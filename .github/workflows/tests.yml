@@ -1,0 +1,104 @@
+name: "Test Commit"
+
+env:
+  CARGO_TERM_COLOR: always
+
+on:
+  pull_request:
+  push:
+    paths:
+      - src/**
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/tests.yml
+jobs:
+  check:
+    name: Cargo check
+    runs-on: "ubuntu-latest"
+    steps:
+      - name: Checkout Source code
+        uses: actions/checkout@v4
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: check-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          target: ${{ matrix.target.build_target }}
+
+      - name: Run cargo check
+        run: cargo check
+
+  test:
+    name: Cargo test
+    runs-on: "ubuntu-latest"
+    steps:
+      - name: Checkout Source code
+        uses: actions/checkout@v4
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: test-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          target: ${{ matrix.target.build_target }}
+
+      - name: Run cargo test
+        run: cargo test
+
+  fmt:
+    name: Cargo fmt
+    runs-on: "ubuntu-latest"
+    steps:
+      - name: Checkout Source code
+        uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          target: ${{ matrix.target.build_target }}
+
+      - name: Run cargo fmt
+        run: cargo fmt -p rom-converto -- --check
+
+  clippy:
+    name: Cargo clippy
+    runs-on: "ubuntu-latest"
+    steps:
+      - name: Checkout Source code
+        uses: actions/checkout@v4
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: clippy-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          target: ${{ matrix.target.build_target }}
+
+      - name: Run cargo clippy
+        run: cargo clippy -- -D warnings

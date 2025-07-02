@@ -1,0 +1,36 @@
+use binrw::{BinRead, BinWrite};
+
+#[derive(BinRead, BinWrite, Debug)]
+#[brw(little)]
+pub struct NcchHdr {
+    pub signature: [u8; 256],
+    magic: [u8; 4],
+    ncchsize: u32,
+    pub titleid: [u8; 8],
+    makercode: u16,
+    pub formatversion: u8,
+    formatversion2: u8,
+    pub seedcheck: [u8; 4],
+    pub programid: [u8; 8],
+    padding1: [u8; 16],
+    logohash: [u8; 32],
+    pub productcode: [u8; 16],
+    exhdrhash: [u8; 32],
+    pub exhdrsize: u32,
+    padding2: u32,
+    pub flags: [u8; 8],
+    plainregionoffset: u32,
+    plainregionsize: u32,
+    logooffset: u32,
+    logosize: u32,
+    pub exefsoffset: u32,
+    pub exefssize: u32,
+    exefshashsize: u32,
+    padding4: u32,
+    pub romfsoffset: u32,
+    pub romfssize: u32,
+    romfshashsize: u32,
+    padding5: u32,
+    exefshash: [u8; 32],
+    romfshash: [u8; 32],
+}
