@@ -23,8 +23,14 @@ pub struct Cli {
     pub command: Commands,
 }
 
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand, Debug, Eq, PartialEq)]
 pub enum Commands {
     #[command(subcommand)]
     Ctr(CtrCommands),
+
+    SelfUpdate(SelfUpdateCommand),
 }
+
+/// Command to check for a new version of the CLI and updates it if available
+#[derive(Parser, Debug, Clone, Eq, PartialEq)]
+pub struct SelfUpdateCommand {}

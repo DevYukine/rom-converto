@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 /// Commands specific to CTR (3DS) formats
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand, Debug, Eq, PartialEq)]
 pub enum CtrCommands {
     CdnToCia(CdnToCiaCommand),
     GenerateCdnTicket(GenerateCdnTicketCommand),
@@ -10,11 +10,10 @@ pub enum CtrCommands {
 }
 
 /// Convert CDN content to CIA format
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
     long_about = "Convert CDN content to CIA format\n\nNote: By default the output CIA file is encrypted, if you want to decrypt it after conversion, use the --decrypt flag"
 )]
-#[derive(Clone)]
 pub struct CdnToCiaCommand {
     /// Path to the CDN content directory
     #[arg(value_name = "CDN_DIR")]
@@ -63,7 +62,7 @@ pub struct CdnToCiaCommand {
 }
 
 /// Generate a Ticket file from CDN content
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
     long_about = "Generate a Ticket file from CDN content\n\nNote: that this Ticket file is not official from Nintendo\nInstead it has non-important data like Console ID set to null, a CIA file build with this ticket will not work on a Stock 3DS but fine on emulators or a 3DS with custom firmware"
 )]
@@ -78,7 +77,7 @@ pub struct GenerateCdnTicketCommand {
 }
 
 /// Decrypts a CIA file
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone, Eq, PartialEq)]
 pub struct DecryptCiaCommand {
     /// Input CIA file path
     #[arg(value_name = "INPUT")]
