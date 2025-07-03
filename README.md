@@ -12,6 +12,12 @@ Built for developers, tinkerers and archivists.
 * [x] Generate 3DS Tickets for CDN files
 * [x] Decrypts `.cia` files for usage on emulators (e.g. [Azahar](https://azahar-emu.org/))
 
+### Planned
+* [ ] Allow for compression of `.bin` and `.cue` files to `.chd` format
+
+### Usage
+
+Use the Help command to see available commands and options for each subcommand
 
 ## Development
 
