@@ -1,9 +1,9 @@
+name: Create Release
+
 on:
   push:
-    branches:
-      - main
+    branches: [ "develop" ]
 
-name: Create Release
 
 env:
   CARGO_TERM_COLOR: always
