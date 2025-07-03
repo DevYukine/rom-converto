@@ -14,7 +14,7 @@ pub mod ctr;
 {about-with-newline}\n\
 {usage-heading}\n    {usage}\n\n\
 {all-args}\n\n\
-Made with ♥️️ by {author}
+Made with ❤ by {author}
 "
 )]
 #[command(propagate_version = true)]
