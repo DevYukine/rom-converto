@@ -1,3 +1,12 @@
+## [0.2.2](https://github.com/DevYukine/rom-converto/compare/v0.2.1...v0.2.2) (2025-07-03)
+
+
+### Bug Fixes
+
+* **ci:** build without --locked for release ([07e6264](https://github.com/DevYukine/rom-converto/commit/07e62644a91631904815bb0d622f6310b6dc1bdc))
+
+
+
 ## [0.2.1](https://github.com/DevYukine/rom-converto/compare/v0.2.0...v0.2.1) (2025-07-03)
 
 
