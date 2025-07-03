@@ -3,8 +3,8 @@ name = "rom-converto"
 version = "0.1.0"
 edition = "2024"
 build = "build.rs"
-authors = ["DevYukine devyukine@gmx.de"]
-description = "CLI for converting, compressing, encrypting, and decrypting ROMs."
+authors = ["DevYukine <devyukine@gmx.de>"]
+description = "CLI for converting, compressing, decompressing, encrypting, and decrypting ROMs."
 
 [dependencies]
 anyhow = "^1.0"
@@ -12,7 +12,7 @@ thiserror = "^2"
 log = "^0.4"
 dotenv = "^0.15"
 env_logger = "^0.11"
-clap = { version = "^4.5", features = ["derive"] }
+clap = { version = "^4.5", features = ["derive", "cargo"] }
 tokio = { version = "^1", features = ["full"] }
 reqwest = { version = "^0.12", features = ["rustls-tls"] }
 async-recursion = "^1.1"
