@@ -10,7 +10,10 @@ mod nintendo;
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenv::dotenv().ok();
-    env_logger::init();
+    env_logger::builder()
+        .filter_level(log::LevelFilter::Info)
+        .parse_default_env()
+        .init();
 
     let cli = Cli::parse();
 
