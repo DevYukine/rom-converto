@@ -211,16 +211,16 @@ async fn write_to_file(
                     let size = LittleEndian::read_u32(&exeinfo.file_size) as usize;
                     off += 512;
 
-                    match exeinfo.fname.iter().rposition(|&x| x != 0) {
+                    match exeinfo.file_name.iter().rposition(|&x| x != 0) {
                         Some(zero_idx) => {
-                            if exeinfo.fname[..=zero_idx].is_ascii() {
+                            if exeinfo.file_name[..=zero_idx].is_ascii() {
                                 // ASCII for 'icon'
                                 let icon: [u8; 4] = hex!("69636f6e");
                                 // ASCII for 'banner'
                                 let banner: [u8; 6] = hex!("62616e6e6572");
 
-                                if !(exeinfo.fname[..=zero_idx] == icon
-                                    || exeinfo.fname[..=zero_idx] == banner)
+                                if !(exeinfo.file_name[..=zero_idx] == icon
+                                    || exeinfo.file_name[..=zero_idx] == banner)
                                 {
                                     exetmp.splice(
                                         off..(off + size),
