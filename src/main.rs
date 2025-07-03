@@ -5,7 +5,6 @@ use anyhow::Result;
 use clap::Parser;
 
 mod commands;
-mod error;
 mod nintendo;
 
 #[tokio::main]
