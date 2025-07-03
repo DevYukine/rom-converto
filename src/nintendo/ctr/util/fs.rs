@@ -1,10 +1,10 @@
-use crate::error::{RomConvertoError, RomConvertoResult};
+use crate::nintendo::ctr::error::{NintendoCTRError, NintendoCTRResult};
 use async_recursion::async_recursion;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 
 #[async_recursion]
-pub async fn get_all_files(dir_path: &Path) -> RomConvertoResult<Vec<PathBuf>> {
+pub async fn get_all_files(dir_path: &Path) -> NintendoCTRResult<Vec<PathBuf>> {
     let mut dir = fs::read_dir(dir_path).await?;
     let mut files = Vec::new();
 
@@ -21,7 +21,7 @@ pub async fn get_all_files(dir_path: &Path) -> RomConvertoResult<Vec<PathBuf>> {
     Ok(files)
 }
 
-pub async fn find_title_file(folder_path: &Path) -> RomConvertoResult<PathBuf> {
+pub async fn find_title_file(folder_path: &Path) -> NintendoCTRResult<PathBuf> {
     let files = get_all_files(folder_path).await?;
 
     files
@@ -32,10 +32,10 @@ pub async fn find_title_file(folder_path: &Path) -> RomConvertoResult<PathBuf> {
             file_name == Some("cetk") || extension == "tik"
         })
         .map(|file| file.to_path_buf())
-        .ok_or_else(|| RomConvertoError::NoTitleFileFound(folder_path.to_path_buf()))
+        .ok_or_else(|| NintendoCTRError::NoTitleFileFound(folder_path.to_path_buf()))
 }
 
-pub async fn find_tmd_file(folder_path: &Path) -> RomConvertoResult<PathBuf> {
+pub async fn find_tmd_file(folder_path: &Path) -> NintendoCTRResult<PathBuf> {
     let files = get_all_files(folder_path).await?;
 
     let mut tmd_files: Vec<_> = files
@@ -65,5 +65,5 @@ pub async fn find_tmd_file(folder_path: &Path) -> RomConvertoResult<PathBuf> {
     tmd_files
         .first()
         .map(|file| file.to_path_buf())
-        .ok_or_else(|| RomConvertoError::NoTmdFileFound(folder_path.to_path_buf()))
+        .ok_or_else(|| NintendoCTRError::NoTmdFileFound(folder_path.to_path_buf()))
 }

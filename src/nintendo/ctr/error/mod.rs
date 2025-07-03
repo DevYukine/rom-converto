@@ -1,9 +1,8 @@
 use std::path::PathBuf;
-use std::result;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum RomConvertoError {
+pub enum NintendoCTRError {
     #[error(transparent)]
     IoError(#[from] std::io::Error),
 
@@ -14,4 +13,4 @@ pub enum RomConvertoError {
     NoTmdFileFound(PathBuf),
 }
 
-pub type RomConvertoResult<T> = result::Result<T, RomConvertoError>;
+pub type NintendoCTRResult<T> = Result<T, NintendoCTRError>;

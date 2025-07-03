@@ -17,6 +17,7 @@ use tokio::io::{AsyncWriteExt, BufWriter};
 mod cia;
 mod constants;
 mod decrypt;
+pub mod error;
 pub mod models;
 pub mod title_key;
 mod util;
