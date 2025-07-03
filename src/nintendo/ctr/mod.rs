@@ -99,7 +99,7 @@ async fn convert_cdn_to_cia_single(cmd: CdnToCiaCommand) -> Result<()> {
             .cdn_dir
             .file_name()
             .and_then(|name| name.to_str())
-            .map(|name| format!("{}.cia", name))
+            .map(|name| format!("{name}.cia"))
             .unwrap();
 
         let parent = cmd.cdn_dir.parent().unwrap_or_else(|| Path::new("."));
