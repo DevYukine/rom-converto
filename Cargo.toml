@@ -14,7 +14,7 @@ dotenv = "^0.15"
 env_logger = "^0.11"
 clap = { version = "^4.5", features = ["derive", "cargo"] }
 tokio = { version = "^1", features = ["full"] }
-reqwest = { version = "^0.12", features = ["rustls-tls"] }
+reqwest = { version = "^0.12", default-features = false, features = ["rustls-tls", "charset", "http2", "system-proxy"] }
 async-recursion = "^1.1"
 binrw = "^0.15"
 aes = "^0.8"
