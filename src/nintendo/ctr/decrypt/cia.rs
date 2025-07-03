@@ -207,8 +207,8 @@ async fn write_to_file(
                     let exebytes = &exetmp[i * 16..(i + 1) * 16];
                     let exeinfo = ExeFSHeader::read(&mut Cursor::new(exebytes))?;
 
-                    let mut off = LittleEndian::read_u32(&exeinfo.off) as usize;
-                    let size = LittleEndian::read_u32(&exeinfo.size) as usize;
+                    let mut off = LittleEndian::read_u32(&exeinfo.file_offset) as usize;
+                    let size = LittleEndian::read_u32(&exeinfo.file_size) as usize;
                     off += 512;
 
                     match exeinfo.fname.iter().rposition(|&x| x != 0) {
