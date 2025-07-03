@@ -1,0 +1,102 @@
+on:
+  push:
+    branches:
+      - main
+
+name: Create Release
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  changelog:
+    outputs:
+      tag: ${{ steps.changelog.outputs.tag }}
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+    name: Create Changelog
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source code
+        uses: actions/checkout@v4
+      - name: Create Conventional Changelog
+        id: changelog
+        uses: TriPSs/conventional-changelog-action@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          version-file: './Cargo.toml'
+          version-path: "package.version"
+      - name: Create Release
+        id: create_release
+        uses: ncipollo/release-action@v1
+        if: ${{ steps.changelog.outputs.skipped == 'false' }}
+        with:
+          tag: ${{ steps.changelog.outputs.tag }}
+          name: ${{ steps.changelog.outputs.tag }}
+          body: ${{ steps.changelog.outputs.clean_changelog }}
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            classifier: linux-x64
+          - os: ubuntu-latest
+            target: armv7-unknown-linux-gnueabihf
+            classifier: linux-arm7
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            classifier: linux-arm64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            classifier: linux-x64-musl
+          - os: ubuntu-latest
+            target: x86_64-unknown-freebsd
+            classifier: freebsd-x64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            classifier: windows-x64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            classifier: macos-x64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            classifier: macos-arm64
+
+    runs-on: ${{ matrix.os }}
+    env:
+      CARGO_TERM_COLOR: always
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build (release) for ${{ matrix.target }}
+        uses: houseabsolute/actions-rust-cross@v1
+        with:
+          command: build
+          target: ${{ matrix.target }}
+          args: "--locked --release"
+          strip: true
+
+      - name: Package binary (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p artifact
+          cp target/${{ matrix.target }}/release/rom-converto \
+             artifact/rom-converto-${{ matrix.classifier }}
+
+      - name: Package binary (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifact
+          Copy-Item "target/${{ matrix.target }}/release/rom-converto.exe" `
+                    -Destination "artifact/rom-converto-${{ matrix.classifier }}.exe"
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifact/*
