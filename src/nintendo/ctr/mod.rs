@@ -37,7 +37,7 @@ pub async fn decrypt_cia(input: &Path, output: &Path) -> Result<()> {
 
 pub async fn generate_ticket_from_cdn(cdn_dir: &Path, output: &Path) -> Result<()> {
     let tmd_path = find_tmd_file(cdn_dir).await?;
-    debug!("Found TMD file");
+    debug!("Found TMD file at {}", tmd_path.display());
 
     let mut ticket_metadata_data = Cursor::new(fs::read(&tmd_path).await?);
     let title_metadata = TitleMetadata::read(&mut ticket_metadata_data)?;
@@ -122,10 +122,10 @@ async fn convert_cdn_to_cia_single(cmd: CdnToCiaCommand) -> Result<()> {
             }
         })
         .await?;
-    debug!("Found Ticket file");
+    debug!("Found Ticket file at {}", ticket_path.display());
 
     let title_metadata_path = find_tmd_file(cdn_dir).await?;
-    debug!("Found TMD file");
+    debug!("Found TMD file at {}", title_metadata_path.display());
 
     let mut ticket_metadata_data = Cursor::new(fs::read(&title_metadata_path).await?);
     let title_metadata = TitleMetadata::read(&mut ticket_metadata_data)?;
