@@ -74,5 +74,5 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: cube_magic-${{ matrix.classifier }}
+          name: rom_converto-${{ matrix.classifier }}
           path: artifact/
