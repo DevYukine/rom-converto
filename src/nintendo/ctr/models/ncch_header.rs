@@ -2,7 +2,7 @@ use binrw::{BinRead, BinWrite};
 
 #[derive(BinRead, BinWrite, Debug)]
 #[brw(little)]
-pub struct NcchHdr {
+pub struct NcchHeader {
     pub signature: [u8; 256],
     magic: [u8; 4],
     ncchsize: u32,

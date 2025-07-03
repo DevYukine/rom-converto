@@ -11,8 +11,8 @@ use crate::nintendo::ctr::decrypt::model::CiaContent;
 use crate::nintendo::ctr::decrypt::reader::CiaReader;
 use crate::nintendo::ctr::decrypt::util::{cbc_decrypt, gen_iv};
 use crate::nintendo::ctr::models::cia::CiaHeader;
-use crate::nintendo::ctr::models::exe_info::ExeInfo;
-use crate::nintendo::ctr::models::ncch_header::NcchHdr;
+use crate::nintendo::ctr::models::exe_fs_header::ExeFSHeader;
+use crate::nintendo::ctr::models::ncch_header::NcchHeader;
 use crate::nintendo::ctr::util::align_64;
 use anyhow::anyhow;
 use binrw::BinRead;
@@ -40,7 +40,7 @@ fn flag_to_bool(flag: u8) -> bool {
     }
 }
 
-fn get_ncch_aes_counter(hdr: &NcchHdr, section: NcchSection) -> [u8; 16] {
+fn get_ncch_aes_counter(hdr: &NcchHeader, section: NcchSection) -> [u8; 16] {
     let mut counter: [u8; 16] = [0; 16];
     if hdr.formatversion == 2 || hdr.formatversion == 0 {
         let mut titleid: [u8; 8] = hdr.titleid;
@@ -205,7 +205,7 @@ async fn write_to_file(
 
                 for i in 0usize..10 {
                     let exebytes = &exetmp[i * 16..(i + 1) * 16];
-                    let exeinfo = ExeInfo::read(&mut Cursor::new(exebytes))?;
+                    let exeinfo = ExeFSHeader::read(&mut Cursor::new(exebytes))?;
 
                     let mut off = LittleEndian::read_u32(&exeinfo.off) as usize;
                     let size = LittleEndian::read_u32(&exeinfo.size) as usize;
@@ -278,7 +278,7 @@ async fn write_to_file(
     Ok(())
 }
 
-async fn get_new_key(key_y: u128, header: &NcchHdr, title_id: String) -> anyhow::Result<u128> {
+async fn get_new_key(key_y: u128, header: &NcchHeader, title_id: String) -> anyhow::Result<u128> {
     let mut new_key: u128 = 0;
     let mut seeds: HashMap<String, [u8; 16]> = HashMap::new();
     let db_path = Path::new("seeddb.bin");
@@ -348,7 +348,7 @@ pub async fn parse_ncch(
     cia.seek(offs).await?;
     let mut tmp = [0u8; 512];
     cia.read(&mut tmp).await?;
-    let header = NcchHdr::read(&mut Cursor::new(&tmp))?;
+    let header = NcchHeader::read(&mut Cursor::new(&tmp))?;
     if titleid.iter().all(|&x| x == 0) {
         titleid = header.programid;
         titleid.reverse();
