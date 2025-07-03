@@ -77,7 +77,7 @@ jobs:
         with:
           command: build
           target: ${{ matrix.target }}
-          args: "--locked --release"
+          args: "--release"
           strip: true
 
       - name: Package binary (Unix)
