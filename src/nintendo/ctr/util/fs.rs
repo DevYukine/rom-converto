@@ -63,7 +63,7 @@ pub async fn find_tmd_file(folder_path: &Path) -> NintendoCTRResult<PathBuf> {
     });
 
     tmd_files
-        .first()
+        .last()
         .map(|file| file.to_path_buf())
         .ok_or_else(|| NintendoCTRError::NoTmdFileFound(folder_path.to_path_buf()))
 }
