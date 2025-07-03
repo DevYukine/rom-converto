@@ -34,6 +34,8 @@ jobs:
           name: ${{ steps.changelog.outputs.tag }}
           body: ${{ steps.changelog.outputs.clean_changelog }}
   build:
+    name: Build Release - ${{ matrix.classifier }}
+    needs: changelog
     strategy:
       fail-fast: false
       matrix:
@@ -64,12 +66,11 @@ jobs:
             classifier: macos-arm64
 
     runs-on: ${{ matrix.os }}
-    env:
-      CARGO_TERM_COLOR: always
-
     steps:
-      - name: Checkout code
+      - name: Checkout Source code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.changelog.outputs.tag }}
 
       - name: Build (release) for ${{ matrix.target }}
         uses: houseabsolute/actions-rust-cross@v1
@@ -98,5 +99,6 @@ jobs:
       - name: Upload to Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ needs.changelog.outputs.tag }}
           files: |
             artifact/*
