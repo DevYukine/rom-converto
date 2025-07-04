@@ -23,7 +23,6 @@ use lazy_static::lazy_static;
 use log::debug;
 use std::io::{Cursor, SeekFrom};
 use std::{collections::HashMap, path::Path, vec};
-use tokio::fs;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufWriter};
 
@@ -84,7 +83,7 @@ async fn fetch_seed(title_id: &str) -> anyhow::Result<[u8; 16]> {
     // Build a future for each country, returning Ok(bytes) on 200 or Err otherwise
     let requests = countries.iter().map(|&country| {
         let client = &*CLIENT;
-        debug!("Fetching seed for {} ({})", country, title_id);
+        debug!("Fetching seed for {country} ({title_id})");
         let url = format!(
             "https://kagiya-ctr.cdn.nintendo.net/title/0x{title_id}/ext_key?country={country}"
         );
@@ -293,7 +292,7 @@ async fn get_new_key(key_y: u128, header: &NcchHeader, title_id: String) -> anyh
         };
     }
 
-    let mut seed = SEEDS.get(&title_id).map(|s| s.clone());
+    let mut seed = SEEDS.get(&title_id).copied();
 
     if seed.is_none() {
         let api_seed = fetch_seed(&title_id).await?;
