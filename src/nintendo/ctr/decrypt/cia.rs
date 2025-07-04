@@ -274,33 +274,40 @@ async fn write_to_file(
 }
 
 async fn get_new_key(key_y: u128, header: &NcchHeader, title_id: String) -> anyhow::Result<u128> {
-    let db_path = Path::new("seeddb.bin");
-
-    let mut seeds = if fs::metadata(db_path).await.is_ok() {
-        let data = fs::read(db_path).await?;
-        let seeddb = SeedDatabase::read(&mut Cursor::new(data))?;
-        debug!("Loading {} seeds from seeddb.bin", seeddb.seed_count);
-        seeddb
-            .seeds
-            .into_iter()
-            .map(|seed| (seed.key, seed.value))
-            .collect()
-    } else {
-        HashMap::new()
-    };
-
-    if !seeds.contains_key(&title_id) {
-        seeds.insert(title_id.clone(), fetch_seed(&title_id).await?);
+    lazy_static! {
+        static ref SEEDS: HashMap<String, [u8; 16]> = {
+            let db_path = Path::new("seeddb.bin");
+            if let Ok(data) = std::fs::read(db_path) {
+                let seeddb =
+                    SeedDatabase::read(&mut Cursor::new(data)).expect("failed to parse seeddb.bin");
+                debug!("Loading {} seeds from seeddb.bin", seeddb.seed_count);
+                seeddb
+                    .seeds
+                    .into_iter()
+                    .map(|seed| (seed.key, seed.value))
+                    .collect()
+            } else {
+                debug!("No seeddb.bin found, starting with an empty seed map");
+                HashMap::new()
+            }
+        };
     }
 
-    if let Some(seed) = seeds.get(&title_id) {
+    let mut seed = SEEDS.get(&title_id).map(|s| s.clone());
+
+    if seed.is_none() {
+        let api_seed = fetch_seed(&title_id).await?;
+        seed = Some(api_seed)
+    }
+
+    if let Some(seed) = seed {
         let seed_check = BigEndian::read_u32(&header.seedcheck);
         let mut revtid = hex::decode(&title_id)?;
         revtid.reverse();
         let sha_sum = sha256::digest([seed.to_vec(), revtid].concat());
 
         if BigEndian::read_u32(&hex::decode(&sha_sum[..8])?) == seed_check {
-            let keystr = sha256::digest([u128::to_be_bytes(key_y), *seed].concat());
+            let keystr = sha256::digest([u128::to_be_bytes(key_y), seed].concat());
             return Ok(BigEndian::read_u128(&hex::decode(&keystr[..32])?));
         }
     }
