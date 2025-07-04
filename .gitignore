@@ -17,3 +17,4 @@ target/
 .idea
 .env
 test_data
+seeddb.bin

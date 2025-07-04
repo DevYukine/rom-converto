@@ -7,12 +7,13 @@ use byteorder::{BigEndian, ByteOrder, LittleEndian};
 use crate::nintendo::ctr::constants::{
     CTR_COMMON_KEYS_HEX, CTR_KEYS_0, CTR_KEYS_1, CTR_MEDIA_UNIT_SIZE, CTR_NCSD_PARTITIONS,
 };
-use crate::nintendo::ctr::decrypt::model::CiaContent;
+use crate::nintendo::ctr::decrypt::model::{CiaContent, NcchSection};
 use crate::nintendo::ctr::decrypt::reader::CiaReader;
 use crate::nintendo::ctr::decrypt::util::{cbc_decrypt, gen_iv};
 use crate::nintendo::ctr::models::cia::CiaHeader;
 use crate::nintendo::ctr::models::exe_fs_header::ExeFSHeader;
 use crate::nintendo::ctr::models::ncch_header::NcchHeader;
+use crate::nintendo::ctr::models::seeddb::SeedDatabase;
 use crate::nintendo::ctr::util::align_64;
 use anyhow::anyhow;
 use binrw::BinRead;
@@ -22,16 +23,11 @@ use lazy_static::lazy_static;
 use log::debug;
 use std::io::{Cursor, SeekFrom};
 use std::{collections::HashMap, path::Path, vec};
+use tokio::fs;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufWriter};
 
 pub type Aes128Ctr = ctr::Ctr128BE<Aes128>;
-
-enum NcchSection {
-    ExHeader = 1,
-    ExeFS = 2,
-    RomFS = 3,
-}
 
 fn flag_to_bool(flag: u8) -> bool {
     match flag {
@@ -65,18 +61,16 @@ fn get_ncch_aes_counter(hdr: &NcchHeader, section: NcchSection) -> [u8; 16] {
 
 fn scramblekey(key_x: u128, key_y: u128) -> u128 {
     const MAX_BITS: u32 = 128;
-    const MASK: u128 = u128::MAX;
 
-    let rol = |val: u128, r_bits: u32| -> u128 {
-        let r_bits = r_bits % MAX_BITS; // Ensure the shift is within bounds
-        (val << r_bits) | (val >> (MAX_BITS - r_bits))
-    };
+    let rol = |val: u128, r_bits: u32| (val << r_bits) | (val >> (MAX_BITS - r_bits));
 
-    let value = (rol(key_x, 2) ^ key_y) + (42503689118608475533858958821215598218 & MASK);
-    rol(value, 87)
+    let value = rol(key_x, 2) ^ key_y;
+    rol(
+        value.wrapping_add(42503689118608475533858958821215598218),
+        87,
+    )
 }
 
-// Assuming this is inside an async context
 async fn fetch_seed(title_id: &str) -> anyhow::Result<[u8; 16]> {
     lazy_static! {
         static ref CLIENT: reqwest::Client = reqwest::Client::builder()
@@ -90,6 +84,7 @@ async fn fetch_seed(title_id: &str) -> anyhow::Result<[u8; 16]> {
     // Build a future for each country, returning Ok(bytes) on 200 or Err otherwise
     let requests = countries.iter().map(|&country| {
         let client = &*CLIENT;
+        debug!("Fetching seed for {} ({})", country, title_id);
         let url = format!(
             "https://kagiya-ctr.cdn.nintendo.net/title/0x{title_id}/ext_key?country={country}"
         );
@@ -279,60 +274,44 @@ async fn write_to_file(
 }
 
 async fn get_new_key(key_y: u128, header: &NcchHeader, title_id: String) -> anyhow::Result<u128> {
-    let mut new_key: u128 = 0;
-    let mut seeds: HashMap<String, [u8; 16]> = HashMap::new();
     let db_path = Path::new("seeddb.bin");
 
-    let seeddb = File::open(db_path).await;
-    let mut cbuffer: [u8; 4] = [0; 4];
-    let mut kbuffer: [u8; 8] = [0; 8];
-    let mut sbuffer: [u8; 16] = [0; 16];
+    let mut seeds = if fs::metadata(db_path).await.is_ok() {
+        let data = fs::read(db_path).await?;
+        let seeddb = SeedDatabase::read(&mut Cursor::new(data))?;
+        debug!("Loading {} seeds from seeddb.bin", seeddb.seed_count);
+        seeddb
+            .seeds
+            .into_iter()
+            .map(|seed| (seed.key, seed.value))
+            .collect()
+    } else {
+        HashMap::new()
+    };
 
-    // Check into seeddb.bin
-    match seeddb {
-        Ok(mut seeddb) => {
-            seeddb.read_exact(&mut cbuffer).await?;
-            let seed_count = LittleEndian::read_u32(&cbuffer);
-            seeddb.seek(SeekFrom::Current(12)).await?;
-
-            for _ in 0..seed_count {
-                seeddb.read_exact(&mut kbuffer).await?;
-                kbuffer.reverse();
-                let key = hex::encode(kbuffer);
-                seeddb.read_exact(&mut sbuffer).await?;
-                seeds.insert(key, sbuffer);
-                seeddb.seek(SeekFrom::Current(8)).await?;
-            }
-        }
-        Err(_) => debug!("seeddb.bin not found, trying to connect to Nintendo servers..."),
-    }
-
-    // Check into Nintendo's servers
     if !seeds.contains_key(&title_id) {
-        let seed = fetch_seed(&title_id).await?;
-
-        seeds.insert(title_id.clone(), seed);
+        seeds.insert(title_id.clone(), fetch_seed(&title_id).await?);
     }
 
-    if seeds.contains_key(&title_id) {
+    if let Some(seed) = seeds.get(&title_id) {
         let seed_check = BigEndian::read_u32(&header.seedcheck);
         let mut revtid = hex::decode(&title_id)?;
         revtid.reverse();
-        let sha_sum = sha256::digest([seeds[&title_id].to_vec(), revtid].concat());
+        let sha_sum = sha256::digest([seed.to_vec(), revtid].concat());
 
-        if BigEndian::read_u32(&hex::decode(sha_sum.get(0..8).unwrap())?) == seed_check {
-            let keystr = sha256::digest([u128::to_be_bytes(key_y), seeds[&title_id]].concat());
-            new_key = BigEndian::read_u128(&hex::decode(keystr.get(0..32).unwrap())?);
+        if BigEndian::read_u32(&hex::decode(&sha_sum[..8])?) == seed_check {
+            let keystr = sha256::digest([u128::to_be_bytes(key_y), *seed].concat());
+            return Ok(BigEndian::read_u128(&hex::decode(&keystr[..32])?));
         }
     }
 
-    Ok(new_key)
+    Ok(0)
 }
 
 pub async fn parse_ncch(
     cia: &mut CiaReader,
     offs: u64,
-    mut titleid: [u8; 8],
+    mut title_id: [u8; 8],
 ) -> anyhow::Result<()> {
     if cia.from_ncsd {
         debug!("  Parsing {} NCCH", CTR_NCSD_PARTITIONS[cia.cidx as usize]);
@@ -349,9 +328,9 @@ pub async fn parse_ncch(
     let mut tmp = [0u8; 512];
     cia.read(&mut tmp).await?;
     let header = NcchHeader::read(&mut Cursor::new(&tmp))?;
-    if titleid.iter().all(|&x| x == 0) {
-        titleid = header.programid;
-        titleid.reverse();
+    if title_id.iter().all(|&x| x == 0) {
+        title_id = header.programid;
+        title_id.reverse();
     }
 
     let ncch_key_y = BigEndian::read_u128(header.signature[0..16].try_into()?);
@@ -385,7 +364,7 @@ pub async fn parse_ncch(
     let mut key_y = ncch_key_y;
 
     if use_seed_crypto {
-        key_y = get_new_key(ncch_key_y, &header, hex::encode(titleid)).await?;
+        key_y = get_new_key(ncch_key_y, &header, hex::encode(title_id)).await?;
         debug!("Uses 9.6 NCCH Seed crypto with KeyY: {key_y:032X}");
     }
 

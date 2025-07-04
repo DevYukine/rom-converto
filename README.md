@@ -19,6 +19,8 @@ Built for developers, tinkerers and archivists.
 
 Use the Help command to see available commands and options for each subcommand
 
+To decrypt .cia files, place a `seeddb.bin` file alongside the executable to load seeds locally. If no `seeddb.bin` is found, the tool will try to fetch the required seed from Nintendo’s API.
+
 ## Development
 
 ### Prerequisites

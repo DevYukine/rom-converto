@@ -196,7 +196,7 @@ pub async fn write_cia(
     Ok(())
 }
 
-/// Reads certificate chain from the end of a TMD or Ticket file
+/// Reads a certificate chain from the end of a TMD or Ticket file
 async fn read_certificate_chain(file_path: &Path) -> anyhow::Result<Vec<Certificate>> {
     let content = tokio::fs::read(file_path).await?;
     let mut cursor = Cursor::new(&content);
