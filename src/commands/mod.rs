@@ -1,6 +1,8 @@
+use crate::commands::chd::ChdCommands;
 use crate::commands::ctr::CtrCommands;
 use clap::{Parser, Subcommand};
 
+pub mod chd;
 pub mod ctr;
 
 /// CLI for en/decrypting, compressing and converting ROMs.
@@ -27,6 +29,9 @@ pub struct Cli {
 pub enum Commands {
     #[command(subcommand)]
     Ctr(CtrCommands),
+
+    #[command(subcommand)]
+    Chd(ChdCommands),
 
     SelfUpdate(SelfUpdateCommand),
 }

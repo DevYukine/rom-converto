@@ -1,3 +1,5 @@
+use crate::chd::convert_to_chd;
+use crate::commands::chd::ChdCommands;
 use crate::commands::ctr::CtrCommands;
 use crate::commands::{Cli, Commands, SelfUpdateCommand};
 use crate::github::api::GithubApi;
@@ -7,6 +9,8 @@ use anyhow::Result;
 use clap::Parser;
 use std::mem::discriminant;
 
+mod cd;
+mod chd;
 mod commands;
 mod github;
 mod nintendo;
@@ -43,6 +47,13 @@ async fn main() -> Result<()> {
                 generate_ticket_from_cdn(&cmd.cdn_dir, &cmd.output).await?
             }
             CtrCommands::DecryptCia(cmd) => decrypt_cia(&cmd.input, &cmd.output).await?,
+        },
+        Commands::Chd(inner) => match inner {
+            ChdCommands::Compress(cmd) => {
+                convert_to_chd(cmd.input_cue, cmd.output, cmd.force).await?
+            }
+            ChdCommands::Extract(cmd) => todo!(),
+            ChdCommands::Verify(cmd) => todo!(),
         },
         Commands::SelfUpdate(_) => self_update(&mut github).await?,
     }

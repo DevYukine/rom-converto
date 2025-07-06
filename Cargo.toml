@@ -34,9 +34,14 @@ lazy_static = "^1.5"
 futures = "^0.3"
 sha2 = "^0.10"
 regex = "^1.11"
-bytes = "^1.5"
+bytes = "^1.10"
 tower = { version = "^0.5", features = ["util", "limit"] }
 const_format = "^0.2"
+flate2 = "^1.1"
+liblzma = { version = "^0.4", features = ["parallel"]}
+flacenc = "^0.4"
+zstd = "^0.13"
+crc = "^3.3"
 
 [build-dependencies]
 built = "^0.8"
