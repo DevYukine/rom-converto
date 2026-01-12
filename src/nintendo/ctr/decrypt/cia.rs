@@ -15,7 +15,7 @@ use crate::nintendo::ctr::models::exe_fs_header::ExeFSHeader;
 use crate::nintendo::ctr::models::ncch_header::NcchHeader;
 use crate::nintendo::ctr::models::seeddb::SeedDatabase;
 use crate::nintendo::ctr::util::align_64;
-use anyhow::anyhow;
+use anyhow::{anyhow, Context};
 use binrw::BinRead;
 use futures::future::select_ok;
 use hex_literal::hex;
@@ -28,11 +28,224 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufWriter};
 
 pub type Aes128Ctr = ctr::Ctr128BE<Aes128>;
 
-fn flag_to_bool(flag: u8) -> bool {
-    match flag {
-        1..=u8::MAX => true,
-        0 => false,
+const CHUNK_SIZE: usize = 32 * 1024 * 1024; // 32 MiB
+
+fn extra_crypto_index(uses_extra_crypto: u8) -> usize {
+    match uses_extra_crypto {
+        0 => 0,
+        1 => 1,
+        10 => 2,
+        11 => 3,
+        _ => 0,
     }
+}
+
+fn derive_ctr_key(key_x: u128, key_y: u128) -> [u8; 16] {
+    u128::to_be_bytes(scramblekey(key_x, key_y))
+}
+
+fn fixed_key(fixed_crypto: u8) -> Option<[u8; 16]> {
+    (fixed_crypto != 0).then(|| u128::to_be_bytes(CTR_KEYS_1[(fixed_crypto as usize) - 1]))
+}
+
+async fn advance_to_offset(
+    writer: &mut BufWriter<&mut File>,
+    cia: &mut CiaReader,
+    target_offset: u64,
+) -> anyhow::Result<()> {
+    if let Some(gap) = target_offset.checked_sub(writer.stream_position().await?) && gap > 0 {
+        let mut buf = vec![0u8; gap as usize];
+        cia.read(&mut buf)
+            .await
+            .context("reading gap bytes before section")?;
+        if writer.stream_position().await? == 512 {
+            buf[1] = 0x00;
+        }
+        writer
+            .write_all(&buf)
+            .await
+            .context("writing gap bytes before section")?;
+    }
+    Ok(())
+}
+
+async fn copy_plain_section(
+    cia: &mut CiaReader,
+    writer: &mut BufWriter<&mut File>,
+    size: u32,
+) -> anyhow::Result<()> {
+    let mut remaining_bytes = size;
+    let mut buf = vec![0u8; CHUNK_SIZE];
+
+    while remaining_bytes > CHUNK_SIZE as u32 {
+        cia.read(&mut buf)
+            .await
+            .context("reading plain chunk")?;
+        writer
+            .write_all(&buf)
+            .await
+            .context("writing plain chunk")?;
+        remaining_bytes -= CHUNK_SIZE as u32;
+    }
+
+    if remaining_bytes > 0 {
+        buf = vec![0u8; remaining_bytes as usize];
+        cia.read(&mut buf)
+            .await
+            .context("reading final plain chunk")?;
+        writer
+            .write_all(&buf)
+            .await
+            .context("writing final plain chunk")?;
+    }
+
+    Ok(())
+}
+
+async fn write_exheader_section(
+    cia: &mut CiaReader,
+    writer: &mut BufWriter<&mut File>,
+    size: u32,
+    ctr: &[u8; 16],
+    base_key: [u8; 16],
+    fixed_crypto: u8,
+) -> anyhow::Result<()> {
+    let mut key = base_key;
+    if let Some(fixed) = fixed_key(fixed_crypto) {
+        key = fixed;
+    }
+
+    let mut buf = vec![0u8; size as usize];
+    cia.read(&mut buf)
+        .await
+        .context("reading ExHeader")?;
+    Aes128Ctr::new_from_slices(&key, ctr)?.apply_keystream(&mut buf);
+    writer
+        .write_all(&buf)
+        .await
+        .context("writing ExHeader")?;
+    Ok(())
+}
+
+struct ExefsDecryptOptions {
+    size: u32,
+    ctr: [u8; 16],
+    base_key: [u8; 16],
+    uses_extra_crypto: u8,
+    fixed_crypto: u8,
+    use_seed_crypto: bool,
+    key_y: u128,
+}
+
+async fn write_exefs_section(
+    cia: &mut CiaReader,
+    writer: &mut BufWriter<&mut File>,
+    opts: ExefsDecryptOptions,
+) -> anyhow::Result<()> {
+    let mut working_key = opts.base_key;
+    if let Some(fixed) = fixed_key(opts.fixed_crypto) {
+        working_key = fixed;
+    }
+
+    let mut encrypted_exefs = vec![0u8; opts.size as usize];
+    cia.read(&mut encrypted_exefs)
+        .await
+        .context("reading ExeFS")?;
+
+    let mut decrypted_exefs = encrypted_exefs.clone();
+    Aes128Ctr::new_from_slices(&working_key, &opts.ctr)?.apply_keystream(&mut decrypted_exefs);
+
+    if opts.uses_extra_crypto != 0 || opts.use_seed_crypto {
+        let mut extra_decrypted = encrypted_exefs;
+        let extra_key = derive_ctr_key(CTR_KEYS_0[extra_crypto_index(opts.uses_extra_crypto)], opts.key_y);
+        Aes128Ctr::new_from_slices(&extra_key, &opts.ctr)?.apply_keystream(&mut extra_decrypted);
+
+        for entry_idx in 0usize..10 {
+            let entry_bytes = &decrypted_exefs[entry_idx * 16..(entry_idx + 1) * 16];
+            let exe_info = ExeFSHeader::read(&mut Cursor::new(entry_bytes))?;
+
+            let offset = LittleEndian::read_u32(&exe_info.file_offset) as usize + 512;
+            let size = LittleEndian::read_u32(&exe_info.file_size) as usize;
+
+            match exe_info.file_name.iter().rposition(|&x| x != 0) {
+                Some(name_end) if exe_info.file_name[..=name_end].is_ascii() => {
+                    let icon: [u8; 4] = hex!("69636f6e");
+                    let banner: [u8; 6] = hex!("62616e6e6572");
+                    if exe_info.file_name[..=name_end] != icon
+                        && exe_info.file_name[..=name_end] != banner
+                    {
+                        decrypted_exefs.splice(
+                            offset..offset + size,
+                            extra_decrypted[offset..offset + size].iter().cloned(),
+                        );
+                    }
+                }
+                _ => {
+                    decrypted_exefs.splice(
+                        offset..offset + size,
+                        extra_decrypted[offset..offset + size].iter().cloned(),
+                    );
+                }
+            }
+        }
+    }
+
+    writer
+        .write_all(&decrypted_exefs)
+        .await
+        .context("writing ExeFS")?;
+    Ok(())
+}
+
+async fn write_romfs_section(
+    cia: &mut CiaReader,
+    writer: &mut BufWriter<&mut File>,
+    size: u32,
+    ctr: &[u8; 16],
+    uses_extra_crypto: u8,
+    fixed_crypto: u8,
+    key_y: u128,
+) -> anyhow::Result<()> {
+    let mut key = derive_ctr_key(CTR_KEYS_0[extra_crypto_index(uses_extra_crypto)], key_y);
+    if let Some(fixed) = fixed_key(fixed_crypto) {
+        key = fixed;
+    }
+
+    let mut remaining_bytes = size;
+    let mut buf = vec![0u8; CHUNK_SIZE];
+    let mut ctr_cipher = Aes128Ctr::new_from_slices(&key, ctr)?;
+
+    while remaining_bytes > CHUNK_SIZE as u32 {
+        cia.read(&mut buf)
+            .await
+            .context("reading RomFS chunk")?;
+        if cia.cidx > 0 && !(cia.single_ncch || cia.from_ncsd) {
+            buf[1] ^= cia.cidx as u8;
+        }
+        ctr_cipher.apply_keystream(&mut buf);
+        writer
+            .write_all(&buf)
+            .await
+            .context("writing RomFS chunk")?;
+        remaining_bytes -= CHUNK_SIZE as u32;
+    }
+
+    if remaining_bytes > 0 {
+        buf = vec![0u8; remaining_bytes as usize];
+        cia.read(&mut buf)
+            .await
+            .context("reading final RomFS chunk")?;
+        if cia.cidx > 0 && !(cia.single_ncch || cia.from_ncsd) {
+            buf[1] ^= cia.cidx as u8;
+        }
+        ctr_cipher.apply_keystream(&mut buf);
+        writer
+            .write_all(&buf)
+            .await
+            .context("writing final RomFS chunk")?;
+    }
+
+    Ok(())
 }
 
 fn get_ncch_aes_counter(hdr: &NcchHeader, section: NcchSection) -> [u8; 16] {
@@ -73,7 +286,7 @@ fn scramblekey(key_x: u128, key_y: u128) -> u128 {
 async fn fetch_seed(title_id: &str) -> anyhow::Result<[u8; 16]> {
     lazy_static! {
         static ref CLIENT: reqwest::Client = reqwest::Client::builder()
-            .danger_accept_invalid_certs(true)
+            .tls_danger_accept_invalid_certs(true)
             .build()
             .expect("Failed to create HTTP client");
     }
@@ -107,163 +320,75 @@ async fn fetch_seed(title_id: &str) -> anyhow::Result<[u8; 16]> {
     Ok(key)
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn write_to_file(
-    ncch: &mut File,
-    cia: &mut CiaReader,
+/// Parameters required to write a decrypted NCCH section.
+struct NcchWriteOptions {
     offset: u64,
     size: u32,
-    sec_type: NcchSection,
-    ctr: [u8; 16],
+    section: NcchSection,
+    counter: [u8; 16],
     uses_extra_crypto: u8,
     fixed_crypto: u8,
     use_seed_crypto: bool,
     encrypted: bool,
-    keyys: [u128; 2],
+    keys: [u128; 2],
+}
+
+async fn write_to_file(
+    ncch: &mut File,
+    cia: &mut CiaReader,
+    opts: NcchWriteOptions,
 ) -> anyhow::Result<()> {
     let mut buff_writer = BufWriter::new(ncch);
-    const CHUNK: u32 = 32 * 1024 * 1024; // 32 MiB
 
-    // Prevent integer overflow
-    if let Some(tmp) = offset.checked_sub(buff_writer.stream_position().await?) {
-        if tmp > 0 {
-            let mut buf = vec![0u8; tmp as usize];
-            cia.read(&mut buf).await?;
-            if buff_writer.stream_position().await? == 512 {
-                buf[1] = 0x00;
-            }
-            buff_writer.write_all(&buf).await?;
-        }
-    }
+    advance_to_offset(&mut buff_writer, cia, opts.offset).await?;
 
-    if !encrypted {
-        let mut sizeleft = size;
-        let mut buf = vec![0u8; CHUNK as usize];
-
-        while sizeleft > CHUNK {
-            cia.read(&mut buf).await?;
-            buff_writer.write_all(&buf).await?;
-            sizeleft -= CHUNK;
-        }
-
-        if sizeleft > 0 {
-            buf = vec![0u8; sizeleft as usize];
-            cia.read(&mut buf).await?;
-            buff_writer.write_all(&buf).await?;
-        }
-
+    if !opts.encrypted {
+        copy_plain_section(cia, &mut buff_writer, opts.size).await?;
         buff_writer.flush().await?;
         return Ok(());
     }
 
-    let key_0x2c = u128::to_be_bytes(scramblekey(CTR_KEYS_0[0], keyys[0]));
-    let get_crypto_key = |extra_crypto: &u8| -> usize {
-        match extra_crypto {
-            0 => 0,
-            1 => 1,
-            10 => 2,
-            11 => 3,
-            _ => 0,
-        }
-    };
+    let base_key = derive_ctr_key(CTR_KEYS_0[0], opts.keys[0]);
 
-    match sec_type {
+    match opts.section {
         NcchSection::ExHeader => {
-            let mut key = key_0x2c;
-            if flag_to_bool(fixed_crypto) {
-                key = u128::to_be_bytes(CTR_KEYS_1[(fixed_crypto as usize) - 1]);
-            }
-            let mut buf = vec![0u8; size as usize];
-            cia.read(&mut buf).await?;
-            Aes128Ctr::new_from_slices(&key, &ctr)?.apply_keystream(&mut buf);
-            buff_writer.write_all(&buf).await?;
+            write_exheader_section(
+                cia,
+                &mut buff_writer,
+                opts.size,
+                &opts.counter,
+                base_key,
+                opts.fixed_crypto,
+            )
+            .await?
         }
         NcchSection::ExeFS => {
-            let mut key = key_0x2c;
-            if flag_to_bool(fixed_crypto) {
-                key = u128::to_be_bytes(CTR_KEYS_1[(fixed_crypto as usize) - 1]);
-            }
-            let mut exedata = vec![0u8; size as usize];
-            cia.read(&mut exedata).await?;
-            let mut exetmp = exedata.clone();
-            Aes128Ctr::new_from_slices(&key, &ctr)?.apply_keystream(&mut exetmp);
-
-            if flag_to_bool(uses_extra_crypto) || use_seed_crypto {
-                let mut exetmp2 = exedata;
-                key = u128::to_be_bytes(scramblekey(
-                    CTR_KEYS_0[get_crypto_key(&uses_extra_crypto)],
-                    keyys[1],
-                ));
-
-                Aes128Ctr::new_from_slices(&key, &ctr)?.apply_keystream(&mut exetmp2);
-
-                for i in 0usize..10 {
-                    let exebytes = &exetmp[i * 16..(i + 1) * 16];
-                    let exeinfo = ExeFSHeader::read(&mut Cursor::new(exebytes))?;
-
-                    let mut off = LittleEndian::read_u32(&exeinfo.file_offset) as usize;
-                    let size = LittleEndian::read_u32(&exeinfo.file_size) as usize;
-                    off += 512;
-
-                    match exeinfo.file_name.iter().rposition(|&x| x != 0) {
-                        Some(zero_idx) => {
-                            if exeinfo.file_name[..=zero_idx].is_ascii() {
-                                // ASCII for 'icon'
-                                let icon: [u8; 4] = hex!("69636f6e");
-                                // ASCII for 'banner'
-                                let banner: [u8; 6] = hex!("62616e6e6572");
-
-                                if !(exeinfo.file_name[..=zero_idx] == icon
-                                    || exeinfo.file_name[..=zero_idx] == banner)
-                                {
-                                    exetmp.splice(
-                                        off..(off + size),
-                                        exetmp2[off..off + size].iter().cloned(),
-                                    );
-                                }
-                            }
-                        }
-                        None => {
-                            exetmp.splice(
-                                off..(off + size),
-                                exetmp2[off..off + size].iter().cloned(),
-                            );
-                        }
-                    }
-                }
-            }
-            buff_writer.write_all(&exetmp).await?;
+            write_exefs_section(
+                cia,
+                &mut buff_writer,
+                ExefsDecryptOptions {
+                    size: opts.size,
+                    ctr: opts.counter,
+                    base_key,
+                    uses_extra_crypto: opts.uses_extra_crypto,
+                    fixed_crypto: opts.fixed_crypto,
+                    use_seed_crypto: opts.use_seed_crypto,
+                    key_y: opts.keys[1],
+                },
+            )
+            .await?
         }
         NcchSection::RomFS => {
-            let mut key = u128::to_be_bytes(scramblekey(
-                CTR_KEYS_0[get_crypto_key(&uses_extra_crypto)],
-                keyys[1],
-            ));
-            if flag_to_bool(fixed_crypto) {
-                key = u128::to_be_bytes(CTR_KEYS_1[(fixed_crypto as usize) - 1]);
-            }
-            let mut sizeleft = size;
-            let mut buf = vec![0u8; CHUNK as usize];
-            let mut ctr_cipher = Aes128Ctr::new_from_slices(&key, &ctr)?;
-            while sizeleft > CHUNK {
-                cia.read(&mut buf).await?;
-                if cia.cidx > 0 && !(cia.single_ncch || cia.from_ncsd) {
-                    buf[1] ^= cia.cidx as u8
-                }
-                ctr_cipher.apply_keystream(&mut buf);
-                buff_writer.write_all(&buf).await?;
-                sizeleft -= CHUNK;
-            }
-
-            if sizeleft > 0 {
-                buf = vec![0u8; sizeleft as usize];
-                cia.read(&mut buf).await?;
-                if cia.cidx > 0 && !(cia.single_ncch || cia.from_ncsd) {
-                    buf[1] ^= cia.cidx as u8
-                }
-                ctr_cipher.apply_keystream(&mut buf);
-                buff_writer.write_all(&buf).await?;
-            }
+            write_romfs_section(
+                cia,
+                &mut buff_writer,
+                opts.size,
+                &opts.counter,
+                opts.uses_extra_crypto,
+                opts.fixed_crypto,
+                opts.keys[1],
+            )
+            .await?
         }
     };
 
@@ -345,15 +470,15 @@ pub async fn parse_ncch(
 
     let uses_extra_crypto: u8 = header.flags[3];
 
-    if flag_to_bool(uses_extra_crypto) {
+    if uses_extra_crypto != 0 {
         debug!("  Uses extra NCCH crypto, keyslot 0x25");
     }
 
     let mut fixed_crypto: u8 = 0;
     let mut encrypted: bool = true;
 
-    if flag_to_bool(header.flags[7] & 1) {
-        if flag_to_bool(tid[3] & 16) {
+    if (header.flags[7] & 1) != 0 {
+        if (tid[3] & 16) != 0 {
             fixed_crypto = 2
         } else {
             fixed_crypto = 1
@@ -361,7 +486,7 @@ pub async fn parse_ncch(
         debug!("  Uses fixed-key crypto")
     }
 
-    if flag_to_bool(header.flags[7] & 4) {
+    if (header.flags[7] & 4) != 0 {
         encrypted = false;
         debug!("  Not encrypted")
     }
@@ -413,15 +538,17 @@ pub async fn parse_ncch(
         write_to_file(
             &mut ncch,
             cia,
-            512,
-            header.exhdrsize * 2,
-            NcchSection::ExHeader,
-            counter,
-            uses_extra_crypto,
-            fixed_crypto,
-            use_seed_crypto,
-            encrypted,
-            [ncch_key_y, key_y],
+            NcchWriteOptions {
+                offset: 512,
+                size: header.exhdrsize * 2,
+                section: NcchSection::ExHeader,
+                counter,
+                uses_extra_crypto,
+                fixed_crypto,
+                use_seed_crypto,
+                encrypted,
+                keys: [ncch_key_y, key_y],
+            },
         )
         .await?;
     }
@@ -431,15 +558,17 @@ pub async fn parse_ncch(
         write_to_file(
             &mut ncch,
             cia,
-            (header.exefsoffset * CTR_MEDIA_UNIT_SIZE) as u64,
-            header.exefssize * CTR_MEDIA_UNIT_SIZE,
-            NcchSection::ExeFS,
-            counter,
-            uses_extra_crypto,
-            fixed_crypto,
-            use_seed_crypto,
-            encrypted,
-            [ncch_key_y, key_y],
+            NcchWriteOptions {
+                offset: (header.exefsoffset * CTR_MEDIA_UNIT_SIZE) as u64,
+                size: header.exefssize * CTR_MEDIA_UNIT_SIZE,
+                section: NcchSection::ExeFS,
+                counter,
+                uses_extra_crypto,
+                fixed_crypto,
+                use_seed_crypto,
+                encrypted,
+                keys: [ncch_key_y, key_y],
+            },
         )
         .await?;
     }
@@ -449,15 +578,17 @@ pub async fn parse_ncch(
         write_to_file(
             &mut ncch,
             cia,
-            (header.romfsoffset * CTR_MEDIA_UNIT_SIZE) as u64,
-            header.romfssize * CTR_MEDIA_UNIT_SIZE,
-            NcchSection::RomFS,
-            counter,
-            uses_extra_crypto,
-            fixed_crypto,
-            use_seed_crypto,
-            encrypted,
-            [ncch_key_y, key_y],
+            NcchWriteOptions {
+                offset: (header.romfsoffset * CTR_MEDIA_UNIT_SIZE) as u64,
+                size: header.romfssize * CTR_MEDIA_UNIT_SIZE,
+                section: NcchSection::RomFS,
+                counter,
+                uses_extra_crypto,
+                fixed_crypto,
+                use_seed_crypto,
+                encrypted,
+                keys: [ncch_key_y, key_y],
+            },
         )
         .await?;
     }
@@ -555,10 +686,8 @@ pub async fn parse_and_decrypt_cia(input: &Path, partition: Option<u8>) -> anyho
                     );
                     next_content_offs += align_64(content.csize);
 
-                    if let Some(number) = partition {
-                        if (i as u8) != number {
-                            continue;
-                        }
+                    if let Some(number) = partition && (i as u8) != number {
+                        continue;
                     }
                     parse_ncch(&mut cia_handle, 0, tid[0..8].try_into()?).await?;
                 } else {
