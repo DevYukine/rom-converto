@@ -15,7 +15,7 @@ use crate::nintendo::ctr::models::exe_fs_header::ExeFSHeader;
 use crate::nintendo::ctr::models::ncch_header::NcchHeader;
 use crate::nintendo::ctr::models::seeddb::SeedDatabase;
 use crate::nintendo::ctr::util::align_64;
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use binrw::BinRead;
 use futures::future::select_ok;
 use hex_literal::hex;
@@ -53,7 +53,9 @@ async fn advance_to_offset(
     cia: &mut CiaReader,
     target_offset: u64,
 ) -> anyhow::Result<()> {
-    if let Some(gap) = target_offset.checked_sub(writer.stream_position().await?) && gap > 0 {
+    if let Some(gap) = target_offset.checked_sub(writer.stream_position().await?)
+        && gap > 0
+    {
         let mut buf = vec![0u8; gap as usize];
         cia.read(&mut buf)
             .await
@@ -78,9 +80,7 @@ async fn copy_plain_section(
     let mut buf = vec![0u8; CHUNK_SIZE];
 
     while remaining_bytes > CHUNK_SIZE as u32 {
-        cia.read(&mut buf)
-            .await
-            .context("reading plain chunk")?;
+        cia.read(&mut buf).await.context("reading plain chunk")?;
         writer
             .write_all(&buf)
             .await
@@ -116,14 +116,9 @@ async fn write_exheader_section(
     }
 
     let mut buf = vec![0u8; size as usize];
-    cia.read(&mut buf)
-        .await
-        .context("reading ExHeader")?;
+    cia.read(&mut buf).await.context("reading ExHeader")?;
     Aes128Ctr::new_from_slices(&key, ctr)?.apply_keystream(&mut buf);
-    writer
-        .write_all(&buf)
-        .await
-        .context("writing ExHeader")?;
+    writer.write_all(&buf).await.context("writing ExHeader")?;
     Ok(())
 }
 
@@ -157,7 +152,10 @@ async fn write_exefs_section(
 
     if opts.uses_extra_crypto != 0 || opts.use_seed_crypto {
         let mut extra_decrypted = encrypted_exefs;
-        let extra_key = derive_ctr_key(CTR_KEYS_0[extra_crypto_index(opts.uses_extra_crypto)], opts.key_y);
+        let extra_key = derive_ctr_key(
+            CTR_KEYS_0[extra_crypto_index(opts.uses_extra_crypto)],
+            opts.key_y,
+        );
         Aes128Ctr::new_from_slices(&extra_key, &opts.ctr)?.apply_keystream(&mut extra_decrypted);
 
         for entry_idx in 0usize..10 {
@@ -216,9 +214,7 @@ async fn write_romfs_section(
     let mut ctr_cipher = Aes128Ctr::new_from_slices(&key, ctr)?;
 
     while remaining_bytes > CHUNK_SIZE as u32 {
-        cia.read(&mut buf)
-            .await
-            .context("reading RomFS chunk")?;
+        cia.read(&mut buf).await.context("reading RomFS chunk")?;
         if cia.cidx > 0 && !(cia.single_ncch || cia.from_ncsd) {
             buf[1] ^= cia.cidx as u8;
         }
@@ -686,7 +682,9 @@ pub async fn parse_and_decrypt_cia(input: &Path, partition: Option<u8>) -> anyho
                     );
                     next_content_offs += align_64(content.csize);
 
-                    if let Some(number) = partition && (i as u8) != number {
+                    if let Some(number) = partition
+                        && (i as u8) != number
+                    {
                         continue;
                     }
                     parse_ncch(&mut cia_handle, 0, tid[0..8].try_into()?).await?;
