@@ -1,3 +1,12 @@
+## [0.3.2](https://github.com/DevYukine/rom-converto/compare/v0.3.1...v0.3.2) (2026-01-12)
+
+
+### Bug Fixes
+
+* **updater:** check for correct name of outdated file ([0ec1460](https://github.com/DevYukine/rom-converto/commit/0ec1460d33d365552ee464d8925238001ef472e7))
+
+
+
 ## [0.3.1](https://github.com/DevYukine/rom-converto/compare/v0.3.0...v0.3.1) (2026-01-12)
 
 
@@ -43,20 +52,6 @@
 ### Bug Fixes
 
 * **ci:** correctly set tag_name and clone from tag ([0a29885](https://github.com/DevYukine/rom-converto/commit/0a29885155d290c304d8482a00010c975ff0fb65))
-
-
-
-# [0.2.0](https://github.com/DevYukine/rom-converto/compare/e49cdbb680044a749fa6a533505a748ebec8af49...v0.2.0) (2025-07-03)
-
-
-### Bug Fixes
-
-* remove obsolete error module ([319efa1](https://github.com/DevYukine/rom-converto/commit/319efa1bd22e8e232ecec7a9ddcd79cc43848d4b))
-
-
-### Features
-
-* **help:** update help command template ([e49cdbb](https://github.com/DevYukine/rom-converto/commit/e49cdbb680044a749fa6a533505a748ebec8af49))
 
 
 
