@@ -1,3 +1,17 @@
+## [0.3.1](https://github.com/DevYukine/rom-converto/compare/v0.3.0...v0.3.1) (2026-01-12)
+
+
+### Bug Fixes
+
+* **cia:** update for latest commit to ExeFSHeader changing the field names ([ae2adac](https://github.com/DevYukine/rom-converto/commit/ae2adace808f5d1bd1c1e47f17d90215913b4e99))
+
+
+### Performance Improvements
+
+* **cia:** only load seeddb.bin once in memory ([985d11c](https://github.com/DevYukine/rom-converto/commit/985d11c65bf3254c267f03e3067d2c53e9b3b6c7))
+
+
+
 # [0.3.0](https://github.com/DevYukine/rom-converto/compare/v0.2.2...v0.3.0) (2025-07-03)
 
 
