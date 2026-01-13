@@ -2,8 +2,9 @@
 use binrw::prelude::*;
 
 pub const SECTOR_SIZE: usize = 2352;
-pub const DATA_SIZE: usize = 2048;
 pub const SUBCODE_SIZE: usize = 96;
+pub const FRAME_SIZE: usize = SECTOR_SIZE + SUBCODE_SIZE;
+pub const FRAMES_PER_HUNK: u32 = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TrackMode {

@@ -24,6 +24,12 @@ pub enum ChdError {
 
     #[error("No files are referenced in the CUE sheet")]
     NoFileReferencedInCueSheet,
+
+    #[error("Invalid hunk size for CHD data")]
+    InvalidHunkSize,
+
+    #[error("CHD map compression failed")]
+    MapCompressionError,
 }
 
 pub type ChdResult<T> = Result<T, ChdError>;

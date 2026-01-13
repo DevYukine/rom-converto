@@ -1,13 +1,13 @@
-use crate::cd::SECTOR_SIZE;
+use crate::cd::{FRAME_SIZE, SECTOR_SIZE, SUBCODE_SIZE};
 use crate::chd::compression::{ChdCompressor, tag_to_bytes};
-use crate::chd::error::ChdResult;
+use crate::chd::error::{ChdError, ChdResult};
 
 #[derive(Debug, Clone)]
 pub struct CdZsCompressor;
 
 impl ChdCompressor for CdZsCompressor {
     fn name(&self) -> &'static str {
-        "CD ZSTD Compression"
+        "CD Zstandard Compressor"
     }
 
     fn tag_bytes(&self) -> [u8; 4] {
@@ -15,31 +15,61 @@ impl ChdCompressor for CdZsCompressor {
     }
 
     fn compress(&self, data: &[u8]) -> ChdResult<Vec<u8>> {
-        // IMPORTANT: CD compression has a specific format!
-        let sector_count = data.len() / SECTOR_SIZE;
-        let mut frames = Vec::with_capacity(sector_count * 2048);
-        let mut subcode = Vec::with_capacity(sector_count * 96);
-
-        for i in 0..sector_count {
-            let sector_start = i * SECTOR_SIZE;
-            let sector = &data[sector_start..sector_start + SECTOR_SIZE];
-
-            // Extract frame data (2048 bytes after sync/header)
-            frames.extend_from_slice(&sector[16..16 + 2048]);
-
-            // Extract subcode data (last 96 bytes) if present in raw sectors
-            // For standard Mode1/Mode2 sectors, generate empty subcode
-            subcode.extend_from_slice(&[0u8; 96]);
-        }
-
-        // Compress with zstd
-        let compressed_frames = zstd::encode_all(frames.as_slice(), 0)?;
-
-        // Build result: subcode + compressed frames
-        let mut result = Vec::new();
-        result.extend_from_slice(&subcode);
-        result.extend_from_slice(&compressed_frames);
-
-        Ok(result)
+        compress_cd_hunk_zstd(data)
     }
+}
+
+fn compress_cd_hunk_zstd(data: &[u8]) -> ChdResult<Vec<u8>> {
+    if data.len() % FRAME_SIZE != 0 {
+        return Err(ChdError::InvalidHunkSize);
+    }
+
+    let frames = data.len() / FRAME_SIZE;
+    let complen_bytes = if data.len() < 65536 { 2 } else { 3 };
+    let ecc_bytes = (frames + 7) / 8;
+    let header_bytes = ecc_bytes + complen_bytes;
+
+    let mut base = Vec::with_capacity(frames * SECTOR_SIZE);
+    let mut subcode = Vec::with_capacity(frames * SUBCODE_SIZE);
+
+    for frame in 0..frames {
+        let start = frame * FRAME_SIZE;
+        base.extend_from_slice(&data[start..start + SECTOR_SIZE]);
+        subcode.extend_from_slice(&data[start + SECTOR_SIZE..start + FRAME_SIZE]);
+    }
+
+    let base_compressed = zstd::encode_all(base.as_slice(), 0)?;
+    let subcode_compressed = zstd::encode_all(subcode.as_slice(), 0)?;
+
+    let mut output =
+        Vec::with_capacity(header_bytes + base_compressed.len() + subcode_compressed.len());
+    output.resize(header_bytes, 0);
+
+    if complen_bytes == 2 {
+        write_u16_be(
+            &mut output[ecc_bytes..ecc_bytes + 2],
+            base_compressed.len() as u16,
+        );
+    } else {
+        write_u24_be(
+            &mut output[ecc_bytes..ecc_bytes + 3],
+            base_compressed.len() as u32,
+        );
+    }
+
+    output.extend_from_slice(&base_compressed);
+    output.extend_from_slice(&subcode_compressed);
+    Ok(output)
+}
+
+fn write_u16_be(buf: &mut [u8], value: u16) {
+    buf[0] = (value >> 8) as u8;
+    buf[1] = value as u8;
+}
+
+fn write_u24_be(buf: &mut [u8], value: u32) {
+    let value = value & 0x00ff_ffff;
+    buf[0] = (value >> 16) as u8;
+    buf[1] = (value >> 8) as u8;
+    buf[2] = value as u8;
 }

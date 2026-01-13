@@ -1,4 +1,4 @@
-use crate::cd::SECTOR_SIZE;
+use crate::cd::{FRAME_SIZE, FRAMES_PER_HUNK, SECTOR_SIZE};
 use crate::chd::bin::BinReader;
 use crate::chd::cue::CueParser;
 use crate::chd::error::{ChdError, ChdResult};
@@ -6,7 +6,6 @@ use crate::chd::writer::ChdWriter;
 use log::debug;
 use std::path::PathBuf;
 use tokio::fs;
-use tokio::time::Instant;
 
 mod bin;
 pub mod compression;
@@ -43,12 +42,12 @@ pub async fn convert_to_chd(cue_path: PathBuf, output_path: PathBuf, force: bool
     debug!("Total sectors: {}", total_sectors);
     debug!("Creating CHD file: {:?}", output_path);
 
-    const HUNK_SIZE: u32 = 19584; // CHD hunk size in bytes
+    const HUNK_SIZE: u32 = FRAME_SIZE as u32 * FRAMES_PER_HUNK;
 
     let mut writer = ChdWriter::create(&output_path, total_sectors, HUNK_SIZE, &cue_sheet).await?;
 
     // Process all sectors
-    let progress_interval = total_sectors / 100;
+    let progress_interval = std::cmp::max(1, total_sectors / 100);
     for lba in 0..total_sectors {
         let sector_data = bin_reader.read_sector(lba).await?;
         writer.write_sector(&sector_data).await?;

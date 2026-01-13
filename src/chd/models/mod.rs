@@ -1,6 +1,6 @@
-use std::io::{Read, Seek, Write};
 // models.rs
 use binrw::{BinRead, BinWrite, binrw};
+use std::io::{Seek, Write};
 
 /// Represents the version of the CHD file format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, BinRead, BinWrite)]
@@ -85,7 +85,8 @@ pub struct ChdMetadataHeader {
 
 impl ChdMetadataHeader {
     pub fn new_cd_metadata(metadata_string: String) -> Self {
-        let data = metadata_string.into_bytes();
+        let mut data = metadata_string.into_bytes();
+        data.push(0);
 
         Self {
             tag: *b"CHT2",
@@ -99,7 +100,7 @@ impl ChdMetadataHeader {
         &self,
         writer: &mut W,
     ) -> Result<usize, std::io::Error> {
-        use byteorder::{BigEndian, WriteBytesExt};
+        use byteorder::WriteBytesExt;
 
         let start_pos = writer.stream_position()?;
 

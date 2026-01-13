@@ -2,9 +2,21 @@ use crate::chd::cue::models::{CueSheet, TrackType};
 use crate::chd::error::ChdResult;
 use crate::chd::models::ChdMetadataHeader;
 use binrw::BinWrite;
+use sha1::{Digest, Sha1};
 use std::io::Cursor;
 
-pub fn generate_cd_metadata(cue_sheet: &CueSheet, total_frames: u32) -> ChdResult<Vec<u8>> {
+#[derive(Clone)]
+pub struct MetadataHash {
+    pub tag: [u8; 4],
+    pub sha1: [u8; 20],
+}
+
+pub struct CdMetadataBlock {
+    pub bytes: Vec<u8>,
+    pub hashes: Vec<MetadataHash>,
+}
+
+pub fn generate_cd_metadata(cue_sheet: &CueSheet, total_frames: u32) -> ChdResult<CdMetadataBlock> {
     let mut metadata_buffer = Vec::new();
 
     // For CDs, we typically have one metadata entry for all tracks
@@ -60,5 +72,17 @@ pub fn generate_cd_metadata(cue_sheet: &CueSheet, total_frames: u32) -> ChdResul
     let mut cursor = Cursor::new(&mut metadata_buffer);
     metadata.write(&mut cursor)?;
 
-    Ok(metadata_buffer)
+    let mut hashes = Vec::new();
+    if metadata.flags & 0x01 != 0 {
+        let sha1: [u8; 20] = Sha1::digest(&metadata.data).into();
+        hashes.push(MetadataHash {
+            tag: metadata.tag,
+            sha1,
+        });
+    }
+
+    Ok(CdMetadataBlock {
+        bytes: metadata_buffer,
+        hashes,
+    })
 }
