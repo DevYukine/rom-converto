@@ -19,7 +19,7 @@ pub async fn cleanup_old_executable() -> anyhow::Result<()> {
 
     debug!("Checking if an outdated executable exists");
 
-    let outdated_exe = current_exe_parent.join("rom-converto-outdated");
+    let outdated_exe = current_exe_parent.join("rom-converto_old");
 
     let exists = tokio::fs::try_exists(&outdated_exe).await?;
 
