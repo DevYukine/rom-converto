@@ -3,7 +3,8 @@ use crate::chd::bin::BinReader;
 use crate::chd::cue::CueParser;
 use crate::chd::error::{ChdError, ChdResult};
 use crate::chd::writer::ChdWriter;
-use log::debug;
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use log::{debug, info};
 use std::path::PathBuf;
 use tokio::fs;
 
@@ -14,7 +15,12 @@ mod error;
 mod models;
 mod writer;
 
-pub async fn convert_to_chd(cue_path: PathBuf, output_path: PathBuf, force: bool) -> ChdResult<()> {
+pub async fn convert_to_chd(
+    pb: MultiProgress,
+    cue_path: PathBuf,
+    output_path: PathBuf,
+    force: bool,
+) -> ChdResult<()> {
     // Check if output exists
     if fs::metadata(&output_path).await.is_ok() && !force {
         return Err(ChdError::ChdFileAlreadyExists);
@@ -46,21 +52,37 @@ pub async fn convert_to_chd(cue_path: PathBuf, output_path: PathBuf, force: bool
 
     let mut writer = ChdWriter::create(&output_path, total_sectors, HUNK_SIZE, &cue_sheet).await?;
 
-    // Process all sectors
-    let progress_interval = std::cmp::max(1, total_sectors / 100);
+    let total_mb = (bin_size as f64) / (1000.0 * 1000.0);
+    let pg = pb.add(ProgressBar::new(bin_size));
+
+    pg.set_style(ProgressStyle::default_bar()
+        .template("{msg}\n{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})")?
+        .progress_chars("#>-"));
+    pg.set_message(format!("Compressing to CHD (~{:.2} MB)", total_mb));
+
     for lba in 0..total_sectors {
         let sector_data = bin_reader.read_sector(lba).await?;
         writer.write_sector(&sector_data).await?;
-
-        if lba % progress_interval == 0 {
-            let progress = (lba as f32 / total_sectors as f32) * 100.0;
-            println!("\rProgress: {:.1}%", progress);
-            std::io::Write::flush(&mut std::io::stdout())?;
-        }
+        pg.inc(SECTOR_SIZE as u64);
     }
+
+    pg.finish_and_clear();
 
     debug!("Finalizing CHD file...");
     writer.finalize().await?;
+
+    // Calculate compression statistics
+    let chd_size = fs::metadata(&output_path).await?.len();
+    let original_size = bin_size;
+    let saved_bytes = original_size.saturating_sub(chd_size);
+    let compression_ratio = (chd_size as f64 / original_size as f64) * 100.0;
+    let saved_mb = saved_bytes as f64 / (1000.0 * 1000.0);
+    let chd_mb = chd_size as f64 / (1000.0 * 1000.0);
+
+    info!(
+        "Original: {:.2} MB, CHD: {:.2} MB, Saved: {:.2} MB ({:.1}% compression ratio)",
+        total_mb, chd_mb, saved_mb, compression_ratio
+    );
 
     debug!("Conversion complete!");
     Ok(())

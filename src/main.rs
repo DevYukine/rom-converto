@@ -7,6 +7,8 @@ use crate::nintendo::ctr::{convert_cdn_to_cia, decrypt_cia, generate_ticket_from
 use crate::updater::{check_for_new_version_and_notify, cleanup_old_executable, self_update};
 use anyhow::Result;
 use clap::Parser;
+use indicatif::MultiProgress;
+use indicatif_log_bridge::LogWrapper;
 use std::mem::discriminant;
 
 mod cd;
@@ -25,10 +27,16 @@ pub mod built_info {
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenv::dotenv().ok();
-    env_logger::builder()
+    let logger = env_logger::builder()
         .filter_level(log::LevelFilter::Info)
         .parse_default_env()
-        .init();
+        .build();
+
+    let level = logger.filter();
+    let pb = MultiProgress::new();
+
+    LogWrapper::new(pb.clone(), logger).try_init()?;
+    log::set_max_level(level);
 
     cleanup_old_executable().await?;
 
@@ -50,7 +58,7 @@ async fn main() -> Result<()> {
         },
         Commands::Chd(inner) => match inner {
             ChdCommands::Compress(cmd) => {
-                convert_to_chd(cmd.input_cue, cmd.output, cmd.force).await?
+                convert_to_chd(pb.clone(), cmd.input_cue, cmd.output, cmd.force).await?
             }
             ChdCommands::Extract(cmd) => todo!(),
             ChdCommands::Verify(cmd) => todo!(),
