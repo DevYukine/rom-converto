@@ -11,8 +11,10 @@ target/
 
 
 # Added by cargo
-
 /target
+
+# MacOS files
+.DS_Store
 
 .idea
 .env
