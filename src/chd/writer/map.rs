@@ -1,5 +1,5 @@
 use crate::chd::error::{ChdError, ChdResult};
-use crc::{Crc, CRC_16_IBM_3740};
+use crc::{CRC_16_IBM_3740, Crc};
 use std::cmp;
 
 pub(crate) struct MapEntry {
@@ -414,8 +414,7 @@ impl HuffmanEncoder {
 
             let new_index = nextalloc;
             nextalloc += 1;
-            self.nodes[new_index].weight =
-                self.nodes[node0].weight + self.nodes[node1].weight;
+            self.nodes[new_index].weight = self.nodes[node0].weight + self.nodes[node1].weight;
             self.nodes[node0].parent = Some(new_index);
             self.nodes[node1].parent = Some(new_index);
 

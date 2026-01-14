@@ -1,8 +1,8 @@
 use crate::cd::{FRAME_SIZE, SECTOR_SIZE, SUBCODE_SIZE};
 use crate::chd::compression::{ChdCompressor, tag_to_bytes};
 use crate::chd::error::{ChdError, ChdResult};
-use flate2::write::DeflateEncoder;
 use flate2::Compression;
+use flate2::write::DeflateEncoder;
 use std::io::Write;
 
 #[derive(Debug, Clone)]
