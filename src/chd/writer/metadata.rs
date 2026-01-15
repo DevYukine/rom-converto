@@ -5,12 +5,13 @@ use binrw::BinWrite;
 use sha1::{Digest, Sha1};
 use std::io::Cursor;
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct MetadataHash {
     pub tag: [u8; 4],
     pub sha1: [u8; 20],
 }
 
+#[derive(Debug)]
 pub struct CdMetadataBlock {
     pub bytes: Vec<u8>,
     pub hashes: Vec<MetadataHash>,

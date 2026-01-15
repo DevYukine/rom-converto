@@ -9,6 +9,7 @@ use tokio::io::AsyncSeekExt;
 use tokio::io::{AsyncReadExt, BufReader};
 
 // BIN file reader
+#[derive(Debug)]
 pub struct BinReader {
     reader: BufReader<File>,
     track_offsets: Vec<u64>,

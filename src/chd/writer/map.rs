@@ -2,6 +2,7 @@ use crate::chd::error::{ChdError, ChdResult};
 use crc::{CRC_16_IBM_3740, Crc};
 use std::cmp;
 
+#[derive(Debug)]
 pub(crate) struct MapEntry {
     pub compression: u8,
     pub length: u32,
@@ -272,6 +273,7 @@ fn write_u48_be(buf: &mut [u8], value: u64) {
     buf[5] = value as u8;
 }
 
+#[derive(Debug)]
 struct BitWriter {
     data: Vec<u8>,
     accum: u8,
@@ -314,7 +316,7 @@ impl BitWriter {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 struct HuffNode {
     parent: Option<usize>,
     weight: u32,
@@ -322,6 +324,7 @@ struct HuffNode {
     numbits: u8,
 }
 
+#[derive(Debug)]
 struct HuffmanEncoder {
     datahisto: [u32; HUFFMAN_CODES],
     nodes: Vec<HuffNode>,

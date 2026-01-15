@@ -10,6 +10,7 @@ use std::time::Duration;
 use tower::limit::RateLimit;
 use tower::{Service, ServiceBuilder, ServiceExt};
 
+#[derive(Debug)]
 pub struct GithubApi {
     client: Client,
     service: RateLimit<Client>,

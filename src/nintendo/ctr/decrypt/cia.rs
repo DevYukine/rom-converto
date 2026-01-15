@@ -122,6 +122,7 @@ async fn write_exheader_section(
     Ok(())
 }
 
+#[derive(Debug)]
 struct ExefsDecryptOptions {
     size: u32,
     ctr: [u8; 16],
@@ -317,6 +318,7 @@ async fn fetch_seed(title_id: &str) -> anyhow::Result<[u8; 16]> {
 }
 
 /// Parameters required to write a decrypted NCCH section.
+#[derive(Debug)]
 struct NcchWriteOptions {
     offset: u64,
     size: u32,

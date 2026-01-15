@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 pub mod error;
 pub mod models;
 
+#[derive(Debug)]
 pub struct CueParser {
     cue_path: PathBuf,
 }

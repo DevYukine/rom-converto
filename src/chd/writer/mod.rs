@@ -21,6 +21,7 @@ use tokio::task;
 
 const ZERO_SUBCODE: [u8; SUBCODE_SIZE] = [0; SUBCODE_SIZE];
 
+#[derive(Debug)]
 pub struct ChdWriter {
     writer: BufWriter<File>,
     header: ChdHeaderV5,

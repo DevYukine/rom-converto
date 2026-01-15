@@ -1,4 +1,5 @@
 #[repr(C)]
+#[derive(Debug)]
 pub struct CiaContent {
     pub cid: u32,
     pub cidx: u16,
@@ -6,6 +7,7 @@ pub struct CiaContent {
     pub csize: u64,
 }
 
+#[derive(Debug)]
 pub enum NcchSection {
     ExHeader = 1,
     ExeFS = 2,

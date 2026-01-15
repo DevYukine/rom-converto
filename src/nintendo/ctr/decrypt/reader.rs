@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
+#[derive(Debug)]
 pub struct CiaReader {
     pub file: File,
     encrypted: bool,
