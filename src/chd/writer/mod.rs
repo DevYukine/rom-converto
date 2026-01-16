@@ -2,8 +2,9 @@ mod map;
 mod metadata;
 
 use crate::cd::{FRAME_SIZE, SUBCODE_SIZE};
+use crate::chd::compression::cdfl::CdFlCompressor;
+use crate::chd::compression::cdlz::CdlzCompressor;
 use crate::chd::compression::cdzl::CdZlCompressor;
-use crate::chd::compression::cdzs::CdZsCompressor;
 use crate::chd::compression::{ChdCompression, ChdCompressor};
 use crate::chd::cue::models::CueSheet;
 use crate::chd::error::{ChdError, ChdResult};
@@ -12,6 +13,7 @@ use crate::chd::writer::map::{MapEntry, compress_v5_map, crc16_ccitt};
 use crate::chd::writer::metadata::{MetadataHash, generate_cd_metadata};
 use binrw::BinWrite;
 use sha1::{Digest, Sha1};
+use std::fmt::Debug;
 use std::io::{Cursor, SeekFrom};
 use std::path::Path;
 use std::sync::Arc;
@@ -48,8 +50,11 @@ impl ChdWriter {
             return Err(ChdError::InvalidHunkSize);
         }
 
-        let compressors: Vec<Arc<dyn ChdCompressor + Send + Sync>> =
-            vec![Arc::new(CdZlCompressor {}), Arc::new(CdZsCompressor {})];
+        let compressors: Vec<Arc<dyn ChdCompressor + Send + Sync>> = vec![
+            Arc::new(CdlzCompressor {}),
+            Arc::new(CdZlCompressor {}),
+            Arc::new(CdFlCompressor {}),
+        ];
 
         const CHD_V5_HEADER_SIZE: u32 = 124; // Size of CHD v5 header
 
@@ -58,7 +63,7 @@ impl ChdWriter {
             version: ChdVersion::V5,
             compressor_0: compressors[0].tag_bytes(),
             compressor_1: compressors[1].tag_bytes(),
-            compressor_2: [0; 4],
+            compressor_2: compressors[2].tag_bytes(),
             compressor_3: [0; 4],
             logical_bytes,
             map_offset: 0,
