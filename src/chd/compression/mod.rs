@@ -1,3 +1,4 @@
+use crate::cd::ecc::{has_valid_ecc, restore_sector_ecc, strip_sector_ecc};
 use crate::cd::{FRAME_SIZE, SECTOR_SIZE, SUBCODE_SIZE};
 use crate::chd::error::{ChdError, ChdResult};
 use byteorder::{BigEndian, ByteOrder};
@@ -58,13 +59,28 @@ where
     F1: FnOnce(&[u8]) -> ChdResult<Vec<u8>>,
     F2: FnOnce(&[u8]) -> ChdResult<Vec<u8>>,
 {
-    let (frames, base, subcode) = split_cd_frames(data)?;
+    let (frames, mut base, subcode) = split_cd_frames(data)?;
     let (header_bytes, ecc_bytes, complen_bytes) = cd_header_sizes(data.len(), frames);
+
+    // ECC stripping: for each frame with valid sync+ECC, strip redundant data
+    // and record which frames were stripped in the ecc_bytes header.
+    let mut ecc_flags = vec![0u8; ecc_bytes];
+    for frame in 0..frames {
+        let sector = &base[frame * SECTOR_SIZE..(frame + 1) * SECTOR_SIZE];
+        if has_valid_ecc(sector) {
+            ecc_flags[frame / 8] |= 1 << (frame % 8);
+            let sector_mut =
+                &mut base[frame * SECTOR_SIZE..(frame + 1) * SECTOR_SIZE];
+            strip_sector_ecc(sector_mut);
+        }
+    }
 
     let base_compressed = base_compress(&base)?;
     let subcode_compressed = subcode_compress(&subcode)?;
 
     let mut output = vec![0u8; header_bytes];
+    // Write ECC flags into the header
+    output[..ecc_bytes].copy_from_slice(&ecc_flags);
     write_cd_header(&mut output, ecc_bytes, base_compressed.len(), complen_bytes);
     output.extend_from_slice(&base_compressed);
     output.extend_from_slice(&subcode_compressed);
@@ -97,6 +113,9 @@ where
     let frames = output_len / FRAME_SIZE;
     let (header_bytes, ecc_bytes, complen_bytes) = cd_header_sizes(output_len, frames);
 
+    // Read ECC flags from header
+    let ecc_flags = &data[..ecc_bytes];
+
     let base_length = if complen_bytes == 2 {
         BigEndian::read_u16(&data[ecc_bytes..ecc_bytes + 2]) as usize
     } else {
@@ -109,8 +128,16 @@ where
     let expected_base_len = frames * SECTOR_SIZE;
     let expected_subcode_len = frames * SUBCODE_SIZE;
 
-    let base = base_decompress(base_compressed, expected_base_len)?;
+    let mut base = base_decompress(base_compressed, expected_base_len)?;
     let subcode = subcode_decompress(subcode_compressed, expected_subcode_len)?;
+
+    // ECC restoration: for each frame that had its ECC stripped, restore it
+    for frame in 0..frames {
+        if ecc_flags[frame / 8] & (1 << (frame % 8)) != 0 {
+            let sector = &mut base[frame * SECTOR_SIZE..(frame + 1) * SECTOR_SIZE];
+            restore_sector_ecc(sector);
+        }
+    }
 
     let mut output = Vec::with_capacity(output_len);
     for frame in 0..frames {

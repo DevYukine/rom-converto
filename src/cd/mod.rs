@@ -1,4 +1,6 @@
 // src/cd/sector.rs
+pub mod ecc;
+
 use binrw::prelude::*;
 
 pub const SECTOR_SIZE: usize = 2352;
