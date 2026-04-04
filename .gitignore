@@ -18,5 +18,6 @@ target/
 
 .idea
 .env
+.claude/settings.local.json
 test_data
 seeddb.bin
