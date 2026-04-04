@@ -12,6 +12,7 @@ pub struct CueSheet {
 #[derive(Debug, Clone)]
 pub struct CueFile {
     pub filename: String,
+    #[allow(dead_code)] // Parsed from CUE, used for format validation
     pub file_type: FileType,
 }
 

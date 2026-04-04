@@ -34,6 +34,7 @@ pub const fn tag_to_bytes(tag: &str) -> [u8; 4] {
 
 // IMPORTANT: These values map to positions in the header, not codec IDs
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[allow(dead_code)] // CHD spec values — Self_ and Parent used in map constants
 pub enum ChdCompression {
     Codec0 = 0, // First codec in header
     Codec1 = 1, // Second codec in header
@@ -44,12 +45,14 @@ pub enum ChdCompression {
     Parent = 6, // From parent CHD
 }
 
+#[allow(dead_code)] // Trait methods are part of the CHD codec API
 pub trait ChdCompressor: Debug {
     fn name(&self) -> &'static str;
     fn tag_bytes(&self) -> [u8; 4];
     fn compress(&self, data: &[u8]) -> ChdResult<Vec<u8>>;
 }
 
+#[allow(dead_code)] // Trait methods are part of the CHD codec API
 pub trait ChdDecompressor: Debug + Send + Sync {
     fn tag_bytes(&self) -> [u8; 4];
     fn decompress(&self, compressed: &[u8], output_len: usize) -> ChdResult<Vec<u8>>;
@@ -231,6 +234,8 @@ impl CdCodecSet {
         let mut best: Option<Vec<u8>> = None;
         let mut best_type = ChdCompression::None as u8;
 
+        let best_len = |best: &Option<Vec<u8>>| best.as_ref().map_or(hunk.len(), |b| b.len());
+
         // Try CDLZ (LZMA base + deflate subcode)
         if let Ok(result) = self.compress_cdlz(
             &base,
@@ -239,11 +244,11 @@ impl CdCodecSet {
             header_bytes,
             ecc_bytes,
             complen_bytes,
-        ) {
-            if result.len() < best.as_ref().map_or(hunk.len(), |b| b.len()) {
-                best_type = 0;
-                best = Some(result);
-            }
+        )
+            && result.len() < best_len(&best)
+        {
+            best_type = 0;
+            best = Some(result);
         }
 
         // Try CDZL (deflate base + deflate subcode)
@@ -254,28 +259,28 @@ impl CdCodecSet {
             header_bytes,
             ecc_bytes,
             complen_bytes,
-        ) {
-            if result.len() < best.as_ref().map_or(hunk.len(), |b| b.len()) {
-                best_type = 1;
-                best = Some(result);
-            }
+        )
+            && result.len() < best_len(&best)
+        {
+            best_type = 1;
+            best = Some(result);
         }
 
         // Try CDFL only for audio tracks (no CD sync header in first sector)
-        if base.len() >= 12 && base[..12] != CD_SYNC_HEADER {
-            if let Ok(result) = self.compress_cdfl(
+        if base.len() >= 12
+            && base[..12] != CD_SYNC_HEADER
+            && let Ok(result) = self.compress_cdfl(
                 &base,
                 &subcode,
                 &ecc_flags,
                 header_bytes,
                 ecc_bytes,
                 complen_bytes,
-            ) {
-                if result.len() < best.as_ref().map_or(hunk.len(), |b| b.len()) {
-                    best_type = 2;
-                    best = Some(result);
-                }
-            }
+            )
+            && result.len() < best_len(&best)
+        {
+            best_type = 2;
+            best = Some(result);
         }
 
         match best {
@@ -335,7 +340,7 @@ impl CdCodecSet {
         ecc_bytes: usize,
         complen_bytes: usize,
     ) -> ChdResult<Vec<u8>> {
-        if base.len() % BYTES_PER_STEREO_SAMPLE != 0 {
+        if !base.len().is_multiple_of(BYTES_PER_STEREO_SAMPLE) {
             return Err(ChdError::InvalidHunkSize);
         }
         let samples = samples_from_bytes(base, Endian::Big);

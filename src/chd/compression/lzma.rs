@@ -6,6 +6,7 @@ use std::io;
 use std::ptr;
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // CHD spec codec
 pub struct LzmaCompressor;
 
 impl ChdCompressor for LzmaCompressor {

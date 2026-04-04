@@ -2,6 +2,7 @@ use crate::chd::compression::{ChdCompressor, tag_to_bytes};
 use crate::chd::error::ChdResult;
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // CHD spec codec
 pub struct ZstdCompressor;
 
 impl ChdCompressor for ZstdCompressor {

@@ -9,9 +9,11 @@ use std::io::{self, Cursor};
 
 pub(crate) const CD_SAMPLE_RATE: usize = 44_100;
 const FLAC_BITS_PER_SAMPLE: usize = 16;
+#[allow(dead_code)] // Used by FlacCompressor
 const BYTES_PER_SAMPLE: usize = FLAC_BITS_PER_SAMPLE / 8;
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // CHD spec codec — available for non-CD hunk compression
 pub struct FlacCompressor;
 
 impl ChdCompressor for FlacCompressor {

@@ -97,20 +97,6 @@ impl ChdWriter {
         })
     }
 
-    pub async fn write_sector(&mut self, sector_data: &[u8]) -> ChdResult<()> {
-        self.raw_sha1.update(sector_data);
-        self.raw_sha1.update(ZERO_SUBCODE);
-
-        self.current_hunk.extend_from_slice(sector_data);
-        self.current_hunk.extend_from_slice(&ZERO_SUBCODE);
-
-        if self.current_hunk.len() >= self.header.hunk_bytes as usize {
-            self.flush_hunk().await?;
-        }
-
-        Ok(())
-    }
-
     async fn flush_hunk(&mut self) -> ChdResult<()> {
         if self.current_hunk.is_empty() {
             return Ok(());
@@ -230,7 +216,7 @@ impl ChdWriter {
                 let start = s * SECTOR_SIZE;
                 self.raw_sha1
                     .update(&sector_data[start..start + SECTOR_SIZE]);
-                self.raw_sha1.update(&ZERO_SUBCODE);
+                self.raw_sha1.update(ZERO_SUBCODE);
                 hunk.extend_from_slice(&sector_data[start..start + SECTOR_SIZE]);
                 hunk.extend_from_slice(&ZERO_SUBCODE);
             }
@@ -272,7 +258,7 @@ impl ChdWriter {
             pending.push_back(handle);
 
             // Drain completed results from front (maintain write order)
-            while pending.front().map_or(false, |h| h.is_finished()) {
+            while pending.front().is_some_and(|h| h.is_finished()) {
                 let result = pending.pop_front().unwrap().await??;
                 let offset = self.writer.stream_position().await?;
                 self.writer.write_all(&result.compressed).await?;
