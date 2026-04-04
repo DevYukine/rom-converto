@@ -24,6 +24,11 @@ impl ChdCompressor for CdFlCompressor {
     }
 
     fn compress(&self, data: &[u8]) -> ChdResult<Vec<u8>> {
+        // Skip FLAC for data tracks — check if first sector has CD sync pattern
+        if data.len() >= 12 && is_cd_data_sector(&data[..12]) {
+            return Err(ChdError::InvalidHunkSize); // Signal: not suitable for FLAC
+        }
+
         compress_cd_hunk(
             data,
             |base| {
@@ -37,6 +42,12 @@ impl ChdCompressor for CdFlCompressor {
             deflate_compress,
         )
     }
+}
+
+const CD_SYNC_HEADER: [u8; 12] = [0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00];
+
+fn is_cd_data_sector(header: &[u8]) -> bool {
+    header == CD_SYNC_HEADER
 }
 
 #[derive(Debug, Clone)]
