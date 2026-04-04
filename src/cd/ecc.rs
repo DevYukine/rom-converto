@@ -203,13 +203,16 @@ static QOFFSETS: [[u16; 43]; 52] = [
 ];
 
 /// Returns the source byte for ECC computation at the given offset.
-/// Offsets >= 0x810 (2064) return 0 — ECC only covers sync + header + user data.
+/// Offset is relative to after the sync header (byte 12).
+/// For Mode 2 sectors, the first 4 bytes (subheader) are masked as zeros.
+const MODE_OFFSET: usize = 0x00F;
+
 #[inline]
 fn ecc_source_byte(sector: &[u8], offset: usize) -> u8 {
-    if offset < 0x810 {
-        sector[offset]
+    if sector[MODE_OFFSET] == 2 && offset < 4 {
+        0x00
     } else {
-        0
+        sector[SYNC_NUM_BYTES + offset]
     }
 }
 
@@ -313,3 +316,4 @@ pub fn restore_sector_ecc(sector: &mut [u8]) {
     // Regenerate ECC P and Q parity
     ecc_generate(sector);
 }
+
