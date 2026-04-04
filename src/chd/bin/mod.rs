@@ -33,4 +33,15 @@ impl BinReader {
 
         Ok(buffer)
     }
+
+    pub async fn read_sectors(&mut self, start_lba: u32, count: u32) -> BinResult<Vec<u8>> {
+        let offset = start_lba as u64 * SECTOR_SIZE as u64;
+        let byte_count = count as usize * SECTOR_SIZE;
+        let mut buffer = vec![0u8; byte_count];
+        self.reader
+            .seek(std::io::SeekFrom::Start(offset))
+            .await?;
+        self.reader.read_exact(&mut buffer).await?;
+        Ok(buffer)
+    }
 }

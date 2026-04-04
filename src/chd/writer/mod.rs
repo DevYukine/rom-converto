@@ -1,6 +1,7 @@
 pub(crate) mod metadata;
 
-use crate::cd::{FRAME_SIZE, SUBCODE_SIZE};
+use crate::cd::{FRAME_SIZE, SECTOR_SIZE, SUBCODE_SIZE};
+use crate::chd::bin::BinReader;
 use crate::chd::compression::cdfl::CdFlCompressor;
 use crate::chd::compression::cdlz::CdlzCompressor;
 use crate::chd::compression::cdzl::CdZlCompressor;
@@ -12,13 +13,16 @@ use crate::chd::models::{CHD_V5_HEADER_SIZE, SHA1_BYTES, ChdHeaderV5, ChdVersion
 use crate::chd::writer::metadata::{MetadataHash, generate_cd_metadata};
 use crate::chd::compute_overall_sha1;
 use binrw::BinWrite;
+use indicatif::ProgressBar;
 use log::debug;
 use sha1::{Digest, Sha1};
+use std::collections::VecDeque;
 use std::io::{Cursor, SeekFrom};
 use std::path::Path;
 use std::sync::Arc;
 use tokio::fs::File;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt, BufWriter};
+use tokio::sync::Semaphore;
 use tokio::task;
 
 const ZERO_SUBCODE: [u8; SUBCODE_SIZE] = [0; SUBCODE_SIZE];
@@ -173,6 +177,124 @@ impl ChdWriter {
         });
 
         self.current_hunk.clear();
+
+        Ok(())
+    }
+
+    pub async fn compress_all_hunks(
+        &mut self,
+        bin_reader: &mut BinReader,
+        total_sectors: u32,
+        progress: &ProgressBar,
+    ) -> ChdResult<()> {
+        let hunk_bytes = self.header.hunk_bytes as usize;
+        let frames_per_hunk = hunk_bytes / FRAME_SIZE;
+        let total_hunks = total_sectors.div_ceil(frames_per_hunk as u32);
+
+        // Allow more concurrent tasks than CPU cores — each task does sequential
+        // codec trials so we want the thread pool kept busy
+        let max_concurrent = std::thread::available_parallelism()
+            .map(|n| (n.get() * 2).min(64))
+            .unwrap_or(8);
+        let semaphore = Arc::new(Semaphore::new(max_concurrent));
+
+        struct CompressedResult {
+            compressed: Vec<u8>,
+            compression: u8,
+            crc16: u16,
+        }
+
+        let mut pending: VecDeque<tokio::task::JoinHandle<ChdResult<CompressedResult>>> =
+            VecDeque::new();
+        let mut sectors_read = 0u32;
+
+        for _hunk_idx in 0..total_hunks {
+            // Read sectors for this hunk
+            let sectors_in_hunk =
+                frames_per_hunk.min((total_sectors - sectors_read) as usize) as u32;
+            let sector_data = bin_reader.read_sectors(sectors_read, sectors_in_hunk).await?;
+
+            // Build hunk: interleave sectors with zero subcodes
+            let mut hunk = Vec::with_capacity(hunk_bytes);
+            for s in 0..sectors_in_hunk as usize {
+                let start = s * SECTOR_SIZE;
+                self.raw_sha1
+                    .update(&sector_data[start..start + SECTOR_SIZE]);
+                self.raw_sha1.update(&ZERO_SUBCODE);
+                hunk.extend_from_slice(&sector_data[start..start + SECTOR_SIZE]);
+                hunk.extend_from_slice(&ZERO_SUBCODE);
+            }
+            hunk.resize(hunk_bytes, 0); // pad last hunk
+            sectors_read += sectors_in_hunk;
+
+            // Compute CRC before sending to compressor
+            let crc16 = crc16_ccitt(&hunk);
+
+            // Acquire semaphore permit
+            let permit = semaphore.clone().acquire_owned().await.unwrap();
+            let comps = self.compressors.clone();
+
+            // Spawn compression task — try each codec sequentially, pick smallest
+            let handle = tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+
+                let mut best_compressed = None;
+                let mut best_size = hunk.len();
+                let mut best_type = ChdCompression::None as u8;
+
+                for (idx, compressor) in comps.iter().enumerate() {
+                    if let Ok(compressed) = compressor.compress(&hunk) {
+                        if compressed.len() < best_size {
+                            best_size = compressed.len();
+                            best_type = idx as u8;
+                            best_compressed = Some(compressed);
+                        }
+                    }
+                }
+
+                let (data, compression) = if let Some(compressed) = best_compressed {
+                    (compressed, best_type)
+                } else {
+                    (hunk, ChdCompression::None as u8)
+                };
+
+                Ok(CompressedResult {
+                    compressed: data,
+                    compression,
+                    crc16,
+                })
+            });
+
+            pending.push_back(handle);
+
+            // Drain completed results from front (maintain write order)
+            while pending.front().map_or(false, |h| h.is_finished()) {
+                let result = pending.pop_front().unwrap().await??;
+                let offset = self.writer.stream_position().await?;
+                self.writer.write_all(&result.compressed).await?;
+                self.map_entries.push(MapEntry {
+                    compression: result.compression,
+                    length: result.compressed.len() as u32,
+                    offset,
+                    crc16: result.crc16,
+                });
+                progress.inc((frames_per_hunk * SECTOR_SIZE) as u64);
+            }
+        }
+
+        // Drain remaining pending tasks
+        while let Some(handle) = pending.pop_front() {
+            let result = handle.await??;
+            let offset = self.writer.stream_position().await?;
+            self.writer.write_all(&result.compressed).await?;
+            self.map_entries.push(MapEntry {
+                compression: result.compression,
+                length: result.compressed.len() as u32,
+                offset,
+                crc16: result.crc16,
+            });
+            progress.inc((frames_per_hunk * SECTOR_SIZE) as u64);
+        }
 
         Ok(())
     }

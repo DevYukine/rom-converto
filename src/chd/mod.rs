@@ -75,11 +75,9 @@ pub async fn convert_to_chd(
     );
     pg.set_message(format!("Compressing to CHD (~{:.2} MB)", total_mb));
 
-    for lba in 0..total_sectors {
-        let sector_data = bin_reader.read_sector(lba).await?;
-        writer.write_sector(&sector_data).await?;
-        pg.inc(SECTOR_SIZE as u64);
-    }
+    writer
+        .compress_all_hunks(&mut bin_reader, total_sectors, &pg)
+        .await?;
 
     pg.finish_and_clear();
 
