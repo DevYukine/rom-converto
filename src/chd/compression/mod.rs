@@ -1,12 +1,15 @@
 use crate::cd::ecc::{has_valid_ecc, restore_sector_ecc, strip_sector_ecc};
 use crate::cd::{FRAME_SIZE, SECTOR_SIZE, SUBCODE_SIZE};
+use crate::chd::compression::cdfl::CD_SYNC_HEADER;
+use crate::chd::compression::flac::{CD_SAMPLE_RATE, Endian, encode_flac_samples, samples_from_bytes};
+use crate::chd::compression::lzma::LzmaEncoder;
 use crate::chd::error::{ChdError, ChdResult};
 use byteorder::{BigEndian, ByteOrder};
 use flate2::Compression;
 use flate2::read::DeflateDecoder;
 use flate2::write::DeflateEncoder;
 use std::fmt::Debug;
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 
 const CD_SHORT_HUNK_LIMIT: usize = 0x1_0000;
 const CD_ECC_DIVISOR: usize = 8;
@@ -181,4 +184,201 @@ fn write_cd_header(buf: &mut [u8], ecc_bytes: usize, base_len: usize, complen_by
     } else {
         BigEndian::write_u24(&mut buf[ecc_bytes..ecc_bytes + 3], base_len as u32);
     }
+}
+
+const CD_CHANNELS: usize = 2;
+const BYTES_PER_SAMPLE: usize = 2;
+const BYTES_PER_STEREO_SAMPLE: usize = CD_CHANNELS * BYTES_PER_SAMPLE;
+
+/// Persistent codec state for CD hunk compression, matching chdman's approach
+/// of reusing encoder instances across hunks rather than creating new ones each time.
+pub(crate) struct CdCodecSet {
+    lzma: LzmaEncoder,
+    cdlz_subcode_deflate: flate2::Compress,
+    cdzl_base_deflate: flate2::Compress,
+    cdzl_subcode_deflate: flate2::Compress,
+}
+
+impl CdCodecSet {
+    pub fn new(hunk_bytes: usize) -> io::Result<Self> {
+        Ok(Self {
+            lzma: LzmaEncoder::new(hunk_bytes)?,
+            cdlz_subcode_deflate: flate2::Compress::new(Compression::best(), false),
+            cdzl_base_deflate: flate2::Compress::new(Compression::best(), false),
+            cdzl_subcode_deflate: flate2::Compress::new(Compression::best(), false),
+        })
+    }
+
+    /// Compress a CD hunk trying all codecs, return best result.
+    /// Returns `(compressed_data, codec_index)` where codec_index maps to the
+    /// header codec slots (0=CDLZ, 1=CDZL, 2=CDFL).
+    pub fn compress_hunk(&mut self, hunk: &[u8]) -> ChdResult<(Vec<u8>, u8)> {
+        let (frames, mut base, subcode) = split_cd_frames(hunk)?;
+        let (header_bytes, ecc_bytes, complen_bytes) = cd_header_sizes(hunk.len(), frames);
+
+        // ECC stripping
+        let mut ecc_flags = vec![0u8; ecc_bytes];
+        for frame in 0..frames {
+            let sector = &base[frame * SECTOR_SIZE..(frame + 1) * SECTOR_SIZE];
+            if has_valid_ecc(sector) {
+                ecc_flags[frame / 8] |= 1 << (frame % 8);
+                let sector_mut = &mut base[frame * SECTOR_SIZE..(frame + 1) * SECTOR_SIZE];
+                strip_sector_ecc(sector_mut);
+            }
+        }
+
+        let mut best: Option<Vec<u8>> = None;
+        let mut best_type = ChdCompression::None as u8;
+
+        // Try CDLZ (LZMA base + deflate subcode)
+        if let Ok(result) = self.compress_cdlz(
+            &base, &subcode, &ecc_flags, header_bytes, ecc_bytes, complen_bytes,
+        ) {
+            if result.len() < best.as_ref().map_or(hunk.len(), |b| b.len()) {
+                best_type = 0;
+                best = Some(result);
+            }
+        }
+
+        // Try CDZL (deflate base + deflate subcode)
+        if let Ok(result) = self.compress_cdzl(
+            &base, &subcode, &ecc_flags, header_bytes, ecc_bytes, complen_bytes,
+        ) {
+            if result.len() < best.as_ref().map_or(hunk.len(), |b| b.len()) {
+                best_type = 1;
+                best = Some(result);
+            }
+        }
+
+        // Try CDFL only for audio tracks (no CD sync header in first sector)
+        if base.len() >= 12 && base[..12] != CD_SYNC_HEADER {
+            if let Ok(result) = self.compress_cdfl(
+                &base, &subcode, &ecc_flags, header_bytes, ecc_bytes, complen_bytes,
+            ) {
+                if result.len() < best.as_ref().map_or(hunk.len(), |b| b.len()) {
+                    best_type = 2;
+                    best = Some(result);
+                }
+            }
+        }
+
+        match best {
+            Some(data) => Ok((data, best_type)),
+            None => Ok((hunk.to_vec(), ChdCompression::None as u8)),
+        }
+    }
+
+    fn compress_cdlz(
+        &mut self,
+        base: &[u8],
+        subcode: &[u8],
+        ecc_flags: &[u8],
+        header_bytes: usize,
+        ecc_bytes: usize,
+        complen_bytes: usize,
+    ) -> ChdResult<Vec<u8>> {
+        let base_compressed = self.lzma.compress(base)?;
+        let subcode_compressed =
+            deflate_with_reset(&mut self.cdlz_subcode_deflate, subcode)?;
+        Ok(assemble_cd_output(
+            ecc_flags,
+            header_bytes,
+            ecc_bytes,
+            complen_bytes,
+            &base_compressed,
+            &subcode_compressed,
+        ))
+    }
+
+    fn compress_cdzl(
+        &mut self,
+        base: &[u8],
+        subcode: &[u8],
+        ecc_flags: &[u8],
+        header_bytes: usize,
+        ecc_bytes: usize,
+        complen_bytes: usize,
+    ) -> ChdResult<Vec<u8>> {
+        let base_compressed =
+            deflate_with_reset(&mut self.cdzl_base_deflate, base)?;
+        let subcode_compressed =
+            deflate_with_reset(&mut self.cdzl_subcode_deflate, subcode)?;
+        Ok(assemble_cd_output(
+            ecc_flags,
+            header_bytes,
+            ecc_bytes,
+            complen_bytes,
+            &base_compressed,
+            &subcode_compressed,
+        ))
+    }
+
+    fn compress_cdfl(
+        &mut self,
+        base: &[u8],
+        subcode: &[u8],
+        ecc_flags: &[u8],
+        header_bytes: usize,
+        ecc_bytes: usize,
+        complen_bytes: usize,
+    ) -> ChdResult<Vec<u8>> {
+        if base.len() % BYTES_PER_STEREO_SAMPLE != 0 {
+            return Err(ChdError::InvalidHunkSize);
+        }
+        let samples = samples_from_bytes(base, Endian::Big);
+        let samples_per_channel = samples.len() / CD_CHANNELS;
+        let base_compressed =
+            encode_flac_samples(&samples, CD_CHANNELS, CD_SAMPLE_RATE, samples_per_channel)?;
+        // CDFL reuses the CDZL subcode deflater for subcode (stateless reset)
+        let subcode_compressed = deflate_compress(subcode)?;
+        Ok(assemble_cd_output(
+            ecc_flags,
+            header_bytes,
+            ecc_bytes,
+            complen_bytes,
+            &base_compressed,
+            &subcode_compressed,
+        ))
+    }
+}
+
+fn deflate_with_reset(
+    compressor: &mut flate2::Compress,
+    data: &[u8],
+) -> ChdResult<Vec<u8>> {
+    compressor.reset();
+    // Deflate worst case is slightly larger than input
+    let max_out = data.len() + data.len() / 100 + 600;
+    let mut output = vec![0u8; max_out];
+    let before_out = compressor.total_out();
+    let status = compressor
+        .compress(data, &mut output, flate2::FlushCompress::Finish)
+        .map_err(|e| io::Error::other(format!("deflate compress error: {e}")))?;
+    match status {
+        flate2::Status::StreamEnd => {}
+        _ => {
+            return Err(
+                io::Error::other("deflate compression did not finish in one call").into(),
+            );
+        }
+    }
+    let written = (compressor.total_out() - before_out) as usize;
+    output.truncate(written);
+    Ok(output)
+}
+
+fn assemble_cd_output(
+    ecc_flags: &[u8],
+    header_bytes: usize,
+    ecc_bytes: usize,
+    complen_bytes: usize,
+    base_compressed: &[u8],
+    subcode_compressed: &[u8],
+) -> Vec<u8> {
+    let mut output = vec![0u8; header_bytes];
+    output[..ecc_bytes].copy_from_slice(ecc_flags);
+    write_cd_header(&mut output, ecc_bytes, base_compressed.len(), complen_bytes);
+    output.extend_from_slice(base_compressed);
+    output.extend_from_slice(subcode_compressed);
+    output
 }

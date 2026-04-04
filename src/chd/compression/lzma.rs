@@ -47,6 +47,70 @@ fn encode_props(props: &CLzmaEncProps) -> [u8; LZMA_PROPS_SIZE as usize] {
     out
 }
 
+/// A reusable LZMA encoder that creates the encoder handle once and reuses it
+/// via `LzmaEnc_MemEncode`, matching chdman's approach of persistent codec state.
+pub(crate) struct LzmaEncoder {
+    handle: CLzmaEncHandle,
+    alloc: Allocator,
+}
+
+// SAFETY: The LZMA encoder handle is only accessed by one thread at a time
+// (protected by Mutex in CdCodecSet).
+unsafe impl Send for LzmaEncoder {}
+
+impl LzmaEncoder {
+    pub fn new(hunk_bytes: usize) -> io::Result<Self> {
+        let alloc = Allocator::default();
+        let handle = unsafe { LzmaEnc_Create(alloc.as_ref()) };
+        if handle.is_null() {
+            return Err(io::Error::other("Failed to create LZMA encoder"));
+        }
+        let props = configure_props(hunk_bytes);
+        unsafe {
+            let res = LzmaEnc_SetProps(handle, &props);
+            if res != SZ_OK as i32 {
+                LzmaEnc_Destroy(handle, alloc.as_ref(), alloc.as_ref());
+                return Err(io::Error::other("Failed to set LZMA encoder props"));
+            }
+        }
+        Ok(Self { handle, alloc })
+    }
+
+    pub fn compress(&self, data: &[u8]) -> ChdResult<Vec<u8>> {
+        let max_out = data.len() + data.len() / 3 + 128;
+        let mut compressed = vec![0u8; max_out];
+        let mut compressed_size = max_out as SizeT;
+        let res = unsafe {
+            LzmaEnc_MemEncode(
+                self.handle,
+                compressed.as_mut_ptr(),
+                &mut compressed_size,
+                data.as_ptr(),
+                data.len() as SizeT,
+                0, // writeEndMark = false
+                ptr::null(),
+                self.alloc.as_ref(),
+                self.alloc.as_ref(),
+            )
+        };
+        if res != SZ_OK as i32 {
+            return Err(
+                io::Error::other(format!("LZMA encode failed with code {res}")).into(),
+            );
+        }
+        compressed.truncate(compressed_size as usize);
+        Ok(compressed)
+    }
+}
+
+impl Drop for LzmaEncoder {
+    fn drop(&mut self) {
+        unsafe {
+            LzmaEnc_Destroy(self.handle, self.alloc.as_ref(), self.alloc.as_ref());
+        }
+    }
+}
+
 pub(crate) fn lzma_compress(data: &[u8]) -> ChdResult<Vec<u8>> {
     let props = configure_props(CD_HUNK_BYTES as usize);
     let alloc = Allocator::default();

@@ -5,7 +5,7 @@ use crate::chd::bin::BinReader;
 use crate::chd::compression::cdfl::CdFlCompressor;
 use crate::chd::compression::cdlz::CdlzCompressor;
 use crate::chd::compression::cdzl::CdZlCompressor;
-use crate::chd::compression::{ChdCompression, ChdCompressor};
+use crate::chd::compression::{CdCodecSet, ChdCompression, ChdCompressor};
 use crate::chd::cue::models::CueSheet;
 use crate::chd::error::{ChdError, ChdResult};
 use crate::chd::map::{MapEntry, compress_v5_map, crc16_ccitt};
@@ -19,7 +19,7 @@ use sha1::{Digest, Sha1};
 use std::collections::VecDeque;
 use std::io::{Cursor, SeekFrom};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::fs::File;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt, BufWriter};
 use tokio::sync::Semaphore;
@@ -191,12 +191,18 @@ impl ChdWriter {
         let frames_per_hunk = hunk_bytes / FRAME_SIZE;
         let total_hunks = total_sectors.div_ceil(frames_per_hunk as u32);
 
-        // Allow more concurrent tasks than CPU cores — each task does sequential
-        // codec trials so we want the thread pool kept busy
-        let max_concurrent = std::thread::available_parallelism()
-            .map(|n| (n.get() * 2).min(64))
-            .unwrap_or(8);
-        let semaphore = Arc::new(Semaphore::new(max_concurrent));
+        // Create a pool of persistent codec sets — one per concurrent thread.
+        // The semaphore ensures we never have more tasks than codec sets.
+        let num_threads = std::thread::available_parallelism()
+            .map(|n| n.get().min(16))
+            .unwrap_or(4);
+        let semaphore = Arc::new(Semaphore::new(num_threads));
+
+        let codec_pool: Arc<Vec<Mutex<CdCodecSet>>> = Arc::new(
+            (0..num_threads)
+                .map(|_| Mutex::new(CdCodecSet::new(hunk_bytes).expect("failed to create codec set")))
+                .collect::<Vec<_>>(),
+        );
 
         struct CompressedResult {
             compressed: Vec<u8>,
@@ -230,32 +236,26 @@ impl ChdWriter {
             // Compute CRC before sending to compressor
             let crc16 = crc16_ccitt(&hunk);
 
-            // Acquire semaphore permit
+            // Acquire semaphore permit — guarantees a codec set is available
             let permit = semaphore.clone().acquire_owned().await.unwrap();
-            let comps = self.compressors.clone();
+            let pool = codec_pool.clone();
 
-            // Spawn compression task — try each codec sequentially, pick smallest
+            // Spawn compression task using persistent codec state
             let handle = tokio::task::spawn_blocking(move || {
                 let _permit = permit;
 
-                let mut best_compressed = None;
-                let mut best_size = hunk.len();
-                let mut best_type = ChdCompression::None as u8;
-
-                for (idx, compressor) in comps.iter().enumerate() {
-                    if let Ok(compressed) = compressor.compress(&hunk) {
-                        if compressed.len() < best_size {
-                            best_size = compressed.len();
-                            best_type = idx as u8;
-                            best_compressed = Some(compressed);
-                        }
+                // Find an available codec set from the pool. The semaphore ensures
+                // there are always enough unlocked mutexes.
+                let mut codecs = loop {
+                    if let Some(guard) = pool.iter().find_map(|m| m.try_lock().ok()) {
+                        break guard;
                     }
-                }
+                    std::thread::yield_now();
+                };
 
-                let (data, compression) = if let Some(compressed) = best_compressed {
-                    (compressed, best_type)
-                } else {
-                    (hunk, ChdCompression::None as u8)
+                let (data, compression) = match codecs.compress_hunk(&hunk) {
+                    Ok((compressed, codec_type)) => (compressed, codec_type),
+                    Err(_) => (hunk, ChdCompression::None as u8),
                 };
 
                 Ok(CompressedResult {
