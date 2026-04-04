@@ -1,7 +1,6 @@
 // src/cue/models
 const SECONDS_PER_MINUTE: u32 = 60;
 const FRAMES_PER_SECOND: u32 = 75;
-const LEAD_IN_FRAMES: u32 = 150;
 const PRIMARY_INDEX: u8 = 1;
 
 #[derive(Debug, Clone)]
@@ -42,7 +41,6 @@ impl Msf {
     pub fn to_lba(self) -> u32 {
         (self.minutes as u32 * SECONDS_PER_MINUTE + self.seconds as u32) * FRAMES_PER_SECOND
             + self.frames as u32
-            - LEAD_IN_FRAMES
     }
 }
 
