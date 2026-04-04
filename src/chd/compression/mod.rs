@@ -1,9 +1,13 @@
 use crate::cd::{FRAME_SIZE, SECTOR_SIZE, SUBCODE_SIZE};
 use crate::chd::error::{ChdError, ChdResult};
+use byteorder::{BigEndian, ByteOrder};
 use flate2::Compression;
 use flate2::write::DeflateEncoder;
 use std::fmt::Debug;
 use std::io::Write;
+
+const CD_SHORT_HUNK_LIMIT: usize = 0x1_0000;
+const CD_ECC_DIVISOR: usize = 8;
 
 pub mod cdfl;
 pub mod cdlz;
@@ -86,8 +90,8 @@ fn split_cd_frames(data: &[u8]) -> ChdResult<(usize, Vec<u8>, Vec<u8>)> {
 }
 
 fn cd_header_sizes(data_len: usize, frames: usize) -> (usize, usize, usize) {
-    let complen_bytes = if data_len < 65536 { 2 } else { 3 };
-    let ecc_bytes = (frames + 7) / 8;
+    let complen_bytes = if data_len < CD_SHORT_HUNK_LIMIT { 2 } else { 3 };
+    let ecc_bytes = (frames + (CD_ECC_DIVISOR - 1)) / CD_ECC_DIVISOR;
     let header_bytes = ecc_bytes + complen_bytes;
     (header_bytes, ecc_bytes, complen_bytes)
 }
@@ -101,10 +105,9 @@ fn write_cd_header(buf: &mut [u8], ecc_bytes: usize, base_len: usize, complen_by
 }
 
 fn write_u16_be(buf: &mut [u8], value: u16) {
-    buf.copy_from_slice(&value.to_be_bytes());
+    BigEndian::write_u16(buf, value);
 }
 
 fn write_u24_be(buf: &mut [u8], value: u32) {
-    let bytes = value.to_be_bytes();
-    buf.copy_from_slice(&bytes[1..]);
+    BigEndian::write_u24(buf, value);
 }

@@ -1,12 +1,15 @@
 use crate::chd::compression::{ChdCompressor, tag_to_bytes};
 use crate::chd::error::{ChdError, ChdResult};
-use anyhow::anyhow;
 use flacenc::bitsink::ByteSink;
 use flacenc::component::BitRepr;
 use flacenc::config;
 use flacenc::error::Verify;
 use flacenc::source::MemSource;
 use std::io;
+
+pub(crate) const CD_SAMPLE_RATE: usize = 44_100;
+const FLAC_BITS_PER_SAMPLE: usize = 16;
+const BYTES_PER_SAMPLE: usize = FLAC_BITS_PER_SAMPLE / 8;
 
 #[derive(Debug, Clone)]
 pub struct FlacCompressor;
@@ -21,17 +24,17 @@ impl ChdCompressor for FlacCompressor {
     }
 
     fn compress(&self, data: &[u8]) -> ChdResult<Vec<u8>> {
-        if data.len() % 2 != 0 {
+        if data.len() % BYTES_PER_SAMPLE != 0 {
             return Err(ChdError::InvalidHunkSize);
         }
 
         let le_samples = samples_from_bytes(data, Endian::Little);
         let be_samples = samples_from_bytes(data, Endian::Big);
-        let samples_per_channel = data.len() / 2;
+        let samples_per_channel = data.len() / BYTES_PER_SAMPLE;
         let block_size = flac_block_size(samples_per_channel);
 
-        let le_flac = encode_flac_samples(&le_samples, 1, 44_100, block_size)?;
-        let be_flac = encode_flac_samples(&be_samples, 1, 44_100, block_size)?;
+        let le_flac = encode_flac_samples(&le_samples, 1, CD_SAMPLE_RATE, block_size)?;
+        let be_flac = encode_flac_samples(&be_samples, 1, CD_SAMPLE_RATE, block_size)?;
 
         let (endian_flag, mut compressed) = if le_flac.len() <= be_flac.len() {
             (0u8, le_flac)
@@ -46,7 +49,7 @@ impl ChdCompressor for FlacCompressor {
     }
 }
 
-pub fn encode_flac_samples(
+pub(crate) fn encode_flac_samples(
     samples: &[i32],
     channels: usize,
     sample_rate: usize,
@@ -62,14 +65,14 @@ pub fn encode_flac_samples(
         .into_verified()
         .map_err(|(_, err)| io::Error::new(io::ErrorKind::InvalidInput, err))?;
 
-    let source = MemSource::from_samples(samples, channels, 16, sample_rate);
+    let source = MemSource::from_samples(samples, channels, FLAC_BITS_PER_SAMPLE, sample_rate);
     let stream = flacenc::encode_with_fixed_block_size(&config, source, config.block_size)
-        .map_err(|_| anyhow!("Could not encode to flac with flixed block size"))?;
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
 
     let mut sink = ByteSink::new();
     stream
         .write(&mut sink)
-        .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
     Ok(sink.into_inner())
 }
 
@@ -84,12 +87,12 @@ fn flac_block_size(samples_per_channel: usize) -> usize {
     block_size
 }
 
-enum Endian {
+pub enum Endian {
     Little,
     Big,
 }
 
-fn samples_from_bytes(data: &[u8], endian: Endian) -> Vec<i32> {
+pub fn samples_from_bytes(data: &[u8], endian: Endian) -> Vec<i32> {
     let mut samples = Vec::with_capacity(data.len() / 2);
     for chunk in data.chunks_exact(2) {
         let value = match endian {

@@ -27,7 +27,6 @@ impl CueParser {
             tracks: Vec::new(),
         };
 
-        let mut current_file: Option<CueFile> = None;
         let mut current_track: Option<Track> = None;
 
         for line in reader.lines() {
@@ -52,13 +51,11 @@ impl CueParser {
                     let filename = self.extract_quoted_string(&line)?;
                     let file_type = self.parse_file_type(parts.last().unwrap())?;
 
-                    current_file = Some(CueFile {
+                    let cue_file = CueFile {
                         filename,
                         file_type,
-                    });
-                    if let Some(file) = &current_file {
-                        cue_sheet.files.push(file.clone());
-                    }
+                    };
+                    cue_sheet.files.push(cue_file);
                 }
                 "TRACK" => {
                     if let Some(track) = current_track.take() {

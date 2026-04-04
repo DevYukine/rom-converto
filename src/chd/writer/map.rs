@@ -1,4 +1,5 @@
 use crate::chd::error::{ChdError, ChdResult};
+use byteorder::{BigEndian, ByteOrder};
 use crc::{CRC_16_IBM_3740, Crc};
 use std::cmp;
 
@@ -27,6 +28,16 @@ const COMPRESSION_PARENT_1: u8 = 13;
 
 const HUFFMAN_CODES: usize = 16;
 const HUFFMAN_MAX_BITS: u8 = 8;
+const MAP_ENTRY_SIZE: usize = 12;
+const MAP_HEADER_SIZE: usize = 16;
+const RLE_SMALL_BASE: u32 = 3;
+const RLE_SMALL_MAX_EXTRA: u32 = 15;
+const RLE_LARGE_BASE: u32 = 3 + 16;
+const RLE_LARGE_MAX_EXTRA: u32 = 255;
+const RLE_SMALL_DECODE_BASE: u32 = 2;
+const RLE_LARGE_DECODE_BASE: u32 = 2 + 16;
+const CANONICAL_MAX_BITS: usize = 32;
+const BITHISTO_LEN: usize = CANONICAL_MAX_BITS + 1;
 
 pub(crate) fn crc16_ccitt(data: &[u8]) -> u16 {
     let crc = Crc::<u16>::new(&CRC_16_IBM_3740);
@@ -55,7 +66,7 @@ pub(crate) fn compress_v5_map(
     let mut count = 0u32;
 
     for hunknum in 0..hunk_count {
-        let base = (hunknum as usize) * 12;
+        let base = (hunknum as usize) * MAP_ENTRY_SIZE;
         let mut curcomp = rawmap[base];
 
         if curcomp == COMPRESSION_SELF {
@@ -91,16 +102,16 @@ pub(crate) fn compress_v5_map(
 
         if curcomp != lastcomp || hunknum == hunk_count - 1 {
             while count != 0 {
-                if count < 3 {
+                if count < RLE_SMALL_BASE {
                     push_symbol(&mut compression_rle, &mut encoder, lastcomp);
                     count -= 1;
-                } else if count <= 3 + 15 {
+                } else if count <= RLE_SMALL_BASE + RLE_SMALL_MAX_EXTRA {
                     push_symbol(&mut compression_rle, &mut encoder, COMPRESSION_RLE_SMALL);
-                    push_symbol(&mut compression_rle, &mut encoder, (count - 3) as u8);
+                    push_symbol(&mut compression_rle, &mut encoder, (count - RLE_SMALL_BASE) as u8);
                     count = 0;
                 } else {
-                    let this_count = cmp::min(count, 3 + 16 + 255);
-                    let rem = this_count - 3 - 16;
+                    let this_count = cmp::min(count, RLE_LARGE_BASE + RLE_LARGE_MAX_EXTRA);
+                    let rem = this_count - RLE_LARGE_BASE;
                     push_symbol(&mut compression_rle, &mut encoder, COMPRESSION_RLE_LARGE);
                     push_symbol(&mut compression_rle, &mut encoder, (rem >> 4) as u8);
                     push_symbol(&mut compression_rle, &mut encoder, (rem & 0x0f) as u8);
@@ -133,7 +144,7 @@ pub(crate) fn compress_v5_map(
     let mut firstoffs = 0u64;
 
     for hunknum in 0..hunk_count {
-        let base = (hunknum as usize) * 12;
+        let base = (hunknum as usize) * MAP_ENTRY_SIZE;
         let length = read_u24_be(&rawmap[base + 1..base + 4]);
         let offset = read_u48_be(&rawmap[base + 4..base + 10]);
         let crc = read_u16_be(&rawmap[base + 10..base + 12]);
@@ -142,14 +153,14 @@ pub(crate) fn compress_v5_map(
             let val = compression_rle[src_index];
             src_index += 1;
             if val == COMPRESSION_RLE_SMALL {
-                count = 2 + compression_rle[src_index] as u32;
+                count = RLE_SMALL_DECODE_BASE + compression_rle[src_index] as u32;
                 src_index += 1;
             } else if val == COMPRESSION_RLE_LARGE {
                 let high = compression_rle[src_index] as u32;
                 src_index += 1;
                 let low = compression_rle[src_index] as u32;
                 src_index += 1;
-                count = 2 + 16 + (high << 4) + low;
+                count = RLE_LARGE_DECODE_BASE + (high << 4) + low;
             } else {
                 lastcomp = val;
             }
@@ -187,8 +198,8 @@ pub(crate) fn compress_v5_map(
     }
 
     let compressed = bitbuf.finish();
-    let mut output = Vec::with_capacity(16 + compressed.len());
-    output.extend_from_slice(&[0u8; 16]);
+    let mut output = Vec::with_capacity(MAP_HEADER_SIZE + compressed.len());
+    output.extend_from_slice(&[0u8; MAP_HEADER_SIZE]);
     output.extend_from_slice(&compressed);
 
     write_u32_be(&mut output[0..4], compressed.len() as u32);
@@ -208,9 +219,9 @@ fn push_symbol(list: &mut Vec<u8>, encoder: &mut HuffmanEncoder, value: u8) {
 }
 
 fn encode_raw_map(entries: &[MapEntry]) -> Vec<u8> {
-    let mut raw = vec![0u8; entries.len() * 12];
+    let mut raw = vec![0u8; entries.len() * MAP_ENTRY_SIZE];
     for (idx, entry) in entries.iter().enumerate() {
-        let base = idx * 12;
+        let base = idx * MAP_ENTRY_SIZE;
         raw[base] = entry.compression;
         write_u24_be(&mut raw[base + 1..base + 4], entry.length);
         write_u48_be(&mut raw[base + 4..base + 10], entry.offset);
@@ -229,48 +240,34 @@ fn bits_for_value(mut value: u64) -> u8 {
 }
 
 fn read_u16_be(buf: &[u8]) -> u16 {
-    ((buf[0] as u16) << 8) | (buf[1] as u16)
+    BigEndian::read_u16(buf)
 }
 
 fn write_u16_be(buf: &mut [u8], value: u16) {
-    buf[0] = (value >> 8) as u8;
-    buf[1] = value as u8;
+    BigEndian::write_u16(buf, value);
 }
 
 fn write_u32_be(buf: &mut [u8], value: u32) {
-    buf[0] = (value >> 24) as u8;
-    buf[1] = (value >> 16) as u8;
-    buf[2] = (value >> 8) as u8;
-    buf[3] = value as u8;
+    BigEndian::write_u32(buf, value);
 }
 
 fn read_u24_be(buf: &[u8]) -> u32 {
-    ((buf[0] as u32) << 16) | ((buf[1] as u32) << 8) | (buf[2] as u32)
+    BigEndian::read_u24(buf)
 }
 
 fn write_u24_be(buf: &mut [u8], value: u32) {
-    let value = value & 0x00ff_ffff;
-    buf[0] = (value >> 16) as u8;
-    buf[1] = (value >> 8) as u8;
-    buf[2] = value as u8;
+    BigEndian::write_u24(buf, value);
 }
 
 fn read_u48_be(buf: &[u8]) -> u64 {
-    ((buf[0] as u64) << 40)
-        | ((buf[1] as u64) << 32)
-        | ((buf[2] as u64) << 24)
-        | ((buf[3] as u64) << 16)
-        | ((buf[4] as u64) << 8)
-        | (buf[5] as u64)
+    let mut bytes = [0u8; 8];
+    bytes[2..].copy_from_slice(&buf[..6]);
+    u64::from_be_bytes(bytes)
 }
 
 fn write_u48_be(buf: &mut [u8], value: u64) {
-    buf[0] = (value >> 40) as u8;
-    buf[1] = (value >> 32) as u8;
-    buf[2] = (value >> 24) as u8;
-    buf[3] = (value >> 16) as u8;
-    buf[4] = (value >> 8) as u8;
-    buf[5] = value as u8;
+    let bytes = value.to_be_bytes();
+    buf.copy_from_slice(&bytes[2..]);
 }
 
 #[derive(Debug)]
@@ -454,19 +451,19 @@ impl HuffmanEncoder {
     }
 
     fn assign_canonical_codes(&mut self) -> ChdResult<()> {
-        let mut bithisto = [0u32; 33];
+        let mut bithisto = [0u32; BITHISTO_LEN];
         for code in 0..HUFFMAN_CODES {
             let bits = self.nodes[code].numbits as usize;
             if bits > HUFFMAN_MAX_BITS as usize {
                 return Err(ChdError::MapCompressionError);
             }
-            if bits <= 32 {
+            if bits <= CANONICAL_MAX_BITS {
                 bithisto[bits] += 1;
             }
         }
 
         let mut curstart = 0u32;
-        for codelen in (1..=32).rev() {
+        for codelen in (1..=CANONICAL_MAX_BITS).rev() {
             let nextstart = (curstart + bithisto[codelen]) >> 1;
             if codelen != 1 && nextstart * 2 != curstart + bithisto[codelen] {
                 return Err(ChdError::MapCompressionError);

@@ -8,12 +8,11 @@ use crate::chd::compression::cdzl::CdZlCompressor;
 use crate::chd::compression::{ChdCompression, ChdCompressor};
 use crate::chd::cue::models::CueSheet;
 use crate::chd::error::{ChdError, ChdResult};
-use crate::chd::models::{ChdHeaderV5, ChdVersion};
+use crate::chd::models::{CHD_V5_HEADER_SIZE, SHA1_BYTES, ChdHeaderV5, ChdVersion};
 use crate::chd::writer::map::{MapEntry, compress_v5_map, crc16_ccitt};
 use crate::chd::writer::metadata::{MetadataHash, generate_cd_metadata};
 use binrw::BinWrite;
 use sha1::{Digest, Sha1};
-use std::fmt::Debug;
 use std::io::{Cursor, SeekFrom};
 use std::path::Path;
 use std::sync::Arc;
@@ -22,6 +21,7 @@ use tokio::io::{AsyncSeekExt, AsyncWriteExt, BufWriter};
 use tokio::task;
 
 const ZERO_SUBCODE: [u8; SUBCODE_SIZE] = [0; SUBCODE_SIZE];
+const IO_BUFFER_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug)]
 pub struct ChdWriter {
@@ -42,7 +42,7 @@ impl ChdWriter {
         cue_sheet: &CueSheet,
     ) -> ChdResult<Self> {
         let file = File::create(output_path).await?;
-        let mut buff_writer = BufWriter::with_capacity(8 * 1024 * 1024, file); // 8 MB buffer
+        let mut buff_writer = BufWriter::with_capacity(IO_BUFFER_BYTES, file);
 
         let logical_bytes = total_sectors as u64 * FRAME_SIZE as u64;
         let unit_bytes = FRAME_SIZE as u32;
@@ -56,8 +56,6 @@ impl ChdWriter {
             Arc::new(CdFlCompressor {}),
         ];
 
-        const CHD_V5_HEADER_SIZE: u32 = 124; // Size of CHD v5 header
-
         let header = ChdHeaderV5 {
             length: CHD_V5_HEADER_SIZE,
             version: ChdVersion::V5,
@@ -70,9 +68,9 @@ impl ChdWriter {
             meta_offset: 0,
             hunk_bytes: hunk_size,
             unit_bytes,
-            raw_sha1: [0; 20],
-            sha1: [0; 20],
-            parent_sha1: [0; 20],
+            raw_sha1: [0; SHA1_BYTES],
+            sha1: [0; SHA1_BYTES],
+            parent_sha1: [0; SHA1_BYTES],
         };
 
         let metadata = generate_cd_metadata(cue_sheet, total_sectors)?;
@@ -189,7 +187,7 @@ impl ChdWriter {
         self.writer.write_all(&map_data).await?;
 
         let meta_offset = self.header.length as u64;
-        let raw_sha1: [u8; 20] = self.raw_sha1.finalize().into();
+        let raw_sha1: [u8; SHA1_BYTES] = self.raw_sha1.finalize().into();
 
         self.header.map_offset = map_offset;
         self.header.meta_offset = meta_offset;
@@ -197,7 +195,7 @@ impl ChdWriter {
         self.header.sha1 = compute_overall_sha1(raw_sha1, &self.metadata_hashes);
 
         self.writer.seek(SeekFrom::Start(0)).await?;
-        let mut header_data = vec![0u8; 124];
+        let mut header_data = vec![0u8; CHD_V5_HEADER_SIZE as usize];
         let mut cursor = Cursor::new(&mut header_data);
         self.header.write(&mut cursor)?;
         self.writer.write_all(&header_data).await?;
@@ -208,7 +206,10 @@ impl ChdWriter {
     }
 }
 
-fn compute_overall_sha1(raw_sha1: [u8; 20], metadata_hashes: &[MetadataHash]) -> [u8; 20] {
+fn compute_overall_sha1(
+    raw_sha1: [u8; SHA1_BYTES],
+    metadata_hashes: &[MetadataHash],
+) -> [u8; SHA1_BYTES] {
     let mut overall = Sha1::new();
     overall.update(raw_sha1);
 

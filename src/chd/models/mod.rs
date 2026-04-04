@@ -1,6 +1,11 @@
 // models.rs
 use binrw::{BinRead, BinWrite, binrw};
-use std::io::{Seek, Write};
+
+pub const CHD_V5_HEADER_SIZE: u32 = 124;
+pub const CHD_METADATA_TAG_CD: [u8; 4] = *b"CHT2";
+pub const CHD_METADATA_FLAG_HASHED: u8 = 0x01;
+pub const CHD_METADATA_RESERVED_BYTES: usize = 8;
+pub const SHA1_BYTES: usize = 20;
 
 /// Represents the version of the CHD file format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, BinRead, BinWrite)]
@@ -49,13 +54,13 @@ pub struct ChdHeaderV5 {
     pub unit_bytes: u32,
 
     /// SHA1 hash of the raw data.
-    pub raw_sha1: [u8; 20],
+    pub raw_sha1: [u8; SHA1_BYTES],
 
     /// SHA1 hash of the compressed data.
-    pub sha1: [u8; 20],
+    pub sha1: [u8; SHA1_BYTES],
 
     /// SHA1 hash of the parent CHD file, otherwise all zeros.
-    pub parent_sha1: [u8; 20],
+    pub parent_sha1: [u8; SHA1_BYTES],
 }
 
 #[binrw]
@@ -72,7 +77,7 @@ pub struct ChdMetadataHeader {
     #[br(temp)]
     length_raw: [u8; 3], // 24-bit big-endian length
 
-    pub reserved: [u8; 8], // 8 bytes of zeros
+    pub reserved: [u8; CHD_METADATA_RESERVED_BYTES], // 8 bytes of zeros
 
     #[br(count = {
         let len = ((length_raw[0] as u32) << 16) |
@@ -89,47 +94,10 @@ impl ChdMetadataHeader {
         data.push(0);
 
         Self {
-            tag: *b"CHT2",
-            flags: 0x01,
-            reserved: [0; 8],
+            tag: CHD_METADATA_TAG_CD,
+            flags: CHD_METADATA_FLAG_HASHED,
+            reserved: [0; CHD_METADATA_RESERVED_BYTES],
             data,
         }
-    }
-
-    pub fn write_with_padding<W: Write + Seek>(
-        &self,
-        writer: &mut W,
-    ) -> Result<usize, std::io::Error> {
-        use byteorder::WriteBytesExt;
-
-        let start_pos = writer.stream_position()?;
-
-        // Write tag
-        writer.write_all(&self.tag)?;
-
-        // Write flags
-        writer.write_u8(self.flags)?;
-
-        // Write 24-bit length
-        let len = self.data.len() as u32;
-        writer.write_u8((len >> 16) as u8)?;
-        writer.write_u8((len >> 8) as u8)?;
-        writer.write_u8(len as u8)?;
-
-        // Write reserved
-        writer.write_all(&self.reserved)?;
-
-        // Write data
-        writer.write_all(&self.data)?;
-
-        // Calculate padding to 4-byte boundary
-        let written = (writer.stream_position()? - start_pos) as usize;
-        let padding = ((written + 3) & !3) - written;
-
-        if padding > 0 {
-            writer.write_all(&vec![0u8; padding])?;
-        }
-
-        Ok(written + padding)
     }
 }

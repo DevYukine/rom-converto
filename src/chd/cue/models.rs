@@ -1,4 +1,9 @@
 // src/cue/models
+const SECONDS_PER_MINUTE: u32 = 60;
+const FRAMES_PER_SECOND: u32 = 75;
+const LEAD_IN_FRAMES: u32 = 150;
+const PRIMARY_INDEX: u8 = 1;
+
 #[derive(Debug, Clone)]
 pub struct CueSheet {
     pub files: Vec<CueFile>,
@@ -35,7 +40,18 @@ pub struct MSF {
 
 impl MSF {
     pub fn to_lba(&self) -> u32 {
-        (self.minutes as u32 * 60 + self.seconds as u32) * 75 + self.frames as u32 - 150
+        (self.minutes as u32 * SECONDS_PER_MINUTE + self.seconds as u32) * FRAMES_PER_SECOND
+            + self.frames as u32
+            - LEAD_IN_FRAMES
+    }
+}
+
+impl Track {
+    pub fn primary_index_lba(&self) -> Option<u32> {
+        self.indices
+            .iter()
+            .find(|index| index.number == PRIMARY_INDEX)
+            .map(|index| index.position.to_lba())
     }
 }
 
@@ -49,6 +65,19 @@ pub enum TrackType {
     Mode2_2352,
     CdI2336,
     CdI2352,
+}
+
+impl TrackType {
+    pub fn chd_metadata_type(self) -> &'static str {
+        match self {
+            TrackType::Audio => "AUDIO",
+            TrackType::Mode1_2352 => "MODE1_RAW",
+            TrackType::Mode1_2048 => "MODE1",
+            TrackType::Mode2_2352 => "MODE2_RAW",
+            TrackType::Mode2_2336 => "MODE2_FORM1",
+            _ => "MODE1_RAW",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

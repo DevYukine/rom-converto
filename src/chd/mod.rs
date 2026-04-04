@@ -1,4 +1,4 @@
-use crate::cd::{FRAME_SIZE, FRAMES_PER_HUNK, SECTOR_SIZE};
+use crate::cd::{CD_HUNK_BYTES, SECTOR_SIZE};
 use crate::chd::bin::BinReader;
 use crate::chd::cue::CueParser;
 use crate::chd::error::{ChdError, ChdResult};
@@ -14,6 +14,10 @@ mod cue;
 mod error;
 mod models;
 mod writer;
+
+const BYTES_PER_MB: f64 = 1_000_000.0;
+const PROGRESS_TEMPLATE: &str =
+    "{msg}\n{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})";
 
 pub async fn convert_to_chd(
     pb: MultiProgress,
@@ -39,25 +43,26 @@ pub async fn convert_to_chd(
     };
 
     debug!("Opening BIN file: {:?}", bin_path);
-    let mut bin_reader = BinReader::new(&bin_path, &cue_sheet).await?;
+    let mut bin_reader = BinReader::new(&bin_path).await?;
 
     // Calculate total sectors
-    let bin_size = std::fs::metadata(&bin_path)?.len();
+    let bin_size = fs::metadata(&bin_path).await?.len();
     let total_sectors = (bin_size / SECTOR_SIZE as u64) as u32;
 
     debug!("Total sectors: {}", total_sectors);
     debug!("Creating CHD file: {:?}", output_path);
 
-    const HUNK_SIZE: u32 = FRAME_SIZE as u32 * FRAMES_PER_HUNK;
+    let mut writer =
+        ChdWriter::create(&output_path, total_sectors, CD_HUNK_BYTES, &cue_sheet).await?;
 
-    let mut writer = ChdWriter::create(&output_path, total_sectors, HUNK_SIZE, &cue_sheet).await?;
-
-    let total_mb = (bin_size as f64) / (1000.0 * 1000.0);
+    let total_mb = (bin_size as f64) / BYTES_PER_MB;
     let pg = pb.add(ProgressBar::new(bin_size));
 
-    pg.set_style(ProgressStyle::default_bar()
-        .template("{msg}\n{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})")?
-        .progress_chars("#>-"));
+    pg.set_style(
+        ProgressStyle::default_bar()
+            .template(PROGRESS_TEMPLATE)?
+            .progress_chars("#>-"),
+    );
     pg.set_message(format!("Compressing to CHD (~{:.2} MB)", total_mb));
 
     for lba in 0..total_sectors {
@@ -76,8 +81,8 @@ pub async fn convert_to_chd(
     let original_size = bin_size;
     let saved_bytes = original_size.saturating_sub(chd_size);
     let compression_ratio = (chd_size as f64 / original_size as f64) * 100.0;
-    let saved_mb = saved_bytes as f64 / (1000.0 * 1000.0);
-    let chd_mb = chd_size as f64 / (1000.0 * 1000.0);
+    let saved_mb = saved_bytes as f64 / BYTES_PER_MB;
+    let chd_mb = chd_size as f64 / BYTES_PER_MB;
 
     info!(
         "Original: {:.2} MB, CHD: {:.2} MB, Saved: {:.2} MB ({:.1}% compression ratio)",

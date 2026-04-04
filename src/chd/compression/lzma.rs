@@ -24,6 +24,9 @@ impl ChdCompressor for LzmaCompressor {
 const LZMA_LEVEL: u32 = 7;
 const MIN_DICT_SIZE: u32 = 1 << 16;
 const MAX_DICT_SIZE: u32 = 1 << 24;
+const LZMA_PROPS_BYTES: usize = 5;
+const LZMA_UNCOMPRESSED_SIZE_BYTES: usize = 8;
+const LZMA_ALONE_HEADER_BYTES: usize = LZMA_PROPS_BYTES + LZMA_UNCOMPRESSED_SIZE_BYTES;
 
 pub(crate) fn lzma_compress(data: &[u8]) -> ChdResult<Vec<u8>> {
     let mut options = LzmaOptions::new_preset(LZMA_LEVEL).map_err(io::Error::from)?;
@@ -34,13 +37,13 @@ pub(crate) fn lzma_compress(data: &[u8]) -> ChdResult<Vec<u8>> {
     let mut encoded = Vec::new();
     encoder.read_to_end(&mut encoded)?;
 
-    if encoded.len() < 13 {
+    if encoded.len() < LZMA_ALONE_HEADER_BYTES {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "LZMA output too small").into());
     }
 
-    let mut output = Vec::with_capacity(encoded.len() - 8);
-    output.extend_from_slice(&encoded[..5]);
-    output.extend_from_slice(&encoded[13..]);
+    let mut output = Vec::with_capacity(encoded.len() - LZMA_UNCOMPRESSED_SIZE_BYTES);
+    output.extend_from_slice(&encoded[..LZMA_PROPS_BYTES]);
+    output.extend_from_slice(&encoded[LZMA_ALONE_HEADER_BYTES..]);
     Ok(output)
 }
 
