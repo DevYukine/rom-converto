@@ -93,7 +93,7 @@ pub(crate) fn compress_v5_map(
             }
             last_parent = refunit;
         } else {
-            max_complen = max_complen.max(read_u24_be(&rawmap[base + 1..base + 4]));
+            max_complen = max_complen.max(BigEndian::read_u24(&rawmap[base + 1..base + 4]));
         }
 
         if curcomp == lastcomp {
@@ -145,9 +145,9 @@ pub(crate) fn compress_v5_map(
 
     for hunknum in 0..hunk_count {
         let base = (hunknum as usize) * MAP_ENTRY_SIZE;
-        let length = read_u24_be(&rawmap[base + 1..base + 4]);
+        let length = BigEndian::read_u24(&rawmap[base + 1..base + 4]);
         let offset = read_u48_be(&rawmap[base + 4..base + 10]);
-        let crc = read_u16_be(&rawmap[base + 10..base + 12]);
+        let crc = BigEndian::read_u16(&rawmap[base + 10..base + 12]);
 
         if count == 0 {
             let val = compression_rle[src_index];
@@ -202,9 +202,9 @@ pub(crate) fn compress_v5_map(
     output.extend_from_slice(&[0u8; MAP_HEADER_SIZE]);
     output.extend_from_slice(&compressed);
 
-    write_u32_be(&mut output[0..4], compressed.len() as u32);
+    BigEndian::write_u32(&mut output[0..4], compressed.len() as u32);
     write_u48_be(&mut output[4..10], firstoffs);
-    write_u16_be(&mut output[10..12], mapcrc);
+    BigEndian::write_u16(&mut output[10..12], mapcrc);
     output[12] = lengthbits;
     output[13] = selfbits;
     output[14] = parentbits;
@@ -223,9 +223,9 @@ fn encode_raw_map(entries: &[MapEntry]) -> Vec<u8> {
     for (idx, entry) in entries.iter().enumerate() {
         let base = idx * MAP_ENTRY_SIZE;
         raw[base] = entry.compression;
-        write_u24_be(&mut raw[base + 1..base + 4], entry.length);
+        BigEndian::write_u24(&mut raw[base + 1..base + 4], entry.length);
         write_u48_be(&mut raw[base + 4..base + 10], entry.offset);
-        write_u16_be(&mut raw[base + 10..base + 12], entry.crc16);
+        BigEndian::write_u16(&mut raw[base + 10..base + 12], entry.crc16);
     }
     raw
 }
@@ -237,26 +237,6 @@ fn bits_for_value(mut value: u64) -> u8 {
         result += 1;
     }
     result
-}
-
-fn read_u16_be(buf: &[u8]) -> u16 {
-    BigEndian::read_u16(buf)
-}
-
-fn write_u16_be(buf: &mut [u8], value: u16) {
-    BigEndian::write_u16(buf, value);
-}
-
-fn write_u32_be(buf: &mut [u8], value: u32) {
-    BigEndian::write_u32(buf, value);
-}
-
-fn read_u24_be(buf: &[u8]) -> u32 {
-    BigEndian::read_u24(buf)
-}
-
-fn write_u24_be(buf: &mut [u8], value: u32) {
-    BigEndian::write_u24(buf, value);
 }
 
 fn read_u48_be(buf: &[u8]) -> u64 {

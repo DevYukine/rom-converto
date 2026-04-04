@@ -98,16 +98,8 @@ fn cd_header_sizes(data_len: usize, frames: usize) -> (usize, usize, usize) {
 
 fn write_cd_header(buf: &mut [u8], ecc_bytes: usize, base_len: usize, complen_bytes: usize) {
     if complen_bytes == 2 {
-        write_u16_be(&mut buf[ecc_bytes..ecc_bytes + 2], base_len as u16);
+        BigEndian::write_u16(&mut buf[ecc_bytes..ecc_bytes + 2], base_len as u16);
     } else {
-        write_u24_be(&mut buf[ecc_bytes..ecc_bytes + 3], base_len as u32);
+        BigEndian::write_u24(&mut buf[ecc_bytes..ecc_bytes + 3], base_len as u32);
     }
-}
-
-fn write_u16_be(buf: &mut [u8], value: u16) {
-    BigEndian::write_u16(buf, value);
-}
-
-fn write_u24_be(buf: &mut [u8], value: u32) {
-    BigEndian::write_u24(buf, value);
 }

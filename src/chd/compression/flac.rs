@@ -77,14 +77,7 @@ pub(crate) fn encode_flac_samples(
 }
 
 fn flac_block_size(samples_per_channel: usize) -> usize {
-    let mut block_size = samples_per_channel;
-    if block_size < flacenc::constant::MIN_BLOCK_SIZE {
-        block_size = flacenc::constant::MIN_BLOCK_SIZE;
-    }
-    if block_size > flacenc::constant::MAX_BLOCK_SIZE {
-        block_size = flacenc::constant::MAX_BLOCK_SIZE;
-    }
-    block_size
+    samples_per_channel.clamp(flacenc::constant::MIN_BLOCK_SIZE, flacenc::constant::MAX_BLOCK_SIZE)
 }
 
 pub enum Endian {

@@ -48,13 +48,8 @@ pub(crate) fn lzma_compress(data: &[u8]) -> ChdResult<Vec<u8>> {
 }
 
 fn lzma_dict_size(input_len: usize) -> u32 {
-    let mut size = input_len as u64;
-    if size < MIN_DICT_SIZE as u64 {
-        size = MIN_DICT_SIZE as u64;
-    }
-    size = size.next_power_of_two();
-    if size > MAX_DICT_SIZE as u64 {
-        size = MAX_DICT_SIZE as u64;
-    }
-    size as u32
+    (input_len as u64)
+        .max(MIN_DICT_SIZE as u64)
+        .next_power_of_two()
+        .min(MAX_DICT_SIZE as u64) as u32
 }
