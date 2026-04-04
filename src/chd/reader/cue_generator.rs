@@ -75,14 +75,14 @@ pub(crate) fn generate_cue_sheet(bin_filename: &str, tracks: &[ChdTrackInfo]) ->
 
     for track in tracks {
         let cue_type = chd_type_to_cue_type(&track.track_type);
-        cue.push_str(&format!(
-            "  TRACK {:02} {}\n",
-            track.track_number, cue_type
-        ));
+        cue.push_str(&format!("  TRACK {:02} {}\n", track.track_number, cue_type));
 
         if track.pregap > 0 {
             let msf = lba_to_msf(track.pregap);
-            cue.push_str(&format!("    PREGAP {:02}:{:02}:{:02}\n", msf.0, msf.1, msf.2));
+            cue.push_str(&format!(
+                "    PREGAP {:02}:{:02}:{:02}\n",
+                msf.0, msf.1, msf.2
+            ));
         }
 
         let msf = lba_to_msf(frame_offset);

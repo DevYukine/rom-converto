@@ -8,7 +8,7 @@ use crate::chd::compression::{ChdDecompressor, tag_to_bytes};
 use crate::chd::error::{ChdError, ChdResult};
 use crate::chd::map::{MapEntry, crc16_ccitt, decompress_v5_map};
 use crate::chd::models::{
-    CHD_METADATA_FLAG_HASHED, SHA1_BYTES, ChdHeaderV5, ChdMetadataHeader, ChdVersion,
+    CHD_METADATA_FLAG_HASHED, ChdHeaderV5, ChdMetadataHeader, ChdVersion, SHA1_BYTES,
 };
 use crate::chd::writer::metadata::MetadataHash;
 use binrw::BinRead;
@@ -69,18 +69,17 @@ impl ChdReader {
             if *tag == [0, 0, 0, 0] {
                 continue;
             }
-            let decompressor: Arc<dyn ChdDecompressor> =
-                if *tag == tag_to_bytes("cdlz") {
-                    Arc::new(CdlzDecompressor)
-                } else if *tag == tag_to_bytes("cdzl") {
-                    Arc::new(CdZlDecompressor)
-                } else if *tag == tag_to_bytes("cdfl") {
-                    Arc::new(CdFlDecompressor)
-                } else if *tag == tag_to_bytes("cdzs") {
-                    Arc::new(CdZsDecompressor)
-                } else {
-                    return Err(ChdError::UnknownCompressionCodec(*tag));
-                };
+            let decompressor: Arc<dyn ChdDecompressor> = if *tag == tag_to_bytes("cdlz") {
+                Arc::new(CdlzDecompressor)
+            } else if *tag == tag_to_bytes("cdzl") {
+                Arc::new(CdZlDecompressor)
+            } else if *tag == tag_to_bytes("cdfl") {
+                Arc::new(CdFlDecompressor)
+            } else if *tag == tag_to_bytes("cdzs") {
+                Arc::new(CdZsDecompressor)
+            } else {
+                return Err(ChdError::UnknownCompressionCodec(*tag));
+            };
             decompressors.push(decompressor);
         }
 
@@ -90,8 +89,7 @@ impl ChdReader {
         reader.read_to_end(&mut map_data).await?;
 
         // Calculate hunk count
-        let hunk_count =
-            header.logical_bytes.div_ceil(header.hunk_bytes as u64) as u32;
+        let hunk_count = header.logical_bytes.div_ceil(header.hunk_bytes as u64) as u32;
 
         let map = decompress_v5_map(&map_data, hunk_count, header.hunk_bytes, header.unit_bytes)?;
 
@@ -100,7 +98,10 @@ impl ChdReader {
             Some(Box::new(Box::pin(ChdReader::open(pp)).await?))
         } else if header.parent_sha1 != [0u8; SHA1_BYTES] {
             // Header references a parent but none was provided
-            log::warn!("CHD references a parent (SHA1: {}), but no parent file was provided. Parent hunk references will fail.", hex::encode(header.parent_sha1));
+            log::warn!(
+                "CHD references a parent (SHA1: {}), but no parent file was provided. Parent hunk references will fail.",
+                hex::encode(header.parent_sha1)
+            );
             None
         } else {
             None
@@ -128,18 +129,15 @@ impl ChdReader {
                     return Err(ChdError::UnknownCompressionCodec([compression, 0, 0, 0]));
                 }
 
-                self.reader
-                    .seek(SeekFrom::Start(entry.offset))
-                    .await?;
+                self.reader.seek(SeekFrom::Start(entry.offset)).await?;
                 let mut compressed = vec![0u8; entry.length as usize];
                 self.reader.read_exact(&mut compressed).await?;
 
                 let decompressor = self.decompressors[codec_index].clone();
-                let decompressed =
-                    tokio::task::spawn_blocking(move || {
-                        decompressor.decompress(&compressed, hunk_bytes)
-                    })
-                    .await??;
+                let decompressed = tokio::task::spawn_blocking(move || {
+                    decompressor.decompress(&compressed, hunk_bytes)
+                })
+                .await??;
 
                 if decompressed.len() != hunk_bytes {
                     return Err(ChdError::DecompressionSizeMismatch {
@@ -161,9 +159,7 @@ impl ChdReader {
                 Ok(decompressed)
             }
             COMPRESSION_NONE => {
-                self.reader
-                    .seek(SeekFrom::Start(entry.offset))
-                    .await?;
+                self.reader.seek(SeekFrom::Start(entry.offset)).await?;
                 let mut data = vec![0u8; hunk_bytes];
                 self.reader.read_exact(&mut data).await?;
 
@@ -232,11 +228,7 @@ impl ChdReader {
 
             // Next metadata offset is stored in reserved as big-endian u64
             let next_offset = BigEndian::read_u64(&reserved);
-            offset = if next_offset != 0 {
-                next_offset
-            } else {
-                0
-            };
+            offset = if next_offset != 0 { next_offset } else { 0 };
         }
 
         Ok(entries)

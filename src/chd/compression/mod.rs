@@ -1,7 +1,9 @@
 use crate::cd::ecc::{has_valid_ecc, restore_sector_ecc, strip_sector_ecc};
 use crate::cd::{FRAME_SIZE, SECTOR_SIZE, SUBCODE_SIZE};
 use crate::chd::compression::cdfl::CD_SYNC_HEADER;
-use crate::chd::compression::flac::{CD_SAMPLE_RATE, Endian, encode_flac_samples, samples_from_bytes};
+use crate::chd::compression::flac::{
+    CD_SAMPLE_RATE, Endian, encode_flac_samples, samples_from_bytes,
+};
 use crate::chd::compression::lzma::LzmaEncoder;
 use crate::chd::error::{ChdError, ChdResult};
 use byteorder::{BigEndian, ByteOrder};
@@ -72,8 +74,7 @@ where
         let sector = &base[frame * SECTOR_SIZE..(frame + 1) * SECTOR_SIZE];
         if has_valid_ecc(sector) {
             ecc_flags[frame / 8] |= 1 << (frame % 8);
-            let sector_mut =
-                &mut base[frame * SECTOR_SIZE..(frame + 1) * SECTOR_SIZE];
+            let sector_mut = &mut base[frame * SECTOR_SIZE..(frame + 1) * SECTOR_SIZE];
             strip_sector_ecc(sector_mut);
         }
     }
@@ -232,7 +233,12 @@ impl CdCodecSet {
 
         // Try CDLZ (LZMA base + deflate subcode)
         if let Ok(result) = self.compress_cdlz(
-            &base, &subcode, &ecc_flags, header_bytes, ecc_bytes, complen_bytes,
+            &base,
+            &subcode,
+            &ecc_flags,
+            header_bytes,
+            ecc_bytes,
+            complen_bytes,
         ) {
             if result.len() < best.as_ref().map_or(hunk.len(), |b| b.len()) {
                 best_type = 0;
@@ -242,7 +248,12 @@ impl CdCodecSet {
 
         // Try CDZL (deflate base + deflate subcode)
         if let Ok(result) = self.compress_cdzl(
-            &base, &subcode, &ecc_flags, header_bytes, ecc_bytes, complen_bytes,
+            &base,
+            &subcode,
+            &ecc_flags,
+            header_bytes,
+            ecc_bytes,
+            complen_bytes,
         ) {
             if result.len() < best.as_ref().map_or(hunk.len(), |b| b.len()) {
                 best_type = 1;
@@ -253,7 +264,12 @@ impl CdCodecSet {
         // Try CDFL only for audio tracks (no CD sync header in first sector)
         if base.len() >= 12 && base[..12] != CD_SYNC_HEADER {
             if let Ok(result) = self.compress_cdfl(
-                &base, &subcode, &ecc_flags, header_bytes, ecc_bytes, complen_bytes,
+                &base,
+                &subcode,
+                &ecc_flags,
+                header_bytes,
+                ecc_bytes,
+                complen_bytes,
             ) {
                 if result.len() < best.as_ref().map_or(hunk.len(), |b| b.len()) {
                     best_type = 2;
@@ -278,8 +294,7 @@ impl CdCodecSet {
         complen_bytes: usize,
     ) -> ChdResult<Vec<u8>> {
         let base_compressed = self.lzma.compress(base)?;
-        let subcode_compressed =
-            deflate_with_reset(&mut self.cdlz_subcode_deflate, subcode)?;
+        let subcode_compressed = deflate_with_reset(&mut self.cdlz_subcode_deflate, subcode)?;
         Ok(assemble_cd_output(
             ecc_flags,
             header_bytes,
@@ -299,10 +314,8 @@ impl CdCodecSet {
         ecc_bytes: usize,
         complen_bytes: usize,
     ) -> ChdResult<Vec<u8>> {
-        let base_compressed =
-            deflate_with_reset(&mut self.cdzl_base_deflate, base)?;
-        let subcode_compressed =
-            deflate_with_reset(&mut self.cdzl_subcode_deflate, subcode)?;
+        let base_compressed = deflate_with_reset(&mut self.cdzl_base_deflate, base)?;
+        let subcode_compressed = deflate_with_reset(&mut self.cdzl_subcode_deflate, subcode)?;
         Ok(assemble_cd_output(
             ecc_flags,
             header_bytes,
@@ -342,10 +355,7 @@ impl CdCodecSet {
     }
 }
 
-fn deflate_with_reset(
-    compressor: &mut flate2::Compress,
-    data: &[u8],
-) -> ChdResult<Vec<u8>> {
+fn deflate_with_reset(compressor: &mut flate2::Compress, data: &[u8]) -> ChdResult<Vec<u8>> {
     compressor.reset();
     // Deflate worst case is slightly larger than input
     let max_out = data.len() + data.len() / 100 + 600;
@@ -357,9 +367,7 @@ fn deflate_with_reset(
     match status {
         flate2::Status::StreamEnd => {}
         _ => {
-            return Err(
-                io::Error::other("deflate compression did not finish in one call").into(),
-            );
+            return Err(io::Error::other("deflate compression did not finish in one call").into());
         }
     }
     let written = (compressor.total_out() - before_out) as usize;

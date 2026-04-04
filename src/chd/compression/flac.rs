@@ -77,7 +77,10 @@ pub(crate) fn encode_flac_samples(
 }
 
 fn flac_block_size(samples_per_channel: usize) -> usize {
-    samples_per_channel.clamp(flacenc::constant::MIN_BLOCK_SIZE, flacenc::constant::MAX_BLOCK_SIZE)
+    samples_per_channel.clamp(
+        flacenc::constant::MIN_BLOCK_SIZE,
+        flacenc::constant::MAX_BLOCK_SIZE,
+    )
 }
 
 pub enum Endian {
@@ -120,7 +123,7 @@ pub(crate) fn flac_decompress(data: &[u8], _expected_len: usize) -> ChdResult<Ve
         _ => {
             return Err(
                 io::Error::new(io::ErrorKind::InvalidData, "Invalid FLAC endian flag").into(),
-            )
+            );
         }
     };
 
@@ -128,8 +131,7 @@ pub(crate) fn flac_decompress(data: &[u8], _expected_len: usize) -> ChdResult<Ve
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
 
     let samples: Result<Vec<i32>, _> = reader.samples().collect();
-    let samples =
-        samples.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+    let samples = samples.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
 
     Ok(bytes_from_samples(&samples, &endian))
 }

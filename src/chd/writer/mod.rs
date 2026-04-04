@@ -6,12 +6,12 @@ use crate::chd::compression::cdfl::CdFlCompressor;
 use crate::chd::compression::cdlz::CdlzCompressor;
 use crate::chd::compression::cdzl::CdZlCompressor;
 use crate::chd::compression::{CdCodecSet, ChdCompression, ChdCompressor};
+use crate::chd::compute_overall_sha1;
 use crate::chd::cue::models::CueSheet;
 use crate::chd::error::{ChdError, ChdResult};
 use crate::chd::map::{MapEntry, compress_v5_map, crc16_ccitt};
-use crate::chd::models::{CHD_V5_HEADER_SIZE, SHA1_BYTES, ChdHeaderV5, ChdVersion};
+use crate::chd::models::{CHD_V5_HEADER_SIZE, ChdHeaderV5, ChdVersion, SHA1_BYTES};
 use crate::chd::writer::metadata::{MetadataHash, generate_cd_metadata};
-use crate::chd::compute_overall_sha1;
 use binrw::BinWrite;
 use indicatif::ProgressBar;
 use log::debug;
@@ -200,7 +200,9 @@ impl ChdWriter {
 
         let codec_pool: Arc<Vec<Mutex<CdCodecSet>>> = Arc::new(
             (0..num_threads)
-                .map(|_| Mutex::new(CdCodecSet::new(hunk_bytes).expect("failed to create codec set")))
+                .map(|_| {
+                    Mutex::new(CdCodecSet::new(hunk_bytes).expect("failed to create codec set"))
+                })
                 .collect::<Vec<_>>(),
         );
 
@@ -218,7 +220,9 @@ impl ChdWriter {
             // Read sectors for this hunk
             let sectors_in_hunk =
                 frames_per_hunk.min((total_sectors - sectors_read) as usize) as u32;
-            let sector_data = bin_reader.read_sectors(sectors_read, sectors_in_hunk).await?;
+            let sector_data = bin_reader
+                .read_sectors(sectors_read, sectors_in_hunk)
+                .await?;
 
             // Build hunk: interleave sectors with zero subcodes
             let mut hunk = Vec::with_capacity(hunk_bytes);
@@ -330,4 +334,3 @@ impl ChdWriter {
         Ok(())
     }
 }
-

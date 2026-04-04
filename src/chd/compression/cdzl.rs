@@ -30,6 +30,11 @@ impl ChdDecompressor for CdZlDecompressor {
     }
 
     fn decompress(&self, compressed: &[u8], output_len: usize) -> ChdResult<Vec<u8>> {
-        decompress_cd_hunk(compressed, output_len, deflate_decompress, deflate_decompress)
+        decompress_cd_hunk(
+            compressed,
+            output_len,
+            deflate_decompress,
+            deflate_decompress,
+        )
     }
 }

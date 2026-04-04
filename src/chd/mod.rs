@@ -24,8 +24,7 @@ pub(crate) mod reader;
 pub(crate) mod writer;
 
 const BYTES_PER_MB: f64 = 1_000_000.0;
-const PROGRESS_TEMPLATE: &str =
-    "{msg}\n{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})";
+const PROGRESS_TEMPLATE: &str = "{msg}\n{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})";
 
 pub async fn convert_to_chd(
     pb: MultiProgress,
@@ -315,10 +314,7 @@ async fn fix_sha1(
     const RAW_SHA1_OFFSET: u64 = 64;
     const SHA1_OFFSET: u64 = 84;
 
-    let mut file = tokio::fs::OpenOptions::new()
-        .write(true)
-        .open(path)
-        .await?;
+    let mut file = tokio::fs::OpenOptions::new().write(true).open(path).await?;
 
     file.seek(std::io::SeekFrom::Start(RAW_SHA1_OFFSET)).await?;
     file.write_all(&raw_sha1).await?;

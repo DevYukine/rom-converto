@@ -107,7 +107,11 @@ pub(crate) fn compress_v5_map(
                     count -= 1;
                 } else if count <= RLE_SMALL_BASE + RLE_SMALL_MAX_EXTRA {
                     push_symbol(&mut compression_rle, &mut encoder, COMPRESSION_RLE_SMALL);
-                    push_symbol(&mut compression_rle, &mut encoder, (count - RLE_SMALL_BASE) as u8);
+                    push_symbol(
+                        &mut compression_rle,
+                        &mut encoder,
+                        (count - RLE_SMALL_BASE) as u8,
+                    );
                     count = 0;
                 } else {
                     let this_count = cmp::min(count, RLE_LARGE_BASE + RLE_LARGE_MAX_EXTRA);
@@ -760,7 +764,6 @@ pub(crate) fn decompress_v5_map(
     let mut last_parent = 0u64;
 
     for (hunknum, &comp) in compression_types.iter().enumerate() {
-
         let entry = match comp {
             COMPRESSION_TYPE_0 | COMPRESSION_TYPE_1 | COMPRESSION_TYPE_2 | COMPRESSION_TYPE_3 => {
                 let length = bits.read(length_bits)?;
@@ -795,14 +798,12 @@ pub(crate) fn decompress_v5_map(
                     crc16: 0,
                 }
             }
-            COMPRESSION_SELF_0 => {
-                MapEntry {
-                    compression: COMPRESSION_SELF,
-                    length: 0,
-                    offset: last_self as u64,
-                    crc16: 0,
-                }
-            }
+            COMPRESSION_SELF_0 => MapEntry {
+                compression: COMPRESSION_SELF,
+                length: 0,
+                offset: last_self as u64,
+                crc16: 0,
+            },
             COMPRESSION_SELF_1 => {
                 last_self += 1;
                 MapEntry {
@@ -894,7 +895,10 @@ mod tests {
         // Compare
         assert_eq!(entries.len(), decompressed.len());
         for (i, (orig, dec)) in entries.iter().zip(decompressed.iter()).enumerate() {
-            assert_eq!(orig.compression, dec.compression, "compression mismatch at hunk {i}");
+            assert_eq!(
+                orig.compression, dec.compression,
+                "compression mismatch at hunk {i}"
+            );
             assert_eq!(orig.length, dec.length, "length mismatch at hunk {i}");
             assert_eq!(orig.offset, dec.offset, "offset mismatch at hunk {i}");
             assert_eq!(orig.crc16, dec.crc16, "crc16 mismatch at hunk {i}");

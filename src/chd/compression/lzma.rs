@@ -94,9 +94,7 @@ impl LzmaEncoder {
             )
         };
         if res != SZ_OK as i32 {
-            return Err(
-                io::Error::other(format!("LZMA encode failed with code {res}")).into(),
-            );
+            return Err(io::Error::other(format!("LZMA encode failed with code {res}")).into());
         }
         compressed.truncate(compressed_size as usize);
         Ok(compressed)
@@ -139,10 +137,7 @@ pub(crate) fn lzma_compress(data: &[u8]) -> ChdResult<Vec<u8>> {
     };
 
     if res != SZ_OK as i32 {
-        return Err(io::Error::other(
-            format!("LZMA encode failed with code {res}"),
-        )
-        .into());
+        return Err(io::Error::other(format!("LZMA encode failed with code {res}")).into());
     }
 
     compressed.truncate(compressed_size as usize);
@@ -175,10 +170,7 @@ pub(crate) fn lzma_decompress(data: &[u8], expected_len: usize) -> ChdResult<Vec
     };
 
     if res != SZ_OK as i32 {
-        return Err(io::Error::other(
-            format!("LZMA decode failed with code {res}"),
-        )
-        .into());
+        return Err(io::Error::other(format!("LZMA decode failed with code {res}")).into());
     }
 
     dest.truncate(dest_len as usize);

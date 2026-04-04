@@ -50,7 +50,9 @@ impl CueParser {
 
                     let filename = self.extract_quoted_string(line)?;
                     let file_type = self.parse_file_type(
-                        parts.last().ok_or(CueError::InvalidFileType("empty".to_string()))?
+                        parts
+                            .last()
+                            .ok_or(CueError::InvalidFileType("empty".to_string()))?,
                     )?;
 
                     let cue_file = CueFile {

@@ -316,4 +316,3 @@ pub fn restore_sector_ecc(sector: &mut [u8]) {
     // Regenerate ECC P and Q parity
     ecc_generate(sector);
 }
-

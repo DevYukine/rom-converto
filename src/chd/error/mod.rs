@@ -44,7 +44,11 @@ pub enum ChdError {
     UnknownCompressionCodec([u8; 4]),
 
     #[error("CRC mismatch for hunk {hunk}: expected {expected:#06x}, got {actual:#06x}")]
-    HunkCrcMismatch { hunk: u32, expected: u16, actual: u16 },
+    HunkCrcMismatch {
+        hunk: u32,
+        expected: u16,
+        actual: u16,
+    },
 
     #[error("SHA1 mismatch: expected {expected}, got {actual}")]
     Sha1Mismatch { expected: String, actual: String },
