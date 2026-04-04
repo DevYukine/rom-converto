@@ -29,7 +29,7 @@ impl ChdCompressor for CdFlCompressor {
                 let samples_per_channel = samples.len() / CD_CHANNELS;
                 encode_flac_samples(&samples, CD_CHANNELS, CD_SAMPLE_RATE, samples_per_channel)
             },
-            |subcode| deflate_compress(subcode),
+            deflate_compress,
         )
     }
 }

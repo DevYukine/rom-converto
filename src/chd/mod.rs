@@ -47,7 +47,9 @@ pub async fn convert_to_chd(
 
     // Calculate total sectors
     let bin_size = fs::metadata(&bin_path).await?.len();
-    let total_sectors = (bin_size / SECTOR_SIZE as u64) as u32;
+    let total_sectors: u32 = (bin_size / SECTOR_SIZE as u64)
+        .try_into()
+        .map_err(|_| ChdError::InvalidHunkSize)?;
 
     debug!("Total sectors: {}", total_sectors);
     debug!("Creating CHD file: {:?}", output_path);

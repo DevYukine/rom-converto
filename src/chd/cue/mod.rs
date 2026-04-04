@@ -1,5 +1,5 @@
 use crate::chd::cue::error::{CueError, CueResult};
-use crate::chd::cue::models::{CueFile, CueSheet, FileType, Index, MSF, Track, TrackType};
+use crate::chd::cue::models::{CueFile, CueSheet, FileType, Index, Msf, Track, TrackType};
 use std::io::{BufRead, Cursor};
 use std::path::{Path, PathBuf};
 
@@ -48,8 +48,10 @@ impl CueParser {
                         cue_sheet.tracks.push(track);
                     }
 
-                    let filename = self.extract_quoted_string(&line)?;
-                    let file_type = self.parse_file_type(parts.last().unwrap())?;
+                    let filename = self.extract_quoted_string(line)?;
+                    let file_type = self.parse_file_type(
+                        parts.last().ok_or(CueError::InvalidFileType("empty".to_string()))?
+                    )?;
 
                     let cue_file = CueFile {
                         filename,
@@ -103,12 +105,8 @@ impl CueParser {
     }
 
     fn extract_quoted_string(&self, line: &str) -> CueResult<String> {
-        let start = line.find('"').ok_or(CueError::MissingQuoteError(
-            "Missing opening quote".to_string(),
-        ))?;
-        let end = line.rfind('"').ok_or(CueError::MissingQuoteError(
-            "Missing closing quote".to_string(),
-        ))?;
+        let start = line.find('"').ok_or(CueError::MissingOpeningQuote)?;
+        let end = line.rfind('"').ok_or(CueError::MissingClosingQuote)?;
         if start >= end {
             return Err(CueError::InvalidQuotedString(line.to_string()));
         }
@@ -141,13 +139,13 @@ impl CueParser {
         }
     }
 
-    fn parse_msf(&self, msf_str: &str) -> CueResult<MSF> {
+    fn parse_msf(&self, msf_str: &str) -> CueResult<Msf> {
         let parts: Vec<&str> = msf_str.split(':').collect();
         if parts.len() != 3 {
-            return Err(CueError::InvalidMSFFormat(msf_str.to_string()));
+            return Err(CueError::InvalidMsfFormat(msf_str.to_string()));
         }
 
-        Ok(MSF {
+        Ok(Msf {
             minutes: parts[0].parse()?,
             seconds: parts[1].parse()?,
             frames: parts[2].parse()?,

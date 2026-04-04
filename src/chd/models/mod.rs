@@ -79,12 +79,9 @@ pub struct ChdMetadataHeader {
 
     pub reserved: [u8; CHD_METADATA_RESERVED_BYTES], // 8 bytes of zeros
 
-    #[br(count = {
-        let len = ((length_raw[0] as u32) << 16) |
+    #[br(count = ((length_raw[0] as u32) << 16) |
                   ((length_raw[1] as u32) << 8) |
-                  (length_raw[2] as u32);
-        len
-    })]
+                  (length_raw[2] as u32))]
     pub data: Vec<u8>, // The actual metadata string
 }
 

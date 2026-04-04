@@ -72,7 +72,7 @@ pub(crate) fn deflate_compress(data: &[u8]) -> ChdResult<Vec<u8>> {
 }
 
 fn split_cd_frames(data: &[u8]) -> ChdResult<(usize, Vec<u8>, Vec<u8>)> {
-    if data.len() % FRAME_SIZE != 0 {
+    if !data.len().is_multiple_of(FRAME_SIZE) {
         return Err(ChdError::InvalidHunkSize);
     }
 
@@ -91,7 +91,7 @@ fn split_cd_frames(data: &[u8]) -> ChdResult<(usize, Vec<u8>, Vec<u8>)> {
 
 fn cd_header_sizes(data_len: usize, frames: usize) -> (usize, usize, usize) {
     let complen_bytes = if data_len < CD_SHORT_HUNK_LIMIT { 2 } else { 3 };
-    let ecc_bytes = (frames + (CD_ECC_DIVISOR - 1)) / CD_ECC_DIVISOR;
+    let ecc_bytes = frames.div_ceil(CD_ECC_DIVISOR);
     let header_bytes = ecc_bytes + complen_bytes;
     (header_bytes, ecc_bytes, complen_bytes)
 }

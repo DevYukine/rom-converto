@@ -12,7 +12,7 @@ pub enum CueError {
     InvalidTrackType(String),
 
     #[error("Invalid MSF format: {0}")]
-    InvalidMSFFormat(String),
+    InvalidMsfFormat(String),
 
     #[error("Invalid quoted string: {0}")]
     InvalidQuotedString(String),
@@ -20,8 +20,11 @@ pub enum CueError {
     #[error(transparent)]
     ParseIntError(#[from] std::num::ParseIntError),
 
-    #[error("{0}")]
-    MissingQuoteError(String),
+    #[error("Missing opening quote")]
+    MissingOpeningQuote,
+
+    #[error("Missing closing quote")]
+    MissingClosingQuote,
 }
 
 pub type CueResult<T> = Result<T, CueError>;

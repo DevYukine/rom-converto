@@ -13,6 +13,7 @@ use crate::chd::writer::map::{MapEntry, compress_v5_map, crc16_ccitt};
 use crate::chd::writer::metadata::{MetadataHash, generate_cd_metadata};
 use binrw::BinWrite;
 use sha1::{Digest, Sha1};
+use log::debug;
 use std::io::{Cursor, SeekFrom};
 use std::path::Path;
 use std::sync::Arc;
@@ -46,7 +47,7 @@ impl ChdWriter {
 
         let logical_bytes = total_sectors as u64 * FRAME_SIZE as u64;
         let unit_bytes = FRAME_SIZE as u32;
-        if hunk_size % unit_bytes != 0 {
+        if !hunk_size.is_multiple_of(unit_bytes) {
             return Err(ChdError::InvalidHunkSize);
         }
 
@@ -94,7 +95,7 @@ impl ChdWriter {
 
     pub async fn write_sector(&mut self, sector_data: &[u8]) -> ChdResult<()> {
         self.raw_sha1.update(sector_data);
-        self.raw_sha1.update(&ZERO_SUBCODE);
+        self.raw_sha1.update(ZERO_SUBCODE);
 
         self.current_hunk.extend_from_slice(sector_data);
         self.current_hunk.extend_from_slice(&ZERO_SUBCODE);
@@ -138,8 +139,8 @@ impl ChdWriter {
             .collect();
 
         for f in futures {
-            if let Ok((compressed, idx)) = f.await? {
-                if compressed.len() < best_size {
+            match f.await? {
+                Ok((compressed, idx)) if compressed.len() < best_size => {
                     best_size = compressed.len();
                     best_compressed = Some(compressed);
                     best_type = match idx {
@@ -150,6 +151,8 @@ impl ChdWriter {
                         _ => ChdCompression::None,
                     };
                 }
+                Err(e) => debug!("Compressor failed (falling back to next): {}", e),
+                _ => {}
             }
         }
 
@@ -157,7 +160,7 @@ impl ChdWriter {
         let (data_to_write, compression) = if let Some(compressed) = best_compressed {
             (compressed, best_type)
         } else {
-            (self.current_hunk.clone(), ChdCompression::None)
+            (std::mem::take(&mut self.current_hunk), ChdCompression::None)
         };
 
         self.writer.write_all(&data_to_write).await?;

@@ -14,10 +14,6 @@ impl ChdCompressor for CdZlCompressor {
     }
 
     fn compress(&self, data: &[u8]) -> ChdResult<Vec<u8>> {
-        compress_cd_hunk(
-            data,
-            |base| deflate_compress(base),
-            |subcode| deflate_compress(subcode),
-        )
+        compress_cd_hunk(data, deflate_compress, deflate_compress)
     }
 }

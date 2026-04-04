@@ -24,7 +24,7 @@ impl ChdCompressor for FlacCompressor {
     }
 
     fn compress(&self, data: &[u8]) -> ChdResult<Vec<u8>> {
-        if data.len() % BYTES_PER_SAMPLE != 0 {
+        if !data.len().is_multiple_of(BYTES_PER_SAMPLE) {
             return Err(ChdError::InvalidHunkSize);
         }
 
@@ -55,7 +55,7 @@ pub(crate) fn encode_flac_samples(
     sample_rate: usize,
     block_size: usize,
 ) -> ChdResult<Vec<u8>> {
-    if channels == 0 || samples.len() % channels != 0 {
+    if channels == 0 || !samples.len().is_multiple_of(channels) {
         return Err(ChdError::InvalidHunkSize);
     }
 
@@ -63,16 +63,16 @@ pub(crate) fn encode_flac_samples(
     config.block_size = flac_block_size(block_size);
     let config = config
         .into_verified()
-        .map_err(|(_, err)| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+        .map_err(|(_, err)| io::Error::other(err))?;
 
     let source = MemSource::from_samples(samples, channels, FLAC_BITS_PER_SAMPLE, sample_rate);
     let stream = flacenc::encode_with_fixed_block_size(&config, source, config.block_size)
-        .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
+        .map_err(|err| io::Error::other(err.to_string()))?;
 
     let mut sink = ByteSink::new();
     stream
         .write(&mut sink)
-        .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
+        .map_err(|err| io::Error::other(err.to_string()))?;
     Ok(sink.into_inner())
 }
 

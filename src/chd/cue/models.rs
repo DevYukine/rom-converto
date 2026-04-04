@@ -21,25 +21,25 @@ pub struct Track {
     pub number: u8,
     pub track_type: TrackType,
     pub indices: Vec<Index>,
-    pub pregap: Option<MSF>,
-    pub postgap: Option<MSF>,
+    pub pregap: Option<Msf>,
+    pub postgap: Option<Msf>,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct Index {
     pub number: u8,
-    pub position: MSF,
+    pub position: Msf,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct MSF {
+pub struct Msf {
     pub minutes: u8,
     pub seconds: u8,
     pub frames: u8,
 }
 
-impl MSF {
-    pub fn to_lba(&self) -> u32 {
+impl Msf {
+    pub fn to_lba(self) -> u32 {
         (self.minutes as u32 * SECONDS_PER_MINUTE + self.seconds as u32) * FRAMES_PER_SECOND
             + self.frames as u32
             - LEAD_IN_FRAMES
