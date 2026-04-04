@@ -182,8 +182,8 @@ pub async fn extract_from_chd(
         let remaining = total_frames - frames_written;
         let frames_in_hunk = frames_per_hunk.min(remaining as usize);
 
-        for f in 0..frames_in_hunk {
-            let offset = f * FRAME_SIZE;
+        for frame_idx in 0..frames_in_hunk {
+            let offset = frame_idx * FRAME_SIZE;
             // Write only the SECTOR_SIZE (2352) bytes, skip SUBCODE_SIZE (96)
             bin_file
                 .write_all(&hunk_data[offset..offset + SECTOR_SIZE])

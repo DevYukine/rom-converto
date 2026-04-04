@@ -1,13 +1,11 @@
 pub mod error;
 
-use crate::cd::SECTOR_SIZE;
+use crate::cd::{IO_BUFFER_SIZE, SECTOR_SIZE};
 use crate::chd::bin::error::BinResult;
 use std::path::Path;
 use tokio::fs::File;
 use tokio::io::AsyncSeekExt;
 use tokio::io::{AsyncReadExt, BufReader};
-
-const IO_BUFFER_BYTES: usize = 8 * 1024 * 1024;
 
 // BIN file reader
 #[derive(Debug)]
@@ -20,7 +18,7 @@ impl BinReader {
         let file = File::open(bin_path).await?;
 
         Ok(Self {
-            reader: BufReader::with_capacity(IO_BUFFER_BYTES, file),
+            reader: BufReader::with_capacity(IO_BUFFER_SIZE, file),
         })
     }
 

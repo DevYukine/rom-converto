@@ -15,9 +15,9 @@ const COMPRESSION_TYPE_0: u8 = 0;
 const COMPRESSION_TYPE_1: u8 = 1;
 const COMPRESSION_TYPE_2: u8 = 2;
 const COMPRESSION_TYPE_3: u8 = 3;
-const COMPRESSION_NONE: u8 = 4;
-const COMPRESSION_SELF: u8 = 5;
-const COMPRESSION_PARENT: u8 = 6;
+pub(crate) const COMPRESSION_NONE: u8 = 4;
+pub(crate) const COMPRESSION_SELF: u8 = 5;
+pub(crate) const COMPRESSION_PARENT: u8 = 6;
 const COMPRESSION_RLE_SMALL: u8 = 7;
 const COMPRESSION_RLE_LARGE: u8 = 8;
 const COMPRESSION_SELF_0: u8 = 9;
@@ -254,9 +254,7 @@ fn write_u48_be(buf: &mut [u8], value: u64) {
     buf.copy_from_slice(&bytes[2..]);
 }
 
-// ---------------------------------------------------------------------------
 // BitWriter (compression)
-// ---------------------------------------------------------------------------
 
 #[derive(Debug)]
 struct BitWriter {
@@ -274,12 +272,12 @@ impl BitWriter {
         }
     }
 
-    fn write(&mut self, value: u32, numbits: u8) {
-        if numbits == 0 {
+    fn write(&mut self, value: u32, num_bits: u8) {
+        if num_bits == 0 {
             return;
         }
 
-        for i in (0..numbits).rev() {
+        for i in (0..num_bits).rev() {
             let bit = ((value >> i) & 1) as u8;
             self.accum = (self.accum << 1) | bit;
             self.bits += 1;
@@ -301,9 +299,7 @@ impl BitWriter {
     }
 }
 
-// ---------------------------------------------------------------------------
 // BitReader (decompression)
-// ---------------------------------------------------------------------------
 
 #[derive(Debug)]
 pub(crate) struct BitReader {
@@ -321,9 +317,9 @@ impl BitReader {
         }
     }
 
-    pub fn read(&mut self, numbits: u8) -> ChdResult<u32> {
+    pub fn read(&mut self, num_bits: u8) -> ChdResult<u32> {
         let mut result = 0u32;
-        for _ in 0..numbits {
+        for _ in 0..num_bits {
             if self.byte_pos >= self.data.len() {
                 return Err(ChdError::MapDecompressionError);
             }
@@ -348,21 +344,17 @@ impl BitReader {
     }
 }
 
-// ---------------------------------------------------------------------------
 // HuffNode
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy)]
 struct HuffNode {
     parent: Option<usize>,
     weight: u32,
     bits: u32,
-    numbits: u8,
+    num_bits: u8,
 }
 
-// ---------------------------------------------------------------------------
 // HuffmanEncoder (compression)
-// ---------------------------------------------------------------------------
 
 #[derive(Debug)]
 struct HuffmanEncoder {
@@ -379,7 +371,7 @@ impl HuffmanEncoder {
                     parent: None,
                     weight: 0,
                     bits: 0,
-                    numbits: 0,
+                    num_bits: 0,
                 };
                 HUFFMAN_CODES * 2
             ],
@@ -393,7 +385,7 @@ impl HuffmanEncoder {
     fn compute_tree_from_histo(&mut self) -> ChdResult<()> {
         let totaldata = self.datahisto.iter().copied().sum::<u32>();
         if totaldata == 0 {
-            self.nodes[0].numbits = 1;
+            self.nodes[0].num_bits = 1;
             self.nodes[0].bits = 0;
             return Ok(());
         }
@@ -422,7 +414,7 @@ impl HuffmanEncoder {
                 parent: None,
                 weight: 0,
                 bits: 0,
-                numbits: 0,
+                num_bits: 0,
             };
         }
 
@@ -486,7 +478,7 @@ impl HuffmanEncoder {
             if bits == 0 {
                 bits = 1;
             }
-            self.nodes[code].numbits = bits;
+            self.nodes[code].num_bits = bits;
             maxbits = maxbits.max(bits);
         }
 
@@ -496,7 +488,7 @@ impl HuffmanEncoder {
     fn assign_canonical_codes(&mut self) -> ChdResult<()> {
         let mut bithisto = [0u32; BITHISTO_LEN];
         for code in 0..HUFFMAN_CODES {
-            let bits = self.nodes[code].numbits as usize;
+            let bits = self.nodes[code].num_bits as usize;
             if bits > HUFFMAN_MAX_BITS as usize {
                 return Err(ChdError::MapCompressionError);
             }
@@ -516,7 +508,7 @@ impl HuffmanEncoder {
         }
 
         for code in 0..HUFFMAN_CODES {
-            let bits = self.nodes[code].numbits as usize;
+            let bits = self.nodes[code].num_bits as usize;
             if bits > 0 {
                 self.nodes[code].bits = bithisto[bits];
                 bithisto[bits] += 1;
@@ -527,7 +519,7 @@ impl HuffmanEncoder {
     }
 
     fn export_tree_rle(&self, bitbuf: &mut BitWriter) -> ChdResult<()> {
-        let numbits = if HUFFMAN_MAX_BITS >= 16 {
+        let num_bits = if HUFFMAN_MAX_BITS >= 16 {
             5
         } else if HUFFMAN_MAX_BITS >= 8 {
             4
@@ -538,60 +530,58 @@ impl HuffmanEncoder {
         let mut lastval = i32::MIN;
         let mut repcount = 0u32;
         for code in 0..HUFFMAN_CODES {
-            let newval = self.nodes[code].numbits as i32;
+            let newval = self.nodes[code].num_bits as i32;
             if newval == lastval {
                 repcount += 1;
             } else {
                 if repcount != 0 {
-                    write_rle_tree_bits(bitbuf, lastval as u32, repcount, numbits);
+                    write_rle_tree_bits(bitbuf, lastval as u32, repcount, num_bits);
                 }
                 lastval = newval;
                 repcount = 1;
             }
         }
-        write_rle_tree_bits(bitbuf, lastval as u32, repcount, numbits);
+        write_rle_tree_bits(bitbuf, lastval as u32, repcount, num_bits);
         Ok(())
     }
 
     fn encode_one(&self, bitbuf: &mut BitWriter, data: u8) {
         let node = self.nodes[data as usize];
-        bitbuf.write(node.bits, node.numbits);
+        bitbuf.write(node.bits, node.num_bits);
     }
 }
 
-fn write_rle_tree_bits(bitbuf: &mut BitWriter, value: u32, mut repcount: u32, numbits: u8) {
+fn write_rle_tree_bits(bitbuf: &mut BitWriter, value: u32, mut repcount: u32, num_bits: u8) {
     while repcount > 0 {
         if value == 1 {
-            bitbuf.write(1, numbits);
-            bitbuf.write(1, numbits);
+            bitbuf.write(1, num_bits);
+            bitbuf.write(1, num_bits);
             repcount -= 1;
         } else if repcount <= 2 {
-            bitbuf.write(value, numbits);
+            bitbuf.write(value, num_bits);
             repcount -= 1;
         } else {
-            let cur_reps = cmp::min(repcount - 3, (1u32 << numbits) - 1);
-            bitbuf.write(1, numbits);
-            bitbuf.write(value, numbits);
-            bitbuf.write(cur_reps, numbits);
+            let cur_reps = cmp::min(repcount - 3, (1u32 << num_bits) - 1);
+            bitbuf.write(1, num_bits);
+            bitbuf.write(value, num_bits);
+            bitbuf.write(cur_reps, num_bits);
             repcount -= cur_reps + 3;
         }
     }
 }
 
-// ---------------------------------------------------------------------------
 // HuffmanDecoder (decompression)
-// ---------------------------------------------------------------------------
 
 #[derive(Debug)]
 pub(crate) struct HuffmanDecoder {
-    /// Lookup table indexed by HUFFMAN_MAX_BITS-width value: (symbol, numbits)
+    /// Lookup table indexed by HUFFMAN_MAX_BITS-width value: (symbol, num_bits)
     lookup: Vec<(u8, u8)>,
 }
 
 impl HuffmanDecoder {
     /// Import Huffman tree from RLE-encoded bit-lengths (reverse of HuffmanEncoder::export_tree_rle)
     pub fn import_tree_rle(bits: &mut BitReader) -> ChdResult<Self> {
-        let numbits: u8 = if HUFFMAN_MAX_BITS >= 16 {
+        let num_bits: u8 = if HUFFMAN_MAX_BITS >= 16 {
             5
         } else if HUFFMAN_MAX_BITS >= 8 {
             4
@@ -603,10 +593,10 @@ impl HuffmanDecoder {
         let mut idx = 0;
 
         while idx < HUFFMAN_CODES {
-            let v = bits.read(numbits)? as u8;
+            let v = bits.read(num_bits)? as u8;
             if v == 1 {
                 // Could be literal value 1 (encoded as pair of 1s) or RLE marker
-                let next = bits.read(numbits)? as u8;
+                let next = bits.read(num_bits)? as u8;
                 if next == 1 {
                     // Literal value 1 — one occurrence
                     if idx < HUFFMAN_CODES {
@@ -614,8 +604,8 @@ impl HuffmanDecoder {
                         idx += 1;
                     }
                 } else {
-                    // RLE: the repeated value is `next`, count is read(numbits)+3
-                    let count = bits.read(numbits)? as usize + 3;
+                    // RLE: the repeated value is `next`, count is read(num_bits)+3
+                    let count = bits.read(num_bits)? as usize + 3;
                     for _ in 0..count {
                         if idx >= HUFFMAN_CODES {
                             break;
@@ -651,7 +641,7 @@ impl HuffmanDecoder {
         }
 
         // Step 2: Assign codes to symbols
-        let mut codes = [(0u32, 0u8); HUFFMAN_CODES]; // (code, numbits)
+        let mut codes = [(0u32, 0u8); HUFFMAN_CODES]; // (code, num_bits)
         for symbol in 0..HUFFMAN_CODES {
             let bits = bit_lengths[symbol];
             if bits > 0 {
@@ -664,16 +654,16 @@ impl HuffmanDecoder {
         let table_size = 1usize << HUFFMAN_MAX_BITS;
         let mut lookup = vec![(0u8, 0u8); table_size];
 
-        for (symbol, &(code, numbits)) in codes.iter().enumerate() {
-            if numbits == 0 {
+        for (symbol, &(code, num_bits)) in codes.iter().enumerate() {
+            if num_bits == 0 {
                 continue;
             }
-            // Fill all lookup entries where the top `numbits` bits match `code`
-            let shift = HUFFMAN_MAX_BITS - numbits;
+            // Fill all lookup entries where the top `num_bits` bits match `code`
+            let shift = HUFFMAN_MAX_BITS - num_bits;
             let base_index = (code as usize) << shift;
             let count = 1usize << shift;
             for i in 0..count {
-                lookup[base_index + i] = (symbol as u8, numbits);
+                lookup[base_index + i] = (symbol as u8, num_bits);
             }
         }
 
@@ -683,20 +673,16 @@ impl HuffmanDecoder {
     pub fn decode_one(&self, bits: &mut BitReader) -> ChdResult<u8> {
         let pos = bits.position();
         let value = bits.read(HUFFMAN_MAX_BITS)?;
-        let (symbol, numbits) = self.lookup[value as usize];
-        if numbits == 0 {
+        let (symbol, num_bits) = self.lookup[value as usize];
+        if num_bits == 0 {
             return Err(ChdError::MapDecompressionError);
         }
-        // Restore position and advance only numbits
+        // Restore position and advance only num_bits
         bits.set_position(pos);
-        bits.read(numbits)?;
+        bits.read(num_bits)?;
         Ok(symbol)
     }
 }
-
-// ---------------------------------------------------------------------------
-// decompress_v5_map
-// ---------------------------------------------------------------------------
 
 pub(crate) fn decompress_v5_map(
     map_data: &[u8],

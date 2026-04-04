@@ -1,5 +1,5 @@
 use crate::cd::ecc::{has_valid_ecc, restore_sector_ecc, strip_sector_ecc};
-use crate::cd::{FRAME_SIZE, SECTOR_SIZE, SUBCODE_SIZE};
+use crate::cd::{BYTES_PER_STEREO_SAMPLE, CD_CHANNELS, FRAME_SIZE, SECTOR_SIZE, SUBCODE_SIZE};
 use crate::chd::compression::cdfl::CD_SYNC_HEADER;
 use crate::chd::compression::flac::{
     CD_SAMPLE_RATE, Endian, encode_flac_samples, samples_from_bytes,
@@ -70,17 +70,7 @@ where
     let (frames, mut base, subcode) = split_cd_frames(data)?;
     let (header_bytes, ecc_bytes, complen_bytes) = cd_header_sizes(data.len(), frames);
 
-    // ECC stripping: for each frame with valid sync+ECC, strip redundant data
-    // and record which frames were stripped in the ecc_bytes header.
-    let mut ecc_flags = vec![0u8; ecc_bytes];
-    for frame in 0..frames {
-        let sector = &base[frame * SECTOR_SIZE..(frame + 1) * SECTOR_SIZE];
-        if has_valid_ecc(sector) {
-            ecc_flags[frame / 8] |= 1 << (frame % 8);
-            let sector_mut = &mut base[frame * SECTOR_SIZE..(frame + 1) * SECTOR_SIZE];
-            strip_sector_ecc(sector_mut);
-        }
-    }
+    let ecc_flags = strip_ecc_from_base(&mut base, frames, ecc_bytes);
 
     let base_compressed = base_compress(&base)?;
     let subcode_compressed = subcode_compress(&subcode)?;
@@ -157,6 +147,19 @@ where
     Ok(output)
 }
 
+fn strip_ecc_from_base(base: &mut [u8], frames: usize, ecc_bytes: usize) -> Vec<u8> {
+    let mut ecc_flags = vec![0u8; ecc_bytes];
+    for frame in 0..frames {
+        let start = frame * SECTOR_SIZE;
+        let end = start + SECTOR_SIZE;
+        if has_valid_ecc(&base[start..end]) {
+            ecc_flags[frame / 8] |= 1 << (frame % 8);
+            strip_sector_ecc(&mut base[start..end]);
+        }
+    }
+    ecc_flags
+}
+
 fn split_cd_frames(data: &[u8]) -> ChdResult<(usize, Vec<u8>, Vec<u8>)> {
     if !data.len().is_multiple_of(FRAME_SIZE) {
         return Err(ChdError::InvalidHunkSize);
@@ -190,10 +193,6 @@ fn write_cd_header(buf: &mut [u8], ecc_bytes: usize, base_len: usize, complen_by
     }
 }
 
-const CD_CHANNELS: usize = 2;
-const BYTES_PER_SAMPLE: usize = 2;
-const BYTES_PER_STEREO_SAMPLE: usize = CD_CHANNELS * BYTES_PER_SAMPLE;
-
 /// Persistent codec state for CD hunk compression, matching chdman's approach
 /// of reusing encoder instances across hunks rather than creating new ones each time.
 pub(crate) struct CdCodecSet {
@@ -220,16 +219,7 @@ impl CdCodecSet {
         let (frames, mut base, subcode) = split_cd_frames(hunk)?;
         let (header_bytes, ecc_bytes, complen_bytes) = cd_header_sizes(hunk.len(), frames);
 
-        // ECC stripping
-        let mut ecc_flags = vec![0u8; ecc_bytes];
-        for frame in 0..frames {
-            let sector = &base[frame * SECTOR_SIZE..(frame + 1) * SECTOR_SIZE];
-            if has_valid_ecc(sector) {
-                ecc_flags[frame / 8] |= 1 << (frame % 8);
-                let sector_mut = &mut base[frame * SECTOR_SIZE..(frame + 1) * SECTOR_SIZE];
-                strip_sector_ecc(sector_mut);
-            }
-        }
+        let ecc_flags = strip_ecc_from_base(&mut base, frames, ecc_bytes);
 
         let mut best: Option<Vec<u8>> = None;
         let mut best_type = ChdCompression::None as u8;
@@ -244,8 +234,7 @@ impl CdCodecSet {
             header_bytes,
             ecc_bytes,
             complen_bytes,
-        )
-            && result.len() < best_len(&best)
+        ) && result.len() < best_len(&best)
         {
             best_type = 0;
             best = Some(result);
@@ -259,8 +248,7 @@ impl CdCodecSet {
             header_bytes,
             ecc_bytes,
             complen_bytes,
-        )
-            && result.len() < best_len(&best)
+        ) && result.len() < best_len(&best)
         {
             best_type = 1;
             best = Some(result);

@@ -1,6 +1,5 @@
-// src/cue/models
-const SECONDS_PER_MINUTE: u32 = 60;
-const FRAMES_PER_SECOND: u32 = 75;
+use crate::cd::{FRAMES_PER_SECOND, SECONDS_PER_MINUTE};
+
 const PRIMARY_INDEX: u8 = 1;
 
 #[derive(Debug, Clone)]
@@ -39,6 +38,18 @@ pub struct Msf {
 }
 
 impl Msf {
+    pub fn from_lba(lba: u32) -> Self {
+        let frames = (lba % FRAMES_PER_SECOND) as u8;
+        let total_seconds = lba / FRAMES_PER_SECOND;
+        let seconds = (total_seconds % SECONDS_PER_MINUTE) as u8;
+        let minutes = (total_seconds / SECONDS_PER_MINUTE) as u8;
+        Self {
+            minutes,
+            seconds,
+            frames,
+        }
+    }
+
     pub fn to_lba(self) -> u32 {
         (self.minutes as u32 * SECONDS_PER_MINUTE + self.seconds as u32) * FRAMES_PER_SECOND
             + self.frames as u32

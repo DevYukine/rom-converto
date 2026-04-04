@@ -1,12 +1,16 @@
 pub(crate) mod cue_generator;
 
+use crate::cd::IO_BUFFER_SIZE;
 use crate::chd::compression::cdfl::CdFlDecompressor;
 use crate::chd::compression::cdlz::CdlzDecompressor;
 use crate::chd::compression::cdzl::CdZlDecompressor;
 use crate::chd::compression::cdzs::CdZsDecompressor;
 use crate::chd::compression::{ChdDecompressor, tag_to_bytes};
 use crate::chd::error::{ChdError, ChdResult};
-use crate::chd::map::{MapEntry, crc16_ccitt, decompress_v5_map};
+use crate::chd::map::{
+    COMPRESSION_NONE, COMPRESSION_PARENT, COMPRESSION_SELF, MapEntry, crc16_ccitt,
+    decompress_v5_map,
+};
 use crate::chd::models::{
     CHD_METADATA_FLAG_HASHED, ChdHeaderV5, ChdMetadataHeader, ChdVersion, SHA1_BYTES,
 };
@@ -18,12 +22,6 @@ use std::io::Cursor;
 use std::sync::Arc;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, BufReader, SeekFrom};
-
-const IO_BUFFER_BYTES: usize = 8 * 1024 * 1024;
-
-const COMPRESSION_NONE: u8 = 4;
-const COMPRESSION_SELF: u8 = 5;
-const COMPRESSION_PARENT: u8 = 6;
 
 pub struct ChdReader {
     reader: BufReader<File>,
@@ -43,7 +41,7 @@ impl ChdReader {
         parent_path: Option<impl AsRef<std::path::Path>>,
     ) -> ChdResult<Self> {
         let file = File::open(path).await?;
-        let mut reader = BufReader::with_capacity(IO_BUFFER_BYTES, file);
+        let mut reader = BufReader::with_capacity(IO_BUFFER_SIZE, file);
 
         // Read and parse header
         let mut header_bytes = vec![0u8; 124];

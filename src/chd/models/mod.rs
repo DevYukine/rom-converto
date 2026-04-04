@@ -1,4 +1,3 @@
-// models.rs
 use binrw::{BinRead, BinWrite, binrw};
 
 pub const CHD_V5_HEADER_SIZE: u32 = 124;
@@ -7,7 +6,7 @@ pub const CHD_METADATA_FLAG_HASHED: u8 = 0x01;
 pub const CHD_METADATA_RESERVED_BYTES: usize = 8;
 pub const SHA1_BYTES: usize = 20;
 
-/// Represents the version of the CHD file format.
+/// CHD file format version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, BinRead, BinWrite)]
 #[brw(repr = u32)]
 pub enum ChdVersion {
@@ -18,48 +17,38 @@ pub enum ChdVersion {
     V5 = 5,
 }
 
-/// Represents the header for CHD files, specifically version 5.
-/// This header contains metadata about the CHD file, including compression methods,
-/// logical size, offsets for map and metadata, and SHA1 hashes for integrity checks.
-/// The header is 124 bytes long and uses big-endian byte order.
+/// CHD v5 file header (124 bytes, big-endian).
+///
+/// Contains compression methods, logical size, offsets for map and metadata,
+/// and SHA1 hashes for integrity checks.
 #[derive(Debug, BinRead, BinWrite)]
 #[brw(big)]
 #[brw(magic = b"MComprHD")]
 pub struct ChdHeaderV5 {
-    /// Length of the header in bytes (124 for V5)
+    /// Header length in bytes (124 for V5).
     pub length: u32,
-
-    /// Version of the CHD file format.
+    /// CHD format version.
     pub version: ChdVersion,
-
-    /// Compressor tags for the four compression methods used in the CHD file.
+    /// Compressor tags (4 slots, 4 bytes each).
     pub compressor_0: [u8; 4],
     pub compressor_1: [u8; 4],
     pub compressor_2: [u8; 4],
     pub compressor_3: [u8; 4],
-
-    /// Logical size of the data in bytes.
+    /// Logical size of the uncompressed data.
     pub logical_bytes: u64,
-
-    /// Offset to the map section in the CHD file.
+    /// File offset to the compressed map section.
     pub map_offset: u64,
-
-    /// Offset to the metadata section in the CHD file.
+    /// File offset to the metadata section.
     pub meta_offset: u64,
-
-    /// Number of hunks in the CHD file.
+    /// Bytes per hunk (compression unit).
     pub hunk_bytes: u32,
-
-    /// Number of bytes per unit within a hunk.
+    /// Bytes per unit within a hunk.
     pub unit_bytes: u32,
-
-    /// SHA1 hash of the raw data.
+    /// SHA1 of the raw (uncompressed) data.
     pub raw_sha1: [u8; SHA1_BYTES],
-
-    /// SHA1 hash of the compressed data.
+    /// Overall SHA1 (raw data + metadata hashes).
     pub sha1: [u8; SHA1_BYTES],
-
-    /// SHA1 hash of the parent CHD file, otherwise all zeros.
+    /// SHA1 of the parent CHD, or all zeros if standalone.
     pub parent_sha1: [u8; SHA1_BYTES],
 }
 

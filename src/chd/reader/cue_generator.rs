@@ -1,7 +1,5 @@
+use crate::chd::cue::models::Msf;
 use crate::chd::error::{ChdError, ChdResult};
-
-const FRAMES_PER_SECOND: u32 = 75;
-const SECONDS_PER_MINUTE: u32 = 60;
 
 #[derive(Debug)]
 pub(crate) struct ChdTrackInfo {
@@ -78,17 +76,17 @@ pub(crate) fn generate_cue_sheet(bin_filename: &str, tracks: &[ChdTrackInfo]) ->
         cue.push_str(&format!("  TRACK {:02} {}\n", track.track_number, cue_type));
 
         if track.pregap > 0 {
-            let msf = lba_to_msf(track.pregap);
+            let msf = Msf::from_lba(track.pregap);
             cue.push_str(&format!(
                 "    PREGAP {:02}:{:02}:{:02}\n",
-                msf.0, msf.1, msf.2
+                msf.minutes, msf.seconds, msf.frames
             ));
         }
 
-        let msf = lba_to_msf(frame_offset);
+        let msf = Msf::from_lba(frame_offset);
         cue.push_str(&format!(
             "    INDEX 01 {:02}:{:02}:{:02}\n",
-            msf.0, msf.1, msf.2
+            msf.minutes, msf.seconds, msf.frames
         ));
 
         frame_offset += track.frames;
@@ -107,12 +105,4 @@ fn chd_type_to_cue_type(chd_type: &str) -> &'static str {
         "MODE2_FORM2" => "MODE2/2352",
         _ => "MODE1/2352",
     }
-}
-
-fn lba_to_msf(lba: u32) -> (u8, u8, u8) {
-    let frames = lba % FRAMES_PER_SECOND;
-    let total_seconds = lba / FRAMES_PER_SECOND;
-    let seconds = total_seconds % SECONDS_PER_MINUTE;
-    let minutes = total_seconds / SECONDS_PER_MINUTE;
-    (minutes as u8, seconds as u8, frames as u8)
 }

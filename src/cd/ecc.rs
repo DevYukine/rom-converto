@@ -3,7 +3,7 @@
 //! Ported from MAME's cdrom.cpp. Used to strip and restore ECC/EDC parity
 //! bytes in CD-ROM Mode 1 sectors for improved compression ratios.
 
-use super::SECTOR_SIZE;
+use super::constants::SECTOR_SIZE;
 
 /// CD-ROM sync header pattern (12 bytes at the start of every Mode 1 sector).
 pub const CD_SYNC_HEADER: [u8; 12] = [

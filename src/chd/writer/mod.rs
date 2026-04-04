@@ -1,6 +1,6 @@
 pub(crate) mod metadata;
 
-use crate::cd::{FRAME_SIZE, SECTOR_SIZE, SUBCODE_SIZE};
+use crate::cd::{FRAME_SIZE, IO_BUFFER_SIZE, SECTOR_SIZE, SUBCODE_SIZE};
 use crate::chd::bin::BinReader;
 use crate::chd::compression::cdfl::CdFlCompressor;
 use crate::chd::compression::cdlz::CdlzCompressor;
@@ -26,7 +26,6 @@ use tokio::sync::Semaphore;
 use tokio::task;
 
 const ZERO_SUBCODE: [u8; SUBCODE_SIZE] = [0; SUBCODE_SIZE];
-const IO_BUFFER_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug)]
 pub struct ChdWriter {
@@ -47,7 +46,7 @@ impl ChdWriter {
         cue_sheet: &CueSheet,
     ) -> ChdResult<Self> {
         let file = File::create(output_path).await?;
-        let mut buff_writer = BufWriter::with_capacity(IO_BUFFER_BYTES, file);
+        let mut buff_writer = BufWriter::with_capacity(IO_BUFFER_SIZE, file);
 
         let logical_bytes = total_sectors as u64 * FRAME_SIZE as u64;
         let unit_bytes = FRAME_SIZE as u32;

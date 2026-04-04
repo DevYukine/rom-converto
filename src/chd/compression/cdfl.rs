@@ -1,3 +1,4 @@
+use crate::cd::{BYTES_PER_STEREO_SAMPLE, CD_CHANNELS};
 use crate::chd::compression::flac::{
     CD_SAMPLE_RATE, Endian, encode_flac_samples, flac_decompress, samples_from_bytes,
 };
@@ -6,10 +7,6 @@ use crate::chd::compression::{
     deflate_decompress, tag_to_bytes,
 };
 use crate::chd::error::{ChdError, ChdResult};
-
-const CD_CHANNELS: usize = 2;
-const BYTES_PER_SAMPLE: usize = 2;
-const BYTES_PER_STEREO_SAMPLE: usize = CD_CHANNELS * BYTES_PER_SAMPLE;
 
 #[derive(Debug, Clone)]
 pub struct CdFlCompressor;
