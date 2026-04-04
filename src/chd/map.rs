@@ -723,33 +723,33 @@ pub(crate) fn decompress_v5_map(
     let decoder = HuffmanDecoder::import_tree_rle(&mut bits)?;
 
     // Decode all Huffman symbols (compression types with RLE)
+    // Decode compression types using the same logic as the encoder's pass 2.
+    // The encoder's pass 2 reads compression_rle[] sequentially:
+    //   - if count==0: read next symbol. RLE_SMALL/LARGE set count. Other values set lastcomp.
+    //   - if count>0: decrement count.
+    // In both cases, lastcomp is used for the current hunk.
     let mut compression_types = Vec::with_capacity(hunk_count as usize);
     {
         let mut count = 0u32;
         let mut lastcomp = 0u8;
 
-        while compression_types.len() < hunk_count as usize {
+        for _ in 0..hunk_count {
             if count > 0 {
-                compression_types.push(lastcomp);
                 count -= 1;
             } else {
                 let val = decoder.decode_one(&mut bits)?;
                 if val == COMPRESSION_RLE_SMALL {
                     let extra = decoder.decode_one(&mut bits)? as u32;
                     count = RLE_SMALL_DECODE_BASE + extra;
-                    compression_types.push(lastcomp);
-                    count -= 1;
                 } else if val == COMPRESSION_RLE_LARGE {
                     let high = decoder.decode_one(&mut bits)? as u32;
                     let low = decoder.decode_one(&mut bits)? as u32;
                     count = RLE_LARGE_DECODE_BASE + (high << 4) + low;
-                    compression_types.push(lastcomp);
-                    count -= 1;
                 } else {
                     lastcomp = val;
-                    compression_types.push(lastcomp);
                 }
             }
+            compression_types.push(lastcomp);
         }
     }
 
@@ -860,4 +860,45 @@ pub(crate) fn decompress_v5_map(
     }
 
     Ok(entries)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_map_roundtrip() {
+        // Create test map entries with cumulative offsets (as in a real CHD)
+        let mut entries: Vec<MapEntry> = Vec::new();
+        let mut cur_offset = 229u64;
+        for i in 0..100u32 {
+            let length = 5000 + i * 10;
+            entries.push(MapEntry {
+                compression: 0, // COMPRESSION_TYPE_0
+                length,
+                offset: cur_offset,
+                crc16: (i * 7) as u16,
+            });
+            cur_offset += length as u64;
+        }
+
+        let hunk_bytes = 19584u32;
+        let unit_bytes = 2448u32;
+
+        // Compress
+        let compressed = compress_v5_map(&entries, hunk_bytes, unit_bytes).unwrap();
+
+        // Decompress
+        let decompressed = decompress_v5_map(&compressed, 100, hunk_bytes, unit_bytes).unwrap();
+
+        // Compare
+        assert_eq!(entries.len(), decompressed.len());
+        for (i, (orig, dec)) in entries.iter().zip(decompressed.iter()).enumerate() {
+            assert_eq!(orig.compression, dec.compression, "compression mismatch at hunk {i}");
+            assert_eq!(orig.length, dec.length, "length mismatch at hunk {i}");
+            assert_eq!(orig.offset, dec.offset, "offset mismatch at hunk {i}");
+            assert_eq!(orig.crc16, dec.crc16, "crc16 mismatch at hunk {i}");
+        }
+        println!("Roundtrip OK!");
+    }
 }
