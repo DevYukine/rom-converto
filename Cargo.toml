@@ -48,6 +48,7 @@ const_format = "^0.2"
 flate2 = "^1.1"
 liblzma = { version = "^0.4", features = ["parallel"] }
 flacenc = "^0.5"
+claxon = "^0.4"
 zstd = "^0.13"
 crc = "^3.4"
 indicatif = "^0.18"

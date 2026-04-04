@@ -5,7 +5,7 @@ use flacenc::component::BitRepr;
 use flacenc::config;
 use flacenc::error::Verify;
 use flacenc::source::MemSource;
-use std::io;
+use std::io::{self, Cursor};
 
 pub(crate) const CD_SAMPLE_RATE: usize = 44_100;
 const FLAC_BITS_PER_SAMPLE: usize = 16;
@@ -95,4 +95,41 @@ pub fn samples_from_bytes(data: &[u8], endian: Endian) -> Vec<i32> {
         samples.push(value as i32);
     }
     samples
+}
+
+pub fn bytes_from_samples(samples: &[i32], endian: &Endian) -> Vec<u8> {
+    let mut output = Vec::with_capacity(samples.len() * 2);
+    for &sample in samples {
+        let value = sample as i16;
+        match endian {
+            Endian::Little => output.extend_from_slice(&value.to_le_bytes()),
+            Endian::Big => output.extend_from_slice(&value.to_be_bytes()),
+        }
+    }
+    output
+}
+
+pub(crate) fn flac_decompress(data: &[u8], _expected_len: usize) -> ChdResult<Vec<u8>> {
+    if data.is_empty() {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "FLAC data is empty").into());
+    }
+
+    let endian = match data[0] {
+        0 => Endian::Little,
+        1 => Endian::Big,
+        _ => {
+            return Err(
+                io::Error::new(io::ErrorKind::InvalidData, "Invalid FLAC endian flag").into(),
+            )
+        }
+    };
+
+    let mut reader = claxon::FlacReader::new(Cursor::new(&data[1..]))
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+
+    let samples: Result<Vec<i32>, _> = reader.samples().collect();
+    let samples =
+        samples.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+
+    Ok(bytes_from_samples(&samples, &endian))
 }

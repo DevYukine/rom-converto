@@ -2,9 +2,10 @@ use crate::cd::{FRAME_SIZE, SECTOR_SIZE, SUBCODE_SIZE};
 use crate::chd::error::{ChdError, ChdResult};
 use byteorder::{BigEndian, ByteOrder};
 use flate2::Compression;
+use flate2::read::DeflateDecoder;
 use flate2::write::DeflateEncoder;
 use std::fmt::Debug;
-use std::io::Write;
+use std::io::{Read, Write};
 
 const CD_SHORT_HUNK_LIMIT: usize = 0x1_0000;
 const CD_ECC_DIVISOR: usize = 8;
@@ -43,6 +44,11 @@ pub trait ChdCompressor: Debug {
     fn compress(&self, data: &[u8]) -> ChdResult<Vec<u8>>;
 }
 
+pub trait ChdDecompressor: Debug + Send + Sync {
+    fn tag_bytes(&self) -> [u8; 4];
+    fn decompress(&self, compressed: &[u8], output_len: usize) -> ChdResult<Vec<u8>>;
+}
+
 pub(crate) fn compress_cd_hunk<F1, F2>(
     data: &[u8],
     base_compress: F1,
@@ -71,6 +77,52 @@ pub(crate) fn deflate_compress(data: &[u8]) -> ChdResult<Vec<u8>> {
     Ok(encoder.finish()?)
 }
 
+pub(crate) fn deflate_decompress(data: &[u8], _expected_len: usize) -> ChdResult<Vec<u8>> {
+    let mut decoder = DeflateDecoder::new(data);
+    let mut output = Vec::new();
+    decoder.read_to_end(&mut output)?;
+    Ok(output)
+}
+
+pub(crate) fn decompress_cd_hunk<F1, F2>(
+    data: &[u8],
+    output_len: usize,
+    base_decompress: F1,
+    subcode_decompress: F2,
+) -> ChdResult<Vec<u8>>
+where
+    F1: FnOnce(&[u8], usize) -> ChdResult<Vec<u8>>,
+    F2: FnOnce(&[u8], usize) -> ChdResult<Vec<u8>>,
+{
+    let frames = output_len / FRAME_SIZE;
+    let (header_bytes, ecc_bytes, complen_bytes) = cd_header_sizes(output_len, frames);
+
+    let base_length = if complen_bytes == 2 {
+        BigEndian::read_u16(&data[ecc_bytes..ecc_bytes + 2]) as usize
+    } else {
+        BigEndian::read_u24(&data[ecc_bytes..ecc_bytes + 3]) as usize
+    };
+
+    let base_compressed = &data[header_bytes..header_bytes + base_length];
+    let subcode_compressed = &data[header_bytes + base_length..];
+
+    let expected_base_len = frames * SECTOR_SIZE;
+    let expected_subcode_len = frames * SUBCODE_SIZE;
+
+    let base = base_decompress(base_compressed, expected_base_len)?;
+    let subcode = subcode_decompress(subcode_compressed, expected_subcode_len)?;
+
+    let mut output = Vec::with_capacity(output_len);
+    for frame in 0..frames {
+        let base_offset = frame * SECTOR_SIZE;
+        let subcode_offset = frame * SUBCODE_SIZE;
+        output.extend_from_slice(&base[base_offset..base_offset + SECTOR_SIZE]);
+        output.extend_from_slice(&subcode[subcode_offset..subcode_offset + SUBCODE_SIZE]);
+    }
+
+    Ok(output)
+}
+
 fn split_cd_frames(data: &[u8]) -> ChdResult<(usize, Vec<u8>, Vec<u8>)> {
     if !data.len().is_multiple_of(FRAME_SIZE) {
         return Err(ChdError::InvalidHunkSize);
@@ -89,7 +141,7 @@ fn split_cd_frames(data: &[u8]) -> ChdResult<(usize, Vec<u8>, Vec<u8>)> {
     Ok((frames, base, subcode))
 }
 
-fn cd_header_sizes(data_len: usize, frames: usize) -> (usize, usize, usize) {
+pub(crate) fn cd_header_sizes(data_len: usize, frames: usize) -> (usize, usize, usize) {
     let complen_bytes = if data_len < CD_SHORT_HUNK_LIMIT { 2 } else { 3 };
     let ecc_bytes = frames.div_ceil(CD_ECC_DIVISOR);
     let header_bytes = ecc_bytes + complen_bytes;

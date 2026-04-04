@@ -250,6 +250,10 @@ fn write_u48_be(buf: &mut [u8], value: u64) {
     buf.copy_from_slice(&bytes[2..]);
 }
 
+// ---------------------------------------------------------------------------
+// BitWriter (compression)
+// ---------------------------------------------------------------------------
+
 #[derive(Debug)]
 struct BitWriter {
     data: Vec<u8>,
@@ -293,6 +297,57 @@ impl BitWriter {
     }
 }
 
+// ---------------------------------------------------------------------------
+// BitReader (decompression)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+pub(crate) struct BitReader {
+    data: Vec<u8>,
+    byte_pos: usize,
+    bit_pos: u8, // bits consumed in current byte (0-7), MSB first
+}
+
+impl BitReader {
+    pub fn new(data: Vec<u8>) -> Self {
+        Self {
+            data,
+            byte_pos: 0,
+            bit_pos: 0,
+        }
+    }
+
+    pub fn read(&mut self, numbits: u8) -> ChdResult<u32> {
+        let mut result = 0u32;
+        for _ in 0..numbits {
+            if self.byte_pos >= self.data.len() {
+                return Err(ChdError::MapDecompressionError);
+            }
+            let bit = (self.data[self.byte_pos] >> (7 - self.bit_pos)) & 1;
+            result = (result << 1) | bit as u32;
+            self.bit_pos += 1;
+            if self.bit_pos == 8 {
+                self.bit_pos = 0;
+                self.byte_pos += 1;
+            }
+        }
+        Ok(result)
+    }
+
+    fn position(&self) -> (usize, u8) {
+        (self.byte_pos, self.bit_pos)
+    }
+
+    fn set_position(&mut self, pos: (usize, u8)) {
+        self.byte_pos = pos.0;
+        self.bit_pos = pos.1;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// HuffNode
+// ---------------------------------------------------------------------------
+
 #[derive(Debug, Clone, Copy)]
 struct HuffNode {
     parent: Option<usize>,
@@ -300,6 +355,10 @@ struct HuffNode {
     bits: u32,
     numbits: u8,
 }
+
+// ---------------------------------------------------------------------------
+// HuffmanEncoder (compression)
+// ---------------------------------------------------------------------------
 
 #[derive(Debug)]
 struct HuffmanEncoder {
@@ -513,4 +572,292 @@ fn write_rle_tree_bits(bitbuf: &mut BitWriter, value: u32, mut repcount: u32, nu
             repcount -= cur_reps + 3;
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// HuffmanDecoder (decompression)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+pub(crate) struct HuffmanDecoder {
+    /// Lookup table indexed by HUFFMAN_MAX_BITS-width value: (symbol, numbits)
+    lookup: Vec<(u8, u8)>,
+}
+
+impl HuffmanDecoder {
+    /// Import Huffman tree from RLE-encoded bit-lengths (reverse of HuffmanEncoder::export_tree_rle)
+    pub fn import_tree_rle(bits: &mut BitReader) -> ChdResult<Self> {
+        let numbits: u8 = if HUFFMAN_MAX_BITS >= 16 {
+            5
+        } else if HUFFMAN_MAX_BITS >= 8 {
+            4
+        } else {
+            3
+        };
+
+        let mut bit_lengths = [0u8; HUFFMAN_CODES];
+        let mut idx = 0;
+
+        while idx < HUFFMAN_CODES {
+            let v = bits.read(numbits)? as u8;
+            if v == 1 {
+                // Could be literal value 1 (encoded as pair of 1s) or RLE marker
+                let next = bits.read(numbits)? as u8;
+                if next == 1 {
+                    // Literal value 1 — one occurrence
+                    if idx < HUFFMAN_CODES {
+                        bit_lengths[idx] = 1;
+                        idx += 1;
+                    }
+                } else {
+                    // RLE: the repeated value is `next`, count is read(numbits)+3
+                    let count = bits.read(numbits)? as usize + 3;
+                    for _ in 0..count {
+                        if idx >= HUFFMAN_CODES {
+                            break;
+                        }
+                        bit_lengths[idx] = next;
+                        idx += 1;
+                    }
+                }
+            } else {
+                // Literal value (one occurrence)
+                bit_lengths[idx] = v;
+                idx += 1;
+            }
+        }
+
+        Self::from_bit_lengths(&bit_lengths)
+    }
+
+    fn from_bit_lengths(bit_lengths: &[u8; HUFFMAN_CODES]) -> ChdResult<Self> {
+        // Step 1: Build canonical codes (same algorithm as assign_canonical_codes in encoder)
+        let mut bithisto = [0u32; BITHISTO_LEN];
+        for &bits in bit_lengths.iter() {
+            if (bits as usize) <= CANONICAL_MAX_BITS {
+                bithisto[bits as usize] += 1;
+            }
+        }
+
+        let mut curstart = 0u32;
+        for codelen in (1..=CANONICAL_MAX_BITS).rev() {
+            let nextstart = (curstart + bithisto[codelen]) >> 1;
+            bithisto[codelen] = curstart;
+            curstart = nextstart;
+        }
+
+        // Step 2: Assign codes to symbols
+        let mut codes = [(0u32, 0u8); HUFFMAN_CODES]; // (code, numbits)
+        for symbol in 0..HUFFMAN_CODES {
+            let bits = bit_lengths[symbol];
+            if bits > 0 {
+                codes[symbol] = (bithisto[bits as usize], bits);
+                bithisto[bits as usize] += 1;
+            }
+        }
+
+        // Step 3: Build lookup table (indexed by HUFFMAN_MAX_BITS-width value)
+        let table_size = 1usize << HUFFMAN_MAX_BITS;
+        let mut lookup = vec![(0u8, 0u8); table_size];
+
+        for (symbol, &(code, numbits)) in codes.iter().enumerate() {
+            if numbits == 0 {
+                continue;
+            }
+            // Fill all lookup entries where the top `numbits` bits match `code`
+            let shift = HUFFMAN_MAX_BITS - numbits;
+            let base_index = (code as usize) << shift;
+            let count = 1usize << shift;
+            for i in 0..count {
+                lookup[base_index + i] = (symbol as u8, numbits);
+            }
+        }
+
+        Ok(Self { lookup })
+    }
+
+    pub fn decode_one(&self, bits: &mut BitReader) -> ChdResult<u8> {
+        let pos = bits.position();
+        let value = bits.read(HUFFMAN_MAX_BITS)?;
+        let (symbol, numbits) = self.lookup[value as usize];
+        if numbits == 0 {
+            return Err(ChdError::MapDecompressionError);
+        }
+        // Restore position and advance only numbits
+        bits.set_position(pos);
+        bits.read(numbits)?;
+        Ok(symbol)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// decompress_v5_map
+// ---------------------------------------------------------------------------
+
+pub(crate) fn decompress_v5_map(
+    map_data: &[u8],
+    hunk_count: u32,
+    hunk_bytes: u32,
+    unit_bytes: u32,
+) -> ChdResult<Vec<MapEntry>> {
+    if map_data.len() < MAP_HEADER_SIZE {
+        return Err(ChdError::MapDecompressionError);
+    }
+
+    // Parse 16-byte header
+    let compressed_len = BigEndian::read_u32(&map_data[0..4]) as usize;
+    let first_offset = read_u48_be(&map_data[4..10]);
+    let map_crc = BigEndian::read_u16(&map_data[10..12]);
+    let length_bits = map_data[12];
+    let self_bits = map_data[13];
+    let parent_bits = map_data[14];
+
+    if MAP_HEADER_SIZE + compressed_len > map_data.len() {
+        return Err(ChdError::MapDecompressionError);
+    }
+
+    let compressed = map_data[MAP_HEADER_SIZE..MAP_HEADER_SIZE + compressed_len].to_vec();
+    let mut bits = BitReader::new(compressed);
+
+    // Import Huffman tree
+    let decoder = HuffmanDecoder::import_tree_rle(&mut bits)?;
+
+    // Decode all Huffman symbols (compression types with RLE)
+    let mut compression_types = Vec::with_capacity(hunk_count as usize);
+    {
+        let mut count = 0u32;
+        let mut lastcomp = 0u8;
+
+        while compression_types.len() < hunk_count as usize {
+            if count > 0 {
+                compression_types.push(lastcomp);
+                count -= 1;
+            } else {
+                let val = decoder.decode_one(&mut bits)?;
+                if val == COMPRESSION_RLE_SMALL {
+                    let extra = decoder.decode_one(&mut bits)? as u32;
+                    count = RLE_SMALL_DECODE_BASE + extra;
+                    compression_types.push(lastcomp);
+                    count -= 1;
+                } else if val == COMPRESSION_RLE_LARGE {
+                    let high = decoder.decode_one(&mut bits)? as u32;
+                    let low = decoder.decode_one(&mut bits)? as u32;
+                    count = RLE_LARGE_DECODE_BASE + (high << 4) + low;
+                    compression_types.push(lastcomp);
+                    count -= 1;
+                } else {
+                    lastcomp = val;
+                    compression_types.push(lastcomp);
+                }
+            }
+        }
+    }
+
+    // Decode per-hunk data from the bitstream
+    let mut entries = Vec::with_capacity(hunk_count as usize);
+    let mut cur_offset = first_offset;
+    let mut last_self = 0u32;
+    let mut last_parent = 0u64;
+
+    for (hunknum, &comp) in compression_types.iter().enumerate() {
+
+        let entry = match comp {
+            COMPRESSION_TYPE_0 | COMPRESSION_TYPE_1 | COMPRESSION_TYPE_2 | COMPRESSION_TYPE_3 => {
+                let length = bits.read(length_bits)?;
+                let crc16 = bits.read(16)? as u16;
+                let offset = cur_offset;
+                cur_offset += length as u64;
+                MapEntry {
+                    compression: comp,
+                    length,
+                    offset,
+                    crc16,
+                }
+            }
+            COMPRESSION_NONE => {
+                let crc16 = bits.read(16)? as u16;
+                let offset = cur_offset;
+                cur_offset += hunk_bytes as u64;
+                MapEntry {
+                    compression: comp,
+                    length: hunk_bytes,
+                    offset,
+                    crc16,
+                }
+            }
+            COMPRESSION_SELF => {
+                let ref_hunk = bits.read(self_bits)?;
+                last_self = ref_hunk;
+                MapEntry {
+                    compression: comp,
+                    length: 0,
+                    offset: ref_hunk as u64,
+                    crc16: 0,
+                }
+            }
+            COMPRESSION_SELF_0 => {
+                MapEntry {
+                    compression: COMPRESSION_SELF,
+                    length: 0,
+                    offset: last_self as u64,
+                    crc16: 0,
+                }
+            }
+            COMPRESSION_SELF_1 => {
+                last_self += 1;
+                MapEntry {
+                    compression: COMPRESSION_SELF,
+                    length: 0,
+                    offset: last_self as u64,
+                    crc16: 0,
+                }
+            }
+            COMPRESSION_PARENT => {
+                let ref_unit = bits.read(parent_bits)?;
+                last_parent = ref_unit as u64;
+                MapEntry {
+                    compression: comp,
+                    length: 0,
+                    offset: ref_unit as u64,
+                    crc16: 0,
+                }
+            }
+            COMPRESSION_PARENT_SELF => {
+                let self_unit = (hunknum as u64 * hunk_bytes as u64) / unit_bytes as u64;
+                last_parent = self_unit;
+                MapEntry {
+                    compression: COMPRESSION_PARENT,
+                    length: 0,
+                    offset: self_unit,
+                    crc16: 0,
+                }
+            }
+            COMPRESSION_PARENT_0 => MapEntry {
+                compression: COMPRESSION_PARENT,
+                length: 0,
+                offset: last_parent,
+                crc16: 0,
+            },
+            COMPRESSION_PARENT_1 => {
+                last_parent += (hunk_bytes / unit_bytes) as u64;
+                MapEntry {
+                    compression: COMPRESSION_PARENT,
+                    length: 0,
+                    offset: last_parent,
+                    crc16: 0,
+                }
+            }
+            _ => return Err(ChdError::MapDecompressionError),
+        };
+        entries.push(entry);
+    }
+
+    // Verify CRC: rebuild raw map and check
+    let raw_map = encode_raw_map(&entries);
+    let computed_crc = crc16_ccitt(&raw_map);
+    if computed_crc != map_crc {
+        return Err(ChdError::MapDecompressionError);
+    }
+
+    Ok(entries)
 }

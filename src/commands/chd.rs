@@ -33,6 +33,10 @@ pub struct ExtractCommand {
 
     /// Output path for extracted files
     pub output: PathBuf,
+
+    /// Optional parent CHD file (for CHDs that reference a parent)
+    #[arg(long, short = 'p', value_name = "PARENT")]
+    pub parent: Option<PathBuf>,
 }
 
 /// Verifies the integrity of a CHD file.
@@ -40,4 +44,12 @@ pub struct ExtractCommand {
 pub struct VerifyCommand {
     /// Input path containing the CHD file
     pub input: PathBuf,
+
+    /// Optional parent CHD file (for CHDs that reference a parent)
+    #[arg(long, short = 'p', value_name = "PARENT")]
+    pub parent: Option<PathBuf>,
+
+    /// Fix incorrect SHA1 values in the header
+    #[arg(long)]
+    pub fix: bool,
 }

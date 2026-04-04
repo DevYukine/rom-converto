@@ -1,4 +1,4 @@
-use crate::chd::convert_to_chd;
+use crate::chd::{convert_to_chd, extract_from_chd, verify_chd};
 use crate::commands::chd::ChdCommands;
 use crate::commands::ctr::CtrCommands;
 use crate::commands::{Cli, Commands, SelfUpdateCommand};
@@ -60,8 +60,12 @@ async fn main() -> Result<()> {
             ChdCommands::Compress(cmd) => {
                 convert_to_chd(pb.clone(), cmd.input_cue, cmd.output, cmd.force).await?
             }
-            ChdCommands::Extract(cmd) => todo!(),
-            ChdCommands::Verify(cmd) => todo!(),
+            ChdCommands::Extract(cmd) => {
+                extract_from_chd(pb.clone(), cmd.input, cmd.output, cmd.parent).await?
+            }
+            ChdCommands::Verify(cmd) => {
+                verify_chd(pb.clone(), cmd.input, cmd.parent, cmd.fix).await?
+            }
         },
         Commands::SelfUpdate(_) => self_update(&mut github).await?,
     }

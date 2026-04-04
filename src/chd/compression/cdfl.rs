@@ -1,5 +1,10 @@
-use crate::chd::compression::flac::{CD_SAMPLE_RATE, Endian, encode_flac_samples, samples_from_bytes};
-use crate::chd::compression::{ChdCompressor, compress_cd_hunk, deflate_compress, tag_to_bytes};
+use crate::chd::compression::flac::{
+    CD_SAMPLE_RATE, Endian, encode_flac_samples, flac_decompress, samples_from_bytes,
+};
+use crate::chd::compression::{
+    ChdCompressor, ChdDecompressor, compress_cd_hunk, decompress_cd_hunk, deflate_compress,
+    deflate_decompress, tag_to_bytes,
+};
 use crate::chd::error::{ChdError, ChdResult};
 
 const CD_CHANNELS: usize = 2;
@@ -31,5 +36,18 @@ impl ChdCompressor for CdFlCompressor {
             },
             deflate_compress,
         )
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CdFlDecompressor;
+
+impl ChdDecompressor for CdFlDecompressor {
+    fn tag_bytes(&self) -> [u8; 4] {
+        tag_to_bytes("cdfl")
+    }
+
+    fn decompress(&self, compressed: &[u8], output_len: usize) -> ChdResult<Vec<u8>> {
+        decompress_cd_hunk(compressed, output_len, flac_decompress, deflate_decompress)
     }
 }

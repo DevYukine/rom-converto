@@ -1,8 +1,8 @@
 use crate::chd::compression::{ChdCompressor, tag_to_bytes};
 use crate::chd::error::ChdResult;
-use liblzma::read::XzEncoder;
+use liblzma::read::{XzDecoder, XzEncoder};
 use liblzma::stream::{LzmaOptions, Stream};
-use std::io::{self, Read};
+use std::io::{self, Cursor, Read};
 
 #[derive(Debug, Clone)]
 pub struct LzmaCompressor;
@@ -44,6 +44,24 @@ pub(crate) fn lzma_compress(data: &[u8]) -> ChdResult<Vec<u8>> {
     let mut output = Vec::with_capacity(encoded.len() - LZMA_UNCOMPRESSED_SIZE_BYTES);
     output.extend_from_slice(&encoded[..LZMA_PROPS_BYTES]);
     output.extend_from_slice(&encoded[LZMA_ALONE_HEADER_BYTES..]);
+    Ok(output)
+}
+
+pub(crate) fn lzma_decompress(data: &[u8], _expected_len: usize) -> ChdResult<Vec<u8>> {
+    if data.len() < LZMA_PROPS_BYTES {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "LZMA data too small").into());
+    }
+
+    // Reconstruct LZMA Alone header: props(5) + uncompressed_size(8, 0xFF = unknown) + compressed_data
+    let mut alone_data = Vec::with_capacity(LZMA_ALONE_HEADER_BYTES + data.len() - LZMA_PROPS_BYTES);
+    alone_data.extend_from_slice(&data[..LZMA_PROPS_BYTES]);
+    alone_data.extend_from_slice(&[0xFF; LZMA_UNCOMPRESSED_SIZE_BYTES]);
+    alone_data.extend_from_slice(&data[LZMA_PROPS_BYTES..]);
+
+    let stream = Stream::new_lzma_decoder(u64::MAX).map_err(io::Error::from)?;
+    let mut decoder = XzDecoder::new_stream(Cursor::new(alone_data), stream);
+    let mut output = Vec::new();
+    decoder.read_to_end(&mut output)?;
     Ok(output)
 }
 

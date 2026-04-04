@@ -1,5 +1,4 @@
-mod map;
-mod metadata;
+pub(crate) mod metadata;
 
 use crate::cd::{FRAME_SIZE, SUBCODE_SIZE};
 use crate::chd::compression::cdfl::CdFlCompressor;
@@ -8,12 +7,13 @@ use crate::chd::compression::cdzl::CdZlCompressor;
 use crate::chd::compression::{ChdCompression, ChdCompressor};
 use crate::chd::cue::models::CueSheet;
 use crate::chd::error::{ChdError, ChdResult};
+use crate::chd::map::{MapEntry, compress_v5_map, crc16_ccitt};
 use crate::chd::models::{CHD_V5_HEADER_SIZE, SHA1_BYTES, ChdHeaderV5, ChdVersion};
-use crate::chd::writer::map::{MapEntry, compress_v5_map, crc16_ccitt};
 use crate::chd::writer::metadata::{MetadataHash, generate_cd_metadata};
+use crate::chd::compute_overall_sha1;
 use binrw::BinWrite;
-use sha1::{Digest, Sha1};
 use log::debug;
+use sha1::{Digest, Sha1};
 use std::io::{Cursor, SeekFrom};
 use std::path::Path;
 use std::sync::Arc;
@@ -209,21 +209,3 @@ impl ChdWriter {
     }
 }
 
-fn compute_overall_sha1(
-    raw_sha1: [u8; SHA1_BYTES],
-    metadata_hashes: &[MetadataHash],
-) -> [u8; SHA1_BYTES] {
-    let mut overall = Sha1::new();
-    overall.update(raw_sha1);
-
-    if !metadata_hashes.is_empty() {
-        let mut hashes = metadata_hashes.to_vec();
-        hashes.sort_by(|a, b| a.tag.cmp(&b.tag).then(a.sha1.cmp(&b.sha1)));
-        for hash in hashes {
-            overall.update(hash.tag);
-            overall.update(hash.sha1);
-        }
-    }
-
-    overall.finalize().into()
-}
