@@ -1,8 +1,9 @@
+use crate::cd::CD_HUNK_BYTES;
 use crate::chd::compression::{ChdCompressor, tag_to_bytes};
 use crate::chd::error::ChdResult;
-use liblzma::read::{XzDecoder, XzEncoder};
-use liblzma::stream::{LzmaOptions, Stream};
-use std::io::{self, Cursor, Read};
+use lzma_sdk_sys::*;
+use std::io;
+use std::ptr;
 
 #[derive(Debug, Clone)]
 pub struct LzmaCompressor;
@@ -21,83 +22,101 @@ impl ChdCompressor for LzmaCompressor {
     }
 }
 
-const LZMA_LEVEL: u32 = 8;
-const LZMA_PROPS_BYTES: usize = 5;
-const LZMA_UNCOMPRESSED_SIZE_BYTES: usize = 8;
-const LZMA_ALONE_HEADER_BYTES: usize = LZMA_PROPS_BYTES + LZMA_UNCOMPRESSED_SIZE_BYTES;
+const LZMA_LEVEL: i32 = 8;
 
-/// Creates LZMA encoder options matching chdman's configure_properties.
-fn lzma_options(data_len: usize) -> io::Result<LzmaOptions> {
-    let mut options = LzmaOptions::new_preset(LZMA_LEVEL).map_err(io::Error::from)?;
-    // Match chdman: reduceSize = hunkbytes, which limits dict to input size
-    // liblzma doesn't have reduceSize directly, but we can set dict_size to match
-    // what LzmaEncProps_Normalize would compute for the given data length
-    // Match MAME's LzmaEncProps_Normalize: find smallest dict that fits data
-    // MAME loops: for i in 11..=30: if reduceSize <= 2<<i or 3<<i, use that
-    let dict_size = lzma_dict_size_for_reduce(data_len as u32);
-    options.dict_size(dict_size);
-    Ok(options)
+/// Configure LZMA encoder properties matching chdman's configure_properties.
+/// Uses hunk_bytes as reduceSize (matching chdman which passes hunkbytes, not base data length).
+fn configure_props(hunk_bytes: usize) -> CLzmaEncProps {
+    unsafe {
+        let mut props = CLzmaEncProps::default();
+        LzmaEncProps_Init(&mut props);
+        props.level = LZMA_LEVEL;
+        props.reduceSize = hunk_bytes as u64;
+        LzmaEncProps_Normalize(&mut props);
+        props
+    }
 }
 
-/// Get the 5-byte LZMA properties for a given data length.
-/// Used by the decompressor to reconstruct the encoder properties.
-fn lzma_props_for_len(data_len: usize) -> io::Result<Vec<u8>> {
-    let options = lzma_options(data_len)?;
-    let stream = Stream::new_lzma_encoder(&options).map_err(io::Error::from)?;
-    // Encode empty data to get the props from the LZMA Alone header
-    let mut encoder = XzEncoder::new_stream(&[][..], stream);
-    let mut header = Vec::new();
-    encoder.read_to_end(&mut header)?;
-    if header.len() < LZMA_PROPS_BYTES {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "Failed to get LZMA props"));
-    }
-    Ok(header[..LZMA_PROPS_BYTES].to_vec())
+/// Encode the 5-byte LZMA properties from configured props.
+fn encode_props(props: &CLzmaEncProps) -> [u8; LZMA_PROPS_SIZE as usize] {
+    let dict_size = unsafe { LzmaEncProps_GetDictSize(props) };
+    let byte0 = ((props.pb * 5 + props.lp) * 9 + props.lc) as u8;
+    let mut out = [0u8; LZMA_PROPS_SIZE as usize];
+    out[0] = byte0;
+    out[1..5].copy_from_slice(&dict_size.to_le_bytes());
+    out
 }
 
 pub(crate) fn lzma_compress(data: &[u8]) -> ChdResult<Vec<u8>> {
-    let options = lzma_options(data.len()).map_err(io::Error::from)?;
+    let props = configure_props(CD_HUNK_BYTES as usize);
+    let alloc = Allocator::default();
 
-    let stream = Stream::new_lzma_encoder(&options).map_err(io::Error::from)?;
-    let mut encoder = XzEncoder::new_stream(data, stream);
-    let mut encoded = Vec::new();
-    encoder.read_to_end(&mut encoded)?;
+    // Output buffer: compressed data can't be much larger than input
+    let max_out = data.len() + data.len() / 3 + 128;
+    let mut compressed = vec![0u8; max_out];
+    let mut compressed_size = max_out as SizeT;
+    let mut props_encoded = [0u8; LZMA_PROPS_SIZE as usize];
+    let mut props_size = LZMA_PROPS_SIZE as SizeT;
 
-    if encoded.len() < LZMA_ALONE_HEADER_BYTES {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "LZMA output too small").into());
+    let res = unsafe {
+        LzmaEncode(
+            compressed.as_mut_ptr(),
+            &mut compressed_size,
+            data.as_ptr(),
+            data.len() as SizeT,
+            &props,
+            props_encoded.as_mut_ptr(),
+            &mut props_size,
+            0, // writeEndMark = false
+            ptr::null(),
+            alloc.as_ref(),
+            alloc.as_ref(),
+        )
+    };
+
+    if res != SZ_OK as i32 {
+        return Err(io::Error::other(
+            format!("LZMA encode failed with code {res}"),
+        )
+        .into());
     }
 
-    // Strip the entire LZMA Alone header (props + uncompressed size) — just raw compressed data
-    // chdman stores no props per-hunk; the decompressor reconstructs them from codec settings
-    Ok(encoded[LZMA_ALONE_HEADER_BYTES..].to_vec())
-}
-
-/// Match MAME's LzmaEncProps_Normalize dict size selection.
-/// For a given reduceSize, finds the smallest dict from the sequence 2<<i, 3<<i (i=11..30).
-fn lzma_dict_size_for_reduce(reduce_size: u32) -> u32 {
-    for i in 11..=30u32 {
-        if reduce_size <= 2u32.wrapping_shl(i) {
-            return 2u32.wrapping_shl(i);
-        }
-        if reduce_size <= 3u32.wrapping_shl(i) {
-            return 3u32.wrapping_shl(i);
-        }
-    }
-    reduce_size
+    compressed.truncate(compressed_size as usize);
+    Ok(compressed)
 }
 
 pub(crate) fn lzma_decompress(data: &[u8], expected_len: usize) -> ChdResult<Vec<u8>> {
-    // Reconstruct LZMA Alone header: props(5) + uncompressed_size(8) + compressed_data
-    // Props are derived from the same settings used during compression
-    let props = lzma_props_for_len(expected_len)?;
+    // Reconstruct the same props that were used during compression (hunk_bytes, not data length)
+    let props = configure_props(CD_HUNK_BYTES as usize);
+    let props_encoded = encode_props(&props);
+    let alloc = Allocator::default();
 
-    let mut alone_data = Vec::with_capacity(LZMA_ALONE_HEADER_BYTES + data.len());
-    alone_data.extend_from_slice(&props);
-    alone_data.extend_from_slice(&[0xFF; LZMA_UNCOMPRESSED_SIZE_BYTES]);
-    alone_data.extend_from_slice(data);
+    let mut dest = vec![0u8; expected_len];
+    let mut dest_len = expected_len as SizeT;
+    let mut src_len = data.len() as SizeT;
+    let mut status = ELzmaStatus::LZMA_STATUS_NOT_SPECIFIED;
 
-    let stream = Stream::new_lzma_decoder(u64::MAX).map_err(io::Error::from)?;
-    let mut decoder = XzDecoder::new_stream(Cursor::new(alone_data), stream);
-    let mut output = Vec::new();
-    decoder.read_to_end(&mut output)?;
-    Ok(output)
+    let res = unsafe {
+        LzmaDecode(
+            dest.as_mut_ptr(),
+            &mut dest_len,
+            data.as_ptr(),
+            &mut src_len,
+            props_encoded.as_ptr(),
+            LZMA_PROPS_SIZE,
+            ELzmaFinishMode::LZMA_FINISH_END,
+            &mut status,
+            alloc.as_ref(),
+        )
+    };
+
+    if res != SZ_OK as i32 {
+        return Err(io::Error::other(
+            format!("LZMA decode failed with code {res}"),
+        )
+        .into());
+    }
+
+    dest.truncate(dest_len as usize);
+    Ok(dest)
 }

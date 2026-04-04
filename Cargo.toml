@@ -46,7 +46,7 @@ bytes = "^1.11"
 tower = { version = "^0.5", features = ["util", "limit"] }
 const_format = "^0.2"
 flate2 = "^1.1"
-liblzma = { version = "^0.4", features = ["parallel"] }
+lzma-sdk-sys = "^0.1"
 flacenc = "^0.5"
 claxon = "^0.4"
 zstd = "^0.13"
