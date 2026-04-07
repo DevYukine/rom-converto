@@ -14,7 +14,7 @@ pub enum CtrCommands {
 /// Convert CDN content to CIA format
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
-    long_about = "Convert CDN content to CIA format\n\nNote: By default the output CIA file is encrypted, if you want to decrypt it after conversion, use the --decrypt flag"
+    long_about = "Convert CDN content to CIA format\n\nNote: By default the output CIA file is encrypted, if you want to decrypt it after conversion, use the --decrypt flag\nYou can also use the --compress flag to compress the CIA into Z3DS format (.zcia) after conversion, this requires the CIA to be decrypted first"
 )]
 pub struct CdnToCiaCommand {
     /// Path to the CDN content directory
@@ -61,6 +61,15 @@ pub struct CdnToCiaCommand {
         default_value = "false"
     )]
     pub decrypt: bool,
+
+    #[arg(
+        value_name = "COMPRESS",
+        long,
+        short = 'Z',
+        help = "compresses the CIA file into Z3DS format (.zcia) after conversion, requires the CIA to be decrypted",
+        default_value = "false"
+    )]
+    pub compress: bool,
 }
 
 /// Generate a Ticket file from CDN content

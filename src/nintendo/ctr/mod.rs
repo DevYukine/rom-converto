@@ -8,6 +8,7 @@ use crate::nintendo::ctr::models::title_metadata::TitleMetadata;
 use crate::nintendo::ctr::title_key::generate_title_key;
 use crate::nintendo::ctr::util::fs::{find_title_file, find_tmd_file};
 use crate::nintendo::ctr::z3ds::models::underlying_magic;
+use crate::nintendo::ctr::z3ds::{compress_rom, derive_compressed_path};
 use anyhow::Result;
 use binrw::BinRead;
 use futures::TryFutureExt;
@@ -298,6 +299,16 @@ async fn convert_cdn_to_cia_single(cmd: CdnToCiaCommand) -> Result<()> {
         fs::rename(&decrypted_cia_path, &output).await?;
 
         debug!("Deleted original encrypted CIA file: {}", output.display());
+    }
+
+    if cmd.compress {
+        let compressed_path = derive_compressed_path(&output);
+
+        compress_rom(&output, &compressed_path).await?;
+
+        fs::remove_file(&output).await?;
+
+        debug!("Deleted intermediate CIA file: {}", output.display());
     }
 
     if cmd.cleanup {
