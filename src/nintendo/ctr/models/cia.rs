@@ -77,8 +77,13 @@ fn write_cert_chain<W: Write + Seek>(
     }
     let cert_written = writer.stream_position()? - cert_start;
     if cert_written < cert_chain_size as u64 {
-        let padding_needed = cert_chain_size as u64 - cert_written;
-        writer.write_all(&vec![0u8; padding_needed as usize])?;
+        let mut padding_needed = (cert_chain_size as u64 - cert_written) as usize;
+        const ZERO_BUF: [u8; 256] = [0u8; 256];
+        while padding_needed > 0 {
+            let chunk = padding_needed.min(ZERO_BUF.len());
+            writer.write_all(&ZERO_BUF[..chunk])?;
+            padding_needed -= chunk;
+        }
     }
     Ok(())
 }
@@ -105,8 +110,8 @@ pub struct CiaFileWithoutContent {
 
 impl CiaFile {
     pub fn apply_content_indexes(&mut self) {
-        for (i, _) in self.tmd.content_chunk_records.iter().enumerate() {
-            self.header.set_content_index(i);
+        for record in &self.tmd.content_chunk_records {
+            self.header.set_content_index(record.content_index as usize);
         }
     }
 }

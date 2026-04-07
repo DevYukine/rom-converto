@@ -38,11 +38,14 @@ pub async fn decrypt_from_encrypted_cia(
 
     // 3) Update Hashes and set content_type to unencrypted
 
+    let parent = input.parent().unwrap_or_else(|| Path::new("."));
+    let stem = input
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| anyhow::anyhow!("input path has no valid filename stem"))?;
+
     for content_chunk_record in &mut decrypted_cia.tmd.content_chunk_records {
         content_chunk_record.content_type.set_encrypted(false);
-
-        let parent = input.parent().unwrap_or_else(|| Path::new("."));
-        let stem = input.file_stem().unwrap().to_str().unwrap();
 
         let new_file_name = format!(
             "{stem}.{index}.{id:08x}.ncch",
@@ -86,7 +89,9 @@ pub async fn decrypt_from_encrypted_cia(
             .content_command_count
             .write_be(&mut cursor)?;
         // then raw hash bytes
-        cursor.get_mut().extend(content_info_record.hash.clone());
+        cursor
+            .get_mut()
+            .extend_from_slice(&content_info_record.hash);
 
         hasher.update(cursor.get_ref());
     }
@@ -101,9 +106,6 @@ pub async fn decrypt_from_encrypted_cia(
     out_writer.write_all(data.get_ref()).await?;
 
     for content_chunk_record in decrypted_cia.tmd.content_chunk_records {
-        let parent = input.parent().unwrap_or_else(|| Path::new("."));
-        let stem = input.file_stem().unwrap().to_str().unwrap();
-
         let new_file_name = format!(
             "{stem}.{index}.{id:08x}.ncch",
             stem = stem,

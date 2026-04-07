@@ -20,7 +20,13 @@ pub fn pad_to_align_64(aligned_pos: u64, writer: &mut (impl Write + Seek)) -> Bi
     if aligned_pos > writer.stream_position()? {
         // Write padding
         let padding_size = (aligned_pos - writer.stream_position()?) as usize;
-        writer.write_all(&vec![0u8; padding_size])?;
+        const ZERO_BUF: [u8; 64] = [0u8; 64];
+        let mut remaining = padding_size;
+        while remaining > 0 {
+            let chunk = remaining.min(ZERO_BUF.len());
+            writer.write_all(&ZERO_BUF[..chunk])?;
+            remaining -= chunk;
+        }
     }
 
     Ok(())

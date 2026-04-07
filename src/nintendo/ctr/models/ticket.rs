@@ -97,7 +97,7 @@ pub struct ContentIndex {
     pub total_size: u32,
 
     /// The data of the content index, which is usually at least 20 bytes long.
-    #[br(count = total_size.checked_sub(8).expect("invalid size") as usize)]
+    #[br(count = total_size.saturating_sub(8) as usize)]
     pub data: Vec<u8>,
 }
 

@@ -6,8 +6,9 @@ use byteorder::{BigEndian, ByteOrder, LittleEndian};
 
 use crate::nintendo::ctr::constants::{
     CTR_COMMON_KEYS_HEX, CTR_KEY_SCRAMBLE_C, CTR_KEYS_0, CTR_KEYS_1, CTR_MEDIA_UNIT_SIZE,
-    CTR_NCSD_PARTITIONS, EXEFS_ENTRY_SIZE, EXEFS_HEADER_SIZE, EXEFS_MAX_FILE_ENTRIES,
-    NCCH_FLAGS_EXTRA_CRYPTO_INDEX, NCCH_FLAGS_OFFSET, NCCH_FLAGS7_FIXED_KEY, NCCH_FLAGS7_NOCRYPTO,
+    CTR_NCSD_PARTITIONS, CTR_SEED_COUNTRIES, EXEFS_ENTRY_SIZE, EXEFS_HEADER_SIZE,
+    EXEFS_MAX_FILE_ENTRIES, NCCH_FLAGS_EXTRA_CRYPTO_INDEX, NCCH_FLAGS_OFFSET,
+    NCCH_FLAGS7_CRYPTO_METHOD, NCCH_FLAGS7_FIXED_KEY, NCCH_FLAGS7_NOCRYPTO,
     NCCH_FLAGS7_SEED_CRYPTO, TICKET_COMMON_KEY_IDX_OFFSET, TICKET_SIG_BODY_OFFSET,
     TICKET_TITLE_ID_OFFSET, TICKET_TITLE_KEY_OFFSET, TMD_CONTENT_COUNT_OFFSET,
     TMD_CONTENT_RECORD_SIZE, TMD_CONTENT_RECORDS_OFFSET,
@@ -15,10 +16,11 @@ use crate::nintendo::ctr::constants::{
 use crate::nintendo::ctr::decrypt::model::{CiaContent, NcchSection};
 use crate::nintendo::ctr::decrypt::reader::CiaReader;
 use crate::nintendo::ctr::decrypt::util::{cbc_decrypt, gen_iv};
-use crate::nintendo::ctr::models::cia::CiaHeader;
+use crate::nintendo::ctr::models::cia::{CIA_HEADER_SIZE, CiaHeader};
 use crate::nintendo::ctr::models::exe_fs_header::ExeFSHeader;
 use crate::nintendo::ctr::models::ncch_header::NcchHeader;
 use crate::nintendo::ctr::models::seeddb::SeedDatabase;
+use crate::nintendo::ctr::models::title_metadata::ContentChunkRecord;
 use crate::nintendo::ctr::util::align_64;
 use anyhow::{Context, anyhow};
 use binrw::BinRead;
@@ -65,7 +67,9 @@ async fn advance_to_offset(
         cia.read(&mut buf)
             .await
             .context("reading gap bytes before section")?;
-        if writer.stream_position().await? == 512 {
+        // At NCCH header boundary (0x200), clear the second byte to fix
+        // the content-index field after decryption
+        if writer.stream_position().await? == EXEFS_HEADER_SIZE as u64 {
             buf[1] = 0x00;
         }
         writer
@@ -94,12 +98,10 @@ async fn copy_plain_section(
     }
 
     if remaining_bytes > 0 {
-        buf = vec![0u8; remaining_bytes as usize];
-        cia.read(&mut buf)
-            .await
-            .context("reading final plain chunk")?;
+        let tail = &mut buf[..remaining_bytes as usize];
+        cia.read(tail).await.context("reading final plain chunk")?;
         writer
-            .write_all(&buf)
+            .write_all(tail)
             .await
             .context("writing final plain chunk")?;
     }
@@ -179,10 +181,8 @@ async fn write_exefs_section(
                     if exe_info.file_name[..=name_end] != icon
                         && exe_info.file_name[..=name_end] != banner
                     {
-                        decrypted_exefs.splice(
-                            offset..offset + size,
-                            extra_decrypted[offset..offset + size].iter().cloned(),
-                        );
+                        decrypted_exefs[offset..offset + size]
+                            .copy_from_slice(&extra_decrypted[offset..offset + size]);
                     }
                 }
                 _ => {
@@ -234,16 +234,14 @@ async fn write_romfs_section(
     }
 
     if remaining_bytes > 0 {
-        buf = vec![0u8; remaining_bytes as usize];
-        cia.read(&mut buf)
-            .await
-            .context("reading final RomFS chunk")?;
+        let tail = &mut buf[..remaining_bytes as usize];
+        cia.read(tail).await.context("reading final RomFS chunk")?;
         if cia.cidx > 0 && !(cia.single_ncch || cia.from_ncsd) {
-            buf[1] ^= cia.cidx as u8;
+            tail[1] ^= cia.cidx as u8;
         }
-        ctr_cipher.apply_keystream(&mut buf);
+        ctr_cipher.apply_keystream(tail);
         writer
-            .write_all(&buf)
+            .write_all(tail)
             .await
             .context("writing final RomFS chunk")?;
     }
@@ -291,10 +289,8 @@ async fn fetch_seed(title_id: &str) -> anyhow::Result<[u8; 16]> {
             .expect("Failed to create HTTP client");
     }
 
-    let countries = ["JP", "US", "GB", "KR", "TW", "AU", "NZ"];
-
     // Build a future for each country, returning Ok(bytes) on 200 or Err otherwise
-    let requests = countries.iter().map(|&country| {
+    let requests = CTR_SEED_COUNTRIES.iter().map(|&country| {
         let client = &*CLIENT;
         debug!("Fetching seed for {country} ({title_id})");
         let url = format!(
@@ -402,9 +398,9 @@ async fn get_new_key(key_y: u128, header: &NcchHeader, title_id: String) -> anyh
     lazy_static! {
         static ref SEEDS: HashMap<String, [u8; 16]> = {
             let db_path = Path::new("seeddb.bin");
-            if let Ok(data) = std::fs::read(db_path) {
-                let seeddb =
-                    SeedDatabase::read(&mut Cursor::new(data)).expect("failed to parse seeddb.bin");
+            if let Ok(data) = std::fs::read(db_path)
+                && let Ok(seeddb) = SeedDatabase::read(&mut Cursor::new(data))
+            {
                 debug!("Loading {} seeds from seeddb.bin", seeddb.seed_count);
                 seeddb
                     .seeds
@@ -437,7 +433,9 @@ async fn get_new_key(key_y: u128, header: &NcchHeader, title_id: String) -> anyh
         }
     }
 
-    Ok(0)
+    Err(anyhow!(
+        "Seed verification failed: SHA256 mismatch for title {title_id}"
+    ))
 }
 
 pub async fn parse_ncch(
@@ -500,14 +498,15 @@ pub async fn parse_ncch(
         debug!("Uses 9.6 NCCH Seed crypto with KeyY: {key_y:032X}");
     }
 
-    let mut base: String;
-    let file_name = cia.path.file_name().unwrap().to_string_lossy();
-
-    if cia.single_ncch || cia.from_ncsd {
-        base = file_name.strip_suffix(".3ds").unwrap().to_string();
-    } else {
-        base = file_name.strip_suffix(".cia").unwrap().to_string();
-    }
+    let file_name = cia
+        .path
+        .file_name()
+        .ok_or_else(|| anyhow!("input path has no filename"))?
+        .to_string_lossy();
+    let base_stem = file_name
+        .rsplit_once('.')
+        .map(|(stem, _)| stem)
+        .unwrap_or(&file_name);
 
     let absolute_path = cia.path.canonicalize()?;
     let final_path = if cfg!(windows) && absolute_path.to_string_lossy().starts_with(r"\\?\") {
@@ -515,22 +514,25 @@ pub async fn parse_ncch(
     } else {
         absolute_path
     };
-    let parent_dir = final_path.parent().unwrap();
+    let parent_dir = final_path
+        .parent()
+        .ok_or_else(|| anyhow!("input path has no parent directory"))?;
 
-    base = format!(
-        "{}/{}.{}.{:08X}.ncch",
-        parent_dir.display(),
-        base,
-        if cia.from_ncsd {
-            CTR_NCSD_PARTITIONS[cia.cidx as usize].to_string()
-        } else {
-            cia.cidx.to_string()
-        },
+    let partition_label = if cia.from_ncsd {
+        CTR_NCSD_PARTITIONS[cia.cidx as usize].to_string()
+    } else {
+        cia.cidx.to_string()
+    };
+
+    let ncch_path = parent_dir.join(format!(
+        "{base_stem}.{partition_label}.{:08X}.ncch",
         cia.content_id
-    );
+    ));
 
-    let mut ncch: File = File::create(base.clone()).await?;
-    tmp[NCCH_FLAGS_OFFSET + 7] = tmp[NCCH_FLAGS_OFFSET + 7] & 2 | NCCH_FLAGS7_NOCRYPTO;
+    let mut ncch: File = File::create(&ncch_path).await?;
+    // Preserve the crypto-method bit, set the NoCrypto flag (content is now decrypted)
+    tmp[NCCH_FLAGS_OFFSET + 7] =
+        tmp[NCCH_FLAGS_OFFSET + 7] & NCCH_FLAGS7_CRYPTO_METHOD | NCCH_FLAGS7_NOCRYPTO;
 
     ncch.write_all(&tmp).await?;
     let mut counter: [u8; 16];
@@ -602,10 +604,9 @@ pub async fn parse_and_decrypt_cia(input: &Path, partition: Option<u8>) -> anyho
 
     let mut rom_file = File::open(input).await?;
 
-    let mut data = Vec::new();
-    rom_file.read_to_end(&mut data).await?;
-    let mut cursor = Cursor::new(data);
-    let cia_header = CiaHeader::read(&mut cursor)?;
+    let mut header_buf = vec![0u8; CIA_HEADER_SIZE as usize];
+    rom_file.read_exact(&mut header_buf).await?;
+    let cia_header = CiaHeader::read_le(&mut Cursor::new(&header_buf))?;
 
     let cachainoff = align_64(cia_header.header_size as u64);
     let tikoff = align_64(cachainoff + cia_header.cert_chain_size as u64);
@@ -657,15 +658,15 @@ pub async fn parse_and_decrypt_cia(input: &Path, partition: Option<u8>) -> anyho
                 tmdoff + TMD_CONTENT_RECORDS_OFFSET + (TMD_CONTENT_RECORD_SIZE * i as u64),
             ))
             .await?;
-        // read the 16-byte content record once
-        let mut cbuffer: [u8; 40] = [0; 40];
-        rom_file.read_exact(&mut cbuffer).await?;
+        let mut record_buf = vec![0u8; TMD_CONTENT_RECORD_SIZE as usize];
+        rom_file.read_exact(&mut record_buf).await?;
+        let record = ContentChunkRecord::read_be(&mut Cursor::new(&record_buf))?;
 
         let content = CiaContent {
-            cid: BigEndian::read_u32(&cbuffer[0..4]),
-            cidx: BigEndian::read_u16(&cbuffer[4..6]),
-            ctype: BigEndian::read_u16(&cbuffer[6..8]),
-            csize: BigEndian::read_u64(&cbuffer[8..16]),
+            cid: record.content_id,
+            cidx: record.content_index,
+            ctype: record.content_type.0,
+            csize: record.content_size,
         };
 
         let cenc = (content.ctype & 1) != 0;
@@ -673,18 +674,18 @@ pub async fn parse_and_decrypt_cia(input: &Path, partition: Option<u8>) -> anyho
         rom_file
             .seek(SeekFrom::Start(contentoffs + next_content_offs))
             .await?;
-        let mut test: [u8; 512] = [0; 512];
-        rom_file.read_exact(&mut test).await?;
-        let mut search: [u8; 4] = test[256..260].try_into()?;
+        let mut probe_buf: [u8; 512] = [0; 512];
+        rom_file.read_exact(&mut probe_buf).await?;
+        let mut magic: [u8; 4] = probe_buf[256..260].try_into()?;
 
         let iv: [u8; 16] = gen_iv(content.cidx);
 
         if cenc {
-            cbc_decrypt(&title_key, &iv, &mut test)?;
-            search = test[256..260].try_into()?;
+            cbc_decrypt(&title_key, &iv, &mut probe_buf)?;
+            magic = probe_buf[256..260].try_into()?;
         }
 
-        match std::str::from_utf8(&search) {
+        match std::str::from_utf8(&magic) {
             Ok(utf8) => {
                 if utf8 == "NCCH" {
                     rom_file

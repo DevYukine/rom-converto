@@ -96,17 +96,20 @@ pub async fn convert_cdn_to_cia(cmd: CdnToCiaCommand) -> Result<()> {
 }
 
 async fn convert_cdn_to_cia_single(cmd: CdnToCiaCommand) -> Result<()> {
-    let output = cmd.output.unwrap_or_else(|| {
-        let name = cmd
-            .cdn_dir
-            .file_name()
-            .and_then(|name| name.to_str())
-            .map(|name| format!("{name}.cia"))
-            .unwrap();
+    let output = match cmd.output {
+        Some(path) => path,
+        None => {
+            let name = cmd
+                .cdn_dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| format!("{name}.cia"))
+                .ok_or_else(|| anyhow::anyhow!("CDN directory path has no name"))?;
 
-        let parent = cmd.cdn_dir.parent().unwrap_or_else(|| Path::new("."));
-        parent.join(name)
-    });
+            let parent = cmd.cdn_dir.parent().unwrap_or_else(|| Path::new("."));
+            parent.join(name)
+        }
+    };
 
     let cdn_dir = &cmd.cdn_dir;
 
@@ -160,7 +163,7 @@ async fn convert_cdn_to_cia_single(cmd: CdnToCiaCommand) -> Result<()> {
     info!("✅ Successfully created CIA file {}", output.display());
 
     if cmd.decrypt {
-        let decrypted_cia_path = output.with_extension("-decrypted.cia");
+        let decrypted_cia_path = output.with_extension("decrypted.cia");
 
         decrypt_cia(&output, &decrypted_cia_path).await?;
 

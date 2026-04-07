@@ -48,6 +48,7 @@ pub const CTR_MEDIA_UNIT_SIZE: u32 = 512;
 pub const NCCH_MAGIC_OFFSET: usize = 0x100;
 pub const NCCH_FLAGS_OFFSET: usize = 0x188;
 pub const NCCH_FLAGS7_FIXED_KEY: u8 = 0x01;
+pub const NCCH_FLAGS7_CRYPTO_METHOD: u8 = 0x02;
 pub const NCCH_FLAGS7_NOCRYPTO: u8 = 0x04;
 pub const NCCH_FLAGS7_SEED_CRYPTO: u8 = 0x20;
 pub const NCCH_FLAGS_EXTRA_CRYPTO_INDEX: usize = 3;
@@ -82,3 +83,6 @@ pub const CERT_SIG_TYPE_MAX: u32 = 0x010005;
 
 // Title key derivation
 pub const CTR_TITLE_KEY_PBKDF2_ITERATIONS: u32 = 20;
+
+// Seed fetch countries for NCCH seed crypto
+pub const CTR_SEED_COUNTRIES: [&str; 7] = ["JP", "US", "GB", "KR", "TW", "AU", "NZ"];
