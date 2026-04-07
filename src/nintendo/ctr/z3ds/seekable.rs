@@ -1,6 +1,6 @@
 use crate::nintendo::ctr::z3ds::error::Z3dsResult;
 
-/// Seekable zstd seek table — appended as a ZSTD skippable frame.
+/// Seek table appended at the end of seekable-zstd output as a ZSTD skippable frame.
 ///
 /// Format (all little-endian):
 ///   u32  skippable magic  0x184D2A5E
@@ -9,7 +9,7 @@ use crate::nintendo::ctr::z3ds::error::Z3dsResult;
 ///     u32  compressed_size
 ///     u32  decompressed_size
 ///   u32  number_of_frames
-///   u8   seek_table_descriptor  (0x00 — no checksums)
+///   u8   seek_table_descriptor  (0x00, no checksums)
 ///   u32  seekable magic    0x8F92EAB1
 pub const FRAME_SIZE_CIA: usize = 32 * 1024 * 1024; // 32 MB
 pub const FRAME_SIZE_DEFAULT: usize = 256 * 1024; // 256 KB
@@ -66,7 +66,7 @@ pub fn encode_seekable(data: &[u8], max_frame_size: usize, level: i32) -> Z3dsRe
 /// Decompress seekable-zstd data back to the original bytes.
 ///
 /// Strips the seek table skippable frame (if present) then decompresses all
-/// remaining ZSTD frames sequentially — the standard zstd library handles
+/// remaining ZSTD frames sequentially. The standard zstd library handles
 /// multiple concatenated frames natively.
 pub fn decode_seekable(data: &[u8]) -> Z3dsResult<Vec<u8>> {
     let payload = strip_seek_table(data);
@@ -169,7 +169,7 @@ mod tests {
 
     #[test]
     fn round_trip_exact_frame_boundary() {
-        // Data length is exactly 4x the frame size — produces 4 even frames.
+        // Data length is exactly 4x the frame size, so this produces 4 even frames.
         let original = vec![0xABu8; 1024];
         let encoded = encode_seekable(&original, 256, 0).unwrap();
         let decoded = decode_seekable(&encoded).unwrap();
@@ -198,7 +198,7 @@ mod tests {
 
     #[test]
     fn round_trip_large_patterned_data() {
-        // 1 MB of a repeating pattern — exercises multi-frame paths and real compression.
+        // 1 MB of a repeating pattern. Exercises multi-frame paths and real compression.
         let original: Vec<u8> = (0u8..=255).cycle().take(1024 * 1024).collect();
         let encoded = encode_seekable(&original, FRAME_SIZE_DEFAULT, 0).unwrap();
         let decoded = decode_seekable(&encoded).unwrap();
@@ -209,7 +209,7 @@ mod tests {
 
     #[test]
     fn round_trip_incompressible_data() {
-        // High-entropy bytes that compress poorly — must still round-trip correctly.
+        // High-entropy bytes that compress poorly, but must still round-trip correctly.
         // Built with a simple LCG so the test is deterministic and dependency-free.
         let mut state: u64 = 0xDEADBEEFCAFEBABE;
         let original: Vec<u8> = (0..4096)
@@ -264,7 +264,7 @@ mod tests {
 
     #[test]
     fn strip_seek_table_leaves_plain_zstd_unchanged() {
-        // Plain single zstd frame (no seek table) — strip_seek_table must not corrupt it.
+        // Plain single zstd frame with no seek table. strip_seek_table must not corrupt it.
         let original = b"plain zstd, no seek table";
         let plain = zstd::encode_all(original.as_slice(), 0).unwrap();
         let stripped = strip_seek_table(&plain);

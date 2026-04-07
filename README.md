@@ -42,7 +42,7 @@ Built for developers, tinkerers and archivists.
 
 > **`decrypt-cia`:** Place a `seeddb.bin` file next to the executable to resolve seeds locally. If none is found, the tool will fetch the required seed from Nintendo's API.
 
-> **`compress` / `decompress`:** Supported input formats for compression: `.cia`, `.cci`, `.3ds`, `.cxi`, `.3dsx`. Output files use the Z3DS format (`.zcia`, `.zcci`, `.zcxi`, `.z3dsx`). Compression requires a decrypted ROM — encrypted ROMs have near-zero compression ratios. The output file path defaults to the input path with the extension updated automatically.
+> **`compress` / `decompress`:** Supported input formats for compression: `.cia`, `.cci`, `.3ds`, `.cxi`, `.3dsx`. Output files use the Z3DS format (`.zcia`, `.zcci`, `.zcxi`, `.z3dsx`). Compression only works on decrypted ROMs, since encrypted ROMs have near-zero compression ratios. The output file path defaults to the input path with the extension updated automatically.
 
 ---
 

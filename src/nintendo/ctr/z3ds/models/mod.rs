@@ -15,13 +15,13 @@ pub mod underlying_magic {
     pub const THREEDSX: [u8; 4] = *b"3DSX";
 }
 
-/// Z3DS file header — 0x20 bytes, little-endian.
+/// Z3DS file header (0x20 bytes, little-endian).
 #[derive(Debug, Clone, BinRead, BinWrite)]
 #[brw(little, magic = b"Z3DS")]
 pub struct Z3dsHeader {
     /// Magic of the original uncompressed ROM (e.g. "NCSD", "NCCH", "3DSX", "CIA\0").
     pub underlying_magic: [u8; 4],
-    /// Format version — must be 0x01.
+    /// Format version, must be 0x01.
     pub version: u8,
     /// Reserved, must be zero.
     pub reserved: u8,
@@ -317,7 +317,7 @@ mod tests {
         let md = Z3dsMetadata::new(vec![Z3dsMetadataItem::new_str("a", "1")]);
         let mut bytes = md.to_bytes().unwrap();
 
-        // Append extra garbage after the padding — the parser must stop at TYPE_END
+        // Append extra garbage after the padding. The parser must stop at TYPE_END
         // and ignore everything after it.
         bytes.extend_from_slice(&[0x01, 0x05, 0x00, 0x00, b'e', b'x', b't', b'r', b'a']);
 

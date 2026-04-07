@@ -17,7 +17,7 @@ pub enum Z3dsError {
     #[error("unsupported Z3DS version: {0}")]
     UnsupportedVersion(u8),
 
-    #[error("input ROM appears to be encrypted — only decrypted ROMs can be compressed")]
+    #[error("input ROM appears to be encrypted, only decrypted ROMs can be compressed")]
     InputNotDecrypted,
 
     #[error("unsupported input format: {0}")]

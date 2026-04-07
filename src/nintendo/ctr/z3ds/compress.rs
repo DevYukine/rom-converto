@@ -204,7 +204,7 @@ mod tests {
         if decrypted {
             data[offset + 0x18F] = 0x04; // NoCrypto bit set
         }
-        // (encrypted: flags[7] stays 0x00 — NoCrypto bit is clear)
+        // (encrypted: flags[7] stays 0x00, NoCrypto bit is clear)
         data
     }
 
@@ -343,7 +343,7 @@ mod tests {
 
     #[test]
     fn dispatch_3dsx_always_passes() {
-        // 3DSX has no encryption — any content is accepted.
+        // 3DSX has no encryption, so any content is accepted.
         let data = vec![0xFFu8; 128];
         assert!(check_not_encrypted(&data, "3dsx").is_ok());
     }

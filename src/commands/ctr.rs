@@ -93,14 +93,14 @@ pub struct DecryptCiaCommand {
 /// Compresses a decrypted 3DS ROM to the Z3DS format
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
-    long_about = "Compress a decrypted 3DS ROM to the Z3DS format\n\nSupported input formats: .cia, .cci, .3ds, .cxi, .3dsx\nOutput extensions: .zcia, .zcci, .zcxi, .z3dsx\n\nNote: only decrypted ROMs can be compressed — encrypted ROMs have near-zero compression ratios."
+    long_about = "Compress a decrypted 3DS ROM to the Z3DS format\n\nSupported input formats: .cia, .cci, .3ds, .cxi, .3dsx\nOutput extensions: .zcia, .zcci, .zcxi, .z3dsx\n\nNote: only decrypted ROMs can be compressed, since encrypted ROMs have near-zero compression ratios."
 )]
 pub struct CompressRomCommand {
     /// Input ROM file path (.cia, .cci, .3ds, .cxi, or .3dsx)
     #[arg(value_name = "INPUT")]
     pub input: PathBuf,
 
-    /// Output file path — defaults to the input path with the extension prefixed by "z"
+    /// Output file path, defaults to the input path with the extension prefixed by "z"
     #[arg(value_name = "OUTPUT")]
     pub output: Option<PathBuf>,
 }
@@ -115,7 +115,7 @@ pub struct DecompressRomCommand {
     #[arg(value_name = "INPUT")]
     pub input: PathBuf,
 
-    /// Output file path — defaults to the input path with the "z" prefix removed from the extension
+    /// Output file path, defaults to the input path with the "z" prefix removed from the extension
     #[arg(value_name = "OUTPUT")]
     pub output: Option<PathBuf>,
 }
