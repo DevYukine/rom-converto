@@ -50,9 +50,13 @@ lzma-sdk-sys = "^0.1"
 flacenc = "^0.5"
 claxon = "^0.4"
 zstd = "^0.13"
+chrono = "^0.4"
 crc = "^3.4"
 indicatif = "^0.18"
 indicatif-log-bridge = "0.2.3"
+
+[dev-dependencies]
+tempfile = "^3"
 
 [build-dependencies]
 built = "^0.8"

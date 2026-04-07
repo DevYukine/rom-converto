@@ -11,6 +11,7 @@ Built for developers, tinkerers and archivists.
 * [x] Convert 3DS CDN files to `.cia` format
 * [x] Generate 3DS Tickets for CDN files
 * [x] Decrypt `.cia` files for usage on emulators (e.g. [Azahar](https://azahar-emu.org/))
+* [x] Compress and decompress 3DS ROMs using the Z3DS format (seekable zstd)
 * [x] Compress CD images (`.bin` + `.cue`) to `.chd` format
 * [x] Extract `.chd` files back to `.bin` + `.cue`
 * [x] Verify `.chd` file integrity (SHA1 checksums)
@@ -25,6 +26,8 @@ Built for developers, tinkerers and archivists.
 | `ctr cdn-to-cia <CDN_DIR> [OUTPUT]` | Convert a CDN directory to `.cia` |
 | `ctr generate-cdn-ticket <CDN_DIR> [OUTPUT]` | Generate a `.tik` ticket from CDN content |
 | `ctr decrypt-cia <INPUT> <OUTPUT>` | Decrypt an encrypted `.cia` for emulator use |
+| `ctr compress <INPUT> [OUTPUT]` | Compress a decrypted ROM to Z3DS format |
+| `ctr decompress <INPUT> [OUTPUT]` | Decompress a Z3DS file back to the original ROM |
 
 **`cdn-to-cia` flags:**
 
@@ -38,6 +41,8 @@ Built for developers, tinkerers and archivists.
 > **`generate-cdn-ticket`:** Generated tickets use placeholder values (null Console ID, etc.) and only work on modded consoles and emulators. They will not work on stock hardware.
 
 > **`decrypt-cia`:** Place a `seeddb.bin` file next to the executable to resolve seeds locally. If none is found, the tool will fetch the required seed from Nintendo's API.
+
+> **`compress` / `decompress`:** Supported input formats for compression: `.cia`, `.cci`, `.3ds`, `.cxi`, `.3dsx`. Output files use the Z3DS format (`.zcia`, `.zcci`, `.zcxi`, `.z3dsx`). Compression requires a decrypted ROM — encrypted ROMs have near-zero compression ratios. The output file path defaults to the input path with the extension updated automatically.
 
 ---
 

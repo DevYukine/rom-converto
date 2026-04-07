@@ -7,6 +7,8 @@ pub enum CtrCommands {
     CdnToCia(CdnToCiaCommand),
     GenerateCdnTicket(GenerateCdnTicketCommand),
     DecryptCia(DecryptCiaCommand),
+    Compress(CompressRomCommand),
+    Decompress(DecompressRomCommand),
 }
 
 /// Convert CDN content to CIA format
@@ -86,4 +88,34 @@ pub struct DecryptCiaCommand {
     /// Output decrypted CIA file path
     #[arg(value_name = "OUTPUT")]
     pub output: PathBuf,
+}
+
+/// Compresses a decrypted 3DS ROM to the Z3DS format
+#[derive(Parser, Debug, Clone, Eq, PartialEq)]
+#[command(
+    long_about = "Compress a decrypted 3DS ROM to the Z3DS format\n\nSupported input formats: .cia, .cci, .3ds, .cxi, .3dsx\nOutput extensions: .zcia, .zcci, .zcxi, .z3dsx\n\nNote: only decrypted ROMs can be compressed — encrypted ROMs have near-zero compression ratios."
+)]
+pub struct CompressRomCommand {
+    /// Input ROM file path (.cia, .cci, .3ds, .cxi, or .3dsx)
+    #[arg(value_name = "INPUT")]
+    pub input: PathBuf,
+
+    /// Output file path — defaults to the input path with the extension prefixed by "z"
+    #[arg(value_name = "OUTPUT")]
+    pub output: Option<PathBuf>,
+}
+
+/// Decompresses a Z3DS file back to the original ROM format
+#[derive(Parser, Debug, Clone, Eq, PartialEq)]
+#[command(
+    long_about = "Decompress a Z3DS file back to the original ROM format\n\nSupported input formats: .zcia, .zcci, .zcxi, .z3dsx\nOutput extensions: .cia, .cci, .cxi, .3dsx"
+)]
+pub struct DecompressRomCommand {
+    /// Input Z3DS file path (.zcia, .zcci, .zcxi, or .z3dsx)
+    #[arg(value_name = "INPUT")]
+    pub input: PathBuf,
+
+    /// Output file path — defaults to the input path with the "z" prefix removed from the extension
+    #[arg(value_name = "OUTPUT")]
+    pub output: Option<PathBuf>,
 }

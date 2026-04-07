@@ -3,6 +3,7 @@ use crate::commands::chd::ChdCommands;
 use crate::commands::ctr::CtrCommands;
 use crate::commands::{Cli, Commands, SelfUpdateCommand};
 use crate::github::api::GithubApi;
+use crate::nintendo::ctr::z3ds::{compress_rom, decompress_rom, derive_compressed_path, derive_decompressed_path};
 use crate::nintendo::ctr::{convert_cdn_to_cia, decrypt_cia, generate_ticket_from_cdn};
 use crate::updater::{check_for_new_version_and_notify, cleanup_old_executable, self_update};
 use anyhow::Result;
@@ -55,6 +56,18 @@ async fn main() -> Result<()> {
                 generate_ticket_from_cdn(&cmd.cdn_dir, &cmd.output).await?
             }
             CtrCommands::DecryptCia(cmd) => decrypt_cia(&cmd.input, &cmd.output).await?,
+            CtrCommands::Compress(cmd) => {
+                let output = cmd
+                    .output
+                    .unwrap_or_else(|| derive_compressed_path(&cmd.input));
+                compress_rom(&cmd.input, &output).await?
+            }
+            CtrCommands::Decompress(cmd) => {
+                let output = cmd
+                    .output
+                    .unwrap_or_else(|| derive_decompressed_path(&cmd.input));
+                decompress_rom(&cmd.input, &output).await?
+            }
         },
         Commands::Chd(inner) => match inner {
             ChdCommands::Compress(cmd) => {

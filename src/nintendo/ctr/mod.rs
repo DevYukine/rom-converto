@@ -21,6 +21,7 @@ pub mod error;
 pub mod models;
 pub mod title_key;
 mod util;
+pub mod z3ds;
 
 pub async fn decrypt_cia(input: &Path, output: &Path) -> Result<()> {
     let out = File::create(output).await?;
