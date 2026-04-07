@@ -316,3 +316,102 @@ pub fn restore_sector_ecc(sector: &mut [u8]) {
     // Regenerate ECC P and Q parity
     ecc_generate(sector);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Builds a minimal Mode 1 sector: sync header + some payload data,
+    /// then generates valid ECC parity bytes.
+    fn make_valid_sector() -> Vec<u8> {
+        let mut sector = vec![0u8; SECTOR_SIZE];
+        sector[..12].copy_from_slice(&CD_SYNC_HEADER);
+        // Mode 1 marker
+        sector[15] = 0x01;
+        // Fill user data area with a pattern
+        for i in 16..2064 {
+            sector[i] = (i % 251) as u8;
+        }
+        ecc_generate(&mut sector);
+        sector
+    }
+
+    #[test]
+    fn ecc_verify_passes_on_valid_sector() {
+        let sector = make_valid_sector();
+        assert!(ecc_verify(&sector));
+    }
+
+    #[test]
+    fn ecc_verify_fails_when_parity_corrupted() {
+        let mut sector = make_valid_sector();
+        // Flip a byte in the P parity region
+        sector[ECC_P_OFFSET] ^= 0xFF;
+        assert!(!ecc_verify(&sector));
+    }
+
+    #[test]
+    fn ecc_clear_zeros_parity_regions() {
+        let mut sector = make_valid_sector();
+        ecc_clear(&mut sector);
+        let p_region = &sector[ECC_P_OFFSET..ECC_P_OFFSET + 2 * ECC_P_NUM_BYTES];
+        let q_region = &sector[ECC_Q_OFFSET..ECC_Q_OFFSET + 2 * ECC_Q_NUM_BYTES];
+        assert!(p_region.iter().all(|&b| b == 0));
+        assert!(q_region.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn ecc_generate_restores_cleared_parity() {
+        let original = make_valid_sector();
+        let mut sector = original.clone();
+        ecc_clear(&mut sector);
+        assert!(!ecc_verify(&sector));
+        ecc_generate(&mut sector);
+        assert!(ecc_verify(&sector));
+        // Parity bytes should match the original
+        assert_eq!(
+            &sector[ECC_P_OFFSET..ECC_P_OFFSET + 2 * ECC_P_NUM_BYTES],
+            &original[ECC_P_OFFSET..ECC_P_OFFSET + 2 * ECC_P_NUM_BYTES],
+        );
+    }
+
+    #[test]
+    fn has_valid_ecc_accepts_valid_sector() {
+        let sector = make_valid_sector();
+        assert!(has_valid_ecc(&sector));
+    }
+
+    #[test]
+    fn has_valid_ecc_rejects_zeroed_sector() {
+        let sector = vec![0u8; SECTOR_SIZE];
+        assert!(!has_valid_ecc(&sector));
+    }
+
+    #[test]
+    fn has_valid_ecc_rejects_short_data() {
+        let data = vec![0u8; 100];
+        assert!(!has_valid_ecc(&data));
+    }
+
+    #[test]
+    fn strip_and_restore_round_trip() {
+        let original = make_valid_sector();
+        let mut sector = original.clone();
+        strip_sector_ecc(&mut sector);
+        // Sync header should be zeroed
+        assert!(sector[..12].iter().all(|&b| b == 0));
+        // ECC parity should be zeroed
+        assert!(!ecc_verify(&sector));
+        restore_sector_ecc(&mut sector);
+        // Should match original exactly
+        assert_eq!(sector, original);
+    }
+
+    #[test]
+    fn ecc_verify_fails_when_data_corrupted() {
+        let mut sector = make_valid_sector();
+        // Corrupt a byte in the user data area
+        sector[100] ^= 0xFF;
+        assert!(!ecc_verify(&sector));
+    }
+}

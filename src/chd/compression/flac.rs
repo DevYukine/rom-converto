@@ -113,6 +113,65 @@ pub fn bytes_from_samples(samples: &[i32], endian: &Endian) -> Vec<u8> {
     output
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn samples_from_bytes_le_known_value() {
+        // 0x1234 in LE = [0x34, 0x12]
+        let data = [0x34u8, 0x12];
+        let samples = samples_from_bytes(&data, Endian::Little);
+        assert_eq!(samples, vec![0x1234i32]);
+    }
+
+    #[test]
+    fn samples_from_bytes_be_known_value() {
+        // 0x1234 in BE = [0x12, 0x34]
+        let data = [0x12u8, 0x34];
+        let samples = samples_from_bytes(&data, Endian::Big);
+        assert_eq!(samples, vec![0x1234i32]);
+    }
+
+    #[test]
+    fn samples_from_bytes_negative() {
+        // -1 in LE = [0xFF, 0xFF]
+        let data = [0xFFu8, 0xFF];
+        let samples = samples_from_bytes(&data, Endian::Little);
+        assert_eq!(samples, vec![-1i32]);
+    }
+
+    #[test]
+    fn samples_from_bytes_empty() {
+        let samples = samples_from_bytes(&[], Endian::Little);
+        assert!(samples.is_empty());
+    }
+
+    #[test]
+    fn round_trip_le() {
+        let original: Vec<u8> = vec![0x34, 0x12, 0xFF, 0xFF, 0x00, 0x80];
+        let samples = samples_from_bytes(&original, Endian::Little);
+        let back = bytes_from_samples(&samples, &Endian::Little);
+        assert_eq!(back, original);
+    }
+
+    #[test]
+    fn round_trip_be() {
+        let original: Vec<u8> = vec![0x12, 0x34, 0xFF, 0xFF, 0x80, 0x00];
+        let samples = samples_from_bytes(&original, Endian::Big);
+        let back = bytes_from_samples(&samples, &Endian::Big);
+        assert_eq!(back, original);
+    }
+
+    #[test]
+    fn bytes_from_samples_truncates_to_i16() {
+        // Values outside i16 range get truncated
+        let samples = vec![0x1234i32];
+        let bytes = bytes_from_samples(&samples, &Endian::Little);
+        assert_eq!(bytes, vec![0x34, 0x12]);
+    }
+}
+
 pub(crate) fn flac_decompress(data: &[u8], _expected_len: usize) -> ChdResult<Vec<u8>> {
     if data.is_empty() {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "FLAC data is empty").into());

@@ -700,3 +700,53 @@ pub async fn parse_and_decrypt_cia(input: &Path, partition: Option<u8>) -> anyho
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extra_crypto_index_known_values() {
+        assert_eq!(extra_crypto_index(0), 0);
+        assert_eq!(extra_crypto_index(1), 1);
+        assert_eq!(extra_crypto_index(10), 2);
+        assert_eq!(extra_crypto_index(11), 3);
+    }
+
+    #[test]
+    fn extra_crypto_index_unknown_defaults_to_zero() {
+        assert_eq!(extra_crypto_index(2), 0);
+        assert_eq!(extra_crypto_index(255), 0);
+    }
+
+    #[test]
+    fn scramblekey_deterministic() {
+        let key_x: u128 = 0x1234_5678_9ABC_DEF0_1234_5678_9ABC_DEF0;
+        let key_y: u128 = 0xFEDC_BA98_7654_3210_FEDC_BA98_7654_3210;
+        let result1 = scramblekey(key_x, key_y);
+        let result2 = scramblekey(key_x, key_y);
+        assert_eq!(result1, result2);
+    }
+
+    #[test]
+    fn scramblekey_zero_inputs() {
+        // ROL(ROL(0, 2) ^ 0 + C, 87) = ROL(C, 87)
+        let result = scramblekey(0, 0);
+        let c: u128 = 42503689118608475533858958821215598218;
+        let expected = (c << 87) | (c >> (128 - 87));
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn scramblekey_different_inputs_different_outputs() {
+        let r1 = scramblekey(1, 0);
+        let r2 = scramblekey(0, 1);
+        assert_ne!(r1, r2);
+    }
+
+    #[test]
+    fn derive_ctr_key_returns_16_bytes() {
+        let key = derive_ctr_key(12345, 67890);
+        assert_eq!(key.len(), 16);
+    }
+}

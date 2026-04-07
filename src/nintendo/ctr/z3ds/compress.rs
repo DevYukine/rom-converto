@@ -228,8 +228,6 @@ mod tests {
         data
     }
 
-    // --- check_ncch_not_encrypted ---
-
     #[test]
     fn ncch_decrypted_passes() {
         let data = make_ncch_at(0x200, 0, true);
@@ -277,8 +275,6 @@ mod tests {
         assert!(matches!(err, Z3dsError::InputNotDecrypted));
     }
 
-    // --- check_ncsd_not_encrypted ---
-
     #[test]
     fn ncsd_decrypted_passes() {
         let data = make_ncsd(1, true); // partition at MU=1 → offset 0x200
@@ -298,8 +294,6 @@ mod tests {
         assert!(check_ncsd_not_encrypted(&data).is_ok());
     }
 
-    // --- check_cia_not_encrypted ---
-
     #[test]
     fn cia_decrypted_passes() {
         let data = make_cia(true);
@@ -318,8 +312,6 @@ mod tests {
         let data = vec![0u8; 0x10]; // shorter than 0x20
         assert!(check_cia_not_encrypted(&data).is_ok());
     }
-
-    // --- check_not_encrypted (dispatcher) ---
 
     #[test]
     fn dispatch_cxi_decrypted_passes() {

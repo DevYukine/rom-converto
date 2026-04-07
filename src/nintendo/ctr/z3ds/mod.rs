@@ -60,8 +60,6 @@ mod tests {
     };
     use std::path::PathBuf;
 
-    // --- derive_compressed_path ---
-
     #[test]
     fn compress_path_cia() {
         assert_eq!(
@@ -110,8 +108,6 @@ mod tests {
         );
     }
 
-    // --- derive_decompressed_path ---
-
     #[test]
     fn decompress_path_zcia() {
         assert_eq!(
@@ -151,8 +147,6 @@ mod tests {
             PathBuf::from("/roms/game.cia")
         );
     }
-
-    // --- Full compress → decompress round-trips ---
 
     // Produces a fake decrypted CXI of the given size.
     // Places the NCCH magic + NoCrypto flag at the correct offsets so the

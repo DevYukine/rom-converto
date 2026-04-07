@@ -171,8 +171,6 @@ mod tests {
     use binrw::{BinRead, BinWrite};
     use std::io::Cursor;
 
-    // --- Z3dsHeader ---
-
     #[test]
     fn header_new_sets_correct_defaults() {
         let h = Z3dsHeader::new(*b"NCCH", 64, 1024, 4096);
@@ -222,8 +220,6 @@ mod tests {
         let result = Z3dsHeader::read(&mut Cursor::new(&bytes));
         assert!(result.is_err());
     }
-
-    // --- Z3dsMetadata ---
 
     #[test]
     fn metadata_empty_yields_empty_bytes() {

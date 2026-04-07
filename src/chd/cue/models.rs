@@ -98,3 +98,119 @@ pub enum FileType {
     Wave,
     Mp3,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn msf_from_lba_zero() {
+        let msf = Msf::from_lba(0);
+        assert_eq!((msf.minutes, msf.seconds, msf.frames), (0, 0, 0));
+    }
+
+    #[test]
+    fn msf_from_lba_one_second() {
+        // 75 frames = 1 second
+        let msf = Msf::from_lba(75);
+        assert_eq!((msf.minutes, msf.seconds, msf.frames), (0, 1, 0));
+    }
+
+    #[test]
+    fn msf_from_lba_one_minute() {
+        // 75 * 60 = 4500
+        let msf = Msf::from_lba(4500);
+        assert_eq!((msf.minutes, msf.seconds, msf.frames), (1, 0, 0));
+    }
+
+    #[test]
+    fn msf_from_lba_mixed() {
+        // 2 minutes + 33 seconds + 12 frames = (2 * 60 + 33) * 75 + 12 = 11487
+        let msf = Msf::from_lba(11487);
+        assert_eq!((msf.minutes, msf.seconds, msf.frames), (2, 33, 12));
+    }
+
+    #[test]
+    fn msf_round_trip() {
+        for lba in [0, 1, 74, 75, 150, 4500, 11487, 33750] {
+            let msf = Msf::from_lba(lba);
+            assert_eq!(msf.to_lba(), lba, "round trip failed for lba={lba}");
+        }
+    }
+
+    #[test]
+    fn to_lba_manual() {
+        let msf = Msf {
+            minutes: 1,
+            seconds: 2,
+            frames: 3,
+        };
+        // (1*60 + 2) * 75 + 3 = 62 * 75 + 3 = 4653
+        assert_eq!(msf.to_lba(), 4653);
+    }
+
+    #[test]
+    fn primary_index_found() {
+        let track = Track {
+            number: 1,
+            track_type: TrackType::Mode1_2352,
+            indices: vec![
+                Index {
+                    number: 0,
+                    position: Msf {
+                        minutes: 0,
+                        seconds: 0,
+                        frames: 0,
+                    },
+                },
+                Index {
+                    number: 1,
+                    position: Msf {
+                        minutes: 0,
+                        seconds: 2,
+                        frames: 0,
+                    },
+                },
+            ],
+            pregap: None,
+            postgap: None,
+        };
+        assert_eq!(track.primary_index_lba(), Some(150)); // 2 seconds = 150 frames
+    }
+
+    #[test]
+    fn primary_index_missing() {
+        let track = Track {
+            number: 1,
+            track_type: TrackType::Audio,
+            indices: vec![Index {
+                number: 0,
+                position: Msf {
+                    minutes: 0,
+                    seconds: 0,
+                    frames: 0,
+                },
+            }],
+            pregap: None,
+            postgap: None,
+        };
+        assert_eq!(track.primary_index_lba(), None);
+    }
+
+    #[test]
+    fn chd_metadata_type_mappings() {
+        assert_eq!(TrackType::Audio.chd_metadata_type(), "AUDIO");
+        assert_eq!(TrackType::Mode1_2352.chd_metadata_type(), "MODE1_RAW");
+        assert_eq!(TrackType::Mode1_2048.chd_metadata_type(), "MODE1");
+        assert_eq!(TrackType::Mode2_2352.chd_metadata_type(), "MODE2_RAW");
+        assert_eq!(TrackType::Mode2_2336.chd_metadata_type(), "MODE2_FORM1");
+    }
+
+    #[test]
+    fn chd_metadata_type_fallback() {
+        // CdG, CdI2336, CdI2352 all fall back to MODE1_RAW
+        assert_eq!(TrackType::CdG.chd_metadata_type(), "MODE1_RAW");
+        assert_eq!(TrackType::CdI2336.chd_metadata_type(), "MODE1_RAW");
+        assert_eq!(TrackType::CdI2352.chd_metadata_type(), "MODE1_RAW");
+    }
+}

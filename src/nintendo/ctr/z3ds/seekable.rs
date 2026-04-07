@@ -157,8 +157,6 @@ mod tests {
         ])
     }
 
-    // --- Round-trip correctness ---
-
     #[test]
     fn round_trip_small() {
         let original = b"Hello, Z3DS seekable zstd!".repeat(100);
@@ -225,8 +223,6 @@ mod tests {
         assert_eq!(original, decoded);
     }
 
-    // --- Seek table structure ---
-
     #[test]
     fn seek_table_ends_with_seekable_magic() {
         let data = b"some test data".repeat(10);
@@ -249,8 +245,6 @@ mod tests {
         ]);
         assert_eq!(magic, SKIPPABLE_MAGIC);
     }
-
-    // --- strip_seek_table ---
 
     #[test]
     fn strip_seek_table_removes_trailing_table() {

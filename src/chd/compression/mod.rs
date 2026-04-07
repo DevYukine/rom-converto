@@ -383,3 +383,94 @@ fn assemble_cd_output(
     output.extend_from_slice(subcode_compressed);
     output
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn header_sizes_small_hunk() {
+        // data_len < 0x10000 -> complen_bytes = 2
+        let (header, ecc, complen) = cd_header_sizes(0x8000, 8);
+        assert_eq!(complen, 2);
+        assert_eq!(ecc, 1); // 8 / 8 = 1
+        assert_eq!(header, ecc + complen);
+    }
+
+    #[test]
+    fn header_sizes_large_hunk() {
+        // data_len >= 0x10000 -> complen_bytes = 3
+        let (header, ecc, complen) = cd_header_sizes(0x10000, 8);
+        assert_eq!(complen, 3);
+        assert_eq!(ecc, 1);
+        assert_eq!(header, ecc + complen);
+    }
+
+    #[test]
+    fn header_sizes_ecc_rounds_up() {
+        // 9 frames -> ceil(9/8) = 2 ecc bytes
+        let (_, ecc, _) = cd_header_sizes(0x8000, 9);
+        assert_eq!(ecc, 2);
+    }
+
+    #[test]
+    fn split_cd_frames_valid() {
+        // Build 2 frames: each FRAME_SIZE bytes (2352 sector + 96 subcode)
+        let mut data = vec![0u8; 2 * FRAME_SIZE];
+        // Mark sectors and subcodes with distinct values
+        data[0] = 0xAA; // sector 0 first byte
+        data[SECTOR_SIZE] = 0xBB; // subcode 0 first byte
+        data[FRAME_SIZE] = 0xCC; // sector 1 first byte
+        data[FRAME_SIZE + SECTOR_SIZE] = 0xDD; // subcode 1 first byte
+
+        let (frames, base, subcode) = split_cd_frames(&data).unwrap();
+        assert_eq!(frames, 2);
+        assert_eq!(base.len(), 2 * SECTOR_SIZE);
+        assert_eq!(subcode.len(), 2 * SUBCODE_SIZE);
+        assert_eq!(base[0], 0xAA);
+        assert_eq!(base[SECTOR_SIZE], 0xCC);
+        assert_eq!(subcode[0], 0xBB);
+        assert_eq!(subcode[SUBCODE_SIZE], 0xDD);
+    }
+
+    #[test]
+    fn split_cd_frames_wrong_size_fails() {
+        let data = vec![0u8; FRAME_SIZE + 1];
+        assert!(split_cd_frames(&data).is_err());
+    }
+
+    #[test]
+    fn deflate_round_trip() {
+        let original = b"hello world, this is test data for deflate compression!";
+        let compressed = deflate_compress(original).unwrap();
+        let decompressed = deflate_decompress(&compressed, original.len()).unwrap();
+        assert_eq!(decompressed, original);
+    }
+
+    #[test]
+    fn deflate_round_trip_empty() {
+        let original: &[u8] = b"";
+        let compressed = deflate_compress(original).unwrap();
+        let decompressed = deflate_decompress(&compressed, 0).unwrap();
+        assert_eq!(decompressed, original);
+    }
+
+    #[test]
+    fn cd_hunk_deflate_round_trip() {
+        // Build a hunk of 8 frames with non-ECC data (no sync header)
+        let mut hunk = vec![0u8; 8 * FRAME_SIZE];
+        for i in 0..hunk.len() {
+            hunk[i] = (i % 253) as u8;
+        }
+
+        let compressed = compress_cd_hunk(&hunk, deflate_compress, deflate_compress).unwrap();
+        let decompressed = decompress_cd_hunk(
+            &compressed,
+            hunk.len(),
+            deflate_decompress,
+            deflate_decompress,
+        )
+        .unwrap();
+        assert_eq!(decompressed, hunk);
+    }
+}

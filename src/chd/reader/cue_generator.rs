@@ -106,3 +106,129 @@ fn chd_type_to_cue_type(chd_type: &str) -> &'static str {
         _ => "MODE1/2352",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_single_track() {
+        let meta = "TRACK:1 TYPE:MODE1_RAW FRAMES:300 PREGAP:0 SUBTYPE:NONE PGTYPE:MODE1 PGSUB:NONE POSTGAP:0";
+        let tracks = parse_chd_track_metadata(meta).unwrap();
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].track_number, 1);
+        assert_eq!(tracks[0].track_type, "MODE1_RAW");
+        assert_eq!(tracks[0].frames, 300);
+        assert_eq!(tracks[0].pregap, 0);
+    }
+
+    #[test]
+    fn parse_multiple_tracks() {
+        let meta =
+            "TRACK:1 TYPE:MODE1_RAW FRAMES:300 PREGAP:0 TRACK:2 TYPE:AUDIO FRAMES:5000 PREGAP:150";
+        let tracks = parse_chd_track_metadata(meta).unwrap();
+        assert_eq!(tracks.len(), 2);
+        assert_eq!(tracks[0].track_number, 1);
+        assert_eq!(tracks[0].track_type, "MODE1_RAW");
+        assert_eq!(tracks[1].track_number, 2);
+        assert_eq!(tracks[1].track_type, "AUDIO");
+        assert_eq!(tracks[1].frames, 5000);
+        assert_eq!(tracks[1].pregap, 150);
+    }
+
+    #[test]
+    fn parse_empty_string_fails() {
+        let result = parse_chd_track_metadata("");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_no_tracks_fails() {
+        let result = parse_chd_track_metadata("SUBTYPE:NONE PGTYPE:MODE1");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_invalid_track_number_fails() {
+        let result = parse_chd_track_metadata("TRACK:abc TYPE:MODE1_RAW FRAMES:100");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn type_mappings() {
+        assert_eq!(chd_type_to_cue_type("AUDIO"), "AUDIO");
+        assert_eq!(chd_type_to_cue_type("MODE1_RAW"), "MODE1/2352");
+        assert_eq!(chd_type_to_cue_type("MODE1"), "MODE1/2048");
+        assert_eq!(chd_type_to_cue_type("MODE2_RAW"), "MODE2/2352");
+        assert_eq!(chd_type_to_cue_type("MODE2_FORM1"), "MODE2/2336");
+        assert_eq!(chd_type_to_cue_type("MODE2_FORM2"), "MODE2/2352");
+    }
+
+    #[test]
+    fn type_unknown_falls_back() {
+        assert_eq!(chd_type_to_cue_type("SOMETHING_ELSE"), "MODE1/2352");
+    }
+
+    #[test]
+    fn generate_single_track_cue() {
+        let tracks = vec![ChdTrackInfo {
+            track_number: 1,
+            track_type: "MODE1_RAW".to_string(),
+            frames: 300,
+            pregap: 0,
+        }];
+        let cue = generate_cue_sheet("game.bin", &tracks);
+        assert!(cue.starts_with("FILE \"game.bin\" BINARY\n"));
+        assert!(cue.contains("TRACK 01 MODE1/2352"));
+        assert!(cue.contains("INDEX 01 00:00:00"));
+        assert!(!cue.contains("PREGAP"));
+    }
+
+    #[test]
+    fn generate_cue_with_pregap() {
+        let tracks = vec![
+            ChdTrackInfo {
+                track_number: 1,
+                track_type: "MODE1_RAW".to_string(),
+                frames: 300,
+                pregap: 0,
+            },
+            ChdTrackInfo {
+                track_number: 2,
+                track_type: "AUDIO".to_string(),
+                frames: 5000,
+                pregap: 150,
+            },
+        ];
+        let cue = generate_cue_sheet("game.bin", &tracks);
+        assert!(cue.contains("TRACK 02 AUDIO"));
+        assert!(cue.contains("PREGAP 00:02:00")); // 150 frames = 2 seconds
+        // Track 2 starts at frame 300 = 00:04:00
+        assert!(cue.contains("INDEX 01 00:04:00"));
+    }
+
+    #[test]
+    fn generate_cue_frame_offset_advances() {
+        let tracks = vec![
+            ChdTrackInfo {
+                track_number: 1,
+                track_type: "MODE1_RAW".to_string(),
+                frames: 75, // 1 second
+                pregap: 0,
+            },
+            ChdTrackInfo {
+                track_number: 2,
+                track_type: "AUDIO".to_string(),
+                frames: 150,
+                pregap: 0,
+            },
+        ];
+        let cue = generate_cue_sheet("game.bin", &tracks);
+        // Track 1 at 00:00:00, track 2 at 00:01:00 (75 frames = 1 second)
+        let lines: Vec<&str> = cue.lines().collect();
+        let idx_lines: Vec<&&str> = lines.iter().filter(|l| l.contains("INDEX 01")).collect();
+        assert_eq!(idx_lines.len(), 2);
+        assert!(idx_lines[0].contains("00:00:00"));
+        assert!(idx_lines[1].contains("00:01:00"));
+    }
+}

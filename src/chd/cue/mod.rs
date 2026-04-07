@@ -154,3 +154,119 @@ impl CueParser {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parser() -> CueParser {
+        CueParser::new("/dev/null")
+    }
+
+    #[test]
+    fn extract_quoted_string_normal() {
+        let result = parser()
+            .extract_quoted_string(r#"FILE "track.bin" BINARY"#)
+            .unwrap();
+        assert_eq!(result, "track.bin");
+    }
+
+    #[test]
+    fn extract_quoted_string_with_spaces() {
+        let result = parser()
+            .extract_quoted_string(r#"FILE "my game file.bin" BINARY"#)
+            .unwrap();
+        assert_eq!(result, "my game file.bin");
+    }
+
+    #[test]
+    fn extract_quoted_string_no_quotes_fails() {
+        assert!(
+            parser()
+                .extract_quoted_string("FILE track.bin BINARY")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn extract_quoted_string_single_quote_fails() {
+        // Only one quote, rfind == find, start >= end
+        assert!(
+            parser()
+                .extract_quoted_string(r#"FILE "track.bin BINARY"#)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn parse_file_type_all_variants() {
+        let p = parser();
+        assert!(matches!(p.parse_file_type("BINARY"), Ok(FileType::Binary)));
+        assert!(matches!(
+            p.parse_file_type("MOTOROLA"),
+            Ok(FileType::Motorola)
+        ));
+        assert!(matches!(p.parse_file_type("AIFF"), Ok(FileType::Aiff)));
+        assert!(matches!(p.parse_file_type("WAVE"), Ok(FileType::Wave)));
+        assert!(matches!(p.parse_file_type("MP3"), Ok(FileType::Mp3)));
+    }
+
+    #[test]
+    fn parse_file_type_unknown_fails() {
+        assert!(parser().parse_file_type("FLAC").is_err());
+    }
+
+    #[test]
+    fn parse_track_type_all_variants() {
+        let p = parser();
+        assert!(matches!(p.parse_track_type("AUDIO"), Ok(TrackType::Audio)));
+        assert!(matches!(p.parse_track_type("CDG"), Ok(TrackType::CdG)));
+        assert!(matches!(
+            p.parse_track_type("MODE1/2048"),
+            Ok(TrackType::Mode1_2048)
+        ));
+        assert!(matches!(
+            p.parse_track_type("MODE1/2352"),
+            Ok(TrackType::Mode1_2352)
+        ));
+        assert!(matches!(
+            p.parse_track_type("MODE2/2336"),
+            Ok(TrackType::Mode2_2336)
+        ));
+        assert!(matches!(
+            p.parse_track_type("MODE2/2352"),
+            Ok(TrackType::Mode2_2352)
+        ));
+        assert!(matches!(
+            p.parse_track_type("CDI/2336"),
+            Ok(TrackType::CdI2336)
+        ));
+        assert!(matches!(
+            p.parse_track_type("CDI/2352"),
+            Ok(TrackType::CdI2352)
+        ));
+    }
+
+    #[test]
+    fn parse_track_type_unknown_fails() {
+        assert!(parser().parse_track_type("MODE3/2048").is_err());
+    }
+
+    #[test]
+    fn parse_msf_valid() {
+        let msf = parser().parse_msf("00:02:33").unwrap();
+        assert_eq!((msf.minutes, msf.seconds, msf.frames), (0, 2, 33));
+    }
+
+    #[test]
+    fn parse_msf_zeros() {
+        let msf = parser().parse_msf("00:00:00").unwrap();
+        assert_eq!((msf.minutes, msf.seconds, msf.frames), (0, 0, 0));
+    }
+
+    #[test]
+    fn parse_msf_wrong_format_fails() {
+        assert!(parser().parse_msf("00:02").is_err());
+        assert!(parser().parse_msf("00:02:33:44").is_err());
+    }
+}
