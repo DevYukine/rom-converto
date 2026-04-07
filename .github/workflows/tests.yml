@@ -8,10 +8,11 @@ on:
   push:
     branches: [ "develop" ]
     paths:
-      - src/**
+      - crates/**
       - Cargo.toml
       - Cargo.lock
       - .github/workflows/tests.yml
+
 jobs:
   check:
     name: Cargo check
@@ -30,13 +31,10 @@ jobs:
           key: check-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Install Rust Toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: stable
-          target: ${{ matrix.target.build_target }}
+        uses: dtolnay/rust-toolchain@stable
 
-      - name: Run cargo check
-        run: cargo check
+      - name: Run cargo check (lib + cli)
+        run: cargo check -p rom-converto-lib -p rom-converto-cli
 
   test:
     name: Cargo test
@@ -55,13 +53,10 @@ jobs:
           key: test-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Install Rust Toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: stable
-          target: ${{ matrix.target.build_target }}
+        uses: dtolnay/rust-toolchain@stable
 
-      - name: Run cargo test
-        run: cargo test
+      - name: Run cargo test (lib + cli)
+        run: cargo test -p rom-converto-lib -p rom-converto-cli
 
   fmt:
     name: Cargo fmt
@@ -71,13 +66,12 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Install Rust Toolchain
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
-          target: ${{ matrix.target.build_target }}
+          components: rustfmt
 
       - name: Run cargo fmt
-        run: cargo fmt -p rom-converto -- --check
+        run: cargo fmt --all -- --check
 
   clippy:
     name: Cargo clippy
@@ -96,10 +90,9 @@ jobs:
           key: clippy-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Install Rust Toolchain
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
-          target: ${{ matrix.target.build_target }}
+          components: clippy
 
-      - name: Run cargo clippy
-        run: cargo clippy -- -D warnings
+      - name: Run cargo clippy (lib + cli)
+        run: cargo clippy -p rom-converto-lib -p rom-converto-cli -- -D warnings
