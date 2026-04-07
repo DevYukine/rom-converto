@@ -1,5 +1,7 @@
 use binrw::{BinRead, BinWrite};
 
+#[allow(dead_code)] // Used in test assertions; brw attribute requires a literal
+pub const Z3DS_MAGIC: &[u8; 4] = b"Z3DS";
 pub const Z3DS_VERSION: u8 = 0x01;
 pub const Z3DS_HEADER_SIZE: u16 = 0x20;
 pub const Z3DS_METADATA_VERSION: u8 = 0x01;
@@ -173,8 +175,8 @@ mod tests {
 
     #[test]
     fn header_new_sets_correct_defaults() {
-        let h = Z3dsHeader::new(*b"NCCH", 64, 1024, 4096);
-        assert_eq!(h.underlying_magic, *b"NCCH");
+        let h = Z3dsHeader::new(underlying_magic::NCCH, 64, 1024, 4096);
+        assert_eq!(h.underlying_magic, underlying_magic::NCCH);
         assert_eq!(h.version, Z3DS_VERSION);
         assert_eq!(h.reserved, 0);
         assert_eq!(h.header_size, Z3DS_HEADER_SIZE);
@@ -185,7 +187,7 @@ mod tests {
 
     #[test]
     fn header_binrw_round_trip() {
-        let original = Z3dsHeader::new(*b"NCSD", 32, 512, 2048);
+        let original = Z3dsHeader::new(underlying_magic::NCSD, 32, 512, 2048);
 
         let mut buf = Cursor::new(Vec::new());
         original.write(&mut buf).unwrap();
@@ -194,12 +196,12 @@ mod tests {
         // Must be exactly 0x20 bytes.
         assert_eq!(bytes.len(), 0x20);
         // File starts with the Z3DS magic.
-        assert_eq!(&bytes[0..4], b"Z3DS");
+        assert_eq!(&bytes[0..4], Z3DS_MAGIC);
 
         let mut read_cur = Cursor::new(&bytes);
         let parsed = Z3dsHeader::read(&mut read_cur).unwrap();
 
-        assert_eq!(parsed.underlying_magic, *b"NCSD");
+        assert_eq!(parsed.underlying_magic, underlying_magic::NCSD);
         assert_eq!(parsed.version, Z3DS_VERSION);
         assert_eq!(parsed.reserved, 0);
         assert_eq!(parsed.header_size, Z3DS_HEADER_SIZE);
@@ -211,7 +213,7 @@ mod tests {
     #[test]
     fn header_rejects_wrong_magic() {
         // Build a valid header then corrupt the magic.
-        let h = Z3dsHeader::new(*b"NCCH", 0, 0, 0);
+        let h = Z3dsHeader::new(underlying_magic::NCCH, 0, 0, 0);
         let mut buf = Cursor::new(Vec::new());
         h.write(&mut buf).unwrap();
         let mut bytes = buf.into_inner();

@@ -124,7 +124,7 @@ pub(crate) fn check_ncch_not_encrypted(data: &[u8], ncch_offset: usize) -> Z3dsR
     if data.len() < magic_start + 4 {
         return Ok(()); // can't check, let it through
     }
-    if &data[magic_start..magic_start + 4] != b"NCCH" {
+    if data[magic_start..magic_start + 4] != underlying_magic::NCCH {
         return Ok(());
     }
 
@@ -143,7 +143,7 @@ pub(crate) fn check_ncch_not_encrypted(data: &[u8], ncch_offset: usize) -> Z3dsR
 /// The first partition starts right after the NCSD header at offset 0x4000 by default.
 pub(crate) fn check_ncsd_not_encrypted(data: &[u8]) -> Z3dsResult<()> {
     let magic_end = NCCH_MAGIC_OFFSET + 4;
-    if data.len() < magic_end || &data[NCCH_MAGIC_OFFSET..magic_end] != b"NCSD" {
+    if data.len() < magic_end || data[NCCH_MAGIC_OFFSET..magic_end] != underlying_magic::NCSD {
         return Ok(());
     }
     // Partition 0 NCCH starts at the offset stored in NCSD partition table.
@@ -192,7 +192,7 @@ pub(crate) fn check_cia_not_encrypted(data: &[u8]) -> Z3dsResult<()> {
 mod tests {
     use super::*;
     use crate::nintendo::ctr::constants::{
-        NCCH_FLAGS_OFFSET, NCCH_FLAGS7_NOCRYPTO, NCCH_MAGIC_OFFSET,
+        NCCH_FLAGS_OFFSET, NCCH_FLAGS7_NOCRYPTO, NCCH_MAGIC_OFFSET, NCSD_PARTITION0_OFFSET_FIELD,
     };
     use crate::nintendo::ctr::z3ds::error::Z3dsError;
 
@@ -201,7 +201,7 @@ mod tests {
     fn make_ncch_at(total_size: usize, offset: usize, decrypted: bool) -> Vec<u8> {
         let mut data = vec![0u8; total_size];
         let magic_start = offset + NCCH_MAGIC_OFFSET;
-        data[magic_start..magic_start + 4].copy_from_slice(b"NCCH");
+        data[magic_start..magic_start + 4].copy_from_slice(&underlying_magic::NCCH);
         if decrypted {
             data[offset + NCCH_FLAGS_OFFSET + 7] = NCCH_FLAGS7_NOCRYPTO;
         }
@@ -214,8 +214,9 @@ mod tests {
         let total = partition_offset + 0x200;
         let mut data = make_ncch_at(total, partition_offset, ncch_decrypted);
         let magic_start = NCCH_MAGIC_OFFSET;
-        data[magic_start..magic_start + 4].copy_from_slice(b"NCSD");
-        data[0x120..0x124].copy_from_slice(&partition_mu.to_le_bytes());
+        data[magic_start..magic_start + 4].copy_from_slice(&underlying_magic::NCSD);
+        data[NCSD_PARTITION0_OFFSET_FIELD..NCSD_PARTITION0_OFFSET_FIELD + 4]
+            .copy_from_slice(&partition_mu.to_le_bytes());
         data
     }
 

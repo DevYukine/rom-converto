@@ -60,6 +60,11 @@ pub const NCSD_PARTITION0_OFFSET_FIELD: usize = 0x120;
 pub const EXEFS_HEADER_SIZE: usize = 0x200;
 pub const EXEFS_MAX_FILE_ENTRIES: usize = 10;
 pub const EXEFS_ENTRY_SIZE: usize = 16;
+pub const EXEFS_SECTION_ICON: [u8; 4] = *b"icon";
+pub const EXEFS_SECTION_BANNER: [u8; 6] = *b"banner";
+
+// NCCH magic identifier
+pub const NCCH_MAGIC: &str = "NCCH";
 
 // Ticket structure offsets (relative to start of ticket)
 pub const TICKET_SIG_BODY_OFFSET: u64 = 0x140;

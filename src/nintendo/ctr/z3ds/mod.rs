@@ -58,6 +58,7 @@ mod tests {
     use crate::nintendo::ctr::constants::{
         NCCH_FLAGS_OFFSET, NCCH_FLAGS7_NOCRYPTO, NCCH_MAGIC_OFFSET,
     };
+    use crate::nintendo::ctr::z3ds::models::{Z3DS_MAGIC, underlying_magic};
     use std::path::PathBuf;
 
     #[test]
@@ -154,7 +155,7 @@ mod tests {
     fn make_fake_decrypted_cxi(size: usize) -> Vec<u8> {
         let size = size.max(0x200);
         let mut data = vec![0u8; size];
-        data[NCCH_MAGIC_OFFSET..NCCH_MAGIC_OFFSET + 4].copy_from_slice(b"NCCH");
+        data[NCCH_MAGIC_OFFSET..NCCH_MAGIC_OFFSET + 4].copy_from_slice(&underlying_magic::NCCH);
         data[NCCH_FLAGS_OFFSET + 7] = NCCH_FLAGS7_NOCRYPTO;
         for i in 0x200..size {
             data[i] = (i % 251) as u8;
@@ -166,7 +167,7 @@ mod tests {
     // pattern. 3DSX has no encryption check so any content is valid.
     fn make_fake_3dsx(size: usize) -> Vec<u8> {
         let mut data = vec![0u8; size];
-        data[0..4].copy_from_slice(b"3DSX");
+        data[0..4].copy_from_slice(&underlying_magic::THREEDSX);
         for i in 4..size {
             data[i] = (i % 251) as u8;
         }
@@ -237,7 +238,7 @@ mod tests {
 
         // NCCH magic present but NoCrypto flag NOT set
         let mut data = vec![0u8; 0x200];
-        data[NCCH_MAGIC_OFFSET..NCCH_MAGIC_OFFSET + 4].copy_from_slice(b"NCCH");
+        data[NCCH_MAGIC_OFFSET..NCCH_MAGIC_OFFSET + 4].copy_from_slice(&underlying_magic::NCCH);
         tokio::fs::write(&input, &data).await.unwrap();
 
         let result = compress_rom(&input, &output).await;
@@ -280,6 +281,6 @@ mod tests {
         compress_rom(&input, &output).await.unwrap();
 
         let header_bytes = tokio::fs::read(&output).await.unwrap();
-        assert_eq!(&header_bytes[0..4], b"Z3DS");
+        assert_eq!(&header_bytes[0..4], Z3DS_MAGIC);
     }
 }

@@ -7,11 +7,12 @@ use byteorder::{BigEndian, ByteOrder, LittleEndian};
 use crate::nintendo::ctr::constants::{
     CTR_COMMON_KEYS_HEX, CTR_KEY_SCRAMBLE_C, CTR_KEYS_0, CTR_KEYS_1, CTR_MEDIA_UNIT_SIZE,
     CTR_NCSD_PARTITIONS, CTR_SEED_COUNTRIES, EXEFS_ENTRY_SIZE, EXEFS_HEADER_SIZE,
-    EXEFS_MAX_FILE_ENTRIES, NCCH_FLAGS_EXTRA_CRYPTO_INDEX, NCCH_FLAGS_OFFSET,
-    NCCH_FLAGS7_CRYPTO_METHOD, NCCH_FLAGS7_FIXED_KEY, NCCH_FLAGS7_NOCRYPTO,
-    NCCH_FLAGS7_SEED_CRYPTO, TICKET_COMMON_KEY_IDX_OFFSET, TICKET_SIG_BODY_OFFSET,
-    TICKET_TITLE_ID_OFFSET, TICKET_TITLE_KEY_OFFSET, TMD_CONTENT_COUNT_OFFSET,
-    TMD_CONTENT_RECORD_SIZE, TMD_CONTENT_RECORDS_OFFSET,
+    EXEFS_MAX_FILE_ENTRIES, EXEFS_SECTION_BANNER, EXEFS_SECTION_ICON,
+    NCCH_FLAGS_EXTRA_CRYPTO_INDEX, NCCH_FLAGS_OFFSET, NCCH_FLAGS7_CRYPTO_METHOD,
+    NCCH_FLAGS7_FIXED_KEY, NCCH_FLAGS7_NOCRYPTO, NCCH_FLAGS7_SEED_CRYPTO, NCCH_MAGIC,
+    TICKET_COMMON_KEY_IDX_OFFSET, TICKET_SIG_BODY_OFFSET, TICKET_TITLE_ID_OFFSET,
+    TICKET_TITLE_KEY_OFFSET, TMD_CONTENT_COUNT_OFFSET, TMD_CONTENT_RECORD_SIZE,
+    TMD_CONTENT_RECORDS_OFFSET,
 };
 use crate::nintendo::ctr::decrypt::model::{CiaContent, NcchSection};
 use crate::nintendo::ctr::decrypt::reader::CiaReader;
@@ -25,7 +26,6 @@ use crate::nintendo::ctr::util::align_64;
 use anyhow::{Context, anyhow};
 use binrw::BinRead;
 use futures::future::select_ok;
-use hex_literal::hex;
 use lazy_static::lazy_static;
 use log::debug;
 use std::io::{Cursor, SeekFrom};
@@ -176,20 +176,16 @@ async fn write_exefs_section(
 
             match exe_info.file_name.iter().rposition(|&x| x != 0) {
                 Some(name_end) if exe_info.file_name[..=name_end].is_ascii() => {
-                    let icon: [u8; 4] = hex!("69636f6e");
-                    let banner: [u8; 6] = hex!("62616e6e6572");
-                    if exe_info.file_name[..=name_end] != icon
-                        && exe_info.file_name[..=name_end] != banner
+                    if exe_info.file_name[..=name_end] != EXEFS_SECTION_ICON
+                        && exe_info.file_name[..=name_end] != EXEFS_SECTION_BANNER
                     {
                         decrypted_exefs[offset..offset + size]
                             .copy_from_slice(&extra_decrypted[offset..offset + size]);
                     }
                 }
                 _ => {
-                    decrypted_exefs.splice(
-                        offset..offset + size,
-                        extra_decrypted[offset..offset + size].iter().cloned(),
-                    );
+                    decrypted_exefs[offset..offset + size]
+                        .copy_from_slice(&extra_decrypted[offset..offset + size]);
                 }
             }
         }
@@ -687,7 +683,7 @@ pub async fn parse_and_decrypt_cia(input: &Path, partition: Option<u8>) -> anyho
 
         match std::str::from_utf8(&magic) {
             Ok(utf8) => {
-                if utf8 == "NCCH" {
+                if utf8 == NCCH_MAGIC {
                     rom_file
                         .seek(SeekFrom::Start(contentoffs + next_content_offs))
                         .await?;
