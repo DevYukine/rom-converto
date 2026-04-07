@@ -1,0 +1,19 @@
+[package]
+name = "rom-converto-gui"
+version = "0.4.0"
+edition = "2024"
+authors = ["DevYukine <devyukine@gmx.de>"]
+description = "GUI for converting, compressing, decompressing, encrypting, and decrypting ROMs."
+
+[dependencies]
+rom-converto-lib = { path = "../../rom-converto-lib" }
+tauri = { version = "^2", features = [] }
+tauri-plugin-dialog = "^2"
+tauri-plugin-shell = "^2"
+serde = { version = "^1", features = ["derive"] }
+serde_json = "^1"
+tokio = { version = "^1", features = ["full"] }
+log = "^0.4"
+
+[build-dependencies]
+tauri-build = { version = "^2", features = [] }

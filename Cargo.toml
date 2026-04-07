@@ -3,4 +3,5 @@ resolver = "3"
 members = [
     "crates/rom-converto-lib",
     "crates/rom-converto-cli",
+    "crates/rom-converto-gui/src-tauri",
 ]

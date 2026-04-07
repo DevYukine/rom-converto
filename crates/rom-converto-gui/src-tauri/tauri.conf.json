@@ -1,0 +1,31 @@
+{
+  "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/tauri-v2.0.0/crates/tauri-cli/config.schema.json",
+  "productName": "rom-converto",
+  "version": "0.4.0",
+  "identifier": "com.devyukine.rom-converto",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:3000",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../.output/public"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "rom-converto",
+        "width": 1024,
+        "height": 768,
+        "minWidth": 800,
+        "minHeight": 600
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "plugins": {
+    "shell": {
+      "open": true
+    }
+  }
+}

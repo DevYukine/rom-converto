@@ -1,0 +1,6 @@
+@import "tailwindcss";
+
+/* Prevent the browser from handling dropped files (opening them) */
+html, body {
+  overflow: hidden;
+}

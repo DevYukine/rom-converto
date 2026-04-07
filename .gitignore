@@ -21,3 +21,12 @@ target/
 .claude/settings.local.json
 test_data
 seeddb.bin
+
+# Node / Nuxt
+node_modules
+.nuxt
+.output
+dist
+
+# Tauri
+crates/rom-converto-gui/src-tauri/gen/schemas

@@ -1,0 +1,23 @@
+{
+  "name": "rom-converto-gui",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "nuxt dev",
+    "build": "nuxt generate",
+    "preview": "nuxt preview",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2",
+    "@tauri-apps/plugin-shell": "^2"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "@tailwindcss/postcss": "^4",
+    "nuxt": "^3",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  }
+}
