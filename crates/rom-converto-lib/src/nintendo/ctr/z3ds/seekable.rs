@@ -32,14 +32,6 @@ struct FrameEntry {
 /// `max_frame_size` decompressed bytes) followed by a seek table encoded as a
 /// ZSTD skippable frame.  The whole output is valid input for the standard zstd
 /// library.
-pub fn encode_seekable(
-    data: &[u8],
-    max_frame_size: usize,
-    level: i32,
-) -> Z3dsResult<Vec<u8>> {
-    encode_seekable_with_progress(data, max_frame_size, level, None)
-}
-
 pub fn encode_seekable_with_progress(
     data: &[u8],
     max_frame_size: usize,
@@ -152,6 +144,10 @@ fn strip_seek_table(data: &[u8]) -> &[u8] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn encode_seekable(data: &[u8], max_frame_size: usize, level: i32) -> Z3dsResult<Vec<u8>> {
+        encode_seekable_with_progress(data, max_frame_size, level, None)
+    }
 
     // Reads num_frames from the seek table at the end of encoded output.
     fn read_num_frames(data: &[u8]) -> u32 {
