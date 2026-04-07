@@ -3,12 +3,14 @@ const input = ref("");
 const output = ref("");
 
 const { result, error, loading, run } = useOperation();
+const progress = useProgress("decrypt");
 
 watch(input, (val) => {
   if (val) output.value = deriveDecryptedPath(val);
 });
 
 async function execute() {
+  progress.reset();
   await run("cmd_decrypt_rom", {
     input: input.value,
     output: output.value,
@@ -35,6 +37,12 @@ async function execute() {
       label="Output Path"
       :save-dialog="true"
       :filters="[{ name: '3DS ROM', extensions: ['cia', '3ds', 'cci', 'cxi'] }]"
+    />
+
+    <ProgressBar
+      :percent="progress.percent.value"
+      :message="progress.message.value"
+      :running="progress.running.value"
     />
 
     <RunButton :loading="loading" :disabled="!input || !output" @click="execute">

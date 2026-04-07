@@ -10,6 +10,10 @@ const ensureTicket = ref(true);
 const { result, error, loading, run } = useOperation();
 const progress = useProgress("cdn-to-cia");
 
+watch(compress, (val) => {
+  if (val) decrypt.value = true;
+});
+
 async function execute() {
   progress.reset();
   await run("cmd_cdn_to_cia", {

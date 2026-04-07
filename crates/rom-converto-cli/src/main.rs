@@ -70,7 +70,7 @@ async fn main() -> Result<()> {
             CtrCommands::GenerateCdnTicket(cmd) => {
                 generate_ticket_from_cdn(&cmd.cdn_dir, &cmd.output).await?
             }
-            CtrCommands::Decrypt(cmd) => decrypt_rom(&cmd.input, &cmd.output).await?,
+            CtrCommands::Decrypt(cmd) => decrypt_rom(&cmd.input, &cmd.output, &progress).await?,
             CtrCommands::Compress(cmd) => {
                 let output = cmd
                     .output

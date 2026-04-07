@@ -54,9 +54,14 @@ pub async fn cmd_generate_ticket(cdn_dir: PathBuf, output: PathBuf) -> Result<St
 }
 
 #[tauri::command]
-pub async fn cmd_decrypt_rom(input: PathBuf, output: PathBuf) -> Result<String, String> {
+pub async fn cmd_decrypt_rom(
+    app: AppHandle,
+    input: PathBuf,
+    output: PathBuf,
+) -> Result<String, String> {
+    let progress = Arc::new(TauriProgress::new(app, "decrypt"));
     let out_display = output.display().to_string();
-    tokio::spawn(async move { decrypt_rom(&input, &output).await })
+    tokio::spawn(async move { decrypt_rom(&input, &output, progress.as_ref()).await })
         .await
         .map_err(err_to_string)?
         .map_err(err_to_string)?;

@@ -25,6 +25,7 @@ use crate::nintendo::ctr::models::seeddb::SeedDatabase;
 use crate::nintendo::ctr::models::title_metadata::ContentChunkRecord;
 use crate::nintendo::ctr::util::align_64;
 use crate::nintendo::ctr::z3ds::models::underlying_magic;
+use crate::util::ProgressReporter;
 use anyhow::{Context, anyhow};
 use binrw::BinRead;
 use futures::future::select_ok;
@@ -86,6 +87,7 @@ async fn copy_plain_section(
     cia: &mut CiaReader,
     writer: &mut BufWriter<&mut File>,
     size: u32,
+    progress: &dyn ProgressReporter,
 ) -> anyhow::Result<()> {
     let mut remaining_bytes = size;
     let mut buf = vec![0u8; CHUNK_SIZE];
@@ -97,6 +99,7 @@ async fn copy_plain_section(
             .await
             .context("writing plain chunk")?;
         remaining_bytes -= CHUNK_SIZE as u32;
+        progress.inc(CHUNK_SIZE as u64);
     }
 
     if remaining_bytes > 0 {
@@ -106,6 +109,7 @@ async fn copy_plain_section(
             .write_all(tail)
             .await
             .context("writing final plain chunk")?;
+        progress.inc(remaining_bytes as u64);
     }
 
     Ok(())
@@ -118,6 +122,7 @@ async fn write_exheader_section(
     ctr: &[u8; 16],
     base_key: [u8; 16],
     fixed_crypto: u8,
+    progress: &dyn ProgressReporter,
 ) -> anyhow::Result<()> {
     let mut key = base_key;
     if let Some(fixed) = fixed_key(fixed_crypto) {
@@ -128,6 +133,7 @@ async fn write_exheader_section(
     cia.read(&mut buf).await.context("reading ExHeader")?;
     Aes128Ctr::new_from_slices(&key, ctr)?.apply_keystream(&mut buf);
     writer.write_all(&buf).await.context("writing ExHeader")?;
+    progress.inc(size as u64);
     Ok(())
 }
 
@@ -146,6 +152,7 @@ async fn write_exefs_section(
     cia: &mut CiaReader,
     writer: &mut BufWriter<&mut File>,
     opts: ExefsDecryptOptions,
+    progress: &dyn ProgressReporter,
 ) -> anyhow::Result<()> {
     let mut working_key = opts.base_key;
     if let Some(fixed) = fixed_key(opts.fixed_crypto) {
@@ -197,9 +204,11 @@ async fn write_exefs_section(
         .write_all(&decrypted_exefs)
         .await
         .context("writing ExeFS")?;
+    progress.inc(opts.size as u64);
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn write_romfs_section(
     cia: &mut CiaReader,
     writer: &mut BufWriter<&mut File>,
@@ -208,6 +217,7 @@ async fn write_romfs_section(
     uses_extra_crypto: u8,
     fixed_crypto: u8,
     key_y: u128,
+    progress: &dyn ProgressReporter,
 ) -> anyhow::Result<()> {
     let mut key = derive_ctr_key(CTR_KEYS_0[extra_crypto_index(uses_extra_crypto)], key_y);
     if let Some(fixed) = fixed_key(fixed_crypto) {
@@ -229,6 +239,7 @@ async fn write_romfs_section(
             .await
             .context("writing RomFS chunk")?;
         remaining_bytes -= CHUNK_SIZE as u32;
+        progress.inc(CHUNK_SIZE as u64);
     }
 
     if remaining_bytes > 0 {
@@ -242,6 +253,7 @@ async fn write_romfs_section(
             .write_all(tail)
             .await
             .context("writing final RomFS chunk")?;
+        progress.inc(remaining_bytes as u64);
     }
 
     Ok(())
@@ -332,13 +344,14 @@ async fn write_to_file(
     ncch: &mut File,
     cia: &mut CiaReader,
     opts: NcchWriteOptions,
+    progress: &dyn ProgressReporter,
 ) -> anyhow::Result<()> {
     let mut buff_writer = BufWriter::new(ncch);
 
     advance_to_offset(&mut buff_writer, cia, opts.offset).await?;
 
     if !opts.encrypted {
-        copy_plain_section(cia, &mut buff_writer, opts.size).await?;
+        copy_plain_section(cia, &mut buff_writer, opts.size, progress).await?;
         buff_writer.flush().await?;
         return Ok(());
     }
@@ -354,6 +367,7 @@ async fn write_to_file(
                 &opts.counter,
                 base_key,
                 opts.fixed_crypto,
+                progress,
             )
             .await?
         }
@@ -370,6 +384,7 @@ async fn write_to_file(
                     use_seed_crypto: opts.use_seed_crypto,
                     key_y: opts.keys[1],
                 },
+                progress,
             )
             .await?
         }
@@ -382,6 +397,7 @@ async fn write_to_file(
                 opts.uses_extra_crypto,
                 opts.fixed_crypto,
                 opts.keys[1],
+                progress,
             )
             .await?
         }
@@ -440,6 +456,7 @@ pub async fn parse_ncch(
     cia: &mut CiaReader,
     offs: u64,
     mut title_id: [u8; 8],
+    progress: &dyn ProgressReporter,
 ) -> anyhow::Result<()> {
     if cia.from_ncsd {
         debug!("  Parsing {} NCCH", CTR_NCSD_PARTITIONS[cia.cidx as usize]);
@@ -550,6 +567,7 @@ pub async fn parse_ncch(
                 encrypted,
                 keys: [ncch_key_y, key_y],
             },
+            progress,
         )
         .await?;
     }
@@ -570,6 +588,7 @@ pub async fn parse_ncch(
                 encrypted,
                 keys: [ncch_key_y, key_y],
             },
+            progress,
         )
         .await?;
     }
@@ -590,6 +609,7 @@ pub async fn parse_ncch(
                 encrypted,
                 keys: [ncch_key_y, key_y],
             },
+            progress,
         )
         .await?;
     }
@@ -597,7 +617,11 @@ pub async fn parse_ncch(
     Ok(())
 }
 
-pub async fn parse_and_decrypt_ncsd(input: &Path, partition: Option<u8>) -> anyhow::Result<()> {
+pub async fn parse_and_decrypt_ncsd(
+    input: &Path,
+    partition: Option<u8>,
+    progress: &dyn ProgressReporter,
+) -> anyhow::Result<()> {
     debug!("Parsing NCSD file: {}", input.display());
 
     let mut rom_file = File::open(input).await?;
@@ -657,13 +681,16 @@ pub async fn parse_and_decrypt_ncsd(input: &Path, partition: Option<u8>) -> anyh
             true,
         );
 
-        parse_ncch(&mut reader, partition_offset, title_id).await?;
+        parse_ncch(&mut reader, partition_offset, title_id, progress).await?;
     }
 
     Ok(())
 }
 
-pub async fn parse_and_decrypt_ncch(input: &Path) -> anyhow::Result<()> {
+pub async fn parse_and_decrypt_ncch(
+    input: &Path,
+    progress: &dyn ProgressReporter,
+) -> anyhow::Result<()> {
     debug!("Parsing standalone NCCH file: {}", input.display());
 
     let rom_file = File::open(input).await?;
@@ -680,12 +707,16 @@ pub async fn parse_and_decrypt_ncch(input: &Path) -> anyhow::Result<()> {
         false,
     );
 
-    parse_ncch(&mut reader, 0, [0u8; 8]).await?;
+    parse_ncch(&mut reader, 0, [0u8; 8], progress).await?;
 
     Ok(())
 }
 
-pub async fn parse_and_decrypt_cia(input: &Path, partition: Option<u8>) -> anyhow::Result<()> {
+pub async fn parse_and_decrypt_cia(
+    input: &Path,
+    partition: Option<u8>,
+    progress: &dyn ProgressReporter,
+) -> anyhow::Result<()> {
     debug!("Parsing CIA file: {}", input.display());
 
     let mut rom_file = File::open(input).await?;
@@ -795,7 +826,7 @@ pub async fn parse_and_decrypt_cia(input: &Path, partition: Option<u8>) -> anyho
                     {
                         continue;
                     }
-                    parse_ncch(&mut cia_handle, 0, tid[0..8].try_into()?).await?;
+                    parse_ncch(&mut cia_handle, 0, tid[0..8].try_into()?, progress).await?;
                 } else {
                     return Err(anyhow!("Cia can't be parsed"));
                 }

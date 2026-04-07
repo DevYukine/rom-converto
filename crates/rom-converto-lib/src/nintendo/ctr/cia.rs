@@ -8,6 +8,7 @@ use crate::nintendo::ctr::models::cia::{
 };
 use crate::nintendo::ctr::models::ticket::Ticket;
 use crate::nintendo::ctr::models::title_metadata::TitleMetadata;
+use crate::util::ProgressReporter;
 use binrw::{BinRead, BinWrite, Endian};
 use byteorder::{BigEndian, ReadBytesExt};
 use sha2::{Digest, Sha256};
@@ -19,9 +20,13 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
 pub async fn decrypt_from_encrypted_cia(
     input: &Path,
     out_writer: &mut BufWriter<File>,
+    progress: &dyn ProgressReporter,
 ) -> anyhow::Result<()> {
     // 1) Decrypt NCCH files inside the CIA
-    parse_and_decrypt_cia(input, None).await?;
+    let input_size = tokio::fs::metadata(input).await?.len();
+    progress.start(input_size, "Decrypting CIA...");
+    parse_and_decrypt_cia(input, None, progress).await?;
+    progress.finish();
 
     // 2) Read original cia without content
     let data = tokio::fs::read(input).await?;
@@ -133,7 +138,15 @@ pub async fn write_cia(
     tik_path: &Path,
     tmd: TitleMetadata,
     tik: Ticket,
+    progress: &dyn ProgressReporter,
 ) -> anyhow::Result<()> {
+    let total_content_size: u64 = tmd
+        .content_chunk_records
+        .iter()
+        .map(|e| e.content_size)
+        .sum();
+    progress.start(total_content_size, "Building CIA...");
+
     // Read all content files
     let mut content = vec![];
     for entry in &tmd.content_chunk_records {
@@ -143,6 +156,7 @@ pub async fn write_cia(
         let mut content_file = File::open(content_path).await?;
         let mut bytes = Vec::new();
         content_file.read_to_end(&mut bytes).await?;
+        progress.inc(entry.content_size);
         content.extend_from_slice(&bytes);
     }
 
@@ -195,6 +209,8 @@ pub async fn write_cia(
     // Write to output
     out.write_all(&cia_buf).await?;
     out.flush().await?;
+
+    progress.finish();
 
     Ok(())
 }

@@ -40,11 +40,15 @@ pub struct CdnToCiaOptions {
     pub compress: bool,
 }
 
-pub async fn decrypt_cia(input: &Path, output: &Path) -> Result<()> {
+pub async fn decrypt_cia(
+    input: &Path,
+    output: &Path,
+    progress: &dyn ProgressReporter,
+) -> Result<()> {
     let out = File::create(output).await?;
     let mut out = BufWriter::new(out);
 
-    decrypt_from_encrypted_cia(input, &mut out).await?;
+    decrypt_from_encrypted_cia(input, &mut out, progress).await?;
 
     out.flush().await?;
 
@@ -53,7 +57,14 @@ pub async fn decrypt_cia(input: &Path, output: &Path) -> Result<()> {
     Ok(())
 }
 
-pub async fn decrypt_rom(input: &Path, output: &Path) -> Result<()> {
+pub async fn decrypt_rom(
+    input: &Path,
+    output: &Path,
+    progress: &dyn ProgressReporter,
+) -> Result<()> {
+    let file_size = tokio::fs::metadata(input).await?.len();
+    progress.start(file_size, "Decrypting...");
+
     let mut file = File::open(input).await?;
 
     // Read magic at offset 0x100 (shared by NCSD and NCCH)
@@ -64,10 +75,10 @@ pub async fn decrypt_rom(input: &Path, output: &Path) -> Result<()> {
 
     if magic_buf == underlying_magic::NCSD {
         info!("Detected NCSD format (.3ds/.cci)");
-        decrypt_ncsd(input, output).await?;
+        decrypt_ncsd(input, output, progress).await?;
     } else if magic_buf == underlying_magic::NCCH {
         info!("Detected standalone NCCH format (.cxi)");
-        decrypt_ncch(input, output).await?;
+        decrypt_ncch(input, output, progress).await?;
     } else {
         // Try CIA: check if the u32 at offset 0 matches CIA_HEADER_SIZE
         let mut file = File::open(input).await?;
@@ -78,7 +89,7 @@ pub async fn decrypt_rom(input: &Path, output: &Path) -> Result<()> {
         let header_size = u32::from_le_bytes(header_check);
         if header_size == CIA_HEADER_SIZE {
             info!("Detected CIA format");
-            decrypt_cia(input, output).await?;
+            decrypt_cia(input, output, progress).await?;
         } else {
             return Err(anyhow::anyhow!(
                 "Unrecognized format: no NCSD/NCCH magic at 0x100 and not a CIA file"
@@ -86,17 +97,19 @@ pub async fn decrypt_rom(input: &Path, output: &Path) -> Result<()> {
         }
     }
 
+    progress.finish();
+
     Ok(())
 }
 
-async fn decrypt_ncsd(input: &Path, output: &Path) -> Result<()> {
+async fn decrypt_ncsd(input: &Path, output: &Path, progress: &dyn ProgressReporter) -> Result<()> {
     use crate::nintendo::ctr::constants::{
         CTR_MEDIA_UNIT_SIZE, CTR_NCSD_PARTITIONS, NCSD_PARTITION_COUNT, NCSD_PARTITION_ENTRY_SIZE,
         NCSD_PARTITION_TABLE_OFFSET,
     };
 
     // Step 1: Decrypt NCCH partitions to temp files
-    parse_and_decrypt_ncsd(input, None).await?;
+    parse_and_decrypt_ncsd(input, None, progress).await?;
 
     // Step 2: Copy the original file to the output
     fs::copy(input, output).await?;
@@ -150,9 +163,9 @@ async fn decrypt_ncsd(input: &Path, output: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn decrypt_ncch(input: &Path, output: &Path) -> Result<()> {
+async fn decrypt_ncch(input: &Path, output: &Path, progress: &dyn ProgressReporter) -> Result<()> {
     // Step 1: Decrypt to a temp .ncch file
-    parse_and_decrypt_ncch(input).await?;
+    parse_and_decrypt_ncch(input, progress).await?;
 
     // Step 2: Find and rename the temp file to the output path
     let parent = input.parent().unwrap_or_else(|| Path::new("."));
@@ -303,6 +316,7 @@ async fn convert_cdn_to_cia_single(
         &ticket_path,
         title_metadata,
         ticket,
+        progress,
     )
     .await?;
 
@@ -311,7 +325,7 @@ async fn convert_cdn_to_cia_single(
     if opts.decrypt {
         let decrypted_cia_path = output.with_extension("decrypted.cia");
 
-        decrypt_cia(&output, &decrypted_cia_path).await?;
+        decrypt_cia(&output, &decrypted_cia_path, progress).await?;
 
         fs::remove_file(&output).await?;
         fs::rename(&decrypted_cia_path, &output).await?;
