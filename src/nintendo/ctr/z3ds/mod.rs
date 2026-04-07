@@ -1,10 +1,10 @@
 use std::path::{Path, PathBuf};
 
+mod compress;
+mod decompress;
 pub mod error;
 pub mod models;
 mod seekable;
-mod compress;
-mod decompress;
 
 pub use compress::compress_rom;
 pub use decompress::decompress_rom;
@@ -210,7 +210,10 @@ mod tests {
         decompress_rom(&compressed, &decompressed).await.unwrap();
 
         let result = tokio::fs::read(&decompressed).await.unwrap();
-        assert_eq!(original, result, "decompressed 3DSX does not match original");
+        assert_eq!(
+            original, result,
+            "decompressed 3DSX does not match original"
+        );
     }
 
     #[tokio::test]
@@ -245,7 +248,10 @@ mod tests {
 
         let result = compress_rom(&input, &output).await;
         assert!(
-            matches!(result, Err(crate::nintendo::ctr::z3ds::error::Z3dsError::InputNotDecrypted)),
+            matches!(
+                result,
+                Err(crate::nintendo::ctr::z3ds::error::Z3dsError::InputNotDecrypted)
+            ),
             "expected InputNotDecrypted, got {result:?}"
         );
     }
@@ -274,7 +280,9 @@ mod tests {
         let input = dir.path().join("game.3dsx");
         let output = dir.path().join("game.z3dsx");
 
-        tokio::fs::write(&input, &make_fake_3dsx(16 * 1024)).await.unwrap();
+        tokio::fs::write(&input, &make_fake_3dsx(16 * 1024))
+            .await
+            .unwrap();
         compress_rom(&input, &output).await.unwrap();
 
         let header_bytes = tokio::fs::read(&output).await.unwrap();

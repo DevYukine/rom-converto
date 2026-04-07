@@ -7,6 +7,10 @@ pub fn align_64(x: u64) -> u64 {
     align(x, 64)
 }
 
+pub fn align_64_usize(x: usize) -> usize {
+    align_64(x as u64) as usize
+}
+
 fn align(x: u64, y: u64) -> u64 {
     let mask: u64 = !(y - 1);
     (x + (y - 1)) & mask

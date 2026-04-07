@@ -116,7 +116,7 @@ impl Z3dsMetadata {
         // Pad to 16-byte boundary
         let remainder = buf.len() % 16;
         if remainder != 0 {
-            buf.extend(std::iter::repeat(0u8).take(16 - remainder));
+            buf.extend(std::iter::repeat_n(0u8, 16 - remainder));
         }
 
         Ok(buf)
@@ -283,7 +283,10 @@ mod tests {
 
     #[test]
     fn metadata_round_trip_single_item() {
-        let md = Z3dsMetadata::new(vec![Z3dsMetadataItem::new_str("compressor", "rom-converto")]);
+        let md = Z3dsMetadata::new(vec![Z3dsMetadataItem::new_str(
+            "compressor",
+            "rom-converto",
+        )]);
         let bytes = md.to_bytes().unwrap();
         let items = Z3dsMetadata::from_bytes(&bytes);
 

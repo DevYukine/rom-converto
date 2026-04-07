@@ -1,6 +1,7 @@
 use crate::nintendo::ctr::z3ds::error::{Z3dsError, Z3dsResult};
 use crate::nintendo::ctr::z3ds::models::Z3dsHeader;
 use crate::nintendo::ctr::z3ds::seekable::decode_seekable;
+use crate::util::{BYTES_PER_MB, PROGRESS_TEMPLATE};
 use binrw::BinRead;
 use indicatif::{ProgressBar, ProgressStyle};
 use log::info;
@@ -9,8 +10,6 @@ use std::path::Path;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufWriter, SeekFrom};
 use tokio::task;
-
-const PROGRESS_TEMPLATE: &str = "{msg}\n{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})";
 
 pub async fn decompress_rom(input: &Path, output: &Path) -> Z3dsResult<()> {
     let mut file = File::open(input).await?;
@@ -42,7 +41,7 @@ pub async fn decompress_rom(input: &Path, output: &Path) -> Z3dsResult<()> {
     pg.set_message(format!(
         "Decompressing {} ({:.2} MB compressed)",
         input.file_name().unwrap_or_default().to_string_lossy(),
-        header.compressed_size as f64 / 1_000_000.0,
+        header.compressed_size as f64 / BYTES_PER_MB,
     ));
 
     let decompressed = task::spawn_blocking(move || decode_seekable(&compressed)).await??;
@@ -66,7 +65,7 @@ pub async fn decompress_rom(input: &Path, output: &Path) -> Z3dsResult<()> {
         "Decompressed {} -> {} ({:.2} MB)",
         input.display(),
         output.display(),
-        actual_size as f64 / 1_000_000.0,
+        actual_size as f64 / BYTES_PER_MB,
     );
 
     Ok(())

@@ -138,13 +138,23 @@ mod tests {
     // Reads num_frames from the seek table at the end of encoded output.
     fn read_num_frames(data: &[u8]) -> u32 {
         let offset = data.len() - 9;
-        u32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]])
+        u32::from_le_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+        ])
     }
 
     // Reads the trailing u32 magic from the encoded output.
     fn read_trailing_magic(data: &[u8]) -> u32 {
         let offset = data.len() - 4;
-        u32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]])
+        u32::from_le_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+        ])
     }
 
     // --- Round-trip correctness ---
@@ -204,7 +214,9 @@ mod tests {
         let mut state: u64 = 0xDEADBEEFCAFEBABE;
         let original: Vec<u8> = (0..4096)
             .map(|_| {
-                state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
                 (state >> 56) as u8
             })
             .collect();

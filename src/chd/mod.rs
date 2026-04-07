@@ -7,6 +7,7 @@ use crate::chd::reader::ChdReader;
 use crate::chd::reader::cue_generator::{generate_cue_sheet, parse_chd_track_metadata};
 use crate::chd::writer::ChdWriter;
 use crate::chd::writer::metadata::MetadataHash;
+use crate::util::{BYTES_PER_MB, PROGRESS_TEMPLATE};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use log::{debug, info};
 use sha1::{Digest, Sha1};
@@ -22,9 +23,6 @@ pub(crate) mod map;
 mod models;
 pub(crate) mod reader;
 pub(crate) mod writer;
-
-const BYTES_PER_MB: f64 = 1_000_000.0;
-const PROGRESS_TEMPLATE: &str = "{msg}\n{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})";
 
 pub async fn convert_to_chd(
     pb: MultiProgress,

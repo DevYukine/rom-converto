@@ -1,8 +1,11 @@
+use crate::nintendo::ctr::constants::CTR_MEDIA_UNIT_SIZE;
+use crate::nintendo::ctr::util::align_64_usize;
 use crate::nintendo::ctr::z3ds::error::{Z3dsError, Z3dsResult};
 use crate::nintendo::ctr::z3ds::models::{
     Z3dsHeader, Z3dsMetadata, Z3dsMetadataItem, underlying_magic,
 };
 use crate::nintendo::ctr::z3ds::seekable::{FRAME_SIZE_CIA, FRAME_SIZE_DEFAULT, encode_seekable};
+use crate::util::{BYTES_PER_MB, PROGRESS_TEMPLATE};
 use binrw::BinWrite;
 use chrono::Utc;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -12,8 +15,6 @@ use std::path::Path;
 use tokio::fs::File;
 use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::task;
-
-const PROGRESS_TEMPLATE: &str = "{msg}\n{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})";
 
 pub async fn compress_rom(input: &Path, output: &Path) -> Z3dsResult<()> {
     let ext = input
@@ -49,7 +50,7 @@ pub async fn compress_rom(input: &Path, output: &Path) -> Z3dsResult<()> {
     pg.set_message(format!(
         "Compressing {} ({:.2} MB)",
         input.file_name().unwrap_or_default().to_string_lossy(),
-        uncompressed_size as f64 / 1_000_000.0,
+        uncompressed_size as f64 / BYTES_PER_MB,
     ));
 
     // Build metadata
@@ -64,8 +65,8 @@ pub async fn compress_rom(input: &Path, output: &Path) -> Z3dsResult<()> {
 
     // Compress on a blocking thread
     let data_clone = input_data.clone();
-    let compressed = task::spawn_blocking(move || encode_seekable(&data_clone, frame_size, 0))
-        .await??;
+    let compressed =
+        task::spawn_blocking(move || encode_seekable(&data_clone, frame_size, 0)).await??;
 
     pg.finish_and_clear();
 
@@ -156,7 +157,7 @@ pub(crate) fn check_ncsd_not_encrypted(data: &[u8]) -> Z3dsResult<()> {
     }
     let partition_offset_mu =
         u32::from_le_bytes([data[0x120], data[0x121], data[0x122], data[0x123]]);
-    let partition_offset = partition_offset_mu as usize * 0x200;
+    let partition_offset = partition_offset_mu as usize * CTR_MEDIA_UNIT_SIZE as usize;
     check_ncch_not_encrypted(data, partition_offset)
 }
 
@@ -176,20 +177,14 @@ pub(crate) fn check_cia_not_encrypted(data: &[u8]) -> Z3dsResult<()> {
     //   0x14  u32  meta_size
     //   0x18  u64  content_size
     let header_size = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
-    let cert_chain_size =
-        u32::from_le_bytes([data[8], data[9], data[10], data[11]]) as usize;
-    let ticket_size =
-        u32::from_le_bytes([data[12], data[13], data[14], data[15]]) as usize;
+    let cert_chain_size = u32::from_le_bytes([data[8], data[9], data[10], data[11]]) as usize;
+    let ticket_size = u32::from_le_bytes([data[12], data[13], data[14], data[15]]) as usize;
     let tmd_size = u32::from_le_bytes([data[16], data[17], data[18], data[19]]) as usize;
 
-    fn align64(v: usize) -> usize {
-        (v + 63) & !63
-    }
-
-    let content_offset = align64(header_size)
-        + align64(cert_chain_size)
-        + align64(ticket_size)
-        + align64(tmd_size);
+    let content_offset = align_64_usize(header_size)
+        + align_64_usize(cert_chain_size)
+        + align_64_usize(ticket_size)
+        + align_64_usize(tmd_size);
 
     check_ncch_not_encrypted(data, content_offset)
 }
