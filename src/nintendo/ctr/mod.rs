@@ -1,18 +1,22 @@
 use crate::commands::ctr::CdnToCiaCommand;
 use crate::nintendo::ctr::cia::{decrypt_from_encrypted_cia, write_cia};
+use crate::nintendo::ctr::constants::NCCH_MAGIC_OFFSET;
+use crate::nintendo::ctr::decrypt::cia::{parse_and_decrypt_ncch, parse_and_decrypt_ncsd};
+use crate::nintendo::ctr::models::cia::CIA_HEADER_SIZE;
 use crate::nintendo::ctr::models::ticket::Ticket;
 use crate::nintendo::ctr::models::title_metadata::TitleMetadata;
 use crate::nintendo::ctr::title_key::generate_title_key;
 use crate::nintendo::ctr::util::fs::{find_title_file, find_tmd_file};
+use crate::nintendo::ctr::z3ds::models::underlying_magic;
 use anyhow::Result;
 use binrw::BinRead;
 use futures::TryFutureExt;
 use log::{debug, info, warn};
-use std::io::Cursor;
+use std::io::{Cursor, SeekFrom};
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::fs::File;
-use tokio::io::{AsyncWriteExt, BufWriter};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufWriter};
 
 mod cia;
 mod constants;
@@ -33,6 +37,129 @@ pub async fn decrypt_cia(input: &Path, output: &Path) -> Result<()> {
 
     info!("Successfully decrypted CIA file");
 
+    Ok(())
+}
+
+pub async fn decrypt_rom(input: &Path, output: &Path) -> Result<()> {
+    let mut file = File::open(input).await?;
+
+    // Read magic at offset 0x100 (shared by NCSD and NCCH)
+    let mut magic_buf = [0u8; 4];
+    file.seek(SeekFrom::Start(NCCH_MAGIC_OFFSET as u64)).await?;
+    file.read_exact(&mut magic_buf).await?;
+    drop(file);
+
+    if magic_buf == underlying_magic::NCSD {
+        info!("Detected NCSD format (.3ds/.cci)");
+        decrypt_ncsd(input, output).await?;
+    } else if magic_buf == underlying_magic::NCCH {
+        info!("Detected standalone NCCH format (.cxi)");
+        decrypt_ncch(input, output).await?;
+    } else {
+        // Try CIA: check if the u32 at offset 0 matches CIA_HEADER_SIZE
+        let mut file = File::open(input).await?;
+        let mut header_check = [0u8; 4];
+        file.read_exact(&mut header_check).await?;
+        drop(file);
+
+        let header_size = u32::from_le_bytes(header_check);
+        if header_size == CIA_HEADER_SIZE {
+            info!("Detected CIA format");
+            decrypt_cia(input, output).await?;
+        } else {
+            return Err(anyhow::anyhow!(
+                "Unrecognized format: no NCSD/NCCH magic at 0x100 and not a CIA file"
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+async fn decrypt_ncsd(input: &Path, output: &Path) -> Result<()> {
+    use crate::nintendo::ctr::constants::{
+        CTR_MEDIA_UNIT_SIZE, CTR_NCSD_PARTITIONS, NCSD_PARTITION_COUNT, NCSD_PARTITION_ENTRY_SIZE,
+        NCSD_PARTITION_TABLE_OFFSET,
+    };
+
+    // Step 1: Decrypt NCCH partitions to temp files
+    parse_and_decrypt_ncsd(input, None).await?;
+
+    // Step 2: Copy the original file to the output
+    fs::copy(input, output).await?;
+
+    // Step 3: Read the partition table to know where each partition lives
+    let mut out_file = fs::OpenOptions::new().write(true).open(output).await?;
+
+    let mut table_buf = [0u8; NCSD_PARTITION_COUNT * NCSD_PARTITION_ENTRY_SIZE];
+    {
+        let mut in_file = File::open(input).await?;
+        in_file
+            .seek(SeekFrom::Start(NCSD_PARTITION_TABLE_OFFSET as u64))
+            .await?;
+        in_file.read_exact(&mut table_buf).await?;
+    }
+
+    let parent = input.parent().unwrap_or_else(|| Path::new("."));
+    let stem = input
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| anyhow::anyhow!("input path has no valid filename stem"))?;
+
+    // Step 4: For each partition, overwrite with the decrypted .ncch temp file
+    for (i, partition_name) in CTR_NCSD_PARTITIONS.iter().enumerate() {
+        let entry_offset = i * NCSD_PARTITION_ENTRY_SIZE;
+        let offset_mu = u32::from_le_bytes(table_buf[entry_offset..entry_offset + 4].try_into()?);
+        let size_mu = u32::from_le_bytes(table_buf[entry_offset + 4..entry_offset + 8].try_into()?);
+
+        if offset_mu == 0 && size_mu == 0 {
+            continue;
+        }
+
+        let ncch_path = parent.join(format!("{stem}.{partition_name}.{i:08X}.ncch"));
+
+        if !ncch_path.exists() {
+            continue;
+        }
+
+        let partition_offset = offset_mu as u64 * CTR_MEDIA_UNIT_SIZE as u64;
+        let ncch_data = fs::read(&ncch_path).await?;
+
+        out_file.seek(SeekFrom::Start(partition_offset)).await?;
+        out_file.write_all(&ncch_data).await?;
+
+        fs::remove_file(&ncch_path).await?;
+    }
+
+    out_file.flush().await?;
+
+    info!("Successfully decrypted NCSD file");
+    Ok(())
+}
+
+async fn decrypt_ncch(input: &Path, output: &Path) -> Result<()> {
+    // Step 1: Decrypt to a temp .ncch file
+    parse_and_decrypt_ncch(input).await?;
+
+    // Step 2: Find and rename the temp file to the output path
+    let parent = input.parent().unwrap_or_else(|| Path::new("."));
+    let stem = input
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| anyhow::anyhow!("input path has no valid filename stem"))?;
+
+    let ncch_path = parent.join(format!("{stem}.0.00000000.ncch"));
+
+    if ncch_path.exists() {
+        fs::rename(&ncch_path, output).await?;
+    } else {
+        return Err(anyhow::anyhow!(
+            "Decrypted NCCH file not found at {}",
+            ncch_path.display()
+        ));
+    }
+
+    info!("Successfully decrypted NCCH file");
     Ok(())
 }
 

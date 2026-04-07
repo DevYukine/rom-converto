@@ -6,7 +6,7 @@ use crate::github::api::GithubApi;
 use crate::nintendo::ctr::z3ds::{
     compress_rom, decompress_rom, derive_compressed_path, derive_decompressed_path,
 };
-use crate::nintendo::ctr::{convert_cdn_to_cia, decrypt_cia, generate_ticket_from_cdn};
+use crate::nintendo::ctr::{convert_cdn_to_cia, decrypt_rom, generate_ticket_from_cdn};
 use crate::updater::{check_for_new_version_and_notify, cleanup_old_executable, self_update};
 use anyhow::Result;
 use clap::Parser;
@@ -57,7 +57,7 @@ async fn main() -> Result<()> {
             CtrCommands::GenerateCdnTicket(cmd) => {
                 generate_ticket_from_cdn(&cmd.cdn_dir, &cmd.output).await?
             }
-            CtrCommands::DecryptCia(cmd) => decrypt_cia(&cmd.input, &cmd.output).await?,
+            CtrCommands::Decrypt(cmd) => decrypt_rom(&cmd.input, &cmd.output).await?,
             CtrCommands::Compress(cmd) => {
                 let output = cmd
                     .output

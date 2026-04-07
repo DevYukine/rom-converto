@@ -6,7 +6,7 @@ use std::path::PathBuf;
 pub enum CtrCommands {
     CdnToCia(CdnToCiaCommand),
     GenerateCdnTicket(GenerateCdnTicketCommand),
-    DecryptCia(DecryptCiaCommand),
+    Decrypt(DecryptCommand),
     Compress(CompressRomCommand),
     Decompress(DecompressRomCommand),
 }
@@ -78,14 +78,17 @@ pub struct GenerateCdnTicketCommand {
     pub output: PathBuf,
 }
 
-/// Decrypts a CIA file
+/// Decrypts an encrypted 3DS ROM file
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
-pub struct DecryptCiaCommand {
-    /// Input CIA file path
+#[command(
+    long_about = "Decrypt an encrypted 3DS ROM file\n\nSupported input formats: .cia, .3ds, .cci, .cxi\nThe format is auto-detected from the file contents.\nA new decrypted file is written to the output path."
+)]
+pub struct DecryptCommand {
+    /// Input ROM file path (.cia, .3ds, .cci, or .cxi)
     #[arg(value_name = "INPUT")]
     pub input: PathBuf,
 
-    /// Output decrypted CIA file path
+    /// Output decrypted file path
     #[arg(value_name = "OUTPUT")]
     pub output: PathBuf,
 }

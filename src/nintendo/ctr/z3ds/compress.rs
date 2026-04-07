@@ -1,6 +1,6 @@
 use crate::nintendo::ctr::constants::{
     CTR_MEDIA_UNIT_SIZE, NCCH_FLAGS_OFFSET, NCCH_FLAGS7_NOCRYPTO, NCCH_MAGIC_OFFSET,
-    NCSD_PARTITION0_OFFSET_FIELD,
+    NCSD_PARTITION_TABLE_OFFSET,
 };
 use crate::nintendo::ctr::util::align_64_usize;
 use crate::nintendo::ctr::z3ds::error::{Z3dsError, Z3dsResult};
@@ -147,14 +147,14 @@ pub(crate) fn check_ncsd_not_encrypted(data: &[u8]) -> Z3dsResult<()> {
         return Ok(());
     }
     // Partition 0 NCCH starts at the offset stored in NCSD partition table.
-    if data.len() < NCSD_PARTITION0_OFFSET_FIELD + 8 {
+    if data.len() < NCSD_PARTITION_TABLE_OFFSET + 8 {
         return Ok(());
     }
     let partition_offset_mu = u32::from_le_bytes([
-        data[NCSD_PARTITION0_OFFSET_FIELD],
-        data[NCSD_PARTITION0_OFFSET_FIELD + 1],
-        data[NCSD_PARTITION0_OFFSET_FIELD + 2],
-        data[NCSD_PARTITION0_OFFSET_FIELD + 3],
+        data[NCSD_PARTITION_TABLE_OFFSET],
+        data[NCSD_PARTITION_TABLE_OFFSET + 1],
+        data[NCSD_PARTITION_TABLE_OFFSET + 2],
+        data[NCSD_PARTITION_TABLE_OFFSET + 3],
     ]);
     let partition_offset = partition_offset_mu as usize * CTR_MEDIA_UNIT_SIZE as usize;
     check_ncch_not_encrypted(data, partition_offset)
@@ -192,7 +192,7 @@ pub(crate) fn check_cia_not_encrypted(data: &[u8]) -> Z3dsResult<()> {
 mod tests {
     use super::*;
     use crate::nintendo::ctr::constants::{
-        NCCH_FLAGS_OFFSET, NCCH_FLAGS7_NOCRYPTO, NCCH_MAGIC_OFFSET, NCSD_PARTITION0_OFFSET_FIELD,
+        NCCH_FLAGS_OFFSET, NCCH_FLAGS7_NOCRYPTO, NCCH_MAGIC_OFFSET, NCSD_PARTITION_TABLE_OFFSET,
     };
     use crate::nintendo::ctr::z3ds::error::Z3dsError;
 
@@ -215,7 +215,7 @@ mod tests {
         let mut data = make_ncch_at(total, partition_offset, ncch_decrypted);
         let magic_start = NCCH_MAGIC_OFFSET;
         data[magic_start..magic_start + 4].copy_from_slice(&underlying_magic::NCSD);
-        data[NCSD_PARTITION0_OFFSET_FIELD..NCSD_PARTITION0_OFFSET_FIELD + 4]
+        data[NCSD_PARTITION_TABLE_OFFSET..NCSD_PARTITION_TABLE_OFFSET + 4]
             .copy_from_slice(&partition_mu.to_le_bytes());
         data
     }

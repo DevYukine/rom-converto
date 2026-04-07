@@ -10,9 +10,10 @@ use crate::nintendo::ctr::constants::{
     EXEFS_MAX_FILE_ENTRIES, EXEFS_SECTION_BANNER, EXEFS_SECTION_ICON,
     NCCH_FLAGS_EXTRA_CRYPTO_INDEX, NCCH_FLAGS_OFFSET, NCCH_FLAGS7_CRYPTO_METHOD,
     NCCH_FLAGS7_FIXED_KEY, NCCH_FLAGS7_NOCRYPTO, NCCH_FLAGS7_SEED_CRYPTO, NCCH_MAGIC,
-    TICKET_COMMON_KEY_IDX_OFFSET, TICKET_SIG_BODY_OFFSET, TICKET_TITLE_ID_OFFSET,
-    TICKET_TITLE_KEY_OFFSET, TMD_CONTENT_COUNT_OFFSET, TMD_CONTENT_RECORD_SIZE,
-    TMD_CONTENT_RECORDS_OFFSET,
+    NCCH_MAGIC_OFFSET, NCSD_PARTITION_COUNT, NCSD_PARTITION_ENTRY_SIZE,
+    NCSD_PARTITION_TABLE_OFFSET, NCSD_TITLE_ID_OFFSET, TICKET_COMMON_KEY_IDX_OFFSET,
+    TICKET_SIG_BODY_OFFSET, TICKET_TITLE_ID_OFFSET, TICKET_TITLE_KEY_OFFSET,
+    TMD_CONTENT_COUNT_OFFSET, TMD_CONTENT_RECORD_SIZE, TMD_CONTENT_RECORDS_OFFSET,
 };
 use crate::nintendo::ctr::decrypt::model::{CiaContent, NcchSection};
 use crate::nintendo::ctr::decrypt::reader::CiaReader;
@@ -23,6 +24,7 @@ use crate::nintendo::ctr::models::ncch_header::NcchHeader;
 use crate::nintendo::ctr::models::seeddb::SeedDatabase;
 use crate::nintendo::ctr::models::title_metadata::ContentChunkRecord;
 use crate::nintendo::ctr::util::align_64;
+use crate::nintendo::ctr::z3ds::models::underlying_magic;
 use anyhow::{Context, anyhow};
 use binrw::BinRead;
 use futures::future::select_ok;
@@ -591,6 +593,94 @@ pub async fn parse_ncch(
         )
         .await?;
     }
+
+    Ok(())
+}
+
+pub async fn parse_and_decrypt_ncsd(input: &Path, partition: Option<u8>) -> anyhow::Result<()> {
+    debug!("Parsing NCSD file: {}", input.display());
+
+    let mut rom_file = File::open(input).await?;
+
+    // Verify NCSD magic at offset 0x100
+    let mut magic_buf = [0u8; 4];
+    rom_file
+        .seek(SeekFrom::Start(NCCH_MAGIC_OFFSET as u64))
+        .await?;
+    rom_file.read_exact(&mut magic_buf).await?;
+    if magic_buf != underlying_magic::NCSD {
+        return Err(anyhow!("Not a valid NCSD file: wrong magic"));
+    }
+
+    // Read title ID at offset 0x108
+    let mut title_id = [0u8; 8];
+    rom_file.seek(SeekFrom::Start(NCSD_TITLE_ID_OFFSET)).await?;
+    rom_file.read_exact(&mut title_id).await?;
+
+    // Read partition table (8 entries, each 8 bytes: offset_mu:u32 + size_mu:u32)
+    rom_file
+        .seek(SeekFrom::Start(NCSD_PARTITION_TABLE_OFFSET as u64))
+        .await?;
+    let mut table_buf = [0u8; NCSD_PARTITION_COUNT * NCSD_PARTITION_ENTRY_SIZE];
+    rom_file.read_exact(&mut table_buf).await?;
+
+    for (i, partition_name) in CTR_NCSD_PARTITIONS.iter().enumerate() {
+        let entry_offset = i * NCSD_PARTITION_ENTRY_SIZE;
+        let offset_mu = u32::from_le_bytes(table_buf[entry_offset..entry_offset + 4].try_into()?);
+        let size_mu = u32::from_le_bytes(table_buf[entry_offset + 4..entry_offset + 8].try_into()?);
+
+        if offset_mu == 0 && size_mu == 0 {
+            continue;
+        }
+
+        if let Some(target) = partition
+            && i as u8 != target
+        {
+            continue;
+        }
+
+        let partition_offset = offset_mu as u64 * CTR_MEDIA_UNIT_SIZE as u64;
+
+        debug!(
+            "  Partition {i} ({partition_name}) at offset 0x{partition_offset:X}, size {size_mu} MU",
+        );
+
+        let mut reader = CiaReader::new(
+            rom_file.try_clone().await?,
+            false,
+            input.to_path_buf(),
+            [0u8; 16],
+            i as u32,
+            i as u16,
+            0,
+            false,
+            true,
+        );
+
+        parse_ncch(&mut reader, partition_offset, title_id).await?;
+    }
+
+    Ok(())
+}
+
+pub async fn parse_and_decrypt_ncch(input: &Path) -> anyhow::Result<()> {
+    debug!("Parsing standalone NCCH file: {}", input.display());
+
+    let rom_file = File::open(input).await?;
+
+    let mut reader = CiaReader::new(
+        rom_file,
+        false,
+        input.to_path_buf(),
+        [0u8; 16],
+        0,
+        0,
+        0,
+        true,
+        false,
+    );
+
+    parse_ncch(&mut reader, 0, [0u8; 8]).await?;
 
     Ok(())
 }

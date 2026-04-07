@@ -54,7 +54,10 @@ pub const NCCH_FLAGS7_SEED_CRYPTO: u8 = 0x20;
 pub const NCCH_FLAGS_EXTRA_CRYPTO_INDEX: usize = 3;
 
 // NCSD partition table
-pub const NCSD_PARTITION0_OFFSET_FIELD: usize = 0x120;
+pub const NCSD_PARTITION_TABLE_OFFSET: usize = 0x120;
+pub const NCSD_PARTITION_COUNT: usize = 8;
+pub const NCSD_PARTITION_ENTRY_SIZE: usize = 8; // 4 bytes offset + 4 bytes size, both in media units
+pub const NCSD_TITLE_ID_OFFSET: u64 = 0x108;
 
 // ExeFS format
 pub const EXEFS_HEADER_SIZE: usize = 0x200;
