@@ -7,7 +7,9 @@ use crate::nintendo::ctr::z3ds::error::{Z3dsError, Z3dsResult};
 use crate::nintendo::ctr::z3ds::models::{
     Z3dsHeader, Z3dsMetadata, Z3dsMetadataItem, underlying_magic,
 };
-use crate::nintendo::ctr::z3ds::seekable::{FRAME_SIZE_CIA, FRAME_SIZE_DEFAULT, encode_seekable};
+use crate::nintendo::ctr::z3ds::seekable::{
+    FRAME_SIZE_CIA, FRAME_SIZE_DEFAULT, encode_seekable_with_progress,
+};
 use crate::util::{BYTES_PER_MB, ProgressReporter};
 use binrw::BinWrite;
 use chrono::Utc;
@@ -47,15 +49,6 @@ pub async fn compress_rom(
 
     let uncompressed_size = input_data.len() as u64;
 
-    progress.start(
-        uncompressed_size,
-        &format!(
-            "Compressing {} ({:.2} MB)",
-            input.file_name().unwrap_or_default().to_string_lossy(),
-            uncompressed_size as f64 / BYTES_PER_MB,
-        ),
-    );
-
     // Build metadata
     let version = env!("CARGO_PKG_VERSION");
     let metadata = Z3dsMetadata::new(vec![
@@ -66,11 +59,48 @@ pub async fn compress_rom(
     let metadata_bytes = metadata.to_bytes()?;
     let metadata_size = metadata_bytes.len() as u32;
 
-    // Compress on a blocking thread
-    let data_clone = input_data.clone();
-    let compressed =
-        task::spawn_blocking(move || encode_seekable(&data_clone, frame_size, 0)).await??;
+    // Phase 1: Compress
+    progress.start(
+        uncompressed_size,
+        &format!(
+            "Compressing {} ({:.2} MB)",
+            input.file_name().unwrap_or_default().to_string_lossy(),
+            uncompressed_size as f64 / BYTES_PER_MB,
+        ),
+    );
 
+    // Use an atomic counter to relay progress from the blocking thread
+    use std::sync::atomic::{AtomicU64, Ordering};
+    let bytes_done = std::sync::Arc::new(AtomicU64::new(0));
+    let bytes_done_clone = bytes_done.clone();
+    let data_clone = input_data.clone();
+    let mut handle = task::spawn_blocking(move || {
+        encode_seekable_with_progress(&data_clone, frame_size, 0, Some(&|bytes| {
+            bytes_done_clone.fetch_add(bytes, Ordering::Relaxed);
+        }))
+    });
+
+    // Poll progress every 100ms while compression runs
+    let compressed = loop {
+        match tokio::time::timeout(std::time::Duration::from_millis(100), &mut handle).await {
+            Ok(result) => {
+                // Task finished
+                break result??;
+            }
+            Err(_) => {
+                // Timeout — report progress so far
+                let delta = bytes_done.swap(0, Ordering::Relaxed);
+                if delta > 0 {
+                    progress.inc(delta);
+                }
+            }
+        }
+    };
+    // Report any remaining progress
+    let remaining = bytes_done.swap(0, Ordering::Relaxed);
+    if remaining > 0 {
+        progress.inc(remaining);
+    }
     progress.finish();
 
     let compressed_size = compressed.len() as u64;
@@ -87,13 +117,32 @@ pub async fn compress_rom(
     header.write(&mut header_buf)?;
     let header_bytes = header_buf.into_inner();
 
-    // Write header + metadata + compressed data
+    // Phase 2: Write to disk
+    let total_write = header_bytes.len() as u64 + metadata_bytes.len() as u64 + compressed_size;
+    progress.start(
+        total_write,
+        &format!(
+            "Writing {} ({:.2} MB)",
+            output.file_name().unwrap_or_default().to_string_lossy(),
+            total_write as f64 / BYTES_PER_MB,
+        ),
+    );
+
     let file = File::create(output).await?;
     let mut out = BufWriter::new(file);
     out.write_all(&header_bytes).await?;
+    progress.inc(header_bytes.len() as u64);
     out.write_all(&metadata_bytes).await?;
-    out.write_all(&compressed).await?;
+    progress.inc(metadata_bytes.len() as u64);
+
+    // Write compressed data in chunks for progress
+    const WRITE_CHUNK: usize = 4 * 1024 * 1024; // 4 MB
+    for chunk in compressed.chunks(WRITE_CHUNK) {
+        out.write_all(chunk).await?;
+        progress.inc(chunk.len() as u64);
+    }
     out.flush().await?;
+    progress.finish();
 
     let ratio = (1.0 - compressed_size as f64 / uncompressed_size as f64) * 100.0;
     info!(

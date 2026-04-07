@@ -35,8 +35,11 @@ pub async fn decompress_rom(
     let mut compressed = vec![0u8; header.compressed_size as usize];
     file.read_exact(&mut compressed).await?;
 
+    // Phase 1: Decompress
+    // We estimate total as compressed + uncompressed (decompress + write phases)
+    let total_work = header.compressed_size + header.uncompressed_size;
     progress.start(
-        header.compressed_size,
+        total_work,
         &format!(
             "Decompressing {} ({:.2} MB compressed)",
             input.file_name().unwrap_or_default().to_string_lossy(),
@@ -45,8 +48,7 @@ pub async fn decompress_rom(
     );
 
     let decompressed = task::spawn_blocking(move || decode_seekable(&compressed)).await??;
-
-    progress.finish();
+    progress.inc(header.compressed_size);
 
     let actual_size = decompressed.len() as u64;
     if actual_size != header.uncompressed_size {
@@ -56,10 +58,17 @@ pub async fn decompress_rom(
         });
     }
 
+    // Phase 2: Write to disk in chunks for progress
     let out_file = File::create(output).await?;
     let mut out = BufWriter::new(out_file);
-    out.write_all(&decompressed).await?;
+
+    const WRITE_CHUNK: usize = 4 * 1024 * 1024; // 4 MB
+    for chunk in decompressed.chunks(WRITE_CHUNK) {
+        out.write_all(chunk).await?;
+        progress.inc(chunk.len() as u64);
+    }
     out.flush().await?;
+    progress.finish();
 
     info!(
         "Decompressed {} -> {} ({:.2} MB)",
