@@ -1,6 +1,6 @@
 # rom-converto
 
-A command-line utility suite for converting, compressing, encrypting, and decrypting ROM formats, currently focused on the **Nintendo 3DS**.
+A command-line utility suite for converting, compressing, encrypting, and decrypting ROM formats, currently focused on the **Nintendo 3DS** and **CD image** formats.
 
 Built for developers, tinkerers and archivists.
 
@@ -10,16 +10,62 @@ Built for developers, tinkerers and archivists.
 
 * [x] Convert 3DS CDN files to `.cia` format
 * [x] Generate 3DS Tickets for CDN files
-* [x] Decrypts `.cia` files for usage on emulators (e.g. [Azahar](https://azahar-emu.org/))
+* [x] Decrypt `.cia` files for usage on emulators (e.g. [Azahar](https://azahar-emu.org/))
+* [x] Compress CD images (`.bin` + `.cue`) to `.chd` format
+* [x] Extract `.chd` files back to `.bin` + `.cue`
+* [x] Verify `.chd` file integrity (SHA1 checksums)
+* [x] Self-update from GitHub releases
 
-### Planned
-* [ ] Allow for compression of `.bin` and `.cue` files to `.chd` format
+## Commands
 
-### Usage
+### CTR (Nintendo 3DS)
 
-Use the Help command to see available commands and options for each subcommand
+| Command | Description |
+|---|---|
+| `ctr cdn-to-cia <CDN_DIR> [OUTPUT]` | Convert a CDN directory to `.cia` |
+| `ctr generate-cdn-ticket <CDN_DIR> [OUTPUT]` | Generate a `.tik` ticket from CDN content |
+| `ctr decrypt-cia <INPUT> <OUTPUT>` | Decrypt an encrypted `.cia` for emulator use |
 
-To decrypt .cia files, place a `seeddb.bin` file alongside the executable to load seeds locally. If no `seeddb.bin` is found, the tool will try to fetch the required seed from Nintendo’s API.
+**`cdn-to-cia` flags:**
+
+| Flag | Description |
+|---|---|
+| `-C, --cleanup` | Remove original CDN files after conversion |
+| `-R, --recursive` | Process all subdirectories, converting each to `.cia` |
+| `-T, --ensure-ticket-exists` | Auto-generate a ticket file if one is not found |
+| `-D, --decrypt` | Also decrypt the CIA after creation |
+
+> **`generate-cdn-ticket`:** Generated tickets use placeholder values (null Console ID, etc.) and only work on modded consoles and emulators. They will not work on stock hardware.
+
+> **`decrypt-cia`:** Place a `seeddb.bin` file next to the executable to resolve seeds locally. If none is found, the tool will fetch the required seed from Nintendo's API.
+
+---
+
+### CHD
+
+| Command | Description |
+|---|---|
+| `chd compress <INPUT_CUE> <OUTPUT>` | Compress a `.bin` + `.cue` pair to `.chd` |
+| `chd extract <INPUT> <OUTPUT>` | Extract a `.chd` file back to `.bin` + `.cue` |
+| `chd verify <INPUT>` | Verify the SHA1 integrity of a `.chd` file |
+
+**Flags:**
+
+| Flag | Applies to | Description |
+|---|---|---|
+| `-f, --force` | `compress` | Overwrite output file if it already exists |
+| `-p, --parent <PARENT>` | `extract`, `verify` | Specify a parent CHD for parent-child relationships |
+| `--fix` | `verify` | Correct SHA1 values in the CHD header if mismatches are found |
+
+---
+
+### Self-Update
+
+```
+rom-converto self-update
+```
+
+Checks GitHub for a newer release and replaces the current binary in place.
 
 ## Development
 
@@ -30,9 +76,15 @@ To decrypt .cia files, place a `seeddb.bin` file alongside the executable to loa
 ### Running in Development
 
 1. Clone the repository
-2. Run `cargo run --package rom-converto --bin rom-converto` to run the cli
+2. Run `cargo run --package rom-converto --bin rom-converto` to run the CLI
 
-The resulting binary will be in `target/release/rom-converto`.
+### Building a Release Binary
+
+```
+cargo build --release
+```
+
+The resulting binary will be at `target/release/rom-converto`.
 
 ## Built With
 
@@ -40,7 +92,9 @@ The resulting binary will be in `target/release/rom-converto`.
 * [tokio](https://tokio.rs/) - Asynchronous runtime
 * [clap](https://github.com/clap-rs/clap) - Command-line argument parsing
 * [binrw](https://github.com/jam1garner/binrw) - Reading/writing binary data structures
-* [RustCrypto](https://github.com/rustcrypto) - Libraries for cryptographic operations
+* [RustCrypto](https://github.com/rustcrypto) - AES encryption, key derivation, and hashing
+* [flate2](https://github.com/rust-lang/flate2-rs) / [lzma-sdk-sys](https://github.com/nicowillis/lzma-sdk-sys) / [flacenc](https://github.com/yotarok/flacenc-rs) - CHD compression codecs
+* [indicatif](https://github.com/console-rs/indicatif) - Progress bars
 
 ## Contributing
 
