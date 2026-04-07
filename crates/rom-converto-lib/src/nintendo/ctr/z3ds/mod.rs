@@ -59,6 +59,7 @@ mod tests {
         NCCH_FLAGS_OFFSET, NCCH_FLAGS7_NOCRYPTO, NCCH_MAGIC_OFFSET,
     };
     use crate::nintendo::ctr::z3ds::models::{Z3DS_MAGIC, underlying_magic};
+    use crate::util::NoProgress;
     use std::path::PathBuf;
 
     #[test]
@@ -184,8 +185,12 @@ mod tests {
         let original = make_fake_decrypted_cxi(64 * 1024);
         tokio::fs::write(&input, &original).await.unwrap();
 
-        compress_rom(&input, &compressed).await.unwrap();
-        decompress_rom(&compressed, &decompressed).await.unwrap();
+        compress_rom(&input, &compressed, &NoProgress)
+            .await
+            .unwrap();
+        decompress_rom(&compressed, &decompressed, &NoProgress)
+            .await
+            .unwrap();
 
         let result = tokio::fs::read(&decompressed).await.unwrap();
         assert_eq!(original, result, "decompressed CXI does not match original");
@@ -201,8 +206,12 @@ mod tests {
         let original = make_fake_3dsx(128 * 1024);
         tokio::fs::write(&input, &original).await.unwrap();
 
-        compress_rom(&input, &compressed).await.unwrap();
-        decompress_rom(&compressed, &decompressed).await.unwrap();
+        compress_rom(&input, &compressed, &NoProgress)
+            .await
+            .unwrap();
+        decompress_rom(&compressed, &decompressed, &NoProgress)
+            .await
+            .unwrap();
 
         let result = tokio::fs::read(&decompressed).await.unwrap();
         assert_eq!(
@@ -220,7 +229,9 @@ mod tests {
         let original = make_fake_decrypted_cxi(256 * 1024);
         tokio::fs::write(&input, &original).await.unwrap();
 
-        compress_rom(&input, &compressed).await.unwrap();
+        compress_rom(&input, &compressed, &NoProgress)
+            .await
+            .unwrap();
 
         let compressed_size = tokio::fs::metadata(&compressed).await.unwrap().len();
         assert!(
@@ -241,7 +252,7 @@ mod tests {
         data[NCCH_MAGIC_OFFSET..NCCH_MAGIC_OFFSET + 4].copy_from_slice(&underlying_magic::NCCH);
         tokio::fs::write(&input, &data).await.unwrap();
 
-        let result = compress_rom(&input, &output).await;
+        let result = compress_rom(&input, &output, &NoProgress).await;
         assert!(
             matches!(
                 result,
@@ -259,7 +270,7 @@ mod tests {
 
         tokio::fs::write(&input, b"dummy").await.unwrap();
 
-        let result = compress_rom(&input, &output).await;
+        let result = compress_rom(&input, &output, &NoProgress).await;
         assert!(
             matches!(
                 result,
@@ -278,7 +289,7 @@ mod tests {
         tokio::fs::write(&input, &make_fake_3dsx(16 * 1024))
             .await
             .unwrap();
-        compress_rom(&input, &output).await.unwrap();
+        compress_rom(&input, &output, &NoProgress).await.unwrap();
 
         let header_bytes = tokio::fs::read(&output).await.unwrap();
         assert_eq!(&header_bytes[0..4], Z3DS_MAGIC);

@@ -1,7 +1,7 @@
 use crate::nintendo::ctr::z3ds::error::{Z3dsError, Z3dsResult};
 use crate::nintendo::ctr::z3ds::models::Z3dsHeader;
 use crate::nintendo::ctr::z3ds::seekable::decode_seekable;
-use crate::util::{BYTES_PER_MB, create_standalone_progress_bar};
+use crate::util::{BYTES_PER_MB, ProgressReporter};
 use binrw::BinRead;
 use log::info;
 use std::io::Cursor;
@@ -10,7 +10,11 @@ use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufWriter, SeekFrom};
 use tokio::task;
 
-pub async fn decompress_rom(input: &Path, output: &Path) -> Z3dsResult<()> {
+pub async fn decompress_rom(
+    input: &Path,
+    output: &Path,
+    progress: &dyn ProgressReporter,
+) -> Z3dsResult<()> {
     let mut file = File::open(input).await?;
 
     // Read and parse the header
@@ -31,18 +35,18 @@ pub async fn decompress_rom(input: &Path, output: &Path) -> Z3dsResult<()> {
     let mut compressed = vec![0u8; header.compressed_size as usize];
     file.read_exact(&mut compressed).await?;
 
-    let pg = create_standalone_progress_bar(
+    progress.start(
         header.compressed_size,
-        format!(
+        &format!(
             "Decompressing {} ({:.2} MB compressed)",
             input.file_name().unwrap_or_default().to_string_lossy(),
             header.compressed_size as f64 / BYTES_PER_MB,
         ),
-    )?;
+    );
 
     let decompressed = task::spawn_blocking(move || decode_seekable(&compressed)).await??;
 
-    pg.finish_and_clear();
+    progress.finish();
 
     let actual_size = decompressed.len() as u64;
     if actual_size != header.uncompressed_size {

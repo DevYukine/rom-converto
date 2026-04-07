@@ -7,8 +7,7 @@ use crate::chd::reader::ChdReader;
 use crate::chd::reader::cue_generator::{generate_cue_sheet, parse_chd_track_metadata};
 use crate::chd::writer::ChdWriter;
 use crate::chd::writer::metadata::MetadataHash;
-use crate::util::{BYTES_PER_MB, create_progress_bar};
-use indicatif::MultiProgress;
+use crate::util::{BYTES_PER_MB, ProgressReporter};
 use log::{debug, info};
 use sha1::{Digest, Sha1};
 use std::path::PathBuf;
@@ -25,7 +24,7 @@ pub(crate) mod reader;
 pub(crate) mod writer;
 
 pub async fn convert_to_chd(
-    pb: MultiProgress,
+    progress: &dyn ProgressReporter,
     cue_path: PathBuf,
     output_path: PathBuf,
     force: bool,
@@ -63,17 +62,16 @@ pub async fn convert_to_chd(
         ChdWriter::create(&output_path, total_sectors, CD_HUNK_BYTES, &cue_sheet).await?;
 
     let total_mb = (bin_size as f64) / BYTES_PER_MB;
-    let pg = create_progress_bar(
-        &pb,
+    progress.start(
         bin_size,
-        format!("Compressing to CHD (~{:.2} MB)", total_mb),
-    )?;
+        &format!("Compressing to CHD (~{:.2} MB)", total_mb),
+    );
 
     writer
-        .compress_all_hunks(&mut bin_reader, total_sectors, &pg)
+        .compress_all_hunks(&mut bin_reader, total_sectors, progress)
         .await?;
 
-    pg.finish_and_clear();
+    progress.finish();
 
     debug!("Finalizing CHD file...");
     writer.finalize().await?;
@@ -115,7 +113,7 @@ pub(crate) fn compute_overall_sha1(
 }
 
 pub async fn extract_from_chd(
-    pb: MultiProgress,
+    progress: &dyn ProgressReporter,
     input_path: PathBuf,
     output_path: PathBuf,
     parent_path: Option<PathBuf>,
@@ -160,11 +158,10 @@ pub async fn extract_from_chd(
 
     let total_bin_bytes = total_frames as u64 * SECTOR_SIZE as u64;
     let total_mb = total_bin_bytes as f64 / BYTES_PER_MB;
-    let pg = create_progress_bar(
-        &pb,
+    progress.start(
         total_bin_bytes,
-        format!("Extracting from CHD (~{:.2} MB)", total_mb),
-    )?;
+        &format!("Extracting from CHD (~{:.2} MB)", total_mb),
+    );
 
     let mut frames_written: u32 = 0;
 
@@ -181,14 +178,14 @@ pub async fn extract_from_chd(
             bin_file
                 .write_all(&hunk_data[offset..offset + SECTOR_SIZE])
                 .await?;
-            pg.inc(SECTOR_SIZE as u64);
+            progress.inc(SECTOR_SIZE as u64);
         }
 
         frames_written += frames_in_hunk as u32;
     }
 
     bin_file.flush().await?;
-    pg.finish_and_clear();
+    progress.finish();
 
     // Write CUE file
     debug!("Writing CUE file: {:?}", cue_path);
@@ -206,7 +203,7 @@ pub async fn extract_from_chd(
 }
 
 pub async fn verify_chd(
-    pb: MultiProgress,
+    progress: &dyn ProgressReporter,
     input_path: PathBuf,
     parent_path: Option<PathBuf>,
     fix: bool,
@@ -221,7 +218,7 @@ pub async fn verify_chd(
     let hunk_bytes = reader.header().hunk_bytes as u64;
     let logical_bytes = reader.header().logical_bytes;
 
-    let pg = create_progress_bar(&pb, logical_bytes, "Verifying CHD integrity")?;
+    progress.start(logical_bytes, "Verifying CHD integrity");
 
     let mut raw_sha1_hasher = Sha1::new();
     let mut bytes_remaining = logical_bytes;
@@ -232,10 +229,10 @@ pub async fn verify_chd(
         let bytes_to_hash = (bytes_remaining).min(hunk_bytes) as usize;
         raw_sha1_hasher.update(&hunk_data[..bytes_to_hash]);
         bytes_remaining = bytes_remaining.saturating_sub(hunk_bytes);
-        pg.inc(bytes_to_hash as u64);
+        progress.inc(bytes_to_hash as u64);
     }
 
-    pg.finish_and_clear();
+    progress.finish();
 
     // Compare raw SHA1
     let computed_raw: [u8; SHA1_BYTES] = raw_sha1_hasher.finalize().into();

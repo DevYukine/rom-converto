@@ -10,6 +10,7 @@ pub struct SeedDatabase {
 }
 
 #[derive(BinRead, BinWrite, Debug, Clone)]
+#[non_exhaustive]
 pub struct SeedEntry {
     #[br(map = |x: [u8; 8]| {
         let mut key = x;
@@ -26,8 +27,6 @@ pub struct SeedEntry {
     })]
     pub key: String,
 
-    pub value: [u8; 16],
-
     #[brw(pad_after = 8)]
-    _padding: (),
+    pub value: [u8; 16],
 }

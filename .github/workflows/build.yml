@@ -5,7 +5,7 @@ on:
   push:
     branches: [ "develop" ]
     paths:
-      - src/**
+      - crates/**
       - Cargo.toml
       - Cargo.lock
       - .github/workflows/build.yml
@@ -54,7 +54,7 @@ jobs:
         with:
           command: build
           target: ${{ matrix.target }}
-          args: "--locked --release"
+          args: "--locked --release -p rom-converto-cli"
           strip: true
 
       - name: Package binary (Unix)

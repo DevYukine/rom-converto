@@ -11,9 +11,6 @@ pub enum Z3dsError {
     #[error(transparent)]
     BinRWError(#[from] binrw::Error),
 
-    #[error(transparent)]
-    TemplateError(#[from] indicatif::style::TemplateError),
-
     #[error("unsupported Z3DS version: {0}")]
     UnsupportedVersion(u8),
 

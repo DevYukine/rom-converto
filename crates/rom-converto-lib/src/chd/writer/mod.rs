@@ -15,8 +15,8 @@ use crate::chd::error::{ChdError, ChdResult};
 use crate::chd::map::{MapEntry, compress_v5_map, crc16_ccitt};
 use crate::chd::models::{CHD_V5_HEADER_SIZE, ChdHeaderV5, ChdVersion, SHA1_BYTES};
 use crate::chd::writer::metadata::{MetadataHash, generate_cd_metadata};
+use crate::util::ProgressReporter;
 use binrw::BinWrite;
-use indicatif::ProgressBar;
 use log::debug;
 use sha1::{Digest, Sha1};
 use std::collections::VecDeque;
@@ -173,7 +173,7 @@ impl ChdWriter {
         &mut self,
         bin_reader: &mut BinReader,
         total_sectors: u32,
-        progress: &ProgressBar,
+        progress: &dyn ProgressReporter,
     ) -> ChdResult<()> {
         let hunk_bytes = self.header.hunk_bytes as usize;
         let frames_per_hunk = hunk_bytes / FRAME_SIZE;

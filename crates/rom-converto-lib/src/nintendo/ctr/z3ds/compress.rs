@@ -8,7 +8,7 @@ use crate::nintendo::ctr::z3ds::models::{
     Z3dsHeader, Z3dsMetadata, Z3dsMetadataItem, underlying_magic,
 };
 use crate::nintendo::ctr::z3ds::seekable::{FRAME_SIZE_CIA, FRAME_SIZE_DEFAULT, encode_seekable};
-use crate::util::{BYTES_PER_MB, create_standalone_progress_bar};
+use crate::util::{BYTES_PER_MB, ProgressReporter};
 use binrw::BinWrite;
 use chrono::Utc;
 use log::info;
@@ -18,7 +18,11 @@ use tokio::fs::File;
 use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::task;
 
-pub async fn compress_rom(input: &Path, output: &Path) -> Z3dsResult<()> {
+pub async fn compress_rom(
+    input: &Path,
+    output: &Path,
+    progress: &dyn ProgressReporter,
+) -> Z3dsResult<()> {
     let ext = input
         .extension()
         .and_then(|e| e.to_str())
@@ -43,17 +47,17 @@ pub async fn compress_rom(input: &Path, output: &Path) -> Z3dsResult<()> {
 
     let uncompressed_size = input_data.len() as u64;
 
-    let pg = create_standalone_progress_bar(
+    progress.start(
         uncompressed_size,
-        format!(
+        &format!(
             "Compressing {} ({:.2} MB)",
             input.file_name().unwrap_or_default().to_string_lossy(),
             uncompressed_size as f64 / BYTES_PER_MB,
         ),
-    )?;
+    );
 
     // Build metadata
-    let version = crate::built_info::PKG_VERSION;
+    let version = env!("CARGO_PKG_VERSION");
     let metadata = Z3dsMetadata::new(vec![
         Z3dsMetadataItem::new_str("compressor", &format!("rom-converto ({version})")),
         Z3dsMetadataItem::new_str("date", &Utc::now().to_rfc3339()),
@@ -67,7 +71,7 @@ pub async fn compress_rom(input: &Path, output: &Path) -> Z3dsResult<()> {
     let compressed =
         task::spawn_blocking(move || encode_seekable(&data_clone, frame_size, 0)).await??;
 
-    pg.finish_and_clear();
+    progress.finish();
 
     let compressed_size = compressed.len() as u64;
 

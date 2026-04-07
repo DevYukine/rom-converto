@@ -1775,7 +1775,32 @@ dependencies = [
 ]
 
 [[package]]
-name = "rom-converto"
+name = "rom-converto-cli"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "built 0.8.0",
+ "bytes",
+ "clap",
+ "const_format",
+ "dotenv",
+ "env_logger",
+ "futures",
+ "indicatif",
+ "indicatif-log-bridge",
+ "lazy_static",
+ "log",
+ "regex",
+ "reqwest",
+ "rom-converto-lib",
+ "serde",
+ "thiserror 2.0.18",
+ "tokio",
+ "tower",
+]
+
+[[package]]
+name = "rom-converto-lib"
 version = "0.4.0"
 dependencies = [
  "aes",
@@ -1783,41 +1808,30 @@ dependencies = [
  "async-recursion",
  "binrw",
  "block-padding",
- "built 0.8.0",
  "byteorder",
- "bytes",
  "cbc",
  "chrono",
- "clap",
  "claxon",
- "const_format",
  "crc",
  "ctr",
- "dotenv",
- "env_logger",
  "flacenc",
  "flate2",
  "futures",
  "hex",
  "hex-literal",
  "hmac",
- "indicatif",
- "indicatif-log-bridge",
  "lazy_static",
  "log",
  "lzma-sdk-sys",
  "md5",
  "pbkdf2",
- "regex",
  "reqwest",
- "serde",
  "sha1",
  "sha2",
  "sha256",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
- "tower",
  "zstd",
 ]
 

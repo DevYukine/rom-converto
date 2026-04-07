@@ -23,7 +23,7 @@ jobs:
         uses: TriPSs/conventional-changelog-action@v6
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          version-file: './Cargo.toml'
+          version-file: './crates/rom-converto-cli/Cargo.toml'
           version-path: "package.version"
       - name: Create Release
         id: create_release
@@ -77,7 +77,7 @@ jobs:
         with:
           command: build
           target: ${{ matrix.target }}
-          args: "--release"
+          args: "--release -p rom-converto-cli"
           strip: true
 
       - name: Package binary (Unix)

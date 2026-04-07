@@ -19,9 +19,6 @@ pub enum ChdError {
     #[error(transparent)]
     BinError(#[from] BinError),
 
-    #[error(transparent)]
-    TemplateError(#[from] indicatif::style::TemplateError),
-
     #[error("Chd file already exists, use --force to overwrite")]
     ChdFileAlreadyExists,
 

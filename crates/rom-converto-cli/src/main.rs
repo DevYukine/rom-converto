@@ -1,24 +1,24 @@
-use crate::chd::{convert_to_chd, extract_from_chd, verify_chd};
 use crate::commands::chd::ChdCommands;
 use crate::commands::ctr::CtrCommands;
 use crate::commands::{Cli, Commands, SelfUpdateCommand};
 use crate::github::api::GithubApi;
-use crate::nintendo::ctr::z3ds::{
-    compress_rom, decompress_rom, derive_compressed_path, derive_decompressed_path,
-};
-use crate::nintendo::ctr::{convert_cdn_to_cia, decrypt_rom, generate_ticket_from_cdn};
 use crate::updater::{check_for_new_version_and_notify, cleanup_old_executable, self_update};
+use crate::util::IndicatifProgress;
 use anyhow::Result;
 use clap::Parser;
 use indicatif::MultiProgress;
 use indicatif_log_bridge::LogWrapper;
+use rom_converto_lib::chd::{convert_to_chd, extract_from_chd, verify_chd};
+use rom_converto_lib::nintendo::ctr::z3ds::{
+    compress_rom, decompress_rom, derive_compressed_path, derive_decompressed_path,
+};
+use rom_converto_lib::nintendo::ctr::{
+    CdnToCiaOptions, convert_cdn_to_cia, decrypt_rom, generate_ticket_from_cdn,
+};
 use std::mem::discriminant;
 
-mod cd;
-mod chd;
 mod commands;
 mod github;
-mod nintendo;
 mod updater;
 mod util;
 
@@ -51,9 +51,22 @@ async fn main() -> Result<()> {
         check_for_new_version_and_notify(&mut github).await?;
     }
 
+    let progress = IndicatifProgress::new(pb);
+
     match cli.command {
         Commands::Ctr(inner) => match inner {
-            CtrCommands::CdnToCia(cmd) => convert_cdn_to_cia(cmd).await?,
+            CtrCommands::CdnToCia(cmd) => {
+                let opts = CdnToCiaOptions {
+                    cdn_dir: cmd.cdn_dir,
+                    output: cmd.output,
+                    cleanup: cmd.cleanup,
+                    recursive: cmd.recursive,
+                    ensure_ticket_exists: cmd.ensure_ticket_exists,
+                    decrypt: cmd.decrypt,
+                    compress: cmd.compress,
+                };
+                convert_cdn_to_cia(opts, &progress).await?
+            }
             CtrCommands::GenerateCdnTicket(cmd) => {
                 generate_ticket_from_cdn(&cmd.cdn_dir, &cmd.output).await?
             }
@@ -62,24 +75,24 @@ async fn main() -> Result<()> {
                 let output = cmd
                     .output
                     .unwrap_or_else(|| derive_compressed_path(&cmd.input));
-                compress_rom(&cmd.input, &output).await?
+                compress_rom(&cmd.input, &output, &progress).await?
             }
             CtrCommands::Decompress(cmd) => {
                 let output = cmd
                     .output
                     .unwrap_or_else(|| derive_decompressed_path(&cmd.input));
-                decompress_rom(&cmd.input, &output).await?
+                decompress_rom(&cmd.input, &output, &progress).await?
             }
         },
         Commands::Chd(inner) => match inner {
             ChdCommands::Compress(cmd) => {
-                convert_to_chd(pb.clone(), cmd.input_cue, cmd.output, cmd.force).await?
+                convert_to_chd(&progress, cmd.input_cue, cmd.output, cmd.force).await?
             }
             ChdCommands::Extract(cmd) => {
-                extract_from_chd(pb.clone(), cmd.input, cmd.output, cmd.parent).await?
+                extract_from_chd(&progress, cmd.input, cmd.output, cmd.parent).await?
             }
             ChdCommands::Verify(cmd) => {
-                verify_chd(pb.clone(), cmd.input, cmd.parent, cmd.fix).await?
+                verify_chd(&progress, cmd.input, cmd.parent, cmd.fix).await?
             }
         },
         Commands::SelfUpdate(_) => self_update(&mut github).await?,

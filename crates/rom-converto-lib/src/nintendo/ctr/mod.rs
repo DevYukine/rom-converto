@@ -1,4 +1,3 @@
-use crate::commands::ctr::CdnToCiaCommand;
 use crate::nintendo::ctr::cia::{decrypt_from_encrypted_cia, write_cia};
 use crate::nintendo::ctr::constants::NCCH_MAGIC_OFFSET;
 use crate::nintendo::ctr::decrypt::cia::{parse_and_decrypt_ncch, parse_and_decrypt_ncsd};
@@ -9,6 +8,7 @@ use crate::nintendo::ctr::title_key::generate_title_key;
 use crate::nintendo::ctr::util::fs::{find_title_file, find_tmd_file};
 use crate::nintendo::ctr::z3ds::models::underlying_magic;
 use crate::nintendo::ctr::z3ds::{compress_rom, derive_compressed_path};
+use crate::util::ProgressReporter;
 use anyhow::Result;
 use binrw::BinRead;
 use futures::TryFutureExt;
@@ -27,6 +27,18 @@ pub mod models;
 pub mod title_key;
 mod util;
 pub mod z3ds;
+
+/// Options for the CDN-to-CIA conversion (decoupled from CLI).
+#[derive(Debug, Clone)]
+pub struct CdnToCiaOptions {
+    pub cdn_dir: PathBuf,
+    pub output: Option<PathBuf>,
+    pub cleanup: bool,
+    pub recursive: bool,
+    pub ensure_ticket_exists: bool,
+    pub decrypt: bool,
+    pub compress: bool,
+}
 
 pub async fn decrypt_cia(input: &Path, output: &Path) -> Result<()> {
     let out = File::create(output).await?;
@@ -193,9 +205,12 @@ pub async fn generate_ticket_from_cdn(cdn_dir: &Path, output: &Path) -> Result<(
     Ok(())
 }
 
-pub async fn convert_cdn_to_cia(cmd: CdnToCiaCommand) -> Result<()> {
-    if cmd.recursive {
-        let mut directories = tokio::fs::read_dir(&cmd.cdn_dir).await?;
+pub async fn convert_cdn_to_cia(
+    opts: CdnToCiaOptions,
+    progress: &dyn ProgressReporter,
+) -> Result<()> {
+    if opts.recursive {
+        let mut directories = tokio::fs::read_dir(&opts.cdn_dir).await?;
 
         while let Ok(Some(entry)) = directories.next_entry().await {
             debug!("Processing directory: {}", entry.path().display());
@@ -204,11 +219,11 @@ pub async fn convert_cdn_to_cia(cmd: CdnToCiaCommand) -> Result<()> {
                 continue;
             }
 
-            let mut cmd_clone = cmd.clone();
-            cmd_clone.cdn_dir = entry.path();
-            cmd_clone.output = None;
+            let mut opts_clone = opts.clone();
+            opts_clone.cdn_dir = entry.path();
+            opts_clone.output = None;
 
-            if let Err(err) = convert_cdn_to_cia_single(cmd_clone).await {
+            if let Err(err) = convert_cdn_to_cia_single(opts_clone, progress).await {
                 warn!(
                     "Failed to convert CDN directory {}: {}",
                     entry.path().display(),
@@ -219,31 +234,34 @@ pub async fn convert_cdn_to_cia(cmd: CdnToCiaCommand) -> Result<()> {
 
         Ok(())
     } else {
-        convert_cdn_to_cia_single(cmd).await
+        convert_cdn_to_cia_single(opts, progress).await
     }
 }
 
-async fn convert_cdn_to_cia_single(cmd: CdnToCiaCommand) -> Result<()> {
-    let output = match cmd.output {
+async fn convert_cdn_to_cia_single(
+    opts: CdnToCiaOptions,
+    progress: &dyn ProgressReporter,
+) -> Result<()> {
+    let output = match opts.output {
         Some(path) => path,
         None => {
-            let name = cmd
+            let name = opts
                 .cdn_dir
                 .file_name()
                 .and_then(|name| name.to_str())
                 .map(|name| format!("{name}.cia"))
                 .ok_or_else(|| anyhow::anyhow!("CDN directory path has no name"))?;
 
-            let parent = cmd.cdn_dir.parent().unwrap_or_else(|| Path::new("."));
+            let parent = opts.cdn_dir.parent().unwrap_or_else(|| Path::new("."));
             parent.join(name)
         }
     };
 
-    let cdn_dir = &cmd.cdn_dir;
+    let cdn_dir = &opts.cdn_dir;
 
     let ticket_path = find_title_file(cdn_dir)
         .or_else(|err| async {
-            if cmd.ensure_ticket_exists {
+            if opts.ensure_ticket_exists {
                 let path = cdn_dir.join("ticket.tik");
                 debug!("Path for ticket file: {}", path.display());
                 debug!("CDN Directory: {}", cdn_dir.display());
@@ -290,7 +308,7 @@ async fn convert_cdn_to_cia_single(cmd: CdnToCiaCommand) -> Result<()> {
 
     info!("✅ Successfully created CIA file {}", output.display());
 
-    if cmd.decrypt {
+    if opts.decrypt {
         let decrypted_cia_path = output.with_extension("decrypted.cia");
 
         decrypt_cia(&output, &decrypted_cia_path).await?;
@@ -301,17 +319,17 @@ async fn convert_cdn_to_cia_single(cmd: CdnToCiaCommand) -> Result<()> {
         debug!("Deleted original encrypted CIA file: {}", output.display());
     }
 
-    if cmd.compress {
+    if opts.compress {
         let compressed_path = derive_compressed_path(&output);
 
-        compress_rom(&output, &compressed_path).await?;
+        compress_rom(&output, &compressed_path, progress).await?;
 
         fs::remove_file(&output).await?;
 
         debug!("Deleted intermediate CIA file: {}", output.display());
     }
 
-    if cmd.cleanup {
+    if opts.cleanup {
         fs::remove_dir_all(cdn_dir).await?;
 
         debug!("Deleted CDN directory: {}", cdn_dir.display());
