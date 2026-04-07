@@ -47,7 +47,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Build (release) for ${{ matrix.target }}
         uses: houseabsolute/actions-rust-cross@v1
@@ -72,7 +72,7 @@ jobs:
           Copy-Item "target/${{ matrix.target }}/release/rom-converto.exe" -Destination artifact
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: rom-converto-${{ matrix.classifier }}
           path: artifact/
