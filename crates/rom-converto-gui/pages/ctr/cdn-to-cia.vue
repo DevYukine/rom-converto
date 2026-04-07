@@ -1,13 +1,10 @@
 <script setup lang="ts">
-const cdnDir = ref("");
-const output = ref("");
-const decrypt = ref(true);
-const compress = ref(false);
-const cleanup = ref(false);
-const recursive = ref(false);
-const ensureTicket = ref(true);
+import { storeToRefs } from "pinia";
+import { useCtrCdnToCiaStore } from "~/stores/ctr-cdn-to-cia";
 
-const { result, error, loading, run } = useOperation();
+const store = useCtrCdnToCiaStore();
+const { cdnDir, output, decrypt, compress, cleanup, recursive, ensureTicket, result, error, loading } = storeToRefs(store);
+const { run } = useOperation({ result, error, loading });
 const progress = useProgress("cdn-to-cia");
 
 watch(compress, (val) => {
@@ -29,63 +26,78 @@ async function execute() {
 </script>
 
 <template>
-  <div class="mx-auto max-w-xl space-y-6">
-    <h2 class="text-xl font-semibold">CDN to CIA</h2>
-    <p class="text-sm text-zinc-400">
-      Convert Nintendo CDN content to CIA format.
-    </p>
-
-    <FileDropZone
-      v-model="cdnDir"
-      label="CDN Directory"
-      :directory="true"
-      :primary="true"
+  <div>
+    <PageHeader
+      title="CDN to CIA"
+      description="Convert Nintendo CDN content to CIA format."
+      :loading="loading"
+      :has-result="!!result"
+      :has-error="!!error"
     />
 
-    <FileDropZone
-      v-model="output"
-      label="Output (optional)"
-      :filters="[{ name: 'CIA', extensions: ['cia'] }]"
-    />
+    <OperationCard>
+      <div class="space-y-5">
+        <!-- 2-col: files left, flags right -->
+        <div class="grid gap-5 lg:grid-cols-2">
+          <div class="space-y-5">
+            <FileDropZone
+              v-model="cdnDir"
+              label="CDN Directory"
+              :directory="true"
+              :primary="true"
+            />
 
-    <div class="space-y-3 rounded-lg border border-zinc-800 p-4">
-      <FlagToggle
-        v-model="decrypt"
-        label="Decrypt"
-        description="Decrypt the CIA after conversion"
-      />
-      <FlagToggle
-        v-model="compress"
-        label="Compress"
-        description="Compress to .zcia after conversion (requires decrypt)"
-      />
-      <FlagToggle
-        v-model="ensureTicket"
-        label="Generate Ticket"
-        description="Generate a ticket if missing"
-      />
-      <FlagToggle
-        v-model="recursive"
-        label="Recursive"
-        description="Process all subdirectories"
-      />
-      <FlagToggle
-        v-model="cleanup"
-        label="Cleanup"
-        description="Delete CDN files after conversion"
-      />
+            <FileDropZone
+              v-model="output"
+              label="Output (optional)"
+              :save-dialog="true"
+              :filters="[{ name: 'CIA', extensions: ['cia'] }]"
+            />
+          </div>
+
+          <div class="space-y-1 rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
+            <FlagToggle
+              v-model="decrypt"
+              label="Decrypt"
+              description="Decrypt the CIA after conversion"
+            />
+            <FlagToggle
+              v-model="compress"
+              label="Compress"
+              description="Compress to .zcia after conversion (requires decrypt)"
+            />
+            <FlagToggle
+              v-model="ensureTicket"
+              label="Generate Ticket"
+              description="Generate a ticket if missing"
+            />
+            <FlagToggle
+              v-model="recursive"
+              label="Recursive"
+              description="Process all subdirectories"
+            />
+            <FlagToggle
+              v-model="cleanup"
+              label="Cleanup"
+              description="Delete CDN files after conversion"
+            />
+          </div>
+        </div>
+
+        <ProgressBar
+          :percent="progress.percent.value"
+          :message="progress.message.value"
+          :running="progress.running.value"
+        />
+
+        <RunButton :loading="loading" :disabled="!cdnDir" @click="execute">
+          Convert
+        </RunButton>
+      </div>
+    </OperationCard>
+
+    <div class="mt-4">
+      <OutputLog :result="result" :error="error" />
     </div>
-
-    <ProgressBar
-      :percent="progress.percent.value"
-      :message="progress.message.value"
-      :running="progress.running.value"
-    />
-
-    <RunButton :loading="loading" :disabled="!cdnDir" @click="execute">
-      Convert
-    </RunButton>
-
-    <OutputLog :result="result" :error="error" />
   </div>
 </template>

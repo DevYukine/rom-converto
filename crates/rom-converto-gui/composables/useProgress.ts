@@ -1,5 +1,5 @@
-import { ref, computed, onUnmounted } from "vue";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { ref, computed } from "vue";
+import { listen } from "@tauri-apps/api/event";
 
 interface ProgressPayload {
   task_id: string;
@@ -9,7 +9,50 @@ interface ProgressPayload {
   message: string;
 }
 
-export function useProgress(taskId: string) {
+interface ProgressState {
+  total: ReturnType<typeof ref<number>>;
+  current: ReturnType<typeof ref<number>>;
+  message: ReturnType<typeof ref<string>>;
+  running: ReturnType<typeof ref<boolean>>;
+  percent: ReturnType<typeof computed<number>>;
+  reset: () => void;
+}
+
+const registry = new Map<string, ProgressState>();
+let listenerInitialized = false;
+
+function initGlobalListener() {
+  if (listenerInitialized) return;
+  listenerInitialized = true;
+
+  listen<ProgressPayload>("progress", (event) => {
+    const p = event.payload;
+    const state = registry.get(p.task_id);
+    if (!state) return;
+
+    switch (p.kind) {
+      case "start":
+        state.total.value = p.total;
+        state.current.value = 0;
+        state.message.value = p.message;
+        state.running.value = true;
+        break;
+      case "inc":
+        state.current.value = p.current;
+        break;
+      case "finish":
+        state.running.value = false;
+        break;
+    }
+  });
+}
+
+export function useProgress(taskId: string): ProgressState {
+  const existing = registry.get(taskId);
+  if (existing) return existing;
+
+  initGlobalListener();
+
   const total = ref(0);
   const current = ref(0);
   const message = ref("");
@@ -19,34 +62,6 @@ export function useProgress(taskId: string) {
     total.value > 0 ? Math.round((current.value / total.value) * 100) : 0,
   );
 
-  let unlisten: UnlistenFn | null = null;
-
-  listen<ProgressPayload>("progress", (event) => {
-    const p = event.payload;
-    if (p.task_id !== taskId) return;
-
-    switch (p.kind) {
-      case "start":
-        total.value = p.total;
-        current.value = 0;
-        message.value = p.message;
-        running.value = true;
-        break;
-      case "inc":
-        current.value = p.current;
-        break;
-      case "finish":
-        running.value = false;
-        break;
-    }
-  }).then((fn) => {
-    unlisten = fn;
-  });
-
-  onUnmounted(() => {
-    unlisten?.();
-  });
-
   function reset() {
     total.value = 0;
     current.value = 0;
@@ -54,5 +69,7 @@ export function useProgress(taskId: string) {
     running.value = false;
   }
 
-  return { total, current, message, running, percent, reset };
+  const state: ProgressState = { total, current, message, running, percent, reset };
+  registry.set(taskId, state);
+  return state;
 }

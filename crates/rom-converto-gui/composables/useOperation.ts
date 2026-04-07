@@ -1,10 +1,17 @@
+import type { Ref } from "vue";
 import { ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 
-export function useOperation() {
-  const result = ref("");
-  const error = ref("");
-  const loading = ref(false);
+interface OperationRefs {
+  result: Ref<string>;
+  error: Ref<string>;
+  loading: Ref<boolean>;
+}
+
+export function useOperation(refs?: OperationRefs) {
+  const result = refs?.result ?? ref("");
+  const error = refs?.error ?? ref("");
+  const loading = refs?.loading ?? ref(false);
 
   async function run<T extends Record<string, unknown>>(
     command: string,

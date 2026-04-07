@@ -1,62 +1,131 @@
 <script setup lang="ts">
-const input = ref("");
-const output = ref("");
-const parent = ref("");
+import { storeToRefs } from "pinia";
+import { useChdExtractStore } from "~/stores/chd-extract";
 
-const { result, error, loading, run } = useOperation();
+const store = useChdExtractStore();
+const { input, output, parent, result, error, loading, queue } = storeToRefs(store);
+const { run } = useOperation({ result, error, loading });
 const progress = useProgress("chd-extract");
+
+const isBatch = computed(() => queue.value.length > 0);
+
+const batch = useBatchOperation("chd-extract", "cmd_chd_extract", (item) => ({
+  input: item.input,
+  output: item.output,
+  parent: parent.value || null,
+}));
 
 watch(input, (val) => {
   if (val) output.value = deriveCuePath(val);
 });
 
+function handleFiles(paths: string[]) {
+  for (const p of paths) {
+    store.addToQueue(p, deriveCuePath(p));
+  }
+}
+
+function handleSingleFile(path: string) {
+  if (queue.value.length > 0) {
+    store.addToQueue(path, deriveCuePath(path));
+  } else {
+    input.value = path;
+  }
+}
+
 async function execute() {
   progress.reset();
-  await run("cmd_chd_extract", {
-    input: input.value,
-    output: output.value,
-    parent: parent.value || null,
-  });
+  if (isBatch.value) {
+    await batch.start(queue, result);
+  } else {
+    await run("cmd_chd_extract", {
+      input: input.value,
+      output: output.value,
+      parent: parent.value || null,
+    });
+  }
 }
 </script>
 
 <template>
-  <div class="mx-auto max-w-xl space-y-6">
-    <h2 class="text-xl font-semibold">Extract CHD</h2>
-    <p class="text-sm text-zinc-400">
-      Extract a CHD file to BIN/CUE disc image.
-    </p>
-
-    <FileDropZone
-      v-model="input"
-      label="Input CHD File"
-      :filters="[{ name: 'CHD', extensions: ['chd'] }]"
-      :primary="true"
+  <div>
+    <PageHeader
+      title="Extract CHD"
+      description="Extract CHD files to BIN/CUE disc images. Drop multiple .chd files for batch processing."
+      :loading="loading || batch.running.value"
+      :has-result="!!result"
+      :has-error="!!error"
     />
 
-    <FileDropZone
-      v-model="output"
-      label="Output CUE File (auto-derived)"
-      :save-dialog="true"
-      :filters="[{ name: 'CUE Sheet', extensions: ['cue'] }]"
-    />
+    <OperationCard>
+      <div class="space-y-5">
+        <!-- Batch mode -->
+        <template v-if="isBatch">
+          <BatchFileList
+            :items="queue"
+            :current-index="batch.currentIndex.value"
+            :running="batch.running.value"
+            :progress="batch.progress"
+            @remove="store.removeFromQueue"
+            @clear="store.clearQueue"
+          />
 
-    <FileDropZone
-      v-model="parent"
-      label="Parent CHD (optional)"
-      :filters="[{ name: 'CHD', extensions: ['chd'] }]"
-    />
+          <FileDropZone
+            label="Add more CHD files"
+            model-value=""
+            :multiple="true"
+            :filters="[{ name: 'CHD', extensions: ['chd'] }]"
+            @update:model-value="(p: string) => { if (p) store.addToQueue(p, deriveCuePath(p)) }"
+            @update:files="handleFiles"
+          />
+        </template>
 
-    <ProgressBar
-      :percent="progress.percent.value"
-      :message="progress.message.value"
-      :running="progress.running.value"
-    />
+        <!-- Single mode: 2-col on large screens -->
+        <template v-else>
+          <div class="grid gap-5 lg:grid-cols-2">
+            <FileDropZone
+              :model-value="input"
+              label="Input CHD File"
+              :multiple="true"
+              :filters="[{ name: 'CHD', extensions: ['chd'] }]"
+              :primary="true"
+              @update:model-value="handleSingleFile"
+              @update:files="handleFiles"
+            />
 
-    <RunButton :loading="loading" :disabled="!input || !output" @click="execute">
-      Extract
-    </RunButton>
+            <FileDropZone
+              v-model="output"
+              label="Output CUE File (auto-derived)"
+              :save-dialog="true"
+              :filters="[{ name: 'CUE Sheet', extensions: ['cue'] }]"
+            />
+          </div>
+        </template>
 
-    <OutputLog :result="result" :error="error" />
+        <FileDropZone
+          v-model="parent"
+          label="Parent CHD (optional)"
+          :filters="[{ name: 'CHD', extensions: ['chd'] }]"
+        />
+
+        <ProgressBar
+          :percent="progress.percent.value"
+          :message="progress.message.value"
+          :running="progress.running.value"
+        />
+
+        <RunButton
+          :loading="loading || batch.running.value"
+          :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input || !output"
+          @click="execute"
+        >
+          {{ isBatch ? `Extract ${queue.filter(i => i.status === 'pending').length} Files` : 'Extract' }}
+        </RunButton>
+      </div>
+    </OperationCard>
+
+    <div class="mt-4">
+      <OutputLog :result="result" :error="error" />
+    </div>
   </div>
 </template>
