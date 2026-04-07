@@ -1,4 +1,4 @@
-name: "Build Commit"
+name: "Build CLI for Commit"
 
 on:
   pull_request:
@@ -8,7 +8,7 @@ on:
       - crates/**
       - Cargo.toml
       - Cargo.lock
-      - .github/workflows/build.yml
+      - .github/workflows/build-cli.yml
 
 jobs:
   build:
