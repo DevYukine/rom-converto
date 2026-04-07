@@ -5,7 +5,12 @@ use aes::{
 use byteorder::{BigEndian, ByteOrder, LittleEndian};
 
 use crate::nintendo::ctr::constants::{
-    CTR_COMMON_KEYS_HEX, CTR_KEYS_0, CTR_KEYS_1, CTR_MEDIA_UNIT_SIZE, CTR_NCSD_PARTITIONS,
+    CTR_COMMON_KEYS_HEX, CTR_KEY_SCRAMBLE_C, CTR_KEYS_0, CTR_KEYS_1, CTR_MEDIA_UNIT_SIZE,
+    CTR_NCSD_PARTITIONS, EXEFS_ENTRY_SIZE, EXEFS_HEADER_SIZE, EXEFS_MAX_FILE_ENTRIES,
+    NCCH_FLAGS_EXTRA_CRYPTO_INDEX, NCCH_FLAGS_OFFSET, NCCH_FLAGS7_FIXED_KEY, NCCH_FLAGS7_NOCRYPTO,
+    NCCH_FLAGS7_SEED_CRYPTO, TICKET_COMMON_KEY_IDX_OFFSET, TICKET_SIG_BODY_OFFSET,
+    TICKET_TITLE_ID_OFFSET, TICKET_TITLE_KEY_OFFSET, TMD_CONTENT_COUNT_OFFSET,
+    TMD_CONTENT_RECORD_SIZE, TMD_CONTENT_RECORDS_OFFSET,
 };
 use crate::nintendo::ctr::decrypt::model::{CiaContent, NcchSection};
 use crate::nintendo::ctr::decrypt::reader::CiaReader;
@@ -159,11 +164,12 @@ async fn write_exefs_section(
         );
         Aes128Ctr::new_from_slices(&extra_key, &opts.ctr)?.apply_keystream(&mut extra_decrypted);
 
-        for entry_idx in 0usize..10 {
-            let entry_bytes = &decrypted_exefs[entry_idx * 16..(entry_idx + 1) * 16];
+        for entry_idx in 0usize..EXEFS_MAX_FILE_ENTRIES {
+            let entry_bytes =
+                &decrypted_exefs[entry_idx * EXEFS_ENTRY_SIZE..(entry_idx + 1) * EXEFS_ENTRY_SIZE];
             let exe_info = ExeFSHeader::read(&mut Cursor::new(entry_bytes))?;
 
-            let offset = LittleEndian::read_u32(&exe_info.file_offset) as usize + 512;
+            let offset = LittleEndian::read_u32(&exe_info.file_offset) as usize + EXEFS_HEADER_SIZE;
             let size = LittleEndian::read_u32(&exe_info.file_size) as usize;
 
             match exe_info.file_name.iter().rposition(|&x| x != 0) {
@@ -274,10 +280,7 @@ fn scramblekey(key_x: u128, key_y: u128) -> u128 {
     let rol = |val: u128, r_bits: u32| (val << r_bits) | (val >> (MAX_BITS - r_bits));
 
     let value = rol(key_x, 2) ^ key_y;
-    rol(
-        value.wrapping_add(42503689118608475533858958821215598218),
-        87,
-    )
+    rol(value.wrapping_add(CTR_KEY_SCRAMBLE_C), 87)
 }
 
 async fn fetch_seed(title_id: &str) -> anyhow::Result<[u8; 16]> {
@@ -466,7 +469,7 @@ pub async fn parse_ncch(
     let mut tid: [u8; 8] = header.titleid;
     tid.reverse();
 
-    let uses_extra_crypto: u8 = header.flags[3];
+    let uses_extra_crypto: u8 = header.flags[NCCH_FLAGS_EXTRA_CRYPTO_INDEX];
 
     if uses_extra_crypto != 0 {
         debug!("  Uses extra NCCH crypto, keyslot 0x25");
@@ -475,7 +478,7 @@ pub async fn parse_ncch(
     let mut fixed_crypto: u8 = 0;
     let mut encrypted: bool = true;
 
-    if (header.flags[7] & 1) != 0 {
+    if (header.flags[7] & NCCH_FLAGS7_FIXED_KEY) != 0 {
         if (tid[3] & 16) != 0 {
             fixed_crypto = 2
         } else {
@@ -484,12 +487,12 @@ pub async fn parse_ncch(
         debug!("  Uses fixed-key crypto")
     }
 
-    if (header.flags[7] & 4) != 0 {
+    if (header.flags[7] & NCCH_FLAGS7_NOCRYPTO) != 0 {
         encrypted = false;
         debug!("  Not encrypted")
     }
 
-    let use_seed_crypto: bool = (header.flags[7] & 32) != 0;
+    let use_seed_crypto: bool = (header.flags[7] & NCCH_FLAGS7_SEED_CRYPTO) != 0;
     let mut key_y = ncch_key_y;
 
     if use_seed_crypto {
@@ -527,7 +530,7 @@ pub async fn parse_ncch(
     );
 
     let mut ncch: File = File::create(base.clone()).await?;
-    tmp[399] = tmp[399] & 2 | 4;
+    tmp[NCCH_FLAGS_OFFSET + 7] = tmp[NCCH_FLAGS_OFFSET + 7] & 2 | NCCH_FLAGS7_NOCRYPTO;
 
     ncch.write_all(&tmp).await?;
     let mut counter: [u8; 16];
@@ -537,7 +540,7 @@ pub async fn parse_ncch(
             &mut ncch,
             cia,
             NcchWriteOptions {
-                offset: 512,
+                offset: EXEFS_HEADER_SIZE as u64,
                 size: header.exhdrsize * 2,
                 section: NcchSection::ExHeader,
                 counter,
@@ -609,10 +612,18 @@ pub async fn parse_and_decrypt_cia(input: &Path, partition: Option<u8>) -> anyho
     let tmdoff = align_64(tikoff + cia_header.ticket_size as u64);
     let contentoffs = align_64(tmdoff + cia_header.tmd_size as u64);
 
-    rom_file.seek(SeekFrom::Start(tikoff + 127 + 320)).await?;
+    rom_file
+        .seek(SeekFrom::Start(
+            tikoff + TICKET_SIG_BODY_OFFSET + TICKET_TITLE_KEY_OFFSET,
+        ))
+        .await?;
     let mut enckey: [u8; 16] = [0; 16];
     rom_file.read_exact(&mut enckey).await?;
-    rom_file.seek(SeekFrom::Start(tikoff + 156 + 320)).await?;
+    rom_file
+        .seek(SeekFrom::Start(
+            tikoff + TICKET_SIG_BODY_OFFSET + TICKET_TITLE_ID_OFFSET,
+        ))
+        .await?;
     let mut tid: [u8; 16] = [0; 16];
     rom_file.read_exact(&mut tid[0..8]).await?;
 
@@ -620,7 +631,11 @@ pub async fn parse_and_decrypt_cia(input: &Path, partition: Option<u8>) -> anyho
         return Err(anyhow::anyhow!("Unsupported CIA file"));
     }
 
-    rom_file.seek(SeekFrom::Start(tikoff + 177 + 320)).await?;
+    rom_file
+        .seek(SeekFrom::Start(
+            tikoff + TICKET_SIG_BODY_OFFSET + TICKET_COMMON_KEY_IDX_OFFSET,
+        ))
+        .await?;
     let mut cmnkeyidx: u8 = 0;
     rom_file
         .read_exact(std::slice::from_mut(&mut cmnkeyidx))
@@ -629,14 +644,18 @@ pub async fn parse_and_decrypt_cia(input: &Path, partition: Option<u8>) -> anyho
     cbc_decrypt(&CTR_COMMON_KEYS_HEX[cmnkeyidx as usize], &tid, &mut enckey)?;
     let title_key = enckey;
 
-    rom_file.seek(SeekFrom::Start(tmdoff + 518)).await?;
+    rom_file
+        .seek(SeekFrom::Start(tmdoff + TMD_CONTENT_COUNT_OFFSET))
+        .await?;
     let mut content_count: [u8; 2] = [0; 2];
     rom_file.read_exact(&mut content_count).await?;
 
     let mut next_content_offs = 0;
     for i in 0..BigEndian::read_u16(&content_count) {
         rom_file
-            .seek(SeekFrom::Start(tmdoff + 2820 + (48 * i as u64)))
+            .seek(SeekFrom::Start(
+                tmdoff + TMD_CONTENT_RECORDS_OFFSET + (TMD_CONTENT_RECORD_SIZE * i as u64),
+            ))
             .await?;
         // read the 16-byte content record once
         let mut cbuffer: [u8; 40] = [0; 40];
@@ -732,8 +751,7 @@ mod tests {
     fn scramblekey_zero_inputs() {
         // ROL(ROL(0, 2) ^ 0 + C, 87) = ROL(C, 87)
         let result = scramblekey(0, 0);
-        let c: u128 = 42503689118608475533858958821215598218;
-        let expected = (c << 87) | (c >> (128 - 87));
+        let expected = (CTR_KEY_SCRAMBLE_C << 87) | (CTR_KEY_SCRAMBLE_C >> (128 - 87));
         assert_eq!(result, expected);
     }
 

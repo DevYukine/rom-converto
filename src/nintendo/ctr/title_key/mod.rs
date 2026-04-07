@@ -1,7 +1,8 @@
 mod error;
 
 use crate::nintendo::ctr::constants::{
-    CTR_COMMON_KEYS, CTR_DEFAULT_TITLE_KEY_PASSWORD, CTR_TITLE_KEY_SECRET,
+    CTR_COMMON_KEYS, CTR_DEFAULT_TITLE_KEY_PASSWORD, CTR_TITLE_KEY_PBKDF2_ITERATIONS,
+    CTR_TITLE_KEY_SECRET,
 };
 use crate::nintendo::ctr::title_key::error::{TitleKeyError, TitleKeyResult};
 use aes::Aes128;
@@ -30,7 +31,12 @@ pub fn generate_key(mut title_id: &str, password: &str) -> TitleKeyResult<String
 
     // PBKDF2-HMAC-SHA1(password, salt, 20 iter) → 16-byte key
     let mut out = [0u8; 16];
-    pbkdf2::<Hmac<Sha1>>(password.as_bytes(), salt.0.as_ref(), 20, &mut out)?;
+    pbkdf2::<Hmac<Sha1>>(
+        password.as_bytes(),
+        salt.0.as_ref(),
+        CTR_TITLE_KEY_PBKDF2_ITERATIONS,
+        &mut out,
+    )?;
 
     Ok(encode(out))
 }

@@ -1,3 +1,4 @@
+use crate::nintendo::ctr::constants::{CERT_SIG_TYPE_MAX, CERT_SIG_TYPE_MIN};
 use crate::nintendo::ctr::models::certificate::Certificate;
 use crate::nintendo::ctr::models::ticket::Ticket;
 use crate::nintendo::ctr::models::title_metadata::TitleMetadata;
@@ -56,7 +57,7 @@ fn read_cert_chain<R: Read + Seek>(reader: &mut R, cert_end: u64) -> BinResult<V
         reader.seek(SeekFrom::Start(current_pos))?;
 
         let sig_type_value = u32::from_be_bytes(sig_type_bytes);
-        if !matches!(sig_type_value, 0x010000..=0x010005) {
+        if !matches!(sig_type_value, CERT_SIG_TYPE_MIN..=CERT_SIG_TYPE_MAX) {
             break;
         }
         cert_chain.push(Certificate::read_options(reader, Endian::Big, ())?);

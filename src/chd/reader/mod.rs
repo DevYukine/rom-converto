@@ -12,7 +12,8 @@ use crate::chd::map::{
     decompress_v5_map,
 };
 use crate::chd::models::{
-    CHD_METADATA_FLAG_HASHED, ChdHeaderV5, ChdMetadataHeader, ChdVersion, SHA1_BYTES,
+    CHD_METADATA_FLAG_HASHED, CHD_V5_HEADER_SIZE, ChdHeaderV5, ChdMetadataHeader, ChdVersion,
+    SHA1_BYTES,
 };
 use crate::chd::writer::metadata::MetadataHash;
 use binrw::BinRead;
@@ -44,7 +45,7 @@ impl ChdReader {
         let mut reader = BufReader::with_capacity(IO_BUFFER_SIZE, file);
 
         // Read and parse header
-        let mut header_bytes = vec![0u8; 124];
+        let mut header_bytes = vec![0u8; CHD_V5_HEADER_SIZE as usize];
         reader.read_exact(&mut header_bytes).await?;
         let mut cursor = Cursor::new(&header_bytes);
         let header = ChdHeaderV5::read(&mut cursor)?;

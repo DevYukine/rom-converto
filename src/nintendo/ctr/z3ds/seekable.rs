@@ -17,6 +17,8 @@ pub const FRAME_SIZE_DEFAULT: usize = 256 * 1024; // 256 KB
 const SKIPPABLE_MAGIC: u32 = 0x184D2A5E;
 const SEEKABLE_MAGIC: u32 = 0x8F92EAB1;
 const SEEK_TABLE_DESCRIPTOR: u8 = 0x00;
+const SEEK_TABLE_ENTRY_SIZE: u32 = 8; // compressed_size(4) + decompressed_size(4)
+const SEEK_TABLE_FOOTER_SIZE: u32 = 9; // num_frames(4) + descriptor(1) + seekable_magic(4)
 
 /// Per-frame entry recorded while encoding.
 struct FrameEntry {
@@ -46,7 +48,7 @@ pub fn encode_seekable(data: &[u8], max_frame_size: usize, level: i32) -> Z3dsRe
     // Seek table skippable frame
     let num_frames = entries.len() as u32;
     // frame_size = entries (8 bytes each) + number_of_frames (4) + descriptor (1) + seekable_magic (4)
-    let frame_payload_size: u32 = num_frames * 8 + 9;
+    let frame_payload_size: u32 = num_frames * SEEK_TABLE_ENTRY_SIZE + SEEK_TABLE_FOOTER_SIZE;
 
     output.extend_from_slice(&SKIPPABLE_MAGIC.to_le_bytes());
     output.extend_from_slice(&frame_payload_size.to_le_bytes());

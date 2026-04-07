@@ -1,3 +1,6 @@
+use crate::nintendo::ctr::constants::{
+    CERT_SIG_TYPE_MAX, CERT_SIG_TYPE_MIN, CIA_CERT_CHAIN_SIZE, CIA_CONTENT_INDEX_SIZE,
+};
 use crate::nintendo::ctr::decrypt::cia::parse_and_decrypt_cia;
 use crate::nintendo::ctr::models::certificate::Certificate;
 use crate::nintendo::ctr::models::cia::{
@@ -161,20 +164,18 @@ pub async fn write_cia(
     tik.write_options(&mut Cursor::new(&mut tik_buf), Endian::Big, ())?;
     let ticket_size = tik_buf.len() as u32;
 
-    const CERT_CHAIN_SIZE: u32 = 2560u32;
-
     // Create the CIA structure
     let mut cia = CiaFile {
         header: CiaHeader {
             header_size: CIA_HEADER_SIZE,
             cia_type: 0, // 0 = Normal
             version: 0,  // CIA format version
-            cert_chain_size: CERT_CHAIN_SIZE,
+            cert_chain_size: CIA_CERT_CHAIN_SIZE,
             ticket_size,
             tmd_size,
             meta_size: 0, // No metadata
             content_size: content.len() as u64,
-            content_index: vec![0u8; 0x2000],
+            content_index: vec![0u8; CIA_CONTENT_INDEX_SIZE],
         },
         cert_chain,
         ticket: tik,
@@ -237,7 +238,7 @@ async fn read_certificate_chain(file_path: &Path) -> anyhow::Result<Vec<Certific
         cursor.seek(SeekFrom::Start(pos))?;
 
         // Check if it's a valid certificate signature type
-        if !matches!(sig_type_bytes, 0x010000..=0x010005) {
+        if !matches!(sig_type_bytes, CERT_SIG_TYPE_MIN..=CERT_SIG_TYPE_MAX) {
             break;
         }
 

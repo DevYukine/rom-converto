@@ -1,5 +1,6 @@
 use crate::nintendo::ctr::constants::{
     CTR_MEDIA_UNIT_SIZE, NCCH_FLAGS_OFFSET, NCCH_FLAGS7_NOCRYPTO, NCCH_MAGIC_OFFSET,
+    NCSD_PARTITION0_OFFSET_FIELD,
 };
 use crate::nintendo::ctr::util::align_64_usize;
 use crate::nintendo::ctr::z3ds::error::{Z3dsError, Z3dsResult};
@@ -146,12 +147,15 @@ pub(crate) fn check_ncsd_not_encrypted(data: &[u8]) -> Z3dsResult<()> {
         return Ok(());
     }
     // Partition 0 NCCH starts at the offset stored in NCSD partition table.
-    // Offset is in media units (1 MU = 0x200 bytes), at NCSD+0x120.
-    if data.len() < 0x128 {
+    if data.len() < NCSD_PARTITION0_OFFSET_FIELD + 8 {
         return Ok(());
     }
-    let partition_offset_mu =
-        u32::from_le_bytes([data[0x120], data[0x121], data[0x122], data[0x123]]);
+    let partition_offset_mu = u32::from_le_bytes([
+        data[NCSD_PARTITION0_OFFSET_FIELD],
+        data[NCSD_PARTITION0_OFFSET_FIELD + 1],
+        data[NCSD_PARTITION0_OFFSET_FIELD + 2],
+        data[NCSD_PARTITION0_OFFSET_FIELD + 3],
+    ]);
     let partition_offset = partition_offset_mu as usize * CTR_MEDIA_UNIT_SIZE as usize;
     check_ncch_not_encrypted(data, partition_offset)
 }

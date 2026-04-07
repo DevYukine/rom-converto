@@ -1,5 +1,8 @@
 pub(crate) mod metadata;
 
+const MAX_COMPRESSION_THREADS: usize = 16;
+const DEFAULT_COMPRESSION_THREADS: usize = 4;
+
 use crate::cd::{FRAME_SIZE, IO_BUFFER_SIZE, SECTOR_SIZE, SUBCODE_SIZE};
 use crate::chd::bin::BinReader;
 use crate::chd::compression::cdfl::CdFlCompressor;
@@ -179,8 +182,8 @@ impl ChdWriter {
         // Create a pool of persistent codec sets — one per concurrent thread.
         // The semaphore ensures we never have more tasks than codec sets.
         let num_threads = std::thread::available_parallelism()
-            .map(|n| n.get().min(16))
-            .unwrap_or(4);
+            .map(|n| n.get().min(MAX_COMPRESSION_THREADS))
+            .unwrap_or(DEFAULT_COMPRESSION_THREADS);
         let semaphore = Arc::new(Semaphore::new(num_threads));
 
         let codec_pool: Arc<Vec<Mutex<CdCodecSet>>> = Arc::new(

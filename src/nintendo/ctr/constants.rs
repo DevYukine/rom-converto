@@ -47,4 +47,38 @@ pub const CTR_MEDIA_UNIT_SIZE: u32 = 512;
 // NCCH header offsets (relative to the start of an NCCH block)
 pub const NCCH_MAGIC_OFFSET: usize = 0x100;
 pub const NCCH_FLAGS_OFFSET: usize = 0x188;
+pub const NCCH_FLAGS7_FIXED_KEY: u8 = 0x01;
 pub const NCCH_FLAGS7_NOCRYPTO: u8 = 0x04;
+pub const NCCH_FLAGS7_SEED_CRYPTO: u8 = 0x20;
+pub const NCCH_FLAGS_EXTRA_CRYPTO_INDEX: usize = 3;
+
+// NCSD partition table
+pub const NCSD_PARTITION0_OFFSET_FIELD: usize = 0x120;
+
+// ExeFS format
+pub const EXEFS_HEADER_SIZE: usize = 0x200;
+pub const EXEFS_MAX_FILE_ENTRIES: usize = 10;
+pub const EXEFS_ENTRY_SIZE: usize = 16;
+
+// Ticket structure offsets (relative to start of ticket)
+pub const TICKET_SIG_BODY_OFFSET: u64 = 0x140;
+pub const TICKET_TITLE_KEY_OFFSET: u64 = 0x7F;
+pub const TICKET_TITLE_ID_OFFSET: u64 = 0x9C;
+pub const TICKET_COMMON_KEY_IDX_OFFSET: u64 = 0xB1;
+
+// TMD structure offsets (relative to start of TMD)
+pub const TMD_CONTENT_COUNT_OFFSET: u64 = 0x206;
+pub const TMD_CONTENT_RECORDS_OFFSET: u64 = 0xB04;
+pub const TMD_CONTENT_RECORD_SIZE: u64 = 48;
+
+// Key scrambler constant used in 3DS key derivation
+pub const CTR_KEY_SCRAMBLE_C: u128 = 42503689118608475533858958821215598218;
+
+// CIA format
+pub const CIA_CONTENT_INDEX_SIZE: usize = 0x2000;
+pub const CIA_CERT_CHAIN_SIZE: u32 = 0xA00;
+pub const CERT_SIG_TYPE_MIN: u32 = 0x010000;
+pub const CERT_SIG_TYPE_MAX: u32 = 0x010005;
+
+// Title key derivation
+pub const CTR_TITLE_KEY_PBKDF2_ITERATIONS: u32 = 20;
