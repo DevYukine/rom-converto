@@ -9,55 +9,55 @@ mod seekable;
 pub use compress::compress_rom;
 pub use decompress::decompress_rom;
 
-/// Derives the output path for compression by prefixing the extension with "z".
-///
-/// Examples: `game.cia` → `game.zcia`, `game.cci` → `game.zcci`,
-///           `game.3ds` → `game.zcci`, `game.3dsx` → `game.z3dsx`,
-///           `game.cxi` → `game.zcxi`.
-pub fn derive_compressed_path(input: &Path) -> PathBuf {
+/// Maps a file extension using the given table, falling back to `default`.
+fn map_extension(input: &Path, table: &[(&str, &str)], default: &str) -> PathBuf {
     let ext = input
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_lowercase();
 
-    let new_ext = match ext.as_str() {
-        "cia" => "zcia",
-        "cci" | "3ds" => "zcci",
-        "cxi" => "zcxi",
-        "3dsx" => "z3dsx",
-        _ => "z3ds",
-    };
+    let new_ext = table
+        .iter()
+        .find(|(from, _)| *from == ext.as_str())
+        .map(|(_, to)| *to)
+        .unwrap_or(default);
 
     input.with_extension(new_ext)
 }
 
+const COMPRESS_MAP: &[(&str, &str)] = &[
+    ("cia", "zcia"),
+    ("cci", "zcci"),
+    ("3ds", "zcci"),
+    ("cxi", "zcxi"),
+    ("3dsx", "z3dsx"),
+];
+
+const DECOMPRESS_MAP: &[(&str, &str)] = &[
+    ("zcia", "cia"),
+    ("zcci", "cci"),
+    ("zcxi", "cxi"),
+    ("z3dsx", "3dsx"),
+];
+
+/// Derives the output path for compression by prefixing the extension with "z".
+pub fn derive_compressed_path(input: &Path) -> PathBuf {
+    map_extension(input, COMPRESS_MAP, "z3ds")
+}
+
 /// Derives the output path for decompression by removing the "z" prefix from
 /// the extension.
-///
-/// Examples: `game.zcia` → `game.cia`, `game.zcci` → `game.cci`,
-///           `game.zcxi` → `game.cxi`, `game.z3dsx` → `game.3dsx`.
 pub fn derive_decompressed_path(input: &Path) -> PathBuf {
-    let ext = input
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-
-    let new_ext = match ext.as_str() {
-        "zcia" => "cia",
-        "zcci" => "cci",
-        "zcxi" => "cxi",
-        "z3dsx" => "3dsx",
-        _ => "3ds",
-    };
-
-    input.with_extension(new_ext)
+    map_extension(input, DECOMPRESS_MAP, "3ds")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nintendo::ctr::constants::{
+        NCCH_FLAGS_OFFSET, NCCH_FLAGS7_NOCRYPTO, NCCH_MAGIC_OFFSET,
+    };
     use std::path::PathBuf;
 
     // --- derive_compressed_path ---
@@ -160,8 +160,8 @@ mod tests {
     fn make_fake_decrypted_cxi(size: usize) -> Vec<u8> {
         let size = size.max(0x200);
         let mut data = vec![0u8; size];
-        data[0x100..0x104].copy_from_slice(b"NCCH");
-        data[0x18F] = 0x04; // NoCrypto flag
+        data[NCCH_MAGIC_OFFSET..NCCH_MAGIC_OFFSET + 4].copy_from_slice(b"NCCH");
+        data[NCCH_FLAGS_OFFSET + 7] = NCCH_FLAGS7_NOCRYPTO;
         for i in 0x200..size {
             data[i] = (i % 251) as u8;
         }
@@ -241,9 +241,9 @@ mod tests {
         let input = dir.path().join("encrypted.cxi");
         let output = dir.path().join("encrypted.zcxi");
 
-        // NCCH magic present but NoCrypto flag NOT set → encrypted
+        // NCCH magic present but NoCrypto flag NOT set
         let mut data = vec![0u8; 0x200];
-        data[0x100..0x104].copy_from_slice(b"NCCH");
+        data[NCCH_MAGIC_OFFSET..NCCH_MAGIC_OFFSET + 4].copy_from_slice(b"NCCH");
         tokio::fs::write(&input, &data).await.unwrap();
 
         let result = compress_rom(&input, &output).await;

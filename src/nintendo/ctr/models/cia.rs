@@ -46,6 +46,42 @@ pub struct MetaData {
     pub icon_data: Vec<u8>,
 }
 
+/// Reads certificates from a reader until padding or end of section.
+fn read_cert_chain<R: Read + Seek>(reader: &mut R, cert_end: u64) -> BinResult<Vec<Certificate>> {
+    let mut cert_chain = Vec::new();
+    while reader.stream_position()? < cert_end {
+        let current_pos = reader.stream_position()?;
+        let mut sig_type_bytes = [0u8; 4];
+        reader.read_exact(&mut sig_type_bytes)?;
+        reader.seek(SeekFrom::Start(current_pos))?;
+
+        let sig_type_value = u32::from_be_bytes(sig_type_bytes);
+        if !matches!(sig_type_value, 0x010000..=0x010005) {
+            break;
+        }
+        cert_chain.push(Certificate::read_options(reader, Endian::Big, ())?);
+    }
+    Ok(cert_chain)
+}
+
+/// Writes the certificate chain and pads it to match the declared size.
+fn write_cert_chain<W: Write + Seek>(
+    writer: &mut W,
+    cert_chain: &[Certificate],
+    cert_chain_size: u32,
+) -> BinResult<()> {
+    let cert_start = writer.stream_position()?;
+    for cert in cert_chain {
+        cert.write_options(writer, Endian::Big, ())?;
+    }
+    let cert_written = writer.stream_position()? - cert_start;
+    if cert_written < cert_chain_size as u64 {
+        let padding_needed = cert_chain_size as u64 - cert_written;
+        writer.write_all(&vec![0u8; padding_needed as usize])?;
+    }
+    Ok(())
+}
+
 /// Complete CIA file structure
 #[derive(Debug, Clone)]
 pub struct CiaFile {
@@ -91,32 +127,7 @@ impl BinRead for CiaFileWithoutContent {
 
         let cert_start = reader.stream_position()?;
         let cert_end = cert_start + header.cert_chain_size as u64;
-
-        let mut cert_chain = Vec::new();
-
-        // Read certificates until we hit padding or reach the end
-        while reader.stream_position()? < cert_end {
-            // Peek at the next 4 bytes to check if it's a valid signature type
-            let current_pos = reader.stream_position()?;
-            let mut sig_type_bytes = [0u8; 4];
-            reader.read_exact(&mut sig_type_bytes)?;
-            reader.seek(SeekFrom::Start(current_pos))?;
-
-            // Check if this looks like a valid signature type (big-endian u32)
-            let sig_type_value = u32::from_be_bytes(sig_type_bytes);
-
-            // Valid signature types are: 0x010000, 0x010001, 0x010002, 0x010003, 0x010004, 0x010005
-            let is_valid_sig_type = matches!(sig_type_value, 0x010000..=0x010005);
-
-            if !is_valid_sig_type {
-                // We've hit padding, stop reading certificates
-                break;
-            }
-
-            cert_chain.push(Certificate::read_options(reader, Endian::Big, ())?);
-        }
-
-        // Skip to the end of the certificate chain section
+        let cert_chain = read_cert_chain(reader, cert_end)?;
         reader.seek(SeekFrom::Start(cert_end))?;
 
         // Read ticket (big-endian, aligned to 64 bytes)
@@ -151,24 +162,9 @@ impl BinWrite for CiaFileWithoutContent {
 
         let header_end = writer.stream_position()?;
         let cert_start = align_64(header_end);
+        pad_to_align_64(cert_start, writer)?;
 
-        if cert_start > header_end {
-            // Write padding to align to 64 bytes
-            let padding_size = (cert_start - header_end) as usize;
-            writer.write_all(&vec![0u8; padding_size])?;
-        }
-
-        // Write certificate chain (big-endian)
-        for cert in &self.cert_chain {
-            cert.write_options(writer, Endian::Big, ())?;
-        }
-
-        // IMPORTANT: Pad the certificate chain to match cert_chain_size
-        let cert_written = writer.stream_position()? - cert_start;
-        if cert_written < self.header.cert_chain_size as u64 {
-            let padding_needed = self.header.cert_chain_size as u64 - cert_written;
-            writer.write_all(&vec![0u8; padding_needed as usize])?;
-        }
+        write_cert_chain(writer, &self.cert_chain, self.header.cert_chain_size)?;
 
         // Write ticket (big-endian, aligned to 64 bytes)
         let ticket_start = align_64(writer.stream_position()?);
@@ -199,38 +195,12 @@ impl BinRead for CiaFile {
         // Read header (little-endian)
         let header = CiaHeader::read_options(reader, Endian::Little, ())?;
 
-        let header_end = reader.stream_position()?; // Header size is 0x2020, but we align to 64 bytes
-
+        let header_end = reader.stream_position()?;
         reader.seek(SeekFrom::Start(align_64(header_end)))?;
 
         let cert_start = reader.stream_position()?;
         let cert_end = cert_start + header.cert_chain_size as u64;
-
-        let mut cert_chain = Vec::new();
-
-        // Read certificates until we hit padding or reach the end
-        while reader.stream_position()? < cert_end {
-            // Peek at the next 4 bytes to check if it's a valid signature type
-            let current_pos = reader.stream_position()?;
-            let mut sig_type_bytes = [0u8; 4];
-            reader.read_exact(&mut sig_type_bytes)?;
-            reader.seek(SeekFrom::Start(current_pos))?;
-
-            // Check if this looks like a valid signature type (big-endian u32)
-            let sig_type_value = u32::from_be_bytes(sig_type_bytes);
-
-            // Valid signature types are: 0x010000, 0x010001, 0x010002, 0x010003, 0x010004, 0x010005
-            let is_valid_sig_type = matches!(sig_type_value, 0x010000..=0x010005);
-
-            if !is_valid_sig_type {
-                // We've hit padding, stop reading certificates
-                break;
-            }
-
-            cert_chain.push(Certificate::read_options(reader, Endian::Big, ())?);
-        }
-
-        // Skip to the end of the certificate chain section
+        let cert_chain = read_cert_chain(reader, cert_end)?;
         reader.seek(SeekFrom::Start(cert_end))?;
 
         // Read ticket (big-endian, aligned to 64 bytes)
@@ -282,24 +252,9 @@ impl BinWrite for CiaFile {
 
         let header_end = writer.stream_position()?;
         let cert_start = align_64(header_end);
+        pad_to_align_64(cert_start, writer)?;
 
-        if cert_start > header_end {
-            // Write padding to align to 64 bytes
-            let padding_size = (cert_start - header_end) as usize;
-            writer.write_all(&vec![0u8; padding_size])?;
-        }
-
-        // Write certificate chain (big-endian)
-        for cert in &self.cert_chain {
-            cert.write_options(writer, Endian::Big, ())?;
-        }
-
-        // IMPORTANT: Pad the certificate chain to match cert_chain_size
-        let cert_written = writer.stream_position()? - cert_start;
-        if cert_written < self.header.cert_chain_size as u64 {
-            let padding_needed = self.header.cert_chain_size as u64 - cert_written;
-            writer.write_all(&vec![0u8; padding_needed as usize])?;
-        }
+        write_cert_chain(writer, &self.cert_chain, self.header.cert_chain_size)?;
 
         // Write ticket (big-endian, aligned to 64 bytes)
         let ticket_start = align_64(writer.stream_position()?);

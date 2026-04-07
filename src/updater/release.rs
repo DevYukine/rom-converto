@@ -53,14 +53,21 @@ pub fn compare_latest_release_to_current_version(
         return ReleaseVersionCompareResult::OutdatedMajor;
     }
 
-    if latest.minor > current.minor && latest.major == current.major {
+    if latest.major < current.major {
+        return ReleaseVersionCompareResult::EqualOrNewer;
+    }
+
+    // Same major version from here
+    if latest.minor > current.minor {
         return ReleaseVersionCompareResult::OutdatedMinor;
     }
 
-    if latest.patch > current.patch
-        && latest.minor == current.minor
-        && latest.major == current.major
-    {
+    if latest.minor < current.minor {
+        return ReleaseVersionCompareResult::EqualOrNewer;
+    }
+
+    // Same major and minor version from here
+    if latest.patch > current.patch {
         return ReleaseVersionCompareResult::OutdatedPatch;
     }
 

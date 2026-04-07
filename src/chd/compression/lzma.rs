@@ -25,6 +25,11 @@ impl ChdCompressor for LzmaCompressor {
 
 const LZMA_LEVEL: i32 = 8;
 
+/// Upper bound for LZMA compressed output size.
+fn lzma_max_output_size(input_len: usize) -> usize {
+    input_len + input_len / 3 + 128
+}
+
 /// Configure LZMA encoder properties matching chdman's configure_properties.
 /// Uses hunk_bytes as reduceSize (matching chdman which passes hunkbytes, not base data length).
 fn configure_props(hunk_bytes: usize) -> CLzmaEncProps {
@@ -78,7 +83,7 @@ impl LzmaEncoder {
     }
 
     pub fn compress(&self, data: &[u8]) -> ChdResult<Vec<u8>> {
-        let max_out = data.len() + data.len() / 3 + 128;
+        let max_out = lzma_max_output_size(data.len());
         let mut compressed = vec![0u8; max_out];
         let mut compressed_size = max_out as SizeT;
         let res = unsafe {

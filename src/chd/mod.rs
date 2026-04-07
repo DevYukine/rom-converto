@@ -7,8 +7,8 @@ use crate::chd::reader::ChdReader;
 use crate::chd::reader::cue_generator::{generate_cue_sheet, parse_chd_track_metadata};
 use crate::chd::writer::ChdWriter;
 use crate::chd::writer::metadata::MetadataHash;
-use crate::util::{BYTES_PER_MB, PROGRESS_TEMPLATE};
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use crate::util::{BYTES_PER_MB, create_progress_bar};
+use indicatif::MultiProgress;
 use log::{debug, info};
 use sha1::{Digest, Sha1};
 use std::path::PathBuf;
@@ -63,14 +63,11 @@ pub async fn convert_to_chd(
         ChdWriter::create(&output_path, total_sectors, CD_HUNK_BYTES, &cue_sheet).await?;
 
     let total_mb = (bin_size as f64) / BYTES_PER_MB;
-    let pg = pb.add(ProgressBar::new(bin_size));
-
-    pg.set_style(
-        ProgressStyle::default_bar()
-            .template(PROGRESS_TEMPLATE)?
-            .progress_chars("#>-"),
-    );
-    pg.set_message(format!("Compressing to CHD (~{:.2} MB)", total_mb));
+    let pg = create_progress_bar(
+        &pb,
+        bin_size,
+        format!("Compressing to CHD (~{:.2} MB)", total_mb),
+    )?;
 
     writer
         .compress_all_hunks(&mut bin_reader, total_sectors, &pg)
@@ -162,14 +159,12 @@ pub async fn extract_from_chd(
     let total_frames = (reader.header().logical_bytes / FRAME_SIZE as u64) as u32;
 
     let total_bin_bytes = total_frames as u64 * SECTOR_SIZE as u64;
-    let pg = pb.add(ProgressBar::new(total_bin_bytes));
-    pg.set_style(
-        ProgressStyle::default_bar()
-            .template(PROGRESS_TEMPLATE)?
-            .progress_chars("#>-"),
-    );
     let total_mb = total_bin_bytes as f64 / BYTES_PER_MB;
-    pg.set_message(format!("Extracting from CHD (~{:.2} MB)", total_mb));
+    let pg = create_progress_bar(
+        &pb,
+        total_bin_bytes,
+        format!("Extracting from CHD (~{:.2} MB)", total_mb),
+    )?;
 
     let mut frames_written: u32 = 0;
 
@@ -226,13 +221,7 @@ pub async fn verify_chd(
     let hunk_bytes = reader.header().hunk_bytes as u64;
     let logical_bytes = reader.header().logical_bytes;
 
-    let pg = pb.add(ProgressBar::new(logical_bytes));
-    pg.set_style(
-        ProgressStyle::default_bar()
-            .template(PROGRESS_TEMPLATE)?
-            .progress_chars("#>-"),
-    );
-    pg.set_message("Verifying CHD integrity");
+    let pg = create_progress_bar(&pb, logical_bytes, "Verifying CHD integrity")?;
 
     let mut raw_sha1_hasher = Sha1::new();
     let mut bytes_remaining = logical_bytes;

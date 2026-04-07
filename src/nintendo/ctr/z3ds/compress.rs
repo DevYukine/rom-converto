@@ -1,14 +1,15 @@
-use crate::nintendo::ctr::constants::CTR_MEDIA_UNIT_SIZE;
+use crate::nintendo::ctr::constants::{
+    CTR_MEDIA_UNIT_SIZE, NCCH_FLAGS_OFFSET, NCCH_FLAGS7_NOCRYPTO, NCCH_MAGIC_OFFSET,
+};
 use crate::nintendo::ctr::util::align_64_usize;
 use crate::nintendo::ctr::z3ds::error::{Z3dsError, Z3dsResult};
 use crate::nintendo::ctr::z3ds::models::{
     Z3dsHeader, Z3dsMetadata, Z3dsMetadataItem, underlying_magic,
 };
 use crate::nintendo::ctr::z3ds::seekable::{FRAME_SIZE_CIA, FRAME_SIZE_DEFAULT, encode_seekable};
-use crate::util::{BYTES_PER_MB, PROGRESS_TEMPLATE};
+use crate::util::{BYTES_PER_MB, create_standalone_progress_bar};
 use binrw::BinWrite;
 use chrono::Utc;
-use indicatif::{ProgressBar, ProgressStyle};
 use log::info;
 use std::io::Cursor;
 use std::path::Path;
@@ -41,17 +42,14 @@ pub async fn compress_rom(input: &Path, output: &Path) -> Z3dsResult<()> {
 
     let uncompressed_size = input_data.len() as u64;
 
-    let pg = ProgressBar::new(uncompressed_size);
-    pg.set_style(
-        ProgressStyle::default_bar()
-            .template(PROGRESS_TEMPLATE)?
-            .progress_chars("#>-"),
-    );
-    pg.set_message(format!(
-        "Compressing {} ({:.2} MB)",
-        input.file_name().unwrap_or_default().to_string_lossy(),
-        uncompressed_size as f64 / BYTES_PER_MB,
-    ));
+    let pg = create_standalone_progress_bar(
+        uncompressed_size,
+        format!(
+            "Compressing {} ({:.2} MB)",
+            input.file_name().unwrap_or_default().to_string_lossy(),
+            uncompressed_size as f64 / BYTES_PER_MB,
+        ),
+    )?;
 
     // Build metadata
     let version = crate::built_info::PKG_VERSION;
@@ -121,8 +119,7 @@ pub(crate) fn check_not_encrypted(data: &[u8], ext: &str) -> Z3dsResult<()> {
 /// start of the NCCH block. Bit 2 of flags[7] being set means NoCrypto.
 /// If that bit is clear the partition is encrypted.
 pub(crate) fn check_ncch_not_encrypted(data: &[u8], ncch_offset: usize) -> Z3dsResult<()> {
-    // NCCH magic at ncch_offset + 0x100
-    let magic_start = ncch_offset + 0x100;
+    let magic_start = ncch_offset + NCCH_MAGIC_OFFSET;
     if data.len() < magic_start + 4 {
         return Ok(()); // can't check, let it through
     }
@@ -130,14 +127,12 @@ pub(crate) fn check_ncch_not_encrypted(data: &[u8], ncch_offset: usize) -> Z3dsR
         return Ok(());
     }
 
-    // flags[7] is at ncch_offset + 0x188
-    let flags_offset = ncch_offset + 0x188;
+    let flags_offset = ncch_offset + NCCH_FLAGS_OFFSET;
     if data.len() <= flags_offset + 7 {
         return Ok(());
     }
     let flags7 = data[flags_offset + 7];
-    // Bit 2 (0x04) = NoCrypto. If clear, content is encrypted.
-    if flags7 & 0x04 == 0 {
+    if flags7 & NCCH_FLAGS7_NOCRYPTO == 0 {
         return Err(Z3dsError::InputNotDecrypted);
     }
     Ok(())
@@ -146,8 +141,8 @@ pub(crate) fn check_ncch_not_encrypted(data: &[u8], ncch_offset: usize) -> Z3dsR
 /// NCSD header at offset 0x100 contains the NCCH header for partition 0.
 /// The first partition starts right after the NCSD header at offset 0x4000 by default.
 pub(crate) fn check_ncsd_not_encrypted(data: &[u8]) -> Z3dsResult<()> {
-    // NCSD magic at 0x100
-    if data.len() < 0x104 || &data[0x100..0x104] != b"NCSD" {
+    let magic_end = NCCH_MAGIC_OFFSET + 4;
+    if data.len() < magic_end || &data[NCCH_MAGIC_OFFSET..magic_end] != b"NCSD" {
         return Ok(());
     }
     // Partition 0 NCCH starts at the offset stored in NCSD partition table.
@@ -192,19 +187,20 @@ pub(crate) fn check_cia_not_encrypted(data: &[u8]) -> Z3dsResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nintendo::ctr::constants::{
+        NCCH_FLAGS_OFFSET, NCCH_FLAGS7_NOCRYPTO, NCCH_MAGIC_OFFSET,
+    };
     use crate::nintendo::ctr::z3ds::error::Z3dsError;
 
     // Builds a fake NCCH block starting at `offset` within a zeroed buffer of `total_size`.
     // `decrypted` controls whether the NoCrypto flag (flags[7] bit 2) is set.
     fn make_ncch_at(total_size: usize, offset: usize, decrypted: bool) -> Vec<u8> {
         let mut data = vec![0u8; total_size];
-        // NCCH magic at offset + 0x100
-        data[offset + 0x100..offset + 0x104].copy_from_slice(b"NCCH");
-        // flags[7] at offset + 0x18F
+        let magic_start = offset + NCCH_MAGIC_OFFSET;
+        data[magic_start..magic_start + 4].copy_from_slice(b"NCCH");
         if decrypted {
-            data[offset + 0x18F] = 0x04; // NoCrypto bit set
+            data[offset + NCCH_FLAGS_OFFSET + 7] = NCCH_FLAGS7_NOCRYPTO;
         }
-        // (encrypted: flags[7] stays 0x00, NoCrypto bit is clear)
         data
     }
 
@@ -213,9 +209,8 @@ mod tests {
         let partition_offset = partition_mu as usize * 0x200;
         let total = partition_offset + 0x200;
         let mut data = make_ncch_at(total, partition_offset, ncch_decrypted);
-        // NCSD magic at 0x100
-        data[0x100..0x104].copy_from_slice(b"NCSD");
-        // Partition offset (in MUs) at 0x120
+        let magic_start = NCCH_MAGIC_OFFSET;
+        data[magic_start..magic_start + 4].copy_from_slice(b"NCSD");
         data[0x120..0x124].copy_from_slice(&partition_mu.to_le_bytes());
         data
     }

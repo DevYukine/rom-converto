@@ -1,9 +1,8 @@
 use crate::nintendo::ctr::z3ds::error::{Z3dsError, Z3dsResult};
 use crate::nintendo::ctr::z3ds::models::Z3dsHeader;
 use crate::nintendo::ctr::z3ds::seekable::decode_seekable;
-use crate::util::{BYTES_PER_MB, PROGRESS_TEMPLATE};
+use crate::util::{BYTES_PER_MB, create_standalone_progress_bar};
 use binrw::BinRead;
-use indicatif::{ProgressBar, ProgressStyle};
 use log::info;
 use std::io::Cursor;
 use std::path::Path;
@@ -32,17 +31,14 @@ pub async fn decompress_rom(input: &Path, output: &Path) -> Z3dsResult<()> {
     let mut compressed = vec![0u8; header.compressed_size as usize];
     file.read_exact(&mut compressed).await?;
 
-    let pg = ProgressBar::new(header.compressed_size);
-    pg.set_style(
-        ProgressStyle::default_bar()
-            .template(PROGRESS_TEMPLATE)?
-            .progress_chars("#>-"),
-    );
-    pg.set_message(format!(
-        "Decompressing {} ({:.2} MB compressed)",
-        input.file_name().unwrap_or_default().to_string_lossy(),
-        header.compressed_size as f64 / BYTES_PER_MB,
-    ));
+    let pg = create_standalone_progress_bar(
+        header.compressed_size,
+        format!(
+            "Decompressing {} ({:.2} MB compressed)",
+            input.file_name().unwrap_or_default().to_string_lossy(),
+            header.compressed_size as f64 / BYTES_PER_MB,
+        ),
+    )?;
 
     let decompressed = task::spawn_blocking(move || decode_seekable(&compressed)).await??;
 
