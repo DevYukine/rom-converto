@@ -1,5 +1,6 @@
 export default defineNuxtConfig({
   compatibilityDate: "2025-01-01",
+  future: { compatibilityVersion: 3 },
   ssr: false,
   devtools: { enabled: false },
   modules: ["@pinia/nuxt"],
@@ -25,6 +26,7 @@ export default defineNuxtConfig({
         "@tauri-apps/api/event",
         "@tauri-apps/plugin-dialog",
       ],
+      force: true,
     },
   },
 });

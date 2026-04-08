@@ -62,7 +62,6 @@ function initGlobalListener() {
     if (payload.type === "drop") {
       isDraggingOver.value = false;
 
-      // If not hovering a specific zone, fall back to the primary (first input) zone
       const targetId = activeZoneId ?? getPrimaryZone();
 
       if (targetId) {
