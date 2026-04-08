@@ -62,6 +62,7 @@ async function execute() {
               v-model="decrypt"
               label="Decrypt"
               description="Decrypt the CIA after conversion"
+              :disabled="compress"
             />
             <FlagToggle
               v-model="compress"
