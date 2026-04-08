@@ -1,3 +1,26 @@
+# [0.5.0](https://github.com/DevYukine/rom-converto/compare/v0.4.0...v0.5.0) (2026-04-08)
+
+
+### Bug Fixes
+
+* **dev:** force reloading on dev server ([e7d7ba0](https://github.com/DevYukine/rom-converto/commit/e7d7ba0057a55d891b78d95b66b82dc59e7f1b88))
+* icons need to be RGBA ([dc9cd89](https://github.com/DevYukine/rom-converto/commit/dc9cd895d1a0f9b93dc7fff0f1378e3345bb73c1))
+
+
+### Features
+
+* **cdn-to-cia:** add compress flag ([c70017d](https://github.com/DevYukine/rom-converto/commit/c70017d2e6462530aafeb0042253b40b384013f9))
+* **compression:** add proper progress tracking ([0b9f7d2](https://github.com/DevYukine/rom-converto/commit/0b9f7d20b12dcc8712707678f879958c5abc977e))
+* **gui:** add auto scroll to lists ([f0d4ea9](https://github.com/DevYukine/rom-converto/commit/f0d4ea9fe8cf98045cf89764f6fcff616502394e))
+* **gui:** add gui ([9b145e5](https://github.com/DevYukine/rom-converto/commit/9b145e52e1c86ca34d6d38530f9625a66e5e9857))
+* **gui:** add loading screen ([509f167](https://github.com/DevYukine/rom-converto/commit/509f167f9611aad1ff01c209d326d89dad3156f2))
+* **gui:** force lock decrypt flag when compress is enabled ([7e27522](https://github.com/DevYukine/rom-converto/commit/7e27522d6e68d66e2f12a8536b053f3a0ba327e0))
+* **gui:** improve progress tracking & drag & drop for files ([3e91091](https://github.com/DevYukine/rom-converto/commit/3e91091f454f1471ba6350f54bca677d53391b61))
+* **gui:** improve UI for bigger screens ([5ab4773](https://github.com/DevYukine/rom-converto/commit/5ab4773d5ad309ff481eec7ab50f0ee5e46bc754))
+* **progress:** add a total progress bar for recursive ([0b8c9eb](https://github.com/DevYukine/rom-converto/commit/0b8c9eb49581bc09fd1dd4403c51b1c00f140d64))
+
+
+
 # [0.4.0](https://github.com/DevYukine/rom-converto/compare/v0.3.2...v0.4.0) (2026-04-07)
 
 
@@ -65,15 +88,6 @@
 ### Features
 
 * add self-update command ([f3d98a7](https://github.com/DevYukine/rom-converto/commit/f3d98a7f81c98d3110e5154e4dd9310a7d558dbe))
-
-
-
-## [0.2.2](https://github.com/DevYukine/rom-converto/compare/v0.2.1...v0.2.2) (2025-07-03)
-
-
-### Bug Fixes
-
-* **ci:** build without --locked for release ([07e6264](https://github.com/DevYukine/rom-converto/commit/07e62644a91631904815bb0d622f6310b6dc1bdc))
 
 
 
