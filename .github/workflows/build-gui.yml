@@ -60,6 +60,17 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Cache Rust dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: gui-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            gui-${{ matrix.target }}-cargo-
+
       - name: Install frontend dependencies
         working-directory: crates/rom-converto-gui
         run: pnpm install
