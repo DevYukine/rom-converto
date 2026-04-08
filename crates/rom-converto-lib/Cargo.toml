@@ -1,8 +1,8 @@
 [package]
 name = "rom-converto-lib"
-version = "0.5.1"
-edition = "2024"
-authors = ["DevYukine <devyukine@gmx.de>"]
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
 description = "Library for converting, compressing, decompressing, encrypting, and decrypting ROMs."
 
 [dependencies]

@@ -1,9 +1,9 @@
 [package]
 name = "rom-converto-cli"
-version = "0.5.1"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 build = "build.rs"
-authors = ["DevYukine <devyukine@gmx.de>"]
+authors.workspace = true
 description = "CLI for converting, compressing, decompressing, encrypting, and decrypting ROMs."
 
 [[bin]]

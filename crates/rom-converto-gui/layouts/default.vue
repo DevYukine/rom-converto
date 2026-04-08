@@ -6,6 +6,10 @@ import { useCtrDecompressStore } from "~/stores/ctr-decompress";
 import { useChdCompressStore } from "~/stores/chd-compress";
 import { useChdExtractStore } from "~/stores/chd-extract";
 import { useChdVerifyStore } from "~/stores/chd-verify";
+import { getVersion } from "@tauri-apps/api/app";
+
+const appVersion = ref("");
+getVersion().then((v) => { appVersion.value = v; }).catch(() => {});
 
 const ctrLinks = [
   { to: "/ctr/cdn-to-cia", label: "CDN to CIA", store: () => useCtrCdnToCiaStore(), icon: "folder-arrow" },
@@ -176,7 +180,7 @@ function getStatus(store: () => { loading: boolean; result: string; error: strin
 
       <!-- Footer -->
       <div class="border-t border-zinc-800/50 px-5 py-3">
-        <span class="text-[11px] text-zinc-600">v0.4.0</span>
+        <span class="text-[11px] text-zinc-600">{{ appVersion ? `v${appVersion}` : '' }}</span>
       </div>
     </nav>
 

@@ -1,7 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/tauri-v2.0.0/crates/tauri-cli/config.schema.json",
   "productName": "rom-converto",
-  "version": "0.5.1",
   "identifier": "com.devyukine.rom-converto",
   "build": {
     "beforeDevCommand": "pnpm dev",

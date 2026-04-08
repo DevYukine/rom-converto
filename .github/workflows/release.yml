@@ -22,9 +22,8 @@ jobs:
         uses: TriPSs/conventional-changelog-action@v6
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          version-file: './crates/rom-converto-cli/Cargo.toml'
-          version-path: "package.version"
-          pre-commit: .github/scripts/sync-versions.js
+          version-file: './Cargo.toml'
+          version-path: "workspace.package.version"
       - name: Create Release
         if: ${{ steps.changelog.outputs.skipped == 'false' }}
         uses: ncipollo/release-action@v1
