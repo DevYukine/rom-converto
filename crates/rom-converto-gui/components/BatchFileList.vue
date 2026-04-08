@@ -20,6 +20,16 @@ function fileName(path: string) {
 
 const doneCount = computed(() => props.items.filter((i) => i.status === "done").length);
 const errorCount = computed(() => props.items.filter((i) => i.status === "error").length);
+
+const listRef = ref<HTMLElement | null>(null);
+
+watch(() => props.currentIndex, (idx) => {
+  if (idx < 0 || !listRef.value) return;
+  const children = listRef.value.children;
+  if (children[idx]) {
+    children[idx].scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }
+});
 </script>
 
 <template>
@@ -37,7 +47,7 @@ const errorCount = computed(() => props.items.filter((i) => i.status === "error"
       </button>
     </div>
 
-    <div class="max-h-60 space-y-1 overflow-y-auto rounded-lg border border-zinc-700/50 bg-zinc-900/50 p-2 xl:max-h-80">
+    <div ref="listRef" class="max-h-60 space-y-1 overflow-y-auto rounded-lg border border-zinc-700/50 bg-zinc-900/50 p-2 xl:max-h-80">
       <div
         v-for="(item, index) in items"
         :key="item.id"
