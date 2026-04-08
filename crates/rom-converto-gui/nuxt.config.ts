@@ -4,6 +4,10 @@ export default defineNuxtConfig({
   ssr: false,
   devtools: { enabled: false },
   modules: ["@pinia/nuxt"],
+  spaLoadingTemplate: "app/spa-loading-template.html",
+  experimental: {
+    payloadExtraction: false,
+  },
   css: ["~/assets/css/main.css"],
   devServer: {
     host: "localhost",
