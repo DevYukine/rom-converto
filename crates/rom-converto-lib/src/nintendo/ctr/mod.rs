@@ -221,8 +221,20 @@ pub async fn generate_ticket_from_cdn(cdn_dir: &Path, output: &Path) -> Result<(
 pub async fn convert_cdn_to_cia(
     opts: CdnToCiaOptions,
     progress: &dyn ProgressReporter,
+    total_progress: &dyn ProgressReporter,
 ) -> Result<()> {
     if opts.recursive {
+        // First pass: count subdirectories
+        let mut count: u64 = 0;
+        let mut dirs = tokio::fs::read_dir(&opts.cdn_dir).await?;
+        while let Ok(Some(entry)) = dirs.next_entry().await {
+            if entry.path().is_dir() {
+                count += 1;
+            }
+        }
+
+        total_progress.start(count, &format!("Processing {count} directories..."));
+
         let mut directories = tokio::fs::read_dir(&opts.cdn_dir).await?;
 
         while let Ok(Some(entry)) = directories.next_entry().await {
@@ -243,8 +255,11 @@ pub async fn convert_cdn_to_cia(
                     err
                 );
             }
+
+            total_progress.inc(1);
         }
 
+        total_progress.finish();
         Ok(())
     } else {
         convert_cdn_to_cia_single(opts, progress).await

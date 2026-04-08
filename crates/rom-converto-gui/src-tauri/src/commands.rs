@@ -26,7 +26,8 @@ pub async fn cmd_cdn_to_cia(
     recursive: bool,
     ensure_ticket_exists: bool,
 ) -> Result<String, String> {
-    let progress = Arc::new(TauriProgress::new(app, "cdn-to-cia"));
+    let progress = Arc::new(TauriProgress::new(app.clone(), "cdn-to-cia"));
+    let total_progress = Arc::new(TauriProgress::new(app, "cdn-to-cia-total"));
     let opts = CdnToCiaOptions {
         cdn_dir,
         output,
@@ -36,7 +37,9 @@ pub async fn cmd_cdn_to_cia(
         decrypt,
         compress,
     };
-    tokio::spawn(async move { convert_cdn_to_cia(opts, progress.as_ref()).await })
+    tokio::spawn(async move {
+        convert_cdn_to_cia(opts, progress.as_ref(), total_progress.as_ref()).await
+    })
         .await
         .map_err(err_to_string)?
         .map_err(err_to_string)?;

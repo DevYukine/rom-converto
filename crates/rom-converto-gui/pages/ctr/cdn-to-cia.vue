@@ -6,6 +6,7 @@ const store = useCtrCdnToCiaStore();
 const { cdnDir, output, decrypt, compress, cleanup, recursive, ensureTicket, result, error, loading } = storeToRefs(store);
 const { run } = useOperation({ result, error, loading });
 const progress = useProgress("cdn-to-cia");
+const totalProgress = useProgress("cdn-to-cia-total");
 
 watch(compress, (val) => {
   if (val) decrypt.value = true;
@@ -13,6 +14,7 @@ watch(compress, (val) => {
 
 async function execute() {
   progress.reset();
+  totalProgress.reset();
   await run("cmd_cdn_to_cia", {
     cdnDir: cdnDir.value,
     output: output.value || null,
@@ -83,6 +85,13 @@ async function execute() {
             />
           </div>
         </div>
+
+        <ProgressBar
+          v-if="recursive"
+          :percent="totalProgress.percent.value"
+          :message="totalProgress.message.value"
+          :running="totalProgress.running.value"
+        />
 
         <ProgressBar
           :percent="progress.percent.value"

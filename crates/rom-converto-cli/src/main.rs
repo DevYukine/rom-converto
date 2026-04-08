@@ -65,7 +65,7 @@ async fn main() -> Result<()> {
                     decrypt: cmd.decrypt,
                     compress: cmd.compress,
                 };
-                convert_cdn_to_cia(opts, &progress).await?
+                convert_cdn_to_cia(opts, &progress, &progress).await?
             }
             CtrCommands::GenerateCdnTicket(cmd) => {
                 generate_ticket_from_cdn(&cmd.cdn_dir, &cmd.output).await?
