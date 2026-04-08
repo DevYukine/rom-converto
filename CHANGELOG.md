@@ -1,3 +1,13 @@
+## [0.5.1](https://github.com/DevYukine/rom-converto/compare/v0.5.0...v0.5.1) (2026-04-08)
+
+
+### Bug Fixes
+
+* **release:** replace .sh file with .js file for syncing version ([d0454ee](https://github.com/DevYukine/rom-converto/commit/d0454eef8370fe2f6b1c8e03575c7911d08e6aff))
+* **version:** update all versions on release action ([5c62ea6](https://github.com/DevYukine/rom-converto/commit/5c62ea6042cf6f39225a4e03d7d486a707fd4710))
+
+
+
 # [0.5.0](https://github.com/DevYukine/rom-converto/compare/v0.4.0...v0.5.0) (2026-04-08)
 
 
@@ -72,22 +82,6 @@
 ### Performance Improvements
 
 * **cia:** only load seeddb.bin once in memory ([985d11c](https://github.com/DevYukine/rom-converto/commit/985d11c65bf3254c267f03e3067d2c53e9b3b6c7))
-
-
-
-# [0.3.0](https://github.com/DevYukine/rom-converto/compare/v0.2.2...v0.3.0) (2025-07-03)
-
-
-### Bug Fixes
-
-* **ctr:** default to use latest tmd file when multiple exists ([69dde38](https://github.com/DevYukine/rom-converto/commit/69dde386e942b4b2bd76683bbc3fc914423e07a4))
-* **help:** properly display heart ([cce8a78](https://github.com/DevYukine/rom-converto/commit/cce8a78a233517bfba22804c91fb7a72fec2286a))
-* **logging:** default to info level if no log level is set ([9927204](https://github.com/DevYukine/rom-converto/commit/99272043e93a71d387ad90c3fb7792d3b0641fa4))
-
-
-### Features
-
-* add self-update command ([f3d98a7](https://github.com/DevYukine/rom-converto/commit/f3d98a7f81c98d3110e5154e4dd9310a7d558dbe))
 
 
 
