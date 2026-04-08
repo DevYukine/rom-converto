@@ -70,7 +70,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: crates/rom-converto-gui
-          tauriScript: npx tauri
+          tauriScript: pnpm tauri
           args: --target ${{ matrix.target }}
 
       - name: Upload artifact
