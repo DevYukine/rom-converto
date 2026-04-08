@@ -1,3 +1,12 @@
+## [0.5.2](https://github.com/DevYukine/rom-converto/compare/v0.5.1...v0.5.2) (2026-04-08)
+
+
+### Bug Fixes
+
+* simplify version management, remove hardcoded version in UI ([cef99a9](https://github.com/DevYukine/rom-converto/commit/cef99a91b50b73ec8491aa7fa9137d2762b5e436))
+
+
+
 ## [0.5.1](https://github.com/DevYukine/rom-converto/compare/v0.5.0...v0.5.1) (2026-04-08)
 
 
@@ -68,20 +77,6 @@
 ### Bug Fixes
 
 * **updater:** check for correct name of outdated file ([0ec1460](https://github.com/DevYukine/rom-converto/commit/0ec1460d33d365552ee464d8925238001ef472e7))
-
-
-
-## [0.3.1](https://github.com/DevYukine/rom-converto/compare/v0.3.0...v0.3.1) (2026-01-12)
-
-
-### Bug Fixes
-
-* **cia:** update for latest commit to ExeFSHeader changing the field names ([ae2adac](https://github.com/DevYukine/rom-converto/commit/ae2adace808f5d1bd1c1e47f17d90215913b4e99))
-
-
-### Performance Improvements
-
-* **cia:** only load seeddb.bin once in memory ([985d11c](https://github.com/DevYukine/rom-converto/commit/985d11c65bf3254c267f03e3067d2c53e9b3b6c7))
 
 
 
