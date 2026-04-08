@@ -4,7 +4,6 @@ on:
   push:
     branches: [ "main" ]
 
-
 env:
   CARGO_TERM_COLOR: always
 
@@ -12,7 +11,7 @@ jobs:
   changelog:
     outputs:
       tag: ${{ steps.changelog.outputs.tag }}
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
+      skipped: ${{ steps.changelog.outputs.skipped }}
     name: Create Changelog
     runs-on: ubuntu-latest
     steps:
@@ -26,16 +25,17 @@ jobs:
           version-file: './crates/rom-converto-cli/Cargo.toml'
           version-path: "package.version"
       - name: Create Release
-        id: create_release
-        uses: ncipollo/release-action@v1
         if: ${{ steps.changelog.outputs.skipped == 'false' }}
+        uses: ncipollo/release-action@v1
         with:
           tag: ${{ steps.changelog.outputs.tag }}
           name: ${{ steps.changelog.outputs.tag }}
           body: ${{ steps.changelog.outputs.clean_changelog }}
-  build:
-    name: Build Release - ${{ matrix.classifier }}
+
+  build-cli:
+    name: CLI - ${{ matrix.classifier }}
     needs: changelog
+    if: ${{ needs.changelog.outputs.skipped == 'false' }}
     strategy:
       fail-fast: false
       matrix:
@@ -86,7 +86,7 @@ jobs:
         run: |
           mkdir -p artifact
           cp target/${{ matrix.target }}/release/rom-converto \
-             artifact/rom-converto-${{ matrix.classifier }}
+             artifact/rom-converto-cli-${{ matrix.classifier }}
 
       - name: Package binary (Windows)
         if: runner.os == 'Windows'
@@ -94,11 +94,107 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path artifact
           Copy-Item "target/${{ matrix.target }}/release/rom-converto.exe" `
-                    -Destination "artifact/rom-converto-${{ matrix.classifier }}.exe"
+                    -Destination "artifact/rom-converto-cli-${{ matrix.classifier }}.exe"
 
       - name: Upload to Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.changelog.outputs.tag }}
-          files: |
-            artifact/*
+          files: artifact/*
+
+  build-gui:
+    name: GUI - ${{ matrix.classifier }}
+    needs: changelog
+    if: ${{ needs.changelog.outputs.skipped == 'false' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            classifier: linux-x64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            classifier: windows-x64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            classifier: macos-x64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            classifier: macos-arm64
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout Source code
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.changelog.outputs.tag }}
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: crates/rom-converto-gui/pnpm-lock.yaml
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: release-gui-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            release-gui-${{ matrix.target }}-cargo-
+
+      - name: Install frontend dependencies
+        working-directory: crates/rom-converto-gui
+        run: pnpm install
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: crates/rom-converto-gui
+          tauriScript: pnpm tauri
+          args: --target ${{ matrix.target }}
+
+      - name: Package binary (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p artifact
+          cp target/${{ matrix.target }}/release/rom-converto-gui \
+             artifact/rom-converto-gui-${{ matrix.classifier }}
+
+      - name: Package binary (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifact
+          Copy-Item "target/${{ matrix.target }}/release/rom-converto-gui.exe" `
+                    -Destination "artifact/rom-converto-gui-${{ matrix.classifier }}.exe"
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.changelog.outputs.tag }}
+          files: artifact/*
