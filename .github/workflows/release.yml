@@ -24,7 +24,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           version-file: './crates/rom-converto-cli/Cargo.toml'
           version-path: "package.version"
-          pre-commit: .github/scripts/sync-versions.sh
+          pre-commit: .github/scripts/sync-versions.js
       - name: Create Release
         if: ${{ steps.changelog.outputs.skipped == 'false' }}
         uses: ncipollo/release-action@v1
