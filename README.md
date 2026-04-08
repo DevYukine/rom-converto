@@ -1,6 +1,8 @@
 # rom-converto
 
-A command-line utility suite for converting, compressing, encrypting, and decrypting ROM formats, currently focused on the **Nintendo 3DS** and **CD image** formats.
+A utility suite for converting, compressing, encrypting, and decrypting ROM formats, currently focused on the **Nintendo 3DS** and **CD image** formats.
+
+Available as both a **command line tool** and a **desktop GUI application**.
 
 Built for developers, tinkerers and archivists.
 
@@ -10,14 +12,42 @@ Built for developers, tinkerers and archivists.
 
 * [x] Convert 3DS CDN files to `.cia` format
 * [x] Generate 3DS Tickets for CDN files
-* [x] Decrypt `.cia` files for usage on emulators (e.g. [Azahar](https://azahar-emu.org/))
+* [x] Decrypt `.cia`, `.3ds`, `.cci`, and `.cxi` files for usage on emulators (e.g. [Azahar](https://azahar-emu.org/))
 * [x] Compress and decompress 3DS ROMs using the Z3DS format (seekable zstd)
 * [x] Compress CD images (`.bin` + `.cue`) to `.chd` format
 * [x] Extract `.chd` files back to `.bin` + `.cue`
 * [x] Verify `.chd` file integrity (SHA1 checksums)
-* [x] Self-update from GitHub releases
+* [x] Batch processing of multiple files at once (GUI)
+* [x] Self-update from GitHub releases (CLI)
 
-## Commands
+## GUI Application
+
+The desktop app provides a visual interface for all operations. Built with [Tauri](https://tauri.app/), [Nuxt](https://nuxt.com/) and [Tailwind CSS](https://tailwindcss.com/).
+
+**Highlights:**
+
+* Drag and drop files directly into the application
+* Batch process multiple files at once (drop several files to queue them up)
+* Real time progress tracking for all operations
+* State persists when switching between pages
+* Works on Windows, macOS and Linux
+
+### Running the GUI in Development
+
+1. Install [Rust 1.88+](https://www.rust-lang.org/tools/install) and [Node.js 22+](https://nodejs.org/)
+2. Install [pnpm](https://pnpm.io/installation)
+3. Clone the repository
+4. Install frontend dependencies:
+   ```
+   cd crates/rom-converto-gui
+   pnpm install
+   ```
+5. Start the development server:
+   ```
+   pnpm tauri dev
+   ```
+
+## CLI Commands
 
 ### CTR (Nintendo 3DS)
 
@@ -25,7 +55,7 @@ Built for developers, tinkerers and archivists.
 |---|---|
 | `ctr cdn-to-cia <CDN_DIR> [OUTPUT]` | Convert a CDN directory to `.cia` |
 | `ctr generate-cdn-ticket <CDN_DIR> [OUTPUT]` | Generate a `.tik` ticket from CDN content |
-| `ctr decrypt-cia <INPUT> <OUTPUT>` | Decrypt an encrypted `.cia` for emulator use |
+| `ctr decrypt <INPUT> <OUTPUT>` | Decrypt an encrypted ROM for emulator use |
 | `ctr compress <INPUT> [OUTPUT]` | Compress a decrypted ROM to Z3DS format |
 | `ctr decompress <INPUT> [OUTPUT]` | Decompress a Z3DS file back to the original ROM |
 
@@ -37,10 +67,11 @@ Built for developers, tinkerers and archivists.
 | `-R, --recursive` | Process all subdirectories, converting each to `.cia` |
 | `-T, --ensure-ticket-exists` | Auto-generate a ticket file if one is not found |
 | `-D, --decrypt` | Also decrypt the CIA after creation |
+| `-Z, --compress` | Also compress the CIA after creation (implies decrypt) |
 
 > **`generate-cdn-ticket`:** Generated tickets use placeholder values (null Console ID, etc.) and only work on modded consoles and emulators. They will not work on stock hardware.
 
-> **`decrypt-cia`:** Place a `seeddb.bin` file next to the executable to resolve seeds locally. If none is found, the tool will fetch the required seed from Nintendo's API.
+> **`decrypt`:** Supports `.cia`, `.3ds`, `.cci` and `.cxi` files. The format is detected automatically. Place a `seeddb.bin` file next to the executable to resolve seeds locally. If none is found, the tool will fetch the required seed from Nintendo's API.
 
 > **`compress` / `decompress`:** Supported input formats for compression: `.cia`, `.cci`, `.3ds`, `.cxi`, `.3dsx`. Output files use the Z3DS format (`.zcia`, `.zcci`, `.zcxi`, `.z3dsx`). Compression only works on decrypted ROMs, since encrypted ROMs have near-zero compression ratios. The output file path defaults to the input path with the extension updated automatically.
 
@@ -72,34 +103,49 @@ rom-converto self-update
 
 Checks GitHub for a newer release and replaces the current binary in place.
 
+## Project Structure
+
+The project is organized as a Cargo workspace with three crates:
+
+| Crate | Description |
+|---|---|
+| `rom-converto-lib` | Core library with all conversion, compression and decryption logic |
+| `rom-converto-cli` | Command line interface |
+| `rom-converto-gui` | Desktop GUI application (Tauri + Nuxt) |
+
 ## Development
 
 ### Prerequisites
 
-1. Install Rust 1.88+ from [here](https://www.rust-lang.org/tools/install)
+1. Install [Rust 1.88+](https://www.rust-lang.org/tools/install)
+2. For the GUI: Install [Node.js 22+](https://nodejs.org/) and [pnpm](https://pnpm.io/installation)
 
-### Running in Development
-
-1. Clone the repository
-2. Run `cargo run --package rom-converto --bin rom-converto` to run the CLI
-
-### Building a Release Binary
+### Running the CLI in Development
 
 ```
-cargo build --release
+cargo run -p rom-converto-cli
+```
+
+### Building Release Binaries
+
+```
+cargo build --release -p rom-converto-cli
 ```
 
 The resulting binary will be at `target/release/rom-converto`.
 
 ## Built With
 
-* [Rust](https://www.rust-lang.org/) - The programming language used
-* [tokio](https://tokio.rs/) - Asynchronous runtime
-* [clap](https://github.com/clap-rs/clap) - Command-line argument parsing
-* [binrw](https://github.com/jam1garner/binrw) - Reading/writing binary data structures
-* [RustCrypto](https://github.com/rustcrypto) - AES encryption, key derivation, and hashing
-* [flate2](https://github.com/rust-lang/flate2-rs) / [lzma-sdk-sys](https://github.com/nicowillis/lzma-sdk-sys) / [flacenc](https://github.com/yotarok/flacenc-rs) - CHD compression codecs
-* [indicatif](https://github.com/console-rs/indicatif) - Progress bars
+* [Rust](https://www.rust-lang.org/) and [tokio](https://tokio.rs/) for the core logic and async runtime
+* [Tauri](https://tauri.app/) and [Nuxt](https://nuxt.com/) for the desktop GUI
+* [clap](https://github.com/clap-rs/clap) for command line argument parsing
+* [binrw](https://github.com/jam1garner/binrw) for reading/writing binary data structures
+* [RustCrypto](https://github.com/rustcrypto) for AES encryption, key derivation, and hashing
+* [zstd](https://github.com/gyscos/zstd-rs) for seekable zstd compression (Z3DS format)
+* [flate2](https://github.com/rust-lang/flate2-rs) / [lzma-sdk-sys](https://github.com/nicowillis/lzma-sdk-sys) / [flacenc](https://github.com/yotarok/flacenc-rs) for CHD compression codecs
+* [indicatif](https://github.com/console-rs/indicatif) for CLI progress bars
+* [Pinia](https://pinia.vuejs.org/) for GUI state management
+* [Tailwind CSS](https://tailwindcss.com/) for GUI styling
 
 ## Contributing
 
