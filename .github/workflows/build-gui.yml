@@ -73,12 +73,22 @@ jobs:
           tauriScript: pnpm tauri
           args: --target ${{ matrix.target }}
 
+      - name: Package binary (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p artifact
+          cp target/${{ matrix.target }}/release/rom-converto-gui artifact/
+
+      - name: Package binary (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifact
+          Copy-Item "target/${{ matrix.target }}/release/rom-converto-gui.exe" -Destination artifact
+
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
           name: rom-converto-gui-${{ matrix.classifier }}
-          path: |
-            target/${{ matrix.target }}/release/bundle/msi/*.msi
-            target/${{ matrix.target }}/release/bundle/dmg/*.dmg
-            target/${{ matrix.target }}/release/bundle/deb/*.deb
-            target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
+          path: artifact/
