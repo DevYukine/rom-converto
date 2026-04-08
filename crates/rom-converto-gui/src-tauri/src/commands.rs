@@ -40,9 +40,9 @@ pub async fn cmd_cdn_to_cia(
     tokio::spawn(async move {
         convert_cdn_to_cia(opts, progress.as_ref(), total_progress.as_ref()).await
     })
-        .await
-        .map_err(err_to_string)?
-        .map_err(err_to_string)?;
+    .await
+    .map_err(err_to_string)?
+    .map_err(err_to_string)?;
     Ok("CDN to CIA conversion complete".to_string())
 }
 

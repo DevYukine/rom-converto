@@ -75,9 +75,14 @@ pub async fn compress_rom(
     let bytes_done_clone = bytes_done.clone();
     let data_clone = input_data.clone();
     let mut handle = task::spawn_blocking(move || {
-        encode_seekable_with_progress(&data_clone, frame_size, 0, Some(&|bytes| {
-            bytes_done_clone.fetch_add(bytes, Ordering::Relaxed);
-        }))
+        encode_seekable_with_progress(
+            &data_clone,
+            frame_size,
+            0,
+            Some(&|bytes| {
+                bytes_done_clone.fetch_add(bytes, Ordering::Relaxed);
+            }),
+        )
     });
 
     // Poll progress every 100ms while compression runs
