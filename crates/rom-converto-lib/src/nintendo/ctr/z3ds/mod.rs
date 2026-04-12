@@ -221,6 +221,53 @@ mod tests {
         );
     }
 
+    /// Exercises the streaming `compress_rom` path with an input large enough
+    /// to span many `FRAME_SIZE_DEFAULT` (256 KB) frames. The existing
+    /// round-trip tests use 64–128 KB inputs which fit in a single frame, so
+    /// they don't catch issues with frame iteration, the spawn_blocking
+    /// progress counter loop, or the placeholder-header rewrite at non-zero
+    /// payload positions.
+    #[tokio::test]
+    async fn round_trip_multi_frame_cxi() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("big.cxi");
+        let compressed = dir.path().join("big.zcxi");
+        let decompressed = dir.path().join("big_out.cxi");
+
+        // 2 MB → ~8 frames at 256 KB each + a partial last frame.
+        let original = make_fake_decrypted_cxi(2 * 1024 * 1024 + 7);
+        tokio::fs::write(&input, &original).await.unwrap();
+
+        compress_rom(&input, &compressed, &NoProgress)
+            .await
+            .unwrap();
+        decompress_rom(&compressed, &decompressed, &NoProgress)
+            .await
+            .unwrap();
+
+        let result = tokio::fs::read(&decompressed).await.unwrap();
+        assert_eq!(
+            original, result,
+            "multi-frame CXI did not round-trip cleanly"
+        );
+
+        // Sanity: the resulting file actually contains multiple frames
+        // (and therefore exercised the seek-table path inside the streaming
+        // encoder, not just the single-frame degenerate case).
+        let compressed_bytes = tokio::fs::read(&compressed).await.unwrap();
+        // The seek table footer is at the very end; num_frames lives 9 bytes
+        // before EOF as a little-endian u32.
+        let num_frames = u32::from_le_bytes(
+            compressed_bytes[compressed_bytes.len() - 9..compressed_bytes.len() - 5]
+                .try_into()
+                .unwrap(),
+        );
+        assert!(
+            num_frames >= 8,
+            "expected ≥8 frames in 2MB+ payload, got {num_frames}"
+        );
+    }
+
     #[tokio::test]
     async fn compress_produces_smaller_file() {
         let dir = tempfile::tempdir().unwrap();

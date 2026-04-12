@@ -5,20 +5,35 @@ use crate::nintendo::ctr::constants::{
 use crate::nintendo::ctr::util::align_64_usize;
 use crate::nintendo::ctr::z3ds::error::{Z3dsError, Z3dsResult};
 use crate::nintendo::ctr::z3ds::models::{
-    Z3dsHeader, Z3dsMetadata, Z3dsMetadataItem, underlying_magic,
+    Z3DS_HEADER_SIZE, Z3dsHeader, Z3dsMetadata, Z3dsMetadataItem, underlying_magic,
 };
 use crate::nintendo::ctr::z3ds::seekable::{
-    FRAME_SIZE_CIA, FRAME_SIZE_DEFAULT, encode_seekable_with_progress,
+    FRAME_SIZE_CIA, FRAME_SIZE_DEFAULT, encode_seekable_streaming,
 };
 use crate::util::{BYTES_PER_MB, ProgressReporter};
 use binrw::BinWrite;
 use chrono::Utc;
 use log::info;
-use std::io::Cursor;
+use std::io::{BufReader, BufWriter as StdBufWriter, Cursor, Seek, SeekFrom, Write};
 use std::path::Path;
-use tokio::fs::File;
-use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::task;
+
+/// Size of the probe buffer used for the encryption check. Must cover the
+/// furthest offset we might poke at: NCSD partition 0 + NCCH header flags.
+/// Real-world NCSD images can place partition 0 at media-unit offsets well
+/// past 0x80 (= 64 KB), so a 64 KB probe would silently let encrypted ROMs
+/// through `check_ncch_not_encrypted` (which skips the check on EOF). 1 MB
+/// is still negligible RAM and covers any realistic partition 0 offset.
+const ENCRYPTION_PROBE_SIZE: usize = 1024 * 1024;
+
+/// Compile-time guard: `ENCRYPTION_PROBE_SIZE` must be large enough to reach
+/// an NCSD partition 0 placed at MU=0x100 (offset 0x20000). If someone
+/// shrinks the constant below this bound, the build fails before any silent
+/// encryption-check regression can ship.
+const _: () = assert!(
+    ENCRYPTION_PROBE_SIZE >= 0x20000 + 0x200,
+    "ENCRYPTION_PROBE_SIZE too small for high-MU NCSD partitions",
+);
 
 pub async fn compress_rom(
     input: &Path,
@@ -39,17 +54,22 @@ pub async fn compress_rom(
         other => return Err(Z3dsError::UnsupportedInputFormat(other.to_string())),
     };
 
-    let input_data = tokio::fs::read(input).await?;
+    let uncompressed_size = tokio::fs::metadata(input).await?.len();
 
-    // Encryption check: for NCCH/NCSD files the NcchHeader flags byte at offset
-    // 0x100 + 0x188 (= 0x288) bit 2 being clear means the content is encrypted.
-    // A simpler heuristic: check the NCCH/NCSD magic at offset 0x100, then check
-    // flags[7] (cryptomethod). For CIA files we look at the first NCCH inside.
-    check_not_encrypted(&input_data, &ext)?;
+    // Read only the first ENCRYPTION_PROBE_SIZE bytes for the encryption check,
+    // instead of loading the whole file into RAM just to peek at flags[7].
+    let probe = {
+        let probe_len = std::cmp::min(uncompressed_size, ENCRYPTION_PROBE_SIZE as u64) as usize;
+        let mut buf = vec![0u8; probe_len];
+        let mut f = tokio::fs::File::open(input).await?;
+        use tokio::io::AsyncReadExt as _;
+        f.read_exact(&mut buf).await?;
+        buf
+    };
+    check_not_encrypted(&probe, &ext)?;
+    drop(probe);
 
-    let uncompressed_size = input_data.len() as u64;
-
-    // Build metadata
+    // Build metadata.
     let version = env!("CARGO_PKG_VERSION");
     let metadata = Z3dsMetadata::new(vec![
         Z3dsMetadataItem::new_str("compressor", &format!("rom-converto ({version})")),
@@ -59,7 +79,6 @@ pub async fn compress_rom(
     let metadata_bytes = metadata.to_bytes()?;
     let metadata_size = metadata_bytes.len() as u32;
 
-    // Phase 1: Compress
     progress.start(
         uncompressed_size,
         &format!(
@@ -69,31 +88,78 @@ pub async fn compress_rom(
         ),
     );
 
-    // Use an atomic counter to relay progress from the blocking thread
+    // Atomic counter to relay progress out of the blocking thread.
     use std::sync::atomic::{AtomicU64, Ordering};
     let bytes_done = std::sync::Arc::new(AtomicU64::new(0));
     let bytes_done_clone = bytes_done.clone();
-    let data_clone = input_data.clone();
-    let mut handle = task::spawn_blocking(move || {
-        encode_seekable_with_progress(
-            &data_clone,
+
+    // Move the paths into the blocking task; we can't borrow them across await.
+    let input_owned = input.to_path_buf();
+    let output_owned = output.to_path_buf();
+    let metadata_bytes_owned = metadata_bytes;
+
+    let mut handle = task::spawn_blocking(move || -> Z3dsResult<(u64, u64)> {
+        // Open input (streaming read) and output (streaming write + seek back
+        // for header rewrite) using std::fs so we can hand them to zstd
+        // directly without tokio's async wrappers.
+        let in_file = std::fs::File::open(&input_owned)?;
+        let mut reader = BufReader::with_capacity(4 * 1024 * 1024, in_file);
+
+        let out_file = std::fs::File::create(&output_owned)?;
+        let mut writer = StdBufWriter::with_capacity(4 * 1024 * 1024, out_file);
+
+        // Reserve space for the Z3DS header by writing a zero-filled placeholder.
+        // We'll seek back and overwrite it with the real header once we know
+        // the final compressed_size.
+        let placeholder_header = vec![0u8; Z3DS_HEADER_SIZE as usize];
+        writer.write_all(&placeholder_header)?;
+        writer.write_all(&metadata_bytes_owned)?;
+
+        let payload_start = placeholder_header.len() as u64 + metadata_bytes_owned.len() as u64;
+
+        // Stream the compressed payload (frames + seek table) directly into
+        // the output writer.
+        let compressed_size = encode_seekable_streaming(
+            &mut reader,
+            &mut writer,
             frame_size,
             0,
             Some(&|bytes| {
                 bytes_done_clone.fetch_add(bytes, Ordering::Relaxed);
             }),
-        )
+        )?;
+
+        // Flush the payload before seeking back for the header rewrite — the
+        // BufWriter must not leak buffered bytes past the seek.
+        writer.flush()?;
+
+        // Serialize the real header and overwrite the placeholder.
+        let header = Z3dsHeader::new(
+            underlying_magic,
+            metadata_size,
+            compressed_size,
+            uncompressed_size,
+        );
+        let mut header_buf = Cursor::new(Vec::with_capacity(Z3DS_HEADER_SIZE as usize));
+        header.write(&mut header_buf)?;
+        let header_bytes = header_buf.into_inner();
+        debug_assert_eq!(header_bytes.len(), Z3DS_HEADER_SIZE as usize);
+
+        writer.seek(SeekFrom::Start(0))?;
+        writer.write_all(&header_bytes)?;
+        writer.flush()?;
+
+        let _ = payload_start; // silence warning on release builds
+        Ok((compressed_size, uncompressed_size))
     });
 
-    // Poll progress every 100ms while compression runs
-    let compressed = loop {
+    // Poll the background task, reporting progress every 100 ms.
+    let (compressed_size, _) = loop {
         match tokio::time::timeout(std::time::Duration::from_millis(100), &mut handle).await {
             Ok(result) => {
-                // Task finished
                 break result??;
             }
             Err(_) => {
-                // Timeout — report progress so far
                 let delta = bytes_done.swap(0, Ordering::Relaxed);
                 if delta > 0 {
                     progress.inc(delta);
@@ -101,52 +167,10 @@ pub async fn compress_rom(
             }
         }
     };
-    // Report any remaining progress
     let remaining = bytes_done.swap(0, Ordering::Relaxed);
     if remaining > 0 {
         progress.inc(remaining);
     }
-    progress.finish();
-
-    let compressed_size = compressed.len() as u64;
-
-    // Build and serialise the header
-    let header = Z3dsHeader::new(
-        underlying_magic,
-        metadata_size,
-        compressed_size,
-        uncompressed_size,
-    );
-
-    let mut header_buf = Cursor::new(Vec::new());
-    header.write(&mut header_buf)?;
-    let header_bytes = header_buf.into_inner();
-
-    // Phase 2: Write to disk
-    let total_write = header_bytes.len() as u64 + metadata_bytes.len() as u64 + compressed_size;
-    progress.start(
-        total_write,
-        &format!(
-            "Writing {} ({:.2} MB)",
-            output.file_name().unwrap_or_default().to_string_lossy(),
-            total_write as f64 / BYTES_PER_MB,
-        ),
-    );
-
-    let file = File::create(output).await?;
-    let mut out = BufWriter::new(file);
-    out.write_all(&header_bytes).await?;
-    progress.inc(header_bytes.len() as u64);
-    out.write_all(&metadata_bytes).await?;
-    progress.inc(metadata_bytes.len() as u64);
-
-    // Write compressed data in chunks for progress
-    const WRITE_CHUNK: usize = 4 * 1024 * 1024; // 4 MB
-    for chunk in compressed.chunks(WRITE_CHUNK) {
-        out.write_all(chunk).await?;
-        progress.inc(chunk.len() as u64);
-    }
-    out.flush().await?;
     progress.finish();
 
     let ratio = (1.0 - compressed_size as f64 / uncompressed_size as f64) * 100.0;
@@ -415,4 +439,26 @@ mod tests {
         let data = make_ncsd(1, true);
         assert!(check_not_encrypted(&data, "3ds").is_ok());
     }
+
+    /// Regression for the encryption-probe size: NCSD images can have
+    /// partition 0 at media-unit offsets well past 0x80 (i.e. past 64 KB).
+    /// The probe must be large enough that `check_ncch_not_encrypted` reaches
+    /// the NCCH header at the partition 0 offset, otherwise the check
+    /// silently passes on encrypted ROMs.
+    #[test]
+    fn ncsd_partition_at_high_mu_decrypted_passes() {
+        // Partition 0 at MU=0x100 → offset 0x20000 (128 KB), well above the
+        // old 64 KB probe limit but inside the new 1 MB probe.
+        let data = make_ncsd(0x100, true);
+        assert!(data.len() >= 0x20000 + 0x200);
+        assert!(check_ncsd_not_encrypted(&data).is_ok());
+    }
+
+    #[test]
+    fn ncsd_partition_at_high_mu_encrypted_fails() {
+        let data = make_ncsd(0x100, false);
+        let err = check_ncsd_not_encrypted(&data).unwrap_err();
+        assert!(matches!(err, Z3dsError::InputNotDecrypted));
+    }
+
 }

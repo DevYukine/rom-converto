@@ -3,10 +3,11 @@ use crate::nintendo::ctr::constants::{
     NCSD_PARTITION_ENTRY_SIZE, NCSD_PARTITION_TABLE_OFFSET,
 };
 use crate::nintendo::ctr::models::certificate::{Certificate, PublicKey};
-use crate::nintendo::ctr::models::cia::{CIA_HEADER_SIZE, CiaFile, CiaFileWithoutContent};
+use crate::nintendo::ctr::models::cia::{CIA_HEADER_SIZE, CiaFileWithoutContent, CiaHeader};
 use crate::nintendo::ctr::models::ncch_header::NcchHeader;
+use crate::nintendo::ctr::models::title_metadata::TitleMetadata;
+use crate::nintendo::ctr::util::align_64;
 use crate::nintendo::ctr::verify::root_key::{ROOT_CA_EXPONENT, ROOT_CA_MODULUS};
-use crate::nintendo::ctr::z3ds::decode_seekable;
 use crate::nintendo::ctr::z3ds::models::Z3dsHeader;
 use crate::util::ProgressReporter;
 use anyhow::{Context, Result};
@@ -161,20 +162,22 @@ async fn verify_compressed(
 
     // Skip metadata, read compressed payload
     let payload_offset = header.header_size as u64 + header.metadata_size as u64;
-    file.seek(SeekFrom::Start(payload_offset)).await?;
-    let mut compressed = vec![0u8; header.compressed_size as usize];
-    file.read_exact(&mut compressed).await?;
+    let compressed_size = header.compressed_size;
+    drop(file);
 
     progress.start(
         header.uncompressed_size,
         "Decompressing for verification...",
     );
 
-    // Decompress
-    let decompressed = tokio::task::spawn_blocking(move || decode_seekable(&compressed)).await??;
-    progress.inc(header.uncompressed_size / 4);
-
-    // Write to a temp file for verification (needed because verify_cia reads from path)
+    // Stream the compressed payload straight from the input file into the
+    // zstd decoder, then into a temp file. We never hold the compressed or
+    // decompressed bytes in memory — peak heap is just BufReader (4 MB) +
+    // BufWriter (4 MB) + libzstd's internal decoder state (a few MB).
+    //
+    // The seek-table footer at the end of the payload is a zstd skippable
+    // frame, which libzstd handles natively (verified by the
+    // `zstd_streaming_skips_skippable_frame_natively` test in `seekable.rs`).
     let temp_dir = tempfile::tempdir()?;
     let ext = match &header.underlying_magic {
         b"CIA\0" => "cia",
@@ -183,7 +186,30 @@ async fn verify_compressed(
         _ => "bin",
     };
     let temp_path = temp_dir.path().join(format!("verify_temp.{ext}"));
-    tokio::fs::write(&temp_path, &decompressed).await?;
+    let temp_path_for_blocking = temp_path.clone();
+    let input_path = input.to_path_buf();
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        use std::io::{BufReader, BufWriter, Read as _, Seek as _};
+        let mut in_file = std::fs::File::open(&input_path)?;
+        in_file.seek(SeekFrom::Start(payload_offset))?;
+        // `take` caps the read at the declared compressed payload size so we
+        // don't accidentally feed trailing garbage (or another concatenated
+        // section) into the decoder.
+        let limited = in_file.take(compressed_size);
+        let mut reader = BufReader::with_capacity(4 * 1024 * 1024, limited);
+        let mut writer = BufWriter::with_capacity(
+            4 * 1024 * 1024,
+            std::fs::File::create(&temp_path_for_blocking)?,
+        );
+        zstd::stream::copy_decode(&mut reader, &mut writer)?;
+        writer
+            .into_inner()
+            .map_err(|e| anyhow::anyhow!("failed to flush decompressed output: {e}"))?
+            .sync_all()?;
+        Ok(())
+    })
+    .await??;
+    progress.inc(header.uncompressed_size / 4);
 
     progress.finish();
 
@@ -199,13 +225,40 @@ pub async fn verify_cia(
     options: &CtrVerifyOptions,
     progress: &dyn ProgressReporter,
 ) -> Result<CiaVerifyResult> {
-    let file_data = tokio::fs::read(input).await?;
-    let file_size = file_data.len() as u64;
+    let mut file = tokio::fs::File::open(input).await?;
+    let file_size = file.metadata().await?.len();
     progress.start(file_size, "Verifying CIA signatures...");
+
+    // Read the CIA header first (fixed size, 0x2020 bytes) so we know cert/ticket/tmd sizes.
+    let mut header_buf = vec![0u8; CIA_HEADER_SIZE as usize];
+    file.read_exact(&mut header_buf).await?;
+    let cia_header = CiaHeader::read_le(&mut Cursor::new(&header_buf))
+        .context("Failed to parse CIA header")?;
+
+    // Compute the exact end of the TMD (where content starts, aligned to 64).
+    let header_end: u64 = CIA_HEADER_SIZE as u64;
+    let cert_start = align_64(header_end);
+    let cert_end = cert_start + cia_header.cert_chain_size as u64;
+    let ticket_start = align_64(cert_end);
+    let ticket_end = ticket_start + cia_header.ticket_size as u64;
+    let tmd_start = align_64(ticket_end);
+    let tmd_end = tmd_start + cia_header.tmd_size as u64;
+    let content_start = align_64(tmd_end);
+
+    if content_start > file_size {
+        anyhow::bail!("CIA preamble exceeds file size (corrupt header)");
+    }
+
+    // Read only the preamble region [0..content_start] into memory (few MB at most).
+    let mut preamble = vec![0u8; content_start as usize];
+    preamble[..CIA_HEADER_SIZE as usize].copy_from_slice(&header_buf);
+    file.seek(SeekFrom::Start(CIA_HEADER_SIZE as u64)).await?;
+    file.read_exact(&mut preamble[CIA_HEADER_SIZE as usize..])
+        .await?;
 
     let mut details = Vec::new();
 
-    let mut cursor = Cursor::new(&file_data);
+    let mut cursor = Cursor::new(&preamble);
     let cia_without_content = CiaFileWithoutContent::read_options(&mut cursor, Endian::Little, ())
         .context("Failed to parse CIA file")?;
 
@@ -338,14 +391,18 @@ pub async fn verify_cia(
 
     progress.inc(file_size / 4);
 
-    // Optionally verify content hashes
+    // Optionally verify content hashes by streaming content directly from the file.
     let content_hashes_valid = if options.verify_content_hashes {
-        let mut cursor = Cursor::new(&file_data);
-        match CiaFile::read_options(&mut cursor, Endian::Little, ()) {
-            Ok(cia) => {
-                let valid = verify_content_hashes(&cia, &mut details);
-                Some(valid)
-            }
+        match verify_content_hashes_streaming(
+            &mut file,
+            content_start,
+            file_size,
+            &cia_without_content.tmd,
+            &mut details,
+        )
+        .await
+        {
+            Ok(valid) => Some(valid),
             Err(e) => {
                 details.push(format!("Content hash verification failed: {e}"));
                 Some(false)
@@ -794,27 +851,45 @@ fn serialize_ticket_body(ticket: &crate::nintendo::ctr::models::ticket::Ticket) 
     buf
 }
 
-fn verify_content_hashes(cia: &CiaFile, details: &mut Vec<String>) -> bool {
+/// Streaming content hash verify: seeks the file to each content chunk's offset
+/// and computes SHA-256 incrementally with a reusable 4 MB buffer instead of
+/// loading the entire CIA into memory.
+async fn verify_content_hashes_streaming(
+    file: &mut tokio::fs::File,
+    content_start: u64,
+    file_size: u64,
+    tmd: &TitleMetadata,
+    details: &mut Vec<String>,
+) -> Result<bool> {
+    const CHUNK_BUF: usize = 4 * 1024 * 1024;
+    let mut buf = vec![0u8; CHUNK_BUF];
     let mut all_valid = true;
-    let mut offset: usize = 0;
+    let mut offset = content_start;
 
-    for record in &cia.tmd.content_chunk_records {
-        let size = record.content_size as usize;
-        let end = offset + size;
-
-        if end > cia.content_data.len() {
+    for record in &tmd.content_chunk_records {
+        let size = record.content_size;
+        if offset + size > file_size {
             details.push(format!(
-                "Content {}: data truncated (need {} bytes, have {})",
+                "Content {}: data truncated (need {} bytes at {:#x}, file is {})",
                 record.content_id,
-                end,
-                cia.content_data.len()
+                size,
+                offset,
+                file_size
             ));
             all_valid = false;
             break;
         }
 
-        let chunk = &cia.content_data[offset..end];
-        let hash = Sha256::digest(chunk);
+        file.seek(SeekFrom::Start(offset)).await?;
+        let mut hasher = Sha256::new();
+        let mut remaining = size;
+        while remaining > 0 {
+            let to_read = remaining.min(buf.len() as u64) as usize;
+            file.read_exact(&mut buf[..to_read]).await?;
+            hasher.update(&buf[..to_read]);
+            remaining -= to_read as u64;
+        }
+        let hash = hasher.finalize();
 
         if hash.as_slice() == record.hash.as_slice() {
             details.push(format!("Content {}: hash OK", record.content_id));
@@ -823,23 +898,405 @@ fn verify_content_hashes(cia: &CiaFile, details: &mut Vec<String>) -> bool {
             all_valid = false;
         }
 
-        offset = end;
+        offset += size;
     }
 
-    // Verify content info records hash chain
+    // Verify content info records hash chain (operates on TMD, no file I/O).
     let mut info_buf = Vec::new();
     let mut info_cursor = Cursor::new(&mut info_buf);
-    for record in &cia.tmd.content_info_records {
+    for record in &tmd.content_info_records {
         let _ = record.write_options(&mut info_cursor, Endian::Big, ());
     }
     let info_hash = Sha256::digest(&info_buf);
 
-    if info_hash.as_slice() == cia.tmd.header.content_info_records_hash.as_slice() {
+    if info_hash.as_slice() == tmd.header.content_info_records_hash.as_slice() {
         details.push("Content info records hash: OK".to_string());
     } else {
         details.push("Content info records hash: MISMATCH".to_string());
         all_valid = false;
     }
 
-    all_valid
+    Ok(all_valid)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::nintendo::ctr::models::certificate::KeyType;
+    use crate::nintendo::ctr::models::cia::CiaFile;
+    use crate::nintendo::ctr::models::signature::{SignatureData, SignatureType};
+    use crate::nintendo::ctr::models::ticket::{ContentIndex, Ticket, TicketData};
+    use crate::nintendo::ctr::models::title_metadata::{
+        ContentChunkRecord, ContentInfoRecord, ContentType, TitleMetadataHeader,
+    };
+    use std::io::Write as _;
+    use std::sync::Mutex;
+
+    /// Captures progress calls so tests can assert on counter totals.
+    #[derive(Default)]
+    struct TestProgress {
+        inner: Mutex<(u64, u64, bool)>, // (total, inc_sum, finish_called)
+    }
+
+    impl ProgressReporter for TestProgress {
+        fn start(&self, total: u64, _message: &str) {
+            let mut g = self.inner.lock().unwrap();
+            g.0 = total;
+        }
+        fn inc(&self, delta: u64) {
+            let mut g = self.inner.lock().unwrap();
+            g.1 += delta;
+        }
+        fn finish(&self) {
+            let mut g = self.inner.lock().unwrap();
+            g.2 = true;
+        }
+    }
+
+    /// Builds a minimal, well-formed CIA fixture with `content_size` bytes of
+    /// deterministic content and a correct SHA-256 in the TMD. Signatures are
+    /// dummy values so signature checks will fail; that's fine for these tests.
+    fn synth_cia(content_size: usize) -> (tempfile::TempDir, std::path::PathBuf, [u8; 32]) {
+        let tmp = tempfile::tempdir().unwrap();
+        let out_path = tmp.path().join("test.cia");
+
+        // Deterministic content
+        let mut content_data = vec![0u8; content_size];
+        for (i, b) in content_data.iter_mut().enumerate() {
+            *b = (i as u8).wrapping_mul(37);
+        }
+        let content_hash = {
+            let mut h = Sha256::new();
+            h.update(&content_data);
+            let d = h.finalize();
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&d);
+            arr
+        };
+
+        // Build cert chain (3 certs, RSA-2048 sig, total 0x900; padded to 0xA00)
+        let make_cert = |name: &[u8], sig_fill: u8| Certificate {
+            signature_type: SignatureType::Rsa2048Sha256,
+            signature: vec![sig_fill; 0x100],
+            padding: vec![0x00; 0x3C],
+            issuer: {
+                let mut v = b"Root".to_vec();
+                v.resize(0x40, 0);
+                v
+            },
+            key_type: KeyType::Rsa2048,
+            name: {
+                let mut v = name.to_vec();
+                v.resize(0x40, 0);
+                v
+            },
+            expiration_time: 0x5F5E0F00,
+            public_key: PublicKey::Rsa2048 {
+                modulus: vec![0xFF; 0x100],
+                public_exponent: 65537,
+                padding: vec![0x00; 0x34],
+            },
+        };
+
+        let cert_chain = vec![
+            make_cert(b"CA00000003", 0xAA),
+            make_cert(b"CP0000000b", 0xBB),
+            make_cert(b"XS0000000c", 0xCC),
+        ];
+
+        let ticket = Ticket {
+            signature_data: SignatureData {
+                signature_type: SignatureType::Rsa2048Sha256,
+                signature: vec![0xBB; 0x100],
+                padding: vec![0x00; 0x3C],
+            },
+            ticket_data: TicketData {
+                issuer: {
+                    let mut v = b"Root-CA00000003-XS0000000c".to_vec();
+                    v.resize(0x40, 0);
+                    v
+                },
+                ecc_public_key: vec![0x00; 0x3C],
+                version: 1,
+                ca_crl_version: 0,
+                signer_crl_version: 0,
+                title_key: vec![0xFF; 0x10],
+                reserved1: 0,
+                ticket_id: 0x0123456789ABCDEF,
+                console_id: 0,
+                title_id: 0xFEDCBA9876543210,
+                reserved2: 0,
+                ticket_title_version: 0x0100,
+                reserved3: 0,
+                license_type: 0,
+                common_key_index: 1,
+                reserved4: vec![0x00; 0x2A],
+                eshop_account_id: 0,
+                reserved5: 0,
+                audit: 0,
+                reserved6: vec![0x00; 0x42],
+                limits: vec![0x00; 0x40],
+                content_index: ContentIndex {
+                    header_word: 0,
+                    total_size: 22,
+                    data: vec![0x00; 20],
+                },
+            },
+        };
+
+        // Build TMD with one content chunk that has the real SHA-256.
+        let mut content_info_records = vec![
+            ContentInfoRecord {
+                content_index_offset: 0,
+                content_command_count: 0,
+                hash: vec![0x00; 0x20],
+            };
+            64
+        ];
+        content_info_records[0] = ContentInfoRecord {
+            content_index_offset: 0,
+            content_command_count: 1,
+            hash: vec![0x00; 0x20], // set below
+        };
+
+        let content_chunk_records = vec![ContentChunkRecord {
+            content_id: 0,
+            content_index: 0,
+            content_type: ContentType(0x0001),
+            content_size: content_size as u64,
+            hash: content_hash.to_vec(),
+        }];
+
+        // Compute the info record's hash = SHA256(serialized chunk record).
+        let mut chunk_buf = Vec::new();
+        content_chunk_records[0]
+            .write_options(&mut Cursor::new(&mut chunk_buf), Endian::Big, ())
+            .unwrap();
+        let info_hash_0 = {
+            let mut h = Sha256::new();
+            h.update(&chunk_buf);
+            h.finalize().to_vec()
+        };
+        content_info_records[0].hash = info_hash_0;
+
+        // Compute header's content_info_records_hash = SHA256(all info records serialized).
+        let mut info_buf = Vec::new();
+        {
+            let mut info_cursor = Cursor::new(&mut info_buf);
+            for r in &content_info_records {
+                r.write_options(&mut info_cursor, Endian::Big, ()).unwrap();
+            }
+        }
+        let content_info_records_hash = {
+            let mut h = Sha256::new();
+            h.update(&info_buf);
+            h.finalize().to_vec()
+        };
+
+        let tmd = TitleMetadata {
+            signature_data: SignatureData {
+                signature_type: SignatureType::Rsa2048Sha256,
+                signature: vec![0xCC; 0x100],
+                padding: vec![0x00; 0x3C],
+            },
+            header: TitleMetadataHeader {
+                signature_issuer: {
+                    let mut v = b"Root-CA00000003-CP0000000b".to_vec();
+                    v.resize(0x40, 0);
+                    v
+                },
+                version: 1,
+                ca_crl_version: 0,
+                signer_crl_version: 0,
+                reserved1: 0,
+                system_version: 0,
+                title_id: 0x0004000000030000,
+                title_type: 0x00040010,
+                group_id: 0,
+                save_data_size: 0x00080000,
+                srl_private_save_data_size: 0,
+                reserved2: 0,
+                srl_flag: 0,
+                reserved3: vec![0x00; 0x31],
+                access_rights: 0,
+                title_version: 0x0100,
+                content_count: 1,
+                boot_content: 0,
+                padding: 0,
+                content_info_records_hash,
+            },
+            content_info_records,
+            content_chunk_records,
+        };
+
+        // Measure actual serialized sizes of ticket and TMD so the CIA header
+        // declares the real lengths. The BinWrite impl for Ticket/TMD does not
+        // pad to declared size — if the declared size disagrees with reality
+        // the file layout breaks.
+        let ticket_size = {
+            let mut b = Vec::new();
+            ticket
+                .write_options(&mut Cursor::new(&mut b), Endian::Big, ())
+                .unwrap();
+            b.len() as u32
+        };
+        let tmd_size = {
+            let mut b = Vec::new();
+            tmd.write_options(&mut Cursor::new(&mut b), Endian::Big, ())
+                .unwrap();
+            b.len() as u32
+        };
+
+        let cia = CiaFile {
+            header: CiaHeader {
+                header_size: CIA_HEADER_SIZE,
+                cia_type: 0,
+                version: 0,
+                cert_chain_size: 0x0A00,
+                ticket_size,
+                tmd_size,
+                meta_size: 0,
+                content_size: content_size as u64,
+                content_index: vec![0x00; 0x2000],
+            },
+            cert_chain,
+            ticket,
+            tmd,
+            content_data,
+            meta_data: None,
+        };
+
+        let mut buf = Vec::new();
+        cia.write_options(&mut Cursor::new(&mut buf), Endian::Little, ())
+            .unwrap();
+
+        let mut f = std::fs::File::create(&out_path).unwrap();
+        f.write_all(&buf).unwrap();
+        f.flush().unwrap();
+
+        (tmp, out_path, content_hash)
+    }
+
+    #[tokio::test]
+    async fn verify_cia_streaming_parses_header_and_tmd() {
+        let (_tmp, path, _) = synth_cia(0x2000);
+        let progress = TestProgress::default();
+        let result = verify_cia(
+            &path,
+            &CtrVerifyOptions {
+                verify_content_hashes: false,
+            },
+            &progress,
+        )
+        .await
+        .expect("verify should parse the synthetic CIA");
+
+        assert_eq!(result.title_id, "0004000000030000");
+        assert_eq!(result.title_version, 0x0100);
+        assert_eq!(result.console_id, 0);
+        // Content hash check wasn't requested.
+        assert_eq!(result.content_hashes_valid, None);
+        // Signatures are forged → all false, classification Standard.
+        assert!(!result.tmd_signature_valid);
+        assert!(!result.ticket_signature_valid);
+    }
+
+    #[tokio::test]
+    async fn verify_cia_streaming_validates_content_hash() {
+        let (_tmp, path, _) = synth_cia(0x4000);
+        let progress = TestProgress::default();
+        let result = verify_cia(
+            &path,
+            &CtrVerifyOptions {
+                verify_content_hashes: true,
+            },
+            &progress,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.content_hashes_valid, Some(true));
+    }
+
+    #[tokio::test]
+    async fn verify_compressed_streams_into_temp_without_full_buffer() {
+        use crate::nintendo::ctr::z3ds::{compress_rom, decompress_rom};
+
+        let (_tmp, cia_path, _) = synth_cia(0x3000);
+
+        // Compress the synthetic CIA into .zcia using the real compressor.
+        let zcia_path = cia_path.with_extension("zcia");
+        let prog = crate::util::NoProgress;
+        compress_rom(&cia_path, &zcia_path, &prog).await.unwrap();
+
+        // Sanity: round-trip the compressed file back and compare to original.
+        let decompressed_path = cia_path.with_extension("roundtrip.cia");
+        decompress_rom(&zcia_path, &decompressed_path, &prog)
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read(&cia_path).unwrap(),
+            std::fs::read(&decompressed_path).unwrap(),
+            "decompress of compressed synthetic CIA must round-trip"
+        );
+
+        // Verify the compressed path through the streaming temp-file pipeline.
+        let result = verify_ctr(
+            &zcia_path,
+            &CtrVerifyOptions {
+                verify_content_hashes: true,
+            },
+            &prog,
+        )
+        .await
+        .unwrap();
+
+        match result {
+            CtrVerifyResult::Cia(cia) => {
+                assert_eq!(cia.title_id, "0004000000030000");
+                assert_eq!(cia.content_hashes_valid, Some(true));
+            }
+            CtrVerifyResult::Ncsd(_) => panic!("expected Cia result"),
+        }
+    }
+
+    #[tokio::test]
+    async fn verify_cia_streaming_detects_content_hash_mismatch() {
+        let (_tmp, path, _) = synth_cia(0x4000);
+
+        // Corrupt one byte in the content region. Content starts somewhere after
+        // the TMD; scan for the deterministic pattern and flip a byte there.
+        // Using known layout: content_start = align_64(CIA_HEADER_SIZE +
+        // cert_chain_size + ticket_size + tmd_size). For this fixture the
+        // content is at the tail of the file.
+        let len = std::fs::metadata(&path).unwrap().len();
+        let corrupt_offset = len - 0x100; // inside the content region
+        {
+            use std::io::{Seek as _, SeekFrom};
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&path)
+                .unwrap();
+            f.seek(SeekFrom::Start(corrupt_offset)).unwrap();
+            f.write_all(&[0xFFu8; 1]).unwrap();
+        }
+
+        let progress = TestProgress::default();
+        let result = verify_cia(
+            &path,
+            &CtrVerifyOptions {
+                verify_content_hashes: true,
+            },
+            &progress,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.content_hashes_valid, Some(false));
+        assert!(
+            result.details.iter().any(|s| s.contains("MISMATCH")),
+            "details should report MISMATCH, got: {:?}",
+            result.details
+        );
+    }
 }

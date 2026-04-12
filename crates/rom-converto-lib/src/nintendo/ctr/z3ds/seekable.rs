@@ -1,4 +1,5 @@
 use crate::nintendo::ctr::z3ds::error::Z3dsResult;
+use std::io::{Read, Write};
 
 /// Seek table appended at the end of seekable-zstd output as a ZSTD skippable frame.
 ///
@@ -32,6 +33,10 @@ struct FrameEntry {
 /// `max_frame_size` decompressed bytes) followed by a seek table encoded as a
 /// ZSTD skippable frame.  The whole output is valid input for the standard zstd
 /// library.
+///
+/// This buffered variant is kept as the reference implementation that the
+/// streaming [`encode_seekable_streaming`] is tested byte-for-byte against.
+#[cfg(test)]
 pub fn encode_seekable_with_progress(
     data: &[u8],
     max_frame_size: usize,
@@ -71,6 +76,89 @@ pub fn encode_seekable_with_progress(
     output.extend_from_slice(&SEEKABLE_MAGIC.to_le_bytes());
 
     Ok(output)
+}
+
+/// Streaming variant of [`encode_seekable_with_progress`]: reads the
+/// uncompressed input from `reader` one frame at a time and writes the
+/// compressed frames (plus seek-table footer) directly to `writer`.
+///
+/// Peak extra memory is bounded by `max_frame_size` (one uncompressed frame
+/// plus its compressed output), independent of the total file size. The frame
+/// table itself is tiny — 8 bytes per frame — so for a 4 GB ROM compressed
+/// with 32 MB frames it's ~1 KB.
+///
+/// Returns the total number of bytes written to `writer` (frames + seek
+/// table). This is what the `compressed_size` field in the Z3DS header must
+/// declare.
+pub fn encode_seekable_streaming<R: Read, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    max_frame_size: usize,
+    level: i32,
+    on_chunk: Option<&dyn Fn(u64)>,
+) -> Z3dsResult<u64> {
+    let mut entries: Vec<FrameEntry> = Vec::new();
+    let mut frame_buf = vec![0u8; max_frame_size];
+    let mut bytes_written: u64 = 0;
+
+    loop {
+        // Read up to one full frame, tolerating short reads until EOF so we
+        // always feed zstd a full max_frame_size block when possible.
+        let mut filled = 0usize;
+        while filled < frame_buf.len() {
+            match reader.read(&mut frame_buf[filled..]) {
+                Ok(0) => break,
+                Ok(n) => filled += n,
+                Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e.into()),
+            }
+        }
+        if filled == 0 {
+            break;
+        }
+
+        // Use the same encoder API as `encode_seekable_with_progress` so the
+        // streaming path produces byte-identical output.
+        let compressed = zstd::encode_all(&frame_buf[..filled], level)?;
+        writer.write_all(&compressed)?;
+        bytes_written += compressed.len() as u64;
+
+        entries.push(FrameEntry {
+            compressed_size: compressed.len() as u32,
+            decompressed_size: filled as u32,
+        });
+
+        if let Some(cb) = &on_chunk {
+            cb(filled as u64);
+        }
+
+        if filled < frame_buf.len() {
+            // Short read → EOF.
+            break;
+        }
+    }
+
+    // Append the seek table skippable frame, matching the layout emitted by
+    // `encode_seekable_with_progress`.
+    let num_frames = entries.len() as u32;
+    let frame_payload_size: u32 = num_frames * SEEK_TABLE_ENTRY_SIZE + SEEK_TABLE_FOOTER_SIZE;
+
+    writer.write_all(&SKIPPABLE_MAGIC.to_le_bytes())?;
+    writer.write_all(&frame_payload_size.to_le_bytes())?;
+    bytes_written += 8;
+
+    for entry in &entries {
+        writer.write_all(&entry.compressed_size.to_le_bytes())?;
+        writer.write_all(&entry.decompressed_size.to_le_bytes())?;
+        bytes_written += 8;
+    }
+
+    writer.write_all(&num_frames.to_le_bytes())?;
+    writer.write_all(&[SEEK_TABLE_DESCRIPTOR])?;
+    writer.write_all(&SEEKABLE_MAGIC.to_le_bytes())?;
+    bytes_written += 9;
+
+    Ok(bytes_written)
 }
 
 /// Decompress seekable-zstd data back to the original bytes.
@@ -278,6 +366,85 @@ mod tests {
         let stripped = strip_seek_table(&plain);
         let decoded = zstd::decode_all(stripped).unwrap();
         assert_eq!(original.as_slice(), decoded.as_slice());
+    }
+
+    #[test]
+    fn streaming_encode_matches_buffered_encode() {
+        // The streaming encoder must produce byte-identical output to the
+        // buffered `encode_seekable_with_progress` for the same input, so
+        // that existing compressed files keep decoding correctly.
+        let original: Vec<u8> = (0u8..=255).cycle().take(200_000).collect();
+        let buffered = encode_seekable(&original, 4096, 0).unwrap();
+
+        let mut streamed = Vec::new();
+        let mut src = std::io::Cursor::new(&original);
+        let written =
+            encode_seekable_streaming(&mut src, &mut streamed, 4096, 0, None).unwrap();
+
+        assert_eq!(written, streamed.len() as u64);
+        assert_eq!(buffered, streamed);
+    }
+
+    #[test]
+    fn streaming_encode_roundtrips() {
+        let original: Vec<u8> = (0u8..=99).cycle().take(50_000).collect();
+        let mut encoded = Vec::new();
+        let mut src = std::io::Cursor::new(&original);
+        encode_seekable_streaming(&mut src, &mut encoded, 1024, 0, None).unwrap();
+        let decoded = decode_seekable(&encoded).unwrap();
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn streaming_encode_progress_callback_sum() {
+        let original = vec![0xABu8; 10_000];
+        let mut encoded = Vec::new();
+        let mut src = std::io::Cursor::new(&original);
+        let total = std::sync::atomic::AtomicU64::new(0);
+        encode_seekable_streaming(
+            &mut src,
+            &mut encoded,
+            1024,
+            0,
+            Some(&|n| {
+                total.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            total.load(std::sync::atomic::Ordering::Relaxed),
+            original.len() as u64
+        );
+    }
+
+    #[test]
+    fn streaming_encode_single_frame() {
+        let original = b"small input fits in one frame".to_vec();
+        let mut encoded = Vec::new();
+        encode_seekable_streaming(
+            &mut std::io::Cursor::new(&original),
+            &mut encoded,
+            1 << 20,
+            0,
+            None,
+        )
+        .unwrap();
+        assert_eq!(read_num_frames(&encoded), 1);
+        assert_eq!(decode_seekable(&encoded).unwrap(), original);
+    }
+
+    #[test]
+    fn zstd_streaming_skips_skippable_frame_natively() {
+        // Sanity check: libzstd's streaming decoder handles the seek-table
+        // skippable frame on its own, without us pre-stripping. If this passes
+        // we can stream the whole compressed payload straight from disk
+        // instead of buffering it in RAM first.
+        let original: Vec<u8> = (0u8..=99).cycle().take(20_000).collect();
+        let encoded = encode_seekable(&original, 1024, 0).unwrap();
+
+        let mut out = Vec::new();
+        zstd::stream::copy_decode(&encoded[..], &mut out).unwrap();
+        assert_eq!(original, out);
     }
 
     #[test]

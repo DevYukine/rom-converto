@@ -79,6 +79,44 @@ pub mod tests {
         assert_eq!(buffer.get_ref().len(), 16);
     }
 
+    /// Proves the identity used by `check_cia_not_encrypted`:
+    /// `align_64(a) + align_64(b) + ... = chained_align(a, b, ...)`
+    /// (i.e. summing independently-aligned section sizes equals walking the
+    /// CIA layout section-by-section). The identity holds because each partial
+    /// sum is itself a multiple of 64, so `align_64(P + s) = P + align_64(s)`
+    /// when P ≡ 0 (mod 64).
+    #[test]
+    fn align_64_sum_equals_chained_alignment() {
+        let cases: &[&[u64]] = &[
+            // Realistic CIA: header, cert chain, ticket, TMD
+            &[0x2020, 0x0A00, 0x0304, 0x0B40],
+            // From test_simple_cia_file
+            &[0x2020, 0x0A00, 0x0350, 0x0B34],
+            // Non-aligned cert chain (synthetic edge case)
+            &[0x2020, 0x0A01, 0x0304, 0x0B40],
+            // Many small unaligned sections
+            &[0x21, 0x47, 0x83, 0xC1, 0x0F],
+            // All aligned
+            &[0x40, 0x80, 0xC0, 0x100],
+            // Single section
+            &[0x2020],
+            // Includes zero-sized sections
+            &[0x2020, 0x0, 0x304, 0x0],
+        ];
+
+        for case in cases {
+            let sum_independent: u64 = case.iter().map(|&s| align_64(s)).sum();
+            let mut chained: u64 = 0;
+            for &s in *case {
+                chained = align_64(chained + s);
+            }
+            assert_eq!(
+                sum_independent, chained,
+                "formulas disagree for case {case:?}: sum={sum_independent:#x}, chained={chained:#x}"
+            );
+        }
+    }
+
     #[test]
     fn pad_to_align_64_handles_large_padding() {
         use std::io::Cursor;
