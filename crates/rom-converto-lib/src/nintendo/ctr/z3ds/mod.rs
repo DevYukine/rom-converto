@@ -8,6 +8,7 @@ mod seekable;
 
 pub use compress::compress_rom;
 pub use decompress::decompress_rom;
+pub use seekable::decode_seekable;
 
 /// Maps a file extension using the given table, falling back to `default`.
 fn map_extension(input: &Path, table: &[(&str, &str)], default: &str) -> PathBuf {

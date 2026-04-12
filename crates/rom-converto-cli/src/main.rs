@@ -9,6 +9,7 @@ use clap::Parser;
 use indicatif::MultiProgress;
 use indicatif_log_bridge::LogWrapper;
 use rom_converto_lib::chd::{convert_to_chd, extract_from_chd, verify_chd};
+use rom_converto_lib::nintendo::ctr::verify::{CtrVerifyOptions, CtrVerifyResult, verify_ctr};
 use rom_converto_lib::nintendo::ctr::z3ds::{
     compress_rom, decompress_rom, derive_compressed_path, derive_decompressed_path,
 };
@@ -82,6 +83,43 @@ async fn main() -> Result<()> {
                     .output
                     .unwrap_or_else(|| derive_decompressed_path(&cmd.input));
                 decompress_rom(&cmd.input, &output, &progress).await?
+            }
+            CtrCommands::Verify(cmd) => {
+                let opts = CtrVerifyOptions {
+                    verify_content_hashes: cmd.verify_content,
+                };
+                let result = verify_ctr(&cmd.input, &opts, &progress).await?;
+                match &result {
+                    CtrVerifyResult::Cia(cia) => {
+                        log::info!("Format: CIA");
+                        log::info!("Legitimacy: {}", cia.legitimacy);
+                        for line in &cia.details {
+                            log::info!("  {line}");
+                        }
+                    }
+                    CtrVerifyResult::Ncsd(ncsd) => {
+                        log::info!("Format: NCSD");
+                        log::info!("Title ID: {}", ncsd.title_id);
+                        for line in &ncsd.details {
+                            log::info!("  {line}");
+                        }
+                        for part in &ncsd.partitions {
+                            log::info!(
+                                "  Partition {} ({}): {}",
+                                part.index,
+                                part.name,
+                                if part.ncch_magic_valid {
+                                    "NCCH OK"
+                                } else {
+                                    "NCCH INVALID"
+                                }
+                            );
+                            for line in &part.details {
+                                log::info!("    {line}");
+                            }
+                        }
+                    }
+                }
             }
         },
         Commands::Chd(inner) => match inner {

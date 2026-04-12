@@ -3,6 +3,7 @@ import { useCtrCdnToCiaStore } from "~/stores/ctr-cdn-to-cia";
 import { useCtrDecryptStore } from "~/stores/ctr-decrypt";
 import { useCtrCompressStore } from "~/stores/ctr-compress";
 import { useCtrDecompressStore } from "~/stores/ctr-decompress";
+import { useCtrVerifyStore } from "~/stores/ctr-verify";
 import { useChdCompressStore } from "~/stores/chd-compress";
 import { useChdExtractStore } from "~/stores/chd-extract";
 import { useChdVerifyStore } from "~/stores/chd-verify";
@@ -16,6 +17,7 @@ const ctrLinks = [
   { to: "/ctr/decrypt", label: "Decrypt", store: () => useCtrDecryptStore(), icon: "lock-open" },
   { to: "/ctr/compress", label: "Compress", store: () => useCtrCompressStore(), icon: "compress" },
   { to: "/ctr/decompress", label: "Decompress", store: () => useCtrDecompressStore(), icon: "expand" },
+  { to: "/ctr/verify", label: "Verify", store: () => useCtrVerifyStore(), icon: "shield-check" },
 ];
 
 const chdLinks = [
@@ -103,6 +105,10 @@ function getStatus(store: () => { loading: boolean; result: string; error: strin
                   <!-- expand -->
                   <svg v-else-if="link.icon === 'expand'" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
                     <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
+                  </svg>
+                  <!-- shield-check -->
+                  <svg v-else-if="link.icon === 'shield-check'" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
                   </svg>
                 </span>
 

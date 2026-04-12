@@ -1,5 +1,6 @@
 use crate::progress::TauriProgress;
 use rom_converto_lib::chd::{convert_to_chd, extract_from_chd, verify_chd};
+use rom_converto_lib::nintendo::ctr::verify::{CtrVerifyOptions, verify_ctr};
 use rom_converto_lib::nintendo::ctr::z3ds::{
     compress_rom, decompress_rom, derive_compressed_path, derive_decompressed_path,
 };
@@ -166,4 +167,22 @@ pub async fn cmd_chd_verify(
     .join()
     .map_err(|_| "task panicked".to_string())??;
     Ok("CHD verification passed".to_string())
+}
+
+#[tauri::command]
+pub async fn cmd_verify_ctr(
+    app: AppHandle,
+    input: PathBuf,
+    verify_content: bool,
+) -> Result<String, String> {
+    let progress = Arc::new(TauriProgress::new(app, "ctr-verify"));
+    let opts = CtrVerifyOptions {
+        verify_content_hashes: verify_content,
+    };
+    let result = tokio::spawn(async move { verify_ctr(&input, &opts, progress.as_ref()).await })
+        .await
+        .map_err(err_to_string)?
+        .map_err(err_to_string)?;
+
+    serde_json::to_string(&result).map_err(err_to_string)
 }

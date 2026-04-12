@@ -9,6 +9,7 @@ pub enum CtrCommands {
     Decrypt(DecryptCommand),
     Compress(CompressRomCommand),
     Decompress(DecompressRomCommand),
+    Verify(VerifyCommand),
 }
 
 /// Convert CDN content to CIA format
@@ -130,4 +131,19 @@ pub struct DecompressRomCommand {
     /// Output file path, defaults to the input path with the "z" prefix removed from the extension
     #[arg(value_name = "OUTPUT")]
     pub output: Option<PathBuf>,
+}
+
+/// Verify CTR ROM file integrity and legitimacy
+#[derive(Parser, Debug, Clone, Eq, PartialEq)]
+#[command(
+    long_about = "Verify a CTR ROM file's integrity by checking hashes and signatures\n\nSupported formats: .cia, .3ds, .cci, .cxi, .zcia, .zcci, .zcxi\n\nFor .cia files, classifies as:\n  - Legit: Both ticket and TMD signatures verify through Nintendo's cert chain\n  - Piratelegit: TMD signature verifies but ticket is forged\n  - Standard: Neither signature verifies\n\nFor .3ds/.cci files, verifies NCCH partition hashes (ExeFS, RomFS, ExHeader)\nCompressed Z3DS files are decompressed automatically before verification"
+)]
+pub struct VerifyCommand {
+    /// Input ROM file path (.cia, .3ds, .cci, .cxi, .zcia, .zcci, .zcxi)
+    #[arg(value_name = "INPUT")]
+    pub input: PathBuf,
+
+    /// Also verify content hashes against TMD (CIA only, slower)
+    #[arg(long, default_value_t = false)]
+    pub verify_content: bool,
 }

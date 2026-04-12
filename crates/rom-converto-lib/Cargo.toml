@@ -30,6 +30,8 @@ hex = "^0.4"
 md5 = "^0.8"
 sha256 = "^1.6"
 hex-literal = "^1.1"
+rsa = { version = "^0.9", features = ["sha2"] }
+serde = { version = "^1", features = ["derive"] }
 crc = "^3.4"
 
 # Compression
@@ -41,6 +43,4 @@ zstd = "^0.13"
 
 # HTTP (for seed DB fetch)
 reqwest = { version = "^0.13", default-features = false, features = ["charset", "http2", "system-proxy", "json", "stream", "rustls"] }
-
-[dev-dependencies]
 tempfile = "^3"

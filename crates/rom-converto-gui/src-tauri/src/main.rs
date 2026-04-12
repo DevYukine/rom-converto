@@ -18,6 +18,7 @@ fn main() {
             cmd_chd_compress,
             cmd_chd_extract,
             cmd_chd_verify,
+            cmd_verify_ctr,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -26,6 +26,7 @@ pub mod error;
 pub mod models;
 pub mod title_key;
 mod util;
+pub mod verify;
 pub mod z3ds;
 
 /// Options for the CDN-to-CIA conversion (decoupled from CLI).
