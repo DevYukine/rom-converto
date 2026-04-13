@@ -24,6 +24,8 @@ mod constants;
 mod decrypt;
 pub mod error;
 pub mod models;
+#[cfg(test)]
+mod test_fixtures;
 pub mod title_key;
 mod util;
 pub mod verify;
