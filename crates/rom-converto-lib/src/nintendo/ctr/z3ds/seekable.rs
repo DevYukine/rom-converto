@@ -378,8 +378,7 @@ mod tests {
 
         let mut streamed = Vec::new();
         let mut src = std::io::Cursor::new(&original);
-        let written =
-            encode_seekable_streaming(&mut src, &mut streamed, 4096, 0, None).unwrap();
+        let written = encode_seekable_streaming(&mut src, &mut streamed, 4096, 0, None).unwrap();
 
         assert_eq!(written, streamed.len() as u64);
         assert_eq!(buffered, streamed);

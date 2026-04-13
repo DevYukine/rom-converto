@@ -120,10 +120,7 @@ pub fn make_ticket(title_id: u64) -> Ticket {
 /// Each record is `(content_id, content_index, data, hash)`. The info-records
 /// hash chain is computed correctly so the resulting TMD passes its own
 /// integrity checks.
-pub fn make_tmd(
-    title_id: u64,
-    records: Vec<(u32, u16, Vec<u8>, [u8; 32])>,
-) -> TitleMetadata {
+pub fn make_tmd(title_id: u64, records: Vec<(u32, u16, Vec<u8>, [u8; 32])>) -> TitleMetadata {
     let content_chunk_records: Vec<ContentChunkRecord> = records
         .iter()
         .map(|(id, idx, data, hash)| ContentChunkRecord {
@@ -195,9 +192,7 @@ pub fn make_tmd(
 /// The TMD title id is [`SYNTH_CIA_TITLE_ID`] and the ticket `console_id` is
 /// 0 (global). Signatures are forged dummy bytes, so downstream verifiers
 /// reject the signature checks. All layout, hash, and streaming checks pass.
-pub fn synth_cia(
-    content_size: usize,
-) -> (tempfile::TempDir, std::path::PathBuf, [u8; 32]) {
+pub fn synth_cia(content_size: usize) -> (tempfile::TempDir, std::path::PathBuf, [u8; 32]) {
     let tmp = tempfile::tempdir().unwrap();
     let out_path = tmp.path().join("test.cia");
 

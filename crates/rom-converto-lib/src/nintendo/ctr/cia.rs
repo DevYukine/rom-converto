@@ -177,7 +177,9 @@ pub async fn write_cia(
         tmd,
     };
     for record in &cia_wo.tmd.content_chunk_records {
-        cia_wo.header.set_content_index(record.content_index as usize);
+        cia_wo
+            .header
+            .set_content_index(record.content_index as usize);
     }
 
     let mut preamble = Vec::new();
@@ -329,23 +331,20 @@ fn merge_certificate_chains(
 mod tests {
     use super::*;
     use crate::nintendo::ctr::models::cia::CiaFile;
-    use crate::nintendo::ctr::test_fixtures::{append_be, make_cert, make_tmd, make_ticket};
+    use crate::nintendo::ctr::test_fixtures::{append_be, make_cert, make_ticket, make_tmd};
     use crate::util::NoProgress;
 
     #[test]
     fn tmd_with_trailing_certs_parses_as_tmd() {
-        let tmd = make_tmd(
-            0x0004000000030000,
-            vec![(0, 0, vec![0u8; 16], [0u8; 32])],
-        );
+        let tmd = make_tmd(0x0004000000030000, vec![(0, 0, vec![0u8; 16], [0u8; 32])]);
         let mut buf = Vec::new();
         append_be(&mut buf, &tmd);
         append_be(&mut buf, &make_cert(b"CP0000000b", 0xBB));
         append_be(&mut buf, &make_cert(b"CA00000003", 0xAA));
 
         let mut cursor = Cursor::new(&buf);
-        let tmd_read = TitleMetadata::read_options(&mut cursor, Endian::Big, ())
-            .expect("TMD should parse");
+        let tmd_read =
+            TitleMetadata::read_options(&mut cursor, Endian::Big, ()).expect("TMD should parse");
         assert_eq!(tmd_read.header.content_count, 1);
     }
 
@@ -430,7 +429,10 @@ mod tests {
 
         assert_eq!(cia.tmd.header.title_id, title_id);
         assert_eq!(cia.tmd.content_chunk_records.len(), 2);
-        assert_eq!(cia.header.content_size as usize, content_a.len() + content_b.len());
+        assert_eq!(
+            cia.header.content_size as usize,
+            content_a.len() + content_b.len()
+        );
         assert_eq!(&cia.content_data[..content_a.len()], content_a.as_slice());
         assert_eq!(&cia.content_data[content_a.len()..], content_b.as_slice());
         // Cert chain should be non-empty; exact count depends on
@@ -493,7 +495,7 @@ mod tests {
             out.flush().await.unwrap();
         }
 
-        use crate::nintendo::ctr::verify::{verify_cia, CtrVerifyOptions};
+        use crate::nintendo::ctr::verify::{CtrVerifyOptions, verify_cia};
         let result = verify_cia(
             &out_path,
             &CtrVerifyOptions {

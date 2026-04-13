@@ -450,5 +450,4 @@ mod tests {
         let err = check_ncsd_not_encrypted(&data).unwrap_err();
         assert!(matches!(err, Z3dsError::InputNotDecrypted));
     }
-
 }

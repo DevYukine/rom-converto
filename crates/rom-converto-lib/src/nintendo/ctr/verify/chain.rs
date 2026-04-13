@@ -222,8 +222,8 @@ pub async fn verify_cia(
     // The header's declared sizes drive the rest of the layout walk.
     let mut header_buf = vec![0u8; CIA_HEADER_SIZE as usize];
     file.read_exact(&mut header_buf).await?;
-    let cia_header = CiaHeader::read_le(&mut Cursor::new(&header_buf))
-        .context("Failed to parse CIA header")?;
+    let cia_header =
+        CiaHeader::read_le(&mut Cursor::new(&header_buf)).context("Failed to parse CIA header")?;
 
     let header_end: u64 = CIA_HEADER_SIZE as u64;
     let cert_start = align_64(header_end);
@@ -850,10 +850,7 @@ async fn verify_content_hashes_streaming(
         if offset + size > file_size {
             details.push(format!(
                 "Content {}: data truncated (need {} bytes at {:#x}, file is {})",
-                record.content_id,
-                size,
-                offset,
-                file_size
+                record.content_id, size, offset, file_size
             ));
             all_valid = false;
             break;
@@ -901,7 +898,7 @@ async fn verify_content_hashes_streaming(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::nintendo::ctr::test_fixtures::{synth_cia, TestProgress};
+    use crate::nintendo::ctr::test_fixtures::{TestProgress, synth_cia};
     use std::io::Write as _;
 
     #[tokio::test]
@@ -999,10 +996,7 @@ mod tests {
         let corrupt_offset = len - 0x100; // inside the content region
         {
             use std::io::{Seek as _, SeekFrom};
-            let mut f = std::fs::OpenOptions::new()
-                .write(true)
-                .open(&path)
-                .unwrap();
+            let mut f = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
             f.seek(SeekFrom::Start(corrupt_offset)).unwrap();
             f.write_all(&[0xFFu8; 1]).unwrap();
         }
