@@ -12,7 +12,7 @@ pub(crate) const CD_SAMPLE_RATE: usize = 44_100;
 const FLAC_BITS_PER_SAMPLE: usize = 16;
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // CHD spec codec — available for non-CD hunk compression
+#[allow(dead_code)] // CHD spec codec: non-CD hunk compression.
 pub struct FlacCompressor;
 
 impl ChdCompressor for FlacCompressor {

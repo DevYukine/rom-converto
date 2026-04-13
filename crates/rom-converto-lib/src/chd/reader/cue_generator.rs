@@ -49,7 +49,7 @@ pub(crate) fn parse_chd_track_metadata(metadata_str: &str) -> ChdResult<Vec<ChdT
                             .map_err(|_| ChdError::InvalidTrackMetadata(token.to_string()))?;
                     }
                 }
-                _ => {} // SUBTYPE, PGTYPE, PGSUB, POSTGAP — not needed for CUE reconstruction
+                _ => {} // SUBTYPE, PGTYPE, PGSUB, POSTGAP: not needed for CUE reconstruction.
             }
         }
     }
@@ -213,7 +213,7 @@ mod tests {
             ChdTrackInfo {
                 track_number: 1,
                 track_type: "MODE1_RAW".to_string(),
-                frames: 75, // 1 second
+                frames: 75,
                 pregap: 0,
             },
             ChdTrackInfo {

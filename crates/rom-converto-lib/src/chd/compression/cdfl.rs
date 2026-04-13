@@ -21,7 +21,7 @@ impl ChdCompressor for CdFlCompressor {
     }
 
     fn compress(&self, data: &[u8]) -> ChdResult<Vec<u8>> {
-        // Skip FLAC for data tracks — check if first sector has CD sync pattern
+        // FLAC is audio-only. Reject if the first sector has the CD sync pattern.
         if data.len() >= 12 && is_cd_data_sector(&data[..12]) {
             return Err(ChdError::InvalidHunkSize);
         }

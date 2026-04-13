@@ -46,24 +46,22 @@ fn encrypt_title_key(
     title_key_hex: &str,
     ckey_hex: &str,
 ) -> TitleKeyResult<String> {
-    // For the IV only strip "0x" – don't drop any more hex digits
+    // Strip only the "0x" prefix. Do not drop any other hex digits.
     let tid = title_id.strip_prefix("0x").unwrap_or(title_id);
 
-    // Build IV: full 16-byte title ID (hex) + pad with zeros to 32 hex chars
+    // IV is the full 16-byte title id in hex, right-padded with zeros to 32 chars.
     let iv_hex = format!("{tid:0<32}");
     let iv = decode(&iv_hex)?;
     let key = decode(ckey_hex)?;
     let data = decode(title_key_hex)?;
 
-    // Initialize AES-CBC encryptor
     let cipher = cbc::Encryptor::<Aes128>::new_from_slices(&key, &iv)?;
 
-    // Prepare buffer: data_len + one block (16 bytes) for padding space
+    // encrypt_padded_mut needs room for one extra block past data_len.
     let data_len = data.len();
     let mut buf = data;
     buf.resize(data_len + 16, 0);
 
-    // Encrypt in-place, using NoPadding
     let ciphertext = cipher
         .encrypt_padded_mut::<NoPadding>(&mut buf, data_len)
         .map_err(|err| TitleKeyError::PadError(err.to_string()))?;

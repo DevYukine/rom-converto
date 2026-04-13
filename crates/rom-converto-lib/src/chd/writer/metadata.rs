@@ -24,7 +24,7 @@ pub struct CdMetadataBlock {
 pub fn generate_cd_metadata(cue_sheet: &CueSheet, total_frames: u32) -> ChdResult<CdMetadataBlock> {
     let mut metadata_buffer = Vec::new();
 
-    // For CDs, we typically have one metadata entry for all tracks
+    // CDs use a single metadata entry that lists every track.
     let mut track_info = String::new();
     let track_starts: Vec<u32> = cue_sheet
         .tracks
@@ -37,7 +37,6 @@ pub fn generate_cd_metadata(cue_sheet: &CueSheet, total_frames: u32) -> ChdResul
             track_info.push(TRACK_INFO_SEPARATOR);
         }
 
-        // Calculate frames
         let start_frame = track_starts[idx];
         let end_frame = track_starts.get(idx + 1).copied().unwrap_or(total_frames);
         let frames = end_frame.saturating_sub(start_frame);

@@ -636,12 +636,11 @@ pub async fn parse_and_decrypt_ncsd(
         return Err(anyhow!("Not a valid NCSD file: wrong magic"));
     }
 
-    // Read title ID at offset 0x108
     let mut title_id = [0u8; 8];
     rom_file.seek(SeekFrom::Start(NCSD_TITLE_ID_OFFSET)).await?;
     rom_file.read_exact(&mut title_id).await?;
 
-    // Read partition table (8 entries, each 8 bytes: offset_mu:u32 + size_mu:u32)
+    // Partition table: 8 entries, each (offset_mu: u32, size_mu: u32) LE.
     rom_file
         .seek(SeekFrom::Start(NCSD_PARTITION_TABLE_OFFSET as u64))
         .await?;

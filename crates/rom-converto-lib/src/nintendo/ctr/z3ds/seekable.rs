@@ -78,18 +78,18 @@ pub fn encode_seekable_with_progress(
     Ok(output)
 }
 
-/// Streaming variant of [`encode_seekable_with_progress`]: reads the
-/// uncompressed input from `reader` one frame at a time and writes the
-/// compressed frames (plus seek-table footer) directly to `writer`.
+/// Streaming variant of [`encode_seekable_with_progress`]. Reads uncompressed
+/// input from `reader` one frame at a time and writes compressed frames plus
+/// the seek-table footer directly to `writer`.
 ///
 /// Peak extra memory is bounded by `max_frame_size` (one uncompressed frame
 /// plus its compressed output), independent of the total file size. The frame
-/// table itself is tiny — 8 bytes per frame — so for a 4 GB ROM compressed
-/// with 32 MB frames it's ~1 KB.
+/// table itself is 8 bytes per frame, so for a 4 GB ROM compressed with 32 MB
+/// frames it's about 1 KB.
 ///
-/// Returns the total number of bytes written to `writer` (frames + seek
-/// table). This is what the `compressed_size` field in the Z3DS header must
-/// declare.
+/// Returns the total number of bytes written to `writer` (frames plus seek
+/// table). This value is what the `compressed_size` field in the Z3DS header
+/// must declare.
 pub fn encode_seekable_streaming<R: Read, W: Write>(
     reader: &mut R,
     writer: &mut W,
@@ -102,8 +102,8 @@ pub fn encode_seekable_streaming<R: Read, W: Write>(
     let mut bytes_written: u64 = 0;
 
     loop {
-        // Read up to one full frame, tolerating short reads until EOF so we
-        // always feed zstd a full max_frame_size block when possible.
+        // Fill one frame, retrying short reads until EOF, so zstd always
+        // gets a full max_frame_size block when one is available.
         let mut filled = 0usize;
         while filled < frame_buf.len() {
             match reader.read(&mut frame_buf[filled..]) {
@@ -435,10 +435,9 @@ mod tests {
 
     #[test]
     fn zstd_streaming_skips_skippable_frame_natively() {
-        // Sanity check: libzstd's streaming decoder handles the seek-table
-        // skippable frame on its own, without us pre-stripping. If this passes
-        // we can stream the whole compressed payload straight from disk
-        // instead of buffering it in RAM first.
+        // libzstd's streaming decoder must handle the seek-table skippable
+        // frame on its own. If it does, the verifier can stream the compressed
+        // payload directly from disk without buffering it in RAM.
         let original: Vec<u8> = (0u8..=99).cycle().take(20_000).collect();
         let encoded = encode_seekable(&original, 1024, 0).unwrap();
 

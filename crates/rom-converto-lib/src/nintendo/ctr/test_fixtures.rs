@@ -1,8 +1,8 @@
-//! Shared test fixtures for building dummy CIA / TMD / Ticket / Certificate
+//! Shared test fixtures for building dummy CIA, TMD, Ticket, and Certificate
 //! values. Used by `cia.rs::tests`, `verify/chain.rs::tests`, and any future
 //! test modules that need a well-formed CIA without re-deriving the binrw
-//! boilerplate. All signatures are forged dummy bytes — these fixtures are
-//! for layout / hashing / streaming tests, not RSA verification.
+//! boilerplate. Signatures here are forged dummy bytes, so the fixtures are
+//! only suitable for layout, hashing, and streaming tests, not RSA verification.
 
 #![cfg(test)]
 
@@ -193,8 +193,8 @@ pub fn make_tmd(
 /// path, and the SHA-256 of the content data.
 ///
 /// The TMD title id is [`SYNTH_CIA_TITLE_ID`] and the ticket `console_id` is
-/// 0 (global). Signatures are forged — downstream verifiers will reject the
-/// signature checks but every layout / hash / streaming check passes.
+/// 0 (global). Signatures are forged dummy bytes, so downstream verifiers
+/// reject the signature checks. All layout, hash, and streaming checks pass.
 pub fn synth_cia(
     content_size: usize,
 ) -> (tempfile::TempDir, std::path::PathBuf, [u8; 32]) {
@@ -218,8 +218,8 @@ pub fn synth_cia(
         vec![(0, 0, content_data.clone(), content_hash)],
     );
 
-    // Measure actual serialized sizes — the CIA header must declare the real
-    // lengths because Ticket / TMD BinWrite impls don't pad.
+    // The CIA header must declare the real ticket and TMD lengths, since
+    // their BinWrite impls do not pad to a fixed size.
     let ticket_size = serialized_size(&ticket);
     let tmd_size = serialized_size(&tmd);
 

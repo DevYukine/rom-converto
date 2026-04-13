@@ -4,7 +4,7 @@ use crate::chd::compression::{
 use crate::chd::error::ChdResult;
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // CHD spec codec — Zstandard CD compressor
+#[allow(dead_code)] // CHD spec codec: Zstandard CD compressor.
 pub struct CdZsCompressor;
 
 impl ChdCompressor for CdZsCompressor {

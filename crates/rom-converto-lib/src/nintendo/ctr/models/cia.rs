@@ -124,11 +124,9 @@ impl BinRead for CiaFileWithoutContent {
         _endian: Endian,
         _args: Self::Args<'_>,
     ) -> BinResult<Self> {
-        // Read header (little-endian)
         let header = CiaHeader::read_options(reader, Endian::Little, ())?;
 
-        let header_end = reader.stream_position()?; // Header size is 0x2020, but we align to 64 bytes
-
+        let header_end = reader.stream_position()?;
         reader.seek(SeekFrom::Start(align_64(header_end)))?;
 
         let cert_start = reader.stream_position()?;
@@ -136,11 +134,9 @@ impl BinRead for CiaFileWithoutContent {
         let cert_chain = read_cert_chain(reader, cert_end)?;
         reader.seek(SeekFrom::Start(cert_end))?;
 
-        // Read ticket (big-endian, aligned to 64 bytes)
         reader.seek(SeekFrom::Start(align_64(cert_end)))?;
         let ticket = Ticket::read_options(reader, Endian::Big, ())?;
 
-        // Read TMD (big-endian, aligned to 64 bytes)
         let tmd_start = align_64(reader.stream_position()?);
         reader.seek(SeekFrom::Start(tmd_start))?;
         let tmd = TitleMetadata::read_options(reader, Endian::Big, ())?;
@@ -163,7 +159,6 @@ impl BinWrite for CiaFileWithoutContent {
         _endian: Endian,
         _args: Self::Args<'_>,
     ) -> BinResult<()> {
-        // Write header (little-endian)
         self.header.write_options(writer, Endian::Little, ())?;
 
         let header_end = writer.stream_position()?;
@@ -172,17 +167,16 @@ impl BinWrite for CiaFileWithoutContent {
 
         write_cert_chain(writer, &self.cert_chain, self.header.cert_chain_size)?;
 
-        // Write ticket (big-endian, aligned to 64 bytes)
         let ticket_start = align_64(writer.stream_position()?);
         pad_to_align_64(ticket_start, writer)?;
         self.ticket.write_options(writer, Endian::Big, ())?;
 
-        // Write TMD (big-endian, aligned to 64 bytes)
         let tmd_start = align_64(writer.stream_position()?);
         pad_to_align_64(tmd_start, writer)?;
         self.tmd.write_options(writer, Endian::Big, ())?;
 
-        // Align for content data
+        // Pad up to the content offset so callers streaming content next
+        // start at the right position.
         let content_start = align_64(writer.stream_position()?);
         pad_to_align_64(content_start, writer)?;
 
@@ -198,7 +192,6 @@ impl BinRead for CiaFile {
         _endian: Endian,
         _args: Self::Args<'_>,
     ) -> BinResult<Self> {
-        // Read header (little-endian)
         let header = CiaHeader::read_options(reader, Endian::Little, ())?;
 
         let header_end = reader.stream_position()?;
@@ -209,22 +202,18 @@ impl BinRead for CiaFile {
         let cert_chain = read_cert_chain(reader, cert_end)?;
         reader.seek(SeekFrom::Start(cert_end))?;
 
-        // Read ticket (big-endian, aligned to 64 bytes)
         reader.seek(SeekFrom::Start(align_64(cert_end)))?;
         let ticket = Ticket::read_options(reader, Endian::Big, ())?;
 
-        // Read TMD (big-endian, aligned to 64 bytes)
         let tmd_start = align_64(reader.stream_position()?);
         reader.seek(SeekFrom::Start(tmd_start))?;
         let tmd = TitleMetadata::read_options(reader, Endian::Big, ())?;
 
-        // Read content data (aligned to 64 bytes)
         let content_start = align_64(reader.stream_position()?);
         reader.seek(SeekFrom::Start(content_start))?;
         let mut content_data = vec![0u8; header.content_size as usize];
         reader.read_exact(&mut content_data)?;
 
-        // Read meta data if present (little-endian, aligned to 64 bytes)
         let meta_data = if header.meta_size > 0 {
             let meta_start = align_64(reader.stream_position()?);
             reader.seek(SeekFrom::Start(meta_start))?;
@@ -253,7 +242,6 @@ impl BinWrite for CiaFile {
         _endian: Endian,
         _args: Self::Args<'_>,
     ) -> BinResult<()> {
-        // Write header (little-endian)
         self.header.write_options(writer, Endian::Little, ())?;
 
         let header_end = writer.stream_position()?;
@@ -262,22 +250,18 @@ impl BinWrite for CiaFile {
 
         write_cert_chain(writer, &self.cert_chain, self.header.cert_chain_size)?;
 
-        // Write ticket (big-endian, aligned to 64 bytes)
         let ticket_start = align_64(writer.stream_position()?);
         pad_to_align_64(ticket_start, writer)?;
         self.ticket.write_options(writer, Endian::Big, ())?;
 
-        // Write TMD (big-endian, aligned to 64 bytes)
         let tmd_start = align_64(writer.stream_position()?);
         pad_to_align_64(tmd_start, writer)?;
         self.tmd.write_options(writer, Endian::Big, ())?;
 
-        // Write content data (aligned to 64 bytes)
         let content_start = align_64(writer.stream_position()?);
         pad_to_align_64(content_start, writer)?;
         writer.write_all(&self.content_data)?;
 
-        // Write meta data if present (little-endian, aligned to 64 bytes)
         if let Some(ref meta) = self.meta_data {
             let meta_start = align_64(writer.stream_position()?);
             pad_to_align_64(meta_start, writer)?;
@@ -431,9 +415,8 @@ mod tests {
 
     #[test]
     fn test_simple_cia_file() {
-        // Calculate how many certificates we need for 0xA00 bytes
-        // Each RSA-2048 cert is 0x300 bytes, so we need 3 certificates + padding
-        // 3 * 0x300 = 0x900, then 0x100 bytes of padding to reach 0xA00
+        // Cert chain size is 0xA00. Each RSA-2048 cert is 0x300 bytes, so the
+        // fixture uses 3 certs (0x900 total) plus 0x100 bytes of padding.
 
         let cia_file = CiaFile {
             header: CiaHeader {
@@ -609,17 +592,14 @@ mod tests {
             meta_data: None,
         };
 
-        // Write using the standard BinWrite implementation
         let mut buf = Vec::new();
         cia_file
             .write_options(&mut Cursor::new(&mut buf), Endian::Little, ())
             .unwrap();
 
-        // Read back
         let mut read_cursor = Cursor::new(&buf);
         let read_cia = CiaFile::read_options(&mut read_cursor, Endian::Little, ()).unwrap();
 
-        // Verify key fields
         assert_eq!(cia_file.header.header_size, read_cia.header.header_size);
         assert_eq!(cia_file.header.content_size, read_cia.header.content_size);
         assert_eq!(cia_file.cert_chain.len(), read_cia.cert_chain.len());

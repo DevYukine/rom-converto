@@ -44,18 +44,15 @@ impl ChdReader {
         let file = File::open(path).await?;
         let mut reader = BufReader::with_capacity(IO_BUFFER_SIZE, file);
 
-        // Read and parse header
         let mut header_bytes = vec![0u8; CHD_V5_HEADER_SIZE as usize];
         reader.read_exact(&mut header_bytes).await?;
         let mut cursor = Cursor::new(&header_bytes);
         let header = ChdHeaderV5::read(&mut cursor)?;
 
-        // Validate version
         if header.version != ChdVersion::V5 {
             return Err(ChdError::UnsupportedChdVersion);
         }
 
-        // Build decompressors from compressor tags
         let tags = [
             header.compressor_0,
             header.compressor_1,
@@ -82,21 +79,18 @@ impl ChdReader {
             decompressors.push(decompressor);
         }
 
-        // Read map data
         reader.seek(SeekFrom::Start(header.map_offset)).await?;
         let mut map_data = Vec::new();
         reader.read_to_end(&mut map_data).await?;
 
-        // Calculate hunk count
         let hunk_count = header.logical_bytes.div_ceil(header.hunk_bytes as u64) as u32;
 
         let map = decompress_v5_map(&map_data, hunk_count, header.hunk_bytes, header.unit_bytes)?;
 
-        // Open parent CHD if provided
         let parent = if let Some(pp) = parent_path {
             Some(Box::new(Box::pin(ChdReader::open(pp)).await?))
         } else if header.parent_sha1 != [0u8; SHA1_BYTES] {
-            // Header references a parent but none was provided
+            // Header references a parent but none was provided.
             log::warn!(
                 "CHD references a parent (SHA1: {}), but no parent file was provided. Parent hunk references will fail.",
                 hex::encode(header.parent_sha1)
@@ -214,7 +208,6 @@ impl ChdReader {
                 | (header_buf[7] as u32);
             let reserved: [u8; 8] = header_buf[8..16].try_into().unwrap();
 
-            // Read data
             let mut data = vec![0u8; length as usize];
             self.reader.read_exact(&mut data).await?;
 

@@ -222,11 +222,10 @@ mod tests {
     }
 
     /// Exercises the streaming `compress_rom` path with an input large enough
-    /// to span many `FRAME_SIZE_DEFAULT` (256 KB) frames. The existing
-    /// round-trip tests use 64–128 KB inputs which fit in a single frame, so
-    /// they don't catch issues with frame iteration, the spawn_blocking
-    /// progress counter loop, or the placeholder-header rewrite at non-zero
-    /// payload positions.
+    /// to span many `FRAME_SIZE_DEFAULT` (256 KB) frames. The other round-trip
+    /// tests use inputs of 64 KB to 128 KB, which fit in a single frame and so
+    /// do not cover frame iteration, the spawn_blocking progress counter loop,
+    /// or the placeholder-header rewrite at a non-zero payload position.
     #[tokio::test]
     async fn round_trip_multi_frame_cxi() {
         let dir = tempfile::tempdir().unwrap();
@@ -251,12 +250,11 @@ mod tests {
             "multi-frame CXI did not round-trip cleanly"
         );
 
-        // Sanity: the resulting file actually contains multiple frames
-        // (and therefore exercised the seek-table path inside the streaming
-        // encoder, not just the single-frame degenerate case).
+        // Confirm the output really has multiple frames, so the test exercises
+        // the seek-table path and not the single-frame degenerate case.
         let compressed_bytes = tokio::fs::read(&compressed).await.unwrap();
-        // The seek table footer is at the very end; num_frames lives 9 bytes
-        // before EOF as a little-endian u32.
+        // The seek table footer sits at the end of the file. num_frames is the
+        // little-endian u32 at offset (len - 9).
         let num_frames = u32::from_le_bytes(
             compressed_bytes[compressed_bytes.len() - 9..compressed_bytes.len() - 5]
                 .try_into()

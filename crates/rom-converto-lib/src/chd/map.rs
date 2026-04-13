@@ -598,7 +598,7 @@ impl HuffmanDecoder {
                 // Could be literal value 1 (encoded as pair of 1s) or RLE marker
                 let next = bits.read(num_bits)? as u8;
                 if next == 1 {
-                    // Literal value 1 — one occurrence
+                    // Literal value 1 with one occurrence.
                     if idx < HUFFMAN_CODES {
                         bit_lengths[idx] = 1;
                         idx += 1;
@@ -861,7 +861,7 @@ mod tests {
         for i in 0..100u32 {
             let length = 5000 + i * 10;
             entries.push(MapEntry {
-                compression: 0, // COMPRESSION_TYPE_0
+                compression: COMPRESSION_TYPE_0,
                 length,
                 offset: cur_offset,
                 crc16: (i * 7) as u16,

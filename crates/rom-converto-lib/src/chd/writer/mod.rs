@@ -179,8 +179,8 @@ impl ChdWriter {
         let frames_per_hunk = hunk_bytes / FRAME_SIZE;
         let total_hunks = total_sectors.div_ceil(frames_per_hunk as u32);
 
-        // Create a pool of persistent codec sets — one per concurrent thread.
-        // The semaphore ensures we never have more tasks than codec sets.
+        // One persistent codec set per concurrent thread. The semaphore caps
+        // outstanding tasks at the pool size so every task always finds a free set.
         let num_threads = std::thread::available_parallelism()
             .map(|n| n.get().min(MAX_COMPRESSION_THREADS))
             .unwrap_or(DEFAULT_COMPRESSION_THREADS);
@@ -228,7 +228,7 @@ impl ChdWriter {
             // Compute CRC before sending to compressor
             let crc16 = crc16_ccitt(&hunk);
 
-            // Acquire semaphore permit — guarantees a codec set is available
+            // Permit acquisition guarantees a codec set is free for this task.
             let permit = semaphore.clone().acquire_owned().await.unwrap();
             let pool = codec_pool.clone();
 

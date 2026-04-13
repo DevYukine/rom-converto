@@ -25,7 +25,6 @@ pub mod lzma;
 pub mod zlib;
 pub mod zstd;
 
-// Convert tag to FourCC bytes
 pub const fn tag_to_bytes(tag: &str) -> [u8; 4] {
     let bytes = tag.as_bytes();
     assert!(bytes.len() == 4, "tag must be exactly 4 bytes");
@@ -34,7 +33,7 @@ pub const fn tag_to_bytes(tag: &str) -> [u8; 4] {
 
 // IMPORTANT: These values map to positions in the header, not codec IDs
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[allow(dead_code)] // CHD spec values — Self_ and Parent used in map constants
+#[allow(dead_code)] // CHD spec values: Self_ and Parent are used in map constants.
 pub enum ChdCompression {
     Codec0 = 0, // First codec in header
     Codec1 = 1, // Second codec in header
@@ -76,7 +75,6 @@ where
     let subcode_compressed = subcode_compress(&subcode)?;
 
     let mut output = vec![0u8; header_bytes];
-    // Write ECC flags into the header
     output[..ecc_bytes].copy_from_slice(&ecc_flags);
     write_cd_header(&mut output, ecc_bytes, base_compressed.len(), complen_bytes);
     output.extend_from_slice(&base_compressed);
@@ -110,7 +108,6 @@ where
     let frames = output_len / FRAME_SIZE;
     let (header_bytes, ecc_bytes, complen_bytes) = cd_header_sizes(output_len, frames);
 
-    // Read ECC flags from header
     let ecc_flags = &data[..ecc_bytes];
 
     let base_length = if complen_bytes == 2 {

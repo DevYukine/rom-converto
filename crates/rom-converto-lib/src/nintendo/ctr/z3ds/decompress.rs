@@ -17,7 +17,6 @@ pub async fn decompress_rom(
 ) -> Z3dsResult<()> {
     let mut file = File::open(input).await?;
 
-    // Read and parse the header
     let mut header_buf = vec![0u8; 0x20];
     file.read_exact(&mut header_buf).await?;
     let mut cursor = Cursor::new(&header_buf);
@@ -27,16 +26,13 @@ pub async fn decompress_rom(
         return Err(Z3dsError::UnsupportedVersion(header.version));
     }
 
-    // Seek past the metadata block to the compressed payload
     let payload_offset = header.header_size as u64 + header.metadata_size as u64;
     file.seek(SeekFrom::Start(payload_offset)).await?;
 
-    // Read compressed payload
     let mut compressed = vec![0u8; header.compressed_size as usize];
     file.read_exact(&mut compressed).await?;
 
-    // Phase 1: Decompress
-    // We estimate total as compressed + uncompressed (decompress + write phases)
+    // Two-phase progress: decompress then write.
     let total_work = header.compressed_size + header.uncompressed_size;
     progress.start(
         total_work,
@@ -58,11 +54,10 @@ pub async fn decompress_rom(
         });
     }
 
-    // Phase 2: Write to disk in chunks for progress
     let out_file = File::create(output).await?;
     let mut out = BufWriter::new(out_file);
 
-    const WRITE_CHUNK: usize = 4 * 1024 * 1024; // 4 MB
+    const WRITE_CHUNK: usize = 4 * 1024 * 1024;
     for chunk in decompressed.chunks(WRITE_CHUNK) {
         out.write_all(chunk).await?;
         progress.inc(chunk.len() as u64);

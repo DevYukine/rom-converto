@@ -49,7 +49,6 @@ pub async fn convert_to_chd(
     debug!("Opening BIN file: {:?}", bin_path);
     let mut bin_reader = BinReader::new(&bin_path).await?;
 
-    // Calculate total sectors
     let bin_size = fs::metadata(&bin_path).await?.len();
     let total_sectors: u32 = (bin_size / SECTOR_SIZE as u64)
         .try_into()
@@ -76,7 +75,6 @@ pub async fn convert_to_chd(
     debug!("Finalizing CHD file...");
     writer.finalize().await?;
 
-    // Calculate compression statistics
     let chd_size = fs::metadata(&output_path).await?.len();
     let original_size = bin_size;
     let saved_bytes = original_size.saturating_sub(chd_size);
@@ -121,7 +119,7 @@ pub async fn extract_from_chd(
     debug!("Opening CHD file: {:?}", input_path);
     let mut reader = ChdReader::open_with_parent(&input_path, parent_path.as_ref()).await?;
 
-    // Read metadata and find CHT2 (CD track) entry
+    // CHT2 is the CD-track metadata blob; required for cue/bin reconstruction.
     let metadata = reader.read_metadata().await?;
     let cd_meta = metadata
         .iter()
@@ -132,7 +130,7 @@ pub async fn extract_from_chd(
     let meta_str = meta_str.trim_end_matches('\0');
     let tracks = parse_chd_track_metadata(meta_str)?;
 
-    // Derive filenames: output_path is the CUE file, BIN has same stem
+    // output_path is the CUE; BIN reuses the same stem.
     let cue_path = if output_path.extension().is_some() {
         output_path.clone()
     } else {
@@ -145,7 +143,6 @@ pub async fn extract_from_chd(
         .to_string_lossy()
         .to_string();
 
-    // Generate CUE content
     let cue_content = generate_cue_sheet(&bin_filename, &tracks);
 
     debug!("Extracting to BIN: {:?}", bin_path);
@@ -168,13 +165,12 @@ pub async fn extract_from_chd(
     for hunk_idx in 0..hunk_count {
         let hunk_data = reader.read_hunk(hunk_idx).await?;
 
-        // Determine how many frames to extract from this hunk
         let remaining = total_frames - frames_written;
         let frames_in_hunk = frames_per_hunk.min(remaining as usize);
 
         for frame_idx in 0..frames_in_hunk {
             let offset = frame_idx * FRAME_SIZE;
-            // Write only the SECTOR_SIZE (2352) bytes, skip SUBCODE_SIZE (96)
+            // Drop the trailing 96-byte subcode; .bin only stores SECTOR_SIZE.
             bin_file
                 .write_all(&hunk_data[offset..offset + SECTOR_SIZE])
                 .await?;
@@ -187,7 +183,6 @@ pub async fn extract_from_chd(
     bin_file.flush().await?;
     progress.finish();
 
-    // Write CUE file
     debug!("Writing CUE file: {:?}", cue_path);
     tokio::fs::write(&cue_path, cue_content).await?;
 
@@ -211,7 +206,6 @@ pub async fn verify_chd(
     debug!("Opening CHD file for verification: {:?}", input_path);
     let mut reader = ChdReader::open_with_parent(&input_path, parent_path.as_ref()).await?;
 
-    // Read metadata hashes
     let metadata_hashes = reader.read_metadata_hashes().await?;
 
     let hunk_count = reader.hunk_count();
@@ -234,7 +228,6 @@ pub async fn verify_chd(
 
     progress.finish();
 
-    // Compare raw SHA1
     let computed_raw: [u8; SHA1_BYTES] = raw_sha1_hasher.finalize().into();
     let expected_raw = reader.header().raw_sha1;
     if computed_raw != expected_raw {
@@ -294,7 +287,6 @@ async fn fix_sha1(
 
     // SHA1 field offsets in the CHD v5 header:
     // 8 (magic) + 4 (length) + 4 (version) + 16 (compressors) + 8 (logical) + 8 (map_offset) + 8 (meta_offset) + 4 (hunk_bytes) + 4 (unit_bytes) = 64
-    // raw_sha1 is at offset 64, sha1 at 84
     const RAW_SHA1_OFFSET: u64 = 64;
     const SHA1_OFFSET: u64 = 84;
 

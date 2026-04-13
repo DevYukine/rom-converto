@@ -25,13 +25,11 @@ pub async fn decrypt_from_encrypted_cia(
     out_writer: &mut BufWriter<File>,
     progress: &dyn ProgressReporter,
 ) -> anyhow::Result<()> {
-    // 1) Decrypt NCCH files inside the CIA
     let input_size = tokio::fs::metadata(input).await?.len();
     progress.start(input_size, "Decrypting CIA...");
     parse_and_decrypt_cia(input, None, progress).await?;
     progress.finish();
 
-    // 2) Read original cia without content
     let data = tokio::fs::read(input).await?;
     let original_cia = CiaFileWithoutContent::read_le(&mut Cursor::new(data))?;
 
@@ -43,8 +41,6 @@ pub async fn decrypt_from_encrypted_cia(
         content_data: vec![],
         meta_data: None,
     };
-
-    // 3) Update Hashes and set content_type to unencrypted
 
     let parent = input.parent().unwrap_or_else(|| Path::new("."));
     let stem = input
@@ -87,16 +83,13 @@ pub async fn decrypt_from_encrypted_cia(
     let mut hasher = Sha256::new();
 
     for content_info_record in &mut decrypted_cia.tmd.content_info_records {
-        // Serialize each ContentInfoRecord as big-endian
         let mut cursor = Cursor::new(Vec::new());
-        // write offset and count
         content_info_record
             .content_index_offset
             .write_be(&mut cursor)?;
         content_info_record
             .content_command_count
             .write_be(&mut cursor)?;
-        // then raw hash bytes
         cursor
             .get_mut()
             .extend_from_slice(&content_info_record.hash);
@@ -106,7 +99,6 @@ pub async fn decrypt_from_encrypted_cia(
 
     decrypted_cia.tmd.header.content_info_records_hash = hasher.finalize().to_vec();
 
-    // 4) Write the decrypted CIA file
     let mut data = Cursor::new(Vec::new());
 
     decrypted_cia.write_le(&mut data)?;
@@ -126,7 +118,6 @@ pub async fn decrypt_from_encrypted_cia(
         let content = tokio::fs::read(&file_path).await?;
         out_writer.write_all(&content).await?;
 
-        // Clean up the temporary file
         tokio::fs::remove_file(&file_path).await?;
     }
 
@@ -153,14 +144,12 @@ pub async fn write_cia(
         .sum();
     progress.start(total_content_size, "Building CIA...");
 
-    // Extract certificate chains from TMD and Ticket files.
     let tmd_certs = read_certificate_chain(tmd_path).await?;
     let tik_certs = read_certificate_chain(tik_path).await?;
     let cert_chain: Vec<Certificate> = merge_certificate_chains(tmd_certs, tik_certs);
 
-    // Measure ticket and TMD sizes by serializing them to scratch buffers —
-    // the header must declare the real sizes for the BinWrite layout to line
-    // up with what the BinRead path expects.
+    // Ticket and TMD have variable BinWrite sizes. Serialize them to scratch
+    // buffers so the CIA header declares lengths that match BinRead.
     let mut tmd_buf = Vec::new();
     tmd.write_options(&mut Cursor::new(&mut tmd_buf), Endian::Big, ())?;
     let tmd_size = tmd_buf.len() as u32;
@@ -169,19 +158,17 @@ pub async fn write_cia(
     tik.write_options(&mut Cursor::new(&mut tik_buf), Endian::Big, ())?;
     let ticket_size = tik_buf.len() as u32;
 
-    // Build the content-less CIA preamble. `CiaFileWithoutContent::write_options`
-    // already emits header → cert chain → ticket → TMD → alignment padding up
-    // to the content offset, which is exactly what we want to flush before
-    // streaming the content payload.
+    // CiaFileWithoutContent::write_options emits header → cert → ticket →
+    // TMD → padding up to content_start, which is the full preamble.
     let mut cia_wo = CiaFileWithoutContent {
         header: CiaHeader {
             header_size: CIA_HEADER_SIZE,
-            cia_type: 0, // 0 = Normal
-            version: 0,  // CIA format version
+            cia_type: 0,
+            version: 0,
             cert_chain_size: CIA_CERT_CHAIN_SIZE,
             ticket_size,
             tmd_size,
-            meta_size: 0, // No metadata
+            meta_size: 0,
             content_size: total_content_size,
             content_index: vec![0u8; CIA_CONTENT_INDEX_SIZE],
         },
@@ -197,9 +184,8 @@ pub async fn write_cia(
     cia_wo.write_options(&mut Cursor::new(&mut preamble), Endian::Little, ())?;
     out.write_all(&preamble).await?;
 
-    // Stream each content file from disk straight into the output writer
-    // using a single reusable buffer. Validate that the actual file size
-    // matches what the TMD declares — otherwise we'd produce a CIA whose
+    // Stream each content file directly to the output. The size check below
+    // is what stops a truncated/corrupt .app from producing a CIA whose
     // header content_size disagrees with the bytes actually written.
     let mut buf = vec![0u8; CONTENT_COPY_BUF];
     for entry in &cia_wo.tmd.content_chunk_records {
@@ -252,11 +238,10 @@ async fn read_certificate_chain(file_path: &Path) -> anyhow::Result<Vec<Certific
     let _ = {
         let start_pos = cursor.position();
 
-        // Try to read as TMD first
+        // The file starts with either a TMD or a Ticket; certificates follow.
         if let Ok(_tmd) = TitleMetadata::read_options(&mut cursor, Endian::Big, ()) {
             cursor.position()
         } else {
-            // Reset and try as Ticket
             cursor.seek(SeekFrom::Start(start_pos))?;
             if let Ok(_ticket) = Ticket::read_options(&mut cursor, Endian::Big, ()) {
                 cursor.position()
@@ -268,14 +253,13 @@ async fn read_certificate_chain(file_path: &Path) -> anyhow::Result<Vec<Certific
 
     let mut certificates = Vec::new();
 
-    // Read all certificates until EOF or invalid data
     while cursor.position() < content.len() as u64 {
-        // Check if there's enough data for at least a signature type
         if content.len() as u64 - cursor.position() < 4 {
             break;
         }
 
-        // Peek at signature type
+        // Peek at the sig type so the loop stops cleanly when the trailing
+        // region hits padding or unrelated data instead of a valid cert.
         let pos = cursor.position();
         let sig_type_bytes = match ReadBytesExt::read_u32::<BigEndian>(&mut cursor) {
             Ok(val) => val,
@@ -283,19 +267,13 @@ async fn read_certificate_chain(file_path: &Path) -> anyhow::Result<Vec<Certific
         };
         cursor.seek(SeekFrom::Start(pos))?;
 
-        // Check if it's a valid certificate signature type
         if !matches!(sig_type_bytes, CERT_SIG_TYPE_MIN..=CERT_SIG_TYPE_MAX) {
             break;
         }
 
-        // Try to read the certificate
         match Certificate::read_options(&mut cursor, Endian::Big, ()) {
-            Ok(cert) => {
-                certificates.push(cert);
-            }
-            Err(_) => {
-                break;
-            }
+            Ok(cert) => certificates.push(cert),
+            Err(_) => break,
         }
     }
 
@@ -310,14 +288,13 @@ fn merge_certificate_chains(
     let mut merged = Vec::new();
     let mut seen_names = std::collections::HashSet::new();
 
-    // Helper function to get certificate name as string
     fn get_cert_name(cert: &Certificate) -> String {
         String::from_utf8_lossy(&cert.name)
             .trim_end_matches('\0')
             .to_string()
     }
 
-    // First, find and add the CA certificate (should be the same in both)
+    // CIA cert chain order is CA → XS → CP. CA may live in either source.
     for cert in tmd_certs.iter().chain(tik_certs.iter()) {
         let name = get_cert_name(cert);
         if name.starts_with("CA") && !seen_names.contains(&name) {
@@ -327,7 +304,6 @@ fn merge_certificate_chains(
         }
     }
 
-    // Then add the Ticket certificate (XS)
     for cert in tik_certs.iter() {
         let name = get_cert_name(cert);
         if name.starts_with("XS") && !seen_names.contains(&name) {
@@ -337,7 +313,6 @@ fn merge_certificate_chains(
         }
     }
 
-    // Then add the TMD certificate (CP)
     for cert in tmd_certs.iter() {
         let name = get_cert_name(cert);
         if name.starts_with("CP") && !seen_names.contains(&name) {
@@ -379,7 +354,6 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let cdn = tmp.path();
 
-        // Deterministic content for two content chunks.
         let make_content = |seed: u8, len: usize| -> Vec<u8> {
             (0..len).map(|i| seed.wrapping_add(i as u8)).collect()
         };
@@ -431,7 +405,6 @@ mod tests {
             std::fs::write(&tik_path, &buf).unwrap();
         }
 
-        // Run the streaming write_cia.
         let out_path = cdn.join("out.cia");
         {
             let f = File::create(&out_path).await.unwrap();

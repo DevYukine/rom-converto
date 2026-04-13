@@ -19,16 +19,17 @@ use std::path::Path;
 use tokio::task;
 
 /// Size of the probe buffer used for the encryption check. Must cover the
-/// furthest offset we might poke at: NCSD partition 0 + NCCH header flags.
-/// Real-world NCSD images can place partition 0 at media-unit offsets well
-/// past 0x80 (= 64 KB), so a 64 KB probe would silently let encrypted ROMs
-/// through `check_ncch_not_encrypted` (which skips the check on EOF). 1 MB
-/// is still negligible RAM and covers any realistic partition 0 offset.
+/// furthest offset the check reads: NCSD partition 0 plus its NCCH header
+/// flags. Real-world NCSD images can place partition 0 at media-unit offsets
+/// well past 0x80 (which is 64 KB), so a 64 KB probe would silently let
+/// encrypted ROMs through `check_ncch_not_encrypted` (which skips the check
+/// on EOF). 1 MB is still negligible RAM and covers any realistic partition
+/// 0 offset.
 const ENCRYPTION_PROBE_SIZE: usize = 1024 * 1024;
 
-/// Compile-time guard: `ENCRYPTION_PROBE_SIZE` must be large enough to reach
-/// an NCSD partition 0 placed at MU=0x100 (offset 0x20000). If someone
-/// shrinks the constant below this bound, the build fails before any silent
+/// Compile-time guard. `ENCRYPTION_PROBE_SIZE` must be large enough to reach
+/// an NCSD partition 0 placed at MU=0x100 (offset 0x20000). Shrinking the
+/// constant below this bound fails the build before any silent
 /// encryption-check regression can ship.
 const _: () = assert!(
     ENCRYPTION_PROBE_SIZE >= 0x20000 + 0x200,
@@ -56,8 +57,7 @@ pub async fn compress_rom(
 
     let uncompressed_size = tokio::fs::metadata(input).await?.len();
 
-    // Read only the first ENCRYPTION_PROBE_SIZE bytes for the encryption check,
-    // instead of loading the whole file into RAM just to peek at flags[7].
+    // Read only the bytes the encryption check needs. See ENCRYPTION_PROBE_SIZE.
     let probe = {
         let probe_len = std::cmp::min(uncompressed_size, ENCRYPTION_PROBE_SIZE as u64) as usize;
         let mut buf = vec![0u8; probe_len];
@@ -69,7 +69,6 @@ pub async fn compress_rom(
     check_not_encrypted(&probe, &ext)?;
     drop(probe);
 
-    // Build metadata.
     let version = env!("CARGO_PKG_VERSION");
     let metadata = Z3dsMetadata::new(vec![
         Z3dsMetadataItem::new_str("compressor", &format!("rom-converto ({version})")),
@@ -93,32 +92,25 @@ pub async fn compress_rom(
     let bytes_done = std::sync::Arc::new(AtomicU64::new(0));
     let bytes_done_clone = bytes_done.clone();
 
-    // Move the paths into the blocking task; we can't borrow them across await.
+    // The paths are moved into the blocking task; borrows do not cross await.
     let input_owned = input.to_path_buf();
     let output_owned = output.to_path_buf();
     let metadata_bytes_owned = metadata_bytes;
 
     let mut handle = task::spawn_blocking(move || -> Z3dsResult<(u64, u64)> {
-        // Open input (streaming read) and output (streaming write + seek back
-        // for header rewrite) using std::fs so we can hand them to zstd
-        // directly without tokio's async wrappers.
+        // std::fs (not tokio) lets the reader and writer hand off directly to zstd.
         let in_file = std::fs::File::open(&input_owned)?;
         let mut reader = BufReader::with_capacity(4 * 1024 * 1024, in_file);
 
         let out_file = std::fs::File::create(&output_owned)?;
         let mut writer = StdBufWriter::with_capacity(4 * 1024 * 1024, out_file);
 
-        // Reserve space for the Z3DS header by writing a zero-filled placeholder.
-        // We'll seek back and overwrite it with the real header once we know
-        // the final compressed_size.
+        // Placeholder header. The real one is written after the payload, by
+        // seeking back to offset 0 once compressed_size is known.
         let placeholder_header = vec![0u8; Z3DS_HEADER_SIZE as usize];
         writer.write_all(&placeholder_header)?;
         writer.write_all(&metadata_bytes_owned)?;
 
-        let payload_start = placeholder_header.len() as u64 + metadata_bytes_owned.len() as u64;
-
-        // Stream the compressed payload (frames + seek table) directly into
-        // the output writer.
         let compressed_size = encode_seekable_streaming(
             &mut reader,
             &mut writer,
@@ -129,11 +121,10 @@ pub async fn compress_rom(
             }),
         )?;
 
-        // Flush the payload before seeking back for the header rewrite — the
-        // BufWriter must not leak buffered bytes past the seek.
+        // Flush before seeking back so the BufWriter doesn't leak buffered
+        // payload bytes past the rewritten header.
         writer.flush()?;
 
-        // Serialize the real header and overwrite the placeholder.
         let header = Z3dsHeader::new(
             underlying_magic,
             metadata_size,
@@ -149,7 +140,6 @@ pub async fn compress_rom(
         writer.write_all(&header_bytes)?;
         writer.flush()?;
 
-        let _ = payload_start; // silence warning on release builds
         Ok((compressed_size, uncompressed_size))
     });
 
@@ -187,8 +177,8 @@ pub async fn compress_rom(
 /// Returns an error if the input ROM appears to be encrypted.
 ///
 /// For NCCH and NCSD files the flags are at a known offset inside the header.
-/// For CIA files we look at the first NCCH content block.
-/// For 3DSX files there is no encryption, so the check is skipped.
+/// For CIA files the check looks at the first NCCH content block.
+/// 3DSX files have no encryption, so the check is a no-op.
 pub(crate) fn check_not_encrypted(data: &[u8], ext: &str) -> Z3dsResult<()> {
     match ext {
         "cci" | "3ds" => check_ncsd_not_encrypted(data),
@@ -242,7 +232,7 @@ pub(crate) fn check_ncsd_not_encrypted(data: &[u8]) -> Z3dsResult<()> {
     check_ncch_not_encrypted(data, partition_offset)
 }
 
-/// CIA files don't have a magic at offset 0. We locate the first NCCH by
+/// CIA files have no magic at offset 0. The first NCCH is located by
 /// parsing the CIA header sizes to find the content section.
 pub(crate) fn check_cia_not_encrypted(data: &[u8]) -> Z3dsResult<()> {
     if data.len() < 0x20 {

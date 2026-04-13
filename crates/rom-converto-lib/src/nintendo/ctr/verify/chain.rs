@@ -108,18 +108,15 @@ pub async fn verify_ctr(
     let mut file = tokio::fs::File::open(input).await?;
     let file_size = file.metadata().await?.len();
 
-    // Read detection bytes
     let mut probe = [0u8; 0x104];
     let probe_len = std::cmp::min(file_size, probe.len() as u64) as usize;
     file.read_exact(&mut probe[..probe_len]).await?;
     file.seek(SeekFrom::Start(0)).await?;
 
-    // Check Z3DS magic at offset 0
     if probe_len >= 4 && &probe[0..4] == b"Z3DS" {
         return verify_compressed(input, options, progress).await;
     }
 
-    // Check magic at offset 0x100
     if probe_len >= 0x104 {
         let magic = &probe[0x100..0x104];
         if magic == b"NCSD" {
@@ -127,13 +124,12 @@ pub async fn verify_ctr(
             return Ok(CtrVerifyResult::Ncsd(result));
         }
         if magic == b"NCCH" {
-            // Standalone NCCH — treat as single-partition NCSD
+            // Standalone NCCH gets reported as a single-partition NCSD result.
             let result = verify_standalone_ncch_file(input, progress).await?;
             return Ok(CtrVerifyResult::Ncsd(result));
         }
     }
 
-    // Check CIA (header_size == 0x2020)
     if probe_len >= 4 {
         let header_size = u32::from_le_bytes(probe[0..4].try_into()?);
         if header_size == CIA_HEADER_SIZE {
@@ -154,13 +150,11 @@ async fn verify_compressed(
 ) -> Result<CtrVerifyResult> {
     let mut file = tokio::fs::File::open(input).await?;
 
-    // Read Z3DS header
     let mut header_buf = vec![0u8; 0x20];
     file.read_exact(&mut header_buf).await?;
     let mut cursor = Cursor::new(&header_buf);
     let header = Z3dsHeader::read(&mut cursor).context("Failed to parse Z3DS header")?;
 
-    // Skip metadata, read compressed payload
     let payload_offset = header.header_size as u64 + header.metadata_size as u64;
     let compressed_size = header.compressed_size;
     drop(file);
@@ -170,14 +164,12 @@ async fn verify_compressed(
         "Decompressing for verification...",
     );
 
-    // Stream the compressed payload straight from the input file into the
-    // zstd decoder, then into a temp file. We never hold the compressed or
-    // decompressed bytes in memory — peak heap is just BufReader (4 MB) +
-    // BufWriter (4 MB) + libzstd's internal decoder state (a few MB).
+    // Stream the compressed payload from disk through the zstd decoder into
+    // a temp file. Peak heap is BufReader (4 MB) + BufWriter (4 MB) + libzstd
+    // working state, regardless of file size.
     //
-    // The seek-table footer at the end of the payload is a zstd skippable
-    // frame, which libzstd handles natively (verified by the
-    // `zstd_streaming_skips_skippable_frame_natively` test in `seekable.rs`).
+    // The seek-table footer is a zstd skippable frame, which libzstd skips on
+    // its own (covered by `zstd_streaming_skips_skippable_frame_natively`).
     let temp_dir = tempfile::tempdir()?;
     let ext = match &header.underlying_magic {
         b"CIA\0" => "cia",
@@ -192,9 +184,9 @@ async fn verify_compressed(
         use std::io::{BufReader, BufWriter, Read as _, Seek as _};
         let mut in_file = std::fs::File::open(&input_path)?;
         in_file.seek(SeekFrom::Start(payload_offset))?;
-        // `take` caps the read at the declared compressed payload size so we
-        // don't accidentally feed trailing garbage (or another concatenated
-        // section) into the decoder.
+        // Cap the read at the declared compressed payload size to avoid
+        // feeding trailing garbage or another concatenated section into the
+        // decoder.
         let limited = in_file.take(compressed_size);
         let mut reader = BufReader::with_capacity(4 * 1024 * 1024, limited);
         let mut writer = BufWriter::with_capacity(
@@ -213,10 +205,8 @@ async fn verify_compressed(
 
     progress.finish();
 
-    // Verify the decompressed data
+    // temp_dir's Drop removes the file after this function returns.
     let result = Box::pin(verify_ctr(&temp_path, options, progress)).await?;
-
-    // Cleanup happens when temp_dir drops
     Ok(result)
 }
 
@@ -229,13 +219,12 @@ pub async fn verify_cia(
     let file_size = file.metadata().await?.len();
     progress.start(file_size, "Verifying CIA signatures...");
 
-    // Read the CIA header first (fixed size, 0x2020 bytes) so we know cert/ticket/tmd sizes.
+    // The header's declared sizes drive the rest of the layout walk.
     let mut header_buf = vec![0u8; CIA_HEADER_SIZE as usize];
     file.read_exact(&mut header_buf).await?;
     let cia_header = CiaHeader::read_le(&mut Cursor::new(&header_buf))
         .context("Failed to parse CIA header")?;
 
-    // Compute the exact end of the TMD (where content starts, aligned to 64).
     let header_end: u64 = CIA_HEADER_SIZE as u64;
     let cert_start = align_64(header_end);
     let cert_end = cert_start + cia_header.cert_chain_size as u64;
@@ -249,7 +238,8 @@ pub async fn verify_cia(
         anyhow::bail!("CIA preamble exceeds file size (corrupt header)");
     }
 
-    // Read only the preamble region [0..content_start] into memory (few MB at most).
+    // Read only the preamble [0..content_start] (few MB at most); content
+    // bytes will be hashed later by streaming directly from the file.
     let mut preamble = vec![0u8; content_start as usize];
     preamble[..CIA_HEADER_SIZE as usize].copy_from_slice(&header_buf);
     file.seek(SeekFrom::Start(CIA_HEADER_SIZE as u64)).await?;
@@ -391,7 +381,6 @@ pub async fn verify_cia(
 
     progress.inc(file_size / 4);
 
-    // Optionally verify content hashes by streaming content directly from the file.
     let content_hashes_valid = if options.verify_content_hashes {
         match verify_content_hashes_streaming(
             &mut file,
@@ -449,7 +438,6 @@ async fn verify_ncsd_file(
 
     let mut details = Vec::new();
 
-    // Check NCSD magic
     let mut magic_buf = [0u8; 4];
     file.seek(SeekFrom::Start(NCCH_MAGIC_OFFSET as u64)).await?;
     file.read_exact(&mut magic_buf).await?;
@@ -459,14 +447,13 @@ async fn verify_ncsd_file(
         if ncsd_magic_valid { "VALID" } else { "INVALID" }
     ));
 
-    // Read title ID (offset 0x108, 8 bytes LE)
+    // Title ID lives at NCSD header offset 0x108 (u64 LE).
     file.seek(SeekFrom::Start(0x108)).await?;
     let mut tid_buf = [0u8; 8];
     file.read_exact(&mut tid_buf).await?;
     let title_id = format!("{:016X}", u64::from_le_bytes(tid_buf));
     details.push(format!("Title ID: {title_id}"));
 
-    // Read partition table
     file.seek(SeekFrom::Start(NCSD_PARTITION_TABLE_OFFSET as u64))
         .await?;
     let mut table_buf = [0u8; NCSD_PARTITION_COUNT * NCSD_PARTITION_ENTRY_SIZE];
@@ -501,12 +488,6 @@ async fn verify_ncsd_file(
         progress.inc(part_size);
     }
 
-    // Account for remaining progress
-    let accounted: u64 = partitions
-        .iter()
-        .map(|_| 0u64) // partitions already incremented
-        .sum();
-    let _ = accounted;
     progress.finish();
 
     details.push(format!("Partitions found: {partition_count}"));
@@ -554,7 +535,6 @@ async fn verify_ncch_partition_from_file(
 ) -> Result<NcchPartitionResult> {
     let mut details = Vec::new();
 
-    // Read NCCH header (512 bytes)
     if offset + 512 > file_size {
         return Ok(NcchPartitionResult {
             index,
@@ -616,7 +596,7 @@ async fn verify_ncch_partition_from_file(
 
     let mu = CTR_MEDIA_UNIT_SIZE as u64;
 
-    // ExHeader hash: SHA-256 of exhdrsize bytes at offset+0x200
+    // ExHeader hash covers `exhdrsize` bytes starting at NCCH offset 0x200.
     let exheader_hash_valid = if header.exhdrsize > 0 {
         let exhdr_offset = offset + 0x200;
         let exhdr_size = header.exhdrsize as u64;
@@ -638,7 +618,6 @@ async fn verify_ncch_partition_from_file(
         None
     };
 
-    // Logo hash
     let logo_hash_valid = if header.logosize > 0 {
         let logo_offset = offset + header.logooffset as u64 * mu;
         let logo_size = header.logosize as u64 * mu;
@@ -972,7 +951,6 @@ mod tests {
 
         let (_tmp, cia_path, _) = synth_cia(0x3000);
 
-        // Compress the synthetic CIA into .zcia using the real compressor.
         let zcia_path = cia_path.with_extension("zcia");
         let prog = crate::util::NoProgress;
         compress_rom(&cia_path, &zcia_path, &prog).await.unwrap();
