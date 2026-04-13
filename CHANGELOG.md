@@ -1,3 +1,17 @@
+# [0.6.0](https://github.com/DevYukine/rom-converto/compare/v0.5.2...v0.6.0) (2026-04-13)
+
+
+### Features
+
+* **ctr:** add 3ds/ncsd and compressed z3ds verification support ([9cb1ff1](https://github.com/DevYukine/rom-converto/commit/9cb1ff156a78412a871f2f24ad039b8152f0302c))
+
+
+### Performance Improvements
+
+* **ctr:** stream verify, compress, and CIA write to reduce memory usage ([285db21](https://github.com/DevYukine/rom-converto/commit/285db21168e37ec1b988556bca0a700f6463a53c))
+
+
+
 ## [0.5.2](https://github.com/DevYukine/rom-converto/compare/v0.5.1...v0.5.2) (2026-04-08)
 
 
@@ -68,15 +82,6 @@
 * **chd:** parallel compression pipeline with bulk I/O ([ca351fa](https://github.com/DevYukine/rom-converto/commit/ca351fa163f9c46e7042f7cbc0b0aa080e12f531))
 * **chd:** persistent codec state with reusable LZMA encoder and deflate compressors ([e7e859b](https://github.com/DevYukine/rom-converto/commit/e7e859b1f545554a24042e85e8cc432bac72ea35))
 * **chd:** skip FLAC codec for data tracks ([eca97fe](https://github.com/DevYukine/rom-converto/commit/eca97fe448a0d5f297edd21aa8f5d0c4933930f9))
-
-
-
-## [0.3.2](https://github.com/DevYukine/rom-converto/compare/v0.3.1...v0.3.2) (2026-01-12)
-
-
-### Bug Fixes
-
-* **updater:** check for correct name of outdated file ([0ec1460](https://github.com/DevYukine/rom-converto/commit/0ec1460d33d365552ee464d8925238001ef472e7))
 
 
 
