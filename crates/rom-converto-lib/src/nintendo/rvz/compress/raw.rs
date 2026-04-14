@@ -19,9 +19,7 @@
 //!   group entry (`data_off4 = 0, data_size = 0`) with no on-disk
 //!   footprint.
 
-use super::{
-    CompressedKind, WriteMsg, push_compressed_chunk_via_channel, write_msg_drain_loop,
-};
+use super::{CompressedKind, WriteMsg, push_compressed_chunk_via_channel, write_msg_drain_loop};
 use crate::nintendo::rvl::constants::WII_SECTOR_SIZE_U64;
 use crate::nintendo::rvz::error::{RvzError, RvzResult};
 use crate::nintendo::rvz::format::RvzGroup;
@@ -308,4 +306,3 @@ fn compress_one_chunk_with(
         rvz_packed_size,
     })
 }
-

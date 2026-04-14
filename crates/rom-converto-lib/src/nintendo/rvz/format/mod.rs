@@ -268,15 +268,12 @@ mod tests {
     fn wia_part_size_is_48() {
         let part = WiaPart {
             part_key: [0u8; 16],
-            pd: [
-                WiaPartData {
-                    first_sector: 0,
-                    n_sectors: 0,
-                    group_index: 0,
-                    n_groups: 0,
-                };
-                2
-            ],
+            pd: [WiaPartData {
+                first_sector: 0,
+                n_sectors: 0,
+                group_index: 0,
+                n_groups: 0,
+            }; 2],
         };
         roundtrip_be_size(&part, WIA_PART_SIZE);
     }

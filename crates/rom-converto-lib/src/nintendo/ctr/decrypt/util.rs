@@ -14,6 +14,14 @@ pub fn gen_iv(cidx: u16) -> [u8; 16] {
     iv
 }
 
+pub fn cbc_decrypt(key: &[u8; 16], iv: &[u8; 16], data: &mut [u8]) -> anyhow::Result<()> {
+    Aes128Cbc::new_from_slices(key, iv)?
+        .decrypt_padded_mut::<NoPadding>(data)
+        .map_err(|e| anyhow::anyhow!(e))?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -46,12 +54,4 @@ mod tests {
         assert_eq!(iv[1], 0xFF);
         assert!(iv[2..].iter().all(|&b| b == 0));
     }
-}
-
-pub fn cbc_decrypt(key: &[u8; 16], iv: &[u8; 16], data: &mut [u8]) -> anyhow::Result<()> {
-    Aes128Cbc::new_from_slices(key, iv)?
-        .decrypt_padded_mut::<NoPadding>(data)
-        .map_err(|e| anyhow::anyhow!(e))?;
-
-    Ok(())
 }

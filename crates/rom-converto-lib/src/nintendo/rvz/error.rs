@@ -40,9 +40,7 @@ pub enum RvzError {
     #[error("decompressed size mismatch: expected {expected}, got {actual}")]
     DecompressedSizeMismatch { expected: u64, actual: u64 },
 
-    #[error(
-        "invalid chunk size {0}: must be a power of two between {1} and {2} bytes"
-    )]
+    #[error("invalid chunk size {0}: must be a power of two between {1} and {2} bytes")]
     InvalidChunkSize(u32, u32, u32),
 
     #[error("input ISO does not look like a GameCube or Wii disc image")]

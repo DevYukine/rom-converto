@@ -112,10 +112,7 @@ struct PartitionDecompressWorker {
 }
 
 impl Worker<PartitionDecompressWork, PartitionDecompressOut> for PartitionDecompressWorker {
-    fn process(
-        &mut self,
-        work: PartitionDecompressWork,
-    ) -> RvzResult<PartitionDecompressOut> {
+    fn process(&mut self, work: PartitionDecompressWork) -> RvzResult<PartitionDecompressOut> {
         // Only zero the payload scratch on partial last clusters.
         // The common full-cluster case overwrites every sector
         // from chunk data, so wiping would just be waste. For
@@ -159,8 +156,7 @@ impl Worker<PartitionDecompressWork, PartitionDecompressOut> for PartitionDecomp
                 if self.scratch_decomp.len() < self.scratch_in.len() {
                     self.scratch_decomp.resize(self.scratch_in.len(), 0);
                 }
-                self.scratch_decomp[..self.scratch_in.len()]
-                    .copy_from_slice(&self.scratch_in);
+                self.scratch_decomp[..self.scratch_in.len()].copy_from_slice(&self.scratch_in);
                 self.scratch_in.len()
             };
 
@@ -179,8 +175,7 @@ impl Worker<PartitionDecompressWork, PartitionDecompressOut> for PartitionDecomp
             // Stage 2: RVZ unpack if packed, otherwise a verbatim
             // slice. Same dispatch as the raw-region worker.
             let unpacked: Vec<u8> = if spec.rvz_packed_size != 0 {
-                let records_len =
-                    (spec.rvz_packed_size as usize).min(payload_region.len());
+                let records_len = (spec.rvz_packed_size as usize).min(payload_region.len());
                 crate::nintendo::rvz::packing::pack_decode(
                     &payload_region[..records_len],
                     spec.chunk_data_offset_pay,
@@ -221,10 +216,7 @@ impl Worker<PartitionDecompressWork, PartitionDecompressOut> for PartitionDecomp
 
         // Apply deferred exceptions.
         for (slice_start, slice_end, exceptions) in deferred.drain(..) {
-            apply_hash_exceptions(
-                &mut self.hash_regions[slice_start..slice_end],
-                &exceptions,
-            );
+            apply_hash_exceptions(&mut self.hash_regions[slice_start..slice_end], &exceptions);
         }
 
         // Re-encrypt the whole cluster into the persistent
@@ -291,8 +283,7 @@ fn build_partition_work_items(
     }
 
     let data_start = pd0.first_sector as u64 * WII_SECTOR_SIZE_U64;
-    let total_data_size =
-        (pd0.n_sectors as u64 + pd1.n_sectors as u64) * WII_SECTOR_SIZE_U64;
+    let total_data_size = (pd0.n_sectors as u64 + pd1.n_sectors as u64) * WII_SECTOR_SIZE_U64;
     let group_index_start = pd0.group_index;
     let group_index_end = group_index_start + total_n_groups;
 
@@ -314,19 +305,16 @@ fn build_partition_work_items(
         let pos = ChunkSectorPos::new(enc_pos, this_chunk_enc_bytes);
 
         // Flush the previous bucket when the cluster changes.
-        if let Some(prev_idx) = current_cluster_idx {
-            if pos.cluster_idx != prev_idx {
-                work_items.push(PartitionDecompressWork {
-                    cluster_idx: prev_idx,
-                    data_start,
-                    part_key: part.part_key,
-                    valid_blocks_in_cluster: valid_blocks_for_cluster(
-                        prev_idx,
-                        total_data_size,
-                    ),
-                    chunks: std::mem::take(&mut current_chunks),
-                });
-            }
+        if let Some(prev_idx) = current_cluster_idx
+            && pos.cluster_idx != prev_idx
+        {
+            work_items.push(PartitionDecompressWork {
+                cluster_idx: prev_idx,
+                data_start,
+                part_key: part.part_key,
+                valid_blocks_in_cluster: valid_blocks_for_cluster(prev_idx, total_data_size),
+                chunks: std::mem::take(&mut current_chunks),
+            });
         }
         current_cluster_idx = Some(pos.cluster_idx);
 
@@ -429,4 +417,3 @@ pub(super) fn parallel_decompress_partition(
     pool.shutdown();
     result
 }
-

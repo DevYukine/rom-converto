@@ -109,7 +109,13 @@ pub async fn compress_disc(
     let bytes_done_bg = bytes_done.clone();
 
     let mut handle = task::spawn_blocking(move || -> RvzResult<u64> {
-        compress_blocking(&input_owned, &output_owned, options, iso_size, bytes_done_bg)
+        compress_blocking(
+            &input_owned,
+            &output_owned,
+            options,
+            iso_size,
+            bytes_done_bg,
+        )
     });
 
     let compressed_size = loop {
@@ -141,8 +147,7 @@ pub async fn compress_disc(
 }
 
 fn validate_chunk_size(chunk_size: u32) -> RvzResult<()> {
-    if !(MIN_CHUNK_SIZE..=MAX_CHUNK_SIZE).contains(&chunk_size) || !chunk_size.is_power_of_two()
-    {
+    if !(MIN_CHUNK_SIZE..=MAX_CHUNK_SIZE).contains(&chunk_size) || !chunk_size.is_power_of_two() {
         return Err(RvzError::InvalidChunkSize(
             chunk_size,
             MIN_CHUNK_SIZE,
@@ -248,15 +253,14 @@ fn compress_blocking(
         .regions
         .iter()
         .any(|r| matches!(r, DiscRegion::Partition(_)));
-    let mut partition_pool: Option<
-        Pool<partition::PartitionWork, Vec<partition::PartitionChunk>>,
-    > = if has_partitions {
-        let workers =
-            partition::make_partition_compress_workers(n_threads, options.compression_level)?;
-        Some(Pool::spawn(workers))
-    } else {
-        None
-    };
+    let mut partition_pool: Option<Pool<partition::PartitionWork, Vec<partition::PartitionChunk>>> =
+        if has_partitions {
+            let workers =
+                partition::make_partition_compress_workers(n_threads, options.compression_level)?;
+            Some(Pool::spawn(workers))
+        } else {
+            None
+        };
 
     let encode_result: RvzResult<()> = (|| {
         for region in &plan.regions {
@@ -575,4 +579,3 @@ where
     }
     Ok(zstd::bulk::compress(&plain, level)?)
 }
-

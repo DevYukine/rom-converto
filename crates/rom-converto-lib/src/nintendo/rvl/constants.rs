@@ -49,8 +49,7 @@ pub const WII_BLOCKS_PER_GROUP: usize = 0x40;
 pub const WII_GROUP_TOTAL_SIZE: u64 = (WII_BLOCKS_PER_GROUP * WII_SECTOR_SIZE) as u64;
 
 /// Total bytes of plaintext payload per cluster (64 × 0x7C00).
-pub const WII_GROUP_PAYLOAD_SIZE: u64 =
-    (WII_BLOCKS_PER_GROUP * WII_SECTOR_PAYLOAD_SIZE) as u64;
+pub const WII_GROUP_PAYLOAD_SIZE: u64 = (WII_BLOCKS_PER_GROUP * WII_SECTOR_PAYLOAD_SIZE) as u64;
 
 /// Partition header field offsets (relative to `partition_offset`).
 pub const WII_PARTITION_HEADER_TMD_SIZE_OFFSET: usize = 0x2A4;
@@ -61,4 +60,3 @@ pub const WII_PARTITION_HEADER_H3_OFFSET_OFFSET: usize = 0x2B4;
 pub const WII_PARTITION_HEADER_DATA_OFFSET_OFFSET: usize = 0x2B8;
 pub const WII_PARTITION_HEADER_DATA_SIZE_OFFSET: usize = 0x2BC;
 pub const WII_PARTITION_HEADER_SIZE: usize = 0x2C0;
-

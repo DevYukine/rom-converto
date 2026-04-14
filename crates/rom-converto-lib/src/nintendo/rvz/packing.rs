@@ -48,10 +48,8 @@ impl LaggedFibonacci {
     /// `SetSeed(const u8*)` + `Initialize(false)` pair.
     pub fn init(seed: &[u8; 68]) -> Self {
         let mut seed_words = [0u32; SEED_SIZE];
-        for i in 0..SEED_SIZE {
-            let off = i * 4;
-            seed_words[i] =
-                u32::from_be_bytes([seed[off], seed[off + 1], seed[off + 2], seed[off + 3]]);
+        for (word, chunk) in seed_words.iter_mut().zip(seed.chunks_exact(4)) {
+            *word = u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
         }
         Self::from_seed_words(&seed_words)
     }
@@ -69,7 +67,8 @@ impl LaggedFibonacci {
         // so we copy as-is; an additional byte-swap here would break
         // round-trips against real Dolphin files.
         lfg.buffer[..SEED_SIZE].copy_from_slice(seed);
-        lfg.initialize(false).expect("Initialize(false) cannot fail");
+        lfg.initialize(false)
+            .expect("Initialize(false) cannot fail");
         lfg
     }
 
@@ -277,12 +276,10 @@ impl LaggedFibonacci {
 
         // Copy the observed words into the buffer, rotated so the word at
         // byte offset 0 of the stream sits at index data_offset_mod_k.
-        for i in 0..(LFG_K - data_offset_mod_k) {
-            self.buffer[data_offset_mod_k + i] = words[i];
-        }
-        for i in 0..data_offset_mod_k {
-            self.buffer[i] = words[LFG_K - data_offset_mod_k + i];
-        }
+        let head_len = LFG_K - data_offset_mod_k;
+        self.buffer[data_offset_mod_k..data_offset_mod_k + head_len]
+            .copy_from_slice(&words[..head_len]);
+        self.buffer[..data_offset_mod_k].copy_from_slice(&words[head_len..LFG_K]);
 
         self.backward(0, data_offset_mod_k);
         for _ in 0..data_offset_div_k {
@@ -338,9 +335,7 @@ pub fn pack_decode(mut src: &[u8], data_offset: u64) -> RvzResult<Vec<u8>> {
 
         if is_random {
             if src.len() < 68 {
-                return Err(RvzError::Custom(
-                    "truncated RVZ packing seed".to_string(),
-                ));
+                return Err(RvzError::Custom("truncated RVZ packing seed".to_string()));
             }
             let seed: [u8; 68] = src[..68].try_into().unwrap();
             src = &src[68..];
@@ -675,7 +670,10 @@ mod tests {
 
     #[test]
     fn decode_errors_on_truncated_header() {
-        assert!(matches!(pack_decode(&[0x00, 0x00], 0), Err(RvzError::Custom(_))));
+        assert!(matches!(
+            pack_decode(&[0x00, 0x00], 0),
+            Err(RvzError::Custom(_))
+        ));
     }
 
     #[test]

@@ -10,10 +10,8 @@ pub enum RvlCommands {
 
 /// Compress a Wii disc image to RVZ.
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
-#[command(
-    long_about = "Compress a Wii disc image to Dolphin's RVZ format.\n\n\
-Supported input: .iso / .wbfs (read as raw so far).\nOutput defaults to the same path with the extension replaced by .rvz."
-)]
+#[command(long_about = "Compress a Wii disc image to Dolphin's RVZ format.\n\n\
+Supported input: .iso / .wbfs (read as raw so far).\nOutput defaults to the same path with the extension replaced by .rvz.")]
 pub struct CompressDiscCommand {
     /// Input disc image path (.iso or .wbfs).
     #[arg(value_name = "INPUT")]

@@ -159,8 +159,8 @@ mod tests {
         let mut data = vec![0u8; size];
         data[NCCH_MAGIC_OFFSET..NCCH_MAGIC_OFFSET + 4].copy_from_slice(&underlying_magic::NCCH);
         data[NCCH_FLAGS_OFFSET + 7] = NCCH_FLAGS7_NOCRYPTO;
-        for i in 0x200..size {
-            data[i] = (i % 251) as u8;
+        for (i, b) in data.iter_mut().enumerate().skip(0x200) {
+            *b = (i % 251) as u8;
         }
         data
     }
@@ -170,8 +170,8 @@ mod tests {
     fn make_fake_3dsx(size: usize) -> Vec<u8> {
         let mut data = vec![0u8; size];
         data[0..4].copy_from_slice(&underlying_magic::THREEDSX);
-        for i in 4..size {
-            data[i] = (i % 251) as u8;
+        for (i, b) in data.iter_mut().enumerate().skip(4) {
+            *b = (i % 251) as u8;
         }
         data
     }

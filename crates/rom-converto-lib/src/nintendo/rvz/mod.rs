@@ -205,14 +205,9 @@ mod integration_tests {
         let original = make_fake_wii_iso_with_partition(2);
         tokio::fs::write(&iso, &original).await.unwrap();
 
-        compress_disc(
-            &iso,
-            &rvz,
-            RvzCompressOptions::default(),
-            &NoProgress,
-        )
-        .await
-        .unwrap();
+        compress_disc(&iso, &rvz, RvzCompressOptions::default(), &NoProgress)
+            .await
+            .unwrap();
 
         decompress_disc(&rvz, &restored, &NoProgress).await.unwrap();
         let result = tokio::fs::read(&restored).await.unwrap();
@@ -373,7 +368,9 @@ mod integration_tests {
         let dolphin_tool = match std::env::var("ROM_CONVERTO_DOLPHIN_TOOL") {
             Ok(p) => p,
             Err(_) => {
-                eprintln!("skipping dolphin_parity_cross_tool_round_trip: ROM_CONVERTO_DOLPHIN_TOOL not set");
+                eprintln!(
+                    "skipping dolphin_parity_cross_tool_round_trip: ROM_CONVERTO_DOLPHIN_TOOL not set"
+                );
                 return;
             }
         };
@@ -386,7 +383,9 @@ mod integration_tests {
         let gc_iso = std::env::var("ROM_CONVERTO_DOLPHIN_PARITY_ISO").ok();
         let wii_iso = std::env::var("ROM_CONVERTO_DOLPHIN_PARITY_WII_ISO").ok();
         if gc_iso.is_none() && wii_iso.is_none() {
-            eprintln!("skipping dolphin_parity_cross_tool_round_trip: no ISO env var set (ROM_CONVERTO_DOLPHIN_PARITY_ISO or ROM_CONVERTO_DOLPHIN_PARITY_WII_ISO)");
+            eprintln!(
+                "skipping dolphin_parity_cross_tool_round_trip: no ISO env var set (ROM_CONVERTO_DOLPHIN_PARITY_ISO or ROM_CONVERTO_DOLPHIN_PARITY_WII_ISO)"
+            );
             return;
         }
 
@@ -547,15 +546,23 @@ mod integration_tests {
         // Verify that pack_partition_chunk emits bytes matching Dolphin's
         // wia_except_list_t layout:
         //   [u16 BE count][count × (u16 BE offset, 20-byte hash)][0x1F0000 payloads]
-        use crate::nintendo::rvl::constants::{WII_BLOCKS_PER_GROUP, WII_GROUP_PAYLOAD_SIZE, WII_SECTOR_PAYLOAD_SIZE};
+        use crate::nintendo::rvl::constants::{
+            WII_BLOCKS_PER_GROUP, WII_GROUP_PAYLOAD_SIZE, WII_SECTOR_PAYLOAD_SIZE,
+        };
         use crate::nintendo::rvl::partition::{HashException, pack_partition_chunk};
 
         let payloads: Vec<[u8; WII_SECTOR_PAYLOAD_SIZE]> = (0..WII_BLOCKS_PER_GROUP)
             .map(|_| [0u8; WII_SECTOR_PAYLOAD_SIZE])
             .collect();
         let exceptions = vec![
-            HashException { offset: 0x0042, hash: [0x11u8; 20] },
-            HashException { offset: 0xFFE0, hash: [0x22u8; 20] },
+            HashException {
+                offset: 0x0042,
+                hash: [0x11u8; 20],
+            },
+            HashException {
+                offset: 0xFFE0,
+                hash: [0x22u8; 20],
+            },
         ];
 
         let packed = pack_partition_chunk(&exceptions, &payloads).unwrap();

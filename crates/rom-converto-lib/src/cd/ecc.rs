@@ -329,8 +329,8 @@ mod tests {
         // Mode 1 marker
         sector[15] = 0x01;
         // Fill user data area with a pattern
-        for i in 16..2064 {
-            sector[i] = (i % 251) as u8;
+        for (i, slot) in sector.iter_mut().enumerate().take(2064).skip(16) {
+            *slot = (i % 251) as u8;
         }
         ecc_generate(&mut sector);
         sector

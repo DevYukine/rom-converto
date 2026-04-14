@@ -868,7 +868,7 @@ mod tests {
     fn scramblekey_zero_inputs() {
         // ROL(ROL(0, 2) ^ 0 + C, 87) = ROL(C, 87)
         let result = scramblekey(0, 0);
-        let expected = (CTR_KEY_SCRAMBLE_C << 87) | (CTR_KEY_SCRAMBLE_C >> (128 - 87));
+        let expected = CTR_KEY_SCRAMBLE_C.rotate_left(87);
         assert_eq!(result, expected);
     }
 

@@ -127,11 +127,7 @@ pub async fn decompress_disc(
     Ok(())
 }
 
-fn decompress_blocking(
-    input: &Path,
-    output: &Path,
-    bytes_done: Arc<AtomicU64>,
-) -> RvzResult<u64> {
+fn decompress_blocking(input: &Path, output: &Path, bytes_done: Arc<AtomicU64>) -> RvzResult<u64> {
     // Shared file handle for the worker pools' positional reads.
     // A second handle is opened below for the main thread's
     // sequential header/table reads so no cursor is shared across

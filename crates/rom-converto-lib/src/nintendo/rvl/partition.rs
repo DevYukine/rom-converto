@@ -39,8 +39,9 @@ pub const SUBGROUPS_PER_GROUP: usize = 8;
 const H0_BLOCK_SIZE: usize = 0x400;
 
 /// Sector-position math for one RVZ partition chunk inside its
-/// containing cluster. Centralises the `enc_pos / WII_GROUP_TOTAL_SIZE`
-/// + `offset_in_cluster / WII_SECTOR_SIZE` arithmetic so encoder
+/// containing cluster. Centralises the
+/// `enc_pos / WII_GROUP_TOTAL_SIZE` and
+/// `offset_in_cluster / WII_SECTOR_SIZE` arithmetic so encoder
 /// and decoder don't each hand-roll (and mis-roll) it.
 ///
 /// "Enc" prefix = **encrypted-byte coordinates**: the units
@@ -77,8 +78,7 @@ impl ChunkSectorPos {
     pub fn new(enc_pos: u64, this_chunk_enc_bytes: u64) -> Self {
         let cluster_idx = enc_pos / WII_GROUP_TOTAL_SIZE;
         let offset_in_cluster_enc = enc_pos % WII_GROUP_TOTAL_SIZE;
-        let first_sector_in_chunk =
-            (offset_in_cluster_enc / WII_SECTOR_SIZE_U64) as usize;
+        let first_sector_in_chunk = (offset_in_cluster_enc / WII_SECTOR_SIZE_U64) as usize;
         let chunk_n_sectors = (this_chunk_enc_bytes / WII_SECTOR_SIZE_U64) as usize;
         debug_assert!(chunk_n_sectors > 0);
         debug_assert!(first_sector_in_chunk + chunk_n_sectors <= WII_BLOCKS_PER_GROUP);
@@ -131,7 +131,10 @@ mod hash_region {
     pub const TOTAL: usize = PADDING_2_OFFSET + PADDING_2_LEN;
 }
 
-const _: () = assert!(hash_region::TOTAL == 0x400, "hash region layout must be 0x400");
+const _: () = assert!(
+    hash_region::TOTAL == 0x400,
+    "hash region layout must be 0x400"
+);
 
 /// Metadata for one Wii partition extracted from its header.
 #[derive(Debug, Clone, Copy)]
@@ -190,14 +193,13 @@ pub fn read_partition_info<R: Read + Seek>(
     let title_key = decrypt_title_key(&ticket)?;
 
     let data_offset_word = u32::from_be_bytes(
-        header[WII_PARTITION_HEADER_DATA_OFFSET_OFFSET
-            ..WII_PARTITION_HEADER_DATA_OFFSET_OFFSET + 4]
+        header
+            [WII_PARTITION_HEADER_DATA_OFFSET_OFFSET..WII_PARTITION_HEADER_DATA_OFFSET_OFFSET + 4]
             .try_into()
             .unwrap(),
     );
     let data_size_word = u32::from_be_bytes(
-        header[WII_PARTITION_HEADER_DATA_SIZE_OFFSET
-            ..WII_PARTITION_HEADER_DATA_SIZE_OFFSET + 4]
+        header[WII_PARTITION_HEADER_DATA_SIZE_OFFSET..WII_PARTITION_HEADER_DATA_SIZE_OFFSET + 4]
             .try_into()
             .unwrap(),
     );
@@ -227,12 +229,18 @@ pub struct DecryptedCluster {
     pub payloads: Vec<[u8; WII_SECTOR_PAYLOAD_SIZE]>,
 }
 
-impl DecryptedCluster {
-    pub fn new() -> Self {
+impl Default for DecryptedCluster {
+    fn default() -> Self {
         Self {
             on_disc_hash_regions: Vec::with_capacity(WII_BLOCKS_PER_GROUP),
             payloads: Vec::with_capacity(WII_BLOCKS_PER_GROUP),
         }
+    }
+}
+
+impl DecryptedCluster {
+    pub fn new() -> Self {
+        Self::default()
     }
 }
 
@@ -365,20 +373,17 @@ pub fn recompute_hash_regions_into(
 
         // h0 for this sector
         for (j, hash) in all_h0[sector_idx].iter().enumerate() {
-            region[hash_region::H0_OFFSET + j * 20
-                ..hash_region::H0_OFFSET + (j + 1) * 20]
+            region[hash_region::H0_OFFSET + j * 20..hash_region::H0_OFFSET + (j + 1) * 20]
                 .copy_from_slice(hash);
         }
         // h1 shared across the sub-group
         for (j, hash) in all_h1[subgroup_idx].iter().enumerate() {
-            region[hash_region::H1_OFFSET + j * 20
-                ..hash_region::H1_OFFSET + (j + 1) * 20]
+            region[hash_region::H1_OFFSET + j * 20..hash_region::H1_OFFSET + (j + 1) * 20]
                 .copy_from_slice(hash);
         }
         // h2 shared across the entire group
         for (j, hash) in h2.iter().enumerate() {
-            region[hash_region::H2_OFFSET + j * 20
-                ..hash_region::H2_OFFSET + (j + 1) * 20]
+            region[hash_region::H2_OFFSET + j * 20..hash_region::H2_OFFSET + (j + 1) * 20]
                 .copy_from_slice(hash);
         }
     }
@@ -452,17 +457,63 @@ pub fn build_hash_exceptions(
     reconstructed: &[[u8; HASH_REGION_BYTES]],
 ) -> Vec<HashException> {
     let mut out = Vec::new();
-    for j in 0..WII_BLOCKS_PER_GROUP {
-        let on_disc = &cluster.on_disc_hash_regions[j];
-        let recon = &reconstructed[j];
+    for (j, (on_disc, recon)) in cluster
+        .on_disc_hash_regions
+        .iter()
+        .zip(reconstructed.iter())
+        .enumerate()
+        .take(WII_BLOCKS_PER_GROUP)
+    {
         let region_base = (j * HASH_REGION_BYTES) as u16;
 
-        compare_hashes(on_disc, recon, region_base, hash_region::H0_OFFSET, hash_region::H0_LEN, &mut out);
-        compare_hashes(on_disc, recon, region_base, hash_region::PADDING_0_OFFSET, hash_region::PADDING_0_LEN, &mut out);
-        compare_hashes(on_disc, recon, region_base, hash_region::H1_OFFSET, hash_region::H1_LEN, &mut out);
-        compare_hashes(on_disc, recon, region_base, hash_region::PADDING_1_OFFSET, hash_region::PADDING_1_LEN, &mut out);
-        compare_hashes(on_disc, recon, region_base, hash_region::H2_OFFSET, hash_region::H2_LEN, &mut out);
-        compare_hashes(on_disc, recon, region_base, hash_region::PADDING_2_OFFSET, hash_region::PADDING_2_LEN, &mut out);
+        compare_hashes(
+            on_disc,
+            recon,
+            region_base,
+            hash_region::H0_OFFSET,
+            hash_region::H0_LEN,
+            &mut out,
+        );
+        compare_hashes(
+            on_disc,
+            recon,
+            region_base,
+            hash_region::PADDING_0_OFFSET,
+            hash_region::PADDING_0_LEN,
+            &mut out,
+        );
+        compare_hashes(
+            on_disc,
+            recon,
+            region_base,
+            hash_region::H1_OFFSET,
+            hash_region::H1_LEN,
+            &mut out,
+        );
+        compare_hashes(
+            on_disc,
+            recon,
+            region_base,
+            hash_region::PADDING_1_OFFSET,
+            hash_region::PADDING_1_LEN,
+            &mut out,
+        );
+        compare_hashes(
+            on_disc,
+            recon,
+            region_base,
+            hash_region::H2_OFFSET,
+            hash_region::H2_LEN,
+            &mut out,
+        );
+        compare_hashes(
+            on_disc,
+            recon,
+            region_base,
+            hash_region::PADDING_2_OFFSET,
+            hash_region::PADDING_2_LEN,
+            &mut out,
+        );
     }
     out
 }
@@ -530,8 +581,7 @@ pub fn split_chunk_exceptions_by_range<'a>(
     // Compute offsets in u32 so a full-cluster range (`64 * 1024 =
     // 65536`) doesn't wrap u16 to 0.
     let chunk_start_offset: u32 = (first_block * HASH_REGION_BYTES) as u32;
-    let chunk_end_offset: u32 =
-        ((first_block + blocks_in_chunk) * HASH_REGION_BYTES) as u32;
+    let chunk_end_offset: u32 = ((first_block + blocks_in_chunk) * HASH_REGION_BYTES) as u32;
     cluster_exceptions
         .iter()
         .filter(move |ex| {
@@ -697,11 +747,11 @@ pub fn parse_exception_header<'a>(
 
 /// Split a payload-region byte slice into 64 fixed-size Wii sector
 /// payloads.
-pub fn split_payloads(
-    data: &[u8],
-) -> RvzResult<Vec<[u8; WII_SECTOR_PAYLOAD_SIZE]>> {
+pub fn split_payloads(data: &[u8]) -> RvzResult<Vec<[u8; WII_SECTOR_PAYLOAD_SIZE]>> {
     if data.len() < WII_GROUP_PAYLOAD_SIZE as usize {
-        return Err(RvzError::Custom("truncated partition chunk payloads".into()));
+        return Err(RvzError::Custom(
+            "truncated partition chunk payloads".into(),
+        ));
     }
     let mut payloads = Vec::with_capacity(WII_BLOCKS_PER_GROUP);
     for i in 0..WII_BLOCKS_PER_GROUP {
@@ -787,9 +837,8 @@ mod tests {
 
         // Sectors 0..11: plaintext we craft and then encrypt.
         let mut original_ciphertext = vec![0u8; WII_GROUP_TOTAL_SIZE as usize];
-        let valid_payloads: Vec<[u8; WII_SECTOR_PAYLOAD_SIZE]> = (0..12)
-            .map(|i| make_payload((i * 7 + 3) as u8))
-            .collect();
+        let valid_payloads: Vec<[u8; WII_SECTOR_PAYLOAD_SIZE]> =
+            (0..12).map(|i| make_payload((i * 7 + 3) as u8)).collect();
         // Compute the hash hierarchy over a FULL 64-sector cluster
         // where sectors 12..63 have the "decrypted junk" that comes
         // from decrypt_sector(all-zero ciphertext, title_key).
@@ -804,8 +853,7 @@ mod tests {
             junk_payloads.push(p);
         }
         // Full 64-sector payload vector.
-        let mut all_payloads: Vec<[u8; WII_SECTOR_PAYLOAD_SIZE]> =
-            valid_payloads.iter().copied().collect();
+        let mut all_payloads: Vec<[u8; WII_SECTOR_PAYLOAD_SIZE]> = valid_payloads.to_vec();
         all_payloads.extend(junk_payloads.iter().copied());
 
         // Hash-region authors for the 64 sectors are:
@@ -818,8 +866,8 @@ mod tests {
         // Sectors 0..11: use the computed hash region (so encryption
         // produces the "correct" ciphertext that would be on a real
         // disc for these valid sectors).
-        for i in 0..12 {
-            on_disc.push(recomputed_full[i]);
+        for region in recomputed_full.iter().take(12) {
+            on_disc.push(*region);
         }
         // Sectors 12..63: use the junk hash region from decrypting
         // all-zero ciphertext.
@@ -856,11 +904,19 @@ mod tests {
         let reencrypted = reencrypt_cluster(&rebuilt, &cluster.payloads, &title_key).unwrap();
 
         if reencrypted != original_ciphertext {
-            for (i, (a, b)) in reencrypted.iter().zip(original_ciphertext.iter()).enumerate() {
+            for (i, (a, b)) in reencrypted
+                .iter()
+                .zip(original_ciphertext.iter())
+                .enumerate()
+            {
                 if a != b {
                     panic!(
                         "byte {:#x} differs: want {:#04x}, got {:#04x} (sector {}, off {:#x})",
-                        i, b, a, i / WII_SECTOR_SIZE, i % WII_SECTOR_SIZE
+                        i,
+                        b,
+                        a,
+                        i / WII_SECTOR_SIZE,
+                        i % WII_SECTOR_SIZE
                     );
                 }
             }
@@ -894,11 +950,19 @@ mod tests {
 
         if reencrypted != original_ciphertext {
             // Pinpoint the first differing byte.
-            for (i, (a, b)) in reencrypted.iter().zip(original_ciphertext.iter()).enumerate() {
+            for (i, (a, b)) in reencrypted
+                .iter()
+                .zip(original_ciphertext.iter())
+                .enumerate()
+            {
                 if a != b {
                     panic!(
                         "byte {:#x} differs: want {:#04x}, got {:#04x} (sector {}, offset {:#x})",
-                        i, b, a, i / WII_SECTOR_SIZE, i % WII_SECTOR_SIZE
+                        i,
+                        b,
+                        a,
+                        i / WII_SECTOR_SIZE,
+                        i % WII_SECTOR_SIZE
                     );
                 }
             }
@@ -1053,7 +1117,10 @@ mod tests {
         };
         let recon = recompute_hash_regions(&payloads);
         let exceptions = build_hash_exceptions(&cluster, &recon);
-        assert!(exceptions.is_empty(), "clean cluster should have 0 exceptions");
+        assert!(
+            exceptions.is_empty(),
+            "clean cluster should have 0 exceptions"
+        );
     }
 
     #[test]

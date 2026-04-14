@@ -7,12 +7,12 @@ use crate::nintendo::rvl::constants::{WII_MAGIC, WII_MAGIC_OFFSET};
 use crate::nintendo::rvl::common_keys::WII_COMMON_KEY;
 use crate::nintendo::rvl::constants::{
     WII_BLOCKS_PER_GROUP, WII_GROUP_TOTAL_SIZE, WII_PARTITION_HEADER_DATA_OFFSET_OFFSET,
-    WII_PARTITION_HEADER_DATA_SIZE_OFFSET, WII_PARTITION_HEADER_SIZE,
-    WII_PARTITION_INFO_OFFSET, WII_SECTOR_PAYLOAD_SIZE, WII_SECTOR_SIZE, WII_TICKET_SIZE,
-    WII_TICKET_TITLE_ID_OFFSET, WII_TICKET_TITLE_KEY_OFFSET,
+    WII_PARTITION_HEADER_DATA_SIZE_OFFSET, WII_PARTITION_HEADER_SIZE, WII_PARTITION_INFO_OFFSET,
+    WII_SECTOR_PAYLOAD_SIZE, WII_SECTOR_SIZE, WII_TICKET_SIZE, WII_TICKET_TITLE_ID_OFFSET,
+    WII_TICKET_TITLE_KEY_OFFSET,
 };
 use crate::nintendo::rvl::disc::encrypt_sector;
-use crate::nintendo::rvl::partition::{recompute_hash_regions, HASH_REGION_BYTES};
+use crate::nintendo::rvl::partition::{HASH_REGION_BYTES, recompute_hash_regions};
 use aes::{
     Aes128,
     cipher::{BlockEncryptMut, KeyIvInit},
@@ -100,8 +100,7 @@ pub fn make_fake_wii_iso_with_partition(n_clusters: usize) -> Vec<u8> {
     let info = WII_PARTITION_INFO_OFFSET as usize;
     let partition_table_offset = info + 0x100; // arbitrary, must point into the file
     data[info..info + 4].copy_from_slice(&1u32.to_be_bytes()); // count
-    data[info + 4..info + 8]
-        .copy_from_slice(&((partition_table_offset as u32) >> 2).to_be_bytes());
+    data[info + 4..info + 8].copy_from_slice(&((partition_table_offset as u32) >> 2).to_be_bytes());
     // groups 1..3 have count = 0 (already zero).
 
     // The partition table for group 0: one entry { offset/4, type=0 }.
@@ -128,8 +127,7 @@ pub fn make_fake_wii_iso_with_partition(n_clusters: usize) -> Vec<u8> {
     // Ticket bytes: zero-init the ticket region, then drop in the fields we need.
     data[part_off + WII_TICKET_TITLE_ID_OFFSET..part_off + WII_TICKET_TITLE_ID_OFFSET + 8]
         .copy_from_slice(&title_id);
-    data[part_off + WII_TICKET_TITLE_KEY_OFFSET
-        ..part_off + WII_TICKET_TITLE_KEY_OFFSET + 16]
+    data[part_off + WII_TICKET_TITLE_KEY_OFFSET..part_off + WII_TICKET_TITLE_KEY_OFFSET + 16]
         .copy_from_slice(&enc_key);
     // common_key_index byte at 0x1F1 stays 0 (standard key).
 
@@ -155,7 +153,9 @@ pub fn make_fake_wii_iso_with_partition(n_clusters: usize) -> Vec<u8> {
         let payloads: Vec<[u8; WII_SECTOR_PAYLOAD_SIZE]> = (0..64)
             .map(|sector_idx| {
                 let mut p = [0u8; WII_SECTOR_PAYLOAD_SIZE];
-                let seed = (cluster as u8).wrapping_mul(31).wrapping_add(sector_idx as u8);
+                let seed = (cluster as u8)
+                    .wrapping_mul(31)
+                    .wrapping_add(sector_idx as u8);
                 for (i, b) in p.iter_mut().enumerate() {
                     *b = ((i as u8).wrapping_mul(13)).wrapping_add(seed);
                 }
@@ -171,8 +171,8 @@ pub fn make_fake_wii_iso_with_partition(n_clusters: usize) -> Vec<u8> {
             sector[HASH_REGION_BYTES..].copy_from_slice(&payloads[sector_idx]);
             encrypt_sector(&mut sector, &plaintext_title_key).unwrap();
 
-            let off = data_start + cluster * WII_GROUP_TOTAL_SIZE as usize
-                + sector_idx * WII_SECTOR_SIZE;
+            let off =
+                data_start + cluster * WII_GROUP_TOTAL_SIZE as usize + sector_idx * WII_SECTOR_SIZE;
             data[off..off + WII_SECTOR_SIZE].copy_from_slice(&sector);
         }
     }

@@ -456,8 +456,8 @@ mod tests {
     fn cd_hunk_deflate_round_trip() {
         // Build a hunk of 8 frames with non-ECC data (no sync header)
         let mut hunk = vec![0u8; 8 * FRAME_SIZE];
-        for i in 0..hunk.len() {
-            hunk[i] = (i % 253) as u8;
+        for (i, b) in hunk.iter_mut().enumerate() {
+            *b = (i % 253) as u8;
         }
 
         let compressed = compress_cd_hunk(&hunk, deflate_compress, deflate_compress).unwrap();

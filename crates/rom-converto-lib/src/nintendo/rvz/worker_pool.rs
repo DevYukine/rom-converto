@@ -224,10 +224,10 @@ where
     while in_flight > 0 {
         let (_seq, result) = pool.recv();
         in_flight -= 1;
-        if run_result.is_ok() {
-            if let Err(e) = result {
-                run_result = Err(e);
-            }
+        if run_result.is_ok()
+            && let Err(e) = result
+        {
+            run_result = Err(e);
         }
     }
 

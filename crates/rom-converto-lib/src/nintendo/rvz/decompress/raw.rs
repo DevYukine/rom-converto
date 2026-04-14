@@ -212,6 +212,7 @@ fn build_raw_region_work_items(
 /// work list for the region, and pumps it via [`drive`]. Output is
 /// written in submission order by the consume closure so
 /// `writer_pos` tracking stays valid.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn parallel_decompress_raw_region(
     region: &WiaRawData,
     groups: &[RvzGroup],
@@ -248,7 +249,8 @@ pub(super) fn parallel_decompress_raw_region(
                 .ok_or_else(|| RvzError::Custom("raw-region work iterator exhausted".into()))
         },
         |_seq, out| -> RvzResult<()> {
-            let slice = &out.decoded[out.chunk_slice_offset..out.chunk_slice_offset + out.write_len];
+            let slice =
+                &out.decoded[out.chunk_slice_offset..out.chunk_slice_offset + out.write_len];
             if out.write_start != *writer_pos {
                 writer.seek(SeekFrom::Start(out.write_start))?;
                 *writer_pos = out.write_start;

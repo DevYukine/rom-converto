@@ -188,12 +188,10 @@ pub async fn cmd_compress_disc(
         chunk_size: chunk_size.unwrap_or(RvzCompressOptions::default().chunk_size),
         ..RvzCompressOptions::default()
     };
-    tokio::spawn(
-        async move { compress_disc(&input, &output, opts, progress.as_ref()).await },
-    )
-    .await
-    .map_err(err_to_string)?
-    .map_err(err_to_string)?;
+    tokio::spawn(async move { compress_disc(&input, &output, opts, progress.as_ref()).await })
+        .await
+        .map_err(err_to_string)?
+        .map_err(err_to_string)?;
     Ok(format!("Compressed to {out_display}"))
 }
 

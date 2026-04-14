@@ -113,6 +113,30 @@ pub fn bytes_from_samples(samples: &[i32], endian: &Endian) -> Vec<u8> {
     output
 }
 
+pub(crate) fn flac_decompress(data: &[u8], _expected_len: usize) -> ChdResult<Vec<u8>> {
+    if data.is_empty() {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "FLAC data is empty").into());
+    }
+
+    let endian = match data[0] {
+        0 => Endian::Little,
+        1 => Endian::Big,
+        _ => {
+            return Err(
+                io::Error::new(io::ErrorKind::InvalidData, "Invalid FLAC endian flag").into(),
+            );
+        }
+    };
+
+    let mut reader = claxon::FlacReader::new(Cursor::new(&data[1..]))
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+
+    let samples: Result<Vec<i32>, _> = reader.samples().collect();
+    let samples = samples.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+
+    Ok(bytes_from_samples(&samples, &endian))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,28 +194,4 @@ mod tests {
         let bytes = bytes_from_samples(&samples, &Endian::Little);
         assert_eq!(bytes, vec![0x34, 0x12]);
     }
-}
-
-pub(crate) fn flac_decompress(data: &[u8], _expected_len: usize) -> ChdResult<Vec<u8>> {
-    if data.is_empty() {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "FLAC data is empty").into());
-    }
-
-    let endian = match data[0] {
-        0 => Endian::Little,
-        1 => Endian::Big,
-        _ => {
-            return Err(
-                io::Error::new(io::ErrorKind::InvalidData, "Invalid FLAC endian flag").into(),
-            );
-        }
-    };
-
-    let mut reader = claxon::FlacReader::new(Cursor::new(&data[1..]))
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-
-    let samples: Result<Vec<i32>, _> = reader.samples().collect();
-    let samples = samples.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-
-    Ok(bytes_from_samples(&samples, &endian))
 }

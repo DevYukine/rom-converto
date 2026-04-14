@@ -324,8 +324,7 @@ fn encode_one_partition_cluster_with(
     // one cluster = 0x200000). `enc_cluster_end` is clamped to
     // `partition_data_size` for the partial last cluster.
     let enc_cluster_start = cluster_idx * WII_GROUP_TOTAL_SIZE;
-    let enc_cluster_end =
-        (enc_cluster_start + WII_GROUP_TOTAL_SIZE).min(partition_data_size);
+    let enc_cluster_end = (enc_cluster_start + WII_GROUP_TOTAL_SIZE).min(partition_data_size);
     debug_assert!(enc_cluster_end > enc_cluster_start);
 
     // How many blocks the partition's declared data covers in
@@ -367,8 +366,7 @@ fn encode_one_partition_cluster_with(
         let mut rebuilt = worker.hash_regions.clone();
         apply_hash_exceptions(&mut rebuilt, &cluster_exceptions);
         debug_assert_eq!(
-            rebuilt,
-            cluster.on_disc_hash_regions,
+            rebuilt, cluster.on_disc_hash_regions,
             "exception list does not reproduce on-disc hash regions for cluster {cluster_idx}"
         );
     }
@@ -453,10 +451,8 @@ fn encode_one_chunk_with(
     // two with `Cow<[u8]>` so downstream code can treat both
     // uniformly without cloning the un-packed path.
     let (payload_region, rvz_packed_size): (std::borrow::Cow<'_, [u8]>, u32) =
-        match crate::nintendo::rvz::packing::pack_encode(
-            &worker.body,
-            pos.chunk_data_offset_pay(),
-        ) {
+        match crate::nintendo::rvz::packing::pack_encode(&worker.body, pos.chunk_data_offset_pay())
+        {
             Some(packed) => {
                 let pack_len = packed.len() as u32;
                 (std::borrow::Cow::Owned(packed), pack_len)
