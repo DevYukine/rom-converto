@@ -49,3 +49,11 @@ export function deriveChdPath(input: string): string {
 export function deriveCuePath(input: string): string {
   return replaceExt(input, "cue");
 }
+
+export function deriveRvzPath(input: string): string {
+  return replaceExt(input, "rvz");
+}
+
+export function deriveDiscIsoPath(input: string): string {
+  return replaceExt(input, "iso");
+}

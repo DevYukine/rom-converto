@@ -7,6 +7,9 @@ use rom_converto_lib::nintendo::ctr::z3ds::{
 use rom_converto_lib::nintendo::ctr::{
     CdnToCiaOptions, convert_cdn_to_cia, decrypt_rom, generate_ticket_from_cdn,
 };
+use rom_converto_lib::nintendo::rvz::{
+    RvzCompressOptions, compress_disc, decompress_disc, derive_disc_path, derive_rvz_path,
+};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::AppHandle;
@@ -167,6 +170,47 @@ pub async fn cmd_chd_verify(
     .join()
     .map_err(|_| "task panicked".to_string())??;
     Ok("CHD verification passed".to_string())
+}
+
+#[tauri::command]
+pub async fn cmd_compress_disc(
+    app: AppHandle,
+    input: PathBuf,
+    output: Option<PathBuf>,
+    level: Option<i32>,
+    chunk_size: Option<u32>,
+) -> Result<String, String> {
+    let progress = Arc::new(TauriProgress::new(app, "compress-disc"));
+    let output = output.unwrap_or_else(|| derive_rvz_path(&input));
+    let out_display = output.display().to_string();
+    let opts = RvzCompressOptions {
+        compression_level: level.unwrap_or(RvzCompressOptions::default().compression_level),
+        chunk_size: chunk_size.unwrap_or(RvzCompressOptions::default().chunk_size),
+        ..RvzCompressOptions::default()
+    };
+    tokio::spawn(
+        async move { compress_disc(&input, &output, opts, progress.as_ref()).await },
+    )
+    .await
+    .map_err(err_to_string)?
+    .map_err(err_to_string)?;
+    Ok(format!("Compressed to {out_display}"))
+}
+
+#[tauri::command]
+pub async fn cmd_decompress_disc(
+    app: AppHandle,
+    input: PathBuf,
+    output: Option<PathBuf>,
+) -> Result<String, String> {
+    let progress = Arc::new(TauriProgress::new(app, "decompress-disc"));
+    let output = output.unwrap_or_else(|| derive_disc_path(&input));
+    let out_display = output.display().to_string();
+    tokio::spawn(async move { decompress_disc(&input, &output, progress.as_ref()).await })
+        .await
+        .map_err(err_to_string)?
+        .map_err(err_to_string)?;
+    Ok(format!("Decompressed to {out_display}"))
 }
 
 #[tauri::command]

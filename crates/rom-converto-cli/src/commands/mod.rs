@@ -1,9 +1,13 @@
 use crate::commands::chd::ChdCommands;
 use crate::commands::ctr::CtrCommands;
+use crate::commands::dol::DolCommands;
+use crate::commands::rvl::RvlCommands;
 use clap::{Parser, Subcommand};
 
 pub mod chd;
 pub mod ctr;
+pub mod dol;
+pub mod rvl;
 
 /// CLI for en/decrypting, compressing and converting ROMs.
 #[derive(Parser, Debug)]
@@ -29,6 +33,12 @@ pub struct Cli {
 pub enum Commands {
     #[command(subcommand)]
     Ctr(CtrCommands),
+
+    #[command(subcommand)]
+    Dol(DolCommands),
+
+    #[command(subcommand)]
+    Rvl(RvlCommands),
 
     #[command(subcommand)]
     Chd(ChdCommands),

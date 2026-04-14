@@ -18,7 +18,7 @@ target/
 
 .idea
 .env
-.claude/settings.local.json
+.claude
 test_data
 seeddb.bin
 
@@ -30,3 +30,7 @@ dist
 
 # Tauri
 crates/rom-converto-gui/src-tauri/gen/schemas
+
+# Host-dependent benchmark harness; the GameCube.md / Wii.md
+# results are committed, the script itself is not.
+benchmark/dolphin_benchmark.py

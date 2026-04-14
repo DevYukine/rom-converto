@@ -1,5 +1,7 @@
 use crate::commands::chd::ChdCommands;
 use crate::commands::ctr::CtrCommands;
+use crate::commands::dol::DolCommands;
+use crate::commands::rvl::RvlCommands;
 use crate::commands::{Cli, Commands, SelfUpdateCommand};
 use crate::github::api::GithubApi;
 use crate::updater::{check_for_new_version_and_notify, cleanup_old_executable, self_update};
@@ -15,6 +17,9 @@ use rom_converto_lib::nintendo::ctr::z3ds::{
 };
 use rom_converto_lib::nintendo::ctr::{
     CdnToCiaOptions, convert_cdn_to_cia, decrypt_rom, generate_ticket_from_cdn,
+};
+use rom_converto_lib::nintendo::rvz::{
+    RvzCompressOptions, compress_disc, decompress_disc, derive_disc_path, derive_rvz_path,
 };
 use std::mem::discriminant;
 
@@ -49,7 +54,11 @@ async fn main() -> Result<()> {
     let mut github = GithubApi::new()?;
 
     if discriminant(&cli.command) != discriminant(&Commands::SelfUpdate(SelfUpdateCommand {})) {
-        check_for_new_version_and_notify(&mut github).await?;
+        // Non-fatal: network outages or GitHub rate limits shouldn't
+        // prevent the user from running conversions offline.
+        if let Err(e) = check_for_new_version_and_notify(&mut github).await {
+            log::debug!("update check skipped: {e}");
+        }
     }
 
     let progress = IndicatifProgress::new(pb);
@@ -120,6 +129,44 @@ async fn main() -> Result<()> {
                         }
                     }
                 }
+            }
+        },
+        Commands::Dol(inner) => match inner {
+            DolCommands::Compress(cmd) => {
+                let output = cmd.output.unwrap_or_else(|| derive_rvz_path(&cmd.input));
+                let opts = RvzCompressOptions {
+                    compression_level: cmd
+                        .level
+                        .unwrap_or(RvzCompressOptions::default().compression_level),
+                    chunk_size: cmd
+                        .chunk_size
+                        .unwrap_or(RvzCompressOptions::default().chunk_size),
+                    ..RvzCompressOptions::default()
+                };
+                compress_disc(&cmd.input, &output, opts, &progress).await?
+            }
+            DolCommands::Decompress(cmd) => {
+                let output = cmd.output.unwrap_or_else(|| derive_disc_path(&cmd.input));
+                decompress_disc(&cmd.input, &output, &progress).await?
+            }
+        },
+        Commands::Rvl(inner) => match inner {
+            RvlCommands::Compress(cmd) => {
+                let output = cmd.output.unwrap_or_else(|| derive_rvz_path(&cmd.input));
+                let opts = RvzCompressOptions {
+                    compression_level: cmd
+                        .level
+                        .unwrap_or(RvzCompressOptions::default().compression_level),
+                    chunk_size: cmd
+                        .chunk_size
+                        .unwrap_or(RvzCompressOptions::default().chunk_size),
+                    ..RvzCompressOptions::default()
+                };
+                compress_disc(&cmd.input, &output, opts, &progress).await?
+            }
+            RvlCommands::Decompress(cmd) => {
+                let output = cmd.output.unwrap_or_else(|| derive_disc_path(&cmd.input));
+                decompress_disc(&cmd.input, &output, &progress).await?
             }
         },
         Commands::Chd(inner) => match inner {

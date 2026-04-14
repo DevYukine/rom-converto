@@ -7,6 +7,10 @@ import { useCtrVerifyStore } from "~/stores/ctr-verify";
 import { useChdCompressStore } from "~/stores/chd-compress";
 import { useChdExtractStore } from "~/stores/chd-extract";
 import { useChdVerifyStore } from "~/stores/chd-verify";
+import { useDolCompressStore } from "~/stores/dol-compress";
+import { useDolDecompressStore } from "~/stores/dol-decompress";
+import { useRvlCompressStore } from "~/stores/rvl-compress";
+import { useRvlDecompressStore } from "~/stores/rvl-decompress";
 import { getVersion } from "@tauri-apps/api/app";
 
 const appVersion = ref("");
@@ -18,6 +22,16 @@ const ctrLinks = [
   { to: "/ctr/compress", label: "Compress", store: () => useCtrCompressStore(), icon: "compress" },
   { to: "/ctr/decompress", label: "Decompress", store: () => useCtrDecompressStore(), icon: "expand" },
   { to: "/ctr/verify", label: "Verify", store: () => useCtrVerifyStore(), icon: "shield-check" },
+];
+
+const dolLinks = [
+  { to: "/dol/compress", label: "Compress", store: () => useDolCompressStore(), icon: "compress" },
+  { to: "/dol/decompress", label: "Decompress", store: () => useDolDecompressStore(), icon: "expand" },
+];
+
+const rvlLinks = [
+  { to: "/rvl/compress", label: "Compress", store: () => useRvlCompressStore(), icon: "compress" },
+  { to: "/rvl/decompress", label: "Decompress", store: () => useRvlDecompressStore(), icon: "expand" },
 ];
 
 const chdLinks = [
@@ -128,6 +142,68 @@ function getStatus(store: () => { loading: boolean; result: string; error: strin
                     v-else-if="getStatus(link.store) === 'error'"
                     class="h-1.5 w-1.5 rounded-full bg-red-400"
                   />
+                </span>
+              </NuxtLink>
+            </li>
+          </ul>
+        </div>
+
+        <!-- DOL Section -->
+        <div>
+          <h3 class="mb-2 px-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+            DOL (GameCube)
+          </h3>
+          <ul class="space-y-0.5">
+            <li v-for="link in dolLinks" :key="link.to">
+              <NuxtLink
+                :to="link.to"
+                class="group relative flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-zinc-400 transition hover:bg-zinc-800/60 hover:text-zinc-200"
+                active-class="!bg-zinc-800 !text-sky-400 before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-0.5 before:rounded-full before:bg-sky-400"
+              >
+                <span class="flex h-5 w-5 items-center justify-center">
+                  <svg v-if="link.icon === 'compress'" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M9 9V4.5M9 9H4.5M9 9L3.75 3.75M9 15v4.5M9 15H4.5M9 15l-5.25 5.25M15 9h4.5M15 9V4.5M15 9l5.25-5.25M15 15h4.5M15 15v4.5m0-4.5l5.25 5.25" />
+                  </svg>
+                  <svg v-else-if="link.icon === 'expand'" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
+                  </svg>
+                </span>
+                {{ link.label }}
+                <span class="ml-auto flex h-4 w-4 items-center justify-center">
+                  <span v-if="getStatus(link.store) === 'running'" class="h-2 w-2 animate-pulse rounded-full bg-sky-400" />
+                  <span v-else-if="getStatus(link.store) === 'done'" class="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                  <span v-else-if="getStatus(link.store) === 'error'" class="h-1.5 w-1.5 rounded-full bg-red-400" />
+                </span>
+              </NuxtLink>
+            </li>
+          </ul>
+        </div>
+
+        <!-- RVL Section -->
+        <div>
+          <h3 class="mb-2 px-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+            RVL (Wii)
+          </h3>
+          <ul class="space-y-0.5">
+            <li v-for="link in rvlLinks" :key="link.to">
+              <NuxtLink
+                :to="link.to"
+                class="group relative flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-zinc-400 transition hover:bg-zinc-800/60 hover:text-zinc-200"
+                active-class="!bg-zinc-800 !text-sky-400 before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-0.5 before:rounded-full before:bg-sky-400"
+              >
+                <span class="flex h-5 w-5 items-center justify-center">
+                  <svg v-if="link.icon === 'compress'" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M9 9V4.5M9 9H4.5M9 9L3.75 3.75M9 15v4.5M9 15H4.5M9 15l-5.25 5.25M15 9h4.5M15 9V4.5M15 9l5.25-5.25M15 15h4.5M15 15v4.5m0-4.5l5.25 5.25" />
+                  </svg>
+                  <svg v-else-if="link.icon === 'expand'" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
+                  </svg>
+                </span>
+                {{ link.label }}
+                <span class="ml-auto flex h-4 w-4 items-center justify-center">
+                  <span v-if="getStatus(link.store) === 'running'" class="h-2 w-2 animate-pulse rounded-full bg-sky-400" />
+                  <span v-else-if="getStatus(link.store) === 'done'" class="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                  <span v-else-if="getStatus(link.store) === 'error'" class="h-1.5 w-1.5 rounded-full bg-red-400" />
                 </span>
               </NuxtLink>
             </li>

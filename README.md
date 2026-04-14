@@ -1,6 +1,6 @@
 # rom-converto
 
-A utility suite for converting, compressing, encrypting, and decrypting ROM formats, currently focused on the **Nintendo 3DS** and **CD image** formats.
+A utility suite for converting, compressing, encrypting, and decrypting ROM formats across **Nintendo 3DS**, **GameCube**, **Wii**, and **CD image** formats.
 
 Available as both a **command line tool** and a **desktop GUI application**.
 
@@ -8,17 +8,40 @@ Built for developers, tinkerers and archivists.
 
 ## Features
 
-### Currently Supported
+### Nintendo 3DS (CTR)
 
-* [x] Convert 3DS CDN files to `.cia` format
-* [x] Generate 3DS Tickets for CDN files
-* [x] Decrypt `.cia`, `.3ds`, `.cci`, and `.cxi` files for usage on emulators (e.g. [Azahar](https://azahar-emu.org/))
-* [x] Compress and decompress 3DS ROMs using the Z3DS format (seekable zstd)
-* [x] Compress CD images (`.bin` + `.cue`) to `.chd` format
-* [x] Extract `.chd` files back to `.bin` + `.cue`
-* [x] Verify `.chd` file integrity (SHA1 checksums)
-* [x] Batch processing of multiple files at once (GUI)
-* [x] Self-update from GitHub releases (CLI)
+* [x] Convert CDN files to `.cia`
+* [x] Generate tickets for CDN files
+* [x] Decrypt `.cia`, `.3ds`, `.cci`, and `.cxi` for emulator use (e.g. [Azahar](https://azahar-emu.org/))
+* [x] Compress and decompress ROMs using the Z3DS format (seekable zstd)
+* [x] Verify `.cia` legitimacy and `.3ds` / `.cci` NCCH partition integrity
+
+### GameCube (DOL)
+
+* [x] Compress `.iso` / `.gcm` to Dolphin's `.rvz` format
+* [x] Decompress `.rvz` back to raw `.iso`
+* [x] Byte identical output against Dolphin's own encoder and decoder
+* [x] See [`benchmark/GameCube.md`](benchmark/GameCube.md) for performance numbers
+
+### Wii (RVL)
+
+* [x] Compress `.iso` / `.wbfs` to Dolphin's `.rvz` format
+* [x] Decompress `.rvz` back to raw `.iso`
+* [x] Full partition pipeline: AES-CBC sector encryption, H0/H1/H2 hash hierarchy, per-chunk exception list, partial-cluster partitions
+* [x] Byte identical output against Dolphin's own encoder and decoder
+* [x] See [`benchmark/Wii.md`](benchmark/Wii.md) for performance numbers
+
+### CD images (CHD)
+
+* [x] Compress `.bin` + `.cue` pairs to `.chd`
+* [x] Extract `.chd` back to `.bin` + `.cue`
+* [x] Verify `.chd` integrity via SHA-1 checksums, with optional header repair
+
+### Application
+
+* [x] Command line interface with progress bars
+* [x] Desktop GUI with drag and drop batch processing
+* [x] Self update from GitHub releases (CLI)
 
 ## GUI Application
 
@@ -77,6 +100,35 @@ The desktop app provides a visual interface for all operations. Built with [Taur
 
 ---
 
+### DOL (GameCube)
+
+| Command | Description |
+|---|---|
+| `dol compress <INPUT> [OUTPUT]` | Compress a `.iso`/`.gcm` to Dolphin's `.rvz` |
+| `dol decompress <INPUT> [OUTPUT]` | Decompress a `.rvz` back to `.iso` |
+
+**Flags:**
+
+| Flag | Applies to | Description |
+|---|---|---|
+| `-l, --level <LEVEL>` | `compress` | Zstandard compression level (signed, defaults to 22, Dolphin's max non-extreme) |
+| `--chunk-size <BYTES>` | `compress` | Chunk size in bytes, power of two between 32 KiB and 2 MiB (defaults to 128 KiB to match Dolphin) |
+
+---
+
+### RVL (Wii)
+
+| Command | Description |
+|---|---|
+| `rvl compress <INPUT> [OUTPUT]` | Compress a `.iso`/`.wbfs` to Dolphin's `.rvz` |
+| `rvl decompress <INPUT> [OUTPUT]` | Decompress a `.rvz` back to `.iso` |
+
+Flags match the `dol` commands.
+
+> `dol` and `rvl` share one RVZ pipeline. Output files are byte identical to Dolphin's own encoder and decoder in both directions, on both GameCube and Wii. See the [Benchmarks](#benchmarks) section for measured performance.
+
+---
+
 ### CHD
 
 | Command | Description |
@@ -102,6 +154,16 @@ rom-converto self-update
 ```
 
 Checks GitHub for a newer release and replaces the current binary in place.
+
+## Benchmarks
+
+RVZ compression and decompression are measured against
+`DolphinTool.exe` 2603a-x64 with the default 128 KiB chunk size, zstd
+levels 5 and 22, N = 10 interleaved warm runs. Full methodology and
+per-run detail live alongside the results:
+
+* [`benchmark/GameCube.md`](benchmark/GameCube.md): GameCube disc image results
+* [`benchmark/Wii.md`](benchmark/Wii.md): Wii disc image results
 
 ## Project Structure
 
