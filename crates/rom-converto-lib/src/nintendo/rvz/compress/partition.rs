@@ -43,7 +43,7 @@ use crate::nintendo::rvl::partition::{
 };
 use crate::nintendo::rvz::error::{RvzError, RvzResult};
 use crate::nintendo::rvz::format::RvzGroup;
-use crate::nintendo::rvz::worker_pool::{Pool, Worker, drive, parallelism};
+use crate::util::worker_pool::{Pool, Worker, drive, parallelism};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -111,7 +111,7 @@ pub(super) struct PartitionCompressWorker {
     chunk_exceptions: Vec<HashException>,
 }
 
-impl Worker<PartitionWork, Vec<PartitionChunk>> for PartitionCompressWorker {
+impl Worker<PartitionWork, Vec<PartitionChunk>, RvzError> for PartitionCompressWorker {
     fn process(&mut self, work: PartitionWork) -> RvzResult<Vec<PartitionChunk>> {
         encode_one_partition_cluster_with(self, work)
     }
@@ -148,7 +148,7 @@ pub(super) fn make_partition_compress_workers(
 /// the group table stays consistent with the file offsets.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn parallel_encode_partition_region(
-    pool: &Pool<PartitionWork, Vec<PartitionChunk>>,
+    pool: &Pool<PartitionWork, Vec<PartitionChunk>, RvzError>,
     reader: &mut BufReader<std::fs::File>,
     writer: &mut BufWriter<std::fs::File>,
     writer_pos: &mut u64,

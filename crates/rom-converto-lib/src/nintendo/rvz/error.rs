@@ -56,4 +56,10 @@ pub enum RvzError {
     Custom(String),
 }
 
+impl From<crate::util::worker_pool::PoolChannelClosed> for RvzError {
+    fn from(_: crate::util::worker_pool::PoolChannelClosed) -> Self {
+        RvzError::Custom("worker pool channel closed".into())
+    }
+}
+
 pub type RvzResult<T> = Result<T, RvzError>;

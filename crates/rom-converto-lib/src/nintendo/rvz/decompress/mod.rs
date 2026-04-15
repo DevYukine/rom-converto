@@ -10,21 +10,22 @@
 //!    partition table, raw-data table, and group table via a
 //!    throwaway `BufReader` on the main thread, then opens a
 //!    second file handle as `Arc<std::fs::File>` for the worker
-//!    pools. Positional reads via [`file_read_exact_at`] let all
-//!    workers share that one handle without seek contention.
+//!    pools. Positional reads via
+//!    [`crate::util::pread::file_read_exact_at`] let all workers
+//!    share that one handle without seek contention.
 //! 3. Every raw-data region is dispatched through
 //!    [`raw::parallel_decompress_raw_region`] and every Wii
 //!    partition through [`partition::parallel_decompress_partition`].
 //!    Both pool-pump closures run through
-//!    [`crate::nintendo::rvz::worker_pool::drive`] so chunks are
-//!    submitted in source order and output is written back in the
-//!    same order despite out-of-order worker completion.
+//!    [`crate::util::worker_pool::drive`] so chunks are submitted
+//!    in source order and output is written back in the same order
+//!    despite out-of-order worker completion.
 //!
 //! # Submodule layout
 //!
 //! * [`raw`]: raw-region decompress worker pool.
 //! * [`partition`]: Wii partition decompress worker pool.
-//! * [`crate::nintendo::rvz::worker_pool`]: shared generic pool.
+//! * [`crate::util::worker_pool`]: shared generic pool.
 
 pub mod partition;
 pub mod raw;
@@ -42,47 +43,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::task;
-
-/// Positional `read_exact` across a shared `Arc<File>`. On Windows
-/// uses `seek_read` which issues `ReadFile` with an `OVERLAPPED`
-/// offset and does NOT move the file-handle cursor, so multiple
-/// workers can safely read disjoint regions concurrently. On Unix
-/// uses `read_exact_at` from `std::os::unix::fs::FileExt`.
-///
-/// Both backends loop until the full buffer is satisfied, turning
-/// short reads at the end of file into `UnexpectedEof`. Shared by
-/// both submodules.
-#[cfg(windows)]
-pub(super) fn file_read_exact_at(
-    file: &std::fs::File,
-    buf: &mut [u8],
-    mut offset: u64,
-) -> std::io::Result<()> {
-    use std::os::windows::fs::FileExt;
-    let mut pos = 0usize;
-    while pos < buf.len() {
-        let n = file.seek_read(&mut buf[pos..], offset)?;
-        if n == 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "short positional read",
-            ));
-        }
-        pos += n;
-        offset += n as u64;
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
-pub(super) fn file_read_exact_at(
-    file: &std::fs::File,
-    buf: &mut [u8],
-    offset: u64,
-) -> std::io::Result<()> {
-    use std::os::unix::fs::FileExt;
-    file.read_exact_at(buf, offset)
-}
 
 pub async fn decompress_disc(
     input: &Path,

@@ -32,7 +32,6 @@ pub mod error;
 pub mod format;
 pub mod packing;
 pub mod regions;
-pub mod worker_pool;
 
 pub mod compress;
 pub mod decompress;

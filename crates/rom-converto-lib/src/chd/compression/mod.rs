@@ -216,6 +216,13 @@ impl CdCodecSet {
         let (frames, mut base, subcode) = split_cd_frames(hunk)?;
         let (header_bytes, ecc_bytes, complen_bytes) = cd_header_sizes(hunk.len(), frames);
 
+        // Decide whether CDFL is a candidate before stripping ECC.
+        // `strip_ecc_from_base` zeros the 12-byte sync header of
+        // every sector with valid Mode-1 ECC, which would otherwise
+        // trick the CDFL gate into running FLAC on data hunks (an
+        // expensive no-op that never wins the best-size trial).
+        let cdfl_candidate = base.len() >= 12 && base[..12] != CD_SYNC_HEADER;
+
         let ecc_flags = strip_ecc_from_base(&mut base, frames, ecc_bytes);
 
         let mut best: Option<Vec<u8>> = None;
@@ -223,7 +230,7 @@ impl CdCodecSet {
 
         let best_len = |best: &Option<Vec<u8>>| best.as_ref().map_or(hunk.len(), |b| b.len());
 
-        // Try CDLZ (LZMA base + deflate subcode)
+        // Try CDLZ (LZMA base + deflate subcode).
         if let Ok(result) = self.compress_cdlz(
             &base,
             &subcode,
@@ -237,7 +244,7 @@ impl CdCodecSet {
             best = Some(result);
         }
 
-        // Try CDZL (deflate base + deflate subcode)
+        // Try CDZL (deflate base + deflate subcode).
         if let Ok(result) = self.compress_cdzl(
             &base,
             &subcode,
@@ -251,9 +258,8 @@ impl CdCodecSet {
             best = Some(result);
         }
 
-        // Try CDFL only for audio tracks (no CD sync header in first sector)
-        if base.len() >= 12
-            && base[..12] != CD_SYNC_HEADER
+        // Try CDFL only for audio tracks (no CD sync header in first sector).
+        if cdfl_candidate
             && let Ok(result) = self.compress_cdfl(
                 &base,
                 &subcode,
@@ -379,6 +385,128 @@ fn assemble_cd_output(
     output.extend_from_slice(base_compressed);
     output.extend_from_slice(subcode_compressed);
     output
+}
+
+/// Persistent decoder state for CD hunk decompression. Mirrors the
+/// encoder-side [`CdCodecSet`]: one instance per worker thread
+/// holds a reusable LZMA decoder plus persistent deflate
+/// decompressors for cdlz / cdzl base + subcode streams, so every
+/// hunk skips the allocator path.
+pub(crate) struct CdDecoderSet {
+    lzma: crate::chd::compression::lzma::LzmaDecoder,
+    deflate: flate2::Decompress,
+}
+
+impl CdDecoderSet {
+    pub fn new(hunk_bytes: usize) -> ChdResult<Self> {
+        Ok(Self {
+            lzma: crate::chd::compression::lzma::LzmaDecoder::new(hunk_bytes)?,
+            deflate: flate2::Decompress::new(false),
+        })
+    }
+
+    /// Decompress a CDLZ hunk body: LZMA on the base stream +
+    /// deflate on the subcode stream, then ECC restoration + frame
+    /// interleave. Matches the shape of [`decompress_cd_hunk`] but
+    /// reuses persistent codec state.
+    pub fn decompress_cdlz(&mut self, data: &[u8], output_len: usize) -> ChdResult<Vec<u8>> {
+        self.decompress_cd_hunk(data, output_len, CdBaseDecoder::Lzma)
+    }
+
+    /// Decompress a CDZL hunk body: deflate on both base and
+    /// subcode streams.
+    pub fn decompress_cdzl(&mut self, data: &[u8], output_len: usize) -> ChdResult<Vec<u8>> {
+        self.decompress_cd_hunk(data, output_len, CdBaseDecoder::Deflate)
+    }
+
+    /// Decompress a CDFL hunk body: FLAC on the base stream +
+    /// deflate on the subcode stream. FLAC doesn't currently have
+    /// a persistent-state decoder, so the base call still
+    /// allocates, but the fixture rarely hits this path.
+    pub fn decompress_cdfl(&mut self, data: &[u8], output_len: usize) -> ChdResult<Vec<u8>> {
+        self.decompress_cd_hunk(data, output_len, CdBaseDecoder::Flac)
+    }
+
+    fn decompress_cd_hunk(
+        &mut self,
+        data: &[u8],
+        output_len: usize,
+        base: CdBaseDecoder,
+    ) -> ChdResult<Vec<u8>> {
+        let frames = output_len / FRAME_SIZE;
+        let (header_bytes, ecc_bytes, complen_bytes) = cd_header_sizes(output_len, frames);
+
+        let ecc_flags = &data[..ecc_bytes];
+
+        let base_length = if complen_bytes == 2 {
+            BigEndian::read_u16(&data[ecc_bytes..ecc_bytes + 2]) as usize
+        } else {
+            BigEndian::read_u24(&data[ecc_bytes..ecc_bytes + 3]) as usize
+        };
+
+        let base_compressed = &data[header_bytes..header_bytes + base_length];
+        let subcode_compressed = &data[header_bytes + base_length..];
+
+        let expected_base_len = frames * SECTOR_SIZE;
+        let expected_subcode_len = frames * SUBCODE_SIZE;
+
+        let mut base_bytes = match base {
+            CdBaseDecoder::Lzma => self.lzma.decompress(base_compressed, expected_base_len)?,
+            CdBaseDecoder::Deflate => {
+                deflate_decompress_with(&mut self.deflate, base_compressed, expected_base_len)?
+            }
+            CdBaseDecoder::Flac => {
+                crate::chd::compression::flac::flac_decompress(base_compressed, expected_base_len)?
+            }
+        };
+
+        let subcode =
+            deflate_decompress_with(&mut self.deflate, subcode_compressed, expected_subcode_len)?;
+
+        for frame in 0..frames {
+            if ecc_flags[frame / 8] & (1 << (frame % 8)) != 0 {
+                let sector = &mut base_bytes[frame * SECTOR_SIZE..(frame + 1) * SECTOR_SIZE];
+                restore_sector_ecc(sector);
+            }
+        }
+
+        let mut output = Vec::with_capacity(output_len);
+        for frame in 0..frames {
+            let base_offset = frame * SECTOR_SIZE;
+            let subcode_offset = frame * SUBCODE_SIZE;
+            output.extend_from_slice(&base_bytes[base_offset..base_offset + SECTOR_SIZE]);
+            output.extend_from_slice(&subcode[subcode_offset..subcode_offset + SUBCODE_SIZE]);
+        }
+        Ok(output)
+    }
+}
+
+enum CdBaseDecoder {
+    Lzma,
+    Deflate,
+    Flac,
+}
+
+fn deflate_decompress_with(
+    decompress: &mut flate2::Decompress,
+    src: &[u8],
+    expected_len: usize,
+) -> ChdResult<Vec<u8>> {
+    decompress.reset(false);
+    let mut output = vec![0u8; expected_len];
+    let before_out = decompress.total_out();
+    let status = decompress
+        .decompress(src, &mut output, flate2::FlushDecompress::Finish)
+        .map_err(|e| io::Error::other(format!("deflate decompress error: {e}")))?;
+    match status {
+        flate2::Status::StreamEnd | flate2::Status::Ok => {}
+        flate2::Status::BufError => {
+            return Err(io::Error::other("deflate decompress buffer error").into());
+        }
+    }
+    let written = (decompress.total_out() - before_out) as usize;
+    output.truncate(written);
+    Ok(output)
 }
 
 #[cfg(test)]

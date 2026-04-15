@@ -23,7 +23,7 @@ use super::{CompressedKind, WriteMsg, push_compressed_chunk_via_channel, write_m
 use crate::nintendo::rvl::constants::WII_SECTOR_SIZE_U64;
 use crate::nintendo::rvz::error::{RvzError, RvzResult};
 use crate::nintendo::rvz::format::RvzGroup;
-use crate::nintendo::rvz::worker_pool::{Pool, Worker, drive, parallelism};
+use crate::util::worker_pool::{Pool, Worker, drive, parallelism};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -54,7 +54,7 @@ pub(super) struct RawCompressWorker {
     compressor: zstd::bulk::Compressor<'static>,
 }
 
-impl Worker<RawWork, CompressedChunk> for RawCompressWorker {
+impl Worker<RawWork, CompressedChunk, RvzError> for RawCompressWorker {
     fn process(&mut self, work: RawWork) -> RvzResult<CompressedChunk> {
         compress_one_chunk_with(
             &mut self.compressor,
@@ -89,7 +89,7 @@ pub(super) fn make_raw_compress_workers(
 /// pool-spawn cost once.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn parallel_encode_raw_region(
-    pool: &Pool<RawWork, CompressedChunk>,
+    pool: &Pool<RawWork, CompressedChunk, RvzError>,
     reader: &mut BufReader<std::fs::File>,
     writer: &mut BufWriter<std::fs::File>,
     writer_pos: &mut u64,

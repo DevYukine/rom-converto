@@ -53,8 +53,8 @@ use crate::nintendo::rvz::format::{
     WiaRawData,
 };
 use crate::nintendo::rvz::regions::{DiscRegion, RegionPlan};
-use crate::nintendo::rvz::worker_pool::{Pool, parallelism};
 use crate::util::ProgressReporter;
+use crate::util::worker_pool::{Pool, parallelism};
 use binrw::{BinWrite, Endian};
 use log::info;
 use std::io::{BufReader, BufWriter, Cursor, Read, Seek, SeekFrom, Write};
@@ -247,20 +247,21 @@ fn compress_blocking(
     // region. GameCube runs skip the partition pool entirely.
     let n_threads = parallelism();
     let raw_workers = raw::make_raw_compress_workers(n_threads, options.compression_level)?;
-    let raw_pool: Pool<raw::RawWork, raw::CompressedChunk> = Pool::spawn(raw_workers);
+    let raw_pool: Pool<raw::RawWork, raw::CompressedChunk, RvzError> = Pool::spawn(raw_workers);
 
     let has_partitions = plan
         .regions
         .iter()
         .any(|r| matches!(r, DiscRegion::Partition(_)));
-    let mut partition_pool: Option<Pool<partition::PartitionWork, Vec<partition::PartitionChunk>>> =
-        if has_partitions {
-            let workers =
-                partition::make_partition_compress_workers(n_threads, options.compression_level)?;
-            Some(Pool::spawn(workers))
-        } else {
-            None
-        };
+    let mut partition_pool: Option<
+        Pool<partition::PartitionWork, Vec<partition::PartitionChunk>, RvzError>,
+    > = if has_partitions {
+        let workers =
+            partition::make_partition_compress_workers(n_threads, options.compression_level)?;
+        Some(Pool::spawn(workers))
+    } else {
+        None
+    };
 
     let encode_result: RvzResult<()> = (|| {
         for region in &plan.regions {

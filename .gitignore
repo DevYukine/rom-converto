@@ -31,6 +31,7 @@ dist
 # Tauri
 crates/rom-converto-gui/src-tauri/gen/schemas
 
-# Host-dependent benchmark harness; the GameCube.md / Wii.md
-# results are committed, the script itself is not.
+# Host-dependent benchmark harnesses; the GameCube.md / Wii.md /
+# CHD.md results are committed, the scripts themselves are not.
 benchmark/dolphin_benchmark.py
+benchmark/chdman_benchmark.py

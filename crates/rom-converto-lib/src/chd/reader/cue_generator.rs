@@ -68,24 +68,31 @@ pub(crate) fn parse_chd_track_metadata(metadata_str: &str) -> ChdResult<Vec<ChdT
 }
 
 pub(crate) fn generate_cue_sheet(bin_filename: &str, tracks: &[ChdTrackInfo]) -> String {
-    let mut cue = format!("FILE \"{bin_filename}\" BINARY\n");
+    // CRLF line endings and the exact indentation below match
+    // chdman's `output_track_metadata` in `src/tools/chdman.cpp`
+    // so `chd extract` output is byte-identical to `chdman
+    // extractcd` for the same input.
+    let mut cue = format!("FILE \"{bin_filename}\" BINARY\r\n");
     let mut frame_offset: u32 = 0;
 
     for track in tracks {
         let cue_type = chd_type_to_cue_type(&track.track_type);
-        cue.push_str(&format!("  TRACK {:02} {}\n", track.track_number, cue_type));
+        cue.push_str(&format!(
+            "  TRACK {:02} {}\r\n",
+            track.track_number, cue_type
+        ));
 
         if track.pregap > 0 {
             let msf = Msf::from_lba(track.pregap);
             cue.push_str(&format!(
-                "    PREGAP {:02}:{:02}:{:02}\n",
+                "    PREGAP {:02}:{:02}:{:02}\r\n",
                 msf.minutes, msf.seconds, msf.frames
             ));
         }
 
         let msf = Msf::from_lba(frame_offset);
         cue.push_str(&format!(
-            "    INDEX 01 {:02}:{:02}:{:02}\n",
+            "    INDEX 01 {:02}:{:02}:{:02}\r\n",
             msf.minutes, msf.seconds, msf.frames
         ));
 
@@ -178,7 +185,7 @@ mod tests {
             pregap: 0,
         }];
         let cue = generate_cue_sheet("game.bin", &tracks);
-        assert!(cue.starts_with("FILE \"game.bin\" BINARY\n"));
+        assert!(cue.starts_with("FILE \"game.bin\" BINARY\r\n"));
         assert!(cue.contains("TRACK 01 MODE1/2352"));
         assert!(cue.contains("INDEX 01 00:00:00"));
         assert!(!cue.contains("PREGAP"));

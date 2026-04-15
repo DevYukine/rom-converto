@@ -36,6 +36,7 @@ Built for developers, tinkerers and archivists.
 * [x] Compress `.bin` + `.cue` pairs to `.chd`
 * [x] Extract `.chd` back to `.bin` + `.cue`
 * [x] Verify `.chd` integrity via SHA-1 checksums, with optional header repair
+* [x] See [`benchmark/CHD.md`](benchmark/CHD.md) for performance numbers
 
 ### Application
 
@@ -157,13 +158,14 @@ Checks GitHub for a newer release and replaces the current binary in place.
 
 ## Benchmarks
 
-RVZ compression and decompression are measured against
-`DolphinTool.exe` 2603a-x64 with the default 128 KiB chunk size, zstd
-levels 5 and 22, N = 10 interleaved warm runs. Full methodology and
-per-run detail live alongside the results:
+RVZ and CHD operations are measured against `DolphinTool.exe` 2603a-x64
+and `chdman.exe` 0.284 respectively, each tool on its own default
+settings, N = 10 interleaved warm runs. Full methodology and per-run
+detail live alongside the results:
 
-* [`benchmark/GameCube.md`](benchmark/GameCube.md): GameCube disc image results
-* [`benchmark/Wii.md`](benchmark/Wii.md): Wii disc image results
+* [`benchmark/GameCube.md`](benchmark/GameCube.md): GameCube disc image results (RVZ)
+* [`benchmark/Wii.md`](benchmark/Wii.md): Wii disc image results (RVZ)
+* [`benchmark/CHD.md`](benchmark/CHD.md): CD image results (CHD)
 
 ## Project Structure
 

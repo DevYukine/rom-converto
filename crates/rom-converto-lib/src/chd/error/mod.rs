@@ -1,4 +1,3 @@
-use crate::chd::bin::error::BinError;
 use crate::chd::cue::error::CueError;
 use thiserror::Error;
 
@@ -15,9 +14,6 @@ pub enum ChdError {
 
     #[error(transparent)]
     CueError(#[from] CueError),
-
-    #[error(transparent)]
-    BinError(#[from] BinError),
 
     #[error("Chd file already exists, use --force to overwrite")]
     ChdFileAlreadyExists,
@@ -58,6 +54,18 @@ pub enum ChdError {
 
     #[error("Invalid CHD track metadata: {0}")]
     InvalidTrackMetadata(String),
+
+    #[error("worker pool channel closed")]
+    WorkerPoolClosed,
+
+    #[error("worker pool writer thread panicked")]
+    WorkerPoolPanic,
+}
+
+impl From<crate::util::worker_pool::PoolChannelClosed> for ChdError {
+    fn from(_: crate::util::worker_pool::PoolChannelClosed) -> Self {
+        ChdError::WorkerPoolClosed
+    }
 }
 
 pub type ChdResult<T> = Result<T, ChdError>;

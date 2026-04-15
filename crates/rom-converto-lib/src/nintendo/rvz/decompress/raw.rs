@@ -15,11 +15,11 @@
 //! than `chunk_size`, and all-zero sentinel groups (`data_size =
 //! 0`) are synthesised from zeros without issuing I/O.
 //!
-use super::file_read_exact_at;
 use crate::nintendo::rvl::constants::WII_SECTOR_SIZE_U64;
 use crate::nintendo::rvz::error::{RvzError, RvzResult};
 use crate::nintendo::rvz::format::{RvzGroup, WiaRawData};
-use crate::nintendo::rvz::worker_pool::{Pool, Worker, drive, parallelism};
+use crate::util::pread::file_read_exact_at;
+use crate::util::worker_pool::{Pool, Worker, drive, parallelism};
 use std::io::{BufWriter, Seek, SeekFrom, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -75,7 +75,7 @@ struct RawDecompressWorker {
     scratch_out: Vec<u8>,
 }
 
-impl Worker<RawDecompressWork, RawDecompressOut> for RawDecompressWorker {
+impl Worker<RawDecompressWork, RawDecompressOut, RvzError> for RawDecompressWorker {
     fn process(&mut self, work: RawDecompressWork) -> RvzResult<RawDecompressOut> {
         // All-zero sentinel: no I/O, no zstd, no pack_decode.
         // Hand back a zero slice of the requested write length.
@@ -230,7 +230,7 @@ pub(super) fn parallel_decompress_raw_region(
 
     let n_threads = parallelism();
     let workers = make_raw_decompress_workers(n_threads, file)?;
-    let pool: Pool<RawDecompressWork, RawDecompressOut> = Pool::spawn(workers);
+    let pool: Pool<RawDecompressWork, RawDecompressOut, RvzError> = Pool::spawn(workers);
     let max_in_flight = n_threads * 2;
 
     let total = items.len() as u64;

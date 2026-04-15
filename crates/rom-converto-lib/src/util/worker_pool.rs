@@ -1,15 +1,15 @@
-//! Generic persistent worker pool shared by the RVZ encode and decode
-//! pipelines.
+//! Generic persistent worker pool shared by every format's
+//! compress / decompress pipelines.
 //!
 //! # Shape
 //!
-//! A [`Pool<W, O>`] owns `n_threads` worker threads, one bounded channel
-//! per worker for back-pressure, and a shared result channel. Each
-//! worker holds a user-supplied state value that implements [`Worker`],
-//! typically a struct with a long-lived `zstd::bulk::Compressor` or
-//! `Decompressor` plus scratch buffers, so expensive per-thread setup
-//! (`ZSTD_createCCtx`, scratch allocations) happens exactly once per
-//! pool lifetime instead of once per work item.
+//! A [`Pool<W, O, E>`] owns `n_threads` worker threads, one bounded
+//! channel per worker for back-pressure, and a shared result channel.
+//! Each worker holds a user-supplied state value that implements
+//! [`Worker`], typically a struct with long-lived codec contexts and
+//! scratch buffers, so expensive per-thread setup (`ZSTD_createCCtx`,
+//! LZMA probability tables, deflate dictionaries, etc.) happens
+//! exactly once per pool lifetime instead of once per work item.
 //!
 //! # Ordering
 //!
@@ -21,22 +21,29 @@
 //! sequence number. This keeps output byte-for-byte reproducible
 //! regardless of which worker finishes first.
 //!
+//! # Error model
+//!
+//! The pool is generic over a worker error type `E`. Pool-internal
+//! failures (worker thread panic → dead channel) surface as
+//! [`PoolChannelClosed`], which the caller's error type must be able
+//! to absorb via `From<PoolChannelClosed>`. Worker errors from
+//! `process` flow through unchanged.
+//!
 //! # Threading model
 //!
-//! The pool lives inside `tokio::task::spawn_blocking` (see
-//! `compress_disc` / `decompress_disc`), so the worker threads are
-//! plain `std::thread::spawn` workers communicating via
-//! `std::sync::mpsc`. Do NOT switch the channels to
-//! `tokio::sync::mpsc`; the workers are synchronous by design and
-//! pay no async runtime cost.
+//! The pool lives inside `tokio::task::spawn_blocking` at the
+//! outermost layer (see the compress / decompress entry points in
+//! each format module), so the worker threads are plain
+//! `std::thread::spawn` workers communicating via `std::sync::mpsc`.
+//! Do NOT switch the channels to `tokio::sync::mpsc`; the workers
+//! are synchronous by design and pay no async runtime cost.
 
-use crate::nintendo::rvz::error::{RvzError, RvzResult};
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, SyncSender, channel, sync_channel};
 use std::thread;
 
-/// Worker thread count for the RVZ pools: `available_parallelism()`,
-/// clamped to at least 1.
+/// Worker thread count: `available_parallelism()`, clamped to at
+/// least 1.
 pub fn parallelism() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get())
@@ -44,30 +51,45 @@ pub fn parallelism() -> usize {
         .max(1)
 }
 
+/// Pool-internal error returned by [`Pool::submit`] when a worker's
+/// inbound channel has closed (usually because the worker thread
+/// panicked). Consumers map this into their own error type via
+/// `From<PoolChannelClosed>`.
+#[derive(Debug, Clone, Copy)]
+pub struct PoolChannelClosed;
+
+impl std::fmt::Display for PoolChannelClosed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("worker pool channel closed")
+    }
+}
+
+impl std::error::Error for PoolChannelClosed {}
+
 /// Per-thread worker state. One instance lives for the lifetime of a
 /// pool thread; `process` is called once per submitted work item.
 ///
-/// Implementations should own any expensive, reusable state (zstd
+/// Implementations should own any expensive, reusable state (codec
 /// contexts, scratch buffers) so the hot loop never allocates.
-pub trait Worker<W, O> {
-    fn process(&mut self, work: W) -> RvzResult<O>;
+pub trait Worker<W, O, E> {
+    fn process(&mut self, work: W) -> Result<O, E>;
 }
 
-/// Persistent worker pool. Generic over the work-item and output
-/// types; the worker type is erased at spawn time so one [`Pool<W, O>`]
-/// can wrap either an encoder or decoder worker set.
-pub struct Pool<W: Send + 'static, O: Send + 'static> {
+/// Persistent worker pool. Generic over the work-item, output, and
+/// error types; the worker type is erased at spawn time so one
+/// [`Pool`] can wrap any encoder or decoder worker set.
+pub struct Pool<W: Send + 'static, O: Send + 'static, E: Send + 'static> {
     n_threads: usize,
     work_txs: Vec<SyncSender<Option<(u64, W)>>>,
-    result_rx: Receiver<(u64, RvzResult<O>)>,
+    result_rx: Receiver<(u64, Result<O, E>)>,
     handles: Vec<thread::JoinHandle<()>>,
 }
 
-impl<W: Send + 'static, O: Send + 'static> Pool<W, O> {
+impl<W: Send + 'static, O: Send + 'static, E: Send + 'static> Pool<W, O, E> {
     /// Spawn `workers.len()` threads, each owning one worker state
     /// instance. Workers are consumed by value; the caller is
-    /// responsible for any fallible construction (e.g. initializing
-    /// a `zstd::bulk::Compressor`) before calling [`Pool::spawn`].
+    /// responsible for any fallible construction (e.g. initialising
+    /// a codec context) before calling [`Pool::spawn`].
     ///
     /// Back-pressure: each worker's inbound channel has capacity 2,
     /// so the dispatcher can run at most one work item ahead of the
@@ -75,10 +97,10 @@ impl<W: Send + 'static, O: Send + 'static> Pool<W, O> {
     /// memory pressure without starving the pipeline.
     pub fn spawn<Wk>(workers: Vec<Wk>) -> Self
     where
-        Wk: Worker<W, O> + Send + 'static,
+        Wk: Worker<W, O, E> + Send + 'static,
     {
         let n_threads = workers.len();
-        let (result_tx, result_rx) = channel::<(u64, RvzResult<O>)>();
+        let (result_tx, result_rx) = channel::<(u64, Result<O, E>)>();
         let mut work_txs = Vec::with_capacity(n_threads);
         let mut handles = Vec::with_capacity(n_threads);
 
@@ -108,24 +130,60 @@ impl<W: Send + 'static, O: Send + 'static> Pool<W, O> {
         }
     }
 
-    /// Route `work` to worker `seq % n_threads`. Returns an error if
-    /// the target worker's channel has closed (i.e. the worker thread
-    /// has panicked or exited) so the dispatcher can surface the
-    /// failure instead of hanging on the next `recv`.
-    pub fn submit(&self, seq: u64, work: W) -> RvzResult<()> {
-        let worker = (seq as usize) % self.n_threads;
-        self.work_txs[worker]
-            .send(Some((seq, work)))
-            .map_err(|_| RvzError::Custom("worker pool channel closed".into()))
+    /// Route `work` to any worker that has capacity, starting at
+    /// the preferred slot `seq % n_threads`. On congestion (every
+    /// worker's channel is full) blocks on the preferred slot.
+    ///
+    /// Non-strict routing matters when per-item processing cost is
+    /// uneven: CD codec trials, for example, spend 4-10× longer on
+    /// LZMA-heavy data hunks than on all-zero hunks, so a strict
+    /// round-robin would stall the dispatcher behind the slowest
+    /// worker while peer workers sit idle. Ordering is preserved by
+    /// [`drive`]'s reorder HashMap regardless of which worker ran
+    /// each item, so smart routing is safe.
+    ///
+    /// Returns [`PoolChannelClosed`] only if every worker's channel
+    /// has closed (i.e. all worker threads have exited).
+    pub fn submit(&self, seq: u64, work: W) -> Result<(), PoolChannelClosed> {
+        use std::sync::mpsc::TrySendError;
+
+        let start = (seq as usize) % self.n_threads;
+        let mut pending = Some((seq, work));
+        for i in 0..self.n_threads {
+            let idx = (start + i) % self.n_threads;
+            let item = pending.take().expect("pending set on every loop iteration");
+            match self.work_txs[idx].try_send(Some(item)) {
+                Ok(()) => return Ok(()),
+                Err(TrySendError::Full(Some(inner))) => {
+                    pending = Some(inner);
+                }
+                Err(TrySendError::Full(None)) => unreachable!("None sentinel is never sent here"),
+                Err(TrySendError::Disconnected(_)) => {
+                    // Move on; another worker may still be alive.
+                    pending = None;
+                }
+            }
+            if pending.is_none() {
+                // Only reachable on a disconnected worker; rebuild
+                // a fresh work item from the original. Since we
+                // consumed it we have to fail the whole submit.
+                return Err(PoolChannelClosed);
+            }
+        }
+        // Every worker is busy: block on the preferred slot.
+        let item = pending.take().expect("pending still set after loop");
+        self.work_txs[start]
+            .send(Some(item))
+            .map_err(|_| PoolChannelClosed)
     }
 
     /// Block until any worker produces a result. Returns the
-    /// submission sequence number and the worker's `RvzResult<O>`.
+    /// submission sequence number and the worker's `Result<O, E>`.
     ///
     /// Panics only if every worker has exited without producing
     /// any output, which only happens if the pool was shut down
     /// prematurely (a programming error).
-    pub fn recv(&self) -> (u64, RvzResult<O>) {
+    pub fn recv(&self) -> (u64, Result<O, E>) {
         self.result_rx
             .recv()
             .expect("worker pool result channel closed unexpectedly")
@@ -157,24 +215,25 @@ impl<W: Send + 'static, O: Send + 'static> Pool<W, O> {
 /// remaining in-flight jobs before returning so no thread is left
 /// holding work. The first error wins; subsequent errors are
 /// discarded.
-pub fn drive<W, O, Produce, Consume>(
-    pool: &Pool<W, O>,
+pub fn drive<W, O, E, Produce, Consume>(
+    pool: &Pool<W, O, E>,
     total: u64,
     max_in_flight: usize,
     mut produce: Produce,
     mut consume: Consume,
-) -> RvzResult<()>
+) -> Result<(), E>
 where
     W: Send + 'static,
     O: Send + 'static,
-    Produce: FnMut(u64) -> RvzResult<W>,
-    Consume: FnMut(u64, O) -> RvzResult<()>,
+    E: Send + 'static + From<PoolChannelClosed>,
+    Produce: FnMut(u64) -> Result<W, E>,
+    Consume: FnMut(u64, O) -> Result<(), E>,
 {
     let mut pending: HashMap<u64, O> = HashMap::new();
     let mut submit_seq: u64 = 0;
     let mut write_seq: u64 = 0;
     let mut in_flight: usize = 0;
-    let mut run_result: RvzResult<()> = Ok(());
+    let mut run_result: Result<(), E> = Ok(());
 
     while write_seq < total {
         // Submit as much as back-pressure allows.
@@ -185,7 +244,7 @@ where
                         submit_seq += 1;
                         in_flight += 1;
                     }
-                    Err(e) => run_result = Err(e),
+                    Err(e) => run_result = Err(e.into()),
                 },
                 Err(e) => run_result = Err(e),
             }

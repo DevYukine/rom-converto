@@ -3,7 +3,7 @@ use byteorder::{BigEndian, ByteOrder};
 use crc::{CRC_16_IBM_3740, Crc};
 use std::cmp;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct MapEntry {
     pub compression: u8,
     pub length: u32,

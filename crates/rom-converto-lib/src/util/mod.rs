@@ -1,3 +1,6 @@
+pub mod pread;
+pub mod worker_pool;
+
 pub const BYTES_PER_MB: f64 = 1_000_000.0;
 
 /// Trait for reporting progress from library operations.

@@ -182,3 +182,84 @@ pub(crate) fn lzma_decompress(data: &[u8], expected_len: usize) -> ChdResult<Vec
     dest.truncate(dest_len as usize);
     Ok(dest)
 }
+
+/// Persistent LZMA decoder that keeps the probability table and
+/// dictionary buffer alive across calls, mirroring the way
+/// [`LzmaEncoder`] reuses its encoder handle. One instance lives
+/// for the lifetime of a decompress worker thread so every hunk
+/// skips the `LzmaDec_Allocate` + dictionary allocation.
+pub(crate) struct LzmaDecoder {
+    handle: CLzmaDec,
+    alloc: Allocator,
+}
+
+// SAFETY: The decoder handle is only accessed by one thread at a
+// time (owned by a [`crate::util::worker_pool::Worker`]).
+unsafe impl Send for LzmaDecoder {}
+
+impl LzmaDecoder {
+    pub fn new(hunk_bytes: usize) -> io::Result<Self> {
+        let alloc = Allocator::default();
+        // CLzmaDec::default() zeros the struct, matching the
+        // `LzmaDec_Construct` macro in `LzmaDec.h`. That's the
+        // required pre-state before `LzmaDec_Allocate`.
+        let mut handle = CLzmaDec::default();
+        let props = configure_props(hunk_bytes);
+        let props_encoded = encode_props(&props);
+        let res = unsafe {
+            LzmaDec_Allocate(
+                &mut handle,
+                props_encoded.as_ptr(),
+                LZMA_PROPS_SIZE,
+                alloc.as_ref(),
+            )
+        };
+        if res != SZ_OK as i32 {
+            return Err(io::Error::other(format!(
+                "LzmaDec_Allocate failed with code {res}"
+            )));
+        }
+        Ok(Self { handle, alloc })
+    }
+
+    pub fn decompress(&mut self, src: &[u8], expected_len: usize) -> ChdResult<Vec<u8>> {
+        // `LzmaDec_Init` resets the decoder state but keeps the
+        // allocated dictionary + probability table, so per-call
+        // cost is a ~1 µs struct wipe instead of a fresh
+        // allocation.
+        unsafe { LzmaDec_Init(&mut self.handle) };
+
+        let mut dest = vec![0u8; expected_len];
+        let mut dest_len = expected_len as SizeT;
+        let mut src_len = src.len() as SizeT;
+        let mut status = ELzmaStatus::LZMA_STATUS_NOT_SPECIFIED;
+
+        let res = unsafe {
+            LzmaDec_DecodeToBuf(
+                &mut self.handle,
+                dest.as_mut_ptr(),
+                &mut dest_len,
+                src.as_ptr(),
+                &mut src_len,
+                ELzmaFinishMode::LZMA_FINISH_END,
+                &mut status,
+            )
+        };
+
+        if res != SZ_OK as i32 {
+            return Err(
+                io::Error::other(format!("LzmaDec_DecodeToBuf failed with code {res}")).into(),
+            );
+        }
+        dest.truncate(dest_len as usize);
+        Ok(dest)
+    }
+}
+
+impl Drop for LzmaDecoder {
+    fn drop(&mut self) {
+        unsafe {
+            LzmaDec_Free(&mut self.handle, self.alloc.as_ref());
+        }
+    }
+}

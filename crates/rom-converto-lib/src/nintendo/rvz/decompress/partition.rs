@@ -30,7 +30,6 @@
 //! gated on `ROM_CONVERTO_SEQUENTIAL_DECOMPRESS=1`. Both paths
 //! share [`flush_partition_cluster`] to emit clusters.
 
-use super::file_read_exact_at;
 use crate::nintendo::rvl::constants::{
     WII_BLOCKS_PER_GROUP, WII_GROUP_TOTAL_SIZE, WII_SECTOR_PAYLOAD_SIZE, WII_SECTOR_SIZE,
     WII_SECTOR_SIZE_U64,
@@ -41,7 +40,8 @@ use crate::nintendo::rvl::partition::{
 };
 use crate::nintendo::rvz::error::{RvzError, RvzResult};
 use crate::nintendo::rvz::format::{RvzGroup, WiaPart};
-use crate::nintendo::rvz::worker_pool::{Pool, Worker, drive, parallelism};
+use crate::util::pread::file_read_exact_at;
+use crate::util::worker_pool::{Pool, Worker, drive, parallelism};
 use std::io::{BufWriter, Seek, SeekFrom, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -111,7 +111,9 @@ struct PartitionDecompressWorker {
     cluster_out: Vec<u8>,
 }
 
-impl Worker<PartitionDecompressWork, PartitionDecompressOut> for PartitionDecompressWorker {
+impl Worker<PartitionDecompressWork, PartitionDecompressOut, RvzError>
+    for PartitionDecompressWorker
+{
     fn process(&mut self, work: PartitionDecompressWork) -> RvzResult<PartitionDecompressOut> {
         // Only zero the payload scratch on partial last clusters.
         // The common full-cluster case overwrites every sector
@@ -380,7 +382,8 @@ pub(super) fn parallel_decompress_partition(
 
     let n_threads = parallelism();
     let workers = make_partition_decompress_workers(n_threads, file)?;
-    let pool: Pool<PartitionDecompressWork, PartitionDecompressOut> = Pool::spawn(workers);
+    let pool: Pool<PartitionDecompressWork, PartitionDecompressOut, RvzError> =
+        Pool::spawn(workers);
     let max_in_flight = n_threads * 2;
 
     let total = work_items.len() as u64;
