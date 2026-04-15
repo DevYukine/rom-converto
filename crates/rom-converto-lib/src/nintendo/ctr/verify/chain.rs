@@ -49,13 +49,25 @@ pub struct CiaVerifyResult {
 pub enum CiaLegitimacy {
     Legit(CiaLegitimacySubType),
     Piratelegit,
-    Standard,
+    Standard(StandardSubType),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum CiaLegitimacySubType {
     Global,
     Personalized,
+}
+
+/// Distinguishes a plain Standard CIA from one that is Standard only
+/// because its content was decrypted (which necessarily rewrites the
+/// per-chunk hashes, the info-record hashes, and the
+/// content_info_records_hash in the header, invalidating Nintendo's
+/// signature). Detected by the Encrypted flag being clear on every
+/// content chunk record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum StandardSubType {
+    Encrypted,
+    Decrypted,
 }
 
 impl std::fmt::Display for CiaLegitimacy {
@@ -66,7 +78,10 @@ impl std::fmt::Display for CiaLegitimacy {
                 write!(f, "Legit (Personalized)")
             }
             CiaLegitimacy::Piratelegit => write!(f, "Piratelegit"),
-            CiaLegitimacy::Standard => write!(f, "Standard"),
+            CiaLegitimacy::Standard(StandardSubType::Encrypted) => write!(f, "Standard"),
+            CiaLegitimacy::Standard(StandardSubType::Decrypted) => {
+                write!(f, "Standard (Decrypted)")
+            }
         }
     }
 }
@@ -412,11 +427,22 @@ pub async fn verify_cia(
     progress.inc(file_size - (file_size / 4) * 3);
     progress.finish();
 
+    // A CIA counts as "Decrypted" iff every content chunk has its
+    // Encrypted flag cleared. That's how our own decrypt path (and
+    // ctrtool et al.) marks the post-decrypt output.
+    let is_decrypted = !cia_without_content.tmd.content_chunk_records.is_empty()
+        && cia_without_content
+            .tmd
+            .content_chunk_records
+            .iter()
+            .all(|r| !r.content_type.is_encrypted());
+
     let legitimacy = classify(
         tmd_signature_valid,
         ticket_signature_valid,
         content_hashes_valid,
         console_id,
+        is_decrypted,
     );
 
     details.push(format!("Classification: {legitimacy}"));
@@ -741,7 +767,13 @@ fn classify(
     ticket_valid: bool,
     content_hashes: Option<bool>,
     console_id: u32,
+    is_decrypted: bool,
 ) -> CiaLegitimacy {
+    let standard_sub = if is_decrypted {
+        StandardSubType::Decrypted
+    } else {
+        StandardSubType::Encrypted
+    };
     if tmd_valid && ticket_valid {
         let sub = if console_id == 0 {
             CiaLegitimacySubType::Global
@@ -753,10 +785,10 @@ fn classify(
         match content_hashes {
             Some(true) => CiaLegitimacy::Piratelegit,
             None => CiaLegitimacy::Piratelegit,
-            Some(false) => CiaLegitimacy::Standard,
+            Some(false) => CiaLegitimacy::Standard(standard_sub),
         }
     } else {
-        CiaLegitimacy::Standard
+        CiaLegitimacy::Standard(standard_sub)
     }
 }
 

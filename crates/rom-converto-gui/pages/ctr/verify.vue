@@ -11,9 +11,11 @@ const isBatch = computed(() => queue.value.length > 0);
 
 const ROM_FILTERS = [{ name: '3DS ROM', extensions: ['cia', '3ds', 'cci', 'cxi', 'zcia', 'zcci', 'zcxi'] }];
 
+type Legitimacy = "Piratelegit" | { Legit: string } | { Standard: "Encrypted" | "Decrypted" };
+
 interface CiaResult {
   format: "Cia";
-  legitimacy: string | { Legit: string };
+  legitimacy: Legitimacy;
   ca_cert_valid: boolean;
   tmd_signer_cert_valid: boolean;
   ticket_signer_cert_valid: boolean;
@@ -98,16 +100,18 @@ async function execute() {
   }
 }
 
-function formatLegitimacy(leg: string | { Legit: string }): string {
+function formatLegitimacy(leg: Legitimacy): string {
   if (typeof leg === "string") return leg;
   if ("Legit" in leg) return `Legit (${leg.Legit})`;
+  if ("Standard" in leg) {
+    return leg.Standard === "Decrypted" ? "Standard (Decrypted)" : "Standard";
+  }
   return String(leg);
 }
 
-function legitColor(leg: string | { Legit: string }): string {
-  const str = formatLegitimacy(leg);
-  if (str.startsWith("Legit")) return "emerald";
-  if (str === "Piratelegit") return "amber";
+function legitColor(leg: Legitimacy): string {
+  if (typeof leg !== "string" && "Legit" in leg) return "emerald";
+  if (leg === "Piratelegit") return "amber";
   return "red";
 }
 
