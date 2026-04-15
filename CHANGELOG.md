@@ -1,3 +1,24 @@
+# [0.7.0](https://github.com/DevYukine/rom-converto/compare/v0.6.0...v0.7.0) (2026-04-15)
+
+
+### Bug Fixes
+
+* **ctr:** correct TMD signature and content hash verification ([7b59ece](https://github.com/DevYukine/rom-converto/commit/7b59ecef8294a6c71df58e476f2390967a724261))
+
+
+### Features
+
+* **ctr:** distinguish decrypted CIAs in Standard classification ([eb3033b](https://github.com/DevYukine/rom-converto/commit/eb3033b5d7b1f15e6c6bf76cf96f038703f364c3))
+* **gui:** redesign navigation with per-console pages and collapsible sidebar ([695623f](https://github.com/DevYukine/rom-converto/commit/695623f9ebbec4e292868f4fbc40b4fbec712364))
+* **rvz:** add GameCube and Wii disc image compression ([95cc486](https://github.com/DevYukine/rom-converto/commit/95cc486721d216362440f5e3783ce0dcafb3ef3c))
+
+
+### Performance Improvements
+
+* **chd:** parallel compress, extract, and verify pipelines ([943ca08](https://github.com/DevYukine/rom-converto/commit/943ca08e90f879010806c26c9881fa0465595f5c))
+
+
+
 # [0.6.0](https://github.com/DevYukine/rom-converto/compare/v0.5.2...v0.6.0) (2026-04-13)
 
 
@@ -51,37 +72,6 @@
 * **gui:** improve progress tracking & drag & drop for files ([3e91091](https://github.com/DevYukine/rom-converto/commit/3e91091f454f1471ba6350f54bca677d53391b61))
 * **gui:** improve UI for bigger screens ([5ab4773](https://github.com/DevYukine/rom-converto/commit/5ab4773d5ad309ff481eec7ab50f0ee5e46bc754))
 * **progress:** add a total progress bar for recursive ([0b8c9eb](https://github.com/DevYukine/rom-converto/commit/0b8c9eb49581bc09fd1dd4403c51b1c00f140d64))
-
-
-
-# [0.4.0](https://github.com/DevYukine/rom-converto/compare/v0.3.2...v0.4.0) (2026-04-07)
-
-
-### Bug Fixes
-
-* **chd:** fix ECC computation for Mode 2 CD sectors ([c59154b](https://github.com/DevYukine/rom-converto/commit/c59154bd04e7ca5886acabf9d002f1a46634899b))
-* **chd:** fix map decompression RLE off-by-one ([5971338](https://github.com/DevYukine/rom-converto/commit/5971338562c9ac7d269a54caf9ab349ddd666a3a))
-* **chd:** fix MSF lead-in subtraction causing overflow ([955a436](https://github.com/DevYukine/rom-converto/commit/955a436ee181a6f71a26c73f9cef3cdfbaac8c20))
-* **chd:** match chdman LZMA format and dict size ([e56b2b3](https://github.com/DevYukine/rom-converto/commit/e56b2b390dcc02bb1c36dd9535b64819a5c827f9))
-
-
-### Features
-
-* add progress bar for chd conversion ([ae845d9](https://github.com/DevYukine/rom-converto/commit/ae845d9133bdb93d1cd1451cb785f6fa2d3f9e43))
-* chd v5 ([523b29f](https://github.com/DevYukine/rom-converto/commit/523b29fbb007779f2957c5dd5b0802928e168674))
-* **chd:** add ECC stripping for Mode 1 CD sectors ([96926ae](https://github.com/DevYukine/rom-converto/commit/96926ae8224945ad36681ea1abe422f9b6e7b9c7))
-* **chd:** implement verify & extract command ([88e0f79](https://github.com/DevYukine/rom-converto/commit/88e0f79ce681ca2f2dac2f685e88954143640e29))
-* **chd:** switch from liblzma to lzma-sdk-sys ([5ed89de](https://github.com/DevYukine/rom-converto/commit/5ed89de6383b818c19d5b5c1cf2647fa98b55187))
-* **compressors:** simplify & implement proper cd spec ([962267d](https://github.com/DevYukine/rom-converto/commit/962267df71850c7b50d8ad8e0d83e4b95d9f1114))
-* **ctr:** add Azahar ctr compression format support ([9032d75](https://github.com/DevYukine/rom-converto/commit/9032d755b3734bf76f6a3fdaa982a6dae9c560a2))
-* first initial setup ([434c23f](https://github.com/DevYukine/rom-converto/commit/434c23f1dad9ce0c730b808d735d5c89922aae36))
-
-
-### Performance Improvements
-
-* **chd:** parallel compression pipeline with bulk I/O ([ca351fa](https://github.com/DevYukine/rom-converto/commit/ca351fa163f9c46e7042f7cbc0b0aa080e12f531))
-* **chd:** persistent codec state with reusable LZMA encoder and deflate compressors ([e7e859b](https://github.com/DevYukine/rom-converto/commit/e7e859b1f545554a24042e85e8cc432bac72ea35))
-* **chd:** skip FLAC codec for data tracks ([eca97fe](https://github.com/DevYukine/rom-converto/commit/eca97fe448a0d5f297edd21aa8f5d0c4933930f9))
 
 
 
