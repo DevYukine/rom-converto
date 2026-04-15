@@ -25,19 +25,27 @@ pair).
 
 | Operation | chdman warm mean | rom-converto warm mean | Δ | Size delta |
 |---|---:|---:|---:|---:|
-| CD compress | 6.211 s (σ = 0.183) | **5.186 s (σ = 0.079)** | **0.83×** | +545,945 B (+0.1657 %) |
-| CD extract | 12.361 s (σ = 0.151) | **0.841 s (σ = 0.025)** | **0.07×** (15× faster) | -2 B (bench filename only) |
-| CD verify | 14.775 s (σ = 0.360) | **0.737 s (σ = 0.032)** | **0.05×** (20× faster) | - |
+| CD compress | 6.086 s (σ = 0.190) | **3.736 s (σ = 0.101)** | **0.61×** (1.63× faster) | **-4 B (−0.0000 %)** |
+| CD extract | 12.632 s (σ = 0.336) | **0.827 s (σ = 0.025)** | **0.07×** (15× faster) | -2 B (bench filename only) |
+| CD verify | 14.817 s (σ = 0.448) | **0.744 s (σ = 0.027)** | **0.05×** (20× faster) | - |
 
 `chdman info` accepts every compressed output.
 
 ## Interpretation
 
-- **Compress** is 17 % faster than chdman. The +0.17 % size delta comes
-  from our codec picker preferring `cdlz` (LZMA) on ~2,555 more hunks
-  than chdman, which prefers `cdzl` (deflate) on those hunks. The
-  output is still well inside the 10 % size budget and every hunk is
-  accepted by chdman's reader.
+- **Compress** is 1.63× faster than chdman and byte-parity on the
+  compressed hunk stream. The remaining -4 B file-size delta is
+  purely cosmetic: our `CHT2` track-metadata string is 4 chars
+  shorter than chdman's (`TRACK:1 TYPE:MODE2_RAW SUBTYPE:NONE
+  FRAMES:N PREGAP:0 P...`, ours 89 B, chdman 93 B), compression
+  matches bit-for-bit. Switching the `flate2` backend from `zlib-ng`
+  to upstream `zlib` was the fix: `zlib-ng` picks slightly different
+  deflate block structures at level 9, enough that our CDLZ
+  (LZMA base + deflate subcode) beat our CDZL (deflate + deflate) on
+  ~2.5K hunks where chdman's CDZL beat its CDLZ. Once the deflate
+  output matched chdman exactly, codec selection matched too, and
+  compression got *faster* because LZMA is much slower than deflate,
+  so correctly picking CDZL more often is a net speedup.
 - **Extract** is 15× faster. The pipeline is a 16-thread worker pool
   sharing one `Arc<File>` via Windows `seek_read` / Unix `read_at`
   positional reads, with persistent LZMA + deflate decoder state per

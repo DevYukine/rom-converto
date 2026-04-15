@@ -25,7 +25,7 @@ Input: one 4.38 GB Wii test disc with two encrypted partitions.
 |---|---:|---:|---:|---:|
 | Compress L5 | 2.575 s (σ = 0.156) | 2.762 s (σ = 0.107) | **1.07×** | −63,268 B (−0.0029 %) |
 | Compress L22 | 20.411 s (σ = 0.817) | 21.040 s (σ = 2.969) | **1.03×** | −62,132 B (−0.0029 %) |
-| Decompress | 6.664 s (σ = 0.188) | **6.455 s (σ = 0.159)** | **0.97×** | — |
+| Decompress | 6.664 s (σ = 0.188) | **6.455 s (σ = 0.159)** | **0.97×** | - |
 
 `DolphinTool.exe header` accepts every compressed output.
 

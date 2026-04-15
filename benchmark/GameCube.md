@@ -25,7 +25,7 @@ Input: one 1.46 GB GameCube test disc.
 |---|---:|---:|---:|---:|
 | Compress L5 | 0.762 s (σ = 0.037) | 0.947 s (σ = 0.013) | 1.24× | −11,612 B (−0.0012 %) |
 | Compress L22 | 7.849 s (σ = 0.365) | 7.921 s (σ = 0.376) | **1.01×** | −16,724 B (−0.0018 %) |
-| Decompress | 1.806 s (σ = 0.059) | **0.740 s (σ = 0.039)** | **0.41×** (2.4× faster) | — |
+| Decompress | 1.806 s (σ = 0.059) | **0.740 s (σ = 0.039)** | **0.41×** (2.4× faster) | - |
 
 `DolphinTool.exe header` accepts every compressed output.
 
