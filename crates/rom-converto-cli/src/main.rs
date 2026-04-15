@@ -84,8 +84,9 @@ async fn main() -> Result<()> {
             CtrCommands::Compress(cmd) => {
                 let output = cmd
                     .output
+                    .clone()
                     .unwrap_or_else(|| derive_compressed_path(&cmd.input));
-                compress_rom(&cmd.input, &output, &progress).await?
+                compress_rom(&cmd.input, &output, cmd.level, &progress).await?
             }
             CtrCommands::Decompress(cmd) => {
                 let output = cmd

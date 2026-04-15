@@ -3,20 +3,38 @@ use crate::nintendo::ctr::constants::{
     NCSD_PARTITION_TABLE_OFFSET,
 };
 use crate::nintendo::ctr::util::align_64_usize;
+use crate::nintendo::ctr::z3ds::compress_parallel::{
+    Z3dsCompressWork, Z3dsCompressedFrame, make_z3ds_compress_workers, parallel_encode_seekable,
+};
 use crate::nintendo::ctr::z3ds::error::{Z3dsError, Z3dsResult};
 use crate::nintendo::ctr::z3ds::models::{
     Z3DS_HEADER_SIZE, Z3dsHeader, Z3dsMetadata, Z3dsMetadataItem, underlying_magic,
 };
-use crate::nintendo::ctr::z3ds::seekable::{
-    FRAME_SIZE_CIA, FRAME_SIZE_DEFAULT, encode_seekable_streaming,
-};
+use crate::nintendo::ctr::z3ds::seekable::{FRAME_SIZE_CIA, FRAME_SIZE_DEFAULT};
+use crate::util::worker_pool::{Pool, parallelism};
 use crate::util::{BYTES_PER_MB, ProgressReporter};
 use binrw::BinWrite;
 use chrono::Utc;
 use log::info;
 use std::io::{BufReader, BufWriter as StdBufWriter, Cursor, Seek, SeekFrom, Write};
 use std::path::Path;
+use std::sync::Arc;
 use tokio::task;
+
+/// Zstd level used when the caller does not request one. Level 0
+/// asks libzstd for its own default (currently level 3) and picks
+/// up any future zstd tuning for free.
+pub const DEFAULT_ZSTD_LEVEL: i32 = 0;
+
+/// Maximum accepted zstd level. libzstd clamps anything above 22
+/// down to 22 internally but we reject over-max values up front so
+/// the CLI fails before opening the input file.
+pub const MAX_ZSTD_LEVEL: i32 = 22;
+
+/// Minimum accepted zstd level. Negative levels are valid zstd
+/// tunings but never a good fit for ROM data, so we cap them off
+/// at the lower end.
+pub const MIN_ZSTD_LEVEL: i32 = 0;
 
 /// Size of the probe buffer used for the encryption check. Must cover the
 /// furthest offset the check reads: NCSD partition 0 plus its NCCH header
@@ -39,6 +57,7 @@ const _: () = assert!(
 pub async fn compress_rom(
     input: &Path,
     output: &Path,
+    level: Option<i32>,
     progress: &dyn ProgressReporter,
 ) -> Z3dsResult<()> {
     let ext = input
@@ -54,6 +73,15 @@ pub async fn compress_rom(
         "3dsx" => (underlying_magic::THREEDSX, FRAME_SIZE_DEFAULT),
         other => return Err(Z3dsError::UnsupportedInputFormat(other.to_string())),
     };
+
+    let zstd_level = level.unwrap_or(DEFAULT_ZSTD_LEVEL);
+    if !(MIN_ZSTD_LEVEL..=MAX_ZSTD_LEVEL).contains(&zstd_level) {
+        return Err(Z3dsError::InvalidCompressionLevel {
+            level: zstd_level,
+            min: MIN_ZSTD_LEVEL,
+            max: MAX_ZSTD_LEVEL,
+        });
+    }
 
     let uncompressed_size = tokio::fs::metadata(input).await?.len();
 
@@ -74,6 +102,7 @@ pub async fn compress_rom(
         Z3dsMetadataItem::new_str("compressor", &format!("rom-converto ({version})")),
         Z3dsMetadataItem::new_str("date", &Utc::now().to_rfc3339()),
         Z3dsMetadataItem::new_str("maxframesize", &frame_size.to_string()),
+        Z3dsMetadataItem::new_str("zstdlevel", &zstd_level.to_string()),
     ]);
     let metadata_bytes = metadata.to_bytes()?;
     let metadata_size = metadata_bytes.len() as u32;
@@ -89,7 +118,7 @@ pub async fn compress_rom(
 
     // Atomic counter to relay progress out of the blocking thread.
     use std::sync::atomic::{AtomicU64, Ordering};
-    let bytes_done = std::sync::Arc::new(AtomicU64::new(0));
+    let bytes_done = Arc::new(AtomicU64::new(0));
     let bytes_done_clone = bytes_done.clone();
 
     // The paths are moved into the blocking task; borrows do not cross await.
@@ -111,15 +140,23 @@ pub async fn compress_rom(
         writer.write_all(&placeholder_header)?;
         writer.write_all(&metadata_bytes_owned)?;
 
-        let compressed_size = encode_seekable_streaming(
+        // Spawn a worker pool with one persistent zstd encoder per
+        // thread. The pool is torn down at the end of this closure
+        // so its lifetime is bounded by one compress invocation.
+        let n_threads = parallelism();
+        let workers = make_z3ds_compress_workers(n_threads, zstd_level)?;
+        let pool: Pool<Z3dsCompressWork, Z3dsCompressedFrame, Z3dsError> = Pool::spawn(workers);
+
+        let compressed_size = parallel_encode_seekable(
+            &pool,
             &mut reader,
             &mut writer,
             frame_size,
-            0,
-            Some(&|bytes| {
-                bytes_done_clone.fetch_add(bytes, Ordering::Relaxed);
-            }),
+            uncompressed_size,
+            &bytes_done_clone,
         )?;
+
+        pool.shutdown();
 
         // Flush before seeking back so the BufWriter doesn't leak buffered
         // payload bytes past the rewritten header.

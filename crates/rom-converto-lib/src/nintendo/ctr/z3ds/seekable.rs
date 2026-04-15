@@ -1,5 +1,7 @@
 use crate::nintendo::ctr::z3ds::error::Z3dsResult;
-use std::io::{Read, Write};
+#[cfg(test)]
+use std::io::Read;
+use std::io::Write;
 
 /// Seek table appended at the end of seekable-zstd output as a ZSTD skippable frame.
 ///
@@ -15,16 +17,55 @@ use std::io::{Read, Write};
 pub const FRAME_SIZE_CIA: usize = 32 * 1024 * 1024; // 32 MB
 pub const FRAME_SIZE_DEFAULT: usize = 256 * 1024; // 256 KB
 
-const SKIPPABLE_MAGIC: u32 = 0x184D2A5E;
-const SEEKABLE_MAGIC: u32 = 0x8F92EAB1;
-const SEEK_TABLE_DESCRIPTOR: u8 = 0x00;
-const SEEK_TABLE_ENTRY_SIZE: u32 = 8; // compressed_size(4) + decompressed_size(4)
-const SEEK_TABLE_FOOTER_SIZE: u32 = 9; // num_frames(4) + descriptor(1) + seekable_magic(4)
+pub(super) const SKIPPABLE_MAGIC: u32 = 0x184D2A5E;
+pub(super) const SEEKABLE_MAGIC: u32 = 0x8F92EAB1;
+pub(super) const SEEK_TABLE_DESCRIPTOR: u8 = 0x00;
+// Per-entry size when the checksum flag (descriptor bit 7) is clear.
+// compressed_size(4) + decompressed_size(4). With the flag set each
+// entry is 12 bytes: compressed_size(4) + decompressed_size(4) +
+// xxh64 checksum(4). The parser handles both layouts.
+pub(super) const SEEK_TABLE_ENTRY_SIZE: u32 = 8;
+pub(super) const SEEK_TABLE_FOOTER_SIZE: u32 = 9; // num_frames(4) + descriptor(1) + seekable_magic(4)
+// Bit 7 of the seek-table descriptor byte. When set, each entry
+// carries a trailing XXH64 checksum so the entry size is 12 bytes
+// instead of 8. External tools that use the full seekable-zstd spec
+// (e.g. Azahar's z3ds_compressor) set this flag; rom-converto does
+// not, but must still parse flagged inputs for cross-tool compat.
+const SEEK_TABLE_DESCRIPTOR_CHECKSUM_FLAG: u8 = 0x80;
 
 /// Per-frame entry recorded while encoding.
-struct FrameEntry {
-    compressed_size: u32,
-    decompressed_size: u32,
+pub(super) struct FrameEntry {
+    pub compressed_size: u32,
+    pub decompressed_size: u32,
+}
+
+/// Append the seek-table skippable frame to `writer` given the
+/// entries collected during compression. Returns the number of bytes
+/// written (always `8 + entries.len() * 8 + 9`).
+///
+/// Shared by [`encode_seekable_streaming`] and the parallel compress
+/// driver in `compress_parallel.rs` so both paths emit a byte-identical
+/// seek-table footer.
+pub(super) fn write_seek_table<W: Write>(
+    writer: &mut W,
+    entries: &[FrameEntry],
+) -> Z3dsResult<u64> {
+    let num_frames = entries.len() as u32;
+    let frame_payload_size: u32 = num_frames * SEEK_TABLE_ENTRY_SIZE + SEEK_TABLE_FOOTER_SIZE;
+
+    writer.write_all(&SKIPPABLE_MAGIC.to_le_bytes())?;
+    writer.write_all(&frame_payload_size.to_le_bytes())?;
+
+    for entry in entries {
+        writer.write_all(&entry.compressed_size.to_le_bytes())?;
+        writer.write_all(&entry.decompressed_size.to_le_bytes())?;
+    }
+
+    writer.write_all(&num_frames.to_le_bytes())?;
+    writer.write_all(&[SEEK_TABLE_DESCRIPTOR])?;
+    writer.write_all(&SEEKABLE_MAGIC.to_le_bytes())?;
+
+    Ok(8 + (num_frames as u64) * 8 + 9)
 }
 
 /// Compress `data` into seekable-zstd format.
@@ -58,38 +99,23 @@ pub fn encode_seekable_with_progress(
         }
     }
 
-    // Seek table skippable frame
-    let num_frames = entries.len() as u32;
-    // frame_size = entries (8 bytes each) + number_of_frames (4) + descriptor (1) + seekable_magic (4)
-    let frame_payload_size: u32 = num_frames * SEEK_TABLE_ENTRY_SIZE + SEEK_TABLE_FOOTER_SIZE;
-
-    output.extend_from_slice(&SKIPPABLE_MAGIC.to_le_bytes());
-    output.extend_from_slice(&frame_payload_size.to_le_bytes());
-
-    for entry in &entries {
-        output.extend_from_slice(&entry.compressed_size.to_le_bytes());
-        output.extend_from_slice(&entry.decompressed_size.to_le_bytes());
-    }
-
-    output.extend_from_slice(&num_frames.to_le_bytes());
-    output.push(SEEK_TABLE_DESCRIPTOR);
-    output.extend_from_slice(&SEEKABLE_MAGIC.to_le_bytes());
-
+    write_seek_table(&mut output, &entries)?;
     Ok(output)
 }
 
-/// Streaming variant of [`encode_seekable_with_progress`]. Reads uncompressed
-/// input from `reader` one frame at a time and writes compressed frames plus
+/// Sequential streaming variant. Reads uncompressed input from
+/// `reader` one frame at a time and writes compressed frames plus
 /// the seek-table footer directly to `writer`.
 ///
-/// Peak extra memory is bounded by `max_frame_size` (one uncompressed frame
-/// plus its compressed output), independent of the total file size. The frame
-/// table itself is 8 bytes per frame, so for a 4 GB ROM compressed with 32 MB
-/// frames it's about 1 KB.
+/// Peak extra memory is bounded by `max_frame_size` (one
+/// uncompressed frame plus its compressed output), independent of
+/// the total file size.
 ///
-/// Returns the total number of bytes written to `writer` (frames plus seek
-/// table). This value is what the `compressed_size` field in the Z3DS header
-/// must declare.
+/// Kept as a reference implementation the parallel compress path in
+/// `compress_parallel.rs` is tested byte-for-byte against. Production
+/// compression always runs through the parallel driver, so this
+/// function is `cfg(test)`.
+#[cfg(test)]
 pub fn encode_seekable_streaming<R: Read, W: Write>(
     reader: &mut R,
     writer: &mut W,
@@ -138,26 +164,7 @@ pub fn encode_seekable_streaming<R: Read, W: Write>(
         }
     }
 
-    // Append the seek table skippable frame, matching the layout emitted by
-    // `encode_seekable_with_progress`.
-    let num_frames = entries.len() as u32;
-    let frame_payload_size: u32 = num_frames * SEEK_TABLE_ENTRY_SIZE + SEEK_TABLE_FOOTER_SIZE;
-
-    writer.write_all(&SKIPPABLE_MAGIC.to_le_bytes())?;
-    writer.write_all(&frame_payload_size.to_le_bytes())?;
-    bytes_written += 8;
-
-    for entry in &entries {
-        writer.write_all(&entry.compressed_size.to_le_bytes())?;
-        writer.write_all(&entry.decompressed_size.to_le_bytes())?;
-        bytes_written += 8;
-    }
-
-    writer.write_all(&num_frames.to_le_bytes())?;
-    writer.write_all(&[SEEK_TABLE_DESCRIPTOR])?;
-    writer.write_all(&SEEKABLE_MAGIC.to_le_bytes())?;
-    bytes_written += 9;
-
+    bytes_written += write_seek_table(writer, &entries)?;
     Ok(bytes_written)
 }
 
@@ -169,6 +176,134 @@ pub fn encode_seekable_streaming<R: Read, W: Write>(
 pub fn decode_seekable(data: &[u8]) -> Z3dsResult<Vec<u8>> {
     let payload = strip_seek_table(data);
     Ok(zstd::decode_all(payload)?)
+}
+
+/// Derive the per-entry byte count from a seek-table descriptor
+/// byte. Entries are 8 bytes by default and 12 bytes when the
+/// checksum flag is set (descriptor bit 7).
+fn entry_size_for_descriptor(descriptor: u8) -> usize {
+    if descriptor & SEEK_TABLE_DESCRIPTOR_CHECKSUM_FLAG != 0 {
+        12
+    } else {
+        8
+    }
+}
+
+/// Read the 9-byte seek-table footer from the tail of a payload and
+/// return `(num_frames, total_skippable_frame_size)`.
+///
+/// `footer_bytes` must be the last 9 bytes of the payload
+/// (`compressed_size` region), laid out as `[num_frames | descriptor
+/// | seekable_magic]`. Returns an error if the seekable magic does
+/// not match, which means the file was not produced by a seekable
+/// encoder and cannot be decompressed frame-by-frame.
+///
+/// Honours the checksum flag in the descriptor byte: the total size
+/// it returns covers 8-byte entries when the flag is clear and
+/// 12-byte entries when the flag is set, matching the
+/// seekable-zstd spec.
+pub(super) fn read_seek_table_footer(footer_bytes: &[u8]) -> Z3dsResult<(u32, u64)> {
+    if footer_bytes.len() < 9 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "seek table footer truncated",
+        )
+        .into());
+    }
+    let num_frames = u32::from_le_bytes(footer_bytes[0..4].try_into().unwrap());
+    let descriptor = footer_bytes[4];
+    let magic = u32::from_le_bytes(footer_bytes[5..9].try_into().unwrap());
+    if magic != SEEKABLE_MAGIC {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "not a seekable zstd payload (missing trailing magic)",
+        )
+        .into());
+    }
+    let entry_size = entry_size_for_descriptor(descriptor);
+    // Full skippable frame: [SKIPPABLE_MAGIC(4) | frame_size(4) |
+    // entries(entry_size * num_frames) | num_frames(4) |
+    // descriptor(1) | SEEKABLE_MAGIC(4)]
+    let total = 8u64 + (num_frames as u64) * entry_size as u64 + 9;
+    Ok((num_frames, total))
+}
+
+/// Parse a fully-loaded seek-table skippable frame into its entry
+/// list. `frame_bytes` must start at the `SKIPPABLE_MAGIC` and end
+/// after the `SEEKABLE_MAGIC`, i.e. the complete skippable frame the
+/// encoder wrote.
+///
+/// Validates the skippable magic, the declared payload size matches
+/// the buffer length, the footer magic, and the footer `num_frames`
+/// matches the entry count. Supports both 8-byte entries (checksum
+/// flag clear) and 12-byte entries (checksum flag set). The XXH64
+/// checksum is parsed but not verified; libzstd checks the stream
+/// checksums during the actual decode.
+pub(super) fn parse_seek_table(frame_bytes: &[u8]) -> Z3dsResult<Vec<FrameEntry>> {
+    if frame_bytes.len() < 17 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "seek table skippable frame truncated",
+        )
+        .into());
+    }
+    let skippable_magic = u32::from_le_bytes(frame_bytes[0..4].try_into().unwrap());
+    if skippable_magic != SKIPPABLE_MAGIC {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "seek table skippable frame has wrong magic",
+        )
+        .into());
+    }
+    let declared_payload_size = u32::from_le_bytes(frame_bytes[4..8].try_into().unwrap()) as usize;
+    let expected_frame_size = 8 + declared_payload_size;
+    if frame_bytes.len() != expected_frame_size {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "seek table skippable frame size mismatch",
+        )
+        .into());
+    }
+    let footer_start = frame_bytes.len() - 9;
+    let num_frames = u32::from_le_bytes(
+        frame_bytes[footer_start..footer_start + 4]
+            .try_into()
+            .unwrap(),
+    );
+    let descriptor = frame_bytes[footer_start + 4];
+    let trailing_magic = u32::from_le_bytes(
+        frame_bytes[footer_start + 5..footer_start + 9]
+            .try_into()
+            .unwrap(),
+    );
+    if trailing_magic != SEEKABLE_MAGIC {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "seek table footer magic mismatch",
+        )
+        .into());
+    }
+    let entry_size = entry_size_for_descriptor(descriptor);
+    let entries_region = &frame_bytes[8..footer_start];
+    if entries_region.len() != (num_frames as usize) * entry_size {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "seek table entry count does not match footer",
+        )
+        .into());
+    }
+    let mut entries = Vec::with_capacity(num_frames as usize);
+    for chunk in entries_region.chunks_exact(entry_size) {
+        entries.push(FrameEntry {
+            compressed_size: u32::from_le_bytes(chunk[0..4].try_into().unwrap()),
+            decompressed_size: u32::from_le_bytes(chunk[4..8].try_into().unwrap()),
+        });
+        // The trailing 4-byte xxh64 checksum (chunk[8..12]) is
+        // ignored. libzstd verifies stream checksums on the actual
+        // decompress path if they're enabled; the seek-table
+        // checksums are redundant with that.
+    }
+    Ok(entries)
 }
 
 /// Returns a slice of `data` with the trailing seek table skippable frame
@@ -203,10 +338,12 @@ fn strip_seek_table(data: &[u8]) -> &[u8] {
         data[num_frames_offset + 2],
         data[num_frames_offset + 3],
     ]) as usize;
+    let descriptor = data[num_frames_offset + 4];
+    let entry_size = entry_size_for_descriptor(descriptor);
 
-    // frame_payload_size = num_frames * 8 + 9
+    // frame_payload_size = num_frames * entry_size + 9
     // total skippable frame = 4 (magic) + 4 (size field) + frame_payload_size
-    let skippable_frame_total = 8 + num_frames * 8 + 9;
+    let skippable_frame_total = 8 + num_frames * entry_size + 9;
 
     if data.len() < skippable_frame_total {
         return data;

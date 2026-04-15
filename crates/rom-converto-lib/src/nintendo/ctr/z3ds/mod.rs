@@ -1,12 +1,14 @@
 use std::path::{Path, PathBuf};
 
 mod compress;
+mod compress_parallel;
 mod decompress;
+mod decompress_parallel;
 pub mod error;
 pub mod models;
 mod seekable;
 
-pub use compress::compress_rom;
+pub use compress::{DEFAULT_ZSTD_LEVEL, MAX_ZSTD_LEVEL, MIN_ZSTD_LEVEL, compress_rom};
 pub use decompress::decompress_rom;
 pub use seekable::decode_seekable;
 
@@ -186,7 +188,7 @@ mod tests {
         let original = make_fake_decrypted_cxi(64 * 1024);
         tokio::fs::write(&input, &original).await.unwrap();
 
-        compress_rom(&input, &compressed, &NoProgress)
+        compress_rom(&input, &compressed, None, &NoProgress)
             .await
             .unwrap();
         decompress_rom(&compressed, &decompressed, &NoProgress)
@@ -207,7 +209,7 @@ mod tests {
         let original = make_fake_3dsx(128 * 1024);
         tokio::fs::write(&input, &original).await.unwrap();
 
-        compress_rom(&input, &compressed, &NoProgress)
+        compress_rom(&input, &compressed, None, &NoProgress)
             .await
             .unwrap();
         decompress_rom(&compressed, &decompressed, &NoProgress)
@@ -237,7 +239,7 @@ mod tests {
         let original = make_fake_decrypted_cxi(2 * 1024 * 1024 + 7);
         tokio::fs::write(&input, &original).await.unwrap();
 
-        compress_rom(&input, &compressed, &NoProgress)
+        compress_rom(&input, &compressed, None, &NoProgress)
             .await
             .unwrap();
         decompress_rom(&compressed, &decompressed, &NoProgress)
@@ -275,7 +277,7 @@ mod tests {
         let original = make_fake_decrypted_cxi(256 * 1024);
         tokio::fs::write(&input, &original).await.unwrap();
 
-        compress_rom(&input, &compressed, &NoProgress)
+        compress_rom(&input, &compressed, None, &NoProgress)
             .await
             .unwrap();
 
@@ -298,7 +300,7 @@ mod tests {
         data[NCCH_MAGIC_OFFSET..NCCH_MAGIC_OFFSET + 4].copy_from_slice(&underlying_magic::NCCH);
         tokio::fs::write(&input, &data).await.unwrap();
 
-        let result = compress_rom(&input, &output, &NoProgress).await;
+        let result = compress_rom(&input, &output, None, &NoProgress).await;
         assert!(
             matches!(
                 result,
@@ -316,7 +318,7 @@ mod tests {
 
         tokio::fs::write(&input, b"dummy").await.unwrap();
 
-        let result = compress_rom(&input, &output, &NoProgress).await;
+        let result = compress_rom(&input, &output, None, &NoProgress).await;
         assert!(
             matches!(
                 result,
@@ -335,9 +337,98 @@ mod tests {
         tokio::fs::write(&input, &make_fake_3dsx(16 * 1024))
             .await
             .unwrap();
-        compress_rom(&input, &output, &NoProgress).await.unwrap();
+        compress_rom(&input, &output, None, &NoProgress)
+            .await
+            .unwrap();
 
         let header_bytes = tokio::fs::read(&output).await.unwrap();
         assert_eq!(&header_bytes[0..4], Z3DS_MAGIC);
+    }
+
+    /// Every valid zstd level must produce output that decompresses
+    /// back to the original bytes. Covers default (None), explicit
+    /// default (Some(0)), a mid level, and the max. Uses a 1 MB
+    /// input so the output spans multiple 256 KB frames and the
+    /// parallel pipeline has real work to do at each level.
+    #[tokio::test]
+    async fn compress_all_levels_round_trip() {
+        for level in [None, Some(0), Some(3), Some(9), Some(22)] {
+            let dir = tempfile::tempdir().unwrap();
+            let input = dir.path().join("game.cxi");
+            let compressed = dir.path().join("game.zcxi");
+            let decompressed = dir.path().join("game_out.cxi");
+
+            let original = make_fake_decrypted_cxi(1024 * 1024);
+            tokio::fs::write(&input, &original).await.unwrap();
+
+            compress_rom(&input, &compressed, level, &NoProgress)
+                .await
+                .unwrap_or_else(|e| panic!("compress failed at level={level:?}: {e}"));
+            decompress_rom(&compressed, &decompressed, &NoProgress)
+                .await
+                .unwrap_or_else(|e| panic!("decompress failed at level={level:?}: {e}"));
+
+            let result = tokio::fs::read(&decompressed).await.unwrap();
+            assert_eq!(original, result, "round trip mismatch at level={level:?}");
+        }
+    }
+
+    /// Out-of-range levels must be rejected before the file is
+    /// opened so bad CLI input fails fast without side effects.
+    #[tokio::test]
+    async fn compress_rejects_out_of_range_level() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("game.cxi");
+        let output = dir.path().join("game.zcxi");
+
+        tokio::fs::write(&input, &make_fake_decrypted_cxi(16 * 1024))
+            .await
+            .unwrap();
+
+        for bad in [-1, 23, 100] {
+            let result = compress_rom(&input, &output, Some(bad), &NoProgress).await;
+            assert!(
+                matches!(
+                    result,
+                    Err(
+                        crate::nintendo::ctr::z3ds::error::Z3dsError::InvalidCompressionLevel { .. }
+                    )
+                ),
+                "expected InvalidCompressionLevel for level={bad}, got {result:?}"
+            );
+        }
+    }
+
+    /// The compression level the caller asked for must be recorded
+    /// in the `zstdlevel` metadata string so downstream tools and
+    /// future versions can tell what produced the file.
+    #[tokio::test]
+    async fn compressed_file_records_zstd_level_in_metadata() {
+        use crate::nintendo::ctr::z3ds::models::{Z3DS_HEADER_SIZE, Z3dsMetadata};
+
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("game.cxi");
+        let output = dir.path().join("game.zcxi");
+
+        tokio::fs::write(&input, &make_fake_decrypted_cxi(16 * 1024))
+            .await
+            .unwrap();
+
+        compress_rom(&input, &output, Some(9), &NoProgress)
+            .await
+            .unwrap();
+
+        let bytes = tokio::fs::read(&output).await.unwrap();
+        let metadata_start = Z3DS_HEADER_SIZE as usize;
+        // Read enough bytes after the header for a metadata block
+        // with a few short items. The fake input has exactly four
+        // metadata strings which fit in well under 256 bytes.
+        let metadata_end = (metadata_start + 256).min(bytes.len());
+        let items = Z3dsMetadata::from_bytes(&bytes[metadata_start..metadata_end]);
+        let level_item = items
+            .iter()
+            .find(|i| i.name == "zstdlevel")
+            .expect("zstdlevel missing from metadata");
+        assert_eq!(level_item.data.as_slice(), b"9");
     }
 }

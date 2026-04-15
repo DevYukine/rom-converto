@@ -354,7 +354,7 @@ async fn convert_cdn_to_cia_single(
     if opts.compress {
         let compressed_path = derive_compressed_path(&output);
 
-        compress_rom(&output, &compressed_path, progress).await?;
+        compress_rom(&output, &compressed_path, None, progress).await?;
 
         fs::remove_file(&output).await?;
 

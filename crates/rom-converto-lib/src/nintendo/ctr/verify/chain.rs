@@ -1042,7 +1042,9 @@ mod tests {
 
         let zcia_path = cia_path.with_extension("zcia");
         let prog = crate::util::NoProgress;
-        compress_rom(&cia_path, &zcia_path, &prog).await.unwrap();
+        compress_rom(&cia_path, &zcia_path, None, &prog)
+            .await
+            .unwrap();
 
         // Sanity: round-trip the compressed file back and compare to original.
         let decompressed_path = cia_path.with_extension("roundtrip.cia");

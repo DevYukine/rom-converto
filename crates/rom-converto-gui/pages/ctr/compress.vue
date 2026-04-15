@@ -3,7 +3,7 @@ import { storeToRefs } from "pinia";
 import { useCtrCompressStore } from "~/stores/ctr-compress";
 
 const store = useCtrCompressStore();
-const { input, output, result, error, loading, queue } = storeToRefs(store);
+const { input, output, level, result, error, loading, queue } = storeToRefs(store);
 const { run } = useOperation({ result, error, loading });
 const progress = useProgress("compress");
 
@@ -12,6 +12,7 @@ const isBatch = computed(() => queue.value.length > 0);
 const batch = useBatchOperation("compress", "cmd_compress_rom", (item) => ({
   input: item.input,
   output: item.output || null,
+  level: level.value,
 }));
 
 watch(input, (val) => {
@@ -40,6 +41,7 @@ async function execute() {
     await run("cmd_compress_rom", {
       input: input.value,
       output: output.value || null,
+      level: level.value,
     });
   }
 }
@@ -96,6 +98,29 @@ async function execute() {
             :save-dialog="true"
             :filters="[{ name: 'Z3DS', extensions: ['zcia', 'zcci', 'zcxi', 'z3dsx'] }]"
           />
+        </div>
+
+        <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
+          <label class="flex flex-col gap-1.5">
+            <span class="text-sm font-medium text-zinc-200">Zstd level</span>
+            <span class="text-xs text-zinc-400">
+              0 uses the library default. 1 is fastest, 22 is max ratio.
+              Higher levels produce smaller files at the cost of compression time.
+            </span>
+            <div class="flex items-center gap-3 pt-1">
+              <input
+                v-model.number="level"
+                type="range"
+                min="0"
+                max="22"
+                step="1"
+                class="flex-1 accent-sky-500"
+              />
+              <span class="w-16 shrink-0 text-right font-mono text-sm text-zinc-200">
+                {{ level === 0 ? "default" : level }}
+              </span>
+            </div>
+          </label>
         </div>
 
         <ProgressBar

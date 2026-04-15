@@ -80,11 +80,12 @@ pub async fn cmd_compress_rom(
     app: AppHandle,
     input: PathBuf,
     output: Option<PathBuf>,
+    level: Option<i32>,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "compress"));
     let output = output.unwrap_or_else(|| derive_compressed_path(&input));
     let out_display = output.display().to_string();
-    tokio::spawn(async move { compress_rom(&input, &output, progress.as_ref()).await })
+    tokio::spawn(async move { compress_rom(&input, &output, level, progress.as_ref()).await })
         .await
         .map_err(err_to_string)?
         .map_err(err_to_string)?;

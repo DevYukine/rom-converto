@@ -116,6 +116,12 @@ pub struct CompressRomCommand {
     /// Output file path, defaults to the input path with the extension prefixed by "z"
     #[arg(value_name = "OUTPUT")]
     pub output: Option<PathBuf>,
+
+    /// Zstd compression level (0 = library default, 22 = maximum
+    /// ratio). Higher levels produce smaller output at the cost of
+    /// compression time. Leave unset to use the library default.
+    #[arg(short = 'l', long = "level", value_name = "LEVEL", value_parser = clap::value_parser!(i32).range(0..=22))]
+    pub level: Option<i32>,
 }
 
 /// Decompresses a Z3DS file back to the original ROM format
