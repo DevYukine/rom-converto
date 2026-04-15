@@ -14,30 +14,62 @@ import { useRvlDecompressStore } from "~/stores/rvl-decompress";
 import { getVersion } from "@tauri-apps/api/app";
 
 const appVersion = ref("");
-getVersion().then((v) => { appVersion.value = v; }).catch(() => {});
+getVersion()
+  .then((v) => {
+    appVersion.value = v;
+  })
+  .catch(() => {});
 
-const ctrLinks = [
-  { to: "/ctr/cdn-to-cia", label: "CDN to CIA", store: () => useCtrCdnToCiaStore(), icon: "folder-arrow" },
-  { to: "/ctr/decrypt", label: "Decrypt", store: () => useCtrDecryptStore(), icon: "lock-open" },
-  { to: "/ctr/compress", label: "Compress", store: () => useCtrCompressStore(), icon: "compress" },
-  { to: "/ctr/decompress", label: "Decompress", store: () => useCtrDecompressStore(), icon: "expand" },
-  { to: "/ctr/verify", label: "Verify", store: () => useCtrVerifyStore(), icon: "shield-check" },
-];
+type SidebarLink = {
+  to: string;
+  label: string;
+  store: () => { loading: boolean; result: string; error: string };
+  icon: string;
+};
 
-const dolLinks = [
-  { to: "/dol/compress", label: "Compress", store: () => useDolCompressStore(), icon: "compress" },
-  { to: "/dol/decompress", label: "Decompress", store: () => useDolDecompressStore(), icon: "expand" },
-];
+type SidebarSection = {
+  key: string;
+  name: string;
+  links: SidebarLink[];
+};
 
-const rvlLinks = [
-  { to: "/rvl/compress", label: "Compress", store: () => useRvlCompressStore(), icon: "compress" },
-  { to: "/rvl/decompress", label: "Decompress", store: () => useRvlDecompressStore(), icon: "expand" },
-];
-
-const chdLinks = [
-  { to: "/chd/compress", label: "Compress", store: () => useChdCompressStore(), icon: "disc-down" },
-  { to: "/chd/extract", label: "Extract", store: () => useChdExtractStore(), icon: "disc-up" },
-  { to: "/chd/verify", label: "Verify", store: () => useChdVerifyStore(), icon: "shield-check" },
+const sections: SidebarSection[] = [
+  {
+    key: "ctr",
+    name: "3DS",
+    links: [
+      { to: "/ctr/cdn-to-cia", label: "CDN to CIA", store: () => useCtrCdnToCiaStore(), icon: "folder-arrow" },
+      { to: "/ctr/decrypt", label: "Decrypt", store: () => useCtrDecryptStore(), icon: "lock-open" },
+      { to: "/ctr/compress", label: "Compress", store: () => useCtrCompressStore(), icon: "compress" },
+      { to: "/ctr/decompress", label: "Decompress", store: () => useCtrDecompressStore(), icon: "expand" },
+      { to: "/ctr/verify", label: "Verify", store: () => useCtrVerifyStore(), icon: "shield-check" },
+    ],
+  },
+  {
+    key: "dol",
+    name: "GameCube",
+    links: [
+      { to: "/dol/compress", label: "Compress", store: () => useDolCompressStore(), icon: "compress" },
+      { to: "/dol/decompress", label: "Decompress", store: () => useDolDecompressStore(), icon: "expand" },
+    ],
+  },
+  {
+    key: "rvl",
+    name: "Wii",
+    links: [
+      { to: "/rvl/compress", label: "Compress", store: () => useRvlCompressStore(), icon: "compress" },
+      { to: "/rvl/decompress", label: "Decompress", store: () => useRvlDecompressStore(), icon: "expand" },
+    ],
+  },
+  {
+    key: "chd",
+    name: "CHD",
+    links: [
+      { to: "/chd/compress", label: "Compress", store: () => useChdCompressStore(), icon: "disc-down" },
+      { to: "/chd/extract", label: "Extract", store: () => useChdExtractStore(), icon: "disc-up" },
+      { to: "/chd/verify", label: "Verify", store: () => useChdVerifyStore(), icon: "shield-check" },
+    ],
+  },
 ];
 
 function getStatus(store: () => { loading: boolean; result: string; error: string }) {
@@ -46,6 +78,50 @@ function getStatus(store: () => { loading: boolean; result: string; error: strin
   if (s.error) return "error";
   if (s.result) return "done";
   return "idle";
+}
+
+// Derive the section key from the current route, e.g. "/ctr/compress" → "ctr".
+const route = useRoute();
+function sectionKeyForPath(path: string): string | null {
+  const m = path.match(/^\/([^/]+)/);
+  return m?.[1] ?? null;
+}
+
+// Open sections. Initial state: only the section matching the current
+// route is open; on a route change into a different section we
+// auto-open the new one while leaving any others the user expanded
+// manually alone.
+const openSections = ref<Set<string>>(new Set());
+
+function ensureSectionOpen(key: string | null) {
+  if (!key) return;
+  if (!openSections.value.has(key)) {
+    const next = new Set(openSections.value);
+    next.add(key);
+    openSections.value = next;
+  }
+}
+
+// Initialise from the current route on mount.
+ensureSectionOpen(sectionKeyForPath(route.path));
+
+watch(
+  () => route.path,
+  (p) => ensureSectionOpen(sectionKeyForPath(p)),
+);
+
+function toggleSection(key: string) {
+  const next = new Set(openSections.value);
+  if (next.has(key)) {
+    next.delete(key);
+  } else {
+    next.add(key);
+  }
+  openSections.value = next;
+}
+
+function isActiveSection(key: string): boolean {
+  return sectionKeyForPath(route.path) === key;
 }
 </script>
 
@@ -89,174 +165,108 @@ function getStatus(store: () => { loading: boolean; result: string; error: strin
       </div>
 
       <!-- Navigation -->
-      <div class="flex-1 space-y-6 px-3 pt-2">
-        <!-- CTR Section -->
-        <div>
-          <h3 class="mb-2 px-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
-            CTR (3DS)
-          </h3>
-          <ul class="space-y-0.5">
-            <li v-for="link in ctrLinks" :key="link.to">
-              <NuxtLink
-                :to="link.to"
-                class="group relative flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-zinc-400 transition hover:bg-zinc-800/60 hover:text-zinc-200"
-                active-class="!bg-zinc-800 !text-sky-400 before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-0.5 before:rounded-full before:bg-sky-400"
-              >
-                <!-- Icons -->
-                <span class="flex h-5 w-5 items-center justify-center">
-                  <!-- folder-arrow -->
-                  <svg v-if="link.icon === 'folder-arrow'" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 00-1.883 2.542l.857 6a2.25 2.25 0 002.227 1.932H19.05a2.25 2.25 0 002.227-1.932l.857-6a2.25 2.25 0 00-1.883-2.542m-16.5 0V6A2.25 2.25 0 016 3.75h3.879a1.5 1.5 0 011.06.44l2.122 2.12a1.5 1.5 0 001.06.44H18A2.25 2.25 0 0120.25 9v.776" />
-                  </svg>
-                  <!-- lock-open -->
-                  <svg v-else-if="link.icon === 'lock-open'" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 10.5V6.75a4.5 4.5 0 119 0v3.75M3.75 21.75h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H3.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
-                  </svg>
-                  <!-- compress -->
-                  <svg v-else-if="link.icon === 'compress'" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M9 9V4.5M9 9H4.5M9 9L3.75 3.75M9 15v4.5M9 15H4.5M9 15l-5.25 5.25M15 9h4.5M15 9V4.5M15 9l5.25-5.25M15 15h4.5M15 15v4.5m0-4.5l5.25 5.25" />
-                  </svg>
-                  <!-- expand -->
-                  <svg v-else-if="link.icon === 'expand'" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
-                  </svg>
-                  <!-- shield-check -->
-                  <svg v-else-if="link.icon === 'shield-check'" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
-                  </svg>
-                </span>
+      <div class="flex-1 space-y-1 overflow-y-auto px-3 pt-2">
+        <div v-for="section in sections" :key="section.key">
+          <!-- Section header: click to expand/collapse -->
+          <button
+            type="button"
+            :class="[
+              'flex w-full items-center justify-between rounded-lg px-2 py-2 text-[11px] font-semibold uppercase tracking-wider transition',
+              isActiveSection(section.key)
+                ? 'text-sky-400'
+                : 'text-zinc-500 hover:bg-zinc-800/40 hover:text-zinc-300',
+            ]"
+            @click="toggleSection(section.key)"
+          >
+            <span class="flex items-center gap-2">
+              <span
+                v-if="isActiveSection(section.key)"
+                class="h-1.5 w-1.5 rounded-full bg-sky-400"
+              />
+              {{ section.name }}
+            </span>
+            <svg
+              :class="[
+                'h-3 w-3 transition-transform duration-150',
+                openSections.has(section.key) ? 'rotate-90' : '',
+              ]"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              stroke-width="2.5"
+            >
+              <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+            </svg>
+          </button>
 
-                {{ link.label }}
+          <!-- Collapsible link list -->
+          <Transition
+            enter-active-class="overflow-hidden transition-all duration-200 ease-out"
+            enter-from-class="max-h-0 opacity-0"
+            enter-to-class="max-h-96 opacity-100"
+            leave-active-class="overflow-hidden transition-all duration-150 ease-in"
+            leave-from-class="max-h-96 opacity-100"
+            leave-to-class="max-h-0 opacity-0"
+          >
+            <ul v-if="openSections.has(section.key)" class="mt-1 space-y-0.5 pb-2">
+              <li v-for="link in section.links" :key="link.to">
+                <NuxtLink
+                  :to="link.to"
+                  class="group relative flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-zinc-400 transition hover:bg-zinc-800/60 hover:text-zinc-200"
+                  active-class="!bg-zinc-800 !text-sky-400 before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-0.5 before:rounded-full before:bg-sky-400"
+                >
+                  <span class="flex h-5 w-5 items-center justify-center">
+                    <!-- folder-arrow -->
+                    <svg v-if="link.icon === 'folder-arrow'" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 00-1.883 2.542l.857 6a2.25 2.25 0 002.227 1.932H19.05a2.25 2.25 0 002.227-1.932l.857-6a2.25 2.25 0 00-1.883-2.542m-16.5 0V6A2.25 2.25 0 016 3.75h3.879a1.5 1.5 0 011.06.44l2.122 2.12a1.5 1.5 0 001.06.44H18A2.25 2.25 0 0120.25 9v.776" />
+                    </svg>
+                    <!-- lock-open -->
+                    <svg v-else-if="link.icon === 'lock-open'" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 10.5V6.75a4.5 4.5 0 119 0v3.75M3.75 21.75h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H3.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
+                    </svg>
+                    <!-- compress -->
+                    <svg v-else-if="link.icon === 'compress'" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M9 9V4.5M9 9H4.5M9 9L3.75 3.75M9 15v4.5M9 15H4.5M9 15l-5.25 5.25M15 9h4.5M15 9V4.5M15 9l5.25-5.25M15 15h4.5M15 15v4.5m0-4.5l5.25 5.25" />
+                    </svg>
+                    <!-- expand -->
+                    <svg v-else-if="link.icon === 'expand'" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
+                    </svg>
+                    <!-- shield-check -->
+                    <svg v-else-if="link.icon === 'shield-check'" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
+                    </svg>
+                    <!-- disc-down -->
+                    <svg v-else-if="link.icon === 'disc-down'" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125" />
+                    </svg>
+                    <!-- disc-up -->
+                    <svg v-else-if="link.icon === 'disc-up'" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
+                    </svg>
+                  </span>
 
-                <!-- Status dot -->
-                <span class="ml-auto flex h-4 w-4 items-center justify-center">
-                  <span
-                    v-if="getStatus(link.store) === 'running'"
-                    class="h-2 w-2 animate-pulse rounded-full bg-sky-400"
-                  />
-                  <span
-                    v-else-if="getStatus(link.store) === 'done'"
-                    class="h-1.5 w-1.5 rounded-full bg-emerald-400"
-                  />
-                  <span
-                    v-else-if="getStatus(link.store) === 'error'"
-                    class="h-1.5 w-1.5 rounded-full bg-red-400"
-                  />
-                </span>
-              </NuxtLink>
-            </li>
-          </ul>
-        </div>
+                  {{ link.label }}
 
-        <!-- DOL Section -->
-        <div>
-          <h3 class="mb-2 px-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
-            DOL (GameCube)
-          </h3>
-          <ul class="space-y-0.5">
-            <li v-for="link in dolLinks" :key="link.to">
-              <NuxtLink
-                :to="link.to"
-                class="group relative flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-zinc-400 transition hover:bg-zinc-800/60 hover:text-zinc-200"
-                active-class="!bg-zinc-800 !text-sky-400 before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-0.5 before:rounded-full before:bg-sky-400"
-              >
-                <span class="flex h-5 w-5 items-center justify-center">
-                  <svg v-if="link.icon === 'compress'" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M9 9V4.5M9 9H4.5M9 9L3.75 3.75M9 15v4.5M9 15H4.5M9 15l-5.25 5.25M15 9h4.5M15 9V4.5M15 9l5.25-5.25M15 15h4.5M15 15v4.5m0-4.5l5.25 5.25" />
-                  </svg>
-                  <svg v-else-if="link.icon === 'expand'" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
-                  </svg>
-                </span>
-                {{ link.label }}
-                <span class="ml-auto flex h-4 w-4 items-center justify-center">
-                  <span v-if="getStatus(link.store) === 'running'" class="h-2 w-2 animate-pulse rounded-full bg-sky-400" />
-                  <span v-else-if="getStatus(link.store) === 'done'" class="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-                  <span v-else-if="getStatus(link.store) === 'error'" class="h-1.5 w-1.5 rounded-full bg-red-400" />
-                </span>
-              </NuxtLink>
-            </li>
-          </ul>
-        </div>
-
-        <!-- RVL Section -->
-        <div>
-          <h3 class="mb-2 px-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
-            RVL (Wii)
-          </h3>
-          <ul class="space-y-0.5">
-            <li v-for="link in rvlLinks" :key="link.to">
-              <NuxtLink
-                :to="link.to"
-                class="group relative flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-zinc-400 transition hover:bg-zinc-800/60 hover:text-zinc-200"
-                active-class="!bg-zinc-800 !text-sky-400 before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-0.5 before:rounded-full before:bg-sky-400"
-              >
-                <span class="flex h-5 w-5 items-center justify-center">
-                  <svg v-if="link.icon === 'compress'" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M9 9V4.5M9 9H4.5M9 9L3.75 3.75M9 15v4.5M9 15H4.5M9 15l-5.25 5.25M15 9h4.5M15 9V4.5M15 9l5.25-5.25M15 15h4.5M15 15v4.5m0-4.5l5.25 5.25" />
-                  </svg>
-                  <svg v-else-if="link.icon === 'expand'" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
-                  </svg>
-                </span>
-                {{ link.label }}
-                <span class="ml-auto flex h-4 w-4 items-center justify-center">
-                  <span v-if="getStatus(link.store) === 'running'" class="h-2 w-2 animate-pulse rounded-full bg-sky-400" />
-                  <span v-else-if="getStatus(link.store) === 'done'" class="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-                  <span v-else-if="getStatus(link.store) === 'error'" class="h-1.5 w-1.5 rounded-full bg-red-400" />
-                </span>
-              </NuxtLink>
-            </li>
-          </ul>
-        </div>
-
-        <!-- CHD Section -->
-        <div>
-          <h3 class="mb-2 px-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
-            CHD
-          </h3>
-          <ul class="space-y-0.5">
-            <li v-for="link in chdLinks" :key="link.to">
-              <NuxtLink
-                :to="link.to"
-                class="group relative flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-zinc-400 transition hover:bg-zinc-800/60 hover:text-zinc-200"
-                active-class="!bg-zinc-800 !text-sky-400 before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-0.5 before:rounded-full before:bg-sky-400"
-              >
-                <span class="flex h-5 w-5 items-center justify-center">
-                  <!-- disc-down -->
-                  <svg v-if="link.icon === 'disc-down'" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125" />
-                  </svg>
-                  <!-- disc-up -->
-                  <svg v-else-if="link.icon === 'disc-up'" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
-                  </svg>
-                  <!-- shield-check -->
-                  <svg v-else-if="link.icon === 'shield-check'" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
-                  </svg>
-                </span>
-
-                {{ link.label }}
-
-                <!-- Status dot -->
-                <span class="ml-auto flex h-4 w-4 items-center justify-center">
-                  <span
-                    v-if="getStatus(link.store) === 'running'"
-                    class="h-2 w-2 animate-pulse rounded-full bg-sky-400"
-                  />
-                  <span
-                    v-else-if="getStatus(link.store) === 'done'"
-                    class="h-1.5 w-1.5 rounded-full bg-emerald-400"
-                  />
-                  <span
-                    v-else-if="getStatus(link.store) === 'error'"
-                    class="h-1.5 w-1.5 rounded-full bg-red-400"
-                  />
-                </span>
-              </NuxtLink>
-            </li>
-          </ul>
+                  <!-- Status dot -->
+                  <span class="ml-auto flex h-4 w-4 items-center justify-center">
+                    <span
+                      v-if="getStatus(link.store) === 'running'"
+                      class="h-2 w-2 animate-pulse rounded-full bg-sky-400"
+                    />
+                    <span
+                      v-else-if="getStatus(link.store) === 'done'"
+                      class="h-1.5 w-1.5 rounded-full bg-emerald-400"
+                    />
+                    <span
+                      v-else-if="getStatus(link.store) === 'error'"
+                      class="h-1.5 w-1.5 rounded-full bg-red-400"
+                    />
+                  </span>
+                </NuxtLink>
+              </li>
+            </ul>
+          </Transition>
         </div>
       </div>
 

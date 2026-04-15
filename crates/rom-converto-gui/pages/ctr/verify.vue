@@ -122,7 +122,7 @@ function partitionOk(part: NcchPartition): boolean {
 <template>
   <div>
     <PageHeader
-      title="Verify CTR ROM"
+      title="Verify 3DS ROM"
       description="Verify .cia legitimacy or .3ds/.cci integrity. Supports compressed Z3DS files. Drop multiple files for batch processing."
       :loading="loading || batch.running.value"
       :has-result="!!result"
