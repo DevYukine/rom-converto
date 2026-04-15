@@ -139,12 +139,12 @@ pub async fn cmd_chd_extract(
     let out_display = output.display().to_string();
     // ChdReader's deeply nested async types exceed the compiler's Send recursion
     // limit, so we run on a dedicated thread with its own tokio runtime.
-    std::thread::spawn(move || {
-        tokio::runtime::Builder::new_current_thread()
+    std::thread::spawn(move || -> Result<(), String> {
+        let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .unwrap()
-            .block_on(extract_from_chd(progress.as_ref(), input, output, parent))
+            .map_err(err_to_string)?;
+        rt.block_on(extract_from_chd(progress.as_ref(), input, output, parent))
             .map_err(err_to_string)
     })
     .join()
@@ -160,12 +160,12 @@ pub async fn cmd_chd_verify(
     fix: bool,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "chd-verify"));
-    std::thread::spawn(move || {
-        tokio::runtime::Builder::new_current_thread()
+    std::thread::spawn(move || -> Result<(), String> {
+        let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .unwrap()
-            .block_on(verify_chd(progress.as_ref(), input, parent, fix))
+            .map_err(err_to_string)?;
+        rt.block_on(verify_chd(progress.as_ref(), input, parent, fix))
             .map_err(err_to_string)
     })
     .join()

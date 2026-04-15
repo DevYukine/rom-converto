@@ -15,7 +15,9 @@ pub mod release;
 
 pub async fn cleanup_old_executable() -> anyhow::Result<()> {
     let current_exe = std::env::current_exe()?;
-    let current_exe_parent = current_exe.parent().unwrap();
+    let current_exe_parent = current_exe
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("current executable path has no parent directory"))?;
 
     debug!("Checking if an outdated executable exists");
 
@@ -122,9 +124,8 @@ pub async fn self_update(github_api: &mut GithubApi) -> anyhow::Result<()> {
     let current_exe = std::env::current_exe()?;
 
     let current_exe_renamed = current_exe
-        .clone()
         .parent()
-        .unwrap()
+        .ok_or_else(|| anyhow::anyhow!("current executable path has no parent directory"))?
         .join("rom-converto_old");
 
     tokio::fs::rename(&current_exe, &current_exe_renamed).await?;
