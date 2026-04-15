@@ -1,10 +1,12 @@
 use crate::nintendo::ctr::constants::{
-    CTR_MEDIA_UNIT_SIZE, CTR_NCSD_PARTITIONS, NCCH_MAGIC_OFFSET, NCSD_PARTITION_COUNT,
-    NCSD_PARTITION_ENTRY_SIZE, NCSD_PARTITION_TABLE_OFFSET,
+    CTR_COMMON_KEYS_HEX, CTR_MEDIA_UNIT_SIZE, CTR_NCSD_PARTITIONS, NCCH_MAGIC_OFFSET,
+    NCSD_PARTITION_COUNT, NCSD_PARTITION_ENTRY_SIZE, NCSD_PARTITION_TABLE_OFFSET,
 };
+use crate::nintendo::ctr::decrypt::util::{cbc_decrypt, gen_iv};
 use crate::nintendo::ctr::models::certificate::{Certificate, PublicKey};
 use crate::nintendo::ctr::models::cia::{CIA_HEADER_SIZE, CiaFileWithoutContent, CiaHeader};
 use crate::nintendo::ctr::models::ncch_header::NcchHeader;
+use crate::nintendo::ctr::models::ticket::Ticket;
 use crate::nintendo::ctr::models::title_metadata::TitleMetadata;
 use crate::nintendo::ctr::util::align_64;
 use crate::nintendo::ctr::verify::root_key::{ROOT_CA_EXPONENT, ROOT_CA_MODULUS};
@@ -382,11 +384,17 @@ pub async fn verify_cia(
     progress.inc(file_size / 4);
 
     let content_hashes_valid = if options.verify_content_hashes {
+        // Derive title key from ticket: AES-CBC decrypt the encrypted
+        // title_key using common_keys[common_key_index] as the AES key
+        // and the title_id (big-endian, zero-padded to 16 bytes) as the
+        // IV. Needed to decrypt encrypted content before hashing.
+        let title_key_opt = derive_title_key(&cia_without_content.ticket);
         match verify_content_hashes_streaming(
             &mut file,
             content_start,
             file_size,
             &cia_without_content.tmd,
+            title_key_opt.as_ref(),
             &mut details,
         )
         .await
@@ -809,16 +817,34 @@ fn serialize_cert_body(cert: &Certificate) -> Vec<u8> {
 fn serialize_tmd_body(
     tmd: &crate::nintendo::ctr::models::title_metadata::TitleMetadata,
 ) -> Vec<u8> {
+    // The TMD signature only covers the header (through
+    // content_info_records_hash). Info records are validated through
+    // the header's content_info_records_hash, and chunk records are
+    // validated through each info record's hash — a Merkle-style chain.
     let mut buf = Vec::new();
     let mut cursor = Cursor::new(&mut buf);
     let _ = tmd.header.write_options(&mut cursor, Endian::Big, ());
-    for record in &tmd.content_info_records {
-        let _ = record.write_options(&mut cursor, Endian::Big, ());
-    }
-    for record in &tmd.content_chunk_records {
-        let _ = record.write_options(&mut cursor, Endian::Big, ());
-    }
     buf
+}
+
+/// Decrypt the encrypted title key stored in a ticket using the common
+/// key at the ticket's common_key_index. Returns None if the ticket's
+/// title_key length is wrong (corrupt ticket) or the key index is out
+/// of range.
+fn derive_title_key(ticket: &Ticket) -> Option<[u8; 16]> {
+    let td = &ticket.ticket_data;
+    if td.title_key.len() != 16 {
+        return None;
+    }
+    let idx = td.common_key_index as usize;
+    let common_key = CTR_COMMON_KEYS_HEX.get(idx)?;
+
+    let mut iv = [0u8; 16];
+    iv[..8].copy_from_slice(&td.title_id.to_be_bytes());
+    let mut key_buf = [0u8; 16];
+    key_buf.copy_from_slice(&td.title_key);
+    cbc_decrypt(common_key, &iv, &mut key_buf).ok()?;
+    Some(key_buf)
 }
 
 fn serialize_ticket_body(ticket: &crate::nintendo::ctr::models::ticket::Ticket) -> Vec<u8> {
@@ -832,12 +858,15 @@ fn serialize_ticket_body(ticket: &crate::nintendo::ctr::models::ticket::Ticket) 
 
 /// Streaming content hash verify: seeks the file to each content chunk's offset
 /// and computes SHA-256 incrementally with a reusable 4 MB buffer instead of
-/// loading the entire CIA into memory.
+/// loading the entire CIA into memory. For encrypted contents the bytes are
+/// AES-CBC decrypted in-place before hashing, because the TMD stores hashes
+/// over the decrypted data.
 async fn verify_content_hashes_streaming(
     file: &mut tokio::fs::File,
     content_start: u64,
     file_size: u64,
     tmd: &TitleMetadata,
+    title_key: Option<&[u8; 16]>,
     details: &mut Vec<String>,
 ) -> Result<bool> {
     const CHUNK_BUF: usize = 4 * 1024 * 1024;
@@ -856,12 +885,43 @@ async fn verify_content_hashes_streaming(
             break;
         }
 
+        let encrypted = record.content_type.is_encrypted();
+        if encrypted && title_key.is_none() {
+            details.push(format!(
+                "Content {}: skipped (encrypted content but title key unavailable)",
+                record.content_id
+            ));
+            all_valid = false;
+            offset += size;
+            continue;
+        }
+        if encrypted && size % 16 != 0 {
+            details.push(format!(
+                "Content {}: encrypted size {} is not a multiple of 16",
+                record.content_id, size
+            ));
+            all_valid = false;
+            offset += size;
+            continue;
+        }
+
         file.seek(SeekFrom::Start(offset)).await?;
         let mut hasher = Sha256::new();
+        // CBC state for this content: IV starts as the content index
+        // big-endian, padded to 16 bytes. Each subsequent chunk picks up
+        // the IV from the LAST ciphertext block of the previous chunk,
+        // which must be saved BEFORE in-place decryption clobbers it.
+        let mut cbc_iv = gen_iv(record.content_index);
         let mut remaining = size;
         while remaining > 0 {
             let to_read = remaining.min(buf.len() as u64) as usize;
             file.read_exact(&mut buf[..to_read]).await?;
+            if encrypted {
+                let key = title_key.expect("title_key checked above");
+                let next_iv: [u8; 16] = buf[to_read - 16..to_read].try_into().expect("16 bytes");
+                cbc_decrypt(key, &cbc_iv, &mut buf[..to_read])?;
+                cbc_iv = next_iv;
+            }
             hasher.update(&buf[..to_read]);
             remaining -= to_read as u64;
         }

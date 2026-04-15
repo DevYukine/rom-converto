@@ -121,12 +121,16 @@ pub fn make_ticket(title_id: u64) -> Ticket {
 /// hash chain is computed correctly so the resulting TMD passes its own
 /// integrity checks.
 pub fn make_tmd(title_id: u64, records: Vec<(u32, u16, Vec<u8>, [u8; 32])>) -> TitleMetadata {
+    // Fixtures store plaintext bytes with a plaintext SHA-256, so they
+    // model a decrypted/devkit CIA. Encrypted-flag is cleared so the
+    // verifier hashes the stored bytes directly instead of trying to
+    // AES-CBC decrypt them first.
     let content_chunk_records: Vec<ContentChunkRecord> = records
         .iter()
         .map(|(id, idx, data, hash)| ContentChunkRecord {
             content_id: *id,
             content_index: *idx,
-            content_type: ContentType(0x0001),
+            content_type: ContentType(0x0000),
             content_size: data.len() as u64,
             hash: hash.to_vec(),
         })
