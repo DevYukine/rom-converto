@@ -15,6 +15,7 @@ Built for developers, tinkerers and archivists.
 * [x] Decrypt `.cia`, `.3ds`, `.cci`, and `.cxi` for emulator use (e.g. [Azahar](https://azahar-emu.org/))
 * [x] Compress and decompress ROMs using the Z3DS format (seekable zstd)
 * [x] Verify `.cia` legitimacy and `.3ds` / `.cci` NCCH partition integrity
+* [x] See [`benchmark/3DS.md`](benchmark/3DS.md) for performance numbers
 
 ### GameCube (DOL)
 
@@ -163,6 +164,7 @@ and `chdman.exe` 0.284 respectively, each tool on its own default
 settings, N = 10 interleaved warm runs. Full methodology and per-run
 detail live alongside the results:
 
+* [`benchmark/3DS.md`](benchmark/3DS.md): 3DS ROM results (Z3DS)
 * [`benchmark/GameCube.md`](benchmark/GameCube.md): GameCube disc image results (RVZ)
 * [`benchmark/Wii.md`](benchmark/Wii.md): Wii disc image results (RVZ)
 * [`benchmark/CHD.md`](benchmark/CHD.md): CD image results (CHD)
