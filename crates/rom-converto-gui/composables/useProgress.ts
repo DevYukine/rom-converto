@@ -1,4 +1,4 @@
-import { ref, computed } from "vue";
+import { ref, computed, type ComputedRef, type Ref } from "vue";
 import { listen } from "@tauri-apps/api/event";
 
 interface ProgressPayload {
@@ -9,12 +9,16 @@ interface ProgressPayload {
   message: string;
 }
 
+// Concrete `Ref<T>` / `ComputedRef<T>` rather than
+// `ReturnType<typeof ref<T>>`. The latter resolves to
+// `Ref<T | undefined>` under the no-initial-value overload and
+// would force every consumer to widen ProgressBar props.
 interface ProgressState {
-  total: ReturnType<typeof ref<number>>;
-  current: ReturnType<typeof ref<number>>;
-  message: ReturnType<typeof ref<string>>;
-  running: ReturnType<typeof ref<boolean>>;
-  percent: ReturnType<typeof computed<number>>;
+  total: Ref<number>;
+  current: Ref<number>;
+  message: Ref<string>;
+  running: Ref<boolean>;
+  percent: ComputedRef<number>;
   reset: () => void;
 }
 

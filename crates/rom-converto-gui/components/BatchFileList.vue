@@ -1,11 +1,14 @@
 <script setup lang="ts">
+import type { ComputedRef, Ref } from "vue";
 import type { BatchItem } from "~/types/batch";
 
+// Concrete Ref/ComputedRef types so ProgressState from useProgress
+// passes through without widening every consumer.
 const props = defineProps<{
   items: BatchItem[];
   currentIndex: number;
   running: boolean;
-  progress?: { percent: ReturnType<typeof computed<number>>; message: ReturnType<typeof ref<string>> };
+  progress?: { percent: ComputedRef<number>; message: Ref<string> };
 }>();
 
 const emit = defineEmits<{

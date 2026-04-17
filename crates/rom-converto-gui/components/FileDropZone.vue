@@ -24,11 +24,12 @@ onMounted(() => {
     zoneId = registerDropZone(
       dropZoneRef.value,
       (paths) => {
-        if (paths.length === 0) return;
+        const first = paths[0];
+        if (first === undefined) return;
         if (props.multiple && paths.length > 1) {
           emit("update:files", paths);
         } else {
-          emit("update:modelValue", paths[0]);
+          emit("update:modelValue", first);
         }
       },
       props.primary ? 0 : 100,

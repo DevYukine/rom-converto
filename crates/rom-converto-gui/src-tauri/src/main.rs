@@ -21,6 +21,8 @@ fn main() {
             cmd_verify_ctr,
             cmd_compress_disc,
             cmd_decompress_disc,
+            cmd_wup_compress,
+            cmd_wup_decrypt,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

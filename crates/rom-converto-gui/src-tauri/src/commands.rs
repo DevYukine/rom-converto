@@ -10,6 +10,9 @@ use rom_converto_lib::nintendo::ctr::{
 use rom_converto_lib::nintendo::rvz::{
     RvzCompressOptions, compress_disc, decompress_disc, derive_disc_path, derive_rvz_path,
 };
+use rom_converto_lib::nintendo::wup::{
+    TitleInput, WupCompressOptions, compress_titles_async, decrypt_nus_title_async,
+};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::AppHandle;
@@ -210,6 +213,62 @@ pub async fn cmd_decompress_disc(
         .map_err(err_to_string)?
         .map_err(err_to_string)?;
     Ok(format!("Decompressed to {out_display}"))
+}
+
+#[tauri::command]
+pub async fn cmd_wup_compress(
+    app: AppHandle,
+    inputs: Vec<PathBuf>,
+    output: PathBuf,
+    level: Option<i32>,
+    keys: Option<Vec<PathBuf>>,
+) -> Result<String, String> {
+    let progress = Arc::new(TauriProgress::new(app, "wup-compress"));
+    let out_display = output.display().to_string();
+    let opts = WupCompressOptions {
+        zstd_level: level.unwrap_or(WupCompressOptions::default().zstd_level),
+    };
+    // Pair each supplied key with the next disc input in positional
+    // order. Non-disc inputs do not consume a key slot.
+    let mut key_iter = keys.unwrap_or_default().into_iter();
+    let titles: Vec<TitleInput> = inputs
+        .into_iter()
+        .map(|p| {
+            let is_disc = p
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(|s| s.eq_ignore_ascii_case("wud") || s.eq_ignore_ascii_case("wux"))
+                .unwrap_or(false)
+                && p.is_file();
+            let mut t = TitleInput::auto(p);
+            if is_disc {
+                t.key_path = key_iter.next();
+            }
+            t
+        })
+        .collect();
+    tokio::spawn(
+        async move { compress_titles_async(titles, output, opts, progress.as_ref()).await },
+    )
+    .await
+    .map_err(err_to_string)?
+    .map_err(err_to_string)?;
+    Ok(format!("Compressed to {out_display}"))
+}
+
+#[tauri::command]
+pub async fn cmd_wup_decrypt(
+    app: AppHandle,
+    input: PathBuf,
+    output: PathBuf,
+) -> Result<String, String> {
+    let progress = Arc::new(TauriProgress::new(app, "wup-decrypt"));
+    let out_display = output.display().to_string();
+    tokio::spawn(async move { decrypt_nus_title_async(input, output, progress.as_ref()).await })
+        .await
+        .map_err(err_to_string)?
+        .map_err(err_to_string)?;
+    Ok(format!("Decrypted to {out_display}"))
 }
 
 #[tauri::command]

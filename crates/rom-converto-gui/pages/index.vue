@@ -19,6 +19,12 @@ const platforms = [
     count: 2,
   },
   {
+    to: "/wup",
+    name: "Wii U",
+    description: "Bundle titles, updates and DLC into Cemu .wua archives",
+    count: 2,
+  },
+  {
     to: "/chd",
     name: "CD (CHD)",
     description: "Compress, extract and verify CD disc images",

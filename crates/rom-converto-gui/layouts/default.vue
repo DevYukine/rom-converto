@@ -11,6 +11,8 @@ import { useDolCompressStore } from "~/stores/dol-compress";
 import { useDolDecompressStore } from "~/stores/dol-decompress";
 import { useRvlCompressStore } from "~/stores/rvl-compress";
 import { useRvlDecompressStore } from "~/stores/rvl-decompress";
+import { useWupCompressStore } from "~/stores/wup-compress";
+import { useWupDecryptStore } from "~/stores/wup-decrypt";
 import { getVersion } from "@tauri-apps/api/app";
 
 const appVersion = ref("");
@@ -59,6 +61,14 @@ const sections: SidebarSection[] = [
     links: [
       { to: "/rvl/compress", label: "Compress", store: () => useRvlCompressStore(), icon: "compress" },
       { to: "/rvl/decompress", label: "Decompress", store: () => useRvlDecompressStore(), icon: "expand" },
+    ],
+  },
+  {
+    key: "wup",
+    name: "Wii U",
+    links: [
+      { to: "/wup/compress", label: "Compress to WUA", store: () => useWupCompressStore(), icon: "compress" },
+      { to: "/wup/decrypt", label: "Decrypt NUS", store: () => useWupDecryptStore(), icon: "lock-open" },
     ],
   },
   {

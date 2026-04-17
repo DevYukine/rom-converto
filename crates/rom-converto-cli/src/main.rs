@@ -2,6 +2,7 @@ use crate::commands::chd::ChdCommands;
 use crate::commands::ctr::CtrCommands;
 use crate::commands::dol::DolCommands;
 use crate::commands::rvl::RvlCommands;
+use crate::commands::wup::WupCommands;
 use crate::commands::{Cli, Commands, SelfUpdateCommand};
 use crate::github::api::GithubApi;
 use crate::updater::{check_for_new_version_and_notify, cleanup_old_executable, self_update};
@@ -20,6 +21,9 @@ use rom_converto_lib::nintendo::ctr::{
 };
 use rom_converto_lib::nintendo::rvz::{
     RvzCompressOptions, compress_disc, decompress_disc, derive_disc_path, derive_rvz_path,
+};
+use rom_converto_lib::nintendo::wup::{
+    TitleInput, WupCompressOptions, compress_titles_async, decrypt_nus_title_async,
 };
 use std::mem::discriminant;
 
@@ -179,6 +183,39 @@ async fn main() -> Result<()> {
             }
             ChdCommands::Verify(cmd) => {
                 verify_chd(&progress, cmd.input, cmd.parent, cmd.fix).await?
+            }
+        },
+        Commands::Wup(inner) => match inner {
+            WupCommands::Compress(cmd) => {
+                let opts = WupCompressOptions {
+                    zstd_level: cmd
+                        .level
+                        .unwrap_or(WupCompressOptions::default().zstd_level),
+                };
+                // Pair --key values with disc inputs in positional
+                // order. Non-disc inputs skip past their key slot.
+                let mut key_iter = cmd.keys.into_iter();
+                let titles: Vec<TitleInput> = cmd
+                    .inputs
+                    .into_iter()
+                    .map(|p| {
+                        let is_disc = p
+                            .extension()
+                            .and_then(|s| s.to_str())
+                            .map(|s| s.eq_ignore_ascii_case("wud") || s.eq_ignore_ascii_case("wux"))
+                            .unwrap_or(false)
+                            && p.is_file();
+                        let mut t = TitleInput::auto(p);
+                        if is_disc {
+                            t.key_path = key_iter.next();
+                        }
+                        t
+                    })
+                    .collect();
+                compress_titles_async(titles, cmd.output, opts, &progress).await?
+            }
+            WupCommands::Decrypt(cmd) => {
+                decrypt_nus_title_async(cmd.input, cmd.output, &progress).await?
             }
         },
         Commands::SelfUpdate(_) => self_update(&mut github).await?,

@@ -57,3 +57,27 @@ export function deriveRvzPath(input: string): string {
 export function deriveDiscIsoPath(input: string): string {
   return replaceExt(input, "iso");
 }
+
+/// Derive a `.wua` output path from a title input. Strips a disc
+/// image extension, then peels trailing parenthesised tags in the
+/// preservation naming style so `Title (Region) (Langs) (Update)`
+/// collapses to `Title`. Dots inside the title (`Super Mario Bros. U`)
+/// are preserved; only real `.wud` / `.wux` extensions are stripped.
+export function deriveWuaPath(input: string): string {
+  const trimmed = input.replace(/[\\/]+$/, "");
+  const slash = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+  const parent = slash >= 0 ? trimmed.slice(0, slash) : "";
+  let base = slash >= 0 ? trimmed.slice(slash + 1) : trimmed;
+
+  base = base.replace(/\.(wud|wux)$/i, "");
+
+  while (true) {
+    const next = base.replace(/\s*\([^()]*\)\s*$/, "");
+    if (next === base) break;
+    base = next;
+  }
+  base = base.trimEnd();
+
+  const sep = input.includes("\\") ? "\\" : "/";
+  return parent ? `${parent}${sep}${base}.wua` : `${base}.wua`;
+}

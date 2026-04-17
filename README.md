@@ -1,6 +1,6 @@
 # rom-converto
 
-A utility suite for converting, compressing, encrypting, and decrypting ROM formats across **Nintendo 3DS**, **GameCube**, **Wii**, and **CD image** formats.
+A utility suite for converting, compressing, encrypting, and decrypting ROM formats across **Nintendo 3DS**, **GameCube**, **Wii**, **Wii U**, and **CD image** formats.
 
 Available as both a **command line tool** and a **desktop GUI application**.
 
@@ -31,6 +31,14 @@ Built for developers, tinkerers and archivists.
 * [x] Full partition pipeline: AES-CBC sector encryption, H0/H1/H2 hash hierarchy, per-chunk exception list, partial-cluster partitions
 * [x] Byte identical output against Dolphin's own encoder and decoder
 * [x] See [`benchmark/Wii.md`](benchmark/Wii.md) for performance numbers
+
+### Wii U (WUP)
+
+* [x] Bundle titles, updates, and DLC into Cemu's `.wua` archive format
+* [x] Decrypt NUS-format titles (`title.tmd` + `title.tik` + `.app` files) into a loadiine-shaped `meta/code/content` tree
+* [x] Also accepts the community layout variant (`tmd.<N>` + optional `cetk.<N>` + extensionless content files)
+* [x] Wii U disc images (`.wud` / `.wux`) accepted as `.wua` input, with per-disc key files
+* [x] FST-aware inherited-file skipping so update overlays install cleanly on top of the base title
 
 ### CD images (CHD)
 
@@ -131,6 +139,27 @@ Flags match the `dol` commands.
 
 ---
 
+### WUP (Wii U)
+
+| Command | Description |
+|---|---|
+| `wup compress -o <OUTPUT> <INPUTS>...` | Bundle one or more titles into a Cemu `.wua` archive |
+| `wup decrypt -o <OUTPUT> <INPUT>` | Decrypt a NUS directory into a loadiine `meta/code/content` tree |
+
+**`compress` flags:**
+
+| Flag | Description |
+|---|---|
+| `-o, --output <FILE>` | Output `.wua` file path |
+| `-l, --level <LEVEL>` | Zstd compression level 0..=22 (0 = Cemu default of 6) |
+| `--key <KEYFILE>` | Disc master key file. Pass once per disc input in positional order |
+
+> **`compress`:** Each input is auto-detected as a loadiine directory, a NUS directory, or a disc image (`.wud` / `.wux`). Disc images need a 16-byte master key; keys are resolved in order from `--key` flags, a sibling `<disc>.key` file, or `game.key` in the same directory. Multiple titles (base + update + DLC) can be bundled into one archive and each lands under its own `<titleId>_v<version>/` folder, the layout Cemu expects.
+
+> **`decrypt`:** Writes the decrypted tree to the output directory. Handles both the canonical Nintendo layout (`title.tmd` + `title.tik` + `{id}.app`) and the community layout variant (`tmd.<N>` + optional `cetk.<N>` + extensionless content files). When no ticket is present, the title key is derived from the title id via the Nintendo CDN's PBKDF2 scheme.
+
+---
+
 ### CHD
 
 | Command | Description |
@@ -168,6 +197,8 @@ detail live alongside the results:
 * [`benchmark/GameCube.md`](benchmark/GameCube.md): GameCube disc image results (RVZ)
 * [`benchmark/Wii.md`](benchmark/Wii.md): Wii disc image results (RVZ)
 * [`benchmark/CHD.md`](benchmark/CHD.md): CD image results (CHD)
+
+The Wii U `.wua` pipeline has no comparable reference CLI (Cemu ships the format but not a standalone compressor), so no head-to-head numbers are published for it.
 
 ## Project Structure
 

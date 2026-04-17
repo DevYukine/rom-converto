@@ -25,7 +25,10 @@ export function useBatchOperation(
     for (let i = 0; i < queue.value.length; i++) {
       if (aborted.value) break;
 
+      // noUncheckedIndexedAccess widens `queue[i]` to `T | undefined`.
+      // Loop bound rules it out, but skip defensively.
       const item = queue.value[i];
+      if (!item) continue;
       if (item.status === "done" || item.status === "error") {
         if (item.status === "done") doneCount++;
         if (item.status === "error") errorCount++;

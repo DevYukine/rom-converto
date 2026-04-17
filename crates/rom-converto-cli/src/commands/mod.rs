@@ -2,12 +2,14 @@ use crate::commands::chd::ChdCommands;
 use crate::commands::ctr::CtrCommands;
 use crate::commands::dol::DolCommands;
 use crate::commands::rvl::RvlCommands;
+use crate::commands::wup::WupCommands;
 use clap::{Parser, Subcommand};
 
 pub mod chd;
 pub mod ctr;
 pub mod dol;
 pub mod rvl;
+pub mod wup;
 
 /// CLI for en/decrypting, compressing and converting ROMs.
 #[derive(Parser, Debug)]
@@ -42,6 +44,9 @@ pub enum Commands {
 
     #[command(subcommand)]
     Chd(ChdCommands),
+
+    #[command(subcommand)]
+    Wup(WupCommands),
 
     SelfUpdate(SelfUpdateCommand),
 }
