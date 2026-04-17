@@ -2,6 +2,7 @@ export default defineNuxtConfig({
   compatibilityDate: "2025-01-01",
   ssr: false,
   devtools: { enabled: false },
+  telemetry: false,
   modules: ["@pinia/nuxt"],
   spaLoadingTemplate: "app/spa-loading-template.html",
   experimental: {
