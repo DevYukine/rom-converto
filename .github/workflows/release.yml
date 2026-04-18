@@ -4,6 +4,9 @@ on:
   push:
     branches: [ "main" ]
 
+permissions:
+  contents: write
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -24,6 +27,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           version-file: './Cargo.toml'
           version-path: "workspace.package.version"
+          pre-commit: '.github/scripts/pre-commit.js'
       - name: Create Release
         if: ${{ steps.changelog.outputs.skipped == 'false' }}
         uses: ncipollo/release-action@v1
