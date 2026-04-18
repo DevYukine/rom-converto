@@ -1,3 +1,18 @@
+# [0.8.0](https://github.com/DevYukine/rom-converto/compare/v0.7.1...v0.8.0) (2026-04-18)
+
+
+### Bug Fixes
+
+* **gui:** disable nuxt telemetry to unblock tauri dev startup ([fe25fe5](https://github.com/DevYukine/rom-converto/commit/fe25fe5b9537083362d7d4ddbf9bfc46c2c6c90b))
+* replace panicking unwraps in updater and CHD GUI commands ([a3db4ba](https://github.com/DevYukine/rom-converto/commit/a3db4ba6046b0e29872817850a2bea156a9d8305))
+
+
+### Features
+
+* **wup:** add Wii U .wua archive creation ([fd6fbe5](https://github.com/DevYukine/rom-converto/commit/fd6fbe58831c5685ed812627f3271da760436557))
+
+
+
 ## [0.7.1](https://github.com/DevYukine/rom-converto/compare/v0.7.0...v0.7.1) (2026-04-15)
 
 
@@ -53,16 +68,6 @@
 ### Bug Fixes
 
 * simplify version management, remove hardcoded version in UI ([cef99a9](https://github.com/DevYukine/rom-converto/commit/cef99a91b50b73ec8491aa7fa9137d2762b5e436))
-
-
-
-## [0.5.1](https://github.com/DevYukine/rom-converto/compare/v0.5.0...v0.5.1) (2026-04-08)
-
-
-### Bug Fixes
-
-* **release:** replace .sh file with .js file for syncing version ([d0454ee](https://github.com/DevYukine/rom-converto/commit/d0454eef8370fe2f6b1c8e03575c7911d08e6aff))
-* **version:** update all versions on release action ([5c62ea6](https://github.com/DevYukine/rom-converto/commit/5c62ea6042cf6f39225a4e03d7d486a707fd4710))
 
 
 
