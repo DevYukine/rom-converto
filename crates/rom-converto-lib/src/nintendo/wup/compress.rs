@@ -17,7 +17,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use crate::nintendo::wup::compress_parallel::spawn_zarchive_pool;
+use crate::nintendo::wup::compress_worker::spawn_zarchive_pool;
 use crate::nintendo::wup::constants::{
     COMPRESSED_BLOCK_SIZE, MAX_ZSTD_LEVEL, MIN_ZSTD_LEVEL, ZARCHIVE_DEFAULT_ZSTD_LEVEL,
 };

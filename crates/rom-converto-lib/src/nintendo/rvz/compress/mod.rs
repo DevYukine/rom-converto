@@ -9,8 +9,8 @@
 //!    header, runs [`RegionPlan::gamecube`] / [`RegionPlan::wii`] to
 //!    slice the disc into an ordered list of raw and partition
 //!    regions, then walks the plan calling one of:
-//!    * [`raw::parallel_encode_raw_region`] for every raw region,
-//!    * [`partition::parallel_encode_partition_region`] for every
+//!    * [`raw::encode_raw_region`] for every raw region,
+//!    * [`partition::encode_partition_region`] for every
 //!      Wii partition.
 //! 3. After every region lands, the partition table, raw-data table,
 //!    and group table are serialized and written back, followed by
@@ -171,7 +171,7 @@ pub(super) enum CompressedKind {
     Raw(Vec<u8>),
 }
 
-/// Metadata returned by [`partition::parallel_encode_partition_region`]
+/// Metadata returned by [`partition::encode_partition_region`]
 /// so [`compress_blocking`] can populate `WiaPart::pd[0]` and
 /// `WiaPart::pd[1]` with values that match Dolphin's
 /// `CreatePartitionDataEntry` formula.
@@ -268,7 +268,7 @@ fn compress_blocking(
             match region {
                 DiscRegion::Raw { offset, size } => {
                     let group_index = groups.len() as u32;
-                    raw::parallel_encode_raw_region(
+                    raw::encode_raw_region(
                         &raw_pool,
                         &mut reader,
                         &mut writer,
@@ -290,7 +290,7 @@ fn compress_blocking(
                 }
                 DiscRegion::Partition(info) => {
                     let group_index = groups.len() as u32;
-                    let layout = partition::parallel_encode_partition_region(
+                    let layout = partition::encode_partition_region(
                         partition_pool
                             .as_ref()
                             .expect("partition_pool must exist if plan contains partitions"),

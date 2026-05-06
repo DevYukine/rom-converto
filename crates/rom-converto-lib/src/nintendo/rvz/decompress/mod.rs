@@ -14,8 +14,8 @@
 //!    [`crate::util::pread::file_read_exact_at`] let all workers
 //!    share that one handle without seek contention.
 //! 3. Every raw-data region is dispatched through
-//!    [`raw::parallel_decompress_raw_region`] and every Wii
-//!    partition through [`partition::parallel_decompress_partition`].
+//!    [`raw::decompress_raw_region`] and every Wii
+//!    partition through [`partition::decompress_partition`].
 //!    Both pool-pump closures run through
 //!    [`crate::util::worker_pool::drive`] so chunks are submitted
 //!    in source order and output is written back in the same order
@@ -193,7 +193,7 @@ fn decompress_blocking(input: &Path, output: &Path, bytes_done: Arc<AtomicU64>) 
     // thin (no long-lived cross-region state) and lets dispatch
     // amortize across the region's ~10 chunks.
     for region in &raw_data {
-        raw::parallel_decompress_raw_region(
+        raw::decompress_raw_region(
             region,
             &groups,
             chunk_size,
@@ -213,7 +213,7 @@ fn decompress_blocking(input: &Path, output: &Path, bytes_done: Arc<AtomicU64>) 
     // sectors that fall inside `total_data_size` and leave the
     // tail untouched.
     for part in &parts {
-        partition::parallel_decompress_partition(
+        partition::decompress_partition(
             part,
             &groups,
             chunk_size,

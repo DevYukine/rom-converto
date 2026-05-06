@@ -366,7 +366,7 @@ fn valid_blocks_for_cluster(cluster_idx: u64, total_data_size: u64) -> usize {
 /// `bytes_to_write` bytes of each cluster are written; sectors
 /// past `valid_blocks_in_cluster` are left to the pre-filled
 /// zero'd output.
-pub(super) fn parallel_decompress_partition(
+pub(super) fn decompress_partition(
     part: &WiaPart,
     groups: &[RvzGroup],
     chunk_size_u64: u64,

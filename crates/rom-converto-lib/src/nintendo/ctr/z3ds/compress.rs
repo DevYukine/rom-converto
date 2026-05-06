@@ -3,8 +3,8 @@ use crate::nintendo::ctr::constants::{
     NCSD_PARTITION_TABLE_OFFSET,
 };
 use crate::nintendo::ctr::util::align_64_usize;
-use crate::nintendo::ctr::z3ds::compress_parallel::{
-    Z3dsCompressWork, Z3dsCompressedFrame, make_z3ds_compress_workers, parallel_encode_seekable,
+use crate::nintendo::ctr::z3ds::compress_worker::{
+    Z3dsCompressWork, Z3dsCompressedFrame, encode_seekable, make_z3ds_compress_workers,
 };
 use crate::nintendo::ctr::z3ds::error::{Z3dsError, Z3dsResult};
 use crate::nintendo::ctr::z3ds::models::{
@@ -147,7 +147,7 @@ pub async fn compress_rom(
         let workers = make_z3ds_compress_workers(n_threads, zstd_level)?;
         let pool: Pool<Z3dsCompressWork, Z3dsCompressedFrame, Z3dsError> = Pool::spawn(workers);
 
-        let compressed_size = parallel_encode_seekable(
+        let compressed_size = encode_seekable(
             &pool,
             &mut reader,
             &mut writer,

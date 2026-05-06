@@ -1,4 +1,4 @@
-//! Parallel Z3DS frame compressor.
+//! Worker-pool Z3DS frame compressor.
 //!
 //! Drives a persistent worker pool to compress every frame in
 //! parallel, overlaps writes with read + dispatch via a dedicated
@@ -6,10 +6,10 @@
 //! table footer on the main thread once every frame has been drained
 //! in order.
 //!
-//! Shape mirrors the CHD writer's `parallel_compress_hunks`. One
-//! worker owns one persistent `zstd::bulk::Compressor` for the
-//! lifetime of the compress call, so the zstd CCtx is allocated
-//! exactly once per thread instead of once per frame.
+//! Shape mirrors the CHD writer's `compress_hunks`. One worker
+//! owns one persistent `zstd::bulk::Compressor` for the lifetime
+//! of the compress call, so the zstd CCtx is allocated exactly
+//! once per thread instead of once per frame.
 
 use crate::nintendo::ctr::z3ds::error::{Z3dsError, Z3dsResult};
 use crate::nintendo::ctr::z3ds::seekable::{FrameEntry, write_seek_table};
@@ -125,7 +125,7 @@ fn read_frame<R: Read>(reader: &mut R, max_frame_size: usize) -> Z3dsResult<Opti
 /// Returns the total number of bytes written to `writer` (frames +
 /// seek table), which is the value that goes into the Z3DS header's
 /// `compressed_size` field.
-pub(super) fn parallel_encode_seekable(
+pub(super) fn encode_seekable(
     pool: &Pool<Z3dsCompressWork, Z3dsCompressedFrame, Z3dsError>,
     reader: &mut BufReader<std::fs::File>,
     writer: &mut BufWriter<std::fs::File>,
@@ -203,7 +203,7 @@ mod tests {
     use super::*;
     use crate::nintendo::ctr::z3ds::seekable::{decode_seekable, encode_seekable_streaming};
 
-    fn encode_parallel(input: &[u8], max_frame_size: usize, level: i32) -> Z3dsResult<Vec<u8>> {
+    fn encode_pool(input: &[u8], max_frame_size: usize, level: i32) -> Z3dsResult<Vec<u8>> {
         let tmp = tempfile::tempdir().unwrap();
         let in_path = tmp.path().join("in.bin");
         let out_path = tmp.path().join("out.bin");
@@ -219,7 +219,7 @@ mod tests {
         let mut writer = BufWriter::with_capacity(4 * 1024 * 1024, out_file);
 
         let bytes_done = Arc::new(AtomicU64::new(0));
-        parallel_encode_seekable(
+        encode_seekable(
             &pool,
             &mut reader,
             &mut writer,
@@ -234,32 +234,32 @@ mod tests {
         Ok(std::fs::read(&out_path).unwrap())
     }
 
-    /// Round-trip the parallel encoder output through `decode_seekable`
+    /// Round-trip the pooled encoder output through `decode_seekable`
     /// to confirm the seek-table footer is well-formed and all frames
     /// decode back to the original bytes in order.
     ///
-    /// Note: the parallel encoder uses `zstd::bulk::Compressor::compress`
+    /// Note: the pooled encoder uses `zstd::bulk::Compressor::compress`
     /// (the bulk API) for persistent-CCtx reuse, which produces slightly
-    /// different frame-header flag bytes than the old sequential path's
-    /// `zstd::encode_all` (streaming API). Both outputs are valid zstd
-    /// and decode correctly via any zstd decoder; the byte-level layout
-    /// of the frame header is the only difference.
+    /// different frame-header flag bytes than the streaming-API
+    /// `zstd::encode_all`. Both outputs are valid zstd and decode
+    /// correctly via any zstd decoder; the byte-level layout of the
+    /// frame header is the only difference.
     #[test]
-    fn parallel_encode_roundtrips_through_decode_seekable() {
+    fn encode_roundtrips_through_decode_seekable() {
         let original: Vec<u8> = (0u8..=99).cycle().take(100_000).collect();
-        let encoded = encode_parallel(&original, 8192, 0).unwrap();
+        let encoded = encode_pool(&original, 8192, 0).unwrap();
         let decoded = decode_seekable(&encoded).unwrap();
         assert_eq!(original, decoded);
     }
 
-    /// The parallel encoder's output must be decodable by the stock
+    /// The pooled encoder's output must be decodable by the stock
     /// `zstd::stream::copy_decode` path the verifier uses, proving the
     /// bulk-API frame headers are compatible with libzstd's streaming
     /// decoder (not just our own `decode_seekable`).
     #[test]
-    fn parallel_encode_decodes_via_zstd_streaming() {
+    fn encode_decodes_via_zstd_streaming() {
         let original: Vec<u8> = (0u8..=255).cycle().take(200_000).collect();
-        let encoded = encode_parallel(&original, 4096, 0).unwrap();
+        let encoded = encode_pool(&original, 4096, 0).unwrap();
 
         let mut out = Vec::new();
         zstd::stream::copy_decode(&encoded[..], &mut out).unwrap();
@@ -270,9 +270,9 @@ mod tests {
     /// branch doesn't emit an empty work item when the last read hits
     /// EOF at a frame boundary.
     #[test]
-    fn parallel_encode_exact_frame_boundary() {
+    fn encode_exact_frame_boundary() {
         let original = vec![0xABu8; 16_384];
-        let encoded = encode_parallel(&original, 4096, 0).unwrap();
+        let encoded = encode_pool(&original, 4096, 0).unwrap();
         let decoded = decode_seekable(&encoded).unwrap();
         assert_eq!(original, decoded);
     }
@@ -283,41 +283,41 @@ mod tests {
     /// in flight; the `drive` reorder buffer must restore strict
     /// sequence before bytes hit the writer.
     #[test]
-    fn parallel_encode_is_deterministic() {
+    fn encode_is_deterministic() {
         let original: Vec<u8> = (0u8..=199).cycle().take(80_000).collect();
-        let a = encode_parallel(&original, 4096, 0).unwrap();
-        let b = encode_parallel(&original, 4096, 0).unwrap();
-        assert_eq!(a, b, "parallel encoder is not deterministic across runs");
+        let a = encode_pool(&original, 4096, 0).unwrap();
+        let b = encode_pool(&original, 4096, 0).unwrap();
+        assert_eq!(a, b, "pooled encoder is not deterministic across runs");
     }
 
-    /// Sanity check: the new bulk-API output must still compress
-    /// roughly as well as the old streaming-API output (within 1 %)
-    /// on highly compressible data. Guards against accidental level
-    /// or parameter drift.
+    /// Sanity check: the bulk-API output must still compress roughly
+    /// as well as the streaming-API output (within 1 %) on highly
+    /// compressible data. Guards against accidental level or
+    /// parameter drift.
     #[test]
-    fn parallel_encode_ratio_close_to_sequential() {
+    fn encode_ratio_close_to_streaming() {
         let original: Vec<u8> = (0u8..=127).cycle().take(200_000).collect();
 
-        let mut sequential = Vec::new();
+        let mut streaming = Vec::new();
         encode_seekable_streaming(
             &mut std::io::Cursor::new(&original),
-            &mut sequential,
+            &mut streaming,
             4096,
             0,
             None,
         )
         .unwrap();
 
-        let parallel = encode_parallel(&original, 4096, 0).unwrap();
+        let pooled = encode_pool(&original, 4096, 0).unwrap();
 
-        let delta = (parallel.len() as f64 - sequential.len() as f64).abs();
-        let ratio = delta / sequential.len() as f64;
+        let delta = (pooled.len() as f64 - streaming.len() as f64).abs();
+        let ratio = delta / streaming.len() as f64;
         assert!(
             ratio < 0.01,
-            "parallel output size drifted >1 % from sequential: \
-             sequential={} parallel={} delta={:.2}%",
-            sequential.len(),
-            parallel.len(),
+            "pooled output size drifted >1 % from streaming: \
+             streaming={} pooled={} delta={:.2}%",
+            streaming.len(),
+            pooled.len(),
             ratio * 100.0
         );
     }

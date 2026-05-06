@@ -88,7 +88,7 @@ pub(super) fn make_raw_compress_workers(
 /// one compress invocation so each compress run only pays the
 /// pool-spawn cost once.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn parallel_encode_raw_region(
+pub(super) fn encode_raw_region(
     pool: &Pool<RawWork, CompressedChunk, RvzError>,
     reader: &mut BufReader<std::fs::File>,
     writer: &mut BufWriter<std::fs::File>,

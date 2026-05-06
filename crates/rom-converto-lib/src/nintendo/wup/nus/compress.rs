@@ -353,10 +353,9 @@ mod tests {
             compress_nus_title(dir.path(), &mut writer, &NoProgress).unwrap();
         assert_eq!(title_id, TEST_TITLE_ID);
         assert_eq!(title_version, TEST_TITLE_VERSION);
-        let pool = crate::nintendo::wup::compress_parallel::spawn_zarchive_pool(
-            ZARCHIVE_DEFAULT_ZSTD_LEVEL,
-        )
-        .unwrap();
+        let pool =
+            crate::nintendo::wup::compress_worker::spawn_zarchive_pool(ZARCHIVE_DEFAULT_ZSTD_LEVEL)
+                .unwrap();
         let (archive, _size) = writer.finalize(&pool, None).unwrap();
         pool.shutdown();
 

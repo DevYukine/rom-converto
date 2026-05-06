@@ -1,5 +1,5 @@
 pub(crate) mod cue_generator;
-pub(crate) mod parallel;
+pub(crate) mod worker;
 
 use crate::cd::IO_BUFFER_SIZE;
 use crate::chd::error::{ChdError, ChdResult};

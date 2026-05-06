@@ -43,9 +43,9 @@ pub(super) struct FrameEntry {
 /// entries collected during compression. Returns the number of bytes
 /// written (always `8 + entries.len() * 8 + 9`).
 ///
-/// Shared by [`encode_seekable_streaming`] and the parallel compress
-/// driver in `compress_parallel.rs` so both paths emit a byte-identical
-/// seek-table footer.
+/// Shared by [`encode_seekable_streaming`] and the worker-pool
+/// compress driver in `compress_worker.rs` so both paths emit a
+/// byte-identical seek-table footer.
 pub(super) fn write_seek_table<W: Write>(
     writer: &mut W,
     entries: &[FrameEntry],
@@ -111,10 +111,10 @@ pub fn encode_seekable_with_progress(
 /// uncompressed frame plus its compressed output), independent of
 /// the total file size.
 ///
-/// Kept as a reference implementation the parallel compress path in
-/// `compress_parallel.rs` is tested byte-for-byte against. Production
-/// compression always runs through the parallel driver, so this
-/// function is `cfg(test)`.
+/// Kept as a reference implementation that the worker-pool compress
+/// path in `compress_worker.rs` is tested byte-for-byte against.
+/// Production compression always runs through the worker pool, so
+/// this function is `cfg(test)`.
 #[cfg(test)]
 pub fn encode_seekable_streaming<R: Read, W: Write>(
     reader: &mut R,

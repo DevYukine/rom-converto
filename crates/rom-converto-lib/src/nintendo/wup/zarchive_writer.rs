@@ -4,7 +4,7 @@
 //! `start_new_file` / `append_data` / `make_dir`, buffers the raw
 //! uncompressed data into 64 KiB blocks, and compresses every block
 //! in parallel at [`Self::finalize`] time through the worker pool in
-//! [`crate::nintendo::wup::compress_parallel`]. The shape mirrors
+//! [`crate::nintendo::wup::compress_worker`]. The shape mirrors
 //! upstream `ZArchiveWriter` in `zarchivewriter.cpp` so byte layouts
 //! stay compatible with `zarchive.exe` and Cemu.
 //!
@@ -19,8 +19,8 @@ use std::io::{Cursor, Write};
 use binrw::BinWrite;
 use sha2::{Digest, Sha256};
 
-use crate::nintendo::wup::compress_parallel::{
-    ZArchiveCompressWork, ZArchiveCompressedBlock, parallel_compress_blocks,
+use crate::nintendo::wup::compress_worker::{
+    ZArchiveCompressWork, ZArchiveCompressedBlock, compress_blocks,
 };
 use crate::nintendo::wup::constants::{
     COMPRESSED_BLOCK_SIZE, COMPRESSION_OFFSET_RECORD_SIZE, FILE_DIRECTORY_ENTRY_SIZE,
@@ -219,7 +219,7 @@ impl<W: Write> ZArchiveWriter<W> {
             return Ok(());
         }
         let pending = std::mem::take(&mut self.pending_blocks);
-        parallel_compress_blocks(
+        compress_blocks(
             pool,
             pending,
             &mut self.inner,
@@ -230,12 +230,12 @@ impl<W: Write> ZArchiveWriter<W> {
         )
     }
 
-    /// Finalise the archive: parallel-compress every buffered block,
-    /// then emit the offset records, name table, file tree, meta
-    /// stubs, and the 144-byte footer with its SHA-256 integrity
-    /// field. Returns the inner writer and the total archive size in
-    /// bytes. `progress`, when present, receives an `inc` per 64 KiB
-    /// block compressed.
+    /// Finalise the archive: compress every buffered block in
+    /// parallel through the pool, then emit the offset records,
+    /// name table, file tree, meta stubs, and the 144-byte footer
+    /// with its SHA-256 integrity field. Returns the inner writer
+    /// and the total archive size in bytes. `progress`, when
+    /// present, receives an `inc` per 64 KiB block compressed.
     pub fn finalize(
         mut self,
         pool: &Pool<ZArchiveCompressWork, ZArchiveCompressedBlock, WupError>,
@@ -264,12 +264,12 @@ impl<W: Write> ZArchiveWriter<W> {
             p.start(0, "Finalizing archive");
         }
 
-        // 2. Parallel-compress every pending block. This populates
-        //    self.offset_records, self.bytes_written, and the hasher
-        //    as if we had run the whole thing through the sequential
-        //    pipeline.
+        // 2. Compress every pending block through the worker pool.
+        //    This populates self.offset_records, self.bytes_written,
+        //    and the hasher as if we had run the whole thing through
+        //    a sequential pipeline.
         let pending = std::mem::take(&mut self.pending_blocks);
-        parallel_compress_blocks(
+        compress_blocks(
             pool,
             pending,
             &mut self.inner,
@@ -418,7 +418,7 @@ pub(crate) mod tests {
     //! parse logic.
 
     use super::*;
-    use crate::nintendo::wup::compress_parallel::spawn_zarchive_pool;
+    use crate::nintendo::wup::compress_worker::spawn_zarchive_pool;
     use crate::nintendo::wup::constants::{
         COMPRESSED_BLOCK_SIZE, ZARCHIVE_DEFAULT_ZSTD_LEVEL, ZARCHIVE_FOOTER_MAGIC,
         ZARCHIVE_FOOTER_SIZE, ZARCHIVE_FOOTER_VERSION,

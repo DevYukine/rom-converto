@@ -1,4 +1,4 @@
-//! Parallel CHD hunk decompressor.
+//! Worker-pool CHD hunk decompressor.
 //!
 //! Drives a worker pool via [`crate::util::worker_pool::drive`] so
 //! N workers decode compressed hunks concurrently. Each worker
@@ -146,11 +146,11 @@ fn resolve_entry(map: &[MapEntry], hunk_index: u32) -> ChdResult<MapEntry> {
     }
 }
 
-/// Drive the parallel extract pipeline: pool of decompressors
-/// reading a shared file via positional reads, reorder-buffered
-/// drive, dedicated writer thread for the output bin.
+/// Drive the extract pipeline: pool of decompressors reading a
+/// shared file via positional reads, reorder-buffered drive,
+/// dedicated writer thread for the output bin.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn parallel_extract_hunks(
+pub(crate) fn extract_hunks(
     pool: &Pool<ChdExtractWork, ChdExtractedOut, ChdError>,
     map: &[MapEntry],
     writer: &mut BufWriter<std::fs::File>,
@@ -221,9 +221,9 @@ pub(crate) fn parallel_extract_hunks(
 /// the worker pool still does every decompression in parallel.
 ///
 /// Only the first `logical_bytes` bytes of the decoded hunks
-/// are folded into the hash, matching the existing serial verify
-/// path and chdman's raw SHA-1 coverage rule.
-pub(crate) fn parallel_verify_hunks(
+/// are folded into the hash, matching chdman's raw SHA-1
+/// coverage rule.
+pub(crate) fn verify_hunks(
     pool: &Pool<ChdExtractWork, ChdExtractedOut, ChdError>,
     map: &[MapEntry],
     raw_sha1: &mut Sha1,

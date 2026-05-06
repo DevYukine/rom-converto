@@ -1,9 +1,9 @@
 use std::path::{Path, PathBuf};
 
 mod compress;
-mod compress_parallel;
+mod compress_worker;
 mod decompress;
-mod decompress_parallel;
+mod decompress_worker;
 pub mod error;
 pub mod models;
 mod seekable;

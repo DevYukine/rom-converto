@@ -1,4 +1,4 @@
-//! Parallel Z3DS frame decompressor.
+//! Worker-pool Z3DS frame decompressor.
 //!
 //! Uses the seek table at the tail of the compressed payload to
 //! schedule frame decode in parallel: N workers each hold an
@@ -165,7 +165,7 @@ fn pick_max_in_flight(max_uncompressed: u32) -> usize {
     }
 }
 
-/// Drive the parallel Z3DS decompress pipeline:
+/// Drive the worker-pool Z3DS decompress pipeline:
 ///
 /// * **Planner (main thread, before spawning)**: reads the seek
 ///   table footer and skippable frame via positional reads and
@@ -178,7 +178,7 @@ fn pick_max_in_flight(max_uncompressed: u32) -> usize {
 /// * **Writer (dedicated thread)**: drains a bounded channel and
 ///   calls `write_all` on the output `BufWriter` in strict frame
 ///   order (the driver's `drive()` reorder buffer).
-pub(super) fn parallel_decompress_frames(
+pub(super) fn decompress_frames(
     pool: &Pool<Z3dsDecompressWork, Z3dsDecompressedFrame, Z3dsError>,
     writer: &mut BufWriter<std::fs::File>,
     work_items: Vec<Z3dsDecompressWork>,
@@ -247,14 +247,14 @@ pub(super) fn parallel_decompress_frames(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::nintendo::ctr::z3ds::compress_parallel::{
-        Z3dsCompressWork, Z3dsCompressedFrame, make_z3ds_compress_workers, parallel_encode_seekable,
+    use crate::nintendo::ctr::z3ds::compress_worker::{
+        Z3dsCompressWork, Z3dsCompressedFrame, encode_seekable, make_z3ds_compress_workers,
     };
     use std::io::BufReader;
 
     fn write_z3ds_payload(input: &[u8], max_frame_size: usize, level: i32) -> Vec<u8> {
         // Write the raw Z3DS payload (frames + seek table, no
-        // Z3dsHeader wrapper) to a temp file via the parallel
+        // Z3dsHeader wrapper) to a temp file via the pooled
         // encoder, then read it back as a Vec for round-trip tests.
         let tmp = tempfile::tempdir().unwrap();
         let in_path = tmp.path().join("in.bin");
@@ -271,7 +271,7 @@ mod tests {
         let mut writer = BufWriter::with_capacity(4 * 1024 * 1024, out_file);
 
         let bytes_done = Arc::new(AtomicU64::new(0));
-        parallel_encode_seekable(
+        encode_seekable(
             &pool,
             &mut reader,
             &mut writer,
@@ -287,7 +287,7 @@ mod tests {
         std::fs::read(&out_path).unwrap()
     }
 
-    fn decompress_parallel_payload(payload: &[u8]) -> Vec<u8> {
+    fn decompress_payload(payload: &[u8]) -> Vec<u8> {
         // Mirrors the production decompress_rom path without the
         // Z3DS header layer: write the raw payload, pread the seek
         // table, dispatch to the pool, collect output via a
@@ -308,7 +308,7 @@ mod tests {
         let pool: Pool<Z3dsDecompressWork, Z3dsDecompressedFrame, Z3dsError> = Pool::spawn(workers);
 
         let bytes_done = Arc::new(AtomicU64::new(0));
-        parallel_decompress_frames(&pool, &mut writer, work_items, &bytes_done).unwrap();
+        decompress_frames(&pool, &mut writer, work_items, &bytes_done).unwrap();
         writer.flush().unwrap();
         drop(writer);
         pool.shutdown();
@@ -317,45 +317,45 @@ mod tests {
     }
 
     #[test]
-    fn parallel_decompress_roundtrips_multi_frame() {
+    fn decompress_roundtrips_multi_frame() {
         let original: Vec<u8> = (0u8..=255).cycle().take(200_000).collect();
         let payload = write_z3ds_payload(&original, 4096, 0);
-        let decoded = decompress_parallel_payload(&payload);
+        let decoded = decompress_payload(&payload);
         assert_eq!(original, decoded);
     }
 
     #[test]
-    fn parallel_decompress_roundtrips_exact_frame_boundary() {
+    fn decompress_roundtrips_exact_frame_boundary() {
         let original = vec![0xABu8; 16_384];
         let payload = write_z3ds_payload(&original, 4096, 0);
-        let decoded = decompress_parallel_payload(&payload);
+        let decoded = decompress_payload(&payload);
         assert_eq!(original, decoded);
     }
 
     #[test]
-    fn parallel_decompress_roundtrips_short_final_frame() {
+    fn decompress_roundtrips_short_final_frame() {
         // 12,345 bytes with a 4,096-byte frame size = 3 full frames
         // plus a 57-byte final frame. Exercises the uneven tail.
         let original: Vec<u8> = (0u8..=99).cycle().take(12_345).collect();
         let payload = write_z3ds_payload(&original, 4096, 0);
-        let decoded = decompress_parallel_payload(&payload);
+        let decoded = decompress_payload(&payload);
         assert_eq!(original, decoded);
     }
 
     #[test]
-    fn parallel_decompress_roundtrips_single_frame() {
+    fn decompress_roundtrips_single_frame() {
         let original = b"small, fits in one frame".to_vec();
         let payload = write_z3ds_payload(&original, 1 << 20, 0);
-        let decoded = decompress_parallel_payload(&payload);
+        let decoded = decompress_payload(&payload);
         assert_eq!(original, decoded);
     }
 
     #[test]
-    fn parallel_decompress_is_deterministic() {
+    fn decompress_is_deterministic() {
         let original: Vec<u8> = (0u8..=199).cycle().take(80_000).collect();
         let payload = write_z3ds_payload(&original, 4096, 0);
-        let a = decompress_parallel_payload(&payload);
-        let b = decompress_parallel_payload(&payload);
+        let a = decompress_payload(&payload);
+        let b = decompress_payload(&payload);
         assert_eq!(a, b);
         assert_eq!(a, original);
     }
@@ -365,12 +365,11 @@ mod tests {
     /// so each entry is 12 bytes instead of 8) must parse correctly
     /// and round-trip. Synthesises such a payload by hand from two
     /// zstd frames and a hand-rolled skippable frame, then runs it
-    /// through the parallel decoder.
+    /// through the pooled decoder.
     #[test]
-    fn parallel_decompress_handles_checksum_flag_seek_table() {
+    fn decompress_handles_checksum_flag_seek_table() {
         // Two independent frames, chosen so the concatenation
-        // round-trips cleanly through the parallel decoder's
-        // per-frame pread path.
+        // round-trips cleanly through the per-frame pread path.
         let a = b"first frame, lorem ipsum dolor sit amet";
         let b = b"second frame, consectetur adipiscing elit";
         let original: Vec<u8> = a.iter().chain(b.iter()).copied().collect();
@@ -407,7 +406,7 @@ mod tests {
         payload.extend_from_slice(&frame_b);
         payload.extend_from_slice(&skippable);
 
-        let decoded = decompress_parallel_payload(&payload);
+        let decoded = decompress_payload(&payload);
         assert_eq!(original, decoded);
     }
 

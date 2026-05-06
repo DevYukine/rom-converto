@@ -207,13 +207,13 @@ fn build_raw_region_work_items(
     items
 }
 
-/// Parallel raw-region decoder. Spawns a worker [`Pool`] seeded
+/// Worker-pool raw-region decoder. Spawns a worker [`Pool`] seeded
 /// with persistent `zstd::bulk::Decompressor`s, builds the full
 /// work list for the region, and pumps it via [`drive`]. Output is
 /// written in submission order by the consume closure so
 /// `writer_pos` tracking stays valid.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn parallel_decompress_raw_region(
+pub(super) fn decompress_raw_region(
     region: &WiaRawData,
     groups: &[RvzGroup],
     chunk_size: u64,

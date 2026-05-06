@@ -13,7 +13,7 @@
 pub mod app_xml;
 pub mod common_keys;
 pub mod compress;
-pub mod compress_parallel;
+pub mod compress_worker;
 pub mod constants;
 pub mod crypto;
 pub mod disc;

@@ -1,6 +1,6 @@
 //! Streaming ZArchive sink and the pool-backed pipeline it feeds.
 //!
-//! Shape mirrors `z3ds::compress_parallel` at a higher level: a
+//! Shape mirrors `z3ds::compress_worker` at a higher level: a
 //! driver thread runs [`crate::util::worker_pool::drive`] with
 //! `produce` pulling blocks from a channel and `consume` forwarding
 //! compressed bytes to a writer thread. The writer thread owns the
@@ -38,7 +38,7 @@ use std::thread::{Scope, ScopedJoinHandle};
 
 use sha2::{Digest, Sha256};
 
-use crate::nintendo::wup::compress_parallel::{ZArchiveCompressWork, ZArchiveCompressedBlock};
+use crate::nintendo::wup::compress_worker::{ZArchiveCompressWork, ZArchiveCompressedBlock};
 use crate::nintendo::wup::constants::{COMPRESSED_BLOCK_SIZE, ENTRIES_PER_OFFSET_RECORD};
 use crate::nintendo::wup::error::{WupError, WupResult};
 use crate::nintendo::wup::models::CompressionOffsetRecord;

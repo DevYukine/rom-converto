@@ -1,6 +1,6 @@
-use crate::nintendo::ctr::z3ds::decompress_parallel::{
-    Z3dsDecompressWork, Z3dsDecompressedFrame, make_z3ds_decompress_workers,
-    parallel_decompress_frames, plan_decompress_work,
+use crate::nintendo::ctr::z3ds::decompress_worker::{
+    Z3dsDecompressWork, Z3dsDecompressedFrame, decompress_frames, make_z3ds_decompress_workers,
+    plan_decompress_work,
 };
 use crate::nintendo::ctr::z3ds::error::{Z3dsError, Z3dsResult};
 use crate::nintendo::ctr::z3ds::models::Z3dsHeader;
@@ -95,7 +95,7 @@ pub async fn decompress_rom(
         let workers = make_z3ds_decompress_workers(n_threads, &in_file)?;
         let pool: Pool<Z3dsDecompressWork, Z3dsDecompressedFrame, Z3dsError> = Pool::spawn(workers);
 
-        parallel_decompress_frames(&pool, &mut writer, work_items, &bytes_done_clone)?;
+        decompress_frames(&pool, &mut writer, work_items, &bytes_done_clone)?;
 
         pool.shutdown();
         writer

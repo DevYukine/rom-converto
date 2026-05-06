@@ -1,4 +1,4 @@
-//! Parallel CD hunk compressor.
+//! Worker-pool CD hunk compressor.
 //!
 //! Drives a persistent worker pool for CDLZ/CDZL/CDFL codec trials,
 //! overlaps writes with read + dispatch via a dedicated writer
@@ -93,7 +93,7 @@ pub(super) fn make_chd_compress_workers(
 /// compressed hunk would land. The caller owns it and passes it
 /// through; this function updates it in place.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn parallel_compress_hunks(
+pub(super) fn compress_hunks(
     pool: &Pool<ChdCompressWork, ChdCompressedOut, ChdError>,
     bin_reader: &mut BufReader<std::fs::File>,
     writer: &mut BufWriter<std::fs::File>,

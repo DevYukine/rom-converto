@@ -205,8 +205,8 @@ pub async fn extract_from_chd(
 
     let mut handle = tokio::task::spawn_blocking(move || -> ChdResult<()> {
         use crate::chd::reader::open_chd_sync;
-        use crate::chd::reader::parallel::{
-            ChdExtractWork, ChdExtractedOut, make_chd_extract_workers, parallel_extract_hunks,
+        use crate::chd::reader::worker::{
+            ChdExtractWork, ChdExtractedOut, extract_hunks, make_chd_extract_workers,
         };
         use crate::util::worker_pool::{Pool, parallelism};
 
@@ -233,7 +233,7 @@ pub async fn extract_from_chd(
         let workers = make_chd_extract_workers(n_threads, &handle.file, hunk_bytes)?;
         let pool: Pool<ChdExtractWork, ChdExtractedOut, ChdError> = Pool::spawn(workers);
 
-        let extract_result = parallel_extract_hunks(
+        let extract_result = extract_hunks(
             &pool,
             &handle.map,
             &mut bin_writer,
@@ -324,8 +324,8 @@ pub async fn verify_chd(
 
     let mut handle = tokio::task::spawn_blocking(move || -> ChdResult<[u8; SHA1_BYTES]> {
         use crate::chd::reader::open_chd_sync;
-        use crate::chd::reader::parallel::{
-            ChdExtractWork, ChdExtractedOut, make_chd_extract_workers, parallel_verify_hunks,
+        use crate::chd::reader::worker::{
+            ChdExtractWork, ChdExtractedOut, make_chd_extract_workers, verify_hunks,
         };
         use crate::util::worker_pool::{Pool, parallelism};
 
@@ -338,7 +338,7 @@ pub async fn verify_chd(
         let pool: Pool<ChdExtractWork, ChdExtractedOut, ChdError> = Pool::spawn(workers);
 
         let mut raw_sha1_hasher = Sha1::new();
-        let verify_result = parallel_verify_hunks(
+        let verify_result = verify_hunks(
             &pool,
             &handle.map,
             &mut raw_sha1_hasher,

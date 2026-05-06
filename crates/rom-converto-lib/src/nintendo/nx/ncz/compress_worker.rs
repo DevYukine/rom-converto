@@ -83,7 +83,7 @@ mod tests {
     use crate::util::worker_pool::drive;
 
     #[test]
-    fn parallel_matches_serial_compression() {
+    fn pool_matches_single_block_compression() {
         let block_size = 1usize << 14;
         let plain: Vec<u8> = (0..block_size).map(|i| (i & 0xFF) as u8).collect();
 

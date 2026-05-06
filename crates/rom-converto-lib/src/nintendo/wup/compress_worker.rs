@@ -1,6 +1,6 @@
-//! Parallel 64 KiB block compressor driving a persistent worker pool.
+//! 64 KiB block compressor driving a persistent worker pool.
 //!
-//! Shape mirrors `z3ds::compress_parallel`: one persistent
+//! Shape mirrors `z3ds::compress_worker`: one persistent
 //! [`zstd::bulk::Compressor`] per thread, fixed 64 KiB work items,
 //! and [`crate::util::worker_pool::drive`] to reorder results back
 //! into submission order before writing them to the output. A
@@ -109,7 +109,7 @@ pub fn spawn_zarchive_pool(
 /// `write_all` blocks on an OS write-cache flush, the dispatcher
 /// keeps draining worker results and reporting progress; the channel
 /// absorbs up to `2 * max_in_flight` blocks of backlog.
-pub(super) fn parallel_compress_blocks<W: Write + Send>(
+pub(super) fn compress_blocks<W: Write + Send>(
     pool: &Pool<ZArchiveCompressWork, ZArchiveCompressedBlock, WupError>,
     blocks: Vec<Vec<u8>>,
     output: &mut W,
@@ -216,7 +216,7 @@ mod tests {
         let mut bytes_written = 0u64;
         let mut records = Vec::new();
         let pool = spawn_zarchive_pool(level).unwrap();
-        parallel_compress_blocks(
+        compress_blocks(
             &pool,
             blocks,
             &mut output,

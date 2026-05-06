@@ -1,5 +1,5 @@
 pub(crate) mod metadata;
-pub(crate) mod parallel;
+pub(crate) mod worker;
 
 use crate::cd::{FRAME_SIZE, IO_BUFFER_SIZE};
 use crate::chd::compression::tag_to_bytes;
@@ -9,7 +9,7 @@ use crate::chd::error::{ChdError, ChdResult};
 use crate::chd::map::{MapEntry, compress_v5_map};
 use crate::chd::models::{CHD_V5_HEADER_SIZE, ChdHeaderV5, ChdVersion, SHA1_BYTES};
 use crate::chd::writer::metadata::{MetadataHash, generate_cd_metadata};
-use crate::chd::writer::parallel::{make_chd_compress_workers, parallel_compress_hunks};
+use crate::chd::writer::worker::{compress_hunks, make_chd_compress_workers};
 use crate::util::worker_pool::{Pool, parallelism};
 use binrw::BinWrite;
 use sha1::{Digest, Sha1};
@@ -21,8 +21,8 @@ use std::sync::atomic::AtomicU64;
 /// Sync CHD writer. One instance is created per output file; it
 /// owns the `BufWriter<File>`, the running raw SHA-1, and the map
 /// entries accumulated across every hunk. The heavy compress work
-/// runs through [`parallel::parallel_compress_hunks`] which drives
-/// a worker pool with a dedicated writer thread.
+/// runs through [`worker::compress_hunks`] which drives a worker
+/// pool with a dedicated writer thread.
 pub struct ChdWriter {
     writer: BufWriter<std::fs::File>,
     writer_pos: u64,
@@ -98,10 +98,10 @@ impl ChdWriter {
         let hunk_bytes = self.header.hunk_bytes as usize;
         let n_threads = parallelism();
         let workers = make_chd_compress_workers(n_threads, hunk_bytes)?;
-        let pool: Pool<parallel::ChdCompressWork, parallel::ChdCompressedOut, ChdError> =
+        let pool: Pool<worker::ChdCompressWork, worker::ChdCompressedOut, ChdError> =
             Pool::spawn(workers);
 
-        let result = parallel_compress_hunks(
+        let result = compress_hunks(
             &pool,
             bin_reader,
             &mut self.writer,

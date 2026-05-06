@@ -147,7 +147,7 @@ pub(super) fn make_partition_compress_workers(
 /// (`consume`) halves. Results land in monotonic cluster order so
 /// the group table stays consistent with the file offsets.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn parallel_encode_partition_region(
+pub(super) fn encode_partition_region(
     pool: &Pool<PartitionWork, Vec<PartitionChunk>, RvzError>,
     reader: &mut BufReader<std::fs::File>,
     writer: &mut BufWriter<std::fs::File>,
