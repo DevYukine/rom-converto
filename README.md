@@ -1,6 +1,6 @@
 # rom-converto
 
-A utility suite for converting, compressing, encrypting, and decrypting ROM formats across **Nintendo 3DS**, **GameCube**, **Wii**, **Wii U**, and **CD image** formats.
+A utility suite for converting, compressing, encrypting, and decrypting ROM formats across **Nintendo 3DS**, **GameCube**, **Wii**, **Wii U**, **Nintendo Switch**, and **CD image** formats.
 
 Available as both a **command line tool** and a **desktop GUI application**.
 
@@ -39,6 +39,15 @@ Built for developers, tinkerers and archivists.
 * [x] Also accepts the community layout variant (`tmd.<N>` + optional `cetk.<N>` + extensionless content files)
 * [x] Wii U disc images (`.wud` / `.wux`) accepted as `.wua` input, with per-disc key files
 * [x] FST-aware inherited-file skipping so update overlays install cleanly on top of the base title
+
+### Nintendo Switch (NX)
+
+* [x] Compress `.nsp` to `.nsz` and `.xci` to `.xcz` using zstd inside the NCZ format
+* [x] Decompress `.nsz` / `.xcz` back to raw `.nsp` / `.xci`
+* [x] Both solid mode (one zstd frame per NCA) and block mode (random-read friendly fixed-size frames)
+* [x] Verify per-NCA hash integrity on any container (`.nsp` / `.nsz` / `.xci` / `.xcz`)
+* [x] Drop-in replacement for [`nsz`](https://github.com/nicoboss/nsz) with byte-identical output and matching CLI defaults
+* [x] See [`benchmark/Switch.md`](benchmark/Switch.md) for performance numbers
 
 ### CD images (CHD)
 
@@ -160,6 +169,30 @@ Flags match the `dol` commands.
 
 ---
 
+### NX (Nintendo Switch)
+
+| Command | Description |
+|---|---|
+| `nx compress <INPUT> [-o OUTPUT]` | Compress a `.nsp` to `.nsz` or a `.xci` to `.xcz` |
+| `nx decompress <INPUT> [-o OUTPUT]` | Decompress a `.nsz` / `.xcz` back to `.nsp` / `.xci` |
+| `nx verify <INPUT>` | Verify per-NCA hash integrity of any Switch container |
+
+**`compress` flags:**
+
+| Flag | Description |
+|---|---|
+| `--keys <PRODKEYS>` | Path to `prod.keys`. Defaults to `$HOME/.switch/prod.keys` (or `%USERPROFILE%/.switch/prod.keys` on Windows) |
+| `-o, --output <FILE>` | Output path. Defaults to the input with the extension switched (`.nsp` -> `.nsz`, `.xci` -> `.xcz`) |
+| `-l, --level <LEVEL>` | Zstd compression level 1..=22 (defaults to 18, matching `nsz`) |
+| `--mode <MODE>` | `solid` (one zstd frame per NCA, default for NSP) or `block` (independent zstd frames per fixed-size block, default for XCI) |
+| `--block-size-exp <EXP>` | Block-mode block size as `1 << exp` bytes, range 14..=32 (defaults to 20 = 1 MiB, matching `nsz`) |
+
+> **`compress` / `decompress`:** Outputs are byte identical to `nsz` / `nsz -D` at matching settings. `prod.keys` is required to derive the per-NCA section keys; the file is read but never modified. Tickets inside the container are kept as-is so installation on console still works.
+
+> **`verify`:** Walks every NCA inside the container and checks the stored hash hierarchy (FS hashes for PFS0 sections, IVFC for RomFS sections). Works on already-compressed `.nsz` / `.xcz` without decompressing first.
+
+---
+
 ### CHD
 
 | Command | Description |
@@ -188,14 +221,16 @@ Checks GitHub for a newer release and replaces the current binary in place.
 
 ## Benchmarks
 
-RVZ and CHD operations are measured against `DolphinTool.exe` 2603a-x64
-and `chdman.exe` 0.284 respectively, each tool on its own default
-settings, N = 10 interleaved warm runs. Full methodology and per-run
-detail live alongside the results:
+RVZ, CHD, and Switch operations are measured against
+`DolphinTool.exe` 2603a-x64, `chdman.exe` 0.284, and `nsz`
+respectively, each tool on its own default settings, N = 10
+interleaved warm runs. Full methodology and per-run detail live
+alongside the results:
 
 * [`benchmark/3DS.md`](benchmark/3DS.md): 3DS ROM results (Z3DS)
 * [`benchmark/GameCube.md`](benchmark/GameCube.md): GameCube disc image results (RVZ)
 * [`benchmark/Wii.md`](benchmark/Wii.md): Wii disc image results (RVZ)
+* [`benchmark/Switch.md`](benchmark/Switch.md): Switch NSP/XCI results (NSZ/XCZ)
 * [`benchmark/CHD.md`](benchmark/CHD.md): CD image results (CHD)
 
 The Wii U `.wua` pipeline has no comparable reference CLI (Cemu ships the format but not a standalone compressor), so no head-to-head numbers are published for it.
