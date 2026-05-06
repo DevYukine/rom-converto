@@ -58,6 +58,18 @@ export function deriveDiscIsoPath(input: string): string {
   return replaceExt(input, "iso");
 }
 
+export function deriveNszPath(input: string): string {
+  const ext = getExt(input);
+  if (ext === "xci") return replaceExt(input, "xcz");
+  return replaceExt(input, "nsz");
+}
+
+export function deriveNspPath(input: string): string {
+  const ext = getExt(input);
+  if (ext === "xcz") return replaceExt(input, "xci");
+  return replaceExt(input, "nsp");
+}
+
 /// Derive a `.wua` output path from a title input. Strips a disc
 /// image extension, then peels trailing parenthesised tags in the
 /// preservation naming style so `Title (Region) (Langs) (Update)`

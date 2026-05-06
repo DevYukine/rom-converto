@@ -7,6 +7,12 @@ use rom_converto_lib::nintendo::ctr::z3ds::{
 use rom_converto_lib::nintendo::ctr::{
     CdnToCiaOptions, convert_cdn_to_cia, decrypt_rom, generate_ticket_from_cdn,
 };
+use rom_converto_lib::nintendo::nx::{
+    NczMode, NxCompressOptions, compress_container_async, decompress_container_async,
+    derive_compressed_path as nx_derive_compressed_path,
+    derive_decompressed_path as nx_derive_decompressed_path, detect_container, load_keyset,
+    verify_container_async,
+};
 use rom_converto_lib::nintendo::rvz::{
     RvzCompressOptions, compress_disc, decompress_disc, derive_disc_path, derive_rvz_path,
 };
@@ -269,6 +275,81 @@ pub async fn cmd_wup_decrypt(
         .map_err(err_to_string)?
         .map_err(err_to_string)?;
     Ok(format!("Decrypted to {out_display}"))
+}
+
+#[tauri::command]
+pub async fn cmd_nx_compress(
+    app: AppHandle,
+    input: PathBuf,
+    output: Option<PathBuf>,
+    keys: Option<PathBuf>,
+    level: Option<i32>,
+    mode: Option<String>,
+    block_size_exp: Option<u8>,
+) -> Result<String, String> {
+    let progress = Arc::new(TauriProgress::new(app, "nx-compress"));
+    let kind = detect_container(&input).map_err(err_to_string)?;
+    let mut opts = NxCompressOptions::for_kind(kind);
+    if let Some(level) = level {
+        opts.level = level;
+    }
+    if let Some(mode) = mode.as_deref() {
+        opts.mode = match mode {
+            "solid" => NczMode::Solid,
+            "block" => NczMode::Block {
+                size_exp: block_size_exp.unwrap_or(20),
+            },
+            other => return Err(format!("unknown mode {other:?}")),
+        };
+    } else if let Some(exp) = block_size_exp {
+        opts.mode = NczMode::Block { size_exp: exp };
+    }
+    let output = output.unwrap_or_else(|| nx_derive_compressed_path(&input));
+    let out_display = output.display().to_string();
+    let keys = load_keyset(keys.as_deref()).map_err(err_to_string)?;
+    tokio::spawn(async move {
+        compress_container_async(input, output, opts, keys, progress.as_ref()).await
+    })
+    .await
+    .map_err(err_to_string)?
+    .map_err(err_to_string)?;
+    Ok(format!("Compressed to {out_display}"))
+}
+
+#[tauri::command]
+pub async fn cmd_nx_decompress(
+    app: AppHandle,
+    input: PathBuf,
+    output: Option<PathBuf>,
+    keys: Option<PathBuf>,
+) -> Result<String, String> {
+    let progress = Arc::new(TauriProgress::new(app, "nx-decompress"));
+    let output = output.unwrap_or_else(|| nx_derive_decompressed_path(&input));
+    let out_display = output.display().to_string();
+    let keys = load_keyset(keys.as_deref()).map_err(err_to_string)?;
+    tokio::spawn(async move {
+        decompress_container_async(input, output, keys, progress.as_ref()).await
+    })
+    .await
+    .map_err(err_to_string)?
+    .map_err(err_to_string)?;
+    Ok(format!("Decompressed to {out_display}"))
+}
+
+#[tauri::command]
+pub async fn cmd_nx_verify(
+    app: AppHandle,
+    input: PathBuf,
+    keys: Option<PathBuf>,
+) -> Result<String, String> {
+    let progress = Arc::new(TauriProgress::new(app, "nx-verify"));
+    let keys = load_keyset(keys.as_deref()).map_err(err_to_string)?;
+    let result =
+        tokio::spawn(async move { verify_container_async(input, keys, progress.as_ref()).await })
+            .await
+            .map_err(err_to_string)?
+            .map_err(err_to_string)?;
+    serde_json::to_string(&result).map_err(err_to_string)
 }
 
 #[tauri::command]

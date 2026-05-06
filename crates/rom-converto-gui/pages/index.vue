@@ -25,6 +25,12 @@ const platforms = [
     count: 2,
   },
   {
+    to: "/nx",
+    name: "Switch",
+    description: "Compress NSP and XCI to NSZ and XCZ; verify integrity",
+    count: 3,
+  },
+  {
     to: "/chd",
     name: "CD (CHD)",
     description: "Compress, extract and verify CD disc images",

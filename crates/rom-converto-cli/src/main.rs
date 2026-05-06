@@ -1,6 +1,7 @@
 use crate::commands::chd::ChdCommands;
 use crate::commands::ctr::CtrCommands;
 use crate::commands::dol::DolCommands;
+use crate::commands::nx::NxCommands;
 use crate::commands::rvl::RvlCommands;
 use crate::commands::wup::WupCommands;
 use crate::commands::{Cli, Commands, SelfUpdateCommand};
@@ -18,6 +19,12 @@ use rom_converto_lib::nintendo::ctr::z3ds::{
 };
 use rom_converto_lib::nintendo::ctr::{
     CdnToCiaOptions, convert_cdn_to_cia, decrypt_rom, generate_ticket_from_cdn,
+};
+use rom_converto_lib::nintendo::nx::{
+    NczMode, NxCompressOptions, compress_container_async, decompress_container_async,
+    derive_compressed_path as nx_derive_compressed_path,
+    derive_decompressed_path as nx_derive_decompressed_path, detect_container, load_keyset,
+    verify_container_async,
 };
 use rom_converto_lib::nintendo::rvz::{
     RvzCompressOptions, compress_disc, decompress_disc, derive_disc_path, derive_rvz_path,
@@ -183,6 +190,58 @@ async fn main() -> Result<()> {
             }
             ChdCommands::Verify(cmd) => {
                 verify_chd(&progress, cmd.input, cmd.parent, cmd.fix).await?
+            }
+        },
+        Commands::Nx(inner) => match inner {
+            NxCommands::Compress(cmd) => {
+                let keys = load_keyset(cmd.keys.as_deref())?;
+                let kind = detect_container(&cmd.input)?;
+                let mut opts = NxCompressOptions::for_kind(kind);
+                if let Some(level) = cmd.level {
+                    opts.level = level;
+                }
+                if let Some(mode) = cmd.mode.as_deref() {
+                    opts.mode = match mode {
+                        "solid" => NczMode::Solid,
+                        "block" => NczMode::Block {
+                            size_exp: cmd.block_size_exp.unwrap_or(20),
+                        },
+                        _ => unreachable!("clap value_parser already validated"),
+                    };
+                } else if let Some(exp) = cmd.block_size_exp {
+                    opts.mode = NczMode::Block { size_exp: exp };
+                }
+                let output = cmd
+                    .output
+                    .clone()
+                    .unwrap_or_else(|| nx_derive_compressed_path(&cmd.input));
+                compress_container_async(cmd.input, output, opts, keys, &progress).await?
+            }
+            NxCommands::Decompress(cmd) => {
+                let keys = load_keyset(cmd.keys.as_deref())?;
+                let output = cmd
+                    .output
+                    .clone()
+                    .unwrap_or_else(|| nx_derive_decompressed_path(&cmd.input));
+                decompress_container_async(cmd.input, output, keys, &progress).await?
+            }
+            NxCommands::Verify(cmd) => {
+                let keys = load_keyset(cmd.keys.as_deref())?;
+                let result = verify_container_async(cmd.input, keys, &progress).await?;
+                log::info!("Container kind: {}", result.kind);
+                log::info!("Overall: {}", if result.ok { "OK" } else { "MISMATCHES" });
+                for v in &result.ncas {
+                    let prefix = match &v.partition {
+                        Some(p) => format!("[{p}] "),
+                        None => String::new(),
+                    };
+                    log::info!(
+                        "  {prefix}{}: {} (sections mismatched: {})",
+                        v.name,
+                        if v.ok { "OK" } else { "FAIL" },
+                        v.mismatched_sections
+                    );
+                }
             }
         },
         Commands::Wup(inner) => match inner {
