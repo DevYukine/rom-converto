@@ -42,6 +42,17 @@ export function deriveDecryptedPath(input: string): string {
   return `${stem}.decrypted.${ext || "cia"}`;
 }
 
+const CONVERT_MAP: Record<string, string> = {
+  cia: "3ds",
+  "3ds": "cia",
+  cci: "cia",
+};
+
+export function deriveConvertedPath(input: string): string {
+  const ext = getExt(input);
+  return replaceExt(input, CONVERT_MAP[ext] ?? "out");
+}
+
 export function deriveChdPath(input: string): string {
   return replaceExt(input, "chd");
 }

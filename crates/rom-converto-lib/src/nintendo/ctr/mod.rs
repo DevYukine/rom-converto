@@ -21,6 +21,7 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufWriter};
 
 mod cia;
 mod constants;
+pub mod convert;
 mod decrypt;
 pub mod error;
 pub mod models;

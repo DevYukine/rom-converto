@@ -19,6 +19,7 @@ fn main() {
             cmd_chd_extract,
             cmd_chd_verify,
             cmd_verify_ctr,
+            cmd_convert_ctr,
             cmd_compress_disc,
             cmd_decompress_disc,
             cmd_wup_compress,

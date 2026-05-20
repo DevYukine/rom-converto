@@ -35,6 +35,13 @@ const operations = [
     formats: ".cia, .3ds, .cci (+ Z3DS)",
     icon: "shield-check",
   },
+  {
+    to: "/ctr/convert",
+    title: "Convert ROM",
+    description: "Convert between CIA and CCI/3DS formats (CFW/emulator output)",
+    formats: ".cia <-> .3ds, .cci",
+    icon: "swap",
+  },
 ];
 </script>
 

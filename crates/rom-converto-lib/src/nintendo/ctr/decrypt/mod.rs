@@ -1,4 +1,4 @@
 pub mod cia;
-mod model;
-mod reader;
+pub(crate) mod model;
+pub(crate) mod reader;
 pub mod util;

@@ -10,6 +10,7 @@ pub enum CtrCommands {
     Compress(CompressRomCommand),
     Decompress(DecompressRomCommand),
     Verify(VerifyCommand),
+    Convert(ConvertCommand),
 }
 
 /// Convert CDN content to CIA format
@@ -151,6 +152,29 @@ pub struct DecompressRomCommand {
     pub input: PathBuf,
 
     /// Output file path, defaults to the input path with the "z" prefix removed (ignored with --recursive)
+    #[arg(value_name = "OUTPUT")]
+    pub output: Option<PathBuf>,
+
+    #[arg(
+        long,
+        short = 'R',
+        help = "process all matching files in INPUT (top-level only)",
+        default_value = "false"
+    )]
+    pub recursive: bool,
+}
+
+/// Convert between CIA and CCI/3DS formats
+#[derive(Parser, Debug, Clone, Eq, PartialEq)]
+#[command(
+    long_about = "Convert between CIA and CCI/3DS formats\n\nDirection is auto-detected from the INPUT extension:\n  .cia       -> .3ds (CCI / NCSD)\n  .3ds, .cci -> .cia\n\nCCI/3DS to CIA produces an unsigned CIA with a zero title key, compatible with CFW (Luma3DS) and emulators (Citra/Lime3DS/Azahar). Not installable on stock 3DS.\n\nUse --recursive/-R to point INPUT at a directory and convert every matching file in it (top-level only). In batch mode OUTPUT is ignored and each output is written next to its source with the opposite extension."
+)]
+pub struct ConvertCommand {
+    /// Input ROM file path, or a directory when --recursive is set (.cia, .3ds, or .cci)
+    #[arg(value_name = "INPUT")]
+    pub input: PathBuf,
+
+    /// Output file path, defaults to the input path with the converted extension (ignored with --recursive)
     #[arg(value_name = "OUTPUT")]
     pub output: Option<PathBuf>,
 

@@ -50,7 +50,7 @@ fn extra_crypto_index(uses_extra_crypto: u8) -> usize {
     }
 }
 
-fn derive_ctr_key(key_x: u128, key_y: u128) -> [u8; 16] {
+pub(crate) fn derive_ctr_key(key_x: u128, key_y: u128) -> [u8; 16] {
     u128::to_be_bytes(scramblekey(key_x, key_y))
 }
 
@@ -259,7 +259,7 @@ async fn write_romfs_section(
     Ok(())
 }
 
-fn get_ncch_aes_counter(hdr: &NcchHeader, section: NcchSection) -> [u8; 16] {
+pub(crate) fn get_ncch_aes_counter(hdr: &NcchHeader, section: NcchSection) -> [u8; 16] {
     let mut counter: [u8; 16] = [0; 16];
     if hdr.formatversion == 2 || hdr.formatversion == 0 {
         let mut titleid: [u8; 8] = hdr.titleid;

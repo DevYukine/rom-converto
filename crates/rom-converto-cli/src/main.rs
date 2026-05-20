@@ -13,6 +13,9 @@ use clap::Parser;
 use indicatif::MultiProgress;
 use indicatif_log_bridge::LogWrapper;
 use rom_converto_lib::chd::{convert_to_chd, extract_from_chd, verify_chd};
+use rom_converto_lib::nintendo::ctr::convert::{
+    convert_rom, convert_rom_batch, derive_converted_path,
+};
 use rom_converto_lib::nintendo::ctr::verify::{
     CtrVerifyOptions, CtrVerifyResult, verify_ctr, verify_ctr_batch,
 };
@@ -144,6 +147,23 @@ async fn main() -> Result<()> {
                         .output
                         .unwrap_or_else(|| derive_decompressed_path(&cmd.input));
                     decompress_rom(&cmd.input, &output, &progress).await?
+                }
+            }
+            CtrCommands::Convert(cmd) => {
+                if cmd.recursive {
+                    if !cmd.input.is_dir() {
+                        anyhow::bail!(
+                            "INPUT must be a directory when --recursive is set: {}",
+                            cmd.input.display()
+                        );
+                    }
+                    convert_rom_batch(&cmd.input, &progress, &total_progress).await?
+                } else {
+                    let output = cmd
+                        .output
+                        .clone()
+                        .unwrap_or_else(|| derive_converted_path(&cmd.input));
+                    convert_rom(&cmd.input, &output, &progress).await?
                 }
             }
             CtrCommands::Verify(cmd) => {
