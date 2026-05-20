@@ -8,14 +8,15 @@ use crate::nintendo::ctr::models::cia::{
 };
 use crate::nintendo::ctr::models::ticket::Ticket;
 use crate::nintendo::ctr::models::title_metadata::TitleMetadata;
+use crate::nintendo::ctr::util::align_64;
 use crate::util::ProgressReporter;
 use binrw::{BinRead, BinWrite, Endian};
 use byteorder::{BigEndian, ReadBytesExt};
 use sha2::{Digest, Sha256};
-use std::io::{Cursor, Seek, SeekFrom};
+use std::io::{Cursor, SeekFrom};
 use std::path::Path;
 use tokio::fs::File;
-use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufWriter};
 
 /// Buffer size for streaming content files from disk to the CIA output.
 const CONTENT_COPY_BUF: usize = 4 * 1024 * 1024;
@@ -30,8 +31,26 @@ pub async fn decrypt_from_encrypted_cia(
     parse_and_decrypt_cia(input, None, progress).await?;
     progress.finish();
 
-    let data = tokio::fs::read(input).await?;
-    let original_cia = CiaFileWithoutContent::read_le(&mut Cursor::new(data))?;
+    let source_bytes = tokio::fs::read(input).await?;
+    let original_cia = CiaFileWithoutContent::read_le(&mut Cursor::new(&source_bytes))?;
+
+    // Meta sits at the tail of the source CIA, after content. The header
+    // declares meta_size, so strict parsers reject the file if those bytes
+    // are missing from the output.
+    let meta_size = original_cia.header.meta_size as usize;
+    let meta_bytes: Option<Vec<u8>> = if meta_size > 0 {
+        let start = source_bytes.len().checked_sub(meta_size).ok_or_else(|| {
+            anyhow::anyhow!(
+                "CIA header declares meta_size {} but source file is only {} bytes",
+                meta_size,
+                source_bytes.len()
+            )
+        })?;
+        Some(source_bytes[start..].to_vec())
+    } else {
+        None
+    };
+    drop(source_bytes);
 
     let mut decrypted_cia = CiaFile {
         header: original_cia.header,
@@ -119,6 +138,16 @@ pub async fn decrypt_from_encrypted_cia(
         out_writer.write_all(&content).await?;
 
         tokio::fs::remove_file(&file_path).await?;
+    }
+
+    if let Some(meta) = meta_bytes {
+        let pos = out_writer.stream_position().await?;
+        let aligned = align_64(pos);
+        if aligned > pos {
+            let pad = vec![0u8; (aligned - pos) as usize];
+            out_writer.write_all(&pad).await?;
+        }
+        out_writer.write_all(&meta).await?;
     }
 
     Ok(())
@@ -244,7 +273,7 @@ async fn read_certificate_chain(file_path: &Path) -> anyhow::Result<Vec<Certific
         if let Ok(_tmd) = TitleMetadata::read_options(&mut cursor, Endian::Big, ()) {
             cursor.position()
         } else {
-            cursor.seek(SeekFrom::Start(start_pos))?;
+            std::io::Seek::seek(&mut cursor, SeekFrom::Start(start_pos))?;
             if let Ok(_ticket) = Ticket::read_options(&mut cursor, Endian::Big, ()) {
                 cursor.position()
             } else {
@@ -267,7 +296,7 @@ async fn read_certificate_chain(file_path: &Path) -> anyhow::Result<Vec<Certific
             Ok(val) => val,
             Err(_) => break,
         };
-        cursor.seek(SeekFrom::Start(pos))?;
+        std::io::Seek::seek(&mut cursor, SeekFrom::Start(pos))?;
 
         if !matches!(sig_type_bytes, CERT_SIG_TYPE_MIN..=CERT_SIG_TYPE_MAX) {
             break;
@@ -628,6 +657,111 @@ mod tests {
         assert!(
             err.to_string().contains("size mismatch"),
             "expected size-mismatch error, got: {err}"
+        );
+    }
+
+    /// A CIA whose header declares a Meta section must keep that section in
+    /// the decrypted output, both in the header's meta_size field and as
+    /// trailing bytes after the content.
+    #[tokio::test]
+    async fn decrypt_from_encrypted_cia_preserves_meta_section() {
+        use crate::nintendo::ctr::test_fixtures::{make_meta, synth_cia_with_meta};
+
+        let meta = make_meta(0x5A);
+        let (_tmp, in_path, expected_meta, expected_meta_size) = synth_cia_with_meta(meta);
+        let out_path = in_path.with_extension("dec.cia");
+
+        let f = File::create(&out_path).await.unwrap();
+        let mut out = BufWriter::new(f);
+        decrypt_from_encrypted_cia(&in_path, &mut out, &NoProgress)
+            .await
+            .unwrap();
+        out.flush().await.unwrap();
+        drop(out);
+
+        let bytes = std::fs::read(&out_path).unwrap();
+        let cia = CiaFile::read_options(&mut Cursor::new(&bytes), Endian::Little, ())
+            .expect("decrypted CIA must parse");
+
+        assert_eq!(
+            cia.header.meta_size, expected_meta_size,
+            "decrypted header must keep the meta_size declaration",
+        );
+        let meta_out = cia
+            .meta_data
+            .as_ref()
+            .expect("decrypted CIA must keep its meta section");
+        assert_eq!(
+            meta_out.dependency_list, expected_meta.dependency_list,
+            "dependency_list must round-trip through decrypt",
+        );
+        assert_eq!(
+            meta_out.reserved1, expected_meta.reserved1,
+            "reserved1 must round-trip through decrypt",
+        );
+        assert_eq!(
+            meta_out.core_version, expected_meta.core_version,
+            "core_version must round-trip through decrypt",
+        );
+        assert_eq!(
+            meta_out.reserved2, expected_meta.reserved2,
+            "reserved2 must round-trip through decrypt",
+        );
+        assert_eq!(
+            meta_out.icon_data, expected_meta.icon_data,
+            "icon_data must round-trip through decrypt",
+        );
+
+        // Tail bytes must exactly equal the serialized meta block.
+        let mut expected_tail = Vec::new();
+        expected_meta
+            .write_options(&mut Cursor::new(&mut expected_tail), Endian::Little, ())
+            .unwrap();
+        let actual_tail = &bytes[bytes.len() - expected_tail.len()..];
+        assert_eq!(actual_tail, expected_tail.as_slice(), "meta tail bytes");
+    }
+
+    /// A CIA whose header declares meta_size = 0 must not gain a meta block
+    /// in the decrypted output.
+    #[tokio::test]
+    async fn decrypt_from_encrypted_cia_skips_meta_when_absent() {
+        use crate::nintendo::ctr::models::cia::MetaData;
+        use crate::nintendo::ctr::test_fixtures::synth_cia_with_meta;
+
+        let placeholder = MetaData {
+            dependency_list: vec![0u8; 0x180],
+            reserved1: vec![0u8; 0x180],
+            core_version: 0,
+            reserved2: vec![0u8; 0xFC],
+            icon_data: vec![0u8; 0x36C0],
+        };
+        let (_tmp, in_path, _, meta_size_with) = synth_cia_with_meta(placeholder);
+
+        // meta_size lives at header offset 0x14.
+        {
+            let mut bytes = std::fs::read(&in_path).unwrap();
+            bytes[0x14..0x18].copy_from_slice(&0u32.to_le_bytes());
+            let new_len = bytes.len() - meta_size_with as usize;
+            bytes.truncate(new_len);
+            std::fs::write(&in_path, &bytes).unwrap();
+        }
+
+        let out_path = in_path.with_extension("dec.cia");
+        let f = File::create(&out_path).await.unwrap();
+        let mut out = BufWriter::new(f);
+        decrypt_from_encrypted_cia(&in_path, &mut out, &NoProgress)
+            .await
+            .unwrap();
+        out.flush().await.unwrap();
+        drop(out);
+
+        let bytes = std::fs::read(&out_path).unwrap();
+        let cia = CiaFile::read_options(&mut Cursor::new(&bytes), Endian::Little, ())
+            .expect("decrypted CIA must parse");
+        assert_eq!(cia.header.meta_size, 0, "header must keep meta_size = 0");
+        assert!(
+            cia.meta_data.is_none(),
+            "no meta input must not produce a meta output",
         );
     }
 }

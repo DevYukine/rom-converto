@@ -6,8 +6,9 @@
 
 #![cfg(test)]
 
+use crate::nintendo::ctr::constants::{NCCH_FLAGS_OFFSET, NCCH_FLAGS7_NOCRYPTO, NCCH_MAGIC};
 use crate::nintendo::ctr::models::certificate::{Certificate, KeyType, PublicKey};
-use crate::nintendo::ctr::models::cia::{CIA_HEADER_SIZE, CiaFile, CiaHeader};
+use crate::nintendo::ctr::models::cia::{CIA_HEADER_SIZE, CiaFile, CiaHeader, MetaData};
 use crate::nintendo::ctr::models::signature::{SignatureData, SignatureType};
 use crate::nintendo::ctr::models::ticket::{ContentIndex, Ticket, TicketData};
 use crate::nintendo::ctr::models::title_metadata::{
@@ -250,6 +251,98 @@ pub fn synth_cia(content_size: usize) -> (tempfile::TempDir, std::path::PathBuf,
     f.flush().unwrap();
 
     (tmp, out_path, content_hash)
+}
+
+/// Build the bytes of a minimal NCCH header (0x200 bytes) with NoCrypto set
+/// and every section size zero. `parse_ncch` accepts this without doing any
+/// AES work, so it embeds cleanly as CIA content in fixtures.
+pub fn make_ncch_header_bytes(title_id: u64) -> Vec<u8> {
+    let mut bytes = vec![0u8; 0x200];
+    bytes[0x100..0x104].copy_from_slice(NCCH_MAGIC.as_bytes());
+    bytes[0x108..0x110].copy_from_slice(&title_id.to_le_bytes());
+    bytes[NCCH_FLAGS_OFFSET + 7] = NCCH_FLAGS7_NOCRYPTO;
+    bytes
+}
+
+/// Build a [`MetaData`] block (0x3AC0 bytes) filled with a per-field offset
+/// pattern derived from `seed`, so any byte slippage between fields is
+/// detectable by an equality check.
+pub fn make_meta(seed: u8) -> MetaData {
+    let pattern = |len: usize, offset: u8| -> Vec<u8> {
+        (0..len)
+            .map(|i| seed.wrapping_add(offset).wrapping_add((i & 0xFF) as u8))
+            .collect()
+    };
+    MetaData {
+        dependency_list: pattern(0x180, 0x10),
+        reserved1: pattern(0x180, 0x20),
+        core_version: 0x0000_0002,
+        reserved2: pattern(0xFC, 0x30),
+        icon_data: pattern(0x36C0, 0x40),
+    }
+}
+
+/// Like [`synth_cia`] but the content is a valid (NoCrypto) NCCH header and
+/// the CIA declares a [`MetaData`] block. Returns the temp dir, on-disk
+/// path, the meta block, and its serialized size.
+pub fn synth_cia_with_meta(
+    meta: MetaData,
+) -> (tempfile::TempDir, std::path::PathBuf, MetaData, u32) {
+    let tmp = tempfile::tempdir().unwrap();
+    let out_path = tmp.path().join("test.cia");
+
+    let content_data = make_ncch_header_bytes(SYNTH_CIA_TITLE_ID);
+    let content_hash = sha256_array(&content_data);
+
+    let cert_chain = vec![
+        make_cert(b"CA00000003", 0xAA),
+        make_cert(b"CP0000000b", 0xBB),
+        make_cert(b"XS0000000c", 0xCC),
+    ];
+    let ticket = make_ticket(SYNTH_CIA_TITLE_ID);
+    let tmd = make_tmd(
+        SYNTH_CIA_TITLE_ID,
+        vec![(0, 0, content_data.clone(), content_hash)],
+    );
+
+    let ticket_size = serialized_size(&ticket);
+    let tmd_size = serialized_size(&tmd);
+
+    let meta_size: u32 = {
+        let mut buf = Vec::new();
+        meta.write_options(&mut Cursor::new(&mut buf), Endian::Little, ())
+            .unwrap();
+        buf.len() as u32
+    };
+
+    let cia = CiaFile {
+        header: CiaHeader {
+            header_size: CIA_HEADER_SIZE,
+            cia_type: 0,
+            version: 0,
+            cert_chain_size: 0x0A00,
+            ticket_size,
+            tmd_size,
+            meta_size,
+            content_size: content_data.len() as u64,
+            content_index: vec![0x00; 0x2000],
+        },
+        cert_chain,
+        ticket,
+        tmd,
+        content_data,
+        meta_data: Some(meta.clone()),
+    };
+
+    let mut buf = Vec::new();
+    cia.write_options(&mut Cursor::new(&mut buf), Endian::Little, ())
+        .unwrap();
+
+    let mut f = std::fs::File::create(&out_path).unwrap();
+    f.write_all(&buf).unwrap();
+    f.flush().unwrap();
+
+    (tmp, out_path, meta, meta_size)
 }
 
 // ---- internal helpers ----

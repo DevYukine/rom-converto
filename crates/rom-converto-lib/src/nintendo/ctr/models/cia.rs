@@ -610,4 +610,104 @@ mod tests {
         assert_eq!(cia_file.tmd.header.title_id, read_cia.tmd.header.title_id);
         assert_eq!(cia_file.content_data.len(), read_cia.content_data.len());
     }
+
+    /// A CIA with `meta_size > 0` must round-trip the `MetaData` block
+    /// byte-for-byte through `write_le` then `read_le`.
+    #[test]
+    fn cia_file_round_trip_preserves_meta_section() {
+        use crate::nintendo::ctr::test_fixtures::{make_cert, make_meta, make_ticket, make_tmd};
+        use sha2::{Digest, Sha256};
+
+        let title_id = 0x0004_000E_0012_5600u64;
+        let content: Vec<u8> = (0..0x800usize).map(|i| (i as u8).wrapping_mul(3)).collect();
+        let content_hash = {
+            let mut h = Sha256::new();
+            h.update(&content);
+            let d = h.finalize();
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&d);
+            arr
+        };
+
+        let meta = make_meta(0x7E);
+        let meta_size: u32 = {
+            let mut buf = Vec::new();
+            meta.write_options(&mut Cursor::new(&mut buf), Endian::Little, ())
+                .unwrap();
+            buf.len() as u32
+        };
+
+        let cert_chain = vec![
+            make_cert(b"CA00000003", 0xAA),
+            make_cert(b"CP0000000b", 0xBB),
+            make_cert(b"XS0000000c", 0xCC),
+        ];
+        let ticket = make_ticket(title_id);
+        let tmd = make_tmd(title_id, vec![(0, 0, content.clone(), content_hash)]);
+
+        let ticket_size = {
+            let mut buf = Vec::new();
+            ticket
+                .write_options(&mut Cursor::new(&mut buf), Endian::Big, ())
+                .unwrap();
+            buf.len() as u32
+        };
+        let tmd_size = {
+            let mut buf = Vec::new();
+            tmd.write_options(&mut Cursor::new(&mut buf), Endian::Big, ())
+                .unwrap();
+            buf.len() as u32
+        };
+
+        let original = CiaFile {
+            header: CiaHeader {
+                header_size: CIA_HEADER_SIZE,
+                cia_type: 0,
+                version: 0,
+                cert_chain_size: 0x0A00,
+                ticket_size,
+                tmd_size,
+                meta_size,
+                content_size: content.len() as u64,
+                content_index: vec![0x00; 0x2000],
+            },
+            cert_chain,
+            ticket,
+            tmd,
+            content_data: content,
+            meta_data: Some(meta),
+        };
+
+        let mut buf = Vec::new();
+        original
+            .write_options(&mut Cursor::new(&mut buf), Endian::Little, ())
+            .unwrap();
+
+        let read = CiaFile::read_options(&mut Cursor::new(&buf), Endian::Little, ())
+            .expect("CIA with meta must round-trip");
+
+        assert_eq!(read.header.meta_size, meta_size, "meta_size header field");
+        let original_meta = original.meta_data.as_ref().expect("fixture has meta");
+        let read_meta = read.meta_data.as_ref().expect("round-trip lost meta");
+        assert_eq!(
+            read_meta.dependency_list, original_meta.dependency_list,
+            "dependency_list bytes",
+        );
+        assert_eq!(
+            read_meta.reserved1, original_meta.reserved1,
+            "reserved1 bytes",
+        );
+        assert_eq!(
+            read_meta.core_version, original_meta.core_version,
+            "core_version",
+        );
+        assert_eq!(
+            read_meta.reserved2, original_meta.reserved2,
+            "reserved2 bytes",
+        );
+        assert_eq!(
+            read_meta.icon_data, original_meta.icon_data,
+            "icon_data bytes",
+        );
+    }
 }
