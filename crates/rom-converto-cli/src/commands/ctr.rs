@@ -91,29 +91,37 @@ pub struct GenerateCdnTicketCommand {
 /// Decrypts an encrypted 3DS ROM file
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
-    long_about = "Decrypt an encrypted 3DS ROM file\n\nSupported input formats: .cia, .3ds, .cci, .cxi\nThe format is auto-detected from the file contents.\nA new decrypted file is written to the output path."
+    long_about = "Decrypt an encrypted 3DS ROM file\n\nSupported input formats: .cia, .3ds, .cci, .cxi\nThe format is auto-detected from the file contents.\nA new decrypted file is written to the output path.\n\nUse --recursive/-R to point INPUT at a directory and decrypt every matching file in it (top-level only). In batch mode OUTPUT is ignored and each decrypted file is written next to its source as <name>.decrypted.<ext>."
 )]
 pub struct DecryptCommand {
-    /// Input ROM file path (.cia, .3ds, .cci, or .cxi)
+    /// Input ROM file path, or a directory when --recursive is set (.cia, .3ds, .cci, or .cxi)
     #[arg(value_name = "INPUT")]
     pub input: PathBuf,
 
-    /// Output decrypted file path
+    /// Output decrypted file path (required in single-file mode, ignored with --recursive)
     #[arg(value_name = "OUTPUT")]
-    pub output: PathBuf,
+    pub output: Option<PathBuf>,
+
+    #[arg(
+        long,
+        short = 'R',
+        help = "process all matching files in INPUT (top-level only)",
+        default_value = "false"
+    )]
+    pub recursive: bool,
 }
 
 /// Compresses a decrypted 3DS ROM to the Z3DS format
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
-    long_about = "Compress a decrypted 3DS ROM to the Z3DS format\n\nSupported input formats: .cia, .cci, .3ds, .cxi, .3dsx\nOutput extensions: .zcia, .zcci, .zcxi, .z3dsx\n\nNote: only decrypted ROMs can be compressed, since encrypted ROMs have near-zero compression ratios."
+    long_about = "Compress a decrypted 3DS ROM to the Z3DS format\n\nSupported input formats: .cia, .cci, .3ds, .cxi, .3dsx\nOutput extensions: .zcia, .zcci, .zcxi, .z3dsx\n\nNote: only decrypted ROMs can be compressed, since encrypted ROMs have near-zero compression ratios.\n\nUse --recursive/-R to point INPUT at a directory and compress every matching file in it (top-level only). In batch mode OUTPUT is ignored and each output is written next to its source."
 )]
 pub struct CompressRomCommand {
-    /// Input ROM file path (.cia, .cci, .3ds, .cxi, or .3dsx)
+    /// Input ROM file path, or a directory when --recursive is set (.cia, .cci, .3ds, .cxi, or .3dsx)
     #[arg(value_name = "INPUT")]
     pub input: PathBuf,
 
-    /// Output file path, defaults to the input path with the extension prefixed by "z"
+    /// Output file path, defaults to the input path with the extension prefixed by "z" (ignored with --recursive)
     #[arg(value_name = "OUTPUT")]
     pub output: Option<PathBuf>,
 
@@ -122,34 +130,58 @@ pub struct CompressRomCommand {
     /// compression time. Leave unset to use the library default.
     #[arg(short = 'l', long = "level", value_name = "LEVEL", value_parser = clap::value_parser!(i32).range(0..=22))]
     pub level: Option<i32>,
+
+    #[arg(
+        long,
+        short = 'R',
+        help = "process all matching files in INPUT (top-level only)",
+        default_value = "false"
+    )]
+    pub recursive: bool,
 }
 
 /// Decompresses a Z3DS file back to the original ROM format
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
-    long_about = "Decompress a Z3DS file back to the original ROM format\n\nSupported input formats: .zcia, .zcci, .zcxi, .z3dsx\nOutput extensions: .cia, .cci, .cxi, .3dsx"
+    long_about = "Decompress a Z3DS file back to the original ROM format\n\nSupported input formats: .zcia, .zcci, .zcxi, .z3dsx\nOutput extensions: .cia, .cci, .cxi, .3dsx\n\nUse --recursive/-R to point INPUT at a directory and decompress every matching file in it (top-level only). In batch mode OUTPUT is ignored and each output is written next to its source."
 )]
 pub struct DecompressRomCommand {
-    /// Input Z3DS file path (.zcia, .zcci, .zcxi, or .z3dsx)
+    /// Input Z3DS file path, or a directory when --recursive is set (.zcia, .zcci, .zcxi, or .z3dsx)
     #[arg(value_name = "INPUT")]
     pub input: PathBuf,
 
-    /// Output file path, defaults to the input path with the "z" prefix removed from the extension
+    /// Output file path, defaults to the input path with the "z" prefix removed (ignored with --recursive)
     #[arg(value_name = "OUTPUT")]
     pub output: Option<PathBuf>,
+
+    #[arg(
+        long,
+        short = 'R',
+        help = "process all matching files in INPUT (top-level only)",
+        default_value = "false"
+    )]
+    pub recursive: bool,
 }
 
 /// Verify CTR ROM file integrity and legitimacy
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
-    long_about = "Verify a CTR ROM file's integrity by checking hashes and signatures\n\nSupported formats: .cia, .3ds, .cci, .cxi, .zcia, .zcci, .zcxi\n\nFor .cia files, classifies as:\n  - Legit: Both ticket and TMD signatures verify through Nintendo's cert chain\n  - Piratelegit: TMD signature verifies but ticket is forged\n  - Standard: Neither signature verifies\n\nFor .3ds/.cci files, verifies NCCH partition hashes (ExeFS, RomFS, ExHeader)\nCompressed Z3DS files are decompressed automatically before verification"
+    long_about = "Verify a CTR ROM file's integrity by checking hashes and signatures\n\nSupported formats: .cia, .3ds, .cci, .cxi, .zcia, .zcci, .zcxi\n\nFor .cia files, classifies as:\n  - Legit: Both ticket and TMD signatures verify through Nintendo's cert chain\n  - Piratelegit: TMD signature verifies but ticket is forged\n  - Standard: Neither signature verifies\n\nFor .3ds/.cci files, verifies NCCH partition hashes (ExeFS, RomFS, ExHeader)\nCompressed Z3DS files are decompressed automatically before verification\n\nUse --recursive/-R to point INPUT at a directory and verify every matching file in it (top-level only). The command prints one line per file and a final tally."
 )]
 pub struct VerifyCommand {
-    /// Input ROM file path (.cia, .3ds, .cci, .cxi, .zcia, .zcci, .zcxi)
+    /// Input ROM file path, or a directory when --recursive is set (.cia, .3ds, .cci, .cxi, .zcia, .zcci, .zcxi)
     #[arg(value_name = "INPUT")]
     pub input: PathBuf,
 
     /// Also verify content hashes against TMD (CIA only, slower)
     #[arg(long, default_value_t = false)]
     pub verify_content: bool,
+
+    #[arg(
+        long,
+        short = 'R',
+        help = "process all matching files in INPUT (top-level only)",
+        default_value = "false"
+    )]
+    pub recursive: bool,
 }

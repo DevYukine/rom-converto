@@ -1,4 +1,9 @@
+use crate::nintendo::ctr::has_matching_extension;
+use crate::util::ProgressReporter;
+use anyhow::Result;
+use log::{debug, warn};
 use std::path::{Path, PathBuf};
+use tokio::fs;
 
 mod compress;
 mod compress_worker;
@@ -11,6 +16,9 @@ mod seekable;
 pub use compress::{DEFAULT_ZSTD_LEVEL, MAX_ZSTD_LEVEL, MIN_ZSTD_LEVEL, compress_rom};
 pub use decompress::decompress_rom;
 pub use seekable::decode_seekable;
+
+const COMPRESS_EXTS: &[&str] = &["cia", "cci", "3ds", "cxi", "3dsx"];
+const DECOMPRESS_EXTS: &[&str] = &["zcia", "zcci", "zcxi", "z3dsx"];
 
 /// Maps a file extension using the given table, falling back to `default`.
 fn map_extension(input: &Path, table: &[(&str, &str)], default: &str) -> PathBuf {
@@ -53,6 +61,99 @@ pub fn derive_compressed_path(input: &Path) -> PathBuf {
 /// the extension.
 pub fn derive_decompressed_path(input: &Path) -> PathBuf {
     map_extension(input, DECOMPRESS_MAP, "3ds")
+}
+
+pub async fn compress_rom_batch(
+    input_dir: &Path,
+    level: Option<i32>,
+    progress: &dyn ProgressReporter,
+    total_progress: &dyn ProgressReporter,
+) -> Result<()> {
+    let mut count: u64 = 0;
+    let mut scan = fs::read_dir(input_dir).await?;
+    while let Ok(Some(entry)) = scan.next_entry().await {
+        if has_matching_extension(&entry.path(), COMPRESS_EXTS) {
+            count += 1;
+        }
+    }
+
+    if count == 0 {
+        warn!(
+            "No supported ROM files found in {} (looked for {:?})",
+            input_dir.display(),
+            COMPRESS_EXTS
+        );
+        return Ok(());
+    }
+
+    total_progress.start(count, &format!("Compressing {count} files..."));
+
+    let mut entries = fs::read_dir(input_dir).await?;
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let path = entry.path();
+        if !has_matching_extension(&path, COMPRESS_EXTS) {
+            debug!("Skipping {} (not a supported ROM)", path.display());
+            continue;
+        }
+
+        let output = derive_compressed_path(&path);
+        debug!("Compressing {} -> {}", path.display(), output.display());
+
+        if let Err(err) = compress_rom(&path, &output, level, progress).await {
+            warn!("Failed to compress {}: {err}", path.display());
+        }
+
+        total_progress.inc(1);
+    }
+
+    total_progress.finish();
+    Ok(())
+}
+
+pub async fn decompress_rom_batch(
+    input_dir: &Path,
+    progress: &dyn ProgressReporter,
+    total_progress: &dyn ProgressReporter,
+) -> Result<()> {
+    let mut count: u64 = 0;
+    let mut scan = fs::read_dir(input_dir).await?;
+    while let Ok(Some(entry)) = scan.next_entry().await {
+        if has_matching_extension(&entry.path(), DECOMPRESS_EXTS) {
+            count += 1;
+        }
+    }
+
+    if count == 0 {
+        warn!(
+            "No supported Z3DS files found in {} (looked for {:?})",
+            input_dir.display(),
+            DECOMPRESS_EXTS
+        );
+        return Ok(());
+    }
+
+    total_progress.start(count, &format!("Decompressing {count} files..."));
+
+    let mut entries = fs::read_dir(input_dir).await?;
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let path = entry.path();
+        if !has_matching_extension(&path, DECOMPRESS_EXTS) {
+            debug!("Skipping {} (not a Z3DS file)", path.display());
+            continue;
+        }
+
+        let output = derive_decompressed_path(&path);
+        debug!("Decompressing {} -> {}", path.display(), output.display());
+
+        if let Err(err) = decompress_rom(&path, &output, progress).await {
+            warn!("Failed to decompress {}: {err}", path.display());
+        }
+
+        total_progress.inc(1);
+    }
+
+    total_progress.finish();
+    Ok(())
 }
 
 #[cfg(test)]

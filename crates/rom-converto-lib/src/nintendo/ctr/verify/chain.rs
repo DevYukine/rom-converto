@@ -987,6 +987,87 @@ async fn verify_content_hashes_streaming(
     Ok(all_valid)
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct BatchVerifySummary {
+    pub total: usize,
+    pub ok: usize,
+    pub failed: usize,
+}
+
+const VERIFY_EXTS: &[&str] = &["cia", "3ds", "cci", "cxi", "zcia", "zcci", "zcxi"];
+
+pub async fn verify_ctr_batch(
+    input_dir: &Path,
+    options: &CtrVerifyOptions,
+    progress: &dyn ProgressReporter,
+    total_progress: &dyn ProgressReporter,
+) -> Result<BatchVerifySummary> {
+    use crate::nintendo::ctr::has_matching_extension;
+
+    let mut count: u64 = 0;
+    let mut scan = tokio::fs::read_dir(input_dir).await?;
+    while let Ok(Some(entry)) = scan.next_entry().await {
+        if has_matching_extension(&entry.path(), VERIFY_EXTS) {
+            count += 1;
+        }
+    }
+
+    let mut summary = BatchVerifySummary::default();
+
+    if count == 0 {
+        log::warn!(
+            "No supported ROM files found in {} (looked for {:?})",
+            input_dir.display(),
+            VERIFY_EXTS
+        );
+        return Ok(summary);
+    }
+
+    total_progress.start(count, &format!("Verifying {count} files..."));
+
+    let mut entries = tokio::fs::read_dir(input_dir).await?;
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let path = entry.path();
+        if !has_matching_extension(&path, VERIFY_EXTS) {
+            log::debug!("Skipping {} (not a supported ROM)", path.display());
+            continue;
+        }
+
+        summary.total += 1;
+        let display_name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("<unnamed>");
+
+        match verify_ctr(&path, options, progress).await {
+            Ok(result) => {
+                summary.ok += 1;
+                match &result {
+                    CtrVerifyResult::Cia(cia) => {
+                        log::info!("[OK] {display_name} - CIA / {}", cia.legitimacy);
+                    }
+                    CtrVerifyResult::Ncsd(ncsd) => {
+                        log::info!(
+                            "[OK] {display_name} - NCSD / {} partitions / Title ID {}",
+                            ncsd.partition_count,
+                            ncsd.title_id
+                        );
+                    }
+                }
+            }
+            Err(err) => {
+                summary.failed += 1;
+                log::warn!("[FAIL] {display_name} - {err}");
+            }
+        }
+
+        total_progress.inc(1);
+    }
+
+    total_progress.finish();
+    Ok(summary)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -43,6 +43,29 @@ pub struct CdnToCiaOptions {
     pub compress: bool,
 }
 
+pub fn derive_decrypted_path(input: &Path) -> PathBuf {
+    let stem = input.file_stem().and_then(|s| s.to_str()).unwrap_or("out");
+    let ext = input.extension().and_then(|s| s.to_str()).unwrap_or("");
+    let name = if ext.is_empty() {
+        format!("{stem}.decrypted")
+    } else {
+        format!("{stem}.decrypted.{ext}")
+    };
+    input.with_file_name(name)
+}
+
+pub(crate) fn has_matching_extension(path: &Path, accepted: &[&str]) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    match path.extension().and_then(|s| s.to_str()) {
+        Some(ext) => accepted.iter().any(|a| ext.eq_ignore_ascii_case(a)),
+        None => false,
+    }
+}
+
+const DECRYPT_EXTS: &[&str] = &["cia", "3ds", "cci", "cxi"];
+
 pub async fn decrypt_cia(
     input: &Path,
     output: &Path,
@@ -368,4 +391,107 @@ async fn convert_cdn_to_cia_single(
     }
 
     Ok(())
+}
+
+pub async fn decrypt_rom_batch(
+    input_dir: &Path,
+    progress: &dyn ProgressReporter,
+    total_progress: &dyn ProgressReporter,
+) -> Result<()> {
+    let mut count: u64 = 0;
+    let mut scan = fs::read_dir(input_dir).await?;
+    while let Ok(Some(entry)) = scan.next_entry().await {
+        if has_matching_extension(&entry.path(), DECRYPT_EXTS) {
+            count += 1;
+        }
+    }
+
+    if count == 0 {
+        warn!(
+            "No supported ROM files found in {} (looked for {:?})",
+            input_dir.display(),
+            DECRYPT_EXTS
+        );
+        return Ok(());
+    }
+
+    total_progress.start(count, &format!("Decrypting {count} files..."));
+
+    let mut entries = fs::read_dir(input_dir).await?;
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let path = entry.path();
+        if !has_matching_extension(&path, DECRYPT_EXTS) {
+            debug!("Skipping {} (not a supported ROM)", path.display());
+            continue;
+        }
+
+        let output = derive_decrypted_path(&path);
+        debug!(
+            "Decrypting {} -> {}",
+            path.display(),
+            output.display()
+        );
+
+        if let Err(err) = decrypt_rom(&path, &output, progress).await {
+            warn!("Failed to decrypt {}: {err}", path.display());
+        }
+
+        total_progress.inc(1);
+    }
+
+    total_progress.finish();
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decrypt_path_cia() {
+        assert_eq!(
+            derive_decrypted_path(Path::new("game.cia")),
+            PathBuf::from("game.decrypted.cia"),
+        );
+    }
+
+    #[test]
+    fn decrypt_path_3ds() {
+        assert_eq!(
+            derive_decrypted_path(Path::new("game.3ds")),
+            PathBuf::from("game.decrypted.3ds"),
+        );
+    }
+
+    #[test]
+    fn decrypt_path_cci() {
+        assert_eq!(
+            derive_decrypted_path(Path::new("game.cci")),
+            PathBuf::from("game.decrypted.cci"),
+        );
+    }
+
+    #[test]
+    fn decrypt_path_cxi() {
+        assert_eq!(
+            derive_decrypted_path(Path::new("game.cxi")),
+            PathBuf::from("game.decrypted.cxi"),
+        );
+    }
+
+    #[test]
+    fn decrypt_path_preserves_directory() {
+        assert_eq!(
+            derive_decrypted_path(Path::new("/roms/game.cia")),
+            PathBuf::from("/roms/game.decrypted.cia"),
+        );
+    }
+
+    #[test]
+    fn decrypt_path_no_extension() {
+        assert_eq!(
+            derive_decrypted_path(Path::new("game")),
+            PathBuf::from("game.decrypted"),
+        );
+    }
 }
