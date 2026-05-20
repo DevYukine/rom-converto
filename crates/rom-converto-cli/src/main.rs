@@ -24,7 +24,8 @@ use rom_converto_lib::nintendo::ctr::z3ds::{
     derive_decompressed_path,
 };
 use rom_converto_lib::nintendo::ctr::{
-    CdnToCiaOptions, convert_cdn_to_cia, decrypt_rom, decrypt_rom_batch, generate_ticket_from_cdn,
+    CdnToCiaOptions, convert_cdn_to_cia, decrypt_rom, decrypt_rom_batch, derive_decrypted_path,
+    generate_ticket_from_cdn,
 };
 use rom_converto_lib::nintendo::nx::{
     NczMode, NxCompressOptions, compress_container_async, decompress_container_async,
@@ -108,11 +109,9 @@ async fn main() -> Result<()> {
                     }
                     decrypt_rom_batch(&cmd.input, &progress, &total_progress).await?
                 } else {
-                    let output = cmd.output.ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "OUTPUT is required in single-file mode; use --recursive/-R to process a directory"
-                        )
-                    })?;
+                    let output = cmd
+                        .output
+                        .unwrap_or_else(|| derive_decrypted_path(&cmd.input));
                     decrypt_rom(&cmd.input, &output, &progress).await?
                 }
             }

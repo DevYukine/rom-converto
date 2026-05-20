@@ -92,14 +92,14 @@ pub struct GenerateCdnTicketCommand {
 /// Decrypts an encrypted 3DS ROM file
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
-    long_about = "Decrypt an encrypted 3DS ROM file\n\nSupported input formats: .cia, .3ds, .cci, .cxi\nThe format is auto-detected from the file contents.\nA new decrypted file is written to the output path.\n\nUse --recursive/-R to point INPUT at a directory and decrypt every matching file in it (top-level only). In batch mode OUTPUT is ignored and each decrypted file is written next to its source as <name>.decrypted.<ext>."
+    long_about = "Decrypt an encrypted 3DS ROM file\n\nSupported input formats: .cia, .3ds, .cci, .cxi\nThe format is auto-detected from the file contents.\n\nIf OUTPUT is omitted the decrypted file is written next to the input as <name>.decrypted.<ext>.\n\nUse --recursive/-R to point INPUT at a directory and decrypt every matching file in it (top-level only). In batch mode OUTPUT is ignored and each decrypted file is written next to its source as <name>.decrypted.<ext>."
 )]
 pub struct DecryptCommand {
     /// Input ROM file path, or a directory when --recursive is set (.cia, .3ds, .cci, or .cxi)
     #[arg(value_name = "INPUT")]
     pub input: PathBuf,
 
-    /// Output decrypted file path (required in single-file mode, ignored with --recursive)
+    /// Output decrypted file path, defaults to <name>.decrypted.<ext> next to the input (ignored with --recursive)
     #[arg(value_name = "OUTPUT")]
     pub output: Option<PathBuf>,
 
