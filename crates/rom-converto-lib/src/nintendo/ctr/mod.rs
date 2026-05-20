@@ -426,11 +426,7 @@ pub async fn decrypt_rom_batch(
         }
 
         let output = derive_decrypted_path(&path);
-        debug!(
-            "Decrypting {} -> {}",
-            path.display(),
-            output.display()
-        );
+        debug!("Decrypting {} -> {}", path.display(), output.display());
 
         if let Err(err) = decrypt_rom(&path, &output, progress).await {
             warn!("Failed to decrypt {}: {err}", path.display());
