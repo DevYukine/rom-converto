@@ -11,7 +11,7 @@ const isBatch = computed(() => queue.value.length > 0);
 
 const batch = useBatchOperation("ctr-convert", "cmd_convert_ctr", (item) => ({
   input: item.input,
-  output: item.output,
+  output: item.output || null,
 }));
 
 function getExt(path: string): string {
@@ -52,7 +52,7 @@ async function execute() {
   } else {
     await run("cmd_convert_ctr", {
       input: input.value,
-      output: output.value,
+      output: output.value || null,
     });
   }
 }
@@ -121,7 +121,7 @@ async function execute() {
 
         <RunButton
           :loading="loading || batch.running.value"
-          :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input || !output"
+          :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input"
           @click="execute"
         >
           {{ isBatch ? `Convert ${queue.filter(i => i.status === 'pending').length} Files` : 'Convert' }}
