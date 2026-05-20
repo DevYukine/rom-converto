@@ -4,6 +4,7 @@ import { useCtrDecryptStore } from "~/stores/ctr-decrypt";
 import { useCtrCompressStore } from "~/stores/ctr-compress";
 import { useCtrDecompressStore } from "~/stores/ctr-decompress";
 import { useCtrVerifyStore } from "~/stores/ctr-verify";
+import { useCtrConvertStore } from "~/stores/ctr-convert";
 import { useChdCompressStore } from "~/stores/chd-compress";
 import { useChdExtractStore } from "~/stores/chd-extract";
 import { useChdVerifyStore } from "~/stores/chd-verify";
@@ -45,6 +46,7 @@ const sections: SidebarSection[] = [
       { to: "/ctr/compress", label: "Compress", store: () => useCtrCompressStore(), icon: "compress" },
       { to: "/ctr/decompress", label: "Decompress", store: () => useCtrDecompressStore(), icon: "expand" },
       { to: "/ctr/verify", label: "Verify", store: () => useCtrVerifyStore(), icon: "shield-check" },
+      { to: "/ctr/convert", label: "Convert", store: () => useCtrConvertStore(), icon: "swap" },
     ],
   },
   {
@@ -245,6 +247,10 @@ function isActiveSection(key: string): boolean {
                     <!-- shield-check -->
                     <svg v-else-if="link.icon === 'shield-check'" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
                       <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
+                    </svg>
+                    <!-- swap -->
+                    <svg v-else-if="link.icon === 'swap'" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M7.5 21L3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5" />
                     </svg>
                     <!-- disc-down -->
                     <svg v-else-if="link.icon === 'disc-down'" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
