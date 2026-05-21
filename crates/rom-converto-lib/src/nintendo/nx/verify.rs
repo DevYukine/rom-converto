@@ -57,7 +57,7 @@ pub fn verify_container(
         if !(lower.ends_with(".nca") || lower.ends_with(".ncz")) {
             continue;
         }
-        let verdict = verify_one(&in_file, &entry, kind.is_compressed(), keys, progress)?;
+        let verdict = verify_one(&in_file, &entry, keys, progress)?;
         if !verdict.ok {
             overall_ok = false;
         }
@@ -172,12 +172,11 @@ fn list_xci_entries(path: &Path) -> NxResult<Vec<Entry>> {
 fn verify_one(
     in_file: &Arc<File>,
     entry: &Entry,
-    is_compressed: bool,
     keys: &KeySet,
     progress: &dyn ProgressReporter,
 ) -> NxResult<NcaVerdict> {
     let lower = entry.name.to_ascii_lowercase();
-    if lower.ends_with(".ncz") || (is_compressed && lower.ends_with(".nca")) {
+    if lower.ends_with(".ncz") {
         let mut nca_bytes = vec![0u8; entry.size as usize];
         file_read_exact_at(in_file, &mut nca_bytes, entry.abs_offset)?;
         let mut decoded = Vec::with_capacity(entry.size as usize);
