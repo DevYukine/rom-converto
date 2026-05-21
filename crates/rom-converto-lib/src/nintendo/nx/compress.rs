@@ -111,9 +111,10 @@ pub async fn compress_container_async(
     keys: KeySet,
     progress: &dyn ProgressReporter,
 ) -> NxResult<()> {
+    let total = tokio::fs::metadata(&input).await?.len();
     let bytes_done = Arc::new(AtomicU64::new(0));
     let bytes_done_bg = bytes_done.clone();
-    progress.start(0, "Compressing Switch container");
+    progress.start(total, "Compressing Switch container");
     let proxy = AtomicProgress {
         counter: bytes_done_bg,
     };

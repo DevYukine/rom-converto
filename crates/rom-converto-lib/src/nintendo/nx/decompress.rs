@@ -48,9 +48,10 @@ pub async fn decompress_container_async(
     keys: KeySet,
     progress: &dyn ProgressReporter,
 ) -> NxResult<()> {
+    let total = tokio::fs::metadata(&input).await?.len();
     let bytes_done = Arc::new(AtomicU64::new(0));
     let bytes_done_bg = bytes_done.clone();
-    progress.start(0, "Decompressing Switch container");
+    progress.start(total, "Decompressing Switch container");
     let proxy = AtomicProgress {
         counter: bytes_done_bg,
     };
