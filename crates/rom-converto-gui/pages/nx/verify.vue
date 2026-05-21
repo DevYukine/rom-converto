@@ -4,63 +4,100 @@ import { storeToRefs } from "pinia";
 import { useNxVerifyStore, type NxVerifyResult } from "~/stores/nx-verify";
 
 const store = useNxVerifyStore();
-const { input, keys, verdict, error, loading } = storeToRefs(store);
+const { input, keys, verdict, result, error, loading, queue } = storeToRefs(store);
 const progress = useProgress("nx-verify");
 
-const dropZoneRef = ref<HTMLElement | null>(null);
-let zoneId: string | null = null;
+const isBatch = computed(() => queue.value.length > 0);
 
-function addPaths(paths: string[]) {
-  if (paths[0]) input.value = paths[0];
+const CONTAINER_FILTERS = [
+  { name: "Switch container", extensions: ["nsp", "nsz", "xci", "xcz"] },
+];
+
+const batch = useBatchOperation("nx-verify", "cmd_nx_verify", (item) => ({
+  input: item.input,
+  keys: keys.value || null,
+}));
+
+function handleFiles(paths: string[]) {
+  for (const p of paths) store.addToQueue(p);
 }
 
-onMounted(() => {
-  if (dropZoneRef.value) {
-    zoneId = registerDropZone(dropZoneRef.value, addPaths, 0);
+function handleSingleFile(path: string) {
+  if (queue.value.length > 0) {
+    store.addToQueue(path);
+  } else {
+    input.value = path;
   }
-});
-
-onUnmounted(() => {
-  if (zoneId) unregisterDropZone(zoneId);
-});
+}
 
 async function execute() {
   progress.reset();
   verdict.value = null;
   error.value = "";
-  loading.value = true;
-  try {
-    const json = await invoke<string>("cmd_nx_verify", {
-      input: input.value,
-      keys: keys.value || null,
-    });
-    verdict.value = JSON.parse(json) as NxVerifyResult;
-  } catch (e) {
-    error.value = String(e);
-  } finally {
-    loading.value = false;
+  result.value = "";
+
+  if (isBatch.value) {
+    await batch.start(queue, result);
+  } else {
+    loading.value = true;
+    try {
+      const json = await invoke<string>("cmd_nx_verify", {
+        input: input.value,
+        keys: keys.value || null,
+      });
+      verdict.value = JSON.parse(json) as NxVerifyResult;
+    } catch (e) {
+      error.value = String(e);
+    } finally {
+      loading.value = false;
+    }
   }
 }
-
-const canVerify = computed(() => !!input.value);
 </script>
 
 <template>
   <div>
     <PageHeader
       title="Verify integrity"
-      description="Decrypt every NCA section in a Switch container and recompute the FsHeader's stored chunk hashes."
-      :loading="loading"
-      :has-result="!!verdict"
+      description="Decrypt every NCA section in a Switch container and recompute the FsHeader's stored chunk hashes. Drop multiple files for batch processing."
+      :loading="loading || batch.running.value"
+      :has-result="!!verdict || !!result"
       :has-error="!!error"
     />
 
     <OperationCard>
       <div class="space-y-5">
+        <!-- Batch mode -->
+        <template v-if="isBatch">
+          <BatchFileList
+            :items="queue"
+            :current-index="batch.currentIndex.value"
+            :running="batch.running.value"
+            :progress="batch.progress"
+            @remove="store.removeFromQueue"
+            @clear="store.clearQueue"
+          />
+
+          <FileDropZone
+            label="Add more containers"
+            model-value=""
+            :multiple="true"
+            :filters="CONTAINER_FILTERS"
+            @update:model-value="(p: string) => { if (p) store.addToQueue(p) }"
+            @update:files="handleFiles"
+          />
+        </template>
+
+        <!-- Single mode -->
         <FileDropZone
-          v-model="input"
+          v-else
+          :model-value="input"
           label="Input container"
-          :filters="[{ name: 'Switch container', extensions: ['nsp', 'nsz', 'xci', 'xcz'] }]"
+          :multiple="true"
+          :filters="CONTAINER_FILTERS"
+          :primary="true"
+          @update:model-value="handleSingleFile"
+          @update:files="handleFiles"
         />
 
         <FileDropZone
@@ -75,11 +112,15 @@ const canVerify = computed(() => !!input.value);
           :running="progress.running.value"
         />
 
-        <RunButton :loading="loading" :disabled="!canVerify" @click="execute">
-          Verify
+        <RunButton
+          :loading="loading || batch.running.value"
+          :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input"
+          @click="execute"
+        >
+          {{ isBatch ? `Verify ${queue.filter(i => i.status === 'pending').length} Files` : 'Verify' }}
         </RunButton>
 
-        <div v-if="verdict" class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
+        <div v-if="!isBatch && verdict" class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
           <div class="flex items-center justify-between">
             <div>
               <div class="text-sm font-medium text-zinc-200">{{ verdict.kind }}</div>
@@ -123,7 +164,7 @@ const canVerify = computed(() => !!input.value);
     </OperationCard>
 
     <div class="mt-4">
-      <OutputLog :result="''" :error="error" />
+      <OutputLog :result="isBatch ? result : ''" :error="error" />
     </div>
   </div>
 </template>
