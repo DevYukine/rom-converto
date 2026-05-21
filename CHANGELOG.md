@@ -1,3 +1,26 @@
+# [0.9.0](https://github.com/DevYukine/rom-converto/compare/v0.8.0...v0.9.0) (2026-05-21)
+
+
+### Bug Fixes
+
+* **ctr:** preserve CIA meta section through decrypt ([ed38ffb](https://github.com/DevYukine/rom-converto/commit/ed38ffb8cd9c5e21af3a72b68674034f20a5e3e6))
+* **gui:** keep verify options visible in batch mode ([8660371](https://github.com/DevYukine/rom-converto/commit/8660371a066667fd9b9e41091243713a8be025bb))
+* **nx:** only decode .ncz entries during NSZ verify ([8504822](https://github.com/DevYukine/rom-converto/commit/85048227f93372ffadf33183fa45fc47dd5ebd44))
+* **nx:** use embedded tickets when verifying NSZ NCAs ([962ce5d](https://github.com/DevYukine/rom-converto/commit/962ce5d9dc68b9494211fd10d2b42b3fb434e138))
+
+
+### Features
+
+* **ctr:** add --recursive batch mode to decrypt, compress, decompress, verify ([6f2cb52](https://github.com/DevYukine/rom-converto/commit/6f2cb52389f13738d180bca58e2cfee4998b9b42))
+* **ctr:** add conversion between CIA and CCI/3DS ([ee93595](https://github.com/DevYukine/rom-converto/commit/ee93595c0e2955a791519dc3e43a5789adde764b))
+* **ctr:** default decrypt output to <name>.decrypted.<ext> ([b37e84b](https://github.com/DevYukine/rom-converto/commit/b37e84b01b3b003af3ea4e2d2e19df948b017eac))
+* **gui:** add batch mode to Switch verify ([f642b4f](https://github.com/DevYukine/rom-converto/commit/f642b4ffdac2cbe6cf252b5328497a4b0f2fd9c0))
+* **gui:** add Convert ROM link to 3DS sidebar ([4edccd9](https://github.com/DevYukine/rom-converto/commit/4edccd917948b5cdc627f5827dcff3b513e11ac3))
+* **gui:** add Switch section to sidebar ([acd543b](https://github.com/DevYukine/rom-converto/commit/acd543b51cc0d1d0c68ed21d3507d6d8a80858e0))
+* **nx:** add Switch NSP/XCI compression and decompression ([e102df8](https://github.com/DevYukine/rom-converto/commit/e102df865eee8653303e54f4324069af8503ccf3))
+
+
+
 # [0.8.0](https://github.com/DevYukine/rom-converto/compare/v0.7.1...v0.8.0) (2026-04-18)
 
 
@@ -59,15 +82,6 @@
 ### Performance Improvements
 
 * **ctr:** stream verify, compress, and CIA write to reduce memory usage ([285db21](https://github.com/DevYukine/rom-converto/commit/285db21168e37ec1b988556bca0a700f6463a53c))
-
-
-
-## [0.5.2](https://github.com/DevYukine/rom-converto/compare/v0.5.1...v0.5.2) (2026-04-08)
-
-
-### Bug Fixes
-
-* simplify version management, remove hardcoded version in UI ([cef99a9](https://github.com/DevYukine/rom-converto/commit/cef99a91b50b73ec8491aa7fa9137d2762b5e436))
 
 
 
