@@ -94,6 +94,9 @@ pub async fn verify_container_async(
     keys: KeySet,
     progress: &dyn ProgressReporter,
 ) -> NxResult<NxVerifyResult> {
+    let total = tokio::fs::metadata(&input).await?.len();
+    progress.start(total, "Verifying Switch container");
+
     let bytes_done = Arc::new(AtomicU64::new(0));
     let bytes_done_bg = bytes_done.clone();
     let proxy = AtomicProgress {
@@ -123,6 +126,7 @@ pub async fn verify_container_async(
     if remaining > 0 {
         progress.inc(remaining);
     }
+    progress.finish();
     Ok(result)
 }
 
