@@ -33,14 +33,14 @@ pub fn get_current_release_version() -> ReleaseVersion {
 
 pub fn get_filename_for_current_target_triple() -> anyhow::Result<String> {
     match built_info::TARGET {
-        "x86_64-unknown-freebsd" => Ok("rom-converto-freebsd-x64".to_string()),
-        "x86_64-unknown-linux-gnu" => Ok("rom-converto-linux-x64".to_string()),
-        "x86_64-unknown-linux-musl" => Ok("rom-converto-linux-x64-musl".to_string()),
-        "aarch64-unknown-linux-gnu" => Ok("rom-converto-linux-arm64".to_string()),
-        "armv7-unknown-linux-gnueabihf" => Ok("rom-converto-linux-arm7".to_string()),
-        "x86_64-pc-windows-msvc" => Ok("rom-converto-windows-x64.exe".to_string()),
-        "x86_64-apple-darwin" => Ok("rom-converto-macos-x64".to_string()),
-        "aarch64-apple-darwin" => Ok("rom-converto-macos-arm64".to_string()),
+        "x86_64-unknown-freebsd" => Ok("rom-converto-cli-freebsd-x64".to_string()),
+        "x86_64-unknown-linux-gnu" => Ok("rom-converto-cli-linux-x64".to_string()),
+        "x86_64-unknown-linux-musl" => Ok("rom-converto-cli-linux-x64-musl".to_string()),
+        "aarch64-unknown-linux-gnu" => Ok("rom-converto-cli-linux-arm64".to_string()),
+        "armv7-unknown-linux-gnueabihf" => Ok("rom-converto-cli-linux-arm7".to_string()),
+        "x86_64-pc-windows-msvc" => Ok("rom-converto-cli-windows-x64.exe".to_string()),
+        "x86_64-apple-darwin" => Ok("rom-converto-cli-macos-x64".to_string()),
+        "aarch64-apple-darwin" => Ok("rom-converto-cli-macos-arm64".to_string()),
         _ => Err(NoPrebuildFoundError.into()),
     }
 }
