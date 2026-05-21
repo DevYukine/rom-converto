@@ -169,7 +169,7 @@ async function execute() {
 
         <FileDropZone
           v-model="output"
-          label="Output .wua path"
+          label="Output (auto-derived)"
           :save-dialog="true"
           :filters="[{ name: 'Wii U Archive', extensions: ['wua'] }]"
         />

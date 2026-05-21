@@ -70,7 +70,7 @@ async function execute() {
   <div>
     <PageHeader
       title="Decompress to NSP/XCI"
-      description="Decompress NSZ to NSP or XCZ to XCI. Output is byte-identical to the original installable container."
+      description="Decompress NSZ to NSP or XCZ to XCI. Output is byte-identical to the original installable container. Drop multiple files for batch processing."
       :loading="loading"
       :has-result="!!result"
       :has-error="!!error"
@@ -114,7 +114,7 @@ async function execute() {
         <FileDropZone
           v-if="queue.length <= 1"
           v-model="output"
-          label="Output path"
+          label="Output (auto-derived)"
           :save-dialog="true"
           :filters="[{ name: 'Switch container', extensions: ['nsp', 'xci'] }]"
         />
@@ -139,7 +139,7 @@ async function execute() {
         />
 
         <RunButton :loading="loading" :disabled="!canDecompress" @click="execute">
-          {{ queue.length <= 1 ? "Decompress" : `Decompress ${queue.length} files` }}
+          {{ queue.length <= 1 ? "Decompress" : `Decompress ${queue.length} Files` }}
         </RunButton>
       </div>
     </OperationCard>

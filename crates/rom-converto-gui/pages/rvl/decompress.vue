@@ -49,7 +49,7 @@ async function execute() {
   <div>
     <PageHeader
       title="Decompress Wii RVZ"
-      description="Decompress an RVZ file back to a raw Wii ISO."
+      description="Decompress an RVZ file back to a raw Wii ISO. Drop multiple files for batch processing."
       :loading="loading || batch.running.value"
       :has-result="!!result"
       :has-error="!!error"

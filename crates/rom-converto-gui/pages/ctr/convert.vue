@@ -103,7 +103,7 @@ async function execute() {
 
           <FileDropZone
             v-model="output"
-            label="Output Path"
+            label="Output (auto-derived)"
             :save-dialog="true"
             :filters="[{ name: '3DS ROM', extensions: ['cia', '3ds', 'cci'] }]"
           />

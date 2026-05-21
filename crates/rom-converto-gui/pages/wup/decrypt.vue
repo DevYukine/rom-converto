@@ -48,7 +48,7 @@ async function execute() {
 
         <FileDropZone
           v-model="output"
-          label="Output directory"
+          label="Output Directory"
           :directory="true"
         />
 

@@ -51,7 +51,7 @@ async function execute() {
 
             <FileDropZone
               v-model="output"
-              label="Output (optional)"
+              label="Output (auto-derived)"
               :save-dialog="true"
               :filters="[{ name: 'CIA', extensions: ['cia'] }]"
             />

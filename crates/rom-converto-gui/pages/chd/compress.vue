@@ -95,7 +95,7 @@ async function execute() {
 
             <FileDropZone
               v-model="output"
-              label="Output CHD File (auto-derived)"
+              label="Output (auto-derived)"
               :save-dialog="true"
               :filters="[{ name: 'CHD', extensions: ['chd'] }]"
             />

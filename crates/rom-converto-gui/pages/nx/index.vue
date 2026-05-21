@@ -37,13 +37,15 @@ const operations = [
         All platforms
       </NuxtLink>
       <h1 class="mt-2 text-2xl font-bold text-zinc-100">Switch</h1>
-      <p class="mt-1 text-sm text-zinc-400">
-        NSP / XCI compression and verification. Requires a `prod.keys`
-        file at $HOME/.switch/prod.keys, %USERPROFILE%\.switch\prod.keys,
-        or supplied via the keys field on each page.
-      </p>
+      <p class="mt-1 text-sm text-zinc-400">Switch container operations.</p>
     </div>
 
     <OperationGrid :operations="operations" />
+
+    <p class="mt-6 text-xs text-zinc-500">
+      Requires a prod.keys file at $HOME/.switch/prod.keys,
+      %USERPROFILE%\.switch\prod.keys, or supplied via the keys field on
+      each page.
+    </p>
   </div>
 </template>

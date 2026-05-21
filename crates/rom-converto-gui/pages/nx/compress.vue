@@ -121,7 +121,7 @@ async function execute() {
         <FileDropZone
           v-if="queue.length <= 1"
           v-model="output"
-          label="Output path"
+          label="Output (auto-derived)"
           :save-dialog="true"
           :filters="[{ name: 'Switch compressed', extensions: ['nsz', 'xcz'] }]"
         />
@@ -222,7 +222,7 @@ async function execute() {
         />
 
         <RunButton :loading="loading" :disabled="!canCompress" @click="execute">
-          {{ queue.length <= 1 ? "Compress" : `Compress ${queue.length} files` }}
+          {{ queue.length <= 1 ? "Compress" : `Compress ${queue.length} Files` }}
         </RunButton>
 
         <div v-if="hasXci && mode === 'solid'" class="text-xs text-amber-300/80">
