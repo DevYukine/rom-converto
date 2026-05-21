@@ -88,7 +88,8 @@ pub async fn decrypt_nus_title_async(
     output_dir: PathBuf,
     progress: &dyn ProgressReporter,
 ) -> WupResult<()> {
-    progress.start(0, "Decrypting Wii U title");
+    let total = scan_content_bytes(&title_dir).await;
+    progress.start(total, "Decrypting Wii U title");
 
     let bytes_done = Arc::new(AtomicU64::new(0));
     let bytes_done_for_task = bytes_done.clone();
@@ -132,6 +133,29 @@ impl ProgressReporter for AtomicBytesProgress {
         self.bytes_done.fetch_add(delta, Ordering::Relaxed);
     }
     fn finish(&self) {}
+}
+
+/// Encrypted `.app` size is a 1:1 approximation of the decrypted byte
+/// count, modulo padding.
+async fn scan_content_bytes(title_dir: &Path) -> u64 {
+    let mut total = 0u64;
+    let Ok(mut entries) = tokio::fs::read_dir(title_dir).await else {
+        return 0;
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let path = entry.path();
+        let is_app = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("app"));
+        if !is_app {
+            continue;
+        }
+        if let Ok(meta) = entry.metadata().await {
+            total = total.saturating_add(meta.len());
+        }
+    }
+    total
 }
 
 #[cfg(test)]
