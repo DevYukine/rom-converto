@@ -16,6 +16,7 @@ use crate::nintendo::nx::error::NxResult;
 use crate::nintendo::nx::keys::KeySet;
 use crate::nintendo::nx::models::hfs0 as hfs0_mod;
 use crate::nintendo::nx::models::pfs0 as pfs0_mod;
+use crate::nintendo::nx::models::ticket::Ticket;
 use crate::nintendo::nx::ncz::ncz_to_nca;
 use crate::nintendo::nx::walker::NcaWalker;
 use crate::util::ProgressReporter;
@@ -50,6 +51,22 @@ pub fn verify_container(
         ContainerKind::Xci | ContainerKind::Xcz => list_xci_entries(input)?,
     };
 
+    // Title-rights NCAs need a titlekey looked up by rights_id. The
+    // external title.keys is optional; tickets shipped inside the
+    // container are merged in here so those NCAs can be opened.
+    let mut keys = keys.clone();
+    for entry in &entries {
+        if !entry.name.to_ascii_lowercase().ends_with(".tik") {
+            continue;
+        }
+        let mut buf = vec![0u8; entry.size as usize];
+        file_read_exact_at(&in_file, &mut buf, entry.abs_offset)?;
+        if let Ok(ticket) = Ticket::parse(&buf) {
+            keys.title_keys
+                .insert(ticket.rights_id, ticket.encrypted_title_key);
+        }
+    }
+
     let mut ncas = Vec::new();
     let mut overall_ok = true;
     for entry in entries {
@@ -57,7 +74,7 @@ pub fn verify_container(
         if !(lower.ends_with(".nca") || lower.ends_with(".ncz")) {
             continue;
         }
-        let verdict = verify_one(&in_file, &entry, keys, progress)?;
+        let verdict = verify_one(&in_file, &entry, &keys, progress)?;
         if !verdict.ok {
             overall_ok = false;
         }
