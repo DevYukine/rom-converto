@@ -14,6 +14,9 @@ import { useRvlCompressStore } from "~/stores/rvl-compress";
 import { useRvlDecompressStore } from "~/stores/rvl-decompress";
 import { useWupCompressStore } from "~/stores/wup-compress";
 import { useWupDecryptStore } from "~/stores/wup-decrypt";
+import { useNxCompressStore } from "~/stores/nx-compress";
+import { useNxDecompressStore } from "~/stores/nx-decompress";
+import { useNxVerifyStore } from "~/stores/nx-verify";
 import { getVersion } from "@tauri-apps/api/app";
 
 const appVersion = ref("");
@@ -71,6 +74,15 @@ const sections: SidebarSection[] = [
     links: [
       { to: "/wup/compress", label: "Compress to WUA", store: () => useWupCompressStore(), icon: "compress" },
       { to: "/wup/decrypt", label: "Decrypt NUS", store: () => useWupDecryptStore(), icon: "lock-open" },
+    ],
+  },
+  {
+    key: "nx",
+    name: "Switch",
+    links: [
+      { to: "/nx/compress", label: "Compress", store: () => useNxCompressStore(), icon: "compress" },
+      { to: "/nx/decompress", label: "Decompress", store: () => useNxDecompressStore(), icon: "expand" },
+      { to: "/nx/verify", label: "Verify", store: () => useNxVerifyStore(), icon: "shield-check" },
     ],
   },
   {
