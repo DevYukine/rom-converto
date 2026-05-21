@@ -157,26 +157,23 @@ function partitionOk(part: NcchPartition): boolean {
         </template>
 
         <!-- Single mode -->
-        <div v-else class="grid gap-5 lg:grid-cols-2">
-          <FileDropZone
-            :model-value="input"
-            label="Input ROM File"
-            :multiple="true"
-            :filters="ROM_FILTERS"
-            :primary="true"
-            @update:model-value="handleSingleFile"
-            @update:files="handleFiles"
-          />
+        <FileDropZone
+          v-else
+          :model-value="input"
+          label="Input ROM File"
+          :multiple="true"
+          :filters="ROM_FILTERS"
+          :primary="true"
+          @update:model-value="handleSingleFile"
+          @update:files="handleFiles"
+        />
 
-          <div class="space-y-5">
-            <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
-              <FlagToggle
-                v-model="verifyContent"
-                label="Verify Content Hashes"
-                description="Also check SHA-256 hashes of all content data (CIA only, slower)"
-              />
-            </div>
-          </div>
+        <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
+          <FlagToggle
+            v-model="verifyContent"
+            label="Verify Content Hashes"
+            description="Also check SHA-256 hashes of all content data (CIA only, slower)"
+          />
         </div>
 
         <ProgressBar

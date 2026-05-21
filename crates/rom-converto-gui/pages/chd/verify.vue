@@ -76,33 +76,30 @@ async function execute() {
           />
         </template>
 
-        <!-- Single mode: 2-col on large screens -->
-        <div v-else class="grid gap-5 lg:grid-cols-2">
-          <FileDropZone
-            :model-value="input"
-            label="Input CHD File"
-            :multiple="true"
-            :filters="[{ name: 'CHD', extensions: ['chd'] }]"
-            :primary="true"
-            @update:model-value="handleSingleFile"
-            @update:files="handleFiles"
+        <!-- Single mode -->
+        <FileDropZone
+          v-else
+          :model-value="input"
+          label="Input CHD File"
+          :multiple="true"
+          :filters="[{ name: 'CHD', extensions: ['chd'] }]"
+          :primary="true"
+          @update:model-value="handleSingleFile"
+          @update:files="handleFiles"
+        />
+
+        <FileDropZone
+          v-model="parent"
+          label="Parent CHD (optional)"
+          :filters="[{ name: 'CHD', extensions: ['chd'] }]"
+        />
+
+        <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
+          <FlagToggle
+            v-model="fix"
+            label="Fix SHA1"
+            description="Automatically fix incorrect SHA1 values in the header"
           />
-
-          <div class="space-y-5">
-            <FileDropZone
-              v-model="parent"
-              label="Parent CHD (optional)"
-              :filters="[{ name: 'CHD', extensions: ['chd'] }]"
-            />
-
-            <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
-              <FlagToggle
-                v-model="fix"
-                label="Fix SHA1"
-                description="Automatically fix incorrect SHA1 values in the header"
-              />
-            </div>
-          </div>
         </div>
 
         <ProgressBar
