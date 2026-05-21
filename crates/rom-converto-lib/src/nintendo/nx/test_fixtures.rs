@@ -24,12 +24,13 @@ pub const TEST_BODY_KEY: [u8; 16] = [
 ];
 
 pub fn synthetic_keyset() -> KeySet {
-    let mut k = KeySet::default();
-    k.header_key = Some(TEST_HEADER_KEY);
     let mut kak = HashMap::new();
     kak.insert((KeyAreaKind::Application, 0), TEST_KAK_APPLICATION_00);
-    k.key_area_keys = kak;
-    k
+    KeySet {
+        header_key: Some(TEST_HEADER_KEY),
+        key_area_keys: kak,
+        ..KeySet::default()
+    }
 }
 
 pub fn encrypt_key_area_block(plain_keys: [[u8; 16]; KEY_AREA_KEY_COUNT]) -> [u8; KEY_AREA_TOTAL] {
