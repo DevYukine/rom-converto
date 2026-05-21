@@ -53,4 +53,32 @@ mod tests {
             PathBuf::from("Foo.xci")
         );
     }
+
+    #[test]
+    fn uppercase_xci_extension_compresses_to_xcz() {
+        assert_eq!(
+            derive_compressed_path(Path::new("Foo.XCI")),
+            PathBuf::from("Foo.xcz")
+        );
+    }
+
+    #[test]
+    fn uppercase_xcz_extension_decompresses_to_xci() {
+        assert_eq!(
+            derive_decompressed_path(Path::new("Foo.XCZ")),
+            PathBuf::from("Foo.xci")
+        );
+    }
+
+    #[test]
+    fn no_extension_defaults_to_nsz_or_nsp() {
+        assert_eq!(
+            derive_compressed_path(Path::new("noext")),
+            PathBuf::from("noext.nsz")
+        );
+        assert_eq!(
+            derive_decompressed_path(Path::new("noext")),
+            PathBuf::from("noext.nsp")
+        );
+    }
 }

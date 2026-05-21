@@ -891,4 +891,30 @@ mod tests {
         }
         println!("Roundtrip OK!");
     }
+
+    #[test]
+    fn bits_for_value_zero_is_zero() {
+        assert_eq!(bits_for_value(0), 0);
+    }
+
+    #[test]
+    fn bits_for_value_powers_of_two() {
+        assert_eq!(bits_for_value(1), 1);
+        assert_eq!(bits_for_value(2), 2);
+        assert_eq!(bits_for_value(255), 8);
+        assert_eq!(bits_for_value(256), 9);
+        assert_eq!(bits_for_value(u64::MAX), 64);
+    }
+
+    #[test]
+    fn crc16_ccitt_known_vector() {
+        // CRC-16/IBM-3740 (a.k.a. CRC-16/CCITT) check value on the
+        // ASCII string "123456789" is 0x29B1.
+        assert_eq!(crc16_ccitt(b"123456789"), 0x29B1);
+    }
+
+    #[test]
+    fn crc16_ccitt_empty_is_init_value() {
+        assert_eq!(crc16_ccitt(&[]), 0xFFFF);
+    }
 }

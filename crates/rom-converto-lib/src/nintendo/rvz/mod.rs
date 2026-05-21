@@ -55,6 +55,59 @@ pub fn derive_disc_path(input: &Path) -> PathBuf {
 }
 
 #[cfg(test)]
+mod derive_path_tests {
+    use super::*;
+
+    #[test]
+    fn iso_to_rvz() {
+        assert_eq!(
+            derive_rvz_path(Path::new("/games/game.iso")),
+            PathBuf::from("/games/game.rvz")
+        );
+    }
+
+    #[test]
+    fn gcm_to_rvz() {
+        assert_eq!(
+            derive_rvz_path(Path::new("game.gcm")),
+            PathBuf::from("game.rvz")
+        );
+    }
+
+    #[test]
+    fn no_extension_input_appends_rvz() {
+        assert_eq!(
+            derive_rvz_path(Path::new("noext")),
+            PathBuf::from("noext.rvz")
+        );
+    }
+
+    #[test]
+    fn already_rvz_stays_rvz() {
+        assert_eq!(
+            derive_rvz_path(Path::new("already.rvz")),
+            PathBuf::from("already.rvz")
+        );
+    }
+
+    #[test]
+    fn rvz_to_iso() {
+        assert_eq!(
+            derive_disc_path(Path::new("game.rvz")),
+            PathBuf::from("game.iso")
+        );
+    }
+
+    #[test]
+    fn multi_dot_stem_preserved() {
+        assert_eq!(
+            derive_rvz_path(Path::new("game.backup.iso")),
+            PathBuf::from("game.backup.rvz")
+        );
+    }
+}
+
+#[cfg(test)]
 mod integration_tests {
     use super::*;
     use crate::nintendo::dol::test_fixtures::make_fake_gamecube_iso;

@@ -144,6 +144,14 @@ mod tests {
     }
 
     #[test]
+    fn rejects_ambiguous_17_byte_input() {
+        // 17 bytes is neither raw-16 nor a 32-char hex string; it
+        // must be rejected rather than silently truncated.
+        let result = DiscKey::from_file_contents(&[0u8; 17]);
+        assert!(matches!(result, Err(WupError::DiscKeyMalformed(_))));
+    }
+
+    #[test]
     fn rejects_non_hex_ascii() {
         // 32 chars but not valid hex.
         let result = DiscKey::from_file_contents(b"gggggggggggggggggggggggggggggggg");

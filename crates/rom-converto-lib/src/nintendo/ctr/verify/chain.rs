@@ -1194,4 +1194,52 @@ mod tests {
             result.details
         );
     }
+
+    #[test]
+    fn classify_both_signatures_valid_console_zero_is_legit_global() {
+        assert_eq!(
+            classify(true, true, None, 0, false),
+            CiaLegitimacy::Legit(CiaLegitimacySubType::Global)
+        );
+    }
+
+    #[test]
+    fn classify_both_signatures_valid_console_nonzero_is_legit_personalized() {
+        assert_eq!(
+            classify(true, true, None, 0x1234, false),
+            CiaLegitimacy::Legit(CiaLegitimacySubType::Personalized)
+        );
+    }
+
+    #[test]
+    fn classify_tmd_valid_ticket_forged_with_content_ok_is_piratelegit() {
+        assert_eq!(
+            classify(true, false, Some(true), 0, false),
+            CiaLegitimacy::Piratelegit
+        );
+    }
+
+    #[test]
+    fn classify_tmd_valid_ticket_forged_with_content_unchecked_is_piratelegit() {
+        assert_eq!(
+            classify(true, false, None, 0, false),
+            CiaLegitimacy::Piratelegit
+        );
+    }
+
+    #[test]
+    fn classify_tmd_valid_ticket_forged_with_content_bad_falls_to_standard() {
+        assert_eq!(
+            classify(true, false, Some(false), 0, false),
+            CiaLegitimacy::Standard(StandardSubType::Encrypted)
+        );
+    }
+
+    #[test]
+    fn classify_no_signatures_decrypted_is_standard_decrypted() {
+        assert_eq!(
+            classify(false, false, None, 0, true),
+            CiaLegitimacy::Standard(StandardSubType::Decrypted)
+        );
+    }
 }

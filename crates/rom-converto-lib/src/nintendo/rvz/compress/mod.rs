@@ -580,3 +580,48 @@ where
     }
     Ok(zstd::bulk::compress(&plain, level)?)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_chunk_size_accepts_min_max_and_default() {
+        assert!(validate_chunk_size(MIN_CHUNK_SIZE).is_ok());
+        assert!(validate_chunk_size(MAX_CHUNK_SIZE).is_ok());
+        assert!(validate_chunk_size(DEFAULT_CHUNK_SIZE).is_ok());
+    }
+
+    #[test]
+    fn validate_chunk_size_rejects_below_min() {
+        assert!(matches!(
+            validate_chunk_size(MIN_CHUNK_SIZE / 2),
+            Err(RvzError::InvalidChunkSize(_, _, _))
+        ));
+    }
+
+    #[test]
+    fn validate_chunk_size_rejects_above_max() {
+        assert!(matches!(
+            validate_chunk_size(MAX_CHUNK_SIZE * 2),
+            Err(RvzError::InvalidChunkSize(_, _, _))
+        ));
+    }
+
+    #[test]
+    fn validate_chunk_size_rejects_non_power_of_two() {
+        let mid = MIN_CHUNK_SIZE + (MIN_CHUNK_SIZE / 2);
+        assert!(matches!(
+            validate_chunk_size(mid),
+            Err(RvzError::InvalidChunkSize(_, _, _))
+        ));
+    }
+
+    #[test]
+    fn default_options_match_constants() {
+        let d = RvzCompressOptions::default();
+        assert_eq!(d.chunk_size, DEFAULT_CHUNK_SIZE);
+        assert_eq!(d.compression_level, DEFAULT_COMPRESSION_LEVEL);
+        assert!(!d.use_rvz_packing);
+    }
+}

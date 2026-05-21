@@ -710,4 +710,48 @@ mod tests {
             "icon_data bytes",
         );
     }
+
+    fn blank_header() -> CiaHeader {
+        CiaHeader {
+            header_size: CIA_HEADER_SIZE,
+            cia_type: 0,
+            version: 0,
+            cert_chain_size: 0,
+            ticket_size: 0,
+            tmd_size: 0,
+            meta_size: 0,
+            content_size: 0,
+            content_index: vec![0u8; 0x2000],
+        }
+    }
+
+    #[test]
+    fn set_content_index_zero_sets_high_bit_of_byte_zero() {
+        let mut h = blank_header();
+        h.set_content_index(0);
+        assert_eq!(h.content_index[0], 0x80);
+    }
+
+    #[test]
+    fn set_content_index_seven_sets_low_bit_of_byte_zero() {
+        let mut h = blank_header();
+        h.set_content_index(7);
+        assert_eq!(h.content_index[0], 0x01);
+    }
+
+    #[test]
+    fn set_content_index_eight_wraps_into_byte_one() {
+        let mut h = blank_header();
+        h.set_content_index(8);
+        assert_eq!(h.content_index[0], 0x00);
+        assert_eq!(h.content_index[1], 0x80);
+    }
+
+    #[test]
+    fn set_content_index_is_idempotent_per_bit() {
+        let mut h = blank_header();
+        h.set_content_index(3);
+        h.set_content_index(3);
+        assert_eq!(h.content_index[0], 0x10);
+    }
 }

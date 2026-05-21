@@ -197,4 +197,40 @@ mod tests {
         let blocks = 0x1234560u64 / 16;
         assert_eq!(&c[8..16], &blocks.to_be_bytes());
     }
+
+    fn header_buf_with_key_generations(old: u8, new: u8) -> [u8; NCA_HEADER_SIZE] {
+        let mut buf = [0u8; NCA_HEADER_SIZE];
+        buf[0x200..0x204].copy_from_slice(&NCA3_MAGIC);
+        buf[0x206] = old;
+        buf[0x220] = new;
+        buf
+    }
+
+    #[test]
+    fn master_key_index_uses_old_field_when_new_is_zero() {
+        let buf = header_buf_with_key_generations(3, 0);
+        let header = NcaHeader::parse(&buf).unwrap();
+        assert_eq!(header.master_key_index(), 2);
+    }
+
+    #[test]
+    fn master_key_index_uses_new_field_when_above_two() {
+        let buf = header_buf_with_key_generations(0, 5);
+        let header = NcaHeader::parse(&buf).unwrap();
+        assert_eq!(header.master_key_index(), 4);
+    }
+
+    #[test]
+    fn master_key_index_prefers_new_when_both_set_and_new_above_two() {
+        let buf = header_buf_with_key_generations(3, 6);
+        let header = NcaHeader::parse(&buf).unwrap();
+        assert_eq!(header.master_key_index(), 5);
+    }
+
+    #[test]
+    fn master_key_index_saturates_at_zero() {
+        let buf = header_buf_with_key_generations(0, 0);
+        let header = NcaHeader::parse(&buf).unwrap();
+        assert_eq!(header.master_key_index(), 0);
+    }
 }

@@ -41,3 +41,27 @@ impl NcchHeader {
         (self.flags[7] & NCCH_FLAGS7_NOCRYPTO) == 0
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::nintendo::ctr::constants::NCCH_FLAGS_OFFSET;
+    use crate::nintendo::ctr::test_fixtures::make_ncch_header_bytes;
+    use binrw::BinRead;
+    use std::io::Cursor;
+
+    #[test]
+    fn nocrypto_header_reports_not_encrypted() {
+        let bytes = make_ncch_header_bytes(0x0004000000030000);
+        let header = NcchHeader::read(&mut Cursor::new(&bytes)).unwrap();
+        assert!(!header.is_encrypted());
+    }
+
+    #[test]
+    fn clearing_nocrypto_bit_reports_encrypted() {
+        let mut bytes = make_ncch_header_bytes(0x0004000000030000);
+        bytes[NCCH_FLAGS_OFFSET + 7] = 0;
+        let header = NcchHeader::read(&mut Cursor::new(&bytes)).unwrap();
+        assert!(header.is_encrypted());
+    }
+}
