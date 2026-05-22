@@ -1,3 +1,15 @@
+## [0.9.1](https://github.com/DevYukine/rom-converto/compare/v0.9.0...v0.9.1) (2026-05-22)
+
+
+### Bug Fixes
+
+* **nx:** emit start and finish for async verify progress ([bde6a02](https://github.com/DevYukine/rom-converto/commit/bde6a024b0ecf2903590ec9546f4a892de6470b0))
+* **nx:** pre-fetch file size for compress and decompress progress ([5feafbc](https://github.com/DevYukine/rom-converto/commit/5feafbc9b8b384a4ee3c651357ddfac15e693cae))
+* **updater:** match renamed rom-converto-cli release assets ([8997d63](https://github.com/DevYukine/rom-converto/commit/8997d63e25ea755c85911ec5f7dd955f26fcdab5))
+* **wup:** scan NUS dir for total bytes before decrypt progress ([f99815f](https://github.com/DevYukine/rom-converto/commit/f99815fc3e2859f3b3ffd52a4df6aa481c359560))
+
+
+
 # [0.9.0](https://github.com/DevYukine/rom-converto/compare/v0.8.0...v0.9.0) (2026-05-21)
 
 
@@ -68,20 +80,6 @@
 ### Performance Improvements
 
 * **chd:** parallel compress, extract, and verify pipelines ([943ca08](https://github.com/DevYukine/rom-converto/commit/943ca08e90f879010806c26c9881fa0465595f5c))
-
-
-
-# [0.6.0](https://github.com/DevYukine/rom-converto/compare/v0.5.2...v0.6.0) (2026-04-13)
-
-
-### Features
-
-* **ctr:** add 3ds/ncsd and compressed z3ds verification support ([9cb1ff1](https://github.com/DevYukine/rom-converto/commit/9cb1ff156a78412a871f2f24ad039b8152f0302c))
-
-
-### Performance Improvements
-
-* **ctr:** stream verify, compress, and CIA write to reduce memory usage ([285db21](https://github.com/DevYukine/rom-converto/commit/285db21168e37ec1b988556bca0a700f6463a53c))
 
 
 
