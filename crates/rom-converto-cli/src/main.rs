@@ -407,10 +407,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn save_dol_banner(
-    info: &rom_converto_lib::info::DolInfo,
-    dir: &std::path::Path,
-) -> Result<()> {
+fn save_dol_banner(info: &rom_converto_lib::info::DolInfo, dir: &std::path::Path) -> Result<()> {
     let Some(img) = &info.banner_image else {
         log::warn!("no GameCube banner decoded; nothing to save");
         return Ok(());
@@ -427,10 +424,7 @@ fn save_dol_banner(
     Ok(())
 }
 
-fn save_ctr_icon(
-    info: &rom_converto_lib::info::CtrInfo,
-    dir: &std::path::Path,
-) -> Result<()> {
+fn save_ctr_icon(info: &rom_converto_lib::info::CtrInfo, dir: &std::path::Path) -> Result<()> {
     let Some(img) = &info.icon else {
         log::warn!("no SMDH icon decoded; nothing to save");
         return Ok(());
@@ -447,10 +441,7 @@ fn save_ctr_icon(
     Ok(())
 }
 
-fn save_nx_icon(
-    info: &rom_converto_lib::info::NxInfo,
-    dir: &std::path::Path,
-) -> Result<()> {
+fn save_nx_icon(info: &rom_converto_lib::info::NxInfo, dir: &std::path::Path) -> Result<()> {
     let Some(full) = &info.full else {
         log::warn!("no control NCA payload available; nothing to save");
         return Ok(());

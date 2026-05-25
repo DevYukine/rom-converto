@@ -102,9 +102,7 @@ pub fn decrypt_hashed_range<R: Read + Seek>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::nintendo::wup::nus::content_stream::{
-        decrypt_hashed_content, decrypt_raw_content,
-    };
+    use crate::nintendo::wup::nus::content_stream::{decrypt_hashed_content, decrypt_raw_content};
     use aes::Aes128;
     use block_padding::NoPadding;
     use cbc::Encryptor;
@@ -178,8 +176,7 @@ mod tests {
         for block_idx in 0..num_blocks {
             let block_start = block_idx * HASHED_BLOCK_SIZE;
             let data_start_virt = block_idx * HASHED_BLOCK_DATA_SIZE;
-            let data_end_virt =
-                (data_start_virt + HASHED_BLOCK_DATA_SIZE).min(plaintext.len());
+            let data_end_virt = (data_start_virt + HASHED_BLOCK_DATA_SIZE).min(plaintext.len());
 
             let mut hash_part = [0u8; HASHED_BLOCK_HASH_SIZE];
             for h in 0..HASHED_BLOCK_H0_COUNT {
@@ -188,11 +185,8 @@ mod tests {
                 hash_part[slot + 1] = 0x42;
             }
             let iv_zero = [0u8; 16];
-            let iv_offset =
-                (block_idx % HASHED_BLOCK_H0_COUNT) * HASHED_BLOCK_H0_SIZE;
-            let data_iv: [u8; 16] = hash_part[iv_offset..iv_offset + 16]
-                .try_into()
-                .unwrap();
+            let iv_offset = (block_idx % HASHED_BLOCK_H0_COUNT) * HASHED_BLOCK_H0_SIZE;
+            let data_iv: [u8; 16] = hash_part[iv_offset..iv_offset + 16].try_into().unwrap();
             let mut hash_enc = hash_part;
             encrypt_in_place(&key.0, &iv_zero, &mut hash_enc);
 
@@ -203,8 +197,7 @@ mod tests {
             }
             encrypt_in_place(&key.0, &data_iv, &mut data_buf);
 
-            encrypted[block_start..block_start + HASHED_BLOCK_HASH_SIZE]
-                .copy_from_slice(&hash_enc);
+            encrypted[block_start..block_start + HASHED_BLOCK_HASH_SIZE].copy_from_slice(&hash_enc);
             encrypted[block_start + HASHED_BLOCK_HASH_SIZE..block_start + HASHED_BLOCK_SIZE]
                 .copy_from_slice(&data_buf);
         }
@@ -214,7 +207,9 @@ mod tests {
     #[test]
     fn hashed_range_inside_one_block_matches_whole_decrypt() {
         let key = make_title_key();
-        let plain: Vec<u8> = (0..HASHED_BLOCK_DATA_SIZE).map(|i| (i & 0xFF) as u8).collect();
+        let plain: Vec<u8> = (0..HASHED_BLOCK_DATA_SIZE)
+            .map(|i| (i & 0xFF) as u8)
+            .collect();
         let encrypted = build_hashed_blocks(1, &key, &plain);
         let whole = decrypt_hashed_content(&encrypted, &key).unwrap();
         let mut cur = Cursor::new(encrypted);
@@ -225,7 +220,9 @@ mod tests {
     #[test]
     fn hashed_range_spans_two_blocks() {
         let key = make_title_key();
-        let plain: Vec<u8> = (0..2 * HASHED_BLOCK_DATA_SIZE).map(|i| (i & 0xFF) as u8).collect();
+        let plain: Vec<u8> = (0..2 * HASHED_BLOCK_DATA_SIZE)
+            .map(|i| (i & 0xFF) as u8)
+            .collect();
         let encrypted = build_hashed_blocks(2, &key, &plain);
         let whole = decrypt_hashed_content(&encrypted, &key).unwrap();
         let mut cur = Cursor::new(encrypted);
@@ -238,7 +235,9 @@ mod tests {
     #[test]
     fn hashed_range_starts_mid_block() {
         let key = make_title_key();
-        let plain: Vec<u8> = (0..3 * HASHED_BLOCK_DATA_SIZE).map(|i| (i & 0xFF) as u8).collect();
+        let plain: Vec<u8> = (0..3 * HASHED_BLOCK_DATA_SIZE)
+            .map(|i| (i & 0xFF) as u8)
+            .collect();
         let encrypted = build_hashed_blocks(3, &key, &plain);
         let whole = decrypt_hashed_content(&encrypted, &key).unwrap();
         let mut cur = Cursor::new(encrypted);

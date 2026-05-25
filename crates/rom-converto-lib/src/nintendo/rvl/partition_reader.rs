@@ -80,7 +80,7 @@ impl<R: Read + Seek> Read for PartitionPayloadReader<R> {
         let n = want.min(available);
 
         self.load_sector(sector_index)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            .map_err(std::io::Error::other)?;
         out[..n].copy_from_slice(&self.cached_payload[in_sector..in_sector + n]);
         self.position += n as u64;
         Ok(n)
@@ -111,7 +111,10 @@ mod tests {
     use crate::nintendo::rvl::disc::encrypt_sector;
     use std::io::Cursor;
 
-    fn build_partition(payloads: &[[u8; WII_SECTOR_PAYLOAD_SIZE]], key: [u8; 16]) -> (Vec<u8>, PartitionInfo) {
+    fn build_partition(
+        payloads: &[[u8; WII_SECTOR_PAYLOAD_SIZE]],
+        key: [u8; 16],
+    ) -> (Vec<u8>, PartitionInfo) {
         let data_offset = 0u64;
         let data_start = 0u64;
         let mut disc = Vec::new();
@@ -129,7 +132,7 @@ mod tests {
             data_offset,
             data_size: disc.len() as u64,
         };
-        let _ = (data_start);
+        let _ = data_start;
         (disc, info)
     }
 
@@ -155,7 +158,9 @@ mod tests {
         let (disc, info) = build_partition(&[p0, p1], [0x55; 16]);
         let mut reader = PartitionPayloadReader::new(Cursor::new(disc), &info);
 
-        reader.seek(SeekFrom::Start(WII_SECTOR_PAYLOAD_SIZE as u64 - 4)).unwrap();
+        reader
+            .seek(SeekFrom::Start(WII_SECTOR_PAYLOAD_SIZE as u64 - 4))
+            .unwrap();
         let mut buf = [0u8; 8];
         reader.read_exact(&mut buf).unwrap();
         // Reader returns in two sectors via two reads; emulate by reading 4 then 4

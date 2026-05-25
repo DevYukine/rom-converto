@@ -154,8 +154,7 @@ mod tests {
         let mut buf = vec![0u8; header_size + content_count as usize * WII_TMD_CONTENT_RECORD_SIZE];
         // Signature issuer at 0x140 (just put a string).
         let issuer = b"Root-CA00000001-CP00000004";
-        buf[WII_TMD_HEADER_OFFSET..WII_TMD_HEADER_OFFSET + issuer.len()]
-            .copy_from_slice(issuer);
+        buf[WII_TMD_HEADER_OFFSET..WII_TMD_HEADER_OFFSET + issuer.len()].copy_from_slice(issuer);
 
         // Version
         buf[WII_TMD_HEADER_OFFSET + 0x40] = 0;

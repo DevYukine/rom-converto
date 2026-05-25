@@ -134,11 +134,7 @@ impl<'a> RomfsReader<'a> {
         self.find_file(0, name)
     }
 
-    pub fn find_file(
-        &self,
-        parent_dir_offset: u32,
-        name: &str,
-    ) -> NxResult<Option<RomfsFile>> {
+    pub fn find_file(&self, parent_dir_offset: u32, name: &str) -> NxResult<Option<RomfsFile>> {
         if let Some(found) = self.find_via_hash_table(parent_dir_offset, name)? {
             return Ok(Some(found));
         }
@@ -250,7 +246,7 @@ fn parse_file_entry(table: &[u8], offset: usize) -> NxResult<FileEntryRaw> {
 pub(crate) fn compute_file_hash(parent_dir_offset: u32, name: &str) -> u32 {
     let mut hash = parent_dir_offset ^ 123_456_789;
     for &b in name.as_bytes() {
-        hash = ((hash >> 5) | (hash << 27)) ^ u32::from(b);
+        hash = hash.rotate_right(5) ^ u32::from(b);
     }
     hash
 }

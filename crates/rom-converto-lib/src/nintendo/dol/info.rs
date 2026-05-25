@@ -1,8 +1,6 @@
 use crate::info::Image;
 use crate::nintendo::dol::fst::find_file;
-use crate::nintendo::dol::models::banner::{
-    BANNER_IMAGE_HEIGHT, BANNER_IMAGE_WIDTH, GcBanner,
-};
+use crate::nintendo::dol::models::banner::{BANNER_IMAGE_HEIGHT, BANNER_IMAGE_WIDTH, GcBanner};
 use crate::nintendo::dol::models::boot_bin::{GcBootBin, GcRegion};
 use crate::util::pixel::{decode_rgb5a3_tiled, encode_png};
 use anyhow::{Context, Result};
@@ -59,7 +57,8 @@ pub fn read_info(path: &Path) -> Result<DolInfo> {
     });
     let (banner, banner_image) = banner_info;
 
-    let maker_name = crate::util::maker_codes::lookup_maker(&boot.maker_code).map(|s| s.to_string());
+    let maker_name =
+        crate::util::maker_codes::lookup_maker(&boot.maker_code).map(|s| s.to_string());
 
     Ok(DolInfo {
         physical_bytes,
@@ -81,7 +80,7 @@ fn read_banner<R: Read + Seek>(
     reader: &mut R,
     boot: &GcBootBin,
 ) -> Result<(Option<GcBannerInfo>, Option<Image>)> {
-    let _ = boot.region.clone();
+    let _ = boot.region;
     if boot.fst_size == 0 || boot.fst_offset == 0 {
         return Ok((None, None));
     }

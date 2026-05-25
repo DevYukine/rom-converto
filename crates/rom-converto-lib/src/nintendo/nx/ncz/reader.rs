@@ -73,8 +73,7 @@ impl NczReader {
         let payload = match parsed.block {
             Some(block_info) => {
                 let block_size = block_info.block_size_bytes();
-                let mut block_offsets =
-                    Vec::with_capacity(block_info.compressed_block_sizes.len());
+                let mut block_offsets = Vec::with_capacity(block_info.compressed_block_sizes.len());
                 let mut cursor = payload_abs_start;
                 for &csz in &block_info.compressed_block_sizes {
                     block_offsets.push(cursor);
@@ -114,11 +113,7 @@ impl NczReader {
         NCA_PREFIX_SIZE as u64 + payload_size
     }
 
-    fn copy_payload(
-        &self,
-        dest: &mut [u8],
-        payload_off: usize,
-    ) -> NxResult<usize> {
+    fn copy_payload(&self, dest: &mut [u8], payload_off: usize) -> NxResult<usize> {
         match &self.payload {
             NczPayload::Solid(v) => {
                 let take = (v.len() - payload_off).min(dest.len());
@@ -171,8 +166,8 @@ impl NcaInput for NczReader {
         while written < buf.len() {
             let here = abs + written as u64;
             if here < NCA_PREFIX_SIZE as u64 {
-                let take = (NCA_PREFIX_SIZE as u64 - here)
-                    .min((buf.len() - written) as u64) as usize;
+                let take =
+                    (NCA_PREFIX_SIZE as u64 - here).min((buf.len() - written) as u64) as usize;
                 buf[written..written + take]
                     .copy_from_slice(&self.prefix[here as usize..here as usize + take]);
                 written += take;
@@ -188,11 +183,7 @@ impl NcaInput for NczReader {
     }
 }
 
-fn reencrypt_in_buf(
-    buf: &mut [u8],
-    start_abs: u64,
-    sections: &[NczSectionEntry],
-) -> NxResult<()> {
+fn reencrypt_in_buf(buf: &mut [u8], start_abs: u64, sections: &[NczSectionEntry]) -> NxResult<()> {
     let mut covered = 0usize;
     while covered < buf.len() {
         let here = start_abs + covered as u64;

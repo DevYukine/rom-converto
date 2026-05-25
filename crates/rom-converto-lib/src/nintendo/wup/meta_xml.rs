@@ -146,8 +146,7 @@ pub struct MetaXml {
 
 impl MetaXml {
     pub fn from_bytes(xml: &[u8]) -> Result<Self> {
-        let text = std::str::from_utf8(xml)
-            .map_err(|_| anyhow!("meta.xml is not valid UTF-8"))?;
+        let text = std::str::from_utf8(xml).map_err(|_| anyhow!("meta.xml is not valid UTF-8"))?;
 
         let long_names = build_multilingual(text, "longname_");
         let short_names = build_multilingual(text, "shortname_");
@@ -160,7 +159,8 @@ impl MetaXml {
         let title_version =
             extract_tag(text, "title_version").and_then(|s| s.trim().parse::<u32>().ok());
 
-        let save_size = extract_tag(text, "save_no_account_size").and_then(|s| s.trim().parse().ok())
+        let save_size = extract_tag(text, "save_no_account_size")
+            .and_then(|s| s.trim().parse().ok())
             .or_else(|| extract_tag(text, "save_size").and_then(|s| s.trim().parse().ok()));
         let common_save_size =
             extract_tag(text, "common_save_size").and_then(|s| s.trim().parse().ok());
@@ -190,18 +190,18 @@ impl MetaXml {
             .or_else(|| extract_tag(text, "boss_id").and_then(|s| s.trim().parse().ok()));
         let mastering_date = extract_tag(text, "mastering_date").map(|s| s.trim().to_string());
         let content_platform = extract_tag(text, "content_platform").map(|s| s.trim().to_string());
-        let logo_type = extract_tag(text, "logo_type")
-            .and_then(|s| parse_int_flexible::<u32>(s.trim()));
-        let app_launch_type = extract_tag(text, "app_launch_type")
-            .and_then(|s| parse_int_flexible::<u32>(s.trim()));
+        let logo_type =
+            extract_tag(text, "logo_type").and_then(|s| parse_int_flexible::<u32>(s.trim()));
+        let app_launch_type =
+            extract_tag(text, "app_launch_type").and_then(|s| parse_int_flexible::<u32>(s.trim()));
         let invisible_flag = extract_tag(text, "invisible_flag").map(parse_bool_flag);
         let no_managed_flag = extract_tag(text, "no_managed_flag").map(parse_bool_flag);
-        let eula_version = extract_tag(text, "eula_version")
-            .and_then(|s| parse_int_flexible::<u32>(s.trim()));
+        let eula_version =
+            extract_tag(text, "eula_version").and_then(|s| parse_int_flexible::<u32>(s.trim()));
         let drc_use = extract_tag(text, "drc_use").map(parse_bool_flag);
         let e_manual = extract_tag(text, "e_manual").map(parse_bool_flag);
-        let e_manual_version = extract_tag(text, "e_manual_version")
-            .and_then(|s| parse_int_flexible::<u32>(s.trim()));
+        let e_manual_version =
+            extract_tag(text, "e_manual_version").and_then(|s| parse_int_flexible::<u32>(s.trim()));
         let ext_dev_nunchaku = extract_tag(text, "ext_dev_nunchaku").map(parse_bool_flag);
         let ext_dev_classic = extract_tag(text, "ext_dev_classic").map(parse_bool_flag);
         let ext_dev_urcc = extract_tag(text, "ext_dev_urcc").map(parse_bool_flag);

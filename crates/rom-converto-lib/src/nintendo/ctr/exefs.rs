@@ -35,11 +35,7 @@ fn fixed_key(fixed_crypto: u8) -> Option<[u8; 16]> {
     (fixed_crypto != 0).then(|| u128::to_be_bytes(CTR_KEYS_1[(fixed_crypto as usize) - 1]))
 }
 
-fn decrypt_exefs_with_base(
-    base_key: &[u8; 16],
-    ctr: &[u8; 16],
-    exefs: &mut [u8],
-) -> Result<()> {
+fn decrypt_exefs_with_base(base_key: &[u8; 16], ctr: &[u8; 16], exefs: &mut [u8]) -> Result<()> {
     Aes128Ctr::new_from_slices(base_key, ctr)
         .map_err(|e| anyhow!("aes ctr init: {}", e))?
         .apply_keystream(exefs);
@@ -70,11 +66,7 @@ pub fn read_exefs_section(
     let fixed_crypto = if fixed {
         let mut tid_normal: [u8; 8] = header.titleid;
         tid_normal.reverse();
-        if (tid_normal[3] & 16) != 0 {
-            2u8
-        } else {
-            1u8
-        }
+        if (tid_normal[3] & 16) != 0 { 2u8 } else { 1u8 }
     } else {
         0u8
     };
@@ -120,8 +112,10 @@ fn find_exefs_entry(decrypted_exefs: &[u8], name: &[u8]) -> Option<(usize, usize
         if off + EXEFS_ENTRY_SIZE > decrypted_exefs.len() {
             break;
         }
-        let entry = ExeFSHeader::read(&mut Cursor::new(&decrypted_exefs[off..off + EXEFS_ENTRY_SIZE]))
-            .ok()?;
+        let entry = ExeFSHeader::read(&mut Cursor::new(
+            &decrypted_exefs[off..off + EXEFS_ENTRY_SIZE],
+        ))
+        .ok()?;
         let entry_name = trim_zero(&entry.file_name);
         if entry_name == name {
             let offset = LittleEndian::read_u32(&entry.file_offset) as usize;

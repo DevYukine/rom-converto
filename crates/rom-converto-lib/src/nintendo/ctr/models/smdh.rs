@@ -138,10 +138,7 @@ impl Smdh {
             let short_description = read_utf16_string(&buf[off..off + 0x80]);
             let long_description = read_utf16_string(&buf[off + 0x80..off + 0x180]);
             let publisher = read_utf16_string(&buf[off + 0x180..off + 0x200]);
-            if short_description.is_empty()
-                && long_description.is_empty()
-                && publisher.is_empty()
-            {
+            if short_description.is_empty() && long_description.is_empty() && publisher.is_empty() {
                 continue;
             }
             titles.push(SmdhTitle {
@@ -226,7 +223,7 @@ mod tests {
         let mut buf = vec![0u8; SMDH_TOTAL_SIZE];
         buf[0..4].copy_from_slice(&SMDH_MAGIC);
         // English (index 1) short = "Hi", long = "Hello", publisher = "Pub"
-        let entry_off = SMDH_TITLES_OFFSET + 1 * SMDH_TITLE_ENTRY_SIZE;
+        let entry_off = SMDH_TITLES_OFFSET + SMDH_TITLE_ENTRY_SIZE;
         let short_bytes: Vec<u16> = "Hi".encode_utf16().collect();
         for (i, u) in short_bytes.iter().enumerate() {
             let off = entry_off + i * 2;
@@ -246,8 +243,7 @@ mod tests {
         buf[SMDH_REGION_LOCK_OFFSET..SMDH_REGION_LOCK_OFFSET + 4]
             .copy_from_slice(&0x00000001u32.to_le_bytes());
         // Flags: visible + auto_save
-        buf[SMDH_FLAGS_OFFSET..SMDH_FLAGS_OFFSET + 4]
-            .copy_from_slice(&0x00000003u32.to_le_bytes());
+        buf[SMDH_FLAGS_OFFSET..SMDH_FLAGS_OFFSET + 4].copy_from_slice(&0x00000003u32.to_le_bytes());
         // CERO 12 enabled
         buf[SMDH_AGE_RATINGS_OFFSET + AgeRatingRegion::Cero as usize] = 0x80 | 12;
         // PEGI 7

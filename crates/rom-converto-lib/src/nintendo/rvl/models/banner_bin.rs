@@ -49,8 +49,7 @@ fn decompress_lz77(input: &[u8]) -> Result<Vec<u8>> {
     if input.len() < 4 || input[0] != LZ77_MARKER {
         return Err(anyhow!("LZ77 input missing 0x10 marker"));
     }
-    let uncompressed_len =
-        u32::from_le_bytes([input[1], input[2], input[3], 0]) as usize;
+    let uncompressed_len = u32::from_le_bytes([input[1], input[2], input[3], 0]) as usize;
     let mut out = Vec::with_capacity(uncompressed_len);
     let mut cursor = 4usize;
     while out.len() < uncompressed_len {

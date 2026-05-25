@@ -112,8 +112,8 @@ pub fn read_info(path: &Path) -> Result<WupInfo> {
 }
 
 fn read_wua(path: &Path) -> Result<WupInfo> {
-    let mut reader = ZArchiveReader::open(path)
-        .map_err(|e| anyhow!("wup info: open .wua: {}", e))?;
+    let mut reader =
+        ZArchiveReader::open(path).map_err(|e| anyhow!("wup info: open .wua: {}", e))?;
     let titles = reader.top_level_names();
     let bundled = parse_bundled_titles(&titles);
     let title_dir = pick_primary_title_dir(&titles, &bundled)
@@ -175,10 +175,10 @@ fn pick_primary_title_dir(top_level: &[String], bundled: &[BundledTitle]) -> Opt
         .iter()
         .find(|t| is_base_title_id(t.title_id))
         .map(|t| format!("{:016x}_v{}", t.title_id, t.title_version));
-    if let Some(name) = preferred {
-        if top_level.iter().any(|n| n == &name) {
-            return Some(name);
-        }
+    if let Some(name) = preferred
+        && top_level.iter().any(|n| n == &name)
+    {
+        return Some(name);
     }
     top_level.iter().find(|n| !n.is_empty()).cloned()
 }

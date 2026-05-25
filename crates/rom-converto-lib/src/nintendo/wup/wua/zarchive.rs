@@ -14,7 +14,7 @@ use std::path::Path;
 
 use crate::nintendo::wup::constants::{
     COMPRESSED_BLOCK_SIZE, COMPRESSION_OFFSET_RECORD_SIZE, ENTRIES_PER_OFFSET_RECORD,
-    FILE_DIRECTORY_ENTRY_SIZE, FILE_DIR_NAME_OFFSET_MASK, ZARCHIVE_FOOTER_MAGIC,
+    FILE_DIR_NAME_OFFSET_MASK, FILE_DIRECTORY_ENTRY_SIZE, ZARCHIVE_FOOTER_MAGIC,
     ZARCHIVE_FOOTER_SIZE, ZARCHIVE_FOOTER_VERSION,
 };
 use crate::nintendo::wup::error::{WupError, WupResult};
@@ -221,7 +221,12 @@ impl ZArchiveReader {
             let mut found = None;
             for &child_idx in children {
                 let entry = self.entries.get(child_idx as usize)?;
-                if self.entry_name(entry).ok().map(|n| n == component).unwrap_or(false) {
+                if self
+                    .entry_name(entry)
+                    .ok()
+                    .map(|n| n == component)
+                    .unwrap_or(false)
+                {
                     found = Some(child_idx);
                     break;
                 }
@@ -280,10 +285,7 @@ impl ZArchiveReader {
         let record_index = (block_index / ENTRIES_PER_OFFSET_RECORD as u64) as usize;
         let slot = (block_index % ENTRIES_PER_OFFSET_RECORD as u64) as usize;
         let record = self.offset_records.get(record_index).ok_or_else(|| {
-            WupError::InvalidZArchive(format!(
-                "block {} past offset record table",
-                block_index
-            ))
+            WupError::InvalidZArchive(format!("block {} past offset record table", block_index))
         })?;
         let mut compressed_offset = record.base_offset;
         for s in 0..slot {
@@ -354,9 +356,7 @@ mod tests {
 
         let mut reader = ZArchiveReader::open(&archive_path).unwrap();
         assert!(reader.has_file("0000000000000000/meta/meta.xml"));
-        let bytes = reader
-            .read_file("0000000000000000/meta/meta.xml")
-            .unwrap();
+        let bytes = reader.read_file("0000000000000000/meta/meta.xml").unwrap();
         assert_eq!(bytes, b"<meta>hello</meta>");
         let titles = reader.top_level_names();
         assert_eq!(titles, vec!["0000000000000000".to_string()]);

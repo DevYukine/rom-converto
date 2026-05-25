@@ -115,7 +115,7 @@ mod tests {
         (&mut buf[0x54..0x58]).write_u32::<BE>(0x2000).unwrap();
 
         // English (idx 1) name: "Test Title"
-        let eng_off = IMET_NAMES_OFFSET + 1 * IMET_NAME_BYTES;
+        let eng_off = IMET_NAMES_OFFSET + IMET_NAME_BYTES;
         for (i, ch) in "Test Title".encode_utf16().enumerate() {
             let off = eng_off + i * 2;
             buf[off..off + 2].copy_from_slice(&ch.to_be_bytes());

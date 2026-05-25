@@ -136,9 +136,7 @@ mod tests {
         buf[7] = 1; // version 1
         buf[8] = 1; // audio streaming on
         buf[9] = 16; // stream buf
-        (&mut buf[0x1C..0x20])
-            .write_u32::<BE>(GC_MAGIC)
-            .unwrap();
+        (&mut buf[0x1C..0x20]).write_u32::<BE>(GC_MAGIC).unwrap();
         let name_bytes = name.as_bytes();
         buf[0x20..0x20 + name_bytes.len()].copy_from_slice(name_bytes);
         (&mut buf[BOOT_BIN_FST_OFFSET_FIELD as usize..BOOT_BIN_FST_OFFSET_FIELD as usize + 4])

@@ -150,14 +150,10 @@ fn make_raw_decompress_workers(
     n_threads: usize,
     file: &Arc<std::fs::File>,
 ) -> RvzResult<Vec<RawDecompressWorker>> {
-    (0..n_threads)
-        .map(|_| make_one_raw_worker(file))
-        .collect()
+    (0..n_threads).map(|_| make_one_raw_worker(file)).collect()
 }
 
-pub(crate) fn make_one_raw_worker(
-    file: &Arc<std::fs::File>,
-) -> RvzResult<RawDecompressWorker> {
+pub(crate) fn make_one_raw_worker(file: &Arc<std::fs::File>) -> RvzResult<RawDecompressWorker> {
     Ok(RawDecompressWorker {
         decompressor: zstd::bulk::Decompressor::new()
             .map_err(|e| RvzError::Custom(format!("zstd dctx init: {e}")))?,

@@ -32,14 +32,12 @@ pub struct NusSource {
 
 impl NusSource {
     pub fn open(dir: &Path) -> Result<Self> {
-        let layout =
-            NusLayout::discover(dir).map_err(|e| anyhow!("nus layout: {}", e))?;
-        let tmd = read_tmd_file(&layout.tmd_path)
-            .map_err(|e| anyhow!("read tmd: {}", e))?;
+        let layout = NusLayout::discover(dir).map_err(|e| anyhow!("nus layout: {}", e))?;
+        let tmd = read_tmd_file(&layout.tmd_path).map_err(|e| anyhow!("read tmd: {}", e))?;
         let title_key = match &layout.ticket_source {
             TicketSource::OnDisk(path) => {
-                let (_ticket, key) = read_ticket_file(path)
-                    .map_err(|e| anyhow!("read ticket: {}", e))?;
+                let (_ticket, key) =
+                    read_ticket_file(path).map_err(|e| anyhow!("read ticket: {}", e))?;
                 key
             }
             TicketSource::Derive => TitleKey(derive_title_key(tmd.title_id)),

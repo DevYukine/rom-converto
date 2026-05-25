@@ -82,9 +82,13 @@ pub fn lookup_maker(code: &str) -> Option<&'static str> {
         b"8N" => "Success",
         b"8P" => "Sega",
         b"91" => "Chunsoft",
-        b"99" => "Marvelous Entertainment / Victor Entertainment / Pack-In-Video / Rising Star Games",
+        b"99" => {
+            "Marvelous Entertainment / Victor Entertainment / Pack-In-Video / Rising Star Games"
+        }
         b"9B" => "Tecmo",
-        b"9G" => "Take-Two Interactive / Global Star Software / Gotham Games / Gathering of Developers",
+        b"9G" => {
+            "Take-Two Interactive / Global Star Software / Gotham Games / Gathering of Developers"
+        }
         b"9S" => "Brother International",
         b"9Z" => "Crunchyroll",
         b"A4" => "Konami",

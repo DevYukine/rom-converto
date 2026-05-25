@@ -195,8 +195,7 @@ mod tests {
         let jp_off = 2 * NACP_TITLE_ENTRY_SIZE;
         let jp_bytes = "ジャパン".as_bytes();
         buf[jp_off..jp_off + jp_bytes.len()].copy_from_slice(jp_bytes);
-        buf[NACP_OFFSET_DISPLAY_VERSION..NACP_OFFSET_DISPLAY_VERSION + 5]
-            .copy_from_slice(b"1.0.0");
+        buf[NACP_OFFSET_DISPLAY_VERSION..NACP_OFFSET_DISPLAY_VERSION + 5].copy_from_slice(b"1.0.0");
         buf[NACP_OFFSET_ATTRIBUTE_FLAG..NACP_OFFSET_ATTRIBUTE_FLAG + 4]
             .copy_from_slice(&0x00000003u32.to_le_bytes());
         buf[NACP_OFFSET_USER_ACCOUNT_SAVE..NACP_OFFSET_USER_ACCOUNT_SAVE + 8]

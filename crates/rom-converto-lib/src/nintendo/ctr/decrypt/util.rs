@@ -49,7 +49,10 @@ pub fn derive_title_key_from_ticket<R: Read + Seek>(
     reader.read_exact(&mut cmnkey_idx)?;
     let idx = cmnkey_idx[0] as usize;
     if idx >= CTR_COMMON_KEYS_HEX.len() {
-        return Err(anyhow::anyhow!("ticket common key index out of range: {}", idx));
+        return Err(anyhow::anyhow!(
+            "ticket common key index out of range: {}",
+            idx
+        ));
     }
 
     cbc_decrypt(&CTR_COMMON_KEYS_HEX[idx], &tid_iv, &mut enckey)?;
@@ -122,20 +125,16 @@ mod tests {
         iv[..8].copy_from_slice(&title_id_bytes);
         let mut enc_title_key = plaintext_title_key;
         type Aes128CbcEnc = cbc::Encryptor<aes::Aes128>;
-        let mut enc = Aes128CbcEnc::new_from_slices(
-            &CTR_COMMON_KEYS_HEX[common_key_idx as usize],
-            &iv,
-        )
-        .unwrap();
+        let mut enc =
+            Aes128CbcEnc::new_from_slices(&CTR_COMMON_KEYS_HEX[common_key_idx as usize], &iv)
+                .unwrap();
         for block in enc_title_key.chunks_mut(16) {
             let array_block = aes::cipher::generic_array::GenericArray::from_mut_slice(block);
             enc.encrypt_block_mut(array_block);
         }
 
         let ticket_offset = 0x100u64;
-        let total = (TICKET_SIG_BODY_OFFSET
-            + TICKET_COMMON_KEY_IDX_OFFSET
-            + 1) as usize
+        let total = (TICKET_SIG_BODY_OFFSET + TICKET_COMMON_KEY_IDX_OFFSET + 1) as usize
             + ticket_offset as usize;
         let mut buf = vec![0u8; total + 0x100];
 

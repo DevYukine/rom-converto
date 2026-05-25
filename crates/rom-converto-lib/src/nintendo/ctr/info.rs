@@ -11,9 +11,7 @@ use crate::nintendo::ctr::constants::{
     NCSD_PARTITION_ENTRY_SIZE, NCSD_PARTITION_TABLE_OFFSET, NCSD_TITLE_ID_OFFSET,
     TMD_CONTENT_RECORD_SIZE, TMD_CONTENT_RECORDS_OFFSET,
 };
-use crate::nintendo::ctr::decrypt::util::{
-    decrypt_first_ncch_block, derive_title_key_from_ticket,
-};
+use crate::nintendo::ctr::decrypt::util::{decrypt_first_ncch_block, derive_title_key_from_ticket};
 use crate::nintendo::ctr::exefs::read_icon_section;
 use crate::nintendo::ctr::models::cia::{CIA_HEADER_SIZE, CiaHeader, MetaData};
 use crate::nintendo::ctr::models::ncch_header::NcchHeader;
@@ -125,8 +123,8 @@ fn read_cia_info(path: &Path, physical_bytes: u64) -> Result<CtrInfo> {
 
     let mut header_buf = vec![0u8; CIA_HEADER_SIZE as usize];
     reader.read_exact(&mut header_buf)?;
-    let cia_header = CiaHeader::read_le(&mut Cursor::new(&header_buf))
-        .context("ctr info: parse CIA header")?;
+    let cia_header =
+        CiaHeader::read_le(&mut Cursor::new(&header_buf)).context("ctr info: parse CIA header")?;
 
     let header_end = CIA_HEADER_SIZE as u64;
     let cert_start = align_64(header_end);
@@ -221,8 +219,7 @@ fn read_ncsd_info(path: &Path, physical_bytes: u64) -> Result<CtrInfo> {
 
     // ExeFS sits at (first_offset + exefsoffset*MU) for exefssize*MU.
     let smdh = if ncch_hdr.exefssize > 0 {
-        let exefs_abs =
-            first_offset + ncch_hdr.exefsoffset as u64 * CTR_MEDIA_UNIT_SIZE as u64;
+        let exefs_abs = first_offset + ncch_hdr.exefsoffset as u64 * CTR_MEDIA_UNIT_SIZE as u64;
         let exefs_len = (ncch_hdr.exefssize as u64) * CTR_MEDIA_UNIT_SIZE as u64;
         match read_exefs_icon_as_smdh(&mut reader, &ncch_hdr, exefs_abs, exefs_len) {
             Ok(s) => Some(s),
@@ -336,18 +333,13 @@ fn trim_nul_ascii(buf: &[u8]) -> String {
 }
 
 fn ascii_or_dot(b: u8) -> char {
-    if b.is_ascii_graphic() {
-        b as char
-    } else {
-        '.'
-    }
+    if b.is_ascii_graphic() { b as char } else { '.' }
 }
 
 fn read_ncch_header_at<R: Read + Seek>(reader: &mut R) -> Result<NcchHeader> {
     let mut buf = [0u8; 0x200];
     reader.read_exact(&mut buf)?;
-    let hdr = NcchHeader::read(&mut Cursor::new(&buf))
-        .context("ctr info: parse NCCH header")?;
+    let hdr = NcchHeader::read(&mut Cursor::new(&buf)).context("ctr info: parse NCCH header")?;
     Ok(hdr)
 }
 

@@ -246,7 +246,10 @@ mod tests {
                 return;
             }
             let head = parts[0];
-            let pos = root.children.iter().position(|c| c.is_dir && c.name == head);
+            let pos = root
+                .children
+                .iter()
+                .position(|c| c.is_dir && c.name == head);
             let idx = match pos {
                 Some(i) => i,
                 None => {
@@ -292,7 +295,6 @@ mod tests {
             nodes.push(NodeBuild {
                 is_dir: node.is_dir,
                 name_off,
-                data_off: 0,
                 size: 0,
             });
             if node.is_dir {
@@ -325,7 +327,9 @@ mod tests {
         let mut out = vec![0u8; total_size];
 
         (&mut out[0..4]).write_u32::<BE>(U8_MAGIC).unwrap();
-        (&mut out[4..8]).write_u32::<BE>(node_table_off as u32).unwrap();
+        (&mut out[4..8])
+            .write_u32::<BE>(node_table_off as u32)
+            .unwrap();
         (&mut out[8..12])
             .write_u32::<BE>((node_table_size + string_table.len()) as u32)
             .unwrap();
@@ -353,8 +357,7 @@ mod tests {
                 .unwrap();
         }
 
-        out[string_table_off..string_table_off + string_table.len()]
-            .copy_from_slice(&string_table);
+        out[string_table_off..string_table_off + string_table.len()].copy_from_slice(&string_table);
 
         let mut cursor = data_offset;
         for payload in &file_payloads {
@@ -368,30 +371,12 @@ mod tests {
     struct NodeBuild {
         is_dir: bool,
         name_off: u32,
-        data_off: u32,
         size: u32,
     }
 
     struct Entry<'a> {
         path: &'a str,
         data: &'a [u8],
-    }
-
-    fn intern(table: &mut Vec<u8>, name: &str) -> u32 {
-        let off = table.len() as u32;
-        table.extend_from_slice(name.as_bytes());
-        table.push(0);
-        off
-    }
-
-    fn read_name_in(table: &[u8], off: u32) -> String {
-        let start = off as usize;
-        let end = table[start..]
-            .iter()
-            .position(|b| *b == 0)
-            .map(|p| start + p)
-            .unwrap_or(table.len());
-        String::from_utf8_lossy(&table[start..end]).into_owned()
     }
 
     #[test]
@@ -421,10 +406,7 @@ mod tests {
             data: b"TPL_DATA",
         }]);
         let parsed = U8Archive::parse(&archive).unwrap();
-        assert_eq!(
-            parsed.find("arc/timg/banner.tpl"),
-            Some(&b"TPL_DATA"[..])
-        );
+        assert_eq!(parsed.find("arc/timg/banner.tpl"), Some(&b"TPL_DATA"[..]));
     }
 
     #[test]
@@ -455,13 +437,17 @@ mod tests {
             },
         ]);
         let parsed = U8Archive::parse(&archive).unwrap();
-        let paths: Vec<String> = parsed
-            .list_paths()
-            .into_iter()
-            .map(|(p, _)| p)
-            .collect();
-        assert!(paths.contains(&"meta/banner.bin".to_string()), "got {:?}", paths);
-        assert!(paths.contains(&"meta/icon.bin".to_string()), "got {:?}", paths);
+        let paths: Vec<String> = parsed.list_paths().into_iter().map(|(p, _)| p).collect();
+        assert!(
+            paths.contains(&"meta/banner.bin".to_string()),
+            "got {:?}",
+            paths
+        );
+        assert!(
+            paths.contains(&"meta/icon.bin".to_string()),
+            "got {:?}",
+            paths
+        );
         assert!(
             paths.contains(&"arc/timg/banner.tpl".to_string()),
             "got {:?}",
@@ -476,10 +462,7 @@ mod tests {
             data: b"TPL_DATA",
         }]);
         let parsed = U8Archive::parse(&archive).unwrap();
-        assert_eq!(
-            parsed.find_path_ending_with(".tpl"),
-            Some(&b"TPL_DATA"[..])
-        );
+        assert_eq!(parsed.find_path_ending_with(".tpl"), Some(&b"TPL_DATA"[..]));
         assert_eq!(
             parsed.find_path_ending_with("/banner.tpl"),
             Some(&b"TPL_DATA"[..])

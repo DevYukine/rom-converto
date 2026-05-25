@@ -17,10 +17,7 @@ pub struct InfoCache {
 impl InfoCache {
     pub fn key_for(path: &Path) -> Option<Key> {
         let canonical = std::fs::canonicalize(path).ok()?;
-        let mtime = std::fs::metadata(&canonical)
-            .ok()?
-            .modified()
-            .ok()?;
+        let mtime = std::fs::metadata(&canonical).ok()?.modified().ok()?;
         Some((canonical, mtime))
     }
 

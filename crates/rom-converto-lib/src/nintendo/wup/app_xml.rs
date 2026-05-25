@@ -47,8 +47,8 @@ fn parse(text: &str, source: &std::path::Path) -> WupResult<AppXml> {
         .parse::<u32>()
         .map_err(|_| WupError::InvalidAppXml(source.to_path_buf()))?;
 
-    let os_version = extract_tag(text, "os_version")
-        .and_then(|s| u64::from_str_radix(s.trim(), 16).ok());
+    let os_version =
+        extract_tag(text, "os_version").and_then(|s| u64::from_str_radix(s.trim(), 16).ok());
     let sdk_version = extract_tag(text, "sdk_version").and_then(|s| s.trim().parse::<u32>().ok());
 
     Ok(AppXml {

@@ -15,7 +15,7 @@ use std::io::Cursor;
 ///
 /// `width` and `height` must both be multiples of 8.
 pub fn decode_rgb565_morton_tiled(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
-    if width % 8 != 0 || height % 8 != 0 {
+    if !width.is_multiple_of(8) || !height.is_multiple_of(8) {
         return Err(anyhow!(
             "rgb565 morton dimensions must be multiples of 8 (got {}x{})",
             width,
@@ -71,7 +71,7 @@ pub fn decode_rgb565_morton_tiled(data: &[u8], width: u32, height: u32) -> Resul
 ///
 /// `width` and `height` must both be multiples of 4.
 pub fn decode_rgb5a3_tiled(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
-    if width % 4 != 0 || height % 4 != 0 {
+    if !width.is_multiple_of(4) || !height.is_multiple_of(4) {
         return Err(anyhow!(
             "rgb5a3 dimensions must be multiples of 4 (got {}x{})",
             width,
@@ -124,7 +124,7 @@ pub fn decode_rgb5a3_tiled(data: &[u8], width: u32, height: u32) -> Result<Vec<u
 /// (A, R) pairs for the 16 pixels in raster order, bytes 32..64 hold
 /// the matching (G, B) pairs.
 pub fn decode_rgba32_tiled(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
-    if width % 4 != 0 || height % 4 != 0 {
+    if !width.is_multiple_of(4) || !height.is_multiple_of(4) {
         return Err(anyhow!(
             "decode_rgba32_tiled: dimensions must be multiples of 4 (got {}x{})",
             width,
@@ -191,9 +191,7 @@ pub fn encode_png(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
         let mut encoder = png::Encoder::new(cursor, width, height);
         encoder.set_color(png::ColorType::Rgba);
         encoder.set_depth(png::BitDepth::Eight);
-        let mut writer = encoder
-            .write_header()
-            .context("png: write header")?;
+        let mut writer = encoder.write_header().context("png: write header")?;
         writer.write_image_data(rgba).context("png: write data")?;
     }
     Ok(out)
@@ -298,8 +296,10 @@ mod tests {
         // byte offsets 0 and 2 respectively, since morton_index(0,0)=0 and
         // morton_index(1,0)=1.
         let mut data = vec![0u8; 8 * 8 * 2];
-        data[0] = 0x00; data[1] = 0xF8; // red at morton idx 0
-        data[2] = 0xE0; data[3] = 0x07; // green at morton idx 1
+        data[0] = 0x00;
+        data[1] = 0xF8; // red at morton idx 0
+        data[2] = 0xE0;
+        data[3] = 0x07; // green at morton idx 1
         let rgba = decode_rgb565_morton_tiled(&data, 8, 8).unwrap();
         assert_eq!(&rgba[0..4], &[0xFF, 0x00, 0x00, 0xFF]);
         assert_eq!(&rgba[4..8], &[0x00, 0xFF, 0x00, 0xFF]);
@@ -392,7 +392,7 @@ mod tests {
         // Pixel (0,0) is in the first tile -> red
         assert_eq!(&rgba[0..4], &[0xFF, 0x00, 0x00, 0xFF]);
         // Pixel (4,0) is in the second tile -> blue
-        let off = (0 * 8 + 4) * 4;
+        let off = 4 * 4;
         assert_eq!(&rgba[off..off + 4], &[0x00, 0x00, 0xFF, 0xFF]);
     }
 

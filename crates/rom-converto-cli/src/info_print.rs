@@ -154,7 +154,10 @@ fn render_ctr(info: &rom_converto_lib::info::CtrInfo) -> String {
     t.push("Title ID", info.title_id.clone());
     t.push("Program ID", info.program_id.clone());
     t.push("Product code", info.product_code.clone());
-    t.push("Maker code", format_maker(&info.maker_code, info.maker_name.as_deref()));
+    t.push(
+        "Maker code",
+        format_maker(&info.maker_code, info.maker_name.as_deref()),
+    );
     if let Some(sz) = info.cartridge_size {
         t.push("Cartridge size", format!("{} bytes", sz));
     }
@@ -211,7 +214,10 @@ fn render_dol(info: &rom_converto_lib::info::DolInfo) -> String {
     let mut t = KeyValueTable::new();
     t.push("Format", "GameCube");
     t.push("Game ID", info.game_id.clone());
-    t.push("Maker code", format_maker(&info.maker_code, info.maker_name.as_deref()));
+    t.push(
+        "Maker code",
+        format_maker(&info.maker_code, info.maker_name.as_deref()),
+    );
     t.push("Disc number", format!("{}", info.disc_number));
     t.push("Disc version", format!("{}", info.disc_version));
     t.push(
@@ -258,7 +264,10 @@ fn render_rvl(info: &rom_converto_lib::info::RvlInfo) -> String {
     let mut t = KeyValueTable::new();
     t.push("Format", "Wii");
     t.push("Game ID", info.game_id.clone());
-    t.push("Maker code", format_maker(&info.maker_code, info.maker_name.as_deref()));
+    t.push(
+        "Maker code",
+        format_maker(&info.maker_code, info.maker_name.as_deref()),
+    );
     t.push("Disc number", format!("{}", info.disc_number));
     t.push("Disc version", format!("{}", info.disc_version));
     t.push("Game name", info.game_name.clone());
@@ -286,12 +295,12 @@ fn render_rvl(info: &rom_converto_lib::info::RvlInfo) -> String {
         }
     }
 
-    if let Some(names) = &info.imet_names {
-        if !names.is_empty() {
-            out.push_str("\nIMET banner names:\n");
-            for (lang, name) in &names.entries {
-                out.push_str(&format!("  {:<10?}  {}\n", lang, name));
-            }
+    if let Some(names) = &info.imet_names
+        && !names.is_empty()
+    {
+        out.push_str("\nIMET banner names:\n");
+        for (lang, name) in &names.entries {
+            out.push_str(&format!("  {:<10?}  {}\n", lang, name));
         }
     }
 
@@ -437,7 +446,14 @@ fn render_nx(info: &rom_converto_lib::info::NxInfo) -> String {
 
     let mut t = KeyValueTable::new();
     t.push("Format", format!("Switch {}", kind_str));
-    t.push("Compressed", if info.is_compressed { "yes (zstd)" } else { "no" });
+    t.push(
+        "Compressed",
+        if info.is_compressed {
+            "yes (zstd)"
+        } else {
+            "no"
+        },
+    );
     t.push("Distribution", info.distribution.display_name());
     t.push("Structure", info.structure.display_name());
     t.push("Physical bytes", format!("{}", info.physical_bytes));
@@ -585,16 +601,16 @@ fn render_nx(info: &rom_converto_lib::info::NxInfo) -> String {
                 ctrl.device_save_journal
             ));
             out.push_str(&format!("  bcat             {}\n", ctrl.bcat_save));
-            if let Some(lang) = &ctrl.icon_language {
-                if let Some(img) = &ctrl.icon {
-                    out.push_str(&format!(
-                        "\nIcon: {}x{} PNG ({} bytes, language {})\n",
-                        img.width,
-                        img.height,
-                        img.png_bytes.len(),
-                        lang
-                    ));
-                }
+            if let Some(lang) = &ctrl.icon_language
+                && let Some(img) = &ctrl.icon
+            {
+                out.push_str(&format!(
+                    "\nIcon: {}x{} PNG ({} bytes, language {})\n",
+                    img.width,
+                    img.height,
+                    img.png_bytes.len(),
+                    lang
+                ));
             }
         }
     }

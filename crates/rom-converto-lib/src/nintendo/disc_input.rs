@@ -60,8 +60,7 @@ pub fn open_disc_input(path: &Path) -> Result<DiscInput> {
             .with_context(|| format!("disc_input: open RVZ {}", path.display()))?;
         return Ok(DiscInput::Rvz(Box::new(reader)));
     }
-    let file = File::open(path)
-        .with_context(|| format!("disc_input: open {}", path.display()))?;
+    let file = File::open(path).with_context(|| format!("disc_input: open {}", path.display()))?;
     Ok(DiscInput::File(BufReader::with_capacity(
         4 * 1024 * 1024,
         file,

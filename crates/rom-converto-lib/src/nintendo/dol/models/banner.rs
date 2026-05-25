@@ -70,8 +70,7 @@ impl GcBanner {
             BNR2_MAGIC => BannerFormat::Bnr2,
             _ => return Err(anyhow!("opening.bnr has unknown magic")),
         };
-        let image_raw =
-            buf[BANNER_IMAGE_OFFSET..BANNER_IMAGE_OFFSET + BANNER_IMAGE_BYTES].to_vec();
+        let image_raw = buf[BANNER_IMAGE_OFFSET..BANNER_IMAGE_OFFSET + BANNER_IMAGE_BYTES].to_vec();
 
         let titles_start = BANNER_IMAGE_OFFSET + BANNER_IMAGE_BYTES;
         let titles = match format {

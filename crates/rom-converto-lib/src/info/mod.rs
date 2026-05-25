@@ -106,10 +106,18 @@ pub fn read_info(path: &Path, opts: &InfoOptions) -> Result<InfoResult> {
     let kind = detect_console(path)?;
     match kind {
         DetectedConsole::Chd => Ok(InfoResult::Chd(crate::chd::info::read_info(path)?)),
-        DetectedConsole::Ctr => Ok(InfoResult::Ctr(crate::nintendo::ctr::info::read_info(path)?)),
-        DetectedConsole::Dol => Ok(InfoResult::Dol(crate::nintendo::dol::info::read_info(path)?)),
-        DetectedConsole::Rvl => Ok(InfoResult::Rvl(crate::nintendo::rvl::info::read_info(path)?)),
-        DetectedConsole::Wup => Ok(InfoResult::Wup(crate::nintendo::wup::info::read_info(path)?)),
+        DetectedConsole::Ctr => Ok(InfoResult::Ctr(crate::nintendo::ctr::info::read_info(
+            path,
+        )?)),
+        DetectedConsole::Dol => Ok(InfoResult::Dol(crate::nintendo::dol::info::read_info(
+            path,
+        )?)),
+        DetectedConsole::Rvl => Ok(InfoResult::Rvl(crate::nintendo::rvl::info::read_info(
+            path,
+        )?)),
+        DetectedConsole::Wup => Ok(InfoResult::Wup(crate::nintendo::wup::info::read_info(
+            path,
+        )?)),
         DetectedConsole::Nx => Ok(InfoResult::Nx(crate::nintendo::nx::info::read_info(
             path,
             opts.keys_path.as_deref(),

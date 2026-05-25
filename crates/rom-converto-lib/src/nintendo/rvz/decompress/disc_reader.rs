@@ -48,8 +48,10 @@ pub struct RvzDiscReader {
     part_worker: PartitionDecompressWorker,
 
     raw_cache: VecDeque<(u32, Arc<[u8]>)>,
-    part_cache: VecDeque<((usize, u64), Arc<[u8]>)>,
+    part_cache: VecDeque<PartCacheEntry>,
 }
+
+type PartCacheEntry = ((usize, u64), Arc<[u8]>);
 
 impl RvzDiscReader {
     pub fn open(path: &Path) -> RvzResult<Self> {
@@ -226,14 +228,11 @@ impl RvzDiscReader {
         let cluster = match self.get_partition_cluster(part_idx, cluster_idx, &part) {
             Ok(v) => v,
             Err(e) => {
-                return Err(io::Error::other(format!(
-                    "rvz partition decompress: {}",
-                    e
-                )));
+                return Err(io::Error::other(format!("rvz partition decompress: {}", e)));
             }
         };
-        let in_cluster = (enc_pos_in_part
-            % crate::nintendo::rvl::constants::WII_GROUP_TOTAL_SIZE) as usize;
+        let in_cluster =
+            (enc_pos_in_part % crate::nintendo::rvl::constants::WII_GROUP_TOTAL_SIZE) as usize;
         if in_cluster >= cluster.len() {
             return Ok(Some(0));
         }
@@ -252,8 +251,7 @@ impl RvzDiscReader {
     fn find_partition(&self, pos: u64) -> Option<usize> {
         for (idx, part) in self.parts.iter().enumerate() {
             let start = part.pd[0].first_sector as u64 * WII_SECTOR_SIZE_U64;
-            let total_sectors =
-                (part.pd[0].n_sectors + part.pd[1].n_sectors) as u64;
+            let total_sectors = (part.pd[0].n_sectors + part.pd[1].n_sectors) as u64;
             let end = start + total_sectors * WII_SECTOR_SIZE_U64;
             if pos >= start && pos < end {
                 return Some(idx);
@@ -285,24 +283,15 @@ impl RvzDiscReader {
         region.group_index + chunk_in_region
     }
 
-    fn build_raw_chunk_work_for(
-        &self,
-        region: &WiaRawData,
-        pos: u64,
-    ) -> Option<RawDecompressWork> {
+    fn build_raw_chunk_work_for(&self, region: &WiaRawData, pos: u64) -> Option<RawDecompressWork> {
         let items =
             build_raw_region_work_items(region, &self.groups, self.chunk_size, self.iso_size);
-        items.into_iter().find(|w| {
-            pos >= w.chunk_abs_start
-                && pos < w.chunk_abs_start + w.chunk_bytes as u64
-        })
+        items
+            .into_iter()
+            .find(|w| pos >= w.chunk_abs_start && pos < w.chunk_abs_start + w.chunk_bytes as u64)
     }
 
-    fn get_raw_chunk(
-        &mut self,
-        group_idx: u32,
-        work: &RawDecompressWork,
-    ) -> RvzResult<Arc<[u8]>> {
+    fn get_raw_chunk(&mut self, group_idx: u32, work: &RawDecompressWork) -> RvzResult<Arc<[u8]>> {
         if let Some(pos) = self.raw_cache.iter().position(|(k, _)| *k == group_idx) {
             let (k, v) = self.raw_cache.remove(pos).unwrap();
             self.raw_cache.push_back((k, v.clone()));
@@ -385,4 +374,3 @@ impl Seek for RvzDiscReader {
         Ok(self.pos)
     }
 }
-

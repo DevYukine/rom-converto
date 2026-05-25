@@ -48,7 +48,8 @@ pub fn list_files(fst: &[u8]) -> Result<Vec<FstNode>> {
     while idx < total_entries {
         let off = idx * FST_ENTRY_SIZE;
         let kind = fst[off];
-        let name_offset = (u32::from_be_bytes([0, fst[off + 1], fst[off + 2], fst[off + 3]])) as usize;
+        let name_offset =
+            (u32::from_be_bytes([0, fst[off + 1], fst[off + 2], fst[off + 3]])) as usize;
         let name = read_c_string(string_table, name_offset);
 
         while let Some(&(end, _)) = dir_stack.last() {

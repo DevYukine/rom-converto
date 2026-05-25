@@ -357,8 +357,7 @@ fn try_full_info(
     listing: &ContainerListing,
     keys_path: Option<&Path>,
 ) -> Result<Option<NxFullInfo>> {
-    let mut keys = load_keyset(keys_path)
-        .with_context(|| "nx info: load prod.keys")?;
+    let mut keys = load_keyset(keys_path).with_context(|| "nx info: load prod.keys")?;
     merge_inline_tickets(path, listing, &mut keys);
 
     let file = Arc::new(File::open(path)?);
@@ -379,11 +378,10 @@ fn try_full_info(
     let primary_idx = pick_primary_cnmt(&cnmts);
     let primary = &cnmts[primary_idx];
 
-    let control =
-        try_read_control(path, listing, &keys).unwrap_or_else(|e| {
-            log::debug!("nx info: control NCA read skipped ({})", e);
-            None
-        });
+    let control = try_read_control(path, listing, &keys).unwrap_or_else(|e| {
+        log::debug!("nx info: control NCA read skipped ({})", e);
+        None
+    });
 
     let total_content_size = primary.contents.iter().map(|c| c.size).sum();
     let contents: Vec<CnmtContentSummary> = primary
@@ -513,11 +511,11 @@ fn read_control_payload(walker: &NcaWalker) -> Result<NxControl> {
     let header_pattern: [u8; 8] = 0x50u64.to_le_bytes();
     let mut i = 0;
     while i + 0x50 < buf.len() {
-        if &buf[i..i + 8] == &header_pattern {
-            if crate::nintendo::nx::romfs::RomfsHeader::parse(&buf[i..]).is_ok() {
-                romfs_offset = Some(i);
-                break;
-            }
+        if buf[i..i + 8] == header_pattern
+            && crate::nintendo::nx::romfs::RomfsHeader::parse(&buf[i..]).is_ok()
+        {
+            romfs_offset = Some(i);
+            break;
         }
         i += 8;
     }
@@ -680,10 +678,7 @@ fn addon_install_policy_name(v: u8) -> &'static str {
     }
 }
 
-fn extract_icon(
-    reader: &RomfsReader<'_>,
-    nacp: &Nacp,
-) -> Result<(Option<Image>, Option<String>)> {
+fn extract_icon(reader: &RomfsReader<'_>, nacp: &Nacp) -> Result<(Option<Image>, Option<String>)> {
     // Prefer the icon for the first language that NACP has a title for,
     // then fall back to AmericanEnglish.
     let mut candidates: Vec<NacpLanguage> = nacp.titles.iter().map(|t| t.language).collect();
@@ -695,7 +690,10 @@ fn extract_icon(
             let jpeg_bytes = reader.read_file(&file)?;
             match jpeg_to_png(&jpeg_bytes) {
                 Ok((png_bytes, w, h)) => {
-                    return Ok((Some(Image::new(png_bytes, w, h)), Some(format!("{:?}", lang))));
+                    return Ok((
+                        Some(Image::new(png_bytes, w, h)),
+                        Some(format!("{:?}", lang)),
+                    ));
                 }
                 Err(e) => {
                     log::debug!("nx info: jpeg->png failed for {:?} ({})", lang, e);
@@ -736,12 +734,7 @@ fn merge_inline_tickets(path: &Path, listing: &ContainerListing, keys: &mut KeyS
     }
 }
 
-fn read_meta_cnmt(
-    file: Arc<File>,
-    nca_offset: u64,
-    nca_size: u64,
-    keys: &KeySet,
-) -> Result<Cnmt> {
+fn read_meta_cnmt(file: Arc<File>, nca_offset: u64, nca_size: u64, keys: &KeySet) -> Result<Cnmt> {
     let walker = NcaWalker::open(file, nca_offset, nca_size, keys)
         .map_err(|e| anyhow::anyhow!("open meta nca: {}", e))?;
     if walker.header.content_type != CONTENT_TYPE_META {
@@ -766,13 +759,15 @@ fn read_meta_cnmt(
     let pfs0_off = scan
         .windows(4)
         .position(|w| w == b"PFS0")
-        .ok_or_else(|| anyhow::anyhow!("no PFS0 magic in meta section"))?
-        as u64;
+        .ok_or_else(|| anyhow::anyhow!("no PFS0 magic in meta section"))? as u64;
 
     let pfs0_section_offset = pfs0_off;
     // Read enough bytes to cover the PFS0 header + string table + at
     // least one .cnmt file. 64 KB is conservative; meta NCAs are tiny.
-    let read_len = section.raw_size.saturating_sub(pfs0_section_offset).min(0x10000);
+    let read_len = section
+        .raw_size
+        .saturating_sub(pfs0_section_offset)
+        .min(0x10000);
     let read_len_aligned = (read_len + 15) & !15;
     let read_start = pfs0_section_offset & !15;
     let read_offset_in_data = (pfs0_section_offset - read_start) as usize;
@@ -783,8 +778,7 @@ fn read_meta_cnmt(
     let pfs0_bytes = &buf[read_offset_in_data..];
 
     let mut cur = Cursor::new(pfs0_bytes);
-    let pfs0 = Pfs0::read(&mut cur)
-        .map_err(|e| anyhow::anyhow!("parse meta pfs0: {}", e))?;
+    let pfs0 = Pfs0::read(&mut cur).map_err(|e| anyhow::anyhow!("parse meta pfs0: {}", e))?;
     let cnmt_entry = pfs0
         .files
         .iter()

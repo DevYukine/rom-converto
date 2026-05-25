@@ -171,7 +171,10 @@ fn extract_dvd_info(
 fn extract_tracks(handle: &crate::chd::reader::SyncChdHandle) -> Vec<ChdTrack> {
     use crate::chd::models::CHD_METADATA_TAG_CD;
 
-    let cd_meta = handle.metadata.iter().find(|m| m.tag == CHD_METADATA_TAG_CD);
+    let cd_meta = handle
+        .metadata
+        .iter()
+        .find(|m| m.tag == CHD_METADATA_TAG_CD);
     let Some(cd_meta) = cd_meta else {
         return Vec::new();
     };

@@ -11,8 +11,8 @@ use crate::nintendo::rvl::models::u8_archive::U8Archive;
 use crate::nintendo::rvl::partition::read_partition_info;
 use crate::nintendo::rvl::partition_reader::PartitionPayloadReader;
 use crate::util::pixel::{decode_rgb5a3_tiled, decode_rgba32_tiled, encode_png};
-use byteorder::BE as BE_;
 use anyhow::{Context, Result, anyhow};
+use byteorder::BE as BE_;
 use byteorder::{BE, ReadBytesExt};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Seek, SeekFrom};
@@ -76,7 +76,8 @@ pub fn read_info(path: &Path) -> Result<RvlInfo> {
     // Disc-level header (unencrypted, common between partitions).
     let disc_header = read_disc_header(&mut reader)?;
 
-    let entries = read_partition_table(&mut reader).map_err(|e| anyhow!("partition table: {}", e))?;
+    let entries =
+        read_partition_table(&mut reader).map_err(|e| anyhow!("partition table: {}", e))?;
     let partitions: Vec<RvlPartitionSummary> = entries
         .iter()
         .map(|e| RvlPartitionSummary {
@@ -88,14 +89,14 @@ pub fn read_info(path: &Path) -> Result<RvlInfo> {
         .collect();
 
     let data_partition = entries.iter().find(|e| e.partition_type == 0).copied();
-    let (tmd, imet_names, image) =
-        try_read_data_partition_extras(&mut reader, data_partition).unwrap_or_else(|e| {
+    let (tmd, imet_names, image) = try_read_data_partition_extras(&mut reader, data_partition)
+        .unwrap_or_else(|e| {
             log::debug!("rvl info: data partition extras skipped ({})", e);
             (None, None, None)
         });
 
-    let maker_name = crate::util::maker_codes::lookup_maker(&disc_header.maker_code)
-        .map(|s| s.to_string());
+    let maker_name =
+        crate::util::maker_codes::lookup_maker(&disc_header.maker_code).map(|s| s.to_string());
 
     Ok(RvlInfo {
         physical_bytes,
@@ -160,10 +161,7 @@ fn read_disc_header<R: Read + Seek>(reader: &mut R) -> Result<DiscHeader> {
     reader.seek(SeekFrom::Start(WII_MAGIC_OFFSET as u64))?;
     let magic = reader.read_u32::<BE>()?;
     if magic != WII_MAGIC {
-        return Err(anyhow!(
-            "rvl info: Wii magic missing (got 0x{:08X})",
-            magic
-        ));
+        return Err(anyhow!("rvl info: Wii magic missing (got 0x{:08X})", magic));
     }
 
     let mut name = [0u8; 64];
@@ -209,7 +207,11 @@ fn partition_kind_name(t: u32) -> &'static str {
 fn try_read_data_partition_extras<R: Read + Seek>(
     reader: &mut R,
     data: Option<WiiPartitionEntry>,
-) -> Result<(Option<RvlTmdInfo>, Option<MultilingualString>, Option<Image>)> {
+) -> Result<(
+    Option<RvlTmdInfo>,
+    Option<MultilingualString>,
+    Option<Image>,
+)> {
     let Some(data) = data else {
         return Ok((None, None, None));
     };
@@ -457,8 +459,7 @@ fn decode_tpl(tpl: &[u8]) -> Result<(Vec<u8>, u32, u32)> {
             if data_offset + size > tpl.len() {
                 return Err(anyhow!("TPL RGB5A3 data past end of buffer"));
             }
-            let rgba =
-                decode_rgb5a3_tiled(&tpl[data_offset..data_offset + size], width, height)?;
+            let rgba = decode_rgb5a3_tiled(&tpl[data_offset..data_offset + size], width, height)?;
             (size, rgba)
         }
         6 => {
@@ -466,8 +467,7 @@ fn decode_tpl(tpl: &[u8]) -> Result<(Vec<u8>, u32, u32)> {
             if data_offset + size > tpl.len() {
                 return Err(anyhow!("TPL RGBA32 data past end of buffer"));
             }
-            let rgba =
-                decode_rgba32_tiled(&tpl[data_offset..data_offset + size], width, height)?;
+            let rgba = decode_rgba32_tiled(&tpl[data_offset..data_offset + size], width, height)?;
             (size, rgba)
         }
         other => {
@@ -479,6 +479,22 @@ fn decode_tpl(tpl: &[u8]) -> Result<(Vec<u8>, u32, u32)> {
     };
     let _ = data_size;
     Ok((rgba, width, height))
+}
+
+fn map_imet_language(
+    lang: crate::nintendo::rvl::models::imet::ImetLanguage,
+) -> crate::info::LanguageCode {
+    use crate::info::LanguageCode;
+    use crate::nintendo::rvl::models::imet::ImetLanguage;
+    match lang {
+        ImetLanguage::Japanese => LanguageCode::Japanese,
+        ImetLanguage::English => LanguageCode::English,
+        ImetLanguage::German => LanguageCode::German,
+        ImetLanguage::French => LanguageCode::French,
+        ImetLanguage::Spanish => LanguageCode::Spanish,
+        ImetLanguage::Italian => LanguageCode::Italian,
+        ImetLanguage::Dutch => LanguageCode::Dutch,
+    }
 }
 
 #[cfg(test)]
@@ -506,10 +522,8 @@ mod banner_tests {
 
         write_be_u32(&mut tpl[imgtab_off..], img_header_off as u32);
 
-        tpl[img_header_off..img_header_off + 2]
-            .copy_from_slice(&(height as u16).to_be_bytes());
-        tpl[img_header_off + 2..img_header_off + 4]
-            .copy_from_slice(&(width as u16).to_be_bytes());
+        tpl[img_header_off..img_header_off + 2].copy_from_slice(&(height as u16).to_be_bytes());
+        tpl[img_header_off + 2..img_header_off + 4].copy_from_slice(&(width as u16).to_be_bytes());
         write_be_u32(&mut tpl[img_header_off + 4..], 5);
         write_be_u32(&mut tpl[img_header_off + 8..], data_off as u32);
 
@@ -628,10 +642,7 @@ mod banner_tests {
 
         write_be_u32(&mut out[0..], 0x55AA382D);
         write_be_u32(&mut out[4..], node_table_off as u32);
-        write_be_u32(
-            &mut out[8..],
-            (node_table_size + string_table.len()) as u32,
-        );
+        write_be_u32(&mut out[8..], (node_table_size + string_table.len()) as u32);
         write_be_u32(&mut out[12..], data_off as u32);
 
         let mut fc = 0usize;
@@ -650,8 +661,7 @@ mod banner_tests {
             write_be_u32(&mut out[off + 8..], *size);
         }
 
-        out[string_table_off..string_table_off + string_table.len()]
-            .copy_from_slice(&string_table);
+        out[string_table_off..string_table_off + string_table.len()].copy_from_slice(&string_table);
 
         let mut cur = data_off;
         for p in &payloads {
@@ -681,10 +691,7 @@ mod banner_tests {
         let image = extract_icon_image(&bnr).expect("banner extraction must succeed");
         assert_eq!(image.width, 192, "expected 192-wide banner");
         assert_eq!(image.height, 64, "expected 64-tall banner");
-        assert!(
-            image.png_bytes.len() > 0,
-            "PNG bytes should be non-empty"
-        );
+        assert!(!image.png_bytes.is_empty(), "PNG bytes should be non-empty");
         assert_eq!(&image.png_bytes[..8], &[137, 80, 78, 71, 13, 10, 26, 10]);
     }
 
@@ -698,19 +705,5 @@ mod banner_tests {
     fn _silence_unused(_: &mut [u8]) {
         let mut b = [0u8; 4];
         b.as_mut_slice().write_u32::<BE_>(0).unwrap();
-    }
-}
-
-fn map_imet_language(lang: crate::nintendo::rvl::models::imet::ImetLanguage) -> crate::info::LanguageCode {
-    use crate::info::LanguageCode;
-    use crate::nintendo::rvl::models::imet::ImetLanguage;
-    match lang {
-        ImetLanguage::Japanese => LanguageCode::Japanese,
-        ImetLanguage::English => LanguageCode::English,
-        ImetLanguage::German => LanguageCode::German,
-        ImetLanguage::French => LanguageCode::French,
-        ImetLanguage::Spanish => LanguageCode::Spanish,
-        ImetLanguage::Italian => LanguageCode::Italian,
-        ImetLanguage::Dutch => LanguageCode::Dutch,
     }
 }
