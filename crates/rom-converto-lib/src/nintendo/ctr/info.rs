@@ -15,9 +15,7 @@ use crate::nintendo::ctr::decrypt::util::{decrypt_first_ncch_block, derive_title
 use crate::nintendo::ctr::exefs::read_icon_section;
 use crate::nintendo::ctr::models::cia::{CIA_HEADER_SIZE, CiaHeader, MetaData};
 use crate::nintendo::ctr::models::ncch_header::NcchHeader;
-use crate::nintendo::ctr::models::smdh::{
-    AgeRating, AgeRatingRegion, SMDH_LARGE_ICON_DIM, Smdh, SmdhLanguage,
-};
+use crate::nintendo::ctr::models::smdh::{AgeRating, SMDH_LARGE_ICON_DIM, Smdh};
 use crate::nintendo::ctr::models::title_metadata::ContentChunkRecord;
 use crate::nintendo::ctr::util::align_64;
 use crate::util::pixel::{decode_rgb565_morton_tiled, encode_png};
@@ -204,12 +202,10 @@ fn read_ncsd_info(path: &Path, physical_bytes: u64) -> Result<CtrInfo> {
 
     // First partition holds the boot content; use it for header + SMDH.
     let first_offset_mu = u32::from_le_bytes(table[0..4].try_into()?);
-    let first_size_mu = u32::from_le_bytes(table[4..8].try_into()?);
     if first_offset_mu == 0 {
         return Err(anyhow!("ctr info: NCSD has no boot partition"));
     }
     let first_offset = first_offset_mu as u64 * CTR_MEDIA_UNIT_SIZE as u64;
-    let _ = first_size_mu;
 
     reader.seek(SeekFrom::Start(first_offset))?;
     let ncch_hdr = read_ncch_header_at(&mut reader)?;
@@ -387,8 +383,6 @@ fn smdh_to_info(s: Smdh) -> CtrSmdhInfo {
         })
         .collect();
 
-    let _ = SmdhLanguage::ACTIVE;
-
     let region_names = region_lock_names(s.region_lock);
     let age_ratings: Vec<CtrSmdhAgeRating> = s
         .enabled_age_ratings()
@@ -400,7 +394,6 @@ fn smdh_to_info(s: Smdh) -> CtrSmdhInfo {
             banned: r.banned,
         })
         .collect();
-    let _ = AgeRatingRegion::ALL;
 
     CtrSmdhInfo {
         titles,

@@ -264,9 +264,7 @@ mod tests {
 
     #[test]
     fn partition_source_content_not_found_for_unknown_id() {
-        let mut disc = vec![0u8; 2 * SECTOR_SIZE];
-        let mut reader = InMemoryDisc::new(disc.clone());
-        let _ = &mut disc;
+        let mut reader = InMemoryDisc::new(vec![0u8; 2 * SECTOR_SIZE]);
         let mut src = PartitionContentSource::new(&mut reader, vec![]);
         let result = src.read_encrypted_content(0xDEAD_BEEF);
         assert!(matches!(

@@ -453,22 +453,20 @@ fn decode_tpl(tpl: &[u8]) -> Result<(Vec<u8>, u32, u32)> {
             .unwrap(),
     ) as usize;
 
-    let (data_size, rgba) = match format {
+    let rgba = match format {
         5 => {
             let size = (width as usize) * (height as usize) * 2;
             if data_offset + size > tpl.len() {
                 return Err(anyhow!("TPL RGB5A3 data past end of buffer"));
             }
-            let rgba = decode_rgb5a3_tiled(&tpl[data_offset..data_offset + size], width, height)?;
-            (size, rgba)
+            decode_rgb5a3_tiled(&tpl[data_offset..data_offset + size], width, height)?
         }
         6 => {
             let size = (width as usize) * (height as usize) * 4;
             if data_offset + size > tpl.len() {
                 return Err(anyhow!("TPL RGBA32 data past end of buffer"));
             }
-            let rgba = decode_rgba32_tiled(&tpl[data_offset..data_offset + size], width, height)?;
-            (size, rgba)
+            decode_rgba32_tiled(&tpl[data_offset..data_offset + size], width, height)?
         }
         other => {
             return Err(anyhow!(
@@ -477,7 +475,6 @@ fn decode_tpl(tpl: &[u8]) -> Result<(Vec<u8>, u32, u32)> {
             ));
         }
     };
-    let _ = data_size;
     Ok((rgba, width, height))
 }
 

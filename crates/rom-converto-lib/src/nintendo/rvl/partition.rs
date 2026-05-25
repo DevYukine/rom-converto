@@ -1018,7 +1018,6 @@ mod tests {
                 }
             }
         }
-        let _ = on_disc;
     }
 
     #[test]

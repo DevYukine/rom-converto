@@ -116,7 +116,6 @@ mod tests {
         key: [u8; 16],
     ) -> (Vec<u8>, PartitionInfo) {
         let data_offset = 0u64;
-        let data_start = 0u64;
         let mut disc = Vec::new();
         for payload in payloads {
             let mut sector = [0u8; WII_SECTOR_SIZE];
@@ -132,7 +131,6 @@ mod tests {
             data_offset,
             data_size: disc.len() as u64,
         };
-        let _ = data_start;
         (disc, info)
     }
 

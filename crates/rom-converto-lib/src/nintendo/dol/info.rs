@@ -1,7 +1,7 @@
 use crate::info::Image;
 use crate::nintendo::dol::fst::find_file;
 use crate::nintendo::dol::models::banner::{BANNER_IMAGE_HEIGHT, BANNER_IMAGE_WIDTH, GcBanner};
-use crate::nintendo::dol::models::boot_bin::{GcBootBin, GcRegion};
+use crate::nintendo::dol::models::boot_bin::GcBootBin;
 use crate::util::pixel::{decode_rgb5a3_tiled, encode_png};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -80,7 +80,6 @@ fn read_banner<R: Read + Seek>(
     reader: &mut R,
     boot: &GcBootBin,
 ) -> Result<(Option<GcBannerInfo>, Option<Image>)> {
-    let _ = boot.region;
     if boot.fst_size == 0 || boot.fst_offset == 0 {
         return Ok((None, None));
     }
@@ -117,8 +116,6 @@ fn read_banner<R: Read + Seek>(
             })
             .collect(),
     };
-
-    let _ = GcRegion::Japan;
 
     Ok((Some(info), image))
 }

@@ -7,9 +7,8 @@ use crate::nintendo::rvl::constants::{WII_MAGIC, WII_MAGIC_OFFSET};
 use crate::nintendo::rvl::common_keys::WII_COMMON_KEY;
 use crate::nintendo::rvl::constants::{
     WII_BLOCKS_PER_GROUP, WII_GROUP_TOTAL_SIZE, WII_PARTITION_HEADER_DATA_OFFSET_OFFSET,
-    WII_PARTITION_HEADER_DATA_SIZE_OFFSET, WII_PARTITION_HEADER_SIZE, WII_PARTITION_INFO_OFFSET,
-    WII_SECTOR_PAYLOAD_SIZE, WII_SECTOR_SIZE, WII_TICKET_SIZE, WII_TICKET_TITLE_ID_OFFSET,
-    WII_TICKET_TITLE_KEY_OFFSET,
+    WII_PARTITION_HEADER_DATA_SIZE_OFFSET, WII_PARTITION_INFO_OFFSET, WII_SECTOR_PAYLOAD_SIZE,
+    WII_SECTOR_SIZE, WII_TICKET_TITLE_ID_OFFSET, WII_TICKET_TITLE_KEY_OFFSET,
 };
 use crate::nintendo::rvl::disc::encrypt_sector;
 use crate::nintendo::rvl::partition::{HASH_REGION_BYTES, recompute_hash_regions};
@@ -140,9 +139,6 @@ pub fn make_fake_wii_iso_with_partition(n_clusters: usize) -> Vec<u8> {
     data[part_off + WII_PARTITION_HEADER_DATA_SIZE_OFFSET
         ..part_off + WII_PARTITION_HEADER_DATA_SIZE_OFFSET + 4]
         .copy_from_slice(&ds_word.to_be_bytes());
-
-    let _ = WII_PARTITION_HEADER_SIZE;
-    let _ = WII_TICKET_SIZE;
 
     // For each cluster: generate 64 plaintext payloads, recompute
     // the hash hierarchy, then AES-CBC encrypt each sector with the
