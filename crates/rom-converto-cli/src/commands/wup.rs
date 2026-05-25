@@ -1,3 +1,4 @@
+use crate::commands::info_command::InfoCommand;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
@@ -6,6 +7,7 @@ use std::path::PathBuf;
 pub enum WupCommands {
     Compress(CompressWupCommand),
     Decrypt(DecryptWupCommand),
+    Info(InfoCommand),
 }
 
 /// Decrypt a NUS-format Wii U title directory into a loadiine-style

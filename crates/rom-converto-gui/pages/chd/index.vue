@@ -21,6 +21,13 @@ const operations = [
     formats: ".chd",
     icon: "shield-check",
   },
+  {
+    to: "/chd/info",
+    title: "Read disc info",
+    description: "Show CHD version, compressors, hunk geometry, SHA-1 set, and per-track metadata",
+    formats: ".chd",
+    icon: "info",
+  },
 ];
 </script>
 

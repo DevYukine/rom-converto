@@ -244,6 +244,109 @@ mod integration_tests {
     }
 
     #[tokio::test]
+    async fn streaming_disc_reader_matches_full_decompress_on_gamecube() {
+        use crate::nintendo::rvz::decompress::RvzDiscReader;
+        use std::io::{Read, Seek, SeekFrom};
+
+        let dir = tempfile::tempdir().unwrap();
+        let iso = dir.path().join("game.iso");
+        let rvz = dir.path().join("game.rvz");
+        let restored = dir.path().join("game.round.iso");
+
+        let original = make_fake_gamecube_iso(5 * 1024 * 1024 + 4096);
+        tokio::fs::write(&iso, &original).await.unwrap();
+        compress_disc(&iso, &rvz, RvzCompressOptions::default(), &NoProgress)
+            .await
+            .unwrap();
+        decompress_disc(&rvz, &restored, &NoProgress).await.unwrap();
+        let expected = tokio::fs::read(&restored).await.unwrap();
+
+        let mut reader = RvzDiscReader::open(&rvz).unwrap();
+        assert_eq!(reader.iso_size(), expected.len() as u64);
+
+        let probes: &[(u64, usize)] = &[
+            (0, 0x80),
+            (0x80, 0x440),
+            (0x10000, 4096),
+            (expected.len() as u64 - 1024, 1024),
+            (0x300000, 65536),
+            (0, 4096),
+        ];
+        for &(off, len) in probes {
+            reader.seek(SeekFrom::Start(off)).unwrap();
+            let mut buf = vec![0u8; len];
+            let mut read_so_far = 0;
+            while read_so_far < len {
+                let n = reader.read(&mut buf[read_so_far..]).unwrap();
+                if n == 0 {
+                    break;
+                }
+                read_so_far += n;
+            }
+            buf.truncate(read_so_far);
+            let end = (off as usize + read_so_far).min(expected.len());
+            assert_eq!(
+                buf,
+                expected[off as usize..end],
+                "streaming reader mismatch at {}..{}",
+                off,
+                end
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn streaming_disc_reader_matches_full_decompress_on_wii_partition() {
+        use crate::nintendo::rvl::test_fixtures::make_fake_wii_iso_with_partition;
+        use crate::nintendo::rvz::decompress::RvzDiscReader;
+        use std::io::{Read, Seek, SeekFrom};
+
+        let dir = tempfile::tempdir().unwrap();
+        let iso = dir.path().join("wii.iso");
+        let rvz = dir.path().join("wii.rvz");
+        let restored = dir.path().join("wii.round.iso");
+
+        let original = make_fake_wii_iso_with_partition(2);
+        tokio::fs::write(&iso, &original).await.unwrap();
+        compress_disc(&iso, &rvz, RvzCompressOptions::default(), &NoProgress)
+            .await
+            .unwrap();
+        decompress_disc(&rvz, &restored, &NoProgress).await.unwrap();
+        let expected = tokio::fs::read(&restored).await.unwrap();
+
+        let mut reader = RvzDiscReader::open(&rvz).unwrap();
+        assert_eq!(reader.iso_size(), expected.len() as u64);
+
+        let probes: &[(u64, usize)] = &[
+            (0, 0x80),
+            (0x100, 0x200),
+            (0x40000, 0x400),
+            (expected.len() as u64 - 4096, 4096),
+        ];
+        for &(off, len) in probes {
+            reader.seek(SeekFrom::Start(off)).unwrap();
+            let mut buf = vec![0u8; len];
+            let mut read_so_far = 0;
+            while read_so_far < len {
+                let n = reader.read(&mut buf[read_so_far..]).unwrap();
+                if n == 0 {
+                    break;
+                }
+                read_so_far += n;
+            }
+            buf.truncate(read_so_far);
+            let end = (off as usize + read_so_far).min(expected.len());
+            assert_eq!(
+                buf,
+                expected[off as usize..end],
+                "wii streaming reader mismatch at {}..{}",
+                off,
+                end
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn wii_with_real_partition_round_trips() {
         use crate::nintendo::rvl::test_fixtures::make_fake_wii_iso_with_partition;
 

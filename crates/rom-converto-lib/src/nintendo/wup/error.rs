@@ -98,6 +98,9 @@ pub enum WupError {
         "file {path:?} (cluster {cluster_index}) extends past the cluster's available bytes; likely inherited from another title"
     )]
     FileInheritedFromOtherTitle { path: String, cluster_index: u16 },
+
+    #[error("invalid ZArchive: {0}")]
+    InvalidZArchive(String),
 }
 
 impl From<PoolChannelClosed> for WupError {

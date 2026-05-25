@@ -9,11 +9,13 @@
 
 use crate::nintendo::wup::error::{WupError, WupResult};
 
-/// Parsed subset of `code/app.xml`. Other fields are ignored in v1.
+/// Parsed subset of `code/app.xml`. Other fields are ignored.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppXml {
     pub title_id: u64,
     pub title_version: u32,
+    pub os_version: Option<u64>,
+    pub sdk_version: Option<u32>,
 }
 
 impl AppXml {
@@ -45,9 +47,15 @@ fn parse(text: &str, source: &std::path::Path) -> WupResult<AppXml> {
         .parse::<u32>()
         .map_err(|_| WupError::InvalidAppXml(source.to_path_buf()))?;
 
+    let os_version = extract_tag(text, "os_version")
+        .and_then(|s| u64::from_str_radix(s.trim(), 16).ok());
+    let sdk_version = extract_tag(text, "sdk_version").and_then(|s| s.trim().parse::<u32>().ok());
+
     Ok(AppXml {
         title_id,
         title_version,
+        os_version,
+        sdk_version,
     })
 }
 
@@ -55,7 +63,7 @@ fn parse(text: &str, source: &std::path::Path) -> WupResult<AppXml> {
 /// Handles attributes on the opening tag (e.g. `<title_id type="..." length="8">`)
 /// and rejects near-miss matches like `<title_id_foo>`. Whitespace
 /// around the value is preserved; callers trim as needed.
-fn extract_tag<'a>(xml: &'a str, tag: &str) -> Option<&'a str> {
+pub(crate) fn extract_tag<'a>(xml: &'a str, tag: &str) -> Option<&'a str> {
     let open_marker = format!("<{tag}");
     let close_marker = format!("</{tag}>");
     let mut search_from = 0usize;

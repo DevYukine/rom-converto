@@ -27,8 +27,11 @@
 //! * [`partition`]: Wii partition decompress worker pool.
 //! * [`crate::util::worker_pool`]: shared generic pool.
 
+pub mod disc_reader;
 pub mod partition;
 pub mod raw;
+
+pub use disc_reader::RvzDiscReader;
 
 use crate::nintendo::rvl::constants::WII_SECTOR_SIZE_U64;
 use crate::nintendo::rvz::constants::RVZ_MAGIC;
@@ -87,7 +90,7 @@ pub async fn decompress_disc(
     Ok(())
 }
 
-fn decompress_blocking(input: &Path, output: &Path, bytes_done: Arc<AtomicU64>) -> RvzResult<u64> {
+pub fn decompress_blocking(input: &Path, output: &Path, bytes_done: Arc<AtomicU64>) -> RvzResult<u64> {
     // Shared file handle for the worker pools' positional reads.
     // A second handle is opened below for the main thread's
     // sequential header/table reads so no cursor is shared across

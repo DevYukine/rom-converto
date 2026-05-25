@@ -31,6 +31,20 @@ use crate::nintendo::nx::keys::KeySet;
 use crate::nintendo::nx::models::nca::{NcaHeader, initial_ctr_for_offset};
 use crate::util::pread::file_read_exact_at;
 
+/// Positional read primitive `NcaWalker` requires. Lets the walker
+/// accept either a plain `Arc<File>` (regular NCA in a container) or
+/// the streaming NCZ adapter that decompresses + re-encrypts blocks
+/// on demand, with no other API differences.
+pub trait NcaInput: Send + Sync {
+    fn read_exact_at(&self, buf: &mut [u8], offset: u64) -> NxResult<()>;
+}
+
+impl NcaInput for File {
+    fn read_exact_at(&self, buf: &mut [u8], offset: u64) -> NxResult<()> {
+        Ok(file_read_exact_at(self, buf, offset)?)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct NcaSection {
     pub index: usize,
@@ -43,7 +57,7 @@ pub struct NcaSection {
 }
 
 pub struct NcaWalker {
-    file: Arc<File>,
+    file: Arc<dyn NcaInput>,
     nca_offset: u64,
     nca_size: u64,
     pub header: NcaHeader,
@@ -52,9 +66,14 @@ pub struct NcaWalker {
 }
 
 impl NcaWalker {
-    pub fn open(file: Arc<File>, nca_offset: u64, nca_size: u64, keys: &KeySet) -> NxResult<Self> {
+    pub fn open(
+        file: Arc<dyn NcaInput>,
+        nca_offset: u64,
+        nca_size: u64,
+        keys: &KeySet,
+    ) -> NxResult<Self> {
         let mut header_buf = Box::new([0u8; NCA_HEADER_SIZE]);
-        file_read_exact_at(&file, header_buf.as_mut_slice(), nca_offset)?;
+        file.read_exact_at(header_buf.as_mut_slice(), nca_offset)?;
         let header_key = keys.header_key()?;
         decrypt_nca_header(&mut header_buf, header_key)?;
         let header = NcaHeader::parse(&header_buf)?;
@@ -118,8 +137,8 @@ impl NcaWalker {
         self.nca_size
     }
 
-    pub fn file(&self) -> &std::fs::File {
-        &self.file
+    pub fn read_exact_at(&self, buf: &mut [u8], offset: u64) -> NxResult<()> {
+        self.file.read_exact_at(buf, offset)
     }
 
     /// 16-byte alignment is required on both `offset_in_section` and
@@ -134,7 +153,7 @@ impl NcaWalker {
         debug_assert_eq!(offset_in_section % 16, 0, "CTR offset must be 16-aligned");
         debug_assert_eq!(buf.len() % 16, 0, "CTR length must be 16-aligned");
         let abs = section.raw_offset + offset_in_section;
-        file_read_exact_at(&self.file, buf, abs)?;
+        self.file.read_exact_at(buf, abs)?;
         match section.encryption_type {
             ENC_NONE => Ok(()),
             ENC_AES_CTR

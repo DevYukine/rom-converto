@@ -1,3 +1,4 @@
+use crate::commands::info_command::InfoCommand;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
@@ -6,6 +7,7 @@ use std::path::PathBuf;
 pub enum DolCommands {
     Compress(CompressDiscCommand),
     Decompress(DecompressDiscCommand),
+    Info(InfoCommand),
 }
 
 /// Compress a GameCube disc image to RVZ.

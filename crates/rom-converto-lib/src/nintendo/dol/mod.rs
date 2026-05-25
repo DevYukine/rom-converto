@@ -6,6 +6,9 @@
 
 pub mod constants;
 pub mod disc;
+pub mod fst;
+pub mod info;
+pub mod models;
 
 #[cfg(test)]
 pub mod test_fixtures;

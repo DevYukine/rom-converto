@@ -14,6 +14,13 @@ const operations = [
     formats: "NUS directory",
     icon: "lock-open",
   },
+  {
+    to: "/wup/info",
+    title: "Read title info",
+    description: "Show TMD, multilingual names, region, save sizes, age ratings, accessories",
+    formats: "NUS / loadiine directories, .wua",
+    icon: "info",
+  },
 ];
 </script>
 

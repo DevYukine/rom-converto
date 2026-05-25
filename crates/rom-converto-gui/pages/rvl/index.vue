@@ -14,6 +14,13 @@ const operations = [
     formats: ".rvz",
     icon: "expand",
   },
+  {
+    to: "/rvl/info",
+    title: "Read disc info",
+    description: "Show game header, partitions, TMD, banner names, and channel icon",
+    formats: ".iso, .rvz",
+    icon: "info",
+  },
 ];
 </script>
 

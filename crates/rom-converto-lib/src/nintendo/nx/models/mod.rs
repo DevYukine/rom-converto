@@ -1,4 +1,6 @@
+pub mod cnmt;
 pub mod hfs0;
+pub mod nacp;
 pub mod nca;
 pub mod pfs0;
 pub mod ticket;

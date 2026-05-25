@@ -51,7 +51,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// chunk_n_sectors, plaintext data_offset for pack_decode) so the
 /// worker never has to reason about partition-level state.
 #[derive(Clone)]
-struct PartitionChunkSpec {
+pub(crate) struct PartitionChunkSpec {
     data_off: u64,
     data_size: u32,
     is_compressed: bool,
@@ -65,27 +65,27 @@ struct PartitionChunkSpec {
 /// One partition cluster of work: every chunk that falls inside
 /// cluster `cluster_idx`, plus the crypto + layout parameters the
 /// worker needs to emit the re-encrypted cluster bytes.
-struct PartitionDecompressWork {
-    cluster_idx: u64,
-    data_start: u64,
-    part_key: [u8; 16],
+pub(crate) struct PartitionDecompressWork {
+    pub(crate) cluster_idx: u64,
+    pub(crate) data_start: u64,
+    pub(crate) part_key: [u8; 16],
     /// How many sectors this cluster actually stores on the
     /// original disc, i.e. how many sectors get written to the
     /// output file. For all but the partial last cluster this
     /// equals `WII_BLOCKS_PER_GROUP`. For the partial last cluster
     /// it's the remainder of `data_size` measured in sectors.
-    valid_blocks_in_cluster: usize,
-    chunks: Vec<PartitionChunkSpec>,
+    pub(crate) valid_blocks_in_cluster: usize,
+    pub(crate) chunks: Vec<PartitionChunkSpec>,
 }
 
 /// Owned cluster buffer ready for sequential write-out on the
 /// dispatcher thread. `bytes_to_write` is the prefix of `buf` the
 /// consumer actually writes; the tail (for partial last clusters)
 /// is left to whatever the pre-filled zero'd output had.
-struct PartitionDecompressOut {
-    cluster_offset: u64,
-    bytes_to_write: usize,
-    buf: Box<[u8]>,
+pub(crate) struct PartitionDecompressOut {
+    pub(crate) cluster_offset: u64,
+    pub(crate) bytes_to_write: usize,
+    pub(crate) buf: Box<[u8]>,
 }
 
 /// Per-thread partition decoder state. Owns a persistent
@@ -93,7 +93,7 @@ struct PartitionDecompressOut {
 /// reads, and heap scratch for payloads + hash regions + the final
 /// cluster output buffer. No `Vec::new` in the per-cluster hot
 /// loop.
-struct PartitionDecompressWorker {
+pub(crate) struct PartitionDecompressWorker {
     decompressor: zstd::bulk::Decompressor<'static>,
     file: Arc<std::fs::File>,
     scratch_in: Vec<u8>,
@@ -253,26 +253,30 @@ fn make_partition_decompress_workers(
     file: &Arc<std::fs::File>,
 ) -> RvzResult<Vec<PartitionDecompressWorker>> {
     (0..n_threads)
-        .map(|_| -> RvzResult<PartitionDecompressWorker> {
-            Ok(PartitionDecompressWorker {
-                decompressor: zstd::bulk::Decompressor::new()
-                    .map_err(|e| RvzError::Custom(format!("zstd dctx init: {e}")))?,
-                file: Arc::clone(file),
-                scratch_in: Vec::new(),
-                scratch_decomp: Vec::new(),
-                payloads: vec![[0u8; WII_SECTOR_PAYLOAD_SIZE]; WII_BLOCKS_PER_GROUP],
-                hash_regions: vec![[0u8; HASH_REGION_BYTES]; WII_BLOCKS_PER_GROUP],
-                cluster_out: vec![0u8; WII_GROUP_TOTAL_SIZE as usize],
-            })
-        })
+        .map(|_| make_one_partition_worker(file))
         .collect()
+}
+
+pub(crate) fn make_one_partition_worker(
+    file: &Arc<std::fs::File>,
+) -> RvzResult<PartitionDecompressWorker> {
+    Ok(PartitionDecompressWorker {
+        decompressor: zstd::bulk::Decompressor::new()
+            .map_err(|e| RvzError::Custom(format!("zstd dctx init: {e}")))?,
+        file: Arc::clone(file),
+        scratch_in: Vec::new(),
+        scratch_decomp: Vec::new(),
+        payloads: vec![[0u8; WII_SECTOR_PAYLOAD_SIZE]; WII_BLOCKS_PER_GROUP],
+        hash_regions: vec![[0u8; HASH_REGION_BYTES]; WII_BLOCKS_PER_GROUP],
+        cluster_out: vec![0u8; WII_GROUP_TOTAL_SIZE as usize],
+    })
 }
 
 /// Walk a partition's pd[0]+pd[1] group entries, bucket chunks by
 /// cluster index, and build one [`PartitionDecompressWork`] per
 /// cluster. Mirrors the sequential decoder's `enc_pos` walk
 /// exactly so the output is byte-identical.
-fn build_partition_work_items(
+pub(crate) fn build_partition_work_items(
     part: &WiaPart,
     groups: &[RvzGroup],
     chunk_size_u64: u64,

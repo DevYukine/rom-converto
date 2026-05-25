@@ -28,39 +28,39 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// the write range needs `region.raw_data_off` plus the ISO file
 /// size, which are cheap to capture but live on the main thread.
 #[derive(Clone)]
-struct RawDecompressWork {
+pub(crate) struct RawDecompressWork {
     // File offset + compressed size of the chunk in the RVZ file.
     // A `data_size` of 0 is Dolphin's all-zero sentinel; the
     // worker synthesises zeros instead of issuing I/O.
-    data_off: u64,
-    data_size: u32,
-    is_compressed: bool,
-    rvz_packed_size: u32,
+    pub(crate) data_off: u64,
+    pub(crate) data_size: u32,
+    pub(crate) is_compressed: bool,
+    pub(crate) rvz_packed_size: u32,
     // Fully decompressed chunk length in bytes. The worker sizes
     // its output buffer to this; the last chunk of a region may be
     // smaller because the encoder only compressed the remaining
     // bytes.
-    chunk_bytes: usize,
+    pub(crate) chunk_bytes: usize,
     // `pack_decode`'s `data_offset` parameter: absolute disc
     // position of the chunk's first byte.
-    chunk_abs_start: u64,
+    pub(crate) chunk_abs_start: u64,
     // Output disc range + slice offset within the decoded chunk.
     // Written sequentially in submission order by the consume
     // closure.
-    write_start: u64,
-    write_len: usize,
-    chunk_slice_offset: usize,
+    pub(crate) write_start: u64,
+    pub(crate) write_len: usize,
+    pub(crate) chunk_slice_offset: usize,
 }
 
-struct RawDecompressOut {
+pub(crate) struct RawDecompressOut {
     // Owned decoded slice ready to write. For the zero-sentinel
     // case this is a fresh zero buffer; otherwise it's an owned
     // copy of the worker's decoded bytes so the worker's scratch
     // can be reused for the next item without racing the consumer.
-    decoded: Box<[u8]>,
-    write_start: u64,
-    write_len: usize,
-    chunk_slice_offset: usize,
+    pub(crate) decoded: Box<[u8]>,
+    pub(crate) write_start: u64,
+    pub(crate) write_len: usize,
+    pub(crate) chunk_slice_offset: usize,
 }
 
 /// Per-thread raw-region decompressor state. Holds a persistent
@@ -68,7 +68,7 @@ struct RawDecompressOut {
 /// buffers reused across every chunk. Same trick the encoder
 /// pool uses with `Compressor`, avoids one `ZSTD_createDCtx` per
 /// chunk.
-struct RawDecompressWorker {
+pub(crate) struct RawDecompressWorker {
     decompressor: zstd::bulk::Decompressor<'static>,
     file: Arc<std::fs::File>,
     scratch_in: Vec<u8>,
@@ -151,23 +151,27 @@ fn make_raw_decompress_workers(
     file: &Arc<std::fs::File>,
 ) -> RvzResult<Vec<RawDecompressWorker>> {
     (0..n_threads)
-        .map(|_| -> RvzResult<RawDecompressWorker> {
-            Ok(RawDecompressWorker {
-                decompressor: zstd::bulk::Decompressor::new()
-                    .map_err(|e| RvzError::Custom(format!("zstd dctx init: {e}")))?,
-                file: Arc::clone(file),
-                scratch_in: Vec::new(),
-                scratch_out: Vec::new(),
-            })
-        })
+        .map(|_| make_one_raw_worker(file))
         .collect()
+}
+
+pub(crate) fn make_one_raw_worker(
+    file: &Arc<std::fs::File>,
+) -> RvzResult<RawDecompressWorker> {
+    Ok(RawDecompressWorker {
+        decompressor: zstd::bulk::Decompressor::new()
+            .map_err(|e| RvzError::Custom(format!("zstd dctx init: {e}")))?,
+        file: Arc::clone(file),
+        scratch_in: Vec::new(),
+        scratch_out: Vec::new(),
+    })
 }
 
 /// Build the work-item list for one raw-data region. Mirrors the
 /// sequential loop's math exactly (effective_start alignment, per-
 /// chunk clip, last-chunk trim) so the decoded output is byte-
 /// identical to the pre-parallel path.
-fn build_raw_region_work_items(
+pub(crate) fn build_raw_region_work_items(
     region: &WiaRawData,
     groups: &[RvzGroup],
     chunk_size: u64,

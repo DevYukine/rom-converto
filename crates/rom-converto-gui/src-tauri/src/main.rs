@@ -1,14 +1,18 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod info_cache;
 mod progress;
 
 use commands::*;
+use info_cache::InfoCache;
+use std::sync::Arc;
 
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
+        .manage(Arc::new(InfoCache::default()))
         .invoke_handler(tauri::generate_handler![
             cmd_cdn_to_cia,
             cmd_generate_ticket,
@@ -27,6 +31,8 @@ fn main() {
             cmd_nx_compress,
             cmd_nx_decompress,
             cmd_nx_verify,
+            cmd_read_info,
+            cmd_save_icon,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -5,18 +5,24 @@ import { useCtrCompressStore } from "~/stores/ctr-compress";
 import { useCtrDecompressStore } from "~/stores/ctr-decompress";
 import { useCtrVerifyStore } from "~/stores/ctr-verify";
 import { useCtrConvertStore } from "~/stores/ctr-convert";
+import { useCtrInfoStore } from "~/stores/ctr-info";
 import { useChdCompressStore } from "~/stores/chd-compress";
 import { useChdExtractStore } from "~/stores/chd-extract";
 import { useChdVerifyStore } from "~/stores/chd-verify";
+import { useChdInfoStore } from "~/stores/chd-info";
 import { useDolCompressStore } from "~/stores/dol-compress";
 import { useDolDecompressStore } from "~/stores/dol-decompress";
+import { useDolInfoStore } from "~/stores/dol-info";
 import { useRvlCompressStore } from "~/stores/rvl-compress";
 import { useRvlDecompressStore } from "~/stores/rvl-decompress";
+import { useRvlInfoStore } from "~/stores/rvl-info";
 import { useWupCompressStore } from "~/stores/wup-compress";
 import { useWupDecryptStore } from "~/stores/wup-decrypt";
+import { useWupInfoStore } from "~/stores/wup-info";
 import { useNxCompressStore } from "~/stores/nx-compress";
 import { useNxDecompressStore } from "~/stores/nx-decompress";
 import { useNxVerifyStore } from "~/stores/nx-verify";
+import { useNxInfoStore } from "~/stores/nx-info";
 import { getVersion } from "@tauri-apps/api/app";
 
 const appVersion = ref("");
@@ -50,6 +56,7 @@ const sections: SidebarSection[] = [
       { to: "/ctr/decompress", label: "Decompress", store: () => useCtrDecompressStore(), icon: "expand" },
       { to: "/ctr/verify", label: "Verify", store: () => useCtrVerifyStore(), icon: "shield-check" },
       { to: "/ctr/convert", label: "Convert", store: () => useCtrConvertStore(), icon: "swap" },
+      { to: "/ctr/info", label: "Info", store: () => useCtrInfoStore(), icon: "info" },
     ],
   },
   {
@@ -58,6 +65,7 @@ const sections: SidebarSection[] = [
     links: [
       { to: "/dol/compress", label: "Compress", store: () => useDolCompressStore(), icon: "compress" },
       { to: "/dol/decompress", label: "Decompress", store: () => useDolDecompressStore(), icon: "expand" },
+      { to: "/dol/info", label: "Info", store: () => useDolInfoStore(), icon: "info" },
     ],
   },
   {
@@ -66,6 +74,7 @@ const sections: SidebarSection[] = [
     links: [
       { to: "/rvl/compress", label: "Compress", store: () => useRvlCompressStore(), icon: "compress" },
       { to: "/rvl/decompress", label: "Decompress", store: () => useRvlDecompressStore(), icon: "expand" },
+      { to: "/rvl/info", label: "Info", store: () => useRvlInfoStore(), icon: "info" },
     ],
   },
   {
@@ -74,6 +83,7 @@ const sections: SidebarSection[] = [
     links: [
       { to: "/wup/compress", label: "Compress to WUA", store: () => useWupCompressStore(), icon: "compress" },
       { to: "/wup/decrypt", label: "Decrypt NUS", store: () => useWupDecryptStore(), icon: "lock-open" },
+      { to: "/wup/info", label: "Info", store: () => useWupInfoStore(), icon: "info" },
     ],
   },
   {
@@ -83,6 +93,7 @@ const sections: SidebarSection[] = [
       { to: "/nx/compress", label: "Compress", store: () => useNxCompressStore(), icon: "compress" },
       { to: "/nx/decompress", label: "Decompress", store: () => useNxDecompressStore(), icon: "expand" },
       { to: "/nx/verify", label: "Verify", store: () => useNxVerifyStore(), icon: "shield-check" },
+      { to: "/nx/info", label: "Info", store: () => useNxInfoStore(), icon: "info" },
     ],
   },
   {
@@ -92,6 +103,7 @@ const sections: SidebarSection[] = [
       { to: "/chd/compress", label: "Compress", store: () => useChdCompressStore(), icon: "disc-down" },
       { to: "/chd/extract", label: "Extract", store: () => useChdExtractStore(), icon: "disc-up" },
       { to: "/chd/verify", label: "Verify", store: () => useChdVerifyStore(), icon: "shield-check" },
+      { to: "/chd/info", label: "Info", store: () => useChdInfoStore(), icon: "info" },
     ],
   },
 ];
@@ -271,6 +283,10 @@ function isActiveSection(key: string): boolean {
                     <!-- disc-up -->
                     <svg v-else-if="link.icon === 'disc-up'" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
                       <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
+                    </svg>
+                    <!-- info -->
+                    <svg v-else-if="link.icon === 'info'" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M11.25 11.25l.041-.02a.75.75 0 011.063.852l-.708 2.836a.75.75 0 001.063.853l.041-.021M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9-3.75h.008v.008H12V8.25z" />
                     </svg>
                   </span>
 

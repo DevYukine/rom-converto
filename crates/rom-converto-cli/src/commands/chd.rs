@@ -1,3 +1,4 @@
+use crate::commands::info_command::InfoCommand;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
@@ -7,6 +8,7 @@ pub enum ChdCommands {
     Compress(CompressCommand),
     Extract(ExtractCommand),
     Verify(VerifyCommand),
+    Info(InfoCommand),
 }
 
 /// Compresses a .bin and .cue file to a CHD (Compressed Hunks of Data) file.

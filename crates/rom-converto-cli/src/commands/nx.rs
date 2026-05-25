@@ -1,3 +1,4 @@
+use crate::commands::info_command::InfoCommand;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
@@ -7,6 +8,7 @@ pub enum NxCommands {
     Compress(NxCompressCommand),
     Decompress(NxDecompressCommand),
     Verify(NxVerifyCommand),
+    Info(InfoCommand),
 }
 
 /// Compress an NSP into NSZ or an XCI into XCZ. NCAs inside the

@@ -42,6 +42,13 @@ const operations = [
     formats: ".cia <-> .3ds, .cci",
     icon: "swap",
   },
+  {
+    to: "/ctr/info",
+    title: "Read ROM info",
+    description: "Show title, region, age ratings, and 48x48 SMDH icon",
+    formats: ".cia, .3ds, .cci, .cxi",
+    icon: "info",
+  },
 ];
 </script>
 

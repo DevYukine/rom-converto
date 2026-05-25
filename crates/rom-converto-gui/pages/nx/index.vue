@@ -21,6 +21,13 @@ const operations = [
     formats: "NSP / NSZ / XCI / XCZ",
     icon: "shield-check",
   },
+  {
+    to: "/nx/info",
+    title: "Read container info",
+    description: "Show title ID, version, NACP names, age ratings, languages, and JPEG icon",
+    formats: "NSP / NSZ / XCI / XCZ",
+    icon: "info",
+  },
 ];
 </script>
 

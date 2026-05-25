@@ -17,6 +17,7 @@ use tokio::io::AsyncWriteExt;
 pub mod compression;
 mod cue;
 mod error;
+pub mod info;
 pub(crate) mod map;
 mod models;
 pub(crate) mod reader;

@@ -141,6 +141,21 @@ defineProps<{ operations: Operation[] }>();
             d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5"
           />
         </svg>
+        <!-- info -->
+        <svg
+          v-else-if="op.icon === 'info'"
+          class="h-4.5 w-4.5 text-sky-400"
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+          stroke-width="1.5"
+        >
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            d="M11.25 11.25l.041-.02a.75.75 0 011.063.852l-.708 2.836a.75.75 0 001.063.853l.041-.021M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9-3.75h.008v.008H12V8.25z"
+          />
+        </svg>
       </div>
       <h3 class="text-sm font-semibold text-zinc-200">{{ op.title }}</h3>
       <p class="mt-1 text-xs text-zinc-500">{{ op.description }}</p>

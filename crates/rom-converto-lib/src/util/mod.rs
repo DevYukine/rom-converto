@@ -1,3 +1,5 @@
+pub mod maker_codes;
+pub mod pixel;
 pub mod pread;
 pub mod worker_pool;
 

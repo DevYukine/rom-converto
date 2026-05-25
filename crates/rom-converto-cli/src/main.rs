@@ -1,4 +1,5 @@
 use crate::commands::chd::ChdCommands;
+use crate::commands::completions::ShellCompletionsCommand;
 use crate::commands::ctr::CtrCommands;
 use crate::commands::dol::DolCommands;
 use crate::commands::nx::NxCommands;
@@ -9,7 +10,8 @@ use crate::github::api::GithubApi;
 use crate::updater::{check_for_new_version_and_notify, cleanup_old_executable, self_update};
 use crate::util::IndicatifProgress;
 use anyhow::Result;
-use clap::Parser;
+use clap::{CommandFactory, Parser};
+use clap_complete::{generate, generate_to};
 use indicatif::MultiProgress;
 use indicatif_log_bridge::LogWrapper;
 use rom_converto_lib::chd::{convert_to_chd, extract_from_chd, verify_chd};
@@ -43,6 +45,7 @@ use std::mem::discriminant;
 
 mod commands;
 mod github;
+mod info_print;
 mod updater;
 mod util;
 
@@ -54,6 +57,15 @@ pub mod built_info {
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenv::dotenv().ok();
+
+    let cli = Cli::parse();
+
+    // Must run before logger init; otherwise log lines leak into stdout
+    // and corrupt the generated completion script.
+    if let Commands::ShellCompletions(cmd) = &cli.command {
+        return run_shell_completions(cmd);
+    }
+
     let logger = env_logger::builder()
         .filter_level(log::LevelFilter::Info)
         .parse_default_env()
@@ -66,8 +78,6 @@ async fn main() -> Result<()> {
     log::set_max_level(level);
 
     cleanup_old_executable().await?;
-
-    let cli = Cli::parse();
 
     let mut github = GithubApi::new()?;
 
@@ -219,6 +229,13 @@ async fn main() -> Result<()> {
                     }
                 }
             }
+            CtrCommands::Info(cmd) => {
+                let info = rom_converto_lib::nintendo::ctr::info::read_info(&cmd.input)?;
+                if let Some(dir) = &cmd.save_icon {
+                    save_ctr_icon(&info, dir)?;
+                }
+                info_print::print(&rom_converto_lib::info::InfoResult::Ctr(info), cmd.json)?;
+            }
         },
         Commands::Dol(inner) => match inner {
             DolCommands::Compress(cmd) => {
@@ -237,6 +254,13 @@ async fn main() -> Result<()> {
             DolCommands::Decompress(cmd) => {
                 let output = cmd.output.unwrap_or_else(|| derive_disc_path(&cmd.input));
                 decompress_disc(&cmd.input, &output, &progress).await?
+            }
+            DolCommands::Info(cmd) => {
+                let info = rom_converto_lib::nintendo::dol::info::read_info(&cmd.input)?;
+                if let Some(dir) = &cmd.save_icon {
+                    save_dol_banner(&info, dir)?;
+                }
+                info_print::print(&rom_converto_lib::info::InfoResult::Dol(info), cmd.json)?;
             }
         },
         Commands::Rvl(inner) => match inner {
@@ -257,6 +281,10 @@ async fn main() -> Result<()> {
                 let output = cmd.output.unwrap_or_else(|| derive_disc_path(&cmd.input));
                 decompress_disc(&cmd.input, &output, &progress).await?
             }
+            RvlCommands::Info(cmd) => {
+                let info = rom_converto_lib::nintendo::rvl::info::read_info(&cmd.input)?;
+                info_print::print(&rom_converto_lib::info::InfoResult::Rvl(info), cmd.json)?;
+            }
         },
         Commands::Chd(inner) => match inner {
             ChdCommands::Compress(cmd) => {
@@ -267,6 +295,10 @@ async fn main() -> Result<()> {
             }
             ChdCommands::Verify(cmd) => {
                 verify_chd(&progress, cmd.input, cmd.parent, cmd.fix).await?
+            }
+            ChdCommands::Info(cmd) => {
+                let info = rom_converto_lib::chd::info::read_info(&cmd.input)?;
+                info_print::print(&rom_converto_lib::info::InfoResult::Chd(info), cmd.json)?;
             }
         },
         Commands::Nx(inner) => match inner {
@@ -320,6 +352,16 @@ async fn main() -> Result<()> {
                     );
                 }
             }
+            NxCommands::Info(cmd) => {
+                let info = rom_converto_lib::nintendo::nx::info::read_info(
+                    &cmd.input,
+                    cmd.keys.as_deref(),
+                )?;
+                if let Some(dir) = &cmd.save_icon {
+                    save_nx_icon(&info, dir)?;
+                }
+                info_print::print(&rom_converto_lib::info::InfoResult::Nx(info), cmd.json)?;
+            }
         },
         Commands::Wup(inner) => match inner {
             WupCommands::Compress(cmd) => {
@@ -353,9 +395,98 @@ async fn main() -> Result<()> {
             WupCommands::Decrypt(cmd) => {
                 decrypt_nus_title_async(cmd.input, cmd.output, &progress).await?
             }
+            WupCommands::Info(cmd) => {
+                let info = rom_converto_lib::nintendo::wup::info::read_info(&cmd.input)?;
+                info_print::print(&rom_converto_lib::info::InfoResult::Wup(info), cmd.json)?;
+            }
         },
         Commands::SelfUpdate(_) => self_update(&mut github).await?,
+        Commands::ShellCompletions(_) => unreachable!("handled before logger init"),
     }
 
+    Ok(())
+}
+
+fn save_dol_banner(
+    info: &rom_converto_lib::info::DolInfo,
+    dir: &std::path::Path,
+) -> Result<()> {
+    let Some(img) = &info.banner_image else {
+        log::warn!("no GameCube banner decoded; nothing to save");
+        return Ok(());
+    };
+    std::fs::create_dir_all(dir)?;
+    let stem = if info.game_id.is_empty() {
+        "gamecube-banner".to_string()
+    } else {
+        info.game_id.clone()
+    };
+    let path = dir.join(format!("{stem}.png"));
+    std::fs::write(&path, &img.png_bytes)?;
+    log::info!("wrote {}", path.display());
+    Ok(())
+}
+
+fn save_ctr_icon(
+    info: &rom_converto_lib::info::CtrInfo,
+    dir: &std::path::Path,
+) -> Result<()> {
+    let Some(img) = &info.icon else {
+        log::warn!("no SMDH icon decoded; nothing to save");
+        return Ok(());
+    };
+    std::fs::create_dir_all(dir)?;
+    let stem = if info.title_id.is_empty() {
+        "ctr-icon".to_string()
+    } else {
+        info.title_id.clone()
+    };
+    let path = dir.join(format!("{stem}.png"));
+    std::fs::write(&path, &img.png_bytes)?;
+    log::info!("wrote {}", path.display());
+    Ok(())
+}
+
+fn save_nx_icon(
+    info: &rom_converto_lib::info::NxInfo,
+    dir: &std::path::Path,
+) -> Result<()> {
+    let Some(full) = &info.full else {
+        log::warn!("no control NCA payload available; nothing to save");
+        return Ok(());
+    };
+    let Some(ctrl) = &full.control else {
+        log::warn!("no NACP/icon decoded; nothing to save");
+        return Ok(());
+    };
+    let Some(img) = &ctrl.icon else {
+        log::warn!("control NACP loaded but no icon present; nothing to save");
+        return Ok(());
+    };
+    std::fs::create_dir_all(dir)?;
+    let path = dir.join(format!("{:016X}.png", full.application_title_id));
+    std::fs::write(&path, &img.png_bytes)?;
+    log::info!("wrote {}", path.display());
+    Ok(())
+}
+
+fn run_shell_completions(cmd: &ShellCompletionsCommand) -> Result<()> {
+    // The package is rom-converto-cli but the installed binary is
+    // rom-converto; completions must key off the binary name the user
+    // actually types. CARGO_BIN_NAME tracks the [[bin]] name even if
+    // the crate is renamed.
+    let bin = env!("CARGO_BIN_NAME");
+    let mut clap_cmd = Cli::command().name(bin).bin_name(bin);
+
+    match &cmd.out_dir {
+        Some(dir) => {
+            std::fs::create_dir_all(dir)?;
+            let path = generate_to(cmd.shell, &mut clap_cmd, bin, dir)?;
+            println!("{}", path.display());
+        }
+        None => {
+            generate(cmd.shell, &mut clap_cmd, bin, &mut std::io::stdout().lock());
+        }
+    }
     Ok(())
 }

@@ -14,10 +14,12 @@
 //!   decrypted files into a ZArchive writer.
 
 pub mod compress;
+pub mod content_reader;
 pub mod content_stream;
 pub mod decrypt;
 pub mod fst_parser;
 pub mod layout;
+pub mod source;
 pub mod ticket_parser;
 pub mod tmd_parser;
 

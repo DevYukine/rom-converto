@@ -1,3 +1,4 @@
+use crate::commands::info_command::InfoCommand;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
@@ -11,6 +12,7 @@ pub enum CtrCommands {
     Decompress(DecompressRomCommand),
     Verify(VerifyCommand),
     Convert(ConvertCommand),
+    Info(InfoCommand),
 }
 
 /// Convert CDN content to CIA format

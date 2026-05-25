@@ -18,7 +18,6 @@ use crate::nintendo::nx::ncz::header::{
 };
 use crate::nintendo::nx::walker::NcaWalker;
 use crate::util::ProgressReporter;
-use crate::util::pread::file_read_exact_at;
 use crate::util::worker_pool::drive;
 
 #[derive(Debug, Clone, Copy)]
@@ -81,7 +80,7 @@ pub fn nca_to_ncz<W: Write + Seek>(
     let prefix_size = (nca_size as usize).min(NCA_PREFIX_SIZE);
 
     let mut prefix = vec![0u8; prefix_size];
-    file_read_exact_at(walker.file(), &mut prefix, nca_offset)?;
+    walker.read_exact_at(&mut prefix, nca_offset)?;
     out.write_all(&prefix)?;
     progress.inc(prefix_size as u64);
 
@@ -254,7 +253,7 @@ fn stream_plaintext<F: FnMut(&[u8]) -> NxResult<()>>(
 }
 
 fn read_plain_range(walker: &NcaWalker, abs_offset: u64, buf: &mut [u8]) -> NxResult<()> {
-    file_read_exact_at(walker.file(), buf, abs_offset)?;
+    walker.read_exact_at(buf, abs_offset)?;
     if buf.is_empty() {
         return Ok(());
     }
@@ -290,8 +289,7 @@ fn read_plain_range(walker: &NcaWalker, abs_offset: u64, buf: &mut [u8]) -> NxRe
                 let aligned_len = (span + head_skip + 0xF) & !0xF;
 
                 let mut tmp = vec![0u8; aligned_len];
-                file_read_exact_at(
-                    walker.file(),
+                walker.read_exact_at(
                     &mut tmp,
                     walker.nca_offset() + section_nca_offset + aligned_in,
                 )?;

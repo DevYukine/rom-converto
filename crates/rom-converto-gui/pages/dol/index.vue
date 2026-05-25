@@ -14,6 +14,13 @@ const operations = [
     formats: ".rvz",
     icon: "expand",
   },
+  {
+    to: "/dol/info",
+    title: "Read disc info",
+    description: "Show disc header, region, publisher, and 96x32 banner",
+    formats: ".iso, .gcm, .rvz",
+    icon: "info",
+  },
 ];
 </script>
 

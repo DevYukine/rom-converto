@@ -8,7 +8,11 @@
 pub mod common_keys;
 pub mod constants;
 pub mod disc;
+pub mod fst;
+pub mod info;
+pub mod models;
 pub mod partition;
+pub mod partition_reader;
 
 #[cfg(test)]
 pub mod test_fixtures;

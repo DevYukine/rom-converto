@@ -144,7 +144,7 @@ pub fn decrypt_hashed_content(encrypted: &[u8], title_key: &TitleKey) -> WupResu
 
 /// IV used for decrypting raw-mode cluster data: cluster index in
 /// the first two bytes (big-endian), zeros in the remaining 14.
-fn raw_content_iv(cluster_index: u16) -> [u8; 16] {
+pub(super) fn raw_content_iv(cluster_index: u16) -> [u8; 16] {
     let mut iv = [0u8; 16];
     iv[0] = (cluster_index >> 8) as u8;
     iv[1] = (cluster_index & 0xFF) as u8;

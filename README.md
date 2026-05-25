@@ -211,6 +211,52 @@ Flags match the `dol` commands.
 
 ---
 
+### Info
+
+```
+rom-converto <console> info <INPUT> [--json] [--save-icon DIR] [--keys FILE]
+```
+
+Inspect a ROM file or title directory and print the embedded metadata: title, version, region, content layout, age ratings, and the embedded icon (where the format carries one). Maker / company codes are resolved to the publisher name (table ported from Dolphin). Encrypted 3DS CIA inputs are decrypted on the fly so the NCCH header fields show real values, not garbage. No decryption files are written to disk. Add `--json` for a machine-readable payload (the Tauri GUI uses the same JSON shape).
+
+| Subcommand | Coverage |
+|---|---|
+| `ctr info <FILE>` | CIA / NCSD / NCCH; SMDH multilingual titles, region lock, age ratings, 48x48 icon. Encrypted CIA is auto-decrypted to read the NCCH header. |
+| `dol info <FILE>` | GameCube `.iso`, `.gcm`, or `.rvz`; boot.bin header, BNR1/BNR2 banner with 96x32 image, publisher name. |
+| `rvl info <FILE>` | Wii `.iso` or `.rvz`; disc header, partition layout, TMD (title id, IOS), IMET banner names, 48x48 channel icon. |
+| `wup info <PATH>` | loadiine + NUS directories and `.wua` archives; TMD + meta.xml with multilingual names, region, age ratings, save sizes, GamePad requirement, supported accessories, mastering date. |
+| `nx info <FILE>` | NSP / NSZ / XCI / XCZ; container listing, tickets, CNMT, NACP, JPEG icon. Reports compression status (NSP vs NSZ), distribution (digital vs cartridge), structure classifier (scene / converted / CDN / homebrew), base title id for patches and DLC, decoded language list, age ratings per organisation. Full info needs `--keys prod.keys`; degrades gracefully without. |
+| `chd info <FILE>` | CHD v5; version, codecs, hunk geometry, SHA-1 triplet, per-track CHT2 metadata, VERS / DVD tags |
+
+`--save-icon DIR` writes the embedded icon as `<title_id>.png` into `DIR` (3DS, GameCube, Wii, and Switch). `--keys` is honoured only by `nx info`.
+
+Format notes:
+
+- `.rvz` for Wii and GameCube is transparently decompressed to a temporary ISO. The temp file is deleted when the command finishes.
+- `.wua` (Wii U Cemu archive) is read directly. When an archive bundles a base title plus update and DLC, the first title is shown.
+- `.wbfs` is not supported; extract to raw ISO first.
+- WIA, CISO, GCZ, NFS, and TGC are not supported.
+
+---
+
+### Shell completions
+
+```
+rom-converto shell-completions <SHELL> [--out-dir DIR]
+```
+
+Generates a tab-completion script for the rom-converto CLI. Writes to stdout by default. Pass `--out-dir DIR` to write the canonical per-shell filename inside `DIR` and print the resulting path.
+
+| Shell | Install one-liner |
+|---|---|
+| Bash | `rom-converto shell-completions bash > ~/.local/share/bash-completion/completions/rom-converto` |
+| Zsh | `rom-converto shell-completions zsh > "${fpath[1]}/_rom-converto"` |
+| Fish | `rom-converto shell-completions fish > ~/.config/fish/completions/rom-converto.fish` |
+| PowerShell | `rom-converto shell-completions powershell >> $PROFILE` |
+| Elvish | `rom-converto shell-completions elvish > ~/.elvish/lib/rom-converto.elv` |
+
+---
+
 ### Self-Update
 
 ```

@@ -1,12 +1,16 @@
 use crate::chd::cue::models::Msf;
 use crate::chd::error::{ChdError, ChdResult};
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct ChdTrackInfo {
     pub track_number: u8,
     pub track_type: String,
     pub frames: u32,
     pub pregap: u32,
+    pub subtype: Option<String>,
+    pub pgtype: Option<String>,
+    pub pgsub: Option<String>,
+    pub postgap: Option<u32>,
 }
 
 pub(crate) fn parse_chd_track_metadata(metadata_str: &str) -> ChdResult<Vec<ChdTrackInfo>> {
@@ -25,9 +29,7 @@ pub(crate) fn parse_chd_track_metadata(metadata_str: &str) -> ChdResult<Vec<ChdT
                         .map_err(|_| ChdError::InvalidTrackMetadata(token.to_string()))?;
                     current = Some(ChdTrackInfo {
                         track_number: number,
-                        track_type: String::new(),
-                        frames: 0,
-                        pregap: 0,
+                        ..ChdTrackInfo::default()
                     });
                 }
                 "TYPE" => {
@@ -49,7 +51,31 @@ pub(crate) fn parse_chd_track_metadata(metadata_str: &str) -> ChdResult<Vec<ChdT
                             .map_err(|_| ChdError::InvalidTrackMetadata(token.to_string()))?;
                     }
                 }
-                _ => {} // SUBTYPE, PGTYPE, PGSUB, POSTGAP: not needed for CUE reconstruction.
+                "SUBTYPE" => {
+                    if let Some(ref mut track) = current {
+                        track.subtype = Some(value.to_string());
+                    }
+                }
+                "PGTYPE" => {
+                    if let Some(ref mut track) = current {
+                        track.pgtype = Some(value.to_string());
+                    }
+                }
+                "PGSUB" => {
+                    if let Some(ref mut track) = current {
+                        track.pgsub = Some(value.to_string());
+                    }
+                }
+                "POSTGAP" => {
+                    if let Some(ref mut track) = current {
+                        track.postgap = Some(
+                            value
+                                .parse()
+                                .map_err(|_| ChdError::InvalidTrackMetadata(token.to_string()))?,
+                        );
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -127,6 +153,10 @@ mod tests {
         assert_eq!(tracks[0].track_type, "MODE1_RAW");
         assert_eq!(tracks[0].frames, 300);
         assert_eq!(tracks[0].pregap, 0);
+        assert_eq!(tracks[0].subtype.as_deref(), Some("NONE"));
+        assert_eq!(tracks[0].pgtype.as_deref(), Some("MODE1"));
+        assert_eq!(tracks[0].pgsub.as_deref(), Some("NONE"));
+        assert_eq!(tracks[0].postgap, Some(0));
     }
 
     #[test]
@@ -183,6 +213,7 @@ mod tests {
             track_type: "MODE1_RAW".to_string(),
             frames: 300,
             pregap: 0,
+            ..ChdTrackInfo::default()
         }];
         let cue = generate_cue_sheet("game.bin", &tracks);
         assert!(cue.starts_with("FILE \"game.bin\" BINARY\r\n"));
@@ -199,12 +230,14 @@ mod tests {
                 track_type: "MODE1_RAW".to_string(),
                 frames: 300,
                 pregap: 0,
+                ..ChdTrackInfo::default()
             },
             ChdTrackInfo {
                 track_number: 2,
                 track_type: "AUDIO".to_string(),
                 frames: 5000,
                 pregap: 150,
+                ..ChdTrackInfo::default()
             },
         ];
         let cue = generate_cue_sheet("game.bin", &tracks);
@@ -222,12 +255,14 @@ mod tests {
                 track_type: "MODE1_RAW".to_string(),
                 frames: 75,
                 pregap: 0,
+                ..ChdTrackInfo::default()
             },
             ChdTrackInfo {
                 track_number: 2,
                 track_type: "AUDIO".to_string(),
                 frames: 150,
                 pregap: 0,
+                ..ChdTrackInfo::default()
             },
         ];
         let cue = generate_cue_sheet("game.bin", &tracks);

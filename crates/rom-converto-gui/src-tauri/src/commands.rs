@@ -1,5 +1,7 @@
+use crate::info_cache::InfoCache;
 use crate::progress::TauriProgress;
 use rom_converto_lib::chd::{convert_to_chd, extract_from_chd, verify_chd};
+use rom_converto_lib::info::{InfoOptions, InfoResult, read_info};
 use rom_converto_lib::nintendo::ctr::convert::{convert_rom, derive_converted_path};
 use rom_converto_lib::nintendo::ctr::verify::{CtrVerifyOptions, verify_ctr};
 use rom_converto_lib::nintendo::ctr::z3ds::{
@@ -22,7 +24,7 @@ use rom_converto_lib::nintendo::wup::{
 };
 use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::AppHandle;
+use tauri::{AppHandle, State};
 
 fn err_to_string(e: impl std::fmt::Display) -> String {
     e.to_string()
@@ -386,3 +388,67 @@ pub async fn cmd_verify_ctr(
 
     serde_json::to_string(&result).map_err(err_to_string)
 }
+
+#[tauri::command]
+pub async fn cmd_read_info(
+    cache: State<'_, Arc<InfoCache>>,
+    input: PathBuf,
+    keys: Option<PathBuf>,
+) -> Result<String, String> {
+    let cache_inner = cache.inner().clone();
+    let result = tokio::task::spawn_blocking(move || -> Result<Arc<InfoResult>, anyhow::Error> {
+        if let Some(key) = InfoCache::key_for(&input)
+            && let Some(hit) = cache_inner.get(&key)
+        {
+            return Ok(hit);
+        }
+        let opts = InfoOptions {
+            keys_path: keys.clone(),
+            parent_path: None,
+        };
+        let info = read_info(&input, &opts)?;
+        let arc = Arc::new(info);
+        if let Some(key) = InfoCache::key_for(&input) {
+            cache_inner.insert(key, arc.clone());
+        }
+        Ok(arc)
+    })
+    .await
+    .map_err(err_to_string)?
+    .map_err(err_to_string)?;
+    serde_json::to_string(result.as_ref()).map_err(err_to_string)
+}
+
+/// Write a per-console icon payload from a recent read_info result to a
+/// host PNG file. The frontend posts back the InfoResult JSON it already
+/// holds, so the Rust side does not need to redo the extraction.
+#[tauri::command]
+pub async fn cmd_save_icon(
+    info_json: String,
+    dest: PathBuf,
+) -> Result<String, String> {
+    let info: InfoResult = serde_json::from_str(&info_json).map_err(err_to_string)?;
+    let bytes = extract_icon_png(&info).ok_or_else(|| "no icon present in info payload".to_string())?;
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(err_to_string)?;
+    }
+    std::fs::write(&dest, &bytes).map_err(err_to_string)?;
+    Ok(dest.display().to_string())
+}
+
+fn extract_icon_png(info: &InfoResult) -> Option<Vec<u8>> {
+    match info {
+        InfoResult::Ctr(c) => c.icon.as_ref().map(|i| i.png_bytes.clone()),
+        InfoResult::Dol(d) => d.banner_image.as_ref().map(|i| i.png_bytes.clone()),
+        InfoResult::Rvl(r) => r.image.as_ref().map(|i| i.png_bytes.clone()),
+        InfoResult::Wup(_) => None,
+        InfoResult::Nx(n) => n
+            .full
+            .as_ref()
+            .and_then(|f| f.control.as_ref())
+            .and_then(|c| c.icon.as_ref())
+            .map(|i| i.png_bytes.clone()),
+        InfoResult::Chd(_) => None,
+    }
+}
+

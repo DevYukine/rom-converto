@@ -5,5 +5,6 @@ pub mod ncch_header;
 pub mod ncsd_header;
 pub mod seeddb;
 pub mod signature;
+pub mod smdh;
 pub mod ticket;
 pub mod title_metadata;

@@ -9,7 +9,9 @@ pub mod compress_worker;
 pub mod decompress;
 pub mod decompress_worker;
 pub mod header;
+pub mod reader;
 pub mod reencrypt;
 
 pub use compress::{NcaToNczOptions, NczMode, nca_to_ncz};
 pub use decompress::ncz_to_nca;
+pub use reader::NczReader;

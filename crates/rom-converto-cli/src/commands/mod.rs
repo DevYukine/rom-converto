@@ -1,4 +1,5 @@
 use crate::commands::chd::ChdCommands;
+use crate::commands::completions::ShellCompletionsCommand;
 use crate::commands::ctr::CtrCommands;
 use crate::commands::dol::DolCommands;
 use crate::commands::nx::NxCommands;
@@ -7,8 +8,10 @@ use crate::commands::wup::WupCommands;
 use clap::{Parser, Subcommand};
 
 pub mod chd;
+pub mod completions;
 pub mod ctr;
 pub mod dol;
+pub mod info_command;
 pub mod nx;
 pub mod rvl;
 pub mod wup;
@@ -54,6 +57,8 @@ pub enum Commands {
     Nx(NxCommands),
 
     SelfUpdate(SelfUpdateCommand),
+
+    ShellCompletions(ShellCompletionsCommand),
 }
 
 /// Command to check for a new version of the CLI and updates it if available

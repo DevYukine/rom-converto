@@ -24,6 +24,8 @@ mod constants;
 pub mod convert;
 mod decrypt;
 pub mod error;
+pub mod exefs;
+pub mod info;
 pub mod models;
 #[cfg(test)]
 mod test_fixtures;
