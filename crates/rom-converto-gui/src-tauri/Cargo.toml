@@ -10,11 +10,11 @@ rom-converto-lib = { path = "../../rom-converto-lib" }
 tauri = { version = "^2", features = [] }
 tauri-plugin-dialog = "^2"
 tauri-plugin-shell = "^2"
-serde = { version = "^1", features = ["derive"] }
-serde_json = "^1"
-tokio = { version = "^1", features = ["full"] }
-log = "^0.4"
-anyhow = "^1"
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["full"] }
+log.workspace = true
+anyhow.workspace = true
 
 [build-dependencies]
 tauri-build = { version = "^2", features = [] }

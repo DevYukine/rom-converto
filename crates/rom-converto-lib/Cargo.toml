@@ -6,16 +6,16 @@ authors.workspace = true
 description = "Library for converting, compressing, decompressing, encrypting, and decrypting ROMs."
 
 [dependencies]
-anyhow = "^1.0"
-thiserror = "^2"
-log = "^0.4"
-tokio = { version = "^1", features = ["fs", "sync", "rt", "rt-multi-thread", "macros", "io-util"] }
-futures = "^0.3"
+anyhow.workspace = true
+thiserror.workspace = true
+log.workspace = true
+tokio = { workspace = true, features = ["fs", "sync", "rt", "rt-multi-thread", "macros", "io-util"] }
+futures.workspace = true
 async-recursion = "^1.1"
 binrw = "^0.15"
 byteorder = "1.5"
 chrono = "^0.4"
-lazy_static = "^1.5"
+lazy_static.workspace = true
 
 # RustCrypto ecosystem: pinned together, upgrade all at once when aes 0.9 / cbc 0.2 / ctr 0.10 / pbkdf2 0.13 go stable
 aes = "^0.8"
@@ -32,8 +32,8 @@ md5 = "^0.8"
 sha256 = "^1.6"
 hex-literal = "^1.1"
 rsa = { version = "^0.9", features = ["sha2"] }
-serde = { version = "^1", features = ["derive"] }
-serde_json = "^1"
+serde.workspace = true
+serde_json.workspace = true
 crc = "^3.4"
 dirs = "^5"
 
@@ -49,5 +49,5 @@ claxon = "^0.4"
 zstd = { version = "^0.13", features = ["zstdmt"] }
 
 # HTTP (for seed DB fetch)
-reqwest = { version = "^0.13", default-features = false, features = ["charset", "http2", "system-proxy", "json", "stream", "rustls"] }
+reqwest.workspace = true
 tempfile = "^3"
