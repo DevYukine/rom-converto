@@ -44,30 +44,18 @@ pub(crate) struct RawDecompressWork {
     // `pack_decode`'s `data_offset` parameter: absolute disc
     // position of the chunk's first byte.
     pub(crate) chunk_abs_start: u64,
-    // Output disc range + slice offset within the decoded chunk.
-    // Written sequentially in submission order by the consume
-    // closure.
     pub(crate) write_start: u64,
     pub(crate) write_len: usize,
     pub(crate) chunk_slice_offset: usize,
 }
 
 pub(crate) struct RawDecompressOut {
-    // Owned decoded slice ready to write. For the zero-sentinel
-    // case this is a fresh zero buffer; otherwise it's an owned
-    // copy of the worker's decoded bytes so the worker's scratch
-    // can be reused for the next item without racing the consumer.
     pub(crate) decoded: Box<[u8]>,
     pub(crate) write_start: u64,
     pub(crate) write_len: usize,
     pub(crate) chunk_slice_offset: usize,
 }
 
-/// Per-thread raw-region decompressor state. Holds a persistent
-/// `zstd::bulk::Decompressor` and a pair of `Vec<u8>` scratch
-/// buffers reused across every chunk. Same trick the encoder
-/// pool uses with `Compressor`, avoids one `ZSTD_createDCtx` per
-/// chunk.
 pub(crate) struct RawDecompressWorker {
     decompressor: zstd::bulk::Decompressor<'static>,
     file: Arc<std::fs::File>,
@@ -77,9 +65,7 @@ pub(crate) struct RawDecompressWorker {
 
 impl Worker<RawDecompressWork, RawDecompressOut, RvzError> for RawDecompressWorker {
     fn process(&mut self, work: RawDecompressWork) -> RvzResult<RawDecompressOut> {
-        // All-zero sentinel: no I/O, no zstd, no pack_decode.
-        // Hand back a zero slice of the requested write length.
-        // Matches the sequential decoder's fast path.
+        // data_size == 0 is Dolphin's all-zero sentinel; synthesise zeros without I/O.
         if work.data_size == 0 {
             let zeros = vec![0u8; work.write_len].into_boxed_slice();
             return Ok(RawDecompressOut {
@@ -90,15 +76,9 @@ impl Worker<RawDecompressWork, RawDecompressOut, RvzError> for RawDecompressWork
             });
         }
 
-        // Read the compressed chunk via positional I/O so multiple
-        // workers can safely share one `Arc<File>` without seek
-        // contention. Grows `scratch_in` up to the largest
-        // compressed chunk seen so far; never shrinks.
         self.scratch_in.resize(work.data_size as usize, 0);
         file_read_exact_at(&self.file, &mut self.scratch_in, work.data_off)?;
 
-        // Stage 1: zstd decompress (if compressed) or verbatim
-        // copy into the scratch output buffer.
         let stage1_len: usize = if work.is_compressed {
             if self.scratch_out.len() < work.chunk_bytes {
                 self.scratch_out.resize(work.chunk_bytes, 0);
@@ -113,9 +93,6 @@ impl Worker<RawDecompressWork, RawDecompressOut, RvzError> for RawDecompressWork
             self.scratch_in.len()
         };
 
-        // Stage 2: RVZ unpack (if packed). `pack_decode` allocates
-        // a fresh Vec; we move it into the returned Box so the
-        // worker's `scratch_out` can be reused immediately.
         let decoded: Box<[u8]> = if work.rvz_packed_size != 0 {
             let unpacked = crate::nintendo::rvz::packing::pack_decode(
                 &self.scratch_out[..stage1_len],
@@ -123,10 +100,6 @@ impl Worker<RawDecompressWork, RawDecompressOut, RvzError> for RawDecompressWork
             )?;
             unpacked.into_boxed_slice()
         } else {
-            // Copy the stage-1 bytes into an owned buffer. One
-            // allocation per chunk, cheaper than sharing `Arc`
-            // around a scratch buffer and fighting interior
-            // mutability across workers.
             self.scratch_out[..stage1_len].to_vec().into_boxed_slice()
         };
 

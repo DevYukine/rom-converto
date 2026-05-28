@@ -132,10 +132,10 @@ mod tests {
     fn build_min_disc_image(name: &str, region: u32, fst_off: u32, fst_size: u32) -> Vec<u8> {
         let mut buf = vec![0u8; 0x2500];
         buf[0..6].copy_from_slice(b"GALE01");
-        buf[6] = 0; // disc 0
-        buf[7] = 1; // version 1
-        buf[8] = 1; // audio streaming on
-        buf[9] = 16; // stream buf
+        buf[6] = 0;
+        buf[7] = 1;
+        buf[8] = 1;
+        buf[9] = 16;
         (&mut buf[0x1C..0x20]).write_u32::<BE>(GC_MAGIC).unwrap();
         let name_bytes = name.as_bytes();
         buf[0x20..0x20 + name_bytes.len()].copy_from_slice(name_bytes);
@@ -174,7 +174,6 @@ mod tests {
     #[test]
     fn rejects_non_gamecube_magic() {
         let mut buf = build_min_disc_image("Test", 0, 0x100, 0x10);
-        // Clobber the magic
         buf[0x1C..0x20].copy_from_slice(&[0u8; 4]);
         let mut cur = Cursor::new(&buf);
         assert!(GcBootBin::read(&mut cur).is_err());

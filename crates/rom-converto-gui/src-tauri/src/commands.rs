@@ -419,9 +419,8 @@ pub async fn cmd_read_info(
     serde_json::to_string(result.as_ref()).map_err(err_to_string)
 }
 
-/// Write a per-console icon payload from a recent read_info result to a
-/// host PNG file. The frontend posts back the InfoResult JSON it already
-/// holds, so the Rust side does not need to redo the extraction.
+/// The frontend posts back the InfoResult JSON it already holds, so the
+/// Rust side does not need to redo the extraction.
 #[tauri::command]
 pub async fn cmd_save_icon(info_json: String, dest: PathBuf) -> Result<String, String> {
     let info: InfoResult = serde_json::from_str(&info_json).map_err(err_to_string)?;

@@ -73,7 +73,6 @@ pub fn read_info(path: &Path) -> Result<RvlInfo> {
     let mut reader = crate::nintendo::disc_input::open_disc_input(path)
         .map_err(|e| anyhow!("rvl info: open input: {}", e))?;
 
-    // Disc-level header (unencrypted, common between partitions).
     let disc_header = read_disc_header(&mut reader)?;
 
     let entries =
@@ -157,7 +156,6 @@ fn read_disc_header<R: Read + Seek>(reader: &mut R) -> Result<DiscHeader> {
     let disc_number = reader.read_u8()?;
     let disc_version = reader.read_u8()?;
 
-    // Verify Wii magic at 0x18.
     reader.seek(SeekFrom::Start(WII_MAGIC_OFFSET as u64))?;
     let magic = reader.read_u32::<BE>()?;
     if magic != WII_MAGIC {
@@ -218,7 +216,6 @@ fn try_read_data_partition_extras<R: Read + Seek>(
     let info = read_partition_info(reader, data.offset, data.group, data.partition_type)
         .map_err(|e| anyhow!("read partition info: {}", e))?;
 
-    // TMD lives at partition_offset + tmd_offset; size at +0x2A4.
     let tmd_info = read_tmd_at(reader, data.offset).ok();
 
     let mut payload_reader = PartitionPayloadReader::new(&mut *reader, &info);
@@ -279,7 +276,6 @@ fn read_tmd_at<R: Read + Seek>(reader: &mut R, partition_offset: u64) -> Result<
 }
 
 fn read_opening_bnr<R: Read + Seek>(reader: &mut R) -> Result<Vec<u8>> {
-    // Read 0x440 of the partition's boot.bin to grab FST offsets.
     reader.seek(SeekFrom::Start(0))?;
     let mut boot = [0u8; 0x440];
     reader.read_exact(&mut boot)?;
@@ -673,7 +669,6 @@ mod banner_tests {
         let inner_u8 = build_u8_archive(&[("arc/timg/banner.tpl", tpl)]);
         let outer_u8 = build_u8_archive(&[("meta/banner.bin", inner_u8)]);
 
-        // Build a minimal opening.bnr: 0x40 padding + 0x600 IMET + U8.
         let mut bnr = vec![0u8; 0x640];
         // Plant a fake "IMET" tag so locate_outer_u8's IMET fallback
         // doesn't accidentally help us reach the right answer.

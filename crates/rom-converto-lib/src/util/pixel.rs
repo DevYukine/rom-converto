@@ -172,7 +172,6 @@ pub fn decode_rgba32_tiled(data: &[u8], width: u32, height: u32) -> Result<Vec<u
     Ok(out)
 }
 
-/// Encode an RGBA8 buffer as a PNG byte vector.
 pub fn encode_png(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
     let expected = (width as usize) * (height as usize) * 4;
     if rgba.len() != expected {

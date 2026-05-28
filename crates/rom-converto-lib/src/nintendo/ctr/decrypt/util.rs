@@ -59,8 +59,6 @@ pub fn derive_title_key_from_ticket<R: Read + Seek>(
     Ok(enckey)
 }
 
-/// Surfaces NCCH header fields from an encrypted CIA content without
-/// having to stream and decrypt the whole content body.
 pub fn decrypt_first_ncch_block<R: Read + Seek>(
     reader: &mut R,
     content_offset: u64,

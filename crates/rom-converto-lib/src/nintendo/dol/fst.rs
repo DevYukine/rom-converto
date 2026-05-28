@@ -24,7 +24,6 @@ pub enum FstNode {
     },
 }
 
-/// Parse an FST buffer into a flat list of files keyed by full path.
 pub fn list_files(fst: &[u8]) -> Result<Vec<FstNode>> {
     if fst.len() < FST_ENTRY_SIZE {
         return Err(anyhow!("FST too small"));
@@ -130,33 +129,27 @@ mod tests {
     use std::io::Write;
 
     fn build_fst() -> Vec<u8> {
-        // Layout: root (dir, total=4) -> opening.bnr (file) -> sub/ (dir, end=4) -> nested (file)
-        // 4 entries total.
         let total_entries: u32 = 4;
         let string_table = b"opening.bnr\0sub\0nested\0";
         let mut entries: Vec<u8> = Vec::new();
 
-        // Entry 0: root
-        entries.push(1); // type=dir
-        entries.extend_from_slice(&[0, 0, 0]); // name_offset
-        entries.extend_from_slice(&[0, 0, 0, 0]); // parent_offset
+        entries.push(1);
+        entries.extend_from_slice(&[0, 0, 0]);
+        entries.extend_from_slice(&[0, 0, 0, 0]);
         entries.extend_from_slice(&total_entries.to_be_bytes());
 
-        // Entry 1: opening.bnr -> name_offset=0
         let entry1_data_offset: u32 = 0x40000;
         let entry1_size: u32 = 0x1840;
         entries.push(0);
-        entries.extend_from_slice(&[0, 0, 0]); // name offset 0
+        entries.extend_from_slice(&[0, 0, 0]);
         entries.extend_from_slice(&entry1_data_offset.to_be_bytes());
         entries.extend_from_slice(&entry1_size.to_be_bytes());
 
-        // Entry 2: sub/ (dir, next_index=4, name_offset=12)
         entries.push(1);
         entries.extend_from_slice(&[0, 0, 12]);
         entries.extend_from_slice(&[0, 0, 0, 0]);
         entries.extend_from_slice(&4u32.to_be_bytes());
 
-        // Entry 3: nested file (name_offset=16, offset=0x50000, size=0x100)
         entries.push(0);
         entries.extend_from_slice(&[0, 0, 16]);
         entries.extend_from_slice(&0x50000u32.to_be_bytes());

@@ -180,8 +180,6 @@ impl Smdh {
         })
     }
 
-    /// Decode the 9 regional age ratings, skipping blocks that are not
-    /// marked enabled.
     pub fn enabled_age_ratings(&self) -> Vec<AgeRating> {
         AgeRatingRegion::ALL
             .iter()

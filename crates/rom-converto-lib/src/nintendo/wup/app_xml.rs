@@ -9,7 +9,6 @@
 
 use crate::nintendo::wup::error::{WupError, WupResult};
 
-/// Parsed subset of `code/app.xml`. Other fields are ignored.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppXml {
     pub title_id: u64,
@@ -19,15 +18,12 @@ pub struct AppXml {
 }
 
 impl AppXml {
-    /// Parse an in-memory `app.xml` byte buffer.
     pub fn from_bytes(xml: &[u8], source: &std::path::Path) -> WupResult<Self> {
         let text =
             std::str::from_utf8(xml).map_err(|_| WupError::InvalidAppXml(source.to_path_buf()))?;
         parse(text, source)
     }
 
-    /// Parse from a filesystem path. The provided path is also the
-    /// path echoed in any [`WupError::InvalidAppXml`] emitted.
     pub fn read_from_path(path: &std::path::Path) -> WupResult<Self> {
         let bytes = std::fs::read(path)?;
         Self::from_bytes(&bytes, path)

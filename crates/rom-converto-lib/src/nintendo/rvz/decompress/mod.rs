@@ -21,12 +21,6 @@
 //!    in source order and output is written back in the same order
 //!    despite out-of-order worker completion.
 //!
-//! # Submodule layout
-//!
-//! * [`raw`]: raw-region decompress worker pool.
-//! * [`partition`]: Wii partition decompress worker pool.
-//! * [`crate::util::worker_pool`]: shared generic pool.
-
 pub mod disc_reader;
 pub mod partition;
 pub mod raw;
@@ -102,7 +96,6 @@ pub fn decompress_blocking(
     let shared_file = Arc::new(std::fs::File::open(input)?);
     let mut reader = BufReader::with_capacity(4 * 1024 * 1024, std::fs::File::open(input)?);
 
-    // Header.
     let mut head_bytes = vec![0u8; crate::nintendo::rvz::format::WIA_FILE_HEAD_SIZE];
     reader.read_exact(&mut head_bytes)?;
     let head = WiaFileHead::read_options(&mut Cursor::new(&head_bytes), Endian::Big, ())?;
@@ -114,7 +107,6 @@ pub fn decompress_blocking(
         return Err(RvzError::HeaderHashMismatch);
     }
 
-    // Disc struct.
     let mut disc_bytes = vec![0u8; head.disc_size as usize];
     reader.read_exact(&mut disc_bytes)?;
     let disc = WiaDisc::read_options(&mut Cursor::new(&disc_bytes), Endian::Big, ())?;
@@ -130,7 +122,6 @@ pub fn decompress_blocking(
         return Err(RvzError::UnsupportedDiscType(disc.disc_type));
     }
 
-    // Partition table (uncompressed in the file).
     let parts: Vec<WiaPart> = if disc.n_part > 0 {
         reader.seek(SeekFrom::Start(disc.part_off))?;
         let mut buf = vec![0u8; disc.n_part as usize * crate::nintendo::rvz::format::WIA_PART_SIZE];
@@ -145,7 +136,6 @@ pub fn decompress_blocking(
         Vec::new()
     };
 
-    // Raw-data table (zstd compressed).
     reader.seek(SeekFrom::Start(disc.raw_data_off))?;
     let mut raw_compressed = vec![0u8; disc.raw_data_size as usize];
     reader.read_exact(&mut raw_compressed)?;
@@ -159,7 +149,6 @@ pub fn decompress_blocking(
         raw_data.push(WiaRawData::read_options(&mut raw_cursor, Endian::Big, ())?);
     }
 
-    // Group table (zstd compressed).
     reader.seek(SeekFrom::Start(disc.group_off))?;
     let mut group_compressed = vec![0u8; disc.group_size as usize];
     reader.read_exact(&mut group_compressed)?;
@@ -196,9 +185,6 @@ pub fn decompress_blocking(
 
     let chunk_size = disc.chunk_size as u64;
 
-    // Raw regions: one `Pool` per region keeps the worker set
-    // thin (no long-lived cross-region state) and lets dispatch
-    // amortize across the region's ~10 chunks.
     for region in &raw_data {
         raw::decompress_raw_region(
             region,

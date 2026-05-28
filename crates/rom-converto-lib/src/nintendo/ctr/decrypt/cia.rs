@@ -293,6 +293,9 @@ fn scramblekey(key_x: u128, key_y: u128) -> u128 {
 
 async fn fetch_seed(title_id: &str) -> anyhow::Result<[u8; 16]> {
     lazy_static! {
+        // Nintendo's seed CDN serves a custom certificate that won't chain to the
+        // standard root store, so disabling TLS validation is the simplest way to
+        // reach it.
         static ref CLIENT: reqwest::Client = reqwest::Client::builder()
             .tls_danger_accept_invalid_certs(true)
             .build()

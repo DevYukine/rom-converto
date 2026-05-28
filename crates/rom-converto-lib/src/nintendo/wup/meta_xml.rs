@@ -342,7 +342,7 @@ mod tests {
         let m = MetaXml::from_bytes(sample_meta_xml().as_bytes()).unwrap();
         assert_eq!(m.product_code.as_deref(), Some("WUP-N-AMKE"));
         assert_eq!(m.company_code.as_deref(), Some("00"));
-        // The XML carries "00000002" — even when typed as hexBinary, parse_int_flexible
+        // The XML carries "00000002"; even when typed as hexBinary, parse_int_flexible
         // reads it as a decimal string, which still yields 2 (= USA bit).
         assert_eq!(m.region, Some(2));
         assert_eq!(m.title_version, Some(1));

@@ -23,15 +23,10 @@ pub const PARTITION_HEADER_SIZE: usize = 0x20;
 /// Parsed partition header fields that matter to the content reader.
 #[derive(Clone, Copy, Debug)]
 pub struct PartitionHeader {
-    /// Distance (bytes) from the start of the partition to the
-    /// content area.
     pub header_size: u32,
-    /// Size of the FST bundled with this partition, if any.
     pub fst_size: u32,
 }
 
-/// Read the plaintext 0x20-byte partition header and verify the
-/// signature.
 pub fn read_partition_header(
     disc: &mut dyn DiscSectorSource,
     partition_byte_offset: u64,
@@ -59,18 +54,10 @@ pub fn read_partition_header(
 /// inside a GM partition.
 #[derive(Clone, Copy, Debug)]
 pub struct PartitionContentLocation {
-    /// Absolute disc byte offset of the first byte of this content
-    /// file. Sector-aligned.
     pub disc_byte_offset: u64,
-    /// Size of this content file in bytes, from the TMD. Not
-    /// necessarily sector-aligned on the high end.
     pub size: u64,
 }
 
-/// Turn a `ContentFSTInfo`-style `(offset_sectors, size)` pair into
-/// the absolute disc byte offset of the content file. Callers build
-/// a map from content id to this struct and hand it to the partition
-/// source.
 pub fn compute_content_location(
     partition_byte_offset: u64,
     header_size: u64,
@@ -92,9 +79,6 @@ pub fn compute_content_location(
     }
 }
 
-/// Reads encrypted content bytes from a GM/UP/UC partition on disc.
-/// Construct with a populated `locations` map and then use as any
-/// `ContentBytesSource`. The disc reader is shared via `&mut dyn`.
 pub struct PartitionContentSource<'d> {
     disc: &'d mut dyn DiscSectorSource,
     locations: Vec<(u32, PartitionContentLocation)>,
@@ -123,9 +107,8 @@ impl<'d> ContentBytesSource for PartitionContentSource<'d> {
     }
 }
 
-/// Read a raw byte range from disc and AES-CBC decrypt it with the
-/// disc key using a zero IV. Used for the partition TOC and for the
-/// SI FST. The byte range length must be a multiple of 16.
+/// Decrypt a raw disc byte range with the disc key and a zero IV.
+/// Used for the partition TOC and the SI FST. Length must be a multiple of 16.
 pub fn read_disc_decrypted_zero_iv(
     disc: &mut dyn DiscSectorSource,
     key: &DiscKey,
@@ -166,9 +149,6 @@ pub fn read_disc_decrypted_file_iv(
     Ok(out)
 }
 
-/// IV derivation for SI FST file reads: `(offset >> 16)` placed as
-/// big-endian u64 in the low 8 bytes of a 16 byte buffer, upper 8
-/// bytes zero.
 pub(crate) fn file_offset_iv(offset: u64) -> [u8; 16] {
     let mut iv = [0u8; 16];
     let val = offset >> 16;

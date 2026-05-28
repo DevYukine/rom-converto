@@ -54,7 +54,6 @@ impl<R: Read + Seek> PartitionPayloadReader<R> {
         self.inner.read_exact(&mut buf)?;
         decrypt_sector(&mut buf, &self.title_key)
             .map_err(|e| anyhow::anyhow!("decrypt sector: {}", e))?;
-        // Skip the 0x400 hash region.
         let payload_start = WII_SECTOR_SIZE - WII_SECTOR_PAYLOAD_SIZE;
         self.cached_payload.copy_from_slice(&buf[payload_start..]);
         self.cached_sector_index = Some(sector_index);
@@ -161,17 +160,14 @@ mod tests {
             .unwrap();
         let mut buf = [0u8; 8];
         reader.read_exact(&mut buf).unwrap();
-        // Reader returns in two sectors via two reads; emulate by reading 4 then 4
-        // (single read_exact may loop internally). Either way the bytes should
-        // concatenate across the boundary.
         let p0_tail = &p0[WII_SECTOR_PAYLOAD_SIZE - 4..];
         let p1_head = &p1[..4];
         let mut expected = Vec::with_capacity(8);
         expected.extend_from_slice(p0_tail);
         expected.extend_from_slice(p1_head);
-        // read_exact may have only filled what one read returned; loop to fill.
-        // The Read impl returns at most one sector slice per call, so we may
-        // already only have the first 4 bytes. Do a second read for the rest.
+        // The Read impl returns at most one sector slice per call, so read_exact across
+        // a boundary may loop internally and leave the second half zero if the caller
+        // only does one read. Handle both cases.
         if buf[4..] == [0u8; 4] {
             let mut second = [0u8; 4];
             reader.read_exact(&mut second).unwrap();

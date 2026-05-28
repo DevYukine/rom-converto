@@ -85,10 +85,6 @@ impl<'a> RomfsReader<'a> {
         Ok(Self { image, header })
     }
 
-    /// Enumerate every file in the file-meta table by walking its
-    /// linked-list entries from offset 0. Returns root-level and
-    /// subdirectory files alike; callers that only want the root
-    /// filter on `parent_dir_offset == 0`.
     pub fn list_files(&self) -> NxResult<Vec<RomfsFile>> {
         let meta_off = self.header.file_meta_table_offset as usize;
         let meta_size = self.header.file_meta_table_size as usize;

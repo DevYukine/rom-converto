@@ -33,7 +33,6 @@ pub const H0_PER_SECTOR: usize = 31;
 /// Number of H1 hashes per sub-group (one per sibling sector).
 pub const H1_PER_SUBGROUP: usize = 8;
 
-/// Number of sub-groups per cluster.
 pub const SUBGROUPS_PER_GROUP: usize = 8;
 
 const H0_BLOCK_SIZE: usize = 0x400;
@@ -59,10 +58,7 @@ pub struct ChunkSectorPos {
     /// (0-based). Multiply by [`WII_GROUP_TOTAL_SIZE`] to get
     /// the cluster's first enc-byte offset.
     pub cluster_idx: u64,
-    /// First sector inside the cluster this chunk covers (0..64).
     pub first_sector_in_chunk: usize,
-    /// How many sectors the chunk covers. `<=
-    /// WII_BLOCKS_PER_GROUP - first_sector_in_chunk`.
     pub chunk_n_sectors: usize,
 }
 
@@ -89,28 +85,18 @@ impl ChunkSectorPos {
         }
     }
 
-    /// Plaintext payload position for [`pack_encode`] /
-    /// [`pack_decode`]. Plaintext cluster 0 starts at 0,
-    /// cluster 1 at 0x1F0000, etc.
-    ///
-    /// [`pack_encode`]: crate::nintendo::rvz::packing::pack_encode
-    /// [`pack_decode`]: crate::nintendo::rvz::packing::pack_decode
     #[inline]
     pub fn chunk_data_offset_pay(&self) -> u64 {
         self.cluster_idx * WII_GROUP_PAYLOAD_SIZE
             + (self.first_sector_in_chunk as u64) * (WII_SECTOR_PAYLOAD_SIZE as u64)
     }
 
-    /// Plaintext payload length this chunk covers in bytes:
-    /// `chunk_n_sectors * WII_SECTOR_PAYLOAD_SIZE`. Used to size
-    /// scratch buffers before `pack_encode` / `pack_decode`.
     #[inline]
     pub fn payload_len(&self) -> usize {
         self.chunk_n_sectors * WII_SECTOR_PAYLOAD_SIZE
     }
 }
 
-/// Size in bytes of one sector's hash region.
 pub const HASH_REGION_BYTES: usize = WII_HASH_SIZE;
 
 /// Field offsets inside a sector's 0x400 hash region. Match Dolphin's
@@ -139,44 +125,36 @@ const _: () = assert!(
 /// Metadata for one Wii partition extracted from its header.
 #[derive(Debug, Clone, Copy)]
 pub struct PartitionInfo {
-    /// Byte offset of the partition inside the raw ISO.
     pub partition_offset: u64,
     /// Partition group index (0..4).
     pub group_index: u8,
-    /// Partition type (0 = game, 1 = update, 2 = channel).
+    /// Partition type (0 = game data, 1 = update, 2 = channel).
     pub partition_type: u32,
-    /// Decrypted title key.
+    /// Decrypted title key (not the on-disc encrypted form).
     pub title_key: [u8; 16],
-    /// Byte offset (relative to `partition_offset`) where encrypted data
-    /// starts.
+    /// Byte offset relative to `partition_offset` where encrypted data starts.
     pub data_offset: u64,
-    /// Bytes of encrypted data in the partition.
+    /// Bytes of encrypted data.
     pub data_size: u64,
 }
 
 impl PartitionInfo {
-    /// Number of full clusters in the partition's encrypted data area.
     /// Number of 2 MiB clusters the partition occupies on disc.
     ///
-    /// Real Wii discs can declare `data_size` values that aren't a
-    /// whole number of clusters. The partition's encrypted storage
-    /// still always spans complete clusters on the physical disc,
-    /// with the tail of the final cluster carrying junk/padding. We
-    /// round up so both encode and decode process every on-disc
-    /// cluster; Dolphin does the same via `align_up(data_size,
-    /// GROUP_TOTAL_SIZE)` in `WIABlob.cpp`.
+    /// Real Wii discs can declare `data_size` values that aren't a whole number
+    /// of clusters. We round up so both encode and decode process every on-disc
+    /// cluster; Dolphin does the same via `align_up(data_size, GROUP_TOTAL_SIZE)`
+    /// in `WIABlob.cpp`.
     pub fn cluster_count(&self) -> u64 {
         self.data_size.div_ceil(WII_GROUP_TOTAL_SIZE)
     }
 
-    /// Absolute byte offset where encrypted data starts.
     pub fn data_start(&self) -> u64 {
         self.partition_offset + self.data_offset
     }
 }
 
-/// Read a partition's header (ticket + offsets) from the input ISO. The
-/// reader is left at an unspecified position.
+/// The reader is left at an unspecified position after this call.
 pub fn read_partition_info<R: Read + Seek>(
     reader: &mut R,
     partition_offset: u64,
@@ -223,7 +201,6 @@ pub fn read_partition_info<R: Read + Seek>(
     })
 }
 
-/// One decrypted cluster: 64 sectors split into hash regions and payloads.
 pub struct DecryptedCluster {
     pub on_disc_hash_regions: Vec<[u8; HASH_REGION_BYTES]>,
     pub payloads: Vec<[u8; WII_SECTOR_PAYLOAD_SIZE]>,
@@ -244,9 +221,7 @@ impl DecryptedCluster {
     }
 }
 
-/// Read one cluster (64 encrypted sectors), decrypt them, and split each
-/// sector into its 0x400 hash region + 0x7C00 payload. The reader must be
-/// seeked to the cluster's start before calling.
+/// Caller must seek to the cluster's start before calling.
 pub fn read_and_decrypt_cluster<R: Read>(
     reader: &mut R,
     title_key: &[u8; 16],
@@ -316,10 +291,8 @@ pub fn compute_h2(
     h2
 }
 
-/// Allocate a fresh `Vec<[u8; HASH_REGION_BYTES]>` and fill it via
-/// [`recompute_hash_regions_into`]. Convenience for tests and one-
-/// shot callers; production RVZ worker pools call the `_into`
-/// variant with persistent scratch to avoid per-cluster allocs.
+/// Allocating convenience wrapper; hot-path callers use [`recompute_hash_regions_into`]
+/// with persistent scratch to avoid per-cluster heap traffic.
 pub fn recompute_hash_regions(
     payloads: &[[u8; WII_SECTOR_PAYLOAD_SIZE]],
 ) -> Vec<[u8; HASH_REGION_BYTES]> {
@@ -343,14 +316,12 @@ pub fn recompute_hash_regions_into(
     debug_assert_eq!(payloads.len(), WII_BLOCKS_PER_GROUP);
     debug_assert_eq!(out.len(), WII_BLOCKS_PER_GROUP);
 
-    // H0 per sector. `[[u8; 20]; H0_PER_SECTOR]` is 620 bytes so the
-    // fixed-size array copies are cheap even on the stack.
+    // `[[u8; 20]; H0_PER_SECTOR]` is 620 bytes; fixed-size array copies stay on the stack.
     let mut all_h0 = [[[0u8; 20]; H0_PER_SECTOR]; WII_BLOCKS_PER_GROUP];
     for (i, payload) in payloads.iter().enumerate() {
         all_h0[i] = compute_h0(payload);
     }
 
-    // H1 per sub-group.
     let mut all_h1 = [[[0u8; 20]; H1_PER_SUBGROUP]; SUBGROUPS_PER_GROUP];
     for sg in 0..SUBGROUPS_PER_GROUP {
         let mut subgroup_h0 = [[[0u8; 20]; H0_PER_SECTOR]; H1_PER_SUBGROUP];
@@ -360,10 +331,8 @@ pub fn recompute_hash_regions_into(
         all_h1[sg] = compute_h1(&subgroup_h0);
     }
 
-    // H2 for the whole group.
     let h2 = compute_h2(&all_h1);
 
-    // Stitch every sector's hash region together in place.
     for sector_idx in 0..WII_BLOCKS_PER_GROUP {
         let subgroup_idx = sector_idx / H1_PER_SUBGROUP;
         let region = &mut out[sector_idx];
@@ -371,17 +340,14 @@ pub fn recompute_hash_regions_into(
         // hand us a dirty buffer from the previous cluster.
         *region = [0u8; HASH_REGION_BYTES];
 
-        // h0 for this sector
         for (j, hash) in all_h0[sector_idx].iter().enumerate() {
             region[hash_region::H0_OFFSET + j * 20..hash_region::H0_OFFSET + (j + 1) * 20]
                 .copy_from_slice(hash);
         }
-        // h1 shared across the sub-group
         for (j, hash) in all_h1[subgroup_idx].iter().enumerate() {
             region[hash_region::H1_OFFSET + j * 20..hash_region::H1_OFFSET + (j + 1) * 20]
                 .copy_from_slice(hash);
         }
-        // h2 shared across the entire group
         for (j, hash) in h2.iter().enumerate() {
             region[hash_region::H2_OFFSET + j * 20..hash_region::H2_OFFSET + (j + 1) * 20]
                 .copy_from_slice(hash);
@@ -594,10 +560,8 @@ pub fn split_chunk_exceptions_by_range<'a>(
         })
 }
 
-/// Allocate a fresh 2 MiB `Vec<u8>` and fill it via
-/// [`reencrypt_cluster_into`]. Convenience for tests and one-shot
-/// callers; production RVZ worker pools call the `_into` variant
-/// with persistent scratch to avoid per-cluster allocator traffic.
+/// Allocating convenience wrapper; hot-path callers use [`reencrypt_cluster_into`]
+/// with persistent scratch to avoid per-cluster heap traffic.
 pub fn reencrypt_cluster(
     hash_regions: &[[u8; HASH_REGION_BYTES]],
     payloads: &[[u8; WII_SECTOR_PAYLOAD_SIZE]],
@@ -608,14 +572,8 @@ pub fn reencrypt_cluster(
     Ok(out)
 }
 
-/// Re-encrypt one Wii cluster: stitch `hash_region + payload` for each
-/// of the 64 sectors, AES-CBC encrypt each sector with `title_key`,
-/// write the ciphertext into `out`. Zero heap allocations; callers
-/// hoist `out` into persistent worker scratch so a single 2 MiB
-/// buffer serves thousands of clusters.
-///
-/// `out.len()` must equal `WII_GROUP_TOTAL_SIZE` (0x200000). Partial
-/// buffers are a programming error.
+/// `out.len()` must equal `WII_GROUP_TOTAL_SIZE` (0x200000); partial buffers are a
+/// programming error. Zero heap allocations; callers reuse `out` across clusters.
 pub fn reencrypt_cluster_into(
     hash_regions: &[[u8; HASH_REGION_BYTES]],
     payloads: &[[u8; WII_SECTOR_PAYLOAD_SIZE]],
@@ -626,10 +584,6 @@ pub fn reencrypt_cluster_into(
     debug_assert_eq!(payloads.len(), WII_BLOCKS_PER_GROUP);
     debug_assert_eq!(out.len(), WII_GROUP_TOTAL_SIZE as usize);
     for i in 0..WII_BLOCKS_PER_GROUP {
-        // Stitch hash region + payload into a stack-local sector
-        // buffer, then AES-CBC encrypt in place. The two memcpys
-        // into the local are cheaper than keeping separate tables
-        // and encrypting across them.
         let mut sector = [0u8; WII_SECTOR_SIZE];
         sector[..HASH_REGION_BYTES].copy_from_slice(&hash_regions[i]);
         sector[HASH_REGION_BYTES..].copy_from_slice(&payloads[i]);
@@ -655,9 +609,6 @@ pub fn serialize_exception_header(exceptions: &[HashException]) -> RvzResult<Vec
     Ok(out)
 }
 
-/// Append the serialised exception header bytes to `out`. Callers hoist
-/// `out` into persistent worker scratch (`Vec::clear` + call) so the
-/// hot loop has zero per-chunk allocator traffic.
 pub fn serialize_exception_header_into(
     exceptions: &[HashException],
     out: &mut Vec<u8>,
@@ -697,9 +648,6 @@ impl<'a> ExceptionEntriesRef<'a> {
     pub fn is_empty(&self) -> bool {
         self.count == 0
     }
-    /// Decode every entry into an owned `HashException`. Cheap:
-    /// 22 bytes of memcpy per entry, no allocation beyond the
-    /// chosen target.
     pub fn iter(&self) -> impl Iterator<Item = HashException> + 'a {
         let bytes = self.entries;
         (0..self.count).map(move |i| {
@@ -745,8 +693,6 @@ pub fn parse_exception_header<'a>(
     Ok((view, &data[exception_area..]))
 }
 
-/// Split a payload-region byte slice into 64 fixed-size Wii sector
-/// payloads.
 pub fn split_payloads(data: &[u8]) -> RvzResult<Vec<[u8; WII_SECTOR_PAYLOAD_SIZE]>> {
     if data.len() < WII_GROUP_PAYLOAD_SIZE as usize {
         return Err(RvzError::Custom(
@@ -777,9 +723,7 @@ pub fn pack_partition_chunk(
     Ok(out)
 }
 
-/// Inverse of [`pack_partition_chunk`]. Returns the exceptions and the 64
-/// payload arrays. Only valid for chunks where the payload portion is
-/// verbatim (not RVZ-packed).
+/// Inverse of [`pack_partition_chunk`]. Only valid for verbatim (non-RVZ-packed) chunks.
 pub fn unpack_partition_chunk(
     data: &[u8],
 ) -> RvzResult<(Vec<HashException>, Vec<[u8; WII_SECTOR_PAYLOAD_SIZE]>)> {
@@ -835,15 +779,11 @@ mod tests {
         use crate::nintendo::rvl::constants::WII_SECTOR_SIZE;
         let title_key = [0xA5u8; 16];
 
-        // Sectors 0..11: plaintext we craft and then encrypt.
         let mut original_ciphertext = vec![0u8; WII_GROUP_TOTAL_SIZE as usize];
         let valid_payloads: Vec<[u8; WII_SECTOR_PAYLOAD_SIZE]> =
             (0..12).map(|i| make_payload((i * 7 + 3) as u8)).collect();
-        // Compute the hash hierarchy over a FULL 64-sector cluster
-        // where sectors 12..63 have the "decrypted junk" that comes
-        // from decrypt_sector(all-zero ciphertext, title_key).
-        // Step 1: derive those junk payloads + hash regions by
-        // actually decrypting 52 all-zero sectors.
+        // Sectors 12..63 carry decrypted junk from decrypt_sector(all-zero ciphertext),
+        // which won't match the recomputed hash hierarchy. Derive those payloads first.
         let mut junk_payloads: Vec<[u8; WII_SECTOR_PAYLOAD_SIZE]> = Vec::with_capacity(52);
         for _ in 12..64 {
             let mut s = [0u8; WII_SECTOR_SIZE];
@@ -852,25 +792,15 @@ mod tests {
             p.copy_from_slice(&s[HASH_REGION_BYTES..]);
             junk_payloads.push(p);
         }
-        // Full 64-sector payload vector.
         let mut all_payloads: Vec<[u8; WII_SECTOR_PAYLOAD_SIZE]> = valid_payloads.to_vec();
         all_payloads.extend(junk_payloads.iter().copied());
 
-        // Hash-region authors for the 64 sectors are:
-        //   0..11: recompute_hash_regions over `all_payloads` (Nintendo's
-        //          authoring tool computes real H0/H1/H2 for these).
-        //   12..63: decrypt_sector(all-zero ciphertext), i.e. junk bytes
-        //           that don't match the recomputed hash hierarchy.
         let recomputed_full = recompute_hash_regions(&all_payloads);
         let mut on_disc: Vec<[u8; HASH_REGION_BYTES]> = Vec::with_capacity(64);
-        // Sectors 0..11: use the computed hash region (so encryption
-        // produces the "correct" ciphertext that would be on a real
-        // disc for these valid sectors).
         for region in recomputed_full.iter().take(12) {
             on_disc.push(*region);
         }
-        // Sectors 12..63: use the junk hash region from decrypting
-        // all-zero ciphertext.
+        // Sectors 12..63: junk hash region from decrypt(all-zero), not matching recomputed hierarchy.
         for _ in 12..64 {
             let mut s = [0u8; WII_SECTOR_SIZE];
             crate::nintendo::rvl::disc::decrypt_sector(&mut s, &title_key).unwrap();
@@ -879,10 +809,7 @@ mod tests {
             on_disc.push(r);
         }
 
-        // Now synthesise the actual ciphertext on disc: encrypt the
-        // constructed sectors. Sectors 12..63 should encrypt back to
-        // all-zero because their on_disc plaintext was derived from
-        // decrypt(0).
+        // Sectors 12..63 should encrypt back to all-zero because their plaintext came from decrypt(0).
         for i in 0..64 {
             let mut sector = [0u8; WII_SECTOR_SIZE];
             sector[..HASH_REGION_BYTES].copy_from_slice(&on_disc[i]);
@@ -892,8 +819,6 @@ mod tests {
                 .copy_from_slice(&sector);
         }
 
-        // Now exercise the round-trip: decrypt → recompute → exceptions
-        // → apply → reencrypt, and verify the output matches.
         let mut cursor = std::io::Cursor::new(original_ciphertext.clone());
         let cluster = read_and_decrypt_cluster(&mut cursor, &title_key).unwrap();
         let recon = recompute_hash_regions(&cluster.payloads);
@@ -936,14 +861,11 @@ mod tests {
         let title_key = [0xA5u8; 16];
         let original_ciphertext = vec![0u8; WII_GROUP_TOTAL_SIZE as usize];
 
-        // Encode-side: decrypt the cluster.
         let mut cursor = std::io::Cursor::new(original_ciphertext.clone());
         let cluster = read_and_decrypt_cluster(&mut cursor, &title_key).unwrap();
         let recon = recompute_hash_regions(&cluster.payloads);
         let exceptions = build_hash_exceptions(&cluster, &recon);
 
-        // Decode-side: start from just the payloads + exceptions, no
-        // access to the original cluster.on_disc_hash_regions.
         let mut rebuilt = recompute_hash_regions(&cluster.payloads);
         apply_hash_exceptions(&mut rebuilt, &exceptions);
         let reencrypted = reencrypt_cluster(&rebuilt, &cluster.payloads, &title_key).unwrap();
@@ -991,8 +913,6 @@ mod tests {
                 r
             })
             .collect();
-        // Keep a pristine copy for comparison; apply_hash_exceptions
-        // should reproduce this from recompute + exceptions.
         let original_on_disc = on_disc.clone();
 
         let cluster = DecryptedCluster {
@@ -1007,7 +927,6 @@ mod tests {
 
         for (i, (got, want)) in rebuilt.iter().zip(original_on_disc.iter()).enumerate() {
             if got != want {
-                // Pinpoint the first differing byte for diagnostics.
                 for (b, (g, w)) in got.iter().zip(want.iter()).enumerate() {
                     if g != w {
                         panic!(
@@ -1025,7 +944,6 @@ mod tests {
         let payload = make_payload(0);
         let h0 = compute_h0(&payload);
         assert_eq!(h0.len(), H0_PER_SECTOR);
-        // First hash should match a manual SHA-1 of the first 0x400 bytes.
         let mut h = Sha1::new();
         h.update(&payload[..0x400]);
         let expected: [u8; 20] = h.finalize().into();

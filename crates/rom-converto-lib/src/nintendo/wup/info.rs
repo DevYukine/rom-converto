@@ -31,9 +31,9 @@ pub struct WupInfo {
     /// All titles bundled in the input. Empty for plain directory
     /// inputs; populated when a `.wua` packs base + update + DLC.
     pub bundled_titles: Vec<BundledTitle>,
-    /// Highest update title's version, when an update is bundled
-    /// alongside the base. The effective game version is `base +
-    /// update` so this is shown in preference to `title_version`.
+    /// Highest update title's version, when an update is bundled alongside the base.
+    /// The effective game version is `base + update`, so this is shown in preference
+    /// to `title_version`.
     pub update_version: Option<u32>,
     pub image: Option<Image>,
 }

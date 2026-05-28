@@ -122,7 +122,6 @@ impl Cnmt {
     pub fn required_system_version(&self) -> u64 {
         match self.content_type {
             CNMT_TYPE_APPLICATION => {
-                // Application extended header: PatchID (u64), RequiredSystemVersion (u64)
                 if self.extended_header.len() >= 0x10 {
                     let mut bytes = [0u8; 8];
                     bytes.copy_from_slice(&self.extended_header[0x08..0x10]);
@@ -131,7 +130,6 @@ impl Cnmt {
                 self.required_download_system_version
             }
             CNMT_TYPE_PATCH => {
-                // Patch extended header: ApplicationID (u64), RequiredSystemVersion (u64)
                 if self.extended_header.len() >= 0x10 {
                     let mut bytes = [0u8; 8];
                     bytes.copy_from_slice(&self.extended_header[0x08..0x10]);

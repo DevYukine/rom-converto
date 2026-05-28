@@ -91,29 +91,22 @@ pub fn make_fake_wii_iso_with_partition(n_clusters: usize) -> Vec<u8> {
 
     let mut data = vec![0u8; total_size];
 
-    // Disc header magic.
     data[WII_MAGIC_OFFSET..WII_MAGIC_OFFSET + 4].copy_from_slice(&WII_MAGIC.to_be_bytes());
 
-    // Partition info table (group 0): count = 1, offset/4 = 0x10000 for the
-    // group's partition table, which sits right after the info struct.
     let info = WII_PARTITION_INFO_OFFSET as usize;
     let partition_table_offset = info + 0x100; // arbitrary, must point into the file
-    data[info..info + 4].copy_from_slice(&1u32.to_be_bytes()); // count
+    data[info..info + 4].copy_from_slice(&1u32.to_be_bytes());
     data[info + 4..info + 8].copy_from_slice(&((partition_table_offset as u32) >> 2).to_be_bytes());
-    // groups 1..3 have count = 0 (already zero).
 
-    // The partition table for group 0: one entry { offset/4, type=0 }.
     data[partition_table_offset..partition_table_offset + 4]
         .copy_from_slice(&((PARTITION_OFFSET as u32) >> 2).to_be_bytes());
     data[partition_table_offset + 4..partition_table_offset + 8]
-        .copy_from_slice(&0u32.to_be_bytes()); // partition type = 0
+        .copy_from_slice(&0u32.to_be_bytes());
 
-    // Build the ticket: title_id at 0x1DC, then the encrypted title key at
-    // 0x1BF derived from a known plaintext via AES-CBC with the common key.
     let title_id = [0x00, 0x01, 0x00, 0x00, 0x12, 0x34, 0x56, 0x78];
     let plaintext_title_key = [0xA5u8; 16];
 
-    // Encrypt the title key with the common key, IV = title_id padded.
+    // IV for AES-CBC title key encryption is the title_id zero-padded to 16 bytes.
     let mut iv = [0u8; 16];
     iv[..8].copy_from_slice(&title_id);
     let cipher = Aes128CbcEnc::new_from_slices(&WII_COMMON_KEY, &iv).unwrap();
@@ -123,14 +116,12 @@ pub fn make_fake_wii_iso_with_partition(n_clusters: usize) -> Vec<u8> {
         .unwrap();
 
     let part_off = PARTITION_OFFSET as usize;
-    // Ticket bytes: zero-init the ticket region, then drop in the fields we need.
     data[part_off + WII_TICKET_TITLE_ID_OFFSET..part_off + WII_TICKET_TITLE_ID_OFFSET + 8]
         .copy_from_slice(&title_id);
     data[part_off + WII_TICKET_TITLE_KEY_OFFSET..part_off + WII_TICKET_TITLE_KEY_OFFSET + 16]
         .copy_from_slice(&enc_key);
-    // common_key_index byte at 0x1F1 stays 0 (standard key).
+    // common_key_index at 0x1F1 stays 0 (standard key).
 
-    // Partition header data_offset / data_size fields.
     let do_word = (DATA_OFFSET_IN_PARTITION >> 2) as u32;
     let ds_word = (data_size >> 2) as u32;
     data[part_off + WII_PARTITION_HEADER_DATA_OFFSET_OFFSET
@@ -140,10 +131,6 @@ pub fn make_fake_wii_iso_with_partition(n_clusters: usize) -> Vec<u8> {
         ..part_off + WII_PARTITION_HEADER_DATA_SIZE_OFFSET + 4]
         .copy_from_slice(&ds_word.to_be_bytes());
 
-    // For each cluster: generate 64 plaintext payloads, recompute
-    // the hash hierarchy, then AES-CBC encrypt each sector with the
-    // title key. The result matches the on-disc byte layout of a
-    // real Wii partition.
     let data_start = part_off + DATA_OFFSET_IN_PARTITION as usize;
     for cluster in 0..n_clusters {
         let payloads: Vec<[u8; WII_SECTOR_PAYLOAD_SIZE]> = (0..64)

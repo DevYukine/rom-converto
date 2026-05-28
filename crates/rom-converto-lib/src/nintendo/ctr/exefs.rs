@@ -101,7 +101,6 @@ pub fn read_exefs_section(
     Ok(decrypted[start..end].to_vec())
 }
 
-/// Convenience for the most common caller: read the `icon` section.
 pub fn read_icon_section(header: &NcchHeader, exefs_encrypted: &[u8]) -> Result<Vec<u8>> {
     read_exefs_section(header, exefs_encrypted, &EXEFS_SECTION_ICON)
 }

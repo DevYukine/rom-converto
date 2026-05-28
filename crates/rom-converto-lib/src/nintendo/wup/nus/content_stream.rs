@@ -25,22 +25,14 @@ use crate::nintendo::wup::nus::ticket_parser::TitleKey;
 /// ranges inside a GM partition). Raw vs hashed decryption sits one
 /// layer above.
 pub trait ContentBytesSource {
-    /// Return the still-encrypted bytes of the content file with the
-    /// given TMD content id (the `.app` filename without extension).
     fn read_encrypted_content(&mut self, content_id: u32) -> WupResult<Vec<u8>>;
 }
 
-/// Reads encrypted content files from a NUS-layout directory on
-/// disk. Filename resolution goes through
-/// [`crate::nintendo::wup::nus::layout::ContentFilenameResolver`] so
-/// both `{ID:08x}.app` and extensionless `{ID:08x}` work.
 pub struct DirectoryContentSource {
     resolver: crate::nintendo::wup::nus::layout::ContentFilenameResolver,
 }
 
 impl DirectoryContentSource {
-    /// Build a source rooted at `title_dir`. Tries `{ID:08x}.app`
-    /// first, falls back to extensionless `{ID:08x}`.
     pub fn new<P: Into<PathBuf>>(title_dir: P) -> Self {
         Self {
             resolver: crate::nintendo::wup::nus::layout::ContentFilenameResolver::new(
@@ -49,7 +41,6 @@ impl DirectoryContentSource {
         }
     }
 
-    /// Build a source from a pre-walked filename resolver.
     pub fn with_resolver(
         resolver: crate::nintendo::wup::nus::layout::ContentFilenameResolver,
     ) -> Self {
@@ -78,14 +69,9 @@ pub const HASHED_BLOCK_H0_SIZE: usize = 20;
 /// Number of H0 hashes packed into the hash prefix of one block.
 pub const HASHED_BLOCK_H0_COUNT: usize = 16;
 
-/// Decrypt a raw-mode content file. The whole file is one AES-CBC
-/// stream keyed by the title key; the IV is the cluster index
-/// placed in the first two bytes of an otherwise-zero buffer, which
-/// matches `FSTVolume::DetermineUnhashedBlockIV` for `blockIndex == 0`.
-///
-/// `data` is decrypted in place and returned as the same owned
-/// buffer. The length must be a multiple of 16; real Wii U content
-/// files are always padded to an AES block boundary.
+/// Decrypt a raw-mode content file. IV is the cluster index in the first two
+/// bytes of an otherwise-zero buffer, matching `FSTVolume::DetermineUnhashedBlockIV`
+/// for `blockIndex == 0`. Input length must be a multiple of 16.
 pub fn decrypt_raw_content(
     mut data: Vec<u8>,
     title_key: &TitleKey,
@@ -96,17 +82,12 @@ pub fn decrypt_raw_content(
     Ok(data)
 }
 
-/// Decrypt content 0 (the FST cluster). Cluster index 0 gives the
-/// all-zero IV the FST header was encrypted with.
 pub fn decrypt_content_0(data: Vec<u8>, title_key: &TitleKey) -> WupResult<Vec<u8>> {
     decrypt_raw_content(data, title_key, 0)
 }
 
-/// Decrypt a hashed-mode content file. Each 64 KiB block holds a
-/// 0x400-byte hash prefix decrypted with IV=0 followed by a 0xFC00
-/// data segment decrypted with an IV sourced from the decrypted
-/// prefix. Returns the virtual data stream with every hash prefix
-/// stripped, i.e. a contiguous buffer of `num_blocks * 0xFC00` bytes.
+/// Decrypt a hashed-mode content file. Returns the virtual data stream with every
+/// hash prefix stripped, producing a contiguous buffer of `num_blocks * 0xFC00` bytes.
 pub fn decrypt_hashed_content(encrypted: &[u8], title_key: &TitleKey) -> WupResult<Vec<u8>> {
     if !encrypted.len().is_multiple_of(HASHED_BLOCK_SIZE) {
         return Err(WupError::AesError(format!(
@@ -120,19 +101,16 @@ pub fn decrypt_hashed_content(encrypted: &[u8], title_key: &TitleKey) -> WupResu
     for block_idx in 0..num_blocks {
         let block = &encrypted[block_idx * HASHED_BLOCK_SIZE..(block_idx + 1) * HASHED_BLOCK_SIZE];
 
-        // Decrypt the hash prefix with IV=0.
         let mut hash_part = [0u8; HASHED_BLOCK_HASH_SIZE];
         hash_part.copy_from_slice(&block[..HASHED_BLOCK_HASH_SIZE]);
         let iv_zero = [0u8; 16];
         aes_cbc_decrypt_in_place(&title_key.0, &iv_zero, &mut hash_part)?;
 
-        // Pick the 16-byte data IV from H0[block_idx % 16].
         let iv_offset = (block_idx % HASHED_BLOCK_H0_COUNT) * HASHED_BLOCK_H0_SIZE;
         let data_iv: [u8; 16] = hash_part[iv_offset..iv_offset + 16]
             .try_into()
             .expect("constant slice length is 16 bytes");
 
-        // Decrypt the data portion with that IV.
         let mut data_part = vec![0u8; HASHED_BLOCK_DATA_SIZE];
         data_part.copy_from_slice(&block[HASHED_BLOCK_HASH_SIZE..]);
         aes_cbc_decrypt_in_place(&title_key.0, &data_iv, &mut data_part)?;
@@ -175,9 +153,6 @@ impl<'a, S: ContentBytesSource> ContentLoader<'a, S> {
         }
     }
 
-    /// Return the decrypted byte buffer for the content file at
-    /// `cluster_index`. The result is cached so repeated calls
-    /// reuse the same `Vec<u8>`.
     pub fn decrypted_cluster(&mut self, cluster_index: u16) -> WupResult<&[u8]> {
         if !self.cache.contains_key(&cluster_index) {
             let cluster =
@@ -237,14 +212,11 @@ impl<'a, S: ContentBytesSource> ContentLoader<'a, S> {
         Ok(cluster[start as usize..end as usize].to_vec())
     }
 
-    /// TMD entry the FST cluster maps to, for sanity checks or
-    /// logging.
     pub fn tmd_entry_for(&self, cluster_index: u16) -> Option<&TmdContentEntry> {
         self.tmd.content_by_index(cluster_index)
     }
 }
 
-/// Convenience constructor for loaders over a NUS directory on disk.
 pub fn content_loader_for_directory<'a>(
     title_dir: &Path,
     title_key: TitleKey,
@@ -358,12 +330,9 @@ mod tests {
             }
             plain_data.extend_from_slice(&data_plain);
 
-            // Data IV = first 16 bytes of H0[block_idx % 16] in
-            // the plaintext hash prefix.
             let iv_offset = (block_idx % HASHED_BLOCK_H0_COUNT) * HASHED_BLOCK_H0_SIZE;
             let data_iv: [u8; 16] = hash_plain[iv_offset..iv_offset + 16].try_into().unwrap();
 
-            // Encrypt hash (IV=0), then encrypt data (IV=data_iv).
             let mut hash_enc = hash_plain;
             encrypt_in_place(&title_key.0, &[0u8; 16], &mut hash_enc);
             encrypt_in_place(&title_key.0, &data_iv, &mut data_plain);

@@ -94,9 +94,7 @@ pub enum LanguageCode {
 
 #[derive(Debug, Clone, Default)]
 pub struct InfoOptions {
-    /// Optional path to a `prod.keys` file for Switch info extraction.
     pub keys_path: Option<PathBuf>,
-    /// Optional parent CHD path for CHD diff / child files.
     pub parent_path: Option<PathBuf>,
 }
 

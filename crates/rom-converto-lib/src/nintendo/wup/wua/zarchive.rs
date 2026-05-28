@@ -129,7 +129,6 @@ impl ZArchiveReader {
             .collect()
     }
 
-    /// File entries (not subdirectories) directly under `dir_path`.
     pub fn list_files_in_dir(&self, dir_path: &str) -> Vec<String> {
         let idx = match self.resolve(dir_path) {
             Some(i) => i,
@@ -153,7 +152,6 @@ impl ZArchiveReader {
             .collect()
     }
 
-    /// Recursive file walk; returns paths relative to the archive root.
     pub fn walk_files(&self, dir_path: &str) -> Vec<String> {
         let Some(root_idx) = self.resolve(dir_path) else {
             return Vec::new();

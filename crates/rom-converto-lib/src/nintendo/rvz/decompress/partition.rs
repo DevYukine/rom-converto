@@ -138,15 +138,9 @@ impl Worker<PartitionDecompressWork, PartitionDecompressOut, RvzError>
             Vec::with_capacity(work.chunks.len());
 
         for spec in &work.chunks {
-            // Read compressed chunk via positional I/O so parallel
-            // workers can share the same file handle without
-            // contending for a seek cursor.
             self.scratch_in.resize(spec.data_size as usize, 0);
             file_read_exact_at(&self.file, &mut self.scratch_in, spec.data_off)?;
 
-            // Stage 1: zstd decompress (if compressed). Target
-            // buffer sized to one full cluster's worth of chunk
-            // body plus zstd framing slack.
             let decompressed_len: usize = if spec.is_compressed {
                 let target = WII_GROUP_TOTAL_SIZE as usize + 1024 * 1024;
                 if self.scratch_decomp.len() < target {
@@ -162,20 +156,13 @@ impl Worker<PartitionDecompressWork, PartitionDecompressOut, RvzError>
                 self.scratch_in.len()
             };
 
-            // Parse the exception list. Raw chunks have a 4-byte
-            // alignment pad after the entries; see
-            // `pad_exception_lists` in Dolphin's `WIABlob.cpp`.
-            // `parse_exception_header` returns a borrowed
-            // `ExceptionEntriesRef`; we materialise it into an
-            // owned `Vec<HashException>` here only because
-            // `deferred` needs to own it across the chunk loop.
+            // Raw chunks have a 4-byte alignment pad after the exception entries;
+            // see `pad_exception_lists` in Dolphin's `WIABlob.cpp`.
             let decompressed = &self.scratch_decomp[..decompressed_len];
             let (chunk_exceptions_ref, payload_region) =
                 parse_exception_header(decompressed, !spec.is_compressed)?;
             let chunk_exceptions: Vec<HashException> = chunk_exceptions_ref.iter().collect();
 
-            // Stage 2: RVZ unpack if packed, otherwise a verbatim
-            // slice. Same dispatch as the raw-region worker.
             let unpacked: Vec<u8> = if spec.rvz_packed_size != 0 {
                 let records_len = (spec.rvz_packed_size as usize).min(payload_region.len());
                 crate::nintendo::rvz::packing::pack_decode(
@@ -208,21 +195,14 @@ impl Worker<PartitionDecompressWork, PartitionDecompressOut, RvzError>
             ));
         }
 
-        // Recompute the hash hierarchy into the persistent
-        // `hash_regions` scratch. Payloads past
-        // `valid_blocks_in_cluster` are zero (either from the
-        // partial-cluster tail wipe above or untouched if the
-        // previous cluster was a partial) so the baseline matches
-        // the encoder's padded recompute.
+        // Payloads past `valid_blocks_in_cluster` are zero, matching the
+        // encoder's padded recompute baseline.
         recompute_hash_regions_into(&self.payloads[..], &mut self.hash_regions[..]);
 
-        // Apply deferred exceptions.
         for (slice_start, slice_end, exceptions) in deferred.drain(..) {
             apply_hash_exceptions(&mut self.hash_regions[slice_start..slice_end], &exceptions);
         }
 
-        // Re-encrypt the whole cluster into the persistent
-        // `cluster_out` scratch.
         reencrypt_cluster_into(
             &self.hash_regions[..],
             &self.payloads[..],
@@ -233,9 +213,6 @@ impl Worker<PartitionDecompressWork, PartitionDecompressOut, RvzError>
         let bytes_to_write = work.valid_blocks_in_cluster * WII_SECTOR_SIZE;
         let cluster_offset = work.data_start + work.cluster_idx * WII_GROUP_TOTAL_SIZE;
 
-        // Clone only the bytes we'll actually write. For a full
-        // cluster that's the full 2 MiB; for a partial last
-        // cluster it's less, and we save the tail memcpy.
         let buf: Box<[u8]> = self.cluster_out[..bytes_to_write]
             .to_vec()
             .into_boxed_slice();
@@ -304,10 +281,6 @@ pub(crate) fn build_partition_work_items(
         let remaining_in_partition = total_data_size - enc_pos;
         let this_chunk_enc_bytes = chunk_size_u64.min(remaining_in_partition);
 
-        // Single shared helper for cluster+sector math. Encoder
-        // and decoder both go through [`ChunkSectorPos::new`] so
-        // there's exactly one place the off-by-one boundary
-        // between cluster and chunk is computed.
         let pos = ChunkSectorPos::new(enc_pos, this_chunk_enc_bytes);
 
         // Flush the previous bucket when the cluster changes.
@@ -412,10 +385,6 @@ pub(super) fn decompress_partition(
                 writer.write_all(&out.buf[..out.bytes_to_write])?;
                 *writer_pos += written;
             }
-            // Progress is charged against the bytes actually
-            // written. For full clusters that's `WII_GROUP_TOTAL_SIZE`;
-            // for the partial last cluster it's less, so the final
-            // progress tick is accurate rather than overshooting.
             bytes_done.fetch_add(written, Ordering::Relaxed);
             Ok(())
         },

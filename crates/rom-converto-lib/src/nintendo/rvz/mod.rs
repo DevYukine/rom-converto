@@ -42,14 +42,10 @@ pub use error::{RvzError, RvzResult};
 
 use std::path::{Path, PathBuf};
 
-/// Derives the output path for RVZ compression by mapping the input extension
-/// to `.rvz`.
 pub fn derive_rvz_path(input: &Path) -> PathBuf {
     input.with_extension("rvz")
 }
 
-/// Derives the output path for RVZ decompression, defaulting to `.iso`
-/// regardless of whether the source disc was GameCube or Wii.
 pub fn derive_disc_path(input: &Path) -> PathBuf {
     input.with_extension("iso")
 }

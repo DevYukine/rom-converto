@@ -15,7 +15,6 @@ pub trait ProgressReporter: Send + Sync {
     fn finish(&self);
 }
 
-/// No-op implementation for when progress reporting isn't needed.
 pub struct NoProgress;
 
 impl ProgressReporter for NoProgress {

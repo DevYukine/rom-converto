@@ -1,5 +1,3 @@
-//! Pretty-printers and JSON output for the `info` command.
-
 #![allow(dead_code)]
 
 use anyhow::Result;

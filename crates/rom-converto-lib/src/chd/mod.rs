@@ -152,7 +152,6 @@ pub async fn extract_from_chd(
 
     debug!("Opening CHD file: {:?}", input_path);
 
-    // Resolve cue + bin paths.
     let cue_path = if output_path.extension().is_some() {
         output_path.clone()
     } else {
@@ -426,8 +425,8 @@ async fn fix_sha1(
 
     let overall_sha1 = compute_overall_sha1(raw_sha1, metadata_hashes);
 
-    // SHA1 field offsets in the CHD v5 header:
-    // 8 (magic) + 4 (length) + 4 (version) + 16 (compressors) + 8 (logical) + 8 (map_offset) + 8 (meta_offset) + 4 (hunk_bytes) + 4 (unit_bytes) = 64
+    // SHA1 field offsets in the CHD v5 header (byte-counted from magic):
+    // 8 + 4 + 4 + 16 + 8 + 8 + 8 + 4 + 4 = 64 for raw_sha1, +20 for sha1.
     const RAW_SHA1_OFFSET: u64 = 64;
     const SHA1_OFFSET: u64 = 84;
 

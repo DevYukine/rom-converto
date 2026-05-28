@@ -152,28 +152,24 @@ mod tests {
     fn build_tmd(title_id: u64, title_version: u16, content_count: u16) -> Vec<u8> {
         let header_size = WII_TMD_HEADER_OFFSET + 0xA4;
         let mut buf = vec![0u8; header_size + content_count as usize * WII_TMD_CONTENT_RECORD_SIZE];
-        // Signature issuer at 0x140 (just put a string).
         let issuer = b"Root-CA00000001-CP00000004";
         buf[WII_TMD_HEADER_OFFSET..WII_TMD_HEADER_OFFSET + issuer.len()].copy_from_slice(issuer);
 
-        // Version
         buf[WII_TMD_HEADER_OFFSET + 0x40] = 0;
-        // system_version at 0x184 = 0x0000000100000023 (IOS 35)
+        // system_version: IOS 35 (0x0000000100000023)
         (&mut buf[WII_TMD_HEADER_OFFSET + 0x44..WII_TMD_HEADER_OFFSET + 0x4C])
             .write_u64::<BE>(0x00000001_00000023)
             .unwrap();
-        // title_id at 0x18C
         (&mut buf[WII_TMD_HEADER_OFFSET + 0x4C..WII_TMD_HEADER_OFFSET + 0x54])
             .write_u64::<BE>(title_id)
             .unwrap();
-        // region at 0x19C = 1 (USA)
+        // region = 1 (USA)
         (&mut buf[WII_TMD_HEADER_OFFSET + 0x5C..WII_TMD_HEADER_OFFSET + 0x5E])
             .write_u16::<BE>(1)
             .unwrap();
 
-        // After consuming system_version/title_id/title_type/group_id/padding/region/
-        // ratings/skip/access_rights the relative cursor sits at 88 bytes past 0x44;
-        // title_version occupies the next two bytes.
+        // After system_version/title_id/title_type/group_id/padding/region/ratings/skip/
+        // access_rights, the cursor sits 88 bytes past 0x44; title_version follows.
         let title_ver_off = WII_TMD_HEADER_OFFSET + 0x44 + 88;
         (&mut buf[title_ver_off..title_ver_off + 2])
             .write_u16::<BE>(title_version)
@@ -183,7 +179,6 @@ mod tests {
             .write_u16::<BE>(content_count)
             .unwrap();
 
-        // Content record at WII_TMD_HEADER_OFFSET + 0xA4
         for i in 0..content_count as usize {
             let base = header_size + i * WII_TMD_CONTENT_RECORD_SIZE;
             (&mut buf[base..base + 4])

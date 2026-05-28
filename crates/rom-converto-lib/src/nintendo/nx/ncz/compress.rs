@@ -1,5 +1,5 @@
 //! NCA -> NCZ. Single-threaded reference path used by tests and as the
-//! correctness oracle for the parallel block-mode compressor in Phase 4.
+//! correctness oracle for the parallel block-mode compressor.
 
 use std::io::{Seek, SeekFrom, Write};
 
@@ -214,12 +214,10 @@ impl<'a> PlaintextBlockProducer<'a> {
         }
     }
 
-    /// Pulls the next plaintext block out of the walker. The driver
-    /// only calls this on the dispatcher thread, so we own the read
-    /// state and never duplicate work across threads. Allocates one
-    /// `Vec<u8>` per block (handed to the worker pool); reuse would
-    /// require the worker to send the buffer back, which complicates
-    /// the channel for a tiny win.
+    // The driver only calls this on the dispatcher thread, so we own the read
+    // state and never duplicate work across threads. Allocates one Vec<u8> per
+    // block handed to the worker pool; reuse would require the worker to send
+    // the buffer back, which complicates the channel for a tiny win.
     fn next_block(&mut self, progress: &dyn ProgressReporter) -> NxResult<NczBlockWork> {
         let take = (self.block_size as u64).min(self.payload_size - self.cursor) as usize;
         let mut buf = vec![0u8; take];

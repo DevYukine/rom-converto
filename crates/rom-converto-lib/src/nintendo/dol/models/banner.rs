@@ -135,7 +135,6 @@ mod tests {
     fn build_bnr1() -> Vec<u8> {
         let mut buf = vec![0u8; BNR1_FILE_SIZE];
         buf[0..4].copy_from_slice(&BNR1_MAGIC);
-        // Image is left zero
         let titles_off = BANNER_IMAGE_OFFSET + BANNER_IMAGE_BYTES;
         let s = b"Game Short";
         buf[titles_off..titles_off + s.len()].copy_from_slice(s);
@@ -150,7 +149,6 @@ mod tests {
         let mut buf = vec![0u8; BNR2_FILE_SIZE];
         buf[0..4].copy_from_slice(&BNR2_MAGIC);
         let titles_off = BANNER_IMAGE_OFFSET + BANNER_IMAGE_BYTES;
-        // Block 1 (English) at offset titles_off + 0x140
         let eng = titles_off + BANNER_LANG_BLOCK_SIZE;
         let s = b"English Game";
         buf[eng..eng + s.len()].copy_from_slice(s);

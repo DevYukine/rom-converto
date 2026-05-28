@@ -31,10 +31,6 @@ use crate::nintendo::nx::keys::KeySet;
 use crate::nintendo::nx::models::nca::{NcaHeader, initial_ctr_for_offset};
 use crate::util::pread::file_read_exact_at;
 
-/// Positional read primitive `NcaWalker` requires. Lets the walker
-/// accept either a plain `Arc<File>` (regular NCA in a container) or
-/// the streaming NCZ adapter that decompresses + re-encrypts blocks
-/// on demand, with no other API differences.
 pub trait NcaInput: Send + Sync {
     fn read_exact_at(&self, buf: &mut [u8], offset: u64) -> NxResult<()>;
 }

@@ -45,7 +45,6 @@ pub struct ChdTrack {
 pub struct ChdDvdInfo {
     /// Total 2048-byte sectors derived from header.logical_bytes.
     pub total_sectors: u64,
-    /// Single-layer (4.7 GB) vs dual-layer (8.5 GB) classification.
     pub layer_class: DvdLayerClass,
 }
 

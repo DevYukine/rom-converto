@@ -200,7 +200,6 @@ fn read_ncsd_info(path: &Path, physical_bytes: u64) -> Result<CtrInfo> {
     let mut table = [0u8; NCSD_PARTITION_COUNT * NCSD_PARTITION_ENTRY_SIZE];
     reader.read_exact(&mut table)?;
 
-    // First partition holds the boot content; use it for header + SMDH.
     let first_offset_mu = u32::from_le_bytes(table[0..4].try_into()?);
     if first_offset_mu == 0 {
         return Err(anyhow!("ctr info: NCSD has no boot partition"));

@@ -50,7 +50,6 @@ pub fn read_info(path: &Path) -> Result<DolInfo> {
 
     let boot = GcBootBin::read(&mut reader).context("dol info: parse boot.bin")?;
 
-    // Pull opening.bnr via the FST.
     let banner_info = read_banner(&mut reader, &boot).unwrap_or_else(|e| {
         log::debug!("dol info: banner read skipped ({})", e);
         (None, None)

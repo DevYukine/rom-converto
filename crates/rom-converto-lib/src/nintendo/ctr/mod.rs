@@ -34,7 +34,6 @@ mod util;
 pub mod verify;
 pub mod z3ds;
 
-/// Options for the CDN-to-CIA conversion (decoupled from CLI).
 #[derive(Debug, Clone)]
 pub struct CdnToCiaOptions {
     pub cdn_dir: PathBuf,
@@ -137,13 +136,10 @@ async fn decrypt_ncsd(input: &Path, output: &Path, progress: &dyn ProgressReport
         NCSD_PARTITION_TABLE_OFFSET,
     };
 
-    // Step 1: Decrypt NCCH partitions to temp files
     parse_and_decrypt_ncsd(input, None, progress).await?;
 
-    // Step 2: Copy the original file to the output
     fs::copy(input, output).await?;
 
-    // Step 3: Read the partition table to know where each partition lives
     let mut out_file = fs::OpenOptions::new().write(true).open(output).await?;
 
     let mut table_buf = [0u8; NCSD_PARTITION_COUNT * NCSD_PARTITION_ENTRY_SIZE];
@@ -161,7 +157,6 @@ async fn decrypt_ncsd(input: &Path, output: &Path, progress: &dyn ProgressReport
         .and_then(|s| s.to_str())
         .ok_or_else(|| anyhow::anyhow!("input path has no valid filename stem"))?;
 
-    // Step 4: For each partition, overwrite with the decrypted .ncch temp file
     for (i, partition_name) in CTR_NCSD_PARTITIONS.iter().enumerate() {
         let entry_offset = i * NCSD_PARTITION_ENTRY_SIZE;
         let offset_mu = u32::from_le_bytes(table_buf[entry_offset..entry_offset + 4].try_into()?);
@@ -193,10 +188,8 @@ async fn decrypt_ncsd(input: &Path, output: &Path, progress: &dyn ProgressReport
 }
 
 async fn decrypt_ncch(input: &Path, output: &Path, progress: &dyn ProgressReporter) -> Result<()> {
-    // Step 1: Decrypt to a temp .ncch file
     parse_and_decrypt_ncch(input, progress).await?;
 
-    // Step 2: Find and rename the temp file to the output path
     let parent = input.parent().unwrap_or_else(|| Path::new("."));
     let stem = input
         .file_stem()
@@ -253,7 +246,6 @@ pub async fn convert_cdn_to_cia(
     total_progress: &dyn ProgressReporter,
 ) -> Result<()> {
     if opts.recursive {
-        // First pass: count subdirectories
         let mut count: u64 = 0;
         let mut dirs = tokio::fs::read_dir(&opts.cdn_dir).await?;
         while let Ok(Some(entry)) = dirs.next_entry().await {
