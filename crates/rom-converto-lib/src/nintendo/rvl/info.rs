@@ -58,18 +58,6 @@ pub fn read_info(path: &Path) -> Result<RvlInfo> {
         .with_context(|| format!("rvl info: stat {}", path.display()))?
         .len();
 
-    // WBFS containers aren't readable as raw discs by this path.
-    if path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|s| s.eq_ignore_ascii_case("wbfs"))
-        .unwrap_or(false)
-    {
-        return Err(anyhow!(
-            "rvl info: WBFS inputs are not supported; extract to .iso first"
-        ));
-    }
-
     let mut reader = crate::nintendo::disc_input::open_disc_input(path)
         .map_err(|e| anyhow!("rvl info: open input: {}", e))?;
 

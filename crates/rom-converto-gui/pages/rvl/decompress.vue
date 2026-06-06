@@ -3,11 +3,28 @@ import { storeToRefs } from "pinia";
 import { useRvlDecompressStore } from "~/stores/rvl-decompress";
 
 const store = useRvlDecompressStore();
-const { input, output, result, error, loading, queue } = storeToRefs(store);
+const { input, output, format, result, error, loading, queue } = storeToRefs(store);
 const { run } = useOperation({ result, error, loading });
 const progress = useProgress("decompress-disc");
 
 const isBatch = computed(() => queue.value.length > 0);
+
+const formatOptions = [
+  { label: "ISO", value: "iso" },
+  { label: "WBFS", value: "wbfs" },
+];
+
+const outputFilters = computed(() =>
+  format.value === "wbfs"
+    ? [
+        { name: "WBFS", extensions: ["wbfs"] },
+        { name: "ISO", extensions: ["iso"] },
+      ]
+    : [
+        { name: "ISO", extensions: ["iso"] },
+        { name: "WBFS", extensions: ["wbfs"] },
+      ],
+);
 
 const batch = useBatchOperation("decompress-disc", "cmd_decompress_disc", (item) => ({
   input: item.input,
@@ -15,18 +32,34 @@ const batch = useBatchOperation("decompress-disc", "cmd_decompress_disc", (item)
 }));
 
 watch(input, (val) => {
-  if (val) output.value = deriveDiscIsoPath(val);
+  if (val) output.value = deriveDiscPath(val, format.value);
 });
+
+function setFormat(value: string) {
+  const next = value === "wbfs" ? "wbfs" : "iso";
+  if (next === format.value) return;
+  const prev = format.value;
+  format.value = next;
+
+  if (input.value && (!output.value || output.value === deriveDiscPath(input.value, prev))) {
+    output.value = deriveDiscPath(input.value, next);
+  }
+  for (const item of queue.value) {
+    if (item.status === "pending" && item.output === deriveDiscPath(item.input, prev)) {
+      item.output = deriveDiscPath(item.input, next);
+    }
+  }
+}
 
 function handleFiles(paths: string[]) {
   for (const p of paths) {
-    store.addToQueue(p, deriveDiscIsoPath(p));
+    store.addToQueue(p, deriveDiscPath(p, format.value));
   }
 }
 
 function handleSingleFile(path: string) {
   if (queue.value.length > 0) {
-    store.addToQueue(path, deriveDiscIsoPath(path));
+    store.addToQueue(path, deriveDiscPath(path, format.value));
   } else {
     input.value = path;
   }
@@ -49,7 +82,7 @@ async function execute() {
   <div>
     <PageHeader
       title="Decompress Wii RVZ"
-      description="Decompress an RVZ file back to a raw Wii ISO. Drop multiple files for batch processing."
+      description="Decompress an RVZ file back to a raw Wii disc image. Pick ISO or WBFS with the toggle. Drop multiple files for batch processing."
       :loading="loading || batch.running.value"
       :has-result="!!result"
       :has-error="!!error"
@@ -57,6 +90,14 @@ async function execute() {
 
     <OperationCard>
       <div class="space-y-5">
+        <SegmentedControl
+          :model-value="format"
+          :options="formatOptions"
+          label="Output format"
+          :disabled="loading || batch.running.value"
+          @update:model-value="setFormat"
+        />
+
         <template v-if="isBatch">
           <BatchFileList
             :items="queue"
@@ -72,7 +113,7 @@ async function execute() {
             model-value=""
             :multiple="true"
             :filters="[{ name: 'RVZ', extensions: ['rvz'] }]"
-            @update:model-value="(p: string) => { if (p) store.addToQueue(p, deriveDiscIsoPath(p)) }"
+            @update:model-value="(p: string) => { if (p) store.addToQueue(p, deriveDiscPath(p, format)) }"
             @update:files="handleFiles"
           />
         </template>
@@ -92,7 +133,7 @@ async function execute() {
             v-model="output"
             label="Output (auto-derived)"
             :save-dialog="true"
-            :filters="[{ name: 'Wii disc', extensions: ['iso', 'wbfs'] }]"
+            :filters="outputFilters"
           />
         </div>
 

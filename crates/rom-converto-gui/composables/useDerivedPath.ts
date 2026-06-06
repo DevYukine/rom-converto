@@ -69,6 +69,10 @@ export function deriveDiscIsoPath(input: string): string {
   return replaceExt(input, "iso");
 }
 
+export function deriveDiscPath(input: string, format: "iso" | "wbfs"): string {
+  return replaceExt(input, format);
+}
+
 export function deriveNszPath(input: string): string {
   const ext = getExt(input);
   if (ext === "xci") return replaceExt(input, "xcz");

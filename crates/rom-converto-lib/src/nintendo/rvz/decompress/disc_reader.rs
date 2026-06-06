@@ -285,7 +285,7 @@ impl RvzDiscReader {
 
     fn build_raw_chunk_work_for(&self, region: &WiaRawData, pos: u64) -> Option<RawDecompressWork> {
         let items =
-            build_raw_region_work_items(region, &self.groups, self.chunk_size, self.iso_size);
+            build_raw_region_work_items(region, &self.groups, self.chunk_size, self.iso_size, None);
         items
             .into_iter()
             .find(|w| pos >= w.chunk_abs_start && pos < w.chunk_abs_start + w.chunk_bytes as u64)
@@ -324,7 +324,7 @@ impl RvzDiscReader {
             self.part_cache.push_back((k, v.clone()));
             return Ok(v);
         }
-        let all = build_partition_work_items(part, &self.groups, self.chunk_size);
+        let all = build_partition_work_items(part, &self.groups, self.chunk_size, None);
         let work = all
             .into_iter()
             .find(|w| w.cluster_idx == cluster_idx)

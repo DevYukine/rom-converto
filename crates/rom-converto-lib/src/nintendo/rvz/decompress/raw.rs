@@ -15,12 +15,12 @@
 //! than `chunk_size`, and all-zero sentinel groups (`data_size =
 //! 0`) are synthesised from zeros without issuing I/O.
 //!
+use super::sink::{DiscSink, UsageFilter};
 use crate::nintendo::rvl::constants::WII_SECTOR_SIZE_U64;
 use crate::nintendo::rvz::error::{RvzError, RvzResult};
 use crate::nintendo::rvz::format::{RvzGroup, WiaRawData};
 use crate::util::pread::file_read_exact_at;
 use crate::util::worker_pool::{Pool, Worker, drive, parallelism};
-use std::io::{BufWriter, Seek, SeekFrom, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -145,6 +145,7 @@ pub(crate) fn build_raw_region_work_items(
     groups: &[RvzGroup],
     chunk_size: u64,
     iso_file_size: u64,
+    filter: Option<&UsageFilter>,
 ) -> Vec<RawDecompressWork> {
     let effective_start = region.raw_data_off - (region.raw_data_off % WII_SECTOR_SIZE_U64);
     let region_end = region.raw_data_off + region.raw_data_size;
@@ -161,6 +162,13 @@ pub(crate) fn build_raw_region_work_items(
         let chunk_slice_offset = (write_start - chunk_abs_start) as usize;
         let write_len = (write_end - write_start) as usize;
         let chunk_bytes = (chunk_abs_end - chunk_abs_start) as usize;
+        // When scrubbing for WBFS, a chunk landing only in unused blocks
+        // is never read or decompressed.
+        if let Some(filter) = filter
+            && !filter.keeps(write_start, write_len as u64)
+        {
+            continue;
+        }
         items.push(RawDecompressWork {
             data_off: (group.data_off4 as u64) << 2,
             data_size: group.compressed_size(),
@@ -192,11 +200,11 @@ pub(super) fn decompress_raw_region(
     chunk_size: u64,
     iso_file_size: u64,
     file: &Arc<std::fs::File>,
-    writer: &mut BufWriter<std::fs::File>,
-    writer_pos: &mut u64,
+    usage: Option<&UsageFilter>,
+    sink: &mut dyn DiscSink,
     bytes_done: &Arc<AtomicU64>,
 ) -> RvzResult<()> {
-    let items = build_raw_region_work_items(region, groups, chunk_size, iso_file_size);
+    let items = build_raw_region_work_items(region, groups, chunk_size, iso_file_size, usage);
     if items.is_empty() {
         return Ok(());
     }
@@ -224,12 +232,7 @@ pub(super) fn decompress_raw_region(
         |_seq, out| -> RvzResult<()> {
             let slice =
                 &out.decoded[out.chunk_slice_offset..out.chunk_slice_offset + out.write_len];
-            if out.write_start != *writer_pos {
-                writer.seek(SeekFrom::Start(out.write_start))?;
-                *writer_pos = out.write_start;
-            }
-            writer.write_all(slice)?;
-            *writer_pos += out.write_len as u64;
+            sink.write_at(out.write_start, slice)?;
             bytes_done.fetch_add(out.write_len as u64, Ordering::Relaxed);
             Ok(())
         },

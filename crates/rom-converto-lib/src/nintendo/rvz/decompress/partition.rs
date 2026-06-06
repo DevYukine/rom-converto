@@ -25,11 +25,11 @@
 //!   exceptions then patch any hash-hierarchy bytes that depend on
 //!   the real (non-padded) on-disc content.
 //!
-//! A single-threaded fallback
-//! ([`decompress_partition_sequential`]) lives in this file too,
-//! gated on `ROM_CONVERTO_SEQUENTIAL_DECOMPRESS=1`. Both paths
-//! share [`flush_partition_cluster`] to emit clusters.
+//! When scrubbing for WBFS, clusters whose blocks are all unused are
+//! filtered out before dispatch (see [`UsageFilter`]) so junk is never
+//! read or decompressed.
 
+use super::sink::{DiscSink, UsageFilter};
 use crate::nintendo::rvl::constants::{
     WII_BLOCKS_PER_GROUP, WII_GROUP_TOTAL_SIZE, WII_SECTOR_PAYLOAD_SIZE, WII_SECTOR_SIZE,
     WII_SECTOR_SIZE_U64,
@@ -42,7 +42,6 @@ use crate::nintendo::rvz::error::{RvzError, RvzResult};
 use crate::nintendo::rvz::format::{RvzGroup, WiaPart};
 use crate::util::pread::file_read_exact_at;
 use crate::util::worker_pool::{Pool, Worker, drive, parallelism};
-use std::io::{BufWriter, Seek, SeekFrom, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -253,10 +252,41 @@ pub(crate) fn make_one_partition_worker(
 /// cluster index, and build one [`PartitionDecompressWork`] per
 /// cluster. Mirrors the sequential decoder's `enc_pos` walk
 /// exactly so the output is byte-identical.
+/// Push one finished cluster's work item, unless the WBFS usage filter
+/// says every block the cluster occupies is scrubbed (then it is
+/// dropped and never reconstructed).
+#[allow(clippy::too_many_arguments)]
+fn push_cluster(
+    work_items: &mut Vec<PartitionDecompressWork>,
+    chunks: Vec<PartitionChunkSpec>,
+    cluster_idx: u64,
+    data_start: u64,
+    part_key: [u8; 16],
+    total_data_size: u64,
+    filter: Option<&UsageFilter>,
+) {
+    let valid_blocks = valid_blocks_for_cluster(cluster_idx, total_data_size);
+    if let Some(filter) = filter {
+        let cluster_offset = data_start + cluster_idx * WII_GROUP_TOTAL_SIZE;
+        let cluster_bytes = valid_blocks as u64 * WII_SECTOR_SIZE_U64;
+        if !filter.keeps(cluster_offset, cluster_bytes) {
+            return;
+        }
+    }
+    work_items.push(PartitionDecompressWork {
+        cluster_idx,
+        data_start,
+        part_key,
+        valid_blocks_in_cluster: valid_blocks,
+        chunks,
+    });
+}
+
 pub(crate) fn build_partition_work_items(
     part: &WiaPart,
     groups: &[RvzGroup],
     chunk_size_u64: u64,
+    filter: Option<&UsageFilter>,
 ) -> Vec<PartitionDecompressWork> {
     let pd0 = part.pd[0];
     let pd1 = part.pd[1];
@@ -287,13 +317,15 @@ pub(crate) fn build_partition_work_items(
         if let Some(prev_idx) = current_cluster_idx
             && pos.cluster_idx != prev_idx
         {
-            work_items.push(PartitionDecompressWork {
-                cluster_idx: prev_idx,
+            push_cluster(
+                &mut work_items,
+                std::mem::take(&mut current_chunks),
+                prev_idx,
                 data_start,
-                part_key: part.part_key,
-                valid_blocks_in_cluster: valid_blocks_for_cluster(prev_idx, total_data_size),
-                chunks: std::mem::take(&mut current_chunks),
-            });
+                part.part_key,
+                total_data_size,
+                filter,
+            );
         }
         current_cluster_idx = Some(pos.cluster_idx);
 
@@ -312,13 +344,15 @@ pub(crate) fn build_partition_work_items(
     }
 
     if let Some(idx) = current_cluster_idx {
-        work_items.push(PartitionDecompressWork {
-            cluster_idx: idx,
+        push_cluster(
+            &mut work_items,
+            std::mem::take(&mut current_chunks),
+            idx,
             data_start,
-            part_key: part.part_key,
-            valid_blocks_in_cluster: valid_blocks_for_cluster(idx, total_data_size),
-            chunks: std::mem::take(&mut current_chunks),
-        });
+            part.part_key,
+            total_data_size,
+            filter,
+        );
     }
 
     work_items
@@ -348,11 +382,11 @@ pub(super) fn decompress_partition(
     groups: &[RvzGroup],
     chunk_size_u64: u64,
     file: &Arc<std::fs::File>,
-    writer: &mut BufWriter<std::fs::File>,
-    writer_pos: &mut u64,
+    usage: Option<&UsageFilter>,
+    sink: &mut dyn DiscSink,
     bytes_done: &Arc<AtomicU64>,
 ) -> RvzResult<()> {
-    let work_items = build_partition_work_items(part, groups, chunk_size_u64);
+    let work_items = build_partition_work_items(part, groups, chunk_size_u64, usage);
     if work_items.is_empty() {
         return Ok(());
     }
@@ -378,12 +412,7 @@ pub(super) fn decompress_partition(
         |_seq, out| -> RvzResult<()> {
             let written = out.bytes_to_write as u64;
             if out.bytes_to_write > 0 {
-                if out.cluster_offset != *writer_pos {
-                    writer.seek(SeekFrom::Start(out.cluster_offset))?;
-                    *writer_pos = out.cluster_offset;
-                }
-                writer.write_all(&out.buf[..out.bytes_to_write])?;
-                *writer_pos += written;
+                sink.write_at(out.cluster_offset, &out.buf[..out.bytes_to_write])?;
             }
             bytes_done.fetch_add(written, Ordering::Relaxed);
             Ok(())

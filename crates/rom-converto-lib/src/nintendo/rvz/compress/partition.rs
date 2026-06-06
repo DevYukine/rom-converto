@@ -147,9 +147,9 @@ pub(super) fn make_partition_compress_workers(
 /// (`consume`) halves. Results land in monotonic cluster order so
 /// the group table stays consistent with the file offsets.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn encode_partition_region(
+pub(super) fn encode_partition_region<R: Read + Seek>(
     pool: &Pool<PartitionWork, Vec<PartitionChunk>, RvzError>,
-    reader: &mut BufReader<std::fs::File>,
+    reader: &mut BufReader<R>,
     writer: &mut BufWriter<std::fs::File>,
     writer_pos: &mut u64,
     info: &PartitionInfo,
@@ -232,7 +232,7 @@ pub(super) fn encode_partition_region(
                 // over uninit bytes is sound as long as no
                 // reader observes them first. `read_exact`
                 // only writes its destination slice;
-                // `BufReader<File>` is a well-behaved `Read`
+                // `BufReader` is a well-behaved `Read`
                 // that never reads uninit bytes. On error
                 // the `Vec` is dropped without any byte ever
                 // being read. Clippy's `uninit_vec` lint is

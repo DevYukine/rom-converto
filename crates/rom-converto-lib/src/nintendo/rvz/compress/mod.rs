@@ -53,6 +53,7 @@ use crate::nintendo::rvz::format::{
     WiaRawData,
 };
 use crate::nintendo::rvz::regions::{DiscRegion, RegionPlan};
+use crate::nintendo::wbfs::WbfsReader;
 use crate::util::ProgressReporter;
 use crate::util::worker_pool::{Pool, parallelism};
 use binrw::{BinWrite, Endian};
@@ -100,7 +101,10 @@ pub async fn compress_disc(
 ) -> RvzResult<()> {
     validate_chunk_size(options.chunk_size)?;
 
-    let iso_size = tokio::fs::metadata(input).await?.len();
+    let iso_size = {
+        let input = input.to_path_buf();
+        task::spawn_blocking(move || logical_input_size(&input)).await??
+    };
     progress.start(iso_size, "Compressing disc to RVZ...");
 
     let input_owned: PathBuf = input.to_path_buf();
@@ -157,6 +161,38 @@ fn validate_chunk_size(chunk_size: u32) -> RvzResult<()> {
     Ok(())
 }
 
+/// Detect a WBFS container by extension or leading magic so compress
+/// can pick the right reader. The magic fallback covers inputs whose
+/// extension was changed.
+fn is_wbfs_input(input: &Path) -> bool {
+    let by_ext = input
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.eq_ignore_ascii_case("wbfs"))
+        .unwrap_or(false);
+    by_ext || wbfs_magic(input).unwrap_or(false)
+}
+
+fn wbfs_magic(input: &Path) -> std::io::Result<bool> {
+    let mut f = std::fs::File::open(input)?;
+    let mut buf = [0u8; 4];
+    if f.read(&mut buf)? < 4 {
+        return Ok(false);
+    }
+    Ok(buf == *b"WBFS")
+}
+
+/// Logical disc size of the input in bytes, used as the progress
+/// total. A WBFS container reports the reconstructed disc size, not
+/// its (smaller) on-disk size.
+fn logical_input_size(input: &Path) -> RvzResult<u64> {
+    if is_wbfs_input(input) {
+        Ok(WbfsReader::open(input)?.disc_size())
+    } else {
+        Ok(std::fs::metadata(input)?.len())
+    }
+}
+
 /// Shared tag describing how one chunk ended up on disk. Emitted by
 /// both encoder paths, handled by the shared chunk-write helpers.
 pub(super) enum CompressedKind {
@@ -182,9 +218,10 @@ pub(super) struct PartitionLayout {
     pub pd1_n_groups: u32,
 }
 
-/// Sync pipeline driven inside `spawn_blocking`. Returns the final
-/// file size so the progress bar can report the final reduction
-/// ratio.
+/// Open the right reader for `input` and hand it to the generic
+/// pipeline. `.wbfs` containers stream through [`WbfsReader`], which
+/// reconstructs the logical disc on the fly; any other input is read
+/// straight off the file. No temporary ISO is materialised either way.
 fn compress_blocking(
     input: &Path,
     output: &Path,
@@ -192,8 +229,25 @@ fn compress_blocking(
     iso_size: u64,
     bytes_done: Arc<AtomicU64>,
 ) -> RvzResult<u64> {
-    let mut reader = BufReader::with_capacity(4 * 1024 * 1024, std::fs::File::open(input)?);
+    if is_wbfs_input(input) {
+        let reader = BufReader::with_capacity(4 * 1024 * 1024, WbfsReader::open(input)?);
+        compress_reader(reader, output, options, iso_size, bytes_done)
+    } else {
+        let reader = BufReader::with_capacity(4 * 1024 * 1024, std::fs::File::open(input)?);
+        compress_reader(reader, output, options, iso_size, bytes_done)
+    }
+}
 
+/// Sync pipeline driven inside `spawn_blocking`. Returns the final
+/// file size so the progress bar can report the final reduction
+/// ratio.
+fn compress_reader<R: Read + Seek>(
+    mut reader: BufReader<R>,
+    output: &Path,
+    options: RvzCompressOptions,
+    iso_size: u64,
+    bytes_done: Arc<AtomicU64>,
+) -> RvzResult<u64> {
     // Read the 0x80-byte disc header used by both the format struct
     // and the GC/Wii detection helpers.
     let mut dhead = [0u8; 128];

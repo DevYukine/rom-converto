@@ -4,6 +4,7 @@ import type { BatchItem } from "~/types/batch";
 export const useRvlDecompressStore = defineStore("rvl-decompress", () => {
   const input = ref("");
   const output = ref("");
+  const format = ref<"iso" | "wbfs">("iso");
 
   const result = ref("");
   const error = ref("");
@@ -31,6 +32,7 @@ export const useRvlDecompressStore = defineStore("rvl-decompress", () => {
   function $reset() {
     input.value = "";
     output.value = "";
+    format.value = "iso";
     result.value = "";
     error.value = "";
     loading.value = false;
@@ -40,6 +42,7 @@ export const useRvlDecompressStore = defineStore("rvl-decompress", () => {
   return {
     input,
     output,
+    format,
     result,
     error,
     loading,

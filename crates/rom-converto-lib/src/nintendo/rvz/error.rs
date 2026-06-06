@@ -13,6 +13,9 @@ pub enum RvzError {
     #[error(transparent)]
     BinRWError(#[from] binrw::Error),
 
+    #[error(transparent)]
+    Wbfs(#[from] crate::nintendo::wbfs::error::WbfsError),
+
     #[error("invalid RVZ magic: expected b\"RVZ\\x01\", got {0:02X?}")]
     InvalidMagic([u8; 4]),
 

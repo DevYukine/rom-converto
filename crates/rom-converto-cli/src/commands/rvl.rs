@@ -13,7 +13,7 @@ pub enum RvlCommands {
 /// Compress a Wii disc image to RVZ.
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(long_about = "Compress a Wii disc image to Dolphin's RVZ format.\n\n\
-Supported input: .iso / .wbfs (read as raw so far).\nOutput defaults to the same path with the extension replaced by .rvz.")]
+Supported input: .iso, or .wbfs (single file or split .wbf1.. parts), streamed directly.\nOutput defaults to the same path with the extension replaced by .rvz.")]
 pub struct CompressDiscCommand {
     /// Input disc image path (.iso or .wbfs).
     #[arg(value_name = "INPUT")]
@@ -35,17 +35,17 @@ pub struct CompressDiscCommand {
     pub chunk_size: Option<u32>,
 }
 
-/// Decompress an RVZ Wii disc image back to ISO.
+/// Decompress an RVZ Wii disc image back to ISO or WBFS.
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
-    long_about = "Decompress an RVZ file back to a raw Wii disc image.\n\nOutput defaults to the input path with extension replaced by .iso."
+    long_about = "Decompress an RVZ file back to a Wii disc image.\n\nThe output format follows the output file extension: a .wbfs path writes a scrubbed WBFS container streamed directly from the RVZ, anything else writes a raw .iso. Defaults to .iso."
 )]
 pub struct DecompressDiscCommand {
     /// Input RVZ file path.
     #[arg(value_name = "INPUT")]
     pub input: PathBuf,
 
-    /// Output ISO path.
+    /// Output path. A .wbfs extension writes a WBFS container; otherwise a raw .iso.
     #[arg(value_name = "OUTPUT")]
     pub output: Option<PathBuf>,
 }

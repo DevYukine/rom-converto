@@ -42,3 +42,30 @@ pub fn file_read_exact_at(
     use std::os::unix::fs::FileExt;
     file.read_exact_at(buf, offset)
 }
+
+/// Positional `write_all` twin of [`file_read_exact_at`]. Writes the
+/// whole buffer at `offset` without moving the file-handle cursor, so a
+/// single `File` can be written at scattered offsets without seeks.
+#[cfg(windows)]
+pub fn file_write_all_at(file: &std::fs::File, buf: &[u8], mut offset: u64) -> std::io::Result<()> {
+    use std::os::windows::fs::FileExt;
+    let mut pos = 0usize;
+    while pos < buf.len() {
+        let n = file.seek_write(&buf[pos..], offset)?;
+        if n == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WriteZero,
+                "short positional write",
+            ));
+        }
+        pos += n;
+        offset += n as u64;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+pub fn file_write_all_at(file: &std::fs::File, buf: &[u8], offset: u64) -> std::io::Result<()> {
+    use std::os::unix::fs::FileExt;
+    file.write_all_at(buf, offset)
+}

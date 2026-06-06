@@ -88,9 +88,9 @@ pub(super) fn make_raw_compress_workers(
 /// one compress invocation so each compress run only pays the
 /// pool-spawn cost once.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn encode_raw_region(
+pub(super) fn encode_raw_region<R: Read + Seek>(
     pool: &Pool<RawWork, CompressedChunk, RvzError>,
-    reader: &mut BufReader<std::fs::File>,
+    reader: &mut BufReader<R>,
     writer: &mut BufWriter<std::fs::File>,
     writer_pos: &mut u64,
     region_offset: u64,
@@ -176,8 +176,8 @@ pub(super) fn encode_raw_region(
                 // sound as long as no reader observes them
                 // before we write. We then overwrite
                 // `[..bytes_to_read]` via `read_exact` (which
-                // only writes its destination;
-                // `BufReader<File>` never reads uninit bytes)
+                // only writes its destination; `BufReader`
+                // never reads uninit bytes)
                 // and initialise `[bytes_to_read..bytes_to_compress]`
                 // with zeros on the short-tail path. On the
                 // error path the `Vec` is dropped without any

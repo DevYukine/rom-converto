@@ -36,7 +36,8 @@ use rom_converto_lib::nintendo::nx::{
     verify_container_async,
 };
 use rom_converto_lib::nintendo::rvz::{
-    RvzCompressOptions, compress_disc, decompress_disc, derive_disc_path, derive_rvz_path,
+    RvzCompressOptions, compress_disc, decompress_disc, decompress_disc_to_wbfs, derive_disc_path,
+    derive_rvz_path,
 };
 use rom_converto_lib::nintendo::wup::{
     TitleInput, WupCompressOptions, compress_titles_async, decrypt_nus_title_async,
@@ -52,6 +53,15 @@ mod util;
 pub mod built_info {
     // The file has been placed there by the build script.
     include!(concat!(env!("OUT_DIR"), "/built.rs"));
+}
+
+/// Decompress targets a WBFS container when the resolved output path
+/// carries a `.wbfs` extension; otherwise it writes a raw disc image.
+fn wants_wbfs_output(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.eq_ignore_ascii_case("wbfs"))
+        .unwrap_or(false)
 }
 
 #[tokio::main]
@@ -253,7 +263,11 @@ async fn main() -> Result<()> {
             }
             DolCommands::Decompress(cmd) => {
                 let output = cmd.output.unwrap_or_else(|| derive_disc_path(&cmd.input));
-                decompress_disc(&cmd.input, &output, &progress).await?
+                if wants_wbfs_output(&output) {
+                    decompress_disc_to_wbfs(&cmd.input, &output, &progress).await?
+                } else {
+                    decompress_disc(&cmd.input, &output, &progress).await?
+                }
             }
             DolCommands::Info(cmd) => {
                 let info = rom_converto_lib::nintendo::dol::info::read_info(&cmd.input)?;
@@ -279,7 +293,11 @@ async fn main() -> Result<()> {
             }
             RvlCommands::Decompress(cmd) => {
                 let output = cmd.output.unwrap_or_else(|| derive_disc_path(&cmd.input));
-                decompress_disc(&cmd.input, &output, &progress).await?
+                if wants_wbfs_output(&output) {
+                    decompress_disc_to_wbfs(&cmd.input, &output, &progress).await?
+                } else {
+                    decompress_disc(&cmd.input, &output, &progress).await?
+                }
             }
             RvlCommands::Info(cmd) => {
                 let info = rom_converto_lib::nintendo::rvl::info::read_info(&cmd.input)?;

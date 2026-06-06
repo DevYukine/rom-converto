@@ -10,7 +10,7 @@ const operations = [
   {
     to: "/rvl/decompress",
     title: "Decompress Disc",
-    description: "Decompress .rvz back to a raw .iso",
+    description: "Decompress .rvz back to a raw .iso or .wbfs",
     formats: ".rvz",
     icon: "expand",
   },

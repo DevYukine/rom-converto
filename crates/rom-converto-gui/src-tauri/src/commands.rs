@@ -17,7 +17,8 @@ use rom_converto_lib::nintendo::nx::{
     verify_container_async,
 };
 use rom_converto_lib::nintendo::rvz::{
-    RvzCompressOptions, compress_disc, decompress_disc, derive_disc_path, derive_rvz_path,
+    RvzCompressOptions, compress_disc, decompress_disc, decompress_disc_to_wbfs, derive_disc_path,
+    derive_rvz_path,
 };
 use rom_converto_lib::nintendo::wup::{
     TitleInput, WupCompressOptions, compress_titles_async, decrypt_nus_title_async,
@@ -217,10 +218,21 @@ pub async fn cmd_decompress_disc(
     let progress = Arc::new(TauriProgress::new(app, "decompress-disc"));
     let output = output.unwrap_or_else(|| derive_disc_path(&input));
     let out_display = output.display().to_string();
-    tokio::spawn(async move { decompress_disc(&input, &output, progress.as_ref()).await })
-        .await
-        .map_err(err_to_string)?
-        .map_err(err_to_string)?;
+    let to_wbfs = output
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.eq_ignore_ascii_case("wbfs"))
+        .unwrap_or(false);
+    tokio::spawn(async move {
+        if to_wbfs {
+            decompress_disc_to_wbfs(&input, &output, progress.as_ref()).await
+        } else {
+            decompress_disc(&input, &output, progress.as_ref()).await
+        }
+    })
+    .await
+    .map_err(err_to_string)?
+    .map_err(err_to_string)?;
     Ok(format!("Decompressed to {out_display}"))
 }
 

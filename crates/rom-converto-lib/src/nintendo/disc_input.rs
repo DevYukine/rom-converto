@@ -1,7 +1,8 @@
 //! Unified `Read + Seek` source for Wii and GameCube info readers.
 //! `.iso` / `.gcm` open as a plain `BufReader<File>`; `.rvz` opens
-//! through [`crate::nintendo::rvz::decompress::RvzDiscReader`] so
-//! that only the groups actually touched are decompressed, capping
+//! through [`crate::nintendo::rvz::decompress::RvzDiscReader`] and
+//! `.wbfs` through [`crate::nintendo::wbfs::WbfsReader`] so that only
+//! the groups or blocks actually touched are materialised, capping
 //! peak disk + memory at a few MB even for a multi-GB Wii title.
 
 use anyhow::{Context, Result};
@@ -10,10 +11,12 @@ use std::io::{self, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
 use crate::nintendo::rvz::decompress::RvzDiscReader;
+use crate::nintendo::wbfs::WbfsReader;
 
 pub enum DiscInput {
     File(BufReader<File>),
     Rvz(Box<RvzDiscReader>),
+    Wbfs(Box<WbfsReader>),
 }
 
 impl DiscInput {
@@ -26,6 +29,7 @@ impl DiscInput {
                 Ok(end)
             }
             Self::Rvz(r) => Ok(r.iso_size()),
+            Self::Wbfs(r) => Ok(r.disc_size()),
         }
     }
 }
@@ -35,6 +39,7 @@ impl Read for DiscInput {
         match self {
             Self::File(r) => r.read(buf),
             Self::Rvz(r) => r.read(buf),
+            Self::Wbfs(r) => r.read(buf),
         }
     }
 }
@@ -44,6 +49,7 @@ impl Seek for DiscInput {
         match self {
             Self::File(r) => r.seek(from),
             Self::Rvz(r) => r.seek(from),
+            Self::Wbfs(r) => r.seek(from),
         }
     }
 }
@@ -60,6 +66,15 @@ pub fn open_disc_input(path: &Path) -> Result<DiscInput> {
             .with_context(|| format!("disc_input: open RVZ {}", path.display()))?;
         return Ok(DiscInput::Rvz(Box::new(reader)));
     }
+
+    let by_wbfs_ext = matches!(ext.as_deref(), Some("wbfs"));
+    let by_wbfs_magic = is_wbfs_magic(path).unwrap_or(false);
+    if by_wbfs_ext || by_wbfs_magic {
+        let reader = WbfsReader::open(path)
+            .with_context(|| format!("disc_input: open WBFS {}", path.display()))?;
+        return Ok(DiscInput::Wbfs(Box::new(reader)));
+    }
+
     let file = File::open(path).with_context(|| format!("disc_input: open {}", path.display()))?;
     Ok(DiscInput::File(BufReader::with_capacity(
         4 * 1024 * 1024,
@@ -74,4 +89,13 @@ fn is_rvz_magic(path: &Path) -> std::io::Result<bool> {
         return Ok(false);
     }
     Ok(buf == [b'R', b'V', b'Z', 0x01])
+}
+
+fn is_wbfs_magic(path: &Path) -> std::io::Result<bool> {
+    let mut f = File::open(path)?;
+    let mut buf = [0u8; 4];
+    if f.read(&mut buf)? < 4 {
+        return Ok(false);
+    }
+    Ok(buf == *b"WBFS")
 }

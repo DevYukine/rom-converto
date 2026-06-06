@@ -37,7 +37,7 @@ pub mod compress;
 pub mod decompress;
 
 pub use compress::{RvzCompressOptions, compress_disc};
-pub use decompress::decompress_disc;
+pub use decompress::{decompress_disc, decompress_disc_to_wbfs};
 pub use error::{RvzError, RvzResult};
 
 use std::path::{Path, PathBuf};
@@ -48,6 +48,10 @@ pub fn derive_rvz_path(input: &Path) -> PathBuf {
 
 pub fn derive_disc_path(input: &Path) -> PathBuf {
     input.with_extension("iso")
+}
+
+pub fn derive_wbfs_path(input: &Path) -> PathBuf {
+    input.with_extension("wbfs")
 }
 
 #[cfg(test)]
@@ -95,6 +99,14 @@ mod derive_path_tests {
     }
 
     #[test]
+    fn rvz_to_wbfs() {
+        assert_eq!(
+            derive_wbfs_path(Path::new("game.rvz")),
+            PathBuf::from("game.wbfs")
+        );
+    }
+
+    #[test]
     fn multi_dot_stem_preserved() {
         assert_eq!(
             derive_rvz_path(Path::new("game.backup.iso")),
@@ -129,6 +141,108 @@ mod integration_tests {
 
         let result = tokio::fs::read(&restored).await.unwrap();
         assert_eq!(original, result, "GC round trip must be byte-identical");
+    }
+
+    #[tokio::test]
+    async fn rvz_decompresses_to_wbfs_and_reconstructs() {
+        use crate::nintendo::wbfs::WbfsReader;
+        use std::io::Read;
+
+        let dir = tempfile::tempdir().unwrap();
+        let iso = dir.path().join("game.iso");
+        let rvz = dir.path().join("game.rvz");
+        let wbfs = dir.path().join("game.wbfs");
+
+        // The synthetic GC disc has a garbage FST, so the usage analyzer
+        // falls back to keeping the whole image; the WBFS reconstruction
+        // is therefore byte-identical to the source disc.
+        let original = make_fake_gamecube_iso(5 * 1024 * 1024 + 123);
+        tokio::fs::write(&iso, &original).await.unwrap();
+
+        compress_disc(&iso, &rvz, RvzCompressOptions::default(), &NoProgress)
+            .await
+            .unwrap();
+        decompress_disc_to_wbfs(&rvz, &wbfs, &NoProgress)
+            .await
+            .unwrap();
+
+        let mut reader = WbfsReader::open(&wbfs).unwrap();
+        let mut got = vec![0u8; original.len()];
+        let mut read = 0;
+        while read < got.len() {
+            let n = reader.read(&mut got[read..]).unwrap();
+            assert!(n > 0, "wbfs reader stalled at {read}");
+            read += n;
+        }
+        assert_eq!(
+            got, original,
+            "rvz -> wbfs -> read must reconstruct the disc"
+        );
+    }
+
+    #[tokio::test]
+    async fn rvz_to_wbfs_is_deterministic() {
+        let dir = tempfile::tempdir().unwrap();
+        let iso = dir.path().join("game.iso");
+        let rvz = dir.path().join("game.rvz");
+        let a = dir.path().join("a.wbfs");
+        let b = dir.path().join("b.wbfs");
+
+        let original = make_fake_gamecube_iso(5 * 1024 * 1024 + 123);
+        tokio::fs::write(&iso, &original).await.unwrap();
+        compress_disc(&iso, &rvz, RvzCompressOptions::default(), &NoProgress)
+            .await
+            .unwrap();
+        decompress_disc_to_wbfs(&rvz, &a, &NoProgress)
+            .await
+            .unwrap();
+        decompress_disc_to_wbfs(&rvz, &b, &NoProgress)
+            .await
+            .unwrap();
+
+        let bytes_a = tokio::fs::read(&a).await.unwrap();
+        let bytes_b = tokio::fs::read(&b).await.unwrap();
+        assert_eq!(
+            bytes_a, bytes_b,
+            "parallel rvz -> wbfs must be byte-deterministic across runs"
+        );
+    }
+
+    #[tokio::test]
+    async fn rvz_to_wbfs_preserves_wii_partition() {
+        use crate::nintendo::rvl::test_fixtures::make_fake_wii_iso_with_partition;
+        use crate::nintendo::wbfs::WbfsReader;
+        use std::io::Read;
+
+        let dir = tempfile::tempdir().unwrap();
+        let iso = dir.path().join("wii.iso");
+        let rvz = dir.path().join("wii.rvz");
+        let wbfs = dir.path().join("wii.wbfs");
+
+        let original = make_fake_wii_iso_with_partition(2);
+        tokio::fs::write(&iso, &original).await.unwrap();
+        compress_disc(&iso, &rvz, RvzCompressOptions::default(), &NoProgress)
+            .await
+            .unwrap();
+        decompress_disc_to_wbfs(&rvz, &wbfs, &NoProgress)
+            .await
+            .unwrap();
+
+        // The synthetic partition has no junk gaps, so the usage map keeps
+        // the whole image and the parallel partition reconstruction is
+        // byte-identical to the source.
+        let mut reader = WbfsReader::open(&wbfs).unwrap();
+        let mut got = vec![0u8; original.len()];
+        let mut read = 0;
+        while read < got.len() {
+            let n = reader.read(&mut got[read..]).unwrap();
+            assert!(n > 0, "wbfs reader stalled at {read}");
+            read += n;
+        }
+        assert_eq!(
+            got, original,
+            "wii partition disc round-trips through the parallel wbfs writer"
+        );
     }
 
     #[tokio::test]

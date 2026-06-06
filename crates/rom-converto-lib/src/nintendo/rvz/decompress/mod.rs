@@ -2,40 +2,43 @@
 //!
 //! # Pipeline
 //!
-//! 1. [`decompress_disc`] is the async public entry. It hands the
-//!    whole sync pipeline to [`tokio::task::spawn_blocking`] and
-//!    polls a shared `AtomicU64` for progress, mirroring
-//!    [`super::compress`].
-//! 2. [`decompress_blocking`] reads the RVZ header, disc struct,
-//!    partition table, raw-data table, and group table via a
-//!    throwaway `BufReader` on the main thread, then opens a
-//!    second file handle as `Arc<std::fs::File>` for the worker
-//!    pools. Positional reads via
-//!    [`crate::util::pread::file_read_exact_at`] let all workers
-//!    share that one handle without seek contention.
-//! 3. Every raw-data region is dispatched through
-//!    [`raw::decompress_raw_region`] and every Wii
-//!    partition through [`partition::decompress_partition`].
-//!    Both pool-pump closures run through
-//!    [`crate::util::worker_pool::drive`] so chunks are submitted
-//!    in source order and output is written back in the same order
-//!    despite out-of-order worker completion.
+//! 1. [`decompress_disc`] / [`decompress_disc_to_wbfs`] are the async
+//!    public entries. They hand the sync pipeline to
+//!    [`tokio::task::spawn_blocking`] and poll a shared `AtomicU64`
+//!    for progress, mirroring [`super::compress`].
+//! 2. [`parse_rvz_metadata`] reads the RVZ header, disc struct,
+//!    partition table, raw-data table, and group table, and opens a
+//!    shared `Arc<std::fs::File>` for the worker pools. Positional
+//!    reads via [`crate::util::pread::file_read_exact_at`] let all
+//!    workers share that one handle without seek contention.
+//! 3. Every raw-data region runs through [`raw::decompress_raw_region`]
+//!    and every Wii partition through [`partition::decompress_partition`],
+//!    both pumped via [`crate::util::worker_pool::drive`] so output
+//!    lands in order despite out-of-order worker completion. The
+//!    reconstructed bytes go to a [`sink::DiscSink`]: [`sink::IsoSink`]
+//!    for `.iso`, or [`sink::WbfsSink`] (FST-scrubbed) for `.wbfs`.
 //!
 pub mod disc_reader;
 pub mod partition;
 pub mod raw;
+pub mod sink;
 
 pub use disc_reader::RvzDiscReader;
 
-use crate::nintendo::rvl::constants::WII_SECTOR_SIZE_U64;
 use crate::nintendo::rvz::constants::RVZ_MAGIC;
 use crate::nintendo::rvz::error::{RvzError, RvzResult};
 use crate::nintendo::rvz::format::sha1::{compute_disc_hash, compute_file_head_hash};
 use crate::nintendo::rvz::format::{RvzGroup, WiaDisc, WiaFileHead, WiaPart, WiaRawData};
+use crate::nintendo::wbfs::build_disc_usage;
+use crate::nintendo::wbfs::format::{
+    DEFAULT_HD_SECTOR_SHIFT, DEFAULT_WBFS_SECTOR_SHIFT, WII_SECTOR_SIZE,
+};
 use crate::util::ProgressReporter;
 use binrw::{BinRead, Endian};
 use log::info;
-use std::io::{BufReader, BufWriter, Cursor, Read, Seek, SeekFrom, Write};
+use sink::{DiscSink, IsoSink, UsageFilter, WbfsSink};
+use std::fs::File;
+use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -84,17 +87,73 @@ pub async fn decompress_disc(
     Ok(())
 }
 
-pub fn decompress_blocking(
+/// Decompress an RVZ straight into a WBFS container without an
+/// intermediate ISO, using the same parallel worker pool as
+/// `.rvz -> .iso`. Builds the FST usage map first so unused (junk)
+/// blocks are never decompressed, then reconstructs the used blocks in
+/// parallel into a scrubbed [`sink::WbfsSink`].
+pub async fn decompress_disc_to_wbfs(
     input: &Path,
     output: &Path,
-    bytes_done: Arc<AtomicU64>,
-) -> RvzResult<u64> {
-    // Shared file handle for the worker pools' positional reads.
-    // A second handle is opened below for the main thread's
-    // sequential header/table reads so no cursor is shared across
-    // threads.
-    let shared_file = Arc::new(std::fs::File::open(input)?);
-    let mut reader = BufReader::with_capacity(4 * 1024 * 1024, std::fs::File::open(input)?);
+    progress: &dyn ProgressReporter,
+) -> RvzResult<()> {
+    let rvz_size = tokio::fs::metadata(input).await?.len();
+    progress.start(rvz_size, "Decompressing RVZ to WBFS...");
+
+    let input_owned: PathBuf = input.to_path_buf();
+    let output_owned: PathBuf = output.to_path_buf();
+    let bytes_done = Arc::new(AtomicU64::new(0));
+    let bytes_done_bg = bytes_done.clone();
+
+    let mut handle = task::spawn_blocking(move || -> RvzResult<u64> {
+        decompress_to_wbfs_blocking(&input_owned, &output_owned, bytes_done_bg)
+    });
+
+    let disc_size = loop {
+        match tokio::time::timeout(std::time::Duration::from_millis(100), &mut handle).await {
+            Ok(result) => break result??,
+            Err(_) => {
+                let delta = bytes_done.swap(0, Ordering::Relaxed);
+                if delta > 0 {
+                    progress.inc(delta);
+                }
+            }
+        }
+    };
+    let remaining = bytes_done.swap(0, Ordering::Relaxed);
+    if remaining > 0 {
+        progress.inc(remaining);
+    }
+    progress.finish();
+
+    info!(
+        "Decompressed {} -> {} ({} bytes)",
+        input.display(),
+        output.display(),
+        disc_size
+    );
+    Ok(())
+}
+
+/// Parsed RVZ metadata plus a shared file handle for the worker pools:
+/// `(shared_file, head, disc, parts, raw_data, groups)`.
+type RvzMetadata = (
+    Arc<File>,
+    WiaFileHead,
+    WiaDisc,
+    Vec<WiaPart>,
+    Vec<WiaRawData>,
+    Vec<RvzGroup>,
+);
+
+/// Read the RVZ header and metadata tables and open a shared file
+/// handle for the worker pools. Shared by the ISO and WBFS paths.
+fn parse_rvz_metadata(input: &Path) -> RvzResult<RvzMetadata> {
+    // Shared handle for the worker pools' positional reads. A separate
+    // handle backs the sequential header/table reads below so no cursor
+    // is shared across threads.
+    let shared_file = Arc::new(File::open(input)?);
+    let mut reader = BufReader::with_capacity(4 * 1024 * 1024, File::open(input)?);
 
     let mut head_bytes = vec![0u8; crate::nintendo::rvz::format::WIA_FILE_HEAD_SIZE];
     reader.read_exact(&mut head_bytes)?;
@@ -102,19 +161,16 @@ pub fn decompress_blocking(
     if head.magic != RVZ_MAGIC {
         return Err(RvzError::InvalidMagic(head.magic));
     }
-    let expected_head_hash = compute_file_head_hash(&head);
-    if expected_head_hash != head.file_head_hash {
+    if compute_file_head_hash(&head) != head.file_head_hash {
         return Err(RvzError::HeaderHashMismatch);
     }
 
     let mut disc_bytes = vec![0u8; head.disc_size as usize];
     reader.read_exact(&mut disc_bytes)?;
     let disc = WiaDisc::read_options(&mut Cursor::new(&disc_bytes), Endian::Big, ())?;
-    let disc_hash = compute_disc_hash(&disc);
-    if disc_hash != head.disc_hash {
+    if compute_disc_hash(&disc) != head.disc_hash {
         return Err(RvzError::DiscHashMismatch);
     }
-
     if disc.compression != 5 {
         return Err(RvzError::UnsupportedCompression(disc.compression));
     }
@@ -162,28 +218,26 @@ pub fn decompress_blocking(
         groups.push(RvzGroup::read_options(&mut group_cursor, Endian::Big, ())?);
     }
 
-    // Pre-size the output so seek-to-end isn't needed for trailing
-    // zero chunks. We still write sequentially below; the position
-    // tracker elides redundant seeks so the BufWriter doesn't flush
-    // on every iteration.
-    let mut writer = BufWriter::with_capacity(4 * 1024 * 1024, std::fs::File::create(output)?);
-    if head.iso_file_size > 0 {
-        writer.seek(SeekFrom::Start(head.iso_file_size - 1))?;
-        writer.write_all(&[0u8])?;
-        writer.seek(SeekFrom::Start(0))?;
-    }
+    Ok((shared_file, head, disc, parts, raw_data, groups))
+}
 
-    // Dolphin stores the first 0x80 bytes of the original disc
-    // inside `wia_disc_t.dhead`. The raw_data table covers the
-    // disc starting at 0x80, so the reader has to write the dhead
-    // bytes back separately.
+pub fn decompress_blocking(
+    input: &Path,
+    output: &Path,
+    bytes_done: Arc<AtomicU64>,
+) -> RvzResult<u64> {
+    let (shared_file, head, disc, parts, raw_data, groups) = parse_rvz_metadata(input)?;
+    let chunk_size = disc.chunk_size as u64;
+
+    let mut sink = IsoSink::create(output, head.iso_file_size)?;
+
+    // Dolphin stores the first 0x80 bytes of the disc in
+    // `wia_disc_t.dhead`; the raw_data table covers the disc from 0x80,
+    // so the head bytes are written separately.
     let dhead_bytes = std::cmp::min(head.iso_file_size, disc.dhead.len() as u64) as usize;
     if dhead_bytes > 0 {
-        writer.write_all(&disc.dhead[..dhead_bytes])?;
+        sink.write_at(0, &disc.dhead[..dhead_bytes])?;
     }
-    let mut writer_pos: u64 = dhead_bytes as u64;
-
-    let chunk_size = disc.chunk_size as u64;
 
     for region in &raw_data {
         raw::decompress_raw_region(
@@ -192,36 +246,87 @@ pub fn decompress_blocking(
             chunk_size,
             head.iso_file_size,
             &shared_file,
-            &mut writer,
-            &mut writer_pos,
+            None,
+            &mut sink,
             &bytes_done,
         )?;
     }
 
-    // Wii partitions. Sectors past `total_data_size` (padding
-    // inside the last cluster on disc) are NOT stored in any
-    // chunk; we zero-pad their plaintext payloads before
-    // recomputing the hash hierarchy so the encoder and decoder
-    // agree on the recompute baseline, then re-encrypt only the
-    // sectors that fall inside `total_data_size` and leave the
-    // tail untouched.
     for part in &parts {
         partition::decompress_partition(
             part,
             &groups,
             chunk_size,
             &shared_file,
-            &mut writer,
-            &mut writer_pos,
+            None,
+            &mut sink,
             &bytes_done,
         )?;
     }
 
-    writer.flush()?;
+    sink.finish()?;
     Ok(head.iso_file_size)
 }
 
-// Silence unused-const warning on platforms where
-// `WII_SECTOR_SIZE_U64` is only read via child modules.
-#[allow(dead_code)]
-const _: u64 = WII_SECTOR_SIZE_U64;
+fn decompress_to_wbfs_blocking(
+    input: &Path,
+    output: &Path,
+    bytes_done: Arc<AtomicU64>,
+) -> RvzResult<u64> {
+    // FST usage map (serial, cheap): only the partition headers and FST
+    // are decrypted here, not the whole disc.
+    let mut reader = RvzDiscReader::open(input)?;
+    let disc_size = reader.iso_size();
+    let usage = build_disc_usage(&mut reader, disc_size)?;
+    drop(reader);
+
+    let (shared_file, head, disc, parts, raw_data, groups) = parse_rvz_metadata(input)?;
+    let chunk_size = disc.chunk_size as u64;
+
+    let wbfs_sec_sz = 1u64 << DEFAULT_WBFS_SECTOR_SHIFT;
+    let filter = UsageFilter {
+        usage: &usage,
+        wbfs_sec_sz,
+        sectors_per_block: wbfs_sec_sz / WII_SECTOR_SIZE,
+    };
+    let mut sink = WbfsSink::create(
+        output,
+        &usage,
+        disc_size,
+        DEFAULT_HD_SECTOR_SHIFT,
+        DEFAULT_WBFS_SECTOR_SHIFT,
+    )?;
+
+    let dhead_bytes = std::cmp::min(disc_size, disc.dhead.len() as u64) as usize;
+    if dhead_bytes > 0 {
+        sink.write_at(0, &disc.dhead[..dhead_bytes])?;
+    }
+
+    for region in &raw_data {
+        raw::decompress_raw_region(
+            region,
+            &groups,
+            chunk_size,
+            head.iso_file_size,
+            &shared_file,
+            Some(&filter),
+            &mut sink,
+            &bytes_done,
+        )?;
+    }
+
+    for part in &parts {
+        partition::decompress_partition(
+            part,
+            &groups,
+            chunk_size,
+            &shared_file,
+            Some(&filter),
+            &mut sink,
+            &bytes_done,
+        )?;
+    }
+
+    sink.finish()?;
+    Ok(disc_size)
+}
