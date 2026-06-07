@@ -3794,6 +3794,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rom-converto-benchmark"
+version = "0.9.1"
+dependencies = [
+ "anyhow",
+ "clap",
+ "sha2",
+ "tempfile",
+]
+
+[[package]]
 name = "rom-converto-cli"
 version = "0.9.1"
 dependencies = [

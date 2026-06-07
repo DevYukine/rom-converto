@@ -1,0 +1,16 @@
+[package]
+name = "rom-converto-benchmark"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Reproducible benchmark harness comparing rom-converto against external reference tools."
+
+[[bin]]
+name = "rom-converto-benchmark"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap = { version = "^4.6", features = ["derive"] }
+sha2 = "^0.10"
+tempfile = "^3"

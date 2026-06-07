@@ -267,11 +267,11 @@ Checks GitHub for a newer release and replaces the current binary in place.
 
 ## Benchmarks
 
-RVZ, CHD, and Switch operations are measured against
-`DolphinTool.exe` 2603a-x64, `chdman.exe` 0.284, and `nsz`
-respectively, each tool on its own default settings, N = 10
-interleaved warm runs. Full methodology and per-run detail live
-alongside the results:
+RVZ, CHD, Switch, and 3DS operations are measured against
+`DolphinTool` 2603a-x64, `chdman` 0.284, `nsz`, and
+`z3ds_compressor` respectively, each tool on its own default
+settings, N = 10 interleaved warm runs. Full methodology and per-run
+detail live alongside the results:
 
 * [`benchmark/3DS.md`](benchmark/3DS.md): 3DS ROM results (Z3DS)
 * [`benchmark/GameCube.md`](benchmark/GameCube.md): GameCube disc image results (RVZ)
@@ -281,15 +281,43 @@ alongside the results:
 
 The Wii U `.wua` pipeline has no comparable reference CLI (Cemu ships the format but not a standalone compressor), so no head-to-head numbers are published for it.
 
+### Reproduce them yourself
+
+The `rom-converto-benchmark` crate runs these comparisons with the same
+methodology on your own hardware. Build the release binary first, then
+run a platform:
+
+```
+cargo build --release -p rom-converto-cli
+cargo run -p rom-converto-benchmark -- <platform> [inputs]
+```
+
+| Platform subcommand | Reference tool | Input flags |
+|---|---|---|
+| `switch` | `nsz` | `--nsp`, `--xci`, `--keys` |
+| `wii` | `DolphinTool` | `--iso` |
+| `gamecube` | `DolphinTool` | `--iso` |
+| `chd` | `chdman` | `--cue` (with a sibling `.bin`) |
+| `ctr` (alias `3ds`) | `z3ds_compressor` | `--three-ds`, `--cia` (both decrypted) |
+
+Each reference tool must be installed and either on your `PATH` or
+placed next to the rom-converto binary (the rom-converto folder). A
+missing tool stops the run with a message naming the tool to install.
+Inputs can also be supplied through the `ROMCONVERTO_BENCH_*`
+environment variables, and `rom-converto-benchmark all` runs every
+platform whose variables are set. The exact commands and the recorded
+numbers live in each `benchmark/*.md`.
+
 ## Project Structure
 
-The project is organized as a Cargo workspace with three crates:
+The project is organized as a Cargo workspace with four crates:
 
 | Crate | Description |
 |---|---|
 | `rom-converto-lib` | Core library with all conversion, compression and decryption logic |
 | `rom-converto-cli` | Command line interface |
 | `rom-converto-gui` | Desktop GUI application (Tauri + Nuxt) |
+| `rom-converto-benchmark` | CLI that benchmarks rom-converto against external reference tools |
 
 ## Development
 
