@@ -1,6 +1,6 @@
 # rom-converto
 
-A utility suite for converting, compressing, encrypting, and decrypting ROM formats across **Nintendo 3DS**, **GameCube**, **Wii**, **Wii U**, **Nintendo Switch**, and **CD image** formats.
+A utility suite for converting, compressing, encrypting, and decrypting ROMs across **Nintendo 3DS**, **GameCube**, **Wii**, **Wii U**, **Nintendo Switch**, and **CD image** formats.
 
 Available as both a **command line tool** and a **desktop GUI application**.
 
@@ -238,18 +238,17 @@ Inspect a ROM file or title directory and print the embedded metadata: title, ve
 |---|---|
 | `ctr info <FILE>` | CIA / NCSD / NCCH; SMDH multilingual titles, region lock, age ratings, 48x48 icon. Encrypted CIA is auto-decrypted to read the NCCH header. |
 | `dol info <FILE>` | GameCube `.iso`, `.gcm`, or `.rvz`; boot.bin header, BNR1/BNR2 banner with 96x32 image, publisher name. |
-| `rvl info <FILE>` | Wii `.iso` or `.rvz`; disc header, partition layout, TMD (title id, IOS), IMET banner names, 48x48 channel icon. |
-| `wup info <PATH>` | loadiine + NUS directories and `.wua` archives; TMD + meta.xml with multilingual names, region, age ratings, save sizes, GamePad requirement, supported accessories, mastering date. |
-| `nx info <FILE>` | NSP / NSZ / XCI / XCZ; container listing, tickets, CNMT, NACP, JPEG icon. Reports compression status (NSP vs NSZ), distribution (digital vs cartridge), structure classifier (scene / converted / CDN / homebrew), base title id for patches and DLC, decoded language list, age ratings per organisation. Full info needs `--keys prod.keys`; degrades gracefully without. |
+| `rvl info <FILE>` | Wii `.iso`, `.rvz`, or `.wbfs`; disc header, partition layout, TMD (title id, IOS), IMET banner names, 192x64 banner image from `opening.bnr` (falls back to the icon). |
+| `wup info <PATH>` | loadiine + NUS directories and `.wua` archives; TMD + meta.xml with multilingual names, region, age ratings, save sizes, GamePad requirement, supported accessories, mastering date, decoded `iconTex.tga` icon. |
+| `nx info <FILE>` | NSP / NSZ / XCI / XCZ; container listing, tickets, CNMT, NACP, JPEG icon. Reports compression status (NSP vs NSZ), distribution (digital vs cartridge), structure classifier (scene / converted / CDN / homebrew), base title id for patches and DLC, decoded language list, age ratings per rating board. Full info needs `--keys prod.keys`, partial info without. |
 | `chd info <FILE>` | CHD v5; version, codecs, hunk geometry, SHA-1 triplet, per-track CHT2 metadata, VERS / DVD tags |
 
-`--save-icon DIR` writes the embedded icon as `<title_id>.png` into `DIR` (3DS, GameCube, Wii, and Switch). `--keys` is honoured only by `nx info`.
+`--save-icon DIR` writes the embedded icon as `<title_id>.png` into `DIR` (3DS, GameCube, and Switch). `--keys` only applies to `nx info`.
 
 Format notes:
 
-- `.rvz` for Wii and GameCube is transparently decompressed to a temporary ISO. The temp file is deleted when the command finishes.
-- `.wua` (Wii U Cemu archive) is read directly. When an archive bundles a base title plus update and DLC, the first title is shown.
-- `.wbfs` is not supported; extract to raw ISO first.
+- `.rvz` (Wii and GameCube) and `.wbfs` (Wii) are read directly. Only the disc areas that are actually needed get decompressed, so no temp files are written and memory stays at a few MB.
+- `.wua` (Wii U Cemu archive) is read directly. When an archive bundles base + update + DLC, the base title is shown, the bundled titles are listed, and the version includes the update.
 - WIA, CISO, GCZ, NFS, and TGC are not supported.
 
 ---
