@@ -1,3 +1,19 @@
+# [0.10.0](https://github.com/DevYukine/rom-converto/compare/v0.9.1...v0.10.0) (2026-06-09)
+
+
+### Bug Fixes
+
+* **ctr:** embed retail cert chain and ticket content index for converted CIAs ([eacbdf0](https://github.com/DevYukine/rom-converto/commit/eacbdf07b201ea0de9d5c733a4a6a3da1dd0d152))
+
+
+### Features
+
+* **cue:** merge multi-bin disc images into a single bin/cue ([3775d40](https://github.com/DevYukine/rom-converto/commit/3775d40255767ee40d01eb61ff46798381ad4d91))
+* **info:** cross-console ROM inspection (CLI + GUI) ([99dcad4](https://github.com/DevYukine/rom-converto/commit/99dcad4686c63a8c1b5585ff0f7bc545f910041a))
+* **rvl:** add wbfs compression/decompression support ([767f929](https://github.com/DevYukine/rom-converto/commit/767f9296e7658ca9a98bcfdf20bce99d3db4c6c9))
+
+
+
 ## [0.9.1](https://github.com/DevYukine/rom-converto/compare/v0.9.0...v0.9.1) (2026-05-22)
 
 
@@ -59,27 +75,6 @@
 ### Performance Improvements
 
 * **ctr:** parallel Z3DS compress/decompress and configurable level ([b38601c](https://github.com/DevYukine/rom-converto/commit/b38601c140cbd3df1c1cce40d62c552bbd7a8898))
-
-
-
-# [0.7.0](https://github.com/DevYukine/rom-converto/compare/v0.6.0...v0.7.0) (2026-04-15)
-
-
-### Bug Fixes
-
-* **ctr:** correct TMD signature and content hash verification ([7b59ece](https://github.com/DevYukine/rom-converto/commit/7b59ecef8294a6c71df58e476f2390967a724261))
-
-
-### Features
-
-* **ctr:** distinguish decrypted CIAs in Standard classification ([eb3033b](https://github.com/DevYukine/rom-converto/commit/eb3033b5d7b1f15e6c6bf76cf96f038703f364c3))
-* **gui:** redesign navigation with per-console pages and collapsible sidebar ([695623f](https://github.com/DevYukine/rom-converto/commit/695623f9ebbec4e292868f4fbc40b4fbec712364))
-* **rvz:** add GameCube and Wii disc image compression ([95cc486](https://github.com/DevYukine/rom-converto/commit/95cc486721d216362440f5e3783ce0dcafb3ef3c))
-
-
-### Performance Improvements
-
-* **chd:** parallel compress, extract, and verify pipelines ([943ca08](https://github.com/DevYukine/rom-converto/commit/943ca08e90f879010806c26c9881fa0465595f5c))
 
 
 
