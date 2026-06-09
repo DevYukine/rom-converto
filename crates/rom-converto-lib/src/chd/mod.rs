@@ -1,10 +1,10 @@
 use crate::cd::{CD_HUNK_BYTES, IO_BUFFER_SIZE, SECTOR_SIZE};
-use crate::chd::cue::CueParser;
 use crate::chd::error::{ChdError, ChdResult};
 use crate::chd::models::{CHD_METADATA_TAG_CD, ChdHeaderV5, SHA1_BYTES};
 use crate::chd::reader::cue_generator::{generate_cue_sheet, parse_chd_track_metadata};
 use crate::chd::writer::ChdWriter;
 use crate::chd::writer::metadata::MetadataHash;
+use crate::cue::CueParser;
 use crate::util::{BYTES_PER_MB, ProgressReporter};
 use log::{debug, info};
 use sha1::{Digest, Sha1};
@@ -15,7 +15,6 @@ use tokio::fs;
 use tokio::io::AsyncWriteExt;
 
 pub mod compression;
-mod cue;
 mod error;
 pub mod info;
 pub(crate) mod map;

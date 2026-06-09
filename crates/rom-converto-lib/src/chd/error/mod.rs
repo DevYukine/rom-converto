@@ -1,4 +1,4 @@
-use crate::chd::cue::error::CueError;
+use crate::cue::error::CueError;
 use thiserror::Error;
 
 #[derive(Debug, Error)]

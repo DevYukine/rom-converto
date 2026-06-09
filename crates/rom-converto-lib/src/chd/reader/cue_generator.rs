@@ -1,5 +1,5 @@
-use crate::chd::cue::models::Msf;
 use crate::chd::error::{ChdError, ChdResult};
+use crate::cue::models::Msf;
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ChdTrackInfo {

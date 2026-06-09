@@ -10,6 +10,7 @@ import { useChdCompressStore } from "~/stores/chd-compress";
 import { useChdExtractStore } from "~/stores/chd-extract";
 import { useChdVerifyStore } from "~/stores/chd-verify";
 import { useChdInfoStore } from "~/stores/chd-info";
+import { useCueMergeStore } from "~/stores/cue-merge";
 import { useDolCompressStore } from "~/stores/dol-compress";
 import { useDolDecompressStore } from "~/stores/dol-decompress";
 import { useDolInfoStore } from "~/stores/dol-info";
@@ -104,6 +105,13 @@ const sections: SidebarSection[] = [
       { to: "/chd/extract", label: "Extract", store: () => useChdExtractStore(), icon: "disc-up" },
       { to: "/chd/verify", label: "Verify", store: () => useChdVerifyStore(), icon: "shield-check" },
       { to: "/chd/info", label: "Info", store: () => useChdInfoStore(), icon: "info" },
+    ],
+  },
+  {
+    key: "cue",
+    name: "CUE/BIN",
+    links: [
+      { to: "/cue/merge", label: "Merge multi-bin", store: () => useCueMergeStore(), icon: "compress" },
     ],
   },
 ];

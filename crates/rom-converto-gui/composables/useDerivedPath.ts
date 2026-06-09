@@ -61,6 +61,15 @@ export function deriveCuePath(input: string): string {
   return replaceExt(input, "cue");
 }
 
+// Strips a trailing "(Track N)" tag so the merged output never collides
+// with one of the input bin files.
+export function deriveMergedCuePath(input: string): string {
+  const dot = input.lastIndexOf(".");
+  let stem = dot === -1 ? input : input.slice(0, dot);
+  stem = stem.replace(/\s*\(Track\s*\d+\)\s*$/i, "");
+  return `${stem} (merged).cue`;
+}
+
 export function deriveRvzPath(input: string): string {
   return replaceExt(input, "rvz");
 }

@@ -1,6 +1,7 @@
 use crate::info_cache::InfoCache;
 use crate::progress::TauriProgress;
 use rom_converto_lib::chd::{convert_to_chd, extract_from_chd, verify_chd};
+use rom_converto_lib::cue::merge::merge_bin;
 use rom_converto_lib::info::{InfoOptions, InfoResult, read_info};
 use rom_converto_lib::nintendo::ctr::convert::{convert_rom, derive_converted_path};
 use rom_converto_lib::nintendo::ctr::verify::{CtrVerifyOptions, verify_ctr};
@@ -135,6 +136,22 @@ pub async fn cmd_chd_compress(
         .map_err(err_to_string)?
         .map_err(err_to_string)?;
     Ok(format!("CHD created at {out_display}"))
+}
+
+#[tauri::command]
+pub async fn cmd_cue_merge(
+    app: AppHandle,
+    cue_path: PathBuf,
+    output: PathBuf,
+    force: bool,
+) -> Result<String, String> {
+    let progress = Arc::new(TauriProgress::new(app, "cue-merge"));
+    let out_display = output.display().to_string();
+    tokio::spawn(async move { merge_bin(progress.as_ref(), cue_path, output, force).await })
+        .await
+        .map_err(err_to_string)?
+        .map_err(err_to_string)?;
+    Ok(format!("Merged bin/cue created at {out_display}"))
 }
 
 // CHD extract and verify use deeply nested async types from ChdReader

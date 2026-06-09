@@ -49,11 +49,12 @@ Built for developers, tinkerers and archivists.
 * [x] Drop-in replacement for [`nsz`](https://github.com/nicoboss/nsz) with byte-identical output and matching CLI defaults
 * [x] See [`benchmark/Switch.md`](benchmark/Switch.md) for performance numbers
 
-### CD images (CHD)
+### CD images (CHD / CUE+BIN)
 
 * [x] Compress `.bin` + `.cue` pairs to `.chd`
 * [x] Extract `.chd` back to `.bin` + `.cue`
 * [x] Verify `.chd` integrity via SHA-1 checksums, with optional header repair
+* [x] Merge a multi-bin `.cue` (one `.bin` per track) into a single `.bin` + `.cue` pair, for emulators that cannot load split images
 * [x] See [`benchmark/CHD.md`](benchmark/CHD.md) for performance numbers
 
 ### Application
@@ -208,6 +209,20 @@ Flags match the `dol` commands.
 | `-f, --force` | `compress` | Overwrite output file if it already exists |
 | `-p, --parent <PARENT>` | `extract`, `verify` | Specify a parent CHD for parent-child relationships |
 | `--fix` | `verify` | Correct SHA1 values in the CHD header if mismatches are found |
+
+---
+
+### CUE/BIN
+
+| Command | Description |
+|---|---|
+| `cue merge <INPUT_CUE> <OUTPUT_CUE>` | Merge a multi-bin `.cue` into a single `.bin` + `.cue` pair (the merged `.bin` is named after the output `.cue`) |
+
+**Flags:**
+
+| Flag | Applies to | Description |
+|---|---|---|
+| `-f, --force` | `merge` | Overwrite output files if they already exist |
 
 ---
 

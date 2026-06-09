@@ -36,6 +36,12 @@ const platforms = [
     description: "Compress, extract, verify CD disc images, read info",
     count: 4,
   },
+  {
+    to: "/cue",
+    name: "CD (CUE/BIN)",
+    description: "Merge multi-bin disc images into a single bin/cue pair",
+    count: 1,
+  },
 ];
 </script>
 

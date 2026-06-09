@@ -22,6 +22,7 @@ fn main() {
             cmd_chd_compress,
             cmd_chd_extract,
             cmd_chd_verify,
+            cmd_cue_merge,
             cmd_verify_ctr,
             cmd_convert_ctr,
             cmd_compress_disc,

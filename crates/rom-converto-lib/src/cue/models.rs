@@ -11,7 +11,6 @@ pub struct CueSheet {
 #[derive(Debug, Clone)]
 pub struct CueFile {
     pub filename: String,
-    #[allow(dead_code)] // Parsed from CUE, used for format validation
     pub file_type: FileType,
 }
 
@@ -22,6 +21,8 @@ pub struct Track {
     pub indices: Vec<Index>,
     pub pregap: Option<Msf>,
     pub postgap: Option<Msf>,
+    /// Index into `CueSheet::files` of the FILE entry this track belongs to.
+    pub file_index: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -56,6 +57,16 @@ impl Msf {
     }
 }
 
+impl std::fmt::Display for Msf {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{:02}:{:02}:{:02}",
+            self.minutes, self.seconds, self.frames
+        )
+    }
+}
+
 impl Track {
     pub fn primary_index_lba(&self) -> Option<u32> {
         self.indices
@@ -78,6 +89,31 @@ pub enum TrackType {
 }
 
 impl TrackType {
+    pub fn block_size(self) -> u32 {
+        match self {
+            TrackType::Audio
+            | TrackType::Mode1_2352
+            | TrackType::Mode2_2352
+            | TrackType::CdI2352 => 2352,
+            TrackType::CdG => 2448,
+            TrackType::Mode1_2048 => 2048,
+            TrackType::Mode2_2336 | TrackType::CdI2336 => 2336,
+        }
+    }
+
+    pub fn cue_string(self) -> &'static str {
+        match self {
+            TrackType::Audio => "AUDIO",
+            TrackType::CdG => "CDG",
+            TrackType::Mode1_2048 => "MODE1/2048",
+            TrackType::Mode1_2352 => "MODE1/2352",
+            TrackType::Mode2_2336 => "MODE2/2336",
+            TrackType::Mode2_2352 => "MODE2/2352",
+            TrackType::CdI2336 => "CDI/2336",
+            TrackType::CdI2352 => "CDI/2352",
+        }
+    }
+
     pub fn chd_metadata_type(self) -> &'static str {
         match self {
             TrackType::Audio => "AUDIO",
@@ -174,6 +210,7 @@ mod tests {
             ],
             pregap: None,
             postgap: None,
+            file_index: 0,
         };
         assert_eq!(track.primary_index_lba(), Some(150)); // 2 seconds = 150 frames
     }
@@ -193,6 +230,7 @@ mod tests {
             }],
             pregap: None,
             postgap: None,
+            file_index: 0,
         };
         assert_eq!(track.primary_index_lba(), None);
     }
@@ -212,5 +250,35 @@ mod tests {
         assert_eq!(TrackType::CdG.chd_metadata_type(), "MODE1_RAW");
         assert_eq!(TrackType::CdI2336.chd_metadata_type(), "MODE1_RAW");
         assert_eq!(TrackType::CdI2352.chd_metadata_type(), "MODE1_RAW");
+    }
+
+    #[test]
+    fn block_size_mappings() {
+        assert_eq!(TrackType::Audio.block_size(), 2352);
+        assert_eq!(TrackType::Mode1_2352.block_size(), 2352);
+        assert_eq!(TrackType::Mode2_2352.block_size(), 2352);
+        assert_eq!(TrackType::CdI2352.block_size(), 2352);
+        assert_eq!(TrackType::CdG.block_size(), 2448);
+        assert_eq!(TrackType::Mode1_2048.block_size(), 2048);
+        assert_eq!(TrackType::Mode2_2336.block_size(), 2336);
+        assert_eq!(TrackType::CdI2336.block_size(), 2336);
+    }
+
+    #[test]
+    fn cue_string_round_trips_with_parser() {
+        let parser = crate::cue::CueParser::new("/dev/null");
+        for track_type in [
+            TrackType::Audio,
+            TrackType::CdG,
+            TrackType::Mode1_2048,
+            TrackType::Mode1_2352,
+            TrackType::Mode2_2336,
+            TrackType::Mode2_2352,
+            TrackType::CdI2336,
+            TrackType::CdI2352,
+        ] {
+            let parsed = parser.parse_track_type(track_type.cue_string()).unwrap();
+            assert_eq!(parsed.cue_string(), track_type.cue_string());
+        }
     }
 }

@@ -1,6 +1,6 @@
-use crate::chd::cue::models::CueSheet;
 use crate::chd::error::ChdResult;
 use crate::chd::models::{CHD_METADATA_FLAG_HASHED, ChdMetadataHeader, SHA1_BYTES};
+use crate::cue::models::CueSheet;
 use binrw::BinWrite;
 use sha1::{Digest, Sha1};
 use std::io::Cursor;

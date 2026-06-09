@@ -1,6 +1,7 @@
 use crate::commands::chd::ChdCommands;
 use crate::commands::completions::ShellCompletionsCommand;
 use crate::commands::ctr::CtrCommands;
+use crate::commands::cue::CueCommands;
 use crate::commands::dol::DolCommands;
 use crate::commands::nx::NxCommands;
 use crate::commands::rvl::RvlCommands;
@@ -15,6 +16,7 @@ use clap_complete::{generate, generate_to};
 use indicatif::MultiProgress;
 use indicatif_log_bridge::LogWrapper;
 use rom_converto_lib::chd::{convert_to_chd, extract_from_chd, verify_chd};
+use rom_converto_lib::cue::merge::merge_bin;
 use rom_converto_lib::nintendo::ctr::convert::{
     convert_rom, convert_rom_batch, derive_converted_path,
 };
@@ -317,6 +319,11 @@ async fn main() -> Result<()> {
             ChdCommands::Info(cmd) => {
                 let info = rom_converto_lib::chd::info::read_info(&cmd.input)?;
                 info_print::print(&rom_converto_lib::info::InfoResult::Chd(info), cmd.json)?;
+            }
+        },
+        Commands::Cue(inner) => match inner {
+            CueCommands::Merge(cmd) => {
+                merge_bin(&progress, cmd.input_cue, cmd.output_cue, cmd.force).await?
             }
         },
         Commands::Nx(inner) => match inner {
