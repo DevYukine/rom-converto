@@ -19,6 +19,9 @@ pub enum RvzError {
     #[error(transparent)]
     Gcz(#[from] crate::nintendo::gcz::error::GczError),
 
+    #[error(transparent)]
+    Wia(#[from] Box<crate::nintendo::wia::error::WiaError>),
+
     #[error("invalid RVZ magic: expected b\"RVZ\\x01\", got {0:02X?}")]
     InvalidMagic([u8; 4]),
 
@@ -65,6 +68,12 @@ pub enum RvzError {
 impl From<crate::util::worker_pool::PoolChannelClosed> for RvzError {
     fn from(_: crate::util::worker_pool::PoolChannelClosed) -> Self {
         RvzError::Custom("worker pool channel closed".into())
+    }
+}
+
+impl From<crate::nintendo::wia::error::WiaError> for RvzError {
+    fn from(e: crate::nintendo::wia::error::WiaError) -> Self {
+        RvzError::Wia(Box::new(e))
     }
 }
 

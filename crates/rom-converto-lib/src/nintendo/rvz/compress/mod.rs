@@ -109,7 +109,11 @@ pub async fn compress_disc(
     };
     if legacy.is_some() {
         return crate::nintendo::legacy_input::migrate_disc(
-            input, output, options, false, progress,
+            input,
+            output,
+            options,
+            crate::nintendo::legacy_input::MigrateOptions::default(),
+            progress,
         )
         .await;
     }
@@ -215,6 +219,7 @@ fn logical_input_size(input: &Path) -> RvzResult<u64> {
     use crate::nintendo::legacy_input::{LegacyFormat, detect_legacy_format};
     match detect_legacy_format(input)? {
         Some(LegacyFormat::Gcz) => Ok(crate::nintendo::gcz::GczReader::data_size_of(input)?),
+        Some(LegacyFormat::Wia) => Ok(crate::nintendo::wia::WiaReader::iso_size_of(input)?),
         Some(other) => Err(RvzError::Custom(format!(
             "{} support is not implemented yet",
             other.name()
@@ -266,6 +271,11 @@ fn compress_blocking(
         Some(LegacyFormat::Gcz) => {
             let reader =
                 BufReader::with_capacity(BUF, crate::nintendo::gcz::GczReader::open(input)?);
+            compress_reader(reader, output, options, iso_size, bytes_done)
+        }
+        Some(LegacyFormat::Wia) => {
+            let reader =
+                BufReader::with_capacity(BUF, crate::nintendo::wia::WiaReader::open(input)?);
             compress_reader(reader, output, options, iso_size, bytes_done)
         }
         Some(other) => Err(RvzError::Custom(format!(

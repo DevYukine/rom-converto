@@ -121,12 +121,13 @@ where
 }
 
 /// Pre-conversion integrity pass. GCZ checks every stored block's
-/// Adler-32 without inflating; WIA and NKit passes land with their
-/// readers.
+/// Adler-32 without inflating; WIA checks the SHA-1 header chain and
+/// decodes both metadata tables (`deep` additionally decodes every
+/// group through the codec); the NKit pass lands with its reader.
 pub async fn verify_legacy_input(
     input: &Path,
     fmt: LegacyFormat,
-    _deep: bool,
+    deep: bool,
     progress: &dyn ProgressReporter,
 ) -> RvzResult<()> {
     match fmt {
@@ -141,11 +142,33 @@ pub async fn verify_legacy_input(
             })
             .await
         }
+        LegacyFormat::Wia => {
+            let total = {
+                let path = input.to_path_buf();
+                task::spawn_blocking(move || super::wia::verify_total(&path, deep)).await??
+            };
+            let path = input.to_path_buf();
+            run_blocking_with_progress(total, "Verifying WIA integrity...", progress, move |done| {
+                Ok(super::wia::verify_wia_blocking(&path, deep, done)?)
+            })
+            .await
+        }
         other => Err(RvzError::Custom(format!(
             "{} support is not implemented yet",
             other.name()
         ))),
     }
+}
+
+/// Knobs for the migrate operation's verify phase.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MigrateOptions {
+    /// Skip the pre-conversion integrity pass entirely.
+    pub skip_verify: bool,
+    /// Walk every group through the codec during verification instead
+    /// of only the cheap header-chain checks (WIA only; GCZ and NKit
+    /// passes are already exhaustive).
+    pub deep_verify: bool,
 }
 
 /// Verify a legacy container, then stream-convert it to RVZ. No
@@ -155,7 +178,7 @@ pub async fn migrate_disc(
     input: &Path,
     output: &Path,
     options: RvzCompressOptions,
-    skip_verify: bool,
+    migrate: MigrateOptions,
     progress: &dyn ProgressReporter,
 ) -> RvzResult<()> {
     let fmt = {
@@ -168,8 +191,8 @@ pub async fn migrate_disc(
         )
     })?;
     info!("Migrating {} input {} to RVZ", fmt.name(), input.display());
-    if !skip_verify {
-        verify_legacy_input(input, fmt, false, progress).await?;
+    if !migrate.skip_verify {
+        verify_legacy_input(input, fmt, migrate.deep_verify, progress).await?;
     }
     compress_disc_inner(input, output, options, progress).await
 }
@@ -204,7 +227,7 @@ mod tests {
             &gcz,
             &rvz_from_gcz,
             RvzCompressOptions::default(),
-            false,
+            MigrateOptions::default(),
             &NoProgress,
         )
         .await
@@ -265,13 +288,61 @@ mod tests {
             &gcz,
             &rvz,
             RvzCompressOptions::default(),
-            false,
+            MigrateOptions::default(),
             &NoProgress,
         )
         .await
         .unwrap_err();
         assert!(err.to_string().contains("checksum mismatch"), "{err}");
         assert!(!rvz.exists(), "no output may be written for corrupt input");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn wia_migrates_to_rvz_byte_identical_to_iso_path() {
+        use crate::nintendo::rvl::test_fixtures::make_fake_wii_iso_with_partition;
+        use crate::nintendo::wia::test_fixtures::make_wia;
+
+        let dir = tempfile::tempdir().unwrap();
+        let original = make_fake_wii_iso_with_partition(2);
+
+        let iso = dir.path().join("game.iso");
+        std::fs::write(&iso, &original).unwrap();
+        let wia = dir.path().join("game.wia");
+        std::fs::write(&wia, make_wia(&original, 3, 0x20_0000)).unwrap();
+
+        let rvz_from_wia = dir.path().join("from_wia.rvz");
+        migrate_disc(
+            &wia,
+            &rvz_from_wia,
+            RvzCompressOptions::default(),
+            MigrateOptions {
+                skip_verify: false,
+                deep_verify: true,
+            },
+            &NoProgress,
+        )
+        .await
+        .unwrap();
+
+        let rvz_from_iso = dir.path().join("from_iso.rvz");
+        compress_disc(
+            &iso,
+            &rvz_from_iso,
+            RvzCompressOptions::default(),
+            &NoProgress,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            std::fs::read(&rvz_from_wia).unwrap(),
+            std::fs::read(&rvz_from_iso).unwrap()
+        );
+
+        let restored = dir.path().join("restored.iso");
+        decompress_disc(&rvz_from_wia, &restored, &NoProgress)
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(&restored).unwrap(), original);
     }
 
     #[tokio::test]
@@ -283,7 +354,7 @@ mod tests {
             &iso,
             &dir.path().join("out.rvz"),
             RvzCompressOptions::default(),
-            false,
+            MigrateOptions::default(),
             &NoProgress,
         )
         .await

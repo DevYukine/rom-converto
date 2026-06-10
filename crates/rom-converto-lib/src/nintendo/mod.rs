@@ -7,4 +7,5 @@ pub mod nx;
 pub mod rvl;
 pub mod rvz;
 pub mod wbfs;
+pub mod wia;
 pub mod wup;
