@@ -52,8 +52,10 @@ pub(crate) struct GapRecord {
     /// Bytes the record occupies in the nkit stream.
     pub consumed: u64,
     /// Bytes the record expands to in the restored image.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub out_len: u64,
+    /// Mixed records apply the leading-NUL rule per junk sub-record;
+    /// AllJunk records apply it once to the whole gap.
+    pub mixed: bool,
     pub pieces: Vec<GapPiece>,
 }
 
@@ -158,6 +160,7 @@ pub(crate) fn parse_gap_record<R: Read + Seek>(
     Ok(GapRecord {
         consumed,
         out_len: size,
+        mixed: gap_type == 2,
         pieces,
     })
 }
@@ -176,7 +179,9 @@ pub(crate) fn parse_junk_file_record<R: Read + Seek>(
             hdr & 3
         )));
     }
-    let leading_nulls = (hdr >> 2) as u64;
+    // Only bits 2..8 carry the NUL count (`(size & 0xFC) >> 2` in
+    // NkitReaderGc/Wii).
+    let leading_nulls = ((hdr & 0xFC) >> 2) as u64;
     let file_len = read_u32_be(r)? as u64;
     if leading_nulls > file_len {
         return Err(NkitError::InvalidGap(

@@ -31,6 +31,13 @@ use crate::util::worker_pool::{Worker, parallelism};
 /// buffer (junk gaps can span hundreds of MiB).
 const MAX_SPAN_BYTES: u64 = 4 * 1024 * 1024;
 
+/// Junk gaps begin with up to this many zero bytes after a file end
+/// (`nullsPos = dstPos + 0x1c` in NKit's readers).
+const NULLS_LEAD: u64 = 0x1C;
+/// Junk runs at least this large skip the leading NULs unless they
+/// follow the FST or trail the last file.
+const JUNK_NULLS_SKIP: u64 = 0x40000;
+
 #[derive(Debug, Clone)]
 enum SpanKind {
     /// Patched in-memory bytes (Boot.bin with the NKit fields cleared,
@@ -104,32 +111,7 @@ fn build_plan<S: Read + Seek>(src: &mut S) -> NkitResult<NkitPlan> {
     let walk_start = (fst_off + fst_size + 3) & !3;
     let mut nkit_pos = walk_start;
     let mut out_pos = walk_start;
-
-    let emit = |spans: &mut Vec<Span>, out_off: u64, len: u64, kind: SpanKind| {
-        if len > 0 {
-            spans.push(Span { out_off, len, kind });
-        }
-    };
-
-    let expand_gap = |spans: &mut Vec<Span>,
-                      src: &mut S,
-                      nkit_pos: &mut u64,
-                      out_pos: &mut u64|
-     -> NkitResult<()> {
-        let rec = parse_gap_record(src, *nkit_pos)?;
-        *nkit_pos += rec.consumed;
-        for piece in &rec.pieces {
-            let kind = match *piece {
-                GapPiece::Junk { .. } => SpanKind::Junk,
-                GapPiece::Zeros { .. } => SpanKind::Zeros,
-                GapPiece::ByteFill { byte, .. } => SpanKind::Fill(byte),
-                GapPiece::Verbatim { nkit_off, .. } => SpanKind::Verbatim(nkit_off),
-            };
-            emit(spans, *out_pos, piece.len(), kind);
-            *out_pos += piece.len();
-        }
-        Ok(())
-    };
+    let mut nulls_pos = walk_start + NULLS_LEAD;
 
     for (i, file) in files.iter().enumerate() {
         let target = file.data_offset;
@@ -139,7 +121,14 @@ fn build_plan<S: Read + Seek>(src: &mut S) -> NkitResult<NkitPlan> {
             )));
         }
         if nkit_pos < target {
-            expand_gap(&mut spans, src, &mut nkit_pos, &mut out_pos)?;
+            expand_gap_record(
+                &mut spans,
+                src,
+                &mut nkit_pos,
+                &mut out_pos,
+                &mut nulls_pos,
+                i == 0,
+            )?;
             if nkit_pos > target {
                 return Err(NkitError::InvalidGap(
                     "gap record extends past the next file".into(),
@@ -162,16 +151,26 @@ fn build_plan<S: Read + Seek>(src: &mut S) -> NkitResult<NkitPlan> {
             );
             patch_fst_entry(&mut fst, file, out_pos, rec.file_len as u32);
             out_pos += restored_len;
+            // The gap after a junk file carries no leading NULs.
+            nulls_pos = 0;
         } else {
             let copy_len = ((file.size as u64) + 3) & !3;
             emit(&mut spans, out_pos, copy_len, SpanKind::Verbatim(nkit_pos));
             patch_fst_entry(&mut fst, file, out_pos, file.size);
             nkit_pos += copy_len;
             out_pos += copy_len;
+            nulls_pos = out_pos + NULLS_LEAD;
         }
     }
     if nkit_pos < nkit_len {
-        expand_gap(&mut spans, src, &mut nkit_pos, &mut out_pos)?;
+        expand_gap_record(
+            &mut spans,
+            src,
+            &mut nkit_pos,
+            &mut out_pos,
+            &mut nulls_pos,
+            true,
+        )?;
     }
     if out_pos != image_size {
         return Err(NkitError::InvalidHeader(format!(
@@ -222,6 +221,81 @@ fn patch_fst_entry(fst: &mut [u8], file: &FstFile, out_off: u64, size: u32) {
     fst[file.entry_offset + 4..file.entry_offset + 8]
         .copy_from_slice(&(out_off as u32).to_be_bytes());
     fst[file.entry_offset + 8..file.entry_offset + 12].copy_from_slice(&size.to_be_bytes());
+}
+
+fn emit(spans: &mut Vec<Span>, out_off: u64, len: u64, kind: SpanKind) {
+    if len > 0 {
+        spans.push(Span { out_off, len, kind });
+    }
+}
+
+/// Decode one gap record into spans, applying the leading-NUL rule
+/// from NKit's `writeGap`: a run of zeroes (up to the tracked
+/// `nulls_pos`) precedes junk output, skipped for large mid-image
+/// gaps.
+fn expand_gap_record<S: Read + Seek>(
+    spans: &mut Vec<Span>,
+    src: &mut S,
+    nkit_pos: &mut u64,
+    out_pos: &mut u64,
+    nulls_pos: &mut u64,
+    first_or_last: bool,
+) -> NkitResult<()> {
+    let rec = parse_gap_record(src, *nkit_pos)?;
+    *nkit_pos += rec.consumed;
+    let size = rec.out_len;
+
+    let max_nulls = nulls_pos.saturating_sub(*out_pos);
+    let lead = if size < max_nulls {
+        size
+    } else if size >= JUNK_NULLS_SKIP && !first_or_last {
+        0
+    } else {
+        max_nulls
+    };
+    *nulls_pos = *out_pos + lead;
+
+    if !rec.mixed {
+        for piece in &rec.pieces {
+            match *piece {
+                GapPiece::Junk { len } => {
+                    emit(spans, *out_pos, lead, SpanKind::Zeros);
+                    emit(spans, *out_pos + lead, len - lead, SpanKind::Junk);
+                }
+                GapPiece::Zeros { len } => emit(spans, *out_pos, len, SpanKind::Zeros),
+                _ => unreachable!("plain gap records expand to one junk or zero piece"),
+            }
+            *out_pos += piece.len();
+        }
+        return Ok(());
+    }
+
+    let mut prg = size;
+    for piece in &rec.pieces {
+        let len = piece.len();
+        match *piece {
+            GapPiece::Junk { .. } => {
+                let max_nulls = nulls_pos.saturating_sub(*out_pos);
+                let nulls = if prg < max_nulls {
+                    len
+                } else if len >= JUNK_NULLS_SKIP && !first_or_last {
+                    0
+                } else {
+                    max_nulls
+                };
+                emit(spans, *out_pos, nulls, SpanKind::Zeros);
+                emit(spans, *out_pos + nulls, len - nulls, SpanKind::Junk);
+            }
+            GapPiece::Zeros { .. } => emit(spans, *out_pos, len, SpanKind::Zeros),
+            GapPiece::ByteFill { byte, .. } => emit(spans, *out_pos, len, SpanKind::Fill(byte)),
+            GapPiece::Verbatim { nkit_off, .. } => {
+                emit(spans, *out_pos, len, SpanKind::Verbatim(nkit_off))
+            }
+        }
+        *out_pos += len;
+        prg -= len;
+    }
+    Ok(())
 }
 
 /// Split spans to [`MAX_SPAN_BYTES`] so the pipeline's buffers stay

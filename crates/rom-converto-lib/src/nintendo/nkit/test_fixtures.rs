@@ -64,10 +64,10 @@ pub(crate) fn make_fake_gc_fs_iso() -> Vec<u8> {
         .copy_from_slice(&(fst_off as u32).to_be_bytes());
     iso[GC_FST_SIZE_FIELD..GC_FST_SIZE_FIELD + 4].copy_from_slice(&(fst_size as u32).to_be_bytes());
 
-    // Gap 0 (fst end .. file A): junk.
+    // Gap 0 (fst end .. file A): 0x1C leading NULs then junk.
     let walk_start = (fst_off + fst_size + 3) & !3;
-    let g0 = junk_at(walk_start as u64, 0x8000 - walk_start);
-    iso[walk_start..0x8000].copy_from_slice(&g0);
+    let g0 = junk_at(walk_start as u64 + 0x1C, 0x8000 - walk_start - 0x1C);
+    iso[walk_start + 0x1C..0x8000].copy_from_slice(&g0);
 
     // File A: compressible-ish content. Gap 1 (A end .. B): zeros.
     for (i, b) in iso[0x8000..0xD000].iter_mut().enumerate() {
@@ -84,12 +84,10 @@ pub(crate) fn make_fake_gc_fs_iso() -> Vec<u8> {
         *b = state as u8;
     }
     let g2_start = 0x11238usize;
-    let junk_run = 0x800;
     let garbage_run = 0x300;
+    let junk_run = 0x800;
     let fill_run = 0x18000 - g2_start - junk_run - garbage_run;
-    let j = junk_at(g2_start as u64, junk_run);
-    iso[g2_start..g2_start + junk_run].copy_from_slice(&j);
-    for b in iso[g2_start + junk_run..g2_start + junk_run + garbage_run].iter_mut() {
+    for b in iso[g2_start..g2_start + garbage_run].iter_mut() {
         state ^= state << 13;
         state ^= state >> 7;
         state ^= state << 17;
@@ -98,7 +96,9 @@ pub(crate) fn make_fake_gc_fs_iso() -> Vec<u8> {
             *b = 1;
         }
     }
-    iso[g2_start + junk_run + garbage_run..g2_start + junk_run + garbage_run + fill_run].fill(0xAB);
+    let j = junk_at((g2_start + garbage_run) as u64, junk_run);
+    iso[g2_start + garbage_run..g2_start + garbage_run + junk_run].copy_from_slice(&j);
+    iso[g2_start + garbage_run + junk_run..g2_start + garbage_run + junk_run + fill_run].fill(0xAB);
 
     // File C: 0x1C NUL bytes then pure junk (a junk file). Gap 3: junk.
     let c_junk = junk_at(0x18000 + 0x1C, 0x6000 - 0x1C);
@@ -106,12 +106,12 @@ pub(crate) fn make_fake_gc_fs_iso() -> Vec<u8> {
     let g3 = junk_at(0x1E000, 0x20000 - 0x1E000);
     iso[0x1E000..0x20000].copy_from_slice(&g3);
 
-    // File D, then trailing junk to the image end.
+    // File D, then 0x1C NULs and trailing junk to the image end.
     for (i, b) in iso[0x20000..0x23000].iter_mut().enumerate() {
         *b = (i % 251) as u8;
     }
-    let tail = junk_at(0x23000, IMAGE_SIZE - 0x23000);
-    iso[0x23000..].copy_from_slice(&tail);
+    let tail = junk_at(0x23000 + 0x1C, IMAGE_SIZE - 0x23000 - 0x1C);
+    iso[0x23000 + 0x1C..].copy_from_slice(&tail);
 
     iso
 }
@@ -135,11 +135,13 @@ pub(crate) fn make_nkit_gc(iso: &[u8]) -> Vec<u8> {
     let mut out = iso[..walk_start].to_vec();
     let mut fst_patch: Vec<(usize, u32, u32)> = Vec::new();
     let mut src_pos = walk_start;
+    let mut nulls_pos = walk_start + 0x1C;
 
-    for f in &files {
+    for (i, f) in files.iter().enumerate() {
         let target = f.data_offset as usize;
         if src_pos < target {
-            write_gap(&mut out, iso, src_pos, target);
+            let lead = gap_lead(target - src_pos, nulls_pos.saturating_sub(src_pos), i == 0);
+            write_gap(&mut out, iso, src_pos, target, lead);
         }
         src_pos = target;
         let copy_len = ((f.size as usize) + 3) & !3;
@@ -154,14 +156,17 @@ pub(crate) fn make_nkit_gc(iso: &[u8]) -> Vec<u8> {
             fst_patch.push((f.entry_offset, out.len() as u32, 0));
             out.extend_from_slice(&((((nulls as u32) << 2) | 3).to_be_bytes()));
             out.extend_from_slice(&f.size.to_be_bytes());
+            nulls_pos = 0;
         } else {
             fst_patch.push((f.entry_offset, out.len() as u32, f.size));
             out.extend_from_slice(content);
+            nulls_pos = src_pos + copy_len + 0x1C;
         }
         src_pos += copy_len;
     }
     if src_pos < iso.len() {
-        write_gap(&mut out, iso, src_pos, iso.len());
+        let lead = gap_lead(iso.len() - src_pos, nulls_pos.saturating_sub(src_pos), true);
+        write_gap(&mut out, iso, src_pos, iso.len(), lead);
     }
 
     for (entry_offset, off, size) in fst_patch {
@@ -185,7 +190,17 @@ pub(crate) fn make_nkit_gc(iso: &[u8]) -> Vec<u8> {
     out
 }
 
-fn write_gap(out: &mut Vec<u8>, iso: &[u8], from: usize, to: usize) {
+fn gap_lead(size: usize, max_nulls: usize, first_or_last: bool) -> usize {
+    if size < max_nulls {
+        size
+    } else if size >= 0x40000 && !first_or_last {
+        0
+    } else {
+        max_nulls
+    }
+}
+
+fn write_gap(out: &mut Vec<u8>, iso: &[u8], from: usize, to: usize, lead: usize) {
     let gap = &iso[from..to];
     let len = gap.len();
     assert_eq!(len % 4, 0, "gaps are 4-byte aligned");
@@ -194,7 +209,9 @@ fn write_gap(out: &mut Vec<u8>, iso: &[u8], from: usize, to: usize) {
         out.extend_from_slice(&((len as u32) | 1).to_be_bytes());
         return;
     }
-    if gap[..] == junk_at(from as u64, len)[..] {
+    if gap[..lead].iter().all(|&b| b == 0)
+        && gap[lead..] == junk_at((from + lead) as u64, len - lead)[..]
+    {
         out.extend_from_slice(&(len as u32).to_be_bytes());
         return;
     }
