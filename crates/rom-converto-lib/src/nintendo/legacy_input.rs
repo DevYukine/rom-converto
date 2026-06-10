@@ -537,7 +537,6 @@ mod tests {
             Some(LegacyFormat::NkitIso)
         );
 
-        // NKit GCZ: same stream inside the GCZ wrapper.
         let nkit_gcz = dir.path().join("game.nkit.gcz");
         let mut f = File::create(&nkit_gcz).unwrap();
         f.write_all(&make_gcz(&nkit_bytes, 0x8000, 0)).unwrap();

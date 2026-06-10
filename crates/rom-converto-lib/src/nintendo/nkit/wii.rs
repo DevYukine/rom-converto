@@ -496,7 +496,6 @@ pub(crate) fn build_wii_plan<S: Read + Seek>(
             )));
         }
 
-        // Patch the partition table entry with the restored offset.
         disc_header[part.table_value_offset..part.table_value_offset + 4]
             .copy_from_slice(&((out_pos / 4) as u32).to_be_bytes());
 

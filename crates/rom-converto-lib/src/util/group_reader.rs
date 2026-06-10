@@ -315,7 +315,6 @@ mod tests {
     fn seek_and_partial_reads() {
         let sizes = [64u32; 16];
         let mut r = make_reader(&sizes);
-        // Forward into group 5.
         r.seek(SeekFrom::Start(64 * 5 + 10)).unwrap();
         let mut buf = [0u8; 20];
         r.read_exact(&mut buf).unwrap();
@@ -324,7 +323,6 @@ mod tests {
         r.seek(SeekFrom::Start(64 + 3)).unwrap();
         r.read_exact(&mut buf).unwrap();
         assert!(buf.iter().all(|&b| b == 1));
-        // End-relative.
         r.seek(SeekFrom::End(-4)).unwrap();
         let mut tail = [0u8; 4];
         r.read_exact(&mut tail).unwrap();

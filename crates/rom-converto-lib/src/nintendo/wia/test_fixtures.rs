@@ -448,7 +448,6 @@ fn lzma_encode_with(data: &[u8], reduce_size: usize) -> ([u8; 5], Vec<u8>) {
 /// 16-bit big-endian length, end marker 0x00). The SDK's LZMA2
 /// encoder needs its multi-threaded coder, which `lzma-sdk-sys` does
 /// not build, and tests only need a valid stream for the decoder.
-/// Used by codec unit tests too.
 pub(crate) fn lzma2_encode(data: &[u8]) -> (u8, Vec<u8>) {
     lzma2_encode_with(data, data.len().max(16))
 }

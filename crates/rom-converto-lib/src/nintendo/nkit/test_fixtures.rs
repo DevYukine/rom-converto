@@ -291,7 +291,6 @@ pub(crate) fn make_nkit_gcz(nkit: &[u8], source_crc: u32) -> Vec<u8> {
     gcz
 }
 
-/// CRC-32 of a byte slice, for tests.
 pub(crate) fn crc_of(bytes: &[u8]) -> u32 {
     let mut c = Crc32::new();
     c.update(bytes);
@@ -300,8 +299,8 @@ pub(crate) fn crc_of(bytes: &[u8]) -> u32 {
 
 /// Compute the 4-byte big-endian value to place at `off` so the
 /// buffer's CRC-32 becomes `target` (what NKit's `CrcForce` does).
-/// Brute basis: CRC-32 is GF(2)-linear, so the patch is the solution
-/// of a 32x32 bit system.
+/// CRC-32 is GF(2)-linear, so the patch is the solution of a 32x32
+/// bit system whose basis is probed one bit at a time.
 fn force_crc(buf: &[u8], off: usize, target: u32) -> u32 {
     let mut work = buf.to_vec();
     work[off..off + 4].fill(0);
@@ -633,7 +632,6 @@ pub(crate) fn make_nkit_wii(iso: &[u8]) -> Vec<u8> {
         pdata[e + 4..e + 8].copy_from_slice(&off_w.to_be_bytes());
     }
 
-    // Assemble the nkit image.
     let mut out = iso[..0x50000].to_vec();
     {
         let lead = gap_lead(PART_OFFSET - 0x50000, 0x1C, true);
@@ -661,7 +659,6 @@ pub(crate) fn make_nkit_wii(iso: &[u8]) -> Vec<u8> {
     // Patch the partition table entry to the nkit offset.
     let table = WII_PARTITION_INFO_OFFSET as usize + 0x20;
     out[table..table + 4].copy_from_slice(&((nkit_part_off as u32) >> 2).to_be_bytes());
-    // Trailing filler.
     {
         let from = iso.len() - TRAILING;
         let lead = gap_lead(TRAILING, 0x1C, true);
