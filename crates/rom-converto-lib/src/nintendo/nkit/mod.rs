@@ -8,6 +8,7 @@ pub mod format;
 pub mod gaps;
 pub mod reader;
 pub mod verify;
+pub(crate) mod wii;
 
 #[cfg(test)]
 pub(crate) mod test_fixtures;
@@ -124,5 +125,47 @@ mod tests {
         let f = write_temp(&bad, ".nkit.gcz");
         let err = verify_nkit_blocking(f.path(), true, Arc::new(AtomicU64::new(0)));
         assert!(err.is_err());
+    }
+}
+
+#[cfg(test)]
+mod wii_tests {
+    use super::test_fixtures::{make_fake_wii_fs_iso, make_nkit_wii};
+    use super::*;
+    use std::io::{Read, Write};
+
+    #[test]
+    fn nkit_wii_restores_byte_identical() {
+        let iso = make_fake_wii_fs_iso();
+        let nkit = make_nkit_wii(&iso);
+        assert!(nkit.len() < iso.len(), "stripping must shrink the image");
+
+        let mut f = tempfile::NamedTempFile::with_suffix(".nkit.iso").unwrap();
+        f.write_all(&nkit).unwrap();
+        f.flush().unwrap();
+        let mut r = NkitReader::open(f.path()).unwrap();
+        assert_eq!(r.image_size(), iso.len() as u64);
+        assert!(r.restorable_warning().is_none());
+        let mut out = Vec::new();
+        r.read_to_end(&mut out).unwrap();
+        assert_eq!(out.len(), iso.len());
+        assert!(out == iso, "Wii restoration must be byte-identical");
+    }
+
+    #[test]
+    fn nkit_wii_corruption_fails_the_crc_check() {
+        let iso = make_fake_wii_fs_iso();
+        let mut nkit = make_nkit_wii(&iso);
+        let pos = nkit.len() / 2;
+        nkit[pos] ^= 0x10;
+        let mut f = tempfile::NamedTempFile::with_suffix(".nkit.iso").unwrap();
+        f.write_all(&nkit).unwrap();
+        f.flush().unwrap();
+        let mut out = Vec::new();
+        let res = NkitReader::open(f.path()).and_then(|mut r| {
+            r.read_to_end(&mut out)?;
+            Ok(())
+        });
+        assert!(res.is_err());
     }
 }

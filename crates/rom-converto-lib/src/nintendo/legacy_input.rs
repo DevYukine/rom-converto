@@ -455,6 +455,49 @@ mod tests {
         assert_eq!(std::fs::read(&restored).unwrap(), original);
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn nkit_wii_migrates_to_rvz_byte_identical_to_iso_path() {
+        use crate::nintendo::nkit::test_fixtures::{make_fake_wii_fs_iso, make_nkit_wii};
+
+        let dir = tempfile::tempdir().unwrap();
+        let original = make_fake_wii_fs_iso();
+        let iso = dir.path().join("game.iso");
+        std::fs::write(&iso, &original).unwrap();
+        let nkit = dir.path().join("game.nkit.iso");
+        std::fs::write(&nkit, make_nkit_wii(&original)).unwrap();
+
+        let rvz_from_iso = dir.path().join("from_iso.rvz");
+        compress_disc(
+            &iso,
+            &rvz_from_iso,
+            RvzCompressOptions::default(),
+            &NoProgress,
+        )
+        .await
+        .unwrap();
+
+        let rvz_from_nkit = dir.path().join("from_nkit.rvz");
+        migrate_disc(
+            &nkit,
+            &rvz_from_nkit,
+            RvzCompressOptions::default(),
+            MigrateOptions::default(),
+            &NoProgress,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            std::fs::read(&rvz_from_nkit).unwrap(),
+            std::fs::read(&rvz_from_iso).unwrap()
+        );
+
+        let restored = dir.path().join("restored.iso");
+        decompress_disc(&rvz_from_nkit, &restored, &NoProgress)
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(&restored).unwrap(), original);
+    }
+
     #[tokio::test]
     async fn migrate_rejects_plain_iso() {
         let dir = tempfile::tempdir().unwrap();

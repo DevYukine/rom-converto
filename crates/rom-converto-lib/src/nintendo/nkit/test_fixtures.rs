@@ -13,8 +13,12 @@ const DISC_NUM: u8 = 0;
 const BLOCK: usize = 0x100;
 
 fn junk_at(off: u64, len: usize) -> Vec<u8> {
+    junk_at_id(JUNK_ID, DISC_NUM, off, len)
+}
+
+fn junk_at_id(id: &[u8; 4], disc: u8, off: u64, len: usize) -> Vec<u8> {
     let mut buf = vec![0u8; len];
-    LaggedFibonacci::fill_junk(JUNK_ID, DISC_NUM, off, &mut buf);
+    LaggedFibonacci::fill_junk(id, disc, off, &mut buf);
     buf
 }
 
@@ -201,6 +205,18 @@ fn gap_lead(size: usize, max_nulls: usize, first_or_last: bool) -> usize {
 }
 
 fn write_gap(out: &mut Vec<u8>, iso: &[u8], from: usize, to: usize, lead: usize) {
+    write_gap_id(out, iso, from, to, lead, JUNK_ID, DISC_NUM)
+}
+
+fn write_gap_id(
+    out: &mut Vec<u8>,
+    iso: &[u8],
+    from: usize,
+    to: usize,
+    lead: usize,
+    id: &[u8; 4],
+    disc: u8,
+) {
     let gap = &iso[from..to];
     let len = gap.len();
     assert_eq!(len % 4, 0, "gaps are 4-byte aligned");
@@ -210,7 +226,7 @@ fn write_gap(out: &mut Vec<u8>, iso: &[u8], from: usize, to: usize, lead: usize)
         return;
     }
     if gap[..lead].iter().all(|&b| b == 0)
-        && gap[lead..] == junk_at((from + lead) as u64, len - lead)[..]
+        && gap[lead..] == junk_at_id(id, disc, (from + lead) as u64, len - lead)[..]
     {
         out.extend_from_slice(&(len as u32).to_be_bytes());
         return;
@@ -228,7 +244,7 @@ fn write_gap(out: &mut Vec<u8>, iso: &[u8], from: usize, to: usize, lead: usize)
     while off < len {
         let n = (len - off).min(BLOCK);
         let block = &gap[off..off + n];
-        let kind = if block == &junk_at((from + off) as u64, n)[..] {
+        let kind = if block == &junk_at_id(id, disc, (from + off) as u64, n)[..] {
             Kind::Junk
         } else if block.iter().all(|&b| b == block[0]) {
             Kind::Fill(block[0])
@@ -352,6 +368,321 @@ fn solve_gf2(cols: &[u32; 32], target: u32) -> Option<u32> {
         }
     }
     Some(x)
+}
+
+use crate::nintendo::rvl::common_keys::WII_COMMON_KEY;
+use crate::nintendo::rvl::constants::{
+    WII_BLOCKS_PER_GROUP, WII_GROUP_PAYLOAD_SIZE, WII_GROUP_TOTAL_SIZE, WII_MAGIC,
+    WII_MAGIC_OFFSET, WII_PARTITION_HEADER_DATA_OFFSET_OFFSET,
+    WII_PARTITION_HEADER_DATA_SIZE_OFFSET, WII_PARTITION_INFO_OFFSET, WII_SECTOR_PAYLOAD_SIZE,
+    WII_SECTOR_SIZE, WII_TICKET_TITLE_ID_OFFSET, WII_TICKET_TITLE_KEY_OFFSET,
+};
+use crate::nintendo::rvl::disc::decrypt_sector;
+use crate::nintendo::rvl::partition::{
+    HASH_REGION_BYTES, recompute_hash_regions_into, reencrypt_cluster_into,
+};
+
+const WII_DISC_ID: &[u8; 4] = b"RNKE";
+const WII_PART_ID: &[u8; 4] = b"GALE";
+const PART_OFFSET: usize = 0x60000;
+const PART_DATA_OFFSET: usize = 0x20000;
+const N_CLUSTERS: usize = 3;
+const TRAILING: usize = 0x8000;
+
+/// Build a Wii ISO with one valid encrypted partition whose decrypted
+/// content is a real filesystem with junk gaps, plus a deliberately
+/// corrupted hash region in cluster 1 to force NKit hash preservation.
+pub(crate) fn make_fake_wii_fs_iso() -> Vec<u8> {
+    let data_size = N_CLUSTERS * WII_GROUP_PAYLOAD_SIZE as usize;
+    let hashed_size = N_CLUSTERS as u64 * WII_GROUP_TOTAL_SIZE;
+    let total = PART_OFFSET + PART_DATA_OFFSET + hashed_size as usize + TRAILING;
+    let mut iso = vec![0u8; total];
+
+    iso[..4].copy_from_slice(WII_DISC_ID);
+    iso[6] = DISC_NUM;
+    iso[WII_MAGIC_OFFSET..WII_MAGIC_OFFSET + 4].copy_from_slice(&WII_MAGIC.to_be_bytes());
+
+    // Partition table: one data partition.
+    let info = WII_PARTITION_INFO_OFFSET as usize;
+    let table = info + 0x20;
+    iso[info..info + 4].copy_from_slice(&1u32.to_be_bytes());
+    iso[info + 4..info + 8].copy_from_slice(&((table as u32) >> 2).to_be_bytes());
+    iso[table..table + 4].copy_from_slice(&((PART_OFFSET as u32) >> 2).to_be_bytes());
+
+    // Ticket with a recoverable title key (same scheme as the rvl fixture).
+    let title_id = [0x00, 0x01, 0x00, 0x00, 0x4E, 0x4B, 0x49, 0x54];
+    let plaintext_title_key = [0x5Au8; 16];
+    let mut iv = [0u8; 16];
+    iv[..8].copy_from_slice(&title_id);
+    use aes::cipher::{BlockEncryptMut, KeyIvInit};
+    let cipher = cbc::Encryptor::<aes::Aes128>::new_from_slices(&WII_COMMON_KEY, &iv).unwrap();
+    let mut enc_key = [0u8; 16];
+    cipher
+        .encrypt_padded_b2b_mut::<block_padding::NoPadding>(&plaintext_title_key, &mut enc_key)
+        .unwrap();
+    iso[PART_OFFSET + WII_TICKET_TITLE_ID_OFFSET..PART_OFFSET + WII_TICKET_TITLE_ID_OFFSET + 8]
+        .copy_from_slice(&title_id);
+    iso[PART_OFFSET + WII_TICKET_TITLE_KEY_OFFSET..PART_OFFSET + WII_TICKET_TITLE_KEY_OFFSET + 16]
+        .copy_from_slice(&enc_key);
+    let do_word = ((PART_DATA_OFFSET as u64) >> 2) as u32;
+    let ds_word = (hashed_size >> 2) as u32;
+    iso[PART_OFFSET + WII_PARTITION_HEADER_DATA_OFFSET_OFFSET
+        ..PART_OFFSET + WII_PARTITION_HEADER_DATA_OFFSET_OFFSET + 4]
+        .copy_from_slice(&do_word.to_be_bytes());
+    iso[PART_OFFSET + WII_PARTITION_HEADER_DATA_SIZE_OFFSET
+        ..PART_OFFSET + WII_PARTITION_HEADER_DATA_SIZE_OFFSET + 4]
+        .copy_from_slice(&ds_word.to_be_bytes());
+
+    // Decrypted partition content: boot header, FST (offsets / 4),
+    // two files, junk and zero gaps, trailing junk.
+    let mut data = vec![0u8; data_size];
+    data[..4].copy_from_slice(WII_PART_ID);
+    data[6] = DISC_NUM;
+    let fst_off = 0x2440usize;
+    let files: [(u32, u32); 2] = [(0x8000, 0x5000), (0x40000, 0x9000)];
+    let n_entries = 1 + files.len();
+    let fst_size = n_entries * 12 + 16;
+    {
+        let fst = &mut data[fst_off..fst_off + fst_size];
+        fst[8..12].copy_from_slice(&(n_entries as u32).to_be_bytes());
+        for (i, (off, size)) in files.iter().enumerate() {
+            let e = (i + 1) * 12;
+            fst[e + 4..e + 8].copy_from_slice(&(off >> 2).to_be_bytes());
+            fst[e + 8..e + 12].copy_from_slice(&size.to_be_bytes());
+        }
+    }
+    data[0x420..0x424].copy_from_slice(&((0x440u32) >> 2).to_be_bytes());
+    data[0x424..0x428].copy_from_slice(&((fst_off as u32) >> 2).to_be_bytes());
+    data[0x428..0x42C].copy_from_slice(&((fst_size as u32) >> 2).to_be_bytes());
+    for (i, b) in data[0x440..0x2440].iter_mut().enumerate() {
+        *b = (i as u8).wrapping_mul(13).wrapping_add(3);
+    }
+    let walk = (fst_off + fst_size + 3) & !3;
+    let g0 = junk_at_id(
+        WII_PART_ID,
+        DISC_NUM,
+        walk as u64 + 0x1C,
+        0x8000 - walk - 0x1C,
+    );
+    data[walk + 0x1C..0x8000].copy_from_slice(&g0);
+    for (i, b) in data[0x8000..0xD000].iter_mut().enumerate() {
+        *b = (i % 253) as u8;
+    }
+    // Zero gap [0xD000, 0x40000) stays zero; file B then trailing junk.
+    for (i, b) in data[0x40000..0x49000].iter_mut().enumerate() {
+        *b = (i % 247) as u8;
+    }
+    let tail = junk_at_id(
+        WII_PART_ID,
+        DISC_NUM,
+        0x49000 + 0x1C,
+        data_size - 0x49000 - 0x1C,
+    );
+    data[0x49000 + 0x1C..].copy_from_slice(&tail);
+
+    // Hash and encrypt clusters; corrupt one hash byte in cluster 1
+    // so NKit must preserve that group's hash sectors.
+    let data_start = PART_OFFSET + PART_DATA_OFFSET;
+    let mut payloads = vec![[0u8; WII_SECTOR_PAYLOAD_SIZE]; WII_BLOCKS_PER_GROUP];
+    let mut regions = vec![[0u8; HASH_REGION_BYTES]; WII_BLOCKS_PER_GROUP];
+    let mut cluster_out = vec![0u8; WII_GROUP_TOTAL_SIZE as usize];
+    for c in 0..N_CLUSTERS {
+        for (s, p) in payloads.iter_mut().enumerate() {
+            let off = c * WII_GROUP_PAYLOAD_SIZE as usize + s * WII_SECTOR_PAYLOAD_SIZE;
+            p.copy_from_slice(&data[off..off + WII_SECTOR_PAYLOAD_SIZE]);
+        }
+        recompute_hash_regions_into(&payloads, &mut regions);
+        if c == 1 {
+            regions[5][0x37] ^= 0xA5;
+        }
+        reencrypt_cluster_into(&regions, &payloads, &plaintext_title_key, &mut cluster_out)
+            .unwrap();
+        let off = data_start + c * WII_GROUP_TOTAL_SIZE as usize;
+        iso[off..off + WII_GROUP_TOTAL_SIZE as usize].copy_from_slice(&cluster_out);
+    }
+
+    // Filler before the partition and trailing region: disc-level junk
+    // with the leading-NUL rule.
+    let f0 = junk_at_id(
+        WII_DISC_ID,
+        DISC_NUM,
+        0x50000 + 0x1C,
+        PART_OFFSET - 0x50000 - 0x1C,
+    );
+    iso[0x50000 + 0x1C..PART_OFFSET].copy_from_slice(&f0);
+    let t0 = junk_at_id(
+        WII_PART_ID,
+        DISC_NUM,
+        (total - TRAILING + 0x1C) as u64,
+        TRAILING - 0x1C,
+    );
+    iso[total - TRAILING + 0x1C..].copy_from_slice(&t0);
+
+    iso
+}
+
+/// Encode a Wii ISO to the native NKit layout (no update partition).
+pub(crate) fn make_nkit_wii(iso: &[u8]) -> Vec<u8> {
+    let data_start = PART_OFFSET + PART_DATA_OFFSET;
+    let hashed_size = N_CLUSTERS as u64 * WII_GROUP_TOTAL_SIZE;
+    let data_size = N_CLUSTERS * WII_GROUP_PAYLOAD_SIZE as usize;
+    let title_key = [0x5Au8; 16];
+
+    // Decrypt the partition into hashless data plus on-disc hash regions.
+    let mut data = vec![0u8; data_size];
+    let mut on_disc = vec![[0u8; HASH_REGION_BYTES]; N_CLUSTERS * WII_BLOCKS_PER_GROUP];
+    for c in 0..N_CLUSTERS {
+        for s in 0..WII_BLOCKS_PER_GROUP {
+            let off = data_start + c * WII_GROUP_TOTAL_SIZE as usize + s * WII_SECTOR_SIZE;
+            let mut sector = [0u8; WII_SECTOR_SIZE];
+            sector.copy_from_slice(&iso[off..off + WII_SECTOR_SIZE]);
+            decrypt_sector(&mut sector, &title_key).unwrap();
+            on_disc[c * WII_BLOCKS_PER_GROUP + s].copy_from_slice(&sector[..HASH_REGION_BYTES]);
+            let doff = c * WII_GROUP_PAYLOAD_SIZE as usize + s * WII_SECTOR_PAYLOAD_SIZE;
+            data[doff..doff + WII_SECTOR_PAYLOAD_SIZE]
+                .copy_from_slice(&sector[HASH_REGION_BYTES..]);
+        }
+    }
+
+    // Preserved groups: recomputed hashes that do not match on-disc.
+    let mut payloads = vec![[0u8; WII_SECTOR_PAYLOAD_SIZE]; WII_BLOCKS_PER_GROUP];
+    let mut regions = vec![[0u8; HASH_REGION_BYTES]; WII_BLOCKS_PER_GROUP];
+    let mut preserved_flags = [false; N_CLUSTERS];
+    let mut preserved_bytes: Vec<u8> = Vec::new();
+    for c in 0..N_CLUSTERS {
+        for (s, p) in payloads.iter_mut().enumerate() {
+            let off = c * WII_GROUP_PAYLOAD_SIZE as usize + s * WII_SECTOR_PAYLOAD_SIZE;
+            p.copy_from_slice(&data[off..off + WII_SECTOR_PAYLOAD_SIZE]);
+        }
+        recompute_hash_regions_into(&payloads, &mut regions);
+        if (0..WII_BLOCKS_PER_GROUP).any(|s| on_disc[c * WII_BLOCKS_PER_GROUP + s] != regions[s]) {
+            preserved_flags[c] = true;
+            for s in 0..WII_BLOCKS_PER_GROUP {
+                preserved_bytes.extend_from_slice(&on_disc[c * WII_BLOCKS_PER_GROUP + s]);
+            }
+        }
+    }
+
+    // Partition data stream: NKit pdata header, verbatim to FST,
+    // patched FST, flags, file walk with gap records, hash sectors.
+    let fst_off = u32::from_be_bytes(data[0x424..0x428].try_into().unwrap()) as usize * 4;
+    let fst_size = u32::from_be_bytes(data[0x428..0x42C].try_into().unwrap()) as usize * 4;
+    let mut files = parse_gc_fst(&data[fst_off..fst_off + fst_size]).unwrap();
+    for f in &mut files {
+        f.data_offset *= 4;
+    }
+    files.sort_by_key(|f| f.data_offset);
+
+    let groups = hashed_size.div_ceil(WII_GROUP_TOTAL_SIZE) as usize;
+    let flags_len = groups.div_ceil(32) * 4;
+    let mut flags = vec![0u8; flags_len];
+    for (g, &p) in preserved_flags.iter().enumerate() {
+        if p {
+            flags[g / 8] |= 0x80 >> (g % 8);
+        }
+    }
+
+    let walk = (fst_off + fst_size + 3) & !3;
+    let mut pdata = data[..walk].to_vec();
+    pdata[0x200..0x208].copy_from_slice(b"NKIT v01");
+    pdata[0x210..0x214].copy_from_slice(&((hashed_size / 4) as u32).to_be_bytes());
+    pdata.extend_from_slice(&flags);
+    let mut fst_patch: Vec<(usize, u32)> = Vec::new();
+    let mut src_pos = walk;
+    let mut nulls_pos = walk + 0x1C;
+    for (i, f) in files.iter().enumerate() {
+        let target = f.data_offset as usize;
+        if src_pos < target {
+            let lead = gap_lead(target - src_pos, nulls_pos.saturating_sub(src_pos), i == 0);
+            write_gap_id(
+                &mut pdata,
+                &data,
+                src_pos,
+                target,
+                lead,
+                WII_PART_ID,
+                DISC_NUM,
+            );
+        }
+        src_pos = target;
+        let copy_len = ((f.size as usize) + 3) & !3;
+        fst_patch.push((f.entry_offset, (pdata.len() as u32) >> 2));
+        pdata.extend_from_slice(&data[src_pos..src_pos + copy_len]);
+        nulls_pos = src_pos + copy_len + 0x1C;
+        src_pos += copy_len;
+    }
+    if src_pos < data.len() {
+        let lead = gap_lead(
+            data.len() - src_pos,
+            nulls_pos.saturating_sub(src_pos),
+            true,
+        );
+        write_gap_id(
+            &mut pdata,
+            &data,
+            src_pos,
+            data.len(),
+            lead,
+            WII_PART_ID,
+            DISC_NUM,
+        );
+    }
+    pdata.extend_from_slice(&preserved_bytes);
+    for (entry_offset, off_w) in fst_patch {
+        let e = fst_off + entry_offset;
+        pdata[e + 4..e + 8].copy_from_slice(&off_w.to_be_bytes());
+    }
+
+    // Assemble the nkit image.
+    let mut out = iso[..0x50000].to_vec();
+    {
+        let lead = gap_lead(PART_OFFSET - 0x50000, 0x1C, true);
+        let iso_ref = iso;
+        write_gap_id(
+            &mut out,
+            iso_ref,
+            0x50000,
+            PART_OFFSET,
+            lead,
+            WII_DISC_ID,
+            DISC_NUM,
+        );
+    }
+    // Pad to 0x8000 like the writer does before each partition.
+    while !out.len().is_multiple_of(0x8000) {
+        out.push(0);
+    }
+    let nkit_part_off = out.len();
+    out.extend_from_slice(&iso[PART_OFFSET..PART_OFFSET + PART_DATA_OFFSET]);
+    let shrunk_len = pdata.len() as u64;
+    let p2bc = nkit_part_off + WII_PARTITION_HEADER_DATA_SIZE_OFFSET;
+    out.extend_from_slice(&pdata);
+    out[p2bc..p2bc + 4].copy_from_slice(&((shrunk_len / 4) as u32).to_be_bytes());
+    // Patch the partition table entry to the nkit offset.
+    let table = WII_PARTITION_INFO_OFFSET as usize + 0x20;
+    out[table..table + 4].copy_from_slice(&((nkit_part_off as u32) >> 2).to_be_bytes());
+    // Trailing filler.
+    {
+        let from = iso.len() - TRAILING;
+        let lead = gap_lead(TRAILING, 0x1C, true);
+        let mut rec = Vec::new();
+        write_gap_id(&mut rec, iso, from, iso.len(), lead, WII_PART_ID, DISC_NUM);
+        out.extend_from_slice(&rec);
+    }
+
+    // Disc-level NKit header plus the CRC fix-up.
+    let src_crc = crc_of(iso);
+    out[0x60] = 1;
+    out[0x61] = 1;
+    out[0x200..0x208].copy_from_slice(b"NKIT v01");
+    out[0x208..0x20C].copy_from_slice(&src_crc.to_be_bytes());
+    out[0x20C..0x210].fill(0);
+    out[0x210..0x214].copy_from_slice(&((iso.len() as u32) / 4).to_be_bytes());
+    out[0x214..0x218].fill(0);
+    out[0x218..0x21C].fill(0);
+    let fixup = force_crc(&out, 0x20C, src_crc);
+    out[0x20C..0x210].copy_from_slice(&fixup.to_be_bytes());
+    out
 }
 
 #[cfg(test)]

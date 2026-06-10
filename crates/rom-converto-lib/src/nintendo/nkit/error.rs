@@ -29,9 +29,6 @@ pub enum NkitError {
         computed: u32,
     },
 
-    #[error("NKit Wii images are not supported yet")]
-    WiiUnsupported,
-
     #[error("{0}")]
     Custom(String),
 }
