@@ -1,3 +1,4 @@
+pub mod group_reader;
 pub mod maker_codes;
 pub mod pixel;
 pub mod pread;

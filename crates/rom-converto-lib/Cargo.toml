@@ -51,3 +51,4 @@ zstd = { version = "^0.13", features = ["zstdmt"] }
 # HTTP (for seed DB fetch)
 reqwest.workspace = true
 tempfile = "^3"
+bzip2 = "0.6.1"
