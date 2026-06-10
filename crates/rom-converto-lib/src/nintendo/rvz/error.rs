@@ -22,6 +22,9 @@ pub enum RvzError {
     #[error(transparent)]
     Wia(#[from] Box<crate::nintendo::wia::error::WiaError>),
 
+    #[error(transparent)]
+    Nkit(#[from] crate::nintendo::nkit::error::NkitError),
+
     #[error("invalid RVZ magic: expected b\"RVZ\\x01\", got {0:02X?}")]
     InvalidMagic([u8; 4]),
 

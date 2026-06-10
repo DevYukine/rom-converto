@@ -220,10 +220,13 @@ fn logical_input_size(input: &Path) -> RvzResult<u64> {
     match detect_legacy_format(input)? {
         Some(LegacyFormat::Gcz) => Ok(crate::nintendo::gcz::GczReader::data_size_of(input)?),
         Some(LegacyFormat::Wia) => Ok(crate::nintendo::wia::WiaReader::iso_size_of(input)?),
-        Some(other) => Err(RvzError::Custom(format!(
-            "{} support is not implemented yet",
-            other.name()
-        ))),
+        Some(LegacyFormat::NkitIso) => Ok(crate::nintendo::nkit::NkitReader::image_size_of(input)?),
+        Some(LegacyFormat::NkitGcz) => {
+            let dhead = crate::nintendo::gcz::gcz_logical_prefix(input, 0x440)?;
+            Ok(crate::nintendo::nkit::format::NkitHeader::parse(&dhead)
+                .map_err(RvzError::from)?
+                .image_size)
+        }
         None if is_wbfs_input(input) => Ok(WbfsReader::open(input)?.disc_size()),
         None => Ok(std::fs::metadata(input)?.len()),
     }
@@ -278,10 +281,18 @@ fn compress_blocking(
                 BufReader::with_capacity(BUF, crate::nintendo::wia::WiaReader::open(input)?);
             compress_reader(reader, output, options, iso_size, bytes_done)
         }
-        Some(other) => Err(RvzError::Custom(format!(
-            "{} support is not implemented yet",
-            other.name()
-        ))),
+        Some(LegacyFormat::NkitIso) => {
+            let reader =
+                BufReader::with_capacity(BUF, crate::nintendo::nkit::NkitReader::open(input)?);
+            compress_reader(reader, output, options, iso_size, bytes_done)
+        }
+        Some(LegacyFormat::NkitGcz) => {
+            let gcz = crate::nintendo::gcz::GczReader::open(input)?;
+            let nkit =
+                crate::nintendo::nkit::NkitReader::from_source(gcz).map_err(RvzError::from)?;
+            let reader = BufReader::with_capacity(BUF, nkit);
+            compress_reader(reader, output, options, iso_size, bytes_done)
+        }
         None if is_wbfs_input(input) => {
             let reader = BufReader::with_capacity(BUF, WbfsReader::open(input)?);
             compress_reader(reader, output, options, iso_size, bytes_done)

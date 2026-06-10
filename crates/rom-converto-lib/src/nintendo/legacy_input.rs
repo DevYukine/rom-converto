@@ -153,10 +153,21 @@ pub async fn verify_legacy_input(
             })
             .await
         }
-        other => Err(RvzError::Custom(format!(
-            "{} support is not implemented yet",
-            other.name()
-        ))),
+        LegacyFormat::NkitIso | LegacyFormat::NkitGcz => {
+            let wrapped = fmt == LegacyFormat::NkitGcz;
+            let total = {
+                let path = input.to_path_buf();
+                task::spawn_blocking(move || super::nkit::verify_total(&path, wrapped)).await??
+            };
+            let path = input.to_path_buf();
+            run_blocking_with_progress(
+                total,
+                "Verifying NKit integrity...",
+                progress,
+                move |done| Ok(super::nkit::verify_nkit_blocking(&path, wrapped, done)?),
+            )
+            .await
+        }
     }
 }
 
@@ -340,6 +351,67 @@ mod tests {
 
         let restored = dir.path().join("restored.iso");
         decompress_disc(&rvz_from_wia, &restored, &NoProgress)
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(&restored).unwrap(), original);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn nkit_migrates_to_rvz_byte_identical_to_iso_path() {
+        use crate::nintendo::nkit::test_fixtures::{
+            crc_of, make_fake_gc_fs_iso, make_nkit_gc, make_nkit_gcz,
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let original = make_fake_gc_fs_iso();
+        let nkit_bytes = make_nkit_gc(&original);
+
+        let iso = dir.path().join("game.iso");
+        std::fs::write(&iso, &original).unwrap();
+        let nkit = dir.path().join("game.nkit.iso");
+        std::fs::write(&nkit, &nkit_bytes).unwrap();
+        let nkit_gcz = dir.path().join("game.nkit.gcz");
+        std::fs::write(&nkit_gcz, make_nkit_gcz(&nkit_bytes, crc_of(&original))).unwrap();
+
+        assert_eq!(
+            detect_legacy_format(&nkit).unwrap(),
+            Some(LegacyFormat::NkitIso)
+        );
+        assert_eq!(
+            detect_legacy_format(&nkit_gcz).unwrap(),
+            Some(LegacyFormat::NkitGcz)
+        );
+
+        let rvz_from_iso = dir.path().join("from_iso.rvz");
+        compress_disc(
+            &iso,
+            &rvz_from_iso,
+            RvzCompressOptions::default(),
+            &NoProgress,
+        )
+        .await
+        .unwrap();
+
+        for (input, name) in [(&nkit, "from_nkit.rvz"), (&nkit_gcz, "from_nkit_gcz.rvz")] {
+            let rvz = dir.path().join(name);
+            migrate_disc(
+                input,
+                &rvz,
+                RvzCompressOptions::default(),
+                MigrateOptions::default(),
+                &NoProgress,
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                std::fs::read(&rvz).unwrap(),
+                std::fs::read(&rvz_from_iso).unwrap(),
+                "{name} must match the direct ISO compression"
+            );
+        }
+
+        let restored = dir.path().join("restored.iso");
+        decompress_disc(&dir.path().join("from_nkit.rvz"), &restored, &NoProgress)
             .await
             .unwrap();
         assert_eq!(std::fs::read(&restored).unwrap(), original);
