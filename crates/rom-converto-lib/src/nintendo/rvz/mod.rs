@@ -43,6 +43,14 @@ pub use error::{RvzError, RvzResult};
 use std::path::{Path, PathBuf};
 
 pub fn derive_rvz_path(input: &Path) -> PathBuf {
+    // Strip NKit's double extension so game.nkit.iso becomes
+    // game.rvz instead of game.nkit.rvz.
+    if let Some(name) = input.file_name().and_then(|n| n.to_str()) {
+        let lower = name.to_ascii_lowercase();
+        if lower.ends_with(".nkit.iso") || lower.ends_with(".nkit.gcz") {
+            return input.with_file_name(format!("{}.rvz", &name[..name.len() - 9]));
+        }
+    }
     input.with_extension("rvz")
 }
 
@@ -111,6 +119,18 @@ mod derive_path_tests {
         assert_eq!(
             derive_rvz_path(Path::new("game.backup.iso")),
             PathBuf::from("game.backup.rvz")
+        );
+    }
+
+    #[test]
+    fn nkit_double_extensions_collapse() {
+        assert_eq!(
+            derive_rvz_path(Path::new("/g/game.nkit.iso")),
+            PathBuf::from("/g/game.rvz")
+        );
+        assert_eq!(
+            derive_rvz_path(Path::new("game.NKIT.GCZ")),
+            PathBuf::from("game.rvz")
         );
     }
 }

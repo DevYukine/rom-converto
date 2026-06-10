@@ -21,6 +21,7 @@ Built for developers, tinkerers and archivists.
 
 * [x] Compress `.iso` / `.gcm` to Dolphin's `.rvz` format
 * [x] Decompress `.rvz` back to raw `.iso`
+* [x] Migrate legacy `.gcz`, `.nkit.iso`, and `.nkit.gcz` images to `.rvz` with an integrity check first (GCZ block checksums, NKit whole-file CRC32) and NKit junk regeneration, streamed with no temp files
 * [x] Byte identical output against Dolphin's own encoder and decoder
 * [x] See [`benchmark/GameCube.md`](benchmark/GameCube.md) for performance numbers
 
@@ -28,6 +29,7 @@ Built for developers, tinkerers and archivists.
 
 * [x] Compress `.iso` / `.wbfs` to Dolphin's `.rvz` format
 * [x] Decompress `.rvz` back to raw `.iso`
+* [x] Migrate legacy `.wia` images (all codecs: bzip2, LZMA, LZMA2, purge, none) to `.rvz` with the SHA-1 header chain verified first, rebuilding the hash tree and re-encrypting partitions on the fly
 * [x] Full partition pipeline: AES-CBC sector encryption, H0/H1/H2 hash hierarchy, per-chunk exception list, partial-cluster partitions
 * [x] Byte identical output against Dolphin's own encoder and decoder
 * [x] See [`benchmark/Wii.md`](benchmark/Wii.md) for performance numbers
@@ -249,7 +251,7 @@ Format notes:
 
 - `.rvz` (Wii and GameCube) and `.wbfs` (Wii) are read directly. Only the disc areas that are actually needed get decompressed, so no temp files are written and memory stays at a few MB.
 - `.wua` (Wii U Cemu archive) is read directly. When an archive bundles base + update + DLC, the base title is shown, the bundled titles are listed, and the version includes the update.
-- WIA, CISO, GCZ, NFS, and TGC are not supported.
+- `.wia`, `.gcz`, `.nkit.iso`, and `.nkit.gcz` are read through the same streaming migration readers the `migrate` command uses (NKit Wii is not supported yet). CISO, NFS, and TGC are not supported.
 
 ---
 

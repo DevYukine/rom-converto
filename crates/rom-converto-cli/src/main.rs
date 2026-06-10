@@ -31,6 +31,7 @@ use rom_converto_lib::nintendo::ctr::{
     CdnToCiaOptions, convert_cdn_to_cia, decrypt_rom, decrypt_rom_batch, derive_decrypted_path,
     generate_ticket_from_cdn,
 };
+use rom_converto_lib::nintendo::legacy_input::{MigrateOptions, migrate_disc, migrate_disc_batch};
 use rom_converto_lib::nintendo::nx::{
     NczMode, NxCompressOptions, compress_container_async, decompress_container_async,
     derive_compressed_path as nx_derive_compressed_path,
@@ -263,6 +264,33 @@ async fn main() -> Result<()> {
                 };
                 compress_disc(&cmd.input, &output, opts, &progress).await?
             }
+            DolCommands::Migrate(cmd) => {
+                let opts = RvzCompressOptions {
+                    compression_level: cmd
+                        .level
+                        .unwrap_or(RvzCompressOptions::default().compression_level),
+                    chunk_size: cmd
+                        .chunk_size
+                        .unwrap_or(RvzCompressOptions::default().chunk_size),
+                    ..RvzCompressOptions::default()
+                };
+                let migrate_opts = MigrateOptions {
+                    skip_verify: cmd.skip_verify,
+                    deep_verify: cmd.deep,
+                };
+                if cmd.recursive {
+                    if !cmd.input.is_dir() {
+                        anyhow::bail!(
+                            "INPUT must be a directory when --recursive is set: {}",
+                            cmd.input.display()
+                        );
+                    }
+                    migrate_disc_batch(&cmd.input, opts, migrate_opts, &progress).await?
+                } else {
+                    let output = cmd.output.unwrap_or_else(|| derive_rvz_path(&cmd.input));
+                    migrate_disc(&cmd.input, &output, opts, migrate_opts, &progress).await?
+                }
+            }
             DolCommands::Decompress(cmd) => {
                 let output = cmd.output.unwrap_or_else(|| derive_disc_path(&cmd.input));
                 if wants_wbfs_output(&output) {
@@ -292,6 +320,33 @@ async fn main() -> Result<()> {
                     ..RvzCompressOptions::default()
                 };
                 compress_disc(&cmd.input, &output, opts, &progress).await?
+            }
+            RvlCommands::Migrate(cmd) => {
+                let opts = RvzCompressOptions {
+                    compression_level: cmd
+                        .level
+                        .unwrap_or(RvzCompressOptions::default().compression_level),
+                    chunk_size: cmd
+                        .chunk_size
+                        .unwrap_or(RvzCompressOptions::default().chunk_size),
+                    ..RvzCompressOptions::default()
+                };
+                let migrate_opts = MigrateOptions {
+                    skip_verify: cmd.skip_verify,
+                    deep_verify: cmd.deep,
+                };
+                if cmd.recursive {
+                    if !cmd.input.is_dir() {
+                        anyhow::bail!(
+                            "INPUT must be a directory when --recursive is set: {}",
+                            cmd.input.display()
+                        );
+                    }
+                    migrate_disc_batch(&cmd.input, opts, migrate_opts, &progress).await?
+                } else {
+                    let output = cmd.output.unwrap_or_else(|| derive_rvz_path(&cmd.input));
+                    migrate_disc(&cmd.input, &output, opts, migrate_opts, &progress).await?
+                }
             }
             RvlCommands::Decompress(cmd) => {
                 let output = cmd.output.unwrap_or_else(|| derive_disc_path(&cmd.input));

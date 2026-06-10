@@ -11,7 +11,7 @@
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -206,6 +206,44 @@ pub async fn migrate_disc(
         verify_legacy_input(input, fmt, migrate.deep_verify, progress).await?;
     }
     compress_disc_inner(input, output, options, progress).await
+}
+
+/// Migrate every legacy container directly inside `dir` (top level
+/// only, matching the ctr batch commands). Outputs land next to their
+/// inputs with the extension replaced by .rvz.
+pub async fn migrate_disc_batch(
+    dir: &Path,
+    options: RvzCompressOptions,
+    migrate: MigrateOptions,
+    progress: &dyn ProgressReporter,
+) -> RvzResult<()> {
+    let inputs = {
+        let dir = dir.to_path_buf();
+        task::spawn_blocking(move || -> std::io::Result<Vec<PathBuf>> {
+            let mut found = Vec::new();
+            for entry in std::fs::read_dir(&dir)? {
+                let path = entry?.path();
+                if path.is_file() && detect_legacy_format(&path)?.is_some() {
+                    found.push(path);
+                }
+            }
+            found.sort();
+            Ok(found)
+        })
+        .await??
+    };
+    if inputs.is_empty() {
+        return Err(RvzError::Custom(format!(
+            "no GCZ, WIA, or NKit images found in {}",
+            dir.display()
+        )));
+    }
+    info!("Migrating {} legacy images to RVZ", inputs.len());
+    for input in &inputs {
+        let output = super::rvz::derive_rvz_path(input);
+        migrate_disc(input, &output, options, migrate, progress).await?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

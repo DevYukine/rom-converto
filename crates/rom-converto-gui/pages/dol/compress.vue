@@ -49,7 +49,7 @@ async function execute() {
   <div>
     <PageHeader
       title="Compress GameCube Disc"
-      description="Compress a GameCube disc image (.iso / .gcm) to Dolphin's RVZ format. Drop multiple files for batch processing."
+      description="Compress a GameCube disc image (.iso / .gcm) to Dolphin's RVZ format. Legacy GCZ and NKit images are detected automatically, verified, and migrated. Drop multiple files for batch processing."
       :loading="loading || batch.running.value"
       :has-result="!!result"
       :has-error="!!error"
@@ -71,7 +71,7 @@ async function execute() {
             label="Add more files"
             model-value=""
             :multiple="true"
-            :filters="[{ name: 'GameCube disc', extensions: ['iso', 'gcm'] }]"
+            :filters="[{ name: 'GameCube disc', extensions: ['iso', 'gcm', 'gcz'] }]"
             @update:model-value="(p: string) => { if (p) store.addToQueue(p, deriveRvzPath(p)) }"
             @update:files="handleFiles"
           />
@@ -82,7 +82,7 @@ async function execute() {
             :model-value="input"
             label="Input disc"
             :multiple="true"
-            :filters="[{ name: 'GameCube disc', extensions: ['iso', 'gcm'] }]"
+            :filters="[{ name: 'GameCube disc', extensions: ['iso', 'gcm', 'gcz'] }]"
             :primary="true"
             @update:model-value="handleSingleFile"
             @update:files="handleFiles"

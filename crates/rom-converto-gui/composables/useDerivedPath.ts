@@ -71,6 +71,11 @@ export function deriveMergedCuePath(input: string): string {
 }
 
 export function deriveRvzPath(input: string): string {
+  // NKit double extensions collapse: game.nkit.iso -> game.rvz.
+  const lower = input.toLowerCase();
+  if (lower.endsWith(".nkit.iso") || lower.endsWith(".nkit.gcz")) {
+    return `${input.slice(0, -9)}.rvz`;
+  }
   return replaceExt(input, "rvz");
 }
 
