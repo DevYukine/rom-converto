@@ -52,7 +52,8 @@ Built for developers, tinkerers and archivists.
 ### CD / DVD images (CHD / CUE+BIN)
 
 * [x] Compress `.bin` + `.cue` pairs to CD-mode `.chd`
-* [x] Compress PS2 / PSP `.iso` to DVD-mode `.chd` (the `chdman createdvd` equivalent); the CD/DVD mode is auto-detected from the input, so the createcd vs createdvd mixup cannot happen
+* [x] Compress CD-media `.iso` (PS1, PS2-CD) to CD-mode `.chd` with a single MODE1/2048 track (the `chdman createcd` equivalent)
+* [x] Compress PS2-DVD / PSP `.iso` to DVD-mode `.chd` (the `chdman createdvd` equivalent); the CD/DVD media type is probed from the image, so the createcd vs createdvd mixup cannot happen
 * [x] Compatibility-first DVD codecs (`lzma` + `zlib`) that load everywhere including AetherSX2/NetherSX2; opt-in `--zstd` for modern emulators
 * [x] PSP images get 2048-byte hunks automatically (what PPSSPP expects); PS2 images use the chdman default
 * [x] Extract `.chd` back to `.bin` + `.cue` (CD) or `.iso` (DVD), auto-detected
@@ -219,7 +220,7 @@ Flags match the `dol` commands.
 
 | Command | Description |
 |---|---|
-| `chd compress <INPUT> [OUTPUT]` | Compress a `.cue` (CD-mode) or PS2/PSP `.iso` (DVD-mode) to `.chd`; the mode is auto-detected |
+| `chd compress <INPUT> [OUTPUT]` | Compress a `.cue` or `.iso` to `.chd`; CD vs DVD media is auto-detected (PS1/PS2-CD iso becomes CD-mode, PS2-DVD/PSP iso becomes DVD-mode) |
 | `chd extract <INPUT> <OUTPUT>` | Extract a `.chd` file back to `.bin` + `.cue` (CD) or `.iso` (DVD) |
 | `chd verify <INPUT>` | Verify the SHA1 integrity of a `.chd` file |
 

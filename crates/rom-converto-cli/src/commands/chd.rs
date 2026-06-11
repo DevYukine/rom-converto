@@ -13,14 +13,17 @@ pub enum ChdCommands {
 
 /// Compresses a disc image to a CHD (Compressed Hunks of Data) file.
 ///
-/// A .cue input (with its .bin) becomes a CD-mode CHD; a PS2/PSP .iso
-/// becomes a DVD-mode CHD, the chdman createdvd equivalent. The mode
-/// is picked automatically so the createcd/createdvd mixup cannot
-/// happen. Default DVD codecs are lzma+zlib, which every emulator
-/// reads, including AetherSX2/NetherSX2.
+/// A .cue input (with its .bin) becomes a CD-mode CHD. An .iso is
+/// probed for its console family: CD-media images (PS1, PS2-CD)
+/// become CD-mode CHDs with a single MODE1/2048 track (the chdman
+/// createcd equivalent), DVD-media images (PS2-DVD, PSP) become
+/// DVD-mode CHDs (the createdvd equivalent). The mode is picked
+/// automatically so the createcd/createdvd mixup cannot happen.
+/// Default DVD codecs are lzma+zlib, which every emulator reads,
+/// including AetherSX2/NetherSX2.
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 pub struct CompressCommand {
-    /// Input image (.cue for CD, .iso for PS2/PSP DVD), or a directory with --recursive
+    /// Input image (.cue, or .iso with CD/DVD media auto-detected), or a directory with --recursive
     #[arg(value_name = "INPUT")]
     pub input: PathBuf,
 
@@ -28,11 +31,11 @@ pub struct CompressCommand {
     #[arg(value_name = "OUTPUT")]
     pub output: Option<PathBuf>,
 
-    /// Force DVD mode regardless of the input extension
+    /// Force DVD mode (.iso input only)
     #[arg(long, conflicts_with = "cd")]
     pub dvd: bool,
 
-    /// Force CD mode (the input must be a cue sheet)
+    /// Force CD mode (a .cue, or a CD-media .iso)
     #[arg(long, conflicts_with = "dvd")]
     pub cd: bool,
 
@@ -131,5 +134,15 @@ mod tests {
     fn rejects_cd_and_dvd_together() {
         let result = Harness::try_parse_from(["bin", "compress", "x.cue", "--cd", "--dvd"]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parses_compress_cd_flag_on_iso() {
+        let h = Harness::parse_from(["bin", "compress", "--cd", "game.iso"]);
+        let ChdCommands::Compress(c) = h.cmd else {
+            panic!("expected Compress");
+        };
+        assert!(c.cd && !c.dvd);
+        assert_eq!(c.input, PathBuf::from("game.iso"));
     }
 }

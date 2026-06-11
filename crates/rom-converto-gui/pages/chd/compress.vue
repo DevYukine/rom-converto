@@ -53,7 +53,7 @@ async function execute() {
   <div>
     <PageHeader
       title="Compress to CHD"
-      description="Compress disc images to CHD. CUE/BIN input becomes a CD-mode CHD; PS2/PSP ISO input becomes a DVD-mode CHD (mode and hunk size are auto-detected). Drop multiple files for batch processing."
+      description="Compress disc images to CHD. CUE/BIN and CD-media ISOs (PS1, PS2-CD) become CD-mode CHDs; PS2-DVD and PSP ISOs become DVD-mode CHDs (media type and hunk size are auto-detected). Drop multiple files for batch processing."
       :loading="loading || batch.running.value"
       :has-result="!!result"
       :has-error="!!error"

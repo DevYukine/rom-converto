@@ -1,10 +1,13 @@
 use crate::cd::{CD_HUNK_BYTES, IO_BUFFER_SIZE, SECTOR_SIZE};
 use crate::chd::error::{ChdError, ChdResult};
 use crate::chd::models::{CHD_METADATA_TAG_CD, CHD_METADATA_TAG_DVD, ChdHeaderV5, SHA1_BYTES};
-use crate::chd::reader::cue_generator::{generate_cue_sheet, parse_chd_track_metadata};
+use crate::chd::reader::cue_generator::{
+    chd_type_datasize, generate_cue_sheet, parse_chd_track_metadata,
+};
 use crate::chd::writer::ChdWriter;
 use crate::chd::writer::metadata::MetadataHash;
 use crate::cue::CueParser;
+use crate::cue::models::{CueFile, CueSheet, FileType, Index, Msf, Track, TrackType};
 use crate::util::iso9660::{DiscKind, detect_disc_kind};
 use crate::util::{BYTES_PER_MB, ProgressReporter};
 use log::{debug, info, warn};
@@ -50,9 +53,10 @@ pub enum DiscMode {
 }
 
 /// Route a disc image to the right CHD writer: `.cue` input is
-/// CD-mode, anything else is treated as a flat 2048-byte-sector image
-/// and goes through DVD mode (the chdman createcd/createdvd split
-/// that trips users up). `mode` overrides the extension routing.
+/// CD-mode; an `.iso` is probed with [`detect_disc_kind`] and CD-media
+/// images (PS1, PS2-CD) become CD-mode CHDs while DVD-media images
+/// (PS2-DVD, PSP) become DVD-mode CHDs (the chdman createcd/createdvd
+/// split that trips users up). `mode` overrides the auto-routing.
 pub async fn convert_disc_to_chd(
     progress: &dyn ProgressReporter,
     input_path: PathBuf,
@@ -63,13 +67,46 @@ pub async fn convert_disc_to_chd(
     let is_cue = input_path
         .extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("cue"));
-    let mode = mode.unwrap_or(if is_cue { DiscMode::Cd } else { DiscMode::Dvd });
-    match mode {
-        DiscMode::Cd if is_cue => {
+    match (mode, is_cue) {
+        (None | Some(DiscMode::Cd), true) => {
             convert_to_chd(progress, input_path, output_path, opts.force).await
         }
-        DiscMode::Cd => Err(ChdError::CdModeNeedsCue),
-        DiscMode::Dvd => convert_iso_to_chd(progress, input_path, output_path, opts).await,
+        (Some(DiscMode::Dvd), true) => Err(ChdError::DvdModeNeedsIso),
+        (Some(DiscMode::Cd), false) => {
+            convert_iso_to_cd_chd(progress, input_path, output_path, opts.force).await
+        }
+        (Some(DiscMode::Dvd), false) => {
+            convert_iso_to_chd(progress, input_path, output_path, opts).await
+        }
+        (None, false) => {
+            let detect_path = input_path.clone();
+            let kind =
+                tokio::task::spawn_blocking(move || detect_disc_kind(&detect_path)).await??;
+            match kind {
+                DiscKind::Ps1 | DiscKind::Ps2Cd => {
+                    info!("{} detected, writing CD-mode CHD", kind.label());
+                    if kind == DiscKind::Ps2Cd {
+                        warn!(
+                            "{:?} looks like a CD-media PS2 game; if the original disc had \
+                             audio tracks, convert from its bin/cue instead so they survive",
+                            input_path
+                        );
+                    }
+                    convert_iso_to_cd_chd(progress, input_path, output_path, opts.force).await
+                }
+                DiscKind::Ps2Dvd | DiscKind::Psp | DiscKind::UnknownIso => {
+                    info!("{} detected, writing DVD-mode CHD", kind.label());
+                    convert_iso_to_chd_with_kind(
+                        progress,
+                        input_path,
+                        output_path,
+                        opts,
+                        Some(kind),
+                    )
+                    .await
+                }
+            }
+        }
     }
 }
 
@@ -128,14 +165,31 @@ pub async fn convert_iso_to_chd(
     output_path: PathBuf,
     opts: ChdDvdOptions,
 ) -> ChdResult<()> {
+    convert_iso_to_chd_with_kind(progress, iso_path, output_path, opts, None).await
+}
+
+/// DVD-mode compress with an already-detected [`DiscKind`], so the
+/// auto-routing in [`convert_disc_to_chd`] does not probe twice.
+async fn convert_iso_to_chd_with_kind(
+    progress: &dyn ProgressReporter,
+    iso_path: PathBuf,
+    output_path: PathBuf,
+    opts: ChdDvdOptions,
+    kind: Option<DiscKind>,
+) -> ChdResult<()> {
     if fs::metadata(&output_path).await.is_ok() && !opts.force {
         return Err(ChdError::ChdFileAlreadyExists);
     }
 
     let iso_size = fs::metadata(&iso_path).await?.len();
 
-    let detect_path = iso_path.clone();
-    let kind = tokio::task::spawn_blocking(move || detect_disc_kind(&detect_path)).await??;
+    let kind = match kind {
+        Some(kind) => kind,
+        None => {
+            let detect_path = iso_path.clone();
+            tokio::task::spawn_blocking(move || detect_disc_kind(&detect_path)).await??
+        }
+    };
     debug!("Detected disc kind: {:?}", kind);
     if kind == DiscKind::Ps2Cd {
         warn!(
@@ -168,6 +222,110 @@ pub async fn convert_iso_to_chd(
 
         let mut writer = ChdWriter::create_dvd(&output_owned, iso_size, hunk_size, allow_zstd)?;
         writer.compress_all_hunks_dvd(&mut iso_reader, &bytes_done_bg)?;
+        writer.finalize()?;
+        Ok(())
+    });
+
+    crate::util::await_with_progress(progress, &bytes_done, handle).await?;
+
+    let chd_size = fs::metadata(&output_path).await?.len();
+    let compression_ratio = (chd_size as f64 / iso_size as f64) * 100.0;
+    info!(
+        "Original: {:.2} MB, CHD: {:.2} MB ({:.1}% compression ratio)",
+        total_mb,
+        chd_size as f64 / BYTES_PER_MB,
+        compression_ratio
+    );
+    Ok(())
+}
+
+/// chdman pads every track, including a lone final one, to a 4-frame
+/// boundary; the zero padding frames count into the logical size and
+/// the raw SHA-1, while CHT2 `FRAMES:` records the real count.
+/// Measured against chdman 0.288: a 10-sector iso produces a CHD with
+/// logical size 12 * 2448 and a data SHA-1 over all 12 frames.
+const CD_TRACK_PADDING: u32 = 4;
+
+fn padded_track_frames(data_sectors: u32) -> u32 {
+    data_sectors.div_ceil(CD_TRACK_PADDING) * CD_TRACK_PADDING
+}
+
+/// The track list `chdman createcd` synthesizes for a flat `.iso`
+/// input: one MODE1/2048 data track starting at frame 0.
+fn synth_mode1_2048_cue_sheet() -> CueSheet {
+    CueSheet {
+        files: vec![CueFile {
+            filename: String::new(),
+            file_type: FileType::Binary,
+        }],
+        tracks: vec![Track {
+            number: 1,
+            track_type: TrackType::Mode1_2048,
+            indices: vec![Index {
+                number: 1,
+                position: Msf::from_lba(0),
+            }],
+            pregap: None,
+            postgap: None,
+            file_index: 0,
+        }],
+    }
+}
+
+/// Compress a CD-media 2048-byte-sector ISO (PS1, PS2-CD) to a
+/// CD-mode CHD with a single MODE1/2048 track, the equivalent of
+/// `chdman createcd -i game.iso`.
+pub async fn convert_iso_to_cd_chd(
+    progress: &dyn ProgressReporter,
+    iso_path: PathBuf,
+    output_path: PathBuf,
+    force: bool,
+) -> ChdResult<()> {
+    if fs::metadata(&output_path).await.is_ok() && !force {
+        return Err(ChdError::ChdFileAlreadyExists);
+    }
+
+    let sector_data_size = TrackType::Mode1_2048.block_size() as u64;
+    let iso_size = fs::metadata(&iso_path).await?.len();
+    if iso_size == 0 || !iso_size.is_multiple_of(sector_data_size) {
+        return Err(ChdError::IsoNotSectorAligned { size: iso_size });
+    }
+    let data_sectors: u32 = (iso_size / sector_data_size)
+        .try_into()
+        .map_err(|_| ChdError::InvalidHunkSize)?;
+    let total_sectors = padded_track_frames(data_sectors);
+    let cue_sheet = synth_mode1_2048_cue_sheet();
+
+    debug!("CD-mode iso: {data_sectors} data sectors, {total_sectors} padded frames");
+    let total_mb = iso_size as f64 / BYTES_PER_MB;
+    progress.start(
+        iso_size,
+        &format!("Compressing to CHD (~{:.2} MB)", total_mb),
+    );
+
+    let iso_owned = iso_path.clone();
+    let output_owned = output_path.clone();
+    let bytes_done = Arc::new(AtomicU64::new(0));
+    let bytes_done_bg = bytes_done.clone();
+
+    let handle = tokio::task::spawn_blocking(move || -> ChdResult<()> {
+        let iso_file = std::fs::File::open(&iso_owned)?;
+        let mut iso_reader = std::io::BufReader::with_capacity(IO_BUFFER_SIZE, iso_file);
+
+        let mut writer = ChdWriter::create(
+            &output_owned,
+            total_sectors,
+            data_sectors,
+            CD_HUNK_BYTES,
+            &cue_sheet,
+        )?;
+        writer.compress_all_hunks(
+            &mut iso_reader,
+            total_sectors,
+            data_sectors,
+            sector_data_size as usize,
+            &bytes_done_bg,
+        )?;
         writer.finalize()?;
         Ok(())
     });
@@ -238,11 +396,18 @@ pub async fn convert_to_chd(
         let mut writer = ChdWriter::create(
             &output_owned,
             total_sectors,
+            total_sectors,
             CD_HUNK_BYTES,
             &cue_sheet_owned,
         )?;
 
-        writer.compress_all_hunks(&mut bin_reader, total_sectors, &bytes_done_bg)?;
+        writer.compress_all_hunks(
+            &mut bin_reader,
+            total_sectors,
+            total_sectors,
+            SECTOR_SIZE,
+            &bytes_done_bg,
+        )?;
         writer.finalize()?;
         Ok(())
     });
@@ -322,8 +487,8 @@ pub async fn extract_from_chd(
     // can overstate the real sector count by up to
     // `frames_per_hunk - 1`.
     let input_for_peek = input_path.clone();
-    let (header, total_frames, is_dvd) =
-        tokio::task::spawn_blocking(move || -> ChdResult<(ChdHeaderV5, u32, bool)> {
+    let (header, total_bin_bytes, is_dvd) =
+        tokio::task::spawn_blocking(move || -> ChdResult<(ChdHeaderV5, u64, bool)> {
             let handle = crate::chd::reader::open_chd_sync(&input_for_peek)?;
             if handle
                 .metadata
@@ -342,8 +507,11 @@ pub async fn extract_from_chd(
             let meta_str = String::from_utf8_lossy(&cd_meta.data);
             let meta_str = meta_str.trim_end_matches('\0');
             let tracks = parse_chd_track_metadata(meta_str)?;
-            let total_frames: u32 = tracks.iter().map(|t| t.frames).sum();
-            Ok((handle.header, total_frames, false))
+            let total_bin_bytes: u64 = tracks
+                .iter()
+                .map(|t| t.frames as u64 * chd_type_datasize(&t.track_type) as u64)
+                .sum();
+            Ok((handle.header, total_bin_bytes, false))
         })
         .await??;
 
@@ -363,7 +531,6 @@ pub async fn extract_from_chd(
         .to_string_lossy()
         .to_string();
 
-    let total_bin_bytes = total_frames as u64 * SECTOR_SIZE as u64;
     let total_mb = total_bin_bytes as f64 / BYTES_PER_MB;
     progress.start(
         total_bin_bytes,
@@ -396,9 +563,12 @@ pub async fn extract_from_chd(
         let tracks = parse_chd_track_metadata(meta_str)?;
 
         let hunk_bytes = handle.header.hunk_bytes as usize;
-        // Use the CHT2 `FRAMES:` sum, not `logical_bytes`; see
+        // Use the CHT2 `FRAMES:` sums, not `logical_bytes`; see
         // the outer peek above.
-        let total_frames: u32 = tracks.iter().map(|t| t.frames).sum();
+        let frame_sizes: Vec<usize> = tracks
+            .iter()
+            .flat_map(|t| std::iter::repeat_n(chd_type_datasize(&t.track_type), t.frames as usize))
+            .collect();
 
         let bin_file = std::fs::File::create(&bin_owned)?;
         let mut bin_writer = std::io::BufWriter::with_capacity(IO_BUFFER_SIZE, bin_file);
@@ -412,7 +582,7 @@ pub async fn extract_from_chd(
             &handle.map,
             &mut bin_writer,
             hunk_bytes,
-            total_frames,
+            &frame_sizes,
             &bytes_done_bg,
         );
         pool.shutdown();
@@ -858,5 +1028,258 @@ mod tests {
             .status()
             .expect("run chdman verify");
         assert!(status.success(), "chdman rejected our DVD CHD");
+    }
+
+    use crate::util::iso9660::test_fixtures::{IsoSpec, make_iso};
+
+    fn ps1_iso() -> Vec<u8> {
+        make_iso(&IsoSpec {
+            system_id: b"PLAYSTATION",
+            volume_sectors: 250_000,
+            root_entries: &[(b"SYSTEM.CNF;1", false)],
+            file_content: b"BOOT = cdrom:\\SLUS_000.01;1\r\nTCB = 4\r\n",
+        })
+    }
+
+    fn ps2_iso(volume_sectors: u32) -> Vec<u8> {
+        make_iso(&IsoSpec {
+            system_id: b"PLAYSTATION",
+            volume_sectors,
+            root_entries: &[(b"SYSTEM.CNF;1", false)],
+            file_content: b"BOOT2 = cdrom0:\\SLUS_123.45;1\r\nVER = 1.00\r\n",
+        })
+    }
+
+    fn cd_track_metadata(path: &std::path::Path) -> String {
+        let handle = crate::chd::reader::open_chd_sync(path).unwrap();
+        let meta = handle
+            .metadata
+            .iter()
+            .find(|m| m.tag == CHD_METADATA_TAG_CD)
+            .expect("CHT2 metadata present");
+        String::from_utf8_lossy(&meta.data)
+            .trim_end_matches('\0')
+            .to_string()
+    }
+
+    fn has_dvd_tag(path: &std::path::Path) -> bool {
+        let handle = crate::chd::reader::open_chd_sync(path).unwrap();
+        handle
+            .metadata
+            .iter()
+            .any(|m| m.tag == CHD_METADATA_TAG_DVD)
+    }
+
+    async fn auto_route(iso: &[u8], dir: &std::path::Path) -> PathBuf {
+        let iso_path = dir.join("game.iso");
+        std::fs::write(&iso_path, iso).unwrap();
+        let chd_path = dir.join("game.chd");
+        convert_disc_to_chd(
+            &NoProgress,
+            iso_path,
+            chd_path.clone(),
+            None,
+            ChdDvdOptions::default(),
+        )
+        .await
+        .unwrap();
+        chd_path
+    }
+
+    #[tokio::test]
+    async fn ps1_iso_routes_to_cd_chd_and_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let iso = ps1_iso();
+        let chd_path = auto_route(&iso, dir.path()).await;
+
+        let meta = cd_track_metadata(&chd_path);
+        assert!(meta.contains("TYPE:MODE1 "), "metadata: {meta}");
+        assert!(meta.contains("FRAMES:20"), "metadata: {meta}");
+
+        verify_chd(&NoProgress, chd_path.clone(), None, false)
+            .await
+            .unwrap();
+
+        let out_cue = dir.path().join("restored.cue");
+        extract_from_chd(&NoProgress, chd_path, out_cue.clone(), None)
+            .await
+            .unwrap();
+        let cue = std::fs::read_to_string(&out_cue).unwrap();
+        assert!(cue.contains("MODE1/2048"), "cue: {cue}");
+        assert!(cue.contains("INDEX 01 00:00:00"), "cue: {cue}");
+        assert_eq!(std::fs::read(out_cue.with_extension("bin")).unwrap(), iso);
+    }
+
+    #[tokio::test]
+    async fn ps2cd_iso_routes_to_cd_chd() {
+        let dir = tempfile::tempdir().unwrap();
+        let chd_path = auto_route(&ps2_iso(300_000), dir.path()).await;
+        assert!(cd_track_metadata(&chd_path).contains("TYPE:MODE1 "));
+    }
+
+    #[tokio::test]
+    async fn dvd_media_and_unknown_isos_route_to_dvd_chd() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, iso) in [
+            ("ps2dvd", ps2_iso(2_000_000)),
+            (
+                "psp",
+                make_iso(&IsoSpec {
+                    system_id: b"PSP GAME",
+                    volume_sectors: 800_000,
+                    root_entries: &[],
+                    file_content: &[],
+                }),
+            ),
+            ("unknown", mixed_iso(11)),
+        ] {
+            let sub = dir.path().join(name);
+            std::fs::create_dir(&sub).unwrap();
+            let chd_path = auto_route(&iso, &sub).await;
+            assert!(has_dvd_tag(&chd_path), "{name} should be DVD-mode");
+        }
+    }
+
+    /// 11 sectors is not a 4-frame multiple, so this also exercises
+    /// the track padding: FRAMES records 11 while the extracted bin
+    /// must drop the 1 padding frame and match the input exactly.
+    #[tokio::test]
+    async fn forced_cd_mode_on_iso_round_trips_with_padding() {
+        let dir = tempfile::tempdir().unwrap();
+        let iso = mixed_iso(11);
+        let iso_path = dir.path().join("game.iso");
+        std::fs::write(&iso_path, &iso).unwrap();
+        let chd_path = dir.path().join("game.chd");
+        convert_disc_to_chd(
+            &NoProgress,
+            iso_path,
+            chd_path.clone(),
+            Some(DiscMode::Cd),
+            ChdDvdOptions::default(),
+        )
+        .await
+        .unwrap();
+
+        let meta = cd_track_metadata(&chd_path);
+        assert!(meta.contains("FRAMES:11"), "metadata: {meta}");
+
+        verify_chd(&NoProgress, chd_path.clone(), None, false)
+            .await
+            .unwrap();
+
+        let out_cue = dir.path().join("restored.cue");
+        extract_from_chd(&NoProgress, chd_path, out_cue.clone(), None)
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(out_cue.with_extension("bin")).unwrap(), iso);
+    }
+
+    #[tokio::test]
+    async fn dvd_flag_on_cue_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let cue_path = dir.path().join("game.cue");
+        std::fs::write(&cue_path, "FILE \"game.bin\" BINARY\n").unwrap();
+        let result = convert_disc_to_chd(
+            &NoProgress,
+            cue_path,
+            dir.path().join("game.chd"),
+            Some(DiscMode::Dvd),
+            ChdDvdOptions::default(),
+        )
+        .await;
+        assert!(matches!(result, Err(ChdError::DvdModeNeedsIso)));
+    }
+
+    #[tokio::test]
+    async fn unaligned_iso_is_rejected_in_cd_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let iso_path = dir.path().join("game.iso");
+        std::fs::write(&iso_path, vec![0u8; 1000]).unwrap();
+        let result =
+            convert_iso_to_cd_chd(&NoProgress, iso_path, dir.path().join("game.chd"), false).await;
+        assert!(matches!(
+            result,
+            Err(ChdError::IsoNotSectorAligned { size: 1000 })
+        ));
+    }
+
+    #[test]
+    fn padded_track_frames_rounds_to_four() {
+        assert_eq!(padded_track_frames(10), 12);
+        assert_eq!(padded_track_frames(12), 12);
+        assert_eq!(padded_track_frames(1), 4);
+    }
+
+    /// Cross-checks the CD-iso path against real chdman; set
+    /// ROMCONVERTO_CHDMAN to the binary path to enable. The sector
+    /// count is deliberately not a 4-frame multiple so the track
+    /// padding rule is exercised, and both SHA1s reported by
+    /// `chdman info` must match between the two files, proving the
+    /// frame layout, padding, and CHT2 metadata are byte-identical.
+    #[tokio::test]
+    async fn chdman_cd_iso_parity() {
+        let Some(chdman) = std::env::var_os("ROMCONVERTO_CHDMAN") else {
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let iso = mixed_iso(13);
+        let iso_path = dir.path().join("game.iso");
+        std::fs::write(&iso_path, &iso).unwrap();
+
+        let their_chd = dir.path().join("their.chd");
+        let status = std::process::Command::new(&chdman)
+            .args(["createcd", "-i"])
+            .arg(&iso_path)
+            .arg("-o")
+            .arg(&their_chd)
+            .status()
+            .expect("run chdman createcd");
+        assert!(status.success(), "chdman createcd failed");
+
+        verify_chd(&NoProgress, their_chd.clone(), None, false)
+            .await
+            .unwrap();
+        let restored_cue = dir.path().join("restored.cue");
+        extract_from_chd(&NoProgress, their_chd.clone(), restored_cue.clone(), None)
+            .await
+            .unwrap();
+        assert!(
+            std::fs::read_to_string(&restored_cue)
+                .unwrap()
+                .contains("MODE1/2048")
+        );
+        assert_eq!(
+            std::fs::read(restored_cue.with_extension("bin")).unwrap(),
+            iso
+        );
+
+        let our_chd = dir.path().join("our.chd");
+        convert_iso_to_cd_chd(&NoProgress, iso_path, our_chd.clone(), false)
+            .await
+            .unwrap();
+        let status = std::process::Command::new(&chdman)
+            .args(["verify", "-i"])
+            .arg(&our_chd)
+            .status()
+            .expect("run chdman verify");
+        assert!(status.success(), "chdman rejected our CD CHD");
+
+        let info_sha1s = |path: &std::path::Path| -> Vec<String> {
+            let out = std::process::Command::new(&chdman)
+                .args(["info", "-i"])
+                .arg(path)
+                .output()
+                .expect("run chdman info");
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .filter(|l| l.contains("SHA1"))
+                .map(str::to_string)
+                .collect()
+        };
+        assert_eq!(
+            info_sha1s(&their_chd),
+            info_sha1s(&our_chd),
+            "SHA1s must match chdman's output byte-for-byte"
+        );
     }
 }

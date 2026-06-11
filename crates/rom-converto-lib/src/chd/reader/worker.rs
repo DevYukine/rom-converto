@@ -222,22 +222,23 @@ pub(crate) fn extract_hunks(
     map: &[MapEntry],
     writer: &mut BufWriter<std::fs::File>,
     hunk_bytes: usize,
-    total_frames: u32,
+    frame_sizes: &[usize],
     bytes_done: &Arc<AtomicU64>,
 ) -> ChdResult<()> {
     let frames_per_hunk = hunk_bytes / FRAME_SIZE;
+    let total_frames = frame_sizes.len();
 
     run_extract_pipeline(pool, map, writer, bytes_done, |seq, out| {
-        // Gather sector-only bytes from the interleaved hunk,
-        // dropping the 96-byte subcode after each frame. `chdman
-        // extractcd` writes sector-only bins, so the output contains
-        // exactly `total_frames * SECTOR_SIZE` bytes.
-        let first_sector = (seq as u32) * frames_per_hunk as u32;
-        let frames_in_hunk = frames_per_hunk.min((total_frames - first_sector) as usize);
+        // Gather payload bytes from the interleaved hunk, dropping
+        // the subcode and any tail past each track's datasize.
+        // `chdman extractcd` writes datasize-wide bins; track padding
+        // frames past the CHT2 frame counts are dropped entirely.
+        let first_frame = seq as usize * frames_per_hunk;
+        let frames_in_hunk = frames_per_hunk.min(total_frames.saturating_sub(first_frame));
         let mut sectors = Vec::with_capacity(frames_in_hunk * SECTOR_SIZE);
         for frame in 0..frames_in_hunk {
             let off = frame * FRAME_SIZE;
-            sectors.extend_from_slice(&out.hunk[off..off + SECTOR_SIZE]);
+            sectors.extend_from_slice(&out.hunk[off..off + frame_sizes[first_frame + frame]]);
         }
         Ok(sectors)
     })

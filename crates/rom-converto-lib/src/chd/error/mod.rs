@@ -25,13 +25,13 @@ pub enum ChdError {
     InvalidHunkSize,
 
     #[error(
-        "input size {size} is not a multiple of 2048; not a DVD-style image \
-         (CD-media dumps need bin/cue input)"
+        "input size {size} is not a multiple of 2048; not a 2048-byte-sector image \
+         (raw 2352-byte CD dumps need bin/cue input)"
     )]
     IsoNotSectorAligned { size: u64 },
 
-    #[error("CD mode needs a cue sheet input; dump CD-media discs to bin/cue")]
-    CdModeNeedsCue,
+    #[error("DVD mode needs a flat .iso input; a .cue describes a CD-layout disc, drop --dvd")]
+    DvdModeNeedsIso,
 
     #[error("CHD map compression failed")]
     MapCompressionError,

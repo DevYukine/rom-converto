@@ -11,7 +11,7 @@
 //! one [`CdCodecSet`] (persistent LZMA encoder + deflate contexts)
 //! for the lifetime of the compress call.
 
-use crate::cd::{FRAME_SIZE, SECTOR_SIZE, SUBCODE_SIZE};
+use crate::cd::FRAME_SIZE;
 use crate::chd::compression::dvd::DvdCodecSet;
 use crate::chd::compression::{CdCodecSet, ChdCompression};
 use crate::chd::error::{ChdError, ChdResult};
@@ -21,8 +21,6 @@ use sha1::{Digest, Sha1};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-
-const ZERO_SUBCODE: [u8; SUBCODE_SIZE] = [0u8; SUBCODE_SIZE];
 
 /// One hunk worth of input bytes, already interleaved as
 /// `[sector0 || zero_subcode0 || sector1 || zero_subcode1 || ...]`
@@ -117,13 +115,19 @@ pub(super) fn make_chd_dvd_compress_workers(
 ///
 /// * **Reader (dispatcher thread)**: sequential `BufReader` over
 ///   the bin file. Produces one interleaved hunk per `drive` call,
-///   updates the running `raw_sha1` with the sector bytes + zero
-///   subcode bytes in hunk order.
+///   updates the running `raw_sha1` with the full frame bytes in
+///   hunk order.
 /// * **Workers (pool threads)**: receive hunks, trial every codec
 ///   via `CdCodecSet::compress_hunk`, return the smallest output.
 /// * **Writer (dedicated thread)**: drains a bounded channel and
 ///   calls `write_all` on the output `BufWriter` so writes overlap
 ///   with reads and compresses.
+///
+/// `total_sectors` includes any track padding frames; only the first
+/// `data_sectors` are read from the source (`sector_data_size` bytes
+/// each, 2352 for raw bin tracks, 2048 for MODE1/2048 ISO data). The
+/// padding frames stay zero but are still hashed: chdman includes
+/// them in the raw SHA-1.
 ///
 /// `writer_pos` is the file position **before** the next
 /// compressed hunk would land. The caller owns it and passes it
@@ -137,6 +141,8 @@ pub(super) fn compress_hunks(
     map_entries: &mut Vec<MapEntry>,
     raw_sha1: &mut Sha1,
     total_sectors: u32,
+    data_sectors: u32,
+    sector_data_size: usize,
     hunk_bytes: usize,
     bytes_done: &Arc<AtomicU64>,
 ) -> ChdResult<()> {
@@ -154,20 +160,25 @@ pub(super) fn compress_hunks(
         |chunk_idx| -> ChdResult<ChdCompressWork> {
             let first_sector = (chunk_idx as u32) * frames_per_hunk as u32;
             let sectors_in_hunk = frames_per_hunk.min((total_sectors - first_sector) as usize);
-            let sector_bytes = sectors_in_hunk * SECTOR_SIZE;
+            let read_sectors =
+                (data_sectors.saturating_sub(first_sector) as usize).min(sectors_in_hunk);
+            let read_bytes = read_sectors * sector_data_size;
 
-            let mut sector_buf = vec![0u8; sector_bytes];
+            let mut sector_buf = vec![0u8; read_bytes];
             bin_reader.read_exact(&mut sector_buf)?;
 
             let mut hunk = vec![0u8; hunk_bytes];
-            for s in 0..sectors_in_hunk {
-                let src = s * SECTOR_SIZE;
+            for s in 0..read_sectors {
+                let src = s * sector_data_size;
                 let dst = s * FRAME_SIZE;
-                hunk[dst..dst + SECTOR_SIZE].copy_from_slice(&sector_buf[src..src + SECTOR_SIZE]);
-                raw_sha1.update(&sector_buf[src..src + SECTOR_SIZE]);
-                raw_sha1.update(ZERO_SUBCODE);
+                hunk[dst..dst + sector_data_size]
+                    .copy_from_slice(&sector_buf[src..src + sector_data_size]);
             }
-            bytes_done.fetch_add(sector_bytes as u64, Ordering::Relaxed);
+            for s in 0..sectors_in_hunk {
+                let dst = s * FRAME_SIZE;
+                raw_sha1.update(&hunk[dst..dst + FRAME_SIZE]);
+            }
+            bytes_done.fetch_add(read_bytes as u64, Ordering::Relaxed);
             Ok(ChdCompressWork { hunk })
         },
     )

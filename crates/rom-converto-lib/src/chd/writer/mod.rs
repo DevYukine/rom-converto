@@ -44,9 +44,13 @@ pub struct ChdWriter {
 }
 
 impl ChdWriter {
+    /// `total_sectors` sizes the logical data (it includes track
+    /// padding frames); `data_sectors` is the real frame count the
+    /// CHT2 `FRAMES:` metadata records, matching chdman.
     pub fn create(
         output_path: impl AsRef<Path>,
         total_sectors: u32,
+        data_sectors: u32,
         hunk_size: u32,
         cue_sheet: &CueSheet,
     ) -> ChdResult<Self> {
@@ -79,7 +83,7 @@ impl ChdWriter {
             parent_sha1: [0; SHA1_BYTES],
         };
 
-        let metadata = generate_cd_metadata(cue_sheet, total_sectors)?;
+        let metadata = generate_cd_metadata(cue_sheet, data_sectors)?;
         Self::init(writer, header, metadata)
     }
 
@@ -151,10 +155,14 @@ impl ChdWriter {
         })
     }
 
+    /// `total_sectors` includes track padding frames; `data_sectors`
+    /// of `sector_data_size` bytes each are read from the source.
     pub fn compress_all_hunks(
         &mut self,
         bin_reader: &mut BufReader<std::fs::File>,
         total_sectors: u32,
+        data_sectors: u32,
+        sector_data_size: usize,
         bytes_done: &Arc<AtomicU64>,
     ) -> ChdResult<()> {
         let hunk_bytes = self.header.hunk_bytes as usize;
@@ -171,6 +179,8 @@ impl ChdWriter {
             &mut self.map_entries,
             &mut self.raw_sha1,
             total_sectors,
+            data_sectors,
+            sector_data_size,
             hunk_bytes,
             bytes_done,
         );
