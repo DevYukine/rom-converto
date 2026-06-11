@@ -1,5 +1,6 @@
 use crate::commands::chd::ChdCommands;
 use crate::commands::completions::ShellCompletionsCommand;
+use crate::commands::cso::CsoCommands;
 use crate::commands::ctr::CtrCommands;
 use crate::commands::cue::CueCommands;
 use crate::commands::dol::DolCommands;
@@ -10,6 +11,7 @@ use clap::{Parser, Subcommand};
 
 pub mod chd;
 pub mod completions;
+pub mod cso;
 pub mod ctr;
 pub mod cue;
 pub mod dol;
@@ -51,6 +53,9 @@ pub enum Commands {
 
     #[command(subcommand)]
     Chd(ChdCommands),
+
+    #[command(subcommand)]
+    Cso(CsoCommands),
 
     #[command(subcommand)]
     Cue(CueCommands),

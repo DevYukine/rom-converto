@@ -1,11 +1,10 @@
 import { defineStore } from "pinia";
 import type { BatchItem } from "~/types/batch";
 
-export const useChdCompressStore = defineStore("chd-compress", () => {
+export const useCsoDecompressStore = defineStore("cso-decompress", () => {
   const input = ref("");
   const output = ref("");
   const force = ref(false);
-  const zstd = ref(false);
 
   const result = ref("");
   const error = ref("");
@@ -33,7 +32,6 @@ export const useChdCompressStore = defineStore("chd-compress", () => {
   function $reset() {
     input.value = "";
     output.value = "";
-    zstd.value = false;
     force.value = false;
     result.value = "";
     error.value = "";
@@ -45,7 +43,6 @@ export const useChdCompressStore = defineStore("chd-compress", () => {
     input,
     output,
     force,
-    zstd,
     result,
     error,
     loading,

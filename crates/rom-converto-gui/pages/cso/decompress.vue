@@ -1,34 +1,33 @@
 <script setup lang="ts">
 import { storeToRefs } from "pinia";
-import { useChdCompressStore } from "~/stores/chd-compress";
+import { useCsoDecompressStore } from "~/stores/cso-decompress";
 
-const store = useChdCompressStore();
-const { input, output, force, zstd, result, error, loading, queue } = storeToRefs(store);
+const store = useCsoDecompressStore();
+const { input, output, force, result, error, loading, queue } = storeToRefs(store);
 const { run } = useOperation({ result, error, loading });
-const progress = useProgress("chd-compress");
+const progress = useProgress("cso-decompress");
 
 const isBatch = computed(() => queue.value.length > 0);
 
-const batch = useBatchOperation("chd-compress", "cmd_chd_compress", (item) => ({
+const batch = useBatchOperation("cso-decompress", "cmd_cso_decompress", (item) => ({
   inputPath: item.input,
   output: item.output,
   force: force.value,
-  zstd: zstd.value,
 }));
 
 watch(input, (val) => {
-  if (val) output.value = deriveChdPath(val);
+  if (val) output.value = deriveDiscIsoPath(val);
 });
 
 function handleFiles(paths: string[]) {
   for (const p of paths) {
-    store.addToQueue(p, deriveChdPath(p));
+    store.addToQueue(p, deriveDiscIsoPath(p));
   }
 }
 
 function handleSingleFile(path: string) {
   if (queue.value.length > 0) {
-    store.addToQueue(path, deriveChdPath(path));
+    store.addToQueue(path, deriveDiscIsoPath(path));
   } else {
     input.value = path;
   }
@@ -39,11 +38,10 @@ async function execute() {
   if (isBatch.value) {
     await batch.start(queue, result);
   } else {
-    await run("cmd_chd_compress", {
+    await run("cmd_cso_decompress", {
       inputPath: input.value,
       output: output.value,
       force: force.value,
-      zstd: zstd.value,
     });
   }
 }
@@ -52,8 +50,8 @@ async function execute() {
 <template>
   <div>
     <PageHeader
-      title="Compress to CHD"
-      description="Compress disc images to CHD. CUE/BIN input becomes a CD-mode CHD; PS2/PSP ISO input becomes a DVD-mode CHD (mode and hunk size are auto-detected). Drop multiple files for batch processing."
+      title="Decompress CSO/ZSO"
+      description="Restore the original ISO from a CSO or ZSO container. Drop multiple files for batch processing."
       :loading="loading || batch.running.value"
       :has-result="!!result"
       :has-error="!!error"
@@ -73,11 +71,11 @@ async function execute() {
           />
 
           <FileDropZone
-            label="Add more disc images"
+            label="Add more CSO/ZSO files"
             model-value=""
             :multiple="true"
-            :filters="[{ name: 'Disc image', extensions: ['cue', 'iso'] }]"
-            @update:model-value="(p: string) => { if (p) store.addToQueue(p, deriveChdPath(p)) }"
+            :filters="[{ name: 'Compressed ISO', extensions: ['cso', 'zso'] }]"
+            @update:model-value="(p: string) => { if (p) store.addToQueue(p, deriveDiscIsoPath(p)) }"
             @update:files="handleFiles"
           />
         </template>
@@ -87,9 +85,9 @@ async function execute() {
           <div class="grid gap-5 lg:grid-cols-2">
             <FileDropZone
               :model-value="input"
-              label="Input disc image (.cue or .iso)"
+              label="Input CSO/ZSO file"
               :multiple="true"
-              :filters="[{ name: 'Disc image', extensions: ['cue', 'iso'] }]"
+              :filters="[{ name: 'Compressed ISO', extensions: ['cso', 'zso'] }]"
               :primary="true"
               @update:model-value="handleSingleFile"
               @update:files="handleFiles"
@@ -99,21 +97,16 @@ async function execute() {
               v-model="output"
               label="Output (auto-derived)"
               :save-dialog="true"
-              :filters="[{ name: 'CHD', extensions: ['chd'] }]"
+              :filters="[{ name: 'ISO image', extensions: ['iso'] }]"
             />
           </div>
         </template>
 
-        <div class="space-y-3 rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
+        <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
           <FlagToggle
             v-model="force"
             label="Force Overwrite"
             description="Overwrite output file if it already exists"
-          />
-          <FlagToggle
-            v-model="zstd"
-            label="zstd codec (DVD mode)"
-            description="Better ratio, but the CHD is rejected by AetherSX2/NetherSX2. Leave off for maximum compatibility"
           />
         </div>
 
@@ -128,7 +121,7 @@ async function execute() {
           :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input || !output"
           @click="execute"
         >
-          {{ isBatch ? `Compress ${queue.filter(i => i.status === 'pending').length} Files` : 'Compress' }}
+          {{ isBatch ? `Decompress ${queue.filter(i => i.status === 'pending').length} Files` : 'Decompress' }}
         </RunButton>
       </div>
     </OperationCard>

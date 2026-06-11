@@ -33,7 +33,13 @@ const platforms = [
   {
     to: "/chd",
     name: "CD (CHD)",
-    description: "Compress, extract, verify CD disc images, read info",
+    description: "Compress CD and PS2/PSP DVD images, extract, verify, read info",
+    count: 4,
+  },
+  {
+    to: "/cso",
+    name: "PSP / PS2 (CSO/ZSO)",
+    description: "Compress ISOs for real hardware, decompress, verify, read info",
     count: 4,
   },
   {

@@ -1,6 +1,9 @@
 use crate::info_cache::InfoCache;
 use crate::progress::TauriProgress;
-use rom_converto_lib::chd::{convert_to_chd, extract_from_chd, verify_chd};
+use rom_converto_lib::chd::{ChdDvdOptions, convert_disc_to_chd, extract_from_chd, verify_chd};
+use rom_converto_lib::cso::{
+    CsoCompressOptions, CsoFormat, compress_to_cso, decompress_from_cso, verify_cso,
+};
 use rom_converto_lib::cue::merge::merge_bin;
 use rom_converto_lib::info::{InfoOptions, InfoResult, read_info};
 use rom_converto_lib::nintendo::ctr::convert::{convert_rom, derive_converted_path};
@@ -125,17 +128,88 @@ pub async fn cmd_decompress_rom(
 #[tauri::command]
 pub async fn cmd_chd_compress(
     app: AppHandle,
-    cue_path: PathBuf,
+    input_path: PathBuf,
     output: PathBuf,
     force: bool,
+    zstd: Option<bool>,
+    hunk_size: Option<u32>,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "chd-compress"));
     let out_display = output.display().to_string();
-    tokio::spawn(async move { convert_to_chd(progress.as_ref(), cue_path, output, force).await })
+    let opts = ChdDvdOptions {
+        hunk_size,
+        allow_zstd: zstd.unwrap_or(false),
+        force,
+    };
+    tokio::spawn(async move {
+        convert_disc_to_chd(progress.as_ref(), input_path, output, None, opts).await
+    })
+    .await
+    .map_err(err_to_string)?
+    .map_err(err_to_string)?;
+    Ok(format!("CHD created at {out_display}"))
+}
+
+#[tauri::command]
+pub async fn cmd_cso_compress(
+    app: AppHandle,
+    input_path: PathBuf,
+    output: PathBuf,
+    format: String,
+    force: bool,
+) -> Result<String, String> {
+    let format = match format.as_str() {
+        "zso" => CsoFormat::Zso,
+        _ => CsoFormat::Cso,
+    };
+    let progress = Arc::new(TauriProgress::new(app, "cso-compress"));
+    let out_display = output.display().to_string();
+    let opts = CsoCompressOptions {
+        format,
+        block_size: None,
+        force,
+    };
+    tokio::spawn(async move { compress_to_cso(progress.as_ref(), input_path, output, opts).await })
         .await
         .map_err(err_to_string)?
         .map_err(err_to_string)?;
-    Ok(format!("CHD created at {out_display}"))
+    Ok(format!("{} created at {out_display}", format.name()))
+}
+
+#[tauri::command]
+pub async fn cmd_cso_decompress(
+    app: AppHandle,
+    input_path: PathBuf,
+    output: PathBuf,
+    force: bool,
+) -> Result<String, String> {
+    let progress = Arc::new(TauriProgress::new(app, "cso-decompress"));
+    let out_display = output.display().to_string();
+    tokio::spawn(
+        async move { decompress_from_cso(progress.as_ref(), input_path, output, force).await },
+    )
+    .await
+    .map_err(err_to_string)?
+    .map_err(err_to_string)?;
+    Ok(format!("ISO restored at {out_display}"))
+}
+
+#[tauri::command]
+pub async fn cmd_cso_verify(
+    app: AppHandle,
+    input_path: PathBuf,
+    full: bool,
+) -> Result<String, String> {
+    let progress = Arc::new(TauriProgress::new(app, "cso-verify"));
+    tokio::spawn(async move { verify_cso(progress.as_ref(), input_path.clone(), full).await })
+        .await
+        .map_err(err_to_string)?
+        .map_err(err_to_string)?;
+    Ok(if full {
+        "Index structure OK, all blocks decoded successfully".to_string()
+    } else {
+        "Index structure OK".to_string()
+    })
 }
 
 #[tauri::command]
@@ -475,5 +549,6 @@ fn extract_icon_png(info: &InfoResult) -> Option<Vec<u8>> {
             .and_then(|c| c.icon.as_ref())
             .map(|i| i.png_bytes.clone()),
         InfoResult::Chd(_) => None,
+        InfoResult::Cso(_) => None,
     }
 }

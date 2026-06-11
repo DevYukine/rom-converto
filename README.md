@@ -49,13 +49,34 @@ Built for developers, tinkerers and archivists.
 * [x] Drop-in replacement for [`nsz`](https://github.com/nicoboss/nsz) with byte-identical output and matching CLI defaults
 * [x] See [`benchmark/Switch.md`](benchmark/Switch.md) for performance numbers
 
-### CD images (CHD / CUE+BIN)
+### CD / DVD images (CHD / CUE+BIN)
 
-* [x] Compress `.bin` + `.cue` pairs to `.chd`
-* [x] Extract `.chd` back to `.bin` + `.cue`
+* [x] Compress `.bin` + `.cue` pairs to CD-mode `.chd`
+* [x] Compress PS2 / PSP `.iso` to DVD-mode `.chd` (the `chdman createdvd` equivalent); the CD/DVD mode is auto-detected from the input, so the createcd vs createdvd mixup cannot happen
+* [x] Compatibility-first DVD codecs (`lzma` + `zlib`) that load everywhere including AetherSX2/NetherSX2; opt-in `--zstd` for modern emulators
+* [x] PSP images get 2048-byte hunks automatically (what PPSSPP expects); PS2 images use the chdman default
+* [x] Extract `.chd` back to `.bin` + `.cue` (CD) or `.iso` (DVD), auto-detected
 * [x] Verify `.chd` integrity via SHA-1 checksums, with optional header repair
+* [x] Read chdman-produced DVD CHDs including `huff` and `flac` compressed hunks
 * [x] Merge a multi-bin `.cue` (one `.bin` per track) into a single `.bin` + `.cue` pair, for emulators that cannot load split images
 * [x] See [`benchmark/CHD.md`](benchmark/CHD.md) for performance numbers
+
+### PSP / PS2 compressed ISOs (CSO / ZSO)
+
+* [x] Compress `.iso` to `.cso` (CISO v1) for real PSP hardware with CFW and for PPSSPP
+* [x] Compress `.iso` to `.zso` (LZ4) for real PS2 hardware via Open PS2 Loader 1.2+ and ARK-4 on PSP
+* [x] Decompress `.cso` / `.zso` back to the original `.iso`
+* [x] Verify container structure, with an optional full decode pass
+* [x] maxcso-compatible defaults: 2 KiB blocks (16 KiB for 2 GiB+ inputs), automatic index shift for large images, per-block store-raw fallback
+
+Where each format works:
+
+| Target | Recommended format |
+|---|---|
+| PCSX2 / NetherSX2 (PS2 emulators) | DVD-mode CHD (default codecs) |
+| PPSSPP (PSP emulator) | CHD or CSO |
+| Real PSP with CFW | CSO |
+| Real PS2 via Open PS2 Loader | ZSO |
 
 ### Application
 
@@ -198,8 +219,8 @@ Flags match the `dol` commands.
 
 | Command | Description |
 |---|---|
-| `chd compress <INPUT_CUE> <OUTPUT>` | Compress a `.bin` + `.cue` pair to `.chd` |
-| `chd extract <INPUT> <OUTPUT>` | Extract a `.chd` file back to `.bin` + `.cue` |
+| `chd compress <INPUT> [OUTPUT]` | Compress a `.cue` (CD-mode) or PS2/PSP `.iso` (DVD-mode) to `.chd`; the mode is auto-detected |
+| `chd extract <INPUT> <OUTPUT>` | Extract a `.chd` file back to `.bin` + `.cue` (CD) or `.iso` (DVD) |
 | `chd verify <INPUT>` | Verify the SHA1 integrity of a `.chd` file |
 
 **Flags:**
@@ -207,8 +228,32 @@ Flags match the `dol` commands.
 | Flag | Applies to | Description |
 |---|---|---|
 | `-f, --force` | `compress` | Overwrite output file if it already exists |
+| `--dvd` / `--cd` | `compress` | Override the auto-detected mode (CD mode needs a cue sheet) |
+| `--hunk-size <BYTES>` | `compress` | DVD hunk size, a multiple of 2048; defaults to 4096, or 2048 for detected PSP images |
+| `--zstd` | `compress` | Add zstd to the DVD codec set; better ratio, but rejected by AetherSX2/NetherSX2 |
+| `-R, --recursive` | `compress` | Compress every `.cue` and `.iso` in the input directory |
 | `-p, --parent <PARENT>` | `extract`, `verify` | Specify a parent CHD for parent-child relationships |
 | `--fix` | `verify` | Correct SHA1 values in the CHD header if mismatches are found |
+
+---
+
+### CSO / ZSO
+
+| Command | Description |
+|---|---|
+| `cso compress <INPUT> [OUTPUT]` | Compress an `.iso` to `.cso` (default) or `.zso` |
+| `cso decompress <INPUT> [OUTPUT]` | Restore the original `.iso` from a `.cso` / `.zso` |
+| `cso verify <INPUT>` | Validate the container index; `--full` decodes every block |
+
+**Flags:**
+
+| Flag | Applies to | Description |
+|---|---|---|
+| `--format <cso\|zso>` | `compress` | Output container: CSO for PSP/PPSSPP, ZSO for PS2 via OPL |
+| `--block-size <BYTES>` | `compress` | Block size, a power of two; defaults to 2048 (16384 for 2 GiB+ inputs) |
+| `-f, --force` | `compress`, `decompress` | Overwrite output file if it already exists |
+| `-R, --recursive` | `compress` | Compress every `.iso` in the input directory |
+| `--full` | `verify` | Decode every block instead of only checking the index |
 
 ---
 
@@ -242,6 +287,7 @@ Inspect a ROM file or title directory and print the embedded metadata: title, ve
 | `wup info <PATH>` | loadiine + NUS directories and `.wua` archives; TMD + meta.xml with multilingual names, region, age ratings, save sizes, GamePad requirement, supported accessories, mastering date, decoded `iconTex.tga` icon. |
 | `nx info <FILE>` | NSP / NSZ / XCI / XCZ; container listing, tickets, CNMT, NACP, JPEG icon. Reports compression status (NSP vs NSZ), distribution (digital vs cartridge), structure classifier (scene / converted / CDN / homebrew), base title id for patches and DLC, decoded language list, age ratings per rating board. Full info needs `--keys prod.keys`, partial info without. |
 | `chd info <FILE>` | CHD v5; version, codecs, hunk geometry, SHA-1 triplet, per-track CHT2 metadata, VERS / DVD tags |
+| `cso info <FILE>` | CSO / ZSO; format and version, block geometry, index shift, raw block count, compression ratio |
 
 `--save-icon DIR` writes the embedded icon as `<title_id>.png` into `DIR` (3DS, GameCube, and Switch). `--keys` only applies to `nx info`.
 
@@ -249,7 +295,8 @@ Format notes:
 
 - `.rvz` (Wii and GameCube) and `.wbfs` (Wii) are read directly. Only the disc areas that are actually needed get decompressed, so no temp files are written and memory stays at a few MB.
 - `.wua` (Wii U Cemu archive) is read directly. When an archive bundles base + update + DLC, the base title is shown, the bundled titles are listed, and the version includes the update.
-- WIA, CISO, GCZ, NFS, and TGC are not supported.
+- `.cso` / `.zso` are read directly.
+- WIA, GCZ, NFS, and TGC are not supported.
 
 ---
 
@@ -325,6 +372,17 @@ cargo build --release -p rom-converto-cli
 ```
 
 The resulting binary will be at `target/release/rom-converto`.
+
+### Cross-Tool Parity Tests
+
+Some tests cross-check output against the reference tools when they
+are available. They are skipped unless the environment variable
+points at the binary:
+
+```
+ROMCONVERTO_CHDMAN=$(which chdman) cargo test -p rom-converto-lib chdman
+ROMCONVERTO_MAXCSO=$(which maxcso) cargo test -p rom-converto-lib maxcso
+```
 
 ## Built With
 

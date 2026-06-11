@@ -1,5 +1,6 @@
 use crate::commands::chd::ChdCommands;
 use crate::commands::completions::ShellCompletionsCommand;
+use crate::commands::cso::{CsoCommands, CsoFormatArg};
 use crate::commands::ctr::CtrCommands;
 use crate::commands::cue::CueCommands;
 use crate::commands::dol::DolCommands;
@@ -15,7 +16,14 @@ use clap::{CommandFactory, Parser};
 use clap_complete::{generate, generate_to};
 use indicatif::MultiProgress;
 use indicatif_log_bridge::LogWrapper;
-use rom_converto_lib::chd::{convert_to_chd, extract_from_chd, verify_chd};
+use rom_converto_lib::chd::{
+    ChdDvdOptions, DiscMode, convert_disc_to_chd, convert_disc_to_chd_batch, extract_from_chd,
+    verify_chd,
+};
+use rom_converto_lib::cso::{
+    CsoCompressOptions, CsoFormat, compress_to_cso, compress_to_cso_batch, decompress_from_cso,
+    verify_cso,
+};
 use rom_converto_lib::cue::merge::merge_bin;
 use rom_converto_lib::nintendo::ctr::convert::{
     convert_rom, convert_rom_batch, derive_converted_path,
@@ -308,7 +316,33 @@ async fn main() -> Result<()> {
         },
         Commands::Chd(inner) => match inner {
             ChdCommands::Compress(cmd) => {
-                convert_to_chd(&progress, cmd.input_cue, cmd.output, cmd.force).await?
+                let opts = ChdDvdOptions {
+                    hunk_size: cmd.hunk_size,
+                    allow_zstd: cmd.zstd,
+                    force: cmd.force,
+                };
+                let mode = if cmd.dvd {
+                    Some(DiscMode::Dvd)
+                } else if cmd.cd {
+                    Some(DiscMode::Cd)
+                } else {
+                    None
+                };
+                if cmd.recursive {
+                    if !cmd.input.is_dir() {
+                        anyhow::bail!(
+                            "INPUT must be a directory when --recursive is set: {}",
+                            cmd.input.display()
+                        );
+                    }
+                    convert_disc_to_chd_batch(&progress, &total_progress, &cmd.input, opts).await?
+                } else {
+                    let output = cmd
+                        .output
+                        .clone()
+                        .unwrap_or_else(|| cmd.input.with_extension("chd"));
+                    convert_disc_to_chd(&progress, cmd.input, output, mode, opts).await?
+                }
             }
             ChdCommands::Extract(cmd) => {
                 extract_from_chd(&progress, cmd.input, cmd.output, cmd.parent).await?
@@ -319,6 +353,46 @@ async fn main() -> Result<()> {
             ChdCommands::Info(cmd) => {
                 let info = rom_converto_lib::chd::info::read_info(&cmd.input)?;
                 info_print::print(&rom_converto_lib::info::InfoResult::Chd(info), cmd.json)?;
+            }
+        },
+        Commands::Cso(inner) => match inner {
+            CsoCommands::Compress(cmd) => {
+                let format = match cmd.format {
+                    CsoFormatArg::Cso => CsoFormat::Cso,
+                    CsoFormatArg::Zso => CsoFormat::Zso,
+                };
+                let opts = CsoCompressOptions {
+                    format,
+                    block_size: cmd.block_size,
+                    force: cmd.force,
+                };
+                if cmd.recursive {
+                    if !cmd.input.is_dir() {
+                        anyhow::bail!(
+                            "INPUT must be a directory when --recursive is set: {}",
+                            cmd.input.display()
+                        );
+                    }
+                    compress_to_cso_batch(&progress, &total_progress, &cmd.input, opts).await?
+                } else {
+                    let output = cmd
+                        .output
+                        .clone()
+                        .unwrap_or_else(|| cmd.input.with_extension(format.extension()));
+                    compress_to_cso(&progress, cmd.input, output, opts).await?
+                }
+            }
+            CsoCommands::Decompress(cmd) => {
+                let output = cmd
+                    .output
+                    .clone()
+                    .unwrap_or_else(|| cmd.input.with_extension("iso"));
+                decompress_from_cso(&progress, cmd.input, output, cmd.force).await?
+            }
+            CsoCommands::Verify(cmd) => verify_cso(&progress, cmd.input, cmd.full).await?,
+            CsoCommands::Info(cmd) => {
+                let info = rom_converto_lib::cso::info::read_info(&cmd.input)?;
+                info_print::print(&rom_converto_lib::info::InfoResult::Cso(info), cmd.json)?;
             }
         },
         Commands::Cue(inner) => match inner {

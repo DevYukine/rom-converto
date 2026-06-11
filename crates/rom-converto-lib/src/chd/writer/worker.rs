@@ -12,6 +12,7 @@
 //! for the lifetime of the compress call.
 
 use crate::cd::{FRAME_SIZE, SECTOR_SIZE, SUBCODE_SIZE};
+use crate::chd::compression::dvd::DvdCodecSet;
 use crate::chd::compression::{CdCodecSet, ChdCompression};
 use crate::chd::error::{ChdError, ChdResult};
 use crate::chd::map::{MapEntry, crc16_ccitt};
@@ -77,6 +78,41 @@ pub(super) fn make_chd_compress_workers(
     (0..n).map(|_| ChdCompressWorker::new(hunk_bytes)).collect()
 }
 
+/// DVD twin of [`ChdCompressWorker`]: same work/output shape, raw
+/// codecs instead of the CD frame-split set.
+pub(super) struct ChdDvdCompressWorker {
+    codecs: DvdCodecSet,
+}
+
+impl Worker<ChdCompressWork, ChdCompressedOut, ChdError> for ChdDvdCompressWorker {
+    fn process(&mut self, work: ChdCompressWork) -> ChdResult<ChdCompressedOut> {
+        let crc16 = crc16_ccitt(&work.hunk);
+        let (compressed, compression) = match self.codecs.compress_hunk(&work.hunk) {
+            Ok((data, codec_type)) => (data, codec_type),
+            Err(_) => (work.hunk, ChdCompression::None as u8),
+        };
+        Ok(ChdCompressedOut {
+            compressed,
+            compression,
+            crc16,
+        })
+    }
+}
+
+pub(super) fn make_chd_dvd_compress_workers(
+    n: usize,
+    hunk_bytes: usize,
+    allow_zstd: bool,
+) -> ChdResult<Vec<ChdDvdCompressWorker>> {
+    (0..n)
+        .map(|_| {
+            Ok(ChdDvdCompressWorker {
+                codecs: DvdCodecSet::new(hunk_bytes, allow_zstd)?,
+            })
+        })
+        .collect()
+}
+
 /// Drive the full compress pipeline:
 ///
 /// * **Reader (dispatcher thread)**: sequential `BufReader` over
@@ -106,8 +142,93 @@ pub(super) fn compress_hunks(
 ) -> ChdResult<()> {
     let frames_per_hunk = hunk_bytes / FRAME_SIZE;
     let total_hunks = total_sectors.div_ceil(frames_per_hunk as u32) as u64;
-    let max_in_flight = parallelism() * 2;
 
+    run_pipeline(
+        pool,
+        writer,
+        writer_pos,
+        map_entries,
+        total_hunks,
+        // produce: read the next hunk worth of sectors, build an
+        // interleaved hunk buffer, fold bytes into the running raw
+        // SHA-1. Zero padding on the short final hunk comes for
+        // free from the `vec![0; hunk_bytes]` allocation.
+        |chunk_idx| -> ChdResult<ChdCompressWork> {
+            let first_sector = (chunk_idx as u32) * frames_per_hunk as u32;
+            let sectors_in_hunk = frames_per_hunk.min((total_sectors - first_sector) as usize);
+            let sector_bytes = sectors_in_hunk * SECTOR_SIZE;
+
+            let mut sector_buf = vec![0u8; sector_bytes];
+            bin_reader.read_exact(&mut sector_buf)?;
+
+            let mut hunk = vec![0u8; hunk_bytes];
+            for s in 0..sectors_in_hunk {
+                let src = s * SECTOR_SIZE;
+                let dst = s * FRAME_SIZE;
+                hunk[dst..dst + SECTOR_SIZE].copy_from_slice(&sector_buf[src..src + SECTOR_SIZE]);
+                raw_sha1.update(&sector_buf[src..src + SECTOR_SIZE]);
+                raw_sha1.update(ZERO_SUBCODE);
+            }
+            bytes_done.fetch_add(sector_bytes as u64, Ordering::Relaxed);
+            Ok(ChdCompressWork { hunk })
+        },
+    )
+}
+
+/// DVD produce path: flat 2048-byte sectors, no interleave, no
+/// subcode. The raw SHA-1 covers exactly `logical_bytes`; the zero
+/// padding of the final partial hunk is compressed but never hashed,
+/// matching chdman.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn compress_hunks_dvd(
+    pool: &Pool<ChdCompressWork, ChdCompressedOut, ChdError>,
+    iso_reader: &mut BufReader<std::fs::File>,
+    writer: &mut BufWriter<std::fs::File>,
+    writer_pos: &mut u64,
+    map_entries: &mut Vec<MapEntry>,
+    raw_sha1: &mut Sha1,
+    logical_bytes: u64,
+    hunk_bytes: usize,
+    bytes_done: &Arc<AtomicU64>,
+) -> ChdResult<()> {
+    let total_hunks = logical_bytes.div_ceil(hunk_bytes as u64);
+
+    run_pipeline(
+        pool,
+        writer,
+        writer_pos,
+        map_entries,
+        total_hunks,
+        |chunk_idx| -> ChdResult<ChdCompressWork> {
+            let offset = chunk_idx * hunk_bytes as u64;
+            let take = ((logical_bytes - offset) as usize).min(hunk_bytes);
+
+            let mut hunk = vec![0u8; hunk_bytes];
+            iso_reader.read_exact(&mut hunk[..take])?;
+            raw_sha1.update(&hunk[..take]);
+            bytes_done.fetch_add(take as u64, Ordering::Relaxed);
+            Ok(ChdCompressWork { hunk })
+        },
+    )
+}
+
+/// Shared compress scaffold: `drive` the pool with the mode-specific
+/// `produce` closure while a dedicated writer thread drains a bounded
+/// channel, so reads, codec trials, and writes overlap. The consume
+/// side is mode-independent: append a map entry, forward bytes,
+/// advance the writer position.
+fn run_pipeline<F>(
+    pool: &Pool<ChdCompressWork, ChdCompressedOut, ChdError>,
+    writer: &mut BufWriter<std::fs::File>,
+    writer_pos: &mut u64,
+    map_entries: &mut Vec<MapEntry>,
+    total_hunks: u64,
+    produce: F,
+) -> ChdResult<()>
+where
+    F: FnMut(u64) -> ChdResult<ChdCompressWork>,
+{
+    let max_in_flight = parallelism() * 2;
     let mut local_writer_pos = *writer_pos;
     let (write_tx, write_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(max_in_flight * 2);
 
@@ -124,33 +245,8 @@ pub(super) fn compress_hunks(
             pool,
             total_hunks,
             max_in_flight,
-            // produce: read the next hunk worth of sectors, build
-            // an interleaved hunk buffer, fold bytes into the
-            // running raw SHA-1. Zero padding on the short final
-            // hunk comes for free from the `vec![0; hunk_bytes]`
-            // allocation.
-            |chunk_idx| -> ChdResult<ChdCompressWork> {
-                let first_sector = (chunk_idx as u32) * frames_per_hunk as u32;
-                let sectors_in_hunk = frames_per_hunk.min((total_sectors - first_sector) as usize);
-                let sector_bytes = sectors_in_hunk * SECTOR_SIZE;
-
-                let mut sector_buf = vec![0u8; sector_bytes];
-                bin_reader.read_exact(&mut sector_buf)?;
-
-                let mut hunk = vec![0u8; hunk_bytes];
-                for s in 0..sectors_in_hunk {
-                    let src = s * SECTOR_SIZE;
-                    let dst = s * FRAME_SIZE;
-                    hunk[dst..dst + SECTOR_SIZE]
-                        .copy_from_slice(&sector_buf[src..src + SECTOR_SIZE]);
-                    raw_sha1.update(&sector_buf[src..src + SECTOR_SIZE]);
-                    raw_sha1.update(ZERO_SUBCODE);
-                }
-                Ok(ChdCompressWork { hunk })
-            },
-            // consume: append a map entry, forward bytes to the
-            // writer thread, advance `writer_pos`, tick progress.
-            |_seq, out| -> ChdResult<()> {
+            produce,
+            |_seq, out: ChdCompressedOut| -> ChdResult<()> {
                 let offset = local_writer_pos;
                 let length = out.compressed.len() as u32;
                 map_entries.push(MapEntry {
@@ -163,7 +259,6 @@ pub(super) fn compress_hunks(
                     .send(out.compressed)
                     .map_err(|_| ChdError::WorkerPoolClosed)?;
                 local_writer_pos += length as u64;
-                bytes_done.fetch_add((frames_per_hunk * SECTOR_SIZE) as u64, Ordering::Relaxed);
                 Ok(())
             },
         );

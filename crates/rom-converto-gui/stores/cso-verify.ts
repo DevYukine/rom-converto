@@ -1,11 +1,9 @@
 import { defineStore } from "pinia";
 import type { BatchItem } from "~/types/batch";
 
-export const useChdCompressStore = defineStore("chd-compress", () => {
+export const useCsoVerifyStore = defineStore("cso-verify", () => {
   const input = ref("");
-  const output = ref("");
-  const force = ref(false);
-  const zstd = ref(false);
+  const full = ref(false);
 
   const result = ref("");
   const error = ref("");
@@ -13,11 +11,11 @@ export const useChdCompressStore = defineStore("chd-compress", () => {
 
   const queue = ref<BatchItem[]>([]);
 
-  function addToQueue(filePath: string, outputPath: string) {
+  function addToQueue(filePath: string) {
     queue.value.push({
       id: crypto.randomUUID(),
       input: filePath,
-      output: outputPath,
+      output: "",
       status: "pending",
     });
   }
@@ -32,9 +30,7 @@ export const useChdCompressStore = defineStore("chd-compress", () => {
 
   function $reset() {
     input.value = "";
-    output.value = "";
-    zstd.value = false;
-    force.value = false;
+    full.value = false;
     result.value = "";
     error.value = "";
     loading.value = false;
@@ -43,9 +39,7 @@ export const useChdCompressStore = defineStore("chd-compress", () => {
 
   return {
     input,
-    output,
-    force,
-    zstd,
+    full,
     result,
     error,
     loading,

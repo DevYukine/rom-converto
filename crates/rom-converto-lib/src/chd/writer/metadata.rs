@@ -16,12 +16,29 @@ pub struct MetadataHash {
 }
 
 #[derive(Debug)]
-pub struct CdMetadataBlock {
+pub struct MetadataBlock {
     pub bytes: Vec<u8>,
     pub hashes: Vec<MetadataHash>,
 }
 
-pub fn generate_cd_metadata(cue_sheet: &CueSheet, total_frames: u32) -> ChdResult<CdMetadataBlock> {
+/// Serialized `DVD ` marker block: chdman's whole DVD metadata is the
+/// hashed empty string.
+pub fn generate_dvd_metadata() -> ChdResult<MetadataBlock> {
+    let metadata = ChdMetadataHeader::new_dvd_metadata();
+    let mut bytes = Vec::new();
+    metadata.write(&mut Cursor::new(&mut bytes))?;
+
+    let sha1: [u8; SHA1_BYTES] = Sha1::digest(&metadata.data).into();
+    Ok(MetadataBlock {
+        bytes,
+        hashes: vec![MetadataHash {
+            tag: metadata.tag,
+            sha1,
+        }],
+    })
+}
+
+pub fn generate_cd_metadata(cue_sheet: &CueSheet, total_frames: u32) -> ChdResult<MetadataBlock> {
     let mut metadata_buffer = Vec::new();
 
     // CDs use a single metadata entry that lists every track.
@@ -71,7 +88,7 @@ pub fn generate_cd_metadata(cue_sheet: &CueSheet, total_frames: u32) -> ChdResul
         });
     }
 
-    Ok(CdMetadataBlock {
+    Ok(MetadataBlock {
         bytes: metadata_buffer,
         hashes,
     })

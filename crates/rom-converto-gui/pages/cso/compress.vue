@@ -1,34 +1,41 @@
 <script setup lang="ts">
 import { storeToRefs } from "pinia";
-import { useChdCompressStore } from "~/stores/chd-compress";
+import { useCsoCompressStore } from "~/stores/cso-compress";
 
-const store = useChdCompressStore();
-const { input, output, force, zstd, result, error, loading, queue } = storeToRefs(store);
+const store = useCsoCompressStore();
+const { input, output, format, force, result, error, loading, queue } = storeToRefs(store);
 const { run } = useOperation({ result, error, loading });
-const progress = useProgress("chd-compress");
+const progress = useProgress("cso-compress");
 
 const isBatch = computed(() => queue.value.length > 0);
 
-const batch = useBatchOperation("chd-compress", "cmd_chd_compress", (item) => ({
+const batch = useBatchOperation("cso-compress", "cmd_cso_compress", (item) => ({
   inputPath: item.input,
   output: item.output,
+  format: format.value,
   force: force.value,
-  zstd: zstd.value,
 }));
 
 watch(input, (val) => {
-  if (val) output.value = deriveChdPath(val);
+  if (val) output.value = deriveCsoPath(val, format.value);
+});
+
+watch(format, (fmt) => {
+  if (input.value) output.value = deriveCsoPath(input.value, fmt);
+  for (const item of queue.value) {
+    if (item.status === "pending") item.output = deriveCsoPath(item.input, fmt);
+  }
 });
 
 function handleFiles(paths: string[]) {
   for (const p of paths) {
-    store.addToQueue(p, deriveChdPath(p));
+    store.addToQueue(p, deriveCsoPath(p, format.value));
   }
 }
 
 function handleSingleFile(path: string) {
   if (queue.value.length > 0) {
-    store.addToQueue(path, deriveChdPath(path));
+    store.addToQueue(path, deriveCsoPath(path, format.value));
   } else {
     input.value = path;
   }
@@ -39,11 +46,11 @@ async function execute() {
   if (isBatch.value) {
     await batch.start(queue, result);
   } else {
-    await run("cmd_chd_compress", {
+    await run("cmd_cso_compress", {
       inputPath: input.value,
       output: output.value,
+      format: format.value,
       force: force.value,
-      zstd: zstd.value,
     });
   }
 }
@@ -52,8 +59,8 @@ async function execute() {
 <template>
   <div>
     <PageHeader
-      title="Compress to CHD"
-      description="Compress disc images to CHD. CUE/BIN input becomes a CD-mode CHD; PS2/PSP ISO input becomes a DVD-mode CHD (mode and hunk size are auto-detected). Drop multiple files for batch processing."
+      title="Compress to CSO/ZSO"
+      description="Compress PSP/PS2 ISOs into block-compressed containers. CSO for PSP hardware and PPSSPP, ZSO for PS2 via Open PS2 Loader. Drop multiple .iso files for batch processing."
       :loading="loading || batch.running.value"
       :has-result="!!result"
       :has-error="!!error"
@@ -73,11 +80,11 @@ async function execute() {
           />
 
           <FileDropZone
-            label="Add more disc images"
+            label="Add more ISO files"
             model-value=""
             :multiple="true"
-            :filters="[{ name: 'Disc image', extensions: ['cue', 'iso'] }]"
-            @update:model-value="(p: string) => { if (p) store.addToQueue(p, deriveChdPath(p)) }"
+            :filters="[{ name: 'ISO image', extensions: ['iso'] }]"
+            @update:model-value="(p: string) => { if (p) store.addToQueue(p, deriveCsoPath(p, format)) }"
             @update:files="handleFiles"
           />
         </template>
@@ -87,9 +94,9 @@ async function execute() {
           <div class="grid gap-5 lg:grid-cols-2">
             <FileDropZone
               :model-value="input"
-              label="Input disc image (.cue or .iso)"
+              label="Input ISO file"
               :multiple="true"
-              :filters="[{ name: 'Disc image', extensions: ['cue', 'iso'] }]"
+              :filters="[{ name: 'ISO image', extensions: ['iso'] }]"
               :primary="true"
               @update:model-value="handleSingleFile"
               @update:files="handleFiles"
@@ -99,21 +106,27 @@ async function execute() {
               v-model="output"
               label="Output (auto-derived)"
               :save-dialog="true"
-              :filters="[{ name: 'CHD', extensions: ['chd'] }]"
+              :filters="[{ name: 'Compressed ISO', extensions: ['cso', 'zso'] }]"
             />
           </div>
         </template>
 
         <div class="space-y-3 rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
+          <div class="flex items-center gap-4">
+            <span class="text-sm font-medium text-zinc-300">Format</span>
+            <label class="flex items-center gap-1.5 text-sm text-zinc-400">
+              <input v-model="format" type="radio" value="cso" class="accent-sky-500">
+              CSO (PSP, PPSSPP)
+            </label>
+            <label class="flex items-center gap-1.5 text-sm text-zinc-400">
+              <input v-model="format" type="radio" value="zso" class="accent-sky-500">
+              ZSO (PS2 via OPL)
+            </label>
+          </div>
           <FlagToggle
             v-model="force"
             label="Force Overwrite"
             description="Overwrite output file if it already exists"
-          />
-          <FlagToggle
-            v-model="zstd"
-            label="zstd codec (DVD mode)"
-            description="Better ratio, but the CHD is rejected by AetherSX2/NetherSX2. Leave off for maximum compatibility"
           />
         </div>
 

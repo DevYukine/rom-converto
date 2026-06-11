@@ -62,6 +62,7 @@ pub fn print(result: &InfoResult, json: bool) -> Result<()> {
     }
     let rendered = match result {
         InfoResult::Chd(info) => render_chd(info),
+        InfoResult::Cso(info) => render_cso(info),
         InfoResult::Ctr(info) => render_ctr(info),
         InfoResult::Dol(info) => render_dol(info),
         InfoResult::Rvl(info) => render_rvl(info),
@@ -70,6 +71,24 @@ pub fn print(result: &InfoResult, json: bool) -> Result<()> {
     };
     print!("{}", rendered);
     Ok(())
+}
+
+fn render_cso(info: &rom_converto_lib::info::CsoInfo) -> String {
+    let mut t = KeyValueTable::new();
+    t.push("Format", format!("{} v{}", info.format, info.version));
+    t.push("Block size", format!("{} bytes", info.block_size));
+    t.push("Index shift", format!("{}", info.index_shift));
+    t.push(
+        "Blocks",
+        format!("{} ({} stored raw)", info.block_count, info.raw_block_count),
+    );
+    t.push("Uncompressed bytes", format!("{}", info.uncompressed_size));
+    t.push("Physical bytes", format!("{}", info.physical_bytes));
+    t.push(
+        "Compression ratio",
+        format!("{:.2}%", info.compression_ratio),
+    );
+    t.render()
 }
 
 fn render_chd(info: &rom_converto_lib::info::ChdInfo) -> String {

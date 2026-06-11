@@ -137,9 +137,124 @@ pub(crate) fn flac_decompress(data: &[u8], _expected_len: usize) -> ChdResult<Ve
     Ok(bytes_from_samples(&samples, &endian))
 }
 
+/// chdman's FLAC block size for raw `flac` hunks: a quarter of the
+/// hunk in samples, halved until at most 2048
+/// (`chd_flac_compressor::blocksize`).
+pub(crate) fn chd_flac_block_size(hunk_bytes: usize) -> usize {
+    let mut block = hunk_bytes / 4;
+    while block > 2048 {
+        block /= 2;
+    }
+    block
+}
+
+/// The 0x2A-byte stream header MAME's `flac_decoder::reset`
+/// synthesizes: chdman stores raw `flac` hunks headerless, so the
+/// fLaC magic and STREAMINFO (44100 Hz, 2 channels, 16-bit) must be
+/// regenerated before claxon can parse the frames.
+fn chd_flac_stream_header(block_size: usize) -> [u8; 42] {
+    let mut header = [0u8; 42];
+    header[0..4].copy_from_slice(b"fLaC");
+    header[4] = 0x80;
+    header[7] = 0x22;
+    header[8..10].copy_from_slice(&(block_size as u16).to_be_bytes());
+    header[10..12].copy_from_slice(&(block_size as u16).to_be_bytes());
+    // 20-bit sample rate, 3-bit channels-1, 5-bit bits-1, packed as
+    // (44100 << 4) | (1 << 1) | 0xF spread over 4 bytes.
+    header[18..22].copy_from_slice(&[0x0A, 0xC4, 0x42, 0xF0]);
+    header
+}
+
+/// Decode a chdman raw `flac` hunk: a 1-byte 'L'/'B' endian marker,
+/// then headerless FLAC frames of interleaved 16-bit stereo samples.
+pub(crate) fn flac_decompress_chd_raw(data: &[u8], expected_len: usize) -> ChdResult<Vec<u8>> {
+    let endian = match data.first() {
+        Some(b'L') => Endian::Little,
+        Some(b'B') => Endian::Big,
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid CHD FLAC endian marker",
+            )
+            .into());
+        }
+    };
+
+    let mut stream = Vec::with_capacity(42 + data.len() - 1);
+    stream.extend_from_slice(&chd_flac_stream_header(chd_flac_block_size(expected_len)));
+    stream.extend_from_slice(&data[1..]);
+
+    let mut reader = claxon::FlacReader::new(Cursor::new(stream))
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+
+    let wanted = expected_len / 2;
+    let mut samples = Vec::with_capacity(wanted);
+    for sample in reader.samples() {
+        samples
+            .push(sample.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?);
+        if samples.len() == wanted {
+            break;
+        }
+    }
+    if samples.len() < wanted {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "short CHD FLAC stream").into());
+    }
+    Ok(bytes_from_samples(&samples, &endian))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn strip_stream_header(stream: &[u8]) -> &[u8] {
+        assert_eq!(&stream[..4], b"fLaC");
+        let mut off = 4;
+        loop {
+            let last = stream[off] & 0x80 != 0;
+            let len =
+                u32::from_be_bytes([0, stream[off + 1], stream[off + 2], stream[off + 3]]) as usize;
+            off += 4 + len;
+            if last {
+                break;
+            }
+        }
+        &stream[off..]
+    }
+
+    #[test]
+    fn chd_raw_flac_round_trips() {
+        // Audio-like data so FLAC's predictors have something to do.
+        let hunk_bytes = 8192usize;
+        let mut data = vec![0u8; hunk_bytes];
+        for (i, chunk) in data.chunks_exact_mut(2).enumerate() {
+            let v = ((i as f64 / 13.0).sin() * 6000.0) as i16;
+            chunk.copy_from_slice(&v.to_le_bytes());
+        }
+
+        let block_size = chd_flac_block_size(hunk_bytes);
+        let samples = samples_from_bytes(&data, Endian::Little);
+        let full = encode_flac_samples(&samples, 2, CD_SAMPLE_RATE, block_size).unwrap();
+
+        let mut chd_hunk = vec![b'L'];
+        chd_hunk.extend_from_slice(strip_stream_header(&full));
+
+        let decoded = flac_decompress_chd_raw(&chd_hunk, hunk_bytes).unwrap();
+        assert_eq!(decoded, data);
+    }
+
+    #[test]
+    fn chd_raw_flac_rejects_bad_marker() {
+        assert!(flac_decompress_chd_raw(&[b'X', 0, 0], 4096).is_err());
+    }
+
+    #[test]
+    fn chd_block_size_matches_chdman() {
+        assert_eq!(chd_flac_block_size(2048), 512);
+        assert_eq!(chd_flac_block_size(4096), 1024);
+        assert_eq!(chd_flac_block_size(8192), 2048);
+        assert_eq!(chd_flac_block_size(16384), 2048);
+        assert_eq!(chd_flac_block_size(19584), 1224);
+    }
 
     #[test]
     fn samples_from_bytes_le_known_value() {

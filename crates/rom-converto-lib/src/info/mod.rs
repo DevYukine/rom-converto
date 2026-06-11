@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 pub mod image;
 
 pub use crate::chd::info::ChdInfo;
+pub use crate::cso::info::CsoInfo;
 pub use crate::nintendo::ctr::info::CtrInfo;
 pub use crate::nintendo::dol::info::DolInfo;
 pub use crate::nintendo::nx::info::NxInfo;
@@ -24,6 +25,7 @@ pub use image::Image;
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum InfoResult {
     Chd(ChdInfo),
+    Cso(CsoInfo),
     Ctr(CtrInfo),
     Dol(DolInfo),
     Rvl(RvlInfo),
@@ -104,6 +106,7 @@ pub fn read_info(path: &Path, opts: &InfoOptions) -> Result<InfoResult> {
     let kind = detect_console(path)?;
     match kind {
         DetectedConsole::Chd => Ok(InfoResult::Chd(crate::chd::info::read_info(path)?)),
+        DetectedConsole::Cso => Ok(InfoResult::Cso(crate::cso::info::read_info(path)?)),
         DetectedConsole::Ctr => Ok(InfoResult::Ctr(crate::nintendo::ctr::info::read_info(
             path,
         )?)),
@@ -126,6 +129,7 @@ pub fn read_info(path: &Path, opts: &InfoOptions) -> Result<InfoResult> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DetectedConsole {
     Chd,
+    Cso,
     Ctr,
     Dol,
     Rvl,
@@ -149,6 +153,7 @@ pub fn detect_console(path: &Path) -> Result<DetectedConsole> {
 
     match lower_ext.as_deref() {
         Some("chd") => return Ok(DetectedConsole::Chd),
+        Some("cso") | Some("zso") => return Ok(DetectedConsole::Cso),
         Some("cia") | Some("3ds") | Some("cci") | Some("cxi") | Some("ncch") => {
             return Ok(DetectedConsole::Ctr);
         }

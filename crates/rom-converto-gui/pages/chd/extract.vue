@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { invoke } from "@tauri-apps/api/core";
 import { storeToRefs } from "pinia";
 import { useChdExtractStore } from "~/stores/chd-extract";
 
@@ -15,19 +16,32 @@ const batch = useBatchOperation("chd-extract", "cmd_chd_extract", (item) => ({
   parent: parent.value || null,
 }));
 
-watch(input, (val) => {
-  if (val) output.value = deriveCuePath(val);
+// DVD-mode CHDs extract to a single .iso, CD-mode to .cue/.bin;
+// the mode is only knowable from the file's metadata.
+async function deriveOutput(path: string): Promise<string> {
+  try {
+    const raw = await invoke<string>("cmd_read_info", { input: path, keys: null });
+    const parsed = JSON.parse(raw);
+    if (parsed?.dvd) return deriveDiscIsoPath(path);
+  } catch {
+    // Fall through to the CD default.
+  }
+  return deriveCuePath(path);
+}
+
+watch(input, async (val) => {
+  if (val) output.value = await deriveOutput(val);
 });
 
-function handleFiles(paths: string[]) {
+async function handleFiles(paths: string[]) {
   for (const p of paths) {
-    store.addToQueue(p, deriveCuePath(p));
+    store.addToQueue(p, await deriveOutput(p));
   }
 }
 
-function handleSingleFile(path: string) {
+async function handleSingleFile(path: string) {
   if (queue.value.length > 0) {
-    store.addToQueue(path, deriveCuePath(path));
+    store.addToQueue(path, await deriveOutput(path));
   } else {
     input.value = path;
   }
@@ -51,7 +65,7 @@ async function execute() {
   <div>
     <PageHeader
       title="Extract CHD"
-      description="Extract CHD files to BIN/CUE disc images. Drop multiple .chd files for batch processing."
+      description="Extract CHD files back to their disc images: BIN/CUE for CD-mode, ISO for DVD-mode (PS2/PSP). Drop multiple .chd files for batch processing."
       :loading="loading || batch.running.value"
       :has-result="!!result"
       :has-error="!!error"
@@ -75,7 +89,7 @@ async function execute() {
             model-value=""
             :multiple="true"
             :filters="[{ name: 'CHD', extensions: ['chd'] }]"
-            @update:model-value="(p: string) => { if (p) store.addToQueue(p, deriveCuePath(p)) }"
+            @update:model-value="async (p: string) => { if (p) store.addToQueue(p, await deriveOutput(p)) }"
             @update:files="handleFiles"
           />
         </template>
@@ -97,7 +111,7 @@ async function execute() {
               v-model="output"
               label="Output (auto-derived)"
               :save-dialog="true"
-              :filters="[{ name: 'CUE Sheet', extensions: ['cue'] }]"
+              :filters="[{ name: 'Disc image', extensions: ['cue', 'iso'] }]"
             />
           </div>
         </template>
