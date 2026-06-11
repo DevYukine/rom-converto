@@ -7,7 +7,23 @@ use std::path::PathBuf;
 pub enum DolCommands {
     Compress(CompressDiscCommand),
     Decompress(DecompressDiscCommand),
+    Verify(VerifyDiscCommand),
     Info(InfoCommand),
+}
+
+/// Verify a GameCube disc image.
+#[derive(Parser, Debug, Clone, Eq, PartialEq)]
+#[command(long_about = "Verify a GameCube disc image.\n\n\
+Fast mode (default) checks the RVZ container's stored SHA-1 hashes (file header, disc struct, partition table). It is a no-op for plain .iso / .gcm input, which carries no integrity data.\n\n\
+--full decodes the whole disc, validates the FST geometry, and computes a whole-disc SHA-1. GameCube discs carry no built-in integrity hashes, so that digest is informational (for external DAT/Redump matching), never a pass/fail.")]
+pub struct VerifyDiscCommand {
+    /// Input disc image path (.iso, .gcm, or .rvz).
+    #[arg(value_name = "INPUT")]
+    pub input: PathBuf,
+
+    /// Deep verification: decode the whole disc and compute a whole-disc SHA-1.
+    #[arg(long, default_value_t = false)]
+    pub full: bool,
 }
 
 /// Compress a GameCube disc image to RVZ.

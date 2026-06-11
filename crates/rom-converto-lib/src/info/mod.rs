@@ -118,6 +118,7 @@ pub fn read_info(path: &Path, opts: &InfoOptions) -> Result<InfoResult> {
         )?)),
         DetectedConsole::Wup => Ok(InfoResult::Wup(crate::nintendo::wup::info::read_info(
             path,
+            opts.keys_path.as_deref(),
         )?)),
         DetectedConsole::Nx => Ok(InfoResult::Nx(crate::nintendo::nx::info::read_info(
             path,

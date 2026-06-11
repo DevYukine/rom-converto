@@ -872,6 +872,90 @@ async fn fix_sha1(
     Ok(())
 }
 
+fn has_extension(path: &std::path::Path, ext: &str) -> bool {
+    path.is_file()
+        && path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case(ext))
+            .unwrap_or(false)
+}
+
+/// Top-level (non-recursive) listing of files in `dir` matching `ext`,
+/// sorted for deterministic processing order.
+fn collect_files_with_ext(dir: &std::path::Path, ext: &str) -> ChdResult<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        if has_extension(&path, ext) {
+            out.push(path);
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// Extract every `.chd` in `input_dir` beside its input: CD-mode CHDs
+/// become `.cue` + `.bin`, DVD-mode CHDs become `.iso` (the output
+/// extension is derived per file by [`extract_from_chd`]). A failure
+/// on one file is logged and skipped rather than aborting the batch.
+pub async fn extract_from_chd_batch(
+    progress: &dyn ProgressReporter,
+    total_progress: &dyn ProgressReporter,
+    input_dir: PathBuf,
+) -> ChdResult<()> {
+    let chds = collect_files_with_ext(&input_dir, "chd")?;
+    if chds.is_empty() {
+        info!("No .chd files found in {}", input_dir.display());
+        return Ok(());
+    }
+    total_progress.start(
+        chds.len() as u64,
+        &format!("Extracting {} chd files", chds.len()),
+    );
+    for chd in chds {
+        let output = chd.with_extension("");
+        if let Err(e) = extract_from_chd(progress, chd.clone(), output, None).await {
+            warn!("skipping {}: {}", chd.display(), e);
+        }
+        total_progress.inc(1);
+    }
+    total_progress.finish();
+    Ok(())
+}
+
+/// Verify every `.chd` in `input_dir`. Logs a per-file failure and a final
+/// `Verified N files: X OK, Y failed` summary.
+pub async fn verify_chd_batch(
+    progress: &dyn ProgressReporter,
+    total_progress: &dyn ProgressReporter,
+    input_dir: PathBuf,
+    fix: bool,
+) -> ChdResult<()> {
+    let chds = collect_files_with_ext(&input_dir, "chd")?;
+    if chds.is_empty() {
+        info!("No .chd files found in {}", input_dir.display());
+        return Ok(());
+    }
+    let total = chds.len();
+    total_progress.start(total as u64, &format!("Verifying {total} chd files"));
+    let mut ok = 0usize;
+    let mut failed = 0usize;
+    for chd in chds {
+        match verify_chd(progress, chd.clone(), None, fix).await {
+            Ok(()) => ok += 1,
+            Err(e) => {
+                failed += 1;
+                warn!("{}: {}", chd.display(), e);
+            }
+        }
+        total_progress.inc(1);
+    }
+    total_progress.finish();
+    info!("Verified {total} files: {ok} OK, {failed} failed");
+    Ok(())
+}
+
 #[cfg(test)]
 pub(crate) mod test_fixtures {
     /// Alternating compressible runs and xorshift noise so the codec
@@ -1281,5 +1365,33 @@ mod tests {
             info_sha1s(&our_chd),
             "SHA1s must match chdman's output byte-for-byte"
         );
+    }
+}
+
+#[cfg(test)]
+mod batch_tests {
+    use super::*;
+
+    #[test]
+    fn has_extension_is_case_insensitive_and_requires_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let chd = dir.path().join("game.CHD");
+        std::fs::write(&chd, b"x").unwrap();
+        assert!(has_extension(&chd, "chd"));
+        assert!(!has_extension(&chd, "cue"));
+        // A directory named like a chd is not matched.
+        let sub = dir.path().join("nested.chd");
+        std::fs::create_dir(&sub).unwrap();
+        assert!(!has_extension(&sub, "chd"));
+    }
+
+    #[test]
+    fn collect_files_with_ext_finds_only_matching_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.chd"), b"x").unwrap();
+        std::fs::write(dir.path().join("b.CHD"), b"x").unwrap();
+        std::fs::write(dir.path().join("c.cue"), b"x").unwrap();
+        let found = collect_files_with_ext(dir.path(), "chd").unwrap();
+        assert_eq!(found.len(), 2);
     }
 }

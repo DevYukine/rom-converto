@@ -13,6 +13,7 @@ pub mod info;
 pub mod models;
 pub mod partition;
 pub mod partition_reader;
+pub mod verify;
 
 #[cfg(test)]
 pub mod test_fixtures;

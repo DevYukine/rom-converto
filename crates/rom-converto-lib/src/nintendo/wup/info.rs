@@ -1,12 +1,20 @@
-//! `info` extractor for Wii U (WUP) titles. WUD/WUX disc images are
-//! not yet supported.
+//! `info` extractor for Wii U (WUP) titles. Accepts NUS directories,
+//! loadiine directories, `.wua` archives, and `.wud` / `.wux` disc images.
 
 use crate::info::{Image, MultilingualString};
 use crate::nintendo::wup::app_xml::AppXml;
+use crate::nintendo::wup::disc::compress::{
+    content_partitions_with_index, find_matching_title, parse_si_titles, plan_partition,
+};
+use crate::nintendo::wup::disc::meta_source::DiscMetaSource;
+use crate::nintendo::wup::disc::partition::PartitionContentSource;
+use crate::nintendo::wup::disc::partition_table::{PartitionEntry, PartitionKind};
+use crate::nintendo::wup::disc::{load_disc_key, open_disc, parse_partition_table};
 use crate::nintendo::wup::loadiine::LoadiineTitle;
 use crate::nintendo::wup::meta_image::decode_meta_tga;
 use crate::nintendo::wup::meta_source::{DirSource, MetaSource, WuaSource};
 use crate::nintendo::wup::meta_xml::MetaXml;
+use crate::nintendo::wup::models::WupTmd;
 use crate::nintendo::wup::nus::source::NusSource;
 use crate::nintendo::wup::wua::ZArchiveReader;
 use anyhow::{Context, Result, anyhow};
@@ -89,19 +97,20 @@ pub struct WupMetaInfo {
     pub age_ratings: HashMap<String, u8>,
 }
 
-pub fn read_info(path: &Path) -> Result<WupInfo> {
+pub fn read_info(path: &Path, key_override: Option<&Path>) -> Result<WupInfo> {
     if path.is_file() {
         let ext = path
             .extension()
             .and_then(|e| e.to_str())
             .unwrap_or_default()
             .to_ascii_lowercase();
-        if ext == "wua" {
-            return read_wua(path);
-        }
-        return Err(anyhow!(
-            "wup info: WUD/WUX disc images are not yet supported; extract NUS or loadiine first"
-        ));
+        return match ext.as_str() {
+            "wua" => read_wua(path),
+            "wud" | "wux" => read_disc(path, key_override),
+            other => Err(anyhow!(
+                "wup info: unsupported file type .{other}; expected .wua, .wud, or .wux"
+            )),
+        };
     }
 
     let mut src = DirSource::new(path.to_path_buf());
@@ -109,6 +118,85 @@ pub fn read_info(path: &Path) -> Result<WupInfo> {
         return read_loadiine(&mut src, loadiine, "loadiine");
     }
     read_nus(path)
+}
+
+/// Read title metadata directly from a WUD/WUX disc image. Resolves the
+/// per-disc master key (explicit path, sibling `<name>.key`, or `game.key`),
+/// finds the primary game partition, and reuses the source-agnostic
+/// [`read_loadiine`] path over a [`DiscMetaSource`].
+fn read_disc(path: &Path, key_override: Option<&Path>) -> Result<WupInfo> {
+    let mut disc = open_disc(path).map_err(|e| anyhow!("wup info: open disc: {}", e))?;
+    let key = load_disc_key(path, key_override).map_err(|e| anyhow!("wup info: {}", e))?;
+    let table = parse_partition_table(&mut *disc, &key)
+        .map_err(|e| anyhow!("wup info: partition table: {}", e))?;
+    let si = table
+        .find_si()
+        .cloned()
+        .ok_or_else(|| anyhow!("wup info: disc has no SI partition"))?;
+    let si_titles = parse_si_titles(&mut *disc, &si, &key)
+        .map_err(|e| anyhow!("wup info: SI titles: {}", e))?;
+
+    // Prefer the base game partition (title type 0x00050000) when a
+    // disc bundles several game partitions (e.g. a system title shares
+    // the disc), falling back to the first GM partition that has a
+    // matching SI ticket/TMD.
+    let game_candidates: Vec<(usize, PartitionEntry)> = content_partitions_with_index(&table)
+        .filter(|(i, p)| {
+            matches!(p.kind, PartitionKind::Game) && find_matching_title(&si_titles, *i).is_some()
+        })
+        .map(|(i, p)| (i, p.clone()))
+        .collect();
+    let (game_index, game) = game_candidates
+        .iter()
+        .find(|(i, _)| {
+            find_matching_title(&si_titles, *i)
+                .map(|t| is_base_title_id(t.title_id))
+                .unwrap_or(false)
+        })
+        .or_else(|| game_candidates.first())
+        .cloned()
+        .ok_or_else(|| anyhow!("wup info: disc has no game partition with a matching ticket"))?;
+    let si_title = find_matching_title(&si_titles, game_index)
+        .ok_or_else(|| anyhow!("wup info: SI has no ticket/TMD for {}", game.name))?;
+
+    let plan =
+        plan_partition(&mut *disc, &game, si_title).map_err(|e| anyhow!("wup info: {}", e))?;
+
+    let title_id = plan.title_id;
+    let title_version = plan.title_version as u32;
+    let group_id = plan.tmd.group_id;
+    let access_rights = plan.tmd.access_rights;
+    let content_count = plan.tmd.contents.len();
+    let total_content_size: u64 = plan.tmd.contents.iter().map(|c| c.size).sum();
+
+    let bundled_titles: Vec<BundledTitle> = si_titles
+        .iter()
+        .map(|t| BundledTitle {
+            title_id: t.title_id,
+            title_id_hex: format!("{:016X}", t.title_id),
+            title_type: title_type_name(t.title_id),
+            title_version: WupTmd::parse(&t.tmd_bytes)
+                .map(|m| m.title_version as u32)
+                .unwrap_or(0),
+        })
+        .collect();
+
+    let source_kind = format!("disc ({})", game.name);
+    let loadiine = LoadiineTitle {
+        dir: PathBuf::new(),
+        title_id,
+        title_version,
+    };
+    let source = PartitionContentSource::new(&mut *disc, plan.locations);
+    let mut meta_src = DiscMetaSource::new(source, plan.title_key, plan.tmd, plan.fs);
+    let mut info = read_loadiine(&mut meta_src, loadiine, &source_kind)?;
+    // read_loadiine zeroes the TMD-derived counts; fill them from the disc TMD.
+    info.group_id = group_id;
+    info.access_rights = access_rights;
+    info.content_count = content_count;
+    info.total_content_size = total_content_size;
+    info.bundled_titles = bundled_titles;
+    Ok(info)
 }
 
 fn read_wua(path: &Path) -> Result<WupInfo> {

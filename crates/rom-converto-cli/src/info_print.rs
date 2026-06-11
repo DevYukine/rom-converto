@@ -183,6 +183,20 @@ fn render_ctr(info: &rom_converto_lib::info::CtrInfo) -> String {
         "NCCH encrypted",
         if info.ncch_encrypted { "yes" } else { "no" },
     );
+    if info.seed_crypto {
+        t.push("Seed crypto", "yes");
+        t.push(
+            "Seed (local seeddb)",
+            if info.seed_found == Some(true) {
+                "found & verified"
+            } else {
+                "not found"
+            },
+        );
+        if let Some(keyy) = &info.seed_keyy {
+            t.push("Derived KeyY", keyy.clone());
+        }
+    }
     let mut out = t.render();
 
     if let Some(s) = &info.smdh {

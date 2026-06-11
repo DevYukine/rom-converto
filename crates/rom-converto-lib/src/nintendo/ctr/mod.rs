@@ -27,6 +27,7 @@ pub mod error;
 pub mod exefs;
 pub mod info;
 pub mod models;
+pub mod seed;
 #[cfg(test)]
 mod test_fixtures;
 pub mod title_key;

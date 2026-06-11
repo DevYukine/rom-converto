@@ -7,7 +7,23 @@ use std::path::PathBuf;
 pub enum RvlCommands {
     Compress(CompressDiscCommand),
     Decompress(DecompressDiscCommand),
+    Verify(VerifyDiscCommand),
     Info(InfoCommand),
+}
+
+/// Verify a Wii disc image.
+#[derive(Parser, Debug, Clone, Eq, PartialEq)]
+#[command(long_about = "Verify a Wii disc image.\n\n\
+Fast mode (default) checks the RVZ container's stored SHA-1 hashes (file header, disc struct, partition table). It is a no-op for plain .iso / .wbfs input, which carries no container hashes.\n\n\
+--full decrypts every partition cluster and recomputes the H0/H1/H2 hash tree, comparing it to the on-disc hash regions to detect tampering or bit rot. This decrypts and hashes the entire disc and can be slow.")]
+pub struct VerifyDiscCommand {
+    /// Input disc image path (.iso, .wbfs, or .rvz).
+    #[arg(value_name = "INPUT")]
+    pub input: PathBuf,
+
+    /// Deep verification: recompute the Wii H0/H1/H2 partition hash tree.
+    #[arg(long, default_value_t = false)]
+    pub full: bool,
 }
 
 /// Compress a Wii disc image to RVZ.

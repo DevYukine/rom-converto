@@ -61,30 +61,39 @@ pub struct CompressCommand {
 /// Extracts files from a CHD file to a specified output directory.
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 pub struct ExtractCommand {
-    /// Input path containing the CHD file
+    /// Input CHD file, or a directory of .chd files when --recursive is set
     pub input: PathBuf,
 
-    /// Output path for extracted files
-    pub output: PathBuf,
+    /// Output path for extracted files (ignored with --recursive)
+    #[arg(value_name = "OUTPUT", required_unless_present = "recursive")]
+    pub output: Option<PathBuf>,
 
-    /// Optional parent CHD file (for CHDs that reference a parent)
+    /// Optional parent CHD file (for CHDs that reference a parent); not allowed with --recursive
     #[arg(long, short = 'p', value_name = "PARENT")]
     pub parent: Option<PathBuf>,
+
+    /// Extract every .chd in INPUT (top-level only); outputs go beside each input
+    #[arg(long, short = 'R', default_value_t = false)]
+    pub recursive: bool,
 }
 
 /// Verifies the integrity of a CHD file.
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 pub struct VerifyCommand {
-    /// Input path containing the CHD file
+    /// Input CHD file, or a directory of .chd files when --recursive is set
     pub input: PathBuf,
 
-    /// Optional parent CHD file (for CHDs that reference a parent)
+    /// Optional parent CHD file (for CHDs that reference a parent); not allowed with --recursive
     #[arg(long, short = 'p', value_name = "PARENT")]
     pub parent: Option<PathBuf>,
 
     /// Fix incorrect SHA1 values in the header
     #[arg(long)]
     pub fix: bool,
+
+    /// Verify every .chd in INPUT (top-level only)
+    #[arg(long, short = 'R', default_value_t = false)]
+    pub recursive: bool,
 }
 
 #[cfg(test)]
@@ -144,5 +153,26 @@ mod tests {
         };
         assert!(c.cd && !c.dvd);
         assert_eq!(c.input, PathBuf::from("game.iso"));
+    }
+
+    #[test]
+    fn verify_parses_recursive_flag() {
+        let h = Harness::parse_from(["bin", "verify", "-R", "dir"]);
+        let ChdCommands::Verify(c) = h.cmd else {
+            panic!("expected Verify");
+        };
+        assert!(c.recursive);
+        assert_eq!(c.input, PathBuf::from("dir"));
+    }
+
+    #[test]
+    fn extract_output_optional_with_recursive() {
+        let h = Harness::parse_from(["bin", "extract", "-R", "dir"]);
+        let ChdCommands::Extract(c) = h.cmd else {
+            panic!("expected Extract");
+        };
+        assert!(c.recursive);
+        assert!(c.output.is_none());
+        assert!(Harness::try_parse_from(["bin", "extract", "in.chd"]).is_err());
     }
 }

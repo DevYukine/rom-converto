@@ -18,7 +18,7 @@ use indicatif::MultiProgress;
 use indicatif_log_bridge::LogWrapper;
 use rom_converto_lib::chd::{
     ChdDvdOptions, DiscMode, convert_disc_to_chd, convert_disc_to_chd_batch, extract_from_chd,
-    verify_chd,
+    extract_from_chd_batch, verify_chd, verify_chd_batch,
 };
 use rom_converto_lib::cso::{
     CsoCompressOptions, CsoFormat, compress_to_cso, compress_to_cso_batch, decompress_from_cso,
@@ -39,18 +39,21 @@ use rom_converto_lib::nintendo::ctr::{
     CdnToCiaOptions, convert_cdn_to_cia, decrypt_rom, decrypt_rom_batch, derive_decrypted_path,
     generate_ticket_from_cdn,
 };
+use rom_converto_lib::nintendo::dol::verify::{DolVerifyOptions, verify_dol};
 use rom_converto_lib::nintendo::nx::{
     NczMode, NxCompressOptions, compress_container_async, decompress_container_async,
     derive_compressed_path as nx_derive_compressed_path,
     derive_decompressed_path as nx_derive_decompressed_path, detect_container, load_keyset,
     verify_container_async,
 };
+use rom_converto_lib::nintendo::rvl::verify::{RvlVerifyOptions, verify_rvl};
 use rom_converto_lib::nintendo::rvz::{
     RvzCompressOptions, compress_disc, decompress_disc, decompress_disc_to_wbfs, derive_disc_path,
     derive_rvz_path,
 };
 use rom_converto_lib::nintendo::wup::{
     TitleInput, WupCompressOptions, compress_titles_async, decrypt_nus_title_async,
+    verify_wup_async,
 };
 use std::mem::discriminant;
 
@@ -279,6 +282,25 @@ async fn main() -> Result<()> {
                     decompress_disc(&cmd.input, &output, &progress).await?
                 }
             }
+            DolCommands::Verify(cmd) => {
+                let opts = DolVerifyOptions { full: cmd.full };
+                let result = verify_dol(&cmd.input, &opts, &progress)?;
+                log::info!("Game ID: {}", result.game_id);
+                print_rvz_structure(result.rvz_structure.as_ref());
+                if let Some(st) = &result.structural {
+                    log::info!("FST within bounds: {}", ok_str(st.fst_within_bounds));
+                    for n in &st.notes {
+                        log::info!("  {n}");
+                    }
+                }
+                if let Some(d) = &result.disc_sha1 {
+                    log::info!("Whole-disc SHA-1: {d}");
+                }
+                log::info!("Overall: {}", if result.ok { "OK" } else { "FAIL" });
+                if !result.ok {
+                    anyhow::bail!("verification failed");
+                }
+            }
             DolCommands::Info(cmd) => {
                 let info = rom_converto_lib::nintendo::dol::info::read_info(&cmd.input)?;
                 if let Some(dir) = &cmd.save_icon {
@@ -307,6 +329,43 @@ async fn main() -> Result<()> {
                     decompress_disc_to_wbfs(&cmd.input, &output, &progress).await?
                 } else {
                     decompress_disc(&cmd.input, &output, &progress).await?
+                }
+            }
+            RvlCommands::Verify(cmd) => {
+                let opts = RvlVerifyOptions { full: cmd.full };
+                let result = verify_rvl(&cmd.input, &opts, &progress)?;
+                log::info!("Game ID: {}", result.game_id);
+                print_rvz_structure(result.rvz_structure.as_ref());
+                if result.rvz_structure.is_none() && !cmd.full {
+                    log::info!(
+                        "No RVZ container hashes to check; pass --full to verify the partition hash tree"
+                    );
+                }
+                for p in &result.partitions {
+                    log::info!(
+                        "  Partition @0x{:X} ({}): {} ({} clusters, {} mismatched)",
+                        p.offset,
+                        p.kind,
+                        if p.ok { "OK" } else { "FAIL" },
+                        p.clusters_checked,
+                        p.mismatched_clusters
+                    );
+                    if p.scrubbed_clusters > 0 {
+                        log::info!(
+                            "    {} scrubbed clusters skipped (zero-filled by the dump tool)",
+                            p.scrubbed_clusters
+                        );
+                    }
+                    if let Some(note) = &p.note {
+                        log::info!("    {note}");
+                    }
+                    if !p.sample_bad_clusters.is_empty() {
+                        log::info!("    bad clusters: {:?}", p.sample_bad_clusters);
+                    }
+                }
+                log::info!("Overall: {}", if result.ok { "OK" } else { "FAIL" });
+                if !result.ok {
+                    anyhow::bail!("verification failed");
                 }
             }
             RvlCommands::Info(cmd) => {
@@ -345,10 +404,39 @@ async fn main() -> Result<()> {
                 }
             }
             ChdCommands::Extract(cmd) => {
-                extract_from_chd(&progress, cmd.input, cmd.output, cmd.parent).await?
+                if cmd.recursive {
+                    if cmd.parent.is_some() {
+                        anyhow::bail!("--parent cannot be combined with --recursive");
+                    }
+                    if !cmd.input.is_dir() {
+                        anyhow::bail!(
+                            "INPUT must be a directory when --recursive is set: {}",
+                            cmd.input.display()
+                        );
+                    }
+                    extract_from_chd_batch(&progress, &total_progress, cmd.input).await?
+                } else {
+                    let output = cmd
+                        .output
+                        .expect("OUTPUT is required without --recursive (enforced by clap)");
+                    extract_from_chd(&progress, cmd.input, output, cmd.parent).await?
+                }
             }
             ChdCommands::Verify(cmd) => {
-                verify_chd(&progress, cmd.input, cmd.parent, cmd.fix).await?
+                if cmd.recursive {
+                    if cmd.parent.is_some() {
+                        anyhow::bail!("--parent cannot be combined with --recursive");
+                    }
+                    if !cmd.input.is_dir() {
+                        anyhow::bail!(
+                            "INPUT must be a directory when --recursive is set: {}",
+                            cmd.input.display()
+                        );
+                    }
+                    verify_chd_batch(&progress, &total_progress, cmd.input, cmd.fix).await?
+                } else {
+                    verify_chd(&progress, cmd.input, cmd.parent, cmd.fix).await?
+                }
             }
             ChdCommands::Info(cmd) => {
                 let info = rom_converto_lib::chd::info::read_info(&cmd.input)?;
@@ -494,8 +582,29 @@ async fn main() -> Result<()> {
             WupCommands::Decrypt(cmd) => {
                 decrypt_nus_title_async(cmd.input, cmd.output, &progress).await?
             }
+            WupCommands::Verify(cmd) => {
+                let result = verify_wup_async(cmd.input, cmd.keys, &progress).await?;
+                log::info!("Source kind: {}", result.kind);
+                log::info!("Overall: {}", if result.ok { "OK" } else { "MISMATCHES" });
+                for t in &result.titles {
+                    log::info!(
+                        "  {}: {} (verified: {}, mismatched: {}, skipped: {})",
+                        t.title_id_hex,
+                        if t.ok { "OK" } else { "FAIL" },
+                        t.verified_content,
+                        t.mismatched_content,
+                        t.skipped_content
+                    );
+                }
+                if !result.ok {
+                    anyhow::bail!("verification failed");
+                }
+            }
             WupCommands::Info(cmd) => {
-                let info = rom_converto_lib::nintendo::wup::info::read_info(&cmd.input)?;
+                let info = rom_converto_lib::nintendo::wup::info::read_info(
+                    &cmd.input,
+                    cmd.keys.as_deref(),
+                )?;
                 info_print::print(&rom_converto_lib::info::InfoResult::Wup(info), cmd.json)?;
             }
         },
@@ -504,6 +613,22 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn ok_str(b: bool) -> &'static str {
+    if b { "OK" } else { "MISMATCH" }
+}
+
+fn print_rvz_structure(s: Option<&rom_converto_lib::nintendo::rvz::RvzStructuralVerify>) {
+    let Some(s) = s else {
+        return;
+    };
+    log::info!("RVZ file header hash: {}", ok_str(s.file_head_hash_ok));
+    log::info!("RVZ disc struct hash: {}", ok_str(s.disc_hash_ok));
+    match s.part_hash_ok {
+        Some(v) => log::info!("RVZ partition table hash: {}", ok_str(v)),
+        None => log::info!("RVZ partition table hash: n/a (no partitions)"),
+    }
 }
 
 fn save_dol_banner(info: &rom_converto_lib::info::DolInfo, dir: &std::path::Path) -> Result<()> {
