@@ -149,9 +149,7 @@ pub(super) fn compress_hunks(
         writer_pos,
         map_entries,
         total_hunks,
-        // produce: read the next hunk worth of sectors, build an
-        // interleaved hunk buffer, fold bytes into the running raw
-        // SHA-1. Zero padding on the short final hunk comes for
+        // produce: zero padding on the short final hunk comes for
         // free from the `vec![0; hunk_bytes]` allocation.
         |chunk_idx| -> ChdResult<ChdCompressWork> {
             let first_sector = (chunk_idx as u32) * frames_per_hunk as u32;

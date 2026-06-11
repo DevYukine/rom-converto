@@ -3,8 +3,8 @@
 //!
 //! Target matrix: real PSP hardware (CFW) and PPSSPP read CSO v1;
 //! Open PS2 Loader (>= 1.2) on real PS2 reads ZSO. CSO v2 was never
-//! adopted (PPSSPP rejects it) and DAX is legacy; both are out of
-//! scope.
+//! adopted (PPSSPP rejects it) and DAX is legacy; both are
+//! unsupported.
 
 use std::path::PathBuf;
 use std::sync::Arc;
