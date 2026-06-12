@@ -1,3 +1,15 @@
+# [0.11.0](https://github.com/DevYukine/rom-converto/compare/v0.10.0...v0.11.0) (2026-06-12)
+
+
+### Features
+
+* **chd:** add dvd-mode chd for ps2/psp and cso/zso support ([c0a0195](https://github.com/DevYukine/rom-converto/commit/c0a019588b77fcb42c4a6adcabc9bee834352a3a))
+* **chd:** route cd-media isos to cd-mode chd with chdman parity ([763f1c5](https://github.com/DevYukine/rom-converto/commit/763f1c56c6d9d76949353a8b4e676a140a7459af))
+* **ux:** consistent cli flags with --force/--output/--recursive everywhere, verify exit codes, gui verify pages and full cli option parity ([69fe088](https://github.com/DevYukine/rom-converto/commit/69fe0881e988432642f09869eff9af796d1b465c))
+* **verify:** disc integrity for dol/rvl/wup, chd extract/verify --recursive, ctr seed-crypto info, wup WUD/WUX info ([d6c3564](https://github.com/DevYukine/rom-converto/commit/d6c3564fffc519f5f03de85cce646f2e628369ca))
+
+
+
 # [0.10.0](https://github.com/DevYukine/rom-converto/compare/v0.9.1...v0.10.0) (2026-06-09)
 
 
@@ -61,20 +73,6 @@
 ### Features
 
 * **wup:** add Wii U .wua archive creation ([fd6fbe5](https://github.com/DevYukine/rom-converto/commit/fd6fbe58831c5685ed812627f3271da760436557))
-
-
-
-## [0.7.1](https://github.com/DevYukine/rom-converto/compare/v0.7.0...v0.7.1) (2026-04-15)
-
-
-### Bug Fixes
-
-* **chd:** match chdman compression byte-for-byte via zlib backend ([a19bf00](https://github.com/DevYukine/rom-converto/commit/a19bf007f3475d576987a4db96c197d1ca81a833))
-
-
-### Performance Improvements
-
-* **ctr:** parallel Z3DS compress/decompress and configurable level ([b38601c](https://github.com/DevYukine/rom-converto/commit/b38601c140cbd3df1c1cce40d62c552bbd7a8898))
 
 
 
