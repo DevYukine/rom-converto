@@ -108,23 +108,21 @@ impl<'d> ContentBytesSource for PartitionContentSource<'d> {
 }
 
 /// Decrypt a raw disc byte range with the disc key and a zero IV.
-/// Used for the partition TOC and the SI FST. Length must be a multiple of 16.
+/// Used for the partition TOC and the SI FST. The SI header can
+/// report an FST size that is not 16-aligned (retail discs do), so
+/// the read is rounded up to whole AES blocks and truncated after.
 pub fn read_disc_decrypted_zero_iv(
     disc: &mut dyn DiscSectorSource,
     key: &DiscKey,
     offset: u64,
     len: usize,
 ) -> WupResult<Vec<u8>> {
-    if !len.is_multiple_of(16) {
-        return Err(WupError::AesError(format!(
-            "disc AES-CBC read length {} is not a multiple of 16",
-            len
-        )));
-    }
-    let mut out = vec![0u8; len];
+    let aligned_len = len.next_multiple_of(16);
+    let mut out = vec![0u8; aligned_len];
     disc.read_bytes(offset, &mut out)?;
     let iv = [0u8; 16];
     aes_cbc_decrypt_in_place(key.as_bytes(), &iv, &mut out)?;
+    out.truncate(len);
     Ok(out)
 }
 

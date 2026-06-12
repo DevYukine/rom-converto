@@ -3,14 +3,14 @@ const operations = [
   {
     to: "/chd/compress",
     title: "Compress Disc",
-    description: "Compress .bin + .cue pairs to .chd",
-    formats: ".bin + .cue",
+    description: "Compress .bin + .cue pairs (CD) or PS2/PSP .iso (DVD) to .chd",
+    formats: ".bin + .cue, .iso",
     icon: "disc-down",
   },
   {
     to: "/chd/extract",
     title: "Extract Disc",
-    description: "Extract .chd back to .bin + .cue",
+    description: "Extract .chd back to .bin + .cue or .iso",
     formats: ".chd",
     icon: "disc-up",
   },
@@ -43,8 +43,8 @@ const operations = [
         </svg>
         All platforms
       </NuxtLink>
-      <h1 class="mt-2 text-2xl font-bold text-zinc-100">CD (CHD)</h1>
-      <p class="mt-1 text-sm text-zinc-400">CD disc image operations.</p>
+      <h1 class="mt-2 text-2xl font-bold text-zinc-100">CD / DVD (CHD)</h1>
+      <p class="mt-1 text-sm text-zinc-400">CD and PS2/PSP DVD disc image operations.</p>
     </div>
 
     <OperationGrid :operations="operations" />

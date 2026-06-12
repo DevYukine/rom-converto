@@ -130,7 +130,7 @@ async function execute() {
             </div>
             <span
               class="rounded-full px-2.5 py-0.5 text-xs font-semibold"
-              :class="verdict.ok ? 'bg-emerald-500/15 text-emerald-300' : 'bg-rose-500/15 text-rose-300'"
+              :class="verdict.ok ? 'bg-emerald-500/15 text-emerald-300' : 'bg-red-500/20 text-red-300'"
             >
               {{ verdict.ok ? "OK" : "MISMATCHES" }}
             </span>
@@ -153,7 +153,7 @@ async function execute() {
               </div>
               <span
                 class="ml-3 shrink-0 font-semibold"
-                :class="nca.ok ? 'text-emerald-400' : 'text-rose-400'"
+                :class="nca.ok ? 'text-emerald-400' : 'text-red-400'"
               >
                 {{ nca.ok ? "OK" : `${nca.mismatched_sections} bad` }}
               </span>

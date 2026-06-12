@@ -85,6 +85,7 @@
 
 pub mod compress;
 pub mod disc_key;
+pub mod meta_source;
 pub mod partition;
 pub mod partition_table;
 pub mod sector_stream;
@@ -93,5 +94,6 @@ pub mod wux_reader;
 
 pub use compress::compress_disc_title;
 pub use disc_key::{DiscKey, load_disc_key};
+pub use meta_source::DiscMetaSource;
 pub use partition_table::{PartitionEntry, PartitionKind, PartitionTable, parse_partition_table};
 pub use sector_stream::{DiscSectorSource, SECTOR_SIZE, open_disc};

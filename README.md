@@ -51,13 +51,35 @@ Built for developers, tinkerers and archivists.
 * [x] Drop-in replacement for [`nsz`](https://github.com/nicoboss/nsz) with byte-identical output and matching CLI defaults
 * [x] See [`benchmark/Switch.md`](benchmark/Switch.md) for performance numbers
 
-### CD images (CHD / CUE+BIN)
+### CD / DVD images (CHD / CUE+BIN)
 
-* [x] Compress `.bin` + `.cue` pairs to `.chd`
-* [x] Extract `.chd` back to `.bin` + `.cue`
+* [x] Compress `.bin` + `.cue` pairs to CD-mode `.chd`
+* [x] Compress CD-media `.iso` (PS1, PS2-CD) to CD-mode `.chd` with a single MODE1/2048 track (the `chdman createcd` equivalent)
+* [x] Compress PS2-DVD / PSP `.iso` to DVD-mode `.chd` (the `chdman createdvd` equivalent); the CD/DVD media type is probed from the image, so the createcd vs createdvd mixup cannot happen
+* [x] Compatibility-first DVD codecs (`lzma` + `zlib`) that load everywhere including AetherSX2/NetherSX2; opt-in `--zstd` for modern emulators
+* [x] PSP images get 2048-byte hunks automatically (what PPSSPP expects); PS2 images use the chdman default
+* [x] Extract `.chd` back to `.bin` + `.cue` (CD) or `.iso` (DVD), auto-detected
 * [x] Verify `.chd` integrity via SHA-1 checksums, with optional header repair
+* [x] Read chdman-produced DVD CHDs including `huff` and `flac` compressed hunks
 * [x] Merge a multi-bin `.cue` (one `.bin` per track) into a single `.bin` + `.cue` pair, for emulators that cannot load split images
 * [x] See [`benchmark/CHD.md`](benchmark/CHD.md) for performance numbers
+
+### PSP / PS2 compressed ISOs (CSO / ZSO)
+
+* [x] Compress `.iso` to `.cso` (CISO v1) for real PSP hardware with CFW and for PPSSPP
+* [x] Compress `.iso` to `.zso` (LZ4) for real PS2 hardware via Open PS2 Loader 1.2+ and ARK-4 on PSP
+* [x] Decompress `.cso` / `.zso` back to the original `.iso`
+* [x] Verify container structure, with an optional full decode pass
+* [x] maxcso-compatible defaults: 2 KiB blocks (16 KiB for 2 GiB+ inputs), automatic index shift for large images, per-block store-raw fallback
+
+Where each format works:
+
+| Target | Recommended format |
+|---|---|
+| PCSX2 / NetherSX2 (PS2 emulators) | DVD-mode CHD (default codecs) |
+| PPSSPP (PSP emulator) | CHD or CSO |
+| Real PSP with CFW | CSO |
+| Real PS2 via Open PS2 Loader | ZSO |
 
 ### Application
 
@@ -94,15 +116,20 @@ The desktop app provides a visual interface for all operations. Built with [Taur
 
 ## CLI Commands
 
+All commands that write an output file refuse to overwrite an existing file unless `-f`/`--force` is passed. Previously, `ctr`, `dol`, `rvl`, `nx`, `wup`, and `chd extract` overwrote silently; that behavior has changed.
+
 ### CTR (Nintendo 3DS)
 
 | Command | Description |
 |---|---|
 | `ctr cdn-to-cia <CDN_DIR> [OUTPUT]` | Convert a CDN directory to `.cia` |
 | `ctr generate-cdn-ticket <CDN_DIR> [OUTPUT]` | Generate a `.tik` ticket from CDN content |
-| `ctr decrypt <INPUT> <OUTPUT>` | Decrypt an encrypted ROM for emulator use |
+| `ctr decrypt <INPUT> [OUTPUT]` | Decrypt an encrypted ROM for emulator use |
 | `ctr compress <INPUT> [OUTPUT]` | Compress a decrypted ROM to Z3DS format |
 | `ctr decompress <INPUT> [OUTPUT]` | Decompress a Z3DS file back to the original ROM |
+| `ctr convert <INPUT> [OUTPUT]` | Convert between `.cia` and `.cci`/`.3ds`, direction auto-detected |
+| `ctr verify <INPUT>` | Verify `.cia` legitimacy or `.3ds`/`.cci` NCCH integrity |
+| `ctr info <INPUT>` | Inspect 3DS metadata; see the Info section |
 
 **`cdn-to-cia` flags:**
 
@@ -113,12 +140,32 @@ The desktop app provides a visual interface for all operations. Built with [Taur
 | `-T, --ensure-ticket-exists` | Auto-generate a ticket file if one is not found |
 | `-D, --decrypt` | Also decrypt the CIA after creation |
 | `-Z, --compress` | Also compress the CIA after creation (implies decrypt) |
+| `-f, --force` | Overwrite output file if it already exists |
+
+**`decrypt` / `compress` / `decompress` / `convert` flags:**
+
+| Flag | Description |
+|---|---|
+| `-o, --output <FILE>` | Output path (alternative to the positional OUTPUT argument) |
+| `-R, --recursive` | Process all matching files in INPUT (top-level only) |
+| `-f, --force` | Overwrite output file if it already exists |
+
+**`verify` flags:**
+
+| Flag | Description |
+|---|---|
+| `--full` | Also verify content hashes against the TMD (CIA only, slower). `--verify-content` is a visible alias for this flag |
+| `-R, --recursive` | Verify every matching file in INPUT and print a summary |
 
 > **`generate-cdn-ticket`:** Generated tickets use placeholder values (null Console ID, etc.) and only work on modded consoles and emulators. They will not work on stock hardware.
 
 > **`decrypt`:** Supports `.cia`, `.3ds`, `.cci` and `.cxi` files. The format is detected automatically. Place a `seeddb.bin` file next to the executable to resolve seeds locally. If none is found, the tool will fetch the required seed from Nintendo's API.
 
 > **`compress` / `decompress`:** Supported input formats for compression: `.cia`, `.cci`, `.3ds`, `.cxi`, `.3dsx`. Output files use the Z3DS format (`.zcia`, `.zcci`, `.zcxi`, `.z3dsx`). Compression only works on decrypted ROMs, since encrypted ROMs have near-zero compression ratios. The output file path defaults to the input path with the extension updated automatically.
+
+> **`convert`:** Direction is auto-detected from the INPUT extension: `.cia` becomes `.3ds` (CCI/NCSD), and `.3ds`/`.cci` become `.cia`. CIA output is unsigned with a zero title key; compatible with CFW (Luma3DS) and emulators, but not installable on stock 3DS.
+
+> **`verify`:** Exits nonzero on verification failure.
 
 ---
 
@@ -128,6 +175,8 @@ The desktop app provides a visual interface for all operations. Built with [Taur
 |---|---|
 | `dol compress <INPUT> [OUTPUT]` | Compress a `.iso`/`.gcm` to Dolphin's `.rvz` |
 | `dol decompress <INPUT> [OUTPUT]` | Decompress a `.rvz` back to `.iso` |
+| `dol verify <INPUT>` | Verify RVZ container hashes, or compute a whole-disc SHA-1 with `--full` |
+| `dol info <INPUT>` | Inspect GameCube disc metadata; see the Info section |
 
 **Flags:**
 
@@ -135,6 +184,10 @@ The desktop app provides a visual interface for all operations. Built with [Taur
 |---|---|---|
 | `-l, --level <LEVEL>` | `compress` | Zstandard compression level (signed, defaults to 22, Dolphin's max non-extreme) |
 | `--chunk-size <BYTES>` | `compress` | Chunk size in bytes, power of two between 32 KiB and 2 MiB (defaults to 128 KiB to match Dolphin) |
+| `-o, --output <FILE>` | `compress`, `decompress` | Output path (alternative to the positional OUTPUT argument) |
+| `-f, --force` | `compress`, `decompress` | Overwrite output file if it already exists |
+| `-R, --recursive` | `compress`, `decompress`, `verify` | Process every matching file in INPUT (top-level only) |
+| `--full` | `verify` | Decode the whole disc and compute a whole-disc SHA-1 |
 
 ---
 
@@ -144,8 +197,10 @@ The desktop app provides a visual interface for all operations. Built with [Taur
 |---|---|
 | `rvl compress <INPUT> [OUTPUT]` | Compress a `.iso`/`.wbfs` to Dolphin's `.rvz` |
 | `rvl decompress <INPUT> [OUTPUT]` | Decompress a `.rvz` back to `.iso` |
+| `rvl verify <INPUT>` | Verify RVZ container hashes, or recompute the Wii partition hash tree with `--full` |
+| `rvl info <INPUT>` | Inspect Wii disc metadata; see the Info section |
 
-Flags match the `dol` commands.
+Flags match the `dol` commands. `--full` on `rvl verify` decrypts every partition cluster and recomputes the H0/H1/H2 hash tree.
 
 > `dol` and `rvl` share one RVZ pipeline. Output files are byte identical to Dolphin's own encoder and decoder in both directions, on both GameCube and Wii. See the [Benchmarks](#benchmarks) section for measured performance.
 
@@ -157,6 +212,8 @@ Flags match the `dol` commands.
 |---|---|
 | `wup compress -o <OUTPUT> <INPUTS>...` | Bundle one or more titles into a Cemu `.wua` archive |
 | `wup decrypt -o <OUTPUT> <INPUT>` | Decrypt a NUS directory into a loadiine `meta/code/content` tree |
+| `wup verify <INPUT>` | Verify Wii U content SHA-1 against the TMD |
+| `wup info <PATH>` | Inspect Wii U title metadata; see the Info section |
 
 **`compress` flags:**
 
@@ -165,6 +222,21 @@ Flags match the `dol` commands.
 | `-o, --output <FILE>` | Output `.wua` file path |
 | `-l, --level <LEVEL>` | Zstd compression level 0..=22 (0 = Cemu default of 6) |
 | `--key <KEYFILE>` | Disc master key file. Pass once per disc input in positional order |
+| `-f, --force` | Overwrite output file if it already exists |
+
+**`decrypt` flags:**
+
+| Flag | Description |
+|---|---|
+| `-o, --output <DIR>` | Output directory |
+| `-f, --force` | Overwrite output directory if it already exists |
+
+**`verify` flags:**
+
+| Flag | Description |
+|---|---|
+| `--key <KEYFILE>` | Disc master key file (`.wud`/`.wux` inputs only) |
+| `-R, --recursive` | Verify every disc image and NUS title subdirectory in INPUT |
 
 > **`compress`:** Each input is auto-detected as a loadiine directory, a NUS directory, or a disc image (`.wud` / `.wux`). Disc images need a 16-byte master key; keys are resolved in order from `--key` flags, a sibling `<disc>.key` file, or `game.key` in the same directory. Multiple titles (base + update + DLC) can be bundled into one archive and each lands under its own `<titleId>_v<version>/` folder, the layout Cemu expects.
 
@@ -179,6 +251,7 @@ Flags match the `dol` commands.
 | `nx compress <INPUT> [-o OUTPUT]` | Compress a `.nsp` to `.nsz` or a `.xci` to `.xcz` |
 | `nx decompress <INPUT> [-o OUTPUT]` | Decompress a `.nsz` / `.xcz` back to `.nsp` / `.xci` |
 | `nx verify <INPUT>` | Verify per-NCA hash integrity of any Switch container |
+| `nx info <INPUT>` | Inspect Switch container metadata; see the Info section |
 
 **`compress` flags:**
 
@@ -189,10 +262,28 @@ Flags match the `dol` commands.
 | `-l, --level <LEVEL>` | Zstd compression level 1..=22 (defaults to 18, matching `nsz`) |
 | `--mode <MODE>` | `solid` (one zstd frame per NCA, default for NSP) or `block` (independent zstd frames per fixed-size block, default for XCI) |
 | `--block-size-exp <EXP>` | Block-mode block size as `1 << exp` bytes, range 14..=32 (defaults to 20 = 1 MiB, matching `nsz`) |
+| `-f, --force` | Overwrite output file if it already exists |
+| `-R, --recursive` | Compress every `.nsp` and `.xci` found in INPUT |
+
+**`decompress` flags:**
+
+| Flag | Description |
+|---|---|
+| `--keys <PRODKEYS>` | Path to `prod.keys`. Same default as `compress` |
+| `-o, --output <FILE>` | Output path. Defaults to the input with the extension switched (`.nsz` -> `.nsp`, `.xcz` -> `.xci`) |
+| `-f, --force` | Overwrite output file if it already exists |
+| `-R, --recursive` | Decompress every `.nsz` and `.xcz` found in INPUT |
+
+**`verify` flags:**
+
+| Flag | Description |
+|---|---|
+| `--keys <PRODKEYS>` | Path to `prod.keys`. Same default as `compress` |
+| `-R, --recursive` | Verify every `.nsp`, `.nsz`, `.xci`, and `.xcz` found in INPUT |
 
 > **`compress` / `decompress`:** Outputs are byte identical to `nsz` / `nsz -D` at matching settings. `prod.keys` is required to derive the per-NCA section keys; the file is read but never modified. Tickets inside the container are kept as-is so installation on console still works.
 
-> **`verify`:** Walks every NCA inside the container and checks the stored hash hierarchy (FS hashes for PFS0 sections, IVFC for RomFS sections). Works on already-compressed `.nsz` / `.xcz` without decompressing first.
+> **`verify`:** Walks every NCA inside the container and checks the stored hash hierarchy (FS hashes for PFS0 sections, IVFC for RomFS sections). Works on already-compressed `.nsz` / `.xcz` without decompressing first. Exits nonzero on verification failure.
 
 ---
 
@@ -200,17 +291,45 @@ Flags match the `dol` commands.
 
 | Command | Description |
 |---|---|
-| `chd compress <INPUT_CUE> <OUTPUT>` | Compress a `.bin` + `.cue` pair to `.chd` |
-| `chd extract <INPUT> <OUTPUT>` | Extract a `.chd` file back to `.bin` + `.cue` |
+| `chd compress <INPUT> [OUTPUT]` | Compress a `.cue` or `.iso` to `.chd`; CD vs DVD media is auto-detected (PS1/PS2-CD iso becomes CD-mode, PS2-DVD/PSP iso becomes DVD-mode) |
+| `chd extract <INPUT> [OUTPUT]` | Extract a `.chd` file back to `.bin` + `.cue` (CD) or `.iso` (DVD) |
 | `chd verify <INPUT>` | Verify the SHA1 integrity of a `.chd` file |
+| `chd info <INPUT>` | Inspect CHD metadata; see the Info section |
 
 **Flags:**
 
 | Flag | Applies to | Description |
 |---|---|---|
-| `-f, --force` | `compress` | Overwrite output file if it already exists |
+| `-f, --force` | `compress`, `extract` | Overwrite output file if it already exists |
+| `--dvd` / `--cd` | `compress` | Override the auto-detected mode (CD mode needs a cue sheet) |
+| `--hunk-size <BYTES>` | `compress` | DVD hunk size, a multiple of 2048; defaults to 4096, or 2048 for detected PSP images |
+| `--zstd` | `compress` | Add zstd to the DVD codec set; better ratio, but rejected by AetherSX2/NetherSX2 |
+| `-o, --output <FILE>` | `compress`, `extract` | Output path (alternative to the positional OUTPUT argument) |
+| `-R, --recursive` | `compress`, `extract`, `verify` | Process every matching file in INPUT (top-level only) |
 | `-p, --parent <PARENT>` | `extract`, `verify` | Specify a parent CHD for parent-child relationships |
 | `--fix` | `verify` | Correct SHA1 values in the CHD header if mismatches are found |
+
+---
+
+### CSO / ZSO
+
+| Command | Description |
+|---|---|
+| `cso compress <INPUT> [OUTPUT]` | Compress an `.iso` to `.cso` (default) or `.zso` |
+| `cso decompress <INPUT> [OUTPUT]` | Restore the original `.iso` from a `.cso` / `.zso` |
+| `cso verify <INPUT>` | Validate the container index; `--full` decodes every block |
+| `cso info <INPUT>` | Inspect CSO/ZSO metadata; see the Info section |
+
+**Flags:**
+
+| Flag | Applies to | Description |
+|---|---|---|
+| `--format <cso\|zso>` | `compress` | Output container: CSO for PSP/PPSSPP, ZSO for PS2 via OPL |
+| `--block-size <BYTES>` | `compress` | Block size, a power of two; defaults to 2048 (16384 for 2 GiB+ inputs) |
+| `-o, --output <FILE>` | `compress`, `decompress` | Output path (alternative to the positional OUTPUT argument) |
+| `-f, --force` | `compress`, `decompress` | Overwrite output file if it already exists |
+| `-R, --recursive` | `compress`, `decompress`, `verify` | Process every matching file in INPUT (top-level only) |
+| `--full` | `verify` | Decode every block instead of only checking the index |
 
 ---
 
@@ -241,16 +360,18 @@ Inspect a ROM file or title directory and print the embedded metadata: title, ve
 | `ctr info <FILE>` | CIA / NCSD / NCCH; SMDH multilingual titles, region lock, age ratings, 48x48 icon. Encrypted CIA is auto-decrypted to read the NCCH header. |
 | `dol info <FILE>` | GameCube `.iso`, `.gcm`, or `.rvz`; boot.bin header, BNR1/BNR2 banner with 96x32 image, publisher name. |
 | `rvl info <FILE>` | Wii `.iso`, `.rvz`, or `.wbfs`; disc header, partition layout, TMD (title id, IOS), IMET banner names, 192x64 banner image from `opening.bnr` (falls back to the icon). |
-| `wup info <PATH>` | loadiine + NUS directories and `.wua` archives; TMD + meta.xml with multilingual names, region, age ratings, save sizes, GamePad requirement, supported accessories, mastering date, decoded `iconTex.tga` icon. |
+| `wup info <PATH>` | loadiine + NUS directories, `.wua` archives, and `.wud`/`.wux` disc images; TMD + meta.xml with multilingual names, region, age ratings, save sizes, GamePad requirement, supported accessories, mastering date, decoded `iconTex.tga` icon. Pass `--keys` with the disc master key file when reading a `.wud`/`.wux`. |
 | `nx info <FILE>` | NSP / NSZ / XCI / XCZ; container listing, tickets, CNMT, NACP, JPEG icon. Reports compression status (NSP vs NSZ), distribution (digital vs cartridge), structure classifier (scene / converted / CDN / homebrew), base title id for patches and DLC, decoded language list, age ratings per rating board. Full info needs `--keys prod.keys`, partial info without. |
 | `chd info <FILE>` | CHD v5; version, codecs, hunk geometry, SHA-1 triplet, per-track CHT2 metadata, VERS / DVD tags |
+| `cso info <FILE>` | CSO / ZSO; format and version, block geometry, index shift, raw block count, compression ratio |
 
-`--save-icon DIR` writes the embedded icon as `<title_id>.png` into `DIR` (3DS, GameCube, and Switch). `--keys` only applies to `nx info`.
+`--save-icon DIR` writes the embedded icon as `<title_id>.png` into `DIR`. Supported by `ctr`, `dol`, `rvl`, `nx`, and `wup` info; not supported by `chd` or `cso` (those formats carry no embedded artwork). `--keys` applies to `nx info` (path to `prod.keys`) and to `wup info` on `.wud`/`.wux` disc images (disc master key file). Other consoles ignore it and will return an error if it is passed.
 
 Format notes:
 
 - `.rvz` (Wii and GameCube) and `.wbfs` (Wii) are read directly. Only the disc areas that are actually needed get decompressed, so no temp files are written and memory stays at a few MB.
 - `.wua` (Wii U Cemu archive) is read directly. When an archive bundles base + update + DLC, the base title is shown, the bundled titles are listed, and the version includes the update.
+- `.cso` / `.zso` are read directly.
 - `.wia`, `.gcz`, `.nkit.iso`, and `.nkit.gcz` are read through the same streaming migration readers the `migrate` command uses. CISO, NFS, and TGC are not supported.
 
 ---
@@ -327,6 +448,17 @@ cargo build --release -p rom-converto-cli
 ```
 
 The resulting binary will be at `target/release/rom-converto`.
+
+### Cross-Tool Parity Tests
+
+Some tests cross-check output against the reference tools when they
+are available. They are skipped unless the environment variable
+points at the binary:
+
+```
+ROMCONVERTO_CHDMAN=$(which chdman) cargo test -p rom-converto-lib chdman
+ROMCONVERTO_MAXCSO=$(which maxcso) cargo test -p rom-converto-lib maxcso
+```
 
 ## Built With
 

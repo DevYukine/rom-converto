@@ -43,6 +43,13 @@ const operations = [
     icon: "swap",
   },
   {
+    to: "/ctr/generate-ticket",
+    title: "Generate ticket",
+    description: "Synthesize a .tik ticket from a CDN content directory",
+    formats: "CDN directories",
+    icon: "folder-arrow",
+  },
+  {
     to: "/ctr/info",
     title: "Read ROM info",
     description: "Show title, region, age ratings, and 48x48 SMDH icon",

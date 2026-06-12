@@ -4,6 +4,8 @@ import type { BatchItem } from "~/types/batch";
 export const useDolCompressStore = defineStore("dol-compress", () => {
   const input = ref("");
   const output = ref("");
+  const level = ref(22);
+  const chunkSize = ref(131072);
 
   const result = ref("");
   const error = ref("");
@@ -31,6 +33,8 @@ export const useDolCompressStore = defineStore("dol-compress", () => {
   function $reset() {
     input.value = "";
     output.value = "";
+    level.value = 22;
+    chunkSize.value = 131072;
     result.value = "";
     error.value = "";
     loading.value = false;
@@ -40,6 +44,8 @@ export const useDolCompressStore = defineStore("dol-compress", () => {
   return {
     input,
     output,
+    level,
+    chunkSize,
     result,
     error,
     loading,

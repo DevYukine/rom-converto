@@ -35,10 +35,12 @@ pub mod regions;
 
 pub mod compress;
 pub mod decompress;
+pub mod verify;
 
 pub use compress::{RvzCompressOptions, compress_disc};
 pub use decompress::{decompress_disc, decompress_disc_to_wbfs};
 pub use error::{RvzError, RvzResult};
+pub use verify::{RvzStructuralVerify, verify_rvz_structure};
 
 use std::path::{Path, PathBuf};
 

@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import { invoke } from "@tauri-apps/api/core";
+import { save } from "@tauri-apps/plugin-dialog";
 import {
   type InfoResult,
   imageToDataUrl,
@@ -34,6 +36,8 @@ const title = computed(() => {
     }
     case "chd":
       return `CHD v${props.info.version}`;
+    case "cso":
+      return `${props.info.format} v${props.info.version}`;
     default:
       return "Unknown";
   }
@@ -55,6 +59,8 @@ const subtitle = computed(() => {
       return props.info.full?.control?.titles?.[0]?.publisher ?? "";
     case "chd":
       return props.info.compressors.join(", ");
+    case "cso":
+      return "";
   }
 });
 
@@ -272,6 +278,22 @@ const fields = computed<Field[]>(() => {
       }
       break;
     }
+    case "cso": {
+      f.push({ label: "Format", value: `${props.info.format} v${props.info.version}` });
+      f.push({ label: "Block size", value: `${props.info.block_size} bytes` });
+      f.push({ label: "Index shift", value: String(props.info.index_shift) });
+      f.push({
+        label: "Blocks",
+        value: `${props.info.block_count} (${props.info.raw_block_count} stored raw)`,
+      });
+      f.push({
+        label: "Compression ratio",
+        value: `${props.info.compression_ratio.toFixed(2)}%`,
+      });
+      f.push({ label: "Uncompressed size", value: `${props.info.uncompressed_size} bytes` });
+      f.push({ label: "Physical size", value: `${props.info.physical_bytes} bytes` });
+      break;
+    }
   }
   return f;
 });
@@ -359,6 +381,15 @@ function copyTitleId() {
     navigator.clipboard.writeText(value).catch(() => {});
   }
 }
+
+async function saveIcon() {
+  const dest = await save({
+    defaultPath: "icon.png",
+    filters: [{ name: "PNG", extensions: ["png"] }],
+  });
+  if (!dest) return;
+  await invoke("cmd_save_icon", { infoJson: JSON.stringify(props.info), dest });
+}
 </script>
 
 <template>
@@ -416,9 +447,17 @@ function copyTitleId() {
       </ul>
     </section>
 
-    <div v-if="info.kind !== 'chd'" class="rom-info-card__footer">
-      <button type="button" class="rom-info-card__btn" @click="copyTitleId">
+    <div v-if="(info.kind !== 'chd' && info.kind !== 'cso') || iconUrl" class="rom-info-card__footer">
+      <button
+        v-if="info.kind !== 'chd' && info.kind !== 'cso'"
+        type="button"
+        class="rom-info-card__btn"
+        @click="copyTitleId"
+      >
         Copy title ID
+      </button>
+      <button v-if="iconUrl" type="button" class="rom-info-card__btn" @click="saveIcon">
+        Save icon
       </button>
     </div>
   </div>

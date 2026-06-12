@@ -14,6 +14,7 @@
 
 use crate::cd::{FRAME_SIZE, SECTOR_SIZE};
 use crate::chd::compression::CdDecoderSet;
+use crate::chd::compression::dvd::DvdDecoderSet;
 use crate::chd::error::{ChdError, ChdResult};
 use crate::chd::map::{
     COMPRESSION_NONE, COMPRESSION_PARENT, COMPRESSION_SELF, MapEntry, crc16_ccitt,
@@ -123,6 +124,73 @@ pub(crate) fn make_chd_extract_workers(
         .collect()
 }
 
+/// DVD twin of [`ChdExtractWorker`]: hunks are flat sector data and
+/// the codec for each map slot comes from the header's compressor
+/// tags instead of the fixed CD set.
+pub(crate) struct ChdDvdExtractWorker {
+    decoders: DvdDecoderSet,
+    file: Arc<std::fs::File>,
+    hunk_bytes: usize,
+}
+
+impl Worker<ChdExtractWork, ChdExtractedOut, ChdError> for ChdDvdExtractWorker {
+    fn process(&mut self, work: ChdExtractWork) -> ChdResult<ChdExtractedOut> {
+        let hunk_bytes = self.hunk_bytes;
+        let entry = work.entry;
+
+        let hunk = match entry.compression {
+            slot @ 0..=3 => {
+                let mut compressed = vec![0u8; entry.length as usize];
+                file_read_exact_at(&self.file, &mut compressed, entry.offset)?;
+                self.decoders.decompress(slot, &compressed, hunk_bytes)?
+            }
+            COMPRESSION_NONE => {
+                let mut data = vec![0u8; hunk_bytes];
+                file_read_exact_at(&self.file, &mut data, entry.offset)?;
+                data
+            }
+            other => {
+                return Err(ChdError::UnknownCompressionCodec([other, 0, 0, 0]));
+            }
+        };
+
+        if hunk.len() != hunk_bytes {
+            return Err(ChdError::DecompressionSizeMismatch {
+                expected: hunk_bytes,
+                actual: hunk.len(),
+            });
+        }
+
+        let computed_crc = crc16_ccitt(&hunk);
+        if computed_crc != entry.crc16 {
+            return Err(ChdError::HunkCrcMismatch {
+                hunk: 0,
+                expected: entry.crc16,
+                actual: computed_crc,
+            });
+        }
+
+        Ok(ChdExtractedOut { hunk })
+    }
+}
+
+pub(crate) fn make_chd_dvd_extract_workers(
+    n: usize,
+    file: &Arc<std::fs::File>,
+    hunk_bytes: usize,
+    compressors: [[u8; 4]; 4],
+) -> ChdResult<Vec<ChdDvdExtractWorker>> {
+    (0..n)
+        .map(|_| {
+            Ok(ChdDvdExtractWorker {
+                decoders: DvdDecoderSet::new(compressors, hunk_bytes)?,
+                file: file.clone(),
+                hunk_bytes,
+            })
+        })
+        .collect()
+}
+
 /// Resolve any `COMPRESSION_SELF` entry into its target by chasing
 /// the reference chain. SELF only points at earlier hunks, so the
 /// chain terminates. PARENT is not supported yet.
@@ -149,16 +217,64 @@ fn resolve_entry(map: &[MapEntry], hunk_index: u32) -> ChdResult<MapEntry> {
 /// Drive the extract pipeline: pool of decompressors reading a
 /// shared file via positional reads, reorder-buffered drive,
 /// dedicated writer thread for the output bin.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn extract_hunks(
     pool: &Pool<ChdExtractWork, ChdExtractedOut, ChdError>,
     map: &[MapEntry],
     writer: &mut BufWriter<std::fs::File>,
     hunk_bytes: usize,
-    total_frames: u32,
+    frame_sizes: &[usize],
     bytes_done: &Arc<AtomicU64>,
 ) -> ChdResult<()> {
     let frames_per_hunk = hunk_bytes / FRAME_SIZE;
+    let total_frames = frame_sizes.len();
+
+    run_extract_pipeline(pool, map, writer, bytes_done, |seq, out| {
+        // Gather payload bytes from the interleaved hunk, dropping
+        // the subcode and any tail past each track's datasize.
+        // `chdman extractcd` writes datasize-wide bins; track padding
+        // frames past the CHT2 frame counts are dropped entirely.
+        let first_frame = seq as usize * frames_per_hunk;
+        let frames_in_hunk = frames_per_hunk.min(total_frames.saturating_sub(first_frame));
+        let mut sectors = Vec::with_capacity(frames_in_hunk * SECTOR_SIZE);
+        for frame in 0..frames_in_hunk {
+            let off = frame * FRAME_SIZE;
+            sectors.extend_from_slice(&out.hunk[off..off + frame_sizes[first_frame + frame]]);
+        }
+        Ok(sectors)
+    })
+}
+
+/// DVD extract: hunks are already flat sector data, so each hunk is
+/// written as-is, with the final one truncated to `logical_bytes`.
+pub(crate) fn extract_hunks_dvd(
+    pool: &Pool<ChdExtractWork, ChdExtractedOut, ChdError>,
+    map: &[MapEntry],
+    writer: &mut BufWriter<std::fs::File>,
+    hunk_bytes: usize,
+    logical_bytes: u64,
+    bytes_done: &Arc<AtomicU64>,
+) -> ChdResult<()> {
+    run_extract_pipeline(pool, map, writer, bytes_done, |seq, out| {
+        let offset = seq * hunk_bytes as u64;
+        let take = ((logical_bytes - offset.min(logical_bytes)) as usize).min(hunk_bytes);
+        let mut hunk = out.hunk;
+        hunk.truncate(take);
+        Ok(hunk)
+    })
+}
+
+/// Shared extract scaffold; `shape` turns one decoded hunk into the
+/// bytes that belong in the output stream.
+fn run_extract_pipeline<F>(
+    pool: &Pool<ChdExtractWork, ChdExtractedOut, ChdError>,
+    map: &[MapEntry],
+    writer: &mut BufWriter<std::fs::File>,
+    bytes_done: &Arc<AtomicU64>,
+    mut shape: F,
+) -> ChdResult<()>
+where
+    F: FnMut(u64, ChdExtractedOut) -> ChdResult<Vec<u8>>,
+{
     let hunk_count = map.len() as u64;
     let max_in_flight = parallelism() * 2;
 
@@ -182,21 +298,10 @@ pub(crate) fn extract_hunks(
                 Ok(ChdExtractWork { entry })
             },
             |seq, out| -> ChdResult<()> {
-                // Gather sector-only bytes from the interleaved
-                // hunk, dropping the 96-byte subcode after each
-                // frame. `chdman extractcd` writes sector-only
-                // bins, so the output contains exactly
-                // `total_frames * SECTOR_SIZE` bytes.
-                let first_sector = (seq as u32) * frames_per_hunk as u32;
-                let frames_in_hunk = frames_per_hunk.min((total_frames - first_sector) as usize);
-                let mut sectors = Vec::with_capacity(frames_in_hunk * SECTOR_SIZE);
-                for frame in 0..frames_in_hunk {
-                    let off = frame * FRAME_SIZE;
-                    sectors.extend_from_slice(&out.hunk[off..off + SECTOR_SIZE]);
-                }
-                let len = sectors.len() as u64;
+                let bytes = shape(seq, out)?;
+                let len = bytes.len() as u64;
                 write_tx
-                    .send(sectors)
+                    .send(bytes)
                     .map_err(|_| ChdError::WorkerPoolClosed)?;
                 bytes_done.fetch_add(len, Ordering::Relaxed);
                 Ok(())

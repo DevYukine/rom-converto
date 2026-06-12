@@ -70,6 +70,10 @@ export function deriveMergedCuePath(input: string): string {
   return `${stem} (merged).cue`;
 }
 
+export function deriveCsoPath(input: string, format: "cso" | "zso"): string {
+  return replaceExt(input, format);
+}
+
 export function deriveRvzPath(input: string): string {
   // NKit double extensions collapse: game.nkit.iso -> game.rvz.
   const lower = input.toLowerCase();

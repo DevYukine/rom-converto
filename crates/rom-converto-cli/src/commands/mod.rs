@@ -1,5 +1,6 @@
 use crate::commands::chd::ChdCommands;
 use crate::commands::completions::ShellCompletionsCommand;
+use crate::commands::cso::CsoCommands;
 use crate::commands::ctr::CtrCommands;
 use crate::commands::cue::CueCommands;
 use crate::commands::dol::DolCommands;
@@ -10,6 +11,7 @@ use clap::{Parser, Subcommand};
 
 pub mod chd;
 pub mod completions;
+pub mod cso;
 pub mod ctr;
 pub mod cue;
 pub mod dol;
@@ -50,22 +52,26 @@ pub enum Commands {
     Rvl(RvlCommands),
 
     #[command(subcommand)]
-    Chd(ChdCommands),
-
-    #[command(subcommand)]
-    Cue(CueCommands),
-
-    #[command(subcommand)]
     Wup(WupCommands),
 
     #[command(subcommand)]
     Nx(NxCommands),
+
+    #[command(subcommand)]
+    Chd(ChdCommands),
+
+    #[command(subcommand)]
+    Cso(CsoCommands),
+
+    #[command(subcommand)]
+    Cue(CueCommands),
 
     SelfUpdate(SelfUpdateCommand),
 
     ShellCompletions(ShellCompletionsCommand),
 }
 
-/// Command to check for a new version of the CLI and updates it if available
+/// Check for and install a newer version of the CLI.
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
+#[command(long_about = "Check for a newer version of the CLI and install it if one is available.")]
 pub struct SelfUpdateCommand {}

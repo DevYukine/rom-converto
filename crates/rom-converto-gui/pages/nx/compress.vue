@@ -1,13 +1,26 @@
 <script setup lang="ts">
 import { open } from "@tauri-apps/plugin-dialog";
 import { storeToRefs } from "pinia";
-import { isXciInput, useNxCompressStore } from "~/stores/nx-compress";
+import { isXciInput, useNxCompressStore, type NxMode } from "~/stores/nx-compress";
 
 const store = useNxCompressStore();
 const { queue, output, keys, level, mode, blockSizeExp, result, error, loading } =
   storeToRefs(store);
-const { run } = useOperation({ result, error, loading });
 const progress = useProgress("nx-compress");
+
+const MODE_OPTIONS = [
+  { label: "Solid", value: "solid" },
+  { label: "Block", value: "block" },
+];
+
+const batch = useBatchOperation("nx-compress", "cmd_nx_compress", (item) => ({
+  input: item.input,
+  output: item.output,
+  keys: keys.value || null,
+  level: level.value,
+  mode: mode.value,
+  blockSizeExp: blockSizeExp.value,
+}));
 
 const dropZoneRef = ref<HTMLElement | null>(null);
 let zoneId: string | null = null;
@@ -44,32 +57,14 @@ async function browseInputs() {
 
 const hasXci = computed(() => queue.value.some((i) => isXciInput(i.input)));
 const canCompress = computed(() => queue.value.length > 0 && !!output.value);
-const currentIndex = computed(() => queue.value.findIndex((i) => i.status === "running"));
 
 async function execute() {
   progress.reset();
-  for (let i = 0; i < queue.value.length; i++) {
-    const item = queue.value[i];
-    if (!item) continue;
-    item.status = "running";
-    const itemOutput =
-      queue.value.length === 1
-        ? output.value
-        : deriveNszPath(item.input);
-    await run("cmd_nx_compress", {
-      input: item.input,
-      output: itemOutput,
-      keys: keys.value || null,
-      level: level.value,
-      mode: mode.value,
-      blockSizeExp: blockSizeExp.value,
-    });
-    if (error.value) {
-      item.status = "error";
-      break;
-    }
-    item.status = "done";
+  for (const item of queue.value) {
+    item.output =
+      queue.value.length === 1 ? output.value : deriveNszPath(item.input);
   }
+  await batch.start(queue, result);
 }
 </script>
 
@@ -78,7 +73,7 @@ async function execute() {
     <PageHeader
       title="Compress to NSZ/XCZ"
       description="Compress NSP into NSZ or XCI into XCZ. Output is nsz-compatible (https://github.com/nicoboss/nsz). Requires prod.keys."
-      :loading="loading"
+      :loading="loading || batch.running.value"
       :has-result="!!result"
       :has-error="!!error"
     />
@@ -88,8 +83,9 @@ async function execute() {
         <BatchFileList
           v-if="queue.length > 0"
           :items="queue"
-          :current-index="currentIndex"
-          :running="loading"
+          :current-index="batch.currentIndex.value"
+          :running="batch.running.value"
+          :progress="batch.progress"
           @remove="store.removeFromQueue"
           @clear="store.clearQueue"
         />
@@ -163,32 +159,19 @@ async function execute() {
             </label>
           </div>
 
-          <div>
-            <span class="text-sm font-medium text-zinc-200">Mode</span>
-            <div class="text-xs text-zinc-400 mt-0.5">
+          <div class="space-y-1.5">
+            <SegmentedControl
+              :model-value="mode"
+              label="Mode"
+              :options="MODE_OPTIONS"
+              @update:model-value="(v: string) => store.setMode(v as NxMode)"
+            />
+            <p class="text-xs text-zinc-400">
               Solid emits one zstd frame per NCA (smaller, default for NSP).
               Block compresses fixed-size chunks independently (random read
               friendly, default for XCI). XCI input auto-selects block
               unless you change it.
-            </div>
-            <div class="mt-2 flex gap-2">
-              <button
-                type="button"
-                class="rounded-md px-3 py-1.5 text-xs font-medium transition"
-                :class="mode === 'solid' ? 'bg-sky-500/20 text-sky-300 ring-1 ring-sky-500/40' : 'bg-zinc-700/60 text-zinc-300 hover:bg-zinc-700'"
-                @click="store.setMode('solid')"
-              >
-                Solid
-              </button>
-              <button
-                type="button"
-                class="rounded-md px-3 py-1.5 text-xs font-medium transition"
-                :class="mode === 'block' ? 'bg-sky-500/20 text-sky-300 ring-1 ring-sky-500/40' : 'bg-zinc-700/60 text-zinc-300 hover:bg-zinc-700'"
-                @click="store.setMode('block')"
-              >
-                Block
-              </button>
-            </div>
+            </p>
           </div>
 
           <div v-if="mode === 'block'">
@@ -221,7 +204,7 @@ async function execute() {
           :running="progress.running.value"
         />
 
-        <RunButton :loading="loading" :disabled="!canCompress" @click="execute">
+        <RunButton :loading="loading || batch.running.value" :disabled="!canCompress" @click="execute">
           {{ queue.length <= 1 ? "Compress" : `Compress ${queue.length} Files` }}
         </RunButton>
 

@@ -20,7 +20,9 @@ pub mod cdfl;
 pub mod cdlz;
 pub mod cdzl;
 pub mod cdzs;
+pub mod dvd;
 pub mod flac;
+pub mod huffman8;
 pub mod lzma;
 pub mod zlib;
 pub mod zstd;
@@ -351,7 +353,10 @@ impl CdCodecSet {
     }
 }
 
-fn deflate_with_reset(compressor: &mut flate2::Compress, data: &[u8]) -> ChdResult<Vec<u8>> {
+pub(crate) fn deflate_with_reset(
+    compressor: &mut flate2::Compress,
+    data: &[u8],
+) -> ChdResult<Vec<u8>> {
     compressor.reset();
     // Deflate worst case is slightly larger than input
     let max_out = data.len() + data.len() / 100 + 600;
@@ -487,7 +492,7 @@ enum CdBaseDecoder {
     Flac,
 }
 
-fn deflate_decompress_with(
+pub(crate) fn deflate_decompress_with(
     decompress: &mut flate2::Decompress,
     src: &[u8],
     expected_len: usize,

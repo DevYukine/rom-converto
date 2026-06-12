@@ -1,0 +1,53 @@
+<script setup lang="ts">
+import { storeToRefs } from "pinia";
+import { useCsoInfoStore } from "~/stores/cso-info";
+
+const store = useCsoInfoStore();
+const { input, info, rawJson, error, loading } = storeToRefs(store);
+
+const CSO_FILTERS = [
+  { name: "Compressed ISO", extensions: ["cso", "zso"] },
+];
+</script>
+
+<template>
+  <div>
+    <PageHeader
+      title="CSO/ZSO info"
+      description="Read a .cso or .zso container: format and version, block geometry, index shift, raw block count, and compression ratio."
+      :loading="loading"
+      :has-result="!!info"
+      :has-error="!!error"
+    />
+
+    <OperationCard>
+      <div class="space-y-5">
+        <FileDropZone
+          v-model="input"
+          label="CSO/ZSO file"
+          :primary="true"
+          :filters="CSO_FILTERS"
+        />
+
+        <RunButton
+          :loading="loading"
+          :disabled="!input"
+          @click="store.execute"
+        >
+          Read info
+        </RunButton>
+
+        <RomInfoCard v-if="info" :info="info" />
+      </div>
+    </OperationCard>
+
+    <div class="mt-4">
+      <OutputLog :error="error" />
+    </div>
+
+    <details v-if="rawJson" class="mt-4">
+      <summary class="cursor-pointer text-sm text-zinc-500">Raw JSON payload</summary>
+      <pre class="mt-2 overflow-auto rounded bg-black/40 p-3 text-xs">{{ rawJson }}</pre>
+    </details>
+  </div>
+</template>

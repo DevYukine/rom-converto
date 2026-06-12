@@ -101,7 +101,7 @@ pub const HASH_REGION_BYTES: usize = WII_HASH_SIZE;
 
 /// Field offsets inside a sector's 0x400 hash region. Match Dolphin's
 /// `VolumeWii::HashBlock`.
-mod hash_region {
+pub(crate) mod hash_region {
     pub const H0_OFFSET: usize = 0;
     pub const H0_LEN: usize = 31 * 20;
     pub const PADDING_0_OFFSET: usize = H0_OFFSET + H0_LEN;

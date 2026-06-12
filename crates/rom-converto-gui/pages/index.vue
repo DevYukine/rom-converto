@@ -3,26 +3,26 @@ const platforms = [
   {
     to: "/ctr",
     name: "3DS",
-    description: "CDN to CIA, decrypt, compress, decompress, verify, convert, info",
-    count: 7,
+    description: "CDN to CIA, decrypt, compress, decompress, verify, convert, generate ticket, info",
+    count: 8,
   },
   {
     to: "/dol",
     name: "GameCube",
-    description: "Compress and decompress ISO/GCM discs; read disc info",
-    count: 3,
+    description: "Compress and decompress ISO/GCM discs, verify, read disc info",
+    count: 4,
   },
   {
     to: "/rvl",
     name: "Wii",
-    description: "Compress and decompress ISO/WBFS discs; read disc info",
-    count: 3,
+    description: "Compress and decompress ISO/WBFS discs, verify, read disc info",
+    count: 4,
   },
   {
     to: "/wup",
     name: "Wii U",
-    description: "Bundle titles into .wua, decrypt NUS, read title info",
-    count: 3,
+    description: "Bundle titles into .wua, decrypt NUS, verify, read title info",
+    count: 4,
   },
   {
     to: "/nx",
@@ -32,8 +32,14 @@ const platforms = [
   },
   {
     to: "/chd",
-    name: "CD (CHD)",
-    description: "Compress, extract, verify CD disc images, read info",
+    name: "CD / DVD (CHD)",
+    description: "Compress CD and PS2/PSP DVD images, extract, verify, read info",
+    count: 4,
+  },
+  {
+    to: "/cso",
+    name: "PSP / PS2 (CSO/ZSO)",
+    description: "Compress ISOs for real hardware, decompress, verify, read info",
     count: 4,
   },
   {

@@ -30,6 +30,7 @@ pub mod path_tree;
 pub mod streaming_sink;
 pub mod ticket_synth;
 pub mod title_key_derive;
+pub mod verify;
 pub mod wua;
 pub mod zarchive_writer;
 
@@ -40,4 +41,5 @@ pub use compress::{
 pub use error::{WupError, WupResult};
 pub use loadiine::{LoadiineTitle, detect_loadiine_title, walk_loadiine_files};
 pub use nus::decrypt::{decrypt_nus_title, decrypt_nus_title_async};
+pub use verify::{TitleVerdict, WupVerifyResult, verify_wup, verify_wup_async};
 pub use zarchive_writer::ZArchiveWriter;

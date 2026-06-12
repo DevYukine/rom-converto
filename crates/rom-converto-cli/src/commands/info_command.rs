@@ -16,7 +16,7 @@ pub struct InfoCommand {
     #[arg(long, value_name = "DIR")]
     pub save_icon: Option<PathBuf>,
 
-    /// Path to `prod.keys` (Switch only; ignored for other consoles).
+    /// Path to prod.keys for Switch, or a disc master key file for Wii U .wud/.wux info. Other consoles do not use it.
     #[arg(long, value_name = "FILE")]
     pub keys: Option<PathBuf>,
 }

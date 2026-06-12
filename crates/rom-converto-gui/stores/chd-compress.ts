@@ -5,6 +5,9 @@ export const useChdCompressStore = defineStore("chd-compress", () => {
   const input = ref("");
   const output = ref("");
   const force = ref(false);
+  const zstd = ref(false);
+  const mode = ref<"auto" | "cd" | "dvd">("auto");
+  const hunkSize = ref<number | null>(null);
 
   const result = ref("");
   const error = ref("");
@@ -32,7 +35,10 @@ export const useChdCompressStore = defineStore("chd-compress", () => {
   function $reset() {
     input.value = "";
     output.value = "";
+    zstd.value = false;
     force.value = false;
+    mode.value = "auto";
+    hunkSize.value = null;
     result.value = "";
     error.value = "";
     loading.value = false;
@@ -43,6 +49,9 @@ export const useChdCompressStore = defineStore("chd-compress", () => {
     input,
     output,
     force,
+    zstd,
+    mode,
+    hunkSize,
     result,
     error,
     loading,

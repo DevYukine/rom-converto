@@ -5,7 +5,7 @@ import { useRvlDecompressStore } from "~/stores/rvl-decompress";
 const store = useRvlDecompressStore();
 const { input, output, format, result, error, loading, queue } = storeToRefs(store);
 const { run } = useOperation({ result, error, loading });
-const progress = useProgress("decompress-disc");
+const progress = useProgress("rvl-decompress");
 
 const isBatch = computed(() => queue.value.length > 0);
 
@@ -26,9 +26,10 @@ const outputFilters = computed(() =>
       ],
 );
 
-const batch = useBatchOperation("decompress-disc", "cmd_decompress_disc", (item) => ({
+const batch = useBatchOperation("rvl-decompress", "cmd_decompress_disc", (item) => ({
   input: item.input,
   output: item.output || null,
+  taskId: "rvl-decompress",
 }));
 
 watch(input, (val) => {
@@ -73,6 +74,7 @@ async function execute() {
     await run("cmd_decompress_disc", {
       input: input.value,
       output: output.value || null,
+      taskId: "rvl-decompress",
     });
   }
 }

@@ -1,0 +1,171 @@
+<script setup lang="ts">
+import { invoke } from "@tauri-apps/api/core";
+import { storeToRefs } from "pinia";
+import { useRvlVerifyStore, type RvlVerifyResult } from "~/stores/rvl-verify";
+
+const store = useRvlVerifyStore();
+const { input, full, verdict, result, error, loading, queue } = storeToRefs(store);
+const progress = useProgress("rvl-verify");
+
+const isBatch = computed(() => queue.value.length > 0);
+
+const DISC_FILTERS = [
+  { name: "Wii disc", extensions: ["iso", "wbfs", "rvz"] },
+];
+
+const batch = useBatchOperation("rvl-verify", "cmd_verify_rvl", (item) => ({
+  input: item.input,
+  full: full.value,
+}));
+
+function handleFiles(paths: string[]) {
+  for (const p of paths) store.addToQueue(p);
+}
+
+function handleSingleFile(path: string) {
+  if (queue.value.length > 0) {
+    store.addToQueue(path);
+  } else {
+    input.value = path;
+  }
+}
+
+function partitionLabel(offset: number): string {
+  return `0x${offset.toString(16).toUpperCase()}`;
+}
+
+async function execute() {
+  progress.reset();
+  verdict.value = null;
+  error.value = "";
+  result.value = "";
+
+  if (isBatch.value) {
+    await batch.start(queue, result);
+  } else {
+    loading.value = true;
+    try {
+      const json = await invoke<string>("cmd_verify_rvl", {
+        input: input.value,
+        full: full.value,
+      });
+      verdict.value = JSON.parse(json) as RvlVerifyResult;
+    } catch (e) {
+      error.value = String(e);
+    } finally {
+      loading.value = false;
+    }
+  }
+}
+</script>
+
+<template>
+  <div>
+    <PageHeader
+      title="Verify integrity"
+      description="Check the RVZ container hashes of a Wii disc, or recompute the full partition hash tree. Drop multiple files for batch processing."
+      :loading="loading || batch.running.value"
+      :has-result="!!verdict || !!result"
+      :has-error="!!error"
+    />
+
+    <OperationCard>
+      <div class="space-y-5">
+        <template v-if="isBatch">
+          <BatchFileList
+            :items="queue"
+            :current-index="batch.currentIndex.value"
+            :running="batch.running.value"
+            :progress="batch.progress"
+            @remove="store.removeFromQueue"
+            @clear="store.clearQueue"
+          />
+
+          <FileDropZone
+            label="Add more discs"
+            model-value=""
+            :multiple="true"
+            :filters="DISC_FILTERS"
+            @update:model-value="(p: string) => { if (p) store.addToQueue(p) }"
+            @update:files="handleFiles"
+          />
+        </template>
+
+        <FileDropZone
+          v-else
+          :model-value="input"
+          label="Input disc"
+          :multiple="true"
+          :filters="DISC_FILTERS"
+          :primary="true"
+          @update:model-value="handleSingleFile"
+          @update:files="handleFiles"
+        />
+
+        <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
+          <FlagToggle
+            v-model="full"
+            label="Full verification"
+            description="Decrypt every partition cluster and recompute the H0/H1/H2 hash tree to detect tampering or bit rot. Hashes the entire disc and can be slow."
+          />
+        </div>
+
+        <ProgressBar
+          :percent="progress.percent.value"
+          :message="progress.message.value"
+          :running="progress.running.value"
+        />
+
+        <RunButton
+          :loading="loading || batch.running.value"
+          :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input"
+          @click="execute"
+        >
+          {{ isBatch ? `Verify ${queue.filter(i => i.status === 'pending').length} Files` : 'Verify' }}
+        </RunButton>
+
+        <div v-if="!isBatch && verdict" class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
+          <div class="flex items-center justify-between">
+            <div class="text-sm font-medium text-zinc-200">{{ verdict.game_id }}</div>
+            <span
+              class="ml-3 shrink-0 rounded-full px-2.5 py-0.5 text-xs font-semibold"
+              :class="verdict.ok ? 'bg-emerald-500/15 text-emerald-300' : 'bg-rose-500/15 text-rose-300'"
+            >
+              {{ verdict.ok ? "OK" : "FAIL" }}
+            </span>
+          </div>
+
+          <ul v-if="verdict.partitions.length" class="mt-3 space-y-1">
+            <li
+              v-for="p in verdict.partitions"
+              :key="p.offset"
+              class="rounded-md bg-zinc-900/60 px-3 py-1.5 text-xs"
+            >
+              <div class="flex items-center justify-between">
+                <div class="flex items-center gap-2 truncate">
+                  <span class="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] font-medium text-zinc-400">
+                    {{ p.kind }}
+                  </span>
+                  <span class="truncate font-mono text-zinc-200">@{{ partitionLabel(p.offset) }}</span>
+                </div>
+                <span
+                  class="ml-3 shrink-0 font-semibold"
+                  :class="p.ok ? 'text-emerald-400' : 'text-rose-400'"
+                >
+                  {{ p.ok ? "OK" : `${p.mismatched_clusters} corrupt` }}
+                </span>
+              </div>
+              <div v-if="p.scrubbed_clusters > 0" class="mt-0.5 text-[11px] text-zinc-500">
+                {{ p.scrubbed_clusters }} scrubbed cluster{{ p.scrubbed_clusters === 1 ? "" : "s" }} skipped
+              </div>
+            </li>
+          </ul>
+        </div>
+      </div>
+    </OperationCard>
+
+    <div class="mt-4">
+      <OutputLog :result="isBatch ? result : ''" :error="error" />
+    </div>
+  </div>
+</template>

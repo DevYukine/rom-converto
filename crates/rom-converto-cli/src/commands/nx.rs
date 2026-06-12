@@ -48,34 +48,62 @@ pub struct NxCompressCommand {
     #[arg(long = "block-size-exp", value_parser = clap::value_parser!(u8).range(14..=32))]
     pub block_size_exp: Option<u8>,
 
-    /// Input NSP or XCI.
+    /// Input NSP or XCI, or a directory with --recursive.
     #[arg(value_name = "INPUT")]
     pub input: PathBuf,
+
+    /// Overwrite the output file if it already exists
+    #[arg(long, short = 'f', default_value_t = false)]
+    pub force: bool,
+
+    /// Compress every .nsp and .xci found in the INPUT directory
+    #[arg(long, short = 'R', default_value_t = false)]
+    pub recursive: bool,
 }
 
 /// Decompress an NSZ back to NSP or an XCZ back to XCI.
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 pub struct NxDecompressCommand {
+    /// Path to `prod.keys`. Defaults to `$HOME/.switch/prod.keys` on
+    /// Linux/macOS or `%USERPROFILE%/.switch/prod.keys` on Windows,
+    /// then the binary's own directory.
     #[arg(long = "keys", value_name = "PRODKEYS")]
     pub keys: Option<PathBuf>,
 
+    /// Output path. Defaults to the input path with the extension
+    /// switched (.nsz -> .nsp, .xcz -> .xci).
     #[arg(short, long, value_name = "OUTPUT")]
     pub output: Option<PathBuf>,
 
-    /// Input NSZ or XCZ.
+    /// Input NSZ or XCZ, or a directory with --recursive.
     #[arg(value_name = "INPUT")]
     pub input: PathBuf,
+
+    /// Overwrite the output file if it already exists
+    #[arg(long, short = 'f', default_value_t = false)]
+    pub force: bool,
+
+    /// Decompress every .nsz and .xcz found in the INPUT directory
+    #[arg(long, short = 'R', default_value_t = false)]
+    pub recursive: bool,
 }
 
 /// Verify hash integrity of every NCA in a Switch container.
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 pub struct NxVerifyCommand {
+    /// Path to `prod.keys`. Defaults to `$HOME/.switch/prod.keys` on
+    /// Linux/macOS or `%USERPROFILE%/.switch/prod.keys` on Windows,
+    /// then the binary's own directory.
     #[arg(long = "keys", value_name = "PRODKEYS")]
     pub keys: Option<PathBuf>,
 
-    /// Input container (NSP / NSZ / XCI / XCZ).
+    /// Input container (NSP / NSZ / XCI / XCZ), or a directory with --recursive.
     #[arg(value_name = "INPUT")]
     pub input: PathBuf,
+
+    /// Verify every .nsp, .xci, .nsz and .xcz found in the INPUT directory
+    #[arg(long, short = 'R', default_value_t = false)]
+    pub recursive: bool,
 }
 
 #[cfg(test)]
@@ -134,6 +162,16 @@ mod tests {
             panic!("expected Decompress");
         };
         assert_eq!(c.input, PathBuf::from("g.nsz"));
+        assert!(!c.force);
+    }
+
+    #[test]
+    fn parses_compress_force() {
+        let h = Harness::parse_from(["bin", "compress", "-f", "game.nsp"]);
+        let NxCommands::Compress(c) = h.cmd else {
+            panic!("expected Compress");
+        };
+        assert!(c.force);
     }
 
     #[test]
@@ -144,5 +182,24 @@ mod tests {
         };
         assert_eq!(c.keys, Some(PathBuf::from("k")));
         assert_eq!(c.input, PathBuf::from("g.nsz"));
+    }
+
+    #[test]
+    fn parses_compress_recursive() {
+        let h = Harness::parse_from(["bin", "compress", "-R", "roms"]);
+        let NxCommands::Compress(c) = h.cmd else {
+            panic!("expected Compress");
+        };
+        assert!(c.recursive);
+        assert!(c.output.is_none());
+    }
+
+    #[test]
+    fn parses_verify_recursive() {
+        let h = Harness::parse_from(["bin", "verify", "-R", "roms"]);
+        let NxCommands::Verify(c) = h.cmd else {
+            panic!("expected Verify");
+        };
+        assert!(c.recursive);
     }
 }

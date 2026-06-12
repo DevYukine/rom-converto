@@ -4,12 +4,19 @@ import { storeToRefs } from "pinia";
 import { useWupInfoStore } from "~/stores/wup-info";
 
 const store = useWupInfoStore();
-const { input, info, rawJson, error, loading } = storeToRefs(store);
+const { input, keys, info, rawJson, error, loading } = storeToRefs(store);
 
-const WUA_FILTERS = [{ name: "WUA archive", extensions: ["wua"] }];
+const WUA_FILTERS = [
+  { name: "WUA archive or disc image", extensions: ["wua", "wud", "wux"] },
+];
 
 type SourceKind = "directory" | "wua";
 const sourceKind = ref<SourceKind>("directory");
+
+const SOURCE_OPTIONS = [
+  { label: "Title directory", value: "directory" },
+  { label: "Archive / disc image", value: "wua" },
+];
 
 function selectSource(kind: SourceKind) {
   if (sourceKind.value !== kind) {
@@ -23,7 +30,7 @@ function selectSource(kind: SourceKind) {
   <div>
     <PageHeader
       title="Wii U info"
-      description="Read a NUS or loadiine title directory, or a .wua archive: TMD, multilingual names from meta.xml, region, save sizes, accessories, and age ratings. WUD and WUX disc images are not yet supported."
+      description="Read a NUS or loadiine title directory, a .wua archive, or a .wud / .wux disc image: TMD, multilingual names from meta.xml, region, save sizes, accessories, and age ratings."
       :loading="loading"
       :has-result="!!info"
       :has-error="!!error"
@@ -32,39 +39,19 @@ function selectSource(kind: SourceKind) {
     <OperationCard>
       <div class="space-y-5">
         <div>
-          <div class="mb-2 block text-sm font-medium text-zinc-300">Source</div>
-          <div class="inline-flex rounded-lg border border-zinc-700 bg-zinc-800/50 p-0.5">
-            <button
-              type="button"
-              :class="[
-                'rounded-md px-3 py-1.5 text-xs font-medium transition',
-                sourceKind === 'directory'
-                  ? 'bg-zinc-700 text-zinc-100'
-                  : 'text-zinc-400 hover:text-zinc-200',
-              ]"
-              @click="selectSource('directory')"
-            >
-              Title directory
-            </button>
-            <button
-              type="button"
-              :class="[
-                'rounded-md px-3 py-1.5 text-xs font-medium transition',
-                sourceKind === 'wua'
-                  ? 'bg-zinc-700 text-zinc-100'
-                  : 'text-zinc-400 hover:text-zinc-200',
-              ]"
-              @click="selectSource('wua')"
-            >
-              .wua archive
-            </button>
-          </div>
+          <SegmentedControl
+            :model-value="sourceKind"
+            label="Source"
+            :options="SOURCE_OPTIONS"
+            @update:model-value="(v: string) => selectSource(v as SourceKind)"
+          />
           <p class="mt-1.5 text-xs text-zinc-500">
             <template v-if="sourceKind === 'directory'">
               Pick a decrypted NUS or loadiine title folder.
             </template>
             <template v-else>
-              Pick a Cemu .wua archive. Archives bundling multiple titles show the first one.
+              Pick a Cemu .wua archive or a .wud / .wux disc image. Archives bundling multiple
+              titles show the first one. Encrypted discs need the disc master key below.
             </template>
           </p>
         </div>
@@ -79,9 +66,15 @@ function selectSource(kind: SourceKind) {
         <FileDropZone
           v-else
           v-model="input"
-          label="WUA archive"
+          label="Archive or disc image"
           :primary="true"
           :filters="WUA_FILTERS"
+        />
+
+        <FileDropZone
+          v-model="keys"
+          label="Disc master key (for .wud / .wux)"
+          :filters="[{ name: 'Disc key', extensions: ['key', 'bin', 'txt'] }]"
         />
 
         <RunButton

@@ -7,9 +7,9 @@
 
 use crate::info::Image;
 use crate::nintendo::ctr::constants::{
-    CTR_MEDIA_UNIT_SIZE, NCCH_MAGIC, NCCH_MAGIC_OFFSET, NCSD_PARTITION_COUNT,
-    NCSD_PARTITION_ENTRY_SIZE, NCSD_PARTITION_TABLE_OFFSET, NCSD_TITLE_ID_OFFSET,
-    TMD_CONTENT_RECORD_SIZE, TMD_CONTENT_RECORDS_OFFSET,
+    CTR_MEDIA_UNIT_SIZE, NCCH_FLAGS7_SEED_CRYPTO, NCCH_MAGIC, NCCH_MAGIC_OFFSET,
+    NCSD_PARTITION_COUNT, NCSD_PARTITION_ENTRY_SIZE, NCSD_PARTITION_TABLE_OFFSET,
+    NCSD_TITLE_ID_OFFSET, TMD_CONTENT_RECORD_SIZE, TMD_CONTENT_RECORDS_OFFSET,
 };
 use crate::nintendo::ctr::decrypt::util::{decrypt_first_ncch_block, derive_title_key_from_ticket};
 use crate::nintendo::ctr::exefs::read_icon_section;
@@ -38,6 +38,9 @@ pub struct CtrInfo {
     pub maker_name: Option<String>,
     pub cartridge_size: Option<u64>,
     pub ncch_encrypted: bool,
+    pub seed_crypto: bool,
+    pub seed_found: Option<bool>,
+    pub seed_keyy: Option<String>,
     pub smdh: Option<CtrSmdhInfo>,
     pub icon: Option<Image>,
     pub small_icon: Option<Image>,
@@ -153,6 +156,7 @@ fn read_cia_info(path: &Path, physical_bytes: u64) -> Result<CtrInfo> {
         read_ncch_header_at(&mut reader)?
     };
     let info_from_ncch = info_from_ncch_header(&ncch_hdr);
+    let (seed_crypto, seed_found, seed_keyy) = seed_fields(&ncch_hdr);
 
     let smdh = if cia_header.meta_size > 0 {
         reader.seek(SeekFrom::Start(meta_start))?;
@@ -182,6 +186,9 @@ fn read_cia_info(path: &Path, physical_bytes: u64) -> Result<CtrInfo> {
         maker_code: info_from_ncch.maker_code,
         cartridge_size: None,
         ncch_encrypted: info_from_ncch.encrypted,
+        seed_crypto,
+        seed_found,
+        seed_keyy,
         smdh: smdh_info,
         icon,
         small_icon,
@@ -209,6 +216,7 @@ fn read_ncsd_info(path: &Path, physical_bytes: u64) -> Result<CtrInfo> {
     reader.seek(SeekFrom::Start(first_offset))?;
     let ncch_hdr = read_ncch_header_at(&mut reader)?;
     let info_from_ncch = info_from_ncch_header(&ncch_hdr);
+    let (seed_crypto, seed_found, seed_keyy) = seed_fields(&ncch_hdr);
 
     let cartridge_size = read_ncsd_image_size(&mut reader).ok();
 
@@ -244,6 +252,9 @@ fn read_ncsd_info(path: &Path, physical_bytes: u64) -> Result<CtrInfo> {
         maker_code: info_from_ncch.maker_code,
         cartridge_size,
         ncch_encrypted: info_from_ncch.encrypted,
+        seed_crypto,
+        seed_found,
+        seed_keyy,
         smdh: smdh_info,
         icon,
         small_icon,
@@ -256,6 +267,7 @@ fn read_ncch_info(path: &Path, physical_bytes: u64) -> Result<CtrInfo> {
 
     let ncch_hdr = read_ncch_header_at(&mut reader)?;
     let info_from_ncch = info_from_ncch_header(&ncch_hdr);
+    let (seed_crypto, seed_found, seed_keyy) = seed_fields(&ncch_hdr);
 
     let smdh = if ncch_hdr.exefssize > 0 {
         let exefs_abs = ncch_hdr.exefsoffset as u64 * CTR_MEDIA_UNIT_SIZE as u64;
@@ -288,6 +300,9 @@ fn read_ncch_info(path: &Path, physical_bytes: u64) -> Result<CtrInfo> {
         maker_code: info_from_ncch.maker_code,
         cartridge_size: None,
         ncch_encrypted: info_from_ncch.encrypted,
+        seed_crypto,
+        seed_found,
+        seed_keyy,
         smdh: smdh_info,
         icon,
         small_icon,
@@ -300,6 +315,17 @@ struct NcchSummary {
     product_code: String,
     maker_code: String,
     encrypted: bool,
+}
+
+/// Detect NCCH seed-crypto and, when present, resolve the seed from a local
+/// `seeddb.bin` (offline). Returns `(seed_crypto, seed_found, derived_keyy)`.
+fn seed_fields(hdr: &NcchHeader) -> (bool, Option<bool>, Option<String>) {
+    if (hdr.flags[7] & NCCH_FLAGS7_SEED_CRYPTO) == 0 {
+        return (false, None, None);
+    }
+    let res = crate::nintendo::ctr::seed::resolve_seed_offline(hdr);
+    let keyy = res.derived_key_y.map(|k| format!("{k:032X}"));
+    (true, Some(res.found), keyy)
 }
 
 fn info_from_ncch_header(hdr: &NcchHeader) -> NcchSummary {

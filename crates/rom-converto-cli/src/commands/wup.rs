@@ -7,7 +7,29 @@ use std::path::PathBuf;
 pub enum WupCommands {
     Compress(CompressWupCommand),
     Decrypt(DecryptWupCommand),
+    Verify(VerifyWupCommand),
     Info(InfoCommand),
+}
+
+/// Verify Wii U content integrity by recomputing each content's SHA-1
+/// against the TMD content hashes.
+#[derive(Parser, Debug, Clone, Eq, PartialEq)]
+#[command(long_about = "Verify Wii U content integrity.\n\n\
+For NUS directories and .wud / .wux discs, every raw-mode content is decrypted and its SHA-1 compared against the TMD hash. Hashed-mode content is reported as skipped (its TMD hash covers the hash tree, not the content). .wua and loadiine inputs are already decrypted and carry no TMD, so they get a structural readability check only.\n\n\
+Disc images need the 16-byte master key, resolved from --key, a sibling <input>.key, or game.key next to the disc.")]
+pub struct VerifyWupCommand {
+    /// Disc master key file (.wud / .wux only). Auto-discovers
+    /// `<input>.key` or `game.key` when omitted.
+    #[arg(long = "key", value_name = "KEYFILE")]
+    pub key: Option<PathBuf>,
+
+    /// Input: NUS directory, loadiine directory, .wua, or .wud / .wux disc, or a parent directory with --recursive.
+    #[arg(value_name = "INPUT")]
+    pub input: PathBuf,
+
+    /// Verify every .wud / .wux disc and every NUS title subdirectory found in the INPUT directory
+    #[arg(long, short = 'R', default_value_t = false)]
+    pub recursive: bool,
 }
 
 /// Decrypt a NUS-format Wii U title directory into a loadiine-style
@@ -22,6 +44,10 @@ pub struct DecryptWupCommand {
     /// community `tmd.<N>` + numbered content files).
     #[arg(value_name = "INPUT")]
     pub input: PathBuf,
+
+    /// Overwrite the output if it already exists
+    #[arg(long, short = 'f', default_value_t = false)]
+    pub force: bool,
 }
 
 /// Compress one or more Wii U titles into a Cemu-compatible .wua
@@ -68,13 +94,17 @@ pub struct CompressWupCommand {
     /// let the loader auto-discover `<input>.key` or `game.key` next
     /// to each disc.
     #[arg(long = "key", value_name = "KEYFILE")]
-    pub keys: Vec<PathBuf>,
+    pub key: Vec<PathBuf>,
 
     /// One or more title inputs to bundle into the archive. Each is
     /// auto-detected as a loadiine directory, a NUS directory, or a
     /// disc image file.
     #[arg(required = true, num_args = 1.., value_name = "INPUT")]
     pub inputs: Vec<PathBuf>,
+
+    /// Overwrite the output file if it already exists
+    #[arg(long, short = 'f', default_value_t = false)]
+    pub force: bool,
 }
 
 #[cfg(test)]
@@ -97,7 +127,7 @@ mod tests {
             panic!("expected Compress");
         };
         assert_eq!(c.output, PathBuf::from("out.wua"));
-        assert_eq!(c.keys, vec![PathBuf::from("game.key")]);
+        assert_eq!(c.key, vec![PathBuf::from("game.key")]);
         assert_eq!(c.inputs, vec![PathBuf::from("game.wud")]);
     }
 
@@ -115,7 +145,7 @@ mod tests {
             panic!("expected Compress");
         };
         assert_eq!(c.inputs.len(), 2);
-        assert!(c.keys.is_empty());
+        assert!(c.key.is_empty());
     }
 
     #[test]
@@ -127,7 +157,7 @@ mod tests {
         let WupCommands::Compress(c) = h.cmd else {
             panic!("expected Compress");
         };
-        assert_eq!(c.keys, vec![PathBuf::from("a.key"), PathBuf::from("b.key")]);
+        assert_eq!(c.key, vec![PathBuf::from("a.key"), PathBuf::from("b.key")]);
         assert_eq!(c.inputs.len(), 2);
     }
 
@@ -145,5 +175,44 @@ mod tests {
     fn rejects_missing_input() {
         let result = Harness::try_parse_from(["bin", "compress", "-o", "out.wua"]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parses_verify_with_key() {
+        let h = Harness::parse_from(["bin", "verify", "--key", "game.key", "game.wud"]);
+        let WupCommands::Verify(c) = h.cmd else {
+            panic!("expected Verify");
+        };
+        assert_eq!(c.key, Some(PathBuf::from("game.key")));
+        assert_eq!(c.input, PathBuf::from("game.wud"));
+    }
+
+    #[test]
+    fn parses_verify_without_key() {
+        let h = Harness::parse_from(["bin", "verify", "title_dir"]);
+        let WupCommands::Verify(c) = h.cmd else {
+            panic!("expected Verify");
+        };
+        assert!(c.key.is_none());
+        assert_eq!(c.input, PathBuf::from("title_dir"));
+    }
+
+    #[test]
+    fn parses_verify_recursive() {
+        let h = Harness::parse_from(["bin", "verify", "-R", "roms"]);
+        let WupCommands::Verify(c) = h.cmd else {
+            panic!("expected Verify");
+        };
+        assert!(c.recursive);
+        assert_eq!(c.input, PathBuf::from("roms"));
+    }
+
+    #[test]
+    fn parses_compress_force() {
+        let h = Harness::parse_from(["bin", "compress", "-o", "out.wua", "-f", "title_dir/"]);
+        let WupCommands::Compress(c) = h.cmd else {
+            panic!("expected Compress");
+        };
+        assert!(c.force);
     }
 }

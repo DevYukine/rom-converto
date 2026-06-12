@@ -3,8 +3,8 @@ const operations = [
   {
     to: "/wup/compress",
     title: "Compress to WUA",
-    description: "Bundle a Wii U title (plus update and DLC) into a Cemu .wua archive",
-    formats: "loadiine or NUS directories",
+    description: "Bundle Wii U titles (directories or .wud / .wux disc images) into a Cemu .wua archive",
+    formats: "loadiine / NUS directories, .wud, .wux",
     icon: "compress",
   },
   {
@@ -13,6 +13,13 @@ const operations = [
     description: "Decrypt a Wii U NUS directory into a loadiine meta/code/content tree",
     formats: "NUS directory",
     icon: "lock-open",
+  },
+  {
+    to: "/wup/verify",
+    title: "Verify integrity",
+    description: "Check a Wii U title against its TMD content hashes",
+    formats: "NUS / loadiine directories, .wua, .wud, .wux",
+    icon: "shield-check",
   },
   {
     to: "/wup/info",
