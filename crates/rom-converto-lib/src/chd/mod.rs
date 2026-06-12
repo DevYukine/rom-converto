@@ -872,27 +872,8 @@ async fn fix_sha1(
     Ok(())
 }
 
-fn has_extension(path: &std::path::Path, ext: &str) -> bool {
-    path.is_file()
-        && path
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.eq_ignore_ascii_case(ext))
-            .unwrap_or(false)
-}
-
-/// Top-level (non-recursive) listing of files in `dir` matching `ext`,
-/// sorted for deterministic processing order.
 fn collect_files_with_ext(dir: &std::path::Path, ext: &str) -> ChdResult<Vec<PathBuf>> {
-    let mut out = Vec::new();
-    for entry in std::fs::read_dir(dir)? {
-        let path = entry?.path();
-        if has_extension(&path, ext) {
-            out.push(path);
-        }
-    }
-    out.sort();
-    Ok(out)
+    Ok(crate::util::fs::collect_files_with_exts(dir, &[ext])?)
 }
 
 /// Extract every `.chd` in `input_dir` beside its input: CD-mode CHDs
@@ -1371,19 +1352,6 @@ mod tests {
 #[cfg(test)]
 mod batch_tests {
     use super::*;
-
-    #[test]
-    fn has_extension_is_case_insensitive_and_requires_a_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let chd = dir.path().join("game.CHD");
-        std::fs::write(&chd, b"x").unwrap();
-        assert!(has_extension(&chd, "chd"));
-        assert!(!has_extension(&chd, "cue"));
-        // A directory named like a chd is not matched.
-        let sub = dir.path().join("nested.chd");
-        std::fs::create_dir(&sub).unwrap();
-        assert!(!has_extension(&sub, "chd"));
-    }
 
     #[test]
     fn collect_files_with_ext_finds_only_matching_files() {

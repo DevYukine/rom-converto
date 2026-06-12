@@ -4,6 +4,35 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use rom_converto_lib::util::ProgressReporter;
 use std::sync::Mutex;
 
+pub fn ensure_output_writable(path: &std::path::Path, force: bool) -> anyhow::Result<()> {
+    if !force && path.exists() {
+        anyhow::bail!(
+            "output file already exists, use --force to overwrite: {}",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+pub fn ensure_output_dir_writable(path: &std::path::Path, force: bool) -> anyhow::Result<()> {
+    if force || !path.exists() {
+        return Ok(());
+    }
+    if path.is_file() {
+        anyhow::bail!(
+            "output path exists and is a file, use --force to overwrite: {}",
+            path.display()
+        );
+    }
+    if std::fs::read_dir(path)?.next().is_some() {
+        anyhow::bail!(
+            "output directory is not empty, use --force to overwrite: {}",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
 const PROGRESS_TEMPLATE: &str = "{msg}\n{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})";
 
 /// Bridges the library's `ProgressReporter` trait to indicatif `ProgressBar`.

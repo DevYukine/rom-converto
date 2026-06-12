@@ -1,21 +1,21 @@
 <script setup lang="ts">
 import { invoke } from "@tauri-apps/api/core";
 import { storeToRefs } from "pinia";
-import { useNxVerifyStore, type NxVerifyResult } from "~/stores/nx-verify";
+import { useRvlVerifyStore, type RvlVerifyResult } from "~/stores/rvl-verify";
 
-const store = useNxVerifyStore();
-const { input, keys, verdict, result, error, loading, queue } = storeToRefs(store);
-const progress = useProgress("nx-verify");
+const store = useRvlVerifyStore();
+const { input, full, verdict, result, error, loading, queue } = storeToRefs(store);
+const progress = useProgress("rvl-verify");
 
 const isBatch = computed(() => queue.value.length > 0);
 
-const CONTAINER_FILTERS = [
-  { name: "Switch container", extensions: ["nsp", "nsz", "xci", "xcz"] },
+const DISC_FILTERS = [
+  { name: "Wii disc", extensions: ["iso", "wbfs", "rvz"] },
 ];
 
-const batch = useBatchOperation("nx-verify", "cmd_nx_verify", (item) => ({
+const batch = useBatchOperation("rvl-verify", "cmd_verify_rvl", (item) => ({
   input: item.input,
-  keys: keys.value || null,
+  full: full.value,
 }));
 
 function handleFiles(paths: string[]) {
@@ -30,6 +30,10 @@ function handleSingleFile(path: string) {
   }
 }
 
+function partitionLabel(offset: number): string {
+  return `0x${offset.toString(16).toUpperCase()}`;
+}
+
 async function execute() {
   progress.reset();
   verdict.value = null;
@@ -41,11 +45,11 @@ async function execute() {
   } else {
     loading.value = true;
     try {
-      const json = await invoke<string>("cmd_nx_verify", {
+      const json = await invoke<string>("cmd_verify_rvl", {
         input: input.value,
-        keys: keys.value || null,
+        full: full.value,
       });
-      verdict.value = JSON.parse(json) as NxVerifyResult;
+      verdict.value = JSON.parse(json) as RvlVerifyResult;
     } catch (e) {
       error.value = String(e);
     } finally {
@@ -59,7 +63,7 @@ async function execute() {
   <div>
     <PageHeader
       title="Verify integrity"
-      description="Decrypt every NCA section in a Switch container and recompute the FsHeader's stored chunk hashes. Drop multiple files for batch processing."
+      description="Check the RVZ container hashes of a Wii disc, or recompute the full partition hash tree. Drop multiple files for batch processing."
       :loading="loading || batch.running.value"
       :has-result="!!verdict || !!result"
       :has-error="!!error"
@@ -67,7 +71,6 @@ async function execute() {
 
     <OperationCard>
       <div class="space-y-5">
-        <!-- Batch mode -->
         <template v-if="isBatch">
           <BatchFileList
             :items="queue"
@@ -79,32 +82,33 @@ async function execute() {
           />
 
           <FileDropZone
-            label="Add more containers"
+            label="Add more discs"
             model-value=""
             :multiple="true"
-            :filters="CONTAINER_FILTERS"
+            :filters="DISC_FILTERS"
             @update:model-value="(p: string) => { if (p) store.addToQueue(p) }"
             @update:files="handleFiles"
           />
         </template>
 
-        <!-- Single mode -->
         <FileDropZone
           v-else
           :model-value="input"
-          label="Input container"
+          label="Input disc"
           :multiple="true"
-          :filters="CONTAINER_FILTERS"
+          :filters="DISC_FILTERS"
           :primary="true"
           @update:model-value="handleSingleFile"
           @update:files="handleFiles"
         />
 
-        <FileDropZone
-          v-model="keys"
-          label="prod.keys (optional, falls back to ~/.switch/prod.keys)"
-          :filters="[{ name: 'prod.keys', extensions: ['keys', 'txt'] }]"
-        />
+        <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
+          <FlagToggle
+            v-model="full"
+            label="Full verification"
+            description="Decrypt every partition cluster and recompute the H0/H1/H2 hash tree to detect tampering or bit rot. Hashes the entire disc and can be slow."
+          />
+        </div>
 
         <ProgressBar
           :percent="progress.percent.value"
@@ -122,41 +126,38 @@ async function execute() {
 
         <div v-if="!isBatch && verdict" class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
           <div class="flex items-center justify-between">
-            <div>
-              <div class="text-sm font-medium text-zinc-200">{{ verdict.kind }}</div>
-              <div class="text-xs text-zinc-400">
-                {{ verdict.ncas.length }} NCA{{ verdict.ncas.length === 1 ? "" : "s" }} verified
-              </div>
-            </div>
+            <div class="text-sm font-medium text-zinc-200">{{ verdict.game_id }}</div>
             <span
-              class="rounded-full px-2.5 py-0.5 text-xs font-semibold"
-              :class="verdict.ok ? 'bg-emerald-500/15 text-emerald-300' : 'bg-red-500/20 text-red-300'"
+              class="ml-3 shrink-0 rounded-full px-2.5 py-0.5 text-xs font-semibold"
+              :class="verdict.ok ? 'bg-emerald-500/15 text-emerald-300' : 'bg-rose-500/15 text-rose-300'"
             >
-              {{ verdict.ok ? "OK" : "MISMATCHES" }}
+              {{ verdict.ok ? "OK" : "FAIL" }}
             </span>
           </div>
 
-          <ul v-if="verdict.ncas.length" class="mt-3 space-y-1">
+          <ul v-if="verdict.partitions.length" class="mt-3 space-y-1">
             <li
-              v-for="nca in verdict.ncas"
-              :key="`${nca.partition ?? ''}|${nca.name}`"
-              class="flex items-center justify-between rounded-md bg-zinc-900/60 px-3 py-1.5 text-xs"
+              v-for="p in verdict.partitions"
+              :key="p.offset"
+              class="rounded-md bg-zinc-900/60 px-3 py-1.5 text-xs"
             >
-              <div class="flex items-center gap-2 truncate">
+              <div class="flex items-center justify-between">
+                <div class="flex items-center gap-2 truncate">
+                  <span class="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] font-medium text-zinc-400">
+                    {{ p.kind }}
+                  </span>
+                  <span class="truncate font-mono text-zinc-200">@{{ partitionLabel(p.offset) }}</span>
+                </div>
                 <span
-                  v-if="nca.partition"
-                  class="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] font-medium text-zinc-400"
+                  class="ml-3 shrink-0 font-semibold"
+                  :class="p.ok ? 'text-emerald-400' : 'text-rose-400'"
                 >
-                  {{ nca.partition }}
+                  {{ p.ok ? "OK" : `${p.mismatched_clusters} corrupt` }}
                 </span>
-                <span class="truncate font-mono text-zinc-200">{{ nca.name }}</span>
               </div>
-              <span
-                class="ml-3 shrink-0 font-semibold"
-                :class="nca.ok ? 'text-emerald-400' : 'text-red-400'"
-              >
-                {{ nca.ok ? "OK" : `${nca.mismatched_sections} bad` }}
-              </span>
+              <div v-if="p.scrubbed_clusters > 0" class="mt-0.5 text-[11px] text-zinc-500">
+                {{ p.scrubbed_clusters }} scrubbed cluster{{ p.scrubbed_clusters === 1 ? "" : "s" }} skipped
+              </div>
             </li>
           </ul>
         </div>

@@ -1,6 +1,8 @@
 use crate::info_cache::InfoCache;
 use crate::progress::TauriProgress;
-use rom_converto_lib::chd::{ChdDvdOptions, convert_disc_to_chd, extract_from_chd, verify_chd};
+use rom_converto_lib::chd::{
+    ChdDvdOptions, DiscMode, convert_disc_to_chd, extract_from_chd, verify_chd,
+};
 use rom_converto_lib::cso::{
     CsoCompressOptions, CsoFormat, compress_to_cso, decompress_from_cso, verify_cso,
 };
@@ -14,18 +16,21 @@ use rom_converto_lib::nintendo::ctr::z3ds::{
 use rom_converto_lib::nintendo::ctr::{
     CdnToCiaOptions, convert_cdn_to_cia, decrypt_rom, generate_ticket_from_cdn,
 };
+use rom_converto_lib::nintendo::dol::verify::{DolVerifyOptions, verify_dol};
 use rom_converto_lib::nintendo::nx::{
     NczMode, NxCompressOptions, compress_container_async, decompress_container_async,
     derive_compressed_path as nx_derive_compressed_path,
     derive_decompressed_path as nx_derive_decompressed_path, detect_container, load_keyset,
     verify_container_async,
 };
+use rom_converto_lib::nintendo::rvl::verify::{RvlVerifyOptions, verify_rvl};
 use rom_converto_lib::nintendo::rvz::{
     RvzCompressOptions, compress_disc, decompress_disc, decompress_disc_to_wbfs, derive_disc_path,
     derive_rvz_path,
 };
 use rom_converto_lib::nintendo::wup::{
     TitleInput, WupCompressOptions, compress_titles_async, decrypt_nus_title_async,
+    verify_wup_async,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -133,16 +138,22 @@ pub async fn cmd_chd_compress(
     force: bool,
     zstd: Option<bool>,
     hunk_size: Option<u32>,
+    mode: Option<String>,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "chd-compress"));
     let out_display = output.display().to_string();
+    let mode = match mode.as_deref() {
+        Some("cd") => Some(DiscMode::Cd),
+        Some("dvd") => Some(DiscMode::Dvd),
+        _ => None,
+    };
     let opts = ChdDvdOptions {
         hunk_size,
         allow_zstd: zstd.unwrap_or(false),
         force,
     };
     tokio::spawn(async move {
-        convert_disc_to_chd(progress.as_ref(), input_path, output, None, opts).await
+        convert_disc_to_chd(progress.as_ref(), input_path, output, mode, opts).await
     })
     .await
     .map_err(err_to_string)?
@@ -157,6 +168,7 @@ pub async fn cmd_cso_compress(
     output: PathBuf,
     format: String,
     force: bool,
+    block_size: Option<u32>,
 ) -> Result<String, String> {
     let format = match format.as_str() {
         "zso" => CsoFormat::Zso,
@@ -166,7 +178,7 @@ pub async fn cmd_cso_compress(
     let out_display = output.display().to_string();
     let opts = CsoCompressOptions {
         format,
-        block_size: None,
+        block_size,
         force,
     };
     tokio::spawn(async move { compress_to_cso(progress.as_ref(), input_path, output, opts).await })
@@ -284,8 +296,9 @@ pub async fn cmd_compress_disc(
     output: Option<PathBuf>,
     level: Option<i32>,
     chunk_size: Option<u32>,
+    task_id: String,
 ) -> Result<String, String> {
-    let progress = Arc::new(TauriProgress::new(app, "compress-disc"));
+    let progress = Arc::new(TauriProgress::new(app, &task_id));
     let output = output.unwrap_or_else(|| derive_rvz_path(&input));
     let out_display = output.display().to_string();
     let opts = RvzCompressOptions {
@@ -305,8 +318,9 @@ pub async fn cmd_decompress_disc(
     app: AppHandle,
     input: PathBuf,
     output: Option<PathBuf>,
+    task_id: String,
 ) -> Result<String, String> {
-    let progress = Arc::new(TauriProgress::new(app, "decompress-disc"));
+    let progress = Arc::new(TauriProgress::new(app, &task_id));
     let output = output.unwrap_or_else(|| derive_disc_path(&input));
     let out_display = output.display().to_string();
     let to_wbfs = output
@@ -493,6 +507,50 @@ pub async fn cmd_verify_ctr(
 }
 
 #[tauri::command]
+pub async fn cmd_verify_dol(app: AppHandle, input: PathBuf, full: bool) -> Result<String, String> {
+    let progress = Arc::new(TauriProgress::new(app, "dol-verify"));
+    let result = tokio::task::spawn_blocking(move || {
+        let opts = DolVerifyOptions { full };
+        verify_dol(&input, &opts, progress.as_ref())
+    })
+    .await
+    .map_err(err_to_string)?
+    .map_err(err_to_string)?;
+
+    serde_json::to_string(&result).map_err(err_to_string)
+}
+
+#[tauri::command]
+pub async fn cmd_verify_rvl(app: AppHandle, input: PathBuf, full: bool) -> Result<String, String> {
+    let progress = Arc::new(TauriProgress::new(app, "rvl-verify"));
+    let result = tokio::task::spawn_blocking(move || {
+        let opts = RvlVerifyOptions { full };
+        verify_rvl(&input, &opts, progress.as_ref())
+    })
+    .await
+    .map_err(err_to_string)?
+    .map_err(err_to_string)?;
+
+    serde_json::to_string(&result).map_err(err_to_string)
+}
+
+#[tauri::command]
+pub async fn cmd_wup_verify(
+    app: AppHandle,
+    input: PathBuf,
+    keys: Option<PathBuf>,
+) -> Result<String, String> {
+    let progress = Arc::new(TauriProgress::new(app, "wup-verify"));
+    let result =
+        tokio::spawn(async move { verify_wup_async(input, keys, progress.as_ref()).await })
+            .await
+            .map_err(err_to_string)?
+            .map_err(err_to_string)?;
+
+    serde_json::to_string(&result).map_err(err_to_string)
+}
+
+#[tauri::command]
 pub async fn cmd_read_info(
     cache: State<'_, Arc<InfoCache>>,
     input: PathBuf,
@@ -541,7 +599,7 @@ fn extract_icon_png(info: &InfoResult) -> Option<Vec<u8>> {
         InfoResult::Ctr(c) => c.icon.as_ref().map(|i| i.png_bytes.clone()),
         InfoResult::Dol(d) => d.banner_image.as_ref().map(|i| i.png_bytes.clone()),
         InfoResult::Rvl(r) => r.image.as_ref().map(|i| i.png_bytes.clone()),
-        InfoResult::Wup(_) => None,
+        InfoResult::Wup(w) => w.image.as_ref().map(|i| i.png_bytes.clone()),
         InfoResult::Nx(n) => n
             .full
             .as_ref()

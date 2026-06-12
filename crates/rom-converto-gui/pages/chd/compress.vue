@@ -3,9 +3,15 @@ import { storeToRefs } from "pinia";
 import { useChdCompressStore } from "~/stores/chd-compress";
 
 const store = useChdCompressStore();
-const { input, output, force, zstd, result, error, loading, queue } = storeToRefs(store);
+const { input, output, force, zstd, mode, hunkSize, result, error, loading, queue } = storeToRefs(store);
 const { run } = useOperation({ result, error, loading });
 const progress = useProgress("chd-compress");
+
+const MODE_OPTIONS = [
+  { label: "Auto", value: "auto" },
+  { label: "CD", value: "cd" },
+  { label: "DVD", value: "dvd" },
+];
 
 const isBatch = computed(() => queue.value.length > 0);
 
@@ -14,6 +20,8 @@ const batch = useBatchOperation("chd-compress", "cmd_chd_compress", (item) => ({
   output: item.output,
   force: force.value,
   zstd: zstd.value,
+  mode: mode.value === "auto" ? null : mode.value,
+  hunkSize: hunkSize.value || null,
 }));
 
 watch(input, (val) => {
@@ -44,6 +52,8 @@ async function execute() {
       output: output.value,
       force: force.value,
       zstd: zstd.value,
+      mode: mode.value === "auto" ? null : mode.value,
+      hunkSize: hunkSize.value || null,
     });
   }
 }
@@ -115,6 +125,26 @@ async function execute() {
             label="zstd codec (DVD mode)"
             description="Better ratio, but the CHD is rejected by AetherSX2/NetherSX2. Leave off for maximum compatibility"
           />
+          <div class="space-y-1.5">
+            <SegmentedControl
+              :model-value="mode"
+              label="Disc mode"
+              :options="MODE_OPTIONS"
+              @update:model-value="(v: string) => { mode = v as 'auto' | 'cd' | 'dvd' }"
+            />
+            <p class="text-xs text-zinc-500">
+              Auto picks CD or DVD from the image. Override only when detection is wrong.
+            </p>
+          </div>
+          <label class="flex flex-col gap-1.5">
+            <span class="text-sm font-medium text-zinc-200">Hunk size</span>
+            <input
+              v-model.number="hunkSize"
+              type="number"
+              placeholder="auto"
+              class="mt-1 w-40 rounded-md border border-zinc-700 bg-zinc-800/50 px-3 py-1.5 text-sm text-zinc-200"
+            />
+          </label>
         </div>
 
         <ProgressBar
@@ -125,7 +155,7 @@ async function execute() {
 
         <RunButton
           :loading="loading || batch.running.value"
-          :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input || !output"
+          :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input"
           @click="execute"
         >
           {{ isBatch ? `Compress ${queue.filter(i => i.status === 'pending').length} Files` : 'Compress' }}

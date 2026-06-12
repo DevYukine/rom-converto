@@ -5,13 +5,14 @@ import { useDolDecompressStore } from "~/stores/dol-decompress";
 const store = useDolDecompressStore();
 const { input, output, result, error, loading, queue } = storeToRefs(store);
 const { run } = useOperation({ result, error, loading });
-const progress = useProgress("decompress-disc");
+const progress = useProgress("dol-decompress");
 
 const isBatch = computed(() => queue.value.length > 0);
 
-const batch = useBatchOperation("decompress-disc", "cmd_decompress_disc", (item) => ({
+const batch = useBatchOperation("dol-decompress", "cmd_decompress_disc", (item) => ({
   input: item.input,
   output: item.output || null,
+  taskId: "dol-decompress",
 }));
 
 watch(input, (val) => {
@@ -40,6 +41,7 @@ async function execute() {
     await run("cmd_decompress_disc", {
       input: input.value,
       output: output.value || null,
+      taskId: "dol-decompress",
     });
   }
 }

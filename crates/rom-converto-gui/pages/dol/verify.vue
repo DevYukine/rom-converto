@@ -1,21 +1,21 @@
 <script setup lang="ts">
 import { invoke } from "@tauri-apps/api/core";
 import { storeToRefs } from "pinia";
-import { useNxVerifyStore, type NxVerifyResult } from "~/stores/nx-verify";
+import { useDolVerifyStore, type DolVerifyResult } from "~/stores/dol-verify";
 
-const store = useNxVerifyStore();
-const { input, keys, verdict, result, error, loading, queue } = storeToRefs(store);
-const progress = useProgress("nx-verify");
+const store = useDolVerifyStore();
+const { input, full, verdict, result, error, loading, queue } = storeToRefs(store);
+const progress = useProgress("dol-verify");
 
 const isBatch = computed(() => queue.value.length > 0);
 
-const CONTAINER_FILTERS = [
-  { name: "Switch container", extensions: ["nsp", "nsz", "xci", "xcz"] },
+const DISC_FILTERS = [
+  { name: "GameCube disc", extensions: ["iso", "gcm", "rvz"] },
 ];
 
-const batch = useBatchOperation("nx-verify", "cmd_nx_verify", (item) => ({
+const batch = useBatchOperation("dol-verify", "cmd_verify_dol", (item) => ({
   input: item.input,
-  keys: keys.value || null,
+  full: full.value,
 }));
 
 function handleFiles(paths: string[]) {
@@ -41,11 +41,11 @@ async function execute() {
   } else {
     loading.value = true;
     try {
-      const json = await invoke<string>("cmd_nx_verify", {
+      const json = await invoke<string>("cmd_verify_dol", {
         input: input.value,
-        keys: keys.value || null,
+        full: full.value,
       });
-      verdict.value = JSON.parse(json) as NxVerifyResult;
+      verdict.value = JSON.parse(json) as DolVerifyResult;
     } catch (e) {
       error.value = String(e);
     } finally {
@@ -59,7 +59,7 @@ async function execute() {
   <div>
     <PageHeader
       title="Verify integrity"
-      description="Decrypt every NCA section in a Switch container and recompute the FsHeader's stored chunk hashes. Drop multiple files for batch processing."
+      description="Check the RVZ container hashes of a GameCube disc, or run a full whole-disc digest. Drop multiple files for batch processing."
       :loading="loading || batch.running.value"
       :has-result="!!verdict || !!result"
       :has-error="!!error"
@@ -67,7 +67,6 @@ async function execute() {
 
     <OperationCard>
       <div class="space-y-5">
-        <!-- Batch mode -->
         <template v-if="isBatch">
           <BatchFileList
             :items="queue"
@@ -79,32 +78,33 @@ async function execute() {
           />
 
           <FileDropZone
-            label="Add more containers"
+            label="Add more discs"
             model-value=""
             :multiple="true"
-            :filters="CONTAINER_FILTERS"
+            :filters="DISC_FILTERS"
             @update:model-value="(p: string) => { if (p) store.addToQueue(p) }"
             @update:files="handleFiles"
           />
         </template>
 
-        <!-- Single mode -->
         <FileDropZone
           v-else
           :model-value="input"
-          label="Input container"
+          label="Input disc"
           :multiple="true"
-          :filters="CONTAINER_FILTERS"
+          :filters="DISC_FILTERS"
           :primary="true"
           @update:model-value="handleSingleFile"
           @update:files="handleFiles"
         />
 
-        <FileDropZone
-          v-model="keys"
-          label="prod.keys (optional, falls back to ~/.switch/prod.keys)"
-          :filters="[{ name: 'prod.keys', extensions: ['keys', 'txt'] }]"
-        />
+        <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
+          <FlagToggle
+            v-model="full"
+            label="Full verification"
+            description="Decode the whole disc and compute a whole-disc SHA-1. GameCube discs carry no built-in hashes, so this digest is informational for DAT matching, not a pass or fail."
+          />
+        </div>
 
         <ProgressBar
           :percent="progress.percent.value"
@@ -123,40 +123,26 @@ async function execute() {
         <div v-if="!isBatch && verdict" class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
           <div class="flex items-center justify-between">
             <div>
-              <div class="text-sm font-medium text-zinc-200">{{ verdict.kind }}</div>
-              <div class="text-xs text-zinc-400">
-                {{ verdict.ncas.length }} NCA{{ verdict.ncas.length === 1 ? "" : "s" }} verified
+              <div class="text-sm font-medium text-zinc-200">{{ verdict.game_id }}</div>
+              <div v-if="verdict.disc_sha1" class="mt-0.5 break-all font-mono text-xs text-zinc-400">
+                SHA-1 {{ verdict.disc_sha1 }}
               </div>
             </div>
             <span
-              class="rounded-full px-2.5 py-0.5 text-xs font-semibold"
-              :class="verdict.ok ? 'bg-emerald-500/15 text-emerald-300' : 'bg-red-500/20 text-red-300'"
+              class="ml-3 shrink-0 rounded-full px-2.5 py-0.5 text-xs font-semibold"
+              :class="verdict.ok ? 'bg-emerald-500/15 text-emerald-300' : 'bg-rose-500/15 text-rose-300'"
             >
-              {{ verdict.ok ? "OK" : "MISMATCHES" }}
+              {{ verdict.ok ? "OK" : "FAIL" }}
             </span>
           </div>
 
-          <ul v-if="verdict.ncas.length" class="mt-3 space-y-1">
+          <ul v-if="verdict.structural?.notes.length" class="mt-3 space-y-1">
             <li
-              v-for="nca in verdict.ncas"
-              :key="`${nca.partition ?? ''}|${nca.name}`"
-              class="flex items-center justify-between rounded-md bg-zinc-900/60 px-3 py-1.5 text-xs"
+              v-for="(note, i) in verdict.structural.notes"
+              :key="i"
+              class="rounded-md bg-zinc-900/60 px-3 py-1.5 text-xs text-zinc-400"
             >
-              <div class="flex items-center gap-2 truncate">
-                <span
-                  v-if="nca.partition"
-                  class="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] font-medium text-zinc-400"
-                >
-                  {{ nca.partition }}
-                </span>
-                <span class="truncate font-mono text-zinc-200">{{ nca.name }}</span>
-              </div>
-              <span
-                class="ml-3 shrink-0 font-semibold"
-                :class="nca.ok ? 'text-emerald-400' : 'text-red-400'"
-              >
-                {{ nca.ok ? "OK" : `${nca.mismatched_sections} bad` }}
-              </span>
+              {{ note }}
             </li>
           </ul>
         </div>

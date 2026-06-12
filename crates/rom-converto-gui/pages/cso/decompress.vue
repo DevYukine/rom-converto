@@ -118,7 +118,7 @@ async function execute() {
 
         <RunButton
           :loading="loading || batch.running.value"
-          :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input || !output"
+          :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input"
           @click="execute"
         >
           {{ isBatch ? `Decompress ${queue.filter(i => i.status === 'pending').length} Files` : 'Decompress' }}

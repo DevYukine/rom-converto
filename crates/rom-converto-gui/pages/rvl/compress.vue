@@ -3,15 +3,20 @@ import { storeToRefs } from "pinia";
 import { useRvlCompressStore } from "~/stores/rvl-compress";
 
 const store = useRvlCompressStore();
-const { input, output, result, error, loading, queue } = storeToRefs(store);
+const { input, output, level, chunkSize, result, error, loading, queue } = storeToRefs(store);
 const { run } = useOperation({ result, error, loading });
-const progress = useProgress("compress-disc");
+const progress = useProgress("rvl-compress");
+
+const CHUNK_SIZES = [32768, 65536, 131072, 262144, 524288, 1048576, 2097152];
 
 const isBatch = computed(() => queue.value.length > 0);
 
-const batch = useBatchOperation("compress-disc", "cmd_compress_disc", (item) => ({
+const batch = useBatchOperation("rvl-compress", "cmd_compress_disc", (item) => ({
   input: item.input,
   output: item.output || null,
+  level: level.value,
+  chunkSize: chunkSize.value,
+  taskId: "rvl-compress",
 }));
 
 watch(input, (val) => {
@@ -40,6 +45,9 @@ async function execute() {
     await run("cmd_compress_disc", {
       input: input.value,
       output: output.value || null,
+      level: level.value,
+      chunkSize: chunkSize.value,
+      taskId: "rvl-compress",
     });
   }
 }
@@ -94,6 +102,35 @@ async function execute() {
             :save-dialog="true"
             :filters="[{ name: 'RVZ', extensions: ['rvz'] }]"
           />
+        </div>
+
+        <div class="space-y-3 rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
+          <label class="flex flex-col gap-1.5">
+            <span class="text-sm font-medium text-zinc-200">Zstd level</span>
+            <span class="text-xs text-zinc-400">
+              1 is fastest, 22 is max ratio. Dolphin's documented suggestion is 5.
+            </span>
+            <div class="flex items-center gap-3 pt-1">
+              <input
+                v-model.number="level"
+                type="range"
+                min="1"
+                max="22"
+                step="1"
+                class="flex-1 accent-sky-500"
+              />
+              <span class="w-16 shrink-0 text-right font-mono text-sm text-zinc-200">{{ level }}</span>
+            </div>
+          </label>
+          <label class="flex flex-col gap-1.5">
+            <span class="text-sm font-medium text-zinc-200">Chunk size (bytes)</span>
+            <span class="text-xs text-zinc-400">
+              Must be a power of two between 32768 (32 KiB) and 2097152 (2 MiB). Defaults to 131072 (128 KiB), which matches Dolphin's default.
+            </span>
+            <select v-model.number="chunkSize" class="mt-1 rounded-md border border-zinc-700 bg-zinc-800/50 px-3 py-1.5 text-sm text-zinc-200">
+              <option v-for="size in CHUNK_SIZES" :key="size" :value="size">{{ size }}</option>
+            </select>
+          </label>
         </div>
 
         <ProgressBar

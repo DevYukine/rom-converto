@@ -15,10 +15,17 @@ const operations = [
     icon: "expand",
   },
   {
+    to: "/rvl/verify",
+    title: "Verify integrity",
+    description: "Check RVZ container hashes, or recompute the partition hash tree",
+    formats: ".iso, .wbfs, .rvz",
+    icon: "shield-check",
+  },
+  {
     to: "/rvl/info",
     title: "Read disc info",
     description: "Show game header, partitions, TMD, banner names, and channel icon",
-    formats: ".iso, .rvz",
+    formats: ".iso, .wbfs, .rvz",
     icon: "info",
   },
 ];

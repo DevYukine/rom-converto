@@ -5,20 +5,28 @@ import { useCtrCompressStore } from "~/stores/ctr-compress";
 import { useCtrDecompressStore } from "~/stores/ctr-decompress";
 import { useCtrVerifyStore } from "~/stores/ctr-verify";
 import { useCtrConvertStore } from "~/stores/ctr-convert";
+import { useCtrGenerateTicketStore } from "~/stores/ctr-generate-ticket";
 import { useCtrInfoStore } from "~/stores/ctr-info";
 import { useChdCompressStore } from "~/stores/chd-compress";
 import { useChdExtractStore } from "~/stores/chd-extract";
 import { useChdVerifyStore } from "~/stores/chd-verify";
 import { useChdInfoStore } from "~/stores/chd-info";
+import { useCsoCompressStore } from "~/stores/cso-compress";
+import { useCsoDecompressStore } from "~/stores/cso-decompress";
+import { useCsoVerifyStore } from "~/stores/cso-verify";
+import { useCsoInfoStore } from "~/stores/cso-info";
 import { useCueMergeStore } from "~/stores/cue-merge";
 import { useDolCompressStore } from "~/stores/dol-compress";
 import { useDolDecompressStore } from "~/stores/dol-decompress";
+import { useDolVerifyStore } from "~/stores/dol-verify";
 import { useDolInfoStore } from "~/stores/dol-info";
 import { useRvlCompressStore } from "~/stores/rvl-compress";
 import { useRvlDecompressStore } from "~/stores/rvl-decompress";
+import { useRvlVerifyStore } from "~/stores/rvl-verify";
 import { useRvlInfoStore } from "~/stores/rvl-info";
 import { useWupCompressStore } from "~/stores/wup-compress";
 import { useWupDecryptStore } from "~/stores/wup-decrypt";
+import { useWupVerifyStore } from "~/stores/wup-verify";
 import { useWupInfoStore } from "~/stores/wup-info";
 import { useNxCompressStore } from "~/stores/nx-compress";
 import { useNxDecompressStore } from "~/stores/nx-decompress";
@@ -57,6 +65,7 @@ const sections: SidebarSection[] = [
       { to: "/ctr/decompress", label: "Decompress", store: () => useCtrDecompressStore(), icon: "expand" },
       { to: "/ctr/verify", label: "Verify", store: () => useCtrVerifyStore(), icon: "shield-check" },
       { to: "/ctr/convert", label: "Convert", store: () => useCtrConvertStore(), icon: "swap" },
+      { to: "/ctr/generate-ticket", label: "Generate ticket", store: () => useCtrGenerateTicketStore(), icon: "folder-arrow" },
       { to: "/ctr/info", label: "Info", store: () => useCtrInfoStore(), icon: "info" },
     ],
   },
@@ -66,6 +75,7 @@ const sections: SidebarSection[] = [
     links: [
       { to: "/dol/compress", label: "Compress", store: () => useDolCompressStore(), icon: "compress" },
       { to: "/dol/decompress", label: "Decompress", store: () => useDolDecompressStore(), icon: "expand" },
+      { to: "/dol/verify", label: "Verify", store: () => useDolVerifyStore(), icon: "shield-check" },
       { to: "/dol/info", label: "Info", store: () => useDolInfoStore(), icon: "info" },
     ],
   },
@@ -75,6 +85,7 @@ const sections: SidebarSection[] = [
     links: [
       { to: "/rvl/compress", label: "Compress", store: () => useRvlCompressStore(), icon: "compress" },
       { to: "/rvl/decompress", label: "Decompress", store: () => useRvlDecompressStore(), icon: "expand" },
+      { to: "/rvl/verify", label: "Verify", store: () => useRvlVerifyStore(), icon: "shield-check" },
       { to: "/rvl/info", label: "Info", store: () => useRvlInfoStore(), icon: "info" },
     ],
   },
@@ -84,6 +95,7 @@ const sections: SidebarSection[] = [
     links: [
       { to: "/wup/compress", label: "Compress to WUA", store: () => useWupCompressStore(), icon: "compress" },
       { to: "/wup/decrypt", label: "Decrypt NUS", store: () => useWupDecryptStore(), icon: "lock-open" },
+      { to: "/wup/verify", label: "Verify", store: () => useWupVerifyStore(), icon: "shield-check" },
       { to: "/wup/info", label: "Info", store: () => useWupInfoStore(), icon: "info" },
     ],
   },
@@ -99,7 +111,7 @@ const sections: SidebarSection[] = [
   },
   {
     key: "chd",
-    name: "CHD",
+    name: "CD / DVD (CHD)",
     links: [
       { to: "/chd/compress", label: "Compress", store: () => useChdCompressStore(), icon: "disc-down" },
       { to: "/chd/extract", label: "Extract", store: () => useChdExtractStore(), icon: "disc-up" },
@@ -108,8 +120,18 @@ const sections: SidebarSection[] = [
     ],
   },
   {
+    key: "cso",
+    name: "PSP / PS2 (CSO/ZSO)",
+    links: [
+      { to: "/cso/compress", label: "Compress", store: () => useCsoCompressStore(), icon: "compress" },
+      { to: "/cso/decompress", label: "Decompress", store: () => useCsoDecompressStore(), icon: "expand" },
+      { to: "/cso/verify", label: "Verify", store: () => useCsoVerifyStore(), icon: "shield-check" },
+      { to: "/cso/info", label: "Info", store: () => useCsoInfoStore(), icon: "info" },
+    ],
+  },
+  {
     key: "cue",
-    name: "CUE/BIN",
+    name: "CD (CUE/BIN)",
     links: [
       { to: "/cue/merge", label: "Merge multi-bin", store: () => useCueMergeStore(), icon: "compress" },
     ],

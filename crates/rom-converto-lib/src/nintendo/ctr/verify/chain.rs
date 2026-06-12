@@ -117,6 +117,19 @@ pub enum CtrVerifyResult {
     Ncsd(NcsdVerifyResult),
 }
 
+impl CtrVerifyResult {
+    pub fn ok(&self) -> bool {
+        match self {
+            // Legitimacy classification is informational; only an actual
+            // content-hash mismatch counts as a verification failure.
+            CtrVerifyResult::Cia(cia) => cia.content_hashes_valid != Some(false),
+            CtrVerifyResult::Ncsd(ncsd) => {
+                ncsd.ncsd_magic_valid && ncsd.partitions.iter().all(|p| p.ncch_magic_valid)
+            }
+        }
+    }
+}
+
 pub async fn verify_ctr(
     input: &Path,
     options: &CtrVerifyOptions,
@@ -1041,14 +1054,19 @@ pub async fn verify_ctr_batch(
 
         match verify_ctr(&path, options, progress).await {
             Ok(result) => {
-                summary.ok += 1;
+                let tag = if result.ok() { "[OK]" } else { "[FAIL]" };
+                if result.ok() {
+                    summary.ok += 1;
+                } else {
+                    summary.failed += 1;
+                }
                 match &result {
                     CtrVerifyResult::Cia(cia) => {
-                        log::info!("[OK] {display_name} - CIA / {}", cia.legitimacy);
+                        log::info!("{tag} {display_name} - CIA / {}", cia.legitimacy);
                     }
                     CtrVerifyResult::Ncsd(ncsd) => {
                         log::info!(
-                            "[OK] {display_name} - NCSD / {} partitions / Title ID {}",
+                            "{tag} {display_name} - NCSD / {} partitions / Title ID {}",
                             ncsd.partition_count,
                             ncsd.title_id
                         );
@@ -1241,5 +1259,77 @@ mod tests {
             classify(false, false, None, 0, true),
             CiaLegitimacy::Standard(StandardSubType::Decrypted)
         );
+    }
+
+    fn ncch_partition(ncch_magic_valid: bool) -> NcchPartitionResult {
+        NcchPartitionResult {
+            index: 0,
+            name: "Main".to_string(),
+            title_id: String::new(),
+            product_code: String::new(),
+            encrypted: false,
+            ncch_magic_valid,
+            exheader_hash_valid: None,
+            logo_hash_valid: None,
+            exefs_hash_valid: None,
+            romfs_hash_valid: None,
+            details: Vec::new(),
+        }
+    }
+
+    fn ncsd_result(ncsd_magic_valid: bool, partition_magic: &[bool]) -> CtrVerifyResult {
+        CtrVerifyResult::Ncsd(NcsdVerifyResult {
+            ncsd_magic_valid,
+            title_id: String::new(),
+            partition_count: partition_magic.len(),
+            partitions: partition_magic.iter().map(|m| ncch_partition(*m)).collect(),
+            details: Vec::new(),
+        })
+    }
+
+    fn cia_result(content_hashes_valid: Option<bool>) -> CtrVerifyResult {
+        CtrVerifyResult::Cia(CiaVerifyResult {
+            legitimacy: CiaLegitimacy::Standard(StandardSubType::Encrypted),
+            ca_cert_valid: false,
+            tmd_signer_cert_valid: false,
+            ticket_signer_cert_valid: false,
+            tmd_signature_valid: false,
+            ticket_signature_valid: false,
+            content_hashes_valid,
+            title_id: String::new(),
+            console_id: 0,
+            title_version: 0,
+            details: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn ok_ncsd_good_magic_and_partitions_passes() {
+        assert!(ncsd_result(true, &[true, true]).ok());
+    }
+
+    #[test]
+    fn ok_ncsd_bad_magic_fails() {
+        assert!(!ncsd_result(false, &[true]).ok());
+    }
+
+    #[test]
+    fn ok_ncsd_bad_partition_magic_fails() {
+        assert!(!ncsd_result(true, &[true, false]).ok());
+    }
+
+    #[test]
+    fn ok_cia_content_hashes_bad_fails() {
+        assert!(!cia_result(Some(false)).ok());
+    }
+
+    #[test]
+    fn ok_cia_content_hashes_good_passes() {
+        assert!(cia_result(Some(true)).ok());
+    }
+
+    #[test]
+    fn ok_cia_content_hashes_unchecked_passes() {
+        assert!(cia_result(None).ok());
     }
 }

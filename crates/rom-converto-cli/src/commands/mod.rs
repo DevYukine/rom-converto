@@ -52,6 +52,12 @@ pub enum Commands {
     Rvl(RvlCommands),
 
     #[command(subcommand)]
+    Wup(WupCommands),
+
+    #[command(subcommand)]
+    Nx(NxCommands),
+
+    #[command(subcommand)]
     Chd(ChdCommands),
 
     #[command(subcommand)]
@@ -60,17 +66,12 @@ pub enum Commands {
     #[command(subcommand)]
     Cue(CueCommands),
 
-    #[command(subcommand)]
-    Wup(WupCommands),
-
-    #[command(subcommand)]
-    Nx(NxCommands),
-
     SelfUpdate(SelfUpdateCommand),
 
     ShellCompletions(ShellCompletionsCommand),
 }
 
-/// Command to check for a new version of the CLI and updates it if available
+/// Check for and install a newer version of the CLI.
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
+#[command(long_about = "Check for a newer version of the CLI and install it if one is available.")]
 pub struct SelfUpdateCommand {}

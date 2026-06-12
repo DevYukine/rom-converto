@@ -2,7 +2,7 @@ use crate::commands::info_command::InfoCommand;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-/// Commands specific to CHD formats
+/// Commands specific to CHD formats.
 #[derive(Subcommand, Debug, Eq, PartialEq)]
 pub enum ChdCommands {
     Compress(CompressCommand),
@@ -11,7 +11,7 @@ pub enum ChdCommands {
     Info(InfoCommand),
 }
 
-/// Compresses a disc image to a CHD (Compressed Hunks of Data) file.
+/// Compress a disc image to a CHD (Compressed Hunks of Data) file.
 ///
 /// A .cue input (with its .bin) becomes a CD-mode CHD. An .iso is
 /// probed for its console family: CD-media images (PS1, PS2-CD)
@@ -30,6 +30,15 @@ pub struct CompressCommand {
     /// Output chd file path, defaults to the input path with extension replaced by .chd
     #[arg(value_name = "OUTPUT")]
     pub output: Option<PathBuf>,
+
+    /// Output chd file path, defaults to the input path with extension replaced by .chd
+    #[arg(
+        short = 'o',
+        long = "output",
+        value_name = "OUTPUT",
+        conflicts_with = "output"
+    )]
+    pub output_flag: Option<PathBuf>,
 
     /// Force DVD mode (.iso input only)
     #[arg(long, conflicts_with = "cd")]
@@ -58,15 +67,28 @@ pub struct CompressCommand {
     pub recursive: bool,
 }
 
-/// Extracts files from a CHD file to a specified output directory.
+/// Extract files from a CHD file to a specified output directory.
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 pub struct ExtractCommand {
     /// Input CHD file, or a directory of .chd files when --recursive is set
+    #[arg(value_name = "INPUT")]
     pub input: PathBuf,
 
     /// Output path for extracted files (ignored with --recursive)
-    #[arg(value_name = "OUTPUT", required_unless_present = "recursive")]
+    #[arg(
+        value_name = "OUTPUT",
+        required_unless_present_any = ["recursive", "output_flag"]
+    )]
     pub output: Option<PathBuf>,
+
+    /// Output path for extracted files (ignored with --recursive)
+    #[arg(
+        short = 'o',
+        long = "output",
+        value_name = "OUTPUT",
+        conflicts_with = "output"
+    )]
+    pub output_flag: Option<PathBuf>,
 
     /// Optional parent CHD file (for CHDs that reference a parent); not allowed with --recursive
     #[arg(long, short = 'p', value_name = "PARENT")]
@@ -75,12 +97,17 @@ pub struct ExtractCommand {
     /// Extract every .chd in INPUT (top-level only); outputs go beside each input
     #[arg(long, short = 'R', default_value_t = false)]
     pub recursive: bool,
+
+    /// Overwrite the output file if it already exists
+    #[arg(long, short = 'f', default_value_t = false)]
+    pub force: bool,
 }
 
-/// Verifies the integrity of a CHD file.
+/// Verify the integrity of a CHD file.
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 pub struct VerifyCommand {
     /// Input CHD file, or a directory of .chd files when --recursive is set
+    #[arg(value_name = "INPUT")]
     pub input: PathBuf,
 
     /// Optional parent CHD file (for CHDs that reference a parent); not allowed with --recursive
@@ -174,5 +201,22 @@ mod tests {
         assert!(c.recursive);
         assert!(c.output.is_none());
         assert!(Harness::try_parse_from(["bin", "extract", "in.chd"]).is_err());
+    }
+
+    #[test]
+    fn extract_output_flag_satisfies_requirement() {
+        let h = Harness::parse_from(["bin", "extract", "in.chd", "-o", "out.cue"]);
+        let ChdCommands::Extract(c) = h.cmd else {
+            panic!("expected Extract");
+        };
+        assert!(c.output.is_none());
+        assert_eq!(c.output_flag, Some(PathBuf::from("out.cue")));
+    }
+
+    #[test]
+    fn extract_output_flag_conflicts_with_positional() {
+        let result =
+            Harness::try_parse_from(["bin", "extract", "in.chd", "pos.cue", "-o", "flag.cue"]);
+        assert!(result.is_err());
     }
 }

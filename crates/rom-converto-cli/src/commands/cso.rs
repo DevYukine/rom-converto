@@ -2,7 +2,7 @@ use crate::commands::info_command::InfoCommand;
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
-/// Commands for CSO/ZSO compressed ISO images (PSP, PS2)
+/// Commands for CSO/ZSO compressed ISO images (PSP, PS2).
 #[derive(Subcommand, Debug, Eq, PartialEq)]
 pub enum CsoCommands {
     Compress(CompressCommand),
@@ -20,7 +20,7 @@ pub enum CsoFormatArg {
     Zso,
 }
 
-/// Compresses an ISO to a CSO or ZSO container.
+/// Compress an ISO to a CSO or ZSO container.
 ///
 /// Pick the format for the target device: CSO for PSP (hardware and
 /// PPSSPP), ZSO for PS2 via Open PS2 Loader. Emulator setups are
@@ -34,6 +34,15 @@ pub struct CompressCommand {
     /// Output path, defaults to the input with the format's extension
     #[arg(value_name = "OUTPUT")]
     pub output: Option<PathBuf>,
+
+    /// Output path, defaults to the input with the format's extension
+    #[arg(
+        short = 'o',
+        long = "output",
+        value_name = "OUTPUT",
+        conflicts_with = "output"
+    )]
+    pub output_flag: Option<PathBuf>,
 
     /// Output container format
     #[arg(long, value_enum, default_value_t = CsoFormatArg::Cso)]
@@ -53,32 +62,52 @@ pub struct CompressCommand {
     pub recursive: bool,
 }
 
-/// Decompresses a CSO or ZSO container back to a plain ISO.
+/// Decompress a CSO or ZSO container back to a plain ISO.
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 pub struct DecompressCommand {
-    /// Input .cso or .zso path
+    /// Input .cso or .zso path, or a directory with --recursive
+    #[arg(value_name = "INPUT")]
     pub input: PathBuf,
 
-    /// Output ISO path, defaults to the input with extension replaced by .iso
+    /// Output ISO path, defaults to the input with extension replaced by .iso (ignored with --recursive)
+    #[arg(value_name = "OUTPUT")]
     pub output: Option<PathBuf>,
+
+    /// Output ISO path, defaults to the input with extension replaced by .iso (ignored with --recursive)
+    #[arg(
+        short = 'o',
+        long = "output",
+        value_name = "OUTPUT",
+        conflicts_with = "output"
+    )]
+    pub output_flag: Option<PathBuf>,
 
     /// Force overwrite of the output file if it already exists
     #[arg(long, short = 'f', default_value_t = false)]
     pub force: bool,
+
+    /// Decompress every .cso and .zso found in the INPUT directory
+    #[arg(long, short = 'R', default_value_t = false)]
+    pub recursive: bool,
 }
 
-/// Verifies the integrity of a CSO or ZSO container.
+/// Verify the integrity of a CSO or ZSO container.
 ///
 /// The formats embed no checksums, so the standard pass validates
 /// the index structure; --full additionally decodes every block.
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 pub struct VerifyCommand {
-    /// Input .cso or .zso path
+    /// Input .cso or .zso path, or a directory with --recursive
+    #[arg(value_name = "INPUT")]
     pub input: PathBuf,
 
     /// Decode every block instead of only checking the index
     #[arg(long)]
     pub full: bool,
+
+    /// Verify every .cso and .zso found in the INPUT directory
+    #[arg(long, short = 'R', default_value_t = false)]
+    pub recursive: bool,
 }
 
 #[cfg(test)]
@@ -109,5 +138,40 @@ mod tests {
             panic!("expected Verify");
         };
         assert!(c.full);
+    }
+
+    #[test]
+    fn parses_verify_recursive() {
+        let h = Harness::parse_from(["bin", "verify", "roms", "-R"]);
+        let CsoCommands::Verify(c) = h.cmd else {
+            panic!("expected Verify");
+        };
+        assert!(c.recursive);
+    }
+
+    #[test]
+    fn parses_decompress_recursive() {
+        let h = Harness::parse_from(["bin", "decompress", "roms", "-R"]);
+        let CsoCommands::Decompress(c) = h.cmd else {
+            panic!("expected Decompress");
+        };
+        assert!(c.recursive);
+    }
+
+    #[test]
+    fn decompress_output_flag_overrides_positional() {
+        let h = Harness::parse_from(["bin", "decompress", "game.cso", "-o", "out.iso"]);
+        let CsoCommands::Decompress(c) = h.cmd else {
+            panic!("expected Decompress");
+        };
+        assert_eq!(c.output, None);
+        assert_eq!(c.output_flag, Some(PathBuf::from("out.iso")));
+    }
+
+    #[test]
+    fn decompress_output_flag_conflicts_with_positional() {
+        let result =
+            Harness::try_parse_from(["bin", "decompress", "game.cso", "pos.iso", "-o", "flag.iso"]);
+        assert!(result.is_err());
     }
 }

@@ -1,23 +1,37 @@
 import { defineStore } from "pinia";
 import type { BatchItem } from "~/types/batch";
 
-export const useRvlCompressStore = defineStore("rvl-compress", () => {
-  const input = ref("");
-  const output = ref("");
-  const level = ref(22);
-  const chunkSize = ref(131072);
+export interface TitleVerdict {
+  title_id: number;
+  title_id_hex: string;
+  ok: boolean;
+  verified_content: number;
+  mismatched_content: number;
+  skipped_content: number;
+}
 
+export interface WupVerifyResult {
+  kind: string;
+  ok: boolean;
+  titles: TitleVerdict[];
+}
+
+export const useWupVerifyStore = defineStore("wup-verify", () => {
+  const input = ref("");
+  const keys = ref("");
+
+  const verdict = ref<WupVerifyResult | null>(null);
   const result = ref("");
   const error = ref("");
   const loading = ref(false);
 
   const queue = ref<BatchItem[]>([]);
 
-  function addToQueue(filePath: string, outputPath: string) {
+  function addToQueue(filePath: string) {
     queue.value.push({
       id: crypto.randomUUID(),
       input: filePath,
-      output: outputPath,
+      output: "",
       status: "pending",
     });
   }
@@ -32,9 +46,8 @@ export const useRvlCompressStore = defineStore("rvl-compress", () => {
 
   function $reset() {
     input.value = "";
-    output.value = "";
-    level.value = 22;
-    chunkSize.value = 131072;
+    keys.value = "";
+    verdict.value = null;
     result.value = "";
     error.value = "";
     loading.value = false;
@@ -43,9 +56,8 @@ export const useRvlCompressStore = defineStore("rvl-compress", () => {
 
   return {
     input,
-    output,
-    level,
-    chunkSize,
+    keys,
+    verdict,
     result,
     error,
     loading,

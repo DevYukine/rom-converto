@@ -15,6 +15,13 @@ const operations = [
     icon: "expand",
   },
   {
+    to: "/dol/verify",
+    title: "Verify integrity",
+    description: "Check RVZ container hashes, or compute a whole-disc SHA-1",
+    formats: ".iso, .gcm, .rvz",
+    icon: "shield-check",
+  },
+  {
     to: "/dol/info",
     title: "Read disc info",
     description: "Show disc header, region, publisher, and 96x32 banner",

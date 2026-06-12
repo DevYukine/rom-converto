@@ -1,23 +1,41 @@
 import { defineStore } from "pinia";
 import type { BatchItem } from "~/types/batch";
 
-export const useRvlCompressStore = defineStore("rvl-compress", () => {
-  const input = ref("");
-  const output = ref("");
-  const level = ref(22);
-  const chunkSize = ref(131072);
+export interface RvlPartitionVerify {
+  offset: number;
+  partition_type: number;
+  kind: string;
+  clusters_checked: number;
+  mismatched_clusters: number;
+  scrubbed_clusters: number;
+  sample_bad_clusters: number[];
+  ok: boolean;
+  note: string | null;
+}
 
+export interface RvlVerifyResult {
+  game_id: string;
+  rvz_structure: { ok: boolean } | null;
+  partitions: RvlPartitionVerify[];
+  ok: boolean;
+}
+
+export const useRvlVerifyStore = defineStore("rvl-verify", () => {
+  const input = ref("");
+  const full = ref(false);
+
+  const verdict = ref<RvlVerifyResult | null>(null);
   const result = ref("");
   const error = ref("");
   const loading = ref(false);
 
   const queue = ref<BatchItem[]>([]);
 
-  function addToQueue(filePath: string, outputPath: string) {
+  function addToQueue(filePath: string) {
     queue.value.push({
       id: crypto.randomUUID(),
       input: filePath,
-      output: outputPath,
+      output: "",
       status: "pending",
     });
   }
@@ -32,9 +50,8 @@ export const useRvlCompressStore = defineStore("rvl-compress", () => {
 
   function $reset() {
     input.value = "";
-    output.value = "";
-    level.value = 22;
-    chunkSize.value = 131072;
+    full.value = false;
+    verdict.value = null;
     result.value = "";
     error.value = "";
     loading.value = false;
@@ -43,9 +60,8 @@ export const useRvlCompressStore = defineStore("rvl-compress", () => {
 
   return {
     input,
-    output,
-    level,
-    chunkSize,
+    full,
+    verdict,
     result,
     error,
     loading,

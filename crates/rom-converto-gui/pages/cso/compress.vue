@@ -3,17 +3,23 @@ import { storeToRefs } from "pinia";
 import { useCsoCompressStore } from "~/stores/cso-compress";
 
 const store = useCsoCompressStore();
-const { input, output, format, force, result, error, loading, queue } = storeToRefs(store);
+const { input, output, format, force, blockSize, result, error, loading, queue } = storeToRefs(store);
 const { run } = useOperation({ result, error, loading });
 const progress = useProgress("cso-compress");
 
 const isBatch = computed(() => queue.value.length > 0);
+
+const FORMAT_OPTIONS = [
+  { label: "CSO (PSP, PPSSPP)", value: "cso" },
+  { label: "ZSO (PS2 via OPL)", value: "zso" },
+];
 
 const batch = useBatchOperation("cso-compress", "cmd_cso_compress", (item) => ({
   inputPath: item.input,
   output: item.output,
   format: format.value,
   force: force.value,
+  blockSize: blockSize.value || null,
 }));
 
 watch(input, (val) => {
@@ -51,6 +57,7 @@ async function execute() {
       output: output.value,
       format: format.value,
       force: force.value,
+      blockSize: blockSize.value || null,
     });
   }
 }
@@ -112,22 +119,29 @@ async function execute() {
         </template>
 
         <div class="space-y-3 rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
-          <div class="flex items-center gap-4">
-            <span class="text-sm font-medium text-zinc-300">Format</span>
-            <label class="flex items-center gap-1.5 text-sm text-zinc-400">
-              <input v-model="format" type="radio" value="cso" class="accent-sky-500">
-              CSO (PSP, PPSSPP)
-            </label>
-            <label class="flex items-center gap-1.5 text-sm text-zinc-400">
-              <input v-model="format" type="radio" value="zso" class="accent-sky-500">
-              ZSO (PS2 via OPL)
-            </label>
-          </div>
+          <SegmentedControl
+            :model-value="format"
+            label="Format"
+            :options="FORMAT_OPTIONS"
+            @update:model-value="(v: string) => { format = v as 'cso' | 'zso' }"
+          />
           <FlagToggle
             v-model="force"
             label="Force Overwrite"
             description="Overwrite output file if it already exists"
           />
+          <label class="flex flex-col gap-1.5">
+            <span class="text-sm font-medium text-zinc-200">Block size</span>
+            <span class="text-xs text-zinc-400">
+              Power of two in bytes. Leave blank for the default of 2048, or 16384 for inputs of 2 GiB and beyond (matching maxcso).
+            </span>
+            <input
+              v-model.number="blockSize"
+              type="number"
+              placeholder="default"
+              class="mt-1 w-40 rounded-md border border-zinc-700 bg-zinc-800/50 px-3 py-1.5 text-sm text-zinc-200"
+            />
+          </label>
         </div>
 
         <ProgressBar
@@ -138,7 +152,7 @@ async function execute() {
 
         <RunButton
           :loading="loading || batch.running.value"
-          :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input || !output"
+          :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input"
           @click="execute"
         >
           {{ isBatch ? `Compress ${queue.filter(i => i.status === 'pending').length} Files` : 'Compress' }}

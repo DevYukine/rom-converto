@@ -5,8 +5,13 @@ import { useNxDecompressStore } from "~/stores/nx-decompress";
 
 const store = useNxDecompressStore();
 const { queue, output, keys, result, error, loading } = storeToRefs(store);
-const { run } = useOperation({ result, error, loading });
 const progress = useProgress("nx-decompress");
+
+const batch = useBatchOperation("nx-decompress", "cmd_nx_decompress", (item) => ({
+  input: item.input,
+  output: item.output,
+  keys: keys.value || null,
+}));
 
 const dropZoneRef = ref<HTMLElement | null>(null);
 let zoneId: string | null = null;
@@ -42,27 +47,14 @@ async function browseInputs() {
 }
 
 const canDecompress = computed(() => queue.value.length > 0 && !!output.value);
-const currentIndex = computed(() => queue.value.findIndex((i) => i.status === "running"));
 
 async function execute() {
   progress.reset();
-  for (let i = 0; i < queue.value.length; i++) {
-    const item = queue.value[i];
-    if (!item) continue;
-    item.status = "running";
-    const itemOutput =
+  for (const item of queue.value) {
+    item.output =
       queue.value.length === 1 ? output.value : deriveNspPath(item.input);
-    await run("cmd_nx_decompress", {
-      input: item.input,
-      output: itemOutput,
-      keys: keys.value || null,
-    });
-    if (error.value) {
-      item.status = "error";
-      break;
-    }
-    item.status = "done";
   }
+  await batch.start(queue, result);
 }
 </script>
 
@@ -71,7 +63,7 @@ async function execute() {
     <PageHeader
       title="Decompress to NSP/XCI"
       description="Decompress NSZ to NSP or XCZ to XCI. Output is byte-identical to the original installable container. Drop multiple files for batch processing."
-      :loading="loading"
+      :loading="loading || batch.running.value"
       :has-result="!!result"
       :has-error="!!error"
     />
@@ -81,8 +73,9 @@ async function execute() {
         <BatchFileList
           v-if="queue.length > 0"
           :items="queue"
-          :current-index="currentIndex"
-          :running="loading"
+          :current-index="batch.currentIndex.value"
+          :running="batch.running.value"
+          :progress="batch.progress"
           @remove="store.removeFromQueue"
           @clear="store.clearQueue"
         />
@@ -138,7 +131,7 @@ async function execute() {
           :running="progress.running.value"
         />
 
-        <RunButton :loading="loading" :disabled="!canDecompress" @click="execute">
+        <RunButton :loading="loading || batch.running.value" :disabled="!canDecompress" @click="execute">
           {{ queue.length <= 1 ? "Decompress" : `Decompress ${queue.length} Files` }}
         </RunButton>
       </div>

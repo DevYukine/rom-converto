@@ -1,3 +1,4 @@
+pub mod fs;
 pub mod iso9660;
 pub mod maker_codes;
 pub mod pixel;

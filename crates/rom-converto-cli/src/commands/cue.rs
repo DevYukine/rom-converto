@@ -1,13 +1,13 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-/// Commands for CUE/BIN disc images
+/// Commands for CUE/BIN disc images.
 #[derive(Subcommand, Debug, Eq, PartialEq)]
 pub enum CueCommands {
     Merge(MergeCommand),
 }
 
-/// Merges a multi-bin .cue disc image into a single .bin and .cue pair.
+/// Merge a multi-bin .cue disc image into a single .bin and .cue pair.
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 pub struct MergeCommand {
     /// Input .cue file referencing multiple .bin files
