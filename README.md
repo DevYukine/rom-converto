@@ -174,6 +174,7 @@ All commands that write an output file refuse to overwrite an existing file unle
 | Command | Description |
 |---|---|
 | `dol compress <INPUT> [OUTPUT]` | Compress a `.iso`/`.gcm` to Dolphin's `.rvz` |
+| `dol migrate <INPUT> [OUTPUT]` | Migrate a legacy `.gcz`, `.nkit.iso`, or `.nkit.gcz` to `.rvz` with an integrity check first |
 | `dol decompress <INPUT> [OUTPUT]` | Decompress a `.rvz` back to `.iso` |
 | `dol verify <INPUT>` | Verify RVZ container hashes, or compute a whole-disc SHA-1 with `--full` |
 | `dol info <INPUT>` | Inspect GameCube disc metadata; see the Info section |
@@ -182,12 +183,14 @@ All commands that write an output file refuse to overwrite an existing file unle
 
 | Flag | Applies to | Description |
 |---|---|---|
-| `-l, --level <LEVEL>` | `compress` | Zstandard compression level (signed, defaults to 22, Dolphin's max non-extreme) |
-| `--chunk-size <BYTES>` | `compress` | Chunk size in bytes, power of two between 32 KiB and 2 MiB (defaults to 128 KiB to match Dolphin) |
-| `-o, --output <FILE>` | `compress`, `decompress` | Output path (alternative to the positional OUTPUT argument) |
-| `-f, --force` | `compress`, `decompress` | Overwrite output file if it already exists |
-| `-R, --recursive` | `compress`, `decompress`, `verify` | Process every matching file in INPUT (top-level only) |
+| `-l, --level <LEVEL>` | `compress`, `migrate` | Zstandard compression level (signed, defaults to 22, Dolphin's max non-extreme) |
+| `--chunk-size <BYTES>` | `compress`, `migrate` | Chunk size in bytes, power of two between 32 KiB and 2 MiB (defaults to 128 KiB to match Dolphin) |
+| `-o, --output <FILE>` | `compress`, `migrate`, `decompress` | Output path (alternative to the positional OUTPUT argument) |
+| `-f, --force` | `compress`, `migrate`, `decompress` | Overwrite output file if it already exists |
+| `-R, --recursive` | `compress`, `migrate`, `decompress`, `verify` | Process every matching file in INPUT (top-level only) |
 | `--full` | `verify` | Decode the whole disc and compute a whole-disc SHA-1 |
+| `--skip-verify` | `migrate` | Skip the pre-conversion integrity pass |
+| `--deep` | `migrate` | Decode every group during verification instead of only the header checks (WIA only) |
 
 ---
 
@@ -196,6 +199,7 @@ All commands that write an output file refuse to overwrite an existing file unle
 | Command | Description |
 |---|---|
 | `rvl compress <INPUT> [OUTPUT]` | Compress a `.iso`/`.wbfs` to Dolphin's `.rvz` |
+| `rvl migrate <INPUT> [OUTPUT]` | Migrate a legacy `.wia`, `.gcz`, `.nkit.iso`, or `.nkit.gcz` to `.rvz` with an integrity check first |
 | `rvl decompress <INPUT> [OUTPUT]` | Decompress a `.rvz` back to `.iso` |
 | `rvl verify <INPUT>` | Verify RVZ container hashes, or recompute the Wii partition hash tree with `--full` |
 | `rvl info <INPUT>` | Inspect Wii disc metadata; see the Info section |
@@ -358,8 +362,8 @@ Inspect a ROM file or title directory and print the embedded metadata: title, ve
 | Subcommand | Coverage |
 |---|---|
 | `ctr info <FILE>` | CIA / NCSD / NCCH; SMDH multilingual titles, region lock, age ratings, 48x48 icon. Encrypted CIA is auto-decrypted to read the NCCH header. |
-| `dol info <FILE>` | GameCube `.iso`, `.gcm`, or `.rvz`; boot.bin header, BNR1/BNR2 banner with 96x32 image, publisher name. |
-| `rvl info <FILE>` | Wii `.iso`, `.rvz`, or `.wbfs`; disc header, partition layout, TMD (title id, IOS), IMET banner names, 192x64 banner image from `opening.bnr` (falls back to the icon). |
+| `dol info <FILE>` | GameCube `.iso`, `.gcm`, `.rvz`, `.gcz`, or NKit; boot.bin header, BNR1/BNR2 banner with 96x32 image, publisher name. |
+| `rvl info <FILE>` | Wii `.iso`, `.rvz`, `.wbfs`, `.wia`, `.gcz`, or NKit; disc header, partition layout, TMD (title id, IOS), IMET banner names, 192x64 banner image from `opening.bnr` (falls back to the icon). |
 | `wup info <PATH>` | loadiine + NUS directories, `.wua` archives, and `.wud`/`.wux` disc images; TMD + meta.xml with multilingual names, region, age ratings, save sizes, GamePad requirement, supported accessories, mastering date, decoded `iconTex.tga` icon. Pass `--keys` with the disc master key file when reading a `.wud`/`.wux`. |
 | `nx info <FILE>` | NSP / NSZ / XCI / XCZ; container listing, tickets, CNMT, NACP, JPEG icon. Reports compression status (NSP vs NSZ), distribution (digital vs cartridge), structure classifier (scene / converted / CDN / homebrew), base title id for patches and DLC, decoded language list, age ratings per rating board. Full info needs `--keys prod.keys`, partial info without. |
 | `chd info <FILE>` | CHD v5; version, codecs, hunk geometry, SHA-1 triplet, per-track CHT2 metadata, VERS / DVD tags |

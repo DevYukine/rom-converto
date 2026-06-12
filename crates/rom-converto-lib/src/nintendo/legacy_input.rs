@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use log::info;
+use log::{info, warn};
 use tokio::task;
 
 use super::gcz;
@@ -210,11 +210,14 @@ pub async fn migrate_disc(
 
 /// Migrate every legacy container directly inside `dir` (top level
 /// only, matching the ctr batch commands). Outputs land next to their
-/// inputs with the extension replaced by .rvz.
+/// inputs with the extension replaced by .rvz. Failures are reported
+/// and counted instead of aborting the run; an existing output
+/// without `force` counts as failed.
 pub async fn migrate_disc_batch(
     dir: &Path,
     options: RvzCompressOptions,
     migrate: MigrateOptions,
+    force: bool,
     progress: &dyn ProgressReporter,
 ) -> RvzResult<()> {
     let inputs = {
@@ -239,9 +242,34 @@ pub async fn migrate_disc_batch(
         )));
     }
     info!("Migrating {} legacy images to RVZ", inputs.len());
+    let mut failed: usize = 0;
     for input in &inputs {
         let output = super::rvz::derive_rvz_path(input);
-        migrate_disc(input, &output, options, migrate, progress).await?;
+        if !force && output.exists() {
+            warn!(
+                "Skipping {}: output file already exists, use --force to overwrite",
+                input.display()
+            );
+            failed += 1;
+            continue;
+        }
+        if let Err(e) = migrate_disc(input, &output, options, migrate, progress).await {
+            warn!("Failed to migrate {}: {e}", input.display());
+            failed += 1;
+        }
+    }
+    info!(
+        "Processed {} files in {}: {} OK, {} failed",
+        inputs.len(),
+        dir.display(),
+        inputs.len() - failed,
+        failed
+    );
+    if failed > 0 {
+        return Err(RvzError::Custom(format!(
+            "{failed} of {} migrations failed",
+            inputs.len()
+        )));
     }
     Ok(())
 }

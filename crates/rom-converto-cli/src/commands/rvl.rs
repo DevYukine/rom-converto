@@ -29,6 +29,15 @@ pub struct MigrateDiscCommand {
     #[arg(value_name = "OUTPUT")]
     pub output: Option<PathBuf>,
 
+    /// Output RVZ path, defaults to the input path with extension replaced by .rvz (ignored with --recursive).
+    #[arg(
+        short = 'o',
+        long = "output",
+        value_name = "OUTPUT",
+        conflicts_with = "output"
+    )]
+    pub output_flag: Option<PathBuf>,
+
     /// Zstandard compression level (signed, negative levels allowed).
     /// Defaults to 22 (archive quality).
     #[arg(long, short = 'l')]
@@ -40,16 +49,20 @@ pub struct MigrateDiscCommand {
     pub chunk_size: Option<u32>,
 
     /// Skip the pre-conversion integrity pass.
-    #[arg(long)]
+    #[arg(long, default_value_t = false)]
     pub skip_verify: bool,
 
     /// Decode every WIA group during verification instead of only the
     /// SHA-1 header chain.
-    #[arg(long)]
+    #[arg(long, default_value_t = false)]
     pub deep: bool,
 
-    /// Migrate every legacy image found in the INPUT directory.
-    #[arg(long, short = 'R')]
+    /// Overwrite the output file if it already exists
+    #[arg(long, short = 'f', default_value_t = false)]
+    pub force: bool,
+
+    /// Migrate every WIA, GCZ and NKit image found in the INPUT directory (detected by content)
+    #[arg(long, short = 'R', default_value_t = false)]
     pub recursive: bool,
 }
 
@@ -173,5 +186,23 @@ mod tests {
             panic!("expected Verify");
         };
         assert!(c.recursive);
+    }
+
+    #[test]
+    fn parses_migrate_force_and_output_flag() {
+        let h = Harness::parse_from(["bin", "migrate", "game.wia", "-o", "out.rvz", "-f"]);
+        let RvlCommands::Migrate(c) = h.cmd else {
+            panic!("expected Migrate");
+        };
+        assert!(c.force);
+        assert_eq!(c.output, None);
+        assert_eq!(c.output_flag, Some(PathBuf::from("out.rvz")));
+    }
+
+    #[test]
+    fn migrate_output_flag_conflicts_with_positional() {
+        let result =
+            Harness::try_parse_from(["bin", "migrate", "game.wia", "pos.rvz", "-o", "flag.rvz"]);
+        assert!(result.is_err());
     }
 }

@@ -344,15 +344,14 @@ async fn main() -> Result<()> {
                     deep_verify: cmd.deep,
                 };
                 if cmd.recursive {
-                    if !cmd.input.is_dir() {
-                        anyhow::bail!(
-                            "INPUT must be a directory when --recursive is set: {}",
-                            cmd.input.display()
-                        );
-                    }
-                    migrate_disc_batch(&cmd.input, opts, migrate_opts, &progress).await?
+                    require_dir(&cmd.input)?;
+                    migrate_disc_batch(&cmd.input, opts, migrate_opts, cmd.force, &progress).await?
                 } else {
-                    let output = cmd.output.unwrap_or_else(|| derive_rvz_path(&cmd.input));
+                    let output = cmd
+                        .output_flag
+                        .or(cmd.output)
+                        .unwrap_or_else(|| derive_rvz_path(&cmd.input));
+                    ensure_output_writable(&output, cmd.force)?;
                     migrate_disc(&cmd.input, &output, opts, migrate_opts, &progress).await?
                 }
             }
@@ -454,15 +453,14 @@ async fn main() -> Result<()> {
                     deep_verify: cmd.deep,
                 };
                 if cmd.recursive {
-                    if !cmd.input.is_dir() {
-                        anyhow::bail!(
-                            "INPUT must be a directory when --recursive is set: {}",
-                            cmd.input.display()
-                        );
-                    }
-                    migrate_disc_batch(&cmd.input, opts, migrate_opts, &progress).await?
+                    require_dir(&cmd.input)?;
+                    migrate_disc_batch(&cmd.input, opts, migrate_opts, cmd.force, &progress).await?
                 } else {
-                    let output = cmd.output.unwrap_or_else(|| derive_rvz_path(&cmd.input));
+                    let output = cmd
+                        .output_flag
+                        .or(cmd.output)
+                        .unwrap_or_else(|| derive_rvz_path(&cmd.input));
+                    ensure_output_writable(&output, cmd.force)?;
                     migrate_disc(&cmd.input, &output, opts, migrate_opts, &progress).await?
                 }
             }
