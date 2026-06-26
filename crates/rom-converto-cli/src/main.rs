@@ -10,7 +10,9 @@ use crate::commands::wup::WupCommands;
 use crate::commands::{Cli, Commands, SelfUpdateCommand};
 use crate::github::api::GithubApi;
 use crate::updater::{check_for_new_version_and_notify, cleanup_old_executable, self_update};
-use crate::util::{IndicatifProgress, ensure_output_dir_writable, ensure_output_writable};
+use crate::util::{
+    IndicatifProgress, ensure_input_exists, ensure_output_dir_writable, ensure_output_writable,
+};
 use anyhow::Result;
 use clap::{CommandFactory, Parser};
 use clap_complete::{generate, generate_to};
@@ -55,6 +57,7 @@ use rom_converto_lib::nintendo::wup::{
     TitleInput, WupCompressOptions, compress_titles_async, decrypt_nus_title_async,
     verify_wup_async,
 };
+use std::io::IsTerminal;
 use std::mem::discriminant;
 
 mod batch;
@@ -90,10 +93,36 @@ async fn main() -> Result<()> {
         return run_shell_completions(cmd);
     }
 
-    let logger = env_logger::builder()
-        .filter_level(log::LevelFilter::Info)
-        .parse_default_env()
-        .build();
+    let project_level = if cli.quiet {
+        log::LevelFilter::Warn
+    } else {
+        match cli.verbose {
+            0 => log::LevelFilter::Info,
+            1 => log::LevelFilter::Debug,
+            _ => log::LevelFilter::Trace,
+        }
+    };
+
+    let mut builder = env_logger::builder();
+    builder
+        .filter_level(log::LevelFilter::Warn)
+        .filter_module("rom_converto", project_level)
+        .filter_module("rom_converto_lib", project_level)
+        .format_timestamp(None);
+    if cli.verbose == 0 {
+        builder.format_target(false);
+        // At default verbosity ordinary info lines are user-facing
+        // summaries, so they print as plain text; warnings and errors
+        // keep a label so they still stand out.
+        builder.format(|buf, record| {
+            use std::io::Write;
+            match record.level() {
+                log::Level::Info => writeln!(buf, "{}", record.args()),
+                level => writeln!(buf, "[{level}] {}", record.args()),
+            }
+        });
+    }
+    let logger = builder.parse_default_env().build();
 
     let level = logger.filter();
     let pb = MultiProgress::new();
@@ -105,7 +134,9 @@ async fn main() -> Result<()> {
 
     let mut github = GithubApi::new()?;
 
-    if discriminant(&cli.command) != discriminant(&Commands::SelfUpdate(SelfUpdateCommand {})) {
+    if discriminant(&cli.command) != discriminant(&Commands::SelfUpdate(SelfUpdateCommand {}))
+        && should_check_for_updates(cli.no_update_check)
+    {
         // Non-fatal: network outages or GitHub rate limits shouldn't
         // prevent the user from running conversions offline.
         if let Err(e) = check_for_new_version_and_notify(&mut github).await {
@@ -121,18 +152,30 @@ async fn main() -> Result<()> {
             CtrCommands::CdnToCia(cmd) => {
                 let output = cmd.output_flag.or(cmd.output);
                 if !cmd.recursive {
-                    let base = output.clone().unwrap_or_else(|| {
-                        let name = cmd
-                            .cdn_dir
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .map(|n| format!("{n}.cia"))
-                            .unwrap_or_else(|| "output.cia".to_string());
-                        cmd.cdn_dir
-                            .parent()
-                            .unwrap_or_else(|| std::path::Path::new("."))
-                            .join(name)
-                    });
+                    ensure_input_exists(&cmd.cdn_dir)?;
+                    let base = match output.clone() {
+                        Some(p) => p,
+                        None => {
+                            if let Some(dir) = cmd.output_dir.as_deref() {
+                                std::fs::create_dir_all(dir)?;
+                            }
+                            let name = cmd
+                                .cdn_dir
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .map(|n| format!("{n}.cia"))
+                                .unwrap_or_else(|| "output.cia".to_string());
+                            let derived = cmd
+                                .cdn_dir
+                                .parent()
+                                .unwrap_or_else(|| std::path::Path::new("."))
+                                .join(name);
+                            rom_converto_lib::util::place_in_dir(
+                                &derived,
+                                cmd.output_dir.as_deref(),
+                            )
+                        }
+                    };
                     let resolved = if cmd.compress {
                         derive_compressed_path(&base)
                     } else {
@@ -148,10 +191,12 @@ async fn main() -> Result<()> {
                     ensure_ticket_exists: cmd.ensure_ticket_exists,
                     decrypt: cmd.decrypt,
                     compress: cmd.compress,
+                    output_dir: cmd.output_dir,
                 };
                 convert_cdn_to_cia(opts, &progress, &total_progress).await?
             }
             CtrCommands::GenerateCdnTicket(cmd) => {
+                ensure_input_exists(&cmd.cdn_dir)?;
                 generate_ticket_from_cdn(&cmd.cdn_dir, &cmd.output).await?
             }
             CtrCommands::Decrypt(cmd) => {
@@ -162,12 +207,27 @@ async fn main() -> Result<()> {
                             cmd.input.display()
                         );
                     }
-                    decrypt_rom_batch(&cmd.input, &progress, &total_progress).await?
+                    decrypt_rom_batch(
+                        &cmd.input,
+                        cmd.output_dir.as_deref(),
+                        &progress,
+                        &total_progress,
+                    )
+                    .await?
                 } else {
-                    let output = cmd
-                        .output_flag
-                        .or(cmd.output)
-                        .unwrap_or_else(|| derive_decrypted_path(&cmd.input));
+                    ensure_input_exists(&cmd.input)?;
+                    let output = match cmd.output_flag.or(cmd.output) {
+                        Some(p) => p,
+                        None => {
+                            if let Some(dir) = cmd.output_dir.as_deref() {
+                                std::fs::create_dir_all(dir)?;
+                            }
+                            rom_converto_lib::util::place_in_dir(
+                                &derive_decrypted_path(&cmd.input),
+                                cmd.output_dir.as_deref(),
+                            )
+                        }
+                    };
                     ensure_output_writable(&output, cmd.force)?;
                     decrypt_rom(&cmd.input, &output, &progress).await?
                 }
@@ -180,12 +240,28 @@ async fn main() -> Result<()> {
                             cmd.input.display()
                         );
                     }
-                    compress_rom_batch(&cmd.input, cmd.level, &progress, &total_progress).await?
+                    compress_rom_batch(
+                        &cmd.input,
+                        cmd.level,
+                        cmd.output_dir.as_deref(),
+                        &progress,
+                        &total_progress,
+                    )
+                    .await?
                 } else {
-                    let output = cmd
-                        .output_flag
-                        .or(cmd.output)
-                        .unwrap_or_else(|| derive_compressed_path(&cmd.input));
+                    ensure_input_exists(&cmd.input)?;
+                    let output = match cmd.output_flag.or(cmd.output) {
+                        Some(p) => p,
+                        None => {
+                            if let Some(dir) = cmd.output_dir.as_deref() {
+                                std::fs::create_dir_all(dir)?;
+                            }
+                            rom_converto_lib::util::place_in_dir(
+                                &derive_compressed_path(&cmd.input),
+                                cmd.output_dir.as_deref(),
+                            )
+                        }
+                    };
                     ensure_output_writable(&output, cmd.force)?;
                     compress_rom(&cmd.input, &output, cmd.level, &progress).await?
                 }
@@ -198,12 +274,27 @@ async fn main() -> Result<()> {
                             cmd.input.display()
                         );
                     }
-                    decompress_rom_batch(&cmd.input, &progress, &total_progress).await?
+                    decompress_rom_batch(
+                        &cmd.input,
+                        cmd.output_dir.as_deref(),
+                        &progress,
+                        &total_progress,
+                    )
+                    .await?
                 } else {
-                    let output = cmd
-                        .output_flag
-                        .or(cmd.output)
-                        .unwrap_or_else(|| derive_decompressed_path(&cmd.input));
+                    ensure_input_exists(&cmd.input)?;
+                    let output = match cmd.output_flag.or(cmd.output) {
+                        Some(p) => p,
+                        None => {
+                            if let Some(dir) = cmd.output_dir.as_deref() {
+                                std::fs::create_dir_all(dir)?;
+                            }
+                            rom_converto_lib::util::place_in_dir(
+                                &derive_decompressed_path(&cmd.input),
+                                cmd.output_dir.as_deref(),
+                            )
+                        }
+                    };
                     ensure_output_writable(&output, cmd.force)?;
                     decompress_rom(&cmd.input, &output, &progress).await?
                 }
@@ -216,12 +307,27 @@ async fn main() -> Result<()> {
                             cmd.input.display()
                         );
                     }
-                    convert_rom_batch(&cmd.input, &progress, &total_progress).await?
+                    convert_rom_batch(
+                        &cmd.input,
+                        cmd.output_dir.as_deref(),
+                        &progress,
+                        &total_progress,
+                    )
+                    .await?
                 } else {
-                    let output = cmd
-                        .output_flag
-                        .or(cmd.output)
-                        .unwrap_or_else(|| derive_converted_path(&cmd.input));
+                    ensure_input_exists(&cmd.input)?;
+                    let output = match cmd.output_flag.or(cmd.output) {
+                        Some(p) => p,
+                        None => {
+                            if let Some(dir) = cmd.output_dir.as_deref() {
+                                std::fs::create_dir_all(dir)?;
+                            }
+                            rom_converto_lib::util::place_in_dir(
+                                &derive_converted_path(&cmd.input),
+                                cmd.output_dir.as_deref(),
+                            )
+                        }
+                    };
                     ensure_output_writable(&output, cmd.force)?;
                     convert_rom(&cmd.input, &output, &progress).await?
                 }
@@ -249,6 +355,7 @@ async fn main() -> Result<()> {
                         anyhow::bail!("verification failed");
                     }
                 } else {
+                    ensure_input_exists(&cmd.input)?;
                     let result = verify_ctr(&cmd.input, &opts, &progress).await?;
                     match &result {
                         CtrVerifyResult::Cia(cia) => {
@@ -290,6 +397,7 @@ async fn main() -> Result<()> {
                 if cmd.keys.is_some() {
                     anyhow::bail!("--keys is only supported by nx and wup info");
                 }
+                ensure_input_exists(&cmd.input)?;
                 let info = rom_converto_lib::nintendo::ctr::info::read_info(&cmd.input)?;
                 if let Some(dir) = &cmd.save_icon {
                     save_ctr_icon(&info, dir)?;
@@ -317,13 +425,23 @@ async fn main() -> Result<()> {
                         &["iso", "gcm"],
                         opts,
                         cmd.force,
+                        cmd.output_dir.as_deref(),
                     )
                     .await?
                 } else {
-                    let output = cmd
-                        .output_flag
-                        .or(cmd.output)
-                        .unwrap_or_else(|| derive_rvz_path(&cmd.input));
+                    ensure_input_exists(&cmd.input)?;
+                    let output = match cmd.output_flag.or(cmd.output) {
+                        Some(p) => p,
+                        None => {
+                            if let Some(dir) = cmd.output_dir.as_deref() {
+                                std::fs::create_dir_all(dir)?;
+                            }
+                            rom_converto_lib::util::place_in_dir(
+                                &derive_rvz_path(&cmd.input),
+                                cmd.output_dir.as_deref(),
+                            )
+                        }
+                    };
                     ensure_output_writable(&output, cmd.force)?;
                     compress_disc(&cmd.input, &output, opts, &progress).await?
                 }
@@ -331,12 +449,28 @@ async fn main() -> Result<()> {
             DolCommands::Decompress(cmd) => {
                 if cmd.recursive {
                     require_dir(&cmd.input)?;
-                    batch::rvz_decompress(&progress, &total_progress, &cmd.input, cmd.force).await?
+                    batch::rvz_decompress(
+                        &progress,
+                        &total_progress,
+                        &cmd.input,
+                        cmd.force,
+                        cmd.output_dir.as_deref(),
+                    )
+                    .await?
                 } else {
-                    let output = cmd
-                        .output_flag
-                        .or(cmd.output)
-                        .unwrap_or_else(|| derive_disc_path(&cmd.input));
+                    ensure_input_exists(&cmd.input)?;
+                    let output = match cmd.output_flag.or(cmd.output) {
+                        Some(p) => p,
+                        None => {
+                            if let Some(dir) = cmd.output_dir.as_deref() {
+                                std::fs::create_dir_all(dir)?;
+                            }
+                            rom_converto_lib::util::place_in_dir(
+                                &derive_disc_path(&cmd.input),
+                                cmd.output_dir.as_deref(),
+                            )
+                        }
+                    };
                     ensure_output_writable(&output, cmd.force)?;
                     if wants_wbfs_output(&output) {
                         decompress_disc_to_wbfs(&cmd.input, &output, &progress).await?
@@ -350,6 +484,7 @@ async fn main() -> Result<()> {
                     require_dir(&cmd.input)?;
                     batch::dol_verify(&progress, &total_progress, &cmd.input, cmd.full).await?
                 } else {
+                    ensure_input_exists(&cmd.input)?;
                     let opts = DolVerifyOptions { full: cmd.full };
                     let result = verify_dol(&cmd.input, &opts, &progress)?;
                     log::info!("Game ID: {}", result.game_id);
@@ -373,6 +508,7 @@ async fn main() -> Result<()> {
                 if cmd.keys.is_some() {
                     anyhow::bail!("--keys is only supported by nx and wup info");
                 }
+                ensure_input_exists(&cmd.input)?;
                 let info = rom_converto_lib::nintendo::dol::info::read_info(&cmd.input)?;
                 if let Some(dir) = &cmd.save_icon {
                     save_dol_banner(&info, dir)?;
@@ -400,13 +536,23 @@ async fn main() -> Result<()> {
                         &["iso", "wbfs"],
                         opts,
                         cmd.force,
+                        cmd.output_dir.as_deref(),
                     )
                     .await?
                 } else {
-                    let output = cmd
-                        .output_flag
-                        .or(cmd.output)
-                        .unwrap_or_else(|| derive_rvz_path(&cmd.input));
+                    ensure_input_exists(&cmd.input)?;
+                    let output = match cmd.output_flag.or(cmd.output) {
+                        Some(p) => p,
+                        None => {
+                            if let Some(dir) = cmd.output_dir.as_deref() {
+                                std::fs::create_dir_all(dir)?;
+                            }
+                            rom_converto_lib::util::place_in_dir(
+                                &derive_rvz_path(&cmd.input),
+                                cmd.output_dir.as_deref(),
+                            )
+                        }
+                    };
                     ensure_output_writable(&output, cmd.force)?;
                     compress_disc(&cmd.input, &output, opts, &progress).await?
                 }
@@ -414,12 +560,28 @@ async fn main() -> Result<()> {
             RvlCommands::Decompress(cmd) => {
                 if cmd.recursive {
                     require_dir(&cmd.input)?;
-                    batch::rvz_decompress(&progress, &total_progress, &cmd.input, cmd.force).await?
+                    batch::rvz_decompress(
+                        &progress,
+                        &total_progress,
+                        &cmd.input,
+                        cmd.force,
+                        cmd.output_dir.as_deref(),
+                    )
+                    .await?
                 } else {
-                    let output = cmd
-                        .output_flag
-                        .or(cmd.output)
-                        .unwrap_or_else(|| derive_disc_path(&cmd.input));
+                    ensure_input_exists(&cmd.input)?;
+                    let output = match cmd.output_flag.or(cmd.output) {
+                        Some(p) => p,
+                        None => {
+                            if let Some(dir) = cmd.output_dir.as_deref() {
+                                std::fs::create_dir_all(dir)?;
+                            }
+                            rom_converto_lib::util::place_in_dir(
+                                &derive_disc_path(&cmd.input),
+                                cmd.output_dir.as_deref(),
+                            )
+                        }
+                    };
                     ensure_output_writable(&output, cmd.force)?;
                     if wants_wbfs_output(&output) {
                         decompress_disc_to_wbfs(&cmd.input, &output, &progress).await?
@@ -433,6 +595,7 @@ async fn main() -> Result<()> {
                     require_dir(&cmd.input)?;
                     batch::rvl_verify(&progress, &total_progress, &cmd.input, cmd.full).await?
                 } else {
+                    ensure_input_exists(&cmd.input)?;
                     let opts = RvlVerifyOptions { full: cmd.full };
                     let result = verify_rvl(&cmd.input, &opts, &progress)?;
                     log::info!("Game ID: {}", result.game_id);
@@ -474,6 +637,7 @@ async fn main() -> Result<()> {
                 if cmd.keys.is_some() {
                     anyhow::bail!("--keys is only supported by nx and wup info");
                 }
+                ensure_input_exists(&cmd.input)?;
                 let info = rom_converto_lib::nintendo::rvl::info::read_info(&cmd.input)?;
                 if let Some(dir) = &cmd.save_icon {
                     save_rvl_image(&info, dir)?;
@@ -512,6 +676,7 @@ async fn main() -> Result<()> {
                 compress_titles_async(titles, cmd.output, opts, &progress).await?
             }
             WupCommands::Decrypt(cmd) => {
+                ensure_input_exists(&cmd.input)?;
                 ensure_output_dir_writable(&cmd.output, cmd.force)?;
                 decrypt_nus_title_async(cmd.input, cmd.output, &progress).await?
             }
@@ -520,6 +685,7 @@ async fn main() -> Result<()> {
                     require_dir(&cmd.input)?;
                     batch::wup_verify(&progress, &total_progress, &cmd.input).await?
                 } else {
+                    ensure_input_exists(&cmd.input)?;
                     let result = verify_wup_async(cmd.input, cmd.key, &progress).await?;
                     log::info!("Source kind: {}", result.kind);
                     log::info!("Overall: {}", if result.ok { "OK" } else { "MISMATCHES" });
@@ -539,6 +705,7 @@ async fn main() -> Result<()> {
                 }
             }
             WupCommands::Info(cmd) => {
+                ensure_input_exists(&cmd.input)?;
                 let info = rom_converto_lib::nintendo::wup::info::read_info(
                     &cmd.input,
                     cmd.keys.as_deref(),
@@ -559,9 +726,11 @@ async fn main() -> Result<()> {
                         mode: cmd.mode.clone(),
                         block_size_exp: cmd.block_size_exp,
                         force: cmd.force,
+                        output_dir: cmd.output_dir.clone(),
                     };
                     batch::nx_compress(&progress, &total_progress, &cmd.input, keys, tuning).await?
                 } else {
+                    ensure_input_exists(&cmd.input)?;
                     let kind = detect_container(&cmd.input)?;
                     let mut opts = NxCompressOptions::for_kind(kind);
                     if let Some(level) = cmd.level {
@@ -578,10 +747,18 @@ async fn main() -> Result<()> {
                     } else if let Some(exp) = cmd.block_size_exp {
                         opts.mode = NczMode::Block { size_exp: exp };
                     }
-                    let output = cmd
-                        .output
-                        .clone()
-                        .unwrap_or_else(|| nx_derive_compressed_path(&cmd.input));
+                    let output = match cmd.output_flag.or(cmd.output) {
+                        Some(p) => p,
+                        None => {
+                            if let Some(dir) = cmd.output_dir.as_deref() {
+                                std::fs::create_dir_all(dir)?;
+                            }
+                            rom_converto_lib::util::place_in_dir(
+                                &nx_derive_compressed_path(&cmd.input),
+                                cmd.output_dir.as_deref(),
+                            )
+                        }
+                    };
                     ensure_output_writable(&output, cmd.force)?;
                     compress_container_async(cmd.input, output, opts, keys, &progress).await?
                 }
@@ -590,13 +767,29 @@ async fn main() -> Result<()> {
                 let keys = load_keyset(cmd.keys.as_deref())?;
                 if cmd.recursive {
                     require_dir(&cmd.input)?;
-                    batch::nx_decompress(&progress, &total_progress, &cmd.input, keys, cmd.force)
-                        .await?
+                    batch::nx_decompress(
+                        &progress,
+                        &total_progress,
+                        &cmd.input,
+                        keys,
+                        cmd.force,
+                        cmd.output_dir.as_deref(),
+                    )
+                    .await?
                 } else {
-                    let output = cmd
-                        .output
-                        .clone()
-                        .unwrap_or_else(|| nx_derive_decompressed_path(&cmd.input));
+                    ensure_input_exists(&cmd.input)?;
+                    let output = match cmd.output_flag.or(cmd.output) {
+                        Some(p) => p,
+                        None => {
+                            if let Some(dir) = cmd.output_dir.as_deref() {
+                                std::fs::create_dir_all(dir)?;
+                            }
+                            rom_converto_lib::util::place_in_dir(
+                                &nx_derive_decompressed_path(&cmd.input),
+                                cmd.output_dir.as_deref(),
+                            )
+                        }
+                    };
                     ensure_output_writable(&output, cmd.force)?;
                     decompress_container_async(cmd.input, output, keys, &progress).await?
                 }
@@ -608,6 +801,7 @@ async fn main() -> Result<()> {
                     batch::nx_verify(&progress, &total_progress, &cmd.input, keys).await?;
                     return Ok(());
                 }
+                ensure_input_exists(&cmd.input)?;
                 let result = verify_container_async(cmd.input, keys, &progress).await?;
                 log::info!("Container kind: {}", result.kind);
                 log::info!("Overall: {}", if result.ok { "OK" } else { "MISMATCHES" });
@@ -628,6 +822,7 @@ async fn main() -> Result<()> {
                 }
             }
             NxCommands::Info(cmd) => {
+                ensure_input_exists(&cmd.input)?;
                 let info = rom_converto_lib::nintendo::nx::info::read_info(
                     &cmd.input,
                     cmd.keys.as_deref(),
@@ -659,41 +854,68 @@ async fn main() -> Result<()> {
                             cmd.input.display()
                         );
                     }
-                    convert_disc_to_chd_batch(&progress, &total_progress, &cmd.input, opts).await?
+                    convert_disc_to_chd_batch(
+                        &progress,
+                        &total_progress,
+                        &cmd.input,
+                        opts,
+                        cmd.output_dir.as_deref(),
+                    )
+                    .await?
                 } else {
-                    let output = cmd
-                        .output_flag
-                        .or(cmd.output)
-                        .unwrap_or_else(|| cmd.input.with_extension("chd"));
+                    ensure_input_exists(&cmd.input)?;
+                    let output = match cmd.output_flag.or(cmd.output) {
+                        Some(p) => p,
+                        None => {
+                            if let Some(dir) = cmd.output_dir.as_deref() {
+                                std::fs::create_dir_all(dir)?;
+                            }
+                            rom_converto_lib::util::place_in_dir(
+                                &cmd.input.with_extension("chd"),
+                                cmd.output_dir.as_deref(),
+                            )
+                        }
+                    };
+                    ensure_output_writable(&output, cmd.force)?;
                     convert_disc_to_chd(&progress, cmd.input, output, mode, opts).await?
                 }
             }
             ChdCommands::Extract(cmd) => {
                 if cmd.recursive {
-                    if cmd.parent.is_some() {
-                        anyhow::bail!("--parent cannot be combined with --recursive");
-                    }
                     if !cmd.input.is_dir() {
                         anyhow::bail!(
                             "INPUT must be a directory when --recursive is set: {}",
                             cmd.input.display()
                         );
                     }
-                    extract_from_chd_batch(&progress, &total_progress, cmd.input).await?
+                    extract_from_chd_batch(
+                        &progress,
+                        &total_progress,
+                        cmd.input,
+                        cmd.output_dir.as_deref(),
+                    )
+                    .await?
                 } else {
-                    let output = cmd
-                        .output_flag
-                        .or(cmd.output)
-                        .expect("OUTPUT is required without --recursive (enforced by clap)");
+                    ensure_input_exists(&cmd.input)?;
+                    let output = match cmd.output_flag.or(cmd.output) {
+                        Some(p) => p,
+                        None => {
+                            let dir = cmd.output_dir.as_deref().expect(
+                                "OUTPUT or --output-dir is required without --recursive (enforced by clap)",
+                            );
+                            std::fs::create_dir_all(dir)?;
+                            rom_converto_lib::util::place_in_dir(
+                                &cmd.input.with_extension(""),
+                                Some(dir),
+                            )
+                        }
+                    };
                     ensure_output_writable(&output, cmd.force)?;
                     extract_from_chd(&progress, cmd.input, output, cmd.parent).await?
                 }
             }
             ChdCommands::Verify(cmd) => {
                 if cmd.recursive {
-                    if cmd.parent.is_some() {
-                        anyhow::bail!("--parent cannot be combined with --recursive");
-                    }
                     if !cmd.input.is_dir() {
                         anyhow::bail!(
                             "INPUT must be a directory when --recursive is set: {}",
@@ -702,6 +924,7 @@ async fn main() -> Result<()> {
                     }
                     verify_chd_batch(&progress, &total_progress, cmd.input, cmd.fix).await?
                 } else {
+                    ensure_input_exists(&cmd.input)?;
                     verify_chd(&progress, cmd.input, cmd.parent, cmd.fix).await?
                 }
             }
@@ -714,6 +937,7 @@ async fn main() -> Result<()> {
                         "--save-icon is not supported for chd: the format has no embedded artwork"
                     );
                 }
+                ensure_input_exists(&cmd.input)?;
                 let info = rom_converto_lib::chd::info::read_info(&cmd.input)?;
                 info_print::print(&rom_converto_lib::info::InfoResult::Chd(info), cmd.json)?;
             }
@@ -736,24 +960,58 @@ async fn main() -> Result<()> {
                             cmd.input.display()
                         );
                     }
-                    compress_to_cso_batch(&progress, &total_progress, &cmd.input, opts).await?
+                    compress_to_cso_batch(
+                        &progress,
+                        &total_progress,
+                        &cmd.input,
+                        opts,
+                        cmd.output_dir.as_deref(),
+                    )
+                    .await?
                 } else {
-                    let output = cmd
-                        .output_flag
-                        .or(cmd.output)
-                        .unwrap_or_else(|| cmd.input.with_extension(format.extension()));
+                    ensure_input_exists(&cmd.input)?;
+                    let output = match cmd.output_flag.or(cmd.output) {
+                        Some(p) => p,
+                        None => {
+                            if let Some(dir) = cmd.output_dir.as_deref() {
+                                std::fs::create_dir_all(dir)?;
+                            }
+                            rom_converto_lib::util::place_in_dir(
+                                &cmd.input.with_extension(format.extension()),
+                                cmd.output_dir.as_deref(),
+                            )
+                        }
+                    };
+                    ensure_output_writable(&output, cmd.force)?;
                     compress_to_cso(&progress, cmd.input, output, opts).await?
                 }
             }
             CsoCommands::Decompress(cmd) => {
                 if cmd.recursive {
                     require_dir(&cmd.input)?;
-                    batch::cso_decompress(&progress, &total_progress, &cmd.input, cmd.force).await?
+                    batch::cso_decompress(
+                        &progress,
+                        &total_progress,
+                        &cmd.input,
+                        cmd.force,
+                        cmd.output_dir.as_deref(),
+                    )
+                    .await?
                 } else {
-                    let output = cmd
-                        .output_flag
-                        .or(cmd.output)
-                        .unwrap_or_else(|| cmd.input.with_extension("iso"));
+                    ensure_input_exists(&cmd.input)?;
+                    let output = match cmd.output_flag.or(cmd.output) {
+                        Some(p) => p,
+                        None => {
+                            if let Some(dir) = cmd.output_dir.as_deref() {
+                                std::fs::create_dir_all(dir)?;
+                            }
+                            rom_converto_lib::util::place_in_dir(
+                                &cmd.input.with_extension("iso"),
+                                cmd.output_dir.as_deref(),
+                            )
+                        }
+                    };
+                    ensure_output_writable(&output, cmd.force)?;
                     decompress_from_cso(&progress, cmd.input, output, cmd.force).await?
                 }
             }
@@ -762,6 +1020,7 @@ async fn main() -> Result<()> {
                     require_dir(&cmd.input)?;
                     batch::cso_verify(&progress, &total_progress, &cmd.input, cmd.full).await?
                 } else {
+                    ensure_input_exists(&cmd.input)?;
                     verify_cso(&progress, cmd.input, cmd.full).await?
                 }
             }
@@ -774,12 +1033,14 @@ async fn main() -> Result<()> {
                         "--save-icon is not supported for cso: the format has no embedded artwork"
                     );
                 }
+                ensure_input_exists(&cmd.input)?;
                 let info = rom_converto_lib::cso::info::read_info(&cmd.input)?;
                 info_print::print(&rom_converto_lib::info::InfoResult::Cso(info), cmd.json)?;
             }
         },
         Commands::Cue(inner) => match inner {
             CueCommands::Merge(cmd) => {
+                ensure_input_exists(&cmd.input_cue)?;
                 merge_bin(&progress, cmd.input_cue, cmd.output_cue, cmd.force).await?
             }
         },
@@ -788,6 +1049,18 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn should_check_for_updates(no_update_check: bool) -> bool {
+    if no_update_check {
+        return false;
+    }
+    for var in ["ROM_CONVERTO_NO_UPDATE_CHECK", "NO_UPDATE_NOTIFIER", "CI"] {
+        if std::env::var(var).is_ok() {
+            return false;
+        }
+    }
+    std::io::stderr().is_terminal()
 }
 
 fn require_dir(input: &std::path::Path) -> Result<()> {

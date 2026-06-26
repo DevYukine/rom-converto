@@ -4,6 +4,7 @@ import { useCtrCompressStore } from "~/stores/ctr-compress";
 
 const store = useCtrCompressStore();
 const { input, output, level, result, error, loading, queue } = storeToRefs(store);
+const { outputDir, resolve } = useOutputDir();
 const { run } = useOperation({ result, error, loading });
 const progress = useProgress("compress");
 
@@ -15,19 +16,25 @@ const batch = useBatchOperation("compress", "cmd_compress_rom", (item) => ({
   level: level.value,
 }));
 
-watch(input, (val) => {
-  if (val) output.value = deriveCompressedPath(val);
+watch([input, outputDir], () => {
+  if (input.value) output.value = resolve(deriveCompressedPath(input.value));
+});
+
+watch(outputDir, () => {
+  for (const it of queue.value) {
+    if (it.status === "pending") it.output = resolve(deriveCompressedPath(it.input));
+  }
 });
 
 function handleFiles(paths: string[]) {
   for (const p of paths) {
-    store.addToQueue(p, deriveCompressedPath(p));
+    store.addToQueue(p, resolve(deriveCompressedPath(p)));
   }
 }
 
 function handleSingleFile(path: string) {
   if (queue.value.length > 0) {
-    store.addToQueue(path, deriveCompressedPath(path));
+    store.addToQueue(path, resolve(deriveCompressedPath(path)));
   } else {
     input.value = path;
   }
@@ -59,7 +66,6 @@ async function execute() {
 
     <OperationCard>
       <div class="space-y-5">
-        <!-- Batch mode -->
         <template v-if="isBatch">
           <BatchFileList
             :items="queue"
@@ -75,12 +81,11 @@ async function execute() {
             model-value=""
             :multiple="true"
             :filters="[{ name: '3DS ROM', extensions: ['cia', 'cci', '3ds', 'cxi', '3dsx'] }]"
-            @update:model-value="(p: string) => { if (p) store.addToQueue(p, deriveCompressedPath(p)) }"
+            @update:model-value="(p: string) => { if (p) store.addToQueue(p, resolve(deriveCompressedPath(p))) }"
             @update:files="handleFiles"
           />
         </template>
 
-        <!-- Single mode: 2-col on large screens -->
         <div v-else class="grid gap-5 lg:grid-cols-2">
           <FileDropZone
             :model-value="input"
@@ -94,7 +99,7 @@ async function execute() {
 
           <FileDropZone
             v-model="output"
-            label="Output (auto-derived)"
+            label="Output file (auto-filled)"
             :save-dialog="true"
             :filters="[{ name: 'Z3DS', extensions: ['zcia', 'zcci', 'zcxi', 'z3dsx'] }]"
           />
@@ -123,6 +128,8 @@ async function execute() {
           </label>
         </div>
 
+        <OutputDirField v-model="outputDir" />
+
         <ProgressBar
           :percent="progress.percent.value"
           :message="progress.message.value"
@@ -134,7 +141,7 @@ async function execute() {
           :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input"
           @click="execute"
         >
-          {{ isBatch ? `Compress ${queue.filter(i => i.status === 'pending').length} Files` : 'Compress' }}
+          {{ isBatch ? `Compress ${queue.filter(i => i.status === 'pending').length} files` : 'Compress' }}
         </RunButton>
       </div>
     </OperationCard>

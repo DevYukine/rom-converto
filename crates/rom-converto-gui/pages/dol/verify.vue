@@ -37,7 +37,16 @@ async function execute() {
   result.value = "";
 
   if (isBatch.value) {
-    await batch.start(queue, result);
+    await batch.start(queue, result, {
+      isSuccess: (res) => {
+        try {
+          return JSON.parse(res).ok !== false;
+        } catch {
+          return true;
+        }
+      },
+      failureMessage: () => "verification failed",
+    });
   } else {
     loading.value = true;
     try {
@@ -61,8 +70,8 @@ async function execute() {
       title="Verify integrity"
       description="Check the RVZ container hashes of a GameCube disc, or run a full whole-disc digest. Drop multiple files for batch processing."
       :loading="loading || batch.running.value"
-      :has-result="!!verdict || !!result"
-      :has-error="!!error"
+      :has-result="!!verdict?.ok || !!result"
+      :has-error="!!error || verdict?.ok === false"
     />
 
     <OperationCard>
@@ -117,7 +126,7 @@ async function execute() {
           :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input"
           @click="execute"
         >
-          {{ isBatch ? `Verify ${queue.filter(i => i.status === 'pending').length} Files` : 'Verify' }}
+          {{ isBatch ? `Verify ${queue.filter(i => i.status === 'pending').length} files` : 'Verify' }}
         </RunButton>
 
         <div v-if="!isBatch && verdict" class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
@@ -130,7 +139,7 @@ async function execute() {
             </div>
             <span
               class="ml-3 shrink-0 rounded-full px-2.5 py-0.5 text-xs font-semibold"
-              :class="verdict.ok ? 'bg-emerald-500/15 text-emerald-300' : 'bg-rose-500/15 text-rose-300'"
+              :class="verdict.ok ? 'bg-emerald-500/15 text-emerald-300' : 'bg-red-500/15 text-red-300'"
             >
               {{ verdict.ok ? "OK" : "FAIL" }}
             </span>

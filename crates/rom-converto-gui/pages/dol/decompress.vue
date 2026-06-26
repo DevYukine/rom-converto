@@ -4,6 +4,7 @@ import { useDolDecompressStore } from "~/stores/dol-decompress";
 
 const store = useDolDecompressStore();
 const { input, output, result, error, loading, queue } = storeToRefs(store);
+const { outputDir, resolve } = useOutputDir();
 const { run } = useOperation({ result, error, loading });
 const progress = useProgress("dol-decompress");
 
@@ -15,19 +16,25 @@ const batch = useBatchOperation("dol-decompress", "cmd_decompress_disc", (item) 
   taskId: "dol-decompress",
 }));
 
-watch(input, (val) => {
-  if (val) output.value = deriveDiscIsoPath(val);
+watch([input, outputDir], () => {
+  if (input.value) output.value = resolve(deriveDiscIsoPath(input.value));
+});
+
+watch(outputDir, () => {
+  for (const it of queue.value) {
+    if (it.status === "pending") it.output = resolve(deriveDiscIsoPath(it.input));
+  }
 });
 
 function handleFiles(paths: string[]) {
   for (const p of paths) {
-    store.addToQueue(p, deriveDiscIsoPath(p));
+    store.addToQueue(p, resolve(deriveDiscIsoPath(p)));
   }
 }
 
 function handleSingleFile(path: string) {
   if (queue.value.length > 0) {
-    store.addToQueue(path, deriveDiscIsoPath(path));
+    store.addToQueue(path, resolve(deriveDiscIsoPath(path)));
   } else {
     input.value = path;
   }
@@ -74,7 +81,7 @@ async function execute() {
             model-value=""
             :multiple="true"
             :filters="[{ name: 'RVZ', extensions: ['rvz'] }]"
-            @update:model-value="(p: string) => { if (p) store.addToQueue(p, deriveDiscIsoPath(p)) }"
+            @update:model-value="(p: string) => { if (p) store.addToQueue(p, resolve(deriveDiscIsoPath(p))) }"
             @update:files="handleFiles"
           />
         </template>
@@ -92,11 +99,13 @@ async function execute() {
 
           <FileDropZone
             v-model="output"
-            label="Output (auto-derived)"
+            label="Output file (auto-filled)"
             :save-dialog="true"
             :filters="[{ name: 'GameCube disc', extensions: ['iso', 'gcm'] }]"
           />
         </div>
+
+        <OutputDirField v-model="outputDir" />
 
         <ProgressBar
           :percent="progress.percent.value"
@@ -109,7 +118,7 @@ async function execute() {
           :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input"
           @click="execute"
         >
-          {{ isBatch ? `Decompress ${queue.filter(i => i.status === 'pending').length} Files` : 'Decompress' }}
+          {{ isBatch ? `Decompress ${queue.filter(i => i.status === 'pending').length} files` : 'Decompress' }}
         </RunButton>
       </div>
     </OperationCard>

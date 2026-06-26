@@ -53,18 +53,23 @@ pub async fn cso_decompress(
     total_progress: &dyn ProgressReporter,
     input_dir: &Path,
     force: bool,
+    output_dir: Option<&Path>,
 ) -> Result<()> {
     use rom_converto_lib::cso::decompress_from_cso;
+    use rom_converto_lib::util::place_in_dir;
 
     let files = collect_or_warn(input_dir, &["cso", "zso"])?;
     if files.is_empty() {
         return Ok(());
     }
+    if let Some(dir) = output_dir {
+        std::fs::create_dir_all(dir)?;
+    }
     let total = files.len();
     total_progress.start(total as u64, &format!("Decompressing {total} files..."));
     let mut failed = 0usize;
     for path in files {
-        let output = path.with_extension("iso");
+        let output = place_in_dir(&path.with_extension("iso"), output_dir);
         if let Err(e) = ensure_output_writable(&output, force) {
             warn!("{e}");
             failed += 1;
@@ -121,18 +126,23 @@ pub async fn rvz_compress(
     exts: &[&str],
     opts: rom_converto_lib::nintendo::rvz::RvzCompressOptions,
     force: bool,
+    output_dir: Option<&Path>,
 ) -> Result<()> {
     use rom_converto_lib::nintendo::rvz::{compress_disc, derive_rvz_path};
+    use rom_converto_lib::util::place_in_dir;
 
     let files = collect_or_warn(input_dir, exts)?;
     if files.is_empty() {
         return Ok(());
     }
+    if let Some(dir) = output_dir {
+        std::fs::create_dir_all(dir)?;
+    }
     let total = files.len();
     total_progress.start(total as u64, &format!("Compressing {total} files..."));
     let mut failed = 0usize;
     for path in files {
-        let output = derive_rvz_path(&path);
+        let output = place_in_dir(&derive_rvz_path(&path), output_dir);
         if let Err(e) = ensure_output_writable(&output, force) {
             warn!("{e}");
             failed += 1;
@@ -154,18 +164,23 @@ pub async fn rvz_decompress(
     total_progress: &dyn ProgressReporter,
     input_dir: &Path,
     force: bool,
+    output_dir: Option<&Path>,
 ) -> Result<()> {
     use rom_converto_lib::nintendo::rvz::{decompress_disc, derive_disc_path};
+    use rom_converto_lib::util::place_in_dir;
 
     let files = collect_or_warn(input_dir, &["rvz"])?;
     if files.is_empty() {
         return Ok(());
     }
+    if let Some(dir) = output_dir {
+        std::fs::create_dir_all(dir)?;
+    }
     let total = files.len();
     total_progress.start(total as u64, &format!("Decompressing {total} files..."));
     let mut failed = 0usize;
     for path in files {
-        let output = derive_disc_path(&path);
+        let output = place_in_dir(&derive_disc_path(&path), output_dir);
         if let Err(e) = ensure_output_writable(&output, force) {
             warn!("{e}");
             failed += 1;
@@ -263,6 +278,7 @@ pub struct NxCompressTuning {
     pub mode: Option<String>,
     pub block_size_exp: Option<u8>,
     pub force: bool,
+    pub output_dir: Option<PathBuf>,
 }
 
 pub async fn nx_compress(
@@ -276,10 +292,14 @@ pub async fn nx_compress(
         NczMode, NxCompressOptions, compress_container_async, derive_compressed_path,
         detect_container,
     };
+    use rom_converto_lib::util::place_in_dir;
 
     let files = collect_or_warn(input_dir, &["nsp", "xci"])?;
     if files.is_empty() {
         return Ok(());
+    }
+    if let Some(dir) = tuning.output_dir.as_deref() {
+        std::fs::create_dir_all(dir)?;
     }
     let total = files.len();
     total_progress.start(total as u64, &format!("Compressing {total} files..."));
@@ -309,7 +329,7 @@ pub async fn nx_compress(
         } else if let Some(exp) = tuning.block_size_exp {
             opts.mode = NczMode::Block { size_exp: exp };
         }
-        let output = derive_compressed_path(&path);
+        let output = place_in_dir(&derive_compressed_path(&path), tuning.output_dir.as_deref());
         if let Err(e) = ensure_output_writable(&output, tuning.force) {
             warn!("{e}");
             failed += 1;
@@ -334,18 +354,23 @@ pub async fn nx_decompress(
     input_dir: &Path,
     keys: rom_converto_lib::nintendo::nx::KeySet,
     force: bool,
+    output_dir: Option<&Path>,
 ) -> Result<()> {
     use rom_converto_lib::nintendo::nx::{decompress_container_async, derive_decompressed_path};
+    use rom_converto_lib::util::place_in_dir;
 
     let files = collect_or_warn(input_dir, &["nsz", "xcz"])?;
     if files.is_empty() {
         return Ok(());
     }
+    if let Some(dir) = output_dir {
+        std::fs::create_dir_all(dir)?;
+    }
     let total = files.len();
     total_progress.start(total as u64, &format!("Decompressing {total} files..."));
     let mut failed = 0usize;
     for path in files {
-        let output = derive_decompressed_path(&path);
+        let output = place_in_dir(&derive_decompressed_path(&path), output_dir);
         if let Err(e) = ensure_output_writable(&output, force) {
             warn!("{e}");
             failed += 1;

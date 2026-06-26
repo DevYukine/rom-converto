@@ -6,6 +6,7 @@ import { isXciInput, useNxCompressStore, type NxMode } from "~/stores/nx-compres
 const store = useNxCompressStore();
 const { queue, output, keys, level, mode, blockSizeExp, result, error, loading } =
   storeToRefs(store);
+const { outputDir, resolve } = useOutputDir();
 const progress = useProgress("nx-compress");
 
 const MODE_OPTIONS = [
@@ -31,9 +32,19 @@ function addPaths(paths: string[]) {
   }
   if (!output.value && queue.value.length > 0) {
     const first = queue.value[0];
-    if (first) output.value = deriveNszPath(first.input);
+    if (first) output.value = resolve(deriveNszPath(first.input));
   }
 }
+
+watch(outputDir, () => {
+  if (queue.value.length === 1) {
+    const first = queue.value[0];
+    if (first) output.value = resolve(deriveNszPath(first.input));
+  }
+  for (const it of queue.value) {
+    if (it.status === "pending") it.output = resolve(deriveNszPath(it.input));
+  }
+});
 
 onMounted(() => {
   if (dropZoneRef.value) {
@@ -62,7 +73,7 @@ async function execute() {
   progress.reset();
   for (const item of queue.value) {
     item.output =
-      queue.value.length === 1 ? output.value : deriveNszPath(item.input);
+      queue.value.length === 1 ? output.value : resolve(deriveNszPath(item.input));
   }
   await batch.start(queue, result);
 }
@@ -117,7 +128,7 @@ async function execute() {
         <FileDropZone
           v-if="queue.length <= 1"
           v-model="output"
-          label="Output (auto-derived)"
+          label="Output file (auto-filled)"
           :save-dialog="true"
           :filters="[{ name: 'Switch compressed', extensions: ['nsz', 'xcz'] }]"
         />
@@ -198,6 +209,8 @@ async function execute() {
           </div>
         </div>
 
+        <OutputDirField v-model="outputDir" />
+
         <ProgressBar
           :percent="progress.percent.value"
           :message="progress.message.value"
@@ -205,7 +218,7 @@ async function execute() {
         />
 
         <RunButton :loading="loading || batch.running.value" :disabled="!canCompress" @click="execute">
-          {{ queue.length <= 1 ? "Compress" : `Compress ${queue.length} Files` }}
+          {{ queue.length <= 1 ? "Compress" : `Compress ${queue.length} files` }}
         </RunButton>
 
         <div v-if="hasXci && mode === 'solid'" class="text-xs text-amber-300/80">

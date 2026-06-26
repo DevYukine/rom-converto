@@ -4,6 +4,7 @@ import { useCsoDecompressStore } from "~/stores/cso-decompress";
 
 const store = useCsoDecompressStore();
 const { input, output, force, result, error, loading, queue } = storeToRefs(store);
+const { outputDir, resolve } = useOutputDir();
 const { run } = useOperation({ result, error, loading });
 const progress = useProgress("cso-decompress");
 
@@ -15,19 +16,25 @@ const batch = useBatchOperation("cso-decompress", "cmd_cso_decompress", (item) =
   force: force.value,
 }));
 
-watch(input, (val) => {
-  if (val) output.value = deriveDiscIsoPath(val);
+watch([input, outputDir], () => {
+  if (input.value) output.value = resolve(deriveDiscIsoPath(input.value));
+});
+
+watch(outputDir, () => {
+  for (const it of queue.value) {
+    if (it.status === "pending") it.output = resolve(deriveDiscIsoPath(it.input));
+  }
 });
 
 function handleFiles(paths: string[]) {
   for (const p of paths) {
-    store.addToQueue(p, deriveDiscIsoPath(p));
+    store.addToQueue(p, resolve(deriveDiscIsoPath(p)));
   }
 }
 
 function handleSingleFile(path: string) {
   if (queue.value.length > 0) {
-    store.addToQueue(path, deriveDiscIsoPath(path));
+    store.addToQueue(path, resolve(deriveDiscIsoPath(path)));
   } else {
     input.value = path;
   }
@@ -59,7 +66,6 @@ async function execute() {
 
     <OperationCard>
       <div class="space-y-5">
-        <!-- Batch mode -->
         <template v-if="isBatch">
           <BatchFileList
             :items="queue"
@@ -75,12 +81,11 @@ async function execute() {
             model-value=""
             :multiple="true"
             :filters="[{ name: 'Compressed ISO', extensions: ['cso', 'zso'] }]"
-            @update:model-value="(p: string) => { if (p) store.addToQueue(p, deriveDiscIsoPath(p)) }"
+            @update:model-value="(p: string) => { if (p) store.addToQueue(p, resolve(deriveDiscIsoPath(p))) }"
             @update:files="handleFiles"
           />
         </template>
 
-        <!-- Single mode: 2-col on large screens -->
         <template v-else>
           <div class="grid gap-5 lg:grid-cols-2">
             <FileDropZone
@@ -95,7 +100,7 @@ async function execute() {
 
             <FileDropZone
               v-model="output"
-              label="Output (auto-derived)"
+              label="Output file (auto-filled)"
               :save-dialog="true"
               :filters="[{ name: 'ISO image', extensions: ['iso'] }]"
             />
@@ -105,10 +110,12 @@ async function execute() {
         <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
           <FlagToggle
             v-model="force"
-            label="Force Overwrite"
+            label="Force overwrite"
             description="Overwrite output file if it already exists"
           />
         </div>
+
+        <OutputDirField v-model="outputDir" />
 
         <ProgressBar
           :percent="progress.percent.value"
@@ -121,7 +128,7 @@ async function execute() {
           :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input"
           @click="execute"
         >
-          {{ isBatch ? `Decompress ${queue.filter(i => i.status === 'pending').length} Files` : 'Decompress' }}
+          {{ isBatch ? `Decompress ${queue.filter(i => i.status === 'pending').length} files` : 'Decompress' }}
         </RunButton>
       </div>
     </OperationCard>

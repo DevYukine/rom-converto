@@ -6,6 +6,8 @@ defineProps<{
   disabled?: boolean;
 }>();
 
+const labelId = useId();
+
 defineEmits<{
   "update:modelValue": [value: string];
 }>();
@@ -13,8 +15,12 @@ defineEmits<{
 
 <template>
   <div class="space-y-1.5">
-    <label v-if="label" class="block text-sm font-medium text-zinc-300">{{ label }}</label>
-    <div role="group" class="inline-flex gap-0.5 rounded-lg border border-zinc-700 bg-zinc-800/30 p-0.5">
+    <label v-if="label" :id="labelId" class="block text-sm font-medium text-zinc-300">{{ label }}</label>
+    <div
+      role="group"
+      :aria-labelledby="label ? labelId : undefined"
+      class="inline-flex gap-0.5 rounded-lg border border-zinc-700 bg-zinc-800/30 p-0.5"
+    >
       <button
         v-for="option in options"
         :key="option.value"

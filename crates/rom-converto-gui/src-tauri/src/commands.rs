@@ -62,6 +62,7 @@ pub async fn cmd_cdn_to_cia(
         ensure_ticket_exists,
         decrypt,
         compress,
+        output_dir: None,
     };
     tokio::spawn(async move {
         convert_cdn_to_cia(opts, progress.as_ref(), total_progress.as_ref()).await

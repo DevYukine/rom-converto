@@ -31,7 +31,24 @@ function handleSingleFile(path: string) {
 async function execute() {
   progress.reset();
   if (isBatch.value) {
-    await batch.start(queue, result);
+    await batch.start(queue, result, {
+      isSuccess: (res) => {
+        try {
+          return JSON.parse(res).ok !== false;
+        } catch {
+          return true;
+        }
+      },
+      failureMessage: (res) => {
+        try {
+          const v = JSON.parse(res);
+          const count = typeof v.mismatches === "number" ? ` (${v.mismatches} mismatches)` : "";
+          return `verification failed${count}`;
+        } catch {
+          return "verification failed";
+        }
+      },
+    });
   } else {
     await run("cmd_cso_verify", {
       inputPath: input.value,
@@ -53,7 +70,6 @@ async function execute() {
 
     <OperationCard>
       <div class="space-y-5">
-        <!-- Batch mode -->
         <template v-if="isBatch">
           <BatchFileList
             :items="queue"
@@ -74,7 +90,6 @@ async function execute() {
           />
         </template>
 
-        <!-- Single mode -->
         <FileDropZone
           v-else
           :model-value="input"
@@ -105,7 +120,7 @@ async function execute() {
           :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input"
           @click="execute"
         >
-          {{ isBatch ? `Verify ${queue.filter(i => i.status === 'pending').length} Files` : 'Verify' }}
+          {{ isBatch ? `Verify ${queue.filter(i => i.status === 'pending').length} files` : 'Verify' }}
         </RunButton>
       </div>
     </OperationCard>

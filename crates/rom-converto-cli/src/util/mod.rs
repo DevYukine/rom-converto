@@ -33,6 +33,13 @@ pub fn ensure_output_dir_writable(path: &std::path::Path, force: bool) -> anyhow
     Ok(())
 }
 
+pub fn ensure_input_exists(path: &std::path::Path) -> anyhow::Result<()> {
+    if !path.exists() {
+        anyhow::bail!("input not found: {}", path.display());
+    }
+    Ok(())
+}
+
 const PROGRESS_TEMPLATE: &str = "{msg}\n{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})";
 
 /// Bridges the library's `ProgressReporter` trait to indicatif `ProgressBar`.

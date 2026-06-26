@@ -5,6 +5,7 @@ import { useChdExtractStore } from "~/stores/chd-extract";
 
 const store = useChdExtractStore();
 const { input, output, parent, result, error, loading, queue } = storeToRefs(store);
+const { outputDir, resolve } = useOutputDir();
 const { run } = useOperation({ result, error, loading });
 const progress = useProgress("chd-extract");
 
@@ -29,19 +30,25 @@ async function deriveOutput(path: string): Promise<string> {
   return deriveCuePath(path);
 }
 
-watch(input, async (val) => {
-  if (val) output.value = await deriveOutput(val);
+watch([input, outputDir], async () => {
+  if (input.value) output.value = resolve(await deriveOutput(input.value));
+});
+
+watch(outputDir, () => {
+  for (const it of queue.value) {
+    if (it.status === "pending") it.output = withOutputDir(it.output, outputDir.value);
+  }
 });
 
 async function handleFiles(paths: string[]) {
   for (const p of paths) {
-    store.addToQueue(p, await deriveOutput(p));
+    store.addToQueue(p, resolve(await deriveOutput(p)));
   }
 }
 
 async function handleSingleFile(path: string) {
   if (queue.value.length > 0) {
-    store.addToQueue(path, await deriveOutput(path));
+    store.addToQueue(path, resolve(await deriveOutput(path)));
   } else {
     input.value = path;
   }
@@ -73,7 +80,6 @@ async function execute() {
 
     <OperationCard>
       <div class="space-y-5">
-        <!-- Batch mode -->
         <template v-if="isBatch">
           <BatchFileList
             :items="queue"
@@ -89,17 +95,16 @@ async function execute() {
             model-value=""
             :multiple="true"
             :filters="[{ name: 'CHD', extensions: ['chd'] }]"
-            @update:model-value="async (p: string) => { if (p) store.addToQueue(p, await deriveOutput(p)) }"
+            @update:model-value="async (p: string) => { if (p) store.addToQueue(p, resolve(await deriveOutput(p))) }"
             @update:files="handleFiles"
           />
         </template>
 
-        <!-- Single mode: 2-col on large screens -->
         <template v-else>
           <div class="grid gap-5 lg:grid-cols-2">
             <FileDropZone
               :model-value="input"
-              label="Input CHD File"
+              label="Input CHD file"
               :multiple="true"
               :filters="[{ name: 'CHD', extensions: ['chd'] }]"
               :primary="true"
@@ -109,7 +114,7 @@ async function execute() {
 
             <FileDropZone
               v-model="output"
-              label="Output (auto-derived)"
+              label="Output file (auto-filled)"
               :save-dialog="true"
               :filters="[{ name: 'Disc image', extensions: ['cue', 'iso'] }]"
             />
@@ -122,6 +127,8 @@ async function execute() {
           :filters="[{ name: 'CHD', extensions: ['chd'] }]"
         />
 
+        <OutputDirField v-model="outputDir" />
+
         <ProgressBar
           :percent="progress.percent.value"
           :message="progress.message.value"
@@ -133,7 +140,7 @@ async function execute() {
           :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input || !output"
           @click="execute"
         >
-          {{ isBatch ? `Extract ${queue.filter(i => i.status === 'pending').length} Files` : 'Extract' }}
+          {{ isBatch ? `Extract ${queue.filter(i => i.status === 'pending').length} files` : 'Extract' }}
         </RunButton>
       </div>
     </OperationCard>

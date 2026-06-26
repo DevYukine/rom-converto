@@ -9,6 +9,14 @@ const progress = useProgress("chd-verify");
 
 const isBatch = computed(() => queue.value.length > 0);
 
+function verdictPassed(res: string) {
+  try {
+    return JSON.parse(res).ok !== false;
+  } catch {
+    return true;
+  }
+}
+
 const batch = useBatchOperation("chd-verify", "cmd_chd_verify", (item) => ({
   input: item.input,
   parent: parent.value || null,
@@ -32,7 +40,10 @@ function handleSingleFile(path: string) {
 async function execute() {
   progress.reset();
   if (isBatch.value) {
-    await batch.start(queue, result);
+    await batch.start(queue, result, {
+      isSuccess: verdictPassed,
+      failureMessage: () => "verification failed",
+    });
   } else {
     await run("cmd_chd_verify", {
       input: input.value,
@@ -47,15 +58,14 @@ async function execute() {
   <div>
     <PageHeader
       title="Verify CHD"
-      description="Verify CHD file integrity by checking SHA1 hashes. Drop multiple .chd files for batch processing."
+      description="Verify CHD file integrity by checking SHA-1 hashes. Drop multiple .chd files for batch processing."
       :loading="loading || batch.running.value"
-      :has-result="!!result"
-      :has-error="!!error"
+      :has-result="!!result && (isBatch || verdictPassed(result))"
+      :has-error="!!error || (!isBatch && !!result && !verdictPassed(result))"
     />
 
     <OperationCard>
       <div class="space-y-5">
-        <!-- Batch mode -->
         <template v-if="isBatch">
           <BatchFileList
             :items="queue"
@@ -76,11 +86,10 @@ async function execute() {
           />
         </template>
 
-        <!-- Single mode -->
         <FileDropZone
           v-else
           :model-value="input"
-          label="Input CHD File"
+          label="Input CHD file"
           :multiple="true"
           :filters="[{ name: 'CHD', extensions: ['chd'] }]"
           :primary="true"
@@ -97,8 +106,8 @@ async function execute() {
         <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
           <FlagToggle
             v-model="fix"
-            label="Fix SHA1"
-            description="Automatically fix incorrect SHA1 values in the header"
+            label="Fix SHA-1"
+            description="Automatically fix incorrect SHA-1 values in the header"
           />
         </div>
 
@@ -113,7 +122,7 @@ async function execute() {
           :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input"
           @click="execute"
         >
-          {{ isBatch ? `Verify ${queue.filter(i => i.status === 'pending').length} Files` : 'Verify' }}
+          {{ isBatch ? `Verify ${queue.filter(i => i.status === 'pending').length} files` : 'Verify' }}
         </RunButton>
       </div>
     </OperationCard>

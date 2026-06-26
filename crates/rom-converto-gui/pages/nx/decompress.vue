@@ -5,6 +5,7 @@ import { useNxDecompressStore } from "~/stores/nx-decompress";
 
 const store = useNxDecompressStore();
 const { queue, output, keys, result, error, loading } = storeToRefs(store);
+const { outputDir, resolve } = useOutputDir();
 const progress = useProgress("nx-decompress");
 
 const batch = useBatchOperation("nx-decompress", "cmd_nx_decompress", (item) => ({
@@ -22,7 +23,7 @@ function addPaths(paths: string[]) {
   }
   if (!output.value && queue.value.length > 0) {
     const first = queue.value[0];
-    if (first) output.value = deriveNspPath(first.input);
+    if (first) output.value = resolve(deriveNspPath(first.input));
   }
 }
 
@@ -34,6 +35,18 @@ onMounted(() => {
 
 onUnmounted(() => {
   if (zoneId) unregisterDropZone(zoneId);
+});
+
+watch(outputDir, () => {
+  if (output.value && queue.value.length === 1) {
+    const first = queue.value[0];
+    if (first) output.value = resolve(deriveNspPath(first.input));
+  }
+  for (const item of queue.value) {
+    if (item.status === "pending") {
+      item.output = resolve(deriveNspPath(item.input));
+    }
+  }
 });
 
 async function browseInputs() {
@@ -52,7 +65,9 @@ async function execute() {
   progress.reset();
   for (const item of queue.value) {
     item.output =
-      queue.value.length === 1 ? output.value : deriveNspPath(item.input);
+      queue.value.length === 1
+        ? output.value
+        : resolve(deriveNspPath(item.input));
   }
   await batch.start(queue, result);
 }
@@ -107,7 +122,7 @@ async function execute() {
         <FileDropZone
           v-if="queue.length <= 1"
           v-model="output"
-          label="Output (auto-derived)"
+          label="Output file (auto-filled)"
           :save-dialog="true"
           :filters="[{ name: 'Switch container', extensions: ['nsp', 'xci'] }]"
         />
@@ -125,6 +140,8 @@ async function execute() {
           :filters="[{ name: 'prod.keys', extensions: ['keys', 'txt'] }]"
         />
 
+        <OutputDirField v-model="outputDir" />
+
         <ProgressBar
           :percent="progress.percent.value"
           :message="progress.message.value"
@@ -132,7 +149,7 @@ async function execute() {
         />
 
         <RunButton :loading="loading || batch.running.value" :disabled="!canDecompress" @click="execute">
-          {{ queue.length <= 1 ? "Decompress" : `Decompress ${queue.length} Files` }}
+          {{ queue.length <= 1 ? "Decompress" : `Decompress ${queue.length} files` }}
         </RunButton>
       </div>
     </OperationCard>

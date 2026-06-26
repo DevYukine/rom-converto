@@ -4,6 +4,7 @@ import { useRvlDecompressStore } from "~/stores/rvl-decompress";
 
 const store = useRvlDecompressStore();
 const { input, output, format, result, error, loading, queue } = storeToRefs(store);
+const { outputDir, resolve } = useOutputDir();
 const { run } = useOperation({ result, error, loading });
 const progress = useProgress("rvl-decompress");
 
@@ -32,8 +33,14 @@ const batch = useBatchOperation("rvl-decompress", "cmd_decompress_disc", (item) 
   taskId: "rvl-decompress",
 }));
 
-watch(input, (val) => {
-  if (val) output.value = deriveDiscPath(val, format.value);
+watch([input, format, outputDir], () => {
+  if (input.value) output.value = resolve(deriveDiscPath(input.value, format.value));
+});
+
+watch(outputDir, () => {
+  for (const item of queue.value) {
+    if (item.status === "pending") item.output = resolve(deriveDiscPath(item.input, format.value));
+  }
 });
 
 function setFormat(value: string) {
@@ -42,25 +49,25 @@ function setFormat(value: string) {
   const prev = format.value;
   format.value = next;
 
-  if (input.value && (!output.value || output.value === deriveDiscPath(input.value, prev))) {
-    output.value = deriveDiscPath(input.value, next);
+  if (input.value && (!output.value || output.value === resolve(deriveDiscPath(input.value, prev)))) {
+    output.value = resolve(deriveDiscPath(input.value, next));
   }
   for (const item of queue.value) {
-    if (item.status === "pending" && item.output === deriveDiscPath(item.input, prev)) {
-      item.output = deriveDiscPath(item.input, next);
+    if (item.status === "pending" && item.output === resolve(deriveDiscPath(item.input, prev))) {
+      item.output = resolve(deriveDiscPath(item.input, next));
     }
   }
 }
 
 function handleFiles(paths: string[]) {
   for (const p of paths) {
-    store.addToQueue(p, deriveDiscPath(p, format.value));
+    store.addToQueue(p, resolve(deriveDiscPath(p, format.value)));
   }
 }
 
 function handleSingleFile(path: string) {
   if (queue.value.length > 0) {
-    store.addToQueue(path, deriveDiscPath(path, format.value));
+    store.addToQueue(path, resolve(deriveDiscPath(path, format.value)));
   } else {
     input.value = path;
   }
@@ -115,7 +122,7 @@ async function execute() {
             model-value=""
             :multiple="true"
             :filters="[{ name: 'RVZ', extensions: ['rvz'] }]"
-            @update:model-value="(p: string) => { if (p) store.addToQueue(p, deriveDiscPath(p, format)) }"
+            @update:model-value="(p: string) => { if (p) store.addToQueue(p, resolve(deriveDiscPath(p, format))) }"
             @update:files="handleFiles"
           />
         </template>
@@ -133,11 +140,13 @@ async function execute() {
 
           <FileDropZone
             v-model="output"
-            label="Output (auto-derived)"
+            label="Output file (auto-filled)"
             :save-dialog="true"
             :filters="outputFilters"
           />
         </div>
+
+        <OutputDirField v-model="outputDir" />
 
         <ProgressBar
           :percent="progress.percent.value"
@@ -150,7 +159,7 @@ async function execute() {
           :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input"
           @click="execute"
         >
-          {{ isBatch ? `Decompress ${queue.filter(i => i.status === 'pending').length} Files` : 'Decompress' }}
+          {{ isBatch ? `Decompress ${queue.filter(i => i.status === 'pending').length} files` : 'Decompress' }}
         </RunButton>
       </div>
     </OperationCard>

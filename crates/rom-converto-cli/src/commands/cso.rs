@@ -26,6 +26,9 @@ pub enum CsoFormatArg {
 /// PPSSPP), ZSO for PS2 via Open PS2 Loader. Emulator setups are
 /// usually better served by `chd compress`.
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
+#[command(
+    after_long_help = "EXAMPLES:\n  Single file:     rom-converto cso compress game.iso\n  Explicit output: rom-converto cso compress game.iso game.zso --format zso\n  Whole folder:    rom-converto cso compress -R ./roms --format cso --output-dir ./cso\n"
+)]
 pub struct CompressCommand {
     /// Input ISO path, or a directory with --recursive
     #[arg(value_name = "INPUT")]
@@ -43,6 +46,10 @@ pub struct CompressCommand {
         conflicts_with = "output"
     )]
     pub output_flag: Option<PathBuf>,
+
+    /// Write output into this directory using the derived filename. Created if missing. Works with --recursive.
+    #[arg(long = "output-dir", value_name = "DIR", conflicts_with_all = ["output", "output_flag"])]
+    pub output_dir: Option<PathBuf>,
 
     /// Output container format
     #[arg(long, value_enum, default_value_t = CsoFormatArg::Cso)]
@@ -81,6 +88,10 @@ pub struct DecompressCommand {
         conflicts_with = "output"
     )]
     pub output_flag: Option<PathBuf>,
+
+    /// Write output into this directory using the derived filename. Created if missing. Works with --recursive.
+    #[arg(long = "output-dir", value_name = "DIR", conflicts_with_all = ["output", "output_flag"])]
+    pub output_dir: Option<PathBuf>,
 
     /// Force overwrite of the output file if it already exists
     #[arg(long, short = 'f', default_value_t = false)]
@@ -172,6 +183,29 @@ mod tests {
     fn decompress_output_flag_conflicts_with_positional() {
         let result =
             Harness::try_parse_from(["bin", "decompress", "game.cso", "pos.iso", "-o", "flag.iso"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parses_compress_output_dir() {
+        let h = Harness::parse_from(["bin", "compress", "game.iso", "--output-dir", "out"]);
+        let CsoCommands::Compress(c) = h.cmd else {
+            panic!("expected Compress");
+        };
+        assert_eq!(c.output_dir, Some(PathBuf::from("out")));
+        assert_eq!(c.output, None);
+    }
+
+    #[test]
+    fn decompress_output_dir_conflicts_with_positional() {
+        let result = Harness::try_parse_from([
+            "bin",
+            "decompress",
+            "game.cso",
+            "pos.iso",
+            "--output-dir",
+            "out",
+        ]);
         assert!(result.is_err());
     }
 }

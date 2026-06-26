@@ -66,6 +66,7 @@ pub fn derive_decompressed_path(input: &Path) -> PathBuf {
 pub async fn compress_rom_batch(
     input_dir: &Path,
     level: Option<i32>,
+    output_dir: Option<&Path>,
     progress: &dyn ProgressReporter,
     total_progress: &dyn ProgressReporter,
 ) -> Result<()> {
@@ -88,6 +89,10 @@ pub async fn compress_rom_batch(
 
     total_progress.start(count, &format!("Compressing {count} files..."));
 
+    if let Some(dir) = output_dir {
+        fs::create_dir_all(dir).await?;
+    }
+
     let mut entries = fs::read_dir(input_dir).await?;
     while let Ok(Some(entry)) = entries.next_entry().await {
         let path = entry.path();
@@ -96,7 +101,7 @@ pub async fn compress_rom_batch(
             continue;
         }
 
-        let output = derive_compressed_path(&path);
+        let output = crate::util::place_in_dir(&derive_compressed_path(&path), output_dir);
         debug!("Compressing {} -> {}", path.display(), output.display());
 
         if let Err(err) = compress_rom(&path, &output, level, progress).await {
@@ -112,6 +117,7 @@ pub async fn compress_rom_batch(
 
 pub async fn decompress_rom_batch(
     input_dir: &Path,
+    output_dir: Option<&Path>,
     progress: &dyn ProgressReporter,
     total_progress: &dyn ProgressReporter,
 ) -> Result<()> {
@@ -134,6 +140,10 @@ pub async fn decompress_rom_batch(
 
     total_progress.start(count, &format!("Decompressing {count} files..."));
 
+    if let Some(dir) = output_dir {
+        fs::create_dir_all(dir).await?;
+    }
+
     let mut entries = fs::read_dir(input_dir).await?;
     while let Ok(Some(entry)) = entries.next_entry().await {
         let path = entry.path();
@@ -142,7 +152,7 @@ pub async fn decompress_rom_batch(
             continue;
         }
 
-        let output = derive_decompressed_path(&path);
+        let output = crate::util::place_in_dir(&derive_decompressed_path(&path), output_dir);
         debug!("Decompressing {} -> {}", path.display(), output.display());
 
         if let Err(err) = decompress_rom(&path, &output, progress).await {

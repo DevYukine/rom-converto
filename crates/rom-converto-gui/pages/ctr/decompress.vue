@@ -4,6 +4,7 @@ import { useCtrDecompressStore } from "~/stores/ctr-decompress";
 
 const store = useCtrDecompressStore();
 const { input, output, result, error, loading, queue } = storeToRefs(store);
+const { outputDir, resolve } = useOutputDir();
 const { run } = useOperation({ result, error, loading });
 const progress = useProgress("decompress");
 
@@ -14,19 +15,25 @@ const batch = useBatchOperation("decompress", "cmd_decompress_rom", (item) => ({
   output: item.output || null,
 }));
 
-watch(input, (val) => {
-  if (val) output.value = deriveDecompressedPath(val);
+watch([input, outputDir], () => {
+  if (input.value) output.value = resolve(deriveDecompressedPath(input.value));
+});
+
+watch(outputDir, () => {
+  for (const it of queue.value) {
+    if (it.status === "pending") it.output = resolve(deriveDecompressedPath(it.input));
+  }
 });
 
 function handleFiles(paths: string[]) {
   for (const p of paths) {
-    store.addToQueue(p, deriveDecompressedPath(p));
+    store.addToQueue(p, resolve(deriveDecompressedPath(p)));
   }
 }
 
 function handleSingleFile(path: string) {
   if (queue.value.length > 0) {
-    store.addToQueue(path, deriveDecompressedPath(path));
+    store.addToQueue(path, resolve(deriveDecompressedPath(path)));
   } else {
     input.value = path;
   }
@@ -57,7 +64,6 @@ async function execute() {
 
     <OperationCard>
       <div class="space-y-5">
-        <!-- Batch mode -->
         <template v-if="isBatch">
           <BatchFileList
             :items="queue"
@@ -73,16 +79,15 @@ async function execute() {
             model-value=""
             :multiple="true"
             :filters="[{ name: 'Z3DS', extensions: ['zcia', 'zcci', 'zcxi', 'z3dsx'] }]"
-            @update:model-value="(p: string) => { if (p) store.addToQueue(p, deriveDecompressedPath(p)) }"
+            @update:model-value="(p: string) => { if (p) store.addToQueue(p, resolve(deriveDecompressedPath(p))) }"
             @update:files="handleFiles"
           />
         </template>
 
-        <!-- Single mode: 2-col on large screens -->
         <div v-else class="grid gap-5 lg:grid-cols-2">
           <FileDropZone
             :model-value="input"
-            label="Input Z3DS File"
+            label="Input Z3DS file"
             :multiple="true"
             :filters="[{ name: 'Z3DS', extensions: ['zcia', 'zcci', 'zcxi', 'z3dsx'] }]"
             :primary="true"
@@ -92,11 +97,13 @@ async function execute() {
 
           <FileDropZone
             v-model="output"
-            label="Output (auto-derived)"
+            label="Output file (auto-filled)"
             :save-dialog="true"
             :filters="[{ name: '3DS ROM', extensions: ['cia', 'cci', 'cxi', '3dsx'] }]"
           />
         </div>
+
+        <OutputDirField v-model="outputDir" />
 
         <ProgressBar
           :percent="progress.percent.value"
@@ -109,7 +116,7 @@ async function execute() {
           :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input"
           @click="execute"
         >
-          {{ isBatch ? `Decompress ${queue.filter(i => i.status === 'pending').length} Files` : 'Decompress' }}
+          {{ isBatch ? `Decompress ${queue.filter(i => i.status === 'pending').length} files` : 'Decompress' }}
         </RunButton>
       </div>
     </OperationCard>

@@ -865,7 +865,7 @@ fn serialize_tmd_body(
     // The TMD signature only covers the header (through
     // content_info_records_hash). Info records are validated through
     // the header's content_info_records_hash, and chunk records are
-    // validated through each info record's hash — a Merkle-style chain.
+    // validated through each info record's hash, a Merkle-style chain.
     let mut buf = Vec::new();
     let mut cursor = Cursor::new(&mut buf);
     let _ = tmd.header.write_options(&mut cursor, Endian::Big, ());

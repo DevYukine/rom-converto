@@ -68,7 +68,8 @@ pub struct DecryptWupCommand {
                   2. sibling `<input>.key` file\n  \
                   3. `game.key` in the same directory as the disc\n\n\
                   Multiple titles (base + update + DLC) can be bundled into a single\n\
-                  archive by passing each input as a separate positional argument."
+                  archive by passing each input as a separate positional argument.",
+    after_long_help = "EXAMPLES:\n  Single title:    rom-converto wup compress -o game.wua ./title_base\n  Disc with key:   rom-converto wup compress -o game.wua --key game.key game.wud\n  Bundle titles:   rom-converto wup compress -o game.wua ./title_base ./title_update ./title_dlc\n"
 )]
 pub struct CompressWupCommand {
     /// Output .wua file path.

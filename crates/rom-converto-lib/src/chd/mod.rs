@@ -118,6 +118,7 @@ pub async fn convert_disc_to_chd_batch(
     total_progress: &dyn ProgressReporter,
     input_dir: &std::path::Path,
     opts: ChdDvdOptions,
+    output_dir: Option<&std::path::Path>,
 ) -> ChdResult<()> {
     let is_disc_input = |path: &std::path::Path| {
         path.extension()
@@ -136,6 +137,10 @@ pub async fn convert_disc_to_chd_batch(
         return Ok(());
     }
 
+    if let Some(dir) = output_dir {
+        std::fs::create_dir_all(dir)?;
+    }
+
     total_progress.start(count, &format!("Compressing {count} discs..."));
 
     let mut entries = fs::read_dir(input_dir).await?;
@@ -144,7 +149,7 @@ pub async fn convert_disc_to_chd_batch(
         if !is_disc_input(&path) {
             continue;
         }
-        let output = path.with_extension("chd");
+        let output = crate::util::place_in_dir(&path.with_extension("chd"), output_dir);
         if let Err(err) =
             convert_disc_to_chd(progress, path.clone(), output, None, opts.clone()).await
         {
@@ -691,7 +696,11 @@ async fn extract_dvd_iso(
 
     crate::util::await_with_progress(progress, &bytes_done, handle).await?;
 
-    info!("Extracted: {:.2} MB ISO from {:?}", total_mb, input_path);
+    info!(
+        "Extracted: {:.2} MB ISO from {}",
+        total_mb,
+        input_path.display()
+    );
     Ok(())
 }
 
@@ -884,18 +893,22 @@ pub async fn extract_from_chd_batch(
     progress: &dyn ProgressReporter,
     total_progress: &dyn ProgressReporter,
     input_dir: PathBuf,
+    output_dir: Option<&std::path::Path>,
 ) -> ChdResult<()> {
     let chds = collect_files_with_ext(&input_dir, "chd")?;
     if chds.is_empty() {
         info!("No .chd files found in {}", input_dir.display());
         return Ok(());
     }
+    if let Some(dir) = output_dir {
+        std::fs::create_dir_all(dir)?;
+    }
     total_progress.start(
         chds.len() as u64,
         &format!("Extracting {} chd files", chds.len()),
     );
     for chd in chds {
-        let output = chd.with_extension("");
+        let output = crate::util::place_in_dir(&chd.with_extension(""), output_dir);
         if let Err(e) = extract_from_chd(progress, chd.clone(), output, None).await {
             warn!("skipping {}: {}", chd.display(), e);
         }

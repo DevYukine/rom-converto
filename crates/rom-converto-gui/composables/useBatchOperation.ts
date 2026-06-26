@@ -14,7 +14,14 @@ export function useBatchOperation(
 
   const progress = useProgress(taskId);
 
-  async function start(queue: Ref<BatchItem[]>, resultRef: Ref<string>) {
+  async function start(
+    queue: Ref<BatchItem[]>,
+    resultRef: Ref<string>,
+    options?: {
+      isSuccess?: (result: string) => boolean;
+      failureMessage?: (result: string) => string;
+    },
+  ) {
     running.value = true;
     aborted.value = false;
     currentIndex.value = 0;
@@ -41,9 +48,18 @@ export function useBatchOperation(
 
       try {
         const res = await invoke<string>(commandName, buildArgs(item));
-        item.status = "done";
-        item.result = res;
-        doneCount++;
+        if (options?.isSuccess && !options.isSuccess(res)) {
+          item.status = "error";
+          item.result = res;
+          item.error = options.failureMessage
+            ? options.failureMessage(res)
+            : "verification failed";
+          errorCount++;
+        } else {
+          item.status = "done";
+          item.result = res;
+          doneCount++;
+        }
       } catch (e) {
         item.status = "error";
         item.error = String(e);

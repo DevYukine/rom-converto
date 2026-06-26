@@ -37,7 +37,24 @@ async function execute() {
   result.value = "";
 
   if (isBatch.value) {
-    await batch.start(queue, result);
+    await batch.start(queue, result, {
+      isSuccess: (res) => {
+        try {
+          return JSON.parse(res).ok !== false;
+        } catch {
+          return true;
+        }
+      },
+      failureMessage: (res) => {
+        try {
+          const v = JSON.parse(res) as NxVerifyResult;
+          const bad = v.ncas.filter((n) => !n.ok).length;
+          return `verification failed (${bad} NCA${bad === 1 ? "" : "s"} with mismatches)`;
+        } catch {
+          return "verification failed";
+        }
+      },
+    });
   } else {
     loading.value = true;
     try {
@@ -61,13 +78,12 @@ async function execute() {
       title="Verify integrity"
       description="Decrypt every NCA section in a Switch container and recompute the FsHeader's stored chunk hashes. Drop multiple files for batch processing."
       :loading="loading || batch.running.value"
-      :has-result="!!verdict || !!result"
-      :has-error="!!error"
+      :has-result="(!!verdict && verdict.ok) || !!result"
+      :has-error="!!error || (!!verdict && verdict.ok === false)"
     />
 
     <OperationCard>
       <div class="space-y-5">
-        <!-- Batch mode -->
         <template v-if="isBatch">
           <BatchFileList
             :items="queue"
@@ -88,7 +104,6 @@ async function execute() {
           />
         </template>
 
-        <!-- Single mode -->
         <FileDropZone
           v-else
           :model-value="input"
@@ -117,7 +132,7 @@ async function execute() {
           :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input"
           @click="execute"
         >
-          {{ isBatch ? `Verify ${queue.filter(i => i.status === 'pending').length} Files` : 'Verify' }}
+          {{ isBatch ? `Verify ${queue.filter(i => i.status === 'pending').length} files` : 'Verify' }}
         </RunButton>
 
         <div v-if="!isBatch && verdict" class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">

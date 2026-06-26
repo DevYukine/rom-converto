@@ -1,7 +1,7 @@
 use clap::Parser;
 use std::path::PathBuf;
 
-/// Shared `info` subcommand reused by every per-console parent command.
+/// Print metadata about a ROM or disc image: title, region, hashes and embedded artwork.
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 pub struct InfoCommand {
     /// File or directory to inspect.

@@ -79,7 +79,7 @@ async function execute() {
   result.value = "";
 
   if (isBatch.value) {
-    await batch.start(queue, result);
+    await batch.start(queue, result, batchOptions);
   } else {
     loading.value = true;
     try {
@@ -91,7 +91,7 @@ async function execute() {
       verifyResult.value = parsed;
       result.value = parsed.format === "Cia"
         ? formatLegitimacy(parsed.legitimacy)
-        : `NCSD — ${parsed.partition_count} partition(s)`;
+        : `NCSD, ${parsed.partition_count} partition(s)`;
     } catch (e: any) {
       error.value = typeof e === "string" ? e : e.message || String(e);
     } finally {
@@ -121,6 +121,43 @@ function partitionOk(part: NcchPartition): boolean {
   return [part.exheader_hash_valid, part.exefs_hash_valid, part.romfs_hash_valid, part.logo_hash_valid]
     .every(v => v === null || v === true);
 }
+
+function resultOk(r: VerifyResult): boolean {
+  if (r.format === "Cia") {
+    if (legitColor(r.legitimacy) === "red") return false;
+    return r.ca_cert_valid
+      && r.tmd_signer_cert_valid
+      && r.ticket_signer_cert_valid
+      && r.tmd_signature_valid
+      && r.ticket_signature_valid
+      && r.content_hashes_valid !== false;
+  }
+  return r.ncsd_magic_valid && r.partitions.every(partitionOk);
+}
+
+const verdictOk = computed(() => verifyResult.value === null || resultOk(verifyResult.value));
+
+const batchOptions = {
+  isSuccess: (res: string) => {
+    try {
+      return resultOk(JSON.parse(res) as VerifyResult);
+    } catch {
+      return true;
+    }
+  },
+  failureMessage: (res: string) => {
+    try {
+      const v = JSON.parse(res) as VerifyResult;
+      if (v.format === "Ncsd") {
+        const bad = v.partitions.filter(p => !partitionOk(p)).length;
+        return `verification failed (${bad} partition mismatch(es))`;
+      }
+      return "verification failed";
+    } catch {
+      return "verification failed";
+    }
+  },
+};
 </script>
 
 <template>
@@ -129,13 +166,12 @@ function partitionOk(part: NcchPartition): boolean {
       title="Verify 3DS ROM"
       description="Verify .cia legitimacy or .3ds/.cci integrity. Supports compressed Z3DS files. Drop multiple files for batch processing."
       :loading="loading || batch.running.value"
-      :has-result="!!result"
-      :has-error="!!error"
+      :has-result="verifyResult ? verdictOk : !!result"
+      :has-error="!!error || (!!verifyResult && !verdictOk)"
     />
 
     <OperationCard>
       <div class="space-y-5">
-        <!-- Batch mode -->
         <template v-if="isBatch">
           <BatchFileList
             :items="queue"
@@ -156,11 +192,10 @@ function partitionOk(part: NcchPartition): boolean {
           />
         </template>
 
-        <!-- Single mode -->
         <FileDropZone
           v-else
           :model-value="input"
-          label="Input ROM File"
+          label="Input ROM file"
           :multiple="true"
           :filters="ROM_FILTERS"
           :primary="true"
@@ -171,7 +206,7 @@ function partitionOk(part: NcchPartition): boolean {
         <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
           <FlagToggle
             v-model="verifyContent"
-            label="Verify Content Hashes"
+            label="Verify content hashes"
             description="Also check SHA-256 hashes of all content data (CIA only, slower)"
           />
         </div>
@@ -187,15 +222,13 @@ function partitionOk(part: NcchPartition): boolean {
           :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input"
           @click="execute"
         >
-          {{ isBatch ? `Verify ${queue.filter(i => i.status === 'pending').length} Files` : 'Verify' }}
+          {{ isBatch ? `Verify ${queue.filter(i => i.status === 'pending').length} files` : 'Verify' }}
         </RunButton>
       </div>
     </OperationCard>
 
-    <!-- CIA result -->
     <template v-if="verifyResult && verifyResult.format === 'Cia'">
       <div class="mt-4 space-y-3">
-        <!-- Legitimacy badge -->
         <div
           class="flex items-center gap-3 rounded-lg border-l-2 px-4 py-3"
           :class="{
@@ -219,7 +252,6 @@ function partitionOk(part: NcchPartition): boolean {
           </span>
         </div>
 
-        <!-- Signature checks -->
         <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
           <h4 class="mb-2 text-xs font-semibold uppercase tracking-wider text-zinc-500">Signature Checks</h4>
           <div class="space-y-1.5">
@@ -236,7 +268,6 @@ function partitionOk(part: NcchPartition): boolean {
           </div>
         </div>
 
-        <!-- Details -->
         <details class="rounded-lg border border-zinc-800/50 bg-zinc-800/20">
           <summary class="cursor-pointer px-4 py-2.5 text-xs font-semibold uppercase tracking-wider text-zinc-500 hover:text-zinc-400">
             Details
@@ -250,10 +281,8 @@ function partitionOk(part: NcchPartition): boolean {
       </div>
     </template>
 
-    <!-- NCSD result -->
     <template v-else-if="verifyResult && verifyResult.format === 'Ncsd'">
       <div class="mt-4 space-y-3">
-        <!-- Header info -->
         <div
           class="flex items-center gap-3 rounded-lg border-l-2 px-4 py-3"
           :class="(verifyResult as NcsdResult).ncsd_magic_valid ? 'border-emerald-500 bg-emerald-500/5' : 'border-red-500 bg-red-500/5'"
@@ -269,7 +298,6 @@ function partitionOk(part: NcchPartition): boolean {
           </span>
         </div>
 
-        <!-- Per-partition results -->
         <div
           v-for="part in (verifyResult as NcsdResult).partitions"
           :key="part.index"
@@ -277,7 +305,7 @@ function partitionOk(part: NcchPartition): boolean {
         >
           <div class="mb-2 flex items-center gap-2">
             <h4 class="text-xs font-semibold uppercase tracking-wider text-zinc-500">
-              Partition {{ part.index }} — {{ part.name }}
+              Partition {{ part.index }}: {{ part.name }}
             </h4>
             <span
               v-if="part.encrypted"
@@ -305,11 +333,10 @@ function partitionOk(part: NcchPartition): boolean {
             <CheckRow v-if="part.logo_hash_valid !== null" label="Logo Hash" :valid="part.logo_hash_valid" />
           </div>
           <div v-else class="text-xs text-zinc-500">
-            Hash verification skipped — content is encrypted
+            Hash verification skipped (content is encrypted)
           </div>
         </div>
 
-        <!-- Details -->
         <details class="rounded-lg border border-zinc-800/50 bg-zinc-800/20">
           <summary class="cursor-pointer px-4 py-2.5 text-xs font-semibold uppercase tracking-wider text-zinc-500 hover:text-zinc-400">
             Details
@@ -323,7 +350,6 @@ function partitionOk(part: NcchPartition): boolean {
       </div>
     </template>
 
-    <!-- Batch/error result (no structured data) -->
     <div v-else class="mt-4">
       <OutputLog :result="result" :error="error" />
     </div>

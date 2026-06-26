@@ -64,7 +64,24 @@ async function execute() {
   result.value = "";
 
   if (isBatch.value) {
-    await batch.start(queue, result);
+    await batch.start(queue, result, {
+      isSuccess: (res) => {
+        try {
+          return JSON.parse(res).ok !== false;
+        } catch {
+          return true;
+        }
+      },
+      failureMessage: (res) => {
+        try {
+          const v = JSON.parse(res) as WupVerifyResult;
+          const mismatches = v.titles.reduce((sum, t) => sum + t.mismatched_content, 0);
+          return `verification failed (${mismatches} mismatched content)`;
+        } catch {
+          return "verification failed";
+        }
+      },
+    });
   } else {
     loading.value = true;
     try {
@@ -88,8 +105,8 @@ async function execute() {
       title="Verify integrity"
       description="Verify a Wii U title against its TMD hashes. Inputs can be NUS or loadiine directories, .wua archives, or .wud / .wux disc images. Drop multiple inputs for batch processing."
       :loading="loading || batch.running.value"
-      :has-result="!!verdict || !!result"
-      :has-error="!!error"
+      :has-result="(!!verdict && verdict.ok) || !!result"
+      :has-error="!!error || (!!verdict && verdict.ok === false)"
     />
 
     <OperationCard>
@@ -168,7 +185,7 @@ async function execute() {
           :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input"
           @click="execute"
         >
-          {{ isBatch ? `Verify ${queue.filter(i => i.status === 'pending').length} Files` : 'Verify' }}
+          {{ isBatch ? `Verify ${queue.filter(i => i.status === 'pending').length} files` : 'Verify' }}
         </RunButton>
 
         <div v-if="!isBatch && verdict" class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
@@ -181,7 +198,7 @@ async function execute() {
             </div>
             <span
               class="ml-3 shrink-0 rounded-full px-2.5 py-0.5 text-xs font-semibold"
-              :class="verdict.ok ? 'bg-emerald-500/15 text-emerald-300' : 'bg-rose-500/15 text-rose-300'"
+              :class="verdict.ok ? 'bg-emerald-500/15 text-emerald-300' : 'bg-red-500/15 text-red-300'"
             >
               {{ verdict.ok ? "OK" : "MISMATCHES" }}
             </span>
@@ -197,7 +214,7 @@ async function execute() {
                 <span class="truncate font-mono text-zinc-200">{{ t.title_id_hex }}</span>
                 <span
                   class="ml-3 shrink-0 font-semibold"
-                  :class="t.ok ? 'text-emerald-400' : 'text-rose-400'"
+                  :class="t.ok ? 'text-emerald-400' : 'text-red-400'"
                 >
                   {{ t.ok ? "OK" : "FAIL" }}
                 </span>

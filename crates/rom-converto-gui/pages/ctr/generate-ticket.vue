@@ -5,6 +5,7 @@ import { useCtrGenerateTicketStore } from "~/stores/ctr-generate-ticket";
 
 const store = useCtrGenerateTicketStore();
 const { cdnDir, output, result, error, loading } = storeToRefs(store);
+const { outputDir, resolve } = useOutputDir();
 const { run } = useOperation({ result, error, loading });
 
 async function chooseOutput() {
@@ -12,8 +13,12 @@ async function chooseOutput() {
     defaultPath: "ticket.tik",
     filters: [{ name: "Ticket", extensions: ["tik"] }],
   });
-  if (picked) output.value = picked;
+  if (picked) output.value = resolve(picked);
 }
+
+watch(outputDir, () => {
+  if (output.value) output.value = resolve(basename(output.value));
+});
 
 async function execute() {
   await run("cmd_generate_ticket", {
@@ -37,13 +42,13 @@ async function execute() {
       <div class="space-y-5">
         <FileDropZone
           v-model="cdnDir"
-          label="CDN Directory"
+          label="CDN directory"
           :directory="true"
           :primary="true"
         />
 
         <div class="space-y-1.5">
-          <label class="block text-sm font-medium text-zinc-300">Output ticket</label>
+          <label class="block text-sm font-medium text-zinc-300">Output ticket file</label>
           <div class="flex items-center justify-between rounded-lg border border-zinc-700 bg-zinc-800/30 px-4 py-3">
             <span class="truncate text-sm" :class="output ? 'text-zinc-200' : 'text-zinc-500'" :title="output">
               {{ output || "No output chosen" }}
@@ -57,6 +62,8 @@ async function execute() {
             </button>
           </div>
         </div>
+
+        <OutputDirField v-model="outputDir" />
 
         <RunButton :loading="loading" :disabled="!cdnDir || !output" @click="execute">
           Generate

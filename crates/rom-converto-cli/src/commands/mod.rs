@@ -23,9 +23,11 @@ pub mod wup;
 /// CLI for en/decrypting, compressing and converting ROMs.
 #[derive(Parser, Debug)]
 #[command(
+	name = env!("CARGO_BIN_NAME"),
 	author,                   // pulls env!("CARGO_PKG_AUTHORS")
 	version,                  // pulls env!("CARGO_PKG_VERSION")
 	about,                    // doc-comment or Cargo.toml description
+	long_about = "Convert, compress, decrypt and verify ROMs and disc images across Nintendo and Sony consoles.\n\nEach top-level command is a console/format family (ctr, dol, rvl, wup, nx, chd, cso, cue); each has operations like compress, decompress, verify and info. Output is auto-derived from the input unless you pass an explicit OUTPUT, -o/--output, or --output-dir. Pass -R/--recursive to process every matching file in a directory.",
 	help_template = "\
 {before-help}{name} {version}\n\
 {about-with-newline}\n\
@@ -34,10 +36,27 @@ pub mod wup;
 Made with ❤ by {author}
 "
 )]
-#[command(propagate_version = true)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
+
+    #[arg(
+        short = 'q',
+        long,
+        global = true,
+        help = "Suppress progress and info output; only warnings and errors"
+    )]
+    pub quiet: bool,
+
+    #[arg(short = 'v', long, global = true, action = clap::ArgAction::Count, help = "Increase verbosity (-v debug, -vv trace)")]
+    pub verbose: u8,
+
+    #[arg(
+        long = "no-update-check",
+        global = true,
+        help = "Skip the check for a newer release"
+    )]
+    pub no_update_check: bool,
 }
 
 #[derive(Subcommand, Debug, Eq, PartialEq)]

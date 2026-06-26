@@ -56,6 +56,7 @@ pub async fn convert_rom(
 
 pub async fn convert_rom_batch(
     input_dir: &Path,
+    output_dir: Option<&Path>,
     progress: &dyn ProgressReporter,
     total_progress: &dyn ProgressReporter,
 ) -> Result<()> {
@@ -78,6 +79,10 @@ pub async fn convert_rom_batch(
 
     total_progress.start(count, &format!("Converting {count} files..."));
 
+    if let Some(dir) = output_dir {
+        fs::create_dir_all(dir).await?;
+    }
+
     let mut entries = fs::read_dir(input_dir).await?;
     while let Ok(Some(entry)) = entries.next_entry().await {
         let path = entry.path();
@@ -86,7 +91,7 @@ pub async fn convert_rom_batch(
             continue;
         }
 
-        let output = derive_converted_path(&path);
+        let output = crate::util::place_in_dir(&derive_converted_path(&path), output_dir);
         debug!("Converting {} -> {}", path.display(), output.display());
 
         if let Err(err) = convert_rom(&path, &output, progress).await {

@@ -4,6 +4,7 @@ import { useCtrCdnToCiaStore } from "~/stores/ctr-cdn-to-cia";
 
 const store = useCtrCdnToCiaStore();
 const { cdnDir, output, decrypt, compress, cleanup, recursive, ensureTicket, result, error, loading } = storeToRefs(store);
+const { outputDir, resolve } = useOutputDir();
 const { run } = useOperation({ result, error, loading });
 const progress = useProgress("cdn-to-cia");
 const totalProgress = useProgress("cdn-to-cia-total");
@@ -12,12 +13,18 @@ watch(compress, (val) => {
   if (val) decrypt.value = true;
 });
 
+function deriveCiaPath(dir: string): string {
+  const trimmed = dir.replace(/[\\/]+$/, "");
+  return `${trimmed}.cia`;
+}
+
 async function execute() {
   progress.reset();
   totalProgress.reset();
+  const target = output.value || (outputDir.value ? resolve(deriveCiaPath(cdnDir.value)) : null);
   await run("cmd_cdn_to_cia", {
     cdnDir: cdnDir.value,
-    output: output.value || null,
+    output: target,
     decrypt: decrypt.value,
     compress: compress.value,
     cleanup: cleanup.value,
@@ -39,19 +46,18 @@ async function execute() {
 
     <OperationCard>
       <div class="space-y-5">
-        <!-- 2-col: files left, flags right -->
         <div class="grid gap-5 lg:grid-cols-2">
           <div class="space-y-5">
             <FileDropZone
               v-model="cdnDir"
-              label="CDN Directory"
+              label="CDN directory"
               :directory="true"
               :primary="true"
             />
 
             <FileDropZone
               v-model="output"
-              label="Output (auto-derived)"
+              label="Output file (auto-filled)"
               :save-dialog="true"
               :filters="[{ name: 'CIA', extensions: ['cia'] }]"
             />
@@ -71,7 +77,7 @@ async function execute() {
             />
             <FlagToggle
               v-model="ensureTicket"
-              label="Generate Ticket"
+              label="Generate ticket"
               description="Generate a ticket if missing"
             />
             <FlagToggle
@@ -86,6 +92,8 @@ async function execute() {
             />
           </div>
         </div>
+
+        <OutputDirField v-model="outputDir" />
 
         <ProgressBar
           v-if="recursive"

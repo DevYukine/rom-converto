@@ -4,6 +4,7 @@ import { useCsoCompressStore } from "~/stores/cso-compress";
 
 const store = useCsoCompressStore();
 const { input, output, format, force, blockSize, result, error, loading, queue } = storeToRefs(store);
+const { outputDir, resolve } = useOutputDir();
 const { run } = useOperation({ result, error, loading });
 const progress = useProgress("cso-compress");
 
@@ -22,26 +23,32 @@ const batch = useBatchOperation("cso-compress", "cmd_cso_compress", (item) => ({
   blockSize: blockSize.value || null,
 }));
 
-watch(input, (val) => {
-  if (val) output.value = deriveCsoPath(val, format.value);
+watch([input, outputDir], () => {
+  if (input.value) output.value = resolve(deriveCsoPath(input.value, format.value));
 });
 
 watch(format, (fmt) => {
-  if (input.value) output.value = deriveCsoPath(input.value, fmt);
+  if (input.value) output.value = resolve(deriveCsoPath(input.value, fmt));
   for (const item of queue.value) {
-    if (item.status === "pending") item.output = deriveCsoPath(item.input, fmt);
+    if (item.status === "pending") item.output = resolve(deriveCsoPath(item.input, fmt));
+  }
+});
+
+watch(outputDir, () => {
+  for (const item of queue.value) {
+    if (item.status === "pending") item.output = resolve(deriveCsoPath(item.input, format.value));
   }
 });
 
 function handleFiles(paths: string[]) {
   for (const p of paths) {
-    store.addToQueue(p, deriveCsoPath(p, format.value));
+    store.addToQueue(p, resolve(deriveCsoPath(p, format.value)));
   }
 }
 
 function handleSingleFile(path: string) {
   if (queue.value.length > 0) {
-    store.addToQueue(path, deriveCsoPath(path, format.value));
+    store.addToQueue(path, resolve(deriveCsoPath(path, format.value)));
   } else {
     input.value = path;
   }
@@ -75,7 +82,6 @@ async function execute() {
 
     <OperationCard>
       <div class="space-y-5">
-        <!-- Batch mode -->
         <template v-if="isBatch">
           <BatchFileList
             :items="queue"
@@ -91,12 +97,11 @@ async function execute() {
             model-value=""
             :multiple="true"
             :filters="[{ name: 'ISO image', extensions: ['iso'] }]"
-            @update:model-value="(p: string) => { if (p) store.addToQueue(p, deriveCsoPath(p, format)) }"
+            @update:model-value="(p: string) => { if (p) store.addToQueue(p, resolve(deriveCsoPath(p, format))) }"
             @update:files="handleFiles"
           />
         </template>
 
-        <!-- Single mode: 2-col on large screens -->
         <template v-else>
           <div class="grid gap-5 lg:grid-cols-2">
             <FileDropZone
@@ -111,7 +116,7 @@ async function execute() {
 
             <FileDropZone
               v-model="output"
-              label="Output (auto-derived)"
+              label="Output file (auto-filled)"
               :save-dialog="true"
               :filters="[{ name: 'Compressed ISO', extensions: ['cso', 'zso'] }]"
             />
@@ -127,7 +132,7 @@ async function execute() {
           />
           <FlagToggle
             v-model="force"
-            label="Force Overwrite"
+            label="Force overwrite"
             description="Overwrite output file if it already exists"
           />
           <label class="flex flex-col gap-1.5">
@@ -144,6 +149,8 @@ async function execute() {
           </label>
         </div>
 
+        <OutputDirField v-model="outputDir" />
+
         <ProgressBar
           :percent="progress.percent.value"
           :message="progress.message.value"
@@ -155,7 +162,7 @@ async function execute() {
           :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input"
           @click="execute"
         >
-          {{ isBatch ? `Compress ${queue.filter(i => i.status === 'pending').length} Files` : 'Compress' }}
+          {{ isBatch ? `Compress ${queue.filter(i => i.status === 'pending').length} files` : 'Compress' }}
         </RunButton>
       </div>
     </OperationCard>

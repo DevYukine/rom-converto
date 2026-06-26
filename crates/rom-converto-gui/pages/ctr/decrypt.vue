@@ -4,6 +4,7 @@ import { useCtrDecryptStore } from "~/stores/ctr-decrypt";
 
 const store = useCtrDecryptStore();
 const { input, output, result, error, loading, queue } = storeToRefs(store);
+const { outputDir, resolve } = useOutputDir();
 const { run } = useOperation({ result, error, loading });
 const progress = useProgress("decrypt");
 
@@ -14,19 +15,25 @@ const batch = useBatchOperation("decrypt", "cmd_decrypt_rom", (item) => ({
   output: item.output,
 }));
 
-watch(input, (val) => {
-  if (val) output.value = deriveDecryptedPath(val);
+watch([input, outputDir], () => {
+  if (input.value) output.value = resolve(deriveDecryptedPath(input.value));
+});
+
+watch(outputDir, () => {
+  for (const it of queue.value) {
+    if (it.status === "pending") it.output = resolve(deriveDecryptedPath(it.input));
+  }
 });
 
 function handleFiles(paths: string[]) {
   for (const p of paths) {
-    store.addToQueue(p, deriveDecryptedPath(p));
+    store.addToQueue(p, resolve(deriveDecryptedPath(p)));
   }
 }
 
 function handleSingleFile(path: string) {
   if (queue.value.length > 0) {
-    store.addToQueue(path, deriveDecryptedPath(path));
+    store.addToQueue(path, resolve(deriveDecryptedPath(path)));
   } else {
     input.value = path;
   }
@@ -57,7 +64,6 @@ async function execute() {
 
     <OperationCard>
       <div class="space-y-5">
-        <!-- Batch mode -->
         <template v-if="isBatch">
           <BatchFileList
             :items="queue"
@@ -73,12 +79,11 @@ async function execute() {
             model-value=""
             :multiple="true"
             :filters="[{ name: '3DS ROM', extensions: ['cia', '3ds', 'cci', 'cxi'] }]"
-            @update:model-value="(p: string) => { if (p) store.addToQueue(p, deriveDecryptedPath(p)) }"
+            @update:model-value="(p: string) => { if (p) store.addToQueue(p, resolve(deriveDecryptedPath(p))) }"
             @update:files="handleFiles"
           />
         </template>
 
-        <!-- Single mode: 2-col on large screens -->
         <div v-else class="grid gap-5 lg:grid-cols-2">
           <FileDropZone
             :model-value="input"
@@ -92,11 +97,13 @@ async function execute() {
 
           <FileDropZone
             v-model="output"
-            label="Output (auto-derived)"
+            label="Output file (auto-filled)"
             :save-dialog="true"
             :filters="[{ name: '3DS ROM', extensions: ['cia', '3ds', 'cci', 'cxi'] }]"
           />
         </div>
+
+        <OutputDirField v-model="outputDir" />
 
         <ProgressBar
           :percent="progress.percent.value"
@@ -109,7 +116,7 @@ async function execute() {
           :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input"
           @click="execute"
         >
-          {{ isBatch ? `Decrypt ${queue.filter(i => i.status === 'pending').length} Files` : 'Decrypt' }}
+          {{ isBatch ? `Decrypt ${queue.filter(i => i.status === 'pending').length} files` : 'Decrypt' }}
         </RunButton>
       </div>
     </OperationCard>

@@ -18,7 +18,8 @@ pub enum CtrCommands {
 /// Convert CDN content to CIA format.
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
-    long_about = "Convert CDN content to CIA format\n\nNote: By default the output CIA file is encrypted, if you want to decrypt it after conversion, use the --decrypt flag\nYou can also use the --compress flag to compress the CIA into Z3DS format (.zcia) after conversion, this requires the CIA to be decrypted first"
+    long_about = "Convert CDN content to CIA format\n\nNote: By default the output CIA file is encrypted, if you want to decrypt it after conversion, use the --decrypt flag\nYou can also use the --compress flag to compress the CIA into Z3DS format (.zcia) after conversion, this requires the CIA to be decrypted first",
+    after_long_help = "EXAMPLES:\n  Single file:     rom-converto ctr cdn-to-cia ./cdn-content\n  Explicit output: rom-converto ctr cdn-to-cia ./cdn-content game.cia\n  Whole folder:    rom-converto ctr cdn-to-cia -R ./cdn-dumps --output-dir ./cia\n"
 )]
 pub struct CdnToCiaCommand {
     /// Path to the CDN content directory
@@ -37,6 +38,10 @@ pub struct CdnToCiaCommand {
         conflicts_with = "output"
     )]
     pub output_flag: Option<PathBuf>,
+
+    /// Write output into this directory using the derived filename. Created if missing. Works with --recursive.
+    #[arg(long = "output-dir", value_name = "DIR", conflicts_with_all = ["output", "output_flag"])]
+    pub output_dir: Option<PathBuf>,
 
     /// Clean up after conversion by removing the original CDN files
     #[arg(long, short = 'C', default_value = "false")]
@@ -101,6 +106,10 @@ pub struct DecryptCommand {
     )]
     pub output_flag: Option<PathBuf>,
 
+    /// Write output into this directory using the derived filename. Created if missing. Works with --recursive.
+    #[arg(long = "output-dir", value_name = "DIR", conflicts_with_all = ["output", "output_flag"])]
+    pub output_dir: Option<PathBuf>,
+
     /// Process all matching files in INPUT (top-level only)
     #[arg(long, short = 'R', default_value = "false")]
     pub recursive: bool,
@@ -113,7 +122,8 @@ pub struct DecryptCommand {
 /// Compress a decrypted 3DS ROM to the Z3DS format.
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
-    long_about = "Compress a decrypted 3DS ROM to the Z3DS format\n\nSupported input formats: .cia, .cci, .3ds, .cxi, .3dsx\nOutput extensions: .zcia, .zcci, .zcxi, .z3dsx\n\nNote: only decrypted ROMs can be compressed, since encrypted ROMs have near-zero compression ratios.\n\nUse --recursive/-R to point INPUT at a directory and compress every matching file in it (top-level only). In batch mode OUTPUT is ignored and each output is written next to its source."
+    long_about = "Compress a decrypted 3DS ROM to the Z3DS format\n\nSupported input formats: .cia, .cci, .3ds, .cxi, .3dsx\nOutput extensions: .zcia, .zcci, .zcxi, .z3dsx\n\nNote: only decrypted ROMs can be compressed, since encrypted ROMs have near-zero compression ratios.\n\nUse --recursive/-R to point INPUT at a directory and compress every matching file in it (top-level only). In batch mode OUTPUT is ignored and each output is written next to its source.",
+    after_long_help = "EXAMPLES:\n  Single file:     rom-converto ctr compress game.cia\n  Explicit output: rom-converto ctr compress game.3ds game.z3ds\n  Whole folder:    rom-converto ctr compress -R ./roms --output-dir ./z3ds\n"
 )]
 pub struct CompressRomCommand {
     /// Input ROM file path, or a directory when --recursive is set (.cia, .cci, .3ds, .cxi, or .3dsx)
@@ -132,6 +142,10 @@ pub struct CompressRomCommand {
         conflicts_with = "output"
     )]
     pub output_flag: Option<PathBuf>,
+
+    /// Write output into this directory using the derived filename. Created if missing. Works with --recursive.
+    #[arg(long = "output-dir", value_name = "DIR", conflicts_with_all = ["output", "output_flag"])]
+    pub output_dir: Option<PathBuf>,
 
     /// Zstd compression level (0 = library default, 22 = maximum ratio).
     /// Higher levels produce smaller output at the cost of compression
@@ -171,6 +185,10 @@ pub struct DecompressRomCommand {
     )]
     pub output_flag: Option<PathBuf>,
 
+    /// Write output into this directory using the derived filename. Created if missing. Works with --recursive.
+    #[arg(long = "output-dir", value_name = "DIR", conflicts_with_all = ["output", "output_flag"])]
+    pub output_dir: Option<PathBuf>,
+
     /// Process all matching files in INPUT (top-level only)
     #[arg(long, short = 'R', default_value = "false")]
     pub recursive: bool,
@@ -202,6 +220,10 @@ pub struct ConvertCommand {
         conflicts_with = "output"
     )]
     pub output_flag: Option<PathBuf>,
+
+    /// Write output into this directory using the derived filename. Created if missing. Works with --recursive.
+    #[arg(long = "output-dir", value_name = "DIR", conflicts_with_all = ["output", "output_flag"])]
+    pub output_dir: Option<PathBuf>,
 
     /// Process all matching files in INPUT (top-level only)
     #[arg(long, short = 'R', default_value = "false")]
@@ -270,6 +292,29 @@ mod tests {
             panic!("expected Compress");
         };
         assert!(c.force);
+    }
+
+    #[test]
+    fn parses_compress_output_dir() {
+        let h = Harness::parse_from(["bin", "compress", "game.cia", "--output-dir", "out"]);
+        let CtrCommands::Compress(c) = h.cmd else {
+            panic!("expected Compress");
+        };
+        assert_eq!(c.output_dir, Some(PathBuf::from("out")));
+        assert_eq!(c.output, None);
+    }
+
+    #[test]
+    fn output_dir_conflicts_with_output() {
+        let result = Harness::try_parse_from([
+            "bin",
+            "compress",
+            "game.cia",
+            "pos.zcia",
+            "--output-dir",
+            "out",
+        ]);
+        assert!(result.is_err());
     }
 
     #[test]

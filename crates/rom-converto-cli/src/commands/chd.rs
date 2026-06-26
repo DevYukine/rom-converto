@@ -22,6 +22,9 @@ pub enum ChdCommands {
 /// Default DVD codecs are lzma+zlib, which every emulator reads,
 /// including AetherSX2/NetherSX2.
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
+#[command(
+    after_long_help = "EXAMPLES:\n  Single file:     rom-converto chd compress game.cue\n  Explicit output: rom-converto chd compress game.iso out.chd\n  Whole folder:    rom-converto chd compress -R ./roms --output-dir ./chd\n"
+)]
 pub struct CompressCommand {
     /// Input image (.cue, or .iso with CD/DVD media auto-detected), or a directory with --recursive
     #[arg(value_name = "INPUT")]
@@ -39,6 +42,10 @@ pub struct CompressCommand {
         conflicts_with = "output"
     )]
     pub output_flag: Option<PathBuf>,
+
+    /// Write output into this directory using the derived filename. Created if missing. Works with --recursive.
+    #[arg(long = "output-dir", value_name = "DIR", conflicts_with_all = ["output", "output_flag"])]
+    pub output_dir: Option<PathBuf>,
 
     /// Force DVD mode (.iso input only)
     #[arg(long, conflicts_with = "cd")]
@@ -59,7 +66,7 @@ pub struct CompressCommand {
     pub zstd: bool,
 
     /// Force overwrite of the output file if it already exists
-    #[arg(long, short = 'f', value_name = "FORCE", default_value_t = false)]
+    #[arg(long, short = 'f', default_value_t = false)]
     pub force: bool,
 
     /// Compress every .cue and .iso found in the INPUT directory
@@ -77,7 +84,7 @@ pub struct ExtractCommand {
     /// Output path for extracted files (ignored with --recursive)
     #[arg(
         value_name = "OUTPUT",
-        required_unless_present_any = ["recursive", "output_flag"]
+        required_unless_present_any = ["recursive", "output_flag", "output_dir"]
     )]
     pub output: Option<PathBuf>,
 
@@ -90,8 +97,12 @@ pub struct ExtractCommand {
     )]
     pub output_flag: Option<PathBuf>,
 
+    /// Write output into this directory using the derived filename. Created if missing. Works with --recursive.
+    #[arg(long = "output-dir", value_name = "DIR", conflicts_with_all = ["output", "output_flag"])]
+    pub output_dir: Option<PathBuf>,
+
     /// Optional parent CHD file (for CHDs that reference a parent); not allowed with --recursive
-    #[arg(long, short = 'p', value_name = "PARENT")]
+    #[arg(long, short = 'p', value_name = "PARENT", conflicts_with = "recursive")]
     pub parent: Option<PathBuf>,
 
     /// Extract every .chd in INPUT (top-level only); outputs go beside each input
@@ -111,7 +122,7 @@ pub struct VerifyCommand {
     pub input: PathBuf,
 
     /// Optional parent CHD file (for CHDs that reference a parent); not allowed with --recursive
-    #[arg(long, short = 'p', value_name = "PARENT")]
+    #[arg(long, short = 'p', value_name = "PARENT", conflicts_with = "recursive")]
     pub parent: Option<PathBuf>,
 
     /// Fix incorrect SHA1 values in the header
@@ -218,5 +229,25 @@ mod tests {
         let result =
             Harness::try_parse_from(["bin", "extract", "in.chd", "pos.cue", "-o", "flag.cue"]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parses_compress_output_dir() {
+        let h = Harness::parse_from(["bin", "compress", "game.iso", "--output-dir", "out"]);
+        let ChdCommands::Compress(c) = h.cmd else {
+            panic!("expected Compress");
+        };
+        assert_eq!(c.output_dir, Some(PathBuf::from("out")));
+        assert_eq!(c.output, None);
+    }
+
+    #[test]
+    fn extract_output_dir_satisfies_requirement() {
+        let h = Harness::parse_from(["bin", "extract", "in.chd", "--output-dir", "out"]);
+        let ChdCommands::Extract(c) = h.cmd else {
+            panic!("expected Extract");
+        };
+        assert!(c.output.is_none());
+        assert_eq!(c.output_dir, Some(PathBuf::from("out")));
     }
 }

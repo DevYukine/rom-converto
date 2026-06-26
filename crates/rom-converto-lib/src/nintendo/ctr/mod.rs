@@ -44,6 +44,7 @@ pub struct CdnToCiaOptions {
     pub ensure_ticket_exists: bool,
     pub decrypt: bool,
     pub compress: bool,
+    pub output_dir: Option<PathBuf>,
 }
 
 pub fn derive_decrypted_path(input: &Path) -> PathBuf {
@@ -257,6 +258,10 @@ pub async fn convert_cdn_to_cia(
 
         total_progress.start(count, &format!("Processing {count} directories..."));
 
+        if let Some(dir) = opts.output_dir.as_deref() {
+            fs::create_dir_all(dir).await?;
+        }
+
         let mut directories = tokio::fs::read_dir(&opts.cdn_dir).await?;
 
         while let Ok(Some(entry)) = directories.next_entry().await {
@@ -266,9 +271,16 @@ pub async fn convert_cdn_to_cia(
                 continue;
             }
 
+            let child_dir = entry.path();
             let mut opts_clone = opts.clone();
-            opts_clone.cdn_dir = entry.path();
-            opts_clone.output = None;
+            opts_clone.output = opts.output_dir.as_deref().and_then(|dir| {
+                child_dir.file_name().map(|name| {
+                    let derived =
+                        child_dir.with_file_name(format!("{}.cia", name.to_string_lossy()));
+                    crate::util::place_in_dir(&derived, Some(dir))
+                })
+            });
+            opts_clone.cdn_dir = child_dir;
 
             if let Err(err) = convert_cdn_to_cia_single(opts_clone, progress).await {
                 warn!(
@@ -391,6 +403,7 @@ async fn convert_cdn_to_cia_single(
 
 pub async fn decrypt_rom_batch(
     input_dir: &Path,
+    output_dir: Option<&Path>,
     progress: &dyn ProgressReporter,
     total_progress: &dyn ProgressReporter,
 ) -> Result<()> {
@@ -413,6 +426,10 @@ pub async fn decrypt_rom_batch(
 
     total_progress.start(count, &format!("Decrypting {count} files..."));
 
+    if let Some(dir) = output_dir {
+        fs::create_dir_all(dir).await?;
+    }
+
     let mut entries = fs::read_dir(input_dir).await?;
     while let Ok(Some(entry)) = entries.next_entry().await {
         let path = entry.path();
@@ -421,7 +438,7 @@ pub async fn decrypt_rom_batch(
             continue;
         }
 
-        let output = derive_decrypted_path(&path);
+        let output = crate::util::place_in_dir(&derive_decrypted_path(&path), output_dir);
         debug!("Decrypting {} -> {}", path.display(), output.display());
 
         if let Err(err) = decrypt_rom(&path, &output, progress).await {

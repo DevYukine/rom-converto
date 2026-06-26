@@ -25,6 +25,21 @@ function getExt(path: string): string {
   return path.slice(dot + 1).toLowerCase();
 }
 
+export function basename(path: string): string {
+  const norm = path.replace(/[\\/]+$/, "");
+  const i = Math.max(norm.lastIndexOf("/"), norm.lastIndexOf("\\"));
+  return i >= 0 ? norm.slice(i + 1) : norm;
+}
+
+// An empty `dir` is a deliberate no-op so the output stays next to its input,
+// preserving the existing default for pages where no directory is chosen.
+export function withOutputDir(derivedPath: string, dir: string): string {
+  if (!dir) return derivedPath;
+  const sep = dir.includes("\\") || derivedPath.includes("\\") ? "\\" : "/";
+  const cleanDir = dir.replace(/[\\/]+$/, "");
+  return `${cleanDir}${sep}${basename(derivedPath)}`;
+}
+
 export function deriveCompressedPath(input: string): string {
   const ext = getExt(input);
   return replaceExt(input, COMPRESS_MAP[ext] ?? "z3ds");

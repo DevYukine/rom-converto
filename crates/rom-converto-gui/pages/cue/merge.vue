@@ -4,11 +4,12 @@ import { useCueMergeStore } from "~/stores/cue-merge";
 
 const store = useCueMergeStore();
 const { input, output, force, result, error, loading } = storeToRefs(store);
+const { outputDir, resolve } = useOutputDir();
 const { run } = useOperation({ result, error, loading });
 const progress = useProgress("cue-merge");
 
-watch(input, (val) => {
-  if (val) output.value = deriveMergedCuePath(val);
+watch([input, outputDir], () => {
+  if (input.value) output.value = resolve(deriveMergedCuePath(input.value));
 });
 
 async function execute() {
@@ -36,23 +37,25 @@ async function execute() {
         <div class="grid gap-5 lg:grid-cols-2">
           <FileDropZone
             v-model="input"
-            label="Input CUE File (multi-bin)"
+            label="Input CUE file (multi-bin)"
             :filters="[{ name: 'CUE Sheet', extensions: ['cue'] }]"
             :primary="true"
           />
 
           <FileDropZone
             v-model="output"
-            label="Output CUE (auto-derived)"
+            label="Output CUE file (auto-filled)"
             :save-dialog="true"
             :filters="[{ name: 'CUE Sheet', extensions: ['cue'] }]"
           />
         </div>
 
+        <OutputDirField v-model="outputDir" />
+
         <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
           <FlagToggle
             v-model="force"
-            label="Force Overwrite"
+            label="Force overwrite"
             description="Overwrite output files if they already exist"
           />
         </div>

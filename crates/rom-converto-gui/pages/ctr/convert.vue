@@ -4,6 +4,7 @@ import { useCtrConvertStore } from "~/stores/ctr-convert";
 
 const store = useCtrConvertStore();
 const { input, output, result, error, loading, queue } = storeToRefs(store);
+const { outputDir, resolve } = useOutputDir();
 const { run } = useOperation({ result, error, loading });
 const progress = useProgress("ctr-convert");
 
@@ -27,19 +28,25 @@ const direction = computed(() => {
   return "";
 });
 
-watch(input, (val) => {
-  if (val) output.value = deriveConvertedPath(val);
+watch([input, outputDir], () => {
+  if (input.value) output.value = resolve(deriveConvertedPath(input.value));
+});
+
+watch(outputDir, () => {
+  for (const it of queue.value) {
+    if (it.status === "pending") it.output = resolve(deriveConvertedPath(it.input));
+  }
 });
 
 function handleFiles(paths: string[]) {
   for (const p of paths) {
-    store.addToQueue(p, deriveConvertedPath(p));
+    store.addToQueue(p, resolve(deriveConvertedPath(p)));
   }
 }
 
 function handleSingleFile(path: string) {
   if (queue.value.length > 0) {
-    store.addToQueue(path, deriveConvertedPath(path));
+    store.addToQueue(path, resolve(deriveConvertedPath(path)));
   } else {
     input.value = path;
   }
@@ -85,7 +92,7 @@ async function execute() {
             model-value=""
             :multiple="true"
             :filters="[{ name: '3DS ROM', extensions: ['cia', '3ds', 'cci'] }]"
-            @update:model-value="(p: string) => { if (p) store.addToQueue(p, deriveConvertedPath(p)) }"
+            @update:model-value="(p: string) => { if (p) store.addToQueue(p, resolve(deriveConvertedPath(p))) }"
             @update:files="handleFiles"
           />
         </template>
@@ -103,7 +110,7 @@ async function execute() {
 
           <FileDropZone
             v-model="output"
-            label="Output (auto-derived)"
+            label="Output file (auto-filled)"
             :save-dialog="true"
             :filters="[{ name: '3DS ROM', extensions: ['cia', '3ds', 'cci'] }]"
           />
@@ -112,6 +119,8 @@ async function execute() {
         <div v-if="direction && !isBatch" class="text-xs text-zinc-400">
           Direction: <span class="font-medium text-sky-300">{{ direction }}</span>
         </div>
+
+        <OutputDirField v-model="outputDir" />
 
         <ProgressBar
           :percent="progress.percent.value"
@@ -124,7 +133,7 @@ async function execute() {
           :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input"
           @click="execute"
         >
-          {{ isBatch ? `Convert ${queue.filter(i => i.status === 'pending').length} Files` : 'Convert' }}
+          {{ isBatch ? `Convert ${queue.filter(i => i.status === 'pending').length} files` : 'Convert' }}
         </RunButton>
       </div>
     </OperationCard>

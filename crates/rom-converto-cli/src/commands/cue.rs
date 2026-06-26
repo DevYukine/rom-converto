@@ -19,6 +19,6 @@ pub struct MergeCommand {
     pub output_cue: PathBuf,
 
     /// Force overwrite of the output files if they already exist
-    #[arg(long, short = 'f', value_name = "FORCE", default_value_t = false)]
+    #[arg(long, short = 'f', default_value_t = false)]
     pub force: bool,
 }

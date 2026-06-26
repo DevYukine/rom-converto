@@ -15,6 +15,9 @@ pub enum NxCommands {
 /// container are decrypted, zstd-compressed, and packaged with the
 /// already-derived per-section keys cached in NCZSECTN.
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
+#[command(
+    after_long_help = "EXAMPLES:\n  Single file:     rom-converto nx compress game.nsp\n  Explicit output: rom-converto nx compress game.xci game.xcz\n  Whole folder:    rom-converto nx compress -R ./roms --output-dir ./nsz\n"
+)]
 pub struct NxCompressCommand {
     /// Path to `prod.keys`. Defaults to `$HOME/.switch/prod.keys` on
     /// Linux/macOS or `%USERPROFILE%/.switch/prod.keys` on Windows,
@@ -22,10 +25,28 @@ pub struct NxCompressCommand {
     #[arg(long = "keys", value_name = "PRODKEYS")]
     pub keys: Option<PathBuf>,
 
+    /// Input NSP or XCI, or a directory with --recursive.
+    #[arg(value_name = "INPUT")]
+    pub input: PathBuf,
+
     /// Output path. Defaults to the input path with the extension
     /// switched (.nsp -> .nsz, .xci -> .xcz).
-    #[arg(short, long, value_name = "OUTPUT")]
+    #[arg(value_name = "OUTPUT")]
     pub output: Option<PathBuf>,
+
+    /// Output path. Defaults to the input path with the extension
+    /// switched (.nsp -> .nsz, .xci -> .xcz).
+    #[arg(
+        short = 'o',
+        long = "output",
+        value_name = "OUTPUT",
+        conflicts_with = "output"
+    )]
+    pub output_flag: Option<PathBuf>,
+
+    /// Write output into this directory using the derived filename. Created if missing. Works with --recursive.
+    #[arg(long = "output-dir", value_name = "DIR", conflicts_with_all = ["output", "output_flag"])]
+    pub output_dir: Option<PathBuf>,
 
     /// Zstd compression level. nsz default is 18; the maximum 22 needs
     /// over 1 GiB of RAM during decompression on the Switch.
@@ -48,10 +69,6 @@ pub struct NxCompressCommand {
     #[arg(long = "block-size-exp", value_parser = clap::value_parser!(u8).range(14..=32))]
     pub block_size_exp: Option<u8>,
 
-    /// Input NSP or XCI, or a directory with --recursive.
-    #[arg(value_name = "INPUT")]
-    pub input: PathBuf,
-
     /// Overwrite the output file if it already exists
     #[arg(long, short = 'f', default_value_t = false)]
     pub force: bool,
@@ -70,14 +87,28 @@ pub struct NxDecompressCommand {
     #[arg(long = "keys", value_name = "PRODKEYS")]
     pub keys: Option<PathBuf>,
 
-    /// Output path. Defaults to the input path with the extension
-    /// switched (.nsz -> .nsp, .xcz -> .xci).
-    #[arg(short, long, value_name = "OUTPUT")]
-    pub output: Option<PathBuf>,
-
     /// Input NSZ or XCZ, or a directory with --recursive.
     #[arg(value_name = "INPUT")]
     pub input: PathBuf,
+
+    /// Output path. Defaults to the input path with the extension
+    /// switched (.nsz -> .nsp, .xcz -> .xci).
+    #[arg(value_name = "OUTPUT")]
+    pub output: Option<PathBuf>,
+
+    /// Output path. Defaults to the input path with the extension
+    /// switched (.nsz -> .nsp, .xcz -> .xci).
+    #[arg(
+        short = 'o',
+        long = "output",
+        value_name = "OUTPUT",
+        conflicts_with = "output"
+    )]
+    pub output_flag: Option<PathBuf>,
+
+    /// Write output into this directory using the derived filename. Created if missing. Works with --recursive.
+    #[arg(long = "output-dir", value_name = "DIR", conflicts_with_all = ["output", "output_flag"])]
+    pub output_dir: Option<PathBuf>,
 
     /// Overwrite the output file if it already exists
     #[arg(long, short = 'f', default_value_t = false)]
@@ -152,7 +183,25 @@ mod tests {
         assert_eq!(c.level, Some(18));
         assert_eq!(c.mode.as_deref(), Some("block"));
         assert_eq!(c.block_size_exp, Some(20));
+        assert_eq!(c.output_flag, Some(PathBuf::from("out.nsz")));
+    }
+
+    #[test]
+    fn parses_compress_positional_output() {
+        let h = Harness::parse_from(["bin", "compress", "game.nsp", "out.nsz"]);
+        let NxCommands::Compress(c) = h.cmd else {
+            panic!("expected Compress");
+        };
+        assert_eq!(c.input, PathBuf::from("game.nsp"));
         assert_eq!(c.output, Some(PathBuf::from("out.nsz")));
+        assert!(c.output_flag.is_none());
+    }
+
+    #[test]
+    fn output_flag_conflicts_with_positional_output() {
+        let result =
+            Harness::try_parse_from(["bin", "compress", "game.nsp", "out.nsz", "-o", "other.nsz"]);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -201,5 +250,29 @@ mod tests {
             panic!("expected Verify");
         };
         assert!(c.recursive);
+    }
+
+    #[test]
+    fn parses_compress_output_dir() {
+        let h = Harness::parse_from(["bin", "compress", "--output-dir", "out", "game.nsp"]);
+        let NxCommands::Compress(c) = h.cmd else {
+            panic!("expected Compress");
+        };
+        assert_eq!(c.output_dir, Some(PathBuf::from("out")));
+        assert!(c.output.is_none());
+    }
+
+    #[test]
+    fn output_dir_conflicts_with_output() {
+        let result = Harness::try_parse_from([
+            "bin",
+            "compress",
+            "-o",
+            "out.nsz",
+            "--output-dir",
+            "out",
+            "game.nsp",
+        ]);
+        assert!(result.is_err());
     }
 }

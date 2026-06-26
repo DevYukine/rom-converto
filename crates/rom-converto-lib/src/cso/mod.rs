@@ -117,6 +117,7 @@ pub async fn compress_to_cso_batch(
     total_progress: &dyn ProgressReporter,
     input_dir: &std::path::Path,
     opts: CsoCompressOptions,
+    output_dir: Option<&std::path::Path>,
 ) -> CsoResult<()> {
     let is_iso = |path: &std::path::Path| {
         path.extension()
@@ -135,6 +136,10 @@ pub async fn compress_to_cso_batch(
         return Ok(());
     }
 
+    if let Some(dir) = output_dir {
+        std::fs::create_dir_all(dir)?;
+    }
+
     total_progress.start(count, &format!("Compressing {count} images..."));
 
     let mut entries = tokio::fs::read_dir(input_dir).await?;
@@ -143,7 +148,8 @@ pub async fn compress_to_cso_batch(
         if !is_iso(&path) {
             continue;
         }
-        let output = path.with_extension(opts.format.extension());
+        let output =
+            crate::util::place_in_dir(&path.with_extension(opts.format.extension()), output_dir);
         if let Err(err) = compress_to_cso(progress, path.clone(), output, opts.clone()).await {
             log::warn!("Failed to compress {}: {err}", path.display());
         }
@@ -209,7 +215,11 @@ pub async fn decompress_from_cso(
 
     await_with_progress(progress, &bytes_done, handle).await?;
 
-    info!("Decompressed: {:.2} MB ISO from {:?}", total_mb, input_path);
+    info!(
+        "Decompressed: {:.2} MB ISO from {}",
+        total_mb,
+        input_path.display()
+    );
     Ok(())
 }
 

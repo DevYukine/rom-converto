@@ -5,6 +5,7 @@ import { isDiscInput, useWupCompressStore } from "~/stores/wup-compress";
 
 const store = useWupCompressStore();
 const { queue, output, level, keys, result, error, loading } = storeToRefs(store);
+const { outputDir, resolve } = useOutputDir();
 const { run } = useOperation({ result, error, loading });
 const progress = useProgress("wup-compress");
 
@@ -22,7 +23,7 @@ function addPaths(paths: string[]) {
   // the user has already picked.
   if (!output.value && queue.value.length > 0) {
     const first = queue.value[0];
-    if (first) output.value = deriveWuaPath(first.input);
+    if (first) output.value = resolve(deriveWuaPath(first.input));
   }
 }
 
@@ -34,6 +35,11 @@ onMounted(() => {
 
 onUnmounted(() => {
   if (zoneId) unregisterDropZone(zoneId);
+});
+
+watch(outputDir, () => {
+  const first = queue.value[0];
+  if (first) output.value = resolve(deriveWuaPath(first.input));
 });
 
 async function browseDirectories() {
@@ -169,7 +175,7 @@ async function execute() {
 
         <FileDropZone
           v-model="output"
-          label="Output (auto-derived)"
+          label="Output file (auto-filled)"
           :save-dialog="true"
           :filters="[{ name: 'Wii U Archive', extensions: ['wua'] }]"
         />
@@ -196,6 +202,8 @@ async function execute() {
             </div>
           </label>
         </div>
+
+        <OutputDirField v-model="outputDir" />
 
         <ProgressBar
           :percent="progress.percent.value"

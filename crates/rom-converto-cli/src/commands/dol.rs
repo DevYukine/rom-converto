@@ -34,7 +34,8 @@ pub struct VerifyDiscCommand {
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
     long_about = "Compress a GameCube disc image to Dolphin's RVZ format.\n\n\
-Supported input: .iso / .gcm.\nOutput defaults to the same path with the extension replaced by .rvz."
+Supported input: .iso / .gcm.\nOutput defaults to the same path with the extension replaced by .rvz.",
+    after_long_help = "EXAMPLES:\n  Single file:     rom-converto dol compress game.iso\n  Explicit output: rom-converto dol compress game.gcm game.rvz\n  Whole folder:    rom-converto dol compress -R ./roms --output-dir ./rvz\n"
 )]
 pub struct CompressDiscCommand {
     /// Input disc image path (.iso or .gcm), or a directory with --recursive.
@@ -54,10 +55,14 @@ pub struct CompressDiscCommand {
     )]
     pub output_flag: Option<PathBuf>,
 
+    /// Write output into this directory using the derived filename. Created if missing. Works with --recursive.
+    #[arg(long = "output-dir", value_name = "DIR", conflicts_with_all = ["output", "output_flag"])]
+    pub output_dir: Option<PathBuf>,
+
     /// Zstandard compression level (signed, negative levels allowed).
     /// Defaults to 22 (archive quality). Lower values trade ratio for
     /// speed; Dolphin's documented suggestion is 5.
-    #[arg(long, short = 'l')]
+    #[arg(long, short = 'l', value_parser = clap::value_parser!(i32).range(-22..=22))]
     pub level: Option<i32>,
 
     /// Chunk size in bytes. Must be a power of two between 32 KiB and
@@ -97,6 +102,10 @@ pub struct DecompressDiscCommand {
     )]
     pub output_flag: Option<PathBuf>,
 
+    /// Write output into this directory using the derived filename. Created if missing. Works with --recursive.
+    #[arg(long = "output-dir", value_name = "DIR", conflicts_with_all = ["output", "output_flag"])]
+    pub output_dir: Option<PathBuf>,
+
     /// Overwrite the output file if it already exists
     #[arg(long, short = 'f', default_value_t = false)]
     pub force: bool,
@@ -133,5 +142,15 @@ mod tests {
             panic!("expected Verify");
         };
         assert!(c.recursive);
+    }
+
+    #[test]
+    fn parses_compress_output_dir() {
+        let h = Harness::parse_from(["bin", "compress", "game.iso", "--output-dir", "out"]);
+        let DolCommands::Compress(c) = h.cmd else {
+            panic!("expected Compress");
+        };
+        assert_eq!(c.output_dir, Some(PathBuf::from("out")));
+        assert_eq!(c.output, None);
     }
 }

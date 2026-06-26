@@ -7,6 +7,22 @@ pub mod worker_pool;
 
 pub const BYTES_PER_MB: f64 = 1_000_000.0;
 
+/// Re-root a derived output filename into `output_dir`, or return it unchanged
+/// when no directory is given.
+pub fn place_in_dir(
+    derived: &std::path::Path,
+    output_dir: Option<&std::path::Path>,
+) -> std::path::PathBuf {
+    match output_dir {
+        Some(dir) => dir.join(
+            derived
+                .file_name()
+                .expect("a derived output path always has a file name"),
+        ),
+        None => derived.to_path_buf(),
+    }
+}
+
 /// Trait for reporting progress from library operations.
 ///
 /// Consumers implement this to bridge progress updates to their
