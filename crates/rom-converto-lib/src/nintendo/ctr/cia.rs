@@ -1,6 +1,9 @@
 use crate::nintendo::ctr::constants::{
     CERT_SIG_TYPE_MAX, CERT_SIG_TYPE_MIN, CIA_CERT_CHAIN_SIZE, CIA_CONTENT_INDEX_SIZE,
 };
+use crate::nintendo::ctr::decrypt::artifact_path::{
+    ncch_artifact_dir_and_stem, ncch_component_path,
+};
 use crate::nintendo::ctr::decrypt::cia::parse_and_decrypt_cia;
 use crate::nintendo::ctr::models::certificate::Certificate;
 use crate::nintendo::ctr::models::cia::{
@@ -61,23 +64,17 @@ pub async fn decrypt_from_encrypted_cia(
         meta_data: None,
     };
 
-    let parent = input.parent().unwrap_or_else(|| Path::new("."));
-    let stem = input
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .ok_or_else(|| anyhow::anyhow!("input path has no valid filename stem"))?;
+    let (parent, stem) = ncch_artifact_dir_and_stem(input)?;
 
     for content_chunk_record in &mut decrypted_cia.tmd.content_chunk_records {
         content_chunk_record.content_type.set_encrypted(false);
 
-        let new_file_name = format!(
-            "{stem}.{index}.{id:08x}.ncch",
-            stem = stem,
-            index = content_chunk_record.content_index,
-            id = content_chunk_record.content_id
+        let file_path = ncch_component_path(
+            &parent,
+            &stem,
+            &content_chunk_record.content_index.to_string(),
+            content_chunk_record.content_id,
         );
-
-        let file_path = parent.join(new_file_name);
 
         let data = tokio::fs::read(&file_path).await?;
         let mut hasher = Sha256::new();
@@ -125,14 +122,12 @@ pub async fn decrypt_from_encrypted_cia(
     out_writer.write_all(data.get_ref()).await?;
 
     for content_chunk_record in decrypted_cia.tmd.content_chunk_records {
-        let new_file_name = format!(
-            "{stem}.{index}.{id:08x}.ncch",
-            stem = stem,
-            index = content_chunk_record.content_index,
-            id = content_chunk_record.content_id
+        let file_path = ncch_component_path(
+            &parent,
+            &stem,
+            &content_chunk_record.content_index.to_string(),
+            content_chunk_record.content_id,
         );
-
-        let file_path = parent.join(new_file_name);
 
         let content = tokio::fs::read(&file_path).await?;
         out_writer.write_all(&content).await?;
@@ -763,5 +758,52 @@ mod tests {
             cia.meta_data.is_none(),
             "no meta input must not produce a meta output",
         );
+    }
+
+    /// Regression for issue #7: a content_id whose hex form carries a digit
+    /// A-F must round-trip through decrypt. The writer used uppercase hex for
+    /// the `.ncch` scratch name while the read-back used lowercase, so on a
+    /// case-sensitive filesystem (Linux) the read missed the file with ENOENT,
+    /// producing a 0-byte output and orphaned `.ncch` fragments. DLCs tripped
+    /// it because they carry enough contents that at least one id lands >= 0x0A.
+    /// On case-insensitive macOS/Windows the two spellings alias the same file,
+    /// which is why it never reproduced on the dev machine; this test only
+    /// fails on the buggy code on a case-sensitive FS (the CI runners).
+    #[tokio::test]
+    async fn decrypt_from_encrypted_cia_round_trips_letter_bearing_content_id() {
+        use crate::nintendo::ctr::test_fixtures::synth_encrypted_cia_multi_content;
+
+        let ids = [0x0000_0000u32, 0x0000_ABCDu32];
+        let (_tmp, in_path, contents) = synth_encrypted_cia_multi_content(&ids);
+        let out_path = in_path.with_extension("dec.cia");
+
+        let f = File::create(&out_path).await.unwrap();
+        let mut out = BufWriter::new(f);
+        decrypt_from_encrypted_cia(&in_path, &mut out, &NoProgress)
+            .await
+            .expect("decrypt must succeed for a content_id containing hex letters");
+        out.flush().await.unwrap();
+        drop(out);
+
+        let bytes = std::fs::read(&out_path).unwrap();
+        let cia = CiaFile::read_options(&mut Cursor::new(&bytes), Endian::Little, ())
+            .expect("decrypted CIA must parse");
+
+        assert_eq!(cia.tmd.content_chunk_records.len(), 2);
+        assert_eq!(cia.tmd.content_chunk_records[0].content_id, ids[0]);
+        assert_eq!(cia.tmd.content_chunk_records[1].content_id, ids[1]);
+
+        // Each id must map back to its own content, proving the read-back read
+        // the correct per-content file rather than cross-wiring or zeroing.
+        let split = contents[0].len();
+        assert_eq!(&cia.content_data[..split], contents[0].as_slice());
+        assert_eq!(&cia.content_data[split..], contents[1].as_slice());
+
+        // On success the scratch `.ncch` files must be cleaned up.
+        let leftover_ncch = std::fs::read_dir(in_path.parent().unwrap())
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|e| e.path().extension().and_then(|s| s.to_str()) == Some("ncch"));
+        assert!(!leftover_ncch, "scratch .ncch files were left behind");
     }
 }

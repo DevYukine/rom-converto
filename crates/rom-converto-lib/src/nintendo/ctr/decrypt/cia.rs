@@ -15,6 +15,9 @@ use crate::nintendo::ctr::constants::{
     TICKET_SIG_BODY_OFFSET, TICKET_TITLE_ID_OFFSET, TICKET_TITLE_KEY_OFFSET,
     TMD_CONTENT_COUNT_OFFSET, TMD_CONTENT_RECORD_SIZE, TMD_CONTENT_RECORDS_OFFSET,
 };
+use crate::nintendo::ctr::decrypt::artifact_path::{
+    ncch_artifact_dir_and_stem, ncch_component_path,
+};
 use crate::nintendo::ctr::decrypt::model::{CiaContent, NcchSection};
 use crate::nintendo::ctr::decrypt::reader::CiaReader;
 use crate::nintendo::ctr::decrypt::util::{cbc_decrypt, gen_iv};
@@ -516,25 +519,7 @@ pub async fn parse_ncch(
         debug!("Uses 9.6 NCCH Seed crypto with KeyY: {key_y:032X}");
     }
 
-    let file_name = cia
-        .path
-        .file_name()
-        .ok_or_else(|| anyhow!("input path has no filename"))?
-        .to_string_lossy();
-    let base_stem = file_name
-        .rsplit_once('.')
-        .map(|(stem, _)| stem)
-        .unwrap_or(&file_name);
-
-    let absolute_path = cia.path.canonicalize()?;
-    let final_path = if cfg!(windows) && absolute_path.to_string_lossy().starts_with(r"\\?\") {
-        Path::new(&absolute_path.to_string_lossy()[4..].replace("\\", "/")).to_path_buf()
-    } else {
-        absolute_path
-    };
-    let parent_dir = final_path
-        .parent()
-        .ok_or_else(|| anyhow!("input path has no parent directory"))?;
+    let (parent_dir, base_stem) = ncch_artifact_dir_and_stem(&cia.path)?;
 
     let partition_label = if cia.from_ncsd {
         CTR_NCSD_PARTITIONS[cia.cidx as usize].to_string()
@@ -542,10 +527,7 @@ pub async fn parse_ncch(
         cia.cidx.to_string()
     };
 
-    let ncch_path = parent_dir.join(format!(
-        "{base_stem}.{partition_label}.{:08X}.ncch",
-        cia.content_id
-    ));
+    let ncch_path = ncch_component_path(&parent_dir, &base_stem, &partition_label, cia.content_id);
 
     let mut ncch: File = File::create(&ncch_path).await?;
     // Preserve the crypto-method bit, set the NoCrypto flag (content is now decrypted)
