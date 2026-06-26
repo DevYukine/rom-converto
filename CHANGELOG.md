@@ -1,3 +1,17 @@
+# [0.12.0](https://github.com/DevYukine/rom-converto/compare/v0.11.0...v0.12.0) (2026-06-26)
+
+
+### Bug Fixes
+
+* **ctr:** align .ncch scratch filename casing so cia decrypt works on case-sensitive filesystems ([fc9b1a1](https://github.com/DevYukine/rom-converto/commit/fc9b1a1d4693f128b1a2f126cb0f15f2f11f7bb5))
+
+
+### Features
+
+* unified output directory, larger default window, and GUI/CLI UX polish ([f361caa](https://github.com/DevYukine/rom-converto/commit/f361caa520537a4190bfd09445bc4fea74b87347))
+
+
+
 # [0.11.0](https://github.com/DevYukine/rom-converto/compare/v0.10.0...v0.11.0) (2026-06-12)
 
 
@@ -58,21 +72,6 @@
 * **gui:** add Convert ROM link to 3DS sidebar ([4edccd9](https://github.com/DevYukine/rom-converto/commit/4edccd917948b5cdc627f5827dcff3b513e11ac3))
 * **gui:** add Switch section to sidebar ([acd543b](https://github.com/DevYukine/rom-converto/commit/acd543b51cc0d1d0c68ed21d3507d6d8a80858e0))
 * **nx:** add Switch NSP/XCI compression and decompression ([e102df8](https://github.com/DevYukine/rom-converto/commit/e102df865eee8653303e54f4324069af8503ccf3))
-
-
-
-# [0.8.0](https://github.com/DevYukine/rom-converto/compare/v0.7.1...v0.8.0) (2026-04-18)
-
-
-### Bug Fixes
-
-* **gui:** disable nuxt telemetry to unblock tauri dev startup ([fe25fe5](https://github.com/DevYukine/rom-converto/commit/fe25fe5b9537083362d7d4ddbf9bfc46c2c6c90b))
-* replace panicking unwraps in updater and CHD GUI commands ([a3db4ba](https://github.com/DevYukine/rom-converto/commit/a3db4ba6046b0e29872817850a2bea156a9d8305))
-
-
-### Features
-
-* **wup:** add Wii U .wua archive creation ([fd6fbe5](https://github.com/DevYukine/rom-converto/commit/fd6fbe58831c5685ed812627f3271da760436557))
 
 
 
