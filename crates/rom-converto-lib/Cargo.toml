@@ -29,6 +29,7 @@ ctr = "^0.9.2"
 xts-mode = "^0.5"
 hex = "^0.4"
 md5 = "^0.8"
+md_5 = { version = "^0.10", package = "md-5" }
 sha256 = "^1.6"
 hex-literal = "^1.1"
 rsa = { version = "^0.9", features = ["sha2"] }

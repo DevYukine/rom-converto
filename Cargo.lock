@@ -3883,6 +3883,7 @@ dependencies = [
  "log",
  "lz4",
  "lzma-sdk-sys",
+ "md-5",
  "md5",
  "pbkdf2",
  "png 0.17.16",

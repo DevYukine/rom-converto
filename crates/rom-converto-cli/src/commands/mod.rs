@@ -4,6 +4,7 @@ use crate::commands::cso::CsoCommands;
 use crate::commands::ctr::CtrCommands;
 use crate::commands::cue::CueCommands;
 use crate::commands::dol::DolCommands;
+use crate::commands::hash::HashCommand;
 use crate::commands::nx::NxCommands;
 use crate::commands::rvl::RvlCommands;
 use crate::commands::wup::WupCommands;
@@ -16,6 +17,7 @@ pub mod cso;
 pub mod ctr;
 pub mod cue;
 pub mod dol;
+pub mod hash;
 pub mod info_command;
 pub mod nx;
 pub mod rvl;
@@ -85,6 +87,8 @@ pub enum Commands {
 
     #[command(subcommand)]
     Cue(CueCommands),
+
+    Hash(HashCommand),
 
     SelfUpdate(SelfUpdateCommand),
 

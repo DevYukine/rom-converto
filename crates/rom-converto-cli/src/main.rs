@@ -57,7 +57,9 @@ use rom_converto_lib::nintendo::wup::{
     verify_wup_async,
 };
 use rom_converto_lib::util::fs::collect_files_with_exts;
-use rom_converto_lib::util::{Tally, TallyDirection};
+use rom_converto_lib::util::{
+    FileDigests, HashAlgo, Tally, TallyDirection, hash_file, parse_algos,
+};
 use std::io::IsTerminal;
 use std::mem::discriminant;
 use std::path::Path;
@@ -135,8 +137,87 @@ fn finish_single(
     Ok(())
 }
 
+fn hash_single(
+    progress: &dyn rom_converto_lib::util::ProgressReporter,
+    input: &Path,
+    algos: &[HashAlgo],
+    report: Option<&Path>,
+) -> Result<()> {
+    use rom_converto_lib::util::{
+        FileStatus, HashReportRecord, ReportFormat, ReportTotals, write_hash_report,
+    };
+
+    let started = Instant::now();
+    let mut tally = Tally::new();
+    let result = hash_file(input, algos, progress);
+    let elapsed_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+
+    let (record, outcome) = match result {
+        Ok(d) => {
+            print_hash_row(input, &d, algos);
+            tally.record_ok(d.size_bytes, 0, started.elapsed());
+            let record = HashReportRecord {
+                path: input.display().to_string(),
+                crc32: d.crc32.clone(),
+                sha1: d.sha1.clone(),
+                md5: d.md5.clone(),
+                sha256: d.sha256.clone(),
+                size_bytes: d.size_bytes,
+                status: FileStatus::Ok,
+                elapsed_ms,
+                error: None,
+            };
+            (record, Ok(d.size_bytes))
+        }
+        Err(e) => {
+            log::warn!("Failed to hash {}: {e}", input.display());
+            tally.record_failed();
+            let record = HashReportRecord {
+                path: input.display().to_string(),
+                crc32: None,
+                sha1: None,
+                md5: None,
+                sha256: None,
+                size_bytes: 0,
+                status: FileStatus::Failed,
+                elapsed_ms,
+                error: Some(e.to_string()),
+            };
+            (record, Err(e))
+        }
+    };
+
+    if let Some(path) = report {
+        let totals = ReportTotals {
+            total_files: 1,
+            ok: outcome.is_ok() as usize,
+            failed: outcome.is_err() as usize,
+            total_input_bytes: *outcome.as_ref().unwrap_or(&0),
+            elapsed_ms,
+            ..ReportTotals::default()
+        };
+        write_hash_report(path, &[record], &totals, ReportFormat::from_path(path))?;
+    }
+
+    match outcome {
+        Ok(_) => {
+            log_count_summary(tally.count(), tally);
+            Ok(())
+        }
+        Err(_) => anyhow::bail!("failed to hash {}", input.display()),
+    }
+}
+
 fn log_count_summary(count: usize, tally: Tally) {
     log::info!("{}", Tally::count_summary(count, tally.elapsed()));
+}
+
+pub(crate) fn print_hash_row(path: &Path, d: &FileDigests, algos: &[HashAlgo]) {
+    let cells: Vec<String> = algos
+        .iter()
+        .map(|a| format!("{}={}", a.label(), d.value(*a).unwrap_or("")))
+        .collect();
+    log::info!("{}  {}", path.display(), cells.join("  "));
 }
 
 fn log_skipped(output: &Path) {
@@ -1403,6 +1484,24 @@ async fn main() -> Result<()> {
                 merge_bin(&progress, cmd.input_cue, output_cue, true).await?
             }
         },
+        Commands::Hash(cmd) => {
+            let algos = parse_algos(&cmd.algo).map_err(|e| anyhow::anyhow!(e))?;
+            if cmd.recursive {
+                require_dir(&cmd.input)?;
+                batch::hash_batch(
+                    &progress,
+                    &total_progress,
+                    &cmd.input,
+                    &algos,
+                    cmd.max_depth,
+                    cmd.report.as_deref(),
+                )
+                .await?;
+            } else {
+                ensure_input_exists(&cmd.input)?;
+                hash_single(&progress, &cmd.input, &algos, cmd.report.as_deref())?;
+            }
+        }
         Commands::SelfUpdate(_) => self_update(&mut github).await?,
         Commands::ShellCompletions(_) => unreachable!("handled before logger init"),
     }

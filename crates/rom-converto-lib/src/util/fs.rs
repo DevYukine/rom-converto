@@ -42,6 +42,34 @@ pub fn collect_files_with_exts(
     Ok(out)
 }
 
+/// Recursive listing of every regular file under `dir`, sorted for
+/// deterministic processing order. Unlike `collect_files_with_exts` this
+/// applies no extension filter, so it suits format-agnostic operations.
+///
+/// `max_depth` follows the same convention as `collect_files_with_exts`:
+/// files directly in `dir` are depth 1, `None` descends without limit, and
+/// symlinked directories are not followed.
+pub fn collect_all_files(dir: &Path, max_depth: Option<usize>) -> std::io::Result<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    let mut stack = vec![(dir.to_path_buf(), 1usize)];
+    while let Some((current, depth)) = stack.pop() {
+        for entry in std::fs::read_dir(&current)? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            let path = entry.path();
+            if file_type.is_dir() && !file_type.is_symlink() {
+                if max_depth.is_none_or(|limit| depth < limit) {
+                    stack.push((path, depth + 1));
+                }
+            } else if file_type.is_file() {
+                out.push(path);
+            }
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,5 +202,34 @@ mod tests {
 
         let found = collect_files_with_exts(dir.path(), &["iso"], None).unwrap();
         assert_eq!(found, vec![real.join("a.iso")]);
+    }
+
+    #[test]
+    fn collect_all_files_ignores_extensions_and_recurses() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.iso"), b"x").unwrap();
+        std::fs::write(dir.path().join("b.txt"), b"x").unwrap();
+        std::fs::write(dir.path().join("noext"), b"x").unwrap();
+        let sub = dir.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("c.bin"), b"x").unwrap();
+
+        let found = collect_all_files(dir.path(), None).unwrap();
+        assert_eq!(found.len(), 4);
+        let mut sorted = found.clone();
+        sorted.sort();
+        assert_eq!(found, sorted);
+    }
+
+    #[test]
+    fn collect_all_files_max_depth_one_is_top_level_only() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.bin"), b"x").unwrap();
+        let sub = dir.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("b.bin"), b"x").unwrap();
+
+        let found = collect_all_files(dir.path(), Some(1)).unwrap();
+        assert_eq!(found, vec![dir.path().join("a.bin")]);
     }
 }

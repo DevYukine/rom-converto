@@ -83,6 +83,7 @@ Where each format works:
 
 * [x] Command line interface with progress bars and a post-run space-saved summary
 * [x] Desktop GUI with drag and drop batch processing
+* [x] Standalone `hash` command for crc32 / sha1 / md5 / sha256 digests with report export
 * [x] Self update from GitHub releases (CLI)
 
 ## GUI Application
@@ -373,6 +374,32 @@ Flags match the `dol` commands. `--full` on `rvl verify` decrypts every partitio
 
 ---
 
+### Hash
+
+```
+rom-converto hash <INPUT> [--algo crc32,sha1,md5,sha256] [-R] [--max-depth N] [--report FILE]
+```
+
+Compute plain checksums for a file, or for every file in a directory with `-R`. This is a digest tool only: it reads the bytes and prints the hashes. It does no DAT or database lookup and compares nothing against any reference set.
+
+```
+rom-converto hash game.iso
+rom-converto hash game.iso --algo sha1,sha256
+rom-converto hash -R ./roms --report hashes.csv
+```
+
+| Flag | Description |
+|---|---|
+| `<INPUT>` | A file, or a directory with `-R` |
+| `--algo <ALGOS>` | Comma-separated digests: `crc32`, `sha1`, `md5`, `sha256`. Default `crc32,sha1` |
+| `-R`, `--recursive` | Hash every file under INPUT, descending into subdirectories |
+| `--max-depth <N>` | Limit recursion depth when `-R` is set. 1 = top level only. Requires `-R` |
+| `--report <FILE>` | Write a run report to FILE. Format inferred from the extension: `.csv`, `.json`, `.html` or `.htm`. Unknown extensions default to JSON. Overwritten directly |
+
+All digests are computed in a single streaming pass per file, so memory stays constant no matter how large the input is. Hashes print as lowercase hex (crc32 is 8 hex characters). Any file type is accepted. Empty files produce the valid digests of empty input. Unreadable files are reported and skipped without aborting the batch. The report carries its own column schema (`path, crc32, sha1, md5, sha256, size_bytes, status, elapsed_ms, error`) with no size-ratio column, since hashing produces no output file.
+
+---
+
 ### Info
 
 ```
@@ -430,9 +457,11 @@ Checks GitHub for a newer release and replaces the current binary in place.
 
 ## Run Reports
 
-Pass `--report <FILE>` to `compress`, `decompress`, or `chd extract` to write a structured report of the run. The format is chosen from the file extension: `.csv` writes CSV, `.json` writes JSON, `.html` and `.htm` write a self-contained HTML table. Any other extension, or no extension, writes JSON. The report file is always created and overwritten directly; it does not go through `--on-conflict`. The numbers match the closing summary line.
+Pass `--report <FILE>` to `compress`, `decompress`, `chd extract`, or `hash` to write a structured report of the run. The format is chosen from the file extension: `.csv` writes CSV, `.json` writes JSON, `.html` and `.htm` write a self-contained HTML table. Any other extension, or no extension, writes JSON. The report file is always created and overwritten directly; it does not go through `--on-conflict`. The numbers match the closing summary line.
 
 The CTR (3DS) commands and all `verify` commands are not yet covered.
+
+The `hash` command uses its own column schema, since it produces digests rather than a converted file: `path`, `crc32`, `sha1`, `md5`, `sha256`, `size_bytes`, `status`, `elapsed_ms`, `error`. Digest cells are empty for algorithms that were not requested, and there is no size-ratio column. The rest of this section describes the conversion report schema.
 
 The columns are stable and appear in this order: `input_path`, `output_path`, `operation`, `status`, `input_bytes`, `output_bytes`, `ratio_pct`, `elapsed_ms`, `error`. `status` is `ok`, `skipped`, or `failed`. `input_bytes` and `output_bytes` are raw byte counts. `ratio_pct` is the space saved as a percent: positive when compression shrank the file, negative when decompression expanded it (honest expansion), and empty or `null` for skipped, failed, or zero-input rows. `output_path` and `error` are empty for skipped and failed rows.
 

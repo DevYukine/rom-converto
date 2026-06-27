@@ -1,10 +1,11 @@
 use crate::util::{WriteDecision, resolve_output};
 use anyhow::Result;
 use log::{info, warn};
-use rom_converto_lib::util::fs::collect_files_with_exts;
+use rom_converto_lib::util::fs::{collect_all_files, collect_files_with_exts};
 use rom_converto_lib::util::{
-    ConflictPolicy, FileStatus, ProgressReporter, ReportFormat, ReportRecord, ReportTotals, Tally,
-    TallyDirection, write_report,
+    ConflictPolicy, FileDigests, FileStatus, HashAlgo, HashReportRecord, ProgressReporter,
+    ReportFormat, ReportRecord, ReportTotals, Tally, TallyDirection, hash_file, write_hash_report,
+    write_report,
 };
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -936,4 +937,85 @@ pub async fn cso_compress(
     }
     total_progress.finish();
     finish_tally(&tally, TallyDirection::Compress, &records, report_path)
+}
+
+fn hash_ok_record(path: &Path, d: &FileDigests, started: Instant) -> HashReportRecord {
+    HashReportRecord {
+        path: path.display().to_string(),
+        crc32: d.crc32.clone(),
+        sha1: d.sha1.clone(),
+        md5: d.md5.clone(),
+        sha256: d.sha256.clone(),
+        size_bytes: d.size_bytes,
+        status: FileStatus::Ok,
+        elapsed_ms: elapsed_ms(started),
+        error: None,
+    }
+}
+
+fn hash_failed_record(
+    path: &Path,
+    started: Instant,
+    error: impl std::fmt::Display,
+) -> HashReportRecord {
+    HashReportRecord {
+        path: path.display().to_string(),
+        crc32: None,
+        sha1: None,
+        md5: None,
+        sha256: None,
+        size_bytes: 0,
+        status: FileStatus::Failed,
+        elapsed_ms: elapsed_ms(started),
+        error: Some(error.to_string()),
+    }
+}
+
+pub async fn hash_batch(
+    progress: &dyn ProgressReporter,
+    total_progress: &dyn ProgressReporter,
+    input_dir: &Path,
+    algos: &[HashAlgo],
+    max_depth: Option<usize>,
+    report_path: Option<&Path>,
+) -> Result<()> {
+    let files = collect_all_files(input_dir, max_depth)?;
+    if files.is_empty() {
+        warn!("No files found in {}", input_dir.display());
+        return Ok(());
+    }
+    let total = files.len();
+    total_progress.start(total as u64, &format!("Hashing {total} files..."));
+    let mut tally = Tally::new();
+    let mut records: Vec<HashReportRecord> = Vec::new();
+    for path in files {
+        let started = Instant::now();
+        match hash_file(&path, algos, progress) {
+            Ok(d) => {
+                crate::print_hash_row(&path, &d, algos);
+                tally.record_ok(d.size_bytes, 0, started.elapsed());
+                records.push(hash_ok_record(&path, &d, started));
+            }
+            Err(e) => {
+                warn!("Failed to hash {}: {e}", path.display());
+                tally.record_failed();
+                records.push(hash_failed_record(&path, started, e));
+            }
+        }
+        total_progress.inc(1);
+    }
+    total_progress.finish();
+    info!("{}", tally.summary_line(TallyDirection::CountOnly));
+    // Hashing is read-only diagnostics, so a per-file read failure must not
+    // abort the run: it is recorded and we move on. The report is still
+    // written so a failing file is captured on disk.
+    if let Some(path) = report_path {
+        write_hash_report(
+            path,
+            &records,
+            &totals_from(&tally),
+            ReportFormat::from_path(path),
+        )?;
+    }
+    Ok(())
 }

@@ -257,6 +257,150 @@ td.num{{text-align:right;font-variant-numeric:tabular-nums}}</style>"
     Ok(())
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct HashReportRecord {
+    pub path: String,
+    pub crc32: Option<String>,
+    pub sha1: Option<String>,
+    pub md5: Option<String>,
+    pub sha256: Option<String>,
+    pub size_bytes: u64,
+    #[serde(serialize_with = "ser_status")]
+    pub status: FileStatus,
+    pub elapsed_ms: u64,
+    pub error: Option<String>,
+}
+
+/// Write a hash run report to `path`, reusing the same CSV/JSON/HTML
+/// infrastructure as `write_report`. Digest columns replace the
+/// conversion-shaped output/ratio columns, since hashing has no output file.
+pub fn write_hash_report(
+    path: &Path,
+    records: &[HashReportRecord],
+    totals: &ReportTotals,
+    format: ReportFormat,
+) -> Result<()> {
+    let file = std::fs::File::create(path)
+        .with_context(|| format!("creating report file {}", path.display()))?;
+    let mut w = BufWriter::new(file);
+    match format {
+        ReportFormat::Csv => write_hash_csv(&mut w, records)?,
+        ReportFormat::Json => write_hash_json(&mut w, records, totals)?,
+        ReportFormat::Html => write_hash_html(&mut w, records, totals)?,
+    }
+    w.flush()?;
+    Ok(())
+}
+
+const HASH_CSV_HEADER: &str = "path,crc32,sha1,md5,sha256,size_bytes,status,elapsed_ms,error";
+
+fn write_hash_csv<W: Write>(w: &mut W, records: &[HashReportRecord]) -> Result<()> {
+    writeln!(w, "{HASH_CSV_HEADER}")?;
+    for r in records {
+        writeln!(
+            w,
+            "{},{},{},{},{},{},{},{},{}",
+            csv_field(&r.path),
+            r.crc32.as_deref().unwrap_or(""),
+            r.sha1.as_deref().unwrap_or(""),
+            r.md5.as_deref().unwrap_or(""),
+            r.sha256.as_deref().unwrap_or(""),
+            r.size_bytes,
+            status_str(r.status),
+            r.elapsed_ms,
+            csv_field(r.error.as_deref().unwrap_or("")),
+        )?;
+    }
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct HashReportDoc<'a> {
+    files: &'a [HashReportRecord],
+    totals: &'a ReportTotals,
+}
+
+fn write_hash_json<W: Write>(
+    w: &mut W,
+    records: &[HashReportRecord],
+    totals: &ReportTotals,
+) -> Result<()> {
+    let doc = HashReportDoc {
+        files: records,
+        totals,
+    };
+    serde_json::to_writer_pretty(&mut *w, &doc)?;
+    writeln!(w)?;
+    Ok(())
+}
+
+fn write_hash_html<W: Write>(
+    w: &mut W,
+    records: &[HashReportRecord],
+    totals: &ReportTotals,
+) -> Result<()> {
+    writeln!(w, "<!DOCTYPE html>")?;
+    writeln!(w, "<html lang=\"en\">")?;
+    writeln!(w, "<head>")?;
+    writeln!(w, "<meta charset=\"utf-8\">")?;
+    writeln!(w, "<title>rom-converto hash report</title>")?;
+    writeln!(
+        w,
+        "<style>body{{font-family:sans-serif;margin:1.5rem}}\
+table{{border-collapse:collapse;width:100%}}\
+th,td{{border:1px solid #ccc;padding:4px 8px;text-align:left;font-size:14px}}\
+thead th{{background:#f0f0f0}}\
+tfoot td{{font-weight:bold;background:#f7f7f7}}\
+td.num{{text-align:right;font-variant-numeric:tabular-nums}}</style>"
+    )?;
+    writeln!(w, "</head>")?;
+    writeln!(w, "<body>")?;
+    writeln!(w, "<h1>Hash report</h1>")?;
+    writeln!(w, "<table>")?;
+    writeln!(w, "<thead><tr>")?;
+    for col in [
+        "Path", "CRC32", "SHA1", "MD5", "SHA256", "Size", "Status", "Elapsed", "Error",
+    ] {
+        write!(w, "<th>{col}</th>")?;
+    }
+    writeln!(w, "</tr></thead>")?;
+    writeln!(w, "<tbody>")?;
+    for r in records {
+        write!(w, "<tr>")?;
+        write!(w, "<td>{}</td>", html_escape(&r.path))?;
+        write!(w, "<td>{}</td>", r.crc32.as_deref().unwrap_or(""))?;
+        write!(w, "<td>{}</td>", r.sha1.as_deref().unwrap_or(""))?;
+        write!(w, "<td>{}</td>", r.md5.as_deref().unwrap_or(""))?;
+        write!(w, "<td>{}</td>", r.sha256.as_deref().unwrap_or(""))?;
+        write!(w, "<td class=\"num\">{}</td>", format_bytes(r.size_bytes))?;
+        write!(w, "<td>{}</td>", status_str(r.status))?;
+        write!(w, "<td class=\"num\">{} ms</td>", r.elapsed_ms)?;
+        write!(w, "<td>{}</td>", html_escape(r.error.as_deref().unwrap_or("")))?;
+        writeln!(w, "</tr>")?;
+    }
+    writeln!(w, "</tbody>")?;
+    writeln!(w, "<tfoot><tr>")?;
+    write!(
+        w,
+        "<td>{} files ({} ok, {} failed)</td>",
+        totals.total_files, totals.ok, totals.failed
+    )?;
+    write!(w, "<td></td><td></td><td></td><td>totals</td>")?;
+    write!(
+        w,
+        "<td class=\"num\">{}</td>",
+        format_bytes(totals.total_input_bytes)
+    )?;
+    write!(w, "<td></td>")?;
+    write!(w, "<td class=\"num\">{} ms</td>", totals.elapsed_ms)?;
+    write!(w, "<td></td>")?;
+    writeln!(w, "</tr></tfoot>")?;
+    writeln!(w, "</table>")?;
+    writeln!(w, "</body>")?;
+    writeln!(w, "</html>")?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -484,6 +628,69 @@ mod tests {
         };
         for format in [ReportFormat::Csv, ReportFormat::Json, ReportFormat::Html] {
             let out = render(&[ok_record()], &totals, format);
+            assert!(!out.contains('\u{2014}'), "em dash in {format:?}");
+            assert!(!out.contains('\u{2013}'), "en dash in {format:?}");
+        }
+    }
+
+    fn hash_ok_record() -> HashReportRecord {
+        HashReportRecord {
+            path: "game.iso".into(),
+            crc32: Some("352441c2".into()),
+            sha1: Some("a9993e364706816aba3e25717850c26c9cd0d89d".into()),
+            md5: None,
+            sha256: None,
+            size_bytes: 2048,
+            status: FileStatus::Ok,
+            elapsed_ms: 12,
+            error: None,
+        }
+    }
+
+    fn render_hash(records: &[HashReportRecord], format: ReportFormat) -> String {
+        let totals = ReportTotals::default();
+        let mut buf = Vec::new();
+        match format {
+            ReportFormat::Csv => write_hash_csv(&mut buf, records).unwrap(),
+            ReportFormat::Json => write_hash_json(&mut buf, records, &totals).unwrap(),
+            ReportFormat::Html => write_hash_html(&mut buf, records, &totals).unwrap(),
+        }
+        String::from_utf8(buf).unwrap()
+    }
+
+    #[test]
+    fn hash_csv_header_and_empty_cells() {
+        let out = render_hash(&[hash_ok_record()], ReportFormat::Csv);
+        let mut lines = out.lines();
+        assert_eq!(lines.next().unwrap(), HASH_CSV_HEADER);
+        let row = lines.next().unwrap();
+        assert!(
+            row.contains("a9993e364706816aba3e25717850c26c9cd0d89d,,,2048,ok,12,"),
+            "{row}"
+        );
+    }
+
+    #[test]
+    fn hash_json_schema() {
+        let out = render_hash(&[hash_ok_record()], ReportFormat::Json);
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["files"][0]["crc32"], "352441c2");
+        assert!(v["files"][0]["md5"].is_null());
+        assert_eq!(v["files"][0]["status"], "ok");
+    }
+
+    #[test]
+    fn hash_html_has_digest_columns() {
+        let out = render_hash(&[hash_ok_record()], ReportFormat::Html);
+        assert!(out.contains("<th>CRC32</th>"), "{out}");
+        assert!(out.contains("<th>SHA256</th>"), "{out}");
+        assert!(out.contains("352441c2"), "{out}");
+    }
+
+    #[test]
+    fn hash_report_has_no_unicode_dashes() {
+        for format in [ReportFormat::Csv, ReportFormat::Json, ReportFormat::Html] {
+            let out = render_hash(&[hash_ok_record()], format);
             assert!(!out.contains('\u{2014}'), "em dash in {format:?}");
             assert!(!out.contains('\u{2013}'), "en dash in {format:?}");
         }
