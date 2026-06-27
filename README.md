@@ -86,6 +86,7 @@ Where each format works:
 * [x] `--on-conflict overwrite-invalid` mode that verifies existing outputs and rewrites only the broken or missing ones
 * [x] Desktop GUI with drag and drop batch processing
 * [x] Standalone `hash` command for crc32 / sha1 / md5 / sha256 digests with report export
+* [x] `playlist` command to generate `.m3u` files for multi-disc sets (PS1, PS2, Saturn, Dreamcast) from filenames
 * [x] Self update from GitHub releases (CLI)
 
 ## GUI Application
@@ -487,6 +488,37 @@ rom-converto hash -R ./roms --report hashes.csv
 | `--report <FILE>` | Write a run report to FILE. Format inferred from the extension: `.csv`, `.json`, `.html` or `.htm`. Unknown extensions default to JSON. Overwritten directly |
 
 All digests are computed in a single streaming pass per file, so memory stays constant no matter how large the input is. Hashes print as lowercase hex (crc32 is 8 hex characters). Any file type is accepted. Empty files produce the valid digests of empty input. Unreadable files are reported and skipped without aborting the batch. The report carries its own column schema (`path, crc32, sha1, md5, sha256, size_bytes, status, elapsed_ms, error`) with no size-ratio column, since hashing produces no output file.
+
+---
+
+### Playlist
+
+```
+rom-converto playlist <DIR> [--playlist-mode multiple|always] [--ext EXTS] [--output-dir DIR] [--max-depth N] [--on-conflict POLICY] [-f]
+```
+
+Scan a directory for disc images and write one `.m3u` per multi-disc game so emulators (RetroArch, Batocera, ES-DE, RetroPie) can swap discs. Grouping is filename-based only; no DAT lookup is done. The scan is recursive by default, so a whole library can be processed in one run.
+
+```
+rom-converto playlist ./roms
+rom-converto playlist ./roms --playlist-mode always
+rom-converto playlist ./roms --ext cue,chd --max-depth 2
+```
+
+| Flag | Description |
+|---|---|
+| `<DIR>` | Directory to scan for disc images |
+| `--playlist-mode <MODE>` | `multiple` (default) writes an `.m3u` only for sets with more than one disc; `always` also writes a single-entry `.m3u` for single-disc games |
+| `--ext <EXTS>` | Comma-separated disc image extensions to scan. Default `cue,chd,iso,cso,zso` |
+| `--output-dir <DIR>` | Write the `.m3u` files here instead of beside the disc files |
+| `--max-depth <N>` | Limit scan depth. 1 = top level only. Omit for unlimited |
+| `--on-conflict <POLICY>`, `-f` | What to do when an `.m3u` already exists. `overwrite-invalid` has no integrity check for plain text, so it behaves as `skip` |
+
+The grouping matches the Redump `(Disc N)` and `(Disc N of M)` conventions and the TOSEC `Disc N of M` and `(Disc N of M)` conventions. The base title is the filename with the disc token and its surrounding parentheses and whitespace removed; the `.m3u` is named after that base title. The match is case-insensitive on the word "Disc", and the word must be preceded by `(` or whitespace, so titles that genuinely contain it (`Discworld`, `Disco Elysium`) are never mis-grouped. When a name carries other parenthesized tags, only the last `(Disc N)` token is stripped, so a region tag like `(USA)` survives in the title.
+
+Disc numbers are parsed as integers and sort numerically, so `Disc 2` precedes `Disc 10` and `Disc 01` equals `Disc 1`. Mixed extensions in one set are grouped together, so a set can list `Game (Disc 1).cue` and `Game (Disc 2).chd`. Entries are relative paths from the `.m3u` location and always use forward slashes, which is what frontends expect. When the discs of one set share a directory the `.m3u` is written next to them; when a set spans subdirectories the `.m3u` is written at the scan root with relative entries pointing into the subdirectories. Duplicate disc numbers are kept and a warning is printed. Output ordering is deterministic. With `--dry-run` the command prints which `.m3u` files would be written along with their full contents and writes nothing.
+
+The GUI does not expose playlist generation yet; it is a planned follow-up.
 
 ---
 

@@ -6,6 +6,7 @@ use crate::commands::cue::CueCommands;
 use crate::commands::dol::DolCommands;
 use crate::commands::hash::HashCommand;
 use crate::commands::nx::NxCommands;
+use crate::commands::playlist::PlaylistCommand;
 use crate::commands::rvl::RvlCommands;
 use crate::commands::wup::WupCommands;
 use clap::{Parser, Subcommand};
@@ -21,6 +22,7 @@ pub mod dol;
 pub mod hash;
 pub mod info_command;
 pub mod nx;
+pub mod playlist;
 pub mod rvl;
 pub mod wup;
 
@@ -113,6 +115,8 @@ pub enum Commands {
     Cue(CueCommands),
 
     Hash(HashCommand),
+
+    Playlist(PlaylistCommand),
 
     SelfUpdate(SelfUpdateCommand),
 

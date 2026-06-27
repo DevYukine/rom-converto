@@ -5,6 +5,7 @@ use crate::commands::ctr::CtrCommands;
 use crate::commands::cue::CueCommands;
 use crate::commands::dol::DolCommands;
 use crate::commands::nx::NxCommands;
+use crate::commands::playlist::PlaylistModeArg;
 use crate::commands::rvl::RvlCommands;
 use crate::commands::wup::WupCommands;
 use crate::commands::{Cli, Commands, SelfUpdateCommand};
@@ -56,6 +57,7 @@ use rom_converto_lib::nintendo::wup::{
     TitleInput, WupCompressOptions, compress_titles_async, decrypt_nus_title_async,
     verify_wup_async,
 };
+use rom_converto_lib::playlist::{PlaylistMode, PlaylistOptions, plan_playlists};
 use rom_converto_lib::util::fs::collect_files_with_exts;
 use rom_converto_lib::util::{
     FileDigests, HashAlgo, Tally, TallyDirection, hash_file, parse_algos,
@@ -2336,6 +2338,79 @@ async fn main() -> Result<()> {
                 hash_single(&progress, &cmd.input, &algos, cmd.report.as_deref())?;
             }
         }
+        Commands::Playlist(cmd) => {
+            require_dir(&cmd.input)?;
+
+            let exts: Vec<String> = cmd
+                .extensions
+                .split(',')
+                .map(|s| s.trim().to_ascii_lowercase())
+                .filter(|s| !s.is_empty())
+                .collect();
+            let ext_refs: Vec<&str> = exts.iter().map(String::as_str).collect();
+
+            let mode = match cmd.playlist_mode {
+                PlaylistModeArg::Multiple => PlaylistMode::Multiple,
+                PlaylistModeArg::Always => PlaylistMode::Always,
+            };
+
+            let plans = plan_playlists(&PlaylistOptions {
+                scan_dir: &cmd.input,
+                output_dir: cmd.output_dir.as_deref(),
+                extensions: &ext_refs,
+                mode,
+                max_depth: cmd.max_depth,
+            })?;
+
+            // An .m3u has no integrity check, so overwrite-invalid degrades to skip.
+            let policy = policy_of(
+                cmd.on_conflict
+                    .unwrap_or(crate::commands::ConflictPolicyArg::Error),
+                cmd.force,
+            );
+
+            if !dry_run && let Some(dir) = cmd.output_dir.as_deref() {
+                std::fs::create_dir_all(dir)?;
+            }
+
+            let mut tally = Tally::new();
+            let started = Instant::now();
+
+            for plan in &plans {
+                if plan.has_duplicate_numbers {
+                    log::warn!(
+                        "duplicate disc numbers in set {}, including all entries",
+                        plan.base_title
+                    );
+                }
+                let decision = resolve_output(&plan.m3u_path, policy)?;
+                if dry_run {
+                    dry_run::log_plan("write", &cmd.input, &plan.m3u_path, &decision, None, None);
+                    for line in plan.contents.lines() {
+                        log::info!("    {line}");
+                    }
+                    dry_run::record(&mut tally, &cmd.input, &decision);
+                    continue;
+                }
+                match decision {
+                    WriteDecision::Write(path) => {
+                        std::fs::write(&path, &plan.contents)?;
+                        log::info!("wrote {} ({} discs)", path.display(), plan.disc_count);
+                        tally.record_ok(0, 0, std::time::Duration::ZERO);
+                    }
+                    WriteDecision::Skip => {
+                        log::info!("skipped existing {}", plan.m3u_path.display());
+                        tally.record_skipped();
+                    }
+                }
+            }
+
+            if dry_run {
+                dry_run::finish(&tally, &[], None)?;
+            } else {
+                log::info!("{}", Tally::count_summary(tally.count(), started.elapsed()));
+            }
+        }
         Commands::SelfUpdate(_) => self_update(&mut github).await?,
         Commands::ShellCompletions(_) => unreachable!("handled before logger init"),
     }
@@ -2357,10 +2432,7 @@ fn should_check_for_updates(no_update_check: bool) -> bool {
 
 fn require_dir(input: &std::path::Path) -> Result<()> {
     if !input.is_dir() {
-        anyhow::bail!(
-            "INPUT must be a directory when --recursive is set: {}",
-            input.display()
-        );
+        anyhow::bail!("expected a directory: {}", input.display());
     }
     Ok(())
 }
