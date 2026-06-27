@@ -1,3 +1,4 @@
+use crate::commands::ConflictPolicyArg;
 use crate::commands::info_command::InfoCommand;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -63,8 +64,12 @@ pub struct CdnToCiaCommand {
     #[arg(long, short = 'Z', default_value = "false")]
     pub compress: bool,
 
-    /// Overwrite the output file if it already exists
-    #[arg(long, short = 'f', default_value_t = false)]
+    /// What to do when an output already exists: error, overwrite, skip, or rename to a numbered sibling
+    #[arg(long = "on-conflict", value_enum, default_value_t = ConflictPolicyArg::Error)]
+    pub on_conflict: ConflictPolicyArg,
+
+    /// Alias for --on-conflict overwrite
+    #[arg(long, short = 'f', default_value_t = false, conflicts_with = "on_conflict")]
     pub force: bool,
 }
 
@@ -118,8 +123,12 @@ pub struct DecryptCommand {
     #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
     pub max_depth: Option<usize>,
 
-    /// Overwrite the output file if it already exists
-    #[arg(long, short = 'f', default_value_t = false)]
+    /// What to do when an output already exists: error, overwrite, skip, or rename to a numbered sibling
+    #[arg(long = "on-conflict", value_enum, default_value_t = ConflictPolicyArg::Error)]
+    pub on_conflict: ConflictPolicyArg,
+
+    /// Alias for --on-conflict overwrite
+    #[arg(long, short = 'f', default_value_t = false, conflicts_with = "on_conflict")]
     pub force: bool,
 }
 
@@ -165,8 +174,12 @@ pub struct CompressRomCommand {
     #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
     pub max_depth: Option<usize>,
 
-    /// Overwrite the output file if it already exists
-    #[arg(long, short = 'f', default_value_t = false)]
+    /// What to do when an output already exists: error, overwrite, skip, or rename to a numbered sibling
+    #[arg(long = "on-conflict", value_enum, default_value_t = ConflictPolicyArg::Error)]
+    pub on_conflict: ConflictPolicyArg,
+
+    /// Alias for --on-conflict overwrite
+    #[arg(long, short = 'f', default_value_t = false, conflicts_with = "on_conflict")]
     pub force: bool,
 }
 
@@ -205,8 +218,12 @@ pub struct DecompressRomCommand {
     #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
     pub max_depth: Option<usize>,
 
-    /// Overwrite the output file if it already exists
-    #[arg(long, short = 'f', default_value_t = false)]
+    /// What to do when an output already exists: error, overwrite, skip, or rename to a numbered sibling
+    #[arg(long = "on-conflict", value_enum, default_value_t = ConflictPolicyArg::Error)]
+    pub on_conflict: ConflictPolicyArg,
+
+    /// Alias for --on-conflict overwrite
+    #[arg(long, short = 'f', default_value_t = false, conflicts_with = "on_conflict")]
     pub force: bool,
 }
 
@@ -245,8 +262,12 @@ pub struct ConvertCommand {
     #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
     pub max_depth: Option<usize>,
 
-    /// Overwrite the output file if it already exists
-    #[arg(long, short = 'f', default_value_t = false)]
+    /// What to do when an output already exists: error, overwrite, skip, or rename to a numbered sibling
+    #[arg(long = "on-conflict", value_enum, default_value_t = ConflictPolicyArg::Error)]
+    pub on_conflict: ConflictPolicyArg,
+
+    /// Alias for --on-conflict overwrite
+    #[arg(long, short = 'f', default_value_t = false, conflicts_with = "on_conflict")]
     pub force: bool,
 }
 
@@ -322,6 +343,50 @@ mod tests {
         };
         assert_eq!(c.output_dir, Some(PathBuf::from("out")));
         assert_eq!(c.output, None);
+    }
+
+    #[test]
+    fn parses_on_conflict_skip() {
+        let h = Harness::parse_from(["bin", "compress", "game.cia", "--on-conflict", "skip"]);
+        let CtrCommands::Compress(c) = h.cmd else {
+            panic!("expected Compress");
+        };
+        assert_eq!(c.on_conflict, ConflictPolicyArg::Skip);
+    }
+
+    #[test]
+    fn parses_on_conflict_rename() {
+        let h = Harness::parse_from(["bin", "compress", "game.cia", "--on-conflict", "rename"]);
+        let CtrCommands::Compress(c) = h.cmd else {
+            panic!("expected Compress");
+        };
+        assert_eq!(c.on_conflict, ConflictPolicyArg::Rename);
+    }
+
+    #[test]
+    fn force_still_accepted() {
+        let h = Harness::parse_from(["bin", "compress", "game.cia", "-f"]);
+        let CtrCommands::Compress(c) = h.cmd else {
+            panic!("expected Compress");
+        };
+        assert!(c.force);
+        assert_eq!(c.on_conflict, ConflictPolicyArg::Error);
+    }
+
+    #[test]
+    fn force_and_on_conflict_conflict() {
+        let result =
+            Harness::try_parse_from(["bin", "compress", "game.cia", "-f", "--on-conflict", "skip"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn defaults_on_conflict_to_error() {
+        let h = Harness::parse_from(["bin", "compress", "game.cia"]);
+        let CtrCommands::Compress(c) = h.cmd else {
+            panic!("expected Compress");
+        };
+        assert_eq!(c.on_conflict, ConflictPolicyArg::Error);
     }
 
     #[test]

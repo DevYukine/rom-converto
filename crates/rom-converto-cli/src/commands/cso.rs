@@ -1,3 +1,4 @@
+use crate::commands::ConflictPolicyArg;
 use crate::commands::info_command::InfoCommand;
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
@@ -60,8 +61,12 @@ pub struct CompressCommand {
     #[arg(long, value_name = "BYTES")]
     pub block_size: Option<u32>,
 
-    /// Force overwrite of the output file if it already exists
-    #[arg(long, short = 'f', default_value_t = false)]
+    /// What to do when an output already exists: error, overwrite, skip, or rename to a numbered sibling
+    #[arg(long = "on-conflict", value_enum, default_value_t = ConflictPolicyArg::Error)]
+    pub on_conflict: ConflictPolicyArg,
+
+    /// Alias for --on-conflict overwrite
+    #[arg(long, short = 'f', default_value_t = false, conflicts_with = "on_conflict")]
     pub force: bool,
 
     /// Compress every .iso found in the INPUT directory and its subdirectories
@@ -97,8 +102,12 @@ pub struct DecompressCommand {
     #[arg(long = "output-dir", value_name = "DIR", conflicts_with_all = ["output", "output_flag"])]
     pub output_dir: Option<PathBuf>,
 
-    /// Force overwrite of the output file if it already exists
-    #[arg(long, short = 'f', default_value_t = false)]
+    /// What to do when an output already exists: error, overwrite, skip, or rename to a numbered sibling
+    #[arg(long = "on-conflict", value_enum, default_value_t = ConflictPolicyArg::Error)]
+    pub on_conflict: ConflictPolicyArg,
+
+    /// Alias for --on-conflict overwrite
+    #[arg(long, short = 'f', default_value_t = false, conflicts_with = "on_conflict")]
     pub force: bool,
 
     /// Decompress every .cso and .zso found in the INPUT directory and its subdirectories

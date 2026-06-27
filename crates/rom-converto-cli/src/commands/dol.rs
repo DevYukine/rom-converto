@@ -1,3 +1,4 @@
+use crate::commands::ConflictPolicyArg;
 use crate::commands::info_command::InfoCommand;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -74,8 +75,12 @@ pub struct CompressDiscCommand {
     #[arg(long)]
     pub chunk_size: Option<u32>,
 
-    /// Overwrite the output file if it already exists
-    #[arg(long, short = 'f', default_value_t = false)]
+    /// What to do when an output already exists: error, overwrite, skip, or rename to a numbered sibling
+    #[arg(long = "on-conflict", value_enum, default_value_t = ConflictPolicyArg::Error)]
+    pub on_conflict: ConflictPolicyArg,
+
+    /// Alias for --on-conflict overwrite
+    #[arg(long, short = 'f', default_value_t = false, conflicts_with = "on_conflict")]
     pub force: bool,
 
     /// Compress every .iso and .gcm found in the INPUT directory and its subdirectories
@@ -114,8 +119,12 @@ pub struct DecompressDiscCommand {
     #[arg(long = "output-dir", value_name = "DIR", conflicts_with_all = ["output", "output_flag"])]
     pub output_dir: Option<PathBuf>,
 
-    /// Overwrite the output file if it already exists
-    #[arg(long, short = 'f', default_value_t = false)]
+    /// What to do when an output already exists: error, overwrite, skip, or rename to a numbered sibling
+    #[arg(long = "on-conflict", value_enum, default_value_t = ConflictPolicyArg::Error)]
+    pub on_conflict: ConflictPolicyArg,
+
+    /// Alias for --on-conflict overwrite
+    #[arg(long, short = 'f', default_value_t = false, conflicts_with = "on_conflict")]
     pub force: bool,
 
     /// Decompress every .rvz found in the INPUT directory and its subdirectories

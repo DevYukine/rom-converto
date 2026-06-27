@@ -1,3 +1,4 @@
+pub mod conflict;
 pub mod fs;
 pub mod iso9660;
 pub mod maker_codes;
@@ -6,6 +7,7 @@ pub mod pread;
 pub mod tally;
 pub mod worker_pool;
 
+pub use conflict::{ConflictPolicy, ConflictResolution, resolve_conflict};
 pub use tally::{FileEntry, FileStatus, Tally, TallyDirection, format_bytes};
 
 pub const BYTES_PER_MB: f64 = 1_000_000.0;

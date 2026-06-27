@@ -8,6 +8,7 @@ use crate::commands::nx::NxCommands;
 use crate::commands::rvl::RvlCommands;
 use crate::commands::wup::WupCommands;
 use clap::{Parser, Subcommand};
+use rom_converto_lib::util::ConflictPolicy;
 
 pub mod chd;
 pub mod completions;
@@ -94,3 +95,22 @@ pub enum Commands {
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(long_about = "Check for a newer version of the CLI and install it if one is available.")]
 pub struct SelfUpdateCommand {}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum ConflictPolicyArg {
+    Error,
+    Overwrite,
+    Skip,
+    Rename,
+}
+
+impl From<ConflictPolicyArg> for ConflictPolicy {
+    fn from(arg: ConflictPolicyArg) -> Self {
+        match arg {
+            ConflictPolicyArg::Error => ConflictPolicy::Error,
+            ConflictPolicyArg::Overwrite => ConflictPolicy::Overwrite,
+            ConflictPolicyArg::Skip => ConflictPolicy::Skip,
+            ConflictPolicyArg::Rename => ConflictPolicy::Rename,
+        }
+    }
+}

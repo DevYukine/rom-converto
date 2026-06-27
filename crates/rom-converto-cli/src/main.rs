@@ -11,7 +11,8 @@ use crate::commands::{Cli, Commands, SelfUpdateCommand};
 use crate::github::api::GithubApi;
 use crate::updater::{check_for_new_version_and_notify, cleanup_old_executable, self_update};
 use crate::util::{
-    IndicatifProgress, ensure_input_exists, ensure_output_dir_writable, ensure_output_writable,
+    IndicatifProgress, WriteDecision, ensure_input_exists, policy_of, resolve_output,
+    resolve_output_dir,
 };
 use anyhow::Result;
 use clap::{CommandFactory, Parser};
@@ -19,12 +20,10 @@ use clap_complete::{generate, generate_to};
 use indicatif::MultiProgress;
 use indicatif_log_bridge::LogWrapper;
 use rom_converto_lib::chd::{
-    ChdDvdOptions, DiscMode, convert_disc_to_chd, convert_disc_to_chd_batch, extract_from_chd,
-    extract_from_chd_batch, verify_chd, verify_chd_batch,
+    ChdDvdOptions, DiscMode, convert_disc_to_chd, extract_from_chd, verify_chd, verify_chd_batch,
 };
 use rom_converto_lib::cso::{
-    CsoCompressOptions, CsoFormat, compress_to_cso, compress_to_cso_batch, decompress_from_cso,
-    verify_cso,
+    CsoCompressOptions, CsoFormat, compress_to_cso, decompress_from_cso, verify_cso,
 };
 use rom_converto_lib::cue::merge::merge_bin;
 use rom_converto_lib::nintendo::ctr::convert::{
@@ -82,9 +81,6 @@ const CTR_DECRYPT_EXTS: &[&str] = &["cia", "3ds", "cci", "cxi"];
 const CTR_COMPRESS_EXTS: &[&str] = &["cia", "cci", "3ds", "cxi", "3dsx"];
 const CTR_DECOMPRESS_EXTS: &[&str] = &["zcia", "zcci", "zcxi", "z3dsx"];
 const CTR_CONVERT_EXTS: &[&str] = &["cia", "3ds", "cci"];
-const CHD_COMPRESS_EXTS: &[&str] = &["cue", "iso"];
-const CHD_EXTRACT_EXTS: &[&str] = &["chd"];
-const CSO_COMPRESS_EXTS: &[&str] = &["iso"];
 
 fn file_len(path: &Path) -> u64 {
     std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
@@ -98,6 +94,10 @@ fn log_single_summary(input: &Path, output: &Path, direction: TallyDirection, st
 
 fn log_count_summary(count: usize, tally: Tally) {
     log::info!("{}", Tally::count_summary(count, tally.elapsed()));
+}
+
+fn log_skipped(output: &Path) {
+    log::info!("skipped, output exists: {}", output.display());
 }
 
 /// Decompress targets a WBFS container when the resolved output path
@@ -178,13 +178,14 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Ctr(inner) => match inner {
             CtrCommands::CdnToCia(cmd) => {
-                let output = cmd.output_flag.or(cmd.output);
+                let mut output = cmd.output_flag.or(cmd.output);
+                let mut output_dir = cmd.output_dir;
                 if !cmd.recursive {
                     ensure_input_exists(&cmd.cdn_dir)?;
                     let base = match output.clone() {
                         Some(p) => p,
                         None => {
-                            if let Some(dir) = cmd.output_dir.as_deref() {
+                            if let Some(dir) = output_dir.as_deref() {
                                 std::fs::create_dir_all(dir)?;
                             }
                             let name = cmd
@@ -198,18 +199,32 @@ async fn main() -> Result<()> {
                                 .parent()
                                 .unwrap_or_else(|| std::path::Path::new("."))
                                 .join(name);
-                            rom_converto_lib::util::place_in_dir(
-                                &derived,
-                                cmd.output_dir.as_deref(),
-                            )
+                            rom_converto_lib::util::place_in_dir(&derived, output_dir.as_deref())
                         }
                     };
                     let resolved = if cmd.compress {
                         derive_compressed_path(&base)
                     } else {
-                        base
+                        base.clone()
                     };
-                    ensure_output_writable(&resolved, cmd.force)?;
+                    let policy = policy_of(cmd.on_conflict, cmd.force);
+                    match resolve_output(&resolved, policy)? {
+                        WriteDecision::Skip => {
+                            log_skipped(&resolved);
+                            return Ok(());
+                        }
+                        WriteDecision::Write(p) if p != resolved => {
+                            // rename redirected the write; pin the lib to the
+                            // free path and drop output_dir so it is not re-rooted.
+                            output = Some(if cmd.compress {
+                                derive_decompressed_path(&p)
+                            } else {
+                                p
+                            });
+                            output_dir = None;
+                        }
+                        WriteDecision::Write(_) => {}
+                    }
                 }
                 let opts = CdnToCiaOptions {
                     cdn_dir: cmd.cdn_dir,
@@ -219,7 +234,7 @@ async fn main() -> Result<()> {
                     ensure_ticket_exists: cmd.ensure_ticket_exists,
                     decrypt: cmd.decrypt,
                     compress: cmd.compress,
-                    output_dir: cmd.output_dir,
+                    output_dir,
                 };
                 convert_cdn_to_cia(opts, &progress, &total_progress).await?
             }
@@ -261,7 +276,14 @@ async fn main() -> Result<()> {
                             )
                         }
                     };
-                    ensure_output_writable(&output, cmd.force)?;
+                    let policy = policy_of(cmd.on_conflict, cmd.force);
+                    let output = match resolve_output(&output, policy)? {
+                        WriteDecision::Skip => {
+                            log_skipped(&output);
+                            return Ok(());
+                        }
+                        WriteDecision::Write(p) => p,
+                    };
                     let started = Instant::now();
                     decrypt_rom(&cmd.input, &output, &progress).await?;
                     log_single_summary(&cmd.input, &output, TallyDirection::Convert, started);
@@ -302,7 +324,14 @@ async fn main() -> Result<()> {
                             )
                         }
                     };
-                    ensure_output_writable(&output, cmd.force)?;
+                    let policy = policy_of(cmd.on_conflict, cmd.force);
+                    let output = match resolve_output(&output, policy)? {
+                        WriteDecision::Skip => {
+                            log_skipped(&output);
+                            return Ok(());
+                        }
+                        WriteDecision::Write(p) => p,
+                    };
                     let started = Instant::now();
                     compress_rom(&cmd.input, &output, cmd.level, &progress).await?;
                     log_single_summary(&cmd.input, &output, TallyDirection::Compress, started);
@@ -343,7 +372,14 @@ async fn main() -> Result<()> {
                             )
                         }
                     };
-                    ensure_output_writable(&output, cmd.force)?;
+                    let policy = policy_of(cmd.on_conflict, cmd.force);
+                    let output = match resolve_output(&output, policy)? {
+                        WriteDecision::Skip => {
+                            log_skipped(&output);
+                            return Ok(());
+                        }
+                        WriteDecision::Write(p) => p,
+                    };
                     let started = Instant::now();
                     decompress_rom(&cmd.input, &output, &progress).await?;
                     log_single_summary(&cmd.input, &output, TallyDirection::Decompress, started);
@@ -383,7 +419,14 @@ async fn main() -> Result<()> {
                             )
                         }
                     };
-                    ensure_output_writable(&output, cmd.force)?;
+                    let policy = policy_of(cmd.on_conflict, cmd.force);
+                    let output = match resolve_output(&output, policy)? {
+                        WriteDecision::Skip => {
+                            log_skipped(&output);
+                            return Ok(());
+                        }
+                        WriteDecision::Write(p) => p,
+                    };
                     let started = Instant::now();
                     convert_rom(&cmd.input, &output, &progress).await?;
                     log_single_summary(&cmd.input, &output, TallyDirection::Convert, started);
@@ -482,7 +525,7 @@ async fn main() -> Result<()> {
                         &cmd.input,
                         &["iso", "gcm"],
                         opts,
-                        cmd.force,
+                        policy_of(cmd.on_conflict, cmd.force),
                         cmd.output_dir.as_deref(),
                         cmd.max_depth,
                     )
@@ -501,7 +544,14 @@ async fn main() -> Result<()> {
                             )
                         }
                     };
-                    ensure_output_writable(&output, cmd.force)?;
+                    let policy = policy_of(cmd.on_conflict, cmd.force);
+                    let output = match resolve_output(&output, policy)? {
+                        WriteDecision::Skip => {
+                            log_skipped(&output);
+                            return Ok(());
+                        }
+                        WriteDecision::Write(p) => p,
+                    };
                     let started = Instant::now();
                     compress_disc(&cmd.input, &output, opts, &progress).await?;
                     log_single_summary(&cmd.input, &output, TallyDirection::Compress, started);
@@ -514,7 +564,7 @@ async fn main() -> Result<()> {
                         &progress,
                         &total_progress,
                         &cmd.input,
-                        cmd.force,
+                        policy_of(cmd.on_conflict, cmd.force),
                         cmd.output_dir.as_deref(),
                         cmd.max_depth,
                     )
@@ -533,7 +583,14 @@ async fn main() -> Result<()> {
                             )
                         }
                     };
-                    ensure_output_writable(&output, cmd.force)?;
+                    let policy = policy_of(cmd.on_conflict, cmd.force);
+                    let output = match resolve_output(&output, policy)? {
+                        WriteDecision::Skip => {
+                            log_skipped(&output);
+                            return Ok(());
+                        }
+                        WriteDecision::Write(p) => p,
+                    };
                     let started = Instant::now();
                     if wants_wbfs_output(&output) {
                         decompress_disc_to_wbfs(&cmd.input, &output, &progress).await?
@@ -600,7 +657,7 @@ async fn main() -> Result<()> {
                         &cmd.input,
                         &["iso", "wbfs"],
                         opts,
-                        cmd.force,
+                        policy_of(cmd.on_conflict, cmd.force),
                         cmd.output_dir.as_deref(),
                         cmd.max_depth,
                     )
@@ -619,7 +676,14 @@ async fn main() -> Result<()> {
                             )
                         }
                     };
-                    ensure_output_writable(&output, cmd.force)?;
+                    let policy = policy_of(cmd.on_conflict, cmd.force);
+                    let output = match resolve_output(&output, policy)? {
+                        WriteDecision::Skip => {
+                            log_skipped(&output);
+                            return Ok(());
+                        }
+                        WriteDecision::Write(p) => p,
+                    };
                     let started = Instant::now();
                     compress_disc(&cmd.input, &output, opts, &progress).await?;
                     log_single_summary(&cmd.input, &output, TallyDirection::Compress, started);
@@ -632,7 +696,7 @@ async fn main() -> Result<()> {
                         &progress,
                         &total_progress,
                         &cmd.input,
-                        cmd.force,
+                        policy_of(cmd.on_conflict, cmd.force),
                         cmd.output_dir.as_deref(),
                         cmd.max_depth,
                     )
@@ -651,7 +715,14 @@ async fn main() -> Result<()> {
                             )
                         }
                     };
-                    ensure_output_writable(&output, cmd.force)?;
+                    let policy = policy_of(cmd.on_conflict, cmd.force);
+                    let output = match resolve_output(&output, policy)? {
+                        WriteDecision::Skip => {
+                            log_skipped(&output);
+                            return Ok(());
+                        }
+                        WriteDecision::Write(p) => p,
+                    };
                     let started = Instant::now();
                     if wants_wbfs_output(&output) {
                         decompress_disc_to_wbfs(&cmd.input, &output, &progress).await?
@@ -719,7 +790,14 @@ async fn main() -> Result<()> {
         },
         Commands::Wup(inner) => match inner {
             WupCommands::Compress(cmd) => {
-                ensure_output_writable(&cmd.output, cmd.force)?;
+                let policy = policy_of(cmd.on_conflict, cmd.force);
+                let output = match resolve_output(&cmd.output, policy)? {
+                    WriteDecision::Skip => {
+                        log_skipped(&cmd.output);
+                        return Ok(());
+                    }
+                    WriteDecision::Write(p) => p,
+                };
                 let opts = WupCompressOptions {
                     zstd_level: cmd
                         .level
@@ -745,11 +823,18 @@ async fn main() -> Result<()> {
                         t
                     })
                     .collect();
-                compress_titles_async(titles, cmd.output, opts, &progress).await?
+                compress_titles_async(titles, output, opts, &progress).await?
             }
             WupCommands::Decrypt(cmd) => {
                 ensure_input_exists(&cmd.input)?;
-                ensure_output_dir_writable(&cmd.output, cmd.force)?;
+                let policy = policy_of(cmd.on_conflict, cmd.force);
+                match resolve_output_dir(&cmd.output, policy)? {
+                    WriteDecision::Skip => {
+                        log_skipped(&cmd.output);
+                        return Ok(());
+                    }
+                    WriteDecision::Write(_) => {}
+                }
                 decrypt_nus_title_async(cmd.input, cmd.output, &progress).await?
             }
             WupCommands::Verify(cmd) => {
@@ -797,7 +882,7 @@ async fn main() -> Result<()> {
                         level: cmd.level,
                         mode: cmd.mode.clone(),
                         block_size_exp: cmd.block_size_exp,
-                        force: cmd.force,
+                        policy: policy_of(cmd.on_conflict, cmd.force),
                         output_dir: cmd.output_dir.clone(),
                         max_depth: cmd.max_depth,
                     };
@@ -832,7 +917,14 @@ async fn main() -> Result<()> {
                             )
                         }
                     };
-                    ensure_output_writable(&output, cmd.force)?;
+                    let policy = policy_of(cmd.on_conflict, cmd.force);
+                    let output = match resolve_output(&output, policy)? {
+                        WriteDecision::Skip => {
+                            log_skipped(&output);
+                            return Ok(());
+                        }
+                        WriteDecision::Write(p) => p,
+                    };
                     let in_path = cmd.input.clone();
                     let out_path = output.clone();
                     let started = Instant::now();
@@ -849,7 +941,7 @@ async fn main() -> Result<()> {
                         &total_progress,
                         &cmd.input,
                         keys,
-                        cmd.force,
+                        policy_of(cmd.on_conflict, cmd.force),
                         cmd.output_dir.as_deref(),
                         cmd.max_depth,
                     )
@@ -868,7 +960,14 @@ async fn main() -> Result<()> {
                             )
                         }
                     };
-                    ensure_output_writable(&output, cmd.force)?;
+                    let policy = policy_of(cmd.on_conflict, cmd.force);
+                    let output = match resolve_output(&output, policy)? {
+                        WriteDecision::Skip => {
+                            log_skipped(&output);
+                            return Ok(());
+                        }
+                        WriteDecision::Write(p) => p,
+                    };
                     let in_path = cmd.input.clone();
                     let out_path = output.clone();
                     let started = Instant::now();
@@ -918,7 +1017,7 @@ async fn main() -> Result<()> {
         },
         Commands::Chd(inner) => match inner {
             ChdCommands::Compress(cmd) => {
-                let opts = ChdDvdOptions {
+                let mut opts = ChdDvdOptions {
                     hunk_size: cmd.hunk_size,
                     allow_zstd: cmd.zstd,
                     force: cmd.force,
@@ -931,25 +1030,19 @@ async fn main() -> Result<()> {
                     None
                 };
                 if cmd.recursive {
-                    if !cmd.input.is_dir() {
-                        anyhow::bail!(
-                            "INPUT must be a directory when --recursive is set: {}",
-                            cmd.input.display()
-                        );
-                    }
-                    let tally = Tally::new();
-                    let count =
-                        collect_files_with_exts(&cmd.input, CHD_COMPRESS_EXTS, cmd.max_depth)?.len();
-                    convert_disc_to_chd_batch(
+                    require_dir(&cmd.input)?;
+                    let policy = policy_of(cmd.on_conflict, cmd.force);
+                    batch::chd_compress(
                         &progress,
                         &total_progress,
                         &cmd.input,
                         opts,
+                        mode,
+                        policy,
                         cmd.output_dir.as_deref(),
                         cmd.max_depth,
                     )
-                    .await?;
-                    log_count_summary(count, tally);
+                    .await?
                 } else {
                     ensure_input_exists(&cmd.input)?;
                     let output = match cmd.output_flag.or(cmd.output) {
@@ -964,7 +1057,15 @@ async fn main() -> Result<()> {
                             )
                         }
                     };
-                    ensure_output_writable(&output, cmd.force)?;
+                    let policy = policy_of(cmd.on_conflict, cmd.force);
+                    let output = match resolve_output(&output, policy)? {
+                        WriteDecision::Skip => {
+                            log_skipped(&output);
+                            return Ok(());
+                        }
+                        WriteDecision::Write(p) => p,
+                    };
+                    opts.force = true;
                     let in_path = cmd.input.clone();
                     let out_path = output.clone();
                     let started = Instant::now();
@@ -974,24 +1075,18 @@ async fn main() -> Result<()> {
             }
             ChdCommands::Extract(cmd) => {
                 if cmd.recursive {
-                    if !cmd.input.is_dir() {
-                        anyhow::bail!(
-                            "INPUT must be a directory when --recursive is set: {}",
-                            cmd.input.display()
-                        );
-                    }
-                    let tally = Tally::new();
-                    let count =
-                        collect_files_with_exts(&cmd.input, CHD_EXTRACT_EXTS, cmd.max_depth)?.len();
-                    extract_from_chd_batch(
+                    require_dir(&cmd.input)?;
+                    let policy = policy_of(cmd.on_conflict, cmd.force);
+                    batch::chd_extract(
                         &progress,
                         &total_progress,
-                        cmd.input,
+                        &cmd.input,
+                        cmd.parent,
+                        policy,
                         cmd.output_dir.as_deref(),
                         cmd.max_depth,
                     )
-                    .await?;
-                    log_count_summary(count, tally);
+                    .await?
                 } else {
                     ensure_input_exists(&cmd.input)?;
                     let output = match cmd.output_flag.or(cmd.output) {
@@ -1007,7 +1102,14 @@ async fn main() -> Result<()> {
                             )
                         }
                     };
-                    ensure_output_writable(&output, cmd.force)?;
+                    let policy = policy_of(cmd.on_conflict, cmd.force);
+                    let output = match resolve_output(&output, policy)? {
+                        WriteDecision::Skip => {
+                            log_skipped(&output);
+                            return Ok(());
+                        }
+                        WriteDecision::Write(p) => p,
+                    };
                     extract_from_chd(&progress, cmd.input, output, cmd.parent).await?
                 }
             }
@@ -1046,31 +1148,24 @@ async fn main() -> Result<()> {
                     CsoFormatArg::Cso => CsoFormat::Cso,
                     CsoFormatArg::Zso => CsoFormat::Zso,
                 };
-                let opts = CsoCompressOptions {
+                let mut opts = CsoCompressOptions {
                     format,
                     block_size: cmd.block_size,
                     force: cmd.force,
                 };
                 if cmd.recursive {
-                    if !cmd.input.is_dir() {
-                        anyhow::bail!(
-                            "INPUT must be a directory when --recursive is set: {}",
-                            cmd.input.display()
-                        );
-                    }
-                    let tally = Tally::new();
-                    let count =
-                        collect_files_with_exts(&cmd.input, CSO_COMPRESS_EXTS, cmd.max_depth)?.len();
-                    compress_to_cso_batch(
+                    require_dir(&cmd.input)?;
+                    let policy = policy_of(cmd.on_conflict, cmd.force);
+                    batch::cso_compress(
                         &progress,
                         &total_progress,
                         &cmd.input,
                         opts,
+                        policy,
                         cmd.output_dir.as_deref(),
                         cmd.max_depth,
                     )
-                    .await?;
-                    log_count_summary(count, tally);
+                    .await?
                 } else {
                     ensure_input_exists(&cmd.input)?;
                     let output = match cmd.output_flag.or(cmd.output) {
@@ -1085,7 +1180,15 @@ async fn main() -> Result<()> {
                             )
                         }
                     };
-                    ensure_output_writable(&output, cmd.force)?;
+                    let policy = policy_of(cmd.on_conflict, cmd.force);
+                    let output = match resolve_output(&output, policy)? {
+                        WriteDecision::Skip => {
+                            log_skipped(&output);
+                            return Ok(());
+                        }
+                        WriteDecision::Write(p) => p,
+                    };
+                    opts.force = true;
                     let in_path = cmd.input.clone();
                     let out_path = output.clone();
                     let started = Instant::now();
@@ -1096,11 +1199,12 @@ async fn main() -> Result<()> {
             CsoCommands::Decompress(cmd) => {
                 if cmd.recursive {
                     require_dir(&cmd.input)?;
+                    let policy = policy_of(cmd.on_conflict, cmd.force);
                     batch::cso_decompress(
                         &progress,
                         &total_progress,
                         &cmd.input,
-                        cmd.force,
+                        policy,
                         cmd.output_dir.as_deref(),
                         cmd.max_depth,
                     )
@@ -1119,11 +1223,18 @@ async fn main() -> Result<()> {
                             )
                         }
                     };
-                    ensure_output_writable(&output, cmd.force)?;
+                    let policy = policy_of(cmd.on_conflict, cmd.force);
+                    let output = match resolve_output(&output, policy)? {
+                        WriteDecision::Skip => {
+                            log_skipped(&output);
+                            return Ok(());
+                        }
+                        WriteDecision::Write(p) => p,
+                    };
                     let in_path = cmd.input.clone();
                     let out_path = output.clone();
                     let started = Instant::now();
-                    decompress_from_cso(&progress, cmd.input, output, cmd.force).await?;
+                    decompress_from_cso(&progress, cmd.input, output, true).await?;
                     log_single_summary(&in_path, &out_path, TallyDirection::Decompress, started);
                 }
             }
@@ -1154,7 +1265,15 @@ async fn main() -> Result<()> {
         Commands::Cue(inner) => match inner {
             CueCommands::Merge(cmd) => {
                 ensure_input_exists(&cmd.input_cue)?;
-                merge_bin(&progress, cmd.input_cue, cmd.output_cue, cmd.force).await?
+                let policy = policy_of(cmd.on_conflict, cmd.force);
+                let output_cue = match resolve_output(&cmd.output_cue, policy)? {
+                    WriteDecision::Skip => {
+                        log_skipped(&cmd.output_cue);
+                        return Ok(());
+                    }
+                    WriteDecision::Write(p) => p,
+                };
+                merge_bin(&progress, cmd.input_cue, output_cue, true).await?
             }
         },
         Commands::SelfUpdate(_) => self_update(&mut github).await?,

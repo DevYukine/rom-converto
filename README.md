@@ -114,7 +114,7 @@ The desktop app provides a visual interface for all operations. Built with [Taur
 
 ## CLI Commands
 
-All commands that write an output file refuse to overwrite an existing file unless `-f`/`--force` is passed. Previously, `ctr`, `dol`, `rvl`, `nx`, `wup`, and `chd extract` overwrote silently; that behavior has changed.
+All commands that write an output file use `--on-conflict` to decide what happens when the output already exists. The choices are `error` (the default, refuse and stop), `overwrite` (replace the existing output), `skip` (leave the existing output and move on, reported as skipped in the summary), and `rename` (write to the next free numbered sibling, for example `Game.chd` becomes `Game (1).chd`). `-f`/`--force` is a shorthand for `--on-conflict overwrite` and cannot be combined with `--on-conflict`. For `wup decrypt` the output is a directory, so `rename` is not supported there and falls back to `error`. For `chd extract` and `cue merge`, which write more than one file, the policy applies to the base output path and the sidecars follow it.
 
 After `compress`, `decompress`, and `convert` operations, the tool prints a closing summary of bytes processed and space saved or expanded, for example `12 files: 12.4 GiB -> 4.1 GiB, saved 8.3 GiB (67%) in 2m14s`. Verify and extract operations print a file count and elapsed time instead.
 
@@ -140,7 +140,8 @@ After `compress`, `decompress`, and `convert` operations, the tool prints a clos
 | `-T, --ensure-ticket-exists` | Auto-generate a ticket file if one is not found |
 | `-D, --decrypt` | Also decrypt the CIA after creation |
 | `-Z, --compress` | Also compress the CIA after creation (implies decrypt) |
-| `-f, --force` | Overwrite output file if it already exists |
+| `--on-conflict <POLICY>` | What to do when the output exists: `error` (default), `overwrite`, `skip`, or `rename` |
+| `-f, --force` | Alias for `--on-conflict overwrite` |
 
 **`decrypt` / `compress` / `decompress` / `convert` flags:**
 
@@ -149,7 +150,8 @@ After `compress`, `decompress`, and `convert` operations, the tool prints a clos
 | `-o, --output <FILE>` | Output path (alternative to the positional OUTPUT argument) |
 | `-R, --recursive` | Recursively process every matching file in INPUT and its subdirectories |
 | `--max-depth <N>` | Limit recursion depth with `--recursive`. `1` = top level only. Default: unlimited |
-| `-f, --force` | Overwrite output file if it already exists |
+| `--on-conflict <POLICY>` | What to do when the output exists: `error` (default), `overwrite`, `skip`, or `rename` |
+| `-f, --force` | Alias for `--on-conflict overwrite` |
 
 **`verify` flags:**
 
@@ -187,7 +189,8 @@ After `compress`, `decompress`, and `convert` operations, the tool prints a clos
 | `-l, --level <LEVEL>` | `compress` | Zstandard compression level (signed, defaults to 22, Dolphin's max non-extreme) |
 | `--chunk-size <BYTES>` | `compress` | Chunk size in bytes, power of two between 32 KiB and 2 MiB (defaults to 128 KiB to match Dolphin) |
 | `-o, --output <FILE>` | `compress`, `decompress` | Output path (alternative to the positional OUTPUT argument) |
-| `-f, --force` | `compress`, `decompress` | Overwrite output file if it already exists |
+| `--on-conflict <POLICY>` | `compress`, `decompress` | What to do when the output exists: `error` (default), `overwrite`, `skip`, or `rename` |
+| `-f, --force` | `compress`, `decompress` | Alias for `--on-conflict overwrite` |
 | `-R, --recursive` | `compress`, `decompress`, `verify` | Recursively process every matching file in INPUT and its subdirectories |
 | `--max-depth <N>` | `compress`, `decompress`, `verify` | Limit recursion depth with `--recursive`. `1` = top level only. Default: unlimited |
 | `--full` | `verify` | Decode the whole disc and compute a whole-disc SHA-1 |
@@ -225,14 +228,16 @@ Flags match the `dol` commands. `--full` on `rvl verify` decrypts every partitio
 | `-o, --output <FILE>` | Output `.wua` file path |
 | `-l, --level <LEVEL>` | Zstd compression level 0..=22 (0 = Cemu default of 6) |
 | `--key <KEYFILE>` | Disc master key file. Pass once per disc input in positional order |
-| `-f, --force` | Overwrite output file if it already exists |
+| `--on-conflict <POLICY>` | What to do when the output exists: `error` (default), `overwrite`, `skip`, or `rename` |
+| `-f, --force` | Alias for `--on-conflict overwrite` |
 
 **`decrypt` flags:**
 
 | Flag | Description |
 |---|---|
 | `-o, --output <DIR>` | Output directory |
-| `-f, --force` | Overwrite output directory if it already exists |
+| `--on-conflict <POLICY>` | What to do when the output directory exists: `error` (default), `overwrite`, or `skip`; `rename` is not supported for directory outputs and falls back to `error` |
+| `-f, --force` | Alias for `--on-conflict overwrite` |
 
 **`verify` flags:**
 
@@ -266,7 +271,8 @@ Flags match the `dol` commands. `--full` on `rvl verify` decrypts every partitio
 | `-l, --level <LEVEL>` | Zstd compression level 1..=22 (defaults to 18, matching `nsz`) |
 | `--mode <MODE>` | `solid` (one zstd frame per NCA, default for NSP) or `block` (independent zstd frames per fixed-size block, default for XCI) |
 | `--block-size-exp <EXP>` | Block-mode block size as `1 << exp` bytes, range 14..=32 (defaults to 20 = 1 MiB, matching `nsz`) |
-| `-f, --force` | Overwrite output file if it already exists |
+| `--on-conflict <POLICY>` | What to do when the output exists: `error` (default), `overwrite`, `skip`, or `rename` |
+| `-f, --force` | Alias for `--on-conflict overwrite` |
 | `-R, --recursive` | Compress every `.nsp` and `.xci` found in INPUT and its subdirectories |
 | `--max-depth <N>` | Limit recursion depth with `--recursive`. `1` = top level only. Default: unlimited |
 
@@ -276,7 +282,8 @@ Flags match the `dol` commands. `--full` on `rvl verify` decrypts every partitio
 |---|---|
 | `--keys <PRODKEYS>` | Path to `prod.keys`. Same default as `compress` |
 | `-o, --output <FILE>` | Output path. Defaults to the input with the extension switched (`.nsz` -> `.nsp`, `.xcz` -> `.xci`) |
-| `-f, --force` | Overwrite output file if it already exists |
+| `--on-conflict <POLICY>` | What to do when the output exists: `error` (default), `overwrite`, `skip`, or `rename` |
+| `-f, --force` | Alias for `--on-conflict overwrite` |
 | `-R, --recursive` | Decompress every `.nsz` and `.xcz` found in INPUT and its subdirectories |
 | `--max-depth <N>` | Limit recursion depth with `--recursive`. `1` = top level only. Default: unlimited |
 
@@ -307,7 +314,8 @@ Flags match the `dol` commands. `--full` on `rvl verify` decrypts every partitio
 
 | Flag | Applies to | Description |
 |---|---|---|
-| `-f, --force` | `compress`, `extract` | Overwrite output file if it already exists |
+| `--on-conflict <POLICY>` | `compress`, `extract` | What to do when the output exists: `error` (default), `overwrite`, `skip`, or `rename` |
+| `-f, --force` | `compress`, `extract` | Alias for `--on-conflict overwrite` |
 | `--dvd` / `--cd` | `compress` | Override the auto-detected mode (CD mode needs a cue sheet) |
 | `--hunk-size <BYTES>` | `compress` | DVD hunk size, a multiple of 2048; defaults to 4096, or 2048 for detected PSP images |
 | `--zstd` | `compress` | Add zstd to the DVD codec set; better ratio, but rejected by AetherSX2/NetherSX2 |
@@ -335,7 +343,8 @@ Flags match the `dol` commands. `--full` on `rvl verify` decrypts every partitio
 | `--format <cso\|zso>` | `compress` | Output container: CSO for PSP/PPSSPP, ZSO for PS2 via OPL |
 | `--block-size <BYTES>` | `compress` | Block size, a power of two; defaults to 2048 (16384 for 2 GiB+ inputs) |
 | `-o, --output <FILE>` | `compress`, `decompress` | Output path (alternative to the positional OUTPUT argument) |
-| `-f, --force` | `compress`, `decompress` | Overwrite output file if it already exists |
+| `--on-conflict <POLICY>` | `compress`, `decompress` | What to do when the output exists: `error` (default), `overwrite`, `skip`, or `rename` |
+| `-f, --force` | `compress`, `decompress` | Alias for `--on-conflict overwrite` |
 | `-R, --recursive` | `compress`, `decompress`, `verify` | Recursively process every matching file in INPUT and its subdirectories |
 | `--max-depth <N>` | `compress`, `decompress`, `verify` | Limit recursion depth with `--recursive`. `1` = top level only. Default: unlimited |
 | `--full` | `verify` | Decode every block instead of only checking the index |
@@ -352,7 +361,8 @@ Flags match the `dol` commands. `--full` on `rvl verify` decrypts every partitio
 
 | Flag | Applies to | Description |
 |---|---|---|
-| `-f, --force` | `merge` | Overwrite output files if they already exist |
+| `--on-conflict <POLICY>` | `merge` | What to do when an output exists: `error` (default), `overwrite`, `skip`, or `rename`; the `.bin` sidecar follows the renamed `.cue` |
+| `-f, --force` | `merge` | Alias for `--on-conflict overwrite` |
 
 ---
 

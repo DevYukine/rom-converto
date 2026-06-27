@@ -1,8 +1,8 @@
-use crate::util::ensure_output_writable;
+use crate::util::{WriteDecision, resolve_output};
 use anyhow::Result;
 use log::{info, warn};
 use rom_converto_lib::util::fs::collect_files_with_exts;
-use rom_converto_lib::util::{ProgressReporter, Tally, TallyDirection};
+use rom_converto_lib::util::{ConflictPolicy, ProgressReporter, Tally, TallyDirection};
 use std::path::{Path, PathBuf};
 
 fn file_len(path: &Path) -> u64 {
@@ -55,7 +55,7 @@ pub async fn cso_decompress(
     progress: &dyn ProgressReporter,
     total_progress: &dyn ProgressReporter,
     input_dir: &Path,
-    force: bool,
+    policy: ConflictPolicy,
     output_dir: Option<&Path>,
     max_depth: Option<usize>,
 ) -> Result<()> {
@@ -77,15 +77,24 @@ pub async fn cso_decompress(
         if let Some(parent) = output.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        if let Err(e) = ensure_output_writable(&output, force) {
-            warn!("{e}");
-            tally.record_skipped();
-            total_progress.inc(1);
-            continue;
-        }
+        let output = match resolve_output(&output, policy) {
+            Ok(WriteDecision::Write(p)) => p,
+            Ok(WriteDecision::Skip) => {
+                info!("skipped, output exists: {}", output.display());
+                tally.record_skipped();
+                total_progress.inc(1);
+                continue;
+            }
+            Err(e) => {
+                warn!("{e}");
+                tally.record_skipped();
+                total_progress.inc(1);
+                continue;
+            }
+        };
         let input_bytes = file_len(&path);
         let out_path = output.clone();
-        if let Err(e) = decompress_from_cso(progress, path.clone(), output, force).await {
+        if let Err(e) = decompress_from_cso(progress, path.clone(), output, true).await {
             warn!("Failed to decompress {}: {e}", path.display());
             tally.record_failed();
         } else {
@@ -138,7 +147,7 @@ pub async fn rvz_compress(
     input_dir: &Path,
     exts: &[&str],
     opts: rom_converto_lib::nintendo::rvz::RvzCompressOptions,
-    force: bool,
+    policy: ConflictPolicy,
     output_dir: Option<&Path>,
     max_depth: Option<usize>,
 ) -> Result<()> {
@@ -160,12 +169,21 @@ pub async fn rvz_compress(
         if let Some(parent) = output.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        if let Err(e) = ensure_output_writable(&output, force) {
-            warn!("{e}");
-            tally.record_skipped();
-            total_progress.inc(1);
-            continue;
-        }
+        let output = match resolve_output(&output, policy) {
+            Ok(WriteDecision::Write(p)) => p,
+            Ok(WriteDecision::Skip) => {
+                info!("skipped, output exists: {}", output.display());
+                tally.record_skipped();
+                total_progress.inc(1);
+                continue;
+            }
+            Err(e) => {
+                warn!("{e}");
+                tally.record_skipped();
+                total_progress.inc(1);
+                continue;
+            }
+        };
         let input_bytes = file_len(&path);
         if let Err(e) = compress_disc(&path, &output, opts, progress).await {
             warn!("Failed to compress {}: {e}", path.display());
@@ -183,7 +201,7 @@ pub async fn rvz_decompress(
     progress: &dyn ProgressReporter,
     total_progress: &dyn ProgressReporter,
     input_dir: &Path,
-    force: bool,
+    policy: ConflictPolicy,
     output_dir: Option<&Path>,
     max_depth: Option<usize>,
 ) -> Result<()> {
@@ -205,12 +223,21 @@ pub async fn rvz_decompress(
         if let Some(parent) = output.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        if let Err(e) = ensure_output_writable(&output, force) {
-            warn!("{e}");
-            tally.record_skipped();
-            total_progress.inc(1);
-            continue;
-        }
+        let output = match resolve_output(&output, policy) {
+            Ok(WriteDecision::Write(p)) => p,
+            Ok(WriteDecision::Skip) => {
+                info!("skipped, output exists: {}", output.display());
+                tally.record_skipped();
+                total_progress.inc(1);
+                continue;
+            }
+            Err(e) => {
+                warn!("{e}");
+                tally.record_skipped();
+                total_progress.inc(1);
+                continue;
+            }
+        };
         let input_bytes = file_len(&path);
         if let Err(e) = decompress_disc(&path, &output, progress).await {
             warn!("Failed to decompress {}: {e}", path.display());
@@ -306,7 +333,7 @@ pub struct NxCompressTuning {
     pub level: Option<i32>,
     pub mode: Option<String>,
     pub block_size_exp: Option<u8>,
-    pub force: bool,
+    pub policy: ConflictPolicy,
     pub output_dir: Option<PathBuf>,
     pub max_depth: Option<usize>,
 }
@@ -367,12 +394,21 @@ pub async fn nx_compress(
         if let Some(parent) = output.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        if let Err(e) = ensure_output_writable(&output, tuning.force) {
-            warn!("{e}");
-            tally.record_skipped();
-            total_progress.inc(1);
-            continue;
-        }
+        let output = match resolve_output(&output, tuning.policy) {
+            Ok(WriteDecision::Write(p)) => p,
+            Ok(WriteDecision::Skip) => {
+                info!("skipped, output exists: {}", output.display());
+                tally.record_skipped();
+                total_progress.inc(1);
+                continue;
+            }
+            Err(e) => {
+                warn!("{e}");
+                tally.record_skipped();
+                total_progress.inc(1);
+                continue;
+            }
+        };
         let input_bytes = file_len(&path);
         let out_path = output.clone();
         if let Err(e) =
@@ -394,7 +430,7 @@ pub async fn nx_decompress(
     total_progress: &dyn ProgressReporter,
     input_dir: &Path,
     keys: rom_converto_lib::nintendo::nx::KeySet,
-    force: bool,
+    policy: ConflictPolicy,
     output_dir: Option<&Path>,
     max_depth: Option<usize>,
 ) -> Result<()> {
@@ -416,12 +452,21 @@ pub async fn nx_decompress(
         if let Some(parent) = output.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        if let Err(e) = ensure_output_writable(&output, force) {
-            warn!("{e}");
-            tally.record_skipped();
-            total_progress.inc(1);
-            continue;
-        }
+        let output = match resolve_output(&output, policy) {
+            Ok(WriteDecision::Write(p)) => p,
+            Ok(WriteDecision::Skip) => {
+                info!("skipped, output exists: {}", output.display());
+                tally.record_skipped();
+                total_progress.inc(1);
+                continue;
+            }
+            Err(e) => {
+                warn!("{e}");
+                tally.record_skipped();
+                total_progress.inc(1);
+                continue;
+            }
+        };
         let input_bytes = file_len(&path);
         let out_path = output.clone();
         if let Err(e) =
@@ -550,4 +595,175 @@ pub async fn wup_verify(
     }
     total_progress.finish();
     finish_verify(VerifyTally { total, ok, failed })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn chd_compress(
+    progress: &dyn ProgressReporter,
+    total_progress: &dyn ProgressReporter,
+    input_dir: &Path,
+    mut opts: rom_converto_lib::chd::ChdDvdOptions,
+    mode: Option<rom_converto_lib::chd::DiscMode>,
+    policy: ConflictPolicy,
+    output_dir: Option<&Path>,
+    max_depth: Option<usize>,
+) -> Result<()> {
+    use rom_converto_lib::chd::convert_disc_to_chd;
+    use rom_converto_lib::util::place_in_dir_mirrored;
+
+    let files = collect_or_warn(input_dir, &["cue", "iso"], max_depth)?;
+    if files.is_empty() {
+        return Ok(());
+    }
+    if let Some(dir) = output_dir {
+        std::fs::create_dir_all(dir)?;
+    }
+    opts.force = true;
+    let total = files.len();
+    total_progress.start(total as u64, &format!("Compressing {total} files..."));
+    let mut tally = Tally::new();
+    for path in files {
+        let output = place_in_dir_mirrored(&path.with_extension("chd"), input_dir, output_dir);
+        if let Some(parent) = output.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let output = match resolve_output(&output, policy) {
+            Ok(WriteDecision::Write(p)) => p,
+            Ok(WriteDecision::Skip) => {
+                info!("skipped, output exists: {}", output.display());
+                tally.record_skipped();
+                total_progress.inc(1);
+                continue;
+            }
+            Err(e) => {
+                warn!("{e}");
+                tally.record_skipped();
+                total_progress.inc(1);
+                continue;
+            }
+        };
+        let input_bytes = file_len(&path);
+        let out_path = output.clone();
+        if let Err(e) = convert_disc_to_chd(progress, path.clone(), output, mode, opts.clone()).await {
+            warn!("Failed to compress {}: {e}", path.display());
+            tally.record_failed();
+        } else {
+            tally.record_ok(input_bytes, file_len(&out_path), Default::default());
+        }
+        total_progress.inc(1);
+    }
+    total_progress.finish();
+    finish_tally(&tally, TallyDirection::Compress)
+}
+
+pub async fn chd_extract(
+    progress: &dyn ProgressReporter,
+    total_progress: &dyn ProgressReporter,
+    input_dir: &Path,
+    parent: Option<PathBuf>,
+    policy: ConflictPolicy,
+    output_dir: Option<&Path>,
+    max_depth: Option<usize>,
+) -> Result<()> {
+    use rom_converto_lib::chd::extract_from_chd;
+    use rom_converto_lib::util::place_in_dir_mirrored;
+
+    let files = collect_or_warn(input_dir, &["chd"], max_depth)?;
+    if files.is_empty() {
+        return Ok(());
+    }
+    if let Some(dir) = output_dir {
+        std::fs::create_dir_all(dir)?;
+    }
+    let total = files.len();
+    total_progress.start(total as u64, &format!("Extracting {total} files..."));
+    let mut tally = Tally::new();
+    for path in files {
+        let output = place_in_dir_mirrored(&path.with_extension(""), input_dir, output_dir);
+        if let Some(p) = output.parent() {
+            std::fs::create_dir_all(p)?;
+        }
+        let output = match resolve_output(&output, policy) {
+            Ok(WriteDecision::Write(p)) => p,
+            Ok(WriteDecision::Skip) => {
+                info!("skipped, output exists: {}", output.display());
+                tally.record_skipped();
+                total_progress.inc(1);
+                continue;
+            }
+            Err(e) => {
+                warn!("{e}");
+                tally.record_skipped();
+                total_progress.inc(1);
+                continue;
+            }
+        };
+        if let Err(e) = extract_from_chd(progress, path.clone(), output, parent.clone()).await {
+            warn!("Failed to extract {}: {e}", path.display());
+            tally.record_failed();
+        } else {
+            tally.record_ok(0, 0, Default::default());
+        }
+        total_progress.inc(1);
+    }
+    total_progress.finish();
+    finish_tally(&tally, TallyDirection::CountOnly)
+}
+
+pub async fn cso_compress(
+    progress: &dyn ProgressReporter,
+    total_progress: &dyn ProgressReporter,
+    input_dir: &Path,
+    mut opts: rom_converto_lib::cso::CsoCompressOptions,
+    policy: ConflictPolicy,
+    output_dir: Option<&Path>,
+    max_depth: Option<usize>,
+) -> Result<()> {
+    use rom_converto_lib::cso::compress_to_cso;
+    use rom_converto_lib::util::place_in_dir_mirrored;
+
+    let ext = opts.format.extension();
+    let files = collect_or_warn(input_dir, &["iso"], max_depth)?;
+    if files.is_empty() {
+        return Ok(());
+    }
+    if let Some(dir) = output_dir {
+        std::fs::create_dir_all(dir)?;
+    }
+    opts.force = true;
+    let total = files.len();
+    total_progress.start(total as u64, &format!("Compressing {total} files..."));
+    let mut tally = Tally::new();
+    for path in files {
+        let output = place_in_dir_mirrored(&path.with_extension(ext), input_dir, output_dir);
+        if let Some(parent) = output.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let output = match resolve_output(&output, policy) {
+            Ok(WriteDecision::Write(p)) => p,
+            Ok(WriteDecision::Skip) => {
+                info!("skipped, output exists: {}", output.display());
+                tally.record_skipped();
+                total_progress.inc(1);
+                continue;
+            }
+            Err(e) => {
+                warn!("{e}");
+                tally.record_skipped();
+                total_progress.inc(1);
+                continue;
+            }
+        };
+        let input_bytes = file_len(&path);
+        let out_path = output.clone();
+        if let Err(e) = compress_to_cso(progress, path.clone(), output, opts.clone()).await {
+            warn!("Failed to compress {}: {e}", path.display());
+            tally.record_failed();
+        } else {
+            tally.record_ok(input_bytes, file_len(&out_path), Default::default());
+        }
+        total_progress.inc(1);
+    }
+    total_progress.finish();
+    finish_tally(&tally, TallyDirection::Compress)
 }

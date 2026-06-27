@@ -1,3 +1,4 @@
+use crate::commands::ConflictPolicyArg;
 use crate::commands::info_command::InfoCommand;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -49,8 +50,12 @@ pub struct DecryptWupCommand {
     #[arg(value_name = "INPUT")]
     pub input: PathBuf,
 
-    /// Overwrite the output if it already exists
-    #[arg(long, short = 'f', default_value_t = false)]
+    /// What to do when an output already exists: error, overwrite, skip, or rename to a numbered sibling
+    #[arg(long = "on-conflict", value_enum, default_value_t = ConflictPolicyArg::Error)]
+    pub on_conflict: ConflictPolicyArg,
+
+    /// Alias for --on-conflict overwrite
+    #[arg(long, short = 'f', default_value_t = false, conflicts_with = "on_conflict")]
     pub force: bool,
 }
 
@@ -107,8 +112,12 @@ pub struct CompressWupCommand {
     #[arg(required = true, num_args = 1.., value_name = "INPUT")]
     pub inputs: Vec<PathBuf>,
 
-    /// Overwrite the output file if it already exists
-    #[arg(long, short = 'f', default_value_t = false)]
+    /// What to do when an output already exists: error, overwrite, skip, or rename to a numbered sibling
+    #[arg(long = "on-conflict", value_enum, default_value_t = ConflictPolicyArg::Error)]
+    pub on_conflict: ConflictPolicyArg,
+
+    /// Alias for --on-conflict overwrite
+    #[arg(long, short = 'f', default_value_t = false, conflicts_with = "on_conflict")]
     pub force: bool,
 }
 
