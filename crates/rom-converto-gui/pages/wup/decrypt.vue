@@ -6,6 +6,7 @@ const store = useWupDecryptStore();
 const { input, output, result, error, loading } = storeToRefs(store);
 const { run } = useOperation({ result, error, loading });
 const progress = useProgress("wup-decrypt");
+const commandLine = ref("");
 
 watch(input, (val) => {
   if (val && !output.value) {
@@ -20,10 +21,9 @@ function deriveDecryptedWupPath(dir: string): string {
 
 async function execute() {
   progress.reset();
-  await run("cmd_wup_decrypt", {
-    input: input.value,
-    output: output.value,
-  });
+  const args = { input: input.value, output: output.value };
+  commandLine.value = buildCliCommand("cmd_wup_decrypt", args);
+  await run("cmd_wup_decrypt", args);
 }
 </script>
 
@@ -69,7 +69,7 @@ async function execute() {
     </OperationCard>
 
     <div class="mt-4">
-      <OutputLog :result="result" :error="error" />
+      <OutputLog :command="commandLine" :result="result" :error="error" />
     </div>
   </div>
 </template>

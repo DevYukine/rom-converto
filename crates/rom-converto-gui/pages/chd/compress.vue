@@ -15,15 +15,22 @@ const MODE_OPTIONS = [
 ];
 
 const isBatch = computed(() => queue.value.length > 0);
+const commandLine = ref("");
 
-const batch = useBatchOperation("chd-compress", "cmd_chd_compress", (item) => ({
-  inputPath: item.input,
-  output: item.output,
-  force: force.value,
-  zstd: zstd.value,
-  mode: mode.value === "auto" ? null : mode.value,
-  hunkSize: hunkSize.value || null,
-}));
+function chdArgs(inputPath: string, outputPath: string) {
+  return {
+    inputPath,
+    output: outputPath,
+    force: force.value,
+    zstd: zstd.value,
+    mode: mode.value === "auto" ? null : mode.value,
+    hunkSize: hunkSize.value || null,
+  };
+}
+
+const batch = useBatchOperation("chd-compress", "cmd_chd_compress", (item) =>
+  chdArgs(item.input, item.output),
+);
 
 watch([input, outputDir], () => {
   if (input.value) output.value = resolve(deriveChdPath(input.value));
@@ -52,16 +59,13 @@ function handleSingleFile(path: string) {
 async function execute() {
   progress.reset();
   if (isBatch.value) {
+    const rep = queue.value.find((i) => i.status === "pending") ?? queue.value[0];
+    commandLine.value = rep ? buildCliCommand("cmd_chd_compress", chdArgs(rep.input, rep.output)) : "";
     await batch.start(queue, result);
   } else {
-    await run("cmd_chd_compress", {
-      inputPath: input.value,
-      output: output.value,
-      force: force.value,
-      zstd: zstd.value,
-      mode: mode.value === "auto" ? null : mode.value,
-      hunkSize: hunkSize.value || null,
-    });
+    const args = chdArgs(input.value, output.value);
+    commandLine.value = buildCliCommand("cmd_chd_compress", args);
+    await run("cmd_chd_compress", args);
   }
 }
 </script>
@@ -171,7 +175,7 @@ async function execute() {
     </OperationCard>
 
     <div class="mt-4">
-      <OutputLog :result="result" :error="error" />
+      <OutputLog :command="commandLine" :result="result" :error="error" />
     </div>
   </div>
 </template>

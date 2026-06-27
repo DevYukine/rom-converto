@@ -10,10 +10,15 @@ const progress = useProgress("ctr-convert");
 
 const isBatch = computed(() => queue.value.length > 0);
 
-const batch = useBatchOperation("ctr-convert", "cmd_convert_ctr", (item) => ({
-  input: item.input,
-  output: item.output || null,
-}));
+const commandLine = ref("");
+
+function convertArgs(inputPath: string, outputPath: string) {
+  return { input: inputPath, output: outputPath || null };
+}
+
+const batch = useBatchOperation("ctr-convert", "cmd_convert_ctr", (item) =>
+  convertArgs(item.input, item.output),
+);
 
 function getExt(path: string): string {
   const dot = path.lastIndexOf(".");
@@ -55,12 +60,13 @@ function handleSingleFile(path: string) {
 async function execute() {
   progress.reset();
   if (isBatch.value) {
+    const rep = queue.value.find((i) => i.status === "pending") ?? queue.value[0];
+    commandLine.value = rep ? buildCliCommand("cmd_convert_ctr", convertArgs(rep.input, rep.output)) : "";
     await batch.start(queue, result);
   } else {
-    await run("cmd_convert_ctr", {
-      input: input.value,
-      output: output.value || null,
-    });
+    const args = convertArgs(input.value, output.value);
+    commandLine.value = buildCliCommand("cmd_convert_ctr", args);
+    await run("cmd_convert_ctr", args);
   }
 }
 </script>
@@ -139,7 +145,7 @@ async function execute() {
     </OperationCard>
 
     <div class="mt-4">
-      <OutputLog :result="result" :error="error" />
+      <OutputLog :command="commandLine" :result="result" :error="error" />
     </div>
   </div>
 </template>

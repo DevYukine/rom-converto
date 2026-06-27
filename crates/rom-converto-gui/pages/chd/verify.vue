@@ -8,6 +8,11 @@ const { run } = useOperation({ result, error, loading });
 const progress = useProgress("chd-verify");
 
 const isBatch = computed(() => queue.value.length > 0);
+const commandLine = ref("");
+
+function verifyArgs(inputPath: string) {
+  return { input: inputPath, parent: parent.value || null, fix: fix.value };
+}
 
 function verdictPassed(res: string) {
   try {
@@ -17,11 +22,9 @@ function verdictPassed(res: string) {
   }
 }
 
-const batch = useBatchOperation("chd-verify", "cmd_chd_verify", (item) => ({
-  input: item.input,
-  parent: parent.value || null,
-  fix: fix.value,
-}));
+const batch = useBatchOperation("chd-verify", "cmd_chd_verify", (item) =>
+  verifyArgs(item.input),
+);
 
 function handleFiles(paths: string[]) {
   for (const p of paths) {
@@ -40,16 +43,16 @@ function handleSingleFile(path: string) {
 async function execute() {
   progress.reset();
   if (isBatch.value) {
+    const rep = queue.value.find((i) => i.status === "pending") ?? queue.value[0];
+    commandLine.value = rep ? buildCliCommand("cmd_chd_verify", verifyArgs(rep.input)) : "";
     await batch.start(queue, result, {
       isSuccess: verdictPassed,
       failureMessage: () => "verification failed",
     });
   } else {
-    await run("cmd_chd_verify", {
-      input: input.value,
-      parent: parent.value || null,
-      fix: fix.value,
-    });
+    const args = verifyArgs(input.value);
+    commandLine.value = buildCliCommand("cmd_chd_verify", args);
+    await run("cmd_chd_verify", args);
   }
 }
 </script>
@@ -128,7 +131,7 @@ async function execute() {
     </OperationCard>
 
     <div class="mt-4">
-      <OutputLog :result="result" :error="error" />
+      <OutputLog :command="commandLine" :result="result" :error="error" />
     </div>
   </div>
 </template>

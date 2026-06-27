@@ -13,10 +13,15 @@ const DISC_FILTERS = [
   { name: "GameCube disc", extensions: ["iso", "gcm", "rvz"] },
 ];
 
-const batch = useBatchOperation("dol-verify", "cmd_verify_dol", (item) => ({
-  input: item.input,
-  full: full.value,
-}));
+const commandLine = ref("");
+
+function verifyArgs(inputPath: string) {
+  return { input: inputPath, full: full.value };
+}
+
+const batch = useBatchOperation("dol-verify", "cmd_verify_dol", (item) =>
+  verifyArgs(item.input),
+);
 
 function handleFiles(paths: string[]) {
   for (const p of paths) store.addToQueue(p);
@@ -37,6 +42,8 @@ async function execute() {
   result.value = "";
 
   if (isBatch.value) {
+    const rep = queue.value.find((i) => i.status === "pending") ?? queue.value[0];
+    commandLine.value = rep ? buildCliCommand("cmd_verify_dol", verifyArgs(rep.input)) : "";
     await batch.start(queue, result, {
       isSuccess: (res) => {
         try {
@@ -48,12 +55,11 @@ async function execute() {
       failureMessage: () => "verification failed",
     });
   } else {
+    const args = verifyArgs(input.value);
+    commandLine.value = buildCliCommand("cmd_verify_dol", args);
     loading.value = true;
     try {
-      const json = await invoke<string>("cmd_verify_dol", {
-        input: input.value,
-        full: full.value,
-      });
+      const json = await invoke<string>("cmd_verify_dol", args);
       verdict.value = JSON.parse(json) as DolVerifyResult;
     } catch (e) {
       error.value = String(e);
@@ -159,7 +165,7 @@ async function execute() {
     </OperationCard>
 
     <div class="mt-4">
-      <OutputLog :result="isBatch ? result : ''" :error="error" />
+      <OutputLog :command="commandLine" :result="isBatch ? result : ''" :error="error" />
     </div>
   </div>
 </template>

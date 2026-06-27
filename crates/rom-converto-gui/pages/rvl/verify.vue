@@ -13,10 +13,15 @@ const DISC_FILTERS = [
   { name: "Wii disc", extensions: ["iso", "wbfs", "rvz"] },
 ];
 
-const batch = useBatchOperation("rvl-verify", "cmd_verify_rvl", (item) => ({
-  input: item.input,
-  full: full.value,
-}));
+const commandLine = ref("");
+
+function verifyArgs(inputPath: string) {
+  return { input: inputPath, full: full.value };
+}
+
+const batch = useBatchOperation("rvl-verify", "cmd_verify_rvl", (item) =>
+  verifyArgs(item.input),
+);
 
 function handleFiles(paths: string[]) {
   for (const p of paths) store.addToQueue(p);
@@ -41,6 +46,8 @@ async function execute() {
   result.value = "";
 
   if (isBatch.value) {
+    const rep = queue.value.find((i) => i.status === "pending") ?? queue.value[0];
+    commandLine.value = rep ? buildCliCommand("cmd_verify_rvl", verifyArgs(rep.input)) : "";
     await batch.start(queue, result, {
       isSuccess: (res) => {
         try {
@@ -60,12 +67,11 @@ async function execute() {
       },
     });
   } else {
+    const args = verifyArgs(input.value);
+    commandLine.value = buildCliCommand("cmd_verify_rvl", args);
     loading.value = true;
     try {
-      const json = await invoke<string>("cmd_verify_rvl", {
-        input: input.value,
-        full: full.value,
-      });
+      const json = await invoke<string>("cmd_verify_rvl", args);
       verdict.value = JSON.parse(json) as RvlVerifyResult;
     } catch (e) {
       error.value = String(e);
@@ -182,7 +188,7 @@ async function execute() {
     </OperationCard>
 
     <div class="mt-4">
-      <OutputLog :result="isBatch ? result : ''" :error="error" />
+      <OutputLog :command="commandLine" :result="isBatch ? result : ''" :error="error" />
     </div>
   </div>
 </template>

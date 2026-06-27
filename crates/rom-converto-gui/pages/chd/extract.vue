@@ -10,12 +10,15 @@ const { run } = useOperation({ result, error, loading });
 const progress = useProgress("chd-extract");
 
 const isBatch = computed(() => queue.value.length > 0);
+const commandLine = ref("");
 
-const batch = useBatchOperation("chd-extract", "cmd_chd_extract", (item) => ({
-  input: item.input,
-  output: item.output,
-  parent: parent.value || null,
-}));
+function extractArgs(inputPath: string, outputPath: string) {
+  return { input: inputPath, output: outputPath, parent: parent.value || null };
+}
+
+const batch = useBatchOperation("chd-extract", "cmd_chd_extract", (item) =>
+  extractArgs(item.input, item.output),
+);
 
 // DVD-mode CHDs extract to a single .iso, CD-mode to .cue/.bin;
 // the mode is only knowable from the file's metadata.
@@ -57,13 +60,13 @@ async function handleSingleFile(path: string) {
 async function execute() {
   progress.reset();
   if (isBatch.value) {
+    const rep = queue.value.find((i) => i.status === "pending") ?? queue.value[0];
+    commandLine.value = rep ? buildCliCommand("cmd_chd_extract", extractArgs(rep.input, rep.output)) : "";
     await batch.start(queue, result);
   } else {
-    await run("cmd_chd_extract", {
-      input: input.value,
-      output: output.value,
-      parent: parent.value || null,
-    });
+    const args = extractArgs(input.value, output.value);
+    commandLine.value = buildCliCommand("cmd_chd_extract", args);
+    await run("cmd_chd_extract", args);
   }
 }
 </script>
@@ -146,7 +149,7 @@ async function execute() {
     </OperationCard>
 
     <div class="mt-4">
-      <OutputLog :result="result" :error="error" />
+      <OutputLog :command="commandLine" :result="result" :error="error" />
     </div>
   </div>
 </template>

@@ -12,13 +12,21 @@ const CHUNK_SIZES = [32768, 65536, 131072, 262144, 524288, 1048576, 2097152];
 
 const isBatch = computed(() => queue.value.length > 0);
 
-const batch = useBatchOperation("rvl-compress", "cmd_compress_disc", (item) => ({
-  input: item.input,
-  output: item.output || null,
-  level: level.value,
-  chunkSize: chunkSize.value,
-  taskId: "rvl-compress",
-}));
+const commandLine = ref("");
+
+function compressArgs(inputPath: string, outputPath: string) {
+  return {
+    input: inputPath,
+    output: outputPath || null,
+    level: level.value,
+    chunkSize: chunkSize.value,
+    taskId: "rvl-compress",
+  };
+}
+
+const batch = useBatchOperation("rvl-compress", "cmd_compress_disc", (item) =>
+  compressArgs(item.input, item.output),
+);
 
 watch([input, outputDir], () => {
   if (input.value) output.value = resolve(deriveRvzPath(input.value));
@@ -47,15 +55,13 @@ function handleSingleFile(path: string) {
 async function execute() {
   progress.reset();
   if (isBatch.value) {
+    const rep = queue.value.find((i) => i.status === "pending") ?? queue.value[0];
+    commandLine.value = rep ? buildCliCommand("cmd_compress_disc", compressArgs(rep.input, rep.output)) : "";
     await batch.start(queue, result);
   } else {
-    await run("cmd_compress_disc", {
-      input: input.value,
-      output: output.value || null,
-      level: level.value,
-      chunkSize: chunkSize.value,
-      taskId: "rvl-compress",
-    });
+    const args = compressArgs(input.value, output.value);
+    commandLine.value = buildCliCommand("cmd_compress_disc", args);
+    await run("cmd_compress_disc", args);
   }
 }
 </script>
@@ -159,7 +165,7 @@ async function execute() {
     </OperationCard>
 
     <div class="mt-4">
-      <OutputLog :result="result" :error="error" />
+      <OutputLog :command="commandLine" :result="result" :error="error" />
     </div>
   </div>
 </template>

@@ -7,6 +7,7 @@ const store = useCtrGenerateTicketStore();
 const { cdnDir, output, result, error, loading } = storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
 const { run } = useOperation({ result, error, loading });
+const commandLine = ref("");
 
 async function chooseOutput() {
   const picked = await save({
@@ -21,10 +22,9 @@ watch(outputDir, () => {
 });
 
 async function execute() {
-  await run("cmd_generate_ticket", {
-    cdnDir: cdnDir.value,
-    output: output.value,
-  });
+  const args = { cdnDir: cdnDir.value, output: output.value };
+  commandLine.value = buildCliCommand("cmd_generate_ticket", args);
+  await run("cmd_generate_ticket", args);
 }
 </script>
 
@@ -72,7 +72,7 @@ async function execute() {
     </OperationCard>
 
     <div class="mt-4">
-      <OutputLog :result="result" :error="error" />
+      <OutputLog :command="commandLine" :result="result" :error="error" />
     </div>
   </div>
 </template>

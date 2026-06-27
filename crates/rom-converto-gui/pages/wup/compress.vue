@@ -8,6 +8,7 @@ const { queue, output, level, keys, result, error, loading } = storeToRefs(store
 const { outputDir, resolve } = useOutputDir();
 const { run } = useOperation({ result, error, loading });
 const progress = useProgress("wup-compress");
+const commandLine = ref("");
 
 // One drop zone for both folders and disc images. Drag-drop takes
 // whatever the OS hands us. The two browse buttons pick folder vs
@@ -81,12 +82,14 @@ async function execute() {
       item.status = "running";
     }
   }
-  await run("cmd_wup_compress", {
+  const args = {
     inputs: queue.value.map((i) => i.input),
     output: output.value,
     level: level.value,
     keys: store.collectKeys(),
-  });
+  };
+  commandLine.value = buildCliCommand("cmd_wup_compress", args);
+  await run("cmd_wup_compress", args);
   const terminal: "done" | "error" = error.value ? "error" : "done";
   for (const item of queue.value) {
     if (item.status === "running") item.status = terminal;
@@ -230,7 +233,7 @@ async function execute() {
     </OperationCard>
 
     <div class="mt-4">
-      <OutputLog :result="result" :error="error" />
+      <OutputLog :command="commandLine" :result="result" :error="error" />
     </div>
   </div>
 </template>

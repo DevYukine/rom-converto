@@ -1,15 +1,25 @@
 <script setup lang="ts">
 defineProps<{
+  command?: string;
   result?: string;
   error?: string;
 }>();
 
+const commandCopied = ref(false);
 const resultCopied = ref(false);
 const errorCopied = ref(false);
 
-async function copy(text: string | undefined, which: "result" | "error") {
+async function copy(
+  text: string | undefined,
+  which: "command" | "result" | "error",
+) {
   if (!text) return;
-  const flag = which === "result" ? resultCopied : errorCopied;
+  const flag =
+    which === "command"
+      ? commandCopied
+      : which === "result"
+        ? resultCopied
+        : errorCopied;
   try {
     await navigator.clipboard.writeText(text);
     flag.value = true;
@@ -23,7 +33,21 @@ async function copy(text: string | undefined, which: "result" | "error") {
 </script>
 
 <template>
-  <div v-if="result || error" class="space-y-2">
+  <div v-if="command || result || error" class="space-y-2">
+    <div
+      v-if="command"
+      class="flex items-start gap-2.5 rounded-lg border-l-2 border-zinc-600 bg-zinc-800/40 px-4 py-3"
+    >
+      <pre class="max-h-32 flex-1 overflow-auto whitespace-pre-wrap break-all font-mono text-sm text-zinc-400">{{ command }}</pre>
+      <button
+        type="button"
+        class="shrink-0 rounded-md bg-zinc-700/50 px-3 py-1 text-xs font-medium text-zinc-300 transition hover:bg-zinc-700 hover:text-zinc-100"
+        @click="copy(command, 'command')"
+      >
+        {{ commandCopied ? "Copied!" : "Copy" }}
+      </button>
+    </div>
+
     <div
       v-if="result"
       role="status"

@@ -14,14 +14,20 @@ const MODE_OPTIONS = [
   { label: "Block", value: "block" },
 ];
 
-const batch = useBatchOperation("nx-compress", "cmd_nx_compress", (item) => ({
-  input: item.input,
-  output: item.output,
-  keys: keys.value || null,
-  level: level.value,
-  mode: mode.value,
-  blockSizeExp: blockSizeExp.value,
-}));
+const commandLine = ref("");
+
+function compressArgs(item: { input: string; output: string }) {
+  return {
+    input: item.input,
+    output: item.output,
+    keys: keys.value || null,
+    level: level.value,
+    mode: mode.value,
+    blockSizeExp: blockSizeExp.value,
+  };
+}
+
+const batch = useBatchOperation("nx-compress", "cmd_nx_compress", compressArgs);
 
 const dropZoneRef = ref<HTMLElement | null>(null);
 let zoneId: string | null = null;
@@ -75,6 +81,8 @@ async function execute() {
     item.output =
       queue.value.length === 1 ? output.value : resolve(deriveNszPath(item.input));
   }
+  const rep = queue.value.find((i) => i.status === "pending") ?? queue.value[0];
+  commandLine.value = rep ? buildCliCommand("cmd_nx_compress", compressArgs(rep)) : "";
   await batch.start(queue, result);
 }
 </script>
@@ -229,7 +237,7 @@ async function execute() {
     </OperationCard>
 
     <div class="mt-4">
-      <OutputLog :result="result" :error="error" />
+      <OutputLog :command="commandLine" :result="result" :error="error" />
     </div>
   </div>
 </template>

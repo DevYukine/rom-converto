@@ -7,6 +7,7 @@ const { input, output, force, result, error, loading } = storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
 const { run } = useOperation({ result, error, loading });
 const progress = useProgress("cue-merge");
+const commandLine = ref("");
 
 watch([input, outputDir], () => {
   if (input.value) output.value = resolve(deriveMergedCuePath(input.value));
@@ -14,11 +15,13 @@ watch([input, outputDir], () => {
 
 async function execute() {
   progress.reset();
-  await run("cmd_cue_merge", {
+  const args = {
     cuePath: input.value,
     output: output.value,
     force: force.value,
-  });
+  };
+  commandLine.value = buildCliCommand("cmd_cue_merge", args);
+  await run("cmd_cue_merge", args);
 }
 </script>
 
@@ -73,7 +76,7 @@ async function execute() {
     </OperationCard>
 
     <div class="mt-4">
-      <OutputLog :result="result" :error="error" />
+      <OutputLog :command="commandLine" :result="result" :error="error" />
     </div>
   </div>
 </template>

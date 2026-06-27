@@ -10,10 +10,15 @@ const progress = useProgress("decrypt");
 
 const isBatch = computed(() => queue.value.length > 0);
 
-const batch = useBatchOperation("decrypt", "cmd_decrypt_rom", (item) => ({
-  input: item.input,
-  output: item.output,
-}));
+const commandLine = ref("");
+
+function decryptArgs(inputPath: string, outputPath: string) {
+  return { input: inputPath, output: outputPath };
+}
+
+const batch = useBatchOperation("decrypt", "cmd_decrypt_rom", (item) =>
+  decryptArgs(item.input, item.output),
+);
 
 watch([input, outputDir], () => {
   if (input.value) output.value = resolve(deriveDecryptedPath(input.value));
@@ -42,12 +47,13 @@ function handleSingleFile(path: string) {
 async function execute() {
   progress.reset();
   if (isBatch.value) {
+    const rep = queue.value.find((i) => i.status === "pending") ?? queue.value[0];
+    commandLine.value = rep ? buildCliCommand("cmd_decrypt_rom", decryptArgs(rep.input, rep.output)) : "";
     await batch.start(queue, result);
   } else {
-    await run("cmd_decrypt_rom", {
-      input: input.value,
-      output: output.value,
-    });
+    const args = decryptArgs(input.value, output.value);
+    commandLine.value = buildCliCommand("cmd_decrypt_rom", args);
+    await run("cmd_decrypt_rom", args);
   }
 }
 </script>
@@ -122,7 +128,7 @@ async function execute() {
     </OperationCard>
 
     <div class="mt-4">
-      <OutputLog :result="result" :error="error" />
+      <OutputLog :command="commandLine" :result="result" :error="error" />
     </div>
   </div>
 </template>

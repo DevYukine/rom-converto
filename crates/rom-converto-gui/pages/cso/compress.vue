@@ -15,13 +15,21 @@ const FORMAT_OPTIONS = [
   { label: "ZSO (PS2 via OPL)", value: "zso" },
 ];
 
-const batch = useBatchOperation("cso-compress", "cmd_cso_compress", (item) => ({
-  inputPath: item.input,
-  output: item.output,
-  format: format.value,
-  force: force.value,
-  blockSize: blockSize.value || null,
-}));
+const commandLine = ref("");
+
+function csoArgs(inputPath: string, outputPath: string) {
+  return {
+    inputPath,
+    output: outputPath,
+    format: format.value,
+    force: force.value,
+    blockSize: blockSize.value || null,
+  };
+}
+
+const batch = useBatchOperation("cso-compress", "cmd_cso_compress", (item) =>
+  csoArgs(item.input, item.output),
+);
 
 watch([input, outputDir], () => {
   if (input.value) output.value = resolve(deriveCsoPath(input.value, format.value));
@@ -57,15 +65,13 @@ function handleSingleFile(path: string) {
 async function execute() {
   progress.reset();
   if (isBatch.value) {
+    const rep = queue.value.find((i) => i.status === "pending") ?? queue.value[0];
+    commandLine.value = rep ? buildCliCommand("cmd_cso_compress", csoArgs(rep.input, rep.output)) : "";
     await batch.start(queue, result);
   } else {
-    await run("cmd_cso_compress", {
-      inputPath: input.value,
-      output: output.value,
-      format: format.value,
-      force: force.value,
-      blockSize: blockSize.value || null,
-    });
+    const args = csoArgs(input.value, output.value);
+    commandLine.value = buildCliCommand("cmd_cso_compress", args);
+    await run("cmd_cso_compress", args);
   }
 }
 </script>
@@ -168,7 +174,7 @@ async function execute() {
     </OperationCard>
 
     <div class="mt-4">
-      <OutputLog :result="result" :error="error" />
+      <OutputLog :command="commandLine" :result="result" :error="error" />
     </div>
   </div>
 </template>

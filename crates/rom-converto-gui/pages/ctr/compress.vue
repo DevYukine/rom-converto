@@ -10,11 +10,15 @@ const progress = useProgress("compress");
 
 const isBatch = computed(() => queue.value.length > 0);
 
-const batch = useBatchOperation("compress", "cmd_compress_rom", (item) => ({
-  input: item.input,
-  output: item.output || null,
-  level: level.value,
-}));
+const commandLine = ref("");
+
+function compressArgs(inputPath: string, outputPath: string) {
+  return { input: inputPath, output: outputPath || null, level: level.value };
+}
+
+const batch = useBatchOperation("compress", "cmd_compress_rom", (item) =>
+  compressArgs(item.input, item.output),
+);
 
 watch([input, outputDir], () => {
   if (input.value) output.value = resolve(deriveCompressedPath(input.value));
@@ -43,13 +47,13 @@ function handleSingleFile(path: string) {
 async function execute() {
   progress.reset();
   if (isBatch.value) {
+    const rep = queue.value.find((i) => i.status === "pending") ?? queue.value[0];
+    commandLine.value = rep ? buildCliCommand("cmd_compress_rom", compressArgs(rep.input, rep.output)) : "";
     await batch.start(queue, result);
   } else {
-    await run("cmd_compress_rom", {
-      input: input.value,
-      output: output.value || null,
-      level: level.value,
-    });
+    const args = compressArgs(input.value, output.value);
+    commandLine.value = buildCliCommand("cmd_compress_rom", args);
+    await run("cmd_compress_rom", args);
   }
 }
 </script>
@@ -147,7 +151,7 @@ async function execute() {
     </OperationCard>
 
     <div class="mt-4">
-      <OutputLog :result="result" :error="error" />
+      <OutputLog :command="commandLine" :result="result" :error="error" />
     </div>
   </div>
 </template>

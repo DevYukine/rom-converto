@@ -12,10 +12,15 @@ const isBatch = computed(() => queue.value.length > 0);
 
 const DISC_FILTERS = [{ name: "Wii U disc images", extensions: ["wud", "wux"] }];
 
-const batch = useBatchOperation("wup-verify", "cmd_wup_verify", (item) => ({
-  input: item.input,
-  keys: keys.value || null,
-}));
+const commandLine = ref("");
+
+function verifyArgs(inputPath: string) {
+  return { input: inputPath, keys: keys.value || null };
+}
+
+const batch = useBatchOperation("wup-verify", "cmd_wup_verify", (item) =>
+  verifyArgs(item.input),
+);
 
 const dropZoneRef = ref<HTMLElement | null>(null);
 let zoneId: string | null = null;
@@ -64,6 +69,8 @@ async function execute() {
   result.value = "";
 
   if (isBatch.value) {
+    const rep = queue.value.find((i) => i.status === "pending") ?? queue.value[0];
+    commandLine.value = rep ? buildCliCommand("cmd_wup_verify", verifyArgs(rep.input)) : "";
     await batch.start(queue, result, {
       isSuccess: (res) => {
         try {
@@ -83,12 +90,11 @@ async function execute() {
       },
     });
   } else {
+    const args = verifyArgs(input.value);
+    commandLine.value = buildCliCommand("cmd_wup_verify", args);
     loading.value = true;
     try {
-      const json = await invoke<string>("cmd_wup_verify", {
-        input: input.value,
-        keys: keys.value || null,
-      });
+      const json = await invoke<string>("cmd_wup_verify", args);
       verdict.value = JSON.parse(json) as WupVerifyResult;
     } catch (e) {
       error.value = String(e);
@@ -229,7 +235,7 @@ async function execute() {
     </OperationCard>
 
     <div class="mt-4">
-      <OutputLog :result="isBatch ? result : ''" :error="error" />
+      <OutputLog :command="commandLine" :result="isBatch ? result : ''" :error="error" />
     </div>
   </div>
 </template>

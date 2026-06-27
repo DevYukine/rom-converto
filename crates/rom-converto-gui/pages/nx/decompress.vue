@@ -8,11 +8,13 @@ const { queue, output, keys, result, error, loading } = storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
 const progress = useProgress("nx-decompress");
 
-const batch = useBatchOperation("nx-decompress", "cmd_nx_decompress", (item) => ({
-  input: item.input,
-  output: item.output,
-  keys: keys.value || null,
-}));
+const commandLine = ref("");
+
+function decompressArgs(item: { input: string; output: string }) {
+  return { input: item.input, output: item.output, keys: keys.value || null };
+}
+
+const batch = useBatchOperation("nx-decompress", "cmd_nx_decompress", decompressArgs);
 
 const dropZoneRef = ref<HTMLElement | null>(null);
 let zoneId: string | null = null;
@@ -69,6 +71,8 @@ async function execute() {
         ? output.value
         : resolve(deriveNspPath(item.input));
   }
+  const rep = queue.value.find((i) => i.status === "pending") ?? queue.value[0];
+  commandLine.value = rep ? buildCliCommand("cmd_nx_decompress", decompressArgs(rep)) : "";
   await batch.start(queue, result);
 }
 </script>
@@ -155,7 +159,7 @@ async function execute() {
     </OperationCard>
 
     <div class="mt-4">
-      <OutputLog :result="result" :error="error" />
+      <OutputLog :command="commandLine" :result="result" :error="error" />
     </div>
   </div>
 </template>

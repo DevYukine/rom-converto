@@ -10,11 +10,15 @@ const progress = useProgress("cso-decompress");
 
 const isBatch = computed(() => queue.value.length > 0);
 
-const batch = useBatchOperation("cso-decompress", "cmd_cso_decompress", (item) => ({
-  inputPath: item.input,
-  output: item.output,
-  force: force.value,
-}));
+const commandLine = ref("");
+
+function csoArgs(inputPath: string, outputPath: string) {
+  return { inputPath, output: outputPath, force: force.value };
+}
+
+const batch = useBatchOperation("cso-decompress", "cmd_cso_decompress", (item) =>
+  csoArgs(item.input, item.output),
+);
 
 watch([input, outputDir], () => {
   if (input.value) output.value = resolve(deriveDiscIsoPath(input.value));
@@ -43,13 +47,13 @@ function handleSingleFile(path: string) {
 async function execute() {
   progress.reset();
   if (isBatch.value) {
+    const rep = queue.value.find((i) => i.status === "pending") ?? queue.value[0];
+    commandLine.value = rep ? buildCliCommand("cmd_cso_decompress", csoArgs(rep.input, rep.output)) : "";
     await batch.start(queue, result);
   } else {
-    await run("cmd_cso_decompress", {
-      inputPath: input.value,
-      output: output.value,
-      force: force.value,
-    });
+    const args = csoArgs(input.value, output.value);
+    commandLine.value = buildCliCommand("cmd_cso_decompress", args);
+    await run("cmd_cso_decompress", args);
   }
 }
 </script>
@@ -134,7 +138,7 @@ async function execute() {
     </OperationCard>
 
     <div class="mt-4">
-      <OutputLog :result="result" :error="error" />
+      <OutputLog :command="commandLine" :result="result" :error="error" />
     </div>
   </div>
 </template>

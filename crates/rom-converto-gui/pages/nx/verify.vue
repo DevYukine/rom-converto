@@ -13,10 +13,15 @@ const CONTAINER_FILTERS = [
   { name: "Switch container", extensions: ["nsp", "nsz", "xci", "xcz"] },
 ];
 
-const batch = useBatchOperation("nx-verify", "cmd_nx_verify", (item) => ({
-  input: item.input,
-  keys: keys.value || null,
-}));
+const commandLine = ref("");
+
+function verifyArgs(inputPath: string) {
+  return { input: inputPath, keys: keys.value || null };
+}
+
+const batch = useBatchOperation("nx-verify", "cmd_nx_verify", (item) =>
+  verifyArgs(item.input),
+);
 
 function handleFiles(paths: string[]) {
   for (const p of paths) store.addToQueue(p);
@@ -37,6 +42,8 @@ async function execute() {
   result.value = "";
 
   if (isBatch.value) {
+    const rep = queue.value.find((i) => i.status === "pending") ?? queue.value[0];
+    commandLine.value = rep ? buildCliCommand("cmd_nx_verify", verifyArgs(rep.input)) : "";
     await batch.start(queue, result, {
       isSuccess: (res) => {
         try {
@@ -56,12 +63,11 @@ async function execute() {
       },
     });
   } else {
+    const args = verifyArgs(input.value);
+    commandLine.value = buildCliCommand("cmd_nx_verify", args);
     loading.value = true;
     try {
-      const json = await invoke<string>("cmd_nx_verify", {
-        input: input.value,
-        keys: keys.value || null,
-      });
+      const json = await invoke<string>("cmd_nx_verify", args);
       verdict.value = JSON.parse(json) as NxVerifyResult;
     } catch (e) {
       error.value = String(e);
@@ -179,7 +185,7 @@ async function execute() {
     </OperationCard>
 
     <div class="mt-4">
-      <OutputLog :result="isBatch ? result : ''" :error="error" />
+      <OutputLog :command="commandLine" :result="isBatch ? result : ''" :error="error" />
     </div>
   </div>
 </template>

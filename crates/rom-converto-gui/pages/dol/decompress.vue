@@ -10,11 +10,15 @@ const progress = useProgress("dol-decompress");
 
 const isBatch = computed(() => queue.value.length > 0);
 
-const batch = useBatchOperation("dol-decompress", "cmd_decompress_disc", (item) => ({
-  input: item.input,
-  output: item.output || null,
-  taskId: "dol-decompress",
-}));
+const commandLine = ref("");
+
+function decompressArgs(inputPath: string, outputPath: string) {
+  return { input: inputPath, output: outputPath || null, taskId: "dol-decompress" };
+}
+
+const batch = useBatchOperation("dol-decompress", "cmd_decompress_disc", (item) =>
+  decompressArgs(item.input, item.output),
+);
 
 watch([input, outputDir], () => {
   if (input.value) output.value = resolve(deriveDiscIsoPath(input.value));
@@ -43,13 +47,13 @@ function handleSingleFile(path: string) {
 async function execute() {
   progress.reset();
   if (isBatch.value) {
+    const rep = queue.value.find((i) => i.status === "pending") ?? queue.value[0];
+    commandLine.value = rep ? buildCliCommand("cmd_decompress_disc", decompressArgs(rep.input, rep.output)) : "";
     await batch.start(queue, result);
   } else {
-    await run("cmd_decompress_disc", {
-      input: input.value,
-      output: output.value || null,
-      taskId: "dol-decompress",
-    });
+    const args = decompressArgs(input.value, output.value);
+    commandLine.value = buildCliCommand("cmd_decompress_disc", args);
+    await run("cmd_decompress_disc", args);
   }
 }
 </script>
@@ -124,7 +128,7 @@ async function execute() {
     </OperationCard>
 
     <div class="mt-4">
-      <OutputLog :result="result" :error="error" />
+      <OutputLog :command="commandLine" :result="result" :error="error" />
     </div>
   </div>
 </template>

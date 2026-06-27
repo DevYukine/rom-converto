@@ -8,6 +8,7 @@ const { outputDir, resolve } = useOutputDir();
 const { run } = useOperation({ result, error, loading });
 const progress = useProgress("cdn-to-cia");
 const totalProgress = useProgress("cdn-to-cia-total");
+const commandLine = ref("");
 
 watch(compress, (val) => {
   if (val) decrypt.value = true;
@@ -22,7 +23,7 @@ async function execute() {
   progress.reset();
   totalProgress.reset();
   const target = output.value || (outputDir.value ? resolve(deriveCiaPath(cdnDir.value)) : null);
-  await run("cmd_cdn_to_cia", {
+  const args = {
     cdnDir: cdnDir.value,
     output: target,
     decrypt: decrypt.value,
@@ -30,7 +31,9 @@ async function execute() {
     cleanup: cleanup.value,
     recursive: recursive.value,
     ensureTicketExists: ensureTicket.value,
-  });
+  };
+  commandLine.value = buildCliCommand("cmd_cdn_to_cia", args);
+  await run("cmd_cdn_to_cia", args);
 }
 </script>
 
@@ -115,7 +118,7 @@ async function execute() {
     </OperationCard>
 
     <div class="mt-4">
-      <OutputLog :result="result" :error="error" />
+      <OutputLog :command="commandLine" :result="result" :error="error" />
     </div>
   </div>
 </template>

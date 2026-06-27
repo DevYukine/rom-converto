@@ -54,11 +54,15 @@ interface NcsdResult {
 type VerifyResult = CiaResult | NcsdResult;
 
 const verifyResult = ref<VerifyResult | null>(null);
+const commandLine = ref("");
 
-const batch = useBatchOperation("ctr-verify", "cmd_verify_ctr", (item) => ({
-  input: item.input,
-  verifyContent: verifyContent.value,
-}));
+function verifyArgs(inputPath: string) {
+  return { input: inputPath, verifyContent: verifyContent.value };
+}
+
+const batch = useBatchOperation("ctr-verify", "cmd_verify_ctr", (item) =>
+  verifyArgs(item.input),
+);
 
 function handleFiles(paths: string[]) {
   for (const p of paths) store.addToQueue(p);
@@ -79,14 +83,15 @@ async function execute() {
   result.value = "";
 
   if (isBatch.value) {
+    const rep = queue.value.find((i) => i.status === "pending") ?? queue.value[0];
+    commandLine.value = rep ? buildCliCommand("cmd_verify_ctr", verifyArgs(rep.input)) : "";
     await batch.start(queue, result, batchOptions);
   } else {
+    const args = verifyArgs(input.value);
+    commandLine.value = buildCliCommand("cmd_verify_ctr", args);
     loading.value = true;
     try {
-      const json = await invoke<string>("cmd_verify_ctr", {
-        input: input.value,
-        verifyContent: verifyContent.value,
-      });
+      const json = await invoke<string>("cmd_verify_ctr", args);
       const parsed = JSON.parse(json) as VerifyResult;
       verifyResult.value = parsed;
       result.value = parsed.format === "Cia"
@@ -351,7 +356,7 @@ const batchOptions = {
     </template>
 
     <div v-else class="mt-4">
-      <OutputLog :result="result" :error="error" />
+      <OutputLog :command="commandLine" :result="result" :error="error" />
     </div>
   </div>
 </template>
