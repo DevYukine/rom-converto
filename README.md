@@ -82,6 +82,7 @@ Where each format works:
 ### Application
 
 * [x] Command line interface with progress bars and a post-run space-saved summary
+* [x] Global `--dry-run` preview that shows the planned actions without writing anything
 * [x] Desktop GUI with drag and drop batch processing
 * [x] Standalone `hash` command for crc32 / sha1 / md5 / sha256 digests with report export
 * [x] Self update from GitHub releases (CLI)
@@ -124,6 +125,10 @@ The `compress`, `decompress`, and `chd extract` commands also accept `--report <
 Two global flags work on every command: `--config <FILE>` points at a config file directly and overrides the search order, and `--preset <NAME>` applies a named preset from the config. See [Configuration](#configuration) for the file format and how settings are resolved.
 
 The compress, decompress, convert, decrypt, and `chd extract` commands also accept `--output-template`, an alternative way to derive the output path from the ROM's own metadata. See [Output-path templates](#output-path-templates).
+
+`--dry-run` is a global flag that previews what a command would do without writing any output. It prints one plan line per file showing the operation, the resolved and templated output path, the `--on-conflict` decision (`overwrite`, `rename`, `skip`, or `new`), the detected media or format, and any missing keys, for example `would compress game.iso -> game.cso (CSO) [overwrite]`. It runs the same input resolution, detection, and conflict checks as a real run, exits 0 on a valid plan, and exits nonzero only for real input errors such as a missing file. Pass `--report` alongside it to export the plan. For recursive `ctr` commands the preview lists resolved output paths only, since those batches do not expose a per-file conflict policy.
+
+The GUI does not yet have a preview toggle. It is a tracked follow-up: each write-capable Tauri command needs a `dry_run` parameter and per-page wiring that reuses the CLI plan logic.
 
 ## Configuration
 

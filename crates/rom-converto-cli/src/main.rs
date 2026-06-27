@@ -68,6 +68,7 @@ use std::time::Instant;
 mod batch;
 mod commands;
 mod config;
+mod dry_run;
 mod github;
 mod info_print;
 mod updater;
@@ -225,6 +226,80 @@ fn log_skipped(output: &Path) {
     log::info!("skipped, output exists: {}", output.display());
 }
 
+/// Emit the plan line, summary, and optional report for a single-file
+/// dry-run, then return so the caller can short-circuit before the lib write.
+fn dry_run_single(
+    operation: &str,
+    input: &Path,
+    desired: &Path,
+    decision: &WriteDecision,
+    media: Option<&str>,
+    missing_keys: Option<&str>,
+    report: Option<&Path>,
+) -> Result<()> {
+    dry_run::log_plan(operation, input, desired, decision, media, missing_keys);
+    let mut tally = Tally::new();
+    dry_run::record(&mut tally, input, decision);
+    let records = [dry_run::report_record(operation, input, desired, decision)];
+    dry_run::finish(&tally, &records, report)
+}
+
+/// Best-effort media label for a CHD dry-run plan line. ISO inputs read a
+/// header to predict the disc kind; cue inputs imply a CD with no header probe.
+fn chd_media_label(input: &Path) -> Option<String> {
+    let ext = input
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase());
+    match ext.as_deref() {
+        Some("cue") => Some("CD".to_string()),
+        Some("iso") => rom_converto_lib::util::iso9660::detect_disc_kind(input)
+            .ok()
+            .map(|k| k.label().to_string()),
+        _ => None,
+    }
+}
+
+/// Load an NX keyset, but under dry-run a missing keyfile is reported as a
+/// plan note instead of aborting, so the preview still shows the resolved
+/// paths and exits 0. Outside dry-run the missing-keyfile error is preserved.
+fn load_keyset_for_plan(
+    explicit: Option<&Path>,
+    dry_run: bool,
+) -> Result<(rom_converto_lib::nintendo::nx::KeySet, Option<String>)> {
+    match load_keyset(explicit) {
+        Ok(keys) => Ok((keys, None)),
+        Err(e) if dry_run => Ok((
+            rom_converto_lib::nintendo::nx::KeySet::default(),
+            Some(e.to_string()),
+        )),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Dry-run preview for the CTR recursive arms. The lib batch functions own
+/// their own walk and write with no CLI-level conflict policy, so the preview
+/// re-derives each output path here and reports the conflict decision without
+/// calling the lib batch. The detected media is omitted; the extension implies
+/// the format.
+fn dry_run_ctr_scan(
+    operation: &str,
+    files: &[std::path::PathBuf],
+    output_dir: Option<&Path>,
+    policy: rom_converto_lib::util::ConflictPolicy,
+    derive: fn(&Path) -> std::path::PathBuf,
+) -> Result<()> {
+    let mut tally = Tally::new();
+    for input in files {
+        let desired = rom_converto_lib::util::place_in_dir(&derive(input), output_dir);
+        let decision = resolve_output(&desired, policy)?;
+        dry_run::log_plan(operation, input, &desired, &decision, None, None);
+        dry_run::record(&mut tally, input, &decision);
+    }
+    log::info!("{}", tally.summary_line(TallyDirection::DryRun));
+    Ok(())
+}
+
 /// Decompress targets a WBFS container when the resolved output path
 /// carries a `.wbfs` extension; otherwise it writes a raw disc image.
 fn wants_wbfs_output(path: &std::path::Path) -> bool {
@@ -303,18 +378,51 @@ async fn main() -> Result<()> {
     let user_config = rom_converto_lib::config::load_config(cli.config.as_deref())?;
     let preset = rom_converto_lib::config::resolve_preset(&user_config, cli.preset.as_deref())?;
     let effective = config::resolve(&user_config, preset.as_ref());
+    let dry_run = cli.dry_run;
 
     match cli.command {
         Commands::Ctr(inner) => match inner {
             CtrCommands::CdnToCia(cmd) => {
                 let mut output = cmd.output_flag.or(cmd.output);
                 let mut output_dir = cmd.output_dir;
+                if cmd.recursive && dry_run {
+                    ensure_input_exists(&cmd.cdn_dir)?;
+                    let policy = policy_of(cmd.on_conflict, cmd.force);
+                    let mut tally = Tally::new();
+                    let mut dirs: Vec<std::path::PathBuf> = std::fs::read_dir(&cmd.cdn_dir)?
+                        .flatten()
+                        .map(|e| e.path())
+                        .filter(|p| p.is_dir())
+                        .collect();
+                    dirs.sort();
+                    for dir in &dirs {
+                        let name = dir
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .map(|n| format!("{n}.cia"))
+                            .unwrap_or_else(|| "output.cia".to_string());
+                        let base = rom_converto_lib::util::place_in_dir(
+                            &dir.parent().unwrap_or_else(|| Path::new(".")).join(name),
+                            output_dir.as_deref(),
+                        );
+                        let resolved = if cmd.compress {
+                            derive_compressed_path(&base)
+                        } else {
+                            base
+                        };
+                        let decision = resolve_output(&resolved, policy)?;
+                        dry_run::log_plan("convert", dir, &resolved, &decision, None, None);
+                        dry_run::record(&mut tally, dir, &decision);
+                    }
+                    log::info!("{}", tally.summary_line(TallyDirection::DryRun));
+                    return Ok(());
+                }
                 if !cmd.recursive {
                     ensure_input_exists(&cmd.cdn_dir)?;
                     let base = match output.clone() {
                         Some(p) => p,
                         None => {
-                            if let Some(dir) = output_dir.as_deref() {
+                            if !dry_run && let Some(dir) = output_dir.as_deref() {
                                 std::fs::create_dir_all(dir)?;
                             }
                             let name = cmd
@@ -337,7 +445,13 @@ async fn main() -> Result<()> {
                         base.clone()
                     };
                     let policy = policy_of(cmd.on_conflict, cmd.force);
-                    match resolve_output(&resolved, policy)? {
+                    let decision = resolve_output(&resolved, policy)?;
+                    if dry_run {
+                        return dry_run_single(
+                            "convert", &cmd.cdn_dir, &resolved, &decision, None, None, None,
+                        );
+                    }
+                    match decision {
                         WriteDecision::Skip => {
                             log_skipped(&resolved);
                             return Ok(());
@@ -369,6 +483,18 @@ async fn main() -> Result<()> {
             }
             CtrCommands::GenerateCdnTicket(cmd) => {
                 ensure_input_exists(&cmd.cdn_dir)?;
+                if dry_run {
+                    let decision = WriteDecision::Write(cmd.output.clone());
+                    return dry_run_single(
+                        "generate ticket",
+                        &cmd.cdn_dir,
+                        &cmd.output,
+                        &decision,
+                        None,
+                        None,
+                        None,
+                    );
+                }
                 generate_ticket_from_cdn(&cmd.cdn_dir, &cmd.output).await?
             }
             CtrCommands::Decrypt(cmd) => {
@@ -379,9 +505,19 @@ async fn main() -> Result<()> {
                             cmd.input.display()
                         );
                     }
+                    let files = collect_files_with_exts(&cmd.input, CTR_DECRYPT_EXTS, cmd.max_depth)?;
+                    if dry_run {
+                        dry_run_ctr_scan(
+                            "decrypt",
+                            &files,
+                            cmd.output_dir.as_deref(),
+                            policy_of(cmd.on_conflict, cmd.force),
+                            derive_decrypted_path,
+                        )?;
+                        return Ok(());
+                    }
                     let tally = Tally::new();
-                    let count =
-                        collect_files_with_exts(&cmd.input, CTR_DECRYPT_EXTS, cmd.max_depth)?.len();
+                    let count = files.len();
                     decrypt_rom_batch(
                         &cmd.input,
                         cmd.output_dir.as_deref(),
@@ -396,7 +532,7 @@ async fn main() -> Result<()> {
                     let output = match cmd.output_flag.or(cmd.output) {
                         Some(p) => p,
                         None => {
-                            if let Some(dir) = cmd.output_dir.as_deref() {
+                            if !dry_run && let Some(dir) = cmd.output_dir.as_deref() {
                                 std::fs::create_dir_all(dir)?;
                             }
                             match cmd.output_template.as_deref() {
@@ -409,6 +545,7 @@ async fn main() -> Result<()> {
                                         .and_then(|e| e.to_str())
                                         .unwrap_or(""),
                                     None,
+                                    dry_run,
                                 )?,
                                 None => rom_converto_lib::util::place_in_dir(
                                     &derive_decrypted_path(&cmd.input),
@@ -418,7 +555,13 @@ async fn main() -> Result<()> {
                         }
                     };
                     let policy = policy_of(cmd.on_conflict, cmd.force);
-                    let output = match resolve_output(&output, policy)? {
+                    let decision = resolve_output(&output, policy)?;
+                    if dry_run {
+                        return dry_run_single(
+                            "decrypt", &cmd.input, &output, &decision, None, None, None,
+                        );
+                    }
+                    let output = match decision {
                         WriteDecision::Skip => {
                             log_skipped(&output);
                             return Ok(());
@@ -438,9 +581,19 @@ async fn main() -> Result<()> {
                             cmd.input.display()
                         );
                     }
+                    let files = collect_files_with_exts(&cmd.input, CTR_COMPRESS_EXTS, cmd.max_depth)?;
+                    if dry_run {
+                        dry_run_ctr_scan(
+                            "compress",
+                            &files,
+                            cmd.output_dir.as_deref(),
+                            policy_of(cmd.on_conflict, cmd.force),
+                            derive_compressed_path,
+                        )?;
+                        return Ok(());
+                    }
                     let tally = Tally::new();
-                    let count =
-                        collect_files_with_exts(&cmd.input, CTR_COMPRESS_EXTS, cmd.max_depth)?.len();
+                    let count = files.len();
                     compress_rom_batch(
                         &cmd.input,
                         cmd.level,
@@ -456,7 +609,7 @@ async fn main() -> Result<()> {
                     let output = match cmd.output_flag.or(cmd.output) {
                         Some(p) => p,
                         None => {
-                            if let Some(dir) = cmd.output_dir.as_deref() {
+                            if !dry_run && let Some(dir) = cmd.output_dir.as_deref() {
                                 std::fs::create_dir_all(dir)?;
                             }
                             match cmd.output_template.as_deref() {
@@ -469,6 +622,7 @@ async fn main() -> Result<()> {
                                         .and_then(|e| e.to_str())
                                         .unwrap_or(""),
                                     None,
+                                    dry_run,
                                 )?,
                                 None => rom_converto_lib::util::place_in_dir(
                                     &derive_compressed_path(&cmd.input),
@@ -478,7 +632,13 @@ async fn main() -> Result<()> {
                         }
                     };
                     let policy = policy_of(cmd.on_conflict, cmd.force);
-                    let output = match resolve_output(&output, policy)? {
+                    let decision = resolve_output(&output, policy)?;
+                    if dry_run {
+                        return dry_run_single(
+                            "compress", &cmd.input, &output, &decision, None, None, None,
+                        );
+                    }
+                    let output = match decision {
                         WriteDecision::Skip => {
                             log_skipped(&output);
                             return Ok(());
@@ -498,10 +658,20 @@ async fn main() -> Result<()> {
                             cmd.input.display()
                         );
                     }
+                    let files =
+                        collect_files_with_exts(&cmd.input, CTR_DECOMPRESS_EXTS, cmd.max_depth)?;
+                    if dry_run {
+                        dry_run_ctr_scan(
+                            "decompress",
+                            &files,
+                            cmd.output_dir.as_deref(),
+                            policy_of(cmd.on_conflict, cmd.force),
+                            derive_decompressed_path,
+                        )?;
+                        return Ok(());
+                    }
                     let tally = Tally::new();
-                    let count =
-                        collect_files_with_exts(&cmd.input, CTR_DECOMPRESS_EXTS, cmd.max_depth)?
-                            .len();
+                    let count = files.len();
                     decompress_rom_batch(
                         &cmd.input,
                         cmd.output_dir.as_deref(),
@@ -516,7 +686,7 @@ async fn main() -> Result<()> {
                     let output = match cmd.output_flag.or(cmd.output) {
                         Some(p) => p,
                         None => {
-                            if let Some(dir) = cmd.output_dir.as_deref() {
+                            if !dry_run && let Some(dir) = cmd.output_dir.as_deref() {
                                 std::fs::create_dir_all(dir)?;
                             }
                             match cmd.output_template.as_deref() {
@@ -529,6 +699,7 @@ async fn main() -> Result<()> {
                                         .and_then(|e| e.to_str())
                                         .unwrap_or(""),
                                     None,
+                                    dry_run,
                                 )?,
                                 None => rom_converto_lib::util::place_in_dir(
                                     &derive_decompressed_path(&cmd.input),
@@ -538,7 +709,13 @@ async fn main() -> Result<()> {
                         }
                     };
                     let policy = policy_of(cmd.on_conflict, cmd.force);
-                    let output = match resolve_output(&output, policy)? {
+                    let decision = resolve_output(&output, policy)?;
+                    if dry_run {
+                        return dry_run_single(
+                            "decompress", &cmd.input, &output, &decision, None, None, None,
+                        );
+                    }
+                    let output = match decision {
                         WriteDecision::Skip => {
                             log_skipped(&output);
                             return Ok(());
@@ -558,9 +735,19 @@ async fn main() -> Result<()> {
                             cmd.input.display()
                         );
                     }
+                    let files = collect_files_with_exts(&cmd.input, CTR_CONVERT_EXTS, cmd.max_depth)?;
+                    if dry_run {
+                        dry_run_ctr_scan(
+                            "convert",
+                            &files,
+                            cmd.output_dir.as_deref(),
+                            policy_of(cmd.on_conflict, cmd.force),
+                            derive_converted_path,
+                        )?;
+                        return Ok(());
+                    }
                     let tally = Tally::new();
-                    let count =
-                        collect_files_with_exts(&cmd.input, CTR_CONVERT_EXTS, cmd.max_depth)?.len();
+                    let count = files.len();
                     convert_rom_batch(
                         &cmd.input,
                         cmd.output_dir.as_deref(),
@@ -575,7 +762,7 @@ async fn main() -> Result<()> {
                     let output = match cmd.output_flag.or(cmd.output) {
                         Some(p) => p,
                         None => {
-                            if let Some(dir) = cmd.output_dir.as_deref() {
+                            if !dry_run && let Some(dir) = cmd.output_dir.as_deref() {
                                 std::fs::create_dir_all(dir)?;
                             }
                             match cmd.output_template.as_deref() {
@@ -588,6 +775,7 @@ async fn main() -> Result<()> {
                                         .and_then(|e| e.to_str())
                                         .unwrap_or(""),
                                     None,
+                                    dry_run,
                                 )?,
                                 None => rom_converto_lib::util::place_in_dir(
                                     &derive_converted_path(&cmd.input),
@@ -597,7 +785,13 @@ async fn main() -> Result<()> {
                         }
                     };
                     let policy = policy_of(cmd.on_conflict, cmd.force);
-                    let output = match resolve_output(&output, policy)? {
+                    let decision = resolve_output(&output, policy)?;
+                    if dry_run {
+                        return dry_run_single(
+                            "convert", &cmd.input, &output, &decision, None, None, None,
+                        );
+                    }
+                    let output = match decision {
                         WriteDecision::Skip => {
                             log_skipped(&output);
                             return Ok(());
@@ -712,6 +906,7 @@ async fn main() -> Result<()> {
                         output_dir.as_deref(),
                         cmd.output_template.as_deref(),
                         cmd.max_depth,
+                        dry_run,
                         report.as_deref(),
                     )
                     .await?
@@ -720,7 +915,7 @@ async fn main() -> Result<()> {
                     let output = match cmd.output_flag.or(cmd.output) {
                         Some(p) => p,
                         None => {
-                            if let Some(dir) = output_dir.as_deref() {
+                            if !dry_run && let Some(dir) = output_dir.as_deref() {
                                 std::fs::create_dir_all(dir)?;
                             }
                             match cmd.output_template.as_deref() {
@@ -730,6 +925,7 @@ async fn main() -> Result<()> {
                                     output_dir.as_deref(),
                                     "rvz",
                                     None,
+                                    dry_run,
                                 )?,
                                 None => rom_converto_lib::util::place_in_dir(
                                     &derive_rvz_path(&cmd.input),
@@ -739,7 +935,19 @@ async fn main() -> Result<()> {
                         }
                     };
                     let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
-                    let output = match resolve_output(&output, policy)? {
+                    let decision = resolve_output(&output, policy)?;
+                    if dry_run {
+                        return dry_run_single(
+                            "compress",
+                            &cmd.input,
+                            &output,
+                            &decision,
+                            Some("RVZ"),
+                            None,
+                            report.as_deref(),
+                        );
+                    }
+                    let output = match decision {
                         WriteDecision::Skip => {
                             log_skipped(&output);
                             return Ok(());
@@ -773,6 +981,7 @@ async fn main() -> Result<()> {
                         output_dir.as_deref(),
                         cmd.output_template.as_deref(),
                         cmd.max_depth,
+                        dry_run,
                         report.as_deref(),
                     )
                     .await?
@@ -781,7 +990,7 @@ async fn main() -> Result<()> {
                     let output = match cmd.output_flag.or(cmd.output) {
                         Some(p) => p,
                         None => {
-                            if let Some(dir) = output_dir.as_deref() {
+                            if !dry_run && let Some(dir) = output_dir.as_deref() {
                                 std::fs::create_dir_all(dir)?;
                             }
                             match cmd.output_template.as_deref() {
@@ -791,6 +1000,7 @@ async fn main() -> Result<()> {
                                     output_dir.as_deref(),
                                     "iso",
                                     None,
+                                    dry_run,
                                 )?,
                                 None => rom_converto_lib::util::place_in_dir(
                                     &derive_disc_path(&cmd.input),
@@ -800,7 +1010,19 @@ async fn main() -> Result<()> {
                         }
                     };
                     let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
-                    let output = match resolve_output(&output, policy)? {
+                    let decision = resolve_output(&output, policy)?;
+                    if dry_run {
+                        return dry_run_single(
+                            "decompress",
+                            &cmd.input,
+                            &output,
+                            &decision,
+                            None,
+                            None,
+                            report.as_deref(),
+                        );
+                    }
+                    let output = match decision {
                         WriteDecision::Skip => {
                             log_skipped(&output);
                             return Ok(());
@@ -890,6 +1112,7 @@ async fn main() -> Result<()> {
                         output_dir.as_deref(),
                         cmd.output_template.as_deref(),
                         cmd.max_depth,
+                        dry_run,
                         report.as_deref(),
                     )
                     .await?
@@ -898,7 +1121,7 @@ async fn main() -> Result<()> {
                     let output = match cmd.output_flag.or(cmd.output) {
                         Some(p) => p,
                         None => {
-                            if let Some(dir) = output_dir.as_deref() {
+                            if !dry_run && let Some(dir) = output_dir.as_deref() {
                                 std::fs::create_dir_all(dir)?;
                             }
                             match cmd.output_template.as_deref() {
@@ -908,6 +1131,7 @@ async fn main() -> Result<()> {
                                     output_dir.as_deref(),
                                     "rvz",
                                     None,
+                                    dry_run,
                                 )?,
                                 None => rom_converto_lib::util::place_in_dir(
                                     &derive_rvz_path(&cmd.input),
@@ -917,7 +1141,19 @@ async fn main() -> Result<()> {
                         }
                     };
                     let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
-                    let output = match resolve_output(&output, policy)? {
+                    let decision = resolve_output(&output, policy)?;
+                    if dry_run {
+                        return dry_run_single(
+                            "compress",
+                            &cmd.input,
+                            &output,
+                            &decision,
+                            Some("RVZ"),
+                            None,
+                            report.as_deref(),
+                        );
+                    }
+                    let output = match decision {
                         WriteDecision::Skip => {
                             log_skipped(&output);
                             return Ok(());
@@ -951,6 +1187,7 @@ async fn main() -> Result<()> {
                         output_dir.as_deref(),
                         cmd.output_template.as_deref(),
                         cmd.max_depth,
+                        dry_run,
                         report.as_deref(),
                     )
                     .await?
@@ -959,7 +1196,7 @@ async fn main() -> Result<()> {
                     let output = match cmd.output_flag.or(cmd.output) {
                         Some(p) => p,
                         None => {
-                            if let Some(dir) = output_dir.as_deref() {
+                            if !dry_run && let Some(dir) = output_dir.as_deref() {
                                 std::fs::create_dir_all(dir)?;
                             }
                             match cmd.output_template.as_deref() {
@@ -969,6 +1206,7 @@ async fn main() -> Result<()> {
                                     output_dir.as_deref(),
                                     "iso",
                                     None,
+                                    dry_run,
                                 )?,
                                 None => rom_converto_lib::util::place_in_dir(
                                     &derive_disc_path(&cmd.input),
@@ -978,7 +1216,19 @@ async fn main() -> Result<()> {
                         }
                     };
                     let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
-                    let output = match resolve_output(&output, policy)? {
+                    let decision = resolve_output(&output, policy)?;
+                    if dry_run {
+                        return dry_run_single(
+                            "decompress",
+                            &cmd.input,
+                            &output,
+                            &decision,
+                            None,
+                            None,
+                            report.as_deref(),
+                        );
+                    }
+                    let output = match decision {
                         WriteDecision::Skip => {
                             log_skipped(&output);
                             return Ok(());
@@ -1065,7 +1315,30 @@ async fn main() -> Result<()> {
                     cmd.force,
                     config::policy_fallback(&eff.on_conflict)?,
                 );
-                let output = match resolve_output(&cmd.output, policy)? {
+                let decision = resolve_output(&cmd.output, policy)?;
+                if dry_run {
+                    use rom_converto_lib::nintendo::wup::compress::TitleInputFormat;
+                    let media = cmd
+                        .inputs
+                        .first()
+                        .and_then(|p| {
+                            rom_converto_lib::nintendo::wup::compress::detect_title_format(p).ok()
+                        })
+                        .map(|f| match f {
+                            TitleInputFormat::Loadiine => "Loadiine",
+                            TitleInputFormat::Nus => "NUS",
+                            TitleInputFormat::Disc => "disc",
+                        });
+                    let input = cmd
+                        .inputs
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| cmd.output.clone());
+                    return dry_run_single(
+                        "compress", &input, &cmd.output, &decision, media, None, None,
+                    );
+                }
+                let output = match decision {
                     WriteDecision::Skip => {
                         log_skipped(&cmd.output);
                         return Ok(());
@@ -1103,7 +1376,13 @@ async fn main() -> Result<()> {
             WupCommands::Decrypt(cmd) => {
                 ensure_input_exists(&cmd.input)?;
                 let policy = policy_of(cmd.on_conflict, cmd.force);
-                match resolve_output_dir(&cmd.output, policy)? {
+                let decision = resolve_output_dir(&cmd.output, policy)?;
+                if dry_run {
+                    return dry_run_single(
+                        "decrypt", &cmd.input, &cmd.output, &decision, None, None, None,
+                    );
+                }
+                match decision {
                     WriteDecision::Skip => {
                         log_skipped(&cmd.output);
                         return Ok(());
@@ -1151,13 +1430,51 @@ async fn main() -> Result<()> {
         Commands::Nx(inner) => match inner {
             NxCommands::Compress(cmd) => {
                 let eff = &effective.nx;
-                let keys = load_keyset(cmd.keys.as_deref())?;
+                let (keys, keys_note) = load_keyset_for_plan(cmd.keys.as_deref(), dry_run)?;
                 let level = cmd.level.or(eff.level);
                 let mode = cmd.mode.clone().or_else(|| eff.mode.clone());
                 let block_size_exp = cmd.block_size_exp.or(eff.block_size_exp);
                 let output_dir = cmd.output_dir.clone().or_else(|| eff.output_dir.clone());
                 let report = cmd.report.clone().or_else(|| eff.report.clone());
                 let fallback = config::policy_fallback(&eff.on_conflict)?;
+                if cmd.recursive && dry_run {
+                    require_dir(&cmd.input)?;
+                    let files = rom_converto_lib::util::fs::collect_files_with_exts(
+                        &cmd.input,
+                        &["nsp", "xci"],
+                        cmd.max_depth,
+                    )?;
+                    let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
+                    let mut tally = Tally::new();
+                    for input in &files {
+                        let desired = crate::util::batch_output(
+                            input,
+                            &nx_derive_compressed_path(input),
+                            &cmd.input,
+                            output_dir.as_deref(),
+                            cmd.output_template.as_deref(),
+                            nx_derive_compressed_path(input)
+                                .extension()
+                                .and_then(|e| e.to_str())
+                                .unwrap_or(""),
+                            cmd.keys.as_deref(),
+                            true,
+                        )?;
+                        let decision = resolve_output(&desired, policy)?;
+                        let media = detect_container(input).ok().map(|k| format!("{k:?}"));
+                        dry_run::log_plan(
+                            "compress",
+                            input,
+                            &desired,
+                            &decision,
+                            media.as_deref(),
+                            keys_note.as_deref(),
+                        );
+                        dry_run::record(&mut tally, input, &decision);
+                    }
+                    log::info!("{}", tally.summary_line(TallyDirection::DryRun));
+                    return Ok(());
+                }
                 if cmd.recursive {
                     require_dir(&cmd.input)?;
                     let tuning = batch::NxCompressTuning {
@@ -1168,6 +1485,7 @@ async fn main() -> Result<()> {
                         output_dir,
                         output_template: cmd.output_template,
                         max_depth: cmd.max_depth,
+                        dry_run,
                         report,
                     };
                     batch::nx_compress(&progress, &total_progress, &cmd.input, keys, tuning).await?
@@ -1192,7 +1510,7 @@ async fn main() -> Result<()> {
                     let output = match cmd.output_flag.or(cmd.output) {
                         Some(p) => p,
                         None => {
-                            if let Some(dir) = output_dir.as_deref() {
+                            if !dry_run && let Some(dir) = output_dir.as_deref() {
                                 std::fs::create_dir_all(dir)?;
                             }
                             match cmd.output_template.as_deref() {
@@ -1205,6 +1523,7 @@ async fn main() -> Result<()> {
                                         .and_then(|e| e.to_str())
                                         .unwrap_or(""),
                                     cmd.keys.as_deref(),
+                                    dry_run,
                                 )?,
                                 None => rom_converto_lib::util::place_in_dir(
                                     &nx_derive_compressed_path(&cmd.input),
@@ -1214,7 +1533,19 @@ async fn main() -> Result<()> {
                         }
                     };
                     let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
-                    let output = match resolve_output(&output, policy)? {
+                    let decision = resolve_output(&output, policy)?;
+                    if dry_run {
+                        return dry_run_single(
+                            "compress",
+                            &cmd.input,
+                            &output,
+                            &decision,
+                            Some(&format!("{kind:?}")),
+                            keys_note.as_deref(),
+                            report.as_deref(),
+                        );
+                    }
+                    let output = match decision {
                         WriteDecision::Skip => {
                             log_skipped(&output);
                             return Ok(());
@@ -1237,10 +1568,47 @@ async fn main() -> Result<()> {
             }
             NxCommands::Decompress(cmd) => {
                 let eff = &effective.nx;
-                let keys = load_keyset(cmd.keys.as_deref())?;
+                let (keys, keys_note) = load_keyset_for_plan(cmd.keys.as_deref(), dry_run)?;
                 let output_dir = cmd.output_dir.clone().or_else(|| eff.output_dir.clone());
                 let report = cmd.report.clone().or_else(|| eff.report.clone());
                 let fallback = config::policy_fallback(&eff.on_conflict)?;
+                if cmd.recursive && dry_run {
+                    require_dir(&cmd.input)?;
+                    let files = rom_converto_lib::util::fs::collect_files_with_exts(
+                        &cmd.input,
+                        &["nsz", "xcz"],
+                        cmd.max_depth,
+                    )?;
+                    let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
+                    let mut tally = Tally::new();
+                    for input in &files {
+                        let desired = crate::util::batch_output(
+                            input,
+                            &nx_derive_decompressed_path(input),
+                            &cmd.input,
+                            output_dir.as_deref(),
+                            cmd.output_template.as_deref(),
+                            nx_derive_decompressed_path(input)
+                                .extension()
+                                .and_then(|e| e.to_str())
+                                .unwrap_or(""),
+                            cmd.keys.as_deref(),
+                            true,
+                        )?;
+                        let decision = resolve_output(&desired, policy)?;
+                        dry_run::log_plan(
+                            "decompress",
+                            input,
+                            &desired,
+                            &decision,
+                            None,
+                            keys_note.as_deref(),
+                        );
+                        dry_run::record(&mut tally, input, &decision);
+                    }
+                    log::info!("{}", tally.summary_line(TallyDirection::DryRun));
+                    return Ok(());
+                }
                 if cmd.recursive {
                     require_dir(&cmd.input)?;
                     batch::nx_decompress(
@@ -1252,6 +1620,7 @@ async fn main() -> Result<()> {
                         output_dir.as_deref(),
                         cmd.output_template.as_deref(),
                         cmd.max_depth,
+                        dry_run,
                         report.as_deref(),
                     )
                     .await?
@@ -1260,7 +1629,7 @@ async fn main() -> Result<()> {
                     let output = match cmd.output_flag.or(cmd.output) {
                         Some(p) => p,
                         None => {
-                            if let Some(dir) = output_dir.as_deref() {
+                            if !dry_run && let Some(dir) = output_dir.as_deref() {
                                 std::fs::create_dir_all(dir)?;
                             }
                             match cmd.output_template.as_deref() {
@@ -1273,6 +1642,7 @@ async fn main() -> Result<()> {
                                         .and_then(|e| e.to_str())
                                         .unwrap_or(""),
                                     cmd.keys.as_deref(),
+                                    dry_run,
                                 )?,
                                 None => rom_converto_lib::util::place_in_dir(
                                     &nx_derive_decompressed_path(&cmd.input),
@@ -1282,7 +1652,19 @@ async fn main() -> Result<()> {
                         }
                     };
                     let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
-                    let output = match resolve_output(&output, policy)? {
+                    let decision = resolve_output(&output, policy)?;
+                    if dry_run {
+                        return dry_run_single(
+                            "decompress",
+                            &cmd.input,
+                            &output,
+                            &decision,
+                            None,
+                            keys_note.as_deref(),
+                            report.as_deref(),
+                        );
+                    }
+                    let output = match decision {
                         WriteDecision::Skip => {
                             log_skipped(&output);
                             return Ok(());
@@ -1374,6 +1756,7 @@ async fn main() -> Result<()> {
                         output_dir.as_deref(),
                         cmd.output_template.as_deref(),
                         cmd.max_depth,
+                        dry_run,
                         report.as_deref(),
                     )
                     .await?
@@ -1382,7 +1765,7 @@ async fn main() -> Result<()> {
                     let output = match cmd.output_flag.or(cmd.output) {
                         Some(p) => p,
                         None => {
-                            if let Some(dir) = output_dir.as_deref() {
+                            if !dry_run && let Some(dir) = output_dir.as_deref() {
                                 std::fs::create_dir_all(dir)?;
                             }
                             match cmd.output_template.as_deref() {
@@ -1392,6 +1775,7 @@ async fn main() -> Result<()> {
                                     output_dir.as_deref(),
                                     "chd",
                                     None,
+                                    dry_run,
                                 )?,
                                 None => rom_converto_lib::util::place_in_dir(
                                     &cmd.input.with_extension("chd"),
@@ -1401,7 +1785,20 @@ async fn main() -> Result<()> {
                         }
                     };
                     let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
-                    let output = match resolve_output(&output, policy)? {
+                    let decision = resolve_output(&output, policy)?;
+                    if dry_run {
+                        let media = chd_media_label(&cmd.input);
+                        return dry_run_single(
+                            "compress",
+                            &cmd.input,
+                            &output,
+                            &decision,
+                            media.as_deref(),
+                            None,
+                            report.as_deref(),
+                        );
+                    }
+                    let output = match decision {
                         WriteDecision::Skip => {
                             log_skipped(&output);
                             return Ok(());
@@ -1440,6 +1837,7 @@ async fn main() -> Result<()> {
                         output_dir.as_deref(),
                         cmd.output_template.as_deref(),
                         cmd.max_depth,
+                        dry_run,
                         report.as_deref(),
                     )
                     .await?
@@ -1451,7 +1849,9 @@ async fn main() -> Result<()> {
                             let dir = output_dir.as_deref().expect(
                                 "OUTPUT or --output-dir is required without --recursive (enforced by clap)",
                             );
-                            std::fs::create_dir_all(dir)?;
+                            if !dry_run {
+                                std::fs::create_dir_all(dir)?;
+                            }
                             match cmd.output_template.as_deref() {
                                 Some(tmpl) => crate::util::templated_output(
                                     tmpl,
@@ -1459,6 +1859,7 @@ async fn main() -> Result<()> {
                                     Some(dir),
                                     "iso",
                                     None,
+                                    dry_run,
                                 )?,
                                 None => rom_converto_lib::util::place_in_dir(
                                     &cmd.input.with_extension(""),
@@ -1468,7 +1869,19 @@ async fn main() -> Result<()> {
                         }
                     };
                     let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
-                    let output = match resolve_output(&output, policy)? {
+                    let decision = resolve_output(&output, policy)?;
+                    if dry_run {
+                        return dry_run_single(
+                            "extract",
+                            &cmd.input,
+                            &output,
+                            &decision,
+                            None,
+                            None,
+                            report.as_deref(),
+                        );
+                    }
+                    let output = match decision {
                         WriteDecision::Skip => {
                             log_skipped(&output);
                             return Ok(());
@@ -1545,6 +1958,7 @@ async fn main() -> Result<()> {
                         output_dir.as_deref(),
                         cmd.output_template.as_deref(),
                         cmd.max_depth,
+                        dry_run,
                         report.as_deref(),
                     )
                     .await?
@@ -1553,7 +1967,7 @@ async fn main() -> Result<()> {
                     let output = match cmd.output_flag.or(cmd.output) {
                         Some(p) => p,
                         None => {
-                            if let Some(dir) = output_dir.as_deref() {
+                            if !dry_run && let Some(dir) = output_dir.as_deref() {
                                 std::fs::create_dir_all(dir)?;
                             }
                             match cmd.output_template.as_deref() {
@@ -1563,6 +1977,7 @@ async fn main() -> Result<()> {
                                     output_dir.as_deref(),
                                     format.extension(),
                                     None,
+                                    dry_run,
                                 )?,
                                 None => rom_converto_lib::util::place_in_dir(
                                     &cmd.input.with_extension(format.extension()),
@@ -1572,7 +1987,23 @@ async fn main() -> Result<()> {
                         }
                     };
                     let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
-                    let output = match resolve_output(&output, policy)? {
+                    let decision = resolve_output(&output, policy)?;
+                    if dry_run {
+                        let media = match format {
+                            CsoFormat::Cso => "CSO",
+                            CsoFormat::Zso => "ZSO",
+                        };
+                        return dry_run_single(
+                            "compress",
+                            &cmd.input,
+                            &output,
+                            &decision,
+                            Some(media),
+                            None,
+                            report.as_deref(),
+                        );
+                    }
+                    let output = match decision {
                         WriteDecision::Skip => {
                             log_skipped(&output);
                             return Ok(());
@@ -1610,6 +2041,7 @@ async fn main() -> Result<()> {
                         output_dir.as_deref(),
                         cmd.output_template.as_deref(),
                         cmd.max_depth,
+                        dry_run,
                         report.as_deref(),
                     )
                     .await?
@@ -1618,7 +2050,7 @@ async fn main() -> Result<()> {
                     let output = match cmd.output_flag.or(cmd.output) {
                         Some(p) => p,
                         None => {
-                            if let Some(dir) = output_dir.as_deref() {
+                            if !dry_run && let Some(dir) = output_dir.as_deref() {
                                 std::fs::create_dir_all(dir)?;
                             }
                             match cmd.output_template.as_deref() {
@@ -1628,6 +2060,7 @@ async fn main() -> Result<()> {
                                     output_dir.as_deref(),
                                     "iso",
                                     None,
+                                    dry_run,
                                 )?,
                                 None => rom_converto_lib::util::place_in_dir(
                                     &cmd.input.with_extension("iso"),
@@ -1637,7 +2070,19 @@ async fn main() -> Result<()> {
                         }
                     };
                     let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
-                    let output = match resolve_output(&output, policy)? {
+                    let decision = resolve_output(&output, policy)?;
+                    if dry_run {
+                        return dry_run_single(
+                            "decompress",
+                            &cmd.input,
+                            &output,
+                            &decision,
+                            None,
+                            None,
+                            report.as_deref(),
+                        );
+                    }
+                    let output = match decision {
                         WriteDecision::Skip => {
                             log_skipped(&output);
                             return Ok(());
@@ -1686,7 +2131,21 @@ async fn main() -> Result<()> {
             CueCommands::Merge(cmd) => {
                 ensure_input_exists(&cmd.input_cue)?;
                 let policy = policy_of(cmd.on_conflict, cmd.force);
-                let output_cue = match resolve_output(&cmd.output_cue, policy)? {
+                let decision = resolve_output(&cmd.output_cue, policy)?;
+                if dry_run {
+                    let bin = cmd.output_cue.with_extension("bin");
+                    let note = format!("+ {}", bin.display());
+                    return dry_run_single(
+                        "merge",
+                        &cmd.input_cue,
+                        &cmd.output_cue,
+                        &decision,
+                        Some(&note),
+                        None,
+                        None,
+                    );
+                }
+                let output_cue = match decision {
                     WriteDecision::Skip => {
                         log_skipped(&cmd.output_cue);
                         return Ok(());

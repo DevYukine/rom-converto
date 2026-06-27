@@ -119,8 +119,10 @@ fn finish_tally(
     tally: &Tally,
     direction: TallyDirection,
     records: &[ReportRecord],
+    dry_run: bool,
     report_path: Option<&Path>,
 ) -> Result<()> {
+    let direction = if dry_run { TallyDirection::DryRun } else { direction };
     info!("{}", tally.summary_line(direction));
     // Write the report before the failed-count bail so failed-only runs still
     // leave a report on disk even though the command exits with an error.
@@ -143,6 +145,7 @@ pub async fn cso_decompress(
     output_dir: Option<&Path>,
     output_template: Option<&str>,
     max_depth: Option<usize>,
+    dry_run: bool,
     report_path: Option<&Path>,
 ) -> Result<()> {
     use rom_converto_lib::cso::decompress_from_cso;
@@ -151,7 +154,7 @@ pub async fn cso_decompress(
     if files.is_empty() {
         return Ok(());
     }
-    if let Some(dir) = output_dir {
+    if !dry_run && let Some(dir) = output_dir {
         std::fs::create_dir_all(dir)?;
     }
     let total = files.len();
@@ -167,6 +170,7 @@ pub async fn cso_decompress(
             output_template,
             "iso",
             None,
+            dry_run,
         ) {
             Ok(p) => p,
             Err(e) => {
@@ -177,22 +181,37 @@ pub async fn cso_decompress(
                 continue;
             }
         };
-        if let Some(parent) = output.parent() {
+        if !dry_run && let Some(parent) = output.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let output = match resolve_output(&output, policy) {
-            Ok(WriteDecision::Write(p)) => p,
-            Ok(WriteDecision::Skip) => {
-                info!("skipped, output exists: {}", output.display());
-                tally.record_skipped();
-                records.push(skipped_record(&path, "decompress", None));
-                total_progress.inc(1);
-                continue;
-            }
+        let decision = match resolve_output(&output, policy) {
+            Ok(d) => d,
             Err(e) => {
                 warn!("{e}");
                 tally.record_skipped();
                 records.push(skipped_record(&path, "decompress", Some(e.to_string())));
+                total_progress.inc(1);
+                continue;
+            }
+        };
+        if dry_run {
+            crate::dry_run::log_plan("decompress", &path, &output, &decision, None, None);
+            crate::dry_run::record(&mut tally, &path, &decision);
+            records.push(crate::dry_run::report_record(
+                "decompress",
+                &path,
+                &output,
+                &decision,
+            ));
+            total_progress.inc(1);
+            continue;
+        }
+        let output = match decision {
+            WriteDecision::Write(p) => p,
+            WriteDecision::Skip => {
+                info!("skipped, output exists: {}", output.display());
+                tally.record_skipped();
+                records.push(skipped_record(&path, "decompress", None));
                 total_progress.inc(1);
                 continue;
             }
@@ -214,7 +233,7 @@ pub async fn cso_decompress(
         total_progress.inc(1);
     }
     total_progress.finish();
-    finish_tally(&tally, TallyDirection::Decompress, &records, report_path)
+    finish_tally(&tally, TallyDirection::Decompress, &records, dry_run, report_path)
 }
 
 pub async fn cso_verify(
@@ -262,6 +281,7 @@ pub async fn rvz_compress(
     output_dir: Option<&Path>,
     output_template: Option<&str>,
     max_depth: Option<usize>,
+    dry_run: bool,
     report_path: Option<&Path>,
 ) -> Result<()> {
     use rom_converto_lib::nintendo::rvz::{compress_disc, derive_rvz_path};
@@ -270,7 +290,7 @@ pub async fn rvz_compress(
     if files.is_empty() {
         return Ok(());
     }
-    if let Some(dir) = output_dir {
+    if !dry_run && let Some(dir) = output_dir {
         std::fs::create_dir_all(dir)?;
     }
     let total = files.len();
@@ -286,6 +306,7 @@ pub async fn rvz_compress(
             output_template,
             "rvz",
             None,
+            dry_run,
         ) {
             Ok(p) => p,
             Err(e) => {
@@ -296,22 +317,34 @@ pub async fn rvz_compress(
                 continue;
             }
         };
-        if let Some(parent) = output.parent() {
+        if !dry_run && let Some(parent) = output.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let output = match resolve_output(&output, policy) {
-            Ok(WriteDecision::Write(p)) => p,
-            Ok(WriteDecision::Skip) => {
-                info!("skipped, output exists: {}", output.display());
-                tally.record_skipped();
-                records.push(skipped_record(&path, "compress", None));
-                total_progress.inc(1);
-                continue;
-            }
+        let decision = match resolve_output(&output, policy) {
+            Ok(d) => d,
             Err(e) => {
                 warn!("{e}");
                 tally.record_skipped();
                 records.push(skipped_record(&path, "compress", Some(e.to_string())));
+                total_progress.inc(1);
+                continue;
+            }
+        };
+        if dry_run {
+            crate::dry_run::log_plan("compress", &path, &output, &decision, Some("RVZ"), None);
+            crate::dry_run::record(&mut tally, &path, &decision);
+            records.push(crate::dry_run::report_record(
+                "compress", &path, &output, &decision,
+            ));
+            total_progress.inc(1);
+            continue;
+        }
+        let output = match decision {
+            WriteDecision::Write(p) => p,
+            WriteDecision::Skip => {
+                info!("skipped, output exists: {}", output.display());
+                tally.record_skipped();
+                records.push(skipped_record(&path, "compress", None));
                 total_progress.inc(1);
                 continue;
             }
@@ -332,9 +365,10 @@ pub async fn rvz_compress(
         total_progress.inc(1);
     }
     total_progress.finish();
-    finish_tally(&tally, TallyDirection::Compress, &records, report_path)
+    finish_tally(&tally, TallyDirection::Compress, &records, dry_run, report_path)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn rvz_decompress(
     progress: &dyn ProgressReporter,
     total_progress: &dyn ProgressReporter,
@@ -343,6 +377,7 @@ pub async fn rvz_decompress(
     output_dir: Option<&Path>,
     output_template: Option<&str>,
     max_depth: Option<usize>,
+    dry_run: bool,
     report_path: Option<&Path>,
 ) -> Result<()> {
     use rom_converto_lib::nintendo::rvz::{decompress_disc, derive_disc_path};
@@ -351,7 +386,7 @@ pub async fn rvz_decompress(
     if files.is_empty() {
         return Ok(());
     }
-    if let Some(dir) = output_dir {
+    if !dry_run && let Some(dir) = output_dir {
         std::fs::create_dir_all(dir)?;
     }
     let total = files.len();
@@ -367,6 +402,7 @@ pub async fn rvz_decompress(
             output_template,
             "iso",
             None,
+            dry_run,
         ) {
             Ok(p) => p,
             Err(e) => {
@@ -377,22 +413,37 @@ pub async fn rvz_decompress(
                 continue;
             }
         };
-        if let Some(parent) = output.parent() {
+        if !dry_run && let Some(parent) = output.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let output = match resolve_output(&output, policy) {
-            Ok(WriteDecision::Write(p)) => p,
-            Ok(WriteDecision::Skip) => {
-                info!("skipped, output exists: {}", output.display());
-                tally.record_skipped();
-                records.push(skipped_record(&path, "decompress", None));
-                total_progress.inc(1);
-                continue;
-            }
+        let decision = match resolve_output(&output, policy) {
+            Ok(d) => d,
             Err(e) => {
                 warn!("{e}");
                 tally.record_skipped();
                 records.push(skipped_record(&path, "decompress", Some(e.to_string())));
+                total_progress.inc(1);
+                continue;
+            }
+        };
+        if dry_run {
+            crate::dry_run::log_plan("decompress", &path, &output, &decision, None, None);
+            crate::dry_run::record(&mut tally, &path, &decision);
+            records.push(crate::dry_run::report_record(
+                "decompress",
+                &path,
+                &output,
+                &decision,
+            ));
+            total_progress.inc(1);
+            continue;
+        }
+        let output = match decision {
+            WriteDecision::Write(p) => p,
+            WriteDecision::Skip => {
+                info!("skipped, output exists: {}", output.display());
+                tally.record_skipped();
+                records.push(skipped_record(&path, "decompress", None));
                 total_progress.inc(1);
                 continue;
             }
@@ -413,7 +464,7 @@ pub async fn rvz_decompress(
         total_progress.inc(1);
     }
     total_progress.finish();
-    finish_tally(&tally, TallyDirection::Decompress, &records, report_path)
+    finish_tally(&tally, TallyDirection::Decompress, &records, dry_run, report_path)
 }
 
 pub async fn dol_verify(
@@ -502,6 +553,7 @@ pub struct NxCompressTuning {
     pub output_dir: Option<PathBuf>,
     pub output_template: Option<String>,
     pub max_depth: Option<usize>,
+    pub dry_run: bool,
     pub report: Option<PathBuf>,
 }
 
@@ -517,11 +569,12 @@ pub async fn nx_compress(
         detect_container,
     };
 
+    let dry_run = tuning.dry_run;
     let files = collect_or_warn(input_dir, &["nsp", "xci"], tuning.max_depth)?;
     if files.is_empty() {
         return Ok(());
     }
-    if let Some(dir) = tuning.output_dir.as_deref() {
+    if !dry_run && let Some(dir) = tuning.output_dir.as_deref() {
         std::fs::create_dir_all(dir)?;
     }
     let total = files.len();
@@ -565,6 +618,7 @@ pub async fn nx_compress(
                 .and_then(|e| e.to_str())
                 .unwrap_or(""),
             None,
+            dry_run,
         ) {
             Ok(p) => p,
             Err(e) => {
@@ -575,22 +629,35 @@ pub async fn nx_compress(
                 continue;
             }
         };
-        if let Some(parent) = output.parent() {
+        if !dry_run && let Some(parent) = output.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let output = match resolve_output(&output, tuning.policy) {
-            Ok(WriteDecision::Write(p)) => p,
-            Ok(WriteDecision::Skip) => {
-                info!("skipped, output exists: {}", output.display());
-                tally.record_skipped();
-                records.push(skipped_record(&path, "compress", None));
-                total_progress.inc(1);
-                continue;
-            }
+        let decision = match resolve_output(&output, tuning.policy) {
+            Ok(d) => d,
             Err(e) => {
                 warn!("{e}");
                 tally.record_skipped();
                 records.push(skipped_record(&path, "compress", Some(e.to_string())));
+                total_progress.inc(1);
+                continue;
+            }
+        };
+        if dry_run {
+            let media = format!("{kind:?}");
+            crate::dry_run::log_plan("compress", &path, &output, &decision, Some(&media), None);
+            crate::dry_run::record(&mut tally, &path, &decision);
+            records.push(crate::dry_run::report_record(
+                "compress", &path, &output, &decision,
+            ));
+            total_progress.inc(1);
+            continue;
+        }
+        let output = match decision {
+            WriteDecision::Write(p) => p,
+            WriteDecision::Skip => {
+                info!("skipped, output exists: {}", output.display());
+                tally.record_skipped();
+                records.push(skipped_record(&path, "compress", None));
                 total_progress.inc(1);
                 continue;
             }
@@ -618,6 +685,7 @@ pub async fn nx_compress(
         &tally,
         TallyDirection::Compress,
         &records,
+        dry_run,
         tuning.report.as_deref(),
     )
 }
@@ -632,6 +700,7 @@ pub async fn nx_decompress(
     output_dir: Option<&Path>,
     output_template: Option<&str>,
     max_depth: Option<usize>,
+    dry_run: bool,
     report_path: Option<&Path>,
 ) -> Result<()> {
     use rom_converto_lib::nintendo::nx::{decompress_container_async, derive_decompressed_path};
@@ -640,7 +709,7 @@ pub async fn nx_decompress(
     if files.is_empty() {
         return Ok(());
     }
-    if let Some(dir) = output_dir {
+    if !dry_run && let Some(dir) = output_dir {
         std::fs::create_dir_all(dir)?;
     }
     let total = files.len();
@@ -659,6 +728,7 @@ pub async fn nx_decompress(
                 .and_then(|e| e.to_str())
                 .unwrap_or(""),
             None,
+            dry_run,
         ) {
             Ok(p) => p,
             Err(e) => {
@@ -669,22 +739,37 @@ pub async fn nx_decompress(
                 continue;
             }
         };
-        if let Some(parent) = output.parent() {
+        if !dry_run && let Some(parent) = output.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let output = match resolve_output(&output, policy) {
-            Ok(WriteDecision::Write(p)) => p,
-            Ok(WriteDecision::Skip) => {
-                info!("skipped, output exists: {}", output.display());
-                tally.record_skipped();
-                records.push(skipped_record(&path, "decompress", None));
-                total_progress.inc(1);
-                continue;
-            }
+        let decision = match resolve_output(&output, policy) {
+            Ok(d) => d,
             Err(e) => {
                 warn!("{e}");
                 tally.record_skipped();
                 records.push(skipped_record(&path, "decompress", Some(e.to_string())));
+                total_progress.inc(1);
+                continue;
+            }
+        };
+        if dry_run {
+            crate::dry_run::log_plan("decompress", &path, &output, &decision, None, None);
+            crate::dry_run::record(&mut tally, &path, &decision);
+            records.push(crate::dry_run::report_record(
+                "decompress",
+                &path,
+                &output,
+                &decision,
+            ));
+            total_progress.inc(1);
+            continue;
+        }
+        let output = match decision {
+            WriteDecision::Write(p) => p,
+            WriteDecision::Skip => {
+                info!("skipped, output exists: {}", output.display());
+                tally.record_skipped();
+                records.push(skipped_record(&path, "decompress", None));
                 total_progress.inc(1);
                 continue;
             }
@@ -708,7 +793,7 @@ pub async fn nx_decompress(
         total_progress.inc(1);
     }
     total_progress.finish();
-    finish_tally(&tally, TallyDirection::Decompress, &records, report_path)
+    finish_tally(&tally, TallyDirection::Decompress, &records, dry_run, report_path)
 }
 
 pub async fn nx_verify(
@@ -836,6 +921,7 @@ pub async fn chd_compress(
     output_dir: Option<&Path>,
     output_template: Option<&str>,
     max_depth: Option<usize>,
+    dry_run: bool,
     report_path: Option<&Path>,
 ) -> Result<()> {
     use rom_converto_lib::chd::convert_disc_to_chd;
@@ -844,7 +930,7 @@ pub async fn chd_compress(
     if files.is_empty() {
         return Ok(());
     }
-    if let Some(dir) = output_dir {
+    if !dry_run && let Some(dir) = output_dir {
         std::fs::create_dir_all(dir)?;
     }
     opts.force = true;
@@ -861,6 +947,7 @@ pub async fn chd_compress(
             output_template,
             "chd",
             None,
+            dry_run,
         ) {
             Ok(p) => p,
             Err(e) => {
@@ -871,22 +958,42 @@ pub async fn chd_compress(
                 continue;
             }
         };
-        if let Some(parent) = output.parent() {
+        if !dry_run && let Some(parent) = output.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let output = match resolve_output(&output, policy) {
-            Ok(WriteDecision::Write(p)) => p,
-            Ok(WriteDecision::Skip) => {
-                info!("skipped, output exists: {}", output.display());
-                tally.record_skipped();
-                records.push(skipped_record(&path, "compress", None));
-                total_progress.inc(1);
-                continue;
-            }
+        let decision = match resolve_output(&output, policy) {
+            Ok(d) => d,
             Err(e) => {
                 warn!("{e}");
                 tally.record_skipped();
                 records.push(skipped_record(&path, "compress", Some(e.to_string())));
+                total_progress.inc(1);
+                continue;
+            }
+        };
+        if dry_run {
+            let media = crate::chd_media_label(&path);
+            crate::dry_run::log_plan(
+                "compress",
+                &path,
+                &output,
+                &decision,
+                media.as_deref(),
+                None,
+            );
+            crate::dry_run::record(&mut tally, &path, &decision);
+            records.push(crate::dry_run::report_record(
+                "compress", &path, &output, &decision,
+            ));
+            total_progress.inc(1);
+            continue;
+        }
+        let output = match decision {
+            WriteDecision::Write(p) => p,
+            WriteDecision::Skip => {
+                info!("skipped, output exists: {}", output.display());
+                tally.record_skipped();
+                records.push(skipped_record(&path, "compress", None));
                 total_progress.inc(1);
                 continue;
             }
@@ -908,7 +1015,7 @@ pub async fn chd_compress(
         total_progress.inc(1);
     }
     total_progress.finish();
-    finish_tally(&tally, TallyDirection::Compress, &records, report_path)
+    finish_tally(&tally, TallyDirection::Compress, &records, dry_run, report_path)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -921,6 +1028,7 @@ pub async fn chd_extract(
     output_dir: Option<&Path>,
     output_template: Option<&str>,
     max_depth: Option<usize>,
+    dry_run: bool,
     report_path: Option<&Path>,
 ) -> Result<()> {
     use rom_converto_lib::chd::extract_from_chd;
@@ -929,7 +1037,7 @@ pub async fn chd_extract(
     if files.is_empty() {
         return Ok(());
     }
-    if let Some(dir) = output_dir {
+    if !dry_run && let Some(dir) = output_dir {
         std::fs::create_dir_all(dir)?;
     }
     let total = files.len();
@@ -945,6 +1053,7 @@ pub async fn chd_extract(
             output_template,
             "iso",
             None,
+            dry_run,
         ) {
             Ok(p) => p,
             Err(e) => {
@@ -955,22 +1064,34 @@ pub async fn chd_extract(
                 continue;
             }
         };
-        if let Some(p) = output.parent() {
+        if !dry_run && let Some(p) = output.parent() {
             std::fs::create_dir_all(p)?;
         }
-        let output = match resolve_output(&output, policy) {
-            Ok(WriteDecision::Write(p)) => p,
-            Ok(WriteDecision::Skip) => {
-                info!("skipped, output exists: {}", output.display());
-                tally.record_skipped();
-                records.push(skipped_record(&path, "extract", None));
-                total_progress.inc(1);
-                continue;
-            }
+        let decision = match resolve_output(&output, policy) {
+            Ok(d) => d,
             Err(e) => {
                 warn!("{e}");
                 tally.record_skipped();
                 records.push(skipped_record(&path, "extract", Some(e.to_string())));
+                total_progress.inc(1);
+                continue;
+            }
+        };
+        if dry_run {
+            crate::dry_run::log_plan("extract", &path, &output, &decision, None, None);
+            crate::dry_run::record(&mut tally, &path, &decision);
+            records.push(crate::dry_run::report_record(
+                "extract", &path, &output, &decision,
+            ));
+            total_progress.inc(1);
+            continue;
+        }
+        let output = match decision {
+            WriteDecision::Write(p) => p,
+            WriteDecision::Skip => {
+                info!("skipped, output exists: {}", output.display());
+                tally.record_skipped();
+                records.push(skipped_record(&path, "extract", None));
                 total_progress.inc(1);
                 continue;
             }
@@ -988,7 +1109,7 @@ pub async fn chd_extract(
         total_progress.inc(1);
     }
     total_progress.finish();
-    finish_tally(&tally, TallyDirection::CountOnly, &records, report_path)
+    finish_tally(&tally, TallyDirection::CountOnly, &records, dry_run, report_path)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1001,16 +1122,21 @@ pub async fn cso_compress(
     output_dir: Option<&Path>,
     output_template: Option<&str>,
     max_depth: Option<usize>,
+    dry_run: bool,
     report_path: Option<&Path>,
 ) -> Result<()> {
-    use rom_converto_lib::cso::compress_to_cso;
+    use rom_converto_lib::cso::{CsoFormat, compress_to_cso};
 
     let ext = opts.format.extension();
+    let media = match opts.format {
+        CsoFormat::Cso => "CSO",
+        CsoFormat::Zso => "ZSO",
+    };
     let files = collect_or_warn(input_dir, &["iso"], max_depth)?;
     if files.is_empty() {
         return Ok(());
     }
-    if let Some(dir) = output_dir {
+    if !dry_run && let Some(dir) = output_dir {
         std::fs::create_dir_all(dir)?;
     }
     opts.force = true;
@@ -1027,6 +1153,7 @@ pub async fn cso_compress(
             output_template,
             ext,
             None,
+            dry_run,
         ) {
             Ok(p) => p,
             Err(e) => {
@@ -1037,22 +1164,34 @@ pub async fn cso_compress(
                 continue;
             }
         };
-        if let Some(parent) = output.parent() {
+        if !dry_run && let Some(parent) = output.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let output = match resolve_output(&output, policy) {
-            Ok(WriteDecision::Write(p)) => p,
-            Ok(WriteDecision::Skip) => {
-                info!("skipped, output exists: {}", output.display());
-                tally.record_skipped();
-                records.push(skipped_record(&path, "compress", None));
-                total_progress.inc(1);
-                continue;
-            }
+        let decision = match resolve_output(&output, policy) {
+            Ok(d) => d,
             Err(e) => {
                 warn!("{e}");
                 tally.record_skipped();
                 records.push(skipped_record(&path, "compress", Some(e.to_string())));
+                total_progress.inc(1);
+                continue;
+            }
+        };
+        if dry_run {
+            crate::dry_run::log_plan("compress", &path, &output, &decision, Some(media), None);
+            crate::dry_run::record(&mut tally, &path, &decision);
+            records.push(crate::dry_run::report_record(
+                "compress", &path, &output, &decision,
+            ));
+            total_progress.inc(1);
+            continue;
+        }
+        let output = match decision {
+            WriteDecision::Write(p) => p,
+            WriteDecision::Skip => {
+                info!("skipped, output exists: {}", output.display());
+                tally.record_skipped();
+                records.push(skipped_record(&path, "compress", None));
                 total_progress.inc(1);
                 continue;
             }
@@ -1074,7 +1213,7 @@ pub async fn cso_compress(
         total_progress.inc(1);
     }
     total_progress.finish();
-    finish_tally(&tally, TallyDirection::Compress, &records, report_path)
+    finish_tally(&tally, TallyDirection::Compress, &records, dry_run, report_path)
 }
 
 fn hash_ok_record(path: &Path, d: &FileDigests, started: Instant) -> HashReportRecord {

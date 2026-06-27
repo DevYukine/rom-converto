@@ -21,6 +21,7 @@ pub fn templated_output(
     base_dir: Option<&Path>,
     output_ext: &str,
     keys_path: Option<&Path>,
+    dry_run: bool,
 ) -> anyhow::Result<PathBuf> {
     let info = read_info(
         input,
@@ -35,7 +36,7 @@ pub fn templated_output(
     let rel = apply_template(template, &tokens)?;
     let base = base_dir.unwrap_or_else(|| Path::new("."));
     let joined = base.join(rel);
-    if let Some(parent) = joined.parent() {
+    if !dry_run && let Some(parent) = joined.parent() {
         std::fs::create_dir_all(parent)?;
     }
     Ok(joined)
@@ -54,9 +55,10 @@ pub fn batch_output(
     output_template: Option<&str>,
     output_ext: &str,
     keys_path: Option<&Path>,
+    dry_run: bool,
 ) -> anyhow::Result<PathBuf> {
     match output_template {
-        Some(tmpl) => templated_output(tmpl, input, output_dir, output_ext, keys_path),
+        Some(tmpl) => templated_output(tmpl, input, output_dir, output_ext, keys_path, dry_run),
         None => Ok(place_in_dir_mirrored(derived, input_dir, output_dir)),
     }
 }
@@ -291,5 +293,32 @@ mod tests {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("a"), b"x").unwrap();
         assert!(resolve_output_dir(dir.path(), ConflictPolicy::Rename).is_err());
+    }
+
+    #[test]
+    fn dry_run_flag_parses() {
+        use crate::commands::Cli;
+        use clap::Parser;
+        let cli = Cli::parse_from(["bin", "--dry-run", "cso", "compress", "game.iso"]);
+        assert!(cli.dry_run);
+        let cli = Cli::parse_from(["bin", "cso", "compress", "game.iso"]);
+        assert!(!cli.dry_run);
+    }
+
+    #[test]
+    fn templated_output_dry_run_skips_mkdir() {
+        let dir = tempdir().unwrap();
+        let input = dir.path().join("game.iso");
+        std::fs::write(&input, b"x").unwrap();
+
+        let out =
+            templated_output("sub/{basename}.cso", &input, Some(dir.path()), "cso", None, true)
+                .unwrap();
+        assert_eq!(out, dir.path().join("sub/game.cso"));
+        assert!(!dir.path().join("sub").exists());
+
+        templated_output("sub/{basename}.cso", &input, Some(dir.path()), "cso", None, false)
+            .unwrap();
+        assert!(dir.path().join("sub").is_dir());
     }
 }

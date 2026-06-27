@@ -30,6 +30,7 @@ pub enum TallyDirection {
     Decompress,
     Convert,
     CountOnly,
+    DryRun,
 }
 
 #[derive(Clone, Debug)]
@@ -148,6 +149,9 @@ impl Tally {
         match direction {
             TallyDirection::CountOnly => {
                 format!("{prefix} in {el}")
+            }
+            TallyDirection::DryRun => {
+                format!("dry run: {prefix} planned in {el}")
             }
             TallyDirection::Compress => {
                 if input == 0 || output >= input {
@@ -303,6 +307,7 @@ mod tests {
             TallyDirection::Decompress,
             TallyDirection::Convert,
             TallyDirection::CountOnly,
+            TallyDirection::DryRun,
         ] {
             let line = t.summary_line(dir);
             assert!(!line.contains('\u{2014}'), "em dash in {line}");

@@ -77,6 +77,13 @@ pub struct Cli {
         help = "Apply a named preset from the config file"
     )]
     pub preset: Option<String>,
+
+    #[arg(
+        long = "dry-run",
+        global = true,
+        help = "Preview what would happen without writing any output"
+    )]
+    pub dry_run: bool,
 }
 
 #[derive(Subcommand, Debug, Eq, PartialEq)]
