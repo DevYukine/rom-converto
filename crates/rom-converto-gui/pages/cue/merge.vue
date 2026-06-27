@@ -17,7 +17,7 @@ async function execute() {
   progress.reset();
   const args = {
     cuePath: input.value,
-    output: output.value,
+    output: output.value || resolve(deriveMergedCuePath(input.value)),
     force: force.value,
   };
   commandLine.value = buildCliCommand("cmd_cue_merge", args);
@@ -69,7 +69,7 @@ async function execute() {
           :running="progress.running.value"
         />
 
-        <RunButton :loading="loading" :disabled="!input || !output" @click="execute">
+        <RunButton :loading="loading" :disabled="!input" @click="execute">
           Merge
         </RunButton>
       </div>

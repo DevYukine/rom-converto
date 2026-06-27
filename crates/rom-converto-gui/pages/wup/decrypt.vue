@@ -21,7 +21,8 @@ function deriveDecryptedWupPath(dir: string): string {
 
 async function execute() {
   progress.reset();
-  const args = { input: input.value, output: output.value };
+  const out = output.value || deriveDecryptedWupPath(input.value);
+  const args = { input: input.value, output: out };
   commandLine.value = buildCliCommand("cmd_wup_decrypt", args);
   await run("cmd_wup_decrypt", args);
 }
@@ -60,7 +61,7 @@ async function execute() {
 
         <RunButton
           :loading="loading"
-          :disabled="!input || !output"
+          :disabled="!input"
           @click="execute"
         >
           Decrypt

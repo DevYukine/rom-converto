@@ -19,7 +19,7 @@ const commandLine = ref("");
 function compressArgs(item: { input: string; output: string }) {
   return {
     input: item.input,
-    output: item.output,
+    output: item.output || null,
     keys: keys.value || null,
     level: level.value,
     mode: mode.value,
@@ -73,7 +73,7 @@ async function browseInputs() {
 }
 
 const hasXci = computed(() => queue.value.some((i) => isXciInput(i.input)));
-const canCompress = computed(() => queue.value.length > 0 && !!output.value);
+const canCompress = computed(() => queue.value.length > 0);
 
 async function execute() {
   progress.reset();

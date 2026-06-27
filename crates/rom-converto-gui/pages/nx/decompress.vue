@@ -11,7 +11,7 @@ const progress = useProgress("nx-decompress");
 const commandLine = ref("");
 
 function decompressArgs(item: { input: string; output: string }) {
-  return { input: item.input, output: item.output, keys: keys.value || null };
+  return { input: item.input, output: item.output || null, keys: keys.value || null };
 }
 
 const batch = useBatchOperation("nx-decompress", "cmd_nx_decompress", decompressArgs);
@@ -61,7 +61,7 @@ async function browseInputs() {
   addPaths(Array.isArray(result) ? result : [result]);
 }
 
-const canDecompress = computed(() => queue.value.length > 0 && !!output.value);
+const canDecompress = computed(() => queue.value.length > 0);
 
 async function execute() {
   progress.reset();
