@@ -52,6 +52,12 @@ pub struct CompressCommand {
     #[arg(long = "output-dir", value_name = "DIR", conflicts_with_all = ["output", "output_flag"])]
     pub output_dir: Option<PathBuf>,
 
+    /// Output path template applied per file. Tokens: {title}, {titleId}, {region},
+    /// {console}, {serial}, {ext}, {basename}. Resolves against extracted metadata;
+    /// missing tokens fall back to the input basename. Joined under --output-dir.
+    #[arg(long = "output-template", value_name = "TEMPLATE", conflicts_with_all = ["output", "output_flag"])]
+    pub output_template: Option<String>,
+
     /// Output container format
     #[arg(long, value_enum, default_value_t = CsoFormatArg::Cso)]
     pub format: CsoFormatArg,
@@ -105,6 +111,12 @@ pub struct DecompressCommand {
     /// Write output into this directory using the derived filename. Created if missing. Works with --recursive.
     #[arg(long = "output-dir", value_name = "DIR", conflicts_with_all = ["output", "output_flag"])]
     pub output_dir: Option<PathBuf>,
+
+    /// Output path template applied per file. Tokens: {title}, {titleId}, {region},
+    /// {console}, {serial}, {ext}, {basename}. Resolves against extracted metadata;
+    /// missing tokens fall back to the input basename. Joined under --output-dir.
+    #[arg(long = "output-template", value_name = "TEMPLATE", conflicts_with_all = ["output", "output_flag"])]
+    pub output_template: Option<String>,
 
     /// What to do when an output already exists: error, overwrite, skip, or rename to a numbered sibling
     #[arg(long = "on-conflict", value_enum)]

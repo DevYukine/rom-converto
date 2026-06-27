@@ -141,11 +141,11 @@ pub async fn cso_decompress(
     input_dir: &Path,
     policy: ConflictPolicy,
     output_dir: Option<&Path>,
+    output_template: Option<&str>,
     max_depth: Option<usize>,
     report_path: Option<&Path>,
 ) -> Result<()> {
     use rom_converto_lib::cso::decompress_from_cso;
-    use rom_converto_lib::util::place_in_dir_mirrored;
 
     let files = collect_or_warn(input_dir, &["cso", "zso"], max_depth)?;
     if files.is_empty() {
@@ -159,7 +159,24 @@ pub async fn cso_decompress(
     let mut tally = Tally::new();
     let mut records: Vec<ReportRecord> = Vec::new();
     for path in files {
-        let output = place_in_dir_mirrored(&path.with_extension("iso"), input_dir, output_dir);
+        let output = match crate::util::batch_output(
+            &path,
+            &path.with_extension("iso"),
+            input_dir,
+            output_dir,
+            output_template,
+            "iso",
+            None,
+        ) {
+            Ok(p) => p,
+            Err(e) => {
+                warn!("{e}");
+                tally.record_skipped();
+                records.push(skipped_record(&path, "decompress", Some(e.to_string())));
+                total_progress.inc(1);
+                continue;
+            }
+        };
         if let Some(parent) = output.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -243,11 +260,11 @@ pub async fn rvz_compress(
     opts: rom_converto_lib::nintendo::rvz::RvzCompressOptions,
     policy: ConflictPolicy,
     output_dir: Option<&Path>,
+    output_template: Option<&str>,
     max_depth: Option<usize>,
     report_path: Option<&Path>,
 ) -> Result<()> {
     use rom_converto_lib::nintendo::rvz::{compress_disc, derive_rvz_path};
-    use rom_converto_lib::util::place_in_dir_mirrored;
 
     let files = collect_or_warn(input_dir, exts, max_depth)?;
     if files.is_empty() {
@@ -261,7 +278,24 @@ pub async fn rvz_compress(
     let mut tally = Tally::new();
     let mut records: Vec<ReportRecord> = Vec::new();
     for path in files {
-        let output = place_in_dir_mirrored(&derive_rvz_path(&path), input_dir, output_dir);
+        let output = match crate::util::batch_output(
+            &path,
+            &derive_rvz_path(&path),
+            input_dir,
+            output_dir,
+            output_template,
+            "rvz",
+            None,
+        ) {
+            Ok(p) => p,
+            Err(e) => {
+                warn!("{e}");
+                tally.record_skipped();
+                records.push(skipped_record(&path, "compress", Some(e.to_string())));
+                total_progress.inc(1);
+                continue;
+            }
+        };
         if let Some(parent) = output.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -307,11 +341,11 @@ pub async fn rvz_decompress(
     input_dir: &Path,
     policy: ConflictPolicy,
     output_dir: Option<&Path>,
+    output_template: Option<&str>,
     max_depth: Option<usize>,
     report_path: Option<&Path>,
 ) -> Result<()> {
     use rom_converto_lib::nintendo::rvz::{decompress_disc, derive_disc_path};
-    use rom_converto_lib::util::place_in_dir_mirrored;
 
     let files = collect_or_warn(input_dir, &["rvz"], max_depth)?;
     if files.is_empty() {
@@ -325,7 +359,24 @@ pub async fn rvz_decompress(
     let mut tally = Tally::new();
     let mut records: Vec<ReportRecord> = Vec::new();
     for path in files {
-        let output = place_in_dir_mirrored(&derive_disc_path(&path), input_dir, output_dir);
+        let output = match crate::util::batch_output(
+            &path,
+            &derive_disc_path(&path),
+            input_dir,
+            output_dir,
+            output_template,
+            "iso",
+            None,
+        ) {
+            Ok(p) => p,
+            Err(e) => {
+                warn!("{e}");
+                tally.record_skipped();
+                records.push(skipped_record(&path, "decompress", Some(e.to_string())));
+                total_progress.inc(1);
+                continue;
+            }
+        };
         if let Some(parent) = output.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -449,6 +500,7 @@ pub struct NxCompressTuning {
     pub block_size_exp: Option<u8>,
     pub policy: ConflictPolicy,
     pub output_dir: Option<PathBuf>,
+    pub output_template: Option<String>,
     pub max_depth: Option<usize>,
     pub report: Option<PathBuf>,
 }
@@ -464,7 +516,6 @@ pub async fn nx_compress(
         NczMode, NxCompressOptions, compress_container_async, derive_compressed_path,
         detect_container,
     };
-    use rom_converto_lib::util::place_in_dir_mirrored;
 
     let files = collect_or_warn(input_dir, &["nsp", "xci"], tuning.max_depth)?;
     if files.is_empty() {
@@ -503,11 +554,27 @@ pub async fn nx_compress(
         } else if let Some(exp) = tuning.block_size_exp {
             opts.mode = NczMode::Block { size_exp: exp };
         }
-        let output = place_in_dir_mirrored(
+        let output = match crate::util::batch_output(
+            &path,
             &derive_compressed_path(&path),
             input_dir,
             tuning.output_dir.as_deref(),
-        );
+            tuning.output_template.as_deref(),
+            derive_compressed_path(&path)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or(""),
+            None,
+        ) {
+            Ok(p) => p,
+            Err(e) => {
+                warn!("{e}");
+                tally.record_skipped();
+                records.push(skipped_record(&path, "compress", Some(e.to_string())));
+                total_progress.inc(1);
+                continue;
+            }
+        };
         if let Some(parent) = output.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -563,11 +630,11 @@ pub async fn nx_decompress(
     keys: rom_converto_lib::nintendo::nx::KeySet,
     policy: ConflictPolicy,
     output_dir: Option<&Path>,
+    output_template: Option<&str>,
     max_depth: Option<usize>,
     report_path: Option<&Path>,
 ) -> Result<()> {
     use rom_converto_lib::nintendo::nx::{decompress_container_async, derive_decompressed_path};
-    use rom_converto_lib::util::place_in_dir_mirrored;
 
     let files = collect_or_warn(input_dir, &["nsz", "xcz"], max_depth)?;
     if files.is_empty() {
@@ -581,7 +648,27 @@ pub async fn nx_decompress(
     let mut tally = Tally::new();
     let mut records: Vec<ReportRecord> = Vec::new();
     for path in files {
-        let output = place_in_dir_mirrored(&derive_decompressed_path(&path), input_dir, output_dir);
+        let output = match crate::util::batch_output(
+            &path,
+            &derive_decompressed_path(&path),
+            input_dir,
+            output_dir,
+            output_template,
+            derive_decompressed_path(&path)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or(""),
+            None,
+        ) {
+            Ok(p) => p,
+            Err(e) => {
+                warn!("{e}");
+                tally.record_skipped();
+                records.push(skipped_record(&path, "decompress", Some(e.to_string())));
+                total_progress.inc(1);
+                continue;
+            }
+        };
         if let Some(parent) = output.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -747,11 +834,11 @@ pub async fn chd_compress(
     mode: Option<rom_converto_lib::chd::DiscMode>,
     policy: ConflictPolicy,
     output_dir: Option<&Path>,
+    output_template: Option<&str>,
     max_depth: Option<usize>,
     report_path: Option<&Path>,
 ) -> Result<()> {
     use rom_converto_lib::chd::convert_disc_to_chd;
-    use rom_converto_lib::util::place_in_dir_mirrored;
 
     let files = collect_or_warn(input_dir, &["cue", "iso"], max_depth)?;
     if files.is_empty() {
@@ -766,7 +853,24 @@ pub async fn chd_compress(
     let mut tally = Tally::new();
     let mut records: Vec<ReportRecord> = Vec::new();
     for path in files {
-        let output = place_in_dir_mirrored(&path.with_extension("chd"), input_dir, output_dir);
+        let output = match crate::util::batch_output(
+            &path,
+            &path.with_extension("chd"),
+            input_dir,
+            output_dir,
+            output_template,
+            "chd",
+            None,
+        ) {
+            Ok(p) => p,
+            Err(e) => {
+                warn!("{e}");
+                tally.record_skipped();
+                records.push(skipped_record(&path, "compress", Some(e.to_string())));
+                total_progress.inc(1);
+                continue;
+            }
+        };
         if let Some(parent) = output.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -815,11 +919,11 @@ pub async fn chd_extract(
     parent: Option<PathBuf>,
     policy: ConflictPolicy,
     output_dir: Option<&Path>,
+    output_template: Option<&str>,
     max_depth: Option<usize>,
     report_path: Option<&Path>,
 ) -> Result<()> {
     use rom_converto_lib::chd::extract_from_chd;
-    use rom_converto_lib::util::place_in_dir_mirrored;
 
     let files = collect_or_warn(input_dir, &["chd"], max_depth)?;
     if files.is_empty() {
@@ -833,7 +937,24 @@ pub async fn chd_extract(
     let mut tally = Tally::new();
     let mut records: Vec<ReportRecord> = Vec::new();
     for path in files {
-        let output = place_in_dir_mirrored(&path.with_extension(""), input_dir, output_dir);
+        let output = match crate::util::batch_output(
+            &path,
+            &path.with_extension(""),
+            input_dir,
+            output_dir,
+            output_template,
+            "iso",
+            None,
+        ) {
+            Ok(p) => p,
+            Err(e) => {
+                warn!("{e}");
+                tally.record_skipped();
+                records.push(skipped_record(&path, "extract", Some(e.to_string())));
+                total_progress.inc(1);
+                continue;
+            }
+        };
         if let Some(p) = output.parent() {
             std::fs::create_dir_all(p)?;
         }
@@ -878,11 +999,11 @@ pub async fn cso_compress(
     mut opts: rom_converto_lib::cso::CsoCompressOptions,
     policy: ConflictPolicy,
     output_dir: Option<&Path>,
+    output_template: Option<&str>,
     max_depth: Option<usize>,
     report_path: Option<&Path>,
 ) -> Result<()> {
     use rom_converto_lib::cso::compress_to_cso;
-    use rom_converto_lib::util::place_in_dir_mirrored;
 
     let ext = opts.format.extension();
     let files = collect_or_warn(input_dir, &["iso"], max_depth)?;
@@ -898,7 +1019,24 @@ pub async fn cso_compress(
     let mut tally = Tally::new();
     let mut records: Vec<ReportRecord> = Vec::new();
     for path in files {
-        let output = place_in_dir_mirrored(&path.with_extension(ext), input_dir, output_dir);
+        let output = match crate::util::batch_output(
+            &path,
+            &path.with_extension(ext),
+            input_dir,
+            output_dir,
+            output_template,
+            ext,
+            None,
+        ) {
+            Ok(p) => p,
+            Err(e) => {
+                warn!("{e}");
+                tally.record_skipped();
+                records.push(skipped_record(&path, "compress", Some(e.to_string())));
+                total_progress.inc(1);
+                continue;
+            }
+        };
         if let Some(parent) = output.parent() {
             std::fs::create_dir_all(parent)?;
         }

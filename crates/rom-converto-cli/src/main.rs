@@ -399,10 +399,22 @@ async fn main() -> Result<()> {
                             if let Some(dir) = cmd.output_dir.as_deref() {
                                 std::fs::create_dir_all(dir)?;
                             }
-                            rom_converto_lib::util::place_in_dir(
-                                &derive_decrypted_path(&cmd.input),
-                                cmd.output_dir.as_deref(),
-                            )
+                            match cmd.output_template.as_deref() {
+                                Some(tmpl) => crate::util::templated_output(
+                                    tmpl,
+                                    &cmd.input,
+                                    cmd.output_dir.as_deref(),
+                                    derive_decrypted_path(&cmd.input)
+                                        .extension()
+                                        .and_then(|e| e.to_str())
+                                        .unwrap_or(""),
+                                    None,
+                                )?,
+                                None => rom_converto_lib::util::place_in_dir(
+                                    &derive_decrypted_path(&cmd.input),
+                                    cmd.output_dir.as_deref(),
+                                ),
+                            }
                         }
                     };
                     let policy = policy_of(cmd.on_conflict, cmd.force);
@@ -447,10 +459,22 @@ async fn main() -> Result<()> {
                             if let Some(dir) = cmd.output_dir.as_deref() {
                                 std::fs::create_dir_all(dir)?;
                             }
-                            rom_converto_lib::util::place_in_dir(
-                                &derive_compressed_path(&cmd.input),
-                                cmd.output_dir.as_deref(),
-                            )
+                            match cmd.output_template.as_deref() {
+                                Some(tmpl) => crate::util::templated_output(
+                                    tmpl,
+                                    &cmd.input,
+                                    cmd.output_dir.as_deref(),
+                                    derive_compressed_path(&cmd.input)
+                                        .extension()
+                                        .and_then(|e| e.to_str())
+                                        .unwrap_or(""),
+                                    None,
+                                )?,
+                                None => rom_converto_lib::util::place_in_dir(
+                                    &derive_compressed_path(&cmd.input),
+                                    cmd.output_dir.as_deref(),
+                                ),
+                            }
                         }
                     };
                     let policy = policy_of(cmd.on_conflict, cmd.force);
@@ -495,10 +519,22 @@ async fn main() -> Result<()> {
                             if let Some(dir) = cmd.output_dir.as_deref() {
                                 std::fs::create_dir_all(dir)?;
                             }
-                            rom_converto_lib::util::place_in_dir(
-                                &derive_decompressed_path(&cmd.input),
-                                cmd.output_dir.as_deref(),
-                            )
+                            match cmd.output_template.as_deref() {
+                                Some(tmpl) => crate::util::templated_output(
+                                    tmpl,
+                                    &cmd.input,
+                                    cmd.output_dir.as_deref(),
+                                    derive_decompressed_path(&cmd.input)
+                                        .extension()
+                                        .and_then(|e| e.to_str())
+                                        .unwrap_or(""),
+                                    None,
+                                )?,
+                                None => rom_converto_lib::util::place_in_dir(
+                                    &derive_decompressed_path(&cmd.input),
+                                    cmd.output_dir.as_deref(),
+                                ),
+                            }
                         }
                     };
                     let policy = policy_of(cmd.on_conflict, cmd.force);
@@ -542,10 +578,22 @@ async fn main() -> Result<()> {
                             if let Some(dir) = cmd.output_dir.as_deref() {
                                 std::fs::create_dir_all(dir)?;
                             }
-                            rom_converto_lib::util::place_in_dir(
-                                &derive_converted_path(&cmd.input),
-                                cmd.output_dir.as_deref(),
-                            )
+                            match cmd.output_template.as_deref() {
+                                Some(tmpl) => crate::util::templated_output(
+                                    tmpl,
+                                    &cmd.input,
+                                    cmd.output_dir.as_deref(),
+                                    derive_converted_path(&cmd.input)
+                                        .extension()
+                                        .and_then(|e| e.to_str())
+                                        .unwrap_or(""),
+                                    None,
+                                )?,
+                                None => rom_converto_lib::util::place_in_dir(
+                                    &derive_converted_path(&cmd.input),
+                                    cmd.output_dir.as_deref(),
+                                ),
+                            }
                         }
                     };
                     let policy = policy_of(cmd.on_conflict, cmd.force);
@@ -662,6 +710,7 @@ async fn main() -> Result<()> {
                         opts,
                         resolve_policy(cmd.on_conflict, cmd.force, fallback),
                         output_dir.as_deref(),
+                        cmd.output_template.as_deref(),
                         cmd.max_depth,
                         report.as_deref(),
                     )
@@ -674,10 +723,19 @@ async fn main() -> Result<()> {
                             if let Some(dir) = output_dir.as_deref() {
                                 std::fs::create_dir_all(dir)?;
                             }
-                            rom_converto_lib::util::place_in_dir(
-                                &derive_rvz_path(&cmd.input),
-                                output_dir.as_deref(),
-                            )
+                            match cmd.output_template.as_deref() {
+                                Some(tmpl) => crate::util::templated_output(
+                                    tmpl,
+                                    &cmd.input,
+                                    output_dir.as_deref(),
+                                    "rvz",
+                                    None,
+                                )?,
+                                None => rom_converto_lib::util::place_in_dir(
+                                    &derive_rvz_path(&cmd.input),
+                                    output_dir.as_deref(),
+                                ),
+                            }
                         }
                     };
                     let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
@@ -713,6 +771,7 @@ async fn main() -> Result<()> {
                         &cmd.input,
                         resolve_policy(cmd.on_conflict, cmd.force, fallback),
                         output_dir.as_deref(),
+                        cmd.output_template.as_deref(),
                         cmd.max_depth,
                         report.as_deref(),
                     )
@@ -725,10 +784,19 @@ async fn main() -> Result<()> {
                             if let Some(dir) = output_dir.as_deref() {
                                 std::fs::create_dir_all(dir)?;
                             }
-                            rom_converto_lib::util::place_in_dir(
-                                &derive_disc_path(&cmd.input),
-                                output_dir.as_deref(),
-                            )
+                            match cmd.output_template.as_deref() {
+                                Some(tmpl) => crate::util::templated_output(
+                                    tmpl,
+                                    &cmd.input,
+                                    output_dir.as_deref(),
+                                    "iso",
+                                    None,
+                                )?,
+                                None => rom_converto_lib::util::place_in_dir(
+                                    &derive_disc_path(&cmd.input),
+                                    output_dir.as_deref(),
+                                ),
+                            }
                         }
                     };
                     let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
@@ -820,6 +888,7 @@ async fn main() -> Result<()> {
                         opts,
                         resolve_policy(cmd.on_conflict, cmd.force, fallback),
                         output_dir.as_deref(),
+                        cmd.output_template.as_deref(),
                         cmd.max_depth,
                         report.as_deref(),
                     )
@@ -832,10 +901,19 @@ async fn main() -> Result<()> {
                             if let Some(dir) = output_dir.as_deref() {
                                 std::fs::create_dir_all(dir)?;
                             }
-                            rom_converto_lib::util::place_in_dir(
-                                &derive_rvz_path(&cmd.input),
-                                output_dir.as_deref(),
-                            )
+                            match cmd.output_template.as_deref() {
+                                Some(tmpl) => crate::util::templated_output(
+                                    tmpl,
+                                    &cmd.input,
+                                    output_dir.as_deref(),
+                                    "rvz",
+                                    None,
+                                )?,
+                                None => rom_converto_lib::util::place_in_dir(
+                                    &derive_rvz_path(&cmd.input),
+                                    output_dir.as_deref(),
+                                ),
+                            }
                         }
                     };
                     let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
@@ -871,6 +949,7 @@ async fn main() -> Result<()> {
                         &cmd.input,
                         resolve_policy(cmd.on_conflict, cmd.force, fallback),
                         output_dir.as_deref(),
+                        cmd.output_template.as_deref(),
                         cmd.max_depth,
                         report.as_deref(),
                     )
@@ -883,10 +962,19 @@ async fn main() -> Result<()> {
                             if let Some(dir) = output_dir.as_deref() {
                                 std::fs::create_dir_all(dir)?;
                             }
-                            rom_converto_lib::util::place_in_dir(
-                                &derive_disc_path(&cmd.input),
-                                output_dir.as_deref(),
-                            )
+                            match cmd.output_template.as_deref() {
+                                Some(tmpl) => crate::util::templated_output(
+                                    tmpl,
+                                    &cmd.input,
+                                    output_dir.as_deref(),
+                                    "iso",
+                                    None,
+                                )?,
+                                None => rom_converto_lib::util::place_in_dir(
+                                    &derive_disc_path(&cmd.input),
+                                    output_dir.as_deref(),
+                                ),
+                            }
                         }
                     };
                     let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
@@ -1078,6 +1166,7 @@ async fn main() -> Result<()> {
                         block_size_exp,
                         policy: resolve_policy(cmd.on_conflict, cmd.force, fallback),
                         output_dir,
+                        output_template: cmd.output_template,
                         max_depth: cmd.max_depth,
                         report,
                     };
@@ -1106,10 +1195,22 @@ async fn main() -> Result<()> {
                             if let Some(dir) = output_dir.as_deref() {
                                 std::fs::create_dir_all(dir)?;
                             }
-                            rom_converto_lib::util::place_in_dir(
-                                &nx_derive_compressed_path(&cmd.input),
-                                output_dir.as_deref(),
-                            )
+                            match cmd.output_template.as_deref() {
+                                Some(tmpl) => crate::util::templated_output(
+                                    tmpl,
+                                    &cmd.input,
+                                    output_dir.as_deref(),
+                                    nx_derive_compressed_path(&cmd.input)
+                                        .extension()
+                                        .and_then(|e| e.to_str())
+                                        .unwrap_or(""),
+                                    cmd.keys.as_deref(),
+                                )?,
+                                None => rom_converto_lib::util::place_in_dir(
+                                    &nx_derive_compressed_path(&cmd.input),
+                                    output_dir.as_deref(),
+                                ),
+                            }
                         }
                     };
                     let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
@@ -1149,6 +1250,7 @@ async fn main() -> Result<()> {
                         keys,
                         resolve_policy(cmd.on_conflict, cmd.force, fallback),
                         output_dir.as_deref(),
+                        cmd.output_template.as_deref(),
                         cmd.max_depth,
                         report.as_deref(),
                     )
@@ -1161,10 +1263,22 @@ async fn main() -> Result<()> {
                             if let Some(dir) = output_dir.as_deref() {
                                 std::fs::create_dir_all(dir)?;
                             }
-                            rom_converto_lib::util::place_in_dir(
-                                &nx_derive_decompressed_path(&cmd.input),
-                                output_dir.as_deref(),
-                            )
+                            match cmd.output_template.as_deref() {
+                                Some(tmpl) => crate::util::templated_output(
+                                    tmpl,
+                                    &cmd.input,
+                                    output_dir.as_deref(),
+                                    nx_derive_decompressed_path(&cmd.input)
+                                        .extension()
+                                        .and_then(|e| e.to_str())
+                                        .unwrap_or(""),
+                                    cmd.keys.as_deref(),
+                                )?,
+                                None => rom_converto_lib::util::place_in_dir(
+                                    &nx_derive_decompressed_path(&cmd.input),
+                                    output_dir.as_deref(),
+                                ),
+                            }
                         }
                     };
                     let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
@@ -1258,6 +1372,7 @@ async fn main() -> Result<()> {
                         mode,
                         policy,
                         output_dir.as_deref(),
+                        cmd.output_template.as_deref(),
                         cmd.max_depth,
                         report.as_deref(),
                     )
@@ -1270,10 +1385,19 @@ async fn main() -> Result<()> {
                             if let Some(dir) = output_dir.as_deref() {
                                 std::fs::create_dir_all(dir)?;
                             }
-                            rom_converto_lib::util::place_in_dir(
-                                &cmd.input.with_extension("chd"),
-                                output_dir.as_deref(),
-                            )
+                            match cmd.output_template.as_deref() {
+                                Some(tmpl) => crate::util::templated_output(
+                                    tmpl,
+                                    &cmd.input,
+                                    output_dir.as_deref(),
+                                    "chd",
+                                    None,
+                                )?,
+                                None => rom_converto_lib::util::place_in_dir(
+                                    &cmd.input.with_extension("chd"),
+                                    output_dir.as_deref(),
+                                ),
+                            }
                         }
                     };
                     let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
@@ -1314,6 +1438,7 @@ async fn main() -> Result<()> {
                         cmd.parent,
                         policy,
                         output_dir.as_deref(),
+                        cmd.output_template.as_deref(),
                         cmd.max_depth,
                         report.as_deref(),
                     )
@@ -1327,10 +1452,19 @@ async fn main() -> Result<()> {
                                 "OUTPUT or --output-dir is required without --recursive (enforced by clap)",
                             );
                             std::fs::create_dir_all(dir)?;
-                            rom_converto_lib::util::place_in_dir(
-                                &cmd.input.with_extension(""),
-                                Some(dir),
-                            )
+                            match cmd.output_template.as_deref() {
+                                Some(tmpl) => crate::util::templated_output(
+                                    tmpl,
+                                    &cmd.input,
+                                    Some(dir),
+                                    "iso",
+                                    None,
+                                )?,
+                                None => rom_converto_lib::util::place_in_dir(
+                                    &cmd.input.with_extension(""),
+                                    Some(dir),
+                                ),
+                            }
                         }
                     };
                     let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
@@ -1409,6 +1543,7 @@ async fn main() -> Result<()> {
                         opts,
                         policy,
                         output_dir.as_deref(),
+                        cmd.output_template.as_deref(),
                         cmd.max_depth,
                         report.as_deref(),
                     )
@@ -1421,10 +1556,19 @@ async fn main() -> Result<()> {
                             if let Some(dir) = output_dir.as_deref() {
                                 std::fs::create_dir_all(dir)?;
                             }
-                            rom_converto_lib::util::place_in_dir(
-                                &cmd.input.with_extension(format.extension()),
-                                output_dir.as_deref(),
-                            )
+                            match cmd.output_template.as_deref() {
+                                Some(tmpl) => crate::util::templated_output(
+                                    tmpl,
+                                    &cmd.input,
+                                    output_dir.as_deref(),
+                                    format.extension(),
+                                    None,
+                                )?,
+                                None => rom_converto_lib::util::place_in_dir(
+                                    &cmd.input.with_extension(format.extension()),
+                                    output_dir.as_deref(),
+                                ),
+                            }
                         }
                     };
                     let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
@@ -1464,6 +1608,7 @@ async fn main() -> Result<()> {
                         &cmd.input,
                         policy,
                         output_dir.as_deref(),
+                        cmd.output_template.as_deref(),
                         cmd.max_depth,
                         report.as_deref(),
                     )
@@ -1476,10 +1621,19 @@ async fn main() -> Result<()> {
                             if let Some(dir) = output_dir.as_deref() {
                                 std::fs::create_dir_all(dir)?;
                             }
-                            rom_converto_lib::util::place_in_dir(
-                                &cmd.input.with_extension("iso"),
-                                output_dir.as_deref(),
-                            )
+                            match cmd.output_template.as_deref() {
+                                Some(tmpl) => crate::util::templated_output(
+                                    tmpl,
+                                    &cmd.input,
+                                    output_dir.as_deref(),
+                                    "iso",
+                                    None,
+                                )?,
+                                None => rom_converto_lib::util::place_in_dir(
+                                    &cmd.input.with_extension("iso"),
+                                    output_dir.as_deref(),
+                                ),
+                            }
                         }
                     };
                     let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);

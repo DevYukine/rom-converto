@@ -123,6 +123,8 @@ The `compress`, `decompress`, and `chd extract` commands also accept `--report <
 
 Two global flags work on every command: `--config <FILE>` points at a config file directly and overrides the search order, and `--preset <NAME>` applies a named preset from the config. See [Configuration](#configuration) for the file format and how settings are resolved.
 
+The compress, decompress, convert, decrypt, and `chd extract` commands also accept `--output-template`, an alternative way to derive the output path from the ROM's own metadata. See [Output-path templates](#output-path-templates).
+
 ## Configuration
 
 A TOML config file lets you set per-format default flags and named presets so you do not have to repeat long flag combinations. The config is optional: with no config file the built-in defaults apply.
@@ -161,7 +163,7 @@ An unset flag never overrides a preset or config value. For example, if a preset
 
 The config covers the tuning knobs that are worth repeating: `level`, `chunk_size`, `block_size_exp`, `mode`, `hunk_size`, `block_size`, `on_conflict`, `output_dir`, and `report`, each under the matching format table.
 
-Some flags are deliberately command-line only and are not read from the config: `--recursive` and `--max-depth` (they change how much of a directory tree is processed), the `cso` `--format`, and the `chd` `--dvd`/`--cd`/`--zstd` selectors (they change which output container or codec set you produce). Keeping these out of the config avoids silently changing what gets traversed or what file is written.
+Some flags are deliberately command-line only and are not read from the config: `--recursive` and `--max-depth` (they change how much of a directory tree is processed), `--output-template` (it changes which output file is written, like the above), the `cso` `--format`, and the `chd` `--dvd`/`--cd`/`--zstd` selectors (they change which output container or codec set you produce). Keeping these out of the config avoids silently changing what gets traversed or what file is written.
 
 ### Example
 
@@ -225,6 +227,7 @@ The GUI does not yet read this config file. The CLI is the supported path for no
 | Flag | Description |
 |---|---|
 | `-o, --output <FILE>` | Output path (alternative to the positional OUTPUT argument) |
+| `--output-template <TEMPLATE>` | Build the output path from metadata tokens. Single-file runs only for CTR. See [Output-path templates](#output-path-templates) |
 | `-R, --recursive` | Recursively process every matching file in INPUT and its subdirectories |
 | `--max-depth <N>` | Limit recursion depth with `--recursive`. `1` = top level only. Default: unlimited |
 | `--on-conflict <POLICY>` | What to do when the output exists: `error` (default), `overwrite`, `skip`, or `rename` |
@@ -266,6 +269,7 @@ The GUI does not yet read this config file. The CLI is the supported path for no
 | `-l, --level <LEVEL>` | `compress` | Zstandard compression level (signed, defaults to 22, Dolphin's max non-extreme) |
 | `--chunk-size <BYTES>` | `compress` | Chunk size in bytes, power of two between 32 KiB and 2 MiB (defaults to 128 KiB to match Dolphin) |
 | `-o, --output <FILE>` | `compress`, `decompress` | Output path (alternative to the positional OUTPUT argument) |
+| `--output-template <TEMPLATE>` | `compress`, `decompress` | Build the output path from metadata tokens. See [Output-path templates](#output-path-templates) |
 | `--on-conflict <POLICY>` | `compress`, `decompress` | What to do when the output exists: `error` (default), `overwrite`, `skip`, or `rename` |
 | `-f, --force` | `compress`, `decompress` | Alias for `--on-conflict overwrite` |
 | `-R, --recursive` | `compress`, `decompress`, `verify` | Recursively process every matching file in INPUT and its subdirectories |
@@ -346,6 +350,7 @@ Flags match the `dol` commands. `--full` on `rvl verify` decrypts every partitio
 |---|---|
 | `--keys <PRODKEYS>` | Path to `prod.keys`. Defaults to `$HOME/.switch/prod.keys` (or `%USERPROFILE%/.switch/prod.keys` on Windows) |
 | `-o, --output <FILE>` | Output path. Defaults to the input with the extension switched (`.nsp` -> `.nsz`, `.xci` -> `.xcz`) |
+| `--output-template <TEMPLATE>` | Build the output path from metadata tokens. See [Output-path templates](#output-path-templates) |
 | `-l, --level <LEVEL>` | Zstd compression level 1..=22 (defaults to 18, matching `nsz`) |
 | `--mode <MODE>` | `solid` (one zstd frame per NCA, default for NSP) or `block` (independent zstd frames per fixed-size block, default for XCI) |
 | `--block-size-exp <EXP>` | Block-mode block size as `1 << exp` bytes, range 14..=32 (defaults to 20 = 1 MiB, matching `nsz`) |
@@ -361,6 +366,7 @@ Flags match the `dol` commands. `--full` on `rvl verify` decrypts every partitio
 |---|---|
 | `--keys <PRODKEYS>` | Path to `prod.keys`. Same default as `compress` |
 | `-o, --output <FILE>` | Output path. Defaults to the input with the extension switched (`.nsz` -> `.nsp`, `.xcz` -> `.xci`) |
+| `--output-template <TEMPLATE>` | Build the output path from metadata tokens. See [Output-path templates](#output-path-templates) |
 | `--on-conflict <POLICY>` | What to do when the output exists: `error` (default), `overwrite`, `skip`, or `rename` |
 | `-f, --force` | Alias for `--on-conflict overwrite` |
 | `-R, --recursive` | Decompress every `.nsz` and `.xcz` found in INPUT and its subdirectories |
@@ -400,6 +406,7 @@ Flags match the `dol` commands. `--full` on `rvl verify` decrypts every partitio
 | `--hunk-size <BYTES>` | `compress` | DVD hunk size, a multiple of 2048; defaults to 4096, or 2048 for detected PSP images |
 | `--zstd` | `compress` | Add zstd to the DVD codec set; better ratio, but rejected by AetherSX2/NetherSX2 |
 | `-o, --output <FILE>` | `compress`, `extract` | Output path (alternative to the positional OUTPUT argument) |
+| `--output-template <TEMPLATE>` | `compress`, `extract` | Build the output path from metadata tokens. For `extract` the sidecars share the resolved stem. See [Output-path templates](#output-path-templates) |
 | `-R, --recursive` | `compress`, `extract`, `verify` | Recursively process every matching file in INPUT and its subdirectories |
 | `--max-depth <N>` | `compress`, `extract`, `verify` | Limit recursion depth with `--recursive`. `1` = top level only. Default: unlimited |
 | `--report <FILE>` | `compress`, `extract` | Write a run report to FILE. Format inferred from the extension: `.csv`, `.json`, `.html` or `.htm`. Unknown extensions default to JSON. Overwritten directly, ignoring `--on-conflict`. Extract rows carry zero byte sizes since extraction writes several files |
@@ -424,6 +431,7 @@ Flags match the `dol` commands. `--full` on `rvl verify` decrypts every partitio
 | `--format <cso\|zso>` | `compress` | Output container: CSO for PSP/PPSSPP, ZSO for PS2 via OPL |
 | `--block-size <BYTES>` | `compress` | Block size, a power of two; defaults to 2048 (16384 for 2 GiB+ inputs) |
 | `-o, --output <FILE>` | `compress`, `decompress` | Output path (alternative to the positional OUTPUT argument) |
+| `--output-template <TEMPLATE>` | `compress`, `decompress` | Build the output path from metadata tokens. See [Output-path templates](#output-path-templates) |
 | `--on-conflict <POLICY>` | `compress`, `decompress` | What to do when the output exists: `error` (default), `overwrite`, `skip`, or `rename` |
 | `-f, --force` | `compress`, `decompress` | Alias for `--on-conflict overwrite` |
 | `-R, --recursive` | `compress`, `decompress`, `verify` | Recursively process every matching file in INPUT and its subdirectories |
@@ -471,6 +479,38 @@ rom-converto hash -R ./roms --report hashes.csv
 | `--report <FILE>` | Write a run report to FILE. Format inferred from the extension: `.csv`, `.json`, `.html` or `.htm`. Unknown extensions default to JSON. Overwritten directly |
 
 All digests are computed in a single streaming pass per file, so memory stays constant no matter how large the input is. Hashes print as lowercase hex (crc32 is 8 hex characters). Any file type is accepted. Empty files produce the valid digests of empty input. Unreadable files are reported and skipped without aborting the batch. The report carries its own column schema (`path, crc32, sha1, md5, sha256, size_bytes, status, elapsed_ms, error`) with no size-ratio column, since hashing produces no output file.
+
+---
+
+### Output-path templates
+
+`--output-template <STRING>` builds each output path from tokens filled by the metadata rom-converto already reads (the same data the `info` command shows). It is the easy way to turn a flat folder of ROMs into a sorted tree in one recursive run. It uses only in-tool metadata, never an external DAT.
+
+```
+rom-converto dol compress -R roms/ --output-dir organized/ --output-template "{console}/{title}.{ext}"
+```
+
+The template is a relative path. Tokens are written as `{name}` and any other text is kept literally, so `/` in the template creates a subdirectory. The resolved path is joined under `--output-dir` (or the current directory when no output directory is given).
+
+| Token | Resolves to |
+|---|---|
+| `{title}` | 3DS SMDH short title, GameCube banner or header name, Wii IMET or header name, Wii U meta.xml long name, Switch NACP title. Prefers the English entry |
+| `{titleId}` | 3DS title id, GameCube/Wii game id, Wii TMD title id (hex), Wii U title id (hex), Switch application id (hex) |
+| `{region}` | 3DS SMDH region, GameCube/Wii region, Wii U region list. Empty for Switch and CHD/CSO |
+| `{console}` | `3DS`, `GameCube`, `Wii`, `WiiU`, `Switch`, `CHD`, or `CSO` |
+| `{serial}` | 3DS product code, GameCube/Wii game id, Wii U product code. Falls back to the basename otherwise |
+| `{ext}` | The output extension for the operation, for example `rvz`, `iso`, `chd`, `nsz` |
+| `{basename}` | The input filename without its extension |
+
+Fallbacks: `{title}`, `{titleId}`, and `{serial}` fall back to the input basename when the metadata is missing; `{region}` and `{console}` resolve to an empty string. `{ext}` and `{basename}` are always available. Templating never requires keys: a Switch container read without `prod.keys`, or any file whose metadata cannot be decoded, still resolves through the basename fallbacks instead of failing the conversion.
+
+Each resolved path component is sanitized for cross-platform safety: the characters `< > : " / \ | ? *` are replaced with `_`, control characters are stripped, trailing dots and spaces are trimmed, components are capped at 200 bytes on a UTF-8 boundary, and Windows reserved names (`CON`, `PRN`, `AUX`, `NUL`, `COM0`-`COM9`, `LPT0`-`LPT9`) get a trailing `_`. A separator inside a token value (for example a `/` in a title) is replaced with `_` so a token cannot inject extra directories. The template may not escape the output root: a leading separator, a drive prefix, or any `..` component is rejected.
+
+It composes with the other output controls. With `-R` the template is applied per file and the templated tree replaces the mirrored input subtree. `--on-conflict` is applied to the templated path, and the run report records the final templated path. `--output-template` conflicts with an explicit `OUTPUT` positional or `-o`/`--output`, since those name a single exact path. It is command-line only and is not read from the config file. `wup compress` does not accept it, because it packs many inputs into a single `.wua`. For `chd extract`, which writes a `.bin`/`.cue` pair or an `.iso`, the template resolves the base path and the sidecars share its stem.
+
+CTR (`ctr decrypt`/`compress`/`decompress`/`convert`) supports the template for single-file runs; its recursive runs use the existing mirrored layout.
+
+The GUI does not expose templating yet; it resolves output paths client-side. A template field with live preview is a planned follow-up.
 
 ---
 

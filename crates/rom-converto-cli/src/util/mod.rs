@@ -2,9 +2,64 @@ pub mod http;
 
 use crate::commands::ConflictPolicyArg;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use rom_converto_lib::util::{ConflictPolicy, ConflictResolution, ProgressReporter, resolve_conflict};
+use rom_converto_lib::info::{InfoOptions, read_info};
+use rom_converto_lib::util::{
+    ConflictPolicy, ConflictResolution, ProgressReporter, TemplateTokens, apply_template,
+    place_in_dir_mirrored, resolve_conflict,
+};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+
+/// Resolve an `--output-template` to a concrete output path joined under
+/// `base_dir`. Metadata is read best-effort: a failed or key-less read
+/// degrades the identity tokens to the input basename rather than aborting
+/// the conversion. A malformed template (traversal, empty result) still
+/// surfaces as an error since that is a user mistake worth reporting.
+pub fn templated_output(
+    template: &str,
+    input: &Path,
+    base_dir: Option<&Path>,
+    output_ext: &str,
+    keys_path: Option<&Path>,
+) -> anyhow::Result<PathBuf> {
+    let info = read_info(
+        input,
+        &InfoOptions {
+            keys_path: keys_path.map(Path::to_path_buf),
+            parent_path: None,
+        },
+    )
+    .map_err(|e| log::debug!("metadata unavailable for {}: {e}", input.display()))
+    .ok();
+    let tokens = TemplateTokens::new(info.as_ref(), input, output_ext);
+    let rel = apply_template(template, &tokens)?;
+    let base = base_dir.unwrap_or_else(|| Path::new("."));
+    let joined = base.join(rel);
+    if let Some(parent) = joined.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    Ok(joined)
+}
+
+/// Per-file output path for a recursive batch. With a template it resolves
+/// against the file's metadata and joins under `output_dir`; without one it
+/// mirrors the input subtree via `place_in_dir_mirrored`, preserving the
+/// existing recursive behavior unchanged.
+#[allow(clippy::too_many_arguments)]
+pub fn batch_output(
+    input: &Path,
+    derived: &Path,
+    input_dir: &Path,
+    output_dir: Option<&Path>,
+    output_template: Option<&str>,
+    output_ext: &str,
+    keys_path: Option<&Path>,
+) -> anyhow::Result<PathBuf> {
+    match output_template {
+        Some(tmpl) => templated_output(tmpl, input, output_dir, output_ext, keys_path),
+        None => Ok(place_in_dir_mirrored(derived, input_dir, output_dir)),
+    }
+}
 
 pub enum WriteDecision {
     Write(PathBuf),

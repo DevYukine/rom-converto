@@ -7,6 +7,7 @@ pub mod pixel;
 pub mod pread;
 pub mod report;
 pub mod tally;
+pub mod template;
 pub mod worker_pool;
 
 pub use conflict::{ConflictPolicy, ConflictResolution, resolve_conflict};
@@ -15,6 +16,7 @@ pub use report::{
     HashReportRecord, ReportFormat, ReportRecord, ReportTotals, write_hash_report, write_report,
 };
 pub use tally::{FileEntry, FileStatus, Tally, TallyDirection, format_bytes};
+pub use template::{TemplateTokens, apply_template};
 
 pub const BYTES_PER_MB: f64 = 1_000_000.0;
 

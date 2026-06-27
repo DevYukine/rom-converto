@@ -115,6 +115,12 @@ pub struct DecryptCommand {
     #[arg(long = "output-dir", value_name = "DIR", conflicts_with_all = ["output", "output_flag"])]
     pub output_dir: Option<PathBuf>,
 
+    /// Output path template applied per file. Tokens: {title}, {titleId}, {region},
+    /// {console}, {serial}, {ext}, {basename}. Resolves against extracted metadata;
+    /// missing tokens fall back to the input basename. Joined under --output-dir.
+    #[arg(long = "output-template", value_name = "TEMPLATE", conflicts_with_all = ["output", "output_flag"])]
+    pub output_template: Option<String>,
+
     /// Process all matching files in INPUT and its subdirectories
     #[arg(long, short = 'R', default_value = "false")]
     pub recursive: bool,
@@ -159,6 +165,12 @@ pub struct CompressRomCommand {
     /// Write output into this directory using the derived filename. Created if missing. Works with --recursive.
     #[arg(long = "output-dir", value_name = "DIR", conflicts_with_all = ["output", "output_flag"])]
     pub output_dir: Option<PathBuf>,
+
+    /// Output path template applied per file. Tokens: {title}, {titleId}, {region},
+    /// {console}, {serial}, {ext}, {basename}. Resolves against extracted metadata;
+    /// missing tokens fall back to the input basename. Joined under --output-dir.
+    #[arg(long = "output-template", value_name = "TEMPLATE", conflicts_with_all = ["output", "output_flag"])]
+    pub output_template: Option<String>,
 
     /// Zstd compression level (0 = library default, 22 = maximum ratio).
     /// Higher levels produce smaller output at the cost of compression
@@ -210,6 +222,12 @@ pub struct DecompressRomCommand {
     #[arg(long = "output-dir", value_name = "DIR", conflicts_with_all = ["output", "output_flag"])]
     pub output_dir: Option<PathBuf>,
 
+    /// Output path template applied per file. Tokens: {title}, {titleId}, {region},
+    /// {console}, {serial}, {ext}, {basename}. Resolves against extracted metadata;
+    /// missing tokens fall back to the input basename. Joined under --output-dir.
+    #[arg(long = "output-template", value_name = "TEMPLATE", conflicts_with_all = ["output", "output_flag"])]
+    pub output_template: Option<String>,
+
     /// Process all matching files in INPUT and its subdirectories
     #[arg(long, short = 'R', default_value = "false")]
     pub recursive: bool,
@@ -253,6 +271,12 @@ pub struct ConvertCommand {
     /// Write output into this directory using the derived filename. Created if missing. Works with --recursive.
     #[arg(long = "output-dir", value_name = "DIR", conflicts_with_all = ["output", "output_flag"])]
     pub output_dir: Option<PathBuf>,
+
+    /// Output path template applied per file. Tokens: {title}, {titleId}, {region},
+    /// {console}, {serial}, {ext}, {basename}. Resolves against extracted metadata;
+    /// missing tokens fall back to the input basename. Joined under --output-dir.
+    #[arg(long = "output-template", value_name = "TEMPLATE", conflicts_with_all = ["output", "output_flag"])]
+    pub output_template: Option<String>,
 
     /// Process all matching files in INPUT and its subdirectories
     #[arg(long, short = 'R', default_value = "false")]

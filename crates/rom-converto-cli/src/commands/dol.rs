@@ -64,6 +64,12 @@ pub struct CompressDiscCommand {
     #[arg(long = "output-dir", value_name = "DIR", conflicts_with_all = ["output", "output_flag"])]
     pub output_dir: Option<PathBuf>,
 
+    /// Output path template applied per file. Tokens: {title}, {titleId}, {region},
+    /// {console}, {serial}, {ext}, {basename}. Resolves against extracted metadata;
+    /// missing tokens fall back to the input basename. Joined under --output-dir.
+    #[arg(long = "output-template", value_name = "TEMPLATE", conflicts_with_all = ["output", "output_flag"])]
+    pub output_template: Option<String>,
+
     /// Zstandard compression level (signed, negative levels allowed).
     /// Defaults to 22 (archive quality). Lower values trade ratio for
     /// speed; Dolphin's documented suggestion is 5.
@@ -122,6 +128,12 @@ pub struct DecompressDiscCommand {
     /// Write output into this directory using the derived filename. Created if missing. Works with --recursive.
     #[arg(long = "output-dir", value_name = "DIR", conflicts_with_all = ["output", "output_flag"])]
     pub output_dir: Option<PathBuf>,
+
+    /// Output path template applied per file. Tokens: {title}, {titleId}, {region},
+    /// {console}, {serial}, {ext}, {basename}. Resolves against extracted metadata;
+    /// missing tokens fall back to the input basename. Joined under --output-dir.
+    #[arg(long = "output-template", value_name = "TEMPLATE", conflicts_with_all = ["output", "output_flag"])]
+    pub output_template: Option<String>,
 
     /// What to do when an output already exists: error, overwrite, skip, or rename to a numbered sibling
     #[arg(long = "on-conflict", value_enum)]
@@ -208,6 +220,37 @@ mod tests {
             panic!("expected Compress");
         };
         assert!(c.on_conflict.is_none());
+    }
+
+    #[test]
+    fn parses_compress_output_template() {
+        let h = Harness::parse_from([
+            "bin",
+            "compress",
+            "game.iso",
+            "--output-template",
+            "{console}/{title}.{ext}",
+        ]);
+        let DolCommands::Compress(c) = h.cmd else {
+            panic!("expected Compress");
+        };
+        assert_eq!(
+            c.output_template,
+            Some("{console}/{title}.{ext}".to_string())
+        );
+    }
+
+    #[test]
+    fn output_template_conflicts_with_explicit_output() {
+        let r = Harness::try_parse_from([
+            "bin",
+            "compress",
+            "game.iso",
+            "out.rvz",
+            "--output-template",
+            "{title}.{ext}",
+        ]);
+        assert!(r.is_err());
     }
 
     #[test]
