@@ -73,9 +73,13 @@ pub struct NxCompressCommand {
     #[arg(long, short = 'f', default_value_t = false)]
     pub force: bool,
 
-    /// Compress every .nsp and .xci found in the INPUT directory
+    /// Compress every .nsp and .xci found in the INPUT directory and its subdirectories
     #[arg(long, short = 'R', default_value_t = false)]
     pub recursive: bool,
+
+    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited.
+    #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
+    pub max_depth: Option<usize>,
 }
 
 /// Decompress an NSZ back to NSP or an XCZ back to XCI.
@@ -114,9 +118,13 @@ pub struct NxDecompressCommand {
     #[arg(long, short = 'f', default_value_t = false)]
     pub force: bool,
 
-    /// Decompress every .nsz and .xcz found in the INPUT directory
+    /// Decompress every .nsz and .xcz found in the INPUT directory and its subdirectories
     #[arg(long, short = 'R', default_value_t = false)]
     pub recursive: bool,
+
+    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited.
+    #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
+    pub max_depth: Option<usize>,
 }
 
 /// Verify hash integrity of every NCA in a Switch container.
@@ -132,9 +140,13 @@ pub struct NxVerifyCommand {
     #[arg(value_name = "INPUT")]
     pub input: PathBuf,
 
-    /// Verify every .nsp, .xci, .nsz and .xcz found in the INPUT directory
+    /// Verify every .nsp, .xci, .nsz and .xcz found in the INPUT directory and its subdirectories
     #[arg(long, short = 'R', default_value_t = false)]
     pub recursive: bool,
+
+    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited.
+    #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
+    pub max_depth: Option<usize>,
 }
 
 #[cfg(test)]

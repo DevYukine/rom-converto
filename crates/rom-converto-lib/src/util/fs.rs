@@ -9,15 +9,33 @@ pub fn has_any_extension(path: &Path, exts: &[&str]) -> bool {
             .unwrap_or(false)
 }
 
-/// Top-level (non-recursive) listing of files in `dir` whose extension
-/// matches any of `exts` (case-insensitive), sorted for deterministic
-/// processing order.
-pub fn collect_files_with_exts(dir: &Path, exts: &[&str]) -> std::io::Result<Vec<PathBuf>> {
+/// Recursive listing of files under `dir` whose extension matches any of
+/// `exts` (case-insensitive), sorted for deterministic processing order.
+///
+/// `max_depth` counts directory levels below the scan root: files directly
+/// in `dir` are depth 1. `None` descends without limit, `Some(1)` returns
+/// only the top-level files (no descent), and `Some(N)` descends at most
+/// `N` levels. Symlinked directories are not followed, so cycles cannot
+/// cause infinite recursion.
+pub fn collect_files_with_exts(
+    dir: &Path,
+    exts: &[&str],
+    max_depth: Option<usize>,
+) -> std::io::Result<Vec<PathBuf>> {
     let mut out = Vec::new();
-    for entry in std::fs::read_dir(dir)? {
-        let path = entry?.path();
-        if has_any_extension(&path, exts) {
-            out.push(path);
+    let mut stack = vec![(dir.to_path_buf(), 1usize)];
+    while let Some((current, depth)) = stack.pop() {
+        for entry in std::fs::read_dir(&current)? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            let path = entry.path();
+            if file_type.is_dir() && !file_type.is_symlink() {
+                if max_depth.is_none_or(|limit| depth < limit) {
+                    stack.push((path, depth + 1));
+                }
+            } else if has_any_extension(&path, exts) {
+                out.push(path);
+            }
         }
     }
     out.sort();
@@ -50,11 +68,11 @@ mod tests {
         std::fs::write(dir.path().join("c.rvz"), b"x").unwrap();
         std::fs::write(dir.path().join("d.txt"), b"x").unwrap();
 
-        let found = collect_files_with_exts(dir.path(), &["iso", "wbfs"]).unwrap();
+        let found = collect_files_with_exts(dir.path(), &["iso", "wbfs"], None).unwrap();
         assert_eq!(found.len(), 2);
         assert!(found.iter().all(|p| p.extension().is_some()));
 
-        let single = collect_files_with_exts(dir.path(), &["rvz"]).unwrap();
+        let single = collect_files_with_exts(dir.path(), &["rvz"], None).unwrap();
         assert_eq!(single.len(), 1);
     }
 
@@ -64,9 +82,97 @@ mod tests {
         for name in ["z.iso", "a.iso", "m.iso"] {
             std::fs::write(dir.path().join(name), b"x").unwrap();
         }
-        let found = collect_files_with_exts(dir.path(), &["iso"]).unwrap();
+        let found = collect_files_with_exts(dir.path(), &["iso"], None).unwrap();
         let mut sorted = found.clone();
         sorted.sort();
         assert_eq!(found, sorted);
+    }
+
+    fn nested_iso_tree() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("b.iso"), b"x").unwrap();
+        let sub = dir.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("a.iso"), b"x").unwrap();
+        let deep = sub.join("deep");
+        std::fs::create_dir(&deep).unwrap();
+        std::fs::write(deep.join("c.iso"), b"x").unwrap();
+        dir
+    }
+
+    #[test]
+    fn collect_files_with_exts_recurses_into_subdirectories() {
+        let dir = nested_iso_tree();
+        let found = collect_files_with_exts(dir.path(), &["iso"], None).unwrap();
+        assert_eq!(found.len(), 3);
+    }
+
+    #[test]
+    fn collect_files_with_exts_max_depth_one_is_top_level_only() {
+        let dir = nested_iso_tree();
+        let found = collect_files_with_exts(dir.path(), &["iso"], Some(1)).unwrap();
+        assert_eq!(found, vec![dir.path().join("b.iso")]);
+    }
+
+    #[test]
+    fn collect_files_with_exts_max_depth_two_descends_one_level() {
+        let dir = nested_iso_tree();
+        let found = collect_files_with_exts(dir.path(), &["iso"], Some(2)).unwrap();
+        assert_eq!(
+            found,
+            vec![dir.path().join("b.iso"), dir.path().join("sub").join("a.iso")]
+        );
+    }
+
+    #[test]
+    fn collect_files_with_exts_sorted_across_levels() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("z.iso"), b"x").unwrap();
+        let sub = dir.path().join("a");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("a.iso"), b"x").unwrap();
+        std::fs::write(sub.join("m.iso"), b"x").unwrap();
+
+        let found = collect_files_with_exts(dir.path(), &["iso"], None).unwrap();
+        let mut sorted = found.clone();
+        sorted.sort();
+        assert_eq!(found, sorted);
+    }
+
+    #[test]
+    fn collect_files_with_exts_subpath_under_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("a.iso"), b"x").unwrap();
+
+        let found = collect_files_with_exts(dir.path(), &["iso"], None).unwrap();
+        assert_eq!(found.len(), 1);
+        let rel = found[0].strip_prefix(dir.path()).unwrap();
+        assert_eq!(rel, Path::new("sub").join("a.iso"));
+    }
+
+    #[test]
+    fn collect_files_with_exts_empty_subdirs() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("empty")).unwrap();
+        std::fs::write(dir.path().join("b.iso"), b"x").unwrap();
+
+        let found = collect_files_with_exts(dir.path(), &["iso"], None).unwrap();
+        assert_eq!(found, vec![dir.path().join("b.iso")]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn collect_files_with_exts_skips_symlinked_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        std::fs::write(real.join("a.iso"), b"x").unwrap();
+        std::os::unix::fs::symlink(dir.path(), dir.path().join("loop")).unwrap();
+        std::os::unix::fs::symlink(&real, dir.path().join("link")).unwrap();
+
+        let found = collect_files_with_exts(dir.path(), &["iso"], None).unwrap();
+        assert_eq!(found, vec![real.join("a.iso")]);
     }
 }

@@ -236,12 +236,14 @@ async fn main() -> Result<()> {
                         );
                     }
                     let tally = Tally::new();
-                    let count = collect_files_with_exts(&cmd.input, CTR_DECRYPT_EXTS)?.len();
+                    let count =
+                        collect_files_with_exts(&cmd.input, CTR_DECRYPT_EXTS, cmd.max_depth)?.len();
                     decrypt_rom_batch(
                         &cmd.input,
                         cmd.output_dir.as_deref(),
                         &progress,
                         &total_progress,
+                        cmd.max_depth,
                     )
                     .await?;
                     log_count_summary(count, tally);
@@ -274,13 +276,15 @@ async fn main() -> Result<()> {
                         );
                     }
                     let tally = Tally::new();
-                    let count = collect_files_with_exts(&cmd.input, CTR_COMPRESS_EXTS)?.len();
+                    let count =
+                        collect_files_with_exts(&cmd.input, CTR_COMPRESS_EXTS, cmd.max_depth)?.len();
                     compress_rom_batch(
                         &cmd.input,
                         cmd.level,
                         cmd.output_dir.as_deref(),
                         &progress,
                         &total_progress,
+                        cmd.max_depth,
                     )
                     .await?;
                     log_count_summary(count, tally);
@@ -313,12 +317,15 @@ async fn main() -> Result<()> {
                         );
                     }
                     let tally = Tally::new();
-                    let count = collect_files_with_exts(&cmd.input, CTR_DECOMPRESS_EXTS)?.len();
+                    let count =
+                        collect_files_with_exts(&cmd.input, CTR_DECOMPRESS_EXTS, cmd.max_depth)?
+                            .len();
                     decompress_rom_batch(
                         &cmd.input,
                         cmd.output_dir.as_deref(),
                         &progress,
                         &total_progress,
+                        cmd.max_depth,
                     )
                     .await?;
                     log_count_summary(count, tally);
@@ -351,12 +358,14 @@ async fn main() -> Result<()> {
                         );
                     }
                     let tally = Tally::new();
-                    let count = collect_files_with_exts(&cmd.input, CTR_CONVERT_EXTS)?.len();
+                    let count =
+                        collect_files_with_exts(&cmd.input, CTR_CONVERT_EXTS, cmd.max_depth)?.len();
                     convert_rom_batch(
                         &cmd.input,
                         cmd.output_dir.as_deref(),
                         &progress,
                         &total_progress,
+                        cmd.max_depth,
                     )
                     .await?;
                     log_count_summary(count, tally);
@@ -392,7 +401,8 @@ async fn main() -> Result<()> {
                         );
                     }
                     let summary =
-                        verify_ctr_batch(&cmd.input, &opts, &progress, &total_progress).await?;
+                        verify_ctr_batch(&cmd.input, &opts, &progress, &total_progress, cmd.max_depth)
+                            .await?;
                     log::info!(
                         "Verified {} files: {} OK, {} failed",
                         summary.total,
@@ -474,6 +484,7 @@ async fn main() -> Result<()> {
                         opts,
                         cmd.force,
                         cmd.output_dir.as_deref(),
+                        cmd.max_depth,
                     )
                     .await?
                 } else {
@@ -505,6 +516,7 @@ async fn main() -> Result<()> {
                         &cmd.input,
                         cmd.force,
                         cmd.output_dir.as_deref(),
+                        cmd.max_depth,
                     )
                     .await?
                 } else {
@@ -534,7 +546,8 @@ async fn main() -> Result<()> {
             DolCommands::Verify(cmd) => {
                 if cmd.recursive {
                     require_dir(&cmd.input)?;
-                    batch::dol_verify(&progress, &total_progress, &cmd.input, cmd.full).await?
+                    batch::dol_verify(&progress, &total_progress, &cmd.input, cmd.full, cmd.max_depth)
+                        .await?
                 } else {
                     ensure_input_exists(&cmd.input)?;
                     let opts = DolVerifyOptions { full: cmd.full };
@@ -589,6 +602,7 @@ async fn main() -> Result<()> {
                         opts,
                         cmd.force,
                         cmd.output_dir.as_deref(),
+                        cmd.max_depth,
                     )
                     .await?
                 } else {
@@ -620,6 +634,7 @@ async fn main() -> Result<()> {
                         &cmd.input,
                         cmd.force,
                         cmd.output_dir.as_deref(),
+                        cmd.max_depth,
                     )
                     .await?
                 } else {
@@ -649,7 +664,8 @@ async fn main() -> Result<()> {
             RvlCommands::Verify(cmd) => {
                 if cmd.recursive {
                     require_dir(&cmd.input)?;
-                    batch::rvl_verify(&progress, &total_progress, &cmd.input, cmd.full).await?
+                    batch::rvl_verify(&progress, &total_progress, &cmd.input, cmd.full, cmd.max_depth)
+                        .await?
                 } else {
                     ensure_input_exists(&cmd.input)?;
                     let opts = RvlVerifyOptions { full: cmd.full };
@@ -739,7 +755,7 @@ async fn main() -> Result<()> {
             WupCommands::Verify(cmd) => {
                 if cmd.recursive {
                     require_dir(&cmd.input)?;
-                    batch::wup_verify(&progress, &total_progress, &cmd.input).await?
+                    batch::wup_verify(&progress, &total_progress, &cmd.input, cmd.max_depth).await?
                 } else {
                     ensure_input_exists(&cmd.input)?;
                     let result = verify_wup_async(cmd.input, cmd.key, &progress).await?;
@@ -783,6 +799,7 @@ async fn main() -> Result<()> {
                         block_size_exp: cmd.block_size_exp,
                         force: cmd.force,
                         output_dir: cmd.output_dir.clone(),
+                        max_depth: cmd.max_depth,
                     };
                     batch::nx_compress(&progress, &total_progress, &cmd.input, keys, tuning).await?
                 } else {
@@ -834,6 +851,7 @@ async fn main() -> Result<()> {
                         keys,
                         cmd.force,
                         cmd.output_dir.as_deref(),
+                        cmd.max_depth,
                     )
                     .await?
                 } else {
@@ -862,7 +880,8 @@ async fn main() -> Result<()> {
                 let keys = load_keyset(cmd.keys.as_deref())?;
                 if cmd.recursive {
                     require_dir(&cmd.input)?;
-                    batch::nx_verify(&progress, &total_progress, &cmd.input, keys).await?;
+                    batch::nx_verify(&progress, &total_progress, &cmd.input, keys, cmd.max_depth)
+                        .await?;
                     return Ok(());
                 }
                 ensure_input_exists(&cmd.input)?;
@@ -919,13 +938,15 @@ async fn main() -> Result<()> {
                         );
                     }
                     let tally = Tally::new();
-                    let count = collect_files_with_exts(&cmd.input, CHD_COMPRESS_EXTS)?.len();
+                    let count =
+                        collect_files_with_exts(&cmd.input, CHD_COMPRESS_EXTS, cmd.max_depth)?.len();
                     convert_disc_to_chd_batch(
                         &progress,
                         &total_progress,
                         &cmd.input,
                         opts,
                         cmd.output_dir.as_deref(),
+                        cmd.max_depth,
                     )
                     .await?;
                     log_count_summary(count, tally);
@@ -960,12 +981,14 @@ async fn main() -> Result<()> {
                         );
                     }
                     let tally = Tally::new();
-                    let count = collect_files_with_exts(&cmd.input, CHD_EXTRACT_EXTS)?.len();
+                    let count =
+                        collect_files_with_exts(&cmd.input, CHD_EXTRACT_EXTS, cmd.max_depth)?.len();
                     extract_from_chd_batch(
                         &progress,
                         &total_progress,
                         cmd.input,
                         cmd.output_dir.as_deref(),
+                        cmd.max_depth,
                     )
                     .await?;
                     log_count_summary(count, tally);
@@ -996,7 +1019,8 @@ async fn main() -> Result<()> {
                             cmd.input.display()
                         );
                     }
-                    verify_chd_batch(&progress, &total_progress, cmd.input, cmd.fix).await?
+                    verify_chd_batch(&progress, &total_progress, cmd.input, cmd.fix, cmd.max_depth)
+                        .await?
                 } else {
                     ensure_input_exists(&cmd.input)?;
                     verify_chd(&progress, cmd.input, cmd.parent, cmd.fix).await?
@@ -1035,13 +1059,15 @@ async fn main() -> Result<()> {
                         );
                     }
                     let tally = Tally::new();
-                    let count = collect_files_with_exts(&cmd.input, CSO_COMPRESS_EXTS)?.len();
+                    let count =
+                        collect_files_with_exts(&cmd.input, CSO_COMPRESS_EXTS, cmd.max_depth)?.len();
                     compress_to_cso_batch(
                         &progress,
                         &total_progress,
                         &cmd.input,
                         opts,
                         cmd.output_dir.as_deref(),
+                        cmd.max_depth,
                     )
                     .await?;
                     log_count_summary(count, tally);
@@ -1076,6 +1102,7 @@ async fn main() -> Result<()> {
                         &cmd.input,
                         cmd.force,
                         cmd.output_dir.as_deref(),
+                        cmd.max_depth,
                     )
                     .await?
                 } else {
@@ -1103,7 +1130,8 @@ async fn main() -> Result<()> {
             CsoCommands::Verify(cmd) => {
                 if cmd.recursive {
                     require_dir(&cmd.input)?;
-                    batch::cso_verify(&progress, &total_progress, &cmd.input, cmd.full).await?
+                    batch::cso_verify(&progress, &total_progress, &cmd.input, cmd.full, cmd.max_depth)
+                        .await?
                 } else {
                     ensure_input_exists(&cmd.input)?;
                     verify_cso(&progress, cmd.input, cmd.full).await?

@@ -58,16 +58,6 @@ pub fn derive_decrypted_path(input: &Path) -> PathBuf {
     input.with_file_name(name)
 }
 
-pub(crate) fn has_matching_extension(path: &Path, accepted: &[&str]) -> bool {
-    if !path.is_file() {
-        return false;
-    }
-    match path.extension().and_then(|s| s.to_str()) {
-        Some(ext) => accepted.iter().any(|a| ext.eq_ignore_ascii_case(a)),
-        None => false,
-    }
-}
-
 const DECRYPT_EXTS: &[&str] = &["cia", "3ds", "cci", "cxi"];
 
 pub async fn decrypt_cia(
@@ -406,16 +396,10 @@ pub async fn decrypt_rom_batch(
     output_dir: Option<&Path>,
     progress: &dyn ProgressReporter,
     total_progress: &dyn ProgressReporter,
+    max_depth: Option<usize>,
 ) -> Result<()> {
-    let mut count: u64 = 0;
-    let mut scan = fs::read_dir(input_dir).await?;
-    while let Ok(Some(entry)) = scan.next_entry().await {
-        if has_matching_extension(&entry.path(), DECRYPT_EXTS) {
-            count += 1;
-        }
-    }
-
-    if count == 0 {
+    let roms = crate::util::fs::collect_files_with_exts(input_dir, DECRYPT_EXTS, max_depth)?;
+    if roms.is_empty() {
         warn!(
             "No supported ROM files found in {} (looked for {:?})",
             input_dir.display(),
@@ -424,21 +408,18 @@ pub async fn decrypt_rom_batch(
         return Ok(());
     }
 
-    total_progress.start(count, &format!("Decrypting {count} files..."));
+    total_progress.start(roms.len() as u64, &format!("Decrypting {} files...", roms.len()));
 
     if let Some(dir) = output_dir {
         fs::create_dir_all(dir).await?;
     }
 
-    let mut entries = fs::read_dir(input_dir).await?;
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        let path = entry.path();
-        if !has_matching_extension(&path, DECRYPT_EXTS) {
-            debug!("Skipping {} (not a supported ROM)", path.display());
-            continue;
+    for path in roms {
+        let output =
+            crate::util::place_in_dir_mirrored(&derive_decrypted_path(&path), input_dir, output_dir);
+        if let Some(parent) = output.parent() {
+            fs::create_dir_all(parent).await?;
         }
-
-        let output = crate::util::place_in_dir(&derive_decrypted_path(&path), output_dir);
         debug!("Decrypting {} -> {}", path.display(), output.display());
 
         if let Err(err) = decrypt_rom(&path, &output, progress).await {

@@ -136,7 +136,7 @@ After `compress`, `decompress`, and `convert` operations, the tool prints a clos
 | Flag | Description |
 |---|---|
 | `-C, --cleanup` | Remove original CDN files after conversion |
-| `-R, --recursive` | Process all subdirectories, converting each to `.cia` |
+| `-R, --recursive` | Convert each immediate child directory of CDN_DIR to a `.cia`. This scans the direct subdirectories, unlike the file-recursive subcommands below, so it takes no `--max-depth` |
 | `-T, --ensure-ticket-exists` | Auto-generate a ticket file if one is not found |
 | `-D, --decrypt` | Also decrypt the CIA after creation |
 | `-Z, --compress` | Also compress the CIA after creation (implies decrypt) |
@@ -147,7 +147,8 @@ After `compress`, `decompress`, and `convert` operations, the tool prints a clos
 | Flag | Description |
 |---|---|
 | `-o, --output <FILE>` | Output path (alternative to the positional OUTPUT argument) |
-| `-R, --recursive` | Process all matching files in INPUT (top-level only) |
+| `-R, --recursive` | Recursively process every matching file in INPUT and its subdirectories |
+| `--max-depth <N>` | Limit recursion depth with `--recursive`. `1` = top level only. Default: unlimited |
 | `-f, --force` | Overwrite output file if it already exists |
 
 **`verify` flags:**
@@ -155,7 +156,8 @@ After `compress`, `decompress`, and `convert` operations, the tool prints a clos
 | Flag | Description |
 |---|---|
 | `--full` | Also verify content hashes against the TMD (CIA only, slower). `--verify-content` is a visible alias for this flag |
-| `-R, --recursive` | Verify every matching file in INPUT and print a summary |
+| `-R, --recursive` | Recursively verify every matching file in INPUT and its subdirectories and print a summary |
+| `--max-depth <N>` | Limit recursion depth with `--recursive`. `1` = top level only. Default: unlimited |
 
 > **`generate-cdn-ticket`:** Generated tickets use placeholder values (null Console ID, etc.) and only work on modded consoles and emulators. They will not work on stock hardware.
 
@@ -186,7 +188,8 @@ After `compress`, `decompress`, and `convert` operations, the tool prints a clos
 | `--chunk-size <BYTES>` | `compress` | Chunk size in bytes, power of two between 32 KiB and 2 MiB (defaults to 128 KiB to match Dolphin) |
 | `-o, --output <FILE>` | `compress`, `decompress` | Output path (alternative to the positional OUTPUT argument) |
 | `-f, --force` | `compress`, `decompress` | Overwrite output file if it already exists |
-| `-R, --recursive` | `compress`, `decompress`, `verify` | Process every matching file in INPUT (top-level only) |
+| `-R, --recursive` | `compress`, `decompress`, `verify` | Recursively process every matching file in INPUT and its subdirectories |
+| `--max-depth <N>` | `compress`, `decompress`, `verify` | Limit recursion depth with `--recursive`. `1` = top level only. Default: unlimited |
 | `--full` | `verify` | Decode the whole disc and compute a whole-disc SHA-1 |
 
 ---
@@ -236,7 +239,8 @@ Flags match the `dol` commands. `--full` on `rvl verify` decrypts every partitio
 | Flag | Description |
 |---|---|
 | `--key <KEYFILE>` | Disc master key file (`.wud`/`.wux` inputs only) |
-| `-R, --recursive` | Verify every disc image and NUS title subdirectory in INPUT |
+| `-R, --recursive` | Recursively verify every `.wud` / `.wux` disc image in INPUT and its subdirectories. NUS title directories are detected among the immediate children of INPUT only |
+| `--max-depth <N>` | Limit disc image recursion depth with `--recursive`. `1` = top level only. Default: unlimited. Does not affect NUS title directory discovery |
 
 > **`compress`:** Each input is auto-detected as a loadiine directory, a NUS directory, or a disc image (`.wud` / `.wux`). Disc images need a 16-byte master key; keys are resolved in order from `--key` flags, a sibling `<disc>.key` file, or `game.key` in the same directory. Multiple titles (base + update + DLC) can be bundled into one archive and each lands under its own `<titleId>_v<version>/` folder, the layout Cemu expects.
 
@@ -263,7 +267,8 @@ Flags match the `dol` commands. `--full` on `rvl verify` decrypts every partitio
 | `--mode <MODE>` | `solid` (one zstd frame per NCA, default for NSP) or `block` (independent zstd frames per fixed-size block, default for XCI) |
 | `--block-size-exp <EXP>` | Block-mode block size as `1 << exp` bytes, range 14..=32 (defaults to 20 = 1 MiB, matching `nsz`) |
 | `-f, --force` | Overwrite output file if it already exists |
-| `-R, --recursive` | Compress every `.nsp` and `.xci` found in INPUT |
+| `-R, --recursive` | Compress every `.nsp` and `.xci` found in INPUT and its subdirectories |
+| `--max-depth <N>` | Limit recursion depth with `--recursive`. `1` = top level only. Default: unlimited |
 
 **`decompress` flags:**
 
@@ -272,14 +277,16 @@ Flags match the `dol` commands. `--full` on `rvl verify` decrypts every partitio
 | `--keys <PRODKEYS>` | Path to `prod.keys`. Same default as `compress` |
 | `-o, --output <FILE>` | Output path. Defaults to the input with the extension switched (`.nsz` -> `.nsp`, `.xcz` -> `.xci`) |
 | `-f, --force` | Overwrite output file if it already exists |
-| `-R, --recursive` | Decompress every `.nsz` and `.xcz` found in INPUT |
+| `-R, --recursive` | Decompress every `.nsz` and `.xcz` found in INPUT and its subdirectories |
+| `--max-depth <N>` | Limit recursion depth with `--recursive`. `1` = top level only. Default: unlimited |
 
 **`verify` flags:**
 
 | Flag | Description |
 |---|---|
 | `--keys <PRODKEYS>` | Path to `prod.keys`. Same default as `compress` |
-| `-R, --recursive` | Verify every `.nsp`, `.nsz`, `.xci`, and `.xcz` found in INPUT |
+| `-R, --recursive` | Verify every `.nsp`, `.nsz`, `.xci`, and `.xcz` found in INPUT and its subdirectories |
+| `--max-depth <N>` | Limit recursion depth with `--recursive`. `1` = top level only. Default: unlimited |
 
 > **`compress` / `decompress`:** Outputs are byte identical to `nsz` / `nsz -D` at matching settings. `prod.keys` is required to derive the per-NCA section keys; the file is read but never modified. Tickets inside the container are kept as-is so installation on console still works.
 
@@ -305,7 +312,8 @@ Flags match the `dol` commands. `--full` on `rvl verify` decrypts every partitio
 | `--hunk-size <BYTES>` | `compress` | DVD hunk size, a multiple of 2048; defaults to 4096, or 2048 for detected PSP images |
 | `--zstd` | `compress` | Add zstd to the DVD codec set; better ratio, but rejected by AetherSX2/NetherSX2 |
 | `-o, --output <FILE>` | `compress`, `extract` | Output path (alternative to the positional OUTPUT argument) |
-| `-R, --recursive` | `compress`, `extract`, `verify` | Process every matching file in INPUT (top-level only) |
+| `-R, --recursive` | `compress`, `extract`, `verify` | Recursively process every matching file in INPUT and its subdirectories |
+| `--max-depth <N>` | `compress`, `extract`, `verify` | Limit recursion depth with `--recursive`. `1` = top level only. Default: unlimited |
 | `-p, --parent <PARENT>` | `extract`, `verify` | Specify a parent CHD for parent-child relationships |
 | `--fix` | `verify` | Correct SHA1 values in the CHD header if mismatches are found |
 
@@ -328,7 +336,8 @@ Flags match the `dol` commands. `--full` on `rvl verify` decrypts every partitio
 | `--block-size <BYTES>` | `compress` | Block size, a power of two; defaults to 2048 (16384 for 2 GiB+ inputs) |
 | `-o, --output <FILE>` | `compress`, `decompress` | Output path (alternative to the positional OUTPUT argument) |
 | `-f, --force` | `compress`, `decompress` | Overwrite output file if it already exists |
-| `-R, --recursive` | `compress`, `decompress`, `verify` | Process every matching file in INPUT (top-level only) |
+| `-R, --recursive` | `compress`, `decompress`, `verify` | Recursively process every matching file in INPUT and its subdirectories |
+| `--max-depth <N>` | `compress`, `decompress`, `verify` | Limit recursion depth with `--recursive`. `1` = top level only. Default: unlimited |
 | `--full` | `verify` | Decode every block instead of only checking the index |
 
 ---

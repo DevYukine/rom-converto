@@ -26,6 +26,30 @@ pub fn place_in_dir(
     }
 }
 
+/// Re-root a derived output path under `output_dir`, preserving the input's
+/// subpath relative to `scan_root` so a recursive batch mirrors the source
+/// tree instead of flattening every file into one directory. With no
+/// `output_dir` the derived path is returned unchanged, since outputs then
+/// land beside their input and already mirror the tree. Falls back to the
+/// file name when `derived` is not under `scan_root`.
+pub fn place_in_dir_mirrored(
+    derived: &std::path::Path,
+    scan_root: &std::path::Path,
+    output_dir: Option<&std::path::Path>,
+) -> std::path::PathBuf {
+    match output_dir {
+        Some(dir) => match derived.strip_prefix(scan_root) {
+            Ok(rel) => dir.join(rel),
+            Err(_) => dir.join(
+                derived
+                    .file_name()
+                    .expect("a derived output path always has a file name"),
+            ),
+        },
+        None => derived.to_path_buf(),
+    }
+}
+
 /// Trait for reporting progress from library operations.
 ///
 /// Consumers implement this to bridge progress updates to their
@@ -74,4 +98,37 @@ where
     }
     progress.finish();
     result?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::place_in_dir_mirrored;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn place_in_dir_mirrored_preserves_subpath() {
+        let out = place_in_dir_mirrored(
+            Path::new("/root/a/b/game.chd"),
+            Path::new("/root"),
+            Some(Path::new("/out")),
+        );
+        assert_eq!(out, PathBuf::from("/out/a/b/game.chd"));
+    }
+
+    #[test]
+    fn place_in_dir_mirrored_none_returns_derived() {
+        let derived = Path::new("/root/a/game.chd");
+        let out = place_in_dir_mirrored(derived, Path::new("/root"), None);
+        assert_eq!(out, derived.to_path_buf());
+    }
+
+    #[test]
+    fn place_in_dir_mirrored_fallback_to_file_name() {
+        let out = place_in_dir_mirrored(
+            Path::new("/elsewhere/game.chd"),
+            Path::new("/root"),
+            Some(Path::new("/out")),
+        );
+        assert_eq!(out, PathBuf::from("/out/game.chd"));
+    }
 }

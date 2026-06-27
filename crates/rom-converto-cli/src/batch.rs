@@ -15,8 +15,12 @@ struct VerifyTally {
     failed: usize,
 }
 
-fn collect_or_warn(input_dir: &Path, exts: &[&str]) -> Result<Vec<PathBuf>> {
-    let files = collect_files_with_exts(input_dir, exts)?;
+fn collect_or_warn(
+    input_dir: &Path,
+    exts: &[&str],
+    max_depth: Option<usize>,
+) -> Result<Vec<PathBuf>> {
+    let files = collect_files_with_exts(input_dir, exts, max_depth)?;
     if files.is_empty() {
         warn!(
             "No matching files found in {} (looked for {:?})",
@@ -53,11 +57,12 @@ pub async fn cso_decompress(
     input_dir: &Path,
     force: bool,
     output_dir: Option<&Path>,
+    max_depth: Option<usize>,
 ) -> Result<()> {
     use rom_converto_lib::cso::decompress_from_cso;
-    use rom_converto_lib::util::place_in_dir;
+    use rom_converto_lib::util::place_in_dir_mirrored;
 
-    let files = collect_or_warn(input_dir, &["cso", "zso"])?;
+    let files = collect_or_warn(input_dir, &["cso", "zso"], max_depth)?;
     if files.is_empty() {
         return Ok(());
     }
@@ -68,7 +73,10 @@ pub async fn cso_decompress(
     total_progress.start(total as u64, &format!("Decompressing {total} files..."));
     let mut tally = Tally::new();
     for path in files {
-        let output = place_in_dir(&path.with_extension("iso"), output_dir);
+        let output = place_in_dir_mirrored(&path.with_extension("iso"), input_dir, output_dir);
+        if let Some(parent) = output.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
         if let Err(e) = ensure_output_writable(&output, force) {
             warn!("{e}");
             tally.record_skipped();
@@ -94,10 +102,11 @@ pub async fn cso_verify(
     total_progress: &dyn ProgressReporter,
     input_dir: &Path,
     full: bool,
+    max_depth: Option<usize>,
 ) -> Result<()> {
     use rom_converto_lib::cso::verify_cso;
 
-    let files = collect_or_warn(input_dir, &["cso", "zso"])?;
+    let files = collect_or_warn(input_dir, &["cso", "zso"], max_depth)?;
     if files.is_empty() {
         return Ok(());
     }
@@ -122,6 +131,7 @@ pub async fn cso_verify(
     finish_verify(VerifyTally { total, ok, failed })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn rvz_compress(
     progress: &dyn ProgressReporter,
     total_progress: &dyn ProgressReporter,
@@ -130,11 +140,12 @@ pub async fn rvz_compress(
     opts: rom_converto_lib::nintendo::rvz::RvzCompressOptions,
     force: bool,
     output_dir: Option<&Path>,
+    max_depth: Option<usize>,
 ) -> Result<()> {
     use rom_converto_lib::nintendo::rvz::{compress_disc, derive_rvz_path};
-    use rom_converto_lib::util::place_in_dir;
+    use rom_converto_lib::util::place_in_dir_mirrored;
 
-    let files = collect_or_warn(input_dir, exts)?;
+    let files = collect_or_warn(input_dir, exts, max_depth)?;
     if files.is_empty() {
         return Ok(());
     }
@@ -145,7 +156,10 @@ pub async fn rvz_compress(
     total_progress.start(total as u64, &format!("Compressing {total} files..."));
     let mut tally = Tally::new();
     for path in files {
-        let output = place_in_dir(&derive_rvz_path(&path), output_dir);
+        let output = place_in_dir_mirrored(&derive_rvz_path(&path), input_dir, output_dir);
+        if let Some(parent) = output.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
         if let Err(e) = ensure_output_writable(&output, force) {
             warn!("{e}");
             tally.record_skipped();
@@ -171,11 +185,12 @@ pub async fn rvz_decompress(
     input_dir: &Path,
     force: bool,
     output_dir: Option<&Path>,
+    max_depth: Option<usize>,
 ) -> Result<()> {
     use rom_converto_lib::nintendo::rvz::{decompress_disc, derive_disc_path};
-    use rom_converto_lib::util::place_in_dir;
+    use rom_converto_lib::util::place_in_dir_mirrored;
 
-    let files = collect_or_warn(input_dir, &["rvz"])?;
+    let files = collect_or_warn(input_dir, &["rvz"], max_depth)?;
     if files.is_empty() {
         return Ok(());
     }
@@ -186,7 +201,10 @@ pub async fn rvz_decompress(
     total_progress.start(total as u64, &format!("Decompressing {total} files..."));
     let mut tally = Tally::new();
     for path in files {
-        let output = place_in_dir(&derive_disc_path(&path), output_dir);
+        let output = place_in_dir_mirrored(&derive_disc_path(&path), input_dir, output_dir);
+        if let Some(parent) = output.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
         if let Err(e) = ensure_output_writable(&output, force) {
             warn!("{e}");
             tally.record_skipped();
@@ -211,10 +229,11 @@ pub async fn dol_verify(
     total_progress: &dyn ProgressReporter,
     input_dir: &Path,
     full: bool,
+    max_depth: Option<usize>,
 ) -> Result<()> {
     use rom_converto_lib::nintendo::dol::verify::{DolVerifyOptions, verify_dol};
 
-    let files = collect_or_warn(input_dir, &["iso", "gcm", "rvz"])?;
+    let files = collect_or_warn(input_dir, &["iso", "gcm", "rvz"], max_depth)?;
     if files.is_empty() {
         return Ok(());
     }
@@ -249,10 +268,11 @@ pub async fn rvl_verify(
     total_progress: &dyn ProgressReporter,
     input_dir: &Path,
     full: bool,
+    max_depth: Option<usize>,
 ) -> Result<()> {
     use rom_converto_lib::nintendo::rvl::verify::{RvlVerifyOptions, verify_rvl};
 
-    let files = collect_or_warn(input_dir, &["iso", "wbfs", "rvz"])?;
+    let files = collect_or_warn(input_dir, &["iso", "wbfs", "rvz"], max_depth)?;
     if files.is_empty() {
         return Ok(());
     }
@@ -288,6 +308,7 @@ pub struct NxCompressTuning {
     pub block_size_exp: Option<u8>,
     pub force: bool,
     pub output_dir: Option<PathBuf>,
+    pub max_depth: Option<usize>,
 }
 
 pub async fn nx_compress(
@@ -301,9 +322,9 @@ pub async fn nx_compress(
         NczMode, NxCompressOptions, compress_container_async, derive_compressed_path,
         detect_container,
     };
-    use rom_converto_lib::util::place_in_dir;
+    use rom_converto_lib::util::place_in_dir_mirrored;
 
-    let files = collect_or_warn(input_dir, &["nsp", "xci"])?;
+    let files = collect_or_warn(input_dir, &["nsp", "xci"], tuning.max_depth)?;
     if files.is_empty() {
         return Ok(());
     }
@@ -338,7 +359,14 @@ pub async fn nx_compress(
         } else if let Some(exp) = tuning.block_size_exp {
             opts.mode = NczMode::Block { size_exp: exp };
         }
-        let output = place_in_dir(&derive_compressed_path(&path), tuning.output_dir.as_deref());
+        let output = place_in_dir_mirrored(
+            &derive_compressed_path(&path),
+            input_dir,
+            tuning.output_dir.as_deref(),
+        );
+        if let Some(parent) = output.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
         if let Err(e) = ensure_output_writable(&output, tuning.force) {
             warn!("{e}");
             tally.record_skipped();
@@ -368,11 +396,12 @@ pub async fn nx_decompress(
     keys: rom_converto_lib::nintendo::nx::KeySet,
     force: bool,
     output_dir: Option<&Path>,
+    max_depth: Option<usize>,
 ) -> Result<()> {
     use rom_converto_lib::nintendo::nx::{decompress_container_async, derive_decompressed_path};
-    use rom_converto_lib::util::place_in_dir;
+    use rom_converto_lib::util::place_in_dir_mirrored;
 
-    let files = collect_or_warn(input_dir, &["nsz", "xcz"])?;
+    let files = collect_or_warn(input_dir, &["nsz", "xcz"], max_depth)?;
     if files.is_empty() {
         return Ok(());
     }
@@ -383,7 +412,10 @@ pub async fn nx_decompress(
     total_progress.start(total as u64, &format!("Decompressing {total} files..."));
     let mut tally = Tally::new();
     for path in files {
-        let output = place_in_dir(&derive_decompressed_path(&path), output_dir);
+        let output = place_in_dir_mirrored(&derive_decompressed_path(&path), input_dir, output_dir);
+        if let Some(parent) = output.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
         if let Err(e) = ensure_output_writable(&output, force) {
             warn!("{e}");
             tally.record_skipped();
@@ -411,10 +443,11 @@ pub async fn nx_verify(
     total_progress: &dyn ProgressReporter,
     input_dir: &Path,
     keys: rom_converto_lib::nintendo::nx::KeySet,
+    max_depth: Option<usize>,
 ) -> Result<()> {
     use rom_converto_lib::nintendo::nx::verify_container_async;
 
-    let files = collect_or_warn(input_dir, &["nsp", "xci", "nsz", "xcz"])?;
+    let files = collect_or_warn(input_dir, &["nsp", "xci", "nsz", "xcz"], max_depth)?;
     if files.is_empty() {
         return Ok(());
     }
@@ -470,10 +503,11 @@ pub async fn wup_verify(
     progress: &dyn ProgressReporter,
     total_progress: &dyn ProgressReporter,
     input_dir: &Path,
+    max_depth: Option<usize>,
 ) -> Result<()> {
     use rom_converto_lib::nintendo::wup::verify_wup_async;
 
-    let mut inputs = collect_files_with_exts(input_dir, &["wud", "wux"])?;
+    let mut inputs = collect_files_with_exts(input_dir, &["wud", "wux"], max_depth)?;
     if let Ok(entries) = std::fs::read_dir(input_dir) {
         let mut dirs: Vec<PathBuf> = entries
             .flatten()

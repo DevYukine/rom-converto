@@ -1,4 +1,3 @@
-use crate::nintendo::ctr::has_matching_extension;
 use crate::util::ProgressReporter;
 use anyhow::Result;
 use log::{debug, warn};
@@ -69,16 +68,10 @@ pub async fn compress_rom_batch(
     output_dir: Option<&Path>,
     progress: &dyn ProgressReporter,
     total_progress: &dyn ProgressReporter,
+    max_depth: Option<usize>,
 ) -> Result<()> {
-    let mut count: u64 = 0;
-    let mut scan = fs::read_dir(input_dir).await?;
-    while let Ok(Some(entry)) = scan.next_entry().await {
-        if has_matching_extension(&entry.path(), COMPRESS_EXTS) {
-            count += 1;
-        }
-    }
-
-    if count == 0 {
+    let roms = crate::util::fs::collect_files_with_exts(input_dir, COMPRESS_EXTS, max_depth)?;
+    if roms.is_empty() {
         warn!(
             "No supported ROM files found in {} (looked for {:?})",
             input_dir.display(),
@@ -87,21 +80,18 @@ pub async fn compress_rom_batch(
         return Ok(());
     }
 
-    total_progress.start(count, &format!("Compressing {count} files..."));
+    total_progress.start(roms.len() as u64, &format!("Compressing {} files...", roms.len()));
 
     if let Some(dir) = output_dir {
         fs::create_dir_all(dir).await?;
     }
 
-    let mut entries = fs::read_dir(input_dir).await?;
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        let path = entry.path();
-        if !has_matching_extension(&path, COMPRESS_EXTS) {
-            debug!("Skipping {} (not a supported ROM)", path.display());
-            continue;
+    for path in roms {
+        let output =
+            crate::util::place_in_dir_mirrored(&derive_compressed_path(&path), input_dir, output_dir);
+        if let Some(parent) = output.parent() {
+            fs::create_dir_all(parent).await?;
         }
-
-        let output = crate::util::place_in_dir(&derive_compressed_path(&path), output_dir);
         debug!("Compressing {} -> {}", path.display(), output.display());
 
         if let Err(err) = compress_rom(&path, &output, level, progress).await {
@@ -120,16 +110,10 @@ pub async fn decompress_rom_batch(
     output_dir: Option<&Path>,
     progress: &dyn ProgressReporter,
     total_progress: &dyn ProgressReporter,
+    max_depth: Option<usize>,
 ) -> Result<()> {
-    let mut count: u64 = 0;
-    let mut scan = fs::read_dir(input_dir).await?;
-    while let Ok(Some(entry)) = scan.next_entry().await {
-        if has_matching_extension(&entry.path(), DECOMPRESS_EXTS) {
-            count += 1;
-        }
-    }
-
-    if count == 0 {
+    let roms = crate::util::fs::collect_files_with_exts(input_dir, DECOMPRESS_EXTS, max_depth)?;
+    if roms.is_empty() {
         warn!(
             "No supported Z3DS files found in {} (looked for {:?})",
             input_dir.display(),
@@ -138,21 +122,21 @@ pub async fn decompress_rom_batch(
         return Ok(());
     }
 
-    total_progress.start(count, &format!("Decompressing {count} files..."));
+    total_progress.start(roms.len() as u64, &format!("Decompressing {} files...", roms.len()));
 
     if let Some(dir) = output_dir {
         fs::create_dir_all(dir).await?;
     }
 
-    let mut entries = fs::read_dir(input_dir).await?;
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        let path = entry.path();
-        if !has_matching_extension(&path, DECOMPRESS_EXTS) {
-            debug!("Skipping {} (not a Z3DS file)", path.display());
-            continue;
+    for path in roms {
+        let output = crate::util::place_in_dir_mirrored(
+            &derive_decompressed_path(&path),
+            input_dir,
+            output_dir,
+        );
+        if let Some(parent) = output.parent() {
+            fs::create_dir_all(parent).await?;
         }
-
-        let output = crate::util::place_in_dir(&derive_decompressed_path(&path), output_dir);
         debug!("Decompressing {} -> {}", path.display(), output.display());
 
         if let Err(err) = decompress_rom(&path, &output, progress).await {

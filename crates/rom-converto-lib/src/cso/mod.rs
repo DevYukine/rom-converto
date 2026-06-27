@@ -109,29 +109,20 @@ pub async fn compress_to_cso(
     Ok(())
 }
 
-/// Compress every `.iso` directly inside `input_dir` (top level only,
-/// matching the other batch commands). Outputs land next to their
-/// inputs with the extension replaced by the format's.
+/// Compress every `.iso` under `input_dir`, descending into subdirectories
+/// up to `max_depth` (`None` for unlimited). Outputs land next to their
+/// inputs with the extension replaced by the format's, or mirror the source
+/// tree under `output_dir` when one is given.
 pub async fn compress_to_cso_batch(
     progress: &dyn ProgressReporter,
     total_progress: &dyn ProgressReporter,
     input_dir: &std::path::Path,
     opts: CsoCompressOptions,
     output_dir: Option<&std::path::Path>,
+    max_depth: Option<usize>,
 ) -> CsoResult<()> {
-    let is_iso = |path: &std::path::Path| {
-        path.extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("iso"))
-    };
-
-    let mut count: u64 = 0;
-    let mut scan = tokio::fs::read_dir(input_dir).await?;
-    while let Ok(Some(entry)) = scan.next_entry().await {
-        if is_iso(&entry.path()) {
-            count += 1;
-        }
-    }
-    if count == 0 {
+    let images = crate::util::fs::collect_files_with_exts(input_dir, &["iso"], max_depth)?;
+    if images.is_empty() {
         log::warn!("No .iso inputs found in {}", input_dir.display());
         return Ok(());
     }
@@ -140,16 +131,17 @@ pub async fn compress_to_cso_batch(
         std::fs::create_dir_all(dir)?;
     }
 
-    total_progress.start(count, &format!("Compressing {count} images..."));
+    total_progress.start(images.len() as u64, &format!("Compressing {} images...", images.len()));
 
-    let mut entries = tokio::fs::read_dir(input_dir).await?;
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        let path = entry.path();
-        if !is_iso(&path) {
-            continue;
+    for path in images {
+        let output = crate::util::place_in_dir_mirrored(
+            &path.with_extension(opts.format.extension()),
+            input_dir,
+            output_dir,
+        );
+        if let Some(parent) = output.parent() {
+            std::fs::create_dir_all(parent)?;
         }
-        let output =
-            crate::util::place_in_dir(&path.with_extension(opts.format.extension()), output_dir);
         if let Err(err) = compress_to_cso(progress, path.clone(), output, opts.clone()).await {
             log::warn!("Failed to compress {}: {err}", path.display());
         }

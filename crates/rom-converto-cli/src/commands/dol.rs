@@ -25,9 +25,13 @@ pub struct VerifyDiscCommand {
     #[arg(long, default_value_t = false)]
     pub full: bool,
 
-    /// Verify every .iso, .gcm and .rvz found in the INPUT directory
+    /// Verify every .iso, .gcm and .rvz found in the INPUT directory and its subdirectories
     #[arg(long, short = 'R', default_value_t = false)]
     pub recursive: bool,
+
+    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited.
+    #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
+    pub max_depth: Option<usize>,
 }
 
 /// Compress a GameCube disc image to RVZ.
@@ -74,9 +78,13 @@ pub struct CompressDiscCommand {
     #[arg(long, short = 'f', default_value_t = false)]
     pub force: bool,
 
-    /// Compress every .iso and .gcm found in the INPUT directory
+    /// Compress every .iso and .gcm found in the INPUT directory and its subdirectories
     #[arg(long, short = 'R', default_value_t = false)]
     pub recursive: bool,
+
+    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited.
+    #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
+    pub max_depth: Option<usize>,
 }
 
 /// Decompress an RVZ GameCube disc image back to ISO.
@@ -110,9 +118,13 @@ pub struct DecompressDiscCommand {
     #[arg(long, short = 'f', default_value_t = false)]
     pub force: bool,
 
-    /// Decompress every .rvz found in the INPUT directory
+    /// Decompress every .rvz found in the INPUT directory and its subdirectories
     #[arg(long, short = 'R', default_value_t = false)]
     pub recursive: bool,
+
+    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited.
+    #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
+    pub max_depth: Option<usize>,
 }
 
 #[cfg(test)]

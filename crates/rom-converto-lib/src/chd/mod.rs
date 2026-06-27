@@ -110,29 +110,20 @@ pub async fn convert_disc_to_chd(
     }
 }
 
-/// Compress every `.cue` and `.iso` directly inside `input_dir` (top
-/// level only, matching the ctr batch commands). Outputs land next to
-/// their inputs with the extension replaced by `.chd`.
+/// Compress every `.cue` and `.iso` under `input_dir`, descending into
+/// subdirectories up to `max_depth` (`None` for unlimited). Outputs land
+/// next to their inputs with the extension replaced by `.chd`, or mirror
+/// the source tree under `output_dir` when one is given.
 pub async fn convert_disc_to_chd_batch(
     progress: &dyn ProgressReporter,
     total_progress: &dyn ProgressReporter,
     input_dir: &std::path::Path,
     opts: ChdDvdOptions,
     output_dir: Option<&std::path::Path>,
+    max_depth: Option<usize>,
 ) -> ChdResult<()> {
-    let is_disc_input = |path: &std::path::Path| {
-        path.extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("cue") || e.eq_ignore_ascii_case("iso"))
-    };
-
-    let mut count: u64 = 0;
-    let mut scan = fs::read_dir(input_dir).await?;
-    while let Ok(Some(entry)) = scan.next_entry().await {
-        if is_disc_input(&entry.path()) {
-            count += 1;
-        }
-    }
-    if count == 0 {
+    let discs = crate::util::fs::collect_files_with_exts(input_dir, &["cue", "iso"], max_depth)?;
+    if discs.is_empty() {
         warn!("No .cue or .iso inputs found in {}", input_dir.display());
         return Ok(());
     }
@@ -141,15 +132,17 @@ pub async fn convert_disc_to_chd_batch(
         std::fs::create_dir_all(dir)?;
     }
 
-    total_progress.start(count, &format!("Compressing {count} discs..."));
+    total_progress.start(discs.len() as u64, &format!("Compressing {} discs...", discs.len()));
 
-    let mut entries = fs::read_dir(input_dir).await?;
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        let path = entry.path();
-        if !is_disc_input(&path) {
-            continue;
+    for path in discs {
+        let output = crate::util::place_in_dir_mirrored(
+            &path.with_extension("chd"),
+            input_dir,
+            output_dir,
+        );
+        if let Some(parent) = output.parent() {
+            std::fs::create_dir_all(parent)?;
         }
-        let output = crate::util::place_in_dir(&path.with_extension("chd"), output_dir);
         if let Err(err) =
             convert_disc_to_chd(progress, path.clone(), output, None, opts.clone()).await
         {
@@ -881,8 +874,12 @@ async fn fix_sha1(
     Ok(())
 }
 
-fn collect_files_with_ext(dir: &std::path::Path, ext: &str) -> ChdResult<Vec<PathBuf>> {
-    Ok(crate::util::fs::collect_files_with_exts(dir, &[ext])?)
+fn collect_files_with_ext(
+    dir: &std::path::Path,
+    ext: &str,
+    max_depth: Option<usize>,
+) -> ChdResult<Vec<PathBuf>> {
+    Ok(crate::util::fs::collect_files_with_exts(dir, &[ext], max_depth)?)
 }
 
 /// Extract every `.chd` in `input_dir` beside its input: CD-mode CHDs
@@ -894,8 +891,9 @@ pub async fn extract_from_chd_batch(
     total_progress: &dyn ProgressReporter,
     input_dir: PathBuf,
     output_dir: Option<&std::path::Path>,
+    max_depth: Option<usize>,
 ) -> ChdResult<()> {
-    let chds = collect_files_with_ext(&input_dir, "chd")?;
+    let chds = collect_files_with_ext(&input_dir, "chd", max_depth)?;
     if chds.is_empty() {
         info!("No .chd files found in {}", input_dir.display());
         return Ok(());
@@ -908,7 +906,11 @@ pub async fn extract_from_chd_batch(
         &format!("Extracting {} chd files", chds.len()),
     );
     for chd in chds {
-        let output = crate::util::place_in_dir(&chd.with_extension(""), output_dir);
+        let output =
+            crate::util::place_in_dir_mirrored(&chd.with_extension(""), &input_dir, output_dir);
+        if let Some(parent) = output.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
         if let Err(e) = extract_from_chd(progress, chd.clone(), output, None).await {
             warn!("skipping {}: {}", chd.display(), e);
         }
@@ -925,8 +927,9 @@ pub async fn verify_chd_batch(
     total_progress: &dyn ProgressReporter,
     input_dir: PathBuf,
     fix: bool,
+    max_depth: Option<usize>,
 ) -> ChdResult<()> {
-    let chds = collect_files_with_ext(&input_dir, "chd")?;
+    let chds = collect_files_with_ext(&input_dir, "chd", max_depth)?;
     if chds.is_empty() {
         info!("No .chd files found in {}", input_dir.display());
         return Ok(());
@@ -1372,7 +1375,7 @@ mod batch_tests {
         std::fs::write(dir.path().join("a.chd"), b"x").unwrap();
         std::fs::write(dir.path().join("b.CHD"), b"x").unwrap();
         std::fs::write(dir.path().join("c.cue"), b"x").unwrap();
-        let found = collect_files_with_ext(dir.path(), "chd").unwrap();
+        let found = collect_files_with_ext(dir.path(), "chd", None).unwrap();
         assert_eq!(found.len(), 2);
     }
 }

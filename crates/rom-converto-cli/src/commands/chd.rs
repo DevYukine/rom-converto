@@ -69,9 +69,13 @@ pub struct CompressCommand {
     #[arg(long, short = 'f', default_value_t = false)]
     pub force: bool,
 
-    /// Compress every .cue and .iso found in the INPUT directory
+    /// Compress every .cue and .iso found in the INPUT directory and its subdirectories
     #[arg(long, short = 'R', default_value_t = false)]
     pub recursive: bool,
+
+    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited.
+    #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
+    pub max_depth: Option<usize>,
 }
 
 /// Extract files from a CHD file to a specified output directory.
@@ -105,9 +109,13 @@ pub struct ExtractCommand {
     #[arg(long, short = 'p', value_name = "PARENT", conflicts_with = "recursive")]
     pub parent: Option<PathBuf>,
 
-    /// Extract every .chd in INPUT (top-level only); outputs go beside each input
+    /// Extract every .chd in INPUT and its subdirectories; outputs go beside each input
     #[arg(long, short = 'R', default_value_t = false)]
     pub recursive: bool,
+
+    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited.
+    #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
+    pub max_depth: Option<usize>,
 
     /// Overwrite the output file if it already exists
     #[arg(long, short = 'f', default_value_t = false)]
@@ -129,9 +137,13 @@ pub struct VerifyCommand {
     #[arg(long)]
     pub fix: bool,
 
-    /// Verify every .chd in INPUT (top-level only)
+    /// Verify every .chd in INPUT and its subdirectories
     #[arg(long, short = 'R', default_value_t = false)]
     pub recursive: bool,
+
+    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited.
+    #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
+    pub max_depth: Option<usize>,
 }
 
 #[cfg(test)]
@@ -239,6 +251,22 @@ mod tests {
         };
         assert_eq!(c.output_dir, Some(PathBuf::from("out")));
         assert_eq!(c.output, None);
+    }
+
+    #[test]
+    fn max_depth_parses_with_recursive() {
+        let h = Harness::parse_from(["bin", "verify", "-R", "--max-depth", "2", "dir"]);
+        let ChdCommands::Verify(c) = h.cmd else {
+            panic!("expected Verify");
+        };
+        assert!(c.recursive);
+        assert_eq!(c.max_depth, Some(2));
+    }
+
+    #[test]
+    fn max_depth_requires_recursive() {
+        let result = Harness::try_parse_from(["bin", "verify", "--max-depth", "2", "dir"]);
+        assert!(result.is_err());
     }
 
     #[test]

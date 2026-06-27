@@ -64,9 +64,13 @@ pub struct CompressCommand {
     #[arg(long, short = 'f', default_value_t = false)]
     pub force: bool,
 
-    /// Compress every .iso found in the INPUT directory
+    /// Compress every .iso found in the INPUT directory and its subdirectories
     #[arg(long, short = 'R', default_value_t = false)]
     pub recursive: bool,
+
+    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited.
+    #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
+    pub max_depth: Option<usize>,
 }
 
 /// Decompress a CSO or ZSO container back to a plain ISO.
@@ -97,9 +101,13 @@ pub struct DecompressCommand {
     #[arg(long, short = 'f', default_value_t = false)]
     pub force: bool,
 
-    /// Decompress every .cso and .zso found in the INPUT directory
+    /// Decompress every .cso and .zso found in the INPUT directory and its subdirectories
     #[arg(long, short = 'R', default_value_t = false)]
     pub recursive: bool,
+
+    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited.
+    #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
+    pub max_depth: Option<usize>,
 }
 
 /// Verify the integrity of a CSO or ZSO container.
@@ -116,9 +124,13 @@ pub struct VerifyCommand {
     #[arg(long)]
     pub full: bool,
 
-    /// Verify every .cso and .zso found in the INPUT directory
+    /// Verify every .cso and .zso found in the INPUT directory and its subdirectories
     #[arg(long, short = 'R', default_value_t = false)]
     pub recursive: bool,
+
+    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited.
+    #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
+    pub max_depth: Option<usize>,
 }
 
 #[cfg(test)]

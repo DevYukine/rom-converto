@@ -1014,20 +1014,13 @@ pub async fn verify_ctr_batch(
     options: &CtrVerifyOptions,
     progress: &dyn ProgressReporter,
     total_progress: &dyn ProgressReporter,
+    max_depth: Option<usize>,
 ) -> Result<BatchVerifySummary> {
-    use crate::nintendo::ctr::has_matching_extension;
-
-    let mut count: u64 = 0;
-    let mut scan = tokio::fs::read_dir(input_dir).await?;
-    while let Ok(Some(entry)) = scan.next_entry().await {
-        if has_matching_extension(&entry.path(), VERIFY_EXTS) {
-            count += 1;
-        }
-    }
+    let roms = crate::util::fs::collect_files_with_exts(input_dir, VERIFY_EXTS, max_depth)?;
 
     let mut summary = BatchVerifySummary::default();
 
-    if count == 0 {
+    if roms.is_empty() {
         log::warn!(
             "No supported ROM files found in {} (looked for {:?})",
             input_dir.display(),
@@ -1036,16 +1029,9 @@ pub async fn verify_ctr_batch(
         return Ok(summary);
     }
 
-    total_progress.start(count, &format!("Verifying {count} files..."));
+    total_progress.start(roms.len() as u64, &format!("Verifying {} files...", roms.len()));
 
-    let mut entries = tokio::fs::read_dir(input_dir).await?;
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        let path = entry.path();
-        if !has_matching_extension(&path, VERIFY_EXTS) {
-            log::debug!("Skipping {} (not a supported ROM)", path.display());
-            continue;
-        }
-
+    for path in roms {
         summary.total += 1;
         let display_name = path
             .file_name()

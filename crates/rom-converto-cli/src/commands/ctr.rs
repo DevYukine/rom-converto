@@ -86,7 +86,7 @@ pub struct GenerateCdnTicketCommand {
 /// Decrypt an encrypted 3DS ROM file.
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
-    long_about = "Decrypt an encrypted 3DS ROM file\n\nSupported input formats: .cia, .3ds, .cci, .cxi\nThe format is auto-detected from the file contents.\n\nIf OUTPUT is omitted the decrypted file is written next to the input as <name>.decrypted.<ext>.\n\nUse --recursive/-R to point INPUT at a directory and decrypt every matching file in it (top-level only). In batch mode OUTPUT is ignored and each decrypted file is written next to its source as <name>.decrypted.<ext>."
+    long_about = "Decrypt an encrypted 3DS ROM file\n\nSupported input formats: .cia, .3ds, .cci, .cxi\nThe format is auto-detected from the file contents.\n\nIf OUTPUT is omitted the decrypted file is written next to the input as <name>.decrypted.<ext>.\n\nUse --recursive/-R to point INPUT at a directory and decrypt every matching file in it and its subdirectories; pass --max-depth N to limit the descent depth (1 = top level only). In batch mode OUTPUT is ignored and each decrypted file is written next to its source as <name>.decrypted.<ext>."
 )]
 pub struct DecryptCommand {
     /// Input ROM file path, or a directory when --recursive is set (.cia, .3ds, .cci, or .cxi)
@@ -110,9 +110,13 @@ pub struct DecryptCommand {
     #[arg(long = "output-dir", value_name = "DIR", conflicts_with_all = ["output", "output_flag"])]
     pub output_dir: Option<PathBuf>,
 
-    /// Process all matching files in INPUT (top-level only)
+    /// Process all matching files in INPUT and its subdirectories
     #[arg(long, short = 'R', default_value = "false")]
     pub recursive: bool,
+
+    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited.
+    #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
+    pub max_depth: Option<usize>,
 
     /// Overwrite the output file if it already exists
     #[arg(long, short = 'f', default_value_t = false)]
@@ -122,7 +126,7 @@ pub struct DecryptCommand {
 /// Compress a decrypted 3DS ROM to the Z3DS format.
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
-    long_about = "Compress a decrypted 3DS ROM to the Z3DS format\n\nSupported input formats: .cia, .cci, .3ds, .cxi, .3dsx\nOutput extensions: .zcia, .zcci, .zcxi, .z3dsx\n\nNote: only decrypted ROMs can be compressed, since encrypted ROMs have near-zero compression ratios.\n\nUse --recursive/-R to point INPUT at a directory and compress every matching file in it (top-level only). In batch mode OUTPUT is ignored and each output is written next to its source.",
+    long_about = "Compress a decrypted 3DS ROM to the Z3DS format\n\nSupported input formats: .cia, .cci, .3ds, .cxi, .3dsx\nOutput extensions: .zcia, .zcci, .zcxi, .z3dsx\n\nNote: only decrypted ROMs can be compressed, since encrypted ROMs have near-zero compression ratios.\n\nUse --recursive/-R to point INPUT at a directory and compress every matching file in it and its subdirectories; pass --max-depth N to limit the descent depth (1 = top level only). In batch mode OUTPUT is ignored and each output is written next to its source.",
     after_long_help = "EXAMPLES:\n  Single file:     rom-converto ctr compress game.cia\n  Explicit output: rom-converto ctr compress game.3ds game.z3ds\n  Whole folder:    rom-converto ctr compress -R ./roms --output-dir ./z3ds\n"
 )]
 pub struct CompressRomCommand {
@@ -153,9 +157,13 @@ pub struct CompressRomCommand {
     #[arg(short = 'l', long = "level", value_name = "LEVEL", value_parser = clap::value_parser!(i32).range(0..=22))]
     pub level: Option<i32>,
 
-    /// Process all matching files in INPUT (top-level only)
+    /// Process all matching files in INPUT and its subdirectories
     #[arg(long, short = 'R', default_value = "false")]
     pub recursive: bool,
+
+    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited.
+    #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
+    pub max_depth: Option<usize>,
 
     /// Overwrite the output file if it already exists
     #[arg(long, short = 'f', default_value_t = false)]
@@ -165,7 +173,7 @@ pub struct CompressRomCommand {
 /// Decompress a Z3DS file back to the original ROM format.
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
-    long_about = "Decompress a Z3DS file back to the original ROM format\n\nSupported input formats: .zcia, .zcci, .zcxi, .z3dsx\nOutput extensions: .cia, .cci, .cxi, .3dsx\n\nUse --recursive/-R to point INPUT at a directory and decompress every matching file in it (top-level only). In batch mode OUTPUT is ignored and each output is written next to its source."
+    long_about = "Decompress a Z3DS file back to the original ROM format\n\nSupported input formats: .zcia, .zcci, .zcxi, .z3dsx\nOutput extensions: .cia, .cci, .cxi, .3dsx\n\nUse --recursive/-R to point INPUT at a directory and decompress every matching file in it and its subdirectories; pass --max-depth N to limit the descent depth (1 = top level only). In batch mode OUTPUT is ignored and each output is written next to its source."
 )]
 pub struct DecompressRomCommand {
     /// Input Z3DS file path, or a directory when --recursive is set (.zcia, .zcci, .zcxi, or .z3dsx)
@@ -189,9 +197,13 @@ pub struct DecompressRomCommand {
     #[arg(long = "output-dir", value_name = "DIR", conflicts_with_all = ["output", "output_flag"])]
     pub output_dir: Option<PathBuf>,
 
-    /// Process all matching files in INPUT (top-level only)
+    /// Process all matching files in INPUT and its subdirectories
     #[arg(long, short = 'R', default_value = "false")]
     pub recursive: bool,
+
+    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited.
+    #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
+    pub max_depth: Option<usize>,
 
     /// Overwrite the output file if it already exists
     #[arg(long, short = 'f', default_value_t = false)]
@@ -201,7 +213,7 @@ pub struct DecompressRomCommand {
 /// Convert between CIA and CCI/3DS formats.
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
-    long_about = "Convert between CIA and CCI/3DS formats\n\nDirection is auto-detected from the INPUT extension:\n  .cia       -> .3ds (CCI / NCSD)\n  .3ds, .cci -> .cia\n\nCCI/3DS to CIA produces an unsigned CIA with a zero title key, compatible with CFW (Luma3DS) and emulators (Citra/Lime3DS/Azahar). Not installable on stock 3DS.\n\nUse --recursive/-R to point INPUT at a directory and convert every matching file in it (top-level only). In batch mode OUTPUT is ignored and each output is written next to its source with the opposite extension."
+    long_about = "Convert between CIA and CCI/3DS formats\n\nDirection is auto-detected from the INPUT extension:\n  .cia       -> .3ds (CCI / NCSD)\n  .3ds, .cci -> .cia\n\nCCI/3DS to CIA produces an unsigned CIA with a zero title key, compatible with CFW (Luma3DS) and emulators (Citra/Lime3DS/Azahar). Not installable on stock 3DS.\n\nUse --recursive/-R to point INPUT at a directory and convert every matching file in it and its subdirectories; pass --max-depth N to limit the descent depth (1 = top level only). In batch mode OUTPUT is ignored and each output is written next to its source with the opposite extension."
 )]
 pub struct ConvertCommand {
     /// Input ROM file path, or a directory when --recursive is set (.cia, .3ds, or .cci)
@@ -225,9 +237,13 @@ pub struct ConvertCommand {
     #[arg(long = "output-dir", value_name = "DIR", conflicts_with_all = ["output", "output_flag"])]
     pub output_dir: Option<PathBuf>,
 
-    /// Process all matching files in INPUT (top-level only)
+    /// Process all matching files in INPUT and its subdirectories
     #[arg(long, short = 'R', default_value = "false")]
     pub recursive: bool,
+
+    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited.
+    #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
+    pub max_depth: Option<usize>,
 
     /// Overwrite the output file if it already exists
     #[arg(long, short = 'f', default_value_t = false)]
@@ -237,7 +253,7 @@ pub struct ConvertCommand {
 /// Verify CTR ROM file integrity and legitimacy.
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
-    long_about = "Verify a CTR ROM file's integrity by checking hashes and signatures\n\nSupported formats: .cia, .3ds, .cci, .cxi, .zcia, .zcci, .zcxi\n\nFor .cia files, classifies as:\n  - Legit: Both ticket and TMD signatures verify through Nintendo's cert chain\n  - Piratelegit: TMD signature verifies but ticket is forged\n  - Standard: Neither signature verifies\n\nFor .3ds/.cci files, verifies NCCH partition hashes (ExeFS, RomFS, ExHeader)\nCompressed Z3DS files are decompressed automatically before verification\n\nUse --recursive/-R to point INPUT at a directory and verify every matching file in it (top-level only). The command prints one line per file and a final tally."
+    long_about = "Verify a CTR ROM file's integrity by checking hashes and signatures\n\nSupported formats: .cia, .3ds, .cci, .cxi, .zcia, .zcci, .zcxi\n\nFor .cia files, classifies as:\n  - Legit: Both ticket and TMD signatures verify through Nintendo's cert chain\n  - Piratelegit: TMD signature verifies but ticket is forged\n  - Standard: Neither signature verifies\n\nFor .3ds/.cci files, verifies NCCH partition hashes (ExeFS, RomFS, ExHeader)\nCompressed Z3DS files are decompressed automatically before verification\n\nUse --recursive/-R to point INPUT at a directory and verify every matching file in it and its subdirectories; pass --max-depth N to limit the descent depth (1 = top level only). The command prints one line per file and a final tally."
 )]
 pub struct VerifyCommand {
     /// Input ROM file path, or a directory when --recursive is set (.cia, .3ds, .cci, .cxi, .zcia, .zcci, .zcxi)
@@ -252,9 +268,13 @@ pub struct VerifyCommand {
     )]
     pub verify_content: bool,
 
-    /// Process all matching files in INPUT (top-level only)
+    /// Process all matching files in INPUT and its subdirectories
     #[arg(long, short = 'R', default_value = "false")]
     pub recursive: bool,
+
+    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited.
+    #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
+    pub max_depth: Option<usize>,
 }
 
 #[cfg(test)]

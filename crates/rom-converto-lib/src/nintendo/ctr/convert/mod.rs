@@ -5,7 +5,6 @@ mod template;
 pub use cci_to_cia::cci_to_cia;
 pub use cia_to_cci::cia_to_cci;
 
-use crate::nintendo::ctr::has_matching_extension;
 use crate::util::ProgressReporter;
 use anyhow::{Result, bail};
 use log::{debug, warn};
@@ -59,16 +58,10 @@ pub async fn convert_rom_batch(
     output_dir: Option<&Path>,
     progress: &dyn ProgressReporter,
     total_progress: &dyn ProgressReporter,
+    max_depth: Option<usize>,
 ) -> Result<()> {
-    let mut count: u64 = 0;
-    let mut scan = fs::read_dir(input_dir).await?;
-    while let Ok(Some(entry)) = scan.next_entry().await {
-        if has_matching_extension(&entry.path(), CONVERT_EXTS) {
-            count += 1;
-        }
-    }
-
-    if count == 0 {
+    let roms = crate::util::fs::collect_files_with_exts(input_dir, CONVERT_EXTS, max_depth)?;
+    if roms.is_empty() {
         warn!(
             "No supported ROM files found in {} (looked for {:?})",
             input_dir.display(),
@@ -77,21 +70,18 @@ pub async fn convert_rom_batch(
         return Ok(());
     }
 
-    total_progress.start(count, &format!("Converting {count} files..."));
+    total_progress.start(roms.len() as u64, &format!("Converting {} files...", roms.len()));
 
     if let Some(dir) = output_dir {
         fs::create_dir_all(dir).await?;
     }
 
-    let mut entries = fs::read_dir(input_dir).await?;
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        let path = entry.path();
-        if !has_matching_extension(&path, CONVERT_EXTS) {
-            debug!("Skipping {} (not a supported ROM)", path.display());
-            continue;
+    for path in roms {
+        let output =
+            crate::util::place_in_dir_mirrored(&derive_converted_path(&path), input_dir, output_dir);
+        if let Some(parent) = output.parent() {
+            fs::create_dir_all(parent).await?;
         }
-
-        let output = crate::util::place_in_dir(&derive_converted_path(&path), output_dir);
         debug!("Converting {} -> {}", path.display(), output.display());
 
         if let Err(err) = convert_rom(&path, &output, progress).await {

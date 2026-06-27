@@ -27,9 +27,13 @@ pub struct VerifyWupCommand {
     #[arg(value_name = "INPUT")]
     pub input: PathBuf,
 
-    /// Verify every .wud / .wux disc and every NUS title subdirectory found in the INPUT directory
+    /// Verify every .wud / .wux disc in the INPUT directory and its subdirectories; NUS title directories are detected among the immediate children of INPUT only
     #[arg(long, short = 'R', default_value_t = false)]
     pub recursive: bool,
+
+    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited.
+    #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
+    pub max_depth: Option<usize>,
 }
 
 /// Decrypt a NUS-format Wii U title directory into a loadiine-style
