@@ -118,6 +118,8 @@ All commands that write an output file use `--on-conflict` to decide what happen
 
 After `compress`, `decompress`, and `convert` operations, the tool prints a closing summary of bytes processed and space saved or expanded, for example `12 files: 12.4 GiB -> 4.1 GiB, saved 8.3 GiB (67%) in 2m14s`. Verify and extract operations print a file count and elapsed time instead.
 
+The `compress`, `decompress`, and `chd extract` commands also accept `--report <FILE>` to write a structured run report after the run. The format is inferred from the file extension and the numbers match the closing summary. The report file is overwritten directly and does not go through `--on-conflict`, since it is an output you named explicitly rather than a converted ROM. See [Run reports](#run-reports) for the formats and schema.
+
 ### CTR (Nintendo 3DS)
 
 | Command | Description |
@@ -193,6 +195,7 @@ After `compress`, `decompress`, and `convert` operations, the tool prints a clos
 | `-f, --force` | `compress`, `decompress` | Alias for `--on-conflict overwrite` |
 | `-R, --recursive` | `compress`, `decompress`, `verify` | Recursively process every matching file in INPUT and its subdirectories |
 | `--max-depth <N>` | `compress`, `decompress`, `verify` | Limit recursion depth with `--recursive`. `1` = top level only. Default: unlimited |
+| `--report <FILE>` | `compress`, `decompress` | Write a run report to FILE. Format inferred from the extension: `.csv`, `.json`, `.html` or `.htm`. Unknown extensions default to JSON. Covers every processed file with paths, status, byte sizes, space-saved ratio, elapsed time, and any error. Overwritten directly, ignoring `--on-conflict` |
 | `--full` | `verify` | Decode the whole disc and compute a whole-disc SHA-1 |
 
 ---
@@ -275,6 +278,7 @@ Flags match the `dol` commands. `--full` on `rvl verify` decrypts every partitio
 | `-f, --force` | Alias for `--on-conflict overwrite` |
 | `-R, --recursive` | Compress every `.nsp` and `.xci` found in INPUT and its subdirectories |
 | `--max-depth <N>` | Limit recursion depth with `--recursive`. `1` = top level only. Default: unlimited |
+| `--report <FILE>` | Write a run report to FILE. Format inferred from the extension: `.csv`, `.json`, `.html` or `.htm`. Unknown extensions default to JSON. Overwritten directly, ignoring `--on-conflict` |
 
 **`decompress` flags:**
 
@@ -286,6 +290,7 @@ Flags match the `dol` commands. `--full` on `rvl verify` decrypts every partitio
 | `-f, --force` | Alias for `--on-conflict overwrite` |
 | `-R, --recursive` | Decompress every `.nsz` and `.xcz` found in INPUT and its subdirectories |
 | `--max-depth <N>` | Limit recursion depth with `--recursive`. `1` = top level only. Default: unlimited |
+| `--report <FILE>` | Write a run report to FILE. Format inferred from the extension: `.csv`, `.json`, `.html` or `.htm`. Unknown extensions default to JSON. Overwritten directly, ignoring `--on-conflict` |
 
 **`verify` flags:**
 
@@ -322,6 +327,7 @@ Flags match the `dol` commands. `--full` on `rvl verify` decrypts every partitio
 | `-o, --output <FILE>` | `compress`, `extract` | Output path (alternative to the positional OUTPUT argument) |
 | `-R, --recursive` | `compress`, `extract`, `verify` | Recursively process every matching file in INPUT and its subdirectories |
 | `--max-depth <N>` | `compress`, `extract`, `verify` | Limit recursion depth with `--recursive`. `1` = top level only. Default: unlimited |
+| `--report <FILE>` | `compress`, `extract` | Write a run report to FILE. Format inferred from the extension: `.csv`, `.json`, `.html` or `.htm`. Unknown extensions default to JSON. Overwritten directly, ignoring `--on-conflict`. Extract rows carry zero byte sizes since extraction writes several files |
 | `-p, --parent <PARENT>` | `extract`, `verify` | Specify a parent CHD for parent-child relationships |
 | `--fix` | `verify` | Correct SHA1 values in the CHD header if mismatches are found |
 
@@ -347,6 +353,7 @@ Flags match the `dol` commands. `--full` on `rvl verify` decrypts every partitio
 | `-f, --force` | `compress`, `decompress` | Alias for `--on-conflict overwrite` |
 | `-R, --recursive` | `compress`, `decompress`, `verify` | Recursively process every matching file in INPUT and its subdirectories |
 | `--max-depth <N>` | `compress`, `decompress`, `verify` | Limit recursion depth with `--recursive`. `1` = top level only. Default: unlimited |
+| `--report <FILE>` | `compress`, `decompress` | Write a run report to FILE. Format inferred from the extension: `.csv`, `.json`, `.html` or `.htm`. Unknown extensions default to JSON. Overwritten directly, ignoring `--on-conflict` |
 | `--full` | `verify` | Decode every block instead of only checking the index |
 
 ---
@@ -420,6 +427,20 @@ rom-converto self-update
 ```
 
 Checks GitHub for a newer release and replaces the current binary in place.
+
+## Run Reports
+
+Pass `--report <FILE>` to `compress`, `decompress`, or `chd extract` to write a structured report of the run. The format is chosen from the file extension: `.csv` writes CSV, `.json` writes JSON, `.html` and `.htm` write a self-contained HTML table. Any other extension, or no extension, writes JSON. The report file is always created and overwritten directly; it does not go through `--on-conflict`. The numbers match the closing summary line.
+
+The CTR (3DS) commands and all `verify` commands are not yet covered.
+
+The columns are stable and appear in this order: `input_path`, `output_path`, `operation`, `status`, `input_bytes`, `output_bytes`, `ratio_pct`, `elapsed_ms`, `error`. `status` is `ok`, `skipped`, or `failed`. `input_bytes` and `output_bytes` are raw byte counts. `ratio_pct` is the space saved as a percent: positive when compression shrank the file, negative when decompression expanded it (honest expansion), and empty or `null` for skipped, failed, or zero-input rows. `output_path` and `error` are empty for skipped and failed rows.
+
+The CSV file has a header row and one row per file, with RFC 4180 quoting for any field that contains a comma, double quote, or newline. It has no totals row.
+
+The JSON file is an object with a `files` array and a `totals` object. Each entry in `files` has the fields above, with `ratio_pct` and `error` serialized as `null` when absent. The `totals` object has `total_files`, `ok`, `skipped`, `failed`, `total_input_bytes`, `total_output_bytes`, and `elapsed_ms`. An empty run writes `{"files":[],"totals":{...}}` with every total set to zero.
+
+The HTML file is a single self-contained page with no external assets: one table with a header, one row per file (sizes shown human readable), and a totals row in the table footer.
 
 ## Benchmarks
 

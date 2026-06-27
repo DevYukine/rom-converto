@@ -92,6 +92,49 @@ fn log_single_summary(input: &Path, output: &Path, direction: TallyDirection, st
     log::info!("{}", tally.summary_line(direction));
 }
 
+fn finish_single(
+    input: &Path,
+    output: &Path,
+    direction: TallyDirection,
+    op: &str,
+    started: Instant,
+    report: Option<&Path>,
+) -> Result<()> {
+    use rom_converto_lib::util::{
+        FileStatus, ReportFormat, ReportRecord, ReportTotals, write_report,
+    };
+
+    let elapsed = started.elapsed();
+    let in_bytes = file_len(input);
+    let out_bytes = file_len(output);
+    let mut tally = Tally::new();
+    tally.record_ok(in_bytes, out_bytes, elapsed);
+    log::info!("{}", tally.summary_line(direction));
+    if let Some(path) = report {
+        let elapsed_ms = elapsed.as_millis().min(u64::MAX as u128) as u64;
+        let record = ReportRecord::new(
+            input.display().to_string(),
+            output.display().to_string(),
+            op,
+            FileStatus::Ok,
+            in_bytes,
+            out_bytes,
+            elapsed_ms,
+            None,
+        );
+        let totals = ReportTotals {
+            total_files: 1,
+            ok: 1,
+            total_input_bytes: in_bytes,
+            total_output_bytes: out_bytes,
+            elapsed_ms,
+            ..ReportTotals::default()
+        };
+        write_report(path, &[record], &totals, ReportFormat::from_path(path))?;
+    }
+    Ok(())
+}
+
 fn log_count_summary(count: usize, tally: Tally) {
     log::info!("{}", Tally::count_summary(count, tally.elapsed()));
 }
@@ -528,6 +571,7 @@ async fn main() -> Result<()> {
                         policy_of(cmd.on_conflict, cmd.force),
                         cmd.output_dir.as_deref(),
                         cmd.max_depth,
+                        cmd.report.as_deref(),
                     )
                     .await?
                 } else {
@@ -554,7 +598,14 @@ async fn main() -> Result<()> {
                     };
                     let started = Instant::now();
                     compress_disc(&cmd.input, &output, opts, &progress).await?;
-                    log_single_summary(&cmd.input, &output, TallyDirection::Compress, started);
+                    finish_single(
+                        &cmd.input,
+                        &output,
+                        TallyDirection::Compress,
+                        "compress",
+                        started,
+                        cmd.report.as_deref(),
+                    )?;
                 }
             }
             DolCommands::Decompress(cmd) => {
@@ -567,6 +618,7 @@ async fn main() -> Result<()> {
                         policy_of(cmd.on_conflict, cmd.force),
                         cmd.output_dir.as_deref(),
                         cmd.max_depth,
+                        cmd.report.as_deref(),
                     )
                     .await?
                 } else {
@@ -597,7 +649,14 @@ async fn main() -> Result<()> {
                     } else {
                         decompress_disc(&cmd.input, &output, &progress).await?
                     }
-                    log_single_summary(&cmd.input, &output, TallyDirection::Decompress, started);
+                    finish_single(
+                        &cmd.input,
+                        &output,
+                        TallyDirection::Decompress,
+                        "decompress",
+                        started,
+                        cmd.report.as_deref(),
+                    )?;
                 }
             }
             DolCommands::Verify(cmd) => {
@@ -660,6 +719,7 @@ async fn main() -> Result<()> {
                         policy_of(cmd.on_conflict, cmd.force),
                         cmd.output_dir.as_deref(),
                         cmd.max_depth,
+                        cmd.report.as_deref(),
                     )
                     .await?
                 } else {
@@ -686,7 +746,14 @@ async fn main() -> Result<()> {
                     };
                     let started = Instant::now();
                     compress_disc(&cmd.input, &output, opts, &progress).await?;
-                    log_single_summary(&cmd.input, &output, TallyDirection::Compress, started);
+                    finish_single(
+                        &cmd.input,
+                        &output,
+                        TallyDirection::Compress,
+                        "compress",
+                        started,
+                        cmd.report.as_deref(),
+                    )?;
                 }
             }
             RvlCommands::Decompress(cmd) => {
@@ -699,6 +766,7 @@ async fn main() -> Result<()> {
                         policy_of(cmd.on_conflict, cmd.force),
                         cmd.output_dir.as_deref(),
                         cmd.max_depth,
+                        cmd.report.as_deref(),
                     )
                     .await?
                 } else {
@@ -729,7 +797,14 @@ async fn main() -> Result<()> {
                     } else {
                         decompress_disc(&cmd.input, &output, &progress).await?
                     }
-                    log_single_summary(&cmd.input, &output, TallyDirection::Decompress, started);
+                    finish_single(
+                        &cmd.input,
+                        &output,
+                        TallyDirection::Decompress,
+                        "decompress",
+                        started,
+                        cmd.report.as_deref(),
+                    )?;
                 }
             }
             RvlCommands::Verify(cmd) => {
@@ -885,6 +960,7 @@ async fn main() -> Result<()> {
                         policy: policy_of(cmd.on_conflict, cmd.force),
                         output_dir: cmd.output_dir.clone(),
                         max_depth: cmd.max_depth,
+                        report: cmd.report.clone(),
                     };
                     batch::nx_compress(&progress, &total_progress, &cmd.input, keys, tuning).await?
                 } else {
@@ -929,7 +1005,14 @@ async fn main() -> Result<()> {
                     let out_path = output.clone();
                     let started = Instant::now();
                     compress_container_async(cmd.input, output, opts, keys, &progress).await?;
-                    log_single_summary(&in_path, &out_path, TallyDirection::Compress, started);
+                    finish_single(
+                        &in_path,
+                        &out_path,
+                        TallyDirection::Compress,
+                        "compress",
+                        started,
+                        cmd.report.as_deref(),
+                    )?;
                 }
             }
             NxCommands::Decompress(cmd) => {
@@ -944,6 +1027,7 @@ async fn main() -> Result<()> {
                         policy_of(cmd.on_conflict, cmd.force),
                         cmd.output_dir.as_deref(),
                         cmd.max_depth,
+                        cmd.report.as_deref(),
                     )
                     .await?
                 } else {
@@ -972,7 +1056,14 @@ async fn main() -> Result<()> {
                     let out_path = output.clone();
                     let started = Instant::now();
                     decompress_container_async(cmd.input, output, keys, &progress).await?;
-                    log_single_summary(&in_path, &out_path, TallyDirection::Decompress, started);
+                    finish_single(
+                        &in_path,
+                        &out_path,
+                        TallyDirection::Decompress,
+                        "decompress",
+                        started,
+                        cmd.report.as_deref(),
+                    )?;
                 }
             }
             NxCommands::Verify(cmd) => {
@@ -1041,6 +1132,7 @@ async fn main() -> Result<()> {
                         policy,
                         cmd.output_dir.as_deref(),
                         cmd.max_depth,
+                        cmd.report.as_deref(),
                     )
                     .await?
                 } else {
@@ -1070,7 +1162,14 @@ async fn main() -> Result<()> {
                     let out_path = output.clone();
                     let started = Instant::now();
                     convert_disc_to_chd(&progress, cmd.input, output, mode, opts).await?;
-                    log_single_summary(&in_path, &out_path, TallyDirection::Compress, started);
+                    finish_single(
+                        &in_path,
+                        &out_path,
+                        TallyDirection::Compress,
+                        "compress",
+                        started,
+                        cmd.report.as_deref(),
+                    )?;
                 }
             }
             ChdCommands::Extract(cmd) => {
@@ -1085,6 +1184,7 @@ async fn main() -> Result<()> {
                         policy,
                         cmd.output_dir.as_deref(),
                         cmd.max_depth,
+                        cmd.report.as_deref(),
                     )
                     .await?
                 } else {
@@ -1110,7 +1210,18 @@ async fn main() -> Result<()> {
                         }
                         WriteDecision::Write(p) => p,
                     };
-                    extract_from_chd(&progress, cmd.input, output, cmd.parent).await?
+                    let in_path = cmd.input.clone();
+                    let out_path = output.clone();
+                    let started = Instant::now();
+                    extract_from_chd(&progress, cmd.input, output, cmd.parent).await?;
+                    finish_single(
+                        &in_path,
+                        &out_path,
+                        TallyDirection::CountOnly,
+                        "extract",
+                        started,
+                        cmd.report.as_deref(),
+                    )?;
                 }
             }
             ChdCommands::Verify(cmd) => {
@@ -1164,6 +1275,7 @@ async fn main() -> Result<()> {
                         policy,
                         cmd.output_dir.as_deref(),
                         cmd.max_depth,
+                        cmd.report.as_deref(),
                     )
                     .await?
                 } else {
@@ -1193,7 +1305,14 @@ async fn main() -> Result<()> {
                     let out_path = output.clone();
                     let started = Instant::now();
                     compress_to_cso(&progress, cmd.input, output, opts).await?;
-                    log_single_summary(&in_path, &out_path, TallyDirection::Compress, started);
+                    finish_single(
+                        &in_path,
+                        &out_path,
+                        TallyDirection::Compress,
+                        "compress",
+                        started,
+                        cmd.report.as_deref(),
+                    )?;
                 }
             }
             CsoCommands::Decompress(cmd) => {
@@ -1207,6 +1326,7 @@ async fn main() -> Result<()> {
                         policy,
                         cmd.output_dir.as_deref(),
                         cmd.max_depth,
+                        cmd.report.as_deref(),
                     )
                     .await?
                 } else {
@@ -1235,7 +1355,14 @@ async fn main() -> Result<()> {
                     let out_path = output.clone();
                     let started = Instant::now();
                     decompress_from_cso(&progress, cmd.input, output, true).await?;
-                    log_single_summary(&in_path, &out_path, TallyDirection::Decompress, started);
+                    finish_single(
+                        &in_path,
+                        &out_path,
+                        TallyDirection::Decompress,
+                        "decompress",
+                        started,
+                        cmd.report.as_deref(),
+                    )?;
                 }
             }
             CsoCommands::Verify(cmd) => {

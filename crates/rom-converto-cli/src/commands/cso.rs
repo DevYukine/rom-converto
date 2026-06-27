@@ -76,6 +76,10 @@ pub struct CompressCommand {
     /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited.
     #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
     pub max_depth: Option<usize>,
+
+    /// Write a run report to FILE. Format inferred from the extension: .csv, .json, .html or .htm. Unknown extensions default to JSON. The file is overwritten directly.
+    #[arg(long = "report", value_name = "FILE")]
+    pub report: Option<PathBuf>,
 }
 
 /// Decompress a CSO or ZSO container back to a plain ISO.
@@ -117,6 +121,10 @@ pub struct DecompressCommand {
     /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited.
     #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
     pub max_depth: Option<usize>,
+
+    /// Write a run report to FILE. Format inferred from the extension: .csv, .json, .html or .htm. Unknown extensions default to JSON. The file is overwritten directly.
+    #[arg(long = "report", value_name = "FILE")]
+    pub report: Option<PathBuf>,
 }
 
 /// Verify the integrity of a CSO or ZSO container.
@@ -215,6 +223,24 @@ mod tests {
         };
         assert_eq!(c.output_dir, Some(PathBuf::from("out")));
         assert_eq!(c.output, None);
+    }
+
+    #[test]
+    fn parses_compress_report_flag() {
+        let h = Harness::parse_from(["bin", "compress", "game.iso", "--report", "out.json"]);
+        let CsoCommands::Compress(c) = h.cmd else {
+            panic!("expected Compress");
+        };
+        assert_eq!(c.report, Some(PathBuf::from("out.json")));
+    }
+
+    #[test]
+    fn parses_decompress_report_flag() {
+        let h = Harness::parse_from(["bin", "decompress", "game.cso", "--report", "out.csv"]);
+        let CsoCommands::Decompress(c) = h.cmd else {
+            panic!("expected Decompress");
+        };
+        assert_eq!(c.report, Some(PathBuf::from("out.csv")));
     }
 
     #[test]

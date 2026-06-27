@@ -85,6 +85,10 @@ pub struct NxCompressCommand {
     /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited.
     #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
     pub max_depth: Option<usize>,
+
+    /// Write a run report to FILE. Format inferred from the extension: .csv, .json, .html or .htm. Unknown extensions default to JSON. The file is overwritten directly.
+    #[arg(long = "report", value_name = "FILE")]
+    pub report: Option<PathBuf>,
 }
 
 /// Decompress an NSZ back to NSP or an XCZ back to XCI.
@@ -134,6 +138,10 @@ pub struct NxDecompressCommand {
     /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited.
     #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
     pub max_depth: Option<usize>,
+
+    /// Write a run report to FILE. Format inferred from the extension: .csv, .json, .html or .htm. Unknown extensions default to JSON. The file is overwritten directly.
+    #[arg(long = "report", value_name = "FILE")]
+    pub report: Option<PathBuf>,
 }
 
 /// Verify hash integrity of every NCA in a Switch container.
@@ -295,5 +303,23 @@ mod tests {
             "game.nsp",
         ]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parses_compress_report_flag() {
+        let h = Harness::parse_from(["bin", "compress", "game.nsp", "--report", "out.json"]);
+        let NxCommands::Compress(c) = h.cmd else {
+            panic!("expected Compress");
+        };
+        assert_eq!(c.report, Some(PathBuf::from("out.json")));
+    }
+
+    #[test]
+    fn parses_decompress_report_flag() {
+        let h = Harness::parse_from(["bin", "decompress", "game.nsz", "--report", "out.csv"]);
+        let NxCommands::Decompress(c) = h.cmd else {
+            panic!("expected Decompress");
+        };
+        assert_eq!(c.report, Some(PathBuf::from("out.csv")));
     }
 }

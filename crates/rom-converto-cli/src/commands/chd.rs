@@ -81,6 +81,10 @@ pub struct CompressCommand {
     /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited.
     #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
     pub max_depth: Option<usize>,
+
+    /// Write a run report to FILE. Format inferred from the extension: .csv, .json, .html or .htm. Unknown extensions default to JSON. The file is overwritten directly.
+    #[arg(long = "report", value_name = "FILE")]
+    pub report: Option<PathBuf>,
 }
 
 /// Extract files from a CHD file to a specified output directory.
@@ -129,6 +133,10 @@ pub struct ExtractCommand {
     /// Alias for --on-conflict overwrite
     #[arg(long, short = 'f', default_value_t = false, conflicts_with = "on_conflict")]
     pub force: bool,
+
+    /// Write a run report to FILE. Format inferred from the extension: .csv, .json, .html or .htm. Unknown extensions default to JSON. The file is overwritten directly.
+    #[arg(long = "report", value_name = "FILE")]
+    pub report: Option<PathBuf>,
 }
 
 /// Verify the integrity of a CHD file.
@@ -330,5 +338,23 @@ mod tests {
         };
         assert!(c.output.is_none());
         assert_eq!(c.output_dir, Some(PathBuf::from("out")));
+    }
+
+    #[test]
+    fn parses_compress_report_flag() {
+        let h = Harness::parse_from(["bin", "compress", "game.iso", "--report", "out.json"]);
+        let ChdCommands::Compress(c) = h.cmd else {
+            panic!("expected Compress");
+        };
+        assert_eq!(c.report, Some(PathBuf::from("out.json")));
+    }
+
+    #[test]
+    fn parses_extract_report_flag() {
+        let h = Harness::parse_from(["bin", "extract", "in.chd", "out", "--report", "out.csv"]);
+        let ChdCommands::Extract(c) = h.cmd else {
+            panic!("expected Extract");
+        };
+        assert_eq!(c.report, Some(PathBuf::from("out.csv")));
     }
 }

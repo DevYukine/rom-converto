@@ -2,11 +2,83 @@ use crate::util::{WriteDecision, resolve_output};
 use anyhow::Result;
 use log::{info, warn};
 use rom_converto_lib::util::fs::collect_files_with_exts;
-use rom_converto_lib::util::{ConflictPolicy, ProgressReporter, Tally, TallyDirection};
+use rom_converto_lib::util::{
+    ConflictPolicy, FileStatus, ProgressReporter, ReportFormat, ReportRecord, ReportTotals, Tally,
+    TallyDirection, write_report,
+};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 fn file_len(path: &Path) -> u64 {
     std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
+}
+
+pub(crate) fn totals_from(tally: &Tally) -> ReportTotals {
+    ReportTotals {
+        total_files: tally.count(),
+        ok: tally.ok_count(),
+        skipped: tally.skipped_count(),
+        failed: tally.failed_count(),
+        total_input_bytes: tally.total_input_bytes(),
+        total_output_bytes: tally.total_output_bytes(),
+        elapsed_ms: tally.elapsed().as_millis().min(u64::MAX as u128) as u64,
+    }
+}
+
+fn elapsed_ms(started: Instant) -> u64 {
+    started.elapsed().as_millis().min(u64::MAX as u128) as u64
+}
+
+fn ok_record(
+    input: &Path,
+    output: &Path,
+    operation: &str,
+    input_bytes: u64,
+    output_bytes: u64,
+    started: Instant,
+) -> ReportRecord {
+    ReportRecord::new(
+        input.display().to_string(),
+        output.display().to_string(),
+        operation,
+        FileStatus::Ok,
+        input_bytes,
+        output_bytes,
+        elapsed_ms(started),
+        None,
+    )
+}
+
+fn failed_record(
+    input: &Path,
+    operation: &str,
+    input_bytes: u64,
+    started: Instant,
+    error: impl std::fmt::Display,
+) -> ReportRecord {
+    ReportRecord::new(
+        input.display().to_string(),
+        String::new(),
+        operation,
+        FileStatus::Failed,
+        input_bytes,
+        0,
+        elapsed_ms(started),
+        Some(error.to_string()),
+    )
+}
+
+fn skipped_record(input: &Path, operation: &str, error: Option<String>) -> ReportRecord {
+    ReportRecord::new(
+        input.display().to_string(),
+        String::new(),
+        operation,
+        FileStatus::Skipped,
+        0,
+        0,
+        0,
+        error,
+    )
 }
 
 struct VerifyTally {
@@ -42,8 +114,18 @@ fn finish_verify(tally: VerifyTally) -> Result<()> {
     Ok(())
 }
 
-fn finish_tally(tally: &Tally, direction: TallyDirection) -> Result<()> {
+fn finish_tally(
+    tally: &Tally,
+    direction: TallyDirection,
+    records: &[ReportRecord],
+    report_path: Option<&Path>,
+) -> Result<()> {
     info!("{}", tally.summary_line(direction));
+    // Write the report before the failed-count bail so failed-only runs still
+    // leave a report on disk even though the command exits with an error.
+    if let Some(path) = report_path {
+        write_report(path, records, &totals_from(tally), ReportFormat::from_path(path))?;
+    }
     let failed = tally.failed_count();
     if failed > 0 {
         anyhow::bail!("{failed} of {} files failed", tally.count());
@@ -51,6 +133,7 @@ fn finish_tally(tally: &Tally, direction: TallyDirection) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn cso_decompress(
     progress: &dyn ProgressReporter,
     total_progress: &dyn ProgressReporter,
@@ -58,6 +141,7 @@ pub async fn cso_decompress(
     policy: ConflictPolicy,
     output_dir: Option<&Path>,
     max_depth: Option<usize>,
+    report_path: Option<&Path>,
 ) -> Result<()> {
     use rom_converto_lib::cso::decompress_from_cso;
     use rom_converto_lib::util::place_in_dir_mirrored;
@@ -72,6 +156,7 @@ pub async fn cso_decompress(
     let total = files.len();
     total_progress.start(total as u64, &format!("Decompressing {total} files..."));
     let mut tally = Tally::new();
+    let mut records: Vec<ReportRecord> = Vec::new();
     for path in files {
         let output = place_in_dir_mirrored(&path.with_extension("iso"), input_dir, output_dir);
         if let Some(parent) = output.parent() {
@@ -82,28 +167,36 @@ pub async fn cso_decompress(
             Ok(WriteDecision::Skip) => {
                 info!("skipped, output exists: {}", output.display());
                 tally.record_skipped();
+                records.push(skipped_record(&path, "decompress", None));
                 total_progress.inc(1);
                 continue;
             }
             Err(e) => {
                 warn!("{e}");
                 tally.record_skipped();
+                records.push(skipped_record(&path, "decompress", Some(e.to_string())));
                 total_progress.inc(1);
                 continue;
             }
         };
         let input_bytes = file_len(&path);
         let out_path = output.clone();
+        let started = Instant::now();
         if let Err(e) = decompress_from_cso(progress, path.clone(), output, true).await {
             warn!("Failed to decompress {}: {e}", path.display());
             tally.record_failed();
+            records.push(failed_record(&path, "decompress", input_bytes, started, e));
         } else {
-            tally.record_ok(input_bytes, file_len(&out_path), Default::default());
+            let out_bytes = file_len(&out_path);
+            tally.record_ok(input_bytes, out_bytes, started.elapsed());
+            records.push(ok_record(
+                &path, &out_path, "decompress", input_bytes, out_bytes, started,
+            ));
         }
         total_progress.inc(1);
     }
     total_progress.finish();
-    finish_tally(&tally, TallyDirection::Decompress)
+    finish_tally(&tally, TallyDirection::Decompress, &records, report_path)
 }
 
 pub async fn cso_verify(
@@ -150,6 +243,7 @@ pub async fn rvz_compress(
     policy: ConflictPolicy,
     output_dir: Option<&Path>,
     max_depth: Option<usize>,
+    report_path: Option<&Path>,
 ) -> Result<()> {
     use rom_converto_lib::nintendo::rvz::{compress_disc, derive_rvz_path};
     use rom_converto_lib::util::place_in_dir_mirrored;
@@ -164,6 +258,7 @@ pub async fn rvz_compress(
     let total = files.len();
     total_progress.start(total as u64, &format!("Compressing {total} files..."));
     let mut tally = Tally::new();
+    let mut records: Vec<ReportRecord> = Vec::new();
     for path in files {
         let output = place_in_dir_mirrored(&derive_rvz_path(&path), input_dir, output_dir);
         if let Some(parent) = output.parent() {
@@ -174,27 +269,35 @@ pub async fn rvz_compress(
             Ok(WriteDecision::Skip) => {
                 info!("skipped, output exists: {}", output.display());
                 tally.record_skipped();
+                records.push(skipped_record(&path, "compress", None));
                 total_progress.inc(1);
                 continue;
             }
             Err(e) => {
                 warn!("{e}");
                 tally.record_skipped();
+                records.push(skipped_record(&path, "compress", Some(e.to_string())));
                 total_progress.inc(1);
                 continue;
             }
         };
         let input_bytes = file_len(&path);
+        let started = Instant::now();
         if let Err(e) = compress_disc(&path, &output, opts, progress).await {
             warn!("Failed to compress {}: {e}", path.display());
             tally.record_failed();
+            records.push(failed_record(&path, "compress", input_bytes, started, e));
         } else {
-            tally.record_ok(input_bytes, file_len(&output), Default::default());
+            let out_bytes = file_len(&output);
+            tally.record_ok(input_bytes, out_bytes, started.elapsed());
+            records.push(ok_record(
+                &path, &output, "compress", input_bytes, out_bytes, started,
+            ));
         }
         total_progress.inc(1);
     }
     total_progress.finish();
-    finish_tally(&tally, TallyDirection::Compress)
+    finish_tally(&tally, TallyDirection::Compress, &records, report_path)
 }
 
 pub async fn rvz_decompress(
@@ -204,6 +307,7 @@ pub async fn rvz_decompress(
     policy: ConflictPolicy,
     output_dir: Option<&Path>,
     max_depth: Option<usize>,
+    report_path: Option<&Path>,
 ) -> Result<()> {
     use rom_converto_lib::nintendo::rvz::{decompress_disc, derive_disc_path};
     use rom_converto_lib::util::place_in_dir_mirrored;
@@ -218,6 +322,7 @@ pub async fn rvz_decompress(
     let total = files.len();
     total_progress.start(total as u64, &format!("Decompressing {total} files..."));
     let mut tally = Tally::new();
+    let mut records: Vec<ReportRecord> = Vec::new();
     for path in files {
         let output = place_in_dir_mirrored(&derive_disc_path(&path), input_dir, output_dir);
         if let Some(parent) = output.parent() {
@@ -228,27 +333,35 @@ pub async fn rvz_decompress(
             Ok(WriteDecision::Skip) => {
                 info!("skipped, output exists: {}", output.display());
                 tally.record_skipped();
+                records.push(skipped_record(&path, "decompress", None));
                 total_progress.inc(1);
                 continue;
             }
             Err(e) => {
                 warn!("{e}");
                 tally.record_skipped();
+                records.push(skipped_record(&path, "decompress", Some(e.to_string())));
                 total_progress.inc(1);
                 continue;
             }
         };
         let input_bytes = file_len(&path);
+        let started = Instant::now();
         if let Err(e) = decompress_disc(&path, &output, progress).await {
             warn!("Failed to decompress {}: {e}", path.display());
             tally.record_failed();
+            records.push(failed_record(&path, "decompress", input_bytes, started, e));
         } else {
-            tally.record_ok(input_bytes, file_len(&output), Default::default());
+            let out_bytes = file_len(&output);
+            tally.record_ok(input_bytes, out_bytes, started.elapsed());
+            records.push(ok_record(
+                &path, &output, "decompress", input_bytes, out_bytes, started,
+            ));
         }
         total_progress.inc(1);
     }
     total_progress.finish();
-    finish_tally(&tally, TallyDirection::Decompress)
+    finish_tally(&tally, TallyDirection::Decompress, &records, report_path)
 }
 
 pub async fn dol_verify(
@@ -336,6 +449,7 @@ pub struct NxCompressTuning {
     pub policy: ConflictPolicy,
     pub output_dir: Option<PathBuf>,
     pub max_depth: Option<usize>,
+    pub report: Option<PathBuf>,
 }
 
 pub async fn nx_compress(
@@ -361,12 +475,14 @@ pub async fn nx_compress(
     let total = files.len();
     total_progress.start(total as u64, &format!("Compressing {total} files..."));
     let mut tally = Tally::new();
+    let mut records: Vec<ReportRecord> = Vec::new();
     for path in files {
         let kind = match detect_container(&path) {
             Ok(kind) => kind,
             Err(e) => {
                 warn!("Failed to compress {}: {e}", path.display());
                 tally.record_failed();
+                records.push(failed_record(&path, "compress", file_len(&path), Instant::now(), e));
                 total_progress.inc(1);
                 continue;
             }
@@ -399,32 +515,46 @@ pub async fn nx_compress(
             Ok(WriteDecision::Skip) => {
                 info!("skipped, output exists: {}", output.display());
                 tally.record_skipped();
+                records.push(skipped_record(&path, "compress", None));
                 total_progress.inc(1);
                 continue;
             }
             Err(e) => {
                 warn!("{e}");
                 tally.record_skipped();
+                records.push(skipped_record(&path, "compress", Some(e.to_string())));
                 total_progress.inc(1);
                 continue;
             }
         };
         let input_bytes = file_len(&path);
         let out_path = output.clone();
+        let started = Instant::now();
         if let Err(e) =
             compress_container_async(path.clone(), output, opts, keys.clone(), progress).await
         {
             warn!("Failed to compress {}: {e}", path.display());
             tally.record_failed();
+            records.push(failed_record(&path, "compress", input_bytes, started, e));
         } else {
-            tally.record_ok(input_bytes, file_len(&out_path), Default::default());
+            let out_bytes = file_len(&out_path);
+            tally.record_ok(input_bytes, out_bytes, started.elapsed());
+            records.push(ok_record(
+                &path, &out_path, "compress", input_bytes, out_bytes, started,
+            ));
         }
         total_progress.inc(1);
     }
     total_progress.finish();
-    finish_tally(&tally, TallyDirection::Compress)
+    finish_tally(
+        &tally,
+        TallyDirection::Compress,
+        &records,
+        tuning.report.as_deref(),
+    )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn nx_decompress(
     progress: &dyn ProgressReporter,
     total_progress: &dyn ProgressReporter,
@@ -433,6 +563,7 @@ pub async fn nx_decompress(
     policy: ConflictPolicy,
     output_dir: Option<&Path>,
     max_depth: Option<usize>,
+    report_path: Option<&Path>,
 ) -> Result<()> {
     use rom_converto_lib::nintendo::nx::{decompress_container_async, derive_decompressed_path};
     use rom_converto_lib::util::place_in_dir_mirrored;
@@ -447,6 +578,7 @@ pub async fn nx_decompress(
     let total = files.len();
     total_progress.start(total as u64, &format!("Decompressing {total} files..."));
     let mut tally = Tally::new();
+    let mut records: Vec<ReportRecord> = Vec::new();
     for path in files {
         let output = place_in_dir_mirrored(&derive_decompressed_path(&path), input_dir, output_dir);
         if let Some(parent) = output.parent() {
@@ -457,30 +589,38 @@ pub async fn nx_decompress(
             Ok(WriteDecision::Skip) => {
                 info!("skipped, output exists: {}", output.display());
                 tally.record_skipped();
+                records.push(skipped_record(&path, "decompress", None));
                 total_progress.inc(1);
                 continue;
             }
             Err(e) => {
                 warn!("{e}");
                 tally.record_skipped();
+                records.push(skipped_record(&path, "decompress", Some(e.to_string())));
                 total_progress.inc(1);
                 continue;
             }
         };
         let input_bytes = file_len(&path);
         let out_path = output.clone();
+        let started = Instant::now();
         if let Err(e) =
             decompress_container_async(path.clone(), output, keys.clone(), progress).await
         {
             warn!("Failed to decompress {}: {e}", path.display());
             tally.record_failed();
+            records.push(failed_record(&path, "decompress", input_bytes, started, e));
         } else {
-            tally.record_ok(input_bytes, file_len(&out_path), Default::default());
+            let out_bytes = file_len(&out_path);
+            tally.record_ok(input_bytes, out_bytes, started.elapsed());
+            records.push(ok_record(
+                &path, &out_path, "decompress", input_bytes, out_bytes, started,
+            ));
         }
         total_progress.inc(1);
     }
     total_progress.finish();
-    finish_tally(&tally, TallyDirection::Decompress)
+    finish_tally(&tally, TallyDirection::Decompress, &records, report_path)
 }
 
 pub async fn nx_verify(
@@ -607,6 +747,7 @@ pub async fn chd_compress(
     policy: ConflictPolicy,
     output_dir: Option<&Path>,
     max_depth: Option<usize>,
+    report_path: Option<&Path>,
 ) -> Result<()> {
     use rom_converto_lib::chd::convert_disc_to_chd;
     use rom_converto_lib::util::place_in_dir_mirrored;
@@ -622,6 +763,7 @@ pub async fn chd_compress(
     let total = files.len();
     total_progress.start(total as u64, &format!("Compressing {total} files..."));
     let mut tally = Tally::new();
+    let mut records: Vec<ReportRecord> = Vec::new();
     for path in files {
         let output = place_in_dir_mirrored(&path.with_extension("chd"), input_dir, output_dir);
         if let Some(parent) = output.parent() {
@@ -632,30 +774,39 @@ pub async fn chd_compress(
             Ok(WriteDecision::Skip) => {
                 info!("skipped, output exists: {}", output.display());
                 tally.record_skipped();
+                records.push(skipped_record(&path, "compress", None));
                 total_progress.inc(1);
                 continue;
             }
             Err(e) => {
                 warn!("{e}");
                 tally.record_skipped();
+                records.push(skipped_record(&path, "compress", Some(e.to_string())));
                 total_progress.inc(1);
                 continue;
             }
         };
         let input_bytes = file_len(&path);
         let out_path = output.clone();
+        let started = Instant::now();
         if let Err(e) = convert_disc_to_chd(progress, path.clone(), output, mode, opts.clone()).await {
             warn!("Failed to compress {}: {e}", path.display());
             tally.record_failed();
+            records.push(failed_record(&path, "compress", input_bytes, started, e));
         } else {
-            tally.record_ok(input_bytes, file_len(&out_path), Default::default());
+            let out_bytes = file_len(&out_path);
+            tally.record_ok(input_bytes, out_bytes, started.elapsed());
+            records.push(ok_record(
+                &path, &out_path, "compress", input_bytes, out_bytes, started,
+            ));
         }
         total_progress.inc(1);
     }
     total_progress.finish();
-    finish_tally(&tally, TallyDirection::Compress)
+    finish_tally(&tally, TallyDirection::Compress, &records, report_path)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn chd_extract(
     progress: &dyn ProgressReporter,
     total_progress: &dyn ProgressReporter,
@@ -664,6 +815,7 @@ pub async fn chd_extract(
     policy: ConflictPolicy,
     output_dir: Option<&Path>,
     max_depth: Option<usize>,
+    report_path: Option<&Path>,
 ) -> Result<()> {
     use rom_converto_lib::chd::extract_from_chd;
     use rom_converto_lib::util::place_in_dir_mirrored;
@@ -678,6 +830,7 @@ pub async fn chd_extract(
     let total = files.len();
     total_progress.start(total as u64, &format!("Extracting {total} files..."));
     let mut tally = Tally::new();
+    let mut records: Vec<ReportRecord> = Vec::new();
     for path in files {
         let output = place_in_dir_mirrored(&path.with_extension(""), input_dir, output_dir);
         if let Some(p) = output.parent() {
@@ -688,28 +841,35 @@ pub async fn chd_extract(
             Ok(WriteDecision::Skip) => {
                 info!("skipped, output exists: {}", output.display());
                 tally.record_skipped();
+                records.push(skipped_record(&path, "extract", None));
                 total_progress.inc(1);
                 continue;
             }
             Err(e) => {
                 warn!("{e}");
                 tally.record_skipped();
+                records.push(skipped_record(&path, "extract", Some(e.to_string())));
                 total_progress.inc(1);
                 continue;
             }
         };
+        let out_path = output.clone();
+        let started = Instant::now();
         if let Err(e) = extract_from_chd(progress, path.clone(), output, parent.clone()).await {
             warn!("Failed to extract {}: {e}", path.display());
             tally.record_failed();
+            records.push(failed_record(&path, "extract", 0, started, e));
         } else {
-            tally.record_ok(0, 0, Default::default());
+            tally.record_ok(0, 0, started.elapsed());
+            records.push(ok_record(&path, &out_path, "extract", 0, 0, started));
         }
         total_progress.inc(1);
     }
     total_progress.finish();
-    finish_tally(&tally, TallyDirection::CountOnly)
+    finish_tally(&tally, TallyDirection::CountOnly, &records, report_path)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn cso_compress(
     progress: &dyn ProgressReporter,
     total_progress: &dyn ProgressReporter,
@@ -718,6 +878,7 @@ pub async fn cso_compress(
     policy: ConflictPolicy,
     output_dir: Option<&Path>,
     max_depth: Option<usize>,
+    report_path: Option<&Path>,
 ) -> Result<()> {
     use rom_converto_lib::cso::compress_to_cso;
     use rom_converto_lib::util::place_in_dir_mirrored;
@@ -734,6 +895,7 @@ pub async fn cso_compress(
     let total = files.len();
     total_progress.start(total as u64, &format!("Compressing {total} files..."));
     let mut tally = Tally::new();
+    let mut records: Vec<ReportRecord> = Vec::new();
     for path in files {
         let output = place_in_dir_mirrored(&path.with_extension(ext), input_dir, output_dir);
         if let Some(parent) = output.parent() {
@@ -744,26 +906,34 @@ pub async fn cso_compress(
             Ok(WriteDecision::Skip) => {
                 info!("skipped, output exists: {}", output.display());
                 tally.record_skipped();
+                records.push(skipped_record(&path, "compress", None));
                 total_progress.inc(1);
                 continue;
             }
             Err(e) => {
                 warn!("{e}");
                 tally.record_skipped();
+                records.push(skipped_record(&path, "compress", Some(e.to_string())));
                 total_progress.inc(1);
                 continue;
             }
         };
         let input_bytes = file_len(&path);
         let out_path = output.clone();
+        let started = Instant::now();
         if let Err(e) = compress_to_cso(progress, path.clone(), output, opts.clone()).await {
             warn!("Failed to compress {}: {e}", path.display());
             tally.record_failed();
+            records.push(failed_record(&path, "compress", input_bytes, started, e));
         } else {
-            tally.record_ok(input_bytes, file_len(&out_path), Default::default());
+            let out_bytes = file_len(&out_path);
+            tally.record_ok(input_bytes, out_bytes, started.elapsed());
+            records.push(ok_record(
+                &path, &out_path, "compress", input_bytes, out_bytes, started,
+            ));
         }
         total_progress.inc(1);
     }
     total_progress.finish();
-    finish_tally(&tally, TallyDirection::Compress)
+    finish_tally(&tally, TallyDirection::Compress, &records, report_path)
 }
