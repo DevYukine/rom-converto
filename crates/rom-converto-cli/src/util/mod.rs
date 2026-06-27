@@ -111,6 +111,12 @@ impl ProgressReporter for IndicatifProgress {
             bar.finish_and_clear();
         }
     }
+
+    fn set_phase(&self, label: &str) {
+        if let Some(bar) = self.bar.lock().unwrap().as_ref() {
+            bar.set_message(label.to_string());
+        }
+    }
 }
 
 #[cfg(test)]

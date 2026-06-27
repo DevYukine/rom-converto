@@ -72,4 +72,17 @@ impl ProgressReporter for TauriProgress {
             },
         );
     }
+
+    fn set_phase(&self, label: &str) {
+        let _ = self.app.emit(
+            "progress",
+            ProgressEvent {
+                task_id: self.task_id.clone(),
+                kind: "phase".to_string(),
+                total: 0,
+                current: 0,
+                message: label.to_string(),
+            },
+        );
+    }
 }

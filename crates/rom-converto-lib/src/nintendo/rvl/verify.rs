@@ -103,8 +103,13 @@ pub fn verify_rvl(
             .sum();
         progress.start(total_clusters, "Verifying Wii hash tree");
 
-        for (offset, partition_type, info) in infos {
+        let partition_count = infos.len();
+        for (i, (offset, partition_type, info)) in infos.into_iter().enumerate() {
             let kind = partition_kind_name(partition_type).to_string();
+            progress.set_phase(&format!(
+                "Verifying {kind} partition ({}/{partition_count})",
+                i + 1
+            ));
             match info {
                 Some(info) => partitions.push(verify_partition(&mut reader, &info, kind, progress)),
                 None => partitions.push(RvlPartitionVerify {
@@ -256,7 +261,40 @@ mod tests {
     use super::*;
     use crate::nintendo::rvl::test_fixtures::make_fake_wii_iso_with_partition;
     use crate::nintendo::rvz::{RvzCompressOptions, compress_disc};
-    use crate::util::NoProgress;
+    use crate::util::{NoProgress, ProgressReporter};
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct PhaseRecorder {
+        phases: Mutex<Vec<String>>,
+    }
+
+    impl ProgressReporter for PhaseRecorder {
+        fn start(&self, _: u64, _: &str) {}
+        fn inc(&self, _: u64) {}
+        fn finish(&self) {}
+        fn set_phase(&self, label: &str) {
+            self.phases.lock().unwrap().push(label.to_string());
+        }
+    }
+
+    #[test]
+    fn full_verify_labels_per_partition_phases() {
+        let dir = tempfile::tempdir().unwrap();
+        let iso = dir.path().join("wii.iso");
+        std::fs::write(&iso, make_fake_wii_iso_with_partition(2)).unwrap();
+
+        let recorder = PhaseRecorder::default();
+        verify_rvl(&iso, &RvlVerifyOptions { full: true }, &recorder).unwrap();
+
+        let phases = recorder.phases.lock().unwrap();
+        assert!(!phases.is_empty(), "full verify should emit phase labels");
+        assert!(
+            phases[0].starts_with("Verifying ") && phases[0].contains(" (1/"),
+            "first phase label was {:?}",
+            phases[0]
+        );
+    }
 
     #[test]
     fn full_verify_on_raw_iso_finds_consistent_hash_tree() {

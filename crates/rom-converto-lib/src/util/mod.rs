@@ -66,6 +66,11 @@ pub trait ProgressReporter: Send + Sync {
     fn start(&self, total: u64, msg: &str);
     fn inc(&self, delta: u64);
     fn finish(&self);
+    /// Announce the active phase of a multi-step operation. The label
+    /// replaces the operation message until the next phase or `start`, and
+    /// is cleared when the operation finishes. Reporters that do not surface
+    /// a label leave this a no-op.
+    fn set_phase(&self, _label: &str) {}
 }
 
 pub struct NoProgress;
@@ -111,7 +116,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::place_in_dir_mirrored;
+    use crate::util::{NoProgress, ProgressReporter};
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn no_progress_set_phase_is_a_no_op() {
+        NoProgress.set_phase("anything");
+    }
 
     #[test]
     fn place_in_dir_mirrored_preserves_subpath() {

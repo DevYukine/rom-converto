@@ -294,6 +294,7 @@ pub async fn compress_title_async(
 enum ProgressEvent {
     Start { total: u64, msg: String },
     Inc(u64),
+    Phase(String),
 }
 
 struct QueuedProgress {
@@ -328,6 +329,10 @@ impl ProgressReporter for QueuedProgress {
     }
 
     fn finish(&self) {}
+
+    fn set_phase(&self, label: &str) {
+        self.push(ProgressEvent::Phase(label.to_string()));
+    }
 }
 
 fn apply_events(progress: &dyn ProgressReporter, events: Vec<ProgressEvent>) {
@@ -335,6 +340,7 @@ fn apply_events(progress: &dyn ProgressReporter, events: Vec<ProgressEvent>) {
         match ev {
             ProgressEvent::Start { total, msg } => progress.start(total, &msg),
             ProgressEvent::Inc(delta) => progress.inc(delta),
+            ProgressEvent::Phase(label) => progress.set_phase(&label),
         }
     }
 }
@@ -418,7 +424,8 @@ pub fn compress_titles(
         let silent = crate::util::NoProgress;
 
         let read_result: WupResult<()> = (|| {
-            for (path, format, key_path) in &resolved {
+            for (i, (path, format, key_path)) in resolved.iter().enumerate() {
+                progress.set_phase(&format!("Packing title ({}/{})", i + 1, resolved.len()));
                 match format {
                     TitleInputFormat::Loadiine => {
                         let title = detect_loadiine_title(path)?
@@ -711,6 +718,51 @@ mod tests {
         let phase1_deltas = *progress.phase1_deltas.lock().unwrap();
         assert_eq!(read_total, phase1_deltas);
         assert!(read_total > 0, "scan should discover non-empty total");
+    }
+
+    #[test]
+    fn compress_titles_labels_per_title_phases() {
+        use std::sync::Mutex;
+
+        #[derive(Default)]
+        struct PhaseRecorder {
+            phases: Mutex<Vec<String>>,
+        }
+        impl ProgressReporter for PhaseRecorder {
+            fn start(&self, _total: u64, _msg: &str) {}
+            fn inc(&self, _delta: u64) {}
+            fn finish(&self) {}
+            fn set_phase(&self, label: &str) {
+                self.phases.lock().unwrap().push(label.to_string());
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("base");
+        let update = dir.path().join("update");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::create_dir_all(&update).unwrap();
+        make_minimal_loadiine(&base, "0005000010102000", 0);
+        make_minimal_loadiine(&update, "0005000E10102000", 32);
+        let output = dir.path().join("bundle.wua");
+
+        let progress = PhaseRecorder::default();
+        compress_titles(
+            &[TitleInput::auto(&base), TitleInput::auto(&update)],
+            &output,
+            WupCompressOptions::default(),
+            &progress,
+        )
+        .unwrap();
+
+        let phases = progress.phases.lock().unwrap();
+        assert_eq!(
+            *phases,
+            vec![
+                "Packing title (1/2)".to_string(),
+                "Packing title (2/2)".to_string(),
+            ]
+        );
     }
 
     #[test]
