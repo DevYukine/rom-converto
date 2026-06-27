@@ -225,8 +225,14 @@ async function execute() {
           :running="progress.running.value"
         />
 
-        <RunButton :loading="loading || batch.running.value" :disabled="!canCompress" @click="execute">
-          {{ queue.length <= 1 ? "Compress" : `Compress ${queue.length} files` }}
+        <RunButton
+          :loading="loading || batch.running.value"
+          :batch-current="batch.currentIndex.value"
+          :batch-total="queue.length"
+          :disabled="!canCompress"
+          @click="execute"
+        >
+          {{ queue.filter(i => i.status === 'pending').length > 1 ? `Compress All (${queue.filter(i => i.status === 'pending').length})` : 'Compress' }}
         </RunButton>
 
         <div v-if="hasXci && mode === 'solid'" class="text-xs text-amber-300/80">

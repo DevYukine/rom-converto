@@ -156,10 +156,12 @@ async function execute() {
 
         <RunButton
           :loading="loading || batch.running.value"
+          :batch-current="batch.currentIndex.value"
+          :batch-total="queue.length"
           :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input"
           @click="execute"
         >
-          {{ isBatch ? `Compress ${queue.filter(i => i.status === 'pending').length} files` : 'Compress' }}
+          {{ isBatch && queue.filter(i => i.status === 'pending').length > 1 ? `Compress All (${queue.filter(i => i.status === 'pending').length})` : 'Compress' }}
         </RunButton>
       </div>
     </OperationCard>

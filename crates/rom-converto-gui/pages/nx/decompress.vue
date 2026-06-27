@@ -152,8 +152,14 @@ async function execute() {
           :running="progress.running.value"
         />
 
-        <RunButton :loading="loading || batch.running.value" :disabled="!canDecompress" @click="execute">
-          {{ queue.length <= 1 ? "Decompress" : `Decompress ${queue.length} files` }}
+        <RunButton
+          :loading="loading || batch.running.value"
+          :batch-current="batch.currentIndex.value"
+          :batch-total="queue.length"
+          :disabled="!canDecompress"
+          @click="execute"
+        >
+          {{ queue.filter(i => i.status === 'pending').length > 1 ? `Decompress All (${queue.filter(i => i.status === 'pending').length})` : 'Decompress' }}
         </RunButton>
       </div>
     </OperationCard>

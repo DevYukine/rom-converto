@@ -219,7 +219,7 @@ async function execute() {
           :disabled="!canCompress"
           @click="execute"
         >
-          {{ queue.length <= 1 ? "Compress" : `Compress ${queue.length} titles` }}
+          {{ queue.length > 1 ? `Compress All (${queue.length} titles)` : 'Compress' }}
         </RunButton>
 
         <div
