@@ -7,8 +7,10 @@ use crate::nintendo::ctr::models::title_metadata::TitleMetadata;
 use crate::nintendo::ctr::title_key::generate_title_key;
 use crate::nintendo::ctr::util::fs::{find_title_file, find_tmd_file};
 use crate::nintendo::ctr::z3ds::models::underlying_magic;
-use crate::nintendo::ctr::z3ds::{compress_rom, derive_compressed_path};
-use crate::util::ProgressReporter;
+use crate::nintendo::ctr::z3ds::{
+    compress_rom, derive_compressed_path, derive_decompressed_path,
+};
+use crate::util::{ConflictPolicy, ConflictResolution, ProgressReporter, resolve_conflict};
 use anyhow::Result;
 use binrw::BinRead;
 use futures::TryFutureExt;
@@ -45,6 +47,7 @@ pub struct CdnToCiaOptions {
     pub decrypt: bool,
     pub compress: bool,
     pub output_dir: Option<PathBuf>,
+    pub on_conflict: ConflictPolicy,
 }
 
 pub fn derive_decrypted_path(input: &Path) -> PathBuf {
@@ -309,6 +312,28 @@ async fn convert_cdn_to_cia_single(
         }
     };
 
+    // Conflict resolution runs against the final artifact. With --compress that
+    // is the .zcia, while the intermediate .cia keeps the working stem, so a
+    // rename slot is mapped back through derive_decompressed_path.
+    let final_path = if opts.compress {
+        derive_compressed_path(&output)
+    } else {
+        output.clone()
+    };
+    let output = match resolve_conflict(&final_path, opts.on_conflict)? {
+        ConflictResolution::Skip => {
+            info!("Skipping, output already exists: {}", final_path.display());
+            return Ok(());
+        }
+        ConflictResolution::Write(resolved) => {
+            if opts.compress {
+                derive_decompressed_path(&resolved)
+            } else {
+                resolved
+            }
+        }
+    };
+
     let cdn_dir = &opts.cdn_dir;
 
     let ticket_path = find_title_file(cdn_dir)
@@ -436,6 +461,201 @@ pub async fn decrypt_rom_batch(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nintendo::ctr::models::cia::CiaFile;
+    use crate::nintendo::ctr::test_fixtures::{append_be, make_cert, make_ticket, make_tmd};
+    use crate::util::NoProgress;
+    use binrw::Endian;
+    use sha2::{Digest, Sha256};
+
+    fn write_cdn_title(dir: &Path, title_id: u64) {
+        std::fs::create_dir_all(dir).unwrap();
+
+        let content: Vec<u8> = (0..0x400u32).map(|i| i as u8).collect();
+        let mut hasher = Sha256::new();
+        hasher.update(&content);
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&hasher.finalize());
+
+        std::fs::write(dir.join("00000000"), &content).unwrap();
+
+        let tmd = make_tmd(title_id, vec![(0, 0, content.clone(), hash)]);
+        let mut tmd_buf = Vec::new();
+        append_be(&mut tmd_buf, &tmd);
+        append_be(&mut tmd_buf, &make_cert(b"CP0000000b", 0xBB));
+        append_be(&mut tmd_buf, &make_cert(b"CA00000003", 0xAA));
+        std::fs::write(dir.join("tmd"), &tmd_buf).unwrap();
+
+        let ticket = make_ticket(title_id);
+        let mut tik_buf = Vec::new();
+        append_be(&mut tik_buf, &ticket);
+        append_be(&mut tik_buf, &make_cert(b"XS0000000c", 0xCC));
+        std::fs::write(dir.join("cetk"), &tik_buf).unwrap();
+    }
+
+    fn recursive_opts(root: PathBuf, on_conflict: ConflictPolicy) -> CdnToCiaOptions {
+        CdnToCiaOptions {
+            cdn_dir: root,
+            output: None,
+            cleanup: false,
+            recursive: true,
+            ensure_ticket_exists: false,
+            decrypt: false,
+            compress: false,
+            output_dir: None,
+            on_conflict,
+        }
+    }
+
+    fn parses_as_cia(path: &Path) -> bool {
+        let bytes = std::fs::read(path).unwrap();
+        CiaFile::read_options(&mut Cursor::new(&bytes), Endian::Little, ()).is_ok()
+    }
+
+    #[tokio::test]
+    async fn cdn_to_cia_recursive_converts_each_subfolder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let base = 0x0004000000030000u64;
+        for (i, name) in ["title_a", "title_b", "title_c"].iter().enumerate() {
+            write_cdn_title(&root.join(name), base + i as u64);
+        }
+
+        let opts = recursive_opts(root.to_path_buf(), ConflictPolicy::Error);
+        convert_cdn_to_cia(opts, &NoProgress, &NoProgress)
+            .await
+            .unwrap();
+
+        for name in ["title_a.cia", "title_b.cia", "title_c.cia"] {
+            let out = root.join(name);
+            assert!(out.exists(), "missing {}", out.display());
+            assert!(parses_as_cia(&out), "{} is not a valid CIA", out.display());
+        }
+    }
+
+    #[tokio::test]
+    async fn cdn_to_cia_recursive_default_error_does_not_overwrite() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_cdn_title(&root.join("title_a"), 0x0004000000030000);
+        let existing = root.join("title_a.cia");
+        std::fs::write(&existing, b"PREEXISTING").unwrap();
+
+        let opts = recursive_opts(root.to_path_buf(), ConflictPolicy::Error);
+        convert_cdn_to_cia(opts, &NoProgress, &NoProgress)
+            .await
+            .unwrap();
+
+        assert_eq!(std::fs::read(&existing).unwrap(), b"PREEXISTING");
+    }
+
+    #[tokio::test]
+    async fn cdn_to_cia_recursive_skip_keeps_existing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_cdn_title(&root.join("title_a"), 0x0004000000030000);
+        let existing = root.join("title_a.cia");
+        std::fs::write(&existing, b"PREEXISTING").unwrap();
+
+        let opts = recursive_opts(root.to_path_buf(), ConflictPolicy::Skip);
+        convert_cdn_to_cia(opts, &NoProgress, &NoProgress)
+            .await
+            .unwrap();
+
+        assert_eq!(std::fs::read(&existing).unwrap(), b"PREEXISTING");
+    }
+
+    #[tokio::test]
+    async fn cdn_to_cia_recursive_overwrite_replaces() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_cdn_title(&root.join("title_a"), 0x0004000000030000);
+        let existing = root.join("title_a.cia");
+        std::fs::write(&existing, b"PREEXISTING").unwrap();
+
+        let opts = recursive_opts(root.to_path_buf(), ConflictPolicy::Overwrite);
+        convert_cdn_to_cia(opts, &NoProgress, &NoProgress)
+            .await
+            .unwrap();
+
+        assert_ne!(std::fs::read(&existing).unwrap(), b"PREEXISTING");
+        assert!(parses_as_cia(&existing));
+    }
+
+    #[tokio::test]
+    async fn cdn_to_cia_recursive_rename_writes_numbered_sibling() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_cdn_title(&root.join("title_a"), 0x0004000000030000);
+        let existing = root.join("title_a.cia");
+        std::fs::write(&existing, b"PREEXISTING").unwrap();
+
+        let opts = recursive_opts(root.to_path_buf(), ConflictPolicy::Rename);
+        convert_cdn_to_cia(opts, &NoProgress, &NoProgress)
+            .await
+            .unwrap();
+
+        assert_eq!(std::fs::read(&existing).unwrap(), b"PREEXISTING");
+        let renamed = root.join("title_a (1).cia");
+        assert!(renamed.exists(), "missing {}", renamed.display());
+        assert!(parses_as_cia(&renamed));
+    }
+
+    #[tokio::test]
+    async fn cdn_to_cia_recursive_skips_non_cdn_subfolder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_cdn_title(&root.join("title_a"), 0x0004000000030000);
+        write_cdn_title(&root.join("title_b"), 0x0004000000030001);
+        let junk = root.join("not_cdn");
+        std::fs::create_dir_all(&junk).unwrap();
+        std::fs::write(junk.join("readme.txt"), b"x").unwrap();
+
+        let opts = recursive_opts(root.to_path_buf(), ConflictPolicy::Error);
+        convert_cdn_to_cia(opts, &NoProgress, &NoProgress)
+            .await
+            .unwrap();
+
+        assert!(root.join("title_a.cia").exists());
+        assert!(root.join("title_b.cia").exists());
+        assert!(!root.join("not_cdn.cia").exists());
+    }
+
+    #[tokio::test]
+    async fn cdn_to_cia_recursive_community_layout_variant() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let dir = root.join("title_a");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let content: Vec<u8> = (0..0x400u32).map(|i| i as u8).collect();
+        let mut hasher = Sha256::new();
+        hasher.update(&content);
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&hasher.finalize());
+        std::fs::write(dir.join("00000000"), &content).unwrap();
+
+        let tmd = make_tmd(0x0004000000030000, vec![(0, 0, content.clone(), hash)]);
+        let mut tmd_buf = Vec::new();
+        append_be(&mut tmd_buf, &tmd);
+        append_be(&mut tmd_buf, &make_cert(b"CP0000000b", 0xBB));
+        append_be(&mut tmd_buf, &make_cert(b"CA00000003", 0xAA));
+        std::fs::write(dir.join("tmd.1029"), &tmd_buf).unwrap();
+
+        let ticket = make_ticket(0x0004000000030000);
+        let mut tik_buf = Vec::new();
+        append_be(&mut tik_buf, &ticket);
+        append_be(&mut tik_buf, &make_cert(b"XS0000000c", 0xCC));
+        std::fs::write(dir.join("title.tik"), &tik_buf).unwrap();
+
+        let opts = recursive_opts(root.to_path_buf(), ConflictPolicy::Error);
+        convert_cdn_to_cia(opts, &NoProgress, &NoProgress)
+            .await
+            .unwrap();
+
+        let out = root.join("title_a.cia");
+        assert!(out.exists(), "missing {}", out.display());
+        assert!(parses_as_cia(&out));
+    }
 
     #[test]
     fn decrypt_path_cia() {

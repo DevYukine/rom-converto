@@ -414,6 +414,16 @@ mod tests {
     }
 
     #[test]
+    fn cdn_to_cia_recursive_parses_on_conflict() {
+        let h = Harness::parse_from(["bin", "cdn-to-cia", "-R", "./cdn", "--on-conflict", "skip"]);
+        let CtrCommands::CdnToCia(c) = h.cmd else {
+            panic!("expected CdnToCia");
+        };
+        assert!(c.recursive);
+        assert_eq!(c.on_conflict, ConflictPolicyArg::Skip);
+    }
+
+    #[test]
     fn output_dir_conflicts_with_output() {
         let result = Harness::try_parse_from([
             "bin",

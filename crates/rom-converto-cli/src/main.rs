@@ -523,6 +523,7 @@ async fn main() -> Result<()> {
                     decrypt: cmd.decrypt,
                     compress: cmd.compress,
                     output_dir,
+                    on_conflict: policy_of(cmd.on_conflict, cmd.force),
                 };
                 convert_cdn_to_cia(opts, &progress, &total_progress).await?
             }

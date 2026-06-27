@@ -63,6 +63,7 @@ pub async fn cmd_cdn_to_cia(
         decrypt,
         compress,
         output_dir: None,
+        on_conflict: rom_converto_lib::util::ConflictPolicy::Overwrite,
     };
     tokio::spawn(async move {
         convert_cdn_to_cia(opts, progress.as_ref(), total_progress.as_ref()).await

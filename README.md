@@ -130,7 +130,7 @@ Two global flags work on every command: `--config <FILE>` points at a config fil
 
 The compress, decompress, convert, decrypt, and `chd extract` commands also accept `--output-template`, an alternative way to derive the output path from the ROM's own metadata. See [Output-path templates](#output-path-templates).
 
-`--dry-run` is a global flag that previews what a command would do without writing any output. It prints one plan line per file showing the operation, the resolved and templated output path, the `--on-conflict` decision (`overwrite`, `rename`, `skip`, or `new`), the detected media or format, and any missing keys, for example `would compress game.iso -> game.cso (CSO) [overwrite]`. Under `--on-conflict overwrite-invalid` the verify is read-only, so the preview runs it and shows `[keep (valid)]` or `[rewrite (invalid)]` for an existing output. It runs the same input resolution, detection, and conflict checks as a real run, exits 0 on a valid plan, and exits nonzero only for real input errors such as a missing file. Pass `--report` alongside it to export the plan. For recursive `ctr` commands the preview lists resolved output paths only, since those batches do not expose a per-file conflict policy.
+`--dry-run` is a global flag that previews what a command would do without writing any output. It prints one plan line per file showing the operation, the resolved and templated output path, the `--on-conflict` decision (`overwrite`, `rename`, `skip`, or `new`), the detected media or format, and any missing keys, for example `would compress game.iso -> game.cso (CSO) [overwrite]`. Under `--on-conflict overwrite-invalid` the verify is read-only, so the preview runs it and shows `[keep (valid)]` or `[rewrite (invalid)]` for an existing output. It runs the same input resolution, detection, and conflict checks as a real run, exits 0 on a valid plan, and exits nonzero only for real input errors such as a missing file. Pass `--report` alongside it to export the plan. For the recursive `ctr` file batches (`decrypt`, `compress`, `decompress`, `verify`) the preview lists resolved output paths only, since those batches do not expose a per-file conflict policy. Recursive `cdn-to-cia` does honor `--on-conflict`, so its preview shows the decision per produced `.cia`.
 
 The GUI does not yet have a preview toggle. It is a tracked follow-up: each write-capable Tauri command needs a `dry_run` parameter and per-page wiring that reuses the CLI plan logic.
 
@@ -224,11 +224,11 @@ The GUI does not yet read this config file. The CLI is the supported path for no
 | Flag | Description |
 |---|---|
 | `-C, --cleanup` | Remove original CDN files after conversion |
-| `-R, --recursive` | Convert each immediate child directory of CDN_DIR to a `.cia`. This scans the direct subdirectories, unlike the file-recursive subcommands below, so it takes no `--max-depth` |
+| `-R, --recursive` | Convert each immediate child directory of CDN_DIR to a `.cia`. This scans the direct subdirectories, unlike the file-recursive subcommands below, so it takes no `--max-depth`. Each per-title output honors `--on-conflict`, so an existing `.cia` is refused, skipped, renamed, or overwritten per the policy instead of being replaced unconditionally |
 | `-T, --ensure-ticket-exists` | Auto-generate a ticket file if one is not found |
 | `-D, --decrypt` | Also decrypt the CIA after creation |
 | `-Z, --compress` | Also compress the CIA after creation (implies decrypt) |
-| `--on-conflict <POLICY>` | What to do when the output exists: `error` (default), `overwrite`, `skip`, or `rename` |
+| `--on-conflict <POLICY>` | What to do when the output exists: `error` (default), `overwrite`, `skip`, `rename`, or `overwrite-invalid` (a CIA has no cheap integrity check, so this falls back to existence-based skip) |
 | `-f, --force` | Alias for `--on-conflict overwrite` |
 
 **`decrypt` / `compress` / `decompress` / `convert` flags:**
