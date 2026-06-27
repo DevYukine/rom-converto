@@ -81,7 +81,7 @@ Where each format works:
 
 ### Application
 
-* [x] Command line interface with progress bars
+* [x] Command line interface with progress bars and a post-run space-saved summary
 * [x] Desktop GUI with drag and drop batch processing
 * [x] Self update from GitHub releases (CLI)
 
@@ -115,6 +115,8 @@ The desktop app provides a visual interface for all operations. Built with [Taur
 ## CLI Commands
 
 All commands that write an output file refuse to overwrite an existing file unless `-f`/`--force` is passed. Previously, `ctr`, `dol`, `rvl`, `nx`, `wup`, and `chd extract` overwrote silently; that behavior has changed.
+
+After `compress`, `decompress`, and `convert` operations, the tool prints a closing summary of bytes processed and space saved or expanded, for example `12 files: 12.4 GiB -> 4.1 GiB, saved 8.3 GiB (67%) in 2m14s`. Verify and extract operations print a file count and elapsed time instead.
 
 ### CTR (Nintendo 3DS)
 

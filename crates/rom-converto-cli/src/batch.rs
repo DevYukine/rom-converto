@@ -1,9 +1,13 @@
 use crate::util::ensure_output_writable;
 use anyhow::Result;
 use log::{info, warn};
-use rom_converto_lib::util::ProgressReporter;
 use rom_converto_lib::util::fs::collect_files_with_exts;
+use rom_converto_lib::util::{ProgressReporter, Tally, TallyDirection};
 use std::path::{Path, PathBuf};
+
+fn file_len(path: &Path) -> u64 {
+    std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
+}
 
 struct VerifyTally {
     total: usize,
@@ -34,16 +38,11 @@ fn finish_verify(tally: VerifyTally) -> Result<()> {
     Ok(())
 }
 
-fn finish_convert(input_dir: &Path, total: usize, failed: usize) -> Result<()> {
-    info!(
-        "Processed {} files in {}: {} OK, {} failed",
-        total,
-        input_dir.display(),
-        total - failed,
-        failed
-    );
+fn finish_tally(tally: &Tally, direction: TallyDirection) -> Result<()> {
+    info!("{}", tally.summary_line(direction));
+    let failed = tally.failed_count();
     if failed > 0 {
-        anyhow::bail!("{failed} of {total} files failed");
+        anyhow::bail!("{failed} of {} files failed", tally.count());
     }
     Ok(())
 }
@@ -67,23 +66,27 @@ pub async fn cso_decompress(
     }
     let total = files.len();
     total_progress.start(total as u64, &format!("Decompressing {total} files..."));
-    let mut failed = 0usize;
+    let mut tally = Tally::new();
     for path in files {
         let output = place_in_dir(&path.with_extension("iso"), output_dir);
         if let Err(e) = ensure_output_writable(&output, force) {
             warn!("{e}");
-            failed += 1;
+            tally.record_skipped();
             total_progress.inc(1);
             continue;
         }
+        let input_bytes = file_len(&path);
+        let out_path = output.clone();
         if let Err(e) = decompress_from_cso(progress, path.clone(), output, force).await {
             warn!("Failed to decompress {}: {e}", path.display());
-            failed += 1;
+            tally.record_failed();
+        } else {
+            tally.record_ok(input_bytes, file_len(&out_path), Default::default());
         }
         total_progress.inc(1);
     }
     total_progress.finish();
-    finish_convert(input_dir, total, failed)
+    finish_tally(&tally, TallyDirection::Decompress)
 }
 
 pub async fn cso_verify(
@@ -140,23 +143,26 @@ pub async fn rvz_compress(
     }
     let total = files.len();
     total_progress.start(total as u64, &format!("Compressing {total} files..."));
-    let mut failed = 0usize;
+    let mut tally = Tally::new();
     for path in files {
         let output = place_in_dir(&derive_rvz_path(&path), output_dir);
         if let Err(e) = ensure_output_writable(&output, force) {
             warn!("{e}");
-            failed += 1;
+            tally.record_skipped();
             total_progress.inc(1);
             continue;
         }
+        let input_bytes = file_len(&path);
         if let Err(e) = compress_disc(&path, &output, opts, progress).await {
             warn!("Failed to compress {}: {e}", path.display());
-            failed += 1;
+            tally.record_failed();
+        } else {
+            tally.record_ok(input_bytes, file_len(&output), Default::default());
         }
         total_progress.inc(1);
     }
     total_progress.finish();
-    finish_convert(input_dir, total, failed)
+    finish_tally(&tally, TallyDirection::Compress)
 }
 
 pub async fn rvz_decompress(
@@ -178,23 +184,26 @@ pub async fn rvz_decompress(
     }
     let total = files.len();
     total_progress.start(total as u64, &format!("Decompressing {total} files..."));
-    let mut failed = 0usize;
+    let mut tally = Tally::new();
     for path in files {
         let output = place_in_dir(&derive_disc_path(&path), output_dir);
         if let Err(e) = ensure_output_writable(&output, force) {
             warn!("{e}");
-            failed += 1;
+            tally.record_skipped();
             total_progress.inc(1);
             continue;
         }
+        let input_bytes = file_len(&path);
         if let Err(e) = decompress_disc(&path, &output, progress).await {
             warn!("Failed to decompress {}: {e}", path.display());
-            failed += 1;
+            tally.record_failed();
+        } else {
+            tally.record_ok(input_bytes, file_len(&output), Default::default());
         }
         total_progress.inc(1);
     }
     total_progress.finish();
-    finish_convert(input_dir, total, failed)
+    finish_tally(&tally, TallyDirection::Decompress)
 }
 
 pub async fn dol_verify(
@@ -303,13 +312,13 @@ pub async fn nx_compress(
     }
     let total = files.len();
     total_progress.start(total as u64, &format!("Compressing {total} files..."));
-    let mut failed = 0usize;
+    let mut tally = Tally::new();
     for path in files {
         let kind = match detect_container(&path) {
             Ok(kind) => kind,
             Err(e) => {
                 warn!("Failed to compress {}: {e}", path.display());
-                failed += 1;
+                tally.record_failed();
                 total_progress.inc(1);
                 continue;
             }
@@ -332,20 +341,24 @@ pub async fn nx_compress(
         let output = place_in_dir(&derive_compressed_path(&path), tuning.output_dir.as_deref());
         if let Err(e) = ensure_output_writable(&output, tuning.force) {
             warn!("{e}");
-            failed += 1;
+            tally.record_skipped();
             total_progress.inc(1);
             continue;
         }
+        let input_bytes = file_len(&path);
+        let out_path = output.clone();
         if let Err(e) =
             compress_container_async(path.clone(), output, opts, keys.clone(), progress).await
         {
             warn!("Failed to compress {}: {e}", path.display());
-            failed += 1;
+            tally.record_failed();
+        } else {
+            tally.record_ok(input_bytes, file_len(&out_path), Default::default());
         }
         total_progress.inc(1);
     }
     total_progress.finish();
-    finish_convert(input_dir, total, failed)
+    finish_tally(&tally, TallyDirection::Compress)
 }
 
 pub async fn nx_decompress(
@@ -368,25 +381,29 @@ pub async fn nx_decompress(
     }
     let total = files.len();
     total_progress.start(total as u64, &format!("Decompressing {total} files..."));
-    let mut failed = 0usize;
+    let mut tally = Tally::new();
     for path in files {
         let output = place_in_dir(&derive_decompressed_path(&path), output_dir);
         if let Err(e) = ensure_output_writable(&output, force) {
             warn!("{e}");
-            failed += 1;
+            tally.record_skipped();
             total_progress.inc(1);
             continue;
         }
+        let input_bytes = file_len(&path);
+        let out_path = output.clone();
         if let Err(e) =
             decompress_container_async(path.clone(), output, keys.clone(), progress).await
         {
             warn!("Failed to decompress {}: {e}", path.display());
-            failed += 1;
+            tally.record_failed();
+        } else {
+            tally.record_ok(input_bytes, file_len(&out_path), Default::default());
         }
         total_progress.inc(1);
     }
     total_progress.finish();
-    finish_convert(input_dir, total, failed)
+    finish_tally(&tally, TallyDirection::Decompress)
 }
 
 pub async fn nx_verify(

@@ -57,8 +57,12 @@ use rom_converto_lib::nintendo::wup::{
     TitleInput, WupCompressOptions, compress_titles_async, decrypt_nus_title_async,
     verify_wup_async,
 };
+use rom_converto_lib::util::fs::collect_files_with_exts;
+use rom_converto_lib::util::{Tally, TallyDirection};
 use std::io::IsTerminal;
 use std::mem::discriminant;
+use std::path::Path;
+use std::time::Instant;
 
 mod batch;
 mod commands;
@@ -70,6 +74,30 @@ mod util;
 pub mod built_info {
     // The file has been placed there by the build script.
     include!(concat!(env!("OUT_DIR"), "/built.rs"));
+}
+
+// Extension sets mirror the lib-internal batch scanners so the closing
+// count summary matches what each lib batch function actually processed.
+const CTR_DECRYPT_EXTS: &[&str] = &["cia", "3ds", "cci", "cxi"];
+const CTR_COMPRESS_EXTS: &[&str] = &["cia", "cci", "3ds", "cxi", "3dsx"];
+const CTR_DECOMPRESS_EXTS: &[&str] = &["zcia", "zcci", "zcxi", "z3dsx"];
+const CTR_CONVERT_EXTS: &[&str] = &["cia", "3ds", "cci"];
+const CHD_COMPRESS_EXTS: &[&str] = &["cue", "iso"];
+const CHD_EXTRACT_EXTS: &[&str] = &["chd"];
+const CSO_COMPRESS_EXTS: &[&str] = &["iso"];
+
+fn file_len(path: &Path) -> u64 {
+    std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
+}
+
+fn log_single_summary(input: &Path, output: &Path, direction: TallyDirection, started: Instant) {
+    let mut tally = Tally::new();
+    tally.record_ok(file_len(input), file_len(output), started.elapsed());
+    log::info!("{}", tally.summary_line(direction));
+}
+
+fn log_count_summary(count: usize, tally: Tally) {
+    log::info!("{}", Tally::count_summary(count, tally.elapsed()));
 }
 
 /// Decompress targets a WBFS container when the resolved output path
@@ -207,13 +235,16 @@ async fn main() -> Result<()> {
                             cmd.input.display()
                         );
                     }
+                    let tally = Tally::new();
+                    let count = collect_files_with_exts(&cmd.input, CTR_DECRYPT_EXTS)?.len();
                     decrypt_rom_batch(
                         &cmd.input,
                         cmd.output_dir.as_deref(),
                         &progress,
                         &total_progress,
                     )
-                    .await?
+                    .await?;
+                    log_count_summary(count, tally);
                 } else {
                     ensure_input_exists(&cmd.input)?;
                     let output = match cmd.output_flag.or(cmd.output) {
@@ -229,7 +260,9 @@ async fn main() -> Result<()> {
                         }
                     };
                     ensure_output_writable(&output, cmd.force)?;
-                    decrypt_rom(&cmd.input, &output, &progress).await?
+                    let started = Instant::now();
+                    decrypt_rom(&cmd.input, &output, &progress).await?;
+                    log_single_summary(&cmd.input, &output, TallyDirection::Convert, started);
                 }
             }
             CtrCommands::Compress(cmd) => {
@@ -240,6 +273,8 @@ async fn main() -> Result<()> {
                             cmd.input.display()
                         );
                     }
+                    let tally = Tally::new();
+                    let count = collect_files_with_exts(&cmd.input, CTR_COMPRESS_EXTS)?.len();
                     compress_rom_batch(
                         &cmd.input,
                         cmd.level,
@@ -247,7 +282,8 @@ async fn main() -> Result<()> {
                         &progress,
                         &total_progress,
                     )
-                    .await?
+                    .await?;
+                    log_count_summary(count, tally);
                 } else {
                     ensure_input_exists(&cmd.input)?;
                     let output = match cmd.output_flag.or(cmd.output) {
@@ -263,7 +299,9 @@ async fn main() -> Result<()> {
                         }
                     };
                     ensure_output_writable(&output, cmd.force)?;
-                    compress_rom(&cmd.input, &output, cmd.level, &progress).await?
+                    let started = Instant::now();
+                    compress_rom(&cmd.input, &output, cmd.level, &progress).await?;
+                    log_single_summary(&cmd.input, &output, TallyDirection::Compress, started);
                 }
             }
             CtrCommands::Decompress(cmd) => {
@@ -274,13 +312,16 @@ async fn main() -> Result<()> {
                             cmd.input.display()
                         );
                     }
+                    let tally = Tally::new();
+                    let count = collect_files_with_exts(&cmd.input, CTR_DECOMPRESS_EXTS)?.len();
                     decompress_rom_batch(
                         &cmd.input,
                         cmd.output_dir.as_deref(),
                         &progress,
                         &total_progress,
                     )
-                    .await?
+                    .await?;
+                    log_count_summary(count, tally);
                 } else {
                     ensure_input_exists(&cmd.input)?;
                     let output = match cmd.output_flag.or(cmd.output) {
@@ -296,7 +337,9 @@ async fn main() -> Result<()> {
                         }
                     };
                     ensure_output_writable(&output, cmd.force)?;
-                    decompress_rom(&cmd.input, &output, &progress).await?
+                    let started = Instant::now();
+                    decompress_rom(&cmd.input, &output, &progress).await?;
+                    log_single_summary(&cmd.input, &output, TallyDirection::Decompress, started);
                 }
             }
             CtrCommands::Convert(cmd) => {
@@ -307,13 +350,16 @@ async fn main() -> Result<()> {
                             cmd.input.display()
                         );
                     }
+                    let tally = Tally::new();
+                    let count = collect_files_with_exts(&cmd.input, CTR_CONVERT_EXTS)?.len();
                     convert_rom_batch(
                         &cmd.input,
                         cmd.output_dir.as_deref(),
                         &progress,
                         &total_progress,
                     )
-                    .await?
+                    .await?;
+                    log_count_summary(count, tally);
                 } else {
                     ensure_input_exists(&cmd.input)?;
                     let output = match cmd.output_flag.or(cmd.output) {
@@ -329,7 +375,9 @@ async fn main() -> Result<()> {
                         }
                     };
                     ensure_output_writable(&output, cmd.force)?;
-                    convert_rom(&cmd.input, &output, &progress).await?
+                    let started = Instant::now();
+                    convert_rom(&cmd.input, &output, &progress).await?;
+                    log_single_summary(&cmd.input, &output, TallyDirection::Convert, started);
                 }
             }
             CtrCommands::Verify(cmd) => {
@@ -443,7 +491,9 @@ async fn main() -> Result<()> {
                         }
                     };
                     ensure_output_writable(&output, cmd.force)?;
-                    compress_disc(&cmd.input, &output, opts, &progress).await?
+                    let started = Instant::now();
+                    compress_disc(&cmd.input, &output, opts, &progress).await?;
+                    log_single_summary(&cmd.input, &output, TallyDirection::Compress, started);
                 }
             }
             DolCommands::Decompress(cmd) => {
@@ -472,11 +522,13 @@ async fn main() -> Result<()> {
                         }
                     };
                     ensure_output_writable(&output, cmd.force)?;
+                    let started = Instant::now();
                     if wants_wbfs_output(&output) {
                         decompress_disc_to_wbfs(&cmd.input, &output, &progress).await?
                     } else {
                         decompress_disc(&cmd.input, &output, &progress).await?
                     }
+                    log_single_summary(&cmd.input, &output, TallyDirection::Decompress, started);
                 }
             }
             DolCommands::Verify(cmd) => {
@@ -554,7 +606,9 @@ async fn main() -> Result<()> {
                         }
                     };
                     ensure_output_writable(&output, cmd.force)?;
-                    compress_disc(&cmd.input, &output, opts, &progress).await?
+                    let started = Instant::now();
+                    compress_disc(&cmd.input, &output, opts, &progress).await?;
+                    log_single_summary(&cmd.input, &output, TallyDirection::Compress, started);
                 }
             }
             RvlCommands::Decompress(cmd) => {
@@ -583,11 +637,13 @@ async fn main() -> Result<()> {
                         }
                     };
                     ensure_output_writable(&output, cmd.force)?;
+                    let started = Instant::now();
                     if wants_wbfs_output(&output) {
                         decompress_disc_to_wbfs(&cmd.input, &output, &progress).await?
                     } else {
                         decompress_disc(&cmd.input, &output, &progress).await?
                     }
+                    log_single_summary(&cmd.input, &output, TallyDirection::Decompress, started);
                 }
             }
             RvlCommands::Verify(cmd) => {
@@ -760,7 +816,11 @@ async fn main() -> Result<()> {
                         }
                     };
                     ensure_output_writable(&output, cmd.force)?;
-                    compress_container_async(cmd.input, output, opts, keys, &progress).await?
+                    let in_path = cmd.input.clone();
+                    let out_path = output.clone();
+                    let started = Instant::now();
+                    compress_container_async(cmd.input, output, opts, keys, &progress).await?;
+                    log_single_summary(&in_path, &out_path, TallyDirection::Compress, started);
                 }
             }
             NxCommands::Decompress(cmd) => {
@@ -791,7 +851,11 @@ async fn main() -> Result<()> {
                         }
                     };
                     ensure_output_writable(&output, cmd.force)?;
-                    decompress_container_async(cmd.input, output, keys, &progress).await?
+                    let in_path = cmd.input.clone();
+                    let out_path = output.clone();
+                    let started = Instant::now();
+                    decompress_container_async(cmd.input, output, keys, &progress).await?;
+                    log_single_summary(&in_path, &out_path, TallyDirection::Decompress, started);
                 }
             }
             NxCommands::Verify(cmd) => {
@@ -854,6 +918,8 @@ async fn main() -> Result<()> {
                             cmd.input.display()
                         );
                     }
+                    let tally = Tally::new();
+                    let count = collect_files_with_exts(&cmd.input, CHD_COMPRESS_EXTS)?.len();
                     convert_disc_to_chd_batch(
                         &progress,
                         &total_progress,
@@ -861,7 +927,8 @@ async fn main() -> Result<()> {
                         opts,
                         cmd.output_dir.as_deref(),
                     )
-                    .await?
+                    .await?;
+                    log_count_summary(count, tally);
                 } else {
                     ensure_input_exists(&cmd.input)?;
                     let output = match cmd.output_flag.or(cmd.output) {
@@ -877,7 +944,11 @@ async fn main() -> Result<()> {
                         }
                     };
                     ensure_output_writable(&output, cmd.force)?;
-                    convert_disc_to_chd(&progress, cmd.input, output, mode, opts).await?
+                    let in_path = cmd.input.clone();
+                    let out_path = output.clone();
+                    let started = Instant::now();
+                    convert_disc_to_chd(&progress, cmd.input, output, mode, opts).await?;
+                    log_single_summary(&in_path, &out_path, TallyDirection::Compress, started);
                 }
             }
             ChdCommands::Extract(cmd) => {
@@ -888,13 +959,16 @@ async fn main() -> Result<()> {
                             cmd.input.display()
                         );
                     }
+                    let tally = Tally::new();
+                    let count = collect_files_with_exts(&cmd.input, CHD_EXTRACT_EXTS)?.len();
                     extract_from_chd_batch(
                         &progress,
                         &total_progress,
                         cmd.input,
                         cmd.output_dir.as_deref(),
                     )
-                    .await?
+                    .await?;
+                    log_count_summary(count, tally);
                 } else {
                     ensure_input_exists(&cmd.input)?;
                     let output = match cmd.output_flag.or(cmd.output) {
@@ -960,6 +1034,8 @@ async fn main() -> Result<()> {
                             cmd.input.display()
                         );
                     }
+                    let tally = Tally::new();
+                    let count = collect_files_with_exts(&cmd.input, CSO_COMPRESS_EXTS)?.len();
                     compress_to_cso_batch(
                         &progress,
                         &total_progress,
@@ -967,7 +1043,8 @@ async fn main() -> Result<()> {
                         opts,
                         cmd.output_dir.as_deref(),
                     )
-                    .await?
+                    .await?;
+                    log_count_summary(count, tally);
                 } else {
                     ensure_input_exists(&cmd.input)?;
                     let output = match cmd.output_flag.or(cmd.output) {
@@ -983,7 +1060,11 @@ async fn main() -> Result<()> {
                         }
                     };
                     ensure_output_writable(&output, cmd.force)?;
-                    compress_to_cso(&progress, cmd.input, output, opts).await?
+                    let in_path = cmd.input.clone();
+                    let out_path = output.clone();
+                    let started = Instant::now();
+                    compress_to_cso(&progress, cmd.input, output, opts).await?;
+                    log_single_summary(&in_path, &out_path, TallyDirection::Compress, started);
                 }
             }
             CsoCommands::Decompress(cmd) => {
@@ -1012,7 +1093,11 @@ async fn main() -> Result<()> {
                         }
                     };
                     ensure_output_writable(&output, cmd.force)?;
-                    decompress_from_cso(&progress, cmd.input, output, cmd.force).await?
+                    let in_path = cmd.input.clone();
+                    let out_path = output.clone();
+                    let started = Instant::now();
+                    decompress_from_cso(&progress, cmd.input, output, cmd.force).await?;
+                    log_single_summary(&in_path, &out_path, TallyDirection::Decompress, started);
                 }
             }
             CsoCommands::Verify(cmd) => {
