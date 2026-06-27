@@ -10,6 +10,7 @@ use crate::commands::rvl::RvlCommands;
 use crate::commands::wup::WupCommands;
 use clap::{Parser, Subcommand};
 use rom_converto_lib::util::ConflictPolicy;
+use std::path::PathBuf;
 
 pub mod chd;
 pub mod completions;
@@ -60,6 +61,22 @@ pub struct Cli {
         help = "Skip the check for a newer release"
     )]
     pub no_update_check: bool,
+
+    #[arg(
+        long = "config",
+        global = true,
+        value_name = "FILE",
+        help = "Path to a config file; overrides the search order"
+    )]
+    pub config: Option<PathBuf>,
+
+    #[arg(
+        long = "preset",
+        global = true,
+        value_name = "NAME",
+        help = "Apply a named preset from the config file"
+    )]
+    pub preset: Option<String>,
 }
 
 #[derive(Subcommand, Debug, Eq, PartialEq)]

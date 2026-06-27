@@ -12,7 +12,7 @@ use crate::github::api::GithubApi;
 use crate::updater::{check_for_new_version_and_notify, cleanup_old_executable, self_update};
 use crate::util::{
     IndicatifProgress, WriteDecision, ensure_input_exists, policy_of, resolve_output,
-    resolve_output_dir,
+    resolve_output_dir, resolve_policy,
 };
 use anyhow::Result;
 use clap::{CommandFactory, Parser};
@@ -67,6 +67,7 @@ use std::time::Instant;
 
 mod batch;
 mod commands;
+mod config;
 mod github;
 mod info_print;
 mod updater;
@@ -298,6 +299,10 @@ async fn main() -> Result<()> {
 
     let progress = IndicatifProgress::new(pb.clone());
     let total_progress = IndicatifProgress::new(pb);
+
+    let user_config = rom_converto_lib::config::load_config(cli.config.as_deref())?;
+    let preset = rom_converto_lib::config::resolve_preset(&user_config, cli.preset.as_deref())?;
+    let effective = config::resolve(&user_config, preset.as_ref());
 
     match cli.command {
         Commands::Ctr(inner) => match inner {
@@ -632,15 +637,21 @@ async fn main() -> Result<()> {
         },
         Commands::Dol(inner) => match inner {
             DolCommands::Compress(cmd) => {
+                let eff = &effective.dol;
                 let opts = RvzCompressOptions {
                     compression_level: cmd
                         .level
+                        .or(eff.level)
                         .unwrap_or(RvzCompressOptions::default().compression_level),
                     chunk_size: cmd
                         .chunk_size
+                        .or(eff.chunk_size)
                         .unwrap_or(RvzCompressOptions::default().chunk_size),
                     ..RvzCompressOptions::default()
                 };
+                let output_dir = cmd.output_dir.clone().or_else(|| eff.output_dir.clone());
+                let report = cmd.report.clone().or_else(|| eff.report.clone());
+                let fallback = config::policy_fallback(&eff.on_conflict)?;
                 if cmd.recursive {
                     require_dir(&cmd.input)?;
                     batch::rvz_compress(
@@ -649,10 +660,10 @@ async fn main() -> Result<()> {
                         &cmd.input,
                         &["iso", "gcm"],
                         opts,
-                        policy_of(cmd.on_conflict, cmd.force),
-                        cmd.output_dir.as_deref(),
+                        resolve_policy(cmd.on_conflict, cmd.force, fallback),
+                        output_dir.as_deref(),
                         cmd.max_depth,
-                        cmd.report.as_deref(),
+                        report.as_deref(),
                     )
                     .await?
                 } else {
@@ -660,16 +671,16 @@ async fn main() -> Result<()> {
                     let output = match cmd.output_flag.or(cmd.output) {
                         Some(p) => p,
                         None => {
-                            if let Some(dir) = cmd.output_dir.as_deref() {
+                            if let Some(dir) = output_dir.as_deref() {
                                 std::fs::create_dir_all(dir)?;
                             }
                             rom_converto_lib::util::place_in_dir(
                                 &derive_rvz_path(&cmd.input),
-                                cmd.output_dir.as_deref(),
+                                output_dir.as_deref(),
                             )
                         }
                     };
-                    let policy = policy_of(cmd.on_conflict, cmd.force);
+                    let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
                     let output = match resolve_output(&output, policy)? {
                         WriteDecision::Skip => {
                             log_skipped(&output);
@@ -685,21 +696,25 @@ async fn main() -> Result<()> {
                         TallyDirection::Compress,
                         "compress",
                         started,
-                        cmd.report.as_deref(),
+                        report.as_deref(),
                     )?;
                 }
             }
             DolCommands::Decompress(cmd) => {
+                let eff = &effective.dol;
+                let output_dir = cmd.output_dir.clone().or_else(|| eff.output_dir.clone());
+                let report = cmd.report.clone().or_else(|| eff.report.clone());
+                let fallback = config::policy_fallback(&eff.on_conflict)?;
                 if cmd.recursive {
                     require_dir(&cmd.input)?;
                     batch::rvz_decompress(
                         &progress,
                         &total_progress,
                         &cmd.input,
-                        policy_of(cmd.on_conflict, cmd.force),
-                        cmd.output_dir.as_deref(),
+                        resolve_policy(cmd.on_conflict, cmd.force, fallback),
+                        output_dir.as_deref(),
                         cmd.max_depth,
-                        cmd.report.as_deref(),
+                        report.as_deref(),
                     )
                     .await?
                 } else {
@@ -707,16 +722,16 @@ async fn main() -> Result<()> {
                     let output = match cmd.output_flag.or(cmd.output) {
                         Some(p) => p,
                         None => {
-                            if let Some(dir) = cmd.output_dir.as_deref() {
+                            if let Some(dir) = output_dir.as_deref() {
                                 std::fs::create_dir_all(dir)?;
                             }
                             rom_converto_lib::util::place_in_dir(
                                 &derive_disc_path(&cmd.input),
-                                cmd.output_dir.as_deref(),
+                                output_dir.as_deref(),
                             )
                         }
                     };
-                    let policy = policy_of(cmd.on_conflict, cmd.force);
+                    let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
                     let output = match resolve_output(&output, policy)? {
                         WriteDecision::Skip => {
                             log_skipped(&output);
@@ -736,7 +751,7 @@ async fn main() -> Result<()> {
                         TallyDirection::Decompress,
                         "decompress",
                         started,
-                        cmd.report.as_deref(),
+                        report.as_deref(),
                     )?;
                 }
             }
@@ -780,15 +795,21 @@ async fn main() -> Result<()> {
         },
         Commands::Rvl(inner) => match inner {
             RvlCommands::Compress(cmd) => {
+                let eff = &effective.rvl;
                 let opts = RvzCompressOptions {
                     compression_level: cmd
                         .level
+                        .or(eff.level)
                         .unwrap_or(RvzCompressOptions::default().compression_level),
                     chunk_size: cmd
                         .chunk_size
+                        .or(eff.chunk_size)
                         .unwrap_or(RvzCompressOptions::default().chunk_size),
                     ..RvzCompressOptions::default()
                 };
+                let output_dir = cmd.output_dir.clone().or_else(|| eff.output_dir.clone());
+                let report = cmd.report.clone().or_else(|| eff.report.clone());
+                let fallback = config::policy_fallback(&eff.on_conflict)?;
                 if cmd.recursive {
                     require_dir(&cmd.input)?;
                     batch::rvz_compress(
@@ -797,10 +818,10 @@ async fn main() -> Result<()> {
                         &cmd.input,
                         &["iso", "wbfs"],
                         opts,
-                        policy_of(cmd.on_conflict, cmd.force),
-                        cmd.output_dir.as_deref(),
+                        resolve_policy(cmd.on_conflict, cmd.force, fallback),
+                        output_dir.as_deref(),
                         cmd.max_depth,
-                        cmd.report.as_deref(),
+                        report.as_deref(),
                     )
                     .await?
                 } else {
@@ -808,16 +829,16 @@ async fn main() -> Result<()> {
                     let output = match cmd.output_flag.or(cmd.output) {
                         Some(p) => p,
                         None => {
-                            if let Some(dir) = cmd.output_dir.as_deref() {
+                            if let Some(dir) = output_dir.as_deref() {
                                 std::fs::create_dir_all(dir)?;
                             }
                             rom_converto_lib::util::place_in_dir(
                                 &derive_rvz_path(&cmd.input),
-                                cmd.output_dir.as_deref(),
+                                output_dir.as_deref(),
                             )
                         }
                     };
-                    let policy = policy_of(cmd.on_conflict, cmd.force);
+                    let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
                     let output = match resolve_output(&output, policy)? {
                         WriteDecision::Skip => {
                             log_skipped(&output);
@@ -833,21 +854,25 @@ async fn main() -> Result<()> {
                         TallyDirection::Compress,
                         "compress",
                         started,
-                        cmd.report.as_deref(),
+                        report.as_deref(),
                     )?;
                 }
             }
             RvlCommands::Decompress(cmd) => {
+                let eff = &effective.rvl;
+                let output_dir = cmd.output_dir.clone().or_else(|| eff.output_dir.clone());
+                let report = cmd.report.clone().or_else(|| eff.report.clone());
+                let fallback = config::policy_fallback(&eff.on_conflict)?;
                 if cmd.recursive {
                     require_dir(&cmd.input)?;
                     batch::rvz_decompress(
                         &progress,
                         &total_progress,
                         &cmd.input,
-                        policy_of(cmd.on_conflict, cmd.force),
-                        cmd.output_dir.as_deref(),
+                        resolve_policy(cmd.on_conflict, cmd.force, fallback),
+                        output_dir.as_deref(),
                         cmd.max_depth,
-                        cmd.report.as_deref(),
+                        report.as_deref(),
                     )
                     .await?
                 } else {
@@ -855,16 +880,16 @@ async fn main() -> Result<()> {
                     let output = match cmd.output_flag.or(cmd.output) {
                         Some(p) => p,
                         None => {
-                            if let Some(dir) = cmd.output_dir.as_deref() {
+                            if let Some(dir) = output_dir.as_deref() {
                                 std::fs::create_dir_all(dir)?;
                             }
                             rom_converto_lib::util::place_in_dir(
                                 &derive_disc_path(&cmd.input),
-                                cmd.output_dir.as_deref(),
+                                output_dir.as_deref(),
                             )
                         }
                     };
-                    let policy = policy_of(cmd.on_conflict, cmd.force);
+                    let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
                     let output = match resolve_output(&output, policy)? {
                         WriteDecision::Skip => {
                             log_skipped(&output);
@@ -884,7 +909,7 @@ async fn main() -> Result<()> {
                         TallyDirection::Decompress,
                         "decompress",
                         started,
-                        cmd.report.as_deref(),
+                        report.as_deref(),
                     )?;
                 }
             }
@@ -946,7 +971,12 @@ async fn main() -> Result<()> {
         },
         Commands::Wup(inner) => match inner {
             WupCommands::Compress(cmd) => {
-                let policy = policy_of(cmd.on_conflict, cmd.force);
+                let eff = &effective.wup;
+                let policy = resolve_policy(
+                    cmd.on_conflict,
+                    cmd.force,
+                    config::policy_fallback(&eff.on_conflict)?,
+                );
                 let output = match resolve_output(&cmd.output, policy)? {
                     WriteDecision::Skip => {
                         log_skipped(&cmd.output);
@@ -957,6 +987,7 @@ async fn main() -> Result<()> {
                 let opts = WupCompressOptions {
                     zstd_level: cmd
                         .level
+                        .or(eff.level)
                         .unwrap_or(WupCompressOptions::default().zstd_level),
                 };
                 // Pair --key values with disc inputs in positional
@@ -1031,50 +1062,57 @@ async fn main() -> Result<()> {
         },
         Commands::Nx(inner) => match inner {
             NxCommands::Compress(cmd) => {
+                let eff = &effective.nx;
                 let keys = load_keyset(cmd.keys.as_deref())?;
+                let level = cmd.level.or(eff.level);
+                let mode = cmd.mode.clone().or_else(|| eff.mode.clone());
+                let block_size_exp = cmd.block_size_exp.or(eff.block_size_exp);
+                let output_dir = cmd.output_dir.clone().or_else(|| eff.output_dir.clone());
+                let report = cmd.report.clone().or_else(|| eff.report.clone());
+                let fallback = config::policy_fallback(&eff.on_conflict)?;
                 if cmd.recursive {
                     require_dir(&cmd.input)?;
                     let tuning = batch::NxCompressTuning {
-                        level: cmd.level,
-                        mode: cmd.mode.clone(),
-                        block_size_exp: cmd.block_size_exp,
-                        policy: policy_of(cmd.on_conflict, cmd.force),
-                        output_dir: cmd.output_dir.clone(),
+                        level,
+                        mode,
+                        block_size_exp,
+                        policy: resolve_policy(cmd.on_conflict, cmd.force, fallback),
+                        output_dir,
                         max_depth: cmd.max_depth,
-                        report: cmd.report.clone(),
+                        report,
                     };
                     batch::nx_compress(&progress, &total_progress, &cmd.input, keys, tuning).await?
                 } else {
                     ensure_input_exists(&cmd.input)?;
                     let kind = detect_container(&cmd.input)?;
                     let mut opts = NxCompressOptions::for_kind(kind);
-                    if let Some(level) = cmd.level {
+                    if let Some(level) = level {
                         opts.level = level;
                     }
-                    if let Some(mode) = cmd.mode.as_deref() {
+                    if let Some(mode) = mode.as_deref() {
                         opts.mode = match mode {
                             "solid" => NczMode::Solid,
                             "block" => NczMode::Block {
-                                size_exp: cmd.block_size_exp.unwrap_or(20),
+                                size_exp: block_size_exp.unwrap_or(20),
                             },
                             _ => unreachable!("clap value_parser already validated"),
                         };
-                    } else if let Some(exp) = cmd.block_size_exp {
+                    } else if let Some(exp) = block_size_exp {
                         opts.mode = NczMode::Block { size_exp: exp };
                     }
                     let output = match cmd.output_flag.or(cmd.output) {
                         Some(p) => p,
                         None => {
-                            if let Some(dir) = cmd.output_dir.as_deref() {
+                            if let Some(dir) = output_dir.as_deref() {
                                 std::fs::create_dir_all(dir)?;
                             }
                             rom_converto_lib::util::place_in_dir(
                                 &nx_derive_compressed_path(&cmd.input),
-                                cmd.output_dir.as_deref(),
+                                output_dir.as_deref(),
                             )
                         }
                     };
-                    let policy = policy_of(cmd.on_conflict, cmd.force);
+                    let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
                     let output = match resolve_output(&output, policy)? {
                         WriteDecision::Skip => {
                             log_skipped(&output);
@@ -1092,12 +1130,16 @@ async fn main() -> Result<()> {
                         TallyDirection::Compress,
                         "compress",
                         started,
-                        cmd.report.as_deref(),
+                        report.as_deref(),
                     )?;
                 }
             }
             NxCommands::Decompress(cmd) => {
+                let eff = &effective.nx;
                 let keys = load_keyset(cmd.keys.as_deref())?;
+                let output_dir = cmd.output_dir.clone().or_else(|| eff.output_dir.clone());
+                let report = cmd.report.clone().or_else(|| eff.report.clone());
+                let fallback = config::policy_fallback(&eff.on_conflict)?;
                 if cmd.recursive {
                     require_dir(&cmd.input)?;
                     batch::nx_decompress(
@@ -1105,10 +1147,10 @@ async fn main() -> Result<()> {
                         &total_progress,
                         &cmd.input,
                         keys,
-                        policy_of(cmd.on_conflict, cmd.force),
-                        cmd.output_dir.as_deref(),
+                        resolve_policy(cmd.on_conflict, cmd.force, fallback),
+                        output_dir.as_deref(),
                         cmd.max_depth,
-                        cmd.report.as_deref(),
+                        report.as_deref(),
                     )
                     .await?
                 } else {
@@ -1116,16 +1158,16 @@ async fn main() -> Result<()> {
                     let output = match cmd.output_flag.or(cmd.output) {
                         Some(p) => p,
                         None => {
-                            if let Some(dir) = cmd.output_dir.as_deref() {
+                            if let Some(dir) = output_dir.as_deref() {
                                 std::fs::create_dir_all(dir)?;
                             }
                             rom_converto_lib::util::place_in_dir(
                                 &nx_derive_decompressed_path(&cmd.input),
-                                cmd.output_dir.as_deref(),
+                                output_dir.as_deref(),
                             )
                         }
                     };
-                    let policy = policy_of(cmd.on_conflict, cmd.force);
+                    let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
                     let output = match resolve_output(&output, policy)? {
                         WriteDecision::Skip => {
                             log_skipped(&output);
@@ -1143,7 +1185,7 @@ async fn main() -> Result<()> {
                         TallyDirection::Decompress,
                         "decompress",
                         started,
-                        cmd.report.as_deref(),
+                        report.as_deref(),
                     )?;
                 }
             }
@@ -1189,11 +1231,15 @@ async fn main() -> Result<()> {
         },
         Commands::Chd(inner) => match inner {
             ChdCommands::Compress(cmd) => {
+                let eff = &effective.chd;
                 let mut opts = ChdDvdOptions {
-                    hunk_size: cmd.hunk_size,
+                    hunk_size: cmd.hunk_size.or(eff.hunk_size),
                     allow_zstd: cmd.zstd,
                     force: cmd.force,
                 };
+                let output_dir = cmd.output_dir.clone().or_else(|| eff.output_dir.clone());
+                let report = cmd.report.clone().or_else(|| eff.report.clone());
+                let fallback = config::policy_fallback(&eff.on_conflict)?;
                 let mode = if cmd.dvd {
                     Some(DiscMode::Dvd)
                 } else if cmd.cd {
@@ -1203,7 +1249,7 @@ async fn main() -> Result<()> {
                 };
                 if cmd.recursive {
                     require_dir(&cmd.input)?;
-                    let policy = policy_of(cmd.on_conflict, cmd.force);
+                    let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
                     batch::chd_compress(
                         &progress,
                         &total_progress,
@@ -1211,9 +1257,9 @@ async fn main() -> Result<()> {
                         opts,
                         mode,
                         policy,
-                        cmd.output_dir.as_deref(),
+                        output_dir.as_deref(),
                         cmd.max_depth,
-                        cmd.report.as_deref(),
+                        report.as_deref(),
                     )
                     .await?
                 } else {
@@ -1221,16 +1267,16 @@ async fn main() -> Result<()> {
                     let output = match cmd.output_flag.or(cmd.output) {
                         Some(p) => p,
                         None => {
-                            if let Some(dir) = cmd.output_dir.as_deref() {
+                            if let Some(dir) = output_dir.as_deref() {
                                 std::fs::create_dir_all(dir)?;
                             }
                             rom_converto_lib::util::place_in_dir(
                                 &cmd.input.with_extension("chd"),
-                                cmd.output_dir.as_deref(),
+                                output_dir.as_deref(),
                             )
                         }
                     };
-                    let policy = policy_of(cmd.on_conflict, cmd.force);
+                    let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
                     let output = match resolve_output(&output, policy)? {
                         WriteDecision::Skip => {
                             log_skipped(&output);
@@ -1249,23 +1295,27 @@ async fn main() -> Result<()> {
                         TallyDirection::Compress,
                         "compress",
                         started,
-                        cmd.report.as_deref(),
+                        report.as_deref(),
                     )?;
                 }
             }
             ChdCommands::Extract(cmd) => {
+                let eff = &effective.chd;
+                let output_dir = cmd.output_dir.clone().or_else(|| eff.output_dir.clone());
+                let report = cmd.report.clone().or_else(|| eff.report.clone());
+                let fallback = config::policy_fallback(&eff.on_conflict)?;
                 if cmd.recursive {
                     require_dir(&cmd.input)?;
-                    let policy = policy_of(cmd.on_conflict, cmd.force);
+                    let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
                     batch::chd_extract(
                         &progress,
                         &total_progress,
                         &cmd.input,
                         cmd.parent,
                         policy,
-                        cmd.output_dir.as_deref(),
+                        output_dir.as_deref(),
                         cmd.max_depth,
-                        cmd.report.as_deref(),
+                        report.as_deref(),
                     )
                     .await?
                 } else {
@@ -1273,7 +1323,7 @@ async fn main() -> Result<()> {
                     let output = match cmd.output_flag.or(cmd.output) {
                         Some(p) => p,
                         None => {
-                            let dir = cmd.output_dir.as_deref().expect(
+                            let dir = output_dir.as_deref().expect(
                                 "OUTPUT or --output-dir is required without --recursive (enforced by clap)",
                             );
                             std::fs::create_dir_all(dir)?;
@@ -1283,7 +1333,7 @@ async fn main() -> Result<()> {
                             )
                         }
                     };
-                    let policy = policy_of(cmd.on_conflict, cmd.force);
+                    let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
                     let output = match resolve_output(&output, policy)? {
                         WriteDecision::Skip => {
                             log_skipped(&output);
@@ -1301,7 +1351,7 @@ async fn main() -> Result<()> {
                         TallyDirection::CountOnly,
                         "extract",
                         started,
-                        cmd.report.as_deref(),
+                        report.as_deref(),
                     )?;
                 }
             }
@@ -1336,27 +1386,31 @@ async fn main() -> Result<()> {
         },
         Commands::Cso(inner) => match inner {
             CsoCommands::Compress(cmd) => {
+                let eff = &effective.cso;
                 let format = match cmd.format {
                     CsoFormatArg::Cso => CsoFormat::Cso,
                     CsoFormatArg::Zso => CsoFormat::Zso,
                 };
                 let mut opts = CsoCompressOptions {
                     format,
-                    block_size: cmd.block_size,
+                    block_size: cmd.block_size.or(eff.block_size),
                     force: cmd.force,
                 };
+                let output_dir = cmd.output_dir.clone().or_else(|| eff.output_dir.clone());
+                let report = cmd.report.clone().or_else(|| eff.report.clone());
+                let fallback = config::policy_fallback(&eff.on_conflict)?;
                 if cmd.recursive {
                     require_dir(&cmd.input)?;
-                    let policy = policy_of(cmd.on_conflict, cmd.force);
+                    let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
                     batch::cso_compress(
                         &progress,
                         &total_progress,
                         &cmd.input,
                         opts,
                         policy,
-                        cmd.output_dir.as_deref(),
+                        output_dir.as_deref(),
                         cmd.max_depth,
-                        cmd.report.as_deref(),
+                        report.as_deref(),
                     )
                     .await?
                 } else {
@@ -1364,16 +1418,16 @@ async fn main() -> Result<()> {
                     let output = match cmd.output_flag.or(cmd.output) {
                         Some(p) => p,
                         None => {
-                            if let Some(dir) = cmd.output_dir.as_deref() {
+                            if let Some(dir) = output_dir.as_deref() {
                                 std::fs::create_dir_all(dir)?;
                             }
                             rom_converto_lib::util::place_in_dir(
                                 &cmd.input.with_extension(format.extension()),
-                                cmd.output_dir.as_deref(),
+                                output_dir.as_deref(),
                             )
                         }
                     };
-                    let policy = policy_of(cmd.on_conflict, cmd.force);
+                    let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
                     let output = match resolve_output(&output, policy)? {
                         WriteDecision::Skip => {
                             log_skipped(&output);
@@ -1392,22 +1446,26 @@ async fn main() -> Result<()> {
                         TallyDirection::Compress,
                         "compress",
                         started,
-                        cmd.report.as_deref(),
+                        report.as_deref(),
                     )?;
                 }
             }
             CsoCommands::Decompress(cmd) => {
+                let eff = &effective.cso;
+                let output_dir = cmd.output_dir.clone().or_else(|| eff.output_dir.clone());
+                let report = cmd.report.clone().or_else(|| eff.report.clone());
+                let fallback = config::policy_fallback(&eff.on_conflict)?;
                 if cmd.recursive {
                     require_dir(&cmd.input)?;
-                    let policy = policy_of(cmd.on_conflict, cmd.force);
+                    let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
                     batch::cso_decompress(
                         &progress,
                         &total_progress,
                         &cmd.input,
                         policy,
-                        cmd.output_dir.as_deref(),
+                        output_dir.as_deref(),
                         cmd.max_depth,
-                        cmd.report.as_deref(),
+                        report.as_deref(),
                     )
                     .await?
                 } else {
@@ -1415,16 +1473,16 @@ async fn main() -> Result<()> {
                     let output = match cmd.output_flag.or(cmd.output) {
                         Some(p) => p,
                         None => {
-                            if let Some(dir) = cmd.output_dir.as_deref() {
+                            if let Some(dir) = output_dir.as_deref() {
                                 std::fs::create_dir_all(dir)?;
                             }
                             rom_converto_lib::util::place_in_dir(
                                 &cmd.input.with_extension("iso"),
-                                cmd.output_dir.as_deref(),
+                                output_dir.as_deref(),
                             )
                         }
                     };
-                    let policy = policy_of(cmd.on_conflict, cmd.force);
+                    let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
                     let output = match resolve_output(&output, policy)? {
                         WriteDecision::Skip => {
                             log_skipped(&output);
@@ -1442,7 +1500,7 @@ async fn main() -> Result<()> {
                         TallyDirection::Decompress,
                         "decompress",
                         started,
-                        cmd.report.as_deref(),
+                        report.as_deref(),
                     )?;
                 }
             }

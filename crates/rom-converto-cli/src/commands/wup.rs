@@ -113,8 +113,8 @@ pub struct CompressWupCommand {
     pub inputs: Vec<PathBuf>,
 
     /// What to do when an output already exists: error, overwrite, skip, or rename to a numbered sibling
-    #[arg(long = "on-conflict", value_enum, default_value_t = ConflictPolicyArg::Error)]
-    pub on_conflict: ConflictPolicyArg,
+    #[arg(long = "on-conflict", value_enum)]
+    pub on_conflict: Option<ConflictPolicyArg>,
 
     /// Alias for --on-conflict overwrite
     #[arg(long, short = 'f', default_value_t = false, conflicts_with = "on_conflict")]
@@ -228,5 +228,14 @@ mod tests {
             panic!("expected Compress");
         };
         assert!(c.force);
+    }
+
+    #[test]
+    fn compress_on_conflict_absent_is_none() {
+        let h = Harness::parse_from(["bin", "compress", "-o", "out.wua", "title_dir/"]);
+        let WupCommands::Compress(c) = h.cmd else {
+            panic!("expected Compress");
+        };
+        assert!(c.on_conflict.is_none());
     }
 }

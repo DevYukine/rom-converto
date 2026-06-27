@@ -37,6 +37,7 @@ serde.workspace = true
 serde_json.workspace = true
 crc = "^3.4"
 dirs = "^5"
+toml = "^0.8"
 
 # Pixel codecs for `info` icon extraction
 png = "^0.17"

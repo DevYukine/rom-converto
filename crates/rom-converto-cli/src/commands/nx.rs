@@ -71,8 +71,8 @@ pub struct NxCompressCommand {
     pub block_size_exp: Option<u8>,
 
     /// What to do when an output already exists: error, overwrite, skip, or rename to a numbered sibling
-    #[arg(long = "on-conflict", value_enum, default_value_t = ConflictPolicyArg::Error)]
-    pub on_conflict: ConflictPolicyArg,
+    #[arg(long = "on-conflict", value_enum)]
+    pub on_conflict: Option<ConflictPolicyArg>,
 
     /// Alias for --on-conflict overwrite
     #[arg(long, short = 'f', default_value_t = false, conflicts_with = "on_conflict")]
@@ -124,8 +124,8 @@ pub struct NxDecompressCommand {
     pub output_dir: Option<PathBuf>,
 
     /// What to do when an output already exists: error, overwrite, skip, or rename to a numbered sibling
-    #[arg(long = "on-conflict", value_enum, default_value_t = ConflictPolicyArg::Error)]
-    pub on_conflict: ConflictPolicyArg,
+    #[arg(long = "on-conflict", value_enum)]
+    pub on_conflict: Option<ConflictPolicyArg>,
 
     /// Alias for --on-conflict overwrite
     #[arg(long, short = 'f', default_value_t = false, conflicts_with = "on_conflict")]
@@ -321,5 +321,14 @@ mod tests {
             panic!("expected Decompress");
         };
         assert_eq!(c.report, Some(PathBuf::from("out.csv")));
+    }
+
+    #[test]
+    fn on_conflict_absent_is_none() {
+        let h = Harness::parse_from(["bin", "compress", "game.nsp"]);
+        let NxCommands::Compress(c) = h.cmd else {
+            panic!("expected Compress");
+        };
+        assert!(c.on_conflict.is_none());
     }
 }

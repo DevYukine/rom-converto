@@ -22,6 +22,22 @@ pub fn policy_of(on_conflict: ConflictPolicyArg, force: bool) -> ConflictPolicy 
     }
 }
 
+/// Resolves the effective conflict policy for commands that read a
+/// config/preset fallback. `--force` still wins, then an explicit
+/// `--on-conflict`, then the config-provided `fallback`. An unset
+/// `--on-conflict` (None) must not clobber the fallback.
+pub fn resolve_policy(
+    on_conflict: Option<ConflictPolicyArg>,
+    force: bool,
+    fallback: ConflictPolicy,
+) -> ConflictPolicy {
+    if force {
+        ConflictPolicy::Overwrite
+    } else {
+        on_conflict.map(Into::into).unwrap_or(fallback)
+    }
+}
+
 pub fn resolve_output(path: &Path, policy: ConflictPolicy) -> anyhow::Result<WriteDecision> {
     match resolve_conflict(path, policy)? {
         ConflictResolution::Write(p) => Ok(WriteDecision::Write(p)),
@@ -137,6 +153,38 @@ mod tests {
         assert_eq!(
             policy_of(ConflictPolicyArg::Skip, false),
             ConflictPolicy::Skip
+        );
+    }
+
+    #[test]
+    fn resolve_policy_flag_wins() {
+        assert_eq!(
+            resolve_policy(Some(ConflictPolicyArg::Skip), false, ConflictPolicy::Error),
+            ConflictPolicy::Skip
+        );
+    }
+
+    #[test]
+    fn resolve_policy_force_wins() {
+        assert_eq!(
+            resolve_policy(None, true, ConflictPolicy::Skip),
+            ConflictPolicy::Overwrite
+        );
+    }
+
+    #[test]
+    fn resolve_policy_falls_back() {
+        assert_eq!(
+            resolve_policy(None, false, ConflictPolicy::Skip),
+            ConflictPolicy::Skip
+        );
+    }
+
+    #[test]
+    fn resolve_policy_builtin_when_no_fallback() {
+        assert_eq!(
+            resolve_policy(None, false, ConflictPolicy::Error),
+            ConflictPolicy::Error
         );
     }
 
