@@ -7,6 +7,7 @@ export const useCtrCompressStore = defineStore("ctr-compress", () => {
   // Zstd compression level: 0 = library default, 1..22 = explicit.
   // Sent straight to the backend; the lib treats 0 as "use default".
   const level = ref<number>(0);
+  const allowEncrypted = ref<boolean>(false);
 
   const result = ref("");
   const error = ref("");
@@ -35,6 +36,7 @@ export const useCtrCompressStore = defineStore("ctr-compress", () => {
     input.value = "";
     output.value = "";
     level.value = 0;
+    allowEncrypted.value = false;
     result.value = "";
     error.value = "";
     loading.value = false;
@@ -45,6 +47,7 @@ export const useCtrCompressStore = defineStore("ctr-compress", () => {
     input,
     output,
     level,
+    allowEncrypted,
     result,
     error,
     loading,

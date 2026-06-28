@@ -503,7 +503,7 @@ async fn convert_cdn_to_cia_single(
         let compressed_path = derive_compressed_path(&output);
 
         if let Err(err) =
-            compress_rom_cancellable(&output, &compressed_path, None, progress, cancel).await
+            compress_rom_cancellable(&output, &compressed_path, None, false, progress, cancel).await
         {
             fs::remove_file(&output).await.ok();
             return Err(err.into());

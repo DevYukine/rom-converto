@@ -71,6 +71,7 @@ pub async fn compress_rom_batch(
     progress: &dyn ProgressReporter,
     total_progress: &dyn ProgressReporter,
     max_depth: Option<usize>,
+    allow_encrypted: bool,
 ) -> Result<()> {
     let roms = crate::util::fs::collect_files_with_exts(input_dir, COMPRESS_EXTS, max_depth)?;
     if roms.is_empty() {
@@ -96,7 +97,7 @@ pub async fn compress_rom_batch(
         }
         debug!("Compressing {} -> {}", path.display(), output.display());
 
-        if let Err(err) = compress_rom(&path, &output, level, progress).await {
+        if let Err(err) = compress_rom(&path, &output, level, allow_encrypted, progress).await {
             warn!("Failed to compress {}: {err}", path.display());
         }
 
@@ -285,7 +286,7 @@ mod tests {
         let original = make_fake_decrypted_cxi(64 * 1024);
         tokio::fs::write(&input, &original).await.unwrap();
 
-        compress_rom(&input, &compressed, None, &NoProgress)
+        compress_rom(&input, &compressed, None, false, &NoProgress)
             .await
             .unwrap();
         decompress_rom(&compressed, &decompressed, &NoProgress)
@@ -306,7 +307,7 @@ mod tests {
         let original = make_fake_3dsx(128 * 1024);
         tokio::fs::write(&input, &original).await.unwrap();
 
-        compress_rom(&input, &compressed, None, &NoProgress)
+        compress_rom(&input, &compressed, None, false, &NoProgress)
             .await
             .unwrap();
         decompress_rom(&compressed, &decompressed, &NoProgress)
@@ -336,7 +337,7 @@ mod tests {
         let original = make_fake_decrypted_cxi(2 * 1024 * 1024 + 7);
         tokio::fs::write(&input, &original).await.unwrap();
 
-        compress_rom(&input, &compressed, None, &NoProgress)
+        compress_rom(&input, &compressed, None, false, &NoProgress)
             .await
             .unwrap();
         decompress_rom(&compressed, &decompressed, &NoProgress)
@@ -374,7 +375,7 @@ mod tests {
         let original = make_fake_decrypted_cxi(256 * 1024);
         tokio::fs::write(&input, &original).await.unwrap();
 
-        compress_rom(&input, &compressed, None, &NoProgress)
+        compress_rom(&input, &compressed, None, false, &NoProgress)
             .await
             .unwrap();
 
@@ -397,7 +398,7 @@ mod tests {
         data[NCCH_MAGIC_OFFSET..NCCH_MAGIC_OFFSET + 4].copy_from_slice(&underlying_magic::NCCH);
         tokio::fs::write(&input, &data).await.unwrap();
 
-        let result = compress_rom(&input, &output, None, &NoProgress).await;
+        let result = compress_rom(&input, &output, None, false, &NoProgress).await;
         assert!(
             matches!(
                 result,
@@ -405,6 +406,122 @@ mod tests {
             ),
             "expected InputNotDecrypted, got {result:?}"
         );
+    }
+
+    // Builds an encrypted NCCH block (magic present, NoCrypto flag NOT set).
+    fn make_encrypted_ncch_at(total_size: usize, offset: usize) -> Vec<u8> {
+        let mut data = vec![0u8; total_size];
+        let magic_start = offset + NCCH_MAGIC_OFFSET;
+        data[magic_start..magic_start + 4].copy_from_slice(&underlying_magic::NCCH);
+        data
+    }
+
+    #[tokio::test]
+    async fn compress_encrypted_cxi_allow_bypasses() {
+        use crate::nintendo::ctr::z3ds::error::Z3dsError;
+
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("encrypted.cxi");
+        let output = dir.path().join("encrypted.zcxi");
+
+        tokio::fs::write(&input, make_encrypted_ncch_at(0x200, 0))
+            .await
+            .unwrap();
+
+        let result = compress_rom(&input, &output, None, true, &NoProgress).await;
+        assert!(
+            !matches!(result, Err(Z3dsError::InputNotDecrypted)),
+            "expected the override to bypass the refusal, got {result:?}"
+        );
+        result.unwrap();
+        assert!(output.exists(), "override should still produce an output");
+    }
+
+    #[tokio::test]
+    async fn compress_encrypted_ncsd_refused() {
+        use crate::nintendo::ctr::constants::NCSD_PARTITION_TABLE_OFFSET;
+        use crate::nintendo::ctr::z3ds::error::Z3dsError;
+
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("encrypted.3ds");
+        let output = dir.path().join("encrypted.zcci");
+
+        let partition_mu: u32 = 1;
+        let partition_offset = partition_mu as usize * 0x200;
+        let mut data = make_encrypted_ncch_at(partition_offset + 0x200, partition_offset);
+        data[NCCH_MAGIC_OFFSET..NCCH_MAGIC_OFFSET + 4].copy_from_slice(&underlying_magic::NCSD);
+        data[NCSD_PARTITION_TABLE_OFFSET..NCSD_PARTITION_TABLE_OFFSET + 4]
+            .copy_from_slice(&partition_mu.to_le_bytes());
+        tokio::fs::write(&input, &data).await.unwrap();
+
+        let result = compress_rom(&input, &output, None, false, &NoProgress).await;
+        assert!(
+            matches!(result, Err(Z3dsError::InputNotDecrypted)),
+            "expected InputNotDecrypted, got {result:?}"
+        );
+        assert!(!output.exists(), "no output should be written on refusal");
+    }
+
+    #[tokio::test]
+    async fn compress_encrypted_cia_refused() {
+        use crate::nintendo::ctr::z3ds::error::Z3dsError;
+
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("encrypted.cia");
+        let output = dir.path().join("encrypted.zcia");
+
+        // header_size = 0x20, all other sections 0 → content at align64(0x20) = 0x40.
+        let content_offset = 0x40;
+        let mut data = make_encrypted_ncch_at(content_offset + 0x200, content_offset);
+        data[0..4].copy_from_slice(&0x20u32.to_le_bytes());
+        tokio::fs::write(&input, &data).await.unwrap();
+
+        let result = compress_rom(&input, &output, None, false, &NoProgress).await;
+        assert!(
+            matches!(result, Err(Z3dsError::InputNotDecrypted)),
+            "expected InputNotDecrypted, got {result:?}"
+        );
+        assert!(!output.exists(), "no output should be written on refusal");
+    }
+
+    #[tokio::test]
+    async fn compress_3dsx_unaffected_by_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = make_fake_3dsx(16 * 1024);
+
+        for allow in [false, true] {
+            let input = dir.path().join(format!("app_{allow}.3dsx"));
+            let output = dir.path().join(format!("app_{allow}.z3dsx"));
+            tokio::fs::write(&input, &original).await.unwrap();
+            compress_rom(&input, &output, None, allow, &NoProgress)
+                .await
+                .unwrap_or_else(|e| panic!("3dsx compress failed at allow={allow}: {e}"));
+            assert!(output.exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn compress_unparseable_header_fails_safe() {
+        use crate::nintendo::ctr::z3ds::error::Z3dsError;
+
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("garbage.cxi");
+        let output = dir.path().join("garbage.zcxi");
+
+        // No NCCH magic anywhere; crypto state cannot be determined.
+        tokio::fs::write(&input, vec![0u8; 0x200]).await.unwrap();
+
+        let refused = compress_rom(&input, &output, None, false, &NoProgress).await;
+        assert!(
+            matches!(refused, Err(Z3dsError::EncryptionStateUnknown)),
+            "expected EncryptionStateUnknown, got {refused:?}"
+        );
+        assert!(!output.exists(), "no output should be written when failing safe");
+
+        compress_rom(&input, &output, None, true, &NoProgress)
+            .await
+            .expect("override should bypass the fail-safe");
+        assert!(output.exists());
     }
 
     #[tokio::test]
@@ -415,7 +532,7 @@ mod tests {
 
         tokio::fs::write(&input, b"dummy").await.unwrap();
 
-        let result = compress_rom(&input, &output, None, &NoProgress).await;
+        let result = compress_rom(&input, &output, None, false, &NoProgress).await;
         assert!(
             matches!(
                 result,
@@ -434,7 +551,7 @@ mod tests {
         tokio::fs::write(&input, &make_fake_3dsx(16 * 1024))
             .await
             .unwrap();
-        compress_rom(&input, &output, None, &NoProgress)
+        compress_rom(&input, &output, None, false, &NoProgress)
             .await
             .unwrap();
 
@@ -458,7 +575,7 @@ mod tests {
             let original = make_fake_decrypted_cxi(1024 * 1024);
             tokio::fs::write(&input, &original).await.unwrap();
 
-            compress_rom(&input, &compressed, level, &NoProgress)
+            compress_rom(&input, &compressed, level, false, &NoProgress)
                 .await
                 .unwrap_or_else(|e| panic!("compress failed at level={level:?}: {e}"));
             decompress_rom(&compressed, &decompressed, &NoProgress)
@@ -483,7 +600,7 @@ mod tests {
             .unwrap();
 
         for bad in [-1, 23, 100] {
-            let result = compress_rom(&input, &output, Some(bad), &NoProgress).await;
+            let result = compress_rom(&input, &output, Some(bad), false, &NoProgress).await;
             assert!(
                 matches!(
                     result,
@@ -511,7 +628,7 @@ mod tests {
             .await
             .unwrap();
 
-        compress_rom(&input, &output, Some(9), &NoProgress)
+        compress_rom(&input, &output, Some(9), false, &NoProgress)
             .await
             .unwrap();
 
@@ -538,7 +655,7 @@ mod tests {
         let raw = dir.path().join("game.3dsx");
         std::fs::write(&raw, make_fake_3dsx(2 * 1024 * 1024)).unwrap();
         let compressed = dir.path().join("game.z3dsx");
-        compress_rom(&raw, &compressed, None, &NoProgress)
+        compress_rom(&raw, &compressed, None, false, &NoProgress)
             .await
             .unwrap();
         let out = dir.path().join("out.3dsx");
@@ -564,7 +681,7 @@ mod tests {
         let raw = dir.path().join("game.3dsx");
         std::fs::write(&raw, make_fake_3dsx(16 * 1024 * 1024)).unwrap();
         let compressed = dir.path().join("game.z3dsx");
-        compress_rom(&raw, &compressed, None, &NoProgress)
+        compress_rom(&raw, &compressed, None, false, &NoProgress)
             .await
             .unwrap();
         let out = dir.path().join("out.3dsx");
@@ -603,7 +720,7 @@ mod tests {
         let original = make_fake_3dsx(2 * 1024 * 1024);
         std::fs::write(&raw, &original).unwrap();
         let compressed = dir.path().join("game.z3dsx");
-        compress_rom(&raw, &compressed, None, &NoProgress)
+        compress_rom(&raw, &compressed, None, false, &NoProgress)
             .await
             .unwrap();
         let out = dir.path().join("out.3dsx");

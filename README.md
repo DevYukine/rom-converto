@@ -244,6 +244,7 @@ The GUI does not yet read this config file. The CLI is the supported path for no
 | `--max-depth <N>` | Limit recursion depth with `--recursive`. `1` = top level only. Default: unlimited |
 | `--on-conflict <POLICY>` | What to do when the output exists: `error` (default), `overwrite`, `skip`, or `rename` |
 | `-f, --force` | Alias for `--on-conflict overwrite` |
+| `--allow-encrypted` | Compress even if the input ROM appears encrypted. `compress` only. By default an encrypted ROM is refused, since encrypted 3DS content has a near-zero compression ratio. Decrypt first with `ctr decrypt`, or pass this to force it |
 
 **`verify` flags:**
 
@@ -257,7 +258,7 @@ The GUI does not yet read this config file. The CLI is the supported path for no
 
 > **`decrypt`:** Supports `.cia`, `.3ds`, `.cci` and `.cxi` files. The format is detected automatically. Place a `seeddb.bin` file next to the executable to resolve seeds locally. If none is found, the tool will fetch the required seed from Nintendo's API.
 
-> **`compress` / `decompress`:** Supported input formats for compression: `.cia`, `.cci`, `.3ds`, `.cxi`, `.3dsx`. Output files use the Z3DS format (`.zcia`, `.zcci`, `.zcxi`, `.z3dsx`). Compression only works on decrypted ROMs, since encrypted ROMs have near-zero compression ratios. The output file path defaults to the input path with the extension updated automatically.
+> **`compress` / `decompress`:** Supported input formats for compression: `.cia`, `.cci`, `.3ds`, `.cxi`, `.3dsx`. Output files use the Z3DS format (`.zcia`, `.zcci`, `.zcxi`, `.z3dsx`). Compression only works on decrypted ROMs, since encrypted ROMs have near-zero compression ratios. `compress` enforces this: it inspects the NCCH/NCSD/CIA crypto flags and refuses an input that still looks encrypted, pointing you to `rom-converto ctr decrypt <INPUT>` and writing no output. A header it cannot parse is also refused, to avoid wasting a full compression pass on a file whose state is unknown. Pass `--allow-encrypted` to override and compress anyway, which prints a warning. In a recursive run each refused file is logged and skipped while the rest of the batch continues. `.3dsx` homebrew has no encryption and is never checked. The output file path defaults to the input path with the extension updated automatically.
 
 > **`convert`:** Direction is auto-detected from the INPUT extension: `.cia` becomes `.3ds` (CCI/NCSD), and `.3ds`/`.cci` become `.cia`. CIA output is unsigned with a zero title key; compatible with CFW (Luma3DS) and emulators, but not installable on stock 3DS.
 

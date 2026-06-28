@@ -721,6 +721,7 @@ async fn dispatch_command(
                         &progress,
                         &total_progress,
                         cmd.max_depth,
+                        cmd.allow_encrypted,
                     )
                     .await?;
                     log_count_summary(count, tally);
@@ -766,8 +767,15 @@ async fn dispatch_command(
                         WriteDecision::Write(p) => p,
                     };
                     let started = Instant::now();
-                    compress_rom_cancellable(&cmd.input, &output, cmd.level, &progress, cancel.clone())
-                        .await?;
+                    compress_rom_cancellable(
+                        &cmd.input,
+                        &output,
+                        cmd.level,
+                        cmd.allow_encrypted,
+                        &progress,
+                        cancel.clone(),
+                    )
+                    .await?;
                     log_single_summary(&cmd.input, &output, TallyDirection::Compress, started);
                 }
             }

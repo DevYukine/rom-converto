@@ -193,6 +193,12 @@ pub struct CompressRomCommand {
     /// Alias for --on-conflict overwrite
     #[arg(long, short = 'f', default_value_t = false, conflicts_with = "on_conflict")]
     pub force: bool,
+
+    /// Compress an encrypted ROM anyway. By default this is refused, because
+    /// encrypted 3DS content has a near-zero compression ratio. Decrypt first
+    /// with: rom-converto ctr decrypt <INPUT>
+    #[arg(long = "allow-encrypted", default_value_t = false)]
+    pub allow_encrypted: bool,
 }
 
 /// Decompress a Z3DS file back to the original ROM format.
@@ -411,6 +417,24 @@ mod tests {
             panic!("expected Compress");
         };
         assert_eq!(c.on_conflict, ConflictPolicyArg::Error);
+    }
+
+    #[test]
+    fn parses_allow_encrypted() {
+        let h = Harness::parse_from(["bin", "compress", "game.cia", "--allow-encrypted"]);
+        let CtrCommands::Compress(c) = h.cmd else {
+            panic!("expected Compress");
+        };
+        assert!(c.allow_encrypted);
+    }
+
+    #[test]
+    fn allow_encrypted_defaults_false() {
+        let h = Harness::parse_from(["bin", "compress", "game.cia"]);
+        let CtrCommands::Compress(c) = h.cmd else {
+            panic!("expected Compress");
+        };
+        assert!(!c.allow_encrypted);
     }
 
     #[test]

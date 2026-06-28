@@ -144,13 +144,15 @@ pub async fn cmd_compress_rom(
     input: PathBuf,
     output: Option<PathBuf>,
     level: Option<i32>,
+    allow_encrypted: bool,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "compress"));
     let output = output.unwrap_or_else(|| derive_compressed_path(&input));
     let out_display = output.display().to_string();
     let token = begin(&state).await;
     let result = tokio::spawn(async move {
-        compress_rom_cancellable(&input, &output, level, progress.as_ref(), token).await
+        compress_rom_cancellable(&input, &output, level, allow_encrypted, progress.as_ref(), token)
+            .await
     })
     .await
     .map_err(err_to_string)?

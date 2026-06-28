@@ -1127,7 +1127,10 @@ mod tests {
 
         let zcia_path = cia_path.with_extension("zcia");
         let prog = crate::util::NoProgress;
-        compress_rom(&cia_path, &zcia_path, None, &prog)
+        // The synthetic CIA's content is not a real NCCH, so the encryption
+        // guard cannot read its crypto state; allow it through, this test only
+        // exercises the streaming verify path.
+        compress_rom(&cia_path, &zcia_path, None, true, &prog)
             .await
             .unwrap();
 

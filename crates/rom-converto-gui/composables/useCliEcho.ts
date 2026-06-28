@@ -108,6 +108,7 @@ export function buildCliCommand(command: string, args: Record<string, unknown>):
       return join([
         "ctr", "compress",
         level ? `-l ${level}` : false,
+        args.allowEncrypted === true && "--allow-encrypted",
         quote(str(args.input)),
         output && quote(output),
       ]);

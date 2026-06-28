@@ -15,7 +15,7 @@ use crate::util::worker_pool::{Pool, parallelism};
 use crate::util::{BYTES_PER_MB, CancelToken, ProgressReporter, await_with_progress_cancel};
 use binrw::BinWrite;
 use chrono::Utc;
-use log::info;
+use log::{info, warn};
 use std::io::{BufReader, BufWriter as StdBufWriter, Cursor, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::sync::Arc;
@@ -58,9 +58,11 @@ pub async fn compress_rom(
     input: &Path,
     output: &Path,
     level: Option<i32>,
+    allow_encrypted: bool,
     progress: &dyn ProgressReporter,
 ) -> Z3dsResult<()> {
-    compress_rom_cancellable(input, output, level, progress, CancelToken::new()).await
+    compress_rom_cancellable(input, output, level, allow_encrypted, progress, CancelToken::new())
+        .await
 }
 
 /// A sibling temp path so an interrupted write never lands on the final
@@ -77,6 +79,7 @@ pub async fn compress_rom_cancellable(
     input: &Path,
     output: &Path,
     level: Option<i32>,
+    allow_encrypted: bool,
     progress: &dyn ProgressReporter,
     cancel: CancelToken,
 ) -> Z3dsResult<()> {
@@ -114,7 +117,20 @@ pub async fn compress_rom_cancellable(
         f.read_exact(&mut buf).await?;
         buf
     };
-    check_not_encrypted(&probe, &ext)?;
+    match check_not_encrypted(&probe, &ext) {
+        Ok(()) => {}
+        Err(e @ (Z3dsError::InputNotDecrypted | Z3dsError::EncryptionStateUnknown)) => {
+            if allow_encrypted {
+                warn!(
+                    "{}: {e}. Compressing anyway because --allow-encrypted was set; the output may be near the same size as the input.",
+                    input.display()
+                );
+            } else {
+                return Err(e);
+            }
+        }
+        Err(e) => return Err(e),
+    }
     drop(probe);
 
     let version = env!("CARGO_PKG_VERSION");
@@ -247,19 +263,21 @@ pub(crate) fn check_not_encrypted(data: &[u8], ext: &str) -> Z3dsResult<()> {
 
 /// NCCH header flags are at offset 0x100 (signature) + 0x188 = 0x188 from the
 /// start of the NCCH block. Bit 2 of flags[7] being set means NoCrypto.
-/// If that bit is clear the partition is encrypted.
+/// If that bit is clear the partition is encrypted. When the header cannot be
+/// read or the NCCH magic is absent, the crypto state is unknown and the check
+/// fails safe rather than letting a possibly encrypted ROM through.
 pub(crate) fn check_ncch_not_encrypted(data: &[u8], ncch_offset: usize) -> Z3dsResult<()> {
     let magic_start = ncch_offset + NCCH_MAGIC_OFFSET;
     if data.len() < magic_start + 4 {
-        return Ok(()); // can't check, let it through
+        return Err(Z3dsError::EncryptionStateUnknown);
     }
     if data[magic_start..magic_start + 4] != underlying_magic::NCCH {
-        return Ok(());
+        return Err(Z3dsError::EncryptionStateUnknown);
     }
 
     let flags_offset = ncch_offset + NCCH_FLAGS_OFFSET;
     if data.len() <= flags_offset + 7 {
-        return Ok(());
+        return Err(Z3dsError::EncryptionStateUnknown);
     }
     let flags7 = data[flags_offset + 7];
     if flags7 & NCCH_FLAGS7_NOCRYPTO == 0 {
@@ -273,11 +291,11 @@ pub(crate) fn check_ncch_not_encrypted(data: &[u8], ncch_offset: usize) -> Z3dsR
 pub(crate) fn check_ncsd_not_encrypted(data: &[u8]) -> Z3dsResult<()> {
     let magic_end = NCCH_MAGIC_OFFSET + 4;
     if data.len() < magic_end || data[NCCH_MAGIC_OFFSET..magic_end] != underlying_magic::NCSD {
-        return Ok(());
+        return Err(Z3dsError::EncryptionStateUnknown);
     }
     // Partition 0 NCCH starts at the offset stored in NCSD partition table.
     if data.len() < NCSD_PARTITION_TABLE_OFFSET + 8 {
-        return Ok(());
+        return Err(Z3dsError::EncryptionStateUnknown);
     }
     let partition_offset_mu = u32::from_le_bytes([
         data[NCSD_PARTITION_TABLE_OFFSET],
@@ -293,7 +311,7 @@ pub(crate) fn check_ncsd_not_encrypted(data: &[u8]) -> Z3dsResult<()> {
 /// parsing the CIA header sizes to find the content section.
 pub(crate) fn check_cia_not_encrypted(data: &[u8]) -> Z3dsResult<()> {
     if data.len() < 0x20 {
-        return Ok(());
+        return Err(Z3dsError::EncryptionStateUnknown);
     }
     // CIA header layout (little-endian):
     //   0x00  u32  header_size
@@ -376,24 +394,33 @@ mod tests {
     }
 
     #[test]
-    fn ncch_wrong_magic_skips_check() {
-        // No NCCH magic → check is silently skipped.
+    fn ncch_wrong_magic_fails_safe() {
+        // No NCCH magic → crypto state is unknown, fail safe.
         let data = vec![0u8; 0x200];
-        assert!(check_ncch_not_encrypted(&data, 0).is_ok());
+        assert!(matches!(
+            check_ncch_not_encrypted(&data, 0).unwrap_err(),
+            Z3dsError::EncryptionStateUnknown
+        ));
     }
 
     #[test]
-    fn ncch_too_short_for_magic_skips_check() {
+    fn ncch_too_short_for_magic_fails_safe() {
         let data = vec![0u8; 0x50]; // shorter than 0x100 + 4
-        assert!(check_ncch_not_encrypted(&data, 0).is_ok());
+        assert!(matches!(
+            check_ncch_not_encrypted(&data, 0).unwrap_err(),
+            Z3dsError::EncryptionStateUnknown
+        ));
     }
 
     #[test]
-    fn ncch_too_short_for_flags_skips_check() {
+    fn ncch_too_short_for_flags_fails_safe() {
         // Has the magic but not enough bytes to reach flags[7].
         let mut data = vec![0u8; 0x18F]; // flags[7] is at 0x18F, need at least 0x190
         data[0x100..0x104].copy_from_slice(b"NCCH");
-        assert!(check_ncch_not_encrypted(&data, 0).is_ok());
+        assert!(matches!(
+            check_ncch_not_encrypted(&data, 0).unwrap_err(),
+            Z3dsError::EncryptionStateUnknown
+        ));
     }
 
     #[test]
@@ -423,9 +450,12 @@ mod tests {
     }
 
     #[test]
-    fn ncsd_wrong_magic_skips_check() {
+    fn ncsd_wrong_magic_fails_safe() {
         let data = vec![0u8; 0x200];
-        assert!(check_ncsd_not_encrypted(&data).is_ok());
+        assert!(matches!(
+            check_ncsd_not_encrypted(&data).unwrap_err(),
+            Z3dsError::EncryptionStateUnknown
+        ));
     }
 
     #[test]
@@ -442,9 +472,12 @@ mod tests {
     }
 
     #[test]
-    fn cia_too_short_skips_check() {
+    fn cia_too_short_fails_safe() {
         let data = vec![0u8; 0x10]; // shorter than 0x20
-        assert!(check_cia_not_encrypted(&data).is_ok());
+        assert!(matches!(
+            check_cia_not_encrypted(&data).unwrap_err(),
+            Z3dsError::EncryptionStateUnknown
+        ));
     }
 
     #[test]
