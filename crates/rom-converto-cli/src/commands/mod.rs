@@ -54,7 +54,7 @@ pub struct Cli {
     )]
     pub quiet: bool,
 
-    #[arg(short = 'v', long, global = true, action = clap::ArgAction::Count, help = "Increase verbosity (-v debug, -vv trace)")]
+    #[arg(short = 'v', long, global = true, action = clap::ArgAction::Count, help = "Increase verbosity (-v debug, -vv trace, -vvv trace + dependencies)")]
     pub verbose: u8,
 
     #[arg(
@@ -86,6 +86,14 @@ pub struct Cli {
         help = "Preview what would happen without writing any output"
     )]
     pub dry_run: bool,
+
+    #[arg(
+        long = "debug-log",
+        global = true,
+        value_name = "FILE",
+        help = "Write a full-detail trace log to FILE regardless of console verbosity"
+    )]
+    pub debug_log: Option<PathBuf>,
 }
 
 #[derive(Subcommand, Debug, Eq, PartialEq)]

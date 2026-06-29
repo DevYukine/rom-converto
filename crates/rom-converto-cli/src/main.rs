@@ -15,7 +15,7 @@ use crate::util::{
     IndicatifProgress, WriteDecision, ensure_input_exists, policy_of, resolve_output,
     resolve_output_dir, resolve_policy,
 };
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser};
 use clap_complete::{generate, generate_to};
 use indicatif::MultiProgress;
@@ -75,6 +75,7 @@ mod config;
 mod dry_run;
 mod github;
 mod info_print;
+mod logging;
 mod updater;
 mod util;
 // Mirrors the inline logic in build.rs; kept here so it is unit-testable.
@@ -389,23 +390,24 @@ async fn main() -> Result<()> {
         return run_shell_completions(cmd);
     }
 
-    let project_level = if cli.quiet {
-        log::LevelFilter::Warn
-    } else {
-        match cli.verbose {
-            0 => log::LevelFilter::Info,
-            1 => log::LevelFilter::Debug,
-            _ => log::LevelFilter::Trace,
+    let (project_level, global_level) = logging::resolve_log_levels(cli.quiet, cli.verbose);
+
+    let debug_file = match cli.debug_log.as_deref() {
+        Some(path) => {
+            let f = std::fs::File::create(path)
+                .with_context(|| format!("cannot open debug log: {}", path.display()))?;
+            Some(std::io::BufWriter::new(f))
         }
+        None => None,
     };
 
     let mut builder = env_logger::builder();
     builder
-        .filter_level(log::LevelFilter::Warn)
+        .filter_level(global_level)
         .filter_module("rom_converto", project_level)
         .filter_module("rom_converto_lib", project_level)
         .format_timestamp(None);
-    if cli.verbose == 0 {
+    if cli.verbose == 0 && !cli.quiet {
         builder.format_target(false);
         // At default verbosity ordinary info lines are user-facing
         // summaries, so they print as plain text; warnings and errors
@@ -418,13 +420,26 @@ async fn main() -> Result<()> {
             }
         });
     }
-    let logger = builder.parse_default_env().build();
+    let console_logger = builder.parse_default_env().build();
 
-    let level = logger.filter();
     let pb = MultiProgress::new();
 
-    LogWrapper::new(pb.clone(), logger).try_init()?;
-    log::set_max_level(level);
+    let max_level = if debug_file.is_some() {
+        log::LevelFilter::Trace
+    } else {
+        console_logger.filter()
+    };
+
+    match debug_file {
+        Some(file) => {
+            let dual = logging::DualLogger::new(console_logger, file);
+            LogWrapper::new(pb.clone(), dual).try_init()?;
+        }
+        None => {
+            LogWrapper::new(pb.clone(), console_logger).try_init()?;
+        }
+    }
+    log::set_max_level(max_level);
 
     cleanup_old_executable().await?;
 
@@ -468,6 +483,8 @@ async fn main() -> Result<()> {
         &mut github,
     )
     .await;
+
+    log::logger().flush();
 
     if let Err(err) = dispatch {
         if cancel.is_cancelled() && is_cancelled_error(&err) {

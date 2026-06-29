@@ -83,6 +83,8 @@ Where each format works:
 
 * [x] Command line interface with progress bars and a post-run space-saved summary
 * [x] Global `--dry-run` preview that shows the planned actions without writing anything
+* [x] Three-step verbosity ladder: `-v` (debug), `-vv` (trace), `-vvv` (trace including dependency logs)
+* [x] Global `--debug-log <FILE>` flag that writes a full trace log to a file independently of the console verbosity
 * [x] `--on-conflict overwrite-invalid` mode that verifies existing outputs and rewrites only the broken or missing ones
 * [x] Desktop GUI with drag and drop batch processing
 * [x] Standalone `hash` command for crc32 / sha1 / md5 / sha256 digests with report export
@@ -130,6 +132,8 @@ Pressing Ctrl-C stops the current operation cleanly. The running conversion abor
 The `compress`, `decompress`, and `chd extract` commands also accept `--report <FILE>` to write a structured run report after the run. The format is inferred from the file extension and the numbers match the closing summary. The report file is overwritten directly and does not go through `--on-conflict`, since it is an output you named explicitly rather than a converted ROM. See [Run reports](#run-reports) for the formats and schema.
 
 Two global flags work on every command: `--config <FILE>` points at a config file directly and overrides the search order, and `--preset <NAME>` applies a named preset from the config. See [Configuration](#configuration) for the file format and how settings are resolved.
+
+Console verbosity is a three-step ladder. `-v` shows debug-level messages from the rom-converto modules, `-vv` raises them to trace level, and `-vvv` shows trace-level output from every module including dependencies. `--quiet` suppresses everything except warnings and errors and takes precedence over `-v`. Separately, `--debug-log <FILE>` writes a full trace log (every module at trace level, with timestamps and module targets) to FILE for the current run, regardless of the console verbosity. The file is created fresh at startup and is useful for attaching a complete log to a bug report without flooding the terminal; if it cannot be opened the command stops with an error before doing any work.
 
 The compress, decompress, convert, decrypt, and `chd extract` commands also accept `--output-template`, an alternative way to derive the output path from the ROM's own metadata. See [Output-path templates](#output-path-templates).
 
