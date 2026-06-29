@@ -12,8 +12,10 @@ pub mod error;
 pub mod models;
 mod seekable;
 
-pub use compress::{DEFAULT_ZSTD_LEVEL, MAX_ZSTD_LEVEL, MIN_ZSTD_LEVEL, compress_rom};
-pub use decompress::decompress_rom;
+pub use compress::{
+    DEFAULT_ZSTD_LEVEL, MAX_ZSTD_LEVEL, MIN_ZSTD_LEVEL, compress_rom, compress_rom_cancellable,
+};
+pub use decompress::{decompress_rom, decompress_rom_cancellable};
 pub use seekable::decode_seekable;
 
 const COMPRESS_EXTS: &[&str] = &["cia", "cci", "3ds", "cxi", "3dsx"];
@@ -525,5 +527,93 @@ mod tests {
             .find(|i| i.name == "zstdlevel")
             .expect("zstdlevel missing from metadata");
         assert_eq!(level_item.data.as_slice(), b"9");
+    }
+
+    #[tokio::test]
+    async fn decompress_cancel_before_start_leaves_no_output() {
+        use crate::nintendo::ctr::z3ds::error::Z3dsError;
+        use crate::util::CancelToken;
+
+        let dir = tempfile::tempdir().unwrap();
+        let raw = dir.path().join("game.3dsx");
+        std::fs::write(&raw, make_fake_3dsx(2 * 1024 * 1024)).unwrap();
+        let compressed = dir.path().join("game.z3dsx");
+        compress_rom(&raw, &compressed, None, &NoProgress)
+            .await
+            .unwrap();
+        let out = dir.path().join("out.3dsx");
+
+        let token = CancelToken::new();
+        token.cancel();
+        let result = decompress_rom_cancellable(&compressed, &out, &NoProgress, token).await;
+
+        assert!(matches!(result, Err(Z3dsError::Cancelled)));
+        assert!(!out.exists(), "no partial output");
+        assert!(
+            !crate::nintendo::ctr::z3ds::decompress::scratch_output_path(&out).exists(),
+            "no leftover temp"
+        );
+    }
+
+    #[tokio::test]
+    async fn decompress_cancel_mid_stream_leaves_no_output() {
+        use crate::nintendo::ctr::z3ds::error::Z3dsError;
+        use crate::util::CancelToken;
+
+        let dir = tempfile::tempdir().unwrap();
+        let raw = dir.path().join("game.3dsx");
+        std::fs::write(&raw, make_fake_3dsx(16 * 1024 * 1024)).unwrap();
+        let compressed = dir.path().join("game.z3dsx");
+        compress_rom(&raw, &compressed, None, &NoProgress)
+            .await
+            .unwrap();
+        let out = dir.path().join("out.3dsx");
+
+        let token = CancelToken::new();
+        let token2 = token.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            token2.cancel();
+        });
+
+        let result = decompress_rom_cancellable(&compressed, &out, &NoProgress, token).await;
+
+        // Mid-stream timing can occasionally complete before the cancel
+        // fires; accept either a clean cancel (no output) or a completed
+        // run, but never a leftover temp file.
+        match result {
+            Err(Z3dsError::Cancelled) => {
+                assert!(!out.exists(), "no partial output after mid-stream cancel");
+            }
+            Ok(()) => assert!(out.exists()),
+            other => panic!("unexpected result: {other:?}"),
+        }
+        assert!(
+            !crate::nintendo::ctr::z3ds::decompress::scratch_output_path(&out).exists(),
+            "no leftover temp"
+        );
+    }
+
+    #[tokio::test]
+    async fn decompress_cancel_after_completion_is_noop() {
+        use crate::util::CancelToken;
+
+        let dir = tempfile::tempdir().unwrap();
+        let raw = dir.path().join("game.3dsx");
+        let original = make_fake_3dsx(2 * 1024 * 1024);
+        std::fs::write(&raw, &original).unwrap();
+        let compressed = dir.path().join("game.z3dsx");
+        compress_rom(&raw, &compressed, None, &NoProgress)
+            .await
+            .unwrap();
+        let out = dir.path().join("out.3dsx");
+
+        let token = CancelToken::new();
+        decompress_rom_cancellable(&compressed, &out, &NoProgress, token.clone())
+            .await
+            .unwrap();
+        token.cancel();
+        assert!(out.exists(), "output survives a post-completion cancel");
+        assert_eq!(std::fs::read(&out).unwrap(), original);
     }
 }

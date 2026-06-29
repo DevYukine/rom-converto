@@ -24,6 +24,7 @@ pub mod ticket_parser;
 pub mod tmd_parser;
 
 pub use compress::compress_nus_title;
+pub use decrypt::decrypt_nus_title_async_cancellable;
 pub use content_stream::{
     ContentLoader, decrypt_content_0, decrypt_hashed_content, decrypt_raw_content,
 };

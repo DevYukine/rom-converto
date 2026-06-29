@@ -28,6 +28,7 @@ export function useBatchOperation(
 
     let doneCount = 0;
     let errorCount = 0;
+    let cancelledCount = 0;
 
     for (let i = 0; i < queue.value.length; i++) {
       if (aborted.value) break;
@@ -61,8 +62,15 @@ export function useBatchOperation(
           doneCount++;
         }
       } catch (e) {
+        const message = String(e);
+        if (message.includes("operation cancelled")) {
+          item.status = "cancelled";
+          item.error = message;
+          cancelledCount++;
+          break;
+        }
         item.status = "error";
-        item.error = String(e);
+        item.error = message;
         errorCount++;
       }
     }
@@ -71,15 +79,23 @@ export function useBatchOperation(
     currentIndex.value = -1;
 
     const total = queue.value.length;
-    if (errorCount === 0) {
+    if (errorCount === 0 && cancelledCount === 0) {
       resultRef.value = `All ${total} files processed successfully`;
     } else {
-      resultRef.value = `${doneCount} of ${total} succeeded, ${errorCount} failed`;
+      let summary = `${doneCount} of ${total} succeeded`;
+      if (errorCount > 0) summary += `, ${errorCount} failed`;
+      if (cancelledCount > 0) summary += `, ${cancelledCount} cancelled`;
+      resultRef.value = summary;
     }
   }
 
-  function abort() {
+  async function abort() {
     aborted.value = true;
+    try {
+      await invoke("cmd_cancel");
+    } catch {
+      // The running task may have already finished; nothing to cancel.
+    }
   }
 
   return { running, currentIndex, progress, start, abort };

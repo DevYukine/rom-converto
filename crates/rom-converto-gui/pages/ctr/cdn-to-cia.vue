@@ -5,7 +5,7 @@ import { useCtrCdnToCiaStore } from "~/stores/ctr-cdn-to-cia";
 const store = useCtrCdnToCiaStore();
 const { cdnDir, output, decrypt, compress, cleanup, recursive, ensureTicket, result, error, loading } = storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
-const { run } = useOperation({ result, error, loading });
+const { run, cancelled, abort } = useOperation({ result, error, loading });
 const progress = useProgress("cdn-to-cia");
 const totalProgress = useProgress("cdn-to-cia-total");
 const commandLine = ref("");
@@ -111,14 +111,14 @@ async function execute() {
           :running="progress.running.value"
         />
 
-        <RunButton :loading="loading" :disabled="!cdnDir" @click="execute">
+        <RunButton :loading="loading" :disabled="!cdnDir" @click="execute" @cancel="abort()">
           Convert
         </RunButton>
       </div>
     </OperationCard>
 
     <div class="mt-4">
-      <OutputLog :command="commandLine" :result="result" :error="error" />
+      <OutputLog :command="commandLine" :result="result" :cancelled="cancelled ? 'Operation cancelled.' : undefined" :error="error" />
     </div>
   </div>
 </template>

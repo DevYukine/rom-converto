@@ -77,6 +77,9 @@ pub enum NxError {
 
     #[error("no ticket found for rights_id {0}")]
     MissingTicket(String),
+
+    #[error("operation cancelled")]
+    Cancelled,
 }
 
 fn format_paths(paths: &[PathBuf]) -> String {

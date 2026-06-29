@@ -6,7 +6,7 @@ import { useChdExtractStore } from "~/stores/chd-extract";
 const store = useChdExtractStore();
 const { input, output, parent, result, error, loading, queue } = storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
-const { run } = useOperation({ result, error, loading });
+const { run, cancelled, abort } = useOperation({ result, error, loading });
 const progress = useProgress("chd-extract");
 
 const isBatch = computed(() => queue.value.length > 0);
@@ -144,6 +144,7 @@ async function execute() {
           :batch-total="queue.length"
           :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input || !output"
           @click="execute"
+          @cancel="isBatch ? batch.abort() : abort()"
         >
           {{ isBatch && queue.filter(i => i.status === 'pending').length > 1 ? `Extract All (${queue.filter(i => i.status === 'pending').length})` : 'Extract' }}
         </RunButton>
@@ -151,7 +152,7 @@ async function execute() {
     </OperationCard>
 
     <div class="mt-4">
-      <OutputLog :command="commandLine" :result="result" :error="error" />
+      <OutputLog :command="commandLine" :result="result" :cancelled="cancelled ? 'Operation cancelled.' : undefined" :error="error" />
     </div>
   </div>
 </template>

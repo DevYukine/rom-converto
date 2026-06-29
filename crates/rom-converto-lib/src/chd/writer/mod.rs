@@ -17,6 +17,7 @@ use crate::chd::writer::worker::{
     compress_hunks, compress_hunks_dvd, make_chd_compress_workers, make_chd_dvd_compress_workers,
 };
 use crate::cue::models::CueSheet;
+use crate::util::CancelToken;
 use crate::util::worker_pool::{Pool, parallelism};
 use binrw::BinWrite;
 use sha1::{Digest, Sha1};
@@ -164,6 +165,7 @@ impl ChdWriter {
         data_sectors: u32,
         sector_data_size: usize,
         bytes_done: &Arc<AtomicU64>,
+        cancel: &CancelToken,
     ) -> ChdResult<()> {
         let hunk_bytes = self.header.hunk_bytes as usize;
         let n_threads = parallelism();
@@ -183,6 +185,7 @@ impl ChdWriter {
             sector_data_size,
             hunk_bytes,
             bytes_done,
+            cancel,
         );
 
         pool.shutdown();
@@ -193,6 +196,7 @@ impl ChdWriter {
         &mut self,
         iso_reader: &mut BufReader<std::fs::File>,
         bytes_done: &Arc<AtomicU64>,
+        cancel: &CancelToken,
     ) -> ChdResult<()> {
         let hunk_bytes = self.header.hunk_bytes as usize;
         let allow_zstd = self.header.compressor_2 == tag_to_bytes("zstd");
@@ -210,6 +214,7 @@ impl ChdWriter {
             self.header.logical_bytes,
             hunk_bytes,
             bytes_done,
+            cancel,
         );
 
         pool.shutdown();
@@ -282,7 +287,7 @@ mod tests {
             ChdWriter::create_dvd(&chd_path, iso.len() as u64, hunk_size, allow_zstd).unwrap();
         let bytes_done = Arc::new(AtomicU64::new(0));
         writer
-            .compress_all_hunks_dvd(&mut reader, &bytes_done)
+            .compress_all_hunks_dvd(&mut reader, &bytes_done, &CancelToken::new())
             .unwrap();
         assert_eq!(bytes_done.load(Ordering::Relaxed), iso.len() as u64);
         writer.finalize().unwrap();
@@ -411,6 +416,7 @@ mod tests {
             ps2_path,
             ps2_out.clone(),
             crate::chd::ChdDvdOptions::default(),
+            CancelToken::new(),
         )
         .await
         .unwrap();
@@ -433,6 +439,7 @@ mod tests {
             psp_path,
             psp_out.clone(),
             crate::chd::ChdDvdOptions::default(),
+            CancelToken::new(),
         )
         .await
         .unwrap();

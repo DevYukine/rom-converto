@@ -158,6 +158,7 @@ async function execute() {
           :batch-total="queue.length"
           :disabled="!canDecompress"
           @click="execute"
+          @cancel="batch.abort"
         >
           {{ queue.filter(i => i.status === 'pending').length > 1 ? `Decompress All (${queue.filter(i => i.status === 'pending').length})` : 'Decompress' }}
         </RunButton>

@@ -5,7 +5,7 @@ import { useDolCompressStore } from "~/stores/dol-compress";
 const store = useDolCompressStore();
 const { input, output, level, chunkSize, result, error, loading, queue } = storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
-const { run } = useOperation({ result, error, loading });
+const { run, cancelled, abort } = useOperation({ result, error, loading });
 const progress = useProgress("dol-compress");
 
 const CHUNK_SIZES = [32768, 65536, 131072, 262144, 524288, 1048576, 2097152];
@@ -160,6 +160,7 @@ async function execute() {
           :batch-total="queue.length"
           :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input"
           @click="execute"
+          @cancel="isBatch ? batch.abort() : abort()"
         >
           {{ isBatch && queue.filter(i => i.status === 'pending').length > 1 ? `Compress All (${queue.filter(i => i.status === 'pending').length})` : 'Compress' }}
         </RunButton>
@@ -167,7 +168,7 @@ async function execute() {
     </OperationCard>
 
     <div class="mt-4">
-      <OutputLog :command="commandLine" :result="result" :error="error" />
+      <OutputLog :command="commandLine" :result="result" :cancelled="cancelled ? 'Operation cancelled.' : undefined" :error="error" />
     </div>
   </div>
 </template>

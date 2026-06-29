@@ -5,6 +5,7 @@ use crate::nintendo::ctr::decrypt::artifact_path::{
     ncch_artifact_dir_and_stem, ncch_component_path,
 };
 use crate::nintendo::ctr::decrypt::cia::parse_and_decrypt_cia;
+use crate::nintendo::ctr::error::NintendoCTRError;
 use crate::nintendo::ctr::models::certificate::Certificate;
 use crate::nintendo::ctr::models::cia::{
     CIA_HEADER_SIZE, CiaFile, CiaFileWithoutContent, CiaHeader,
@@ -12,7 +13,7 @@ use crate::nintendo::ctr::models::cia::{
 use crate::nintendo::ctr::models::ticket::Ticket;
 use crate::nintendo::ctr::models::title_metadata::TitleMetadata;
 use crate::nintendo::ctr::util::align_64;
-use crate::util::ProgressReporter;
+use crate::util::{CancelToken, ProgressReporter};
 use binrw::{BinRead, BinWrite, Endian};
 use byteorder::{BigEndian, ReadBytesExt};
 use sha2::{Digest, Sha256};
@@ -28,10 +29,11 @@ pub async fn decrypt_from_encrypted_cia(
     input: &Path,
     out_writer: &mut BufWriter<File>,
     progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
 ) -> anyhow::Result<()> {
     let input_size = tokio::fs::metadata(input).await?.len();
     progress.start(input_size, "Decrypting CIA...");
-    parse_and_decrypt_cia(input, None, progress).await?;
+    parse_and_decrypt_cia(input, None, progress, cancel).await?;
     progress.finish();
 
     let source_bytes = tokio::fs::read(input).await?;
@@ -160,6 +162,7 @@ pub async fn write_cia(
     tmd: TitleMetadata,
     tik: Ticket,
     progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
 ) -> anyhow::Result<()> {
     let total_content_size: u64 = tmd
         .content_chunk_records
@@ -231,6 +234,9 @@ pub async fn write_cia(
         let mut f = File::open(&content_path).await?;
         let mut written: u64 = 0;
         loop {
+            if cancel.is_cancelled() {
+                return Err(NintendoCTRError::Cancelled.into());
+            }
             let n = f.read(&mut buf).await?;
             if n == 0 {
                 break;
@@ -440,6 +446,7 @@ mod tests {
                 tmd.clone(),
                 ticket,
                 &NoProgress,
+                &CancelToken::new(),
             )
             .await
             .unwrap();
@@ -513,6 +520,7 @@ mod tests {
                 tmd,
                 ticket,
                 &NoProgress,
+                &CancelToken::new(),
             )
             .await
             .unwrap();
@@ -585,6 +593,7 @@ mod tests {
             tmd,
             ticket,
             &NoProgress,
+            &CancelToken::new(),
         )
         .await
         .unwrap_err();
@@ -646,6 +655,7 @@ mod tests {
             tmd,
             ticket,
             &NoProgress,
+            &CancelToken::new(),
         )
         .await
         .unwrap_err();
@@ -668,7 +678,7 @@ mod tests {
 
         let f = File::create(&out_path).await.unwrap();
         let mut out = BufWriter::new(f);
-        decrypt_from_encrypted_cia(&in_path, &mut out, &NoProgress)
+        decrypt_from_encrypted_cia(&in_path, &mut out, &NoProgress, &CancelToken::new())
             .await
             .unwrap();
         out.flush().await.unwrap();
@@ -744,7 +754,7 @@ mod tests {
         let out_path = in_path.with_extension("dec.cia");
         let f = File::create(&out_path).await.unwrap();
         let mut out = BufWriter::new(f);
-        decrypt_from_encrypted_cia(&in_path, &mut out, &NoProgress)
+        decrypt_from_encrypted_cia(&in_path, &mut out, &NoProgress, &CancelToken::new())
             .await
             .unwrap();
         out.flush().await.unwrap();
@@ -779,7 +789,7 @@ mod tests {
 
         let f = File::create(&out_path).await.unwrap();
         let mut out = BufWriter::new(f);
-        decrypt_from_encrypted_cia(&in_path, &mut out, &NoProgress)
+        decrypt_from_encrypted_cia(&in_path, &mut out, &NoProgress, &CancelToken::new())
             .await
             .expect("decrypt must succeed for a content_id containing hex letters");
         out.flush().await.unwrap();

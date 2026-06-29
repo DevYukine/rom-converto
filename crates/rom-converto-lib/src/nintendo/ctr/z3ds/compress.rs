@@ -12,7 +12,7 @@ use crate::nintendo::ctr::z3ds::models::{
 };
 use crate::nintendo::ctr::z3ds::seekable::{FRAME_SIZE_CIA, FRAME_SIZE_DEFAULT};
 use crate::util::worker_pool::{Pool, parallelism};
-use crate::util::{BYTES_PER_MB, ProgressReporter};
+use crate::util::{BYTES_PER_MB, CancelToken, ProgressReporter, await_with_progress_cancel};
 use binrw::BinWrite;
 use chrono::Utc;
 use log::info;
@@ -59,6 +59,26 @@ pub async fn compress_rom(
     output: &Path,
     level: Option<i32>,
     progress: &dyn ProgressReporter,
+) -> Z3dsResult<()> {
+    compress_rom_cancellable(input, output, level, progress, CancelToken::new()).await
+}
+
+/// A sibling temp path so an interrupted write never lands on the final
+/// name.
+fn scratch_output_path(output: &Path) -> std::path::PathBuf {
+    let mut name = output.file_name().unwrap_or_default().to_os_string();
+    name.push(".tmp");
+    output.with_file_name(name)
+}
+
+/// Like [`compress_rom`] but observes `cancel` at every frame boundary;
+/// on cancel the partial output is removed.
+pub async fn compress_rom_cancellable(
+    input: &Path,
+    output: &Path,
+    level: Option<i32>,
+    progress: &dyn ProgressReporter,
+    cancel: CancelToken,
 ) -> Z3dsResult<()> {
     let ext = input
         .extension()
@@ -117,21 +137,23 @@ pub async fn compress_rom(
     );
 
     // Atomic counter to relay progress out of the blocking thread.
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::AtomicU64;
     let bytes_done = Arc::new(AtomicU64::new(0));
     let bytes_done_clone = bytes_done.clone();
 
     // The paths are moved into the blocking task; borrows do not cross await.
+    let write_path = scratch_output_path(output);
     let input_owned = input.to_path_buf();
-    let output_owned = output.to_path_buf();
+    let write_owned = write_path.clone();
+    let cancel_bg = cancel.clone();
     let metadata_bytes_owned = metadata_bytes;
 
-    let mut handle = task::spawn_blocking(move || -> Z3dsResult<(u64, u64)> {
+    let handle = task::spawn_blocking(move || -> Z3dsResult<(u64, u64)> {
         // std::fs (not tokio) lets the reader and writer hand off directly to zstd.
         let in_file = std::fs::File::open(&input_owned)?;
         let mut reader = BufReader::with_capacity(4 * 1024 * 1024, in_file);
 
-        let out_file = std::fs::File::create(&output_owned)?;
+        let out_file = std::fs::File::create(&write_owned)?;
         let mut writer = StdBufWriter::with_capacity(4 * 1024 * 1024, out_file);
 
         // Placeholder header. The real one is written after the payload, by
@@ -154,6 +176,7 @@ pub async fn compress_rom(
             frame_size,
             uncompressed_size,
             &bytes_done_clone,
+            &cancel_bg,
         )?;
 
         pool.shutdown();
@@ -180,25 +203,22 @@ pub async fn compress_rom(
         Ok((compressed_size, uncompressed_size))
     });
 
-    // Poll the background task, reporting progress every 100 ms.
-    let (compressed_size, _) = loop {
-        match tokio::time::timeout(std::time::Duration::from_millis(100), &mut handle).await {
-            Ok(result) => {
-                break result??;
-            }
-            Err(_) => {
-                let delta = bytes_done.swap(0, Ordering::Relaxed);
-                if delta > 0 {
-                    progress.inc(delta);
-                }
-            }
+    let cleanup = {
+        let write_path = write_path.clone();
+        move || -> Z3dsError {
+            let _ = std::fs::remove_file(&write_path);
+            Z3dsError::Cancelled
         }
     };
-    let remaining = bytes_done.swap(0, Ordering::Relaxed);
-    if remaining > 0 {
-        progress.inc(remaining);
-    }
-    progress.finish();
+    let (compressed_size, _) =
+        match await_with_progress_cancel(progress, &bytes_done, handle, &cancel, cleanup).await {
+            Ok(sizes) => sizes,
+            Err(err) => {
+                let _ = tokio::fs::remove_file(&write_path).await;
+                return Err(err);
+            }
+        };
+    tokio::fs::rename(&write_path, output).await?;
 
     let ratio = (1.0 - compressed_size as f64 / uncompressed_size as f64) * 100.0;
     info!(

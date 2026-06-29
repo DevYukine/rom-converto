@@ -9,17 +9,19 @@ use crate::chd::writer::metadata::MetadataHash;
 use crate::cue::CueParser;
 use crate::cue::models::{CueFile, CueSheet, FileType, Index, Msf, Track, TrackType};
 use crate::util::iso9660::{DiscKind, detect_disc_kind};
-use crate::util::{BYTES_PER_MB, ProgressReporter};
+use crate::util::{
+    BYTES_PER_MB, CancelToken, ProgressReporter, await_with_progress_cancel,
+};
 use log::{debug, info, warn};
 use sha1::{Digest, Sha1};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 
 pub mod compression;
-pub(crate) mod error;
+pub mod error;
 pub mod info;
 pub(crate) mod map;
 mod models;
@@ -52,6 +54,26 @@ pub enum DiscMode {
     Dvd,
 }
 
+/// A sibling temp path in the output directory so an interrupted write
+/// never lands on the final name and a pre-existing overwrite target
+/// survives until the rename.
+fn scratch_output_path(output: &std::path::Path) -> PathBuf {
+    let mut name = output.file_name().unwrap_or_default().to_os_string();
+    name.push(".tmp");
+    output.with_file_name(name)
+}
+
+/// Remove the scratch file and report the cancellation; used as the
+/// `on_cancel` fallback for the race where the blocking pipeline
+/// finished a hunk just as the token fired.
+fn cancel_cleanup(write_path: &std::path::Path) -> impl FnOnce() -> ChdError {
+    let write_path = write_path.to_path_buf();
+    move || {
+        let _ = std::fs::remove_file(&write_path);
+        ChdError::Cancelled
+    }
+}
+
 /// Route a disc image to the right CHD writer: `.cue` input is
 /// CD-mode; an `.iso` is probed with [`detect_disc_kind`] and CD-media
 /// images (PS1, PS2-CD) become CD-mode CHDs while DVD-media images
@@ -64,19 +86,41 @@ pub async fn convert_disc_to_chd(
     mode: Option<DiscMode>,
     opts: ChdDvdOptions,
 ) -> ChdResult<()> {
+    convert_disc_to_chd_cancellable(
+        progress,
+        input_path,
+        output_path,
+        mode,
+        opts,
+        CancelToken::new(),
+    )
+    .await
+}
+
+/// Like [`convert_disc_to_chd`] but observes `cancel` at every hunk
+/// boundary; on cancel the partial CHD is removed and a pre-existing
+/// overwrite target is left untouched.
+pub async fn convert_disc_to_chd_cancellable(
+    progress: &dyn ProgressReporter,
+    input_path: PathBuf,
+    output_path: PathBuf,
+    mode: Option<DiscMode>,
+    opts: ChdDvdOptions,
+    cancel: CancelToken,
+) -> ChdResult<()> {
     let is_cue = input_path
         .extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("cue"));
     match (mode, is_cue) {
         (None | Some(DiscMode::Cd), true) => {
-            convert_to_chd(progress, input_path, output_path, opts.force).await
+            convert_to_chd(progress, input_path, output_path, opts.force, cancel).await
         }
         (Some(DiscMode::Dvd), true) => Err(ChdError::DvdModeNeedsIso),
         (Some(DiscMode::Cd), false) => {
-            convert_iso_to_cd_chd(progress, input_path, output_path, opts.force).await
+            convert_iso_to_cd_chd(progress, input_path, output_path, opts.force, cancel).await
         }
         (Some(DiscMode::Dvd), false) => {
-            convert_iso_to_chd(progress, input_path, output_path, opts).await
+            convert_iso_to_chd(progress, input_path, output_path, opts, cancel).await
         }
         (None, false) => {
             let detect_path = input_path.clone();
@@ -92,7 +136,8 @@ pub async fn convert_disc_to_chd(
                             input_path
                         );
                     }
-                    convert_iso_to_cd_chd(progress, input_path, output_path, opts.force).await
+                    convert_iso_to_cd_chd(progress, input_path, output_path, opts.force, cancel)
+                        .await
                 }
                 DiscKind::Ps2Dvd | DiscKind::Psp | DiscKind::UnknownIso => {
                     info!("{} detected, writing DVD-mode CHD", kind.label());
@@ -102,6 +147,7 @@ pub async fn convert_disc_to_chd(
                         output_path,
                         opts,
                         Some(kind),
+                        cancel,
                     )
                     .await
                 }
@@ -162,8 +208,9 @@ pub async fn convert_iso_to_chd(
     iso_path: PathBuf,
     output_path: PathBuf,
     opts: ChdDvdOptions,
+    cancel: CancelToken,
 ) -> ChdResult<()> {
-    convert_iso_to_chd_with_kind(progress, iso_path, output_path, opts, None).await
+    convert_iso_to_chd_with_kind(progress, iso_path, output_path, opts, None, cancel).await
 }
 
 /// DVD-mode compress with an already-detected [`DiscKind`], so the
@@ -174,6 +221,7 @@ async fn convert_iso_to_chd_with_kind(
     output_path: PathBuf,
     opts: ChdDvdOptions,
     kind: Option<DiscKind>,
+    cancel: CancelToken,
 ) -> ChdResult<()> {
     if fs::metadata(&output_path).await.is_ok() && !opts.force {
         return Err(ChdError::ChdFileAlreadyExists);
@@ -208,9 +256,11 @@ async fn convert_iso_to_chd_with_kind(
         &format!("Compressing to CHD (~{:.2} MB)", total_mb),
     );
 
+    let write_path = scratch_output_path(&output_path);
     let iso_owned = iso_path.clone();
-    let output_owned = output_path.clone();
+    let write_owned = write_path.clone();
     let allow_zstd = opts.allow_zstd;
+    let cancel_bg = cancel.clone();
     let bytes_done = Arc::new(AtomicU64::new(0));
     let bytes_done_bg = bytes_done.clone();
 
@@ -218,13 +268,20 @@ async fn convert_iso_to_chd_with_kind(
         let iso_file = std::fs::File::open(&iso_owned)?;
         let mut iso_reader = std::io::BufReader::with_capacity(IO_BUFFER_SIZE, iso_file);
 
-        let mut writer = ChdWriter::create_dvd(&output_owned, iso_size, hunk_size, allow_zstd)?;
-        writer.compress_all_hunks_dvd(&mut iso_reader, &bytes_done_bg)?;
+        let mut writer = ChdWriter::create_dvd(&write_owned, iso_size, hunk_size, allow_zstd)?;
+        writer.compress_all_hunks_dvd(&mut iso_reader, &bytes_done_bg, &cancel_bg)?;
         writer.finalize()?;
         Ok(())
     });
 
-    crate::util::await_with_progress(progress, &bytes_done, handle).await?;
+    if let Err(err) =
+        await_with_progress_cancel(progress, &bytes_done, handle, &cancel, cancel_cleanup(&write_path))
+            .await
+    {
+        let _ = fs::remove_file(&write_path).await;
+        return Err(err);
+    }
+    fs::rename(&write_path, &output_path).await?;
 
     let chd_size = fs::metadata(&output_path).await?.len();
     let compression_ratio = (chd_size as f64 / iso_size as f64) * 100.0;
@@ -278,6 +335,7 @@ pub async fn convert_iso_to_cd_chd(
     iso_path: PathBuf,
     output_path: PathBuf,
     force: bool,
+    cancel: CancelToken,
 ) -> ChdResult<()> {
     if fs::metadata(&output_path).await.is_ok() && !force {
         return Err(ChdError::ChdFileAlreadyExists);
@@ -301,8 +359,10 @@ pub async fn convert_iso_to_cd_chd(
         &format!("Compressing to CHD (~{:.2} MB)", total_mb),
     );
 
+    let write_path = scratch_output_path(&output_path);
     let iso_owned = iso_path.clone();
-    let output_owned = output_path.clone();
+    let write_owned = write_path.clone();
+    let cancel_bg = cancel.clone();
     let bytes_done = Arc::new(AtomicU64::new(0));
     let bytes_done_bg = bytes_done.clone();
 
@@ -311,7 +371,7 @@ pub async fn convert_iso_to_cd_chd(
         let mut iso_reader = std::io::BufReader::with_capacity(IO_BUFFER_SIZE, iso_file);
 
         let mut writer = ChdWriter::create(
-            &output_owned,
+            &write_owned,
             total_sectors,
             data_sectors,
             CD_HUNK_BYTES,
@@ -323,12 +383,20 @@ pub async fn convert_iso_to_cd_chd(
             data_sectors,
             sector_data_size as usize,
             &bytes_done_bg,
+            &cancel_bg,
         )?;
         writer.finalize()?;
         Ok(())
     });
 
-    crate::util::await_with_progress(progress, &bytes_done, handle).await?;
+    if let Err(err) =
+        await_with_progress_cancel(progress, &bytes_done, handle, &cancel, cancel_cleanup(&write_path))
+            .await
+    {
+        let _ = fs::remove_file(&write_path).await;
+        return Err(err);
+    }
+    fs::rename(&write_path, &output_path).await?;
 
     let chd_size = fs::metadata(&output_path).await?.len();
     let compression_ratio = (chd_size as f64 / iso_size as f64) * 100.0;
@@ -346,6 +414,7 @@ pub async fn convert_to_chd(
     cue_path: PathBuf,
     output_path: PathBuf,
     force: bool,
+    cancel: CancelToken,
 ) -> ChdResult<()> {
     if fs::metadata(&output_path).await.is_ok() && !force {
         return Err(ChdError::ChdFileAlreadyExists);
@@ -381,18 +450,20 @@ pub async fn convert_to_chd(
     // finalize) to a single `spawn_blocking` and poll a shared
     // `AtomicU64` for progress ticks. Same shape as the RVZ
     // compress entry in `nintendo/rvz/compress/mod.rs`.
+    let write_path = scratch_output_path(&output_path);
     let bin_path_owned = bin_path.clone();
-    let output_owned = output_path.clone();
+    let write_owned = write_path.clone();
     let cue_sheet_owned = cue_sheet.clone();
+    let cancel_bg = cancel.clone();
     let bytes_done = Arc::new(AtomicU64::new(0));
     let bytes_done_bg = bytes_done.clone();
 
-    let mut handle = tokio::task::spawn_blocking(move || -> ChdResult<()> {
+    let handle = tokio::task::spawn_blocking(move || -> ChdResult<()> {
         let bin_file = std::fs::File::open(&bin_path_owned)?;
         let mut bin_reader = std::io::BufReader::with_capacity(IO_BUFFER_SIZE, bin_file);
 
         let mut writer = ChdWriter::create(
-            &output_owned,
+            &write_owned,
             total_sectors,
             total_sectors,
             CD_HUNK_BYTES,
@@ -405,30 +476,20 @@ pub async fn convert_to_chd(
             total_sectors,
             SECTOR_SIZE,
             &bytes_done_bg,
+            &cancel_bg,
         )?;
         writer.finalize()?;
         Ok(())
     });
 
-    loop {
-        match tokio::time::timeout(std::time::Duration::from_millis(100), &mut handle).await {
-            Ok(result) => {
-                result??;
-                break;
-            }
-            Err(_) => {
-                let delta = bytes_done.swap(0, Ordering::Relaxed);
-                if delta > 0 {
-                    progress.inc(delta);
-                }
-            }
-        }
+    if let Err(err) =
+        await_with_progress_cancel(progress, &bytes_done, handle, &cancel, cancel_cleanup(&write_path))
+            .await
+    {
+        let _ = fs::remove_file(&write_path).await;
+        return Err(err);
     }
-    let remaining = bytes_done.swap(0, Ordering::Relaxed);
-    if remaining > 0 {
-        progress.inc(remaining);
-    }
-    progress.finish();
+    fs::rename(&write_path, &output_path).await?;
 
     let chd_size = fs::metadata(&output_path).await?.len();
     let original_size = bin_size;
@@ -470,6 +531,19 @@ pub async fn extract_from_chd(
     input_path: PathBuf,
     output_path: PathBuf,
     parent_path: Option<PathBuf>,
+) -> ChdResult<()> {
+    extract_from_chd_cancellable(progress, input_path, output_path, parent_path, CancelToken::new())
+        .await
+}
+
+/// Like [`extract_from_chd`] but observes `cancel` at every hunk
+/// boundary; on cancel any output file this call created is removed.
+pub async fn extract_from_chd_cancellable(
+    progress: &dyn ProgressReporter,
+    input_path: PathBuf,
+    output_path: PathBuf,
+    parent_path: Option<PathBuf>,
+    cancel: CancelToken,
 ) -> ChdResult<()> {
     if parent_path.is_some() {
         return Err(ChdError::ParentChdNotSupported);
@@ -514,7 +588,8 @@ pub async fn extract_from_chd(
         .await??;
 
     if is_dvd {
-        return extract_dvd_iso(progress, input_path, output_path, header.logical_bytes).await;
+        return extract_dvd_iso(progress, input_path, output_path, header.logical_bytes, cancel)
+            .await;
     }
 
     let cue_path = if output_path.extension().is_some() {
@@ -535,14 +610,18 @@ pub async fn extract_from_chd(
         &format!("Extracting from CHD (~{:.2} MB)", total_mb),
     );
 
+    let bin_preexisting = fs::metadata(&bin_path).await.is_ok();
+    let cue_preexisting = fs::metadata(&cue_path).await.is_ok();
+
     let input_owned = input_path.clone();
     let bin_owned = bin_path.clone();
     let cue_owned = cue_path.clone();
     let bin_filename_owned = bin_filename;
+    let cancel_bg = cancel.clone();
     let bytes_done = Arc::new(AtomicU64::new(0));
     let bytes_done_bg = bytes_done.clone();
 
-    let mut handle = tokio::task::spawn_blocking(move || -> ChdResult<()> {
+    let handle = tokio::task::spawn_blocking(move || -> ChdResult<()> {
         use crate::chd::reader::open_chd_sync;
         use crate::chd::reader::worker::{
             ChdExtractWork, ChdExtractedOut, extract_hunks, make_chd_extract_workers,
@@ -582,6 +661,7 @@ pub async fn extract_from_chd(
             hunk_bytes,
             &frame_sizes,
             &bytes_done_bg,
+            &cancel_bg,
         );
         pool.shutdown();
         extract_result?;
@@ -595,25 +675,18 @@ pub async fn extract_from_chd(
         Ok(())
     });
 
-    loop {
-        match tokio::time::timeout(std::time::Duration::from_millis(100), &mut handle).await {
-            Ok(result) => {
-                result??;
-                break;
-            }
-            Err(_) => {
-                let delta = bytes_done.swap(0, Ordering::Relaxed);
-                if delta > 0 {
-                    progress.inc(delta);
-                }
-            }
+    let on_cancel = ChdError::Cancelled;
+    if let Err(err) =
+        await_with_progress_cancel(progress, &bytes_done, handle, &cancel, || on_cancel).await
+    {
+        if !bin_preexisting {
+            let _ = fs::remove_file(&bin_path).await;
         }
+        if !cue_preexisting {
+            let _ = fs::remove_file(&cue_path).await;
+        }
+        return Err(err);
     }
-    let remaining = bytes_done.swap(0, Ordering::Relaxed);
-    if remaining > 0 {
-        progress.inc(remaining);
-    }
-    progress.finish();
 
     let bin_mb = total_bin_bytes as f64 / BYTES_PER_MB;
     info!(
@@ -631,6 +704,7 @@ async fn extract_dvd_iso(
     input_path: PathBuf,
     output_path: PathBuf,
     logical_bytes: u64,
+    cancel: CancelToken,
 ) -> ChdResult<()> {
     let iso_path = if output_path.extension().is_some() {
         output_path.clone()
@@ -644,8 +718,10 @@ async fn extract_dvd_iso(
         &format!("Extracting from CHD (~{:.2} MB)", total_mb),
     );
 
+    let write_path = scratch_output_path(&iso_path);
     let input_owned = input_path.clone();
-    let iso_owned = iso_path.clone();
+    let write_owned = write_path.clone();
+    let cancel_bg = cancel.clone();
     let bytes_done = Arc::new(AtomicU64::new(0));
     let bytes_done_bg = bytes_done.clone();
 
@@ -660,7 +736,7 @@ async fn extract_dvd_iso(
         let hunk_bytes = handle.header.hunk_bytes as usize;
         let logical_bytes = handle.header.logical_bytes;
 
-        let iso_file = std::fs::File::create(&iso_owned)?;
+        let iso_file = std::fs::File::create(&write_owned)?;
         let mut iso_writer = std::io::BufWriter::with_capacity(IO_BUFFER_SIZE, iso_file);
 
         let workers = make_chd_dvd_extract_workers(
@@ -678,6 +754,7 @@ async fn extract_dvd_iso(
             hunk_bytes,
             logical_bytes,
             &bytes_done_bg,
+            &cancel_bg,
         );
         pool.shutdown();
         extract_result?;
@@ -687,7 +764,14 @@ async fn extract_dvd_iso(
         Ok(())
     });
 
-    crate::util::await_with_progress(progress, &bytes_done, handle).await?;
+    if let Err(err) =
+        await_with_progress_cancel(progress, &bytes_done, handle, &cancel, cancel_cleanup(&write_path))
+            .await
+    {
+        let _ = fs::remove_file(&write_path).await;
+        return Err(err);
+    }
+    fs::rename(&write_path, &iso_path).await?;
 
     info!(
         "Extracted: {:.2} MB ISO from {}",
@@ -702,6 +786,19 @@ pub async fn verify_chd(
     input_path: PathBuf,
     parent_path: Option<PathBuf>,
     fix: bool,
+) -> ChdResult<()> {
+    verify_chd_cancellable(progress, input_path, parent_path, fix, CancelToken::new()).await
+}
+
+/// Like [`verify_chd`] but observes `cancel` at every hunk boundary.
+/// Verify writes no output, so cancellation simply stops the read with
+/// [`ChdError::Cancelled`].
+pub async fn verify_chd_cancellable(
+    progress: &dyn ProgressReporter,
+    input_path: PathBuf,
+    parent_path: Option<PathBuf>,
+    fix: bool,
+    cancel: CancelToken,
 ) -> ChdResult<()> {
     if parent_path.is_some() {
         return Err(ChdError::ParentChdNotSupported);
@@ -733,10 +830,11 @@ pub async fn verify_chd(
     progress.start(logical_bytes, "Verifying CHD integrity");
 
     let input_owned = input_path.clone();
+    let cancel_bg = cancel.clone();
     let bytes_done = Arc::new(AtomicU64::new(0));
     let bytes_done_bg = bytes_done.clone();
 
-    let mut handle = tokio::task::spawn_blocking(move || -> ChdResult<[u8; SHA1_BYTES]> {
+    let handle = tokio::task::spawn_blocking(move || -> ChdResult<[u8; SHA1_BYTES]> {
         use crate::chd::reader::open_chd_sync;
         use crate::chd::reader::worker::{
             ChdExtractWork, ChdExtractedOut, make_chd_dvd_extract_workers,
@@ -776,6 +874,7 @@ pub async fn verify_chd(
             hunk_bytes,
             logical_bytes,
             &bytes_done_bg,
+            &cancel_bg,
         );
         pool.shutdown();
         verify_result?;
@@ -784,22 +883,9 @@ pub async fn verify_chd(
         Ok(computed)
     });
 
-    let computed_raw = loop {
-        match tokio::time::timeout(std::time::Duration::from_millis(100), &mut handle).await {
-            Ok(result) => break result??,
-            Err(_) => {
-                let delta = bytes_done.swap(0, Ordering::Relaxed);
-                if delta > 0 {
-                    progress.inc(delta);
-                }
-            }
-        }
-    };
-    let remaining = bytes_done.swap(0, Ordering::Relaxed);
-    if remaining > 0 {
-        progress.inc(remaining);
-    }
-    progress.finish();
+    let computed_raw =
+        await_with_progress_cancel(progress, &bytes_done, handle, &cancel, || ChdError::Cancelled)
+            .await?;
 
     let expected_raw = header.raw_sha1;
     if computed_raw != expected_raw {
@@ -996,6 +1082,7 @@ mod tests {
                 allow_zstd,
                 force: false,
             },
+            CancelToken::new(),
         )
         .await
         .unwrap();
@@ -1036,6 +1123,7 @@ mod tests {
             iso_path,
             chd_path.clone(),
             ChdDvdOptions::default(),
+            CancelToken::new(),
         )
         .await
         .unwrap();
@@ -1100,6 +1188,7 @@ mod tests {
             iso_path,
             our_chd.clone(),
             ChdDvdOptions::default(),
+            CancelToken::new(),
         )
         .await
         .unwrap();
@@ -1276,8 +1365,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let iso_path = dir.path().join("game.iso");
         std::fs::write(&iso_path, vec![0u8; 1000]).unwrap();
-        let result =
-            convert_iso_to_cd_chd(&NoProgress, iso_path, dir.path().join("game.chd"), false).await;
+        let result = convert_iso_to_cd_chd(
+            &NoProgress,
+            iso_path,
+            dir.path().join("game.chd"),
+            false,
+            CancelToken::new(),
+        )
+        .await;
         assert!(matches!(
             result,
             Err(ChdError::IsoNotSectorAligned { size: 1000 })
@@ -1335,7 +1430,7 @@ mod tests {
         );
 
         let our_chd = dir.path().join("our.chd");
-        convert_iso_to_cd_chd(&NoProgress, iso_path, our_chd.clone(), false)
+        convert_iso_to_cd_chd(&NoProgress, iso_path, our_chd.clone(), false, CancelToken::new())
             .await
             .unwrap();
         let status = std::process::Command::new(&chdman)

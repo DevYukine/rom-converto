@@ -6,7 +6,7 @@ import { isDiscInput, useWupCompressStore } from "~/stores/wup-compress";
 const store = useWupCompressStore();
 const { queue, output, level, keys, result, error, loading } = storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
-const { run } = useOperation({ result, error, loading });
+const { run, cancelled, abort } = useOperation({ result, error, loading });
 const progress = useProgress("wup-compress");
 const commandLine = ref("");
 
@@ -90,7 +90,11 @@ async function execute() {
   };
   commandLine.value = buildCliCommand("cmd_wup_compress", args);
   await run("cmd_wup_compress", args);
-  const terminal: "done" | "error" = error.value ? "error" : "done";
+  const terminal: "done" | "error" | "cancelled" = cancelled.value
+    ? "cancelled"
+    : error.value
+      ? "error"
+      : "done";
   for (const item of queue.value) {
     if (item.status === "running") item.status = terminal;
   }
@@ -218,6 +222,7 @@ async function execute() {
           :loading="loading"
           :disabled="!canCompress"
           @click="execute"
+          @cancel="abort()"
         >
           {{ queue.length > 1 ? `Compress All (${queue.length} titles)` : 'Compress' }}
         </RunButton>
@@ -233,7 +238,7 @@ async function execute() {
     </OperationCard>
 
     <div class="mt-4">
-      <OutputLog :command="commandLine" :result="result" :error="error" />
+      <OutputLog :command="commandLine" :result="result" :cancelled="cancelled ? 'Operation cancelled.' : undefined" :error="error" />
     </div>
   </div>
 </template>

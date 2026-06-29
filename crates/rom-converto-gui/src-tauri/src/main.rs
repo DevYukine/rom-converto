@@ -13,7 +13,9 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .manage(Arc::new(InfoCache::default()))
+        .manage(ActiveCancel::default())
         .invoke_handler(tauri::generate_handler![
+            cmd_cancel,
             cmd_cdn_to_cia,
             cmd_generate_ticket,
             cmd_decrypt_rom,

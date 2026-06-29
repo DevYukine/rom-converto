@@ -19,6 +19,7 @@ use crate::chd::error::{ChdError, ChdResult};
 use crate::chd::map::{
     COMPRESSION_NONE, COMPRESSION_PARENT, COMPRESSION_SELF, MapEntry, crc16_ccitt,
 };
+use crate::util::CancelToken;
 use crate::util::pread::file_read_exact_at;
 use crate::util::worker_pool::{Pool, Worker, drive, parallelism};
 use sha1::{Digest, Sha1};
@@ -224,11 +225,12 @@ pub(crate) fn extract_hunks(
     hunk_bytes: usize,
     frame_sizes: &[usize],
     bytes_done: &Arc<AtomicU64>,
+    cancel: &CancelToken,
 ) -> ChdResult<()> {
     let frames_per_hunk = hunk_bytes / FRAME_SIZE;
     let total_frames = frame_sizes.len();
 
-    run_extract_pipeline(pool, map, writer, bytes_done, |seq, out| {
+    run_extract_pipeline(pool, map, writer, bytes_done, cancel, |seq, out| {
         // Gather payload bytes from the interleaved hunk, dropping
         // the subcode and any tail past each track's datasize.
         // `chdman extractcd` writes datasize-wide bins; track padding
@@ -253,8 +255,9 @@ pub(crate) fn extract_hunks_dvd(
     hunk_bytes: usize,
     logical_bytes: u64,
     bytes_done: &Arc<AtomicU64>,
+    cancel: &CancelToken,
 ) -> ChdResult<()> {
-    run_extract_pipeline(pool, map, writer, bytes_done, |seq, out| {
+    run_extract_pipeline(pool, map, writer, bytes_done, cancel, |seq, out| {
         let offset = seq * hunk_bytes as u64;
         let take = ((logical_bytes - offset.min(logical_bytes)) as usize).min(hunk_bytes);
         let mut hunk = out.hunk;
@@ -270,6 +273,7 @@ fn run_extract_pipeline<F>(
     map: &[MapEntry],
     writer: &mut BufWriter<std::fs::File>,
     bytes_done: &Arc<AtomicU64>,
+    cancel: &CancelToken,
     mut shape: F,
 ) -> ChdResult<()>
 where
@@ -294,6 +298,9 @@ where
             hunk_count,
             max_in_flight,
             |chunk_idx| -> ChdResult<ChdExtractWork> {
+                if cancel.is_cancelled() {
+                    return Err(ChdError::Cancelled);
+                }
                 let entry = resolve_entry(map, chunk_idx as u32)?;
                 Ok(ChdExtractWork { entry })
             },
@@ -335,6 +342,7 @@ pub(crate) fn verify_hunks(
     hunk_bytes: usize,
     logical_bytes: u64,
     bytes_done: &Arc<AtomicU64>,
+    cancel: &CancelToken,
 ) -> ChdResult<()> {
     let hunk_count = map.len() as u64;
     let max_in_flight = parallelism() * 2;
@@ -347,6 +355,9 @@ pub(crate) fn verify_hunks(
         hunk_count,
         max_in_flight,
         |chunk_idx| -> ChdResult<ChdExtractWork> {
+            if cancel.is_cancelled() {
+                return Err(ChdError::Cancelled);
+            }
             let entry = resolve_entry(map, chunk_idx as u32)?;
             Ok(ChdExtractWork { entry })
         },

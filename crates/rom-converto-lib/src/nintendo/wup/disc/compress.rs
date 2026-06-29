@@ -23,6 +23,8 @@ use crate::nintendo::wup::disc::partition_table::{
     PartitionEntry, PartitionKind, PartitionTable, parse_partition_table,
 };
 use crate::nintendo::wup::disc::sector_stream::{DiscSectorSource, SECTOR_SIZE};
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use crate::nintendo::wup::error::{WupError, WupResult};
 use crate::nintendo::wup::models::WupTmd;
 use crate::nintendo::wup::nus::content_stream::{ContentLoader, decrypt_content_0};
@@ -116,6 +118,16 @@ pub fn compress_disc_title(
     sink: &mut dyn ArchiveSink,
     progress: &dyn ProgressReporter,
 ) -> WupResult<Vec<(u64, u16)>> {
+    compress_disc_title_with_cancel(disc_path, key_override, sink, progress, None)
+}
+
+pub(crate) fn compress_disc_title_with_cancel(
+    disc_path: &Path,
+    key_override: Option<&Path>,
+    sink: &mut dyn ArchiveSink,
+    progress: &dyn ProgressReporter,
+    cancelled: Option<&AtomicBool>,
+) -> WupResult<Vec<(u64, u16)>> {
     let mut disc = crate::nintendo::wup::disc::sector_stream::open_disc(disc_path)?;
     let key = load_disc_key(disc_path, key_override)?;
 
@@ -140,12 +152,15 @@ pub fn compress_disc_title(
         .map(|(i, p)| (i, p.clone()))
         .collect();
     for (toc_index, partition) in &indexed {
+        if cancelled.is_some_and(|c| c.load(Ordering::Relaxed)) {
+            return Err(WupError::Cancelled);
+        }
         let si_title = match find_matching_title(&si_titles, *toc_index) {
             Some(t) => t,
             None => continue,
         };
         let (title_id, version) =
-            compress_one_partition(&mut *disc, partition, si_title, sink, progress)?;
+            compress_one_partition_with_cancel(&mut *disc, partition, si_title, sink, progress, cancelled)?;
         results.push((title_id, version));
     }
 
@@ -307,21 +322,22 @@ pub(crate) fn plan_partition(
     })
 }
 
-/// Compress one GM/UP/UC partition: decrypt its FST, build a content
-/// location map, stream every virtual file through the shared
-/// `ContentLoader`.
-fn compress_one_partition(
+fn compress_one_partition_with_cancel(
     disc: &mut dyn DiscSectorSource,
     partition: &PartitionEntry,
     si_title: &SiTitle,
     sink: &mut dyn ArchiveSink,
     progress: &dyn ProgressReporter,
+    cancelled: Option<&AtomicBool>,
 ) -> WupResult<(u64, u16)> {
     let plan = plan_partition(disc, partition, si_title)?;
     let archive_folder = format!("{:016x}_v{}", plan.title_id, plan.title_version);
     let mut source = PartitionContentSource::new(disc, plan.locations);
     let mut loader = ContentLoader::new(&mut source, plan.title_key, &plan.tmd, &plan.fs);
     for vfile in &plan.fs.files {
+        if cancelled.is_some_and(|c| c.load(Ordering::Relaxed)) {
+            return Err(WupError::Cancelled);
+        }
         let bytes = loader.extract_file(vfile)?;
         let archive_path = format!("{archive_folder}/{}", vfile.path);
         sink.start_new_file(&archive_path)?;

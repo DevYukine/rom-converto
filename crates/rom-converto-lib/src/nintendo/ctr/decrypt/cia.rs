@@ -28,7 +28,8 @@ use crate::nintendo::ctr::models::seeddb::SeedDatabase;
 use crate::nintendo::ctr::models::title_metadata::ContentChunkRecord;
 use crate::nintendo::ctr::util::align_64;
 use crate::nintendo::ctr::z3ds::models::underlying_magic;
-use crate::util::ProgressReporter;
+use crate::nintendo::ctr::error::NintendoCTRError;
+use crate::util::{CancelToken, ProgressReporter};
 use anyhow::{Context, anyhow};
 use binrw::BinRead;
 use futures::future::select_ok;
@@ -91,11 +92,15 @@ async fn copy_plain_section(
     writer: &mut BufWriter<&mut File>,
     size: u32,
     progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
 ) -> anyhow::Result<()> {
     let mut remaining_bytes = size;
     let mut buf = vec![0u8; CHUNK_SIZE];
 
     while remaining_bytes > CHUNK_SIZE as u32 {
+        if cancel.is_cancelled() {
+            return Err(NintendoCTRError::Cancelled.into());
+        }
         cia.read(&mut buf).await.context("reading plain chunk")?;
         writer
             .write_all(&buf)
@@ -221,6 +226,7 @@ async fn write_romfs_section(
     fixed_crypto: u8,
     key_y: u128,
     progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
 ) -> anyhow::Result<()> {
     let mut key = derive_ctr_key(CTR_KEYS_0[extra_crypto_index(uses_extra_crypto)], key_y);
     if let Some(fixed) = fixed_key(fixed_crypto) {
@@ -232,6 +238,9 @@ async fn write_romfs_section(
     let mut ctr_cipher = Aes128Ctr::new_from_slices(&key, ctr)?;
 
     while remaining_bytes > CHUNK_SIZE as u32 {
+        if cancel.is_cancelled() {
+            return Err(NintendoCTRError::Cancelled.into());
+        }
         cia.read(&mut buf).await.context("reading RomFS chunk")?;
         if cia.cidx > 0 && !(cia.single_ncch || cia.from_ncsd) {
             buf[1] ^= cia.cidx as u8;
@@ -351,13 +360,14 @@ async fn write_to_file(
     cia: &mut CiaReader,
     opts: NcchWriteOptions,
     progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
 ) -> anyhow::Result<()> {
     let mut buff_writer = BufWriter::new(ncch);
 
     advance_to_offset(&mut buff_writer, cia, opts.offset).await?;
 
     if !opts.encrypted {
-        copy_plain_section(cia, &mut buff_writer, opts.size, progress).await?;
+        copy_plain_section(cia, &mut buff_writer, opts.size, progress, cancel).await?;
         buff_writer.flush().await?;
         return Ok(());
     }
@@ -404,6 +414,7 @@ async fn write_to_file(
                 opts.fixed_crypto,
                 opts.keys[1],
                 progress,
+                cancel,
             )
             .await?
         }
@@ -463,6 +474,7 @@ pub async fn parse_ncch(
     offs: u64,
     mut title_id: [u8; 8],
     progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
 ) -> anyhow::Result<()> {
     if cia.from_ncsd {
         debug!("  Parsing {} NCCH", CTR_NCSD_PARTITIONS[cia.cidx as usize]);
@@ -553,6 +565,7 @@ pub async fn parse_ncch(
                 keys: [ncch_key_y, key_y],
             },
             progress,
+            cancel,
         )
         .await?;
     }
@@ -574,6 +587,7 @@ pub async fn parse_ncch(
                 keys: [ncch_key_y, key_y],
             },
             progress,
+            cancel,
         )
         .await?;
     }
@@ -595,6 +609,7 @@ pub async fn parse_ncch(
                 keys: [ncch_key_y, key_y],
             },
             progress,
+            cancel,
         )
         .await?;
     }
@@ -606,6 +621,7 @@ pub async fn parse_and_decrypt_ncsd(
     input: &Path,
     partition: Option<u8>,
     progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
 ) -> anyhow::Result<()> {
     debug!("Parsing NCSD file: {}", input.display());
 
@@ -633,6 +649,9 @@ pub async fn parse_and_decrypt_ncsd(
     rom_file.read_exact(&mut table_buf).await?;
 
     for (i, partition_name) in CTR_NCSD_PARTITIONS.iter().enumerate() {
+        if cancel.is_cancelled() {
+            return Err(NintendoCTRError::Cancelled.into());
+        }
         let entry_offset = i * NCSD_PARTITION_ENTRY_SIZE;
         let offset_mu = u32::from_le_bytes(table_buf[entry_offset..entry_offset + 4].try_into()?);
         let size_mu = u32::from_le_bytes(table_buf[entry_offset + 4..entry_offset + 8].try_into()?);
@@ -665,7 +684,7 @@ pub async fn parse_and_decrypt_ncsd(
             true,
         );
 
-        parse_ncch(&mut reader, partition_offset, title_id, progress).await?;
+        parse_ncch(&mut reader, partition_offset, title_id, progress, cancel).await?;
     }
 
     Ok(())
@@ -674,6 +693,7 @@ pub async fn parse_and_decrypt_ncsd(
 pub async fn parse_and_decrypt_ncch(
     input: &Path,
     progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
 ) -> anyhow::Result<()> {
     debug!("Parsing standalone NCCH file: {}", input.display());
 
@@ -691,7 +711,7 @@ pub async fn parse_and_decrypt_ncch(
         false,
     );
 
-    parse_ncch(&mut reader, 0, [0u8; 8], progress).await?;
+    parse_ncch(&mut reader, 0, [0u8; 8], progress, cancel).await?;
 
     Ok(())
 }
@@ -700,6 +720,7 @@ pub async fn parse_and_decrypt_cia(
     input: &Path,
     partition: Option<u8>,
     progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
 ) -> anyhow::Result<()> {
     debug!("Parsing CIA file: {}", input.display());
 
@@ -754,6 +775,9 @@ pub async fn parse_and_decrypt_cia(
 
     let mut next_content_offs = 0;
     for i in 0..BigEndian::read_u16(&content_count) {
+        if cancel.is_cancelled() {
+            return Err(NintendoCTRError::Cancelled.into());
+        }
         rom_file
             .seek(SeekFrom::Start(
                 tmdoff + TMD_CONTENT_RECORDS_OFFSET + (TMD_CONTENT_RECORD_SIZE * i as u64),
@@ -810,7 +834,7 @@ pub async fn parse_and_decrypt_cia(
                     {
                         continue;
                     }
-                    parse_ncch(&mut cia_handle, 0, tid[0..8].try_into()?, progress).await?;
+                    parse_ncch(&mut cia_handle, 0, tid[0..8].try_into()?, progress, cancel).await?;
                 } else {
                     return Err(anyhow!("Cia can't be parsed"));
                 }

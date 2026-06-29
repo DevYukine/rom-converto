@@ -5,7 +5,7 @@ import { useCtrConvertStore } from "~/stores/ctr-convert";
 const store = useCtrConvertStore();
 const { input, output, result, error, loading, queue } = storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
-const { run } = useOperation({ result, error, loading });
+const { run, cancelled, abort } = useOperation({ result, error, loading });
 const progress = useProgress("ctr-convert");
 
 const isBatch = computed(() => queue.value.length > 0);
@@ -140,6 +140,7 @@ async function execute() {
           :batch-total="queue.length"
           :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input"
           @click="execute"
+          @cancel="isBatch ? batch.abort() : abort()"
         >
           {{ isBatch && queue.filter(i => i.status === 'pending').length > 1 ? `Convert All (${queue.filter(i => i.status === 'pending').length})` : 'Convert' }}
         </RunButton>
@@ -147,7 +148,7 @@ async function execute() {
     </OperationCard>
 
     <div class="mt-4">
-      <OutputLog :command="commandLine" :result="result" :error="error" />
+      <OutputLog :command="commandLine" :result="result" :cancelled="cancelled ? 'Operation cancelled.' : undefined" :error="error" />
     </div>
   </div>
 </template>

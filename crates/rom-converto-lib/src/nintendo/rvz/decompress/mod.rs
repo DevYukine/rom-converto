@@ -33,7 +33,7 @@ use crate::nintendo::wbfs::build_disc_usage;
 use crate::nintendo::wbfs::format::{
     DEFAULT_HD_SECTOR_SHIFT, DEFAULT_WBFS_SECTOR_SHIFT, WII_SECTOR_SIZE,
 };
-use crate::util::ProgressReporter;
+use crate::util::{CancelToken, ProgressReporter, await_with_progress_cancel};
 use binrw::{BinRead, Endian};
 use log::info;
 use sink::{DiscSink, IsoSink, UsageFilter, WbfsSink};
@@ -41,7 +41,7 @@ use std::fs::File;
 use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 use tokio::task;
 
 pub async fn decompress_disc(
@@ -49,34 +49,41 @@ pub async fn decompress_disc(
     output: &Path,
     progress: &dyn ProgressReporter,
 ) -> RvzResult<()> {
+    decompress_disc_cancellable(input, output, progress, CancelToken::new()).await
+}
+
+/// Like [`decompress_disc`] but observes `cancel` at region boundaries;
+/// on cancel the partial ISO is removed.
+pub async fn decompress_disc_cancellable(
+    input: &Path,
+    output: &Path,
+    progress: &dyn ProgressReporter,
+    cancel: CancelToken,
+) -> RvzResult<()> {
     let iso_size_guess = tokio::fs::metadata(input).await?.len();
     progress.start(iso_size_guess, "Decompressing RVZ...");
 
+    let write_path = scratch_output_path(output);
     let input_owned: PathBuf = input.to_path_buf();
-    let output_owned: PathBuf = output.to_path_buf();
+    let write_owned: PathBuf = write_path.clone();
+    let cancel_bg = cancel.clone();
     let bytes_done = Arc::new(AtomicU64::new(0));
     let bytes_done_bg = bytes_done.clone();
 
-    let mut handle = task::spawn_blocking(move || -> RvzResult<u64> {
-        decompress_blocking(&input_owned, &output_owned, bytes_done_bg)
+    let handle = task::spawn_blocking(move || -> RvzResult<u64> {
+        decompress_blocking(&input_owned, &write_owned, bytes_done_bg, &cancel_bg)
     });
 
-    let iso_size = loop {
-        match tokio::time::timeout(std::time::Duration::from_millis(100), &mut handle).await {
-            Ok(result) => break result??,
-            Err(_) => {
-                let delta = bytes_done.swap(0, Ordering::Relaxed);
-                if delta > 0 {
-                    progress.inc(delta);
-                }
+    let cleanup = decompress_cleanup(&write_path);
+    let iso_size =
+        match await_with_progress_cancel(progress, &bytes_done, handle, &cancel, cleanup).await {
+            Ok(size) => size,
+            Err(err) => {
+                let _ = tokio::fs::remove_file(&write_path).await;
+                return Err(err);
             }
-        }
-    };
-    let remaining = bytes_done.swap(0, Ordering::Relaxed);
-    if remaining > 0 {
-        progress.inc(remaining);
-    }
-    progress.finish();
+        };
+    tokio::fs::rename(&write_path, output).await?;
 
     info!(
         "Decompressed {} -> {} ({} bytes)",
@@ -85,6 +92,20 @@ pub async fn decompress_disc(
         iso_size
     );
     Ok(())
+}
+
+fn scratch_output_path(output: &Path) -> PathBuf {
+    let mut name = output.file_name().unwrap_or_default().to_os_string();
+    name.push(".tmp");
+    output.with_file_name(name)
+}
+
+fn decompress_cleanup(write_path: &Path) -> impl FnOnce() -> RvzError {
+    let write_path = write_path.to_path_buf();
+    move || {
+        let _ = std::fs::remove_file(&write_path);
+        RvzError::Cancelled
+    }
 }
 
 /// Decompress an RVZ straight into a WBFS container without an
@@ -97,34 +118,41 @@ pub async fn decompress_disc_to_wbfs(
     output: &Path,
     progress: &dyn ProgressReporter,
 ) -> RvzResult<()> {
+    decompress_disc_to_wbfs_cancellable(input, output, progress, CancelToken::new()).await
+}
+
+/// Like [`decompress_disc_to_wbfs`] but observes `cancel` at region
+/// boundaries; on cancel the partial WBFS is removed.
+pub async fn decompress_disc_to_wbfs_cancellable(
+    input: &Path,
+    output: &Path,
+    progress: &dyn ProgressReporter,
+    cancel: CancelToken,
+) -> RvzResult<()> {
     let rvz_size = tokio::fs::metadata(input).await?.len();
     progress.start(rvz_size, "Decompressing RVZ to WBFS...");
 
+    let write_path = scratch_output_path(output);
     let input_owned: PathBuf = input.to_path_buf();
-    let output_owned: PathBuf = output.to_path_buf();
+    let write_owned: PathBuf = write_path.clone();
+    let cancel_bg = cancel.clone();
     let bytes_done = Arc::new(AtomicU64::new(0));
     let bytes_done_bg = bytes_done.clone();
 
-    let mut handle = task::spawn_blocking(move || -> RvzResult<u64> {
-        decompress_to_wbfs_blocking(&input_owned, &output_owned, bytes_done_bg)
+    let handle = task::spawn_blocking(move || -> RvzResult<u64> {
+        decompress_to_wbfs_blocking(&input_owned, &write_owned, bytes_done_bg, &cancel_bg)
     });
 
-    let disc_size = loop {
-        match tokio::time::timeout(std::time::Duration::from_millis(100), &mut handle).await {
-            Ok(result) => break result??,
-            Err(_) => {
-                let delta = bytes_done.swap(0, Ordering::Relaxed);
-                if delta > 0 {
-                    progress.inc(delta);
-                }
+    let cleanup = decompress_cleanup(&write_path);
+    let disc_size =
+        match await_with_progress_cancel(progress, &bytes_done, handle, &cancel, cleanup).await {
+            Ok(size) => size,
+            Err(err) => {
+                let _ = tokio::fs::remove_file(&write_path).await;
+                return Err(err);
             }
-        }
-    };
-    let remaining = bytes_done.swap(0, Ordering::Relaxed);
-    if remaining > 0 {
-        progress.inc(remaining);
-    }
-    progress.finish();
+        };
+    tokio::fs::rename(&write_path, output).await?;
 
     info!(
         "Decompressed {} -> {} ({} bytes)",
@@ -225,6 +253,7 @@ pub fn decompress_blocking(
     input: &Path,
     output: &Path,
     bytes_done: Arc<AtomicU64>,
+    cancel: &CancelToken,
 ) -> RvzResult<u64> {
     let (shared_file, head, disc, parts, raw_data, groups) = parse_rvz_metadata(input)?;
     let chunk_size = disc.chunk_size as u64;
@@ -240,6 +269,9 @@ pub fn decompress_blocking(
     }
 
     for region in &raw_data {
+        if cancel.is_cancelled() {
+            return Err(RvzError::Cancelled);
+        }
         raw::decompress_raw_region(
             region,
             &groups,
@@ -253,6 +285,9 @@ pub fn decompress_blocking(
     }
 
     for part in &parts {
+        if cancel.is_cancelled() {
+            return Err(RvzError::Cancelled);
+        }
         partition::decompress_partition(
             part,
             &groups,
@@ -272,6 +307,7 @@ fn decompress_to_wbfs_blocking(
     input: &Path,
     output: &Path,
     bytes_done: Arc<AtomicU64>,
+    cancel: &CancelToken,
 ) -> RvzResult<u64> {
     // FST usage map (serial, cheap): only the partition headers and FST
     // are decrypted here, not the whole disc.
@@ -303,6 +339,9 @@ fn decompress_to_wbfs_blocking(
     }
 
     for region in &raw_data {
+        if cancel.is_cancelled() {
+            return Err(RvzError::Cancelled);
+        }
         raw::decompress_raw_region(
             region,
             &groups,
@@ -316,6 +355,9 @@ fn decompress_to_wbfs_blocking(
     }
 
     for part in &parts {
+        if cancel.is_cancelled() {
+            return Err(RvzError::Cancelled);
+        }
         partition::decompress_partition(
             part,
             &groups,

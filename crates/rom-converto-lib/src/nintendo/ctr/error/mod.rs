@@ -11,6 +11,9 @@ pub enum NintendoCTRError {
 
     #[error("Could not find at least one TMD file in the specified path: {0}")]
     NoTmdFileFound(PathBuf),
+
+    #[error("operation cancelled")]
+    Cancelled,
 }
 
 pub type NintendoCTRResult<T> = Result<T, NintendoCTRError>;

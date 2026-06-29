@@ -1,36 +1,41 @@
 use crate::info_cache::InfoCache;
 use crate::progress::TauriProgress;
 use rom_converto_lib::chd::{
-    ChdDvdOptions, DiscMode, convert_disc_to_chd, extract_from_chd, verify_chd,
+    ChdDvdOptions, DiscMode, convert_disc_to_chd_cancellable, extract_from_chd_cancellable,
+    verify_chd_cancellable,
 };
 use rom_converto_lib::cso::{
-    CsoCompressOptions, CsoFormat, compress_to_cso, decompress_from_cso, verify_cso,
+    CsoCompressOptions, CsoFormat, compress_to_cso_cancellable, decompress_from_cso_cancellable,
+    verify_cso,
 };
 use rom_converto_lib::cue::merge::merge_bin;
 use rom_converto_lib::info::{InfoOptions, InfoResult, read_info};
-use rom_converto_lib::nintendo::ctr::convert::{convert_rom, derive_converted_path};
+use rom_converto_lib::nintendo::ctr::convert::{convert_rom_cancellable, derive_converted_path};
 use rom_converto_lib::nintendo::ctr::verify::{CtrVerifyOptions, verify_ctr};
 use rom_converto_lib::nintendo::ctr::z3ds::{
-    compress_rom, decompress_rom, derive_compressed_path, derive_decompressed_path,
+    compress_rom_cancellable, decompress_rom_cancellable, derive_compressed_path,
+    derive_decompressed_path,
 };
 use rom_converto_lib::nintendo::ctr::{
-    CdnToCiaOptions, convert_cdn_to_cia, decrypt_rom, generate_ticket_from_cdn,
+    CdnToCiaOptions, convert_cdn_to_cia_cancellable, decrypt_rom_cancellable,
+    generate_ticket_from_cdn,
 };
 use rom_converto_lib::nintendo::dol::verify::{DolVerifyOptions, verify_dol};
 use rom_converto_lib::nintendo::nx::{
-    NczMode, NxCompressOptions, compress_container_async, decompress_container_async,
-    derive_compressed_path as nx_derive_compressed_path,
+    NczMode, NxCompressOptions, compress_container_async_cancellable,
+    decompress_container_async_cancellable, derive_compressed_path as nx_derive_compressed_path,
     derive_decompressed_path as nx_derive_decompressed_path, detect_container, load_keyset,
     verify_container_async,
 };
 use rom_converto_lib::nintendo::rvl::verify::{RvlVerifyOptions, verify_rvl};
 use rom_converto_lib::nintendo::rvz::{
-    RvzCompressOptions, compress_disc, decompress_disc, decompress_disc_to_wbfs, derive_disc_path,
-    derive_rvz_path,
+    RvzCompressOptions, compress_disc_cancellable, decompress_disc_cancellable,
+    decompress_disc_to_wbfs_cancellable, derive_disc_path, derive_rvz_path,
 };
+use rom_converto_lib::util::CancelToken;
 use rom_converto_lib::nintendo::wup::{
-    TitleInput, WupCompressOptions, compress_titles_async, decrypt_nus_title_async,
-    verify_wup_async,
+    TitleInput, WupCompressOptions, compress_titles_async_cancellable,
+    decrypt_nus_title_async_cancellable, verify_wup_async,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -40,10 +45,34 @@ fn err_to_string(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
 
+/// Single-slot holder for the token of the operation currently running.
+/// Only one conversion runs at a time per command invocation, so a
+/// single slot is enough; `cmd_cancel` fires whatever is in it.
+pub type ActiveCancel = Arc<tokio::sync::Mutex<Option<CancelToken>>>;
+
+async fn begin(state: &State<'_, ActiveCancel>) -> CancelToken {
+    let token = CancelToken::new();
+    *state.lock().await = Some(token.clone());
+    token
+}
+
+async fn finish(state: &State<'_, ActiveCancel>) {
+    *state.lock().await = None;
+}
+
+#[tauri::command]
+pub async fn cmd_cancel(state: State<'_, ActiveCancel>) -> Result<(), String> {
+    if let Some(token) = state.lock().await.as_ref() {
+        token.cancel();
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn cmd_cdn_to_cia(
     app: AppHandle,
+    state: State<'_, ActiveCancel>,
     cdn_dir: PathBuf,
     output: Option<PathBuf>,
     decrypt: bool,
@@ -65,12 +94,16 @@ pub async fn cmd_cdn_to_cia(
         output_dir: None,
         on_conflict: rom_converto_lib::util::ConflictPolicy::Overwrite,
     };
-    tokio::spawn(async move {
-        convert_cdn_to_cia(opts, progress.as_ref(), total_progress.as_ref()).await
+    let token = begin(&state).await;
+    let result = tokio::spawn(async move {
+        convert_cdn_to_cia_cancellable(opts, progress.as_ref(), total_progress.as_ref(), token)
+            .await
     })
     .await
     .map_err(err_to_string)?
-    .map_err(err_to_string)?;
+    .map_err(err_to_string);
+    finish(&state).await;
+    result?;
     Ok("CDN to CIA conversion complete".to_string())
 }
 
@@ -87,21 +120,27 @@ pub async fn cmd_generate_ticket(cdn_dir: PathBuf, output: PathBuf) -> Result<St
 #[tauri::command]
 pub async fn cmd_decrypt_rom(
     app: AppHandle,
+    state: State<'_, ActiveCancel>,
     input: PathBuf,
     output: PathBuf,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "decrypt"));
     let out_display = output.display().to_string();
-    tokio::spawn(async move { decrypt_rom(&input, &output, progress.as_ref()).await })
-        .await
-        .map_err(err_to_string)?
-        .map_err(err_to_string)?;
+    let token = begin(&state).await;
+    let result =
+        tokio::spawn(async move { decrypt_rom_cancellable(&input, &output, progress.as_ref(), token).await })
+            .await
+            .map_err(err_to_string)?
+            .map_err(err_to_string);
+    finish(&state).await;
+    result?;
     Ok(format!("Decrypted to {out_display}"))
 }
 
 #[tauri::command]
 pub async fn cmd_compress_rom(
     app: AppHandle,
+    state: State<'_, ActiveCancel>,
     input: PathBuf,
     output: Option<PathBuf>,
     level: Option<i32>,
@@ -109,32 +148,44 @@ pub async fn cmd_compress_rom(
     let progress = Arc::new(TauriProgress::new(app, "compress"));
     let output = output.unwrap_or_else(|| derive_compressed_path(&input));
     let out_display = output.display().to_string();
-    tokio::spawn(async move { compress_rom(&input, &output, level, progress.as_ref()).await })
-        .await
-        .map_err(err_to_string)?
-        .map_err(err_to_string)?;
+    let token = begin(&state).await;
+    let result = tokio::spawn(async move {
+        compress_rom_cancellable(&input, &output, level, progress.as_ref(), token).await
+    })
+    .await
+    .map_err(err_to_string)?
+    .map_err(err_to_string);
+    finish(&state).await;
+    result?;
     Ok(format!("Compressed to {out_display}"))
 }
 
 #[tauri::command]
 pub async fn cmd_decompress_rom(
     app: AppHandle,
+    state: State<'_, ActiveCancel>,
     input: PathBuf,
     output: Option<PathBuf>,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "decompress"));
     let output = output.unwrap_or_else(|| derive_decompressed_path(&input));
     let out_display = output.display().to_string();
-    tokio::spawn(async move { decompress_rom(&input, &output, progress.as_ref()).await })
-        .await
-        .map_err(err_to_string)?
-        .map_err(err_to_string)?;
+    let token = begin(&state).await;
+    let result = tokio::spawn(async move {
+        decompress_rom_cancellable(&input, &output, progress.as_ref(), token).await
+    })
+    .await
+    .map_err(err_to_string)?
+    .map_err(err_to_string);
+    finish(&state).await;
+    result?;
     Ok(format!("Decompressed to {out_display}"))
 }
 
 #[tauri::command]
 pub async fn cmd_chd_compress(
     app: AppHandle,
+    state: State<'_, ActiveCancel>,
     input_path: PathBuf,
     output: PathBuf,
     force: bool,
@@ -154,18 +205,23 @@ pub async fn cmd_chd_compress(
         allow_zstd: zstd.unwrap_or(false),
         force,
     };
-    tokio::spawn(async move {
-        convert_disc_to_chd(progress.as_ref(), input_path, output, mode, opts).await
+    let token = begin(&state).await;
+    let result = tokio::spawn(async move {
+        convert_disc_to_chd_cancellable(progress.as_ref(), input_path, output, mode, opts, token)
+            .await
     })
     .await
     .map_err(err_to_string)?
-    .map_err(err_to_string)?;
+    .map_err(err_to_string);
+    finish(&state).await;
+    result?;
     Ok(format!("CHD created at {out_display}"))
 }
 
 #[tauri::command]
 pub async fn cmd_cso_compress(
     app: AppHandle,
+    state: State<'_, ActiveCancel>,
     input_path: PathBuf,
     output: PathBuf,
     format: String,
@@ -183,28 +239,37 @@ pub async fn cmd_cso_compress(
         block_size,
         force,
     };
-    tokio::spawn(async move { compress_to_cso(progress.as_ref(), input_path, output, opts).await })
-        .await
-        .map_err(err_to_string)?
-        .map_err(err_to_string)?;
+    let token = begin(&state).await;
+    let result = tokio::spawn(async move {
+        compress_to_cso_cancellable(progress.as_ref(), input_path, output, opts, token).await
+    })
+    .await
+    .map_err(err_to_string)?
+    .map_err(err_to_string);
+    finish(&state).await;
+    result?;
     Ok(format!("{} created at {out_display}", format.name()))
 }
 
 #[tauri::command]
 pub async fn cmd_cso_decompress(
     app: AppHandle,
+    state: State<'_, ActiveCancel>,
     input_path: PathBuf,
     output: PathBuf,
     force: bool,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "cso-decompress"));
     let out_display = output.display().to_string();
-    tokio::spawn(
-        async move { decompress_from_cso(progress.as_ref(), input_path, output, force).await },
-    )
+    let token = begin(&state).await;
+    let result = tokio::spawn(async move {
+        decompress_from_cso_cancellable(progress.as_ref(), input_path, output, force, token).await
+    })
     .await
     .map_err(err_to_string)?
-    .map_err(err_to_string)?;
+    .map_err(err_to_string);
+    finish(&state).await;
+    result?;
     Ok(format!("ISO restored at {out_display}"))
 }
 
@@ -249,51 +314,72 @@ pub async fn cmd_cue_merge(
 #[tauri::command]
 pub async fn cmd_chd_extract(
     app: AppHandle,
+    state: State<'_, ActiveCancel>,
     input: PathBuf,
     output: PathBuf,
     parent: Option<PathBuf>,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "chd-extract"));
     let out_display = output.display().to_string();
+    let token = begin(&state).await;
     // ChdReader's deeply nested async types exceed the compiler's Send recursion
     // limit, so we run on a dedicated thread with its own tokio runtime.
-    std::thread::spawn(move || -> Result<(), String> {
+    let result = std::thread::spawn(move || -> Result<(), String> {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(err_to_string)?;
-        rt.block_on(extract_from_chd(progress.as_ref(), input, output, parent))
-            .map_err(err_to_string)
+        rt.block_on(extract_from_chd_cancellable(
+            progress.as_ref(),
+            input,
+            output,
+            parent,
+            token,
+        ))
+        .map_err(err_to_string)
     })
     .join()
-    .map_err(|_| "task panicked".to_string())??;
+    .map_err(|_| "task panicked".to_string());
+    finish(&state).await;
+    result??;
     Ok(format!("Extracted to {out_display}"))
 }
 
 #[tauri::command]
 pub async fn cmd_chd_verify(
     app: AppHandle,
+    state: State<'_, ActiveCancel>,
     input: PathBuf,
     parent: Option<PathBuf>,
     fix: bool,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "chd-verify"));
-    std::thread::spawn(move || -> Result<(), String> {
+    let token = begin(&state).await;
+    let result = std::thread::spawn(move || -> Result<(), String> {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(err_to_string)?;
-        rt.block_on(verify_chd(progress.as_ref(), input, parent, fix))
-            .map_err(err_to_string)
+        rt.block_on(verify_chd_cancellable(
+            progress.as_ref(),
+            input,
+            parent,
+            fix,
+            token,
+        ))
+        .map_err(err_to_string)
     })
     .join()
-    .map_err(|_| "task panicked".to_string())??;
+    .map_err(|_| "task panicked".to_string());
+    finish(&state).await;
+    result??;
     Ok("CHD verification passed".to_string())
 }
 
 #[tauri::command]
 pub async fn cmd_compress_disc(
     app: AppHandle,
+    state: State<'_, ActiveCancel>,
     input: PathBuf,
     output: Option<PathBuf>,
     level: Option<i32>,
@@ -308,16 +394,22 @@ pub async fn cmd_compress_disc(
         chunk_size: chunk_size.unwrap_or(RvzCompressOptions::default().chunk_size),
         ..RvzCompressOptions::default()
     };
-    tokio::spawn(async move { compress_disc(&input, &output, opts, progress.as_ref()).await })
-        .await
-        .map_err(err_to_string)?
-        .map_err(err_to_string)?;
+    let token = begin(&state).await;
+    let result = tokio::spawn(async move {
+        compress_disc_cancellable(&input, &output, opts, progress.as_ref(), token).await
+    })
+    .await
+    .map_err(err_to_string)?
+    .map_err(err_to_string);
+    finish(&state).await;
+    result?;
     Ok(format!("Compressed to {out_display}"))
 }
 
 #[tauri::command]
 pub async fn cmd_decompress_disc(
     app: AppHandle,
+    state: State<'_, ActiveCancel>,
     input: PathBuf,
     output: Option<PathBuf>,
     task_id: String,
@@ -330,22 +422,26 @@ pub async fn cmd_decompress_disc(
         .and_then(|e| e.to_str())
         .map(|s| s.eq_ignore_ascii_case("wbfs"))
         .unwrap_or(false);
-    tokio::spawn(async move {
+    let token = begin(&state).await;
+    let result = tokio::spawn(async move {
         if to_wbfs {
-            decompress_disc_to_wbfs(&input, &output, progress.as_ref()).await
+            decompress_disc_to_wbfs_cancellable(&input, &output, progress.as_ref(), token).await
         } else {
-            decompress_disc(&input, &output, progress.as_ref()).await
+            decompress_disc_cancellable(&input, &output, progress.as_ref(), token).await
         }
     })
     .await
     .map_err(err_to_string)?
-    .map_err(err_to_string)?;
+    .map_err(err_to_string);
+    finish(&state).await;
+    result?;
     Ok(format!("Decompressed to {out_display}"))
 }
 
 #[tauri::command]
 pub async fn cmd_wup_compress(
     app: AppHandle,
+    state: State<'_, ActiveCancel>,
     inputs: Vec<PathBuf>,
     output: PathBuf,
     level: Option<i32>,
@@ -375,33 +471,42 @@ pub async fn cmd_wup_compress(
             t
         })
         .collect();
-    tokio::spawn(
-        async move { compress_titles_async(titles, output, opts, progress.as_ref()).await },
-    )
+    let token = begin(&state).await;
+    let result = tokio::spawn(async move {
+        compress_titles_async_cancellable(titles, output, opts, progress.as_ref(), token).await
+    })
     .await
     .map_err(err_to_string)?
-    .map_err(err_to_string)?;
+    .map_err(err_to_string);
+    finish(&state).await;
+    result?;
     Ok(format!("Compressed to {out_display}"))
 }
 
 #[tauri::command]
 pub async fn cmd_wup_decrypt(
     app: AppHandle,
+    state: State<'_, ActiveCancel>,
     input: PathBuf,
     output: PathBuf,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "wup-decrypt"));
     let out_display = output.display().to_string();
-    tokio::spawn(async move { decrypt_nus_title_async(input, output, progress.as_ref()).await })
-        .await
-        .map_err(err_to_string)?
-        .map_err(err_to_string)?;
+    let token = begin(&state).await;
+    let result =
+        tokio::spawn(async move { decrypt_nus_title_async_cancellable(input, output, progress.as_ref(), token).await })
+            .await
+            .map_err(err_to_string)?
+            .map_err(err_to_string);
+    finish(&state).await;
+    result?;
     Ok(format!("Decrypted to {out_display}"))
 }
 
 #[tauri::command]
 pub async fn cmd_nx_compress(
     app: AppHandle,
+    state: State<'_, ActiveCancel>,
     input: PathBuf,
     output: Option<PathBuf>,
     keys: Option<PathBuf>,
@@ -429,18 +534,23 @@ pub async fn cmd_nx_compress(
     let output = output.unwrap_or_else(|| nx_derive_compressed_path(&input));
     let out_display = output.display().to_string();
     let keys = load_keyset(keys.as_deref()).map_err(err_to_string)?;
-    tokio::spawn(async move {
-        compress_container_async(input, output, opts, keys, progress.as_ref()).await
+    let token = begin(&state).await;
+    let result = tokio::spawn(async move {
+        compress_container_async_cancellable(input, output, opts, keys, progress.as_ref(), token)
+            .await
     })
     .await
     .map_err(err_to_string)?
-    .map_err(err_to_string)?;
+    .map_err(err_to_string);
+    finish(&state).await;
+    result?;
     Ok(format!("Compressed to {out_display}"))
 }
 
 #[tauri::command]
 pub async fn cmd_nx_decompress(
     app: AppHandle,
+    state: State<'_, ActiveCancel>,
     input: PathBuf,
     output: Option<PathBuf>,
     keys: Option<PathBuf>,
@@ -449,12 +559,15 @@ pub async fn cmd_nx_decompress(
     let output = output.unwrap_or_else(|| nx_derive_decompressed_path(&input));
     let out_display = output.display().to_string();
     let keys = load_keyset(keys.as_deref()).map_err(err_to_string)?;
-    tokio::spawn(async move {
-        decompress_container_async(input, output, keys, progress.as_ref()).await
+    let token = begin(&state).await;
+    let result = tokio::spawn(async move {
+        decompress_container_async_cancellable(input, output, keys, progress.as_ref(), token).await
     })
     .await
     .map_err(err_to_string)?
-    .map_err(err_to_string)?;
+    .map_err(err_to_string);
+    finish(&state).await;
+    result?;
     Ok(format!("Decompressed to {out_display}"))
 }
 
@@ -477,16 +590,21 @@ pub async fn cmd_nx_verify(
 #[tauri::command]
 pub async fn cmd_convert_ctr(
     app: AppHandle,
+    state: State<'_, ActiveCancel>,
     input: PathBuf,
     output: Option<PathBuf>,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "ctr-convert"));
     let output = output.unwrap_or_else(|| derive_converted_path(&input));
     let out_display = output.display().to_string();
-    tokio::spawn(async move { convert_rom(&input, &output, progress.as_ref()).await })
-        .await
-        .map_err(err_to_string)?
-        .map_err(err_to_string)?;
+    let token = begin(&state).await;
+    let result =
+        tokio::spawn(async move { convert_rom_cancellable(&input, &output, progress.as_ref(), token).await })
+            .await
+            .map_err(err_to_string)?
+            .map_err(err_to_string);
+    finish(&state).await;
+    result?;
     Ok(format!("Converted to {out_display}"))
 }
 

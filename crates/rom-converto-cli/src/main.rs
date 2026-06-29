@@ -21,41 +21,44 @@ use clap_complete::{generate, generate_to};
 use indicatif::MultiProgress;
 use indicatif_log_bridge::LogWrapper;
 use rom_converto_lib::chd::{
-    ChdDvdOptions, DiscMode, convert_disc_to_chd, extract_from_chd, verify_chd, verify_chd_batch,
+    ChdDvdOptions, DiscMode, convert_disc_to_chd_cancellable, extract_from_chd_cancellable,
+    verify_chd, verify_chd_batch,
 };
 use rom_converto_lib::cso::{
-    CsoCompressOptions, CsoFormat, compress_to_cso, decompress_from_cso, verify_cso,
+    CsoCompressOptions, CsoFormat, compress_to_cso_cancellable, decompress_from_cso_cancellable,
+    verify_cso,
 };
 use rom_converto_lib::cue::merge::merge_bin;
 use rom_converto_lib::nintendo::ctr::convert::{
-    convert_rom, convert_rom_batch, derive_converted_path,
+    convert_rom_batch_cancellable, convert_rom_cancellable, derive_converted_path,
 };
 use rom_converto_lib::nintendo::ctr::verify::{
     CtrVerifyOptions, CtrVerifyResult, verify_ctr, verify_ctr_batch,
 };
 use rom_converto_lib::nintendo::ctr::z3ds::{
-    compress_rom, compress_rom_batch, decompress_rom, decompress_rom_batch, derive_compressed_path,
-    derive_decompressed_path,
+    compress_rom_batch, compress_rom_cancellable, decompress_rom_batch,
+    decompress_rom_cancellable, derive_compressed_path, derive_decompressed_path,
 };
 use rom_converto_lib::nintendo::ctr::{
-    CdnToCiaOptions, convert_cdn_to_cia, decrypt_rom, decrypt_rom_batch, derive_decrypted_path,
+    CdnToCiaOptions, convert_cdn_to_cia_cancellable, decrypt_rom_batch_cancellable,
+    decrypt_rom_cancellable, derive_decrypted_path,
     generate_ticket_from_cdn,
 };
 use rom_converto_lib::nintendo::dol::verify::{DolVerifyOptions, verify_dol};
 use rom_converto_lib::nintendo::nx::{
-    NczMode, NxCompressOptions, compress_container_async, decompress_container_async,
-    derive_compressed_path as nx_derive_compressed_path,
+    NczMode, NxCompressOptions, compress_container_async_cancellable,
+    decompress_container_async_cancellable, derive_compressed_path as nx_derive_compressed_path,
     derive_decompressed_path as nx_derive_decompressed_path, detect_container, load_keyset,
     verify_container_async,
 };
 use rom_converto_lib::nintendo::rvl::verify::{RvlVerifyOptions, verify_rvl};
 use rom_converto_lib::nintendo::rvz::{
-    RvzCompressOptions, compress_disc, decompress_disc, decompress_disc_to_wbfs, derive_disc_path,
-    derive_rvz_path,
+    RvzCompressOptions, compress_disc_cancellable, decompress_disc_cancellable,
+    decompress_disc_to_wbfs_cancellable, derive_disc_path, derive_rvz_path,
 };
 use rom_converto_lib::nintendo::wup::{
-    TitleInput, WupCompressOptions, compress_titles_async, decrypt_nus_title_async,
-    verify_wup_async,
+    TitleInput, WupCompressOptions, compress_titles_async_cancellable,
+    decrypt_nus_title_async_cancellable, verify_wup_async,
 };
 use rom_converto_lib::playlist::{PlaylistMode, PlaylistOptions, plan_playlists};
 use rom_converto_lib::util::fs::collect_files_with_exts;
@@ -425,7 +428,77 @@ async fn main() -> Result<()> {
     let effective = config::resolve(&user_config, preset.as_ref());
     let dry_run = cli.dry_run;
 
-    match cli.command {
+    let cancel = rom_converto_lib::util::CancelToken::new();
+    {
+        let cancel = cancel.clone();
+        tokio::spawn(async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                cancel.cancel();
+            }
+        });
+    }
+
+    let dispatch = dispatch_command(
+        cli.command,
+        progress,
+        total_progress,
+        &effective,
+        dry_run,
+        cancel.clone(),
+        &mut github,
+    )
+    .await;
+
+    if let Err(err) = dispatch {
+        if cancel.is_cancelled() && is_cancelled_error(&err) {
+            eprintln!("Cancelled.");
+            std::process::exit(130);
+        }
+        return Err(err);
+    }
+    Ok(())
+}
+
+/// True when the error chain bottoms out at one of the codec
+/// `Cancelled` variants, so a Ctrl-C abort is reported distinctly
+/// rather than as a generic failure.
+fn is_cancelled_error(err: &anyhow::Error) -> bool {
+    use rom_converto_lib::chd::error::ChdError;
+    use rom_converto_lib::cso::CsoError;
+    use rom_converto_lib::nintendo::ctr::error::NintendoCTRError;
+    use rom_converto_lib::nintendo::ctr::z3ds::error::Z3dsError;
+    use rom_converto_lib::nintendo::nx::NxError;
+    use rom_converto_lib::nintendo::rvz::RvzError;
+    use rom_converto_lib::nintendo::wup::WupError;
+
+    err.chain().any(|cause| {
+        matches!(cause.downcast_ref::<ChdError>(), Some(ChdError::Cancelled))
+            || matches!(cause.downcast_ref::<CsoError>(), Some(CsoError::Cancelled))
+            || matches!(cause.downcast_ref::<RvzError>(), Some(RvzError::Cancelled))
+            || matches!(cause.downcast_ref::<NxError>(), Some(NxError::Cancelled))
+            || matches!(
+                cause.downcast_ref::<Z3dsError>(),
+                Some(Z3dsError::Cancelled)
+            )
+            || matches!(
+                cause.downcast_ref::<NintendoCTRError>(),
+                Some(NintendoCTRError::Cancelled)
+            )
+            || matches!(cause.downcast_ref::<WupError>(), Some(WupError::Cancelled))
+    })
+}
+
+#[allow(clippy::too_many_lines)]
+async fn dispatch_command(
+    command: Commands,
+    progress: IndicatifProgress,
+    total_progress: IndicatifProgress,
+    effective: &config::Effective,
+    dry_run: bool,
+    cancel: rom_converto_lib::util::CancelToken,
+    github: &mut GithubApi,
+) -> Result<()> {
+    match command {
         Commands::Ctr(inner) => match inner {
             CtrCommands::CdnToCia(cmd) => {
                 let mut output = cmd.output_flag.or(cmd.output);
@@ -525,7 +598,7 @@ async fn main() -> Result<()> {
                     output_dir,
                     on_conflict: policy_of(cmd.on_conflict, cmd.force),
                 };
-                convert_cdn_to_cia(opts, &progress, &total_progress).await?
+                convert_cdn_to_cia_cancellable(opts, &progress, &total_progress, cancel.clone()).await?
             }
             CtrCommands::GenerateCdnTicket(cmd) => {
                 ensure_input_exists(&cmd.cdn_dir)?;
@@ -564,12 +637,13 @@ async fn main() -> Result<()> {
                     }
                     let tally = Tally::new();
                     let count = files.len();
-                    decrypt_rom_batch(
+                    decrypt_rom_batch_cancellable(
                         &cmd.input,
                         cmd.output_dir.as_deref(),
                         &progress,
                         &total_progress,
                         cmd.max_depth,
+                        cancel.clone(),
                     )
                     .await?;
                     log_count_summary(count, tally);
@@ -615,7 +689,7 @@ async fn main() -> Result<()> {
                         WriteDecision::Write(p) => p,
                     };
                     let started = Instant::now();
-                    decrypt_rom(&cmd.input, &output, &progress).await?;
+                    decrypt_rom_cancellable(&cmd.input, &output, &progress, cancel.clone()).await?;
                     log_single_summary(&cmd.input, &output, TallyDirection::Convert, started);
                 }
             }
@@ -692,7 +766,8 @@ async fn main() -> Result<()> {
                         WriteDecision::Write(p) => p,
                     };
                     let started = Instant::now();
-                    compress_rom(&cmd.input, &output, cmd.level, &progress).await?;
+                    compress_rom_cancellable(&cmd.input, &output, cmd.level, &progress, cancel.clone())
+                        .await?;
                     log_single_summary(&cmd.input, &output, TallyDirection::Compress, started);
                 }
             }
@@ -769,7 +844,8 @@ async fn main() -> Result<()> {
                         WriteDecision::Write(p) => p,
                     };
                     let started = Instant::now();
-                    decompress_rom(&cmd.input, &output, &progress).await?;
+                    decompress_rom_cancellable(&cmd.input, &output, &progress, cancel.clone())
+                        .await?;
                     log_single_summary(&cmd.input, &output, TallyDirection::Decompress, started);
                 }
             }
@@ -794,12 +870,13 @@ async fn main() -> Result<()> {
                     }
                     let tally = Tally::new();
                     let count = files.len();
-                    convert_rom_batch(
+                    convert_rom_batch_cancellable(
                         &cmd.input,
                         cmd.output_dir.as_deref(),
                         &progress,
                         &total_progress,
                         cmd.max_depth,
+                        cancel.clone(),
                     )
                     .await?;
                     log_count_summary(count, tally);
@@ -845,7 +922,7 @@ async fn main() -> Result<()> {
                         WriteDecision::Write(p) => p,
                     };
                     let started = Instant::now();
-                    convert_rom(&cmd.input, &output, &progress).await?;
+                    convert_rom_cancellable(&cmd.input, &output, &progress, cancel.clone()).await?;
                     log_single_summary(&cmd.input, &output, TallyDirection::Convert, started);
                 }
             }
@@ -954,6 +1031,7 @@ async fn main() -> Result<()> {
                         cmd.max_depth,
                         dry_run,
                         report.as_deref(),
+                        cancel.clone(),
                     )
                     .await?
                 } else {
@@ -1025,7 +1103,8 @@ async fn main() -> Result<()> {
                         WriteDecision::Write(p) => p,
                     };
                     let started = Instant::now();
-                    compress_disc(&cmd.input, &output, opts, &progress).await?;
+                    compress_disc_cancellable(&cmd.input, &output, opts, &progress, cancel.clone())
+                        .await?;
                     finish_single(
                         &cmd.input,
                         &output,
@@ -1053,6 +1132,7 @@ async fn main() -> Result<()> {
                         cmd.max_depth,
                         dry_run,
                         report.as_deref(),
+                        cancel.clone(),
                     )
                     .await?
                 } else {
@@ -1101,9 +1181,16 @@ async fn main() -> Result<()> {
                     };
                     let started = Instant::now();
                     if wants_wbfs_output(&output) {
-                        decompress_disc_to_wbfs(&cmd.input, &output, &progress).await?
+                        decompress_disc_to_wbfs_cancellable(
+                            &cmd.input,
+                            &output,
+                            &progress,
+                            cancel.clone(),
+                        )
+                        .await?
                     } else {
-                        decompress_disc(&cmd.input, &output, &progress).await?
+                        decompress_disc_cancellable(&cmd.input, &output, &progress, cancel.clone())
+                            .await?
                     }
                     finish_single(
                         &cmd.input,
@@ -1184,6 +1271,7 @@ async fn main() -> Result<()> {
                         cmd.max_depth,
                         dry_run,
                         report.as_deref(),
+                        cancel.clone(),
                     )
                     .await?
                 } else {
@@ -1255,7 +1343,8 @@ async fn main() -> Result<()> {
                         WriteDecision::Write(p) => p,
                     };
                     let started = Instant::now();
-                    compress_disc(&cmd.input, &output, opts, &progress).await?;
+                    compress_disc_cancellable(&cmd.input, &output, opts, &progress, cancel.clone())
+                        .await?;
                     finish_single(
                         &cmd.input,
                         &output,
@@ -1283,6 +1372,7 @@ async fn main() -> Result<()> {
                         cmd.max_depth,
                         dry_run,
                         report.as_deref(),
+                        cancel.clone(),
                     )
                     .await?
                 } else {
@@ -1331,9 +1421,16 @@ async fn main() -> Result<()> {
                     };
                     let started = Instant::now();
                     if wants_wbfs_output(&output) {
-                        decompress_disc_to_wbfs(&cmd.input, &output, &progress).await?
+                        decompress_disc_to_wbfs_cancellable(
+                            &cmd.input,
+                            &output,
+                            &progress,
+                            cancel.clone(),
+                        )
+                        .await?
                     } else {
-                        decompress_disc(&cmd.input, &output, &progress).await?
+                        decompress_disc_cancellable(&cmd.input, &output, &progress, cancel.clone())
+                            .await?
                     }
                     finish_single(
                         &cmd.input,
@@ -1465,7 +1562,7 @@ async fn main() -> Result<()> {
                         t
                     })
                     .collect();
-                compress_titles_async(titles, output, opts, &progress).await?
+                compress_titles_async_cancellable(titles, output, opts, &progress, cancel.clone()).await?
             }
             WupCommands::Decrypt(cmd) => {
                 ensure_input_exists(&cmd.input)?;
@@ -1483,7 +1580,7 @@ async fn main() -> Result<()> {
                     }
                     WriteDecision::Write(_) => {}
                 }
-                decrypt_nus_title_async(cmd.input, cmd.output, &progress).await?
+                decrypt_nus_title_async_cancellable(cmd.input, cmd.output, &progress, cancel.clone()).await?
             }
             WupCommands::Verify(cmd) => {
                 if cmd.recursive {
@@ -1582,7 +1679,15 @@ async fn main() -> Result<()> {
                         dry_run,
                         report,
                     };
-                    batch::nx_compress(&progress, &total_progress, &cmd.input, keys, tuning).await?
+                    batch::nx_compress(
+                        &progress,
+                        &total_progress,
+                        &cmd.input,
+                        keys,
+                        tuning,
+                        cancel.clone(),
+                    )
+                    .await?
                 } else {
                     ensure_input_exists(&cmd.input)?;
                     let kind = detect_container(&cmd.input)?;
@@ -1673,7 +1778,15 @@ async fn main() -> Result<()> {
                     let in_path = cmd.input.clone();
                     let out_path = output.clone();
                     let started = Instant::now();
-                    compress_container_async(cmd.input, output, opts, keys, &progress).await?;
+                    compress_container_async_cancellable(
+                        cmd.input,
+                        output,
+                        opts,
+                        keys,
+                        &progress,
+                        cancel.clone(),
+                    )
+                    .await?;
                     finish_single(
                         &in_path,
                         &out_path,
@@ -1740,6 +1853,7 @@ async fn main() -> Result<()> {
                         cmd.max_depth,
                         dry_run,
                         report.as_deref(),
+                        cancel.clone(),
                     )
                     .await?
                 } else {
@@ -1792,7 +1906,14 @@ async fn main() -> Result<()> {
                     let in_path = cmd.input.clone();
                     let out_path = output.clone();
                     let started = Instant::now();
-                    decompress_container_async(cmd.input, output, keys, &progress).await?;
+                    decompress_container_async_cancellable(
+                        cmd.input,
+                        output,
+                        keys,
+                        &progress,
+                        cancel.clone(),
+                    )
+                    .await?;
                     finish_single(
                         &in_path,
                         &out_path,
@@ -1876,6 +1997,7 @@ async fn main() -> Result<()> {
                         cmd.max_depth,
                         dry_run,
                         report.as_deref(),
+                        cancel.clone(),
                     )
                     .await?
                 } else {
@@ -1951,7 +2073,15 @@ async fn main() -> Result<()> {
                     let in_path = cmd.input.clone();
                     let out_path = output.clone();
                     let started = Instant::now();
-                    convert_disc_to_chd(&progress, cmd.input, output, mode, opts).await?;
+                    convert_disc_to_chd_cancellable(
+                        &progress,
+                        cmd.input,
+                        output,
+                        mode,
+                        opts,
+                        cancel.clone(),
+                    )
+                    .await?;
                     finish_single(
                         &in_path,
                         &out_path,
@@ -1981,6 +2111,7 @@ async fn main() -> Result<()> {
                         cmd.max_depth,
                         dry_run,
                         report.as_deref(),
+                        cancel.clone(),
                     )
                     .await?
                 } else {
@@ -2033,7 +2164,14 @@ async fn main() -> Result<()> {
                     let in_path = cmd.input.clone();
                     let out_path = output.clone();
                     let started = Instant::now();
-                    extract_from_chd(&progress, cmd.input, output, cmd.parent).await?;
+                    extract_from_chd_cancellable(
+                        &progress,
+                        cmd.input,
+                        output,
+                        cmd.parent,
+                        cancel.clone(),
+                    )
+                    .await?;
                     finish_single(
                         &in_path,
                         &out_path,
@@ -2102,6 +2240,7 @@ async fn main() -> Result<()> {
                         cmd.max_depth,
                         dry_run,
                         report.as_deref(),
+                        cancel.clone(),
                     )
                     .await?
                 } else {
@@ -2180,7 +2319,8 @@ async fn main() -> Result<()> {
                     let in_path = cmd.input.clone();
                     let out_path = output.clone();
                     let started = Instant::now();
-                    compress_to_cso(&progress, cmd.input, output, opts).await?;
+                    compress_to_cso_cancellable(&progress, cmd.input, output, opts, cancel.clone())
+                        .await?;
                     finish_single(
                         &in_path,
                         &out_path,
@@ -2209,6 +2349,7 @@ async fn main() -> Result<()> {
                         cmd.max_depth,
                         dry_run,
                         report.as_deref(),
+                        cancel.clone(),
                     )
                     .await?
                 } else {
@@ -2258,7 +2399,14 @@ async fn main() -> Result<()> {
                     let in_path = cmd.input.clone();
                     let out_path = output.clone();
                     let started = Instant::now();
-                    decompress_from_cso(&progress, cmd.input, output, true).await?;
+                    decompress_from_cso_cancellable(
+                        &progress,
+                        cmd.input,
+                        output,
+                        true,
+                        cancel.clone(),
+                    )
+                    .await?;
                     finish_single(
                         &in_path,
                         &out_path,
@@ -2412,7 +2560,7 @@ async fn main() -> Result<()> {
                 log::info!("{}", Tally::count_summary(tally.count(), started.elapsed()));
             }
         }
-        Commands::SelfUpdate(_) => self_update(&mut github).await?,
+        Commands::SelfUpdate(_) => self_update(github).await?,
         Commands::ShellCompletions(_) => unreachable!("handled before logger init"),
     }
 

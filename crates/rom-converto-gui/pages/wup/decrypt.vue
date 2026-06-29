@@ -4,7 +4,7 @@ import { useWupDecryptStore } from "~/stores/wup-decrypt";
 
 const store = useWupDecryptStore();
 const { input, output, result, error, loading } = storeToRefs(store);
-const { run } = useOperation({ result, error, loading });
+const { run, cancelled, abort } = useOperation({ result, error, loading });
 const progress = useProgress("wup-decrypt");
 const commandLine = ref("");
 
@@ -63,6 +63,7 @@ async function execute() {
           :loading="loading"
           :disabled="!input"
           @click="execute"
+          @cancel="abort()"
         >
           Decrypt
         </RunButton>
@@ -70,7 +71,7 @@ async function execute() {
     </OperationCard>
 
     <div class="mt-4">
-      <OutputLog :command="commandLine" :result="result" :error="error" />
+      <OutputLog :command="commandLine" :result="result" :cancelled="cancelled ? 'Operation cancelled.' : undefined" :error="error" />
     </div>
   </div>
 </template>

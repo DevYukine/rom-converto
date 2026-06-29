@@ -5,7 +5,7 @@ import { useRvlDecompressStore } from "~/stores/rvl-decompress";
 const store = useRvlDecompressStore();
 const { input, output, format, result, error, loading, queue } = storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
-const { run } = useOperation({ result, error, loading });
+const { run, cancelled, abort } = useOperation({ result, error, loading });
 const progress = useProgress("rvl-decompress");
 
 const isBatch = computed(() => queue.value.length > 0);
@@ -164,6 +164,7 @@ async function execute() {
           :batch-total="queue.length"
           :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input"
           @click="execute"
+          @cancel="isBatch ? batch.abort() : abort()"
         >
           {{ isBatch && queue.filter(i => i.status === 'pending').length > 1 ? `Decompress All (${queue.filter(i => i.status === 'pending').length})` : 'Decompress' }}
         </RunButton>
@@ -171,7 +172,7 @@ async function execute() {
     </OperationCard>
 
     <div class="mt-4">
-      <OutputLog :command="commandLine" :result="result" :error="error" />
+      <OutputLog :command="commandLine" :result="result" :cancelled="cancelled ? 'Operation cancelled.' : undefined" :error="error" />
     </div>
   </div>
 </template>

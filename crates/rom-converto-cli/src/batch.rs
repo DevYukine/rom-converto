@@ -3,9 +3,9 @@ use anyhow::Result;
 use log::{info, warn};
 use rom_converto_lib::util::fs::{collect_all_files, collect_files_with_exts};
 use rom_converto_lib::util::{
-    ConflictPolicy, FileDigests, FileStatus, HashAlgo, HashReportRecord, ProgressReporter,
-    ReportFormat, ReportRecord, ReportTotals, Tally, TallyDirection, hash_file, write_hash_report,
-    write_report,
+    CancelToken, ConflictPolicy, FileDigests, FileStatus, HashAlgo, HashReportRecord,
+    ProgressReporter, ReportFormat, ReportRecord, ReportTotals, Tally, TallyDirection, hash_file,
+    write_hash_report, write_report,
 };
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -189,8 +189,9 @@ pub async fn cso_decompress(
     max_depth: Option<usize>,
     dry_run: bool,
     report_path: Option<&Path>,
+    cancel: CancelToken,
 ) -> Result<()> {
-    use rom_converto_lib::cso::decompress_from_cso;
+    use rom_converto_lib::cso::decompress_from_cso_cancellable;
 
     let files = collect_or_warn(input_dir, &["cso", "zso"], max_depth)?;
     if files.is_empty() {
@@ -204,6 +205,9 @@ pub async fn cso_decompress(
     let mut tally = Tally::new();
     let mut records: Vec<ReportRecord> = Vec::new();
     for path in files {
+        if cancel.is_cancelled() {
+            break;
+        }
         let output = match crate::util::batch_output(
             &path,
             &path.with_extension("iso"),
@@ -261,7 +265,13 @@ pub async fn cso_decompress(
         let input_bytes = file_len(&path);
         let out_path = output.clone();
         let started = Instant::now();
-        if let Err(e) = decompress_from_cso(progress, path.clone(), output, true).await {
+        if let Err(e) =
+            decompress_from_cso_cancellable(progress, path.clone(), output, true, cancel.clone())
+                .await
+        {
+            if matches!(e, rom_converto_lib::cso::CsoError::Cancelled) {
+                break;
+            }
             warn!("Failed to decompress {}: {e}", path.display());
             tally.record_failed();
             records.push(failed_record(&path, "decompress", input_bytes, started, e));
@@ -275,6 +285,9 @@ pub async fn cso_decompress(
         total_progress.inc(1);
     }
     total_progress.finish();
+    if cancel.is_cancelled() {
+        return Ok(());
+    }
     finish_tally(&tally, TallyDirection::Decompress, &records, dry_run, report_path)
 }
 
@@ -325,8 +338,9 @@ pub async fn rvz_compress(
     max_depth: Option<usize>,
     dry_run: bool,
     report_path: Option<&Path>,
+    cancel: CancelToken,
 ) -> Result<()> {
-    use rom_converto_lib::nintendo::rvz::{compress_disc, derive_rvz_path};
+    use rom_converto_lib::nintendo::rvz::{compress_disc_cancellable, derive_rvz_path};
 
     let files = collect_or_warn(input_dir, exts, max_depth)?;
     if files.is_empty() {
@@ -340,6 +354,9 @@ pub async fn rvz_compress(
     let mut tally = Tally::new();
     let mut records: Vec<ReportRecord> = Vec::new();
     for path in files {
+        if cancel.is_cancelled() {
+            break;
+        }
         let output = match crate::util::batch_output(
             &path,
             &derive_rvz_path(&path),
@@ -426,7 +443,12 @@ pub async fn rvz_compress(
         };
         let input_bytes = file_len(&path);
         let started = Instant::now();
-        if let Err(e) = compress_disc(&path, &output, opts, progress).await {
+        if let Err(e) =
+            compress_disc_cancellable(&path, &output, opts, progress, cancel.clone()).await
+        {
+            if matches!(e, rom_converto_lib::nintendo::rvz::RvzError::Cancelled) {
+                break;
+            }
             warn!("Failed to compress {}: {e}", path.display());
             tally.record_failed();
             records.push(failed_record(&path, "compress", input_bytes, started, e));
@@ -440,6 +462,9 @@ pub async fn rvz_compress(
         total_progress.inc(1);
     }
     total_progress.finish();
+    if cancel.is_cancelled() {
+        return Ok(());
+    }
     finish_tally(&tally, TallyDirection::Compress, &records, dry_run, report_path)
 }
 
@@ -454,8 +479,9 @@ pub async fn rvz_decompress(
     max_depth: Option<usize>,
     dry_run: bool,
     report_path: Option<&Path>,
+    cancel: CancelToken,
 ) -> Result<()> {
-    use rom_converto_lib::nintendo::rvz::{decompress_disc, derive_disc_path};
+    use rom_converto_lib::nintendo::rvz::{decompress_disc_cancellable, derive_disc_path};
 
     let files = collect_or_warn(input_dir, &["rvz"], max_depth)?;
     if files.is_empty() {
@@ -469,6 +495,9 @@ pub async fn rvz_decompress(
     let mut tally = Tally::new();
     let mut records: Vec<ReportRecord> = Vec::new();
     for path in files {
+        if cancel.is_cancelled() {
+            break;
+        }
         let output = match crate::util::batch_output(
             &path,
             &derive_disc_path(&path),
@@ -525,7 +554,10 @@ pub async fn rvz_decompress(
         };
         let input_bytes = file_len(&path);
         let started = Instant::now();
-        if let Err(e) = decompress_disc(&path, &output, progress).await {
+        if let Err(e) = decompress_disc_cancellable(&path, &output, progress, cancel.clone()).await {
+            if matches!(e, rom_converto_lib::nintendo::rvz::RvzError::Cancelled) {
+                break;
+            }
             warn!("Failed to decompress {}: {e}", path.display());
             tally.record_failed();
             records.push(failed_record(&path, "decompress", input_bytes, started, e));
@@ -539,6 +571,9 @@ pub async fn rvz_decompress(
         total_progress.inc(1);
     }
     total_progress.finish();
+    if cancel.is_cancelled() {
+        return Ok(());
+    }
     finish_tally(&tally, TallyDirection::Decompress, &records, dry_run, report_path)
 }
 
@@ -638,9 +673,10 @@ pub async fn nx_compress(
     input_dir: &Path,
     keys: rom_converto_lib::nintendo::nx::KeySet,
     tuning: NxCompressTuning,
+    cancel: CancelToken,
 ) -> Result<()> {
     use rom_converto_lib::nintendo::nx::{
-        NczMode, NxCompressOptions, compress_container_async, derive_compressed_path,
+        NczMode, NxCompressOptions, compress_container_async_cancellable, derive_compressed_path,
         detect_container,
     };
 
@@ -657,6 +693,9 @@ pub async fn nx_compress(
     let mut tally = Tally::new();
     let mut records: Vec<ReportRecord> = Vec::new();
     for path in files {
+        if cancel.is_cancelled() {
+            break;
+        }
         let kind = match detect_container(&path) {
             Ok(kind) => kind,
             Err(e) => {
@@ -773,9 +812,19 @@ pub async fn nx_compress(
         let input_bytes = file_len(&path);
         let out_path = output.clone();
         let started = Instant::now();
-        if let Err(e) =
-            compress_container_async(path.clone(), output, opts, keys.clone(), progress).await
+        if let Err(e) = compress_container_async_cancellable(
+            path.clone(),
+            output,
+            opts,
+            keys.clone(),
+            progress,
+            cancel.clone(),
+        )
+        .await
         {
+            if matches!(e, rom_converto_lib::nintendo::nx::NxError::Cancelled) {
+                break;
+            }
             warn!("Failed to compress {}: {e}", path.display());
             tally.record_failed();
             records.push(failed_record(&path, "compress", input_bytes, started, e));
@@ -789,6 +838,9 @@ pub async fn nx_compress(
         total_progress.inc(1);
     }
     total_progress.finish();
+    if cancel.is_cancelled() {
+        return Ok(());
+    }
     finish_tally(
         &tally,
         TallyDirection::Compress,
@@ -810,8 +862,11 @@ pub async fn nx_decompress(
     max_depth: Option<usize>,
     dry_run: bool,
     report_path: Option<&Path>,
+    cancel: CancelToken,
 ) -> Result<()> {
-    use rom_converto_lib::nintendo::nx::{decompress_container_async, derive_decompressed_path};
+    use rom_converto_lib::nintendo::nx::{
+        decompress_container_async_cancellable, derive_decompressed_path,
+    };
 
     let files = collect_or_warn(input_dir, &["nsz", "xcz"], max_depth)?;
     if files.is_empty() {
@@ -825,6 +880,9 @@ pub async fn nx_decompress(
     let mut tally = Tally::new();
     let mut records: Vec<ReportRecord> = Vec::new();
     for path in files {
+        if cancel.is_cancelled() {
+            break;
+        }
         let output = match crate::util::batch_output(
             &path,
             &derive_decompressed_path(&path),
@@ -885,9 +943,18 @@ pub async fn nx_decompress(
         let input_bytes = file_len(&path);
         let out_path = output.clone();
         let started = Instant::now();
-        if let Err(e) =
-            decompress_container_async(path.clone(), output, keys.clone(), progress).await
+        if let Err(e) = decompress_container_async_cancellable(
+            path.clone(),
+            output,
+            keys.clone(),
+            progress,
+            cancel.clone(),
+        )
+        .await
         {
+            if matches!(e, rom_converto_lib::nintendo::nx::NxError::Cancelled) {
+                break;
+            }
             warn!("Failed to decompress {}: {e}", path.display());
             tally.record_failed();
             records.push(failed_record(&path, "decompress", input_bytes, started, e));
@@ -901,6 +968,9 @@ pub async fn nx_decompress(
         total_progress.inc(1);
     }
     total_progress.finish();
+    if cancel.is_cancelled() {
+        return Ok(());
+    }
     finish_tally(&tally, TallyDirection::Decompress, &records, dry_run, report_path)
 }
 
@@ -1031,8 +1101,9 @@ pub async fn chd_compress(
     max_depth: Option<usize>,
     dry_run: bool,
     report_path: Option<&Path>,
+    cancel: CancelToken,
 ) -> Result<()> {
-    use rom_converto_lib::chd::convert_disc_to_chd;
+    use rom_converto_lib::chd::convert_disc_to_chd_cancellable;
 
     let files = collect_or_warn(input_dir, &["cue", "iso"], max_depth)?;
     if files.is_empty() {
@@ -1047,6 +1118,9 @@ pub async fn chd_compress(
     let mut tally = Tally::new();
     let mut records: Vec<ReportRecord> = Vec::new();
     for path in files {
+        if cancel.is_cancelled() {
+            break;
+        }
         let output = match crate::util::batch_output(
             &path,
             &path.with_extension("chd"),
@@ -1135,7 +1209,19 @@ pub async fn chd_compress(
         let input_bytes = file_len(&path);
         let out_path = output.clone();
         let started = Instant::now();
-        if let Err(e) = convert_disc_to_chd(progress, path.clone(), output, mode, opts.clone()).await {
+        if let Err(e) = convert_disc_to_chd_cancellable(
+            progress,
+            path.clone(),
+            output,
+            mode,
+            opts.clone(),
+            cancel.clone(),
+        )
+        .await
+        {
+            if matches!(e, rom_converto_lib::chd::error::ChdError::Cancelled) {
+                break;
+            }
             warn!("Failed to compress {}: {e}", path.display());
             tally.record_failed();
             records.push(failed_record(&path, "compress", input_bytes, started, e));
@@ -1149,6 +1235,9 @@ pub async fn chd_compress(
         total_progress.inc(1);
     }
     total_progress.finish();
+    if cancel.is_cancelled() {
+        return Ok(());
+    }
     finish_tally(&tally, TallyDirection::Compress, &records, dry_run, report_path)
 }
 
@@ -1164,8 +1253,9 @@ pub async fn chd_extract(
     max_depth: Option<usize>,
     dry_run: bool,
     report_path: Option<&Path>,
+    cancel: CancelToken,
 ) -> Result<()> {
-    use rom_converto_lib::chd::extract_from_chd;
+    use rom_converto_lib::chd::extract_from_chd_cancellable;
 
     let files = collect_or_warn(input_dir, &["chd"], max_depth)?;
     if files.is_empty() {
@@ -1179,6 +1269,9 @@ pub async fn chd_extract(
     let mut tally = Tally::new();
     let mut records: Vec<ReportRecord> = Vec::new();
     for path in files {
+        if cancel.is_cancelled() {
+            break;
+        }
         let output = match crate::util::batch_output(
             &path,
             &path.with_extension(""),
@@ -1240,7 +1333,18 @@ pub async fn chd_extract(
         };
         let out_path = output.clone();
         let started = Instant::now();
-        if let Err(e) = extract_from_chd(progress, path.clone(), output, parent.clone()).await {
+        if let Err(e) = extract_from_chd_cancellable(
+            progress,
+            path.clone(),
+            output,
+            parent.clone(),
+            cancel.clone(),
+        )
+        .await
+        {
+            if matches!(e, rom_converto_lib::chd::error::ChdError::Cancelled) {
+                break;
+            }
             warn!("Failed to extract {}: {e}", path.display());
             tally.record_failed();
             records.push(failed_record(&path, "extract", 0, started, e));
@@ -1251,6 +1355,9 @@ pub async fn chd_extract(
         total_progress.inc(1);
     }
     total_progress.finish();
+    if cancel.is_cancelled() {
+        return Ok(());
+    }
     finish_tally(&tally, TallyDirection::CountOnly, &records, dry_run, report_path)
 }
 
@@ -1266,8 +1373,9 @@ pub async fn cso_compress(
     max_depth: Option<usize>,
     dry_run: bool,
     report_path: Option<&Path>,
+    cancel: CancelToken,
 ) -> Result<()> {
-    use rom_converto_lib::cso::{CsoFormat, compress_to_cso};
+    use rom_converto_lib::cso::{CsoFormat, compress_to_cso_cancellable};
 
     let ext = opts.format.extension();
     let media = match opts.format {
@@ -1287,6 +1395,9 @@ pub async fn cso_compress(
     let mut tally = Tally::new();
     let mut records: Vec<ReportRecord> = Vec::new();
     for path in files {
+        if cancel.is_cancelled() {
+            break;
+        }
         let output = match crate::util::batch_output(
             &path,
             &path.with_extension(ext),
@@ -1374,7 +1485,13 @@ pub async fn cso_compress(
         let input_bytes = file_len(&path);
         let out_path = output.clone();
         let started = Instant::now();
-        if let Err(e) = compress_to_cso(progress, path.clone(), output, opts.clone()).await {
+        if let Err(e) =
+            compress_to_cso_cancellable(progress, path.clone(), output, opts.clone(), cancel.clone())
+                .await
+        {
+            if matches!(e, rom_converto_lib::cso::CsoError::Cancelled) {
+                break;
+            }
             warn!("Failed to compress {}: {e}", path.display());
             tally.record_failed();
             records.push(failed_record(&path, "compress", input_bytes, started, e));
@@ -1388,6 +1505,9 @@ pub async fn cso_compress(
         total_progress.inc(1);
     }
     total_progress.finish();
+    if cancel.is_cancelled() {
+        return Ok(());
+    }
     finish_tally(&tally, TallyDirection::Compress, &records, dry_run, report_path)
 }
 

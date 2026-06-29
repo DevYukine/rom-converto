@@ -4,7 +4,7 @@ import { useChdVerifyStore } from "~/stores/chd-verify";
 
 const store = useChdVerifyStore();
 const { input, parent, fix, result, error, loading, queue } = storeToRefs(store);
-const { run } = useOperation({ result, error, loading });
+const { run, cancelled, abort } = useOperation({ result, error, loading });
 const progress = useProgress("chd-verify");
 
 const isBatch = computed(() => queue.value.length > 0);
@@ -126,6 +126,7 @@ async function execute() {
           :batch-total="queue.length"
           :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input"
           @click="execute"
+          @cancel="isBatch ? batch.abort() : abort()"
         >
           {{ isBatch && queue.filter(i => i.status === 'pending').length > 1 ? `Verify All (${queue.filter(i => i.status === 'pending').length})` : 'Verify' }}
         </RunButton>
@@ -133,7 +134,7 @@ async function execute() {
     </OperationCard>
 
     <div class="mt-4">
-      <OutputLog :command="commandLine" :result="result" :error="error" />
+      <OutputLog :command="commandLine" :result="result" :cancelled="cancelled ? 'Operation cancelled.' : undefined" :error="error" />
     </div>
   </div>
 </template>

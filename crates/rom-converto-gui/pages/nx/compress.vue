@@ -231,6 +231,7 @@ async function execute() {
           :batch-total="queue.length"
           :disabled="!canCompress"
           @click="execute"
+          @cancel="batch.abort"
         >
           {{ queue.filter(i => i.status === 'pending').length > 1 ? `Compress All (${queue.filter(i => i.status === 'pending').length})` : 'Compress' }}
         </RunButton>

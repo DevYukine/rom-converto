@@ -91,6 +91,18 @@ watch(() => props.currentIndex, (idx) => {
           >
             <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
           </svg>
+          <svg
+            v-else-if="item.status === 'cancelled'"
+            class="h-4 w-4 text-amber-400"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            stroke-width="2"
+            aria-hidden="true"
+          >
+            <circle cx="12" cy="12" r="9" />
+            <path stroke-linecap="round" d="M8 12h8" />
+          </svg>
         </span>
 
         <div class="min-w-0 flex-1">

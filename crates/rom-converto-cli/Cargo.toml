@@ -19,6 +19,7 @@ env_logger = "^0.11"
 clap = { version = "^4.6", features = ["derive", "cargo"] }
 clap_complete = "^4.6"
 tokio = { workspace = true, features = ["full"] }
+tokio-util.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true

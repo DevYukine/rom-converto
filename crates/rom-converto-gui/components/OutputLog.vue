@@ -2,6 +2,7 @@
 defineProps<{
   command?: string;
   result?: string;
+  cancelled?: string;
   error?: string;
 }>();
 
@@ -33,7 +34,7 @@ async function copy(
 </script>
 
 <template>
-  <div v-if="command || result || error" class="space-y-2">
+  <div v-if="command || result || cancelled || error" class="space-y-2">
     <div
       v-if="command"
       class="flex items-start gap-2.5 rounded-lg border-l-2 border-zinc-600 bg-zinc-800/40 px-4 py-3"
@@ -65,6 +66,18 @@ async function copy(
       >
         {{ resultCopied ? "Copied!" : "Copy" }}
       </button>
+    </div>
+
+    <div
+      v-if="cancelled"
+      role="status"
+      aria-live="polite"
+      class="flex items-start gap-2.5 rounded-lg border-l-2 border-amber-400 bg-amber-400/5 px-4 py-3"
+    >
+      <svg class="mt-0.5 h-4 w-4 shrink-0 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M10 9v6m4-6v6M5 7h14l-1 13a2 2 0 01-2 2H8a2 2 0 01-2-2L5 7z" />
+      </svg>
+      <pre class="max-h-64 flex-1 overflow-auto whitespace-pre-wrap break-words font-sans text-sm text-amber-300">{{ cancelled }}</pre>
     </div>
 
     <div
