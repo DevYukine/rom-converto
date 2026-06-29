@@ -10,6 +10,8 @@ pub enum Decision<'a> {
     Rename(&'a Path),
     New,
     Skip,
+    KeepValid,
+    RewriteInvalid,
 }
 
 /// Classify the conflict outcome for a desired path against the resolver's
@@ -32,11 +34,36 @@ pub fn log_plan(
     media: Option<&str>,
     missing_keys: Option<&str>,
 ) {
-    let label = match classify(desired, decision) {
+    log_plan_decision(
+        operation,
+        input,
+        desired,
+        decision,
+        classify(desired, decision),
+        media,
+        missing_keys,
+    );
+}
+
+/// Like `log_plan` but with the conflict outcome supplied by the caller, used
+/// for `overwrite-invalid` where the keep-vs-rewrite choice comes from a
+/// read-only verify the pure classifier cannot run.
+pub fn log_plan_decision(
+    operation: &str,
+    input: &Path,
+    desired: &Path,
+    decision: &WriteDecision,
+    outcome: Decision<'_>,
+    media: Option<&str>,
+    missing_keys: Option<&str>,
+) {
+    let label = match outcome {
         Decision::Overwrite => "[overwrite]".to_string(),
         Decision::Rename(p) => format!("[rename -> {}]", p.display()),
         Decision::New => "[new]".to_string(),
         Decision::Skip => "[skip]".to_string(),
+        Decision::KeepValid => "[keep (valid)]".to_string(),
+        Decision::RewriteInvalid => "[rewrite (invalid)]".to_string(),
     };
     let target = match decision {
         WriteDecision::Write(p) => p.as_path(),

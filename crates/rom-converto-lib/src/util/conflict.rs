@@ -9,6 +9,7 @@ pub enum ConflictPolicy {
     Overwrite,
     Skip,
     Rename,
+    OverwriteInvalid,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -35,6 +36,10 @@ pub fn resolve_conflict(desired: &Path, policy: ConflictPolicy) -> std::io::Resu
             ),
         )),
         ConflictPolicy::Rename => Ok(ConflictResolution::Write(first_free_slot(desired)?)),
+        // The integrity check is async and format specific, so it cannot run
+        // here. Default to keeping the existing output; the caller overrides
+        // this to a rewrite when it can verify the output and finds it broken.
+        ConflictPolicy::OverwriteInvalid => Ok(ConflictResolution::Skip),
     }
 }
 
@@ -116,6 +121,23 @@ mod tests {
         let path = dir.path().join("game.chd");
         let res = resolve_conflict(&path, ConflictPolicy::Skip).unwrap();
         assert_eq!(res, ConflictResolution::Write(path));
+    }
+
+    #[test]
+    fn overwrite_invalid_writes_when_absent() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("game.chd");
+        let res = resolve_conflict(&path, ConflictPolicy::OverwriteInvalid).unwrap();
+        assert_eq!(res, ConflictResolution::Write(path));
+    }
+
+    #[test]
+    fn overwrite_invalid_keeps_existing_until_caller_verifies() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("game.chd");
+        std::fs::write(&path, b"x").unwrap();
+        let res = resolve_conflict(&path, ConflictPolicy::OverwriteInvalid).unwrap();
+        assert_eq!(res, ConflictResolution::Skip);
     }
 
     #[test]

@@ -88,6 +88,48 @@ struct VerifyTally {
     failed: usize,
 }
 
+/// Dry-run plan entry for a batch arm that may verify. For `overwrite-invalid`
+/// with an existing output the read-only verify runs to choose the keep or
+/// rewrite label; every other case falls through to the existing plan path so
+/// the tally and report counts stay identical to a real run.
+#[allow(clippy::too_many_arguments)]
+async fn dry_run_verify_record(
+    progress: &dyn ProgressReporter,
+    operation: &str,
+    input: &Path,
+    desired: &Path,
+    decision: &WriteDecision,
+    policy: ConflictPolicy,
+    target: crate::util::OutputVerify,
+    media: Option<&str>,
+    tally: &mut Tally,
+    records: &mut Vec<ReportRecord>,
+) {
+    if policy == ConflictPolicy::OverwriteInvalid && desired.exists() {
+        let (synth, outcome) =
+            match crate::util::verify_existing_output(progress, desired, target).await {
+                crate::util::VerifyOutcome::Valid => {
+                    (WriteDecision::Skip, crate::dry_run::Decision::KeepValid)
+                }
+                crate::util::VerifyOutcome::Invalid => (
+                    WriteDecision::Write(desired.to_path_buf()),
+                    crate::dry_run::Decision::RewriteInvalid,
+                ),
+            };
+        crate::dry_run::log_plan_decision(operation, input, desired, &synth, outcome, media, None);
+        crate::dry_run::record(tally, input, &synth);
+        records.push(crate::dry_run::report_record(
+            operation, input, desired, &synth,
+        ));
+        return;
+    }
+    crate::dry_run::log_plan(operation, input, desired, decision, media, None);
+    crate::dry_run::record(tally, input, decision);
+    records.push(crate::dry_run::report_record(
+        operation, input, desired, decision,
+    ));
+}
+
 fn collect_or_warn(
     input_dir: &Path,
     exts: &[&str],
@@ -331,16 +373,49 @@ pub async fn rvz_compress(
             }
         };
         if dry_run {
-            crate::dry_run::log_plan("compress", &path, &output, &decision, Some("RVZ"), None);
-            crate::dry_run::record(&mut tally, &path, &decision);
-            records.push(crate::dry_run::report_record(
-                "compress", &path, &output, &decision,
-            ));
+            dry_run_verify_record(
+                progress,
+                "compress",
+                &path,
+                &output,
+                &decision,
+                policy,
+                crate::util::OutputVerify::Rvz,
+                Some("RVZ"),
+                &mut tally,
+                &mut records,
+            )
+            .await;
             total_progress.inc(1);
             continue;
         }
         let output = match decision {
             WriteDecision::Write(p) => p,
+            WriteDecision::Skip if policy == ConflictPolicy::OverwriteInvalid => {
+                match crate::util::verify_existing_output(
+                    progress,
+                    &output,
+                    crate::util::OutputVerify::Rvz,
+                )
+                .await
+                {
+                    crate::util::VerifyOutcome::Valid => {
+                        info!("kept, output verified valid: {}", output.display());
+                        tally.record_skipped();
+                        records.push(skipped_record(
+                            &path,
+                            "compress",
+                            Some("output verified valid".into()),
+                        ));
+                        total_progress.inc(1);
+                        continue;
+                    }
+                    crate::util::VerifyOutcome::Invalid => {
+                        info!("rewriting, output failed verification: {}", output.display());
+                        output
+                    }
+                }
+            }
             WriteDecision::Skip => {
                 info!("skipped, output exists: {}", output.display());
                 tally.record_skipped();
@@ -644,16 +719,49 @@ pub async fn nx_compress(
         };
         if dry_run {
             let media = format!("{kind:?}");
-            crate::dry_run::log_plan("compress", &path, &output, &decision, Some(&media), None);
-            crate::dry_run::record(&mut tally, &path, &decision);
-            records.push(crate::dry_run::report_record(
-                "compress", &path, &output, &decision,
-            ));
+            dry_run_verify_record(
+                progress,
+                "compress",
+                &path,
+                &output,
+                &decision,
+                tuning.policy,
+                crate::util::OutputVerify::Nx(Box::new(keys.clone())),
+                Some(&media),
+                &mut tally,
+                &mut records,
+            )
+            .await;
             total_progress.inc(1);
             continue;
         }
         let output = match decision {
             WriteDecision::Write(p) => p,
+            WriteDecision::Skip if tuning.policy == ConflictPolicy::OverwriteInvalid => {
+                match crate::util::verify_existing_output(
+                    progress,
+                    &output,
+                    crate::util::OutputVerify::Nx(Box::new(keys.clone())),
+                )
+                .await
+                {
+                    crate::util::VerifyOutcome::Valid => {
+                        info!("kept, output verified valid: {}", output.display());
+                        tally.record_skipped();
+                        records.push(skipped_record(
+                            &path,
+                            "compress",
+                            Some("output verified valid".into()),
+                        ));
+                        total_progress.inc(1);
+                        continue;
+                    }
+                    crate::util::VerifyOutcome::Invalid => {
+                        info!("rewriting, output failed verification: {}", output.display());
+                        output
+                    }
+                }
+            }
             WriteDecision::Skip => {
                 info!("skipped, output exists: {}", output.display());
                 tally.record_skipped();
@@ -973,23 +1081,49 @@ pub async fn chd_compress(
         };
         if dry_run {
             let media = crate::chd_media_label(&path);
-            crate::dry_run::log_plan(
+            dry_run_verify_record(
+                progress,
                 "compress",
                 &path,
                 &output,
                 &decision,
+                policy,
+                crate::util::OutputVerify::Chd,
                 media.as_deref(),
-                None,
-            );
-            crate::dry_run::record(&mut tally, &path, &decision);
-            records.push(crate::dry_run::report_record(
-                "compress", &path, &output, &decision,
-            ));
+                &mut tally,
+                &mut records,
+            )
+            .await;
             total_progress.inc(1);
             continue;
         }
         let output = match decision {
             WriteDecision::Write(p) => p,
+            WriteDecision::Skip if policy == ConflictPolicy::OverwriteInvalid => {
+                match crate::util::verify_existing_output(
+                    progress,
+                    &output,
+                    crate::util::OutputVerify::Chd,
+                )
+                .await
+                {
+                    crate::util::VerifyOutcome::Valid => {
+                        info!("kept, output verified valid: {}", output.display());
+                        tally.record_skipped();
+                        records.push(skipped_record(
+                            &path,
+                            "compress",
+                            Some("output verified valid".into()),
+                        ));
+                        total_progress.inc(1);
+                        continue;
+                    }
+                    crate::util::VerifyOutcome::Invalid => {
+                        info!("rewriting, output failed verification: {}", output.display());
+                        output
+                    }
+                }
+            }
             WriteDecision::Skip => {
                 info!("skipped, output exists: {}", output.display());
                 tally.record_skipped();
@@ -1089,6 +1223,14 @@ pub async fn chd_extract(
         let output = match decision {
             WriteDecision::Write(p) => p,
             WriteDecision::Skip => {
+                if policy == ConflictPolicy::OverwriteInvalid {
+                    crate::util::verify_existing_output(
+                        progress,
+                        &output,
+                        crate::util::OutputVerify::None,
+                    )
+                    .await;
+                }
                 info!("skipped, output exists: {}", output.display());
                 tally.record_skipped();
                 records.push(skipped_record(&path, "extract", None));
@@ -1178,16 +1320,49 @@ pub async fn cso_compress(
             }
         };
         if dry_run {
-            crate::dry_run::log_plan("compress", &path, &output, &decision, Some(media), None);
-            crate::dry_run::record(&mut tally, &path, &decision);
-            records.push(crate::dry_run::report_record(
-                "compress", &path, &output, &decision,
-            ));
+            dry_run_verify_record(
+                progress,
+                "compress",
+                &path,
+                &output,
+                &decision,
+                policy,
+                crate::util::OutputVerify::Cso,
+                Some(media),
+                &mut tally,
+                &mut records,
+            )
+            .await;
             total_progress.inc(1);
             continue;
         }
         let output = match decision {
             WriteDecision::Write(p) => p,
+            WriteDecision::Skip if policy == ConflictPolicy::OverwriteInvalid => {
+                match crate::util::verify_existing_output(
+                    progress,
+                    &output,
+                    crate::util::OutputVerify::Cso,
+                )
+                .await
+                {
+                    crate::util::VerifyOutcome::Valid => {
+                        info!("kept, output verified valid: {}", output.display());
+                        tally.record_skipped();
+                        records.push(skipped_record(
+                            &path,
+                            "compress",
+                            Some("output verified valid".into()),
+                        ));
+                        total_progress.inc(1);
+                        continue;
+                    }
+                    crate::util::VerifyOutcome::Invalid => {
+                        info!("rewriting, output failed verification: {}", output.display());
+                        output
+                    }
+                }
+            }
             WriteDecision::Skip => {
                 info!("skipped, output exists: {}", output.display());
                 tally.record_skipped();

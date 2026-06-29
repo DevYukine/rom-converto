@@ -226,6 +226,49 @@ fn log_skipped(output: &Path) {
     log::info!("skipped, output exists: {}", output.display());
 }
 
+fn log_kept_valid(output: &Path) {
+    log::info!("kept, output verified valid: {}", output.display());
+}
+
+fn log_rewriting_invalid(output: &Path) {
+    log::info!("rewriting, output failed verification: {}", output.display());
+}
+
+/// Single-file dry-run preview for an `overwrite-invalid` arm. The verify is
+/// read-only, so it runs under dry-run to show whether the existing output
+/// would be kept or rewritten. The synthesized decision feeds the existing
+/// tally/report path so the plan counts match a real run.
+#[allow(clippy::too_many_arguments)]
+async fn dry_run_single_verify(
+    operation: &str,
+    input: &Path,
+    desired: &Path,
+    decision: &WriteDecision,
+    policy: rom_converto_lib::util::ConflictPolicy,
+    target: crate::util::OutputVerify,
+    media: Option<&str>,
+    missing_keys: Option<&str>,
+    progress: &dyn rom_converto_lib::util::ProgressReporter,
+    report: Option<&Path>,
+) -> Result<()> {
+    use crate::util::{VerifyOutcome, verify_existing_output};
+    if policy != rom_converto_lib::util::ConflictPolicy::OverwriteInvalid || !desired.exists() {
+        return dry_run_single(operation, input, desired, decision, media, missing_keys, report);
+    }
+    let (synth, outcome) = match verify_existing_output(progress, desired, target).await {
+        VerifyOutcome::Valid => (WriteDecision::Skip, dry_run::Decision::KeepValid),
+        VerifyOutcome::Invalid => (
+            WriteDecision::Write(desired.to_path_buf()),
+            dry_run::Decision::RewriteInvalid,
+        ),
+    };
+    dry_run::log_plan_decision(operation, input, desired, &synth, outcome, media, missing_keys);
+    let mut tally = Tally::new();
+    dry_run::record(&mut tally, input, &synth);
+    let records = [dry_run::report_record(operation, input, desired, &synth)];
+    dry_run::finish(&tally, &records, report)
+}
+
 /// Emit the plan line, summary, and optional report for a single-file
 /// dry-run, then return so the caller can short-circuit before the lib write.
 fn dry_run_single(
@@ -937,17 +980,41 @@ async fn main() -> Result<()> {
                     let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
                     let decision = resolve_output(&output, policy)?;
                     if dry_run {
-                        return dry_run_single(
+                        return dry_run_single_verify(
                             "compress",
                             &cmd.input,
                             &output,
                             &decision,
+                            policy,
+                            crate::util::OutputVerify::Rvz,
                             Some("RVZ"),
                             None,
+                            &progress,
                             report.as_deref(),
-                        );
+                        )
+                        .await;
                     }
                     let output = match decision {
+                        WriteDecision::Skip
+                            if policy == rom_converto_lib::util::ConflictPolicy::OverwriteInvalid =>
+                        {
+                            match crate::util::verify_existing_output(
+                                &progress,
+                                &output,
+                                crate::util::OutputVerify::Rvz,
+                            )
+                            .await
+                            {
+                                crate::util::VerifyOutcome::Valid => {
+                                    log_kept_valid(&output);
+                                    return Ok(());
+                                }
+                                crate::util::VerifyOutcome::Invalid => {
+                                    log_rewriting_invalid(&output);
+                                    output
+                                }
+                            }
+                        }
                         WriteDecision::Skip => {
                             log_skipped(&output);
                             return Ok(());
@@ -1143,17 +1210,41 @@ async fn main() -> Result<()> {
                     let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
                     let decision = resolve_output(&output, policy)?;
                     if dry_run {
-                        return dry_run_single(
+                        return dry_run_single_verify(
                             "compress",
                             &cmd.input,
                             &output,
                             &decision,
+                            policy,
+                            crate::util::OutputVerify::Rvz,
                             Some("RVZ"),
                             None,
+                            &progress,
                             report.as_deref(),
-                        );
+                        )
+                        .await;
                     }
                     let output = match decision {
+                        WriteDecision::Skip
+                            if policy == rom_converto_lib::util::ConflictPolicy::OverwriteInvalid =>
+                        {
+                            match crate::util::verify_existing_output(
+                                &progress,
+                                &output,
+                                crate::util::OutputVerify::Rvz,
+                            )
+                            .await
+                            {
+                                crate::util::VerifyOutcome::Valid => {
+                                    log_kept_valid(&output);
+                                    return Ok(());
+                                }
+                                crate::util::VerifyOutcome::Invalid => {
+                                    log_rewriting_invalid(&output);
+                                    output
+                                }
+                            }
+                        }
                         WriteDecision::Skip => {
                             log_skipped(&output);
                             return Ok(());
@@ -1535,17 +1626,41 @@ async fn main() -> Result<()> {
                     let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
                     let decision = resolve_output(&output, policy)?;
                     if dry_run {
-                        return dry_run_single(
+                        return dry_run_single_verify(
                             "compress",
                             &cmd.input,
                             &output,
                             &decision,
+                            policy,
+                            crate::util::OutputVerify::Nx(Box::new(keys.clone())),
                             Some(&format!("{kind:?}")),
                             keys_note.as_deref(),
+                            &progress,
                             report.as_deref(),
-                        );
+                        )
+                        .await;
                     }
                     let output = match decision {
+                        WriteDecision::Skip
+                            if policy == rom_converto_lib::util::ConflictPolicy::OverwriteInvalid =>
+                        {
+                            match crate::util::verify_existing_output(
+                                &progress,
+                                &output,
+                                crate::util::OutputVerify::Nx(Box::new(keys.clone())),
+                            )
+                            .await
+                            {
+                                crate::util::VerifyOutcome::Valid => {
+                                    log_kept_valid(&output);
+                                    return Ok(());
+                                }
+                                crate::util::VerifyOutcome::Invalid => {
+                                    log_rewriting_invalid(&output);
+                                    output
+                                }
+                            }
+                        }
                         WriteDecision::Skip => {
                             log_skipped(&output);
                             return Ok(());
@@ -1788,17 +1903,41 @@ async fn main() -> Result<()> {
                     let decision = resolve_output(&output, policy)?;
                     if dry_run {
                         let media = chd_media_label(&cmd.input);
-                        return dry_run_single(
+                        return dry_run_single_verify(
                             "compress",
                             &cmd.input,
                             &output,
                             &decision,
+                            policy,
+                            crate::util::OutputVerify::Chd,
                             media.as_deref(),
                             None,
+                            &progress,
                             report.as_deref(),
-                        );
+                        )
+                        .await;
                     }
                     let output = match decision {
+                        WriteDecision::Skip
+                            if policy == rom_converto_lib::util::ConflictPolicy::OverwriteInvalid =>
+                        {
+                            match crate::util::verify_existing_output(
+                                &progress,
+                                &output,
+                                crate::util::OutputVerify::Chd,
+                            )
+                            .await
+                            {
+                                crate::util::VerifyOutcome::Valid => {
+                                    log_kept_valid(&output);
+                                    return Ok(());
+                                }
+                                crate::util::VerifyOutcome::Invalid => {
+                                    log_rewriting_invalid(&output);
+                                    output
+                                }
+                            }
+                        }
                         WriteDecision::Skip => {
                             log_skipped(&output);
                             return Ok(());
@@ -1988,22 +2127,46 @@ async fn main() -> Result<()> {
                     };
                     let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
                     let decision = resolve_output(&output, policy)?;
+                    let media = match format {
+                        CsoFormat::Cso => "CSO",
+                        CsoFormat::Zso => "ZSO",
+                    };
                     if dry_run {
-                        let media = match format {
-                            CsoFormat::Cso => "CSO",
-                            CsoFormat::Zso => "ZSO",
-                        };
-                        return dry_run_single(
+                        return dry_run_single_verify(
                             "compress",
                             &cmd.input,
                             &output,
                             &decision,
+                            policy,
+                            crate::util::OutputVerify::Cso,
                             Some(media),
                             None,
+                            &progress,
                             report.as_deref(),
-                        );
+                        )
+                        .await;
                     }
                     let output = match decision {
+                        WriteDecision::Skip
+                            if policy == rom_converto_lib::util::ConflictPolicy::OverwriteInvalid =>
+                        {
+                            match crate::util::verify_existing_output(
+                                &progress,
+                                &output,
+                                crate::util::OutputVerify::Cso,
+                            )
+                            .await
+                            {
+                                crate::util::VerifyOutcome::Valid => {
+                                    log_kept_valid(&output);
+                                    return Ok(());
+                                }
+                                crate::util::VerifyOutcome::Invalid => {
+                                    log_rewriting_invalid(&output);
+                                    output
+                                }
+                            }
+                        }
                         WriteDecision::Skip => {
                             log_skipped(&output);
                             return Ok(());

@@ -130,6 +130,7 @@ pub enum ConflictPolicyArg {
     Overwrite,
     Skip,
     Rename,
+    OverwriteInvalid,
 }
 
 impl From<ConflictPolicyArg> for ConflictPolicy {
@@ -139,6 +140,7 @@ impl From<ConflictPolicyArg> for ConflictPolicy {
             ConflictPolicyArg::Overwrite => ConflictPolicy::Overwrite,
             ConflictPolicyArg::Skip => ConflictPolicy::Skip,
             ConflictPolicyArg::Rename => ConflictPolicy::Rename,
+            ConflictPolicyArg::OverwriteInvalid => ConflictPolicy::OverwriteInvalid,
         }
     }
 }

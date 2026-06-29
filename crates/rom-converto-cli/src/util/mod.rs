@@ -68,6 +68,78 @@ pub enum WriteDecision {
     Skip,
 }
 
+/// Which integrity check to run against an existing output under
+/// `--on-conflict overwrite-invalid`. `None` marks an output format with no
+/// integrity check, where the policy falls back to existence-based skip.
+/// `Nx` carries the keyset because the NX verify decrypts every NCA section;
+/// when keys are missing the existing output is kept rather than rewritten.
+pub enum OutputVerify {
+    Chd,
+    Cso,
+    Rvz,
+    Nx(Box<rom_converto_lib::nintendo::nx::KeySet>),
+    None,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VerifyOutcome {
+    Valid,
+    Invalid,
+}
+
+/// Run the format's read-only integrity check on an existing output. Any
+/// verification failure, including an output that cannot be read or decoded,
+/// is reported as `Invalid` so the caller rewrites it.
+pub async fn verify_existing_output(
+    progress: &dyn ProgressReporter,
+    path: &Path,
+    target: OutputVerify,
+) -> VerifyOutcome {
+    use rom_converto_lib::chd::verify_chd;
+    use rom_converto_lib::cso::verify_cso;
+    use rom_converto_lib::nintendo::nx::verify_container_async;
+    use rom_converto_lib::nintendo::rvz::verify_rvz_structure;
+    let ok = match target {
+        OutputVerify::Chd => verify_chd(progress, path.to_path_buf(), None, false)
+            .await
+            .is_ok(),
+        OutputVerify::Cso => verify_cso(progress, path.to_path_buf(), true).await.is_ok(),
+        OutputVerify::Rvz => verify_rvz_structure(path).map(|r| r.ok()).unwrap_or(false),
+        OutputVerify::Nx(keys) => {
+            if keys.header_key.is_none() {
+                log::debug!(
+                    "overwrite-invalid: nx keys unavailable for {}, keeping existing output",
+                    path.display()
+                );
+                true
+            } else {
+                match verify_container_async(path.to_path_buf(), *keys, progress).await {
+                    Ok(result) => result.ok,
+                    Err(e) => {
+                        log::debug!(
+                            "overwrite-invalid: nx verify could not run for {}, keeping existing output: {e}",
+                            path.display()
+                        );
+                        true
+                    }
+                }
+            }
+        }
+        OutputVerify::None => {
+            log::debug!(
+                "overwrite-invalid: no integrity check for {}, keeping existing output",
+                path.display()
+            );
+            true
+        }
+    };
+    if ok {
+        VerifyOutcome::Valid
+    } else {
+        VerifyOutcome::Invalid
+    }
+}
+
 /// Map the lone `--force` shorthand onto a policy. `--force` and
 /// `--on-conflict` are mutually exclusive in clap, so a set `force`
 /// always means the policy is its default and overwrite is intended.
@@ -112,7 +184,9 @@ pub fn resolve_output_dir(path: &Path, policy: ConflictPolicy) -> anyhow::Result
     if path.is_file() {
         match policy {
             ConflictPolicy::Overwrite => return Ok(WriteDecision::Write(path.to_path_buf())),
-            ConflictPolicy::Skip => return Ok(WriteDecision::Skip),
+            ConflictPolicy::Skip | ConflictPolicy::OverwriteInvalid => {
+                return Ok(WriteDecision::Skip);
+            }
             _ => anyhow::bail!(
                 "output path exists and is a file, use --on-conflict overwrite to replace it: {}",
                 path.display()
@@ -125,7 +199,7 @@ pub fn resolve_output_dir(path: &Path, policy: ConflictPolicy) -> anyhow::Result
     }
     match policy {
         ConflictPolicy::Overwrite => Ok(WriteDecision::Write(path.to_path_buf())),
-        ConflictPolicy::Skip => Ok(WriteDecision::Skip),
+        ConflictPolicy::Skip | ConflictPolicy::OverwriteInvalid => Ok(WriteDecision::Skip),
         ConflictPolicy::Rename => anyhow::bail!(
             "rename is not supported for directory outputs, use --on-conflict overwrite/skip/error: {}",
             path.display()
@@ -289,6 +363,40 @@ mod tests {
     }
 
     #[test]
+    fn resolve_output_overwrite_invalid_keeps_existing() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("game.cso");
+        std::fs::write(&path, b"x").unwrap();
+        assert!(matches!(
+            resolve_output(&path, ConflictPolicy::OverwriteInvalid).unwrap(),
+            WriteDecision::Skip
+        ));
+    }
+
+    #[test]
+    fn resolve_output_overwrite_invalid_writes_when_absent() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("game.cso");
+        let WriteDecision::Write(p) =
+            resolve_output(&path, ConflictPolicy::OverwriteInvalid).unwrap()
+        else {
+            panic!("expected write");
+        };
+        assert_eq!(p, path);
+    }
+
+    #[tokio::test]
+    async fn verify_existing_output_none_keeps_unverifiable() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("game.iso");
+        std::fs::write(&path, b"x").unwrap();
+        let outcome =
+            verify_existing_output(&rom_converto_lib::util::NoProgress, &path, OutputVerify::None)
+                .await;
+        assert_eq!(outcome, VerifyOutcome::Valid);
+    }
+
+    #[test]
     fn resolve_output_dir_rejects_rename() {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("a"), b"x").unwrap();
@@ -320,5 +428,30 @@ mod tests {
         templated_output("sub/{basename}.cso", &input, Some(dir.path()), "cso", None, false)
             .unwrap();
         assert!(dir.path().join("sub").is_dir());
+    }
+
+    // A full NX corrupt-rewrite end-to-end test is omitted because it needs a
+    // populated prod.keys that cannot ship with the suite. These cover the
+    // decision logic instead: missing keys keep the existing output, and a
+    // non-RVZ file at an .rvz path is treated as invalid so it gets rewritten.
+    #[tokio::test]
+    async fn nx_verify_missing_keys_keeps_existing_output() {
+        use rom_converto_lib::util::NoProgress;
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("game.nsz");
+        std::fs::write(&path, b"not a real container").unwrap();
+        let outcome =
+            verify_existing_output(&NoProgress, &path, OutputVerify::Nx(Box::default())).await;
+        assert_eq!(outcome, VerifyOutcome::Valid);
+    }
+
+    #[tokio::test]
+    async fn rvz_verify_non_rvz_file_is_invalid() {
+        use rom_converto_lib::util::NoProgress;
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("game.rvz");
+        std::fs::write(&path, b"this is not an rvz container at all").unwrap();
+        let outcome = verify_existing_output(&NoProgress, &path, OutputVerify::Rvz).await;
+        assert_eq!(outcome, VerifyOutcome::Invalid);
     }
 }

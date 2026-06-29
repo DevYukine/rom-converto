@@ -83,6 +83,7 @@ Where each format works:
 
 * [x] Command line interface with progress bars and a post-run space-saved summary
 * [x] Global `--dry-run` preview that shows the planned actions without writing anything
+* [x] `--on-conflict overwrite-invalid` mode that verifies existing outputs and rewrites only the broken or missing ones
 * [x] Desktop GUI with drag and drop batch processing
 * [x] Standalone `hash` command for crc32 / sha1 / md5 / sha256 digests with report export
 * [x] Self update from GitHub releases (CLI)
@@ -116,7 +117,9 @@ The desktop app provides a visual interface for all operations. Built with [Taur
 
 ## CLI Commands
 
-All commands that write an output file use `--on-conflict` to decide what happens when the output already exists. The choices are `error` (the default, refuse and stop), `overwrite` (replace the existing output), `skip` (leave the existing output and move on, reported as skipped in the summary), and `rename` (write to the next free numbered sibling, for example `Game.chd` becomes `Game (1).chd`). `-f`/`--force` is a shorthand for `--on-conflict overwrite` and cannot be combined with `--on-conflict`. For `wup decrypt` the output is a directory, so `rename` is not supported there and falls back to `error`. For `chd extract` and `cue merge`, which write more than one file, the policy applies to the base output path and the sidecars follow it.
+All commands that write an output file use `--on-conflict` to decide what happens when the output already exists. The choices are `error` (the default, refuse and stop), `overwrite` (replace the existing output), `skip` (leave the existing output and move on, reported as skipped in the summary), `rename` (write to the next free numbered sibling, for example `Game.chd` becomes `Game (1).chd`), and `overwrite-invalid` (verify the existing output; if it passes, keep it and report it as skipped; if it fails verification or cannot be verified, rewrite it; a missing output is always written). `overwrite-invalid` is useful when re-running after a partial failure or a settings upgrade, since only outputs that are missing or broken get rewritten. `-f`/`--force` is a shorthand for `--on-conflict overwrite` and cannot be combined with `--on-conflict`. For `wup decrypt` the output is a directory, so `rename` is not supported there and falls back to `error`. For `chd extract` and `cue merge`, which write more than one file, the policy applies to the base output path and the sidecars follow it.
+
+With `overwrite-invalid`, each existing output is checked for integrity before the decision is made. The check is skipped when the output does not exist. It runs the same per-format verification as the `verify` command. `chd compress` and `cso compress` check the `.chd` or `.cso` they would produce, reading the file in full, which costs about as much as a decompression pass on a large file. `dol compress` and `rvl compress` verify the `.rvz` they would produce against its stored SHA-1 structural hashes, which is fast and does not decompress any group data. `nx compress` verifies the `.nsz`/`.xcz` by decrypting every NCA section and checking the stored hash hierarchy; this requires `prod.keys` and costs about as much as the compress pass itself, and when keys are unavailable or incomplete it falls back to existence-based skip rather than rewriting a file it cannot verify. For operations whose output has no integrity check, such as the raw `.iso` from `cso decompress`, `chd extract`, `rvz decompress`, or the raw `.nsp`/`.xci` from `nx decompress`, `overwrite-invalid` falls back to existence-based skip: an existing output is kept and a missing one is written. Recursive `ctr` commands manage their own output paths and behave the same way under this policy.
 
 After `compress`, `decompress`, and `convert` operations, the tool prints a closing summary of bytes processed and space saved or expanded, for example `12 files: 12.4 GiB -> 4.1 GiB, saved 8.3 GiB (67%) in 2m14s`. Verify and extract operations print a file count and elapsed time instead.
 
@@ -126,7 +129,7 @@ Two global flags work on every command: `--config <FILE>` points at a config fil
 
 The compress, decompress, convert, decrypt, and `chd extract` commands also accept `--output-template`, an alternative way to derive the output path from the ROM's own metadata. See [Output-path templates](#output-path-templates).
 
-`--dry-run` is a global flag that previews what a command would do without writing any output. It prints one plan line per file showing the operation, the resolved and templated output path, the `--on-conflict` decision (`overwrite`, `rename`, `skip`, or `new`), the detected media or format, and any missing keys, for example `would compress game.iso -> game.cso (CSO) [overwrite]`. It runs the same input resolution, detection, and conflict checks as a real run, exits 0 on a valid plan, and exits nonzero only for real input errors such as a missing file. Pass `--report` alongside it to export the plan. For recursive `ctr` commands the preview lists resolved output paths only, since those batches do not expose a per-file conflict policy.
+`--dry-run` is a global flag that previews what a command would do without writing any output. It prints one plan line per file showing the operation, the resolved and templated output path, the `--on-conflict` decision (`overwrite`, `rename`, `skip`, or `new`), the detected media or format, and any missing keys, for example `would compress game.iso -> game.cso (CSO) [overwrite]`. Under `--on-conflict overwrite-invalid` the verify is read-only, so the preview runs it and shows `[keep (valid)]` or `[rewrite (invalid)]` for an existing output. It runs the same input resolution, detection, and conflict checks as a real run, exits 0 on a valid plan, and exits nonzero only for real input errors such as a missing file. Pass `--report` alongside it to export the plan. For recursive `ctr` commands the preview lists resolved output paths only, since those batches do not expose a per-file conflict policy.
 
 The GUI does not yet have a preview toggle. It is a tracked follow-up: each write-capable Tauri command needs a `dry_run` parameter and per-page wiring that reuses the CLI plan logic.
 
@@ -275,7 +278,7 @@ The GUI does not yet read this config file. The CLI is the supported path for no
 | `--chunk-size <BYTES>` | `compress` | Chunk size in bytes, power of two between 32 KiB and 2 MiB (defaults to 128 KiB to match Dolphin) |
 | `-o, --output <FILE>` | `compress`, `decompress` | Output path (alternative to the positional OUTPUT argument) |
 | `--output-template <TEMPLATE>` | `compress`, `decompress` | Build the output path from metadata tokens. See [Output-path templates](#output-path-templates) |
-| `--on-conflict <POLICY>` | `compress`, `decompress` | What to do when the output exists: `error` (default), `overwrite`, `skip`, or `rename` |
+| `--on-conflict <POLICY>` | `compress`, `decompress` | What to do when the output exists: `error` (default), `overwrite`, `skip`, `rename`, or `overwrite-invalid` (verifies the `.rvz` structural hashes on `compress`, fast and without decompression; `decompress` writes a raw `.iso` with no integrity check and falls back to existence-based skip) |
 | `-f, --force` | `compress`, `decompress` | Alias for `--on-conflict overwrite` |
 | `-R, --recursive` | `compress`, `decompress`, `verify` | Recursively process every matching file in INPUT and its subdirectories |
 | `--max-depth <N>` | `compress`, `decompress`, `verify` | Limit recursion depth with `--recursive`. `1` = top level only. Default: unlimited |
@@ -359,7 +362,7 @@ Flags match the `dol` commands. `--full` on `rvl verify` decrypts every partitio
 | `-l, --level <LEVEL>` | Zstd compression level 1..=22 (defaults to 18, matching `nsz`) |
 | `--mode <MODE>` | `solid` (one zstd frame per NCA, default for NSP) or `block` (independent zstd frames per fixed-size block, default for XCI) |
 | `--block-size-exp <EXP>` | Block-mode block size as `1 << exp` bytes, range 14..=32 (defaults to 20 = 1 MiB, matching `nsz`) |
-| `--on-conflict <POLICY>` | What to do when the output exists: `error` (default), `overwrite`, `skip`, or `rename` |
+| `--on-conflict <POLICY>` | What to do when the output exists: `error` (default), `overwrite`, `skip`, `rename`, or `overwrite-invalid` (verifies the `.nsz`/`.xcz` NCA hash hierarchy on `compress`; requires `prod.keys` and falls back to existence-based skip when keys are absent) |
 | `-f, --force` | Alias for `--on-conflict overwrite` |
 | `-R, --recursive` | Compress every `.nsp` and `.xci` found in INPUT and its subdirectories |
 | `--max-depth <N>` | Limit recursion depth with `--recursive`. `1` = top level only. Default: unlimited |
@@ -405,7 +408,7 @@ Flags match the `dol` commands. `--full` on `rvl verify` decrypts every partitio
 
 | Flag | Applies to | Description |
 |---|---|---|
-| `--on-conflict <POLICY>` | `compress`, `extract` | What to do when the output exists: `error` (default), `overwrite`, `skip`, or `rename` |
+| `--on-conflict <POLICY>` | `compress`, `extract` | What to do when the output exists: `error` (default), `overwrite`, `skip`, `rename`, or `overwrite-invalid` (verifies the `.chd` on `compress`; `extract` writes a raw image with no integrity check and falls back to existence-based skip) |
 | `-f, --force` | `compress`, `extract` | Alias for `--on-conflict overwrite` |
 | `--dvd` / `--cd` | `compress` | Override the auto-detected mode (CD mode needs a cue sheet) |
 | `--hunk-size <BYTES>` | `compress` | DVD hunk size, a multiple of 2048; defaults to 4096, or 2048 for detected PSP images |
@@ -437,7 +440,7 @@ Flags match the `dol` commands. `--full` on `rvl verify` decrypts every partitio
 | `--block-size <BYTES>` | `compress` | Block size, a power of two; defaults to 2048 (16384 for 2 GiB+ inputs) |
 | `-o, --output <FILE>` | `compress`, `decompress` | Output path (alternative to the positional OUTPUT argument) |
 | `--output-template <TEMPLATE>` | `compress`, `decompress` | Build the output path from metadata tokens. See [Output-path templates](#output-path-templates) |
-| `--on-conflict <POLICY>` | `compress`, `decompress` | What to do when the output exists: `error` (default), `overwrite`, `skip`, or `rename` |
+| `--on-conflict <POLICY>` | `compress`, `decompress` | What to do when the output exists: `error` (default), `overwrite`, `skip`, `rename`, or `overwrite-invalid` (verifies the `.cso`/`.zso` on `compress`; `decompress` writes a raw `.iso` with no integrity check and falls back to existence-based skip) |
 | `-f, --force` | `compress`, `decompress` | Alias for `--on-conflict overwrite` |
 | `-R, --recursive` | `compress`, `decompress`, `verify` | Recursively process every matching file in INPUT and its subdirectories |
 | `--max-depth <N>` | `compress`, `decompress`, `verify` | Limit recursion depth with `--recursive`. `1` = top level only. Default: unlimited |

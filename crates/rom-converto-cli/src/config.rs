@@ -135,8 +135,9 @@ pub fn conflict_from_str(s: &str) -> anyhow::Result<ConflictPolicy> {
         "overwrite" => Ok(ConflictPolicy::Overwrite),
         "skip" => Ok(ConflictPolicy::Skip),
         "rename" => Ok(ConflictPolicy::Rename),
+        "overwrite-invalid" => Ok(ConflictPolicy::OverwriteInvalid),
         other => anyhow::bail!(
-            "invalid on_conflict value '{other}' in config: expected error, overwrite, skip or rename"
+            "invalid on_conflict value '{other}' in config: expected error, overwrite, skip, rename or overwrite-invalid"
         ),
     }
 }
@@ -259,6 +260,10 @@ mod tests {
         );
         assert_eq!(conflict_from_str("SKIP").unwrap(), ConflictPolicy::Skip);
         assert_eq!(conflict_from_str("rename").unwrap(), ConflictPolicy::Rename);
+        assert_eq!(
+            conflict_from_str("overwrite-invalid").unwrap(),
+            ConflictPolicy::OverwriteInvalid
+        );
     }
 
     #[test]
