@@ -83,15 +83,21 @@ pub async fn compress_rom_batch(
         return Ok(());
     }
 
-    total_progress.start(roms.len() as u64, &format!("Compressing {} files...", roms.len()));
+    total_progress.start(
+        roms.len() as u64,
+        &format!("Compressing {} files...", roms.len()),
+    );
 
     if let Some(dir) = output_dir {
         fs::create_dir_all(dir).await?;
     }
 
     for path in roms {
-        let output =
-            crate::util::place_in_dir_mirrored(&derive_compressed_path(&path), input_dir, output_dir);
+        let output = crate::util::place_in_dir_mirrored(
+            &derive_compressed_path(&path),
+            input_dir,
+            output_dir,
+        );
         if let Some(parent) = output.parent() {
             fs::create_dir_all(parent).await?;
         }
@@ -125,7 +131,10 @@ pub async fn decompress_rom_batch(
         return Ok(());
     }
 
-    total_progress.start(roms.len() as u64, &format!("Decompressing {} files...", roms.len()));
+    total_progress.start(
+        roms.len() as u64,
+        &format!("Decompressing {} files...", roms.len()),
+    );
 
     if let Some(dir) = output_dir {
         fs::create_dir_all(dir).await?;
@@ -516,7 +525,10 @@ mod tests {
             matches!(refused, Err(Z3dsError::EncryptionStateUnknown)),
             "expected EncryptionStateUnknown, got {refused:?}"
         );
-        assert!(!output.exists(), "no output should be written when failing safe");
+        assert!(
+            !output.exists(),
+            "no output should be written when failing safe"
+        );
 
         compress_rom(&input, &output, None, true, &NoProgress)
             .await

@@ -354,8 +354,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("game.chd");
         std::fs::write(&path, b"x").unwrap();
-        let WriteDecision::Write(p) =
-            resolve_output(&path, ConflictPolicy::Overwrite).unwrap()
+        let WriteDecision::Write(p) = resolve_output(&path, ConflictPolicy::Overwrite).unwrap()
         else {
             panic!("expected write");
         };
@@ -390,9 +389,12 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("game.iso");
         std::fs::write(&path, b"x").unwrap();
-        let outcome =
-            verify_existing_output(&rom_converto_lib::util::NoProgress, &path, OutputVerify::None)
-                .await;
+        let outcome = verify_existing_output(
+            &rom_converto_lib::util::NoProgress,
+            &path,
+            OutputVerify::None,
+        )
+        .await;
         assert_eq!(outcome, VerifyOutcome::Valid);
     }
 
@@ -419,14 +421,27 @@ mod tests {
         let input = dir.path().join("game.iso");
         std::fs::write(&input, b"x").unwrap();
 
-        let out =
-            templated_output("sub/{basename}.cso", &input, Some(dir.path()), "cso", None, true)
-                .unwrap();
+        let out = templated_output(
+            "sub/{basename}.cso",
+            &input,
+            Some(dir.path()),
+            "cso",
+            None,
+            true,
+        )
+        .unwrap();
         assert_eq!(out, dir.path().join("sub/game.cso"));
         assert!(!dir.path().join("sub").exists());
 
-        templated_output("sub/{basename}.cso", &input, Some(dir.path()), "cso", None, false)
-            .unwrap();
+        templated_output(
+            "sub/{basename}.cso",
+            &input,
+            Some(dir.path()),
+            "cso",
+            None,
+            false,
+        )
+        .unwrap();
         assert!(dir.path().join("sub").is_dir());
     }
 

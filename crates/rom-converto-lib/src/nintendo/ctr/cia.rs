@@ -158,6 +158,7 @@ pub async fn decrypt_from_encrypted_cia(
 /// the output, avoiding the previous behavior of loading every `.app` into
 /// memory and then serializing a full in-memory CIA. Peak memory is bounded by
 /// the TMD/ticket preamble (a few KB) plus a 4 MB copy buffer.
+#[allow(clippy::too_many_arguments)]
 pub async fn write_cia(
     path: &Path,
     out: &mut BufWriter<File>,

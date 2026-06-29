@@ -5,6 +5,7 @@ use crate::nintendo::ctr::constants::{
 use crate::nintendo::ctr::convert::template::{retail_cert_chain, template_ticket};
 use crate::nintendo::ctr::decrypt::cia::{Aes128Ctr, derive_ctr_key, get_ncch_aes_counter};
 use crate::nintendo::ctr::decrypt::model::NcchSection;
+use crate::nintendo::ctr::error::NintendoCTRError;
 use crate::nintendo::ctr::models::cia::{CIA_HEADER_SIZE, CiaFileWithoutContent, CiaHeader};
 use crate::nintendo::ctr::models::ncch_header::NcchHeader;
 use crate::nintendo::ctr::models::ncsd_header::{NCSD_HEADER_SIZE, NcsdHeader};
@@ -12,7 +13,6 @@ use crate::nintendo::ctr::models::signature::{SignatureData, SignatureType};
 use crate::nintendo::ctr::models::title_metadata::{
     ContentChunkRecord, ContentInfoRecord, ContentType, TitleMetadata, TitleMetadataHeader,
 };
-use crate::nintendo::ctr::error::NintendoCTRError;
 use crate::util::{CancelToken, ProgressReporter, scratch_output_path};
 use aes::cipher::{KeyIvInit, StreamCipher};
 use anyhow::{Context, Result, bail};

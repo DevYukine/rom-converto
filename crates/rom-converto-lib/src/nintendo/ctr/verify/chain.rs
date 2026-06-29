@@ -1029,7 +1029,10 @@ pub async fn verify_ctr_batch(
         return Ok(summary);
     }
 
-    total_progress.start(roms.len() as u64, &format!("Verifying {} files...", roms.len()));
+    total_progress.start(
+        roms.len() as u64,
+        &format!("Verifying {} files...", roms.len()),
+    );
 
     for path in roms {
         summary.total += 1;

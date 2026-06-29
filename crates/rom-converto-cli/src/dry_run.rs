@@ -85,9 +85,7 @@ pub fn log_plan_decision(
 pub fn record(tally: &mut Tally, input: &Path, decision: &WriteDecision) {
     match decision {
         WriteDecision::Skip => tally.record_skipped(),
-        WriteDecision::Write(_) => {
-            tally.record_ok(file_len(input), 0, std::time::Duration::ZERO)
-        }
+        WriteDecision::Write(_) => tally.record_ok(file_len(input), 0, std::time::Duration::ZERO),
     }
 }
 

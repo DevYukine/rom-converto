@@ -1,5 +1,6 @@
 use crate::nintendo::ctr::constants::{CTR_COMMON_KEYS_HEX, CTR_MEDIA_UNIT_SIZE};
 use crate::nintendo::ctr::decrypt::util::{cbc_decrypt, gen_iv};
+use crate::nintendo::ctr::error::NintendoCTRError;
 use crate::nintendo::ctr::models::cia::CiaFileWithoutContent;
 use crate::nintendo::ctr::models::ncsd_header::{
     NCSD_FIRST_PARTITION_OFFSET, NCSD_HEADER_SIZE, NCSD_PARTITION_FS_TYPE_NORMAL, NcsdHeader,
@@ -7,7 +8,6 @@ use crate::nintendo::ctr::models::ncsd_header::{
 };
 use crate::nintendo::ctr::models::ticket::Ticket;
 use crate::nintendo::ctr::util::align_64;
-use crate::nintendo::ctr::error::NintendoCTRError;
 use crate::util::{CancelToken, ProgressReporter, scratch_output_path};
 use anyhow::{Context, Result, bail};
 use binrw::{BinRead, BinWrite};

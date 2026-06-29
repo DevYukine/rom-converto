@@ -13,9 +13,7 @@ use std::sync::atomic::AtomicU64;
 use log::info;
 
 use crate::cd::IO_BUFFER_SIZE;
-use crate::util::{
-    BYTES_PER_MB, CancelToken, ProgressReporter, await_with_progress_cancel,
-};
+use crate::util::{BYTES_PER_MB, CancelToken, ProgressReporter, await_with_progress_cancel};
 
 pub mod compression;
 pub mod error;
@@ -174,7 +172,10 @@ pub async fn compress_to_cso_batch(
         std::fs::create_dir_all(dir)?;
     }
 
-    total_progress.start(images.len() as u64, &format!("Compressing {} images...", images.len()));
+    total_progress.start(
+        images.len() as u64,
+        &format!("Compressing {} images...", images.len()),
+    );
 
     for path in images {
         let output = crate::util::place_in_dir_mirrored(

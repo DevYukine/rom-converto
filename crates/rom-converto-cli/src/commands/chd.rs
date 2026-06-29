@@ -77,7 +77,12 @@ pub struct CompressCommand {
     pub on_conflict: Option<ConflictPolicyArg>,
 
     /// Alias for --on-conflict overwrite
-    #[arg(long, short = 'f', default_value_t = false, conflicts_with = "on_conflict")]
+    #[arg(
+        long,
+        short = 'f',
+        default_value_t = false,
+        conflicts_with = "on_conflict"
+    )]
     pub force: bool,
 
     /// Compress every .cue and .iso found in the INPUT directory and its subdirectories
@@ -143,7 +148,12 @@ pub struct ExtractCommand {
     pub on_conflict: Option<ConflictPolicyArg>,
 
     /// Alias for --on-conflict overwrite
-    #[arg(long, short = 'f', default_value_t = false, conflicts_with = "on_conflict")]
+    #[arg(
+        long,
+        short = 'f',
+        default_value_t = false,
+        conflicts_with = "on_conflict"
+    )]
     pub force: bool,
 
     /// Write a run report to FILE. Format inferred from the extension: .csv, .json, .html or .htm. Unknown extensions default to JSON. The file is overwritten directly.

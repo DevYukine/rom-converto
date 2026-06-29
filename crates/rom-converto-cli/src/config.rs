@@ -78,7 +78,10 @@ fn merge_nx(top: Option<&NxDefaults>, base: Option<&NxDefaults>) -> NxDefaults {
 
 fn merge_chd(top: Option<&ChdDefaults>, base: Option<&ChdDefaults>) -> ChdDefaults {
     ChdDefaults {
-        hunk_size: pick(top.and_then(|t| t.hunk_size), base.and_then(|b| b.hunk_size)),
+        hunk_size: pick(
+            top.and_then(|t| t.hunk_size),
+            base.and_then(|b| b.hunk_size),
+        ),
         on_conflict: pick(
             top.and_then(|t| t.on_conflict.clone()),
             base.and_then(|b| b.on_conflict.clone()),
@@ -238,7 +241,10 @@ mod tests {
 
         let eff_empty = resolve(&UserConfig::default(), None);
         let cli_level: Option<i32> = None;
-        assert_eq!(cli_level.or(eff_empty.dol.level).unwrap_or(BUILTIN), BUILTIN);
+        assert_eq!(
+            cli_level.or(eff_empty.dol.level).unwrap_or(BUILTIN),
+            BUILTIN
+        );
     }
 
     #[test]

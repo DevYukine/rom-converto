@@ -164,12 +164,21 @@ fn finish_tally(
     dry_run: bool,
     report_path: Option<&Path>,
 ) -> Result<()> {
-    let direction = if dry_run { TallyDirection::DryRun } else { direction };
+    let direction = if dry_run {
+        TallyDirection::DryRun
+    } else {
+        direction
+    };
     info!("{}", tally.summary_line(direction));
     // Write the report before the failed-count bail so failed-only runs still
     // leave a report on disk even though the command exits with an error.
     if let Some(path) = report_path {
-        write_report(path, records, &totals_from(tally), ReportFormat::from_path(path))?;
+        write_report(
+            path,
+            records,
+            &totals_from(tally),
+            ReportFormat::from_path(path),
+        )?;
     }
     let failed = tally.failed_count();
     if failed > 0 {
@@ -279,7 +288,12 @@ pub async fn cso_decompress(
             let out_bytes = file_len(&out_path);
             tally.record_ok(input_bytes, out_bytes, started.elapsed());
             records.push(ok_record(
-                &path, &out_path, "decompress", input_bytes, out_bytes, started,
+                &path,
+                &out_path,
+                "decompress",
+                input_bytes,
+                out_bytes,
+                started,
             ));
         }
         total_progress.inc(1);
@@ -288,7 +302,13 @@ pub async fn cso_decompress(
     if cancel.is_cancelled() {
         return Ok(());
     }
-    finish_tally(&tally, TallyDirection::Decompress, &records, dry_run, report_path)
+    finish_tally(
+        &tally,
+        TallyDirection::Decompress,
+        &records,
+        dry_run,
+        report_path,
+    )
 }
 
 pub async fn cso_verify(
@@ -428,7 +448,10 @@ pub async fn rvz_compress(
                         continue;
                     }
                     crate::util::VerifyOutcome::Invalid => {
-                        info!("rewriting, output failed verification: {}", output.display());
+                        info!(
+                            "rewriting, output failed verification: {}",
+                            output.display()
+                        );
                         output
                     }
                 }
@@ -456,7 +479,12 @@ pub async fn rvz_compress(
             let out_bytes = file_len(&output);
             tally.record_ok(input_bytes, out_bytes, started.elapsed());
             records.push(ok_record(
-                &path, &output, "compress", input_bytes, out_bytes, started,
+                &path,
+                &output,
+                "compress",
+                input_bytes,
+                out_bytes,
+                started,
             ));
         }
         total_progress.inc(1);
@@ -465,7 +493,13 @@ pub async fn rvz_compress(
     if cancel.is_cancelled() {
         return Ok(());
     }
-    finish_tally(&tally, TallyDirection::Compress, &records, dry_run, report_path)
+    finish_tally(
+        &tally,
+        TallyDirection::Compress,
+        &records,
+        dry_run,
+        report_path,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -554,7 +588,8 @@ pub async fn rvz_decompress(
         };
         let input_bytes = file_len(&path);
         let started = Instant::now();
-        if let Err(e) = decompress_disc_cancellable(&path, &output, progress, cancel.clone()).await {
+        if let Err(e) = decompress_disc_cancellable(&path, &output, progress, cancel.clone()).await
+        {
             if matches!(e, rom_converto_lib::nintendo::rvz::RvzError::Cancelled) {
                 break;
             }
@@ -565,7 +600,12 @@ pub async fn rvz_decompress(
             let out_bytes = file_len(&output);
             tally.record_ok(input_bytes, out_bytes, started.elapsed());
             records.push(ok_record(
-                &path, &output, "decompress", input_bytes, out_bytes, started,
+                &path,
+                &output,
+                "decompress",
+                input_bytes,
+                out_bytes,
+                started,
             ));
         }
         total_progress.inc(1);
@@ -574,7 +614,13 @@ pub async fn rvz_decompress(
     if cancel.is_cancelled() {
         return Ok(());
     }
-    finish_tally(&tally, TallyDirection::Decompress, &records, dry_run, report_path)
+    finish_tally(
+        &tally,
+        TallyDirection::Decompress,
+        &records,
+        dry_run,
+        report_path,
+    )
 }
 
 pub async fn dol_verify(
@@ -701,7 +747,13 @@ pub async fn nx_compress(
             Err(e) => {
                 warn!("Failed to compress {}: {e}", path.display());
                 tally.record_failed();
-                records.push(failed_record(&path, "compress", file_len(&path), Instant::now(), e));
+                records.push(failed_record(
+                    &path,
+                    "compress",
+                    file_len(&path),
+                    Instant::now(),
+                    e,
+                ));
                 total_progress.inc(1);
                 continue;
             }
@@ -796,7 +848,10 @@ pub async fn nx_compress(
                         continue;
                     }
                     crate::util::VerifyOutcome::Invalid => {
-                        info!("rewriting, output failed verification: {}", output.display());
+                        info!(
+                            "rewriting, output failed verification: {}",
+                            output.display()
+                        );
                         output
                     }
                 }
@@ -832,7 +887,12 @@ pub async fn nx_compress(
             let out_bytes = file_len(&out_path);
             tally.record_ok(input_bytes, out_bytes, started.elapsed());
             records.push(ok_record(
-                &path, &out_path, "compress", input_bytes, out_bytes, started,
+                &path,
+                &out_path,
+                "compress",
+                input_bytes,
+                out_bytes,
+                started,
             ));
         }
         total_progress.inc(1);
@@ -962,7 +1022,12 @@ pub async fn nx_decompress(
             let out_bytes = file_len(&out_path);
             tally.record_ok(input_bytes, out_bytes, started.elapsed());
             records.push(ok_record(
-                &path, &out_path, "decompress", input_bytes, out_bytes, started,
+                &path,
+                &out_path,
+                "decompress",
+                input_bytes,
+                out_bytes,
+                started,
             ));
         }
         total_progress.inc(1);
@@ -971,7 +1036,13 @@ pub async fn nx_decompress(
     if cancel.is_cancelled() {
         return Ok(());
     }
-    finish_tally(&tally, TallyDirection::Decompress, &records, dry_run, report_path)
+    finish_tally(
+        &tally,
+        TallyDirection::Decompress,
+        &records,
+        dry_run,
+        report_path,
+    )
 }
 
 pub async fn nx_verify(
@@ -1193,7 +1264,10 @@ pub async fn chd_compress(
                         continue;
                     }
                     crate::util::VerifyOutcome::Invalid => {
-                        info!("rewriting, output failed verification: {}", output.display());
+                        info!(
+                            "rewriting, output failed verification: {}",
+                            output.display()
+                        );
                         output
                     }
                 }
@@ -1229,7 +1303,12 @@ pub async fn chd_compress(
             let out_bytes = file_len(&out_path);
             tally.record_ok(input_bytes, out_bytes, started.elapsed());
             records.push(ok_record(
-                &path, &out_path, "compress", input_bytes, out_bytes, started,
+                &path,
+                &out_path,
+                "compress",
+                input_bytes,
+                out_bytes,
+                started,
             ));
         }
         total_progress.inc(1);
@@ -1238,7 +1317,13 @@ pub async fn chd_compress(
     if cancel.is_cancelled() {
         return Ok(());
     }
-    finish_tally(&tally, TallyDirection::Compress, &records, dry_run, report_path)
+    finish_tally(
+        &tally,
+        TallyDirection::Compress,
+        &records,
+        dry_run,
+        report_path,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1358,7 +1443,13 @@ pub async fn chd_extract(
     if cancel.is_cancelled() {
         return Ok(());
     }
-    finish_tally(&tally, TallyDirection::CountOnly, &records, dry_run, report_path)
+    finish_tally(
+        &tally,
+        TallyDirection::CountOnly,
+        &records,
+        dry_run,
+        report_path,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1469,7 +1560,10 @@ pub async fn cso_compress(
                         continue;
                     }
                     crate::util::VerifyOutcome::Invalid => {
-                        info!("rewriting, output failed verification: {}", output.display());
+                        info!(
+                            "rewriting, output failed verification: {}",
+                            output.display()
+                        );
                         output
                     }
                 }
@@ -1485,9 +1579,14 @@ pub async fn cso_compress(
         let input_bytes = file_len(&path);
         let out_path = output.clone();
         let started = Instant::now();
-        if let Err(e) =
-            compress_to_cso_cancellable(progress, path.clone(), output, opts.clone(), cancel.clone())
-                .await
+        if let Err(e) = compress_to_cso_cancellable(
+            progress,
+            path.clone(),
+            output,
+            opts.clone(),
+            cancel.clone(),
+        )
+        .await
         {
             if matches!(e, rom_converto_lib::cso::CsoError::Cancelled) {
                 break;
@@ -1499,7 +1598,12 @@ pub async fn cso_compress(
             let out_bytes = file_len(&out_path);
             tally.record_ok(input_bytes, out_bytes, started.elapsed());
             records.push(ok_record(
-                &path, &out_path, "compress", input_bytes, out_bytes, started,
+                &path,
+                &out_path,
+                "compress",
+                input_bytes,
+                out_bytes,
+                started,
             ));
         }
         total_progress.inc(1);
@@ -1508,7 +1612,13 @@ pub async fn cso_compress(
     if cancel.is_cancelled() {
         return Ok(());
     }
-    finish_tally(&tally, TallyDirection::Compress, &records, dry_run, report_path)
+    finish_tally(
+        &tally,
+        TallyDirection::Compress,
+        &records,
+        dry_run,
+        report_path,
+    )
 }
 
 fn hash_ok_record(path: &Path, d: &FileDigests, started: Instant) -> HashReportRecord {

@@ -101,10 +101,7 @@ pub fn hash_file(
 
     let mut file = std::fs::File::open(path)?;
     let size_bytes = file.metadata()?.len();
-    let name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("file");
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
     progress.start(size_bytes, &format!("Hashing {name}"));
 
     let crc_algo = Crc::<u32>::new(&CRC_32_ISO_HDLC);
@@ -227,13 +224,20 @@ mod tests {
         assert_eq!(d.md5.as_ref().unwrap().len(), 32);
         assert_eq!(d.sha256.as_ref().unwrap().len(), 64);
         for value in [d.crc32, d.sha1, d.md5, d.sha256].into_iter().flatten() {
-            assert!(value.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+            assert!(
+                value
+                    .chars()
+                    .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+            );
         }
     }
 
     #[test]
     fn parse_algos_normalizes_order() {
-        assert_eq!(parse_algos("sha1,crc32").unwrap(), vec![HashAlgo::Crc32, HashAlgo::Sha1]);
+        assert_eq!(
+            parse_algos("sha1,crc32").unwrap(),
+            vec![HashAlgo::Crc32, HashAlgo::Sha1]
+        );
     }
 
     #[test]

@@ -9,9 +9,7 @@ use crate::chd::writer::metadata::MetadataHash;
 use crate::cue::CueParser;
 use crate::cue::models::{CueFile, CueSheet, FileType, Index, Msf, Track, TrackType};
 use crate::util::iso9660::{DiscKind, detect_disc_kind};
-use crate::util::{
-    BYTES_PER_MB, CancelToken, ProgressReporter, await_with_progress_cancel,
-};
+use crate::util::{BYTES_PER_MB, CancelToken, ProgressReporter, await_with_progress_cancel};
 use log::{debug, info, warn};
 use sha1::{Digest, Sha1};
 use std::path::PathBuf;
@@ -178,14 +176,14 @@ pub async fn convert_disc_to_chd_batch(
         std::fs::create_dir_all(dir)?;
     }
 
-    total_progress.start(discs.len() as u64, &format!("Compressing {} discs...", discs.len()));
+    total_progress.start(
+        discs.len() as u64,
+        &format!("Compressing {} discs...", discs.len()),
+    );
 
     for path in discs {
-        let output = crate::util::place_in_dir_mirrored(
-            &path.with_extension("chd"),
-            input_dir,
-            output_dir,
-        );
+        let output =
+            crate::util::place_in_dir_mirrored(&path.with_extension("chd"), input_dir, output_dir);
         if let Some(parent) = output.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -274,9 +272,14 @@ async fn convert_iso_to_chd_with_kind(
         Ok(())
     });
 
-    if let Err(err) =
-        await_with_progress_cancel(progress, &bytes_done, handle, &cancel, cancel_cleanup(&write_path))
-            .await
+    if let Err(err) = await_with_progress_cancel(
+        progress,
+        &bytes_done,
+        handle,
+        &cancel,
+        cancel_cleanup(&write_path),
+    )
+    .await
     {
         let _ = fs::remove_file(&write_path).await;
         return Err(err);
@@ -389,9 +392,14 @@ pub async fn convert_iso_to_cd_chd(
         Ok(())
     });
 
-    if let Err(err) =
-        await_with_progress_cancel(progress, &bytes_done, handle, &cancel, cancel_cleanup(&write_path))
-            .await
+    if let Err(err) = await_with_progress_cancel(
+        progress,
+        &bytes_done,
+        handle,
+        &cancel,
+        cancel_cleanup(&write_path),
+    )
+    .await
     {
         let _ = fs::remove_file(&write_path).await;
         return Err(err);
@@ -482,9 +490,14 @@ pub async fn convert_to_chd(
         Ok(())
     });
 
-    if let Err(err) =
-        await_with_progress_cancel(progress, &bytes_done, handle, &cancel, cancel_cleanup(&write_path))
-            .await
+    if let Err(err) = await_with_progress_cancel(
+        progress,
+        &bytes_done,
+        handle,
+        &cancel,
+        cancel_cleanup(&write_path),
+    )
+    .await
     {
         let _ = fs::remove_file(&write_path).await;
         return Err(err);
@@ -532,8 +545,14 @@ pub async fn extract_from_chd(
     output_path: PathBuf,
     parent_path: Option<PathBuf>,
 ) -> ChdResult<()> {
-    extract_from_chd_cancellable(progress, input_path, output_path, parent_path, CancelToken::new())
-        .await
+    extract_from_chd_cancellable(
+        progress,
+        input_path,
+        output_path,
+        parent_path,
+        CancelToken::new(),
+    )
+    .await
 }
 
 /// Like [`extract_from_chd`] but observes `cancel` at every hunk
@@ -588,8 +607,14 @@ pub async fn extract_from_chd_cancellable(
         .await??;
 
     if is_dvd {
-        return extract_dvd_iso(progress, input_path, output_path, header.logical_bytes, cancel)
-            .await;
+        return extract_dvd_iso(
+            progress,
+            input_path,
+            output_path,
+            header.logical_bytes,
+            cancel,
+        )
+        .await;
     }
 
     let cue_path = if output_path.extension().is_some() {
@@ -764,9 +789,14 @@ async fn extract_dvd_iso(
         Ok(())
     });
 
-    if let Err(err) =
-        await_with_progress_cancel(progress, &bytes_done, handle, &cancel, cancel_cleanup(&write_path))
-            .await
+    if let Err(err) = await_with_progress_cancel(
+        progress,
+        &bytes_done,
+        handle,
+        &cancel,
+        cancel_cleanup(&write_path),
+    )
+    .await
     {
         let _ = fs::remove_file(&write_path).await;
         return Err(err);
@@ -883,9 +913,10 @@ pub async fn verify_chd_cancellable(
         Ok(computed)
     });
 
-    let computed_raw =
-        await_with_progress_cancel(progress, &bytes_done, handle, &cancel, || ChdError::Cancelled)
-            .await?;
+    let computed_raw = await_with_progress_cancel(progress, &bytes_done, handle, &cancel, || {
+        ChdError::Cancelled
+    })
+    .await?;
 
     let expected_raw = header.raw_sha1;
     if computed_raw != expected_raw {
@@ -965,7 +996,11 @@ fn collect_files_with_ext(
     ext: &str,
     max_depth: Option<usize>,
 ) -> ChdResult<Vec<PathBuf>> {
-    Ok(crate::util::fs::collect_files_with_exts(dir, &[ext], max_depth)?)
+    Ok(crate::util::fs::collect_files_with_exts(
+        dir,
+        &[ext],
+        max_depth,
+    )?)
 }
 
 /// Extract every `.chd` in `input_dir` beside its input: CD-mode CHDs
@@ -1430,9 +1465,15 @@ mod tests {
         );
 
         let our_chd = dir.path().join("our.chd");
-        convert_iso_to_cd_chd(&NoProgress, iso_path, our_chd.clone(), false, CancelToken::new())
-            .await
-            .unwrap();
+        convert_iso_to_cd_chd(
+            &NoProgress,
+            iso_path,
+            our_chd.clone(),
+            false,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
         let status = std::process::Command::new(&chdman)
             .args(["verify", "-i"])
             .arg(&our_chd)

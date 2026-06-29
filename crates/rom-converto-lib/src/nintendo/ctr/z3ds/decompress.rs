@@ -116,7 +116,13 @@ pub async fn decompress_rom_cancellable(
         let workers = make_z3ds_decompress_workers(n_threads, &in_file)?;
         let pool: Pool<Z3dsDecompressWork, Z3dsDecompressedFrame, Z3dsError> = Pool::spawn(workers);
 
-        decompress_frames(&pool, &mut writer, work_items, &bytes_done_clone, &cancel_bg)?;
+        decompress_frames(
+            &pool,
+            &mut writer,
+            work_items,
+            &bytes_done_clone,
+            &cancel_bg,
+        )?;
 
         pool.shutdown();
         writer

@@ -40,7 +40,9 @@ impl Worker<RomfsChunkWork, RomfsChunk, NintendoCTRError> for RomfsDecryptWorker
 /// is `u128::from_be_bytes(base).wrapping_add(blocks)`.
 pub(super) fn advance_counter(base: &[u8; 16], byte_offset: u64) -> [u8; 16] {
     let blocks = (byte_offset / 16) as u128;
-    u128::from_be_bytes(*base).wrapping_add(blocks).to_be_bytes()
+    u128::from_be_bytes(*base)
+        .wrapping_add(blocks)
+        .to_be_bytes()
 }
 
 #[cfg(test)]

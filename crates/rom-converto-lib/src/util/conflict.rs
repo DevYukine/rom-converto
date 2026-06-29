@@ -21,7 +21,10 @@ pub enum ConflictResolution {
 /// Decide what to do with `desired` under `policy` when the path may
 /// already exist. The caller never writes until this returns `Write`,
 /// so `Skip` and `Error` leave no partial output behind.
-pub fn resolve_conflict(desired: &Path, policy: ConflictPolicy) -> std::io::Result<ConflictResolution> {
+pub fn resolve_conflict(
+    desired: &Path,
+    policy: ConflictPolicy,
+) -> std::io::Result<ConflictResolution> {
     if !desired.exists() {
         return Ok(ConflictResolution::Write(desired.to_path_buf()));
     }

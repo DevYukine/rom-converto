@@ -15,8 +15,8 @@
 //! `tokio::task::spawn_blocking`.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use crate::nintendo::wup::compress_worker::spawn_zarchive_pool;
 use crate::nintendo::wup::constants::{
@@ -27,7 +27,8 @@ use crate::nintendo::wup::disc::compress::{
 };
 use crate::nintendo::wup::error::{WupError, WupResult};
 use crate::nintendo::wup::loadiine::{
-    compress_loadiine_title_with_cancel, detect_loadiine_title, estimate_loadiine_uncompressed_bytes,
+    compress_loadiine_title_with_cancel, detect_loadiine_title,
+    estimate_loadiine_uncompressed_bytes,
 };
 use crate::nintendo::wup::nus::compress::{
     compress_nus_title_with_cancel, estimate_nus_uncompressed_bytes,
@@ -277,7 +278,13 @@ pub async fn compress_titles_async_cancellable(
         let shim = QueuedProgress {
             events: events_for_task,
         };
-        compress_titles_with_cancel(&titles, &output_for_task, opts, &shim, Some(&cancelled_for_task))
+        compress_titles_with_cancel(
+            &titles,
+            &output_for_task,
+            opts,
+            &shim,
+            Some(&cancelled_for_task),
+        )
     });
 
     let pump = |progress: &dyn ProgressReporter| {
@@ -425,14 +432,8 @@ fn compress_titles_with_cancel(
     }
 
     let tmp = scratch_output_path(output);
-    let result = compress_titles_into_tmp(
-        &resolved,
-        &tmp,
-        opts,
-        progress,
-        cancelled,
-        read_total_bytes,
-    );
+    let result =
+        compress_titles_into_tmp(&resolved, &tmp, opts, progress, cancelled, read_total_bytes);
 
     match result {
         Ok(()) => {

@@ -499,7 +499,11 @@ fn cdn_to_cia_recursive_dry_run_skip_on_existing() {
 
     assert!(output.status.success(), "{}", combined(&output));
     assert_eq!(fs::read(&existing).unwrap(), b"original");
-    assert!(combined(&output).contains("[skip]"), "{}", combined(&output));
+    assert!(
+        combined(&output).contains("[skip]"),
+        "{}",
+        combined(&output)
+    );
 }
 
 #[test]

@@ -86,7 +86,12 @@ pub struct CompressDiscCommand {
     pub on_conflict: Option<ConflictPolicyArg>,
 
     /// Alias for --on-conflict overwrite
-    #[arg(long, short = 'f', default_value_t = false, conflicts_with = "on_conflict")]
+    #[arg(
+        long,
+        short = 'f',
+        default_value_t = false,
+        conflicts_with = "on_conflict"
+    )]
     pub force: bool,
 
     /// Compress every .iso and .wbfs found in the INPUT directory and its subdirectories
@@ -140,7 +145,12 @@ pub struct DecompressDiscCommand {
     pub on_conflict: Option<ConflictPolicyArg>,
 
     /// Alias for --on-conflict overwrite
-    #[arg(long, short = 'f', default_value_t = false, conflicts_with = "on_conflict")]
+    #[arg(
+        long,
+        short = 'f',
+        default_value_t = false,
+        conflicts_with = "on_conflict"
+    )]
     pub force: bool,
 
     /// Decompress every .rvz found in the INPUT directory and its subdirectories

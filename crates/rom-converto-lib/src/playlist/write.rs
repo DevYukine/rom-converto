@@ -137,7 +137,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         touch(&dir.path().join("Sonic.cue"));
         let ext = exts();
-        let plans = plan_playlists(&options(dir.path(), None, &ext, PlaylistMode::Multiple)).unwrap();
+        let plans =
+            plan_playlists(&options(dir.path(), None, &ext, PlaylistMode::Multiple)).unwrap();
         assert!(plans.is_empty());
     }
 
@@ -157,12 +158,10 @@ mod tests {
         touch(&dir.path().join("Game (Disc 2).cue"));
         touch(&dir.path().join("Game (Disc 1).cue"));
         let ext = exts();
-        let plans = plan_playlists(&options(dir.path(), None, &ext, PlaylistMode::Multiple)).unwrap();
+        let plans =
+            plan_playlists(&options(dir.path(), None, &ext, PlaylistMode::Multiple)).unwrap();
         assert_eq!(plans.len(), 1);
-        assert_eq!(
-            plans[0].contents,
-            "Game (Disc 1).cue\nGame (Disc 2).cue\n"
-        );
+        assert_eq!(plans[0].contents, "Game (Disc 1).cue\nGame (Disc 2).cue\n");
     }
 
     #[test]
@@ -171,7 +170,8 @@ mod tests {
         touch(&dir.path().join("Game (Disc 1).cue"));
         touch(&dir.path().join("Game (Disc 2).cue"));
         let ext = exts();
-        let plans = plan_playlists(&options(dir.path(), None, &ext, PlaylistMode::Multiple)).unwrap();
+        let plans =
+            plan_playlists(&options(dir.path(), None, &ext, PlaylistMode::Multiple)).unwrap();
         for line in plans[0].contents.lines() {
             assert!(!line.starts_with('/'));
             assert!(!line.contains('/'));
@@ -184,7 +184,8 @@ mod tests {
         touch(&dir.path().join("Game (Disc 1).cue"));
         touch(&dir.path().join("Game (Disc 2).cue"));
         let ext = exts();
-        let plans = plan_playlists(&options(dir.path(), None, &ext, PlaylistMode::Multiple)).unwrap();
+        let plans =
+            plan_playlists(&options(dir.path(), None, &ext, PlaylistMode::Multiple)).unwrap();
         assert_eq!(
             plans[0].m3u_path.file_name().unwrap().to_str().unwrap(),
             "Game.m3u"
@@ -199,7 +200,8 @@ mod tests {
         touch(&sub.join("Game (Disc 1).cue"));
         touch(&dir.path().join("Game (Disc 2).cue"));
         let ext = exts();
-        let plans = plan_playlists(&options(dir.path(), None, &ext, PlaylistMode::Multiple)).unwrap();
+        let plans =
+            plan_playlists(&options(dir.path(), None, &ext, PlaylistMode::Multiple)).unwrap();
         assert_eq!(plans[0].m3u_path.parent().unwrap(), dir.path());
         let lines: Vec<&str> = plans[0].contents.lines().collect();
         assert!(lines.iter().any(|l| *l == "sub/Game (Disc 1).cue"));
@@ -213,9 +215,13 @@ mod tests {
         touch(&dir.path().join("Game (Disc 1).cue"));
         touch(&dir.path().join("Game (Disc 2).cue"));
         let ext = exts();
-        let plans =
-            plan_playlists(&options(dir.path(), Some(out.path()), &ext, PlaylistMode::Multiple))
-                .unwrap();
+        let plans = plan_playlists(&options(
+            dir.path(),
+            Some(out.path()),
+            &ext,
+            PlaylistMode::Multiple,
+        ))
+        .unwrap();
         assert_eq!(plans[0].m3u_path.parent().unwrap(), out.path());
         for line in plans[0].contents.lines() {
             assert!(line.starts_with("..") || line.contains('/'));
@@ -228,7 +234,8 @@ mod tests {
         touch(&dir.path().join("Game (Disc 1).cue"));
         touch(&dir.path().join("Game (Disc 1).chd"));
         let ext = exts();
-        let plans = plan_playlists(&options(dir.path(), None, &ext, PlaylistMode::Multiple)).unwrap();
+        let plans =
+            plan_playlists(&options(dir.path(), None, &ext, PlaylistMode::Multiple)).unwrap();
         assert_eq!(plans.len(), 1);
         assert!(plans[0].has_duplicate_numbers);
     }

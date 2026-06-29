@@ -148,7 +148,10 @@ mod tests {
         let found = collect_files_with_exts(dir.path(), &["iso"], Some(2)).unwrap();
         assert_eq!(
             found,
-            vec![dir.path().join("b.iso"), dir.path().join("sub").join("a.iso")]
+            vec![
+                dir.path().join("b.iso"),
+                dir.path().join("sub").join("a.iso")
+            ]
         );
     }
 

@@ -63,7 +63,16 @@ mod tests {
 
     #[test]
     fn parses_recursive_depth_and_algo() {
-        let c = parse(&["bin", "hash", "roms", "-R", "--max-depth", "2", "--algo", "sha256"]);
+        let c = parse(&[
+            "bin",
+            "hash",
+            "roms",
+            "-R",
+            "--max-depth",
+            "2",
+            "--algo",
+            "sha256",
+        ]);
         assert!(c.recursive);
         assert_eq!(c.max_depth, Some(2));
         assert_eq!(c.algo, "sha256");

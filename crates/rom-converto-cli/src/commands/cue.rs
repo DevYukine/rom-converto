@@ -24,7 +24,12 @@ pub struct MergeCommand {
     pub on_conflict: ConflictPolicyArg,
 
     /// Alias for --on-conflict overwrite
-    #[arg(long, short = 'f', default_value_t = false, conflicts_with = "on_conflict")]
+    #[arg(
+        long,
+        short = 'f',
+        default_value_t = false,
+        conflicts_with = "on_conflict"
+    )]
     pub force: bool,
 }
 
@@ -47,8 +52,14 @@ mod tests {
 
     #[test]
     fn parses_on_conflict_rename() {
-        let h =
-            Harness::parse_from(["bin", "merge", "in.cue", "out.cue", "--on-conflict", "rename"]);
+        let h = Harness::parse_from([
+            "bin",
+            "merge",
+            "in.cue",
+            "out.cue",
+            "--on-conflict",
+            "rename",
+        ]);
         let CueCommands::Merge(c) = h.cmd;
         assert_eq!(c.on_conflict, ConflictPolicyArg::Rename);
     }

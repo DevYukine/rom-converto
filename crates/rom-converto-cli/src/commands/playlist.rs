@@ -30,7 +30,11 @@ pub struct PlaylistCommand {
     pub playlist_mode: PlaylistModeArg,
 
     /// Comma-separated disc image extensions to scan
-    #[arg(long = "ext", value_name = "EXTS", default_value = "cue,chd,iso,cso,zso")]
+    #[arg(
+        long = "ext",
+        value_name = "EXTS",
+        default_value = "cue,chd,iso,cso,zso"
+    )]
     pub extensions: String,
 
     /// Maximum directory depth. 1 = top level only. Omit for unlimited.
@@ -42,7 +46,12 @@ pub struct PlaylistCommand {
     pub on_conflict: Option<ConflictPolicyArg>,
 
     /// Alias for --on-conflict overwrite
-    #[arg(long, short = 'f', default_value_t = false, conflicts_with = "on_conflict")]
+    #[arg(
+        long,
+        short = 'f',
+        default_value_t = false,
+        conflicts_with = "on_conflict"
+    )]
     pub force: bool,
 }
 
@@ -86,7 +95,15 @@ mod tests {
 
     #[test]
     fn parses_custom_ext_and_depth() {
-        let c = parse(&["bin", "playlist", "roms", "--ext", "cue,chd", "--max-depth", "2"]);
+        let c = parse(&[
+            "bin",
+            "playlist",
+            "roms",
+            "--ext",
+            "cue,chd",
+            "--max-depth",
+            "2",
+        ]);
         assert_eq!(c.extensions, "cue,chd");
         assert_eq!(c.max_depth, Some(2));
     }

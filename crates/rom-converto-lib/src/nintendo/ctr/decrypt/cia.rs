@@ -21,6 +21,7 @@ use crate::nintendo::ctr::decrypt::romfs_worker::{
     RomfsChunk, RomfsChunkWork, RomfsDecryptWorker, advance_counter,
 };
 use crate::nintendo::ctr::decrypt::util::{cbc_decrypt, gen_iv};
+use crate::nintendo::ctr::error::NintendoCTRError;
 use crate::nintendo::ctr::models::cia::{CIA_HEADER_SIZE, CiaHeader};
 use crate::nintendo::ctr::models::exe_fs_header::ExeFSHeader;
 use crate::nintendo::ctr::models::ncch_header::NcchHeader;
@@ -28,7 +29,6 @@ use crate::nintendo::ctr::models::seeddb::SeedDatabase;
 use crate::nintendo::ctr::models::title_metadata::ContentChunkRecord;
 use crate::nintendo::ctr::util::align_64;
 use crate::nintendo::ctr::z3ds::models::underlying_magic;
-use crate::nintendo::ctr::error::NintendoCTRError;
 use crate::util::worker_pool::{Pool, parallelism};
 use crate::util::{CancelToken, ProgressReporter};
 use anyhow::{Context, anyhow};
@@ -857,7 +857,8 @@ pub async fn parse_and_decrypt_cia(
     let mut content_count: [u8; 2] = [0; 2];
     rom_file.read_exact(&mut content_count).await?;
 
-    let mut hashes: Vec<[u8; 32]> = Vec::with_capacity(BigEndian::read_u16(&content_count) as usize);
+    let mut hashes: Vec<[u8; 32]> =
+        Vec::with_capacity(BigEndian::read_u16(&content_count) as usize);
     let mut next_content_offs = 0;
     let mut out_pos = out.stream_position().await?;
     for i in 0..BigEndian::read_u16(&content_count) {
@@ -959,7 +960,9 @@ mod tests {
         ];
         let size: u32 = 0x4000;
 
-        let plaintext: Vec<u8> = (0..size).map(|i| (i.wrapping_mul(31) % 251) as u8).collect();
+        let plaintext: Vec<u8> = (0..size)
+            .map(|i| (i.wrapping_mul(31) % 251) as u8)
+            .collect();
         let key = derive_ctr_key(CTR_KEYS_0[0], key_y);
 
         // Reference: encrypt the plaintext with one continuous keystream; the
@@ -1017,7 +1020,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(decrypted, plaintext, "pooled RomFS decrypt must match plaintext");
+        assert_eq!(
+            decrypted, plaintext,
+            "pooled RomFS decrypt must match plaintext"
+        );
     }
 
     /// When the cidx fixup is active (non-first CIA content, not single NCCH,
@@ -1034,7 +1040,9 @@ mod tests {
         let cidx: u16 = 3;
         let size: u32 = (2 * CHUNK_SIZE + 0x1000) as u32;
 
-        let plaintext: Vec<u8> = (0..size).map(|i| (i.wrapping_mul(31) % 251) as u8).collect();
+        let plaintext: Vec<u8> = (0..size)
+            .map(|i| (i.wrapping_mul(31) % 251) as u8)
+            .collect();
         let key = derive_ctr_key(CTR_KEYS_0[0], key_y);
 
         // Build the encrypted input the decrypt path expects: per chunk, run the
@@ -1118,7 +1126,9 @@ mod tests {
         let cidx: u16 = 3;
         let size: u32 = 0x4000;
 
-        let plaintext: Vec<u8> = (0..size).map(|i| (i.wrapping_mul(31) % 251) as u8).collect();
+        let plaintext: Vec<u8> = (0..size)
+            .map(|i| (i.wrapping_mul(31) % 251) as u8)
+            .collect();
         let key = derive_ctr_key(CTR_KEYS_0[0], key_y);
 
         // Plain continuous-keystream encryption with no cidx XOR baked in: decrypt

@@ -32,11 +32,11 @@ use rom_converto_lib::nintendo::rvz::{
     RvzCompressOptions, compress_disc_cancellable, decompress_disc_cancellable,
     decompress_disc_to_wbfs_cancellable, derive_disc_path, derive_rvz_path,
 };
-use rom_converto_lib::util::CancelToken;
 use rom_converto_lib::nintendo::wup::{
     TitleInput, WupCompressOptions, compress_titles_async_cancellable,
     decrypt_nus_title_async_cancellable, verify_wup_async,
 };
+use rom_converto_lib::util::CancelToken;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{AppHandle, State};
@@ -95,15 +95,25 @@ pub async fn cmd_cdn_to_cia(
         on_conflict: rom_converto_lib::util::ConflictPolicy::Overwrite,
     };
     let token = begin(&state).await;
-    let result = tokio::spawn(async move {
-        convert_cdn_to_cia_cancellable(opts, progress.as_ref(), total_progress.as_ref(), token)
-            .await
+    // The streaming decrypt holds the worker-pool receiver across await points,
+    // so its future is not Send; run on a dedicated thread with its own runtime.
+    let result = std::thread::spawn(move || -> Result<(), String> {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(err_to_string)?;
+        rt.block_on(convert_cdn_to_cia_cancellable(
+            opts,
+            progress.as_ref(),
+            total_progress.as_ref(),
+            token,
+        ))
+        .map_err(err_to_string)
     })
-    .await
-    .map_err(err_to_string)?
-    .map_err(err_to_string);
+    .join()
+    .map_err(|_| "task panicked".to_string());
     finish(&state).await;
-    result?;
+    result??;
     Ok("CDN to CIA conversion complete".to_string())
 }
 
@@ -127,13 +137,25 @@ pub async fn cmd_decrypt_rom(
     let progress = Arc::new(TauriProgress::new(app, "decrypt"));
     let out_display = output.display().to_string();
     let token = begin(&state).await;
-    let result =
-        tokio::spawn(async move { decrypt_rom_cancellable(&input, &output, progress.as_ref(), token).await })
-            .await
-            .map_err(err_to_string)?
-            .map_err(err_to_string);
+    // The streaming decrypt holds the worker-pool receiver across await points,
+    // so its future is not Send; run on a dedicated thread with its own runtime.
+    let result = std::thread::spawn(move || -> Result<(), String> {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(err_to_string)?;
+        rt.block_on(decrypt_rom_cancellable(
+            &input,
+            &output,
+            progress.as_ref(),
+            token,
+        ))
+        .map_err(err_to_string)
+    })
+    .join()
+    .map_err(|_| "task panicked".to_string());
     finish(&state).await;
-    result?;
+    result??;
     Ok(format!("Decrypted to {out_display}"))
 }
 
@@ -151,8 +173,15 @@ pub async fn cmd_compress_rom(
     let out_display = output.display().to_string();
     let token = begin(&state).await;
     let result = tokio::spawn(async move {
-        compress_rom_cancellable(&input, &output, level, allow_encrypted, progress.as_ref(), token)
-            .await
+        compress_rom_cancellable(
+            &input,
+            &output,
+            level,
+            allow_encrypted,
+            progress.as_ref(),
+            token,
+        )
+        .await
     })
     .await
     .map_err(err_to_string)?
@@ -495,11 +524,12 @@ pub async fn cmd_wup_decrypt(
     let progress = Arc::new(TauriProgress::new(app, "wup-decrypt"));
     let out_display = output.display().to_string();
     let token = begin(&state).await;
-    let result =
-        tokio::spawn(async move { decrypt_nus_title_async_cancellable(input, output, progress.as_ref(), token).await })
-            .await
-            .map_err(err_to_string)?
-            .map_err(err_to_string);
+    let result = tokio::spawn(async move {
+        decrypt_nus_title_async_cancellable(input, output, progress.as_ref(), token).await
+    })
+    .await
+    .map_err(err_to_string)?
+    .map_err(err_to_string);
     finish(&state).await;
     result?;
     Ok(format!("Decrypted to {out_display}"))
@@ -600,11 +630,12 @@ pub async fn cmd_convert_ctr(
     let output = output.unwrap_or_else(|| derive_converted_path(&input));
     let out_display = output.display().to_string();
     let token = begin(&state).await;
-    let result =
-        tokio::spawn(async move { convert_rom_cancellable(&input, &output, progress.as_ref(), token).await })
-            .await
-            .map_err(err_to_string)?
-            .map_err(err_to_string);
+    let result = tokio::spawn(async move {
+        convert_rom_cancellable(&input, &output, progress.as_ref(), token).await
+    })
+    .await
+    .map_err(err_to_string)?
+    .map_err(err_to_string);
     finish(&state).await;
     result?;
     Ok(format!("Converted to {out_display}"))

@@ -159,8 +159,9 @@ pub(crate) fn compress_disc_title_with_cancel(
             Some(t) => t,
             None => continue,
         };
-        let (title_id, version) =
-            compress_one_partition_with_cancel(&mut *disc, partition, si_title, sink, progress, cancelled)?;
+        let (title_id, version) = compress_one_partition_with_cancel(
+            &mut *disc, partition, si_title, sink, progress, cancelled,
+        )?;
         results.push((title_id, version));
     }
 

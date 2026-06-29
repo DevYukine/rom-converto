@@ -55,7 +55,12 @@ pub struct DecryptWupCommand {
     pub on_conflict: ConflictPolicyArg,
 
     /// Alias for --on-conflict overwrite
-    #[arg(long, short = 'f', default_value_t = false, conflicts_with = "on_conflict")]
+    #[arg(
+        long,
+        short = 'f',
+        default_value_t = false,
+        conflicts_with = "on_conflict"
+    )]
     pub force: bool,
 }
 
@@ -117,7 +122,12 @@ pub struct CompressWupCommand {
     pub on_conflict: Option<ConflictPolicyArg>,
 
     /// Alias for --on-conflict overwrite
-    #[arg(long, short = 'f', default_value_t = false, conflicts_with = "on_conflict")]
+    #[arg(
+        long,
+        short = 'f',
+        default_value_t = false,
+        conflicts_with = "on_conflict"
+    )]
     pub force: bool,
 }
 

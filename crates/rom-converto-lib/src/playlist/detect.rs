@@ -98,7 +98,11 @@ fn parse_token_body(body: &str) -> Option<u32> {
         None => Some(n),
         Some(of) if of.eq_ignore_ascii_case("of") => {
             parts.next()?.parse::<u32>().ok()?;
-            if parts.next().is_none() { Some(n) } else { None }
+            if parts.next().is_none() {
+                Some(n)
+            } else {
+                None
+            }
         }
         Some(_) => None,
     }
@@ -117,7 +121,11 @@ fn parse_token_tail(after: &str) -> Option<u32> {
         None => Some(n),
         Some(of) if of.eq_ignore_ascii_case("of") => {
             parts.next()?.parse::<u32>().ok()?;
-            if parts.next().is_none() { Some(n) } else { None }
+            if parts.next().is_none() {
+                Some(n)
+            } else {
+                None
+            }
         }
         Some(_) => None,
     }

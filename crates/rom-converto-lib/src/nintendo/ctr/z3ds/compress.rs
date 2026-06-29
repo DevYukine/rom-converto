@@ -61,8 +61,15 @@ pub async fn compress_rom(
     allow_encrypted: bool,
     progress: &dyn ProgressReporter,
 ) -> Z3dsResult<()> {
-    compress_rom_cancellable(input, output, level, allow_encrypted, progress, CancelToken::new())
-        .await
+    compress_rom_cancellable(
+        input,
+        output,
+        level,
+        allow_encrypted,
+        progress,
+        CancelToken::new(),
+    )
+    .await
 }
 
 /// A sibling temp path so an interrupted write never lands on the final

@@ -36,13 +36,12 @@ use rom_converto_lib::nintendo::ctr::verify::{
     CtrVerifyOptions, CtrVerifyResult, verify_ctr, verify_ctr_batch,
 };
 use rom_converto_lib::nintendo::ctr::z3ds::{
-    compress_rom_batch, compress_rom_cancellable, decompress_rom_batch,
-    decompress_rom_cancellable, derive_compressed_path, derive_decompressed_path,
+    compress_rom_batch, compress_rom_cancellable, decompress_rom_batch, decompress_rom_cancellable,
+    derive_compressed_path, derive_decompressed_path,
 };
 use rom_converto_lib::nintendo::ctr::{
     CdnToCiaOptions, convert_cdn_to_cia_cancellable, decrypt_rom_batch_cancellable,
-    decrypt_rom_cancellable, derive_decrypted_path,
-    generate_ticket_from_cdn,
+    decrypt_rom_cancellable, derive_decrypted_path, generate_ticket_from_cdn,
 };
 use rom_converto_lib::nintendo::dol::verify::{DolVerifyOptions, verify_dol};
 use rom_converto_lib::nintendo::nx::{
@@ -236,7 +235,10 @@ fn log_kept_valid(output: &Path) {
 }
 
 fn log_rewriting_invalid(output: &Path) {
-    log::info!("rewriting, output failed verification: {}", output.display());
+    log::info!(
+        "rewriting, output failed verification: {}",
+        output.display()
+    );
 }
 
 /// Single-file dry-run preview for an `overwrite-invalid` arm. The verify is
@@ -258,7 +260,15 @@ async fn dry_run_single_verify(
 ) -> Result<()> {
     use crate::util::{VerifyOutcome, verify_existing_output};
     if policy != rom_converto_lib::util::ConflictPolicy::OverwriteInvalid || !desired.exists() {
-        return dry_run_single(operation, input, desired, decision, media, missing_keys, report);
+        return dry_run_single(
+            operation,
+            input,
+            desired,
+            decision,
+            media,
+            missing_keys,
+            report,
+        );
     }
     let (synth, outcome) = match verify_existing_output(progress, desired, target).await {
         VerifyOutcome::Valid => (WriteDecision::Skip, dry_run::Decision::KeepValid),
@@ -267,7 +277,15 @@ async fn dry_run_single_verify(
             dry_run::Decision::RewriteInvalid,
         ),
     };
-    dry_run::log_plan_decision(operation, input, desired, &synth, outcome, media, missing_keys);
+    dry_run::log_plan_decision(
+        operation,
+        input,
+        desired,
+        &synth,
+        outcome,
+        media,
+        missing_keys,
+    );
     let mut tally = Tally::new();
     dry_run::record(&mut tally, input, &synth);
     let records = [dry_run::report_record(operation, input, desired, &synth)];
@@ -566,7 +584,13 @@ async fn dispatch_command(
                     let decision = resolve_output(&resolved, policy)?;
                     if dry_run {
                         return dry_run_single(
-                            "convert", &cmd.cdn_dir, &resolved, &decision, None, None, None,
+                            "convert",
+                            &cmd.cdn_dir,
+                            &resolved,
+                            &decision,
+                            None,
+                            None,
+                            None,
                         );
                     }
                     match decision {
@@ -598,7 +622,8 @@ async fn dispatch_command(
                     output_dir,
                     on_conflict: policy_of(cmd.on_conflict, cmd.force),
                 };
-                convert_cdn_to_cia_cancellable(opts, &progress, &total_progress, cancel.clone()).await?
+                convert_cdn_to_cia_cancellable(opts, &progress, &total_progress, cancel.clone())
+                    .await?
             }
             CtrCommands::GenerateCdnTicket(cmd) => {
                 ensure_input_exists(&cmd.cdn_dir)?;
@@ -624,7 +649,8 @@ async fn dispatch_command(
                             cmd.input.display()
                         );
                     }
-                    let files = collect_files_with_exts(&cmd.input, CTR_DECRYPT_EXTS, cmd.max_depth)?;
+                    let files =
+                        collect_files_with_exts(&cmd.input, CTR_DECRYPT_EXTS, cmd.max_depth)?;
                     if dry_run {
                         dry_run_ctr_scan(
                             "decrypt",
@@ -701,7 +727,8 @@ async fn dispatch_command(
                             cmd.input.display()
                         );
                     }
-                    let files = collect_files_with_exts(&cmd.input, CTR_COMPRESS_EXTS, cmd.max_depth)?;
+                    let files =
+                        collect_files_with_exts(&cmd.input, CTR_COMPRESS_EXTS, cmd.max_depth)?;
                     if dry_run {
                         dry_run_ctr_scan(
                             "compress",
@@ -841,7 +868,13 @@ async fn dispatch_command(
                     let decision = resolve_output(&output, policy)?;
                     if dry_run {
                         return dry_run_single(
-                            "decompress", &cmd.input, &output, &decision, None, None, None,
+                            "decompress",
+                            &cmd.input,
+                            &output,
+                            &decision,
+                            None,
+                            None,
+                            None,
                         );
                     }
                     let output = match decision {
@@ -865,7 +898,8 @@ async fn dispatch_command(
                             cmd.input.display()
                         );
                     }
-                    let files = collect_files_with_exts(&cmd.input, CTR_CONVERT_EXTS, cmd.max_depth)?;
+                    let files =
+                        collect_files_with_exts(&cmd.input, CTR_CONVERT_EXTS, cmd.max_depth)?;
                     if dry_run {
                         dry_run_ctr_scan(
                             "convert",
@@ -945,9 +979,14 @@ async fn dispatch_command(
                             cmd.input.display()
                         );
                     }
-                    let summary =
-                        verify_ctr_batch(&cmd.input, &opts, &progress, &total_progress, cmd.max_depth)
-                            .await?;
+                    let summary = verify_ctr_batch(
+                        &cmd.input,
+                        &opts,
+                        &progress,
+                        &total_progress,
+                        cmd.max_depth,
+                    )
+                    .await?;
                     log::info!(
                         "Verified {} files: {} OK, {} failed",
                         summary.total,
@@ -1085,7 +1124,8 @@ async fn dispatch_command(
                     }
                     let output = match decision {
                         WriteDecision::Skip
-                            if policy == rom_converto_lib::util::ConflictPolicy::OverwriteInvalid =>
+                            if policy
+                                == rom_converto_lib::util::ConflictPolicy::OverwriteInvalid =>
                         {
                             match crate::util::verify_existing_output(
                                 &progress,
@@ -1213,8 +1253,14 @@ async fn dispatch_command(
             DolCommands::Verify(cmd) => {
                 if cmd.recursive {
                     require_dir(&cmd.input)?;
-                    batch::dol_verify(&progress, &total_progress, &cmd.input, cmd.full, cmd.max_depth)
-                        .await?
+                    batch::dol_verify(
+                        &progress,
+                        &total_progress,
+                        &cmd.input,
+                        cmd.full,
+                        cmd.max_depth,
+                    )
+                    .await?
                 } else {
                     ensure_input_exists(&cmd.input)?;
                     let opts = DolVerifyOptions { full: cmd.full };
@@ -1325,7 +1371,8 @@ async fn dispatch_command(
                     }
                     let output = match decision {
                         WriteDecision::Skip
-                            if policy == rom_converto_lib::util::ConflictPolicy::OverwriteInvalid =>
+                            if policy
+                                == rom_converto_lib::util::ConflictPolicy::OverwriteInvalid =>
                         {
                             match crate::util::verify_existing_output(
                                 &progress,
@@ -1453,8 +1500,14 @@ async fn dispatch_command(
             RvlCommands::Verify(cmd) => {
                 if cmd.recursive {
                     require_dir(&cmd.input)?;
-                    batch::rvl_verify(&progress, &total_progress, &cmd.input, cmd.full, cmd.max_depth)
-                        .await?
+                    batch::rvl_verify(
+                        &progress,
+                        &total_progress,
+                        &cmd.input,
+                        cmd.full,
+                        cmd.max_depth,
+                    )
+                    .await?
                 } else {
                     ensure_input_exists(&cmd.input)?;
                     let opts = RvlVerifyOptions { full: cmd.full };
@@ -1534,7 +1587,13 @@ async fn dispatch_command(
                         .cloned()
                         .unwrap_or_else(|| cmd.output.clone());
                     return dry_run_single(
-                        "compress", &input, &cmd.output, &decision, media, None, None,
+                        "compress",
+                        &input,
+                        &cmd.output,
+                        &decision,
+                        media,
+                        None,
+                        None,
                     );
                 }
                 let output = match decision {
@@ -1570,7 +1629,8 @@ async fn dispatch_command(
                         t
                     })
                     .collect();
-                compress_titles_async_cancellable(titles, output, opts, &progress, cancel.clone()).await?
+                compress_titles_async_cancellable(titles, output, opts, &progress, cancel.clone())
+                    .await?
             }
             WupCommands::Decrypt(cmd) => {
                 ensure_input_exists(&cmd.input)?;
@@ -1578,7 +1638,13 @@ async fn dispatch_command(
                 let decision = resolve_output_dir(&cmd.output, policy)?;
                 if dry_run {
                     return dry_run_single(
-                        "decrypt", &cmd.input, &cmd.output, &decision, None, None, None,
+                        "decrypt",
+                        &cmd.input,
+                        &cmd.output,
+                        &decision,
+                        None,
+                        None,
+                        None,
                     );
                 }
                 match decision {
@@ -1588,7 +1654,13 @@ async fn dispatch_command(
                     }
                     WriteDecision::Write(_) => {}
                 }
-                decrypt_nus_title_async_cancellable(cmd.input, cmd.output, &progress, cancel.clone()).await?
+                decrypt_nus_title_async_cancellable(
+                    cmd.input,
+                    cmd.output,
+                    &progress,
+                    cancel.clone(),
+                )
+                .await?
             }
             WupCommands::Verify(cmd) => {
                 if cmd.recursive {
@@ -1758,7 +1830,8 @@ async fn dispatch_command(
                     }
                     let output = match decision {
                         WriteDecision::Skip
-                            if policy == rom_converto_lib::util::ConflictPolicy::OverwriteInvalid =>
+                            if policy
+                                == rom_converto_lib::util::ConflictPolicy::OverwriteInvalid =>
                         {
                             match crate::util::verify_existing_output(
                                 &progress,
@@ -2052,7 +2125,8 @@ async fn dispatch_command(
                     }
                     let output = match decision {
                         WriteDecision::Skip
-                            if policy == rom_converto_lib::util::ConflictPolicy::OverwriteInvalid =>
+                            if policy
+                                == rom_converto_lib::util::ConflictPolicy::OverwriteInvalid =>
                         {
                             match crate::util::verify_existing_output(
                                 &progress,
@@ -2198,8 +2272,14 @@ async fn dispatch_command(
                             cmd.input.display()
                         );
                     }
-                    verify_chd_batch(&progress, &total_progress, cmd.input, cmd.fix, cmd.max_depth)
-                        .await?
+                    verify_chd_batch(
+                        &progress,
+                        &total_progress,
+                        cmd.input,
+                        cmd.fix,
+                        cmd.max_depth,
+                    )
+                    .await?
                 } else {
                     ensure_input_exists(&cmd.input)?;
                     verify_chd(&progress, cmd.input, cmd.parent, cmd.fix).await?
@@ -2298,7 +2378,8 @@ async fn dispatch_command(
                     }
                     let output = match decision {
                         WriteDecision::Skip
-                            if policy == rom_converto_lib::util::ConflictPolicy::OverwriteInvalid =>
+                            if policy
+                                == rom_converto_lib::util::ConflictPolicy::OverwriteInvalid =>
                         {
                             match crate::util::verify_existing_output(
                                 &progress,
@@ -2428,8 +2509,14 @@ async fn dispatch_command(
             CsoCommands::Verify(cmd) => {
                 if cmd.recursive {
                     require_dir(&cmd.input)?;
-                    batch::cso_verify(&progress, &total_progress, &cmd.input, cmd.full, cmd.max_depth)
-                        .await?
+                    batch::cso_verify(
+                        &progress,
+                        &total_progress,
+                        &cmd.input,
+                        cmd.full,
+                        cmd.max_depth,
+                    )
+                    .await?
                 } else {
                     ensure_input_exists(&cmd.input)?;
                     verify_cso(&progress, cmd.input, cmd.full).await?

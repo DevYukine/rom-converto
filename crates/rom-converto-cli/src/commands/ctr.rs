@@ -69,7 +69,12 @@ pub struct CdnToCiaCommand {
     pub on_conflict: ConflictPolicyArg,
 
     /// Alias for --on-conflict overwrite
-    #[arg(long, short = 'f', default_value_t = false, conflicts_with = "on_conflict")]
+    #[arg(
+        long,
+        short = 'f',
+        default_value_t = false,
+        conflicts_with = "on_conflict"
+    )]
     pub force: bool,
 }
 
@@ -134,7 +139,12 @@ pub struct DecryptCommand {
     pub on_conflict: ConflictPolicyArg,
 
     /// Alias for --on-conflict overwrite
-    #[arg(long, short = 'f', default_value_t = false, conflicts_with = "on_conflict")]
+    #[arg(
+        long,
+        short = 'f',
+        default_value_t = false,
+        conflicts_with = "on_conflict"
+    )]
     pub force: bool,
 }
 
@@ -191,7 +201,12 @@ pub struct CompressRomCommand {
     pub on_conflict: ConflictPolicyArg,
 
     /// Alias for --on-conflict overwrite
-    #[arg(long, short = 'f', default_value_t = false, conflicts_with = "on_conflict")]
+    #[arg(
+        long,
+        short = 'f',
+        default_value_t = false,
+        conflicts_with = "on_conflict"
+    )]
     pub force: bool,
 
     /// Compress an encrypted ROM anyway. By default this is refused, because
@@ -247,7 +262,12 @@ pub struct DecompressRomCommand {
     pub on_conflict: ConflictPolicyArg,
 
     /// Alias for --on-conflict overwrite
-    #[arg(long, short = 'f', default_value_t = false, conflicts_with = "on_conflict")]
+    #[arg(
+        long,
+        short = 'f',
+        default_value_t = false,
+        conflicts_with = "on_conflict"
+    )]
     pub force: bool,
 }
 
@@ -297,7 +317,12 @@ pub struct ConvertCommand {
     pub on_conflict: ConflictPolicyArg,
 
     /// Alias for --on-conflict overwrite
-    #[arg(long, short = 'f', default_value_t = false, conflicts_with = "on_conflict")]
+    #[arg(
+        long,
+        short = 'f',
+        default_value_t = false,
+        conflicts_with = "on_conflict"
+    )]
     pub force: bool,
 }
 

@@ -99,7 +99,10 @@ pub async fn convert_rom_batch_cancellable(
         return Ok(());
     }
 
-    total_progress.start(roms.len() as u64, &format!("Converting {} files...", roms.len()));
+    total_progress.start(
+        roms.len() as u64,
+        &format!("Converting {} files...", roms.len()),
+    );
 
     if let Some(dir) = output_dir {
         fs::create_dir_all(dir).await?;
@@ -109,8 +112,11 @@ pub async fn convert_rom_batch_cancellable(
         if cancel.is_cancelled() {
             return Err(NintendoCTRError::Cancelled.into());
         }
-        let output =
-            crate::util::place_in_dir_mirrored(&derive_converted_path(&path), input_dir, output_dir);
+        let output = crate::util::place_in_dir_mirrored(
+            &derive_converted_path(&path),
+            input_dir,
+            output_dir,
+        );
         if let Some(parent) = output.parent() {
             fs::create_dir_all(parent).await?;
         }

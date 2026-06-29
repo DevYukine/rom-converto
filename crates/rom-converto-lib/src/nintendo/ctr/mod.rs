@@ -168,7 +168,11 @@ async fn decrypt_ncsd_cancellable(
     // without per-partition scratch files.
     let result = async {
         fs::copy(input, &tmp).await?;
-        let mut out = fs::OpenOptions::new().write(true).read(true).open(&tmp).await?;
+        let mut out = fs::OpenOptions::new()
+            .write(true)
+            .read(true)
+            .open(&tmp)
+            .await?;
         parse_and_decrypt_ncsd(input, &mut out, None, progress, cancel).await?;
         out.flush().await?;
         Ok::<(), anyhow::Error>(())
@@ -296,8 +300,7 @@ pub async fn convert_cdn_to_cia_cancellable(
             });
             opts_clone.cdn_dir = child_dir;
 
-            if let Err(err) =
-                convert_cdn_to_cia_single(opts_clone, progress, cancel.clone()).await
+            if let Err(err) = convert_cdn_to_cia_single(opts_clone, progress, cancel.clone()).await
             {
                 warn!(
                     "Failed to convert CDN directory {}: {}",
@@ -497,7 +500,10 @@ pub async fn decrypt_rom_batch_cancellable(
         return Ok(());
     }
 
-    total_progress.start(roms.len() as u64, &format!("Decrypting {} files...", roms.len()));
+    total_progress.start(
+        roms.len() as u64,
+        &format!("Decrypting {} files...", roms.len()),
+    );
 
     if let Some(dir) = output_dir {
         fs::create_dir_all(dir).await?;
@@ -507,8 +513,11 @@ pub async fn decrypt_rom_batch_cancellable(
         if cancel.is_cancelled() {
             return Err(NintendoCTRError::Cancelled.into());
         }
-        let output =
-            crate::util::place_in_dir_mirrored(&derive_decrypted_path(&path), input_dir, output_dir);
+        let output = crate::util::place_in_dir_mirrored(
+            &derive_decrypted_path(&path),
+            input_dir,
+            output_dir,
+        );
         if let Some(parent) = output.parent() {
             fs::create_dir_all(parent).await?;
         }
@@ -731,8 +740,12 @@ mod tests {
     }
 
     fn is_ctr_cancelled(err: &anyhow::Error) -> bool {
-        err.chain()
-            .any(|c| matches!(c.downcast_ref::<NintendoCTRError>(), Some(NintendoCTRError::Cancelled)))
+        err.chain().any(|c| {
+            matches!(
+                c.downcast_ref::<NintendoCTRError>(),
+                Some(NintendoCTRError::Cancelled)
+            )
+        })
     }
 
     struct CancelAfter {
@@ -779,10 +792,16 @@ mod tests {
         let result = decrypt_rom_cancellable(&input, &output, &NoProgress, token).await;
 
         let err = result.expect_err("a pre-cancelled token must abort the decrypt");
-        assert!(is_ctr_cancelled(&err), "error chain must carry the cancelled variant");
+        assert!(
+            is_ctr_cancelled(&err),
+            "error chain must carry the cancelled variant"
+        );
         assert!(!output.exists(), "no partial output");
         assert!(!scratch_output_path(&output).exists(), "no leftover temp");
-        assert!(!ncch_scratch_present(tmp.path()), "no leftover .ncch scratch");
+        assert!(
+            !ncch_scratch_present(tmp.path()),
+            "no leftover .ncch scratch"
+        );
     }
 
     #[tokio::test]
@@ -803,7 +822,10 @@ mod tests {
 
         assert!(output.exists(), "final output must exist");
         assert!(parses_as_cia(&output), "final output is a valid CIA");
-        assert!(!ncch_scratch_present(dir.path()), "no .ncch scratch left behind");
+        assert!(
+            !ncch_scratch_present(dir.path()),
+            "no .ncch scratch left behind"
+        );
 
         let leftover_tmp = std::fs::read_dir(dir.path())
             .unwrap()
@@ -839,7 +861,10 @@ mod tests {
         assert!(output.exists(), "output survives a post-completion cancel");
         assert!(parses_as_cia(&output), "decrypted output is a valid CIA");
         assert!(!scratch_output_path(&output).exists(), "no leftover temp");
-        assert!(!ncch_scratch_present(tmp.path()), "no leftover .ncch scratch");
+        assert!(
+            !ncch_scratch_present(tmp.path()),
+            "no leftover .ncch scratch"
+        );
     }
 
     #[tokio::test]
@@ -875,18 +900,15 @@ mod tests {
 
         let token = CancelToken::new();
         token.cancel();
-        let result = decrypt_rom_batch_cancellable(
-            dir.path(),
-            None,
-            &NoProgress,
-            &NoProgress,
-            None,
-            token,
-        )
-        .await;
+        let result =
+            decrypt_rom_batch_cancellable(dir.path(), None, &NoProgress, &NoProgress, None, token)
+                .await;
 
         let err = result.expect_err("a pre-cancelled token must abort the batch");
-        assert!(is_ctr_cancelled(&err), "error chain must carry the cancelled variant");
+        assert!(
+            is_ctr_cancelled(&err),
+            "error chain must carry the cancelled variant"
+        );
         assert!(!dir.path().join("a.decrypted.cia").exists());
         assert!(!dir.path().join("b.decrypted.cia").exists());
     }
@@ -920,11 +942,7 @@ mod tests {
         let produced = std::fs::read_dir(dir.path())
             .unwrap()
             .filter_map(Result::ok)
-            .filter(|e| {
-                e.file_name()
-                    .to_string_lossy()
-                    .ends_with(".decrypted.cia")
-            })
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".decrypted.cia"))
             .count();
         assert_eq!(produced, 1, "only the first file completes before cancel");
     }

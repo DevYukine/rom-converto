@@ -204,7 +204,14 @@ td.num{{text-align:right;font-variant-numeric:tabular-nums}}</style>"
     writeln!(w, "<table>")?;
     writeln!(w, "<thead><tr>")?;
     for col in [
-        "Input", "Output", "Operation", "Status", "Input size", "Output size", "Ratio", "Elapsed",
+        "Input",
+        "Output",
+        "Operation",
+        "Status",
+        "Input size",
+        "Output size",
+        "Ratio",
+        "Elapsed",
         "Error",
     ] {
         write!(w, "<th>{col}</th>")?;
@@ -212,10 +219,7 @@ td.num{{text-align:right;font-variant-numeric:tabular-nums}}</style>"
     writeln!(w, "</tr></thead>")?;
     writeln!(w, "<tbody>")?;
     for r in records {
-        let ratio = r
-            .ratio_pct
-            .map(|v| format!("{v:.1}%"))
-            .unwrap_or_default();
+        let ratio = r.ratio_pct.map(|v| format!("{v:.1}%")).unwrap_or_default();
         let error = r.error.as_deref().unwrap_or("");
         write!(w, "<tr>")?;
         write!(w, "<td>{}</td>", html_escape(&r.input_path))?;
@@ -375,7 +379,11 @@ td.num{{text-align:right;font-variant-numeric:tabular-nums}}</style>"
         write!(w, "<td class=\"num\">{}</td>", format_bytes(r.size_bytes))?;
         write!(w, "<td>{}</td>", status_str(r.status))?;
         write!(w, "<td class=\"num\">{} ms</td>", r.elapsed_ms)?;
-        write!(w, "<td>{}</td>", html_escape(r.error.as_deref().unwrap_or("")))?;
+        write!(
+            w,
+            "<td>{}</td>",
+            html_escape(r.error.as_deref().unwrap_or(""))
+        )?;
         writeln!(w, "</tr>")?;
     }
     writeln!(w, "</tbody>")?;
@@ -551,7 +559,10 @@ mod tests {
 
     #[test]
     fn format_from_extension() {
-        assert_eq!(ReportFormat::from_path(Path::new("a.csv")), ReportFormat::Csv);
+        assert_eq!(
+            ReportFormat::from_path(Path::new("a.csv")),
+            ReportFormat::Csv
+        );
         assert_eq!(
             ReportFormat::from_path(Path::new("a.json")),
             ReportFormat::Json

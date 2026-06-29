@@ -174,10 +174,10 @@ fn resolve_paths(cfg: &mut UserConfig, base: &Path) {
 }
 
 fn resolve_relative(base: &Path, p: &mut Option<PathBuf>) {
-    if let Some(path) = p {
-        if path.is_relative() {
-            *path = base.join(&*path);
-        }
+    if let Some(path) = p
+        && path.is_relative()
+    {
+        *path = base.join(&*path);
     }
 }
 
@@ -312,7 +312,13 @@ mod tests {
     fn relative_preset_path_resolved_against_config_dir() {
         let cfg = parse_str("[presets.a.cso]\nreport = \"r.json\"\n", base()).unwrap();
         assert_eq!(
-            cfg.presets["a"].cso.as_ref().unwrap().report.as_ref().unwrap(),
+            cfg.presets["a"]
+                .cso
+                .as_ref()
+                .unwrap()
+                .report
+                .as_ref()
+                .unwrap(),
             &Path::new(BASE).join("r.json")
         );
     }
