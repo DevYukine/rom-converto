@@ -747,6 +747,11 @@ pub async fn cmd_save_icon(info_json: String, dest: PathBuf) -> Result<String, S
     Ok(dest.display().to_string())
 }
 
+#[tauri::command]
+pub fn app_display_version() -> &'static str {
+    env!("ROM_CONVERTO_DISPLAY_VERSION")
+}
+
 fn extract_icon_png(info: &InfoResult) -> Option<Vec<u8>> {
     match info {
         InfoResult::Ctr(c) => c.icon.as_ref().map(|i| i.png_bytes.clone()),

@@ -668,6 +668,10 @@ The project is organized as a Cargo workspace with three crates:
 cargo run -p rom-converto-cli
 ```
 
+Local development builds show the version as `dev-<shorthash>` (for example `dev-2dd4ee7`),
+using the current git commit. The same applies to the GUI version label. If the source is not a
+git checkout (for example a source tarball), the build falls back to the plain semantic version.
+
 ### Building Release Binaries
 
 ```
@@ -675,6 +679,10 @@ cargo build --release -p rom-converto-cli
 ```
 
 The resulting binary will be at `target/release/rom-converto`.
+
+Set `ROM_CONVERTO_RELEASE=1` at build time to mark a release build, which shows the normal
+semantic version (for example `0.12.0`) instead of the dev hash. The release CI workflow sets
+this automatically.
 
 ### Cross-Tool Parity Tests
 

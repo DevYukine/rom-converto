@@ -32,10 +32,10 @@ import { useNxCompressStore } from "~/stores/nx-compress";
 import { useNxDecompressStore } from "~/stores/nx-decompress";
 import { useNxVerifyStore } from "~/stores/nx-verify";
 import { useNxInfoStore } from "~/stores/nx-info";
-import { getVersion } from "@tauri-apps/api/app";
+import { invoke } from "@tauri-apps/api/core";
 
 const appVersion = ref("");
-getVersion()
+invoke<string>("app_display_version")
   .then((v) => {
     appVersion.value = v;
   })
@@ -331,7 +331,7 @@ function isActiveSection(key: string): boolean {
       </div>
 
       <div class="border-t border-zinc-800/50 px-5 py-3">
-        <span class="text-[11px] text-zinc-400">{{ appVersion ? `v${appVersion}` : '' }}</span>
+        <span class="text-[11px] text-zinc-400">{{ appVersion ? (appVersion.startsWith('dev-') ? appVersion : `v${appVersion}`) : '' }}</span>
       </div>
     </nav>
 

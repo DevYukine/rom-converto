@@ -77,6 +77,8 @@ mod github;
 mod info_print;
 mod updater;
 mod util;
+// Mirrors the inline logic in build.rs; kept here so it is unit-testable.
+mod version;
 
 pub mod built_info {
     // The file has been placed there by the build script.

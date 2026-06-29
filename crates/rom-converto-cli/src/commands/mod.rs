@@ -31,7 +31,7 @@ pub mod wup;
 #[command(
 	name = env!("CARGO_BIN_NAME"),
 	author,                   // pulls env!("CARGO_PKG_AUTHORS")
-	version,                  // pulls env!("CARGO_PKG_VERSION")
+	version = env!("ROM_CONVERTO_DISPLAY_VERSION"),
 	about,                    // doc-comment or Cargo.toml description
 	long_about = "Convert, compress, decrypt and verify ROMs and disc images across Nintendo and Sony consoles.\n\nEach top-level command is a console/format family (ctr, dol, rvl, wup, nx, chd, cso, cue); each has operations like compress, decompress, verify and info. Output is auto-derived from the input unless you pass an explicit OUTPUT, -o/--output, or --output-dir. Pass -R/--recursive to process every matching file in a directory.",
 	help_template = "\
