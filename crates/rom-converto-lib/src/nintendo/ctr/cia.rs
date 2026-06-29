@@ -1,9 +1,6 @@
 use crate::nintendo::ctr::constants::{
     CERT_SIG_TYPE_MAX, CERT_SIG_TYPE_MIN, CIA_CERT_CHAIN_SIZE, CIA_CONTENT_INDEX_SIZE,
 };
-use crate::nintendo::ctr::decrypt::artifact_path::{
-    ncch_artifact_dir_and_stem, ncch_component_path,
-};
 use crate::nintendo::ctr::decrypt::cia::parse_and_decrypt_cia;
 use crate::nintendo::ctr::error::NintendoCTRError;
 use crate::nintendo::ctr::models::certificate::Certificate;
@@ -33,8 +30,6 @@ pub async fn decrypt_from_encrypted_cia(
 ) -> anyhow::Result<()> {
     let input_size = tokio::fs::metadata(input).await?.len();
     progress.start(input_size, "Decrypting CIA...");
-    parse_and_decrypt_cia(input, None, progress, cancel).await?;
-    progress.finish();
 
     let source_bytes = tokio::fs::read(input).await?;
     let original_cia = CiaFileWithoutContent::read_le(&mut Cursor::new(&source_bytes))?;
@@ -66,22 +61,40 @@ pub async fn decrypt_from_encrypted_cia(
         meta_data: None,
     };
 
-    let (parent, stem) = ncch_artifact_dir_and_stem(input)?;
-
     for content_chunk_record in &mut decrypted_cia.tmd.content_chunk_records {
         content_chunk_record.content_type.set_encrypted(false);
+    }
 
-        let file_path = ncch_component_path(
-            &parent,
-            &stem,
-            &content_chunk_record.content_index.to_string(),
-            content_chunk_record.content_id,
+    // The preamble byte length is independent of the hash values it carries,
+    // so reserve it now, stream the decrypted content past it, then come back
+    // and write the finalized preamble. This keeps the decrypt streaming with
+    // no scratch files.
+    let mut preamble = Cursor::new(Vec::new());
+    decrypted_cia.write_le(&mut preamble)?;
+    let preamble_len = preamble.get_ref().len() as u64;
+
+    out_writer.write_all(preamble.get_ref()).await?;
+    out_writer.flush().await?;
+
+    let out_file = out_writer.get_mut();
+    out_file.seek(SeekFrom::Start(preamble_len)).await?;
+    let content_hashes = parse_and_decrypt_cia(input, out_file, progress, cancel).await?;
+    progress.finish();
+
+    if content_hashes.len() != decrypted_cia.tmd.content_chunk_records.len() {
+        anyhow::bail!(
+            "decrypted {} contents but TMD declares {} records",
+            content_hashes.len(),
+            decrypted_cia.tmd.content_chunk_records.len()
         );
-
-        let data = tokio::fs::read(&file_path).await?;
-        let mut hasher = Sha256::new();
-        hasher.update(&data);
-        content_chunk_record.hash = hasher.finalize().to_vec();
+    }
+    for (record, hash) in decrypted_cia
+        .tmd
+        .content_chunk_records
+        .iter_mut()
+        .zip(content_hashes)
+    {
+        record.hash = hash.to_vec();
     }
 
     for content_info_record in &mut decrypted_cia.tmd.content_info_records {
@@ -117,34 +130,25 @@ pub async fn decrypt_from_encrypted_cia(
 
     decrypted_cia.tmd.header.content_info_records_hash = hasher.finalize().to_vec();
 
-    let mut data = Cursor::new(Vec::new());
-
-    decrypted_cia.write_le(&mut data)?;
-
-    out_writer.write_all(data.get_ref()).await?;
-
-    for content_chunk_record in decrypted_cia.tmd.content_chunk_records {
-        let file_path = ncch_component_path(
-            &parent,
-            &stem,
-            &content_chunk_record.content_index.to_string(),
-            content_chunk_record.content_id,
-        );
-
-        let content = tokio::fs::read(&file_path).await?;
-        out_writer.write_all(&content).await?;
-
-        tokio::fs::remove_file(&file_path).await?;
+    let mut finalized = Cursor::new(Vec::new());
+    decrypted_cia.write_le(&mut finalized)?;
+    if finalized.get_ref().len() as u64 != preamble_len {
+        anyhow::bail!("CIA preamble length changed after hash fixup");
     }
 
+    let out_file = out_writer.get_mut();
+    let end_pos = out_file.stream_position().await?;
+    out_file.seek(SeekFrom::Start(0)).await?;
+    out_file.write_all(finalized.get_ref()).await?;
+    out_file.seek(SeekFrom::Start(end_pos)).await?;
+
     if let Some(meta) = meta_bytes {
-        let pos = out_writer.stream_position().await?;
-        let aligned = align_64(pos);
-        if aligned > pos {
-            let pad = vec![0u8; (aligned - pos) as usize];
-            out_writer.write_all(&pad).await?;
+        let aligned = align_64(end_pos);
+        if aligned > end_pos {
+            let pad = vec![0u8; (aligned - end_pos) as usize];
+            out_file.write_all(&pad).await?;
         }
-        out_writer.write_all(&meta).await?;
+        out_file.write_all(&meta).await?;
     }
 
     Ok(())

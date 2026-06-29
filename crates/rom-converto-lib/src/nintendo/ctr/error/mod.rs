@@ -1,3 +1,4 @@
+use crate::util::worker_pool::PoolChannelClosed;
 use std::path::PathBuf;
 use thiserror::Error;
 
@@ -14,6 +15,15 @@ pub enum NintendoCTRError {
 
     #[error("operation cancelled")]
     Cancelled,
+
+    #[error("worker pool channel closed")]
+    WorkerPoolClosed,
+}
+
+impl From<PoolChannelClosed> for NintendoCTRError {
+    fn from(_: PoolChannelClosed) -> Self {
+        NintendoCTRError::WorkerPoolClosed
+    }
 }
 
 pub type NintendoCTRResult<T> = Result<T, NintendoCTRError>;

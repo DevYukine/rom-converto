@@ -160,80 +160,23 @@ async fn decrypt_ncsd_cancellable(
     progress: &dyn ProgressReporter,
     cancel: &CancelToken,
 ) -> Result<()> {
-    use crate::nintendo::ctr::constants::{
-        CTR_MEDIA_UNIT_SIZE, CTR_NCSD_PARTITIONS, NCSD_PARTITION_COUNT, NCSD_PARTITION_ENTRY_SIZE,
-        NCSD_PARTITION_TABLE_OFFSET,
-    };
-
-    let parent = input.parent().unwrap_or_else(|| Path::new("."));
-    let stem = input
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .ok_or_else(|| anyhow::anyhow!("input path has no valid filename stem"))?
-        .to_owned();
-
     let tmp = scratch_output_path(output);
 
-    let cleanup = || async {
-        fs::remove_file(&tmp).await.ok();
-        for (i, partition_name) in CTR_NCSD_PARTITIONS.iter().enumerate() {
-            let ncch_path = parent.join(format!("{stem}.{partition_name}.{i:08X}.ncch"));
-            fs::remove_file(&ncch_path).await.ok();
-        }
-    };
-
-    if let Err(err) = parse_and_decrypt_ncsd(input, None, progress, cancel).await {
-        cleanup().await;
-        return Err(err);
-    }
-
+    // The verbatim copy carries the NCSD header, inter-partition gaps, and any
+    // plain partitions; parse_and_decrypt_ncsd overwrites each NCCH partition
+    // region in place, so the decrypt streams straight into the final temp
+    // without per-partition scratch files.
     let result = async {
         fs::copy(input, &tmp).await?;
-
-        let mut out_file = fs::OpenOptions::new().write(true).open(&tmp).await?;
-
-        let mut table_buf = [0u8; NCSD_PARTITION_COUNT * NCSD_PARTITION_ENTRY_SIZE];
-        {
-            let mut in_file = File::open(input).await?;
-            in_file
-                .seek(SeekFrom::Start(NCSD_PARTITION_TABLE_OFFSET as u64))
-                .await?;
-            in_file.read_exact(&mut table_buf).await?;
-        }
-
-        for (i, partition_name) in CTR_NCSD_PARTITIONS.iter().enumerate() {
-            let entry_offset = i * NCSD_PARTITION_ENTRY_SIZE;
-            let offset_mu =
-                u32::from_le_bytes(table_buf[entry_offset..entry_offset + 4].try_into()?);
-            let size_mu =
-                u32::from_le_bytes(table_buf[entry_offset + 4..entry_offset + 8].try_into()?);
-
-            if offset_mu == 0 && size_mu == 0 {
-                continue;
-            }
-
-            let ncch_path = parent.join(format!("{stem}.{partition_name}.{i:08X}.ncch"));
-
-            if !ncch_path.exists() {
-                continue;
-            }
-
-            let partition_offset = offset_mu as u64 * CTR_MEDIA_UNIT_SIZE as u64;
-            let ncch_data = fs::read(&ncch_path).await?;
-
-            out_file.seek(SeekFrom::Start(partition_offset)).await?;
-            out_file.write_all(&ncch_data).await?;
-
-            fs::remove_file(&ncch_path).await?;
-        }
-
-        out_file.flush().await?;
+        let mut out = fs::OpenOptions::new().write(true).read(true).open(&tmp).await?;
+        parse_and_decrypt_ncsd(input, &mut out, None, progress, cancel).await?;
+        out.flush().await?;
         Ok::<(), anyhow::Error>(())
     }
     .await;
 
     if let Err(err) = result {
-        cleanup().await;
+        fs::remove_file(&tmp).await.ok();
         return Err(err);
     }
 
@@ -249,27 +192,22 @@ async fn decrypt_ncch_cancellable(
     progress: &dyn ProgressReporter,
     cancel: &CancelToken,
 ) -> Result<()> {
-    let parent = input.parent().unwrap_or_else(|| Path::new("."));
-    let stem = input
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .ok_or_else(|| anyhow::anyhow!("input path has no valid filename stem"))?;
+    let tmp = scratch_output_path(output);
 
-    let ncch_path = parent.join(format!("{stem}.0.00000000.ncch"));
+    let result = async {
+        let mut out = File::create(&tmp).await?;
+        parse_and_decrypt_ncch(input, &mut out, progress, cancel).await?;
+        out.flush().await?;
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
 
-    if let Err(err) = parse_and_decrypt_ncch(input, progress, cancel).await {
-        fs::remove_file(&ncch_path).await.ok();
+    if let Err(err) = result {
+        fs::remove_file(&tmp).await.ok();
         return Err(err);
     }
 
-    if ncch_path.exists() {
-        fs::rename(&ncch_path, output).await?;
-    } else {
-        return Err(anyhow::anyhow!(
-            "Decrypted NCCH file not found at {}",
-            ncch_path.display()
-        ));
-    }
+    fs::rename(&tmp, output).await?;
 
     info!("Successfully decrypted NCCH file");
     Ok(())
@@ -845,6 +783,44 @@ mod tests {
         assert!(!output.exists(), "no partial output");
         assert!(!scratch_output_path(&output).exists(), "no leftover temp");
         assert!(!ncch_scratch_present(tmp.path()), "no leftover .ncch scratch");
+    }
+
+    #[tokio::test]
+    async fn decrypt_leaves_only_final_output_no_scratch() {
+        use crate::nintendo::ctr::test_fixtures::synth_encrypted_cia_multi_content;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (src_tmp, input, _) =
+            synth_encrypted_cia_multi_content(&[0x0000_0000u32, 0x0000_ABCDu32]);
+        let input2 = dir.path().join("game.cia");
+        std::fs::copy(&input, &input2).unwrap();
+        drop(src_tmp);
+
+        let output = dir.path().join("game.decrypted.cia");
+        decrypt_rom_cancellable(&input2, &output, &NoProgress, CancelToken::new())
+            .await
+            .unwrap();
+
+        assert!(output.exists(), "final output must exist");
+        assert!(parses_as_cia(&output), "final output is a valid CIA");
+        assert!(!ncch_scratch_present(dir.path()), "no .ncch scratch left behind");
+
+        let leftover_tmp = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|e| e.path().extension().and_then(|s| s.to_str()) == Some("tmp"));
+        assert!(!leftover_tmp, "no .tmp scratch left behind");
+
+        let entries: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            entries.len(),
+            2,
+            "only the input and the final output remain: {entries:?}"
+        );
     }
 
     #[tokio::test]

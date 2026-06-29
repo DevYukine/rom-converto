@@ -12,7 +12,7 @@ Built for developers, tinkerers and archivists.
 
 * [x] Convert CDN files to `.cia`
 * [x] Generate tickets for CDN files
-* [x] Decrypt `.cia`, `.3ds`, `.cci`, and `.cxi` for emulator use (e.g. [Azahar](https://azahar-emu.org/))
+* [x] Decrypt `.cia`, `.3ds`, `.cci`, and `.cxi` for emulator use (e.g. [Azahar](https://azahar-emu.org/)), streaming in bounded chunks without temporary files
 * [x] Compress and decompress ROMs using the Z3DS format (seekable zstd)
 * [x] Verify `.cia` legitimacy and `.3ds` / `.cci` NCCH partition integrity
 * [x] See [`benchmark/3DS.md`](benchmark/3DS.md) for performance numbers
