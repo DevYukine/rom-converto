@@ -1,4 +1,4 @@
-use crate::util::ProgressReporter;
+use crate::util::{CancelToken, ProgressReporter};
 use crc::{CRC_32_ISO_HDLC, Crc};
 use sha2::Digest as _;
 use std::io::Read;
@@ -92,10 +92,11 @@ pub fn parse_algos(spec: &str) -> Result<Vec<HashAlgo>, String> {
 /// Compute every requested digest for `path` in a single streaming pass.
 /// The file is read in fixed-size chunks and every selected hasher is fed
 /// each chunk, so memory stays constant no matter how large the file is.
-pub fn hash_file(
+pub fn hash_file_cancellable(
     path: &Path,
     algos: &[HashAlgo],
     progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
 ) -> std::io::Result<FileDigests> {
     let want = |a: HashAlgo| algos.contains(&a);
 
@@ -115,6 +116,12 @@ pub fn hash_file(
         let n = file.read(&mut buf)?;
         if n == 0 {
             break;
+        }
+        if cancel.is_cancelled() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "operation cancelled",
+            ));
         }
         let chunk = &buf[..n];
         if let Some(d) = crc.as_mut() {
@@ -140,6 +147,14 @@ pub fn hash_file(
         sha256: sha256.map(|h| hex::encode(h.finalize())),
         size_bytes,
     })
+}
+
+pub fn hash_file(
+    path: &Path,
+    algos: &[HashAlgo],
+    progress: &dyn ProgressReporter,
+) -> std::io::Result<FileDigests> {
+    hash_file_cancellable(path, algos, progress, &CancelToken::new())
 }
 
 #[cfg(test)]
@@ -230,6 +245,37 @@ mod tests {
                     .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
             );
         }
+    }
+
+    #[test]
+    fn cancelled_token_stops_hashing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.bin");
+        std::fs::write(&path, vec![0u8; 12 * 1024 * 1024]).unwrap();
+
+        let token = CancelToken::new();
+        token.cancel();
+
+        let err =
+            hash_file_cancellable(&path, &[HashAlgo::Sha256], &NoProgress, &token).unwrap_err();
+        assert_eq!(err.to_string(), "operation cancelled");
+    }
+
+    #[test]
+    fn uncancelled_token_completes() {
+        let data = vec![0u8; 12 * 1024 * 1024];
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.bin");
+        std::fs::write(&path, &data).unwrap();
+
+        let token = CancelToken::new();
+        let digests =
+            hash_file_cancellable(&path, &[HashAlgo::Sha256], &NoProgress, &token).unwrap();
+        assert_eq!(digests.size_bytes, data.len() as u64);
+        assert_eq!(
+            digests.sha256,
+            hash_bytes(&data, &[HashAlgo::Sha256]).sha256
+        );
     }
 
     #[test]
