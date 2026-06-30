@@ -1178,7 +1178,10 @@ mod tests {
             CtrVerifyResult::Cia(cia) => {
                 assert_eq!(cia.title_id, "0004000000030000");
                 assert_eq!(cia.content_hashes_valid, Some(true));
-                assert!(cia.compressed, "verify_compressed must set compressed = true");
+                assert!(
+                    cia.compressed,
+                    "verify_compressed must set compressed = true"
+                );
             }
             CtrVerifyResult::Ncsd(_) => panic!("expected Cia result"),
         }

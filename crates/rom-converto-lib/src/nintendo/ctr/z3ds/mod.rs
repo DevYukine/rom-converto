@@ -549,7 +549,9 @@ mod tests {
         let input = dir.path().join("encrypted.cia");
         let output = dir.path().join("encrypted.zcia");
 
-        tokio::fs::write(&input, make_encrypted_cia()).await.unwrap();
+        tokio::fs::write(&input, make_encrypted_cia())
+            .await
+            .unwrap();
 
         let result = compress_rom(&input, &output, None, false, &NoProgress).await;
         assert!(

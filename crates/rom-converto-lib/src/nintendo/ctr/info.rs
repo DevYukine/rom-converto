@@ -18,7 +18,9 @@ use crate::nintendo::ctr::models::ncch_header::NcchHeader;
 use crate::nintendo::ctr::models::smdh::{AgeRating, SMDH_LARGE_ICON_DIM, Smdh};
 use crate::nintendo::ctr::models::title_metadata::ContentChunkRecord;
 use crate::nintendo::ctr::util::align_64;
-use crate::nintendo::ctr::z3ds::models::{Z3DS_HEADER_SIZE, Z3DS_MAGIC, Z3dsHeader, underlying_magic};
+use crate::nintendo::ctr::z3ds::models::{
+    Z3DS_HEADER_SIZE, Z3DS_MAGIC, Z3dsHeader, underlying_magic,
+};
 use crate::util::pixel::{decode_rgb565_morton_tiled, encode_png};
 use anyhow::{Context, Result, anyhow};
 use binrw::BinRead;
