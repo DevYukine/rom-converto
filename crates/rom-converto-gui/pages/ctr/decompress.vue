@@ -8,6 +8,9 @@ const { outputDir, resolve } = useOutputDir();
 const { run, cancelled, abort } = useOperation({ result, error, loading });
 const progress = useProgress("decompress");
 
+const previewMode = ref(false);
+const { preview, single: previewSingle, batch: previewBatch, error: previewError } = usePreview("cmd_decompress_rom");
+
 const isBatch = computed(() => queue.value.length > 0);
 
 const commandLine = ref("");
@@ -20,6 +23,7 @@ function decompressArgs(inputPath: string, outputPath: string) {
     onConflict: onConflict.value,
     skipSpaceCheck: skipSpaceCheck.value,
     outputTemplate: tmpl,
+    dryRun: previewMode.value,
   };
 }
 
@@ -62,6 +66,24 @@ async function execute() {
     commandLine.value = buildCliCommand("cmd_decompress_rom", args);
     await run("cmd_decompress_rom", args);
   }
+}
+
+async function runPreview() {
+  const rep = isBatch.value ? (queue.value.find((i) => i.status === "pending") ?? queue.value[0]) : null;
+  commandLine.value = isBatch.value
+    ? rep ? buildCliCommand("cmd_decompress_rom", decompressArgs(rep.input, rep.output)) : ""
+    : buildCliCommand("cmd_decompress_rom", decompressArgs(input.value, output.value));
+  if (isBatch.value) {
+    await previewBatch(queue, (item) => decompressArgs(item.input, item.output));
+  } else {
+    await previewSingle(decompressArgs(input.value, output.value));
+  }
+  if (previewError.value) error.value = previewError.value;
+}
+
+function onRun() {
+  if (previewMode.value) runPreview();
+  else execute();
 }
 </script>
 
@@ -146,21 +168,27 @@ async function execute() {
           :running="progress.running.value"
         />
 
+        <FlagToggle
+          v-model="previewMode"
+          label="Preview (dry run)"
+          description="Show what each file would do without writing anything."
+        />
+
         <RunButton
           :loading="loading || batch.running.value"
           :batch-current="batch.currentIndex.value"
           :batch-total="queue.length"
           :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input"
-          @click="execute"
+          @click="onRun"
           @cancel="isBatch ? batch.abort() : abort()"
         >
-          {{ isBatch && queue.filter(i => i.status === 'pending').length > 1 ? `Decompress All (${queue.filter(i => i.status === 'pending').length})` : 'Decompress' }}
+          {{ previewMode ? 'Preview' : (isBatch && queue.filter(i => i.status === 'pending').length > 1 ? `Decompress All (${queue.filter(i => i.status === 'pending').length})` : 'Decompress') }}
         </RunButton>
       </div>
     </OperationCard>
 
     <div class="mt-4">
-      <OutputLog :command="commandLine" :result="result" :cancelled="cancelled ? 'Operation cancelled.' : undefined" :error="error" />
+      <OutputLog :command="commandLine" :result="result" :preview="preview" :cancelled="cancelled ? 'Operation cancelled.' : undefined" :error="error" />
     </div>
   </div>
 </template>

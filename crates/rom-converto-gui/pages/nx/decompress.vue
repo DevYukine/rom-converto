@@ -9,6 +9,9 @@ const { queue, output, keys, onConflict, skipSpaceCheck, outputTemplate, reportF
 const { outputDir, resolve } = useOutputDir();
 const progress = useProgress("nx-decompress");
 
+const previewMode = ref(false);
+const { preview, batch: previewBatch, error: previewError } = usePreview("cmd_nx_decompress");
+
 const commandLine = ref("");
 
 function decompressArgs(item: { input: string; output: string }) {
@@ -22,6 +25,7 @@ function decompressArgs(item: { input: string; output: string }) {
     outputTemplate: tmpl,
     report: !!reportFile.value,
     reportFile: reportFile.value || null,
+    dryRun: previewMode.value,
   };
 }
 
@@ -102,6 +106,23 @@ async function execute() {
   if (reportFile.value && records.length) {
     await writeRunReport(reportFile.value, records);
   }
+}
+
+async function runPreview() {
+  if (!outputTemplate.value) {
+    for (const item of queue.value) {
+      item.output = queue.value.length === 1 ? output.value : resolve(deriveNspPath(item.input));
+    }
+  }
+  const rep = queue.value.find((i) => i.status === "pending") ?? queue.value[0];
+  commandLine.value = rep ? buildCliCommand("cmd_nx_decompress", decompressArgs(rep)) : "";
+  await previewBatch(queue, decompressArgs);
+  if (previewError.value) error.value = previewError.value;
+}
+
+function onRun() {
+  if (previewMode.value) runPreview();
+  else execute();
 }
 </script>
 
@@ -210,21 +231,27 @@ async function execute() {
           :running="progress.running.value"
         />
 
+        <FlagToggle
+          v-model="previewMode"
+          label="Preview (dry run)"
+          description="Show what each file would do without writing anything."
+        />
+
         <RunButton
           :loading="loading || batch.running.value"
           :batch-current="batch.currentIndex.value"
           :batch-total="queue.length"
           :disabled="!canDecompress"
-          @click="execute"
+          @click="onRun"
           @cancel="batch.abort"
         >
-          {{ queue.filter(i => i.status === 'pending').length > 1 ? `Decompress All (${queue.filter(i => i.status === 'pending').length})` : 'Decompress' }}
+          {{ previewMode ? 'Preview' : (queue.filter(i => i.status === 'pending').length > 1 ? `Decompress All (${queue.filter(i => i.status === 'pending').length})` : 'Decompress') }}
         </RunButton>
       </div>
     </OperationCard>
 
     <div class="mt-4">
-      <OutputLog :command="commandLine" :result="result" :error="error" />
+      <OutputLog :command="commandLine" :result="result" :preview="preview" :error="error" />
     </div>
   </div>
 </template>

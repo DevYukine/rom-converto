@@ -143,7 +143,6 @@ Every GUI control forwards to the same library function the CLI uses, so a GUI r
 
 **Deferred.** These CLI options are not yet in the GUI:
 
-* `--dry-run` preview.
 * Recursive batch conversion through a directory scan (the GUI's per-file batch queue covers the common case).
 * `--on-conflict overwrite-invalid` on the CHD, CSO, and CUE compress paths, where the library cannot run the async integrity check at conflict time; it is omitted from those controls rather than degrading silently to skip.
 
@@ -184,7 +183,7 @@ The compress, decompress, convert, decrypt, and `chd extract` commands also acce
 
 Before any write-producing operation, the CLI estimates how much space the outputs need, using the total size of the input files as a conservative floor, and checks the free space on the output filesystem. If there is not enough room it aborts before writing anything, naming the directory, the estimated need, and the space available. This is a best-effort check, not a guarantee: it cannot know exact output sizes, and decompression in particular can produce far more than the compressed input, so the estimate is a floor. The value is catching a near-full disk before a long batch starts rather than minutes in. If the free-space query fails, for example on an unsupported filesystem, the check is skipped and the run proceeds. Under `--dry-run` nothing is written, so the check never aborts. Pass `--skip-space-check` to disable the preflight entirely.
 
-The GUI does not yet have a preview toggle. It is a tracked follow-up: each write-capable Tauri command needs a `dry_run` parameter and per-page wiring that reuses the CLI plan logic.
+The GUI surfaces `--dry-run` as a Preview toggle on nearly every write-capable page. Turning it on makes the Run button preview the plan instead of running it: one plan line per file in the same `would <op> <in> -> <out> (<FMT>) [<decision>]` form as the CLI, with nothing written. The preview shares the CLI's plan logic through the library, so a GUI preview line matches the CLI's `--dry-run` line for the same input, including the read-only `overwrite-invalid` verify that distinguishes `[keep (valid)]` from `[rewrite (invalid)]`. Recursive `cdn-to-cia` is the one write page without a preview, mirroring how the CLI special-cases that batch.
 
 ## Configuration
 

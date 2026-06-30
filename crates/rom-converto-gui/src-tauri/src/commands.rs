@@ -22,7 +22,7 @@ use rom_converto_lib::nintendo::ctr::{
 };
 use rom_converto_lib::nintendo::dol::verify::{DolVerifyOptions, verify_dol};
 use rom_converto_lib::nintendo::nx::{
-    NczMode, NxCompressOptions, compress_container_async_cancellable,
+    KeySet, NczMode, NxCompressOptions, compress_container_async_cancellable,
     decompress_container_async_cancellable, derive_compressed_path as nx_derive_compressed_path,
     derive_decompressed_path as nx_derive_decompressed_path, detect_container, load_keyset,
     verify_container_async,
@@ -40,8 +40,9 @@ use rom_converto_lib::playlist::{PlaylistMode, PlaylistOptions, plan_playlists};
 use rom_converto_lib::util::fs::collect_all_files;
 use rom_converto_lib::util::{
     CancelToken, ConflictPolicy, ConflictResolution, DEFAULT_SPACE_HEADROOM, FileStatus, HashAlgo,
-    ReportFormat, ReportRecord, ReportTotals, TemplateTokens, apply_template, available_space,
-    format_bytes, hash_file, parse_algos, resolve_conflict, space_shortfall, write_report,
+    PlanLine, ReportFormat, ReportRecord, ReportTotals, TemplateTokens, apply_template,
+    available_space, format_bytes, hash_file, parse_algos, resolve_conflict, space_shortfall,
+    write_report,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -89,6 +90,7 @@ fn resolve_templated_output(
     input: &Path,
     output_ext: &str,
     keys_path: Option<&Path>,
+    dry_run: bool,
 ) -> Result<PathBuf, String> {
     let info = read_info(
         input,
@@ -102,7 +104,7 @@ fn resolve_templated_output(
     let rel = apply_template(template, &tokens).map_err(err_to_string)?;
     let base = input.parent().unwrap_or_else(|| Path::new("."));
     let joined = base.join(rel);
-    if let Some(parent) = joined.parent() {
+    if !dry_run && let Some(parent) = joined.parent() {
         std::fs::create_dir_all(parent).map_err(err_to_string)?;
     }
     Ok(joined)
@@ -118,6 +120,7 @@ fn ext_of(path: &Path) -> String {
 /// Pick the output path for a write command. When a template is given it
 /// supersedes any explicit output, mirroring the CLI's `conflicts_with` rule;
 /// supplying both at once is rejected.
+#[allow(clippy::too_many_arguments)]
 fn pick_output(
     explicit: Option<PathBuf>,
     template: Option<&str>,
@@ -125,13 +128,14 @@ fn pick_output(
     output_ext: &str,
     keys_path: Option<&Path>,
     default: impl FnOnce() -> PathBuf,
+    dry_run: bool,
 ) -> Result<PathBuf, String> {
     match template {
         Some(tmpl) => {
             if explicit.is_some() {
                 return Err("output template conflicts with an explicit output path".into());
             }
-            resolve_templated_output(tmpl, input, output_ext, keys_path)
+            resolve_templated_output(tmpl, input, output_ext, keys_path, dry_run)
         }
         None => Ok(explicit.unwrap_or_else(default)),
     }
@@ -202,6 +206,63 @@ fn resolve_write_path(
     match resolve_conflict(desired, conflict_policy(on_conflict)).map_err(err_to_string)? {
         ConflictResolution::Write(p) => Ok(Some(p)),
         ConflictResolution::Skip => Ok(None),
+    }
+}
+
+/// Build the dry-run plan line for a single write, mirroring the CLI's
+/// per-file planning: resolve the conflict, and for `overwrite-invalid` run the
+/// read-only verify to choose keep-valid versus rewrite-invalid. Nothing is
+/// written; the only filesystem access is reading the input and the read-only
+/// verify. The resulting `PlanLine` renders byte-identically to the CLI plan.
+#[allow(clippy::too_many_arguments)]
+async fn plan_line(
+    progress: &dyn rom_converto_lib::util::ProgressReporter,
+    operation: &str,
+    input: &Path,
+    desired: &Path,
+    on_conflict: Option<&str>,
+    media: Option<String>,
+    verify: rom_converto_lib::util::OutputVerify,
+    missing_keys: Option<String>,
+) -> Result<PlanLine, String> {
+    use rom_converto_lib::util::{PlanDecision, VerifyOutcome, classify, verify_existing_output};
+    let policy = conflict_policy(on_conflict);
+    let resolution = resolve_conflict(desired, policy).map_err(err_to_string)?;
+    let (output, decision) = if policy == ConflictPolicy::OverwriteInvalid && desired.exists() {
+        match verify_existing_output(progress, desired, verify).await {
+            VerifyOutcome::Valid => (desired.to_path_buf(), PlanDecision::KeepValid),
+            VerifyOutcome::Invalid => (desired.to_path_buf(), PlanDecision::RewriteInvalid),
+        }
+    } else {
+        let out = match &resolution {
+            ConflictResolution::Write(p) => p.clone(),
+            ConflictResolution::Skip => desired.to_path_buf(),
+        };
+        (out, classify(desired, &resolution))
+    };
+    Ok(PlanLine {
+        operation: operation.to_string(),
+        input: input.to_path_buf(),
+        output,
+        decision,
+        media,
+        missing_keys,
+    })
+}
+
+/// Best-effort media label for a CHD dry-run plan line, mirroring the CLI:
+/// cue inputs imply a CD, ISO inputs read a header to predict the disc kind.
+fn chd_media_label(input: &Path) -> Option<String> {
+    let ext = input
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase());
+    match ext.as_deref() {
+        Some("cue") => Some("CD".to_string()),
+        Some("iso") => rom_converto_lib::util::iso9660::detect_disc_kind(input)
+            .ok()
+            .map(|k| k.label().to_string()),
+        _ => None,
     }
 }
 
@@ -371,12 +432,34 @@ pub async fn cmd_decrypt_rom(
     on_conflict: Option<String>,
     skip_space_check: bool,
     output_template: Option<String>,
+    dry_run: Option<bool>,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "decrypt"));
+    let dry_run = dry_run.unwrap_or(false);
     let ext = ext_of(&derive_decrypted_path(&input));
-    let desired = pick_output(output, output_template.as_deref(), &input, &ext, None, || {
-        derive_decrypted_path(&input)
-    })?;
+    let desired = pick_output(
+        output,
+        output_template.as_deref(),
+        &input,
+        &ext,
+        None,
+        || derive_decrypted_path(&input),
+        dry_run,
+    )?;
+    if dry_run {
+        let line = plan_line(
+            progress.as_ref(),
+            "decrypt",
+            &input,
+            &desired,
+            on_conflict.as_deref(),
+            None,
+            rom_converto_lib::util::OutputVerify::None,
+            None,
+        )
+        .await?;
+        return Ok(line.display_text());
+    }
     let output = match resolve_write_path(&desired, on_conflict.as_deref())? {
         Some(p) => p,
         None => return Ok(format!("skipped existing {}", desired.display())),
@@ -422,12 +505,34 @@ pub async fn cmd_compress_rom(
     on_conflict: Option<String>,
     skip_space_check: bool,
     output_template: Option<String>,
+    dry_run: Option<bool>,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "compress"));
+    let dry_run = dry_run.unwrap_or(false);
     let ext = ext_of(&derive_compressed_path(&input));
-    let desired = pick_output(output, output_template.as_deref(), &input, &ext, None, || {
-        derive_compressed_path(&input)
-    })?;
+    let desired = pick_output(
+        output,
+        output_template.as_deref(),
+        &input,
+        &ext,
+        None,
+        || derive_compressed_path(&input),
+        dry_run,
+    )?;
+    if dry_run {
+        let line = plan_line(
+            progress.as_ref(),
+            "compress",
+            &input,
+            &desired,
+            on_conflict.as_deref(),
+            None,
+            rom_converto_lib::util::OutputVerify::None,
+            None,
+        )
+        .await?;
+        return Ok(line.display_text());
+    }
     let output = match resolve_write_path(&desired, on_conflict.as_deref())? {
         Some(p) => p,
         None => return Ok(format!("skipped existing {}", desired.display())),
@@ -458,6 +563,7 @@ pub async fn cmd_compress_rom(
     Ok(format!("Compressed to {out_display}"))
 }
 
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn cmd_decompress_rom(
     app: AppHandle,
@@ -467,12 +573,34 @@ pub async fn cmd_decompress_rom(
     on_conflict: Option<String>,
     skip_space_check: bool,
     output_template: Option<String>,
+    dry_run: Option<bool>,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "decompress"));
+    let dry_run = dry_run.unwrap_or(false);
     let ext = ext_of(&derive_decompressed_path(&input));
-    let desired = pick_output(output, output_template.as_deref(), &input, &ext, None, || {
-        derive_decompressed_path(&input)
-    })?;
+    let desired = pick_output(
+        output,
+        output_template.as_deref(),
+        &input,
+        &ext,
+        None,
+        || derive_decompressed_path(&input),
+        dry_run,
+    )?;
+    if dry_run {
+        let line = plan_line(
+            progress.as_ref(),
+            "decompress",
+            &input,
+            &desired,
+            on_conflict.as_deref(),
+            None,
+            rom_converto_lib::util::OutputVerify::None,
+            None,
+        )
+        .await?;
+        return Ok(line.display_text());
+    }
     let output = match resolve_write_path(&desired, on_conflict.as_deref())? {
         Some(p) => p,
         None => return Ok(format!("skipped existing {}", desired.display())),
@@ -509,11 +637,36 @@ pub async fn cmd_chd_compress(
     skip_space_check: bool,
     output_template: Option<String>,
     report: Option<bool>,
+    dry_run: Option<bool>,
 ) -> Result<RunOutcome, String> {
     let progress = Arc::new(TauriProgress::new(app, "chd-compress"));
-    let desired = pick_output(output, output_template.as_deref(), &input_path, "chd", None, || {
-        input_path.with_extension("chd")
-    })?;
+    let dry_run = dry_run.unwrap_or(false);
+    let desired = pick_output(
+        output,
+        output_template.as_deref(),
+        &input_path,
+        "chd",
+        None,
+        || input_path.with_extension("chd"),
+        dry_run,
+    )?;
+    if dry_run {
+        let line = plan_line(
+            progress.as_ref(),
+            "compress",
+            &input_path,
+            &desired,
+            on_conflict.as_deref(),
+            chd_media_label(&input_path),
+            rom_converto_lib::util::OutputVerify::Chd,
+            None,
+        )
+        .await?;
+        return Ok(RunOutcome {
+            message: line.display_text(),
+            record: None,
+        });
+    }
     let output = match resolve_write_path(&desired, on_conflict.as_deref())? {
         Some(p) => p,
         None => {
@@ -583,6 +736,7 @@ pub async fn cmd_cso_compress(
     skip_space_check: bool,
     output_template: Option<String>,
     report: Option<bool>,
+    dry_run: Option<bool>,
 ) -> Result<RunOutcome, String> {
     let format = match format.as_str() {
         "zso" => CsoFormat::Zso,
@@ -590,6 +744,7 @@ pub async fn cmd_cso_compress(
     };
     let format_name = format.name();
     let progress = Arc::new(TauriProgress::new(app, "cso-compress"));
+    let dry_run = dry_run.unwrap_or(false);
     let desired = pick_output(
         output,
         output_template.as_deref(),
@@ -597,7 +752,25 @@ pub async fn cmd_cso_compress(
         format.extension(),
         None,
         || input_path.with_extension(format.extension()),
+        dry_run,
     )?;
+    if dry_run {
+        let line = plan_line(
+            progress.as_ref(),
+            "compress",
+            &input_path,
+            &desired,
+            on_conflict.as_deref(),
+            Some(format_name.to_string()),
+            rom_converto_lib::util::OutputVerify::Cso,
+            None,
+        )
+        .await?;
+        return Ok(RunOutcome {
+            message: line.display_text(),
+            record: None,
+        });
+    }
     let output = match resolve_write_path(&desired, on_conflict.as_deref())? {
         Some(p) => p,
         None => {
@@ -659,11 +832,36 @@ pub async fn cmd_cso_decompress(
     skip_space_check: bool,
     output_template: Option<String>,
     report: Option<bool>,
+    dry_run: Option<bool>,
 ) -> Result<RunOutcome, String> {
     let progress = Arc::new(TauriProgress::new(app, "cso-decompress"));
-    let desired = pick_output(output, output_template.as_deref(), &input_path, "iso", None, || {
-        input_path.with_extension("iso")
-    })?;
+    let dry_run = dry_run.unwrap_or(false);
+    let desired = pick_output(
+        output,
+        output_template.as_deref(),
+        &input_path,
+        "iso",
+        None,
+        || input_path.with_extension("iso"),
+        dry_run,
+    )?;
+    if dry_run {
+        let line = plan_line(
+            progress.as_ref(),
+            "decompress",
+            &input_path,
+            &desired,
+            on_conflict.as_deref(),
+            None,
+            rom_converto_lib::util::OutputVerify::None,
+            None,
+        )
+        .await?;
+        return Ok(RunOutcome {
+            message: line.display_text(),
+            record: None,
+        });
+    }
     let output = match resolve_write_path(&desired, on_conflict.as_deref())? {
         Some(p) => p,
         None => {
@@ -734,8 +932,23 @@ pub async fn cmd_cue_merge(
     output: PathBuf,
     on_conflict: Option<String>,
     skip_space_check: bool,
+    dry_run: Option<bool>,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "cue-merge"));
+    if dry_run.unwrap_or(false) {
+        let line = plan_line(
+            progress.as_ref(),
+            "merge",
+            &cue_path,
+            &output,
+            on_conflict.as_deref(),
+            Some(format!("+ {}", output.with_extension("bin").display())),
+            rom_converto_lib::util::OutputVerify::None,
+            None,
+        )
+        .await?;
+        return Ok(line.display_text());
+    }
     let output = match resolve_write_path(&output, on_conflict.as_deref())? {
         Some(p) => p,
         None => return Ok(format!("skipped existing {}", output.display())),
@@ -768,11 +981,36 @@ pub async fn cmd_chd_extract(
     skip_space_check: bool,
     output_template: Option<String>,
     report: Option<bool>,
+    dry_run: Option<bool>,
 ) -> Result<RunOutcome, String> {
     let progress = Arc::new(TauriProgress::new(app, "chd-extract"));
-    let output = pick_output(output, output_template.as_deref(), &input, "cue", None, || {
-        input.with_extension("cue")
-    })?;
+    let dry_run = dry_run.unwrap_or(false);
+    let output = pick_output(
+        output,
+        output_template.as_deref(),
+        &input,
+        "cue",
+        None,
+        || input.with_extension("cue"),
+        dry_run,
+    )?;
+    if dry_run {
+        let line = plan_line(
+            progress.as_ref(),
+            "extract",
+            &input,
+            &output,
+            None,
+            None,
+            rom_converto_lib::util::OutputVerify::None,
+            None,
+        )
+        .await?;
+        return Ok(RunOutcome {
+            message: line.display_text(),
+            record: None,
+        });
+    }
     let out_display = output.display().to_string();
     preflight_space(
         output.parent().unwrap_or(&output),
@@ -863,11 +1101,36 @@ pub async fn cmd_compress_disc(
     skip_space_check: bool,
     output_template: Option<String>,
     report: Option<bool>,
+    dry_run: Option<bool>,
 ) -> Result<RunOutcome, String> {
     let progress = Arc::new(TauriProgress::new(app, &task_id));
-    let desired = pick_output(output, output_template.as_deref(), &input, "rvz", None, || {
-        derive_rvz_path(&input)
-    })?;
+    let dry_run = dry_run.unwrap_or(false);
+    let desired = pick_output(
+        output,
+        output_template.as_deref(),
+        &input,
+        "rvz",
+        None,
+        || derive_rvz_path(&input),
+        dry_run,
+    )?;
+    if dry_run {
+        let line = plan_line(
+            progress.as_ref(),
+            "compress",
+            &input,
+            &desired,
+            on_conflict.as_deref(),
+            Some("RVZ".to_string()),
+            rom_converto_lib::util::OutputVerify::Rvz,
+            None,
+        )
+        .await?;
+        return Ok(RunOutcome {
+            message: line.display_text(),
+            record: None,
+        });
+    }
     let output = match resolve_write_path(&desired, on_conflict.as_deref())? {
         Some(p) => p,
         None => {
@@ -930,11 +1193,36 @@ pub async fn cmd_decompress_disc(
     skip_space_check: bool,
     output_template: Option<String>,
     report: Option<bool>,
+    dry_run: Option<bool>,
 ) -> Result<RunOutcome, String> {
     let progress = Arc::new(TauriProgress::new(app, &task_id));
-    let desired = pick_output(output, output_template.as_deref(), &input, "iso", None, || {
-        derive_disc_path(&input)
-    })?;
+    let dry_run = dry_run.unwrap_or(false);
+    let desired = pick_output(
+        output,
+        output_template.as_deref(),
+        &input,
+        "iso",
+        None,
+        || derive_disc_path(&input),
+        dry_run,
+    )?;
+    if dry_run {
+        let line = plan_line(
+            progress.as_ref(),
+            "decompress",
+            &input,
+            &desired,
+            on_conflict.as_deref(),
+            None,
+            rom_converto_lib::util::OutputVerify::None,
+            None,
+        )
+        .await?;
+        return Ok(RunOutcome {
+            message: line.display_text(),
+            record: None,
+        });
+    }
     let output = match resolve_write_path(&desired, on_conflict.as_deref())? {
         Some(p) => p,
         None => {
@@ -1000,8 +1288,33 @@ pub async fn cmd_wup_compress(
     keys: Option<Vec<PathBuf>>,
     on_conflict: Option<String>,
     skip_space_check: bool,
+    dry_run: Option<bool>,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "wup-compress"));
+    if dry_run.unwrap_or(false) {
+        use rom_converto_lib::nintendo::wup::compress::{TitleInputFormat, detect_title_format};
+        let media = inputs
+            .first()
+            .and_then(|p| detect_title_format(p).ok())
+            .map(|f| match f {
+                TitleInputFormat::Loadiine => "Loadiine",
+                TitleInputFormat::Nus => "NUS",
+                TitleInputFormat::Disc => "disc",
+            });
+        let input = inputs.first().cloned().unwrap_or_else(|| output.clone());
+        let line = plan_line(
+            progress.as_ref(),
+            "compress",
+            &input,
+            &output,
+            on_conflict.as_deref(),
+            media.map(str::to_string),
+            rom_converto_lib::util::OutputVerify::None,
+            None,
+        )
+        .await?;
+        return Ok(line.display_text());
+    }
     let output = match resolve_write_path(&output, on_conflict.as_deref())? {
         Some(p) => p,
         None => return Ok(format!("skipped existing {}", output.display())),
@@ -1055,8 +1368,23 @@ pub async fn cmd_wup_decrypt(
     output: PathBuf,
     on_conflict: Option<String>,
     skip_space_check: bool,
+    dry_run: Option<bool>,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "wup-decrypt"));
+    if dry_run.unwrap_or(false) {
+        let line = plan_line(
+            progress.as_ref(),
+            "decrypt",
+            &input,
+            &output,
+            on_conflict.as_deref(),
+            None,
+            rom_converto_lib::util::OutputVerify::None,
+            None,
+        )
+        .await?;
+        return Ok(line.display_text());
+    }
     let output = match resolve_write_path(&output, on_conflict.as_deref())? {
         Some(p) => p,
         None => return Ok(format!("skipped existing {}", output.display())),
@@ -1094,8 +1422,10 @@ pub async fn cmd_nx_compress(
     skip_space_check: bool,
     output_template: Option<String>,
     report: Option<bool>,
+    dry_run: Option<bool>,
 ) -> Result<RunOutcome, String> {
     let progress = Arc::new(TauriProgress::new(app, "nx-compress"));
+    let dry_run = dry_run.unwrap_or(false);
     let kind = detect_container(&input).map_err(err_to_string)?;
     let mut opts = NxCompressOptions::for_kind(kind);
     if let Some(level) = level {
@@ -1120,7 +1450,29 @@ pub async fn cmd_nx_compress(
         &ext,
         keys.as_deref(),
         || nx_derive_compressed_path(&input),
+        dry_run,
     )?;
+    if dry_run {
+        let (keyset, missing) = match load_keyset(keys.as_deref()) {
+            Ok(k) => (k, None),
+            Err(e) => (KeySet::default(), Some(e.to_string())),
+        };
+        let line = plan_line(
+            progress.as_ref(),
+            "compress",
+            &input,
+            &desired,
+            on_conflict.as_deref(),
+            Some(format!("{kind:?}")),
+            rom_converto_lib::util::OutputVerify::Nx(Box::new(keyset)),
+            missing,
+        )
+        .await?;
+        return Ok(RunOutcome {
+            message: line.display_text(),
+            record: None,
+        });
+    }
     let output = match resolve_write_path(&desired, on_conflict.as_deref())? {
         Some(p) => p,
         None => {
@@ -1180,8 +1532,10 @@ pub async fn cmd_nx_decompress(
     skip_space_check: bool,
     output_template: Option<String>,
     report: Option<bool>,
+    dry_run: Option<bool>,
 ) -> Result<RunOutcome, String> {
     let progress = Arc::new(TauriProgress::new(app, "nx-decompress"));
+    let dry_run = dry_run.unwrap_or(false);
     let ext = ext_of(&nx_derive_decompressed_path(&input));
     let desired = pick_output(
         output,
@@ -1190,7 +1544,25 @@ pub async fn cmd_nx_decompress(
         &ext,
         keys.as_deref(),
         || nx_derive_decompressed_path(&input),
+        dry_run,
     )?;
+    if dry_run {
+        let line = plan_line(
+            progress.as_ref(),
+            "decompress",
+            &input,
+            &desired,
+            on_conflict.as_deref(),
+            None,
+            rom_converto_lib::util::OutputVerify::None,
+            None,
+        )
+        .await?;
+        return Ok(RunOutcome {
+            message: line.display_text(),
+            record: None,
+        });
+    }
     let output = match resolve_write_path(&desired, on_conflict.as_deref())? {
         Some(p) => p,
         None => {
@@ -1263,12 +1635,34 @@ pub async fn cmd_convert_ctr(
     on_conflict: Option<String>,
     skip_space_check: bool,
     output_template: Option<String>,
+    dry_run: Option<bool>,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "ctr-convert"));
+    let dry_run = dry_run.unwrap_or(false);
     let ext = ext_of(&derive_converted_path(&input));
-    let desired = pick_output(output, output_template.as_deref(), &input, &ext, None, || {
-        derive_converted_path(&input)
-    })?;
+    let desired = pick_output(
+        output,
+        output_template.as_deref(),
+        &input,
+        &ext,
+        None,
+        || derive_converted_path(&input),
+        dry_run,
+    )?;
+    if dry_run {
+        let line = plan_line(
+            progress.as_ref(),
+            "convert",
+            &input,
+            &desired,
+            on_conflict.as_deref(),
+            None,
+            rom_converto_lib::util::OutputVerify::None,
+            None,
+        )
+        .await?;
+        return Ok(line.display_text());
+    }
     let output = match resolve_write_path(&desired, on_conflict.as_deref())? {
         Some(p) => p,
         None => return Ok(format!("skipped existing {}", desired.display())),

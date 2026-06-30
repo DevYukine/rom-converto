@@ -274,10 +274,13 @@ async fn dry_run_single_verify(
         );
     }
     let (synth, outcome) = match verify_existing_output(progress, desired, target).await {
-        VerifyOutcome::Valid => (WriteDecision::Skip, dry_run::Decision::KeepValid),
+        VerifyOutcome::Valid => (
+            WriteDecision::Skip,
+            rom_converto_lib::util::PlanDecision::KeepValid,
+        ),
         VerifyOutcome::Invalid => (
             WriteDecision::Write(desired.to_path_buf()),
-            dry_run::Decision::RewriteInvalid,
+            rom_converto_lib::util::PlanDecision::RewriteInvalid,
         ),
     };
     dry_run::log_plan_decision(

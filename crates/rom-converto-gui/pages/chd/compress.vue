@@ -9,6 +9,9 @@ const { outputDir, resolve } = useOutputDir();
 const { run, cancelled, abort } = useOperation({ result, error, loading });
 const progress = useProgress("chd-compress");
 
+const previewMode = ref(false);
+const { preview, single: previewSingle, batch: previewBatch, error: previewError } = usePreview("cmd_chd_compress");
+
 const MODE_OPTIONS = [
   { label: "Auto", value: "auto" },
   { label: "CD", value: "cd" },
@@ -31,6 +34,7 @@ function chdArgs(inputPath: string, outputPath: string) {
     outputTemplate: tmpl,
     report: !!reportFile.value,
     reportFile: reportFile.value || null,
+    dryRun: previewMode.value,
   };
 }
 
@@ -88,6 +92,24 @@ async function execute() {
   if (reportFile.value && records.length) {
     await writeRunReport(reportFile.value, records);
   }
+}
+
+async function runPreview() {
+  const rep = isBatch.value ? (queue.value.find((i) => i.status === "pending") ?? queue.value[0]) : null;
+  commandLine.value = isBatch.value
+    ? rep ? buildCliCommand("cmd_chd_compress", chdArgs(rep.input, rep.output)) : ""
+    : buildCliCommand("cmd_chd_compress", chdArgs(input.value, output.value));
+  if (isBatch.value) {
+    await previewBatch(queue, (item) => chdArgs(item.input, item.output));
+  } else {
+    await previewSingle(chdArgs(input.value, output.value));
+  }
+  if (previewError.value) error.value = previewError.value;
+}
+
+function onRun() {
+  if (previewMode.value) runPreview();
+  else execute();
 }
 </script>
 
@@ -207,21 +229,27 @@ async function execute() {
           :running="progress.running.value"
         />
 
+        <FlagToggle
+          v-model="previewMode"
+          label="Preview (dry run)"
+          description="Show what each file would do without writing anything."
+        />
+
         <RunButton
           :loading="loading || batch.running.value"
           :batch-current="batch.currentIndex.value"
           :batch-total="queue.length"
           :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input"
-          @click="execute"
+          @click="onRun"
           @cancel="isBatch ? batch.abort() : abort()"
         >
-          {{ isBatch && queue.filter(i => i.status === 'pending').length > 1 ? `Compress All (${queue.filter(i => i.status === 'pending').length})` : 'Compress' }}
+          {{ previewMode ? 'Preview' : (isBatch && queue.filter(i => i.status === 'pending').length > 1 ? `Compress All (${queue.filter(i => i.status === 'pending').length})` : 'Compress') }}
         </RunButton>
       </div>
     </OperationCard>
 
     <div class="mt-4">
-      <OutputLog :command="commandLine" :result="result" :cancelled="cancelled ? 'Operation cancelled.' : undefined" :error="error" />
+      <OutputLog :command="commandLine" :result="result" :preview="preview" :cancelled="cancelled ? 'Operation cancelled.' : undefined" :error="error" />
     </div>
   </div>
 </template>

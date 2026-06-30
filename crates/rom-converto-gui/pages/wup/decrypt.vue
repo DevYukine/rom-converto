@@ -8,6 +8,9 @@ const { run, cancelled, abort } = useOperation({ result, error, loading });
 const progress = useProgress("wup-decrypt");
 const commandLine = ref("");
 
+const previewMode = ref(false);
+const { preview, single: previewSingle, error: previewError } = usePreview("cmd_wup_decrypt");
+
 watch(input, (val) => {
   if (val && !output.value) {
     output.value = deriveDecryptedWupPath(val);
@@ -19,12 +22,34 @@ function deriveDecryptedWupPath(dir: string): string {
   return `${trimmed}_decrypted`;
 }
 
+function decryptArgs() {
+  const out = output.value || deriveDecryptedWupPath(input.value);
+  return {
+    input: input.value,
+    output: out,
+    onConflict: onConflict.value,
+    skipSpaceCheck: skipSpaceCheck.value,
+    dryRun: previewMode.value,
+  };
+}
+
 async function execute() {
   progress.reset();
-  const out = output.value || deriveDecryptedWupPath(input.value);
-  const args = { input: input.value, output: out, onConflict: onConflict.value, skipSpaceCheck: skipSpaceCheck.value };
+  const args = decryptArgs();
   commandLine.value = buildCliCommand("cmd_wup_decrypt", args);
   await run("cmd_wup_decrypt", args);
+}
+
+async function runPreview() {
+  const args = decryptArgs();
+  commandLine.value = buildCliCommand("cmd_wup_decrypt", args);
+  await previewSingle(args);
+  if (previewError.value) error.value = previewError.value;
+}
+
+function onRun() {
+  if (previewMode.value) runPreview();
+  else execute();
 }
 </script>
 
@@ -68,19 +93,25 @@ async function execute() {
           :running="progress.running.value"
         />
 
+        <FlagToggle
+          v-model="previewMode"
+          label="Preview (dry run)"
+          description="Show what would happen without writing anything."
+        />
+
         <RunButton
           :loading="loading"
           :disabled="!input"
-          @click="execute"
+          @click="onRun"
           @cancel="abort()"
         >
-          Decrypt
+          {{ previewMode ? 'Preview' : 'Decrypt' }}
         </RunButton>
       </div>
     </OperationCard>
 
     <div class="mt-4">
-      <OutputLog :command="commandLine" :result="result" :cancelled="cancelled ? 'Operation cancelled.' : undefined" :error="error" />
+      <OutputLog :command="commandLine" :result="result" :preview="preview" :cancelled="cancelled ? 'Operation cancelled.' : undefined" :error="error" />
     </div>
   </div>
 </template>

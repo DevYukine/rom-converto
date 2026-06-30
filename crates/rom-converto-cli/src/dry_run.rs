@@ -1,29 +1,20 @@
 use crate::util::WriteDecision;
 use anyhow::Result;
 use rom_converto_lib::util::{
-    FileStatus, ReportFormat, ReportRecord, ReportTotals, Tally, TallyDirection, write_report,
+    ConflictResolution, FileStatus, PlanDecision, PlanLine, ReportFormat, ReportRecord,
+    ReportTotals, Tally, TallyDirection, write_report,
 };
 use std::path::Path;
-
-pub enum Decision<'a> {
-    Overwrite,
-    Rename(&'a Path),
-    New,
-    Skip,
-    KeepValid,
-    RewriteInvalid,
-}
 
 /// Classify the conflict outcome for a desired path against the resolver's
 /// decision. `desired` is the path passed to resolve_output; the returned
 /// path differs from it only when a rename redirected the write.
-pub fn classify<'a>(desired: &Path, decision: &'a WriteDecision) -> Decision<'a> {
-    match decision {
-        WriteDecision::Skip => Decision::Skip,
-        WriteDecision::Write(p) if p != desired => Decision::Rename(p),
-        WriteDecision::Write(_) if desired.exists() => Decision::Overwrite,
-        WriteDecision::Write(_) => Decision::New,
-    }
+pub fn classify(desired: &Path, decision: &WriteDecision) -> PlanDecision {
+    let resolution = match decision {
+        WriteDecision::Write(p) => ConflictResolution::Write(p.clone()),
+        WriteDecision::Skip => ConflictResolution::Skip,
+    };
+    rom_converto_lib::util::classify(desired, &resolution)
 }
 
 pub fn log_plan(
@@ -53,31 +44,23 @@ pub fn log_plan_decision(
     input: &Path,
     desired: &Path,
     decision: &WriteDecision,
-    outcome: Decision<'_>,
+    outcome: PlanDecision,
     media: Option<&str>,
     missing_keys: Option<&str>,
 ) {
-    let label = match outcome {
-        Decision::Overwrite => "[overwrite]".to_string(),
-        Decision::Rename(p) => format!("[rename -> {}]", p.display()),
-        Decision::New => "[new]".to_string(),
-        Decision::Skip => "[skip]".to_string(),
-        Decision::KeepValid => "[keep (valid)]".to_string(),
-        Decision::RewriteInvalid => "[rewrite (invalid)]".to_string(),
-    };
     let target = match decision {
-        WriteDecision::Write(p) => p.as_path(),
-        WriteDecision::Skip => desired,
+        WriteDecision::Write(p) => p.clone(),
+        WriteDecision::Skip => desired.to_path_buf(),
     };
-    let media = media.map(|m| format!(" ({m})")).unwrap_or_default();
-    let keys = missing_keys
-        .map(|k| format!(" missing keys: {k}"))
-        .unwrap_or_default();
-    log::info!(
-        "would {operation} {} -> {}{media} {label}{keys}",
-        input.display(),
-        target.display()
-    );
+    let line = PlanLine {
+        operation: operation.to_string(),
+        input: input.to_path_buf(),
+        output: target,
+        decision: outcome,
+        media: media.map(str::to_string),
+        missing_keys: missing_keys.map(str::to_string),
+    };
+    log::info!("{}", line.display_text());
 }
 
 /// Record one planned file in a tally as either ok (a would-be write) or
@@ -162,7 +145,10 @@ mod tests {
         let path = dir.path().join("game.chd");
         std::fs::write(&path, b"x").unwrap();
         let decision = WriteDecision::Write(path.clone());
-        assert!(matches!(classify(&path, &decision), Decision::Overwrite));
+        assert!(matches!(
+            classify(&path, &decision),
+            PlanDecision::Overwrite
+        ));
     }
 
     #[test]
@@ -170,7 +156,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("game.chd");
         let decision = WriteDecision::Write(path.clone());
-        assert!(matches!(classify(&path, &decision), Decision::New));
+        assert!(matches!(classify(&path, &decision), PlanDecision::New));
     }
 
     #[test]
@@ -178,13 +164,16 @@ mod tests {
         let desired = PathBuf::from("game.chd");
         let renamed = PathBuf::from("game (1).chd");
         let decision = WriteDecision::Write(renamed);
-        assert!(matches!(classify(&desired, &decision), Decision::Rename(_)));
+        assert!(matches!(
+            classify(&desired, &decision),
+            PlanDecision::Rename(_)
+        ));
     }
 
     #[test]
     fn classify_skip() {
         let desired = PathBuf::from("game.chd");
         let decision = WriteDecision::Skip;
-        assert!(matches!(classify(&desired, &decision), Decision::Skip));
+        assert!(matches!(classify(&desired, &decision), PlanDecision::Skip));
     }
 }

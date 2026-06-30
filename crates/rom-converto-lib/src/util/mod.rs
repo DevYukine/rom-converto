@@ -4,20 +4,24 @@ pub mod hash;
 pub mod iso9660;
 pub mod maker_codes;
 pub mod pixel;
+pub mod plan;
 pub mod pread;
 pub mod report;
 pub mod tally;
 pub mod template;
+pub mod verify;
 pub mod worker_pool;
 
 pub use conflict::{ConflictPolicy, ConflictResolution, resolve_conflict};
 pub use fs::{DEFAULT_SPACE_HEADROOM, available_space, space_shortfall};
 pub use hash::{FileDigests, HashAlgo, hash_file, parse_algos};
+pub use plan::{PlanDecision, PlanLine, classify};
 pub use report::{
     HashReportRecord, ReportFormat, ReportRecord, ReportTotals, write_hash_report, write_report,
 };
 pub use tally::{FileEntry, FileStatus, Tally, TallyDirection, format_bytes};
 pub use template::{TemplateTokens, apply_template};
+pub use verify::{OutputVerify, VerifyOutcome, verify_existing_output};
 
 pub const BYTES_PER_MB: f64 = 1_000_000.0;
 

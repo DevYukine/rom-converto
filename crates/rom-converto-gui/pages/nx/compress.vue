@@ -10,6 +10,9 @@ const { queue, output, keys, level, mode, blockSizeExp, onConflict, skipSpaceChe
 const { outputDir, resolve } = useOutputDir();
 const progress = useProgress("nx-compress");
 
+const previewMode = ref(false);
+const { preview, batch: previewBatch, error: previewError } = usePreview("cmd_nx_compress");
+
 const MODE_OPTIONS = [
   { label: "Solid", value: "solid" },
   { label: "Block", value: "block" },
@@ -31,6 +34,7 @@ function compressArgs(item: { input: string; output: string }) {
     outputTemplate: tmpl,
     report: !!reportFile.value,
     reportFile: reportFile.value || null,
+    dryRun: previewMode.value,
   };
 }
 
@@ -108,6 +112,23 @@ async function execute() {
   if (reportFile.value && records.length) {
     await writeRunReport(reportFile.value, records);
   }
+}
+
+async function runPreview() {
+  if (!outputTemplate.value) {
+    for (const item of queue.value) {
+      item.output = queue.value.length === 1 ? output.value : resolve(deriveNszPath(item.input));
+    }
+  }
+  const rep = queue.value.find((i) => i.status === "pending") ?? queue.value[0];
+  commandLine.value = rep ? buildCliCommand("cmd_nx_compress", compressArgs(rep)) : "";
+  await previewBatch(queue, compressArgs);
+  if (previewError.value) error.value = previewError.value;
+}
+
+function onRun() {
+  if (previewMode.value) runPreview();
+  else execute();
 }
 </script>
 
@@ -279,15 +300,21 @@ async function execute() {
           :running="progress.running.value"
         />
 
+        <FlagToggle
+          v-model="previewMode"
+          label="Preview (dry run)"
+          description="Show what each file would do without writing anything."
+        />
+
         <RunButton
           :loading="loading || batch.running.value"
           :batch-current="batch.currentIndex.value"
           :batch-total="queue.length"
           :disabled="!canCompress"
-          @click="execute"
+          @click="onRun"
           @cancel="batch.abort"
         >
-          {{ queue.filter(i => i.status === 'pending').length > 1 ? `Compress All (${queue.filter(i => i.status === 'pending').length})` : 'Compress' }}
+          {{ previewMode ? 'Preview' : (queue.filter(i => i.status === 'pending').length > 1 ? `Compress All (${queue.filter(i => i.status === 'pending').length})` : 'Compress') }}
         </RunButton>
 
         <div v-if="hasXci && mode === 'solid'" class="text-xs text-amber-300/80">
@@ -298,7 +325,7 @@ async function execute() {
     </OperationCard>
 
     <div class="mt-4">
-      <OutputLog :command="commandLine" :result="result" :error="error" />
+      <OutputLog :command="commandLine" :result="result" :preview="preview" :error="error" />
     </div>
   </div>
 </template>

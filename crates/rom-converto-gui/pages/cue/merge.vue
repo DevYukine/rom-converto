@@ -9,20 +9,40 @@ const { run } = useOperation({ result, error, loading });
 const progress = useProgress("cue-merge");
 const commandLine = ref("");
 
+const previewMode = ref(false);
+const { preview, single: previewSingle, error: previewError } = usePreview("cmd_cue_merge");
+
 watch([input, outputDir], () => {
   if (input.value) output.value = resolve(deriveMergedCuePath(input.value));
 });
 
-async function execute() {
-  progress.reset();
-  const args = {
+function mergeArgs() {
+  return {
     cuePath: input.value,
     output: output.value || resolve(deriveMergedCuePath(input.value)),
     onConflict: onConflict.value,
     skipSpaceCheck: skipSpaceCheck.value,
+    dryRun: previewMode.value,
   };
+}
+
+async function execute() {
+  progress.reset();
+  const args = mergeArgs();
   commandLine.value = buildCliCommand("cmd_cue_merge", args);
   await run("cmd_cue_merge", args);
+}
+
+async function runPreview() {
+  const args = mergeArgs();
+  commandLine.value = buildCliCommand("cmd_cue_merge", args);
+  await previewSingle(args);
+  if (previewError.value) error.value = previewError.value;
+}
+
+function onRun() {
+  if (previewMode.value) runPreview();
+  else execute();
 }
 </script>
 
@@ -71,14 +91,20 @@ async function execute() {
           :running="progress.running.value"
         />
 
-        <RunButton :loading="loading" :disabled="!input" @click="execute">
-          Merge
+        <FlagToggle
+          v-model="previewMode"
+          label="Preview (dry run)"
+          description="Show what would happen without writing anything."
+        />
+
+        <RunButton :loading="loading" :disabled="!input" @click="onRun">
+          {{ previewMode ? 'Preview' : 'Merge' }}
         </RunButton>
       </div>
     </OperationCard>
 
     <div class="mt-4">
-      <OutputLog :command="commandLine" :result="result" :error="error" />
+      <OutputLog :command="commandLine" :result="result" :preview="preview" :error="error" />
     </div>
   </div>
 </template>

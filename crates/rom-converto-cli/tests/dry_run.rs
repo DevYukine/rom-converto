@@ -547,3 +547,28 @@ fn playlist_output_dir_is_created_when_missing() {
     assert!(lines[1].ends_with("Game (Disc 2).cue"), "{contents}");
     assert!(!lines[0].starts_with('/'), "{contents}");
 }
+
+#[test]
+fn cue_merge_dry_run_notes_companion_bin() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("game.cue");
+    fs::write(&input, b"x").unwrap();
+    let output = dir.path().join("out.cue");
+
+    let result = bin()
+        .arg("--dry-run")
+        .args(["cue", "merge"])
+        .arg(&input)
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(result.status.success(), "{}", combined(&result));
+    assert!(!output.exists());
+    assert!(!dir.path().join("out.bin").exists());
+    let text = combined(&result);
+    let bin_note = format!("(+ {})", dir.path().join("out.bin").display());
+    assert!(text.contains(&bin_note), "{text}");
+    assert!(text.contains("would merge"), "{text}");
+    assert!(text.contains("[new]"), "{text}");
+}

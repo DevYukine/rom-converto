@@ -147,12 +147,13 @@ async fn dry_run_verify_record(
     if policy == ConflictPolicy::OverwriteInvalid && desired.exists() {
         let (synth, outcome) =
             match crate::util::verify_existing_output(progress, desired, target).await {
-                crate::util::VerifyOutcome::Valid => {
-                    (WriteDecision::Skip, crate::dry_run::Decision::KeepValid)
-                }
+                crate::util::VerifyOutcome::Valid => (
+                    WriteDecision::Skip,
+                    rom_converto_lib::util::PlanDecision::KeepValid,
+                ),
                 crate::util::VerifyOutcome::Invalid => (
                     WriteDecision::Write(desired.to_path_buf()),
-                    crate::dry_run::Decision::RewriteInvalid,
+                    rom_converto_lib::util::PlanDecision::RewriteInvalid,
                 ),
             };
         crate::dry_run::log_plan_decision(operation, input, desired, &synth, outcome, media, None);

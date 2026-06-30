@@ -10,6 +10,21 @@ const { run, cancelled, abort } = useOperation({ result, error, loading });
 const progress = useProgress("wup-compress");
 const commandLine = ref("");
 
+const previewMode = ref(false);
+const { preview, single: previewSingle, error: previewError } = usePreview("cmd_wup_compress");
+
+function wupArgs() {
+  return {
+    inputs: queue.value.map((i) => i.input),
+    output: output.value,
+    level: level.value,
+    keys: store.collectKeys(),
+    onConflict: onConflict.value,
+    skipSpaceCheck: skipSpaceCheck.value,
+    dryRun: previewMode.value,
+  };
+}
+
 // One drop zone for both folders and disc images. Drag-drop takes
 // whatever the OS hands us. The two browse buttons pick folder vs
 // file mode because a native picker can only do one.
@@ -82,14 +97,7 @@ async function execute() {
       item.status = "running";
     }
   }
-  const args = {
-    inputs: queue.value.map((i) => i.input),
-    output: output.value,
-    level: level.value,
-    keys: store.collectKeys(),
-    onConflict: onConflict.value,
-    skipSpaceCheck: skipSpaceCheck.value,
-  };
+  const args = wupArgs();
   commandLine.value = buildCliCommand("cmd_wup_compress", args);
   await run("cmd_wup_compress", args);
   const terminal: "done" | "error" | "cancelled" = cancelled.value
@@ -100,6 +108,18 @@ async function execute() {
   for (const item of queue.value) {
     if (item.status === "running") item.status = terminal;
   }
+}
+
+async function runPreview() {
+  const args = wupArgs();
+  commandLine.value = buildCliCommand("cmd_wup_compress", args);
+  await previewSingle(args);
+  if (previewError.value) error.value = previewError.value;
+}
+
+function onRun() {
+  if (previewMode.value) runPreview();
+  else execute();
 }
 </script>
 
@@ -229,13 +249,19 @@ async function execute() {
           :running="progress.running.value"
         />
 
+        <FlagToggle
+          v-model="previewMode"
+          label="Preview (dry run)"
+          description="Show what would happen without writing anything."
+        />
+
         <RunButton
           :loading="loading"
           :disabled="!canCompress"
-          @click="execute"
+          @click="onRun"
           @cancel="abort()"
         >
-          {{ queue.length > 1 ? `Compress All (${queue.length} titles)` : 'Compress' }}
+          {{ previewMode ? 'Preview' : (queue.length > 1 ? `Compress All (${queue.length} titles)` : 'Compress') }}
         </RunButton>
 
         <div
@@ -249,7 +275,7 @@ async function execute() {
     </OperationCard>
 
     <div class="mt-4">
-      <OutputLog :command="commandLine" :result="result" :cancelled="cancelled ? 'Operation cancelled.' : undefined" :error="error" />
+      <OutputLog :command="commandLine" :result="result" :preview="preview" :cancelled="cancelled ? 'Operation cancelled.' : undefined" :error="error" />
     </div>
   </div>
 </template>

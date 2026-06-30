@@ -47,6 +47,7 @@ export function buildCliCommand(command: string, args: Record<string, unknown>):
       const mode = str(args.mode);
       const hunk = args.hunkSize as number | null | undefined;
       return join([
+        args.dryRun === true && "--dry-run",
         args.skipSpaceCheck === true && "--skip-space-check",
         "chd", "compress",
         mode === "dvd" && "--dvd",
@@ -63,6 +64,7 @@ export function buildCliCommand(command: string, args: Record<string, unknown>):
     case "cmd_chd_extract": {
       const parent = str(args.parent);
       return join([
+        args.dryRun === true && "--dry-run",
         args.skipSpaceCheck === true && "--skip-space-check",
         "chd", "extract",
         parent && `--parent ${quote(parent)}`,
@@ -84,6 +86,7 @@ export function buildCliCommand(command: string, args: Record<string, unknown>):
     case "cmd_cso_compress": {
       const block = args.blockSize as number | null | undefined;
       return join([
+        args.dryRun === true && "--dry-run",
         args.skipSpaceCheck === true && "--skip-space-check",
         "cso", "compress",
         args.format === "zso" && "--format zso",
@@ -97,6 +100,7 @@ export function buildCliCommand(command: string, args: Record<string, unknown>):
     }
     case "cmd_cso_decompress":
       return join([
+        args.dryRun === true && "--dry-run",
         args.skipSpaceCheck === true && "--skip-space-check",
         "cso", "decompress",
         conflict(args),
@@ -113,6 +117,7 @@ export function buildCliCommand(command: string, args: Record<string, unknown>):
       ]);
     case "cmd_cue_merge":
       return join([
+        args.dryRun === true && "--dry-run",
         args.skipSpaceCheck === true && "--skip-space-check",
         "cue", "merge",
         conflict(args),
@@ -143,6 +148,7 @@ export function buildCliCommand(command: string, args: Record<string, unknown>):
     case "cmd_compress_rom": {
       const level = args.level as number | null | undefined;
       return join([
+        args.dryRun === true && "--dry-run",
         args.skipSpaceCheck === true && "--skip-space-check",
         "ctr", "compress",
         level ? `-l ${level}` : false,
@@ -154,11 +160,11 @@ export function buildCliCommand(command: string, args: Record<string, unknown>):
       ]);
     }
     case "cmd_decompress_rom":
-      return join([args.skipSpaceCheck === true && "--skip-space-check", "ctr", "decompress", conflict(args), template(args), quote(str(args.input)), outputArg(args)]);
+      return join([args.dryRun === true && "--dry-run", args.skipSpaceCheck === true && "--skip-space-check", "ctr", "decompress", conflict(args), template(args), quote(str(args.input)), outputArg(args)]);
     case "cmd_decrypt_rom":
-      return join([args.skipSpaceCheck === true && "--skip-space-check", "ctr", "decrypt", conflict(args), template(args), quote(str(args.input)), outputArg(args)]);
+      return join([args.dryRun === true && "--dry-run", args.skipSpaceCheck === true && "--skip-space-check", "ctr", "decrypt", conflict(args), template(args), quote(str(args.input)), outputArg(args)]);
     case "cmd_convert_ctr":
-      return join([args.skipSpaceCheck === true && "--skip-space-check", "ctr", "convert", conflict(args), template(args), quote(str(args.input)), outputArg(args)]);
+      return join([args.dryRun === true && "--dry-run", args.skipSpaceCheck === true && "--skip-space-check", "ctr", "convert", conflict(args), template(args), quote(str(args.input)), outputArg(args)]);
     case "cmd_verify_ctr":
       return join([
         "ctr", "verify",
@@ -169,6 +175,7 @@ export function buildCliCommand(command: string, args: Record<string, unknown>):
       const level = args.level as number | undefined;
       const chunk = args.chunkSize as number | undefined;
       return join([
+        args.dryRun === true && "--dry-run",
         args.skipSpaceCheck === true && "--skip-space-check",
         ...discSub(args, "compress"),
         level != null && level !== 22 ? `-l ${level}` : false,
@@ -181,7 +188,7 @@ export function buildCliCommand(command: string, args: Record<string, unknown>):
       ]);
     }
     case "cmd_decompress_disc":
-      return join([args.skipSpaceCheck === true && "--skip-space-check", ...discSub(args, "decompress"), conflict(args), template(args), report(args), quote(str(args.input)), outputArg(args)]);
+      return join([args.dryRun === true && "--dry-run", args.skipSpaceCheck === true && "--skip-space-check", ...discSub(args, "decompress"), conflict(args), template(args), report(args), quote(str(args.input)), outputArg(args)]);
     case "cmd_verify_dol":
       return join(["dol", "verify", args.full === true && "--full", quote(str(args.input))]);
     case "cmd_verify_rvl":
@@ -192,6 +199,7 @@ export function buildCliCommand(command: string, args: Record<string, unknown>):
       const mode = str(args.mode);
       const exp = args.blockSizeExp as number | undefined;
       return join([
+        args.dryRun === true && "--dry-run",
         args.skipSpaceCheck === true && "--skip-space-check",
         "nx", "compress",
         keys && `--keys ${quote(keys)}`,
@@ -208,6 +216,7 @@ export function buildCliCommand(command: string, args: Record<string, unknown>):
     case "cmd_nx_decompress": {
       const keys = str(args.keys);
       return join([
+        args.dryRun === true && "--dry-run",
         args.skipSpaceCheck === true && "--skip-space-check",
         "nx", "decompress",
         keys && `--keys ${quote(keys)}`,
@@ -227,6 +236,7 @@ export function buildCliCommand(command: string, args: Record<string, unknown>):
       const keys = Array.isArray(args.keys) ? (args.keys as string[]) : [];
       const level = args.level as number | undefined;
       return join([
+        args.dryRun === true && "--dry-run",
         args.skipSpaceCheck === true && "--skip-space-check",
         "wup", "compress",
         `-o ${quote(str(args.output))}`,
@@ -238,6 +248,7 @@ export function buildCliCommand(command: string, args: Record<string, unknown>):
     }
     case "cmd_wup_decrypt":
       return join([
+        args.dryRun === true && "--dry-run",
         args.skipSpaceCheck === true && "--skip-space-check",
         "wup", "decrypt",
         `-o ${quote(str(args.output))}`,
