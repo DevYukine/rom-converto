@@ -44,7 +44,9 @@ use rom_converto_lib::nintendo::ctr::{
     decrypt_rom_cancellable, derive_decrypted_path, generate_ticket_from_cdn,
 };
 use rom_converto_lib::nintendo::dol::verify::{DolVerifyOptions, verify_dol};
-use rom_converto_lib::nintendo::legacy_input::{MigrateOptions, migrate_disc, migrate_disc_batch};
+use rom_converto_lib::nintendo::legacy_input::{
+    MigrateOptions, migrate_disc_batch, migrate_disc_cancellable,
+};
 use rom_converto_lib::nintendo::nx::{
     NczMode, NxCompressOptions, compress_container_async_cancellable,
     decompress_container_async_cancellable, derive_compressed_path as nx_derive_compressed_path,
@@ -1253,7 +1255,15 @@ async fn dispatch_command(
                 };
                 if cmd.recursive {
                     require_dir(&cmd.input)?;
-                    migrate_disc_batch(&cmd.input, opts, migrate_opts, cmd.force, &progress).await?
+                    migrate_disc_batch(
+                        &cmd.input,
+                        opts,
+                        migrate_opts,
+                        cmd.force,
+                        &progress,
+                        cancel.clone(),
+                    )
+                    .await?
                 } else {
                     let output = cmd
                         .output_flag
@@ -1267,7 +1277,15 @@ async fn dispatch_command(
                         }
                         WriteDecision::Write(p) => p,
                     };
-                    migrate_disc(&cmd.input, &output, opts, migrate_opts, &progress).await?
+                    migrate_disc_cancellable(
+                        &cmd.input,
+                        &output,
+                        opts,
+                        migrate_opts,
+                        &progress,
+                        cancel.clone(),
+                    )
+                    .await?
                 }
             }
             DolCommands::Decompress(cmd) => {
@@ -1543,7 +1561,15 @@ async fn dispatch_command(
                 };
                 if cmd.recursive {
                     require_dir(&cmd.input)?;
-                    migrate_disc_batch(&cmd.input, opts, migrate_opts, cmd.force, &progress).await?
+                    migrate_disc_batch(
+                        &cmd.input,
+                        opts,
+                        migrate_opts,
+                        cmd.force,
+                        &progress,
+                        cancel.clone(),
+                    )
+                    .await?
                 } else {
                     let output = cmd
                         .output_flag
@@ -1557,7 +1583,15 @@ async fn dispatch_command(
                         }
                         WriteDecision::Write(p) => p,
                     };
-                    migrate_disc(&cmd.input, &output, opts, migrate_opts, &progress).await?
+                    migrate_disc_cancellable(
+                        &cmd.input,
+                        &output,
+                        opts,
+                        migrate_opts,
+                        &progress,
+                        cancel.clone(),
+                    )
+                    .await?
                 }
             }
             RvlCommands::Decompress(cmd) => {
