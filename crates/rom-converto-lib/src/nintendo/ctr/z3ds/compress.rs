@@ -2,6 +2,7 @@ use crate::nintendo::ctr::constants::{
     CTR_MEDIA_UNIT_SIZE, NCCH_FLAGS_OFFSET, NCCH_FLAGS7_NOCRYPTO, NCCH_MAGIC_OFFSET,
     NCSD_PARTITION_TABLE_OFFSET,
 };
+use crate::nintendo::ctr::models::title_metadata::TitleMetadata;
 use crate::nintendo::ctr::util::align_64_usize;
 use crate::nintendo::ctr::z3ds::compress_worker::{
     Z3dsCompressWork, Z3dsCompressedFrame, encode_seekable, make_z3ds_compress_workers,
@@ -13,7 +14,7 @@ use crate::nintendo::ctr::z3ds::models::{
 use crate::nintendo::ctr::z3ds::seekable::{FRAME_SIZE_CIA, FRAME_SIZE_DEFAULT};
 use crate::util::worker_pool::{Pool, parallelism};
 use crate::util::{BYTES_PER_MB, CancelToken, ProgressReporter, await_with_progress_cancel};
-use binrw::BinWrite;
+use binrw::{BinRead, BinWrite, Endian};
 use chrono::Utc;
 use log::{info, warn};
 use std::io::{BufReader, BufWriter as StdBufWriter, Cursor, Seek, SeekFrom, Write};
@@ -314,8 +315,12 @@ pub(crate) fn check_ncsd_not_encrypted(data: &[u8]) -> Z3dsResult<()> {
     check_ncch_not_encrypted(data, partition_offset)
 }
 
-/// CIA files have no magic at offset 0. The first NCCH is located by
-/// parsing the CIA header sizes to find the content section.
+/// CIA files have no magic at offset 0. Per-content encryption is recorded in
+/// the TMD, which sits in plaintext before the content section. In an encrypted
+/// CIA the whole content (the NCCH header and its magic included) is title-key
+/// encrypted, so the NCCH magic is absent at the content offset; the TMD
+/// content-chunk flags are the only reliable signal there. A decrypted CIA still
+/// falls through to the plaintext NCCH NoCrypto check.
 pub(crate) fn check_cia_not_encrypted(data: &[u8]) -> Z3dsResult<()> {
     if data.len() < 0x20 {
         return Err(Z3dsError::EncryptionStateUnknown);
@@ -334,10 +339,25 @@ pub(crate) fn check_cia_not_encrypted(data: &[u8]) -> Z3dsResult<()> {
     let ticket_size = u32::from_le_bytes([data[12], data[13], data[14], data[15]]) as usize;
     let tmd_size = u32::from_le_bytes([data[16], data[17], data[18], data[19]]) as usize;
 
-    let content_offset = align_64_usize(header_size)
-        + align_64_usize(cert_chain_size)
-        + align_64_usize(ticket_size)
-        + align_64_usize(tmd_size);
+    let tmd_offset =
+        align_64_usize(header_size) + align_64_usize(cert_chain_size) + align_64_usize(ticket_size);
+    let content_offset = tmd_offset + align_64_usize(tmd_size);
+
+    if tmd_size == 0 || data.len() < tmd_offset + tmd_size {
+        return Err(Z3dsError::EncryptionStateUnknown);
+    }
+
+    let mut cursor = Cursor::new(&data[tmd_offset..tmd_offset + tmd_size]);
+    let tmd = TitleMetadata::read_options(&mut cursor, Endian::Big, ())
+        .map_err(|_| Z3dsError::EncryptionStateUnknown)?;
+
+    if tmd
+        .content_chunk_records
+        .iter()
+        .any(|r| r.content_type.is_encrypted())
+    {
+        return Err(Z3dsError::InputNotDecrypted);
+    }
 
     check_ncch_not_encrypted(data, content_offset)
 }
@@ -347,6 +367,10 @@ mod tests {
     use super::*;
     use crate::nintendo::ctr::constants::{
         NCCH_FLAGS_OFFSET, NCCH_FLAGS7_NOCRYPTO, NCCH_MAGIC_OFFSET, NCSD_PARTITION_TABLE_OFFSET,
+    };
+    use crate::nintendo::ctr::models::signature::{SignatureData, SignatureType};
+    use crate::nintendo::ctr::models::title_metadata::{
+        ContentChunkRecord, ContentInfoRecord, ContentType, TitleMetadataHeader,
     };
     use crate::nintendo::ctr::z3ds::error::Z3dsError;
 
@@ -374,17 +398,94 @@ mod tests {
         data
     }
 
-    // Builds a fake CIA header pointing to an NCCH at the computed content offset.
-    // Uses header_size=0x20, all section sizes 0 → content at align64(0x20) = 0x40.
-    fn make_cia(ncch_decrypted: bool) -> Vec<u8> {
-        // content_offset = align64(0x20) = 0x40
-        let content_offset: usize = 0x40;
+    // Serializes a minimal single-content TMD whose content chunk carries the
+    // chosen Encrypted flag. Mirrors the struct literal in title_metadata tests.
+    fn serialize_tmd(content_encrypted: bool) -> Vec<u8> {
+        let tmd = TitleMetadata {
+            signature_data: SignatureData {
+                signature_type: SignatureType::Rsa2048Sha256,
+                signature: vec![0xBB; 0x100],
+                padding: vec![0x00; 0x3C],
+            },
+            header: TitleMetadataHeader {
+                signature_issuer: vec![0x00; 0x40],
+                version: 1,
+                ca_crl_version: 0,
+                signer_crl_version: 0,
+                reserved1: 0,
+                system_version: 0,
+                title_id: 0x0004000000125600,
+                title_type: 0x00040010,
+                group_id: 0,
+                save_data_size: 0,
+                srl_private_save_data_size: 0,
+                reserved2: 0,
+                srl_flag: 0,
+                reserved3: vec![0x00; 0x31],
+                access_rights: 0,
+                title_version: 0x0100,
+                content_count: 1,
+                boot_content: 0,
+                padding: 0,
+                content_info_records_hash: vec![0x00; 0x20],
+            },
+            content_info_records: vec![
+                ContentInfoRecord {
+                    content_index_offset: 0,
+                    content_command_count: 1,
+                    hash: vec![0x00; 0x20],
+                };
+                64
+            ],
+            content_chunk_records: vec![ContentChunkRecord {
+                content_id: 0,
+                content_index: 0,
+                content_type: ContentType(if content_encrypted { 0x0001 } else { 0x0000 }),
+                content_size: 0x00400000,
+                hash: vec![0x00; 0x20],
+            }],
+        };
+        let mut buf = Vec::new();
+        tmd.write(&mut Cursor::new(&mut buf)).unwrap();
+        buf
+    }
+
+    // Builds a fake CIA probe with a real serialized TMD at tmd_offset (0x40)
+    // and an NCCH block at content_offset. `content_encrypted` drives the TMD
+    // content-chunk Encrypted flag; `ncch_decrypted` drives the NCCH NoCrypto
+    // flag at content_offset.
+    fn make_cia_with_tmd(content_encrypted: bool, ncch_decrypted: bool) -> Vec<u8> {
+        let tmd_bytes = serialize_tmd(content_encrypted);
+        let tmd_offset = 0x40usize;
+        let tmd_size = tmd_bytes.len();
+        let content_offset = tmd_offset + align_64_usize(tmd_size);
         let total = content_offset + 0x200;
+
         let mut data = make_ncch_at(total, content_offset, ncch_decrypted);
-        // header_size = 0x20 (LE u32)
+        data[tmd_offset..tmd_offset + tmd_size].copy_from_slice(&tmd_bytes);
         data[0..4].copy_from_slice(&0x20u32.to_le_bytes());
-        // cert_chain_size, ticket_size, tmd_size all stay 0
+        data[16..20].copy_from_slice(&(tmd_size as u32).to_le_bytes());
         data
+    }
+
+    // Like make_cia_with_tmd but leaves the content region zeroed (no NCCH
+    // magic), matching a real encrypted CIA where the NCCH is ciphertext.
+    fn make_cia_tmd_only(content_encrypted: bool) -> Vec<u8> {
+        let tmd_bytes = serialize_tmd(content_encrypted);
+        let tmd_offset = 0x40usize;
+        let tmd_size = tmd_bytes.len();
+        let content_offset = tmd_offset + align_64_usize(tmd_size);
+        let total = content_offset + 0x200;
+
+        let mut data = vec![0u8; total];
+        data[tmd_offset..tmd_offset + tmd_size].copy_from_slice(&tmd_bytes);
+        data[0..4].copy_from_slice(&0x20u32.to_le_bytes());
+        data[16..20].copy_from_slice(&(tmd_size as u32).to_le_bytes());
+        data
+    }
+
+    fn make_cia(ncch_decrypted: bool) -> Vec<u8> {
+        make_cia_with_tmd(false, ncch_decrypted)
     }
 
     #[test]
@@ -481,6 +582,36 @@ mod tests {
     #[test]
     fn cia_too_short_fails_safe() {
         let data = vec![0u8; 0x10]; // shorter than 0x20
+        assert!(matches!(
+            check_cia_not_encrypted(&data).unwrap_err(),
+            Z3dsError::EncryptionStateUnknown
+        ));
+    }
+
+    #[test]
+    fn cia_tmd_encrypted_flag_returns_not_decrypted() {
+        // TMD marks the content encrypted and the content region is junk (no
+        // NCCH magic), as in a real encrypted CIA. The TMD flag is the only
+        // signal, so this must be InputNotDecrypted, not EncryptionStateUnknown.
+        let data = make_cia_tmd_only(true);
+        assert!(matches!(
+            check_cia_not_encrypted(&data).unwrap_err(),
+            Z3dsError::InputNotDecrypted
+        ));
+    }
+
+    #[test]
+    fn cia_tmd_decrypted_with_plain_ncch_passes() {
+        let data = make_cia_with_tmd(false, true);
+        assert!(check_cia_not_encrypted(&data).is_ok());
+    }
+
+    #[test]
+    fn cia_truncated_tmd_fails_safe() {
+        // Header advertises a TMD the probe is too short to contain.
+        let mut data = vec![0u8; 0x40];
+        data[0..4].copy_from_slice(&0x20u32.to_le_bytes());
+        data[16..20].copy_from_slice(&0x800u32.to_le_bytes());
         assert!(matches!(
             check_cia_not_encrypted(&data).unwrap_err(),
             Z3dsError::EncryptionStateUnknown

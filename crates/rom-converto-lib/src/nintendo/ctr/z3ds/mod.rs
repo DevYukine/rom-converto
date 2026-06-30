@@ -425,6 +425,76 @@ mod tests {
         data
     }
 
+    // Builds a minimal CIA probe whose TMD marks its single content encrypted.
+    // The content region is left as ciphertext (no plaintext NCCH magic), as in
+    // a real encrypted CIA. header_size = 0x20, other sections 0, so TMD at 0x40.
+    fn make_encrypted_cia() -> Vec<u8> {
+        use crate::nintendo::ctr::models::signature::{SignatureData, SignatureType};
+        use crate::nintendo::ctr::models::title_metadata::{
+            ContentChunkRecord, ContentInfoRecord, ContentType, TitleMetadata, TitleMetadataHeader,
+        };
+        use crate::nintendo::ctr::util::align_64_usize;
+        use binrw::BinWrite;
+        use std::io::Cursor;
+
+        let tmd = TitleMetadata {
+            signature_data: SignatureData {
+                signature_type: SignatureType::Rsa2048Sha256,
+                signature: vec![0xBB; 0x100],
+                padding: vec![0x00; 0x3C],
+            },
+            header: TitleMetadataHeader {
+                signature_issuer: vec![0x00; 0x40],
+                version: 1,
+                ca_crl_version: 0,
+                signer_crl_version: 0,
+                reserved1: 0,
+                system_version: 0,
+                title_id: 0x0004000000125600,
+                title_type: 0x00040010,
+                group_id: 0,
+                save_data_size: 0,
+                srl_private_save_data_size: 0,
+                reserved2: 0,
+                srl_flag: 0,
+                reserved3: vec![0x00; 0x31],
+                access_rights: 0,
+                title_version: 0x0100,
+                content_count: 1,
+                boot_content: 0,
+                padding: 0,
+                content_info_records_hash: vec![0x00; 0x20],
+            },
+            content_info_records: vec![
+                ContentInfoRecord {
+                    content_index_offset: 0,
+                    content_command_count: 1,
+                    hash: vec![0x00; 0x20],
+                };
+                64
+            ],
+            content_chunk_records: vec![ContentChunkRecord {
+                content_id: 0,
+                content_index: 0,
+                content_type: ContentType(ContentType::ENCRYPTED),
+                content_size: 0x00400000,
+                hash: vec![0x00; 0x20],
+            }],
+        };
+        let mut tmd_bytes = Vec::new();
+        tmd.write(&mut Cursor::new(&mut tmd_bytes)).unwrap();
+
+        let tmd_offset = 0x40usize;
+        let tmd_size = tmd_bytes.len();
+        let total = tmd_offset + align_64_usize(tmd_size) + 0x200;
+
+        let mut data = vec![0u8; total];
+        data[tmd_offset..tmd_offset + tmd_size].copy_from_slice(&tmd_bytes);
+        data[0..4].copy_from_slice(&0x20u32.to_le_bytes());
+        data[16..20].copy_from_slice(&(tmd_size as u32).to_le_bytes());
+        data
+    }
+
     #[tokio::test]
     async fn compress_encrypted_cxi_allow_bypasses() {
         use crate::nintendo::ctr::z3ds::error::Z3dsError;
@@ -479,11 +549,7 @@ mod tests {
         let input = dir.path().join("encrypted.cia");
         let output = dir.path().join("encrypted.zcia");
 
-        // header_size = 0x20, all other sections 0 → content at align64(0x20) = 0x40.
-        let content_offset = 0x40;
-        let mut data = make_encrypted_ncch_at(content_offset + 0x200, content_offset);
-        data[0..4].copy_from_slice(&0x20u32.to_le_bytes());
-        tokio::fs::write(&input, &data).await.unwrap();
+        tokio::fs::write(&input, make_encrypted_cia()).await.unwrap();
 
         let result = compress_rom(&input, &output, None, false, &NoProgress).await;
         assert!(
