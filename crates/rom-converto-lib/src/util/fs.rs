@@ -70,9 +70,56 @@ pub fn collect_all_files(dir: &Path, max_depth: Option<usize>) -> std::io::Resul
     Ok(out)
 }
 
+pub const DEFAULT_SPACE_HEADROOM: u64 = 256 * 1024 * 1024;
+
+pub fn available_space(path: &Path) -> std::io::Result<u64> {
+    fs4::available_space(path)
+}
+
+/// Best-effort headroom check. `required` is a heuristic floor (the total
+/// input size), not an exact prediction of output size, so this can only
+/// catch a clearly too-full destination, not guarantee the write fits.
+/// Returns the missing byte count when `available < required + headroom`.
+pub fn space_shortfall(available: u64, required: u64, headroom: u64) -> Option<u64> {
+    let needed = required.saturating_add(headroom);
+    needed.checked_sub(available).filter(|missing| *missing > 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn space_shortfall_returns_none_when_sufficient() {
+        assert_eq!(space_shortfall(1000, 500, 100), None);
+    }
+
+    #[test]
+    fn space_shortfall_returns_none_at_exact_threshold() {
+        assert_eq!(space_shortfall(600, 500, 100), None);
+    }
+
+    #[test]
+    fn space_shortfall_returns_missing_when_one_byte_short() {
+        assert_eq!(space_shortfall(599, 500, 100), Some(1));
+    }
+
+    #[test]
+    fn space_shortfall_returns_missing_when_insufficient() {
+        assert_eq!(space_shortfall(100, 500, 100), Some(500));
+    }
+
+    #[test]
+    fn space_shortfall_saturates_without_panicking() {
+        assert_eq!(space_shortfall(0, u64::MAX, u64::MAX), Some(u64::MAX));
+    }
+
+    #[test]
+    fn available_space_returns_positive_for_real_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let n = available_space(dir.path()).unwrap();
+        assert!(n > 0);
+    }
 
     #[test]
     fn has_any_extension_is_case_insensitive_and_requires_a_file() {

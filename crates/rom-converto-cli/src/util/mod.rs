@@ -416,6 +416,16 @@ mod tests {
     }
 
     #[test]
+    fn skip_space_check_flag_parses() {
+        use crate::commands::Cli;
+        use clap::Parser;
+        let cli = Cli::parse_from(["bin", "--skip-space-check", "cso", "compress", "game.iso"]);
+        assert!(cli.skip_space_check);
+        let cli = Cli::parse_from(["bin", "cso", "compress", "game.iso"]);
+        assert!(!cli.skip_space_check);
+    }
+
+    #[test]
     fn templated_output_dry_run_skips_mkdir() {
         let dir = tempdir().unwrap();
         let input = dir.path().join("game.iso");

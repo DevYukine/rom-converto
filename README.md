@@ -85,6 +85,7 @@ Where each format works:
 * [x] Global `--dry-run` preview that shows the planned actions without writing anything
 * [x] Three-step verbosity ladder: `-v` (debug), `-vv` (trace), `-vvv` (trace including dependency logs)
 * [x] Global `--debug-log <FILE>` flag that writes a full trace log to a file independently of the console verbosity
+* [x] Pre-run free-space check that aborts a write-producing run before it starts when the output filesystem looks too full; `--skip-space-check` bypasses it
 * [x] `--on-conflict overwrite-invalid` mode that verifies existing outputs and rewrites only the broken or missing ones
 * [x] Desktop GUI with drag and drop batch processing
 * [x] Standalone `hash` command for crc32 / sha1 / md5 / sha256 digests with report export
@@ -138,6 +139,8 @@ Console verbosity is a three-step ladder. `-v` shows debug-level messages from t
 The compress, decompress, convert, decrypt, and `chd extract` commands also accept `--output-template`, an alternative way to derive the output path from the ROM's own metadata. See [Output-path templates](#output-path-templates).
 
 `--dry-run` is a global flag that previews what a command would do without writing any output. It prints one plan line per file showing the operation, the resolved and templated output path, the `--on-conflict` decision (`overwrite`, `rename`, `skip`, or `new`), the detected media or format, and any missing keys, for example `would compress game.iso -> game.cso (CSO) [overwrite]`. Under `--on-conflict overwrite-invalid` the verify is read-only, so the preview runs it and shows `[keep (valid)]` or `[rewrite (invalid)]` for an existing output. It runs the same input resolution, detection, and conflict checks as a real run, exits 0 on a valid plan, and exits nonzero only for real input errors such as a missing file. Pass `--report` alongside it to export the plan. For the recursive `ctr` file batches (`decrypt`, `compress`, `decompress`, `verify`) the preview lists resolved output paths only, since those batches do not expose a per-file conflict policy. Recursive `cdn-to-cia` does honor `--on-conflict`, so its preview shows the decision per produced `.cia`.
+
+Before any write-producing operation, the CLI estimates how much space the outputs need, using the total size of the input files as a conservative floor, and checks the free space on the output filesystem. If there is not enough room it aborts before writing anything, naming the directory, the estimated need, and the space available. This is a best-effort check, not a guarantee: it cannot know exact output sizes, and decompression in particular can produce far more than the compressed input, so the estimate is a floor. The value is catching a near-full disk before a long batch starts rather than minutes in. If the free-space query fails, for example on an unsupported filesystem, the check is skipped and the run proceeds. Under `--dry-run` nothing is written, so the check never aborts. Pass `--skip-space-check` to disable the preflight entirely.
 
 The GUI does not yet have a preview toggle. It is a tracked follow-up: each write-capable Tauri command needs a `dry_run` parameter and per-page wiring that reuses the CLI plan logic.
 

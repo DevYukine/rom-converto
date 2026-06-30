@@ -462,6 +462,7 @@ async fn main() -> Result<()> {
     let preset = rom_converto_lib::config::resolve_preset(&user_config, cli.preset.as_deref())?;
     let effective = config::resolve(&user_config, preset.as_ref());
     let dry_run = cli.dry_run;
+    let skip_space_check = cli.skip_space_check;
 
     let cancel = rom_converto_lib::util::CancelToken::new();
     {
@@ -479,6 +480,7 @@ async fn main() -> Result<()> {
         total_progress,
         &effective,
         dry_run,
+        skip_space_check,
         cancel.clone(),
         &mut github,
     )
@@ -525,13 +527,14 @@ fn is_cancelled_error(err: &anyhow::Error) -> bool {
     })
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 async fn dispatch_command(
     command: Commands,
     progress: IndicatifProgress,
     total_progress: IndicatifProgress,
     effective: &config::Effective,
     dry_run: bool,
+    skip_space_check: bool,
     cancel: rom_converto_lib::util::CancelToken,
     github: &mut GithubApi,
 ) -> Result<()> {
@@ -680,6 +683,10 @@ async fn dispatch_command(
                         )?;
                         return Ok(());
                     }
+                    if !skip_space_check {
+                        let check_dir = cmd.output_dir.as_deref().unwrap_or(&cmd.input);
+                        batch::space_preflight(&files, check_dir)?;
+                    }
                     let tally = Tally::new();
                     let count = files.len();
                     decrypt_rom_batch_cancellable(
@@ -733,6 +740,10 @@ async fn dispatch_command(
                         }
                         WriteDecision::Write(p) => p,
                     };
+                    if !skip_space_check {
+                        let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
+                        batch::space_preflight_for_size(file_len(&cmd.input), check_dir)?;
+                    }
                     let started = Instant::now();
                     decrypt_rom_cancellable(&cmd.input, &output, &progress, cancel.clone()).await?;
                     log_single_summary(&cmd.input, &output, TallyDirection::Convert, started);
@@ -757,6 +768,10 @@ async fn dispatch_command(
                             derive_compressed_path,
                         )?;
                         return Ok(());
+                    }
+                    if !skip_space_check {
+                        let check_dir = cmd.output_dir.as_deref().unwrap_or(&cmd.input);
+                        batch::space_preflight(&files, check_dir)?;
                     }
                     let tally = Tally::new();
                     let count = files.len();
@@ -812,6 +827,10 @@ async fn dispatch_command(
                         }
                         WriteDecision::Write(p) => p,
                     };
+                    if !skip_space_check {
+                        let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
+                        batch::space_preflight_for_size(file_len(&cmd.input), check_dir)?;
+                    }
                     let started = Instant::now();
                     compress_rom_cancellable(
                         &cmd.input,
@@ -844,6 +863,10 @@ async fn dispatch_command(
                             derive_decompressed_path,
                         )?;
                         return Ok(());
+                    }
+                    if !skip_space_check {
+                        let check_dir = cmd.output_dir.as_deref().unwrap_or(&cmd.input);
+                        batch::space_preflight(&files, check_dir)?;
                     }
                     let tally = Tally::new();
                     let count = files.len();
@@ -903,6 +926,10 @@ async fn dispatch_command(
                         }
                         WriteDecision::Write(p) => p,
                     };
+                    if !skip_space_check {
+                        let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
+                        batch::space_preflight_for_size(file_len(&cmd.input), check_dir)?;
+                    }
                     let started = Instant::now();
                     decompress_rom_cancellable(&cmd.input, &output, &progress, cancel.clone())
                         .await?;
@@ -928,6 +955,10 @@ async fn dispatch_command(
                             derive_converted_path,
                         )?;
                         return Ok(());
+                    }
+                    if !skip_space_check {
+                        let check_dir = cmd.output_dir.as_deref().unwrap_or(&cmd.input);
+                        batch::space_preflight(&files, check_dir)?;
                     }
                     let tally = Tally::new();
                     let count = files.len();
@@ -982,6 +1013,10 @@ async fn dispatch_command(
                         }
                         WriteDecision::Write(p) => p,
                     };
+                    if !skip_space_check {
+                        let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
+                        batch::space_preflight_for_size(file_len(&cmd.input), check_dir)?;
+                    }
                     let started = Instant::now();
                     convert_rom_cancellable(&cmd.input, &output, &progress, cancel.clone()).await?;
                     log_single_summary(&cmd.input, &output, TallyDirection::Convert, started);
@@ -1096,6 +1131,7 @@ async fn dispatch_command(
                         cmd.output_template.as_deref(),
                         cmd.max_depth,
                         dry_run,
+                        skip_space_check,
                         report.as_deref(),
                         cancel.clone(),
                     )
@@ -1169,6 +1205,10 @@ async fn dispatch_command(
                         }
                         WriteDecision::Write(p) => p,
                     };
+                    if !skip_space_check {
+                        let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
+                        batch::space_preflight_for_size(file_len(&cmd.input), check_dir)?;
+                    }
                     let started = Instant::now();
                     compress_disc_cancellable(&cmd.input, &output, opts, &progress, cancel.clone())
                         .await?;
@@ -1198,6 +1238,7 @@ async fn dispatch_command(
                         cmd.output_template.as_deref(),
                         cmd.max_depth,
                         dry_run,
+                        skip_space_check,
                         report.as_deref(),
                         cancel.clone(),
                     )
@@ -1246,6 +1287,10 @@ async fn dispatch_command(
                         }
                         WriteDecision::Write(p) => p,
                     };
+                    if !skip_space_check {
+                        let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
+                        batch::space_preflight_for_size(file_len(&cmd.input), check_dir)?;
+                    }
                     let started = Instant::now();
                     if wants_wbfs_output(&output) {
                         decompress_disc_to_wbfs_cancellable(
@@ -1343,6 +1388,7 @@ async fn dispatch_command(
                         cmd.output_template.as_deref(),
                         cmd.max_depth,
                         dry_run,
+                        skip_space_check,
                         report.as_deref(),
                         cancel.clone(),
                     )
@@ -1416,6 +1462,10 @@ async fn dispatch_command(
                         }
                         WriteDecision::Write(p) => p,
                     };
+                    if !skip_space_check {
+                        let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
+                        batch::space_preflight_for_size(file_len(&cmd.input), check_dir)?;
+                    }
                     let started = Instant::now();
                     compress_disc_cancellable(&cmd.input, &output, opts, &progress, cancel.clone())
                         .await?;
@@ -1445,6 +1495,7 @@ async fn dispatch_command(
                         cmd.output_template.as_deref(),
                         cmd.max_depth,
                         dry_run,
+                        skip_space_check,
                         report.as_deref(),
                         cancel.clone(),
                     )
@@ -1493,6 +1544,10 @@ async fn dispatch_command(
                         }
                         WriteDecision::Write(p) => p,
                     };
+                    if !skip_space_check {
+                        let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
+                        batch::space_preflight_for_size(file_len(&cmd.input), check_dir)?;
+                    }
                     let started = Instant::now();
                     if wants_wbfs_output(&output) {
                         decompress_disc_to_wbfs_cancellable(
@@ -1622,6 +1677,11 @@ async fn dispatch_command(
                     }
                     WriteDecision::Write(p) => p,
                 };
+                if !skip_space_check {
+                    let required: u64 = cmd.inputs.iter().map(|p| file_len(p)).sum();
+                    let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
+                    batch::space_preflight_for_size(required, check_dir)?;
+                }
                 let opts = WupCompressOptions {
                     zstd_level: cmd
                         .level
@@ -1672,6 +1732,9 @@ async fn dispatch_command(
                         return Ok(());
                     }
                     WriteDecision::Write(_) => {}
+                }
+                if !skip_space_check {
+                    batch::space_preflight_for_size(file_len(&cmd.input), &cmd.output)?;
                 }
                 decrypt_nus_title_async_cancellable(
                     cmd.input,
@@ -1776,6 +1839,7 @@ async fn dispatch_command(
                         output_template: cmd.output_template,
                         max_depth: cmd.max_depth,
                         dry_run,
+                        skip_space_check,
                         report,
                     };
                     batch::nx_compress(
@@ -1875,6 +1939,10 @@ async fn dispatch_command(
                         }
                         WriteDecision::Write(p) => p,
                     };
+                    if !skip_space_check {
+                        let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
+                        batch::space_preflight_for_size(file_len(&cmd.input), check_dir)?;
+                    }
                     let in_path = cmd.input.clone();
                     let out_path = output.clone();
                     let started = Instant::now();
@@ -1952,6 +2020,7 @@ async fn dispatch_command(
                         cmd.output_template.as_deref(),
                         cmd.max_depth,
                         dry_run,
+                        skip_space_check,
                         report.as_deref(),
                         cancel.clone(),
                     )
@@ -2003,6 +2072,10 @@ async fn dispatch_command(
                         }
                         WriteDecision::Write(p) => p,
                     };
+                    if !skip_space_check {
+                        let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
+                        batch::space_preflight_for_size(file_len(&cmd.input), check_dir)?;
+                    }
                     let in_path = cmd.input.clone();
                     let out_path = output.clone();
                     let started = Instant::now();
@@ -2096,6 +2169,7 @@ async fn dispatch_command(
                         cmd.output_template.as_deref(),
                         cmd.max_depth,
                         dry_run,
+                        skip_space_check,
                         report.as_deref(),
                         cancel.clone(),
                     )
@@ -2170,6 +2244,10 @@ async fn dispatch_command(
                         }
                         WriteDecision::Write(p) => p,
                     };
+                    if !skip_space_check {
+                        let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
+                        batch::space_preflight_for_size(file_len(&cmd.input), check_dir)?;
+                    }
                     opts.force = true;
                     let in_path = cmd.input.clone();
                     let out_path = output.clone();
@@ -2211,6 +2289,7 @@ async fn dispatch_command(
                         cmd.output_template.as_deref(),
                         cmd.max_depth,
                         dry_run,
+                        skip_space_check,
                         report.as_deref(),
                         cancel.clone(),
                     )
@@ -2262,6 +2341,10 @@ async fn dispatch_command(
                         }
                         WriteDecision::Write(p) => p,
                     };
+                    if !skip_space_check {
+                        let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
+                        batch::space_preflight_for_size(file_len(&cmd.input), check_dir)?;
+                    }
                     let in_path = cmd.input.clone();
                     let out_path = output.clone();
                     let started = Instant::now();
@@ -2346,6 +2429,7 @@ async fn dispatch_command(
                         cmd.output_template.as_deref(),
                         cmd.max_depth,
                         dry_run,
+                        skip_space_check,
                         report.as_deref(),
                         cancel.clone(),
                     )
@@ -2423,6 +2507,10 @@ async fn dispatch_command(
                         }
                         WriteDecision::Write(p) => p,
                     };
+                    if !skip_space_check {
+                        let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
+                        batch::space_preflight_for_size(file_len(&cmd.input), check_dir)?;
+                    }
                     opts.force = true;
                     let in_path = cmd.input.clone();
                     let out_path = output.clone();
@@ -2456,6 +2544,7 @@ async fn dispatch_command(
                         cmd.output_template.as_deref(),
                         cmd.max_depth,
                         dry_run,
+                        skip_space_check,
                         report.as_deref(),
                         cancel.clone(),
                     )
@@ -2504,6 +2593,10 @@ async fn dispatch_command(
                         }
                         WriteDecision::Write(p) => p,
                     };
+                    if !skip_space_check {
+                        let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
+                        batch::space_preflight_for_size(file_len(&cmd.input), check_dir)?;
+                    }
                     let in_path = cmd.input.clone();
                     let out_path = output.clone();
                     let started = Instant::now();
@@ -2580,6 +2673,10 @@ async fn dispatch_command(
                     }
                     WriteDecision::Write(p) => p,
                 };
+                if !skip_space_check {
+                    let check_dir = output_cue.parent().unwrap_or_else(|| Path::new("."));
+                    batch::space_preflight_for_size(file_len(&cmd.input_cue), check_dir)?;
+                }
                 merge_bin(&progress, cmd.input_cue, output_cue, true).await?
             }
         },

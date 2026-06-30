@@ -94,6 +94,13 @@ pub struct Cli {
         help = "Write a full-detail trace log to FILE regardless of console verbosity"
     )]
     pub debug_log: Option<PathBuf>,
+
+    #[arg(
+        long = "skip-space-check",
+        global = true,
+        help = "Skip the free-space preflight before writing output"
+    )]
+    pub skip_space_check: bool,
 }
 
 #[derive(Subcommand, Debug, Eq, PartialEq)]

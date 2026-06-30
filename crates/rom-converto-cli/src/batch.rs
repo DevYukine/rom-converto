@@ -14,6 +14,45 @@ fn file_len(path: &Path) -> u64 {
     std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
 }
 
+pub(crate) fn space_preflight(files: &[PathBuf], check_dir: &Path) -> Result<()> {
+    let required: u64 = files.iter().map(|p| file_len(p)).sum();
+    space_preflight_for_size(required, check_dir)
+}
+
+pub(crate) fn space_preflight_for_size(required: u64, check_dir: &Path) -> Result<()> {
+    // The output dir may not exist yet (it is created after this check), so
+    // probe the nearest existing ancestor, which sits on the same filesystem.
+    let probe = check_dir
+        .ancestors()
+        .find(|p| p.exists())
+        .unwrap_or(check_dir);
+    match rom_converto_lib::util::available_space(probe) {
+        Ok(available) => {
+            if rom_converto_lib::util::space_shortfall(
+                available,
+                required,
+                rom_converto_lib::util::DEFAULT_SPACE_HEADROOM,
+            )
+            .is_some()
+            {
+                anyhow::bail!(
+                    "Not enough free space at {}: need about {}, only {} available. Re-run with --skip-space-check to proceed anyway.",
+                    check_dir.display(),
+                    rom_converto_lib::util::format_bytes(
+                        required.saturating_add(rom_converto_lib::util::DEFAULT_SPACE_HEADROOM)
+                    ),
+                    rom_converto_lib::util::format_bytes(available)
+                );
+            }
+        }
+        Err(e) => log::debug!(
+            "free-space check unavailable at {}: {e}",
+            check_dir.display()
+        ),
+    }
+    Ok(())
+}
+
 pub(crate) fn totals_from(tally: &Tally) -> ReportTotals {
     ReportTotals {
         total_files: tally.count(),
@@ -197,6 +236,7 @@ pub async fn cso_decompress(
     output_template: Option<&str>,
     max_depth: Option<usize>,
     dry_run: bool,
+    skip_space_check: bool,
     report_path: Option<&Path>,
     cancel: CancelToken,
 ) -> Result<()> {
@@ -205,6 +245,9 @@ pub async fn cso_decompress(
     let files = collect_or_warn(input_dir, &["cso", "zso"], max_depth)?;
     if files.is_empty() {
         return Ok(());
+    }
+    if !dry_run && !skip_space_check {
+        space_preflight(&files, output_dir.unwrap_or(input_dir))?;
     }
     if !dry_run && let Some(dir) = output_dir {
         std::fs::create_dir_all(dir)?;
@@ -357,6 +400,7 @@ pub async fn rvz_compress(
     output_template: Option<&str>,
     max_depth: Option<usize>,
     dry_run: bool,
+    skip_space_check: bool,
     report_path: Option<&Path>,
     cancel: CancelToken,
 ) -> Result<()> {
@@ -365,6 +409,9 @@ pub async fn rvz_compress(
     let files = collect_or_warn(input_dir, exts, max_depth)?;
     if files.is_empty() {
         return Ok(());
+    }
+    if !dry_run && !skip_space_check {
+        space_preflight(&files, output_dir.unwrap_or(input_dir))?;
     }
     if !dry_run && let Some(dir) = output_dir {
         std::fs::create_dir_all(dir)?;
@@ -512,6 +559,7 @@ pub async fn rvz_decompress(
     output_template: Option<&str>,
     max_depth: Option<usize>,
     dry_run: bool,
+    skip_space_check: bool,
     report_path: Option<&Path>,
     cancel: CancelToken,
 ) -> Result<()> {
@@ -520,6 +568,9 @@ pub async fn rvz_decompress(
     let files = collect_or_warn(input_dir, &["rvz"], max_depth)?;
     if files.is_empty() {
         return Ok(());
+    }
+    if !dry_run && !skip_space_check {
+        space_preflight(&files, output_dir.unwrap_or(input_dir))?;
     }
     if !dry_run && let Some(dir) = output_dir {
         std::fs::create_dir_all(dir)?;
@@ -710,6 +761,7 @@ pub struct NxCompressTuning {
     pub output_template: Option<String>,
     pub max_depth: Option<usize>,
     pub dry_run: bool,
+    pub skip_space_check: bool,
     pub report: Option<PathBuf>,
 }
 
@@ -730,6 +782,9 @@ pub async fn nx_compress(
     let files = collect_or_warn(input_dir, &["nsp", "xci"], tuning.max_depth)?;
     if files.is_empty() {
         return Ok(());
+    }
+    if !dry_run && !tuning.skip_space_check {
+        space_preflight(&files, tuning.output_dir.as_deref().unwrap_or(input_dir))?;
     }
     if !dry_run && let Some(dir) = tuning.output_dir.as_deref() {
         std::fs::create_dir_all(dir)?;
@@ -921,6 +976,7 @@ pub async fn nx_decompress(
     output_template: Option<&str>,
     max_depth: Option<usize>,
     dry_run: bool,
+    skip_space_check: bool,
     report_path: Option<&Path>,
     cancel: CancelToken,
 ) -> Result<()> {
@@ -931,6 +987,9 @@ pub async fn nx_decompress(
     let files = collect_or_warn(input_dir, &["nsz", "xcz"], max_depth)?;
     if files.is_empty() {
         return Ok(());
+    }
+    if !dry_run && !skip_space_check {
+        space_preflight(&files, output_dir.unwrap_or(input_dir))?;
     }
     if !dry_run && let Some(dir) = output_dir {
         std::fs::create_dir_all(dir)?;
@@ -1171,6 +1230,7 @@ pub async fn chd_compress(
     output_template: Option<&str>,
     max_depth: Option<usize>,
     dry_run: bool,
+    skip_space_check: bool,
     report_path: Option<&Path>,
     cancel: CancelToken,
 ) -> Result<()> {
@@ -1179,6 +1239,9 @@ pub async fn chd_compress(
     let files = collect_or_warn(input_dir, &["cue", "iso"], max_depth)?;
     if files.is_empty() {
         return Ok(());
+    }
+    if !dry_run && !skip_space_check {
+        space_preflight(&files, output_dir.unwrap_or(input_dir))?;
     }
     if !dry_run && let Some(dir) = output_dir {
         std::fs::create_dir_all(dir)?;
@@ -1337,6 +1400,7 @@ pub async fn chd_extract(
     output_template: Option<&str>,
     max_depth: Option<usize>,
     dry_run: bool,
+    skip_space_check: bool,
     report_path: Option<&Path>,
     cancel: CancelToken,
 ) -> Result<()> {
@@ -1345,6 +1409,9 @@ pub async fn chd_extract(
     let files = collect_or_warn(input_dir, &["chd"], max_depth)?;
     if files.is_empty() {
         return Ok(());
+    }
+    if !dry_run && !skip_space_check {
+        space_preflight(&files, output_dir.unwrap_or(input_dir))?;
     }
     if !dry_run && let Some(dir) = output_dir {
         std::fs::create_dir_all(dir)?;
@@ -1463,6 +1530,7 @@ pub async fn cso_compress(
     output_template: Option<&str>,
     max_depth: Option<usize>,
     dry_run: bool,
+    skip_space_check: bool,
     report_path: Option<&Path>,
     cancel: CancelToken,
 ) -> Result<()> {
@@ -1476,6 +1544,9 @@ pub async fn cso_compress(
     let files = collect_or_warn(input_dir, &["iso"], max_depth)?;
     if files.is_empty() {
         return Ok(());
+    }
+    if !dry_run && !skip_space_check {
+        space_preflight(&files, output_dir.unwrap_or(input_dir))?;
     }
     if !dry_run && let Some(dir) = output_dir {
         std::fs::create_dir_all(dir)?;

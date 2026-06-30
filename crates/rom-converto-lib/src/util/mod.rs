@@ -11,6 +11,7 @@ pub mod template;
 pub mod worker_pool;
 
 pub use conflict::{ConflictPolicy, ConflictResolution, resolve_conflict};
+pub use fs::{DEFAULT_SPACE_HEADROOM, available_space, space_shortfall};
 pub use hash::{FileDigests, HashAlgo, hash_file, parse_algos};
 pub use report::{
     HashReportRecord, ReportFormat, ReportRecord, ReportTotals, write_hash_report, write_report,

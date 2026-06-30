@@ -55,3 +55,4 @@ lz4 = "^1.28"
 # HTTP (for seed DB fetch)
 reqwest.workspace = true
 tempfile = "^3"
+fs4 = "^0.12"
