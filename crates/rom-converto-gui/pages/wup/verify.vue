@@ -116,6 +116,10 @@ async function execute() {
       :has-error="!!error || (!!verdict && verdict.ok === false)"
     />
 
+    <div class="mb-4">
+      <OutputLog :command="commandLine" :result="isBatch ? result : ''" :error="error" />
+    </div>
+
     <OperationCard>
       <div class="space-y-5">
         <BatchFileList
@@ -236,10 +240,6 @@ async function execute() {
         </div>
       </div>
     </OperationCard>
-
-    <div class="mt-4">
-      <OutputLog :command="commandLine" :result="isBatch ? result : ''" :error="error" />
-    </div>
   </div>
 </template>
 

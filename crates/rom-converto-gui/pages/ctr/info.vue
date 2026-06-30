@@ -23,6 +23,10 @@ const CTR_FILTERS = [
       :has-error="!!error"
     />
 
+    <div class="mb-4">
+      <OutputLog :error="error" />
+    </div>
+
     <OperationCard>
       <div class="space-y-5">
         <FileDropZone
@@ -43,10 +47,6 @@ const CTR_FILTERS = [
         <RomInfoCard v-if="info" :info="info" />
       </div>
     </OperationCard>
-
-    <div class="mt-4">
-      <OutputLog :error="error" />
-    </div>
 
     <details v-if="rawJson" class="mt-4">
       <summary class="cursor-pointer text-sm text-zinc-500">Raw JSON payload</summary>

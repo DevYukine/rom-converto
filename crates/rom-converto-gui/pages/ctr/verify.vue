@@ -184,67 +184,8 @@ const batchOptions = {
       :has-error="!!error || (!!verifyResult && !verdictOk)"
     />
 
-    <OperationCard>
-      <div class="space-y-5">
-        <template v-if="isBatch">
-          <BatchFileList
-            :items="queue"
-            :current-index="batch.currentIndex.value"
-            :running="batch.running.value"
-            :progress="batch.progress"
-            @remove="store.removeFromQueue"
-            @clear="store.clearQueue"
-          />
-
-          <FileDropZone
-            label="Add more ROM files"
-            model-value=""
-            :multiple="true"
-            :filters="ROM_FILTERS"
-            @update:model-value="(p: string) => { if (p) store.addToQueue(p) }"
-            @update:files="handleFiles"
-          />
-        </template>
-
-        <FileDropZone
-          v-else
-          :model-value="input"
-          label="Input ROM file"
-          :multiple="true"
-          :filters="ROM_FILTERS"
-          :primary="true"
-          @update:model-value="handleSingleFile"
-          @update:files="handleFiles"
-        />
-
-        <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
-          <FlagToggle
-            v-model="verifyContent"
-            label="Verify content hashes"
-            description="Also check SHA-256 hashes of all content data (CIA only, slower)"
-          />
-        </div>
-
-        <ProgressBar
-          :percent="progress.percent.value"
-          :message="progress.message.value"
-          :running="progress.running.value"
-        />
-
-        <RunButton
-          :loading="loading || batch.running.value"
-          :batch-current="batch.currentIndex.value"
-          :batch-total="queue.length"
-          :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input"
-          @click="execute"
-        >
-          {{ isBatch && queue.filter(i => i.status === 'pending').length > 1 ? `Verify All (${queue.filter(i => i.status === 'pending').length})` : 'Verify' }}
-        </RunButton>
-      </div>
-    </OperationCard>
-
     <template v-if="verifyResult && verifyResult.format === 'Cia'">
-      <div class="mt-4 space-y-3">
+      <div class="mb-4 space-y-3">
         <div
           class="flex items-center gap-3 rounded-lg border-l-2 px-4 py-3"
           :class="{
@@ -298,7 +239,7 @@ const batchOptions = {
     </template>
 
     <template v-else-if="verifyResult && verifyResult.format === 'Ncsd'">
-      <div class="mt-4 space-y-3">
+      <div class="mb-4 space-y-3">
         <div
           class="flex items-center gap-3 rounded-lg border-l-2 px-4 py-3"
           :class="(verifyResult as NcsdResult).ncsd_magic_valid ? 'border-emerald-500 bg-emerald-500/5' : 'border-red-500 bg-red-500/5'"
@@ -370,8 +311,67 @@ const batchOptions = {
       </div>
     </template>
 
-    <div v-else class="mt-4">
+    <div v-else class="mb-4">
       <OutputLog :command="commandLine" :result="result" :error="error" />
     </div>
+
+    <OperationCard>
+      <div class="space-y-5">
+        <template v-if="isBatch">
+          <BatchFileList
+            :items="queue"
+            :current-index="batch.currentIndex.value"
+            :running="batch.running.value"
+            :progress="batch.progress"
+            @remove="store.removeFromQueue"
+            @clear="store.clearQueue"
+          />
+
+          <FileDropZone
+            label="Add more ROM files"
+            model-value=""
+            :multiple="true"
+            :filters="ROM_FILTERS"
+            @update:model-value="(p: string) => { if (p) store.addToQueue(p) }"
+            @update:files="handleFiles"
+          />
+        </template>
+
+        <FileDropZone
+          v-else
+          :model-value="input"
+          label="Input ROM file"
+          :multiple="true"
+          :filters="ROM_FILTERS"
+          :primary="true"
+          @update:model-value="handleSingleFile"
+          @update:files="handleFiles"
+        />
+
+        <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
+          <FlagToggle
+            v-model="verifyContent"
+            label="Verify content hashes"
+            description="Also check SHA-256 hashes of all content data (CIA only, slower)"
+          />
+        </div>
+
+        <ProgressBar
+          :percent="progress.percent.value"
+          :message="progress.message.value"
+          :running="progress.running.value"
+        />
+
+        <RunButton
+          :loading="loading || batch.running.value"
+          :batch-current="batch.currentIndex.value"
+          :batch-total="queue.length"
+          :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input"
+          @click="execute"
+        >
+          {{ isBatch && queue.filter(i => i.status === 'pending').length > 1 ? `Verify All (${queue.filter(i => i.status === 'pending').length})` : 'Verify' }}
+        </RunButton>
+      </div>
+    </OperationCard>
   </div>
 </template>

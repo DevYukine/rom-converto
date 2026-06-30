@@ -51,6 +51,10 @@ async function execute() {
       :has-error="!!error"
     />
 
+    <div class="mb-4">
+      <OutputLog :command="commandLine" :result="result" :cancelled="cancelled ? 'Operation cancelled.' : undefined" :error="error" />
+    </div>
+
     <OperationCard>
       <div class="space-y-5">
         <div class="grid gap-5 lg:grid-cols-2">
@@ -129,9 +133,5 @@ async function execute() {
         </RunButton>
       </div>
     </OperationCard>
-
-    <div class="mt-4">
-      <OutputLog :command="commandLine" :result="result" :cancelled="cancelled ? 'Operation cancelled.' : undefined" :error="error" />
-    </div>
   </div>
 </template>

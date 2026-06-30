@@ -157,6 +157,10 @@ function onRun() {
       :has-error="!!error"
     />
 
+    <div class="mb-4">
+      <OutputLog :command="commandLine" :result="result" :preview="preview" :cancelled="cancelled ? 'Operation cancelled.' : undefined" :error="error" />
+    </div>
+
     <OperationCard>
       <div class="space-y-5">
         <SegmentedControl
@@ -280,9 +284,5 @@ function onRun() {
         </RunButton>
       </div>
     </OperationCard>
-
-    <div class="mt-4">
-      <OutputLog :command="commandLine" :result="result" :preview="preview" :cancelled="cancelled ? 'Operation cancelled.' : undefined" :error="error" />
-    </div>
   </div>
 </template>

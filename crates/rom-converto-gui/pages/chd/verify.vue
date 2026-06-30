@@ -68,6 +68,10 @@ async function execute() {
       :has-error="!!error || (!isBatch && !!result && !verdictPassed(result))"
     />
 
+    <div class="mb-4">
+      <OutputLog :command="commandLine" :result="result" :cancelled="cancelled ? 'Operation cancelled.' : undefined" :error="error" />
+    </div>
+
     <OperationCard>
       <div class="space-y-5">
         <template v-if="isBatch">
@@ -133,9 +137,5 @@ async function execute() {
         </RunButton>
       </div>
     </OperationCard>
-
-    <div class="mt-4">
-      <OutputLog :command="commandLine" :result="result" :cancelled="cancelled ? 'Operation cancelled.' : undefined" :error="error" />
-    </div>
   </div>
 </template>
