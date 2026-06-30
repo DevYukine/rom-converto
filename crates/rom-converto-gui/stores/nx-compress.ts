@@ -9,6 +9,8 @@ export function isXciInput(input: string): boolean {
 
 export const useNxCompressStore = defineStore("nx-compress", () => {
   const queue = ref<BatchItem[]>([]);
+  const recursive = ref(true);
+  const maxDepth = ref<number | null>(null);
   const output = ref("");
   const keys = ref("");
   const level = ref<number>(18);
@@ -55,6 +57,8 @@ export const useNxCompressStore = defineStore("nx-compress", () => {
 
   function $reset() {
     queue.value = [];
+    recursive.value = true;
+    maxDepth.value = null;
     output.value = "";
     keys.value = "";
     level.value = 18;
@@ -72,6 +76,8 @@ export const useNxCompressStore = defineStore("nx-compress", () => {
 
   return {
     queue,
+    recursive,
+    maxDepth,
     output,
     keys,
     level,

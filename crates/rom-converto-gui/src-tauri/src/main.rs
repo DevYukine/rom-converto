@@ -44,6 +44,7 @@ fn main() {
             cmd_save_icon,
             cmd_hash,
             cmd_playlist,
+            cmd_scan_dir,
             cmd_write_report,
             cmd_file_size,
             app_display_version,

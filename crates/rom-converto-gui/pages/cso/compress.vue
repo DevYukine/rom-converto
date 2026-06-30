@@ -4,8 +4,10 @@ import { useCsoCompressStore } from "~/stores/cso-compress";
 import type { ReportRecord, RunOutcome } from "~/types/report";
 
 const store = useCsoCompressStore();
-const { input, output, format, onConflict, skipSpaceCheck, blockSize, outputTemplate, reportFile, result, error, loading, queue } = storeToRefs(store);
+const { input, output, format, onConflict, skipSpaceCheck, blockSize, outputTemplate, reportFile, result, error, loading, queue, recursive, maxDepth } = storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
+const { expand } = useFolderScan(["iso"]);
+const scanDepth = () => (recursive.value ? maxDepth.value : 1);
 const { run, cancelled, abort } = useOperation({ result, error, loading });
 const progress = useProgress("cso-compress");
 
@@ -58,17 +60,22 @@ watch(outputDir, () => {
   }
 });
 
-function handleFiles(paths: string[]) {
+async function handleFiles(paths: string[]) {
   for (const p of paths) {
-    store.addToQueue(p, resolve(deriveCsoPath(p, format.value)));
+    for (const f of await expand(p, scanDepth())) {
+      store.addToQueue(f, resolve(deriveCsoPath(f, format.value)));
+    }
   }
 }
 
-function handleSingleFile(path: string) {
-  if (queue.value.length > 0) {
-    store.addToQueue(path, resolve(deriveCsoPath(path, format.value)));
-  } else {
+async function handleSingleFile(path: string) {
+  const found = await expand(path, scanDepth());
+  if (found.length === 1 && found[0] === path && queue.value.length === 0) {
     input.value = path;
+  } else {
+    for (const f of found) {
+      store.addToQueue(f, resolve(deriveCsoPath(f, format.value)));
+    }
   }
 }
 
@@ -146,7 +153,7 @@ function onRun() {
             model-value=""
             :multiple="true"
             :filters="[{ name: 'ISO image', extensions: ['iso'] }]"
-            @update:model-value="(p: string) => { if (p) store.addToQueue(p, resolve(deriveCsoPath(p, format))) }"
+            @update:model-value="(p: string) => { if (p) handleSingleFile(p) }"
             @update:files="handleFiles"
           />
         </template>
@@ -180,6 +187,12 @@ function onRun() {
             @update:model-value="(v: string) => { format = v as 'cso' | 'zso' }"
           />
           <ConflictPolicyControl v-model="onConflict" />
+          <RecursiveOptions
+            :recursive="recursive"
+            :max-depth="maxDepth"
+            @update:recursive="recursive = $event"
+            @update:max-depth="maxDepth = $event"
+          />
           <FlagToggle
             v-model="skipSpaceCheck"
             label="Skip free space check"

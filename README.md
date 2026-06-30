@@ -112,20 +112,22 @@ The GUI surfaces every meaningful CLI capability. The table below maps each CLI 
 
 | CLI command | GUI page | Notes |
 |---|---|---|
-| `chd compress` / `extract` / `verify` / `info` | CD / DVD (CHD) | conflict policy on compress |
-| `cso compress` / `decompress` / `verify` / `info` | PSP / PS2 (CSO/ZSO) | conflict policy on compress and decompress |
-| `ctr` (cdn-to-cia, decrypt, compress, decompress, convert, verify, generate-ticket, info) | 3DS | conflict policy on every write command |
-| `dol compress` / `decompress` / `verify` / `info` | GameCube | conflict policy on compress and decompress |
-| `rvl compress` / `decompress` / `verify` / `info` | Wii | conflict policy on compress and decompress |
-| `wup compress` / `decrypt` / `verify` / `info` | Wii U | conflict policy on compress and decrypt |
-| `nx compress` / `decompress` / `verify` / `info` | Switch | conflict policy on compress and decompress |
+| `chd compress` / `extract` / `verify` / `info` | CD / DVD (CHD) | conflict policy on compress, including overwrite-invalid; recursive folder scan on compress and extract |
+| `cso compress` / `decompress` / `verify` / `info` | PSP / PS2 (CSO/ZSO) | conflict policy on compress and decompress, including overwrite-invalid; recursive folder scan |
+| `ctr` (cdn-to-cia, decrypt, compress, decompress, convert, verify, generate-ticket, info) | 3DS | conflict policy on every write command, including overwrite-invalid; recursive folder scan on decrypt, compress, decompress, and convert |
+| `dol compress` / `decompress` / `verify` / `info` | GameCube | conflict policy on compress and decompress, including overwrite-invalid; recursive folder scan |
+| `rvl compress` / `decompress` / `verify` / `info` | Wii | conflict policy on compress and decompress, including overwrite-invalid; recursive folder scan |
+| `wup compress` / `decrypt` / `verify` / `info` | Wii U | conflict policy on compress and decrypt, including overwrite-invalid |
+| `nx compress` / `decompress` / `verify` / `info` | Switch | conflict policy on compress and decompress, including overwrite-invalid; recursive folder scan |
 | `cue merge` | CD (CUE/BIN) | full conflict policy |
 | `hash` | Utilities -> Hash | CRC32/SHA1/MD5/SHA256, recursive folder scan |
 | `playlist` | Utilities -> Playlist | .m3u generation, conflict policy |
 
 Every GUI control forwards to the same library function the CLI uses, so a GUI run and the equivalent CLI command produce identical output. The CLI command echo above each result reflects the chosen options.
 
-**Conflict policy.** Pages that write output expose an "On conflict" control with Overwrite, Skip, Rename, and Error, replacing the older force toggle. The choice is resolved before the write so Skip and Error never touch an existing file.
+**Conflict policy.** Pages that write output expose an "On conflict" control with Overwrite, Skip, Rename, Error, and Overwrite if invalid, replacing the older force toggle. The choice is resolved before the write so Skip and Error never touch an existing file. With Overwrite if invalid the GUI runs the same per-format integrity verify the CLI does before deciding keep versus rewrite, and falls back to existence-based skip for outputs that have no integrity check, matching the CLI.
+
+**Recursive folder scan.** Dropping or browsing a folder onto a write-capable batch page scans it for matching input files and queues them, using the same junk-filtered library walk as the CLI. A Recursive toggle with an optional max-depth controls how deep the scan goes, defaulting to full depth like the CLI `-R`.
 
 **Disk space preflight.** Before any write-producing command runs, the GUI checks the output filesystem for free space, using the total size of the input files as a conservative floor plus a 256 MiB headroom. If space looks insufficient it reports an error and writes nothing, naming the directory, the estimated need, and the space available. The estimate is a floor and cannot account for decompression that expands well beyond its input, so the value is in catching a near-full disk before a long batch starts. If the free-space query fails, the run proceeds. The "Skip free space check" toggle on each write page bypasses the guard, matching the CLI's `--skip-space-check`.
 
@@ -140,11 +142,6 @@ Every GUI control forwards to the same library function the CLI uses, so a GUI r
 * `info --json`: scripting output for the terminal; the GUI shows a rich info card.
 
 **Run reports and output templates.** The GUI exposes `--report` on the compress and decompress pages for every format (dol, rvl, cso, nx) plus chd compress and chd extract. It accumulates one record per processed file and calls the same `write_report` library function the CLI uses, so the CSV/JSON/HTML output is identical. The report file is overwritten directly and does not go through the on-conflict control, matching the CLI. The GUI also exposes `--output-template` on those pages plus the four CTR operations (compress, decompress, convert, decrypt). For CTR the template is single file only, so the field is hidden once files are queued for a batch. The template resolves through the same `TemplateTokens` and `apply_template` library functions, so the resolved path matches the CLI. Extract report rows carry zero byte sizes, the same as the CLI, since extraction writes several files.
-
-**Deferred.** These CLI options are not yet in the GUI:
-
-* Recursive batch conversion through a directory scan (the GUI's per-file batch queue covers the common case).
-* `--on-conflict overwrite-invalid` on the CHD, CSO, and CUE compress paths, where the library cannot run the async integrity check at conflict time; it is omitted from those controls rather than degrading silently to skip.
 
 ### Running the GUI in Development
 

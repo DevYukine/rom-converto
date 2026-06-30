@@ -16,6 +16,7 @@ const options = [
   { label: "Skip", value: "skip" },
   { label: "Rename", value: "rename" },
   { label: "Error", value: "error" },
+  { label: "Overwrite if invalid", value: "overwrite-invalid" },
 ];
 </script>
 

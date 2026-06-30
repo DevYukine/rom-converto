@@ -14,6 +14,8 @@ export const useChdExtractStore = defineStore("chd-extract", () => {
   const loading = ref(false);
 
   const queue = ref<BatchItem[]>([]);
+  const recursive = ref(true);
+  const maxDepth = ref<number | null>(null);
 
   function addToQueue(filePath: string, outputPath: string) {
     queue.value.push({
@@ -43,6 +45,8 @@ export const useChdExtractStore = defineStore("chd-extract", () => {
     error.value = "";
     loading.value = false;
     queue.value = [];
+    recursive.value = true;
+    maxDepth.value = null;
   }
 
   return {
@@ -56,6 +60,8 @@ export const useChdExtractStore = defineStore("chd-extract", () => {
     error,
     loading,
     queue,
+    recursive,
+    maxDepth,
     addToQueue,
     removeFromQueue,
     clearQueue,

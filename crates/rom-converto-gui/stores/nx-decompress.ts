@@ -3,6 +3,8 @@ import type { BatchItem } from "~/types/batch";
 
 export const useNxDecompressStore = defineStore("nx-decompress", () => {
   const queue = ref<BatchItem[]>([]);
+  const recursive = ref(true);
+  const maxDepth = ref<number | null>(null);
   const output = ref("");
   const keys = ref("");
   const onConflict = ref("overwrite");
@@ -34,6 +36,8 @@ export const useNxDecompressStore = defineStore("nx-decompress", () => {
 
   function $reset() {
     queue.value = [];
+    recursive.value = true;
+    maxDepth.value = null;
     output.value = "";
     keys.value = "";
     onConflict.value = "overwrite";
@@ -47,6 +51,8 @@ export const useNxDecompressStore = defineStore("nx-decompress", () => {
 
   return {
     queue,
+    recursive,
+    maxDepth,
     output,
     keys,
     onConflict,

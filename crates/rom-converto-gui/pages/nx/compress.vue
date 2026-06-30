@@ -5,9 +5,11 @@ import { isXciInput, useNxCompressStore, type NxMode } from "~/stores/nx-compres
 import type { ReportRecord, RunOutcome } from "~/types/report";
 
 const store = useNxCompressStore();
-const { queue, output, keys, level, mode, blockSizeExp, onConflict, skipSpaceCheck, outputTemplate, reportFile, result, error, loading } =
+const { queue, output, keys, level, mode, blockSizeExp, onConflict, skipSpaceCheck, outputTemplate, reportFile, result, error, loading, recursive, maxDepth } =
   storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
+const { expand } = useFolderScan(["nsp", "xci"]);
+const scanDepth = () => (recursive.value ? maxDepth.value : 1);
 const progress = useProgress("nx-compress");
 
 const previewMode = ref(false);
@@ -43,9 +45,12 @@ const batch = useBatchOperation("nx-compress", "cmd_nx_compress", compressArgs);
 const dropZoneRef = ref<HTMLElement | null>(null);
 let zoneId: string | null = null;
 
-function addPaths(paths: string[]) {
+async function addPaths(paths: string[]) {
   for (const p of paths) {
-    if (p) store.addToQueue(p);
+    if (!p) continue;
+    for (const f of await expand(p, scanDepth())) {
+      store.addToQueue(f);
+    }
   }
   if (!output.value && queue.value.length > 0) {
     const first = queue.value[0];
@@ -262,8 +267,14 @@ function onRun() {
           </div>
         </div>
 
-        <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
+        <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3 space-y-3">
           <ConflictPolicyControl v-model="onConflict" />
+          <RecursiveOptions
+            :recursive="recursive"
+            :max-depth="maxDepth"
+            @update:recursive="recursive = $event"
+            @update:max-depth="maxDepth = $event"
+          />
           <FlagToggle
             v-model="skipSpaceCheck"
             label="Skip free space check"

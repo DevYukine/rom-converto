@@ -5,8 +5,10 @@ import { useNxDecompressStore } from "~/stores/nx-decompress";
 import type { ReportRecord, RunOutcome } from "~/types/report";
 
 const store = useNxDecompressStore();
-const { queue, output, keys, onConflict, skipSpaceCheck, outputTemplate, reportFile, result, error, loading } = storeToRefs(store);
+const { queue, output, keys, onConflict, skipSpaceCheck, outputTemplate, reportFile, result, error, loading, recursive, maxDepth } = storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
+const { expand } = useFolderScan(["nsz", "xcz"]);
+const scanDepth = () => (recursive.value ? maxDepth.value : 1);
 const progress = useProgress("nx-decompress");
 
 const previewMode = ref(false);
@@ -34,9 +36,12 @@ const batch = useBatchOperation("nx-decompress", "cmd_nx_decompress", decompress
 const dropZoneRef = ref<HTMLElement | null>(null);
 let zoneId: string | null = null;
 
-function addPaths(paths: string[]) {
+async function addPaths(paths: string[]) {
   for (const p of paths) {
-    if (p) store.addToQueue(p);
+    if (!p) continue;
+    for (const f of await expand(p, scanDepth())) {
+      store.addToQueue(f);
+    }
   }
   if (!output.value && queue.value.length > 0) {
     const first = queue.value[0];
@@ -193,8 +198,14 @@ function onRun() {
           :filters="[{ name: 'prod.keys', extensions: ['keys', 'txt'] }]"
         />
 
-        <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
+        <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3 space-y-3">
           <ConflictPolicyControl v-model="onConflict" />
+          <RecursiveOptions
+            :recursive="recursive"
+            :max-depth="maxDepth"
+            @update:recursive="recursive = $event"
+            @update:max-depth="maxDepth = $event"
+          />
           <FlagToggle
             v-model="skipSpaceCheck"
             label="Skip free space check"

@@ -5,8 +5,10 @@ import { useChdExtractStore } from "~/stores/chd-extract";
 import type { ReportRecord, RunOutcome } from "~/types/report";
 
 const store = useChdExtractStore();
-const { input, output, parent, skipSpaceCheck, outputTemplate, reportFile, result, error, loading, queue } = storeToRefs(store);
+const { input, output, parent, skipSpaceCheck, outputTemplate, reportFile, result, error, loading, queue, recursive, maxDepth } = storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
+const { expand } = useFolderScan(["chd"]);
+const scanDepth = () => (recursive.value ? maxDepth.value : 1);
 const { run, cancelled, abort } = useOperation({ result, error, loading });
 const progress = useProgress("chd-extract");
 
@@ -59,15 +61,20 @@ watch(outputDir, () => {
 
 async function handleFiles(paths: string[]) {
   for (const p of paths) {
-    store.addToQueue(p, resolve(await deriveOutput(p)));
+    for (const f of await expand(p, scanDepth())) {
+      store.addToQueue(f, resolve(await deriveOutput(f)));
+    }
   }
 }
 
 async function handleSingleFile(path: string) {
-  if (queue.value.length > 0) {
-    store.addToQueue(path, resolve(await deriveOutput(path)));
-  } else {
+  const found = await expand(path, scanDepth());
+  if (found.length === 1 && found[0] === path && queue.value.length === 0) {
     input.value = path;
+  } else {
+    for (const f of found) {
+      store.addToQueue(f, resolve(await deriveOutput(f)));
+    }
   }
 }
 
@@ -145,7 +152,7 @@ function onRun() {
             model-value=""
             :multiple="true"
             :filters="[{ name: 'CHD', extensions: ['chd'] }]"
-            @update:model-value="async (p: string) => { if (p) store.addToQueue(p, resolve(await deriveOutput(p))) }"
+            @update:model-value="(p: string) => { if (p) handleSingleFile(p) }"
             @update:files="handleFiles"
           />
         </template>
@@ -178,6 +185,12 @@ function onRun() {
         />
 
         <div class="space-y-3 rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
+          <RecursiveOptions
+            :recursive="recursive"
+            :max-depth="maxDepth"
+            @update:recursive="recursive = $event"
+            @update:max-depth="maxDepth = $event"
+          />
           <FlagToggle
             v-model="skipSpaceCheck"
             label="Skip free space check"

@@ -37,7 +37,7 @@ use rom_converto_lib::nintendo::wup::{
     decrypt_nus_title_async_cancellable, verify_wup_async,
 };
 use rom_converto_lib::playlist::{PlaylistMode, PlaylistOptions, plan_playlists};
-use rom_converto_lib::util::fs::collect_all_files;
+use rom_converto_lib::util::fs::{collect_all_files, collect_files_with_exts};
 use rom_converto_lib::util::{
     CancelToken, ConflictPolicy, ConflictResolution, DEFAULT_SPACE_HEADROOM, FileStatus, HashAlgo,
     PlanLine, ReportFormat, ReportRecord, ReportTotals, TemplateTokens, apply_template,
@@ -195,17 +195,36 @@ fn conflict_policy(s: Option<&str>) -> ConflictPolicy {
 }
 
 /// Resolve where to write `desired` under the chosen policy. Returns `Ok(None)`
-/// when the policy is to keep an existing file, in which case the caller skips
-/// the operation entirely. The force-only lib functions cannot express skip or
-/// rename themselves, so the decision is made here and the lib is then called
-/// with force=true to bypass its own existence guard.
-fn resolve_write_path(
+/// when an existing file is kept, in which case the caller skips the operation;
+/// the lib is otherwise called with force=true since the force-only lib
+/// functions cannot express skip or rename themselves.
+///
+/// `overwrite-invalid` is executed here: `resolve_conflict` reports `Skip` for
+/// `OverwriteInvalid`, so the keep-versus-rewrite decision is made by verifying
+/// the existing file. A valid output is kept (skip), an invalid one is
+/// rewritten. This uses the same verify call, target, and mapping as
+/// `plan_line`, so the dry-run preview and the real run agree.
+async fn resolve_output(
+    progress: &dyn rom_converto_lib::util::ProgressReporter,
     desired: &Path,
     on_conflict: Option<&str>,
+    verify: rom_converto_lib::util::OutputVerify,
 ) -> Result<Option<PathBuf>, String> {
-    match resolve_conflict(desired, conflict_policy(on_conflict)).map_err(err_to_string)? {
+    use rom_converto_lib::util::{VerifyOutcome, verify_existing_output};
+    let policy = conflict_policy(on_conflict);
+    match resolve_conflict(desired, policy).map_err(err_to_string)? {
         ConflictResolution::Write(p) => Ok(Some(p)),
-        ConflictResolution::Skip => Ok(None),
+        ConflictResolution::Skip => {
+            if policy == ConflictPolicy::OverwriteInvalid && desired.exists() {
+                let outcome = verify_existing_output(progress, desired, verify).await;
+                Ok(match outcome {
+                    VerifyOutcome::Valid => None,
+                    VerifyOutcome::Invalid => Some(desired.to_path_buf()),
+                })
+            } else {
+                Ok(None)
+            }
+        }
     }
 }
 
@@ -460,7 +479,14 @@ pub async fn cmd_decrypt_rom(
         .await?;
         return Ok(line.display_text());
     }
-    let output = match resolve_write_path(&desired, on_conflict.as_deref())? {
+    let output = match resolve_output(
+        progress.as_ref(),
+        &desired,
+        on_conflict.as_deref(),
+        rom_converto_lib::util::OutputVerify::None,
+    )
+    .await?
+    {
         Some(p) => p,
         None => return Ok(format!("skipped existing {}", desired.display())),
     };
@@ -533,7 +559,14 @@ pub async fn cmd_compress_rom(
         .await?;
         return Ok(line.display_text());
     }
-    let output = match resolve_write_path(&desired, on_conflict.as_deref())? {
+    let output = match resolve_output(
+        progress.as_ref(),
+        &desired,
+        on_conflict.as_deref(),
+        rom_converto_lib::util::OutputVerify::None,
+    )
+    .await?
+    {
         Some(p) => p,
         None => return Ok(format!("skipped existing {}", desired.display())),
     };
@@ -601,7 +634,14 @@ pub async fn cmd_decompress_rom(
         .await?;
         return Ok(line.display_text());
     }
-    let output = match resolve_write_path(&desired, on_conflict.as_deref())? {
+    let output = match resolve_output(
+        progress.as_ref(),
+        &desired,
+        on_conflict.as_deref(),
+        rom_converto_lib::util::OutputVerify::None,
+    )
+    .await?
+    {
         Some(p) => p,
         None => return Ok(format!("skipped existing {}", desired.display())),
     };
@@ -667,7 +707,14 @@ pub async fn cmd_chd_compress(
             record: None,
         });
     }
-    let output = match resolve_write_path(&desired, on_conflict.as_deref())? {
+    let output = match resolve_output(
+        progress.as_ref(),
+        &desired,
+        on_conflict.as_deref(),
+        rom_converto_lib::util::OutputVerify::Chd,
+    )
+    .await?
+    {
         Some(p) => p,
         None => {
             return Ok(RunOutcome::skipped(
@@ -771,7 +818,14 @@ pub async fn cmd_cso_compress(
             record: None,
         });
     }
-    let output = match resolve_write_path(&desired, on_conflict.as_deref())? {
+    let output = match resolve_output(
+        progress.as_ref(),
+        &desired,
+        on_conflict.as_deref(),
+        rom_converto_lib::util::OutputVerify::Cso,
+    )
+    .await?
+    {
         Some(p) => p,
         None => {
             return Ok(RunOutcome::skipped(
@@ -862,7 +916,14 @@ pub async fn cmd_cso_decompress(
             record: None,
         });
     }
-    let output = match resolve_write_path(&desired, on_conflict.as_deref())? {
+    let output = match resolve_output(
+        progress.as_ref(),
+        &desired,
+        on_conflict.as_deref(),
+        rom_converto_lib::util::OutputVerify::None,
+    )
+    .await?
+    {
         Some(p) => p,
         None => {
             return Ok(RunOutcome::skipped(
@@ -949,7 +1010,14 @@ pub async fn cmd_cue_merge(
         .await?;
         return Ok(line.display_text());
     }
-    let output = match resolve_write_path(&output, on_conflict.as_deref())? {
+    let output = match resolve_output(
+        progress.as_ref(),
+        &output,
+        on_conflict.as_deref(),
+        rom_converto_lib::util::OutputVerify::None,
+    )
+    .await?
+    {
         Some(p) => p,
         None => return Ok(format!("skipped existing {}", output.display())),
     };
@@ -1131,7 +1199,14 @@ pub async fn cmd_compress_disc(
             record: None,
         });
     }
-    let output = match resolve_write_path(&desired, on_conflict.as_deref())? {
+    let output = match resolve_output(
+        progress.as_ref(),
+        &desired,
+        on_conflict.as_deref(),
+        rom_converto_lib::util::OutputVerify::Rvz,
+    )
+    .await?
+    {
         Some(p) => p,
         None => {
             return Ok(RunOutcome::skipped(
@@ -1223,7 +1298,14 @@ pub async fn cmd_decompress_disc(
             record: None,
         });
     }
-    let output = match resolve_write_path(&desired, on_conflict.as_deref())? {
+    let output = match resolve_output(
+        progress.as_ref(),
+        &desired,
+        on_conflict.as_deref(),
+        rom_converto_lib::util::OutputVerify::None,
+    )
+    .await?
+    {
         Some(p) => p,
         None => {
             return Ok(RunOutcome::skipped(
@@ -1315,7 +1397,14 @@ pub async fn cmd_wup_compress(
         .await?;
         return Ok(line.display_text());
     }
-    let output = match resolve_write_path(&output, on_conflict.as_deref())? {
+    let output = match resolve_output(
+        progress.as_ref(),
+        &output,
+        on_conflict.as_deref(),
+        rom_converto_lib::util::OutputVerify::None,
+    )
+    .await?
+    {
         Some(p) => p,
         None => return Ok(format!("skipped existing {}", output.display())),
     };
@@ -1385,7 +1474,14 @@ pub async fn cmd_wup_decrypt(
         .await?;
         return Ok(line.display_text());
     }
-    let output = match resolve_write_path(&output, on_conflict.as_deref())? {
+    let output = match resolve_output(
+        progress.as_ref(),
+        &output,
+        on_conflict.as_deref(),
+        rom_converto_lib::util::OutputVerify::None,
+    )
+    .await?
+    {
         Some(p) => p,
         None => return Ok(format!("skipped existing {}", output.display())),
     };
@@ -1473,7 +1569,15 @@ pub async fn cmd_nx_compress(
             record: None,
         });
     }
-    let output = match resolve_write_path(&desired, on_conflict.as_deref())? {
+    let keys = load_keyset(keys.as_deref()).map_err(err_to_string)?;
+    let output = match resolve_output(
+        progress.as_ref(),
+        &desired,
+        on_conflict.as_deref(),
+        rom_converto_lib::util::OutputVerify::Nx(Box::new(keys.clone())),
+    )
+    .await?
+    {
         Some(p) => p,
         None => {
             return Ok(RunOutcome::skipped(
@@ -1490,7 +1594,6 @@ pub async fn cmd_nx_compress(
         input_size(&input),
         skip_space_check,
     )?;
-    let keys = load_keyset(keys.as_deref()).map_err(err_to_string)?;
     let in_bytes = input_size(&input);
     let record_input = input.clone();
     let record_output = output.clone();
@@ -1563,7 +1666,14 @@ pub async fn cmd_nx_decompress(
             record: None,
         });
     }
-    let output = match resolve_write_path(&desired, on_conflict.as_deref())? {
+    let output = match resolve_output(
+        progress.as_ref(),
+        &desired,
+        on_conflict.as_deref(),
+        rom_converto_lib::util::OutputVerify::None,
+    )
+    .await?
+    {
         Some(p) => p,
         None => {
             return Ok(RunOutcome::skipped(
@@ -1663,7 +1773,14 @@ pub async fn cmd_convert_ctr(
         .await?;
         return Ok(line.display_text());
     }
-    let output = match resolve_write_path(&desired, on_conflict.as_deref())? {
+    let output = match resolve_output(
+        progress.as_ref(),
+        &desired,
+        on_conflict.as_deref(),
+        rom_converto_lib::util::OutputVerify::None,
+    )
+    .await?
+    {
         Some(p) => p,
         None => return Ok(format!("skipped existing {}", desired.display())),
     };
@@ -1868,6 +1985,23 @@ pub async fn cmd_playlist(
             }
         }
         Ok(format!("{written} playlists written, {skipped} skipped"))
+    })
+    .await
+    .map_err(err_to_string)?
+}
+
+/// Recursively scan `dir` for files matching `exts`, applying the same junk
+/// filter and sort as the CLI batch walk. A non-directory path surfaces as an
+/// error so the caller can fall back to treating it as a single file.
+#[tauri::command]
+pub async fn cmd_scan_dir(
+    dir: PathBuf,
+    exts: Vec<String>,
+    max_depth: Option<usize>,
+) -> Result<Vec<PathBuf>, String> {
+    tokio::task::spawn_blocking(move || {
+        let ext_refs: Vec<&str> = exts.iter().map(String::as_str).collect();
+        collect_files_with_exts(&dir, &ext_refs, max_depth).map_err(err_to_string)
     })
     .await
     .map_err(err_to_string)?
