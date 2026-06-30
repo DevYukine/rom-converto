@@ -8,6 +8,8 @@ export const useRvlCompressStore = defineStore("rvl-compress", () => {
   const chunkSize = ref(131072);
   const onConflict = ref("overwrite");
   const skipSpaceCheck = ref(false);
+  const outputTemplate = ref("");
+  const reportFile = ref("");
 
   const result = ref("");
   const error = ref("");
@@ -39,6 +41,8 @@ export const useRvlCompressStore = defineStore("rvl-compress", () => {
     chunkSize.value = 131072;
     onConflict.value = "overwrite";
     skipSpaceCheck.value = false;
+    outputTemplate.value = "";
+    reportFile.value = "";
     result.value = "";
     error.value = "";
     loading.value = false;
@@ -52,6 +56,8 @@ export const useRvlCompressStore = defineStore("rvl-compress", () => {
     chunkSize,
     onConflict,
     skipSpaceCheck,
+    outputTemplate,
+    reportFile,
     result,
     error,
     loading,

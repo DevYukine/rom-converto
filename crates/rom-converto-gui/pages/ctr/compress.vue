@@ -3,7 +3,7 @@ import { storeToRefs } from "pinia";
 import { useCtrCompressStore } from "~/stores/ctr-compress";
 
 const store = useCtrCompressStore();
-const { input, output, level, allowEncrypted, onConflict, skipSpaceCheck, result, error, loading, queue } = storeToRefs(store);
+const { input, output, level, allowEncrypted, onConflict, skipSpaceCheck, outputTemplate, result, error, loading, queue } = storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
 const { run, cancelled, abort } = useOperation({ result, error, loading });
 const progress = useProgress("compress");
@@ -13,7 +13,17 @@ const isBatch = computed(() => queue.value.length > 0);
 const commandLine = ref("");
 
 function compressArgs(inputPath: string, outputPath: string) {
-  return { input: inputPath, output: outputPath || null, level: level.value, allowEncrypted: allowEncrypted.value, onConflict: onConflict.value, skipSpaceCheck: skipSpaceCheck.value };
+  // Output template is single-file only for CTR, mirroring the CLI.
+  const tmpl = !isBatch.value && outputTemplate.value ? outputTemplate.value : null;
+  return {
+    input: inputPath,
+    output: tmpl ? null : outputPath || null,
+    level: level.value,
+    allowEncrypted: allowEncrypted.value,
+    onConflict: onConflict.value,
+    skipSpaceCheck: skipSpaceCheck.value,
+    outputTemplate: tmpl,
+  };
 }
 
 const batch = useBatchOperation("compress", "cmd_compress_rom", (item) =>
@@ -148,6 +158,19 @@ async function execute() {
             description="Proceed even if the output filesystem looks too full to hold the result."
           />
         </div>
+
+        <label v-if="!isBatch" class="flex flex-col gap-1.5">
+          <span class="text-sm font-medium text-zinc-200">Output template (optional)</span>
+          <span class="text-xs text-zinc-400">
+            Build the output path from metadata tokens, for example {console}/{title}.{ext}. Single file only. Replaces the explicit output path.
+          </span>
+          <input
+            v-model="outputTemplate"
+            type="text"
+            placeholder="e.g. {console}/{title}.{ext}"
+            class="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-800/50 px-3 py-1.5 text-sm text-zinc-200"
+          />
+        </label>
 
         <OutputDirField v-model="outputDir" />
 

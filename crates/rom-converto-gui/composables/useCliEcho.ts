@@ -23,6 +23,24 @@ function conflict(args: Record<string, unknown>): string | false {
   return value && value !== "overwrite" ? `--on-conflict ${value}` : false;
 }
 
+function template(args: Record<string, unknown>): string | false {
+  const value = str(args.outputTemplate);
+  return value && `--output-template ${quote(value)}`;
+}
+
+function report(args: Record<string, unknown>): string | false {
+  const value = str(args.reportFile);
+  return value && `--report ${quote(value)}`;
+}
+
+// When a template is set it names the exact output path, so the positional
+// output token is dropped to mirror the CLI's conflicts_with rule.
+function outputArg(args: Record<string, unknown>): string | false {
+  if (str(args.outputTemplate)) return false;
+  const value = str(args.output);
+  return value && quote(value);
+}
+
 export function buildCliCommand(command: string, args: Record<string, unknown>): string {
   switch (command) {
     case "cmd_chd_compress": {
@@ -36,8 +54,10 @@ export function buildCliCommand(command: string, args: Record<string, unknown>):
         args.zstd === true && "--zstd",
         hunk ? `--hunk-size ${hunk}` : false,
         conflict(args),
+        template(args),
+        report(args),
         quote(str(args.inputPath)),
-        quote(str(args.output)),
+        outputArg(args),
       ]);
     }
     case "cmd_chd_extract": {
@@ -46,8 +66,10 @@ export function buildCliCommand(command: string, args: Record<string, unknown>):
         args.skipSpaceCheck === true && "--skip-space-check",
         "chd", "extract",
         parent && `--parent ${quote(parent)}`,
+        template(args),
+        report(args),
         quote(str(args.input)),
-        quote(str(args.output)),
+        outputArg(args),
       ]);
     }
     case "cmd_chd_verify": {
@@ -67,8 +89,10 @@ export function buildCliCommand(command: string, args: Record<string, unknown>):
         args.format === "zso" && "--format zso",
         block ? `--block-size ${block}` : false,
         conflict(args),
+        template(args),
+        report(args),
         quote(str(args.inputPath)),
-        quote(str(args.output)),
+        outputArg(args),
       ]);
     }
     case "cmd_cso_decompress":
@@ -76,8 +100,10 @@ export function buildCliCommand(command: string, args: Record<string, unknown>):
         args.skipSpaceCheck === true && "--skip-space-check",
         "cso", "decompress",
         conflict(args),
+        template(args),
+        report(args),
         quote(str(args.inputPath)),
-        quote(str(args.output)),
+        outputArg(args),
       ]);
     case "cmd_cso_verify":
       return join([
@@ -116,29 +142,23 @@ export function buildCliCommand(command: string, args: Record<string, unknown>):
       ]);
     case "cmd_compress_rom": {
       const level = args.level as number | null | undefined;
-      const output = str(args.output);
       return join([
         args.skipSpaceCheck === true && "--skip-space-check",
         "ctr", "compress",
         level ? `-l ${level}` : false,
         args.allowEncrypted === true && "--allow-encrypted",
         conflict(args),
+        template(args),
         quote(str(args.input)),
-        output && quote(output),
+        outputArg(args),
       ]);
     }
-    case "cmd_decompress_rom": {
-      const output = str(args.output);
-      return join([args.skipSpaceCheck === true && "--skip-space-check", "ctr", "decompress", conflict(args), quote(str(args.input)), output && quote(output)]);
-    }
-    case "cmd_decrypt_rom": {
-      const output = str(args.output);
-      return join([args.skipSpaceCheck === true && "--skip-space-check", "ctr", "decrypt", conflict(args), quote(str(args.input)), output && quote(output)]);
-    }
-    case "cmd_convert_ctr": {
-      const output = str(args.output);
-      return join([args.skipSpaceCheck === true && "--skip-space-check", "ctr", "convert", conflict(args), quote(str(args.input)), output && quote(output)]);
-    }
+    case "cmd_decompress_rom":
+      return join([args.skipSpaceCheck === true && "--skip-space-check", "ctr", "decompress", conflict(args), template(args), quote(str(args.input)), outputArg(args)]);
+    case "cmd_decrypt_rom":
+      return join([args.skipSpaceCheck === true && "--skip-space-check", "ctr", "decrypt", conflict(args), template(args), quote(str(args.input)), outputArg(args)]);
+    case "cmd_convert_ctr":
+      return join([args.skipSpaceCheck === true && "--skip-space-check", "ctr", "convert", conflict(args), template(args), quote(str(args.input)), outputArg(args)]);
     case "cmd_verify_ctr":
       return join([
         "ctr", "verify",
@@ -148,21 +168,20 @@ export function buildCliCommand(command: string, args: Record<string, unknown>):
     case "cmd_compress_disc": {
       const level = args.level as number | undefined;
       const chunk = args.chunkSize as number | undefined;
-      const output = str(args.output);
       return join([
         args.skipSpaceCheck === true && "--skip-space-check",
         ...discSub(args, "compress"),
         level != null && level !== 22 ? `-l ${level}` : false,
         chunk != null && chunk !== 131072 ? `--chunk-size ${chunk}` : false,
         conflict(args),
+        template(args),
+        report(args),
         quote(str(args.input)),
-        output && quote(output),
+        outputArg(args),
       ]);
     }
-    case "cmd_decompress_disc": {
-      const output = str(args.output);
-      return join([args.skipSpaceCheck === true && "--skip-space-check", ...discSub(args, "decompress"), conflict(args), quote(str(args.input)), output && quote(output)]);
-    }
+    case "cmd_decompress_disc":
+      return join([args.skipSpaceCheck === true && "--skip-space-check", ...discSub(args, "decompress"), conflict(args), template(args), report(args), quote(str(args.input)), outputArg(args)]);
     case "cmd_verify_dol":
       return join(["dol", "verify", args.full === true && "--full", quote(str(args.input))]);
     case "cmd_verify_rvl":
@@ -172,7 +191,6 @@ export function buildCliCommand(command: string, args: Record<string, unknown>):
       const level = args.level as number | undefined;
       const mode = str(args.mode);
       const exp = args.blockSizeExp as number | undefined;
-      const output = str(args.output);
       return join([
         args.skipSpaceCheck === true && "--skip-space-check",
         "nx", "compress",
@@ -181,20 +199,23 @@ export function buildCliCommand(command: string, args: Record<string, unknown>):
         mode === "block" && "--mode block",
         mode === "block" && exp != null && exp !== 20 ? `--block-size-exp ${exp}` : false,
         conflict(args),
+        template(args),
+        report(args),
         quote(str(args.input)),
-        output && quote(output),
+        outputArg(args),
       ]);
     }
     case "cmd_nx_decompress": {
       const keys = str(args.keys);
-      const output = str(args.output);
       return join([
         args.skipSpaceCheck === true && "--skip-space-check",
         "nx", "decompress",
         keys && `--keys ${quote(keys)}`,
         conflict(args),
+        template(args),
+        report(args),
         quote(str(args.input)),
-        output && quote(output),
+        outputArg(args),
       ]);
     }
     case "cmd_nx_verify": {

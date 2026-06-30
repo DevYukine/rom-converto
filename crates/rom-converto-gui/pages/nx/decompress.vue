@@ -2,16 +2,27 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { storeToRefs } from "pinia";
 import { useNxDecompressStore } from "~/stores/nx-decompress";
+import type { ReportRecord, RunOutcome } from "~/types/report";
 
 const store = useNxDecompressStore();
-const { queue, output, keys, onConflict, skipSpaceCheck, result, error, loading } = storeToRefs(store);
+const { queue, output, keys, onConflict, skipSpaceCheck, outputTemplate, reportFile, result, error, loading } = storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
 const progress = useProgress("nx-decompress");
 
 const commandLine = ref("");
 
 function decompressArgs(item: { input: string; output: string }) {
-  return { input: item.input, output: item.output || null, keys: keys.value || null, onConflict: onConflict.value, skipSpaceCheck: skipSpaceCheck.value };
+  const tmpl = outputTemplate.value || null;
+  return {
+    input: item.input,
+    output: tmpl ? null : item.output || null,
+    keys: keys.value || null,
+    onConflict: onConflict.value,
+    skipSpaceCheck: skipSpaceCheck.value,
+    outputTemplate: tmpl,
+    report: !!reportFile.value,
+    reportFile: reportFile.value || null,
+  };
 }
 
 const batch = useBatchOperation("nx-decompress", "cmd_nx_decompress", decompressArgs);
@@ -65,15 +76,32 @@ const canDecompress = computed(() => queue.value.length > 0);
 
 async function execute() {
   progress.reset();
-  for (const item of queue.value) {
-    item.output =
-      queue.value.length === 1
-        ? output.value
-        : resolve(deriveNspPath(item.input));
+  if (!outputTemplate.value) {
+    for (const item of queue.value) {
+      item.output =
+        queue.value.length === 1
+          ? output.value
+          : resolve(deriveNspPath(item.input));
+    }
   }
+  const records: ReportRecord[] = [];
   const rep = queue.value.find((i) => i.status === "pending") ?? queue.value[0];
   commandLine.value = rep ? buildCliCommand("cmd_nx_decompress", decompressArgs(rep)) : "";
-  await batch.start(queue, result);
+  await batch.start(
+    queue,
+    result,
+    undefined,
+    (res) => {
+      const record = (res as RunOutcome)?.record;
+      if (record) records.push(record);
+    },
+    async (item, err) => {
+      if (reportFile.value) await pushFailedRecord(records, item.input, "decompress", err);
+    },
+  );
+  if (reportFile.value && records.length) {
+    await writeRunReport(reportFile.value, records);
+  }
 }
 </script>
 
@@ -153,7 +181,28 @@ async function execute() {
           />
         </div>
 
+        <label class="flex flex-col gap-1.5">
+          <span class="text-sm font-medium text-zinc-200">Output template (optional)</span>
+          <span class="text-xs text-zinc-400">
+            Build the output path from metadata tokens, for example {console}/{title}.{ext}. Replaces the explicit output path.
+          </span>
+          <input
+            v-model="outputTemplate"
+            type="text"
+            placeholder="e.g. {console}/{title}.{ext}"
+            class="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-800/50 px-3 py-1.5 text-sm text-zinc-200"
+          />
+        </label>
+
         <OutputDirField v-model="outputDir" />
+
+        <FileDropZone
+          v-model="reportFile"
+          label="Run report file (optional)"
+          placeholder="No report"
+          :save-dialog="true"
+          :filters="[{ name: 'Report', extensions: ['csv', 'json', 'html'] }]"
+        />
 
         <ProgressBar
           :percent="progress.percent.value"

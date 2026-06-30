@@ -6,6 +6,8 @@ export const useCsoDecompressStore = defineStore("cso-decompress", () => {
   const output = ref("");
   const onConflict = ref("overwrite");
   const skipSpaceCheck = ref(false);
+  const outputTemplate = ref("");
+  const reportFile = ref("");
 
   const result = ref("");
   const error = ref("");
@@ -35,6 +37,8 @@ export const useCsoDecompressStore = defineStore("cso-decompress", () => {
     output.value = "";
     onConflict.value = "overwrite";
     skipSpaceCheck.value = false;
+    outputTemplate.value = "";
+    reportFile.value = "";
     result.value = "";
     error.value = "";
     loading.value = false;
@@ -46,6 +50,8 @@ export const useCsoDecompressStore = defineStore("cso-decompress", () => {
     output,
     onConflict,
     skipSpaceCheck,
+    outputTemplate,
+    reportFile,
     result,
     error,
     loading,

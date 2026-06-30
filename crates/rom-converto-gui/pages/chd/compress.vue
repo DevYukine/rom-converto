@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { storeToRefs } from "pinia";
 import { useChdCompressStore } from "~/stores/chd-compress";
+import type { ReportRecord, RunOutcome } from "~/types/report";
 
 const store = useChdCompressStore();
-const { input, output, onConflict, skipSpaceCheck, zstd, mode, hunkSize, result, error, loading, queue } = storeToRefs(store);
+const { input, output, onConflict, skipSpaceCheck, zstd, mode, hunkSize, outputTemplate, reportFile, result, error, loading, queue } = storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
 const { run, cancelled, abort } = useOperation({ result, error, loading });
 const progress = useProgress("chd-compress");
@@ -18,14 +19,18 @@ const isBatch = computed(() => queue.value.length > 0);
 const commandLine = ref("");
 
 function chdArgs(inputPath: string, outputPath: string) {
+  const tmpl = outputTemplate.value || null;
   return {
     inputPath,
-    output: outputPath,
+    output: tmpl ? null : outputPath,
     onConflict: onConflict.value,
     skipSpaceCheck: skipSpaceCheck.value,
     zstd: zstd.value,
     mode: mode.value === "auto" ? null : mode.value,
     hunkSize: hunkSize.value || null,
+    outputTemplate: tmpl,
+    report: !!reportFile.value,
+    reportFile: reportFile.value || null,
   };
 }
 
@@ -59,14 +64,29 @@ function handleSingleFile(path: string) {
 
 async function execute() {
   progress.reset();
+  const records: ReportRecord[] = [];
   if (isBatch.value) {
     const rep = queue.value.find((i) => i.status === "pending") ?? queue.value[0];
     commandLine.value = rep ? buildCliCommand("cmd_chd_compress", chdArgs(rep.input, rep.output)) : "";
-    await batch.start(queue, result);
+    await batch.start(
+      queue,
+      result,
+      undefined,
+      (res) => {
+        const record = (res as RunOutcome)?.record;
+        if (record) records.push(record);
+      },
+      async (item, err) => {
+        if (reportFile.value) await pushFailedRecord(records, item.input, "compress", err);
+      },
+    );
   } else {
     const args = chdArgs(input.value, output.value);
     commandLine.value = buildCliCommand("cmd_chd_compress", args);
-    await run("cmd_chd_compress", args);
+    await runReportable("cmd_chd_compress", args, { result, error, loading, cancelled }, records, "compress");
+  }
+  if (reportFile.value && records.length) {
+    await writeRunReport(reportFile.value, records);
   }
 }
 </script>
@@ -158,7 +178,28 @@ async function execute() {
           </label>
         </div>
 
+        <label class="flex flex-col gap-1.5">
+          <span class="text-sm font-medium text-zinc-200">Output template (optional)</span>
+          <span class="text-xs text-zinc-400">
+            Build the output path from metadata tokens, for example {console}/{title}.{ext}. Replaces the explicit output path.
+          </span>
+          <input
+            v-model="outputTemplate"
+            type="text"
+            placeholder="e.g. {console}/{title}.{ext}"
+            class="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-800/50 px-3 py-1.5 text-sm text-zinc-200"
+          />
+        </label>
+
         <OutputDirField v-model="outputDir" />
+
+        <FileDropZone
+          v-model="reportFile"
+          label="Run report file (optional)"
+          placeholder="No report"
+          :save-dialog="true"
+          :filters="[{ name: 'Report', extensions: ['csv', 'json', 'html'] }]"
+        />
 
         <ProgressBar
           :percent="progress.percent.value"

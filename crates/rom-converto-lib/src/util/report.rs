@@ -1,16 +1,16 @@
 use crate::util::tally::{FileStatus, format_bytes};
 use anyhow::{Context, Result};
-use serde::{Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::borrow::Cow;
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ReportRecord {
     pub input_path: String,
     pub output_path: String,
     pub operation: String,
-    #[serde(serialize_with = "ser_status")]
+    #[serde(serialize_with = "ser_status", deserialize_with = "de_status")]
     pub status: FileStatus,
     pub input_bytes: u64,
     pub output_bytes: u64,
@@ -19,7 +19,7 @@ pub struct ReportRecord {
     pub error: Option<String>,
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ReportTotals {
     pub total_files: usize,
     pub ok: usize,
@@ -96,6 +96,16 @@ fn status_str(status: FileStatus) -> &'static str {
 
 fn ser_status<S: Serializer>(status: &FileStatus, s: S) -> Result<S::Ok, S::Error> {
     s.serialize_str(status_str(*status))
+}
+
+fn de_status<'de, D: Deserializer<'de>>(d: D) -> Result<FileStatus, D::Error> {
+    let s = String::deserialize(d)?;
+    match s.as_str() {
+        "ok" => Ok(FileStatus::Ok),
+        "skipped" => Ok(FileStatus::Skipped),
+        "failed" => Ok(FileStatus::Failed),
+        other => Err(serde::de::Error::custom(format!("unknown status {other:?}"))),
+    }
 }
 
 /// Write a run report to `path`. The file is created and truncated directly,
@@ -642,6 +652,70 @@ mod tests {
             assert!(!out.contains('\u{2014}'), "em dash in {format:?}");
             assert!(!out.contains('\u{2013}'), "en dash in {format:?}");
         }
+    }
+
+    #[test]
+    fn report_record_round_trips_through_json() {
+        let original = ReportRecord::new(
+            "in.iso".into(),
+            "out.cso".into(),
+            "compress",
+            FileStatus::Skipped,
+            1024 * 1024,
+            256 * 1024,
+            1500,
+            Some("note".into()),
+        );
+        let json = serde_json::to_string(&original).unwrap();
+        let back: ReportRecord = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.input_path, original.input_path);
+        assert_eq!(back.output_path, original.output_path);
+        assert_eq!(back.operation, original.operation);
+        assert_eq!(back.status, original.status);
+        assert_eq!(back.input_bytes, original.input_bytes);
+        assert_eq!(back.output_bytes, original.output_bytes);
+        assert_eq!(back.ratio_pct, original.ratio_pct);
+        assert_eq!(back.elapsed_ms, original.elapsed_ms);
+        assert_eq!(back.error, original.error);
+    }
+
+    #[test]
+    fn report_record_status_deserializes_each_variant() {
+        for (text, expected) in [
+            ("ok", FileStatus::Ok),
+            ("skipped", FileStatus::Skipped),
+            ("failed", FileStatus::Failed),
+        ] {
+            let json = format!(
+                r#"{{"input_path":"a","output_path":"b","operation":"compress","status":"{text}","input_bytes":0,"output_bytes":0,"ratio_pct":null,"elapsed_ms":0,"error":null}}"#
+            );
+            let rec: ReportRecord = serde_json::from_str(&json).unwrap();
+            assert_eq!(rec.status, expected);
+        }
+        let bad = r#"{"input_path":"a","output_path":"b","operation":"compress","status":"bogus","input_bytes":0,"output_bytes":0,"ratio_pct":null,"elapsed_ms":0,"error":null}"#;
+        assert!(serde_json::from_str::<ReportRecord>(bad).is_err());
+    }
+
+    #[test]
+    fn report_totals_round_trips() {
+        let totals = ReportTotals {
+            total_files: 3,
+            ok: 2,
+            skipped: 1,
+            failed: 0,
+            total_input_bytes: 4096,
+            total_output_bytes: 2048,
+            elapsed_ms: 99,
+        };
+        let json = serde_json::to_string(&totals).unwrap();
+        let back: ReportTotals = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.total_files, totals.total_files);
+        assert_eq!(back.ok, totals.ok);
+        assert_eq!(back.skipped, totals.skipped);
+        assert_eq!(back.failed, totals.failed);
+        assert_eq!(back.total_input_bytes, totals.total_input_bytes);
+        assert_eq!(back.total_output_bytes, totals.total_output_bytes);
+        assert_eq!(back.elapsed_ms, totals.elapsed_ms);
     }
 
     fn hash_ok_record() -> HashReportRecord {

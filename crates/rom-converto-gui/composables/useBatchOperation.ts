@@ -21,6 +21,8 @@ export function useBatchOperation(
       isSuccess?: (result: string) => boolean;
       failureMessage?: (result: string) => string;
     },
+    onItemResult?: (res: unknown, item: BatchItem) => void,
+    onItemError?: (item: BatchItem, error: string) => void | Promise<void>,
   ) {
     running.value = true;
     aborted.value = false;
@@ -48,17 +50,24 @@ export function useBatchOperation(
       progress.reset();
 
       try {
-        const res = await invoke<string>(commandName, buildArgs(item));
-        if (options?.isSuccess && !options.isSuccess(res)) {
+        const res = await invoke<unknown>(commandName, buildArgs(item));
+        // Report-capable commands return a { message, record } object; the
+        // rest return a plain string. Display the message either way.
+        const display =
+          typeof res === "object" && res !== null
+            ? String((res as { message?: unknown }).message ?? res)
+            : String(res);
+        if (options?.isSuccess && !options.isSuccess(display)) {
           item.status = "error";
-          item.result = res;
+          item.result = display;
           item.error = options.failureMessage
-            ? options.failureMessage(res)
+            ? options.failureMessage(display)
             : "verification failed";
           errorCount++;
         } else {
           item.status = "done";
-          item.result = res;
+          item.result = display;
+          onItemResult?.(res, item);
           doneCount++;
         }
       } catch (e) {
@@ -72,6 +81,7 @@ export function useBatchOperation(
         item.status = "error";
         item.error = message;
         errorCount++;
+        await onItemError?.(item, message);
       }
     }
 

@@ -19,6 +19,8 @@ export const useNxCompressStore = defineStore("nx-compress", () => {
   const blockSizeExp = ref<number>(20);
   const onConflict = ref("overwrite");
   const skipSpaceCheck = ref(false);
+  const outputTemplate = ref("");
+  const reportFile = ref("");
   const userPickedMode = ref(false);
 
   const result = ref("");
@@ -60,6 +62,8 @@ export const useNxCompressStore = defineStore("nx-compress", () => {
     blockSizeExp.value = 20;
     onConflict.value = "overwrite";
     skipSpaceCheck.value = false;
+    outputTemplate.value = "";
+    reportFile.value = "";
     userPickedMode.value = false;
     result.value = "";
     error.value = "";
@@ -75,6 +79,8 @@ export const useNxCompressStore = defineStore("nx-compress", () => {
     blockSizeExp,
     onConflict,
     skipSpaceCheck,
+    outputTemplate,
+    reportFile,
     result,
     error,
     loading,

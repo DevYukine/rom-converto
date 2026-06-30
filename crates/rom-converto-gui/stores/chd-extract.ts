@@ -6,6 +6,8 @@ export const useChdExtractStore = defineStore("chd-extract", () => {
   const output = ref("");
   const parent = ref("");
   const skipSpaceCheck = ref(false);
+  const outputTemplate = ref("");
+  const reportFile = ref("");
 
   const result = ref("");
   const error = ref("");
@@ -35,6 +37,8 @@ export const useChdExtractStore = defineStore("chd-extract", () => {
     output.value = "";
     parent.value = "";
     skipSpaceCheck.value = false;
+    outputTemplate.value = "";
+    reportFile.value = "";
     result.value = "";
     error.value = "";
     loading.value = false;
@@ -46,6 +50,8 @@ export const useChdExtractStore = defineStore("chd-extract", () => {
     output,
     parent,
     skipSpaceCheck,
+    outputTemplate,
+    reportFile,
     result,
     error,
     loading,

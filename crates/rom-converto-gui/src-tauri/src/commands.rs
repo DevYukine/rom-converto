@@ -18,7 +18,7 @@ use rom_converto_lib::nintendo::ctr::z3ds::{
 };
 use rom_converto_lib::nintendo::ctr::{
     CdnToCiaOptions, convert_cdn_to_cia_cancellable, decrypt_rom_cancellable,
-    generate_ticket_from_cdn,
+    derive_decrypted_path, generate_ticket_from_cdn,
 };
 use rom_converto_lib::nintendo::dol::verify::{DolVerifyOptions, verify_dol};
 use rom_converto_lib::nintendo::nx::{
@@ -39,15 +39,145 @@ use rom_converto_lib::nintendo::wup::{
 use rom_converto_lib::playlist::{PlaylistMode, PlaylistOptions, plan_playlists};
 use rom_converto_lib::util::fs::collect_all_files;
 use rom_converto_lib::util::{
-    CancelToken, ConflictPolicy, ConflictResolution, DEFAULT_SPACE_HEADROOM, HashAlgo,
-    available_space, format_bytes, hash_file, parse_algos, resolve_conflict, space_shortfall,
+    CancelToken, ConflictPolicy, ConflictResolution, DEFAULT_SPACE_HEADROOM, FileStatus, HashAlgo,
+    ReportFormat, ReportRecord, ReportTotals, TemplateTokens, apply_template, available_space,
+    format_bytes, hash_file, parse_algos, resolve_conflict, space_shortfall, write_report,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, State};
 
 fn err_to_string(e: impl std::fmt::Display) -> String {
     e.to_string()
+}
+
+/// Result of a report-capable command. The message drives the operation log;
+/// the optional record is accumulated client-side and handed back to
+/// `cmd_write_report` once the run finishes, matching how the CLI collects
+/// records and writes a single report at the end.
+#[derive(serde::Serialize)]
+pub struct RunOutcome {
+    message: String,
+    record: Option<ReportRecord>,
+}
+
+impl RunOutcome {
+    /// A conflict-policy skip. When reporting is on it carries a skipped record
+    /// so the run report matches the CLI, which records every skipped file.
+    fn skipped(report: bool, input: &Path, operation: &str, desired: &Path) -> Self {
+        Self {
+            message: format!("skipped existing {}", desired.display()),
+            record: build_skip_record(report, input, operation),
+        }
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct ReportPayload {
+    records: Vec<ReportRecord>,
+    totals: ReportTotals,
+}
+
+/// Resolve an output-path template to a concrete path, mirroring the CLI's
+/// `templated_output`: metadata is read best-effort (a failed read degrades
+/// the identity tokens to the input basename) and the relative result is
+/// joined under the input's directory, matching the GUI's output-next-to-source
+/// default. A malformed template still surfaces as an error.
+fn resolve_templated_output(
+    template: &str,
+    input: &Path,
+    output_ext: &str,
+    keys_path: Option<&Path>,
+) -> Result<PathBuf, String> {
+    let info = read_info(
+        input,
+        &InfoOptions {
+            keys_path: keys_path.map(Path::to_path_buf),
+            parent_path: None,
+        },
+    )
+    .ok();
+    let tokens = TemplateTokens::new(info.as_ref(), input, output_ext);
+    let rel = apply_template(template, &tokens).map_err(err_to_string)?;
+    let base = input.parent().unwrap_or_else(|| Path::new("."));
+    let joined = base.join(rel);
+    if let Some(parent) = joined.parent() {
+        std::fs::create_dir_all(parent).map_err(err_to_string)?;
+    }
+    Ok(joined)
+}
+
+fn ext_of(path: &Path) -> String {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+/// Pick the output path for a write command. When a template is given it
+/// supersedes any explicit output, mirroring the CLI's `conflicts_with` rule;
+/// supplying both at once is rejected.
+fn pick_output(
+    explicit: Option<PathBuf>,
+    template: Option<&str>,
+    input: &Path,
+    output_ext: &str,
+    keys_path: Option<&Path>,
+    default: impl FnOnce() -> PathBuf,
+) -> Result<PathBuf, String> {
+    match template {
+        Some(tmpl) => {
+            if explicit.is_some() {
+                return Err("output template conflicts with an explicit output path".into());
+            }
+            resolve_templated_output(tmpl, input, output_ext, keys_path)
+        }
+        None => Ok(explicit.unwrap_or_else(default)),
+    }
+}
+
+fn build_record(
+    enabled: bool,
+    input: &Path,
+    output: &Path,
+    operation: &str,
+    input_bytes: u64,
+    output_bytes: u64,
+    elapsed: Duration,
+) -> Option<ReportRecord> {
+    if !enabled {
+        return None;
+    }
+    let elapsed_ms = elapsed.as_millis().min(u64::MAX as u128) as u64;
+    Some(ReportRecord::new(
+        input.display().to_string(),
+        output.display().to_string(),
+        operation,
+        FileStatus::Ok,
+        input_bytes,
+        output_bytes,
+        elapsed_ms,
+        None,
+    ))
+}
+
+/// Build a skipped record for a conflict-policy skip, matching the CLI's
+/// `skipped_record(input, op, None)`: empty output path, zero bytes, no error.
+fn build_skip_record(enabled: bool, input: &Path, operation: &str) -> Option<ReportRecord> {
+    if !enabled {
+        return None;
+    }
+    Some(ReportRecord::new(
+        input.display().to_string(),
+        String::new(),
+        operation,
+        FileStatus::Skipped,
+        0,
+        0,
+        0,
+        None,
+    ))
 }
 
 fn conflict_policy(s: Option<&str>) -> ConflictPolicy {
@@ -138,6 +268,28 @@ pub async fn cmd_cancel(state: State<'_, ActiveCancel>) -> Result<(), String> {
     Ok(())
 }
 
+/// Write a run report from records the frontend accumulated during a run. The
+/// format is inferred from the path extension and the file is written directly,
+/// bypassing the on-conflict machinery, exactly as the CLI does.
+#[tauri::command]
+pub async fn cmd_write_report(path: PathBuf, payload: ReportPayload) -> Result<(), String> {
+    let format = ReportFormat::from_path(&path);
+    tokio::task::spawn_blocking(move || {
+        write_report(&path, &payload.records, &payload.totals, format)
+    })
+    .await
+    .map_err(err_to_string)?
+    .map_err(err_to_string)
+}
+
+/// Size of `path` in bytes, or 0 if it cannot be read. Used to fill the
+/// `input_bytes` field of a failed record on the frontend, matching the CLI,
+/// whose `failed_record` carries the input file size.
+#[tauri::command]
+pub fn cmd_file_size(path: PathBuf) -> u64 {
+    input_size(&path)
+}
+
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn cmd_cdn_to_cia(
@@ -209,19 +361,25 @@ pub async fn cmd_generate_ticket(cdn_dir: PathBuf, output: PathBuf) -> Result<St
     Ok(format!("Ticket generated at {out_display}"))
 }
 
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn cmd_decrypt_rom(
     app: AppHandle,
     state: State<'_, ActiveCancel>,
     input: PathBuf,
-    output: PathBuf,
+    output: Option<PathBuf>,
     on_conflict: Option<String>,
     skip_space_check: bool,
+    output_template: Option<String>,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "decrypt"));
-    let output = match resolve_write_path(&output, on_conflict.as_deref())? {
+    let ext = ext_of(&derive_decrypted_path(&input));
+    let desired = pick_output(output, output_template.as_deref(), &input, &ext, None, || {
+        derive_decrypted_path(&input)
+    })?;
+    let output = match resolve_write_path(&desired, on_conflict.as_deref())? {
         Some(p) => p,
-        None => return Ok(format!("skipped existing {}", output.display())),
+        None => return Ok(format!("skipped existing {}", desired.display())),
     };
     let out_display = output.display().to_string();
     preflight_space(
@@ -252,6 +410,7 @@ pub async fn cmd_decrypt_rom(
     Ok(format!("Decrypted to {out_display}"))
 }
 
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn cmd_compress_rom(
     app: AppHandle,
@@ -262,12 +421,16 @@ pub async fn cmd_compress_rom(
     allow_encrypted: bool,
     on_conflict: Option<String>,
     skip_space_check: bool,
+    output_template: Option<String>,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "compress"));
-    let output = output.unwrap_or_else(|| derive_compressed_path(&input));
-    let output = match resolve_write_path(&output, on_conflict.as_deref())? {
+    let ext = ext_of(&derive_compressed_path(&input));
+    let desired = pick_output(output, output_template.as_deref(), &input, &ext, None, || {
+        derive_compressed_path(&input)
+    })?;
+    let output = match resolve_write_path(&desired, on_conflict.as_deref())? {
         Some(p) => p,
-        None => return Ok(format!("skipped existing {}", output.display())),
+        None => return Ok(format!("skipped existing {}", desired.display())),
     };
     let out_display = output.display().to_string();
     preflight_space(
@@ -303,12 +466,16 @@ pub async fn cmd_decompress_rom(
     output: Option<PathBuf>,
     on_conflict: Option<String>,
     skip_space_check: bool,
+    output_template: Option<String>,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "decompress"));
-    let output = output.unwrap_or_else(|| derive_decompressed_path(&input));
-    let output = match resolve_write_path(&output, on_conflict.as_deref())? {
+    let ext = ext_of(&derive_decompressed_path(&input));
+    let desired = pick_output(output, output_template.as_deref(), &input, &ext, None, || {
+        derive_decompressed_path(&input)
+    })?;
+    let output = match resolve_write_path(&desired, on_conflict.as_deref())? {
         Some(p) => p,
-        None => return Ok(format!("skipped existing {}", output.display())),
+        None => return Ok(format!("skipped existing {}", desired.display())),
     };
     let out_display = output.display().to_string();
     preflight_space(
@@ -334,17 +501,29 @@ pub async fn cmd_chd_compress(
     app: AppHandle,
     state: State<'_, ActiveCancel>,
     input_path: PathBuf,
-    output: PathBuf,
+    output: Option<PathBuf>,
     zstd: Option<bool>,
     hunk_size: Option<u32>,
     mode: Option<String>,
     on_conflict: Option<String>,
     skip_space_check: bool,
-) -> Result<String, String> {
+    output_template: Option<String>,
+    report: Option<bool>,
+) -> Result<RunOutcome, String> {
     let progress = Arc::new(TauriProgress::new(app, "chd-compress"));
-    let output = match resolve_write_path(&output, on_conflict.as_deref())? {
+    let desired = pick_output(output, output_template.as_deref(), &input_path, "chd", None, || {
+        input_path.with_extension("chd")
+    })?;
+    let output = match resolve_write_path(&desired, on_conflict.as_deref())? {
         Some(p) => p,
-        None => return Ok(format!("skipped existing {}", output.display())),
+        None => {
+            return Ok(RunOutcome::skipped(
+                report.unwrap_or(false),
+                &input_path,
+                "compress",
+                &desired,
+            ));
+        }
     };
     let out_display = output.display().to_string();
     preflight_space(
@@ -362,7 +541,11 @@ pub async fn cmd_chd_compress(
         allow_zstd: zstd.unwrap_or(false),
         force: true,
     };
+    let in_bytes = input_size(&input_path);
+    let record_input = input_path.clone();
+    let record_output = output.clone();
     let token = begin(&state).await;
+    let started = Instant::now();
     let result = tokio::spawn(async move {
         convert_disc_to_chd_cancellable(progress.as_ref(), input_path, output, mode, opts, token)
             .await
@@ -372,28 +555,59 @@ pub async fn cmd_chd_compress(
     .map_err(err_to_string);
     finish(&state).await;
     result?;
-    Ok(format!("CHD created at {out_display}"))
+    let record = build_record(
+        report.unwrap_or(false),
+        &record_input,
+        &record_output,
+        "compress",
+        in_bytes,
+        input_size(&record_output),
+        started.elapsed(),
+    );
+    Ok(RunOutcome {
+        message: format!("CHD created at {out_display}"),
+        record,
+    })
 }
 
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn cmd_cso_compress(
     app: AppHandle,
     state: State<'_, ActiveCancel>,
     input_path: PathBuf,
-    output: PathBuf,
+    output: Option<PathBuf>,
     format: String,
     block_size: Option<u32>,
     on_conflict: Option<String>,
     skip_space_check: bool,
-) -> Result<String, String> {
+    output_template: Option<String>,
+    report: Option<bool>,
+) -> Result<RunOutcome, String> {
     let format = match format.as_str() {
         "zso" => CsoFormat::Zso,
         _ => CsoFormat::Cso,
     };
+    let format_name = format.name();
     let progress = Arc::new(TauriProgress::new(app, "cso-compress"));
-    let output = match resolve_write_path(&output, on_conflict.as_deref())? {
+    let desired = pick_output(
+        output,
+        output_template.as_deref(),
+        &input_path,
+        format.extension(),
+        None,
+        || input_path.with_extension(format.extension()),
+    )?;
+    let output = match resolve_write_path(&desired, on_conflict.as_deref())? {
         Some(p) => p,
-        None => return Ok(format!("skipped existing {}", output.display())),
+        None => {
+            return Ok(RunOutcome::skipped(
+                report.unwrap_or(false),
+                &input_path,
+                "compress",
+                &desired,
+            ));
+        }
     };
     let out_display = output.display().to_string();
     preflight_space(
@@ -406,7 +620,11 @@ pub async fn cmd_cso_compress(
         block_size,
         force: true,
     };
+    let in_bytes = input_size(&input_path);
+    let record_input = input_path.clone();
+    let record_output = output.clone();
     let token = begin(&state).await;
+    let started = Instant::now();
     let result = tokio::spawn(async move {
         compress_to_cso_cancellable(progress.as_ref(), input_path, output, opts, token).await
     })
@@ -415,22 +633,47 @@ pub async fn cmd_cso_compress(
     .map_err(err_to_string);
     finish(&state).await;
     result?;
-    Ok(format!("{} created at {out_display}", format.name()))
+    let record = build_record(
+        report.unwrap_or(false),
+        &record_input,
+        &record_output,
+        "compress",
+        in_bytes,
+        input_size(&record_output),
+        started.elapsed(),
+    );
+    Ok(RunOutcome {
+        message: format!("{format_name} created at {out_display}"),
+        record,
+    })
 }
 
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn cmd_cso_decompress(
     app: AppHandle,
     state: State<'_, ActiveCancel>,
     input_path: PathBuf,
-    output: PathBuf,
+    output: Option<PathBuf>,
     on_conflict: Option<String>,
     skip_space_check: bool,
-) -> Result<String, String> {
+    output_template: Option<String>,
+    report: Option<bool>,
+) -> Result<RunOutcome, String> {
     let progress = Arc::new(TauriProgress::new(app, "cso-decompress"));
-    let output = match resolve_write_path(&output, on_conflict.as_deref())? {
+    let desired = pick_output(output, output_template.as_deref(), &input_path, "iso", None, || {
+        input_path.with_extension("iso")
+    })?;
+    let output = match resolve_write_path(&desired, on_conflict.as_deref())? {
         Some(p) => p,
-        None => return Ok(format!("skipped existing {}", output.display())),
+        None => {
+            return Ok(RunOutcome::skipped(
+                report.unwrap_or(false),
+                &input_path,
+                "decompress",
+                &desired,
+            ));
+        }
     };
     let out_display = output.display().to_string();
     preflight_space(
@@ -438,7 +681,11 @@ pub async fn cmd_cso_decompress(
         input_size(&input_path),
         skip_space_check,
     )?;
+    let in_bytes = input_size(&input_path);
+    let record_input = input_path.clone();
+    let record_output = output.clone();
     let token = begin(&state).await;
+    let started = Instant::now();
     let result = tokio::spawn(async move {
         decompress_from_cso_cancellable(progress.as_ref(), input_path, output, true, token).await
     })
@@ -447,7 +694,19 @@ pub async fn cmd_cso_decompress(
     .map_err(err_to_string);
     finish(&state).await;
     result?;
-    Ok(format!("ISO restored at {out_display}"))
+    let record = build_record(
+        report.unwrap_or(false),
+        &record_input,
+        &record_output,
+        "decompress",
+        in_bytes,
+        input_size(&record_output),
+        started.elapsed(),
+    );
+    Ok(RunOutcome {
+        message: format!("ISO restored at {out_display}"),
+        record,
+    })
 }
 
 #[tauri::command]
@@ -498,23 +757,32 @@ pub async fn cmd_cue_merge(
 // that exceed the compiler's recursion limit for Send inference. We run
 // these on a dedicated thread with its own tokio runtime to sidestep the issue.
 
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn cmd_chd_extract(
     app: AppHandle,
     state: State<'_, ActiveCancel>,
     input: PathBuf,
-    output: PathBuf,
+    output: Option<PathBuf>,
     parent: Option<PathBuf>,
     skip_space_check: bool,
-) -> Result<String, String> {
+    output_template: Option<String>,
+    report: Option<bool>,
+) -> Result<RunOutcome, String> {
     let progress = Arc::new(TauriProgress::new(app, "chd-extract"));
+    let output = pick_output(output, output_template.as_deref(), &input, "cue", None, || {
+        input.with_extension("cue")
+    })?;
     let out_display = output.display().to_string();
     preflight_space(
         output.parent().unwrap_or(&output),
         input_size(&input),
         skip_space_check,
     )?;
+    let record_input = input.clone();
+    let record_output = output.clone();
     let token = begin(&state).await;
+    let started = Instant::now();
     // ChdReader's deeply nested async types exceed the compiler's Send recursion
     // limit, so we run on a dedicated thread with its own tokio runtime.
     let result = std::thread::spawn(move || -> Result<(), String> {
@@ -535,7 +803,19 @@ pub async fn cmd_chd_extract(
     .map_err(|_| "task panicked".to_string());
     finish(&state).await;
     result??;
-    Ok(format!("Extracted to {out_display}"))
+    let record = build_record(
+        report.unwrap_or(false),
+        &record_input,
+        &record_output,
+        "extract",
+        0,
+        0,
+        started.elapsed(),
+    );
+    Ok(RunOutcome {
+        message: format!("Extracted to {out_display}"),
+        record,
+    })
 }
 
 #[tauri::command]
@@ -581,12 +861,23 @@ pub async fn cmd_compress_disc(
     task_id: String,
     on_conflict: Option<String>,
     skip_space_check: bool,
-) -> Result<String, String> {
+    output_template: Option<String>,
+    report: Option<bool>,
+) -> Result<RunOutcome, String> {
     let progress = Arc::new(TauriProgress::new(app, &task_id));
-    let output = output.unwrap_or_else(|| derive_rvz_path(&input));
-    let output = match resolve_write_path(&output, on_conflict.as_deref())? {
+    let desired = pick_output(output, output_template.as_deref(), &input, "rvz", None, || {
+        derive_rvz_path(&input)
+    })?;
+    let output = match resolve_write_path(&desired, on_conflict.as_deref())? {
         Some(p) => p,
-        None => return Ok(format!("skipped existing {}", output.display())),
+        None => {
+            return Ok(RunOutcome::skipped(
+                report.unwrap_or(false),
+                &input,
+                "compress",
+                &desired,
+            ));
+        }
     };
     let out_display = output.display().to_string();
     preflight_space(
@@ -599,7 +890,11 @@ pub async fn cmd_compress_disc(
         chunk_size: chunk_size.unwrap_or(RvzCompressOptions::default().chunk_size),
         ..RvzCompressOptions::default()
     };
+    let in_bytes = input_size(&input);
+    let record_input = input.clone();
+    let record_output = output.clone();
     let token = begin(&state).await;
+    let started = Instant::now();
     let result = tokio::spawn(async move {
         compress_disc_cancellable(&input, &output, opts, progress.as_ref(), token).await
     })
@@ -608,9 +903,22 @@ pub async fn cmd_compress_disc(
     .map_err(err_to_string);
     finish(&state).await;
     result?;
-    Ok(format!("Compressed to {out_display}"))
+    let record = build_record(
+        report.unwrap_or(false),
+        &record_input,
+        &record_output,
+        "compress",
+        in_bytes,
+        input_size(&record_output),
+        started.elapsed(),
+    );
+    Ok(RunOutcome {
+        message: format!("Compressed to {out_display}"),
+        record,
+    })
 }
 
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn cmd_decompress_disc(
     app: AppHandle,
@@ -620,12 +928,23 @@ pub async fn cmd_decompress_disc(
     task_id: String,
     on_conflict: Option<String>,
     skip_space_check: bool,
-) -> Result<String, String> {
+    output_template: Option<String>,
+    report: Option<bool>,
+) -> Result<RunOutcome, String> {
     let progress = Arc::new(TauriProgress::new(app, &task_id));
-    let output = output.unwrap_or_else(|| derive_disc_path(&input));
-    let output = match resolve_write_path(&output, on_conflict.as_deref())? {
+    let desired = pick_output(output, output_template.as_deref(), &input, "iso", None, || {
+        derive_disc_path(&input)
+    })?;
+    let output = match resolve_write_path(&desired, on_conflict.as_deref())? {
         Some(p) => p,
-        None => return Ok(format!("skipped existing {}", output.display())),
+        None => {
+            return Ok(RunOutcome::skipped(
+                report.unwrap_or(false),
+                &input,
+                "decompress",
+                &desired,
+            ));
+        }
     };
     let out_display = output.display().to_string();
     preflight_space(
@@ -638,7 +957,11 @@ pub async fn cmd_decompress_disc(
         .and_then(|e| e.to_str())
         .map(|s| s.eq_ignore_ascii_case("wbfs"))
         .unwrap_or(false);
+    let in_bytes = input_size(&input);
+    let record_input = input.clone();
+    let record_output = output.clone();
     let token = begin(&state).await;
+    let started = Instant::now();
     let result = tokio::spawn(async move {
         if to_wbfs {
             decompress_disc_to_wbfs_cancellable(&input, &output, progress.as_ref(), token).await
@@ -651,7 +974,19 @@ pub async fn cmd_decompress_disc(
     .map_err(err_to_string);
     finish(&state).await;
     result?;
-    Ok(format!("Decompressed to {out_display}"))
+    let record = build_record(
+        report.unwrap_or(false),
+        &record_input,
+        &record_output,
+        "decompress",
+        in_bytes,
+        input_size(&record_output),
+        started.elapsed(),
+    );
+    Ok(RunOutcome {
+        message: format!("Decompressed to {out_display}"),
+        record,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -757,7 +1092,9 @@ pub async fn cmd_nx_compress(
     block_size_exp: Option<u8>,
     on_conflict: Option<String>,
     skip_space_check: bool,
-) -> Result<String, String> {
+    output_template: Option<String>,
+    report: Option<bool>,
+) -> Result<RunOutcome, String> {
     let progress = Arc::new(TauriProgress::new(app, "nx-compress"));
     let kind = detect_container(&input).map_err(err_to_string)?;
     let mut opts = NxCompressOptions::for_kind(kind);
@@ -775,10 +1112,25 @@ pub async fn cmd_nx_compress(
     } else if let Some(exp) = block_size_exp {
         opts.mode = NczMode::Block { size_exp: exp };
     }
-    let output = output.unwrap_or_else(|| nx_derive_compressed_path(&input));
-    let output = match resolve_write_path(&output, on_conflict.as_deref())? {
+    let ext = ext_of(&nx_derive_compressed_path(&input));
+    let desired = pick_output(
+        output,
+        output_template.as_deref(),
+        &input,
+        &ext,
+        keys.as_deref(),
+        || nx_derive_compressed_path(&input),
+    )?;
+    let output = match resolve_write_path(&desired, on_conflict.as_deref())? {
         Some(p) => p,
-        None => return Ok(format!("skipped existing {}", output.display())),
+        None => {
+            return Ok(RunOutcome::skipped(
+                report.unwrap_or(false),
+                &input,
+                "compress",
+                &desired,
+            ));
+        }
     };
     let out_display = output.display().to_string();
     preflight_space(
@@ -787,7 +1139,11 @@ pub async fn cmd_nx_compress(
         skip_space_check,
     )?;
     let keys = load_keyset(keys.as_deref()).map_err(err_to_string)?;
+    let in_bytes = input_size(&input);
+    let record_input = input.clone();
+    let record_output = output.clone();
     let token = begin(&state).await;
+    let started = Instant::now();
     let result = tokio::spawn(async move {
         compress_container_async_cancellable(input, output, opts, keys, progress.as_ref(), token)
             .await
@@ -797,9 +1153,22 @@ pub async fn cmd_nx_compress(
     .map_err(err_to_string);
     finish(&state).await;
     result?;
-    Ok(format!("Compressed to {out_display}"))
+    let record = build_record(
+        report.unwrap_or(false),
+        &record_input,
+        &record_output,
+        "compress",
+        in_bytes,
+        input_size(&record_output),
+        started.elapsed(),
+    );
+    Ok(RunOutcome {
+        message: format!("Compressed to {out_display}"),
+        record,
+    })
 }
 
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn cmd_nx_decompress(
     app: AppHandle,
@@ -809,12 +1178,29 @@ pub async fn cmd_nx_decompress(
     keys: Option<PathBuf>,
     on_conflict: Option<String>,
     skip_space_check: bool,
-) -> Result<String, String> {
+    output_template: Option<String>,
+    report: Option<bool>,
+) -> Result<RunOutcome, String> {
     let progress = Arc::new(TauriProgress::new(app, "nx-decompress"));
-    let output = output.unwrap_or_else(|| nx_derive_decompressed_path(&input));
-    let output = match resolve_write_path(&output, on_conflict.as_deref())? {
+    let ext = ext_of(&nx_derive_decompressed_path(&input));
+    let desired = pick_output(
+        output,
+        output_template.as_deref(),
+        &input,
+        &ext,
+        keys.as_deref(),
+        || nx_derive_decompressed_path(&input),
+    )?;
+    let output = match resolve_write_path(&desired, on_conflict.as_deref())? {
         Some(p) => p,
-        None => return Ok(format!("skipped existing {}", output.display())),
+        None => {
+            return Ok(RunOutcome::skipped(
+                report.unwrap_or(false),
+                &input,
+                "decompress",
+                &desired,
+            ));
+        }
     };
     let out_display = output.display().to_string();
     preflight_space(
@@ -823,7 +1209,11 @@ pub async fn cmd_nx_decompress(
         skip_space_check,
     )?;
     let keys = load_keyset(keys.as_deref()).map_err(err_to_string)?;
+    let in_bytes = input_size(&input);
+    let record_input = input.clone();
+    let record_output = output.clone();
     let token = begin(&state).await;
+    let started = Instant::now();
     let result = tokio::spawn(async move {
         decompress_container_async_cancellable(input, output, keys, progress.as_ref(), token).await
     })
@@ -832,7 +1222,19 @@ pub async fn cmd_nx_decompress(
     .map_err(err_to_string);
     finish(&state).await;
     result?;
-    Ok(format!("Decompressed to {out_display}"))
+    let record = build_record(
+        report.unwrap_or(false),
+        &record_input,
+        &record_output,
+        "decompress",
+        in_bytes,
+        input_size(&record_output),
+        started.elapsed(),
+    );
+    Ok(RunOutcome {
+        message: format!("Decompressed to {out_display}"),
+        record,
+    })
 }
 
 #[tauri::command]
@@ -851,6 +1253,7 @@ pub async fn cmd_nx_verify(
     serde_json::to_string(&result).map_err(err_to_string)
 }
 
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn cmd_convert_ctr(
     app: AppHandle,
@@ -859,12 +1262,16 @@ pub async fn cmd_convert_ctr(
     output: Option<PathBuf>,
     on_conflict: Option<String>,
     skip_space_check: bool,
+    output_template: Option<String>,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "ctr-convert"));
-    let output = output.unwrap_or_else(|| derive_converted_path(&input));
-    let output = match resolve_write_path(&output, on_conflict.as_deref())? {
+    let ext = ext_of(&derive_converted_path(&input));
+    let desired = pick_output(output, output_template.as_deref(), &input, &ext, None, || {
+        derive_converted_path(&input)
+    })?;
+    let output = match resolve_write_path(&desired, on_conflict.as_deref())? {
         Some(p) => p,
-        None => return Ok(format!("skipped existing {}", output.display())),
+        None => return Ok(format!("skipped existing {}", desired.display())),
     };
     let out_display = output.display().to_string();
     preflight_space(

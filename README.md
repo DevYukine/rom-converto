@@ -139,10 +139,10 @@ Every GUI control forwards to the same library function the CLI uses, so a GUI r
 * `--config`, `--preset`, `--no-update-check`: file based configuration and updater flags; the GUI keeps options per page.
 * `info --json`: scripting output for the terminal; the GUI shows a rich info card.
 
-**Deferred.** These CLI options are not yet in the GUI. They depend on CLI-side logic (output templating, the dry-run planner, and per-file report records) that lives outside the shared library, so wiring them into the GUI without forking behavior would require moving that logic into the library first:
+**Run reports and output templates.** The GUI exposes `--report` on the compress and decompress pages for every format (dol, rvl, cso, nx) plus chd compress and chd extract. It accumulates one record per processed file and calls the same `write_report` library function the CLI uses, so the CSV/JSON/HTML output is identical. The report file is overwritten directly and does not go through the on-conflict control, matching the CLI. The GUI also exposes `--output-template` on those pages plus the four CTR operations (compress, decompress, convert, decrypt). For CTR the template is single file only, so the field is hidden once files are queued for a batch. The template resolves through the same `TemplateTokens` and `apply_template` library functions, so the resolved path matches the CLI. Extract report rows carry zero byte sizes, the same as the CLI, since extraction writes several files.
 
-* `--report` (CSV/JSON/HTML run reports).
-* `--output-template` path token expansion.
+**Deferred.** These CLI options are not yet in the GUI:
+
 * `--dry-run` preview.
 * Recursive batch conversion through a directory scan (the GUI's per-file batch queue covers the common case).
 * `--on-conflict overwrite-invalid` on the CHD, CSO, and CUE compress paths, where the library cannot run the async integrity check at conflict time; it is omitted from those controls rather than degrading silently to skip.
@@ -603,7 +603,7 @@ It composes with the other output controls. With `-R` the template is applied pe
 
 CTR (`ctr decrypt`/`compress`/`decompress`/`convert`) supports the template for single-file runs; its recursive runs use the existing mirrored layout.
 
-The GUI does not expose templating yet; it resolves output paths client-side. A template field with live preview is a planned follow-up.
+The GUI exposes an Output template field on the compress, decompress, convert, and decrypt pages plus chd extract, single file only for CTR. It resolves the path through the same library functions, so the result matches the CLI. A live preview is a planned follow-up.
 
 ---
 

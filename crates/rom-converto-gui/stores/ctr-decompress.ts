@@ -6,6 +6,7 @@ export const useCtrDecompressStore = defineStore("ctr-decompress", () => {
   const output = ref("");
   const onConflict = ref("overwrite");
   const skipSpaceCheck = ref(false);
+  const outputTemplate = ref("");
 
   const result = ref("");
   const error = ref("");
@@ -35,6 +36,7 @@ export const useCtrDecompressStore = defineStore("ctr-decompress", () => {
     output.value = "";
     onConflict.value = "overwrite";
     skipSpaceCheck.value = false;
+    outputTemplate.value = "";
     result.value = "";
     error.value = "";
     loading.value = false;
@@ -46,6 +48,7 @@ export const useCtrDecompressStore = defineStore("ctr-decompress", () => {
     output,
     onConflict,
     skipSpaceCheck,
+    outputTemplate,
     result,
     error,
     loading,

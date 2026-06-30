@@ -3,7 +3,7 @@ import { storeToRefs } from "pinia";
 import { useCtrConvertStore } from "~/stores/ctr-convert";
 
 const store = useCtrConvertStore();
-const { input, output, onConflict, skipSpaceCheck, result, error, loading, queue } = storeToRefs(store);
+const { input, output, onConflict, skipSpaceCheck, outputTemplate, result, error, loading, queue } = storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
 const { run, cancelled, abort } = useOperation({ result, error, loading });
 const progress = useProgress("ctr-convert");
@@ -13,7 +13,14 @@ const isBatch = computed(() => queue.value.length > 0);
 const commandLine = ref("");
 
 function convertArgs(inputPath: string, outputPath: string) {
-  return { input: inputPath, output: outputPath || null, onConflict: onConflict.value, skipSpaceCheck: skipSpaceCheck.value };
+  const tmpl = !isBatch.value && outputTemplate.value ? outputTemplate.value : null;
+  return {
+    input: inputPath,
+    output: tmpl ? null : outputPath || null,
+    onConflict: onConflict.value,
+    skipSpaceCheck: skipSpaceCheck.value,
+    outputTemplate: tmpl,
+  };
 }
 
 const batch = useBatchOperation("ctr-convert", "cmd_convert_ctr", (item) =>
@@ -134,6 +141,19 @@ async function execute() {
             description="Proceed even if the output filesystem looks too full to hold the result."
           />
         </div>
+
+        <label v-if="!isBatch" class="flex flex-col gap-1.5">
+          <span class="text-sm font-medium text-zinc-200">Output template (optional)</span>
+          <span class="text-xs text-zinc-400">
+            Build the output path from metadata tokens, for example {console}/{title}.{ext}. Single file only. Replaces the explicit output path.
+          </span>
+          <input
+            v-model="outputTemplate"
+            type="text"
+            placeholder="e.g. {console}/{title}.{ext}"
+            class="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-800/50 px-3 py-1.5 text-sm text-zinc-200"
+          />
+        </label>
 
         <OutputDirField v-model="outputDir" />
 

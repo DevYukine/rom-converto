@@ -2,9 +2,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { storeToRefs } from "pinia";
 import { useChdExtractStore } from "~/stores/chd-extract";
+import type { ReportRecord, RunOutcome } from "~/types/report";
 
 const store = useChdExtractStore();
-const { input, output, parent, skipSpaceCheck, result, error, loading, queue } = storeToRefs(store);
+const { input, output, parent, skipSpaceCheck, outputTemplate, reportFile, result, error, loading, queue } = storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
 const { run, cancelled, abort } = useOperation({ result, error, loading });
 const progress = useProgress("chd-extract");
@@ -13,7 +14,16 @@ const isBatch = computed(() => queue.value.length > 0);
 const commandLine = ref("");
 
 function extractArgs(inputPath: string, outputPath: string) {
-  return { input: inputPath, output: outputPath, parent: parent.value || null, skipSpaceCheck: skipSpaceCheck.value };
+  const tmpl = outputTemplate.value || null;
+  return {
+    input: inputPath,
+    output: tmpl ? null : outputPath,
+    parent: parent.value || null,
+    skipSpaceCheck: skipSpaceCheck.value,
+    outputTemplate: tmpl,
+    report: !!reportFile.value,
+    reportFile: reportFile.value || null,
+  };
 }
 
 const batch = useBatchOperation("chd-extract", "cmd_chd_extract", (item) =>
@@ -59,14 +69,29 @@ async function handleSingleFile(path: string) {
 
 async function execute() {
   progress.reset();
+  const records: ReportRecord[] = [];
   if (isBatch.value) {
     const rep = queue.value.find((i) => i.status === "pending") ?? queue.value[0];
     commandLine.value = rep ? buildCliCommand("cmd_chd_extract", extractArgs(rep.input, rep.output)) : "";
-    await batch.start(queue, result);
+    await batch.start(
+      queue,
+      result,
+      undefined,
+      (res) => {
+        const record = (res as RunOutcome)?.record;
+        if (record) records.push(record);
+      },
+      async (item, err) => {
+        if (reportFile.value) await pushFailedRecord(records, item.input, "extract", err);
+      },
+    );
   } else {
     const args = extractArgs(input.value, output.value);
     commandLine.value = buildCliCommand("cmd_chd_extract", args);
-    await run("cmd_chd_extract", args);
+    await runReportable("cmd_chd_extract", args, { result, error, loading, cancelled }, records, "extract");
+  }
+  if (reportFile.value && records.length) {
+    await writeRunReport(reportFile.value, records);
   }
 }
 </script>
@@ -138,7 +163,28 @@ async function execute() {
           />
         </div>
 
+        <label class="flex flex-col gap-1.5">
+          <span class="text-sm font-medium text-zinc-200">Output template (optional)</span>
+          <span class="text-xs text-zinc-400">
+            Build the output path from metadata tokens, for example {console}/{title}.{ext}. The sidecars share the resolved stem. Replaces the explicit output path.
+          </span>
+          <input
+            v-model="outputTemplate"
+            type="text"
+            placeholder="e.g. {console}/{title}.{ext}"
+            class="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-800/50 px-3 py-1.5 text-sm text-zinc-200"
+          />
+        </label>
+
         <OutputDirField v-model="outputDir" />
+
+        <FileDropZone
+          v-model="reportFile"
+          label="Run report file (optional)"
+          placeholder="No report"
+          :save-dialog="true"
+          :filters="[{ name: 'Report', extensions: ['csv', 'json', 'html'] }]"
+        />
 
         <ProgressBar
           :percent="progress.percent.value"
@@ -150,7 +196,7 @@ async function execute() {
           :loading="loading || batch.running.value"
           :batch-current="batch.currentIndex.value"
           :batch-total="queue.length"
-          :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input || !output"
+          :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input || (!output && !outputTemplate)"
           @click="execute"
           @cancel="isBatch ? batch.abort() : abort()"
         >

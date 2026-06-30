@@ -7,6 +7,8 @@ export const useCsoCompressStore = defineStore("cso-compress", () => {
   const format = ref<"cso" | "zso">("cso");
   const onConflict = ref("overwrite");
   const skipSpaceCheck = ref(false);
+  const outputTemplate = ref("");
+  const reportFile = ref("");
   const blockSize = ref<number | null>(null);
 
   const result = ref("");
@@ -38,6 +40,8 @@ export const useCsoCompressStore = defineStore("cso-compress", () => {
     format.value = "cso";
     onConflict.value = "overwrite";
     skipSpaceCheck.value = false;
+    outputTemplate.value = "";
+    reportFile.value = "";
     blockSize.value = null;
     result.value = "";
     error.value = "";
@@ -51,6 +55,8 @@ export const useCsoCompressStore = defineStore("cso-compress", () => {
     format,
     onConflict,
     skipSpaceCheck,
+    outputTemplate,
+    reportFile,
     blockSize,
     result,
     error,
