@@ -4,6 +4,7 @@ export const useCueMergeStore = defineStore("cue-merge", () => {
   const input = ref("");
   const output = ref("");
   const onConflict = ref("overwrite");
+  const skipSpaceCheck = ref(false);
 
   const result = ref("");
   const error = ref("");
@@ -13,6 +14,7 @@ export const useCueMergeStore = defineStore("cue-merge", () => {
     input.value = "";
     output.value = "";
     onConflict.value = "overwrite";
+    skipSpaceCheck.value = false;
     result.value = "";
     error.value = "";
     loading.value = false;
@@ -22,6 +24,7 @@ export const useCueMergeStore = defineStore("cue-merge", () => {
     input,
     output,
     onConflict,
+    skipSpaceCheck,
     result,
     error,
     loading,

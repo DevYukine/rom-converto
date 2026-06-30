@@ -3,7 +3,7 @@ import { storeToRefs } from "pinia";
 import { useCtrCdnToCiaStore } from "~/stores/ctr-cdn-to-cia";
 
 const store = useCtrCdnToCiaStore();
-const { cdnDir, output, decrypt, compress, cleanup, recursive, ensureTicket, onConflict, result, error, loading } = storeToRefs(store);
+const { cdnDir, output, decrypt, compress, cleanup, recursive, ensureTicket, onConflict, skipSpaceCheck, result, error, loading } = storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
 const { run, cancelled, abort } = useOperation({ result, error, loading });
 const progress = useProgress("cdn-to-cia");
@@ -32,6 +32,7 @@ async function execute() {
     recursive: recursive.value,
     ensureTicketExists: ensureTicket.value,
     onConflict: onConflict.value,
+    skipSpaceCheck: skipSpaceCheck.value,
   };
   commandLine.value = buildCliCommand("cmd_cdn_to_cia", args);
   await run("cmd_cdn_to_cia", args);
@@ -99,6 +100,11 @@ async function execute() {
 
         <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
           <ConflictPolicyControl v-model="onConflict" />
+          <FlagToggle
+            v-model="skipSpaceCheck"
+            label="Skip free space check"
+            description="Proceed even if the output filesystem looks too full to hold the result."
+          />
         </div>
 
         <OutputDirField v-model="outputDir" />

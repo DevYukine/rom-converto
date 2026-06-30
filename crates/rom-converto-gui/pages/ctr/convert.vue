@@ -3,7 +3,7 @@ import { storeToRefs } from "pinia";
 import { useCtrConvertStore } from "~/stores/ctr-convert";
 
 const store = useCtrConvertStore();
-const { input, output, onConflict, result, error, loading, queue } = storeToRefs(store);
+const { input, output, onConflict, skipSpaceCheck, result, error, loading, queue } = storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
 const { run, cancelled, abort } = useOperation({ result, error, loading });
 const progress = useProgress("ctr-convert");
@@ -13,7 +13,7 @@ const isBatch = computed(() => queue.value.length > 0);
 const commandLine = ref("");
 
 function convertArgs(inputPath: string, outputPath: string) {
-  return { input: inputPath, output: outputPath || null, onConflict: onConflict.value };
+  return { input: inputPath, output: outputPath || null, onConflict: onConflict.value, skipSpaceCheck: skipSpaceCheck.value };
 }
 
 const batch = useBatchOperation("ctr-convert", "cmd_convert_ctr", (item) =>
@@ -128,6 +128,11 @@ async function execute() {
 
         <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
           <ConflictPolicyControl v-model="onConflict" />
+          <FlagToggle
+            v-model="skipSpaceCheck"
+            label="Skip free space check"
+            description="Proceed even if the output filesystem looks too full to hold the result."
+          />
         </div>
 
         <OutputDirField v-model="outputDir" />

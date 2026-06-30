@@ -5,6 +5,7 @@ export const useCtrDecryptStore = defineStore("ctr-decrypt", () => {
   const input = ref("");
   const output = ref("");
   const onConflict = ref("overwrite");
+  const skipSpaceCheck = ref(false);
 
   const result = ref("");
   const error = ref("");
@@ -33,6 +34,7 @@ export const useCtrDecryptStore = defineStore("ctr-decrypt", () => {
     input.value = "";
     output.value = "";
     onConflict.value = "overwrite";
+    skipSpaceCheck.value = false;
     result.value = "";
     error.value = "";
     loading.value = false;
@@ -43,6 +45,7 @@ export const useCtrDecryptStore = defineStore("ctr-decrypt", () => {
     input,
     output,
     onConflict,
+    skipSpaceCheck,
     result,
     error,
     loading,

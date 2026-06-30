@@ -9,6 +9,7 @@ export const useCtrCdnToCiaStore = defineStore("ctr-cdn-to-cia", () => {
   const recursive = ref(false);
   const ensureTicket = ref(true);
   const onConflict = ref("overwrite");
+  const skipSpaceCheck = ref(false);
 
   const result = ref("");
   const error = ref("");
@@ -23,6 +24,7 @@ export const useCtrCdnToCiaStore = defineStore("ctr-cdn-to-cia", () => {
     recursive.value = false;
     ensureTicket.value = true;
     onConflict.value = "overwrite";
+    skipSpaceCheck.value = false;
     result.value = "";
     error.value = "";
     loading.value = false;
@@ -37,6 +39,7 @@ export const useCtrCdnToCiaStore = defineStore("ctr-cdn-to-cia", () => {
     recursive,
     ensureTicket,
     onConflict,
+    skipSpaceCheck,
     result,
     error,
     loading,

@@ -127,6 +127,8 @@ Every GUI control forwards to the same library function the CLI uses, so a GUI r
 
 **Conflict policy.** Pages that write output expose an "On conflict" control with Overwrite, Skip, Rename, and Error, replacing the older force toggle. The choice is resolved before the write so Skip and Error never touch an existing file.
 
+**Disk space preflight.** Before any write-producing command runs, the GUI checks the output filesystem for free space, using the total size of the input files as a conservative floor plus a 256 MiB headroom. If space looks insufficient it reports an error and writes nothing, naming the directory, the estimated need, and the space available. The estimate is a floor and cannot account for decompression that expands well beyond its input, so the value is in catching a near-full disk before a long batch starts. If the free-space query fails, the run proceeds. The "Skip free space check" toggle on each write page bypasses the guard, matching the CLI's `--skip-space-check`.
+
 **GUI to CLI direction.** The GUI adds no conversion capability the CLI lacks. Info caching, drag and drop, the batch queue, and the CLI command echo are interface conveniences over the same library calls, so no CLI changes were needed.
 
 **Intentional non-parity.** These CLI features have no GUI counterpart by design:
@@ -137,12 +139,11 @@ Every GUI control forwards to the same library function the CLI uses, so a GUI r
 * `--config`, `--preset`, `--no-update-check`: file based configuration and updater flags; the GUI keeps options per page.
 * `info --json`: scripting output for the terminal; the GUI shows a rich info card.
 
-**Deferred.** These CLI options are not yet in the GUI. They depend on CLI-side logic (output templating, the dry-run planner, the space preflight, and per-file report records) that lives outside the shared library, so wiring them into the GUI without forking behavior would require moving that logic into the library first:
+**Deferred.** These CLI options are not yet in the GUI. They depend on CLI-side logic (output templating, the dry-run planner, and per-file report records) that lives outside the shared library, so wiring them into the GUI without forking behavior would require moving that logic into the library first:
 
 * `--report` (CSV/JSON/HTML run reports).
 * `--output-template` path token expansion.
 * `--dry-run` preview.
-* `--skip-space-check` and the low-space preflight warning.
 * Recursive batch conversion through a directory scan (the GUI's per-file batch queue covers the common case).
 * `--on-conflict overwrite-invalid` on the CHD, CSO, and CUE compress paths, where the library cannot run the async integrity check at conflict time; it is omitted from those controls rather than degrading silently to skip.
 

@@ -9,6 +9,7 @@ export const useCtrCompressStore = defineStore("ctr-compress", () => {
   const level = ref<number>(0);
   const allowEncrypted = ref<boolean>(false);
   const onConflict = ref("overwrite");
+  const skipSpaceCheck = ref(false);
 
   const result = ref("");
   const error = ref("");
@@ -39,6 +40,7 @@ export const useCtrCompressStore = defineStore("ctr-compress", () => {
     level.value = 0;
     allowEncrypted.value = false;
     onConflict.value = "overwrite";
+    skipSpaceCheck.value = false;
     result.value = "";
     error.value = "";
     loading.value = false;
@@ -51,6 +53,7 @@ export const useCtrCompressStore = defineStore("ctr-compress", () => {
     level,
     allowEncrypted,
     onConflict,
+    skipSpaceCheck,
     result,
     error,
     loading,

@@ -5,6 +5,7 @@ export const useChdCompressStore = defineStore("chd-compress", () => {
   const input = ref("");
   const output = ref("");
   const onConflict = ref("overwrite");
+  const skipSpaceCheck = ref(false);
   const zstd = ref(false);
   const mode = ref<"auto" | "cd" | "dvd">("auto");
   const hunkSize = ref<number | null>(null);
@@ -37,6 +38,7 @@ export const useChdCompressStore = defineStore("chd-compress", () => {
     output.value = "";
     zstd.value = false;
     onConflict.value = "overwrite";
+    skipSpaceCheck.value = false;
     mode.value = "auto";
     hunkSize.value = null;
     result.value = "";
@@ -49,6 +51,7 @@ export const useChdCompressStore = defineStore("chd-compress", () => {
     input,
     output,
     onConflict,
+    skipSpaceCheck,
     zstd,
     mode,
     hunkSize,

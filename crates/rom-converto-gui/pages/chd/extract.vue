@@ -4,7 +4,7 @@ import { storeToRefs } from "pinia";
 import { useChdExtractStore } from "~/stores/chd-extract";
 
 const store = useChdExtractStore();
-const { input, output, parent, result, error, loading, queue } = storeToRefs(store);
+const { input, output, parent, skipSpaceCheck, result, error, loading, queue } = storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
 const { run, cancelled, abort } = useOperation({ result, error, loading });
 const progress = useProgress("chd-extract");
@@ -13,7 +13,7 @@ const isBatch = computed(() => queue.value.length > 0);
 const commandLine = ref("");
 
 function extractArgs(inputPath: string, outputPath: string) {
-  return { input: inputPath, output: outputPath, parent: parent.value || null };
+  return { input: inputPath, output: outputPath, parent: parent.value || null, skipSpaceCheck: skipSpaceCheck.value };
 }
 
 const batch = useBatchOperation("chd-extract", "cmd_chd_extract", (item) =>
@@ -129,6 +129,14 @@ async function execute() {
           label="Parent CHD (optional)"
           :filters="[{ name: 'CHD', extensions: ['chd'] }]"
         />
+
+        <div class="space-y-3 rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
+          <FlagToggle
+            v-model="skipSpaceCheck"
+            label="Skip free space check"
+            description="Proceed even if the output filesystem looks too full to hold the result."
+          />
+        </div>
 
         <OutputDirField v-model="outputDir" />
 

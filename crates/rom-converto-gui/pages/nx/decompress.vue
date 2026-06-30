@@ -4,14 +4,14 @@ import { storeToRefs } from "pinia";
 import { useNxDecompressStore } from "~/stores/nx-decompress";
 
 const store = useNxDecompressStore();
-const { queue, output, keys, onConflict, result, error, loading } = storeToRefs(store);
+const { queue, output, keys, onConflict, skipSpaceCheck, result, error, loading } = storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
 const progress = useProgress("nx-decompress");
 
 const commandLine = ref("");
 
 function decompressArgs(item: { input: string; output: string }) {
-  return { input: item.input, output: item.output || null, keys: keys.value || null, onConflict: onConflict.value };
+  return { input: item.input, output: item.output || null, keys: keys.value || null, onConflict: onConflict.value, skipSpaceCheck: skipSpaceCheck.value };
 }
 
 const batch = useBatchOperation("nx-decompress", "cmd_nx_decompress", decompressArgs);
@@ -146,6 +146,11 @@ async function execute() {
 
         <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
           <ConflictPolicyControl v-model="onConflict" />
+          <FlagToggle
+            v-model="skipSpaceCheck"
+            label="Skip free space check"
+            description="Proceed even if the output filesystem looks too full to hold the result."
+          />
         </div>
 
         <OutputDirField v-model="outputDir" />

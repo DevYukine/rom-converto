@@ -6,6 +6,7 @@ export const useRvlDecompressStore = defineStore("rvl-decompress", () => {
   const output = ref("");
   const format = ref<"iso" | "wbfs">("iso");
   const onConflict = ref("overwrite");
+  const skipSpaceCheck = ref(false);
 
   const result = ref("");
   const error = ref("");
@@ -35,6 +36,7 @@ export const useRvlDecompressStore = defineStore("rvl-decompress", () => {
     output.value = "";
     format.value = "iso";
     onConflict.value = "overwrite";
+    skipSpaceCheck.value = false;
     result.value = "";
     error.value = "";
     loading.value = false;
@@ -46,6 +48,7 @@ export const useRvlDecompressStore = defineStore("rvl-decompress", () => {
     output,
     format,
     onConflict,
+    skipSpaceCheck,
     result,
     error,
     loading,

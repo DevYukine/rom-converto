@@ -6,6 +6,7 @@ export const useNxDecompressStore = defineStore("nx-decompress", () => {
   const output = ref("");
   const keys = ref("");
   const onConflict = ref("overwrite");
+  const skipSpaceCheck = ref(false);
 
   const result = ref("");
   const error = ref("");
@@ -34,6 +35,7 @@ export const useNxDecompressStore = defineStore("nx-decompress", () => {
     output.value = "";
     keys.value = "";
     onConflict.value = "overwrite";
+    skipSpaceCheck.value = false;
     result.value = "";
     error.value = "";
     loading.value = false;
@@ -44,6 +46,7 @@ export const useNxDecompressStore = defineStore("nx-decompress", () => {
     output,
     keys,
     onConflict,
+    skipSpaceCheck,
     result,
     error,
     loading,

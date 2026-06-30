@@ -3,7 +3,7 @@ import { storeToRefs } from "pinia";
 import { useChdCompressStore } from "~/stores/chd-compress";
 
 const store = useChdCompressStore();
-const { input, output, onConflict, zstd, mode, hunkSize, result, error, loading, queue } = storeToRefs(store);
+const { input, output, onConflict, skipSpaceCheck, zstd, mode, hunkSize, result, error, loading, queue } = storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
 const { run, cancelled, abort } = useOperation({ result, error, loading });
 const progress = useProgress("chd-compress");
@@ -22,6 +22,7 @@ function chdArgs(inputPath: string, outputPath: string) {
     inputPath,
     output: outputPath,
     onConflict: onConflict.value,
+    skipSpaceCheck: skipSpaceCheck.value,
     zstd: zstd.value,
     mode: mode.value === "auto" ? null : mode.value,
     hunkSize: hunkSize.value || null,
@@ -125,6 +126,11 @@ async function execute() {
 
         <div class="space-y-3 rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
           <ConflictPolicyControl v-model="onConflict" />
+          <FlagToggle
+            v-model="skipSpaceCheck"
+            label="Skip free space check"
+            description="Proceed even if the output filesystem looks too full to hold the result."
+          />
           <FlagToggle
             v-model="zstd"
             label="zstd codec (DVD mode)"

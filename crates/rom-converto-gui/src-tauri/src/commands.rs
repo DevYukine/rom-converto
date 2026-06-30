@@ -39,8 +39,8 @@ use rom_converto_lib::nintendo::wup::{
 use rom_converto_lib::playlist::{PlaylistMode, PlaylistOptions, plan_playlists};
 use rom_converto_lib::util::fs::collect_all_files;
 use rom_converto_lib::util::{
-    CancelToken, ConflictPolicy, ConflictResolution, HashAlgo, hash_file, parse_algos,
-    resolve_conflict,
+    CancelToken, ConflictPolicy, ConflictResolution, DEFAULT_SPACE_HEADROOM, HashAlgo,
+    available_space, format_bytes, hash_file, parse_algos, resolve_conflict, space_shortfall,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -75,7 +75,39 @@ fn resolve_write_path(
     }
 }
 
-fn render_hash_row(path: &Path, d: &rom_converto_lib::util::FileDigests, algos: &[HashAlgo]) -> String {
+fn input_size(path: &Path) -> u64 {
+    std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
+}
+
+fn preflight_space(output_dir: &Path, required_bytes: u64, skip: bool) -> Result<(), String> {
+    if skip {
+        return Ok(());
+    }
+    let probe = output_dir
+        .ancestors()
+        .find(|p| p.exists())
+        .unwrap_or(output_dir);
+    match available_space(probe) {
+        Ok(available) => {
+            if space_shortfall(available, required_bytes, DEFAULT_SPACE_HEADROOM).is_some() {
+                return Err(format!(
+                    "Not enough free space at {}: need about {}, only {} available. Turn on Skip free space check to proceed anyway.",
+                    output_dir.display(),
+                    format_bytes(required_bytes.saturating_add(DEFAULT_SPACE_HEADROOM)),
+                    format_bytes(available),
+                ));
+            }
+            Ok(())
+        }
+        Err(_) => Ok(()),
+    }
+}
+
+fn render_hash_row(
+    path: &Path,
+    d: &rom_converto_lib::util::FileDigests,
+    algos: &[HashAlgo],
+) -> String {
     let cells: Vec<String> = algos
         .iter()
         .map(|a| format!("{}={}", a.label(), d.value(*a).unwrap_or("")))
@@ -119,6 +151,7 @@ pub async fn cmd_cdn_to_cia(
     recursive: bool,
     ensure_ticket_exists: bool,
     on_conflict: Option<String>,
+    skip_space_check: bool,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app.clone(), "cdn-to-cia"));
     let total_progress = Arc::new(TauriProgress::new(app, "cdn-to-cia-total"));
@@ -133,6 +166,16 @@ pub async fn cmd_cdn_to_cia(
         output_dir: None,
         on_conflict: conflict_policy(on_conflict.as_deref()),
     };
+    let required: u64 = collect_all_files(&opts.cdn_dir, None)
+        .map(|files| files.iter().map(|p| input_size(p)).sum())
+        .unwrap_or(0);
+    let probe_dir = opts
+        .output
+        .as_deref()
+        .and_then(|p| p.parent())
+        .or_else(|| opts.cdn_dir.parent())
+        .unwrap_or(opts.cdn_dir.as_path());
+    preflight_space(probe_dir, required, skip_space_check)?;
     let token = begin(&state).await;
     // The streaming decrypt holds the worker-pool receiver across await points,
     // so its future is not Send; run on a dedicated thread with its own runtime.
@@ -173,6 +216,7 @@ pub async fn cmd_decrypt_rom(
     input: PathBuf,
     output: PathBuf,
     on_conflict: Option<String>,
+    skip_space_check: bool,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "decrypt"));
     let output = match resolve_write_path(&output, on_conflict.as_deref())? {
@@ -180,6 +224,11 @@ pub async fn cmd_decrypt_rom(
         None => return Ok(format!("skipped existing {}", output.display())),
     };
     let out_display = output.display().to_string();
+    preflight_space(
+        output.parent().unwrap_or(&output),
+        input_size(&input),
+        skip_space_check,
+    )?;
     let token = begin(&state).await;
     // The streaming decrypt holds the worker-pool receiver across await points,
     // so its future is not Send; run on a dedicated thread with its own runtime.
@@ -212,6 +261,7 @@ pub async fn cmd_compress_rom(
     level: Option<i32>,
     allow_encrypted: bool,
     on_conflict: Option<String>,
+    skip_space_check: bool,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "compress"));
     let output = output.unwrap_or_else(|| derive_compressed_path(&input));
@@ -220,6 +270,11 @@ pub async fn cmd_compress_rom(
         None => return Ok(format!("skipped existing {}", output.display())),
     };
     let out_display = output.display().to_string();
+    preflight_space(
+        output.parent().unwrap_or(&output),
+        input_size(&input),
+        skip_space_check,
+    )?;
     let token = begin(&state).await;
     let result = tokio::spawn(async move {
         compress_rom_cancellable(
@@ -247,6 +302,7 @@ pub async fn cmd_decompress_rom(
     input: PathBuf,
     output: Option<PathBuf>,
     on_conflict: Option<String>,
+    skip_space_check: bool,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "decompress"));
     let output = output.unwrap_or_else(|| derive_decompressed_path(&input));
@@ -255,6 +311,11 @@ pub async fn cmd_decompress_rom(
         None => return Ok(format!("skipped existing {}", output.display())),
     };
     let out_display = output.display().to_string();
+    preflight_space(
+        output.parent().unwrap_or(&output),
+        input_size(&input),
+        skip_space_check,
+    )?;
     let token = begin(&state).await;
     let result = tokio::spawn(async move {
         decompress_rom_cancellable(&input, &output, progress.as_ref(), token).await
@@ -278,6 +339,7 @@ pub async fn cmd_chd_compress(
     hunk_size: Option<u32>,
     mode: Option<String>,
     on_conflict: Option<String>,
+    skip_space_check: bool,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "chd-compress"));
     let output = match resolve_write_path(&output, on_conflict.as_deref())? {
@@ -285,6 +347,11 @@ pub async fn cmd_chd_compress(
         None => return Ok(format!("skipped existing {}", output.display())),
     };
     let out_display = output.display().to_string();
+    preflight_space(
+        output.parent().unwrap_or(&output),
+        input_size(&input_path),
+        skip_space_check,
+    )?;
     let mode = match mode.as_deref() {
         Some("cd") => Some(DiscMode::Cd),
         Some("dvd") => Some(DiscMode::Dvd),
@@ -317,6 +384,7 @@ pub async fn cmd_cso_compress(
     format: String,
     block_size: Option<u32>,
     on_conflict: Option<String>,
+    skip_space_check: bool,
 ) -> Result<String, String> {
     let format = match format.as_str() {
         "zso" => CsoFormat::Zso,
@@ -328,6 +396,11 @@ pub async fn cmd_cso_compress(
         None => return Ok(format!("skipped existing {}", output.display())),
     };
     let out_display = output.display().to_string();
+    preflight_space(
+        output.parent().unwrap_or(&output),
+        input_size(&input_path),
+        skip_space_check,
+    )?;
     let opts = CsoCompressOptions {
         format,
         block_size,
@@ -352,6 +425,7 @@ pub async fn cmd_cso_decompress(
     input_path: PathBuf,
     output: PathBuf,
     on_conflict: Option<String>,
+    skip_space_check: bool,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "cso-decompress"));
     let output = match resolve_write_path(&output, on_conflict.as_deref())? {
@@ -359,6 +433,11 @@ pub async fn cmd_cso_decompress(
         None => return Ok(format!("skipped existing {}", output.display())),
     };
     let out_display = output.display().to_string();
+    preflight_space(
+        output.parent().unwrap_or(&output),
+        input_size(&input_path),
+        skip_space_check,
+    )?;
     let token = begin(&state).await;
     let result = tokio::spawn(async move {
         decompress_from_cso_cancellable(progress.as_ref(), input_path, output, true, token).await
@@ -395,6 +474,7 @@ pub async fn cmd_cue_merge(
     cue_path: PathBuf,
     output: PathBuf,
     on_conflict: Option<String>,
+    skip_space_check: bool,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "cue-merge"));
     let output = match resolve_write_path(&output, on_conflict.as_deref())? {
@@ -402,6 +482,11 @@ pub async fn cmd_cue_merge(
         None => return Ok(format!("skipped existing {}", output.display())),
     };
     let out_display = output.display().to_string();
+    preflight_space(
+        output.parent().unwrap_or(&output),
+        input_size(&cue_path),
+        skip_space_check,
+    )?;
     tokio::spawn(async move { merge_bin(progress.as_ref(), cue_path, output, true).await })
         .await
         .map_err(err_to_string)?
@@ -420,9 +505,15 @@ pub async fn cmd_chd_extract(
     input: PathBuf,
     output: PathBuf,
     parent: Option<PathBuf>,
+    skip_space_check: bool,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "chd-extract"));
     let out_display = output.display().to_string();
+    preflight_space(
+        output.parent().unwrap_or(&output),
+        input_size(&input),
+        skip_space_check,
+    )?;
     let token = begin(&state).await;
     // ChdReader's deeply nested async types exceed the compiler's Send recursion
     // limit, so we run on a dedicated thread with its own tokio runtime.
@@ -489,6 +580,7 @@ pub async fn cmd_compress_disc(
     chunk_size: Option<u32>,
     task_id: String,
     on_conflict: Option<String>,
+    skip_space_check: bool,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, &task_id));
     let output = output.unwrap_or_else(|| derive_rvz_path(&input));
@@ -497,6 +589,11 @@ pub async fn cmd_compress_disc(
         None => return Ok(format!("skipped existing {}", output.display())),
     };
     let out_display = output.display().to_string();
+    preflight_space(
+        output.parent().unwrap_or(&output),
+        input_size(&input),
+        skip_space_check,
+    )?;
     let opts = RvzCompressOptions {
         compression_level: level.unwrap_or(RvzCompressOptions::default().compression_level),
         chunk_size: chunk_size.unwrap_or(RvzCompressOptions::default().chunk_size),
@@ -522,6 +619,7 @@ pub async fn cmd_decompress_disc(
     output: Option<PathBuf>,
     task_id: String,
     on_conflict: Option<String>,
+    skip_space_check: bool,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, &task_id));
     let output = output.unwrap_or_else(|| derive_disc_path(&input));
@@ -530,6 +628,11 @@ pub async fn cmd_decompress_disc(
         None => return Ok(format!("skipped existing {}", output.display())),
     };
     let out_display = output.display().to_string();
+    preflight_space(
+        output.parent().unwrap_or(&output),
+        input_size(&input),
+        skip_space_check,
+    )?;
     let to_wbfs = output
         .extension()
         .and_then(|e| e.to_str())
@@ -561,6 +664,7 @@ pub async fn cmd_wup_compress(
     level: Option<i32>,
     keys: Option<Vec<PathBuf>>,
     on_conflict: Option<String>,
+    skip_space_check: bool,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "wup-compress"));
     let output = match resolve_write_path(&output, on_conflict.as_deref())? {
@@ -568,6 +672,12 @@ pub async fn cmd_wup_compress(
         None => return Ok(format!("skipped existing {}", output.display())),
     };
     let out_display = output.display().to_string();
+    let required: u64 = inputs.iter().map(|p| input_size(p)).sum();
+    preflight_space(
+        output.parent().unwrap_or(&output),
+        required,
+        skip_space_check,
+    )?;
     let opts = WupCompressOptions {
         zstd_level: level.unwrap_or(WupCompressOptions::default().zstd_level),
     };
@@ -609,6 +719,7 @@ pub async fn cmd_wup_decrypt(
     input: PathBuf,
     output: PathBuf,
     on_conflict: Option<String>,
+    skip_space_check: bool,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "wup-decrypt"));
     let output = match resolve_write_path(&output, on_conflict.as_deref())? {
@@ -616,6 +727,11 @@ pub async fn cmd_wup_decrypt(
         None => return Ok(format!("skipped existing {}", output.display())),
     };
     let out_display = output.display().to_string();
+    preflight_space(
+        output.parent().unwrap_or(&output),
+        input_size(&input),
+        skip_space_check,
+    )?;
     let token = begin(&state).await;
     let result = tokio::spawn(async move {
         decrypt_nus_title_async_cancellable(input, output, progress.as_ref(), token).await
@@ -640,6 +756,7 @@ pub async fn cmd_nx_compress(
     mode: Option<String>,
     block_size_exp: Option<u8>,
     on_conflict: Option<String>,
+    skip_space_check: bool,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "nx-compress"));
     let kind = detect_container(&input).map_err(err_to_string)?;
@@ -664,6 +781,11 @@ pub async fn cmd_nx_compress(
         None => return Ok(format!("skipped existing {}", output.display())),
     };
     let out_display = output.display().to_string();
+    preflight_space(
+        output.parent().unwrap_or(&output),
+        input_size(&input),
+        skip_space_check,
+    )?;
     let keys = load_keyset(keys.as_deref()).map_err(err_to_string)?;
     let token = begin(&state).await;
     let result = tokio::spawn(async move {
@@ -686,6 +808,7 @@ pub async fn cmd_nx_decompress(
     output: Option<PathBuf>,
     keys: Option<PathBuf>,
     on_conflict: Option<String>,
+    skip_space_check: bool,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "nx-decompress"));
     let output = output.unwrap_or_else(|| nx_derive_decompressed_path(&input));
@@ -694,6 +817,11 @@ pub async fn cmd_nx_decompress(
         None => return Ok(format!("skipped existing {}", output.display())),
     };
     let out_display = output.display().to_string();
+    preflight_space(
+        output.parent().unwrap_or(&output),
+        input_size(&input),
+        skip_space_check,
+    )?;
     let keys = load_keyset(keys.as_deref()).map_err(err_to_string)?;
     let token = begin(&state).await;
     let result = tokio::spawn(async move {
@@ -730,6 +858,7 @@ pub async fn cmd_convert_ctr(
     input: PathBuf,
     output: Option<PathBuf>,
     on_conflict: Option<String>,
+    skip_space_check: bool,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "ctr-convert"));
     let output = output.unwrap_or_else(|| derive_converted_path(&input));
@@ -738,6 +867,11 @@ pub async fn cmd_convert_ctr(
         None => return Ok(format!("skipped existing {}", output.display())),
     };
     let out_display = output.display().to_string();
+    preflight_space(
+        output.parent().unwrap_or(&output),
+        input_size(&input),
+        skip_space_check,
+    )?;
     let token = begin(&state).await;
     let result = tokio::spawn(async move {
         convert_rom_cancellable(&input, &output, progress.as_ref(), token).await
@@ -874,7 +1008,8 @@ pub async fn cmd_hash(
                 return Ok(format!("no files found in {}", input.display()));
             }
             for file in files {
-                let digests = hash_file(&file, &parsed, progress.as_ref()).map_err(err_to_string)?;
+                let digests =
+                    hash_file(&file, &parsed, progress.as_ref()).map_err(err_to_string)?;
                 lines.push(render_hash_row(&file, &digests, &parsed));
             }
         } else {

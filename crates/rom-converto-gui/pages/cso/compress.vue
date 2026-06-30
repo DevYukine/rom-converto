@@ -3,7 +3,7 @@ import { storeToRefs } from "pinia";
 import { useCsoCompressStore } from "~/stores/cso-compress";
 
 const store = useCsoCompressStore();
-const { input, output, format, onConflict, blockSize, result, error, loading, queue } = storeToRefs(store);
+const { input, output, format, onConflict, skipSpaceCheck, blockSize, result, error, loading, queue } = storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
 const { run, cancelled, abort } = useOperation({ result, error, loading });
 const progress = useProgress("cso-compress");
@@ -23,6 +23,7 @@ function csoArgs(inputPath: string, outputPath: string) {
     output: outputPath,
     format: format.value,
     onConflict: onConflict.value,
+    skipSpaceCheck: skipSpaceCheck.value,
     blockSize: blockSize.value || null,
   };
 }
@@ -137,6 +138,11 @@ async function execute() {
             @update:model-value="(v: string) => { format = v as 'cso' | 'zso' }"
           />
           <ConflictPolicyControl v-model="onConflict" />
+          <FlagToggle
+            v-model="skipSpaceCheck"
+            label="Skip free space check"
+            description="Proceed even if the output filesystem looks too full to hold the result."
+          />
           <label class="flex flex-col gap-1.5">
             <span class="text-sm font-medium text-zinc-200">Block size</span>
             <span class="text-xs text-zinc-400">

@@ -3,7 +3,7 @@ import { storeToRefs } from "pinia";
 import { useCtrDecryptStore } from "~/stores/ctr-decrypt";
 
 const store = useCtrDecryptStore();
-const { input, output, onConflict, result, error, loading, queue } = storeToRefs(store);
+const { input, output, onConflict, skipSpaceCheck, result, error, loading, queue } = storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
 const { run, cancelled, abort } = useOperation({ result, error, loading });
 const progress = useProgress("decrypt");
@@ -13,7 +13,7 @@ const isBatch = computed(() => queue.value.length > 0);
 const commandLine = ref("");
 
 function decryptArgs(inputPath: string, outputPath: string) {
-  return { input: inputPath, output: outputPath, onConflict: onConflict.value };
+  return { input: inputPath, output: outputPath, onConflict: onConflict.value, skipSpaceCheck: skipSpaceCheck.value };
 }
 
 const batch = useBatchOperation("decrypt", "cmd_decrypt_rom", (item) =>
@@ -111,6 +111,11 @@ async function execute() {
 
         <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
           <ConflictPolicyControl v-model="onConflict" />
+          <FlagToggle
+            v-model="skipSpaceCheck"
+            label="Skip free space check"
+            description="Proceed even if the output filesystem looks too full to hold the result."
+          />
         </div>
 
         <OutputDirField v-model="outputDir" />

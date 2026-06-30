@@ -3,7 +3,7 @@ import { storeToRefs } from "pinia";
 import { useRvlDecompressStore } from "~/stores/rvl-decompress";
 
 const store = useRvlDecompressStore();
-const { input, output, format, onConflict, result, error, loading, queue } = storeToRefs(store);
+const { input, output, format, onConflict, skipSpaceCheck, result, error, loading, queue } = storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
 const { run, cancelled, abort } = useOperation({ result, error, loading });
 const progress = useProgress("rvl-decompress");
@@ -30,7 +30,7 @@ const outputFilters = computed(() =>
 const commandLine = ref("");
 
 function decompressArgs(inputPath: string, outputPath: string) {
-  return { input: inputPath, output: outputPath || null, taskId: "rvl-decompress", onConflict: onConflict.value };
+  return { input: inputPath, output: outputPath || null, taskId: "rvl-decompress", onConflict: onConflict.value, skipSpaceCheck: skipSpaceCheck.value };
 }
 
 const batch = useBatchOperation("rvl-decompress", "cmd_decompress_disc", (item) =>
@@ -152,6 +152,11 @@ async function execute() {
 
         <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
           <ConflictPolicyControl v-model="onConflict" />
+          <FlagToggle
+            v-model="skipSpaceCheck"
+            label="Skip free space check"
+            description="Proceed even if the output filesystem looks too full to hold the result."
+          />
         </div>
 
         <OutputDirField v-model="outputDir" />

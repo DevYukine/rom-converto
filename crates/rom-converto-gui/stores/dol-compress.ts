@@ -7,6 +7,7 @@ export const useDolCompressStore = defineStore("dol-compress", () => {
   const level = ref(22);
   const chunkSize = ref(131072);
   const onConflict = ref("overwrite");
+  const skipSpaceCheck = ref(false);
 
   const result = ref("");
   const error = ref("");
@@ -37,6 +38,7 @@ export const useDolCompressStore = defineStore("dol-compress", () => {
     level.value = 22;
     chunkSize.value = 131072;
     onConflict.value = "overwrite";
+    skipSpaceCheck.value = false;
     result.value = "";
     error.value = "";
     loading.value = false;
@@ -49,6 +51,7 @@ export const useDolCompressStore = defineStore("dol-compress", () => {
     level,
     chunkSize,
     onConflict,
+    skipSpaceCheck,
     result,
     error,
     loading,
