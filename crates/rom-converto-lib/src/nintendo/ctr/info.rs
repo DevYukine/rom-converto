@@ -18,13 +18,16 @@ use crate::nintendo::ctr::models::ncch_header::NcchHeader;
 use crate::nintendo::ctr::models::smdh::{AgeRating, SMDH_LARGE_ICON_DIM, Smdh};
 use crate::nintendo::ctr::models::title_metadata::ContentChunkRecord;
 use crate::nintendo::ctr::util::align_64;
+use crate::nintendo::ctr::z3ds::models::{
+    Z3DS_HEADER_SIZE, Z3DS_MAGIC, Z3dsHeader, underlying_magic,
+};
 use crate::util::pixel::{decode_rgb565_morton_tiled, encode_png};
 use anyhow::{Context, Result, anyhow};
 use binrw::BinRead;
 use byteorder::{LE, ReadBytesExt};
 use serde::{Deserialize, Serialize};
 use std::fs::File;
-use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
+use std::io::{BufReader, BufWriter, Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -44,6 +47,8 @@ pub struct CtrInfo {
     pub smdh: Option<CtrSmdhInfo>,
     pub icon: Option<Image>,
     pub small_icon: Option<Image>,
+    #[serde(default)]
+    pub compressed: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -97,6 +102,10 @@ pub fn read_info(path: &Path) -> Result<CtrInfo> {
         return Err(anyhow!("ctr info: file is too small"));
     }
 
+    if &probe[0..4] == Z3DS_MAGIC.as_slice() {
+        return read_z3ds_info(path, physical_bytes);
+    }
+
     // NCSD / NCCH have magic at 0x100; CIA has a 4-byte header_size at 0.
     if n >= 0x104 {
         let magic = &probe[0x100..0x104];
@@ -116,6 +125,41 @@ pub fn read_info(path: &Path) -> Result<CtrInfo> {
         "ctr info: unrecognised format at {}",
         path.display()
     ))
+}
+
+fn read_z3ds_info(path: &Path, physical_bytes: u64) -> Result<CtrInfo> {
+    let mut file = File::open(path)?;
+    let mut header_buf = vec![0u8; Z3DS_HEADER_SIZE as usize];
+    file.read_exact(&mut header_buf)?;
+    let header =
+        Z3dsHeader::read(&mut Cursor::new(&header_buf)).context("ctr info: parse Z3DS header")?;
+
+    let payload_offset = header.header_size as u64 + header.metadata_size as u64;
+    let compressed_size = header.compressed_size;
+
+    let temp_dir = tempfile::tempdir()?;
+    let ext = match header.underlying_magic {
+        underlying_magic::CIA => "cia",
+        underlying_magic::NCSD => "3ds",
+        underlying_magic::NCCH => "cxi",
+        _ => "bin",
+    };
+    let temp_path = temp_dir.path().join(format!("info_temp.{ext}"));
+
+    file.seek(SeekFrom::Start(payload_offset))?;
+    let limited = file.take(compressed_size);
+    let mut reader = BufReader::with_capacity(4 * 1024 * 1024, limited);
+    let mut writer = BufWriter::with_capacity(4 * 1024 * 1024, File::create(&temp_path)?);
+    zstd::stream::copy_decode(&mut reader, &mut writer)?;
+    writer
+        .into_inner()
+        .map_err(|e| anyhow!("ctr info: failed to flush decompressed output: {e}"))?
+        .sync_all()?;
+
+    let mut result = read_info(&temp_path)?;
+    result.physical_bytes = physical_bytes;
+    result.compressed = true;
+    Ok(result)
 }
 
 fn read_cia_info(path: &Path, physical_bytes: u64) -> Result<CtrInfo> {
@@ -177,6 +221,7 @@ fn read_cia_info(path: &Path, physical_bytes: u64) -> Result<CtrInfo> {
 
     Ok(CtrInfo {
         format: CtrFormat::Cia,
+        compressed: false,
         physical_bytes,
         title_id: info_from_ncch.title_id,
         program_id: info_from_ncch.program_id,
@@ -243,6 +288,7 @@ fn read_ncsd_info(path: &Path, physical_bytes: u64) -> Result<CtrInfo> {
 
     Ok(CtrInfo {
         format: CtrFormat::Ncsd,
+        compressed: false,
         physical_bytes,
         title_id: info_from_ncch.title_id,
         program_id: info_from_ncch.program_id,
@@ -291,6 +337,7 @@ fn read_ncch_info(path: &Path, physical_bytes: u64) -> Result<CtrInfo> {
 
     Ok(CtrInfo {
         format: CtrFormat::Ncch,
+        compressed: false,
         physical_bytes,
         title_id: info_from_ncch.title_id,
         program_id: info_from_ncch.program_id,
@@ -473,4 +520,42 @@ fn decode_smdh_icons(s: &Smdh) -> (Option<Image>, Option<Image>) {
         .map(|png| Image::new(png, small_dim, small_dim));
 
     (large, small)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::nintendo::ctr::constants::{
+        NCCH_FLAGS_OFFSET, NCCH_FLAGS7_NOCRYPTO, NCCH_MAGIC_OFFSET,
+    };
+    use crate::nintendo::ctr::z3ds::compress_rom;
+    use crate::nintendo::ctr::z3ds::models::underlying_magic;
+    use crate::util::NoProgress;
+
+    fn make_fake_decrypted_cxi(size: usize) -> Vec<u8> {
+        let size = size.max(0x200);
+        let mut data = vec![0u8; size];
+        data[NCCH_MAGIC_OFFSET..NCCH_MAGIC_OFFSET + 4].copy_from_slice(&underlying_magic::NCCH);
+        data[NCCH_FLAGS_OFFSET + 7] = NCCH_FLAGS7_NOCRYPTO;
+        for (i, b) in data.iter_mut().enumerate().skip(0x200) {
+            *b = (i % 251) as u8;
+        }
+        data
+    }
+
+    #[tokio::test]
+    async fn read_info_on_compressed_cxi_returns_ncch_compressed() {
+        let dir = tempfile::tempdir().unwrap();
+        let cxi_path = dir.path().join("game.cxi");
+        let zcxi_path = dir.path().join("game.zcxi");
+
+        std::fs::write(&cxi_path, make_fake_decrypted_cxi(64 * 1024)).unwrap();
+        compress_rom(&cxi_path, &zcxi_path, None, false, &NoProgress)
+            .await
+            .unwrap();
+
+        let info = read_info(&zcxi_path).unwrap();
+        assert_eq!(info.format, CtrFormat::Ncch);
+        assert!(info.compressed);
+    }
 }

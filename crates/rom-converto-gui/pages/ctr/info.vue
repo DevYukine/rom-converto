@@ -6,7 +6,10 @@ const store = useCtrInfoStore();
 const { input, info, rawJson, error, loading } = storeToRefs(store);
 
 const CTR_FILTERS = [
-  { name: "3DS container", extensions: ["cia", "3ds", "cci", "cxi", "ncch"] },
+  {
+    name: "3DS container",
+    extensions: ["cia", "3ds", "cci", "cxi", "ncch", "zcia", "zcci", "zcxi", "z3dsx"],
+  },
 ];
 </script>
 
@@ -19,6 +22,10 @@ const CTR_FILTERS = [
       :has-result="!!info"
       :has-error="!!error"
     />
+
+    <div class="mb-4">
+      <OutputLog :error="error" />
+    </div>
 
     <OperationCard>
       <div class="space-y-5">
@@ -40,10 +47,6 @@ const CTR_FILTERS = [
         <RomInfoCard v-if="info" :info="info" />
       </div>
     </OperationCard>
-
-    <div class="mt-4">
-      <OutputLog :error="error" />
-    </div>
 
     <details v-if="rawJson" class="mt-4">
       <summary class="cursor-pointer text-sm text-zinc-500">Raw JSON payload</summary>

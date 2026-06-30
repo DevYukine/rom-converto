@@ -2,27 +2,50 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { storeToRefs } from "pinia";
 import { useNxDecompressStore } from "~/stores/nx-decompress";
+import type { ReportRecord, RunOutcome } from "~/types/report";
 
 const store = useNxDecompressStore();
-const { queue, output, keys, result, error, loading } = storeToRefs(store);
+const { queue, output, keys, onConflict, skipSpaceCheck, outputTemplate, reportFile, result, error, loading, recursive, maxDepth } = storeToRefs(store);
+const { outputDir, resolve } = useOutputDir();
+const { expand } = useFolderScan(["nsz", "xcz"]);
+const scanDepth = () => (recursive.value ? maxDepth.value : 1);
 const progress = useProgress("nx-decompress");
 
-const batch = useBatchOperation("nx-decompress", "cmd_nx_decompress", (item) => ({
-  input: item.input,
-  output: item.output,
-  keys: keys.value || null,
-}));
+const previewMode = ref(false);
+const { preview, batch: previewBatch, error: previewError } = usePreview("cmd_nx_decompress");
+
+const commandLine = ref("");
+
+function decompressArgs(item: { input: string; output: string }) {
+  const tmpl = outputTemplate.value || null;
+  return {
+    input: item.input,
+    output: tmpl ? null : item.output || null,
+    keys: keys.value || null,
+    onConflict: onConflict.value,
+    skipSpaceCheck: skipSpaceCheck.value,
+    outputTemplate: tmpl,
+    report: !!reportFile.value,
+    reportFile: reportFile.value || null,
+    dryRun: previewMode.value,
+  };
+}
+
+const batch = useBatchOperation("nx-decompress", "cmd_nx_decompress", decompressArgs);
 
 const dropZoneRef = ref<HTMLElement | null>(null);
 let zoneId: string | null = null;
 
-function addPaths(paths: string[]) {
+async function addPaths(paths: string[]) {
   for (const p of paths) {
-    if (p) store.addToQueue(p);
+    if (!p) continue;
+    for (const f of await expand(p, scanDepth())) {
+      store.addToQueue(f);
+    }
   }
   if (!output.value && queue.value.length > 0) {
     const first = queue.value[0];
-    if (first) output.value = deriveNspPath(first.input);
+    if (first) output.value = resolve(deriveNspPath(first.input));
   }
 }
 
@@ -36,6 +59,18 @@ onUnmounted(() => {
   if (zoneId) unregisterDropZone(zoneId);
 });
 
+watch(outputDir, () => {
+  if (output.value && queue.value.length === 1) {
+    const first = queue.value[0];
+    if (first) output.value = resolve(deriveNspPath(first.input));
+  }
+  for (const item of queue.value) {
+    if (item.status === "pending") {
+      item.output = resolve(deriveNspPath(item.input));
+    }
+  }
+});
+
 async function browseInputs() {
   const result = await open({
     directory: false,
@@ -46,15 +81,57 @@ async function browseInputs() {
   addPaths(Array.isArray(result) ? result : [result]);
 }
 
-const canDecompress = computed(() => queue.value.length > 0 && !!output.value);
+const { canRun, runBlockReason, templateActive } = usePageGating({
+  queue,
+  outputTemplate,
+  emptyInputReason: "Add at least one file to the queue to continue.",
+});
 
 async function execute() {
   progress.reset();
-  for (const item of queue.value) {
-    item.output =
-      queue.value.length === 1 ? output.value : deriveNspPath(item.input);
+  if (!outputTemplate.value) {
+    for (const item of queue.value) {
+      item.output =
+        queue.value.length === 1
+          ? output.value
+          : resolve(deriveNspPath(item.input));
+    }
   }
-  await batch.start(queue, result);
+  const records: ReportRecord[] = [];
+  const rep = queue.value.find((i) => i.status === "pending") ?? queue.value[0];
+  commandLine.value = rep ? buildCliCommand("cmd_nx_decompress", decompressArgs(rep)) : "";
+  await batch.start(
+    queue,
+    result,
+    { errorRef: error },
+    (res) => {
+      const record = (res as RunOutcome)?.record;
+      if (record) records.push(record);
+    },
+    async (item, err) => {
+      if (reportFile.value) await pushFailedRecord(records, item.input, "decompress", err);
+    },
+  );
+  if (reportFile.value && records.length) {
+    await writeRunReport(reportFile.value, records);
+  }
+}
+
+async function runPreview() {
+  if (!outputTemplate.value) {
+    for (const item of queue.value) {
+      item.output = queue.value.length === 1 ? output.value : resolve(deriveNspPath(item.input));
+    }
+  }
+  const rep = queue.value.find((i) => i.status === "pending") ?? queue.value[0];
+  commandLine.value = rep ? buildCliCommand("cmd_nx_decompress", decompressArgs(rep)) : "";
+  await previewBatch(queue, decompressArgs);
+  if (previewError.value) error.value = previewError.value;
+}
+
+function onRun() {
+  if (previewMode.value) runPreview();
+  else execute();
 }
 </script>
 
@@ -67,6 +144,10 @@ async function execute() {
       :has-result="!!result"
       :has-error="!!error"
     />
+
+    <div class="mb-4">
+      <OutputLog :command="commandLine" :result="result" :preview="preview" :error="error" />
+    </div>
 
     <OperationCard>
       <div class="space-y-5">
@@ -104,10 +185,20 @@ async function execute() {
           </div>
         </div>
 
+        <InfoTooltip v-if="queue.length <= 1 && templateActive" :message="OUTPUT_TEMPLATE_TOOLTIP" block>
+          <FileDropZone
+            v-model="output"
+            class="w-full"
+            label="Output file (auto-filled)"
+            :save-dialog="true"
+            :disabled="true"
+            :filters="[{ name: 'Switch container', extensions: ['nsp', 'xci'] }]"
+          />
+        </InfoTooltip>
         <FileDropZone
-          v-if="queue.length <= 1"
+          v-else-if="queue.length <= 1"
           v-model="output"
-          label="Output (auto-derived)"
+          label="Output file (auto-filled)"
           :save-dialog="true"
           :filters="[{ name: 'Switch container', extensions: ['nsp', 'xci'] }]"
         />
@@ -125,20 +216,68 @@ async function execute() {
           :filters="[{ name: 'prod.keys', extensions: ['keys', 'txt'] }]"
         />
 
+        <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3 space-y-3">
+          <ConflictPolicyControl v-model="onConflict" />
+          <RecursiveOptions
+            :recursive="recursive"
+            :max-depth="maxDepth"
+            @update:recursive="recursive = $event"
+            @update:max-depth="maxDepth = $event"
+          />
+          <FlagToggle
+            v-model="skipSpaceCheck"
+            label="Skip free space check"
+            description="Proceed even if the output filesystem looks too full to hold the result."
+          />
+        </div>
+
+        <label class="flex flex-col gap-1.5">
+          <span class="text-sm font-medium text-zinc-200">Output template (optional)</span>
+          <span class="text-xs text-zinc-400">
+            Build the output path from metadata tokens, for example {console}/{title}.{ext}. Replaces the explicit output path.
+          </span>
+          <input
+            v-model="outputTemplate"
+            type="text"
+            placeholder="e.g. {console}/{title}.{ext}"
+            class="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-800/50 px-3 py-1.5 text-sm text-zinc-200"
+          />
+        </label>
+
+        <OutputDirField v-model="outputDir" />
+
+        <FileDropZone
+          v-model="reportFile"
+          label="Run report file (optional)"
+          placeholder="No report"
+          :save-dialog="true"
+          :filters="[{ name: 'Report', extensions: ['csv', 'json', 'html'] }]"
+        />
+
         <ProgressBar
           :percent="progress.percent.value"
           :message="progress.message.value"
           :running="progress.running.value"
         />
 
-        <RunButton :loading="loading || batch.running.value" :disabled="!canDecompress" @click="execute">
-          {{ queue.length <= 1 ? "Decompress" : `Decompress ${queue.length} Files` }}
+        <FlagToggle
+          v-model="previewMode"
+          label="Preview (dry run)"
+          description="Show what each file would do without writing anything."
+        />
+
+        <RunButton
+          :loading="loading || batch.running.value"
+          :batch-current="batch.currentIndex.value"
+          :batch-total="queue.length"
+          :disabled="!canRun"
+          :disabled-reason="runBlockReason"
+          @click="onRun"
+          @cancel="batch.abort"
+        >
+          {{ previewMode ? 'Preview' : (queue.filter(i => i.status === 'pending').length > 1 ? `Decompress All (${queue.filter(i => i.status === 'pending').length})` : 'Decompress') }}
         </RunButton>
       </div>
     </OperationCard>
-
-    <div class="mt-4">
-      <OutputLog :result="result" :error="error" />
-    </div>
   </div>
 </template>

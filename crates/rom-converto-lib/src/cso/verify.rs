@@ -121,14 +121,23 @@ mod tests {
     use super::*;
     use crate::cso::models::CsoFormat;
     use crate::cso::writer::write_cso_blocking;
-    use crate::util::NoProgress;
+    use crate::util::{CancelToken, NoProgress};
 
     fn make_cso(dir: &std::path::Path, data: &[u8]) -> PathBuf {
         let iso = dir.join("game.iso");
         std::fs::write(&iso, data).unwrap();
         let packed = dir.join("game.cso");
         let bytes_done = Arc::new(AtomicU64::new(0));
-        write_cso_blocking(&iso, &packed, CsoFormat::Cso, 2048, 0, &bytes_done).unwrap();
+        write_cso_blocking(
+            &iso,
+            &packed,
+            CsoFormat::Cso,
+            2048,
+            0,
+            &bytes_done,
+            &CancelToken::new(),
+        )
+        .unwrap();
         packed
     }
 

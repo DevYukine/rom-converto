@@ -1,49 +1,115 @@
 <script setup lang="ts">
 import { storeToRefs } from "pinia";
 import { useCsoDecompressStore } from "~/stores/cso-decompress";
+import type { ReportRecord, RunOutcome } from "~/types/report";
 
 const store = useCsoDecompressStore();
-const { input, output, force, result, error, loading, queue } = storeToRefs(store);
-const { run } = useOperation({ result, error, loading });
+const { input, output, onConflict, skipSpaceCheck, outputTemplate, reportFile, result, error, loading, queue, recursive, maxDepth } = storeToRefs(store);
+const { outputDir, resolve } = useOutputDir();
+const { expand } = useFolderScan(["cso", "zso"]);
+const scanDepth = () => (recursive.value ? maxDepth.value : 1);
+const { run, cancelled, abort } = useOperation({ result, error, loading });
 const progress = useProgress("cso-decompress");
 
+const previewMode = ref(false);
+const { preview, single: previewSingle, batch: previewBatch, error: previewError } = usePreview("cmd_cso_decompress");
+
 const isBatch = computed(() => queue.value.length > 0);
+const { canRun, runBlockReason, templateActive } = usePageGating({ input, queue, outputTemplate });
 
-const batch = useBatchOperation("cso-decompress", "cmd_cso_decompress", (item) => ({
-  inputPath: item.input,
-  output: item.output,
-  force: force.value,
-}));
+const commandLine = ref("");
 
-watch(input, (val) => {
-  if (val) output.value = deriveDiscIsoPath(val);
+function csoArgs(inputPath: string, outputPath: string) {
+  const tmpl = outputTemplate.value || null;
+  return {
+    inputPath,
+    output: tmpl ? null : outputPath,
+    onConflict: onConflict.value,
+    skipSpaceCheck: skipSpaceCheck.value,
+    outputTemplate: tmpl,
+    report: !!reportFile.value,
+    reportFile: reportFile.value || null,
+    dryRun: previewMode.value,
+  };
+}
+
+const batch = useBatchOperation("cso-decompress", "cmd_cso_decompress", (item) =>
+  csoArgs(item.input, item.output),
+);
+
+watch([input, outputDir], () => {
+  if (input.value) output.value = resolve(deriveDiscIsoPath(input.value));
 });
 
-function handleFiles(paths: string[]) {
+watch(outputDir, () => {
+  for (const it of queue.value) {
+    if (it.status === "pending") it.output = resolve(deriveDiscIsoPath(it.input));
+  }
+});
+
+async function handleFiles(paths: string[]) {
   for (const p of paths) {
-    store.addToQueue(p, deriveDiscIsoPath(p));
+    for (const f of await expand(p, scanDepth())) {
+      store.addToQueue(f, resolve(deriveDiscIsoPath(f)));
+    }
   }
 }
 
-function handleSingleFile(path: string) {
-  if (queue.value.length > 0) {
-    store.addToQueue(path, deriveDiscIsoPath(path));
-  } else {
+async function handleSingleFile(path: string) {
+  const found = await expand(path, scanDepth());
+  if (found.length === 1 && found[0] === path && queue.value.length === 0) {
     input.value = path;
+  } else {
+    for (const f of found) {
+      store.addToQueue(f, resolve(deriveDiscIsoPath(f)));
+    }
   }
 }
 
 async function execute() {
   progress.reset();
+  const records: ReportRecord[] = [];
   if (isBatch.value) {
-    await batch.start(queue, result);
+    const rep = queue.value.find((i) => i.status === "pending") ?? queue.value[0];
+    commandLine.value = rep ? buildCliCommand("cmd_cso_decompress", csoArgs(rep.input, rep.output)) : "";
+    await batch.start(
+      queue,
+      result,
+      { errorRef: error },
+      (res) => {
+        const record = (res as RunOutcome)?.record;
+        if (record) records.push(record);
+      },
+      async (item, err) => {
+        if (reportFile.value) await pushFailedRecord(records, item.input, "decompress", err);
+      },
+    );
   } else {
-    await run("cmd_cso_decompress", {
-      inputPath: input.value,
-      output: output.value,
-      force: force.value,
-    });
+    const args = csoArgs(input.value, output.value);
+    commandLine.value = buildCliCommand("cmd_cso_decompress", args);
+    await runReportable("cmd_cso_decompress", args, { result, error, loading, cancelled }, records, "decompress");
   }
+  if (reportFile.value && records.length) {
+    await writeRunReport(reportFile.value, records);
+  }
+}
+
+async function runPreview() {
+  const rep = isBatch.value ? (queue.value.find((i) => i.status === "pending") ?? queue.value[0]) : null;
+  commandLine.value = isBatch.value
+    ? rep ? buildCliCommand("cmd_cso_decompress", csoArgs(rep.input, rep.output)) : ""
+    : buildCliCommand("cmd_cso_decompress", csoArgs(input.value, output.value));
+  if (isBatch.value) {
+    await previewBatch(queue, (item) => csoArgs(item.input, item.output));
+  } else {
+    await previewSingle(csoArgs(input.value, output.value));
+  }
+  if (previewError.value) error.value = previewError.value;
+}
+
+function onRun() {
+  if (previewMode.value) runPreview();
+  else execute();
 }
 </script>
 
@@ -57,9 +123,12 @@ async function execute() {
       :has-error="!!error"
     />
 
+    <div class="mb-4">
+      <OutputLog :command="commandLine" :result="result" :preview="preview" :cancelled="cancelled ? 'Operation cancelled.' : undefined" :error="error" />
+    </div>
+
     <OperationCard>
       <div class="space-y-5">
-        <!-- Batch mode -->
         <template v-if="isBatch">
           <BatchFileList
             :items="queue"
@@ -75,12 +144,11 @@ async function execute() {
             model-value=""
             :multiple="true"
             :filters="[{ name: 'Compressed ISO', extensions: ['cso', 'zso'] }]"
-            @update:model-value="(p: string) => { if (p) store.addToQueue(p, deriveDiscIsoPath(p)) }"
+            @update:model-value="(p: string) => { if (p) handleSingleFile(p) }"
             @update:files="handleFiles"
           />
         </template>
 
-        <!-- Single mode: 2-col on large screens -->
         <template v-else>
           <div class="grid gap-5 lg:grid-cols-2">
             <FileDropZone
@@ -93,9 +161,20 @@ async function execute() {
               @update:files="handleFiles"
             />
 
+            <InfoTooltip v-if="templateActive" :message="OUTPUT_TEMPLATE_TOOLTIP" block>
+              <FileDropZone
+                v-model="output"
+                class="w-full"
+                label="Output file (auto-filled)"
+                :save-dialog="true"
+                :disabled="true"
+                :filters="[{ name: 'ISO image', extensions: ['iso'] }]"
+              />
+            </InfoTooltip>
             <FileDropZone
+              v-else
               v-model="output"
-              label="Output (auto-derived)"
+              label="Output file (auto-filled)"
               :save-dialog="true"
               :filters="[{ name: 'ISO image', extensions: ['iso'] }]"
             />
@@ -103,12 +182,42 @@ async function execute() {
         </template>
 
         <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
+          <ConflictPolicyControl v-model="onConflict" />
+          <RecursiveOptions
+            :recursive="recursive"
+            :max-depth="maxDepth"
+            @update:recursive="recursive = $event"
+            @update:max-depth="maxDepth = $event"
+          />
           <FlagToggle
-            v-model="force"
-            label="Force Overwrite"
-            description="Overwrite output file if it already exists"
+            v-model="skipSpaceCheck"
+            label="Skip free space check"
+            description="Proceed even if the output filesystem looks too full to hold the result."
           />
         </div>
+
+        <label class="flex flex-col gap-1.5">
+          <span class="text-sm font-medium text-zinc-200">Output template (optional)</span>
+          <span class="text-xs text-zinc-400">
+            Build the output path from metadata tokens, for example {console}/{title}.{ext}. Replaces the explicit output path.
+          </span>
+          <input
+            v-model="outputTemplate"
+            type="text"
+            placeholder="e.g. {console}/{title}.{ext}"
+            class="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-800/50 px-3 py-1.5 text-sm text-zinc-200"
+          />
+        </label>
+
+        <OutputDirField v-model="outputDir" />
+
+        <FileDropZone
+          v-model="reportFile"
+          label="Run report file (optional)"
+          placeholder="No report"
+          :save-dialog="true"
+          :filters="[{ name: 'Report', extensions: ['csv', 'json', 'html'] }]"
+        />
 
         <ProgressBar
           :percent="progress.percent.value"
@@ -116,18 +225,24 @@ async function execute() {
           :running="progress.running.value"
         />
 
+        <FlagToggle
+          v-model="previewMode"
+          label="Preview (dry run)"
+          description="Show what each file would do without writing anything."
+        />
+
         <RunButton
           :loading="loading || batch.running.value"
-          :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input"
-          @click="execute"
+          :batch-current="batch.currentIndex.value"
+          :batch-total="queue.length"
+          :disabled="!canRun"
+          :disabled-reason="runBlockReason"
+          @click="onRun"
+          @cancel="isBatch ? batch.abort() : abort()"
         >
-          {{ isBatch ? `Decompress ${queue.filter(i => i.status === 'pending').length} Files` : 'Decompress' }}
+          {{ previewMode ? 'Preview' : (isBatch && queue.filter(i => i.status === 'pending').length > 1 ? `Decompress All (${queue.filter(i => i.status === 'pending').length})` : 'Decompress') }}
         </RunButton>
       </div>
     </OperationCard>
-
-    <div class="mt-4">
-      <OutputLog :result="result" :error="error" />
-    </div>
   </div>
 </template>

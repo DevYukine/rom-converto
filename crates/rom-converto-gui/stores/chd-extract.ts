@@ -5,12 +5,17 @@ export const useChdExtractStore = defineStore("chd-extract", () => {
   const input = ref("");
   const output = ref("");
   const parent = ref("");
+  const skipSpaceCheck = ref(false);
+  const outputTemplate = ref("");
+  const reportFile = ref("");
 
   const result = ref("");
   const error = ref("");
   const loading = ref(false);
 
   const queue = ref<BatchItem[]>([]);
+  const recursive = ref(true);
+  const maxDepth = ref<number | null>(null);
 
   function addToQueue(filePath: string, outputPath: string) {
     queue.value.push({
@@ -33,20 +38,30 @@ export const useChdExtractStore = defineStore("chd-extract", () => {
     input.value = "";
     output.value = "";
     parent.value = "";
+    skipSpaceCheck.value = false;
+    outputTemplate.value = "";
+    reportFile.value = "";
     result.value = "";
     error.value = "";
     loading.value = false;
     queue.value = [];
+    recursive.value = true;
+    maxDepth.value = null;
   }
 
   return {
     input,
     output,
     parent,
+    skipSpaceCheck,
+    outputTemplate,
+    reportFile,
     result,
     error,
     loading,
     queue,
+    recursive,
+    maxDepth,
     addToQueue,
     removeFromQueue,
     clearQueue,

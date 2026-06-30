@@ -16,6 +16,7 @@ use crate::chd::compression::dvd::DvdCodecSet;
 use crate::chd::compression::{CdCodecSet, ChdCompression};
 use crate::chd::error::{ChdError, ChdResult};
 use crate::chd::map::{MapEntry, crc16_ccitt};
+use crate::util::CancelToken;
 use crate::util::worker_pool::{Pool, Worker, drive, parallelism};
 use sha1::{Digest, Sha1};
 use std::io::{BufReader, BufWriter, Read, Write};
@@ -145,6 +146,7 @@ pub(super) fn compress_hunks(
     sector_data_size: usize,
     hunk_bytes: usize,
     bytes_done: &Arc<AtomicU64>,
+    cancel: &CancelToken,
 ) -> ChdResult<()> {
     let frames_per_hunk = hunk_bytes / FRAME_SIZE;
     let total_hunks = total_sectors.div_ceil(frames_per_hunk as u32) as u64;
@@ -158,6 +160,9 @@ pub(super) fn compress_hunks(
         // produce: zero padding on the short final hunk comes for
         // free from the `vec![0; hunk_bytes]` allocation.
         |chunk_idx| -> ChdResult<ChdCompressWork> {
+            if cancel.is_cancelled() {
+                return Err(ChdError::Cancelled);
+            }
             let first_sector = (chunk_idx as u32) * frames_per_hunk as u32;
             let sectors_in_hunk = frames_per_hunk.min((total_sectors - first_sector) as usize);
             let read_sectors =
@@ -199,6 +204,7 @@ pub(super) fn compress_hunks_dvd(
     logical_bytes: u64,
     hunk_bytes: usize,
     bytes_done: &Arc<AtomicU64>,
+    cancel: &CancelToken,
 ) -> ChdResult<()> {
     let total_hunks = logical_bytes.div_ceil(hunk_bytes as u64);
 
@@ -209,6 +215,9 @@ pub(super) fn compress_hunks_dvd(
         map_entries,
         total_hunks,
         |chunk_idx| -> ChdResult<ChdCompressWork> {
+            if cancel.is_cancelled() {
+                return Err(ChdError::Cancelled);
+            }
             let offset = chunk_idx * hunk_bytes as u64;
             let take = ((logical_bytes - offset) as usize).min(hunk_bytes);
 

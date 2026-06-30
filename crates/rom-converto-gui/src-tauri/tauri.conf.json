@@ -12,10 +12,11 @@
     "windows": [
       {
         "title": "rom-converto",
-        "width": 1024,
-        "height": 768,
-        "minWidth": 800,
+        "width": 1200,
+        "height": 720,
+        "minWidth": 960,
         "minHeight": 600,
+        "center": true,
         "backgroundColor": "#18181b"
       }
     ],

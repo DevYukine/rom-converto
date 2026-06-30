@@ -19,6 +19,7 @@ use crate::cso::error::{CsoError, CsoResult};
 use crate::cso::models::{
     CISO_HEADER_SIZE, CISO_INDEX_UNCOMPRESSED, CisoHeader, CsoFormat, block_count,
 };
+use crate::util::CancelToken;
 use crate::util::worker_pool::{Pool, Worker, drive, parallelism};
 
 pub(crate) struct CsoBlockWork {
@@ -66,6 +67,7 @@ pub(crate) fn write_cso_blocking(
     block_size: u32,
     index_shift: u8,
     bytes_done: &Arc<AtomicU64>,
+    cancel: &CancelToken,
 ) -> CsoResult<()> {
     let input_file = std::fs::File::open(input)?;
     let input_size = input_file.metadata()?.len();
@@ -112,6 +114,9 @@ pub(crate) fn write_cso_blocking(
             blocks,
             max_in_flight,
             |block_idx| -> CsoResult<CsoBlockWork> {
+                if cancel.is_cancelled() {
+                    return Err(CsoError::Cancelled);
+                }
                 let offset = block_idx * block_size as u64;
                 let take = ((input_size - offset) as usize).min(block_size as usize);
                 let mut data = vec![0u8; take];

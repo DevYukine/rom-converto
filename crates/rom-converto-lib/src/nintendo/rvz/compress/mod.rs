@@ -54,14 +54,14 @@ use crate::nintendo::rvz::format::{
 };
 use crate::nintendo::rvz::regions::{DiscRegion, RegionPlan};
 use crate::nintendo::wbfs::WbfsReader;
-use crate::util::ProgressReporter;
 use crate::util::worker_pool::{Pool, parallelism};
+use crate::util::{CancelToken, ProgressReporter, await_with_progress_cancel};
 use binrw::{BinWrite, Endian};
 use log::info;
 use std::io::{BufReader, BufWriter, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 use tokio::task;
 
 /// Compression options for [`compress_disc`].
@@ -117,17 +117,31 @@ pub async fn compress_disc(
         )
         .await;
     }
-    compress_disc_inner(input, output, options, progress).await
+    compress_disc_cancellable(input, output, options, progress, CancelToken::new()).await
 }
 
-/// The compress pipeline without legacy-format routing. Called by both
-/// [`compress_disc`] and the migrate path (which has already verified
-/// the input).
+/// The compress pipeline without legacy-format routing. Called by the
+/// migrate path, which has already verified the input.
 pub(crate) async fn compress_disc_inner(
     input: &Path,
     output: &Path,
     options: RvzCompressOptions,
     progress: &dyn ProgressReporter,
+) -> RvzResult<()> {
+    compress_disc_cancellable(input, output, options, progress, CancelToken::new()).await
+}
+
+/// Like [`compress_disc`] but observes `cancel` at region and chunk
+/// boundaries; on cancel the partial RVZ is removed (the writer targets
+/// a sibling temp file renamed into place only on success). The input
+/// is opened through the same reader set as the migrate path, so legacy
+/// containers (GCZ, WIA, NKit) stream their logical disc on the fly.
+pub async fn compress_disc_cancellable(
+    input: &Path,
+    output: &Path,
+    options: RvzCompressOptions,
+    progress: &dyn ProgressReporter,
+    cancel: CancelToken,
 ) -> RvzResult<()> {
     validate_chunk_size(options.chunk_size)?;
 
@@ -137,37 +151,40 @@ pub(crate) async fn compress_disc_inner(
     };
     progress.start(iso_size, "Compressing disc to RVZ...");
 
+    let write_path = scratch_output_path(output);
     let input_owned: PathBuf = input.to_path_buf();
-    let output_owned: PathBuf = output.to_path_buf();
+    let write_owned: PathBuf = write_path.clone();
+    let cancel_bg = cancel.clone();
     let bytes_done = Arc::new(AtomicU64::new(0));
     let bytes_done_bg = bytes_done.clone();
 
-    let mut handle = task::spawn_blocking(move || -> RvzResult<u64> {
+    let handle = task::spawn_blocking(move || -> RvzResult<u64> {
         compress_blocking(
             &input_owned,
-            &output_owned,
+            &write_owned,
             options,
             iso_size,
             bytes_done_bg,
+            &cancel_bg,
         )
     });
 
-    let compressed_size = loop {
-        match tokio::time::timeout(std::time::Duration::from_millis(100), &mut handle).await {
-            Ok(result) => break result??,
-            Err(_) => {
-                let delta = bytes_done.swap(0, Ordering::Relaxed);
-                if delta > 0 {
-                    progress.inc(delta);
-                }
-            }
+    let cleanup = {
+        let write_path = write_path.clone();
+        move || -> RvzError {
+            let _ = std::fs::remove_file(&write_path);
+            RvzError::Cancelled
         }
     };
-    let remaining = bytes_done.swap(0, Ordering::Relaxed);
-    if remaining > 0 {
-        progress.inc(remaining);
-    }
-    progress.finish();
+    let compressed_size =
+        match await_with_progress_cancel(progress, &bytes_done, handle, &cancel, cleanup).await {
+            Ok(size) => size,
+            Err(err) => {
+                let _ = tokio::fs::remove_file(&write_path).await;
+                return Err(err);
+            }
+        };
+    tokio::fs::rename(&write_path, output).await?;
 
     let ratio = (1.0 - compressed_size as f64 / iso_size.max(1) as f64) * 100.0;
     info!(
@@ -178,6 +195,14 @@ pub(crate) async fn compress_disc_inner(
     );
 
     Ok(())
+}
+
+/// A sibling temp path in the output directory so an interrupted write
+/// never lands on the final name.
+fn scratch_output_path(output: &Path) -> PathBuf {
+    let mut name = output.file_name().unwrap_or_default().to_os_string();
+    name.push(".tmp");
+    output.with_file_name(name)
 }
 
 fn validate_chunk_size(chunk_size: u32) -> RvzResult<()> {
@@ -267,6 +292,7 @@ fn compress_blocking(
     options: RvzCompressOptions,
     iso_size: u64,
     bytes_done: Arc<AtomicU64>,
+    cancel: &CancelToken,
 ) -> RvzResult<u64> {
     use crate::nintendo::legacy_input::{LegacyFormat, detect_legacy_format};
     const BUF: usize = 4 * 1024 * 1024;
@@ -274,32 +300,32 @@ fn compress_blocking(
         Some(LegacyFormat::Gcz) => {
             let reader =
                 BufReader::with_capacity(BUF, crate::nintendo::gcz::GczReader::open(input)?);
-            compress_reader(reader, output, options, iso_size, bytes_done)
+            compress_reader(reader, output, options, iso_size, bytes_done, cancel)
         }
         Some(LegacyFormat::Wia) => {
             let reader =
                 BufReader::with_capacity(BUF, crate::nintendo::wia::WiaReader::open(input)?);
-            compress_reader(reader, output, options, iso_size, bytes_done)
+            compress_reader(reader, output, options, iso_size, bytes_done, cancel)
         }
         Some(LegacyFormat::NkitIso) => {
             let reader =
                 BufReader::with_capacity(BUF, crate::nintendo::nkit::NkitReader::open(input)?);
-            compress_reader(reader, output, options, iso_size, bytes_done)
+            compress_reader(reader, output, options, iso_size, bytes_done, cancel)
         }
         Some(LegacyFormat::NkitGcz) => {
             let gcz = crate::nintendo::gcz::GczReader::open(input)?;
             let nkit =
                 crate::nintendo::nkit::NkitReader::from_source(gcz).map_err(RvzError::from)?;
             let reader = BufReader::with_capacity(BUF, nkit);
-            compress_reader(reader, output, options, iso_size, bytes_done)
+            compress_reader(reader, output, options, iso_size, bytes_done, cancel)
         }
         None if is_wbfs_input(input) => {
             let reader = BufReader::with_capacity(BUF, WbfsReader::open(input)?);
-            compress_reader(reader, output, options, iso_size, bytes_done)
+            compress_reader(reader, output, options, iso_size, bytes_done, cancel)
         }
         None => {
             let reader = BufReader::with_capacity(BUF, std::fs::File::open(input)?);
-            compress_reader(reader, output, options, iso_size, bytes_done)
+            compress_reader(reader, output, options, iso_size, bytes_done, cancel)
         }
     }
 }
@@ -313,6 +339,7 @@ fn compress_reader<R: Read + Seek>(
     options: RvzCompressOptions,
     iso_size: u64,
     bytes_done: Arc<AtomicU64>,
+    cancel: &CancelToken,
 ) -> RvzResult<u64> {
     // Read the 0x80-byte disc header used by both the format struct
     // and the GC/Wii detection helpers.
@@ -385,6 +412,9 @@ fn compress_reader<R: Read + Seek>(
 
     let encode_result: RvzResult<()> = (|| {
         for region in &plan.regions {
+            if cancel.is_cancelled() {
+                return Err(RvzError::Cancelled);
+            }
             match region {
                 DiscRegion::Raw { offset, size } => {
                     let group_index = groups.len() as u32;
@@ -399,6 +429,7 @@ fn compress_reader<R: Read + Seek>(
                         effective_chunk_size,
                         &mut groups,
                         &bytes_done,
+                        cancel,
                     )?;
                     let n_groups = groups.len() as u32 - group_index;
                     raw_data.push(WiaRawData {
@@ -421,6 +452,7 @@ fn compress_reader<R: Read + Seek>(
                         effective_chunk_size,
                         &mut groups,
                         &bytes_done,
+                        cancel,
                     )?;
                     let first_sector = (info.data_start() / WII_SECTOR_SIZE_U64) as u32;
                     partitions.push(WiaPart {

@@ -69,6 +69,9 @@ pub enum ChdError {
 
     #[error("worker pool writer thread panicked")]
     WorkerPoolPanic,
+
+    #[error("operation cancelled")]
+    Cancelled,
 }
 
 impl From<crate::util::worker_pool::PoolChannelClosed> for ChdError {

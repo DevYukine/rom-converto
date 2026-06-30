@@ -9,6 +9,8 @@ export function isXciInput(input: string): boolean {
 
 export const useNxCompressStore = defineStore("nx-compress", () => {
   const queue = ref<BatchItem[]>([]);
+  const recursive = ref(true);
+  const maxDepth = ref<number | null>(null);
   const output = ref("");
   const keys = ref("");
   const level = ref<number>(18);
@@ -17,6 +19,10 @@ export const useNxCompressStore = defineStore("nx-compress", () => {
   // only kicks in when the user has not deliberately picked.
   const mode = ref<NxMode>("solid");
   const blockSizeExp = ref<number>(20);
+  const onConflict = ref("overwrite");
+  const skipSpaceCheck = ref(false);
+  const outputTemplate = ref("");
+  const reportFile = ref("");
   const userPickedMode = ref(false);
 
   const result = ref("");
@@ -51,11 +57,17 @@ export const useNxCompressStore = defineStore("nx-compress", () => {
 
   function $reset() {
     queue.value = [];
+    recursive.value = true;
+    maxDepth.value = null;
     output.value = "";
     keys.value = "";
     level.value = 18;
     mode.value = "solid";
     blockSizeExp.value = 20;
+    onConflict.value = "overwrite";
+    skipSpaceCheck.value = false;
+    outputTemplate.value = "";
+    reportFile.value = "";
     userPickedMode.value = false;
     result.value = "";
     error.value = "";
@@ -64,11 +76,17 @@ export const useNxCompressStore = defineStore("nx-compress", () => {
 
   return {
     queue,
+    recursive,
+    maxDepth,
     output,
     keys,
     level,
     mode,
     blockSizeExp,
+    onConflict,
+    skipSpaceCheck,
+    outputTemplate,
+    reportFile,
     result,
     error,
     loading,

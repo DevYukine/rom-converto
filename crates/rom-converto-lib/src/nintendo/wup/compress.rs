@@ -15,21 +15,27 @@
 //! `tokio::task::spawn_blocking`.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::nintendo::wup::compress_worker::spawn_zarchive_pool;
 use crate::nintendo::wup::constants::{
     COMPRESSED_BLOCK_SIZE, MAX_ZSTD_LEVEL, MIN_ZSTD_LEVEL, ZARCHIVE_DEFAULT_ZSTD_LEVEL,
 };
-use crate::nintendo::wup::disc::compress::{compress_disc_title, estimate_disc_uncompressed_bytes};
+use crate::nintendo::wup::disc::compress::{
+    compress_disc_title_with_cancel, estimate_disc_uncompressed_bytes,
+};
 use crate::nintendo::wup::error::{WupError, WupResult};
 use crate::nintendo::wup::loadiine::{
-    compress_loadiine_title, detect_loadiine_title, estimate_loadiine_uncompressed_bytes,
+    compress_loadiine_title_with_cancel, detect_loadiine_title,
+    estimate_loadiine_uncompressed_bytes,
 };
-use crate::nintendo::wup::nus::compress::{compress_nus_title, estimate_nus_uncompressed_bytes};
+use crate::nintendo::wup::nus::compress::{
+    compress_nus_title_with_cancel, estimate_nus_uncompressed_bytes,
+};
 use crate::nintendo::wup::streaming_sink::{StreamingSink, spawn_stream_pipeline};
 use crate::nintendo::wup::zarchive_writer::write_zarchive_tail;
-use crate::util::ProgressReporter;
+use crate::util::{CancelToken, ProgressReporter, scratch_output_path};
 
 /// Recognised Wii U title layouts. The [`compress_titles`]
 /// dispatcher picks one per input.
@@ -244,6 +250,16 @@ pub async fn compress_titles_async(
     opts: WupCompressOptions,
     progress: &dyn ProgressReporter,
 ) -> WupResult<()> {
+    compress_titles_async_cancellable(titles, output, opts, progress, CancelToken::new()).await
+}
+
+pub async fn compress_titles_async_cancellable(
+    titles: Vec<TitleInput>,
+    output: PathBuf,
+    opts: WupCompressOptions,
+    progress: &dyn ProgressReporter,
+    cancel: CancelToken,
+) -> WupResult<()> {
     validate_level(opts.zstd_level)?;
     if titles.is_empty() {
         return Err(WupError::InvalidPath(
@@ -254,12 +270,21 @@ pub async fn compress_titles_async(
 
     let events: Arc<Mutex<Vec<ProgressEvent>>> = Arc::new(Mutex::new(Vec::new()));
     let events_for_task = events.clone();
+    let cancelled = Arc::new(AtomicBool::new(cancel.is_cancelled()));
+    let cancelled_for_task = cancelled.clone();
 
+    let output_for_task = output.clone();
     let mut handle = tokio::task::spawn_blocking(move || -> WupResult<()> {
         let shim = QueuedProgress {
             events: events_for_task,
         };
-        compress_titles(&titles, &output, opts, &shim)
+        compress_titles_with_cancel(
+            &titles,
+            &output_for_task,
+            opts,
+            &shim,
+            Some(&cancelled_for_task),
+        )
     });
 
     let pump = |progress: &dyn ProgressReporter| {
@@ -267,17 +292,27 @@ pub async fn compress_titles_async(
         apply_events(progress, drained);
     };
 
-    loop {
+    let result = loop {
         match tokio::time::timeout(std::time::Duration::from_millis(100), &mut handle).await {
-            Ok(result) => {
-                result??;
-                break;
+            Ok(result) => break result,
+            Err(_) => {
+                if cancel.is_cancelled() {
+                    cancelled.store(true, Ordering::Relaxed);
+                }
+                pump(progress);
             }
-            Err(_) => pump(progress),
         }
-    }
+    };
     pump(progress);
     progress.finish();
+    result??;
+    if cancel.is_cancelled() {
+        // The token can fire after the writer finished but before this
+        // wrapper observes it, so the completed archive must be removed
+        // to honor the no-partial-output guarantee.
+        tokio::fs::remove_file(&output).await.ok();
+        return Err(WupError::Cancelled);
+    }
     Ok(())
 }
 
@@ -294,6 +329,7 @@ pub async fn compress_title_async(
 enum ProgressEvent {
     Start { total: u64, msg: String },
     Inc(u64),
+    Phase(String),
 }
 
 struct QueuedProgress {
@@ -328,6 +364,10 @@ impl ProgressReporter for QueuedProgress {
     }
 
     fn finish(&self) {}
+
+    fn set_phase(&self, label: &str) {
+        self.push(ProgressEvent::Phase(label.to_string()));
+    }
 }
 
 fn apply_events(progress: &dyn ProgressReporter, events: Vec<ProgressEvent>) {
@@ -335,6 +375,7 @@ fn apply_events(progress: &dyn ProgressReporter, events: Vec<ProgressEvent>) {
         match ev {
             ProgressEvent::Start { total, msg } => progress.start(total, &msg),
             ProgressEvent::Inc(delta) => progress.inc(delta),
+            ProgressEvent::Phase(label) => progress.set_phase(&label),
         }
     }
 }
@@ -347,6 +388,16 @@ pub fn compress_titles(
     output: &Path,
     opts: WupCompressOptions,
     progress: &(dyn ProgressReporter + Sync),
+) -> WupResult<()> {
+    compress_titles_with_cancel(titles, output, opts, progress, None)
+}
+
+fn compress_titles_with_cancel(
+    titles: &[TitleInput],
+    output: &Path,
+    opts: WupCompressOptions,
+    progress: &(dyn ProgressReporter + Sync),
+    cancelled: Option<&AtomicBool>,
 ) -> WupResult<()> {
     validate_level(opts.zstd_level)?;
     if titles.is_empty() {
@@ -380,6 +431,31 @@ pub fn compress_titles(
         read_total_bytes = read_total_bytes.saturating_add(n);
     }
 
+    let tmp = scratch_output_path(output);
+    let result =
+        compress_titles_into_tmp(&resolved, &tmp, opts, progress, cancelled, read_total_bytes);
+
+    match result {
+        Ok(()) => {
+            std::fs::rename(&tmp, output)?;
+            progress.finish();
+            Ok(())
+        }
+        Err(err) => {
+            std::fs::remove_file(&tmp).ok();
+            Err(err)
+        }
+    }
+}
+
+fn compress_titles_into_tmp(
+    resolved: &[(PathBuf, TitleInputFormat, Option<PathBuf>)],
+    output: &Path,
+    opts: WupCompressOptions,
+    progress: &(dyn ProgressReporter + Sync),
+    cancelled: Option<&AtomicBool>,
+    read_total_bytes: u64,
+) -> WupResult<()> {
     let file = std::fs::File::create(output)?;
     // 4 MiB BufWriter batches many 64 KiB block writes into a single
     // WriteFile syscall, cutting user <-> kernel transitions across
@@ -418,18 +494,28 @@ pub fn compress_titles(
         let silent = crate::util::NoProgress;
 
         let read_result: WupResult<()> = (|| {
-            for (path, format, key_path) in &resolved {
+            for (i, (path, format, key_path)) in resolved.iter().enumerate() {
+                if cancelled.is_some_and(|c| c.load(Ordering::Relaxed)) {
+                    return Err(WupError::Cancelled);
+                }
+                progress.set_phase(&format!("Packing title ({}/{})", i + 1, resolved.len()));
                 match format {
                     TitleInputFormat::Loadiine => {
                         let title = detect_loadiine_title(path)?
                             .ok_or_else(|| WupError::UnrecognizedTitleDirectory(path.clone()))?;
-                        compress_loadiine_title(&title, &mut sink, &silent)?;
+                        compress_loadiine_title_with_cancel(&title, &mut sink, &silent, cancelled)?;
                     }
                     TitleInputFormat::Nus => {
-                        compress_nus_title(path, &mut sink, &silent)?;
+                        compress_nus_title_with_cancel(path, &mut sink, &silent, cancelled)?;
                     }
                     TitleInputFormat::Disc => {
-                        compress_disc_title(path, key_path.as_deref(), &mut sink, &silent)?;
+                        compress_disc_title_with_cancel(
+                            path,
+                            key_path.as_deref(),
+                            &mut sink,
+                            &silent,
+                            cancelled,
+                        )?;
                     }
                 }
             }
@@ -467,7 +553,6 @@ pub fn compress_titles(
 
     drop(inner);
 
-    progress.finish();
     Ok(())
 }
 
@@ -714,6 +799,51 @@ mod tests {
     }
 
     #[test]
+    fn compress_titles_labels_per_title_phases() {
+        use std::sync::Mutex;
+
+        #[derive(Default)]
+        struct PhaseRecorder {
+            phases: Mutex<Vec<String>>,
+        }
+        impl ProgressReporter for PhaseRecorder {
+            fn start(&self, _total: u64, _msg: &str) {}
+            fn inc(&self, _delta: u64) {}
+            fn finish(&self) {}
+            fn set_phase(&self, label: &str) {
+                self.phases.lock().unwrap().push(label.to_string());
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("base");
+        let update = dir.path().join("update");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::create_dir_all(&update).unwrap();
+        make_minimal_loadiine(&base, "0005000010102000", 0);
+        make_minimal_loadiine(&update, "0005000E10102000", 32);
+        let output = dir.path().join("bundle.wua");
+
+        let progress = PhaseRecorder::default();
+        compress_titles(
+            &[TitleInput::auto(&base), TitleInput::auto(&update)],
+            &output,
+            WupCompressOptions::default(),
+            &progress,
+        )
+        .unwrap();
+
+        let phases = progress.phases.lock().unwrap();
+        assert_eq!(
+            *phases,
+            vec![
+                "Packing title (1/2)".to_string(),
+                "Packing title (2/2)".to_string(),
+            ]
+        );
+    }
+
+    #[test]
     fn compress_titles_bundles_two_nus_titles() {
         use crate::nintendo::wup::common_keys::WII_U_COMMON_KEY;
         use crate::nintendo::wup::models::ticket::{WUP_TICKET_BASE_SIZE, WUP_TICKET_FORMAT_V1};
@@ -918,6 +1048,127 @@ mod tests {
         );
         assert_eq!(inp.format, Some(TitleInputFormat::Disc));
         assert_eq!(inp.key_path, Some(PathBuf::from("/keys/g.key")));
+    }
+
+    #[tokio::test]
+    async fn cancel_before_start_leaves_no_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let title_dir = dir.path().join("title");
+        std::fs::create_dir_all(&title_dir).unwrap();
+        make_minimal_loadiine(&title_dir, "0005000E10102000", 32);
+        let output = dir.path().join("out.wua");
+
+        let token = CancelToken::new();
+        token.cancel();
+        let result = compress_titles_async_cancellable(
+            vec![TitleInput::auto(&title_dir)],
+            output.clone(),
+            WupCompressOptions::default(),
+            &NoProgress,
+            token,
+        )
+        .await;
+
+        assert!(matches!(result, Err(WupError::Cancelled)));
+        assert!(!output.exists(), "no partial output");
+        assert!(!scratch_output_path(&output).exists(), "no leftover temp");
+    }
+
+    #[tokio::test]
+    async fn cancel_mid_stream_leaves_no_output() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct CancelOnInc {
+            token: CancelToken,
+            fired: AtomicBool,
+        }
+        impl ProgressReporter for CancelOnInc {
+            fn start(&self, _: u64, _: &str) {}
+            fn inc(&self, _: u64) {
+                if !self.fired.swap(true, Ordering::SeqCst) {
+                    self.token.cancel();
+                }
+            }
+            fn finish(&self) {}
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let title_dir = dir.path().join("title");
+        std::fs::create_dir_all(&title_dir).unwrap();
+        make_minimal_loadiine(&title_dir, "0005000E10102000", 32);
+        std::fs::write(
+            title_dir.join("content").join("data.bin"),
+            vec![0x42u8; 4 * 1024 * 1024],
+        )
+        .unwrap();
+        let output = dir.path().join("out.wua");
+
+        let token = CancelToken::new();
+        let reporter = CancelOnInc {
+            token: token.clone(),
+            fired: AtomicBool::new(false),
+        };
+        let result = compress_titles_async_cancellable(
+            vec![TitleInput::auto(&title_dir)],
+            output.clone(),
+            WupCompressOptions::default(),
+            &reporter,
+            token,
+        )
+        .await;
+
+        assert!(matches!(result, Err(WupError::Cancelled)));
+        assert!(!output.exists(), "no partial output");
+        assert!(!scratch_output_path(&output).exists(), "no leftover temp");
+    }
+
+    #[tokio::test]
+    async fn cancel_after_completion_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let title_dir = dir.path().join("title");
+        std::fs::create_dir_all(&title_dir).unwrap();
+        make_minimal_loadiine(&title_dir, "0005000E10102000", 32);
+        let output = dir.path().join("out.wua");
+
+        let token = CancelToken::new();
+        compress_titles_async_cancellable(
+            vec![TitleInput::auto(&title_dir)],
+            output.clone(),
+            WupCompressOptions::default(),
+            &NoProgress,
+            token.clone(),
+        )
+        .await
+        .unwrap();
+        token.cancel();
+        assert!(output.exists(), "output survives a post-completion cancel");
+        assert!(!scratch_output_path(&output).exists(), "no leftover temp");
+    }
+
+    #[tokio::test]
+    async fn force_overwrite_preexisting_survives_cancel() {
+        let dir = tempfile::tempdir().unwrap();
+        let title_dir = dir.path().join("title");
+        std::fs::create_dir_all(&title_dir).unwrap();
+        make_minimal_loadiine(&title_dir, "0005000E10102000", 32);
+        let output = dir.path().join("out.wua");
+        let original = b"do not destroy me".to_vec();
+        std::fs::write(&output, &original).unwrap();
+
+        let token = CancelToken::new();
+        token.cancel();
+        let result = compress_titles_async_cancellable(
+            vec![TitleInput::auto(&title_dir)],
+            output.clone(),
+            WupCompressOptions::default(),
+            &NoProgress,
+            token,
+        )
+        .await;
+
+        assert!(matches!(result, Err(WupError::Cancelled)));
+        assert_eq!(std::fs::read(&output).unwrap(), original);
+        assert!(!scratch_output_path(&output).exists(), "no leftover temp");
     }
 
     #[test]

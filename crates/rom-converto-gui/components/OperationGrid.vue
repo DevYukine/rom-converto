@@ -24,6 +24,7 @@ defineProps<{ operations: Operation[] }>();
         <svg
           v-if="op.icon === 'folder-arrow'"
           class="h-4.5 w-4.5 text-sky-400"
+          aria-hidden="true"
           fill="none"
           viewBox="0 0 24 24"
           stroke="currentColor"
@@ -38,6 +39,7 @@ defineProps<{ operations: Operation[] }>();
         <svg
           v-else-if="op.icon === 'lock-open'"
           class="h-4.5 w-4.5 text-sky-400"
+          aria-hidden="true"
           fill="none"
           viewBox="0 0 24 24"
           stroke="currentColor"
@@ -52,6 +54,7 @@ defineProps<{ operations: Operation[] }>();
         <svg
           v-else-if="op.icon === 'compress'"
           class="h-4.5 w-4.5 text-sky-400"
+          aria-hidden="true"
           fill="none"
           viewBox="0 0 24 24"
           stroke="currentColor"
@@ -66,6 +69,7 @@ defineProps<{ operations: Operation[] }>();
         <svg
           v-else-if="op.icon === 'expand'"
           class="h-4.5 w-4.5 text-sky-400"
+          aria-hidden="true"
           fill="none"
           viewBox="0 0 24 24"
           stroke="currentColor"
@@ -80,6 +84,7 @@ defineProps<{ operations: Operation[] }>();
         <svg
           v-else-if="op.icon === 'shield-check'"
           class="h-4.5 w-4.5 text-sky-400"
+          aria-hidden="true"
           fill="none"
           viewBox="0 0 24 24"
           stroke="currentColor"
@@ -94,6 +99,7 @@ defineProps<{ operations: Operation[] }>();
         <svg
           v-else-if="op.icon === 'disc-down'"
           class="h-4.5 w-4.5 text-sky-400"
+          aria-hidden="true"
           fill="none"
           viewBox="0 0 24 24"
           stroke="currentColor"
@@ -108,6 +114,7 @@ defineProps<{ operations: Operation[] }>();
         <svg
           v-else-if="op.icon === 'swap'"
           class="h-4.5 w-4.5 text-sky-400"
+          aria-hidden="true"
           fill="none"
           viewBox="0 0 24 24"
           stroke="currentColor"
@@ -122,6 +129,7 @@ defineProps<{ operations: Operation[] }>();
         <svg
           v-else-if="op.icon === 'disc-up'"
           class="h-4.5 w-4.5 text-sky-400"
+          aria-hidden="true"
           fill="none"
           viewBox="0 0 24 24"
           stroke="currentColor"
@@ -136,6 +144,7 @@ defineProps<{ operations: Operation[] }>();
         <svg
           v-else-if="op.icon === 'info'"
           class="h-4.5 w-4.5 text-sky-400"
+          aria-hidden="true"
           fill="none"
           viewBox="0 0 24 24"
           stroke="currentColor"
@@ -150,7 +159,7 @@ defineProps<{ operations: Operation[] }>();
       </div>
       <h3 class="text-sm font-semibold text-zinc-200">{{ op.title }}</h3>
       <p class="mt-1 text-xs text-zinc-500">{{ op.description }}</p>
-      <p class="mt-2 text-[11px] font-medium text-zinc-600">{{ op.formats }}</p>
+      <p class="mt-2 text-[11px] font-medium text-zinc-400">{{ op.formats }}</p>
     </NuxtLink>
   </div>
 </template>

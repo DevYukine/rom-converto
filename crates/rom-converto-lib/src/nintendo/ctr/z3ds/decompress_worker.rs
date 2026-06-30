@@ -17,6 +17,7 @@
 
 use crate::nintendo::ctr::z3ds::error::{Z3dsError, Z3dsResult};
 use crate::nintendo::ctr::z3ds::seekable::{FrameEntry, parse_seek_table, read_seek_table_footer};
+use crate::util::CancelToken;
 use crate::util::pread::file_read_exact_at;
 use crate::util::worker_pool::{Pool, Worker, drive, parallelism};
 use std::io::{BufWriter, Write};
@@ -183,6 +184,7 @@ pub(super) fn decompress_frames(
     writer: &mut BufWriter<std::fs::File>,
     work_items: Vec<Z3dsDecompressWork>,
     bytes_done: &Arc<AtomicU64>,
+    cancel: &CancelToken,
 ) -> Z3dsResult<()> {
     let num_frames = work_items.len() as u64;
     if num_frames == 0 {
@@ -217,6 +219,9 @@ pub(super) fn decompress_frames(
             num_frames,
             max_in_flight,
             |_seq| -> Z3dsResult<Z3dsDecompressWork> {
+                if cancel.is_cancelled() {
+                    return Err(Z3dsError::Cancelled);
+                }
                 work_iter.next().ok_or_else(|| {
                     Z3dsError::IoError(std::io::Error::other(
                         "work iterator exhausted before drive() finished",
@@ -278,6 +283,7 @@ mod tests {
             max_frame_size,
             input.len() as u64,
             &bytes_done,
+            &crate::util::CancelToken::new(),
         )
         .unwrap();
         writer.flush().unwrap();
@@ -308,7 +314,14 @@ mod tests {
         let pool: Pool<Z3dsDecompressWork, Z3dsDecompressedFrame, Z3dsError> = Pool::spawn(workers);
 
         let bytes_done = Arc::new(AtomicU64::new(0));
-        decompress_frames(&pool, &mut writer, work_items, &bytes_done).unwrap();
+        decompress_frames(
+            &pool,
+            &mut writer,
+            work_items,
+            &bytes_done,
+            &crate::util::CancelToken::new(),
+        )
+        .unwrap();
         writer.flush().unwrap();
         drop(writer);
         pool.shutdown();

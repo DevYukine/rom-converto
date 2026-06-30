@@ -23,6 +23,7 @@ use super::{CompressedKind, WriteMsg, push_compressed_chunk_via_channel, write_m
 use crate::nintendo::rvl::constants::WII_SECTOR_SIZE_U64;
 use crate::nintendo::rvz::error::{RvzError, RvzResult};
 use crate::nintendo::rvz::format::RvzGroup;
+use crate::util::CancelToken;
 use crate::util::worker_pool::{Pool, Worker, drive, parallelism};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom};
 use std::sync::Arc;
@@ -99,6 +100,7 @@ pub(super) fn encode_raw_region<R: Read + Seek>(
     chunk_size: u32,
     groups: &mut Vec<RvzGroup>,
     bytes_done: &Arc<AtomicU64>,
+    cancel: &CancelToken,
 ) -> RvzResult<()> {
     let chunk_size_u64 = chunk_size as u64;
 
@@ -159,6 +161,9 @@ pub(super) fn encode_raw_region<R: Read + Seek>(
             // chunk of a region, which may be short; in that
             // case we zero just the tail past `bytes_to_read`.
             |chunk_idx| -> RvzResult<RawWork> {
+                if cancel.is_cancelled() {
+                    return Err(RvzError::Cancelled);
+                }
                 let chunk_abs_start = effective_start + chunk_idx * chunk_size_u64;
                 let effective_remaining =
                     (effective_start + effective_size).saturating_sub(chunk_abs_start);

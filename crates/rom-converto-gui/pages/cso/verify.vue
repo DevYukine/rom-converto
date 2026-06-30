@@ -9,10 +9,15 @@ const progress = useProgress("cso-verify");
 
 const isBatch = computed(() => queue.value.length > 0);
 
-const batch = useBatchOperation("cso-verify", "cmd_cso_verify", (item) => ({
-  inputPath: item.input,
-  full: full.value,
-}));
+const commandLine = ref("");
+
+function csoArgs(inputPath: string) {
+  return { inputPath, full: full.value };
+}
+
+const batch = useBatchOperation("cso-verify", "cmd_cso_verify", (item) =>
+  csoArgs(item.input),
+);
 
 function handleFiles(paths: string[]) {
   for (const p of paths) {
@@ -31,12 +36,31 @@ function handleSingleFile(path: string) {
 async function execute() {
   progress.reset();
   if (isBatch.value) {
-    await batch.start(queue, result);
-  } else {
-    await run("cmd_cso_verify", {
-      inputPath: input.value,
-      full: full.value,
+    const rep = queue.value.find((i) => i.status === "pending") ?? queue.value[0];
+    commandLine.value = rep ? buildCliCommand("cmd_cso_verify", csoArgs(rep.input)) : "";
+    await batch.start(queue, result, {
+      errorRef: error,
+      isSuccess: (res) => {
+        try {
+          return JSON.parse(res).ok !== false;
+        } catch {
+          return true;
+        }
+      },
+      failureMessage: (res) => {
+        try {
+          const v = JSON.parse(res);
+          const count = typeof v.mismatches === "number" ? ` (${v.mismatches} mismatches)` : "";
+          return `verification failed${count}`;
+        } catch {
+          return "verification failed";
+        }
+      },
     });
+  } else {
+    const args = csoArgs(input.value);
+    commandLine.value = buildCliCommand("cmd_cso_verify", args);
+    await run("cmd_cso_verify", args);
   }
 }
 </script>
@@ -51,9 +75,12 @@ async function execute() {
       :has-error="!!error"
     />
 
+    <div class="mb-4">
+      <OutputLog :command="commandLine" :result="result" :error="error" />
+    </div>
+
     <OperationCard>
       <div class="space-y-5">
-        <!-- Batch mode -->
         <template v-if="isBatch">
           <BatchFileList
             :items="queue"
@@ -74,7 +101,6 @@ async function execute() {
           />
         </template>
 
-        <!-- Single mode -->
         <FileDropZone
           v-else
           :model-value="input"
@@ -102,16 +128,14 @@ async function execute() {
 
         <RunButton
           :loading="loading || batch.running.value"
+          :batch-current="batch.currentIndex.value"
+          :batch-total="queue.length"
           :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input"
           @click="execute"
         >
-          {{ isBatch ? `Verify ${queue.filter(i => i.status === 'pending').length} Files` : 'Verify' }}
+          {{ isBatch && queue.filter(i => i.status === 'pending').length > 1 ? `Verify All (${queue.filter(i => i.status === 'pending').length})` : 'Verify' }}
         </RunButton>
       </div>
     </OperationCard>
-
-    <div class="mt-4">
-      <OutputLog :result="result" :error="error" />
-    </div>
   </div>
 </template>

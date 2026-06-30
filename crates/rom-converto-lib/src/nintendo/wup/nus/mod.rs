@@ -27,6 +27,7 @@ pub use compress::compress_nus_title;
 pub use content_stream::{
     ContentLoader, decrypt_content_0, decrypt_hashed_content, decrypt_raw_content,
 };
+pub use decrypt::decrypt_nus_title_async_cancellable;
 pub use fst_parser::{FstCluster, FstClusterHashMode, VirtualFile, VirtualFs, parse_fst};
 pub use ticket_parser::{TitleKey, parse_ticket_bytes, read_ticket_file};
 pub use tmd_parser::{parse_tmd_bytes, read_tmd_file};

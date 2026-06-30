@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 
 interface ProgressPayload {
   task_id: string;
-  kind: "start" | "inc" | "finish";
+  kind: "start" | "inc" | "finish" | "phase";
   total: number;
   current: number;
   message: string;
@@ -43,6 +43,9 @@ function initGlobalListener() {
         break;
       case "inc":
         state.current.value = p.current;
+        break;
+      case "phase":
+        state.message.value = p.message;
         break;
       case "finish":
         state.running.value = false;

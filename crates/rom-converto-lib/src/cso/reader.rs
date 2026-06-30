@@ -13,6 +13,7 @@ use crate::cso::error::{CsoError, CsoResult};
 use crate::cso::models::{
     CISO_HEADER_SIZE, CISO_INDEX_UNCOMPRESSED, CisoHeader, CsoFormat, valid_block_size,
 };
+use crate::util::CancelToken;
 use crate::util::pread::file_read_exact_at;
 use crate::util::worker_pool::{Pool, Worker, drive, parallelism};
 
@@ -169,6 +170,7 @@ pub(crate) fn extract_blocks(
     handle: &CsoSyncHandle,
     writer: &mut BufWriter<std::fs::File>,
     bytes_done: &Arc<AtomicU64>,
+    cancel: &CancelToken,
 ) -> CsoResult<()> {
     let blocks = handle.header.block_count();
     let max_in_flight = parallelism() * 2;
@@ -188,6 +190,9 @@ pub(crate) fn extract_blocks(
             blocks,
             max_in_flight,
             |block| -> CsoResult<CsoExtractWork> {
+                if cancel.is_cancelled() {
+                    return Err(CsoError::Cancelled);
+                }
                 Ok(CsoExtractWork {
                     spec: block_spec(handle, block)?,
                     block,

@@ -5,7 +5,10 @@ export const useCsoCompressStore = defineStore("cso-compress", () => {
   const input = ref("");
   const output = ref("");
   const format = ref<"cso" | "zso">("cso");
-  const force = ref(false);
+  const onConflict = ref("overwrite");
+  const skipSpaceCheck = ref(false);
+  const outputTemplate = ref("");
+  const reportFile = ref("");
   const blockSize = ref<number | null>(null);
 
   const result = ref("");
@@ -13,6 +16,8 @@ export const useCsoCompressStore = defineStore("cso-compress", () => {
   const loading = ref(false);
 
   const queue = ref<BatchItem[]>([]);
+  const recursive = ref(true);
+  const maxDepth = ref<number | null>(null);
 
   function addToQueue(filePath: string, outputPath: string) {
     queue.value.push({
@@ -35,24 +40,34 @@ export const useCsoCompressStore = defineStore("cso-compress", () => {
     input.value = "";
     output.value = "";
     format.value = "cso";
-    force.value = false;
+    onConflict.value = "overwrite";
+    skipSpaceCheck.value = false;
+    outputTemplate.value = "";
+    reportFile.value = "";
     blockSize.value = null;
     result.value = "";
     error.value = "";
     loading.value = false;
     queue.value = [];
+    recursive.value = true;
+    maxDepth.value = null;
   }
 
   return {
     input,
     output,
     format,
-    force,
+    onConflict,
+    skipSpaceCheck,
+    outputTemplate,
+    reportFile,
     blockSize,
     result,
     error,
     loading,
     queue,
+    recursive,
+    maxDepth,
     addToQueue,
     removeFromQueue,
     clearQueue,

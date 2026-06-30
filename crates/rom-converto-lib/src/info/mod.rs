@@ -155,7 +155,8 @@ pub fn detect_console(path: &Path) -> Result<DetectedConsole> {
     match lower_ext.as_deref() {
         Some("chd") => return Ok(DetectedConsole::Chd),
         Some("cso") | Some("zso") => return Ok(DetectedConsole::Cso),
-        Some("cia") | Some("3ds") | Some("cci") | Some("cxi") | Some("ncch") => {
+        Some("cia") | Some("3ds") | Some("cci") | Some("cxi") | Some("ncch") | Some("zcia")
+        | Some("zcci") | Some("zcxi") | Some("z3dsx") => {
             return Ok(DetectedConsole::Ctr);
         }
         Some("nsp") | Some("nsz") | Some("xci") | Some("xcz") => return Ok(DetectedConsole::Nx),
@@ -259,6 +260,15 @@ mod tests {
     #[test]
     fn detect_ctr_by_extension() {
         for ext in ["cia", "3ds", "cci", "cxi"] {
+            let p = format!("/tmp/x.{}", ext);
+            let r = detect_console(Path::new(&p)).unwrap();
+            assert_eq!(r, DetectedConsole::Ctr, "ext {} should route to Ctr", ext);
+        }
+    }
+
+    #[test]
+    fn detect_compressed_ctr_by_extension() {
+        for ext in ["zcia", "zcci", "zcxi", "z3dsx"] {
             let p = format!("/tmp/x.{}", ext);
             let r = detect_console(Path::new(&p)).unwrap();
             assert_eq!(r, DetectedConsole::Ctr, "ext {} should route to Ctr", ext);

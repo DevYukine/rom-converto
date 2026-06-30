@@ -5,12 +5,18 @@ export const useRvlDecompressStore = defineStore("rvl-decompress", () => {
   const input = ref("");
   const output = ref("");
   const format = ref<"iso" | "wbfs">("iso");
+  const onConflict = ref("overwrite");
+  const skipSpaceCheck = ref(false);
+  const outputTemplate = ref("");
+  const reportFile = ref("");
 
   const result = ref("");
   const error = ref("");
   const loading = ref(false);
 
   const queue = ref<BatchItem[]>([]);
+  const recursive = ref(true);
+  const maxDepth = ref<number | null>(null);
 
   function addToQueue(filePath: string, outputPath: string) {
     queue.value.push({
@@ -33,20 +39,32 @@ export const useRvlDecompressStore = defineStore("rvl-decompress", () => {
     input.value = "";
     output.value = "";
     format.value = "iso";
+    onConflict.value = "overwrite";
+    skipSpaceCheck.value = false;
+    outputTemplate.value = "";
+    reportFile.value = "";
     result.value = "";
     error.value = "";
     loading.value = false;
     queue.value = [];
+    recursive.value = true;
+    maxDepth.value = null;
   }
 
   return {
     input,
     output,
     format,
+    onConflict,
+    skipSpaceCheck,
+    outputTemplate,
+    reportFile,
     result,
     error,
     loading,
     queue,
+    recursive,
+    maxDepth,
     addToQueue,
     removeFromQueue,
     clearQueue,

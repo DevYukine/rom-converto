@@ -14,8 +14,15 @@ pub enum Z3dsError {
     #[error("unsupported Z3DS version: {0}")]
     UnsupportedVersion(u8),
 
-    #[error("input ROM appears to be encrypted, only decrypted ROMs can be compressed")]
+    #[error(
+        "input ROM appears to be encrypted. Compressing an encrypted 3DS ROM gives almost no size reduction. Decrypt it first with: rom-converto ctr decrypt <INPUT>, or pass --allow-encrypted to compress it anyway"
+    )]
     InputNotDecrypted,
+
+    #[error(
+        "could not determine whether the input ROM is encrypted (its header could not be parsed). Decrypt it first with: rom-converto ctr decrypt <INPUT>, or pass --allow-encrypted to compress it anyway"
+    )]
+    EncryptionStateUnknown,
 
     #[error("unsupported input format: {0}")]
     UnsupportedInputFormat(String),
@@ -31,6 +38,9 @@ pub enum Z3dsError {
 
     #[error("worker pool writer thread panicked")]
     WorkerPoolPanic,
+
+    #[error("operation cancelled")]
+    Cancelled,
 }
 
 impl From<crate::util::worker_pool::PoolChannelClosed> for Z3dsError {

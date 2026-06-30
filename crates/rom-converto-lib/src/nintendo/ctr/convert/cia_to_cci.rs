@@ -1,5 +1,6 @@
 use crate::nintendo::ctr::constants::{CTR_COMMON_KEYS_HEX, CTR_MEDIA_UNIT_SIZE};
 use crate::nintendo::ctr::decrypt::util::{cbc_decrypt, gen_iv};
+use crate::nintendo::ctr::error::NintendoCTRError;
 use crate::nintendo::ctr::models::cia::CiaFileWithoutContent;
 use crate::nintendo::ctr::models::ncsd_header::{
     NCSD_FIRST_PARTITION_OFFSET, NCSD_HEADER_SIZE, NCSD_PARTITION_FS_TYPE_NORMAL, NcsdHeader,
@@ -7,7 +8,7 @@ use crate::nintendo::ctr::models::ncsd_header::{
 };
 use crate::nintendo::ctr::models::ticket::Ticket;
 use crate::nintendo::ctr::util::align_64;
-use crate::util::ProgressReporter;
+use crate::util::{CancelToken, ProgressReporter, scratch_output_path};
 use anyhow::{Context, Result, bail};
 use binrw::{BinRead, BinWrite};
 use log::{info, warn};
@@ -25,6 +26,15 @@ pub async fn cia_to_cci(
     input: &Path,
     output: &Path,
     progress: &dyn ProgressReporter,
+) -> Result<()> {
+    cia_to_cci_cancellable(input, output, progress, CancelToken::new()).await
+}
+
+pub async fn cia_to_cci_cancellable(
+    input: &Path,
+    output: &Path,
+    progress: &dyn ProgressReporter,
+    cancel: CancelToken,
 ) -> Result<()> {
     let mut in_file = File::open(input).await.context("opening CIA input")?;
     let file_size = in_file.metadata().await?.len();
@@ -94,54 +104,72 @@ pub async fn cia_to_cci(
     let total_content_bytes: u64 = placements.iter().map(|p| p.layout.ncch_size).sum();
     progress.start(total_content_bytes, "Converting CIA to CCI...");
 
-    let out = File::create(output).await.context("creating CCI output")?;
+    let tmp = scratch_output_path(output);
+    let out = File::create(&tmp).await.context("creating CCI output")?;
     let mut out = BufWriter::new(out);
 
-    out.write_all(&header_buf).await?;
-    pad_with(
-        &mut out,
-        NCSD_FIRST_PARTITION_OFFSET - NCSD_HEADER_SIZE as u64,
-        0x00,
-    )
-    .await?;
+    let stream = async {
+        out.write_all(&header_buf).await?;
+        pad_with(
+            &mut out,
+            NCSD_FIRST_PARTITION_OFFSET - NCSD_HEADER_SIZE as u64,
+            0x00,
+        )
+        .await?;
 
-    let mut buf = vec![0u8; COPY_BUF];
-    for pl in &placements {
-        in_file.seek(SeekFrom::Start(pl.layout.cia_offset)).await?;
+        let mut buf = vec![0u8; COPY_BUF];
+        for pl in &placements {
+            in_file.seek(SeekFrom::Start(pl.layout.cia_offset)).await?;
 
-        let mut cbc_iv = gen_iv(pl.layout.content_index);
-        let mut remaining = pl.layout.ncch_size;
-        while remaining > 0 {
-            let to_read = remaining.min(buf.len() as u64) as usize;
-            in_file.read_exact(&mut buf[..to_read]).await?;
-            if pl.layout.encrypted {
-                if to_read < 16 {
-                    bail!(
-                        "encrypted content {} produced a sub-block read of {} bytes",
-                        pl.layout.content_index,
-                        to_read
-                    );
+            let mut cbc_iv = gen_iv(pl.layout.content_index);
+            let mut remaining = pl.layout.ncch_size;
+            while remaining > 0 {
+                if cancel.is_cancelled() {
+                    return Err(NintendoCTRError::Cancelled.into());
                 }
-                let next_iv: [u8; 16] = buf[to_read - 16..to_read].try_into().expect("16 bytes");
-                cbc_decrypt(&title_key, &cbc_iv, &mut buf[..to_read])?;
-                cbc_iv = next_iv;
+                let to_read = remaining.min(buf.len() as u64) as usize;
+                in_file.read_exact(&mut buf[..to_read]).await?;
+                if pl.layout.encrypted {
+                    if to_read < 16 {
+                        bail!(
+                            "encrypted content {} produced a sub-block read of {} bytes",
+                            pl.layout.content_index,
+                            to_read
+                        );
+                    }
+                    let next_iv: [u8; 16] =
+                        buf[to_read - 16..to_read].try_into().expect("16 bytes");
+                    cbc_decrypt(&title_key, &cbc_iv, &mut buf[..to_read])?;
+                    cbc_iv = next_iv;
+                }
+                out.write_all(&buf[..to_read]).await?;
+                progress.inc(to_read as u64);
+                remaining -= to_read as u64;
             }
-            out.write_all(&buf[..to_read]).await?;
-            progress.inc(to_read as u64);
-            remaining -= to_read as u64;
+
+            let pad = pl.ncsd_size - pl.layout.ncch_size;
+            if pad > 0 {
+                pad_with(&mut out, pad, NCSD_PADDING_BYTE).await?;
+            }
         }
 
-        let pad = pl.ncsd_size - pl.layout.ncch_size;
-        if pad > 0 {
-            pad_with(&mut out, pad, NCSD_PADDING_BYTE).await?;
+        if image_size > used_size {
+            pad_with(&mut out, image_size - used_size, NCSD_PADDING_BYTE).await?;
         }
+
+        out.flush().await?;
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+
+    if let Err(err) = stream {
+        drop(out);
+        tokio::fs::remove_file(&tmp).await.ok();
+        return Err(err);
     }
 
-    if image_size > used_size {
-        pad_with(&mut out, image_size - used_size, NCSD_PADDING_BYTE).await?;
-    }
-
-    out.flush().await?;
+    drop(out);
+    tokio::fs::rename(&tmp, output).await?;
     progress.finish();
 
     info!(

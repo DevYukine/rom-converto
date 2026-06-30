@@ -365,6 +365,7 @@ mod tests {
             },
             &keys,
             &NoProgress,
+            None,
         )
         .unwrap();
 
@@ -373,6 +374,7 @@ mod tests {
             &recovered_path,
             &keys,
             &NoProgress,
+            None,
         )
         .unwrap();
 

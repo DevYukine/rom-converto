@@ -2,38 +2,71 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { storeToRefs } from "pinia";
 import { isXciInput, useNxCompressStore, type NxMode } from "~/stores/nx-compress";
+import type { ReportRecord, RunOutcome } from "~/types/report";
 
 const store = useNxCompressStore();
-const { queue, output, keys, level, mode, blockSizeExp, result, error, loading } =
+const { queue, output, keys, level, mode, blockSizeExp, onConflict, skipSpaceCheck, outputTemplate, reportFile, result, error, loading, recursive, maxDepth } =
   storeToRefs(store);
+const { outputDir, resolve } = useOutputDir();
+const { expand } = useFolderScan(["nsp", "xci"]);
+const scanDepth = () => (recursive.value ? maxDepth.value : 1);
 const progress = useProgress("nx-compress");
+
+const previewMode = ref(false);
+const { preview, batch: previewBatch, error: previewError } = usePreview("cmd_nx_compress");
 
 const MODE_OPTIONS = [
   { label: "Solid", value: "solid" },
   { label: "Block", value: "block" },
 ];
 
-const batch = useBatchOperation("nx-compress", "cmd_nx_compress", (item) => ({
-  input: item.input,
-  output: item.output,
-  keys: keys.value || null,
-  level: level.value,
-  mode: mode.value,
-  blockSizeExp: blockSizeExp.value,
-}));
+const commandLine = ref("");
+
+function compressArgs(item: { input: string; output: string }) {
+  const tmpl = outputTemplate.value || null;
+  return {
+    input: item.input,
+    output: tmpl ? null : item.output || null,
+    keys: keys.value || null,
+    level: level.value,
+    mode: mode.value,
+    blockSizeExp: blockSizeExp.value,
+    onConflict: onConflict.value,
+    skipSpaceCheck: skipSpaceCheck.value,
+    outputTemplate: tmpl,
+    report: !!reportFile.value,
+    reportFile: reportFile.value || null,
+    dryRun: previewMode.value,
+  };
+}
+
+const batch = useBatchOperation("nx-compress", "cmd_nx_compress", compressArgs);
 
 const dropZoneRef = ref<HTMLElement | null>(null);
 let zoneId: string | null = null;
 
-function addPaths(paths: string[]) {
+async function addPaths(paths: string[]) {
   for (const p of paths) {
-    if (p) store.addToQueue(p);
+    if (!p) continue;
+    for (const f of await expand(p, scanDepth())) {
+      store.addToQueue(f);
+    }
   }
   if (!output.value && queue.value.length > 0) {
     const first = queue.value[0];
-    if (first) output.value = deriveNszPath(first.input);
+    if (first) output.value = resolve(deriveNszPath(first.input));
   }
 }
+
+watch(outputDir, () => {
+  if (queue.value.length === 1) {
+    const first = queue.value[0];
+    if (first) output.value = resolve(deriveNszPath(first.input));
+  }
+  for (const it of queue.value) {
+    if (it.status === "pending") it.output = resolve(deriveNszPath(it.input));
+  }
+});
 
 onMounted(() => {
   if (dropZoneRef.value) {
@@ -56,15 +89,55 @@ async function browseInputs() {
 }
 
 const hasXci = computed(() => queue.value.some((i) => isXciInput(i.input)));
-const canCompress = computed(() => queue.value.length > 0 && !!output.value);
+const { canRun, runBlockReason, templateActive } = usePageGating({
+  queue,
+  outputTemplate,
+  emptyInputReason: "Add at least one file to the queue to continue.",
+});
 
 async function execute() {
   progress.reset();
-  for (const item of queue.value) {
-    item.output =
-      queue.value.length === 1 ? output.value : deriveNszPath(item.input);
+  if (!outputTemplate.value) {
+    for (const item of queue.value) {
+      item.output =
+        queue.value.length === 1 ? output.value : resolve(deriveNszPath(item.input));
+    }
   }
-  await batch.start(queue, result);
+  const records: ReportRecord[] = [];
+  const rep = queue.value.find((i) => i.status === "pending") ?? queue.value[0];
+  commandLine.value = rep ? buildCliCommand("cmd_nx_compress", compressArgs(rep)) : "";
+  await batch.start(
+    queue,
+    result,
+    { errorRef: error },
+    (res) => {
+      const record = (res as RunOutcome)?.record;
+      if (record) records.push(record);
+    },
+    async (item, err) => {
+      if (reportFile.value) await pushFailedRecord(records, item.input, "compress", err);
+    },
+  );
+  if (reportFile.value && records.length) {
+    await writeRunReport(reportFile.value, records);
+  }
+}
+
+async function runPreview() {
+  if (!outputTemplate.value) {
+    for (const item of queue.value) {
+      item.output = queue.value.length === 1 ? output.value : resolve(deriveNszPath(item.input));
+    }
+  }
+  const rep = queue.value.find((i) => i.status === "pending") ?? queue.value[0];
+  commandLine.value = rep ? buildCliCommand("cmd_nx_compress", compressArgs(rep)) : "";
+  await previewBatch(queue, compressArgs);
+  if (previewError.value) error.value = previewError.value;
+}
+
+function onRun() {
+  if (previewMode.value) runPreview();
+  else execute();
 }
 </script>
 
@@ -77,6 +150,10 @@ async function execute() {
       :has-result="!!result"
       :has-error="!!error"
     />
+
+    <div class="mb-4">
+      <OutputLog :command="commandLine" :result="result" :preview="preview" :error="error" />
+    </div>
 
     <OperationCard>
       <div class="space-y-5">
@@ -114,10 +191,20 @@ async function execute() {
           </div>
         </div>
 
+        <InfoTooltip v-if="queue.length <= 1 && templateActive" :message="OUTPUT_TEMPLATE_TOOLTIP" block>
+          <FileDropZone
+            v-model="output"
+            class="w-full"
+            label="Output file (auto-filled)"
+            :save-dialog="true"
+            :disabled="true"
+            :filters="[{ name: 'Switch compressed', extensions: ['nsz', 'xcz'] }]"
+          />
+        </InfoTooltip>
         <FileDropZone
-          v-if="queue.length <= 1"
+          v-else-if="queue.length <= 1"
           v-model="output"
-          label="Output (auto-derived)"
+          label="Output file (auto-filled)"
           :save-dialog="true"
           :filters="[{ name: 'Switch compressed', extensions: ['nsz', 'xcz'] }]"
         />
@@ -198,14 +285,66 @@ async function execute() {
           </div>
         </div>
 
+        <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3 space-y-3">
+          <ConflictPolicyControl v-model="onConflict" />
+          <RecursiveOptions
+            :recursive="recursive"
+            :max-depth="maxDepth"
+            @update:recursive="recursive = $event"
+            @update:max-depth="maxDepth = $event"
+          />
+          <FlagToggle
+            v-model="skipSpaceCheck"
+            label="Skip free space check"
+            description="Proceed even if the output filesystem looks too full to hold the result."
+          />
+        </div>
+
+        <label class="flex flex-col gap-1.5">
+          <span class="text-sm font-medium text-zinc-200">Output template (optional)</span>
+          <span class="text-xs text-zinc-400">
+            Build the output path from metadata tokens, for example {console}/{title}.{ext}. Replaces the explicit output path.
+          </span>
+          <input
+            v-model="outputTemplate"
+            type="text"
+            placeholder="e.g. {console}/{title}.{ext}"
+            class="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-800/50 px-3 py-1.5 text-sm text-zinc-200"
+          />
+        </label>
+
+        <OutputDirField v-model="outputDir" />
+
+        <FileDropZone
+          v-model="reportFile"
+          label="Run report file (optional)"
+          placeholder="No report"
+          :save-dialog="true"
+          :filters="[{ name: 'Report', extensions: ['csv', 'json', 'html'] }]"
+        />
+
         <ProgressBar
           :percent="progress.percent.value"
           :message="progress.message.value"
           :running="progress.running.value"
         />
 
-        <RunButton :loading="loading || batch.running.value" :disabled="!canCompress" @click="execute">
-          {{ queue.length <= 1 ? "Compress" : `Compress ${queue.length} Files` }}
+        <FlagToggle
+          v-model="previewMode"
+          label="Preview (dry run)"
+          description="Show what each file would do without writing anything."
+        />
+
+        <RunButton
+          :loading="loading || batch.running.value"
+          :batch-current="batch.currentIndex.value"
+          :batch-total="queue.length"
+          :disabled="!canRun"
+          :disabled-reason="runBlockReason"
+          @click="onRun"
+          @cancel="batch.abort"
+        >
+          {{ previewMode ? 'Preview' : (queue.filter(i => i.status === 'pending').length > 1 ? `Compress All (${queue.filter(i => i.status === 'pending').length})` : 'Compress') }}
         </RunButton>
 
         <div v-if="hasXci && mode === 'solid'" class="text-xs text-amber-300/80">
@@ -214,9 +353,5 @@ async function execute() {
         </div>
       </div>
     </OperationCard>
-
-    <div class="mt-4">
-      <OutputLog :result="result" :error="error" />
-    </div>
   </div>
 </template>

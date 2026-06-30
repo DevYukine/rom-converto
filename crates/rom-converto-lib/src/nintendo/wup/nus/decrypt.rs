@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::nintendo::wup::error::{WupError, WupResult};
 use crate::nintendo::wup::nus::content_stream::{
@@ -11,7 +11,7 @@ use crate::nintendo::wup::nus::layout::{NusLayout, TicketSource};
 use crate::nintendo::wup::nus::ticket_parser::{TitleKey, read_ticket_file};
 use crate::nintendo::wup::nus::tmd_parser::read_tmd_file;
 use crate::nintendo::wup::title_key_derive::derive_title_key;
-use crate::util::ProgressReporter;
+use crate::util::{CancelToken, ProgressReporter};
 
 /// Decrypt one NUS-format title into a loadiine-style directory tree
 /// under `output_dir`. Returns `(title_id, title_version)` from the
@@ -20,6 +20,15 @@ pub fn decrypt_nus_title(
     title_dir: &Path,
     output_dir: &Path,
     progress: &dyn ProgressReporter,
+) -> WupResult<(u64, u16)> {
+    decrypt_nus_title_with_cancel(title_dir, output_dir, progress, None)
+}
+
+fn decrypt_nus_title_with_cancel(
+    title_dir: &Path,
+    output_dir: &Path,
+    progress: &dyn ProgressReporter,
+    cancelled: Option<&AtomicBool>,
 ) -> WupResult<(u64, u16)> {
     let layout = NusLayout::discover(title_dir)?;
     let tmd = read_tmd_file(&layout.tmd_path)?;
@@ -52,32 +61,47 @@ pub fn decrypt_nus_title(
     let decrypted_content_0 = decrypt_content_0(encrypted_content_0, &title_key)?;
     let fs = parse_fst(&decrypted_content_0)?;
 
+    let created_output_dir = !output_dir.exists();
     std::fs::create_dir_all(output_dir)?;
 
     let source = DirectoryContentSource::with_resolver(layout.content);
     let mut loader = ContentLoader::new(source, title_key, &tmd, &fs);
-    let mut skipped: u32 = 0;
-    for vfile in &fs.files {
-        match loader.extract_file(vfile) {
-            Ok(bytes) => {
-                let out_path = output_dir.join(&vfile.path);
-                if let Some(parent) = out_path.parent() {
-                    std::fs::create_dir_all(parent)?;
+
+    let result = (|| {
+        let mut skipped: u32 = 0;
+        for vfile in &fs.files {
+            if cancelled.is_some_and(|c| c.load(Ordering::Relaxed)) {
+                return Err(WupError::Cancelled);
+            }
+            match loader.extract_file(vfile) {
+                Ok(bytes) => {
+                    let out_path = output_dir.join(&vfile.path);
+                    if let Some(parent) = out_path.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::write(&out_path, &bytes)?;
+                    progress.inc(bytes.len() as u64);
                 }
-                std::fs::write(&out_path, &bytes)?;
-                progress.inc(bytes.len() as u64);
+                Err(WupError::FileInheritedFromOtherTitle { .. }) => {
+                    skipped = skipped.saturating_add(1);
+                }
+                Err(e) => return Err(e),
             }
-            Err(WupError::FileInheritedFromOtherTitle { .. }) => {
-                skipped = skipped.saturating_add(1);
-            }
-            Err(e) => return Err(e),
         }
-    }
-    if skipped > 0 {
-        log::info!(
-            "skipped {skipped} file(s) in title {title_id:016x} v{title_version}: \
-             cluster data not shipped in this title"
-        );
+        if skipped > 0 {
+            log::info!(
+                "skipped {skipped} file(s) in title {title_id:016x} v{title_version}: \
+                 cluster data not shipped in this title"
+            );
+        }
+        Ok(())
+    })();
+
+    if let Err(err) = result {
+        if created_output_dir {
+            std::fs::remove_dir_all(output_dir).ok();
+        }
+        return Err(err);
     }
 
     Ok((title_id, title_version))
@@ -88,38 +112,63 @@ pub async fn decrypt_nus_title_async(
     output_dir: PathBuf,
     progress: &dyn ProgressReporter,
 ) -> WupResult<()> {
+    decrypt_nus_title_async_cancellable(title_dir, output_dir, progress, CancelToken::new()).await
+}
+
+pub async fn decrypt_nus_title_async_cancellable(
+    title_dir: PathBuf,
+    output_dir: PathBuf,
+    progress: &dyn ProgressReporter,
+    cancel: CancelToken,
+) -> WupResult<()> {
     let total = scan_content_bytes(&title_dir).await;
     progress.start(total, "Decrypting Wii U title");
 
+    let output_existed = output_dir.exists();
+    let output_for_cleanup = output_dir.clone();
+
     let bytes_done = Arc::new(AtomicU64::new(0));
     let bytes_done_for_task = bytes_done.clone();
+    let cancelled = Arc::new(AtomicBool::new(cancel.is_cancelled()));
+    let cancelled_for_task = cancelled.clone();
 
     let mut handle = tokio::task::spawn_blocking(move || -> WupResult<()> {
         let shim = AtomicBytesProgress {
             bytes_done: bytes_done_for_task,
         };
-        decrypt_nus_title(&title_dir, &output_dir, &shim).map(|_| ())
+        decrypt_nus_title_with_cancel(&title_dir, &output_dir, &shim, Some(&cancelled_for_task))
+            .map(|_| ())
     });
 
-    loop {
+    let result = loop {
         match tokio::time::timeout(std::time::Duration::from_millis(100), &mut handle).await {
-            Ok(result) => {
-                result??;
-                break;
-            }
+            Ok(result) => break result,
             Err(_) => {
+                if cancel.is_cancelled() {
+                    cancelled.store(true, Ordering::Relaxed);
+                }
                 let delta = bytes_done.swap(0, Ordering::Relaxed);
                 if delta > 0 {
                     progress.inc(delta);
                 }
             }
         }
-    }
+    };
     let remaining = bytes_done.swap(0, Ordering::Relaxed);
     if remaining > 0 {
         progress.inc(remaining);
     }
     progress.finish();
+    result??;
+    if cancel.is_cancelled() {
+        // A late-firing token can land after the title is fully written;
+        // drop the directory we created to keep the no-partial-output
+        // guarantee, but never a directory the caller already had.
+        if !output_existed {
+            tokio::fs::remove_dir_all(&output_for_cleanup).await.ok();
+        }
+        return Err(WupError::Cancelled);
+    }
     Ok(())
 }
 

@@ -1,3 +1,4 @@
+use crate::commands::ConflictPolicyArg;
 use crate::commands::info_command::InfoCommand;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -27,9 +28,13 @@ pub struct VerifyWupCommand {
     #[arg(value_name = "INPUT")]
     pub input: PathBuf,
 
-    /// Verify every .wud / .wux disc and every NUS title subdirectory found in the INPUT directory
+    /// Verify every .wud / .wux disc in the INPUT directory and its subdirectories; NUS title directories are detected among the immediate children of INPUT only
     #[arg(long, short = 'R', default_value_t = false)]
     pub recursive: bool,
+
+    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited.
+    #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
+    pub max_depth: Option<usize>,
 }
 
 /// Decrypt a NUS-format Wii U title directory into a loadiine-style
@@ -45,8 +50,17 @@ pub struct DecryptWupCommand {
     #[arg(value_name = "INPUT")]
     pub input: PathBuf,
 
-    /// Overwrite the output if it already exists
-    #[arg(long, short = 'f', default_value_t = false)]
+    /// What to do when an output already exists: error, overwrite, skip, or rename to a numbered sibling
+    #[arg(long = "on-conflict", value_enum, default_value_t = ConflictPolicyArg::Error)]
+    pub on_conflict: ConflictPolicyArg,
+
+    /// Alias for --on-conflict overwrite
+    #[arg(
+        long,
+        short = 'f',
+        default_value_t = false,
+        conflicts_with = "on_conflict"
+    )]
     pub force: bool,
 }
 
@@ -68,7 +82,8 @@ pub struct DecryptWupCommand {
                   2. sibling `<input>.key` file\n  \
                   3. `game.key` in the same directory as the disc\n\n\
                   Multiple titles (base + update + DLC) can be bundled into a single\n\
-                  archive by passing each input as a separate positional argument."
+                  archive by passing each input as a separate positional argument.",
+    after_long_help = "EXAMPLES:\n  Single title:    rom-converto wup compress -o game.wua ./title_base\n  Disc with key:   rom-converto wup compress -o game.wua --key game.key game.wud\n  Bundle titles:   rom-converto wup compress -o game.wua ./title_base ./title_update ./title_dlc\n"
 )]
 pub struct CompressWupCommand {
     /// Output .wua file path.
@@ -102,8 +117,17 @@ pub struct CompressWupCommand {
     #[arg(required = true, num_args = 1.., value_name = "INPUT")]
     pub inputs: Vec<PathBuf>,
 
-    /// Overwrite the output file if it already exists
-    #[arg(long, short = 'f', default_value_t = false)]
+    /// What to do when an output already exists: error, overwrite, skip, or rename to a numbered sibling
+    #[arg(long = "on-conflict", value_enum)]
+    pub on_conflict: Option<ConflictPolicyArg>,
+
+    /// Alias for --on-conflict overwrite
+    #[arg(
+        long,
+        short = 'f',
+        default_value_t = false,
+        conflicts_with = "on_conflict"
+    )]
     pub force: bool,
 }
 
@@ -214,5 +238,14 @@ mod tests {
             panic!("expected Compress");
         };
         assert!(c.force);
+    }
+
+    #[test]
+    fn compress_on_conflict_absent_is_none() {
+        let h = Harness::parse_from(["bin", "compress", "-o", "out.wua", "title_dir/"]);
+        let WupCommands::Compress(c) = h.cmd else {
+            panic!("expected Compress");
+        };
+        assert!(c.on_conflict.is_none());
     }
 }

@@ -105,6 +105,7 @@ export interface CtrInfo {
   } | null;
   icon: Image | null;
   small_icon: Image | null;
+  compressed: boolean;
 }
 
 export interface DolInfo {

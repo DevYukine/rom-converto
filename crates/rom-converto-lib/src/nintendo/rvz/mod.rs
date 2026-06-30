@@ -37,8 +37,11 @@ pub mod compress;
 pub mod decompress;
 pub mod verify;
 
-pub use compress::{RvzCompressOptions, compress_disc};
-pub use decompress::{decompress_disc, decompress_disc_to_wbfs};
+pub use compress::{RvzCompressOptions, compress_disc, compress_disc_cancellable};
+pub use decompress::{
+    decompress_disc, decompress_disc_cancellable, decompress_disc_to_wbfs,
+    decompress_disc_to_wbfs_cancellable,
+};
 pub use error::{RvzError, RvzResult};
 pub use verify::{RvzStructuralVerify, verify_rvz_structure};
 

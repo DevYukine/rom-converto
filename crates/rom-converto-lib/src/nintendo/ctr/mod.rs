@@ -1,14 +1,20 @@
 use crate::nintendo::ctr::cia::{decrypt_from_encrypted_cia, write_cia};
 use crate::nintendo::ctr::constants::NCCH_MAGIC_OFFSET;
 use crate::nintendo::ctr::decrypt::cia::{parse_and_decrypt_ncch, parse_and_decrypt_ncsd};
+use crate::nintendo::ctr::error::NintendoCTRError;
 use crate::nintendo::ctr::models::cia::CIA_HEADER_SIZE;
 use crate::nintendo::ctr::models::ticket::Ticket;
 use crate::nintendo::ctr::models::title_metadata::TitleMetadata;
 use crate::nintendo::ctr::title_key::generate_title_key;
 use crate::nintendo::ctr::util::fs::{find_title_file, find_tmd_file};
 use crate::nintendo::ctr::z3ds::models::underlying_magic;
-use crate::nintendo::ctr::z3ds::{compress_rom, derive_compressed_path};
-use crate::util::ProgressReporter;
+use crate::nintendo::ctr::z3ds::{
+    compress_rom_cancellable, derive_compressed_path, derive_decompressed_path,
+};
+use crate::util::{
+    CancelToken, ConflictPolicy, ConflictResolution, ProgressReporter, resolve_conflict,
+    scratch_output_path,
+};
 use anyhow::Result;
 use binrw::BinRead;
 use futures::TryFutureExt;
@@ -44,6 +50,8 @@ pub struct CdnToCiaOptions {
     pub ensure_ticket_exists: bool,
     pub decrypt: bool,
     pub compress: bool,
+    pub output_dir: Option<PathBuf>,
+    pub on_conflict: ConflictPolicy,
 }
 
 pub fn derive_decrypted_path(input: &Path) -> PathBuf {
@@ -57,16 +65,6 @@ pub fn derive_decrypted_path(input: &Path) -> PathBuf {
     input.with_file_name(name)
 }
 
-pub(crate) fn has_matching_extension(path: &Path, accepted: &[&str]) -> bool {
-    if !path.is_file() {
-        return false;
-    }
-    match path.extension().and_then(|s| s.to_str()) {
-        Some(ext) => accepted.iter().any(|a| ext.eq_ignore_ascii_case(a)),
-        None => false,
-    }
-}
-
 const DECRYPT_EXTS: &[&str] = &["cia", "3ds", "cci", "cxi"];
 
 pub async fn decrypt_cia(
@@ -74,12 +72,28 @@ pub async fn decrypt_cia(
     output: &Path,
     progress: &dyn ProgressReporter,
 ) -> Result<()> {
-    let out = File::create(output).await?;
+    decrypt_cia_cancellable(input, output, progress, CancelToken::new()).await
+}
+
+pub async fn decrypt_cia_cancellable(
+    input: &Path,
+    output: &Path,
+    progress: &dyn ProgressReporter,
+    cancel: CancelToken,
+) -> Result<()> {
+    let tmp = scratch_output_path(output);
+    let out = File::create(&tmp).await?;
     let mut out = BufWriter::new(out);
 
-    decrypt_from_encrypted_cia(input, &mut out, progress).await?;
+    if let Err(err) = decrypt_from_encrypted_cia(input, &mut out, progress, &cancel).await {
+        drop(out);
+        fs::remove_file(&tmp).await.ok();
+        return Err(err);
+    }
 
     out.flush().await?;
+    drop(out);
+    fs::rename(&tmp, output).await?;
 
     info!("Successfully decrypted CIA file");
 
@@ -90,6 +104,15 @@ pub async fn decrypt_rom(
     input: &Path,
     output: &Path,
     progress: &dyn ProgressReporter,
+) -> Result<()> {
+    decrypt_rom_cancellable(input, output, progress, CancelToken::new()).await
+}
+
+pub async fn decrypt_rom_cancellable(
+    input: &Path,
+    output: &Path,
+    progress: &dyn ProgressReporter,
+    cancel: CancelToken,
 ) -> Result<()> {
     let file_size = tokio::fs::metadata(input).await?.len();
     progress.start(file_size, "Decrypting...");
@@ -104,10 +127,10 @@ pub async fn decrypt_rom(
 
     if magic_buf == underlying_magic::NCSD {
         info!("Detected NCSD format (.3ds/.cci)");
-        decrypt_ncsd(input, output, progress).await?;
+        decrypt_ncsd_cancellable(input, output, progress, &cancel).await?;
     } else if magic_buf == underlying_magic::NCCH {
         info!("Detected standalone NCCH format (.cxi)");
-        decrypt_ncch(input, output, progress).await?;
+        decrypt_ncch_cancellable(input, output, progress, &cancel).await?;
     } else {
         // Try CIA: check if the u32 at offset 0 matches CIA_HEADER_SIZE
         let mut file = File::open(input).await?;
@@ -118,7 +141,7 @@ pub async fn decrypt_rom(
         let header_size = u32::from_le_bytes(header_check);
         if header_size == CIA_HEADER_SIZE {
             info!("Detected CIA format");
-            decrypt_cia(input, output, progress).await?;
+            decrypt_cia_cancellable(input, output, progress, cancel).await?;
         } else {
             return Err(anyhow::anyhow!(
                 "Unrecognized format: no NCSD/NCCH magic at 0x100 and not a CIA file"
@@ -131,82 +154,64 @@ pub async fn decrypt_rom(
     Ok(())
 }
 
-async fn decrypt_ncsd(input: &Path, output: &Path, progress: &dyn ProgressReporter) -> Result<()> {
-    use crate::nintendo::ctr::constants::{
-        CTR_MEDIA_UNIT_SIZE, CTR_NCSD_PARTITIONS, NCSD_PARTITION_COUNT, NCSD_PARTITION_ENTRY_SIZE,
-        NCSD_PARTITION_TABLE_OFFSET,
-    };
+async fn decrypt_ncsd_cancellable(
+    input: &Path,
+    output: &Path,
+    progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
+) -> Result<()> {
+    let tmp = scratch_output_path(output);
 
-    parse_and_decrypt_ncsd(input, None, progress).await?;
-
-    fs::copy(input, output).await?;
-
-    let mut out_file = fs::OpenOptions::new().write(true).open(output).await?;
-
-    let mut table_buf = [0u8; NCSD_PARTITION_COUNT * NCSD_PARTITION_ENTRY_SIZE];
-    {
-        let mut in_file = File::open(input).await?;
-        in_file
-            .seek(SeekFrom::Start(NCSD_PARTITION_TABLE_OFFSET as u64))
+    // The verbatim copy carries the NCSD header, inter-partition gaps, and any
+    // plain partitions; parse_and_decrypt_ncsd overwrites each NCCH partition
+    // region in place, so the decrypt streams straight into the final temp
+    // without per-partition scratch files.
+    let result = async {
+        fs::copy(input, &tmp).await?;
+        let mut out = fs::OpenOptions::new()
+            .write(true)
+            .read(true)
+            .open(&tmp)
             .await?;
-        in_file.read_exact(&mut table_buf).await?;
+        parse_and_decrypt_ncsd(input, &mut out, None, progress, cancel).await?;
+        out.flush().await?;
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+
+    if let Err(err) = result {
+        fs::remove_file(&tmp).await.ok();
+        return Err(err);
     }
 
-    let parent = input.parent().unwrap_or_else(|| Path::new("."));
-    let stem = input
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .ok_or_else(|| anyhow::anyhow!("input path has no valid filename stem"))?;
-
-    for (i, partition_name) in CTR_NCSD_PARTITIONS.iter().enumerate() {
-        let entry_offset = i * NCSD_PARTITION_ENTRY_SIZE;
-        let offset_mu = u32::from_le_bytes(table_buf[entry_offset..entry_offset + 4].try_into()?);
-        let size_mu = u32::from_le_bytes(table_buf[entry_offset + 4..entry_offset + 8].try_into()?);
-
-        if offset_mu == 0 && size_mu == 0 {
-            continue;
-        }
-
-        let ncch_path = parent.join(format!("{stem}.{partition_name}.{i:08X}.ncch"));
-
-        if !ncch_path.exists() {
-            continue;
-        }
-
-        let partition_offset = offset_mu as u64 * CTR_MEDIA_UNIT_SIZE as u64;
-        let ncch_data = fs::read(&ncch_path).await?;
-
-        out_file.seek(SeekFrom::Start(partition_offset)).await?;
-        out_file.write_all(&ncch_data).await?;
-
-        fs::remove_file(&ncch_path).await?;
-    }
-
-    out_file.flush().await?;
+    fs::rename(&tmp, output).await?;
 
     info!("Successfully decrypted NCSD file");
     Ok(())
 }
 
-async fn decrypt_ncch(input: &Path, output: &Path, progress: &dyn ProgressReporter) -> Result<()> {
-    parse_and_decrypt_ncch(input, progress).await?;
+async fn decrypt_ncch_cancellable(
+    input: &Path,
+    output: &Path,
+    progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
+) -> Result<()> {
+    let tmp = scratch_output_path(output);
 
-    let parent = input.parent().unwrap_or_else(|| Path::new("."));
-    let stem = input
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .ok_or_else(|| anyhow::anyhow!("input path has no valid filename stem"))?;
-
-    let ncch_path = parent.join(format!("{stem}.0.00000000.ncch"));
-
-    if ncch_path.exists() {
-        fs::rename(&ncch_path, output).await?;
-    } else {
-        return Err(anyhow::anyhow!(
-            "Decrypted NCCH file not found at {}",
-            ncch_path.display()
-        ));
+    let result = async {
+        let mut out = File::create(&tmp).await?;
+        parse_and_decrypt_ncch(input, &mut out, progress, cancel).await?;
+        out.flush().await?;
+        Ok::<(), anyhow::Error>(())
     }
+    .await;
+
+    if let Err(err) = result {
+        fs::remove_file(&tmp).await.ok();
+        return Err(err);
+    }
+
+    fs::rename(&tmp, output).await?;
 
     info!("Successfully decrypted NCCH file");
     Ok(())
@@ -246,6 +251,15 @@ pub async fn convert_cdn_to_cia(
     progress: &dyn ProgressReporter,
     total_progress: &dyn ProgressReporter,
 ) -> Result<()> {
+    convert_cdn_to_cia_cancellable(opts, progress, total_progress, CancelToken::new()).await
+}
+
+pub async fn convert_cdn_to_cia_cancellable(
+    opts: CdnToCiaOptions,
+    progress: &dyn ProgressReporter,
+    total_progress: &dyn ProgressReporter,
+    cancel: CancelToken,
+) -> Result<()> {
     if opts.recursive {
         let mut count: u64 = 0;
         let mut dirs = tokio::fs::read_dir(&opts.cdn_dir).await?;
@@ -257,20 +271,37 @@ pub async fn convert_cdn_to_cia(
 
         total_progress.start(count, &format!("Processing {count} directories..."));
 
+        if let Some(dir) = opts.output_dir.as_deref() {
+            fs::create_dir_all(dir).await?;
+        }
+
         let mut directories = tokio::fs::read_dir(&opts.cdn_dir).await?;
 
         while let Ok(Some(entry)) = directories.next_entry().await {
+            if cancel.is_cancelled() {
+                total_progress.finish();
+                return Err(NintendoCTRError::Cancelled.into());
+            }
+
             debug!("Processing directory: {}", entry.path().display());
 
             if entry.path().is_file() {
                 continue;
             }
 
+            let child_dir = entry.path();
             let mut opts_clone = opts.clone();
-            opts_clone.cdn_dir = entry.path();
-            opts_clone.output = None;
+            opts_clone.output = opts.output_dir.as_deref().and_then(|dir| {
+                child_dir.file_name().map(|name| {
+                    let derived =
+                        child_dir.with_file_name(format!("{}.cia", name.to_string_lossy()));
+                    crate::util::place_in_dir(&derived, Some(dir))
+                })
+            });
+            opts_clone.cdn_dir = child_dir;
 
-            if let Err(err) = convert_cdn_to_cia_single(opts_clone, progress).await {
+            if let Err(err) = convert_cdn_to_cia_single(opts_clone, progress, cancel.clone()).await
+            {
                 warn!(
                     "Failed to convert CDN directory {}: {}",
                     entry.path().display(),
@@ -284,13 +315,14 @@ pub async fn convert_cdn_to_cia(
         total_progress.finish();
         Ok(())
     } else {
-        convert_cdn_to_cia_single(opts, progress).await
+        convert_cdn_to_cia_single(opts, progress, cancel).await
     }
 }
 
 async fn convert_cdn_to_cia_single(
     opts: CdnToCiaOptions,
     progress: &dyn ProgressReporter,
+    cancel: CancelToken,
 ) -> Result<()> {
     let output = match opts.output {
         Some(path) => path,
@@ -304,6 +336,28 @@ async fn convert_cdn_to_cia_single(
 
             let parent = opts.cdn_dir.parent().unwrap_or_else(|| Path::new("."));
             parent.join(name)
+        }
+    };
+
+    // Conflict resolution runs against the final artifact. With --compress that
+    // is the .zcia, while the intermediate .cia keeps the working stem, so a
+    // rename slot is mapped back through derive_decompressed_path.
+    let final_path = if opts.compress {
+        derive_compressed_path(&output)
+    } else {
+        output.clone()
+    };
+    let output = match resolve_conflict(&final_path, opts.on_conflict)? {
+        ConflictResolution::Skip => {
+            info!("Skipping, output already exists: {}", final_path.display());
+            return Ok(());
+        }
+        ConflictResolution::Write(resolved) => {
+            if opts.compress {
+                derive_decompressed_path(&resolved)
+            } else {
+                resolved
+            }
         }
     };
 
@@ -344,9 +398,10 @@ async fn convert_cdn_to_cia_single(
         );
     }
 
-    let out = File::create(&output).await?;
+    let tmp = scratch_output_path(&output);
+    let out = File::create(&tmp).await?;
     let mut out_buffered = BufWriter::new(out);
-    write_cia(
+    if let Err(err) = write_cia(
         cdn_dir,
         &mut out_buffered,
         &title_metadata_path,
@@ -354,15 +409,30 @@ async fn convert_cdn_to_cia_single(
         title_metadata,
         ticket,
         progress,
+        &cancel,
     )
-    .await?;
+    .await
+    {
+        drop(out_buffered);
+        fs::remove_file(&tmp).await.ok();
+        return Err(err);
+    }
+    out_buffered.flush().await?;
+    drop(out_buffered);
+    fs::rename(&tmp, &output).await?;
 
-    info!("✅ Successfully created CIA file {}", output.display());
+    info!("Successfully created CIA file {}", output.display());
 
     if opts.decrypt {
         let decrypted_cia_path = output.with_extension("decrypted.cia");
 
-        decrypt_cia(&output, &decrypted_cia_path, progress).await?;
+        if let Err(err) =
+            decrypt_cia_cancellable(&output, &decrypted_cia_path, progress, cancel.clone()).await
+        {
+            fs::remove_file(&decrypted_cia_path).await.ok();
+            fs::remove_file(&output).await.ok();
+            return Err(err);
+        }
 
         fs::remove_file(&output).await?;
         fs::rename(&decrypted_cia_path, &output).await?;
@@ -373,7 +443,12 @@ async fn convert_cdn_to_cia_single(
     if opts.compress {
         let compressed_path = derive_compressed_path(&output);
 
-        compress_rom(&output, &compressed_path, None, progress).await?;
+        if let Err(err) =
+            compress_rom_cancellable(&output, &compressed_path, None, false, progress, cancel).await
+        {
+            fs::remove_file(&output).await.ok();
+            return Err(err.into());
+        }
 
         fs::remove_file(&output).await?;
 
@@ -391,18 +466,32 @@ async fn convert_cdn_to_cia_single(
 
 pub async fn decrypt_rom_batch(
     input_dir: &Path,
+    output_dir: Option<&Path>,
     progress: &dyn ProgressReporter,
     total_progress: &dyn ProgressReporter,
+    max_depth: Option<usize>,
 ) -> Result<()> {
-    let mut count: u64 = 0;
-    let mut scan = fs::read_dir(input_dir).await?;
-    while let Ok(Some(entry)) = scan.next_entry().await {
-        if has_matching_extension(&entry.path(), DECRYPT_EXTS) {
-            count += 1;
-        }
-    }
+    decrypt_rom_batch_cancellable(
+        input_dir,
+        output_dir,
+        progress,
+        total_progress,
+        max_depth,
+        CancelToken::new(),
+    )
+    .await
+}
 
-    if count == 0 {
+pub async fn decrypt_rom_batch_cancellable(
+    input_dir: &Path,
+    output_dir: Option<&Path>,
+    progress: &dyn ProgressReporter,
+    total_progress: &dyn ProgressReporter,
+    max_depth: Option<usize>,
+    cancel: CancelToken,
+) -> Result<()> {
+    let roms = crate::util::fs::collect_files_with_exts(input_dir, DECRYPT_EXTS, max_depth)?;
+    if roms.is_empty() {
         warn!(
             "No supported ROM files found in {} (looked for {:?})",
             input_dir.display(),
@@ -411,20 +500,36 @@ pub async fn decrypt_rom_batch(
         return Ok(());
     }
 
-    total_progress.start(count, &format!("Decrypting {count} files..."));
+    total_progress.start(
+        roms.len() as u64,
+        &format!("Decrypting {} files...", roms.len()),
+    );
 
-    let mut entries = fs::read_dir(input_dir).await?;
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        let path = entry.path();
-        if !has_matching_extension(&path, DECRYPT_EXTS) {
-            debug!("Skipping {} (not a supported ROM)", path.display());
-            continue;
+    if let Some(dir) = output_dir {
+        fs::create_dir_all(dir).await?;
+    }
+
+    for path in roms {
+        if cancel.is_cancelled() {
+            return Err(NintendoCTRError::Cancelled.into());
         }
-
-        let output = derive_decrypted_path(&path);
+        let output = crate::util::place_in_dir_mirrored(
+            &derive_decrypted_path(&path),
+            input_dir,
+            output_dir,
+        );
+        if let Some(parent) = output.parent() {
+            fs::create_dir_all(parent).await?;
+        }
         debug!("Decrypting {} -> {}", path.display(), output.display());
 
-        if let Err(err) = decrypt_rom(&path, &output, progress).await {
+        if let Err(err) = decrypt_rom_cancellable(&path, &output, progress, cancel.clone()).await {
+            if matches!(
+                err.downcast_ref::<NintendoCTRError>(),
+                Some(NintendoCTRError::Cancelled)
+            ) {
+                return Err(err);
+            }
             warn!("Failed to decrypt {}: {err}", path.display());
         }
 
@@ -438,6 +543,409 @@ pub async fn decrypt_rom_batch(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nintendo::ctr::models::cia::CiaFile;
+    use crate::nintendo::ctr::test_fixtures::{append_be, make_cert, make_ticket, make_tmd};
+    use crate::util::NoProgress;
+    use binrw::Endian;
+    use sha2::{Digest, Sha256};
+
+    fn write_cdn_title(dir: &Path, title_id: u64) {
+        std::fs::create_dir_all(dir).unwrap();
+
+        let content: Vec<u8> = (0..0x400u32).map(|i| i as u8).collect();
+        let mut hasher = Sha256::new();
+        hasher.update(&content);
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&hasher.finalize());
+
+        std::fs::write(dir.join("00000000"), &content).unwrap();
+
+        let tmd = make_tmd(title_id, vec![(0, 0, content.clone(), hash)]);
+        let mut tmd_buf = Vec::new();
+        append_be(&mut tmd_buf, &tmd);
+        append_be(&mut tmd_buf, &make_cert(b"CP0000000b", 0xBB));
+        append_be(&mut tmd_buf, &make_cert(b"CA00000003", 0xAA));
+        std::fs::write(dir.join("tmd"), &tmd_buf).unwrap();
+
+        let ticket = make_ticket(title_id);
+        let mut tik_buf = Vec::new();
+        append_be(&mut tik_buf, &ticket);
+        append_be(&mut tik_buf, &make_cert(b"XS0000000c", 0xCC));
+        std::fs::write(dir.join("cetk"), &tik_buf).unwrap();
+    }
+
+    fn recursive_opts(root: PathBuf, on_conflict: ConflictPolicy) -> CdnToCiaOptions {
+        CdnToCiaOptions {
+            cdn_dir: root,
+            output: None,
+            cleanup: false,
+            recursive: true,
+            ensure_ticket_exists: false,
+            decrypt: false,
+            compress: false,
+            output_dir: None,
+            on_conflict,
+        }
+    }
+
+    fn parses_as_cia(path: &Path) -> bool {
+        let bytes = std::fs::read(path).unwrap();
+        CiaFile::read_options(&mut Cursor::new(&bytes), Endian::Little, ()).is_ok()
+    }
+
+    #[tokio::test]
+    async fn cdn_to_cia_recursive_converts_each_subfolder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let base = 0x0004000000030000u64;
+        for (i, name) in ["title_a", "title_b", "title_c"].iter().enumerate() {
+            write_cdn_title(&root.join(name), base + i as u64);
+        }
+
+        let opts = recursive_opts(root.to_path_buf(), ConflictPolicy::Error);
+        convert_cdn_to_cia(opts, &NoProgress, &NoProgress)
+            .await
+            .unwrap();
+
+        for name in ["title_a.cia", "title_b.cia", "title_c.cia"] {
+            let out = root.join(name);
+            assert!(out.exists(), "missing {}", out.display());
+            assert!(parses_as_cia(&out), "{} is not a valid CIA", out.display());
+        }
+    }
+
+    #[tokio::test]
+    async fn cdn_to_cia_recursive_default_error_does_not_overwrite() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_cdn_title(&root.join("title_a"), 0x0004000000030000);
+        let existing = root.join("title_a.cia");
+        std::fs::write(&existing, b"PREEXISTING").unwrap();
+
+        let opts = recursive_opts(root.to_path_buf(), ConflictPolicy::Error);
+        convert_cdn_to_cia(opts, &NoProgress, &NoProgress)
+            .await
+            .unwrap();
+
+        assert_eq!(std::fs::read(&existing).unwrap(), b"PREEXISTING");
+    }
+
+    #[tokio::test]
+    async fn cdn_to_cia_recursive_skip_keeps_existing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_cdn_title(&root.join("title_a"), 0x0004000000030000);
+        let existing = root.join("title_a.cia");
+        std::fs::write(&existing, b"PREEXISTING").unwrap();
+
+        let opts = recursive_opts(root.to_path_buf(), ConflictPolicy::Skip);
+        convert_cdn_to_cia(opts, &NoProgress, &NoProgress)
+            .await
+            .unwrap();
+
+        assert_eq!(std::fs::read(&existing).unwrap(), b"PREEXISTING");
+    }
+
+    #[tokio::test]
+    async fn cdn_to_cia_recursive_overwrite_replaces() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_cdn_title(&root.join("title_a"), 0x0004000000030000);
+        let existing = root.join("title_a.cia");
+        std::fs::write(&existing, b"PREEXISTING").unwrap();
+
+        let opts = recursive_opts(root.to_path_buf(), ConflictPolicy::Overwrite);
+        convert_cdn_to_cia(opts, &NoProgress, &NoProgress)
+            .await
+            .unwrap();
+
+        assert_ne!(std::fs::read(&existing).unwrap(), b"PREEXISTING");
+        assert!(parses_as_cia(&existing));
+    }
+
+    #[tokio::test]
+    async fn cdn_to_cia_recursive_rename_writes_numbered_sibling() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_cdn_title(&root.join("title_a"), 0x0004000000030000);
+        let existing = root.join("title_a.cia");
+        std::fs::write(&existing, b"PREEXISTING").unwrap();
+
+        let opts = recursive_opts(root.to_path_buf(), ConflictPolicy::Rename);
+        convert_cdn_to_cia(opts, &NoProgress, &NoProgress)
+            .await
+            .unwrap();
+
+        assert_eq!(std::fs::read(&existing).unwrap(), b"PREEXISTING");
+        let renamed = root.join("title_a (1).cia");
+        assert!(renamed.exists(), "missing {}", renamed.display());
+        assert!(parses_as_cia(&renamed));
+    }
+
+    #[tokio::test]
+    async fn cdn_to_cia_recursive_skips_non_cdn_subfolder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_cdn_title(&root.join("title_a"), 0x0004000000030000);
+        write_cdn_title(&root.join("title_b"), 0x0004000000030001);
+        let junk = root.join("not_cdn");
+        std::fs::create_dir_all(&junk).unwrap();
+        std::fs::write(junk.join("readme.txt"), b"x").unwrap();
+
+        let opts = recursive_opts(root.to_path_buf(), ConflictPolicy::Error);
+        convert_cdn_to_cia(opts, &NoProgress, &NoProgress)
+            .await
+            .unwrap();
+
+        assert!(root.join("title_a.cia").exists());
+        assert!(root.join("title_b.cia").exists());
+        assert!(!root.join("not_cdn.cia").exists());
+    }
+
+    #[tokio::test]
+    async fn cdn_to_cia_recursive_community_layout_variant() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let dir = root.join("title_a");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let content: Vec<u8> = (0..0x400u32).map(|i| i as u8).collect();
+        let mut hasher = Sha256::new();
+        hasher.update(&content);
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&hasher.finalize());
+        std::fs::write(dir.join("00000000"), &content).unwrap();
+
+        let tmd = make_tmd(0x0004000000030000, vec![(0, 0, content.clone(), hash)]);
+        let mut tmd_buf = Vec::new();
+        append_be(&mut tmd_buf, &tmd);
+        append_be(&mut tmd_buf, &make_cert(b"CP0000000b", 0xBB));
+        append_be(&mut tmd_buf, &make_cert(b"CA00000003", 0xAA));
+        std::fs::write(dir.join("tmd.1029"), &tmd_buf).unwrap();
+
+        let ticket = make_ticket(0x0004000000030000);
+        let mut tik_buf = Vec::new();
+        append_be(&mut tik_buf, &ticket);
+        append_be(&mut tik_buf, &make_cert(b"XS0000000c", 0xCC));
+        std::fs::write(dir.join("title.tik"), &tik_buf).unwrap();
+
+        let opts = recursive_opts(root.to_path_buf(), ConflictPolicy::Error);
+        convert_cdn_to_cia(opts, &NoProgress, &NoProgress)
+            .await
+            .unwrap();
+
+        let out = root.join("title_a.cia");
+        assert!(out.exists(), "missing {}", out.display());
+        assert!(parses_as_cia(&out));
+    }
+
+    fn is_ctr_cancelled(err: &anyhow::Error) -> bool {
+        err.chain().any(|c| {
+            matches!(
+                c.downcast_ref::<NintendoCTRError>(),
+                Some(NintendoCTRError::Cancelled)
+            )
+        })
+    }
+
+    struct CancelAfter {
+        token: CancelToken,
+        remaining: std::sync::atomic::AtomicUsize,
+    }
+
+    impl CancelAfter {
+        fn new(token: CancelToken, after: usize) -> Self {
+            Self {
+                token,
+                remaining: std::sync::atomic::AtomicUsize::new(after),
+            }
+        }
+    }
+
+    impl ProgressReporter for CancelAfter {
+        fn start(&self, _: u64, _: &str) {}
+        fn inc(&self, _: u64) {
+            use std::sync::atomic::Ordering;
+            if self.remaining.fetch_sub(1, Ordering::SeqCst) == 1 {
+                self.token.cancel();
+            }
+        }
+        fn finish(&self) {}
+    }
+
+    fn ncch_scratch_present(dir: &Path) -> bool {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|e| e.path().extension().and_then(|s| s.to_str()) == Some("ncch"))
+    }
+
+    #[tokio::test]
+    async fn decrypt_cancel_before_start_leaves_no_output() {
+        use crate::nintendo::ctr::test_fixtures::synth_encrypted_cia_multi_content;
+
+        let (tmp, input, _) = synth_encrypted_cia_multi_content(&[0x0000_0000u32, 0x0000_0001u32]);
+        let output = tmp.path().join("decrypted.cia");
+
+        let token = CancelToken::new();
+        token.cancel();
+        let result = decrypt_rom_cancellable(&input, &output, &NoProgress, token).await;
+
+        let err = result.expect_err("a pre-cancelled token must abort the decrypt");
+        assert!(
+            is_ctr_cancelled(&err),
+            "error chain must carry the cancelled variant"
+        );
+        assert!(!output.exists(), "no partial output");
+        assert!(!scratch_output_path(&output).exists(), "no leftover temp");
+        assert!(
+            !ncch_scratch_present(tmp.path()),
+            "no leftover .ncch scratch"
+        );
+    }
+
+    #[tokio::test]
+    async fn decrypt_leaves_only_final_output_no_scratch() {
+        use crate::nintendo::ctr::test_fixtures::synth_encrypted_cia_multi_content;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (src_tmp, input, _) =
+            synth_encrypted_cia_multi_content(&[0x0000_0000u32, 0x0000_ABCDu32]);
+        let input2 = dir.path().join("game.cia");
+        std::fs::copy(&input, &input2).unwrap();
+        drop(src_tmp);
+
+        let output = dir.path().join("game.decrypted.cia");
+        decrypt_rom_cancellable(&input2, &output, &NoProgress, CancelToken::new())
+            .await
+            .unwrap();
+
+        assert!(output.exists(), "final output must exist");
+        assert!(parses_as_cia(&output), "final output is a valid CIA");
+        assert!(
+            !ncch_scratch_present(dir.path()),
+            "no .ncch scratch left behind"
+        );
+
+        let leftover_tmp = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|e| e.path().extension().and_then(|s| s.to_str()) == Some("tmp"));
+        assert!(!leftover_tmp, "no .tmp scratch left behind");
+
+        let entries: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            entries.len(),
+            2,
+            "only the input and the final output remain: {entries:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn decrypt_cancel_after_completion_succeeds() {
+        use crate::nintendo::ctr::test_fixtures::synth_encrypted_cia_multi_content;
+
+        let (tmp, input, _) = synth_encrypted_cia_multi_content(&[0x0000_0000u32, 0x0000_0001u32]);
+        let output = tmp.path().join("decrypted.cia");
+
+        let token = CancelToken::new();
+        decrypt_rom_cancellable(&input, &output, &NoProgress, token.clone())
+            .await
+            .expect("decrypt must succeed with an uncancelled token");
+        token.cancel();
+
+        assert!(output.exists(), "output survives a post-completion cancel");
+        assert!(parses_as_cia(&output), "decrypted output is a valid CIA");
+        assert!(!scratch_output_path(&output).exists(), "no leftover temp");
+        assert!(
+            !ncch_scratch_present(tmp.path()),
+            "no leftover .ncch scratch"
+        );
+    }
+
+    #[tokio::test]
+    async fn decrypt_force_overwrite_preexisting_survives_cancel() {
+        use crate::nintendo::ctr::test_fixtures::synth_encrypted_cia_multi_content;
+
+        let (tmp, input, _) = synth_encrypted_cia_multi_content(&[0x0000_0000u32, 0x0000_0001u32]);
+        let output = tmp.path().join("decrypted.cia");
+        let original = b"do not destroy me".to_vec();
+        std::fs::write(&output, &original).unwrap();
+
+        let token = CancelToken::new();
+        token.cancel();
+        let result = decrypt_rom_cancellable(&input, &output, &NoProgress, token).await;
+
+        let err = result.expect_err("a pre-cancelled token must abort the decrypt");
+        assert!(is_ctr_cancelled(&err));
+        assert_eq!(std::fs::read(&output).unwrap(), original);
+        assert!(!scratch_output_path(&output).exists(), "no leftover temp");
+    }
+
+    #[tokio::test]
+    async fn decrypt_batch_cancel_before_start_leaves_no_output() {
+        use crate::nintendo::ctr::test_fixtures::synth_encrypted_cia_multi_content;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (a_tmp, a_in, _) = synth_encrypted_cia_multi_content(&[0x0000_0000u32]);
+        let (b_tmp, b_in, _) = synth_encrypted_cia_multi_content(&[0x0000_0001u32]);
+        std::fs::copy(&a_in, dir.path().join("a.cia")).unwrap();
+        std::fs::copy(&b_in, dir.path().join("b.cia")).unwrap();
+        drop(a_tmp);
+        drop(b_tmp);
+
+        let token = CancelToken::new();
+        token.cancel();
+        let result =
+            decrypt_rom_batch_cancellable(dir.path(), None, &NoProgress, &NoProgress, None, token)
+                .await;
+
+        let err = result.expect_err("a pre-cancelled token must abort the batch");
+        assert!(
+            is_ctr_cancelled(&err),
+            "error chain must carry the cancelled variant"
+        );
+        assert!(!dir.path().join("a.decrypted.cia").exists());
+        assert!(!dir.path().join("b.decrypted.cia").exists());
+    }
+
+    #[tokio::test]
+    async fn decrypt_batch_cancel_mid_stops_remaining() {
+        use crate::nintendo::ctr::test_fixtures::synth_encrypted_cia_multi_content;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (a_tmp, a_in, _) = synth_encrypted_cia_multi_content(&[0x0000_0000u32]);
+        let (b_tmp, b_in, _) = synth_encrypted_cia_multi_content(&[0x0000_0001u32]);
+        std::fs::copy(&a_in, dir.path().join("a.cia")).unwrap();
+        std::fs::copy(&b_in, dir.path().join("b.cia")).unwrap();
+        drop(a_tmp);
+        drop(b_tmp);
+
+        let token = CancelToken::new();
+        let cancel_after_first = CancelAfter::new(token.clone(), 1);
+        let result = decrypt_rom_batch_cancellable(
+            dir.path(),
+            None,
+            &NoProgress,
+            &cancel_after_first,
+            None,
+            token,
+        )
+        .await;
+
+        let err = result.expect_err("cancelling mid-batch must abort the run");
+        assert!(is_ctr_cancelled(&err));
+        let produced = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".decrypted.cia"))
+            .count();
+        assert_eq!(produced, 1, "only the first file completes before cancel");
+    }
 
     #[test]
     fn decrypt_path_cia() {

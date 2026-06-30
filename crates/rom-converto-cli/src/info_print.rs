@@ -183,6 +183,9 @@ fn render_ctr(info: &rom_converto_lib::info::CtrInfo) -> String {
         "NCCH encrypted",
         if info.ncch_encrypted { "yes" } else { "no" },
     );
+    if info.compressed {
+        t.push("Compressed", "yes");
+    }
     if info.seed_crypto {
         t.push("Seed crypto", "yes");
         t.push(

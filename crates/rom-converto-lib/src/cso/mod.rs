@@ -13,7 +13,7 @@ use std::sync::atomic::AtomicU64;
 use log::info;
 
 use crate::cd::IO_BUFFER_SIZE;
-use crate::util::{BYTES_PER_MB, ProgressReporter, await_with_progress};
+use crate::util::{BYTES_PER_MB, CancelToken, ProgressReporter, await_with_progress_cancel};
 
 pub mod compression;
 pub mod error;
@@ -29,6 +29,15 @@ pub use models::CsoFormat;
 pub use verify::verify_cso;
 
 use models::{pick_block_size, pick_index_shift, valid_block_size};
+
+/// A sibling temp path in the output directory so an interrupted write
+/// never lands on the final name and a pre-existing overwrite target
+/// survives until the rename.
+fn scratch_output_path(output: &std::path::Path) -> PathBuf {
+    let mut name = output.file_name().unwrap_or_default().to_os_string();
+    name.push(".tmp");
+    output.with_file_name(name)
+}
 
 #[derive(Debug, Clone)]
 pub struct CsoCompressOptions {
@@ -56,7 +65,22 @@ pub async fn compress_to_cso(
     output_path: PathBuf,
     opts: CsoCompressOptions,
 ) -> CsoResult<()> {
-    if tokio::fs::metadata(&output_path).await.is_ok() && !opts.force {
+    compress_to_cso_cancellable(progress, input_path, output_path, opts, CancelToken::new()).await
+}
+
+/// Compress an ISO into a CSO or ZSO container, observing `cancel` at
+/// every block boundary. On cancel the partial output is removed and a
+/// pre-existing overwrite target is left untouched (the writer targets a
+/// sibling temp file that is renamed into place only on success).
+pub async fn compress_to_cso_cancellable(
+    progress: &dyn ProgressReporter,
+    input_path: PathBuf,
+    output_path: PathBuf,
+    opts: CsoCompressOptions,
+    cancel: CancelToken,
+) -> CsoResult<()> {
+    let preexisting = tokio::fs::metadata(&output_path).await.is_ok();
+    if preexisting && !opts.force {
         return Err(CsoError::OutputAlreadyExists);
     }
 
@@ -79,24 +103,41 @@ pub async fn compress_to_cso(
         ),
     );
 
+    let write_path = scratch_output_path(&output_path);
     let input_owned = input_path.clone();
-    let output_owned = output_path.clone();
+    let write_owned = write_path.clone();
     let format = opts.format;
+    let cancel_bg = cancel.clone();
     let bytes_done = Arc::new(AtomicU64::new(0));
     let bytes_done_bg = bytes_done.clone();
 
     let handle = tokio::task::spawn_blocking(move || -> CsoResult<()> {
         writer::write_cso_blocking(
             &input_owned,
-            &output_owned,
+            &write_owned,
             format,
             block_size,
             index_shift,
             &bytes_done_bg,
+            &cancel_bg,
         )
     });
 
-    await_with_progress(progress, &bytes_done, handle).await?;
+    let cleanup = {
+        let write_path = write_path.clone();
+        move || -> CsoError {
+            let _ = std::fs::remove_file(&write_path);
+            CsoError::Cancelled
+        }
+    };
+    if let Err(err) =
+        await_with_progress_cancel(progress, &bytes_done, handle, &cancel, cleanup).await
+    {
+        let _ = tokio::fs::remove_file(&write_path).await;
+        return Err(err);
+    }
+
+    tokio::fs::rename(&write_path, &output_path).await?;
 
     let out_size = tokio::fs::metadata(&output_path).await?.len();
     info!(
@@ -109,41 +150,42 @@ pub async fn compress_to_cso(
     Ok(())
 }
 
-/// Compress every `.iso` directly inside `input_dir` (top level only,
-/// matching the other batch commands). Outputs land next to their
-/// inputs with the extension replaced by the format's.
+/// Compress every `.iso` under `input_dir`, descending into subdirectories
+/// up to `max_depth` (`None` for unlimited). Outputs land next to their
+/// inputs with the extension replaced by the format's, or mirror the source
+/// tree under `output_dir` when one is given.
 pub async fn compress_to_cso_batch(
     progress: &dyn ProgressReporter,
     total_progress: &dyn ProgressReporter,
     input_dir: &std::path::Path,
     opts: CsoCompressOptions,
+    output_dir: Option<&std::path::Path>,
+    max_depth: Option<usize>,
 ) -> CsoResult<()> {
-    let is_iso = |path: &std::path::Path| {
-        path.extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("iso"))
-    };
-
-    let mut count: u64 = 0;
-    let mut scan = tokio::fs::read_dir(input_dir).await?;
-    while let Ok(Some(entry)) = scan.next_entry().await {
-        if is_iso(&entry.path()) {
-            count += 1;
-        }
-    }
-    if count == 0 {
+    let images = crate::util::fs::collect_files_with_exts(input_dir, &["iso"], max_depth)?;
+    if images.is_empty() {
         log::warn!("No .iso inputs found in {}", input_dir.display());
         return Ok(());
     }
 
-    total_progress.start(count, &format!("Compressing {count} images..."));
+    if let Some(dir) = output_dir {
+        std::fs::create_dir_all(dir)?;
+    }
 
-    let mut entries = tokio::fs::read_dir(input_dir).await?;
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        let path = entry.path();
-        if !is_iso(&path) {
-            continue;
+    total_progress.start(
+        images.len() as u64,
+        &format!("Compressing {} images...", images.len()),
+    );
+
+    for path in images {
+        let output = crate::util::place_in_dir_mirrored(
+            &path.with_extension(opts.format.extension()),
+            input_dir,
+            output_dir,
+        );
+        if let Some(parent) = output.parent() {
+            std::fs::create_dir_all(parent)?;
         }
-        let output = path.with_extension(opts.format.extension());
         if let Err(err) = compress_to_cso(progress, path.clone(), output, opts.clone()).await {
             log::warn!("Failed to compress {}: {err}", path.display());
         }
@@ -161,7 +203,22 @@ pub async fn decompress_from_cso(
     output_path: PathBuf,
     force: bool,
 ) -> CsoResult<()> {
-    if tokio::fs::metadata(&output_path).await.is_ok() && !force {
+    decompress_from_cso_cancellable(progress, input_path, output_path, force, CancelToken::new())
+        .await
+}
+
+/// Restore the original ISO from a CSO or ZSO container, observing
+/// `cancel` at every block boundary. Cleanup and overwrite guarantees
+/// match [`compress_to_cso_cancellable`].
+pub async fn decompress_from_cso_cancellable(
+    progress: &dyn ProgressReporter,
+    input_path: PathBuf,
+    output_path: PathBuf,
+    force: bool,
+    cancel: CancelToken,
+) -> CsoResult<()> {
+    let preexisting = tokio::fs::metadata(&output_path).await.is_ok();
+    if preexisting && !force {
         return Err(CsoError::OutputAlreadyExists);
     }
 
@@ -183,8 +240,10 @@ pub async fn decompress_from_cso(
         ),
     );
 
+    let write_path = scratch_output_path(&output_path);
     let input_owned = input_path.clone();
-    let output_owned = output_path.clone();
+    let write_owned = write_path.clone();
+    let cancel_bg = cancel.clone();
     let bytes_done = Arc::new(AtomicU64::new(0));
     let bytes_done_bg = bytes_done.clone();
 
@@ -192,13 +251,14 @@ pub async fn decompress_from_cso(
         use crate::util::worker_pool::{Pool, parallelism};
 
         let handle = reader::open_cso_sync(&input_owned)?;
-        let out_file = std::fs::File::create(&output_owned)?;
+        let out_file = std::fs::File::create(&write_owned)?;
         let mut writer = std::io::BufWriter::with_capacity(IO_BUFFER_SIZE, out_file);
 
         let workers = reader::make_cso_extract_workers(parallelism(), handle.format, &handle.file);
         let pool: Pool<reader::CsoExtractWork, reader::CsoExtractedOut, CsoError> =
             Pool::spawn(workers);
-        let result = reader::extract_blocks(&pool, &handle, &mut writer, &bytes_done_bg);
+        let result =
+            reader::extract_blocks(&pool, &handle, &mut writer, &bytes_done_bg, &cancel_bg);
         pool.shutdown();
         result?;
 
@@ -207,9 +267,27 @@ pub async fn decompress_from_cso(
         Ok(())
     });
 
-    await_with_progress(progress, &bytes_done, handle).await?;
+    let cleanup = {
+        let write_path = write_path.clone();
+        move || -> CsoError {
+            let _ = std::fs::remove_file(&write_path);
+            CsoError::Cancelled
+        }
+    };
+    if let Err(err) =
+        await_with_progress_cancel(progress, &bytes_done, handle, &cancel, cleanup).await
+    {
+        let _ = tokio::fs::remove_file(&write_path).await;
+        return Err(err);
+    }
 
-    info!("Decompressed: {:.2} MB ISO from {:?}", total_mb, input_path);
+    tokio::fs::rename(&write_path, &output_path).await?;
+
+    info!(
+        "Decompressed: {:.2} MB ISO from {}",
+        total_mb,
+        input_path.display()
+    );
     Ok(())
 }
 
@@ -292,7 +370,16 @@ mod tests {
             let packed = dir.path().join("game.cso");
 
             let bytes_done = Arc::new(AtomicU64::new(0));
-            writer::write_cso_blocking(&iso, &packed, format, 2048, 2, &bytes_done).unwrap();
+            writer::write_cso_blocking(
+                &iso,
+                &packed,
+                format,
+                2048,
+                2,
+                &bytes_done,
+                &CancelToken::new(),
+            )
+            .unwrap();
 
             let handle = reader::open_cso_sync(&packed).unwrap();
             assert_eq!(handle.header.index_shift, 2);
@@ -342,6 +429,119 @@ mod tests {
             .await,
             Err(CsoError::InvalidBlockSize(3000))
         ));
+    }
+
+    fn large_iso(dir: &std::path::Path) -> PathBuf {
+        let iso = dir.join("game.iso");
+        std::fs::write(&iso, mixed_payload(4096 * 2048)).unwrap();
+        iso
+    }
+
+    #[tokio::test]
+    async fn cancel_before_start_leaves_no_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let iso = dir.path().join("game.iso");
+        std::fs::write(&iso, mixed_payload(11 * 2048)).unwrap();
+        let out = dir.path().join("game.cso");
+
+        let token = CancelToken::new();
+        token.cancel();
+        let result = compress_to_cso_cancellable(
+            &NoProgress,
+            iso,
+            out.clone(),
+            CsoCompressOptions::default(),
+            token,
+        )
+        .await;
+
+        assert!(matches!(result, Err(CsoError::Cancelled)));
+        assert!(!out.exists(), "no partial output");
+        assert!(!scratch_output_path(&out).exists(), "no leftover temp");
+    }
+
+    #[tokio::test]
+    async fn cancel_mid_stream_leaves_no_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let iso = large_iso(dir.path());
+        let out = dir.path().join("game.cso");
+
+        let token = CancelToken::new();
+        let token2 = token.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            token2.cancel();
+        });
+
+        let result = compress_to_cso_cancellable(
+            &NoProgress,
+            iso,
+            out.clone(),
+            CsoCompressOptions::default(),
+            token,
+        )
+        .await;
+
+        assert!(matches!(result, Err(CsoError::Cancelled)));
+        assert!(!out.exists(), "no partial output after mid-stream cancel");
+        assert!(!scratch_output_path(&out).exists(), "no leftover temp");
+    }
+
+    #[tokio::test]
+    async fn cancel_after_completion_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let iso = dir.path().join("game.iso");
+        std::fs::write(&iso, mixed_payload(11 * 2048)).unwrap();
+        let out = dir.path().join("game.cso");
+
+        let token = CancelToken::new();
+        compress_to_cso_cancellable(
+            &NoProgress,
+            iso,
+            out.clone(),
+            CsoCompressOptions::default(),
+            token.clone(),
+        )
+        .await
+        .unwrap();
+        token.cancel();
+        assert!(out.exists(), "output survives a post-completion cancel");
+    }
+
+    #[tokio::test]
+    async fn force_overwrite_preexisting_survives_cancel() {
+        let dir = tempfile::tempdir().unwrap();
+        let iso = large_iso(dir.path());
+        let out = dir.path().join("game.cso");
+        let original = b"do not destroy me".to_vec();
+        std::fs::write(&out, &original).unwrap();
+
+        let token = CancelToken::new();
+        let token2 = token.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            token2.cancel();
+        });
+
+        let result = compress_to_cso_cancellable(
+            &NoProgress,
+            iso,
+            out.clone(),
+            CsoCompressOptions {
+                force: true,
+                ..Default::default()
+            },
+            token,
+        )
+        .await;
+
+        assert!(matches!(result, Err(CsoError::Cancelled)));
+        assert_eq!(
+            std::fs::read(&out).unwrap(),
+            original,
+            "pre-existing overwrite target must be untouched on cancel"
+        );
+        assert!(!scratch_output_path(&out).exists(), "no leftover temp");
     }
 
     /// Cross-checks against real maxcso; set ROMCONVERTO_MAXCSO to
