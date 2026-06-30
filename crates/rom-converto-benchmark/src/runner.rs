@@ -1,13 +1,16 @@
 use anyhow::{Context, Result, bail};
 use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::stats::WarmStats;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct RunConfig {
     pub iterations: usize,
     pub cooldown: Duration,
+    pub cancel: Arc<AtomicBool>,
 }
 
 /// Run a command to completion with stdout/stderr captured (mirrors the
@@ -69,6 +72,10 @@ where
     let mut ext_samples = Vec::with_capacity(cfg.iterations);
     let mut rc_samples = Vec::with_capacity(cfg.iterations);
     for _ in 0..cfg.iterations {
+        // checked between invocations so a run in flight finishes first
+        if cfg.cancel.load(Ordering::SeqCst) {
+            bail!("benchmark cancelled");
+        }
         kill_residuals(kill_names);
         ext_samples.push(ext()?.as_secs_f64());
         std::thread::sleep(cfg.cooldown);
@@ -114,6 +121,9 @@ where
 {
     let mut rc_samples = Vec::with_capacity(cfg.iterations);
     for _ in 0..cfg.iterations {
+        if cfg.cancel.load(Ordering::SeqCst) {
+            bail!("benchmark cancelled");
+        }
         kill_residuals(kill_names);
         rc_samples.push(rc()?.as_secs_f64());
         std::thread::sleep(cfg.cooldown);

@@ -7,6 +7,8 @@ mod tool;
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use bench::BenchCtx;
@@ -116,6 +118,13 @@ fn main() -> Result<()> {
         bail!("--iterations must be at least 1");
     }
 
+    let cancel = Arc::new(AtomicBool::new(false));
+    {
+        let cancel = Arc::clone(&cancel);
+        ctrlc::set_handler(move || cancel.store(true, Ordering::SeqCst))
+            .context("failed to install Ctrl-C handler")?;
+    }
+
     let rom_converto = tool::resolve_rom_converto(cli.rom_converto_bin.as_deref())?;
     let rom_converto_dir = rom_converto
         .parent()
@@ -128,6 +137,7 @@ fn main() -> Result<()> {
         config: RunConfig {
             iterations: cli.iterations,
             cooldown: Duration::from_secs(cli.cooldown_secs),
+            cancel,
         },
         keep_temp: cli.keep_temp,
         rom_converto_only: cli.rom_converto_only,
