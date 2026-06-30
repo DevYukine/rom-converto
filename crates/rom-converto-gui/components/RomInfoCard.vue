@@ -131,6 +131,9 @@ const fields = computed<Field[]>(() => {
         label: "Encrypted",
         value: formatBool(props.info.ncch_encrypted),
       });
+      if (props.info.compressed) {
+        f.push({ label: "Compressed", value: "yes (zstd)" });
+      }
       if (props.info.smdh?.region_names?.length) {
         f.push({ label: "Region", value: props.info.smdh.region_names.join(", ") });
       }

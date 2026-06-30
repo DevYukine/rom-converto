@@ -6,7 +6,10 @@ const store = useCtrInfoStore();
 const { input, info, rawJson, error, loading } = storeToRefs(store);
 
 const CTR_FILTERS = [
-  { name: "3DS container", extensions: ["cia", "3ds", "cci", "cxi", "ncch"] },
+  {
+    name: "3DS container",
+    extensions: ["cia", "3ds", "cci", "cxi", "ncch", "zcia", "zcci", "zcxi", "z3dsx"],
+  },
 ];
 </script>
 

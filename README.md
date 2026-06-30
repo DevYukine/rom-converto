@@ -615,7 +615,7 @@ Inspect a ROM file or title directory and print the embedded metadata: title, ve
 
 | Subcommand | Coverage |
 |---|---|
-| `ctr info <FILE>` | CIA / NCSD / NCCH; SMDH multilingual titles, region lock, age ratings, 48x48 icon. Encrypted CIA is auto-decrypted to read the NCCH header. |
+| `ctr info <FILE>` | CIA / NCSD / NCCH, plus Z3DS compressed variants (.zcia, .zcci, .zcxi, .z3dsx) which are decompressed automatically; SMDH multilingual titles, region lock, age ratings, 48x48 icon. Encrypted CIA is auto-decrypted to read the NCCH header. |
 | `dol info <FILE>` | GameCube `.iso`, `.gcm`, or `.rvz`; boot.bin header, BNR1/BNR2 banner with 96x32 image, publisher name. |
 | `rvl info <FILE>` | Wii `.iso`, `.rvz`, or `.wbfs`; disc header, partition layout, TMD (title id, IOS), IMET banner names, 192x64 banner image from `opening.bnr` (falls back to the icon). |
 | `wup info <PATH>` | loadiine + NUS directories, `.wua` archives, and `.wud`/`.wux` disc images; TMD + meta.xml with multilingual names, region, age ratings, save sizes, GamePad requirement, supported accessories, mastering date, decoded `iconTex.tga` icon. Pass `--keys` with the disc master key file when reading a `.wud`/`.wux`. |
