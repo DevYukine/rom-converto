@@ -20,6 +20,7 @@ export function useBatchOperation(
     options?: {
       isSuccess?: (result: string) => boolean;
       failureMessage?: (result: string) => string;
+      errorRef?: Ref<string>;
     },
     onItemResult?: (res: unknown, item: BatchItem) => void,
     onItemError?: (item: BatchItem, error: string) => void | Promise<void>,
@@ -27,6 +28,16 @@ export function useBatchOperation(
     running.value = true;
     aborted.value = false;
     currentIndex.value = 0;
+
+    resultRef.value = "";
+    if (options?.errorRef) options.errorRef.value = "";
+    for (const item of queue.value) {
+      if (item.status === "error" || item.status === "cancelled") {
+        item.status = "pending";
+        item.error = undefined;
+        item.result = undefined;
+      }
+    }
 
     let doneCount = 0;
     let errorCount = 0;
