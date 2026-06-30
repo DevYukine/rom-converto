@@ -4,7 +4,7 @@ import { storeToRefs } from "pinia";
 import { isDiscInput, useWupCompressStore } from "~/stores/wup-compress";
 
 const store = useWupCompressStore();
-const { queue, output, level, keys, result, error, loading } = storeToRefs(store);
+const { queue, output, level, keys, onConflict, result, error, loading } = storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
 const { run, cancelled, abort } = useOperation({ result, error, loading });
 const progress = useProgress("wup-compress");
@@ -87,6 +87,7 @@ async function execute() {
     output: output.value,
     level: level.value,
     keys: store.collectKeys(),
+    onConflict: onConflict.value,
   };
   commandLine.value = buildCliCommand("cmd_wup_compress", args);
   await run("cmd_wup_compress", args);
@@ -208,6 +209,10 @@ async function execute() {
               </span>
             </div>
           </label>
+        </div>
+
+        <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
+          <ConflictPolicyControl v-model="onConflict" />
         </div>
 
         <OutputDirField v-model="outputDir" />

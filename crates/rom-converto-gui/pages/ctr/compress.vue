@@ -3,7 +3,7 @@ import { storeToRefs } from "pinia";
 import { useCtrCompressStore } from "~/stores/ctr-compress";
 
 const store = useCtrCompressStore();
-const { input, output, level, allowEncrypted, result, error, loading, queue } = storeToRefs(store);
+const { input, output, level, allowEncrypted, onConflict, result, error, loading, queue } = storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
 const { run, cancelled, abort } = useOperation({ result, error, loading });
 const progress = useProgress("compress");
@@ -13,7 +13,7 @@ const isBatch = computed(() => queue.value.length > 0);
 const commandLine = ref("");
 
 function compressArgs(inputPath: string, outputPath: string) {
-  return { input: inputPath, output: outputPath || null, level: level.value, allowEncrypted: allowEncrypted.value };
+  return { input: inputPath, output: outputPath || null, level: level.value, allowEncrypted: allowEncrypted.value, onConflict: onConflict.value };
 }
 
 const batch = useBatchOperation("compress", "cmd_compress_rom", (item) =>
@@ -138,6 +138,10 @@ async function execute() {
             label="Allow encrypted input"
             description="Compress even if the ROM appears encrypted. Encrypted 3DS ROMs barely compress; decrypt first for real savings."
           />
+        </div>
+
+        <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
+          <ConflictPolicyControl v-model="onConflict" />
         </div>
 
         <OutputDirField v-model="outputDir" />

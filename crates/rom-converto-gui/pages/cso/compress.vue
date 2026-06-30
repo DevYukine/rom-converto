@@ -3,7 +3,7 @@ import { storeToRefs } from "pinia";
 import { useCsoCompressStore } from "~/stores/cso-compress";
 
 const store = useCsoCompressStore();
-const { input, output, format, force, blockSize, result, error, loading, queue } = storeToRefs(store);
+const { input, output, format, onConflict, blockSize, result, error, loading, queue } = storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
 const { run, cancelled, abort } = useOperation({ result, error, loading });
 const progress = useProgress("cso-compress");
@@ -22,7 +22,7 @@ function csoArgs(inputPath: string, outputPath: string) {
     inputPath,
     output: outputPath,
     format: format.value,
-    force: force.value,
+    onConflict: onConflict.value,
     blockSize: blockSize.value || null,
   };
 }
@@ -136,11 +136,7 @@ async function execute() {
             :options="FORMAT_OPTIONS"
             @update:model-value="(v: string) => { format = v as 'cso' | 'zso' }"
           />
-          <FlagToggle
-            v-model="force"
-            label="Force overwrite"
-            description="Overwrite output file if it already exists"
-          />
+          <ConflictPolicyControl v-model="onConflict" />
           <label class="flex flex-col gap-1.5">
             <span class="text-sm font-medium text-zinc-200">Block size</span>
             <span class="text-xs text-zinc-400">

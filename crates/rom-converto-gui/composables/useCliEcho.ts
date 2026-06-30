@@ -18,6 +18,11 @@ function discSub(args: Record<string, unknown>, verb: string): string[] {
   return [family, verb];
 }
 
+function conflict(args: Record<string, unknown>): string | false {
+  const value = str(args.onConflict);
+  return value && value !== "overwrite" ? `--on-conflict ${value}` : false;
+}
+
 export function buildCliCommand(command: string, args: Record<string, unknown>): string {
   switch (command) {
     case "cmd_chd_compress": {
@@ -29,7 +34,7 @@ export function buildCliCommand(command: string, args: Record<string, unknown>):
         mode === "cd" && "--cd",
         args.zstd === true && "--zstd",
         hunk ? `--hunk-size ${hunk}` : false,
-        args.force === true && "-f",
+        conflict(args),
         quote(str(args.inputPath)),
         quote(str(args.output)),
       ]);
@@ -58,7 +63,7 @@ export function buildCliCommand(command: string, args: Record<string, unknown>):
         "cso", "compress",
         args.format === "zso" && "--format zso",
         block ? `--block-size ${block}` : false,
-        args.force === true && "-f",
+        conflict(args),
         quote(str(args.inputPath)),
         quote(str(args.output)),
       ]);
@@ -66,7 +71,7 @@ export function buildCliCommand(command: string, args: Record<string, unknown>):
     case "cmd_cso_decompress":
       return join([
         "cso", "decompress",
-        args.force === true && "-f",
+        conflict(args),
         quote(str(args.inputPath)),
         quote(str(args.output)),
       ]);
@@ -79,7 +84,7 @@ export function buildCliCommand(command: string, args: Record<string, unknown>):
     case "cmd_cue_merge":
       return join([
         "cue", "merge",
-        args.force === true && "-f",
+        conflict(args),
         quote(str(args.cuePath)),
         quote(str(args.output)),
       ]);
@@ -92,6 +97,7 @@ export function buildCliCommand(command: string, args: Record<string, unknown>):
         args.cleanup === true && "-C",
         args.recursive === true && "-R",
         args.ensureTicketExists === true && "-T",
+        conflict(args),
         quote(str(args.cdnDir)),
         output && quote(output),
       ]);
@@ -109,21 +115,22 @@ export function buildCliCommand(command: string, args: Record<string, unknown>):
         "ctr", "compress",
         level ? `-l ${level}` : false,
         args.allowEncrypted === true && "--allow-encrypted",
+        conflict(args),
         quote(str(args.input)),
         output && quote(output),
       ]);
     }
     case "cmd_decompress_rom": {
       const output = str(args.output);
-      return join(["ctr", "decompress", quote(str(args.input)), output && quote(output)]);
+      return join(["ctr", "decompress", conflict(args), quote(str(args.input)), output && quote(output)]);
     }
     case "cmd_decrypt_rom": {
       const output = str(args.output);
-      return join(["ctr", "decrypt", quote(str(args.input)), output && quote(output)]);
+      return join(["ctr", "decrypt", conflict(args), quote(str(args.input)), output && quote(output)]);
     }
     case "cmd_convert_ctr": {
       const output = str(args.output);
-      return join(["ctr", "convert", quote(str(args.input)), output && quote(output)]);
+      return join(["ctr", "convert", conflict(args), quote(str(args.input)), output && quote(output)]);
     }
     case "cmd_verify_ctr":
       return join([
@@ -139,13 +146,14 @@ export function buildCliCommand(command: string, args: Record<string, unknown>):
         ...discSub(args, "compress"),
         level != null && level !== 22 ? `-l ${level}` : false,
         chunk != null && chunk !== 131072 ? `--chunk-size ${chunk}` : false,
+        conflict(args),
         quote(str(args.input)),
         output && quote(output),
       ]);
     }
     case "cmd_decompress_disc": {
       const output = str(args.output);
-      return join([...discSub(args, "decompress"), quote(str(args.input)), output && quote(output)]);
+      return join([...discSub(args, "decompress"), conflict(args), quote(str(args.input)), output && quote(output)]);
     }
     case "cmd_verify_dol":
       return join(["dol", "verify", args.full === true && "--full", quote(str(args.input))]);
@@ -163,6 +171,7 @@ export function buildCliCommand(command: string, args: Record<string, unknown>):
         level != null && level !== 18 ? `-l ${level}` : false,
         mode === "block" && "--mode block",
         mode === "block" && exp != null && exp !== 20 ? `--block-size-exp ${exp}` : false,
+        conflict(args),
         quote(str(args.input)),
         output && quote(output),
       ]);
@@ -173,6 +182,7 @@ export function buildCliCommand(command: string, args: Record<string, unknown>):
       return join([
         "nx", "decompress",
         keys && `--keys ${quote(keys)}`,
+        conflict(args),
         quote(str(args.input)),
         output && quote(output),
       ]);
@@ -189,15 +199,46 @@ export function buildCliCommand(command: string, args: Record<string, unknown>):
         "wup", "compress",
         `-o ${quote(str(args.output))}`,
         level ? `-l ${level}` : false,
+        conflict(args),
         ...keys.filter((k) => k).map((k) => `--key ${quote(k)}`),
         ...inputs.map((i) => quote(i)),
       ]);
     }
     case "cmd_wup_decrypt":
-      return join(["wup", "decrypt", `-o ${quote(str(args.output))}`, quote(str(args.input))]);
+      return join([
+        "wup", "decrypt",
+        `-o ${quote(str(args.output))}`,
+        conflict(args),
+        quote(str(args.input)),
+      ]);
     case "cmd_wup_verify": {
       const keys = str(args.keys);
       return join(["wup", "verify", keys && `--key ${quote(keys)}`, quote(str(args.input))]);
+    }
+    case "cmd_hash": {
+      const algos = Array.isArray(args.algos) ? (args.algos as string[]) : [];
+      const depth = args.maxDepth as number | null | undefined;
+      return join([
+        "hash",
+        algos.length > 0 && `--algo ${algos.join(",")}`,
+        args.recursive === true && "-R",
+        args.recursive === true && depth != null ? `--max-depth ${depth}` : false,
+        quote(str(args.input)),
+      ]);
+    }
+    case "cmd_playlist": {
+      const outputDir = str(args.outputDir);
+      const depth = args.maxDepth as number | null | undefined;
+      const policy = str(args.onConflict);
+      return join([
+        "playlist",
+        outputDir && `--output-dir ${quote(outputDir)}`,
+        args.mode === "always" && "--playlist-mode always",
+        `--ext ${str(args.extensions)}`,
+        depth != null ? `--max-depth ${depth}` : false,
+        policy && `--on-conflict ${policy}`,
+        quote(str(args.scanDir)),
+      ]);
     }
     default:
       return "";

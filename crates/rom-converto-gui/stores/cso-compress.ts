@@ -5,7 +5,7 @@ export const useCsoCompressStore = defineStore("cso-compress", () => {
   const input = ref("");
   const output = ref("");
   const format = ref<"cso" | "zso">("cso");
-  const force = ref(false);
+  const onConflict = ref("overwrite");
   const blockSize = ref<number | null>(null);
 
   const result = ref("");
@@ -35,7 +35,7 @@ export const useCsoCompressStore = defineStore("cso-compress", () => {
     input.value = "";
     output.value = "";
     format.value = "cso";
-    force.value = false;
+    onConflict.value = "overwrite";
     blockSize.value = null;
     result.value = "";
     error.value = "";
@@ -47,7 +47,7 @@ export const useCsoCompressStore = defineStore("cso-compress", () => {
     input,
     output,
     format,
-    force,
+    onConflict,
     blockSize,
     result,
     error,

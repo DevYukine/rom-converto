@@ -4,14 +4,14 @@ import { storeToRefs } from "pinia";
 import { useNxDecompressStore } from "~/stores/nx-decompress";
 
 const store = useNxDecompressStore();
-const { queue, output, keys, result, error, loading } = storeToRefs(store);
+const { queue, output, keys, onConflict, result, error, loading } = storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
 const progress = useProgress("nx-decompress");
 
 const commandLine = ref("");
 
 function decompressArgs(item: { input: string; output: string }) {
-  return { input: item.input, output: item.output || null, keys: keys.value || null };
+  return { input: item.input, output: item.output || null, keys: keys.value || null, onConflict: onConflict.value };
 }
 
 const batch = useBatchOperation("nx-decompress", "cmd_nx_decompress", decompressArgs);
@@ -143,6 +143,10 @@ async function execute() {
           label="prod.keys (optional, falls back to ~/.switch/prod.keys)"
           :filters="[{ name: 'prod.keys', extensions: ['keys', 'txt'] }]"
         />
+
+        <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
+          <ConflictPolicyControl v-model="onConflict" />
+        </div>
 
         <OutputDirField v-model="outputDir" />
 

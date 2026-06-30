@@ -36,13 +36,51 @@ use rom_converto_lib::nintendo::wup::{
     TitleInput, WupCompressOptions, compress_titles_async_cancellable,
     decrypt_nus_title_async_cancellable, verify_wup_async,
 };
-use rom_converto_lib::util::CancelToken;
-use std::path::PathBuf;
+use rom_converto_lib::playlist::{PlaylistMode, PlaylistOptions, plan_playlists};
+use rom_converto_lib::util::fs::collect_all_files;
+use rom_converto_lib::util::{
+    CancelToken, ConflictPolicy, ConflictResolution, HashAlgo, hash_file, parse_algos,
+    resolve_conflict,
+};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{AppHandle, State};
 
 fn err_to_string(e: impl std::fmt::Display) -> String {
     e.to_string()
+}
+
+fn conflict_policy(s: Option<&str>) -> ConflictPolicy {
+    match s {
+        Some("error") => ConflictPolicy::Error,
+        Some("skip") => ConflictPolicy::Skip,
+        Some("rename") => ConflictPolicy::Rename,
+        Some("overwrite-invalid") => ConflictPolicy::OverwriteInvalid,
+        _ => ConflictPolicy::Overwrite,
+    }
+}
+
+/// Resolve where to write `desired` under the chosen policy. Returns `Ok(None)`
+/// when the policy is to keep an existing file, in which case the caller skips
+/// the operation entirely. The force-only lib functions cannot express skip or
+/// rename themselves, so the decision is made here and the lib is then called
+/// with force=true to bypass its own existence guard.
+fn resolve_write_path(
+    desired: &Path,
+    on_conflict: Option<&str>,
+) -> Result<Option<PathBuf>, String> {
+    match resolve_conflict(desired, conflict_policy(on_conflict)).map_err(err_to_string)? {
+        ConflictResolution::Write(p) => Ok(Some(p)),
+        ConflictResolution::Skip => Ok(None),
+    }
+}
+
+fn render_hash_row(path: &Path, d: &rom_converto_lib::util::FileDigests, algos: &[HashAlgo]) -> String {
+    let cells: Vec<String> = algos
+        .iter()
+        .map(|a| format!("{}={}", a.label(), d.value(*a).unwrap_or("")))
+        .collect();
+    format!("{}  {}", path.display(), cells.join("  "))
 }
 
 /// Single-slot holder for the token of the operation currently running.
@@ -80,6 +118,7 @@ pub async fn cmd_cdn_to_cia(
     cleanup: bool,
     recursive: bool,
     ensure_ticket_exists: bool,
+    on_conflict: Option<String>,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app.clone(), "cdn-to-cia"));
     let total_progress = Arc::new(TauriProgress::new(app, "cdn-to-cia-total"));
@@ -92,7 +131,7 @@ pub async fn cmd_cdn_to_cia(
         decrypt,
         compress,
         output_dir: None,
-        on_conflict: rom_converto_lib::util::ConflictPolicy::Overwrite,
+        on_conflict: conflict_policy(on_conflict.as_deref()),
     };
     let token = begin(&state).await;
     // The streaming decrypt holds the worker-pool receiver across await points,
@@ -133,8 +172,13 @@ pub async fn cmd_decrypt_rom(
     state: State<'_, ActiveCancel>,
     input: PathBuf,
     output: PathBuf,
+    on_conflict: Option<String>,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "decrypt"));
+    let output = match resolve_write_path(&output, on_conflict.as_deref())? {
+        Some(p) => p,
+        None => return Ok(format!("skipped existing {}", output.display())),
+    };
     let out_display = output.display().to_string();
     let token = begin(&state).await;
     // The streaming decrypt holds the worker-pool receiver across await points,
@@ -167,9 +211,14 @@ pub async fn cmd_compress_rom(
     output: Option<PathBuf>,
     level: Option<i32>,
     allow_encrypted: bool,
+    on_conflict: Option<String>,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "compress"));
     let output = output.unwrap_or_else(|| derive_compressed_path(&input));
+    let output = match resolve_write_path(&output, on_conflict.as_deref())? {
+        Some(p) => p,
+        None => return Ok(format!("skipped existing {}", output.display())),
+    };
     let out_display = output.display().to_string();
     let token = begin(&state).await;
     let result = tokio::spawn(async move {
@@ -197,9 +246,14 @@ pub async fn cmd_decompress_rom(
     state: State<'_, ActiveCancel>,
     input: PathBuf,
     output: Option<PathBuf>,
+    on_conflict: Option<String>,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "decompress"));
     let output = output.unwrap_or_else(|| derive_decompressed_path(&input));
+    let output = match resolve_write_path(&output, on_conflict.as_deref())? {
+        Some(p) => p,
+        None => return Ok(format!("skipped existing {}", output.display())),
+    };
     let out_display = output.display().to_string();
     let token = begin(&state).await;
     let result = tokio::spawn(async move {
@@ -213,18 +267,23 @@ pub async fn cmd_decompress_rom(
     Ok(format!("Decompressed to {out_display}"))
 }
 
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn cmd_chd_compress(
     app: AppHandle,
     state: State<'_, ActiveCancel>,
     input_path: PathBuf,
     output: PathBuf,
-    force: bool,
     zstd: Option<bool>,
     hunk_size: Option<u32>,
     mode: Option<String>,
+    on_conflict: Option<String>,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "chd-compress"));
+    let output = match resolve_write_path(&output, on_conflict.as_deref())? {
+        Some(p) => p,
+        None => return Ok(format!("skipped existing {}", output.display())),
+    };
     let out_display = output.display().to_string();
     let mode = match mode.as_deref() {
         Some("cd") => Some(DiscMode::Cd),
@@ -234,7 +293,7 @@ pub async fn cmd_chd_compress(
     let opts = ChdDvdOptions {
         hunk_size,
         allow_zstd: zstd.unwrap_or(false),
-        force,
+        force: true,
     };
     let token = begin(&state).await;
     let result = tokio::spawn(async move {
@@ -256,19 +315,23 @@ pub async fn cmd_cso_compress(
     input_path: PathBuf,
     output: PathBuf,
     format: String,
-    force: bool,
     block_size: Option<u32>,
+    on_conflict: Option<String>,
 ) -> Result<String, String> {
     let format = match format.as_str() {
         "zso" => CsoFormat::Zso,
         _ => CsoFormat::Cso,
     };
     let progress = Arc::new(TauriProgress::new(app, "cso-compress"));
+    let output = match resolve_write_path(&output, on_conflict.as_deref())? {
+        Some(p) => p,
+        None => return Ok(format!("skipped existing {}", output.display())),
+    };
     let out_display = output.display().to_string();
     let opts = CsoCompressOptions {
         format,
         block_size,
-        force,
+        force: true,
     };
     let token = begin(&state).await;
     let result = tokio::spawn(async move {
@@ -288,13 +351,17 @@ pub async fn cmd_cso_decompress(
     state: State<'_, ActiveCancel>,
     input_path: PathBuf,
     output: PathBuf,
-    force: bool,
+    on_conflict: Option<String>,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "cso-decompress"));
+    let output = match resolve_write_path(&output, on_conflict.as_deref())? {
+        Some(p) => p,
+        None => return Ok(format!("skipped existing {}", output.display())),
+    };
     let out_display = output.display().to_string();
     let token = begin(&state).await;
     let result = tokio::spawn(async move {
-        decompress_from_cso_cancellable(progress.as_ref(), input_path, output, force, token).await
+        decompress_from_cso_cancellable(progress.as_ref(), input_path, output, true, token).await
     })
     .await
     .map_err(err_to_string)?
@@ -327,11 +394,15 @@ pub async fn cmd_cue_merge(
     app: AppHandle,
     cue_path: PathBuf,
     output: PathBuf,
-    force: bool,
+    on_conflict: Option<String>,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "cue-merge"));
+    let output = match resolve_write_path(&output, on_conflict.as_deref())? {
+        Some(p) => p,
+        None => return Ok(format!("skipped existing {}", output.display())),
+    };
     let out_display = output.display().to_string();
-    tokio::spawn(async move { merge_bin(progress.as_ref(), cue_path, output, force).await })
+    tokio::spawn(async move { merge_bin(progress.as_ref(), cue_path, output, true).await })
         .await
         .map_err(err_to_string)?
         .map_err(err_to_string)?;
@@ -407,6 +478,7 @@ pub async fn cmd_chd_verify(
     Ok("CHD verification passed".to_string())
 }
 
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn cmd_compress_disc(
     app: AppHandle,
@@ -416,9 +488,14 @@ pub async fn cmd_compress_disc(
     level: Option<i32>,
     chunk_size: Option<u32>,
     task_id: String,
+    on_conflict: Option<String>,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, &task_id));
     let output = output.unwrap_or_else(|| derive_rvz_path(&input));
+    let output = match resolve_write_path(&output, on_conflict.as_deref())? {
+        Some(p) => p,
+        None => return Ok(format!("skipped existing {}", output.display())),
+    };
     let out_display = output.display().to_string();
     let opts = RvzCompressOptions {
         compression_level: level.unwrap_or(RvzCompressOptions::default().compression_level),
@@ -444,9 +521,14 @@ pub async fn cmd_decompress_disc(
     input: PathBuf,
     output: Option<PathBuf>,
     task_id: String,
+    on_conflict: Option<String>,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, &task_id));
     let output = output.unwrap_or_else(|| derive_disc_path(&input));
+    let output = match resolve_write_path(&output, on_conflict.as_deref())? {
+        Some(p) => p,
+        None => return Ok(format!("skipped existing {}", output.display())),
+    };
     let out_display = output.display().to_string();
     let to_wbfs = output
         .extension()
@@ -469,6 +551,7 @@ pub async fn cmd_decompress_disc(
     Ok(format!("Decompressed to {out_display}"))
 }
 
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn cmd_wup_compress(
     app: AppHandle,
@@ -477,8 +560,13 @@ pub async fn cmd_wup_compress(
     output: PathBuf,
     level: Option<i32>,
     keys: Option<Vec<PathBuf>>,
+    on_conflict: Option<String>,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "wup-compress"));
+    let output = match resolve_write_path(&output, on_conflict.as_deref())? {
+        Some(p) => p,
+        None => return Ok(format!("skipped existing {}", output.display())),
+    };
     let out_display = output.display().to_string();
     let opts = WupCompressOptions {
         zstd_level: level.unwrap_or(WupCompressOptions::default().zstd_level),
@@ -520,8 +608,13 @@ pub async fn cmd_wup_decrypt(
     state: State<'_, ActiveCancel>,
     input: PathBuf,
     output: PathBuf,
+    on_conflict: Option<String>,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "wup-decrypt"));
+    let output = match resolve_write_path(&output, on_conflict.as_deref())? {
+        Some(p) => p,
+        None => return Ok(format!("skipped existing {}", output.display())),
+    };
     let out_display = output.display().to_string();
     let token = begin(&state).await;
     let result = tokio::spawn(async move {
@@ -535,6 +628,7 @@ pub async fn cmd_wup_decrypt(
     Ok(format!("Decrypted to {out_display}"))
 }
 
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn cmd_nx_compress(
     app: AppHandle,
@@ -545,6 +639,7 @@ pub async fn cmd_nx_compress(
     level: Option<i32>,
     mode: Option<String>,
     block_size_exp: Option<u8>,
+    on_conflict: Option<String>,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "nx-compress"));
     let kind = detect_container(&input).map_err(err_to_string)?;
@@ -564,6 +659,10 @@ pub async fn cmd_nx_compress(
         opts.mode = NczMode::Block { size_exp: exp };
     }
     let output = output.unwrap_or_else(|| nx_derive_compressed_path(&input));
+    let output = match resolve_write_path(&output, on_conflict.as_deref())? {
+        Some(p) => p,
+        None => return Ok(format!("skipped existing {}", output.display())),
+    };
     let out_display = output.display().to_string();
     let keys = load_keyset(keys.as_deref()).map_err(err_to_string)?;
     let token = begin(&state).await;
@@ -586,9 +685,14 @@ pub async fn cmd_nx_decompress(
     input: PathBuf,
     output: Option<PathBuf>,
     keys: Option<PathBuf>,
+    on_conflict: Option<String>,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "nx-decompress"));
     let output = output.unwrap_or_else(|| nx_derive_decompressed_path(&input));
+    let output = match resolve_write_path(&output, on_conflict.as_deref())? {
+        Some(p) => p,
+        None => return Ok(format!("skipped existing {}", output.display())),
+    };
     let out_display = output.display().to_string();
     let keys = load_keyset(keys.as_deref()).map_err(err_to_string)?;
     let token = begin(&state).await;
@@ -625,9 +729,14 @@ pub async fn cmd_convert_ctr(
     state: State<'_, ActiveCancel>,
     input: PathBuf,
     output: Option<PathBuf>,
+    on_conflict: Option<String>,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "ctr-convert"));
     let output = output.unwrap_or_else(|| derive_converted_path(&input));
+    let output = match resolve_write_path(&output, on_conflict.as_deref())? {
+        Some(p) => p,
+        None => return Ok(format!("skipped existing {}", output.display())),
+    };
     let out_display = output.display().to_string();
     let token = begin(&state).await;
     let result = tokio::spawn(async move {
@@ -745,6 +854,87 @@ pub async fn cmd_save_icon(info_json: String, dest: PathBuf) -> Result<String, S
     }
     std::fs::write(&dest, &bytes).map_err(err_to_string)?;
     Ok(dest.display().to_string())
+}
+
+#[tauri::command]
+pub async fn cmd_hash(
+    app: AppHandle,
+    input: PathBuf,
+    algos: Vec<String>,
+    recursive: bool,
+    max_depth: Option<usize>,
+) -> Result<String, String> {
+    let progress = Arc::new(TauriProgress::new(app, "hash"));
+    tokio::task::spawn_blocking(move || -> Result<String, String> {
+        let parsed = parse_algos(&algos.join(","))?;
+        let mut lines = Vec::new();
+        if recursive {
+            let files = collect_all_files(&input, max_depth).map_err(err_to_string)?;
+            if files.is_empty() {
+                return Ok(format!("no files found in {}", input.display()));
+            }
+            for file in files {
+                let digests = hash_file(&file, &parsed, progress.as_ref()).map_err(err_to_string)?;
+                lines.push(render_hash_row(&file, &digests, &parsed));
+            }
+        } else {
+            let digests = hash_file(&input, &parsed, progress.as_ref()).map_err(err_to_string)?;
+            lines.push(render_hash_row(&input, &digests, &parsed));
+        }
+        Ok(lines.join("\n"))
+    })
+    .await
+    .map_err(err_to_string)?
+}
+
+#[tauri::command]
+pub async fn cmd_playlist(
+    scan_dir: PathBuf,
+    output_dir: Option<PathBuf>,
+    mode: String,
+    extensions: String,
+    max_depth: Option<usize>,
+    on_conflict: Option<String>,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || -> Result<String, String> {
+        let exts: Vec<String> = extensions
+            .split(',')
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| !s.is_empty())
+            .collect();
+        let ext_refs: Vec<&str> = exts.iter().map(String::as_str).collect();
+        let pmode = if mode == "always" {
+            PlaylistMode::Always
+        } else {
+            PlaylistMode::Multiple
+        };
+        let plans = plan_playlists(&PlaylistOptions {
+            scan_dir: &scan_dir,
+            output_dir: output_dir.as_deref(),
+            extensions: &ext_refs,
+            mode: pmode,
+            max_depth,
+        })
+        .map_err(err_to_string)?;
+        if let Some(dir) = output_dir.as_deref() {
+            std::fs::create_dir_all(dir).map_err(err_to_string)?;
+        }
+        let policy = conflict_policy(on_conflict.as_deref());
+        let mut written = 0usize;
+        let mut skipped = 0usize;
+        for plan in &plans {
+            match resolve_conflict(&plan.m3u_path, policy).map_err(err_to_string)? {
+                ConflictResolution::Write(p) => {
+                    std::fs::write(&p, &plan.contents).map_err(err_to_string)?;
+                    written += 1;
+                }
+                ConflictResolution::Skip => skipped += 1,
+            }
+        }
+        Ok(format!("{written} playlists written, {skipped} skipped"))
+    })
+    .await
+    .map_err(err_to_string)?
 }
 
 #[tauri::command]

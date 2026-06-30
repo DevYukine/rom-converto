@@ -3,7 +3,7 @@ import { storeToRefs } from "pinia";
 import { useCueMergeStore } from "~/stores/cue-merge";
 
 const store = useCueMergeStore();
-const { input, output, force, result, error, loading } = storeToRefs(store);
+const { input, output, onConflict, result, error, loading } = storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
 const { run } = useOperation({ result, error, loading });
 const progress = useProgress("cue-merge");
@@ -18,7 +18,7 @@ async function execute() {
   const args = {
     cuePath: input.value,
     output: output.value || resolve(deriveMergedCuePath(input.value)),
-    force: force.value,
+    onConflict: onConflict.value,
   };
   commandLine.value = buildCliCommand("cmd_cue_merge", args);
   await run("cmd_cue_merge", args);
@@ -56,11 +56,7 @@ async function execute() {
         <OutputDirField v-model="outputDir" />
 
         <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
-          <FlagToggle
-            v-model="force"
-            label="Force overwrite"
-            description="Overwrite output files if they already exist"
-          />
+          <ConflictPolicyControl v-model="onConflict" />
         </div>
 
         <ProgressBar

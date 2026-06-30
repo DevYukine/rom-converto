@@ -5,6 +5,7 @@ export const useNxDecompressStore = defineStore("nx-decompress", () => {
   const queue = ref<BatchItem[]>([]);
   const output = ref("");
   const keys = ref("");
+  const onConflict = ref("overwrite");
 
   const result = ref("");
   const error = ref("");
@@ -32,6 +33,7 @@ export const useNxDecompressStore = defineStore("nx-decompress", () => {
     queue.value = [];
     output.value = "";
     keys.value = "";
+    onConflict.value = "overwrite";
     result.value = "";
     error.value = "";
     loading.value = false;
@@ -41,6 +43,7 @@ export const useNxDecompressStore = defineStore("nx-decompress", () => {
     queue,
     output,
     keys,
+    onConflict,
     result,
     error,
     loading,

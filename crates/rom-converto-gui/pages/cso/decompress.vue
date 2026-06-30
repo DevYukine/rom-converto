@@ -3,7 +3,7 @@ import { storeToRefs } from "pinia";
 import { useCsoDecompressStore } from "~/stores/cso-decompress";
 
 const store = useCsoDecompressStore();
-const { input, output, force, result, error, loading, queue } = storeToRefs(store);
+const { input, output, onConflict, result, error, loading, queue } = storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
 const { run, cancelled, abort } = useOperation({ result, error, loading });
 const progress = useProgress("cso-decompress");
@@ -13,7 +13,7 @@ const isBatch = computed(() => queue.value.length > 0);
 const commandLine = ref("");
 
 function csoArgs(inputPath: string, outputPath: string) {
-  return { inputPath, output: outputPath, force: force.value };
+  return { inputPath, output: outputPath, onConflict: onConflict.value };
 }
 
 const batch = useBatchOperation("cso-decompress", "cmd_cso_decompress", (item) =>
@@ -112,11 +112,7 @@ async function execute() {
         </template>
 
         <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
-          <FlagToggle
-            v-model="force"
-            label="Force overwrite"
-            description="Overwrite output file if it already exists"
-          />
+          <ConflictPolicyControl v-model="onConflict" />
         </div>
 
         <OutputDirField v-model="outputDir" />

@@ -8,6 +8,7 @@ export const useCtrCdnToCiaStore = defineStore("ctr-cdn-to-cia", () => {
   const cleanup = ref(false);
   const recursive = ref(false);
   const ensureTicket = ref(true);
+  const onConflict = ref("overwrite");
 
   const result = ref("");
   const error = ref("");
@@ -21,6 +22,7 @@ export const useCtrCdnToCiaStore = defineStore("ctr-cdn-to-cia", () => {
     cleanup.value = false;
     recursive.value = false;
     ensureTicket.value = true;
+    onConflict.value = "overwrite";
     result.value = "";
     error.value = "";
     loading.value = false;
@@ -34,6 +36,7 @@ export const useCtrCdnToCiaStore = defineStore("ctr-cdn-to-cia", () => {
     cleanup,
     recursive,
     ensureTicket,
+    onConflict,
     result,
     error,
     loading,

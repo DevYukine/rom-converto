@@ -1,9 +1,10 @@
 import { defineStore } from "pinia";
 
-export const useWupDecryptStore = defineStore("wup-decrypt", () => {
+export const useHashStore = defineStore("hash", () => {
   const input = ref("");
-  const output = ref("");
-  const onConflict = ref("overwrite");
+  const algos = ref<string[]>(["crc32", "sha1"]);
+  const recursive = ref(false);
+  const maxDepth = ref<number | null>(null);
 
   const result = ref("");
   const error = ref("");
@@ -11,8 +12,9 @@ export const useWupDecryptStore = defineStore("wup-decrypt", () => {
 
   function $reset() {
     input.value = "";
-    output.value = "";
-    onConflict.value = "overwrite";
+    algos.value = ["crc32", "sha1"];
+    recursive.value = false;
+    maxDepth.value = null;
     result.value = "";
     error.value = "";
     loading.value = false;
@@ -20,8 +22,9 @@ export const useWupDecryptStore = defineStore("wup-decrypt", () => {
 
   return {
     input,
-    output,
-    onConflict,
+    algos,
+    recursive,
+    maxDepth,
     result,
     error,
     loading,

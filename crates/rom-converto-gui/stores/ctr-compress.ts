@@ -8,6 +8,7 @@ export const useCtrCompressStore = defineStore("ctr-compress", () => {
   // Sent straight to the backend; the lib treats 0 as "use default".
   const level = ref<number>(0);
   const allowEncrypted = ref<boolean>(false);
+  const onConflict = ref("overwrite");
 
   const result = ref("");
   const error = ref("");
@@ -37,6 +38,7 @@ export const useCtrCompressStore = defineStore("ctr-compress", () => {
     output.value = "";
     level.value = 0;
     allowEncrypted.value = false;
+    onConflict.value = "overwrite";
     result.value = "";
     error.value = "";
     loading.value = false;
@@ -48,6 +50,7 @@ export const useCtrCompressStore = defineStore("ctr-compress", () => {
     output,
     level,
     allowEncrypted,
+    onConflict,
     result,
     error,
     loading,

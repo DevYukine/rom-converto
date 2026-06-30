@@ -4,7 +4,7 @@ import { storeToRefs } from "pinia";
 import { isXciInput, useNxCompressStore, type NxMode } from "~/stores/nx-compress";
 
 const store = useNxCompressStore();
-const { queue, output, keys, level, mode, blockSizeExp, result, error, loading } =
+const { queue, output, keys, level, mode, blockSizeExp, onConflict, result, error, loading } =
   storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
 const progress = useProgress("nx-compress");
@@ -24,6 +24,7 @@ function compressArgs(item: { input: string; output: string }) {
     level: level.value,
     mode: mode.value,
     blockSizeExp: blockSizeExp.value,
+    onConflict: onConflict.value,
   };
 }
 
@@ -215,6 +216,10 @@ async function execute() {
               </div>
             </label>
           </div>
+        </div>
+
+        <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
+          <ConflictPolicyControl v-model="onConflict" />
         </div>
 
         <OutputDirField v-model="outputDir" />

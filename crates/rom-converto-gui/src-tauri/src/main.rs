@@ -42,6 +42,8 @@ fn main() {
             cmd_nx_verify,
             cmd_read_info,
             cmd_save_icon,
+            cmd_hash,
+            cmd_playlist,
             app_display_version,
         ])
         .run(tauri::generate_context!())

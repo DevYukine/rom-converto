@@ -3,7 +3,7 @@ import { storeToRefs } from "pinia";
 import { useDolDecompressStore } from "~/stores/dol-decompress";
 
 const store = useDolDecompressStore();
-const { input, output, result, error, loading, queue } = storeToRefs(store);
+const { input, output, onConflict, result, error, loading, queue } = storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
 const { run, cancelled, abort } = useOperation({ result, error, loading });
 const progress = useProgress("dol-decompress");
@@ -13,7 +13,7 @@ const isBatch = computed(() => queue.value.length > 0);
 const commandLine = ref("");
 
 function decompressArgs(inputPath: string, outputPath: string) {
-  return { input: inputPath, output: outputPath || null, taskId: "dol-decompress" };
+  return { input: inputPath, output: outputPath || null, taskId: "dol-decompress", onConflict: onConflict.value };
 }
 
 const batch = useBatchOperation("dol-decompress", "cmd_decompress_disc", (item) =>
@@ -107,6 +107,10 @@ async function execute() {
             :save-dialog="true"
             :filters="[{ name: 'GameCube disc', extensions: ['iso', 'gcm'] }]"
           />
+        </div>
+
+        <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
+          <ConflictPolicyControl v-model="onConflict" />
         </div>
 
         <OutputDirField v-model="outputDir" />

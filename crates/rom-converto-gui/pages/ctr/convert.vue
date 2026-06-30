@@ -3,7 +3,7 @@ import { storeToRefs } from "pinia";
 import { useCtrConvertStore } from "~/stores/ctr-convert";
 
 const store = useCtrConvertStore();
-const { input, output, result, error, loading, queue } = storeToRefs(store);
+const { input, output, onConflict, result, error, loading, queue } = storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
 const { run, cancelled, abort } = useOperation({ result, error, loading });
 const progress = useProgress("ctr-convert");
@@ -13,7 +13,7 @@ const isBatch = computed(() => queue.value.length > 0);
 const commandLine = ref("");
 
 function convertArgs(inputPath: string, outputPath: string) {
-  return { input: inputPath, output: outputPath || null };
+  return { input: inputPath, output: outputPath || null, onConflict: onConflict.value };
 }
 
 const batch = useBatchOperation("ctr-convert", "cmd_convert_ctr", (item) =>
@@ -124,6 +124,10 @@ async function execute() {
 
         <div v-if="direction && !isBatch" class="text-xs text-zinc-400">
           Direction: <span class="font-medium text-sky-300">{{ direction }}</span>
+        </div>
+
+        <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
+          <ConflictPolicyControl v-model="onConflict" />
         </div>
 
         <OutputDirField v-model="outputDir" />

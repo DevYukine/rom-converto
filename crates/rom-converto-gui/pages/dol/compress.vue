@@ -3,7 +3,7 @@ import { storeToRefs } from "pinia";
 import { useDolCompressStore } from "~/stores/dol-compress";
 
 const store = useDolCompressStore();
-const { input, output, level, chunkSize, result, error, loading, queue } = storeToRefs(store);
+const { input, output, level, chunkSize, onConflict, result, error, loading, queue } = storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
 const { run, cancelled, abort } = useOperation({ result, error, loading });
 const progress = useProgress("dol-compress");
@@ -21,6 +21,7 @@ function compressArgs(inputPath: string, outputPath: string) {
     level: level.value,
     chunkSize: chunkSize.value,
     taskId: "dol-compress",
+    onConflict: onConflict.value,
   };
 }
 
@@ -144,6 +145,10 @@ async function execute() {
               <option v-for="size in CHUNK_SIZES" :key="size" :value="size">{{ size }}</option>
             </select>
           </label>
+        </div>
+
+        <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
+          <ConflictPolicyControl v-model="onConflict" />
         </div>
 
         <OutputDirField v-model="outputDir" />

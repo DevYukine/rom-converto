@@ -3,7 +3,7 @@ import { storeToRefs } from "pinia";
 import { useWupDecryptStore } from "~/stores/wup-decrypt";
 
 const store = useWupDecryptStore();
-const { input, output, result, error, loading } = storeToRefs(store);
+const { input, output, onConflict, result, error, loading } = storeToRefs(store);
 const { run, cancelled, abort } = useOperation({ result, error, loading });
 const progress = useProgress("wup-decrypt");
 const commandLine = ref("");
@@ -22,7 +22,7 @@ function deriveDecryptedWupPath(dir: string): string {
 async function execute() {
   progress.reset();
   const out = output.value || deriveDecryptedWupPath(input.value);
-  const args = { input: input.value, output: out };
+  const args = { input: input.value, output: out, onConflict: onConflict.value };
   commandLine.value = buildCliCommand("cmd_wup_decrypt", args);
   await run("cmd_wup_decrypt", args);
 }
@@ -52,6 +52,10 @@ async function execute() {
           label="Output Directory"
           :directory="true"
         />
+
+        <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
+          <ConflictPolicyControl v-model="onConflict" />
+        </div>
 
         <ProgressBar
           :percent="progress.percent.value"

@@ -4,7 +4,7 @@ import type { BatchItem } from "~/types/batch";
 export const useChdCompressStore = defineStore("chd-compress", () => {
   const input = ref("");
   const output = ref("");
-  const force = ref(false);
+  const onConflict = ref("overwrite");
   const zstd = ref(false);
   const mode = ref<"auto" | "cd" | "dvd">("auto");
   const hunkSize = ref<number | null>(null);
@@ -36,7 +36,7 @@ export const useChdCompressStore = defineStore("chd-compress", () => {
     input.value = "";
     output.value = "";
     zstd.value = false;
-    force.value = false;
+    onConflict.value = "overwrite";
     mode.value = "auto";
     hunkSize.value = null;
     result.value = "";
@@ -48,7 +48,7 @@ export const useChdCompressStore = defineStore("chd-compress", () => {
   return {
     input,
     output,
-    force,
+    onConflict,
     zstd,
     mode,
     hunkSize,

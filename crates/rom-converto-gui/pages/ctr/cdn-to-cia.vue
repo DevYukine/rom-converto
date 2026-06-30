@@ -3,7 +3,7 @@ import { storeToRefs } from "pinia";
 import { useCtrCdnToCiaStore } from "~/stores/ctr-cdn-to-cia";
 
 const store = useCtrCdnToCiaStore();
-const { cdnDir, output, decrypt, compress, cleanup, recursive, ensureTicket, result, error, loading } = storeToRefs(store);
+const { cdnDir, output, decrypt, compress, cleanup, recursive, ensureTicket, onConflict, result, error, loading } = storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
 const { run, cancelled, abort } = useOperation({ result, error, loading });
 const progress = useProgress("cdn-to-cia");
@@ -31,6 +31,7 @@ async function execute() {
     cleanup: cleanup.value,
     recursive: recursive.value,
     ensureTicketExists: ensureTicket.value,
+    onConflict: onConflict.value,
   };
   commandLine.value = buildCliCommand("cmd_cdn_to_cia", args);
   await run("cmd_cdn_to_cia", args);
@@ -94,6 +95,10 @@ async function execute() {
               description="Delete CDN files after conversion"
             />
           </div>
+        </div>
+
+        <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
+          <ConflictPolicyControl v-model="onConflict" />
         </div>
 
         <OutputDirField v-model="outputDir" />

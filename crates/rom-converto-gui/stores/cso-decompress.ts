@@ -4,7 +4,7 @@ import type { BatchItem } from "~/types/batch";
 export const useCsoDecompressStore = defineStore("cso-decompress", () => {
   const input = ref("");
   const output = ref("");
-  const force = ref(false);
+  const onConflict = ref("overwrite");
 
   const result = ref("");
   const error = ref("");
@@ -32,7 +32,7 @@ export const useCsoDecompressStore = defineStore("cso-decompress", () => {
   function $reset() {
     input.value = "";
     output.value = "";
-    force.value = false;
+    onConflict.value = "overwrite";
     result.value = "";
     error.value = "";
     loading.value = false;
@@ -42,7 +42,7 @@ export const useCsoDecompressStore = defineStore("cso-decompress", () => {
   return {
     input,
     output,
-    force,
+    onConflict,
     result,
     error,
     loading,

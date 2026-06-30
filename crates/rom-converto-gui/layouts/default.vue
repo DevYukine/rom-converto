@@ -32,6 +32,8 @@ import { useNxCompressStore } from "~/stores/nx-compress";
 import { useNxDecompressStore } from "~/stores/nx-decompress";
 import { useNxVerifyStore } from "~/stores/nx-verify";
 import { useNxInfoStore } from "~/stores/nx-info";
+import { useHashStore } from "~/stores/hash";
+import { usePlaylistStore } from "~/stores/playlist";
 import { invoke } from "@tauri-apps/api/core";
 
 const appVersion = ref("");
@@ -134,6 +136,14 @@ const sections: SidebarSection[] = [
     name: "CD (CUE/BIN)",
     links: [
       { to: "/cue/merge", label: "Merge multi-bin", store: () => useCueMergeStore(), icon: "compress" },
+    ],
+  },
+  {
+    key: "util",
+    name: "Utilities",
+    links: [
+      { to: "/hash", label: "Hash", store: () => useHashStore(), icon: "shield-check" },
+      { to: "/playlist", label: "Playlist", store: () => usePlaylistStore(), icon: "folder-arrow" },
     ],
   },
 ];

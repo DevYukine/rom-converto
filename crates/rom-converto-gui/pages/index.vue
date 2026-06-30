@@ -48,6 +48,18 @@ const platforms = [
     description: "Merge multi-bin disc images into a single bin/cue pair",
     count: 1,
   },
+  {
+    to: "/hash",
+    name: "Hash",
+    description: "Compute CRC32, SHA1, MD5, and SHA256 checksums for files or folders",
+    count: 1,
+  },
+  {
+    to: "/playlist",
+    name: "Playlist",
+    description: "Generate .m3u playlists for multi-disc sets",
+    count: 1,
+  },
 ];
 </script>
 

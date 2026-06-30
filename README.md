@@ -106,6 +106,46 @@ The desktop app provides a visual interface for all operations. Built with [Taur
 * State persists when switching between pages
 * Works on Windows, macOS and Linux
 
+### CLI / GUI parity
+
+The GUI surfaces every meaningful CLI capability. The table below maps each CLI command to its GUI page.
+
+| CLI command | GUI page | Notes |
+|---|---|---|
+| `chd compress` / `extract` / `verify` / `info` | CD / DVD (CHD) | conflict policy on compress |
+| `cso compress` / `decompress` / `verify` / `info` | PSP / PS2 (CSO/ZSO) | conflict policy on compress and decompress |
+| `ctr` (cdn-to-cia, decrypt, compress, decompress, convert, verify, generate-ticket, info) | 3DS | conflict policy on every write command |
+| `dol compress` / `decompress` / `verify` / `info` | GameCube | conflict policy on compress and decompress |
+| `rvl compress` / `decompress` / `verify` / `info` | Wii | conflict policy on compress and decompress |
+| `wup compress` / `decrypt` / `verify` / `info` | Wii U | conflict policy on compress and decrypt |
+| `nx compress` / `decompress` / `verify` / `info` | Switch | conflict policy on compress and decompress |
+| `cue merge` | CD (CUE/BIN) | full conflict policy |
+| `hash` | Utilities -> Hash | CRC32/SHA1/MD5/SHA256, recursive folder scan |
+| `playlist` | Utilities -> Playlist | .m3u generation, conflict policy |
+
+Every GUI control forwards to the same library function the CLI uses, so a GUI run and the equivalent CLI command produce identical output. The CLI command echo above each result reflects the chosen options.
+
+**Conflict policy.** Pages that write output expose an "On conflict" control with Overwrite, Skip, Rename, and Error, replacing the older force toggle. The choice is resolved before the write so Skip and Error never touch an existing file.
+
+**GUI to CLI direction.** The GUI adds no conversion capability the CLI lacks. Info caching, drag and drop, the batch queue, and the CLI command echo are interface conveniences over the same library calls, so no CLI changes were needed.
+
+**Intentional non-parity.** These CLI features have no GUI counterpart by design:
+
+* `shell-completions`: shell integration for a terminal, not the desktop app.
+* `self-update`: the desktop app updates itself through Tauri.
+* `-v/--verbose`, `--debug-log`, `-q/--quiet`: terminal logging controls; the GUI shows operation output in its own log panel.
+* `--config`, `--preset`, `--no-update-check`: file based configuration and updater flags; the GUI keeps options per page.
+* `info --json`: scripting output for the terminal; the GUI shows a rich info card.
+
+**Deferred.** These CLI options are not yet in the GUI. They depend on CLI-side logic (output templating, the dry-run planner, the space preflight, and per-file report records) that lives outside the shared library, so wiring them into the GUI without forking behavior would require moving that logic into the library first:
+
+* `--report` (CSV/JSON/HTML run reports).
+* `--output-template` path token expansion.
+* `--dry-run` preview.
+* `--skip-space-check` and the low-space preflight warning.
+* Recursive batch conversion through a directory scan (the GUI's per-file batch queue covers the common case).
+* `--on-conflict overwrite-invalid` on the CHD, CSO, and CUE compress paths, where the library cannot run the async integrity check at conflict time; it is omitted from those controls rather than degrading silently to skip.
+
 ### Running the GUI in Development
 
 1. Install [Rust 1.88+](https://www.rust-lang.org/tools/install) and [Node.js 22+](https://nodejs.org/)

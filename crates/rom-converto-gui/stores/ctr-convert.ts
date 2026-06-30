@@ -4,6 +4,7 @@ import type { BatchItem } from "~/types/batch";
 export const useCtrConvertStore = defineStore("ctr-convert", () => {
   const input = ref("");
   const output = ref("");
+  const onConflict = ref("overwrite");
 
   const result = ref("");
   const error = ref("");
@@ -31,6 +32,7 @@ export const useCtrConvertStore = defineStore("ctr-convert", () => {
   function $reset() {
     input.value = "";
     output.value = "";
+    onConflict.value = "overwrite";
     result.value = "";
     error.value = "";
     loading.value = false;
@@ -40,6 +42,7 @@ export const useCtrConvertStore = defineStore("ctr-convert", () => {
   return {
     input,
     output,
+    onConflict,
     result,
     error,
     loading,

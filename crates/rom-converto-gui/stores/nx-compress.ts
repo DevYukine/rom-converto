@@ -17,6 +17,7 @@ export const useNxCompressStore = defineStore("nx-compress", () => {
   // only kicks in when the user has not deliberately picked.
   const mode = ref<NxMode>("solid");
   const blockSizeExp = ref<number>(20);
+  const onConflict = ref("overwrite");
   const userPickedMode = ref(false);
 
   const result = ref("");
@@ -56,6 +57,7 @@ export const useNxCompressStore = defineStore("nx-compress", () => {
     level.value = 18;
     mode.value = "solid";
     blockSizeExp.value = 20;
+    onConflict.value = "overwrite";
     userPickedMode.value = false;
     result.value = "";
     error.value = "";
@@ -69,6 +71,7 @@ export const useNxCompressStore = defineStore("nx-compress", () => {
     level,
     mode,
     blockSizeExp,
+    onConflict,
     result,
     error,
     loading,

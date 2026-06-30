@@ -15,6 +15,7 @@ export const useWupCompressStore = defineStore("wup-compress", () => {
   const output = ref("");
   // Zstd level: 0 = Cemu default (6), 1..22 = explicit.
   const level = ref<number>(0);
+  const onConflict = ref("overwrite");
   // Master key per disc input, keyed by BatchItem.id.
   const keys = ref<Record<string, string>>({});
 
@@ -66,6 +67,7 @@ export const useWupCompressStore = defineStore("wup-compress", () => {
     queue.value = [];
     output.value = "";
     level.value = 0;
+    onConflict.value = "overwrite";
     keys.value = {};
     result.value = "";
     error.value = "";
@@ -76,6 +78,7 @@ export const useWupCompressStore = defineStore("wup-compress", () => {
     queue,
     output,
     level,
+    onConflict,
     keys,
     result,
     error,

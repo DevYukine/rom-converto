@@ -3,7 +3,7 @@ import { storeToRefs } from "pinia";
 import { useCtrDecryptStore } from "~/stores/ctr-decrypt";
 
 const store = useCtrDecryptStore();
-const { input, output, result, error, loading, queue } = storeToRefs(store);
+const { input, output, onConflict, result, error, loading, queue } = storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
 const { run, cancelled, abort } = useOperation({ result, error, loading });
 const progress = useProgress("decrypt");
@@ -13,7 +13,7 @@ const isBatch = computed(() => queue.value.length > 0);
 const commandLine = ref("");
 
 function decryptArgs(inputPath: string, outputPath: string) {
-  return { input: inputPath, output: outputPath };
+  return { input: inputPath, output: outputPath, onConflict: onConflict.value };
 }
 
 const batch = useBatchOperation("decrypt", "cmd_decrypt_rom", (item) =>
@@ -107,6 +107,10 @@ async function execute() {
             :save-dialog="true"
             :filters="[{ name: '3DS ROM', extensions: ['cia', '3ds', 'cci', 'cxi'] }]"
           />
+        </div>
+
+        <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
+          <ConflictPolicyControl v-model="onConflict" />
         </div>
 
         <OutputDirField v-model="outputDir" />
