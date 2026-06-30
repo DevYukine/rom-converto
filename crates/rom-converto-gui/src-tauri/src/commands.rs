@@ -41,8 +41,8 @@ use rom_converto_lib::util::fs::{collect_all_files, collect_files_with_exts};
 use rom_converto_lib::util::{
     CancelToken, ConflictPolicy, ConflictResolution, DEFAULT_SPACE_HEADROOM, FileStatus, HashAlgo,
     PlanLine, ReportFormat, ReportRecord, ReportTotals, TemplateTokens, apply_template,
-    available_space, format_bytes, hash_file, parse_algos, resolve_conflict, space_shortfall,
-    write_report,
+    available_space, format_bytes, hash_file_cancellable, parse_algos, resolve_conflict,
+    space_shortfall, write_report,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -1911,13 +1911,15 @@ pub async fn cmd_save_icon(info_json: String, dest: PathBuf) -> Result<String, S
 #[tauri::command]
 pub async fn cmd_hash(
     app: AppHandle,
+    state: State<'_, ActiveCancel>,
     input: PathBuf,
     algos: Vec<String>,
     recursive: bool,
     max_depth: Option<usize>,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "hash"));
-    tokio::task::spawn_blocking(move || -> Result<String, String> {
+    let token = begin(&state).await;
+    let result = tokio::task::spawn_blocking(move || -> Result<String, String> {
         let parsed = parse_algos(&algos.join(","))?;
         let mut lines = Vec::new();
         if recursive {
@@ -1926,18 +1928,24 @@ pub async fn cmd_hash(
                 return Ok(format!("no files found in {}", input.display()));
             }
             for file in files {
-                let digests =
-                    hash_file(&file, &parsed, progress.as_ref()).map_err(err_to_string)?;
+                if token.is_cancelled() {
+                    return Err("operation cancelled".to_string());
+                }
+                let digests = hash_file_cancellable(&file, &parsed, progress.as_ref(), &token)
+                    .map_err(err_to_string)?;
                 lines.push(render_hash_row(&file, &digests, &parsed));
             }
         } else {
-            let digests = hash_file(&input, &parsed, progress.as_ref()).map_err(err_to_string)?;
+            let digests = hash_file_cancellable(&input, &parsed, progress.as_ref(), &token)
+                .map_err(err_to_string)?;
             lines.push(render_hash_row(&input, &digests, &parsed));
         }
         Ok(lines.join("\n"))
     })
     .await
-    .map_err(err_to_string)?
+    .map_err(err_to_string);
+    finish(&state).await;
+    result?
 }
 
 #[tauri::command]

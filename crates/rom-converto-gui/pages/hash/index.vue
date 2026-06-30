@@ -4,7 +4,7 @@ import { useHashStore } from "~/stores/hash";
 
 const store = useHashStore();
 const { input, algos, recursive, maxDepth, result, error, loading } = storeToRefs(store);
-const { run } = useOperation({ result, error, loading });
+const { run, abort, cancelled } = useOperation({ result, error, loading });
 const progress = useProgress("hash");
 const commandLine = ref("");
 
@@ -61,6 +61,10 @@ async function execute() {
       :has-error="!!error"
     />
 
+    <div class="mb-4">
+      <OutputLog :command="commandLine" :result="result" :error="error" :cancelled="cancelled ? 'Operation cancelled.' : undefined" />
+    </div>
+
     <OperationCard>
       <div class="space-y-5">
         <FileDropZone
@@ -104,14 +108,10 @@ async function execute() {
           :running="progress.running.value"
         />
 
-        <RunButton :loading="loading" :disabled="!canRun" :disabled-reason="runBlockReason" @click="execute">
+        <RunButton :loading="loading" :disabled="!canRun" :disabled-reason="runBlockReason" @click="execute" @cancel="abort()">
           Hash
         </RunButton>
       </div>
     </OperationCard>
-
-    <div class="mt-4">
-      <OutputLog :command="commandLine" :result="result" :error="error" />
-    </div>
   </div>
 </template>
