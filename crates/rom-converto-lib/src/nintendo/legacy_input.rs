@@ -19,9 +19,9 @@ use log::{info, warn};
 use tokio::task;
 
 use super::gcz;
-use super::rvz::compress::{RvzCompressOptions, compress_disc_inner};
+use super::rvz::compress::{RvzCompressOptions, compress_disc_cancellable};
 use super::rvz::error::{RvzError, RvzResult};
-use crate::util::ProgressReporter;
+use crate::util::{CancelToken, ProgressReporter};
 
 const NKIT_MAGIC_OFFSET: u64 = 0x200;
 const NKIT_MAGIC: &[u8; 4] = b"NKIT";
@@ -192,6 +192,30 @@ pub async fn migrate_disc(
     migrate: MigrateOptions,
     progress: &dyn ProgressReporter,
 ) -> RvzResult<()> {
+    migrate_disc_cancellable(
+        input,
+        output,
+        options,
+        migrate,
+        progress,
+        CancelToken::new(),
+    )
+    .await
+}
+
+/// Like [`migrate_disc`] but observes `cancel`. The verify phase runs
+/// to completion (it is short); the conversion phase streams through
+/// [`compress_disc_cancellable`], which writes to a scratch file and
+/// renames on success, so an interrupted migration leaves no partial
+/// RVZ behind.
+pub async fn migrate_disc_cancellable(
+    input: &Path,
+    output: &Path,
+    options: RvzCompressOptions,
+    migrate: MigrateOptions,
+    progress: &dyn ProgressReporter,
+    cancel: CancelToken,
+) -> RvzResult<()> {
     let fmt = {
         let input = input.to_path_buf();
         task::spawn_blocking(move || detect_legacy_format(&input)).await??
@@ -205,7 +229,7 @@ pub async fn migrate_disc(
     if !migrate.skip_verify {
         verify_legacy_input(input, fmt, migrate.deep_verify, progress).await?;
     }
-    compress_disc_inner(input, output, options, progress).await
+    compress_disc_cancellable(input, output, options, progress, cancel).await
 }
 
 /// Migrate every legacy container directly inside `dir` (top level
@@ -219,6 +243,7 @@ pub async fn migrate_disc_batch(
     migrate: MigrateOptions,
     force: bool,
     progress: &dyn ProgressReporter,
+    cancel: CancelToken,
 ) -> RvzResult<()> {
     let inputs = {
         let dir = dir.to_path_buf();
@@ -244,6 +269,9 @@ pub async fn migrate_disc_batch(
     info!("Migrating {} legacy images to RVZ", inputs.len());
     let mut failed: usize = 0;
     for input in &inputs {
+        if cancel.is_cancelled() {
+            break;
+        }
         let output = super::rvz::derive_rvz_path(input);
         if !force && output.exists() {
             warn!(
@@ -253,7 +281,10 @@ pub async fn migrate_disc_batch(
             failed += 1;
             continue;
         }
-        if let Err(e) = migrate_disc(input, &output, options, migrate, progress).await {
+        if let Err(e) =
+            migrate_disc_cancellable(input, &output, options, migrate, progress, cancel.clone())
+                .await
+        {
             warn!("Failed to migrate {}: {e}", input.display());
             failed += 1;
         }
