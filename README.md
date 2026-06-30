@@ -86,6 +86,7 @@ Where each format works:
 * [x] Three-step verbosity ladder: `-v` (debug), `-vv` (trace), `-vvv` (trace including dependency logs)
 * [x] Global `--debug-log <FILE>` flag that writes a full trace log to a file independently of the console verbosity
 * [x] Pre-run free-space check that aborts a write-producing run before it starts when the output filesystem looks too full; `--skip-space-check` bypasses it
+* [x] OS and NAS junk files and directories (.DS_Store, AppleDouble "._" sidecars, @eaDir, $RECYCLE.BIN, Thumbs.db, and similar) are skipped automatically during recursive scans, so they are never treated as ROM inputs
 * [x] `--on-conflict overwrite-invalid` mode that verifies existing outputs and rewrites only the broken or missing ones
 * [x] Desktop GUI with drag and drop batch processing
 * [x] Standalone `hash` command for crc32 / sha1 / md5 / sha256 digests with report export

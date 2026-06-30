@@ -9,6 +9,35 @@ pub fn has_any_extension(path: &Path, exts: &[&str]) -> bool {
             .unwrap_or(false)
 }
 
+pub fn is_os_junk_file(name: &str) -> bool {
+    name.starts_with("._")
+        || matches!(
+            name,
+            ".DS_Store" | "Thumbs.db" | "desktop.ini" | ".localized"
+        )
+}
+
+pub fn is_os_junk_dir(name: &str) -> bool {
+    matches!(
+        name,
+        "@eaDir"
+            | ".@__thumb"
+            | ".Spotlight-V100"
+            | ".Trashes"
+            | ".fseventsd"
+            | ".TemporaryItems"
+            | ".AppleDouble"
+            | ".AppleDB"
+            | ".AppleDesktop"
+            | "#recycle"
+            | "@Recently-Snapshot"
+            | "lost+found"
+    ) || name.eq_ignore_ascii_case("$RECYCLE.BIN")
+        || name.eq_ignore_ascii_case("RECYCLER")
+        // Windows reserves this name on case-insensitive volumes.
+        || name.eq_ignore_ascii_case("System Volume Information")
+}
+
 /// Recursive listing of files under `dir` whose extension matches any of
 /// `exts` (case-insensitive), sorted for deterministic processing order.
 ///
@@ -29,11 +58,13 @@ pub fn collect_files_with_exts(
             let entry = entry?;
             let file_type = entry.file_type()?;
             let path = entry.path();
+            let name = entry.file_name();
+            let name = name.to_str().unwrap_or("");
             if file_type.is_dir() && !file_type.is_symlink() {
-                if max_depth.is_none_or(|limit| depth < limit) {
+                if !is_os_junk_dir(name) && max_depth.is_none_or(|limit| depth < limit) {
                     stack.push((path, depth + 1));
                 }
-            } else if has_any_extension(&path, exts) {
+            } else if has_any_extension(&path, exts) && !is_os_junk_file(name) {
                 out.push(path);
             }
         }
@@ -57,11 +88,13 @@ pub fn collect_all_files(dir: &Path, max_depth: Option<usize>) -> std::io::Resul
             let entry = entry?;
             let file_type = entry.file_type()?;
             let path = entry.path();
+            let name = entry.file_name();
+            let name = name.to_str().unwrap_or("");
             if file_type.is_dir() && !file_type.is_symlink() {
-                if max_depth.is_none_or(|limit| depth < limit) {
+                if !is_os_junk_dir(name) && max_depth.is_none_or(|limit| depth < limit) {
                     stack.push((path, depth + 1));
                 }
-            } else if file_type.is_file() {
+            } else if file_type.is_file() && !is_os_junk_file(name) {
                 out.push(path);
             }
         }
@@ -281,5 +314,97 @@ mod tests {
 
         let found = collect_all_files(dir.path(), Some(1)).unwrap();
         assert_eq!(found, vec![dir.path().join("a.bin")]);
+    }
+
+    #[test]
+    fn is_os_junk_file_positives() {
+        for name in [
+            "._game.cia",
+            "._",
+            ".DS_Store",
+            "Thumbs.db",
+            "desktop.ini",
+            ".localized",
+        ] {
+            assert!(is_os_junk_file(name), "{name} should be junk");
+        }
+    }
+
+    #[test]
+    fn is_os_junk_file_negatives() {
+        for name in ["game.cia", ".hidden", "DS_Store", "thumbs.db.bak", ""] {
+            assert!(!is_os_junk_file(name), "{name} should not be junk");
+        }
+    }
+
+    #[test]
+    fn is_os_junk_dir_positives() {
+        for name in [
+            "@eaDir",
+            ".@__thumb",
+            "$RECYCLE.BIN",
+            "$recycle.bin",
+            "RECYCLER",
+            "recycler",
+            "System Volume Information",
+            "system volume information",
+            ".Spotlight-V100",
+            ".Trashes",
+            ".fseventsd",
+            ".AppleDouble",
+            "#recycle",
+            "lost+found",
+        ] {
+            assert!(is_os_junk_dir(name), "{name} should be junk");
+        }
+    }
+
+    #[test]
+    fn is_os_junk_dir_negatives() {
+        for name in [".hidden", "sub", "@media", "System", "recycle", ""] {
+            assert!(!is_os_junk_dir(name), "{name} should not be junk");
+        }
+    }
+
+    #[test]
+    fn collect_files_with_exts_skips_appledouble_and_junk() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("game.cia"), b"x").unwrap();
+        std::fs::write(root.join("._game.cia"), b"x").unwrap();
+        std::fs::write(root.join(".DS_Store"), b"x").unwrap();
+
+        let dotdir = root.join(".dotdir");
+        std::fs::create_dir(&dotdir).unwrap();
+        std::fs::write(dotdir.join("game2.cia"), b"x").unwrap();
+
+        let eadir = root.join("@eaDir");
+        std::fs::create_dir(&eadir).unwrap();
+        std::fs::write(eadir.join("junk.cia"), b"x").unwrap();
+
+        let found = collect_files_with_exts(root, &["cia"], None).unwrap();
+        assert_eq!(
+            found,
+            vec![
+                root.join(".dotdir").join("game2.cia"),
+                root.join("game.cia")
+            ]
+        );
+    }
+
+    #[test]
+    fn collect_all_files_skips_junk_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("rom.bin"), b"x").unwrap();
+        std::fs::write(root.join("._rom.bin"), b"x").unwrap();
+        std::fs::write(root.join(".DS_Store"), b"x").unwrap();
+
+        let eadir = root.join("@eaDir");
+        std::fs::create_dir(&eadir).unwrap();
+        std::fs::write(eadir.join("junk.bin"), b"x").unwrap();
+
+        let found = collect_all_files(root, None).unwrap();
+        assert_eq!(found, vec![root.join("rom.bin")]);
     }
 }

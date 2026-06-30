@@ -60,7 +60,7 @@ use rom_converto_lib::nintendo::wup::{
     decrypt_nus_title_async_cancellable, verify_wup_async,
 };
 use rom_converto_lib::playlist::{PlaylistMode, PlaylistOptions, plan_playlists};
-use rom_converto_lib::util::fs::collect_files_with_exts;
+use rom_converto_lib::util::fs::{collect_files_with_exts, is_os_junk_dir};
 use rom_converto_lib::util::{
     FileDigests, HashAlgo, Tally, TallyDirection, hash_file, parse_algos,
 };
@@ -550,7 +550,12 @@ async fn dispatch_command(
                     let mut dirs: Vec<std::path::PathBuf> = std::fs::read_dir(&cmd.cdn_dir)?
                         .flatten()
                         .map(|e| e.path())
-                        .filter(|p| p.is_dir())
+                        .filter(|p| {
+                            p.is_dir()
+                                && p.file_name()
+                                    .and_then(|n| n.to_str())
+                                    .is_none_or(|n| !is_os_junk_dir(n))
+                        })
                         .collect();
                     dirs.sort();
                     for dir in &dirs {

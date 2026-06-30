@@ -1,7 +1,7 @@
 use crate::util::{WriteDecision, resolve_output};
 use anyhow::Result;
 use log::{info, warn};
-use rom_converto_lib::util::fs::{collect_all_files, collect_files_with_exts};
+use rom_converto_lib::util::fs::{collect_all_files, collect_files_with_exts, is_os_junk_dir};
 use rom_converto_lib::util::{
     CancelToken, ConflictPolicy, FileDigests, FileStatus, HashAlgo, HashReportRecord,
     ProgressReporter, ReportFormat, ReportRecord, ReportTotals, Tally, TallyDirection, hash_file,
@@ -1178,7 +1178,13 @@ pub async fn wup_verify(
         let mut dirs: Vec<PathBuf> = entries
             .flatten()
             .map(|e| e.path())
-            .filter(|p| p.is_dir() && is_nus_title_dir(p))
+            .filter(|p| {
+                p.is_dir()
+                    && p.file_name()
+                        .and_then(|n| n.to_str())
+                        .is_none_or(|n| !is_os_junk_dir(n))
+                    && is_nus_title_dir(p)
+            })
             .collect();
         dirs.sort();
         inputs.extend(dirs);
