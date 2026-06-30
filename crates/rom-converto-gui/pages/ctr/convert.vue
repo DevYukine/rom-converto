@@ -81,7 +81,7 @@ async function execute() {
   if (isBatch.value) {
     const rep = queue.value.find((i) => i.status === "pending") ?? queue.value[0];
     commandLine.value = rep ? buildCliCommand("cmd_convert_ctr", convertArgs(rep.input, rep.output)) : "";
-    await batch.start(queue, result);
+    await batch.start(queue, result, { errorRef: error });
   } else {
     const args = convertArgs(input.value, output.value);
     commandLine.value = buildCliCommand("cmd_convert_ctr", args);

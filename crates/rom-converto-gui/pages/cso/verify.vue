@@ -39,6 +39,7 @@ async function execute() {
     const rep = queue.value.find((i) => i.status === "pending") ?? queue.value[0];
     commandLine.value = rep ? buildCliCommand("cmd_cso_verify", csoArgs(rep.input)) : "";
     await batch.start(queue, result, {
+      errorRef: error,
       isSuccess: (res) => {
         try {
           return JSON.parse(res).ok !== false;

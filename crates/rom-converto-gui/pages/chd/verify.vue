@@ -46,6 +46,7 @@ async function execute() {
     const rep = queue.value.find((i) => i.status === "pending") ?? queue.value[0];
     commandLine.value = rep ? buildCliCommand("cmd_chd_verify", verifyArgs(rep.input)) : "";
     await batch.start(queue, result, {
+      errorRef: error,
       isSuccess: verdictPassed,
       failureMessage: () => "verification failed",
     });

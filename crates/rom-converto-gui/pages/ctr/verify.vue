@@ -151,6 +151,7 @@ function resultOk(r: VerifyResult): boolean {
 const verdictOk = computed(() => verifyResult.value === null || resultOk(verifyResult.value));
 
 const batchOptions = {
+  errorRef: error,
   isSuccess: (res: string) => {
     try {
       return resultOk(JSON.parse(res) as VerifyResult);

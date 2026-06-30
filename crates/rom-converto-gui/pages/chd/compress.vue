@@ -84,7 +84,7 @@ async function execute() {
     await batch.start(
       queue,
       result,
-      undefined,
+      { errorRef: error },
       (res) => {
         const record = (res as RunOutcome)?.record;
         if (record) records.push(record);
