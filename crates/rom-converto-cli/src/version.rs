@@ -17,7 +17,10 @@ fn release_returns_semver() {
 
 #[test]
 fn dev_with_hash_returns_dev_hash() {
-    assert_eq!(display_version(false, "0.12.0", Some("2dd4ee7")), "dev-2dd4ee7");
+    assert_eq!(
+        display_version(false, "0.12.0", Some("2dd4ee7")),
+        "dev-2dd4ee7"
+    );
 }
 
 #[test]

@@ -204,7 +204,7 @@ mod tests {
             plan_playlists(&options(dir.path(), None, &ext, PlaylistMode::Multiple)).unwrap();
         assert_eq!(plans[0].m3u_path.parent().unwrap(), dir.path());
         let lines: Vec<&str> = plans[0].contents.lines().collect();
-        assert!(lines.iter().any(|l| *l == "sub/Game (Disc 1).cue"));
+        assert!(lines.contains(&"sub/Game (Disc 1).cue"));
         assert!(lines.iter().all(|l| !l.contains('\\')));
     }
 

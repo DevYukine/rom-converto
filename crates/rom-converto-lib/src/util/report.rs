@@ -104,7 +104,9 @@ fn de_status<'de, D: Deserializer<'de>>(d: D) -> Result<FileStatus, D::Error> {
         "ok" => Ok(FileStatus::Ok),
         "skipped" => Ok(FileStatus::Skipped),
         "failed" => Ok(FileStatus::Failed),
-        other => Err(serde::de::Error::custom(format!("unknown status {other:?}"))),
+        other => Err(serde::de::Error::custom(format!(
+            "unknown status {other:?}"
+        ))),
     }
 }
 
@@ -612,7 +614,11 @@ mod tests {
             Some("boom".into()),
         );
         assert!(rec.ratio_pct.is_none());
-        let csv = render(&[rec.clone()], &ReportTotals::default(), ReportFormat::Csv);
+        let csv = render(
+            std::slice::from_ref(&rec),
+            &ReportTotals::default(),
+            ReportFormat::Csv,
+        );
         let row = csv.lines().nth(1).unwrap();
         assert!(row.ends_with(",boom"), "{row}");
         assert!(row.contains(",failed,1024,0,,10,"), "{row}");
