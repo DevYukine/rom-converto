@@ -26,6 +26,7 @@ interface CiaResult {
   console_id: number;
   title_version: number;
   details: string[];
+  compressed: boolean;
 }
 
 interface NcchPartition {
@@ -49,6 +50,7 @@ interface NcsdResult {
   partition_count: number;
   partitions: NcchPartition[];
   details: string[];
+  compressed: boolean;
 }
 
 type VerifyResult = CiaResult | NcsdResult;
@@ -95,7 +97,7 @@ async function execute() {
       const parsed = JSON.parse(json) as VerifyResult;
       verifyResult.value = parsed;
       result.value = parsed.format === "Cia"
-        ? formatLegitimacy(parsed.legitimacy)
+        ? ciaLabel(parsed)
         : `NCSD, ${parsed.partition_count} partition(s)`;
     } catch (e: any) {
       error.value = typeof e === "string" ? e : e.message || String(e);
@@ -105,11 +107,15 @@ async function execute() {
   }
 }
 
-function formatLegitimacy(leg: Legitimacy): string {
+function ciaLabel(r: CiaResult): string {
+  const leg = r.legitimacy;
   if (typeof leg === "string") return leg;
   if ("Legit" in leg) return `Legit (${leg.Legit})`;
   if ("Standard" in leg) {
-    return leg.Standard === "Decrypted" ? "Standard (Decrypted)" : "Standard";
+    if (leg.Standard === "Decrypted") {
+      return r.compressed ? "Compressed & Decrypted" : "Decrypted";
+    }
+    return "Standard";
   }
   return String(leg);
 }
@@ -117,7 +123,15 @@ function formatLegitimacy(leg: Legitimacy): string {
 function legitColor(leg: Legitimacy): string {
   if (typeof leg !== "string" && "Legit" in leg) return "emerald";
   if (leg === "Piratelegit") return "amber";
-  return "red";
+  if (typeof leg !== "string" && "Standard" in leg) {
+    return leg.Standard === "Decrypted" ? "amber" : "emerald";
+  }
+  return "emerald";
+}
+
+function ciaColor(r: CiaResult): string {
+  if (!resultOk(r)) return "red";
+  return legitColor(r.legitimacy);
 }
 
 function partitionOk(part: NcchPartition): boolean {
@@ -129,13 +143,7 @@ function partitionOk(part: NcchPartition): boolean {
 
 function resultOk(r: VerifyResult): boolean {
   if (r.format === "Cia") {
-    if (legitColor(r.legitimacy) === "red") return false;
-    return r.ca_cert_valid
-      && r.tmd_signer_cert_valid
-      && r.ticket_signer_cert_valid
-      && r.tmd_signature_valid
-      && r.ticket_signature_valid
-      && r.content_hashes_valid !== false;
+    return r.content_hashes_valid !== false;
   }
   return r.ncsd_magic_valid && r.partitions.every(partitionOk);
 }
@@ -239,20 +247,20 @@ const batchOptions = {
         <div
           class="flex items-center gap-3 rounded-lg border-l-2 px-4 py-3"
           :class="{
-            'border-emerald-500 bg-emerald-500/5': legitColor((verifyResult as CiaResult).legitimacy) === 'emerald',
-            'border-amber-500 bg-amber-500/5': legitColor((verifyResult as CiaResult).legitimacy) === 'amber',
-            'border-red-500 bg-red-500/5': legitColor((verifyResult as CiaResult).legitimacy) === 'red',
+            'border-emerald-500 bg-emerald-500/5': ciaColor(verifyResult as CiaResult) === 'emerald',
+            'border-amber-500 bg-amber-500/5': ciaColor(verifyResult as CiaResult) === 'amber',
+            'border-red-500 bg-red-500/5': ciaColor(verifyResult as CiaResult) === 'red',
           }"
         >
           <span
             class="inline-flex items-center rounded-md px-2.5 py-1 text-sm font-semibold"
             :class="{
-              'bg-emerald-500/20 text-emerald-300': legitColor((verifyResult as CiaResult).legitimacy) === 'emerald',
-              'bg-amber-500/20 text-amber-300': legitColor((verifyResult as CiaResult).legitimacy) === 'amber',
-              'bg-red-500/20 text-red-300': legitColor((verifyResult as CiaResult).legitimacy) === 'red',
+              'bg-emerald-500/20 text-emerald-300': ciaColor(verifyResult as CiaResult) === 'emerald',
+              'bg-amber-500/20 text-amber-300': ciaColor(verifyResult as CiaResult) === 'amber',
+              'bg-red-500/20 text-red-300': ciaColor(verifyResult as CiaResult) === 'red',
             }"
           >
-            {{ formatLegitimacy((verifyResult as CiaResult).legitimacy) }}
+            {{ ciaLabel(verifyResult as CiaResult) }}
           </span>
           <span class="text-sm text-zinc-400">
             Title ID: {{ (verifyResult as CiaResult).title_id }} &middot; Version: {{ (verifyResult as CiaResult).title_version }}
@@ -300,6 +308,10 @@ const batchOptions = {
           >
             NCSD {{ (verifyResult as NcsdResult).ncsd_magic_valid ? 'Valid' : 'Invalid' }}
           </span>
+          <span
+            v-if="(verifyResult as NcsdResult).compressed"
+            class="rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-medium text-amber-300"
+          >Compressed</span>
           <span class="text-sm text-zinc-400">
             Title ID: {{ (verifyResult as NcsdResult).title_id }} &middot; {{ (verifyResult as NcsdResult).partition_count }} partition(s)
           </span>

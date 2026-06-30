@@ -1065,6 +1065,9 @@ async fn dispatch_command(
                         CtrVerifyResult::Cia(cia) => {
                             log::info!("Format: CIA");
                             log::info!("Legitimacy: {}", cia.legitimacy);
+                            if cia.compressed {
+                                log::info!("Compressed: yes");
+                            }
                             for line in &cia.details {
                                 log::info!("  {line}");
                             }
@@ -1072,6 +1075,9 @@ async fn dispatch_command(
                         CtrVerifyResult::Ncsd(ncsd) => {
                             log::info!("Format: NCSD");
                             log::info!("Title ID: {}", ncsd.title_id);
+                            if ncsd.compressed {
+                                log::info!("Compressed: yes");
+                            }
                             for line in &ncsd.details {
                                 log::info!("  {line}");
                             }

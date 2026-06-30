@@ -43,6 +43,8 @@ pub struct CiaVerifyResult {
     pub console_id: u32,
     pub title_version: u16,
     pub details: Vec<String>,
+    #[serde(default)]
+    pub compressed: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -108,6 +110,8 @@ pub struct NcsdVerifyResult {
     pub partition_count: usize,
     pub partitions: Vec<NcchPartitionResult>,
     pub details: Vec<String>,
+    #[serde(default)]
+    pub compressed: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -236,7 +240,11 @@ async fn verify_compressed(
     progress.finish();
 
     // temp_dir's Drop removes the file after this function returns.
-    let result = Box::pin(verify_ctr(&temp_path, options, progress)).await?;
+    let mut result = Box::pin(verify_ctr(&temp_path, options, progress)).await?;
+    match &mut result {
+        CtrVerifyResult::Cia(c) => c.compressed = true,
+        CtrVerifyResult::Ncsd(n) => n.compressed = true,
+    }
     Ok(result)
 }
 
@@ -472,6 +480,7 @@ pub async fn verify_cia(
         console_id,
         title_version,
         details,
+        compressed: false,
     })
 }
 
@@ -545,6 +554,7 @@ async fn verify_ncsd_file(
         partition_count,
         partitions,
         details,
+        compressed: false,
     })
 }
 
@@ -569,6 +579,7 @@ async fn verify_standalone_ncch_file(
         partition_count: 1,
         partitions: vec![result],
         details: vec!["Standalone NCCH file".to_string()],
+        compressed: false,
     })
 }
 
@@ -1100,9 +1111,13 @@ mod tests {
         assert_eq!(result.console_id, 0);
         // Content hash check wasn't requested.
         assert_eq!(result.content_hashes_valid, None);
-        // Signatures are forged → all false, classification Standard.
+        // Signatures are forged, all false, classification Standard.
         assert!(!result.tmd_signature_valid);
         assert!(!result.ticket_signature_valid);
+        assert!(
+            !result.compressed,
+            "non-compressed verify must leave compressed = false"
+        );
     }
 
     #[tokio::test]
@@ -1163,6 +1178,7 @@ mod tests {
             CtrVerifyResult::Cia(cia) => {
                 assert_eq!(cia.title_id, "0004000000030000");
                 assert_eq!(cia.content_hashes_valid, Some(true));
+                assert!(cia.compressed, "verify_compressed must set compressed = true");
             }
             CtrVerifyResult::Ncsd(_) => panic!("expected Cia result"),
         }
@@ -1276,6 +1292,7 @@ mod tests {
             partition_count: partition_magic.len(),
             partitions: partition_magic.iter().map(|m| ncch_partition(*m)).collect(),
             details: Vec::new(),
+            compressed: false,
         })
     }
 
@@ -1292,6 +1309,7 @@ mod tests {
             console_id: 0,
             title_version: 0,
             details: Vec::new(),
+            compressed: false,
         })
     }
 
