@@ -120,17 +120,6 @@ pub async fn compress_disc(
     compress_disc_cancellable(input, output, options, progress, CancelToken::new()).await
 }
 
-/// The compress pipeline without legacy-format routing. Called by the
-/// migrate path, which has already verified the input.
-pub(crate) async fn compress_disc_inner(
-    input: &Path,
-    output: &Path,
-    options: RvzCompressOptions,
-    progress: &dyn ProgressReporter,
-) -> RvzResult<()> {
-    compress_disc_cancellable(input, output, options, progress, CancelToken::new()).await
-}
-
 /// Like [`compress_disc`] but observes `cancel` at region and chunk
 /// boundaries; on cancel the partial RVZ is removed (the writer targets
 /// a sibling temp file renamed into place only on success). The input
