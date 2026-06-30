@@ -31,6 +31,15 @@ export function basename(path: string): string {
   return i >= 0 ? norm.slice(i + 1) : norm;
 }
 
+// Splits a path's filename into a shrinkable head and a fixed tail for
+// middle-ellipsis display. The tail keeps the extension and trailing
+// disambiguating tags (region, version) which are as identifying as the start.
+export function splitFilenameForDisplay(path: string, tailLen = 12): [string, string] {
+  const name = basename(path);
+  if (name.length <= tailLen) return ["", name];
+  return [name.slice(0, name.length - tailLen), name.slice(name.length - tailLen)];
+}
+
 // An empty `dir` is a deliberate no-op so the output stays next to its input,
 // preserving the existing default for pages where no directory is chosen.
 export function withOutputDir(derivedPath: string, dir: string): string {
