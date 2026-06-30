@@ -11,6 +11,7 @@
 //! share the same `.app`.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::nintendo::wup::error::{WupError, WupResult};
 use crate::nintendo::wup::nus::content_stream::{
@@ -74,6 +75,15 @@ pub fn compress_nus_title(
     sink: &mut dyn ArchiveSink,
     progress: &dyn ProgressReporter,
 ) -> WupResult<(u64, u16)> {
+    compress_nus_title_with_cancel(title_dir, sink, progress, None)
+}
+
+pub(crate) fn compress_nus_title_with_cancel(
+    title_dir: &Path,
+    sink: &mut dyn ArchiveSink,
+    progress: &dyn ProgressReporter,
+    cancelled: Option<&AtomicBool>,
+) -> WupResult<(u64, u16)> {
     let layout = NusLayout::discover(title_dir)?;
     let tmd = read_tmd_file(&layout.tmd_path)?;
     let title_id = tmd.title_id;
@@ -122,6 +132,9 @@ pub fn compress_nus_title(
     let mut loader = ContentLoader::new(source, title_key, &tmd, &fs);
     let mut skipped: u32 = 0;
     for vfile in &fs.files {
+        if cancelled.is_some_and(|c| c.load(Ordering::Relaxed)) {
+            return Err(WupError::Cancelled);
+        }
         match loader.extract_file(vfile) {
             Ok(bytes) => {
                 let archive_path = format!("{archive_folder}/{}", vfile.path);

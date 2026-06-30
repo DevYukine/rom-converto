@@ -4,9 +4,26 @@ import { storeToRefs } from "pinia";
 import { isDiscInput, useWupCompressStore } from "~/stores/wup-compress";
 
 const store = useWupCompressStore();
-const { queue, output, level, keys, result, error, loading } = storeToRefs(store);
-const { run } = useOperation({ result, error, loading });
+const { queue, output, level, keys, onConflict, skipSpaceCheck, result, error, loading } = storeToRefs(store);
+const { outputDir, resolve } = useOutputDir();
+const { run, cancelled, abort } = useOperation({ result, error, loading });
 const progress = useProgress("wup-compress");
+const commandLine = ref("");
+
+const previewMode = ref(false);
+const { preview, single: previewSingle, error: previewError } = usePreview("cmd_wup_compress");
+
+function wupArgs() {
+  return {
+    inputs: queue.value.map((i) => i.input),
+    output: output.value,
+    level: level.value,
+    keys: store.collectKeys(),
+    onConflict: onConflict.value,
+    skipSpaceCheck: skipSpaceCheck.value,
+    dryRun: previewMode.value,
+  };
+}
 
 // One drop zone for both folders and disc images. Drag-drop takes
 // whatever the OS hands us. The two browse buttons pick folder vs
@@ -22,7 +39,7 @@ function addPaths(paths: string[]) {
   // the user has already picked.
   if (!output.value && queue.value.length > 0) {
     const first = queue.value[0];
-    if (first) output.value = deriveWuaPath(first.input);
+    if (first) output.value = resolve(deriveWuaPath(first.input));
   }
 }
 
@@ -34,6 +51,11 @@ onMounted(() => {
 
 onUnmounted(() => {
   if (zoneId) unregisterDropZone(zoneId);
+});
+
+watch(outputDir, () => {
+  const first = queue.value[0];
+  if (first) output.value = resolve(deriveWuaPath(first.input));
 });
 
 async function browseDirectories() {
@@ -64,7 +86,13 @@ const discsMissingKeys = computed(() =>
     .filter((i) => !keys.value[i.id]),
 );
 
-const canCompress = computed(() => queue.value.length > 0 && !!output.value);
+const { canRun, runBlockReason } = usePageGating({
+  queue,
+  output,
+  requireOutput: true,
+  emptyInputReason: "Add at least one title to the queue to continue.",
+  noOutputReason: "Choose an output archive path.",
+});
 
 async function execute() {
   progress.reset();
@@ -75,16 +103,29 @@ async function execute() {
       item.status = "running";
     }
   }
-  await run("cmd_wup_compress", {
-    inputs: queue.value.map((i) => i.input),
-    output: output.value,
-    level: level.value,
-    keys: store.collectKeys(),
-  });
-  const terminal: "done" | "error" = error.value ? "error" : "done";
+  const args = wupArgs();
+  commandLine.value = buildCliCommand("cmd_wup_compress", args);
+  await run("cmd_wup_compress", args);
+  const terminal: "done" | "error" | "cancelled" = cancelled.value
+    ? "cancelled"
+    : error.value
+      ? "error"
+      : "done";
   for (const item of queue.value) {
     if (item.status === "running") item.status = terminal;
   }
+}
+
+async function runPreview() {
+  const args = wupArgs();
+  commandLine.value = buildCliCommand("cmd_wup_compress", args);
+  await previewSingle(args);
+  if (previewError.value) error.value = previewError.value;
+}
+
+function onRun() {
+  if (previewMode.value) runPreview();
+  else execute();
 }
 </script>
 
@@ -97,6 +138,10 @@ async function execute() {
       :has-result="!!result"
       :has-error="!!error"
     />
+
+    <div class="mb-4">
+      <OutputLog :command="commandLine" :result="result" :preview="preview" :cancelled="cancelled ? 'Operation cancelled.' : undefined" :error="error" />
+    </div>
 
     <OperationCard>
       <div class="space-y-5">
@@ -169,7 +214,7 @@ async function execute() {
 
         <FileDropZone
           v-model="output"
-          label="Output (auto-derived)"
+          label="Output file (auto-filled)"
           :save-dialog="true"
           :filters="[{ name: 'Wii U Archive', extensions: ['wua'] }]"
         />
@@ -197,18 +242,37 @@ async function execute() {
           </label>
         </div>
 
+        <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
+          <ConflictPolicyControl v-model="onConflict" />
+          <FlagToggle
+            v-model="skipSpaceCheck"
+            label="Skip free space check"
+            description="Proceed even if the output filesystem looks too full to hold the result."
+          />
+        </div>
+
+        <OutputDirField v-model="outputDir" />
+
         <ProgressBar
           :percent="progress.percent.value"
           :message="progress.message.value"
           :running="progress.running.value"
         />
 
+        <FlagToggle
+          v-model="previewMode"
+          label="Preview (dry run)"
+          description="Show what would happen without writing anything."
+        />
+
         <RunButton
           :loading="loading"
-          :disabled="!canCompress"
-          @click="execute"
+          :disabled="!canRun"
+          :disabled-reason="runBlockReason"
+          @click="onRun"
+          @cancel="abort()"
         >
-          {{ queue.length <= 1 ? "Compress" : `Compress ${queue.length} titles` }}
+          {{ previewMode ? 'Preview' : (queue.length > 1 ? `Compress All (${queue.length} titles)` : 'Compress') }}
         </RunButton>
 
         <div
@@ -220,9 +284,5 @@ async function execute() {
         </div>
       </div>
     </OperationCard>
-
-    <div class="mt-4">
-      <OutputLog :result="result" :error="error" />
-    </div>
   </div>
 </template>

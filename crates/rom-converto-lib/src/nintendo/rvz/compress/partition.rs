@@ -43,6 +43,7 @@ use crate::nintendo::rvl::partition::{
 };
 use crate::nintendo::rvz::error::{RvzError, RvzResult};
 use crate::nintendo::rvz::format::RvzGroup;
+use crate::util::CancelToken;
 use crate::util::worker_pool::{Pool, Worker, drive, parallelism};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom};
 use std::sync::Arc;
@@ -156,6 +157,7 @@ pub(super) fn encode_partition_region<R: Read + Seek>(
     chunk_size: u32,
     groups: &mut Vec<RvzGroup>,
     bytes_done: &Arc<AtomicU64>,
+    cancel: &CancelToken,
 ) -> RvzResult<PartitionLayout> {
     let title_key = info.title_key;
     let chunk_size_u64 = chunk_size as u64;
@@ -226,6 +228,9 @@ pub(super) fn encode_partition_region<R: Read + Seek>(
             // overwrites every byte. On a full Wii disc that
             // zero-fill adds up to gigabytes of wasted work.
             |seq| -> RvzResult<PartitionWork> {
+                if cancel.is_cancelled() {
+                    return Err(RvzError::Cancelled);
+                }
                 let mut buf = Vec::with_capacity(cluster_size);
                 // SAFETY: `u8` has no drop glue and no
                 // validity invariants, so extending `len`

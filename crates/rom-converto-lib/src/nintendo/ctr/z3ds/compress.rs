@@ -2,6 +2,7 @@ use crate::nintendo::ctr::constants::{
     CTR_MEDIA_UNIT_SIZE, NCCH_FLAGS_OFFSET, NCCH_FLAGS7_NOCRYPTO, NCCH_MAGIC_OFFSET,
     NCSD_PARTITION_TABLE_OFFSET,
 };
+use crate::nintendo::ctr::models::title_metadata::TitleMetadata;
 use crate::nintendo::ctr::util::align_64_usize;
 use crate::nintendo::ctr::z3ds::compress_worker::{
     Z3dsCompressWork, Z3dsCompressedFrame, encode_seekable, make_z3ds_compress_workers,
@@ -12,10 +13,10 @@ use crate::nintendo::ctr::z3ds::models::{
 };
 use crate::nintendo::ctr::z3ds::seekable::{FRAME_SIZE_CIA, FRAME_SIZE_DEFAULT};
 use crate::util::worker_pool::{Pool, parallelism};
-use crate::util::{BYTES_PER_MB, ProgressReporter};
-use binrw::BinWrite;
+use crate::util::{BYTES_PER_MB, CancelToken, ProgressReporter, await_with_progress_cancel};
+use binrw::{BinRead, BinWrite, Endian};
 use chrono::Utc;
-use log::info;
+use log::{info, warn};
 use std::io::{BufReader, BufWriter as StdBufWriter, Cursor, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::sync::Arc;
@@ -58,7 +59,37 @@ pub async fn compress_rom(
     input: &Path,
     output: &Path,
     level: Option<i32>,
+    allow_encrypted: bool,
     progress: &dyn ProgressReporter,
+) -> Z3dsResult<()> {
+    compress_rom_cancellable(
+        input,
+        output,
+        level,
+        allow_encrypted,
+        progress,
+        CancelToken::new(),
+    )
+    .await
+}
+
+/// A sibling temp path so an interrupted write never lands on the final
+/// name.
+fn scratch_output_path(output: &Path) -> std::path::PathBuf {
+    let mut name = output.file_name().unwrap_or_default().to_os_string();
+    name.push(".tmp");
+    output.with_file_name(name)
+}
+
+/// Like [`compress_rom`] but observes `cancel` at every frame boundary;
+/// on cancel the partial output is removed.
+pub async fn compress_rom_cancellable(
+    input: &Path,
+    output: &Path,
+    level: Option<i32>,
+    allow_encrypted: bool,
+    progress: &dyn ProgressReporter,
+    cancel: CancelToken,
 ) -> Z3dsResult<()> {
     let ext = input
         .extension()
@@ -94,7 +125,20 @@ pub async fn compress_rom(
         f.read_exact(&mut buf).await?;
         buf
     };
-    check_not_encrypted(&probe, &ext)?;
+    match check_not_encrypted(&probe, &ext) {
+        Ok(()) => {}
+        Err(e @ (Z3dsError::InputNotDecrypted | Z3dsError::EncryptionStateUnknown)) => {
+            if allow_encrypted {
+                warn!(
+                    "{}: {e}. Compressing anyway because --allow-encrypted was set; the output may be near the same size as the input.",
+                    input.display()
+                );
+            } else {
+                return Err(e);
+            }
+        }
+        Err(e) => return Err(e),
+    }
     drop(probe);
 
     let version = env!("CARGO_PKG_VERSION");
@@ -117,21 +161,23 @@ pub async fn compress_rom(
     );
 
     // Atomic counter to relay progress out of the blocking thread.
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::AtomicU64;
     let bytes_done = Arc::new(AtomicU64::new(0));
     let bytes_done_clone = bytes_done.clone();
 
     // The paths are moved into the blocking task; borrows do not cross await.
+    let write_path = scratch_output_path(output);
     let input_owned = input.to_path_buf();
-    let output_owned = output.to_path_buf();
+    let write_owned = write_path.clone();
+    let cancel_bg = cancel.clone();
     let metadata_bytes_owned = metadata_bytes;
 
-    let mut handle = task::spawn_blocking(move || -> Z3dsResult<(u64, u64)> {
+    let handle = task::spawn_blocking(move || -> Z3dsResult<(u64, u64)> {
         // std::fs (not tokio) lets the reader and writer hand off directly to zstd.
         let in_file = std::fs::File::open(&input_owned)?;
         let mut reader = BufReader::with_capacity(4 * 1024 * 1024, in_file);
 
-        let out_file = std::fs::File::create(&output_owned)?;
+        let out_file = std::fs::File::create(&write_owned)?;
         let mut writer = StdBufWriter::with_capacity(4 * 1024 * 1024, out_file);
 
         // Placeholder header. The real one is written after the payload, by
@@ -154,6 +200,7 @@ pub async fn compress_rom(
             frame_size,
             uncompressed_size,
             &bytes_done_clone,
+            &cancel_bg,
         )?;
 
         pool.shutdown();
@@ -180,25 +227,22 @@ pub async fn compress_rom(
         Ok((compressed_size, uncompressed_size))
     });
 
-    // Poll the background task, reporting progress every 100 ms.
-    let (compressed_size, _) = loop {
-        match tokio::time::timeout(std::time::Duration::from_millis(100), &mut handle).await {
-            Ok(result) => {
-                break result??;
-            }
-            Err(_) => {
-                let delta = bytes_done.swap(0, Ordering::Relaxed);
-                if delta > 0 {
-                    progress.inc(delta);
-                }
-            }
+    let cleanup = {
+        let write_path = write_path.clone();
+        move || -> Z3dsError {
+            let _ = std::fs::remove_file(&write_path);
+            Z3dsError::Cancelled
         }
     };
-    let remaining = bytes_done.swap(0, Ordering::Relaxed);
-    if remaining > 0 {
-        progress.inc(remaining);
-    }
-    progress.finish();
+    let (compressed_size, _) =
+        match await_with_progress_cancel(progress, &bytes_done, handle, &cancel, cleanup).await {
+            Ok(sizes) => sizes,
+            Err(err) => {
+                let _ = tokio::fs::remove_file(&write_path).await;
+                return Err(err);
+            }
+        };
+    tokio::fs::rename(&write_path, output).await?;
 
     let ratio = (1.0 - compressed_size as f64 / uncompressed_size as f64) * 100.0;
     info!(
@@ -227,19 +271,21 @@ pub(crate) fn check_not_encrypted(data: &[u8], ext: &str) -> Z3dsResult<()> {
 
 /// NCCH header flags are at offset 0x100 (signature) + 0x188 = 0x188 from the
 /// start of the NCCH block. Bit 2 of flags[7] being set means NoCrypto.
-/// If that bit is clear the partition is encrypted.
+/// If that bit is clear the partition is encrypted. When the header cannot be
+/// read or the NCCH magic is absent, the crypto state is unknown and the check
+/// fails safe rather than letting a possibly encrypted ROM through.
 pub(crate) fn check_ncch_not_encrypted(data: &[u8], ncch_offset: usize) -> Z3dsResult<()> {
     let magic_start = ncch_offset + NCCH_MAGIC_OFFSET;
     if data.len() < magic_start + 4 {
-        return Ok(()); // can't check, let it through
+        return Err(Z3dsError::EncryptionStateUnknown);
     }
     if data[magic_start..magic_start + 4] != underlying_magic::NCCH {
-        return Ok(());
+        return Err(Z3dsError::EncryptionStateUnknown);
     }
 
     let flags_offset = ncch_offset + NCCH_FLAGS_OFFSET;
     if data.len() <= flags_offset + 7 {
-        return Ok(());
+        return Err(Z3dsError::EncryptionStateUnknown);
     }
     let flags7 = data[flags_offset + 7];
     if flags7 & NCCH_FLAGS7_NOCRYPTO == 0 {
@@ -253,11 +299,11 @@ pub(crate) fn check_ncch_not_encrypted(data: &[u8], ncch_offset: usize) -> Z3dsR
 pub(crate) fn check_ncsd_not_encrypted(data: &[u8]) -> Z3dsResult<()> {
     let magic_end = NCCH_MAGIC_OFFSET + 4;
     if data.len() < magic_end || data[NCCH_MAGIC_OFFSET..magic_end] != underlying_magic::NCSD {
-        return Ok(());
+        return Err(Z3dsError::EncryptionStateUnknown);
     }
     // Partition 0 NCCH starts at the offset stored in NCSD partition table.
     if data.len() < NCSD_PARTITION_TABLE_OFFSET + 8 {
-        return Ok(());
+        return Err(Z3dsError::EncryptionStateUnknown);
     }
     let partition_offset_mu = u32::from_le_bytes([
         data[NCSD_PARTITION_TABLE_OFFSET],
@@ -269,11 +315,15 @@ pub(crate) fn check_ncsd_not_encrypted(data: &[u8]) -> Z3dsResult<()> {
     check_ncch_not_encrypted(data, partition_offset)
 }
 
-/// CIA files have no magic at offset 0. The first NCCH is located by
-/// parsing the CIA header sizes to find the content section.
+/// CIA files have no magic at offset 0. Per-content encryption is recorded in
+/// the TMD, which sits in plaintext before the content section. In an encrypted
+/// CIA the whole content (the NCCH header and its magic included) is title-key
+/// encrypted, so the NCCH magic is absent at the content offset; the TMD
+/// content-chunk flags are the only reliable signal there. A decrypted CIA still
+/// falls through to the plaintext NCCH NoCrypto check.
 pub(crate) fn check_cia_not_encrypted(data: &[u8]) -> Z3dsResult<()> {
     if data.len() < 0x20 {
-        return Ok(());
+        return Err(Z3dsError::EncryptionStateUnknown);
     }
     // CIA header layout (little-endian):
     //   0x00  u32  header_size
@@ -289,10 +339,25 @@ pub(crate) fn check_cia_not_encrypted(data: &[u8]) -> Z3dsResult<()> {
     let ticket_size = u32::from_le_bytes([data[12], data[13], data[14], data[15]]) as usize;
     let tmd_size = u32::from_le_bytes([data[16], data[17], data[18], data[19]]) as usize;
 
-    let content_offset = align_64_usize(header_size)
-        + align_64_usize(cert_chain_size)
-        + align_64_usize(ticket_size)
-        + align_64_usize(tmd_size);
+    let tmd_offset =
+        align_64_usize(header_size) + align_64_usize(cert_chain_size) + align_64_usize(ticket_size);
+    let content_offset = tmd_offset + align_64_usize(tmd_size);
+
+    if tmd_size == 0 || data.len() < tmd_offset + tmd_size {
+        return Err(Z3dsError::EncryptionStateUnknown);
+    }
+
+    let mut cursor = Cursor::new(&data[tmd_offset..tmd_offset + tmd_size]);
+    let tmd = TitleMetadata::read_options(&mut cursor, Endian::Big, ())
+        .map_err(|_| Z3dsError::EncryptionStateUnknown)?;
+
+    if tmd
+        .content_chunk_records
+        .iter()
+        .any(|r| r.content_type.is_encrypted())
+    {
+        return Err(Z3dsError::InputNotDecrypted);
+    }
 
     check_ncch_not_encrypted(data, content_offset)
 }
@@ -302,6 +367,10 @@ mod tests {
     use super::*;
     use crate::nintendo::ctr::constants::{
         NCCH_FLAGS_OFFSET, NCCH_FLAGS7_NOCRYPTO, NCCH_MAGIC_OFFSET, NCSD_PARTITION_TABLE_OFFSET,
+    };
+    use crate::nintendo::ctr::models::signature::{SignatureData, SignatureType};
+    use crate::nintendo::ctr::models::title_metadata::{
+        ContentChunkRecord, ContentInfoRecord, ContentType, TitleMetadataHeader,
     };
     use crate::nintendo::ctr::z3ds::error::Z3dsError;
 
@@ -329,17 +398,94 @@ mod tests {
         data
     }
 
-    // Builds a fake CIA header pointing to an NCCH at the computed content offset.
-    // Uses header_size=0x20, all section sizes 0 → content at align64(0x20) = 0x40.
-    fn make_cia(ncch_decrypted: bool) -> Vec<u8> {
-        // content_offset = align64(0x20) = 0x40
-        let content_offset: usize = 0x40;
+    // Serializes a minimal single-content TMD whose content chunk carries the
+    // chosen Encrypted flag. Mirrors the struct literal in title_metadata tests.
+    fn serialize_tmd(content_encrypted: bool) -> Vec<u8> {
+        let tmd = TitleMetadata {
+            signature_data: SignatureData {
+                signature_type: SignatureType::Rsa2048Sha256,
+                signature: vec![0xBB; 0x100],
+                padding: vec![0x00; 0x3C],
+            },
+            header: TitleMetadataHeader {
+                signature_issuer: vec![0x00; 0x40],
+                version: 1,
+                ca_crl_version: 0,
+                signer_crl_version: 0,
+                reserved1: 0,
+                system_version: 0,
+                title_id: 0x0004000000125600,
+                title_type: 0x00040010,
+                group_id: 0,
+                save_data_size: 0,
+                srl_private_save_data_size: 0,
+                reserved2: 0,
+                srl_flag: 0,
+                reserved3: vec![0x00; 0x31],
+                access_rights: 0,
+                title_version: 0x0100,
+                content_count: 1,
+                boot_content: 0,
+                padding: 0,
+                content_info_records_hash: vec![0x00; 0x20],
+            },
+            content_info_records: vec![
+                ContentInfoRecord {
+                    content_index_offset: 0,
+                    content_command_count: 1,
+                    hash: vec![0x00; 0x20],
+                };
+                64
+            ],
+            content_chunk_records: vec![ContentChunkRecord {
+                content_id: 0,
+                content_index: 0,
+                content_type: ContentType(if content_encrypted { 0x0001 } else { 0x0000 }),
+                content_size: 0x00400000,
+                hash: vec![0x00; 0x20],
+            }],
+        };
+        let mut buf = Vec::new();
+        tmd.write(&mut Cursor::new(&mut buf)).unwrap();
+        buf
+    }
+
+    // Builds a fake CIA probe with a real serialized TMD at tmd_offset (0x40)
+    // and an NCCH block at content_offset. `content_encrypted` drives the TMD
+    // content-chunk Encrypted flag; `ncch_decrypted` drives the NCCH NoCrypto
+    // flag at content_offset.
+    fn make_cia_with_tmd(content_encrypted: bool, ncch_decrypted: bool) -> Vec<u8> {
+        let tmd_bytes = serialize_tmd(content_encrypted);
+        let tmd_offset = 0x40usize;
+        let tmd_size = tmd_bytes.len();
+        let content_offset = tmd_offset + align_64_usize(tmd_size);
         let total = content_offset + 0x200;
+
         let mut data = make_ncch_at(total, content_offset, ncch_decrypted);
-        // header_size = 0x20 (LE u32)
+        data[tmd_offset..tmd_offset + tmd_size].copy_from_slice(&tmd_bytes);
         data[0..4].copy_from_slice(&0x20u32.to_le_bytes());
-        // cert_chain_size, ticket_size, tmd_size all stay 0
+        data[16..20].copy_from_slice(&(tmd_size as u32).to_le_bytes());
         data
+    }
+
+    // Like make_cia_with_tmd but leaves the content region zeroed (no NCCH
+    // magic), matching a real encrypted CIA where the NCCH is ciphertext.
+    fn make_cia_tmd_only(content_encrypted: bool) -> Vec<u8> {
+        let tmd_bytes = serialize_tmd(content_encrypted);
+        let tmd_offset = 0x40usize;
+        let tmd_size = tmd_bytes.len();
+        let content_offset = tmd_offset + align_64_usize(tmd_size);
+        let total = content_offset + 0x200;
+
+        let mut data = vec![0u8; total];
+        data[tmd_offset..tmd_offset + tmd_size].copy_from_slice(&tmd_bytes);
+        data[0..4].copy_from_slice(&0x20u32.to_le_bytes());
+        data[16..20].copy_from_slice(&(tmd_size as u32).to_le_bytes());
+        data
+    }
+
+    fn make_cia(ncch_decrypted: bool) -> Vec<u8> {
+        make_cia_with_tmd(false, ncch_decrypted)
     }
 
     #[test]
@@ -356,24 +502,33 @@ mod tests {
     }
 
     #[test]
-    fn ncch_wrong_magic_skips_check() {
-        // No NCCH magic → check is silently skipped.
+    fn ncch_wrong_magic_fails_safe() {
+        // No NCCH magic → crypto state is unknown, fail safe.
         let data = vec![0u8; 0x200];
-        assert!(check_ncch_not_encrypted(&data, 0).is_ok());
+        assert!(matches!(
+            check_ncch_not_encrypted(&data, 0).unwrap_err(),
+            Z3dsError::EncryptionStateUnknown
+        ));
     }
 
     #[test]
-    fn ncch_too_short_for_magic_skips_check() {
+    fn ncch_too_short_for_magic_fails_safe() {
         let data = vec![0u8; 0x50]; // shorter than 0x100 + 4
-        assert!(check_ncch_not_encrypted(&data, 0).is_ok());
+        assert!(matches!(
+            check_ncch_not_encrypted(&data, 0).unwrap_err(),
+            Z3dsError::EncryptionStateUnknown
+        ));
     }
 
     #[test]
-    fn ncch_too_short_for_flags_skips_check() {
+    fn ncch_too_short_for_flags_fails_safe() {
         // Has the magic but not enough bytes to reach flags[7].
         let mut data = vec![0u8; 0x18F]; // flags[7] is at 0x18F, need at least 0x190
         data[0x100..0x104].copy_from_slice(b"NCCH");
-        assert!(check_ncch_not_encrypted(&data, 0).is_ok());
+        assert!(matches!(
+            check_ncch_not_encrypted(&data, 0).unwrap_err(),
+            Z3dsError::EncryptionStateUnknown
+        ));
     }
 
     #[test]
@@ -403,9 +558,12 @@ mod tests {
     }
 
     #[test]
-    fn ncsd_wrong_magic_skips_check() {
+    fn ncsd_wrong_magic_fails_safe() {
         let data = vec![0u8; 0x200];
-        assert!(check_ncsd_not_encrypted(&data).is_ok());
+        assert!(matches!(
+            check_ncsd_not_encrypted(&data).unwrap_err(),
+            Z3dsError::EncryptionStateUnknown
+        ));
     }
 
     #[test]
@@ -422,9 +580,42 @@ mod tests {
     }
 
     #[test]
-    fn cia_too_short_skips_check() {
+    fn cia_too_short_fails_safe() {
         let data = vec![0u8; 0x10]; // shorter than 0x20
+        assert!(matches!(
+            check_cia_not_encrypted(&data).unwrap_err(),
+            Z3dsError::EncryptionStateUnknown
+        ));
+    }
+
+    #[test]
+    fn cia_tmd_encrypted_flag_returns_not_decrypted() {
+        // TMD marks the content encrypted and the content region is junk (no
+        // NCCH magic), as in a real encrypted CIA. The TMD flag is the only
+        // signal, so this must be InputNotDecrypted, not EncryptionStateUnknown.
+        let data = make_cia_tmd_only(true);
+        assert!(matches!(
+            check_cia_not_encrypted(&data).unwrap_err(),
+            Z3dsError::InputNotDecrypted
+        ));
+    }
+
+    #[test]
+    fn cia_tmd_decrypted_with_plain_ncch_passes() {
+        let data = make_cia_with_tmd(false, true);
         assert!(check_cia_not_encrypted(&data).is_ok());
+    }
+
+    #[test]
+    fn cia_truncated_tmd_fails_safe() {
+        // Header advertises a TMD the probe is too short to contain.
+        let mut data = vec![0u8; 0x40];
+        data[0..4].copy_from_slice(&0x20u32.to_le_bytes());
+        data[16..20].copy_from_slice(&0x800u32.to_le_bytes());
+        assert!(matches!(
+            check_cia_not_encrypted(&data).unwrap_err(),
+            Z3dsError::EncryptionStateUnknown
+        ));
     }
 
     #[test]

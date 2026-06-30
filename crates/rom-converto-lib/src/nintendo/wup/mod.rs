@@ -30,14 +30,19 @@ pub mod path_tree;
 pub mod streaming_sink;
 pub mod ticket_synth;
 pub mod title_key_derive;
+pub mod verify;
 pub mod wua;
 pub mod zarchive_writer;
 
 pub use compress::{
     TitleInput, TitleInputFormat, WupCompressOptions, compress_title, compress_title_async,
-    compress_titles, compress_titles_async, derive_wua_path, detect_title_format,
+    compress_titles, compress_titles_async, compress_titles_async_cancellable, derive_wua_path,
+    detect_title_format,
 };
 pub use error::{WupError, WupResult};
 pub use loadiine::{LoadiineTitle, detect_loadiine_title, walk_loadiine_files};
-pub use nus::decrypt::{decrypt_nus_title, decrypt_nus_title_async};
+pub use nus::decrypt::{
+    decrypt_nus_title, decrypt_nus_title_async, decrypt_nus_title_async_cancellable,
+};
+pub use verify::{TitleVerdict, WupVerifyResult, verify_wup, verify_wup_async};
 pub use zarchive_writer::ZArchiveWriter;

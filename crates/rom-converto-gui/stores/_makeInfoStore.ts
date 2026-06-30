@@ -1,6 +1,5 @@
-// Shared shape across the six per-console info stores so the sidebar
-// status dot can read loading/result/error the same way it does for
-// the other operations.
+// The sidebar status dots read loading/result/error generically, so
+// every info store must keep this exact shape.
 
 import { defineStore } from "pinia";
 import { invoke } from "@tauri-apps/api/core";

@@ -26,6 +26,7 @@ interface CiaResult {
   console_id: number;
   title_version: number;
   details: string[];
+  compressed: boolean;
 }
 
 interface NcchPartition {
@@ -49,16 +50,21 @@ interface NcsdResult {
   partition_count: number;
   partitions: NcchPartition[];
   details: string[];
+  compressed: boolean;
 }
 
 type VerifyResult = CiaResult | NcsdResult;
 
 const verifyResult = ref<VerifyResult | null>(null);
+const commandLine = ref("");
 
-const batch = useBatchOperation("ctr-verify", "cmd_verify_ctr", (item) => ({
-  input: item.input,
-  verifyContent: verifyContent.value,
-}));
+function verifyArgs(inputPath: string) {
+  return { input: inputPath, verifyContent: verifyContent.value };
+}
+
+const batch = useBatchOperation("ctr-verify", "cmd_verify_ctr", (item) =>
+  verifyArgs(item.input),
+);
 
 function handleFiles(paths: string[]) {
   for (const p of paths) store.addToQueue(p);
@@ -79,19 +85,20 @@ async function execute() {
   result.value = "";
 
   if (isBatch.value) {
-    await batch.start(queue, result);
+    const rep = queue.value.find((i) => i.status === "pending") ?? queue.value[0];
+    commandLine.value = rep ? buildCliCommand("cmd_verify_ctr", verifyArgs(rep.input)) : "";
+    await batch.start(queue, result, batchOptions);
   } else {
+    const args = verifyArgs(input.value);
+    commandLine.value = buildCliCommand("cmd_verify_ctr", args);
     loading.value = true;
     try {
-      const json = await invoke<string>("cmd_verify_ctr", {
-        input: input.value,
-        verifyContent: verifyContent.value,
-      });
+      const json = await invoke<string>("cmd_verify_ctr", args);
       const parsed = JSON.parse(json) as VerifyResult;
       verifyResult.value = parsed;
       result.value = parsed.format === "Cia"
-        ? formatLegitimacy(parsed.legitimacy)
-        : `NCSD — ${parsed.partition_count} partition(s)`;
+        ? ciaLabel(parsed)
+        : `NCSD, ${parsed.partition_count} partition(s)`;
     } catch (e: any) {
       error.value = typeof e === "string" ? e : e.message || String(e);
     } finally {
@@ -100,11 +107,15 @@ async function execute() {
   }
 }
 
-function formatLegitimacy(leg: Legitimacy): string {
+function ciaLabel(r: CiaResult): string {
+  const leg = r.legitimacy;
   if (typeof leg === "string") return leg;
   if ("Legit" in leg) return `Legit (${leg.Legit})`;
   if ("Standard" in leg) {
-    return leg.Standard === "Decrypted" ? "Standard (Decrypted)" : "Standard";
+    if (leg.Standard === "Decrypted") {
+      return r.compressed ? "Compressed & Decrypted" : "Decrypted";
+    }
+    return "Standard";
   }
   return String(leg);
 }
@@ -112,7 +123,15 @@ function formatLegitimacy(leg: Legitimacy): string {
 function legitColor(leg: Legitimacy): string {
   if (typeof leg !== "string" && "Legit" in leg) return "emerald";
   if (leg === "Piratelegit") return "amber";
-  return "red";
+  if (typeof leg !== "string" && "Standard" in leg) {
+    return leg.Standard === "Decrypted" ? "amber" : "emerald";
+  }
+  return "emerald";
+}
+
+function ciaColor(r: CiaResult): string {
+  if (!resultOk(r)) return "red";
+  return legitColor(r.legitimacy);
 }
 
 function partitionOk(part: NcchPartition): boolean {
@@ -121,6 +140,38 @@ function partitionOk(part: NcchPartition): boolean {
   return [part.exheader_hash_valid, part.exefs_hash_valid, part.romfs_hash_valid, part.logo_hash_valid]
     .every(v => v === null || v === true);
 }
+
+function resultOk(r: VerifyResult): boolean {
+  if (r.format === "Cia") {
+    return r.content_hashes_valid !== false;
+  }
+  return r.ncsd_magic_valid && r.partitions.every(partitionOk);
+}
+
+const verdictOk = computed(() => verifyResult.value === null || resultOk(verifyResult.value));
+
+const batchOptions = {
+  errorRef: error,
+  isSuccess: (res: string) => {
+    try {
+      return resultOk(JSON.parse(res) as VerifyResult);
+    } catch {
+      return true;
+    }
+  },
+  failureMessage: (res: string) => {
+    try {
+      const v = JSON.parse(res) as VerifyResult;
+      if (v.format === "Ncsd") {
+        const bad = v.partitions.filter(p => !partitionOk(p)).length;
+        return `verification failed (${bad} partition mismatch(es))`;
+      }
+      return "verification failed";
+    } catch {
+      return "verification failed";
+    }
+  },
+};
 </script>
 
 <template>
@@ -129,97 +180,35 @@ function partitionOk(part: NcchPartition): boolean {
       title="Verify 3DS ROM"
       description="Verify .cia legitimacy or .3ds/.cci integrity. Supports compressed Z3DS files. Drop multiple files for batch processing."
       :loading="loading || batch.running.value"
-      :has-result="!!result"
-      :has-error="!!error"
+      :has-result="verifyResult ? verdictOk : !!result"
+      :has-error="!!error || (!!verifyResult && !verdictOk)"
     />
 
-    <OperationCard>
-      <div class="space-y-5">
-        <!-- Batch mode -->
-        <template v-if="isBatch">
-          <BatchFileList
-            :items="queue"
-            :current-index="batch.currentIndex.value"
-            :running="batch.running.value"
-            :progress="batch.progress"
-            @remove="store.removeFromQueue"
-            @clear="store.clearQueue"
-          />
-
-          <FileDropZone
-            label="Add more ROM files"
-            model-value=""
-            :multiple="true"
-            :filters="ROM_FILTERS"
-            @update:model-value="(p: string) => { if (p) store.addToQueue(p) }"
-            @update:files="handleFiles"
-          />
-        </template>
-
-        <!-- Single mode -->
-        <FileDropZone
-          v-else
-          :model-value="input"
-          label="Input ROM File"
-          :multiple="true"
-          :filters="ROM_FILTERS"
-          :primary="true"
-          @update:model-value="handleSingleFile"
-          @update:files="handleFiles"
-        />
-
-        <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
-          <FlagToggle
-            v-model="verifyContent"
-            label="Verify Content Hashes"
-            description="Also check SHA-256 hashes of all content data (CIA only, slower)"
-          />
-        </div>
-
-        <ProgressBar
-          :percent="progress.percent.value"
-          :message="progress.message.value"
-          :running="progress.running.value"
-        />
-
-        <RunButton
-          :loading="loading || batch.running.value"
-          :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input"
-          @click="execute"
-        >
-          {{ isBatch ? `Verify ${queue.filter(i => i.status === 'pending').length} Files` : 'Verify' }}
-        </RunButton>
-      </div>
-    </OperationCard>
-
-    <!-- CIA result -->
     <template v-if="verifyResult && verifyResult.format === 'Cia'">
-      <div class="mt-4 space-y-3">
-        <!-- Legitimacy badge -->
+      <div class="mb-4 space-y-3">
         <div
           class="flex items-center gap-3 rounded-lg border-l-2 px-4 py-3"
           :class="{
-            'border-emerald-500 bg-emerald-500/5': legitColor((verifyResult as CiaResult).legitimacy) === 'emerald',
-            'border-amber-500 bg-amber-500/5': legitColor((verifyResult as CiaResult).legitimacy) === 'amber',
-            'border-red-500 bg-red-500/5': legitColor((verifyResult as CiaResult).legitimacy) === 'red',
+            'border-emerald-500 bg-emerald-500/5': ciaColor(verifyResult as CiaResult) === 'emerald',
+            'border-amber-500 bg-amber-500/5': ciaColor(verifyResult as CiaResult) === 'amber',
+            'border-red-500 bg-red-500/5': ciaColor(verifyResult as CiaResult) === 'red',
           }"
         >
           <span
             class="inline-flex items-center rounded-md px-2.5 py-1 text-sm font-semibold"
             :class="{
-              'bg-emerald-500/20 text-emerald-300': legitColor((verifyResult as CiaResult).legitimacy) === 'emerald',
-              'bg-amber-500/20 text-amber-300': legitColor((verifyResult as CiaResult).legitimacy) === 'amber',
-              'bg-red-500/20 text-red-300': legitColor((verifyResult as CiaResult).legitimacy) === 'red',
+              'bg-emerald-500/20 text-emerald-300': ciaColor(verifyResult as CiaResult) === 'emerald',
+              'bg-amber-500/20 text-amber-300': ciaColor(verifyResult as CiaResult) === 'amber',
+              'bg-red-500/20 text-red-300': ciaColor(verifyResult as CiaResult) === 'red',
             }"
           >
-            {{ formatLegitimacy((verifyResult as CiaResult).legitimacy) }}
+            {{ ciaLabel(verifyResult as CiaResult) }}
           </span>
           <span class="text-sm text-zinc-400">
             Title ID: {{ (verifyResult as CiaResult).title_id }} &middot; Version: {{ (verifyResult as CiaResult).title_version }}
           </span>
         </div>
 
-        <!-- Signature checks -->
         <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
           <h4 class="mb-2 text-xs font-semibold uppercase tracking-wider text-zinc-500">Signature Checks</h4>
           <div class="space-y-1.5">
@@ -236,7 +225,6 @@ function partitionOk(part: NcchPartition): boolean {
           </div>
         </div>
 
-        <!-- Details -->
         <details class="rounded-lg border border-zinc-800/50 bg-zinc-800/20">
           <summary class="cursor-pointer px-4 py-2.5 text-xs font-semibold uppercase tracking-wider text-zinc-500 hover:text-zinc-400">
             Details
@@ -250,10 +238,8 @@ function partitionOk(part: NcchPartition): boolean {
       </div>
     </template>
 
-    <!-- NCSD result -->
     <template v-else-if="verifyResult && verifyResult.format === 'Ncsd'">
-      <div class="mt-4 space-y-3">
-        <!-- Header info -->
+      <div class="mb-4 space-y-3">
         <div
           class="flex items-center gap-3 rounded-lg border-l-2 px-4 py-3"
           :class="(verifyResult as NcsdResult).ncsd_magic_valid ? 'border-emerald-500 bg-emerald-500/5' : 'border-red-500 bg-red-500/5'"
@@ -264,12 +250,15 @@ function partitionOk(part: NcchPartition): boolean {
           >
             NCSD {{ (verifyResult as NcsdResult).ncsd_magic_valid ? 'Valid' : 'Invalid' }}
           </span>
+          <span
+            v-if="(verifyResult as NcsdResult).compressed"
+            class="rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-medium text-amber-300"
+          >Compressed</span>
           <span class="text-sm text-zinc-400">
             Title ID: {{ (verifyResult as NcsdResult).title_id }} &middot; {{ (verifyResult as NcsdResult).partition_count }} partition(s)
           </span>
         </div>
 
-        <!-- Per-partition results -->
         <div
           v-for="part in (verifyResult as NcsdResult).partitions"
           :key="part.index"
@@ -277,7 +266,7 @@ function partitionOk(part: NcchPartition): boolean {
         >
           <div class="mb-2 flex items-center gap-2">
             <h4 class="text-xs font-semibold uppercase tracking-wider text-zinc-500">
-              Partition {{ part.index }} — {{ part.name }}
+              Partition {{ part.index }}: {{ part.name }}
             </h4>
             <span
               v-if="part.encrypted"
@@ -305,11 +294,10 @@ function partitionOk(part: NcchPartition): boolean {
             <CheckRow v-if="part.logo_hash_valid !== null" label="Logo Hash" :valid="part.logo_hash_valid" />
           </div>
           <div v-else class="text-xs text-zinc-500">
-            Hash verification skipped — content is encrypted
+            Hash verification skipped (content is encrypted)
           </div>
         </div>
 
-        <!-- Details -->
         <details class="rounded-lg border border-zinc-800/50 bg-zinc-800/20">
           <summary class="cursor-pointer px-4 py-2.5 text-xs font-semibold uppercase tracking-wider text-zinc-500 hover:text-zinc-400">
             Details
@@ -323,9 +311,67 @@ function partitionOk(part: NcchPartition): boolean {
       </div>
     </template>
 
-    <!-- Batch/error result (no structured data) -->
-    <div v-else class="mt-4">
-      <OutputLog :result="result" :error="error" />
+    <div v-else class="mb-4">
+      <OutputLog :command="commandLine" :result="result" :error="error" />
     </div>
+
+    <OperationCard>
+      <div class="space-y-5">
+        <template v-if="isBatch">
+          <BatchFileList
+            :items="queue"
+            :current-index="batch.currentIndex.value"
+            :running="batch.running.value"
+            :progress="batch.progress"
+            @remove="store.removeFromQueue"
+            @clear="store.clearQueue"
+          />
+
+          <FileDropZone
+            label="Add more ROM files"
+            model-value=""
+            :multiple="true"
+            :filters="ROM_FILTERS"
+            @update:model-value="(p: string) => { if (p) store.addToQueue(p) }"
+            @update:files="handleFiles"
+          />
+        </template>
+
+        <FileDropZone
+          v-else
+          :model-value="input"
+          label="Input ROM file"
+          :multiple="true"
+          :filters="ROM_FILTERS"
+          :primary="true"
+          @update:model-value="handleSingleFile"
+          @update:files="handleFiles"
+        />
+
+        <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
+          <FlagToggle
+            v-model="verifyContent"
+            label="Verify content hashes"
+            description="Also check SHA-256 hashes of all content data (CIA only, slower)"
+          />
+        </div>
+
+        <ProgressBar
+          :percent="progress.percent.value"
+          :message="progress.message.value"
+          :running="progress.running.value"
+        />
+
+        <RunButton
+          :loading="loading || batch.running.value"
+          :batch-current="batch.currentIndex.value"
+          :batch-total="queue.length"
+          :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input"
+          @click="execute"
+        >
+          {{ isBatch && queue.filter(i => i.status === 'pending').length > 1 ? `Verify All (${queue.filter(i => i.status === 'pending').length})` : 'Verify' }}
+        </RunButton>
+      </div>
+    </OperationCard>
   </div>
 </template>

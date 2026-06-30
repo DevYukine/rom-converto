@@ -2,11 +2,11 @@ mod cci_to_cia;
 mod cia_to_cci;
 mod template;
 
-pub use cci_to_cia::cci_to_cia;
-pub use cia_to_cci::cia_to_cci;
+pub use cci_to_cia::{cci_to_cia, cci_to_cia_cancellable};
+pub use cia_to_cci::{cia_to_cci, cia_to_cci_cancellable};
 
-use crate::nintendo::ctr::has_matching_extension;
-use crate::util::ProgressReporter;
+use crate::nintendo::ctr::error::NintendoCTRError;
+use crate::util::{CancelToken, ProgressReporter};
 use anyhow::{Result, bail};
 use log::{debug, warn};
 use std::path::{Path, PathBuf};
@@ -36,6 +36,15 @@ pub async fn convert_rom(
     output: &Path,
     progress: &dyn ProgressReporter,
 ) -> Result<()> {
+    convert_rom_cancellable(input, output, progress, CancelToken::new()).await
+}
+
+pub async fn convert_rom_cancellable(
+    input: &Path,
+    output: &Path,
+    progress: &dyn ProgressReporter,
+    cancel: CancelToken,
+) -> Result<()> {
     let ext = input
         .extension()
         .and_then(|s| s.to_str())
@@ -43,9 +52,9 @@ pub async fn convert_rom(
         .unwrap_or_default();
 
     if CIA_EXTS.contains(&ext.as_str()) {
-        cia_to_cci(input, output, progress).await
+        cia_to_cci_cancellable(input, output, progress, cancel).await
     } else if CCI_EXTS.contains(&ext.as_str()) {
-        cci_to_cia(input, output, progress).await
+        cci_to_cia_cancellable(input, output, progress, cancel).await
     } else {
         bail!(
             "input extension '{}' is not convertible (expected .cia, .3ds, or .cci)",
@@ -56,18 +65,32 @@ pub async fn convert_rom(
 
 pub async fn convert_rom_batch(
     input_dir: &Path,
+    output_dir: Option<&Path>,
     progress: &dyn ProgressReporter,
     total_progress: &dyn ProgressReporter,
+    max_depth: Option<usize>,
 ) -> Result<()> {
-    let mut count: u64 = 0;
-    let mut scan = fs::read_dir(input_dir).await?;
-    while let Ok(Some(entry)) = scan.next_entry().await {
-        if has_matching_extension(&entry.path(), CONVERT_EXTS) {
-            count += 1;
-        }
-    }
+    convert_rom_batch_cancellable(
+        input_dir,
+        output_dir,
+        progress,
+        total_progress,
+        max_depth,
+        CancelToken::new(),
+    )
+    .await
+}
 
-    if count == 0 {
+pub async fn convert_rom_batch_cancellable(
+    input_dir: &Path,
+    output_dir: Option<&Path>,
+    progress: &dyn ProgressReporter,
+    total_progress: &dyn ProgressReporter,
+    max_depth: Option<usize>,
+    cancel: CancelToken,
+) -> Result<()> {
+    let roms = crate::util::fs::collect_files_with_exts(input_dir, CONVERT_EXTS, max_depth)?;
+    if roms.is_empty() {
         warn!(
             "No supported ROM files found in {} (looked for {:?})",
             input_dir.display(),
@@ -76,20 +99,36 @@ pub async fn convert_rom_batch(
         return Ok(());
     }
 
-    total_progress.start(count, &format!("Converting {count} files..."));
+    total_progress.start(
+        roms.len() as u64,
+        &format!("Converting {} files...", roms.len()),
+    );
 
-    let mut entries = fs::read_dir(input_dir).await?;
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        let path = entry.path();
-        if !has_matching_extension(&path, CONVERT_EXTS) {
-            debug!("Skipping {} (not a supported ROM)", path.display());
-            continue;
+    if let Some(dir) = output_dir {
+        fs::create_dir_all(dir).await?;
+    }
+
+    for path in roms {
+        if cancel.is_cancelled() {
+            return Err(NintendoCTRError::Cancelled.into());
         }
-
-        let output = derive_converted_path(&path);
+        let output = crate::util::place_in_dir_mirrored(
+            &derive_converted_path(&path),
+            input_dir,
+            output_dir,
+        );
+        if let Some(parent) = output.parent() {
+            fs::create_dir_all(parent).await?;
+        }
         debug!("Converting {} -> {}", path.display(), output.display());
 
-        if let Err(err) = convert_rom(&path, &output, progress).await {
+        if let Err(err) = convert_rom_cancellable(&path, &output, progress, cancel.clone()).await {
+            if matches!(
+                err.downcast_ref::<NintendoCTRError>(),
+                Some(NintendoCTRError::Cancelled)
+            ) {
+                return Err(err);
+            }
             warn!("Failed to convert {}: {err}", path.display());
         }
 

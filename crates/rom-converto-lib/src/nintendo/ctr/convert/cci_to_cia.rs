@@ -5,6 +5,7 @@ use crate::nintendo::ctr::constants::{
 use crate::nintendo::ctr::convert::template::{retail_cert_chain, template_ticket};
 use crate::nintendo::ctr::decrypt::cia::{Aes128Ctr, derive_ctr_key, get_ncch_aes_counter};
 use crate::nintendo::ctr::decrypt::model::NcchSection;
+use crate::nintendo::ctr::error::NintendoCTRError;
 use crate::nintendo::ctr::models::cia::{CIA_HEADER_SIZE, CiaFileWithoutContent, CiaHeader};
 use crate::nintendo::ctr::models::ncch_header::NcchHeader;
 use crate::nintendo::ctr::models::ncsd_header::{NCSD_HEADER_SIZE, NcsdHeader};
@@ -12,7 +13,7 @@ use crate::nintendo::ctr::models::signature::{SignatureData, SignatureType};
 use crate::nintendo::ctr::models::title_metadata::{
     ContentChunkRecord, ContentInfoRecord, ContentType, TitleMetadata, TitleMetadataHeader,
 };
-use crate::util::ProgressReporter;
+use crate::util::{CancelToken, ProgressReporter, scratch_output_path};
 use aes::cipher::{KeyIvInit, StreamCipher};
 use anyhow::{Context, Result, bail};
 use binrw::{BinRead, BinWrite, Endian};
@@ -35,6 +36,15 @@ pub async fn cci_to_cia(
     input: &Path,
     output: &Path,
     progress: &dyn ProgressReporter,
+) -> Result<()> {
+    cci_to_cia_cancellable(input, output, progress, CancelToken::new()).await
+}
+
+pub async fn cci_to_cia_cancellable(
+    input: &Path,
+    output: &Path,
+    progress: &dyn ProgressReporter,
+    cancel: CancelToken,
 ) -> Result<()> {
     let mut in_file = File::open(input).await.context("opening CCI input")?;
 
@@ -136,27 +146,42 @@ pub async fn cci_to_cia(
             .set_content_index(record.content_index as usize);
     }
 
-    let out = File::create(output).await.context("creating CIA output")?;
+    let tmp = scratch_output_path(output);
+    let out = File::create(&tmp).await.context("creating CIA output")?;
     let mut out = BufWriter::new(out);
 
-    let mut preamble = Vec::new();
-    cia_wo.write_options(&mut Cursor::new(&mut preamble), Endian::Little, ())?;
-    out.write_all(&preamble).await?;
+    let stream = async {
+        let mut preamble = Vec::new();
+        cia_wo.write_options(&mut Cursor::new(&mut preamble), Endian::Little, ())?;
+        out.write_all(&preamble).await?;
 
-    let mut buf = vec![0u8; CONTENT_COPY_BUF];
-    for p in &partitions {
-        stream_partition(
-            &mut in_file,
-            &mut out,
-            p,
-            &patched_cxi_prefix,
-            &mut buf,
-            progress,
-        )
-        .await?;
+        let mut buf = vec![0u8; CONTENT_COPY_BUF];
+        for p in &partitions {
+            stream_partition(
+                &mut in_file,
+                &mut out,
+                p,
+                &patched_cxi_prefix,
+                &mut buf,
+                progress,
+                &cancel,
+            )
+            .await?;
+        }
+
+        out.flush().await?;
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+
+    if let Err(err) = stream {
+        drop(out);
+        tokio::fs::remove_file(&tmp).await.ok();
+        return Err(err);
     }
 
-    out.flush().await?;
+    drop(out);
+    tokio::fs::rename(&tmp, output).await?;
     progress.finish();
 
     info!(
@@ -308,6 +333,7 @@ async fn stream_partition(
     patched: &PatchedCxiPrefix,
     buf: &mut [u8],
     progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
 ) -> Result<()> {
     if p.content_index == 0 {
         out.write_all(&patched.ncch_header).await?;
@@ -318,6 +344,9 @@ async fn stream_partition(
         file.seek(SeekFrom::Start(p.offset + prefix_len)).await?;
         let mut remaining = p.size - prefix_len;
         while remaining > 0 {
+            if cancel.is_cancelled() {
+                return Err(NintendoCTRError::Cancelled.into());
+            }
             let to_read = remaining.min(buf.len() as u64) as usize;
             file.read_exact(&mut buf[..to_read]).await?;
             out.write_all(&buf[..to_read]).await?;
@@ -328,6 +357,9 @@ async fn stream_partition(
         file.seek(SeekFrom::Start(p.offset)).await?;
         let mut remaining = p.size;
         while remaining > 0 {
+            if cancel.is_cancelled() {
+                return Err(NintendoCTRError::Cancelled.into());
+            }
             let to_read = remaining.min(buf.len() as u64) as usize;
             file.read_exact(&mut buf[..to_read]).await?;
             out.write_all(&buf[..to_read]).await?;

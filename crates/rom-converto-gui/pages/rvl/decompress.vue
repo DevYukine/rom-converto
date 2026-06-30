@@ -1,13 +1,21 @@
 <script setup lang="ts">
 import { storeToRefs } from "pinia";
 import { useRvlDecompressStore } from "~/stores/rvl-decompress";
+import type { ReportRecord, RunOutcome } from "~/types/report";
 
 const store = useRvlDecompressStore();
-const { input, output, format, result, error, loading, queue } = storeToRefs(store);
-const { run } = useOperation({ result, error, loading });
-const progress = useProgress("decompress-disc");
+const { input, output, format, onConflict, skipSpaceCheck, outputTemplate, reportFile, result, error, loading, queue, recursive, maxDepth } = storeToRefs(store);
+const { outputDir, resolve } = useOutputDir();
+const { expand } = useFolderScan(["rvz"]);
+const scanDepth = () => (recursive.value ? maxDepth.value : 1);
+const { run, cancelled, abort } = useOperation({ result, error, loading });
+const progress = useProgress("rvl-decompress");
+
+const previewMode = ref(false);
+const { preview, single: previewSingle, batch: previewBatch, error: previewError } = usePreview("cmd_decompress_disc");
 
 const isBatch = computed(() => queue.value.length > 0);
+const { canRun, runBlockReason, templateActive } = usePageGating({ input, queue, outputTemplate });
 
 const formatOptions = [
   { label: "ISO", value: "iso" },
@@ -26,13 +34,35 @@ const outputFilters = computed(() =>
       ],
 );
 
-const batch = useBatchOperation("decompress-disc", "cmd_decompress_disc", (item) => ({
-  input: item.input,
-  output: item.output || null,
-}));
+const commandLine = ref("");
 
-watch(input, (val) => {
-  if (val) output.value = deriveDiscPath(val, format.value);
+function decompressArgs(inputPath: string, outputPath: string) {
+  const tmpl = outputTemplate.value || null;
+  return {
+    input: inputPath,
+    output: tmpl ? null : outputPath || null,
+    taskId: "rvl-decompress",
+    onConflict: onConflict.value,
+    skipSpaceCheck: skipSpaceCheck.value,
+    outputTemplate: tmpl,
+    report: !!reportFile.value,
+    reportFile: reportFile.value || null,
+    dryRun: previewMode.value,
+  };
+}
+
+const batch = useBatchOperation("rvl-decompress", "cmd_decompress_disc", (item) =>
+  decompressArgs(item.input, item.output),
+);
+
+watch([input, format, outputDir], () => {
+  if (input.value) output.value = resolve(deriveDiscPath(input.value, format.value));
+});
+
+watch(outputDir, () => {
+  for (const item of queue.value) {
+    if (item.status === "pending") item.output = resolve(deriveDiscPath(item.input, format.value));
+  }
 });
 
 function setFormat(value: string) {
@@ -41,40 +71,79 @@ function setFormat(value: string) {
   const prev = format.value;
   format.value = next;
 
-  if (input.value && (!output.value || output.value === deriveDiscPath(input.value, prev))) {
-    output.value = deriveDiscPath(input.value, next);
+  if (input.value && (!output.value || output.value === resolve(deriveDiscPath(input.value, prev)))) {
+    output.value = resolve(deriveDiscPath(input.value, next));
   }
   for (const item of queue.value) {
-    if (item.status === "pending" && item.output === deriveDiscPath(item.input, prev)) {
-      item.output = deriveDiscPath(item.input, next);
+    if (item.status === "pending" && item.output === resolve(deriveDiscPath(item.input, prev))) {
+      item.output = resolve(deriveDiscPath(item.input, next));
     }
   }
 }
 
-function handleFiles(paths: string[]) {
+async function handleFiles(paths: string[]) {
   for (const p of paths) {
-    store.addToQueue(p, deriveDiscPath(p, format.value));
+    for (const f of await expand(p, scanDepth())) {
+      store.addToQueue(f, resolve(deriveDiscPath(f, format.value)));
+    }
   }
 }
 
-function handleSingleFile(path: string) {
-  if (queue.value.length > 0) {
-    store.addToQueue(path, deriveDiscPath(path, format.value));
-  } else {
+async function handleSingleFile(path: string) {
+  const found = await expand(path, scanDepth());
+  if (found.length === 1 && found[0] === path && queue.value.length === 0) {
     input.value = path;
+  } else {
+    for (const f of found) {
+      store.addToQueue(f, resolve(deriveDiscPath(f, format.value)));
+    }
   }
 }
 
 async function execute() {
   progress.reset();
+  const records: ReportRecord[] = [];
   if (isBatch.value) {
-    await batch.start(queue, result);
+    const rep = queue.value.find((i) => i.status === "pending") ?? queue.value[0];
+    commandLine.value = rep ? buildCliCommand("cmd_decompress_disc", decompressArgs(rep.input, rep.output)) : "";
+    await batch.start(
+      queue,
+      result,
+      { errorRef: error },
+      (res) => {
+        const record = (res as RunOutcome)?.record;
+        if (record) records.push(record);
+      },
+      async (item, err) => {
+        if (reportFile.value) await pushFailedRecord(records, item.input, "decompress", err);
+      },
+    );
   } else {
-    await run("cmd_decompress_disc", {
-      input: input.value,
-      output: output.value || null,
-    });
+    const args = decompressArgs(input.value, output.value);
+    commandLine.value = buildCliCommand("cmd_decompress_disc", args);
+    await runReportable("cmd_decompress_disc", args, { result, error, loading, cancelled }, records, "decompress");
   }
+  if (reportFile.value && records.length) {
+    await writeRunReport(reportFile.value, records);
+  }
+}
+
+async function runPreview() {
+  const rep = isBatch.value ? (queue.value.find((i) => i.status === "pending") ?? queue.value[0]) : null;
+  commandLine.value = isBatch.value
+    ? rep ? buildCliCommand("cmd_decompress_disc", decompressArgs(rep.input, rep.output)) : ""
+    : buildCliCommand("cmd_decompress_disc", decompressArgs(input.value, output.value));
+  if (isBatch.value) {
+    await previewBatch(queue, (item) => decompressArgs(item.input, item.output));
+  } else {
+    await previewSingle(decompressArgs(input.value, output.value));
+  }
+  if (previewError.value) error.value = previewError.value;
+}
+
+function onRun() {
+  if (previewMode.value) runPreview();
+  else execute();
 }
 </script>
 
@@ -87,6 +156,10 @@ async function execute() {
       :has-result="!!result"
       :has-error="!!error"
     />
+
+    <div class="mb-4">
+      <OutputLog :command="commandLine" :result="result" :preview="preview" :cancelled="cancelled ? 'Operation cancelled.' : undefined" :error="error" />
+    </div>
 
     <OperationCard>
       <div class="space-y-5">
@@ -113,7 +186,7 @@ async function execute() {
             model-value=""
             :multiple="true"
             :filters="[{ name: 'RVZ', extensions: ['rvz'] }]"
-            @update:model-value="(p: string) => { if (p) store.addToQueue(p, deriveDiscPath(p, format)) }"
+            @update:model-value="(p: string) => { if (p) handleSingleFile(p) }"
             @update:files="handleFiles"
           />
         </template>
@@ -129,13 +202,62 @@ async function execute() {
             @update:files="handleFiles"
           />
 
+          <InfoTooltip v-if="templateActive" :message="OUTPUT_TEMPLATE_TOOLTIP" block>
+            <FileDropZone
+              v-model="output"
+              class="w-full"
+              label="Output file (auto-filled)"
+              :save-dialog="true"
+              :disabled="true"
+              :filters="outputFilters"
+            />
+          </InfoTooltip>
           <FileDropZone
+            v-else
             v-model="output"
-            label="Output (auto-derived)"
+            label="Output file (auto-filled)"
             :save-dialog="true"
             :filters="outputFilters"
           />
         </div>
+
+        <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
+          <ConflictPolicyControl v-model="onConflict" />
+          <RecursiveOptions
+            :recursive="recursive"
+            :max-depth="maxDepth"
+            @update:recursive="recursive = $event"
+            @update:max-depth="maxDepth = $event"
+          />
+          <FlagToggle
+            v-model="skipSpaceCheck"
+            label="Skip free space check"
+            description="Proceed even if the output filesystem looks too full to hold the result."
+          />
+        </div>
+
+        <label class="flex flex-col gap-1.5">
+          <span class="text-sm font-medium text-zinc-200">Output template (optional)</span>
+          <span class="text-xs text-zinc-400">
+            Build the output path from metadata tokens, for example {console}/{title}.{ext}. Replaces the explicit output path.
+          </span>
+          <input
+            v-model="outputTemplate"
+            type="text"
+            placeholder="e.g. {console}/{title}.{ext}"
+            class="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-800/50 px-3 py-1.5 text-sm text-zinc-200"
+          />
+        </label>
+
+        <OutputDirField v-model="outputDir" />
+
+        <FileDropZone
+          v-model="reportFile"
+          label="Run report file (optional)"
+          placeholder="No report"
+          :save-dialog="true"
+          :filters="[{ name: 'Report', extensions: ['csv', 'json', 'html'] }]"
+        />
 
         <ProgressBar
           :percent="progress.percent.value"
@@ -143,18 +265,24 @@ async function execute() {
           :running="progress.running.value"
         />
 
+        <FlagToggle
+          v-model="previewMode"
+          label="Preview (dry run)"
+          description="Show what each file would do without writing anything."
+        />
+
         <RunButton
           :loading="loading || batch.running.value"
-          :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input"
-          @click="execute"
+          :batch-current="batch.currentIndex.value"
+          :batch-total="queue.length"
+          :disabled="!canRun"
+          :disabled-reason="runBlockReason"
+          @click="onRun"
+          @cancel="isBatch ? batch.abort() : abort()"
         >
-          {{ isBatch ? `Decompress ${queue.filter(i => i.status === 'pending').length} Files` : 'Decompress' }}
+          {{ previewMode ? 'Preview' : (isBatch && queue.filter(i => i.status === 'pending').length > 1 ? `Decompress All (${queue.filter(i => i.status === 'pending').length})` : 'Decompress') }}
         </RunButton>
       </div>
     </OperationCard>
-
-    <div class="mt-4">
-      <OutputLog :result="result" :error="error" />
-    </div>
   </div>
 </template>

@@ -5,28 +5,39 @@ import { useCtrCompressStore } from "~/stores/ctr-compress";
 import { useCtrDecompressStore } from "~/stores/ctr-decompress";
 import { useCtrVerifyStore } from "~/stores/ctr-verify";
 import { useCtrConvertStore } from "~/stores/ctr-convert";
+import { useCtrGenerateTicketStore } from "~/stores/ctr-generate-ticket";
 import { useCtrInfoStore } from "~/stores/ctr-info";
 import { useChdCompressStore } from "~/stores/chd-compress";
 import { useChdExtractStore } from "~/stores/chd-extract";
 import { useChdVerifyStore } from "~/stores/chd-verify";
 import { useChdInfoStore } from "~/stores/chd-info";
+import { useCsoCompressStore } from "~/stores/cso-compress";
+import { useCsoDecompressStore } from "~/stores/cso-decompress";
+import { useCsoVerifyStore } from "~/stores/cso-verify";
+import { useCsoInfoStore } from "~/stores/cso-info";
+import { useCueMergeStore } from "~/stores/cue-merge";
 import { useDolCompressStore } from "~/stores/dol-compress";
 import { useDolDecompressStore } from "~/stores/dol-decompress";
+import { useDolVerifyStore } from "~/stores/dol-verify";
 import { useDolInfoStore } from "~/stores/dol-info";
 import { useRvlCompressStore } from "~/stores/rvl-compress";
 import { useRvlDecompressStore } from "~/stores/rvl-decompress";
+import { useRvlVerifyStore } from "~/stores/rvl-verify";
 import { useRvlInfoStore } from "~/stores/rvl-info";
 import { useWupCompressStore } from "~/stores/wup-compress";
 import { useWupDecryptStore } from "~/stores/wup-decrypt";
+import { useWupVerifyStore } from "~/stores/wup-verify";
 import { useWupInfoStore } from "~/stores/wup-info";
 import { useNxCompressStore } from "~/stores/nx-compress";
 import { useNxDecompressStore } from "~/stores/nx-decompress";
 import { useNxVerifyStore } from "~/stores/nx-verify";
 import { useNxInfoStore } from "~/stores/nx-info";
-import { getVersion } from "@tauri-apps/api/app";
+import { useHashStore } from "~/stores/hash";
+import { usePlaylistStore } from "~/stores/playlist";
+import { invoke } from "@tauri-apps/api/core";
 
 const appVersion = ref("");
-getVersion()
+invoke<string>("app_display_version")
   .then((v) => {
     appVersion.value = v;
   })
@@ -56,6 +67,7 @@ const sections: SidebarSection[] = [
       { to: "/ctr/decompress", label: "Decompress", store: () => useCtrDecompressStore(), icon: "expand" },
       { to: "/ctr/verify", label: "Verify", store: () => useCtrVerifyStore(), icon: "shield-check" },
       { to: "/ctr/convert", label: "Convert", store: () => useCtrConvertStore(), icon: "swap" },
+      { to: "/ctr/generate-ticket", label: "Generate ticket", store: () => useCtrGenerateTicketStore(), icon: "folder-arrow" },
       { to: "/ctr/info", label: "Info", store: () => useCtrInfoStore(), icon: "info" },
     ],
   },
@@ -65,6 +77,7 @@ const sections: SidebarSection[] = [
     links: [
       { to: "/dol/compress", label: "Compress", store: () => useDolCompressStore(), icon: "compress" },
       { to: "/dol/decompress", label: "Decompress", store: () => useDolDecompressStore(), icon: "expand" },
+      { to: "/dol/verify", label: "Verify", store: () => useDolVerifyStore(), icon: "shield-check" },
       { to: "/dol/info", label: "Info", store: () => useDolInfoStore(), icon: "info" },
     ],
   },
@@ -74,6 +87,7 @@ const sections: SidebarSection[] = [
     links: [
       { to: "/rvl/compress", label: "Compress", store: () => useRvlCompressStore(), icon: "compress" },
       { to: "/rvl/decompress", label: "Decompress", store: () => useRvlDecompressStore(), icon: "expand" },
+      { to: "/rvl/verify", label: "Verify", store: () => useRvlVerifyStore(), icon: "shield-check" },
       { to: "/rvl/info", label: "Info", store: () => useRvlInfoStore(), icon: "info" },
     ],
   },
@@ -83,6 +97,7 @@ const sections: SidebarSection[] = [
     links: [
       { to: "/wup/compress", label: "Compress to WUA", store: () => useWupCompressStore(), icon: "compress" },
       { to: "/wup/decrypt", label: "Decrypt NUS", store: () => useWupDecryptStore(), icon: "lock-open" },
+      { to: "/wup/verify", label: "Verify", store: () => useWupVerifyStore(), icon: "shield-check" },
       { to: "/wup/info", label: "Info", store: () => useWupInfoStore(), icon: "info" },
     ],
   },
@@ -98,12 +113,37 @@ const sections: SidebarSection[] = [
   },
   {
     key: "chd",
-    name: "CHD",
+    name: "CD / DVD (CHD)",
     links: [
       { to: "/chd/compress", label: "Compress", store: () => useChdCompressStore(), icon: "disc-down" },
       { to: "/chd/extract", label: "Extract", store: () => useChdExtractStore(), icon: "disc-up" },
       { to: "/chd/verify", label: "Verify", store: () => useChdVerifyStore(), icon: "shield-check" },
       { to: "/chd/info", label: "Info", store: () => useChdInfoStore(), icon: "info" },
+    ],
+  },
+  {
+    key: "cso",
+    name: "PSP / PS2 (CSO/ZSO)",
+    links: [
+      { to: "/cso/compress", label: "Compress", store: () => useCsoCompressStore(), icon: "compress" },
+      { to: "/cso/decompress", label: "Decompress", store: () => useCsoDecompressStore(), icon: "expand" },
+      { to: "/cso/verify", label: "Verify", store: () => useCsoVerifyStore(), icon: "shield-check" },
+      { to: "/cso/info", label: "Info", store: () => useCsoInfoStore(), icon: "info" },
+    ],
+  },
+  {
+    key: "cue",
+    name: "CD (CUE/BIN)",
+    links: [
+      { to: "/cue/merge", label: "Merge multi-bin", store: () => useCueMergeStore(), icon: "compress" },
+    ],
+  },
+  {
+    key: "util",
+    name: "Utilities",
+    links: [
+      { to: "/hash", label: "Hash", store: () => useHashStore(), icon: "shield-check" },
+      { to: "/playlist", label: "Playlist", store: () => usePlaylistStore(), icon: "folder-arrow" },
     ],
   },
 ];
@@ -183,11 +223,11 @@ function isActiveSection(key: string): boolean {
       </div>
     </Transition>
 
-    <nav class="flex w-60 flex-col border-r border-zinc-800/50 bg-zinc-950">
+    <nav aria-label="Platforms" class="flex w-60 flex-col border-r border-zinc-800/50 bg-zinc-950">
       <div class="px-5 py-5">
         <NuxtLink to="/" class="flex items-center gap-2.5">
           <div class="flex h-8 w-8 items-center justify-center rounded-lg bg-sky-500/10">
-            <svg class="h-4 w-4 text-sky-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <svg aria-hidden="true" class="h-4 w-4 text-sky-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
               <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m.75 12l3 3m0 0l3-3m-3 3v-6m-1.5-9H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
             </svg>
           </div>
@@ -199,6 +239,8 @@ function isActiveSection(key: string): boolean {
         <div v-for="section in sections" :key="section.key">
           <button
             type="button"
+            :aria-expanded="openSections.has(section.key)"
+            :aria-controls="'section-' + section.key"
             :class="[
               'flex w-full items-center justify-between rounded-lg px-2 py-2 text-[11px] font-semibold uppercase tracking-wider transition',
               isActiveSection(section.key)
@@ -215,6 +257,7 @@ function isActiveSection(key: string): boolean {
               {{ section.name }}
             </span>
             <svg
+              aria-hidden="true"
               :class="[
                 'h-3 w-3 transition-transform duration-150',
                 openSections.has(section.key) ? 'rotate-90' : '',
@@ -236,39 +279,40 @@ function isActiveSection(key: string): boolean {
             leave-from-class="max-h-96 opacity-100"
             leave-to-class="max-h-0 opacity-0"
           >
-            <ul v-if="openSections.has(section.key)" class="mt-1 space-y-0.5 pb-2">
+            <ul v-if="openSections.has(section.key)" :id="'section-' + section.key" class="mt-1 space-y-0.5 pb-2">
               <li v-for="link in section.links" :key="link.to">
                 <NuxtLink
                   :to="link.to"
+                  :aria-current="route.path === link.to ? 'page' : undefined"
                   class="group relative flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-zinc-400 transition hover:bg-zinc-800/60 hover:text-zinc-200"
                   active-class="!bg-zinc-800 !text-sky-400 before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-0.5 before:rounded-full before:bg-sky-400"
                 >
                   <span class="flex h-5 w-5 items-center justify-center">
-                    <svg v-if="link.icon === 'folder-arrow'" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                    <svg v-if="link.icon === 'folder-arrow'" aria-hidden="true" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
                       <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 00-1.883 2.542l.857 6a2.25 2.25 0 002.227 1.932H19.05a2.25 2.25 0 002.227-1.932l.857-6a2.25 2.25 0 00-1.883-2.542m-16.5 0V6A2.25 2.25 0 016 3.75h3.879a1.5 1.5 0 011.06.44l2.122 2.12a1.5 1.5 0 001.06.44H18A2.25 2.25 0 0120.25 9v.776" />
                     </svg>
-                    <svg v-else-if="link.icon === 'lock-open'" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                    <svg v-else-if="link.icon === 'lock-open'" aria-hidden="true" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
                       <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 10.5V6.75a4.5 4.5 0 119 0v3.75M3.75 21.75h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H3.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
                     </svg>
-                    <svg v-else-if="link.icon === 'compress'" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                    <svg v-else-if="link.icon === 'compress'" aria-hidden="true" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
                       <path stroke-linecap="round" stroke-linejoin="round" d="M9 9V4.5M9 9H4.5M9 9L3.75 3.75M9 15v4.5M9 15H4.5M9 15l-5.25 5.25M15 9h4.5M15 9V4.5M15 9l5.25-5.25M15 15h4.5M15 15v4.5m0-4.5l5.25 5.25" />
                     </svg>
-                    <svg v-else-if="link.icon === 'expand'" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                    <svg v-else-if="link.icon === 'expand'" aria-hidden="true" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
                       <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
                     </svg>
-                    <svg v-else-if="link.icon === 'shield-check'" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                    <svg v-else-if="link.icon === 'shield-check'" aria-hidden="true" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
                       <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
                     </svg>
-                    <svg v-else-if="link.icon === 'swap'" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                    <svg v-else-if="link.icon === 'swap'" aria-hidden="true" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
                       <path stroke-linecap="round" stroke-linejoin="round" d="M7.5 21L3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5" />
                     </svg>
-                    <svg v-else-if="link.icon === 'disc-down'" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                    <svg v-else-if="link.icon === 'disc-down'" aria-hidden="true" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
                       <path stroke-linecap="round" stroke-linejoin="round" d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125" />
                     </svg>
-                    <svg v-else-if="link.icon === 'disc-up'" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                    <svg v-else-if="link.icon === 'disc-up'" aria-hidden="true" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
                       <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
                     </svg>
-                    <svg v-else-if="link.icon === 'info'" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                    <svg v-else-if="link.icon === 'info'" aria-hidden="true" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
                       <path stroke-linecap="round" stroke-linejoin="round" d="M11.25 11.25l.041-.02a.75.75 0 011.063.852l-.708 2.836a.75.75 0 001.063.853l.041-.021M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9-3.75h.008v.008H12V8.25z" />
                     </svg>
                   </span>
@@ -276,18 +320,18 @@ function isActiveSection(key: string): boolean {
                   {{ link.label }}
 
                   <span class="ml-auto flex h-4 w-4 items-center justify-center">
-                    <span
-                      v-if="getStatus(link.store) === 'running'"
-                      class="h-2 w-2 animate-pulse rounded-full bg-sky-400"
-                    />
-                    <span
-                      v-else-if="getStatus(link.store) === 'done'"
-                      class="h-1.5 w-1.5 rounded-full bg-emerald-400"
-                    />
-                    <span
-                      v-else-if="getStatus(link.store) === 'error'"
-                      class="h-1.5 w-1.5 rounded-full bg-red-400"
-                    />
+                    <template v-if="getStatus(link.store) === 'running'">
+                      <span class="h-2 w-2 animate-pulse rounded-full bg-sky-400" />
+                      <span class="sr-only">running</span>
+                    </template>
+                    <template v-else-if="getStatus(link.store) === 'done'">
+                      <span class="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                      <span class="sr-only">done</span>
+                    </template>
+                    <template v-else-if="getStatus(link.store) === 'error'">
+                      <span class="h-1.5 w-1.5 rounded-full bg-red-400" />
+                      <span class="sr-only">failed</span>
+                    </template>
                   </span>
                 </NuxtLink>
               </li>
@@ -297,7 +341,7 @@ function isActiveSection(key: string): boolean {
       </div>
 
       <div class="border-t border-zinc-800/50 px-5 py-3">
-        <span class="text-[11px] text-zinc-600">{{ appVersion ? `v${appVersion}` : '' }}</span>
+        <span class="text-[11px] text-zinc-400">{{ appVersion ? (appVersion.startsWith('dev-') ? appVersion : `v${appVersion}`) : '' }}</span>
       </div>
     </nav>
 

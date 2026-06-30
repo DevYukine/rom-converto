@@ -1,13 +1,14 @@
-use crate::chd::cue::models::CueSheet;
 use crate::chd::error::ChdResult;
 use crate::chd::models::{CHD_METADATA_FLAG_HASHED, ChdMetadataHeader, SHA1_BYTES};
+use crate::cue::models::CueSheet;
 use binrw::BinWrite;
 use sha1::{Digest, Sha1};
 use std::io::Cursor;
 
 const TRACK_INFO_SEPARATOR: char = ' ';
-const PREGAP_TYPE_MODE1: &str = "MODE1";
-const PREGAP_TYPE_NONE: &str = "V";
+// chdman leaves PGTYPE at its MODE1 default unless the pregap data is
+// stored in-file, which this writer never does.
+const PREGAP_TYPE: &str = "MODE1";
 
 #[derive(Debug, Clone)]
 pub struct MetadataHash {
@@ -16,12 +17,29 @@ pub struct MetadataHash {
 }
 
 #[derive(Debug)]
-pub struct CdMetadataBlock {
+pub struct MetadataBlock {
     pub bytes: Vec<u8>,
     pub hashes: Vec<MetadataHash>,
 }
 
-pub fn generate_cd_metadata(cue_sheet: &CueSheet, total_frames: u32) -> ChdResult<CdMetadataBlock> {
+/// Serialized `DVD ` marker block: chdman's whole DVD metadata is the
+/// hashed empty string.
+pub fn generate_dvd_metadata() -> ChdResult<MetadataBlock> {
+    let metadata = ChdMetadataHeader::new_dvd_metadata();
+    let mut bytes = Vec::new();
+    metadata.write(&mut Cursor::new(&mut bytes))?;
+
+    let sha1: [u8; SHA1_BYTES] = Sha1::digest(&metadata.data).into();
+    Ok(MetadataBlock {
+        bytes,
+        hashes: vec![MetadataHash {
+            tag: metadata.tag,
+            sha1,
+        }],
+    })
+}
+
+pub fn generate_cd_metadata(cue_sheet: &CueSheet, total_frames: u32) -> ChdResult<MetadataBlock> {
     let mut metadata_buffer = Vec::new();
 
     // CDs use a single metadata entry that lists every track.
@@ -41,11 +59,6 @@ pub fn generate_cd_metadata(cue_sheet: &CueSheet, total_frames: u32) -> ChdResul
         let end_frame = track_starts.get(idx + 1).copied().unwrap_or(total_frames);
         let frames = end_frame.saturating_sub(start_frame);
         let pregap = track.pregap.map(|p| p.to_lba()).unwrap_or(0);
-        let pgtype = if pregap > 0 {
-            PREGAP_TYPE_MODE1
-        } else {
-            PREGAP_TYPE_NONE
-        };
 
         // Format: TRACK:n TYPE:type SUBTYPE:NONE FRAMES:nnn PREGAP:n PGTYPE:type PGSUB:NONE POSTGAP:0
         track_info.push_str(&format!(
@@ -54,7 +67,7 @@ pub fn generate_cd_metadata(cue_sheet: &CueSheet, total_frames: u32) -> ChdResul
             track.track_type.chd_metadata_type(),
             frames,
             pregap,
-            pgtype
+            PREGAP_TYPE
         ));
     }
 
@@ -71,7 +84,7 @@ pub fn generate_cd_metadata(cue_sheet: &CueSheet, total_frames: u32) -> ChdResul
         });
     }
 
-    Ok(CdMetadataBlock {
+    Ok(MetadataBlock {
         bytes: metadata_buffer,
         hashes,
     })

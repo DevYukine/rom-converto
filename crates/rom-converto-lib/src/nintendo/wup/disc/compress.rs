@@ -20,14 +20,16 @@ use crate::nintendo::wup::disc::partition::{
     read_disc_decrypted_file_iv, read_disc_decrypted_zero_iv, read_partition_header,
 };
 use crate::nintendo::wup::disc::partition_table::{
-    PartitionEntry, PartitionKind, parse_partition_table,
+    PartitionEntry, PartitionKind, PartitionTable, parse_partition_table,
 };
 use crate::nintendo::wup::disc::sector_stream::{DiscSectorSource, SECTOR_SIZE};
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use crate::nintendo::wup::error::{WupError, WupResult};
 use crate::nintendo::wup::models::WupTmd;
 use crate::nintendo::wup::nus::content_stream::{ContentLoader, decrypt_content_0};
-use crate::nintendo::wup::nus::fst_parser::parse_fst;
-use crate::nintendo::wup::nus::ticket_parser::parse_ticket_bytes;
+use crate::nintendo::wup::nus::fst_parser::{VirtualFs, parse_fst};
+use crate::nintendo::wup::nus::ticket_parser::{TitleKey, parse_ticket_bytes};
 use crate::nintendo::wup::zarchive_writer::ArchiveSink;
 use crate::util::ProgressReporter;
 
@@ -51,23 +53,35 @@ pub fn estimate_disc_uncompressed_bytes(
         .ok_or(WupError::InvalidPartitionHeader)?;
     let si_titles = parse_si_titles(&mut *disc, &si, &key)?;
 
-    let content_partitions: Vec<PartitionEntry> = table.content_partitions().cloned().collect();
-    if !content_partitions
-        .iter()
+    if !table
+        .content_partitions()
         .any(|p| matches!(p.kind, PartitionKind::Game))
     {
         return Err(WupError::NoGamePartitionFound);
     }
 
     let mut total: u64 = 0;
-    for partition in &content_partitions {
-        let si_title = match find_matching_title(&si_titles, &partition.name) {
+    for (toc_index, partition) in content_partitions_with_index(&table) {
+        let si_title = match find_matching_title(&si_titles, toc_index) {
             Some(t) => t,
             None => continue,
         };
         total = total.saturating_add(estimate_one_partition(&mut *disc, partition, si_title)?);
     }
     Ok(total)
+}
+
+/// Iterate the disc's content partitions (GM/UP/UC) paired with the
+/// TOC index that [`find_matching_title`] keys on.
+pub(crate) fn content_partitions_with_index(
+    table: &PartitionTable,
+) -> impl Iterator<Item = (usize, &PartitionEntry)> {
+    table.entries.iter().enumerate().filter(|(_, e)| {
+        matches!(
+            e.kind,
+            PartitionKind::Game | PartitionKind::Update | PartitionKind::Dlc
+        )
+    })
 }
 
 fn estimate_one_partition(
@@ -104,6 +118,16 @@ pub fn compress_disc_title(
     sink: &mut dyn ArchiveSink,
     progress: &dyn ProgressReporter,
 ) -> WupResult<Vec<(u64, u16)>> {
+    compress_disc_title_with_cancel(disc_path, key_override, sink, progress, None)
+}
+
+pub(crate) fn compress_disc_title_with_cancel(
+    disc_path: &Path,
+    key_override: Option<&Path>,
+    sink: &mut dyn ArchiveSink,
+    progress: &dyn ProgressReporter,
+    cancelled: Option<&AtomicBool>,
+) -> WupResult<Vec<(u64, u16)>> {
     let mut disc = crate::nintendo::wup::disc::sector_stream::open_disc(disc_path)?;
     let key = load_disc_key(disc_path, key_override)?;
 
@@ -116,23 +140,28 @@ pub fn compress_disc_title(
     // Pull ticket + TMD for every title advertised in the SI FST.
     let si_titles = parse_si_titles(&mut *disc, &si, &key)?;
 
-    // Match each GM/UP/UC partition to its ticket + TMD by title id.
     let mut results = Vec::new();
-    let content_partitions: Vec<PartitionEntry> = table.content_partitions().cloned().collect();
-    if !content_partitions
-        .iter()
+    if !table
+        .content_partitions()
         .any(|p| matches!(p.kind, PartitionKind::Game))
     {
         return Err(WupError::NoGamePartitionFound);
     }
 
-    for partition in &content_partitions {
-        let si_title = match find_matching_title(&si_titles, &partition.name) {
+    let indexed: Vec<(usize, PartitionEntry)> = content_partitions_with_index(&table)
+        .map(|(i, p)| (i, p.clone()))
+        .collect();
+    for (toc_index, partition) in &indexed {
+        if cancelled.is_some_and(|c| c.load(Ordering::Relaxed)) {
+            return Err(WupError::Cancelled);
+        }
+        let si_title = match find_matching_title(&si_titles, *toc_index) {
             Some(t) => t,
             None => continue,
         };
-        let (title_id, version) =
-            compress_one_partition(&mut *disc, partition, si_title, sink, progress)?;
+        let (title_id, version) = compress_one_partition_with_cancel(
+            &mut *disc, partition, si_title, sink, progress, cancelled,
+        )?;
         results.push((title_id, version));
     }
 
@@ -144,15 +173,18 @@ pub fn compress_disc_title(
 
 /// Decrypted ticket + TMD bytes for one title pulled from the SI
 /// FST. Parsing happens on demand so the SI walk stays cheap.
-struct SiTitle {
-    title_id: u64,
-    ticket_bytes: Vec<u8>,
-    tmd_bytes: Vec<u8>,
+pub(crate) struct SiTitle {
+    /// SI FST directory this title was read from, named
+    /// `{partition_index:02x}` after the partition's TOC position.
+    pub(crate) dir: String,
+    pub(crate) title_id: u64,
+    pub(crate) ticket_bytes: Vec<u8>,
+    pub(crate) tmd_bytes: Vec<u8>,
 }
 
 /// Walk the SI partition's FST and pull out every title's ticket and
 /// TMD pair.
-fn parse_si_titles(
+pub(crate) fn parse_si_titles(
     disc: &mut dyn DiscSectorSource,
     si: &PartitionEntry,
     key: &DiscKey,
@@ -206,10 +238,11 @@ fn parse_si_titles(
     // Keep only dirs that have both ticket and TMD. Read the ticket
     // once to pull title_id out for the matching step below.
     let mut titles = Vec::new();
-    for (_, (tik, tmd)) in by_dir {
+    for (dir, (tik, tmd)) in by_dir {
         if let (Some(tik), Some(tmd)) = (tik, tmd) {
             let (ticket, _) = parse_ticket_bytes(&tik)?;
             titles.push(SiTitle {
+                dir,
                 title_id: ticket.title_id,
                 ticket_bytes: tik,
                 tmd_bytes: tmd,
@@ -219,38 +252,37 @@ fn parse_si_titles(
     Ok(titles)
 }
 
-/// Match a partition name like `GM12345678` or `UP` to one SI title.
-/// GM names carry the low 8 hex digits of the title id as suffix. UP
-/// names have no suffix, so fall back to the first non-game title
-/// (title-type high half != 0x0005_000E).
-fn find_matching_title<'a>(titles: &'a [SiTitle], partition_name: &str) -> Option<&'a SiTitle> {
-    if partition_name.len() >= 10 {
-        let suffix = &partition_name[2..10];
-        if let Ok(low) = u32::from_str_radix(suffix, 16)
-            && let Some(t) = titles.iter().find(|t| (t.title_id as u32) == low)
-        {
-            return Some(t);
-        }
-    }
-    if partition_name.starts_with("UP") {
-        return titles.iter().find(|t| {
-            let mid = (t.title_id >> 32) as u32;
-            mid != 0x0005_000E
-        });
-    }
-    None
+/// Match a content partition to its SI ticket/TMD by the partition's
+/// index in the disc TOC. The SI FST stores each title under a
+/// directory named `{partition_index:02x}` (the partition's position
+/// in the TOC), so the lookup is positional rather than name-based.
+/// Partitions whose SI directory is absent (a stripped update on a
+/// game disc, for example) return `None` and are skipped by callers.
+pub(crate) fn find_matching_title(titles: &[SiTitle], toc_index: usize) -> Option<&SiTitle> {
+    let dir = format!("{toc_index:02x}");
+    titles.iter().find(|t| t.dir == dir)
 }
 
-/// Compress one GM/UP/UC partition: decrypt its FST, build a content
-/// location map, stream every virtual file through the shared
-/// `ContentLoader`.
-fn compress_one_partition(
+/// Everything needed to read the content of one GM/UP/UC partition:
+/// the decrypted title key, parsed TMD, parsed FST, and the
+/// `content_id -> (disc offset, size)` location map. Shared by the
+/// compressor, the disc `info` reader, and the disc `verify` path.
+pub(crate) struct PartitionPlan {
+    pub(crate) title_id: u64,
+    pub(crate) title_version: u16,
+    pub(crate) title_key: TitleKey,
+    pub(crate) tmd: WupTmd,
+    pub(crate) fs: VirtualFs,
+    pub(crate) locations: Vec<(u32, PartitionContentLocation)>,
+}
+
+/// Decrypt a content partition's FST and build the location map, the
+/// shared head of every partition walk.
+pub(crate) fn plan_partition(
     disc: &mut dyn DiscSectorSource,
     partition: &PartitionEntry,
     si_title: &SiTitle,
-    sink: &mut dyn ArchiveSink,
-    progress: &dyn ProgressReporter,
-) -> WupResult<(u64, u16)> {
+) -> WupResult<PartitionPlan> {
     let (ticket, title_key) = parse_ticket_bytes(&si_title.ticket_bytes)?;
     let tmd = WupTmd::parse(&si_title.tmd_bytes)?;
 
@@ -258,20 +290,15 @@ fn compress_one_partition(
     let gm_header_size = header.header_size as u64;
 
     // Content 0 sits at the start of the content area. Size on disc
-    // is TMD.contents[0].size (encrypted, padded).
+    // is TMD.contents[0].size (encrypted, padded). It must be
+    // decrypted up front so its FST can produce the location map.
     let content0 = tmd.contents.first().ok_or(WupError::InvalidTmd)?;
     let content0_offset = partition.byte_offset() + gm_header_size;
-    let content0_size = content0.size;
-
-    // Content 0 must be decrypted up front (outside ContentLoader) so
-    // its FST can produce the location map ContentLoader needs.
-    let mut encrypted_content0 = vec![0u8; content0_size as usize];
+    let mut encrypted_content0 = vec![0u8; content0.size as usize];
     disc.read_bytes(content0_offset, &mut encrypted_content0)?;
     let fst_bytes = decrypt_content_0(encrypted_content0, &title_key)?;
     let fs = parse_fst(&fst_bytes)?;
 
-    // Build the content_id -> (disc offset, size) map used by
-    // PartitionContentSource.
     let mut locations: Vec<(u32, PartitionContentLocation)> = Vec::new();
     for (cluster_idx, cluster) in fs.clusters.iter().enumerate() {
         let tmd_entry = tmd
@@ -286,17 +313,39 @@ fn compress_one_partition(
         locations.push((tmd_entry.content_id, loc));
     }
 
-    let archive_folder = format!("{:016x}_v{}", ticket.title_id, ticket.title_version);
-    let mut source = PartitionContentSource::new(disc, locations);
-    let mut loader = ContentLoader::new(&mut source, title_key, &tmd, &fs);
-    for vfile in &fs.files {
+    Ok(PartitionPlan {
+        title_id: ticket.title_id,
+        title_version: ticket.title_version,
+        title_key,
+        tmd,
+        fs,
+        locations,
+    })
+}
+
+fn compress_one_partition_with_cancel(
+    disc: &mut dyn DiscSectorSource,
+    partition: &PartitionEntry,
+    si_title: &SiTitle,
+    sink: &mut dyn ArchiveSink,
+    progress: &dyn ProgressReporter,
+    cancelled: Option<&AtomicBool>,
+) -> WupResult<(u64, u16)> {
+    let plan = plan_partition(disc, partition, si_title)?;
+    let archive_folder = format!("{:016x}_v{}", plan.title_id, plan.title_version);
+    let mut source = PartitionContentSource::new(disc, plan.locations);
+    let mut loader = ContentLoader::new(&mut source, plan.title_key, &plan.tmd, &plan.fs);
+    for vfile in &plan.fs.files {
+        if cancelled.is_some_and(|c| c.load(Ordering::Relaxed)) {
+            return Err(WupError::Cancelled);
+        }
         let bytes = loader.extract_file(vfile)?;
         let archive_path = format!("{archive_folder}/{}", vfile.path);
         sink.start_new_file(&archive_path)?;
         sink.append_data(&bytes)?;
         progress.inc(bytes.len() as u64);
     }
-    Ok((ticket.title_id, ticket.title_version))
+    Ok((plan.title_id, plan.title_version))
 }
 
 fn split_parent(path: &str) -> (&str, &str) {
@@ -328,44 +377,48 @@ mod tests {
     }
 
     #[test]
-    fn find_matching_title_by_gm_suffix() {
+    fn find_matching_title_by_toc_index() {
         let titles = vec![
             SiTitle {
-                title_id: 0x0005_000E_0000_BEEF,
+                dir: "02".to_string(),
+                title_id: 0x0005_0000_1019_E600,
                 ticket_bytes: vec![],
                 tmd_bytes: vec![],
             },
             SiTitle {
-                title_id: 0x0005_000E_0000_CAFE,
+                dir: "03".to_string(),
+                title_id: 0x0005_0010_1006_0000,
                 ticket_bytes: vec![],
                 tmd_bytes: vec![],
             },
         ];
-        let t = find_matching_title(&titles, "GM0000CAFE").unwrap();
-        assert_eq!(t.title_id, 0x0005_000E_0000_CAFE);
+        assert_eq!(
+            find_matching_title(&titles, 2).unwrap().title_id,
+            0x0005_0000_1019_E600
+        );
+        assert_eq!(
+            find_matching_title(&titles, 3).unwrap().title_id,
+            0x0005_0010_1006_0000
+        );
     }
 
     #[test]
-    fn find_matching_title_up_fallback() {
-        let titles = vec![
-            SiTitle {
-                title_id: 0x0005_000E_0000_BEEF,
-                ticket_bytes: vec![],
-                tmd_bytes: vec![],
-            },
-            SiTitle {
-                title_id: 0x0005_001B_0000_0001,
-                ticket_bytes: vec![],
-                tmd_bytes: vec![],
-            },
-        ];
-        let t = find_matching_title(&titles, "UP").unwrap();
-        assert_eq!(t.title_id, 0x0005_001B_0000_0001);
+    fn find_matching_title_returns_none_when_si_dir_absent() {
+        // An update partition at TOC index 1 with no `01/` directory
+        // in the SI FST has no ticket/TMD and must be skipped rather
+        // than mismatched to another title.
+        let titles = vec![SiTitle {
+            dir: "02".to_string(),
+            title_id: 0x0005_0000_1019_E600,
+            ticket_bytes: vec![],
+            tmd_bytes: vec![],
+        }];
+        assert!(find_matching_title(&titles, 1).is_none());
     }
 
     #[test]
-    fn find_matching_title_returns_none_for_unknown() {
+    fn find_matching_title_returns_none_for_empty() {
         let titles: Vec<SiTitle> = Vec::new();
-        assert!(find_matching_title(&titles, "GM12345678").is_none());
+        assert!(find_matching_title(&titles, 2).is_none());
     }
 }

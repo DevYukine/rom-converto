@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
+import { invoke } from "@tauri-apps/api/core";
+import { save } from "@tauri-apps/plugin-dialog";
 import {
   type InfoResult,
   imageToDataUrl,
@@ -34,6 +36,8 @@ const title = computed(() => {
     }
     case "chd":
       return `CHD v${props.info.version}`;
+    case "cso":
+      return `${props.info.format} v${props.info.version}`;
     default:
       return "Unknown";
   }
@@ -55,6 +59,8 @@ const subtitle = computed(() => {
       return props.info.full?.control?.titles?.[0]?.publisher ?? "";
     case "chd":
       return props.info.compressors.join(", ");
+    case "cso":
+      return "";
   }
 });
 
@@ -83,6 +89,25 @@ function formatMaker(code: string, name: string | null): string {
   return code;
 }
 
+function formatBytes(n: number): string {
+  if (n < 1024) {
+    return `${n} bytes`;
+  }
+  const units = ["KiB", "MiB", "GiB", "TiB"];
+  let value = n / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value.toFixed(2)} ${units[unit]} (${n.toLocaleString()} bytes)`;
+}
+
+function formatBool(value: boolean, qualifier?: string): string {
+  const label = value ? "Yes" : "No";
+  return qualifier ? `${label} (${qualifier})` : label;
+}
+
 function nxLabel(snake: string): string {
   return snake
     .split("_")
@@ -104,8 +129,11 @@ const fields = computed<Field[]>(() => {
       f.push({ label: "Maker", value: formatMaker(props.info.maker_code, props.info.maker_name) });
       f.push({
         label: "Encrypted",
-        value: props.info.ncch_encrypted ? "yes" : "no",
+        value: formatBool(props.info.ncch_encrypted),
       });
+      if (props.info.compressed) {
+        f.push({ label: "Compressed", value: "yes (zstd)" });
+      }
       if (props.info.smdh?.region_names?.length) {
         f.push({ label: "Region", value: props.info.smdh.region_names.join(", ") });
       }
@@ -175,11 +203,11 @@ const fields = computed<Field[]>(() => {
       if (props.info.meta?.drc_use !== null && props.info.meta?.drc_use !== undefined) {
         f.push({
           label: "GamePad required",
-          value: props.info.meta.drc_use ? "yes" : "no",
+          value: formatBool(props.info.meta.drc_use),
         });
       }
       if (props.info.meta?.app_size && props.info.meta.app_size > 0) {
-        f.push({ label: "App size", value: `${props.info.meta.app_size} bytes` });
+        f.push({ label: "App size", value: formatBytes(props.info.meta.app_size) });
       }
       if (props.info.meta) {
         const accessories: string[] = [];
@@ -196,7 +224,10 @@ const fields = computed<Field[]>(() => {
     }
     case "nx": {
       f.push({ label: "Container", value: props.info.container_kind.toUpperCase() });
-      f.push({ label: "Compressed", value: props.info.is_compressed ? "yes (zstd)" : "no" });
+      f.push({
+        label: "Compressed",
+        value: formatBool(props.info.is_compressed, props.info.is_compressed ? "zstd" : undefined),
+      });
       f.push({ label: "Distribution", value: nxLabel(props.info.distribution) });
       f.push({ label: "Structure", value: nxLabel(props.info.structure) });
       f.push({ label: "NCA files", value: String(props.info.nca_names.length) });
@@ -260,7 +291,7 @@ const fields = computed<Field[]>(() => {
     case "chd": {
       f.push({ label: "Version", value: `CHD v${props.info.version}` });
       f.push({ label: "Hunks", value: String(props.info.hunk_count) });
-      f.push({ label: "Hunk size", value: `${props.info.hunk_bytes} bytes` });
+      f.push({ label: "Hunk size", value: formatBytes(props.info.hunk_bytes) });
       f.push({
         label: "Compression ratio",
         value: `${props.info.compression_ratio.toFixed(2)}%`,
@@ -270,6 +301,22 @@ const fields = computed<Field[]>(() => {
       if (props.info.tracks.length > 0) {
         f.push({ label: "Tracks", value: String(props.info.tracks.length) });
       }
+      break;
+    }
+    case "cso": {
+      f.push({ label: "Format", value: `${props.info.format} v${props.info.version}` });
+      f.push({ label: "Block size", value: formatBytes(props.info.block_size) });
+      f.push({ label: "Index shift", value: String(props.info.index_shift) });
+      f.push({
+        label: "Blocks",
+        value: `${props.info.block_count} (${props.info.raw_block_count} stored raw)`,
+      });
+      f.push({
+        label: "Compression ratio",
+        value: `${props.info.compression_ratio.toFixed(2)}%`,
+      });
+      f.push({ label: "Uncompressed size", value: formatBytes(props.info.uncompressed_size) });
+      f.push({ label: "Physical size", value: formatBytes(props.info.physical_bytes) });
       break;
     }
   }
@@ -325,6 +372,20 @@ const localizedTitles = computed<LocalizedEntry[]>(() => {
   }
 });
 
+const copied = ref(false);
+let copyResetTimer: ReturnType<typeof setTimeout> | null = null;
+
+function flagCopied() {
+  copied.value = true;
+  if (copyResetTimer !== null) {
+    clearTimeout(copyResetTimer);
+  }
+  copyResetTimer = setTimeout(() => {
+    copied.value = false;
+    copyResetTimer = null;
+  }, 1500);
+}
+
 function copyTitleId() {
   let value = "";
   switch (props.info.kind) {
@@ -356,8 +417,17 @@ function copyTitleId() {
       return;
   }
   if (value && typeof navigator !== "undefined" && navigator.clipboard) {
-    navigator.clipboard.writeText(value).catch(() => {});
+    navigator.clipboard.writeText(value).then(flagCopied, () => {});
   }
+}
+
+async function saveIcon() {
+  const dest = await save({
+    defaultPath: "icon.png",
+    filters: [{ name: "PNG", extensions: ["png"] }],
+  });
+  if (!dest) return;
+  await invoke("cmd_save_icon", { infoJson: JSON.stringify(props.info), dest });
 }
 </script>
 
@@ -416,9 +486,17 @@ function copyTitleId() {
       </ul>
     </section>
 
-    <div v-if="info.kind !== 'chd'" class="rom-info-card__footer">
-      <button type="button" class="rom-info-card__btn" @click="copyTitleId">
-        Copy title ID
+    <div v-if="(info.kind !== 'chd' && info.kind !== 'cso') || iconUrl" class="rom-info-card__footer">
+      <button
+        v-if="info.kind !== 'chd' && info.kind !== 'cso'"
+        type="button"
+        class="rom-info-card__btn"
+        @click="copyTitleId"
+      >
+        {{ copied ? "Copied!" : "Copy title ID" }}
+      </button>
+      <button v-if="iconUrl" type="button" class="rom-info-card__btn" @click="saveIcon">
+        Save icon
       </button>
     </div>
   </div>
@@ -426,13 +504,19 @@ function copyTitleId() {
 
 <style scoped>
 .rom-info-card {
+  --color-accent: #38bdf8;
+  --color-accent-strong: #0ea5e9;
+  --color-border: #3f3f46;
+  --color-card-bg: rgba(39, 39, 42, 0.3);
+  --color-text-muted: #a1a1aa;
+
   display: flex;
   flex-direction: column;
   gap: 1rem;
   padding: 1rem;
-  border: 1px solid var(--color-border, #2c2c2c);
+  border: 1px solid var(--color-border);
   border-radius: 0.5rem;
-  background: var(--color-card-bg, #1a1a1a);
+  background: var(--color-card-bg);
 }
 
 .rom-info-card__header {
@@ -458,7 +542,7 @@ function copyTitleId() {
 }
 
 .rom-info-card__subtitle {
-  color: var(--color-text-muted, #999);
+  color: var(--color-text-muted);
   font-size: 0.875rem;
 }
 
@@ -472,7 +556,7 @@ function copyTitleId() {
 }
 
 .rom-info-card__fields dt {
-  color: var(--color-text-muted, #999);
+  color: var(--color-text-muted);
 }
 
 .rom-info-card__fields dd {
@@ -488,7 +572,7 @@ function copyTitleId() {
 .rom-info-card__btn {
   padding: 0.4rem 0.9rem;
   border-radius: 0.375rem;
-  background: var(--color-accent, #3b82f6);
+  background: var(--color-accent);
   color: white;
   border: none;
   cursor: pointer;
@@ -496,11 +580,11 @@ function copyTitleId() {
 }
 
 .rom-info-card__btn:hover {
-  filter: brightness(1.1);
+  background: var(--color-accent-strong);
 }
 
 .rom-info-card__locales {
-  border-top: 1px solid var(--color-border, #2c2c2c);
+  border-top: 1px solid var(--color-border);
   padding-top: 0.75rem;
 }
 
@@ -508,7 +592,7 @@ function copyTitleId() {
   margin: 0 0 0.5rem 0;
   font-size: 0.85rem;
   font-weight: 600;
-  color: var(--color-text-muted, #999);
+  color: var(--color-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
@@ -532,7 +616,7 @@ function copyTitleId() {
 }
 
 .rom-info-card__locale-lang {
-  color: var(--color-text-muted, #999);
+  color: var(--color-text-muted);
   font-variant: small-caps;
 }
 
@@ -541,7 +625,7 @@ function copyTitleId() {
 }
 
 .rom-info-card__locale-pub {
-  color: var(--color-text-muted, #999);
+  color: var(--color-text-muted);
   font-size: 0.8rem;
 }
 </style>

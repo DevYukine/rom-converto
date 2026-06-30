@@ -6,8 +6,8 @@ use std::fs::File;
 use std::io::{BufReader, Seek, SeekFrom};
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
@@ -67,14 +67,20 @@ pub fn verify_container(
         }
     }
 
+    let nca_entries: Vec<_> = entries
+        .into_iter()
+        .filter(|e| {
+            let lower = e.name.to_ascii_lowercase();
+            lower.ends_with(".nca") || lower.ends_with(".ncz")
+        })
+        .collect();
+    let nca_total = nca_entries.len();
+
     let mut ncas = Vec::new();
     let mut overall_ok = true;
-    for entry in entries {
-        let lower = entry.name.to_ascii_lowercase();
-        if !(lower.ends_with(".nca") || lower.ends_with(".ncz")) {
-            continue;
-        }
-        let verdict = verify_one(&in_file, &entry, &keys, progress)?;
+    for (i, entry) in nca_entries.iter().enumerate() {
+        progress.set_phase(&format!("Verifying NCA ({}/{})", i + 1, nca_total));
+        let verdict = verify_one(&in_file, entry, &keys, progress)?;
         if !verdict.ok {
             overall_ok = false;
         }
@@ -99,8 +105,17 @@ pub async fn verify_container_async(
 
     let bytes_done = Arc::new(AtomicU64::new(0));
     let bytes_done_bg = bytes_done.clone();
+    let phase = Arc::new(Mutex::new(String::new()));
     let proxy = AtomicProgress {
         counter: bytes_done_bg,
+        phase: phase.clone(),
+    };
+
+    let publish_phase = || {
+        let label = std::mem::take(&mut *phase.lock().unwrap());
+        if !label.is_empty() {
+            progress.set_phase(&label);
+        }
     };
 
     let mut handle = tokio::task::spawn_blocking(move || -> NxResult<NxVerifyResult> {
@@ -119,6 +134,7 @@ pub async fn verify_container_async(
                 if delta > 0 {
                     progress.inc(delta);
                 }
+                publish_phase();
             }
         }
     }
@@ -126,12 +142,14 @@ pub async fn verify_container_async(
     if remaining > 0 {
         progress.inc(remaining);
     }
+    publish_phase();
     progress.finish();
     Ok(result)
 }
 
 struct AtomicProgress {
     counter: Arc<AtomicU64>,
+    phase: Arc<Mutex<String>>,
 }
 
 impl ProgressReporter for AtomicProgress {
@@ -140,6 +158,9 @@ impl ProgressReporter for AtomicProgress {
         self.counter.fetch_add(delta, Ordering::Relaxed);
     }
     fn finish(&self) {}
+    fn set_phase(&self, label: &str) {
+        *self.phase.lock().unwrap() = label.to_string();
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -262,4 +283,60 @@ fn check_nca_bytes(
         ok: mismatches == 0,
         mismatched_sections: mismatches,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::nintendo::nx::models::pfs0::{Pfs0LayoutHints, build_header};
+
+    #[derive(Default)]
+    struct PhaseRecorder {
+        phases: Mutex<Vec<String>>,
+    }
+
+    impl ProgressReporter for PhaseRecorder {
+        fn start(&self, _: u64, _: &str) {}
+        fn inc(&self, _: u64) {}
+        fn finish(&self) {}
+        fn set_phase(&self, label: &str) {
+            self.phases.lock().unwrap().push(label.to_string());
+        }
+    }
+
+    fn write_nsp(path: &Path, files: &[(&str, &[u8])]) {
+        let specs: Vec<(String, u64)> = files
+            .iter()
+            .map(|(n, b)| (n.to_string(), b.len() as u64))
+            .collect();
+        let hdr = build_header(&specs, &Pfs0LayoutHints::default()).unwrap();
+        let mut out = hdr.bytes;
+        for (_, bytes) in files {
+            out.extend_from_slice(bytes);
+        }
+        std::fs::write(path, out).unwrap();
+    }
+
+    #[test]
+    fn verify_labels_per_nca_phases() {
+        let dir = tempfile::tempdir().unwrap();
+        let nsp = dir.path().join("two.nsp");
+        write_nsp(
+            &nsp,
+            &[("a.nca", b"not-a-real-nca"), ("b.nca", b"also-not-real")],
+        );
+
+        let keys = KeySet::default();
+        let recorder = PhaseRecorder::default();
+        verify_container(&nsp, &keys, &recorder).unwrap();
+
+        let phases = recorder.phases.lock().unwrap();
+        assert_eq!(
+            *phases,
+            vec![
+                "Verifying NCA (1/2)".to_string(),
+                "Verifying NCA (2/2)".to_string(),
+            ]
+        );
+    }
 }

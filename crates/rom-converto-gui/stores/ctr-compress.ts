@@ -7,12 +7,18 @@ export const useCtrCompressStore = defineStore("ctr-compress", () => {
   // Zstd compression level: 0 = library default, 1..22 = explicit.
   // Sent straight to the backend; the lib treats 0 as "use default".
   const level = ref<number>(0);
+  const allowEncrypted = ref<boolean>(false);
+  const onConflict = ref("overwrite");
+  const skipSpaceCheck = ref(false);
+  const outputTemplate = ref("");
 
   const result = ref("");
   const error = ref("");
   const loading = ref(false);
 
   const queue = ref<BatchItem[]>([]);
+  const recursive = ref(true);
+  const maxDepth = ref<number | null>(null);
 
   function addToQueue(filePath: string, outputPath: string) {
     queue.value.push({
@@ -35,20 +41,32 @@ export const useCtrCompressStore = defineStore("ctr-compress", () => {
     input.value = "";
     output.value = "";
     level.value = 0;
+    allowEncrypted.value = false;
+    onConflict.value = "overwrite";
+    skipSpaceCheck.value = false;
+    outputTemplate.value = "";
     result.value = "";
     error.value = "";
     loading.value = false;
     queue.value = [];
+    recursive.value = true;
+    maxDepth.value = null;
   }
 
   return {
     input,
     output,
     level,
+    allowEncrypted,
+    onConflict,
+    skipSpaceCheck,
+    outputTemplate,
     result,
     error,
     loading,
     queue,
+    recursive,
+    maxDepth,
     addToQueue,
     removeFromQueue,
     clearQueue,

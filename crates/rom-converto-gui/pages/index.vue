@@ -3,26 +3,26 @@ const platforms = [
   {
     to: "/ctr",
     name: "3DS",
-    description: "CDN to CIA, decrypt, compress, decompress, verify, convert, info",
-    count: 7,
+    description: "CDN to CIA, decrypt, compress, decompress, verify, convert, generate ticket, info",
+    count: 8,
   },
   {
     to: "/dol",
     name: "GameCube",
-    description: "Compress and decompress ISO/GCM discs; read disc info",
-    count: 3,
+    description: "Compress and decompress ISO/GCM discs, verify, read disc info",
+    count: 4,
   },
   {
     to: "/rvl",
     name: "Wii",
-    description: "Compress and decompress ISO/WBFS discs; read disc info",
-    count: 3,
+    description: "Compress and decompress ISO/WBFS discs, verify, read disc info",
+    count: 4,
   },
   {
     to: "/wup",
     name: "Wii U",
-    description: "Bundle titles into .wua, decrypt NUS, read title info",
-    count: 3,
+    description: "Bundle titles into .wua, decrypt NUS, verify, read title info",
+    count: 4,
   },
   {
     to: "/nx",
@@ -32,9 +32,33 @@ const platforms = [
   },
   {
     to: "/chd",
-    name: "CD (CHD)",
-    description: "Compress, extract, verify CD disc images, read info",
+    name: "CD / DVD (CHD)",
+    description: "Compress CD and PS2/PSP DVD images, extract, verify, read info",
     count: 4,
+  },
+  {
+    to: "/cso",
+    name: "PSP / PS2 (CSO/ZSO)",
+    description: "Compress ISOs for real hardware, decompress, verify, read info",
+    count: 4,
+  },
+  {
+    to: "/cue",
+    name: "CD (CUE/BIN)",
+    description: "Merge multi-bin disc images into a single bin/cue pair",
+    count: 1,
+  },
+  {
+    to: "/hash",
+    name: "Hash",
+    description: "Compute CRC32, SHA1, MD5, and SHA256 checksums for files or folders",
+    count: 1,
+  },
+  {
+    to: "/playlist",
+    name: "Playlist",
+    description: "Generate .m3u playlists for multi-disc sets",
+    count: 1,
   },
 ];
 </script>
@@ -59,12 +83,12 @@ const platforms = [
           <h3 class="truncate text-lg font-semibold text-zinc-100">{{ p.name }}</h3>
           <span
             class="shrink-0 whitespace-nowrap rounded-full bg-sky-500/10 px-2 py-0.5 text-[11px] font-medium text-sky-400"
-          >{{ p.count }} {{ p.count === 1 ? "action" : "actions" }}</span>
+          >{{ p.count }} {{ p.count === 1 ? "operation" : "operations" }}</span>
         </div>
         <p class="mt-3 text-xs text-zinc-500">{{ p.description }}</p>
-        <div class="mt-4 flex items-center gap-1 text-[11px] font-medium text-zinc-600 transition group-hover:text-sky-400">
+        <div class="mt-4 flex items-center gap-1 text-[11px] font-medium text-zinc-400 transition group-hover:text-sky-400">
           <span>Open</span>
-          <svg class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <svg class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
             <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
           </svg>
         </div>

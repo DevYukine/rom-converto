@@ -1,5 +1,5 @@
-use crate::chd::cue::models::Msf;
 use crate::chd::error::{ChdError, ChdResult};
+use crate::cue::models::Msf;
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ChdTrackInfo {
@@ -140,6 +140,17 @@ fn chd_type_to_cue_type(chd_type: &str) -> &'static str {
     }
 }
 
+/// Bytes of frame payload the extracted bin carries per track type.
+/// Mirrors [`chd_type_to_cue_type`] so the generated cue sheet and
+/// the bin widths always agree.
+pub(crate) fn chd_type_datasize(chd_type: &str) -> usize {
+    match chd_type {
+        "MODE1" => 2048,
+        "MODE2_FORM1" => 2336,
+        _ => 2352,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -272,5 +283,15 @@ mod tests {
         assert_eq!(idx_lines.len(), 2);
         assert!(idx_lines[0].contains("00:00:00"));
         assert!(idx_lines[1].contains("00:01:00"));
+    }
+
+    #[test]
+    fn datasize_matches_cue_type_widths() {
+        assert_eq!(chd_type_datasize("MODE1"), 2048);
+        assert_eq!(chd_type_datasize("MODE1_RAW"), 2352);
+        assert_eq!(chd_type_datasize("MODE2_RAW"), 2352);
+        assert_eq!(chd_type_datasize("MODE2_FORM1"), 2336);
+        assert_eq!(chd_type_datasize("AUDIO"), 2352);
+        assert_eq!(chd_type_datasize("BOGUS"), 2352);
     }
 }

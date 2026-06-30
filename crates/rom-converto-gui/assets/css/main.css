@@ -22,3 +22,31 @@ html, body {
 ::-webkit-scrollbar-thumb:hover {
   background: rgb(63 63 70 / 0.8);
 }
+
+/* Visible keyboard focus indicator (Preflight removes the UA outline and Tailwind v4 ships no default ring) */
+a:focus-visible,
+button:focus-visible,
+summary:focus-visible,
+[role="button"]:focus-visible,
+[role="switch"]:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid rgb(56 189 248);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Render native controls and the pre-hydration paint dark */
+:root {
+  color-scheme: dark;
+}

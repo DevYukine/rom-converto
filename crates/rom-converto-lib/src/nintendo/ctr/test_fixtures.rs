@@ -345,6 +345,87 @@ pub fn synth_cia_with_meta(
     (tmp, out_path, meta, meta_size)
 }
 
+/// Build and persist a synthetic encrypted-format CIA carrying one NoCrypto
+/// NCCH per entry in `content_ids`, with `content_index` running 0,1,2,...
+/// Each content is a distinct 0x200-byte header, so callers can pass ids whose
+/// hex form contains digits A-F (e.g. `0x0000ABCD`) to exercise the per-content
+/// `.ncch` read-back path. Returns the temp dir (drop guard), the on-disk path,
+/// and the raw content bytes in record order.
+pub fn synth_encrypted_cia_multi_content(
+    content_ids: &[u32],
+) -> (tempfile::TempDir, std::path::PathBuf, Vec<Vec<u8>>) {
+    let tmp = tempfile::tempdir().unwrap();
+    let out_path = tmp.path().join("test.cia");
+
+    let contents: Vec<Vec<u8>> = content_ids
+        .iter()
+        .enumerate()
+        .map(|(i, &id)| {
+            let mut bytes = make_ncch_header_bytes(SYNTH_CIA_TITLE_ID);
+            // Perturb the signature region (unused for NoCrypto) so every
+            // content hashes differently, even when ids repeat.
+            bytes[0x40] = i as u8;
+            bytes[0x44..0x48].copy_from_slice(&id.to_le_bytes());
+            bytes
+        })
+        .collect();
+
+    let records: Vec<(u32, u16, Vec<u8>, [u8; 32])> = content_ids
+        .iter()
+        .enumerate()
+        .map(|(i, &id)| {
+            (
+                id,
+                i as u16,
+                contents[i].clone(),
+                sha256_array(&contents[i]),
+            )
+        })
+        .collect();
+
+    let content_data: Vec<u8> = contents.iter().flatten().copied().collect();
+
+    let cert_chain = vec![
+        make_cert(b"CA00000003", 0xAA),
+        make_cert(b"CP0000000b", 0xBB),
+        make_cert(b"XS0000000c", 0xCC),
+    ];
+    let ticket = make_ticket(SYNTH_CIA_TITLE_ID);
+    let tmd = make_tmd(SYNTH_CIA_TITLE_ID, records);
+
+    let ticket_size = serialized_size(&ticket);
+    let tmd_size = serialized_size(&tmd);
+
+    let cia = CiaFile {
+        header: CiaHeader {
+            header_size: CIA_HEADER_SIZE,
+            cia_type: 0,
+            version: 0,
+            cert_chain_size: 0x0A00,
+            ticket_size,
+            tmd_size,
+            meta_size: 0,
+            content_size: content_data.len() as u64,
+            content_index: vec![0x00; 0x2000],
+        },
+        cert_chain,
+        ticket,
+        tmd,
+        content_data,
+        meta_data: None,
+    };
+
+    let mut buf = Vec::new();
+    cia.write_options(&mut Cursor::new(&mut buf), Endian::Little, ())
+        .unwrap();
+
+    let mut f = std::fs::File::create(&out_path).unwrap();
+    f.write_all(&buf).unwrap();
+    f.flush().unwrap();
+
+    (tmp, out_path, contents)
+}
+
 // ---- internal helpers ----
 
 fn pad_to(src: &[u8], len: usize) -> Vec<u8> {

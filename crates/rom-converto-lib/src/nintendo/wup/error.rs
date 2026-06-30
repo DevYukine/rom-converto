@@ -101,6 +101,9 @@ pub enum WupError {
 
     #[error("invalid ZArchive: {0}")]
     InvalidZArchive(String),
+
+    #[error("operation cancelled")]
+    Cancelled,
 }
 
 impl From<PoolChannelClosed> for WupError {

@@ -40,6 +40,8 @@ jobs:
     name: CLI - ${{ matrix.classifier }}
     needs: changelog
     if: ${{ needs.changelog.outputs.skipped == 'false' }}
+    env:
+      ROM_CONVERTO_RELEASE: "1"
     strategy:
       fail-fast: false
       matrix:
@@ -176,6 +178,7 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ROM_CONVERTO_RELEASE: "1"
         with:
           projectPath: crates/rom-converto-gui
           tauriScript: pnpm tauri

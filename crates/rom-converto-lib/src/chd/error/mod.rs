@@ -1,4 +1,4 @@
-use crate::chd::cue::error::CueError;
+use crate::cue::error::CueError;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -23,6 +23,15 @@ pub enum ChdError {
 
     #[error("Invalid hunk size for CHD data")]
     InvalidHunkSize,
+
+    #[error(
+        "input size {size} is not a multiple of 2048; not a 2048-byte-sector image \
+         (raw 2352-byte CD dumps need bin/cue input)"
+    )]
+    IsoNotSectorAligned { size: u64 },
+
+    #[error("DVD mode needs a flat .iso input; a .cue describes a CD-layout disc, drop --dvd")]
+    DvdModeNeedsIso,
 
     #[error("CHD map compression failed")]
     MapCompressionError,
@@ -60,6 +69,9 @@ pub enum ChdError {
 
     #[error("worker pool writer thread panicked")]
     WorkerPoolPanic,
+
+    #[error("operation cancelled")]
+    Cancelled,
 }
 
 impl From<crate::util::worker_pool::PoolChannelClosed> for ChdError {

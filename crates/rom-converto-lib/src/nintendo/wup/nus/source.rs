@@ -54,6 +54,25 @@ impl NusSource {
         &self.tmd
     }
 
+    /// Decrypted title key for this title's content.
+    pub fn title_key(&self) -> TitleKey {
+        self.title_key
+    }
+
+    /// Parse and return the title's FST (decrypted from content 0).
+    pub fn virtual_fs(&self) -> Result<VirtualFs> {
+        self.load_fst()
+    }
+
+    /// A content-bytes source over this title's on-disk `.app` files.
+    pub fn content_source(
+        &self,
+    ) -> crate::nintendo::wup::nus::content_stream::DirectoryContentSource {
+        crate::nintendo::wup::nus::content_stream::DirectoryContentSource::with_resolver(
+            self.layout.content.clone(),
+        )
+    }
+
     fn load_fst(&self) -> Result<VirtualFs> {
         let content_0 = self
             .tmd

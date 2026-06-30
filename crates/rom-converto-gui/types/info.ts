@@ -60,6 +60,18 @@ export interface ChdInfo {
   dvd: { total_sectors: number; layer_class: string } | null;
 }
 
+export interface CsoInfo {
+  format: string;
+  version: number;
+  block_size: number;
+  index_shift: number;
+  uncompressed_size: number;
+  physical_bytes: number;
+  compression_ratio: number;
+  block_count: number;
+  raw_block_count: number;
+}
+
 export interface CtrSmdhTitle {
   language: string;
   short_description: string;
@@ -93,6 +105,7 @@ export interface CtrInfo {
   } | null;
   icon: Image | null;
   small_icon: Image | null;
+  compressed: boolean;
 }
 
 export interface DolInfo {
@@ -291,6 +304,7 @@ export interface NxInfo {
 
 export type InfoResult =
   | ({ kind: "chd" } & ChdInfo)
+  | ({ kind: "cso" } & CsoInfo)
   | ({ kind: "ctr" } & CtrInfo)
   | ({ kind: "dol" } & DolInfo)
   | ({ kind: "rvl" } & RvlInfo)

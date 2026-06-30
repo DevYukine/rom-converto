@@ -1,7 +1,7 @@
 use clap::Parser;
 use std::path::PathBuf;
 
-/// Shared `info` subcommand reused by every per-console parent command.
+/// Print metadata about a ROM or disc image: title, region, hashes and embedded artwork.
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 pub struct InfoCommand {
     /// File or directory to inspect.
@@ -16,7 +16,7 @@ pub struct InfoCommand {
     #[arg(long, value_name = "DIR")]
     pub save_icon: Option<PathBuf>,
 
-    /// Path to `prod.keys` (Switch only; ignored for other consoles).
+    /// Path to prod.keys for Switch, or a disc master key file for Wii U .wud/.wux info. Other consoles do not use it.
     #[arg(long, value_name = "FILE")]
     pub keys: Option<PathBuf>,
 }

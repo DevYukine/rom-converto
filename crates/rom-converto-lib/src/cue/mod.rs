@@ -1,9 +1,10 @@
-use crate::chd::cue::error::{CueError, CueResult};
-use crate::chd::cue::models::{CueFile, CueSheet, FileType, Index, Msf, Track, TrackType};
+use crate::cue::error::{CueError, CueResult};
+use crate::cue::models::{CueFile, CueSheet, FileType, Index, Msf, Track, TrackType};
 use std::io::{BufRead, Cursor};
 use std::path::{Path, PathBuf};
 
 pub mod error;
+pub mod merge;
 pub mod models;
 
 #[derive(Debug)]
@@ -62,6 +63,9 @@ impl CueParser {
                     cue_sheet.files.push(cue_file);
                 }
                 "TRACK" => {
+                    if parts.len() < 3 {
+                        return Err(CueError::InvalidTrackType(line.to_string()));
+                    }
                     if let Some(track) = current_track.take() {
                         cue_sheet.tracks.push(track);
                     }
@@ -75,9 +79,13 @@ impl CueParser {
                         indices: Vec::new(),
                         pregap: None,
                         postgap: None,
+                        file_index: cue_sheet.files.len().saturating_sub(1),
                     });
                 }
                 "INDEX" => {
+                    if parts.len() < 3 {
+                        return Err(CueError::InvalidMsfFormat(line.to_string()));
+                    }
                     if let Some(track) = &mut current_track {
                         let number = parts[1].parse::<u8>()?;
                         let position = self.parse_msf(parts[2])?;
@@ -86,11 +94,17 @@ impl CueParser {
                     }
                 }
                 "PREGAP" => {
+                    if parts.len() < 2 {
+                        return Err(CueError::InvalidMsfFormat(line.to_string()));
+                    }
                     if let Some(track) = &mut current_track {
                         track.pregap = Some(self.parse_msf(parts[1])?);
                     }
                 }
                 "POSTGAP" => {
+                    if parts.len() < 2 {
+                        return Err(CueError::InvalidMsfFormat(line.to_string()));
+                    }
                     if let Some(track) = &mut current_track {
                         track.postgap = Some(self.parse_msf(parts[1])?);
                     }
@@ -268,5 +282,28 @@ mod tests {
     fn parse_msf_wrong_format_fails() {
         assert!(parser().parse_msf("00:02").is_err());
         assert!(parser().parse_msf("00:02:33:44").is_err());
+    }
+
+    #[tokio::test]
+    async fn parse_truncated_track_line_errors_not_panics() {
+        let dir = tempfile::tempdir().unwrap();
+        let cue = dir.path().join("bad.cue");
+        tokio::fs::write(&cue, "FILE \"a.bin\" BINARY\r\n  TRACK 01\r\n")
+            .await
+            .unwrap();
+        assert!(CueParser::new(&cue).parse().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn parse_truncated_index_line_errors_not_panics() {
+        let dir = tempfile::tempdir().unwrap();
+        let cue = dir.path().join("bad.cue");
+        tokio::fs::write(
+            &cue,
+            "FILE \"a.bin\" BINARY\r\n  TRACK 01 MODE1/2352\r\n    INDEX 01\r\n",
+        )
+        .await
+        .unwrap();
+        assert!(CueParser::new(&cue).parse().await.is_err());
     }
 }

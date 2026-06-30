@@ -2,6 +2,7 @@ use crate::nintendo::ctr::constants::{
     CERT_SIG_TYPE_MAX, CERT_SIG_TYPE_MIN, CIA_CERT_CHAIN_SIZE, CIA_CONTENT_INDEX_SIZE,
 };
 use crate::nintendo::ctr::decrypt::cia::parse_and_decrypt_cia;
+use crate::nintendo::ctr::error::NintendoCTRError;
 use crate::nintendo::ctr::models::certificate::Certificate;
 use crate::nintendo::ctr::models::cia::{
     CIA_HEADER_SIZE, CiaFile, CiaFileWithoutContent, CiaHeader,
@@ -9,7 +10,7 @@ use crate::nintendo::ctr::models::cia::{
 use crate::nintendo::ctr::models::ticket::Ticket;
 use crate::nintendo::ctr::models::title_metadata::TitleMetadata;
 use crate::nintendo::ctr::util::align_64;
-use crate::util::ProgressReporter;
+use crate::util::{CancelToken, ProgressReporter};
 use binrw::{BinRead, BinWrite, Endian};
 use byteorder::{BigEndian, ReadBytesExt};
 use sha2::{Digest, Sha256};
@@ -25,11 +26,10 @@ pub async fn decrypt_from_encrypted_cia(
     input: &Path,
     out_writer: &mut BufWriter<File>,
     progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
 ) -> anyhow::Result<()> {
     let input_size = tokio::fs::metadata(input).await?.len();
     progress.start(input_size, "Decrypting CIA...");
-    parse_and_decrypt_cia(input, None, progress).await?;
-    progress.finish();
 
     let source_bytes = tokio::fs::read(input).await?;
     let original_cia = CiaFileWithoutContent::read_le(&mut Cursor::new(&source_bytes))?;
@@ -61,28 +61,40 @@ pub async fn decrypt_from_encrypted_cia(
         meta_data: None,
     };
 
-    let parent = input.parent().unwrap_or_else(|| Path::new("."));
-    let stem = input
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .ok_or_else(|| anyhow::anyhow!("input path has no valid filename stem"))?;
-
     for content_chunk_record in &mut decrypted_cia.tmd.content_chunk_records {
         content_chunk_record.content_type.set_encrypted(false);
+    }
 
-        let new_file_name = format!(
-            "{stem}.{index}.{id:08x}.ncch",
-            stem = stem,
-            index = content_chunk_record.content_index,
-            id = content_chunk_record.content_id
+    // The preamble byte length is independent of the hash values it carries,
+    // so reserve it now, stream the decrypted content past it, then come back
+    // and write the finalized preamble. This keeps the decrypt streaming with
+    // no scratch files.
+    let mut preamble = Cursor::new(Vec::new());
+    decrypted_cia.write_le(&mut preamble)?;
+    let preamble_len = preamble.get_ref().len() as u64;
+
+    out_writer.write_all(preamble.get_ref()).await?;
+    out_writer.flush().await?;
+
+    let out_file = out_writer.get_mut();
+    out_file.seek(SeekFrom::Start(preamble_len)).await?;
+    let content_hashes = parse_and_decrypt_cia(input, out_file, progress, cancel).await?;
+    progress.finish();
+
+    if content_hashes.len() != decrypted_cia.tmd.content_chunk_records.len() {
+        anyhow::bail!(
+            "decrypted {} contents but TMD declares {} records",
+            content_hashes.len(),
+            decrypted_cia.tmd.content_chunk_records.len()
         );
-
-        let file_path = parent.join(new_file_name);
-
-        let data = tokio::fs::read(&file_path).await?;
-        let mut hasher = Sha256::new();
-        hasher.update(&data);
-        content_chunk_record.hash = hasher.finalize().to_vec();
+    }
+    for (record, hash) in decrypted_cia
+        .tmd
+        .content_chunk_records
+        .iter_mut()
+        .zip(content_hashes)
+    {
+        record.hash = hash.to_vec();
     }
 
     for content_info_record in &mut decrypted_cia.tmd.content_info_records {
@@ -118,36 +130,25 @@ pub async fn decrypt_from_encrypted_cia(
 
     decrypted_cia.tmd.header.content_info_records_hash = hasher.finalize().to_vec();
 
-    let mut data = Cursor::new(Vec::new());
-
-    decrypted_cia.write_le(&mut data)?;
-
-    out_writer.write_all(data.get_ref()).await?;
-
-    for content_chunk_record in decrypted_cia.tmd.content_chunk_records {
-        let new_file_name = format!(
-            "{stem}.{index}.{id:08x}.ncch",
-            stem = stem,
-            index = content_chunk_record.content_index,
-            id = content_chunk_record.content_id
-        );
-
-        let file_path = parent.join(new_file_name);
-
-        let content = tokio::fs::read(&file_path).await?;
-        out_writer.write_all(&content).await?;
-
-        tokio::fs::remove_file(&file_path).await?;
+    let mut finalized = Cursor::new(Vec::new());
+    decrypted_cia.write_le(&mut finalized)?;
+    if finalized.get_ref().len() as u64 != preamble_len {
+        anyhow::bail!("CIA preamble length changed after hash fixup");
     }
 
+    let out_file = out_writer.get_mut();
+    let end_pos = out_file.stream_position().await?;
+    out_file.seek(SeekFrom::Start(0)).await?;
+    out_file.write_all(finalized.get_ref()).await?;
+    out_file.seek(SeekFrom::Start(end_pos)).await?;
+
     if let Some(meta) = meta_bytes {
-        let pos = out_writer.stream_position().await?;
-        let aligned = align_64(pos);
-        if aligned > pos {
-            let pad = vec![0u8; (aligned - pos) as usize];
-            out_writer.write_all(&pad).await?;
+        let aligned = align_64(end_pos);
+        if aligned > end_pos {
+            let pad = vec![0u8; (aligned - end_pos) as usize];
+            out_file.write_all(&pad).await?;
         }
-        out_writer.write_all(&meta).await?;
+        out_file.write_all(&meta).await?;
     }
 
     Ok(())
@@ -157,6 +158,7 @@ pub async fn decrypt_from_encrypted_cia(
 /// the output, avoiding the previous behavior of loading every `.app` into
 /// memory and then serializing a full in-memory CIA. Peak memory is bounded by
 /// the TMD/ticket preamble (a few KB) plus a 4 MB copy buffer.
+#[allow(clippy::too_many_arguments)]
 pub async fn write_cia(
     path: &Path,
     out: &mut BufWriter<File>,
@@ -165,6 +167,7 @@ pub async fn write_cia(
     tmd: TitleMetadata,
     tik: Ticket,
     progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
 ) -> anyhow::Result<()> {
     let total_content_size: u64 = tmd
         .content_chunk_records
@@ -236,6 +239,9 @@ pub async fn write_cia(
         let mut f = File::open(&content_path).await?;
         let mut written: u64 = 0;
         loop {
+            if cancel.is_cancelled() {
+                return Err(NintendoCTRError::Cancelled.into());
+            }
             let n = f.read(&mut buf).await?;
             if n == 0 {
                 break;
@@ -445,6 +451,7 @@ mod tests {
                 tmd.clone(),
                 ticket,
                 &NoProgress,
+                &CancelToken::new(),
             )
             .await
             .unwrap();
@@ -518,6 +525,7 @@ mod tests {
                 tmd,
                 ticket,
                 &NoProgress,
+                &CancelToken::new(),
             )
             .await
             .unwrap();
@@ -590,6 +598,7 @@ mod tests {
             tmd,
             ticket,
             &NoProgress,
+            &CancelToken::new(),
         )
         .await
         .unwrap_err();
@@ -651,6 +660,7 @@ mod tests {
             tmd,
             ticket,
             &NoProgress,
+            &CancelToken::new(),
         )
         .await
         .unwrap_err();
@@ -673,7 +683,7 @@ mod tests {
 
         let f = File::create(&out_path).await.unwrap();
         let mut out = BufWriter::new(f);
-        decrypt_from_encrypted_cia(&in_path, &mut out, &NoProgress)
+        decrypt_from_encrypted_cia(&in_path, &mut out, &NoProgress, &CancelToken::new())
             .await
             .unwrap();
         out.flush().await.unwrap();
@@ -749,7 +759,7 @@ mod tests {
         let out_path = in_path.with_extension("dec.cia");
         let f = File::create(&out_path).await.unwrap();
         let mut out = BufWriter::new(f);
-        decrypt_from_encrypted_cia(&in_path, &mut out, &NoProgress)
+        decrypt_from_encrypted_cia(&in_path, &mut out, &NoProgress, &CancelToken::new())
             .await
             .unwrap();
         out.flush().await.unwrap();
@@ -763,5 +773,52 @@ mod tests {
             cia.meta_data.is_none(),
             "no meta input must not produce a meta output",
         );
+    }
+
+    /// Regression for issue #7: a content_id whose hex form carries a digit
+    /// A-F must round-trip through decrypt. The writer used uppercase hex for
+    /// the `.ncch` scratch name while the read-back used lowercase, so on a
+    /// case-sensitive filesystem (Linux) the read missed the file with ENOENT,
+    /// producing a 0-byte output and orphaned `.ncch` fragments. DLCs tripped
+    /// it because they carry enough contents that at least one id lands >= 0x0A.
+    /// On case-insensitive macOS/Windows the two spellings alias the same file,
+    /// which is why it never reproduced on the dev machine; this test only
+    /// fails on the buggy code on a case-sensitive FS (the CI runners).
+    #[tokio::test]
+    async fn decrypt_from_encrypted_cia_round_trips_letter_bearing_content_id() {
+        use crate::nintendo::ctr::test_fixtures::synth_encrypted_cia_multi_content;
+
+        let ids = [0x0000_0000u32, 0x0000_ABCDu32];
+        let (_tmp, in_path, contents) = synth_encrypted_cia_multi_content(&ids);
+        let out_path = in_path.with_extension("dec.cia");
+
+        let f = File::create(&out_path).await.unwrap();
+        let mut out = BufWriter::new(f);
+        decrypt_from_encrypted_cia(&in_path, &mut out, &NoProgress, &CancelToken::new())
+            .await
+            .expect("decrypt must succeed for a content_id containing hex letters");
+        out.flush().await.unwrap();
+        drop(out);
+
+        let bytes = std::fs::read(&out_path).unwrap();
+        let cia = CiaFile::read_options(&mut Cursor::new(&bytes), Endian::Little, ())
+            .expect("decrypted CIA must parse");
+
+        assert_eq!(cia.tmd.content_chunk_records.len(), 2);
+        assert_eq!(cia.tmd.content_chunk_records[0].content_id, ids[0]);
+        assert_eq!(cia.tmd.content_chunk_records[1].content_id, ids[1]);
+
+        // Each id must map back to its own content, proving the read-back read
+        // the correct per-content file rather than cross-wiring or zeroing.
+        let split = contents[0].len();
+        assert_eq!(&cia.content_data[..split], contents[0].as_slice());
+        assert_eq!(&cia.content_data[split..], contents[1].as_slice());
+
+        // On success the scratch `.ncch` files must be cleaned up.
+        let leftover_ncch = std::fs::read_dir(in_path.parent().unwrap())
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|e| e.path().extension().and_then(|s| s.to_str()) == Some("ncch"));
+        assert!(!leftover_ncch, "scratch .ncch files were left behind");
     }
 }

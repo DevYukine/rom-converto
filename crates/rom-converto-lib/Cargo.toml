@@ -10,6 +10,7 @@ anyhow.workspace = true
 thiserror.workspace = true
 log.workspace = true
 tokio = { workspace = true, features = ["fs", "sync", "rt", "rt-multi-thread", "macros", "io-util"] }
+tokio-util.workspace = true
 futures.workspace = true
 async-recursion = "^1.1"
 binrw = "^0.15"
@@ -29,6 +30,7 @@ ctr = "^0.9.2"
 xts-mode = "^0.5"
 hex = "^0.4"
 md5 = "^0.8"
+md_5 = { version = "^0.10", package = "md-5" }
 sha256 = "^1.6"
 hex-literal = "^1.1"
 rsa = { version = "^0.9", features = ["sha2"] }
@@ -36,6 +38,7 @@ serde.workspace = true
 serde_json.workspace = true
 crc = "^3.4"
 dirs = "^5"
+toml = "^0.8"
 
 # Pixel codecs for `info` icon extraction
 png = "^0.17"
@@ -47,7 +50,9 @@ lzma-sdk-sys = "^0.1"
 flacenc = "^0.5"
 claxon = "^0.4"
 zstd = { version = "^0.13", features = ["zstdmt"] }
+lz4 = "^1.28"
 
 # HTTP (for seed DB fetch)
 reqwest.workspace = true
 tempfile = "^3"
+fs4 = "^0.12"

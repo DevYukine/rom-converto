@@ -17,6 +17,8 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use crate::nintendo::wup::app_xml::AppXml;
 use crate::nintendo::wup::error::{WupError, WupResult};
 use crate::nintendo::wup::zarchive_writer::ArchiveSink;
@@ -129,12 +131,24 @@ pub fn compress_loadiine_title(
     sink: &mut dyn ArchiveSink,
     progress: &dyn ProgressReporter,
 ) -> WupResult<()> {
+    compress_loadiine_title_with_cancel(title, sink, progress, None)
+}
+
+pub(crate) fn compress_loadiine_title_with_cancel(
+    title: &LoadiineTitle,
+    sink: &mut dyn ArchiveSink,
+    progress: &dyn ProgressReporter,
+    cancelled: Option<&AtomicBool>,
+) -> WupResult<()> {
     const READ_CHUNK_SIZE: usize = 1024 * 1024;
 
     let archive_folder = title.archive_folder();
     let files = walk_loadiine_files(&title.dir)?;
     let mut buffer = vec![0u8; READ_CHUNK_SIZE];
     for file in &files {
+        if cancelled.is_some_and(|c| c.load(Ordering::Relaxed)) {
+            return Err(WupError::Cancelled);
+        }
         let archive_path = format!("{}/{}", archive_folder, file.relative_path);
         sink.start_new_file(&archive_path)?;
         let mut reader = std::io::BufReader::new(std::fs::File::open(&file.absolute_path)?);

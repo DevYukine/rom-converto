@@ -11,6 +11,9 @@ pub struct CiaReader {
     encrypted: bool,
     pub path: PathBuf,
     pub key: [u8; 16],
+    // Carried for identification and Debug output; the streaming decrypt no
+    // longer derives a per-content scratch path from it.
+    #[allow(dead_code)]
     pub content_id: u32,
     pub cidx: u16,
     iv: [u8; 16],

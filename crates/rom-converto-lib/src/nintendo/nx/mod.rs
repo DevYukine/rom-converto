@@ -26,9 +26,14 @@ pub mod walker;
 #[cfg(test)]
 pub mod test_fixtures;
 
-pub use compress::{NxCompressOptions, compress_container, compress_container_async};
+pub use compress::{
+    NxCompressOptions, compress_container, compress_container_async,
+    compress_container_async_cancellable,
+};
 pub use container::{ContainerKind, detect_container};
-pub use decompress::{decompress_container, decompress_container_async};
+pub use decompress::{
+    decompress_container, decompress_container_async, decompress_container_async_cancellable,
+};
 pub use derive_paths::{derive_compressed_path, derive_decompressed_path};
 pub use error::{NxError, NxResult};
 pub use keys::{KeyAreaKind, KeySet, load_keyset};

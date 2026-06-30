@@ -2,9 +2,13 @@ use binrw::{BinRead, BinWrite, binrw};
 
 pub const CHD_V5_HEADER_SIZE: u32 = 124;
 pub const CHD_METADATA_TAG_CD: [u8; 4] = *b"CHT2";
+pub const CHD_METADATA_TAG_DVD: [u8; 4] = *b"DVD ";
 pub const CHD_METADATA_FLAG_HASHED: u8 = 0x01;
 pub const CHD_METADATA_RESERVED_BYTES: usize = 8;
 pub const SHA1_BYTES: usize = 20;
+
+/// DVD-mode unit size: plain 2048-byte sectors, no subcode.
+pub const DVD_SECTOR_SIZE: u32 = 2048;
 
 /// CHD file format version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, BinRead, BinWrite)]
@@ -52,6 +56,17 @@ pub struct ChdHeaderV5 {
     pub parent_sha1: [u8; SHA1_BYTES],
 }
 
+impl ChdHeaderV5 {
+    pub fn compressors(&self) -> [[u8; 4]; 4] {
+        [
+            self.compressor_0,
+            self.compressor_1,
+            self.compressor_2,
+            self.compressor_3,
+        ]
+    }
+}
+
 #[binrw]
 #[brw(big)]
 #[derive(Debug)]
@@ -84,6 +99,18 @@ impl ChdMetadataHeader {
             flags: CHD_METADATA_FLAG_HASHED,
             reserved: [0; CHD_METADATA_RESERVED_BYTES],
             data,
+        }
+    }
+
+    /// chdman writes the DVD marker as an empty string, which lands
+    /// on disk as a single NUL byte. The tag's presence is the whole
+    /// signal; there is no payload format.
+    pub fn new_dvd_metadata() -> Self {
+        Self {
+            tag: CHD_METADATA_TAG_DVD,
+            flags: CHD_METADATA_FLAG_HASHED,
+            reserved: [0; CHD_METADATA_RESERVED_BYTES],
+            data: vec![0],
         }
     }
 }

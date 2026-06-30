@@ -4,13 +4,21 @@ import type { BatchItem } from "~/types/batch";
 export const useChdCompressStore = defineStore("chd-compress", () => {
   const input = ref("");
   const output = ref("");
-  const force = ref(false);
+  const onConflict = ref("overwrite");
+  const skipSpaceCheck = ref(false);
+  const outputTemplate = ref("");
+  const reportFile = ref("");
+  const zstd = ref(false);
+  const mode = ref<"auto" | "cd" | "dvd">("auto");
+  const hunkSize = ref<number | null>(null);
 
   const result = ref("");
   const error = ref("");
   const loading = ref(false);
 
   const queue = ref<BatchItem[]>([]);
+  const recursive = ref(true);
+  const maxDepth = ref<number | null>(null);
 
   function addToQueue(filePath: string, outputPath: string) {
     queue.value.push({
@@ -32,21 +40,37 @@ export const useChdCompressStore = defineStore("chd-compress", () => {
   function $reset() {
     input.value = "";
     output.value = "";
-    force.value = false;
+    zstd.value = false;
+    onConflict.value = "overwrite";
+    skipSpaceCheck.value = false;
+    outputTemplate.value = "";
+    reportFile.value = "";
+    mode.value = "auto";
+    hunkSize.value = null;
     result.value = "";
     error.value = "";
     loading.value = false;
     queue.value = [];
+    recursive.value = true;
+    maxDepth.value = null;
   }
 
   return {
     input,
     output,
-    force,
+    onConflict,
+    skipSpaceCheck,
+    outputTemplate,
+    reportFile,
+    zstd,
+    mode,
+    hunkSize,
     result,
     error,
     loading,
     queue,
+    recursive,
+    maxDepth,
     addToQueue,
     removeFromQueue,
     clearQueue,
