@@ -143,6 +143,8 @@ Every GUI control forwards to the same library function the CLI uses, so a GUI r
 
 **Run reports and output templates.** The GUI exposes `--report` on the compress and decompress pages for every format (dol, rvl, cso, nx) plus chd compress and chd extract. It accumulates one record per processed file and calls the same `write_report` library function the CLI uses, so the CSV/JSON/HTML output is identical. The report file is overwritten directly and does not go through the on-conflict control, matching the CLI. The GUI also exposes `--output-template` on those pages plus the four CTR operations (compress, decompress, convert, decrypt). For CTR the template is single file only, so the field is hidden once files are queued for a batch. The template resolves through the same `TemplateTokens` and `apply_template` library functions, so the resolved path matches the CLI. Extract report rows carry zero byte sizes, the same as the CLI, since extraction writes several files.
 
+**Option gating.** The GUI disables options that do not apply to the current selection and explains why with a tooltip. An output template and an explicit output path are mutually exclusive, so entering a template disables the explicit output field with a note that the template controls the output path. On the Wii U decrypt page the Rename conflict policy is disabled because the output is a directory. The Run button is disabled, with a tooltip giving the exact reason, whenever the configuration cannot run, for example when no input is selected, when a queue is empty, or when an output template field is set but blank.
+
 ### Running the GUI in Development
 
 1. Install [Rust 1.88+](https://www.rust-lang.org/tools/install) and [Node.js 22+](https://nodejs.org/)

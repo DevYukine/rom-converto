@@ -9,6 +9,14 @@ const { outputDir, resolve } = useOutputDir();
 const { run } = useOperation({ result, error, loading });
 const commandLine = ref("");
 
+const { canRun, runBlockReason } = usePageGating({
+  input: cdnDir,
+  output,
+  requireOutput: true,
+  emptyInputReason: "Select a CDN directory to continue.",
+  noOutputReason: "Choose an output ticket file.",
+});
+
 async function chooseOutput() {
   const picked = await save({
     defaultPath: "ticket.tik",
@@ -65,7 +73,7 @@ async function execute() {
 
         <OutputDirField v-model="outputDir" />
 
-        <RunButton :loading="loading" :disabled="!cdnDir || !output" @click="execute">
+        <RunButton :loading="loading" :disabled="!canRun" :disabled-reason="runBlockReason" @click="execute">
           Generate
         </RunButton>
       </div>

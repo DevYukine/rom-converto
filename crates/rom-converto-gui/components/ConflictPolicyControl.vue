@@ -3,6 +3,8 @@ withDefaults(
   defineProps<{
     modelValue: string;
     label?: string;
+    disabledOptions?: string[];
+    disabledReason?: string;
   }>(),
   { label: "On conflict" },
 );
@@ -25,6 +27,8 @@ const options = [
     :model-value="modelValue"
     :options="options"
     :label="label"
+    :disabled-options="disabledOptions"
+    :disabled-reason="disabledReason"
     @update:model-value="$emit('update:modelValue', $event)"
   />
 </template>

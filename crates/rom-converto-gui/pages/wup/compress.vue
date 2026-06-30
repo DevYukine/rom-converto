@@ -86,7 +86,13 @@ const discsMissingKeys = computed(() =>
     .filter((i) => !keys.value[i.id]),
 );
 
-const canCompress = computed(() => queue.value.length > 0 && !!output.value);
+const { canRun, runBlockReason } = usePageGating({
+  queue,
+  output,
+  requireOutput: true,
+  emptyInputReason: "Add at least one title to the queue to continue.",
+  noOutputReason: "Choose an output archive path.",
+});
 
 async function execute() {
   progress.reset();
@@ -257,7 +263,8 @@ function onRun() {
 
         <RunButton
           :loading="loading"
-          :disabled="!canCompress"
+          :disabled="!canRun"
+          :disabled-reason="runBlockReason"
           @click="onRun"
           @cancel="abort()"
         >

@@ -15,6 +15,7 @@ const previewMode = ref(false);
 const { preview, single: previewSingle, batch: previewBatch, error: previewError } = usePreview("cmd_decompress_disc");
 
 const isBatch = computed(() => queue.value.length > 0);
+const { canRun, runBlockReason, templateActive } = usePageGating({ input, queue, outputTemplate });
 
 const commandLine = ref("");
 
@@ -156,7 +157,18 @@ function onRun() {
             @update:files="handleFiles"
           />
 
+          <InfoTooltip v-if="templateActive" :message="OUTPUT_TEMPLATE_TOOLTIP" block>
+            <FileDropZone
+              v-model="output"
+              class="w-full"
+              label="Output file (auto-filled)"
+              :save-dialog="true"
+              :disabled="true"
+              :filters="[{ name: 'GameCube disc', extensions: ['iso', 'gcm'] }]"
+            />
+          </InfoTooltip>
           <FileDropZone
+            v-else
             v-model="output"
             label="Output file (auto-filled)"
             :save-dialog="true"
@@ -218,7 +230,8 @@ function onRun() {
           :loading="loading || batch.running.value"
           :batch-current="batch.currentIndex.value"
           :batch-total="queue.length"
-          :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input"
+          :disabled="!canRun"
+          :disabled-reason="runBlockReason"
           @click="onRun"
           @cancel="isBatch ? batch.abort() : abort()"
         >

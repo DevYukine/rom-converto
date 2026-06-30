@@ -11,6 +11,8 @@ const commandLine = ref("");
 const previewMode = ref(false);
 const { preview, single: previewSingle, error: previewError } = usePreview("cmd_wup_decrypt");
 
+const { canRun, runBlockReason } = usePageGating({ input, emptyInputReason: "Select an input NUS directory." });
+
 watch(input, (val) => {
   if (val && !output.value) {
     output.value = deriveDecryptedWupPath(val);
@@ -79,7 +81,11 @@ function onRun() {
         />
 
         <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
-          <ConflictPolicyControl v-model="onConflict" />
+          <ConflictPolicyControl
+            v-model="onConflict"
+            :disabled-options="['rename']"
+            :disabled-reason="WUP_RENAME_TOOLTIP"
+          />
           <FlagToggle
             v-model="skipSpaceCheck"
             label="Skip free space check"
@@ -101,7 +107,8 @@ function onRun() {
 
         <RunButton
           :loading="loading"
-          :disabled="!input"
+          :disabled="!canRun"
+          :disabled-reason="runBlockReason"
           @click="onRun"
           @cancel="abort()"
         >

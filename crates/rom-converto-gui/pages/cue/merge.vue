@@ -12,6 +12,8 @@ const commandLine = ref("");
 const previewMode = ref(false);
 const { preview, single: previewSingle, error: previewError } = usePreview("cmd_cue_merge");
 
+const { canRun, runBlockReason } = usePageGating({ input, emptyInputReason: "Select an input file to continue." });
+
 watch([input, outputDir], () => {
   if (input.value) output.value = resolve(deriveMergedCuePath(input.value));
 });
@@ -97,7 +99,7 @@ function onRun() {
           description="Show what would happen without writing anything."
         />
 
-        <RunButton :loading="loading" :disabled="!input" @click="onRun">
+        <RunButton :loading="loading" :disabled="!canRun" :disabled-reason="runBlockReason" @click="onRun">
           {{ previewMode ? 'Preview' : 'Merge' }}
         </RunButton>
       </div>

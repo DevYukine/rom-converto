@@ -9,6 +9,7 @@ const props = defineProps<{
   primary?: boolean;
   multiple?: boolean;
   placeholder?: string;
+  disabled?: boolean;
   filters?: { name: string; extensions: string[] }[];
 }>();
 
@@ -25,6 +26,7 @@ onMounted(() => {
     zoneId = registerDropZone(
       dropZoneRef.value,
       (paths) => {
+        if (props.disabled) return;
         const first = paths[0];
         if (first === undefined) return;
         if (props.multiple && paths.length > 1) {
@@ -47,6 +49,7 @@ function clear() {
 }
 
 async function browse() {
+  if (props.disabled) return;
   if (props.saveDialog) {
     const result = await save({ filters: props.filters });
     if (result) {
@@ -79,7 +82,9 @@ async function browse() {
       ref="dropZoneRef"
       type="button"
       :aria-label="'Browse for ' + label"
-      class="drop-zone flex w-full cursor-pointer flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-zinc-700 bg-zinc-800/30 px-4 py-6 transition hover:border-zinc-500 hover:bg-zinc-800/50 xl:py-8"
+      :disabled="disabled"
+      class="drop-zone flex w-full flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-zinc-700 bg-zinc-800/30 px-4 py-6 transition xl:py-8"
+      :class="disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:border-zinc-500 hover:bg-zinc-800/50'"
       @click="browse"
     >
       <svg aria-hidden="true" class="h-8 w-8 text-zinc-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
@@ -103,7 +108,8 @@ async function browse() {
       <div class="mt-1 flex items-center gap-2">
         <button
           type="button"
-          class="rounded-md bg-zinc-700/50 px-3 py-1 text-xs font-medium text-zinc-300 transition hover:bg-zinc-700 hover:text-zinc-100"
+          :disabled="disabled"
+          class="rounded-md bg-zinc-700/50 px-3 py-1 text-xs font-medium text-zinc-300 transition hover:bg-zinc-700 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-zinc-700/50 disabled:hover:text-zinc-300"
           @click="browse"
         >
           Change

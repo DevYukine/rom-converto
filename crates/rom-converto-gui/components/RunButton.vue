@@ -2,9 +2,12 @@
 const props = defineProps<{
   loading?: boolean;
   disabled?: boolean;
+  disabledReason?: string;
   batchCurrent?: number;
   batchTotal?: number;
 }>();
+
+const showReason = computed(() => !props.loading && !!props.disabled && !!props.disabledReason);
 
 defineEmits<{
   click: [];
@@ -20,7 +23,19 @@ const batchCounter = computed(() =>
 
 <template>
   <div class="flex w-full items-stretch gap-2">
+    <InfoTooltip v-if="showReason" :message="disabledReason!" block class="flex-1">
+      <button
+        type="button"
+        class="w-full rounded-lg bg-gradient-to-r from-sky-600 to-sky-500 px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-sky-500/20 transition hover:from-sky-500 hover:to-sky-400 disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none"
+        :disabled="true"
+        :aria-label="disabledReason"
+        @click="$emit('click')"
+      >
+        <slot />
+      </button>
+    </InfoTooltip>
     <button
+      v-else
       type="button"
       class="flex-1 rounded-lg bg-gradient-to-r from-sky-600 to-sky-500 px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-sky-500/20 transition hover:from-sky-500 hover:to-sky-400 disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none"
       :disabled="loading || disabled"

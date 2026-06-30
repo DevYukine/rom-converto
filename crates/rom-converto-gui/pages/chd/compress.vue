@@ -23,6 +23,8 @@ const MODE_OPTIONS = [
 const isBatch = computed(() => queue.value.length > 0);
 const commandLine = ref("");
 
+const { canRun, runBlockReason, templateActive } = usePageGating({ input, queue, outputTemplate });
+
 function chdArgs(inputPath: string, outputPath: string) {
   const tmpl = outputTemplate.value || null;
   return {
@@ -164,7 +166,18 @@ function onRun() {
               @update:files="handleFiles"
             />
 
+            <InfoTooltip v-if="templateActive" :message="OUTPUT_TEMPLATE_TOOLTIP" block>
+              <FileDropZone
+                v-model="output"
+                class="w-full"
+                label="Output file (auto-filled)"
+                :save-dialog="true"
+                :disabled="true"
+                :filters="[{ name: 'CHD', extensions: ['chd'] }]"
+              />
+            </InfoTooltip>
             <FileDropZone
+              v-else
               v-model="output"
               label="Output file (auto-filled)"
               :save-dialog="true"
@@ -252,7 +265,8 @@ function onRun() {
           :loading="loading || batch.running.value"
           :batch-current="batch.currentIndex.value"
           :batch-total="queue.length"
-          :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input"
+          :disabled="!canRun"
+          :disabled-reason="runBlockReason"
           @click="onRun"
           @cancel="isBatch ? batch.abort() : abort()"
         >

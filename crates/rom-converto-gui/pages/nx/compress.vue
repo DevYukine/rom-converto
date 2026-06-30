@@ -89,7 +89,11 @@ async function browseInputs() {
 }
 
 const hasXci = computed(() => queue.value.some((i) => isXciInput(i.input)));
-const canCompress = computed(() => queue.value.length > 0);
+const { canRun, runBlockReason, templateActive } = usePageGating({
+  queue,
+  outputTemplate,
+  emptyInputReason: "Add at least one file to the queue to continue.",
+});
 
 async function execute() {
   progress.reset();
@@ -183,8 +187,18 @@ function onRun() {
           </div>
         </div>
 
+        <InfoTooltip v-if="queue.length <= 1 && templateActive" :message="OUTPUT_TEMPLATE_TOOLTIP" block>
+          <FileDropZone
+            v-model="output"
+            class="w-full"
+            label="Output file (auto-filled)"
+            :save-dialog="true"
+            :disabled="true"
+            :filters="[{ name: 'Switch compressed', extensions: ['nsz', 'xcz'] }]"
+          />
+        </InfoTooltip>
         <FileDropZone
-          v-if="queue.length <= 1"
+          v-else-if="queue.length <= 1"
           v-model="output"
           label="Output file (auto-filled)"
           :save-dialog="true"
@@ -321,7 +335,8 @@ function onRun() {
           :loading="loading || batch.running.value"
           :batch-current="batch.currentIndex.value"
           :batch-total="queue.length"
-          :disabled="!canCompress"
+          :disabled="!canRun"
+          :disabled-reason="runBlockReason"
           @click="onRun"
           @cancel="batch.abort"
         >

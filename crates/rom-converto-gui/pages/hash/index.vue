@@ -8,6 +8,17 @@ const { run } = useOperation({ result, error, loading });
 const progress = useProgress("hash");
 const commandLine = ref("");
 
+const { runBlockReason: inputReason } = usePageGating({
+  input,
+  emptyInputReason: "Select a file or folder to hash.",
+});
+const runBlockReason = computed(() => {
+  if (inputReason.value) return inputReason.value;
+  if (algos.value.length === 0) return "Select at least one hash algorithm.";
+  return "";
+});
+const canRun = computed(() => runBlockReason.value === "");
+
 const ALGO_OPTIONS = [
   { label: "CRC32", value: "crc32" },
   { label: "SHA1", value: "sha1" },
@@ -93,7 +104,7 @@ async function execute() {
           :running="progress.running.value"
         />
 
-        <RunButton :loading="loading" :disabled="!input || algos.length === 0" @click="execute">
+        <RunButton :loading="loading" :disabled="!canRun" :disabled-reason="runBlockReason" @click="execute">
           Hash
         </RunButton>
       </div>

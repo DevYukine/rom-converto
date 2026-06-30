@@ -9,6 +9,11 @@ const { run } = useOperation({ result, error, loading });
 const progress = useProgress("playlist");
 const commandLine = ref("");
 
+const { canRun, runBlockReason } = usePageGating({
+  input: scanDir,
+  emptyInputReason: "Select a folder to scan for playlists.",
+});
+
 const MODE_OPTIONS = [
   { label: "Multiple discs only", value: "multiple" },
   { label: "Always", value: "always" },
@@ -93,7 +98,7 @@ async function execute() {
           :running="progress.running.value"
         />
 
-        <RunButton :loading="loading" :disabled="!scanDir" @click="execute">
+        <RunButton :loading="loading" :disabled="!canRun" :disabled-reason="runBlockReason" @click="execute">
           Write playlists
         </RunButton>
       </div>

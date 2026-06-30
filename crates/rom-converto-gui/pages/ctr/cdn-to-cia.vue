@@ -10,6 +10,8 @@ const progress = useProgress("cdn-to-cia");
 const totalProgress = useProgress("cdn-to-cia-total");
 const commandLine = ref("");
 
+const { canRun, runBlockReason } = usePageGating({ input: cdnDir, emptyInputReason: "Select a CDN directory to continue." });
+
 watch(compress, (val) => {
   if (val) decrypt.value = true;
 });
@@ -122,7 +124,7 @@ async function execute() {
           :running="progress.running.value"
         />
 
-        <RunButton :loading="loading" :disabled="!cdnDir" @click="execute" @cancel="abort()">
+        <RunButton :loading="loading" :disabled="!canRun" :disabled-reason="runBlockReason" @click="execute" @cancel="abort()">
           Convert
         </RunButton>
       </div>
