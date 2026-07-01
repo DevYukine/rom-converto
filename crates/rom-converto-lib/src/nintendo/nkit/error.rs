@@ -29,6 +29,9 @@ pub enum NkitError {
         computed: u32,
     },
 
+    #[error("operation cancelled")]
+    Cancelled,
+
     #[error("{0}")]
     Custom(String),
 }

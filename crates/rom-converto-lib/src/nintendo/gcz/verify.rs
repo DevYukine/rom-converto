@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use super::error::{GczError, GczResult};
 use super::format::adler32;
 use super::reader::GczLayout;
+use crate::util::CancelToken;
 use crate::util::worker_pool::{Pool, Worker, drive, parallelism};
 
 struct HashCheckWork {
@@ -40,7 +41,11 @@ impl Worker<HashCheckWork, u64, GczError> for HashCheckWorker {
 
 /// Verify all block checksums. `bytes_done` advances by stored bytes
 /// up to the header's `compressed_data_size`.
-pub fn verify_gcz_blocking(path: &Path, bytes_done: Arc<AtomicU64>) -> GczResult<()> {
+pub fn verify_gcz_blocking(
+    path: &Path,
+    bytes_done: Arc<AtomicU64>,
+    cancel: CancelToken,
+) -> GczResult<()> {
     let mut f = File::open(path)?;
     let layout = GczLayout::parse(&mut f)?;
     let total_blocks = layout.header.num_blocks as u64;
@@ -53,6 +58,9 @@ pub fn verify_gcz_blocking(path: &Path, bytes_done: Arc<AtomicU64>) -> GczResult
         total_blocks,
         parallelism() * 2,
         |i| {
+            if cancel.is_cancelled() {
+                return Err(GczError::Cancelled);
+            }
             let (off, len, _) = layout.stored_extent(i)?;
             let mut stored = vec![0u8; len as usize];
             use std::io::{Read, Seek, SeekFrom};

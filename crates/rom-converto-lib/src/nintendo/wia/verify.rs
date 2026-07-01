@@ -18,6 +18,7 @@ use super::format::exception_lists_per_group;
 use super::reader::{
     Segment, SegmentKind, WiaLayout, WiaSegmentWorker, build_segments, read_segment_work,
 };
+use crate::util::CancelToken;
 use crate::util::worker_pool::{Pool, drive, parallelism};
 
 /// Bytes covered by the non-deep pass (header chain plus tables).
@@ -39,7 +40,12 @@ pub fn verify_total(path: &Path, deep: bool) -> WiaResult<u64> {
     })
 }
 
-pub fn verify_wia_blocking(path: &Path, deep: bool, bytes_done: Arc<AtomicU64>) -> WiaResult<()> {
+pub fn verify_wia_blocking(
+    path: &Path,
+    deep: bool,
+    bytes_done: Arc<AtomicU64>,
+    cancel: CancelToken,
+) -> WiaResult<()> {
     let mut f = File::open(path)?;
     let layout = WiaLayout::parse(&mut f)?;
     bytes_done.fetch_add(header_bytes(&layout), Ordering::Relaxed);
@@ -71,6 +77,9 @@ pub fn verify_wia_blocking(path: &Path, deep: bool, bytes_done: Arc<AtomicU64>) 
         segments.len() as u64,
         parallelism() * 2,
         |_seq| {
+            if cancel.is_cancelled() {
+                return Err(WiaError::Cancelled);
+            }
             let seg = seg_iter
                 .next()
                 .ok_or_else(|| WiaError::Custom("segment iterator exhausted".into()))?;

@@ -100,13 +100,25 @@ mod tests {
         let nkit = make_nkit_gc(&iso);
 
         let f = write_temp(&nkit, ".nkit.iso");
-        verify_nkit_blocking(f.path(), false, Arc::new(AtomicU64::new(0))).unwrap();
+        verify_nkit_blocking(
+            f.path(),
+            false,
+            Arc::new(AtomicU64::new(0)),
+            crate::util::CancelToken::new(),
+        )
+        .unwrap();
 
         let mut bad = nkit.clone();
         let n = bad.len();
         bad[n - 3] ^= 0xFF;
         let f = write_temp(&bad, ".nkit.iso");
-        let err = verify_nkit_blocking(f.path(), false, Arc::new(AtomicU64::new(0))).unwrap_err();
+        let err = verify_nkit_blocking(
+            f.path(),
+            false,
+            Arc::new(AtomicU64::new(0)),
+            crate::util::CancelToken::new(),
+        )
+        .unwrap_err();
         assert!(matches!(err, NkitError::CrcMismatch { .. }), "{err}");
     }
 
@@ -117,13 +129,24 @@ mod tests {
         let gcz = make_nkit_gcz(&nkit, crc_of(&iso));
 
         let f = write_temp(&gcz, ".nkit.gcz");
-        verify_nkit_blocking(f.path(), true, Arc::new(AtomicU64::new(0))).unwrap();
+        verify_nkit_blocking(
+            f.path(),
+            true,
+            Arc::new(AtomicU64::new(0)),
+            crate::util::CancelToken::new(),
+        )
+        .unwrap();
 
         let mut bad = gcz.clone();
         let n = bad.len();
         bad[n - 3] ^= 0xFF;
         let f = write_temp(&bad, ".nkit.gcz");
-        let err = verify_nkit_blocking(f.path(), true, Arc::new(AtomicU64::new(0)));
+        let err = verify_nkit_blocking(
+            f.path(),
+            true,
+            Arc::new(AtomicU64::new(0)),
+            crate::util::CancelToken::new(),
+        );
         assert!(err.is_err());
     }
 }

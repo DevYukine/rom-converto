@@ -32,6 +32,9 @@ pub enum GczError {
     #[error("GCZ block {block} failed to inflate: {reason}")]
     Inflate { block: u64, reason: String },
 
+    #[error("operation cancelled")]
+    Cancelled,
+
     #[error("{0}")]
     Custom(String),
 }

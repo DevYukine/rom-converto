@@ -91,16 +91,18 @@ async fn run_blocking_with_progress<T, F>(
     total: u64,
     msg: &str,
     progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
     job: F,
 ) -> RvzResult<T>
 where
     T: Send + 'static,
-    F: FnOnce(Arc<AtomicU64>) -> RvzResult<T> + Send + 'static,
+    F: FnOnce(Arc<AtomicU64>, CancelToken) -> RvzResult<T> + Send + 'static,
 {
     progress.start(total, msg);
     let bytes_done = Arc::new(AtomicU64::new(0));
     let bytes_done_bg = bytes_done.clone();
-    let mut handle = task::spawn_blocking(move || job(bytes_done_bg));
+    let cancel_bg = cancel.clone();
+    let mut handle = task::spawn_blocking(move || job(bytes_done_bg, cancel_bg));
     let result = loop {
         match tokio::time::timeout(std::time::Duration::from_millis(100), &mut handle).await {
             Ok(joined) => break joined?,
@@ -117,7 +119,16 @@ where
         progress.inc(remaining);
     }
     progress.finish();
-    result
+    if result.is_ok() && cancel.is_cancelled() {
+        return Err(RvzError::Cancelled);
+    }
+    result.map_err(|e| {
+        if cancel.is_cancelled() {
+            RvzError::Cancelled
+        } else {
+            e
+        }
+    })
 }
 
 /// Pre-conversion integrity pass. GCZ checks every stored block's
@@ -129,6 +140,7 @@ pub async fn verify_legacy_input(
     fmt: LegacyFormat,
     deep: bool,
     progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
 ) -> RvzResult<()> {
     match fmt {
         LegacyFormat::Gcz => {
@@ -137,9 +149,13 @@ pub async fn verify_legacy_input(
                 task::spawn_blocking(move || gcz::verify_total(&path)).await??
             };
             let path = input.to_path_buf();
-            run_blocking_with_progress(total, "Verifying GCZ integrity...", progress, move |done| {
-                Ok(gcz::verify_gcz_blocking(&path, done)?)
-            })
+            run_blocking_with_progress(
+                total,
+                "Verifying GCZ integrity...",
+                progress,
+                cancel,
+                move |done, cancel| Ok(gcz::verify_gcz_blocking(&path, done, cancel)?),
+            )
             .await
         }
         LegacyFormat::Wia => {
@@ -148,9 +164,13 @@ pub async fn verify_legacy_input(
                 task::spawn_blocking(move || super::wia::verify_total(&path, deep)).await??
             };
             let path = input.to_path_buf();
-            run_blocking_with_progress(total, "Verifying WIA integrity...", progress, move |done| {
-                Ok(super::wia::verify_wia_blocking(&path, deep, done)?)
-            })
+            run_blocking_with_progress(
+                total,
+                "Verifying WIA integrity...",
+                progress,
+                cancel,
+                move |done, cancel| Ok(super::wia::verify_wia_blocking(&path, deep, done, cancel)?),
+            )
             .await
         }
         LegacyFormat::NkitIso | LegacyFormat::NkitGcz => {
@@ -164,7 +184,12 @@ pub async fn verify_legacy_input(
                 total,
                 "Verifying NKit integrity...",
                 progress,
-                move |done| Ok(super::nkit::verify_nkit_blocking(&path, wrapped, done)?),
+                cancel,
+                move |done, cancel| {
+                    Ok(super::nkit::verify_nkit_blocking(
+                        &path, wrapped, done, cancel,
+                    )?)
+                },
             )
             .await
         }
@@ -203,11 +228,11 @@ pub async fn migrate_disc(
     .await
 }
 
-/// Like [`migrate_disc`] but observes `cancel`. The verify phase runs
-/// to completion (it is short); the conversion phase streams through
-/// [`compress_disc_cancellable`], which writes to a scratch file and
-/// renames on success, so an interrupted migration leaves no partial
-/// RVZ behind.
+/// Like [`migrate_disc`] but observes `cancel`. Both phases honour the
+/// token: the verify pass checks it at block/group boundaries and the
+/// conversion phase streams through [`compress_disc_cancellable`],
+/// which writes to a scratch file and renames on success, so an
+/// interrupted migration leaves no partial RVZ behind.
 pub async fn migrate_disc_cancellable(
     input: &Path,
     output: &Path,
@@ -227,7 +252,7 @@ pub async fn migrate_disc_cancellable(
     })?;
     info!("Migrating {} input {} to RVZ", fmt.name(), input.display());
     if !migrate.skip_verify {
-        verify_legacy_input(input, fmt, migrate.deep_verify, progress).await?;
+        verify_legacy_input(input, fmt, migrate.deep_verify, progress, &cancel).await?;
     }
     compress_disc_cancellable(input, output, options, progress, cancel).await
 }
@@ -403,6 +428,30 @@ mod tests {
         .unwrap_err();
         assert!(err.to_string().contains("checksum mismatch"), "{err}");
         assert!(!rvz.exists(), "no output may be written for corrupt input");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verify_phase_observes_cancellation() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = make_fake_gamecube_iso(4 * 1024 * 1024);
+        let gcz = write_gcz_fixture(dir.path(), &original);
+
+        let cancel = CancelToken::new();
+        cancel.cancel();
+
+        let rvz = dir.path().join("out.rvz");
+        let err = migrate_disc_cancellable(
+            &gcz,
+            &rvz,
+            RvzCompressOptions::default(),
+            MigrateOptions::default(),
+            &NoProgress,
+            cancel,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, RvzError::Cancelled), "{err}");
+        assert!(!rvz.exists(), "no output may be written when cancelled");
     }
 
     #[tokio::test(flavor = "multi_thread")]

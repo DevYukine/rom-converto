@@ -34,6 +34,9 @@ pub enum WiaError {
     #[error("WIA group failed to decode: {0}")]
     Decode(String),
 
+    #[error("operation cancelled")]
+    Cancelled,
+
     #[error("{0}")]
     Custom(String),
 }

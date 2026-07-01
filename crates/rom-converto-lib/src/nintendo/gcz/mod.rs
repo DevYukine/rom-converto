@@ -125,7 +125,12 @@ mod tests {
         let err = r.read_to_end(&mut out).unwrap_err();
         assert!(err.to_string().contains("checksum mismatch"), "{err}");
 
-        let err = verify_gcz_blocking(f.path(), Arc::new(AtomicU64::new(0))).unwrap_err();
+        let err = verify_gcz_blocking(
+            f.path(),
+            Arc::new(AtomicU64::new(0)),
+            crate::util::CancelToken::new(),
+        )
+        .unwrap_err();
         assert!(matches!(err, GczError::BlockHashMismatch { .. }));
     }
 
@@ -134,11 +139,23 @@ mod tests {
         let iso = mixed_payload(0x20000);
         let f = write_temp_gcz(&iso, 0x8000);
         let done = Arc::new(AtomicU64::new(0));
-        verify_gcz_blocking(f.path(), done.clone()).unwrap();
+        verify_gcz_blocking(f.path(), done.clone(), crate::util::CancelToken::new()).unwrap();
         assert_eq!(
             done.load(std::sync::atomic::Ordering::Relaxed),
             verify_total(f.path()).unwrap()
         );
+    }
+
+    #[test]
+    fn verify_stops_early_when_cancelled() {
+        let iso = mixed_payload(0x40000);
+        let f = write_temp_gcz(&iso, 0x4000);
+        let cancel = crate::util::CancelToken::new();
+        cancel.cancel();
+        let done = Arc::new(AtomicU64::new(0));
+        let err = verify_gcz_blocking(f.path(), done.clone(), cancel).unwrap_err();
+        assert!(matches!(err, GczError::Cancelled), "{err}");
+        assert_eq!(done.load(std::sync::atomic::Ordering::Relaxed), 0);
     }
 
     #[test]

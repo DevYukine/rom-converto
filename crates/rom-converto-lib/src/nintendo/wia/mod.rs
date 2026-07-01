@@ -130,18 +130,36 @@ mod tests {
         let mut bad = wia.clone();
         bad[0x60] ^= 0xFF;
         let f = write_temp(&bad);
-        let err = verify_wia_blocking(f.path(), false, Arc::new(AtomicU64::new(0))).unwrap_err();
+        let err = verify_wia_blocking(
+            f.path(),
+            false,
+            Arc::new(AtomicU64::new(0)),
+            crate::util::CancelToken::new(),
+        )
+        .unwrap_err();
         assert!(matches!(err, WiaError::HashChainMismatch(_)), "{err}");
 
         // Truncation: declared size no longer matches.
         let mut truncated = wia.clone();
         truncated.pop();
         let f = write_temp(&truncated);
-        let err = verify_wia_blocking(f.path(), false, Arc::new(AtomicU64::new(0))).unwrap_err();
+        let err = verify_wia_blocking(
+            f.path(),
+            false,
+            Arc::new(AtomicU64::new(0)),
+            crate::util::CancelToken::new(),
+        )
+        .unwrap_err();
         assert!(matches!(err, WiaError::InvalidHeader(_)), "{err}");
 
         let f = write_temp(&wia);
-        verify_wia_blocking(f.path(), true, Arc::new(AtomicU64::new(0))).unwrap();
+        verify_wia_blocking(
+            f.path(),
+            true,
+            Arc::new(AtomicU64::new(0)),
+            crate::util::CancelToken::new(),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -153,7 +171,13 @@ mod tests {
         let mid = wia.len() / 2;
         wia[mid] ^= 0xFF;
         let f = write_temp(&wia);
-        let err = verify_wia_blocking(f.path(), true, Arc::new(AtomicU64::new(0))).unwrap_err();
+        let err = verify_wia_blocking(
+            f.path(),
+            true,
+            Arc::new(AtomicU64::new(0)),
+            crate::util::CancelToken::new(),
+        )
+        .unwrap_err();
         assert!(
             matches!(err, WiaError::HashChainMismatch(_) | WiaError::Decode(_)),
             "{err}"
