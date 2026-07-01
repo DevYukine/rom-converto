@@ -102,30 +102,50 @@ pub async fn compress_disc(
     options: RvzCompressOptions,
     progress: &dyn ProgressReporter,
 ) -> RvzResult<()> {
+    compress_disc_cancellable(input, output, options, progress, CancelToken::new()).await
+}
+
+/// Like [`compress_disc`] but observes `cancel` at region and chunk
+/// boundaries; on cancel the partial RVZ is removed (the writer targets
+/// a sibling temp file renamed into place only on success). Legacy
+/// containers (GCZ, WIA, NKit) are detected by magic and routed through
+/// [`crate::nintendo::legacy_input::migrate_disc_cancellable`], which
+/// verifies their integrity before converting; everything else goes
+/// straight to the raw writer.
+pub async fn compress_disc_cancellable(
+    input: &Path,
+    output: &Path,
+    options: RvzCompressOptions,
+    progress: &dyn ProgressReporter,
+    cancel: CancelToken,
+) -> RvzResult<()> {
     let legacy = {
         let input = input.to_path_buf();
         task::spawn_blocking(move || crate::nintendo::legacy_input::detect_legacy_format(&input))
             .await??
     };
     if legacy.is_some() {
-        return crate::nintendo::legacy_input::migrate_disc(
+        return crate::nintendo::legacy_input::migrate_disc_cancellable(
             input,
             output,
             options,
             crate::nintendo::legacy_input::MigrateOptions::default(),
             progress,
+            cancel,
         )
         .await;
     }
-    compress_disc_cancellable(input, output, options, progress, CancelToken::new()).await
+    compress_iso_cancellable(input, output, options, progress, cancel).await
 }
 
-/// Like [`compress_disc`] but observes `cancel` at region and chunk
-/// boundaries; on cancel the partial RVZ is removed (the writer targets
-/// a sibling temp file renamed into place only on success). The input
-/// is opened through the same reader set as the migrate path, so legacy
-/// containers (GCZ, WIA, NKit) stream their logical disc on the fly.
-pub async fn compress_disc_cancellable(
+/// The raw cancellable RVZ writer. Performs no legacy detection or
+/// routing: it opens the input through the standard reader set (so a
+/// legacy container reconstructs its logical disc on the fly), streams
+/// it to a sibling temp file, and renames into place only on success.
+/// On cancel the partial RVZ is removed. This is the single point every
+/// compress path bottoms out in, which keeps the migrate route free of
+/// recursion.
+pub(crate) async fn compress_iso_cancellable(
     input: &Path,
     output: &Path,
     options: RvzCompressOptions,

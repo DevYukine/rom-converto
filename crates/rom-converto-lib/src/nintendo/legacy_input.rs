@@ -19,7 +19,7 @@ use log::{info, warn};
 use tokio::task;
 
 use super::gcz;
-use super::rvz::compress::{RvzCompressOptions, compress_disc_cancellable};
+use super::rvz::compress::{RvzCompressOptions, compress_iso_cancellable};
 use super::rvz::error::{RvzError, RvzResult};
 use crate::util::{CancelToken, ProgressReporter};
 
@@ -230,7 +230,7 @@ pub async fn migrate_disc(
 
 /// Like [`migrate_disc`] but observes `cancel`. Both phases honour the
 /// token: the verify pass checks it at block/group boundaries and the
-/// conversion phase streams through [`compress_disc_cancellable`],
+/// conversion phase streams through [`compress_iso_cancellable`],
 /// which writes to a scratch file and renames on success, so an
 /// interrupted migration leaves no partial RVZ behind.
 pub async fn migrate_disc_cancellable(
@@ -254,7 +254,7 @@ pub async fn migrate_disc_cancellable(
     if !migrate.skip_verify {
         verify_legacy_input(input, fmt, migrate.deep_verify, progress, &cancel).await?;
     }
-    compress_disc_cancellable(input, output, options, progress, cancel).await
+    compress_iso_cancellable(input, output, options, progress, cancel).await
 }
 
 /// Migrate every legacy container directly inside `dir` (top level
@@ -431,6 +431,61 @@ mod tests {
         .unwrap_err();
         assert!(err.to_string().contains("checksum mismatch"), "{err}");
         assert!(!rvz.exists(), "no output may be written for corrupt input");
+    }
+
+    #[derive(Default)]
+    struct PhaseRecorder {
+        messages: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl ProgressReporter for PhaseRecorder {
+        fn start(&self, _total: u64, msg: &str) {
+            self.messages.lock().unwrap().push(msg.to_string());
+        }
+        fn inc(&self, _delta: u64) {}
+        fn finish(&self) {}
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn compress_verifies_legacy_input_before_converting() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = make_fake_gamecube_iso(1024 * 1024);
+
+        let corrupt = write_gcz_fixture(dir.path(), &original);
+        let mut bytes = std::fs::read(&corrupt).unwrap();
+        let n = bytes.len();
+        bytes[n - 5] ^= 0xFF;
+        std::fs::write(&corrupt, &bytes).unwrap();
+
+        let corrupt_out = dir.path().join("corrupt.rvz");
+        let err = compress_disc(
+            &corrupt,
+            &corrupt_out,
+            RvzCompressOptions::default(),
+            &NoProgress,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("checksum mismatch"), "{err}");
+        assert!(
+            !corrupt_out.exists(),
+            "no output may be written for corrupt legacy input"
+        );
+
+        let valid_dir = tempfile::tempdir().unwrap();
+        let valid = write_gcz_fixture(valid_dir.path(), &original);
+        let valid_out = valid_dir.path().join("valid.rvz");
+        let recorder = PhaseRecorder::default();
+        compress_disc(&valid, &valid_out, RvzCompressOptions::default(), &recorder)
+            .await
+            .unwrap();
+        assert!(valid_out.exists());
+
+        let messages = recorder.messages.lock().unwrap();
+        assert!(
+            messages.iter().any(|m| m.contains("Verifying")),
+            "compress on a legacy input must run the verify phase, saw {messages:?}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
