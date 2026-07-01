@@ -295,7 +295,7 @@ pub async fn migrate_disc_batch(
     let mut failed: usize = 0;
     for input in &inputs {
         if cancel.is_cancelled() {
-            return Err(RvzError::Cancelled);
+            break;
         }
         let output = super::rvz::derive_rvz_path(input);
         if !force && output.exists() {
@@ -311,7 +311,7 @@ pub async fn migrate_disc_batch(
                 .await
         {
             if matches!(e, RvzError::Cancelled) {
-                return Err(e);
+                break;
             }
             warn!("Failed to migrate {}: {e}", input.display());
             failed += 1;
@@ -324,6 +324,9 @@ pub async fn migrate_disc_batch(
         inputs.len() - failed,
         failed
     );
+    if cancel.is_cancelled() {
+        return Ok(());
+    }
     if failed > 0 {
         return Err(RvzError::Custom(format!(
             "{failed} of {} migrations failed",
@@ -513,7 +516,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn batch_propagates_cancellation_instead_of_failure() {
+    async fn batch_cancellation_stops_cleanly_without_failure() {
         let dir = tempfile::tempdir().unwrap();
         let original = make_fake_gamecube_iso(1024 * 1024);
         for name in ["a.gcz", "b.gcz"] {
@@ -525,7 +528,7 @@ mod tests {
         let cancel = CancelToken::new();
         cancel.cancel();
 
-        let err = migrate_disc_batch(
+        migrate_disc_batch(
             dir.path(),
             RvzCompressOptions::default(),
             MigrateOptions::default(),
@@ -534,8 +537,10 @@ mod tests {
             cancel,
         )
         .await
-        .unwrap_err();
-        assert!(matches!(err, RvzError::Cancelled), "{err}");
+        .expect("cancelled batch must return Ok, not a failure");
+
+        assert!(!dir.path().join("a.rvz").exists());
+        assert!(!dir.path().join("b.rvz").exists());
     }
 
     #[tokio::test(flavor = "multi_thread")]
