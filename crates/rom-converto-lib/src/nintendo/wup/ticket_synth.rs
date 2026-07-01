@@ -13,7 +13,7 @@
 use crate::nintendo::wup::common_keys::WII_U_COMMON_KEY;
 use crate::nintendo::wup::models::ticket::{WUP_TICKET_BASE_SIZE, WUP_TICKET_FORMAT_V1};
 
-use aes::cipher::{BlockEncryptMut, KeyIvInit};
+use aes::cipher::{BlockModeEncrypt, KeyIvInit};
 use block_padding::NoPadding;
 
 // Offsets are duplicated from models::ticket instead of imported to
@@ -53,7 +53,7 @@ pub fn synthesize_wup_ticket(
     let mut ciphertext = *plain_title_key;
     cbc::Encryptor::<aes::Aes128>::new_from_slices(&WII_U_COMMON_KEY, &iv)
         .expect("common key and IV are exactly 16 bytes")
-        .encrypt_padded_mut::<NoPadding>(&mut ciphertext, plain_title_key.len())
+        .encrypt_padded::<NoPadding>(&mut ciphertext, plain_title_key.len())
         .expect("16 byte plaintext always encrypts cleanly with NoPadding");
 
     ticket[OFFSET_ENCRYPTED_TITLE_KEY..OFFSET_ENCRYPTED_TITLE_KEY + 16]

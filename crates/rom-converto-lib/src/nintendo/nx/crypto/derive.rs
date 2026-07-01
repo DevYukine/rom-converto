@@ -7,8 +7,8 @@
 //! or AES-XTS.
 
 use aes::Aes128;
-use aes::cipher::generic_array::GenericArray;
-use aes::cipher::{BlockDecrypt, KeyInit};
+use aes::cipher::array::Array;
+use aes::cipher::{BlockCipherDecrypt, KeyInit};
 
 use crate::nintendo::nx::error::{NxError, NxResult};
 use crate::nintendo::nx::keys::{KeyAreaKind, KeySet};
@@ -34,8 +34,8 @@ pub fn decrypt_key_area(
     let mut out = [[0u8; KEY_AREA_KEY_SIZE]; KEY_AREA_KEY_COUNT];
     for (i, slot) in out.iter_mut().enumerate() {
         let start = i * KEY_AREA_KEY_SIZE;
-        let mut block =
-            GenericArray::clone_from_slice(&encrypted_key_area[start..start + KEY_AREA_KEY_SIZE]);
+        let mut block = Array::try_from(&encrypted_key_area[start..start + KEY_AREA_KEY_SIZE])
+            .expect("key area slot is one AES block");
         cipher.decrypt_block(&mut block);
         slot.copy_from_slice(block.as_slice());
     }
@@ -50,7 +50,7 @@ pub fn body_key(area: &[[u8; KEY_AREA_KEY_SIZE]; KEY_AREA_KEY_COUNT]) -> [u8; KE
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aes::cipher::BlockEncrypt;
+    use aes::cipher::BlockCipherEncrypt;
 
     #[test]
     fn round_trip_single_block() {
@@ -59,7 +59,7 @@ mod tests {
         let cipher = Aes128::new_from_slice(&kak).unwrap();
         let mut encrypted = [0u8; 64];
         for (i, k) in plain_keys.iter().enumerate() {
-            let mut block = GenericArray::clone_from_slice(k);
+            let mut block = Array::from(*k);
             cipher.encrypt_block(&mut block);
             encrypted[i * 16..(i + 1) * 16].copy_from_slice(block.as_slice());
         }

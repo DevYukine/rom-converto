@@ -7,6 +7,9 @@ pub enum TitleKeyError {
     InvalidLength(#[from] InvalidLength),
 
     #[error(transparent)]
+    CipherInvalidLength(#[from] aes::cipher::InvalidLength),
+
+    #[error(transparent)]
     FromHexError(#[from] hex::FromHexError),
 
     #[error("Padding invalid: {0}")]

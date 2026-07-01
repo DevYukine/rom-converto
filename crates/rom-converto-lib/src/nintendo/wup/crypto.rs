@@ -8,7 +8,7 @@
 
 use aes::{
     Aes128,
-    cipher::{BlockDecryptMut, KeyIvInit},
+    cipher::{BlockModeDecrypt, KeyIvInit},
 };
 use block_padding::NoPadding;
 use cbc::Decryptor;
@@ -30,7 +30,7 @@ pub fn aes_cbc_decrypt_in_place(key: &[u8; 16], iv: &[u8; 16], data: &mut [u8]) 
     }
     Aes128CbcDec::new_from_slices(key, iv)
         .map_err(|e| WupError::AesError(e.to_string()))?
-        .decrypt_padded_mut::<NoPadding>(data)
+        .decrypt_padded::<NoPadding>(data)
         .map_err(|e| WupError::AesError(e.to_string()))?;
     Ok(())
 }
@@ -53,7 +53,7 @@ pub fn decrypt_title_key(encrypted_title_key: &[u8; 16], title_id: u64) -> WupRe
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aes::cipher::BlockEncryptMut;
+    use aes::cipher::BlockModeEncrypt;
     use cbc::Encryptor;
 
     type Aes128CbcEnc = Encryptor<Aes128>;
@@ -61,7 +61,7 @@ mod tests {
     fn aes_cbc_encrypt_in_place(key: &[u8; 16], iv: &[u8; 16], data: &mut [u8]) {
         Aes128CbcEnc::new_from_slices(key, iv)
             .unwrap()
-            .encrypt_padded_mut::<NoPadding>(data, data.len())
+            .encrypt_padded::<NoPadding>(data, data.len())
             .unwrap();
     }
 

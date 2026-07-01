@@ -7,7 +7,7 @@ use crate::nintendo::ctr::constants::{
 use crate::nintendo::ctr::title_key::error::{TitleKeyError, TitleKeyResult};
 use aes::Aes128;
 use block_padding::NoPadding;
-use cbc::cipher::{BlockEncryptMut, KeyIvInit};
+use cbc::cipher::{BlockModeEncrypt, KeyIvInit};
 use hex::{decode, encode};
 use hmac::Hmac;
 use log::debug;
@@ -57,13 +57,13 @@ fn encrypt_title_key(
 
     let cipher = cbc::Encryptor::<Aes128>::new_from_slices(&key, &iv)?;
 
-    // encrypt_padded_mut needs room for one extra block past data_len.
+    // encrypt_padded needs room for one extra block past data_len.
     let data_len = data.len();
     let mut buf = data;
     buf.resize(data_len + 16, 0);
 
     let ciphertext = cipher
-        .encrypt_padded_mut::<NoPadding>(&mut buf, data_len)
+        .encrypt_padded::<NoPadding>(&mut buf, data_len)
         .map_err(|err| TitleKeyError::PadError(err.to_string()))?;
 
     Ok(encode(ciphertext))

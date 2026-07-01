@@ -79,7 +79,7 @@ mod tests {
 
         let decoder = png::Decoder::new(Cursor::new(&img.png_bytes));
         let mut reader = decoder.read_info().unwrap();
-        let mut buf = vec![0u8; reader.output_buffer_size()];
+        let mut buf = vec![0u8; reader.output_buffer_size().expect("png output buffer size")];
         let info = reader.next_frame(&mut buf).unwrap();
         assert_eq!(info.width, 2);
         assert_eq!(info.height, 2);

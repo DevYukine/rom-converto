@@ -46,7 +46,7 @@ mod tests {
     use crate::nintendo::wup::models::ticket::{WUP_TICKET_BASE_SIZE, WUP_TICKET_FORMAT_V1};
     use aes::{
         Aes128,
-        cipher::{BlockEncryptMut, KeyIvInit},
+        cipher::{BlockModeEncrypt, KeyIvInit},
     };
     use block_padding::NoPadding;
     use cbc::Encryptor;
@@ -62,7 +62,7 @@ mod tests {
         let mut encrypted = *plain_key;
         Aes128CbcEnc::new_from_slices(&WII_U_COMMON_KEY, &iv)
             .unwrap()
-            .encrypt_padded_mut::<NoPadding>(&mut encrypted, 16)
+            .encrypt_padded::<NoPadding>(&mut encrypted, 16)
             .unwrap();
 
         let mut bytes = vec![0u8; WUP_TICKET_BASE_SIZE];

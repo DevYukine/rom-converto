@@ -1,6 +1,6 @@
 use aes::{
     Aes128,
-    cipher::{BlockDecryptMut, KeyIvInit},
+    cipher::{BlockModeDecrypt, KeyIvInit},
 };
 use block_padding::NoPadding;
 use byteorder::{BigEndian, ByteOrder};
@@ -22,7 +22,7 @@ pub fn gen_iv(cidx: u16) -> [u8; 16] {
 
 pub fn cbc_decrypt(key: &[u8; 16], iv: &[u8; 16], data: &mut [u8]) -> anyhow::Result<()> {
     Aes128Cbc::new_from_slices(key, iv)?
-        .decrypt_padded_mut::<NoPadding>(data)
+        .decrypt_padded::<NoPadding>(data)
         .map_err(|e| anyhow::anyhow!(e))?;
 
     Ok(())
@@ -112,7 +112,7 @@ mod tests {
             CTR_COMMON_KEYS_HEX, TICKET_COMMON_KEY_IDX_OFFSET, TICKET_SIG_BODY_OFFSET,
             TICKET_TITLE_ID_OFFSET, TICKET_TITLE_KEY_OFFSET,
         };
-        use aes::cipher::{BlockEncryptMut, KeyIvInit};
+        use aes::cipher::{BlockModeEncrypt, KeyIvInit};
         use std::io::Cursor;
 
         let plaintext_title_key = [0xA5u8; 16];
@@ -127,8 +127,9 @@ mod tests {
             Aes128CbcEnc::new_from_slices(&CTR_COMMON_KEYS_HEX[common_key_idx as usize], &iv)
                 .unwrap();
         for block in enc_title_key.chunks_mut(16) {
-            let array_block = aes::cipher::generic_array::GenericArray::from_mut_slice(block);
-            enc.encrypt_block_mut(array_block);
+            let array_block = <&mut aes::cipher::array::Array<_, _>>::try_from(block)
+                .expect("chunk is exactly one AES block");
+            enc.encrypt_block(array_block);
         }
 
         let ticket_offset = 0x100u64;

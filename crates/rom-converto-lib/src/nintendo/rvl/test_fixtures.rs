@@ -14,7 +14,7 @@ use crate::nintendo::rvl::disc::encrypt_sector;
 use crate::nintendo::rvl::partition::{HASH_REGION_BYTES, recompute_hash_regions};
 use aes::{
     Aes128,
-    cipher::{BlockEncryptMut, KeyIvInit},
+    cipher::{BlockModeEncrypt, KeyIvInit},
 };
 use block_padding::NoPadding;
 use cbc::Encryptor;
@@ -112,7 +112,7 @@ pub fn make_fake_wii_iso_with_partition(n_clusters: usize) -> Vec<u8> {
     let cipher = Aes128CbcEnc::new_from_slices(&WII_COMMON_KEY, &iv).unwrap();
     let mut enc_key = [0u8; 16];
     cipher
-        .encrypt_padded_b2b_mut::<NoPadding>(&plaintext_title_key, &mut enc_key)
+        .encrypt_padded_b2b::<NoPadding>(&plaintext_title_key, &mut enc_key)
         .unwrap();
 
     let part_off = PARTITION_OFFSET as usize;

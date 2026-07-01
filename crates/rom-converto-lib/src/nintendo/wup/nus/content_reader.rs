@@ -106,7 +106,7 @@ mod tests {
     use aes::Aes128;
     use block_padding::NoPadding;
     use cbc::Encryptor;
-    use cbc::cipher::{BlockEncryptMut, KeyIvInit};
+    use cbc::cipher::{BlockModeEncrypt, KeyIvInit};
     use std::io::Cursor;
 
     type Aes128CbcEnc = Encryptor<Aes128>;
@@ -114,7 +114,7 @@ mod tests {
     fn encrypt_in_place(key: &[u8; 16], iv: &[u8; 16], data: &mut [u8]) {
         Aes128CbcEnc::new_from_slices(key, iv)
             .unwrap()
-            .encrypt_padded_mut::<NoPadding>(data, data.len())
+            .encrypt_padded::<NoPadding>(data, data.len())
             .unwrap();
     }
 

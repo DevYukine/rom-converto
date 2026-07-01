@@ -183,7 +183,7 @@ mod tests {
     use super::*;
     use crate::nintendo::wup::disc::sector_stream::InMemoryDisc;
     use aes::Aes128;
-    use aes::cipher::BlockEncryptMut;
+    use aes::cipher::BlockModeEncrypt;
     use aes::cipher::KeyIvInit;
     use block_padding::NoPadding;
     use cbc::Encryptor;
@@ -209,7 +209,7 @@ mod tests {
         let iv = [0u8; 16];
         Aes128CbcEnc::new_from_slices(key, &iv)
             .unwrap()
-            .encrypt_padded_mut::<NoPadding>(&mut toc, SECTOR_SIZE)
+            .encrypt_padded::<NoPadding>(&mut toc, SECTOR_SIZE)
             .unwrap();
 
         // Assemble full disc: sectors 0..3 zero, sector 3 is our TOC.

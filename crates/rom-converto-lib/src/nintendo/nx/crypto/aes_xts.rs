@@ -8,13 +8,14 @@
 
 use aes::Aes128;
 use aes::cipher::KeyInit;
+use aes::cipher::array::Array;
 use xts_mode::Xts128;
 
 use crate::nintendo::nx::constants::{NCA_HEADER_SIZE, NCA_XTS_SECTOR};
 use crate::nintendo::nx::error::{NxError, NxResult};
 
-fn nca_tweak(sector_index: u128) -> [u8; 16] {
-    sector_index.to_be_bytes()
+fn nca_tweak(sector_index: u128) -> Array<u8, aes::cipher::consts::U16> {
+    Array(sector_index.to_be_bytes())
 }
 
 fn make_cipher(header_key: &[u8; 32]) -> NxResult<Xts128<Aes128>> {

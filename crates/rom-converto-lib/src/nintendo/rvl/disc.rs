@@ -12,7 +12,7 @@ use crate::nintendo::rvl::constants::{
 use crate::nintendo::rvz::error::{RvzError, RvzResult};
 use aes::{
     Aes128,
-    cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit},
+    cipher::{BlockModeDecrypt, BlockModeEncrypt, KeyIvInit},
 };
 use block_padding::NoPadding;
 use cbc::{Decryptor, Encryptor};
@@ -129,7 +129,7 @@ pub fn decrypt_title_key(ticket: &[u8; WII_TICKET_SIZE]) -> RvzResult<[u8; 16]> 
         Aes128CbcDec::new_from_slices(key, &iv).map_err(|e| RvzError::AesError(e.to_string()))?;
     let mut buf = encrypted;
     cipher
-        .decrypt_padded_mut::<NoPadding>(&mut buf)
+        .decrypt_padded::<NoPadding>(&mut buf)
         .map_err(|e| RvzError::AesError(format!("title key decrypt: {e}")))?;
     Ok(buf)
 }
@@ -153,7 +153,7 @@ pub fn encrypt_title_key(
     buf.copy_from_slice(title_key);
     let mut out = [0u8; 16];
     let ct = cipher
-        .encrypt_padded_b2b_mut::<NoPadding>(&buf, &mut out)
+        .encrypt_padded_b2b::<NoPadding>(&buf, &mut out)
         .map_err(|e| RvzError::AesError(format!("title key encrypt: {e}")))?;
     let mut arr = [0u8; 16];
     arr.copy_from_slice(ct);
@@ -175,7 +175,7 @@ pub fn decrypt_sector(sector: &mut [u8; WII_SECTOR_SIZE], title_key: &[u8; 16]) 
     let hash_iv = [0u8; 16];
     Aes128CbcDec::new_from_slices(title_key, &hash_iv)
         .map_err(|e| RvzError::AesError(e.to_string()))?
-        .decrypt_padded_mut::<NoPadding>(&mut hash_region)
+        .decrypt_padded::<NoPadding>(&mut hash_region)
         .map_err(|e| RvzError::AesError(format!("hash decrypt: {e}")))?;
 
     // Payload (0x7C00 bytes).
@@ -183,7 +183,7 @@ pub fn decrypt_sector(sector: &mut [u8; WII_SECTOR_SIZE], title_key: &[u8; 16]) 
     payload.copy_from_slice(&sector[WII_HASH_SIZE..]);
     Aes128CbcDec::new_from_slices(title_key, &payload_iv)
         .map_err(|e| RvzError::AesError(e.to_string()))?
-        .decrypt_padded_mut::<NoPadding>(&mut payload)
+        .decrypt_padded::<NoPadding>(&mut payload)
         .map_err(|e| RvzError::AesError(format!("payload decrypt: {e}")))?;
 
     sector[..WII_HASH_SIZE].copy_from_slice(&hash_region);
@@ -201,7 +201,7 @@ pub fn encrypt_sector(sector: &mut [u8; WII_SECTOR_SIZE], title_key: &[u8; 16]) 
         let hash_cipher = Aes128CbcEnc::new_from_slices(title_key, &hash_iv)
             .map_err(|e| RvzError::AesError(e.to_string()))?;
         let ct = hash_cipher
-            .encrypt_padded_b2b_mut::<NoPadding>(&sector[..WII_HASH_SIZE], &mut hash_enc)
+            .encrypt_padded_b2b::<NoPadding>(&sector[..WII_HASH_SIZE], &mut hash_enc)
             .map_err(|e| RvzError::AesError(format!("hash encrypt: {e}")))?;
         debug_assert_eq!(ct.len(), WII_HASH_SIZE);
     }
@@ -214,7 +214,7 @@ pub fn encrypt_sector(sector: &mut [u8; WII_SECTOR_SIZE], title_key: &[u8; 16]) 
         let payload_cipher = Aes128CbcEnc::new_from_slices(title_key, &payload_iv)
             .map_err(|e| RvzError::AesError(e.to_string()))?;
         payload_cipher
-            .encrypt_padded_b2b_mut::<NoPadding>(&sector[WII_HASH_SIZE..], &mut payload_enc)
+            .encrypt_padded_b2b::<NoPadding>(&sector[WII_HASH_SIZE..], &mut payload_enc)
             .map_err(|e| RvzError::AesError(format!("payload encrypt: {e}")))?;
     }
 

@@ -225,7 +225,7 @@ mod tests {
     use crate::util::NoProgress;
     use aes::{
         Aes128,
-        cipher::{BlockEncryptMut, KeyIvInit},
+        cipher::{BlockModeEncrypt, KeyIvInit},
     };
     use block_padding::NoPadding;
     use cbc::Encryptor;
@@ -235,7 +235,7 @@ mod tests {
     fn encrypt(key: &[u8; 16], iv: &[u8; 16], data: &mut [u8]) {
         Aes128CbcEnc::new_from_slices(key, iv)
             .unwrap()
-            .encrypt_padded_mut::<NoPadding>(data, data.len())
+            .encrypt_padded::<NoPadding>(data, data.len())
             .unwrap();
     }
 

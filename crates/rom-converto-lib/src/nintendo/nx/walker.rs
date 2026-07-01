@@ -16,8 +16,8 @@ use std::fs::File;
 use std::sync::Arc;
 
 use aes::Aes128;
-use aes::cipher::generic_array::GenericArray;
-use aes::cipher::{BlockDecrypt, KeyInit};
+use aes::cipher::array::Array;
+use aes::cipher::{BlockCipherDecrypt, KeyInit};
 
 use crate::nintendo::nx::constants::{
     ENC_AES_CTR, ENC_AES_CTR_EX, ENC_AES_CTR_EX_SKIP_LAYER_HASH, ENC_AES_CTR_SKIP_LAYER_HASH,
@@ -85,7 +85,8 @@ impl NcaWalker {
             let titlekek = keys.titlekek(master_idx)?;
             let cipher = Aes128::new_from_slice(titlekek)
                 .map_err(|e| NxError::AesError(format!("titlekek init: {e}")))?;
-            let mut block = GenericArray::clone_from_slice(encrypted_title_key);
+            let mut block = Array::try_from(&encrypted_title_key[..])
+                .expect("encrypted title key is one AES block");
             cipher.decrypt_block(&mut block);
             let mut out = [0u8; 16];
             out.copy_from_slice(block.as_slice());

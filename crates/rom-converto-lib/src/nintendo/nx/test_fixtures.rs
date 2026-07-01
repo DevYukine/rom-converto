@@ -4,8 +4,8 @@
 use std::collections::HashMap;
 
 use aes::Aes128;
-use aes::cipher::generic_array::GenericArray;
-use aes::cipher::{BlockEncrypt, KeyInit};
+use aes::cipher::array::Array;
+use aes::cipher::{BlockCipherEncrypt, KeyInit};
 
 use crate::nintendo::nx::crypto::derive::{KEY_AREA_KEY_COUNT, KEY_AREA_KEY_SIZE, KEY_AREA_TOTAL};
 use crate::nintendo::nx::keys::{KeyAreaKind, KeySet};
@@ -37,7 +37,7 @@ pub fn encrypt_key_area_block(plain_keys: [[u8; 16]; KEY_AREA_KEY_COUNT]) -> [u8
     let cipher = Aes128::new_from_slice(&TEST_KAK_APPLICATION_00).unwrap();
     let mut out = [0u8; KEY_AREA_TOTAL];
     for (i, plain) in plain_keys.iter().enumerate() {
-        let mut block = GenericArray::clone_from_slice(plain);
+        let mut block = Array::from(*plain);
         cipher.encrypt_block(&mut block);
         out[i * KEY_AREA_KEY_SIZE..(i + 1) * KEY_AREA_KEY_SIZE].copy_from_slice(block.as_slice());
     }

@@ -254,7 +254,7 @@ async fn patch_cxi_prefix(file: &mut File, p: &PartitionInfo) -> Result<PatchedC
     let counter = get_ncch_aes_counter(&ncch_header, NcchSection::ExHeader);
 
     if let Some(key) = normal_key {
-        let mut cipher = Aes128Ctr::new(key.as_ref().into(), counter.as_ref().into());
+        let mut cipher = Aes128Ctr::new((&key).into(), (&counter).into());
         cipher.apply_keystream(&mut exheader_buf);
     }
 
@@ -273,7 +273,7 @@ async fn patch_cxi_prefix(file: &mut File, p: &PartitionInfo) -> Result<PatchedC
     );
 
     if let Some(key) = normal_key {
-        let mut cipher = Aes128Ctr::new(key.as_ref().into(), counter.as_ref().into());
+        let mut cipher = Aes128Ctr::new((&key).into(), (&counter).into());
         cipher.apply_keystream(&mut exheader_buf);
     }
 
