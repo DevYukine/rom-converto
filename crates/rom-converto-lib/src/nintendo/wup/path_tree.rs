@@ -2,16 +2,16 @@
 //!
 //! The tree holds the virtual filesystem the writer is building. Each
 //! node is either a directory (with `children`) or a file (with
-//! `file_offset` and `file_size`). The writer hands us `add_file`
+//! `file_offset` and `file_size`). The writer makes `add_file`
 //! calls, mutates file sizes through [`PathTree::get_mut`] as data
 //! streams in, then calls [`PathTree::sort`] and
-//! [`PathTree::bfs_entries`] at finalise time to produce the flat
+//! [`PathTree::bfs_entries`] at finalize time to produce the flat
 //! BFS layout the file tree section expects.
 //!
-//! The sort order matches upstream [`compare_node_name`] exactly. Our
+//! The sort order matches upstream [`compare_node_name`] exactly. The
 //! BFS walk mirrors the upstream writer (`zarchivewriter.cpp`): two
 //! passes over a queue, first to assign `node_start_index` values
-//! and then to serialise.
+//! and then to serialize.
 
 use std::collections::VecDeque;
 
@@ -59,7 +59,7 @@ impl PathNode {
 
 /// Virtual filesystem being built up for the writer. The root is an
 /// empty-named directory and always lives at tree index 0 in the
-/// serialised file tree section.
+/// serialized file tree section.
 #[derive(Debug)]
 pub struct PathTree {
     pub root: PathNode,
@@ -325,7 +325,7 @@ mod tests {
     #[test]
     fn compare_node_name_sign_is_inverse_of_strcmp() {
         // 'a' (97) vs 'b' (98): upstream returns c2 - c1 = 1 > 0.
-        // Strict strcmp would return -1 (a < b). Our result is
+        // Strict strcmp would return -1 (a < b). The result here is
         // positive, which the writer's `> 0` predicate treats as
         // "a < b" -> same lexicographic order but opposite sign.
         assert!(compare_node_name(b"a", b"b") > 0);

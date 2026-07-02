@@ -1,7 +1,7 @@
 //! Wii partition FST walker.
 //!
 //! Same shape as the GameCube FST in [`crate::nintendo::dol::fst`] but
-//! file/dir offsets are stored as `u32 >> 2`, so we shift them back to
+//! file/dir offsets are stored as `u32 >> 2`, so they are shifted back to
 //! byte offsets before returning them. Sizes are stored as raw bytes.
 
 use anyhow::{Result, anyhow};

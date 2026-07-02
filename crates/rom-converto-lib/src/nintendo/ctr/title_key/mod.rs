@@ -15,7 +15,6 @@ use pbkdf2::pbkdf2;
 use sha1::Sha1;
 
 pub fn generate_key(mut title_id: &str, password: &str) -> TitleKeyResult<String> {
-    // Strip optional "0x"
     if let Some(stripped) = title_id.strip_prefix("0x") {
         title_id = stripped;
     }

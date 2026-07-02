@@ -83,7 +83,7 @@ pub struct Pfs0LayoutHints {
     /// input to output, which keeps the entry table aligned.
     pub target_total_header_size: Option<usize>,
     /// Where the first file should sit in the output's data section
-    /// (i.e. `pfs0.files[0].data_offset` from input). nsz preserves
+    /// (that is, `pfs0.files[0].data_offset` from input). nsz preserves
     /// this so the original NSP padding round trips byte-for-byte.
     pub first_file_data_offset: u64,
 }

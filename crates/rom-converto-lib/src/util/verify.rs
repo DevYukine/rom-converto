@@ -1,3 +1,8 @@
+//! Existing-output integrity checks for `--on-conflict overwrite-invalid`:
+//! decides whether a file already at the output path is a valid conversion
+//! result, so a corrupt or partial output gets rewritten and a valid one
+//! is kept.
+
 use super::ProgressReporter;
 use std::path::Path;
 

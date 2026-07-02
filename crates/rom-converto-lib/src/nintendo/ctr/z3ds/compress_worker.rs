@@ -261,7 +261,7 @@ mod tests {
     /// The pooled encoder's output must be decodable by the stock
     /// `zstd::stream::copy_decode` path the verifier uses, proving the
     /// bulk-API frame headers are compatible with libzstd's streaming
-    /// decoder (not just our own `decode_seekable`).
+    /// decoder (not just this crate's own `decode_seekable`).
     #[test]
     fn encode_decodes_via_zstd_streaming() {
         let original: Vec<u8> = (0u8..=255).cycle().take(200_000).collect();

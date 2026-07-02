@@ -30,9 +30,8 @@ pub use verify::verify_cso;
 
 use models::{pick_block_size, pick_index_shift, valid_block_size};
 
-/// A sibling temp path in the output directory so an interrupted write
-/// never lands on the final name and a pre-existing overwrite target
-/// survives until the rename.
+/// See [`crate::util::scratch_output_path`]: sibling temp path so an
+/// interrupted write never lands on the final name.
 fn scratch_output_path(output: &std::path::Path) -> PathBuf {
     let mut name = output.file_name().unwrap_or_default().to_os_string();
     name.push(".tmp");
@@ -174,7 +173,7 @@ pub async fn compress_to_cso_batch(
 
     total_progress.start(
         images.len() as u64,
-        &format!("Compressing {} images...", images.len()),
+        &format!("Compressing {} images", images.len()),
     );
 
     for path in images {

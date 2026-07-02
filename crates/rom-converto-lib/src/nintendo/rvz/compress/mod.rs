@@ -5,12 +5,12 @@
 //! 1. [`compress_disc`] is the async public entry. It hands the whole
 //!    sync pipeline to [`tokio::task::spawn_blocking`] and polls a
 //!    shared `AtomicU64` for progress.
-//! 2. [`compress_blocking`] is the sync pipeline. It reads the disc
+//! 2. `compress_blocking` is the sync pipeline. It reads the disc
 //!    header, runs [`RegionPlan::gamecube`] / [`RegionPlan::wii`] to
 //!    slice the disc into an ordered list of raw and partition
 //!    regions, then walks the plan calling one of:
-//!    * [`raw::encode_raw_region`] for every raw region,
-//!    * [`partition::encode_partition_region`] for every
+//!    * `raw::encode_raw_region` for every raw region,
+//!    * `partition::encode_partition_region` for every
 //!      Wii partition.
 //! 3. After every region lands, the partition table, raw-data table,
 //!    and group table are serialized and written back, followed by
@@ -23,8 +23,8 @@
 //!   (work items, worker struct, produce/consume halves).
 //! * [`partition`]: the Wii partition encoder, including the
 //!   per-cluster decrypt/recompute/exception/re-encrypt pipeline.
-//! * [`crate::nintendo::rvz::worker_pool`]: the shared generic
-//!   [`Pool<W, O>`] + [`drive`] helper. Both submodules instantiate
+//! * [`crate::util::worker_pool`]: the shared generic
+//!   [`Pool<W, O>`] + [`crate::util::worker_pool::drive`] helper. Both submodules instantiate
 //!   it with their own work-item and output types.
 //!
 //! # Compression methods
@@ -118,7 +118,7 @@ pub async fn compress_disc_cancellable(
         let input = input.to_path_buf();
         task::spawn_blocking(move || logical_input_size(&input)).await??
     };
-    progress.start(iso_size, "Compressing disc to RVZ...");
+    progress.start(iso_size, "Compressing disc to RVZ");
 
     let write_path = scratch_output_path(output);
     let input_owned: PathBuf = input.to_path_buf();
@@ -310,7 +310,7 @@ fn compress_reader<R: Read + Seek>(
 
     // Manually tracked writer position. Every region encoder and
     // the metadata emitters update this in sync with their
-    // writes so we never need to call `writer.stream_position()`,
+    // writes so `writer.stream_position()` never needs to be called,
     // which on a `BufWriter` flushes the internal buffer to
     // disk and negates the whole point of buffering.
     let mut writer_pos: u64 = (WIA_FILE_HEAD_SIZE + WIA_DISC_SIZE) as u64;
@@ -425,7 +425,7 @@ fn compress_reader<R: Read + Seek>(
     // (zstd-compressed), groups (zstd-compressed). Each is 4-byte
     // aligned so the file-head offsets are trivially recoverable.
     //
-    // These offsets come from our tracked `writer_pos` rather
+    // These offsets come from the tracked `writer_pos` rather
     // than `writer.stream_position()` so the BufWriter never
     // flushes in the middle of a contiguous write stream.
     let part_off = if !partitions.is_empty() {

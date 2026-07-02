@@ -1,3 +1,7 @@
+//! Dry-run planning: classifies each input into a [`PlanDecision`] and
+//! renders the "Would ..." lines the CLI and GUI show in preview mode,
+//! without touching the filesystem.
+
 use super::conflict::ConflictResolution;
 use std::path::{Path, PathBuf};
 
@@ -42,7 +46,7 @@ impl PlanLine {
             .map(|k| format!(" missing keys: {k}"))
             .unwrap_or_default();
         format!(
-            "would {} {} -> {}{media} {label}{keys}",
+            "Would {} {} -> {}{media} {label}{keys}",
             self.operation,
             self.input.display(),
             self.output.display()
@@ -119,7 +123,7 @@ mod tests {
         let line = sample(PlanDecision::New, Some("CSO"));
         assert_eq!(
             line.display_text(),
-            "would compress game.iso -> game.cso (CSO) [new]"
+            "Would compress game.iso -> game.cso (CSO) [new]"
         );
     }
 
@@ -128,7 +132,7 @@ mod tests {
         let line = sample(PlanDecision::New, None);
         assert_eq!(
             line.display_text(),
-            "would compress game.iso -> game.cso [new]"
+            "Would compress game.iso -> game.cso [new]"
         );
     }
 
@@ -137,12 +141,12 @@ mod tests {
         let keep = sample(PlanDecision::KeepValid, None);
         assert_eq!(
             keep.display_text(),
-            "would compress game.iso -> game.cso [keep (valid)]"
+            "Would compress game.iso -> game.cso [keep (valid)]"
         );
         let rewrite = sample(PlanDecision::RewriteInvalid, None);
         assert_eq!(
             rewrite.display_text(),
-            "would compress game.iso -> game.cso [rewrite (invalid)]"
+            "Would compress game.iso -> game.cso [rewrite (invalid)]"
         );
     }
 
@@ -151,7 +155,7 @@ mod tests {
         let line = sample(PlanDecision::Rename(PathBuf::from("game (1).chd")), None);
         assert_eq!(
             line.display_text(),
-            "would compress game.iso -> game.cso [rename -> game (1).chd]"
+            "Would compress game.iso -> game.cso [rename -> game (1).chd]"
         );
     }
 
@@ -161,7 +165,7 @@ mod tests {
         line.missing_keys = Some("prod.keys not found".to_string());
         assert_eq!(
             line.display_text(),
-            "would compress game.iso -> game.cso [new] missing keys: prod.keys not found"
+            "Would compress game.iso -> game.cso [new] missing keys: prod.keys not found"
         );
     }
 

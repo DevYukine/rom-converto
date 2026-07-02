@@ -11,7 +11,7 @@ use binrw::{BinRead, BinWrite};
 use crate::nintendo::wup::constants::{COMPRESSED_BLOCK_SIZE, ENTRIES_PER_OFFSET_RECORD};
 
 /// Compression offset record mapping block index to compressed byte
-/// offset. Serialised as one big-endian u64 followed by 16 big-endian
+/// offset. Serialized as one big-endian u64 followed by 16 big-endian
 /// u16s for a fixed 40-byte layout.
 #[derive(Debug, Clone, BinRead, BinWrite, PartialEq, Eq)]
 #[brw(big)]
@@ -26,7 +26,7 @@ pub struct CompressionOffsetRecord {
 
 impl CompressionOffsetRecord {
     /// Build a new record starting at `base_offset` with every slot
-    /// initialised to zero.
+    /// initialized to zero.
     pub fn new(base_offset: u64) -> Self {
         Self {
             base_offset,
@@ -60,7 +60,7 @@ mod tests {
     use std::io::Cursor;
 
     #[test]
-    fn offset_record_serialises_to_40_bytes() {
+    fn offset_record_serializes_to_40_bytes() {
         let record = CompressionOffsetRecord::new(0);
         let mut buf = Cursor::new(Vec::new());
         record.write(&mut buf).unwrap();

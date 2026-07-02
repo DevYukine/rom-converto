@@ -1,8 +1,8 @@
 //! `Read + Seek` view over an RVZ-compressed disc that decompresses
 //! only the groups touched by each call. Backs the info commands
-//! against multi-GB Wii ISOs without materialising the full image
+//! against multi-GB Wii ISOs without materializing the full image
 //! anywhere. Reuses the parallel decoder's worker types
-//! ([`build_raw_region_work_items`], [`build_partition_work_items`])
+//! (`build_raw_region_work_items`, `build_partition_work_items`)
 //! single-threaded; small LRU caches keep repeat reads in the same
 //! region cheap.
 

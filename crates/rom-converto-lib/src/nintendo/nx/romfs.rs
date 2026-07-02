@@ -1,8 +1,8 @@
 //! Minimal read-only Switch RomFS walker.
 //!
 //! The Control NCA's section 0 contains a RomFS image whose root holds
-//! `control.nacp` and a handful of `icon_<Language>.dat` files. We do
-//! not need full directory traversal for that case, just "find a file
+//! `control.nacp` and a handful of `icon_<Language>.dat` files. Full
+//! directory traversal is not needed for that case, only "find a file
 //! by name in the root" and a flat root listing. The IVFC hash layers
 //! that wrap the RomFS image inside a real NCA are handled by the
 //! caller; this module only sees the RomFS image itself.
@@ -113,7 +113,7 @@ impl<'a> RomfsReader<'a> {
             });
             // Advance past the variable-length entry: 0x20 fixed bytes
             // plus the name padded to 4. Subsequent files are written
-            // immediately after; we use this as the implicit cursor when
+            // immediately after; this is used as the implicit cursor when
             // `next` is INVALID_OFFSET (top-level walk).
             if next != INVALID_OFFSET && (next as usize) < meta_size {
                 cursor = next;

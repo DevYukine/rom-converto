@@ -1,3 +1,7 @@
+//! Format detection and top-level dispatch for the 3DS family: CDN-to-CIA
+//! assembly, decryption, conversion between CIA and CCI, verification, and
+//! the Z3DS compression pipeline.
+
 use crate::nintendo::ctr::cia::{decrypt_from_encrypted_cia, write_cia};
 use crate::nintendo::ctr::constants::NCCH_MAGIC_OFFSET;
 use crate::nintendo::ctr::decrypt::cia::{parse_and_decrypt_ncch, parse_and_decrypt_ncsd};
@@ -95,7 +99,7 @@ pub async fn decrypt_cia_cancellable(
     drop(out);
     fs::rename(&tmp, output).await?;
 
-    info!("Successfully decrypted CIA file");
+    info!("Decrypted CIA file");
 
     Ok(())
 }
@@ -115,7 +119,7 @@ pub async fn decrypt_rom_cancellable(
     cancel: CancelToken,
 ) -> Result<()> {
     let file_size = tokio::fs::metadata(input).await?.len();
-    progress.start(file_size, "Decrypting...");
+    progress.start(file_size, "Decrypting");
 
     let mut file = File::open(input).await?;
 
@@ -144,7 +148,7 @@ pub async fn decrypt_rom_cancellable(
             decrypt_cia_cancellable(input, output, progress, cancel).await?;
         } else {
             return Err(anyhow::anyhow!(
-                "Unrecognized format: no NCSD/NCCH magic at 0x100 and not a CIA file"
+                "unrecognized format: no NCSD/NCCH magic at 0x100 and not a CIA file"
             ));
         }
     }
@@ -186,7 +190,7 @@ async fn decrypt_ncsd_cancellable(
 
     fs::rename(&tmp, output).await?;
 
-    info!("Successfully decrypted NCSD file");
+    info!("Decrypted NCSD file");
     Ok(())
 }
 
@@ -213,7 +217,7 @@ async fn decrypt_ncch_cancellable(
 
     fs::rename(&tmp, output).await?;
 
-    info!("Successfully decrypted NCCH file");
+    info!("Decrypted NCCH file");
     Ok(())
 }
 
@@ -241,7 +245,7 @@ pub async fn generate_ticket_from_cdn(cdn_dir: &Path, output: &Path) -> Result<(
 
     file.write_all(&hex::decode(cetk)?).await?;
 
-    info!("✅ Successfully created Ticket at {}", output.display());
+    info!("Created ticket at {}", output.display());
 
     Ok(())
 }
@@ -269,7 +273,7 @@ pub async fn convert_cdn_to_cia_cancellable(
             }
         }
 
-        total_progress.start(count, &format!("Processing {count} directories..."));
+        total_progress.start(count, &format!("Processing {count} directories"));
 
         if let Some(dir) = opts.output_dir.as_deref() {
             fs::create_dir_all(dir).await?;
@@ -349,7 +353,7 @@ async fn convert_cdn_to_cia_single(
     };
     let output = match resolve_conflict(&final_path, opts.on_conflict)? {
         ConflictResolution::Skip => {
-            info!("Skipping, output already exists: {}", final_path.display());
+            info!("Skipped, output exists: {}", final_path.display());
             return Ok(());
         }
         ConflictResolution::Write(resolved) => {
@@ -394,7 +398,7 @@ async fn convert_cdn_to_cia_single(
 
     if ticket_title_id != title_metadata_title_id {
         warn!(
-            "warning: TICKET and TMD Title IDs do not match: TICKET=0x{ticket_title_id:016X}, TMD=0x{title_metadata_title_id:016X}"
+            "TICKET and TMD Title IDs do not match: TICKET=0x{ticket_title_id:016X}, TMD=0x{title_metadata_title_id:016X}"
         );
     }
 
@@ -421,7 +425,7 @@ async fn convert_cdn_to_cia_single(
     drop(out_buffered);
     fs::rename(&tmp, &output).await?;
 
-    info!("Successfully created CIA file {}", output.display());
+    info!("Created CIA file {}", output.display());
 
     if opts.decrypt {
         let decrypted_cia_path = output.with_extension("decrypted.cia");
@@ -502,7 +506,7 @@ pub async fn decrypt_rom_batch_cancellable(
 
     total_progress.start(
         roms.len() as u64,
-        &format!("Decrypting {} files...", roms.len()),
+        &format!("Decrypting {} files", roms.len()),
     );
 
     if let Some(dir) = output_dir {

@@ -77,7 +77,7 @@ impl NxDistribution {
 
 /// Heuristic classification of how the container was assembled,
 /// derived from which sidecar files sit next to the NCAs (scene
-/// dumps ship `.cert`, CDN exports ship `.xml`, etc.).
+/// dumps ship `.cert`, CDN exports ship `.xml`, and so on).
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum NxStructure {

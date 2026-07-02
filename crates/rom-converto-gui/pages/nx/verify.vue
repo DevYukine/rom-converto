@@ -82,7 +82,7 @@ async function execute() {
 <template>
   <div>
     <PageHeader
-      title="Verify integrity"
+      title="Verify Switch container"
       description="Decrypt every NCA section in a Switch container and recompute the FsHeader's stored chunk hashes. Drop multiple files for batch processing."
       :loading="loading || batch.running.value"
       :has-result="(!!verdict && verdict.ok) || !!result"
@@ -145,7 +145,7 @@ async function execute() {
           :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input"
           @click="execute"
         >
-          {{ isBatch && queue.filter(i => i.status === 'pending').length > 1 ? `Verify All (${queue.filter(i => i.status === 'pending').length})` : 'Verify' }}
+          {{ isBatch && queue.filter(i => i.status === 'pending').length > 1 ? `Verify all (${queue.filter(i => i.status === 'pending').length})` : 'Verify' }}
         </RunButton>
 
         <div v-if="!isBatch && verdict" class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
@@ -160,7 +160,7 @@ async function execute() {
               class="rounded-full px-2.5 py-0.5 text-xs font-semibold"
               :class="verdict.ok ? 'bg-emerald-500/15 text-emerald-300' : 'bg-red-500/20 text-red-300'"
             >
-              {{ verdict.ok ? "OK" : "MISMATCHES" }}
+              {{ verdict.ok ? "OK" : "FAIL" }}
             </span>
           </div>
 

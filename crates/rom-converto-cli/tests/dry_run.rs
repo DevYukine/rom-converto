@@ -36,8 +36,8 @@ fn cso_compress_dry_run_writes_nothing() {
     assert!(output.status.success(), "{}", combined(&output));
     assert!(no_files_with_ext(dir.path(), "cso"));
     let text = combined(&output);
-    assert!(text.contains("would compress"), "{text}");
-    assert!(text.contains("dry run:"), "{text}");
+    assert!(text.contains("Would compress"), "{text}");
+    assert!(text.contains("Dry run:"), "{text}");
 }
 
 #[test]
@@ -135,7 +135,7 @@ fn chd_compress_dry_run_writes_nothing() {
 
     assert!(output.status.success(), "{}", combined(&output));
     assert!(no_files_with_ext(dir.path(), "chd"));
-    assert!(combined(&output).contains("would compress"));
+    assert!(combined(&output).contains("Would compress"));
 }
 
 #[test]
@@ -151,7 +151,7 @@ fn ctr_decrypt_dry_run_recursive_writes_nothing() {
 
     assert!(output.status.success(), "{}", combined(&output));
     let text = combined(&output);
-    assert!(text.contains("would decrypt"), "{text}");
+    assert!(text.contains("Would decrypt"), "{text}");
 }
 
 fn iso_payload(len: usize) -> Vec<u8> {
@@ -214,7 +214,7 @@ fn overwrite_invalid_keeps_valid_cso() {
     assert!(output.status.success(), "{}", combined(&output));
     assert_eq!(fs::read(&cso).unwrap(), before);
     let text = combined(&output);
-    assert!(text.contains("kept, output verified valid"), "{text}");
+    assert!(text.contains("Kept, output verified valid"), "{text}");
 }
 
 #[test]
@@ -236,7 +236,7 @@ fn overwrite_invalid_rewrites_corrupt_cso() {
     assert_ne!(fs::read(&cso).unwrap(), corrupt);
     let text = combined(&output);
     assert!(
-        text.contains("rewriting, output failed verification"),
+        text.contains("Rewriting, output failed verification"),
         "{text}"
     );
 }
@@ -363,7 +363,7 @@ fn overwrite_invalid_keeps_valid_rvz() {
     assert!(output.status.success(), "{}", combined(&output));
     assert_eq!(fs::read(&rvz).unwrap(), before);
     let text = combined(&output);
-    assert!(text.contains("kept, output verified valid"), "{text}");
+    assert!(text.contains("Kept, output verified valid"), "{text}");
 }
 
 #[test]
@@ -385,7 +385,7 @@ fn overwrite_invalid_rewrites_corrupt_rvz() {
     assert_ne!(fs::read(&rvz).unwrap(), corrupt);
     let text = combined(&output);
     assert!(
-        text.contains("rewriting, output failed verification"),
+        text.contains("Rewriting, output failed verification"),
         "{text}"
     );
 }
@@ -480,7 +480,7 @@ fn cdn_to_cia_recursive_dry_run_lists_each_folder() {
     assert!(text.contains("title_a.cia"), "{text}");
     assert!(text.contains("title_b.cia"), "{text}");
     assert!(text.contains("title_c.cia"), "{text}");
-    assert!(text.contains("dry run:"), "{text}");
+    assert!(text.contains("Dry run:"), "{text}");
 }
 
 #[test]
@@ -569,6 +569,6 @@ fn cue_merge_dry_run_notes_companion_bin() {
     let text = combined(&result);
     let bin_note = format!("(+ {})", dir.path().join("out.bin").display());
     assert!(text.contains(&bin_note), "{text}");
-    assert!(text.contains("would merge"), "{text}");
+    assert!(text.contains("Would merge"), "{text}");
     assert!(text.contains("[new]"), "{text}");
 }

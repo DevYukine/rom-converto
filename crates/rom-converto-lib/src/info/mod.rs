@@ -1,6 +1,6 @@
 //! Cross-console ROM metadata extraction (the `info` feature).
 //!
-//! Per-console extractors live alongside their parsers (e.g. `crate::chd::info`).
+//! Per-console extractors live alongside their parsers (such as `crate::chd::info`).
 //! This module owns the umbrella [`InfoResult`] sum type, the shared
 //! [`Image`] / [`MultilingualString`] / [`LanguageCode`] types, and a
 //! top-level [`read_info`] dispatcher that the GUI uses to read any

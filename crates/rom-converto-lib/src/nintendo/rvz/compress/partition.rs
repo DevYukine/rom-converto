@@ -26,7 +26,7 @@
 //! The worker holds persistent scratch buffers
 //! (`padded_payloads`, `hash_regions`, `exception_header`, `body`,
 //! `chunk_exceptions`) so the per-cluster hot loop allocates zero
-//! `Vec`s after the pool is warm. See [`PartitionCompressWorker`].
+//! `Vec`s after the pool is warm. See `PartitionCompressWorker`.
 
 use super::{
     CompressedKind, PartitionLayout, WriteMsg, push_compressed_chunk_via_channel,
@@ -94,7 +94,7 @@ pub(super) struct PartitionWork {
 ///   for per-chunk header bytes, payload bytes, and the
 ///   `[header][payload]` buffer handed to zstd. `assembly` can't
 ///   share with `body` because `pack_encode`'s `Cow::Borrowed`
-///   path keeps `body` borrowed while we assemble.
+///   path keeps `body` borrowed while assembly happens.
 /// * `chunk_exceptions`: reused `Vec<HashException>` the encoder
 ///   collects the per-chunk exception iterator into.
 ///
@@ -221,7 +221,7 @@ pub(super) fn encode_partition_region<R: Read + Seek>(
             // one pool across partitions means these vary per
             // cluster.
             //
-            // The cluster buffer is allocated uninitialised
+            // The cluster buffer is allocated uninitialized
             // rather than via `vec![0u8; 2 MiB]` because
             // `alloc_zeroed` pays for a 2 MiB `memset` per
             // cluster even though `read_exact` immediately
@@ -342,7 +342,7 @@ fn encode_one_partition_cluster_with(
     debug_assert!(valid_blocks <= WII_BLOCKS_PER_GROUP);
     let full_cluster = valid_blocks == WII_BLOCKS_PER_GROUP;
 
-    // `padded_slice` points at whichever buffer we hand to
+    // `padded_slice` points at whichever buffer gets handed to
     // `recompute_hash_regions_into`. Full clusters skip the
     // 2 MiB memcpy; partial clusters copy into the worker's
     // persistent scratch and zero-fill the tail.
@@ -361,7 +361,7 @@ fn encode_one_partition_cluster_with(
     let cluster_exceptions = build_hash_exceptions(&cluster, &worker.hash_regions[..]);
 
     // Self-check: recomputing the hash hierarchy from the padded
-    // baseline and then applying our exception list must
+    // baseline and then applying the exception list must
     // reproduce the cluster's actual on-disc hash regions
     // exactly. Caught the u16 overflow regression during W4 and
     // keeps the partial-cluster padding math honest.
@@ -429,8 +429,8 @@ fn encode_one_chunk_with(
     enc_bytes: u64,
 ) -> RvzResult<PartitionChunk> {
     // Chunk-local exception list.
-    // `split_chunk_exceptions_by_range` returns an iterator so
-    // we can collect into the worker's persistent scratch with
+    // `split_chunk_exceptions_by_range` returns an iterator so this can
+    // collect into the worker's persistent scratch with
     // zero heap traffic.
     worker.chunk_exceptions.clear();
     worker
@@ -452,8 +452,8 @@ fn encode_one_chunk_with(
 
     // `pack_encode` consumes `&worker.body` and may return either
     // an owned packed Vec (LFG junk found) or `None` (no junk,
-    // the raw body itself is the payload region). We bridge the
-    // two with `Cow<[u8]>` so downstream code can treat both
+    // the raw body itself is the payload region). The two are bridged
+    // with `Cow<[u8]>` so downstream code can treat both
     // uniformly without cloning the un-packed path.
     let (payload_region, rvz_packed_size): (std::borrow::Cow<'_, [u8]>, u32) =
         match crate::nintendo::rvz::packing::pack_encode(&worker.body, pos.chunk_data_offset_pay())
@@ -485,8 +485,8 @@ fn encode_one_chunk_with(
 
     // Dolphin's RVZ "will it compress" check uses
     // `uncompressed_size = main_data.size() +
-    // AlignUp(exception_lists.size(), 4)`. Match that so our
-    // compressed/raw decisions agree with Dolphin's.
+    // AlignUp(exception_lists.size(), 4)`. Match that so the
+    // compressed/raw decisions made here agree with Dolphin's.
     let aligned_exc_len = (worker.exception_header.len() + 3) & !3;
     let uncompressed_size = aligned_exc_len + payload_region.len();
     let kind = if compressed.len() < uncompressed_size {

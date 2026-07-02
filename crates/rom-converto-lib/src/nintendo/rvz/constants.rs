@@ -5,7 +5,7 @@
 //! [`crate::nintendo::rvl::constants`].
 
 /// RVZ file magic. Matches `RVZ_MAGIC = 0x015A5652` in
-/// `Source/Core/DiscIO/WIABlob.h`. We only emit RVZ (our group
+/// `Source/Core/DiscIO/WIABlob.h`. Only RVZ is ever emitted (its group
 /// entries carry `rvz_packed_size`, which WIA doesn't define), so
 /// the plain WIA magic is never written or accepted.
 pub const RVZ_MAGIC: [u8; 4] = *b"RVZ\x01";

@@ -12,7 +12,7 @@ pub enum TitleKeyError {
     #[error(transparent)]
     FromHexError(#[from] hex::FromHexError),
 
-    #[error("Padding invalid: {0}")]
+    #[error("padding invalid: {0}")]
     PadError(String),
 }
 

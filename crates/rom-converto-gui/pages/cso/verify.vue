@@ -133,7 +133,7 @@ async function execute() {
           :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input"
           @click="execute"
         >
-          {{ isBatch && queue.filter(i => i.status === 'pending').length > 1 ? `Verify All (${queue.filter(i => i.status === 'pending').length})` : 'Verify' }}
+          {{ isBatch && queue.filter(i => i.status === 'pending').length > 1 ? `Verify all (${queue.filter(i => i.status === 'pending').length})` : 'Verify' }}
         </RunButton>
       </div>
     </OperationCard>

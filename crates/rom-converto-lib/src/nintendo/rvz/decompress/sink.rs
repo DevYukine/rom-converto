@@ -1,6 +1,6 @@
 //! Output sinks for the parallel RVZ decompressor. The same
-//! reconstruction pipeline writes either a raw ISO ([`IsoSink`]) or a
-//! scrubbed WBFS container ([`WbfsSink`]) through the [`DiscSink`]
+//! reconstruction pipeline writes either a raw ISO (`IsoSink`) or a
+//! scrubbed WBFS container (`WbfsSink`) through the `DiscSink`
 //! trait, so `.rvz -> .iso` and `.rvz -> .wbfs` share one parallel
 //! decode path.
 

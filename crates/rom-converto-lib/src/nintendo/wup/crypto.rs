@@ -68,7 +68,7 @@ mod tests {
     #[test]
     fn decrypt_round_trip_block() {
         // Encrypt a known plaintext block, then decrypt with the
-        // same key and IV and check we get the original bytes.
+        // same key and IV and check the original bytes come back.
         let key = [0x11u8; 16];
         let iv = [0x22u8; 16];
         let plaintext: [u8; 32] = [
@@ -94,8 +94,8 @@ mod tests {
     #[test]
     fn title_key_decrypts_matching_encryption() {
         // Encrypt a known title key the same way Cemu's ticket
-        // builder would (common key + title_id IV), then run our
-        // decrypt and assert we recover the original.
+        // builder would (common key + title_id IV), then run the
+        // decrypt and assert the original is recovered.
         let title_id: u64 = 0x0005_000E_1234_5678;
         let plain_title_key = [
             0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,

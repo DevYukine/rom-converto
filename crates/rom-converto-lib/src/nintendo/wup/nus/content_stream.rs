@@ -322,8 +322,8 @@ mod tests {
                 *b = ((block_idx as u32 + 1) * (i as u32 + 1)) as u8;
             }
 
-            // Plaintext data: another deterministic pattern so we
-            // can assert the decrypt produces exactly these bytes.
+            // Plaintext data: another deterministic pattern so the
+            // test can assert the decrypt produces exactly these bytes.
             let mut data_plain = vec![0u8; HASHED_BLOCK_DATA_SIZE];
             for (i, b) in data_plain.iter_mut().enumerate() {
                 *b = ((block_idx as u32) * 13 + i as u32) as u8;

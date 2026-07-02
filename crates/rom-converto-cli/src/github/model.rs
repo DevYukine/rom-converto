@@ -1,3 +1,5 @@
+//! Deserialization targets for the GitHub Releases API response.
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]

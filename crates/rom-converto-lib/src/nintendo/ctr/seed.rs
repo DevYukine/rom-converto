@@ -1,6 +1,6 @@
 //! Offline NCCH seed-crypto resolution.
 //!
-//! The decrypt path ([`crate::nintendo::ctr::decrypt`]) can fetch a title's
+//! The decrypt path (`crate::nintendo::ctr::decrypt`) can fetch a title's
 //! seed from Nintendo's CDN. The `info` path stays offline: it only resolves
 //! seeds from a local `seeddb.bin` in the working directory and reports
 //! whether the seed verifies against the NCCH `seedcheck`.

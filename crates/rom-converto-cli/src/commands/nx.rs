@@ -3,7 +3,7 @@ use crate::commands::info_command::InfoCommand;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-/// Commands specific to Nintendo Switch (NX) NSP/XCI containers.
+/// Commands specific to Nintendo Switch (NX) NSP/XCI containers
 #[derive(Subcommand, Debug, Eq, PartialEq)]
 pub enum NxCommands {
     Compress(NxCompressCommand),
@@ -12,31 +12,26 @@ pub enum NxCommands {
     Info(InfoCommand),
 }
 
-/// Compress an NSP into NSZ or an XCI into XCZ. NCAs inside the
-/// container are decrypted, zstd-compressed, and packaged with the
-/// already-derived per-section keys cached in NCZSECTN.
+/// Compress an NSP into NSZ or an XCI into XCZ
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
+    long_about = "Compress an NSP into NSZ or an XCI into XCZ\n\nNCAs inside the container are decrypted, zstd-compressed, and packaged with the already-derived per-section keys cached in NCZSECTN.",
     after_long_help = "EXAMPLES:\n  Single file:     rom-converto nx compress game.nsp\n  Explicit output: rom-converto nx compress game.xci game.xcz\n  Whole folder:    rom-converto nx compress -R ./roms --output-dir ./nsz\n"
 )]
 pub struct NxCompressCommand {
-    /// Path to `prod.keys`. Defaults to `$HOME/.switch/prod.keys` on
-    /// Linux/macOS or `%USERPROFILE%/.switch/prod.keys` on Windows,
-    /// then the binary's own directory.
+    /// Path to `prod.keys`. Defaults to `$HOME/.switch/prod.keys` on Linux/macOS or `%USERPROFILE%/.switch/prod.keys` on Windows, then the binary's own directory
     #[arg(long = "keys", value_name = "PRODKEYS")]
     pub keys: Option<PathBuf>,
 
-    /// Input NSP or XCI, or a directory with --recursive.
+    /// Input NSP or XCI, or a directory with --recursive
     #[arg(value_name = "INPUT")]
     pub input: PathBuf,
 
-    /// Output path. Defaults to the input path with the extension
-    /// switched (.nsp -> .nsz, .xci -> .xcz).
+    /// Output path. Defaults to the input path with the extension switched (.nsp -> .nsz, .xci -> .xcz)
     #[arg(value_name = "OUTPUT")]
     pub output: Option<PathBuf>,
 
-    /// Output path. Defaults to the input path with the extension
-    /// switched (.nsp -> .nsz, .xci -> .xcz).
+    /// Output path. Defaults to the input path with the extension switched (.nsp -> .nsz, .xci -> .xcz)
     #[arg(
         short = 'o',
         long = "output",
@@ -45,18 +40,17 @@ pub struct NxCompressCommand {
     )]
     pub output_flag: Option<PathBuf>,
 
-    /// Write output into this directory using the derived filename. Created if missing. Works with --recursive.
+    /// Write output into this directory using the derived filename. Created if missing. Works with --recursive
     #[arg(long = "output-dir", value_name = "DIR", conflicts_with_all = ["output", "output_flag"])]
     pub output_dir: Option<PathBuf>,
 
     /// Output path template applied per file. Tokens: {title}, {titleId}, {region},
     /// {console}, {serial}, {ext}, {basename}. Resolves against extracted metadata;
-    /// missing tokens fall back to the input basename. Joined under --output-dir.
+    /// missing tokens fall back to the input basename. Joined under --output-dir
     #[arg(long = "output-template", value_name = "TEMPLATE", conflicts_with_all = ["output", "output_flag"])]
     pub output_template: Option<String>,
 
-    /// Zstd compression level. nsz default is 18; the maximum 22 needs
-    /// over 1 GiB of RAM during decompression on the Switch.
+    /// Zstd compression level. nsz default is 18; the maximum 22 needs over 1 GiB of RAM during decompression on the Switch
     #[arg(
         short = 'l',
         long = "level",
@@ -65,14 +59,11 @@ pub struct NxCompressCommand {
     )]
     pub level: Option<i32>,
 
-    /// Compression mode. `solid` writes one zstd frame per NCA (smaller
-    /// output, default for NSP). `block` writes independent zstd frames
-    /// per fixed-size block (random read friendly, default for XCI).
+    /// Compression mode. `solid` writes one zstd frame per NCA (smaller output, default for NSP). `block` writes independent zstd frames per fixed-size block (random read friendly, default for XCI)
     #[arg(long = "mode", value_parser = ["solid", "block"])]
     pub mode: Option<String>,
 
-    /// Block-mode block size, expressed as a power of two (`exp` in
-    /// `1 << exp` bytes). nsz default is 20 (1 MiB). Range 14..=32.
+    /// Block-mode block size, expressed as a power of two (`exp` in `1 << exp` bytes). nsz default is 20 (1 MiB). Range 14..=32
     #[arg(long = "block-size-exp", value_parser = clap::value_parser!(u8).range(14..=32))]
     pub block_size_exp: Option<u8>,
 
@@ -93,35 +84,34 @@ pub struct NxCompressCommand {
     #[arg(long, short = 'R', default_value_t = false)]
     pub recursive: bool,
 
-    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited.
+    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited
     #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
     pub max_depth: Option<usize>,
 
-    /// Write a run report to FILE. Format inferred from the extension: .csv, .json, .html or .htm. Unknown extensions default to JSON. The file is overwritten directly.
+    /// Write a run report to FILE. Format inferred from the extension: .csv, .json, .html or .htm. Unknown extensions default to JSON. The file is overwritten directly
     #[arg(long = "report", value_name = "FILE")]
     pub report: Option<PathBuf>,
 }
 
-/// Decompress an NSZ back to NSP or an XCZ back to XCI.
+/// Decompress an NSZ back to NSP or an XCZ back to XCI
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
+#[command(
+    after_long_help = "EXAMPLES:\n  Single file:     rom-converto nx decompress game.nsz\n  Explicit output: rom-converto nx decompress game.xcz game.xci\n  Whole folder:    rom-converto nx decompress -R ./nsz --output-dir ./roms\n"
+)]
 pub struct NxDecompressCommand {
-    /// Path to `prod.keys`. Defaults to `$HOME/.switch/prod.keys` on
-    /// Linux/macOS or `%USERPROFILE%/.switch/prod.keys` on Windows,
-    /// then the binary's own directory.
+    /// Path to `prod.keys`. Defaults to `$HOME/.switch/prod.keys` on Linux/macOS or `%USERPROFILE%/.switch/prod.keys` on Windows, then the binary's own directory
     #[arg(long = "keys", value_name = "PRODKEYS")]
     pub keys: Option<PathBuf>,
 
-    /// Input NSZ or XCZ, or a directory with --recursive.
+    /// Input NSZ or XCZ, or a directory with --recursive
     #[arg(value_name = "INPUT")]
     pub input: PathBuf,
 
-    /// Output path. Defaults to the input path with the extension
-    /// switched (.nsz -> .nsp, .xcz -> .xci).
+    /// Output path. Defaults to the input path with the extension switched (.nsz -> .nsp, .xcz -> .xci)
     #[arg(value_name = "OUTPUT")]
     pub output: Option<PathBuf>,
 
-    /// Output path. Defaults to the input path with the extension
-    /// switched (.nsz -> .nsp, .xcz -> .xci).
+    /// Output path. Defaults to the input path with the extension switched (.nsz -> .nsp, .xcz -> .xci)
     #[arg(
         short = 'o',
         long = "output",
@@ -130,13 +120,13 @@ pub struct NxDecompressCommand {
     )]
     pub output_flag: Option<PathBuf>,
 
-    /// Write output into this directory using the derived filename. Created if missing. Works with --recursive.
+    /// Write output into this directory using the derived filename. Created if missing. Works with --recursive
     #[arg(long = "output-dir", value_name = "DIR", conflicts_with_all = ["output", "output_flag"])]
     pub output_dir: Option<PathBuf>,
 
     /// Output path template applied per file. Tokens: {title}, {titleId}, {region},
     /// {console}, {serial}, {ext}, {basename}. Resolves against extracted metadata;
-    /// missing tokens fall back to the input basename. Joined under --output-dir.
+    /// missing tokens fall back to the input basename. Joined under --output-dir
     #[arg(long = "output-template", value_name = "TEMPLATE", conflicts_with_all = ["output", "output_flag"])]
     pub output_template: Option<String>,
 
@@ -157,25 +147,26 @@ pub struct NxDecompressCommand {
     #[arg(long, short = 'R', default_value_t = false)]
     pub recursive: bool,
 
-    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited.
+    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited
     #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
     pub max_depth: Option<usize>,
 
-    /// Write a run report to FILE. Format inferred from the extension: .csv, .json, .html or .htm. Unknown extensions default to JSON. The file is overwritten directly.
+    /// Write a run report to FILE. Format inferred from the extension: .csv, .json, .html or .htm. Unknown extensions default to JSON. The file is overwritten directly
     #[arg(long = "report", value_name = "FILE")]
     pub report: Option<PathBuf>,
 }
 
-/// Verify hash integrity of every NCA in a Switch container.
+/// Verify hash integrity of every NCA in a Switch container
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
+#[command(
+    after_long_help = "EXAMPLES:\n  Single file:  rom-converto nx verify game.nsp\n  Whole folder: rom-converto nx verify -R ./roms\n"
+)]
 pub struct NxVerifyCommand {
-    /// Path to `prod.keys`. Defaults to `$HOME/.switch/prod.keys` on
-    /// Linux/macOS or `%USERPROFILE%/.switch/prod.keys` on Windows,
-    /// then the binary's own directory.
+    /// Path to `prod.keys`. Defaults to `$HOME/.switch/prod.keys` on Linux/macOS or `%USERPROFILE%/.switch/prod.keys` on Windows, then the binary's own directory
     #[arg(long = "keys", value_name = "PRODKEYS")]
     pub keys: Option<PathBuf>,
 
-    /// Input container (NSP / NSZ / XCI / XCZ), or a directory with --recursive.
+    /// Input container (NSP / NSZ / XCI / XCZ), or a directory with --recursive
     #[arg(value_name = "INPUT")]
     pub input: PathBuf,
 
@@ -183,7 +174,7 @@ pub struct NxVerifyCommand {
     #[arg(long, short = 'R', default_value_t = false)]
     pub recursive: bool,
 
-    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited.
+    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited
     #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
     pub max_depth: Option<usize>,
 }

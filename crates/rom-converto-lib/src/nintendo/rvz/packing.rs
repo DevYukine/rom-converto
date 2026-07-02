@@ -1,13 +1,13 @@
 //! RVZ packing encoding.
 //!
 //! A Lagged Fibonacci PRNG (f=XOR, j=32, k=521) generates pseudorandom
-//! padding that the spec uses to re-synthesise large runs of Wii partition
+//! padding that the spec uses to re-synthesize large runs of Wii partition
 //! padding losslessly. Both encoder and decoder live here.
 //!
 //! This module is a line-by-line port of Dolphin's
 //! `Source/Core/DiscIO/LaggedFibonacciGenerator.{h,cpp}` from
 //! `dolphin-emu/dolphin`. The in-memory buffer layout matches Dolphin on
-//! a little-endian host (the only platform we support), so `get_seed`
+//! a little-endian host (the only platform supported here), so `get_seed`
 //! round-trips any bytes Dolphin's encoder produces.
 //!
 //! Spec: <https://github.com/dolphin-emu/dolphin/blob/master/docs/WiaAndRvz.md>
@@ -62,9 +62,9 @@ impl LaggedFibonacci {
         };
         // SetSeed: copy seed into buffer[0..17]. Dolphin's SetSeed(u8*)
         // reads each 4-byte slice as a big-endian u32 via
-        // `Common::swap32(ptr)` and stores that directly. Our caller
+        // `Common::swap32(ptr)` and stores that directly. The caller
         // already did the big-endian read in `init` (from_be_bytes),
-        // so we copy as-is; an additional byte-swap here would break
+        // so this copies as-is; an additional byte-swap here would break
         // round-trips against real Dolphin files.
         lfg.buffer[..SEED_SIZE].copy_from_slice(seed);
         lfg.initialize(false)
@@ -213,7 +213,7 @@ impl LaggedFibonacci {
     /// Port of Dolphin's public
     /// `LaggedFibonacciGenerator::GetSeed(const u8*, ...)`.
     pub fn get_seed(data: &[u8], data_offset: usize) -> Option<([u32; SEED_SIZE], usize)> {
-        // Skip up to 3 leading bytes so we land on a u32 boundary
+        // Skip up to 3 leading bytes to land on a u32 boundary
         // relative to the stream.
         let bytes_to_skip = (data_offset.wrapping_neg()) & 3;
         if data.len() < bytes_to_skip {
@@ -393,7 +393,7 @@ fn scan_junk_runs(chunk: &[u8], chunk_data_offset: u64) -> Vec<JunkRun> {
     let total_size = chunk.len();
     while position < total_size {
         // Skip any leading zeros. Zstd compresses zeros better than
-        // we can via LFG records, so don't try to re-encode them.
+        // LFG records can, so don't try to re-encode them.
         let mut zeroes = 0;
         while position + zeroes < total_size && chunk[position + zeroes] == 0 {
             zeroes += 1;
@@ -576,7 +576,7 @@ mod tests {
             LaggedFibonacci::get_seed(&bytes, 0).expect("seed should be recoverable");
 
         // The recovered seed, fed back through init, must produce the
-        // same bytes we started with.
+        // same bytes the test started with.
         let mut recovered_seed_bytes = [0u8; 68];
         for i in 0..SEED_SIZE {
             recovered_seed_bytes[i * 4..i * 4 + 4].copy_from_slice(&recovered[i].to_be_bytes());

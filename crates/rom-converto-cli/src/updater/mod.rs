@@ -1,3 +1,6 @@
+//! Self-update: checks the latest GitHub release against the running
+//! version, and downloads and swaps in the matching prebuilt binary.
+
 use crate::github::api::GithubApi;
 use crate::updater::constants::{GH_REPO, GH_USER};
 use crate::updater::release::ReleaseVersionCompareResult;
@@ -87,7 +90,7 @@ pub async fn self_update(github_api: &mut GithubApi) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    info!("New version {latest_version} available, updating...");
+    info!("New version {latest_version} available, updating");
 
     let temp_folder_name = temp_dir().join("rom-converto-update");
 

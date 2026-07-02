@@ -7,23 +7,23 @@
 /// big-endian.
 pub const ZARCHIVE_FOOTER_MAGIC: u32 = 0x169f_52d6;
 
-/// Format version. Serialised immediately before the magic,
+/// Format version. Serialized immediately before the magic,
 /// big-endian. Upstream treats this as a second magic so bumping it
 /// would make existing readers reject the file.
 pub const ZARCHIVE_FOOTER_VERSION: u32 = 0x61bf_3a01;
 
-/// Serialised size of
+/// Serialized size of
 /// [`crate::nintendo::wup::models::footer::ZArchiveFooter`] in bytes.
 /// A reader locates the footer by seeking to
 /// `file_size - ZARCHIVE_FOOTER_SIZE`.
 pub const ZARCHIVE_FOOTER_SIZE: usize = 144;
 
-/// Serialised size of
+/// Serialized size of
 /// [`crate::nintendo::wup::models::offset_record::CompressionOffsetRecord`]
 /// in bytes (8 for `base_offset` plus 16 * 2 for the size array).
 pub const COMPRESSION_OFFSET_RECORD_SIZE: usize = 40;
 
-/// Serialised size of
+/// Serialized size of
 /// [`crate::nintendo::wup::models::file_tree::FileDirectoryEntry`] in
 /// bytes. One header u32 plus a three-u32 union payload.
 pub const FILE_DIRECTORY_ENTRY_SIZE: usize = 16;
@@ -67,6 +67,6 @@ pub const ROOT_NAME_OFFSET_SENTINEL: u32 = 0x7FFF_FFFF;
 
 /// Maximum node name length accepted by the writer, in bytes. The
 /// upstream reader has a confirmed bug in its 2-byte-prefix
-/// extended-name path, so we never emit a name that would trigger it.
+/// extended-name path, so no name that would trigger it is ever emitted.
 /// Wii U FST paths are all well below this limit.
 pub const MAX_NODE_NAME_LEN: usize = 127;

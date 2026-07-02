@@ -1,7 +1,7 @@
 //! MAME `huffman_8bit_decoder` port for the CHD `huff` hunk codec.
 //!
 //! chdman's createdvd/createhd default codec set includes `huff`, so
-//! reading arbitrary chdman files needs it even though our writer
+//! reading arbitrary chdman files needs it even though this crate's writer
 //! never emits it. The format (MAME `huffman.cpp`): a 24-code/6-bit
 //! "small" huffman tree describes the code lengths of the real
 //! 256-code/16-bit tree (lengths shifted by one, value 0 = RLE repeat

@@ -6,7 +6,7 @@
 //! the final sizes plus (for HFS0) per-file SHA-256 chunk hashes.
 //! The placeholder and the final header have the same on-disk length
 //! because PFS0 / HFS0 header size depends only on file names and
-//! count, both of which we know up front.
+//! count, both of which are known up front.
 
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
@@ -196,7 +196,7 @@ fn compress_pfs0(
 
     // Mirror nsz: only rename .nca -> .ncz for PROGRAM and PUBLICDATA
     // content types whose first section sits at or past 0x4000. CONTROL,
-    // MANUAL, META, and DATA NCAs stay as .nca; we'd otherwise write
+    // MANUAL, META, and DATA NCAs stay as .nca; otherwise this would write
     // a .ncz whose NCZSECTN entry references bytes inside the prefix
     // and nsz's `nca_size = 0x4000 + sum(section.size)` formula would
     // overcount the decompressed size.

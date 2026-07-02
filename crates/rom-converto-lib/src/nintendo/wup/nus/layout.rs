@@ -196,7 +196,7 @@ mod tests {
     fn cetk_without_version_match_falls_back_to_highest() {
         let dir = TempDir::new().unwrap();
         touch(dir.path(), "tmd.32");
-        touch(dir.path(), "cetk.64"); // weird but possible
+        touch(dir.path(), "cetk.64"); // unusual name, but NUS layouts do use it
         touch(dir.path(), "00000000");
         let layout = NusLayout::discover(dir.path()).unwrap();
         assert_eq!(layout.tmd_path, dir.path().join("tmd.32"));

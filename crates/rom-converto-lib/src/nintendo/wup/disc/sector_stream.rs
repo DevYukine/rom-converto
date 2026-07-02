@@ -70,8 +70,8 @@ pub fn open_disc<P: AsRef<Path>>(path: P) -> WupResult<Box<dyn DiscSectorSource>
         return Err(WupError::MissingRequiredFile(path.to_path_buf()));
     }
 
-    // Peek at the first 8 bytes so we can distinguish WUX0 from raw
-    // WUD. We do not rely on file extension for this, only for the
+    // Peek at the first 8 bytes to distinguish WUX0 from raw
+    // WUD. File extension is not relied on for this, only for the
     // split-part chain convention below.
     let mut magic = [0u8; 8];
     {

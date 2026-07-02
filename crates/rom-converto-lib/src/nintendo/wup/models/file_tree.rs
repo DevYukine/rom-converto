@@ -36,8 +36,8 @@ use crate::nintendo::wup::constants::{
 };
 
 /// 16-byte file-or-directory record from the ZArchive file tree
-/// section. Serialised as four consecutive big-endian u32s; the
-/// upstream writer uses a tagged-union optimisation that writes the
+/// section. Serialized as four consecutive big-endian u32s; the
+/// upstream writer uses a tagged-union optimization that writes the
 /// three payload slots as if they were always the file variant.
 #[derive(Debug, Clone, Copy, BinRead, BinWrite, PartialEq, Eq)]
 #[brw(big)]
@@ -140,16 +140,16 @@ mod tests {
     use binrw::{BinRead, BinWrite};
     use std::io::Cursor;
 
-    fn serialise(entry: &FileDirectoryEntry) -> Vec<u8> {
+    fn serialize(entry: &FileDirectoryEntry) -> Vec<u8> {
         let mut buf = Cursor::new(Vec::new());
         entry.write(&mut buf).unwrap();
         buf.into_inner()
     }
 
     #[test]
-    fn entry_serialises_to_16_bytes() {
+    fn entry_serializes_to_16_bytes() {
         let entry = FileDirectoryEntry::new_file(0x1234, 0, 0);
-        assert_eq!(serialise(&entry).len(), FILE_DIRECTORY_ENTRY_SIZE);
+        assert_eq!(serialize(&entry).len(), FILE_DIRECTORY_ENTRY_SIZE);
     }
 
     #[test]
@@ -204,7 +204,7 @@ mod tests {
         let offset: u64 = 0x1234_5678_9ABC;
         let size: u64 = 0xEDCB_A987_6543;
         let entry = FileDirectoryEntry::new_file(0x1_2345, offset, size);
-        let bytes = serialise(&entry);
+        let bytes = serialize(&entry);
 
         // name_offset_and_type_flag = 0x80012345
         assert_eq!(&bytes[0..4], &0x8001_2345u32.to_be_bytes());
@@ -219,7 +219,7 @@ mod tests {
     #[test]
     fn directory_entry_byte_layout() {
         let entry = FileDirectoryEntry::new_directory(0x1234, 0x10, 0x20);
-        let bytes = serialise(&entry);
+        let bytes = serialize(&entry);
         assert_eq!(&bytes[0..4], &0x0000_1234u32.to_be_bytes());
         assert_eq!(&bytes[4..8], &0x0000_0010u32.to_be_bytes());
         assert_eq!(&bytes[8..12], &0x0000_0020u32.to_be_bytes());
@@ -229,7 +229,7 @@ mod tests {
     #[test]
     fn entry_round_trips_through_binrw() {
         let original = FileDirectoryEntry::new_file(0x7F, 0x1234_5678_9ABC, 0xEDCB_A987_6543);
-        let bytes = serialise(&original);
+        let bytes = serialize(&original);
         let parsed = FileDirectoryEntry::read(&mut Cursor::new(&bytes)).unwrap();
         assert_eq!(parsed, original);
         assert!(parsed.is_file());

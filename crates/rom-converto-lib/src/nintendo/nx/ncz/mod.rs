@@ -1,7 +1,7 @@
 //! NCZ codec: per-NCA decompose into a 0x4000 encrypted prefix plus a
 //! zstd-compressed plaintext payload, with stored per-section AES keys
-//! so the decompressor can re-encrypt without `prod.keys`. We still
-//! demand a keyfile higher up; the cached keys make the zstd payload
+//! so the decompressor can re-encrypt without `prod.keys`. A keyfile is
+//! still demanded higher up; the cached keys make the zstd payload
 //! itself replayable on hosts without keys.
 
 pub mod compress;

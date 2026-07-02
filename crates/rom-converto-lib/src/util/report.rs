@@ -1,3 +1,6 @@
+//! Run reports: per-file records and run totals written to CSV, JSON, or
+//! HTML at the end of a batch run, via `--report`.
+
 use crate::util::tally::{FileStatus, format_bytes};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -14,6 +17,9 @@ pub struct ReportRecord {
     pub status: FileStatus,
     pub input_bytes: u64,
     pub output_bytes: u64,
+    /// Space saved as a percentage of `input_bytes`, rounded to one decimal
+    /// place; negative when the output is larger. `None` for skipped or
+    /// failed files, where there is no meaningful output size to compare.
     pub ratio_pct: Option<f64>,
     pub elapsed_ms: u64,
     pub error: Option<String>,
@@ -22,8 +28,12 @@ pub struct ReportRecord {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ReportTotals {
     pub total_files: usize,
+    /// Files converted successfully.
     pub ok: usize,
+    /// Files not converted because a valid output already existed
+    /// (`--on-conflict skip`, or `overwrite-invalid` finding it valid).
     pub skipped: usize,
+    /// Files that returned an error during conversion.
     pub failed: usize,
     pub total_input_bytes: u64,
     pub total_output_bytes: u64,

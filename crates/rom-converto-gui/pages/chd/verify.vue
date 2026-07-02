@@ -133,7 +133,7 @@ async function execute() {
           @click="execute"
           @cancel="isBatch ? batch.abort() : abort()"
         >
-          {{ isBatch && queue.filter(i => i.status === 'pending').length > 1 ? `Verify All (${queue.filter(i => i.status === 'pending').length})` : 'Verify' }}
+          {{ isBatch && queue.filter(i => i.status === 'pending').length > 1 ? `Verify all (${queue.filter(i => i.status === 'pending').length})` : 'Verify' }}
         </RunButton>
       </div>
     </OperationCard>

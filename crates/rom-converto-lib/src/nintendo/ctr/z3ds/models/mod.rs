@@ -21,7 +21,7 @@ pub mod underlying_magic {
 #[derive(Debug, Clone, BinRead, BinWrite)]
 #[brw(little, magic = b"Z3DS")]
 pub struct Z3dsHeader {
-    /// Magic of the original uncompressed ROM (e.g. "NCSD", "NCCH", "3DSX", "CIA\0").
+    /// Magic of the original uncompressed ROM (such as "NCSD", "NCCH", "3DSX", "CIA\0").
     pub underlying_magic: [u8; 4],
     /// Format version, must be 0x01.
     pub version: u8,
@@ -88,7 +88,7 @@ impl Z3dsMetadata {
         Self { items }
     }
 
-    /// Serialises the metadata block and pads it to a 16-byte boundary.
+    /// Serializes the metadata block and pads it to a 16-byte boundary.
     /// Returns the padded bytes. Returns empty vec if there are no items.
     pub fn to_bytes(&self) -> std::io::Result<Vec<u8>> {
         if self.items.is_empty() {

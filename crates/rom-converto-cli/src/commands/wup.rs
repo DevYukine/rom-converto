@@ -3,7 +3,7 @@ use crate::commands::info_command::InfoCommand;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-/// Commands specific to Wii U (WUP) formats.
+/// Commands specific to Wii U (WUP) formats
 #[derive(Subcommand, Debug, Eq, PartialEq)]
 pub enum WupCommands {
     Compress(CompressWupCommand),
@@ -12,19 +12,20 @@ pub enum WupCommands {
     Info(InfoCommand),
 }
 
-/// Verify Wii U content integrity by recomputing each content's SHA-1
-/// against the TMD content hashes.
+/// Verify Wii U content integrity by recomputing each content's SHA-1 against the TMD content hashes
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
-#[command(long_about = "Verify Wii U content integrity.\n\n\
+#[command(
+    long_about = "Verify Wii U content integrity by recomputing each content's SHA-1 against the TMD content hashes\n\n\
 For NUS directories and .wud / .wux discs, every raw-mode content is decrypted and its SHA-1 compared against the TMD hash. Hashed-mode content is reported as skipped (its TMD hash covers the hash tree, not the content). .wua and loadiine inputs are already decrypted and carry no TMD, so they get a structural readability check only.\n\n\
-Disc images need the 16-byte master key, resolved from --key, a sibling <input>.key, or game.key next to the disc.")]
+Disc images need the 16-byte master key, resolved from --key, a sibling <input>.key, or game.key next to the disc.",
+    after_long_help = "EXAMPLES:\n  NUS directory: rom-converto wup verify ./title_dir\n  Disc with key: rom-converto wup verify --key game.key game.wud\n  Whole folder:  rom-converto wup verify -R ./titles\n"
+)]
 pub struct VerifyWupCommand {
-    /// Disc master key file (.wud / .wux only). Auto-discovers
-    /// `<input>.key` or `game.key` when omitted.
+    /// Disc master key file (.wud / .wux only). Auto-discovers `<input>.key` or `game.key` when omitted
     #[arg(long = "key", value_name = "KEYFILE")]
     pub key: Option<PathBuf>,
 
-    /// Input: NUS directory, loadiine directory, .wua, or .wud / .wux disc, or a parent directory with --recursive.
+    /// Input: NUS directory, loadiine directory, .wua, or .wud / .wux disc, or a parent directory with --recursive
     #[arg(value_name = "INPUT")]
     pub input: PathBuf,
 
@@ -32,21 +33,22 @@ pub struct VerifyWupCommand {
     #[arg(long, short = 'R', default_value_t = false)]
     pub recursive: bool,
 
-    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited.
+    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited
     #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
     pub max_depth: Option<usize>,
 }
 
-/// Decrypt a NUS-format Wii U title directory into a loadiine-style
-/// `meta/code/content` tree that Cemu can load directly.
+/// Decrypt a NUS-format Wii U title directory into a loadiine-style `meta/code/content` tree that Cemu can load directly
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
+#[command(
+    after_long_help = "EXAMPLES:\n  NUS directory: rom-converto wup decrypt -o ./title_out ./title_nus\n"
+)]
 pub struct DecryptWupCommand {
-    /// Output directory. Created if missing.
+    /// Output directory. Created if missing
     #[arg(short, long, value_name = "OUTPUT")]
     pub output: PathBuf,
 
-    /// Input NUS directory (canonical `title.tmd` + `.app` or
-    /// community `tmd.<N>` + numbered content files).
+    /// Input NUS directory (canonical `title.tmd` + `.app` or community `tmd.<N>` + numbered content files)
     #[arg(value_name = "INPUT")]
     pub input: PathBuf,
 
@@ -64,16 +66,11 @@ pub struct DecryptWupCommand {
     pub force: bool,
 }
 
-/// Compress one or more Wii U titles into a Cemu-compatible .wua
-/// archive. Each input is auto-detected as a loadiine directory, a
-/// NUS directory, or a disc image file (.wud / .wux). Encrypted
-/// inputs are decrypted on the fly: NUS titles use the built-in
-/// common key, disc images use a per-disc master key supplied via
-/// `--key` or a sibling `.key` file.
+/// Compress one or more Wii U titles into a Cemu-compatible .wua archive
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
     long_about = "Compress one or more Wii U titles into a Cemu-compatible .wua archive\n\n\
-                  Each input can be:\n  \
+                  Each input is auto-detected as one of:\n  \
                   - loadiine directory: already-decrypted `meta/`, `code/`, `content/`\n  \
                   - NUS directory: `title.tmd`, `title.tik`, `*.app` (auto-decrypted)\n  \
                   - disc image: `.wud` or `.wux` file (requires per-disc key)\n\n\
@@ -86,13 +83,11 @@ pub struct DecryptWupCommand {
     after_long_help = "EXAMPLES:\n  Single title:    rom-converto wup compress -o game.wua ./title_base\n  Disc with key:   rom-converto wup compress -o game.wua --key game.key game.wud\n  Bundle titles:   rom-converto wup compress -o game.wua ./title_base ./title_update ./title_dlc\n"
 )]
 pub struct CompressWupCommand {
-    /// Output .wua file path.
+    /// Output .wua file path
     #[arg(short, long, value_name = "OUTPUT")]
     pub output: PathBuf,
 
-    /// Zstd compression level (0 = Cemu default of 6, 22 = max
-    /// ratio). Higher levels produce smaller output at the cost of
-    /// compression time.
+    /// Zstd compression level (0 = Cemu default of 6, 22 = max ratio). Higher levels produce smaller output at the cost of compression time
     #[arg(
         short = 'l',
         long = "level",
@@ -101,19 +96,11 @@ pub struct CompressWupCommand {
     )]
     pub level: Option<i32>,
 
-    /// Disc master key file path(s). Applies only to disc image
-    /// inputs. When supplied multiple times, keys are paired with
-    /// disc inputs in the order they appear on the command line; the
-    /// Nth `--key` applies to the Nth disc input. Non-disc inputs
-    /// silently skip past their positional slot. Omit entirely to
-    /// let the loader auto-discover `<input>.key` or `game.key` next
-    /// to each disc.
+    /// Disc master key file path(s). Applies only to disc image inputs. When supplied multiple times, keys are paired with disc inputs in the order they appear on the command line; the Nth `--key` applies to the Nth disc input. Non-disc inputs silently skip past their positional slot. Omit entirely to let the loader auto-discover `<input>.key` or `game.key` next to each disc
     #[arg(long = "key", value_name = "KEYFILE")]
     pub key: Vec<PathBuf>,
 
-    /// One or more title inputs to bundle into the archive. Each is
-    /// auto-detected as a loadiine directory, a NUS directory, or a
-    /// disc image file.
+    /// One or more title inputs to bundle into the archive. Each is auto-detected as a loadiine directory, a NUS directory, or a disc image file
     #[arg(required = true, num_args = 1.., value_name = "INPUT")]
     pub inputs: Vec<PathBuf>,
 

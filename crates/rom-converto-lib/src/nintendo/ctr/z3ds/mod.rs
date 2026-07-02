@@ -85,7 +85,7 @@ pub async fn compress_rom_batch(
 
     total_progress.start(
         roms.len() as u64,
-        &format!("Compressing {} files...", roms.len()),
+        &format!("Compressing {} files", roms.len()),
     );
 
     if let Some(dir) = output_dir {
@@ -133,7 +133,7 @@ pub async fn decompress_rom_batch(
 
     total_progress.start(
         roms.len() as u64,
-        &format!("Decompressing {} files...", roms.len()),
+        &format!("Decompressing {} files", roms.len()),
     );
 
     if let Some(dir) = output_dir {

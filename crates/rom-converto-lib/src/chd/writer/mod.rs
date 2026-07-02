@@ -1,3 +1,6 @@
+//! CHD hunk writer: compresses hunks on a worker pool and assembles the
+//! header, compressed map, and metadata blocks into the final file.
+
 pub(crate) mod metadata;
 pub(crate) mod worker;
 
@@ -245,8 +248,8 @@ impl ChdWriter {
 
         // Seek back and rewrite the header with the finalized
         // offsets and hashes. `BufWriter::seek` flushes the
-        // internal buffer first, which is the one place we want
-        // that behavior.
+        // internal buffer first, which is the one place that
+        // behavior is wanted.
         self.writer.seek(SeekFrom::Start(0))?;
         let mut header_buf = vec![0u8; CHD_V5_HEADER_SIZE as usize];
         {

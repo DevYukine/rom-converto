@@ -1,6 +1,6 @@
 //! Wii partition decompressor.
 //!
-//! Walks each partition's pd[0]+pd[1] group range one cluster at a
+//! Walks each partition's pd\[0\]+pd\[1\] group range one cluster at a
 //! time, bucketing chunks by cluster index on the dispatcher
 //! thread, and dispatching one cluster per worker through the
 //! shared generic [`Pool`]. Workers own persistent
@@ -26,7 +26,7 @@
 //!   the real (non-padded) on-disc content.
 //!
 //! When scrubbing for WBFS, clusters whose blocks are all unused are
-//! filtered out before dispatch (see [`UsageFilter`]) so junk is never
+//! filtered out before dispatch (see `UsageFilter`) so junk is never
 //! read or decompressed.
 
 use super::sink::{DiscSink, UsageFilter};
@@ -69,7 +69,7 @@ pub(crate) struct PartitionDecompressWork {
     pub(crate) data_start: u64,
     pub(crate) part_key: [u8; 16],
     /// How many sectors this cluster actually stores on the
-    /// original disc, i.e. how many sectors get written to the
+    /// original disc, that is, how many sectors get written to the
     /// output file. For all but the partial last cluster this
     /// equals `WII_BLOCKS_PER_GROUP`. For the partial last cluster
     /// it's the remainder of `data_size` measured in sectors.
@@ -116,8 +116,8 @@ impl Worker<PartitionDecompressWork, PartitionDecompressOut, RvzError>
     fn process(&mut self, work: PartitionDecompressWork) -> RvzResult<PartitionDecompressOut> {
         // Only zero the payload scratch on partial last clusters.
         // The common full-cluster case overwrites every sector
-        // from chunk data, so wiping would just be waste. For
-        // partial clusters we zero only the tail past
+        // from chunk data, so wiping would just be waste. Partial
+        // clusters only zero the tail past
         // `valid_blocks_in_cluster` so the hash recompute sees
         // the right padded baseline.
         let full_cluster = work.valid_blocks_in_cluster == WII_BLOCKS_PER_GROUP;

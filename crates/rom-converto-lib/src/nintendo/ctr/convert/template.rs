@@ -141,7 +141,7 @@ mod tests {
         }
 
         // Parsing then re-serializing must reproduce the embedded chain exactly,
-        // otherwise the CIA we emit would carry a corrupted chain.
+        // otherwise the emitted CIA would carry a corrupted chain.
         let mut buf = Vec::new();
         let mut cursor = Cursor::new(&mut buf);
         for cert in &chain {

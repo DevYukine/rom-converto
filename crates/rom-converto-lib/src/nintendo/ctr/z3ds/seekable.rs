@@ -29,7 +29,7 @@ pub(super) const SEEK_TABLE_FOOTER_SIZE: u32 = 9; // num_frames(4) + descriptor(
 // Bit 7 of the seek-table descriptor byte. When set, each entry
 // carries a trailing XXH64 checksum so the entry size is 12 bytes
 // instead of 8. External tools that use the full seekable-zstd spec
-// (e.g. Azahar's z3ds_compressor) set this flag; rom-converto does
+// (such as Azahar's z3ds_compressor) set this flag; rom-converto does
 // not, but must still parse flagged inputs for cross-tool compat.
 const SEEK_TABLE_DESCRIPTOR_CHECKSUM_FLAG: u8 = 0x80;
 
@@ -230,7 +230,7 @@ pub(super) fn read_seek_table_footer(footer_bytes: &[u8]) -> Z3dsResult<(u32, u6
 
 /// Parse a fully-loaded seek-table skippable frame into its entry
 /// list. `frame_bytes` must start at the `SKIPPABLE_MAGIC` and end
-/// after the `SEEKABLE_MAGIC`, i.e. the complete skippable frame the
+/// after the `SEEKABLE_MAGIC`, that is, the complete skippable frame the
 /// encoder wrote.
 ///
 /// Validates the skippable magic, the declared payload size matches

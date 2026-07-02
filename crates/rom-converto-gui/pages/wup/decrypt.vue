@@ -80,7 +80,7 @@ function onRun() {
 
         <FileDropZone
           v-model="output"
-          label="Output Directory"
+          label="Output directory (optional)"
           :directory="true"
         />
 

@@ -15,8 +15,8 @@
 //!
 //! Everything is big-endian once decrypted; the disc-level AES uses
 //! the disc key as the 128 bit key and a zero 128 bit IV. Chunks of
-//! `0x10000` are decrypted at a time, but we only need the first
-//! `0x8000` so we stop there.
+//! `0x10000` are decrypted at a time, but only the first
+//! `0x8000` is needed, so decryption stops there.
 
 use crate::nintendo::wup::crypto::aes_cbc_decrypt_in_place;
 use crate::nintendo::wup::disc::disc_key::DiscKey;
@@ -36,10 +36,10 @@ const PARTITION_COUNT_OFFSET: usize = 0x1C;
 /// Offset of the first entry within the decrypted TOC sector.
 const PARTITION_ENTRIES_OFFSET: usize = 0x800;
 
-/// Serialised size of one entry in bytes.
+/// Serialized size of one entry in bytes.
 const PARTITION_ENTRY_SIZE: usize = 0x80;
 
-/// Maximum entries we will parse. Real discs have a handful (SI + GM +
+/// Maximum entries that will be parsed. Real discs have a handful (SI + GM +
 /// optional UP/UC), so anything above ~64 almost certainly indicates a
 /// corrupt TOC.
 const MAX_PARTITIONS: usize = 64;
@@ -56,7 +56,7 @@ pub enum PartitionKind {
     Update,
     /// DLC partition.
     Dlc,
-    /// Any other kind we should not attempt to process.
+    /// Any other kind that should not be processed.
     Other(String),
 }
 
@@ -212,7 +212,7 @@ mod tests {
             .encrypt_padded::<NoPadding>(&mut toc, SECTOR_SIZE)
             .unwrap();
 
-        // Assemble full disc: sectors 0..3 zero, sector 3 is our TOC.
+        // Assemble full disc: sectors 0..3 zero, sector 3 is the TOC.
         let mut disc = vec![0u8; 4 * SECTOR_SIZE];
         disc[3 * SECTOR_SIZE..4 * SECTOR_SIZE].copy_from_slice(&toc);
         disc

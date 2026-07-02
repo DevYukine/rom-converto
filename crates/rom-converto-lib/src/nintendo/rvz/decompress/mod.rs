@@ -6,17 +6,17 @@
 //!    public entries. They hand the sync pipeline to
 //!    [`tokio::task::spawn_blocking`] and poll a shared `AtomicU64`
 //!    for progress, mirroring [`super::compress`].
-//! 2. [`parse_rvz_metadata`] reads the RVZ header, disc struct,
+//! 2. `parse_rvz_metadata` reads the RVZ header, disc struct,
 //!    partition table, raw-data table, and group table, and opens a
 //!    shared `Arc<std::fs::File>` for the worker pools. Positional
 //!    reads via [`crate::util::pread::file_read_exact_at`] let all
 //!    workers share that one handle without seek contention.
-//! 3. Every raw-data region runs through [`raw::decompress_raw_region`]
-//!    and every Wii partition through [`partition::decompress_partition`],
+//! 3. Every raw-data region runs through `raw::decompress_raw_region`
+//!    and every Wii partition through `partition::decompress_partition`,
 //!    both pumped via [`crate::util::worker_pool::drive`] so output
 //!    lands in order despite out-of-order worker completion. The
-//!    reconstructed bytes go to a [`sink::DiscSink`]: [`sink::IsoSink`]
-//!    for `.iso`, or [`sink::WbfsSink`] (FST-scrubbed) for `.wbfs`.
+//!    reconstructed bytes go to a `sink::DiscSink`: `sink::IsoSink`
+//!    for `.iso`, or `sink::WbfsSink` (FST-scrubbed) for `.wbfs`.
 //!
 pub mod disc_reader;
 pub mod partition;
@@ -61,7 +61,7 @@ pub async fn decompress_disc_cancellable(
     cancel: CancelToken,
 ) -> RvzResult<()> {
     let iso_size_guess = tokio::fs::metadata(input).await?.len();
-    progress.start(iso_size_guess, "Decompressing RVZ...");
+    progress.start(iso_size_guess, "Decompressing RVZ");
 
     let write_path = scratch_output_path(output);
     let input_owned: PathBuf = input.to_path_buf();
@@ -112,7 +112,7 @@ fn decompress_cleanup(write_path: &Path) -> impl FnOnce() -> RvzError {
 /// intermediate ISO, using the same parallel worker pool as
 /// `.rvz -> .iso`. Builds the FST usage map first so unused (junk)
 /// blocks are never decompressed, then reconstructs the used blocks in
-/// parallel into a scrubbed [`sink::WbfsSink`].
+/// parallel into a scrubbed `sink::WbfsSink`.
 pub async fn decompress_disc_to_wbfs(
     input: &Path,
     output: &Path,
@@ -130,7 +130,7 @@ pub async fn decompress_disc_to_wbfs_cancellable(
     cancel: CancelToken,
 ) -> RvzResult<()> {
     let rvz_size = tokio::fs::metadata(input).await?.len();
-    progress.start(rvz_size, "Decompressing RVZ to WBFS...");
+    progress.start(rvz_size, "Decompressing RVZ to WBFS");
 
     let write_path = scratch_output_path(output);
     let input_owned: PathBuf = input.to_path_buf();

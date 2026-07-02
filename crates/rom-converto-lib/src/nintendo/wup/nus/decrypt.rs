@@ -90,7 +90,7 @@ fn decrypt_nus_title_with_cancel(
         }
         if skipped > 0 {
             log::info!(
-                "skipped {skipped} file(s) in title {title_id:016x} v{title_version}: \
+                "Skipped {skipped} file(s) in title {title_id:016x} v{title_version}: \
                  cluster data not shipped in this title"
             );
         }
@@ -162,7 +162,7 @@ pub async fn decrypt_nus_title_async_cancellable(
     result??;
     if cancel.is_cancelled() {
         // A late-firing token can land after the title is fully written;
-        // drop the directory we created to keep the no-partial-output
+        // drop the directory created here to keep the no-partial-output
         // guarantee, but never a directory the caller already had.
         if !output_existed {
             tokio::fs::remove_dir_all(&output_for_cleanup).await.ok();

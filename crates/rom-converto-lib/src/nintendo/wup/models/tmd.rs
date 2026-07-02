@@ -15,7 +15,7 @@ use crate::nintendo::wup::error::{WupError, WupResult};
 /// array at `+0x204` (64 x 36 = 2304 bytes).
 pub const WUP_TMD_HEADER_SIZE: usize = 0x204 + 64 * 36;
 
-/// Serialised size of a single TMD content entry.
+/// Serialized size of a single TMD content entry.
 pub const WUP_TMD_CONTENT_ENTRY_SIZE: usize = 0x30;
 
 const OFFSET_SIGNATURE_TYPE: usize = 0x000;
@@ -31,8 +31,8 @@ const OFFSET_CONTENT_INFO_HASH: usize = 0x1E4;
 
 /// Content entry flag bits from the TMD `type` field. Wii U uses
 /// just two of the sixteen bits: encrypted (bit 0) and hashed-mode
-/// content (bit 1). Unknown bits are preserved on round trip so we
-/// don't silently drop them.
+/// content (bit 1). Unknown bits are preserved on round trip instead
+/// of being silently dropped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TmdContentFlags(u16);
 
@@ -295,8 +295,8 @@ mod tests {
     #[test]
     fn unknown_flag_bits_are_preserved() {
         // Future flag bits pass through from_bits instead of being
-        // silently dropped, so an unexpected Wii U title we haven't
-        // modelled yet still round-trips.
+        // silently dropped, so an unexpected Wii U title that isn't
+        // modeled yet still round-trips.
         let flags = TmdContentFlags::from_bits(0x8003);
         assert_eq!(flags.bits(), 0x8003);
         assert!(flags.contains(TmdContentFlags::ENCRYPTED));

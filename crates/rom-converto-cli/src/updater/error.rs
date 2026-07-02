@@ -1,7 +1,10 @@
+//! Error type for the self-update flow.
+
 use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum UpdaterError {
-    #[error("No prebuild found for the current platform")]
+    /// No release asset name matches the current OS/architecture.
+    #[error("no prebuild found for the current platform")]
     NoPrebuildFoundError,
 }

@@ -32,8 +32,8 @@ impl WudReader {
                 actual: total,
             });
         }
-        // We do not hard-reject non-retail sizes since homebrew and
-        // pre-production discs exist. We only require sector alignment.
+        // Non-retail sizes are not hard-rejected since homebrew and
+        // pre-production discs exist. Only sector alignment is required.
         Ok(Self {
             inner,
             sector_count: total / SECTOR_SIZE as u64,

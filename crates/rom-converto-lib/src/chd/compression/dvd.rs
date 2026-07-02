@@ -89,7 +89,7 @@ impl DvdCodecSet {
 
 /// Decoder routing for one header compressor slot. `Huff` and `Flac`
 /// exist for reading chdman's `createdvd` default set
-/// `[lzma, zlib, huff, flac]`; our writer never emits them.
+/// `[lzma, zlib, huff, flac]`; this crate's writer never emits them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DvdSlot {
     Lzma,

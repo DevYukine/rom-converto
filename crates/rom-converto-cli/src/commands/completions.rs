@@ -2,28 +2,26 @@ use clap::Parser;
 use clap_complete::Shell;
 use std::path::PathBuf;
 
-/// Generate shell completion scripts for the rom-converto CLI.
+/// Generate shell completion scripts for the rom-converto CLI
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
-    long_about = "Generate a shell completion script for the rom-converto CLI.\n\n\
+    long_about = "Generate shell completion scripts for the rom-converto CLI\n\n\
                   Writes to stdout by default. Pass --out-dir to write a canonical\n\
                   per-shell file under that directory (created if missing) and\n\
-                  print the resulting path instead.\n\n\
-                  Examples:\n  \
+                  print the resulting path instead.",
+    after_long_help = "EXAMPLES:\n  \
                   Bash:       rom-converto shell-completions bash >> ~/.bashrc.d/rom-converto\n  \
                   Zsh:        rom-converto shell-completions zsh > \"${fpath[1]}/_rom-converto\"\n  \
                   Fish:       rom-converto shell-completions fish > ~/.config/fish/completions/rom-converto.fish\n  \
                   PowerShell: rom-converto shell-completions powershell >> $PROFILE\n  \
-                  Elvish:     rom-converto shell-completions elvish > ~/.elvish/lib/rom-converto.elv"
+                  Elvish:     rom-converto shell-completions elvish > ~/.elvish/lib/rom-converto.elv\n"
 )]
 pub struct ShellCompletionsCommand {
-    /// Target shell. Accepts bash, zsh, fish, powershell, elvish.
+    /// Target shell. Accepts bash, zsh, fish, powershell, elvish
     #[arg(value_name = "SHELL", value_enum)]
     pub shell: Shell,
 
-    /// Write the completion script into DIR using the canonical filename
-    /// for that shell, instead of writing to stdout. Prints the path on
-    /// success.
+    /// Write the completion script into DIR using the canonical filename for that shell, instead of writing to stdout. Prints the path on success
     #[arg(long, short = 'o', value_name = "DIR")]
     pub out_dir: Option<PathBuf>,
 }

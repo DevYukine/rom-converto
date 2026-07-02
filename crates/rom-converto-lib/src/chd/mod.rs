@@ -1,3 +1,10 @@
+//! CHD (Compressed Hunks of Data) compression and extraction for CD and DVD
+//! disc images, targeting the same V5 format chdman writes.
+//!
+//! CD input (`.cue`/`.bin`) keeps its sidecar files, so restoring a CHD back
+//! to disc form is called extract rather than decompress; see
+//! [`crate::chd::error`] for the failure modes.
+
 use crate::cd::{CD_HUNK_BYTES, IO_BUFFER_SIZE, SECTOR_SIZE};
 use crate::chd::error::{ChdError, ChdResult};
 use crate::chd::models::{CHD_METADATA_TAG_CD, CHD_METADATA_TAG_DVD, ChdHeaderV5, SHA1_BYTES};
@@ -178,7 +185,7 @@ pub async fn convert_disc_to_chd_batch(
 
     total_progress.start(
         discs.len() as u64,
-        &format!("Compressing {} discs...", discs.len()),
+        &format!("Compressing {} discs", discs.len()),
     );
 
     for path in discs {
@@ -516,7 +523,7 @@ pub async fn convert_to_chd(
         total_mb, chd_mb, saved_mb, compression_ratio
     );
 
-    debug!("Conversion complete!");
+    debug!("Conversion complete");
     Ok(())
 }
 
@@ -719,7 +726,7 @@ pub async fn extract_from_chd_cancellable(
         bin_mb, input_path
     );
 
-    debug!("Extraction complete!");
+    debug!("Extraction complete");
     Ok(())
 }
 
@@ -821,7 +828,7 @@ pub async fn verify_chd(
 }
 
 /// Like [`verify_chd`] but observes `cancel` at every hunk boundary.
-/// Verify writes no output, so cancellation simply stops the read with
+/// Verify writes no output, so cancellation only stops the read with
 /// [`ChdError::Cancelled`].
 pub async fn verify_chd_cancellable(
     progress: &dyn ProgressReporter,
@@ -935,7 +942,7 @@ pub async fn verify_chd_cancellable(
             actual: hex::encode(computed_raw),
         });
     }
-    info!("Raw SHA1 verification successful!");
+    info!("Raw SHA-1 verification passed");
 
     let computed_overall = compute_overall_sha1(computed_raw, &metadata_hashes);
     let expected_overall = header.sha1;
@@ -957,7 +964,7 @@ pub async fn verify_chd_cancellable(
     }
 
     info!(
-        "Overall SHA1 verification successful! (SHA1: {})",
+        "Overall SHA-1 verification passed (SHA-1: {})",
         hex::encode(computed_overall)
     );
 
@@ -1033,7 +1040,7 @@ pub async fn extract_from_chd_batch(
             std::fs::create_dir_all(parent)?;
         }
         if let Err(e) = extract_from_chd(progress, chd.clone(), output, None).await {
-            warn!("skipping {}: {}", chd.display(), e);
+            warn!("Skipping {}: {}", chd.display(), e);
         }
         total_progress.inc(1);
     }
@@ -1187,7 +1194,7 @@ mod tests {
     /// Cross-checks against real chdman; set ROMCONVERTO_CHDMAN to
     /// the binary path to enable. Covers both directions: chdman
     /// createdvd output (with its huff/flac codec set) must extract
-    /// and verify here, and our DVD CHD must pass chdman verify.
+    /// and verify here, and this crate's DVD CHD must pass chdman verify.
     #[tokio::test]
     async fn chdman_dvd_parity() {
         let Some(chdman) = std::env::var_os("ROMCONVERTO_CHDMAN") else {

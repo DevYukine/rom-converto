@@ -397,7 +397,7 @@ async fn fetch_seed(title_id: &str) -> anyhow::Result<[u8; 16]> {
     let (bytes, _others) = select_ok(requests).await?;
 
     let key: [u8; 16] = <[u8; 16]>::try_from(bytes.as_ref())
-        .map_err(|e| anyhow!("Failed to parse key bytes: {}", e))?;
+        .map_err(|e| anyhow!("failed to parse key bytes: {}", e))?;
 
     Ok(key)
 }
@@ -703,7 +703,7 @@ pub async fn parse_and_decrypt_ncsd(
         .await?;
     rom_file.read_exact(&mut magic_buf).await?;
     if magic_buf != underlying_magic::NCSD {
-        return Err(anyhow!("Not a valid NCSD file: wrong magic"));
+        return Err(anyhow!("not a valid NCSD file: wrong magic"));
     }
 
     let mut title_id = [0u8; 8];
@@ -835,7 +835,7 @@ pub async fn parse_and_decrypt_cia(
     rom_file.read_exact(&mut tid[0..8]).await?;
 
     if hex::encode(tid).starts_with("00048") {
-        return Err(anyhow::anyhow!("Unsupported CIA file"));
+        return Err(anyhow::anyhow!("unsupported CIA file"));
     }
 
     rom_file
@@ -931,7 +931,7 @@ pub async fn parse_and_decrypt_cia(
                     out_pos = out.stream_position().await?;
                     hashes.push(hasher.finalize().into());
                 } else {
-                    return Err(anyhow!("Cia can't be parsed"));
+                    return Err(anyhow!("CIA file cannot be parsed"));
                 }
             }
             Err(e) => return Err(anyhow!(e)),

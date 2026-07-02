@@ -1,3 +1,7 @@
+//! Tauri backend for the rom-converto desktop GUI. Bridges the Nuxt frontend to
+//! `rom-converto-lib`, exposing one command per CLI operation so the GUI and the
+//! CLI produce identical results from the same library code.
+
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;

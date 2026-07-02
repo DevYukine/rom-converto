@@ -699,7 +699,7 @@ mod integration_tests {
             .await
             .expect("our compress failed");
 
-        // Step 2: Dolphin decompresses our RVZ; result must hash-match.
+        // Step 2: Dolphin decompresses the RVZ produced above; result must hash-match.
         eprintln!("[{label}] step 2: DolphinTool decode ours.rvz");
         run_dolphin_with_timeout(
             dolphin_tool,
@@ -744,7 +744,7 @@ mod integration_tests {
             &format!("{label} Dolphin compress"),
         );
 
-        // Step 4: our decoder on Dolphin's RVZ must hash-match.
+        // Step 4: this decoder on Dolphin's RVZ must hash-match.
         eprintln!("[{label}] step 4: rom-converto decode dolphin.rvz");
         decompress_disc(&dolphin_rvz, &dolphin_from_ours_iso, &NoProgress)
             .await
@@ -774,7 +774,7 @@ mod integration_tests {
     /// Run `DolphinTool` with a hard timeout. If the process doesn't
     /// finish within `timeout_secs`, kill it and panic. This prevents
     /// failed runs from hanging on a modal error dialog on Windows
-    /// (`DolphinTool.exe` pops "Unable to open disc image" etc. on
+    /// (`DolphinTool.exe` pops "Unable to open disc image" and similar on
     /// failure and blocks on user acknowledgment without a timeout).
     fn run_dolphin_with_timeout(tool: &str, args: &[&str], timeout_secs: u64, label: &str) {
         use std::process::{Command, Stdio};

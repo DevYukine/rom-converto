@@ -889,7 +889,7 @@ mod tests {
             assert_eq!(orig.offset, dec.offset, "offset mismatch at hunk {i}");
             assert_eq!(orig.crc16, dec.crc16, "crc16 mismatch at hunk {i}");
         }
-        println!("Roundtrip OK!");
+        println!("Roundtrip OK");
     }
 
     #[test]

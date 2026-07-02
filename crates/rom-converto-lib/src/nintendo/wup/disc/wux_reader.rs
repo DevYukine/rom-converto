@@ -209,7 +209,7 @@ impl DiscSectorSource for WuxReader {
 
 /// Test-only helper that builds a valid WUX file from a sequence of
 /// logical sectors. Deduplicates identical sectors exactly the way a
-/// real writer would, so dedup behaviour is also covered by tests.
+/// real writer would, so dedup behavior is also covered by tests.
 #[cfg(test)]
 pub(crate) fn write_wux_for_test(
     path: &Path,

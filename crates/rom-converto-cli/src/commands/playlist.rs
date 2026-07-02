@@ -8,7 +8,7 @@ pub enum PlaylistModeArg {
     Always,
 }
 
-/// Scan a directory for multi-disc game sets and write one .m3u per game.
+/// Scan a directory for multi-disc game sets and write one .m3u per game
 ///
 /// Grouping is filename-based only, matching the Redump "(Disc N)" /
 /// "(Disc N of M)" and TOSEC "Disc N of M" conventions. No DAT lookup is done.
@@ -37,11 +37,11 @@ pub struct PlaylistCommand {
     )]
     pub extensions: String,
 
-    /// Maximum directory depth. 1 = top level only. Omit for unlimited.
+    /// Maximum directory depth. 1 = top level only. Omit for unlimited
     #[arg(long = "max-depth", value_name = "N")]
     pub max_depth: Option<usize>,
 
-    /// What to do when an .m3u already exists: error, overwrite, skip, rename
+    /// What to do when an output already exists: error, overwrite, skip, or rename to a numbered sibling
     #[arg(long = "on-conflict", value_enum)]
     pub on_conflict: Option<ConflictPolicyArg>,
 

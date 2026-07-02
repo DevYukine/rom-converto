@@ -5,7 +5,7 @@
 //! (`title.tik` + `title.tmd` + `{id:08x}.app`) and the community
 //! layout (`cetk.<N>` + `tmd.<N>` + `{id:08x}`) work. When a ticket
 //! is absent the title key is derived via
-//! [`title_key_derive::derive_title_key`].
+//! [`crate::nintendo::wup::title_key_derive::derive_title_key`].
 //!
 //! [`ContentLoader`] caches decrypted cluster bytes across files that
 //! share the same `.app`.
@@ -27,7 +27,8 @@ use crate::util::ProgressReporter;
 
 /// Sum the decrypted byte size of every FST file this title would
 /// actually emit, skipping inherited-from-base entries (FST type bit
-/// 7) the same way [`compress_nus_title`] and [`decrypt_nus_title`]
+/// 7) the same way [`compress_nus_title`] and
+/// [`crate::nintendo::wup::nus::decrypt::decrypt_nus_title`]
 /// do. Parses the TMD and content 0 only; no per-file decryption
 /// work. Lets the caller seed the progress bar with a real byte
 /// total.
@@ -150,7 +151,7 @@ pub(crate) fn compress_nus_title_with_cancel(
     }
     if skipped > 0 {
         log::info!(
-            "skipped {skipped} file(s) in title {title_id:016x} v{title_version}: \
+            "Skipped {skipped} file(s) in title {title_id:016x} v{title_version}: \
              cluster data not shipped in this title, stacked .wua fills them in"
         );
     }
@@ -420,7 +421,7 @@ mod tests {
     #[test]
     fn rejects_directory_with_no_tmd_at_all() {
         // Layout resolver requires a TMD file to read title id and
-        // content list. Without one the directory is unrecognisable.
+        // content list. Without one the directory is unrecognizable.
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("title.tik"), b"junk").unwrap();
         let mut writer = ZArchiveWriter::new(Vec::new(), ZARCHIVE_DEFAULT_ZSTD_LEVEL).unwrap();

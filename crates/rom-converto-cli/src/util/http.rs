@@ -1,3 +1,6 @@
+//! Shared HTTP client and User-Agent string for the GitHub API and
+//! self-update requests.
+
 use crate::built_info;
 use const_format::formatcp;
 use lazy_static::lazy_static;

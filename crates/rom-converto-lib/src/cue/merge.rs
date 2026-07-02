@@ -13,40 +13,52 @@ use tokio::fs;
 
 #[derive(Debug, Error)]
 pub enum MergeError {
+    /// Wraps an underlying I/O failure.
     #[error(transparent)]
     Io(#[from] std::io::Error),
 
+    /// Wraps a failed worker task join.
     #[error(transparent)]
     Join(#[from] tokio::task::JoinError),
 
+    /// Wraps a CUE sheet parsing or validation failure.
     #[error(transparent)]
     Cue(#[from] CueError),
 
-    #[error("Output file already exists, use force to overwrite: {0}")]
+    /// The output `.cue` or `.bin` file already exists and no overwrite was requested.
+    #[error("output already exists: {0}; pass --on-conflict overwrite to replace it")]
     OutputExists(String),
 
-    #[error("Output path collides with an input file: {0}")]
+    /// The computed output path is the same as one of the input files.
+    #[error("output path collides with an input file: {0}")]
     OutputCollidesWithInput(String),
 
+    /// The CUE sheet does not reference any files.
     #[error("CUE sheet references no files")]
     NoFiles,
 
+    /// The CUE sheet does not define any tracks.
     #[error("CUE sheet contains no tracks")]
     NoTracks,
 
+    /// The CUE sheet already references a single bin file, so there is nothing to merge.
     #[error("CUE sheet already references a single bin file, nothing to merge")]
     AlreadySingleFile,
 
+    /// The tracks in the CUE sheet do not share a single block size.
     #[error("CUE sheet mixes track types with different block sizes")]
     MixedBlockSizes,
 
+    /// A `FILE` entry names a type other than `BINARY`, which cannot be concatenated as raw bytes.
     #[error("CUE sheet references a non-BINARY file, only raw .bin tracks can be merged: {0}")]
     NonBinaryFile(String),
 
-    #[error("Referenced bin file not found: {0}")]
+    /// A bin file the CUE sheet references does not exist next to the `.cue`.
+    #[error("referenced bin file not found: {0}")]
     BinNotFound(String),
 
-    #[error("Size of {path} ({size} bytes) is not a multiple of the block size {block_size}")]
+    /// A bin file's size is not a whole multiple of its track's block size.
+    #[error("size of {path} ({size} bytes) is not a multiple of the block size {block_size}")]
     SizeNotMultipleOfBlock {
         path: String,
         size: u64,

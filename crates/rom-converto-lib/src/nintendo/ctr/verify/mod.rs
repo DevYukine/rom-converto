@@ -1,3 +1,6 @@
+//! Verification of CIA and CCI/3DS ROMs: signature chain validation against
+//! the built-in root key and per-partition legitimacy checks.
+
 mod chain;
 pub mod root_key;
 

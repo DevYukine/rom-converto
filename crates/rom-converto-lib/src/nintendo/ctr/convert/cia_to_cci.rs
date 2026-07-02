@@ -1,3 +1,7 @@
+//! Rebuilds a CCI (`.3ds`) cartridge image from a CIA's decrypted NCCH
+//! partitions, laying them out with the card padding and alignment a real
+//! cartridge would carry.
+
 use crate::nintendo::ctr::constants::{CTR_COMMON_KEYS_HEX, CTR_MEDIA_UNIT_SIZE};
 use crate::nintendo::ctr::decrypt::util::{cbc_decrypt, gen_iv};
 use crate::nintendo::ctr::error::NintendoCTRError;
@@ -102,7 +106,7 @@ pub async fn cia_to_cci_cancellable(
     ncsd.write(&mut Cursor::new(&mut header_buf))?;
 
     let total_content_bytes: u64 = placements.iter().map(|p| p.layout.ncch_size).sum();
-    progress.start(total_content_bytes, "Converting CIA to CCI...");
+    progress.start(total_content_bytes, "Converting CIA to CCI");
 
     let tmp = scratch_output_path(output);
     let out = File::create(&tmp).await.context("creating CCI output")?;

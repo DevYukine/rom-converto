@@ -1,3 +1,6 @@
+//! Multi-disc playlist generation: groups sibling disc image files by title
+//! and writes `.m3u` playlists that emulators use to prompt disc swaps.
+
 mod detect;
 mod write;
 

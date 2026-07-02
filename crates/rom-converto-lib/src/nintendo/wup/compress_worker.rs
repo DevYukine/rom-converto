@@ -89,7 +89,7 @@ pub fn make_workers(n: usize, level: i32) -> WupResult<Vec<ZArchiveCompressWorke
     (0..n).map(|_| ZArchiveCompressWorker::new(level)).collect()
 }
 
-/// Spawn the worker pool [`compress_titles`] shares across its whole
+/// Spawn the worker pool [`crate::nintendo::wup::compress::compress_titles`] shares across its whole
 /// invocation. Callers own the pool and must call
 /// [`Pool::shutdown`] after the last `finalize`.
 pub fn spawn_zarchive_pool(

@@ -1,3 +1,9 @@
+//! The `rom-converto.toml` config file: discovery, parsing, and the
+//! per-format default and preset structures. Precedence is
+//! flag > preset > config default > built-in default; presets and
+//! top-level format defaults never merge, a preset fully replaces the
+//! top-level defaults for the formats it sets.
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -22,7 +28,10 @@ pub struct UserConfig {
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DiscDefaults {
+    /// Zstandard compression level, -22 to 22. Defaults to 22.
     pub level: Option<i32>,
+    /// Chunk size in bytes; must be a power of two between 32 KiB and 2 MiB.
+    /// Defaults to 128 KiB.
     pub chunk_size: Option<u32>,
     pub on_conflict: Option<String>,
     pub output_dir: Option<PathBuf>,
@@ -32,6 +41,7 @@ pub struct DiscDefaults {
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NxDefaults {
+    /// Zstd compression level, 1 to 22. Defaults to 18.
     pub level: Option<i32>,
     pub mode: Option<String>,
     pub block_size_exp: Option<u8>,
@@ -61,6 +71,7 @@ pub struct CsoDefaults {
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WupDefaults {
+    /// Zstd compression level, 0 to 22. Defaults to 6.
     pub level: Option<i32>,
     pub on_conflict: Option<String>,
 }

@@ -63,7 +63,7 @@ pub enum NxError {
     #[error("AES operation failed: {0}")]
     AesError(String),
 
-    #[error("input is not a recognised Switch container (NSP/XCI/NSZ/XCZ)")]
+    #[error("input is not a recognized Switch container (NSP/XCI/NSZ/XCZ)")]
     UnknownContainer,
 
     #[error("input container kind {0:?} cannot be the source of a {1} operation")]

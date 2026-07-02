@@ -1,6 +1,6 @@
 //! Positional `read_exact` across a shared `File`.
 //!
-//! On Windows uses [`std::os::windows::fs::FileExt::seek_read`] which
+//! On Windows uses `std::os::windows::fs::FileExt::seek_read` which
 //! issues `ReadFile` with an `OVERLAPPED` offset and does NOT move
 //! the file-handle cursor, so multiple threads can safely read
 //! disjoint regions of the same file concurrently. On Unix uses

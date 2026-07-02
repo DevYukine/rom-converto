@@ -10,7 +10,7 @@ use binrw::{BinRead, BinWrite};
 
 use crate::nintendo::wup::constants::{ZARCHIVE_FOOTER_MAGIC, ZARCHIVE_FOOTER_VERSION};
 
-/// Offset + size pair describing one archive section. Serialised as
+/// Offset + size pair describing one archive section. Serialized as
 /// two big-endian u64s, 16 bytes total. Six of these live inside the
 /// [`ZArchiveFooter`].
 #[derive(Debug, Clone, Copy, BinRead, BinWrite, Default, PartialEq, Eq)]
@@ -111,7 +111,7 @@ mod tests {
     }
 
     #[test]
-    fn section_info_serialises_to_16_bytes() {
+    fn section_info_serializes_to_16_bytes() {
         let info = ZArchiveSectionInfo::new(0x1234_5678, 0xAABB_CCDD);
         let mut buf = Cursor::new(Vec::new());
         info.write(&mut buf).unwrap();
@@ -122,7 +122,7 @@ mod tests {
     }
 
     #[test]
-    fn footer_serialises_to_144_bytes() {
+    fn footer_serializes_to_144_bytes() {
         let footer = empty_footer();
         let mut buf = Cursor::new(Vec::new());
         footer.write(&mut buf).unwrap();
@@ -200,9 +200,9 @@ mod tests {
     }
 
     #[test]
-    fn footer_sections_serialise_in_declaration_order() {
-        // The upstream writer serialises sectionCompressedData first,
-        // then sectionOffsetRecords, etc. A caller that mixes them up
+    fn footer_sections_serialize_in_declaration_order() {
+        // The upstream writer serializes sectionCompressedData first,
+        // then sectionOffsetRecords, and so on. A caller that mixes them up
         // would still produce a 144-byte blob but the byte order
         // would be wrong and every reader would reject it.
         let footer = ZArchiveFooter {

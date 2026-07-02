@@ -69,7 +69,7 @@ impl NameTableBuilder {
         self.bytes.is_empty()
     }
 
-    /// Consume the builder and return the serialised name table bytes.
+    /// Consume the builder and return the serialized name table bytes.
     pub fn into_bytes(self) -> Vec<u8> {
         self.bytes
     }

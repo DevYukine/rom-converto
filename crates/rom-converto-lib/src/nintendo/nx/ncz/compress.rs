@@ -112,7 +112,7 @@ fn write_solid<W: Write + Seek>(
     // Match nsz's `ZstdCompressionParameters.from_level(level,
     // threads=N)` solid pipeline. With `zstdmt`, libzstd splits the
     // input into jobs, compresses them on N worker threads, and
-    // serialises the output. This both saturates more cores AND
+    // serializes the output. This both saturates more cores AND
     // bumps the effective window/job sizing zstd uses, which on
     // multi-GB program NCAs trims a handful of percent off the output
     // compared to single-threaded `from_level` defaults.
@@ -214,8 +214,8 @@ impl<'a> PlaintextBlockProducer<'a> {
         }
     }
 
-    // The driver only calls this on the dispatcher thread, so we own the read
-    // state and never duplicate work across threads. Allocates one Vec<u8> per
+    // The driver only calls this on the dispatcher thread, so the read
+    // state is owned here and never duplicated across threads. Allocates one Vec<u8> per
     // block handed to the worker pool; reuse would require the worker to send
     // the buffer back, which complicates the channel for a tiny win.
     fn next_block(&mut self, progress: &dyn ProgressReporter) -> NxResult<NczBlockWork> {
@@ -315,7 +315,7 @@ fn build_section_entries(walker: &NcaWalker) -> NxResult<Vec<NczSectionEntry>> {
         // nsz stores bytes 0..8 of crypto_counter as the FsHeader's
         // section_ctr reversed, and bytes 8..16 as zeros (the
         // decompressor fills in `position_in_nca / 16` BE on the fly).
-        // Match that convention so other tools can read our NSZ.
+        // Match that convention so other tools can read the resulting NSZ.
         let mut crypto_counter = [0u8; 16];
         crypto_counter[0..4].copy_from_slice(&s.section_ctr_high.to_be_bytes());
         crypto_counter[4..8].copy_from_slice(&s.section_ctr_low.to_be_bytes());
@@ -332,8 +332,8 @@ fn build_section_entries(walker: &NcaWalker) -> NxResult<Vec<NczSectionEntry>> {
     // synthetic "fake section" for the gap before `sections[0]`,
     // and that math only matches the actual NCA size when entries
     // are ordered by offset. Real NCAs sometimes lay out sections
-    // in non-monotonic fs_entry slots (e.g. slot 0 holding the
-    // highest-offset section), so we sort here.
+    // in non-monotonic fs_entry slots (such as slot 0 holding the
+    // highest-offset section), so this sorts here.
     out.sort_by_key(|e| e.offset);
     Ok(out)
 }

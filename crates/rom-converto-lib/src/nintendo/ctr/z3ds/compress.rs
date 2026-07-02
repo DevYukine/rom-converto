@@ -28,12 +28,12 @@ use tokio::task;
 pub const DEFAULT_ZSTD_LEVEL: i32 = 0;
 
 /// Maximum accepted zstd level. libzstd clamps anything above 22
-/// down to 22 internally but we reject over-max values up front so
+/// down to 22 internally but over-max values are rejected up front so
 /// the CLI fails before opening the input file.
 pub const MAX_ZSTD_LEVEL: i32 = 22;
 
 /// Minimum accepted zstd level. Negative levels are valid zstd
-/// tunings but never a good fit for ROM data, so we cap them off
+/// tunings but never a good fit for ROM data, so they are capped off
 /// at the lower end.
 pub const MIN_ZSTD_LEVEL: i32 = 0;
 
@@ -659,7 +659,7 @@ mod tests {
     }
 
     /// Regression for the encryption-probe size: NCSD images can have
-    /// partition 0 at media-unit offsets well past 0x80 (i.e. past 64 KB).
+    /// partition 0 at media-unit offsets well past 0x80 (past 64 KB).
     /// The probe must be large enough that `check_ncch_not_encrypted` reaches
     /// the NCCH header at the partition 0 offset, otherwise the check
     /// silently passes on encrypted ROMs.

@@ -1,8 +1,8 @@
 //! Random-access `NcaInput` adapter over an NCZ file.
 //!
-//! `NcaWalker` only ever issues positional reads, so we can present
+//! `NcaWalker` only ever issues positional reads, so this can present
 //! the decompressed + re-encrypted NCA byte stream as a virtual file
-//! and walk an NCZ without first materialising it to disk. Block-mode
+//! and walk an NCZ without first materializing it to disk. Block-mode
 //! NCZ decompresses one covered block per read; solid-mode (single
 //! zstd frame) cannot be random-accessed and decompresses the whole
 //! payload once on open, then serves reads from that buffer.

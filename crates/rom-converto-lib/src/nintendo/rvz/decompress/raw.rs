@@ -3,7 +3,7 @@
 //! Decodes the non-partition chunks of a disc. Workers own a
 //! persistent `zstd::bulk::Decompressor` and read compressed chunk
 //! bytes from a shared `Arc<File>` via
-//! [`super::file_read_exact_at`]. Positional reads let N workers
+//! [`crate::util::pread::file_read_exact_at`]. Positional reads let N workers
 //! satisfy chunks concurrently without contending for a single
 //! seek cursor. See the parent module docs for the overall
 //! pipeline shape.

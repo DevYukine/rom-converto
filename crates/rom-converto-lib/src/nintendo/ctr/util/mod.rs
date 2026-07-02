@@ -81,7 +81,7 @@ pub mod tests {
 
     /// Proves the identity used by `check_cia_not_encrypted`:
     /// `align_64(a) + align_64(b) + ... = chained_align(a, b, ...)`
-    /// (i.e. summing independently-aligned section sizes equals walking the
+    /// (that is, summing independently-aligned section sizes equals walking the
     /// CIA layout section-by-section). The identity holds because each partial
     /// sum is itself a multiple of 64, so `align_64(P + s) = P + align_64(s)`
     /// when P ≡ 0 (mod 64).

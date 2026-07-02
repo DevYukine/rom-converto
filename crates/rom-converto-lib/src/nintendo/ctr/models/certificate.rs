@@ -4,51 +4,48 @@ use binrw::{BinRead, BinWrite};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, BinRead, BinWrite)]
 #[brw(repr = u32)]
 pub enum KeyType {
-    /// This contains the Public Key(i.e. Modulus & Public Exponent) 4096 bits long, used for RSA signatures.
+    /// The public key (modulus and public exponent) is 4096 bits long, used for RSA signatures.
     Rsa4096 = 0x0,
-    /// This contains the Public Key(i.e. Modulus & Public Exponent) 2048 bits long, used for RSA signatures.
+    /// The public key (modulus and public exponent) is 2048 bits long, used for RSA signatures.
     Rsa2048 = 0x1,
-    /// This contains the ECC public key
+    /// The key is an ECC public key.
     EllipticCurve = 0x2,
 }
 
-/// Certificates contain cryptography information for verifying Signatures. These certificates are also signed. The parent/child relationship between certificates, makes all the certificates effectively signed by 'Root', the public key for which is stored in NATIVE_FIRM.
+/// Certificates contain cryptography information for verifying signatures. These
+/// certificates are also signed: the parent/child relationship between certificates
+/// makes all the certificates effectively signed by 'Root', the public key for which
+/// is stored in NATIVE_FIRM.
 #[derive(Debug, Clone, BinRead, BinWrite)]
 pub struct Certificate {
-    /// Signature Type
     #[brw(big)]
     pub signature_type: SignatureType,
 
-    /// Signature
     #[br(count = signature_type.signature_size())]
     pub signature: Vec<u8>,
 
-    /// Padding (aligning next data to 0x40 bytes)
+    /// Aligns the next field to a 0x40-byte boundary.
     #[br(count = signature_type.padding_size())]
     pub padding: Vec<u8>,
 
-    /// Issuer
     #[br(count = 0x40)]
     pub issuer: Vec<u8>,
 
-    /// Key Type
     #[brw(big)]
     pub key_type: KeyType,
 
-    /// Name
     #[br(count = 0x40)]
     pub name: Vec<u8>,
 
-    /// Expiration time as UNIX Timestamp, used at least for CTCert
+    /// UNIX timestamp, used at least for CTCert.
     #[brw(big)]
     pub expiration_time: u32,
 
-    /// Public Key
     #[br(args(key_type))]
     pub public_key: PublicKey,
 }
 
-// Determining the type of public key stored, is done by checking the key type:
+// The type of public key stored is determined by checking the key type.
 #[derive(Debug, Clone, BinRead, BinWrite)]
 #[br(import(key_type: KeyType))]
 pub enum PublicKey {

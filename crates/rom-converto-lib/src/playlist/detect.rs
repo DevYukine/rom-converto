@@ -86,7 +86,7 @@ fn parse_bare(stem: &str) -> Option<(String, u32)> {
     None
 }
 
-/// Parse the inside of a parenthesized token, e.g. "Disc 2" or "Disc 2 of 3".
+/// Parse the inside of a parenthesized token, such as "Disc 2" or "Disc 2 of 3".
 fn parse_token_body(body: &str) -> Option<u32> {
     let mut parts = body.split_ascii_whitespace();
     let head = parts.next()?;
@@ -109,7 +109,7 @@ fn parse_token_body(body: &str) -> Option<u32> {
 }
 
 /// Parse a bare token tail that starts right after the word "disc" and must
-/// run to the end of the stem, e.g. " 2" or " 2 of 3".
+/// run to the end of the stem, such as " 2" or " 2 of 3".
 fn parse_token_tail(after: &str) -> Option<u32> {
     let trimmed = after.trim_start();
     if trimmed.len() == after.len() {

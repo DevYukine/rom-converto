@@ -1,10 +1,10 @@
 //! `MetaSource` impl that decrypts NUS content on demand.
 //!
-//! Pulling a Wii U meta file (e.g. `meta/iconTex.tga`) used to load
+//! Pulling a Wii U meta file (such as `meta/iconTex.tga`) used to load
 //! the whole `.app` cluster into memory and decrypt all of it before
 //! slicing. This source instead opens the cluster file fresh per
 //! request, decrypts only the byte range that backs the requested
-//! virtual file, and reuses a cached FST across calls so we do not
+//! virtual file, and reuses a cached FST across calls so it does not
 //! re-decrypt the first chunk of content 0 for every meta read.
 
 use std::fs::File;

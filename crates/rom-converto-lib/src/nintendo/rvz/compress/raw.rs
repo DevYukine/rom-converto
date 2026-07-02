@@ -3,7 +3,7 @@
 //! Handles the non-partition portions of a Wii disc and the entire
 //! GameCube body. Chunks flow through the same persistent worker
 //! pool as the partition encoder ([`super::partition`]); see
-//! [`crate::nintendo::rvz::worker_pool::Pool`] for the pool shape.
+//! [`crate::util::worker_pool::Pool`] for the pool shape.
 //! Each worker's `zstd::bulk::Compressor` is allocated once per
 //! thread for the lifetime of the region.
 //!
@@ -152,14 +152,14 @@ pub(super) fn encode_raw_region<R: Read + Seek>(
             // `bytes_to_read = min(chunk_size, data_offset +
             // data_size - bytes_read)`.
             //
-            // The input buffer is allocated uninitialised
+            // The input buffer is allocated uninitialized
             // rather than zero-filled via `vec![0u8; n]`.
             // `alloc_zeroed` pays for a 128 KiB `memset` on
             // every chunk even though `reader.read_exact`
-            // immediately overwrites the bytes. The only
-            // reason we'd need the buffer zeroed is the final
-            // chunk of a region, which may be short; in that
-            // case we zero just the tail past `bytes_to_read`.
+            // immediately overwrites the bytes. The buffer only
+            // needs zeroing on the final chunk of a region, which
+            // may be short; in that case only the tail past
+            // `bytes_to_read` is zeroed.
             |chunk_idx| -> RvzResult<RawWork> {
                 if cancel.is_cancelled() {
                     return Err(RvzError::Cancelled);

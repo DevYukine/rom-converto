@@ -37,7 +37,7 @@ use crate::nintendo::wup::streaming_sink::{StreamingSink, spawn_stream_pipeline}
 use crate::nintendo::wup::zarchive_writer::write_zarchive_tail;
 use crate::util::{CancelToken, ProgressReporter, scratch_output_path};
 
-/// Recognised Wii U title layouts. The [`compress_titles`]
+/// Recognized Wii U title layouts. The [`compress_titles`]
 /// dispatcher picks one per input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TitleInputFormat {
@@ -485,7 +485,7 @@ fn compress_titles_into_tmp(
     // Run reads + compression + writes concurrently inside a scope.
     // After the scope exits, the writer thread has returned the
     // output file back to the main thread along with the hasher,
-    // byte counter, and offset-records table we need to emit the
+    // byte counter, and offset-records table needed to emit the
     // metadata sections.
     let (stream_result, tree) = std::thread::scope(|s| -> WupResult<_> {
         let (block_tx, handle) =
@@ -535,8 +535,8 @@ fn compress_titles_into_tmp(
 
     // Streaming pipeline is done; now on the main thread with full
     // ownership of the inner writer. Switch to the "Finalizing"
-    // indeterminate pulse while we emit the metadata tail and wait
-    // for the OS to flush the multi-GB write cache on drop.
+    // indeterminate pulse while the metadata tail is emitted and
+    // the OS flushes the multi-GB write cache on drop.
     progress.start(0, "Finalizing archive");
 
     let mut inner = stream_result.inner;

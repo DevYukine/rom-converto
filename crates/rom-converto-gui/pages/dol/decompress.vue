@@ -117,7 +117,7 @@ function onRun() {
 <template>
   <div>
     <PageHeader
-      title="Decompress GameCube RVZ"
+      title="Decompress RVZ"
       description="Decompress an RVZ file back to a raw GameCube ISO. Drop multiple files for batch processing."
       :loading="loading || batch.running.value"
       :has-result="!!result"
@@ -203,7 +203,7 @@ function onRun() {
           <input
             v-model="outputTemplate"
             type="text"
-            placeholder="e.g. {console}/{title}.{ext}"
+            placeholder="for example, {console}/{title}.{ext}"
             class="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-800/50 px-3 py-1.5 text-sm text-zinc-200"
           />
         </label>
@@ -239,7 +239,7 @@ function onRun() {
           @click="onRun"
           @cancel="isBatch ? batch.abort() : abort()"
         >
-          {{ previewMode ? 'Preview' : (isBatch && queue.filter(i => i.status === 'pending').length > 1 ? `Decompress All (${queue.filter(i => i.status === 'pending').length})` : 'Decompress') }}
+          {{ previewMode ? 'Preview' : (isBatch && queue.filter(i => i.status === 'pending').length > 1 ? `Decompress all (${queue.filter(i => i.status === 'pending').length})` : 'Decompress') }}
         </RunButton>
       </div>
     </OperationCard>

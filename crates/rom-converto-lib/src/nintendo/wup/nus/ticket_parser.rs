@@ -20,9 +20,9 @@ use crate::nintendo::wup::models::WupTicket;
 pub struct TitleKey(pub [u8; 16]);
 
 /// Parse an in-memory ticket blob and return the decrypted title
-/// key alongside the parsed ticket metadata. Personalised tickets
-/// are rejected in v1 because depersonalisation requires the
-/// console's private key, which we do not have.
+/// key alongside the parsed ticket metadata. Personalized tickets
+/// are rejected in v1 because depersonalizing them requires the
+/// console's private key, which is not available.
 pub fn parse_ticket_bytes(bytes: &[u8]) -> WupResult<(WupTicket, TitleKey)> {
     let ticket = WupTicket::parse(bytes)?;
     if ticket.is_personalized() {

@@ -33,7 +33,7 @@ pub enum WupError {
     #[error("path conflict at {0:?}: cannot place a file under a file or a directory over a file")]
     PathConflict(String),
 
-    #[error("file already exists at {0:?}")]
+    #[error("output already exists: {0}; pass --on-conflict overwrite to replace it")]
     DuplicateFile(String),
 
     #[error("title directory is neither loadiine nor NUS layout: {0}")]
@@ -60,7 +60,7 @@ pub enum WupError {
     #[error("failed to decrypt title key")]
     TitleKeyDecryptFailed,
 
-    #[error("TMD references content id {content_id:08x} which is not in the title directory")]
+    #[error("TMD references content id {content_id:#010x} which is not in the title directory")]
     ContentNotFound { content_id: u32 },
 
     #[error("content encryption mode is not supported")]

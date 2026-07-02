@@ -8,22 +8,22 @@ use binrw::{BinRead, BinWrite};
 
 pub mod sha1;
 
-/// Size of [`WiaFileHead`] when serialised (0x48 bytes).
+/// Size of [`WiaFileHead`] when serialized (0x48 bytes).
 pub const WIA_FILE_HEAD_SIZE: usize = 0x48;
 
-/// Size of [`WiaDisc`] when serialised (0xDC bytes).
+/// Size of [`WiaDisc`] when serialized (0xDC bytes).
 pub const WIA_DISC_SIZE: usize = 0xDC;
 
-/// Size of a serialised [`RvzGroup`] (12 bytes).
+/// Size of a serialized [`RvzGroup`] (12 bytes).
 pub const RVZ_GROUP_SIZE: usize = 12;
 
-/// Size of a serialised [`WiaRawData`] (24 bytes).
+/// Size of a serialized [`WiaRawData`] (24 bytes).
 pub const WIA_RAW_DATA_SIZE: usize = 24;
 
-/// Size of a serialised [`WiaPartData`] (16 bytes).
+/// Size of a serialized [`WiaPartData`] (16 bytes).
 pub const WIA_PART_DATA_SIZE: usize = 16;
 
-/// Size of a serialised [`WiaPart`] (48 bytes).
+/// Size of a serialized [`WiaPart`] (48 bytes).
 pub const WIA_PART_SIZE: usize = 48;
 
 /// File-level header. Fixed size, starts at offset 0, fully cleartext.
@@ -38,7 +38,7 @@ pub struct WiaFileHead {
     pub version_compatible: u32,
     /// Size of the following [`WiaDisc`] struct.
     pub disc_size: u32,
-    /// SHA-1 of the serialised [`WiaDisc`].
+    /// SHA-1 of the serialized [`WiaDisc`].
     pub disc_hash: [u8; 20],
     /// Original uncompressed disc size.
     pub iso_file_size: u64,
@@ -192,7 +192,7 @@ mod tests {
         value
             .write_options(&mut Cursor::new(&mut buf), Endian::Big, ())
             .unwrap();
-        assert_eq!(buf.len(), expected_size, "serialised size mismatch");
+        assert_eq!(buf.len(), expected_size, "serialized size mismatch");
         let mut cursor = Cursor::new(&buf);
         let _ = T::read_options(&mut cursor, Endian::Big, ()).unwrap();
     }

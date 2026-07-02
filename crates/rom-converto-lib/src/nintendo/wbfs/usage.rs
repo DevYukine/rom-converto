@@ -32,7 +32,7 @@ const WII_SECTOR_PAYLOAD_SIZE_U64: u64 = WII_SECTOR_PAYLOAD_SIZE as u64;
 const WII_RESERVED_HEAD: u64 = WII_PARTITION_INFO_OFFSET + 0x10000;
 
 /// A Wii FST never reaches this size; a larger declared size means a
-/// corrupt header, so we bail to the conservative fallback instead of
+/// corrupt header, so this bails to the conservative fallback instead of
 /// allocating it.
 const MAX_FST_SIZE: u64 = 64 * 1024 * 1024;
 
@@ -141,7 +141,7 @@ fn mark_wii<R: Read + Seek>(reader: &mut R, usage: &mut DiscUsage) -> WbfsResult
 
         if mark_wii_partition_files(reader, &info, usage).is_err() {
             // Keep the whole partition rather than risk dropping live
-            // data on a partition we could not fully parse.
+            // data on a partition that could not be fully parsed.
             usage.mark_range(info.data_start(), info.data_size);
         }
     }

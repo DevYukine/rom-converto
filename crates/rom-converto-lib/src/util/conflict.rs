@@ -1,3 +1,7 @@
+//! Resolves what to do when a planned output path already exists, per the
+//! `--on-conflict` policy: error, overwrite, skip, rename to a numbered
+//! sibling, or (per format) overwrite only if the existing file is invalid.
+
 use std::io::{Error, ErrorKind};
 use std::path::{Path, PathBuf};
 
@@ -34,7 +38,7 @@ pub fn resolve_conflict(
         ConflictPolicy::Error => Err(Error::new(
             ErrorKind::AlreadyExists,
             format!(
-                "output file already exists, use --on-conflict overwrite to replace it: {}",
+                "output already exists: {}; pass --on-conflict overwrite to replace it",
                 desired.display()
             ),
         )),

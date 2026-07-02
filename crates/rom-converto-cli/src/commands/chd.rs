@@ -3,7 +3,7 @@ use crate::commands::info_command::InfoCommand;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-/// Commands specific to CHD formats.
+/// Commands specific to CHD formats
 #[derive(Subcommand, Debug, Eq, PartialEq)]
 pub enum ChdCommands {
     Compress(CompressCommand),
@@ -12,18 +12,10 @@ pub enum ChdCommands {
     Info(InfoCommand),
 }
 
-/// Compress a disc image to a CHD (Compressed Hunks of Data) file.
-///
-/// A .cue input (with its .bin) becomes a CD-mode CHD. An .iso is
-/// probed for its console family: CD-media images (PS1, PS2-CD)
-/// become CD-mode CHDs with a single MODE1/2048 track (the chdman
-/// createcd equivalent), DVD-media images (PS2-DVD, PSP) become
-/// DVD-mode CHDs (the createdvd equivalent). The mode is picked
-/// automatically so the createcd/createdvd mixup cannot happen.
-/// Default DVD codecs are lzma+zlib, which every emulator reads,
-/// including AetherSX2/NetherSX2.
+/// Compress a disc image to a CHD (Compressed Hunks of Data) file
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
+    long_about = "Compress a disc image to a CHD (Compressed Hunks of Data) file\n\nA .cue input (with its .bin) becomes a CD-mode CHD. An .iso is probed for its console family: CD-media images (PS1, PS2-CD) become CD-mode CHDs with a single MODE1/2048 track (the chdman createcd equivalent), DVD-media images (PS2-DVD, PSP) become DVD-mode CHDs (the createdvd equivalent). The mode is picked automatically so the createcd/createdvd mixup cannot happen. Default DVD codecs are lzma+zlib, which every emulator reads, including AetherSX2/NetherSX2.",
     after_long_help = "EXAMPLES:\n  Single file:     rom-converto chd compress game.cue\n  Explicit output: rom-converto chd compress game.iso out.chd\n  Whole folder:    rom-converto chd compress -R ./roms --output-dir ./chd\n"
 )]
 pub struct CompressCommand {
@@ -44,13 +36,13 @@ pub struct CompressCommand {
     )]
     pub output_flag: Option<PathBuf>,
 
-    /// Write output into this directory using the derived filename. Created if missing. Works with --recursive.
+    /// Write output into this directory using the derived filename. Created if missing. Works with --recursive
     #[arg(long = "output-dir", value_name = "DIR", conflicts_with_all = ["output", "output_flag"])]
     pub output_dir: Option<PathBuf>,
 
     /// Output path template applied per file. Tokens: {title}, {titleId}, {region},
     /// {console}, {serial}, {ext}, {basename}. Resolves against extracted metadata;
-    /// missing tokens fall back to the input basename. Joined under --output-dir.
+    /// missing tokens fall back to the input basename. Joined under --output-dir
     #[arg(long = "output-template", value_name = "TEMPLATE", conflicts_with_all = ["output", "output_flag"])]
     pub output_template: Option<String>,
 
@@ -62,13 +54,11 @@ pub struct CompressCommand {
     #[arg(long, conflicts_with = "dvd")]
     pub cd: bool,
 
-    /// DVD hunk size in bytes, a multiple of 2048. Defaults to 4096,
-    /// or 2048 for detected PSP images (PPSSPP reads 2048-byte blocks)
+    /// DVD hunk size in bytes, a multiple of 2048. Defaults to 4096, or 2048 for detected PSP images (PPSSPP reads 2048-byte blocks)
     #[arg(long, value_name = "BYTES")]
     pub hunk_size: Option<u32>,
 
-    /// Add zstd to the DVD codec set: slightly better ratio, but the
-    /// output is rejected by AetherSX2/NetherSX2 (outdated libchdr)
+    /// Add zstd to the DVD codec set: slightly better ratio, but some older players and cores do not support zstd-compressed CHD
     #[arg(long)]
     pub zstd: bool,
 
@@ -89,17 +79,20 @@ pub struct CompressCommand {
     #[arg(long, short = 'R', default_value_t = false)]
     pub recursive: bool,
 
-    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited.
+    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited
     #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
     pub max_depth: Option<usize>,
 
-    /// Write a run report to FILE. Format inferred from the extension: .csv, .json, .html or .htm. Unknown extensions default to JSON. The file is overwritten directly.
+    /// Write a run report to FILE. Format inferred from the extension: .csv, .json, .html or .htm. Unknown extensions default to JSON. The file is overwritten directly
     #[arg(long = "report", value_name = "FILE")]
     pub report: Option<PathBuf>,
 }
 
-/// Extract files from a CHD file to a specified output directory.
+/// Extract files from a CHD file to a specified output directory
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
+#[command(
+    after_long_help = "EXAMPLES:\n  Single file:     rom-converto chd extract game.chd game.cue\n  Explicit output: rom-converto chd extract game.chd --output-dir ./extracted\n  Whole folder:    rom-converto chd extract -R ./chds --output-dir ./extracted\n"
+)]
 pub struct ExtractCommand {
     /// Input CHD file, or a directory of .chd files when --recursive is set
     #[arg(value_name = "INPUT")]
@@ -121,13 +114,13 @@ pub struct ExtractCommand {
     )]
     pub output_flag: Option<PathBuf>,
 
-    /// Write output into this directory using the derived filename. Created if missing. Works with --recursive.
+    /// Write output into this directory using the derived filename. Created if missing. Works with --recursive
     #[arg(long = "output-dir", value_name = "DIR", conflicts_with_all = ["output", "output_flag"])]
     pub output_dir: Option<PathBuf>,
 
     /// Output path template applied per file. Tokens: {title}, {titleId}, {region},
     /// {console}, {serial}, {ext}, {basename}. Resolves against extracted metadata;
-    /// missing tokens fall back to the input basename. Joined under --output-dir.
+    /// missing tokens fall back to the input basename. Joined under --output-dir
     #[arg(long = "output-template", value_name = "TEMPLATE", conflicts_with_all = ["output", "output_flag"])]
     pub output_template: Option<String>,
 
@@ -139,7 +132,7 @@ pub struct ExtractCommand {
     #[arg(long, short = 'R', default_value_t = false)]
     pub recursive: bool,
 
-    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited.
+    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited
     #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
     pub max_depth: Option<usize>,
 
@@ -156,13 +149,16 @@ pub struct ExtractCommand {
     )]
     pub force: bool,
 
-    /// Write a run report to FILE. Format inferred from the extension: .csv, .json, .html or .htm. Unknown extensions default to JSON. The file is overwritten directly.
+    /// Write a run report to FILE. Format inferred from the extension: .csv, .json, .html or .htm. Unknown extensions default to JSON. The file is overwritten directly
     #[arg(long = "report", value_name = "FILE")]
     pub report: Option<PathBuf>,
 }
 
-/// Verify the integrity of a CHD file.
+/// Verify the integrity of a CHD file
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
+#[command(
+    after_long_help = "EXAMPLES:\n  Single file:  rom-converto chd verify game.chd\n  Whole folder: rom-converto chd verify -R ./chds\n"
+)]
 pub struct VerifyCommand {
     /// Input CHD file, or a directory of .chd files when --recursive is set
     #[arg(value_name = "INPUT")]
@@ -180,7 +176,7 @@ pub struct VerifyCommand {
     #[arg(long, short = 'R', default_value_t = false)]
     pub recursive: bool,
 
-    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited.
+    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited
     #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
     pub max_depth: Option<usize>,
 }

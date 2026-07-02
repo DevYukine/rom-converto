@@ -101,10 +101,10 @@ pub async fn decompress_rom_cancellable(
 
         // Progress accounting: `progress.start` was called with
         // `compressed_size + uncompressed_size`, so the bar reaches
-        // 100 % only if we tick both halves. The parallel driver
+        // 100 % only if both halves get ticked. The parallel driver
         // ticks one `uncompressed_size` per frame from its consume
-        // closure; we pre-tick the whole compressed_size (frames +
-        // seek table) here, since the reads that produce them have
+        // closure; the whole compressed_size (frames +
+        // seek table) is pre-ticked here, since the reads that produce them have
         // effectively already happened as workers pread their own
         // frames.
         bytes_done_clone.fetch_add(compressed_size, Ordering::Relaxed);

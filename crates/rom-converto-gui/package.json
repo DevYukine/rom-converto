@@ -1,6 +1,7 @@
 {
   "name": "rom-converto-gui",
   "private": true,
+  "description": "GUI for converting, compressing, decompressing, encrypting, and decrypting ROMs.",
   "type": "module",
   "scripts": {
     "dev": "nuxt dev",

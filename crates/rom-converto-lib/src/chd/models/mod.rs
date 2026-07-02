@@ -1,3 +1,6 @@
+//! CHD V5 on-disk structures: the fixed-size header, metadata tags, and
+//! version enum that the reader and writer share.
+
 use binrw::{BinRead, BinWrite, binrw};
 
 pub const CHD_V5_HEADER_SIZE: u32 = 124;
@@ -71,7 +74,7 @@ impl ChdHeaderV5 {
 #[brw(big)]
 #[derive(Debug)]
 pub struct ChdMetadataHeader {
-    pub tag: [u8; 4], // e.g. b"CHT2"
+    pub tag: [u8; 4], // such as b"CHT2"
     pub flags: u8,    // 0x01
 
     #[bw(calc = {

@@ -1,3 +1,8 @@
+//! Clap-based CLI over rom-converto-lib. Each subcommand maps one to one
+//! onto a library conversion, verification, or info function; this crate
+//! adds argument parsing, progress reporting, batch/dry-run orchestration,
+//! and config file resolution around those calls.
+
 use crate::commands::chd::ChdCommands;
 use crate::commands::completions::ShellCompletionsCommand;
 use crate::commands::cso::{CsoCommands, CsoFormatArg};
@@ -230,16 +235,16 @@ pub(crate) fn print_hash_row(path: &Path, d: &FileDigests, algos: &[HashAlgo]) {
 }
 
 fn log_skipped(output: &Path) {
-    log::info!("skipped, output exists: {}", output.display());
+    log::info!("Skipped, output exists: {}", output.display());
 }
 
 fn log_kept_valid(output: &Path) {
-    log::info!("kept, output verified valid: {}", output.display());
+    log::info!("Kept, output verified valid: {}", output.display());
 }
 
 fn log_rewriting_invalid(output: &Path) {
     log::info!(
-        "rewriting, output failed verification: {}",
+        "Rewriting, output failed verification: {}",
         output.display()
     );
 }
@@ -454,7 +459,7 @@ async fn main() -> Result<()> {
         // Non-fatal: network outages or GitHub rate limits shouldn't
         // prevent the user from running conversions offline.
         if let Err(e) = check_for_new_version_and_notify(&mut github).await {
-            log::debug!("update check skipped: {e}");
+            log::debug!("Update check skipped: {e}");
         }
     }
 
@@ -493,7 +498,7 @@ async fn main() -> Result<()> {
 
     if let Err(err) = dispatch {
         if cancel.is_cancelled() && is_cancelled_error(&err) {
-            eprintln!("Cancelled.");
+            eprintln!("Cancelled");
             std::process::exit(130);
         }
         return Err(err);
@@ -1766,7 +1771,7 @@ async fn dispatch_command(
                     ensure_input_exists(&cmd.input)?;
                     let result = verify_wup_async(cmd.input, cmd.key, &progress).await?;
                     log::info!("Source kind: {}", result.kind);
-                    log::info!("Overall: {}", if result.ok { "OK" } else { "MISMATCHES" });
+                    log::info!("Overall: {}", if result.ok { "OK" } else { "FAIL" });
                     for t in &result.titles {
                         log::info!(
                             "  {}: {} (verified: {}, mismatched: {}, skipped: {})",
@@ -2122,7 +2127,7 @@ async fn dispatch_command(
                 ensure_input_exists(&cmd.input)?;
                 let result = verify_container_async(cmd.input, keys, &progress).await?;
                 log::info!("Container kind: {}", result.kind);
-                log::info!("Overall: {}", if result.ok { "OK" } else { "MISMATCHES" });
+                log::info!("Overall: {}", if result.ok { "OK" } else { "FAIL" });
                 for v in &result.ncas {
                     let prefix = match &v.partition {
                         Some(p) => format!("[{p}] "),
@@ -2753,7 +2758,7 @@ async fn dispatch_command(
             for plan in &plans {
                 if plan.has_duplicate_numbers {
                     log::warn!(
-                        "duplicate disc numbers in set {}, including all entries",
+                        "Duplicate disc numbers in set {}, including all entries",
                         plan.base_title
                     );
                 }
@@ -2769,11 +2774,11 @@ async fn dispatch_command(
                 match decision {
                     WriteDecision::Write(path) => {
                         std::fs::write(&path, &plan.contents)?;
-                        log::info!("wrote {} ({} discs)", path.display(), plan.disc_count);
+                        log::info!("Wrote {} ({} discs)", path.display(), plan.disc_count);
                         tally.record_ok(0, 0, std::time::Duration::ZERO);
                     }
                     WriteDecision::Skip => {
-                        log::info!("skipped existing {}", plan.m3u_path.display());
+                        log::info!("Skipped existing {}", plan.m3u_path.display());
                         tally.record_skipped();
                     }
                 }
@@ -2812,7 +2817,7 @@ fn require_dir(input: &std::path::Path) -> Result<()> {
 }
 
 fn ok_str(b: bool) -> &'static str {
-    if b { "OK" } else { "MISMATCH" }
+    if b { "OK" } else { "FAIL" }
 }
 
 fn print_rvz_structure(s: Option<&rom_converto_lib::nintendo::rvz::RvzStructuralVerify>) {
@@ -2829,7 +2834,7 @@ fn print_rvz_structure(s: Option<&rom_converto_lib::nintendo::rvz::RvzStructural
 
 fn save_dol_banner(info: &rom_converto_lib::info::DolInfo, dir: &std::path::Path) -> Result<()> {
     let Some(img) = &info.banner_image else {
-        log::warn!("no GameCube banner decoded; nothing to save");
+        log::warn!("No GameCube banner decoded; nothing to save");
         return Ok(());
     };
     std::fs::create_dir_all(dir)?;
@@ -2840,13 +2845,13 @@ fn save_dol_banner(info: &rom_converto_lib::info::DolInfo, dir: &std::path::Path
     };
     let path = dir.join(format!("{stem}.png"));
     std::fs::write(&path, &img.png_bytes)?;
-    log::info!("wrote {}", path.display());
+    log::info!("Wrote {}", path.display());
     Ok(())
 }
 
 fn save_ctr_icon(info: &rom_converto_lib::info::CtrInfo, dir: &std::path::Path) -> Result<()> {
     let Some(img) = &info.icon else {
-        log::warn!("no SMDH icon decoded; nothing to save");
+        log::warn!("No SMDH icon decoded; nothing to save");
         return Ok(());
     };
     std::fs::create_dir_all(dir)?;
@@ -2857,33 +2862,33 @@ fn save_ctr_icon(info: &rom_converto_lib::info::CtrInfo, dir: &std::path::Path) 
     };
     let path = dir.join(format!("{stem}.png"));
     std::fs::write(&path, &img.png_bytes)?;
-    log::info!("wrote {}", path.display());
+    log::info!("Wrote {}", path.display());
     Ok(())
 }
 
 fn save_nx_icon(info: &rom_converto_lib::info::NxInfo, dir: &std::path::Path) -> Result<()> {
     let Some(full) = &info.full else {
-        log::warn!("no control NCA payload available; nothing to save");
+        log::warn!("No control NCA payload available; nothing to save");
         return Ok(());
     };
     let Some(ctrl) = &full.control else {
-        log::warn!("no NACP/icon decoded; nothing to save");
+        log::warn!("No NACP/icon decoded; nothing to save");
         return Ok(());
     };
     let Some(img) = &ctrl.icon else {
-        log::warn!("control NACP loaded but no icon present; nothing to save");
+        log::warn!("Control NACP loaded but no icon present; nothing to save");
         return Ok(());
     };
     std::fs::create_dir_all(dir)?;
     let path = dir.join(format!("{:016X}.png", full.application_title_id));
     std::fs::write(&path, &img.png_bytes)?;
-    log::info!("wrote {}", path.display());
+    log::info!("Wrote {}", path.display());
     Ok(())
 }
 
 fn save_rvl_image(info: &rom_converto_lib::info::RvlInfo, dir: &std::path::Path) -> Result<()> {
     let Some(img) = &info.image else {
-        log::warn!("no Wii banner decoded; nothing to save");
+        log::warn!("No Wii banner decoded; nothing to save");
         return Ok(());
     };
     std::fs::create_dir_all(dir)?;
@@ -2894,19 +2899,19 @@ fn save_rvl_image(info: &rom_converto_lib::info::RvlInfo, dir: &std::path::Path)
     };
     let path = dir.join(format!("{stem}.png"));
     std::fs::write(&path, &img.png_bytes)?;
-    log::info!("wrote {}", path.display());
+    log::info!("Wrote {}", path.display());
     Ok(())
 }
 
 fn save_wup_image(info: &rom_converto_lib::info::WupInfo, dir: &std::path::Path) -> Result<()> {
     let Some(img) = &info.image else {
-        log::warn!("no Wii U icon decoded; nothing to save");
+        log::warn!("No Wii U icon decoded; nothing to save");
         return Ok(());
     };
     std::fs::create_dir_all(dir)?;
     let path = dir.join(format!("{}.png", info.title_id_hex));
     std::fs::write(&path, &img.png_bytes)?;
-    log::info!("wrote {}", path.display());
+    log::info!("Wrote {}", path.display());
     Ok(())
 }
 

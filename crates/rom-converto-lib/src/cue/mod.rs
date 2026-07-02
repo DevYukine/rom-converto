@@ -1,3 +1,5 @@
+//! CUE sheet parsing and multi-bin merging for CD disc images.
+
 use crate::cue::error::{CueError, CueResult};
 use crate::cue::models::{CueFile, CueSheet, FileType, Index, Msf, Track, TrackType};
 use std::io::{BufRead, Cursor};

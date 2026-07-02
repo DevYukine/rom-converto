@@ -1,3 +1,6 @@
+//! Filesystem helpers: extension matching, OS junk file detection, and
+//! free-space checks used by the disk-space preflight.
+
 use std::path::{Path, PathBuf};
 
 pub fn has_any_extension(path: &Path, exts: &[&str]) -> bool {

@@ -137,7 +137,7 @@ fn read_disc(path: &Path, key_override: Option<&Path>) -> Result<WupInfo> {
         .map_err(|e| anyhow!("wup info: SI titles: {}", e))?;
 
     // Prefer the base game partition (title type 0x00050000) when a
-    // disc bundles several game partitions (e.g. a system title shares
+    // disc bundles several game partitions (such as a system title sharing
     // the disc), falling back to the first GM partition that has a
     // matching SI ticket/TMD.
     let game_candidates: Vec<(usize, PartitionEntry)> = content_partitions_with_index(&table)

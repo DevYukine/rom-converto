@@ -126,7 +126,7 @@ impl NcaHeader {
     /// Master key index used to look up `key_area_key_<kind>_<idx>`
     /// in `prod.keys`. Switch firmware 3.0.0+ moved the wider field to
     /// 0x220; older NCAs zero that slot and store the value at 0x206.
-    /// Both indices in the file are 1-based, so we subtract one (the
+    /// Both indices in the file are 1-based, so one is subtracted (the
     /// idx of `master_key_00`).
     pub fn master_key_index(&self) -> u8 {
         let raw = if self.key_generation_new > 2 {

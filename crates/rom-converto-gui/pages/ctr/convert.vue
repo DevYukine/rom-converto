@@ -111,7 +111,7 @@ function onRun() {
 <template>
   <div>
     <PageHeader
-      title="Convert ROM"
+      title="Convert CIA/CCI"
       description="Convert between CIA and CCI/3DS formats. Direction is auto-detected from the input extension."
       :loading="loading || batch.running.value"
       :has-result="!!result"
@@ -201,7 +201,7 @@ function onRun() {
           <input
             v-model="outputTemplate"
             type="text"
-            placeholder="e.g. {console}/{title}.{ext}"
+            placeholder="for example, {console}/{title}.{ext}"
             class="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-800/50 px-3 py-1.5 text-sm text-zinc-200"
           />
         </label>
@@ -229,7 +229,7 @@ function onRun() {
           @click="onRun"
           @cancel="isBatch ? batch.abort() : abort()"
         >
-          {{ previewMode ? 'Preview' : (isBatch && queue.filter(i => i.status === 'pending').length > 1 ? `Convert All (${queue.filter(i => i.status === 'pending').length})` : 'Convert') }}
+          {{ previewMode ? 'Preview' : (isBatch && queue.filter(i => i.status === 'pending').length > 1 ? `Convert all (${queue.filter(i => i.status === 'pending').length})` : 'Convert') }}
         </RunButton>
       </div>
     </OperationCard>

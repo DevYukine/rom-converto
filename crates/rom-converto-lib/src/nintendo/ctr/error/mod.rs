@@ -7,10 +7,10 @@ pub enum NintendoCTRError {
     #[error(transparent)]
     IoError(#[from] std::io::Error),
 
-    #[error("Could not find the title file in the specified path: {0}")]
+    #[error("could not find the title file in the specified path: {0}")]
     NoTitleFileFound(PathBuf),
 
-    #[error("Could not find at least one TMD file in the specified path: {0}")]
+    #[error("could not find at least one TMD file in the specified path: {0}")]
     NoTmdFileFound(PathBuf),
 
     #[error("operation cancelled")]

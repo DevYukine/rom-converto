@@ -272,8 +272,8 @@ mod tests {
     fn sector_decrypt_encrypt_roundtrips_on_all_zero_ciphertext() {
         // A Wii partition's "padding" clusters on real discs frequently
         // contain all-zero ciphertext in sectors past the declared
-        // data_size. decrypt(0) → junk; then our encoder stores the
-        // junk and our decoder is supposed to re-encrypt it back to the
+        // data_size. decrypt(0) -> junk; the encoder then stores the
+        // junk and the decoder is supposed to re-encrypt it back to the
         // original all-zero ciphertext. This test exercises exactly
         // that path: `encrypt_sector(decrypt_sector(C)) == C`.
         let key = [0xA5u8; 16];

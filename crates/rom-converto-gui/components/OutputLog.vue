@@ -49,7 +49,7 @@ async function copy(
         class="shrink-0 rounded-md bg-zinc-700/50 px-3 py-1 text-xs font-medium text-zinc-300 transition hover:bg-zinc-700 hover:text-zinc-100"
         @click="copy(command, 'command')"
       >
-        {{ commandCopied ? "Copied!" : "Copy" }}
+        {{ commandCopied ? "Copied" : "Copy" }}
       </button>
     </div>
 
@@ -68,7 +68,7 @@ async function copy(
         class="shrink-0 rounded-md bg-zinc-700/50 px-3 py-1 text-xs font-medium text-zinc-300 transition hover:bg-zinc-700 hover:text-zinc-100"
         @click="copy(result, 'result')"
       >
-        {{ resultCopied ? "Copied!" : "Copy" }}
+        {{ resultCopied ? "Copied" : "Copy" }}
       </button>
     </div>
 
@@ -87,7 +87,7 @@ async function copy(
         class="shrink-0 rounded-md bg-zinc-700/50 px-3 py-1 text-xs font-medium text-zinc-300 transition hover:bg-zinc-700 hover:text-zinc-100"
         @click="copy(preview, 'preview')"
       >
-        {{ previewCopied ? "Copied!" : "Copy" }}
+        {{ previewCopied ? "Copied" : "Copy" }}
       </button>
     </div>
 
@@ -118,7 +118,7 @@ async function copy(
         class="shrink-0 rounded-md bg-zinc-700/50 px-3 py-1 text-xs font-medium text-zinc-300 transition hover:bg-zinc-700 hover:text-zinc-100"
         @click="copy(error, 'error')"
       >
-        {{ errorCopied ? "Copied!" : "Copy" }}
+        {{ errorCopied ? "Copied" : "Copy" }}
       </button>
     </div>
   </div>

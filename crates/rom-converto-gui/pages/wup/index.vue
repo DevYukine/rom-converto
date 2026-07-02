@@ -16,15 +16,15 @@ const operations = [
   },
   {
     to: "/wup/verify",
-    title: "Verify integrity",
+    title: "Verify Wii U title",
     description: "Check a Wii U title against its TMD content hashes",
     formats: "NUS / loadiine directories, .wua, .wud, .wux",
     icon: "shield-check",
   },
   {
     to: "/wup/info",
-    title: "Read title info",
-    description: "Show TMD, multilingual names, region, save sizes, age ratings, accessories",
+    title: "Wii U info",
+    description: "Read title info: TMD, multilingual names, region, save sizes, age ratings, accessories",
     formats: "NUS / loadiine directories, .wua",
     icon: "info",
   },

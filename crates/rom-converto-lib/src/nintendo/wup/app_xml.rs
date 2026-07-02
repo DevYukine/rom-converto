@@ -1,11 +1,11 @@
 //! Minimal `code/app.xml` parser.
 //!
 //! Wii U loadiine titles store a small `app.xml` describing the
-//! title: we only need two fields from it, `<title_id>` (64-bit hex)
+//! title, of which only two fields matter: `<title_id>` (64-bit hex)
 //! and `<title_version>` (unsigned decimal). Rather than pull in a
-//! full XML crate, we do a targeted tag extraction that matches the
+//! full XML crate, this module does a targeted tag extraction that matches the
 //! machine-generated shape Cemu and every Wii U toolchain produces,
-//! e.g. `<title_id type="hexBinary" length="8">0005000E10102000</title_id>`.
+//! such as `<title_id type="hexBinary" length="8">0005000E10102000</title_id>`.
 
 use crate::nintendo::wup::error::{WupError, WupResult};
 
@@ -56,7 +56,7 @@ fn parse(text: &str, source: &std::path::Path) -> WupResult<AppXml> {
 }
 
 /// Find the text content of the first `<tag>...</tag>` in `xml`.
-/// Handles attributes on the opening tag (e.g. `<title_id type="..." length="8">`)
+/// Handles attributes on the opening tag (such as `<title_id type="..." length="8">`)
 /// and rejects near-miss matches like `<title_id_foo>`. Whitespace
 /// around the value is preserved; callers trim as needed.
 pub(crate) fn extract_tag<'a>(xml: &'a str, tag: &str) -> Option<&'a str> {
@@ -66,7 +66,7 @@ pub(crate) fn extract_tag<'a>(xml: &'a str, tag: &str) -> Option<&'a str> {
     while let Some(found) = xml[search_from..].find(&open_marker) {
         let tag_pos = search_from + found;
         let after_marker = tag_pos + open_marker.len();
-        // Reject `<title_id_foo>` etc. The next byte after the marker
+        // Reject `<title_id_foo>` and similar near-miss tags. The next byte after the marker
         // must either close the tag (`>`) or start an attribute list
         // (whitespace).
         let next = xml.as_bytes().get(after_marker)?;

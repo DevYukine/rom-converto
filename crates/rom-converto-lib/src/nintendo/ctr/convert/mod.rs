@@ -1,3 +1,6 @@
+//! Conversion between the CIA and CCI/3DS container formats, dispatched by
+//! input file extension. See [`cia_to_cci`] and [`cci_to_cia`].
+
 mod cci_to_cia;
 mod cia_to_cci;
 mod template;
@@ -101,7 +104,7 @@ pub async fn convert_rom_batch_cancellable(
 
     total_progress.start(
         roms.len() as u64,
-        &format!("Converting {} files...", roms.len()),
+        &format!("Converting {} files", roms.len()),
     );
 
     if let Some(dir) = output_dir {

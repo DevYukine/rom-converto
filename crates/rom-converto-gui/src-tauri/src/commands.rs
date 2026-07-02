@@ -68,7 +68,7 @@ impl RunOutcome {
     /// so the run report matches the CLI, which records every skipped file.
     fn skipped(report: bool, input: &Path, operation: &str, desired: &Path) -> Self {
         Self {
-            message: format!("skipped existing {}", desired.display()),
+            message: format!("Skipped existing {}", desired.display()),
             record: build_skip_record(report, input, operation),
         }
     }
@@ -425,7 +425,10 @@ pub async fn cmd_cdn_to_cia(
         .map_err(err_to_string)
     })
     .join()
-    .map_err(|_| "task panicked".to_string());
+    .map_err(|_| {
+        "The operation failed unexpectedly. Try again, and report a bug if it keeps happening."
+            .to_string()
+    });
     finish(&state).await;
     result??;
     Ok("CDN to CIA conversion complete".to_string())
@@ -438,7 +441,7 @@ pub async fn cmd_generate_ticket(cdn_dir: PathBuf, output: PathBuf) -> Result<St
         .await
         .map_err(err_to_string)?
         .map_err(err_to_string)?;
-    Ok(format!("Ticket generated at {out_display}"))
+    Ok(format!("Wrote {out_display}"))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -488,7 +491,7 @@ pub async fn cmd_decrypt_rom(
     .await?
     {
         Some(p) => p,
-        None => return Ok(format!("skipped existing {}", desired.display())),
+        None => return Ok(format!("Skipped existing {}", desired.display())),
     };
     let out_display = output.display().to_string();
     preflight_space(
@@ -513,10 +516,13 @@ pub async fn cmd_decrypt_rom(
         .map_err(err_to_string)
     })
     .join()
-    .map_err(|_| "task panicked".to_string());
+    .map_err(|_| {
+        "The operation failed unexpectedly. Try again, and report a bug if it keeps happening."
+            .to_string()
+    });
     finish(&state).await;
     result??;
-    Ok(format!("Decrypted to {out_display}"))
+    Ok(format!("Wrote {out_display}"))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -568,7 +574,7 @@ pub async fn cmd_compress_rom(
     .await?
     {
         Some(p) => p,
-        None => return Ok(format!("skipped existing {}", desired.display())),
+        None => return Ok(format!("Skipped existing {}", desired.display())),
     };
     let out_display = output.display().to_string();
     preflight_space(
@@ -593,7 +599,7 @@ pub async fn cmd_compress_rom(
     .map_err(err_to_string);
     finish(&state).await;
     result?;
-    Ok(format!("Compressed to {out_display}"))
+    Ok(format!("Wrote {out_display}"))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -643,7 +649,7 @@ pub async fn cmd_decompress_rom(
     .await?
     {
         Some(p) => p,
-        None => return Ok(format!("skipped existing {}", desired.display())),
+        None => return Ok(format!("Skipped existing {}", desired.display())),
     };
     let out_display = output.display().to_string();
     preflight_space(
@@ -660,7 +666,7 @@ pub async fn cmd_decompress_rom(
     .map_err(err_to_string);
     finish(&state).await;
     result?;
-    Ok(format!("Decompressed to {out_display}"))
+    Ok(format!("Wrote {out_display}"))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -765,7 +771,7 @@ pub async fn cmd_chd_compress(
         started.elapsed(),
     );
     Ok(RunOutcome {
-        message: format!("CHD created at {out_display}"),
+        message: format!("Wrote {out_display}"),
         record,
     })
 }
@@ -870,7 +876,7 @@ pub async fn cmd_cso_compress(
         started.elapsed(),
     );
     Ok(RunOutcome {
-        message: format!("{format_name} created at {out_display}"),
+        message: format!("Wrote {out_display}"),
         record,
     })
 }
@@ -963,7 +969,7 @@ pub async fn cmd_cso_decompress(
         started.elapsed(),
     );
     Ok(RunOutcome {
-        message: format!("ISO restored at {out_display}"),
+        message: format!("Wrote {out_display}"),
         record,
     })
 }
@@ -1019,7 +1025,7 @@ pub async fn cmd_cue_merge(
     .await?
     {
         Some(p) => p,
-        None => return Ok(format!("skipped existing {}", output.display())),
+        None => return Ok(format!("Skipped existing {}", output.display())),
     };
     let out_display = output.display().to_string();
     preflight_space(
@@ -1031,12 +1037,12 @@ pub async fn cmd_cue_merge(
         .await
         .map_err(err_to_string)?
         .map_err(err_to_string)?;
-    Ok(format!("Merged bin/cue created at {out_display}"))
+    Ok(format!("Wrote {out_display}"))
 }
 
 // CHD extract and verify use deeply nested async types from ChdReader
-// that exceed the compiler's recursion limit for Send inference. We run
-// these on a dedicated thread with its own tokio runtime to sidestep the issue.
+// that exceed the compiler's recursion limit for Send inference. They run
+// on a dedicated thread with its own tokio runtime to sidestep the issue.
 
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
@@ -1090,7 +1096,7 @@ pub async fn cmd_chd_extract(
     let token = begin(&state).await;
     let started = Instant::now();
     // ChdReader's deeply nested async types exceed the compiler's Send recursion
-    // limit, so we run on a dedicated thread with its own tokio runtime.
+    // limit, so it runs on a dedicated thread with its own tokio runtime.
     let result = std::thread::spawn(move || -> Result<(), String> {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1106,7 +1112,10 @@ pub async fn cmd_chd_extract(
         .map_err(err_to_string)
     })
     .join()
-    .map_err(|_| "task panicked".to_string());
+    .map_err(|_| {
+        "The operation failed unexpectedly. Try again, and report a bug if it keeps happening."
+            .to_string()
+    });
     finish(&state).await;
     result??;
     let record = build_record(
@@ -1119,7 +1128,7 @@ pub async fn cmd_chd_extract(
         started.elapsed(),
     );
     Ok(RunOutcome {
-        message: format!("Extracted to {out_display}"),
+        message: format!("Wrote {out_display}"),
         record,
     })
 }
@@ -1149,7 +1158,10 @@ pub async fn cmd_chd_verify(
         .map_err(err_to_string)
     })
     .join()
-    .map_err(|_| "task panicked".to_string());
+    .map_err(|_| {
+        "The operation failed unexpectedly. Try again, and report a bug if it keeps happening."
+            .to_string()
+    });
     finish(&state).await;
     result??;
     Ok("CHD verification passed".to_string())
@@ -1251,7 +1263,7 @@ pub async fn cmd_compress_disc(
         started.elapsed(),
     );
     Ok(RunOutcome {
-        message: format!("Compressed to {out_display}"),
+        message: format!("Wrote {out_display}"),
         record,
     })
 }
@@ -1354,7 +1366,7 @@ pub async fn cmd_decompress_disc(
         started.elapsed(),
     );
     Ok(RunOutcome {
-        message: format!("Decompressed to {out_display}"),
+        message: format!("Wrote {out_display}"),
         record,
     })
 }
@@ -1406,7 +1418,7 @@ pub async fn cmd_wup_compress(
     .await?
     {
         Some(p) => p,
-        None => return Ok(format!("skipped existing {}", output.display())),
+        None => return Ok(format!("Skipped existing {}", output.display())),
     };
     let out_display = output.display().to_string();
     let required: u64 = inputs.iter().map(|p| input_size(p)).sum();
@@ -1446,7 +1458,7 @@ pub async fn cmd_wup_compress(
     .map_err(err_to_string);
     finish(&state).await;
     result?;
-    Ok(format!("Compressed to {out_display}"))
+    Ok(format!("Wrote {out_display}"))
 }
 
 #[tauri::command]
@@ -1483,7 +1495,7 @@ pub async fn cmd_wup_decrypt(
     .await?
     {
         Some(p) => p,
-        None => return Ok(format!("skipped existing {}", output.display())),
+        None => return Ok(format!("Skipped existing {}", output.display())),
     };
     let out_display = output.display().to_string();
     preflight_space(
@@ -1500,7 +1512,7 @@ pub async fn cmd_wup_decrypt(
     .map_err(err_to_string);
     finish(&state).await;
     result?;
-    Ok(format!("Decrypted to {out_display}"))
+    Ok(format!("Wrote {out_display}"))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1618,7 +1630,7 @@ pub async fn cmd_nx_compress(
         started.elapsed(),
     );
     Ok(RunOutcome {
-        message: format!("Compressed to {out_display}"),
+        message: format!("Wrote {out_display}"),
         record,
     })
 }
@@ -1714,7 +1726,7 @@ pub async fn cmd_nx_decompress(
         started.elapsed(),
     );
     Ok(RunOutcome {
-        message: format!("Decompressed to {out_display}"),
+        message: format!("Wrote {out_display}"),
         record,
     })
 }
@@ -1782,7 +1794,7 @@ pub async fn cmd_convert_ctr(
     .await?
     {
         Some(p) => p,
-        None => return Ok(format!("skipped existing {}", desired.display())),
+        None => return Ok(format!("Skipped existing {}", desired.display())),
     };
     let out_display = output.display().to_string();
     preflight_space(
@@ -1799,7 +1811,7 @@ pub async fn cmd_convert_ctr(
     .map_err(err_to_string);
     finish(&state).await;
     result?;
-    Ok(format!("Converted to {out_display}"))
+    Ok(format!("Wrote {out_display}"))
 }
 
 #[tauri::command]
@@ -1900,7 +1912,7 @@ pub async fn cmd_read_info(
 pub async fn cmd_save_icon(info_json: String, dest: PathBuf) -> Result<String, String> {
     let info: InfoResult = serde_json::from_str(&info_json).map_err(err_to_string)?;
     let bytes =
-        extract_icon_png(&info).ok_or_else(|| "no icon present in info payload".to_string())?;
+        extract_icon_png(&info).ok_or_else(|| "This file has no icon to save.".to_string())?;
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent).map_err(err_to_string)?;
     }

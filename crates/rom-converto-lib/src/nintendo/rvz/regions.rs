@@ -116,7 +116,7 @@ impl RegionPlan {
             // / 0x8000` in pd[1], so sectors past `data_start +
             // data_size` (the padding tail of a partial last cluster)
             // are NOT in the partition's group range and instead fall
-            // into the following raw_data entry. Our region cursor
+            // into the following raw_data entry. The region cursor
             // must match so those bytes get compressed as raw.
             cursor = data_start + p.data_size;
         }

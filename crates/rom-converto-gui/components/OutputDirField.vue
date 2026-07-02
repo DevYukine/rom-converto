@@ -6,7 +6,7 @@ defineEmits<{ "update:modelValue": [value: string] }>();
 <template>
   <FileDropZone
     :model-value="modelValue"
-    label="Output Directory (optional)"
+    label="Output directory (optional)"
     placeholder="Same as source (default)"
     :directory="true"
     @update:model-value="$emit('update:modelValue', $event)"

@@ -272,7 +272,7 @@ function onRun() {
           @click="onRun"
           @cancel="abort()"
         >
-          {{ previewMode ? 'Preview' : (queue.length > 1 ? `Compress All (${queue.length} titles)` : 'Compress') }}
+          {{ previewMode ? 'Preview' : (queue.length > 1 ? `Compress all (${queue.length} titles)` : 'Compress') }}
         </RunButton>
 
         <div

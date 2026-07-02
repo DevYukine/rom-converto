@@ -210,16 +210,16 @@ const batchOptions = {
         </div>
 
         <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
-          <h4 class="mb-2 text-xs font-semibold uppercase tracking-wider text-zinc-500">Signature Checks</h4>
+          <h4 class="mb-2 text-xs font-semibold uppercase tracking-wider text-zinc-500">Signature checks</h4>
           <div class="space-y-1.5">
-            <CheckRow label="CA Certificate" :valid="(verifyResult as CiaResult).ca_cert_valid" />
-            <CheckRow label="TMD Signer (CP)" :valid="(verifyResult as CiaResult).tmd_signer_cert_valid" />
-            <CheckRow label="Ticket Signer (XS)" :valid="(verifyResult as CiaResult).ticket_signer_cert_valid" />
-            <CheckRow label="TMD Signature" :valid="(verifyResult as CiaResult).tmd_signature_valid" />
-            <CheckRow label="Ticket Signature" :valid="(verifyResult as CiaResult).ticket_signature_valid" />
+            <CheckRow label="CA certificate" :valid="(verifyResult as CiaResult).ca_cert_valid" />
+            <CheckRow label="TMD signer (CP)" :valid="(verifyResult as CiaResult).tmd_signer_cert_valid" />
+            <CheckRow label="Ticket signer (XS)" :valid="(verifyResult as CiaResult).ticket_signer_cert_valid" />
+            <CheckRow label="TMD signature" :valid="(verifyResult as CiaResult).tmd_signature_valid" />
+            <CheckRow label="Ticket signature" :valid="(verifyResult as CiaResult).ticket_signature_valid" />
             <CheckRow
               v-if="(verifyResult as CiaResult).content_hashes_valid !== null"
-              label="Content Hashes"
+              label="Content hashes"
               :valid="(verifyResult as CiaResult).content_hashes_valid!"
             />
           </div>
@@ -287,11 +287,11 @@ const batchOptions = {
           </div>
 
           <div v-if="!part.encrypted" class="space-y-1.5">
-            <CheckRow label="NCCH Magic" :valid="part.ncch_magic_valid" />
-            <CheckRow v-if="part.exheader_hash_valid !== null" label="ExHeader Hash" :valid="part.exheader_hash_valid" />
-            <CheckRow v-if="part.exefs_hash_valid !== null" label="ExeFS Hash" :valid="part.exefs_hash_valid" />
-            <CheckRow v-if="part.romfs_hash_valid !== null" label="RomFS Hash" :valid="part.romfs_hash_valid" />
-            <CheckRow v-if="part.logo_hash_valid !== null" label="Logo Hash" :valid="part.logo_hash_valid" />
+            <CheckRow label="NCCH magic" :valid="part.ncch_magic_valid" />
+            <CheckRow v-if="part.exheader_hash_valid !== null" label="ExHeader hash" :valid="part.exheader_hash_valid" />
+            <CheckRow v-if="part.exefs_hash_valid !== null" label="ExeFS hash" :valid="part.exefs_hash_valid" />
+            <CheckRow v-if="part.romfs_hash_valid !== null" label="RomFS hash" :valid="part.romfs_hash_valid" />
+            <CheckRow v-if="part.logo_hash_valid !== null" label="Logo hash" :valid="part.logo_hash_valid" />
           </div>
           <div v-else class="text-xs text-zinc-500">
             Hash verification skipped (content is encrypted)
@@ -369,7 +369,7 @@ const batchOptions = {
           :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input"
           @click="execute"
         >
-          {{ isBatch && queue.filter(i => i.status === 'pending').length > 1 ? `Verify All (${queue.filter(i => i.status === 'pending').length})` : 'Verify' }}
+          {{ isBatch && queue.filter(i => i.status === 'pending').length > 1 ? `Verify all (${queue.filter(i => i.status === 'pending').length})` : 'Verify' }}
         </RunButton>
       </div>
     </OperationCard>

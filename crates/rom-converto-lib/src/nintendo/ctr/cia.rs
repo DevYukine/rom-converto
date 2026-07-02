@@ -29,7 +29,7 @@ pub async fn decrypt_from_encrypted_cia(
     cancel: &CancelToken,
 ) -> anyhow::Result<()> {
     let input_size = tokio::fs::metadata(input).await?.len();
-    progress.start(input_size, "Decrypting CIA...");
+    progress.start(input_size, "Decrypting CIA");
 
     let source_bytes = tokio::fs::read(input).await?;
     let original_cia = CiaFileWithoutContent::read_le(&mut Cursor::new(&source_bytes))?;
@@ -174,7 +174,7 @@ pub async fn write_cia(
         .iter()
         .map(|e| e.content_size)
         .sum();
-    progress.start(total_content_size, "Building CIA...");
+    progress.start(total_content_size, "Building CIA");
 
     let tmd_certs = read_certificate_chain(tmd_path).await?;
     let tik_certs = read_certificate_chain(tik_path).await?;
@@ -283,7 +283,7 @@ async fn read_certificate_chain(file_path: &Path) -> anyhow::Result<Vec<Certific
             if let Ok(_ticket) = Ticket::read_options(&mut cursor, Endian::Big, ()) {
                 cursor.position()
             } else {
-                return Err(anyhow::anyhow!("File is neither TMD nor Ticket"));
+                return Err(anyhow::anyhow!("file is neither TMD nor ticket"));
             }
         }
     };

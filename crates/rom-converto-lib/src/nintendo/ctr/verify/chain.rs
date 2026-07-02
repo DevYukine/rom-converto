@@ -187,16 +187,13 @@ async fn verify_compressed(
     let mut header_buf = vec![0u8; 0x20];
     file.read_exact(&mut header_buf).await?;
     let mut cursor = Cursor::new(&header_buf);
-    let header = Z3dsHeader::read(&mut cursor).context("Failed to parse Z3DS header")?;
+    let header = Z3dsHeader::read(&mut cursor).context("failed to parse Z3DS header")?;
 
     let payload_offset = header.header_size as u64 + header.metadata_size as u64;
     let compressed_size = header.compressed_size;
     drop(file);
 
-    progress.start(
-        header.uncompressed_size,
-        "Decompressing for verification...",
-    );
+    progress.start(header.uncompressed_size, "Decompressing for verification");
 
     // Stream the compressed payload from disk through the zstd decoder into
     // a temp file. Peak heap is BufReader (4 MB) + BufWriter (4 MB) + libzstd
@@ -255,13 +252,13 @@ pub async fn verify_cia(
 ) -> Result<CiaVerifyResult> {
     let mut file = tokio::fs::File::open(input).await?;
     let file_size = file.metadata().await?.len();
-    progress.start(file_size, "Verifying CIA signatures...");
+    progress.start(file_size, "Verifying CIA signatures");
 
     // The header's declared sizes drive the rest of the layout walk.
     let mut header_buf = vec![0u8; CIA_HEADER_SIZE as usize];
     file.read_exact(&mut header_buf).await?;
     let cia_header =
-        CiaHeader::read_le(&mut Cursor::new(&header_buf)).context("Failed to parse CIA header")?;
+        CiaHeader::read_le(&mut Cursor::new(&header_buf)).context("failed to parse CIA header")?;
 
     let header_end: u64 = CIA_HEADER_SIZE as u64;
     let cert_start = align_64(header_end);
@@ -288,7 +285,7 @@ pub async fn verify_cia(
 
     let mut cursor = Cursor::new(&preamble);
     let cia_without_content = CiaFileWithoutContent::read_options(&mut cursor, Endian::Little, ())
-        .context("Failed to parse CIA file")?;
+        .context("failed to parse CIA file")?;
 
     let title_id = format!("{:016X}", cia_without_content.tmd.header.title_id);
     let console_id = cia_without_content.ticket.ticket_data.console_id;
@@ -449,8 +446,8 @@ pub async fn verify_cia(
     progress.finish();
 
     // A CIA counts as "Decrypted" iff every content chunk has its
-    // Encrypted flag cleared. That's how our own decrypt path (and
-    // ctrtool et al.) marks the post-decrypt output.
+    // Encrypted flag cleared. That's how this crate's own decrypt path
+    // (and ctrtool and similar tools) marks the post-decrypt output.
     let is_decrypted = !cia_without_content.tmd.content_chunk_records.is_empty()
         && cia_without_content
             .tmd
@@ -490,7 +487,7 @@ async fn verify_ncsd_file(
 ) -> Result<NcsdVerifyResult> {
     let mut file = tokio::fs::File::open(input).await?;
     let file_size = file.metadata().await?.len();
-    progress.start(file_size, "Verifying NCSD integrity...");
+    progress.start(file_size, "Verifying NCSD integrity");
 
     let mut details = Vec::new();
 
@@ -564,7 +561,7 @@ async fn verify_standalone_ncch_file(
 ) -> Result<NcsdVerifyResult> {
     let mut file = tokio::fs::File::open(input).await?;
     let file_size = file.metadata().await?.len();
-    progress.start(file_size, "Verifying NCCH integrity...");
+    progress.start(file_size, "Verifying NCCH integrity");
 
     let result =
         verify_ncch_partition_from_file(&mut file, 0, file_size, 0, "Main", file_size).await?;
@@ -663,7 +660,7 @@ async fn verify_ncch_partition_from_file(
                 let valid = hash == header.exhdrhash;
                 details.push(format!(
                     "ExHeader hash: {}",
-                    if valid { "OK" } else { "MISMATCH" }
+                    if valid { "OK" } else { "FAIL" }
                 ));
                 Some(valid)
             }
@@ -682,10 +679,7 @@ async fn verify_ncch_partition_from_file(
         match read_and_hash(file, logo_offset, logo_size, file_size).await {
             Some(hash) => {
                 let valid = hash == header.logohash;
-                details.push(format!(
-                    "Logo hash: {}",
-                    if valid { "OK" } else { "MISMATCH" }
-                ));
+                details.push(format!("Logo hash: {}", if valid { "OK" } else { "FAIL" }));
                 Some(valid)
             }
             None => {
@@ -704,10 +698,7 @@ async fn verify_ncch_partition_from_file(
         match read_and_hash(file, exefs_offset, hash_size, file_size).await {
             Some(hash) => {
                 let valid = hash == header.exefshash;
-                details.push(format!(
-                    "ExeFS hash: {}",
-                    if valid { "OK" } else { "MISMATCH" }
-                ));
+                details.push(format!("ExeFS hash: {}", if valid { "OK" } else { "FAIL" }));
                 Some(valid)
             }
             None => {
@@ -726,10 +717,7 @@ async fn verify_ncch_partition_from_file(
         match read_and_hash(file, romfs_offset, hash_size, file_size).await {
             Some(hash) => {
                 let valid = hash == header.romfshash;
-                details.push(format!(
-                    "RomFS hash: {}",
-                    if valid { "OK" } else { "MISMATCH" }
-                ));
+                details.push(format!("RomFS hash: {}", if valid { "OK" } else { "FAIL" }));
                 Some(valid)
             }
             None => {
@@ -986,7 +974,7 @@ async fn verify_content_hashes_streaming(
         if hash.as_slice() == record.hash.as_slice() {
             details.push(format!("Content {}: hash OK", record.content_id));
         } else {
-            details.push(format!("Content {}: hash MISMATCH", record.content_id));
+            details.push(format!("Content {}: hash FAIL", record.content_id));
             all_valid = false;
         }
 
@@ -1004,7 +992,7 @@ async fn verify_content_hashes_streaming(
     if info_hash.as_slice() == tmd.header.content_info_records_hash.as_slice() {
         details.push("Content info records hash: OK".to_string());
     } else {
-        details.push("Content info records hash: MISMATCH".to_string());
+        details.push("Content info records hash: FAIL".to_string());
         all_valid = false;
     }
 
@@ -1042,7 +1030,7 @@ pub async fn verify_ctr_batch(
 
     total_progress.start(
         roms.len() as u64,
-        &format!("Verifying {} files...", roms.len()),
+        &format!("Verifying {} files", roms.len()),
     );
 
     for path in roms {
@@ -1218,8 +1206,8 @@ mod tests {
 
         assert_eq!(result.content_hashes_valid, Some(false));
         assert!(
-            result.details.iter().any(|s| s.contains("MISMATCH")),
-            "details should report MISMATCH, got: {:?}",
+            result.details.iter().any(|s| s.contains("FAIL")),
+            "details should report FAIL, got: {:?}",
             result.details
         );
     }

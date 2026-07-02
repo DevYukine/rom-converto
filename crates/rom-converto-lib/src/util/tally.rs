@@ -1,3 +1,6 @@
+//! Per-run byte and file-count tracking, rendered into the final
+//! `"{n} files: A -> B, saved C (p%) in T"`-style summary line.
+
 use std::time::{Duration, Instant};
 
 const KIB: f64 = 1024.0;
@@ -19,11 +22,16 @@ pub fn format_bytes(n: u64) -> String {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FileStatus {
+    /// Converted successfully.
     Ok,
+    /// Not converted because a valid output already existed.
     Skipped,
+    /// Conversion returned an error.
     Failed,
 }
 
+/// Which summary shape [`Tally::summary_line`] renders: whether the run
+/// produced output worth comparing, and how input and output sizes relate.
 #[derive(Clone, Copy, Debug)]
 pub enum TallyDirection {
     Compress,
@@ -151,7 +159,7 @@ impl Tally {
                 format!("{prefix} in {el}")
             }
             TallyDirection::DryRun => {
-                format!("dry run: {prefix} planned in {el}")
+                format!("Dry run: {prefix} planned in {el}")
             }
             TallyDirection::Compress => {
                 if input == 0 || output >= input {

@@ -57,7 +57,7 @@ const WRITER_PROGRESS_BATCH_BLOCKS: u64 = 32;
 /// finishes. `inner` is the writer that started the pipeline, now
 /// positioned just past the last compressed block; `hasher`,
 /// `bytes_written`, and `offset_records` are exactly what
-/// [`ZArchiveWriter`]'s finalize would have produced for the same
+/// [`crate::nintendo::wup::zarchive_writer::ZArchiveWriter`]'s finalize would have produced for the same
 /// input.
 pub struct StreamResult<W> {
     pub inner: W,
@@ -107,7 +107,7 @@ struct WriteMsg {
 /// fewer causes deadlock.
 ///
 /// `progress`, when set, receives one `inc` per
-/// [`WRITER_PROGRESS_BATCH_BLOCKS`] blocks committed to disk. The
+/// `WRITER_PROGRESS_BATCH_BLOCKS` blocks committed to disk. The
 /// reader is expected to stay silent on its own progress reporter
 /// so the bar reflects only bytes that have cleared the pipeline,
 /// keeping it smooth under back-pressure.

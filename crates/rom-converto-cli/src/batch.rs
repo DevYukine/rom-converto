@@ -36,7 +36,7 @@ pub(crate) fn space_preflight_for_size(required: u64, check_dir: &Path) -> Resul
             .is_some()
             {
                 anyhow::bail!(
-                    "Not enough free space at {}: need about {}, only {} available. Re-run with --skip-space-check to proceed anyway.",
+                    "not enough free space at {}: need about {}, only {} available. Re-run with --skip-space-check to proceed anyway.",
                     check_dir.display(),
                     rom_converto_lib::util::format_bytes(
                         required.saturating_add(rom_converto_lib::util::DEFAULT_SPACE_HEADROOM)
@@ -46,7 +46,7 @@ pub(crate) fn space_preflight_for_size(required: u64, check_dir: &Path) -> Resul
             }
         }
         Err(e) => log::debug!(
-            "free-space check unavailable at {}: {e}",
+            "Free-space check unavailable at {}: {e}",
             check_dir.display()
         ),
     }
@@ -254,7 +254,7 @@ pub async fn cso_decompress(
         std::fs::create_dir_all(dir)?;
     }
     let total = files.len();
-    total_progress.start(total as u64, &format!("Decompressing {total} files..."));
+    total_progress.start(total as u64, &format!("Decompressing {total} files"));
     let mut tally = Tally::new();
     let mut records: Vec<ReportRecord> = Vec::new();
     for path in files {
@@ -308,7 +308,7 @@ pub async fn cso_decompress(
         let output = match decision {
             WriteDecision::Write(p) => p,
             WriteDecision::Skip => {
-                info!("skipped, output exists: {}", output.display());
+                info!("Skipped, output exists: {}", output.display());
                 tally.record_skipped();
                 records.push(skipped_record(&path, "decompress", None));
                 total_progress.inc(1);
@@ -369,7 +369,7 @@ pub async fn cso_verify(
         return Ok(());
     }
     let total = files.len();
-    total_progress.start(total as u64, &format!("Verifying {total} files..."));
+    total_progress.start(total as u64, &format!("Verifying {total} files"));
     let mut ok = 0usize;
     let mut failed = 0usize;
     for path in files {
@@ -418,7 +418,7 @@ pub async fn rvz_compress(
         std::fs::create_dir_all(dir)?;
     }
     let total = files.len();
-    total_progress.start(total as u64, &format!("Compressing {total} files..."));
+    total_progress.start(total as u64, &format!("Compressing {total} files"));
     let mut tally = Tally::new();
     let mut records: Vec<ReportRecord> = Vec::new();
     for path in files {
@@ -485,7 +485,7 @@ pub async fn rvz_compress(
                 .await
                 {
                     crate::util::VerifyOutcome::Valid => {
-                        info!("kept, output verified valid: {}", output.display());
+                        info!("Kept, output verified valid: {}", output.display());
                         tally.record_skipped();
                         records.push(skipped_record(
                             &path,
@@ -497,7 +497,7 @@ pub async fn rvz_compress(
                     }
                     crate::util::VerifyOutcome::Invalid => {
                         info!(
-                            "rewriting, output failed verification: {}",
+                            "Rewriting, output failed verification: {}",
                             output.display()
                         );
                         output
@@ -505,7 +505,7 @@ pub async fn rvz_compress(
                 }
             }
             WriteDecision::Skip => {
-                info!("skipped, output exists: {}", output.display());
+                info!("Skipped, output exists: {}", output.display());
                 tally.record_skipped();
                 records.push(skipped_record(&path, "compress", None));
                 total_progress.inc(1);
@@ -577,7 +577,7 @@ pub async fn rvz_decompress(
         std::fs::create_dir_all(dir)?;
     }
     let total = files.len();
-    total_progress.start(total as u64, &format!("Decompressing {total} files..."));
+    total_progress.start(total as u64, &format!("Decompressing {total} files"));
     let mut tally = Tally::new();
     let mut records: Vec<ReportRecord> = Vec::new();
     for path in files {
@@ -631,7 +631,7 @@ pub async fn rvz_decompress(
         let output = match decision {
             WriteDecision::Write(p) => p,
             WriteDecision::Skip => {
-                info!("skipped, output exists: {}", output.display());
+                info!("Skipped, output exists: {}", output.display());
                 tally.record_skipped();
                 records.push(skipped_record(&path, "decompress", None));
                 total_progress.inc(1);
@@ -690,7 +690,7 @@ pub async fn dol_verify(
     }
     let total = files.len();
     let opts = DolVerifyOptions { full };
-    total_progress.start(total as u64, &format!("Verifying {total} files..."));
+    total_progress.start(total as u64, &format!("Verifying {total} files"));
     let mut ok = 0usize;
     let mut failed = 0usize;
     for path in files {
@@ -729,7 +729,7 @@ pub async fn rvl_verify(
     }
     let total = files.len();
     let opts = RvlVerifyOptions { full };
-    total_progress.start(total as u64, &format!("Verifying {total} files..."));
+    total_progress.start(total as u64, &format!("Verifying {total} files"));
     let mut ok = 0usize;
     let mut failed = 0usize;
     for path in files {
@@ -791,7 +791,7 @@ pub async fn nx_compress(
         std::fs::create_dir_all(dir)?;
     }
     let total = files.len();
-    total_progress.start(total as u64, &format!("Compressing {total} files..."));
+    total_progress.start(total as u64, &format!("Compressing {total} files"));
     let mut tally = Tally::new();
     let mut records: Vec<ReportRecord> = Vec::new();
     for path in files {
@@ -893,7 +893,7 @@ pub async fn nx_compress(
                 .await
                 {
                     crate::util::VerifyOutcome::Valid => {
-                        info!("kept, output verified valid: {}", output.display());
+                        info!("Kept, output verified valid: {}", output.display());
                         tally.record_skipped();
                         records.push(skipped_record(
                             &path,
@@ -905,7 +905,7 @@ pub async fn nx_compress(
                     }
                     crate::util::VerifyOutcome::Invalid => {
                         info!(
-                            "rewriting, output failed verification: {}",
+                            "Rewriting, output failed verification: {}",
                             output.display()
                         );
                         output
@@ -913,7 +913,7 @@ pub async fn nx_compress(
                 }
             }
             WriteDecision::Skip => {
-                info!("skipped, output exists: {}", output.display());
+                info!("Skipped, output exists: {}", output.display());
                 tally.record_skipped();
                 records.push(skipped_record(&path, "compress", None));
                 total_progress.inc(1);
@@ -996,7 +996,7 @@ pub async fn nx_decompress(
         std::fs::create_dir_all(dir)?;
     }
     let total = files.len();
-    total_progress.start(total as u64, &format!("Decompressing {total} files..."));
+    total_progress.start(total as u64, &format!("Decompressing {total} files"));
     let mut tally = Tally::new();
     let mut records: Vec<ReportRecord> = Vec::new();
     for path in files {
@@ -1053,7 +1053,7 @@ pub async fn nx_decompress(
         let output = match decision {
             WriteDecision::Write(p) => p,
             WriteDecision::Skip => {
-                info!("skipped, output exists: {}", output.display());
+                info!("Skipped, output exists: {}", output.display());
                 tally.record_skipped();
                 records.push(skipped_record(&path, "decompress", None));
                 total_progress.inc(1);
@@ -1119,7 +1119,7 @@ pub async fn nx_verify(
         return Ok(());
     }
     let total = files.len();
-    total_progress.start(total as u64, &format!("Verifying {total} files..."));
+    total_progress.start(total as u64, &format!("Verifying {total} files"));
     let mut ok = 0usize;
     let mut failed = 0usize;
     for path in files {
@@ -1201,7 +1201,7 @@ pub async fn wup_verify(
     }
 
     let total = inputs.len();
-    total_progress.start(total as u64, &format!("Verifying {total} titles..."));
+    total_progress.start(total as u64, &format!("Verifying {total} titles"));
     let mut ok = 0usize;
     let mut failed = 0usize;
     for path in inputs {
@@ -1255,7 +1255,7 @@ pub async fn chd_compress(
     }
     opts.force = true;
     let total = files.len();
-    total_progress.start(total as u64, &format!("Compressing {total} files..."));
+    total_progress.start(total as u64, &format!("Compressing {total} files"));
     let mut tally = Tally::new();
     let mut records: Vec<ReportRecord> = Vec::new();
     for path in files {
@@ -1323,7 +1323,7 @@ pub async fn chd_compress(
                 .await
                 {
                     crate::util::VerifyOutcome::Valid => {
-                        info!("kept, output verified valid: {}", output.display());
+                        info!("Kept, output verified valid: {}", output.display());
                         tally.record_skipped();
                         records.push(skipped_record(
                             &path,
@@ -1335,7 +1335,7 @@ pub async fn chd_compress(
                     }
                     crate::util::VerifyOutcome::Invalid => {
                         info!(
-                            "rewriting, output failed verification: {}",
+                            "Rewriting, output failed verification: {}",
                             output.display()
                         );
                         output
@@ -1343,7 +1343,7 @@ pub async fn chd_compress(
                 }
             }
             WriteDecision::Skip => {
-                info!("skipped, output exists: {}", output.display());
+                info!("Skipped, output exists: {}", output.display());
                 tally.record_skipped();
                 records.push(skipped_record(&path, "compress", None));
                 total_progress.inc(1);
@@ -1424,7 +1424,7 @@ pub async fn chd_extract(
         std::fs::create_dir_all(dir)?;
     }
     let total = files.len();
-    total_progress.start(total as u64, &format!("Extracting {total} files..."));
+    total_progress.start(total as u64, &format!("Extracting {total} files"));
     let mut tally = Tally::new();
     let mut records: Vec<ReportRecord> = Vec::new();
     for path in files {
@@ -1483,7 +1483,7 @@ pub async fn chd_extract(
                     )
                     .await;
                 }
-                info!("skipped, output exists: {}", output.display());
+                info!("Skipped, output exists: {}", output.display());
                 tally.record_skipped();
                 records.push(skipped_record(&path, "extract", None));
                 total_progress.inc(1);
@@ -1560,7 +1560,7 @@ pub async fn cso_compress(
     }
     opts.force = true;
     let total = files.len();
-    total_progress.start(total as u64, &format!("Compressing {total} files..."));
+    total_progress.start(total as u64, &format!("Compressing {total} files"));
     let mut tally = Tally::new();
     let mut records: Vec<ReportRecord> = Vec::new();
     for path in files {
@@ -1627,7 +1627,7 @@ pub async fn cso_compress(
                 .await
                 {
                     crate::util::VerifyOutcome::Valid => {
-                        info!("kept, output verified valid: {}", output.display());
+                        info!("Kept, output verified valid: {}", output.display());
                         tally.record_skipped();
                         records.push(skipped_record(
                             &path,
@@ -1639,7 +1639,7 @@ pub async fn cso_compress(
                     }
                     crate::util::VerifyOutcome::Invalid => {
                         info!(
-                            "rewriting, output failed verification: {}",
+                            "Rewriting, output failed verification: {}",
                             output.display()
                         );
                         output
@@ -1647,7 +1647,7 @@ pub async fn cso_compress(
                 }
             }
             WriteDecision::Skip => {
-                info!("skipped, output exists: {}", output.display());
+                info!("Skipped, output exists: {}", output.display());
                 tally.record_skipped();
                 records.push(skipped_record(&path, "compress", None));
                 total_progress.inc(1);
@@ -1745,7 +1745,7 @@ pub async fn hash_batch(
         return Ok(());
     }
     let total = files.len();
-    total_progress.start(total as u64, &format!("Hashing {total} files..."));
+    total_progress.start(total as u64, &format!("Hashing {total} files"));
     let mut tally = Tally::new();
     let mut records: Vec<HashReportRecord> = Vec::new();
     for path in files {
@@ -1767,7 +1767,7 @@ pub async fn hash_batch(
     total_progress.finish();
     info!("{}", tally.summary_line(TallyDirection::CountOnly));
     // Hashing is read-only diagnostics, so a per-file read failure must not
-    // abort the run: it is recorded and we move on. The report is still
+    // abort the run: it is recorded and the run continues. The report is still
     // written so a failing file is captured on disk.
     if let Some(path) = report_path {
         write_hash_report(

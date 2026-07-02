@@ -2,14 +2,17 @@ use crate::commands::ConflictPolicyArg;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-/// Commands for CUE/BIN disc images.
+/// Commands for CUE/BIN disc images
 #[derive(Subcommand, Debug, Eq, PartialEq)]
 pub enum CueCommands {
     Merge(MergeCommand),
 }
 
-/// Merge a multi-bin .cue disc image into a single .bin and .cue pair.
+/// Merge a multi-bin .cue disc image into a single .bin and .cue pair
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
+#[command(
+    after_long_help = "EXAMPLES:\n  Merge tracks: rom-converto cue merge game.cue merged.cue\n"
+)]
 pub struct MergeCommand {
     /// Input .cue file referencing multiple .bin files
     #[arg(value_name = "INPUT_CUE")]

@@ -5,86 +5,66 @@ use binrw::{BinRead, BinWrite};
 #[derive(Debug, Clone, BinRead, BinWrite)]
 #[brw(big)]
 pub struct Ticket {
-    /// Signature Data, The hash for the signature is calculated over the Ticket Data.
+    /// The hash for the signature is calculated over the ticket data.
     pub signature_data: SignatureData,
 
-    /// Ticket Data
     pub ticket_data: TicketData,
 }
 
 #[derive(Debug, Clone, BinRead, BinWrite)]
 #[brw(big)]
 pub struct TicketData {
-    /// Issuer
     #[br(count = 0x40)]
     pub issuer: Vec<u8>,
 
-    /// ECC PublicKey
     #[br(count = 0x3C)]
     pub ecc_public_key: Vec<u8>,
 
-    /// Version (For 3DS this is always 1)
+    /// For 3DS this is always 1.
     pub version: u8,
 
-    /// CaCrlVersion
     pub ca_crl_version: u8,
 
-    /// SignerCrlVersion
     pub signer_crl_version: u8,
 
-    /// TitleKey (normal-key encrypted using one of the common keyYs; see below)
+    /// Normal-key encrypted using one of the common keyYs; see [`TicketData::common_key_index`].
     #[br(count = 0x10)]
     pub title_key: Vec<u8>,
 
-    /// Reserved
     pub reserved1: u8,
 
-    /// TicketID
     pub ticket_id: u64,
 
-    /// ConsoleID
     pub console_id: u32,
 
-    /// TitleID
     pub title_id: u64,
 
-    /// Reserved
     pub reserved2: u16,
 
-    /// Ticket title version
     pub ticket_title_version: u16,
 
-    /// Reserved
     pub reserved3: u64,
 
-    /// License Type
     pub license_type: u8,
 
-    /// Index to the common keyY used for this ticket, usually 0x1 for retail system titles;
+    /// Index to the common keyY used for this ticket, usually 0x1 for retail system titles.
     pub common_key_index: u8,
 
-    /// Reserved
     #[br(count = 0x2A)]
     pub reserved4: Vec<u8>,
 
-    /// eShop Account ID?
     pub eshop_account_id: u32,
 
-    /// Reserved
     pub reserved5: u8,
 
-    /// Audit
     pub audit: u8,
 
-    /// Reserved
     #[br(count = 0x42)]
     pub reserved6: Vec<u8>,
 
-    /// Limits
     #[br(count = 0x40)]
     pub limits: Vec<u8>,
 
-    /// Content Index
     pub content_index: ContentIndex,
 }
 

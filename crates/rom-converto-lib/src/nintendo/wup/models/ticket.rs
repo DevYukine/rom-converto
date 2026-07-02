@@ -2,21 +2,21 @@
 //!
 //! The Wii U ticket header is a 0x220-byte fixed-layout structure.
 //! Field offsets are taken verbatim from `ETicketFileHeaderWiiU` in
-//! Cemu's `src/Cemu/ncrypto/ncrypto.cpp`. We use hand-rolled
-//! offset reads rather than binrw because we only need a handful of
-//! fields and the ticket layout has a lot of padding that binrw
+//! Cemu's `src/Cemu/ncrypto/ncrypto.cpp`. This uses hand-rolled
+//! offset reads rather than binrw because only a handful of
+//! fields are needed and the ticket layout has a lot of padding that binrw
 //! wouldn't clean up.
 
 use crate::nintendo::wup::error::{WupError, WupResult};
 
 /// Fixed base size of a Wii U ticket header. Optional V1 extensions
-/// (AOC content rights) sit beyond this offset but we don't parse
-/// them in v1.
+/// (AOC content rights) sit beyond this offset but are not parsed
+/// in v1.
 pub const WUP_TICKET_BASE_SIZE: usize = 0x220;
 
 /// Expected ticket format version ("v1" Wii U ticket) that Cemu's
 /// parser tolerates. Older v0 Wii tickets aren't used for Wii U
-/// content, so we accept either 0 or 1 without distinguishing.
+/// content, so either 0 or 1 is accepted without distinguishing.
 pub const WUP_TICKET_FORMAT_V1: u8 = 1;
 
 const OFFSET_SIGNATURE_TYPE: usize = 0x000;
@@ -28,8 +28,8 @@ const OFFSET_TITLE_ID: usize = 0x1DC;
 const OFFSET_TITLE_VERSION: usize = 0x1E6;
 const OFFSET_ACCOUNT_ID: usize = 0x21C;
 
-/// Minimal parsed view over a Wii U `title.tik`. Contains just the
-/// fields we need to derive the title key and identify the title;
+/// Minimal parsed view over a Wii U `title.tik`. Contains only the
+/// fields needed to derive the title key and identify the title;
 /// everything else in the ticket header is ignored.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WupTicket {

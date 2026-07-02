@@ -493,7 +493,7 @@ async function saveIcon() {
         class="rom-info-card__btn"
         @click="copyTitleId"
       >
-        {{ copied ? "Copied!" : "Copy title ID" }}
+        {{ copied ? "Copied" : "Copy title ID" }}
       </button>
       <button v-if="iconUrl" type="button" class="rom-info-card__btn" @click="saveIcon">
         Save icon

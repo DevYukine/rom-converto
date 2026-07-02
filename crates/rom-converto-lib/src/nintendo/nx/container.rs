@@ -3,8 +3,8 @@
 //! Magic-byte sniff distinguishes NSP/NSZ (PFS0) from XCI/XCZ
 //! (gamecard image). The HFS0 root sits at the offset stored in the
 //! gamecard header at byte 0x130 (`partition_fs_header_address`),
-//! not at a fixed location, so we read it dynamically. Once we know
-//! the kind, the partition list comes from a single PFS0 read or
+//! not at a fixed location, so it is read dynamically. Once the kind
+//! is known, the partition list comes from a single PFS0 read or
 //! from walking the four named XCI sub-HFS0s. NCAs in XCIs always
 //! live in `secure`; the loader still reads `update`/`logo`/`normal`
 //! so a re-pack can pass them through.

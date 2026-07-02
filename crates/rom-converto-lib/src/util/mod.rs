@@ -1,3 +1,8 @@
+//! Cross-format helpers shared by every conversion pipeline: conflict
+//! resolution, hashing, dry-run planning, run reports and tallies, output
+//! templating, and the worker pool that drives compression on background
+//! threads.
+
 pub mod conflict;
 pub mod fs;
 pub mod hash;
@@ -83,7 +88,7 @@ pub fn place_in_dir_mirrored(
 /// Trait for reporting progress from library operations.
 ///
 /// Consumers implement this to bridge progress updates to their
-/// preferred UI (CLI progress bars, GUI events, etc.).
+/// preferred UI (CLI progress bars, GUI events, and similar).
 pub trait ProgressReporter: Send + Sync {
     fn start(&self, total: u64, msg: &str);
     fn inc(&self, delta: u64);

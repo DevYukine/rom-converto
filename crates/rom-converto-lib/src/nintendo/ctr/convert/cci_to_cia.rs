@@ -1,3 +1,7 @@
+//! Packages a CCI (`.3ds`) cartridge image's NCCH partitions into a CIA,
+//! synthesizing the ticket, title metadata, and certificate chain a CIA
+//! needs but a cartridge dump does not carry.
+
 use crate::nintendo::ctr::constants::{
     CIA_CERT_CHAIN_SIZE, CIA_CONTENT_INDEX_SIZE, CTR_KEY_0X2C, CTR_KEYS_1, CTR_MEDIA_UNIT_SIZE,
     NCCH_FLAGS7_FIXED_KEY, NCCH_FLAGS7_NOCRYPTO,
@@ -83,7 +87,7 @@ pub async fn cci_to_cia_cancellable(
     let save_data_size = patched_cxi_prefix.save_data_size;
 
     let total_size: u64 = partitions.iter().map(|p| p.size).sum();
-    progress.start(total_size, "Converting CCI to CIA...");
+    progress.start(total_size, "Converting CCI to CIA");
 
     let mut chunk_records: Vec<ContentChunkRecord> = partitions
         .iter()

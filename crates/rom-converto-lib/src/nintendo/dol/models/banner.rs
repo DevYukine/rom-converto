@@ -30,7 +30,7 @@ pub enum BannerFormat {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BannerLanguage {
     /// BNR1 carries a single language slot (region-dependent: typically
-    /// English for US, German for German PAL, etc.). We expose it as
+    /// English for US, German for German PAL, and so on). It is exposed as
     /// `BannerLanguage::Default`.
     Default,
     Japanese,

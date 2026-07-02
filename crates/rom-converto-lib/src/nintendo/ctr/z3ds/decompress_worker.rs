@@ -61,7 +61,7 @@ impl Worker<Z3dsDecompressWork, Z3dsDecompressedFrame, Z3dsError> for Z3dsDecomp
         let mut compressed = vec![0u8; work.compressed_size as usize];
         file_read_exact_at(&self.file, &mut compressed, work.file_offset)?;
         // `decompress` sizes the output to `capacity`; pass the exact
-        // declared uncompressed size as the cap so we allocate once
+        // declared uncompressed size as the cap so allocation happens once
         // and libzstd writes straight in.
         let bytes = self
             .decoder
@@ -391,8 +391,8 @@ mod tests {
         let frame_b = zstd::bulk::Compressor::new(0).unwrap().compress(b).unwrap();
 
         // Hand-build the skippable frame with 12-byte entries (the
-        // checksum slots are set to zero since we don't validate
-        // them), descriptor = 0x80 (checksum flag set), SEEKABLE
+        // checksum slots are set to zero since they are not validated
+        // here), descriptor = 0x80 (checksum flag set), SEEKABLE
         // magic at the tail. Matches the layout produced by
         // external seekable-zstd encoders.
         let num_frames = 2u32;

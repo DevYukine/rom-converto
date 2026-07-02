@@ -3,7 +3,7 @@
 //! Accepts files and directories incrementally through
 //! `start_new_file` / `append_data` / `make_dir`, buffers the raw
 //! uncompressed data into 64 KiB blocks, and compresses every block
-//! in parallel at [`Self::finalize`] time through the worker pool in
+//! in parallel at [`ZArchiveWriter::finalize`] time through the worker pool in
 //! [`crate::nintendo::wup::compress_worker`]. The shape mirrors
 //! upstream `ZArchiveWriter` in `zarchivewriter.cpp` so byte layouts
 //! stay compatible with `zarchive.exe` and Cemu.
@@ -64,7 +64,7 @@ pub struct ZArchiveWriter<W: Write> {
 ///
 /// - [`ZArchiveWriter`]: buffered, in-memory. Tests use this
 ///   because it's easy to wrap around `Vec<u8>`.
-/// - [`StreamingSink`]: pool-backed, streams completed 64 KiB
+/// - [`crate::nintendo::wup::streaming_sink::StreamingSink`]: pool-backed, streams completed 64 KiB
 ///   blocks straight into a background compress/write pipeline.
 ///   The production compress path uses this.
 ///
@@ -157,7 +157,7 @@ impl<W: Write> ZArchiveWriter<W> {
         let mut remaining = data;
 
         while !remaining.is_empty() {
-            // Fast path: the partial-buffer is empty and we have at
+            // Fast path: the partial-buffer is empty and there is at
             // least one full block of data, so copy it straight
             // into a fresh owned block without touching write_buffer.
             if self.write_buffer.is_empty() && remaining.len() >= COMPRESSED_BLOCK_SIZE {
@@ -244,12 +244,12 @@ impl<W: Write> ZArchiveWriter<W> {
     where
         W: Send,
     {
-        // Drop the current-file marker so any padding we AppendData
+        // Drop the current-file marker so any padding AppendData does
         // below doesn't count against it.
         self.current_file_path = None;
 
         // 1. Flush the trailing write buffer by padding it to a
-        //    full 64 KiB block, mirroring upstream's behaviour.
+        //    full 64 KiB block, mirroring upstream's behavior.
         if !self.write_buffer.is_empty() {
             let pad_len = COMPRESSED_BLOCK_SIZE - self.write_buffer.len();
             let padding = vec![0u8; pad_len];
@@ -266,7 +266,7 @@ impl<W: Write> ZArchiveWriter<W> {
 
         // 2. Compress every pending block through the worker pool.
         //    This populates self.offset_records, self.bytes_written,
-        //    and the hasher as if we had run the whole thing through
+        //    and the hasher as if the whole thing had run through
         //    a sequential pipeline.
         let pending = std::mem::take(&mut self.pending_blocks);
         compress_blocks(
@@ -641,8 +641,8 @@ pub(crate) mod tests {
     fn integrity_hash_matches_recomputed() {
         // The reader's job is to recompute the SHA-256 over the
         // whole file with the integrity_hash field zeroed and
-        // compare against what the writer stored. We mirror that
-        // check directly here.
+        // compare against what the writer stored. This test mirrors
+        // that check directly.
         use sha2::{Digest, Sha256};
         let bytes = build_archive(|w| {
             w.make_dir("meta")?;
@@ -697,7 +697,7 @@ pub(crate) mod tests {
     fn invalid_compression_level_rejected() {
         // ZArchiveWriter deliberately does not derive Debug (it owns
         // a zstd context and a writer W that may not be Debug), so
-        // we can't call `unwrap_err` here. `matches!` pattern match
+        // `unwrap_err` can't be called here. `matches!` pattern match
         // on the Result's error variant is sufficient.
         assert!(matches!(
             ZArchiveWriter::new(Vec::new(), -1),

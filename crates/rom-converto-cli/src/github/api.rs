@@ -1,3 +1,6 @@
+//! Rate-limited client for fetching the latest GitHub release of a repo
+//! and downloading a named asset from it.
+
 use crate::github::error::GithubError;
 use crate::github::model::GithubReleaseResponse;
 use crate::updater::release::ReleaseVersion;

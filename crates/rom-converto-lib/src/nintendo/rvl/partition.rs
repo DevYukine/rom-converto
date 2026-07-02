@@ -142,7 +142,7 @@ impl PartitionInfo {
     /// Number of 2 MiB clusters the partition occupies on disc.
     ///
     /// Real Wii discs can declare `data_size` values that aren't a whole number
-    /// of clusters. We round up so both encode and decode process every on-disc
+    /// of clusters. This rounds up so both encode and decode process every on-disc
     /// cluster; Dolphin does the same via `align_up(data_size, GROUP_TOTAL_SIZE)`
     /// in `WIABlob.cpp`.
     pub fn cluster_count(&self) -> u64 {
@@ -186,7 +186,7 @@ pub fn read_partition_info<R: Read + Seek>(
 
     // Dolphin's `WIABlob.cpp` rounds `data_size` up to a multiple of
     // `GROUP_TOTAL_SIZE` when computing how many clusters to process.
-    // We mirror that by relaxing the strict alignment check: real
+    // This mirrors that by relaxing the strict alignment check: real
     // partitions frequently carry a short tail beyond the declared
     // data_size, and the last cluster's extra bytes are just junk
     // padding that still needs to flow through encrypt/decrypt.
@@ -336,8 +336,8 @@ pub fn recompute_hash_regions_into(
     for sector_idx in 0..WII_BLOCKS_PER_GROUP {
         let subgroup_idx = sector_idx / H1_PER_SUBGROUP;
         let region = &mut out[sector_idx];
-        // Wipe. We re-fill every byte below, but the caller may
-        // hand us a dirty buffer from the previous cluster.
+        // Wipe. Every byte gets re-filled below, but the caller may
+        // pass in a dirty buffer from the previous cluster.
         *region = [0u8; HASH_REGION_BYTES];
 
         for (j, hash) in all_h0[sector_idx].iter().enumerate() {
@@ -361,7 +361,7 @@ pub fn recompute_hash_regions_into(
 ///
 /// `offset` is the byte position of the 20-byte SHA-1 inside the chunk's
 /// packed hash data, where block N starts at `N * BLOCK_HEADER_SIZE`
-/// (0x400). For our single-cluster-per-chunk configuration this maxes at
+/// (0x400). For this single-cluster-per-chunk configuration this maxes at
 /// `63 * 0x400 + 0x3E0 = 0xFFE0`, which fits in u16.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HashException {
@@ -410,8 +410,8 @@ fn compare_hashes(
 /// Build the Dolphin-format hash exception list for one Wii cluster.
 ///
 /// This ports the per-block exception-building loop from `WIABlob.cpp`
-/// in `dolphin-emu/dolphin`. For each of the 64 blocks in a cluster we
-/// compare the on-disc hash region (plaintext, post-decryption) against
+/// in `dolphin-emu/dolphin`. For each of the 64 blocks in a cluster this
+/// compares the on-disc hash region (plaintext, post-decryption) against
 /// the recomputed one tier-by-tier (h0, padding_0, h1, padding_1, h2,
 /// padding_2), in 20-byte slices.
 ///
@@ -530,7 +530,7 @@ pub fn split_chunk_exceptions(
 
 /// Project cluster-relative exceptions onto an arbitrary block range
 /// inside the cluster. Used by the Wii partition encoder when a chunk
-/// doesn't cover `blocks_per_chunk` whole blocks, e.g. the final
+/// doesn't cover `blocks_per_chunk` whole blocks, such as the final
 /// chunk of a partition whose `data_size` isn't a multiple of
 /// `chunk_size`.
 ///
@@ -593,7 +593,7 @@ pub fn reencrypt_cluster_into(
     Ok(())
 }
 
-/// Serialise the exception-list header that prefixes every `wia_part_t`
+/// Serialize the exception-list header that prefixes every `wia_part_t`
 /// chunk body, matching Dolphin's `wia_except_list_t`:
 ///
 /// ```text
@@ -709,7 +709,7 @@ pub fn split_payloads(data: &[u8]) -> RvzResult<Vec<[u8; WII_SECTOR_PAYLOAD_SIZE
     Ok(payloads)
 }
 
-/// Serialise a chunk body with verbatim (non-RVZ-packed) payloads, for
+/// Serialize a chunk body with verbatim (non-RVZ-packed) payloads, for
 /// the fallback path when RVZ packing finds no junk runs.
 pub fn pack_partition_chunk(
     exceptions: &[HashException],
@@ -747,7 +747,7 @@ mod tests {
 
     #[test]
     fn split_chunk_exceptions_full_cluster_does_not_overflow_u16() {
-        // Regression: at chunks_per_cluster=1 (i.e. 2 MiB chunks), the
+        // Regression: at chunks_per_cluster=1 (2 MiB chunks), the
         // whole-cluster "chunk" must keep every exception. Earlier code
         // computed `chunk_end_offset = 64 * 0x400 = 0x10000` as u16,
         // which wrapped to 0 and silently dropped every exception,

@@ -1,29 +1,39 @@
+//! Error type for the CUE sheet parser.
+
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum CueError {
+    /// Wraps an underlying I/O failure.
     #[error(transparent)]
     IoError(#[from] std::io::Error),
 
-    #[error("Unknown file type: {0}")]
+    /// A `FILE` line names a type other than `BINARY`, `WAVE`, `MP3`, or `AIFF`.
+    #[error("unknown file type: {0}")]
     InvalidFileType(String),
 
-    #[error("Unknown track type: {0}")]
+    /// A `TRACK` line names a mode this parser does not recognize.
+    #[error("unknown track type: {0}")]
     InvalidTrackType(String),
 
-    #[error("Invalid MSF format: {0}")]
+    /// An `INDEX`, `PREGAP`, or `POSTGAP` position is not valid `mm:ss:ff`.
+    #[error("invalid MSF format: {0}")]
     InvalidMsfFormat(String),
 
-    #[error("Invalid quoted string: {0}")]
+    /// A quoted string field could not be decoded.
+    #[error("invalid quoted string: {0}")]
     InvalidQuotedString(String),
 
+    /// Wraps a failure to parse a numeric field (track or index number).
     #[error(transparent)]
     ParseIntError(#[from] std::num::ParseIntError),
 
-    #[error("Missing opening quote")]
+    /// A quoted string field is missing its opening quote.
+    #[error("missing opening quote")]
     MissingOpeningQuote,
 
-    #[error("Missing closing quote")]
+    /// A quoted string field is missing its closing quote.
+    #[error("missing closing quote")]
     MissingClosingQuote,
 }
 

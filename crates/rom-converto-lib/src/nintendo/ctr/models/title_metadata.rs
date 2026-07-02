@@ -1,21 +1,23 @@
 use crate::nintendo::ctr::models::signature::SignatureData;
 use binrw::{BinRead, BinWrite};
 
-/// Title metadata is a format used to store information about a title (installed title, DLC, etc.) and all its installed contents, including which contents they consist of and their SHA256 hashes.
+/// Title metadata is a format used to store information about a title (an installed
+/// title or DLC). It records which contents belong to the title and their
+/// SHA-256 hashes.
 #[derive(Debug, Clone, BinRead, BinWrite)]
 #[brw(big)]
 pub struct TitleMetadata {
-    /// Signature Data, The hash for the signature is calculated over the Title Metadata Data.
+    /// The hash for the signature is calculated over the title metadata data.
     pub signature_data: SignatureData,
 
-    /// Title Metadata Header
     pub header: TitleMetadataHeader,
 
-    /// Content Info Records; there are 64 of these records, usually only the first is used.
+    /// There are 64 of these records; usually only the first is used.
     #[br(count = 64)]
     pub content_info_records: Vec<ContentInfoRecord>,
 
-    /// Content Chunk Records; there is one of these for each content contained in this title. (Determined by "Content Count" in the TMD Header).
+    /// One record per content contained in this title, sized by
+    /// [`TitleMetadataHeader::content_count`].
     #[br(count = header.content_count)]
     pub content_chunk_records: Vec<ContentChunkRecord>,
 }
@@ -23,68 +25,50 @@ pub struct TitleMetadata {
 #[derive(Debug, Clone, BinRead, BinWrite)]
 #[brw(big)]
 pub struct TitleMetadataHeader {
-    /// Signature Issuer
     #[br(count = 0x40)]
     pub signature_issuer: Vec<u8>,
 
-    /// Version
     pub version: u8,
 
-    /// CaCrlVersion
     pub ca_crl_version: u8,
 
-    /// signer_crl_version
     pub signer_crl_version: u8,
 
-    /// Reserved
     pub reserved1: u8,
 
-    /// System Version
     pub system_version: u64,
 
-    /// Title ID
     pub title_id: u64,
 
-    /// Title Type
     pub title_type: u32,
 
-    /// Group ID
     pub group_id: u16,
 
-    /// Save Data Size in Little Endian (Bytes) (Also SRL Public Save Data Size)
+    /// Little-endian byte count; also the SRL public save data size.
     #[brw(little)]
     pub save_data_size: u32,
 
-    /// SRL Private Save Data Size in Little Endian (Bytes)
+    /// Little-endian byte count.
     #[brw(little)]
     pub srl_private_save_data_size: u32,
 
-    /// Reserved
     pub reserved2: u32,
 
-    /// SRL Flag
     pub srl_flag: u8,
 
-    /// Reserved
     #[br(count = 0x31)]
     pub reserved3: Vec<u8>,
 
-    /// Access Rights
     pub access_rights: u32,
 
-    /// Title Version
     pub title_version: u16,
 
-    /// Content Count
     pub content_count: u16,
 
-    /// Boot Content
     pub boot_content: u16,
 
-    /// Padding
     pub padding: u16,
 
-    /// SHA-256 Hash of the Content Info Records
     #[br(count = 0x20)]
     pub content_info_records_hash: Vec<u8>,
 }
@@ -92,13 +76,14 @@ pub struct TitleMetadataHeader {
 #[derive(Debug, Clone, BinRead, BinWrite)]
 #[brw(big)]
 pub struct ContentInfoRecord {
-    /// Content index offset
     pub content_index_offset: u16,
 
-    /// Content command count [k]
+    /// Number of content records covered by this record, starting from
+    /// `content_index_offset`.
     pub content_command_count: u16,
 
-    /// SHA-256 hash of the next k content records that have not been hashed yet
+    /// SHA-256 hash of the content records covered by this record that have
+    /// not already been hashed by an earlier one.
     #[br(count = 0x20)]
     pub hash: Vec<u8>,
 }
@@ -106,19 +91,14 @@ pub struct ContentInfoRecord {
 #[derive(Debug, Clone, BinRead, BinWrite)]
 #[brw(big)]
 pub struct ContentChunkRecord {
-    /// Content id
     pub content_id: u32,
 
-    /// Content index
     pub content_index: u16,
 
-    /// Content type
     pub content_type: ContentType,
 
-    /// Content size
     pub content_size: u64,
 
-    /// SHA-256 hash
     #[br(count = 0x20)]
     pub hash: Vec<u8>,
 }

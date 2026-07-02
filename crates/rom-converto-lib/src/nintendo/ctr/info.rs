@@ -122,7 +122,7 @@ pub fn read_info(path: &Path) -> Result<CtrInfo> {
     }
 
     Err(anyhow!(
-        "ctr info: unrecognised format at {}",
+        "ctr info: unrecognized format at {}",
         path.display()
     ))
 }

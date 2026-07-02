@@ -3,7 +3,7 @@
 //! Split into two groups:
 //!
 //! - **ZArchive format** (`file_tree`, `footer`, `offset_record`):
-//!   binrw structs serialised big-endian. Every serialised size is
+//!   binrw structs serialized big-endian. Every serialized size is
 //!   fixed by the spec and asserted in its own module.
 //! - **Nintendo NUS format** (`ticket`, `tmd`): fixed-offset parsers
 //!   over the published Wii U ticket and TMD layouts. These don't

@@ -134,8 +134,8 @@ pub fn build_header(specs: &[Hfs0FileSpec], hints: &Hfs0LayoutHints) -> NxResult
     let header_overhead = HFS0_HEADER_SIZE + entries_size;
     if let Some(target) = hints.target_total_header_size {
         let want_string_table = target.saturating_sub(header_overhead);
-        // Honour the input's value verbatim, even if it is shorter
-        // than our 0x10-aligned default; this matches nsz's behaviour
+        // Honor the input's value verbatim, even if it is shorter
+        // than the 0x10-aligned default used here; this matches nsz's behavior
         // where `getStringTableSize` is forwarded byte-exact.
         string_table.resize(want_string_table, 0);
     }

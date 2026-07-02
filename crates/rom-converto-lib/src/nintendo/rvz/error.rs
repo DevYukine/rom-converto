@@ -19,7 +19,7 @@ pub enum RvzError {
     #[error("invalid RVZ magic: expected b\"RVZ\\x01\", got {0:02X?}")]
     InvalidMagic([u8; 4]),
 
-    #[error("unsupported WIA/RVZ version: {0:#010X}")]
+    #[error("unsupported WIA/RVZ version: {0:#010x}")]
     UnsupportedVersion(u32),
 
     #[error(

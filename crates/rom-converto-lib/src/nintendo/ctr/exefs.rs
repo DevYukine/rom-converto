@@ -1,6 +1,6 @@
 //! Sync, in-memory ExeFS section reader.
 //!
-//! [`crate::nintendo::ctr::decrypt::cia`] decrypts NCCH ExeFS sections
+//! `crate::nintendo::ctr::decrypt::cia` decrypts NCCH ExeFS sections
 //! while streaming the file to disk. The `info` extractor needs the
 //! same decryption logic but for a single named entry (typically
 //! `icon`, holding the SMDH) returned as a `Vec<u8>` it can parse
@@ -85,9 +85,9 @@ pub fn read_exefs_section(
         decrypt_exefs_with_base(&working_key, &ctr, &mut decrypted)?;
     }
 
-    // For sections like `icon` / `banner` we never want the extra-crypto
+    // Sections like `icon` / `banner` never want the extra-crypto
     // variant per the canonical decrypt path; the base key is correct.
-    // For other sections we would re-decrypt with the extra key, but the
+    // Other sections would re-decrypt with the extra key, but the
     // info path only reads the icon today.
 
     let (offset, size) = find_exefs_entry(&decrypted, section_name)

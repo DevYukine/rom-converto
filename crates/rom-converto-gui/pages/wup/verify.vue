@@ -109,7 +109,7 @@ async function execute() {
 <template>
   <div>
     <PageHeader
-      title="Verify integrity"
+      title="Verify Wii U title"
       description="Verify a Wii U title against its TMD hashes. Inputs can be NUS or loadiine directories, .wua archives, or .wud / .wux disc images. Drop multiple inputs for batch processing."
       :loading="loading || batch.running.value"
       :has-result="(!!verdict && verdict.ok) || !!result"
@@ -198,7 +198,7 @@ async function execute() {
           :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input"
           @click="execute"
         >
-          {{ isBatch && queue.filter(i => i.status === 'pending').length > 1 ? `Verify All (${queue.filter(i => i.status === 'pending').length})` : 'Verify' }}
+          {{ isBatch && queue.filter(i => i.status === 'pending').length > 1 ? `Verify all (${queue.filter(i => i.status === 'pending').length})` : 'Verify' }}
         </RunButton>
 
         <div v-if="!isBatch && verdict" class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
@@ -213,7 +213,7 @@ async function execute() {
               class="ml-3 shrink-0 rounded-full px-2.5 py-0.5 text-xs font-semibold"
               :class="verdict.ok ? 'bg-emerald-500/15 text-emerald-300' : 'bg-red-500/15 text-red-300'"
             >
-              {{ verdict.ok ? "OK" : "MISMATCHES" }}
+              {{ verdict.ok ? "OK" : "FAIL" }}
             </span>
           </div>
 

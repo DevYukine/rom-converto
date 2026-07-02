@@ -26,14 +26,14 @@ pub mod playlist;
 pub mod rvl;
 pub mod wup;
 
-/// CLI for en/decrypting, compressing and converting ROMs.
+/// Encrypt, decrypt, compress, convert, and verify ROMs and disc images
 #[derive(Parser, Debug)]
 #[command(
 	name = env!("CARGO_BIN_NAME"),
 	author,                   // pulls env!("CARGO_PKG_AUTHORS")
 	version = env!("ROM_CONVERTO_DISPLAY_VERSION"),
 	about,                    // doc-comment or Cargo.toml description
-	long_about = "Convert, compress, decrypt and verify ROMs and disc images across Nintendo and Sony consoles.\n\nEach top-level command is a console/format family (ctr, dol, rvl, wup, nx, chd, cso, cue); each has operations like compress, decompress, verify and info. Output is auto-derived from the input unless you pass an explicit OUTPUT, -o/--output, or --output-dir. Pass -R/--recursive to process every matching file in a directory.",
+	long_about = "Encrypt, decrypt, compress, convert, and verify ROMs and disc images\n\nEach top-level command is a console/format family (ctr, dol, rvl, wup, nx, chd, cso, cue); each has operations like compress, decompress, verify and info. Output is auto-derived from the input unless you pass an explicit OUTPUT, -o/--output, or --output-dir. Pass -R/--recursive to process every matching file in a directory.",
 	help_template = "\
 {before-help}{name} {version}\n\
 {about-with-newline}\n\
@@ -46,60 +46,36 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
 
-    #[arg(
-        short = 'q',
-        long,
-        global = true,
-        help = "Suppress progress and info output; only warnings and errors"
-    )]
+    /// Suppress progress and info output; only warnings and errors
+    #[arg(short = 'q', long, global = true)]
     pub quiet: bool,
 
-    #[arg(short = 'v', long, global = true, action = clap::ArgAction::Count, help = "Increase verbosity (-v debug, -vv trace, -vvv trace + dependencies)")]
+    /// Increase verbosity (-v debug, -vv trace, -vvv trace + dependencies)
+    #[arg(short = 'v', long, global = true, action = clap::ArgAction::Count)]
     pub verbose: u8,
 
-    #[arg(
-        long = "no-update-check",
-        global = true,
-        help = "Skip the check for a newer release"
-    )]
+    /// Skip the check for a newer release
+    #[arg(long = "no-update-check", global = true)]
     pub no_update_check: bool,
 
-    #[arg(
-        long = "config",
-        global = true,
-        value_name = "FILE",
-        help = "Path to a config file; overrides the search order"
-    )]
+    /// Path to a config file; overrides the search order
+    #[arg(long = "config", global = true, value_name = "FILE")]
     pub config: Option<PathBuf>,
 
-    #[arg(
-        long = "preset",
-        global = true,
-        value_name = "NAME",
-        help = "Apply a named preset from the config file"
-    )]
+    /// Apply a named preset from the config file
+    #[arg(long = "preset", global = true, value_name = "NAME")]
     pub preset: Option<String>,
 
-    #[arg(
-        long = "dry-run",
-        global = true,
-        help = "Preview what would happen without writing any output"
-    )]
+    /// Preview what would happen without writing any output
+    #[arg(long = "dry-run", global = true)]
     pub dry_run: bool,
 
-    #[arg(
-        long = "debug-log",
-        global = true,
-        value_name = "FILE",
-        help = "Write a full-detail trace log to FILE regardless of console verbosity"
-    )]
+    /// Write a full-detail trace log to FILE regardless of console verbosity
+    #[arg(long = "debug-log", global = true, value_name = "FILE")]
     pub debug_log: Option<PathBuf>,
 
-    #[arg(
-        long = "skip-space-check",
-        global = true,
-        help = "Skip the free-space preflight before writing output"
-    )]
+    /// Skip the free-space preflight before writing output
+    #[arg(long = "skip-space-check", global = true)]
     pub skip_space_check: bool,
 }
 
@@ -138,9 +114,11 @@ pub enum Commands {
     ShellCompletions(ShellCompletionsCommand),
 }
 
-/// Check for and install a newer version of the CLI.
+/// Check for and install a newer version of the CLI
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
-#[command(long_about = "Check for a newer version of the CLI and install it if one is available.")]
+#[command(
+    long_about = "Check for and install a newer version of the CLI\n\nDownloads and installs the latest release if one is available."
+)]
 pub struct SelfUpdateCommand {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]

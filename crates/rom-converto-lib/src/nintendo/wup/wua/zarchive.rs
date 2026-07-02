@@ -47,13 +47,13 @@ impl ZArchiveReader {
 
         if footer.magic != ZARCHIVE_FOOTER_MAGIC {
             return Err(WupError::InvalidZArchive(format!(
-                "bad footer magic 0x{:08X}",
+                "bad footer magic 0x{:08x}",
                 footer.magic
             )));
         }
         if footer.version != ZARCHIVE_FOOTER_VERSION {
             return Err(WupError::InvalidZArchive(format!(
-                "unsupported zarchive version 0x{:08X}",
+                "unsupported zarchive version 0x{:08x}",
                 footer.version
             )));
         }

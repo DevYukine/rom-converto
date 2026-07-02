@@ -343,7 +343,7 @@ mod tests {
     fn rgb5a3_opaque_known_pixels() {
         // 0xFFFF top bit set, 5R/5G/5B all 1 -> white opaque
         assert_eq!(rgb5a3_to_rgba8(0xFFFF), (0xFF, 0xFF, 0xFF, 0xFF));
-        // 0x8000 top bit set, all colour bits zero -> black opaque
+        // 0x8000 top bit set, all color bits zero -> black opaque
         assert_eq!(rgb5a3_to_rgba8(0x8000), (0x00, 0x00, 0x00, 0xFF));
         // Pure red opaque: 0_11111_00000_00000 = 0xFC00 | 0x8000 = 0xFC00
         assert_eq!(rgb5a3_to_rgba8(0xFC00), (0xFF, 0x00, 0x00, 0xFF));
@@ -353,9 +353,9 @@ mod tests {
     fn rgb5a3_translucent_known_pixels() {
         // 0x0000 top bit clear, alpha 0 -> fully transparent
         assert_eq!(rgb5a3_to_rgba8(0x0000), (0x00, 0x00, 0x00, 0x00));
-        // 0x7FFF top bit clear, alpha 7 (max), all colour 0xF -> white fully opaque-ish
+        // 0x7FFF top bit clear, alpha 7 (max), all color 0xF -> white fully opaque-ish
         // alpha: 7 -> 0b111<<5 | 0b111<<2 | 0b111>>1 = 0xE0 | 0x1C | 0x3 = 0xFF
-        // colour: 0xF -> (0xF << 4) | 0xF = 0xFF
+        // color: 0xF -> (0xF << 4) | 0xF = 0xFF
         assert_eq!(rgb5a3_to_rgba8(0x7FFF), (0xFF, 0xFF, 0xFF, 0xFF));
     }
 

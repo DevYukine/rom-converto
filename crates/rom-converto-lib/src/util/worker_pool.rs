@@ -8,7 +8,7 @@
 //! Each worker holds a user-supplied state value that implements
 //! [`Worker`], typically a struct with long-lived codec contexts and
 //! scratch buffers, so expensive per-thread setup (`ZSTD_createCCtx`,
-//! LZMA probability tables, deflate dictionaries, etc.) happens
+//! LZMA probability tables, deflate dictionaries, and similar) happens
 //! exactly once per pool lifetime instead of once per work item.
 //!
 //! # Ordering
@@ -88,7 +88,7 @@ pub struct Pool<W: Send + 'static, O: Send + 'static, E: Send + 'static> {
 impl<W: Send + 'static, O: Send + 'static, E: Send + 'static> Pool<W, O, E> {
     /// Spawn `workers.len()` threads, each owning one worker state
     /// instance. Workers are consumed by value; the caller is
-    /// responsible for any fallible construction (e.g. initialising
+    /// responsible for any fallible construction (such as initializing
     /// a codec context) before calling [`Pool::spawn`].
     ///
     /// Back-pressure: each worker's inbound channel has capacity 2,
@@ -143,7 +143,7 @@ impl<W: Send + 'static, O: Send + 'static, E: Send + 'static> Pool<W, O, E> {
     /// each item, so smart routing is safe.
     ///
     /// Returns [`PoolChannelClosed`] only if every worker's channel
-    /// has closed (i.e. all worker threads have exited).
+    /// has closed, that is, all worker threads have exited.
     pub fn submit(&self, seq: u64, work: W) -> Result<(), PoolChannelClosed> {
         use std::sync::mpsc::TrySendError;
 
@@ -165,8 +165,8 @@ impl<W: Send + 'static, O: Send + 'static, E: Send + 'static> Pool<W, O, E> {
             }
             if pending.is_none() {
                 // Only reachable on a disconnected worker; rebuild
-                // a fresh work item from the original. Since we
-                // consumed it we have to fail the whole submit.
+                // a fresh work item from the original. Since it was
+                // already consumed, the whole submit has to fail.
                 return Err(PoolChannelClosed);
             }
         }

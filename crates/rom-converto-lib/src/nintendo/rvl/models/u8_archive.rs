@@ -38,7 +38,7 @@ impl<'a> U8Archive<'a> {
         }
         let magic = BE::read_u32(&data[0..4]);
         if magic != U8_MAGIC {
-            return Err(anyhow!("bad U8 magic 0x{:08X}", magic));
+            return Err(anyhow!("bad U8 magic 0x{:08x}", magic));
         }
         let node_offset = BE::read_u32(&data[4..8]) as usize;
         let _fst_size = BE::read_u32(&data[8..12]) as usize;

@@ -1,7 +1,7 @@
 use clap::Parser;
 use std::path::PathBuf;
 
-/// Compute checksums for a file or, with --recursive, every file in a directory.
+/// Compute checksums for a file or, with --recursive, every file in a directory
 ///
 /// This is a plain digest tool: it reads the bytes and prints the requested
 /// hashes. It does no DAT or database lookup and compares nothing.
@@ -22,11 +22,11 @@ pub struct HashCommand {
     #[arg(long, short = 'R', default_value_t = false)]
     pub recursive: bool,
 
-    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited.
+    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited
     #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
     pub max_depth: Option<usize>,
 
-    /// Write a run report to FILE. Format inferred from the extension: .csv, .json, .html or .htm. Unknown extensions default to JSON. The file is overwritten directly.
+    /// Write a run report to FILE. Format inferred from the extension: .csv, .json, .html or .htm. Unknown extensions default to JSON. The file is overwritten directly
     #[arg(long = "report", value_name = "FILE")]
     pub report: Option<PathBuf>,
 }

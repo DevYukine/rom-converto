@@ -348,7 +348,7 @@ pub fn synth_cia_with_meta(
 /// Build and persist a synthetic encrypted-format CIA carrying one NoCrypto
 /// NCCH per entry in `content_ids`, with `content_index` running 0,1,2,...
 /// Each content is a distinct 0x200-byte header, so callers can pass ids whose
-/// hex form contains digits A-F (e.g. `0x0000ABCD`) to exercise the per-content
+/// hex form contains digits A-F (such as `0x0000ABCD`) to exercise the per-content
 /// `.ncch` read-back path. Returns the temp dir (drop guard), the on-disk path,
 /// and the raw content bytes in record order.
 pub fn synth_encrypted_cia_multi_content(

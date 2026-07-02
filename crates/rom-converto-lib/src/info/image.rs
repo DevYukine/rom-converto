@@ -1,6 +1,7 @@
-//! All extractors normalise to PNG so the GUI can render the bytes
-//! through a single `data:image/png;base64,...` path without
-//! per-console branching.
+//! Icon pixel decoding and PNG encoding for each platform's embedded
+//! artwork. All extractors normalize to PNG so the GUI can render the bytes
+//! through a single `data:image/png;base64,...` path without per-console
+//! branching.
 
 use serde::{Deserialize, Serialize};
 

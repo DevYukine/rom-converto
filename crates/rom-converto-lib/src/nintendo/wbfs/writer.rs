@@ -1,5 +1,5 @@
 //! WBFS container write primitives shared by the parallel writer
-//! ([`crate::nintendo::rvz::decompress::sink::WbfsSink`]): the
+//! (`crate::nintendo::rvz::decompress::sink::WbfsSink`): the
 //! physical-slot layout for a disc, block-0 construction, and the
 //! free-block bitmap.
 
@@ -87,7 +87,7 @@ pub(crate) fn build_block0(
 /// remove discs read this to find free space; Dolphin ignores it.
 ///
 /// `alloc_block` in libwbfs iterates exactly `n_wbfs_sec / 32` words at
-/// `freeblks_lba`, so we size and place the bitmap to match.
+/// `freeblks_lba`, so the bitmap is sized and placed to match.
 fn write_freeblocks(sector0: &mut [u8], total_blocks: u64, wbfs_sec_sz: u64, hd_sec_sz_s: u8) {
     let n_wbfs_sec = total_blocks;
     let n_words = (n_wbfs_sec / 32) as usize;

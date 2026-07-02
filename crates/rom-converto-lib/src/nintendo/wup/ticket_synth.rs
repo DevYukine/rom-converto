@@ -1,7 +1,7 @@
 //! Build in-memory Wii U tickets for titles that ship without one.
 //!
 //! The blob is only used internally. The NUS loader parses it through
-//! the same [`WupTicket::parse`] path as real tickets and the derived
+//! the same [`crate::nintendo::wup::models::ticket::WupTicket::parse`] path as real tickets and the derived
 //! title key flows into content decryption. Nothing is written to
 //! disk or bundled into the produced `.wua`, so RSA signing is
 //! skipped (the parser does not verify) and only the parser-read
@@ -61,9 +61,9 @@ pub fn synthesize_wup_ticket(
 
     ticket[OFFSET_TICKET_ID..OFFSET_TICKET_ID + 8].copy_from_slice(&0u64.to_be_bytes());
 
-    // device_id = 0 flags the ticket non-personalised. The parser
-    // rejects personalised tickets since we cannot depersonalise
-    // without the console private key.
+    // device_id = 0 flags the ticket non-personalized. The parser
+    // rejects personalized tickets since depersonalizing them requires
+    // the console private key.
     ticket[OFFSET_DEVICE_ID..OFFSET_DEVICE_ID + 4].copy_from_slice(&0u32.to_be_bytes());
 
     ticket[OFFSET_TITLE_ID..OFFSET_TITLE_ID + 8].copy_from_slice(&title_id.to_be_bytes());

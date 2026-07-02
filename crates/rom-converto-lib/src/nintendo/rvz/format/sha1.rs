@@ -1,6 +1,6 @@
 //! SHA-1 integrity helpers for the WIA/RVZ header structs.
 //!
-//! Each helper serialises the struct directly into a `Sha1Writer`, which
+//! Each helper serializes the struct directly into a `Sha1Writer`, which
 //! feeds bytes to the hasher without any intermediate `Vec` allocation.
 
 use crate::nintendo::rvz::format::{WiaDisc, WiaFileHead, WiaPart};
@@ -42,7 +42,7 @@ impl Write for Sha1Writer {
 
 impl Seek for Sha1Writer {
     fn seek(&mut self, pos: SeekFrom) -> IoResult<u64> {
-        // binrw needs Seek for stream_position; we never actually rewind a
+        // binrw needs Seek for stream_position; this never actually rewinds a
         // hash so any non-current position is rejected.
         match pos {
             SeekFrom::Current(0) => Ok(self.pos),
@@ -63,12 +63,12 @@ where
     F: FnOnce(&mut Sha1Writer) -> binrw::BinResult<()>,
 {
     let mut w = Sha1Writer::new();
-    write(&mut w).expect("infallible serialisation");
+    write(&mut w).expect("infallible serialization");
     w.finalize()
 }
 
 /// SHA-1 of [`WiaFileHead`] over the first
-/// `WIA_FILE_HEAD_SIZE - 20` bytes, i.e. everything before the
+/// `WIA_FILE_HEAD_SIZE - 20` bytes, that is, everything before the
 /// `file_head_hash` field itself. Matches Dolphin's
 /// `CalculateDigest(&header_1, offsetof(WIAHeader1, header_1_hash))`
 /// in `Source/Core/DiscIO/WIABlob.cpp`.
@@ -80,7 +80,7 @@ pub fn compute_file_head_hash(head: &WiaFileHead) -> [u8; 20] {
     use std::io::Cursor;
     let mut buf = Vec::with_capacity(super::WIA_FILE_HEAD_SIZE);
     head.write_options(&mut Cursor::new(&mut buf), Endian::Big, ())
-        .expect("infallible serialisation");
+        .expect("infallible serialization");
     debug_assert_eq!(buf.len(), super::WIA_FILE_HEAD_SIZE);
     let hashed_len = super::WIA_FILE_HEAD_SIZE - 20;
     let mut h = Sha1::new();
@@ -88,7 +88,7 @@ pub fn compute_file_head_hash(head: &WiaFileHead) -> [u8; 20] {
     h.finalize().into()
 }
 
-/// SHA-1 of the full serialised [`WiaDisc`].
+/// SHA-1 of the full serialized [`WiaDisc`].
 pub fn compute_disc_hash(disc: &WiaDisc) -> [u8; 20] {
     hash_via(|w| disc.write_options(w, Endian::Big, ()))
 }
@@ -98,12 +98,12 @@ pub fn compute_part_hash(parts: &[WiaPart]) -> [u8; 20] {
     let mut w = Sha1Writer::new();
     for part in parts {
         part.write_options(&mut w, Endian::Big, ())
-            .expect("infallible serialisation");
+            .expect("infallible serialization");
     }
     w.finalize()
 }
 
-/// Test-only reference path: serialise the struct to a `Vec<u8>`, then
+/// Test-only reference path: serialize the struct to a `Vec<u8>`, then
 /// hash the buffer. Used to cross-check [`Sha1Writer`]'s streaming
 /// output against the straightforward implementation.
 #[cfg(test)]

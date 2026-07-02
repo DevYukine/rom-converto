@@ -47,7 +47,7 @@ impl LoadiineTitle {
 
 /// One file the loadiine walker will feed into the archive writer.
 ///
-/// `relative_path` is the path inside the title folder (e.g.
+/// `relative_path` is the path inside the title folder (such as
 /// `meta/meta.xml`) and is used to construct the in-archive path.
 /// `absolute_path` is the host filesystem path the caller opens for
 /// reading.
@@ -314,7 +314,7 @@ mod tests {
             make_minimal_title(dir);
             let content_sub = dir.join("content").join("sub");
             fs::create_dir_all(&content_sub).unwrap();
-            // Insert in an intentionally scrambled order so we
+            // Insert in an intentionally scrambled order to
             // catch any reliance on filesystem iteration order.
             for name in ["z.bin", "a.bin", "m.bin", "d.bin"] {
                 fs::write(content_sub.join(name), b"data").unwrap();

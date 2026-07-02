@@ -86,7 +86,7 @@ async function execute() {
 <template>
   <div>
     <PageHeader
-      title="Verify integrity"
+      title="Verify Wii disc"
       description="Check the RVZ container hashes of a Wii disc, or recompute the full partition hash tree. Drop multiple files for batch processing."
       :loading="loading || batch.running.value"
       :has-result="(!!verdict && verdict.ok) || !!result"
@@ -151,7 +151,7 @@ async function execute() {
           :disabled="isBatch ? queue.every(i => i.status !== 'pending') : !input"
           @click="execute"
         >
-          {{ isBatch && queue.filter(i => i.status === 'pending').length > 1 ? `Verify All (${queue.filter(i => i.status === 'pending').length})` : 'Verify' }}
+          {{ isBatch && queue.filter(i => i.status === 'pending').length > 1 ? `Verify all (${queue.filter(i => i.status === 'pending').length})` : 'Verify' }}
         </RunButton>
 
         <div v-if="!isBatch && verdict" class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">

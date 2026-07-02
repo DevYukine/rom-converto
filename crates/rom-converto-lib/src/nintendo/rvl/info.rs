@@ -147,7 +147,7 @@ fn read_disc_header<R: Read + Seek>(reader: &mut R) -> Result<DiscHeader> {
     reader.seek(SeekFrom::Start(WII_MAGIC_OFFSET as u64))?;
     let magic = reader.read_u32::<BE>()?;
     if magic != WII_MAGIC {
-        return Err(anyhow!("rvl info: Wii magic missing (got 0x{:08X})", magic));
+        return Err(anyhow!("rvl info: Wii magic missing (got 0x{:08x})", magic));
     }
 
     let mut name = [0u8; 64];
@@ -306,7 +306,7 @@ fn extract_icon_image(bnr: &[u8]) -> Result<Image> {
         .ok_or_else(|| anyhow!("rvl info: U8 archive magic not found in opening.bnr"))?;
     log::debug!("rvl info: outer U8 archive at bnr offset 0x{:X}", u8_offset);
     let outer = U8Archive::parse(&bnr[u8_offset..])
-        .map_err(|e| anyhow!("parse outer U8 at offset 0x{:X}: {}", u8_offset, e))?;
+        .map_err(|e| anyhow!("parse outer U8 at offset 0x{:x}: {}", u8_offset, e))?;
 
     let (label, raw) = if let Some(b) = outer.find("meta/banner.bin") {
         ("meta/banner.bin", b)
@@ -360,7 +360,7 @@ fn find_first_tpl_under_timg<'a>(inner: &U8Archive<'a>) -> Option<&'a [u8]> {
 /// Strip the optional `"LZ77"`-magic LZSS wrapper from a disc
 /// opening.bnr inner `.bin` file. Pass-through for the IMD5 form so
 /// the same path also handles channel-style banners (the IMD5 prefix
-/// gets dropped and we fall through to the LZSS magic test).
+/// gets dropped and processing falls through to the LZSS magic test).
 fn unwrap_disc_banner_payload(bytes: &[u8]) -> Result<Vec<u8>> {
     let stripped = strip_imd5(bytes);
     maybe_decompress_lz77_ascii(stripped)

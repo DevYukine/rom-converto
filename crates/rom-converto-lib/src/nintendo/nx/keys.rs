@@ -105,7 +105,7 @@ impl KeySet {
 
 /// On miss, returns `KeyfileMissing` with every path that was tried so
 /// the error message tells the user exactly where to drop the file.
-/// When `explicit` is provided we only honor that path: matching nsz,
+/// When `explicit` is provided only that path is honored: matching nsz,
 /// the fallback search is skipped so a typo'd `--keys` flag is loud
 /// instead of silently resolving to a different file.
 pub fn load_keyset(explicit: Option<&Path>) -> NxResult<KeySet> {
@@ -177,9 +177,9 @@ fn ingest(set: &mut KeySet, key: &str, value: &str) -> NxResult<()> {
         return Ok(());
     }
     // Unknown keys (eticket_rsa_kek, RSA components, key_area_key_*_source,
-    // future suffixes) silently passthrough; we only care about the subset
-    // of entries needed for NCA crypto. Real prod.keys files carry many
-    // entries we don't need.
+    // future suffixes) silently passthrough; only the subset of entries
+    // needed for NCA crypto matters here. Real prod.keys files carry many
+    // entries that go unused.
     Ok(())
 }
 

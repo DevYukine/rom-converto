@@ -10,7 +10,7 @@ default 128 KiB chunk size, zstd level 5 and level 22.
 - `taskkill /F /IM DolphinTool.exe rom-converto.exe` between every run so
   no modal error dialog or zombie process can leak state across runs.
 - **Warm stats exclude run 1** (cold cache).
-- Δ is the rom-converto / Dolphin ratio; values below 1.00× mean
+- Delta is the rom-converto / Dolphin ratio; values below 1.00× mean
   rom-converto is faster.
 - After every compress, `DolphinTool.exe header -i <our.rvz>` runs as a
   parse sanity check.
@@ -21,11 +21,11 @@ Input: one 1.46 GB GameCube test disc.
 
 ## Results
 
-| Operation | Dolphin warm mean | rom-converto warm mean | Δ | Size delta |
+| Operation | Dolphin warm mean | rom-converto warm mean | Delta | Size delta |
 |---|---:|---:|---:|---:|
-| Compress L5 | 0.762 s (σ = 0.037) | 0.947 s (σ = 0.013) | 1.24× | −11,612 B (−0.0012 %) |
-| Compress L22 | 7.849 s (σ = 0.365) | 7.921 s (σ = 0.376) | **1.01×** | −16,724 B (−0.0018 %) |
-| Decompress | 1.806 s (σ = 0.059) | **0.740 s (σ = 0.039)** | **0.41×** (2.4× faster) | - |
+| Compress L5 | 0.762 s (sigma = 0.037) | 0.947 s (sigma = 0.013) | 1.24× | −11,612 B (−0.0012 %) |
+| Compress L22 | 7.849 s (sigma = 0.365) | 7.921 s (sigma = 0.376) | **1.01×** | −16,724 B (−0.0018 %) |
+| Decompress | 1.806 s (sigma = 0.059) | **0.740 s (sigma = 0.039)** | **0.41×** (2.4× faster) | - |
 
 `DolphinTool.exe header` accepts every compressed output.
 

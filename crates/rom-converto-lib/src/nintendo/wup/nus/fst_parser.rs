@@ -7,7 +7,7 @@
 //! `FSTHeader_ClusterEntry`, and `FSTHeader_FileEntry` structs in
 //! `src/Cafe/Filesystem/FST/FST.h`:
 //!
-//! - 0x20-byte [`FstHeader`] (magic `0x46535400`, offset factor,
+//! - 0x20-byte `FstHeader` (magic `0x46535400`, offset factor,
 //!   cluster count, hash disabled flag, padding).
 //! - `num_clusters` x 0x20-byte cluster descriptors.
 //! - Variable-length file entry array (0x10 bytes each). Entry 0 is
@@ -78,7 +78,7 @@ pub struct FstCluster {
 /// One virtual file discovered during the FST walk.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VirtualFile {
-    /// Full path relative to the title root, e.g. `meta/meta.xml`.
+    /// Full path relative to the title root, such as `meta/meta.xml`.
     /// Forward slashes are used on every host.
     pub path: String,
     /// Index into [`VirtualFs::clusters`] telling us which cluster
@@ -252,7 +252,7 @@ pub fn parse_fst(bytes: &[u8]) -> WupResult<VirtualFs> {
 /// (bit 0 = directory, bit 7 = link) and the low 24 bits are the
 /// byte offset into the name string table. The `flags_or_permissions`
 /// field at `+0x0C` is ignored; every retail Wii U title sets it to
-/// zero and we don't need it to walk the tree.
+/// zero and it is not needed to walk the tree.
 #[derive(Debug, Clone, Copy)]
 struct FileEntryRaw {
     type_and_name_offset: u32,
@@ -339,8 +339,8 @@ mod tests {
     /// Total: 3 top-level dirs + 5 files + 1 root dir = 9 entries.
     /// All files live in cluster 0 at sequential offsets.
     fn build_fixture_fst() -> Vec<u8> {
-        // Name string table: we pack the names back-to-back with
-        // NUL terminators and record each one's starting offset.
+        // Name string table: names are packed back-to-back with
+        // NUL terminators, recording each one's starting offset.
         let mut name_table: Vec<u8> = Vec::new();
         let mut name_offsets = std::collections::HashMap::new();
         for name in [

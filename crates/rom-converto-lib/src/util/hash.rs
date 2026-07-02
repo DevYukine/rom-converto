@@ -1,3 +1,6 @@
+//! File hashing for the `hash` command and verify pipelines: CRC32, SHA-1,
+//! MD5, and SHA-256, computed in a single streaming pass over each file.
+
 use crate::util::{CancelToken, ProgressReporter};
 use crc::{CRC_32_ISO_HDLC, Crc};
 use sha2::Digest as _;

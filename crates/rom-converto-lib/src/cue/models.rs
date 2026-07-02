@@ -27,6 +27,8 @@ pub struct Track {
 
 #[derive(Debug, Clone, Copy)]
 pub struct Index {
+    /// The CUE `INDEX` number (0 = pregap start, 1 = track start, and so on),
+    /// not a position in `Track::indices`.
     pub number: u8,
     pub position: Msf,
 }

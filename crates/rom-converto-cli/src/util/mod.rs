@@ -30,7 +30,7 @@ pub fn templated_output(
             parent_path: None,
         },
     )
-    .map_err(|e| log::debug!("metadata unavailable for {}: {e}", input.display()))
+    .map_err(|e| log::debug!("Metadata unavailable for {}: {e}", input.display()))
     .ok();
     let tokens = TemplateTokens::new(info.as_ref(), input, output_ext);
     let rel = apply_template(template, &tokens)?;

@@ -158,7 +158,7 @@ mod tests {
 
     #[test]
     fn minor_branch_takes_precedence_over_patch() {
-        // latest has both minor and patch higher, but we should get OutdatedMinor
+        // latest has both minor and patch higher, but this should report OutdatedMinor
         let current = v(1, 2, 3);
         let latest = v(1, 3, 4);
         assert_eq!(

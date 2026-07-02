@@ -20,9 +20,9 @@ const PBKDF2_ITERATIONS: u32 = 20;
 /// Derive the plaintext title key for the given Wii U title id.
 ///
 /// Format the 64 bit title id as 16 lowercase hex digits, drop the
-/// first two, concatenate to [`SECRET_HEX`], hex-decode, MD5 to form
-/// the salt, then run PBKDF2-HMAC-SHA1 with [`PASSWORD`] for
-/// [`PBKDF2_ITERATIONS`] rounds to produce the 16 byte key.
+/// first two, concatenate to `SECRET_HEX`, hex-decode, MD5 to form
+/// the salt, then run PBKDF2-HMAC-SHA1 with `PASSWORD` for
+/// `PBKDF2_ITERATIONS` rounds to produce the 16 byte key.
 pub fn derive_title_key(title_id: u64) -> [u8; 16] {
     let full_hex = format!("{title_id:016x}");
     let stripped = &full_hex[2..];
