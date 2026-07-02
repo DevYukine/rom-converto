@@ -8,6 +8,7 @@ use crate::commands::completions::ShellCompletionsCommand;
 use crate::commands::cso::{CsoCommands, CsoFormatArg};
 use crate::commands::ctr::CtrCommands;
 use crate::commands::cue::CueCommands;
+use crate::commands::dat::DatCommands;
 use crate::commands::dol::DolCommands;
 use crate::commands::nx::NxCommands;
 use crate::commands::playlist::PlaylistModeArg;
@@ -512,6 +513,7 @@ async fn main() -> Result<()> {
 fn is_cancelled_error(err: &anyhow::Error) -> bool {
     use rom_converto_lib::chd::error::ChdError;
     use rom_converto_lib::cso::CsoError;
+    use rom_converto_lib::dat::DatError;
     use rom_converto_lib::nintendo::ctr::error::NintendoCTRError;
     use rom_converto_lib::nintendo::ctr::z3ds::error::Z3dsError;
     use rom_converto_lib::nintendo::nx::NxError;
@@ -532,6 +534,7 @@ fn is_cancelled_error(err: &anyhow::Error) -> bool {
                 Some(NintendoCTRError::Cancelled)
             )
             || matches!(cause.downcast_ref::<WupError>(), Some(WupError::Cancelled))
+            || matches!(cause.downcast_ref::<DatError>(), Some(DatError::Cancelled))
     })
 }
 
@@ -2790,6 +2793,110 @@ async fn dispatch_command(
                 log::info!("{}", Tally::count_summary(tally.count(), started.elapsed()));
             }
         }
+        Commands::Dat(inner) => match inner {
+            DatCommands::Verify(cmd) => {
+                let algos = parse_algos(&cmd.algo).map_err(|e| anyhow::anyhow!(e))?;
+                let api_base = cmd.api_base.or_else(|| effective.dat.api_base.clone());
+                let report = cmd.report.or_else(|| effective.dat.report.clone());
+                if cmd.recursive {
+                    require_dir(&cmd.input)?;
+                    batch::dat_verify_batch(
+                        &progress,
+                        &total_progress,
+                        &cmd.input,
+                        &algos,
+                        cmd.max_depth,
+                        api_base.as_deref(),
+                        report.as_deref(),
+                        &cancel,
+                    )
+                    .await?;
+                } else {
+                    ensure_input_exists(&cmd.input)?;
+                    batch::dat_verify_single(
+                        &progress,
+                        &cmd.input,
+                        &algos,
+                        api_base.as_deref(),
+                        report.as_deref(),
+                        &cancel,
+                    )
+                    .await?;
+                }
+            }
+            DatCommands::Scan(cmd) => {
+                require_dir(&cmd.input)?;
+                let api_base = cmd.api_base.or_else(|| effective.dat.api_base.clone());
+                let report = cmd.report.or_else(|| effective.dat.report.clone());
+                batch::dat_scan(
+                    &progress,
+                    &total_progress,
+                    &cmd.input,
+                    cmd.max_depth,
+                    api_base.as_deref(),
+                    report.as_deref(),
+                    &cancel,
+                )
+                .await?;
+            }
+            DatCommands::Rename(cmd) => {
+                if cmd.recursive {
+                    require_dir(&cmd.input)?;
+                } else {
+                    ensure_input_exists(&cmd.input)?;
+                }
+                let api_base = cmd.api_base.or_else(|| effective.dat.api_base.clone());
+                let report = cmd.report.or_else(|| effective.dat.report.clone());
+                let policy = policy_of(
+                    cmd.on_conflict
+                        .unwrap_or(crate::commands::ConflictPolicyArg::Error),
+                    cmd.force,
+                );
+                batch::dat_rename(
+                    &progress,
+                    &total_progress,
+                    &cmd.input,
+                    cmd.recursive,
+                    cmd.max_depth,
+                    api_base.as_deref(),
+                    policy,
+                    dry_run,
+                    report.as_deref(),
+                    &cancel,
+                )
+                .await?;
+            }
+            DatCommands::Identify(cmd) => {
+                ensure_input_exists(&cmd.input)?;
+                let algos = parse_algos(&cmd.algo).map_err(|e| anyhow::anyhow!(e))?;
+                let api_base = cmd.api_base.or_else(|| effective.dat.api_base.clone());
+                batch::dat_identify(&progress, &cmd.input, &algos, api_base.as_deref(), &cancel)
+                    .await?;
+            }
+            DatCommands::Fixdat(cmd) => {
+                require_dir(&cmd.input)?;
+                let api_base = cmd
+                    .api_base
+                    .clone()
+                    .or_else(|| effective.dat.api_base.clone());
+                let policy = policy_of(
+                    cmd.on_conflict
+                        .unwrap_or(crate::commands::ConflictPolicyArg::Error),
+                    cmd.force,
+                );
+                let args = batch::DatFixdatArgs {
+                    input: cmd.input,
+                    output: cmd.output,
+                    platform: cmd.platform,
+                    dat_id: cmd.dat_id,
+                    dat_name: cmd.dat_name,
+                    subset: cmd.subset,
+                    max_depth: cmd.max_depth,
+                    api_base,
+                };
+                batch::dat_fixdat(&progress, &args, dry_run, policy, &cancel).await?;
+            }
+        },
         Commands::SelfUpdate(_) => self_update(github).await?,
         Commands::ShellCompletions(_) => unreachable!("handled before logger init"),
     }

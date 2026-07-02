@@ -1,12 +1,27 @@
 use crate::util::{WriteDecision, resolve_output};
 use anyhow::Result;
 use log::{info, warn};
-use rom_converto_lib::util::fs::{collect_all_files, collect_files_with_exts, is_os_junk_dir};
-use rom_converto_lib::util::{
-    CancelToken, ConflictPolicy, FileDigests, FileStatus, HashAlgo, HashReportRecord,
-    ProgressReporter, ReportFormat, ReportRecord, ReportTotals, Tally, TallyDirection, hash_file,
-    write_hash_report, write_report,
+use rom_converto_lib::cue::CueParser;
+use rom_converto_lib::dat::client::DatFileFilter;
+use rom_converto_lib::dat::digest::{RomDigests, TrackDigests, digest_inner_async};
+use rom_converto_lib::dat::fixdat::{LocalHashIndex, diff_library, write_fixdat_xml};
+use rom_converto_lib::dat::model::{
+    BulkIdentifyIdsResult, BulkIdentifyItem, BulkItemStatus, DatFileSummary,
+    GameAndRelationMatchResult, GameFileMatchSearch,
 };
+use rom_converto_lib::dat::rename::{RenameAction, RenameCandidate, RenamePlan, plan_renames};
+use rom_converto_lib::dat::verdict::{DatVerdict, MatchStrength, match_strength, reconcile_tracks};
+use rom_converto_lib::dat::{DatError, DatResult, PlaymatchClient};
+use rom_converto_lib::util::fs::{collect_all_files, collect_files_with_exts, is_os_junk_dir};
+use rom_converto_lib::util::hash::MultiHasher;
+use rom_converto_lib::util::report::{DatReportRecord, write_dat_report};
+use rom_converto_lib::util::{
+    CancelToken, ConflictPolicy, ConflictResolution, FileDigests, FileStatus, HashAlgo,
+    HashReportRecord, ProgressReporter, ReportFormat, ReportRecord, ReportTotals, Tally,
+    TallyDirection, hash_file, hash_file_cancellable, resolve_conflict, write_hash_report,
+    write_report,
+};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -1778,4 +1793,1329 @@ pub async fn hash_batch(
         )?;
     }
     Ok(())
+}
+
+/// Resolved fixdat command fields, decoupled from the clap struct so the
+/// driver takes owned values without borrowing the parsed command.
+pub struct DatFixdatArgs {
+    pub input: PathBuf,
+    pub output: PathBuf,
+    pub platform: Option<String>,
+    pub dat_id: Option<String>,
+    pub dat_name: Option<String>,
+    pub subset: Option<String>,
+    pub max_depth: Option<usize>,
+    pub api_base: Option<String>,
+}
+
+/// A member .bin set behind one .cue sheet. The bins are hashed raw in cue
+/// order; the concatenation is the single-bin whole-image stream.
+struct CueSet {
+    cue: PathBuf,
+    bins: Vec<PathBuf>,
+}
+
+/// One walkable input: a standalone file digested by its container decoder, or
+/// a cue set whose member bins are hashed raw.
+enum DatUnit {
+    File(PathBuf),
+    CueSet(CueSet),
+}
+
+impl DatUnit {
+    fn display_path(&self) -> &Path {
+        match self {
+            DatUnit::File(p) => p,
+            DatUnit::CueSet(s) => &s.cue,
+        }
+    }
+}
+
+/// Walk `input_dir`, group each .cue with its member .bin files, and drop the
+/// grouped bins plus report-ish sidecar files from the flat list. Bins with no
+/// owning cue stay as standalone File units.
+async fn dat_collect(input_dir: &Path, max_depth: Option<usize>) -> Result<Vec<DatUnit>> {
+    let files = collect_all_files(input_dir, max_depth)?;
+    let mut cues: Vec<PathBuf> = Vec::new();
+    let mut others: Vec<PathBuf> = Vec::new();
+    for f in files {
+        match f
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .as_deref()
+        {
+            Some("cue") => cues.push(f),
+            Some("m3u") => {}
+            _ => others.push(f),
+        }
+    }
+
+    let mut covered: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    let mut sets: Vec<CueSet> = Vec::new();
+    for cue in cues {
+        let parent = cue.parent().unwrap_or_else(|| Path::new("."));
+        let sheet = match CueParser::new(&cue).parse().await {
+            Ok(s) => s,
+            Err(e) => {
+                warn!("skipping unreadable cue {}: {e}", cue.display());
+                continue;
+            }
+        };
+        let mut bins: Vec<PathBuf> = Vec::new();
+        for file in &sheet.files {
+            let bin = parent.join(&file.filename);
+            covered.insert(bin.clone());
+            bins.push(bin);
+        }
+        if !bins.is_empty() {
+            sets.push(CueSet { cue, bins });
+        }
+    }
+
+    let mut units: Vec<DatUnit> = Vec::new();
+    for set in sets {
+        units.push(DatUnit::CueSet(set));
+    }
+    for f in others {
+        if !covered.contains(&f) {
+            units.push(DatUnit::File(f));
+        }
+    }
+    Ok(units)
+}
+
+/// Digest one unit. A File goes through the container decoder; a CueSet hashes
+/// each member bin raw in cue order, folding each into its own track digest and
+/// the concatenated whole-image digest.
+async fn digest_unit(
+    unit: &DatUnit,
+    algos: &[HashAlgo],
+    progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
+) -> DatResult<RomDigests> {
+    match unit {
+        DatUnit::File(path) => {
+            digest_inner_async(path.clone(), algos.to_vec(), progress, cancel.clone()).await
+        }
+        DatUnit::CueSet(set) => digest_cue_set(set, algos, progress, cancel),
+    }
+}
+
+/// Hash each member bin raw in cue order into a per-track digest and fold the
+/// same bytes into a whole-image hasher, yielding `RomDigests::Tracks`.
+fn digest_cue_set(
+    set: &CueSet,
+    algos: &[HashAlgo],
+    progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
+) -> DatResult<RomDigests> {
+    let mut tracks: Vec<TrackDigests> = Vec::with_capacity(set.bins.len());
+    let mut whole = MultiHasher::new(algos);
+    let mut whole_size: u64 = 0;
+    for (i, bin) in set.bins.iter().enumerate() {
+        if cancel.is_cancelled() {
+            return Err(DatError::Cancelled);
+        }
+        let digests = hash_file_cancellable(bin, algos, progress, cancel).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::Interrupted {
+                DatError::Cancelled
+            } else {
+                DatError::IoError(e)
+            }
+        })?;
+        // Re-read the bin to fold it into the whole-image hasher. Bins are
+        // hashed twice (once per-track, once whole) because the DAT may use
+        // either the single-bin or the multi-bin convention.
+        fold_file(bin, &mut whole, cancel)?;
+        whole_size += digests.size_bytes;
+        tracks.push(TrackDigests {
+            track_number: (i + 1) as u32,
+            track_type: String::new(),
+            digests,
+        });
+    }
+    Ok(RomDigests::Tracks {
+        tracks,
+        whole: whole.finalize(whole_size),
+    })
+}
+
+/// Stream a file into an existing multi-hasher, honoring cancellation.
+fn fold_file(path: &Path, hasher: &mut MultiHasher, cancel: &CancelToken) -> DatResult<()> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let mut buf = vec![0u8; 4 * 1024 * 1024];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        if cancel.is_cancelled() {
+            return Err(DatError::Cancelled);
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(())
+}
+
+/// Resolved verify/identify outcome for one unit: the verdict plus the display
+/// fields and per-track detail the CLI prints and the report row records.
+struct DatOutcome {
+    verdict: DatVerdict,
+    match_algo: Option<HashAlgo>,
+    game_name: Option<String>,
+    game_id: Option<String>,
+    platform: Option<String>,
+    signature_group: Option<String>,
+    dat_version: Option<String>,
+    detail: Option<String>,
+    size_bytes: u64,
+}
+
+/// The display fields lifted from a relations match: game name/id, platform,
+/// signature group, and dat version.
+struct DisplayFields {
+    game_name: Option<String>,
+    game_id: Option<String>,
+    platform: Option<String>,
+    signature_group: Option<String>,
+    dat_version: Option<String>,
+}
+
+fn display_fields(m: &GameAndRelationMatchResult) -> DisplayFields {
+    DisplayFields {
+        game_name: m.game.as_ref().map(|g| g.name.clone()),
+        game_id: m.game.as_ref().map(|g| g.id.clone()),
+        platform: m.platform.as_ref().map(|p| p.name.clone()),
+        signature_group: m.signature_group.as_ref().map(|g| g.name.clone()),
+        dat_version: m.dat_file_import.as_ref().map(|i| i.version.clone()),
+    }
+}
+
+/// Whole-image decoded size for a digested unit: the sole size for a single
+/// stream, the concatenated whole size for a track set.
+fn unit_size(digests: &RomDigests) -> u64 {
+    match digests {
+        RomDigests::Single(d) => d.size_bytes,
+        RomDigests::Tracks { whole, .. } => whole.size_bytes,
+    }
+}
+
+/// Resolve the verify verdict for one unit against the database. Single
+/// streams take one relations call; track sets try the whole-image query
+/// first (single-bin DATs) and fall back to a per-track reconciliation
+/// (multi-bin DATs), keeping the stronger of the two results (A step 3).
+async fn resolve_verify(
+    client: &PlaymatchClient,
+    unit: &DatUnit,
+    digests: &RomDigests,
+    cancel: &CancelToken,
+) -> DatResult<DatOutcome> {
+    let size = unit_size(digests);
+    match digests {
+        RomDigests::Single(d) => {
+            let file_name = file_name_of(unit.display_path());
+            let search = GameFileMatchSearch::from_digests(&file_name, d);
+            let m = client.identify_relations(&search, cancel).await?;
+            Ok(outcome_from_single(&m, size))
+        }
+        RomDigests::Tracks { tracks, whole } => {
+            let stem = stem_of(unit.display_path());
+            let whole_name = format!("{stem}.bin");
+            let whole_search = GameFileMatchSearch::from_digests(&whole_name, whole);
+            let whole_match = client.identify_relations(&whole_search, cancel).await?;
+            if match_strength(whole_match.game_match_type).is_verified() {
+                return Ok(outcome_from_single(&whole_match, size));
+            }
+
+            let first_name = match unit {
+                DatUnit::CueSet(set) => file_name_of(&set.bins[0]),
+                _ => format!("{stem} (Track 1).bin"),
+            };
+            let first_search = GameFileMatchSearch::from_digests(&first_name, &tracks[0].digests);
+            let track_match = client.identify_relations(&first_search, cancel).await?;
+            Ok(outcome_from_tracks(
+                &track_match,
+                tracks,
+                &whole_match,
+                size,
+            ))
+        }
+    }
+}
+
+fn outcome_from_single(m: &GameAndRelationMatchResult, size: u64) -> DatOutcome {
+    let strength = match_strength(m.game_match_type);
+    let verdict = match strength {
+        MatchStrength::Verified(_) => DatVerdict::Verified,
+        MatchStrength::NameSizeHint => DatVerdict::Hint,
+        MatchStrength::NoMatch => DatVerdict::Unknown,
+    };
+    let f = display_fields(m);
+    DatOutcome {
+        verdict,
+        match_algo: match strength {
+            MatchStrength::Verified(a) => Some(a),
+            _ => None,
+        },
+        game_name: f.game_name,
+        game_id: f.game_id,
+        platform: f.platform,
+        signature_group: f.signature_group,
+        dat_version: f.dat_version,
+        detail: None,
+        size_bytes: size,
+    }
+}
+
+fn outcome_from_tracks(
+    track_match: &GameAndRelationMatchResult,
+    tracks: &[TrackDigests],
+    whole_match: &GameAndRelationMatchResult,
+    size: u64,
+) -> DatOutcome {
+    let recon = reconcile_tracks(tracks, &track_match.game_files);
+    // Prefer the response that actually carried the match for display: the
+    // per-track query when it reconciled or resolved a game, else the whole
+    // query. A lone track-1 hash hit is display-only; it does not verify the set.
+    let track_resolved = recon.all_ok || match_strength(track_match.game_match_type).is_verified();
+    let display = if track_resolved {
+        track_match
+    } else {
+        whole_match
+    };
+    let f = display_fields(display);
+
+    // A track set is Verified only when every local track reconciles by a real
+    // hash (recon.all_ok). A hash-verified track 1 with an unreconciled other
+    // track is not whole-set verification.
+    let verdict = if recon.all_ok {
+        DatVerdict::Verified
+    } else if match_strength(track_match.game_match_type) == MatchStrength::NameSizeHint
+        || match_strength(whole_match.game_match_type) == MatchStrength::NameSizeHint
+    {
+        DatVerdict::Hint
+    } else {
+        DatVerdict::Unknown
+    };
+
+    let ok = recon.tracks.iter().filter(|t| t.ok).count();
+    let detail = if recon.tracks.is_empty() {
+        None
+    } else {
+        Some(format!("{ok}/{} tracks matched", recon.tracks.len()))
+    };
+
+    DatOutcome {
+        verdict,
+        match_algo: None,
+        game_name: f.game_name,
+        game_id: f.game_id,
+        platform: f.platform,
+        signature_group: f.signature_group,
+        dat_version: f.dat_version,
+        detail,
+        size_bytes: size,
+    }
+}
+
+fn file_name_of(path: &Path) -> String {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("file")
+        .to_string()
+}
+
+fn stem_of(path: &Path) -> String {
+    path.file_stem()
+        .and_then(|n| n.to_str())
+        .unwrap_or("file")
+        .to_string()
+}
+
+/// Build a report row from a resolved outcome.
+fn dat_record(
+    path: &Path,
+    outcome: &DatOutcome,
+    status: FileStatus,
+    started: Instant,
+) -> DatReportRecord {
+    DatReportRecord {
+        path: path.display().to_string(),
+        verdict: outcome.verdict.as_str().to_string(),
+        game_name: outcome.game_name.clone(),
+        game_id: outcome.game_id.clone(),
+        platform: outcome.platform.clone(),
+        signature_group: outcome.signature_group.clone(),
+        dat_version: outcome.dat_version.clone(),
+        match_algo: outcome.match_algo.map(|a| a.label().to_string()),
+        detail: outcome.detail.clone(),
+        size_bytes: outcome.size_bytes,
+        status,
+        elapsed_ms: elapsed_ms(started),
+        error: None,
+    }
+}
+
+/// A failed or unsupported unit as a report row (no database lookup happened).
+fn dat_error_record(
+    path: &Path,
+    verdict: DatVerdict,
+    status: FileStatus,
+    error: Option<String>,
+    started: Instant,
+) -> DatReportRecord {
+    DatReportRecord {
+        path: path.display().to_string(),
+        verdict: verdict.as_str().to_string(),
+        game_name: None,
+        game_id: None,
+        platform: None,
+        signature_group: None,
+        dat_version: None,
+        match_algo: None,
+        detail: None,
+        size_bytes: 0,
+        status,
+        elapsed_ms: elapsed_ms(started),
+        error,
+    }
+}
+
+/// Totals for a DAT report driven purely by outcome counts (no byte flow).
+fn dat_totals(records: &[DatReportRecord], elapsed: std::time::Duration) -> ReportTotals {
+    ReportTotals {
+        total_files: records.len(),
+        ok: records
+            .iter()
+            .filter(|r| r.status == FileStatus::Ok)
+            .count(),
+        failed: records
+            .iter()
+            .filter(|r| r.status == FileStatus::Failed)
+            .count(),
+        total_input_bytes: records.iter().map(|r| r.size_bytes).sum(),
+        elapsed_ms: elapsed.as_millis().min(u64::MAX as u128) as u64,
+        ..ReportTotals::default()
+    }
+}
+
+/// Print one verify/identify verdict line, with a per-track summary when the
+/// unit is a track set.
+fn print_verdict(path: &Path, outcome: &DatOutcome) {
+    let name = path.display();
+    match outcome.verdict {
+        DatVerdict::Verified => {
+            let algo = outcome
+                .match_algo
+                .map(|a| format!(" [{}]", a.label()))
+                .unwrap_or_default();
+            let game = outcome.game_name.as_deref().unwrap_or("");
+            let mut extra = Vec::new();
+            if let Some(p) = &outcome.platform {
+                extra.push(format!("platform: {p}"));
+            }
+            if let Some(g) = &outcome.signature_group {
+                extra.push(format!("group: {g}"));
+            }
+            if let Some(v) = &outcome.dat_version {
+                extra.push(format!("version: {v}"));
+            }
+            let suffix = if extra.is_empty() {
+                String::new()
+            } else {
+                format!("  ({})", extra.join(", "))
+            };
+            info!("{name}: VERIFIED{algo} -> {game}{suffix}");
+            if let Some(d) = &outcome.detail {
+                info!("  {d}");
+            }
+        }
+        DatVerdict::Hint => {
+            let game = outcome.game_name.as_deref().unwrap_or("?");
+            info!("{name}: NOT VERIFIED  (name+size hint only: \"{game}\")");
+        }
+        DatVerdict::Unsupported => {
+            info!("{name}: unsupported (decompress the file first)");
+        }
+        DatVerdict::Failed => {
+            info!("{name}: failed");
+        }
+        _ => {
+            info!("{name}: no match");
+        }
+    }
+}
+
+/// Map a digest error to a bucket: unsupported inner formats and transport or
+/// cancellation errors are distinguished from a plain per-file failure.
+fn digest_bucket(e: DatError) -> DatResult<(DatVerdict, String)> {
+    match e {
+        DatError::Cancelled => Err(DatError::Cancelled),
+        DatError::Transport(_) => Err(e),
+        DatError::UnsupportedInnerHash { .. } => Ok((DatVerdict::Unsupported, e.to_string())),
+        other => Ok((DatVerdict::Failed, other.to_string())),
+    }
+}
+
+pub async fn dat_verify_single(
+    progress: &dyn ProgressReporter,
+    input: &Path,
+    algos: &[HashAlgo],
+    api_base: Option<&str>,
+    report: Option<&Path>,
+    cancel: &CancelToken,
+) -> Result<()> {
+    let started = Instant::now();
+    let client = PlaymatchClient::new(api_base);
+    let unit = DatUnit::File(input.to_path_buf());
+    let digests = digest_unit(&unit, algos, progress, cancel).await;
+    let record = match digests {
+        Ok(digests) => {
+            let outcome = resolve_verify(&client, &unit, &digests, cancel).await?;
+            print_verdict(input, &outcome);
+            dat_record(input, &outcome, FileStatus::Ok, started)
+        }
+        Err(e) => {
+            let (verdict, msg) = digest_bucket(e)?;
+            let outcome = DatOutcome {
+                verdict,
+                match_algo: None,
+                game_name: None,
+                game_id: None,
+                platform: None,
+                signature_group: None,
+                dat_version: None,
+                detail: None,
+                size_bytes: 0,
+            };
+            print_verdict(input, &outcome);
+            dat_error_record(
+                input,
+                verdict,
+                if verdict == DatVerdict::Failed {
+                    FileStatus::Failed
+                } else {
+                    FileStatus::Ok
+                },
+                Some(msg),
+                started,
+            )
+        }
+    };
+    if let Some(path) = report {
+        let records = [record];
+        write_dat_report(
+            path,
+            &records,
+            &dat_totals(&records, started.elapsed()),
+            ReportFormat::from_path(path),
+        )?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn dat_verify_batch(
+    progress: &dyn ProgressReporter,
+    total_progress: &dyn ProgressReporter,
+    input_dir: &Path,
+    algos: &[HashAlgo],
+    max_depth: Option<usize>,
+    api_base: Option<&str>,
+    report: Option<&Path>,
+    cancel: &CancelToken,
+) -> Result<()> {
+    let units = dat_collect(input_dir, max_depth).await?;
+    if units.is_empty() {
+        warn!("no files found under {}", input_dir.display());
+        return Ok(());
+    }
+    let client = PlaymatchClient::new(api_base);
+    let total = units.len();
+    total_progress.start(total as u64, &format!("Verifying {total} files..."));
+    let started = Instant::now();
+    let mut records: Vec<DatReportRecord> = Vec::new();
+    let mut cache: HashMap<String, DatVerdict> = HashMap::new();
+    let mut verified = 0usize;
+    let mut hints = 0usize;
+    for unit in &units {
+        let unit_started = Instant::now();
+        let path = unit.display_path().to_path_buf();
+        match digest_unit(unit, algos, progress, cancel).await {
+            Ok(digests) => {
+                let outcome = resolve_verify(&client, unit, &digests, cancel).await?;
+                dedup_note(&mut cache, &digests, outcome.verdict);
+                match outcome.verdict {
+                    DatVerdict::Verified => verified += 1,
+                    DatVerdict::Hint => hints += 1,
+                    _ => {}
+                }
+                print_verdict(&path, &outcome);
+                records.push(dat_record(&path, &outcome, FileStatus::Ok, unit_started));
+            }
+            Err(e) => {
+                let (verdict, msg) = digest_bucket(e)?;
+                let status = if verdict == DatVerdict::Failed {
+                    FileStatus::Failed
+                } else {
+                    FileStatus::Ok
+                };
+                info!("{}: {}", path.display(), verdict.as_str());
+                records.push(dat_error_record(
+                    &path,
+                    verdict,
+                    status,
+                    Some(msg),
+                    unit_started,
+                ));
+            }
+        }
+        total_progress.inc(1);
+    }
+    total_progress.finish();
+    info!("{verified} verified, {hints} hint");
+    if let Some(path) = report {
+        write_dat_report(
+            path,
+            &records,
+            &dat_totals(&records, started.elapsed()),
+            ReportFormat::from_path(path),
+        )?;
+    }
+    Ok(())
+}
+
+/// Record a unit's verdict in the per-run dedup cache keyed on its strongest
+/// available digest, so an identical file need not be re-reported. The cache is
+/// advisory in v1 (kept for the API round-trip savings the plan calls out).
+fn dedup_note(cache: &mut HashMap<String, DatVerdict>, digests: &RomDigests, verdict: DatVerdict) {
+    let key = match digests {
+        RomDigests::Single(d) => strongest_key(d),
+        RomDigests::Tracks { whole, .. } => strongest_key(whole),
+    };
+    if let Some(k) = key {
+        cache.entry(k).or_insert(verdict);
+    }
+}
+
+fn strongest_key(d: &FileDigests) -> Option<String> {
+    d.sha256
+        .clone()
+        .or_else(|| d.sha1.clone())
+        .or_else(|| d.md5.clone())
+        .or_else(|| d.crc32.clone())
+}
+
+pub async fn dat_identify(
+    progress: &dyn ProgressReporter,
+    input: &Path,
+    algos: &[HashAlgo],
+    api_base: Option<&str>,
+    cancel: &CancelToken,
+) -> Result<()> {
+    let client = PlaymatchClient::new(api_base);
+    let unit = DatUnit::File(input.to_path_buf());
+    let digests = digest_unit(&unit, algos, progress, cancel).await?;
+    let file_name = file_name_of(input);
+    let m = match &digests {
+        RomDigests::Single(d) => {
+            let search = GameFileMatchSearch::from_digests(&file_name, d);
+            client.identify_relations(&search, cancel).await?
+        }
+        RomDigests::Tracks { whole, .. } => {
+            let search = GameFileMatchSearch::from_digests(&file_name, whole);
+            client.identify_relations(&search, cancel).await?
+        }
+    };
+    let strength = match_strength(m.game_match_type);
+    match strength {
+        MatchStrength::Verified(a) => info!("match: {} (verified)", a.label().to_uppercase()),
+        MatchStrength::NameSizeHint => info!("match: name+size (weak)"),
+        MatchStrength::NoMatch => {
+            info!("no match");
+            return Ok(());
+        }
+    }
+    if let Some(g) = &m.game {
+        let platform = m.platform.as_ref().map(|p| p.name.as_str()).unwrap_or("?");
+        let group = m
+            .signature_group
+            .as_ref()
+            .map(|g| g.name.as_str())
+            .unwrap_or("?");
+        info!(
+            "game:  {}      platform: {platform}   group: {group}",
+            g.name
+        );
+    }
+    if let Some(i) = &m.dat_file_import {
+        info!("dat:   version {}", i.version);
+    }
+    let ids: Vec<String> = m
+        .external_metadata
+        .iter()
+        .filter(|e| matches!(e.match_type.as_str(), "Automatic" | "Manual"))
+        .filter_map(|e| {
+            e.provider_id
+                .as_ref()
+                .map(|id| format!("{} {id}", e.provider_name))
+        })
+        .collect();
+    if !ids.is_empty() {
+        info!("ids:   {}", ids.join(", "));
+    }
+    Ok(())
+}
+
+/// One digested unit carried through scan/rename: a decoded result, an
+/// unsupported format, or a per-file digest failure. Buckets a digest error
+/// rather than aborting the batch (read-only semantics, D.3).
+enum ScanUnit {
+    Ok {
+        unit_index: usize,
+        digests: RomDigests,
+    },
+    Unsupported {
+        unit_index: usize,
+    },
+    Failed {
+        unit_index: usize,
+        error: String,
+    },
+}
+
+/// Digest every unit under `input_dir`, bucketing unsupported and failed units.
+async fn digest_scan_units(
+    progress: &dyn ProgressReporter,
+    total_progress: &dyn ProgressReporter,
+    units: &[DatUnit],
+    algos: &[HashAlgo],
+    cancel: &CancelToken,
+) -> DatResult<Vec<ScanUnit>> {
+    total_progress.start(
+        units.len() as u64,
+        &format!("Hashing {} files...", units.len()),
+    );
+    let mut out = Vec::with_capacity(units.len());
+    for (i, unit) in units.iter().enumerate() {
+        if cancel.is_cancelled() {
+            return Err(DatError::Cancelled);
+        }
+        match digest_unit(unit, algos, progress, cancel).await {
+            Ok(digests) => out.push(ScanUnit::Ok {
+                unit_index: i,
+                digests,
+            }),
+            Err(e) => match digest_bucket_dat(e)? {
+                Some(msg) => out.push(ScanUnit::Failed {
+                    unit_index: i,
+                    error: msg,
+                }),
+                None => out.push(ScanUnit::Unsupported { unit_index: i }),
+            },
+        }
+        total_progress.inc(1);
+    }
+    total_progress.finish();
+    Ok(out)
+}
+
+/// Like `digest_bucket` but as a DatResult of Option: None means unsupported,
+/// Some(msg) means a plain per-file failure; transport/cancel propagate.
+fn digest_bucket_dat(e: DatError) -> DatResult<Option<String>> {
+    match e {
+        DatError::Cancelled => Err(DatError::Cancelled),
+        DatError::Transport(_) => Err(e),
+        DatError::UnsupportedInnerHash { .. } => Ok(None),
+        other => Ok(Some(other.to_string())),
+    }
+}
+
+pub async fn dat_scan(
+    progress: &dyn ProgressReporter,
+    total_progress: &dyn ProgressReporter,
+    input_dir: &Path,
+    max_depth: Option<usize>,
+    api_base: Option<&str>,
+    report: Option<&Path>,
+    cancel: &CancelToken,
+) -> Result<()> {
+    let units = dat_collect(input_dir, max_depth).await?;
+    if units.is_empty() {
+        warn!("no files found under {}", input_dir.display());
+        return Ok(());
+    }
+    let started = Instant::now();
+    let scanned = digest_scan_units(progress, total_progress, &units, algos_scan(), cancel).await?;
+
+    let client = PlaymatchClient::new(api_base);
+    progress.set_phase("Querying playmatch");
+
+    // Build bulk items for decoded units; remember each item's owning unit.
+    let mut items: Vec<BulkIdentifyItem> = Vec::new();
+    let mut item_owner: Vec<usize> = Vec::new();
+    for su in &scanned {
+        if let ScanUnit::Ok {
+            unit_index,
+            digests,
+        } = su
+        {
+            let name = file_name_of(units[*unit_index].display_path());
+            items.push(BulkIdentifyItem {
+                search: GameFileMatchSearch::from_digests(&name, primary_digests(digests)),
+                key: None,
+            });
+            item_owner.push(*unit_index);
+        }
+    }
+
+    let bulk = client.identify_bulk_ids(items, cancel).await?;
+
+    // Resolve canonical names for hash-verified matches via one games_bulk pass.
+    let mut matched_ids: Vec<String> = bulk
+        .iter()
+        .filter(|r| r.status == BulkItemStatus::Ok)
+        .filter_map(|r| r.matched.as_ref())
+        .filter(|m| match_strength(m.game_match_type).is_verified())
+        .filter_map(|m| m.id.clone())
+        .collect();
+    matched_ids.sort();
+    matched_ids.dedup();
+    let games = if matched_ids.is_empty() {
+        Vec::new()
+    } else {
+        client.games_bulk(matched_ids, cancel).await?
+    };
+    let name_for_id = |id: &str| -> Option<String> {
+        games
+            .iter()
+            .find(|g| g.id == id)
+            .and_then(|g| g.data.as_ref())
+            .map(|d| d.name.clone())
+    };
+
+    let mut records: Vec<DatReportRecord> = Vec::new();
+    let mut counts = ScanCounts::default();
+    for su in &scanned {
+        let unit_index = match su {
+            ScanUnit::Ok { unit_index, .. }
+            | ScanUnit::Unsupported { unit_index }
+            | ScanUnit::Failed { unit_index, .. } => *unit_index,
+        };
+        let path = units[unit_index].display_path();
+        let record = match su {
+            ScanUnit::Unsupported { .. } => {
+                counts.unsupported += 1;
+                dat_error_record(path, DatVerdict::Unsupported, FileStatus::Ok, None, started)
+            }
+            ScanUnit::Failed { error, .. } => {
+                counts.failed += 1;
+                dat_error_record(
+                    path,
+                    DatVerdict::Failed,
+                    FileStatus::Failed,
+                    Some(error.clone()),
+                    started,
+                )
+            }
+            ScanUnit::Ok { .. } => {
+                let item_pos = item_owner.iter().position(|&u| u == unit_index);
+                let result = item_pos.and_then(|p| bulk.iter().find(|r| r.index == p));
+                scan_record(path, result, &name_for_id, &mut counts, started)
+            }
+        };
+        records.push(record);
+    }
+
+    info!(
+        "matched {}, misnamed {}, hint {}, unknown {}, unsupported {}, failed {}",
+        counts.matched,
+        counts.misnamed,
+        counts.hint,
+        counts.unknown,
+        counts.unsupported,
+        counts.failed
+    );
+    if let Some(path) = report {
+        write_dat_report(
+            path,
+            &records,
+            &dat_totals(&records, started.elapsed()),
+            ReportFormat::from_path(path),
+        )?;
+    }
+    Ok(())
+}
+
+fn algos_scan() -> &'static [HashAlgo] {
+    &[HashAlgo::Crc32, HashAlgo::Sha1]
+}
+
+fn primary_digests(digests: &RomDigests) -> &FileDigests {
+    match digests {
+        RomDigests::Single(d) => d,
+        RomDigests::Tracks { whole, .. } => whole,
+    }
+}
+
+#[derive(Default)]
+struct ScanCounts {
+    matched: usize,
+    misnamed: usize,
+    hint: usize,
+    unknown: usize,
+    unsupported: usize,
+    failed: usize,
+}
+
+/// Classify one bulk-ids result into a scan report row and bump the running
+/// counts. A non-ok status is a failure (never dropped), NoMatch is unknown, a
+/// FileNameAndSize match is a hint, and a hash-verified match is matched unless
+/// the local stem differs from the canonical name (misnamed).
+fn scan_record(
+    path: &Path,
+    result: Option<&BulkIdentifyIdsResult>,
+    name_for_id: &impl Fn(&str) -> Option<String>,
+    counts: &mut ScanCounts,
+    started: Instant,
+) -> DatReportRecord {
+    let mut rec = dat_error_record(path, DatVerdict::Unknown, FileStatus::Ok, None, started);
+    let Some(result) = result else {
+        counts.failed += 1;
+        rec.verdict = DatVerdict::Failed.as_str().to_string();
+        rec.status = FileStatus::Failed;
+        rec.error = Some("no result returned for this file".to_string());
+        return rec;
+    };
+    if result.status != BulkItemStatus::Ok {
+        counts.failed += 1;
+        rec.verdict = DatVerdict::Failed.as_str().to_string();
+        rec.status = FileStatus::Failed;
+        rec.error = Some(
+            result
+                .error
+                .as_ref()
+                .map(|e| e.message.clone())
+                .unwrap_or_else(|| "bulk identify item failed".to_string()),
+        );
+        return rec;
+    }
+    let Some(matched) = &result.matched else {
+        counts.unknown += 1;
+        return rec;
+    };
+    match match_strength(matched.game_match_type) {
+        MatchStrength::NoMatch => {
+            counts.unknown += 1;
+            rec
+        }
+        MatchStrength::NameSizeHint => {
+            counts.hint += 1;
+            rec.verdict = DatVerdict::Hint.as_str().to_string();
+            rec
+        }
+        MatchStrength::Verified(a) => {
+            let game_name = matched.id.as_deref().and_then(name_for_id);
+            let local_stem = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default();
+            let misnamed = game_name
+                .as_deref()
+                .is_some_and(|n| !n.eq_ignore_ascii_case(local_stem));
+            rec.game_name = game_name.clone();
+            rec.game_id = matched.id.clone();
+            rec.match_algo = Some(a.label().to_string());
+            if misnamed {
+                counts.misnamed += 1;
+                rec.verdict = DatVerdict::Misnamed.as_str().to_string();
+            } else {
+                counts.matched += 1;
+                rec.verdict = "matched".to_string();
+            }
+            rec
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn dat_rename(
+    progress: &dyn ProgressReporter,
+    total_progress: &dyn ProgressReporter,
+    input: &Path,
+    recursive: bool,
+    max_depth: Option<usize>,
+    api_base: Option<&str>,
+    policy: ConflictPolicy,
+    dry_run: bool,
+    report: Option<&Path>,
+    cancel: &CancelToken,
+) -> Result<()> {
+    // Group cue members so a set is one unit; renaming a member .bin in
+    // isolation would leave the cue's FILE line dangling. Cue sets are recorded
+    // as a single skipped row (member renaming with FILE-line rewrite is not
+    // performed), so their bins and cue are left untouched on disk.
+    let units: Vec<DatUnit> = if recursive {
+        dat_collect(input, max_depth).await?
+    } else {
+        vec![DatUnit::File(input.to_path_buf())]
+    };
+    if units.is_empty() {
+        warn!("no files found under {}", input.display());
+        return Ok(());
+    }
+    let client = PlaymatchClient::new(api_base);
+    let started = Instant::now();
+    total_progress.start(
+        units.len() as u64,
+        &format!("Hashing {} files...", units.len()),
+    );
+
+    // Digest each queryable file; cue sets, unsupported, and failed units record
+    // a row and do not participate in planning.
+    let mut queryable: Vec<PathBuf> = Vec::new();
+    let mut items: Vec<BulkIdentifyItem> = Vec::new();
+    let mut records: Vec<DatReportRecord> = Vec::new();
+    for unit in &units {
+        if cancel.is_cancelled() {
+            return Err(DatError::Cancelled.into());
+        }
+        let path = unit.display_path();
+        if let DatUnit::CueSet(_) = unit {
+            records.push(dat_error_record(
+                path,
+                DatVerdict::Skipped,
+                FileStatus::Ok,
+                Some("cue set: rename skipped to keep FILE lines consistent".to_string()),
+                started,
+            ));
+            total_progress.inc(1);
+            continue;
+        }
+        match digest_unit(unit, algos_scan(), progress, cancel).await {
+            Ok(digests) => {
+                items.push(BulkIdentifyItem {
+                    search: GameFileMatchSearch::from_digests(
+                        &file_name_of(path),
+                        primary_digests(&digests),
+                    ),
+                    key: None,
+                });
+                queryable.push(path.to_path_buf());
+            }
+            Err(e) => match digest_bucket_dat(e)? {
+                None => records.push(dat_error_record(
+                    path,
+                    DatVerdict::Unsupported,
+                    FileStatus::Ok,
+                    None,
+                    started,
+                )),
+                Some(msg) => records.push(dat_error_record(
+                    path,
+                    DatVerdict::Failed,
+                    FileStatus::Failed,
+                    Some(msg),
+                    started,
+                )),
+            },
+        }
+        total_progress.inc(1);
+    }
+    total_progress.finish();
+
+    progress.set_phase("Querying playmatch");
+    let bulk = client.identify_bulk_relations(items, cancel).await?;
+
+    let candidates: Vec<RenameCandidate> = queryable
+        .iter()
+        .enumerate()
+        .map(|(i, path)| {
+            let matched = bulk
+                .iter()
+                .find(|r| r.index == i)
+                .filter(|r| r.status == BulkItemStatus::Ok)
+                .and_then(|r| r.matched.as_ref());
+            candidate_from_match(path, matched)
+        })
+        .collect();
+
+    let plans = plan_renames(&candidates);
+    let mut renamed = 0usize;
+    let mut already = 0usize;
+    let mut skipped = 0usize;
+    for plan in &plans {
+        records.push(execute_rename(
+            plan,
+            dry_run,
+            policy,
+            &mut renamed,
+            &mut already,
+            &mut skipped,
+            started,
+        ));
+    }
+
+    info!("{renamed} renamed, {already} already canonical, {skipped} skipped");
+    if let Some(path) = report {
+        write_dat_report(
+            path,
+            &records,
+            &dat_totals(&records, started.elapsed()),
+            ReportFormat::from_path(path),
+        )?;
+    }
+    Ok(())
+}
+
+/// Build a rename candidate from a file's relations match. `verified` is set
+/// only for a hash-rung match (hints never rename); the file-level canonical
+/// name is taken from the sole matching gameFiles entry when present.
+fn candidate_from_match(
+    path: &Path,
+    matched: Option<&GameAndRelationMatchResult>,
+) -> RenameCandidate {
+    let Some(m) = matched else {
+        return RenameCandidate {
+            path: path.to_path_buf(),
+            game_id: None,
+            game_name: None,
+            file_name: None,
+            verified: false,
+        };
+    };
+    RenameCandidate {
+        path: path.to_path_buf(),
+        game_id: m.game.as_ref().map(|g| g.id.clone()),
+        game_name: m.game.as_ref().map(|g| g.name.clone()),
+        file_name: if m.game_files.len() == 1 {
+            Some(m.game_files[0].file_name.clone())
+        } else {
+            None
+        },
+        verified: match_strength(m.game_match_type).is_verified(),
+    }
+}
+
+/// Execute one rename plan (or preview it under dry-run), record the row, and
+/// bump the running counts. std::fs::rename replaces an existing destination on
+/// Windows, so an overwrite decision needs no separate delete.
+#[allow(clippy::too_many_arguments)]
+fn execute_rename(
+    plan: &RenamePlan,
+    dry_run: bool,
+    policy: ConflictPolicy,
+    renamed: &mut usize,
+    already: &mut usize,
+    skipped: &mut usize,
+    started: Instant,
+) -> DatReportRecord {
+    let mut rec = dat_error_record(
+        &plan.from,
+        DatVerdict::Skipped,
+        FileStatus::Ok,
+        None,
+        started,
+    );
+    rec.detail = plan.detail.clone();
+    match plan.action {
+        RenameAction::AlreadyCanonical => {
+            *already += 1;
+            rec.verdict = DatVerdict::Skipped.as_str().to_string();
+            rec.detail = Some("already canonical".to_string());
+        }
+        RenameAction::SkipUnmatched
+        | RenameAction::SkipWeakMatch
+        | RenameAction::SkipCollision
+        | RenameAction::SkipDiscSetConflict => {
+            *skipped += 1;
+        }
+        RenameAction::Rename => {
+            let Some(target) = &plan.to else {
+                *skipped += 1;
+                rec.verdict = DatVerdict::Failed.as_str().to_string();
+                rec.status = FileStatus::Failed;
+                rec.error = Some("rename plan missing target".to_string());
+                return rec;
+            };
+            if dry_run {
+                *renamed += 1;
+                info!(
+                    "[dry-run] {:?} -> {:?}",
+                    plan.from.display(),
+                    target.display()
+                );
+                rec.verdict = DatVerdict::Renamed.as_str().to_string();
+                rec.detail = Some(target.display().to_string());
+                return rec;
+            }
+            match resolve_conflict(target, policy) {
+                Ok(ConflictResolution::Skip) => {
+                    *skipped += 1;
+                    rec.detail = Some(format!("target exists: {}", target.display()));
+                }
+                Ok(ConflictResolution::Write(dest)) => match std::fs::rename(&plan.from, &dest) {
+                    Ok(()) => {
+                        *renamed += 1;
+                        info!("{} -> {}", plan.from.display(), dest.display());
+                        rec.verdict = DatVerdict::Renamed.as_str().to_string();
+                        rec.detail = Some(dest.display().to_string());
+                    }
+                    Err(e) => {
+                        *skipped += 1;
+                        rec.verdict = DatVerdict::Failed.as_str().to_string();
+                        rec.status = FileStatus::Failed;
+                        rec.error = Some(e.to_string());
+                    }
+                },
+                Err(e) => {
+                    *skipped += 1;
+                    rec.verdict = DatVerdict::Failed.as_str().to_string();
+                    rec.status = FileStatus::Failed;
+                    rec.error = Some(e.to_string());
+                }
+            }
+        }
+    }
+    rec
+}
+
+pub async fn dat_fixdat(
+    progress: &dyn ProgressReporter,
+    args: &DatFixdatArgs,
+    dry_run: bool,
+    policy: ConflictPolicy,
+    cancel: &CancelToken,
+) -> Result<()> {
+    let client = PlaymatchClient::new(args.api_base.as_deref());
+    let dat = resolve_fixdat_dat(&client, args, cancel).await?;
+    info!("using DAT {} (version {})", dat.name, dat.current_version);
+
+    let games = client
+        .dat_file_games(&dat.id, true, progress, cancel)
+        .await?;
+    let total_games = games.len();
+
+    // Digest the local library into a hash index.
+    let units = dat_collect(&args.input, args.max_depth).await?;
+    total_progress_hash(progress, units.len());
+    let mut index = LocalHashIndex::default();
+    for unit in &units {
+        if cancel.is_cancelled() {
+            return Err(DatError::Cancelled.into());
+        }
+        match digest_unit(unit, algos_index(), progress, cancel).await {
+            Ok(RomDigests::Single(d)) => index.insert(&d),
+            Ok(RomDigests::Tracks { tracks, .. }) => index.insert_tracks(&tracks),
+            Err(e) => match digest_bucket_dat(e)? {
+                None => {}
+                Some(msg) => warn!("skipping {}: {msg}", unit.display_path().display()),
+            },
+        }
+    }
+
+    let entries = diff_library(&games, &index);
+    let missing_files: usize = entries.iter().map(|e| e.missing.len()).sum();
+
+    if dry_run {
+        info!(
+            "[dry-run] missing {} of {} games ({} files); would write {}",
+            entries.len(),
+            total_games,
+            missing_files,
+            args.output.display()
+        );
+        return Ok(());
+    }
+
+    let out_path = match resolve_conflict(&args.output, policy)? {
+        ConflictResolution::Skip => {
+            info!("skipped, output exists: {}", args.output.display());
+            return Ok(());
+        }
+        ConflictResolution::Write(p) => p,
+    };
+    let file = std::fs::File::create(&out_path)?;
+    let mut w = std::io::BufWriter::new(file);
+    write_fixdat_xml(&mut w, &dat, &entries)?;
+    use std::io::Write;
+    w.flush()?;
+    info!(
+        "missing {} of {} games ({} files); wrote {}",
+        entries.len(),
+        total_games,
+        missing_files,
+        out_path.display()
+    );
+    Ok(())
+}
+
+fn algos_index() -> &'static [HashAlgo] {
+    &[
+        HashAlgo::Crc32,
+        HashAlgo::Sha1,
+        HashAlgo::Md5,
+        HashAlgo::Sha256,
+    ]
+}
+
+fn total_progress_hash(progress: &dyn ProgressReporter, count: usize) {
+    progress.set_phase(&format!("Hashing {count} files"));
+}
+
+/// Resolve the one DAT to diff against: an explicit `--dat-id` is found by
+/// scanning the DAT list; otherwise the platform is resolved by name and its
+/// DATs are filtered by name/subset. An ambiguous result lists candidates and
+/// bails so the user can narrow it.
+async fn resolve_fixdat_dat(
+    client: &PlaymatchClient,
+    args: &DatFixdatArgs,
+    cancel: &CancelToken,
+) -> Result<DatFileSummary> {
+    if let Some(id) = &args.dat_id {
+        let all = client
+            .list_dat_files(&DatFileFilter::default(), cancel)
+            .await?;
+        return all
+            .into_iter()
+            .find(|d| &d.id == id)
+            .ok_or_else(|| anyhow::anyhow!("no DAT with id {id}"));
+    }
+
+    let platform_name = args
+        .platform
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("either --platform or --dat-id is required"))?;
+    let platforms = client.platforms_search(platform_name, cancel).await?;
+    let platform = platforms
+        .into_iter()
+        .find(|p| p.name.eq_ignore_ascii_case(platform_name))
+        .ok_or_else(|| anyhow::anyhow!("no platform matching \"{platform_name}\""))?;
+
+    let filter = DatFileFilter {
+        platform_id: Some(platform.id.clone()),
+        name: args.dat_name.clone(),
+        subset: args.subset.clone(),
+        ..DatFileFilter::default()
+    };
+    let mut candidates = client.list_dat_files(&filter, cancel).await?;
+    match candidates.len() {
+        0 => Err(anyhow::anyhow!(
+            "no DAT found for platform \"{platform_name}\" with the given filters"
+        )),
+        1 => Ok(candidates.remove(0)),
+        _ => {
+            warn!("multiple DATs match; narrow with --dat-name or --subset:");
+            for d in &candidates {
+                let subset = d.subset.as_deref().unwrap_or("-");
+                info!(
+                    "  {}  {}  subset={subset}  version={}",
+                    d.id, d.name, d.current_version
+                );
+            }
+            Err(anyhow::anyhow!("ambiguous DAT selection"))
+        }
+    }
 }

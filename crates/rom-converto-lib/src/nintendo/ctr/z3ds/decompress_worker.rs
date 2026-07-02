@@ -18,6 +18,7 @@
 use crate::nintendo::ctr::z3ds::error::{Z3dsError, Z3dsResult};
 use crate::nintendo::ctr::z3ds::seekable::{FrameEntry, parse_seek_table, read_seek_table_footer};
 use crate::util::CancelToken;
+use crate::util::hash::{FileDigests, HashAlgo, MultiHasher};
 use crate::util::pread::file_read_exact_at;
 use crate::util::worker_pool::{Pool, Worker, drive, parallelism};
 use std::io::{BufWriter, Write};
@@ -247,6 +248,58 @@ pub(super) fn decompress_frames(
     });
 
     scope_result
+}
+
+/// Digest-side twin of [`decompress_frames`]: the pool decompresses
+/// every frame in parallel and the ordered consume closure folds each
+/// frame into `hasher` instead of a writer thread. `drive`'s reorder
+/// buffer keeps strict frame order, so the digest matches one taken
+/// over the fully decompressed output. `size_bytes` is the sum of the
+/// declared uncompressed frame sizes.
+pub(super) fn digest_frames(
+    pool: &Pool<Z3dsDecompressWork, Z3dsDecompressedFrame, Z3dsError>,
+    work_items: Vec<Z3dsDecompressWork>,
+    algos: &[HashAlgo],
+    bytes_done: &Arc<AtomicU64>,
+    cancel: &CancelToken,
+) -> Z3dsResult<FileDigests> {
+    let num_frames = work_items.len() as u64;
+    let total_uncompressed: u64 = work_items.iter().map(|w| w.uncompressed_size as u64).sum();
+    let mut hasher = MultiHasher::new(algos);
+    if num_frames == 0 {
+        return Ok(hasher.finalize(0));
+    }
+
+    let max_uncompressed = work_items
+        .iter()
+        .map(|w| w.uncompressed_size)
+        .max()
+        .unwrap_or(0);
+    let max_in_flight = pick_max_in_flight(max_uncompressed);
+
+    let mut work_iter = work_items.into_iter();
+    drive(
+        pool,
+        num_frames,
+        max_in_flight,
+        |_seq| -> Z3dsResult<Z3dsDecompressWork> {
+            if cancel.is_cancelled() {
+                return Err(Z3dsError::Cancelled);
+            }
+            work_iter.next().ok_or_else(|| {
+                Z3dsError::IoError(std::io::Error::other(
+                    "work iterator exhausted before drive() finished",
+                ))
+            })
+        },
+        |_seq, out| -> Z3dsResult<()> {
+            hasher.update(&out.bytes);
+            bytes_done.fetch_add(out.bytes.len() as u64, Ordering::Relaxed);
+            Ok(())
+        },
+    )?;
+
+    Ok(hasher.finalize(total_uncompressed))
 }
 
 #[cfg(test)]

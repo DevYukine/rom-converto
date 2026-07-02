@@ -15,7 +15,7 @@ mod seekable;
 pub use compress::{
     DEFAULT_ZSTD_LEVEL, MAX_ZSTD_LEVEL, MIN_ZSTD_LEVEL, compress_rom, compress_rom_cancellable,
 };
-pub use decompress::{decompress_rom, decompress_rom_cancellable};
+pub use decompress::{decompress_rom, decompress_rom_cancellable, digest_z3ds_inner};
 pub use seekable::decode_seekable;
 
 const COMPRESS_EXTS: &[&str] = &["cia", "cci", "3ds", "cxi", "3dsx"];

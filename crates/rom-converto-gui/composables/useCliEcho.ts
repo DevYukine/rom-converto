@@ -284,6 +284,28 @@ export function buildCliCommand(command: string, args: Record<string, unknown>):
         quote(str(args.scanDir)),
       ]);
     }
+    case "cmd_dat_verify":
+      return join(["dat", "verify", quote(str(args.input))]);
+    case "cmd_dat_scan": {
+      const depth = args.maxDepth as number | null | undefined;
+      return join([
+        "dat", "scan",
+        depth != null ? `--max-depth ${depth}` : false,
+        quote(str(args.input)),
+      ]);
+    }
+    case "cmd_dat_rename": {
+      const depth = args.maxDepth as number | null | undefined;
+      const policy = str(args.onConflict);
+      return join([
+        "dat", "rename",
+        "-R",
+        depth != null ? `--max-depth ${depth}` : false,
+        args.dryRun === true && "--dry-run",
+        policy && `--on-conflict ${policy}`,
+        quote(str(args.input)),
+      ]);
+    }
     default:
       return "";
   }

@@ -1,9 +1,10 @@
 use crate::nintendo::ctr::z3ds::decompress_worker::{
-    Z3dsDecompressWork, Z3dsDecompressedFrame, decompress_frames, make_z3ds_decompress_workers,
-    plan_decompress_work,
+    Z3dsDecompressWork, Z3dsDecompressedFrame, decompress_frames, digest_frames,
+    make_z3ds_decompress_workers, plan_decompress_work,
 };
 use crate::nintendo::ctr::z3ds::error::{Z3dsError, Z3dsResult};
 use crate::nintendo::ctr::z3ds::models::Z3dsHeader;
+use crate::util::hash::{FileDigests, HashAlgo};
 use crate::util::worker_pool::{Pool, parallelism};
 use crate::util::{BYTES_PER_MB, CancelToken, ProgressReporter, await_with_progress_cancel};
 use binrw::BinRead;
@@ -166,4 +167,106 @@ pub async fn decompress_rom_cancellable(
     );
 
     Ok(())
+}
+
+/// Digest a Z3DS container's decoded content in a single streaming
+/// pass, no temp files, mirroring [`decompress_rom_cancellable`]'s
+/// blocking body but folding each decompressed frame into the hashers
+/// instead of a `BufWriter`. The returned `size_bytes` is the decoded
+/// ROM size.
+///
+/// Synchronous: intended to run inside the caller's `spawn_blocking`.
+/// Progress is relayed through the shared `bytes_done` counter.
+pub fn digest_z3ds_inner(
+    input: &Path,
+    algos: &[HashAlgo],
+    bytes_done: &Arc<AtomicU64>,
+    cancel: &CancelToken,
+) -> Z3dsResult<FileDigests> {
+    let mut header_file = std::fs::File::open(input)?;
+    let mut header_buf = vec![0u8; 0x20];
+    header_file.read_exact(&mut header_buf)?;
+    let header = Z3dsHeader::read(&mut Cursor::new(&header_buf))?;
+    drop(header_file);
+    if header.version != 1 {
+        return Err(Z3dsError::UnsupportedVersion(header.version));
+    }
+
+    let payload_offset = header.header_size as u64 + header.metadata_size as u64;
+    let compressed_size = header.compressed_size;
+    let uncompressed_size = header.uncompressed_size;
+
+    let in_file = Arc::new(std::fs::File::open(input)?);
+    let work_items = plan_decompress_work(&in_file, payload_offset, compressed_size)?;
+
+    let n_threads = parallelism();
+    let workers = make_z3ds_decompress_workers(n_threads, &in_file)?;
+    let pool: Pool<Z3dsDecompressWork, Z3dsDecompressedFrame, Z3dsError> = Pool::spawn(workers);
+
+    let result = digest_frames(&pool, work_items, algos, bytes_done, cancel);
+    pool.shutdown();
+    let digests = result?;
+
+    if digests.size_bytes != uncompressed_size {
+        return Err(Z3dsError::DecompressedSizeMismatch {
+            expected: uncompressed_size,
+            actual: digests.size_bytes,
+        });
+    }
+
+    Ok(digests)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::compress::compress_rom;
+    use super::*;
+    use crate::nintendo::ctr::z3ds::models::underlying_magic;
+    use crate::util::NoProgress;
+    use crate::util::hash::{HashAlgo, hash_file};
+
+    fn fake_3dsx(size: usize) -> Vec<u8> {
+        let mut data = vec![0u8; size];
+        data[0..4].copy_from_slice(&underlying_magic::THREEDSX);
+        for (i, b) in data.iter_mut().enumerate().skip(4) {
+            *b = (i % 251) as u8;
+        }
+        data
+    }
+
+    /// digest_z3ds_inner must equal a plain hash of the decompressed
+    /// ROM. Uses a multi-frame input so the pooled per-frame fold and
+    /// the seek-table path are exercised.
+    #[tokio::test]
+    async fn digest_z3ds_inner_matches_decompressed_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw = dir.path().join("app.3dsx");
+        let compressed = dir.path().join("app.z3dsx");
+        let decompressed = dir.path().join("app_out.3dsx");
+
+        let original = fake_3dsx(2 * 1024 * 1024 + 123);
+        tokio::fs::write(&raw, &original).await.unwrap();
+
+        compress_rom(&raw, &compressed, None, false, &NoProgress)
+            .await
+            .unwrap();
+        decompress_rom(&compressed, &decompressed, &NoProgress)
+            .await
+            .unwrap();
+
+        let algos = [HashAlgo::Crc32, HashAlgo::Sha1, HashAlgo::Sha256];
+        let bytes_done = Arc::new(AtomicU64::new(0));
+        let inner = {
+            let compressed = compressed.clone();
+            tokio::task::spawn_blocking(move || {
+                digest_z3ds_inner(&compressed, &algos, &bytes_done, &CancelToken::new())
+            })
+            .await
+            .unwrap()
+            .unwrap()
+        };
+        let direct = hash_file(&decompressed, &algos, &NoProgress).unwrap();
+        assert_eq!(inner, direct);
+        assert_eq!(inner.size_bytes, original.len() as u64);
+    }
 }

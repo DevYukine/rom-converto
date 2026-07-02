@@ -21,6 +21,7 @@ pub struct UserConfig {
     pub chd: Option<ChdDefaults>,
     pub cso: Option<CsoDefaults>,
     pub wup: Option<WupDefaults>,
+    pub dat: Option<DatDefaults>,
     #[serde(default)]
     pub presets: HashMap<String, Preset>,
 }
@@ -78,6 +79,13 @@ pub struct WupDefaults {
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct DatDefaults {
+    pub api_base: Option<String>,
+    pub report: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Preset {
     pub dol: Option<DiscDefaults>,
     pub rvl: Option<DiscDefaults>,
@@ -85,6 +93,7 @@ pub struct Preset {
     pub chd: Option<ChdDefaults>,
     pub cso: Option<CsoDefaults>,
     pub wup: Option<WupDefaults>,
+    pub dat: Option<DatDefaults>,
 }
 
 /// Ordered list of paths to probe for a config file. An explicit path
@@ -175,12 +184,14 @@ fn resolve_paths(cfg: &mut UserConfig, base: &Path) {
     resolve_nx(cfg.nx.as_mut(), base);
     resolve_chd(cfg.chd.as_mut(), base);
     resolve_cso(cfg.cso.as_mut(), base);
+    resolve_dat(cfg.dat.as_mut(), base);
     for preset in cfg.presets.values_mut() {
         resolve_disc(preset.dol.as_mut(), base);
         resolve_disc(preset.rvl.as_mut(), base);
         resolve_nx(preset.nx.as_mut(), base);
         resolve_chd(preset.chd.as_mut(), base);
         resolve_cso(preset.cso.as_mut(), base);
+        resolve_dat(preset.dat.as_mut(), base);
     }
 }
 
@@ -216,6 +227,12 @@ fn resolve_chd(d: Option<&mut ChdDefaults>, base: &Path) {
 fn resolve_cso(d: Option<&mut CsoDefaults>, base: &Path) {
     if let Some(d) = d {
         resolve_relative(base, &mut d.output_dir);
+        resolve_relative(base, &mut d.report);
+    }
+}
+
+fn resolve_dat(d: Option<&mut DatDefaults>, base: &Path) {
+    if let Some(d) = d {
         resolve_relative(base, &mut d.report);
     }
 }
@@ -317,6 +334,50 @@ mod tests {
     fn absolute_output_dir_unchanged() {
         let cfg = parse_str("[dol]\noutput_dir = \"/abs/out\"\n", base()).unwrap();
         assert_eq!(cfg.dol.unwrap().output_dir.unwrap(), Path::new("/abs/out"));
+    }
+
+    #[test]
+    fn parses_dat_api_base() {
+        let cfg = parse_str(
+            "[dat]\napi_base = \"https://example.test/api/v2\"\n",
+            base(),
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.dat.unwrap().api_base.as_deref(),
+            Some("https://example.test/api/v2")
+        );
+    }
+
+    #[test]
+    fn dat_unknown_field_is_error() {
+        assert!(parse_str("[dat]\nbogus = 1\n", base()).is_err());
+    }
+
+    #[test]
+    fn dat_relative_report_resolved_against_config_dir() {
+        let cfg = parse_str("[dat]\nreport = \"dat-report.json\"\n", base()).unwrap();
+        assert_eq!(
+            cfg.dat.unwrap().report.unwrap(),
+            Path::new(BASE).join("dat-report.json")
+        );
+    }
+
+    #[test]
+    fn preset_dat_overrides_config_dat() {
+        let cfg = parse_str(
+            "[dat]\napi_base = \"https://config.test/api/v2\"\n[presets.p.dat]\napi_base = \"https://preset.test/api/v2\"\n",
+            base(),
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.presets["p"].dat.as_ref().unwrap().api_base.as_deref(),
+            Some("https://preset.test/api/v2")
+        );
+        assert_eq!(
+            cfg.dat.as_ref().unwrap().api_base.as_deref(),
+            Some("https://config.test/api/v2")
+        );
     }
 
     #[test]

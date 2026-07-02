@@ -1,5 +1,6 @@
 use rom_converto_lib::config::{
-    ChdDefaults, CsoDefaults, DiscDefaults, NxDefaults, Preset, UserConfig, WupDefaults,
+    ChdDefaults, CsoDefaults, DatDefaults, DiscDefaults, NxDefaults, Preset, UserConfig,
+    WupDefaults,
 };
 use rom_converto_lib::util::ConflictPolicy;
 
@@ -15,6 +16,7 @@ pub struct Effective {
     pub chd: ChdDefaults,
     pub cso: CsoDefaults,
     pub wup: WupDefaults,
+    pub dat: DatDefaults,
 }
 
 pub fn resolve(cfg: &UserConfig, preset: Option<&Preset>) -> Effective {
@@ -25,6 +27,7 @@ pub fn resolve(cfg: &UserConfig, preset: Option<&Preset>) -> Effective {
         chd: merge_chd(preset.and_then(|p| p.chd.as_ref()), cfg.chd.as_ref()),
         cso: merge_cso(preset.and_then(|p| p.cso.as_ref()), cfg.cso.as_ref()),
         wup: merge_wup(preset.and_then(|p| p.wup.as_ref()), cfg.wup.as_ref()),
+        dat: merge_dat(preset.and_then(|p| p.dat.as_ref()), cfg.dat.as_ref()),
     }
 }
 
@@ -124,6 +127,19 @@ fn merge_wup(top: Option<&WupDefaults>, base: Option<&WupDefaults>) -> WupDefaul
         on_conflict: pick(
             top.and_then(|t| t.on_conflict.clone()),
             base.and_then(|b| b.on_conflict.clone()),
+        ),
+    }
+}
+
+fn merge_dat(top: Option<&DatDefaults>, base: Option<&DatDefaults>) -> DatDefaults {
+    DatDefaults {
+        api_base: pick(
+            top.and_then(|t| t.api_base.clone()),
+            base.and_then(|b| b.api_base.clone()),
+        ),
+        report: pick(
+            top.and_then(|t| t.report.clone()),
+            base.and_then(|b| b.report.clone()),
         ),
     }
 }
@@ -288,6 +304,76 @@ mod tests {
             policy_fallback(&Some("skip".to_string())).unwrap(),
             ConflictPolicy::Skip
         );
+    }
+
+    #[test]
+    fn merge_dat_preset_over_config() {
+        let cfg = UserConfig {
+            dat: Some(DatDefaults {
+                api_base: Some("https://config.test/api/v2".into()),
+                ..Default::default()
+            }),
+            ..UserConfig::default()
+        };
+        let preset = Preset {
+            dat: Some(DatDefaults {
+                api_base: Some("https://preset.test/api/v2".into()),
+                ..Default::default()
+            }),
+            ..Preset::default()
+        };
+        let eff = resolve(&cfg, Some(&preset));
+        assert_eq!(
+            eff.dat.api_base.as_deref(),
+            Some("https://preset.test/api/v2")
+        );
+    }
+
+    #[test]
+    fn merge_dat_config_used_when_no_preset() {
+        let cfg = UserConfig {
+            dat: Some(DatDefaults {
+                api_base: Some("https://config.test/api/v2".into()),
+                ..Default::default()
+            }),
+            ..UserConfig::default()
+        };
+        let eff = resolve(&cfg, None);
+        assert_eq!(
+            eff.dat.api_base.as_deref(),
+            Some("https://config.test/api/v2")
+        );
+    }
+
+    #[test]
+    fn merge_dat_none_when_neither() {
+        let eff = resolve(&UserConfig::default(), None);
+        assert_eq!(eff.dat.api_base, None);
+        assert_eq!(eff.dat.report, None);
+    }
+
+    #[test]
+    fn merge_dat_field_independence() {
+        let cfg = UserConfig {
+            dat: Some(DatDefaults {
+                api_base: Some("https://config.test/api/v2".into()),
+                ..Default::default()
+            }),
+            ..UserConfig::default()
+        };
+        let preset = Preset {
+            dat: Some(DatDefaults {
+                report: Some(PathBuf::from("dat-report.json")),
+                ..Default::default()
+            }),
+            ..Preset::default()
+        };
+        let eff = resolve(&cfg, Some(&preset));
+        assert_eq!(
+            eff.dat.api_base.as_deref(),
+            Some("https://config.test/api/v2")
+        );
+        assert_eq!(eff.dat.report, Some(PathBuf::from("dat-report.json")));
     }
 
     #[test]

@@ -46,6 +46,56 @@ impl FileDigests {
     }
 }
 
+/// A set of streaming hashers, one per requested algorithm, fed the
+/// same byte chunks in a single pass. Each selected hasher is an
+/// `Option` so unrequested algorithms allocate no state and cost
+/// nothing in the update loop.
+pub struct MultiHasher {
+    crc: Option<crc::Digest<'static, u32>>,
+    sha1: Option<sha1::Sha1>,
+    md5: Option<md_5::Md5>,
+    sha256: Option<sha2::Sha256>,
+}
+
+static CRC32_ISO_HDLC: Crc<u32> = Crc::<u32>::new(&CRC_32_ISO_HDLC);
+
+impl MultiHasher {
+    pub fn new(algos: &[HashAlgo]) -> Self {
+        let want = |a: HashAlgo| algos.contains(&a);
+        Self {
+            crc: want(HashAlgo::Crc32).then(|| CRC32_ISO_HDLC.digest()),
+            sha1: want(HashAlgo::Sha1).then(sha1::Sha1::new),
+            md5: want(HashAlgo::Md5).then(md_5::Md5::new),
+            sha256: want(HashAlgo::Sha256).then(sha2::Sha256::new),
+        }
+    }
+
+    pub fn update(&mut self, chunk: &[u8]) {
+        if let Some(d) = self.crc.as_mut() {
+            d.update(chunk);
+        }
+        if let Some(h) = self.sha1.as_mut() {
+            h.update(chunk);
+        }
+        if let Some(h) = self.md5.as_mut() {
+            h.update(chunk);
+        }
+        if let Some(h) = self.sha256.as_mut() {
+            h.update(chunk);
+        }
+    }
+
+    pub fn finalize(self, size_bytes: u64) -> FileDigests {
+        FileDigests {
+            crc32: self.crc.map(|d| format!("{:08x}", d.finalize())),
+            sha1: self.sha1.map(|h| hex::encode(h.finalize())),
+            md5: self.md5.map(|h| hex::encode(h.finalize())),
+            sha256: self.sha256.map(|h| hex::encode(h.finalize())),
+            size_bytes,
+        }
+    }
+}
+
 /// Parse a comma-separated `--algo` value into a deduplicated set of
 /// algorithms, normalized to a stable column order (crc32, sha1, md5,
 /// sha256) regardless of how the user ordered them.
@@ -101,18 +151,12 @@ pub fn hash_file_cancellable(
     progress: &dyn ProgressReporter,
     cancel: &CancelToken,
 ) -> std::io::Result<FileDigests> {
-    let want = |a: HashAlgo| algos.contains(&a);
-
     let mut file = std::fs::File::open(path)?;
     let size_bytes = file.metadata()?.len();
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
     progress.start(size_bytes, &format!("Hashing {name}"));
 
-    let crc_algo = Crc::<u32>::new(&CRC_32_ISO_HDLC);
-    let mut crc = want(HashAlgo::Crc32).then(|| crc_algo.digest());
-    let mut sha1 = want(HashAlgo::Sha1).then(sha1::Sha1::new);
-    let mut md5 = want(HashAlgo::Md5).then(md_5::Md5::new);
-    let mut sha256 = want(HashAlgo::Sha256).then(sha2::Sha256::new);
+    let mut hasher = MultiHasher::new(algos);
 
     let mut buf = vec![0u8; 4 * 1024 * 1024];
     loop {
@@ -126,30 +170,12 @@ pub fn hash_file_cancellable(
                 "operation cancelled",
             ));
         }
-        let chunk = &buf[..n];
-        if let Some(d) = crc.as_mut() {
-            d.update(chunk);
-        }
-        if let Some(h) = sha1.as_mut() {
-            h.update(chunk);
-        }
-        if let Some(h) = md5.as_mut() {
-            h.update(chunk);
-        }
-        if let Some(h) = sha256.as_mut() {
-            h.update(chunk);
-        }
+        hasher.update(&buf[..n]);
         progress.inc(n as u64);
     }
     progress.finish();
 
-    Ok(FileDigests {
-        crc32: crc.map(|d| format!("{:08x}", d.finalize())),
-        sha1: sha1.map(|h| hex::encode(h.finalize())),
-        md5: md5.map(|h| hex::encode(h.finalize())),
-        sha256: sha256.map(|h| hex::encode(h.finalize())),
-        size_bytes,
-    })
+    Ok(hasher.finalize(size_bytes))
 }
 
 pub fn hash_file(
@@ -308,5 +334,72 @@ mod tests {
     fn parse_algos_rejects_empty() {
         assert!(parse_algos("").is_err());
         assert!(parse_algos(" , ").is_err());
+    }
+
+    fn multi_hash(data: &[u8], algos: &[HashAlgo]) -> FileDigests {
+        let mut h = MultiHasher::new(algos);
+        h.update(data);
+        h.finalize(data.len() as u64)
+    }
+
+    #[test]
+    fn multi_hasher_empty_known_answers() {
+        let d = multi_hash(b"", ALL);
+        assert_eq!(d.crc32.as_deref(), Some("00000000"));
+        assert_eq!(
+            d.sha1.as_deref(),
+            Some("da39a3ee5e6b4b0d3255bfef95601890afd80709")
+        );
+        assert_eq!(d.md5.as_deref(), Some("d41d8cd98f00b204e9800998ecf8427e"));
+        assert_eq!(
+            d.sha256.as_deref(),
+            Some("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+        );
+        assert_eq!(d.size_bytes, 0);
+    }
+
+    #[test]
+    fn multi_hasher_abc_known_answers() {
+        let d = multi_hash(b"abc", ALL);
+        assert_eq!(d.crc32.as_deref(), Some("352441c2"));
+        assert_eq!(
+            d.sha1.as_deref(),
+            Some("a9993e364706816aba3e25717850c26c9cd0d89d")
+        );
+        assert_eq!(d.md5.as_deref(), Some("900150983cd24fb0d6963f7d28e17f72"));
+        assert_eq!(
+            d.sha256.as_deref(),
+            Some("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+        );
+        assert_eq!(d.size_bytes, 3);
+    }
+
+    #[test]
+    fn multi_hasher_chunked_matches_single_update() {
+        let data: Vec<u8> = (0..10_000u32).map(|i| (i % 251) as u8).collect();
+        let one = multi_hash(&data, ALL);
+        let mut split = MultiHasher::new(ALL);
+        for chunk in data.chunks(97) {
+            split.update(chunk);
+        }
+        let split = split.finalize(data.len() as u64);
+        assert_eq!(one, split);
+    }
+
+    #[test]
+    fn multi_hasher_matches_hash_file() {
+        let data: Vec<u8> = (0..50_000u32).map(|i| (i % 253) as u8).collect();
+        let via_file = hash_bytes(&data, ALL);
+        let via_multi = multi_hash(&data, ALL);
+        assert_eq!(via_file, via_multi);
+    }
+
+    #[test]
+    fn multi_hasher_respects_requested_algos() {
+        let d = multi_hash(b"abc", &[HashAlgo::Sha256]);
+        assert!(d.sha256.is_some());
+        assert!(d.crc32.is_none());
+        assert!(d.sha1.is_none());
+        assert!(d.md5.is_none());
     }
 }

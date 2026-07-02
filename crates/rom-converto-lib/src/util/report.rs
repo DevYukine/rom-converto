@@ -431,6 +431,209 @@ td.num{{text-align:right;font-variant-numeric:tabular-nums}}</style>"
     Ok(())
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct DatReportRecord {
+    pub path: String,
+    pub verdict: String,
+    pub game_name: Option<String>,
+    pub game_id: Option<String>,
+    pub platform: Option<String>,
+    pub signature_group: Option<String>,
+    pub dat_version: Option<String>,
+    pub match_algo: Option<String>,
+    pub detail: Option<String>,
+    pub size_bytes: u64,
+    #[serde(serialize_with = "ser_status")]
+    pub status: FileStatus,
+    pub elapsed_ms: u64,
+    pub error: Option<String>,
+}
+
+/// Write a dat run report to `path`, reusing the same CSV/JSON/HTML
+/// infrastructure as `write_report`. Verdict and game metadata columns
+/// replace the conversion-shaped output/ratio columns, since a dat run
+/// identifies files rather than converting them.
+pub fn write_dat_report(
+    path: &Path,
+    records: &[DatReportRecord],
+    totals: &ReportTotals,
+    format: ReportFormat,
+) -> Result<()> {
+    let file = std::fs::File::create(path)
+        .with_context(|| format!("creating report file {}", path.display()))?;
+    let mut w = BufWriter::new(file);
+    match format {
+        ReportFormat::Csv => write_dat_csv(&mut w, records)?,
+        ReportFormat::Json => write_dat_json(&mut w, records, totals)?,
+        ReportFormat::Html => write_dat_html(&mut w, records, totals)?,
+    }
+    w.flush()?;
+    Ok(())
+}
+
+const DAT_CSV_HEADER: &str = "path,verdict,game_name,game_id,platform,signature_group,dat_version,match_algo,detail,size_bytes,status,elapsed_ms,error";
+
+fn write_dat_csv<W: Write>(w: &mut W, records: &[DatReportRecord]) -> Result<()> {
+    writeln!(w, "{DAT_CSV_HEADER}")?;
+    for r in records {
+        writeln!(
+            w,
+            "{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            csv_field(&r.path),
+            csv_field(&r.verdict),
+            csv_field(r.game_name.as_deref().unwrap_or("")),
+            csv_field(r.game_id.as_deref().unwrap_or("")),
+            csv_field(r.platform.as_deref().unwrap_or("")),
+            csv_field(r.signature_group.as_deref().unwrap_or("")),
+            csv_field(r.dat_version.as_deref().unwrap_or("")),
+            csv_field(r.match_algo.as_deref().unwrap_or("")),
+            csv_field(r.detail.as_deref().unwrap_or("")),
+            r.size_bytes,
+            status_str(r.status),
+            r.elapsed_ms,
+            csv_field(r.error.as_deref().unwrap_or("")),
+        )?;
+    }
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct DatReportDoc<'a> {
+    files: &'a [DatReportRecord],
+    totals: &'a ReportTotals,
+}
+
+fn write_dat_json<W: Write>(
+    w: &mut W,
+    records: &[DatReportRecord],
+    totals: &ReportTotals,
+) -> Result<()> {
+    let doc = DatReportDoc {
+        files: records,
+        totals,
+    };
+    serde_json::to_writer_pretty(&mut *w, &doc)?;
+    writeln!(w)?;
+    Ok(())
+}
+
+fn write_dat_html<W: Write>(
+    w: &mut W,
+    records: &[DatReportRecord],
+    totals: &ReportTotals,
+) -> Result<()> {
+    writeln!(w, "<!DOCTYPE html>")?;
+    writeln!(w, "<html lang=\"en\">")?;
+    writeln!(w, "<head>")?;
+    writeln!(w, "<meta charset=\"utf-8\">")?;
+    writeln!(w, "<title>rom-converto dat report</title>")?;
+    writeln!(
+        w,
+        "<style>body{{font-family:sans-serif;margin:1.5rem}}\
+table{{border-collapse:collapse;width:100%}}\
+th,td{{border:1px solid #ccc;padding:4px 8px;text-align:left;font-size:14px}}\
+thead th{{background:#f0f0f0}}\
+tfoot td{{font-weight:bold;background:#f7f7f7}}\
+td.num{{text-align:right;font-variant-numeric:tabular-nums}}</style>"
+    )?;
+    writeln!(w, "</head>")?;
+    writeln!(w, "<body>")?;
+    writeln!(w, "<h1>Dat report</h1>")?;
+    writeln!(w, "<table>")?;
+    writeln!(w, "<thead><tr>")?;
+    for col in [
+        "Path",
+        "Verdict",
+        "Game",
+        "Game id",
+        "Platform",
+        "Signature group",
+        "Dat version",
+        "Match algo",
+        "Detail",
+        "Size",
+        "Status",
+        "Elapsed",
+        "Error",
+    ] {
+        write!(w, "<th>{col}</th>")?;
+    }
+    writeln!(w, "</tr></thead>")?;
+    writeln!(w, "<tbody>")?;
+    for r in records {
+        write!(w, "<tr>")?;
+        write!(w, "<td>{}</td>", html_escape(&r.path))?;
+        write!(w, "<td>{}</td>", html_escape(&r.verdict))?;
+        write!(
+            w,
+            "<td>{}</td>",
+            html_escape(r.game_name.as_deref().unwrap_or(""))
+        )?;
+        write!(
+            w,
+            "<td>{}</td>",
+            html_escape(r.game_id.as_deref().unwrap_or(""))
+        )?;
+        write!(
+            w,
+            "<td>{}</td>",
+            html_escape(r.platform.as_deref().unwrap_or(""))
+        )?;
+        write!(
+            w,
+            "<td>{}</td>",
+            html_escape(r.signature_group.as_deref().unwrap_or(""))
+        )?;
+        write!(
+            w,
+            "<td>{}</td>",
+            html_escape(r.dat_version.as_deref().unwrap_or(""))
+        )?;
+        write!(
+            w,
+            "<td>{}</td>",
+            html_escape(r.match_algo.as_deref().unwrap_or(""))
+        )?;
+        write!(
+            w,
+            "<td>{}</td>",
+            html_escape(r.detail.as_deref().unwrap_or(""))
+        )?;
+        write!(w, "<td class=\"num\">{}</td>", format_bytes(r.size_bytes))?;
+        write!(w, "<td>{}</td>", status_str(r.status))?;
+        write!(w, "<td class=\"num\">{} ms</td>", r.elapsed_ms)?;
+        write!(
+            w,
+            "<td>{}</td>",
+            html_escape(r.error.as_deref().unwrap_or(""))
+        )?;
+        writeln!(w, "</tr>")?;
+    }
+    writeln!(w, "</tbody>")?;
+    writeln!(w, "<tfoot><tr>")?;
+    write!(
+        w,
+        "<td>{} files ({} ok, {} skipped, {} failed)</td>",
+        totals.total_files, totals.ok, totals.skipped, totals.failed
+    )?;
+    for _ in 0..8 {
+        write!(w, "<td></td>")?;
+    }
+    write!(
+        w,
+        "<td class=\"num\">{}</td>",
+        format_bytes(totals.total_input_bytes)
+    )?;
+    write!(w, "<td></td>")?;
+    write!(w, "<td class=\"num\">{} ms</td>", totals.elapsed_ms)?;
+    write!(w, "<td></td>")?;
+    writeln!(w, "</tr></tfoot>")?;
+    writeln!(w, "</table>")?;
+    writeln!(w, "</body>")?;
+    writeln!(w, "</html>")?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -792,6 +995,127 @@ mod tests {
     fn hash_report_has_no_unicode_dashes() {
         for format in [ReportFormat::Csv, ReportFormat::Json, ReportFormat::Html] {
             let out = render_hash(&[hash_ok_record()], format);
+            assert!(!out.contains('\u{2014}'), "em dash in {format:?}");
+            assert!(!out.contains('\u{2013}'), "en dash in {format:?}");
+        }
+    }
+
+    fn dat_ok_record() -> DatReportRecord {
+        DatReportRecord {
+            path: "game.chd".into(),
+            verdict: "verified".into(),
+            game_name: Some("Some Game (USA)".into()),
+            game_id: Some("g-1".into()),
+            platform: Some("PlayStation".into()),
+            signature_group: Some("Redump".into()),
+            dat_version: Some("2026-06-01".into()),
+            match_algo: Some("sha1".into()),
+            detail: None,
+            size_bytes: 700_000_000,
+            status: FileStatus::Ok,
+            elapsed_ms: 850,
+            error: None,
+        }
+    }
+
+    fn render_dat(records: &[DatReportRecord], format: ReportFormat) -> String {
+        let totals = ReportTotals::default();
+        let mut buf = Vec::new();
+        match format {
+            ReportFormat::Csv => write_dat_csv(&mut buf, records).unwrap(),
+            ReportFormat::Json => write_dat_json(&mut buf, records, &totals).unwrap(),
+            ReportFormat::Html => write_dat_html(&mut buf, records, &totals).unwrap(),
+        }
+        String::from_utf8(buf).unwrap()
+    }
+
+    #[test]
+    fn dat_csv_header_and_one_row() {
+        let out = render_dat(&[dat_ok_record()], ReportFormat::Csv);
+        let mut lines = out.lines();
+        assert_eq!(lines.next().unwrap(), DAT_CSV_HEADER);
+        let row = lines.next().unwrap();
+        assert_eq!(
+            row,
+            "game.chd,verified,Some Game (USA),g-1,PlayStation,Redump,2026-06-01,sha1,,700000000,ok,850,",
+            "{row}"
+        );
+    }
+
+    #[test]
+    fn dat_csv_escapes_comma_in_game_name() {
+        let mut rec = dat_ok_record();
+        rec.game_name = Some("Some Game, Special Edition (USA)".into());
+        let out = render_dat(&[rec], ReportFormat::Csv);
+        assert!(
+            out.contains("\"Some Game, Special Edition (USA)\""),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn dat_csv_escapes_quote_in_detail() {
+        let mut rec = dat_ok_record();
+        rec.detail = Some("track \"01\" ok".into());
+        let out = render_dat(&[rec], ReportFormat::Csv);
+        assert!(out.contains("\"track \"\"01\"\" ok\""), "{out}");
+    }
+
+    #[test]
+    fn dat_csv_row_with_all_fields_empty() {
+        let rec = DatReportRecord {
+            path: "unknown.iso".into(),
+            verdict: "unknown".into(),
+            game_name: None,
+            game_id: None,
+            platform: None,
+            signature_group: None,
+            dat_version: None,
+            match_algo: None,
+            detail: None,
+            size_bytes: 0,
+            status: FileStatus::Failed,
+            elapsed_ms: 5,
+            error: Some("boom".into()),
+        };
+        let out = render_dat(&[rec], ReportFormat::Csv);
+        let row = out.lines().nth(1).unwrap();
+        assert_eq!(row, "unknown.iso,unknown,,,,,,,,0,failed,5,boom", "{row}");
+    }
+
+    #[test]
+    fn dat_json_schema() {
+        let out = render_dat(&[dat_ok_record()], ReportFormat::Json);
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["files"][0]["verdict"], "verified");
+        assert_eq!(v["files"][0]["game_name"], "Some Game (USA)");
+        assert_eq!(v["files"][0]["match_algo"], "sha1");
+        assert_eq!(v["files"][0]["status"], "ok");
+        assert!(v["files"][0]["detail"].is_null());
+    }
+
+    #[test]
+    fn dat_html_has_verdict_and_game_columns() {
+        let out = render_dat(&[dat_ok_record()], ReportFormat::Html);
+        assert!(out.contains("<th>Verdict</th>"), "{out}");
+        assert!(out.contains("<th>Game</th>"), "{out}");
+        assert!(out.contains("Some Game (USA)"), "{out}");
+        assert!(out.contains("<tfoot"), "{out}");
+    }
+
+    #[test]
+    fn dat_html_escapes_angle_brackets_in_game_name() {
+        let mut rec = dat_ok_record();
+        rec.game_name = Some("<script>".into());
+        let out = render_dat(&[rec], ReportFormat::Html);
+        assert!(out.contains("&lt;script&gt;"), "{out}");
+        assert!(!out.contains("<script>"), "{out}");
+    }
+
+    #[test]
+    fn dat_report_has_no_unicode_dashes() {
+        for format in [ReportFormat::Csv, ReportFormat::Json, ReportFormat::Html] {
+            let out = render_dat(&[dat_ok_record()], format);
             assert!(!out.contains('\u{2014}'), "em dash in {format:?}");
             assert!(!out.contains('\u{2013}'), "en dash in {format:?}");
         }

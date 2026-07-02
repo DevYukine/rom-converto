@@ -6,6 +6,7 @@
 pub mod conflict;
 pub mod fs;
 pub mod hash;
+pub mod http;
 pub mod iso9660;
 pub mod maker_codes;
 pub mod pixel;

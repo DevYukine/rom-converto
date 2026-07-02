@@ -9,6 +9,15 @@ use rom_converto_lib::cso::{
     verify_cso,
 };
 use rom_converto_lib::cue::merge::merge_bin;
+use rom_converto_lib::dat::model::{
+    BulkIdentifyIdsResult, BulkIdentifyItem, BulkItemStatus, GameAndRelationMatchResult,
+    GameFileMatchSearch,
+};
+use rom_converto_lib::dat::rename::{RenameAction, RenameCandidate, RenamePlan, plan_renames};
+use rom_converto_lib::dat::verdict::{DatVerdict, MatchStrength, match_strength, reconcile_tracks};
+use rom_converto_lib::dat::{
+    DEFAULT_API_BASE, PlaymatchClient, RomDigests, TrackDigests, digest_inner_async,
+};
 use rom_converto_lib::info::{InfoOptions, InfoResult, read_info};
 use rom_converto_lib::nintendo::ctr::convert::{convert_rom_cancellable, derive_converted_path};
 use rom_converto_lib::nintendo::ctr::verify::{CtrVerifyOptions, verify_ctr};
@@ -40,9 +49,9 @@ use rom_converto_lib::playlist::{PlaylistMode, PlaylistOptions, plan_playlists};
 use rom_converto_lib::util::fs::{collect_all_files, collect_files_with_exts};
 use rom_converto_lib::util::{
     CancelToken, ConflictPolicy, ConflictResolution, DEFAULT_SPACE_HEADROOM, FileStatus, HashAlgo,
-    PlanLine, ReportFormat, ReportRecord, ReportTotals, TemplateTokens, apply_template,
-    available_space, format_bytes, hash_file_cancellable, parse_algos, resolve_conflict,
-    space_shortfall, write_report,
+    PlanLine, ProgressReporter, ReportFormat, ReportRecord, ReportTotals, TemplateTokens,
+    apply_template, available_space, format_bytes, hash_file_cancellable, parse_algos,
+    resolve_conflict, space_shortfall, write_report,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -2010,6 +2019,853 @@ pub async fn cmd_playlist(
     .map_err(err_to_string)?
 }
 
+// ---- dat verify/scan/rename ----
+//
+// Digesting and Playmatch calls are both async-native (digest_inner_async
+// already runs the blocking decode in spawn_blocking; PlaymatchClient is
+// plain reqwest), so these commands run on the Tauri async runtime directly,
+// unlike the CHD extract/verify commands above.
+
+#[derive(serde::Serialize)]
+struct DatTrackCheckJson {
+    track: u32,
+    ok: bool,
+    algo: Option<String>,
+    #[serde(rename = "matchedFile")]
+    matched_file: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct ExternalIdJson {
+    provider: String,
+    id: String,
+}
+
+#[derive(serde::Serialize)]
+struct DatVerifyResult {
+    kind: &'static str,
+    path: String,
+    verdict: &'static str,
+    #[serde(rename = "matchAlgo")]
+    match_algo: Option<String>,
+    #[serde(rename = "gameName")]
+    game_name: Option<String>,
+    platform: Option<String>,
+    #[serde(rename = "signatureGroup")]
+    signature_group: Option<String>,
+    #[serde(rename = "datVersion")]
+    dat_version: Option<String>,
+    #[serde(rename = "externalIds")]
+    external_ids: Vec<ExternalIdJson>,
+    tracks: Option<Vec<DatTrackCheckJson>>,
+    error: Option<String>,
+}
+
+/// External ids shown to the user: automatic or manual matches with a
+/// non-null provider id, matching the CLI's `identify` filter (D.4).
+fn external_ids_from(matched: &GameAndRelationMatchResult) -> Vec<ExternalIdJson> {
+    matched
+        .external_metadata
+        .iter()
+        .filter(|m| matches!(m.match_type.as_str(), "Automatic" | "Manual"))
+        .filter_map(|m| {
+            m.provider_id.clone().map(|id| ExternalIdJson {
+                provider: m.provider_name.clone(),
+                id,
+            })
+        })
+        .collect()
+}
+
+#[tauri::command]
+pub async fn cmd_dat_verify(
+    app: AppHandle,
+    state: State<'_, ActiveCancel>,
+    input: PathBuf,
+) -> Result<String, String> {
+    let progress = Arc::new(TauriProgress::new(app, "dat-verify"));
+    let token = begin(&state).await;
+    let result = run_dat_verify(progress, input.clone(), token).await;
+    finish(&state).await;
+    // Cancellation propagates as an Err carrying "operation cancelled" (G.4),
+    // matching the other verify commands and scan/rename. Any other failure
+    // still renders as a single Failed card so genuine digest/API errors do
+    // not abort the whole invoke.
+    let outcome = match result {
+        Ok(outcome) => outcome,
+        Err(rom_converto_lib::dat::DatError::Cancelled) => {
+            return Err("operation cancelled".to_string());
+        }
+        Err(e) => DatVerifyResult {
+            kind: "verify",
+            path: input.display().to_string(),
+            verdict: DatVerdict::Failed.as_str(),
+            match_algo: None,
+            game_name: None,
+            platform: None,
+            signature_group: None,
+            dat_version: None,
+            external_ids: Vec::new(),
+            tracks: None,
+            error: Some(e.to_string()),
+        },
+    };
+    serde_json::to_string(&outcome).map_err(err_to_string)
+}
+
+async fn run_dat_verify(
+    progress: Arc<TauriProgress>,
+    input: PathBuf,
+    token: CancelToken,
+) -> Result<DatVerifyResult, rom_converto_lib::dat::DatError> {
+    let algos = [
+        rom_converto_lib::util::HashAlgo::Crc32,
+        rom_converto_lib::util::HashAlgo::Sha1,
+    ];
+    let digests = digest_inner_async(
+        input.clone(),
+        algos.to_vec(),
+        progress.as_ref(),
+        token.clone(),
+    )
+    .await?;
+
+    let client = PlaymatchClient::new(Some(DEFAULT_API_BASE));
+    progress.set_phase("Querying");
+    let path_str = input.display().to_string();
+
+    match digests {
+        RomDigests::Single(d) => {
+            let file_name = input
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("file")
+                .to_string();
+            let search = GameFileMatchSearch::from_digests(&file_name, &d);
+            let matched = client.identify_relations(&search, &token).await?;
+            Ok(verify_result_from_single(path_str, &matched))
+        }
+        RomDigests::Tracks { tracks, whole } => {
+            let stem = input.file_stem().and_then(|n| n.to_str()).unwrap_or("file");
+            let whole_name = format!("{stem}.bin");
+            let whole_search = GameFileMatchSearch::from_digests(&whole_name, &whole);
+            let whole_match = client.identify_relations(&whole_search, &token).await?;
+            if match_strength(whole_match.game_match_type).is_verified() {
+                return Ok(verify_result_from_single(path_str, &whole_match));
+            }
+
+            let first_name = format!("{stem} (Track 1).bin");
+            let first_digests = &tracks[0].digests;
+            let first_search = GameFileMatchSearch::from_digests(&first_name, first_digests);
+            let track_match = client.identify_relations(&first_search, &token).await?;
+            Ok(verify_result_from_tracks(path_str, &track_match, &tracks))
+        }
+    }
+}
+
+fn verify_result_from_single(
+    path: String,
+    matched: &GameAndRelationMatchResult,
+) -> DatVerifyResult {
+    let strength = match_strength(matched.game_match_type);
+    let verdict = match strength {
+        MatchStrength::Verified(_) => DatVerdict::Verified,
+        MatchStrength::NameSizeHint => DatVerdict::Hint,
+        MatchStrength::NoMatch => DatVerdict::Unknown,
+    };
+    let match_algo = match strength {
+        MatchStrength::Verified(a) => Some(a.label().to_string()),
+        _ => None,
+    };
+    DatVerifyResult {
+        kind: "verify",
+        path,
+        verdict: verdict.as_str(),
+        match_algo,
+        game_name: matched.game.as_ref().map(|g| g.name.clone()),
+        platform: matched.platform.as_ref().map(|p| p.name.clone()),
+        signature_group: matched.signature_group.as_ref().map(|g| g.name.clone()),
+        dat_version: matched.dat_file_import.as_ref().map(|i| i.version.clone()),
+        external_ids: external_ids_from(matched),
+        tracks: None,
+        error: None,
+    }
+}
+
+fn verify_result_from_tracks(
+    path: String,
+    matched: &GameAndRelationMatchResult,
+    tracks: &[TrackDigests],
+) -> DatVerifyResult {
+    let reconciliation = reconcile_tracks(tracks, &matched.game_files);
+    // A track set is Verified only when every local track reconciles by a real
+    // hash. A hash-verified track 1 with an unreconciled other track is not
+    // whole-set verification.
+    let verdict = if reconciliation.all_ok {
+        DatVerdict::Verified
+    } else if match_strength(matched.game_match_type) == MatchStrength::NameSizeHint {
+        DatVerdict::Hint
+    } else {
+        DatVerdict::Unknown
+    };
+    let track_checks = reconciliation
+        .tracks
+        .iter()
+        .map(|t| DatTrackCheckJson {
+            track: t.track_number,
+            ok: t.ok,
+            algo: t.algo.map(|a| a.label().to_string()),
+            matched_file: t.matched_file.clone(),
+        })
+        .collect();
+    DatVerifyResult {
+        kind: "verify",
+        path,
+        verdict: verdict.as_str(),
+        match_algo: None,
+        game_name: matched.game.as_ref().map(|g| g.name.clone()),
+        platform: matched.platform.as_ref().map(|p| p.name.clone()),
+        signature_group: matched.signature_group.as_ref().map(|g| g.name.clone()),
+        dat_version: matched.dat_file_import.as_ref().map(|i| i.version.clone()),
+        external_ids: external_ids_from(matched),
+        tracks: Some(track_checks),
+        error: None,
+    }
+}
+
+#[derive(serde::Serialize)]
+struct DatScanRow {
+    path: String,
+    status: &'static str,
+    #[serde(rename = "gameName")]
+    game_name: Option<String>,
+    #[serde(rename = "canonicalStem")]
+    canonical_stem: Option<String>,
+    error: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct DatScanResult {
+    kind: &'static str,
+    matched: u32,
+    misnamed: u32,
+    hint: u32,
+    unknown: u32,
+    unsupported: u32,
+    failed: u32,
+    rows: Vec<DatScanRow>,
+}
+
+/// One local file plus its computed digests, carried through the scan/rename
+/// pipeline so a digest failure becomes a row instead of aborting the batch.
+enum DigestedUnit {
+    Ok { path: PathBuf, digests: RomDigests },
+    Unsupported { path: PathBuf },
+    Failed { path: PathBuf, error: String },
+}
+
+impl DigestedUnit {
+    fn path(&self) -> &Path {
+        match self {
+            DigestedUnit::Ok { path, .. }
+            | DigestedUnit::Unsupported { path }
+            | DigestedUnit::Failed { path, .. } => path,
+        }
+    }
+}
+
+/// Digest every file under `input_dir`, bucketing unsupported formats and
+/// per-file failures instead of aborting the whole scan/rename run, matching
+/// the CLI driver's read-only semantics (D.3).
+async fn digest_all(
+    progress: &TauriProgress,
+    input_dir: &Path,
+    max_depth: Option<usize>,
+    token: &CancelToken,
+) -> Result<Vec<DigestedUnit>, String> {
+    // Cue sheets and playlists are set descriptors, not hashable images: they
+    // are handled via cue grouping (rename) and would otherwise digest to an
+    // InvalidInput failure and surface as a spurious Failed row in scan.
+    let files: Vec<PathBuf> = collect_all_files(input_dir, max_depth)
+        .map_err(err_to_string)?
+        .into_iter()
+        .filter(|f| {
+            !f.extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("cue") || e.eq_ignore_ascii_case("m3u"))
+        })
+        .collect();
+    progress.set_phase("Hashing");
+    let algos = vec![
+        rom_converto_lib::util::HashAlgo::Crc32,
+        rom_converto_lib::util::HashAlgo::Sha1,
+    ];
+    let mut units = Vec::with_capacity(files.len());
+    for file in files {
+        if token.is_cancelled() {
+            return Err("operation cancelled".to_string());
+        }
+        match digest_inner_async(file.clone(), algos.clone(), progress, token.clone()).await {
+            Ok(digests) => units.push(DigestedUnit::Ok {
+                path: file,
+                digests,
+            }),
+            Err(rom_converto_lib::dat::DatError::UnsupportedInnerHash { .. }) => {
+                units.push(DigestedUnit::Unsupported { path: file })
+            }
+            Err(rom_converto_lib::dat::DatError::Cancelled) => {
+                return Err("operation cancelled".to_string());
+            }
+            Err(e) => units.push(DigestedUnit::Failed {
+                path: file,
+                error: e.to_string(),
+            }),
+        }
+    }
+    Ok(units)
+}
+
+/// The strongest single search key for one digested unit: the whole-image
+/// digest for track sets, the sole digest otherwise. This is what bulk
+/// scan/rename queries key on; per-track reconciliation is verify-only.
+fn primary_digests(digests: &RomDigests) -> &rom_converto_lib::util::FileDigests {
+    match digests {
+        RomDigests::Single(d) => d,
+        RomDigests::Tracks { whole, .. } => whole,
+    }
+}
+
+#[tauri::command]
+pub async fn cmd_dat_scan(
+    app: AppHandle,
+    state: State<'_, ActiveCancel>,
+    input: PathBuf,
+    #[allow(non_snake_case)] maxDepth: Option<usize>,
+) -> Result<String, String> {
+    let progress = Arc::new(TauriProgress::new(app, "dat-scan"));
+    let token = begin(&state).await;
+    let result = run_dat_scan(progress, input, maxDepth, token).await;
+    finish(&state).await;
+    let outcome = result?;
+    serde_json::to_string(&outcome).map_err(err_to_string)
+}
+
+async fn run_dat_scan(
+    progress: Arc<TauriProgress>,
+    input: PathBuf,
+    max_depth: Option<usize>,
+    token: CancelToken,
+) -> Result<DatScanResult, String> {
+    let units = digest_all(progress.as_ref(), &input, max_depth, &token).await?;
+
+    // Slot per unit, filled in either immediately (unsupported/failed) or
+    // after the bulk query resolves (queryable). Keeps output row order
+    // matching the walk order regardless of query completion order.
+    let mut slots: Vec<Option<DatScanRow>> = Vec::with_capacity(units.len());
+    let mut queryable = Vec::new();
+    for (i, unit) in units.iter().enumerate() {
+        match unit {
+            DigestedUnit::Ok { path, digests } => {
+                let file_name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("file")
+                    .to_string();
+                queryable.push((i, path.clone(), file_name, primary_digests(digests).clone()));
+                slots.push(None);
+            }
+            DigestedUnit::Unsupported { path } => slots.push(Some(DatScanRow {
+                path: path.display().to_string(),
+                status: DatVerdict::Unsupported.as_str(),
+                game_name: None,
+                canonical_stem: None,
+                error: None,
+            })),
+            DigestedUnit::Failed { path, error } => slots.push(Some(DatScanRow {
+                path: path.display().to_string(),
+                status: DatVerdict::Failed.as_str(),
+                game_name: None,
+                canonical_stem: None,
+                error: Some(error.clone()),
+            })),
+        }
+    }
+
+    let client = PlaymatchClient::new(Some(DEFAULT_API_BASE));
+    progress.set_phase("Querying");
+    let items: Vec<BulkIdentifyItem> = queryable
+        .iter()
+        .map(|(_, _, name, digests)| BulkIdentifyItem {
+            search: GameFileMatchSearch::from_digests(name, digests),
+            key: None,
+        })
+        .collect();
+    let bulk_results = client
+        .identify_bulk_ids(items, &token)
+        .await
+        .map_err(err_to_string)?;
+
+    let mut matched_ids: Vec<String> = Vec::new();
+    for r in &bulk_results {
+        if r.status == BulkItemStatus::Ok
+            && let Some(m) = &r.matched
+            && match_strength(m.game_match_type).is_verified()
+            && let Some(id) = &m.id
+        {
+            matched_ids.push(id.clone());
+        }
+    }
+    matched_ids.sort();
+    matched_ids.dedup();
+    let games = if matched_ids.is_empty() {
+        Vec::new()
+    } else {
+        client
+            .games_bulk(matched_ids, &token)
+            .await
+            .map_err(err_to_string)?
+    };
+    let name_for_id = |id: &str| -> Option<String> {
+        games
+            .iter()
+            .find(|g| g.id == id)
+            .and_then(|g| g.data.as_ref())
+            .map(|d| d.name.clone())
+    };
+
+    for (queryable_idx, (unit_idx, path, _, _)) in queryable.iter().enumerate() {
+        let result = bulk_results.iter().find(|r| r.index == queryable_idx);
+        slots[*unit_idx] = Some(scan_row_for(path, result, &name_for_id));
+    }
+
+    let mut tally = ScanTally::default();
+    let rows: Vec<DatScanRow> = slots
+        .into_iter()
+        .map(|slot| slot.expect("every unit gets exactly one row"))
+        .inspect(|row| tally.count(row.status))
+        .collect();
+
+    Ok(DatScanResult {
+        kind: "scan",
+        matched: tally.matched,
+        misnamed: tally.misnamed,
+        hint: tally.hint,
+        unknown: tally.unknown,
+        unsupported: tally.unsupported,
+        failed: tally.failed,
+        rows,
+    })
+}
+
+#[derive(Default)]
+struct ScanTally {
+    matched: u32,
+    misnamed: u32,
+    hint: u32,
+    unknown: u32,
+    unsupported: u32,
+    failed: u32,
+}
+
+impl ScanTally {
+    fn count(&mut self, status: &str) {
+        match status {
+            "matched" => self.matched += 1,
+            "misnamed" => self.misnamed += 1,
+            "hint" => self.hint += 1,
+            "unknown" => self.unknown += 1,
+            "unsupported" => self.unsupported += 1,
+            _ => self.failed += 1,
+        }
+    }
+}
+
+/// Classify one file's bulk-ids result into a scan row: a non-ok status
+/// becomes Failed (never silently dropped), NoMatch is Unknown, a
+/// FileNameAndSize match is Hint, and a hash-verified match is Matched
+/// unless the local stem differs from the canonical name (Misnamed).
+fn scan_row_for(
+    path: &Path,
+    result: Option<&BulkIdentifyIdsResult>,
+    name_for_id: &impl Fn(&str) -> Option<String>,
+) -> DatScanRow {
+    let path_str = path.display().to_string();
+    let Some(result) = result else {
+        return DatScanRow {
+            path: path_str,
+            status: DatVerdict::Failed.as_str(),
+            game_name: None,
+            canonical_stem: None,
+            error: Some("no result returned for this file".to_string()),
+        };
+    };
+    if result.status != BulkItemStatus::Ok {
+        let msg = result
+            .error
+            .as_ref()
+            .map(|e| e.message.clone())
+            .unwrap_or_else(|| "bulk identify item failed".to_string());
+        return DatScanRow {
+            path: path_str,
+            status: DatVerdict::Failed.as_str(),
+            game_name: None,
+            canonical_stem: None,
+            error: Some(msg),
+        };
+    }
+    let Some(matched) = &result.matched else {
+        return DatScanRow {
+            path: path_str,
+            status: DatVerdict::Unknown.as_str(),
+            game_name: None,
+            canonical_stem: None,
+            error: None,
+        };
+    };
+    match match_strength(matched.game_match_type) {
+        MatchStrength::NoMatch => DatScanRow {
+            path: path_str,
+            status: DatVerdict::Unknown.as_str(),
+            game_name: None,
+            canonical_stem: None,
+            error: None,
+        },
+        MatchStrength::NameSizeHint => DatScanRow {
+            path: path_str,
+            status: DatVerdict::Hint.as_str(),
+            game_name: None,
+            canonical_stem: None,
+            error: None,
+        },
+        MatchStrength::Verified(_) => {
+            let game_name = matched.id.as_deref().and_then(name_for_id);
+            let local_stem = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default();
+            // Scan's "matched" bucket has no DatVerdict counterpart (verify's
+            // Verified and scan's matched are the same hash-rung outcome, but
+            // G.4 spells the scan status "matched"); misnamed does map onto
+            // DatVerdict::Misnamed and goes through as_str() as usual.
+            let status = match &game_name {
+                Some(name) if !name.eq_ignore_ascii_case(local_stem) => {
+                    DatVerdict::Misnamed.as_str()
+                }
+                _ => "matched",
+            };
+            DatScanRow {
+                path: path_str,
+                status,
+                game_name: game_name.clone(),
+                canonical_stem: game_name,
+                error: None,
+            }
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+struct DatRenameRow {
+    from: String,
+    to: Option<String>,
+    action: &'static str,
+    detail: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct DatRenameResult {
+    kind: &'static str,
+    #[serde(rename = "dryRun")]
+    dry_run: bool,
+    renamed: u32,
+    skipped: u32,
+    failed: u32,
+    rows: Vec<DatRenameRow>,
+}
+
+#[tauri::command]
+pub async fn cmd_dat_rename(
+    app: AppHandle,
+    state: State<'_, ActiveCancel>,
+    input: PathBuf,
+    #[allow(non_snake_case)] maxDepth: Option<usize>,
+    #[allow(non_snake_case)] dryRun: bool,
+    #[allow(non_snake_case)] onConflict: String,
+) -> Result<String, String> {
+    let progress = Arc::new(TauriProgress::new(app, "dat-rename"));
+    let token = begin(&state).await;
+    let result = run_dat_rename(progress, input, maxDepth, dryRun, onConflict, token).await;
+    finish(&state).await;
+    let outcome = result?;
+    serde_json::to_string(&outcome).map_err(err_to_string)
+}
+
+/// Group cue members under `input_dir` into sets: each entry is a `.cue` path
+/// and its member .bin paths. Used to keep rename cue-aware so a member .bin is
+/// never renamed in isolation, which would dangle the cue's FILE line.
+async fn cue_sets_under(
+    input_dir: &Path,
+    max_depth: Option<usize>,
+) -> Result<Vec<(PathBuf, Vec<PathBuf>)>, String> {
+    use rom_converto_lib::cue::CueParser;
+    let files = collect_all_files(input_dir, max_depth).map_err(err_to_string)?;
+    let mut sets = Vec::new();
+    for cue in files.iter().filter(|f| {
+        f.extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("cue"))
+    }) {
+        let parent = cue.parent().unwrap_or_else(|| Path::new("."));
+        let Ok(sheet) = CueParser::new(cue).parse().await else {
+            continue;
+        };
+        let bins: Vec<PathBuf> = sheet
+            .files
+            .iter()
+            .map(|f| parent.join(&f.filename))
+            .collect();
+        if !bins.is_empty() {
+            sets.push((cue.clone(), bins));
+        }
+    }
+    Ok(sets)
+}
+
+async fn run_dat_rename(
+    progress: Arc<TauriProgress>,
+    input: PathBuf,
+    max_depth: Option<usize>,
+    dry_run: bool,
+    on_conflict: String,
+    token: CancelToken,
+) -> Result<DatRenameResult, String> {
+    let policy = conflict_policy(Some(on_conflict.as_str()));
+    let cue_sets = cue_sets_under(&input, max_depth).await?;
+    let cue_covered: std::collections::HashSet<PathBuf> = cue_sets
+        .iter()
+        .flat_map(|(cue, bins)| std::iter::once(cue.clone()).chain(bins.iter().cloned()))
+        .collect();
+    let units = digest_all(progress.as_ref(), &input, max_depth, &token).await?;
+
+    let client = PlaymatchClient::new(Some(DEFAULT_API_BASE));
+    progress.set_phase("Querying");
+
+    // Queryable units carry their local path and primary search digest; failed
+    // and unsupported units become non-participating rows and never rename.
+    let mut queryable: Vec<PathBuf> = Vec::new();
+    let mut items: Vec<BulkIdentifyItem> = Vec::new();
+    let mut rows: Vec<DatRenameRow> = Vec::new();
+    let mut renamed = 0u32;
+    let mut skipped = 0u32;
+    let mut failed = 0u32;
+
+    // One skip row per cue set; members are never renamed in isolation.
+    for (cue, _) in &cue_sets {
+        skipped += 1;
+        rows.push(DatRenameRow {
+            from: cue.display().to_string(),
+            to: None,
+            action: "skip-unmatched",
+            detail: Some("cue set: rename skipped to keep FILE lines consistent".to_string()),
+        });
+    }
+
+    for unit in &units {
+        // Cue files and their member bins are handled as a set above.
+        if cue_covered.contains(unit.path()) {
+            continue;
+        }
+        match unit {
+            DigestedUnit::Ok { path, digests } => {
+                let file_name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("file")
+                    .to_string();
+                items.push(BulkIdentifyItem {
+                    search: GameFileMatchSearch::from_digests(&file_name, primary_digests(digests)),
+                    key: None,
+                });
+                queryable.push(path.clone());
+            }
+            DigestedUnit::Unsupported { path } => {
+                skipped += 1;
+                rows.push(DatRenameRow {
+                    from: path.display().to_string(),
+                    to: None,
+                    action: "skip-unmatched",
+                    detail: Some("unsupported format".to_string()),
+                });
+            }
+            DigestedUnit::Failed { path, error } => {
+                failed += 1;
+                rows.push(DatRenameRow {
+                    from: path.display().to_string(),
+                    to: None,
+                    action: "failed",
+                    detail: Some(error.clone()),
+                });
+            }
+        }
+    }
+
+    let bulk_results = client
+        .identify_bulk_relations(items, &token)
+        .await
+        .map_err(err_to_string)?;
+
+    let candidates: Vec<RenameCandidate> = queryable
+        .iter()
+        .enumerate()
+        .map(|(i, path)| {
+            let matched = bulk_results
+                .iter()
+                .find(|r| r.index == i)
+                .filter(|r| r.status == BulkItemStatus::Ok)
+                .and_then(|r| r.matched.as_ref());
+            candidate_from_match(path, matched)
+        })
+        .collect();
+
+    for plan in &plan_renames(&candidates) {
+        let row = execute_rename_plan(plan, dry_run, policy);
+        match row.action {
+            "renamed" | "would-rename" => renamed += 1,
+            "failed" => failed += 1,
+            _ => skipped += 1,
+        }
+        rows.push(row);
+    }
+
+    Ok(DatRenameResult {
+        kind: "rename",
+        dry_run,
+        renamed,
+        skipped,
+        failed,
+        rows,
+    })
+}
+
+/// Build a rename candidate from a file's relations match. `verified` is set
+/// only for a hash-rung match (hints never rename, B.7); the file-level name
+/// is taken from the single matching gameFiles entry when the game has one.
+fn candidate_from_match(
+    path: &Path,
+    matched: Option<&GameAndRelationMatchResult>,
+) -> RenameCandidate {
+    let Some(matched) = matched else {
+        return RenameCandidate {
+            path: path.to_path_buf(),
+            game_id: None,
+            game_name: None,
+            file_name: None,
+            verified: false,
+        };
+    };
+    let verified = match_strength(matched.game_match_type).is_verified();
+    let file_name = if matched.game_files.len() == 1 {
+        Some(matched.game_files[0].file_name.clone())
+    } else {
+        None
+    };
+    RenameCandidate {
+        path: path.to_path_buf(),
+        game_id: matched.game.as_ref().map(|g| g.id.clone()),
+        game_name: matched.game.as_ref().map(|g| g.name.clone()),
+        file_name,
+        verified,
+    }
+}
+
+/// Turn one planned rename into a row, executing the filesystem move unless
+/// `dry_run`. A `Rename` action resolves the target against `policy`: a Skip
+/// resolution (target exists, policy Skip/Error/OverwriteInvalid) records a
+/// skip, a Write resolution moves the file. std::fs::rename replaces an
+/// existing destination on Windows, so no separate delete is needed.
+fn execute_rename_plan(plan: &RenamePlan, dry_run: bool, policy: ConflictPolicy) -> DatRenameRow {
+    let from = plan.from.display().to_string();
+    match plan.action {
+        RenameAction::AlreadyCanonical => DatRenameRow {
+            from,
+            to: plan.to.as_ref().map(|p| p.display().to_string()),
+            action: "already-canonical",
+            detail: plan.detail.clone(),
+        },
+        RenameAction::SkipUnmatched => DatRenameRow {
+            from,
+            to: None,
+            action: "skip-unmatched",
+            detail: plan.detail.clone(),
+        },
+        RenameAction::SkipWeakMatch => DatRenameRow {
+            from,
+            to: None,
+            action: "skip-weak",
+            detail: plan.detail.clone(),
+        },
+        RenameAction::SkipCollision => DatRenameRow {
+            from,
+            to: None,
+            action: "skip-collision",
+            detail: plan.detail.clone(),
+        },
+        RenameAction::SkipDiscSetConflict => DatRenameRow {
+            from,
+            to: None,
+            action: "skip-disc-set",
+            detail: plan.detail.clone(),
+        },
+        RenameAction::Rename => {
+            let Some(target) = &plan.to else {
+                return DatRenameRow {
+                    from,
+                    to: None,
+                    action: "failed",
+                    detail: Some("rename plan missing target".to_string()),
+                };
+            };
+            let to = target.display().to_string();
+            if dry_run {
+                return DatRenameRow {
+                    from,
+                    to: Some(to),
+                    action: "would-rename",
+                    detail: plan.detail.clone(),
+                };
+            }
+            match resolve_conflict(target, policy) {
+                Ok(ConflictResolution::Skip) => DatRenameRow {
+                    from,
+                    to: Some(to),
+                    action: "skip-collision",
+                    detail: Some("target exists".to_string()),
+                },
+                Ok(ConflictResolution::Write(dest)) => match std::fs::rename(&plan.from, &dest) {
+                    Ok(()) => DatRenameRow {
+                        from,
+                        to: Some(dest.display().to_string()),
+                        action: "renamed",
+                        detail: plan.detail.clone(),
+                    },
+                    Err(e) => DatRenameRow {
+                        from,
+                        to: Some(to),
+                        action: "failed",
+                        detail: Some(e.to_string()),
+                    },
+                },
+                Err(e) => DatRenameRow {
+                    from,
+                    to: Some(to),
+                    action: "failed",
+                    detail: Some(e.to_string()),
+                },
+            }
+        }
+    }
+}
+
 /// Recursively scan `dir` for files matching `exts`, applying the same junk
 /// filter and sort as the CLI batch walk. A non-directory path surfaces as an
 /// error so the caller can fall back to treating it as a single file.
@@ -2046,5 +2902,127 @@ fn extract_icon_png(info: &InfoResult) -> Option<Vec<u8>> {
             .map(|i| i.png_bytes.clone()),
         InfoResult::Chd(_) => None,
         InfoResult::Cso(_) => None,
+    }
+}
+
+#[cfg(test)]
+mod dat_result_serde_tests {
+    use super::*;
+    use serde_json::Value;
+
+    // Assert an object has exactly `expected` keys, catching a stray snake_case
+    // field before it reaches the E.2 TS contract.
+    fn assert_keys(v: &Value, expected: &[&str]) {
+        let obj = v.as_object().expect("object");
+        let mut got: Vec<&str> = obj.keys().map(String::as_str).collect();
+        got.sort_unstable();
+        let mut want: Vec<&str> = expected.to_vec();
+        want.sort_unstable();
+        assert_eq!(got, want, "serialized keys");
+    }
+
+    #[test]
+    fn verify_result_keys_are_camel_case() {
+        let r = DatVerifyResult {
+            kind: "verify",
+            path: "d/x.chd".into(),
+            verdict: "verified",
+            match_algo: Some("sha1".into()),
+            game_name: Some("Some Game".into()),
+            platform: Some("Platform".into()),
+            signature_group: Some("SG".into()),
+            dat_version: Some("2024".into()),
+            external_ids: vec![ExternalIdJson {
+                provider: "prov".into(),
+                id: "abc".into(),
+            }],
+            tracks: Some(vec![DatTrackCheckJson {
+                track: 1,
+                ok: true,
+                algo: Some("sha1".into()),
+                matched_file: Some("Some Game (Track 1).bin".into()),
+            }]),
+            error: None,
+        };
+        let v = serde_json::to_value(&r).unwrap();
+        assert_keys(
+            &v,
+            &[
+                "kind",
+                "path",
+                "verdict",
+                "matchAlgo",
+                "gameName",
+                "platform",
+                "signatureGroup",
+                "datVersion",
+                "externalIds",
+                "tracks",
+                "error",
+            ],
+        );
+        assert_keys(&v["externalIds"][0], &["provider", "id"]);
+        assert_keys(&v["tracks"][0], &["track", "ok", "algo", "matchedFile"]);
+    }
+
+    #[test]
+    fn scan_result_keys_are_camel_case() {
+        let r = DatScanResult {
+            kind: "scan",
+            matched: 1,
+            misnamed: 0,
+            hint: 0,
+            unknown: 0,
+            unsupported: 0,
+            failed: 0,
+            rows: vec![DatScanRow {
+                path: "d/x.chd".into(),
+                status: "matched",
+                game_name: Some("Some Game".into()),
+                canonical_stem: Some("Some Game".into()),
+                error: None,
+            }],
+        };
+        let v = serde_json::to_value(&r).unwrap();
+        assert_keys(
+            &v,
+            &[
+                "kind",
+                "matched",
+                "misnamed",
+                "hint",
+                "unknown",
+                "unsupported",
+                "failed",
+                "rows",
+            ],
+        );
+        assert_keys(
+            &v["rows"][0],
+            &["path", "status", "gameName", "canonicalStem", "error"],
+        );
+    }
+
+    #[test]
+    fn rename_result_keys_are_camel_case() {
+        let r = DatRenameResult {
+            kind: "rename",
+            dry_run: true,
+            renamed: 1,
+            skipped: 0,
+            failed: 0,
+            rows: vec![DatRenameRow {
+                from: "d/x.chd".into(),
+                to: Some("d/Some Game.chd".into()),
+                action: "would-rename",
+                detail: None,
+            }],
+        };
+        let v = serde_json::to_value(&r).unwrap();
+        assert_keys(
+            &v,
+            &["kind", "dryRun", "renamed", "skipped", "failed", "rows"],
+        );
+        assert_keys(&v["rows"][0], &["from", "to", "action", "detail"]);
     }
 }

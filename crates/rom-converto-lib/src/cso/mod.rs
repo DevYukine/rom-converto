@@ -13,6 +13,7 @@ use std::sync::atomic::AtomicU64;
 use log::info;
 
 use crate::cd::IO_BUFFER_SIZE;
+use crate::util::hash::{FileDigests, HashAlgo};
 use crate::util::{BYTES_PER_MB, CancelToken, ProgressReporter, await_with_progress_cancel};
 
 pub mod compression;
@@ -290,6 +291,31 @@ pub async fn decompress_from_cso_cancellable(
     Ok(())
 }
 
+/// Digest a CSO/ZSO's decoded ISO content in a single streaming pass,
+/// no temp files, following [`decompress_from_cso_cancellable`]'s
+/// open/pool/drive shape but folding decoded blocks into the hashers
+/// instead of a writer. The returned `size_bytes` is the uncompressed
+/// ISO size.
+///
+/// Synchronous: intended to run inside the caller's `spawn_blocking`.
+/// Progress is relayed through the shared `bytes_done` counter.
+pub fn digest_cso_inner(
+    path: &std::path::Path,
+    algos: &[HashAlgo],
+    bytes_done: &Arc<AtomicU64>,
+    cancel: &CancelToken,
+) -> CsoResult<FileDigests> {
+    use crate::util::worker_pool::{Pool, parallelism};
+
+    let handle = reader::open_cso_sync(path)?;
+    let workers = reader::make_cso_extract_workers(parallelism(), handle.format, &handle.file);
+    let pool: Pool<reader::CsoExtractWork, reader::CsoExtractedOut, CsoError> =
+        Pool::spawn(workers);
+    let result = reader::hash_blocks(&handle, &pool, algos, bytes_done, cancel);
+    pool.shutdown();
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,6 +367,40 @@ mod tests {
     #[tokio::test]
     async fn cso_round_trips_with_raw_and_compressed_blocks() {
         round_trip(CsoFormat::Cso, 11 * 2048, None).await;
+    }
+
+    /// digest_cso_inner must equal a plain hash of the decompressed ISO
+    /// for both formats.
+    #[tokio::test]
+    async fn digest_cso_inner_matches_decompressed_hash() {
+        use crate::util::hash::{HashAlgo, hash_file};
+        for format in [CsoFormat::Cso, CsoFormat::Zso] {
+            let dir = tempfile::tempdir().unwrap();
+            let data = mixed_payload(17 * 2048);
+            let iso = dir.path().join("game.iso");
+            std::fs::write(&iso, &data).unwrap();
+
+            let packed = dir.path().join(format!("game.{}", format.extension()));
+            compress_to_cso(
+                &NoProgress,
+                iso.clone(),
+                packed.clone(),
+                CsoCompressOptions {
+                    format,
+                    block_size: None,
+                    force: false,
+                },
+            )
+            .await
+            .unwrap();
+
+            let algos = [HashAlgo::Crc32, HashAlgo::Sha1, HashAlgo::Sha256];
+            let bytes_done = Arc::new(AtomicU64::new(0));
+            let inner =
+                digest_cso_inner(&packed, &algos, &bytes_done, &CancelToken::new()).unwrap();
+            let direct = hash_file(&iso, &algos, &NoProgress).unwrap();
+            assert_eq!(inner, direct, "format {format:?}");
+        }
     }
 
     #[tokio::test]

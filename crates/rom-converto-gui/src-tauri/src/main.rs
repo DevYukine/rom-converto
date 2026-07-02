@@ -51,6 +51,9 @@ fn main() {
             cmd_scan_dir,
             cmd_write_report,
             cmd_file_size,
+            cmd_dat_verify,
+            cmd_dat_scan,
+            cmd_dat_rename,
             app_display_version,
         ])
         .run(tauri::generate_context!())

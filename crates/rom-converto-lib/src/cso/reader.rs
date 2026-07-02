@@ -14,6 +14,7 @@ use crate::cso::models::{
     CISO_HEADER_SIZE, CISO_INDEX_UNCOMPRESSED, CisoHeader, CsoFormat, valid_block_size,
 };
 use crate::util::CancelToken;
+use crate::util::hash::{FileDigests, HashAlgo, MultiHasher};
 use crate::util::pread::file_read_exact_at;
 use crate::util::worker_pool::{Pool, Worker, drive, parallelism};
 
@@ -216,4 +217,43 @@ pub(crate) fn extract_blocks(
         writer_result
     });
     scope_result
+}
+
+/// Digest-side twin of [`extract_blocks`]: the pool decodes every
+/// block in parallel and the ordered consume closure folds each block
+/// into `hasher` instead of a writer thread. `drive`'s reorder buffer
+/// guarantees strict block order, so the digest is identical to one
+/// taken over the restored ISO.
+pub(crate) fn hash_blocks(
+    handle: &CsoSyncHandle,
+    pool: &Pool<CsoExtractWork, CsoExtractedOut, CsoError>,
+    algos: &[HashAlgo],
+    bytes_done: &Arc<AtomicU64>,
+    cancel: &CancelToken,
+) -> CsoResult<FileDigests> {
+    let blocks = handle.header.block_count();
+    let max_in_flight = parallelism() * 2;
+    let mut hasher = MultiHasher::new(algos);
+
+    drive(
+        pool,
+        blocks,
+        max_in_flight,
+        |block| -> CsoResult<CsoExtractWork> {
+            if cancel.is_cancelled() {
+                return Err(CsoError::Cancelled);
+            }
+            Ok(CsoExtractWork {
+                spec: block_spec(handle, block)?,
+                block,
+            })
+        },
+        |_seq, out: CsoExtractedOut| -> CsoResult<()> {
+            hasher.update(&out.bytes);
+            bytes_done.fetch_add(out.bytes.len() as u64, Ordering::Relaxed);
+            Ok(())
+        },
+    )?;
+
+    Ok(hasher.finalize(handle.header.uncompressed_size))
 }

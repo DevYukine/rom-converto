@@ -20,6 +20,7 @@ use crate::chd::map::{
     COMPRESSION_NONE, COMPRESSION_PARENT, COMPRESSION_SELF, MapEntry, crc16_ccitt,
 };
 use crate::util::CancelToken;
+use crate::util::hash::MultiHasher;
 use crate::util::pread::file_read_exact_at;
 use crate::util::worker_pool::{Pool, Worker, drive, parallelism};
 use sha1::{Digest, Sha1};
@@ -368,6 +369,105 @@ pub(crate) fn verify_hunks(
             // `do_verify` and the existing serial verify path.
             let take = bytes_remaining.min(hunk_bytes_u64) as usize;
             raw_sha1.update(&out.hunk[..take]);
+            bytes_remaining = bytes_remaining.saturating_sub(hunk_bytes_u64);
+            bytes_done.fetch_add(take as u64, Ordering::Relaxed);
+            Ok(())
+        },
+    )
+}
+
+/// Digest-side variant of [`extract_hunks`]: the pool decodes every
+/// hunk in parallel and the ordered consume closure feeds each
+/// frame's payload slice into its track hasher (`hashers[track]`)
+/// and into the whole-image hasher. Shaping matches `extract_hunks`
+/// byte-for-byte (same per-frame slice widths, same drop of padding
+/// frames past the CHT2 counts), so the per-track digests reproduce
+/// the bins `chdman extractcd` would write and `whole` reproduces the
+/// single concatenated bin.
+///
+/// Routing is per FRAME via `frame_track`, never by byte offset into
+/// the shaped output: track datasizes vary (2048/2336/2352) and one
+/// hunk can straddle a track boundary, so only the frame index is a
+/// reliable key.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn digest_hunks_per_track(
+    pool: &Pool<ChdExtractWork, ChdExtractedOut, ChdError>,
+    map: &[MapEntry],
+    hunk_bytes: usize,
+    frame_sizes: &[usize],
+    frame_track: &[usize],
+    hashers: &mut [MultiHasher],
+    whole: &mut MultiHasher,
+    bytes_done: &Arc<AtomicU64>,
+    cancel: &CancelToken,
+) -> ChdResult<()> {
+    let hunk_count = map.len() as u64;
+    let max_in_flight = parallelism() * 2;
+    let frames_per_hunk = hunk_bytes / FRAME_SIZE;
+    let total_frames = frame_sizes.len();
+
+    drive(
+        pool,
+        hunk_count,
+        max_in_flight,
+        |chunk_idx| -> ChdResult<ChdExtractWork> {
+            if cancel.is_cancelled() {
+                return Err(ChdError::Cancelled);
+            }
+            let entry = resolve_entry(map, chunk_idx as u32)?;
+            Ok(ChdExtractWork { entry })
+        },
+        |seq, out| -> ChdResult<()> {
+            let first_frame = seq as usize * frames_per_hunk;
+            let frames_in_hunk = frames_per_hunk.min(total_frames.saturating_sub(first_frame));
+            let mut folded = 0u64;
+            for frame in 0..frames_in_hunk {
+                let idx = first_frame + frame;
+                let off = frame * FRAME_SIZE;
+                let slice = &out.hunk[off..off + frame_sizes[idx]];
+                hashers[frame_track[idx]].update(slice);
+                whole.update(slice);
+                folded += slice.len() as u64;
+            }
+            bytes_done.fetch_add(folded, Ordering::Relaxed);
+            Ok(())
+        },
+    )
+}
+
+/// DVD-mode digest fold: decode every hunk in order and feed the
+/// decoded bytes (capped at `logical_bytes` on the final partial
+/// hunk) into `whole`. Same coverage rule as [`extract_hunks_dvd`]
+/// and [`verify_hunks`], but the output is a multi-algorithm digest
+/// of the flat ISO instead of a written file or a lone Sha1.
+pub(crate) fn digest_hunks_dvd(
+    pool: &Pool<ChdExtractWork, ChdExtractedOut, ChdError>,
+    map: &[MapEntry],
+    hunk_bytes: usize,
+    logical_bytes: u64,
+    whole: &mut MultiHasher,
+    bytes_done: &Arc<AtomicU64>,
+    cancel: &CancelToken,
+) -> ChdResult<()> {
+    let hunk_count = map.len() as u64;
+    let max_in_flight = parallelism() * 2;
+    let hunk_bytes_u64 = hunk_bytes as u64;
+    let mut bytes_remaining = logical_bytes;
+
+    drive(
+        pool,
+        hunk_count,
+        max_in_flight,
+        |chunk_idx| -> ChdResult<ChdExtractWork> {
+            if cancel.is_cancelled() {
+                return Err(ChdError::Cancelled);
+            }
+            let entry = resolve_entry(map, chunk_idx as u32)?;
+            Ok(ChdExtractWork { entry })
+        },
+        |_seq, out| -> ChdResult<()> {
+            let take = bytes_remaining.min(hunk_bytes_u64) as usize;
+            whole.update(&out.hunk[..take]);
             bytes_remaining = bytes_remaining.saturating_sub(hunk_bytes_u64);
             bytes_done.fetch_add(take as u64, Ordering::Relaxed);
             Ok(())

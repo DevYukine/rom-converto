@@ -3,6 +3,7 @@ use crate::commands::completions::ShellCompletionsCommand;
 use crate::commands::cso::CsoCommands;
 use crate::commands::ctr::CtrCommands;
 use crate::commands::cue::CueCommands;
+use crate::commands::dat::DatCommands;
 use crate::commands::dol::DolCommands;
 use crate::commands::hash::HashCommand;
 use crate::commands::nx::NxCommands;
@@ -18,6 +19,7 @@ pub mod completions;
 pub mod cso;
 pub mod ctr;
 pub mod cue;
+pub mod dat;
 pub mod dol;
 pub mod hash;
 pub mod info_command;
@@ -104,6 +106,9 @@ pub enum Commands {
 
     #[command(subcommand)]
     Cue(CueCommands),
+
+    #[command(subcommand)]
+    Dat(DatCommands),
 
     Hash(HashCommand),
 

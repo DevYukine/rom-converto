@@ -34,6 +34,9 @@ import { useNxVerifyStore } from "~/stores/nx-verify";
 import { useNxInfoStore } from "~/stores/nx-info";
 import { useHashStore } from "~/stores/hash";
 import { usePlaylistStore } from "~/stores/playlist";
+import { useDatVerifyStore } from "~/stores/datVerify";
+import { useDatScanStore } from "~/stores/datScan";
+import { useDatRenameStore } from "~/stores/datRename";
 import { invoke } from "@tauri-apps/api/core";
 
 const appVersion = ref("");
@@ -144,6 +147,15 @@ const sections: SidebarSection[] = [
     links: [
       { to: "/hash", label: "Hash", store: () => useHashStore(), icon: "shield-check" },
       { to: "/playlist", label: "Playlist", store: () => usePlaylistStore(), icon: "folder-arrow" },
+    ],
+  },
+  {
+    key: "dat",
+    name: "DAT",
+    links: [
+      { to: "/dat/verify", label: "Verify", store: () => useDatVerifyStore(), icon: "shield-check" },
+      { to: "/dat/scan", label: "Scan", store: () => useDatScanStore(), icon: "folder-arrow" },
+      { to: "/dat/rename", label: "Rename", store: () => useDatRenameStore(), icon: "swap" },
     ],
   },
 ];
