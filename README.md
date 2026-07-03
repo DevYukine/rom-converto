@@ -10,8 +10,8 @@ rom-converto converts, compresses, verifies, encrypts, and decrypts ROMs and dis
 | Platform | Input | Output | Compatible with |
 |---|---|---|---|
 | Nintendo 3DS (`ctr`) | `.3ds`, `.cci`, `.cxi`, `.cia`, CDN content | Z3DS | Azahar |
-| GameCube (`dol`) | `.iso`, `.gcm` | RVZ | Dolphin |
-| Wii (`rvl`) | `.iso`, `.wbfs` | RVZ | Dolphin |
+| GameCube (`dol`) | `.iso`, `.gcm`, `.gcz`, NKit | RVZ | Dolphin |
+| Wii (`rvl`) | `.iso`, `.wbfs`, `.wia`, `.gcz`, NKit | RVZ | Dolphin |
 | Wii U (`wup`) | NUS or loadiine title, `.wud`, `.wux` | WUA | Cemu |
 | Switch (`nx`) | NSP, XCI | NSZ, XCZ | nsz |
 | CD / DVD (`chd`) | `.cue`+`.bin`, `.iso` | CHD | chdman, PPSSPP, PCSX2 |
@@ -63,8 +63,8 @@ Each top-level command is a console or format family, and every family has opera
 | Command | Purpose |
 |---|---|
 | `ctr` | Convert, decrypt, compress, and verify Nintendo 3DS ROMs |
-| `dol` | Compress and verify GameCube disc images (RVZ) |
-| `rvl` | Compress and verify Wii disc images (RVZ) |
+| `dol` | Compress, migrate, and verify GameCube disc images (RVZ) |
+| `rvl` | Compress, migrate, and verify Wii disc images (RVZ) |
 | `wup` | Bundle and decrypt Wii U titles (WUA) |
 | `nx` | Compress and verify Switch containers (NSZ/XCZ) |
 | `chd` | Compress, extract, and verify CD/DVD images (CHD) |

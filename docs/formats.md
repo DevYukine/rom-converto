@@ -12,8 +12,8 @@ the tool and docs.
 | Platform (code) | Input term | Input formats | Output format | Operation |
 |---|---|---|---|---|
 | Nintendo 3DS (`ctr`) | ROM | `.3ds`, `.cci`, `.cxi`, `.cia`; CDN content | Z3DS | compress / decompress |
-| GameCube (`dol`) | disc image | `.iso`, `.gcm` | RVZ | compress / decompress |
-| Wii (`rvl`) | disc image | `.iso`, `.wbfs` | RVZ | compress / decompress |
+| GameCube (`dol`) | disc image | `.iso`, `.gcm`, `.gcz`, NKit | RVZ | compress / migrate / decompress |
+| Wii (`rvl`) | disc image | `.iso`, `.wbfs`, `.wia`, `.gcz`, NKit | RVZ | compress / migrate / decompress |
 | Wii U (`wup`) | title (NUS or loadiine); disc image for `.wud`/`.wux` | NUS, loadiine, `.wud`, `.wux` | WUA | compress; decrypt |
 | Switch (`nx`) | container | NSP, XCI | NSZ, XCZ | compress / decompress |
 | CD / DVD (`chd`) | disc image | `.cue`+`.bin`, `.iso` | CHD | compress / extract |
@@ -31,6 +31,11 @@ collective phrase for all inputs is "ROMs and disc images".
   has a near-zero compression ratio.
 - **RVZ** is Dolphin's compressed disc format for GameCube and Wii, with per-block compression
   and a partition-aware hash pipeline for Wii.
+- **GCZ, WIA, and NKit** are older compressed disc containers that rom-converto reads as
+  GameCube and Wii inputs. `dol migrate` and `rvl migrate` convert them to RVZ after an
+  integrity check, and `compress` migrates a legacy container automatically when it is given
+  one. GCZ (`.gcz`) and NKit (`.nkit.iso`, `.nkit.gcz`) are accepted on both consoles; WIA
+  (`.wia`) is Wii only.
 - **WUA** is Cemu's Wii U archive format. One archive can bundle a base title, update, and DLC,
   each under its own `<titleId>_v<version>/` folder.
 - **NSZ / XCZ** compress a Switch NSP or XCI with zstd inside the NCZ format, in solid mode
@@ -52,7 +57,7 @@ chdman.
 
 | Format | Reference tool | Notes |
 |---|---|---|
-| RVZ | Dolphin | Byte-identical in both directions on GameCube and Wii |
+| RVZ | Dolphin | Byte-identical in both directions on GameCube and Wii, including RVZ migrated from a GCZ, WIA, or NKit source |
 | NSZ / XCZ | nsz | Byte-identical to `nsz` and `nsz -D`; matching CLI defaults |
 | CSO / ZSO | maxcso | maxcso-compatible defaults, including index shift and store-raw fallback |
 | CHD | chdman | `createcd` and `createdvd` equivalents; also reads chdman DVD CHDs with `huff` and `flac` hunks |

@@ -27,8 +27,8 @@ These flags work on every command.
 
 ### Conflict policy
 
-Every command that writes an output file takes `--on-conflict <POLICY>` to decide what
-happens when the output already exists:
+Every command that writes an output file except `migrate` takes `--on-conflict <POLICY>` to
+decide what happens when the output already exists:
 
 - `error` (default): refuse and stop.
 - `overwrite`: replace the existing output.
@@ -256,7 +256,8 @@ Output is byte-identical to Dolphin's own encoder and decoder in both directions
 regenerates NKit junk data, and streams the rebuilt disc straight to `.rvz` with no
 temporary files. The input format is detected by content, so renamed files still work.
 Unlike the other commands, `migrate` overwrites an existing output only with `-f`/`--force`
-and does not take `--on-conflict`.
+and does not take `--on-conflict`. Without `--force`, a single-file run stops on an existing
+output, while a recursive run skips it and continues.
 
 ## rvl (Wii)
 
@@ -508,6 +509,10 @@ region, content layout, age ratings, and the embedded icon where the format carr
 Maker and company codes are resolved to the publisher name. Encrypted 3DS CIA inputs are
 decrypted on the fly to read the NCCH header, and nothing is written to disk. Add `--json`
 for a machine-readable payload (the GUI uses the same shape).
+
+For `dol` and `rvl`, the report names the container it read: the text output prints it as
+`Format: GameCube (GCZ)` or `Format: Wii (WIA)`, and `--json` carries it as the `container`
+field (`ISO`, `RVZ`, `WBFS`, `GCZ`, `WIA`, or `NKit`).
 
 | Flag | Description |
 |---|---|
