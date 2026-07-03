@@ -14,7 +14,7 @@ pub enum DatCommands {
 
 /// Verify a ROM's decoded content hashes against the Playmatch database
 ///
-/// Container formats (chd, rvz, wbfs, cso, zso, z3ds) are hashed on their
+/// Container formats (chd, rvz, wbfs, cso, zso, z3ds, gcz, wia, nkit) are hashed on their
 /// decoded inner stream, so the verdict matches the original ROM or disc
 /// image regardless of compression. Multi-track discs check every track.
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
