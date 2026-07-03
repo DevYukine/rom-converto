@@ -23,7 +23,7 @@ pub enum InnerStreamKind {
     Wbfs,
     /// CSO / ZSO block-compressed image.
     CsoZso,
-    /// Z3DS container (z3ds/zcia/zcci/zcxi/z3dsx).
+    /// Z3DS file (z3ds/zcia/zcci/zcxi/z3dsx).
     Z3ds,
     /// CHD: per-track digests plus the whole concatenated image.
     ChdTracks,
@@ -185,7 +185,8 @@ fn digest_dispatch(
             }
         }
         InnerStreamKind::CueSet => Err(DatError::InvalidInput(
-            "pass the .bin tracks or the folder; cue sets are resolved by the caller".to_string(),
+            "CUE sheets are not hashed directly; pass the .bin tracks or the directory instead"
+                .to_string(),
         )),
         InnerStreamKind::UnsupportedCompressed => {
             let format = match path

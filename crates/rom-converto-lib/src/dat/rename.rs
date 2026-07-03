@@ -82,8 +82,8 @@ fn base_title(name: &str) -> String {
 }
 
 // Target stem for a single candidate. Prefers the canonical fileName stem when
-// the local file is a raw single-file rom whose extension equals the canonical
-// extension; otherwise the game name.
+// the local file is a raw single-file ROM or disc image whose extension
+// equals the canonical extension; otherwise the game name.
 fn target_stem(c: &RenameCandidate, local_ext: &str) -> Option<String> {
     if let Some(file_name) = &c.file_name {
         let canon = Path::new(file_name);

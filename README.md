@@ -70,6 +70,7 @@ Each top-level command is a console or format family, and every family has opera
 | `chd` | Compress, extract, and verify CD/DVD images (CHD) |
 | `cso` | Compress and verify PSP/PS2 ISOs (CSO/ZSO) |
 | `cue` | Merge a multi-bin `.cue` into one `.bin`/`.cue` pair |
+| `dat` | Identify, verify, and rename ROMs against the Playmatch database |
 | `hash` | Compute CRC32, SHA-1, MD5, and SHA-256 digests |
 | `playlist` | Generate `.m3u` files for multi-disc sets |
 | `shell-completions` | Print a tab-completion script for your shell |

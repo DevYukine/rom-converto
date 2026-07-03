@@ -2062,7 +2062,7 @@ struct DatVerifyResult {
 }
 
 /// External ids shown to the user: automatic or manual matches with a
-/// non-null provider id, matching the CLI's `identify` filter (D.4).
+/// non-null provider id, matching the CLI's `identify` filter.
 fn external_ids_from(matched: &GameAndRelationMatchResult) -> Vec<ExternalIdJson> {
     matched
         .external_metadata
@@ -2087,7 +2087,7 @@ pub async fn cmd_dat_verify(
     let token = begin(&state).await;
     let result = run_dat_verify(progress, input.clone(), token).await;
     finish(&state).await;
-    // Cancellation propagates as an Err carrying "operation cancelled" (G.4),
+    // Cancellation propagates as an Err carrying "operation cancelled",
     // matching the other verify commands and scan/rename. Any other failure
     // still renders as a single Failed card so genuine digest/API errors do
     // not abort the whole invoke.
@@ -2131,7 +2131,7 @@ async fn run_dat_verify(
     .await?;
 
     let client = PlaymatchClient::new(Some(DEFAULT_API_BASE));
-    progress.set_phase("Querying");
+    progress.set_phase("Querying matches");
     let path_str = input.display().to_string();
 
     match digests {
@@ -2276,7 +2276,7 @@ impl DigestedUnit {
 
 /// Digest every file under `input_dir`, bucketing unsupported formats and
 /// per-file failures instead of aborting the whole scan/rename run, matching
-/// the CLI driver's read-only semantics (D.3).
+/// the CLI driver's read-only semantics.
 async fn digest_all(
     progress: &TauriProgress,
     input_dir: &Path,
@@ -2295,7 +2295,7 @@ async fn digest_all(
                 .is_some_and(|e| e.eq_ignore_ascii_case("cue") || e.eq_ignore_ascii_case("m3u"))
         })
         .collect();
-    progress.set_phase("Hashing");
+    progress.set_phase("Hashing files");
     let algos = vec![
         rom_converto_lib::util::HashAlgo::Crc32,
         rom_converto_lib::util::HashAlgo::Sha1,
@@ -2392,7 +2392,7 @@ async fn run_dat_scan(
     }
 
     let client = PlaymatchClient::new(Some(DEFAULT_API_BASE));
-    progress.set_phase("Querying");
+    progress.set_phase("Querying matches");
     let items: Vec<BulkIdentifyItem> = queryable
         .iter()
         .map(|(_, _, name, digests)| BulkIdentifyItem {
@@ -2545,7 +2545,7 @@ fn scan_row_for(
                 .unwrap_or_default();
             // Scan's "matched" bucket has no DatVerdict counterpart (verify's
             // Verified and scan's matched are the same hash-rung outcome, but
-            // G.4 spells the scan status "matched"); misnamed does map onto
+            // the scan status here is spelled "matched"); misnamed does map onto
             // DatVerdict::Misnamed and goes through as_str() as usual.
             let status = match &game_name {
                 Some(name) if !name.eq_ignore_ascii_case(local_stem) => {
@@ -2648,7 +2648,7 @@ async fn run_dat_rename(
     let units = digest_all(progress.as_ref(), &input, max_depth, &token).await?;
 
     let client = PlaymatchClient::new(Some(DEFAULT_API_BASE));
-    progress.set_phase("Querying");
+    progress.set_phase("Querying matches");
 
     // Queryable units carry their local path and primary search digest; failed
     // and unsupported units become non-participating rows and never rename.
@@ -2748,7 +2748,7 @@ async fn run_dat_rename(
 }
 
 /// Build a rename candidate from a file's relations match. `verified` is set
-/// only for a hash-rung match (hints never rename, B.7); the file-level name
+/// only for a hash-rung match (hints never rename); the file-level name
 /// is taken from the single matching gameFiles entry when the game has one.
 fn candidate_from_match(
     path: &Path,
@@ -2911,7 +2911,7 @@ mod dat_result_serde_tests {
     use serde_json::Value;
 
     // Assert an object has exactly `expected` keys, catching a stray snake_case
-    // field before it reaches the E.2 TS contract.
+    // field before it reaches the TS contract.
     fn assert_keys(v: &Value, expected: &[&str]) {
         let obj = v.as_object().expect("object");
         let mut got: Vec<&str> = obj.keys().map(String::as_str).collect();

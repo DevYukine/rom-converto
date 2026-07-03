@@ -100,11 +100,12 @@ aborts. Pass `--skip-space-check` to disable the preflight.
 
 ### Run reports
 
-Pass `--report <FILE>` to `compress`, `decompress`, `chd extract`, or `hash` to write a
-structured report after the run. The format is chosen from the file extension: `.csv`
-writes CSV, `.json` writes JSON, `.html` and `.htm` write a self-contained HTML table, and
-any other extension writes JSON. The report file is overwritten directly and does not go
-through `--on-conflict`. The numbers match the closing summary line.
+Pass `--report <FILE>` to `compress`, `decompress`, `chd extract`, `hash`, or the
+`dat verify`, `scan`, and `rename` commands to write a structured report after the run.
+The format is chosen from the file extension: `.csv` writes CSV, `.json` writes JSON,
+`.html` and `.htm` write a self-contained HTML table, and any other extension writes JSON.
+The report file is overwritten directly and does not go through `--on-conflict`. The
+numbers match the closing summary line.
 
 The conversion report columns are stable and in this order: `input_path`, `output_path`,
 `operation`, `status`, `input_bytes`, `output_bytes`, `ratio_pct`, `elapsed_ms`, `error`.
@@ -120,6 +121,15 @@ no totals row. The HTML file is a single self-contained page with a totals row i
 footer. The `hash` command uses its own column schema, since it produces digests rather
 than a converted file: `path`, `crc32`, `sha1`, `md5`, `sha256`, `size_bytes`, `status`,
 `elapsed_ms`, `error`.
+
+The `dat verify`, `scan`, and `rename` commands use their own schema too, since they record
+database verdicts rather than a converted file: `path`, `verdict`, `game_name`, `game_id`,
+`platform`, `signature_group`, `dat_version`, `match_algo`, `detail`, `size_bytes`,
+`status`, `elapsed_ms`, `error`. `status` is `ok` or `failed`, separate from the finer
+`verdict` (`verified`, `matched`, `hint`, `unknown`, `misnamed`, `renamed`, `skipped`,
+`unsupported`, or `failed`); an `unsupported` verdict still counts as `ok`. The JSON file wraps the records
+in a `files` array with a `totals` object (`total_files`, `ok`, `skipped`, `failed`,
+`total_input_bytes`, `total_output_bytes`, `elapsed_ms`).
 
 ### Output-path templates
 
@@ -369,6 +379,59 @@ rom-converto cue merge <INPUT_CUE> <OUTPUT_CUE>
 Merge a multi-bin `.cue` (one `.bin` per track) into a single `.bin` + `.cue` pair, for
 emulators that cannot load split images. The merged `.bin` is named after the output `.cue`.
 `merge` takes `--on-conflict` (and `-f`) only; the `.bin` sidecar follows the renamed `.cue`.
+
+## dat
+
+```
+rom-converto dat <SUBCOMMAND> ...
+```
+
+| Subcommand | Description |
+|---|---|
+| `verify <INPUT>` | Verify a ROM's decoded content hashes against the Playmatch database |
+| `scan <DIR>` | Batch-identify a library and summarize matched, misnamed, and unknown files |
+| `rename <INPUT>` | Rename ROMs to their canonical database names |
+| `identify <INPUT>` | Look up one file and print everything the database knows about it |
+| `fixdat <DIR> -o <FILE>` | Build a Logiqx fixdat of the database entries missing from a local library |
+
+Format-specific flags (shared conflict and report flags are covered in
+[Shared behaviors](#shared-behaviors)):
+
+| Flag | Applies to | Description |
+|---|---|---|
+| `--algo <ALGOS>` | `verify`, `identify` | Comma-separated digests: `crc32`, `sha1`, `md5`, `sha256`. Default `crc32,sha1` |
+| `-R`, `--recursive` | `verify`, `rename` | Process every file under INPUT, descending into subdirectories |
+| `--max-depth <N>` | `verify`, `scan`, `rename`, `fixdat` | Limit recursion depth. `1` = top level only. On `verify` and `rename` requires `-R`; `scan` and `fixdat` always walk the whole directory |
+| `--report <FILE>` | `verify`, `scan`, `rename` | Write a run report. See [Run reports](#run-reports) |
+| `--api-base <URL>` | all | Playmatch API base URL for this run. Defaults to the public instance |
+| `-o, --output <FILE>` | `fixdat` | Path for the generated Logiqx fixdat. Required |
+| `--platform <NAME>` | `fixdat` | Select the source DAT by platform name. Required unless `--dat-id` is given |
+| `--dat-id <UUID>` | `fixdat` | Select the source DAT by exact id, skipping the platform lookup |
+| `--dat-name <NAME>` | `fixdat` | Narrow the candidate DATs by name substring. Requires `--platform` |
+| `--subset <SUBSET>` | `fixdat` | Narrow the candidate DATs by subset. Requires `--platform` |
+
+Every file is hashed on its decoded inner stream, not the compressed container bytes, so a
+`.chd`, `.rvz`, `.wbfs`, `.cso`, `.zso`, or Z3DS file verifies the same as the raw ROM or
+disc image it holds. Multi-track discs check every track. `.nsz` and `.xcz` have no
+inner hasher and are reported as `unsupported` while the run continues. A `.cue` file is
+never hashed on its own: a recursive walk groups each cue with the `.bin` tracks it lists
+and hashes those, and `rename` always leaves a cue set untouched so its `FILE` lines stay
+consistent.
+
+`verify` treats a filename-and-size match as a hint and reports it as not verified, while
+`identify` shows the same match as a weak result so a near-miss is still informative.
+`rename` renames only on a hash-verified match; a hint never renames a file. The target
+name is the game's canonical file name when the match resolves to exactly one database
+file entry with the same extension as the local file, and the game name otherwise. `scan`
+is always recursive over its directory, and it and `rename` hash with `crc32` and `sha1`,
+while `fixdat` indexes the local library with all four digests. `--algo` widens the digest
+set on `verify` and `identify` only.
+
+`fixdat` needs either `--platform` or `--dat-id` to pick a source DAT; `--dat-name` and
+`--subset` narrow an ambiguous platform match, and more than one remaining candidate stops
+the run with each candidate listed. `--api-base` points every subcommand at a different
+Playmatch instance and defaults to the public one at
+`https://playmatch.retrorealm.dev/api/v2`.
 
 ## hash
 

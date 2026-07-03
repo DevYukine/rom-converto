@@ -34,8 +34,8 @@ impl LocalHashIndex {
         }
     }
 
-    /// Membership by hash precedence sha256 > sha1 > md5 > crc+size. A file is
-    /// present when the strongest hash both sides carry matches; the crc rung
+    /// Membership by hash precedence SHA-256 > SHA-1 > MD5 > CRC32+size. A file is
+    /// present when the strongest hash both sides carry matches; the CRC32 rung
     /// additionally requires equal fileSize.
     pub fn contains(&self, f: &PlaymatchGameFile) -> bool {
         if let Some(h) = &f.sha256 {
@@ -111,7 +111,7 @@ pub fn xml_escape(s: &str) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
-/// Emit a Logiqx fixdat of the missing roms.
+/// Emit a Logiqx fixdat of the missing ROMs and disc images.
 pub fn write_fixdat_xml<W: std::io::Write>(
     w: &mut W,
     dat: &DatFileSummary,

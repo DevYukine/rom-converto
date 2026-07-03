@@ -439,7 +439,7 @@ pub(crate) fn digest_hunks_per_track(
 /// decoded bytes (capped at `logical_bytes` on the final partial
 /// hunk) into `whole`. Same coverage rule as [`extract_hunks_dvd`]
 /// and [`verify_hunks`], but the output is a multi-algorithm digest
-/// of the flat ISO instead of a written file or a lone Sha1.
+/// of the flat ISO instead of a written file or a lone SHA-1.
 pub(crate) fn digest_hunks_dvd(
     pool: &Pool<ChdExtractWork, ChdExtractedOut, ChdError>,
     map: &[MapEntry],

@@ -1858,7 +1858,7 @@ async fn dat_collect(input_dir: &Path, max_depth: Option<usize>) -> Result<Vec<D
         let sheet = match CueParser::new(&cue).parse().await {
             Ok(s) => s,
             Err(e) => {
-                warn!("skipping unreadable cue {}: {e}", cue.display());
+                warn!("Skipping unreadable cue {}: {e}", cue.display());
                 continue;
             }
         };
@@ -2005,7 +2005,7 @@ fn unit_size(digests: &RomDigests) -> u64 {
 /// Resolve the verify verdict for one unit against the database. Single
 /// streams take one relations call; track sets try the whole-image query
 /// first (single-bin DATs) and fall back to a per-track reconciliation
-/// (multi-bin DATs), keeping the stronger of the two results (A step 3).
+/// (multi-bin DATs), keeping the stronger of the two results.
 async fn resolve_verify(
     client: &PlaymatchClient,
     unit: &DatUnit,
@@ -2227,14 +2227,14 @@ fn print_verdict(path: &Path, outcome: &DatOutcome) {
             } else {
                 format!("  ({})", extra.join(", "))
             };
-            info!("{name}: VERIFIED{algo} -> {game}{suffix}");
+            info!("{name}: verified{algo} -> {game}{suffix}");
             if let Some(d) = &outcome.detail {
                 info!("  {d}");
             }
         }
         DatVerdict::Hint => {
             let game = outcome.game_name.as_deref().unwrap_or("?");
-            info!("{name}: NOT VERIFIED  (name+size hint only: \"{game}\")");
+            info!("{name}: not verified  (name+size hint only: \"{game}\")");
         }
         DatVerdict::Unsupported => {
             info!("{name}: unsupported (decompress the file first)");
@@ -2329,12 +2329,12 @@ pub async fn dat_verify_batch(
 ) -> Result<()> {
     let units = dat_collect(input_dir, max_depth).await?;
     if units.is_empty() {
-        warn!("no files found under {}", input_dir.display());
+        warn!("No files found under {}", input_dir.display());
         return Ok(());
     }
     let client = PlaymatchClient::new(api_base);
     let total = units.len();
-    total_progress.start(total as u64, &format!("Verifying {total} files..."));
+    total_progress.start(total as u64, &format!("Verifying {total} files"));
     let started = Instant::now();
     let mut records: Vec<DatReportRecord> = Vec::new();
     let mut cache: HashMap<String, DatVerdict> = HashMap::new();
@@ -2389,7 +2389,7 @@ pub async fn dat_verify_batch(
 
 /// Record a unit's verdict in the per-run dedup cache keyed on its strongest
 /// available digest, so an identical file need not be re-reported. The cache is
-/// advisory in v1 (kept for the API round-trip savings the plan calls out).
+/// advisory in v1, kept for the API round-trip savings.
 fn dedup_note(cache: &mut HashMap<String, DatVerdict>, digests: &RomDigests, verdict: DatVerdict) {
     let key = match digests {
         RomDigests::Single(d) => strongest_key(d),
@@ -2431,10 +2431,10 @@ pub async fn dat_identify(
     };
     let strength = match_strength(m.game_match_type);
     match strength {
-        MatchStrength::Verified(a) => info!("match: {} (verified)", a.label().to_uppercase()),
-        MatchStrength::NameSizeHint => info!("match: name+size (weak)"),
+        MatchStrength::Verified(a) => info!("Match: {} (verified)", a.label().to_uppercase()),
+        MatchStrength::NameSizeHint => info!("Match: name+size (weak)"),
         MatchStrength::NoMatch => {
-            info!("no match");
+            info!("No match");
             return Ok(());
         }
     }
@@ -2446,12 +2446,12 @@ pub async fn dat_identify(
             .map(|g| g.name.as_str())
             .unwrap_or("?");
         info!(
-            "game:  {}      platform: {platform}   group: {group}",
+            "Game:  {}      platform: {platform}   group: {group}",
             g.name
         );
     }
     if let Some(i) = &m.dat_file_import {
-        info!("dat:   version {}", i.version);
+        info!("DAT:   version {}", i.version);
     }
     let ids: Vec<String> = m
         .external_metadata
@@ -2464,14 +2464,14 @@ pub async fn dat_identify(
         })
         .collect();
     if !ids.is_empty() {
-        info!("ids:   {}", ids.join(", "));
+        info!("IDs:   {}", ids.join(", "));
     }
     Ok(())
 }
 
 /// One digested unit carried through scan/rename: a decoded result, an
 /// unsupported format, or a per-file digest failure. Buckets a digest error
-/// rather than aborting the batch (read-only semantics, D.3).
+/// rather than aborting the batch (read-only semantics).
 enum ScanUnit {
     Ok {
         unit_index: usize,
@@ -2496,7 +2496,7 @@ async fn digest_scan_units(
 ) -> DatResult<Vec<ScanUnit>> {
     total_progress.start(
         units.len() as u64,
-        &format!("Hashing {} files...", units.len()),
+        &format!("Hashing {} files", units.len()),
     );
     let mut out = Vec::with_capacity(units.len());
     for (i, unit) in units.iter().enumerate() {
@@ -2544,16 +2544,15 @@ pub async fn dat_scan(
 ) -> Result<()> {
     let units = dat_collect(input_dir, max_depth).await?;
     if units.is_empty() {
-        warn!("no files found under {}", input_dir.display());
+        warn!("No files found under {}", input_dir.display());
         return Ok(());
     }
     let started = Instant::now();
     let scanned = digest_scan_units(progress, total_progress, &units, algos_scan(), cancel).await?;
 
     let client = PlaymatchClient::new(api_base);
-    progress.set_phase("Querying playmatch");
+    progress.set_phase("Querying Playmatch");
 
-    // Build bulk items for decoded units; remember each item's owning unit.
     let mut items: Vec<BulkIdentifyItem> = Vec::new();
     let mut item_owner: Vec<usize> = Vec::new();
     for su in &scanned {
@@ -2630,7 +2629,7 @@ pub async fn dat_scan(
     }
 
     info!(
-        "matched {}, misnamed {}, hint {}, unknown {}, unsupported {}, failed {}",
+        "{} matched, {} misnamed, {} hint, {} unknown, {} unsupported, {} failed",
         counts.matched,
         counts.misnamed,
         counts.hint,
@@ -2763,18 +2762,16 @@ pub async fn dat_rename(
         vec![DatUnit::File(input.to_path_buf())]
     };
     if units.is_empty() {
-        warn!("no files found under {}", input.display());
+        warn!("No files found under {}", input.display());
         return Ok(());
     }
     let client = PlaymatchClient::new(api_base);
     let started = Instant::now();
     total_progress.start(
         units.len() as u64,
-        &format!("Hashing {} files...", units.len()),
+        &format!("Hashing {} files", units.len()),
     );
 
-    // Digest each queryable file; cue sets, unsupported, and failed units record
-    // a row and do not participate in planning.
     let mut queryable: Vec<PathBuf> = Vec::new();
     let mut items: Vec<BulkIdentifyItem> = Vec::new();
     let mut records: Vec<DatReportRecord> = Vec::new();
@@ -2826,7 +2823,7 @@ pub async fn dat_rename(
     }
     total_progress.finish();
 
-    progress.set_phase("Querying playmatch");
+    progress.set_phase("Querying Playmatch");
     let bulk = client.identify_bulk_relations(items, cancel).await?;
 
     let candidates: Vec<RenameCandidate> = queryable
@@ -2943,7 +2940,7 @@ fn execute_rename(
             if dry_run {
                 *renamed += 1;
                 info!(
-                    "[dry-run] {:?} -> {:?}",
+                    "Would rename {} -> {}",
                     plan.from.display(),
                     target.display()
                 );
@@ -2991,14 +2988,13 @@ pub async fn dat_fixdat(
 ) -> Result<()> {
     let client = PlaymatchClient::new(args.api_base.as_deref());
     let dat = resolve_fixdat_dat(&client, args, cancel).await?;
-    info!("using DAT {} (version {})", dat.name, dat.current_version);
+    info!("Using DAT {} (version {})", dat.name, dat.current_version);
 
     let games = client
         .dat_file_games(&dat.id, true, progress, cancel)
         .await?;
     let total_games = games.len();
 
-    // Digest the local library into a hash index.
     let units = dat_collect(&args.input, args.max_depth).await?;
     total_progress_hash(progress, units.len());
     let mut index = LocalHashIndex::default();
@@ -3011,7 +3007,7 @@ pub async fn dat_fixdat(
             Ok(RomDigests::Tracks { tracks, .. }) => index.insert_tracks(&tracks),
             Err(e) => match digest_bucket_dat(e)? {
                 None => {}
-                Some(msg) => warn!("skipping {}: {msg}", unit.display_path().display()),
+                Some(msg) => warn!("Skipping {}: {msg}", unit.display_path().display()),
             },
         }
     }
@@ -3021,7 +3017,7 @@ pub async fn dat_fixdat(
 
     if dry_run {
         info!(
-            "[dry-run] missing {} of {} games ({} files); would write {}",
+            "Dry run: missing {} of {} games ({} files); would write {}",
             entries.len(),
             total_games,
             missing_files,
@@ -3032,7 +3028,7 @@ pub async fn dat_fixdat(
 
     let out_path = match resolve_conflict(&args.output, policy)? {
         ConflictResolution::Skip => {
-            info!("skipped, output exists: {}", args.output.display());
+            info!("Skipped, output exists: {}", args.output.display());
             return Ok(());
         }
         ConflictResolution::Write(p) => p,
@@ -3043,7 +3039,7 @@ pub async fn dat_fixdat(
     use std::io::Write;
     w.flush()?;
     info!(
-        "missing {} of {} games ({} files); wrote {}",
+        "Missing {} of {} games ({} files); wrote {}",
         entries.len(),
         total_games,
         missing_files,
@@ -3107,7 +3103,7 @@ async fn resolve_fixdat_dat(
         )),
         1 => Ok(candidates.remove(0)),
         _ => {
-            warn!("multiple DATs match; narrow with --dat-name or --subset:");
+            warn!("Multiple DATs match; narrow with --dat-name or --subset:");
             for d in &candidates {
                 let subset = d.subset.as_deref().unwrap_or("-");
                 info!(

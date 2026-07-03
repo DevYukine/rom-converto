@@ -169,7 +169,7 @@ pub async fn decompress_rom_cancellable(
     Ok(())
 }
 
-/// Digest a Z3DS container's decoded content in a single streaming
+/// Digest a Z3DS file's decoded content in a single streaming
 /// pass, no temp files, mirroring [`decompress_rom_cancellable`]'s
 /// blocking body but folding each decompressed frame into the hashers
 /// instead of a `BufWriter`. The returned `size_bytes` is the decoded

@@ -2,7 +2,7 @@ use crate::commands::ConflictPolicyArg;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-/// Identify, verify and rename ROMs against the Playmatch database.
+/// Identify, verify and rename ROMs against the Playmatch database
 #[derive(Subcommand, Debug, Eq, PartialEq)]
 pub enum DatCommands {
     Verify(DatVerifyCommand),
@@ -12,14 +12,14 @@ pub enum DatCommands {
     Fixdat(DatFixdatCommand),
 }
 
-/// Verify a ROM's decoded content hashes against the Playmatch database.
+/// Verify a ROM's decoded content hashes against the Playmatch database
 ///
 /// Container formats (chd, rvz, wbfs, cso, zso, z3ds) are hashed on their
-/// decoded inner stream, so the verdict matches the original disc or cart
+/// decoded inner stream, so the verdict matches the original ROM or disc
 /// image regardless of compression. Multi-track discs check every track.
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
-    after_long_help = "EXAMPLES:\n  Single file:   rom-converto dat verify game.chd\n  Whole folder:  rom-converto dat verify -R ./roms --report verify.json\n  Extra digests: rom-converto dat verify game.rvz --algo crc32,sha1,sha256\n"
+    after_long_help = "EXAMPLES:\n  Single file:     rom-converto dat verify game.chd\n  Whole directory: rom-converto dat verify -R ./roms --report verify.json\n  Extra digests:   rom-converto dat verify game.rvz --algo crc32,sha1,sha256\n"
 )]
 pub struct DatVerifyCommand {
     /// Input file path, or a directory with --recursive
@@ -34,11 +34,11 @@ pub struct DatVerifyCommand {
     #[arg(long, short = 'R', default_value_t = false)]
     pub recursive: bool,
 
-    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited.
+    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited
     #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
     pub max_depth: Option<usize>,
 
-    /// Write a run report to FILE. Format inferred from the extension: .csv, .json, .html or .htm. Unknown extensions default to JSON. The file is overwritten directly.
+    /// Write a run report to FILE. Format inferred from the extension: .csv, .json, .html or .htm. Unknown extensions default to JSON. The file is overwritten directly
     #[arg(long = "report", value_name = "FILE")]
     pub report: Option<PathBuf>,
 
@@ -117,21 +117,21 @@ mod verify_tests {
     }
 }
 
-/// Batch-identify a library and summarize matched, misnamed and unknown files.
+/// Batch-identify a library and summarize matched, misnamed and unknown files
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
-    after_long_help = "EXAMPLES:\n  Scan folder:   rom-converto dat scan ./roms\n  With report:   rom-converto dat scan ./roms --report scan.csv\n  Limit depth:   rom-converto dat scan ./roms --max-depth 2\n"
+    after_long_help = "EXAMPLES:\n  Scan directory: rom-converto dat scan ./roms\n  With report:    rom-converto dat scan ./roms --report scan.csv\n  Limit depth:    rom-converto dat scan ./roms --max-depth 2\n"
 )]
 pub struct DatScanCommand {
     /// Directory to scan
     #[arg(value_name = "INPUT")]
     pub input: PathBuf,
 
-    /// Maximum directory depth. 1 = top level only. Omit for unlimited.
+    /// Maximum directory depth. 1 = top level only. Omit for unlimited
     #[arg(long = "max-depth", value_name = "N")]
     pub max_depth: Option<usize>,
 
-    /// Write a run report to FILE. Format inferred from the extension: .csv, .json, .html or .htm. Unknown extensions default to JSON. The file is overwritten directly.
+    /// Write a run report to FILE. Format inferred from the extension: .csv, .json, .html or .htm. Unknown extensions default to JSON. The file is overwritten directly
     #[arg(long = "report", value_name = "FILE")]
     pub report: Option<PathBuf>,
 
@@ -192,7 +192,9 @@ mod scan_tests {
     }
 }
 
-/// Rename ROMs to their canonical database names. Hash-verified matches only.
+/// Rename ROMs to their canonical database names
+///
+/// Hash-verified matches only.
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
     after_long_help = "EXAMPLES:\n  Preview:       rom-converto dat rename ./roms --dry-run\n  Rename all:    rom-converto dat rename ./roms\n  One file:      rom-converto dat rename game.chd\n"
@@ -206,19 +208,19 @@ pub struct DatRenameCommand {
     #[arg(long, short = 'R', default_value_t = false)]
     pub recursive: bool,
 
-    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited.
+    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited
     #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
     pub max_depth: Option<usize>,
 
-    /// What to do when the target name already exists on disk
+    /// What to do when an output already exists: error, overwrite, skip, or rename to a numbered sibling
     #[arg(long = "on-conflict", value_enum, value_name = "MODE")]
     pub on_conflict: Option<ConflictPolicyArg>,
 
-    /// Shorthand for --on-conflict overwrite
+    /// Alias for --on-conflict overwrite
     #[arg(short = 'f', long = "force", conflicts_with = "on_conflict")]
     pub force: bool,
 
-    /// Write a run report to FILE. Format inferred from the extension: .csv, .json, .html or .htm. Unknown extensions default to JSON. The file is overwritten directly.
+    /// Write a run report to FILE. Format inferred from the extension: .csv, .json, .html or .htm. Unknown extensions default to JSON. The file is overwritten directly
     #[arg(long = "report", value_name = "FILE")]
     pub report: Option<PathBuf>,
 
@@ -282,7 +284,7 @@ mod rename_tests {
     }
 }
 
-/// Look up a single file and print everything the database knows about it.
+/// Look up a single file and print everything the database knows about it
 ///
 /// Unlike verify, a filename-and-size match is shown as a weak match rather
 /// than rejected, so near-misses are still informative.
@@ -348,7 +350,7 @@ mod identify_tests {
     }
 }
 
-/// Build a Logiqx fixdat of the database entries missing from a local library.
+/// Build a Logiqx fixdat of the database entries missing from a local library
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
     after_long_help = "EXAMPLES:\n  By platform:   rom-converto dat fixdat ./roms --platform \"PlayStation\" -o missing.dat\n  Exact DAT:     rom-converto dat fixdat ./roms --dat-id 5c1e... -o missing.dat\n  Narrow it:     rom-converto dat fixdat ./roms --platform \"PlayStation\" --dat-name \"...\" -o missing.dat\n"
@@ -362,7 +364,7 @@ pub struct DatFixdatCommand {
     #[arg(short = 'o', long = "output", value_name = "FILE")]
     pub output: PathBuf,
 
-    /// Platform name to resolve via the database (e.g. a console name)
+    /// Platform name to resolve via the database (such as a console name)
     #[arg(
         long,
         value_name = "NAME",
@@ -393,15 +395,15 @@ pub struct DatFixdatCommand {
     )]
     pub subset: Option<String>,
 
-    /// Maximum directory depth. 1 = top level only. Omit for unlimited.
+    /// Maximum directory depth. 1 = top level only. Omit for unlimited
     #[arg(long = "max-depth", value_name = "N")]
     pub max_depth: Option<usize>,
 
-    /// What to do when OUTPUT already exists
+    /// What to do when an output already exists: error, overwrite, skip, or rename to a numbered sibling
     #[arg(long = "on-conflict", value_enum, value_name = "MODE")]
     pub on_conflict: Option<ConflictPolicyArg>,
 
-    /// Shorthand for --on-conflict overwrite
+    /// Alias for --on-conflict overwrite
     #[arg(short = 'f', long = "force", conflicts_with = "on_conflict")]
     pub force: bool,
 

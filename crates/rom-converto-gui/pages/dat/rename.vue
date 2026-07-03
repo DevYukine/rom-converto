@@ -11,7 +11,7 @@ const commandLine = ref("");
 
 const { canRun, runBlockReason } = usePageGating({
   input,
-  emptyInputReason: "Select a file or folder to rename against the Playmatch database.",
+  emptyInputReason: "Select a file or directory to rename against the Playmatch database.",
 });
 
 type DatRenameAction =
@@ -55,12 +55,12 @@ const ACTION_COLOR: Record<DatRenameAction, "emerald" | "sky" | "amber" | "red">
 
 const ACTION_LABEL: Record<DatRenameAction, string> = {
   renamed: "Renamed",
-  "would-rename": "Would Rename",
-  "already-canonical": "Already Canonical",
-  "skip-unmatched": "Skip: Unmatched",
-  "skip-weak": "Skip: Weak Match",
-  "skip-collision": "Skip: Collision",
-  "skip-disc-set": "Skip: Disc Set",
+  "would-rename": "Would rename",
+  "already-canonical": "Already canonical",
+  "skip-unmatched": "Skip: unmatched",
+  "skip-weak": "Skip: weak match",
+  "skip-collision": "Skip: collision",
+  "skip-disc-set": "Skip: disc set",
   failed: "Failed",
 };
 
@@ -166,7 +166,7 @@ const rows = computed<DatResultRow[]>(() =>
       <div class="space-y-5">
         <FileDropZone
           v-model="input"
-          label="Input file or folder"
+          label="Input file or directory"
           :directory="false"
           :primary="true"
         />
@@ -174,8 +174,8 @@ const rows = computed<DatResultRow[]>(() =>
         <div class="space-y-4 rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
           <FlagToggle
             v-model="dryRun"
-            label="Dry run"
-            description="Preview renames without touching any files"
+            label="Preview (dry run)"
+            description="Show what each file would do without writing anything."
           />
 
           <div class="space-y-1.5">

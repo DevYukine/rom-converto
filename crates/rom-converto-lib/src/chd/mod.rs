@@ -1677,8 +1677,7 @@ mod tests {
     /// `FRAMES:` counts are used as-is (pregap frames stored in the CHD
     /// are inside `FRAMES`), and per-frame routing keys on the frame
     /// index so the differing datasizes (2352 data, 2352 audio) and the
-    /// track boundary line up. This is the synthetic stand-in for the
-    /// real pregap cross-check called out in B.5b.
+    /// track boundary line up.
     #[test]
     fn frame_spans_multi_track_with_pregap() {
         let meta =
@@ -1688,16 +1687,13 @@ mod tests {
 
         assert_eq!(sizes.len(), 800);
         assert_eq!(track.len(), 800);
-        // Track 1: 300 frames, MODE1_RAW = 2352 bytes, track index 0.
         assert!(sizes[..300].iter().all(|&s| s == 2352));
         assert!(track[..300].iter().all(|&t| t == 0));
-        // Track 2: 500 frames, AUDIO = 2352 bytes, track index 1.
         assert!(sizes[300..].iter().all(|&s| s == 2352));
         assert!(track[300..].iter().all(|&t| t == 1));
 
         assert_eq!(chd_track_decoded_size(&tracks[0]), 300 * 2352);
         assert_eq!(chd_track_decoded_size(&tracks[1]), 500 * 2352);
-        // Whole size is the sum of every frame's payload width.
         let whole: u64 = sizes.iter().map(|&s| s as u64).sum();
         assert_eq!(whole, 800 * 2352);
     }

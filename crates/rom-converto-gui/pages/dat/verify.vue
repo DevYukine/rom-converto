@@ -73,7 +73,7 @@ const VERDICT_COLOR: Record<DatVerifyResult["verdict"], "emerald" | "amber" | "z
 
 const VERDICT_LABEL: Record<DatVerifyResult["verdict"], string> = {
   verified: "Verified",
-  hint: "Name+Size Hint",
+  hint: "Name+size hint",
   unknown: "Unknown",
   unsupported: "Unsupported",
   failed: "Failed",
@@ -180,7 +180,7 @@ const batchRows = computed<DatResultRow[]>(() =>
         </div>
 
         <div v-if="verifyResult.tracks" class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
-          <h4 class="mb-2 text-xs font-semibold uppercase tracking-wider text-zinc-500">Track Checks</h4>
+          <h4 class="mb-2 text-xs font-semibold uppercase tracking-wider text-zinc-500">Track checks</h4>
           <div class="space-y-1.5">
             <CheckRow
               v-for="t in verifyResult.tracks"
@@ -205,11 +205,11 @@ const batchRows = computed<DatResultRow[]>(() =>
               <dd class="text-zinc-300">{{ verifyResult.platform }}</dd>
             </template>
             <template v-if="verifyResult.signatureGroup">
-              <dt class="text-zinc-500">Signature Group</dt>
+              <dt class="text-zinc-500">Signature group</dt>
               <dd class="text-zinc-300">{{ verifyResult.signatureGroup }}</dd>
             </template>
             <template v-if="verifyResult.datVersion">
-              <dt class="text-zinc-500">DAT Version</dt>
+              <dt class="text-zinc-500">DAT version</dt>
               <dd class="text-zinc-300">{{ verifyResult.datVersion }}</dd>
             </template>
             <template v-for="ext in visibleExternalIds(verifyResult)" :key="ext.provider">
@@ -283,7 +283,7 @@ const batchRows = computed<DatResultRow[]>(() =>
           @click="execute"
           @cancel="batch.abort()"
         >
-          {{ isBatch && queue.filter(i => i.status === 'pending').length > 1 ? `Verify All (${queue.filter(i => i.status === 'pending').length})` : 'Verify' }}
+          {{ isBatch && queue.filter(i => i.status === 'pending').length > 1 ? `Verify all (${queue.filter(i => i.status === 'pending').length})` : 'Verify' }}
         </RunButton>
       </div>
     </OperationCard>

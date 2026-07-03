@@ -11,7 +11,7 @@ const commandLine = ref("");
 
 const { canRun, runBlockReason } = usePageGating({
   input,
-  emptyInputReason: "Select a folder to scan against the Playmatch database.",
+  emptyInputReason: "Select a directory to scan against the Playmatch database.",
 });
 
 interface DatScanRow {
@@ -143,7 +143,7 @@ const rows = computed<DatResultRow[]>(() =>
       <div class="space-y-5">
         <FileDropZone
           v-model="input"
-          label="Folder to scan"
+          label="Directory to scan"
           :directory="true"
           :primary="true"
         />

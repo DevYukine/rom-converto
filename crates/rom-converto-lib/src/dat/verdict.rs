@@ -68,7 +68,7 @@ pub struct SetReconciliation {
     pub all_ok: bool,
 }
 
-/// Case-insensitive hex compare after trimming; crc padded to 8 chars.
+/// Case-insensitive hex compare after trimming.
 pub fn hashes_equal(local: &str, remote: &str) -> bool {
     let l = local.trim();
     let r = remote.trim();
@@ -84,7 +84,7 @@ fn crc_equal(local: &str, remote: &str) -> bool {
 }
 
 // Strongest-hash-first probe of one remote file against one local track.
-// Returns the algo that reconciled, or None. crc requires equal fileSize.
+// Returns the algo that reconciled, or None. CRC32 requires an equal file size.
 fn track_reconciles(local: &TrackDigests, remote: &PlaymatchGameFile) -> Option<HashAlgo> {
     let d = &local.digests;
     if let (Some(l), Some(r)) = (&d.sha256, &remote.sha256)
@@ -113,7 +113,7 @@ fn track_reconciles(local: &TrackDigests, remote: &PlaymatchGameFile) -> Option<
 
 /// Match each local track digest against gameFiles[] by strongest available
 /// hash. Each remote file may reconcile at most one local track (greedy,
-/// strongest-hash-first). crc only counts together with equal fileSize.
+/// strongest-hash-first). CRC32 only counts when the file sizes are equal.
 pub fn reconcile_tracks(local: &[TrackDigests], remote: &[PlaymatchGameFile]) -> SetReconciliation {
     let mut used = vec![false; remote.len()];
     let mut tracks = Vec::with_capacity(local.len());

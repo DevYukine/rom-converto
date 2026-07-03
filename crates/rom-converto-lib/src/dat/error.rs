@@ -8,15 +8,15 @@ pub enum DatError {
     HttpError(#[from] reqwest::Error),
     #[error("network error: {0}")]
     Transport(String),
-    #[error("playmatch api error ({code}): {message}")]
+    #[error("Playmatch API error ({code}): {message}")]
     Api { code: String, message: String },
     #[error("pagination exceeded {0} pages with more remaining; refusing incomplete results")]
     Truncated(usize),
-    #[error("invalid response from playmatch: {0}")]
+    #[error("invalid response from Playmatch: {0}")]
     BadResponse(String),
     #[error("inner-stream hashing is not supported for {format} yet; decompress the file first")]
     UnsupportedInnerHash { format: &'static str },
-    #[error("container error: {0}")]
+    #[error("decode error: {0}")]
     Container(String),
     #[error("{0}")]
     InvalidInput(String),

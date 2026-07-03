@@ -44,9 +44,9 @@ An unset flag never overrides a preset or config value. For example, if a preset
 ## Covered settings
 
 The config covers the tuning knobs worth repeating: `level`, `chunk_size`, `block_size_exp`,
-`mode`, `hunk_size`, `block_size`, `on_conflict`, `output_dir`, and `report`, each under the
-matching format table. The format tables are `[dol]`, `[rvl]`, `[nx]`, `[chd]`, `[cso]`, and
-`[wup]`.
+`mode`, `hunk_size`, `block_size`, `on_conflict`, `output_dir`, `report`, and `api_base`,
+each under the matching format table. The format tables are `[dol]`, `[rvl]`, `[nx]`,
+`[chd]`, `[cso]`, `[wup]`, and `[dat]`.
 
 Some flags are deliberately command-line only and are not read from the config: `--recursive`
 and `--max-depth` (they change how much of a directory tree is processed),
@@ -71,6 +71,10 @@ block_size_exp = 20
 
 [chd]
 hunk_size = 4096
+
+[dat]
+api_base = "https://playmatch.retrorealm.dev/api/v2"
+report = "./dat-report.json"
 
 [presets.archive]
 dol = { level = 22, chunk_size = 131072 }

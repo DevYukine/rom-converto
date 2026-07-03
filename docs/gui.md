@@ -25,6 +25,7 @@ the sidebar:
 | CSO/ZSO | Compress to CSO/ZSO, Decompress CSO/ZSO, Verify CSO/ZSO, CSO/ZSO info |
 | CD (CUE/BIN) | Merge multi-bin |
 | Utilities | Hash, Playlist |
+| DAT | Verify, Scan, Rename |
 
 ## CLI and GUI parity
 
@@ -43,6 +44,7 @@ CLI command to its GUI page.
 | `cue merge` | Merge multi-bin |
 | `hash` | Utilities: Hash |
 | `playlist` | Utilities: Playlist |
+| `dat verify`, `scan`, `rename` | DAT |
 
 A few CLI features have no GUI counterpart by design:
 
@@ -53,6 +55,8 @@ A few CLI features have no GUI counterpart by design:
 - `--config`, `--preset`, and `--no-update-check` are file-based configuration and updater
   flags; the GUI keeps options per page.
 - `info --json` is scripting output for the terminal; the GUI shows a rich info card.
+- `dat identify` and `dat fixdat` are terminal operations: a single-file database lookup and
+  a Logiqx fixdat builder. The GUI covers `dat verify`, `scan`, and `rename`.
 
 ## Conflict control
 
@@ -70,7 +74,8 @@ plan instead of running it: one plan line per file in the same
 `Would <op> <in> -> <out> (<FMT>) [<decision>]` form as the CLI `--dry-run`, with nothing
 written. The preview shares the CLI's plan logic through the library, so a preview line matches
 the CLI's line for the same input. Recursive CDN to CIA is the one write page without a
-preview, mirroring how the CLI special-cases that batch.
+preview, mirroring how the CLI special-cases that batch. The DAT Rename page has its own
+Preview toggle that lists each file's planned rename rather than a conversion plan line.
 
 ## Cancellation
 
