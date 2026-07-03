@@ -48,6 +48,8 @@ The config covers the tuning knobs worth repeating: `level`, `chunk_size`, `bloc
 each under the matching format table. The format tables are `[dol]`, `[rvl]`, `[nx]`,
 `[chd]`, `[cso]`, `[wup]`, and `[dat]`.
 
+For `[dol]` and `[rvl]`, `level` and `chunk_size` apply to both `compress` and `migrate`; a CLI flag still takes precedence.
+
 Some flags are deliberately command-line only and are not read from the config: `--recursive`
 and `--max-depth` (they change how much of a directory tree is processed),
 `--output-template` (it changes which output file is written), the `cso` `--format`, and the

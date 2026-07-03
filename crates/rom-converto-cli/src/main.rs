@@ -405,6 +405,24 @@ fn verify_gate(input: &Path, allowed: &[LegacyFormat]) -> Result<()> {
     Ok(())
 }
 
+/// Resolve the compression knobs migrate exposes with the compress precedence:
+/// flag over preset/config over built-in default.
+fn resolve_migrate_opts(
+    level: Option<i32>,
+    chunk_size: Option<u32>,
+    eff: &rom_converto_lib::config::DiscDefaults,
+) -> RvzCompressOptions {
+    RvzCompressOptions {
+        compression_level: level
+            .or(eff.level)
+            .unwrap_or(RvzCompressOptions::default().compression_level),
+        chunk_size: chunk_size
+            .or(eff.chunk_size)
+            .unwrap_or(RvzCompressOptions::default().chunk_size),
+        ..RvzCompressOptions::default()
+    }
+}
+
 /// Best-effort media label for a CHD dry-run plan line. ISO inputs read a
 /// header to predict the disc kind; cue inputs imply a CD with no header probe.
 fn chd_media_label(input: &Path) -> Option<String> {
@@ -1331,15 +1349,7 @@ async fn dispatch_command(
                 }
             }
             DolCommands::Migrate(cmd) => {
-                let opts = RvzCompressOptions {
-                    compression_level: cmd
-                        .level
-                        .unwrap_or(RvzCompressOptions::default().compression_level),
-                    chunk_size: cmd
-                        .chunk_size
-                        .unwrap_or(RvzCompressOptions::default().chunk_size),
-                    ..RvzCompressOptions::default()
-                };
+                let opts = resolve_migrate_opts(cmd.level, cmd.chunk_size, &effective.dol);
                 let migrate_opts = MigrateOptions {
                     skip_verify: cmd.skip_verify,
                     deep_verify: false,
@@ -1649,15 +1659,7 @@ async fn dispatch_command(
                 }
             }
             RvlCommands::Migrate(cmd) => {
-                let opts = RvzCompressOptions {
-                    compression_level: cmd
-                        .level
-                        .unwrap_or(RvzCompressOptions::default().compression_level),
-                    chunk_size: cmd
-                        .chunk_size
-                        .unwrap_or(RvzCompressOptions::default().chunk_size),
-                    ..RvzCompressOptions::default()
-                };
+                let opts = resolve_migrate_opts(cmd.level, cmd.chunk_size, &effective.rvl);
                 let migrate_opts = MigrateOptions {
                     skip_verify: cmd.skip_verify,
                     deep_verify: cmd.deep,
@@ -3323,5 +3325,45 @@ mod verify_gate_tests {
         let plain = dir.path().join("game.iso");
         std::fs::write(&plain, [0u8; 16]).unwrap();
         verify_gate(&plain, DOL_MIGRATE_FORMATS).expect("a plain file must pass the gate");
+    }
+}
+
+#[cfg(test)]
+mod migrate_opts_tests {
+    use super::*;
+    use rom_converto_lib::config::DiscDefaults;
+
+    #[test]
+    fn config_level_and_chunk_reach_migrate_opts() {
+        let eff = DiscDefaults {
+            level: Some(7),
+            chunk_size: Some(262_144),
+            ..Default::default()
+        };
+        let opts = resolve_migrate_opts(None, None, &eff);
+        assert_eq!(opts.compression_level, 7);
+        assert_eq!(opts.chunk_size, 262_144);
+    }
+
+    #[test]
+    fn migrate_flag_beats_config() {
+        let eff = DiscDefaults {
+            level: Some(7),
+            chunk_size: Some(262_144),
+            ..Default::default()
+        };
+        let opts = resolve_migrate_opts(Some(3), Some(65_536), &eff);
+        assert_eq!(opts.compression_level, 3);
+        assert_eq!(opts.chunk_size, 65_536);
+    }
+
+    #[test]
+    fn migrate_falls_back_to_builtin() {
+        let opts = resolve_migrate_opts(None, None, &DiscDefaults::default());
+        assert_eq!(
+            opts.compression_level,
+            RvzCompressOptions::default().compression_level
+        );
+        assert_eq!(opts.chunk_size, RvzCompressOptions::default().chunk_size);
     }
 }
