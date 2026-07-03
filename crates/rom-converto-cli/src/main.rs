@@ -52,7 +52,7 @@ use rom_converto_lib::nintendo::ctr::{
 use rom_converto_lib::nintendo::dol::verify::{DolVerifyOptions, verify_dol};
 use rom_converto_lib::nintendo::legacy_input::{
     ALL_MIGRATE_FORMATS, DOL_MIGRATE_FORMATS, LegacyFormat, MigrateOptions, detect_legacy_format,
-    ensure_format_allowed, migrate_disc_batch, migrate_disc_cancellable,
+    ensure_format_allowed, ensure_format_allowed_for, migrate_disc_batch, migrate_disc_cancellable,
 };
 use rom_converto_lib::nintendo::nx::{
     NczMode, NxCompressOptions, compress_container_async_cancellable,
@@ -394,6 +394,15 @@ fn migrate_dry_run(
         let decision = resolve_output(&desired, policy)?;
         dry_run_single("migrate", input, &desired, &decision, None, None, None)
     }
+}
+
+/// Reject a legacy container the verify console gate does not accept, pointing
+/// at `rvl verify`. A non-legacy input passes through to the normal magic check.
+fn verify_gate(input: &Path, allowed: &[LegacyFormat]) -> Result<()> {
+    if let Some(fmt) = detect_legacy_format(input)? {
+        ensure_format_allowed_for(fmt, allowed, "rvl verify")?;
+    }
+    Ok(())
 }
 
 /// Best-effort media label for a CHD dry-run plan line. ISO inputs read a
@@ -1486,6 +1495,7 @@ async fn dispatch_command(
                     .await?
                 } else {
                     ensure_input_exists(&cmd.input)?;
+                    verify_gate(&cmd.input, DOL_MIGRATE_FORMATS)?;
                     let opts = DolVerifyOptions { full: cmd.full };
                     let result = verify_dol(&cmd.input, &opts, &progress)?;
                     log::info!("Game ID: {}", result.game_id);
@@ -1803,6 +1813,7 @@ async fn dispatch_command(
                     .await?
                 } else {
                     ensure_input_exists(&cmd.input)?;
+                    verify_gate(&cmd.input, ALL_MIGRATE_FORMATS)?;
                     let opts = RvlVerifyOptions { full: cmd.full };
                     let result = verify_rvl(&cmd.input, &opts, &progress)?;
                     log::info!("Game ID: {}", result.game_id);
@@ -3275,5 +3286,42 @@ mod migrate_gate_tests {
         write_wia(dir.path());
         migrate_dry_run(dir.path(), None, true, false, DOL_MIGRATE_FORMATS)
             .expect("a WIA-only directory must not fail a dol dry-run");
+    }
+}
+
+#[cfg(test)]
+mod verify_gate_tests {
+    use super::*;
+
+    fn write_wia(dir: &Path) -> std::path::PathBuf {
+        let p = dir.join("game.wia");
+        std::fs::write(&p, [b'W', b'I', b'A', 0x01, 0, 0, 0, 0]).unwrap();
+        p
+    }
+
+    #[test]
+    fn dol_verify_gate_rejects_wia() {
+        let dir = tempfile::tempdir().unwrap();
+        let wia = write_wia(dir.path());
+        let err = verify_gate(&wia, DOL_MIGRATE_FORMATS).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "input is a WIA image; use rvl verify for Wii disc images"
+        );
+    }
+
+    #[test]
+    fn rvl_verify_gate_accepts_wia() {
+        let dir = tempfile::tempdir().unwrap();
+        let wia = write_wia(dir.path());
+        verify_gate(&wia, ALL_MIGRATE_FORMATS).expect("rvl verify must accept a WIA image");
+    }
+
+    #[test]
+    fn verify_gate_ignores_non_legacy_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let plain = dir.path().join("game.iso");
+        std::fs::write(&plain, [0u8; 16]).unwrap();
+        verify_gate(&plain, DOL_MIGRATE_FORMATS).expect("a plain file must pass the gate");
     }
 }

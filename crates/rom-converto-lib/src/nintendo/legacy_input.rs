@@ -68,11 +68,21 @@ pub const ALL_MIGRATE_FORMATS: &[LegacyFormat] = &[
 /// accept, naming the format and pointing at the command that handles
 /// it. Single source of the wording for both migrate and compress.
 pub fn ensure_format_allowed(fmt: LegacyFormat, allowed: &[LegacyFormat]) -> RvzResult<()> {
+    ensure_format_allowed_for(fmt, allowed, "rvl migrate")
+}
+
+/// Same console gate as [`ensure_format_allowed`], but naming the command that
+/// should handle the rejected container so `verify` points at `rvl verify`.
+pub fn ensure_format_allowed_for(
+    fmt: LegacyFormat,
+    allowed: &[LegacyFormat],
+    next_command: &str,
+) -> RvzResult<()> {
     if allowed.contains(&fmt) {
         Ok(())
     } else {
         Err(RvzError::Custom(format!(
-            "input is a {} image; use rvl migrate for Wii disc images",
+            "input is a {} image; use {next_command} for Wii disc images",
             fmt.name()
         )))
     }

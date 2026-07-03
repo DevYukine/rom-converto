@@ -75,11 +75,12 @@ pub struct MigrateDiscCommand {
 #[command(
     long_about = "Verify a Wii disc image\n\n\
 Fast mode (default) checks the RVZ container's stored SHA-1 hashes (file header, disc struct, partition table). It is a no-op for plain .iso / .wbfs input, which carries no container hashes.\n\n\
---full decrypts every partition cluster and recomputes the H0/H1/H2 hash tree, comparing it to the on-disc hash regions to detect tampering or bit rot. This decrypts and hashes the entire disc and can be slow.",
-    after_long_help = "EXAMPLES:\n  Single file:     rom-converto rvl verify game.iso\n  Full check:      rom-converto rvl verify game.rvz --full\n  Whole directory: rom-converto rvl verify -R ./roms\n"
+--full decrypts every partition cluster and recomputes the H0/H1/H2 hash tree, comparing it to the on-disc hash regions to detect tampering or bit rot. This decrypts and hashes the entire disc and can be slow.\n\n\
+Legacy Wii containers (WIA, GCZ, NKit) are decoded on the fly and checked the same way.",
+    after_long_help = "EXAMPLES:\n  Single file:     rom-converto rvl verify game.iso\n  Legacy input:    rom-converto rvl verify game.wia\n  Full check:      rom-converto rvl verify game.rvz --full\n  Whole directory: rom-converto rvl verify -R ./roms\n"
 )]
 pub struct VerifyDiscCommand {
-    /// Input disc image path (.iso, .wbfs, or .rvz), or a directory with --recursive
+    /// Input disc image path (.iso, .wbfs, .rvz, .wia, .gcz, .nkit.iso, .nkit.gcz), or a directory with --recursive
     #[arg(value_name = "INPUT")]
     pub input: PathBuf,
 

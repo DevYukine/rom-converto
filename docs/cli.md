@@ -239,7 +239,7 @@ rom-converto dol <SUBCOMMAND> <INPUT> [OUTPUT]
 | `compress <INPUT> [OUTPUT]` | Compress a `.iso`/`.gcm` to Dolphin's `.rvz` |
 | `migrate <INPUT> [OUTPUT]` | Migrate a legacy `.gcz`, `.nkit.iso`, or `.nkit.gcz` to `.rvz` with an integrity check first |
 | `decompress <INPUT> [OUTPUT]` | Decompress a `.rvz` back to `.iso` |
-| `verify <INPUT>` | Verify RVZ container hashes, or compute a whole-disc SHA-1 with `--full` |
+| `verify <INPUT>` | Verify a `.iso`, `.gcm`, `.rvz`, or legacy `.gcz`/NKit image (checks RVZ container hashes, or a whole-disc SHA-1 with `--full`) |
 | `info <INPUT>` | Inspect GameCube disc metadata. See [info](#info) |
 
 | Flag | Applies to | Description |
@@ -259,6 +259,8 @@ Unlike the other commands, `migrate` overwrites an existing output only with `-f
 and does not take `--on-conflict`. Without `--force`, a single-file run stops on an existing
 output, while a recursive run skips it and continues.
 
+`dol verify` reads the same legacy GameCube containers as `migrate` (`.gcz`, NKit); a `.wia` holds a Wii disc image and is rejected with a pointer to `rvl verify`.
+
 ## rvl (Wii)
 
 ```
@@ -270,7 +272,7 @@ rom-converto rvl <SUBCOMMAND> <INPUT> [OUTPUT]
 | `compress <INPUT> [OUTPUT]` | Compress a `.iso`/`.wbfs` to Dolphin's `.rvz` |
 | `migrate <INPUT> [OUTPUT]` | Migrate a legacy `.wia`, `.gcz`, `.nkit.iso`, or `.nkit.gcz` to `.rvz` with an integrity check first |
 | `decompress <INPUT> [OUTPUT]` | Decompress a `.rvz` back to `.iso` |
-| `verify <INPUT>` | Verify RVZ container hashes, or recompute the Wii partition hash tree with `--full` |
+| `verify <INPUT>` | Verify a `.iso`, `.wbfs`, `.rvz`, or legacy `.wia`/`.gcz`/NKit image (checks RVZ container hashes, or recomputes the Wii partition hash tree with `--full`) |
 | `info <INPUT>` | Inspect Wii disc metadata. See [info](#info) |
 
 `rvl migrate` covers `.wia` in every codec (bzip2, LZMA, LZMA2, purge, none) alongside

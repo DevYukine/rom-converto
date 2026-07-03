@@ -70,11 +70,12 @@ pub struct MigrateDiscCommand {
 #[command(
     long_about = "Verify a GameCube disc image\n\n\
 Fast mode (default) checks the RVZ container's stored SHA-1 hashes (file header, disc struct, partition table). It is a no-op for plain .iso / .gcm input, which carries no integrity data.\n\n\
---full decodes the whole disc, validates the FST geometry, and computes a whole-disc SHA-1. GameCube discs carry no built-in integrity hashes, so that digest is informational (for external DAT/Redump matching), never a pass/fail.",
-    after_long_help = "EXAMPLES:\n  Single file:     rom-converto dol verify game.iso\n  Full check:      rom-converto dol verify game.rvz --full\n  Whole directory: rom-converto dol verify -R ./roms\n"
+--full decodes the whole disc, validates the FST geometry, and computes a whole-disc SHA-1. GameCube discs carry no built-in integrity hashes, so that digest is informational (for external DAT/Redump matching), never a pass/fail.\n\n\
+Legacy GameCube containers (GCZ, NKit) are decoded on the fly and checked the same way. A WIA holds a Wii disc image, so it is rejected with a pointer to rvl verify.",
+    after_long_help = "EXAMPLES:\n  Single file:     rom-converto dol verify game.iso\n  Legacy input:    rom-converto dol verify game.gcz\n  Full check:      rom-converto dol verify game.rvz --full\n  Whole directory: rom-converto dol verify -R ./roms\n"
 )]
 pub struct VerifyDiscCommand {
-    /// Input disc image path (.iso, .gcm, or .rvz), or a directory with --recursive
+    /// Input disc image path (.iso, .gcm, .rvz, .gcz, .nkit.iso, .nkit.gcz), or a directory with --recursive
     #[arg(value_name = "INPUT")]
     pub input: PathBuf,
 
