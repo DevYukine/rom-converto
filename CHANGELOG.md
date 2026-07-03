@@ -1,3 +1,20 @@
+# [0.14.0](https://github.com/DevYukine/rom-converto/compare/v0.13.0...v0.14.0) (2026-07-03)
+
+
+### Bug Fixes
+
+* **cli:** apply config and preset level and chunk size to dol and rvl migrate ([42a11ac](https://github.com/DevYukine/rom-converto/commit/42a11acc0400cd27b6217275d56547bfe43611b9))
+* **gui:** enforce pnpm minimum release age and re-resolve electron-to-chromium ([48bec8e](https://github.com/DevYukine/rom-converto/commit/48bec8e0dad1fa849ede53caa9c61635fa872f80))
+
+
+### Features
+
+* **cli:** gate dol and rvl verify by container console with legacy inputs documented ([e8be15e](https://github.com/DevYukine/rom-converto/commit/e8be15e770f4a827986ddd1d25d55cae20ced574))
+* **dat:** playmatch-backed verify, scan, rename, identify and fixdat (CLI + GUI) ([7ff04b0](https://github.com/DevYukine/rom-converto/commit/7ff04b00df3d35923ddbd6790c3971ed0910df06))
+* **nintendo:** migrate legacy GCZ, WIA, and NKit disc images to RVZ ([6e3ed7b](https://github.com/DevYukine/rom-converto/commit/6e3ed7b765c390ab35acf98e1970b68ff547634e))
+
+
+
 # [0.13.0](https://github.com/DevYukine/rom-converto/compare/v0.12.0...v0.13.0) (2026-06-30)
 
 
@@ -85,18 +102,6 @@
 * **cue:** merge multi-bin disc images into a single bin/cue ([3775d40](https://github.com/DevYukine/rom-converto/commit/3775d40255767ee40d01eb61ff46798381ad4d91))
 * **info:** cross-console ROM inspection (CLI + GUI) ([99dcad4](https://github.com/DevYukine/rom-converto/commit/99dcad4686c63a8c1b5585ff0f7bc545f910041a))
 * **rvl:** add wbfs compression/decompression support ([767f929](https://github.com/DevYukine/rom-converto/commit/767f9296e7658ca9a98bcfdf20bce99d3db4c6c9))
-
-
-
-## [0.9.1](https://github.com/DevYukine/rom-converto/compare/v0.9.0...v0.9.1) (2026-05-22)
-
-
-### Bug Fixes
-
-* **nx:** emit start and finish for async verify progress ([bde6a02](https://github.com/DevYukine/rom-converto/commit/bde6a024b0ecf2903590ec9546f4a892de6470b0))
-* **nx:** pre-fetch file size for compress and decompress progress ([5feafbc](https://github.com/DevYukine/rom-converto/commit/5feafbc9b8b384a4ee3c651357ddfac15e693cae))
-* **updater:** match renamed rom-converto-cli release assets ([8997d63](https://github.com/DevYukine/rom-converto/commit/8997d63e25ea755c85911ec5f7dd955f26fcdab5))
-* **wup:** scan NUS dir for total bytes before decrypt progress ([f99815f](https://github.com/DevYukine/rom-converto/commit/f99815fc3e2859f3b3ffd52a4df6aa481c359560))
 
 
 
