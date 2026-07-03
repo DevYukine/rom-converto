@@ -296,6 +296,68 @@ impl LaggedFibonacci {
     }
 }
 
+impl LaggedFibonacci {
+    /// Derive the seed the disc mastering process used for junk data in
+    /// the 32 KiB sector containing `offset`, then position the
+    /// generator at `offset` within that sector. `offset` is a disc
+    /// byte offset for GameCube, or a partition-data offset (hashes
+    /// excluded) for Wii partition contents.
+    ///
+    /// Matches nod's `LaggedFibonacci::init_with_seed`, validated
+    /// against the published vector (see tests). Junk reseeds every
+    /// 32 KiB; use [`Self::fill_junk`] to cross sector boundaries.
+    pub fn with_junk_position(disc_id: &[u8; 4], disc_num: u8, offset: u64) -> Self {
+        let sector = (offset / RVZ_BLOCK_SIZE) as u32;
+        let seed = junk_seed(disc_id, disc_num, sector);
+        let mut lfg = Self::from_seed_words(&seed);
+        lfg.forward_bytes((offset % RVZ_BLOCK_SIZE) as usize);
+        lfg
+    }
+
+    /// Fill `out` with junk data starting at `offset`, reseeding at
+    /// every 32 KiB sector boundary as the hardware generator does.
+    pub fn fill_junk(disc_id: &[u8; 4], disc_num: u8, mut offset: u64, out: &mut [u8]) {
+        let mut out = &mut out[..];
+        while !out.is_empty() {
+            let mut lfg = Self::with_junk_position(disc_id, disc_num, offset);
+            let in_sector = (offset % RVZ_BLOCK_SIZE) as usize;
+            let take = out.len().min(RVZ_BLOCK_SIZE as usize - in_sector);
+            let (head, tail) = out.split_at_mut(take);
+            lfg.fill(head);
+            out = tail;
+            offset += take as u64;
+        }
+    }
+}
+
+/// Forward seed derivation for GameCube/Wii junk data: 17 seed words
+/// from the disc ID, disc number, and 32 KiB sector index. Port of
+/// nod's `generate_seed` (`nod/src/util/lfg.rs`), itself derived from
+/// the generator the disc mastering process used. The reverse path
+/// ([`LaggedFibonacci::get_seed`]) recovers seeds from observed bytes;
+/// this is the forward path NKit relies on to regenerate stripped junk.
+pub fn junk_seed(disc_id: &[u8; 4], disc_num: u8, sector: u32) -> [u32; SEED_SIZE] {
+    let base = u32::from_be_bytes([
+        disc_id[2],
+        disc_id[1],
+        disc_id[3].wrapping_add(disc_id[2]),
+        disc_id[0].wrapping_add(disc_id[1]),
+    ]) ^ (disc_num as u32);
+    let mut n = base.wrapping_mul(0x0260_BCD5) ^ sector.wrapping_mul(0x1EF2_9123);
+
+    let mut seed = [0u32; SEED_SIZE];
+    for word in seed.iter_mut() {
+        let mut v = 0u32;
+        for _ in 0..LFG_J {
+            n = n.wrapping_mul(0x5D58_8B65).wrapping_add(1);
+            v = (v >> 1) | (n & 0x8000_0000);
+        }
+        *word = v;
+    }
+    seed[16] ^= (seed[0] >> 9) ^ (seed[16] << 23);
+    seed
+}
+
 const COMPRESSED_FLAG: u32 = 1 << 31;
 const MAX_PLAIN_RUN: u32 = 0x7FFF_FFFF;
 
@@ -688,5 +750,50 @@ mod tests {
         let mut buf = (0x80000100u32).to_be_bytes().to_vec();
         buf.extend_from_slice(&[0u8; 30]); // need 68 seed bytes
         assert!(matches!(pack_decode(&buf, 0), Err(RvzError::Custom(_))));
+    }
+
+    /// Published junk vector cross-checked against nod's `lfg.rs` test
+    /// suite: disc "GALE" (Super Smash Bros. Melee), disc 0, offset
+    /// 0x600000.
+    #[test]
+    fn junk_seed_matches_known_vector() {
+        let mut out = [0u8; 16];
+        let mut lfg = LaggedFibonacci::with_junk_position(b"GALE", 0, 0x600000);
+        lfg.fill(&mut out);
+        assert_eq!(
+            out,
+            [
+                0xE9, 0x47, 0x67, 0xBD, 0x41, 0x50, 0x4D, 0x5D, 0x61, 0x48, 0xB1, 0x99, 0xA0, 0x12,
+                0x0C, 0xBA
+            ]
+        );
+    }
+
+    #[test]
+    fn fill_junk_reseeds_per_sector() {
+        // Filling across a sector boundary must equal two independent
+        // per-sector fills.
+        let mut joined = vec![0u8; 0x100];
+        LaggedFibonacci::fill_junk(b"GALE", 0, 0x8000 - 0x80, &mut joined);
+
+        let mut first = vec![0u8; 0x80];
+        LaggedFibonacci::fill_junk(b"GALE", 0, 0x8000 - 0x80, &mut first);
+        let mut second = vec![0u8; 0x80];
+        LaggedFibonacci::fill_junk(b"GALE", 0, 0x8000, &mut second);
+
+        assert_eq!(&joined[..0x80], &first[..]);
+        assert_eq!(&joined[0x80..], &second[..]);
+    }
+
+    #[test]
+    fn junk_seed_round_trips_through_get_seed() {
+        // Forward-generated junk must be recoverable by the reverse
+        // derivation used by the RVZ pack encoder.
+        let mut junk = vec![0u8; 0x8000];
+        LaggedFibonacci::fill_junk(b"RMCE", 0, 0x40000, &mut junk);
+        let (seed, matched) =
+            LaggedFibonacci::get_seed(&junk, 0).expect("forward junk must be a valid trajectory");
+        assert_eq!(matched, junk.len());
+        assert_eq!(seed, junk_seed(b"RMCE", 0, 8));
     }
 }

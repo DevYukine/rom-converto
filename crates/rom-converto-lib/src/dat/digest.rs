@@ -17,7 +17,7 @@ use crate::util::{CancelToken, ProgressReporter};
 pub enum InnerStreamKind {
     /// Already a raw image: hash the file bytes as-is.
     Raw,
-    /// RVZ / WIA disc image.
+    /// RVZ disc image.
     Rvz,
     /// WBFS container.
     Wbfs,
@@ -44,7 +44,7 @@ pub fn classify_input(path: &Path) -> InnerStreamKind {
         .unwrap_or_default();
 
     match ext.as_str() {
-        "rvz" | "wia" => InnerStreamKind::Rvz,
+        "rvz" => InnerStreamKind::Rvz,
         "wbfs" => InnerStreamKind::Wbfs,
         "cso" | "zso" => InnerStreamKind::CsoZso,
         "z3ds" | "zcia" | "zcci" | "zcxi" | "z3dsx" => InnerStreamKind::Z3ds,
@@ -128,6 +128,49 @@ fn digest_reader<R: Read>(
     Ok(hasher.finalize(total))
 }
 
+/// Decode a legacy disc container (GCZ, WIA, NKit ISO, or NKit GCZ)
+/// and digest its logical disc content, matching how `dol/rvl info`
+/// and `compress_disc` decode the same inputs. Container decode errors
+/// surface through `digest_reader`'s `?` as I/O errors.
+fn digest_legacy(
+    fmt: crate::nintendo::legacy_input::LegacyFormat,
+    path: &Path,
+    algos: &[HashAlgo],
+    bytes_done: &Arc<AtomicU64>,
+    cancel: &CancelToken,
+) -> DatResult<RomDigests> {
+    use crate::nintendo::legacy_input::LegacyFormat;
+    let single = match fmt {
+        LegacyFormat::Gcz => {
+            let mut r = crate::nintendo::gcz::GczReader::open(path)
+                .map_err(|e| DatError::Container(e.to_string()))?;
+            let total = r.data_size();
+            digest_reader(&mut r, total, algos, bytes_done, cancel)?
+        }
+        LegacyFormat::Wia => {
+            let mut r = crate::nintendo::wia::WiaReader::open(path)
+                .map_err(|e| DatError::Container(e.to_string()))?;
+            let total = r.iso_size();
+            digest_reader(&mut r, total, algos, bytes_done, cancel)?
+        }
+        LegacyFormat::NkitIso => {
+            let mut r = crate::nintendo::nkit::NkitReader::open(path)
+                .map_err(|e| DatError::Container(e.to_string()))?;
+            let total = r.image_size();
+            digest_reader(&mut r, total, algos, bytes_done, cancel)?
+        }
+        LegacyFormat::NkitGcz => {
+            let gcz = crate::nintendo::gcz::GczReader::open(path)
+                .map_err(|e| DatError::Container(e.to_string()))?;
+            let mut r = crate::nintendo::nkit::NkitReader::from_source(gcz)
+                .map_err(|e| DatError::Container(e.to_string()))?;
+            let total = r.image_size();
+            digest_reader(&mut r, total, algos, bytes_done, cancel)?
+        }
+    };
+    Ok(RomDigests::Single(single))
+}
+
 /// Synchronous dispatch core. Runs inside the caller's blocking
 /// context and ticks `bytes_done` as it hashes. `digest_inner` and
 /// `digest_inner_async` both funnel through here.
@@ -139,6 +182,14 @@ fn digest_dispatch(
 ) -> DatResult<RomDigests> {
     match classify_input(path) {
         InnerStreamKind::Raw => {
+            // Legacy containers are magic-sniffed only for raw-looking
+            // extensions, so known non-raw extensions keep their
+            // extension-based errors and never pay a file open.
+            if let Some(fmt) = crate::nintendo::legacy_input::detect_legacy_format(path)
+                .map_err(DatError::IoError)?
+            {
+                return digest_legacy(fmt, path, algos, bytes_done, cancel);
+            }
             let d = digest_raw(path, algos, bytes_done, cancel)?;
             Ok(RomDigests::Single(d))
         }
@@ -335,7 +386,7 @@ mod tests {
         assert_eq!(kind("noext"), InnerStreamKind::Raw);
 
         assert_eq!(kind("game.rvz"), InnerStreamKind::Rvz);
-        assert_eq!(kind("game.wia"), InnerStreamKind::Rvz);
+        assert_eq!(kind("game.wia"), InnerStreamKind::Raw);
         assert_eq!(kind("game.wbfs"), InnerStreamKind::Wbfs);
         assert_eq!(kind("game.cso"), InnerStreamKind::CsoZso);
         assert_eq!(kind("game.zso"), InnerStreamKind::CsoZso);
@@ -362,17 +413,21 @@ mod tests {
 
     #[test]
     fn unsupported_compressed_reports_format() {
+        let dir = tempfile::tempdir().unwrap();
         let progress = crate::util::NoProgress;
         let cancel = CancelToken::new();
-        let err =
-            digest_inner(Path::new("game.xcz"), &[HashAlgo::Sha1], &progress, &cancel).unwrap_err();
+
+        let xcz = dir.path().join("game.xcz");
+        std::fs::write(&xcz, b"not a legacy container").unwrap();
+        let err = digest_inner(&xcz, &[HashAlgo::Sha1], &progress, &cancel).unwrap_err();
         assert!(matches!(
             err,
             DatError::UnsupportedInnerHash { format: "xcz" }
         ));
 
-        let err =
-            digest_inner(Path::new("game.nsz"), &[HashAlgo::Sha1], &progress, &cancel).unwrap_err();
+        let nsz = dir.path().join("game.nsz");
+        std::fs::write(&nsz, b"not a legacy container").unwrap();
+        let err = digest_inner(&nsz, &[HashAlgo::Sha1], &progress, &cancel).unwrap_err();
         assert!(matches!(
             err,
             DatError::UnsupportedInnerHash { format: "nsz" }
@@ -381,11 +436,36 @@ mod tests {
 
     #[test]
     fn cue_set_is_caller_resolved() {
+        let dir = tempfile::tempdir().unwrap();
+        let cue = dir.path().join("game.cue");
+        std::fs::write(&cue, b"FILE \"track.bin\" BINARY").unwrap();
         let progress = crate::util::NoProgress;
         let cancel = CancelToken::new();
-        let err =
-            digest_inner(Path::new("game.cue"), &[HashAlgo::Sha1], &progress, &cancel).unwrap_err();
+        let err = digest_inner(&cue, &[HashAlgo::Sha1], &progress, &cancel).unwrap_err();
         assert!(matches!(err, DatError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn missing_cue_reports_cue_error_without_io() {
+        let dir = tempfile::tempdir().unwrap();
+        let cue = dir.path().join("does-not-exist.cue");
+        let progress = crate::util::NoProgress;
+        let cancel = CancelToken::new();
+        let err = digest_inner(&cue, &[HashAlgo::Sha1], &progress, &cancel).unwrap_err();
+        assert!(matches!(err, DatError::InvalidInput(_)), "{err:?}");
+    }
+
+    #[test]
+    fn missing_nsz_reports_unsupported_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let nsz = dir.path().join("does-not-exist.nsz");
+        let progress = crate::util::NoProgress;
+        let cancel = CancelToken::new();
+        let err = digest_inner(&nsz, &[HashAlgo::Sha1], &progress, &cancel).unwrap_err();
+        assert!(
+            matches!(err, DatError::UnsupportedInnerHash { format: "nsz" }),
+            "{err:?}"
+        );
     }
 
     #[test]
@@ -404,5 +484,128 @@ mod tests {
         };
         let direct = crate::util::hash_file(&path, &algos, &progress).unwrap();
         assert_eq!(single, direct);
+    }
+
+    fn legacy_algos() -> [HashAlgo; 3] {
+        [HashAlgo::Crc32, HashAlgo::Sha1, HashAlgo::Sha256]
+    }
+
+    fn decoded_digest(path: &Path) -> FileDigests {
+        let algos = legacy_algos();
+        let progress = crate::util::NoProgress;
+        let cancel = CancelToken::new();
+        let RomDigests::Single(got) = digest_inner(path, &algos, &progress, &cancel).unwrap()
+        else {
+            panic!("legacy container must be Single");
+        };
+        got
+    }
+
+    fn plain_digest(path: &Path) -> FileDigests {
+        crate::util::hash_file(path, &legacy_algos(), &crate::util::NoProgress).unwrap()
+    }
+
+    #[test]
+    fn gcz_digest_matches_iso() {
+        use crate::nintendo::dol::test_fixtures::make_fake_gamecube_iso;
+        use crate::nintendo::gcz::test_fixtures::make_gcz;
+
+        let dir = tempfile::tempdir().unwrap();
+        let iso_bytes = make_fake_gamecube_iso(5 * 1024 * 1024 + 123);
+        let iso = dir.path().join("game.iso");
+        std::fs::write(&iso, &iso_bytes).unwrap();
+        let gcz = dir.path().join("game.gcz");
+        std::fs::write(&gcz, make_gcz(&iso_bytes, 0x8000, 0)).unwrap();
+
+        assert_eq!(decoded_digest(&gcz), plain_digest(&iso));
+    }
+
+    #[test]
+    fn wia_digest_matches_iso() {
+        use crate::nintendo::rvl::test_fixtures::make_fake_wii_iso_with_partition;
+        use crate::nintendo::wia::test_fixtures::make_wia;
+
+        let dir = tempfile::tempdir().unwrap();
+        let iso_bytes = make_fake_wii_iso_with_partition(2);
+        let iso = dir.path().join("game.iso");
+        std::fs::write(&iso, &iso_bytes).unwrap();
+        let wia = dir.path().join("game.wia");
+        std::fs::write(&wia, make_wia(&iso_bytes, 3, 0x20_0000)).unwrap();
+
+        assert_eq!(decoded_digest(&wia), plain_digest(&iso));
+    }
+
+    #[test]
+    fn nkit_iso_digest_matches_iso() {
+        use crate::nintendo::nkit::test_fixtures::{make_fake_gc_fs_iso, make_nkit_gc};
+
+        let dir = tempfile::tempdir().unwrap();
+        let iso_bytes = make_fake_gc_fs_iso();
+        let iso = dir.path().join("game.iso");
+        std::fs::write(&iso, &iso_bytes).unwrap();
+        let nkit = dir.path().join("game.nkit.iso");
+        std::fs::write(&nkit, make_nkit_gc(&iso_bytes)).unwrap();
+
+        let got = decoded_digest(&nkit);
+        // The on-disk NKit container bytes differ from the source ISO,
+        // so routing `.nkit.iso` as Raw would silently hash the wrong
+        // content. The decoded digest must match the ISO, not the file.
+        assert_ne!(std::fs::read(&nkit).unwrap(), std::fs::read(&iso).unwrap());
+        assert_ne!(got, plain_digest(&nkit));
+        assert_eq!(got, plain_digest(&iso));
+    }
+
+    #[test]
+    fn nkit_gcz_digest_matches_iso() {
+        use crate::nintendo::nkit::test_fixtures::{
+            crc_of, make_fake_gc_fs_iso, make_nkit_gc, make_nkit_gcz,
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let iso_bytes = make_fake_gc_fs_iso();
+        let iso = dir.path().join("game.iso");
+        std::fs::write(&iso, &iso_bytes).unwrap();
+        let nkit_bytes = make_nkit_gc(&iso_bytes);
+        let nkit_gcz = dir.path().join("game.nkit.gcz");
+        std::fs::write(&nkit_gcz, make_nkit_gcz(&nkit_bytes, crc_of(&iso_bytes))).unwrap();
+
+        assert_eq!(decoded_digest(&nkit_gcz), plain_digest(&iso));
+    }
+
+    #[test]
+    fn nkit_wii_iso_digest_matches_iso() {
+        use crate::nintendo::nkit::test_fixtures::{make_fake_wii_fs_iso, make_nkit_wii};
+
+        let dir = tempfile::tempdir().unwrap();
+        let iso_bytes = make_fake_wii_fs_iso();
+        let iso = dir.path().join("game.iso");
+        std::fs::write(&iso, &iso_bytes).unwrap();
+        let nkit = dir.path().join("game.nkit.iso");
+        std::fs::write(&nkit, make_nkit_wii(&iso_bytes)).unwrap();
+
+        assert_eq!(decoded_digest(&nkit), plain_digest(&iso));
+    }
+
+    #[test]
+    fn gcz_digest_rejects_corrupted_container() {
+        use crate::nintendo::dol::test_fixtures::make_fake_gamecube_iso;
+        use crate::nintendo::gcz::test_fixtures::make_gcz;
+
+        let dir = tempfile::tempdir().unwrap();
+        let iso_bytes = make_fake_gamecube_iso(1024 * 1024);
+        let gcz = dir.path().join("game.gcz");
+        let mut bytes = make_gcz(&iso_bytes, 0x8000, 0);
+        let n = bytes.len();
+        bytes[n - 5] ^= 0xFF;
+        std::fs::write(&gcz, &bytes).unwrap();
+
+        let algos = legacy_algos();
+        let progress = crate::util::NoProgress;
+        let cancel = CancelToken::new();
+        let err = digest_inner(&gcz, &algos, &progress, &cancel).unwrap_err();
+        assert!(
+            matches!(err, DatError::Container(_) | DatError::IoError(_)),
+            "{err}"
+        );
     }
 }

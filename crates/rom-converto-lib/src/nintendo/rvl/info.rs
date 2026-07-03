@@ -10,7 +10,9 @@ use crate::nintendo::rvl::models::tmd::WiiTmd;
 use crate::nintendo::rvl::models::u8_archive::U8Archive;
 use crate::nintendo::rvl::partition::read_partition_info;
 use crate::nintendo::rvl::partition_reader::PartitionPayloadReader;
-use crate::util::pixel::{decode_rgb5a3_tiled, decode_rgba32_tiled, encode_png};
+use crate::util::pixel::{
+    decode_cmpr_tiled, decode_i4_tiled, decode_rgb5a3_tiled, decode_rgba32_tiled, encode_png,
+};
 use anyhow::{Context, Result, anyhow};
 use byteorder::BE as BE_;
 use byteorder::{BE, ReadBytesExt};
@@ -21,6 +23,7 @@ use std::path::Path;
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RvlInfo {
     pub physical_bytes: u64,
+    pub container: String,
     pub game_id: String,
     pub maker_code: String,
     pub maker_name: Option<String>,
@@ -60,6 +63,7 @@ pub fn read_info(path: &Path) -> Result<RvlInfo> {
 
     let mut reader = crate::nintendo::disc_input::open_disc_input(path)
         .map_err(|e| anyhow!("rvl info: open input: {}", e))?;
+    let container = reader.container_name().to_string();
 
     let disc_header = read_disc_header(&mut reader)?;
 
@@ -87,6 +91,7 @@ pub fn read_info(path: &Path) -> Result<RvlInfo> {
 
     Ok(RvlInfo {
         physical_bytes,
+        container,
         game_id: disc_header.game_id,
         maker_name,
         maker_code: disc_header.maker_code,
@@ -296,11 +301,12 @@ fn read_opening_bnr<R: Read + Seek>(reader: &mut R) -> Result<Vec<u8>> {
 /// opening.bnr := [0x40 padding] [0x600 IMET] [outer U8 archive]
 /// outer U8 := /meta/banner.bin /meta/icon.bin /meta/sound.bin
 /// meta/banner.bin := optional "LZ77"-magic LZSS wrapper around an
-///                    inner U8 archive that holds arc/timg/<name>.tpl
-///                    (the texture name is listed in arc/blyt/Banner.brlyt;
-///                    in practice the only TPL is the banner so any
-///                    .tpl under arc/timg/ works).
-/// banner.tpl := standard GameCube/Wii TPL, format 5 (RGB5A3) at 192x64.
+///                    inner U8 archive that holds arc/timg/<name>.tpl.
+///                    Real banners ship dozens of TPLs under arc/timg/;
+///                    see `select_banner_tpl` for how the displayed banner
+///                    texture is chosen without parsing arc/blyt/*.brlyt.
+/// banner.tpl := standard GameCube/Wii TPL, RGB5A3 or CMPR, a few hundred
+///               pixels on a side.
 fn extract_icon_image(bnr: &[u8]) -> Result<Image> {
     let u8_offset = locate_outer_u8(bnr)
         .ok_or_else(|| anyhow!("rvl info: U8 archive magic not found in opening.bnr"))?;
@@ -334,10 +340,7 @@ fn extract_icon_image(bnr: &[u8]) -> Result<Image> {
     let inner = U8Archive::parse(&payload)
         .with_context(|| format!("rvl info: parse inner {} U8", label))?;
 
-    let tpl_bytes = inner
-        .find_path_ending_with("/banner.tpl")
-        .or_else(|| inner.find_path_ending_with("/icon.tpl"))
-        .or_else(|| find_first_tpl_under_timg(&inner))
+    let tpl_bytes = select_banner_tpl(&inner)
         .or_else(|| inner.find_path_ending_with(".tpl"))
         .ok_or_else(|| anyhow!("rvl info: no .tpl file inside {}", label))?;
 
@@ -346,15 +349,42 @@ fn extract_icon_image(bnr: &[u8]) -> Result<Image> {
     Ok(Image::new(png, w, h))
 }
 
-fn find_first_tpl_under_timg<'a>(inner: &U8Archive<'a>) -> Option<&'a [u8]> {
-    inner
+/// Pick the banner texture out of the many TPLs a real opening.bnr carries.
+///
+/// The layout in arc/blyt/*.brlyt names the displayed banner texture, but
+/// parsing it is heavy. In practice the banner is the game's title art, whose
+/// filename carries "title" or "logo" (the sibling textures are small UI
+/// chrome, or oversized decorative overlays like a full-screen cloud that a
+/// naive largest-area pick would wrongly select). The largest title or logo
+/// texture that decodes is chosen, falling back to the largest decodable
+/// texture of any name.
+fn select_banner_tpl<'a>(inner: &U8Archive<'a>) -> Option<&'a [u8]> {
+    let candidates: Vec<(String, u64, &'a [u8])> = inner
         .list_paths()
         .into_iter()
-        .find(|(path, _)| {
-            let lower = path.to_ascii_lowercase();
-            lower.starts_with("arc/timg/") && lower.ends_with(".tpl")
+        .filter(|(path, _)| path.to_ascii_lowercase().ends_with(".tpl"))
+        .filter_map(|(path, bytes)| {
+            let header = parse_tpl_header(bytes).ok()?;
+            if !is_decodable_tpl_format(header.format) {
+                return None;
+            }
+            let area = header.width as u64 * header.height as u64;
+            Some((path.to_ascii_lowercase(), area, bytes))
         })
-        .map(|(_, bytes)| bytes)
+        .collect();
+
+    let largest_named = candidates
+        .iter()
+        .filter(|(name, _, _)| name.contains("title") || name.contains("logo"))
+        .max_by_key(|(_, area, _)| *area);
+
+    largest_named
+        .or_else(|| candidates.iter().max_by_key(|(_, area, _)| *area))
+        .map(|(_, _, bytes)| *bytes)
+}
+
+fn is_decodable_tpl_format(format: u32) -> bool {
+    matches!(format, 0 | 5 | 6 | 14)
 }
 
 /// Strip the optional `"LZ77"`-magic LZSS wrapper from a disc
@@ -394,7 +424,14 @@ fn locate_outer_u8(bnr: &[u8]) -> Option<usize> {
     None
 }
 
-fn decode_tpl(tpl: &[u8]) -> Result<(Vec<u8>, u32, u32)> {
+struct TplImageHeader {
+    width: u32,
+    height: u32,
+    format: u32,
+    data_offset: usize,
+}
+
+fn parse_tpl_header(tpl: &[u8]) -> Result<TplImageHeader> {
     use byteorder::ReadBytesExt;
     use std::io::Cursor;
 
@@ -437,7 +474,32 @@ fn decode_tpl(tpl: &[u8]) -> Result<(Vec<u8>, u32, u32)> {
             .unwrap(),
     ) as usize;
 
+    Ok(TplImageHeader {
+        width,
+        height,
+        format,
+        data_offset,
+    })
+}
+
+fn decode_tpl(tpl: &[u8]) -> Result<(Vec<u8>, u32, u32)> {
+    let TplImageHeader {
+        width,
+        height,
+        format,
+        data_offset,
+    } = parse_tpl_header(tpl)?;
+
     let rgba = match format {
+        0 => {
+            let padded_w = width.next_multiple_of(8) as usize;
+            let padded_h = height.next_multiple_of(8) as usize;
+            let size = padded_w * padded_h / 2;
+            if data_offset + size > tpl.len() {
+                return Err(anyhow!("TPL I4 data past end of buffer"));
+            }
+            decode_i4_tiled(&tpl[data_offset..data_offset + size], width, height)?
+        }
         5 => {
             let size = (width as usize) * (height as usize) * 2;
             if data_offset + size > tpl.len() {
@@ -452,9 +514,18 @@ fn decode_tpl(tpl: &[u8]) -> Result<(Vec<u8>, u32, u32)> {
             }
             decode_rgba32_tiled(&tpl[data_offset..data_offset + size], width, height)?
         }
+        14 => {
+            let padded_w = width.next_multiple_of(8) as usize;
+            let padded_h = height.next_multiple_of(8) as usize;
+            let size = padded_w * padded_h / 2;
+            if data_offset + size > tpl.len() {
+                return Err(anyhow!("TPL CMPR data past end of buffer"));
+            }
+            decode_cmpr_tiled(&tpl[data_offset..data_offset + size], width, height)?
+        }
         other => {
             return Err(anyhow!(
-                "unsupported TPL pixel format {} (supports 5=RGB5A3, 6=RGBA32)",
+                "unsupported TPL pixel format {} (supports 0=I4, 5=RGB5A3, 6=RGBA32, 14=CMPR)",
                 other
             ));
         }
@@ -514,6 +585,56 @@ mod banner_tests {
             tpl[data_off + i * 2..data_off + i * 2 + 2].copy_from_slice(&red_word);
         }
         (tpl, [0xFF, 0, 0, 0xFF])
+    }
+
+    fn build_test_tpl_i4(width: u32, height: u32) -> Vec<u8> {
+        const TPL_MAGIC: [u8; 4] = [0x00, 0x20, 0xAF, 0x30];
+        let pixel_bytes = (width.next_multiple_of(8) * height.next_multiple_of(8) / 2) as usize;
+
+        let imgtab_off = 0x0Cusize;
+        let img_header_off = 0x14usize;
+        let data_off = 0x40usize;
+
+        let mut tpl = vec![0u8; data_off + pixel_bytes];
+        tpl[0..4].copy_from_slice(&TPL_MAGIC);
+        write_be_u32(&mut tpl[4..], 1);
+        write_be_u32(&mut tpl[8..], imgtab_off as u32);
+
+        write_be_u32(&mut tpl[imgtab_off..], img_header_off as u32);
+
+        tpl[img_header_off..img_header_off + 2].copy_from_slice(&(height as u16).to_be_bytes());
+        tpl[img_header_off + 2..img_header_off + 4].copy_from_slice(&(width as u16).to_be_bytes());
+        write_be_u32(&mut tpl[img_header_off + 4..], 0);
+        write_be_u32(&mut tpl[img_header_off + 8..], data_off as u32);
+
+        for b in tpl[data_off..].iter_mut() {
+            *b = 0xFF;
+        }
+        tpl
+    }
+
+    #[test]
+    fn decode_tpl_i4_yields_white_opaque_pixels() {
+        let tpl = build_test_tpl_i4(192, 64);
+        let (rgba, width, height) = decode_tpl(&tpl).expect("I4 TPL must decode");
+        assert_eq!(width, 192);
+        assert_eq!(height, 64);
+        assert_eq!(rgba.len(), (192 * 64 * 4) as usize);
+        assert!(
+            rgba.iter().all(|&b| b == 0xFF),
+            "all-0xFF I4 data must decode to opaque white"
+        );
+    }
+
+    #[test]
+    fn decode_tpl_i4_handles_non_multiple_of_8_dimensions() {
+        // PokePark 2 (S2LP01) banner is 220x22, neither axis a multiple of 8.
+        let tpl = build_test_tpl_i4(220, 22);
+        let (rgba, width, height) = decode_tpl(&tpl).expect("non-mult-of-8 I4 TPL must decode");
+        assert_eq!(width, 220);
+        assert_eq!(height, 22);
+        assert_eq!(rgba.len(), (220 * 22 * 4) as usize);
+        assert!(rgba.iter().all(|&b| b == 0xFF));
     }
 
     fn build_u8_archive(entries: &[(&str, Vec<u8>)]) -> Vec<u8> {
@@ -675,6 +796,31 @@ mod banner_tests {
         assert_eq!(&image.png_bytes[..8], &[137, 80, 78, 71, 13, 10, 26, 10]);
     }
 
+    fn build_synthetic_opening_bnr_multi_tpl() -> Vec<u8> {
+        let button = build_test_tpl_i4(8, 8);
+        let (banner, _) = build_test_tpl(192, 64);
+        // The small button TPL is planted first so a first-match selector
+        // would wrongly pick it over the real 192x64 banner.
+        let inner_u8 = build_u8_archive(&[
+            ("arc/timg/aaa_button.tpl", button),
+            ("arc/timg/zzz_banner.tpl", banner),
+        ]);
+        let outer_u8 = build_u8_archive(&[("meta/banner.bin", inner_u8)]);
+
+        let mut bnr = vec![0u8; 0x640];
+        bnr[0x40..0x44].copy_from_slice(b"IMET");
+        bnr.extend_from_slice(&outer_u8);
+        bnr
+    }
+
+    #[test]
+    fn selects_largest_tpl_over_first_timg_entry() {
+        let bnr = build_synthetic_opening_bnr_multi_tpl();
+        let image = extract_icon_image(&bnr).expect("banner extraction must succeed");
+        assert_eq!(image.width, 192, "must select the 192x64 banner texture");
+        assert_eq!(image.height, 64, "must select the 192x64 banner texture");
+    }
+
     #[test]
     fn locates_u8_archive_at_0x640() {
         let bnr = build_synthetic_opening_bnr();
@@ -685,5 +831,26 @@ mod banner_tests {
     fn _silence_unused(_: &mut [u8]) {
         let mut b = [0u8; 4];
         b.as_mut_slice().write_u32::<BE_>(0).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod container_tests {
+    use super::*;
+    use crate::nintendo::rvl::test_fixtures::make_fake_wii_iso_with_partition;
+    use crate::nintendo::wia::test_fixtures::make_wia;
+
+    #[test]
+    fn info_reports_container() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = make_fake_wii_iso_with_partition(2);
+
+        let iso = dir.path().join("game.iso");
+        std::fs::write(&iso, &original).unwrap();
+        assert_eq!(read_info(&iso).unwrap().container, "ISO");
+
+        let wia = dir.path().join("game.wia");
+        std::fs::write(&wia, make_wia(&original, 3, 0x20_0000)).unwrap();
+        assert_eq!(read_info(&wia).unwrap().container, "WIA");
     }
 }

@@ -99,6 +99,11 @@ export function deriveCsoPath(input: string, format: "cso" | "zso"): string {
 }
 
 export function deriveRvzPath(input: string): string {
+  // NKit double extensions collapse: game.nkit.iso -> game.rvz.
+  const lower = input.toLowerCase();
+  if (lower.endsWith(".nkit.iso") || lower.endsWith(".nkit.gcz")) {
+    return `${input.slice(0, -9)}.rvz`;
+  }
   return replaceExt(input, "rvz");
 }
 

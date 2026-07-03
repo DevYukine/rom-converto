@@ -172,6 +172,155 @@ pub fn decode_rgba32_tiled(data: &[u8], width: u32, height: u32) -> Result<Vec<u
     Ok(out)
 }
 
+/// Decode GameCube/Wii TPL format 0 (I4) tiled pixel data into RGBA8.
+///
+/// Pixels are 4-bit intensity stored in 8x8 tiles, tiles row-major. Each
+/// tile row is 4 bytes holding 8 pixels; the high nibble is the left
+/// texel. Each nibble is replicated into all three color channels with
+/// full opacity.
+///
+/// The stored image is padded up to a multiple of 8 in each axis; padding
+/// texels are decoded but never written past `width`/`height`.
+pub fn decode_i4_tiled(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
+    let padded_w = width.next_multiple_of(8) as usize;
+    let padded_h = height.next_multiple_of(8) as usize;
+    let expected = padded_w * padded_h / 2;
+    if data.len() < expected {
+        return Err(anyhow!(
+            "i4 input too short: {} bytes for {}x{} (padded {}x{})",
+            data.len(),
+            width,
+            height,
+            padded_w,
+            padded_h
+        ));
+    }
+
+    let w = width as usize;
+    let h = height as usize;
+    let tiles_x = padded_w / 8;
+    let tiles_y = padded_h / 8;
+    let mut out = vec![0u8; w * h * 4];
+
+    for ty in 0..tiles_y {
+        for tx in 0..tiles_x {
+            let tile_off = (ty * tiles_x + tx) * 32;
+            for py in 0..8usize {
+                for px in 0..8usize {
+                    let byte = data[tile_off + py * 4 + px / 2];
+                    let n = if px % 2 == 0 { byte >> 4 } else { byte & 0x0F };
+                    let v = (n << 4) | n;
+                    let x = tx * 8 + px;
+                    let y = ty * 8 + py;
+                    if x < w && y < h {
+                        let out_off = ((y * w) + x) * 4;
+                        out[out_off] = v;
+                        out[out_off + 1] = v;
+                        out[out_off + 2] = v;
+                        out[out_off + 3] = 0xFF;
+                    }
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Decode GameCube/Wii TPL format 14 (CMPR) into RGBA8.
+///
+/// CMPR is DXT1/S3TC with GameCube quirks: the two RGB565 endpoints are
+/// big-endian, the 2-bit selector for each texel is packed most significant
+/// first, and blocks are stored as 8x8 macro-tiles that each hold four 4x4
+/// DXT sub-blocks in top-left, top-right, bottom-left, bottom-right order.
+/// The stored image is padded up to a multiple of 8 in each axis; padding
+/// texels are decoded but never written past `width`/`height`.
+pub fn decode_cmpr_tiled(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
+    let padded_w = width.next_multiple_of(8) as usize;
+    let padded_h = height.next_multiple_of(8) as usize;
+    let expected = padded_w * padded_h / 2;
+    if data.len() < expected {
+        return Err(anyhow!(
+            "cmpr input too short: {} bytes for {}x{} (padded {}x{})",
+            data.len(),
+            width,
+            height,
+            padded_w,
+            padded_h
+        ));
+    }
+
+    let w = width as usize;
+    let h = height as usize;
+    let mut out = vec![0u8; w * h * 4];
+    let mut src = 0usize;
+
+    for ty in (0..padded_h).step_by(8) {
+        for tx in (0..padded_w).step_by(8) {
+            for sy in (0..8).step_by(4) {
+                for sx in (0..8).step_by(4) {
+                    let block = &data[src..src + 8];
+                    src += 8;
+                    let palette = cmpr_block_palette(block);
+                    for py in 0..4usize {
+                        let mut bits = block[4 + py];
+                        for px in 0..4usize {
+                            let idx = (bits >> 6) & 0x3;
+                            bits <<= 2;
+                            let x = tx + sx + px;
+                            let y = ty + sy + py;
+                            if x < w && y < h {
+                                let out_off = (y * w + x) * 4;
+                                out[out_off..out_off + 4].copy_from_slice(&palette[idx as usize]);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn cmpr_block_palette(block: &[u8]) -> [[u8; 4]; 4] {
+    let c0 = u16::from_be_bytes([block[0], block[1]]);
+    let c1 = u16::from_be_bytes([block[2], block[3]]);
+    let (r0, g0, b0) = rgb565_to_rgb8(c0);
+    let (r1, g1, b1) = rgb565_to_rgb8(c1);
+
+    let mut palette = [[r0, g0, b0, 0xFF], [r1, g1, b1, 0xFF], [0; 4], [0; 4]];
+    // DXT1 rule: c0 > c1 selects the 4-color opaque mode with two blended
+    // in-between colors; c0 <= c1 selects the 3-color mode, where the fourth
+    // palette entry is transparent black instead of a second blend.
+    if c0 > c1 {
+        palette[2] = [
+            mix_third(r0, r1),
+            mix_third(g0, g1),
+            mix_third(b0, b1),
+            0xFF,
+        ];
+        palette[3] = [
+            mix_third(r1, r0),
+            mix_third(g1, g0),
+            mix_third(b1, b0),
+            0xFF,
+        ];
+    } else {
+        palette[2] = [mix_half(r0, r1), mix_half(g0, g1), mix_half(b0, b1), 0xFF];
+        palette[3] = [0, 0, 0, 0];
+    }
+    palette
+}
+
+#[inline]
+fn mix_third(a: u8, b: u8) -> u8 {
+    ((2 * a as u16 + b as u16) / 3) as u8
+}
+
+#[inline]
+fn mix_half(a: u8, b: u8) -> u8 {
+    ((a as u16 + b as u16) / 2) as u8
+}
+
 pub fn encode_png(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
     let expected = (width as usize) * (height as usize) * 4;
     if rgba.len() != expected {
@@ -271,6 +420,74 @@ mod tests {
         assert_eq!(rgb565_to_rgb8(0x07E0), (0x00, 0xFF, 0x00));
         // RGB565 pure blue = 0x001F -> (0x00, 0x00, 0xFF)
         assert_eq!(rgb565_to_rgb8(0x001F), (0x00, 0x00, 0xFF));
+    }
+
+    #[test]
+    fn decode_cmpr_solid_and_gradient_block() {
+        // One 8x8 macro-tile, four identical 4x4 DXT sub-blocks. Endpoints
+        // c0=red (0xF800) > c1=blue (0x001F), so index 2 is the 2/3-red mix
+        // and index 3 is the 2/3-blue mix. Selector bytes 0b00_01_10_11 map
+        // the four texels of every row to indices 0,1,2,3 (MSB first).
+        let mut block = Vec::new();
+        block.extend_from_slice(&0xF800u16.to_be_bytes());
+        block.extend_from_slice(&0x001Fu16.to_be_bytes());
+        block.extend_from_slice(&[0b00_01_10_11u8; 4]);
+        let data: Vec<u8> = block.iter().cloned().cycle().take(8 * 8 / 2).collect();
+
+        let rgba = decode_cmpr_tiled(&data, 8, 8).unwrap();
+        assert_eq!(rgba.len(), 8 * 8 * 4);
+
+        let px = |x: usize, y: usize| {
+            let o = (y * 8 + x) * 4;
+            [rgba[o], rgba[o + 1], rgba[o + 2], rgba[o + 3]]
+        };
+        assert_eq!(px(0, 0), [0xFF, 0x00, 0x00, 0xFF], "index 0 = red endpoint");
+        assert_eq!(
+            px(1, 0),
+            [0x00, 0x00, 0xFF, 0xFF],
+            "index 1 = blue endpoint"
+        );
+        assert_eq!(
+            px(2, 0),
+            [mix_third(0xFF, 0x00), 0x00, mix_third(0x00, 0xFF), 0xFF],
+            "index 2 = 2/3 red mix"
+        );
+        assert_eq!(
+            px(3, 0),
+            [mix_third(0x00, 0xFF), 0x00, mix_third(0xFF, 0x00), 0xFF],
+            "index 3 = 2/3 blue mix"
+        );
+    }
+
+    #[test]
+    fn decode_cmpr_transparent_index_when_c0_le_c1() {
+        // c0 (blue, 0x001F) <= c1 (red, 0xF800): index 3 must be transparent.
+        let mut block = Vec::new();
+        block.extend_from_slice(&0x001Fu16.to_be_bytes());
+        block.extend_from_slice(&0xF800u16.to_be_bytes());
+        block.extend_from_slice(&[0b11_11_11_11u8; 4]);
+        let data: Vec<u8> = block.iter().cloned().cycle().take(8 * 8 / 2).collect();
+
+        let rgba = decode_cmpr_tiled(&data, 8, 8).unwrap();
+        assert!(
+            rgba.chunks_exact(4).all(|c| c == [0, 0, 0, 0]),
+            "all-index-3 block with c0<=c1 must be fully transparent"
+        );
+    }
+
+    #[test]
+    fn decode_cmpr_pads_odd_dimensions() {
+        // 12x4 is padded to 16x8; decoding must succeed and only emit the
+        // requested 12x4 region.
+        let mut block = Vec::new();
+        block.extend_from_slice(&0xF800u16.to_be_bytes());
+        block.extend_from_slice(&0x001Fu16.to_be_bytes());
+        block.extend_from_slice(&[0u8; 4]);
+        let data: Vec<u8> = block.iter().cloned().cycle().take(16 * 8 / 2).collect();
+
+        let rgba = decode_cmpr_tiled(&data, 12, 4).unwrap();
+        assert_eq!(rgba.len(), 12 * 4 * 4);
+        assert_eq!(&rgba[0..4], &[0xFF, 0x00, 0x00, 0xFF]);
     }
 
     #[test]
@@ -404,5 +621,29 @@ mod tests {
     #[test]
     fn decode_rgb5a3_rejects_short_input() {
         assert!(decode_rgb5a3_tiled(&[0u8; 10], 4, 4).is_err());
+    }
+
+    #[test]
+    fn i4_tile_decodes_intensity_nibbles() {
+        // One 8x8 tile (32 bytes) filled with 0x0F: even pixels take the
+        // high nibble (0x0 -> black), odd pixels the low nibble (0xF -> white).
+        let rgba = decode_i4_tiled(&[0x0Fu8; 32], 8, 8).unwrap();
+        assert_eq!(&rgba[0..4], &[0, 0, 0, 0xFF]);
+        assert_eq!(&rgba[4..8], &[0xFF, 0xFF, 0xFF, 0xFF]);
+    }
+
+    #[test]
+    fn decode_i4_pads_odd_dimensions() {
+        // 220x22 (PokePark 2 banner) pads to 224x24; decoding must succeed
+        // and only emit the requested 220x22 region.
+        let padded = 224usize * 24 / 2;
+        let rgba = decode_i4_tiled(&vec![0xFFu8; padded], 220, 22).unwrap();
+        assert_eq!(rgba.len(), 220 * 22 * 4);
+        assert!(rgba.iter().all(|&b| b == 0xFF));
+    }
+
+    #[test]
+    fn decode_i4_rejects_short_input() {
+        assert!(decode_i4_tiled(&[0u8; 10], 8, 8).is_err());
     }
 }

@@ -92,7 +92,10 @@ impl Default for RvzCompressOptions {
     }
 }
 
-/// Compress a GameCube or Wii disc image to RVZ.
+/// Compress a GameCube or Wii disc image to RVZ. Legacy containers
+/// (GCZ, WIA, NKit) are detected by magic and routed through
+/// [`crate::nintendo::legacy_input::migrate_disc_cancellable`], which verifies
+/// their integrity before converting.
 pub async fn compress_disc(
     input: &Path,
     output: &Path,
@@ -104,8 +107,46 @@ pub async fn compress_disc(
 
 /// Like [`compress_disc`] but observes `cancel` at region and chunk
 /// boundaries; on cancel the partial RVZ is removed (the writer targets
-/// a sibling temp file renamed into place only on success).
+/// a sibling temp file renamed into place only on success). Legacy
+/// containers (GCZ, WIA, NKit) are detected by magic and routed through
+/// [`crate::nintendo::legacy_input::migrate_disc_cancellable`], which
+/// verifies their integrity before converting; everything else goes
+/// straight to the raw writer.
 pub async fn compress_disc_cancellable(
+    input: &Path,
+    output: &Path,
+    options: RvzCompressOptions,
+    progress: &dyn ProgressReporter,
+    cancel: CancelToken,
+) -> RvzResult<()> {
+    let legacy = {
+        let input = input.to_path_buf();
+        task::spawn_blocking(move || crate::nintendo::legacy_input::detect_legacy_format(&input))
+            .await??
+    };
+    if legacy.is_some() {
+        return crate::nintendo::legacy_input::migrate_disc_cancellable(
+            input,
+            output,
+            options,
+            crate::nintendo::legacy_input::MigrateOptions::default(),
+            crate::nintendo::legacy_input::ALL_MIGRATE_FORMATS,
+            progress,
+            cancel,
+        )
+        .await;
+    }
+    compress_iso_cancellable(input, output, options, progress, cancel).await
+}
+
+/// The raw cancellable RVZ writer. Performs no legacy detection or
+/// routing: it opens the input through the standard reader set (so a
+/// legacy container reconstructs its logical disc on the fly), streams
+/// it to a sibling temp file, and renames into place only on success.
+/// On cancel the partial RVZ is removed. This is the single point every
+/// compress path bottoms out in, which keeps the migrate route free of
+/// recursion.
+pub(crate) async fn compress_iso_cancellable(
     input: &Path,
     output: &Path,
     options: RvzCompressOptions,
@@ -207,13 +248,22 @@ fn wbfs_magic(input: &Path) -> std::io::Result<bool> {
 }
 
 /// Logical disc size of the input in bytes, used as the progress
-/// total. A WBFS container reports the reconstructed disc size, not
-/// its (smaller) on-disk size.
+/// total. Reconstructing containers (WBFS, GCZ, WIA, NKit) report the
+/// logical disc size, not their (smaller) on-disk size.
 fn logical_input_size(input: &Path) -> RvzResult<u64> {
-    if is_wbfs_input(input) {
-        Ok(WbfsReader::open(input)?.disc_size())
-    } else {
-        Ok(std::fs::metadata(input)?.len())
+    use crate::nintendo::legacy_input::{LegacyFormat, detect_legacy_format};
+    match detect_legacy_format(input)? {
+        Some(LegacyFormat::Gcz) => Ok(crate::nintendo::gcz::GczReader::data_size_of(input)?),
+        Some(LegacyFormat::Wia) => Ok(crate::nintendo::wia::WiaReader::iso_size_of(input)?),
+        Some(LegacyFormat::NkitIso) => Ok(crate::nintendo::nkit::NkitReader::image_size_of(input)?),
+        Some(LegacyFormat::NkitGcz) => {
+            let dhead = crate::nintendo::gcz::gcz_logical_prefix(input, 0x440)?;
+            Ok(crate::nintendo::nkit::format::NkitHeader::parse(&dhead)
+                .map_err(RvzError::from)?
+                .image_size)
+        }
+        None if is_wbfs_input(input) => Ok(WbfsReader::open(input)?.disc_size()),
+        None => Ok(std::fs::metadata(input)?.len()),
     }
 }
 
@@ -243,9 +293,9 @@ pub(super) struct PartitionLayout {
 }
 
 /// Open the right reader for `input` and hand it to the generic
-/// pipeline. `.wbfs` containers stream through [`WbfsReader`], which
-/// reconstructs the logical disc on the fly; any other input is read
-/// straight off the file. No temporary ISO is materialised either way.
+/// pipeline. Reconstructing containers (WBFS, GCZ, WIA, NKit) stream
+/// the logical disc on the fly; any other input is read straight off
+/// the file. No temporary ISO is materialized either way.
 fn compress_blocking(
     input: &Path,
     output: &Path,
@@ -254,12 +304,39 @@ fn compress_blocking(
     bytes_done: Arc<AtomicU64>,
     cancel: &CancelToken,
 ) -> RvzResult<u64> {
-    if is_wbfs_input(input) {
-        let reader = BufReader::with_capacity(4 * 1024 * 1024, WbfsReader::open(input)?);
-        compress_reader(reader, output, options, iso_size, bytes_done, cancel)
-    } else {
-        let reader = BufReader::with_capacity(4 * 1024 * 1024, std::fs::File::open(input)?);
-        compress_reader(reader, output, options, iso_size, bytes_done, cancel)
+    use crate::nintendo::legacy_input::{LegacyFormat, detect_legacy_format};
+    const BUF: usize = 4 * 1024 * 1024;
+    match detect_legacy_format(input)? {
+        Some(LegacyFormat::Gcz) => {
+            let reader =
+                BufReader::with_capacity(BUF, crate::nintendo::gcz::GczReader::open(input)?);
+            compress_reader(reader, output, options, iso_size, bytes_done, cancel)
+        }
+        Some(LegacyFormat::Wia) => {
+            let reader =
+                BufReader::with_capacity(BUF, crate::nintendo::wia::WiaReader::open(input)?);
+            compress_reader(reader, output, options, iso_size, bytes_done, cancel)
+        }
+        Some(LegacyFormat::NkitIso) => {
+            let reader =
+                BufReader::with_capacity(BUF, crate::nintendo::nkit::NkitReader::open(input)?);
+            compress_reader(reader, output, options, iso_size, bytes_done, cancel)
+        }
+        Some(LegacyFormat::NkitGcz) => {
+            let gcz = crate::nintendo::gcz::GczReader::open(input)?;
+            let nkit =
+                crate::nintendo::nkit::NkitReader::from_source(gcz).map_err(RvzError::from)?;
+            let reader = BufReader::with_capacity(BUF, nkit);
+            compress_reader(reader, output, options, iso_size, bytes_done, cancel)
+        }
+        None if is_wbfs_input(input) => {
+            let reader = BufReader::with_capacity(BUF, WbfsReader::open(input)?);
+            compress_reader(reader, output, options, iso_size, bytes_done, cancel)
+        }
+        None => {
+            let reader = BufReader::with_capacity(BUF, std::fs::File::open(input)?);
+            compress_reader(reader, output, options, iso_size, bytes_done, cancel)
+        }
     }
 }
 

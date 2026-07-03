@@ -246,7 +246,7 @@ fn render_ctr(info: &rom_converto_lib::info::CtrInfo) -> String {
 
 fn render_dol(info: &rom_converto_lib::info::DolInfo) -> String {
     let mut t = KeyValueTable::new();
-    t.push("Format", "GameCube");
+    t.push("Format", format!("GameCube ({})", info.container));
     t.push("Game ID", info.game_id.clone());
     t.push(
         "Maker code",
@@ -296,7 +296,7 @@ fn render_dol(info: &rom_converto_lib::info::DolInfo) -> String {
 
 fn render_rvl(info: &rom_converto_lib::info::RvlInfo) -> String {
     let mut t = KeyValueTable::new();
-    t.push("Format", "Wii");
+    t.push("Format", format!("Wii ({})", info.container));
     t.push("Game ID", info.game_id.clone());
     t.push(
         "Maker code",

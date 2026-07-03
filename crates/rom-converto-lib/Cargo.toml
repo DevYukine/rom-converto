@@ -54,6 +54,7 @@ flacenc = "^0.5"
 claxon = "^0.4"
 zstd = { version = "^0.13", features = ["zstdmt"] }
 lz4 = "^1.28"
+bzip2 = "^0.6"
 
 # HTTP (for seed DB fetch)
 reqwest.workspace = true

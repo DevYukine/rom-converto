@@ -7,9 +7,67 @@ use std::path::PathBuf;
 #[derive(Subcommand, Debug, Eq, PartialEq)]
 pub enum RvlCommands {
     Compress(CompressDiscCommand),
+    Migrate(MigrateDiscCommand),
     Decompress(DecompressDiscCommand),
     Verify(VerifyDiscCommand),
     Info(InfoCommand),
+}
+
+/// Migrate a legacy Wii disc image (WIA, GCZ, or NKit) to RVZ
+#[derive(Parser, Debug, Clone, Eq, PartialEq)]
+#[command(
+    long_about = "Migrate a legacy Wii disc image (WIA, GCZ, or NKit) to RVZ\n\n\
+Supported input: .wia (all compression methods including bzip2/LZMA/LZMA2), .gcz, .nkit.iso, and \
+.nkit.gcz, detected by content so renamed files work. The container is integrity-checked first \
+(WIA SHA-1 chain, GCZ block checksums, NKit whole-file CRC32), then the original disc is \
+reconstructed on the fly (Wii hash tree rebuild and re-encryption included) and compressed to RVZ.\n\n\
+Output defaults to the input path with the extension replaced by .rvz.",
+    after_long_help = "EXAMPLES:\n  Single file:     rom-converto rvl migrate game.wia\n  Explicit output: rom-converto rvl migrate game.gcz game.rvz\n  Whole directory: rom-converto rvl migrate -R ./roms\n"
+)]
+pub struct MigrateDiscCommand {
+    /// Input disc image path (.wia, .gcz, .nkit.iso, .nkit.gcz), or a directory with --recursive
+    #[arg(value_name = "INPUT")]
+    pub input: PathBuf,
+
+    /// Output RVZ path, defaults to the input path with extension replaced by .rvz (ignored with --recursive)
+    #[arg(value_name = "OUTPUT")]
+    pub output: Option<PathBuf>,
+
+    /// Output RVZ path, defaults to the input path with extension replaced by .rvz (ignored with --recursive)
+    #[arg(
+        short = 'o',
+        long = "output",
+        value_name = "OUTPUT",
+        conflicts_with = "output"
+    )]
+    pub output_flag: Option<PathBuf>,
+
+    /// Zstandard compression level (signed, negative levels allowed).
+    /// Defaults to 22 (archive quality)
+    #[arg(long, short = 'l')]
+    pub level: Option<i32>,
+
+    /// RVZ chunk size in bytes. Must be a power of two between 32 KiB
+    /// and 2 MiB. Defaults to 128 KiB
+    #[arg(long)]
+    pub chunk_size: Option<u32>,
+
+    /// Skip the pre-conversion integrity pass
+    #[arg(long, default_value_t = false)]
+    pub skip_verify: bool,
+
+    /// Decode every WIA group during verification instead of only the
+    /// SHA-1 header chain
+    #[arg(long, default_value_t = false)]
+    pub deep: bool,
+
+    /// Overwrite the output file if it already exists
+    #[arg(long, short = 'f', default_value_t = false)]
+    pub force: bool,
+
+    /// Migrate every WIA, GCZ and NKit image found in the INPUT directory (detected by content)
+    #[arg(long, short = 'R', default_value_t = false)]
+    pub recursive: bool,
 }
 
 /// Verify a Wii disc image
@@ -18,7 +76,7 @@ pub enum RvlCommands {
     long_about = "Verify a Wii disc image\n\n\
 Fast mode (default) checks the RVZ container's stored SHA-1 hashes (file header, disc struct, partition table). It is a no-op for plain .iso / .wbfs input, which carries no container hashes.\n\n\
 --full decrypts every partition cluster and recomputes the H0/H1/H2 hash tree, comparing it to the on-disc hash regions to detect tampering or bit rot. This decrypts and hashes the entire disc and can be slow.",
-    after_long_help = "EXAMPLES:\n  Single file:  rom-converto rvl verify game.iso\n  Full check:   rom-converto rvl verify game.rvz --full\n  Whole folder: rom-converto rvl verify -R ./roms\n"
+    after_long_help = "EXAMPLES:\n  Single file:     rom-converto rvl verify game.iso\n  Full check:      rom-converto rvl verify game.rvz --full\n  Whole directory: rom-converto rvl verify -R ./roms\n"
 )]
 pub struct VerifyDiscCommand {
     /// Input disc image path (.iso, .wbfs, or .rvz), or a directory with --recursive
@@ -43,7 +101,7 @@ pub struct VerifyDiscCommand {
 #[command(
     long_about = "Compress a Wii disc image to RVZ\n\n\
 Supported input: .iso, or .wbfs (single file or split .wbf1.. parts), streamed directly.\nOutput defaults to the same path with the extension replaced by .rvz.",
-    after_long_help = "EXAMPLES:\n  Single file:     rom-converto rvl compress game.iso\n  Explicit output: rom-converto rvl compress game.wbfs game.rvz\n  Whole folder:    rom-converto rvl compress -R ./roms --output-dir ./rvz\n"
+    after_long_help = "EXAMPLES:\n  Single file:     rom-converto rvl compress game.iso\n  Explicit output: rom-converto rvl compress game.wbfs game.rvz\n  Whole directory: rom-converto rvl compress -R ./roms --output-dir ./rvz\n"
 )]
 pub struct CompressDiscCommand {
     /// Input disc image path (.iso or .wbfs), or a directory with --recursive
@@ -111,7 +169,7 @@ pub struct CompressDiscCommand {
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
     long_about = "Decompress an RVZ Wii disc image back to ISO or WBFS\n\nThe output format follows the output file extension: a .wbfs path writes a scrubbed WBFS container streamed directly from the RVZ, anything else writes a raw .iso. Defaults to .iso.",
-    after_long_help = "EXAMPLES:\n  Single file:     rom-converto rvl decompress game.rvz\n  Explicit output: rom-converto rvl decompress game.rvz game.wbfs\n  Whole folder:    rom-converto rvl decompress -R ./rvz --output-dir ./roms\n"
+    after_long_help = "EXAMPLES:\n  Single file:     rom-converto rvl decompress game.rvz\n  Explicit output: rom-converto rvl decompress game.rvz game.wbfs\n  Whole directory: rom-converto rvl decompress -R ./rvz --output-dir ./roms\n"
 )]
 pub struct DecompressDiscCommand {
     /// Input RVZ file path, or a directory with --recursive
@@ -194,6 +252,33 @@ mod tests {
             panic!("expected Verify");
         };
         assert!(c.recursive);
+    }
+
+    #[test]
+    fn parses_migrate_force_and_output_flag() {
+        let h = Harness::parse_from(["bin", "migrate", "game.wia", "-o", "out.rvz", "-f"]);
+        let RvlCommands::Migrate(c) = h.cmd else {
+            panic!("expected Migrate");
+        };
+        assert!(c.force);
+        assert_eq!(c.output, None);
+        assert_eq!(c.output_flag, Some(PathBuf::from("out.rvz")));
+    }
+
+    #[test]
+    fn migrate_output_flag_conflicts_with_positional() {
+        let result =
+            Harness::try_parse_from(["bin", "migrate", "game.wia", "pos.rvz", "-o", "flag.rvz"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parses_migrate_deep() {
+        let h = Harness::parse_from(["bin", "migrate", "game.wia", "--deep"]);
+        let RvlCommands::Migrate(c) = h.cmd else {
+            panic!("expected Migrate");
+        };
+        assert!(c.deep);
     }
 
     #[test]

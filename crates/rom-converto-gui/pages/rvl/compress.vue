@@ -122,7 +122,7 @@ function onRun() {
   <div>
     <PageHeader
       title="Compress to RVZ"
-      description="Compress a Wii disc image (.iso / .wbfs) to Dolphin's RVZ format. Drop multiple files for batch processing."
+      description="Compress a Wii disc image (.iso / .wbfs) to Dolphin's RVZ format. Legacy WIA, GCZ, and NKit images are detected automatically, verified, and migrated. Drop multiple files for batch processing."
       :loading="loading || batch.running.value"
       :has-result="!!result"
       :has-error="!!error"
@@ -148,7 +148,7 @@ function onRun() {
             label="Add more files"
             model-value=""
             :multiple="true"
-            :filters="[{ name: 'Wii disc', extensions: ['iso', 'wbfs'] }]"
+            :filters="[{ name: 'Wii disc', extensions: ['iso', 'wbfs', 'wia', 'gcz'] }]"
             @update:model-value="(p: string) => { if (p) handleSingleFile(p) }"
             @update:files="handleFiles"
           />
@@ -159,7 +159,7 @@ function onRun() {
             :model-value="input"
             label="Input disc"
             :multiple="true"
-            :filters="[{ name: 'Wii disc', extensions: ['iso', 'wbfs'] }]"
+            :filters="[{ name: 'Wii disc', extensions: ['iso', 'wbfs', 'wia', 'gcz'] }]"
             :primary="true"
             @update:model-value="handleSingleFile"
             @update:files="handleFiles"

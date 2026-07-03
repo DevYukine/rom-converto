@@ -140,6 +140,7 @@ const fields = computed<Field[]>(() => {
       break;
     }
     case "dol": {
+      f.push({ label: "Format", value: props.info.container });
       f.push({ label: "Game ID", value: props.info.game_id });
       f.push({ label: "Maker", value: formatMaker(props.info.maker_code, props.info.maker_name) });
       f.push({ label: "Region", value: props.info.region });
@@ -148,6 +149,7 @@ const fields = computed<Field[]>(() => {
       break;
     }
     case "rvl": {
+      f.push({ label: "Format", value: props.info.container });
       f.push({ label: "Game ID", value: props.info.game_id });
       f.push({ label: "Maker", value: formatMaker(props.info.maker_code, props.info.maker_name) });
       f.push({ label: "Region", value: props.info.region });

@@ -110,6 +110,7 @@ export interface CtrInfo {
 
 export interface DolInfo {
   physical_bytes: number;
+  container: string;
   game_id: string;
   maker_code: string;
   maker_name: string | null;
@@ -135,6 +136,7 @@ export interface DolInfo {
 
 export interface RvlInfo {
   physical_bytes: number;
+  container: string;
   game_id: string;
   maker_code: string;
   maker_name: string | null;

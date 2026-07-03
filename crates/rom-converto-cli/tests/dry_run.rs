@@ -572,3 +572,108 @@ fn cue_merge_dry_run_notes_companion_bin() {
     assert!(text.contains("Would merge"), "{text}");
     assert!(text.contains("[new]"), "{text}");
 }
+
+// Regression: `migrate --dry-run` must plan only. It previously ignored the
+// global flag and ran a real conversion, writing an RVZ next to the input
+// (into a read-only source directory in batch mode).
+fn fake_legacy_wia(path: &Path) {
+    // The migrate path detects containers by magic, not extension; the 4-byte
+    // WIA magic is enough for the planner to recognize the file.
+    fs::write(path, [b'W', b'I', b'A', 0x01, 0, 0, 0, 0]).unwrap();
+}
+
+fn fake_legacy_gcz(path: &Path) {
+    // GCZ magic 0xB10BC001, little-endian; enough for the planner to recognize
+    // the file as a GameCube-capable container.
+    fs::write(path, [0x01, 0xC0, 0x0B, 0xB1, 0, 0, 0, 0]).unwrap();
+}
+
+#[test]
+fn dol_migrate_dry_run_recursive_writes_nothing() {
+    let src = tempfile::tempdir().unwrap();
+    fake_legacy_gcz(&src.path().join("game.gcz"));
+    let out = tempfile::tempdir().unwrap();
+
+    let output = bin()
+        .args(["--dry-run", "dol", "migrate", "-R"])
+        .arg(src.path())
+        .arg("-o")
+        .arg(out.path())
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "{}", combined(&output));
+    assert!(no_files_with_ext(src.path(), "rvz"));
+    assert!(no_files_with_ext(out.path(), "rvz"));
+    let text = combined(&output);
+    assert!(text.contains("Would migrate"), "{text}");
+    assert!(text.contains("Dry run:"), "{text}");
+}
+
+#[test]
+fn dol_migrate_dry_run_rejects_non_legacy_input() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("plain.iso");
+    fs::write(&input, vec![0u8; 2048]).unwrap();
+
+    let output = bin()
+        .arg("--dry-run")
+        .args(["dol", "migrate"])
+        .arg(&input)
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success(), "{}", combined(&output));
+    let text = combined(&output);
+    assert!(
+        text.contains("input is not a GCZ, WIA, or NKit image"),
+        "{text}"
+    );
+}
+
+#[test]
+fn dol_migrate_rejects_wia_with_clear_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("game.wia");
+    fake_legacy_wia(&input);
+
+    for extra in [&["--dry-run"][..], &[][..]] {
+        let output = bin()
+            .args(extra)
+            .args(["dol", "migrate"])
+            .arg(&input)
+            .output()
+            .unwrap();
+
+        assert!(!output.status.success(), "{}", combined(&output));
+        let text = combined(&output);
+        assert!(
+            text.contains("input is a WIA image; use rvl migrate for Wii disc images"),
+            "{text}"
+        );
+        assert!(no_files_with_ext(dir.path(), "rvz"));
+    }
+}
+
+#[test]
+fn rvl_migrate_dry_run_single_writes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("game.wia");
+    fake_legacy_wia(&input);
+    let out = dir.path().join("game.rvz");
+
+    let output = bin()
+        .arg("--dry-run")
+        .args(["rvl", "migrate"])
+        .arg(&input)
+        .arg("-o")
+        .arg(&out)
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "{}", combined(&output));
+    assert!(!out.exists());
+    let text = combined(&output);
+    assert!(text.contains("Would migrate"), "{text}");
+    assert!(text.contains("[new]"), "{text}");
+}

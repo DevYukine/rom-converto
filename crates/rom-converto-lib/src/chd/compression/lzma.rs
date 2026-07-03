@@ -199,13 +199,25 @@ unsafe impl Send for LzmaDecoder {}
 
 impl LzmaDecoder {
     pub fn new(hunk_bytes: usize) -> io::Result<Self> {
+        let props = configure_props(hunk_bytes);
+        Self::with_props(&encode_props(&props))
+    }
+
+    /// Build a decoder from raw 5-byte LZMA properties as found in
+    /// container metadata (WIA stores them verbatim in its
+    /// `compressor_data` field).
+    pub fn with_props(props_encoded: &[u8]) -> io::Result<Self> {
+        if props_encoded.len() != LZMA_PROPS_SIZE as usize {
+            return Err(io::Error::other(format!(
+                "LZMA props must be {LZMA_PROPS_SIZE} bytes, got {}",
+                props_encoded.len()
+            )));
+        }
         let alloc = Allocator::default();
         // CLzmaDec::default() zeros the struct, matching the
         // `LzmaDec_Construct` macro in `LzmaDec.h`. That's the
         // required pre-state before `LzmaDec_Allocate`.
         let mut handle = CLzmaDec::default();
-        let props = configure_props(hunk_bytes);
-        let props_encoded = encode_props(&props);
         let res = unsafe {
             LzmaDec_Allocate(
                 &mut handle,

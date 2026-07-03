@@ -50,6 +50,10 @@ use rom_converto_lib::nintendo::ctr::{
     decrypt_rom_cancellable, derive_decrypted_path, generate_ticket_from_cdn,
 };
 use rom_converto_lib::nintendo::dol::verify::{DolVerifyOptions, verify_dol};
+use rom_converto_lib::nintendo::legacy_input::{
+    ALL_MIGRATE_FORMATS, DOL_MIGRATE_FORMATS, LegacyFormat, MigrateOptions, detect_legacy_format,
+    ensure_format_allowed, migrate_disc_batch, migrate_disc_cancellable,
+};
 use rom_converto_lib::nintendo::nx::{
     NczMode, NxCompressOptions, compress_container_async_cancellable,
     decompress_container_async_cancellable, derive_compressed_path as nx_derive_compressed_path,
@@ -320,6 +324,76 @@ fn dry_run_single(
     dry_run::record(&mut tally, input, decision);
     let records = [dry_run::report_record(operation, input, desired, decision)];
     dry_run::finish(&tally, &records, report)
+}
+
+/// Plan a legacy-disc migration without writing anything. Recursive mode
+/// mirrors [`migrate_disc_batch`]: it enumerates the legacy containers in
+/// the top level of the directory (detected by content) and shows each
+/// output landing next to its input. Single mode plans one file.
+fn migrate_dry_run(
+    input: &Path,
+    explicit_output: Option<std::path::PathBuf>,
+    recursive: bool,
+    force: bool,
+    allowed: &[LegacyFormat],
+) -> Result<()> {
+    if recursive {
+        require_dir(input)?;
+        let mut detected: Vec<(std::path::PathBuf, LegacyFormat)> = std::fs::read_dir(input)?
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_file())
+            .filter_map(|p| match detect_legacy_format(&p) {
+                Ok(Some(fmt)) => Some((p, fmt)),
+                _ => None,
+            })
+            .collect();
+        detected.sort_by(|a, b| a.0.cmp(&b.0));
+        if detected.is_empty() {
+            anyhow::bail!("no GCZ, WIA, or NKit images found in {}", input.display());
+        }
+        for (path, fmt) in detected.iter().filter(|(_, f)| !allowed.contains(f)) {
+            log::warn!(
+                "Skipped {}: {} is a Wii disc image; use rvl migrate",
+                path.display(),
+                fmt.name()
+            );
+        }
+        let inputs: Vec<std::path::PathBuf> = detected
+            .into_iter()
+            .filter(|(_, fmt)| allowed.contains(fmt))
+            .map(|(p, _)| p)
+            .collect();
+        let mut tally = Tally::new();
+        let mut records = Vec::with_capacity(inputs.len());
+        for file in &inputs {
+            let desired = derive_rvz_path(file);
+            // Mirror migrate_disc_batch: an existing output without
+            // --force is skipped, not overwritten, and never aborts the
+            // plan.
+            let decision = if !force && desired.exists() {
+                WriteDecision::Skip
+            } else {
+                WriteDecision::Write(desired.clone())
+            };
+            dry_run::log_plan("migrate", file, &desired, &decision, None, None);
+            dry_run::record(&mut tally, file, &decision);
+            records.push(dry_run::report_record("migrate", file, &desired, &decision));
+        }
+        dry_run::finish(&tally, &records, None)
+    } else {
+        ensure_input_exists(input)?;
+        match detect_legacy_format(input)? {
+            None => anyhow::bail!(
+                "input is not a GCZ, WIA, or NKit image; use compress for .iso/.gcm/.wbfs"
+            ),
+            Some(fmt) => ensure_format_allowed(fmt, allowed)?,
+        }
+        let policy = policy_of(crate::commands::ConflictPolicyArg::Error, force);
+        let desired = explicit_output.unwrap_or_else(|| derive_rvz_path(input));
+        let decision = resolve_output(&desired, policy)?;
+        dry_run_single("migrate", input, &desired, &decision, None, None, None)
+    }
 }
 
 /// Best-effort media label for a CHD dry-run plan line. ISO inputs read a
@@ -1160,6 +1234,9 @@ async fn dispatch_command(
                     .await?
                 } else {
                     ensure_input_exists(&cmd.input)?;
+                    if let Some(fmt) = detect_legacy_format(&cmd.input)? {
+                        ensure_format_allowed(fmt, DOL_MIGRATE_FORMATS)?;
+                    }
                     let output = match cmd.output_flag.or(cmd.output) {
                         Some(p) => p,
                         None => {
@@ -1242,6 +1319,66 @@ async fn dispatch_command(
                         started,
                         report.as_deref(),
                     )?;
+                }
+            }
+            DolCommands::Migrate(cmd) => {
+                let opts = RvzCompressOptions {
+                    compression_level: cmd
+                        .level
+                        .unwrap_or(RvzCompressOptions::default().compression_level),
+                    chunk_size: cmd
+                        .chunk_size
+                        .unwrap_or(RvzCompressOptions::default().chunk_size),
+                    ..RvzCompressOptions::default()
+                };
+                let migrate_opts = MigrateOptions {
+                    skip_verify: cmd.skip_verify,
+                    deep_verify: false,
+                };
+                if dry_run {
+                    return migrate_dry_run(
+                        &cmd.input,
+                        cmd.output_flag.or(cmd.output),
+                        cmd.recursive,
+                        cmd.force,
+                        DOL_MIGRATE_FORMATS,
+                    );
+                }
+                if cmd.recursive {
+                    require_dir(&cmd.input)?;
+                    migrate_disc_batch(
+                        &cmd.input,
+                        opts,
+                        migrate_opts,
+                        DOL_MIGRATE_FORMATS,
+                        cmd.force,
+                        &progress,
+                        cancel.clone(),
+                    )
+                    .await?;
+                } else {
+                    let output = cmd
+                        .output_flag
+                        .or(cmd.output)
+                        .unwrap_or_else(|| derive_rvz_path(&cmd.input));
+                    let policy = policy_of(crate::commands::ConflictPolicyArg::Error, cmd.force);
+                    let output = match resolve_output(&output, policy)? {
+                        WriteDecision::Skip => {
+                            log_skipped(&output);
+                            return Ok(());
+                        }
+                        WriteDecision::Write(p) => p,
+                    };
+                    migrate_disc_cancellable(
+                        &cmd.input,
+                        &output,
+                        opts,
+                        migrate_opts,
+                        DOL_MIGRATE_FORMATS,
+                        &progress,
+                        cancel.clone(),
+                    )
+                    .await?
                 }
             }
             DolCommands::Decompress(cmd) => {
@@ -1499,6 +1636,66 @@ async fn dispatch_command(
                         started,
                         report.as_deref(),
                     )?;
+                }
+            }
+            RvlCommands::Migrate(cmd) => {
+                let opts = RvzCompressOptions {
+                    compression_level: cmd
+                        .level
+                        .unwrap_or(RvzCompressOptions::default().compression_level),
+                    chunk_size: cmd
+                        .chunk_size
+                        .unwrap_or(RvzCompressOptions::default().chunk_size),
+                    ..RvzCompressOptions::default()
+                };
+                let migrate_opts = MigrateOptions {
+                    skip_verify: cmd.skip_verify,
+                    deep_verify: cmd.deep,
+                };
+                if dry_run {
+                    return migrate_dry_run(
+                        &cmd.input,
+                        cmd.output_flag.or(cmd.output),
+                        cmd.recursive,
+                        cmd.force,
+                        ALL_MIGRATE_FORMATS,
+                    );
+                }
+                if cmd.recursive {
+                    require_dir(&cmd.input)?;
+                    migrate_disc_batch(
+                        &cmd.input,
+                        opts,
+                        migrate_opts,
+                        ALL_MIGRATE_FORMATS,
+                        cmd.force,
+                        &progress,
+                        cancel.clone(),
+                    )
+                    .await?;
+                } else {
+                    let output = cmd
+                        .output_flag
+                        .or(cmd.output)
+                        .unwrap_or_else(|| derive_rvz_path(&cmd.input));
+                    let policy = policy_of(crate::commands::ConflictPolicyArg::Error, cmd.force);
+                    let output = match resolve_output(&output, policy)? {
+                        WriteDecision::Skip => {
+                            log_skipped(&output);
+                            return Ok(());
+                        }
+                        WriteDecision::Write(p) => p,
+                    };
+                    migrate_disc_cancellable(
+                        &cmd.input,
+                        &output,
+                        opts,
+                        migrate_opts,
+                        ALL_MIGRATE_FORMATS,
+                        &progress,
+                        cancel.clone(),
+                    )
+                    .await?
                 }
             }
             RvlCommands::Decompress(cmd) => {
@@ -3041,4 +3238,42 @@ fn run_shell_completions(cmd: &ShellCompletionsCommand) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod migrate_gate_tests {
+    use super::*;
+
+    fn write_wia(dir: &Path) -> std::path::PathBuf {
+        let p = dir.join("game.wia");
+        std::fs::write(&p, [b'W', b'I', b'A', 0x01, 0, 0, 0, 0]).unwrap();
+        p
+    }
+
+    #[test]
+    fn dol_migrate_dry_run_rejects_wia() {
+        let dir = tempfile::tempdir().unwrap();
+        let wia = write_wia(dir.path());
+        let err = migrate_dry_run(&wia, None, false, false, DOL_MIGRATE_FORMATS).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "input is a WIA image; use rvl migrate for Wii disc images"
+        );
+    }
+
+    #[test]
+    fn rvl_migrate_dry_run_accepts_wia() {
+        let dir = tempfile::tempdir().unwrap();
+        let wia = write_wia(dir.path());
+        migrate_dry_run(&wia, None, false, false, ALL_MIGRATE_FORMATS)
+            .expect("the rvl dry-run must accept a WIA image");
+    }
+
+    #[test]
+    fn dol_migrate_dry_run_recursive_skips_wia_without_failing() {
+        let dir = tempfile::tempdir().unwrap();
+        write_wia(dir.path());
+        migrate_dry_run(dir.path(), None, true, false, DOL_MIGRATE_FORMATS)
+            .expect("a WIA-only directory must not fail a dol dry-run");
+    }
 }

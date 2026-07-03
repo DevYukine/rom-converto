@@ -237,18 +237,26 @@ rom-converto dol <SUBCOMMAND> <INPUT> [OUTPUT]
 | Subcommand | Description |
 |---|---|
 | `compress <INPUT> [OUTPUT]` | Compress a `.iso`/`.gcm` to Dolphin's `.rvz` |
+| `migrate <INPUT> [OUTPUT]` | Migrate a legacy `.gcz`, `.nkit.iso`, or `.nkit.gcz` to `.rvz` with an integrity check first |
 | `decompress <INPUT> [OUTPUT]` | Decompress a `.rvz` back to `.iso` |
 | `verify <INPUT>` | Verify RVZ container hashes, or compute a whole-disc SHA-1 with `--full` |
 | `info <INPUT>` | Inspect GameCube disc metadata. See [info](#info) |
 
 | Flag | Applies to | Description |
 |---|---|---|
-| `-l, --level <LEVEL>` | `compress` | Zstandard compression level (defaults to 22, Dolphin's max non-extreme) |
-| `--chunk-size <BYTES>` | `compress` | Chunk size in bytes, power of two between 32 KiB and 2 MiB (defaults to 128 KiB to match Dolphin) |
+| `-l, --level <LEVEL>` | `compress`, `migrate` | Zstandard compression level (defaults to 22, Dolphin's max non-extreme) |
+| `--chunk-size <BYTES>` | `compress`, `migrate` | Chunk size in bytes, power of two between 32 KiB and 2 MiB (defaults to 128 KiB to match Dolphin) |
 | `--output-dir <DIR>` | `compress`, `decompress` | Write outputs under this directory instead of beside each input |
+| `--skip-verify` | `migrate` | Skip the pre-conversion integrity pass |
 | `--full` | `verify` | Decode the whole disc and compute a whole-disc SHA-1 |
 
 Output is byte-identical to Dolphin's own encoder and decoder in both directions.
+
+`migrate` integrity-checks the source first (GCZ block checksums, NKit whole-file CRC32),
+regenerates NKit junk data, and streams the rebuilt disc straight to `.rvz` with no
+temporary files. The input format is detected by content, so renamed files still work.
+Unlike the other commands, `migrate` overwrites an existing output only with `-f`/`--force`
+and does not take `--on-conflict`.
 
 ## rvl (Wii)
 
@@ -259,11 +267,19 @@ rom-converto rvl <SUBCOMMAND> <INPUT> [OUTPUT]
 | Subcommand | Description |
 |---|---|
 | `compress <INPUT> [OUTPUT]` | Compress a `.iso`/`.wbfs` to Dolphin's `.rvz` |
+| `migrate <INPUT> [OUTPUT]` | Migrate a legacy `.wia`, `.gcz`, `.nkit.iso`, or `.nkit.gcz` to `.rvz` with an integrity check first |
 | `decompress <INPUT> [OUTPUT]` | Decompress a `.rvz` back to `.iso` |
 | `verify <INPUT>` | Verify RVZ container hashes, or recompute the Wii partition hash tree with `--full` |
 | `info <INPUT>` | Inspect Wii disc metadata. See [info](#info) |
 
-Flags match the `dol` commands, including `--output-dir` on `compress` and `decompress`.
+`rvl migrate` covers `.wia` in every codec (bzip2, LZMA, LZMA2, purge, none) alongside
+`.gcz` and NKit. It rebuilds the Wii hash tree and re-encrypts partitions on the fly while
+converting to `.rvz`.
+
+Flags match the `dol` commands, including `--output-dir` on `compress` and `decompress`
+and the shared `migrate` flags. `rvl migrate` additionally takes `--deep`, which decodes
+every WIA group during verification instead of only the SHA-1 header chain (GCZ and NKit
+checks are already exhaustive, so it applies to WIA input only).
 `--full` on `rvl verify` decrypts every partition cluster and recomputes the H0/H1/H2 hash
 tree. `dol` and `rvl` share one RVZ pipeline, and output is byte-identical to Dolphin on
 both consoles.
@@ -411,12 +427,13 @@ Format-specific flags (shared conflict and report flags are covered in
 | `--subset <SUBSET>` | `fixdat` | Narrow the candidate DATs by subset. Requires `--platform` |
 
 Every file is hashed on its decoded inner stream, not the compressed container bytes, so a
-`.chd`, `.rvz`, `.wbfs`, `.cso`, `.zso`, or Z3DS file verifies the same as the raw ROM or
-disc image it holds. Multi-track discs check every track. `.nsz` and `.xcz` have no
-inner hasher and are reported as `unsupported` while the run continues. A `.cue` file is
-never hashed on its own: a recursive walk groups each cue with the `.bin` tracks it lists
-and hashes those, and `rename` always leaves a cue set untouched so its `FILE` lines stay
-consistent.
+`.chd`, `.rvz`, `.wbfs`, `.cso`, `.zso`, `.gcz`, `.wia`, NKit, or Z3DS file verifies the same
+as the raw ROM or disc image it holds. GCZ, WIA, and NKit containers are detected by content,
+so a renamed file still verifies correctly. Multi-track discs check every track. `.nsz` and
+`.xcz` have no inner hasher and are reported as `unsupported` while the run continues. A
+`.cue` file is never hashed on its own: a recursive walk groups each cue with the `.bin`
+tracks it lists and hashes those, and `rename` always leaves a cue set untouched so its
+`FILE` lines stay consistent.
 
 `verify` treats a filename-and-size match as a hint and reports it as not verified, while
 `identify` shows the same match as a weak result so a near-miss is still informative.
@@ -499,9 +516,11 @@ for a machine-readable payload (the GUI uses the same shape).
 | `--keys <FILE>` | `prod.keys` for `nx info`, or a disc master key file for `wup info` on `.wud`/`.wux`. Other consoles do not use it |
 
 Coverage per family: `ctr` reads CIA/NCSD/NCCH and Z3DS variants; `dol` reads `.iso`,
-`.gcm`, and `.rvz`; `rvl` reads `.iso`, `.rvz`, and `.wbfs`; `wup` reads loadiine and NUS
-directories, `.wua` archives, and `.wud`/`.wux` disc images; `nx` reads NSP/NSZ/XCI/XCZ;
-`chd` reads CHD v5; `cso` reads CSO/ZSO. WIA, GCZ, NFS, and TGC are not supported.
+`.gcm`, `.rvz`, `.gcz`, and NKit; `rvl` reads `.iso`, `.rvz`, `.wbfs`, `.wia`, `.gcz`, and
+NKit through the same streaming migration readers the `migrate` command uses; `wup` reads
+loadiine and NUS directories, `.wua` archives, and `.wud`/`.wux` disc images; `nx` reads
+NSP/NSZ/XCI/XCZ; `chd` reads CHD v5; `cso` reads CSO/ZSO. NFS and TGC are not
+supported.
 
 ## shell-completions
 

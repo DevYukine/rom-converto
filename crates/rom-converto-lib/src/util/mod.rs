@@ -5,6 +5,7 @@
 
 pub mod conflict;
 pub mod fs;
+pub mod group_reader;
 pub mod hash;
 pub mod http;
 pub mod iso9660;

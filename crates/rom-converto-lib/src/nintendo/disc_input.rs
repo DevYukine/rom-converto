@@ -10,16 +10,34 @@ use std::fs::File;
 use std::io::{self, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
+use crate::nintendo::gcz::GczReader;
+use crate::nintendo::legacy_input::{LegacyFormat, detect_legacy_format};
+use crate::nintendo::nkit::NkitReader;
 use crate::nintendo::rvz::decompress::RvzDiscReader;
 use crate::nintendo::wbfs::WbfsReader;
+use crate::nintendo::wia::WiaReader;
 
 pub enum DiscInput {
     File(BufReader<File>),
     Rvz(Box<RvzDiscReader>),
     Wbfs(Box<WbfsReader>),
+    Gcz(Box<GczReader>),
+    Wia(Box<WiaReader>),
+    Nkit(Box<NkitReader>),
 }
 
 impl DiscInput {
+    pub fn container_name(&self) -> &'static str {
+        match self {
+            Self::File(_) => "ISO",
+            Self::Rvz(_) => "RVZ",
+            Self::Wbfs(_) => "WBFS",
+            Self::Gcz(_) => "GCZ",
+            Self::Wia(_) => "WIA",
+            Self::Nkit(_) => "NKit",
+        }
+    }
+
     pub fn iso_size(&mut self) -> Result<u64> {
         match self {
             Self::File(r) => {
@@ -30,6 +48,9 @@ impl DiscInput {
             }
             Self::Rvz(r) => Ok(r.iso_size()),
             Self::Wbfs(r) => Ok(r.disc_size()),
+            Self::Gcz(r) => Ok(r.data_size()),
+            Self::Wia(r) => Ok(r.iso_size()),
+            Self::Nkit(r) => Ok(r.image_size()),
         }
     }
 }
@@ -40,6 +61,9 @@ impl Read for DiscInput {
             Self::File(r) => r.read(buf),
             Self::Rvz(r) => r.read(buf),
             Self::Wbfs(r) => r.read(buf),
+            Self::Gcz(r) => r.read(buf),
+            Self::Wia(r) => r.read(buf),
+            Self::Nkit(r) => r.read(buf),
         }
     }
 }
@@ -50,6 +74,9 @@ impl Seek for DiscInput {
             Self::File(r) => r.seek(from),
             Self::Rvz(r) => r.seek(from),
             Self::Wbfs(r) => r.seek(from),
+            Self::Gcz(r) => r.seek(from),
+            Self::Wia(r) => r.seek(from),
+            Self::Nkit(r) => r.seek(from),
         }
     }
 }
@@ -73,6 +100,32 @@ pub fn open_disc_input(path: &Path) -> Result<DiscInput> {
         let reader = WbfsReader::open(path)
             .with_context(|| format!("disc_input: open WBFS {}", path.display()))?;
         return Ok(DiscInput::Wbfs(Box::new(reader)));
+    }
+
+    match detect_legacy_format(path).unwrap_or(None) {
+        Some(LegacyFormat::Gcz) => {
+            let reader = GczReader::open(path)
+                .with_context(|| format!("disc_input: open GCZ {}", path.display()))?;
+            return Ok(DiscInput::Gcz(Box::new(reader)));
+        }
+        Some(LegacyFormat::Wia) => {
+            let reader = WiaReader::open(path)
+                .with_context(|| format!("disc_input: open WIA {}", path.display()))?;
+            return Ok(DiscInput::Wia(Box::new(reader)));
+        }
+        Some(LegacyFormat::NkitIso) => {
+            let reader = NkitReader::open(path)
+                .with_context(|| format!("disc_input: open NKit {}", path.display()))?;
+            return Ok(DiscInput::Nkit(Box::new(reader)));
+        }
+        Some(LegacyFormat::NkitGcz) => {
+            let gcz = GczReader::open(path)
+                .with_context(|| format!("disc_input: open NKit GCZ {}", path.display()))?;
+            let reader = NkitReader::from_source(gcz)
+                .with_context(|| format!("disc_input: open NKit GCZ {}", path.display()))?;
+            return Ok(DiscInput::Nkit(Box::new(reader)));
+        }
+        None => {}
     }
 
     let file = File::open(path).with_context(|| format!("disc_input: open {}", path.display()))?;

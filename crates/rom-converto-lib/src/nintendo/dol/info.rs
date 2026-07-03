@@ -11,6 +11,7 @@ use std::path::Path;
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DolInfo {
     pub physical_bytes: u64,
+    pub container: String,
     pub game_id: String,
     pub maker_code: String,
     pub maker_name: Option<String>,
@@ -47,6 +48,7 @@ pub fn read_info(path: &Path) -> Result<DolInfo> {
 
     let mut reader = crate::nintendo::disc_input::open_disc_input(path)
         .with_context(|| format!("dol info: open {}", path.display()))?;
+    let container = reader.container_name().to_string();
 
     let boot = GcBootBin::read(&mut reader).context("dol info: parse boot.bin")?;
 
@@ -61,6 +63,7 @@ pub fn read_info(path: &Path) -> Result<DolInfo> {
 
     Ok(DolInfo {
         physical_bytes,
+        container,
         game_id: boot.game_id,
         maker_name,
         maker_code: boot.maker_code,
@@ -117,4 +120,28 @@ fn read_banner<R: Read + Seek>(
     };
 
     Ok((Some(info), image))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::nintendo::dol::test_fixtures::make_fake_gamecube_iso;
+    use crate::nintendo::gcz::test_fixtures::make_gcz;
+    use std::io::Write;
+
+    #[test]
+    fn info_reports_container() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = make_fake_gamecube_iso(0x40000);
+
+        let iso = dir.path().join("game.iso");
+        std::fs::write(&iso, &original).unwrap();
+        assert_eq!(read_info(&iso).unwrap().container, "ISO");
+
+        let gcz = dir.path().join("game.gcz");
+        let mut f = std::fs::File::create(&gcz).unwrap();
+        f.write_all(&make_gcz(&original, 0x8000, 0)).unwrap();
+        drop(f);
+        assert_eq!(read_info(&gcz).unwrap().container, "GCZ");
+    }
 }

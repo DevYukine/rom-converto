@@ -7,9 +7,62 @@ use std::path::PathBuf;
 #[derive(Subcommand, Debug, Eq, PartialEq)]
 pub enum DolCommands {
     Compress(CompressDiscCommand),
+    Migrate(MigrateDiscCommand),
     Decompress(DecompressDiscCommand),
     Verify(VerifyDiscCommand),
     Info(InfoCommand),
+}
+
+/// Migrate a legacy GameCube disc image (GCZ or NKit) to RVZ
+#[derive(Parser, Debug, Clone, Eq, PartialEq)]
+#[command(
+    long_about = "Migrate a legacy GameCube disc image (GCZ or NKit) to RVZ\n\n\
+Supported input: .gcz, .nkit.iso, and .nkit.gcz, detected by content so renamed files work. \
+The container is integrity-checked first (GCZ block checksums, NKit whole-file CRC32), then the \
+original disc is reconstructed on the fly (NKit junk regeneration included) and compressed to RVZ. \
+NKit restorations are additionally verified against the embedded source CRC32 while converting.\n\n\
+Output defaults to the input path with the extension replaced by .rvz.",
+    after_long_help = "EXAMPLES:\n  Single file:     rom-converto dol migrate game.gcz\n  Explicit output: rom-converto dol migrate game.nkit.iso game.rvz\n  Whole directory: rom-converto dol migrate -R ./roms\n"
+)]
+pub struct MigrateDiscCommand {
+    /// Input disc image path (.gcz, .nkit.iso, .nkit.gcz), or a directory with --recursive
+    #[arg(value_name = "INPUT")]
+    pub input: PathBuf,
+
+    /// Output RVZ path, defaults to the input path with extension replaced by .rvz (ignored with --recursive)
+    #[arg(value_name = "OUTPUT")]
+    pub output: Option<PathBuf>,
+
+    /// Output RVZ path, defaults to the input path with extension replaced by .rvz (ignored with --recursive)
+    #[arg(
+        short = 'o',
+        long = "output",
+        value_name = "OUTPUT",
+        conflicts_with = "output"
+    )]
+    pub output_flag: Option<PathBuf>,
+
+    /// Zstandard compression level (signed, negative levels allowed).
+    /// Defaults to 22 (archive quality)
+    #[arg(long, short = 'l')]
+    pub level: Option<i32>,
+
+    /// RVZ chunk size in bytes. Must be a power of two between 32 KiB
+    /// and 2 MiB. Defaults to 128 KiB
+    #[arg(long)]
+    pub chunk_size: Option<u32>,
+
+    /// Skip the pre-conversion integrity pass
+    #[arg(long, default_value_t = false)]
+    pub skip_verify: bool,
+
+    /// Overwrite the output file if it already exists
+    #[arg(long, short = 'f', default_value_t = false)]
+    pub force: bool,
+
+    /// Migrate every GCZ and NKit image found in the INPUT directory (detected by content)
+    #[arg(long, short = 'R', default_value_t = false)]
+    pub recursive: bool,
 }
 
 /// Verify a GameCube disc image
@@ -18,7 +71,7 @@ pub enum DolCommands {
     long_about = "Verify a GameCube disc image\n\n\
 Fast mode (default) checks the RVZ container's stored SHA-1 hashes (file header, disc struct, partition table). It is a no-op for plain .iso / .gcm input, which carries no integrity data.\n\n\
 --full decodes the whole disc, validates the FST geometry, and computes a whole-disc SHA-1. GameCube discs carry no built-in integrity hashes, so that digest is informational (for external DAT/Redump matching), never a pass/fail.",
-    after_long_help = "EXAMPLES:\n  Single file:  rom-converto dol verify game.iso\n  Full check:   rom-converto dol verify game.rvz --full\n  Whole folder: rom-converto dol verify -R ./roms\n"
+    after_long_help = "EXAMPLES:\n  Single file:     rom-converto dol verify game.iso\n  Full check:      rom-converto dol verify game.rvz --full\n  Whole directory: rom-converto dol verify -R ./roms\n"
 )]
 pub struct VerifyDiscCommand {
     /// Input disc image path (.iso, .gcm, or .rvz), or a directory with --recursive
@@ -43,7 +96,7 @@ pub struct VerifyDiscCommand {
 #[command(
     long_about = "Compress a GameCube disc image to RVZ\n\n\
 Supported input: .iso / .gcm.\nOutput defaults to the same path with the extension replaced by .rvz.",
-    after_long_help = "EXAMPLES:\n  Single file:     rom-converto dol compress game.iso\n  Explicit output: rom-converto dol compress game.gcm game.rvz\n  Whole folder:    rom-converto dol compress -R ./roms --output-dir ./rvz\n"
+    after_long_help = "EXAMPLES:\n  Single file:     rom-converto dol compress game.iso\n  Explicit output: rom-converto dol compress game.gcm game.rvz\n  Whole directory: rom-converto dol compress -R ./roms --output-dir ./rvz\n"
 )]
 pub struct CompressDiscCommand {
     /// Input disc image path (.iso or .gcm), or a directory with --recursive
@@ -111,7 +164,7 @@ pub struct CompressDiscCommand {
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
     long_about = "Decompress an RVZ GameCube disc image back to ISO\n\nOutput defaults to the input path with extension replaced by .iso.",
-    after_long_help = "EXAMPLES:\n  Single file:     rom-converto dol decompress game.rvz\n  Explicit output: rom-converto dol decompress game.rvz game.iso\n  Whole folder:    rom-converto dol decompress -R ./rvz --output-dir ./roms\n"
+    after_long_help = "EXAMPLES:\n  Single file:     rom-converto dol decompress game.rvz\n  Explicit output: rom-converto dol decompress game.rvz game.iso\n  Whole directory: rom-converto dol decompress -R ./rvz --output-dir ./roms\n"
 )]
 pub struct DecompressDiscCommand {
     /// Input RVZ file path, or a directory with --recursive
@@ -194,6 +247,30 @@ mod tests {
             panic!("expected Verify");
         };
         assert!(c.recursive);
+    }
+
+    #[test]
+    fn parses_migrate_force_and_output_flag() {
+        let h = Harness::parse_from(["bin", "migrate", "game.gcz", "-o", "out.rvz", "-f"]);
+        let DolCommands::Migrate(c) = h.cmd else {
+            panic!("expected Migrate");
+        };
+        assert!(c.force);
+        assert_eq!(c.output, None);
+        assert_eq!(c.output_flag, Some(PathBuf::from("out.rvz")));
+    }
+
+    #[test]
+    fn migrate_output_flag_conflicts_with_positional() {
+        let result =
+            Harness::try_parse_from(["bin", "migrate", "game.gcz", "pos.rvz", "-o", "flag.rvz"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn migrate_rejects_deep_flag() {
+        let result = Harness::try_parse_from(["bin", "migrate", "game.gcz", "--deep"]);
+        assert!(result.is_err());
     }
 
     #[test]
