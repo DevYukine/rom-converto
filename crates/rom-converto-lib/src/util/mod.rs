@@ -27,7 +27,10 @@ pub use footgun::{
     mixed_playlist_extensions, oversized_rvz_chunk,
 };
 pub use fs::{DEFAULT_SPACE_HEADROOM, available_space, space_shortfall};
-pub use hash::{FileDigests, HashAlgo, hash_file, hash_file_cancellable, parse_algos};
+pub use hash::{
+    ChecksumBounds, FileDigests, HashAlgo, hash_file, hash_file_cancellable, parse_algos,
+    parse_checksum_bound,
+};
 pub use hash_cache::{CachedTrack, CueDigests, HashCache};
 pub use plan::{PlanDecision, PlanLine, classify};
 pub use report::{

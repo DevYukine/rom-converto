@@ -16,10 +16,10 @@ use rom_converto_lib::util::fs::{collect_all_files, collect_files_with_exts, is_
 use rom_converto_lib::util::hash::MultiHasher;
 use rom_converto_lib::util::report::{DatReportRecord, write_dat_report};
 use rom_converto_lib::util::{
-    CachedTrack, CancelToken, ConflictPolicy, ConflictResolution, FileDigests, FileStatus,
-    HashAlgo, HashCache, HashReportRecord, NX_DAT_UNSUPPORTED_HINT, ProgressReporter, ReportFormat,
-    ReportRecord, ReportTotals, Tally, TallyDirection, hash_file, hash_file_cancellable,
-    resolve_conflict, write_hash_report, write_report,
+    CachedTrack, CancelToken, ChecksumBounds, ConflictPolicy, ConflictResolution, FileDigests,
+    FileStatus, HashAlgo, HashCache, HashReportRecord, NX_DAT_UNSUPPORTED_HINT, ProgressReporter,
+    ReportFormat, ReportRecord, ReportTotals, Tally, TallyDirection, hash_file,
+    hash_file_cancellable, resolve_conflict, write_hash_report, write_report,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -2697,11 +2697,52 @@ fn digest_bucket(e: DatError) -> DatResult<(DatVerdict, String)> {
     }
 }
 
+/// True when tiered checksum escalation is worth attempting for `unit`: a
+/// second full read is cheap for a raw file or a cue set's raw bin members,
+/// but not for a container whose first decode already dominates cost.
+fn unit_is_tierable(unit: &DatUnit) -> bool {
+    match unit {
+        DatUnit::File(path) => rom_converto_lib::dat::is_raw_reread_cheap(path),
+        DatUnit::CueSet(_) => true,
+    }
+}
+
+/// Digest and resolve one unit's verify verdict, escalating past the cheap
+/// floor tier to the full ceiling tier only when the floor tier alone does
+/// not resolve a `DatVerdict::Verified` match. The hash cache makes any
+/// escalation happen at most once per file: a later lookup at the floor
+/// tier alone is already satisfied by the merged, escalated digest.
+async fn digest_and_resolve_verify(
+    client: &PlaymatchClient,
+    unit: &DatUnit,
+    algos: &[HashAlgo],
+    bounds: &ChecksumBounds,
+    progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
+    cache: &HashCache,
+) -> DatResult<(RomDigests, DatOutcome)> {
+    let (floor, escalation) = if unit_is_tierable(unit) {
+        bounds.split(algos)
+    } else {
+        (algos.to_vec(), Vec::new())
+    };
+    let digests = digest_unit(unit, &floor, progress, cancel, cache).await?;
+    let outcome = resolve_verify(client, unit, &digests, cancel).await?;
+    if escalation.is_empty() || outcome.verdict != DatVerdict::Hint {
+        return Ok((digests, outcome));
+    }
+    let full: Vec<HashAlgo> = floor.iter().chain(escalation.iter()).copied().collect();
+    let digests = digest_unit(unit, &full, progress, cancel, cache).await?;
+    let outcome = resolve_verify(client, unit, &digests, cancel).await?;
+    Ok((digests, outcome))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn dat_verify_single(
     progress: &dyn ProgressReporter,
     input: &Path,
     algos: &[HashAlgo],
+    bounds: &ChecksumBounds,
     api_base: Option<&str>,
     report: Option<&Path>,
     cancel: &CancelToken,
@@ -2710,10 +2751,10 @@ pub async fn dat_verify_single(
     let started = Instant::now();
     let client = PlaymatchClient::new(api_base);
     let unit = DatUnit::File(input.to_path_buf());
-    let digests = digest_unit(&unit, algos, progress, cancel, cache).await;
-    let record = match digests {
-        Ok(digests) => {
-            let outcome = resolve_verify(&client, &unit, &digests, cancel).await?;
+    let resolved =
+        digest_and_resolve_verify(&client, &unit, algos, bounds, progress, cancel, cache).await;
+    let record = match resolved {
+        Ok((_, outcome)) => {
             print_verdict(input, &outcome);
             dat_record(input, &outcome, FileStatus::Ok, started)
         }
@@ -2765,6 +2806,7 @@ pub async fn dat_verify_batch(
     total_progress: &crate::util::TotalProgress,
     input_dir: &Path,
     algos: &[HashAlgo],
+    bounds: &ChecksumBounds,
     max_depth: Option<usize>,
     api_base: Option<&str>,
     report: Option<&Path>,
@@ -2788,9 +2830,9 @@ pub async fn dat_verify_batch(
     for unit in &units {
         let unit_started = Instant::now();
         let path = unit.display_path().to_path_buf();
-        match digest_unit(unit, algos, progress, cancel, cache).await {
-            Ok(digests) => {
-                let outcome = resolve_verify(&client, unit, &digests, cancel).await?;
+        match digest_and_resolve_verify(&client, unit, algos, bounds, progress, cancel, cache).await
+        {
+            Ok((digests, outcome)) => {
                 dedup_note(&mut dedup, &digests, outcome.verdict);
                 match outcome.verdict {
                     DatVerdict::Verified => verified += 1,
@@ -2859,28 +2901,44 @@ fn strongest_key(d: &FileDigests) -> Option<String> {
         .or_else(|| d.crc32.clone())
 }
 
+async fn identify_one(
+    client: &PlaymatchClient,
+    file_name: &str,
+    digests: &RomDigests,
+    cancel: &CancelToken,
+) -> DatResult<GameAndRelationMatchResult> {
+    let d = match digests {
+        RomDigests::Single(d) => d,
+        RomDigests::Tracks { whole, .. } => whole,
+    };
+    let search = GameFileMatchSearch::from_digests(file_name, d);
+    client.identify_relations(&search, cancel).await
+}
+
 pub async fn dat_identify(
     progress: &dyn ProgressReporter,
     input: &Path,
     algos: &[HashAlgo],
+    bounds: &ChecksumBounds,
     api_base: Option<&str>,
     cancel: &CancelToken,
     cache: &HashCache,
 ) -> Result<()> {
     let client = PlaymatchClient::new(api_base);
     let unit = DatUnit::File(input.to_path_buf());
-    let digests = digest_unit(&unit, algos, progress, cancel, cache).await?;
     let file_name = file_name_of(input);
-    let m = match &digests {
-        RomDigests::Single(d) => {
-            let search = GameFileMatchSearch::from_digests(&file_name, d);
-            client.identify_relations(&search, cancel).await?
-        }
-        RomDigests::Tracks { whole, .. } => {
-            let search = GameFileMatchSearch::from_digests(&file_name, whole);
-            client.identify_relations(&search, cancel).await?
-        }
+    let (floor, escalation) = if unit_is_tierable(&unit) {
+        bounds.split(algos)
+    } else {
+        (algos.to_vec(), Vec::new())
     };
+    let digests = digest_unit(&unit, &floor, progress, cancel, cache).await?;
+    let mut m = identify_one(&client, &file_name, &digests, cancel).await?;
+    if !escalation.is_empty() && match_strength(m.game_match_type) == MatchStrength::NameSizeHint {
+        let full: Vec<HashAlgo> = floor.iter().chain(escalation.iter()).copied().collect();
+        let digests = digest_unit(&unit, &full, progress, cancel, cache).await?;
+        m = identify_one(&client, &file_name, &digests, cancel).await?;
+    }
     let strength = match_strength(m.game_match_type);
     match strength {
         MatchStrength::Verified(a) => info!("Match: {} (verified)", a.label().to_uppercase()),
@@ -2989,6 +3047,7 @@ pub async fn dat_scan(
     total_progress: &crate::util::TotalProgress,
     input_dir: &Path,
     max_depth: Option<usize>,
+    algos: &[HashAlgo],
     api_base: Option<&str>,
     report: Option<&Path>,
     cancel: &CancelToken,
@@ -3004,7 +3063,7 @@ pub async fn dat_scan(
         progress,
         total_progress,
         &units,
-        algos_scan(),
+        algos,
         cancel,
         cache,
     )

@@ -82,6 +82,10 @@ pub struct WupDefaults {
 pub struct DatDefaults {
     pub api_base: Option<String>,
     pub report: Option<PathBuf>,
+    /// Minimum checksum tier always computed before consulting Playmatch: crc32, md5, sha1, sha256.
+    pub input_checksum_min: Option<String>,
+    /// Maximum checksum tier escalation may reach when the floor tier alone does not verify.
+    pub input_checksum_max: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]

@@ -472,6 +472,9 @@ Format-specific flags (shared conflict and report flags are covered in
 | Flag | Applies to | Description |
 |---|---|---|
 | `--algo <ALGOS>` | `verify`, `identify` | Comma-separated digests: `crc32`, `sha1`, `md5`, `sha256`. Default `crc32,sha1` |
+| `--algo <ALGOS>` | `scan` | Same values. Default `crc32`: size plus CRC32 identifies almost everything, so scans stay fast; raise it when a match needs a stronger digest |
+| `--input-checksum-min <ALGO>` | `verify`, `identify` | Checksum tier always computed before consulting Playmatch: `crc32`, `md5`, `sha1`, or `sha256`. Default `crc32` |
+| `--input-checksum-max <ALGO>` | `verify`, `identify` | Ceiling on how far escalation may go past the floor tier. Default `sha256` |
 | `-R`, `--recursive` | `verify`, `rename` | Process every file under INPUT, descending into subdirectories |
 | `--max-depth <N>` | `verify`, `scan`, `rename`, `fixdat` | Limit recursion depth. `1` = top level only. On `verify` and `rename` requires `-R`; `scan` and `fixdat` always walk the whole directory |
 | `--report <FILE>` | `verify`, `scan`, `rename` | Write a run report. See [Run reports](#run-reports) |
@@ -503,6 +506,17 @@ file entry with the same extension as the local file, and the game name otherwis
 is always recursive over its directory, and it and `rename` hash with `crc32` and `sha1`,
 while `fixdat` indexes the local library with all four digests. `--algo` widens the digest
 set on `verify` and `identify` only.
+
+`verify` and `identify` compute `--input-checksum-min` first (`crc32` by default) and only
+compute the rest of `--algo`'s digest set if that floor tier alone does not resolve a
+verified match, up to `--input-checksum-max`. This is skipped for compressed containers
+(`.chd`, `.rvz`, `.wbfs`, `.cso`, `.zso`, GCZ, WIA, NKit, Z3DS): their decode already
+dominates cost, so all requested digests are computed together in the one pass instead of
+risking a second decode. Raw files and cue-set `.bin` tracks benefit the most, since a
+confident crc32 match skips the extra digests entirely. The hash cache remembers whichever
+tier was last computed, so escalation happens at most once per file across a run.
+`--algo` may not request a digest stronger than `--input-checksum-max`; that combination
+is rejected at startup instead of silently skipping the digest.
 
 `fixdat` needs either `--platform` or `--dat-id` to pick a source DAT; `--dat-name` and
 `--subset` narrow an ambiguous platform match, and more than one remaining candidate stops

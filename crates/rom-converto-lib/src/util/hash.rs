@@ -24,6 +24,17 @@ impl HashAlgo {
             HashAlgo::Sha256 => "sha256",
         }
     }
+
+    /// Ascending compute-cost order used for checksum-tier escalation:
+    /// crc32 is cheapest to compute and compare, sha256 the priciest.
+    pub fn cost_rank(self) -> u8 {
+        match self {
+            HashAlgo::Crc32 => 0,
+            HashAlgo::Md5 => 1,
+            HashAlgo::Sha1 => 2,
+            HashAlgo::Sha256 => 3,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -140,6 +151,83 @@ pub fn parse_algos(spec: &str) -> Result<Vec<HashAlgo>, String> {
         algos.push(HashAlgo::Sha256);
     }
     Ok(algos)
+}
+
+/// Parse a single checksum-tier bound (one of `crc32`, `md5`, `sha1`,
+/// `sha256`) used by `--input-checksum-min`/`--input-checksum-max`.
+pub fn parse_checksum_bound(spec: &str) -> Result<HashAlgo, String> {
+    match spec.trim().to_ascii_lowercase().as_str() {
+        "crc32" => Ok(HashAlgo::Crc32),
+        "sha1" => Ok(HashAlgo::Sha1),
+        "md5" => Ok(HashAlgo::Md5),
+        "sha256" => Ok(HashAlgo::Sha256),
+        other => Err(format!(
+            "unknown checksum tier: {other} (expected crc32, md5, sha1, or sha256)"
+        )),
+    }
+}
+
+/// Floor/ceiling for tiered checksum escalation: `min` is always computed
+/// up front for identification, `max` bounds how far escalation may go when
+/// the floor tier alone does not resolve a confident match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChecksumBounds {
+    pub min: HashAlgo,
+    pub max: HashAlgo,
+}
+
+impl ChecksumBounds {
+    pub fn new(min: HashAlgo, max: HashAlgo) -> Result<Self, String> {
+        if min.cost_rank() > max.cost_rank() {
+            return Err(format!(
+                "--input-checksum-min ({}) must be no stronger than --input-checksum-max ({})",
+                min.label(),
+                max.label()
+            ));
+        }
+        Ok(Self { min, max })
+    }
+
+    /// Split `requested` into a cheap floor tier always computed first and
+    /// an escalation tier computed only when the floor tier does not
+    /// resolve a confident match. Both preserve `requested`'s original
+    /// order. If nothing in `requested` is at or below `min`'s rank
+    /// (e.g. the caller asked for `sha256` only with the default
+    /// `crc32` floor), tiering has no benefit, so the whole set is
+    /// returned as the floor and escalation is left empty.
+    pub fn split(&self, requested: &[HashAlgo]) -> (Vec<HashAlgo>, Vec<HashAlgo>) {
+        let floor: Vec<HashAlgo> = requested
+            .iter()
+            .copied()
+            .filter(|a| a.cost_rank() <= self.min.cost_rank())
+            .collect();
+        if floor.is_empty() {
+            return (requested.to_vec(), Vec::new());
+        }
+        let escalation: Vec<HashAlgo> = requested
+            .iter()
+            .copied()
+            .filter(|a| a.cost_rank() <= self.max.cost_rank() && !floor.contains(a))
+            .collect();
+        (floor, escalation)
+    }
+
+    /// Reject a `--algo` selection that asks for a digest stronger than
+    /// `max`: `split` would otherwise drop it from both the floor and the
+    /// escalation tier and it would never be computed.
+    pub fn validate_requested(&self, requested: &[HashAlgo]) -> Result<(), String> {
+        if let Some(bad) = requested
+            .iter()
+            .find(|a| a.cost_rank() > self.max.cost_rank())
+        {
+            return Err(format!(
+                "--algo {} is stronger than --input-checksum-max ({}); raise the max or drop it from --algo",
+                bad.label(),
+                self.max.label()
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// Compute every requested digest for `path` in a single streaming pass.
@@ -334,6 +422,82 @@ mod tests {
     fn parse_algos_rejects_empty() {
         assert!(parse_algos("").is_err());
         assert!(parse_algos(" , ").is_err());
+    }
+
+    #[test]
+    fn cost_rank_orders_crc32_cheapest_and_sha256_priciest() {
+        assert!(HashAlgo::Crc32.cost_rank() < HashAlgo::Md5.cost_rank());
+        assert!(HashAlgo::Md5.cost_rank() < HashAlgo::Sha1.cost_rank());
+        assert!(HashAlgo::Sha1.cost_rank() < HashAlgo::Sha256.cost_rank());
+    }
+
+    #[test]
+    fn parse_checksum_bound_accepts_known_algos() {
+        assert_eq!(parse_checksum_bound("crc32"), Ok(HashAlgo::Crc32));
+        assert_eq!(parse_checksum_bound("SHA256"), Ok(HashAlgo::Sha256));
+        assert_eq!(parse_checksum_bound(" sha1 "), Ok(HashAlgo::Sha1));
+        assert_eq!(parse_checksum_bound("md5"), Ok(HashAlgo::Md5));
+    }
+
+    #[test]
+    fn parse_checksum_bound_rejects_unknown() {
+        assert!(parse_checksum_bound("sha3").is_err());
+        assert!(parse_checksum_bound("").is_err());
+    }
+
+    #[test]
+    fn checksum_bounds_rejects_inverted_range() {
+        assert!(ChecksumBounds::new(HashAlgo::Sha256, HashAlgo::Crc32).is_err());
+        assert!(ChecksumBounds::new(HashAlgo::Crc32, HashAlgo::Crc32).is_ok());
+    }
+
+    #[test]
+    fn checksum_bounds_split_default_defers_sha1_to_escalation() {
+        let bounds = ChecksumBounds::new(HashAlgo::Crc32, HashAlgo::Sha256).unwrap();
+        let (floor, escalation) = bounds.split(&[HashAlgo::Crc32, HashAlgo::Sha1]);
+        assert_eq!(floor, vec![HashAlgo::Crc32]);
+        assert_eq!(escalation, vec![HashAlgo::Sha1]);
+    }
+
+    #[test]
+    fn checksum_bounds_split_max_caps_escalation() {
+        let bounds = ChecksumBounds::new(HashAlgo::Crc32, HashAlgo::Md5).unwrap();
+        let (floor, escalation) = bounds.split(ALL);
+        assert_eq!(floor, vec![HashAlgo::Crc32]);
+        assert_eq!(escalation, vec![HashAlgo::Md5]);
+    }
+
+    #[test]
+    fn checksum_bounds_split_min_raises_floor() {
+        let bounds = ChecksumBounds::new(HashAlgo::Sha1, HashAlgo::Sha256).unwrap();
+        let (floor, escalation) = bounds.split(ALL);
+        assert_eq!(floor, vec![HashAlgo::Crc32, HashAlgo::Sha1, HashAlgo::Md5]);
+        assert_eq!(escalation, vec![HashAlgo::Sha256]);
+    }
+
+    #[test]
+    fn checksum_bounds_validate_requested_rejects_algo_above_max() {
+        let bounds = ChecksumBounds::new(HashAlgo::Crc32, HashAlgo::Md5).unwrap();
+        assert!(
+            bounds
+                .validate_requested(&[HashAlgo::Crc32, HashAlgo::Sha1])
+                .is_err()
+        );
+        assert!(
+            bounds
+                .validate_requested(&[HashAlgo::Crc32, HashAlgo::Md5])
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn checksum_bounds_split_falls_back_when_floor_empty() {
+        // Requested set has nothing at or below the default crc32 floor:
+        // no benefit to tiering, whole set computed in one pass.
+        let bounds = ChecksumBounds::new(HashAlgo::Crc32, HashAlgo::Sha256).unwrap();
+        let (floor, escalation) = bounds.split(&[HashAlgo::Sha256]);
+        assert_eq!(floor, vec![HashAlgo::Sha256]);
+        assert!(escalation.is_empty());
     }
 
     fn multi_hash(data: &[u8], algos: &[HashAlgo]) -> FileDigests {

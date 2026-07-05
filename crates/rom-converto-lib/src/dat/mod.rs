@@ -9,5 +9,6 @@ pub mod verdict;
 pub use client::{DEFAULT_API_BASE, DatFileFilter, PlaymatchClient};
 pub use digest::{
     InnerStreamKind, RomDigests, TrackDigests, classify_input, digest_inner, digest_inner_async,
+    is_raw_reread_cheap,
 };
 pub use error::{DatError, DatResult};

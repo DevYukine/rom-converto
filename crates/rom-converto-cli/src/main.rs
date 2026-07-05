@@ -73,8 +73,8 @@ use rom_converto_lib::pipeline::{chd_to_cso_cancellable, cso_to_chd_cancellable}
 use rom_converto_lib::playlist::{PlaylistMode, PlaylistOptions, plan_playlists};
 use rom_converto_lib::util::fs::{collect_files_with_exts, is_os_junk_dir};
 use rom_converto_lib::util::{
-    FileDigests, HashAlgo, Tally, TallyDirection, hash_file, mixed_playlist_extensions,
-    oversized_rvz_chunk, parse_algos,
+    ChecksumBounds, FileDigests, HashAlgo, Tally, TallyDirection, hash_file,
+    mixed_playlist_extensions, oversized_rvz_chunk, parse_algos, parse_checksum_bound,
 };
 use std::io::IsTerminal;
 use std::mem::discriminant;
@@ -433,6 +433,27 @@ fn resolve_migrate_opts(
             .unwrap_or(RvzCompressOptions::default().chunk_size),
         ..RvzCompressOptions::default()
     }
+}
+
+/// Resolve `--input-checksum-min`/`--input-checksum-max` against the dat
+/// config defaults, falling back to crc32/sha256 (compute crc32 first,
+/// escalate up to sha256 if the matched entry needs it).
+fn resolve_checksum_bounds(
+    min: Option<&str>,
+    max: Option<&str>,
+    eff: &rom_converto_lib::config::DatDefaults,
+) -> Result<ChecksumBounds> {
+    let min = min
+        .map(str::to_string)
+        .or_else(|| eff.input_checksum_min.clone())
+        .unwrap_or_else(|| "crc32".to_string());
+    let max = max
+        .map(str::to_string)
+        .or_else(|| eff.input_checksum_max.clone())
+        .unwrap_or_else(|| "sha256".to_string());
+    let min = parse_checksum_bound(&min).map_err(|e| anyhow::anyhow!(e))?;
+    let max = parse_checksum_bound(&max).map_err(|e| anyhow::anyhow!(e))?;
+    ChecksumBounds::new(min, max).map_err(|e| anyhow::anyhow!(e))
 }
 
 /// Best-effort media label for a CHD dry-run plan line. ISO inputs read a
@@ -3311,6 +3332,14 @@ async fn dispatch_command(
         Commands::Dat(inner) => match inner {
             DatCommands::Verify(cmd) => {
                 let algos = parse_algos(&cmd.algo).map_err(|e| anyhow::anyhow!(e))?;
+                let bounds = resolve_checksum_bounds(
+                    cmd.input_checksum_min.as_deref(),
+                    cmd.input_checksum_max.as_deref(),
+                    &effective.dat,
+                )?;
+                bounds
+                    .validate_requested(&algos)
+                    .map_err(|e| anyhow::anyhow!(e))?;
                 let api_base = cmd.api_base.or_else(|| effective.dat.api_base.clone());
                 let report = cmd.report.or_else(|| effective.dat.report.clone());
                 if cmd.recursive {
@@ -3320,6 +3349,7 @@ async fn dispatch_command(
                         &total_progress,
                         &cmd.input,
                         &algos,
+                        &bounds,
                         cmd.max_depth,
                         api_base.as_deref(),
                         report.as_deref(),
@@ -3333,6 +3363,7 @@ async fn dispatch_command(
                         &progress,
                         &cmd.input,
                         &algos,
+                        &bounds,
                         api_base.as_deref(),
                         report.as_deref(),
                         &cancel,
@@ -3343,6 +3374,7 @@ async fn dispatch_command(
             }
             DatCommands::Scan(cmd) => {
                 require_dir(&cmd.input)?;
+                let algos = parse_algos(&cmd.algo).map_err(|e| anyhow::anyhow!(e))?;
                 let api_base = cmd.api_base.or_else(|| effective.dat.api_base.clone());
                 let report = cmd.report.or_else(|| effective.dat.report.clone());
                 batch::dat_scan(
@@ -3350,6 +3382,7 @@ async fn dispatch_command(
                     &total_progress,
                     &cmd.input,
                     cmd.max_depth,
+                    &algos,
                     api_base.as_deref(),
                     report.as_deref(),
                     &cancel,
@@ -3388,11 +3421,20 @@ async fn dispatch_command(
             DatCommands::Identify(cmd) => {
                 ensure_input_exists(&cmd.input)?;
                 let algos = parse_algos(&cmd.algo).map_err(|e| anyhow::anyhow!(e))?;
+                let bounds = resolve_checksum_bounds(
+                    cmd.input_checksum_min.as_deref(),
+                    cmd.input_checksum_max.as_deref(),
+                    &effective.dat,
+                )?;
+                bounds
+                    .validate_requested(&algos)
+                    .map_err(|e| anyhow::anyhow!(e))?;
                 let api_base = cmd.api_base.or_else(|| effective.dat.api_base.clone());
                 batch::dat_identify(
                     &progress,
                     &cmd.input,
                     &algos,
+                    &bounds,
                     api_base.as_deref(),
                     &cancel,
                     cache,

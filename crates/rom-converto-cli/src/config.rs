@@ -141,6 +141,14 @@ fn merge_dat(top: Option<&DatDefaults>, base: Option<&DatDefaults>) -> DatDefaul
             top.and_then(|t| t.report.clone()),
             base.and_then(|b| b.report.clone()),
         ),
+        input_checksum_min: pick(
+            top.and_then(|t| t.input_checksum_min.clone()),
+            base.and_then(|b| b.input_checksum_min.clone()),
+        ),
+        input_checksum_max: pick(
+            top.and_then(|t| t.input_checksum_max.clone()),
+            base.and_then(|b| b.input_checksum_max.clone()),
+        ),
     }
 }
 
@@ -374,6 +382,27 @@ mod tests {
             Some("https://config.test/api/v2")
         );
         assert_eq!(eff.dat.report, Some(PathBuf::from("dat-report.json")));
+    }
+
+    #[test]
+    fn merge_dat_checksum_bounds() {
+        let cfg = UserConfig {
+            dat: Some(DatDefaults {
+                input_checksum_min: Some("sha1".into()),
+                ..Default::default()
+            }),
+            ..UserConfig::default()
+        };
+        let preset = Preset {
+            dat: Some(DatDefaults {
+                input_checksum_max: Some("md5".into()),
+                ..Default::default()
+            }),
+            ..Preset::default()
+        };
+        let eff = resolve(&cfg, Some(&preset));
+        assert_eq!(eff.dat.input_checksum_min.as_deref(), Some("sha1"));
+        assert_eq!(eff.dat.input_checksum_max.as_deref(), Some("md5"));
     }
 
     #[test]

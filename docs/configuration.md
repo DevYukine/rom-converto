@@ -52,6 +52,10 @@ The config covers the tuning knobs worth repeating: `level`, `chunk_size`, `bloc
 each under the matching format table. The format tables are `[dol]`, `[rvl]`, `[nx]`,
 `[chd]`, `[cso]`, `[wup]`, and `[dat]`.
 
+`[dat]` also takes `input_checksum_min` and `input_checksum_max`, the config equivalent of
+`dat verify`/`dat identify`'s `--input-checksum-min`/`--input-checksum-max` (see
+[dat](cli.md#dat)). A CLI flag still takes precedence.
+
 For `[dol]` and `[rvl]`, `level` and `chunk_size` apply to both `compress` and `migrate`; a CLI flag still takes precedence.
 
 Some flags are deliberately command-line only and are not read from the config: `--recursive`
@@ -81,6 +85,8 @@ hunk_size = 4096
 [dat]
 api_base = "https://playmatch.retrorealm.dev/api/v2"
 report = "./dat-report.json"
+input_checksum_min = "crc32"
+input_checksum_max = "sha256"
 
 [presets.archive]
 dol = { level = 22, chunk_size = 131072 }

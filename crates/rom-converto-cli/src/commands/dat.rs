@@ -45,6 +45,14 @@ pub struct DatVerifyCommand {
     /// Playmatch API base URL (defaults to the public instance)
     #[arg(long = "api-base", value_name = "URL")]
     pub api_base: Option<String>,
+
+    /// Minimum checksum tier always computed before consulting Playmatch: crc32, md5, sha1, sha256 (default: crc32)
+    #[arg(long = "input-checksum-min", value_name = "ALGO")]
+    pub input_checksum_min: Option<String>,
+
+    /// Maximum checksum tier escalation may reach when the floor tier alone does not verify: crc32, md5, sha1, sha256 (default: sha256)
+    #[arg(long = "input-checksum-max", value_name = "ALGO")]
+    pub input_checksum_max: Option<String>,
 }
 
 #[cfg(test)]
@@ -76,6 +84,23 @@ mod verify_tests {
         assert_eq!(c.max_depth, None);
         assert_eq!(c.report, None);
         assert_eq!(c.api_base, None);
+        assert_eq!(c.input_checksum_min, None);
+        assert_eq!(c.input_checksum_max, None);
+    }
+
+    #[test]
+    fn parses_checksum_bounds() {
+        let c = parse(&[
+            "bin",
+            "verify",
+            "f",
+            "--input-checksum-min",
+            "sha1",
+            "--input-checksum-max",
+            "md5",
+        ]);
+        assert_eq!(c.input_checksum_min.as_deref(), Some("sha1"));
+        assert_eq!(c.input_checksum_max.as_deref(), Some("md5"));
     }
 
     #[test]
@@ -126,6 +151,12 @@ pub struct DatScanCommand {
     /// Directory to scan
     #[arg(value_name = "INPUT")]
     pub input: PathBuf,
+
+    /// Comma-separated digests to compute per file: crc32, sha1, md5, sha256.
+    /// Size plus CRC32 identifies almost everything; raise this only when a
+    /// match needs a stronger digest
+    #[arg(long, value_name = "ALGOS", default_value = "crc32")]
+    pub algo: String,
 
     /// Maximum directory depth. 1 = top level only. Omit for unlimited
     #[arg(long = "max-depth", value_name = "N")]
@@ -304,6 +335,14 @@ pub struct DatIdentifyCommand {
     /// Playmatch API base URL (defaults to the public instance)
     #[arg(long = "api-base", value_name = "URL")]
     pub api_base: Option<String>,
+
+    /// Minimum checksum tier always computed before consulting Playmatch: crc32, md5, sha1, sha256 (default: crc32)
+    #[arg(long = "input-checksum-min", value_name = "ALGO")]
+    pub input_checksum_min: Option<String>,
+
+    /// Maximum checksum tier escalation may reach when the floor tier alone does not verify: crc32, md5, sha1, sha256 (default: sha256)
+    #[arg(long = "input-checksum-max", value_name = "ALGO")]
+    pub input_checksum_max: Option<String>,
 }
 
 #[cfg(test)]
@@ -332,6 +371,23 @@ mod identify_tests {
         let c = parse(&["bin", "identify", "game.chd"]);
         assert_eq!(c.algo, "crc32,sha1");
         assert_eq!(c.api_base, None);
+        assert_eq!(c.input_checksum_min, None);
+        assert_eq!(c.input_checksum_max, None);
+    }
+
+    #[test]
+    fn parses_checksum_bounds() {
+        let c = parse(&[
+            "bin",
+            "identify",
+            "game.chd",
+            "--input-checksum-min",
+            "md5",
+            "--input-checksum-max",
+            "sha1",
+        ]);
+        assert_eq!(c.input_checksum_min.as_deref(), Some("md5"));
+        assert_eq!(c.input_checksum_max.as_deref(), Some("sha1"));
     }
 
     #[test]

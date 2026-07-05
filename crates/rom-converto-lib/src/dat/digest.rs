@@ -55,6 +55,19 @@ pub fn classify_input(path: &Path) -> InnerStreamKind {
     }
 }
 
+/// True when `path`'s inner stream is a plain raw-file read: no container
+/// decode stands between the bytes on disk and the digest. Tiered checksum
+/// escalation only re-reads a file for a second pass when this holds, since
+/// for every other kind the first decode already dominates cost and a
+/// second full decode to add more digests would cost more than it saves.
+pub fn is_raw_reread_cheap(path: &Path) -> bool {
+    classify_input(path) == InnerStreamKind::Raw
+        && !matches!(
+            crate::nintendo::legacy_input::detect_legacy_format(path),
+            Ok(Some(_))
+        )
+}
+
 /// One track's decoded digest set.
 #[derive(Debug, Clone)]
 pub struct TrackDigests {
@@ -409,6 +422,45 @@ mod tests {
         assert_eq!(kind("Game.RvZ"), InnerStreamKind::Rvz);
         assert_eq!(kind("thing.CSO"), InnerStreamKind::CsoZso);
         assert_eq!(kind("thing.NSZ"), InnerStreamKind::UnsupportedCompressed);
+    }
+
+    #[test]
+    fn raw_reread_cheap_for_plain_extensions() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["game.iso", "game.bin", "game.gcm", "noext"] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, b"plain data").unwrap();
+            assert!(is_raw_reread_cheap(&path), "{name} should be tierable");
+        }
+    }
+
+    #[test]
+    fn raw_reread_not_cheap_for_containers() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["game.rvz", "game.wbfs", "game.cso", "game.chd", "game.cue"] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, b"container-shaped bytes").unwrap();
+            assert!(
+                !is_raw_reread_cheap(&path),
+                "{name} decode dominates, must not be tierable"
+            );
+        }
+    }
+
+    #[test]
+    fn raw_reread_not_cheap_for_magic_sniffed_legacy_container() {
+        use crate::nintendo::dol::test_fixtures::make_fake_gamecube_iso;
+        use crate::nintendo::gcz::test_fixtures::make_gcz;
+
+        let dir = tempfile::tempdir().unwrap();
+        let iso_bytes = make_fake_gamecube_iso(1024 * 1024);
+        let gcz = dir.path().join("game.gcz");
+        std::fs::write(&gcz, make_gcz(&iso_bytes, 0x8000, 0)).unwrap();
+
+        // ".gcz" classifies as Raw by extension alone; the magic sniff
+        // inside is_raw_reread_cheap must still catch it as a container.
+        assert_eq!(kind("game.gcz"), InnerStreamKind::Raw);
+        assert!(!is_raw_reread_cheap(&gcz));
     }
 
     #[test]
