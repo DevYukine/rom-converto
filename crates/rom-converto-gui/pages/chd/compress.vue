@@ -46,6 +46,20 @@ function chdArgs(inputPath: string, outputPath: string) {
 const batch = useBatchOperation("chd-compress", "cmd_chd_compress", (item) =>
   chdArgs(item.input, item.output),
 );
+
+const allWarnings = computed(() => {
+  const seen = new Set(progress.warnings.value);
+  for (const slot of batch.progressSlots) for (const w of slot.warnings.value) seen.add(w);
+  return [...seen];
+});
+
+function handleReorder(ids: string[]) {
+  batch.reorder(queue, ids);
+}
+
+function handleRemoveSelected(ids: string[]) {
+  batch.removeSelected(queue, ids);
+}
 const comparisons = ref<ComparisonSummary[]>([]);
 
 watch([input, outputDir], () => {
@@ -138,7 +152,7 @@ function onRun() {
     />
 
     <div class="mb-4">
-      <OutputLog :command="commandLine" :result="result" :preview="preview" :cancelled="cancelled ? 'Operation cancelled.' : undefined" :error="error" />
+      <OutputLog :command="commandLine" :result="result" :preview="preview" :cancelled="cancelled ? 'Operation cancelled.' : undefined" :error="error" :warnings="allWarnings" />
     </div>
 
     <div class="mb-4">
@@ -150,11 +164,13 @@ function onRun() {
         <template v-if="isBatch">
           <BatchFileList
             :items="queue"
-            :current-index="batch.currentIndex.value"
             :running="batch.running.value"
-            :progress="batch.progress"
+            :progress-slots="batch.progressSlots"
             @remove="store.removeFromQueue"
             @clear="store.clearQueue"
+            @reorder="handleReorder"
+            @remove-selected="handleRemoveSelected"
+            @retry-failed="execute"
           />
 
           <FileDropZone

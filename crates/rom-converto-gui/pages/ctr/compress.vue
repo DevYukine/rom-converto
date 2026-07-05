@@ -38,6 +38,13 @@ const batch = useBatchOperation("compress", "cmd_compress_rom", (item) =>
   compressArgs(item.input, item.output),
 );
 
+function handleReorder(ids: string[]) {
+  batch.reorder(queue, ids);
+}
+
+function handleRemoveSelected(ids: string[]) {
+  batch.removeSelected(queue, ids);
+}
 const comparisons = ref<ComparisonSummary[]>([]);
 
 watch([input, outputDir], () => {
@@ -130,11 +137,13 @@ function onRun() {
         <template v-if="isBatch">
           <BatchFileList
             :items="queue"
-            :current-index="batch.currentIndex.value"
             :running="batch.running.value"
-            :progress="batch.progress"
+            :progress-slots="batch.progressSlots"
             @remove="store.removeFromQueue"
             @clear="store.clearQueue"
+            @reorder="handleReorder"
+            @remove-selected="handleRemoveSelected"
+            @retry-failed="execute"
           />
 
           <FileDropZone

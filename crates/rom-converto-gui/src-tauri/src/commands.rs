@@ -56,6 +56,7 @@ use rom_converto_lib::util::{
     mixed_playlist_extensions, oversized_rvz_chunk, parse_algos, resolve_conflict, space_shortfall,
     write_report,
 };
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -562,27 +563,103 @@ fn render_hash_row(
     format!("{}  {}", path.display(), cells.join("  "))
 }
 
-/// Single-slot holder for the token of the operation currently running.
-/// Only one conversion runs at a time per command invocation, so a
-/// single slot is enough; `cmd_cancel` fires whatever is in it.
-pub type ActiveCancel = Arc<tokio::sync::Mutex<Option<CancelToken>>>;
+/// Registry of the cancel tokens for every operation currently running,
+/// keyed by task id. Concurrent batch jobs run in their own slot (one
+/// task id per slot), so cancelling one must not touch the others.
+pub type ActiveCancel = Arc<tokio::sync::Mutex<HashMap<String, CancelToken>>>;
 
-async fn begin(state: &State<'_, ActiveCancel>) -> CancelToken {
+async fn begin(state: &ActiveCancel, key: &str) -> CancelToken {
     let token = CancelToken::new();
-    *state.lock().await = Some(token.clone());
+    state.lock().await.insert(key.to_string(), token.clone());
     token
 }
 
-async fn finish(state: &State<'_, ActiveCancel>) {
-    *state.lock().await = None;
+async fn finish(state: &ActiveCancel, key: &str) {
+    state.lock().await.remove(key);
 }
 
+/// Cancels one in-flight task by id, or every in-flight task when `task_id`
+/// is `None` (the frontend's "abort everything" fallback).
 #[tauri::command]
-pub async fn cmd_cancel(state: State<'_, ActiveCancel>) -> Result<(), String> {
-    if let Some(token) = state.lock().await.as_ref() {
-        token.cancel();
+pub async fn cmd_cancel(
+    state: State<'_, ActiveCancel>,
+    task_id: Option<String>,
+) -> Result<(), String> {
+    let map = state.lock().await;
+    match task_id {
+        Some(id) => {
+            if let Some(token) = map.get(&id) {
+                token.cancel();
+            }
+        }
+        None => {
+            for token in map.values() {
+                token.cancel();
+            }
+        }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod cancel_registry_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn cancel_one_leaves_others_live() {
+        let state: ActiveCancel = Arc::default();
+        let a = {
+            let token = CancelToken::new();
+            state.lock().await.insert("a".to_string(), token.clone());
+            token
+        };
+        let b = {
+            let token = CancelToken::new();
+            state.lock().await.insert("b".to_string(), token.clone());
+            token
+        };
+        {
+            let map = state.lock().await;
+            if let Some(token) = map.get("a") {
+                token.cancel();
+            }
+        }
+        assert!(a.is_cancelled());
+        assert!(!b.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn cancel_all_drains_every_token() {
+        let state: ActiveCancel = Arc::default();
+        let a = {
+            let token = CancelToken::new();
+            state.lock().await.insert("a".to_string(), token.clone());
+            token
+        };
+        let b = {
+            let token = CancelToken::new();
+            state.lock().await.insert("b".to_string(), token.clone());
+            token
+        };
+        {
+            let map = state.lock().await;
+            for token in map.values() {
+                token.cancel();
+            }
+        }
+        assert!(a.is_cancelled());
+        assert!(b.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn begin_and_finish_track_by_key() {
+        let state: ActiveCancel = Arc::default();
+        let token = begin(&state, "slot-0").await;
+        assert!(state.lock().await.contains_key("slot-0"));
+        finish(&state, "slot-0").await;
+        assert!(!state.lock().await.contains_key("slot-0"));
+        assert!(!token.is_cancelled());
+    }
 }
 
 /// Write a run report from records the frontend accumulated during a run. The
@@ -645,7 +722,7 @@ pub async fn cmd_cdn_to_cia(
         .or_else(|| opts.cdn_dir.parent())
         .unwrap_or(opts.cdn_dir.as_path());
     preflight_space(probe_dir, required, skip_space_check)?;
-    let token = begin(&state).await;
+    let token = begin(&state, "cdn-to-cia").await;
     // The streaming decrypt holds the worker-pool receiver across await points,
     // so its future is not Send; run on a dedicated thread with its own runtime.
     let result = std::thread::spawn(move || -> Result<(), String> {
@@ -666,7 +743,7 @@ pub async fn cmd_cdn_to_cia(
         "The operation failed unexpectedly. Try again, and report a bug if it keeps happening."
             .to_string()
     });
-    finish(&state).await;
+    finish(&state, "cdn-to-cia").await;
     result??;
     Ok("CDN to CIA conversion complete".to_string())
 }
@@ -692,8 +769,10 @@ pub async fn cmd_decrypt_rom(
     skip_space_check: bool,
     output_template: Option<String>,
     dry_run: Option<bool>,
+    task_id: Option<String>,
 ) -> Result<RunOutcome, String> {
-    let progress = Arc::new(TauriProgress::new(app, "decrypt"));
+    let key = task_id.as_deref().unwrap_or("decrypt");
+    let progress = Arc::new(TauriProgress::new(app, key));
     let dry_run = dry_run.unwrap_or(false);
     let ext = ext_of(&derive_decrypted_path(&input));
     let desired = pick_output(
@@ -744,7 +823,7 @@ pub async fn cmd_decrypt_rom(
     let record_input = input.clone();
     let record_output = output.clone();
     let in_bytes = input_size(&input);
-    let token = begin(&state).await;
+    let token = begin(&state, key).await;
     // The streaming decrypt holds the worker-pool receiver across await points,
     // so its future is not Send; run on a dedicated thread with its own runtime.
     let result = std::thread::spawn(move || -> Result<(), String> {
@@ -765,7 +844,7 @@ pub async fn cmd_decrypt_rom(
         "The operation failed unexpectedly. Try again, and report a bug if it keeps happening."
             .to_string()
     });
-    finish(&state).await;
+    finish(&state, key).await;
     result??;
     let out_bytes = input_size(&record_output);
     Ok(RunOutcome {
@@ -795,8 +874,10 @@ pub async fn cmd_compress_rom(
     skip_space_check: bool,
     output_template: Option<String>,
     dry_run: Option<bool>,
+    task_id: Option<String>,
 ) -> Result<RunOutcome, String> {
-    let progress = Arc::new(TauriProgress::new(app, "compress"));
+    let key = task_id.as_deref().unwrap_or("compress");
+    let progress = Arc::new(TauriProgress::new(app, key));
     let dry_run = dry_run.unwrap_or(false);
     let ext = ext_of(&derive_compressed_path(&input));
     let desired = pick_output(
@@ -847,7 +928,7 @@ pub async fn cmd_compress_rom(
     let record_input = input.clone();
     let record_output = output.clone();
     let in_bytes = input_size(&input);
-    let token = begin(&state).await;
+    let token = begin(&state, key).await;
     let result = tokio::spawn(async move {
         compress_rom_cancellable(
             &input,
@@ -862,7 +943,7 @@ pub async fn cmd_compress_rom(
     .await
     .map_err(err_to_string)?
     .map_err(err_to_string);
-    finish(&state).await;
+    finish(&state, key).await;
     result?;
     let out_bytes = input_size(&record_output);
     Ok(RunOutcome {
@@ -890,8 +971,10 @@ pub async fn cmd_decompress_rom(
     skip_space_check: bool,
     output_template: Option<String>,
     dry_run: Option<bool>,
+    task_id: Option<String>,
 ) -> Result<RunOutcome, String> {
-    let progress = Arc::new(TauriProgress::new(app, "decompress"));
+    let key = task_id.as_deref().unwrap_or("decompress");
+    let progress = Arc::new(TauriProgress::new(app, key));
     let dry_run = dry_run.unwrap_or(false);
     let ext = ext_of(&derive_decompressed_path(&input));
     let desired = pick_output(
@@ -942,14 +1025,14 @@ pub async fn cmd_decompress_rom(
     let record_input = input.clone();
     let record_output = output.clone();
     let in_bytes = input_size(&input);
-    let token = begin(&state).await;
+    let token = begin(&state, key).await;
     let result = tokio::spawn(async move {
         decompress_rom_cancellable(&input, &output, progress.as_ref(), token).await
     })
     .await
     .map_err(err_to_string)?
     .map_err(err_to_string);
-    finish(&state).await;
+    finish(&state, key).await;
     result?;
     let out_bytes = input_size(&record_output);
     Ok(RunOutcome {
@@ -982,8 +1065,10 @@ pub async fn cmd_chd_compress(
     report: Option<bool>,
     verify_after: Option<bool>,
     dry_run: Option<bool>,
+    task_id: Option<String>,
 ) -> Result<RunOutcome, String> {
-    let progress = Arc::new(TauriProgress::new(app, "chd-compress"));
+    let key = task_id.as_deref().unwrap_or("chd-compress");
+    let progress = Arc::new(TauriProgress::new(app, key));
     let dry_run = dry_run.unwrap_or(false);
     let desired = pick_output(
         output,
@@ -1052,7 +1137,7 @@ pub async fn cmd_chd_compress(
     let record_input = input_path.clone();
     let record_output = output.clone();
     let progress_for_verify = progress.clone();
-    let token = begin(&state).await;
+    let token = begin(&state, key).await;
     let token_for_verify = token.clone();
     let started = Instant::now();
     let result = tokio::spawn(async move {
@@ -1062,7 +1147,7 @@ pub async fn cmd_chd_compress(
     .await
     .map_err(err_to_string)?
     .map_err(err_to_string);
-    finish(&state).await;
+    finish(&state, key).await;
     result?;
     let out_bytes = input_size(&record_output);
     let record = build_record(
@@ -1109,13 +1194,15 @@ pub async fn cmd_cso_compress(
     report: Option<bool>,
     verify_after: Option<bool>,
     dry_run: Option<bool>,
+    task_id: Option<String>,
 ) -> Result<RunOutcome, String> {
     let format = match format.as_str() {
         "zso" => CsoFormat::Zso,
         _ => CsoFormat::Cso,
     };
     let format_name = format.name();
-    let progress = Arc::new(TauriProgress::new(app, "cso-compress"));
+    let key = task_id.as_deref().unwrap_or("cso-compress");
+    let progress = Arc::new(TauriProgress::new(app, key));
     let dry_run = dry_run.unwrap_or(false);
     let desired = pick_output(
         output,
@@ -1179,7 +1266,7 @@ pub async fn cmd_cso_compress(
     let record_input = input_path.clone();
     let record_output = output.clone();
     let progress_for_verify = progress.clone();
-    let token = begin(&state).await;
+    let token = begin(&state, key).await;
     let token_for_verify = token.clone();
     let started = Instant::now();
     let result = tokio::spawn(async move {
@@ -1188,7 +1275,7 @@ pub async fn cmd_cso_compress(
     .await
     .map_err(err_to_string)?
     .map_err(err_to_string);
-    finish(&state).await;
+    finish(&state, key).await;
     result?;
     let out_bytes = input_size(&record_output);
     let record = build_record(
@@ -1240,8 +1327,10 @@ pub async fn cmd_cso_to_chd(
     report: Option<bool>,
     verify_after: Option<bool>,
     dry_run: Option<bool>,
+    task_id: Option<String>,
 ) -> Result<RunOutcome, String> {
-    let progress = Arc::new(TauriProgress::new(app, "cso-to-chd"));
+    let key = task_id.as_deref().unwrap_or("cso-to-chd");
+    let progress = Arc::new(TauriProgress::new(app, key));
     let dry_run = dry_run.unwrap_or(false);
     let desired = pick_output(
         output,
@@ -1313,7 +1402,7 @@ pub async fn cmd_cso_to_chd(
     let record_input = input_path.clone();
     let record_output = output.clone();
     let progress_for_verify = progress.clone();
-    let token = begin(&state).await;
+    let token = begin(&state, key).await;
     let token_for_verify = token.clone();
     let started = Instant::now();
     let result = tokio::spawn(async move {
@@ -1322,7 +1411,7 @@ pub async fn cmd_cso_to_chd(
     .await
     .map_err(err_to_string)?
     .map_err(err_to_string);
-    finish(&state).await;
+    finish(&state, key).await;
     result?;
     let out_bytes = input_size(&record_output);
     let record = build_record(
@@ -1366,8 +1455,10 @@ pub async fn cmd_cso_decompress(
     output_template: Option<String>,
     report: Option<bool>,
     dry_run: Option<bool>,
+    task_id: Option<String>,
 ) -> Result<RunOutcome, String> {
-    let progress = Arc::new(TauriProgress::new(app, "cso-decompress"));
+    let key = task_id.as_deref().unwrap_or("cso-decompress");
+    let progress = Arc::new(TauriProgress::new(app, key));
     let dry_run = dry_run.unwrap_or(false);
     let desired = pick_output(
         output,
@@ -1425,7 +1516,7 @@ pub async fn cmd_cso_decompress(
     let in_bytes = input_size(&input_path);
     let record_input = input_path.clone();
     let record_output = output.clone();
-    let token = begin(&state).await;
+    let token = begin(&state, key).await;
     let started = Instant::now();
     let result = tokio::spawn(async move {
         decompress_from_cso_cancellable(progress.as_ref(), input_path, output, true, token).await
@@ -1433,7 +1524,7 @@ pub async fn cmd_cso_decompress(
     .await
     .map_err(err_to_string)?
     .map_err(err_to_string);
-    finish(&state).await;
+    finish(&state, key).await;
     result?;
     let record = build_record(
         report.unwrap_or(false),
@@ -1463,8 +1554,10 @@ pub async fn cmd_cso_verify(
     app: AppHandle,
     input_path: PathBuf,
     full: bool,
+    task_id: Option<String>,
 ) -> Result<String, String> {
-    let progress = Arc::new(TauriProgress::new(app, "cso-verify"));
+    let key = task_id.as_deref().unwrap_or("cso-verify");
+    let progress = Arc::new(TauriProgress::new(app, key));
     tokio::spawn(async move { verify_cso(progress.as_ref(), input_path.clone(), full).await })
         .await
         .map_err(err_to_string)?
@@ -1540,8 +1633,10 @@ pub async fn cmd_chd_extract(
     output_template: Option<String>,
     report: Option<bool>,
     dry_run: Option<bool>,
+    task_id: Option<String>,
 ) -> Result<RunOutcome, String> {
-    let progress = Arc::new(TauriProgress::new(app, "chd-extract"));
+    let key = task_id.as_deref().unwrap_or("chd-extract");
+    let progress = Arc::new(TauriProgress::new(app, key));
     let dry_run = dry_run.unwrap_or(false);
     let output = pick_output(
         output,
@@ -1580,7 +1675,7 @@ pub async fn cmd_chd_extract(
     )?;
     let record_input = input.clone();
     let record_output = output.clone();
-    let token = begin(&state).await;
+    let token = begin(&state, key).await;
     let started = Instant::now();
     // ChdReader's deeply nested async types exceed the compiler's Send recursion
     // limit, so it runs on a dedicated thread with its own tokio runtime.
@@ -1603,7 +1698,7 @@ pub async fn cmd_chd_extract(
         "The operation failed unexpectedly. Try again, and report a bug if it keeps happening."
             .to_string()
     });
-    finish(&state).await;
+    finish(&state, key).await;
     result??;
     let in_bytes = input_size(&record_input);
     let out_bytes = extracted_output_size(&record_output);
@@ -1637,9 +1732,11 @@ pub async fn cmd_chd_verify(
     input: PathBuf,
     parent: Option<PathBuf>,
     fix: bool,
+    task_id: Option<String>,
 ) -> Result<String, String> {
-    let progress = Arc::new(TauriProgress::new(app, "chd-verify"));
-    let token = begin(&state).await;
+    let key = task_id.as_deref().unwrap_or("chd-verify");
+    let progress = Arc::new(TauriProgress::new(app, key));
+    let token = begin(&state, key).await;
     let result = std::thread::spawn(move || -> Result<(), String> {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1659,7 +1756,7 @@ pub async fn cmd_chd_verify(
         "The operation failed unexpectedly. Try again, and report a bug if it keeps happening."
             .to_string()
     });
-    finish(&state).await;
+    finish(&state, key).await;
     result??;
     Ok("CHD verification passed".to_string())
 }
@@ -1683,12 +1780,14 @@ pub async fn cmd_chd_to_cso(
     report: Option<bool>,
     verify_after: Option<bool>,
     dry_run: Option<bool>,
+    task_id: Option<String>,
 ) -> Result<RunOutcome, String> {
     let format = match format.as_str() {
         "zso" => CsoFormat::Zso,
         _ => CsoFormat::Cso,
     };
-    let progress = Arc::new(TauriProgress::new(app, "chd-to-cso"));
+    let key = task_id.as_deref().unwrap_or("chd-to-cso");
+    let progress = Arc::new(TauriProgress::new(app, key));
     let dry_run = dry_run.unwrap_or(false);
     let desired = pick_output(
         output,
@@ -1755,7 +1854,7 @@ pub async fn cmd_chd_to_cso(
     let record_input = input_path.clone();
     let record_output = output.clone();
     let progress_for_verify = progress.clone();
-    let token = begin(&state).await;
+    let token = begin(&state, key).await;
     let token_for_verify = token.clone();
     let started = Instant::now();
     // Chained on extract_from_chd_cancellable, whose deeply nested ChdReader
@@ -1781,7 +1880,7 @@ pub async fn cmd_chd_to_cso(
         "The operation failed unexpectedly. Try again, and report a bug if it keeps happening."
             .to_string()
     });
-    finish(&state).await;
+    finish(&state, key).await;
     result??;
     let out_bytes = input_size(&record_output);
     let record = build_record(
@@ -1897,7 +1996,7 @@ pub async fn cmd_compress_disc(
     let record_input = input.clone();
     let record_output = output.clone();
     let progress_for_verify = progress.clone();
-    let token = begin(&state).await;
+    let token = begin(&state, &task_id).await;
     let token_for_verify = token.clone();
     let started = Instant::now();
     let result = tokio::spawn(async move {
@@ -1906,7 +2005,7 @@ pub async fn cmd_compress_disc(
     .await
     .map_err(err_to_string)?
     .map_err(err_to_string);
-    finish(&state).await;
+    finish(&state, &task_id).await;
     result?;
     let out_bytes = input_size(&record_output);
     let record = build_record(
@@ -2015,7 +2114,7 @@ pub async fn cmd_decompress_disc(
     let in_bytes = input_size(&input);
     let record_input = input.clone();
     let record_output = output.clone();
-    let token = begin(&state).await;
+    let token = begin(&state, &task_id).await;
     let started = Instant::now();
     let result = tokio::spawn(async move {
         if to_wbfs {
@@ -2027,7 +2126,7 @@ pub async fn cmd_decompress_disc(
     .await
     .map_err(err_to_string)?
     .map_err(err_to_string);
-    finish(&state).await;
+    finish(&state, &task_id).await;
     result?;
     let record = build_record(
         report.unwrap_or(false),
@@ -2130,14 +2229,14 @@ pub async fn cmd_wup_compress(
             t
         })
         .collect();
-    let token = begin(&state).await;
+    let token = begin(&state, "wup-compress").await;
     let result = tokio::spawn(async move {
         compress_titles_async_cancellable(titles, output, opts, progress.as_ref(), token).await
     })
     .await
     .map_err(err_to_string)?
     .map_err(err_to_string);
-    finish(&state).await;
+    finish(&state, "wup-compress").await;
     result?;
     Ok(format!("Wrote {out_display}"))
 }
@@ -2184,14 +2283,14 @@ pub async fn cmd_wup_decrypt(
         input_size(&input),
         skip_space_check,
     )?;
-    let token = begin(&state).await;
+    let token = begin(&state, "wup-decrypt").await;
     let result = tokio::spawn(async move {
         decrypt_nus_title_async_cancellable(input, output, progress.as_ref(), token).await
     })
     .await
     .map_err(err_to_string)?
     .map_err(err_to_string);
-    finish(&state).await;
+    finish(&state, "wup-decrypt").await;
     result?;
     Ok(format!("Wrote {out_display}"))
 }
@@ -2213,8 +2312,10 @@ pub async fn cmd_nx_compress(
     report: Option<bool>,
     verify_after: Option<bool>,
     dry_run: Option<bool>,
+    task_id: Option<String>,
 ) -> Result<RunOutcome, String> {
-    let progress = Arc::new(TauriProgress::new(app, "nx-compress"));
+    let key = task_id.as_deref().unwrap_or("nx-compress");
+    let progress = Arc::new(TauriProgress::new(app, key));
     let dry_run = dry_run.unwrap_or(false);
     let kind = detect_container(&input).map_err(err_to_string)?;
     let mut opts = NxCompressOptions::for_kind(kind);
@@ -2296,7 +2397,7 @@ pub async fn cmd_nx_compress(
     let record_output = output.clone();
     let progress_for_verify = progress.clone();
     let keys_for_verify = keys.clone();
-    let token = begin(&state).await;
+    let token = begin(&state, key).await;
     let token_for_verify = token.clone();
     let started = Instant::now();
     let result = tokio::spawn(async move {
@@ -2306,7 +2407,7 @@ pub async fn cmd_nx_compress(
     .await
     .map_err(err_to_string)?
     .map_err(err_to_string);
-    finish(&state).await;
+    finish(&state, key).await;
     result?;
     let out_bytes = input_size(&record_output);
     let record = build_record(
@@ -2351,8 +2452,10 @@ pub async fn cmd_nx_decompress(
     output_template: Option<String>,
     report: Option<bool>,
     dry_run: Option<bool>,
+    task_id: Option<String>,
 ) -> Result<RunOutcome, String> {
-    let progress = Arc::new(TauriProgress::new(app, "nx-decompress"));
+    let key = task_id.as_deref().unwrap_or("nx-decompress");
+    let progress = Arc::new(TauriProgress::new(app, key));
     let dry_run = dry_run.unwrap_or(false);
     let ext = ext_of(&nx_derive_decompressed_path(&input));
     let desired = pick_output(
@@ -2412,7 +2515,7 @@ pub async fn cmd_nx_decompress(
     let in_bytes = input_size(&input);
     let record_input = input.clone();
     let record_output = output.clone();
-    let token = begin(&state).await;
+    let token = begin(&state, key).await;
     let started = Instant::now();
     let result = tokio::spawn(async move {
         decompress_container_async_cancellable(input, output, keys, progress.as_ref(), token).await
@@ -2420,7 +2523,7 @@ pub async fn cmd_nx_decompress(
     .await
     .map_err(err_to_string)?
     .map_err(err_to_string);
-    finish(&state).await;
+    finish(&state, key).await;
     result?;
     let record = build_record(
         report.unwrap_or(false),
@@ -2450,8 +2553,10 @@ pub async fn cmd_nx_verify(
     app: AppHandle,
     input: PathBuf,
     keys: Option<PathBuf>,
+    task_id: Option<String>,
 ) -> Result<String, String> {
-    let progress = Arc::new(TauriProgress::new(app, "nx-verify"));
+    let key = task_id.as_deref().unwrap_or("nx-verify");
+    let progress = Arc::new(TauriProgress::new(app, key));
     let keys = load_keyset(keys.as_deref()).map_err(err_to_string)?;
     let result =
         tokio::spawn(async move { verify_container_async(input, keys, progress.as_ref()).await })
@@ -2473,8 +2578,10 @@ pub async fn cmd_convert_ctr(
     output_template: Option<String>,
     verify_after: Option<bool>,
     dry_run: Option<bool>,
+    task_id: Option<String>,
 ) -> Result<RunOutcome, String> {
-    let progress = Arc::new(TauriProgress::new(app, "ctr-convert"));
+    let key = task_id.as_deref().unwrap_or("ctr-convert");
+    let progress = Arc::new(TauriProgress::new(app, key));
     let dry_run = dry_run.unwrap_or(false);
     let ext = ext_of(&derive_converted_path(&input));
     let desired = pick_output(
@@ -2529,7 +2636,7 @@ pub async fn cmd_convert_ctr(
     let record_input = input.clone();
     let record_output = output.clone();
     let progress_for_verify = progress.clone();
-    let token = begin(&state).await;
+    let token = begin(&state, key).await;
     let token_for_verify = token.clone();
     let result = tokio::spawn(async move {
         convert_rom_cancellable(&input, &output, progress.as_ref(), token).await
@@ -2537,7 +2644,7 @@ pub async fn cmd_convert_ctr(
     .await
     .map_err(err_to_string)?
     .map_err(err_to_string);
-    finish(&state).await;
+    finish(&state, key).await;
     result?;
     let out_bytes = input_size(&record_output);
     let comparison = build_comparison(
@@ -2565,8 +2672,10 @@ pub async fn cmd_verify_ctr(
     app: AppHandle,
     input: PathBuf,
     verify_content: bool,
+    task_id: Option<String>,
 ) -> Result<String, String> {
-    let progress = Arc::new(TauriProgress::new(app, "ctr-verify"));
+    let key = task_id.as_deref().unwrap_or("ctr-verify");
+    let progress = Arc::new(TauriProgress::new(app, key));
     let opts = CtrVerifyOptions {
         verify_content_hashes: verify_content,
     };
@@ -2579,8 +2688,14 @@ pub async fn cmd_verify_ctr(
 }
 
 #[tauri::command]
-pub async fn cmd_verify_dol(app: AppHandle, input: PathBuf, full: bool) -> Result<String, String> {
-    let progress = Arc::new(TauriProgress::new(app, "dol-verify"));
+pub async fn cmd_verify_dol(
+    app: AppHandle,
+    input: PathBuf,
+    full: bool,
+    task_id: Option<String>,
+) -> Result<String, String> {
+    let key = task_id.as_deref().unwrap_or("dol-verify");
+    let progress = Arc::new(TauriProgress::new(app, key));
     let result = tokio::task::spawn_blocking(move || {
         let opts = DolVerifyOptions { full };
         verify_dol(&input, &opts, progress.as_ref())
@@ -2593,8 +2708,14 @@ pub async fn cmd_verify_dol(app: AppHandle, input: PathBuf, full: bool) -> Resul
 }
 
 #[tauri::command]
-pub async fn cmd_verify_rvl(app: AppHandle, input: PathBuf, full: bool) -> Result<String, String> {
-    let progress = Arc::new(TauriProgress::new(app, "rvl-verify"));
+pub async fn cmd_verify_rvl(
+    app: AppHandle,
+    input: PathBuf,
+    full: bool,
+    task_id: Option<String>,
+) -> Result<String, String> {
+    let key = task_id.as_deref().unwrap_or("rvl-verify");
+    let progress = Arc::new(TauriProgress::new(app, key));
     let result = tokio::task::spawn_blocking(move || {
         let opts = RvlVerifyOptions { full };
         verify_rvl(&input, &opts, progress.as_ref())
@@ -2611,8 +2732,10 @@ pub async fn cmd_wup_verify(
     app: AppHandle,
     input: PathBuf,
     keys: Option<PathBuf>,
+    task_id: Option<String>,
 ) -> Result<String, String> {
-    let progress = Arc::new(TauriProgress::new(app, "wup-verify"));
+    let key = task_id.as_deref().unwrap_or("wup-verify");
+    let progress = Arc::new(TauriProgress::new(app, key));
     let result =
         tokio::spawn(async move { verify_wup_async(input, keys, progress.as_ref()).await })
             .await
@@ -2677,7 +2800,7 @@ pub async fn cmd_hash(
     max_depth: Option<usize>,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "hash"));
-    let token = begin(&state).await;
+    let token = begin(&state, "hash").await;
     let cache = cache.inner().clone();
     let result = tokio::task::spawn_blocking(move || -> Result<String, String> {
         let parsed = parse_algos(&algos.join(","))?;
@@ -2712,7 +2835,7 @@ pub async fn cmd_hash(
     })
     .await
     .map_err(err_to_string);
-    finish(&state).await;
+    finish(&state, "hash").await;
     result?
 }
 
@@ -2843,11 +2966,13 @@ pub async fn cmd_dat_verify(
     app: AppHandle,
     state: State<'_, ActiveCancel>,
     input: PathBuf,
+    task_id: Option<String>,
 ) -> Result<String, String> {
-    let progress = Arc::new(TauriProgress::new(app, "dat-verify"));
-    let token = begin(&state).await;
+    let key = task_id.as_deref().unwrap_or("dat-verify");
+    let progress = Arc::new(TauriProgress::new(app, key));
+    let token = begin(&state, key).await;
     let result = run_dat_verify(progress, input.clone(), token).await;
-    finish(&state).await;
+    finish(&state, key).await;
     // Cancellation propagates as an Err carrying "operation cancelled",
     // matching the other verify commands and scan/rename. Any other failure
     // still renders as a single Failed card so genuine digest/API errors do
@@ -3104,9 +3229,9 @@ pub async fn cmd_dat_scan(
     #[allow(non_snake_case)] maxDepth: Option<usize>,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "dat-scan"));
-    let token = begin(&state).await;
+    let token = begin(&state, "dat-scan").await;
     let result = run_dat_scan(progress, input, maxDepth, token).await;
-    finish(&state).await;
+    finish(&state, "dat-scan").await;
     let outcome = result?;
     serde_json::to_string(&outcome).map_err(err_to_string)
 }
@@ -3354,9 +3479,9 @@ pub async fn cmd_dat_rename(
     #[allow(non_snake_case)] onConflict: String,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "dat-rename"));
-    let token = begin(&state).await;
+    let token = begin(&state, "dat-rename").await;
     let result = run_dat_rename(progress, input, maxDepth, dryRun, onConflict, token).await;
-    finish(&state).await;
+    finish(&state, "dat-rename").await;
     let outcome = result?;
     serde_json::to_string(&outcome).map_err(err_to_string)
 }

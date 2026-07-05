@@ -33,6 +33,13 @@ function decompressArgs(item: { input: string; output: string }) {
 
 const batch = useBatchOperation("nx-decompress", "cmd_nx_decompress", decompressArgs);
 
+function handleReorder(ids: string[]) {
+  batch.reorder(queue, ids);
+}
+
+function handleRemoveSelected(ids: string[]) {
+  batch.removeSelected(queue, ids);
+}
 const comparisons = ref<ComparisonSummary[]>([]);
 
 const dropZoneRef = ref<HTMLElement | null>(null);
@@ -163,11 +170,13 @@ function onRun() {
         <BatchFileList
           v-if="queue.length > 0"
           :items="queue"
-          :current-index="batch.currentIndex.value"
           :running="batch.running.value"
-          :progress="batch.progress"
+          :progress-slots="batch.progressSlots"
           @remove="store.removeFromQueue"
           @clear="store.clearQueue"
+          @reorder="handleReorder"
+          @remove-selected="handleRemoveSelected"
+          @retry-failed="execute"
         />
 
         <div class="space-y-1.5">

@@ -2,30 +2,103 @@
 import type { ComputedRef, Ref } from "vue";
 import type { BatchItem } from "~/types/batch";
 
+type ProgressState = { percent: ComputedRef<number>; message: Ref<string> };
+
 // Concrete Ref/ComputedRef types so ProgressState from useProgress
 // passes through without widening every consumer.
-const props = defineProps<{
-  items: BatchItem[];
-  currentIndex: number;
-  running: boolean;
-  progress?: { percent: ComputedRef<number>; message: Ref<string> };
-}>();
+const props = withDefaults(
+  defineProps<{
+    items: BatchItem[];
+    running: boolean;
+    progressSlots?: ProgressState[];
+    // Hide the concurrency control, drag-reorder, selection, and retry-failed
+    // UI for pages whose queue is a single N-to-1 bundle op rather than a set
+    // of independently retryable jobs.
+    queueActions?: boolean;
+  }>(),
+  { progressSlots: () => [], queueActions: true },
+);
 
 const emit = defineEmits<{
   remove: [id: string];
   clear: [];
+  reorder: [orderedIds: string[]];
+  removeSelected: [ids: string[]];
+  retryFailed: [];
 }>();
 
-const doneCount = computed(() => props.items.filter((i) => i.status === "done").length);
-const errorCount = computed(() => props.items.filter((i) => i.status === "error").length);
+const { concurrency, maxConcurrency } = useJobConcurrency();
 
-const listRef = ref<HTMLElement | null>(null);
+const activeItems = computed(() => props.items.filter((i) => i.status === "pending" || i.status === "running"));
+const completedItems = computed(() => props.items.filter((i) => i.status === "done"));
+const failedItems = computed(() => props.items.filter((i) => i.status === "error" || i.status === "cancelled"));
 
-watch(() => props.currentIndex, (idx) => {
-  if (idx < 0 || !listRef.value) return;
-  const children = listRef.value.children;
-  if (children[idx]) {
-    children[idx].scrollIntoView({ block: "nearest", behavior: "smooth" });
+const settledCount = computed(
+  () => props.items.filter((i) => i.status === "done" || i.status === "error" || i.status === "cancelled").length,
+);
+
+// Settled items count as 1, running items contribute their slot's fraction,
+// so the bar advances smoothly instead of jumping per completed file.
+const overallPercent = computed(() => {
+  const total = props.items.length;
+  if (total === 0) return 0;
+  let done = settledCount.value;
+  for (const item of props.items) {
+    if (item.status === "running" && item.slot !== undefined) {
+      done += (props.progressSlots[item.slot]?.percent.value ?? 0) / 100;
+    }
+  }
+  return Math.min(100, Math.round((done / total) * 100));
+});
+
+const selectedIds = ref(new Set<string>());
+
+function toggleSelect(id: string) {
+  const next = new Set(selectedIds.value);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  selectedIds.value = next;
+}
+
+// Requeueing happens here rather than in the batch runner so single-item
+// retry and bulk retry share one path: mark pending, then let the page's
+// retryFailed handler re-run the queue.
+function requeue(item: BatchItem) {
+  item.status = "pending";
+  item.error = undefined;
+  item.result = undefined;
+  item.elapsedMs = undefined;
+}
+
+function retryFailed() {
+  for (const item of props.items) {
+    if (item.status === "error" || item.status === "cancelled") requeue(item);
+  }
+  emit("retryFailed");
+}
+
+function retryItem(id: string) {
+  const item = props.items.find((i) => i.id === id);
+  if (item && (item.status === "error" || item.status === "cancelled")) {
+    requeue(item);
+    emit("retryFailed");
+  }
+}
+
+function removeItem(id: string) {
+  selectedIds.value.delete(id);
+  emit("remove", id);
+}
+
+function removeSelected() {
+  emit("removeSelected", [...selectedIds.value]);
+  selectedIds.value = new Set();
+}
+
+watch(() => props.items, (items) => {
+  const ids = new Set(items.map((i) => i.id));
+  for (const id of selectedIds.value) {
+    if (!ids.has(id)) selectedIds.value.delete(id);
   }
 });
 </script>
@@ -36,116 +109,93 @@ watch(() => props.currentIndex, (idx) => {
       <span class="text-sm font-medium text-zinc-300">
         Files ({{ items.length }})
       </span>
-      <button
-        v-if="!running && items.length > 0"
-        class="text-xs text-zinc-500 transition hover:text-zinc-300"
-        @click="emit('clear')"
-      >
-        Clear all
-      </button>
-    </div>
-
-    <div ref="listRef" class="max-h-60 space-y-1 overflow-y-auto rounded-lg border border-zinc-700/50 bg-zinc-900/50 p-2 xl:max-h-80">
-      <div
-        v-for="(item, index) in items"
-        :key="item.id"
-        class="group flex items-center gap-2 rounded-md px-2.5 py-1.5 text-sm"
-        :class="{
-          'bg-zinc-800/50': item.status === 'running',
-        }"
-      >
-        <span class="flex h-4 w-4 shrink-0 items-center justify-center">
-          <span
-            v-if="item.status === 'pending'"
-            class="h-2 w-2 rounded-full bg-zinc-600"
-          />
-          <svg
-            v-else-if="item.status === 'running'"
-            class="h-4 w-4 animate-spin text-sky-400"
-            fill="none"
-            viewBox="0 0 24 24"
-            aria-hidden="true"
-          >
-            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
-            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-          </svg>
-          <svg
-            v-else-if="item.status === 'done'"
-            class="h-4 w-4 text-emerald-400"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-            stroke-width="2"
-            aria-hidden="true"
-          >
-            <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
-          </svg>
-          <svg
-            v-else-if="item.status === 'error'"
-            class="h-4 w-4 text-red-400"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-            stroke-width="2"
-            aria-hidden="true"
-          >
-            <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
-          </svg>
-          <svg
-            v-else-if="item.status === 'cancelled'"
-            class="h-4 w-4 text-amber-400"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-            stroke-width="2"
-            aria-hidden="true"
-          >
-            <circle cx="12" cy="12" r="9" />
-            <path stroke-linecap="round" d="M8 12h8" />
-          </svg>
-        </span>
-
-        <div class="min-w-0 flex-1">
-          <div class="truncate text-zinc-200" :title="item.input">
-            {{ basename(item.input) }}
-          </div>
-          <div
-            v-if="item.status === 'running' && progress"
-            class="mt-1 h-1 w-full overflow-hidden rounded-full bg-zinc-700"
-          >
-            <div
-              class="h-full rounded-full bg-gradient-to-r from-sky-500 to-sky-400 transition-all duration-300"
-              :style="{ width: `${Math.min(progress.percent.value, 100)}%` }"
-            />
-          </div>
-          <div v-if="item.status === 'error' && item.error" class="mt-0.5 truncate text-xs text-red-400/80" :title="item.error">
-            {{ item.error }}
-          </div>
-        </div>
-
+      <div class="flex items-center gap-3">
         <button
-          v-if="!running"
-          class="shrink-0 text-zinc-400 opacity-0 transition hover:text-zinc-300 group-hover:opacity-100"
-          :aria-label="`Remove ${basename(item.input)} from queue`"
-          @click="emit('remove', item.id)"
+          v-if="queueActions && !running && selectedIds.size > 0"
+          class="text-xs text-zinc-500 transition hover:text-zinc-300"
+          @click="removeSelected"
         >
-          <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
-          </svg>
+          Remove selected ({{ selectedIds.size }})
+        </button>
+        <button
+          v-if="queueActions && !running && failedItems.length > 0"
+          class="text-xs text-amber-400 transition hover:text-amber-300"
+          @click="retryFailed"
+        >
+          Retry failed ({{ failedItems.length }})
+        </button>
+        <button
+          v-if="!running && items.length > 0"
+          class="text-xs text-zinc-500 transition hover:text-zinc-300"
+          @click="emit('clear')"
+        >
+          Clear all
         </button>
       </div>
     </div>
 
-    <div v-if="items.length > 0" role="status" aria-live="polite" class="text-xs text-zinc-500">
-      <template v-if="running">
-        Processing {{ currentIndex + 1 }} of {{ items.length }}...
-      </template>
-      <template v-else-if="doneCount > 0 || errorCount > 0">
-        {{ doneCount }} of {{ items.length }} complete<template v-if="errorCount > 0">, {{ errorCount }} failed</template>
-      </template>
-      <template v-else>
-        {{ items.length }} file{{ items.length === 1 ? '' : 's' }} queued
-      </template>
+    <ProgressBar
+      v-if="running && items.length > 1"
+      :percent="overallPercent"
+      :message="`Overall: ${settledCount} of ${items.length} processed`"
+      :running="running"
+    />
+
+    <div class="max-h-60 space-y-2 overflow-y-auto rounded-lg border border-zinc-700/50 bg-zinc-900/50 p-2 xl:max-h-80">
+      <QueueSection
+        title="Active"
+        :items="activeItems"
+        :selected-ids="selectedIds"
+        :draggable="queueActions"
+        :selectable="queueActions"
+        :progress-slots="progressSlots"
+        @toggle-select="toggleSelect"
+        @remove="removeItem"
+        @reorder="(ids) => emit('reorder', ids)"
+      />
+      <QueueSection
+        title="Completed"
+        :items="completedItems"
+        :selected-ids="selectedIds"
+        :selectable="queueActions"
+        @toggle-select="toggleSelect"
+        @remove="removeItem"
+      />
+      <QueueSection
+        title="Failed"
+        :items="failedItems"
+        :selected-ids="selectedIds"
+        :selectable="queueActions"
+        :retryable="queueActions && !running"
+        @toggle-select="toggleSelect"
+        @remove="removeItem"
+        @retry="retryItem"
+      />
+    </div>
+
+    <div class="flex items-center justify-between gap-3">
+      <div v-if="items.length > 0" role="status" aria-live="polite" class="text-xs text-zinc-500">
+        <template v-if="running">
+          {{ activeItems.length }} remaining, {{ completedItems.length }} done<template v-if="failedItems.length > 0">, {{ failedItems.length }} failed</template>
+        </template>
+        <template v-else-if="completedItems.length > 0 || failedItems.length > 0">
+          {{ completedItems.length }} of {{ items.length }} complete<template v-if="failedItems.length > 0">, {{ failedItems.length }} failed</template>
+        </template>
+        <template v-else>
+          {{ items.length }} file{{ items.length === 1 ? '' : 's' }} queued
+        </template>
+      </div>
+
+      <label v-if="queueActions" class="flex shrink-0 items-center gap-1.5 text-xs text-zinc-500">
+        Concurrent jobs
+        <input
+          v-model.number="concurrency"
+          type="number"
+          min="1"
+          :max="maxConcurrency"
+          class="w-12 rounded-md border border-zinc-700 bg-zinc-800/50 px-1.5 py-0.5 text-center text-xs text-zinc-200"
+        />
+      </label>
     </div>
   </div>
 </template>

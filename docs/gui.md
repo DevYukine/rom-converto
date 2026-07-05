@@ -9,6 +9,18 @@ The app adds drag-and-drop batch queues, live progress, a cancel button, per-pag
 controls, and a rich info card. It adds no conversion capability the CLI lacks. The command
 line echoed above each result shows the equivalent CLI invocation for the options you chose.
 
+## Batch queue
+
+Batch-capable pages group queued files into three sections: Active (pending and running),
+Completed, and Failed. Each running file shows its own progress bar and elapsed time. Pending
+files can be dragged to reorder them; running and finished files keep their position. A
+"Concurrent jobs" control sets how many files convert at once (default 2, up to 8); this is
+separate from any per-conversion thread or worker-pool setting a page exposes. Checkboxes let
+you select files across sections for "Remove selected". A "Retry failed" button re-runs only
+the files left in the Failed section, without restarting files that already finished. Wii U
+compress is a bundle operation (every queued title is packed into one output archive), so it
+shows the same grouped list but without reorder, selection, retry, or the concurrency control.
+
 ## Pages
 
 Each console or format family has its own set of pages, one per operation, reachable from
@@ -88,10 +100,12 @@ Preview toggle that lists each file's planned rename rather than a conversion pl
 ## Cancellation
 
 A Cancel button aborts the running conversion immediately, both for a single file and within
-a batch, and discards the partial output it created. Cancellation covers every decrypt,
-encrypt, compress, and decompress operation across all consoles. A file chosen for overwrite
-is left untouched, and a cancelled run is reported with its own status rather than as a
-failure.
+a batch, and discards the partial output it created. When a batch runs more than one
+concurrent job, Cancel stops every in-flight job, not just one; a partially-completed batch
+keeps the files it already finished in the Completed section. Cancellation covers every
+decrypt, encrypt, compress, and decompress operation across all consoles. A file chosen for
+overwrite is left untouched, and a cancelled run is reported with its own status rather than
+as a failure.
 
 ## Recursive folder scan
 

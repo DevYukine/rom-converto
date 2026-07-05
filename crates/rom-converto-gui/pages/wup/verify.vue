@@ -22,6 +22,14 @@ const batch = useBatchOperation("wup-verify", "cmd_wup_verify", (item) =>
   verifyArgs(item.input),
 );
 
+function handleReorder(ids: string[]) {
+  batch.reorder(queue, ids);
+}
+
+function handleRemoveSelected(ids: string[]) {
+  batch.removeSelected(queue, ids);
+}
+
 const dropZoneRef = ref<HTMLElement | null>(null);
 let zoneId: string | null = null;
 
@@ -125,11 +133,13 @@ async function execute() {
         <BatchFileList
           v-if="isBatch"
           :items="queue"
-          :current-index="batch.currentIndex.value"
           :running="batch.running.value"
-          :progress="batch.progress"
+          :progress-slots="batch.progressSlots"
           @remove="store.removeFromQueue"
           @clear="store.clearQueue"
+          @reorder="handleReorder"
+          @remove-selected="handleRemoveSelected"
+          @retry-failed="execute"
         />
 
         <div v-else-if="input" class="space-y-1.5">

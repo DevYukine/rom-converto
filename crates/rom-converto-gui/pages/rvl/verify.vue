@@ -23,6 +23,14 @@ const batch = useBatchOperation("rvl-verify", "cmd_verify_rvl", (item) =>
   verifyArgs(item.input),
 );
 
+function handleReorder(ids: string[]) {
+  batch.reorder(queue, ids);
+}
+
+function handleRemoveSelected(ids: string[]) {
+  batch.removeSelected(queue, ids);
+}
+
 function handleFiles(paths: string[]) {
   for (const p of paths) store.addToQueue(p);
 }
@@ -102,11 +110,13 @@ async function execute() {
         <template v-if="isBatch">
           <BatchFileList
             :items="queue"
-            :current-index="batch.currentIndex.value"
             :running="batch.running.value"
-            :progress="batch.progress"
+            :progress-slots="batch.progressSlots"
             @remove="store.removeFromQueue"
             @clear="store.clearQueue"
+            @reorder="handleReorder"
+            @remove-selected="handleRemoveSelected"
+            @retry-failed="execute"
           />
 
           <FileDropZone

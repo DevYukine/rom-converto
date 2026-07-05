@@ -148,8 +148,8 @@ function onRun() {
         <BatchFileList
           v-if="queue.length > 0"
           :items="queue"
-          :current-index="-1"
           :running="loading"
+          :queue-actions="false"
           @remove="store.removeFromQueue"
           @clear="store.clearQueue"
         />

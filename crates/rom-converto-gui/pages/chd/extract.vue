@@ -37,6 +37,13 @@ const batch = useBatchOperation("chd-extract", "cmd_chd_extract", (item) =>
   extractArgs(item.input, item.output),
 );
 
+function handleReorder(ids: string[]) {
+  batch.reorder(queue, ids);
+}
+
+function handleRemoveSelected(ids: string[]) {
+  batch.removeSelected(queue, ids);
+}
 const comparisons = ref<ComparisonSummary[]>([]);
 
 // DVD-mode CHDs extract to a single .iso, CD-mode to .cue/.bin;
@@ -154,11 +161,13 @@ function onRun() {
         <template v-if="isBatch">
           <BatchFileList
             :items="queue"
-            :current-index="batch.currentIndex.value"
             :running="batch.running.value"
-            :progress="batch.progress"
+            :progress-slots="batch.progressSlots"
             @remove="store.removeFromQueue"
             @clear="store.clearQueue"
+            @reorder="handleReorder"
+            @remove-selected="handleRemoveSelected"
+            @retry-failed="execute"
           />
 
           <FileDropZone
