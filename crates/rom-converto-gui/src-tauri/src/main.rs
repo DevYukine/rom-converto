@@ -5,10 +5,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod config_cmds;
 mod info_cache;
 mod progress;
 
 use commands::*;
+use config_cmds::*;
 use info_cache::InfoCache;
 use rom_converto_lib::util::HashCache;
 use std::sync::Arc;
@@ -61,6 +63,10 @@ fn main() {
             cmd_dat_verify,
             cmd_dat_scan,
             cmd_dat_rename,
+            cmd_config_path,
+            cmd_load_config,
+            cmd_save_preset,
+            cmd_delete_preset,
             app_display_version,
         ])
         .run(tauri::generate_context!())

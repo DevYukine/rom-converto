@@ -6,6 +6,12 @@ import type { ComparisonSummary, ReportRecord, RunOutcome } from "~/types/report
 const store = useChdCompressStore();
 const { input, output, onConflict, skipSpaceCheck, zstd, mode, hunkSize, outputTemplate, reportFile, verifyAfter, result, error, loading, queue, recursive, maxDepth } = storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
+const { saveAs: savePresetAs } = usePreset("chd", {
+  hunk_size: hunkSize,
+  on_conflict: onConflict,
+  output_dir: outputDir,
+  report: reportFile,
+});
 const { expand } = useFolderScan(["cue", "iso"]);
 const scanDepth = () => (recursive.value ? maxDepth.value : 1);
 const { run, cancelled, abort } = useOperation({ result, error, loading });
@@ -161,6 +167,8 @@ function onRun() {
 
     <OperationCard>
       <div class="space-y-5">
+        <PresetPanel format="chd" :on-save="savePresetAs" />
+
         <template v-if="isBatch">
           <BatchFileList
             :items="queue"

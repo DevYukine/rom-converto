@@ -39,6 +39,7 @@ import { usePlaylistStore } from "~/stores/playlist";
 import { useDatVerifyStore } from "~/stores/datVerify";
 import { useDatScanStore } from "~/stores/datScan";
 import { useDatRenameStore } from "~/stores/datRename";
+import { useConfigStore } from "~/stores/config";
 import { invoke } from "@tauri-apps/api/core";
 
 const appVersion = ref("");
@@ -49,6 +50,9 @@ invoke<string>("app_display_version")
   .catch(() => {});
 
 const { soundEnabled } = useNotifyPrefs();
+
+const configStore = useConfigStore();
+if (!configStore.loaded) configStore.loadConfig();
 
 type SidebarLink = {
   to: string;
@@ -153,6 +157,7 @@ const sections: SidebarSection[] = [
     links: [
       { to: "/hash", label: "Hash", store: () => useHashStore(), icon: "shield-check" },
       { to: "/playlist", label: "Playlist", store: () => usePlaylistStore(), icon: "folder-arrow" },
+      { to: "/settings", label: "Settings", store: () => useConfigStore(), icon: "info" },
     ],
   },
   {
@@ -359,6 +364,17 @@ function isActiveSection(key: string): boolean {
       </div>
 
       <div class="border-t border-zinc-800/50 px-5 py-3">
+        <label v-if="Object.keys(configStore.presets).length > 0" class="mb-2 flex items-center justify-between gap-2 text-xs text-zinc-400">
+          Active preset
+          <select
+            :value="configStore.activePreset ?? ''"
+            class="rounded-md border border-zinc-700 bg-zinc-800/50 px-2 py-1 text-xs text-zinc-200"
+            @change="configStore.applyPreset(($event.target as HTMLSelectElement).value)"
+          >
+            <option value="">None</option>
+            <option v-for="name in Object.keys(configStore.presets).sort()" :key="name" :value="name">{{ name }}</option>
+          </select>
+        </label>
         <FlagToggle v-model="soundEnabled" label="Completion sound" />
         <span class="mt-1 block text-[11px] text-zinc-400">{{ appVersion ? (appVersion.startsWith('dev-') ? appVersion : `v${appVersion}`) : '' }}</span>
       </div>

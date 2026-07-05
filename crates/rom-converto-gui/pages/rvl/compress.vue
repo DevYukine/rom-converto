@@ -6,6 +6,13 @@ import type { ComparisonSummary, ReportRecord, RunOutcome } from "~/types/report
 const store = useRvlCompressStore();
 const { input, output, level, chunkSize, onConflict, skipSpaceCheck, outputTemplate, reportFile, verifyAfter, result, error, loading, queue, recursive, maxDepth } = storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
+const { saveAs: savePresetAs } = usePreset("rvl", {
+  level,
+  chunk_size: chunkSize,
+  on_conflict: onConflict,
+  output_dir: outputDir,
+  report: reportFile,
+});
 const { expand } = useFolderScan(["iso", "wbfs"]);
 const scanDepth = () => (recursive.value ? maxDepth.value : 1);
 const { run, cancelled, abort } = useOperation({ result, error, loading });
@@ -157,6 +164,8 @@ function onRun() {
 
     <OperationCard>
       <div class="space-y-5">
+        <PresetPanel format="rvl" :on-save="savePresetAs" />
+
         <template v-if="isBatch">
           <BatchFileList
             :items="queue"

@@ -8,6 +8,14 @@ const store = useNxCompressStore();
 const { queue, output, keys, level, mode, blockSizeExp, onConflict, skipSpaceCheck, outputTemplate, reportFile, verifyAfter, result, error, loading, recursive, maxDepth } =
   storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
+const { saveAs: savePresetAs } = usePreset("nx", {
+  level,
+  mode,
+  block_size_exp: blockSizeExp,
+  on_conflict: onConflict,
+  output_dir: outputDir,
+  report: reportFile,
+});
 const { expand } = useFolderScan(["nsp", "xci"]);
 const scanDepth = () => (recursive.value ? maxDepth.value : 1);
 const progress = useProgress("nx-compress");
@@ -174,6 +182,8 @@ function onRun() {
 
     <OperationCard>
       <div class="space-y-5">
+        <PresetPanel format="nx" :on-save="savePresetAs" />
+
         <BatchFileList
           v-if="queue.length > 0"
           :items="queue"

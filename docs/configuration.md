@@ -4,8 +4,10 @@ A TOML config file lets you set per-format default flags and named presets so yo
 to repeat long flag combinations. The config is optional: with no config file the built-in
 defaults apply.
 
-The GUI does not read this config file. Options are set per page in the app. The config file
-applies to the CLI only.
+The GUI reads and writes the same `[presets.<name>]` tables described below through its
+Settings view; see [Configuration](gui.md#configuration) in the GUI docs. Everything else in
+this page (top-level format defaults, precedence, search order) is CLI-only: the GUI only ever
+reads and writes presets, never the bare `[dol]`/`[nx]`/etc. tables.
 
 ## Search order
 

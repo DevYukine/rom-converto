@@ -6,6 +6,12 @@ import type { ComparisonSummary, ReportRecord, RunOutcome } from "~/types/report
 const store = useCsoCompressStore();
 const { input, output, format, onConflict, skipSpaceCheck, blockSize, outputTemplate, reportFile, verifyAfter, result, error, loading, queue, recursive, maxDepth } = storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
+const { saveAs: savePresetAs } = usePreset("cso", {
+  block_size: blockSize,
+  on_conflict: onConflict,
+  output_dir: outputDir,
+  report: reportFile,
+});
 const { expand } = useFolderScan(["iso"]);
 const scanDepth = () => (recursive.value ? maxDepth.value : 1);
 const { run, cancelled, abort } = useOperation({ result, error, loading });
@@ -160,6 +166,8 @@ function onRun() {
 
     <OperationCard>
       <div class="space-y-5">
+        <PresetPanel format="cso" :on-save="savePresetAs" />
+
         <template v-if="isBatch">
           <BatchFileList
             :items="queue"

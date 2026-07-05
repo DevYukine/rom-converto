@@ -42,6 +42,7 @@ serde_json.workspace = true
 crc = "^3.4"
 dirs = "^6"
 toml = "^1.1"
+toml_edit = { version = "^0.23", features = ["serde"] }
 
 # Pixel codecs for `info` icon extraction
 png = "^0.18"

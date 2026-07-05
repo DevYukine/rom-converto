@@ -36,7 +36,7 @@ the sidebar:
 | CHD | Compress to CHD, Extract CHD, Extract to CSO/ZSO, Verify CHD, CHD info |
 | CSO/ZSO | Compress to CSO/ZSO, Decompress CSO/ZSO, Compress to CHD, Verify CSO/ZSO, CSO/ZSO info |
 | CD (CUE/BIN) | Merge multi-bin |
-| Utilities | Hash, Playlist |
+| Utilities | Hash, Playlist, Settings |
 | DAT | Verify, Scan, Rename |
 
 Compress to CHD (under CSO/ZSO) and Extract to CSO/ZSO (under CHD) each run as a single
@@ -173,5 +173,33 @@ window managers without support are silently skipped, and the rest of the GUI is
 
 ## Configuration
 
-The GUI does not read the config file. Options are set per page in the app. The CLI is the
-path for config-driven presets; see [`configuration.md`](configuration.md).
+The GUI reads and writes the same `rom-converto.toml` presets the CLI does (see
+[Configuration](configuration.md) for the file format, search order, and covered settings). A
+preset saved in the GUI runs identically from the CLI with `--preset <name>`, and a preset
+written by hand or by the CLI shows up in the GUI's preset picker.
+
+The Settings page (Utilities section of the sidebar) lists every `[presets.<name>]` table found
+in the config file, shows the resolved config path, and lets you delete a preset. Format pages
+that expose config-covered options (GameCube, Wii, Switch, CHD, and CSO/ZSO compress, and Wii U
+compress for `level`/`on_conflict`) show a preset control with:
+
+- A picker to make a preset active. Making a preset active applies its values for that page's
+  format into the page's own fields immediately, and again whenever you open a page with that
+  preset still active, so the same profile follows you across pages without re-picking it.
+- "Save current options as", which writes the page's current values into `[presets.<name>]`
+  under that page's format key, creating the preset if the name is new or replacing it if it
+  already exists.
+
+Only the fields a page exposes as config-covered knobs are read or written: `--recursive`,
+`--max-depth`, and the output template stay page-local, matching the CLI's own config
+exclusions. `dat` presets are not writable from the GUI: the dat pages do not expose
+`api_base`/checksum-tier controls, so there is nothing to bind them to.
+
+Saving or deleting a preset only rewrites its own `[presets.<name>]` table; every other table,
+key, and comment in the file is left as-is. The one caveat: comments placed *inside* a preset
+table you edit (for example between two of its keys) are not preserved, since the GUI
+regenerates that whole table from its current fields on every save.
+
+A relative `output_dir` or `report` path in a preset is kept relative when the GUI saves it
+back; the GUI does not resolve it against the config directory the way a running command does,
+so a hand-authored relative path stays reproducible from the CLI on another machine.

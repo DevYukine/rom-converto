@@ -9,10 +9,13 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 
+mod write;
+pub use write::*;
+
 pub const CONFIG_FILENAMES: [&str; 2] = ["rom-converto.toml", ".rom-converto.toml"];
 pub const USER_CONFIG_SUBPATH: &str = "rom-converto/config.toml";
 
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct UserConfig {
     pub dol: Option<DiscDefaults>,
@@ -26,7 +29,7 @@ pub struct UserConfig {
     pub presets: HashMap<String, Preset>,
 }
 
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DiscDefaults {
     /// Zstandard compression level, -22 to 22. Defaults to 22.
@@ -39,7 +42,7 @@ pub struct DiscDefaults {
     pub report: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct NxDefaults {
     /// Zstd compression level, 1 to 22. Defaults to 18.
@@ -51,7 +54,7 @@ pub struct NxDefaults {
     pub report: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChdDefaults {
     pub hunk_size: Option<u32>,
@@ -60,7 +63,7 @@ pub struct ChdDefaults {
     pub report: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CsoDefaults {
     pub block_size: Option<u32>,
@@ -69,7 +72,7 @@ pub struct CsoDefaults {
     pub report: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct WupDefaults {
     /// Zstd compression level, 0 to 22. Defaults to 6.
@@ -77,7 +80,7 @@ pub struct WupDefaults {
     pub on_conflict: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DatDefaults {
     pub api_base: Option<String>,
@@ -88,7 +91,7 @@ pub struct DatDefaults {
     pub input_checksum_max: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Preset {
     pub dol: Option<DiscDefaults>,
@@ -138,6 +141,13 @@ pub fn discover_config_path(explicit: Option<&Path>) -> anyhow::Result<Option<Pa
     Ok(candidates.into_iter().find(|p| p.is_file()))
 }
 
+/// Path to the per-user config file, used as the write target when no
+/// config file exists yet to save a preset into. Does not check that the
+/// file or its parent directory exists.
+pub fn user_config_write_path() -> Option<PathBuf> {
+    dirs::config_dir().map(|dir| dir.join(USER_CONFIG_SUBPATH))
+}
+
 /// Loads and parses the config, applying the discovery order. A missing
 /// config (without an explicit path) yields the built-in defaults. A
 /// missing explicit path or malformed TOML is a hard error so user
@@ -150,6 +160,19 @@ pub fn load_config(explicit: Option<&Path>) -> anyhow::Result<UserConfig> {
         .with_context(|| format!("cannot read config file: {}", path.display()))?;
     let base = path.parent().unwrap_or_else(|| Path::new("."));
     parse_str(&content, base).with_context(|| format!("invalid config file: {}", path.display()))
+}
+
+/// Like `load_config`, but leaves `output_dir`/`report` untouched instead of
+/// resolving relative ones against the config file's directory. Used by the
+/// GUI so a preset saved back keeps a hand-authored relative path relative
+/// instead of baking in a machine-specific absolute one.
+pub fn load_config_raw(explicit: Option<&Path>) -> anyhow::Result<UserConfig> {
+    let Some(path) = discover_config_path(explicit)? else {
+        return Ok(UserConfig::default());
+    };
+    let content = std::fs::read_to_string(&path)
+        .with_context(|| format!("cannot read config file: {}", path.display()))?;
+    toml::from_str(&content).with_context(|| format!("invalid config file: {}", path.display()))
 }
 
 /// Validates the preset name against the config. An unknown name is an

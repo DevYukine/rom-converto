@@ -6,6 +6,7 @@ import { isDiscInput, useWupCompressStore } from "~/stores/wup-compress";
 const store = useWupCompressStore();
 const { queue, output, level, keys, onConflict, skipSpaceCheck, result, error, loading } = storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
+const { saveAs: savePresetAs } = usePreset("wup", { level, on_conflict: onConflict });
 const { run, cancelled, abort } = useOperation({ result, error, loading });
 const progress = useProgress("wup-compress");
 const commandLine = ref("");
@@ -145,6 +146,8 @@ function onRun() {
 
     <OperationCard>
       <div class="space-y-5">
+        <PresetPanel format="wup" :on-save="savePresetAs" />
+
         <BatchFileList
           v-if="queue.length > 0"
           :items="queue"
