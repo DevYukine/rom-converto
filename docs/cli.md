@@ -180,6 +180,12 @@ once it finishes. In a batch run the file in progress is cancelled and the loop 
 already converted are kept. A cancelled run is reported with its own status rather than as a
 failure.
 
+### Progress
+
+A recursive `-R` run shows two bars: an overall one pinned on top with files done/total,
+total size processed, and an ETA for the whole batch, and the per-file bar below it with
+that file's throughput and remaining time. Single-file runs only show the per-file bar.
+
 ### Summaries
 
 After `compress`, `decompress`, and `convert` operations the tool prints a closing summary

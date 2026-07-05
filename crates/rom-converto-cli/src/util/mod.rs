@@ -9,6 +9,7 @@ use rom_converto_lib::util::{
 };
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Resolve an `--output-template` to a concrete output path joined under
 /// `base_dir`. Metadata is read best-effort: a failed or key-less read
@@ -148,7 +149,7 @@ pub fn ensure_input_exists(path: &std::path::Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-const PROGRESS_TEMPLATE: &str = "{msg}\n{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})";
+const PROGRESS_TEMPLATE: &str = "{msg}\n{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({binary_bytes_per_sec}, {eta})";
 
 /// Bridges the library's `ProgressReporter` trait to indicatif `ProgressBar`.
 pub struct IndicatifProgress {
@@ -193,6 +194,92 @@ impl ProgressReporter for IndicatifProgress {
         if let Some(bar) = self.bar.lock().unwrap().as_ref() {
             bar.set_message(label.to_string());
         }
+    }
+}
+
+const TOTAL_PROGRESS_TEMPLATE: &str =
+    "{msg} [{wide_bar:.green/blue}] {binary_bytes}/{binary_total_bytes} ({eta})";
+
+/// Aggregate batch progress bar: files done/total and total bytes across an
+/// entire recursive run, pinned above the per-file `IndicatifProgress` bar on
+/// the same `MultiProgress`.
+pub struct TotalProgress {
+    mp: MultiProgress,
+    bar: Mutex<Option<ProgressBar>>,
+    done: AtomicU64,
+    total_files: AtomicU64,
+}
+
+impl TotalProgress {
+    pub fn new(mp: MultiProgress) -> Self {
+        Self {
+            mp,
+            bar: Mutex::new(None),
+            done: AtomicU64::new(0),
+            total_files: AtomicU64::new(0),
+        }
+    }
+
+    /// Start (or restart, for a new command) the aggregate bar for
+    /// `total_files` files totaling `total_bytes`. Added before any per-file
+    /// bar so it stays pinned above them. Zero bytes (empty or unknown-size
+    /// batch) falls back to a spinner instead of a stuck full bar.
+    pub fn begin(&self, total_files: u64, total_bytes: u64) {
+        self.done.store(0, Ordering::Relaxed);
+        self.total_files.store(total_files, Ordering::Relaxed);
+        let pg = self.mp.add(ProgressBar::new(total_bytes));
+        let style = if total_bytes == 0 {
+            ProgressStyle::default_spinner()
+                .template("{spinner} {msg}")
+                .expect("valid progress template")
+        } else {
+            ProgressStyle::default_bar()
+                .template(TOTAL_PROGRESS_TEMPLATE)
+                .expect("valid progress template")
+                .progress_chars("#>-")
+        };
+        pg.set_style(style);
+        pg.set_message(format!("0/{total_files} files"));
+        *self.bar.lock().unwrap() = Some(pg);
+    }
+
+    /// Advance by one finished file (`file_bytes` long, skipped or failed
+    /// files included) so the bar reaches 100% once every input has been
+    /// accounted for.
+    pub fn advance(&self, file_bytes: u64) {
+        let done = self.done.fetch_add(1, Ordering::Relaxed) + 1;
+        let total = self.total_files.load(Ordering::Relaxed);
+        if let Some(bar) = self.bar.lock().unwrap().as_ref() {
+            bar.set_message(format!("{done}/{total} files"));
+            if bar.length() == Some(0) {
+                bar.tick();
+            } else {
+                bar.inc(file_bytes);
+            }
+        }
+    }
+
+    pub fn finish(&self) {
+        if let Some(bar) = self.bar.lock().unwrap().take() {
+            bar.finish_and_clear();
+        }
+    }
+}
+
+/// Lets library functions outside batch.rs (which don't know the concrete
+/// `TotalProgress` byte-aware API) drive the same aggregate bar through the
+/// shared trait, one unit at a time.
+impl ProgressReporter for TotalProgress {
+    fn start(&self, total: u64, _msg: &str) {
+        self.begin(total, 0);
+    }
+
+    fn inc(&self, delta: u64) {
+        self.advance(delta);
+    }
+
+    fn finish(&self) {
+        TotalProgress::finish(self);
     }
 }
 
@@ -369,5 +456,29 @@ mod tests {
         )
         .unwrap();
         assert!(dir.path().join("sub").is_dir());
+    }
+
+    fn hidden_multi_progress() -> MultiProgress {
+        MultiProgress::with_draw_target(indicatif::ProgressDrawTarget::hidden())
+    }
+
+    #[test]
+    fn total_progress_advances_bytes_and_file_count() {
+        let tp = TotalProgress::new(hidden_multi_progress());
+        tp.begin(3, 300);
+        tp.advance(100);
+        tp.advance(100);
+        tp.advance(100);
+        assert_eq!(tp.done.load(Ordering::Relaxed), 3);
+        assert_eq!(tp.bar.lock().unwrap().as_ref().unwrap().position(), 300);
+        tp.finish();
+    }
+
+    #[test]
+    fn total_progress_zero_bytes_does_not_panic() {
+        let tp = TotalProgress::new(hidden_multi_progress());
+        tp.begin(0, 0);
+        tp.advance(0);
+        tp.finish();
     }
 }

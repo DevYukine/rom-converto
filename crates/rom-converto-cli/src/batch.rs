@@ -29,6 +29,24 @@ fn file_len(path: &Path) -> u64 {
     std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
 }
 
+/// Sum of on-disk sizes for the aggregate progress bar's total byte length.
+fn files_bytes(files: &[PathBuf]) -> u64 {
+    files.iter().map(|p| file_len(p)).sum()
+}
+
+/// On-disk size of one DAT unit: the file itself, or every member bin for a
+/// cue set (the cue sheet text itself is not counted).
+fn unit_bytes(unit: &DatUnit) -> u64 {
+    match unit {
+        DatUnit::File(p) => file_len(p),
+        DatUnit::CueSet(set) => set.bins.iter().map(|p| file_len(p)).sum(),
+    }
+}
+
+fn units_bytes(units: &[DatUnit]) -> u64 {
+    units.iter().map(unit_bytes).sum()
+}
+
 pub(crate) fn space_preflight(files: &[PathBuf], check_dir: &Path) -> Result<()> {
     let required: u64 = files.iter().map(|p| file_len(p)).sum();
     space_preflight_for_size(required, check_dir)
@@ -245,7 +263,7 @@ fn finish_tally(
 #[allow(clippy::too_many_arguments)]
 pub async fn cso_decompress(
     progress: &dyn ProgressReporter,
-    total_progress: &dyn ProgressReporter,
+    total_progress: &crate::util::TotalProgress,
     input_dir: &Path,
     policy: ConflictPolicy,
     output_dir: Option<&Path>,
@@ -269,7 +287,7 @@ pub async fn cso_decompress(
         std::fs::create_dir_all(dir)?;
     }
     let total = files.len();
-    total_progress.start(total as u64, &format!("Decompressing {total} files"));
+    total_progress.begin(total as u64, files_bytes(&files));
     let mut tally = Tally::new();
     let mut records: Vec<ReportRecord> = Vec::new();
     for path in files {
@@ -291,7 +309,7 @@ pub async fn cso_decompress(
                 warn!("{e}");
                 tally.record_skipped();
                 records.push(skipped_record(&path, "decompress", Some(e.to_string())));
-                total_progress.inc(1);
+                total_progress.advance(file_len(&path));
                 continue;
             }
         };
@@ -304,7 +322,7 @@ pub async fn cso_decompress(
                 warn!("{e}");
                 tally.record_skipped();
                 records.push(skipped_record(&path, "decompress", Some(e.to_string())));
-                total_progress.inc(1);
+                total_progress.advance(file_len(&path));
                 continue;
             }
         };
@@ -317,7 +335,7 @@ pub async fn cso_decompress(
                 &output,
                 &decision,
             ));
-            total_progress.inc(1);
+            total_progress.advance(file_len(&path));
             continue;
         }
         let output = match decision {
@@ -326,7 +344,7 @@ pub async fn cso_decompress(
                 info!("Skipped, output exists: {}", output.display());
                 tally.record_skipped();
                 records.push(skipped_record(&path, "decompress", None));
-                total_progress.inc(1);
+                total_progress.advance(file_len(&path));
                 continue;
             }
         };
@@ -355,7 +373,7 @@ pub async fn cso_decompress(
                 started,
             ));
         }
-        total_progress.inc(1);
+        total_progress.advance(input_bytes);
     }
     total_progress.finish();
     if cancel.is_cancelled() {
@@ -372,7 +390,7 @@ pub async fn cso_decompress(
 
 pub async fn cso_verify(
     progress: &dyn ProgressReporter,
-    total_progress: &dyn ProgressReporter,
+    total_progress: &crate::util::TotalProgress,
     input_dir: &Path,
     full: bool,
     max_depth: Option<usize>,
@@ -384,10 +402,11 @@ pub async fn cso_verify(
         return Ok(());
     }
     let total = files.len();
-    total_progress.start(total as u64, &format!("Verifying {total} files"));
+    total_progress.begin(total as u64, files_bytes(&files));
     let mut ok = 0usize;
     let mut failed = 0usize;
     for path in files {
+        let bytes = file_len(&path);
         match verify_cso(progress, path.clone(), full).await {
             Ok(()) => {
                 ok += 1;
@@ -398,7 +417,7 @@ pub async fn cso_verify(
                 warn!("[FAIL] {}: {e}", path.display());
             }
         }
-        total_progress.inc(1);
+        total_progress.advance(bytes);
     }
     total_progress.finish();
     finish_verify(VerifyTally { total, ok, failed })
@@ -407,7 +426,7 @@ pub async fn cso_verify(
 #[allow(clippy::too_many_arguments)]
 pub async fn rvz_compress(
     progress: &dyn ProgressReporter,
-    total_progress: &dyn ProgressReporter,
+    total_progress: &crate::util::TotalProgress,
     input_dir: &Path,
     exts: &[&str],
     opts: rom_converto_lib::nintendo::rvz::RvzCompressOptions,
@@ -433,7 +452,7 @@ pub async fn rvz_compress(
         std::fs::create_dir_all(dir)?;
     }
     let total = files.len();
-    total_progress.start(total as u64, &format!("Compressing {total} files"));
+    total_progress.begin(total as u64, files_bytes(&files));
     let mut tally = Tally::new();
     let mut records: Vec<ReportRecord> = Vec::new();
     for path in files {
@@ -455,7 +474,7 @@ pub async fn rvz_compress(
                 warn!("{e}");
                 tally.record_skipped();
                 records.push(skipped_record(&path, "compress", Some(e.to_string())));
-                total_progress.inc(1);
+                total_progress.advance(file_len(&path));
                 continue;
             }
         };
@@ -468,7 +487,7 @@ pub async fn rvz_compress(
                 warn!("{e}");
                 tally.record_skipped();
                 records.push(skipped_record(&path, "compress", Some(e.to_string())));
-                total_progress.inc(1);
+                total_progress.advance(file_len(&path));
                 continue;
             }
         };
@@ -486,7 +505,7 @@ pub async fn rvz_compress(
                 &mut records,
             )
             .await;
-            total_progress.inc(1);
+            total_progress.advance(file_len(&path));
             continue;
         }
         let output = match decision {
@@ -507,7 +526,7 @@ pub async fn rvz_compress(
                             "compress",
                             Some("output verified valid".into()),
                         ));
-                        total_progress.inc(1);
+                        total_progress.advance(file_len(&path));
                         continue;
                     }
                     crate::util::VerifyOutcome::Invalid => {
@@ -523,7 +542,7 @@ pub async fn rvz_compress(
                 info!("Skipped, output exists: {}", output.display());
                 tally.record_skipped();
                 records.push(skipped_record(&path, "compress", None));
-                total_progress.inc(1);
+                total_progress.advance(file_len(&path));
                 continue;
             }
         };
@@ -550,7 +569,7 @@ pub async fn rvz_compress(
                 started,
             ));
         }
-        total_progress.inc(1);
+        total_progress.advance(input_bytes);
     }
     total_progress.finish();
     if cancel.is_cancelled() {
@@ -568,7 +587,7 @@ pub async fn rvz_compress(
 #[allow(clippy::too_many_arguments)]
 pub async fn rvz_decompress(
     progress: &dyn ProgressReporter,
-    total_progress: &dyn ProgressReporter,
+    total_progress: &crate::util::TotalProgress,
     input_dir: &Path,
     policy: ConflictPolicy,
     output_dir: Option<&Path>,
@@ -592,7 +611,7 @@ pub async fn rvz_decompress(
         std::fs::create_dir_all(dir)?;
     }
     let total = files.len();
-    total_progress.start(total as u64, &format!("Decompressing {total} files"));
+    total_progress.begin(total as u64, files_bytes(&files));
     let mut tally = Tally::new();
     let mut records: Vec<ReportRecord> = Vec::new();
     for path in files {
@@ -614,7 +633,7 @@ pub async fn rvz_decompress(
                 warn!("{e}");
                 tally.record_skipped();
                 records.push(skipped_record(&path, "decompress", Some(e.to_string())));
-                total_progress.inc(1);
+                total_progress.advance(file_len(&path));
                 continue;
             }
         };
@@ -627,7 +646,7 @@ pub async fn rvz_decompress(
                 warn!("{e}");
                 tally.record_skipped();
                 records.push(skipped_record(&path, "decompress", Some(e.to_string())));
-                total_progress.inc(1);
+                total_progress.advance(file_len(&path));
                 continue;
             }
         };
@@ -640,7 +659,7 @@ pub async fn rvz_decompress(
                 &output,
                 &decision,
             ));
-            total_progress.inc(1);
+            total_progress.advance(file_len(&path));
             continue;
         }
         let output = match decision {
@@ -649,7 +668,7 @@ pub async fn rvz_decompress(
                 info!("Skipped, output exists: {}", output.display());
                 tally.record_skipped();
                 records.push(skipped_record(&path, "decompress", None));
-                total_progress.inc(1);
+                total_progress.advance(file_len(&path));
                 continue;
             }
         };
@@ -675,7 +694,7 @@ pub async fn rvz_decompress(
                 started,
             ));
         }
-        total_progress.inc(1);
+        total_progress.advance(input_bytes);
     }
     total_progress.finish();
     if cancel.is_cancelled() {
@@ -692,7 +711,7 @@ pub async fn rvz_decompress(
 
 pub async fn dol_verify(
     progress: &dyn ProgressReporter,
-    total_progress: &dyn ProgressReporter,
+    total_progress: &crate::util::TotalProgress,
     input_dir: &Path,
     full: bool,
     max_depth: Option<usize>,
@@ -705,10 +724,11 @@ pub async fn dol_verify(
     }
     let total = files.len();
     let opts = DolVerifyOptions { full };
-    total_progress.start(total as u64, &format!("Verifying {total} files"));
+    total_progress.begin(total as u64, files_bytes(&files));
     let mut ok = 0usize;
     let mut failed = 0usize;
     for path in files {
+        let bytes = file_len(&path);
         match verify_dol(&path, &opts, progress) {
             Ok(result) if result.ok => {
                 ok += 1;
@@ -723,7 +743,7 @@ pub async fn dol_verify(
                 warn!("[FAIL] {}: {e}", path.display());
             }
         }
-        total_progress.inc(1);
+        total_progress.advance(bytes);
     }
     total_progress.finish();
     finish_verify(VerifyTally { total, ok, failed })
@@ -731,7 +751,7 @@ pub async fn dol_verify(
 
 pub async fn rvl_verify(
     progress: &dyn ProgressReporter,
-    total_progress: &dyn ProgressReporter,
+    total_progress: &crate::util::TotalProgress,
     input_dir: &Path,
     full: bool,
     max_depth: Option<usize>,
@@ -744,10 +764,11 @@ pub async fn rvl_verify(
     }
     let total = files.len();
     let opts = RvlVerifyOptions { full };
-    total_progress.start(total as u64, &format!("Verifying {total} files"));
+    total_progress.begin(total as u64, files_bytes(&files));
     let mut ok = 0usize;
     let mut failed = 0usize;
     for path in files {
+        let bytes = file_len(&path);
         match verify_rvl(&path, &opts, progress) {
             Ok(result) if result.ok => {
                 ok += 1;
@@ -762,7 +783,7 @@ pub async fn rvl_verify(
                 warn!("[FAIL] {}: {e}", path.display());
             }
         }
-        total_progress.inc(1);
+        total_progress.advance(bytes);
     }
     total_progress.finish();
     finish_verify(VerifyTally { total, ok, failed })
@@ -783,7 +804,7 @@ pub struct NxCompressTuning {
 
 pub async fn nx_compress(
     progress: &dyn ProgressReporter,
-    total_progress: &dyn ProgressReporter,
+    total_progress: &crate::util::TotalProgress,
     input_dir: &Path,
     keys: rom_converto_lib::nintendo::nx::KeySet,
     tuning: NxCompressTuning,
@@ -806,7 +827,7 @@ pub async fn nx_compress(
         std::fs::create_dir_all(dir)?;
     }
     let total = files.len();
-    total_progress.start(total as u64, &format!("Compressing {total} files"));
+    total_progress.begin(total as u64, files_bytes(&files));
     let mut tally = Tally::new();
     let mut records: Vec<ReportRecord> = Vec::new();
     for path in files {
@@ -825,7 +846,7 @@ pub async fn nx_compress(
                     Instant::now(),
                     e,
                 ));
-                total_progress.inc(1);
+                total_progress.advance(file_len(&path));
                 continue;
             }
         };
@@ -862,7 +883,7 @@ pub async fn nx_compress(
                 warn!("{e}");
                 tally.record_skipped();
                 records.push(skipped_record(&path, "compress", Some(e.to_string())));
-                total_progress.inc(1);
+                total_progress.advance(file_len(&path));
                 continue;
             }
         };
@@ -875,7 +896,7 @@ pub async fn nx_compress(
                 warn!("{e}");
                 tally.record_skipped();
                 records.push(skipped_record(&path, "compress", Some(e.to_string())));
-                total_progress.inc(1);
+                total_progress.advance(file_len(&path));
                 continue;
             }
         };
@@ -894,7 +915,7 @@ pub async fn nx_compress(
                 &mut records,
             )
             .await;
-            total_progress.inc(1);
+            total_progress.advance(file_len(&path));
             continue;
         }
         let output = match decision {
@@ -915,7 +936,7 @@ pub async fn nx_compress(
                             "compress",
                             Some("output verified valid".into()),
                         ));
-                        total_progress.inc(1);
+                        total_progress.advance(file_len(&path));
                         continue;
                     }
                     crate::util::VerifyOutcome::Invalid => {
@@ -931,7 +952,7 @@ pub async fn nx_compress(
                 info!("Skipped, output exists: {}", output.display());
                 tally.record_skipped();
                 records.push(skipped_record(&path, "compress", None));
-                total_progress.inc(1);
+                total_progress.advance(file_len(&path));
                 continue;
             }
         };
@@ -966,7 +987,7 @@ pub async fn nx_compress(
                 started,
             ));
         }
-        total_progress.inc(1);
+        total_progress.advance(input_bytes);
     }
     total_progress.finish();
     if cancel.is_cancelled() {
@@ -984,7 +1005,7 @@ pub async fn nx_compress(
 #[allow(clippy::too_many_arguments)]
 pub async fn nx_decompress(
     progress: &dyn ProgressReporter,
-    total_progress: &dyn ProgressReporter,
+    total_progress: &crate::util::TotalProgress,
     input_dir: &Path,
     keys: rom_converto_lib::nintendo::nx::KeySet,
     policy: ConflictPolicy,
@@ -1011,7 +1032,7 @@ pub async fn nx_decompress(
         std::fs::create_dir_all(dir)?;
     }
     let total = files.len();
-    total_progress.start(total as u64, &format!("Decompressing {total} files"));
+    total_progress.begin(total as u64, files_bytes(&files));
     let mut tally = Tally::new();
     let mut records: Vec<ReportRecord> = Vec::new();
     for path in files {
@@ -1036,7 +1057,7 @@ pub async fn nx_decompress(
                 warn!("{e}");
                 tally.record_skipped();
                 records.push(skipped_record(&path, "decompress", Some(e.to_string())));
-                total_progress.inc(1);
+                total_progress.advance(file_len(&path));
                 continue;
             }
         };
@@ -1049,7 +1070,7 @@ pub async fn nx_decompress(
                 warn!("{e}");
                 tally.record_skipped();
                 records.push(skipped_record(&path, "decompress", Some(e.to_string())));
-                total_progress.inc(1);
+                total_progress.advance(file_len(&path));
                 continue;
             }
         };
@@ -1062,7 +1083,7 @@ pub async fn nx_decompress(
                 &output,
                 &decision,
             ));
-            total_progress.inc(1);
+            total_progress.advance(file_len(&path));
             continue;
         }
         let output = match decision {
@@ -1071,7 +1092,7 @@ pub async fn nx_decompress(
                 info!("Skipped, output exists: {}", output.display());
                 tally.record_skipped();
                 records.push(skipped_record(&path, "decompress", None));
-                total_progress.inc(1);
+                total_progress.advance(file_len(&path));
                 continue;
             }
         };
@@ -1105,7 +1126,7 @@ pub async fn nx_decompress(
                 started,
             ));
         }
-        total_progress.inc(1);
+        total_progress.advance(input_bytes);
     }
     total_progress.finish();
     if cancel.is_cancelled() {
@@ -1122,7 +1143,7 @@ pub async fn nx_decompress(
 
 pub async fn nx_verify(
     progress: &dyn ProgressReporter,
-    total_progress: &dyn ProgressReporter,
+    total_progress: &crate::util::TotalProgress,
     input_dir: &Path,
     keys: rom_converto_lib::nintendo::nx::KeySet,
     max_depth: Option<usize>,
@@ -1134,10 +1155,11 @@ pub async fn nx_verify(
         return Ok(());
     }
     let total = files.len();
-    total_progress.start(total as u64, &format!("Verifying {total} files"));
+    total_progress.begin(total as u64, files_bytes(&files));
     let mut ok = 0usize;
     let mut failed = 0usize;
     for path in files {
+        let bytes = file_len(&path);
         match verify_container_async(path.clone(), keys.clone(), progress).await {
             Ok(result) if result.ok => {
                 ok += 1;
@@ -1152,7 +1174,7 @@ pub async fn nx_verify(
                 warn!("[FAIL] {}: {e}", path.display());
             }
         }
-        total_progress.inc(1);
+        total_progress.advance(bytes);
     }
     total_progress.finish();
     finish_verify(VerifyTally { total, ok, failed })
@@ -1183,7 +1205,7 @@ fn is_nus_title_dir(dir: &Path) -> bool {
 
 pub async fn wup_verify(
     progress: &dyn ProgressReporter,
-    total_progress: &dyn ProgressReporter,
+    total_progress: &crate::util::TotalProgress,
     input_dir: &Path,
     max_depth: Option<usize>,
 ) -> Result<()> {
@@ -1216,10 +1238,11 @@ pub async fn wup_verify(
     }
 
     let total = inputs.len();
-    total_progress.start(total as u64, &format!("Verifying {total} titles"));
+    total_progress.begin(total as u64, files_bytes(&inputs));
     let mut ok = 0usize;
     let mut failed = 0usize;
     for path in inputs {
+        let bytes = file_len(&path);
         match verify_wup_async(path.clone(), None, progress).await {
             Ok(result) if result.ok => {
                 ok += 1;
@@ -1234,7 +1257,7 @@ pub async fn wup_verify(
                 warn!("[FAIL] {}: {e}", path.display());
             }
         }
-        total_progress.inc(1);
+        total_progress.advance(bytes);
     }
     total_progress.finish();
     finish_verify(VerifyTally { total, ok, failed })
@@ -1243,7 +1266,7 @@ pub async fn wup_verify(
 #[allow(clippy::too_many_arguments)]
 pub async fn chd_compress(
     progress: &dyn ProgressReporter,
-    total_progress: &dyn ProgressReporter,
+    total_progress: &crate::util::TotalProgress,
     input_dir: &Path,
     mut opts: rom_converto_lib::chd::ChdDvdOptions,
     mode: Option<rom_converto_lib::chd::DiscMode>,
@@ -1270,7 +1293,7 @@ pub async fn chd_compress(
     }
     opts.force = true;
     let total = files.len();
-    total_progress.start(total as u64, &format!("Compressing {total} files"));
+    total_progress.begin(total as u64, files_bytes(&files));
     let mut tally = Tally::new();
     let mut records: Vec<ReportRecord> = Vec::new();
     for path in files {
@@ -1292,7 +1315,7 @@ pub async fn chd_compress(
                 warn!("{e}");
                 tally.record_skipped();
                 records.push(skipped_record(&path, "compress", Some(e.to_string())));
-                total_progress.inc(1);
+                total_progress.advance(file_len(&path));
                 continue;
             }
         };
@@ -1305,7 +1328,7 @@ pub async fn chd_compress(
                 warn!("{e}");
                 tally.record_skipped();
                 records.push(skipped_record(&path, "compress", Some(e.to_string())));
-                total_progress.inc(1);
+                total_progress.advance(file_len(&path));
                 continue;
             }
         };
@@ -1324,7 +1347,7 @@ pub async fn chd_compress(
                 &mut records,
             )
             .await;
-            total_progress.inc(1);
+            total_progress.advance(file_len(&path));
             continue;
         }
         let output = match decision {
@@ -1345,7 +1368,7 @@ pub async fn chd_compress(
                             "compress",
                             Some("output verified valid".into()),
                         ));
-                        total_progress.inc(1);
+                        total_progress.advance(file_len(&path));
                         continue;
                     }
                     crate::util::VerifyOutcome::Invalid => {
@@ -1361,7 +1384,7 @@ pub async fn chd_compress(
                 info!("Skipped, output exists: {}", output.display());
                 tally.record_skipped();
                 records.push(skipped_record(&path, "compress", None));
-                total_progress.inc(1);
+                total_progress.advance(file_len(&path));
                 continue;
             }
         };
@@ -1396,7 +1419,7 @@ pub async fn chd_compress(
                 started,
             ));
         }
-        total_progress.inc(1);
+        total_progress.advance(input_bytes);
     }
     total_progress.finish();
     if cancel.is_cancelled() {
@@ -1414,7 +1437,7 @@ pub async fn chd_compress(
 #[allow(clippy::too_many_arguments)]
 pub async fn chd_extract(
     progress: &dyn ProgressReporter,
-    total_progress: &dyn ProgressReporter,
+    total_progress: &crate::util::TotalProgress,
     input_dir: &Path,
     parent: Option<PathBuf>,
     policy: ConflictPolicy,
@@ -1439,7 +1462,7 @@ pub async fn chd_extract(
         std::fs::create_dir_all(dir)?;
     }
     let total = files.len();
-    total_progress.start(total as u64, &format!("Extracting {total} files"));
+    total_progress.begin(total as u64, files_bytes(&files));
     let mut tally = Tally::new();
     let mut records: Vec<ReportRecord> = Vec::new();
     for path in files {
@@ -1461,7 +1484,7 @@ pub async fn chd_extract(
                 warn!("{e}");
                 tally.record_skipped();
                 records.push(skipped_record(&path, "extract", Some(e.to_string())));
-                total_progress.inc(1);
+                total_progress.advance(file_len(&path));
                 continue;
             }
         };
@@ -1474,7 +1497,7 @@ pub async fn chd_extract(
                 warn!("{e}");
                 tally.record_skipped();
                 records.push(skipped_record(&path, "extract", Some(e.to_string())));
-                total_progress.inc(1);
+                total_progress.advance(file_len(&path));
                 continue;
             }
         };
@@ -1484,7 +1507,7 @@ pub async fn chd_extract(
             records.push(crate::dry_run::report_record(
                 "extract", &path, &output, &decision,
             ));
-            total_progress.inc(1);
+            total_progress.advance(file_len(&path));
             continue;
         }
         let output = match decision {
@@ -1501,10 +1524,11 @@ pub async fn chd_extract(
                 info!("Skipped, output exists: {}", output.display());
                 tally.record_skipped();
                 records.push(skipped_record(&path, "extract", None));
-                total_progress.inc(1);
+                total_progress.advance(file_len(&path));
                 continue;
             }
         };
+        let input_bytes = file_len(&path);
         let out_path = output.clone();
         let started = Instant::now();
         if let Err(e) = extract_from_chd_cancellable(
@@ -1526,7 +1550,7 @@ pub async fn chd_extract(
             tally.record_ok(0, 0, started.elapsed());
             records.push(ok_record(&path, &out_path, "extract", 0, 0, started));
         }
-        total_progress.inc(1);
+        total_progress.advance(input_bytes);
     }
     total_progress.finish();
     if cancel.is_cancelled() {
@@ -1544,7 +1568,7 @@ pub async fn chd_extract(
 #[allow(clippy::too_many_arguments)]
 pub async fn cso_compress(
     progress: &dyn ProgressReporter,
-    total_progress: &dyn ProgressReporter,
+    total_progress: &crate::util::TotalProgress,
     input_dir: &Path,
     mut opts: rom_converto_lib::cso::CsoCompressOptions,
     policy: ConflictPolicy,
@@ -1575,7 +1599,7 @@ pub async fn cso_compress(
     }
     opts.force = true;
     let total = files.len();
-    total_progress.start(total as u64, &format!("Compressing {total} files"));
+    total_progress.begin(total as u64, files_bytes(&files));
     let mut tally = Tally::new();
     let mut records: Vec<ReportRecord> = Vec::new();
     for path in files {
@@ -1597,7 +1621,7 @@ pub async fn cso_compress(
                 warn!("{e}");
                 tally.record_skipped();
                 records.push(skipped_record(&path, "compress", Some(e.to_string())));
-                total_progress.inc(1);
+                total_progress.advance(file_len(&path));
                 continue;
             }
         };
@@ -1610,7 +1634,7 @@ pub async fn cso_compress(
                 warn!("{e}");
                 tally.record_skipped();
                 records.push(skipped_record(&path, "compress", Some(e.to_string())));
-                total_progress.inc(1);
+                total_progress.advance(file_len(&path));
                 continue;
             }
         };
@@ -1628,7 +1652,7 @@ pub async fn cso_compress(
                 &mut records,
             )
             .await;
-            total_progress.inc(1);
+            total_progress.advance(file_len(&path));
             continue;
         }
         let output = match decision {
@@ -1649,7 +1673,7 @@ pub async fn cso_compress(
                             "compress",
                             Some("output verified valid".into()),
                         ));
-                        total_progress.inc(1);
+                        total_progress.advance(file_len(&path));
                         continue;
                     }
                     crate::util::VerifyOutcome::Invalid => {
@@ -1665,7 +1689,7 @@ pub async fn cso_compress(
                 info!("Skipped, output exists: {}", output.display());
                 tally.record_skipped();
                 records.push(skipped_record(&path, "compress", None));
-                total_progress.inc(1);
+                total_progress.advance(file_len(&path));
                 continue;
             }
         };
@@ -1699,7 +1723,7 @@ pub async fn cso_compress(
                 started,
             ));
         }
-        total_progress.inc(1);
+        total_progress.advance(input_bytes);
     }
     total_progress.finish();
     if cancel.is_cancelled() {
@@ -1748,7 +1772,7 @@ fn hash_failed_record(
 
 pub async fn hash_batch(
     progress: &dyn ProgressReporter,
-    total_progress: &dyn ProgressReporter,
+    total_progress: &crate::util::TotalProgress,
     input_dir: &Path,
     algos: &[HashAlgo],
     max_depth: Option<usize>,
@@ -1760,10 +1784,11 @@ pub async fn hash_batch(
         return Ok(());
     }
     let total = files.len();
-    total_progress.start(total as u64, &format!("Hashing {total} files"));
+    total_progress.begin(total as u64, files_bytes(&files));
     let mut tally = Tally::new();
     let mut records: Vec<HashReportRecord> = Vec::new();
     for path in files {
+        let bytes = file_len(&path);
         let started = Instant::now();
         match hash_file(&path, algos, progress) {
             Ok(d) => {
@@ -1777,7 +1802,7 @@ pub async fn hash_batch(
                 records.push(hash_failed_record(&path, started, e));
             }
         }
-        total_progress.inc(1);
+        total_progress.advance(bytes);
     }
     total_progress.finish();
     info!("{}", tally.summary_line(TallyDirection::CountOnly));
@@ -2319,7 +2344,7 @@ pub async fn dat_verify_single(
 #[allow(clippy::too_many_arguments)]
 pub async fn dat_verify_batch(
     progress: &dyn ProgressReporter,
-    total_progress: &dyn ProgressReporter,
+    total_progress: &crate::util::TotalProgress,
     input_dir: &Path,
     algos: &[HashAlgo],
     max_depth: Option<usize>,
@@ -2334,7 +2359,7 @@ pub async fn dat_verify_batch(
     }
     let client = PlaymatchClient::new(api_base);
     let total = units.len();
-    total_progress.start(total as u64, &format!("Verifying {total} files"));
+    total_progress.begin(total as u64, units_bytes(&units));
     let started = Instant::now();
     let mut records: Vec<DatReportRecord> = Vec::new();
     let mut cache: HashMap<String, DatVerdict> = HashMap::new();
@@ -2372,7 +2397,7 @@ pub async fn dat_verify_batch(
                 ));
             }
         }
-        total_progress.inc(1);
+        total_progress.advance(unit_bytes(unit));
     }
     total_progress.finish();
     info!("{verified} verified, {hints} hint");
@@ -2489,15 +2514,12 @@ enum ScanUnit {
 /// Digest every unit under `input_dir`, bucketing unsupported and failed units.
 async fn digest_scan_units(
     progress: &dyn ProgressReporter,
-    total_progress: &dyn ProgressReporter,
+    total_progress: &crate::util::TotalProgress,
     units: &[DatUnit],
     algos: &[HashAlgo],
     cancel: &CancelToken,
 ) -> DatResult<Vec<ScanUnit>> {
-    total_progress.start(
-        units.len() as u64,
-        &format!("Hashing {} files", units.len()),
-    );
+    total_progress.begin(units.len() as u64, units_bytes(units));
     let mut out = Vec::with_capacity(units.len());
     for (i, unit) in units.iter().enumerate() {
         if cancel.is_cancelled() {
@@ -2516,7 +2538,7 @@ async fn digest_scan_units(
                 None => out.push(ScanUnit::Unsupported { unit_index: i }),
             },
         }
-        total_progress.inc(1);
+        total_progress.advance(unit_bytes(unit));
     }
     total_progress.finish();
     Ok(out)
@@ -2535,7 +2557,7 @@ fn digest_bucket_dat(e: DatError) -> DatResult<Option<String>> {
 
 pub async fn dat_scan(
     progress: &dyn ProgressReporter,
-    total_progress: &dyn ProgressReporter,
+    total_progress: &crate::util::TotalProgress,
     input_dir: &Path,
     max_depth: Option<usize>,
     api_base: Option<&str>,
@@ -2742,7 +2764,7 @@ fn scan_record(
 #[allow(clippy::too_many_arguments)]
 pub async fn dat_rename(
     progress: &dyn ProgressReporter,
-    total_progress: &dyn ProgressReporter,
+    total_progress: &crate::util::TotalProgress,
     input: &Path,
     recursive: bool,
     max_depth: Option<usize>,
@@ -2767,10 +2789,7 @@ pub async fn dat_rename(
     }
     let client = PlaymatchClient::new(api_base);
     let started = Instant::now();
-    total_progress.start(
-        units.len() as u64,
-        &format!("Hashing {} files", units.len()),
-    );
+    total_progress.begin(units.len() as u64, units_bytes(&units));
 
     let mut queryable: Vec<PathBuf> = Vec::new();
     let mut items: Vec<BulkIdentifyItem> = Vec::new();
@@ -2788,7 +2807,7 @@ pub async fn dat_rename(
                 Some("cue set: rename skipped to keep FILE lines consistent".to_string()),
                 started,
             ));
-            total_progress.inc(1);
+            total_progress.advance(unit_bytes(unit));
             continue;
         }
         match digest_unit(unit, algos_scan(), progress, cancel).await {
@@ -2819,7 +2838,7 @@ pub async fn dat_rename(
                 )),
             },
         }
-        total_progress.inc(1);
+        total_progress.advance(unit_bytes(unit));
     }
     total_progress.finish();
 

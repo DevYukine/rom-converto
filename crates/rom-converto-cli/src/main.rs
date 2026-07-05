@@ -18,8 +18,8 @@ use crate::commands::{Cli, Commands, SelfUpdateCommand};
 use crate::github::api::GithubApi;
 use crate::updater::{check_for_new_version_and_notify, cleanup_old_executable, self_update};
 use crate::util::{
-    IndicatifProgress, WriteDecision, ensure_input_exists, policy_of, resolve_output,
-    resolve_output_dir, resolve_policy,
+    IndicatifProgress, TotalProgress, WriteDecision, ensure_input_exists, policy_of,
+    resolve_output, resolve_output_dir, resolve_policy,
 };
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser};
@@ -566,7 +566,7 @@ async fn main() -> Result<()> {
     }
 
     let progress = IndicatifProgress::new(pb.clone());
-    let total_progress = IndicatifProgress::new(pb);
+    let total_progress = TotalProgress::new(pb);
 
     let user_config = rom_converto_lib::config::load_config(cli.config.as_deref())?;
     let preset = rom_converto_lib::config::resolve_preset(&user_config, cli.preset.as_deref())?;
@@ -643,7 +643,7 @@ fn is_cancelled_error(err: &anyhow::Error) -> bool {
 async fn dispatch_command(
     command: Commands,
     progress: IndicatifProgress,
-    total_progress: IndicatifProgress,
+    total_progress: TotalProgress,
     effective: &config::Effective,
     dry_run: bool,
     skip_space_check: bool,
