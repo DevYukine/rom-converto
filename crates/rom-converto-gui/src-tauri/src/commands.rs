@@ -65,11 +65,16 @@ fn err_to_string(e: impl std::fmt::Display) -> String {
 /// Result of a report-capable command. The message drives the operation log;
 /// the optional record is accumulated client-side and handed back to
 /// `cmd_write_report` once the run finishes, matching how the CLI collects
-/// records and writes a single report at the end.
+/// records and writes a single report at the end. `input_bytes`/`output_bytes`
+/// are always populated (independent of the report toggle) so the batch
+/// completion notification can total up space saved without requiring the
+/// user to turn reporting on.
 #[derive(serde::Serialize)]
 pub struct RunOutcome {
     message: String,
     record: Option<ReportRecord>,
+    input_bytes: u64,
+    output_bytes: u64,
 }
 
 impl RunOutcome {
@@ -79,6 +84,8 @@ impl RunOutcome {
         Self {
             message: format!("Skipped existing {}", desired.display()),
             record: build_skip_record(report, input, operation),
+            input_bytes: 0,
+            output_bytes: 0,
         }
     }
 }
@@ -720,6 +727,8 @@ pub async fn cmd_chd_compress(
         return Ok(RunOutcome {
             message: line.display_text(),
             record: None,
+            input_bytes: 0,
+            output_bytes: 0,
         });
     }
     let output = match resolve_output(
@@ -782,6 +791,8 @@ pub async fn cmd_chd_compress(
     Ok(RunOutcome {
         message: format!("Wrote {out_display}"),
         record,
+        input_bytes: in_bytes,
+        output_bytes: input_size(&record_output),
     })
 }
 
@@ -831,6 +842,8 @@ pub async fn cmd_cso_compress(
         return Ok(RunOutcome {
             message: line.display_text(),
             record: None,
+            input_bytes: 0,
+            output_bytes: 0,
         });
     }
     let output = match resolve_output(
@@ -887,6 +900,8 @@ pub async fn cmd_cso_compress(
     Ok(RunOutcome {
         message: format!("Wrote {out_display}"),
         record,
+        input_bytes: in_bytes,
+        output_bytes: input_size(&record_output),
     })
 }
 
@@ -929,6 +944,8 @@ pub async fn cmd_cso_decompress(
         return Ok(RunOutcome {
             message: line.display_text(),
             record: None,
+            input_bytes: 0,
+            output_bytes: 0,
         });
     }
     let output = match resolve_output(
@@ -980,6 +997,8 @@ pub async fn cmd_cso_decompress(
     Ok(RunOutcome {
         message: format!("Wrote {out_display}"),
         record,
+        input_bytes: in_bytes,
+        output_bytes: input_size(&record_output),
     })
 }
 
@@ -1092,6 +1111,8 @@ pub async fn cmd_chd_extract(
         return Ok(RunOutcome {
             message: line.display_text(),
             record: None,
+            input_bytes: 0,
+            output_bytes: 0,
         });
     }
     let out_display = output.display().to_string();
@@ -1139,6 +1160,8 @@ pub async fn cmd_chd_extract(
     Ok(RunOutcome {
         message: format!("Wrote {out_display}"),
         record,
+        input_bytes: 0,
+        output_bytes: 0,
     })
 }
 
@@ -1218,6 +1241,8 @@ pub async fn cmd_compress_disc(
         return Ok(RunOutcome {
             message: line.display_text(),
             record: None,
+            input_bytes: 0,
+            output_bytes: 0,
         });
     }
     let output = match resolve_output(
@@ -1274,6 +1299,8 @@ pub async fn cmd_compress_disc(
     Ok(RunOutcome {
         message: format!("Wrote {out_display}"),
         record,
+        input_bytes: in_bytes,
+        output_bytes: input_size(&record_output),
     })
 }
 
@@ -1317,6 +1344,8 @@ pub async fn cmd_decompress_disc(
         return Ok(RunOutcome {
             message: line.display_text(),
             record: None,
+            input_bytes: 0,
+            output_bytes: 0,
         });
     }
     let output = match resolve_output(
@@ -1377,6 +1406,8 @@ pub async fn cmd_decompress_disc(
     Ok(RunOutcome {
         message: format!("Wrote {out_display}"),
         record,
+        input_bytes: in_bytes,
+        output_bytes: input_size(&record_output),
     })
 }
 
@@ -1588,6 +1619,8 @@ pub async fn cmd_nx_compress(
         return Ok(RunOutcome {
             message: line.display_text(),
             record: None,
+            input_bytes: 0,
+            output_bytes: 0,
         });
     }
     let keys = load_keyset(keys.as_deref()).map_err(err_to_string)?;
@@ -1641,6 +1674,8 @@ pub async fn cmd_nx_compress(
     Ok(RunOutcome {
         message: format!("Wrote {out_display}"),
         record,
+        input_bytes: in_bytes,
+        output_bytes: input_size(&record_output),
     })
 }
 
@@ -1685,6 +1720,8 @@ pub async fn cmd_nx_decompress(
         return Ok(RunOutcome {
             message: line.display_text(),
             record: None,
+            input_bytes: 0,
+            output_bytes: 0,
         });
     }
     let output = match resolve_output(
@@ -1737,6 +1774,8 @@ pub async fn cmd_nx_decompress(
     Ok(RunOutcome {
         message: format!("Wrote {out_display}"),
         record,
+        input_bytes: in_bytes,
+        output_bytes: input_size(&record_output),
     })
 }
 

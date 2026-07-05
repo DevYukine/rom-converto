@@ -125,6 +125,19 @@ tooltip. The Run button is disabled, with a tooltip giving the exact reason, whe
 configuration cannot run, for example when no input is selected, when a queue is empty, or when
 an output template field is set but blank.
 
+## Completion notification and taskbar progress
+
+When a batch finishes and the app window is not focused, the GUI fires a native OS
+notification with a summary such as "42 of 43 done, 1 failed, 18.3 GiB saved". The title
+switches to "Batch finished with errors" when any file failed. A "Completion sound" toggle
+in the sidebar footer plays a short tone alongside the notification; it is off by default and
+the notification itself always fires regardless of the toggle.
+
+While a batch runs, the taskbar (Windows and Linux desktops that support it) or dock icon
+(macOS) advances alongside the per-file progress bar, turns red on failure, and clears when
+the batch finishes or is cancelled. Taskbar and dock progress are best-effort: platforms or
+window managers without support are silently skipped, and the rest of the GUI is unaffected.
+
 ## Configuration
 
 The GUI does not read the config file. Options are set per page in the app. The CLI is the

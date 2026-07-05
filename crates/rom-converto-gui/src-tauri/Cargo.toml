@@ -10,6 +10,7 @@ rom-converto-lib = { path = "../../rom-converto-lib" }
 tauri = { version = "^2", features = [] }
 tauri-plugin-dialog = "^2"
 tauri-plugin-shell = "^2"
+tauri-plugin-notification = "^2"
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["full"] }

@@ -200,6 +200,23 @@ impl ProgressReporter for IndicatifProgress {
 const TOTAL_PROGRESS_TEMPLATE: &str =
     "{msg} [{wide_bar:.green/blue}] {binary_bytes}/{binary_total_bytes} ({eta})";
 
+/// Terminal taskbar progress via OSC 9;4 (Windows Terminal, ConEmu).
+/// Unsupported terminals ignore the sequence; skipped entirely when stderr
+/// is not a terminal. `None` clears the taskbar state.
+fn osc_taskbar(percent: Option<u64>) {
+    use std::io::{IsTerminal, Write};
+    let mut err = std::io::stderr();
+    if !err.is_terminal() {
+        return;
+    }
+    let seq = match percent {
+        Some(p) => format!("\x1b]9;4;1;{p}\x07"),
+        None => "\x1b]9;4;0;0\x07".to_string(),
+    };
+    let _ = err.write_all(seq.as_bytes());
+    let _ = err.flush();
+}
+
 /// Aggregate batch progress bar: files done/total and total bytes across an
 /// entire recursive run, pinned above the per-file `IndicatifProgress` bar on
 /// the same `MultiProgress`.
@@ -208,6 +225,7 @@ pub struct TotalProgress {
     bar: Mutex<Option<ProgressBar>>,
     done: AtomicU64,
     total_files: AtomicU64,
+    taskbar_percent: AtomicU64,
 }
 
 impl TotalProgress {
@@ -217,6 +235,7 @@ impl TotalProgress {
             bar: Mutex::new(None),
             done: AtomicU64::new(0),
             total_files: AtomicU64::new(0),
+            taskbar_percent: AtomicU64::new(0),
         }
     }
 
@@ -241,6 +260,8 @@ impl TotalProgress {
         pg.set_style(style);
         pg.set_message(format!("0/{total_files} files"));
         *self.bar.lock().unwrap() = Some(pg);
+        self.taskbar_percent.store(0, Ordering::Relaxed);
+        osc_taskbar(Some(0));
     }
 
     /// Advance by one finished file (`file_bytes` long, skipped or failed
@@ -256,6 +277,14 @@ impl TotalProgress {
             } else {
                 bar.inc(file_bytes);
             }
+            let percent = match bar.length() {
+                Some(len) if len > 0 => (bar.position() * 100 / len).min(100),
+                _ if total > 0 => (done * 100 / total).min(100),
+                _ => 0,
+            };
+            if self.taskbar_percent.swap(percent, Ordering::Relaxed) != percent {
+                osc_taskbar(Some(percent));
+            }
         }
     }
 
@@ -263,6 +292,7 @@ impl TotalProgress {
         if let Some(bar) = self.bar.lock().unwrap().take() {
             bar.finish_and_clear();
         }
+        osc_taskbar(None);
     }
 }
 

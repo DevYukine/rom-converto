@@ -39,11 +39,17 @@ export function useBatchOperation(
       }
     }
 
+    const notify = useBatchNotify();
+    await notify.clearTaskbar();
+
     let doneCount = 0;
     let errorCount = 0;
     let cancelledCount = 0;
+    let savedBytes = 0;
 
-    for (let i = 0; i < queue.value.length; i++) {
+    const total = queue.value.length;
+
+    for (let i = 0; i < total; i++) {
       if (aborted.value) break;
 
       // noUncheckedIndexedAccess widens `queue[i]` to `T | undefined`.
@@ -53,6 +59,7 @@ export function useBatchOperation(
       if (item.status === "done" || item.status === "error") {
         if (item.status === "done") doneCount++;
         if (item.status === "error") errorCount++;
+        await notify.setTaskbarProgress((i + 1) / total);
         continue;
       }
 
@@ -62,8 +69,9 @@ export function useBatchOperation(
 
       try {
         const res = await invoke<unknown>(commandName, buildArgs(item));
-        // Report-capable commands return a { message, record } object; the
-        // rest return a plain string. Display the message either way.
+        // Report-capable commands return a RunOutcome object (message, record,
+        // input_bytes, output_bytes); the rest return a plain string. Display
+        // the message either way.
         const display =
           typeof res === "object" && res !== null
             ? String((res as { message?: unknown }).message ?? res)
@@ -80,6 +88,17 @@ export function useBatchOperation(
           item.result = display;
           onItemResult?.(res, item);
           doneCount++;
+
+          // input_bytes/output_bytes are always present on report-capable
+          // commands (unlike `record`, which only exists when reporting is on),
+          // so the saved-space summary works without the user enabling reports.
+          const outcome =
+            typeof res === "object" && res !== null
+              ? (res as { input_bytes?: unknown; output_bytes?: unknown })
+              : null;
+          if (outcome && typeof outcome.input_bytes === "number" && typeof outcome.output_bytes === "number") {
+            savedBytes += Math.max(0, outcome.input_bytes - outcome.output_bytes);
+          }
         }
       } catch (e) {
         const message = String(e);
@@ -94,12 +113,13 @@ export function useBatchOperation(
         errorCount++;
         await onItemError?.(item, message);
       }
+
+      await notify.setTaskbarProgress((i + 1) / total);
     }
 
     running.value = false;
     currentIndex.value = -1;
 
-    const total = queue.value.length;
     if (errorCount === 0 && cancelledCount === 0) {
       resultRef.value = `All ${total} files processed successfully`;
     } else {
@@ -107,6 +127,23 @@ export function useBatchOperation(
       if (errorCount > 0) summary += `, ${errorCount} failed`;
       if (cancelledCount > 0) summary += `, ${cancelledCount} cancelled`;
       resultRef.value = summary;
+    }
+
+    if (total > 0) {
+      const { soundEnabled } = useNotifyPrefs();
+      let body = `${doneCount} of ${total} done`;
+      if (errorCount > 0) body += `, ${errorCount} failed`;
+      if (cancelledCount > 0) body += `, ${cancelledCount} cancelled`;
+      if (savedBytes > 0) body += `, ${notify.formatBytes(savedBytes)} saved`;
+      if (!document.hasFocus()) {
+        const title = errorCount > 0 ? "Batch finished with errors" : "Batch finished";
+        await notify.notifyBatchDone(title, body, soundEnabled.value);
+      }
+      if (errorCount > 0) {
+        await notify.taskbarError();
+      } else {
+        await notify.clearTaskbar();
+      }
     }
   }
 
@@ -117,6 +154,7 @@ export function useBatchOperation(
     } catch {
       // The running task may have already finished; nothing to cancel.
     }
+    await useBatchNotify().clearTaskbar();
   }
 
   return { running, currentIndex, progress, start, abort };

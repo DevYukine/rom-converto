@@ -46,6 +46,8 @@ invoke<string>("app_display_version")
   })
   .catch(() => {});
 
+const { soundEnabled } = useNotifyPrefs();
+
 type SidebarLink = {
   to: string;
   label: string;
@@ -353,7 +355,8 @@ function isActiveSection(key: string): boolean {
       </div>
 
       <div class="border-t border-zinc-800/50 px-5 py-3">
-        <span class="text-[11px] text-zinc-400">{{ appVersion ? (appVersion.startsWith('dev-') ? appVersion : `v${appVersion}`) : '' }}</span>
+        <FlagToggle v-model="soundEnabled" label="Completion sound" />
+        <span class="mt-1 block text-[11px] text-zinc-400">{{ appVersion ? (appVersion.startsWith('dev-') ? appVersion : `v${appVersion}`) : '' }}</span>
       </div>
     </nav>
 

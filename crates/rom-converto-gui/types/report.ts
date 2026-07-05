@@ -27,4 +27,6 @@ export interface ReportTotals {
 export interface RunOutcome {
   message: string;
   record: ReportRecord | null;
+  input_bytes: number;
+  output_bytes: number;
 }
