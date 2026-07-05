@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { storeToRefs } from "pinia";
 import { useCtrConvertStore } from "~/stores/ctr-convert";
+import type { ComparisonSummary, ReportRecord, RunOutcome } from "~/types/report";
 
 const store = useCtrConvertStore();
-const { input, output, onConflict, skipSpaceCheck, outputTemplate, result, error, loading, queue, recursive, maxDepth } = storeToRefs(store);
+const { input, output, onConflict, skipSpaceCheck, outputTemplate, verifyAfter, result, error, loading, queue, recursive, maxDepth } = storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
 const { expand } = useFolderScan(["cia", "3ds", "cci"]);
 const scanDepth = () => (recursive.value ? maxDepth.value : 1);
-const { run, cancelled, abort } = useOperation({ result, error, loading });
+const { cancelled, abort } = useOperation({ result, error, loading });
 const progress = useProgress("ctr-convert");
 
 const previewMode = ref(false);
@@ -26,6 +27,7 @@ function convertArgs(inputPath: string, outputPath: string) {
     onConflict: onConflict.value,
     skipSpaceCheck: skipSpaceCheck.value,
     outputTemplate: tmpl,
+    verifyAfter: verifyAfter.value,
     dryRun: previewMode.value,
   };
 }
@@ -33,6 +35,7 @@ function convertArgs(inputPath: string, outputPath: string) {
 const batch = useBatchOperation("ctr-convert", "cmd_convert_ctr", (item) =>
   convertArgs(item.input, item.output),
 );
+const comparisons = ref<ComparisonSummary[]>([]);
 
 function getExt(path: string): string {
   const dot = path.lastIndexOf(".");
@@ -78,14 +81,19 @@ async function handleSingleFile(path: string) {
 
 async function execute() {
   progress.reset();
+  comparisons.value = [];
   if (isBatch.value) {
     const rep = queue.value.find((i) => i.status === "pending") ?? queue.value[0];
     commandLine.value = rep ? buildCliCommand("cmd_convert_ctr", convertArgs(rep.input, rep.output)) : "";
-    await batch.start(queue, result, { errorRef: error });
+    await batch.start(queue, result, { errorRef: error }, (res) => {
+      const comparison = (res as RunOutcome)?.comparison;
+      if (comparison) comparisons.value.push(comparison);
+    });
   } else {
     const args = convertArgs(input.value, output.value);
     commandLine.value = buildCliCommand("cmd_convert_ctr", args);
-    await run("cmd_convert_ctr", args);
+    const records: ReportRecord[] = [];
+    await runReportable("cmd_convert_ctr", args, { result, error, loading, cancelled }, records, "convert", comparisons.value);
   }
 }
 
@@ -120,6 +128,10 @@ function onRun() {
 
     <div class="mb-4">
       <OutputLog :command="commandLine" :result="result" :preview="preview" :cancelled="cancelled ? 'Operation cancelled.' : undefined" :error="error" />
+    </div>
+
+    <div class="mb-4">
+      <ComparisonList :comparisons="comparisons" />
     </div>
 
     <OperationCard>
@@ -212,6 +224,12 @@ function onRun() {
           :percent="progress.percent.value"
           :message="progress.message.value"
           :running="progress.running.value"
+        />
+
+        <FlagToggle
+          v-model="verifyAfter"
+          label="Compute output hash"
+          description="Hash each output after writing it. CIA/CCI conversion has no integrity check to run."
         />
 
         <FlagToggle

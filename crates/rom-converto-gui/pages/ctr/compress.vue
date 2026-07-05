@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { storeToRefs } from "pinia";
 import { useCtrCompressStore } from "~/stores/ctr-compress";
+import type { ComparisonSummary, RunOutcome } from "~/types/report";
 
 const store = useCtrCompressStore();
 const { input, output, level, allowEncrypted, onConflict, skipSpaceCheck, outputTemplate, result, error, loading, queue, recursive, maxDepth } = storeToRefs(store);
@@ -37,6 +38,8 @@ const batch = useBatchOperation("compress", "cmd_compress_rom", (item) =>
   compressArgs(item.input, item.output),
 );
 
+const comparisons = ref<ComparisonSummary[]>([]);
+
 watch([input, outputDir], () => {
   if (input.value) output.value = resolve(deriveCompressedPath(input.value));
 });
@@ -68,14 +71,20 @@ async function handleSingleFile(path: string) {
 
 async function execute() {
   progress.reset();
+  comparisons.value = [];
   if (isBatch.value) {
     const rep = queue.value.find((i) => i.status === "pending") ?? queue.value[0];
     commandLine.value = rep ? buildCliCommand("cmd_compress_rom", compressArgs(rep.input, rep.output)) : "";
-    await batch.start(queue, result, { errorRef: error });
+    await batch.start(queue, result, { errorRef: error }, (res) => {
+      const comparison = (res as RunOutcome)?.comparison;
+      if (comparison) comparisons.value.push(comparison);
+    });
   } else {
     const args = compressArgs(input.value, output.value);
     commandLine.value = buildCliCommand("cmd_compress_rom", args);
-    await run("cmd_compress_rom", args);
+    const res = await run("cmd_compress_rom", args);
+    const comparison = (res as RunOutcome)?.comparison;
+    if (comparison) comparisons.value.push(comparison);
   }
 }
 
@@ -110,6 +119,10 @@ function onRun() {
 
     <div class="mb-4">
       <OutputLog :command="commandLine" :result="result" :preview="preview" :cancelled="cancelled ? 'Operation cancelled.' : undefined" :error="error" />
+    </div>
+
+    <div class="mb-4">
+      <ComparisonList :comparisons="comparisons" />
     </div>
 
     <OperationCard>

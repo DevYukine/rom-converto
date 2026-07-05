@@ -2,7 +2,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { storeToRefs } from "pinia";
 import { useChdExtractStore } from "~/stores/chd-extract";
-import type { ReportRecord, RunOutcome } from "~/types/report";
+import type { ComparisonSummary, ReportRecord, RunOutcome } from "~/types/report";
 
 const store = useChdExtractStore();
 const { input, output, parent, skipSpaceCheck, outputTemplate, reportFile, result, error, loading, queue, recursive, maxDepth } = storeToRefs(store);
@@ -36,6 +36,8 @@ function extractArgs(inputPath: string, outputPath: string) {
 const batch = useBatchOperation("chd-extract", "cmd_chd_extract", (item) =>
   extractArgs(item.input, item.output),
 );
+
+const comparisons = ref<ComparisonSummary[]>([]);
 
 // DVD-mode CHDs extract to a single .iso, CD-mode to .cue/.bin;
 // the mode is only knowable from the file's metadata.
@@ -82,6 +84,7 @@ async function handleSingleFile(path: string) {
 async function execute() {
   progress.reset();
   const records: ReportRecord[] = [];
+  comparisons.value = [];
   if (isBatch.value) {
     const rep = queue.value.find((i) => i.status === "pending") ?? queue.value[0];
     commandLine.value = rep ? buildCliCommand("cmd_chd_extract", extractArgs(rep.input, rep.output)) : "";
@@ -92,6 +95,8 @@ async function execute() {
       (res) => {
         const record = (res as RunOutcome)?.record;
         if (record) records.push(record);
+        const comparison = (res as RunOutcome)?.comparison;
+        if (comparison) comparisons.value.push(comparison);
       },
       async (item, err) => {
         if (reportFile.value) await pushFailedRecord(records, item.input, "extract", err);
@@ -100,7 +105,7 @@ async function execute() {
   } else {
     const args = extractArgs(input.value, output.value);
     commandLine.value = buildCliCommand("cmd_chd_extract", args);
-    await runReportable("cmd_chd_extract", args, { result, error, loading, cancelled }, records, "extract");
+    await runReportable("cmd_chd_extract", args, { result, error, loading, cancelled }, records, "extract", comparisons.value);
   }
   if (reportFile.value && records.length) {
     await writeRunReport(reportFile.value, records);
@@ -138,6 +143,10 @@ function onRun() {
 
     <div class="mb-4">
       <OutputLog :command="commandLine" :result="result" :preview="preview" :cancelled="cancelled ? 'Operation cancelled.' : undefined" :error="error" />
+    </div>
+
+    <div class="mb-4">
+      <ComparisonList :comparisons="comparisons" />
     </div>
 
     <OperationCard>

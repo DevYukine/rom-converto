@@ -1,6 +1,6 @@
 import type { Ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import type { ReportRecord, ReportTotals, RunOutcome } from "~/types/report";
+import type { ComparisonSummary, ReportRecord, ReportTotals, RunOutcome } from "~/types/report";
 
 interface ReportableRefs {
   result: Ref<string>;
@@ -54,6 +54,7 @@ export async function runReportable(
   refs: ReportableRefs,
   records: ReportRecord[],
   operation: string,
+  comparisons?: ComparisonSummary[],
 ): Promise<void> {
   refs.result.value = "";
   refs.error.value = "";
@@ -63,6 +64,7 @@ export async function runReportable(
     const res = await invoke<RunOutcome>(command, args);
     refs.result.value = res.message;
     if (res.record) records.push(res.record);
+    if (comparisons && res.comparison) comparisons.push(res.comparison);
   } catch (e) {
     const message = String(e);
     if (message.includes("operation cancelled")) {

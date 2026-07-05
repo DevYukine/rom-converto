@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { storeToRefs } from "pinia";
 import { useCsoCompressStore } from "~/stores/cso-compress";
-import type { ReportRecord, RunOutcome } from "~/types/report";
+import type { ComparisonSummary, ReportRecord, RunOutcome } from "~/types/report";
 
 const store = useCsoCompressStore();
-const { input, output, format, onConflict, skipSpaceCheck, blockSize, outputTemplate, reportFile, result, error, loading, queue, recursive, maxDepth } = storeToRefs(store);
+const { input, output, format, onConflict, skipSpaceCheck, blockSize, outputTemplate, reportFile, verifyAfter, result, error, loading, queue, recursive, maxDepth } = storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
 const { expand } = useFolderScan(["iso"]);
 const scanDepth = () => (recursive.value ? maxDepth.value : 1);
@@ -36,6 +36,7 @@ function csoArgs(inputPath: string, outputPath: string) {
     outputTemplate: tmpl,
     report: !!reportFile.value,
     reportFile: reportFile.value || null,
+    verifyAfter: verifyAfter.value,
     dryRun: previewMode.value,
   };
 }
@@ -43,6 +44,7 @@ function csoArgs(inputPath: string, outputPath: string) {
 const batch = useBatchOperation("cso-compress", "cmd_cso_compress", (item) =>
   csoArgs(item.input, item.output),
 );
+const comparisons = ref<ComparisonSummary[]>([]);
 
 watch([input, outputDir], () => {
   if (input.value) output.value = resolve(deriveCsoPath(input.value, format.value));
@@ -83,6 +85,7 @@ async function handleSingleFile(path: string) {
 async function execute() {
   progress.reset();
   const records: ReportRecord[] = [];
+  comparisons.value = [];
   if (isBatch.value) {
     const rep = queue.value.find((i) => i.status === "pending") ?? queue.value[0];
     commandLine.value = rep ? buildCliCommand("cmd_cso_compress", csoArgs(rep.input, rep.output)) : "";
@@ -93,6 +96,8 @@ async function execute() {
       (res) => {
         const record = (res as RunOutcome)?.record;
         if (record) records.push(record);
+        const comparison = (res as RunOutcome)?.comparison;
+        if (comparison) comparisons.value.push(comparison);
       },
       async (item, err) => {
         if (reportFile.value) await pushFailedRecord(records, item.input, "compress", err);
@@ -101,7 +106,7 @@ async function execute() {
   } else {
     const args = csoArgs(input.value, output.value);
     commandLine.value = buildCliCommand("cmd_cso_compress", args);
-    await runReportable("cmd_cso_compress", args, { result, error, loading, cancelled }, records, "compress");
+    await runReportable("cmd_cso_compress", args, { result, error, loading, cancelled }, records, "compress", comparisons.value);
   }
   if (reportFile.value && records.length) {
     await writeRunReport(reportFile.value, records);
@@ -139,6 +144,10 @@ function onRun() {
 
     <div class="mb-4">
       <OutputLog :command="commandLine" :result="result" :preview="preview" :cancelled="cancelled ? 'Operation cancelled.' : undefined" :error="error" />
+    </div>
+
+    <div class="mb-4">
+      <ComparisonList :comparisons="comparisons" />
     </div>
 
     <OperationCard>
@@ -213,6 +222,11 @@ function onRun() {
             v-model="skipSpaceCheck"
             label="Skip free space check"
             description="Proceed even if the output filesystem looks too full to hold the result."
+          />
+          <FlagToggle
+            v-model="verifyAfter"
+            label="Verify after conversion"
+            description="Re-check each output after writing it and note whether the format supports a full round-trip decode."
           />
           <FlagToggle
             v-model="previewMode"

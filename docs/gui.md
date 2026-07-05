@@ -118,6 +118,19 @@ field is hidden once files are queued for a batch. The template resolves through
 library functions as the CLI, so the resolved path matches. An output template and an explicit
 output path are mutually exclusive: entering a template disables the explicit output field.
 
+## Comparison card
+
+The compress-to-CHD, compress-to-CSO/ZSO, compress-to-RVZ (GameCube and Wii), compress-to-NSZ/XCZ,
+and CIA/CCI convert pages show a comparison card above the output log after each file finishes.
+It lists the input and output size with the percent saved (or grown), the format transition (for
+example ISO to RVZ), and, when the "Verify after conversion" toggle is on, the output's SHA-1 and
+a verify badge. CHD, CSO/ZSO, and NSZ/XCZ re-decompress the whole output and note a round trip;
+RVZ verifies structure without a full decode; CIA/CCI conversion has no integrity check to run, so
+no badge is shown. If an NSZ/XCZ output can't actually be checked (for example the keyset has no
+header key), the card reports it as not verified rather than showing a false pass.
+Batch runs show one card per file. The toggle is off by default, since verification re-reads the
+output and adds time proportional to its size.
+
 ## Option gating
 
 The GUI disables options that do not apply to the current selection and explains why with a

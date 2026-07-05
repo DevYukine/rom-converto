@@ -7,6 +7,7 @@ export const useCtrConvertStore = defineStore("ctr-convert", () => {
   const onConflict = ref("overwrite");
   const skipSpaceCheck = ref(false);
   const outputTemplate = ref("");
+  const verifyAfter = ref(false);
 
   const result = ref("");
   const error = ref("");
@@ -39,6 +40,7 @@ export const useCtrConvertStore = defineStore("ctr-convert", () => {
     onConflict.value = "overwrite";
     skipSpaceCheck.value = false;
     outputTemplate.value = "";
+    verifyAfter.value = false;
     result.value = "";
     error.value = "";
     loading.value = false;
@@ -53,6 +55,7 @@ export const useCtrConvertStore = defineStore("ctr-convert", () => {
     onConflict,
     skipSpaceCheck,
     outputTemplate,
+    verifyAfter,
     result,
     error,
     loading,

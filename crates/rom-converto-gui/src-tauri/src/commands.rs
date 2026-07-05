@@ -39,7 +39,7 @@ use rom_converto_lib::nintendo::nx::{
 use rom_converto_lib::nintendo::rvl::verify::{RvlVerifyOptions, verify_rvl};
 use rom_converto_lib::nintendo::rvz::{
     RvzCompressOptions, compress_disc_cancellable, decompress_disc_cancellable,
-    decompress_disc_to_wbfs_cancellable, derive_disc_path, derive_rvz_path,
+    decompress_disc_to_wbfs_cancellable, derive_disc_path, derive_rvz_path, verify_rvz_structure,
 };
 use rom_converto_lib::nintendo::wup::{
     TitleInput, WupCompressOptions, compress_titles_async_cancellable,
@@ -75,6 +75,7 @@ pub struct RunOutcome {
     record: Option<ReportRecord>,
     input_bytes: u64,
     output_bytes: u64,
+    comparison: Option<ComparisonSummary>,
 }
 
 impl RunOutcome {
@@ -86,8 +87,225 @@ impl RunOutcome {
             record: build_skip_record(report, input, operation),
             input_bytes: 0,
             output_bytes: 0,
+            comparison: None,
         }
     }
+
+    /// A plain message outcome with no record or size data (dry-run plans).
+    fn text(message: String) -> Self {
+        Self {
+            message,
+            record: None,
+            input_bytes: 0,
+            output_bytes: 0,
+            comparison: None,
+        }
+    }
+}
+
+/// Verify verdict shown on a comparison card. `round_trip` is only set when
+/// the format's check re-decodes the whole output (Chd, Cso, Nx) and that
+/// check actually ran and passed. Formats with no integrity check
+/// (`OutputVerify::None`) never produce a `VerifyReport` at all, so the card
+/// cannot show a "Verified" badge for a check that never ran.
+#[derive(serde::Serialize)]
+pub struct VerifyReport {
+    ok: bool,
+    round_trip: bool,
+    message: String,
+}
+
+/// Before/after summary for one conversion, shown as a comparison card once
+/// the run finishes. Always populated on success regardless of the report
+/// toggle; `verify` is only filled in when the caller asked for a
+/// post-conversion check, since that re-reads the whole output file.
+#[derive(serde::Serialize)]
+pub struct ComparisonSummary {
+    input_bytes: u64,
+    output_bytes: u64,
+    ratio_pct: Option<f64>,
+    input_format: String,
+    output_format: String,
+    output_sha1: Option<String>,
+    verify: Option<VerifyReport>,
+}
+
+fn verify_report(ok: bool, round_trip: bool, message: impl Into<String>) -> Option<VerifyReport> {
+    Some(VerifyReport {
+        ok,
+        round_trip,
+        message: message.into(),
+    })
+}
+
+/// Run the format-specific integrity check for the comparison card. Unlike
+/// `verify_existing_output` (used for the `--on-conflict overwrite-invalid`
+/// keep-versus-rewrite decision), this never treats "could not check" as a
+/// pass: a missing NX header key or a verify error is reported as its own
+/// unverified state rather than a green "Verified" badge.
+async fn run_comparison_verify(
+    progress: &dyn ProgressReporter,
+    output: &Path,
+    target: rom_converto_lib::util::OutputVerify,
+    cancel: &CancelToken,
+) -> Option<VerifyReport> {
+    use rom_converto_lib::util::OutputVerify;
+    match target {
+        OutputVerify::None => None,
+        OutputVerify::Chd => {
+            let ok =
+                verify_chd_cancellable(progress, output.to_path_buf(), None, false, cancel.clone())
+                    .await
+                    .is_ok();
+            verify_report(
+                ok,
+                ok,
+                if ok {
+                    "Verified"
+                } else {
+                    "Verification failed"
+                },
+            )
+        }
+        OutputVerify::Cso => {
+            let ok = verify_cso(progress, output.to_path_buf(), true)
+                .await
+                .is_ok();
+            verify_report(
+                ok,
+                ok,
+                if ok {
+                    "Verified"
+                } else {
+                    "Verification failed"
+                },
+            )
+        }
+        OutputVerify::Rvz => {
+            let ok = verify_rvz_structure(output)
+                .map(|r| r.ok())
+                .unwrap_or(false);
+            verify_report(
+                ok,
+                false,
+                if ok {
+                    "Verified"
+                } else {
+                    "Verification failed"
+                },
+            )
+        }
+        OutputVerify::Nx(keys) => {
+            if keys.header_key.is_none() {
+                return verify_report(false, false, "Could not verify: keyset has no header key");
+            }
+            match verify_container_async(output.to_path_buf(), *keys, progress).await {
+                Ok(result) => verify_report(
+                    result.ok,
+                    result.ok,
+                    if result.ok {
+                        "Verified"
+                    } else {
+                        "Verification failed"
+                    },
+                ),
+                Err(e) => verify_report(false, false, format!("Could not verify: {e}")),
+            }
+        }
+    }
+}
+
+/// Size/ratio/format comparison for one conversion, with no verify pass and
+/// no output hash. Used directly by operations that never re-read their
+/// output (decompress, extract) and as the base for `build_comparison`.
+fn comparison_sizes(
+    input: &Path,
+    output: &Path,
+    input_bytes: u64,
+    output_bytes: u64,
+) -> ComparisonSummary {
+    let ratio_pct = if input_bytes > 0 {
+        let saved = (1.0 - output_bytes as f64 / input_bytes as f64) * 100.0;
+        Some((saved * 10.0).round() / 10.0)
+    } else {
+        None
+    };
+    ComparisonSummary {
+        input_bytes,
+        output_bytes,
+        ratio_pct,
+        input_format: ext_of(input).to_ascii_uppercase(),
+        output_format: ext_of(output).to_ascii_uppercase(),
+        output_sha1: None,
+        verify: None,
+    }
+}
+
+/// Build the comparison card data for a successful conversion. Sizes, the
+/// ratio, and format labels are always computed; the verify pass and output
+/// hash only run when `verify_after` is set, since both re-read the output
+/// file in full. The output hash is computed under `spawn_blocking` so a
+/// multi-GB file doesn't stall the async runtime, and observes `cancel` so
+/// it can be interrupted like the conversion it follows.
+#[allow(clippy::too_many_arguments)]
+async fn build_comparison(
+    progress: Arc<dyn ProgressReporter>,
+    input: &Path,
+    output: &Path,
+    input_bytes: u64,
+    output_bytes: u64,
+    target: rom_converto_lib::util::OutputVerify,
+    verify_after: bool,
+    cancel: &CancelToken,
+) -> ComparisonSummary {
+    let mut summary = comparison_sizes(input, output, input_bytes, output_bytes);
+
+    let (verify, output_sha1) = if verify_after {
+        let verify = run_comparison_verify(progress.as_ref(), output, target, cancel).await;
+
+        let output_owned = output.to_path_buf();
+        let progress_for_hash = progress.clone();
+        let cancel_for_hash = cancel.clone();
+        let sha1 = tokio::task::spawn_blocking(move || {
+            hash_file_cancellable(
+                &output_owned,
+                &[HashAlgo::Sha1],
+                progress_for_hash.as_ref(),
+                &cancel_for_hash,
+            )
+        })
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .and_then(|d| d.sha1);
+
+        (verify, sha1)
+    } else {
+        (None, None)
+    };
+
+    summary.output_sha1 = output_sha1;
+    summary.verify = verify;
+    summary
+}
+
+/// Total bytes written by a CHD extraction: the named output plus, for cue
+/// sheets, every data file the sheet references.
+fn extracted_output_size(output: &Path) -> u64 {
+    let mut total = input_size(output);
+    if ext_of(output).eq_ignore_ascii_case("cue")
+        && let Ok(text) = std::fs::read_to_string(output)
+    {
+        let dir = output.parent().unwrap_or_else(|| Path::new("."));
+        for line in text.lines() {
+            if let Some(rest) = line.trim().strip_prefix("FILE ")
+                && let Some(name) = rest.split('"').nth(1)
+            {
+                total += input_size(&dir.join(name));
+            }
+        }
+    }
+    total
 }
 
 #[derive(serde::Deserialize)]
@@ -471,7 +689,7 @@ pub async fn cmd_decrypt_rom(
     skip_space_check: bool,
     output_template: Option<String>,
     dry_run: Option<bool>,
-) -> Result<String, String> {
+) -> Result<RunOutcome, String> {
     let progress = Arc::new(TauriProgress::new(app, "decrypt"));
     let dry_run = dry_run.unwrap_or(false);
     let ext = ext_of(&derive_decrypted_path(&input));
@@ -496,7 +714,7 @@ pub async fn cmd_decrypt_rom(
             None,
         )
         .await?;
-        return Ok(line.display_text());
+        return Ok(RunOutcome::text(line.display_text()));
     }
     let output = match resolve_output(
         progress.as_ref(),
@@ -507,7 +725,12 @@ pub async fn cmd_decrypt_rom(
     .await?
     {
         Some(p) => p,
-        None => return Ok(format!("Skipped existing {}", desired.display())),
+        None => {
+            return Ok(RunOutcome::text(format!(
+                "Skipped existing {}",
+                desired.display()
+            )));
+        }
     };
     let out_display = output.display().to_string();
     preflight_space(
@@ -515,6 +738,9 @@ pub async fn cmd_decrypt_rom(
         input_size(&input),
         skip_space_check,
     )?;
+    let record_input = input.clone();
+    let record_output = output.clone();
+    let in_bytes = input_size(&input);
     let token = begin(&state).await;
     // The streaming decrypt holds the worker-pool receiver across await points,
     // so its future is not Send; run on a dedicated thread with its own runtime.
@@ -538,7 +764,19 @@ pub async fn cmd_decrypt_rom(
     });
     finish(&state).await;
     result??;
-    Ok(format!("Wrote {out_display}"))
+    let out_bytes = input_size(&record_output);
+    Ok(RunOutcome {
+        message: format!("Wrote {out_display}"),
+        record: None,
+        input_bytes: in_bytes,
+        output_bytes: out_bytes,
+        comparison: Some(comparison_sizes(
+            &record_input,
+            &record_output,
+            in_bytes,
+            out_bytes,
+        )),
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -554,7 +792,7 @@ pub async fn cmd_compress_rom(
     skip_space_check: bool,
     output_template: Option<String>,
     dry_run: Option<bool>,
-) -> Result<String, String> {
+) -> Result<RunOutcome, String> {
     let progress = Arc::new(TauriProgress::new(app, "compress"));
     let dry_run = dry_run.unwrap_or(false);
     let ext = ext_of(&derive_compressed_path(&input));
@@ -579,7 +817,7 @@ pub async fn cmd_compress_rom(
             None,
         )
         .await?;
-        return Ok(line.display_text());
+        return Ok(RunOutcome::text(line.display_text()));
     }
     let output = match resolve_output(
         progress.as_ref(),
@@ -590,7 +828,12 @@ pub async fn cmd_compress_rom(
     .await?
     {
         Some(p) => p,
-        None => return Ok(format!("Skipped existing {}", desired.display())),
+        None => {
+            return Ok(RunOutcome::text(format!(
+                "Skipped existing {}",
+                desired.display()
+            )));
+        }
     };
     let out_display = output.display().to_string();
     preflight_space(
@@ -598,6 +841,9 @@ pub async fn cmd_compress_rom(
         input_size(&input),
         skip_space_check,
     )?;
+    let record_input = input.clone();
+    let record_output = output.clone();
+    let in_bytes = input_size(&input);
     let token = begin(&state).await;
     let result = tokio::spawn(async move {
         compress_rom_cancellable(
@@ -615,7 +861,19 @@ pub async fn cmd_compress_rom(
     .map_err(err_to_string);
     finish(&state).await;
     result?;
-    Ok(format!("Wrote {out_display}"))
+    let out_bytes = input_size(&record_output);
+    Ok(RunOutcome {
+        message: format!("Wrote {out_display}"),
+        record: None,
+        input_bytes: in_bytes,
+        output_bytes: out_bytes,
+        comparison: Some(comparison_sizes(
+            &record_input,
+            &record_output,
+            in_bytes,
+            out_bytes,
+        )),
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -629,7 +887,7 @@ pub async fn cmd_decompress_rom(
     skip_space_check: bool,
     output_template: Option<String>,
     dry_run: Option<bool>,
-) -> Result<String, String> {
+) -> Result<RunOutcome, String> {
     let progress = Arc::new(TauriProgress::new(app, "decompress"));
     let dry_run = dry_run.unwrap_or(false);
     let ext = ext_of(&derive_decompressed_path(&input));
@@ -654,7 +912,7 @@ pub async fn cmd_decompress_rom(
             None,
         )
         .await?;
-        return Ok(line.display_text());
+        return Ok(RunOutcome::text(line.display_text()));
     }
     let output = match resolve_output(
         progress.as_ref(),
@@ -665,7 +923,12 @@ pub async fn cmd_decompress_rom(
     .await?
     {
         Some(p) => p,
-        None => return Ok(format!("Skipped existing {}", desired.display())),
+        None => {
+            return Ok(RunOutcome::text(format!(
+                "Skipped existing {}",
+                desired.display()
+            )));
+        }
     };
     let out_display = output.display().to_string();
     preflight_space(
@@ -673,6 +936,9 @@ pub async fn cmd_decompress_rom(
         input_size(&input),
         skip_space_check,
     )?;
+    let record_input = input.clone();
+    let record_output = output.clone();
+    let in_bytes = input_size(&input);
     let token = begin(&state).await;
     let result = tokio::spawn(async move {
         decompress_rom_cancellable(&input, &output, progress.as_ref(), token).await
@@ -682,7 +948,19 @@ pub async fn cmd_decompress_rom(
     .map_err(err_to_string);
     finish(&state).await;
     result?;
-    Ok(format!("Wrote {out_display}"))
+    let out_bytes = input_size(&record_output);
+    Ok(RunOutcome {
+        message: format!("Wrote {out_display}"),
+        record: None,
+        input_bytes: in_bytes,
+        output_bytes: out_bytes,
+        comparison: Some(comparison_sizes(
+            &record_input,
+            &record_output,
+            in_bytes,
+            out_bytes,
+        )),
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -699,6 +977,7 @@ pub async fn cmd_chd_compress(
     skip_space_check: bool,
     output_template: Option<String>,
     report: Option<bool>,
+    verify_after: Option<bool>,
     dry_run: Option<bool>,
 ) -> Result<RunOutcome, String> {
     let progress = Arc::new(TauriProgress::new(app, "chd-compress"));
@@ -729,6 +1008,7 @@ pub async fn cmd_chd_compress(
             record: None,
             input_bytes: 0,
             output_bytes: 0,
+            comparison: None,
         });
     }
     let output = match resolve_output(
@@ -768,7 +1048,9 @@ pub async fn cmd_chd_compress(
     let in_bytes = input_size(&input_path);
     let record_input = input_path.clone();
     let record_output = output.clone();
+    let progress_for_verify = progress.clone();
     let token = begin(&state).await;
+    let token_for_verify = token.clone();
     let started = Instant::now();
     let result = tokio::spawn(async move {
         convert_disc_to_chd_cancellable(progress.as_ref(), input_path, output, mode, opts, token)
@@ -779,20 +1061,33 @@ pub async fn cmd_chd_compress(
     .map_err(err_to_string);
     finish(&state).await;
     result?;
+    let out_bytes = input_size(&record_output);
     let record = build_record(
         report.unwrap_or(false),
         &record_input,
         &record_output,
         "compress",
         in_bytes,
-        input_size(&record_output),
+        out_bytes,
         started.elapsed(),
     );
+    let comparison = build_comparison(
+        progress_for_verify,
+        &record_input,
+        &record_output,
+        in_bytes,
+        out_bytes,
+        rom_converto_lib::util::OutputVerify::Chd,
+        verify_after.unwrap_or(false),
+        &token_for_verify,
+    )
+    .await;
     Ok(RunOutcome {
         message: format!("Wrote {out_display}"),
         record,
         input_bytes: in_bytes,
-        output_bytes: input_size(&record_output),
+        output_bytes: out_bytes,
+        comparison: Some(comparison),
     })
 }
 
@@ -809,6 +1104,7 @@ pub async fn cmd_cso_compress(
     skip_space_check: bool,
     output_template: Option<String>,
     report: Option<bool>,
+    verify_after: Option<bool>,
     dry_run: Option<bool>,
 ) -> Result<RunOutcome, String> {
     let format = match format.as_str() {
@@ -844,6 +1140,7 @@ pub async fn cmd_cso_compress(
             record: None,
             input_bytes: 0,
             output_bytes: 0,
+            comparison: None,
         });
     }
     let output = match resolve_output(
@@ -878,7 +1175,9 @@ pub async fn cmd_cso_compress(
     let in_bytes = input_size(&input_path);
     let record_input = input_path.clone();
     let record_output = output.clone();
+    let progress_for_verify = progress.clone();
     let token = begin(&state).await;
+    let token_for_verify = token.clone();
     let started = Instant::now();
     let result = tokio::spawn(async move {
         compress_to_cso_cancellable(progress.as_ref(), input_path, output, opts, token).await
@@ -888,20 +1187,33 @@ pub async fn cmd_cso_compress(
     .map_err(err_to_string);
     finish(&state).await;
     result?;
+    let out_bytes = input_size(&record_output);
     let record = build_record(
         report.unwrap_or(false),
         &record_input,
         &record_output,
         "compress",
         in_bytes,
-        input_size(&record_output),
+        out_bytes,
         started.elapsed(),
     );
+    let comparison = build_comparison(
+        progress_for_verify,
+        &record_input,
+        &record_output,
+        in_bytes,
+        out_bytes,
+        rom_converto_lib::util::OutputVerify::Cso,
+        verify_after.unwrap_or(false),
+        &token_for_verify,
+    )
+    .await;
     Ok(RunOutcome {
         message: format!("Wrote {out_display}"),
         record,
         input_bytes: in_bytes,
-        output_bytes: input_size(&record_output),
+        output_bytes: out_bytes,
+        comparison: Some(comparison),
     })
 }
 
@@ -946,6 +1258,7 @@ pub async fn cmd_cso_decompress(
             record: None,
             input_bytes: 0,
             output_bytes: 0,
+            comparison: None,
         });
     }
     let output = match resolve_output(
@@ -999,6 +1312,12 @@ pub async fn cmd_cso_decompress(
         record,
         input_bytes: in_bytes,
         output_bytes: input_size(&record_output),
+        comparison: Some(comparison_sizes(
+            &record_input,
+            &record_output,
+            in_bytes,
+            input_size(&record_output),
+        )),
     })
 }
 
@@ -1113,6 +1432,7 @@ pub async fn cmd_chd_extract(
             record: None,
             input_bytes: 0,
             output_bytes: 0,
+            comparison: None,
         });
     }
     let out_display = output.display().to_string();
@@ -1148,20 +1468,28 @@ pub async fn cmd_chd_extract(
     });
     finish(&state).await;
     result??;
+    let in_bytes = input_size(&record_input);
+    let out_bytes = extracted_output_size(&record_output);
     let record = build_record(
         report.unwrap_or(false),
         &record_input,
         &record_output,
         "extract",
-        0,
-        0,
+        in_bytes,
+        out_bytes,
         started.elapsed(),
     );
     Ok(RunOutcome {
         message: format!("Wrote {out_display}"),
         record,
-        input_bytes: 0,
-        output_bytes: 0,
+        input_bytes: in_bytes,
+        output_bytes: out_bytes,
+        comparison: Some(comparison_sizes(
+            &record_input,
+            &record_output,
+            in_bytes,
+            out_bytes,
+        )),
     })
 }
 
@@ -1213,6 +1541,7 @@ pub async fn cmd_compress_disc(
     skip_space_check: bool,
     output_template: Option<String>,
     report: Option<bool>,
+    verify_after: Option<bool>,
     dry_run: Option<bool>,
 ) -> Result<RunOutcome, String> {
     let progress = Arc::new(TauriProgress::new(app, &task_id));
@@ -1243,6 +1572,7 @@ pub async fn cmd_compress_disc(
             record: None,
             input_bytes: 0,
             output_bytes: 0,
+            comparison: None,
         });
     }
     let output = match resolve_output(
@@ -1277,7 +1607,9 @@ pub async fn cmd_compress_disc(
     let in_bytes = input_size(&input);
     let record_input = input.clone();
     let record_output = output.clone();
+    let progress_for_verify = progress.clone();
     let token = begin(&state).await;
+    let token_for_verify = token.clone();
     let started = Instant::now();
     let result = tokio::spawn(async move {
         compress_disc_cancellable(&input, &output, opts, progress.as_ref(), token).await
@@ -1287,20 +1619,33 @@ pub async fn cmd_compress_disc(
     .map_err(err_to_string);
     finish(&state).await;
     result?;
+    let out_bytes = input_size(&record_output);
     let record = build_record(
         report.unwrap_or(false),
         &record_input,
         &record_output,
         "compress",
         in_bytes,
-        input_size(&record_output),
+        out_bytes,
         started.elapsed(),
     );
+    let comparison = build_comparison(
+        progress_for_verify,
+        &record_input,
+        &record_output,
+        in_bytes,
+        out_bytes,
+        rom_converto_lib::util::OutputVerify::Rvz,
+        verify_after.unwrap_or(false),
+        &token_for_verify,
+    )
+    .await;
     Ok(RunOutcome {
         message: format!("Wrote {out_display}"),
         record,
         input_bytes: in_bytes,
-        output_bytes: input_size(&record_output),
+        output_bytes: out_bytes,
+        comparison: Some(comparison),
     })
 }
 
@@ -1346,6 +1691,7 @@ pub async fn cmd_decompress_disc(
             record: None,
             input_bytes: 0,
             output_bytes: 0,
+            comparison: None,
         });
     }
     let output = match resolve_output(
@@ -1408,6 +1754,12 @@ pub async fn cmd_decompress_disc(
         record,
         input_bytes: in_bytes,
         output_bytes: input_size(&record_output),
+        comparison: Some(comparison_sizes(
+            &record_input,
+            &record_output,
+            in_bytes,
+            input_size(&record_output),
+        )),
     })
 }
 
@@ -1570,6 +1922,7 @@ pub async fn cmd_nx_compress(
     skip_space_check: bool,
     output_template: Option<String>,
     report: Option<bool>,
+    verify_after: Option<bool>,
     dry_run: Option<bool>,
 ) -> Result<RunOutcome, String> {
     let progress = Arc::new(TauriProgress::new(app, "nx-compress"));
@@ -1621,6 +1974,7 @@ pub async fn cmd_nx_compress(
             record: None,
             input_bytes: 0,
             output_bytes: 0,
+            comparison: None,
         });
     }
     let keys = load_keyset(keys.as_deref()).map_err(err_to_string)?;
@@ -1651,7 +2005,10 @@ pub async fn cmd_nx_compress(
     let in_bytes = input_size(&input);
     let record_input = input.clone();
     let record_output = output.clone();
+    let progress_for_verify = progress.clone();
+    let keys_for_verify = keys.clone();
     let token = begin(&state).await;
+    let token_for_verify = token.clone();
     let started = Instant::now();
     let result = tokio::spawn(async move {
         compress_container_async_cancellable(input, output, opts, keys, progress.as_ref(), token)
@@ -1662,20 +2019,33 @@ pub async fn cmd_nx_compress(
     .map_err(err_to_string);
     finish(&state).await;
     result?;
+    let out_bytes = input_size(&record_output);
     let record = build_record(
         report.unwrap_or(false),
         &record_input,
         &record_output,
         "compress",
         in_bytes,
-        input_size(&record_output),
+        out_bytes,
         started.elapsed(),
     );
+    let comparison = build_comparison(
+        progress_for_verify,
+        &record_input,
+        &record_output,
+        in_bytes,
+        out_bytes,
+        rom_converto_lib::util::OutputVerify::Nx(Box::new(keys_for_verify)),
+        verify_after.unwrap_or(false),
+        &token_for_verify,
+    )
+    .await;
     Ok(RunOutcome {
         message: format!("Wrote {out_display}"),
         record,
         input_bytes: in_bytes,
-        output_bytes: input_size(&record_output),
+        output_bytes: out_bytes,
+        comparison: Some(comparison),
     })
 }
 
@@ -1722,6 +2092,7 @@ pub async fn cmd_nx_decompress(
             record: None,
             input_bytes: 0,
             output_bytes: 0,
+            comparison: None,
         });
     }
     let output = match resolve_output(
@@ -1776,6 +2147,12 @@ pub async fn cmd_nx_decompress(
         record,
         input_bytes: in_bytes,
         output_bytes: input_size(&record_output),
+        comparison: Some(comparison_sizes(
+            &record_input,
+            &record_output,
+            in_bytes,
+            input_size(&record_output),
+        )),
     })
 }
 
@@ -1805,8 +2182,9 @@ pub async fn cmd_convert_ctr(
     on_conflict: Option<String>,
     skip_space_check: bool,
     output_template: Option<String>,
+    verify_after: Option<bool>,
     dry_run: Option<bool>,
-) -> Result<String, String> {
+) -> Result<RunOutcome, String> {
     let progress = Arc::new(TauriProgress::new(app, "ctr-convert"));
     let dry_run = dry_run.unwrap_or(false);
     let ext = ext_of(&derive_converted_path(&input));
@@ -1831,7 +2209,13 @@ pub async fn cmd_convert_ctr(
             None,
         )
         .await?;
-        return Ok(line.display_text());
+        return Ok(RunOutcome {
+            message: line.display_text(),
+            record: None,
+            input_bytes: 0,
+            output_bytes: 0,
+            comparison: None,
+        });
     }
     let output = match resolve_output(
         progress.as_ref(),
@@ -1842,7 +2226,9 @@ pub async fn cmd_convert_ctr(
     .await?
     {
         Some(p) => p,
-        None => return Ok(format!("Skipped existing {}", desired.display())),
+        None => {
+            return Ok(RunOutcome::skipped(false, &input, "convert", &desired));
+        }
     };
     let out_display = output.display().to_string();
     preflight_space(
@@ -1850,7 +2236,12 @@ pub async fn cmd_convert_ctr(
         input_size(&input),
         skip_space_check,
     )?;
+    let in_bytes = input_size(&input);
+    let record_input = input.clone();
+    let record_output = output.clone();
+    let progress_for_verify = progress.clone();
     let token = begin(&state).await;
+    let token_for_verify = token.clone();
     let result = tokio::spawn(async move {
         convert_rom_cancellable(&input, &output, progress.as_ref(), token).await
     })
@@ -1859,7 +2250,25 @@ pub async fn cmd_convert_ctr(
     .map_err(err_to_string);
     finish(&state).await;
     result?;
-    Ok(format!("Wrote {out_display}"))
+    let out_bytes = input_size(&record_output);
+    let comparison = build_comparison(
+        progress_for_verify,
+        &record_input,
+        &record_output,
+        in_bytes,
+        out_bytes,
+        rom_converto_lib::util::OutputVerify::None,
+        verify_after.unwrap_or(false),
+        &token_for_verify,
+    )
+    .await;
+    Ok(RunOutcome {
+        message: format!("Wrote {out_display}"),
+        record: None,
+        input_bytes: in_bytes,
+        output_bytes: out_bytes,
+        comparison: Some(comparison),
+    })
 }
 
 #[tauri::command]
@@ -3063,5 +3472,233 @@ mod dat_result_serde_tests {
             &["kind", "dryRun", "renamed", "skipped", "failed", "rows"],
         );
         assert_keys(&v["rows"][0], &["from", "to", "action", "detail"]);
+    }
+}
+
+#[cfg(test)]
+mod comparison_tests {
+    use super::*;
+    use rom_converto_lib::util::NoProgress;
+    use serde_json::Value;
+    use tempfile::tempdir;
+
+    // Assert an object has exactly `expected` keys, catching a stray
+    // camelCase field before it reaches the snake_case TS contract.
+    fn assert_keys(v: &Value, expected: &[&str]) {
+        let obj = v.as_object().expect("object");
+        let mut got: Vec<&str> = obj.keys().map(String::as_str).collect();
+        got.sort_unstable();
+        let mut want: Vec<&str> = expected.to_vec();
+        want.sort_unstable();
+        assert_eq!(got, want);
+    }
+
+    #[tokio::test]
+    async fn ratio_and_formats_derive_from_extensions() {
+        let dir = tempdir().unwrap();
+        let input = dir.path().join("game.iso");
+        let output = dir.path().join("game.rvz");
+        std::fs::write(&input, vec![0u8; 1024]).unwrap();
+        std::fs::write(&output, vec![0u8; 256]).unwrap();
+
+        let summary = build_comparison(
+            Arc::new(NoProgress),
+            &input,
+            &output,
+            1024,
+            256,
+            rom_converto_lib::util::OutputVerify::Rvz,
+            false,
+            &CancelToken::new(),
+        )
+        .await;
+
+        assert_eq!(summary.input_format, "ISO");
+        assert_eq!(summary.output_format, "RVZ");
+        assert_eq!(summary.ratio_pct, Some(75.0));
+    }
+
+    #[tokio::test]
+    async fn negative_ratio_when_output_grew() {
+        let dir = tempdir().unwrap();
+        let input = dir.path().join("game.cso");
+        let output = dir.path().join("game.iso");
+        std::fs::write(&input, vec![0u8; 256]).unwrap();
+        std::fs::write(&output, vec![0u8; 1024]).unwrap();
+
+        let summary = build_comparison(
+            Arc::new(NoProgress),
+            &input,
+            &output,
+            256,
+            1024,
+            rom_converto_lib::util::OutputVerify::None,
+            false,
+            &CancelToken::new(),
+        )
+        .await;
+
+        assert!(summary.ratio_pct.unwrap() < 0.0);
+    }
+
+    #[tokio::test]
+    async fn verify_after_false_skips_verify_and_hash() {
+        let dir = tempdir().unwrap();
+        let input = dir.path().join("game.iso");
+        let output = dir.path().join("game.chd");
+        std::fs::write(&input, vec![0u8; 8]).unwrap();
+        std::fs::write(&output, vec![0u8; 8]).unwrap();
+
+        let summary = build_comparison(
+            Arc::new(NoProgress),
+            &input,
+            &output,
+            8,
+            8,
+            rom_converto_lib::util::OutputVerify::Chd,
+            false,
+            &CancelToken::new(),
+        )
+        .await;
+
+        assert!(summary.verify.is_none());
+        assert!(summary.output_sha1.is_none());
+    }
+
+    #[tokio::test]
+    async fn corrupt_chd_output_fails_verify() {
+        let dir = tempdir().unwrap();
+        let input = dir.path().join("game.iso");
+        let output = dir.path().join("game.chd");
+        std::fs::write(&input, b"not a real disc image").unwrap();
+        std::fs::write(&output, b"not a real chd container").unwrap();
+
+        let summary = build_comparison(
+            Arc::new(NoProgress),
+            &input,
+            &output,
+            22,
+            25,
+            rom_converto_lib::util::OutputVerify::Chd,
+            true,
+            &CancelToken::new(),
+        )
+        .await;
+
+        let verify = summary.verify.expect("verify_after=true fills in verify");
+        assert!(!verify.ok);
+        assert!(!verify.round_trip);
+        assert!(summary.output_sha1.is_some());
+    }
+
+    #[tokio::test]
+    async fn corrupt_rvz_output_fails_verify() {
+        let dir = tempdir().unwrap();
+        let input = dir.path().join("game.iso");
+        let output = dir.path().join("game.rvz");
+        std::fs::write(&input, b"not a real disc image").unwrap();
+        std::fs::write(&output, b"not a real rvz container").unwrap();
+
+        let summary = build_comparison(
+            Arc::new(NoProgress),
+            &input,
+            &output,
+            22,
+            24,
+            rom_converto_lib::util::OutputVerify::Rvz,
+            true,
+            &CancelToken::new(),
+        )
+        .await;
+
+        let verify = summary.verify.expect("verify_after=true fills in verify");
+        assert!(!verify.ok);
+        // Rvz's check is structural only, never a full round-trip decode.
+        assert!(!verify.round_trip);
+    }
+
+    #[tokio::test]
+    async fn nx_missing_header_key_is_not_reported_as_verified() {
+        let dir = tempdir().unwrap();
+        let input = dir.path().join("game.nsp");
+        let output = dir.path().join("game.nsz");
+        std::fs::write(&input, vec![0u8; 4]).unwrap();
+        std::fs::write(&output, vec![0u8; 4]).unwrap();
+
+        let summary = build_comparison(
+            Arc::new(NoProgress),
+            &input,
+            &output,
+            4,
+            4,
+            rom_converto_lib::util::OutputVerify::Nx(Box::new(KeySet::default())),
+            true,
+            &CancelToken::new(),
+        )
+        .await;
+
+        // A keyset with no header key can't actually run the check, so this
+        // must not be reported as a passed round-trip verification.
+        let verify = summary.verify.expect("verify_after=true fills in verify");
+        assert!(!verify.ok);
+        assert!(!verify.round_trip);
+    }
+
+    #[tokio::test]
+    async fn no_verify_target_reports_no_verify() {
+        let dir = tempdir().unwrap();
+        let input = dir.path().join("game.cia");
+        let output = dir.path().join("game.3ds");
+        std::fs::write(&input, vec![0u8; 4]).unwrap();
+        std::fs::write(&output, vec![0u8; 4]).unwrap();
+
+        let summary = build_comparison(
+            Arc::new(NoProgress),
+            &input,
+            &output,
+            4,
+            4,
+            rom_converto_lib::util::OutputVerify::None,
+            true,
+            &CancelToken::new(),
+        )
+        .await;
+
+        // No integrity check exists for this format, so the card must not
+        // show a "Verified" badge for a check that never ran. The output
+        // hash is still computed since it doesn't depend on a check.
+        assert!(summary.verify.is_none());
+        assert!(summary.output_sha1.is_some());
+    }
+
+    #[test]
+    fn comparison_summary_keys_are_snake_case() {
+        let summary = ComparisonSummary {
+            input_bytes: 1024,
+            output_bytes: 256,
+            ratio_pct: Some(75.0),
+            input_format: "ISO".into(),
+            output_format: "RVZ".into(),
+            output_sha1: Some("abc123".into()),
+            verify: Some(VerifyReport {
+                ok: true,
+                round_trip: false,
+                message: "Verified".into(),
+            }),
+        };
+        let v = serde_json::to_value(&summary).unwrap();
+        assert_keys(
+            &v,
+            &[
+                "input_bytes",
+                "output_bytes",
+                "ratio_pct",
+                "input_format",
+                "output_format",
+                "output_sha1",
+                "verify",
+            ],
+        );
+        assert_keys(&v["verify"], &["ok", "round_trip", "message"]);
     }
 }

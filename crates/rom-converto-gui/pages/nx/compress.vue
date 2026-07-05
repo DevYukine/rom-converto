@@ -2,10 +2,10 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { storeToRefs } from "pinia";
 import { isXciInput, useNxCompressStore, type NxMode } from "~/stores/nx-compress";
-import type { ReportRecord, RunOutcome } from "~/types/report";
+import type { ComparisonSummary, ReportRecord, RunOutcome } from "~/types/report";
 
 const store = useNxCompressStore();
-const { queue, output, keys, level, mode, blockSizeExp, onConflict, skipSpaceCheck, outputTemplate, reportFile, result, error, loading, recursive, maxDepth } =
+const { queue, output, keys, level, mode, blockSizeExp, onConflict, skipSpaceCheck, outputTemplate, reportFile, verifyAfter, result, error, loading, recursive, maxDepth } =
   storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
 const { expand } = useFolderScan(["nsp", "xci"]);
@@ -36,11 +36,13 @@ function compressArgs(item: { input: string; output: string }) {
     outputTemplate: tmpl,
     report: !!reportFile.value,
     reportFile: reportFile.value || null,
+    verifyAfter: verifyAfter.value,
     dryRun: previewMode.value,
   };
 }
 
 const batch = useBatchOperation("nx-compress", "cmd_nx_compress", compressArgs);
+const comparisons = ref<ComparisonSummary[]>([]);
 
 const dropZoneRef = ref<HTMLElement | null>(null);
 let zoneId: string | null = null;
@@ -104,6 +106,7 @@ async function execute() {
     }
   }
   const records: ReportRecord[] = [];
+  comparisons.value = [];
   const rep = queue.value.find((i) => i.status === "pending") ?? queue.value[0];
   commandLine.value = rep ? buildCliCommand("cmd_nx_compress", compressArgs(rep)) : "";
   await batch.start(
@@ -113,6 +116,8 @@ async function execute() {
     (res) => {
       const record = (res as RunOutcome)?.record;
       if (record) records.push(record);
+      const comparison = (res as RunOutcome)?.comparison;
+      if (comparison) comparisons.value.push(comparison);
     },
     async (item, err) => {
       if (reportFile.value) await pushFailedRecord(records, item.input, "compress", err);
@@ -153,6 +158,10 @@ function onRun() {
 
     <div class="mb-4">
       <OutputLog :command="commandLine" :result="result" :preview="preview" :error="error" />
+    </div>
+
+    <div class="mb-4">
+      <ComparisonList :comparisons="comparisons" />
     </div>
 
     <OperationCard>
@@ -327,6 +336,12 @@ function onRun() {
           :percent="progress.percent.value"
           :message="progress.message.value"
           :running="progress.running.value"
+        />
+
+        <FlagToggle
+          v-model="verifyAfter"
+          label="Verify after conversion"
+          description="Re-check each output after writing it and note whether the format supports a full round-trip decode."
         />
 
         <FlagToggle

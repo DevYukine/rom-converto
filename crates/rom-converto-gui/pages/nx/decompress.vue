@@ -2,7 +2,7 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { storeToRefs } from "pinia";
 import { useNxDecompressStore } from "~/stores/nx-decompress";
-import type { ReportRecord, RunOutcome } from "~/types/report";
+import type { ComparisonSummary, ReportRecord, RunOutcome } from "~/types/report";
 
 const store = useNxDecompressStore();
 const { queue, output, keys, onConflict, skipSpaceCheck, outputTemplate, reportFile, result, error, loading, recursive, maxDepth } = storeToRefs(store);
@@ -32,6 +32,8 @@ function decompressArgs(item: { input: string; output: string }) {
 }
 
 const batch = useBatchOperation("nx-decompress", "cmd_nx_decompress", decompressArgs);
+
+const comparisons = ref<ComparisonSummary[]>([]);
 
 const dropZoneRef = ref<HTMLElement | null>(null);
 let zoneId: string | null = null;
@@ -98,6 +100,7 @@ async function execute() {
     }
   }
   const records: ReportRecord[] = [];
+  comparisons.value = [];
   const rep = queue.value.find((i) => i.status === "pending") ?? queue.value[0];
   commandLine.value = rep ? buildCliCommand("cmd_nx_decompress", decompressArgs(rep)) : "";
   await batch.start(
@@ -107,6 +110,8 @@ async function execute() {
     (res) => {
       const record = (res as RunOutcome)?.record;
       if (record) records.push(record);
+      const comparison = (res as RunOutcome)?.comparison;
+      if (comparison) comparisons.value.push(comparison);
     },
     async (item, err) => {
       if (reportFile.value) await pushFailedRecord(records, item.input, "decompress", err);
@@ -147,6 +152,10 @@ function onRun() {
 
     <div class="mb-4">
       <OutputLog :command="commandLine" :result="result" :preview="preview" :error="error" />
+    </div>
+
+    <div class="mb-4">
+      <ComparisonList :comparisons="comparisons" />
     </div>
 
     <OperationCard>

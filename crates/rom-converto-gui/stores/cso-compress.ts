@@ -10,6 +10,7 @@ export const useCsoCompressStore = defineStore("cso-compress", () => {
   const outputTemplate = ref("");
   const reportFile = ref("");
   const blockSize = ref<number | null>(null);
+  const verifyAfter = ref(false);
 
   const result = ref("");
   const error = ref("");
@@ -45,6 +46,7 @@ export const useCsoCompressStore = defineStore("cso-compress", () => {
     outputTemplate.value = "";
     reportFile.value = "";
     blockSize.value = null;
+    verifyAfter.value = false;
     result.value = "";
     error.value = "";
     loading.value = false;
@@ -62,6 +64,7 @@ export const useCsoCompressStore = defineStore("cso-compress", () => {
     outputTemplate,
     reportFile,
     blockSize,
+    verifyAfter,
     result,
     error,
     loading,

@@ -11,6 +11,7 @@ export const useChdCompressStore = defineStore("chd-compress", () => {
   const zstd = ref(false);
   const mode = ref<"auto" | "cd" | "dvd">("auto");
   const hunkSize = ref<number | null>(null);
+  const verifyAfter = ref(false);
 
   const result = ref("");
   const error = ref("");
@@ -47,6 +48,7 @@ export const useChdCompressStore = defineStore("chd-compress", () => {
     reportFile.value = "";
     mode.value = "auto";
     hunkSize.value = null;
+    verifyAfter.value = false;
     result.value = "";
     error.value = "";
     loading.value = false;
@@ -65,6 +67,7 @@ export const useChdCompressStore = defineStore("chd-compress", () => {
     zstd,
     mode,
     hunkSize,
+    verifyAfter,
     result,
     error,
     loading,

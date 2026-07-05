@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { storeToRefs } from "pinia";
 import { useCtrDecryptStore } from "~/stores/ctr-decrypt";
+import type { ComparisonSummary, RunOutcome } from "~/types/report";
 
 const store = useCtrDecryptStore();
 const { input, output, onConflict, skipSpaceCheck, outputTemplate, result, error, loading, queue, recursive, maxDepth } = storeToRefs(store);
@@ -34,6 +35,8 @@ const batch = useBatchOperation("decrypt", "cmd_decrypt_rom", (item) =>
   decryptArgs(item.input, item.output),
 );
 
+const comparisons = ref<ComparisonSummary[]>([]);
+
 watch([input, outputDir], () => {
   if (input.value) output.value = resolve(deriveDecryptedPath(input.value));
 });
@@ -65,14 +68,20 @@ async function handleSingleFile(path: string) {
 
 async function execute() {
   progress.reset();
+  comparisons.value = [];
   if (isBatch.value) {
     const rep = queue.value.find((i) => i.status === "pending") ?? queue.value[0];
     commandLine.value = rep ? buildCliCommand("cmd_decrypt_rom", decryptArgs(rep.input, rep.output)) : "";
-    await batch.start(queue, result, { errorRef: error });
+    await batch.start(queue, result, { errorRef: error }, (res) => {
+      const comparison = (res as RunOutcome)?.comparison;
+      if (comparison) comparisons.value.push(comparison);
+    });
   } else {
     const args = decryptArgs(input.value, output.value);
     commandLine.value = buildCliCommand("cmd_decrypt_rom", args);
-    await run("cmd_decrypt_rom", args);
+    const res = await run("cmd_decrypt_rom", args);
+    const comparison = (res as RunOutcome)?.comparison;
+    if (comparison) comparisons.value.push(comparison);
   }
 }
 
@@ -107,6 +116,10 @@ function onRun() {
 
     <div class="mb-4">
       <OutputLog :command="commandLine" :result="result" :preview="preview" :cancelled="cancelled ? 'Operation cancelled.' : undefined" :error="error" />
+    </div>
+
+    <div class="mb-4">
+      <ComparisonList :comparisons="comparisons" />
     </div>
 
     <OperationCard>

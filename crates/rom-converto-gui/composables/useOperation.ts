@@ -24,8 +24,12 @@ export function useOperation(refs?: OperationRefs) {
     loading.value = true;
 
     try {
-      const res = await invoke<string>(command, args);
-      result.value = res;
+      const res = await invoke<unknown>(command, args);
+      result.value =
+        typeof res === "object" && res !== null && "message" in res
+          ? String((res as { message?: unknown }).message)
+          : String(res);
+      return res;
     } catch (e) {
       const message = String(e);
       if (message.includes("operation cancelled")) {

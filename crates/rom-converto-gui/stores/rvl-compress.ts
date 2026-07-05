@@ -10,6 +10,7 @@ export const useRvlCompressStore = defineStore("rvl-compress", () => {
   const skipSpaceCheck = ref(false);
   const outputTemplate = ref("");
   const reportFile = ref("");
+  const verifyAfter = ref(false);
 
   const result = ref("");
   const error = ref("");
@@ -45,6 +46,7 @@ export const useRvlCompressStore = defineStore("rvl-compress", () => {
     skipSpaceCheck.value = false;
     outputTemplate.value = "";
     reportFile.value = "";
+    verifyAfter.value = false;
     result.value = "";
     error.value = "";
     loading.value = false;
@@ -62,6 +64,7 @@ export const useRvlCompressStore = defineStore("rvl-compress", () => {
     skipSpaceCheck,
     outputTemplate,
     reportFile,
+    verifyAfter,
     result,
     error,
     loading,

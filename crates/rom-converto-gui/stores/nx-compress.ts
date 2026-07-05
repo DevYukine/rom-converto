@@ -24,6 +24,7 @@ export const useNxCompressStore = defineStore("nx-compress", () => {
   const outputTemplate = ref("");
   const reportFile = ref("");
   const userPickedMode = ref(false);
+  const verifyAfter = ref(false);
 
   const result = ref("");
   const error = ref("");
@@ -69,6 +70,7 @@ export const useNxCompressStore = defineStore("nx-compress", () => {
     outputTemplate.value = "";
     reportFile.value = "";
     userPickedMode.value = false;
+    verifyAfter.value = false;
     result.value = "";
     error.value = "";
     loading.value = false;
@@ -87,6 +89,7 @@ export const useNxCompressStore = defineStore("nx-compress", () => {
     skipSpaceCheck,
     outputTemplate,
     reportFile,
+    verifyAfter,
     result,
     error,
     loading,
