@@ -22,6 +22,8 @@ These flags work on every command.
 | `--preset <NAME>` | Apply a named preset from the config |
 | `--no-update-check` | Skip the background check for a newer release |
 | `--skip-space-check` | Skip the free-space preflight before writing output. See [Disk-space preflight](#disk-space-preflight) |
+| `--no-cache` | Ignore the persistent hash and verify cache for this run. See [Hash and verify cache](#hash-and-verify-cache) |
+| `--rebuild-cache` | Discard the cache and rebuild it from this run |
 
 ## Shared behaviors
 
@@ -97,6 +99,23 @@ more than the compressed input, so the estimate is a floor. The value is catchin
 near-full disk before a long batch starts. If the free-space query fails, the check is
 skipped and the run proceeds. Under `--dry-run` nothing is written, so the check never
 aborts. Pass `--skip-space-check` to disable the preflight.
+
+### Hash and verify cache
+
+Commands that read whole files, `hash -R`, `dat verify`, `dat scan`, and the
+`--on-conflict overwrite-invalid` integrity check, keep a persistent cache so a repeat run
+over an unchanged collection reads results instead of re-reading the bytes. The cache lives
+at `<config dir>/rom-converto/hash-cache.json.gz`, next to the user config (see
+[Configuration](configuration.md)). Each entry is keyed by the file path and fingerprinted
+by size and modification time; if either changes the entry is recomputed automatically, so
+an edited or replaced file is never served a stale digest. Turning a re-audit of a large
+stable library from hours of I/O into seconds is the point.
+
+Only digests and `overwrite-invalid` verify verdicts are cached. `dat verify` still queries
+the remote database every run, because that database can change between runs; the cache only
+removes the disk I/O of re-reading the files, not the lookup. Pass `--no-cache` to ignore
+the cache for one run, or `--rebuild-cache` to discard it and repopulate it from the current
+run.
 
 ### Run reports
 

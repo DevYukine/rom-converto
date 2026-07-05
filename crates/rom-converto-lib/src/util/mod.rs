@@ -8,6 +8,7 @@ pub mod footgun;
 pub mod fs;
 pub mod group_reader;
 pub mod hash;
+pub mod hash_cache;
 pub mod http;
 pub mod iso9660;
 pub mod maker_codes;
@@ -27,6 +28,7 @@ pub use footgun::{
 };
 pub use fs::{DEFAULT_SPACE_HEADROOM, available_space, space_shortfall};
 pub use hash::{FileDigests, HashAlgo, hash_file, hash_file_cancellable, parse_algos};
+pub use hash_cache::{CachedTrack, CueDigests, HashCache};
 pub use plan::{PlanDecision, PlanLine, classify};
 pub use report::{
     HashReportRecord, ReportFormat, ReportRecord, ReportTotals, write_hash_report, write_report,

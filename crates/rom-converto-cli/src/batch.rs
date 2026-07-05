@@ -16,10 +16,10 @@ use rom_converto_lib::util::fs::{collect_all_files, collect_files_with_exts, is_
 use rom_converto_lib::util::hash::MultiHasher;
 use rom_converto_lib::util::report::{DatReportRecord, write_dat_report};
 use rom_converto_lib::util::{
-    CancelToken, ConflictPolicy, ConflictResolution, FileDigests, FileStatus, HashAlgo,
-    HashReportRecord, NX_DAT_UNSUPPORTED_HINT, ProgressReporter, ReportFormat, ReportRecord,
-    ReportTotals, Tally, TallyDirection, hash_file, hash_file_cancellable, resolve_conflict,
-    write_hash_report, write_report,
+    CachedTrack, CancelToken, ConflictPolicy, ConflictResolution, FileDigests, FileStatus,
+    HashAlgo, HashCache, HashReportRecord, NX_DAT_UNSUPPORTED_HINT, ProgressReporter, ReportFormat,
+    ReportRecord, ReportTotals, Tally, TallyDirection, hash_file, hash_file_cancellable,
+    resolve_conflict, write_hash_report, write_report,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -438,6 +438,7 @@ pub async fn rvz_compress(
     skip_space_check: bool,
     report_path: Option<&Path>,
     cancel: CancelToken,
+    cache: &HashCache,
 ) -> Result<()> {
     use rom_converto_lib::nintendo::rvz::{compress_disc_cancellable, derive_rvz_path};
 
@@ -511,7 +512,8 @@ pub async fn rvz_compress(
         let output = match decision {
             WriteDecision::Write(p) => p,
             WriteDecision::Skip if policy == ConflictPolicy::OverwriteInvalid => {
-                match crate::util::verify_existing_output(
+                match crate::util::verify_existing_cached(
+                    cache,
                     progress,
                     &output,
                     crate::util::OutputVerify::Rvz,
@@ -809,6 +811,7 @@ pub async fn nx_compress(
     keys: rom_converto_lib::nintendo::nx::KeySet,
     tuning: NxCompressTuning,
     cancel: CancelToken,
+    cache: &HashCache,
 ) -> Result<()> {
     use rom_converto_lib::nintendo::nx::{
         NczMode, NxCompressOptions, compress_container_async_cancellable, derive_compressed_path,
@@ -921,7 +924,8 @@ pub async fn nx_compress(
         let output = match decision {
             WriteDecision::Write(p) => p,
             WriteDecision::Skip if tuning.policy == ConflictPolicy::OverwriteInvalid => {
-                match crate::util::verify_existing_output(
+                match crate::util::verify_existing_cached(
+                    cache,
                     progress,
                     &output,
                     crate::util::OutputVerify::Nx(Box::new(keys.clone())),
@@ -1278,6 +1282,7 @@ pub async fn chd_compress(
     skip_space_check: bool,
     report_path: Option<&Path>,
     cancel: CancelToken,
+    cache: &HashCache,
 ) -> Result<()> {
     use rom_converto_lib::chd::convert_disc_to_chd_cancellable;
 
@@ -1353,7 +1358,8 @@ pub async fn chd_compress(
         let output = match decision {
             WriteDecision::Write(p) => p,
             WriteDecision::Skip if policy == ConflictPolicy::OverwriteInvalid => {
-                match crate::util::verify_existing_output(
+                match crate::util::verify_existing_cached(
+                    cache,
                     progress,
                     &output,
                     crate::util::OutputVerify::Chd,
@@ -1579,6 +1585,7 @@ pub async fn cso_compress(
     skip_space_check: bool,
     report_path: Option<&Path>,
     cancel: CancelToken,
+    cache: &HashCache,
 ) -> Result<()> {
     use rom_converto_lib::cso::compress_to_cso_cancellable;
 
@@ -1655,7 +1662,8 @@ pub async fn cso_compress(
         let output = match decision {
             WriteDecision::Write(p) => p,
             WriteDecision::Skip if policy == ConflictPolicy::OverwriteInvalid => {
-                match crate::util::verify_existing_output(
+                match crate::util::verify_existing_cached(
+                    cache,
                     progress,
                     &output,
                     crate::util::OutputVerify::Cso,
@@ -1767,6 +1775,7 @@ pub async fn cso_to_chd(
     skip_space_check: bool,
     report_path: Option<&Path>,
     cancel: CancelToken,
+    cache: &HashCache,
 ) -> Result<()> {
     use rom_converto_lib::pipeline::cso_to_chd_cancellable;
 
@@ -1842,7 +1851,8 @@ pub async fn cso_to_chd(
         let output = match decision {
             WriteDecision::Write(p) => p,
             WriteDecision::Skip if policy == ConflictPolicy::OverwriteInvalid => {
-                match crate::util::verify_existing_output(
+                match crate::util::verify_existing_cached(
+                    cache,
                     progress,
                     &output,
                     crate::util::OutputVerify::Chd,
@@ -1937,6 +1947,7 @@ pub async fn chd_to_cso(
     skip_space_check: bool,
     report_path: Option<&Path>,
     cancel: CancelToken,
+    cache: &HashCache,
 ) -> Result<()> {
     use rom_converto_lib::pipeline::chd_to_cso_cancellable;
 
@@ -2013,7 +2024,8 @@ pub async fn chd_to_cso(
         let output = match decision {
             WriteDecision::Write(p) => p,
             WriteDecision::Skip if policy == ConflictPolicy::OverwriteInvalid => {
-                match crate::util::verify_existing_output(
+                match crate::util::verify_existing_cached(
+                    cache,
                     progress,
                     &output,
                     crate::util::OutputVerify::Cso,
@@ -2127,6 +2139,7 @@ pub async fn hash_batch(
     algos: &[HashAlgo],
     max_depth: Option<usize>,
     report_path: Option<&Path>,
+    cache: &HashCache,
 ) -> Result<()> {
     let files = collect_all_files(input_dir, max_depth)?;
     if files.is_empty() {
@@ -2140,7 +2153,17 @@ pub async fn hash_batch(
     for path in files {
         let bytes = file_len(&path);
         let started = Instant::now();
-        match hash_file(&path, algos, progress) {
+        let hashed = match cache.lookup_raw(&path, algos) {
+            Some(d) => Ok(d),
+            None => {
+                let computed = hash_file(&path, algos, progress);
+                if let Ok(d) = &computed {
+                    cache.store_raw(&path, d);
+                }
+                computed
+            }
+        };
+        match hashed {
             Ok(d) => {
                 crate::print_hash_row(&path, &d, algos);
                 tally.record_ok(d.size_bytes, 0, started.elapsed());
@@ -2268,12 +2291,52 @@ async fn digest_unit(
     algos: &[HashAlgo],
     progress: &dyn ProgressReporter,
     cancel: &CancelToken,
+    cache: &HashCache,
 ) -> DatResult<RomDigests> {
     match unit {
         DatUnit::File(path) => {
-            digest_inner_async(path.clone(), algos.to_vec(), progress, cancel.clone()).await
+            if let Some(d) = cache.lookup_decoded(path, algos) {
+                return Ok(RomDigests::Single(d));
+            }
+            let result =
+                digest_inner_async(path.clone(), algos.to_vec(), progress, cancel.clone()).await?;
+            // Only single-stream decodes are cached; a CHD's per-track result
+            // is left uncached (no whole-set fingerprint is tracked here).
+            if let RomDigests::Single(d) = &result {
+                cache.store_decoded(path, d);
+            }
+            Ok(result)
         }
-        DatUnit::CueSet(set) => digest_cue_set(set, algos, progress, cancel),
+        DatUnit::CueSet(set) => {
+            if let Some(hit) = cache.lookup_cue_set(&set.cue, &set.bins, algos) {
+                let tracks = hit
+                    .tracks
+                    .into_iter()
+                    .map(|t| TrackDigests {
+                        track_number: t.number,
+                        track_type: t.kind,
+                        digests: t.digests,
+                    })
+                    .collect();
+                return Ok(RomDigests::Tracks {
+                    tracks,
+                    whole: hit.whole,
+                });
+            }
+            let result = digest_cue_set(set, algos, progress, cancel)?;
+            if let RomDigests::Tracks { tracks, whole } = &result {
+                let cached: Vec<CachedTrack> = tracks
+                    .iter()
+                    .map(|t| CachedTrack {
+                        number: t.track_number,
+                        kind: t.track_type.clone(),
+                        digests: t.digests.clone(),
+                    })
+                    .collect();
+                cache.store_cue_set(&set.cue, &set.bins, whole, &cached);
+            }
+            Ok(result)
+        }
     }
 }
 
@@ -2634,6 +2697,7 @@ fn digest_bucket(e: DatError) -> DatResult<(DatVerdict, String)> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn dat_verify_single(
     progress: &dyn ProgressReporter,
     input: &Path,
@@ -2641,11 +2705,12 @@ pub async fn dat_verify_single(
     api_base: Option<&str>,
     report: Option<&Path>,
     cancel: &CancelToken,
+    cache: &HashCache,
 ) -> Result<()> {
     let started = Instant::now();
     let client = PlaymatchClient::new(api_base);
     let unit = DatUnit::File(input.to_path_buf());
-    let digests = digest_unit(&unit, algos, progress, cancel).await;
+    let digests = digest_unit(&unit, algos, progress, cancel, cache).await;
     let record = match digests {
         Ok(digests) => {
             let outcome = resolve_verify(&client, &unit, &digests, cancel).await?;
@@ -2704,6 +2769,7 @@ pub async fn dat_verify_batch(
     api_base: Option<&str>,
     report: Option<&Path>,
     cancel: &CancelToken,
+    cache: &HashCache,
 ) -> Result<()> {
     let units = dat_collect(input_dir, max_depth).await?;
     if units.is_empty() {
@@ -2715,17 +2781,17 @@ pub async fn dat_verify_batch(
     total_progress.begin(total as u64, units_bytes(&units));
     let started = Instant::now();
     let mut records: Vec<DatReportRecord> = Vec::new();
-    let mut cache: HashMap<String, DatVerdict> = HashMap::new();
+    let mut dedup: HashMap<String, DatVerdict> = HashMap::new();
     let mut verified = 0usize;
     let mut hints = 0usize;
     let mut unsupported = 0usize;
     for unit in &units {
         let unit_started = Instant::now();
         let path = unit.display_path().to_path_buf();
-        match digest_unit(unit, algos, progress, cancel).await {
+        match digest_unit(unit, algos, progress, cancel, cache).await {
             Ok(digests) => {
                 let outcome = resolve_verify(&client, unit, &digests, cancel).await?;
-                dedup_note(&mut cache, &digests, outcome.verdict);
+                dedup_note(&mut dedup, &digests, outcome.verdict);
                 match outcome.verdict {
                     DatVerdict::Verified => verified += 1,
                     DatVerdict::Hint => hints += 1,
@@ -2799,10 +2865,11 @@ pub async fn dat_identify(
     algos: &[HashAlgo],
     api_base: Option<&str>,
     cancel: &CancelToken,
+    cache: &HashCache,
 ) -> Result<()> {
     let client = PlaymatchClient::new(api_base);
     let unit = DatUnit::File(input.to_path_buf());
-    let digests = digest_unit(&unit, algos, progress, cancel).await?;
+    let digests = digest_unit(&unit, algos, progress, cancel, cache).await?;
     let file_name = file_name_of(input);
     let m = match &digests {
         RomDigests::Single(d) => {
@@ -2878,6 +2945,7 @@ async fn digest_scan_units(
     units: &[DatUnit],
     algos: &[HashAlgo],
     cancel: &CancelToken,
+    cache: &HashCache,
 ) -> DatResult<Vec<ScanUnit>> {
     total_progress.begin(units.len() as u64, units_bytes(units));
     let mut out = Vec::with_capacity(units.len());
@@ -2885,7 +2953,7 @@ async fn digest_scan_units(
         if cancel.is_cancelled() {
             return Err(DatError::Cancelled);
         }
-        match digest_unit(unit, algos, progress, cancel).await {
+        match digest_unit(unit, algos, progress, cancel, cache).await {
             Ok(digests) => out.push(ScanUnit::Ok {
                 unit_index: i,
                 digests,
@@ -2915,6 +2983,7 @@ fn digest_bucket_dat(e: DatError) -> DatResult<Option<String>> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn dat_scan(
     progress: &dyn ProgressReporter,
     total_progress: &crate::util::TotalProgress,
@@ -2923,6 +2992,7 @@ pub async fn dat_scan(
     api_base: Option<&str>,
     report: Option<&Path>,
     cancel: &CancelToken,
+    cache: &HashCache,
 ) -> Result<()> {
     let units = dat_collect(input_dir, max_depth).await?;
     if units.is_empty() {
@@ -2930,7 +3000,15 @@ pub async fn dat_scan(
         return Ok(());
     }
     let started = Instant::now();
-    let scanned = digest_scan_units(progress, total_progress, &units, algos_scan(), cancel).await?;
+    let scanned = digest_scan_units(
+        progress,
+        total_progress,
+        &units,
+        algos_scan(),
+        cancel,
+        cache,
+    )
+    .await?;
 
     let client = PlaymatchClient::new(api_base);
     progress.set_phase("Querying Playmatch");
@@ -3136,6 +3214,7 @@ pub async fn dat_rename(
     dry_run: bool,
     report: Option<&Path>,
     cancel: &CancelToken,
+    cache: &HashCache,
 ) -> Result<()> {
     // Group cue members so a set is one unit; renaming a member .bin in
     // isolation would leave the cue's FILE line dangling. Cue sets are recorded
@@ -3173,7 +3252,7 @@ pub async fn dat_rename(
             total_progress.advance(unit_bytes(unit));
             continue;
         }
-        match digest_unit(unit, algos_scan(), progress, cancel).await {
+        match digest_unit(unit, algos_scan(), progress, cancel, cache).await {
             Ok(digests) => {
                 items.push(BulkIdentifyItem {
                     search: GameFileMatchSearch::from_digests(
@@ -3367,6 +3446,7 @@ pub async fn dat_fixdat(
     dry_run: bool,
     policy: ConflictPolicy,
     cancel: &CancelToken,
+    cache: &HashCache,
 ) -> Result<()> {
     let client = PlaymatchClient::new(args.api_base.as_deref());
     let dat = resolve_fixdat_dat(&client, args, cancel).await?;
@@ -3384,7 +3464,7 @@ pub async fn dat_fixdat(
         if cancel.is_cancelled() {
             return Err(DatError::Cancelled.into());
         }
-        match digest_unit(unit, algos_index(), progress, cancel).await {
+        match digest_unit(unit, algos_index(), progress, cancel, cache).await {
             Ok(RomDigests::Single(d)) => index.insert(&d),
             Ok(RomDigests::Tracks { tracks, .. }) => index.insert_tracks(&tracks),
             Err(e) => match digest_bucket_dat(e)? {

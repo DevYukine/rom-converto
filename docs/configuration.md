@@ -40,6 +40,10 @@ An unset flag never overrides a preset or config value. For example, if a preset
 - An unknown `--preset` name stops with an error that lists the available preset names.
 - Relative `output_dir` and `report` paths resolve against the directory that holds the
   config file, not the current directory.
+- The persistent hash and verify cache is stored next to the per-user config, at
+  `rom-converto/hash-cache.json.gz` in the config directory. It holds no settings and needs
+  no configuration; delete the file or run with `--rebuild-cache` to reset it. See
+  [Hash and verify cache](cli.md#hash-and-verify-cache).
 
 ## Covered settings
 

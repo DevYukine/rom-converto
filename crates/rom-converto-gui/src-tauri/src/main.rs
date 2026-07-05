@@ -10,6 +10,7 @@ mod progress;
 
 use commands::*;
 use info_cache::InfoCache;
+use rom_converto_lib::util::HashCache;
 use std::sync::Arc;
 
 fn main() {
@@ -18,6 +19,9 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
         .manage(Arc::new(InfoCache::default()))
+        // Same on-disk store the CLI uses, so hashes computed by either
+        // frontend are reused by both.
+        .manage(Arc::new(HashCache::load(false, false)))
         .manage(ActiveCancel::default())
         .invoke_handler(tauri::generate_handler![
             cmd_cancel,

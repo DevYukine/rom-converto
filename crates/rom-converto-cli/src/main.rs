@@ -163,6 +163,7 @@ fn hash_single(
     input: &Path,
     algos: &[HashAlgo],
     report: Option<&Path>,
+    cache: &rom_converto_lib::util::HashCache,
 ) -> Result<()> {
     use rom_converto_lib::util::{
         FileStatus, HashReportRecord, ReportFormat, ReportTotals, write_hash_report,
@@ -170,7 +171,16 @@ fn hash_single(
 
     let started = Instant::now();
     let mut tally = Tally::new();
-    let result = hash_file(input, algos, progress);
+    let result = match cache.lookup_raw(input, algos) {
+        Some(d) => Ok(d),
+        None => {
+            let computed = hash_file(input, algos, progress);
+            if let Ok(d) = &computed {
+                cache.store_raw(input, d);
+            }
+            computed
+        }
+    };
     let elapsed_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
 
     let (record, outcome) = match result {
@@ -575,6 +585,7 @@ async fn main() -> Result<()> {
     let effective = config::resolve(&user_config, preset.as_ref());
     let dry_run = cli.dry_run;
     let skip_space_check = cli.skip_space_check;
+    let cache = rom_converto_lib::util::HashCache::load(cli.no_cache, cli.rebuild_cache);
 
     let cancel = rom_converto_lib::util::CancelToken::new();
     {
@@ -595,9 +606,11 @@ async fn main() -> Result<()> {
         skip_space_check,
         cancel.clone(),
         &mut github,
+        &cache,
     )
     .await;
 
+    cache.save();
     log::logger().flush();
 
     if let Err(err) = dispatch {
@@ -651,6 +664,7 @@ async fn dispatch_command(
     skip_space_check: bool,
     cancel: rom_converto_lib::util::CancelToken,
     github: &mut GithubApi,
+    cache: &rom_converto_lib::util::HashCache,
 ) -> Result<()> {
     match command {
         Commands::Ctr(inner) => match inner {
@@ -1262,6 +1276,7 @@ async fn dispatch_command(
                         skip_space_check,
                         report.as_deref(),
                         cancel.clone(),
+                        cache,
                     )
                     .await?
                 } else {
@@ -1581,6 +1596,7 @@ async fn dispatch_command(
                         skip_space_check,
                         report.as_deref(),
                         cancel.clone(),
+                        cache,
                     )
                     .await?
                 } else {
@@ -2095,6 +2111,7 @@ async fn dispatch_command(
                         keys,
                         tuning,
                         cancel.clone(),
+                        cache,
                     )
                     .await?
                 } else {
@@ -2418,6 +2435,7 @@ async fn dispatch_command(
                         skip_space_check,
                         report.as_deref(),
                         cancel.clone(),
+                        cache,
                     )
                     .await?
                 } else {
@@ -2663,6 +2681,7 @@ async fn dispatch_command(
                         skip_space_check,
                         report.as_deref(),
                         cancel.clone(),
+                        cache,
                     )
                     .await?
                 } else {
@@ -2803,6 +2822,7 @@ async fn dispatch_command(
                         skip_space_check,
                         report.as_deref(),
                         cancel.clone(),
+                        cache,
                     )
                     .await?
                 } else {
@@ -3036,6 +3056,7 @@ async fn dispatch_command(
                         skip_space_check,
                         report.as_deref(),
                         cancel.clone(),
+                        cache,
                     )
                     .await?
                 } else {
@@ -3194,11 +3215,12 @@ async fn dispatch_command(
                     &algos,
                     cmd.max_depth,
                     cmd.report.as_deref(),
+                    cache,
                 )
                 .await?;
             } else {
                 ensure_input_exists(&cmd.input)?;
-                hash_single(&progress, &cmd.input, &algos, cmd.report.as_deref())?;
+                hash_single(&progress, &cmd.input, &algos, cmd.report.as_deref(), cache)?;
             }
         }
         Commands::Playlist(cmd) => {
@@ -3302,6 +3324,7 @@ async fn dispatch_command(
                         api_base.as_deref(),
                         report.as_deref(),
                         &cancel,
+                        cache,
                     )
                     .await?;
                 } else {
@@ -3313,6 +3336,7 @@ async fn dispatch_command(
                         api_base.as_deref(),
                         report.as_deref(),
                         &cancel,
+                        cache,
                     )
                     .await?;
                 }
@@ -3329,6 +3353,7 @@ async fn dispatch_command(
                     api_base.as_deref(),
                     report.as_deref(),
                     &cancel,
+                    cache,
                 )
                 .await?;
             }
@@ -3356,6 +3381,7 @@ async fn dispatch_command(
                     dry_run,
                     report.as_deref(),
                     &cancel,
+                    cache,
                 )
                 .await?;
             }
@@ -3363,8 +3389,15 @@ async fn dispatch_command(
                 ensure_input_exists(&cmd.input)?;
                 let algos = parse_algos(&cmd.algo).map_err(|e| anyhow::anyhow!(e))?;
                 let api_base = cmd.api_base.or_else(|| effective.dat.api_base.clone());
-                batch::dat_identify(&progress, &cmd.input, &algos, api_base.as_deref(), &cancel)
-                    .await?;
+                batch::dat_identify(
+                    &progress,
+                    &cmd.input,
+                    &algos,
+                    api_base.as_deref(),
+                    &cancel,
+                    cache,
+                )
+                .await?;
             }
             DatCommands::Fixdat(cmd) => {
                 require_dir(&cmd.input)?;
@@ -3387,7 +3420,7 @@ async fn dispatch_command(
                     max_depth: cmd.max_depth,
                     api_base,
                 };
-                batch::dat_fixdat(&progress, &args, dry_run, policy, &cancel).await?;
+                batch::dat_fixdat(&progress, &args, dry_run, policy, &cancel, cache).await?;
             }
         },
         Commands::SelfUpdate(_) => self_update(github).await?,

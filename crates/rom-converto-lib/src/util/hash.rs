@@ -26,7 +26,7 @@ impl HashAlgo {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FileDigests {
     pub crc32: Option<String>,
     pub sha1: Option<String>,

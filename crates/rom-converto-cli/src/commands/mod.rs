@@ -79,6 +79,14 @@ pub struct Cli {
     /// Skip the free-space preflight before writing output
     #[arg(long = "skip-space-check", global = true)]
     pub skip_space_check: bool,
+
+    /// Ignore the persistent hash and verify cache for this run
+    #[arg(long = "no-cache", global = true, conflicts_with = "rebuild_cache")]
+    pub no_cache: bool,
+
+    /// Discard the persistent cache and rebuild it from this run
+    #[arg(long = "rebuild-cache", global = true)]
+    pub rebuild_cache: bool,
 }
 
 #[derive(Subcommand, Debug, Eq, PartialEq)]
@@ -144,5 +152,32 @@ impl From<ConflictPolicyArg> for ConflictPolicy {
             ConflictPolicyArg::Rename => ConflictPolicy::Rename,
             ConflictPolicyArg::OverwriteInvalid => ConflictPolicy::OverwriteInvalid,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cache_flags_default_off() {
+        let cli = Cli::try_parse_from(["bin", "hash", "game.iso"]).unwrap();
+        assert!(!cli.no_cache);
+        assert!(!cli.rebuild_cache);
+    }
+
+    #[test]
+    fn cache_flags_parse() {
+        let cli = Cli::try_parse_from(["bin", "--no-cache", "hash", "game.iso"]).unwrap();
+        assert!(cli.no_cache);
+        let cli = Cli::try_parse_from(["bin", "hash", "game.iso", "--rebuild-cache"]).unwrap();
+        assert!(cli.rebuild_cache);
+    }
+
+    #[test]
+    fn no_cache_and_rebuild_cache_conflict() {
+        let result =
+            Cli::try_parse_from(["bin", "--no-cache", "--rebuild-cache", "hash", "game.iso"]);
+        assert!(result.is_err());
     }
 }

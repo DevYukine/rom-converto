@@ -18,6 +18,7 @@ use rom_converto_lib::dat::verdict::{DatVerdict, MatchStrength, match_strength, 
 use rom_converto_lib::dat::{
     DEFAULT_API_BASE, PlaymatchClient, RomDigests, TrackDigests, digest_inner_async,
 };
+use rom_converto_lib::util::HashCache;
 use rom_converto_lib::info::{InfoOptions, InfoResult, read_info};
 use rom_converto_lib::nintendo::ctr::convert::{convert_rom_cancellable, derive_converted_path};
 use rom_converto_lib::nintendo::ctr::verify::{CtrVerifyOptions, verify_ctr};
@@ -2669,6 +2670,7 @@ pub async fn cmd_save_icon(info_json: String, dest: PathBuf) -> Result<String, S
 pub async fn cmd_hash(
     app: AppHandle,
     state: State<'_, ActiveCancel>,
+    cache: State<'_, Arc<HashCache>>,
     input: PathBuf,
     algos: Vec<String>,
     recursive: bool,
@@ -2676,8 +2678,18 @@ pub async fn cmd_hash(
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "hash"));
     let token = begin(&state).await;
+    let cache = cache.inner().clone();
     let result = tokio::task::spawn_blocking(move || -> Result<String, String> {
         let parsed = parse_algos(&algos.join(","))?;
+        let hash_one = |file: &Path| -> Result<_, String> {
+            if let Some(hit) = cache.lookup_raw(file, &parsed) {
+                return Ok(hit);
+            }
+            let digests = hash_file_cancellable(file, &parsed, progress.as_ref(), &token)
+                .map_err(err_to_string)?;
+            cache.store_raw(file, &digests);
+            Ok(digests)
+        };
         let mut lines = Vec::new();
         if recursive {
             let files = collect_all_files(&input, max_depth).map_err(err_to_string)?;
@@ -2688,15 +2700,14 @@ pub async fn cmd_hash(
                 if token.is_cancelled() {
                     return Err("operation cancelled".to_string());
                 }
-                let digests = hash_file_cancellable(&file, &parsed, progress.as_ref(), &token)
-                    .map_err(err_to_string)?;
+                let digests = hash_one(&file)?;
                 lines.push(render_hash_row(&file, &digests, &parsed));
             }
         } else {
-            let digests = hash_file_cancellable(&input, &parsed, progress.as_ref(), &token)
-                .map_err(err_to_string)?;
+            let digests = hash_one(&input)?;
             lines.push(render_hash_row(&input, &digests, &parsed));
         }
+        let _ = cache.save();
         Ok(lines.join("\n"))
     })
     .await
