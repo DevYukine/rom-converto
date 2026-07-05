@@ -136,6 +136,29 @@ pub fn detect_legacy_format(input: &Path) -> std::io::Result<Option<LegacyFormat
     Ok(None)
 }
 
+/// Leading bytes that span every legacy-container magic [`detect_legacy_format`]
+/// checks: GCZ and WIA sit at offset 0, the NKit marker at [`NKIT_MAGIC_OFFSET`].
+/// Reading this many bytes of a stream is enough to tell a raw image apart from
+/// a disc container.
+pub(crate) const LEGACY_MAGIC_PROBE_LEN: usize = NKIT_MAGIC_OFFSET as usize + NKIT_MAGIC.len();
+
+/// True when `head` opens with a legacy disc-container signature (GCZ, WIA, or
+/// NKit). Only the raw magics are matched, so an NKit-wrapped GCZ reads as a
+/// GCZ here; both still route the caller off the raw fast path, which is all the
+/// `--quick` gate needs. A `head` too short for a given magic's span cannot
+/// match it.
+pub(crate) fn head_has_legacy_magic(head: &[u8]) -> bool {
+    if head.len() >= 4 {
+        let first = [head[0], head[1], head[2], head[3]];
+        if first == WIA_MAGIC || u32::from_le_bytes(first) == gcz::format::GCZ_MAGIC {
+            return true;
+        }
+    }
+    let start = NKIT_MAGIC_OFFSET as usize;
+    let end = start + NKIT_MAGIC.len();
+    head.len() >= end && &head[start..end] == NKIT_MAGIC.as_slice()
+}
+
 /// Run a blocking job that reports progress through an atomic byte
 /// counter, polled at 100 ms like the compress pipelines.
 async fn run_blocking_with_progress<T, F>(

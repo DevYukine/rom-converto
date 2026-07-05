@@ -3,7 +3,9 @@ use anyhow::Result;
 use log::{info, warn};
 use rom_converto_lib::cue::CueParser;
 use rom_converto_lib::dat::client::DatFileFilter;
-use rom_converto_lib::dat::digest::{RomDigests, TrackDigests, digest_inner_async};
+use rom_converto_lib::dat::digest::{
+    QuickDigest, RomDigests, TrackDigests, digest_inner_async, quick_crc_digest,
+};
 use rom_converto_lib::dat::fixdat::{LocalHashIndex, diff_library, write_fixdat_xml};
 use rom_converto_lib::dat::model::{
     BulkIdentifyIdsResult, BulkIdentifyItem, BulkItemStatus, DatFileSummary,
@@ -19,7 +21,7 @@ use rom_converto_lib::util::{
     CachedTrack, CancelToken, ChecksumBounds, ConflictPolicy, ConflictResolution, FileDigests,
     FileStatus, HashAlgo, HashCache, HashReportRecord, NX_DAT_UNSUPPORTED_HINT, ProgressReporter,
     ReportFormat, ReportRecord, ReportTotals, Tally, TallyDirection, hash_file,
-    hash_file_cancellable, resolve_conflict, write_hash_report, write_report,
+    hash_file_cancellable, resolve_conflict, resolve_input, write_hash_report, write_report,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -2737,13 +2739,73 @@ async fn digest_and_resolve_verify(
     Ok((digests, outcome))
 }
 
+/// `--quick` mode's zip-central-directory CRC shortcut for one unit. Only a
+/// `DatUnit::File` qualifies; a cue set spans multiple bins, not a single
+/// zip central directory. A hash cache hit already gives the real digest
+/// for free, so the CRC probe only runs on a cache miss. The CRC-only
+/// digest is never stored in the hash cache and is only returned when it
+/// resolves an authoritative `Verified` match; anything weaker is
+/// discarded here so the caller falls back to the normal full extraction
+/// and hashing path.
+async fn quick_verify(
+    client: &PlaymatchClient,
+    unit: &DatUnit,
+    cache: &HashCache,
+    cancel: &CancelToken,
+) -> DatResult<Option<(RomDigests, DatOutcome)>> {
+    let DatUnit::File(path) = unit else {
+        return Ok(None);
+    };
+    if cache.lookup_decoded(path, &[HashAlgo::Crc32]).is_some() {
+        return Ok(None);
+    }
+    let Some(QuickDigest {
+        digests: crc_digest,
+        member_name,
+    }) = quick_crc_digest(path)
+    else {
+        return Ok(None);
+    };
+    // Search under the inner member's name, matching the full path, which
+    // digests the extracted member rather than the archive.
+    let search = GameFileMatchSearch::from_digests(&member_name, &crc_digest);
+    let m = client.identify_relations(&search, cancel).await?;
+    let outcome = outcome_from_single(&m, crc_digest.size_bytes);
+    if outcome.verdict == DatVerdict::Verified {
+        Ok(Some((RomDigests::Single(crc_digest), outcome)))
+    } else {
+        Ok(None)
+    }
+}
+
+/// `--quick` mode composed with the existing tiered digest-and-verify path:
+/// try the CRC-only shortcut first, falling back to the unmodified
+/// escalation path when quick mode is off, the unit is not eligible, or the
+/// CRC-only search does not verify.
+#[allow(clippy::too_many_arguments)]
+async fn digest_and_resolve_verify_quick(
+    client: &PlaymatchClient,
+    unit: &DatUnit,
+    algos: &[HashAlgo],
+    bounds: &ChecksumBounds,
+    quick: bool,
+    progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
+    cache: &HashCache,
+) -> DatResult<(RomDigests, DatOutcome)> {
+    if quick && let Some(hit) = quick_verify(client, unit, cache, cancel).await? {
+        return Ok(hit);
+    }
+    digest_and_resolve_verify(client, unit, algos, bounds, progress, cancel, cache).await
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn dat_verify_single(
     progress: &dyn ProgressReporter,
     input: &Path,
-    display: &Path,
     algos: &[HashAlgo],
     bounds: &ChecksumBounds,
+    quick: bool,
     api_base: Option<&str>,
     report: Option<&Path>,
     cancel: &CancelToken,
@@ -2751,42 +2813,59 @@ pub async fn dat_verify_single(
 ) -> Result<()> {
     let started = Instant::now();
     let client = PlaymatchClient::new(api_base);
-    let unit = DatUnit::File(input.to_path_buf());
-    let resolved =
-        digest_and_resolve_verify(&client, &unit, algos, bounds, progress, cancel, cache).await;
-    let record = match resolved {
-        Ok((_, outcome)) => {
-            print_verdict(display, &outcome);
-            dat_record(display, &outcome, FileStatus::Ok, started)
-        }
-        Err(e) => {
-            let (verdict, msg) = digest_bucket(e)?;
-            if verdict == DatVerdict::Unsupported {
-                warn!("{NX_DAT_UNSUPPORTED_HINT}");
+
+    // Quick mode inspects the original path's zip central directory, so it
+    // must run before resolve_input below would extract a member: extraction
+    // is exactly the cost quick mode exists to skip.
+    let quick_hit = if quick {
+        let unit = DatUnit::File(input.to_path_buf());
+        quick_verify(&client, &unit, cache, cancel).await?
+    } else {
+        None
+    };
+
+    let record = if let Some((_, outcome)) = quick_hit {
+        print_verdict(input, &outcome);
+        dat_record(input, &outcome, FileStatus::Ok, started)
+    } else {
+        let resolved_input = resolve_input(input, crate::ALL_IMAGE_EXTS)?;
+        let unit = DatUnit::File(resolved_input.path().to_path_buf());
+        let resolved =
+            digest_and_resolve_verify(&client, &unit, algos, bounds, progress, cancel, cache).await;
+        match resolved {
+            Ok((_, outcome)) => {
+                print_verdict(input, &outcome);
+                dat_record(input, &outcome, FileStatus::Ok, started)
             }
-            let outcome = DatOutcome {
-                verdict,
-                match_algo: None,
-                game_name: None,
-                game_id: None,
-                platform: None,
-                signature_group: None,
-                dat_version: None,
-                detail: None,
-                size_bytes: 0,
-            };
-            print_verdict(display, &outcome);
-            dat_error_record(
-                display,
-                verdict,
-                if verdict == DatVerdict::Failed {
-                    FileStatus::Failed
-                } else {
-                    FileStatus::Ok
-                },
-                Some(msg),
-                started,
-            )
+            Err(e) => {
+                let (verdict, msg) = digest_bucket(e)?;
+                if verdict == DatVerdict::Unsupported {
+                    warn!("{NX_DAT_UNSUPPORTED_HINT}");
+                }
+                let outcome = DatOutcome {
+                    verdict,
+                    match_algo: None,
+                    game_name: None,
+                    game_id: None,
+                    platform: None,
+                    signature_group: None,
+                    dat_version: None,
+                    detail: None,
+                    size_bytes: 0,
+                };
+                print_verdict(input, &outcome);
+                dat_error_record(
+                    input,
+                    verdict,
+                    if verdict == DatVerdict::Failed {
+                        FileStatus::Failed
+                    } else {
+                        FileStatus::Ok
+                    },
+                    Some(msg),
+                    started,
+                )
+            }
         }
     };
     if let Some(path) = report {
@@ -2808,6 +2887,7 @@ pub async fn dat_verify_batch(
     input_dir: &Path,
     algos: &[HashAlgo],
     bounds: &ChecksumBounds,
+    quick: bool,
     max_depth: Option<usize>,
     api_base: Option<&str>,
     report: Option<&Path>,
@@ -2831,7 +2911,10 @@ pub async fn dat_verify_batch(
     for unit in &units {
         let unit_started = Instant::now();
         let path = unit.display_path().to_path_buf();
-        match digest_and_resolve_verify(&client, unit, algos, bounds, progress, cancel, cache).await
+        match digest_and_resolve_verify_quick(
+            &client, unit, algos, bounds, quick, progress, cancel, cache,
+        )
+        .await
         {
             Ok((digests, outcome)) => {
                 dedup_note(&mut dedup, &digests, outcome.verdict);
@@ -2987,6 +3070,10 @@ enum ScanUnit {
     Ok {
         unit_index: usize,
         digests: RomDigests,
+        /// Digested via the `--quick` CRC-only shortcut rather than a full
+        /// extraction and hash; if the first bulk lookup below does not
+        /// verify it, the unit must be redone with a full digest.
+        quick: bool,
     },
     Unsupported {
         unit_index: usize,
@@ -2997,12 +3084,31 @@ enum ScanUnit {
     },
 }
 
+/// `--quick` mode's CRC-only digest for one scan unit: `None` when quick is
+/// off, the unit is a cue set (no single zip central directory to trust),
+/// the hash cache already holds a real decoded digest for it (the CRC probe
+/// would just be extra work for the same answer), or the file does not
+/// qualify (see [`quick_crc_digest`]).
+fn quick_scan_digest(unit: &DatUnit, quick: bool, cache: &HashCache) -> Option<FileDigests> {
+    if !quick {
+        return None;
+    }
+    let DatUnit::File(path) = unit else {
+        return None;
+    };
+    if cache.lookup_decoded(path, &[HashAlgo::Crc32]).is_some() {
+        return None;
+    }
+    quick_crc_digest(path).map(|q| q.digests)
+}
+
 /// Digest every unit under `input_dir`, bucketing unsupported and failed units.
 async fn digest_scan_units(
     progress: &dyn ProgressReporter,
     total_progress: &crate::util::TotalProgress,
     units: &[DatUnit],
     algos: &[HashAlgo],
+    quick: bool,
     cancel: &CancelToken,
     cache: &HashCache,
 ) -> DatResult<Vec<ScanUnit>> {
@@ -3012,10 +3118,17 @@ async fn digest_scan_units(
         if cancel.is_cancelled() {
             return Err(DatError::Cancelled);
         }
-        match digest_unit(unit, algos, progress, cancel, cache).await {
+        let quick_digest = quick_scan_digest(unit, quick, cache);
+        let is_quick = quick_digest.is_some();
+        let result = match quick_digest {
+            Some(d) => Ok(RomDigests::Single(d)),
+            None => digest_unit(unit, algos, progress, cancel, cache).await,
+        };
+        match result {
             Ok(digests) => out.push(ScanUnit::Ok {
                 unit_index: i,
                 digests,
+                quick: is_quick,
             }),
             Err(e) => match digest_bucket_dat(e)? {
                 Some(msg) => out.push(ScanUnit::Failed {
@@ -3049,6 +3162,7 @@ pub async fn dat_scan(
     input_dir: &Path,
     max_depth: Option<usize>,
     algos: &[HashAlgo],
+    quick: bool,
     api_base: Option<&str>,
     report: Option<&Path>,
     cancel: &CancelToken,
@@ -3060,11 +3174,12 @@ pub async fn dat_scan(
         return Ok(());
     }
     let started = Instant::now();
-    let scanned = digest_scan_units(
+    let mut scanned = digest_scan_units(
         progress,
         total_progress,
         &units,
         algos,
+        quick,
         cancel,
         cache,
     )
@@ -3079,6 +3194,7 @@ pub async fn dat_scan(
         if let ScanUnit::Ok {
             unit_index,
             digests,
+            ..
         } = su
         {
             let name = file_name_of(units[*unit_index].display_path());
@@ -3092,6 +3208,66 @@ pub async fn dat_scan(
 
     let bulk = client.identify_bulk_ids(items, cancel).await?;
 
+    // `--quick` mode: a CRC-only unit whose first bulk lookup did not verify
+    // must be redone with a full digest so the match stays authoritative.
+    // Redo is expected to be rare (quick mode is meant to resolve almost
+    // everything), so a second small bulk pass over just the stragglers
+    // keeps this one extra round trip rather than one per file.
+    let mut redo_results: HashMap<usize, BulkIdentifyIdsResult> = HashMap::new();
+    if quick {
+        let mut redo_owner: Vec<usize> = Vec::new();
+        let mut redo_items: Vec<BulkIdentifyItem> = Vec::new();
+        for (item_pos, &unit_index) in item_owner.iter().enumerate() {
+            if !matches!(&scanned[unit_index], ScanUnit::Ok { quick: true, .. }) {
+                continue;
+            }
+            let verified = bulk.iter().find(|r| r.index == item_pos).is_some_and(|r| {
+                r.status == BulkItemStatus::Ok
+                    && r.matched
+                        .as_ref()
+                        .is_some_and(|m| match_strength(m.game_match_type).is_verified())
+            });
+            if verified {
+                continue;
+            }
+            if cancel.is_cancelled() {
+                return Err(DatError::Cancelled.into());
+            }
+            match digest_unit(&units[unit_index], algos, progress, cancel, cache).await {
+                Ok(full_digests) => {
+                    let name = file_name_of(units[unit_index].display_path());
+                    redo_items.push(BulkIdentifyItem {
+                        search: GameFileMatchSearch::from_digests(
+                            &name,
+                            primary_digests(&full_digests),
+                        ),
+                        key: None,
+                    });
+                    redo_owner.push(unit_index);
+                    scanned[unit_index] = ScanUnit::Ok {
+                        unit_index,
+                        digests: full_digests,
+                        quick: false,
+                    };
+                }
+                Err(e) => {
+                    scanned[unit_index] = match digest_bucket_dat(e)? {
+                        Some(error) => ScanUnit::Failed { unit_index, error },
+                        None => ScanUnit::Unsupported { unit_index },
+                    };
+                }
+            }
+        }
+        if !redo_owner.is_empty() {
+            let redo_bulk = client.identify_bulk_ids(redo_items, cancel).await?;
+            for (i, &unit_index) in redo_owner.iter().enumerate() {
+                if let Some(r) = redo_bulk.iter().find(|r| r.index == i) {
+                    redo_results.insert(unit_index, r.clone());
+                }
+            }
+        }
+    }
+
     // Resolve canonical names for hash-verified matches via one games_bulk pass.
     let mut matched_ids: Vec<String> = bulk
         .iter()
@@ -3100,6 +3276,14 @@ pub async fn dat_scan(
         .filter(|m| match_strength(m.game_match_type).is_verified())
         .filter_map(|m| m.id.clone())
         .collect();
+    matched_ids.extend(
+        redo_results
+            .values()
+            .filter(|r| r.status == BulkItemStatus::Ok)
+            .filter_map(|r| r.matched.as_ref())
+            .filter(|m| match_strength(m.game_match_type).is_verified())
+            .filter_map(|m| m.id.clone()),
+    );
     matched_ids.sort();
     matched_ids.dedup();
     let games = if matched_ids.is_empty() {
@@ -3140,8 +3324,10 @@ pub async fn dat_scan(
                 )
             }
             ScanUnit::Ok { .. } => {
-                let item_pos = item_owner.iter().position(|&u| u == unit_index);
-                let result = item_pos.and_then(|p| bulk.iter().find(|r| r.index == p));
+                let result = redo_results.get(&unit_index).or_else(|| {
+                    let item_pos = item_owner.iter().position(|&u| u == unit_index);
+                    item_pos.and_then(|p| bulk.iter().find(|r| r.index == p))
+                });
                 scan_record(path, result, &name_for_id, &mut counts, started)
             }
         };

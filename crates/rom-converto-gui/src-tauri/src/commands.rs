@@ -15,10 +15,13 @@ use rom_converto_lib::dat::model::{
 };
 use rom_converto_lib::dat::rename::{RenameAction, RenameCandidate, RenamePlan, plan_renames};
 use rom_converto_lib::dat::verdict::{DatVerdict, MatchStrength, match_strength, reconcile_tracks};
+use rom_converto_lib::dat::digest::quick_crc_digest;
 use rom_converto_lib::dat::{
     DEFAULT_API_BASE, PlaymatchClient, RomDigests, TrackDigests, digest_inner_async,
 };
 use rom_converto_lib::util::HashCache;
+use rom_converto_lib::util::NX_DAT_UNSUPPORTED_HINT;
+use rom_converto_lib::util::{ChecksumBounds, parse_checksum_bound};
 use rom_converto_lib::info::{InfoOptions, InfoResult, read_info};
 use rom_converto_lib::nintendo::ctr::convert::{convert_rom_cancellable, derive_converted_path};
 use rom_converto_lib::nintendo::ctr::verify::{CtrVerifyOptions, verify_ctr};
@@ -3067,14 +3070,25 @@ fn external_ids_from(matched: &GameAndRelationMatchResult) -> Vec<ExternalIdJson
 pub async fn cmd_dat_verify(
     app: AppHandle,
     state: State<'_, ActiveCancel>,
+    cache: State<'_, Arc<HashCache>>,
     input: PathBuf,
+    quick: Option<bool>,
     task_id: Option<String>,
 ) -> Result<String, String> {
     let key = task_id.as_deref().unwrap_or("dat-verify");
     let progress = Arc::new(TauriProgress::new(app, key));
     let token = begin(&state, key).await;
-    let result = run_dat_verify(progress, input.clone(), token).await;
+    let cache = cache.inner().clone();
+    let result = run_dat_verify(
+        progress.clone(),
+        cache.clone(),
+        input.clone(),
+        quick.unwrap_or(false),
+        token,
+    )
+    .await;
     finish(&state, key).await;
+    let _ = cache.save();
     // Cancellation propagates as an Err carrying "operation cancelled",
     // matching the other verify commands and scan/rename. Any other failure
     // still renders as a single Failed card so genuine digest/API errors do
@@ -3083,6 +3097,22 @@ pub async fn cmd_dat_verify(
         Ok(outcome) => outcome,
         Err(rom_converto_lib::dat::DatError::Cancelled) => {
             return Err("operation cancelled".to_string());
+        }
+        Err(e @ rom_converto_lib::dat::DatError::UnsupportedInnerHash { .. }) => {
+            progress.warn(NX_DAT_UNSUPPORTED_HINT);
+            DatVerifyResult {
+                kind: "verify",
+                path: input.display().to_string(),
+                verdict: DatVerdict::Unsupported.as_str(),
+                match_algo: None,
+                game_name: None,
+                platform: None,
+                signature_group: None,
+                dat_version: None,
+                external_ids: Vec::new(),
+                tracks: None,
+                error: Some(e.to_string()),
+            }
         }
         Err(e) => DatVerifyResult {
             kind: "verify",
@@ -3101,24 +3131,103 @@ pub async fn cmd_dat_verify(
     serde_json::to_string(&outcome).map_err(err_to_string)
 }
 
+/// Checksum escalation bounds from the user config's [dat] section, with
+/// the CLI defaults (crc32 floor, sha256 ceiling) when unset or invalid.
+fn dat_checksum_bounds() -> ChecksumBounds {
+    let dat = crate::config_cmds::cmd_load_config()
+        .ok()
+        .and_then(|c| c.dat)
+        .unwrap_or_default();
+    let tier = |spec: Option<&str>, default| {
+        spec.and_then(|s| parse_checksum_bound(s).ok())
+            .unwrap_or(default)
+    };
+    let min = tier(dat.input_checksum_min.as_deref(), HashAlgo::Crc32);
+    let max = tier(dat.input_checksum_max.as_deref(), HashAlgo::Sha256);
+    ChecksumBounds::new(min, max).unwrap_or(ChecksumBounds {
+        min: HashAlgo::Crc32,
+        max: HashAlgo::Sha256,
+    })
+}
+
+/// Digest through the persistent hash cache: an unchanged file (same
+/// canonical path, size, mtime) reuses its stored digests instead of being
+/// decoded and hashed again. Track sets stay uncached; the store holds
+/// single-stream digests only.
+async fn digest_cached(
+    cache: &HashCache,
+    input: PathBuf,
+    algos: Vec<HashAlgo>,
+    progress: &TauriProgress,
+    token: CancelToken,
+) -> Result<RomDigests, rom_converto_lib::dat::DatError> {
+    if let Some(hit) = cache.lookup_decoded(&input, &algos) {
+        return Ok(RomDigests::Single(hit));
+    }
+    let digests = digest_inner_async(input.clone(), algos, progress, token).await?;
+    if let RomDigests::Single(d) = &digests {
+        cache.store_decoded(&input, d);
+    }
+    Ok(digests)
+}
+
 async fn run_dat_verify(
     progress: Arc<TauriProgress>,
+    cache: Arc<HashCache>,
     input: PathBuf,
+    quick: bool,
     token: CancelToken,
 ) -> Result<DatVerifyResult, rom_converto_lib::dat::DatError> {
-    let algos = [
-        rom_converto_lib::util::HashAlgo::Crc32,
-        rom_converto_lib::util::HashAlgo::Sha1,
-    ];
-    let digests = digest_inner_async(
-        input.clone(),
-        algos.to_vec(),
+    let client = PlaymatchClient::new(Some(DEFAULT_API_BASE));
+
+    // Quick mode: trust the zip's stored CRC32 for an eligible single-member
+    // archive. Anything short of a verified match falls back to full hashing.
+    if quick {
+        let probe = input.clone();
+        let quick_hit = tokio::task::spawn_blocking(move || quick_crc_digest(&probe))
+            .await
+            .ok()
+            .flatten();
+        if let Some(q) = quick_hit {
+            progress.set_phase("Querying matches");
+            let search = GameFileMatchSearch::from_digests(&q.member_name, &q.digests);
+            let matched = client.identify_relations(&search, &token).await?;
+            if match_strength(matched.game_match_type).is_verified() {
+                return Ok(verify_result_from_single(input.display().to_string(), &matched));
+            }
+        }
+    }
+
+    // Tiered digests: compute the config floor first and escalate to the
+    // stronger tier only when the floor alone does not verify, mirroring
+    // the CLI's --input-checksum-min/--input-checksum-max policy.
+    let bounds = dat_checksum_bounds();
+    let (floor, escalation) = bounds.split(&[HashAlgo::Crc32, HashAlgo::Sha1]);
+    let first = verify_pass(&client, &cache, &progress, &input, floor.clone(), &token).await?;
+    if escalation.is_empty() || first.verdict == DatVerdict::Verified.as_str() {
+        return Ok(first);
+    }
+    let mut full = floor;
+    full.extend(escalation);
+    verify_pass(&client, &cache, &progress, &input, full, &token).await
+}
+
+async fn verify_pass(
+    client: &PlaymatchClient,
+    cache: &HashCache,
+    progress: &Arc<TauriProgress>,
+    input: &Path,
+    algos: Vec<HashAlgo>,
+    token: &CancelToken,
+) -> Result<DatVerifyResult, rom_converto_lib::dat::DatError> {
+    let digests = digest_cached(
+        cache,
+        input.to_path_buf(),
+        algos,
         progress.as_ref(),
         token.clone(),
     )
     .await?;
-
-    let client = PlaymatchClient::new(Some(DEFAULT_API_BASE));
     progress.set_phase("Querying matches");
     let path_str = input.display().to_string();
 

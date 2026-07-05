@@ -3,6 +3,7 @@ import type { BatchItem } from "~/types/batch";
 
 export const useDatVerifyStore = defineStore("dat-verify", () => {
   const input = ref("");
+  const quick = ref(false);
 
   const result = ref("");
   const error = ref("");
@@ -29,6 +30,7 @@ export const useDatVerifyStore = defineStore("dat-verify", () => {
 
   function $reset() {
     input.value = "";
+    quick.value = false;
     result.value = "";
     error.value = "";
     loading.value = false;
@@ -37,6 +39,7 @@ export const useDatVerifyStore = defineStore("dat-verify", () => {
 
   return {
     input,
+    quick,
     result,
     error,
     loading,

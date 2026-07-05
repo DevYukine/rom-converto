@@ -136,6 +136,28 @@ fn list_zip(path: &Path) -> Result<Vec<ArchiveMember>> {
     Ok(out)
 }
 
+/// The zip central directory's CRC32 and uncompressed size for `member_name`,
+/// read without decompressing the member. Backs dat verify/scan's `--quick`
+/// mode, which trusts a zip's own checksum for an eligible cartridge image
+/// instead of extracting and hashing it.
+pub(crate) fn zip_member_crc32(path: &Path, member_name: &str) -> Result<(u32, u64)> {
+    let mut zip = zip::ZipArchive::new(File::open(path)?)?;
+    let entry = zip.by_name(member_name)?;
+    Ok((entry.crc32(), entry.size()))
+}
+
+/// Read up to `len` leading bytes of a zip member without extracting the whole
+/// thing, so the `--quick` path can magic-sniff a member's head cheaply. A
+/// member shorter than `len` yields a shorter buffer.
+pub(crate) fn zip_member_head(path: &Path, member_name: &str, len: usize) -> Result<Vec<u8>> {
+    use std::io::Read;
+    let mut zip = zip::ZipArchive::new(File::open(path)?)?;
+    let entry = zip.by_name(member_name)?;
+    let mut buf = Vec::with_capacity(len);
+    entry.take(len as u64).read_to_end(&mut buf)?;
+    Ok(buf)
+}
+
 fn list_7z(path: &Path) -> Result<Vec<ArchiveMember>> {
     let reader = sevenz_rust2::ArchiveReader::open(path, sevenz_rust2::Password::empty())?;
     let mut out = Vec::new();

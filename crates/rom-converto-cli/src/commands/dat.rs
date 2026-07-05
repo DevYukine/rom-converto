@@ -53,6 +53,10 @@ pub struct DatVerifyCommand {
     /// Maximum checksum tier escalation may reach when the floor tier alone does not verify: crc32, md5, sha1, sha256 (default: sha256)
     #[arg(long = "input-checksum-max", value_name = "ALGO")]
     pub input_checksum_max: Option<String>,
+
+    /// Trust a zip's own CRC32 for an eligible cartridge image instead of extracting and hashing it. Falls back automatically when the archive checksum alone does not verify
+    #[arg(long, default_value_t = false)]
+    pub quick: bool,
 }
 
 #[cfg(test)]
@@ -86,6 +90,13 @@ mod verify_tests {
         assert_eq!(c.api_base, None);
         assert_eq!(c.input_checksum_min, None);
         assert_eq!(c.input_checksum_max, None);
+        assert!(!c.quick);
+    }
+
+    #[test]
+    fn parses_quick_flag() {
+        let c = parse(&["bin", "verify", "f", "--quick"]);
+        assert!(c.quick);
     }
 
     #[test]
@@ -169,6 +180,10 @@ pub struct DatScanCommand {
     /// Playmatch API base URL (defaults to the public instance)
     #[arg(long = "api-base", value_name = "URL")]
     pub api_base: Option<String>,
+
+    /// Trust a zip's own CRC32 for an eligible cartridge image instead of extracting and hashing it. Falls back automatically when the archive checksum alone does not verify
+    #[arg(long, default_value_t = false)]
+    pub quick: bool,
 }
 
 #[cfg(test)]
@@ -198,6 +213,13 @@ mod scan_tests {
         assert_eq!(c.max_depth, None);
         assert_eq!(c.report, None);
         assert_eq!(c.api_base, None);
+        assert!(!c.quick);
+    }
+
+    #[test]
+    fn parses_quick_flag() {
+        let c = parse(&["bin", "scan", "roms", "--quick"]);
+        assert!(c.quick);
     }
 
     #[test]

@@ -5,7 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { DatResultRow } from "~/components/DatResultList.vue";
 
 const store = useDatVerifyStore();
-const { input, result, error, loading, queue } = storeToRefs(store);
+const { input, quick, result, error, loading, queue } = storeToRefs(store);
 const progress = useProgress("dat-verify");
 
 const isBatch = computed(() => queue.value.length > 0);
@@ -44,12 +44,18 @@ const { canRun, runBlockReason } = usePageGating({
 });
 
 function verifyArgs(inputPath: string) {
-  return { input: inputPath };
+  return { input: inputPath, quick: quick.value };
 }
 
 const batch = useBatchOperation("dat-verify", "cmd_dat_verify", (item) =>
   verifyArgs(item.input),
 );
+
+const allWarnings = computed(() => {
+  const seen = new Set(progress.warnings.value);
+  for (const slot of batch.progressSlots) for (const w of slot.warnings.value) seen.add(w);
+  return [...seen];
+});
 
 function handleReorder(ids: string[]) {
   batch.reorder(queue, ids);
@@ -240,7 +246,7 @@ const batchRows = computed<DatResultRow[]>(() =>
     </template>
 
     <div v-else class="mb-4">
-      <OutputLog :command="commandLine" :result="result" :error="error" />
+      <OutputLog :command="commandLine" :result="result" :error="error" :warnings="allWarnings" />
     </div>
 
     <OperationCard>
@@ -276,6 +282,13 @@ const batchRows = computed<DatResultRow[]>(() =>
           :primary="true"
           @update:model-value="handleSingleFile"
           @update:files="handleFiles"
+        />
+
+        <FlagToggle
+          v-model="quick"
+          label="Quick verify"
+          description="Trust a zip's own CRC32 for eligible cartridge images instead of extracting and hashing. Falls back automatically when that alone does not verify."
+          :disabled="loading || batch.running.value"
         />
 
         <ProgressBar

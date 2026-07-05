@@ -502,6 +502,7 @@ Format-specific flags (shared conflict and report flags are covered in
 | `-R`, `--recursive` | `verify`, `rename` | Process every file under INPUT, descending into subdirectories |
 | `--max-depth <N>` | `verify`, `scan`, `rename`, `fixdat` | Limit recursion depth. `1` = top level only. On `verify` and `rename` requires `-R`; `scan` and `fixdat` always walk the whole directory |
 | `--report <FILE>` | `verify`, `scan`, `rename` | Write a run report. See [Run reports](#run-reports) |
+| `--quick` | `verify`, `scan` | Trust a zip's own CRC32 for an eligible cartridge image instead of extracting and hashing it. Falls back automatically when the archive checksum alone does not verify |
 | `--api-base <URL>` | all | Playmatch API base URL for this run. Defaults to the public instance |
 | `-o, --output <FILE>` | `fixdat` | Path for the generated Logiqx fixdat. Required |
 | `--platform <NAME>` | `fixdat` | Select the source DAT by platform name. Required unless `--dat-id` is given |

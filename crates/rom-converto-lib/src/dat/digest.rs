@@ -68,6 +68,64 @@ pub fn is_raw_reread_cheap(path: &Path) -> bool {
         )
 }
 
+/// A `--quick` CRC-only digest paired with the archive member it came from, so
+/// the caller can search under the inner member's name rather than the archive's.
+#[derive(Debug, Clone)]
+pub struct QuickDigest {
+    pub digests: FileDigests,
+    pub member_name: String,
+}
+
+/// `--quick` mode's CRC-only digest: trust a zip archive's own
+/// central-directory CRC32 and uncompressed size instead of extracting and
+/// hashing. Valid only when `path` is a zip holding exactly one relevant
+/// member, that member classifies as [`InnerStreamKind::Raw`] by extension,
+/// and its head bytes carry no legacy disc-container magic. Returns `None` for
+/// a non-zip input, a multi-member archive, a member that classifies as a disc
+/// or decoded-stream format, or a raw-looking member whose content is actually
+/// a GCZ/WIA/NKit container, so the caller falls back to the normal extraction
+/// and hashing path.
+pub fn quick_crc_digest(path: &Path) -> Option<QuickDigest> {
+    let is_zip = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("zip"));
+    if !is_zip {
+        return None;
+    }
+    let members = crate::util::archive::list_members(path).ok()?;
+    let [member] = members.as_slice() else {
+        return None;
+    };
+    if classify_input(Path::new(&member.name)) != InnerStreamKind::Raw {
+        return None;
+    }
+    // Extension alone cannot tell a raw cartridge image from a disc container
+    // renamed to a raw-looking name (or a plain .iso whose content is NKit):
+    // the full path magic-sniffs those and hashes the decoded disc, a different
+    // digest than the raw member bytes quick would trust. Sniff the member's
+    // magic-bearing head and defer to the full path on any legacy container, so
+    // a CRC32 collision can never pass a container off as its decoded content.
+    let head = crate::util::archive::zip_member_head(
+        path,
+        &member.name,
+        crate::nintendo::legacy_input::LEGACY_MAGIC_PROBE_LEN,
+    )
+    .ok()?;
+    if crate::nintendo::legacy_input::head_has_legacy_magic(&head) {
+        return None;
+    }
+    let (crc32, size) = crate::util::archive::zip_member_crc32(path, &member.name).ok()?;
+    Some(QuickDigest {
+        digests: FileDigests {
+            crc32: Some(format!("{crc32:08x}")),
+            size_bytes: size,
+            ..Default::default()
+        },
+        member_name: member.name.clone(),
+    })
+}
+
 /// One track's decoded digest set.
 #[derive(Debug, Clone)]
 pub struct TrackDigests {
@@ -659,5 +717,107 @@ mod tests {
             matches!(err, DatError::Container(_) | DatError::IoError(_)),
             "{err}"
         );
+    }
+
+    fn write_zip(path: &Path, entries: &[(&str, &[u8])]) {
+        use std::io::Write;
+
+        let file = std::fs::File::create(path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let opts: zip::write::FileOptions<'_, ()> =
+            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        for (name, data) in entries {
+            zip.start_file(*name, opts).unwrap();
+            zip.write_all(data).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    #[test]
+    fn quick_crc_digest_matches_hashed_crc_for_single_member_zip() {
+        let dir = tempfile::tempdir().unwrap();
+        let data: Vec<u8> = (0..10_000u32).map(|i| (i % 200) as u8).collect();
+        let raw = dir.path().join("game.iso");
+        std::fs::write(&raw, &data).unwrap();
+        let expected =
+            crate::util::hash_file(&raw, &[HashAlgo::Crc32], &crate::util::NoProgress).unwrap();
+
+        let zip = dir.path().join("game.zip");
+        write_zip(&zip, &[("game.iso", &data)]);
+
+        let got = quick_crc_digest(&zip).unwrap();
+        assert_eq!(got.member_name, "game.iso");
+        assert_eq!(got.digests.crc32, expected.crc32);
+        assert_eq!(got.digests.size_bytes, data.len() as u64);
+        assert_eq!(got.digests.sha1, None);
+        assert_eq!(got.digests.sha256, None);
+    }
+
+    #[test]
+    fn quick_crc_digest_none_for_gcz_magic_member() {
+        use crate::nintendo::dol::test_fixtures::make_fake_gamecube_iso;
+        use crate::nintendo::gcz::test_fixtures::make_gcz;
+
+        // Member named .iso (classifies Raw by extension) whose content is a
+        // GCZ container: the head sniff must catch it and fall back.
+        let dir = tempfile::tempdir().unwrap();
+        let gcz = make_gcz(&make_fake_gamecube_iso(256 * 1024), 0x8000, 0);
+        let zip = dir.path().join("gcz-in-disguise.zip");
+        write_zip(&zip, &[("game.iso", &gcz)]);
+        assert!(quick_crc_digest(&zip).is_none());
+    }
+
+    #[test]
+    fn quick_crc_digest_none_for_nkit_header_member() {
+        // NKit keeps its marker in Boot.bin's reserved area at 0x200, past the
+        // file head; the sniff must read far enough to see it and fall back.
+        let dir = tempfile::tempdir().unwrap();
+        let mut data = vec![0u8; 0x400];
+        data[0x200..0x204].copy_from_slice(b"NKIT");
+        let zip = dir.path().join("nkit.zip");
+        write_zip(&zip, &[("game.iso", &data)]);
+        assert!(quick_crc_digest(&zip).is_none());
+    }
+
+    #[test]
+    fn quick_crc_digest_none_for_disc_container_member() {
+        let dir = tempfile::tempdir().unwrap();
+        let zip = dir.path().join("disc.zip");
+        write_zip(&zip, &[("game.chd", b"chd-shaped bytes")]);
+        assert!(quick_crc_digest(&zip).is_none());
+    }
+
+    #[test]
+    fn quick_crc_digest_none_for_multi_member_zip() {
+        let dir = tempfile::tempdir().unwrap();
+        let zip = dir.path().join("multi.zip");
+        write_zip(&zip, &[("a.iso", b"aaa"), ("b.iso", b"bbb")]);
+        assert!(quick_crc_digest(&zip).is_none());
+    }
+
+    #[test]
+    fn quick_crc_digest_none_for_non_zip_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let iso = dir.path().join("game.iso");
+        std::fs::write(&iso, b"plain data").unwrap();
+        assert!(quick_crc_digest(&iso).is_none());
+    }
+
+    #[test]
+    fn quick_crc_digest_handles_stored_zero_length_member() {
+        let dir = tempfile::tempdir().unwrap();
+        let zip = dir.path().join("empty.zip");
+        write_zip(&zip, &[("game.gb", b"")]);
+        let got = quick_crc_digest(&zip).unwrap();
+        assert_eq!(got.digests.crc32.as_deref(), Some("00000000"));
+        assert_eq!(got.digests.size_bytes, 0);
+    }
+
+    #[test]
+    fn quick_crc_digest_eligible_for_extensionless_member() {
+        let dir = tempfile::tempdir().unwrap();
+        let zip = dir.path().join("noext.zip");
+        write_zip(&zip, &[("game", b"cartridge bytes")]);
+        assert!(quick_crc_digest(&zip).is_some());
     }
 }

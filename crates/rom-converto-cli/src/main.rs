@@ -3442,6 +3442,7 @@ async fn dispatch_command(
                         &cmd.input,
                         &algos,
                         &bounds,
+                        cmd.quick,
                         cmd.max_depth,
                         api_base.as_deref(),
                         report.as_deref(),
@@ -3451,14 +3452,12 @@ async fn dispatch_command(
                     .await?;
                 } else {
                     ensure_input_exists(&cmd.input)?;
-                    let resolved =
-                        rom_converto_lib::util::resolve_input(&cmd.input, ALL_IMAGE_EXTS)?;
                     batch::dat_verify_single(
                         &progress,
-                        resolved.path(),
                         &cmd.input,
                         &algos,
                         &bounds,
+                        cmd.quick,
                         api_base.as_deref(),
                         report.as_deref(),
                         &cancel,
@@ -3478,6 +3477,7 @@ async fn dispatch_command(
                     &cmd.input,
                     cmd.max_depth,
                     &algos,
+                    cmd.quick,
                     api_base.as_deref(),
                     report.as_deref(),
                     &cancel,
