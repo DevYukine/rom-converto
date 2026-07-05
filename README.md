@@ -20,6 +20,8 @@ rom-converto converts, compresses, verifies, encrypts, and decrypts ROMs and dis
 
 For RVZ and NSZ/XCZ the output is byte-identical to the reference encoder (Dolphin, nsz) at matching settings, so it verifies against that tool and loads in the same players. CSO/ZSO output is maxcso-compatible and CHD output matches chdman's `createcd`/`createdvd`, so both interoperate with their reference tools. See [`docs/formats.md`](docs/formats.md) for what each format is and where it works.
 
+Single-image commands (compress, decompress, convert, extract, verify, info, and `hash`) also read a `.zip`, `.7z`, `.rar`, `.tar`, or `.tar.gz`/`.tgz` archive directly and operate on the first matching member. See [`docs/cli.md`](docs/cli.md) for the details.
+
 ## Installation
 
 Download a prebuilt binary from the [GitHub Releases](https://github.com/DevYukine/rom-converto/releases) page. The CLI and GUI are published for Windows, macOS, and Linux.

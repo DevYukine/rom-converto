@@ -6,7 +6,7 @@ const store = useChdInfoStore();
 const { input, info, rawJson, error, loading } = storeToRefs(store);
 
 const CHD_FILTERS = [
-  { name: "CHD file", extensions: ["chd"] },
+  { name: "CHD file", extensions: ["chd", "zip", "7z", "rar", "tar", "tgz", "gz"] },
 ];
 </script>
 

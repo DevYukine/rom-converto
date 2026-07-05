@@ -61,3 +61,9 @@ bzip2 = "^0.6"
 reqwest.workspace = true
 tempfile = "^3"
 fs4 = "^1.1"
+
+# Transparent archive input (zip/7z/rar/tar/tar.gz); gzip via flate2 above
+zip = { version = "^2", default-features = false, features = ["deflate", "bzip2"] }
+sevenz-rust2 = "^0.21"
+tar = "^0.4"
+unrar = "^0.5"

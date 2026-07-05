@@ -185,7 +185,7 @@ function onRun() {
             label="Add more disc images"
             model-value=""
             :multiple="true"
-            :filters="[{ name: 'Disc image', extensions: ['cue', 'iso'] }]"
+            :filters="[{ name: 'Disc image', extensions: ['cue', 'iso', 'zip', '7z', 'rar', 'tar', 'tgz', 'gz'] }]"
             @update:model-value="(p: string) => { if (p) handleSingleFile(p) }"
             @update:files="handleFiles"
           />
@@ -197,7 +197,7 @@ function onRun() {
               :model-value="input"
               label="Input disc image (.cue or .iso)"
               :multiple="true"
-              :filters="[{ name: 'Disc image', extensions: ['cue', 'iso'] }]"
+              :filters="[{ name: 'Disc image', extensions: ['cue', 'iso', 'zip', '7z', 'rar', 'tar', 'tgz', 'gz'] }]"
               :primary="true"
               @update:model-value="handleSingleFile"
               @update:files="handleFiles"

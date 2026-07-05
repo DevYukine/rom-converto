@@ -10,7 +10,7 @@ const progress = useProgress("nx-verify");
 const isBatch = computed(() => queue.value.length > 0);
 
 const CONTAINER_FILTERS = [
-  { name: "Switch container", extensions: ["nsp", "nsz", "xci", "xcz"] },
+  { name: "Switch container", extensions: ["nsp", "nsz", "xci", "xcz", "zip", "7z", "rar", "tar", "tgz", "gz"] },
 ];
 
 const commandLine = ref("");

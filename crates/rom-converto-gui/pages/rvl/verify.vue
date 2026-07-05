@@ -10,7 +10,7 @@ const progress = useProgress("rvl-verify");
 const isBatch = computed(() => queue.value.length > 0);
 
 const DISC_FILTERS = [
-  { name: "Wii disc", extensions: ["iso", "wbfs", "rvz"] },
+  { name: "Wii disc", extensions: ["iso", "wbfs", "rvz", "zip", "7z", "rar", "tar", "tgz", "gz"] },
 ];
 
 const commandLine = ref("");

@@ -2741,6 +2741,7 @@ async fn digest_and_resolve_verify(
 pub async fn dat_verify_single(
     progress: &dyn ProgressReporter,
     input: &Path,
+    display: &Path,
     algos: &[HashAlgo],
     bounds: &ChecksumBounds,
     api_base: Option<&str>,
@@ -2755,8 +2756,8 @@ pub async fn dat_verify_single(
         digest_and_resolve_verify(&client, &unit, algos, bounds, progress, cancel, cache).await;
     let record = match resolved {
         Ok((_, outcome)) => {
-            print_verdict(input, &outcome);
-            dat_record(input, &outcome, FileStatus::Ok, started)
+            print_verdict(display, &outcome);
+            dat_record(display, &outcome, FileStatus::Ok, started)
         }
         Err(e) => {
             let (verdict, msg) = digest_bucket(e)?;
@@ -2774,9 +2775,9 @@ pub async fn dat_verify_single(
                 detail: None,
                 size_bytes: 0,
             };
-            print_verdict(input, &outcome);
+            print_verdict(display, &outcome);
             dat_error_record(
-                input,
+                display,
                 verdict,
                 if verdict == DatVerdict::Failed {
                     FileStatus::Failed

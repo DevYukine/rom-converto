@@ -10,7 +10,7 @@ const progress = useProgress("dol-verify");
 const isBatch = computed(() => queue.value.length > 0);
 
 const DISC_FILTERS = [
-  { name: "GameCube disc", extensions: ["iso", "gcm", "rvz"] },
+  { name: "GameCube disc", extensions: ["iso", "gcm", "rvz", "zip", "7z", "rar", "tar", "tgz", "gz"] },
 ];
 
 const commandLine = ref("");

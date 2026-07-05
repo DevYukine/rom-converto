@@ -147,7 +147,7 @@ function onRun() {
             label="Add more files"
             model-value=""
             :multiple="true"
-            :filters="[{ name: 'Z3DS', extensions: ['zcia', 'zcci', 'zcxi', 'z3dsx'] }]"
+            :filters="[{ name: 'Z3DS', extensions: ['zcia', 'zcci', 'zcxi', 'z3dsx', 'zip', '7z', 'rar', 'tar', 'tgz', 'gz'] }]"
             @update:model-value="(p: string) => { if (p) handleSingleFile(p) }"
             @update:files="handleFiles"
           />
@@ -158,7 +158,7 @@ function onRun() {
             :model-value="input"
             label="Input Z3DS file"
             :multiple="true"
-            :filters="[{ name: 'Z3DS', extensions: ['zcia', 'zcci', 'zcxi', 'z3dsx'] }]"
+            :filters="[{ name: 'Z3DS', extensions: ['zcia', 'zcci', 'zcxi', 'z3dsx', 'zip', '7z', 'rar', 'tar', 'tgz', 'gz'] }]"
             :primary="true"
             @update:model-value="handleSingleFile"
             @update:files="handleFiles"
@@ -171,7 +171,7 @@ function onRun() {
               label="Output file (auto-filled)"
               :save-dialog="true"
               :disabled="true"
-              :filters="[{ name: '3DS ROM', extensions: ['cia', 'cci', 'cxi', '3dsx'] }]"
+              :filters="[{ name: '3DS ROM', extensions: ['cia', 'cci', 'cxi', '3dsx', 'zip', '7z', 'rar', 'tar', 'tgz', 'gz'] }]"
             />
           </InfoTooltip>
           <FileDropZone
@@ -179,7 +179,7 @@ function onRun() {
             v-model="output"
             label="Output file (auto-filled)"
             :save-dialog="true"
-            :filters="[{ name: '3DS ROM', extensions: ['cia', 'cci', 'cxi', '3dsx'] }]"
+            :filters="[{ name: '3DS ROM', extensions: ['cia', 'cci', 'cxi', '3dsx', 'zip', '7z', 'rar', 'tar', 'tgz', 'gz'] }]"
           />
         </div>
 

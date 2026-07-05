@@ -100,7 +100,7 @@ async function browseInputs() {
   const result = await open({
     directory: false,
     multiple: true,
-    filters: [{ name: "Switch container", extensions: ["nsp", "xci"] }],
+    filters: [{ name: "Switch container", extensions: ["nsp", "xci", "zip", "7z", "rar", "tar", "tgz", "gz"] }],
   });
   if (!result) return;
   addPaths(Array.isArray(result) ? result : [result]);

@@ -6,7 +6,7 @@ const store = useRvlInfoStore();
 const { input, info, rawJson, error, loading } = storeToRefs(store);
 
 const RVL_FILTERS = [
-  { name: "Wii disc image", extensions: ["iso", "wbfs", "rvz"] },
+  { name: "Wii disc image", extensions: ["iso", "wbfs", "rvz", "zip", "7z", "rar", "tar", "tgz", "gz"] },
 ];
 </script>
 

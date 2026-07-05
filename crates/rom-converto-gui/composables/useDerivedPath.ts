@@ -25,6 +25,18 @@ function getExt(path: string): string {
   return path.slice(dot + 1).toLowerCase();
 }
 
+const ARCHIVE_EXTS = ["zip", "7z", "rar", "tar", "tgz", "gz"];
+
+// Archive wrappers are transparent inputs: the backend extracts the inner
+// image, so a picked `game.zip` should derive output names as if it were
+// `game`. A `.tar.gz` collapses both extensions.
+export function stripArchiveExt(name: string): string {
+  if (/\.tar\.gz$/i.test(name)) return name.slice(0, -7);
+  if (!ARCHIVE_EXTS.includes(getExt(name))) return name;
+  const dot = name.lastIndexOf(".");
+  return dot === -1 ? name : name.slice(0, dot);
+}
+
 export function basename(path: string): string {
   const norm = path.replace(/[\\/]+$/, "");
   const i = Math.max(norm.lastIndexOf("/"), norm.lastIndexOf("\\"));
@@ -50,16 +62,19 @@ export function withOutputDir(derivedPath: string, dir: string): string {
 }
 
 export function deriveCompressedPath(input: string): string {
+  input = stripArchiveExt(input);
   const ext = getExt(input);
   return replaceExt(input, COMPRESS_MAP[ext] ?? "z3ds");
 }
 
 export function deriveDecompressedPath(input: string): string {
+  input = stripArchiveExt(input);
   const ext = getExt(input);
   return replaceExt(input, DECOMPRESS_MAP[ext] ?? "3ds");
 }
 
 export function deriveDecryptedPath(input: string): string {
+  input = stripArchiveExt(input);
   const ext = getExt(input);
   const dot = input.lastIndexOf(".");
   const stem = dot === -1 ? input : input.slice(0, dot);
@@ -73,21 +88,23 @@ const CONVERT_MAP: Record<string, string> = {
 };
 
 export function deriveConvertedPath(input: string): string {
+  input = stripArchiveExt(input);
   const ext = getExt(input);
   return replaceExt(input, CONVERT_MAP[ext] ?? "out");
 }
 
 export function deriveChdPath(input: string): string {
-  return replaceExt(input, "chd");
+  return replaceExt(stripArchiveExt(input), "chd");
 }
 
 export function deriveCuePath(input: string): string {
-  return replaceExt(input, "cue");
+  return replaceExt(stripArchiveExt(input), "cue");
 }
 
 // Strips a trailing "(Track N)" tag so the merged output never collides
 // with one of the input bin files.
 export function deriveMergedCuePath(input: string): string {
+  input = stripArchiveExt(input);
   const dot = input.lastIndexOf(".");
   let stem = dot === -1 ? input : input.slice(0, dot);
   stem = stem.replace(/\s*\(Track\s*\d+\)\s*$/i, "");
@@ -95,10 +112,11 @@ export function deriveMergedCuePath(input: string): string {
 }
 
 export function deriveCsoPath(input: string, format: "cso" | "zso"): string {
-  return replaceExt(input, format);
+  return replaceExt(stripArchiveExt(input), format);
 }
 
 export function deriveRvzPath(input: string): string {
+  input = stripArchiveExt(input);
   // NKit double extensions collapse: game.nkit.iso -> game.rvz.
   const lower = input.toLowerCase();
   if (lower.endsWith(".nkit.iso") || lower.endsWith(".nkit.gcz")) {
@@ -108,20 +126,22 @@ export function deriveRvzPath(input: string): string {
 }
 
 export function deriveDiscIsoPath(input: string): string {
-  return replaceExt(input, "iso");
+  return replaceExt(stripArchiveExt(input), "iso");
 }
 
 export function deriveDiscPath(input: string, format: "iso" | "wbfs"): string {
-  return replaceExt(input, format);
+  return replaceExt(stripArchiveExt(input), format);
 }
 
 export function deriveNszPath(input: string): string {
+  input = stripArchiveExt(input);
   const ext = getExt(input);
   if (ext === "xci") return replaceExt(input, "xcz");
   return replaceExt(input, "nsz");
 }
 
 export function deriveNspPath(input: string): string {
+  input = stripArchiveExt(input);
   const ext = getExt(input);
   if (ext === "xcz") return replaceExt(input, "xci");
   return replaceExt(input, "nsp");
@@ -133,6 +153,7 @@ export function deriveNspPath(input: string): string {
 /// collapses to `Title`. Dots inside the title (`Super Mario Bros. U`)
 /// are preserved; only real `.wud` / `.wux` extensions are stripped.
 export function deriveWuaPath(input: string): string {
+  input = stripArchiveExt(input);
   const trimmed = input.replace(/[\\/]+$/, "");
   const slash = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
   const parent = slash >= 0 ? trimmed.slice(0, slash) : "";

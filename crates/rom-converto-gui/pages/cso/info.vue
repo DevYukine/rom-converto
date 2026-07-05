@@ -6,7 +6,7 @@ const store = useCsoInfoStore();
 const { input, info, rawJson, error, loading } = storeToRefs(store);
 
 const CSO_FILTERS = [
-  { name: "Compressed ISO", extensions: ["cso", "zso", "dax"] },
+  { name: "Compressed ISO", extensions: ["cso", "zso", "dax", "zip", "7z", "rar", "tar", "tgz", "gz"] },
 ];
 </script>
 

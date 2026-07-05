@@ -105,6 +105,14 @@ const CTR_COMPRESS_EXTS: &[&str] = &["cia", "cci", "3ds", "cxi", "3dsx"];
 const CTR_DECOMPRESS_EXTS: &[&str] = &["zcia", "zcci", "zcxi", "z3dsx"];
 const CTR_CONVERT_EXTS: &[&str] = &["cia", "3ds", "cci"];
 
+// Union of image extensions the read side recognizes, used to pick the first
+// convertible member when a format-agnostic command (hash) is handed an archive.
+const ALL_IMAGE_EXTS: &[&str] = &[
+    "iso", "gcm", "wbfs", "rvz", "gcz", "wia", "nkit", "chd", "cso", "zso", "dax", "cue", "cia",
+    "3ds", "cci", "cxi", "3dsx", "zcia", "zcci", "zcxi", "z3dsx", "nsp", "xci", "nca", "nsz",
+    "xcz", "ncz", "wud", "wux",
+];
+
 fn file_len(path: &Path) -> u64 {
     std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
 }
@@ -855,6 +863,9 @@ async fn dispatch_command(
                     log_count_summary(count, tally);
                 } else {
                     ensure_input_exists(&cmd.input)?;
+                    let resolved =
+                        rom_converto_lib::util::resolve_input(&cmd.input, CTR_DECRYPT_EXTS)?;
+                    let input = resolved.path();
                     let output = match cmd.output_flag.or(cmd.output) {
                         Some(p) => p,
                         None => {
@@ -864,9 +875,9 @@ async fn dispatch_command(
                             match cmd.output_template.as_deref() {
                                 Some(tmpl) => crate::util::templated_output(
                                     tmpl,
-                                    &cmd.input,
+                                    input,
                                     cmd.output_dir.as_deref(),
-                                    derive_decrypted_path(&cmd.input)
+                                    derive_decrypted_path(resolved.output_basis())
                                         .extension()
                                         .and_then(|e| e.to_str())
                                         .unwrap_or(""),
@@ -874,7 +885,7 @@ async fn dispatch_command(
                                     dry_run,
                                 )?,
                                 None => rom_converto_lib::util::place_in_dir(
-                                    &derive_decrypted_path(&cmd.input),
+                                    &derive_decrypted_path(resolved.output_basis()),
                                     cmd.output_dir.as_deref(),
                                 ),
                             }
@@ -896,10 +907,10 @@ async fn dispatch_command(
                     };
                     if !skip_space_check {
                         let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
-                        batch::space_preflight_for_size(file_len(&cmd.input), check_dir)?;
+                        batch::space_preflight_for_size(file_len(input), check_dir)?;
                     }
                     let started = Instant::now();
-                    decrypt_rom_cancellable(&cmd.input, &output, &progress, cancel.clone()).await?;
+                    decrypt_rom_cancellable(input, &output, &progress, cancel.clone()).await?;
                     log_single_summary(&cmd.input, &output, TallyDirection::Convert, started);
                 }
             }
@@ -942,6 +953,9 @@ async fn dispatch_command(
                     log_count_summary(count, tally);
                 } else {
                     ensure_input_exists(&cmd.input)?;
+                    let resolved =
+                        rom_converto_lib::util::resolve_input(&cmd.input, CTR_COMPRESS_EXTS)?;
+                    let input = resolved.path();
                     let output = match cmd.output_flag.or(cmd.output) {
                         Some(p) => p,
                         None => {
@@ -951,9 +965,9 @@ async fn dispatch_command(
                             match cmd.output_template.as_deref() {
                                 Some(tmpl) => crate::util::templated_output(
                                     tmpl,
-                                    &cmd.input,
+                                    input,
                                     cmd.output_dir.as_deref(),
-                                    derive_compressed_path(&cmd.input)
+                                    derive_compressed_path(resolved.output_basis())
                                         .extension()
                                         .and_then(|e| e.to_str())
                                         .unwrap_or(""),
@@ -961,7 +975,7 @@ async fn dispatch_command(
                                     dry_run,
                                 )?,
                                 None => rom_converto_lib::util::place_in_dir(
-                                    &derive_compressed_path(&cmd.input),
+                                    &derive_compressed_path(resolved.output_basis()),
                                     cmd.output_dir.as_deref(),
                                 ),
                             }
@@ -983,11 +997,11 @@ async fn dispatch_command(
                     };
                     if !skip_space_check {
                         let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
-                        batch::space_preflight_for_size(file_len(&cmd.input), check_dir)?;
+                        batch::space_preflight_for_size(file_len(input), check_dir)?;
                     }
                     let started = Instant::now();
                     compress_rom_cancellable(
-                        &cmd.input,
+                        input,
                         &output,
                         cmd.level,
                         cmd.allow_encrypted,
@@ -1035,6 +1049,9 @@ async fn dispatch_command(
                     log_count_summary(count, tally);
                 } else {
                     ensure_input_exists(&cmd.input)?;
+                    let resolved =
+                        rom_converto_lib::util::resolve_input(&cmd.input, CTR_DECOMPRESS_EXTS)?;
+                    let input = resolved.path();
                     let output = match cmd.output_flag.or(cmd.output) {
                         Some(p) => p,
                         None => {
@@ -1044,9 +1061,9 @@ async fn dispatch_command(
                             match cmd.output_template.as_deref() {
                                 Some(tmpl) => crate::util::templated_output(
                                     tmpl,
-                                    &cmd.input,
+                                    input,
                                     cmd.output_dir.as_deref(),
-                                    derive_decompressed_path(&cmd.input)
+                                    derive_decompressed_path(resolved.output_basis())
                                         .extension()
                                         .and_then(|e| e.to_str())
                                         .unwrap_or(""),
@@ -1054,7 +1071,7 @@ async fn dispatch_command(
                                     dry_run,
                                 )?,
                                 None => rom_converto_lib::util::place_in_dir(
-                                    &derive_decompressed_path(&cmd.input),
+                                    &derive_decompressed_path(resolved.output_basis()),
                                     cmd.output_dir.as_deref(),
                                 ),
                             }
@@ -1082,11 +1099,10 @@ async fn dispatch_command(
                     };
                     if !skip_space_check {
                         let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
-                        batch::space_preflight_for_size(file_len(&cmd.input), check_dir)?;
+                        batch::space_preflight_for_size(file_len(input), check_dir)?;
                     }
                     let started = Instant::now();
-                    decompress_rom_cancellable(&cmd.input, &output, &progress, cancel.clone())
-                        .await?;
+                    decompress_rom_cancellable(input, &output, &progress, cancel.clone()).await?;
                     log_single_summary(&cmd.input, &output, TallyDirection::Decompress, started);
                 }
             }
@@ -1128,6 +1144,9 @@ async fn dispatch_command(
                     log_count_summary(count, tally);
                 } else {
                     ensure_input_exists(&cmd.input)?;
+                    let resolved =
+                        rom_converto_lib::util::resolve_input(&cmd.input, CTR_CONVERT_EXTS)?;
+                    let input = resolved.path();
                     let output = match cmd.output_flag.or(cmd.output) {
                         Some(p) => p,
                         None => {
@@ -1137,9 +1156,9 @@ async fn dispatch_command(
                             match cmd.output_template.as_deref() {
                                 Some(tmpl) => crate::util::templated_output(
                                     tmpl,
-                                    &cmd.input,
+                                    input,
                                     cmd.output_dir.as_deref(),
-                                    derive_converted_path(&cmd.input)
+                                    derive_converted_path(resolved.output_basis())
                                         .extension()
                                         .and_then(|e| e.to_str())
                                         .unwrap_or(""),
@@ -1147,7 +1166,7 @@ async fn dispatch_command(
                                     dry_run,
                                 )?,
                                 None => rom_converto_lib::util::place_in_dir(
-                                    &derive_converted_path(&cmd.input),
+                                    &derive_converted_path(resolved.output_basis()),
                                     cmd.output_dir.as_deref(),
                                 ),
                             }
@@ -1169,10 +1188,10 @@ async fn dispatch_command(
                     };
                     if !skip_space_check {
                         let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
-                        batch::space_preflight_for_size(file_len(&cmd.input), check_dir)?;
+                        batch::space_preflight_for_size(file_len(input), check_dir)?;
                     }
                     let started = Instant::now();
-                    convert_rom_cancellable(&cmd.input, &output, &progress, cancel.clone()).await?;
+                    convert_rom_cancellable(input, &output, &progress, cancel.clone()).await?;
                     log_single_summary(&cmd.input, &output, TallyDirection::Convert, started);
                 }
             }
@@ -1206,7 +1225,9 @@ async fn dispatch_command(
                     }
                 } else {
                     ensure_input_exists(&cmd.input)?;
-                    let result = verify_ctr(&cmd.input, &opts, &progress).await?;
+                    let resolved =
+                        rom_converto_lib::util::resolve_input(&cmd.input, CTR_DECRYPT_EXTS)?;
+                    let result = verify_ctr(resolved.path(), &opts, &progress).await?;
                     match &result {
                         CtrVerifyResult::Cia(cia) => {
                             log::info!("Format: CIA");
@@ -1254,7 +1275,8 @@ async fn dispatch_command(
                     anyhow::bail!("--keys is only supported by nx and wup info");
                 }
                 ensure_input_exists(&cmd.input)?;
-                let info = rom_converto_lib::nintendo::ctr::info::read_info(&cmd.input)?;
+                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, ALL_IMAGE_EXTS)?;
+                let info = rom_converto_lib::nintendo::ctr::info::read_info(resolved.path())?;
                 if let Some(dir) = &cmd.save_icon {
                     save_ctr_icon(&info, dir)?;
                 }
@@ -1302,7 +1324,10 @@ async fn dispatch_command(
                     .await?
                 } else {
                     ensure_input_exists(&cmd.input)?;
-                    if let Some(fmt) = detect_legacy_format(&cmd.input)? {
+                    let resolved =
+                        rom_converto_lib::util::resolve_input(&cmd.input, &["iso", "gcm", "gcz"])?;
+                    let input = resolved.path();
+                    if let Some(fmt) = detect_legacy_format(input)? {
                         ensure_format_allowed(fmt, DOL_MIGRATE_FORMATS)?;
                     }
                     let output = match cmd.output_flag.or(cmd.output) {
@@ -1314,14 +1339,14 @@ async fn dispatch_command(
                             match cmd.output_template.as_deref() {
                                 Some(tmpl) => crate::util::templated_output(
                                     tmpl,
-                                    &cmd.input,
+                                    input,
                                     output_dir.as_deref(),
                                     "rvz",
                                     None,
                                     dry_run,
                                 )?,
                                 None => rom_converto_lib::util::place_in_dir(
-                                    &derive_rvz_path(&cmd.input),
+                                    &derive_rvz_path(resolved.output_basis()),
                                     output_dir.as_deref(),
                                 ),
                             }
@@ -1374,10 +1399,10 @@ async fn dispatch_command(
                     };
                     if !skip_space_check {
                         let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
-                        batch::space_preflight_for_size(file_len(&cmd.input), check_dir)?;
+                        batch::space_preflight_for_size(file_len(input), check_dir)?;
                     }
                     let started = Instant::now();
-                    compress_disc_cancellable(&cmd.input, &output, opts, &progress, cancel.clone())
+                    compress_disc_cancellable(input, &output, opts, &progress, cancel.clone())
                         .await?;
                     finish_single(
                         &cmd.input,
@@ -1467,6 +1492,8 @@ async fn dispatch_command(
                     .await?
                 } else {
                     ensure_input_exists(&cmd.input)?;
+                    let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["rvz"])?;
+                    let input = resolved.path();
                     let output = match cmd.output_flag.or(cmd.output) {
                         Some(p) => p,
                         None => {
@@ -1476,14 +1503,14 @@ async fn dispatch_command(
                             match cmd.output_template.as_deref() {
                                 Some(tmpl) => crate::util::templated_output(
                                     tmpl,
-                                    &cmd.input,
+                                    input,
                                     output_dir.as_deref(),
                                     "iso",
                                     None,
                                     dry_run,
                                 )?,
                                 None => rom_converto_lib::util::place_in_dir(
-                                    &derive_disc_path(&cmd.input),
+                                    &derive_disc_path(resolved.output_basis()),
                                     output_dir.as_deref(),
                                 ),
                             }
@@ -1511,19 +1538,19 @@ async fn dispatch_command(
                     };
                     if !skip_space_check {
                         let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
-                        batch::space_preflight_for_size(file_len(&cmd.input), check_dir)?;
+                        batch::space_preflight_for_size(file_len(input), check_dir)?;
                     }
                     let started = Instant::now();
                     if wants_wbfs_output(&output) {
                         decompress_disc_to_wbfs_cancellable(
-                            &cmd.input,
+                            input,
                             &output,
                             &progress,
                             cancel.clone(),
                         )
                         .await?
                     } else {
-                        decompress_disc_cancellable(&cmd.input, &output, &progress, cancel.clone())
+                        decompress_disc_cancellable(input, &output, &progress, cancel.clone())
                             .await?
                     }
                     finish_single(
@@ -1549,9 +1576,14 @@ async fn dispatch_command(
                     .await?
                 } else {
                     ensure_input_exists(&cmd.input)?;
-                    verify_gate(&cmd.input, DOL_MIGRATE_FORMATS)?;
+                    let resolved = rom_converto_lib::util::resolve_input(
+                        &cmd.input,
+                        &["iso", "gcm", "gcz", "rvz"],
+                    )?;
+                    let input = resolved.path();
+                    verify_gate(input, DOL_MIGRATE_FORMATS)?;
                     let opts = DolVerifyOptions { full: cmd.full };
-                    let result = verify_dol(&cmd.input, &opts, &progress)?;
+                    let result = verify_dol(input, &opts, &progress)?;
                     log::info!("Game ID: {}", result.game_id);
                     print_rvz_structure(result.rvz_structure.as_ref());
                     if let Some(st) = &result.structural {
@@ -1574,7 +1606,8 @@ async fn dispatch_command(
                     anyhow::bail!("--keys is only supported by nx and wup info");
                 }
                 ensure_input_exists(&cmd.input)?;
-                let info = rom_converto_lib::nintendo::dol::info::read_info(&cmd.input)?;
+                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, ALL_IMAGE_EXTS)?;
+                let info = rom_converto_lib::nintendo::dol::info::read_info(resolved.path())?;
                 if let Some(dir) = &cmd.save_icon {
                     save_dol_banner(&info, dir)?;
                 }
@@ -1622,6 +1655,11 @@ async fn dispatch_command(
                     .await?
                 } else {
                     ensure_input_exists(&cmd.input)?;
+                    let resolved = rom_converto_lib::util::resolve_input(
+                        &cmd.input,
+                        &["iso", "wbfs", "gcz", "wia"],
+                    )?;
+                    let input = resolved.path();
                     let output = match cmd.output_flag.or(cmd.output) {
                         Some(p) => p,
                         None => {
@@ -1631,14 +1669,14 @@ async fn dispatch_command(
                             match cmd.output_template.as_deref() {
                                 Some(tmpl) => crate::util::templated_output(
                                     tmpl,
-                                    &cmd.input,
+                                    input,
                                     output_dir.as_deref(),
                                     "rvz",
                                     None,
                                     dry_run,
                                 )?,
                                 None => rom_converto_lib::util::place_in_dir(
-                                    &derive_rvz_path(&cmd.input),
+                                    &derive_rvz_path(resolved.output_basis()),
                                     output_dir.as_deref(),
                                 ),
                             }
@@ -1691,10 +1729,10 @@ async fn dispatch_command(
                     };
                     if !skip_space_check {
                         let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
-                        batch::space_preflight_for_size(file_len(&cmd.input), check_dir)?;
+                        batch::space_preflight_for_size(file_len(input), check_dir)?;
                     }
                     let started = Instant::now();
-                    compress_disc_cancellable(&cmd.input, &output, opts, &progress, cancel.clone())
+                    compress_disc_cancellable(input, &output, opts, &progress, cancel.clone())
                         .await?;
                     finish_single(
                         &cmd.input,
@@ -1784,6 +1822,8 @@ async fn dispatch_command(
                     .await?
                 } else {
                     ensure_input_exists(&cmd.input)?;
+                    let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["rvz"])?;
+                    let input = resolved.path();
                     let output = match cmd.output_flag.or(cmd.output) {
                         Some(p) => p,
                         None => {
@@ -1793,14 +1833,14 @@ async fn dispatch_command(
                             match cmd.output_template.as_deref() {
                                 Some(tmpl) => crate::util::templated_output(
                                     tmpl,
-                                    &cmd.input,
+                                    input,
                                     output_dir.as_deref(),
                                     "iso",
                                     None,
                                     dry_run,
                                 )?,
                                 None => rom_converto_lib::util::place_in_dir(
-                                    &derive_disc_path(&cmd.input),
+                                    &derive_disc_path(resolved.output_basis()),
                                     output_dir.as_deref(),
                                 ),
                             }
@@ -1828,19 +1868,19 @@ async fn dispatch_command(
                     };
                     if !skip_space_check {
                         let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
-                        batch::space_preflight_for_size(file_len(&cmd.input), check_dir)?;
+                        batch::space_preflight_for_size(file_len(input), check_dir)?;
                     }
                     let started = Instant::now();
                     if wants_wbfs_output(&output) {
                         decompress_disc_to_wbfs_cancellable(
-                            &cmd.input,
+                            input,
                             &output,
                             &progress,
                             cancel.clone(),
                         )
                         .await?
                     } else {
-                        decompress_disc_cancellable(&cmd.input, &output, &progress, cancel.clone())
+                        decompress_disc_cancellable(input, &output, &progress, cancel.clone())
                             .await?
                     }
                     finish_single(
@@ -1866,9 +1906,14 @@ async fn dispatch_command(
                     .await?
                 } else {
                     ensure_input_exists(&cmd.input)?;
-                    verify_gate(&cmd.input, ALL_MIGRATE_FORMATS)?;
+                    let resolved = rom_converto_lib::util::resolve_input(
+                        &cmd.input,
+                        &["iso", "wbfs", "gcz", "wia", "rvz"],
+                    )?;
+                    let input = resolved.path();
+                    verify_gate(input, ALL_MIGRATE_FORMATS)?;
                     let opts = RvlVerifyOptions { full: cmd.full };
-                    let result = verify_rvl(&cmd.input, &opts, &progress)?;
+                    let result = verify_rvl(input, &opts, &progress)?;
                     log::info!("Game ID: {}", result.game_id);
                     print_rvz_structure(result.rvz_structure.as_ref());
                     if result.rvz_structure.is_none() && !cmd.full {
@@ -1909,7 +1954,8 @@ async fn dispatch_command(
                     anyhow::bail!("--keys is only supported by nx and wup info");
                 }
                 ensure_input_exists(&cmd.input)?;
-                let info = rom_converto_lib::nintendo::rvl::info::read_info(&cmd.input)?;
+                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, ALL_IMAGE_EXTS)?;
+                let info = rom_converto_lib::nintendo::rvl::info::read_info(resolved.path())?;
                 if let Some(dir) = &cmd.save_icon {
                     save_rvl_image(&info, dir)?;
                 }
@@ -2033,7 +2079,10 @@ async fn dispatch_command(
                     batch::wup_verify(&progress, &total_progress, &cmd.input, cmd.max_depth).await?
                 } else {
                     ensure_input_exists(&cmd.input)?;
-                    let result = verify_wup_async(cmd.input, cmd.key, &progress).await?;
+                    let resolved =
+                        rom_converto_lib::util::resolve_input(&cmd.input, &["wud", "wux"])?;
+                    let result =
+                        verify_wup_async(resolved.path().to_path_buf(), cmd.key, &progress).await?;
                     log::info!("Source kind: {}", result.kind);
                     log::info!("Overall: {}", if result.ok { "OK" } else { "FAIL" });
                     for t in &result.titles {
@@ -2053,8 +2102,9 @@ async fn dispatch_command(
             }
             WupCommands::Info(cmd) => {
                 ensure_input_exists(&cmd.input)?;
+                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, ALL_IMAGE_EXTS)?;
                 let info = rom_converto_lib::nintendo::wup::info::read_info(
-                    &cmd.input,
+                    resolved.path(),
                     cmd.keys.as_deref(),
                 )?;
                 if let Some(dir) = &cmd.save_icon {
@@ -2137,7 +2187,10 @@ async fn dispatch_command(
                     .await?
                 } else {
                     ensure_input_exists(&cmd.input)?;
-                    let kind = detect_container(&cmd.input)?;
+                    let resolved =
+                        rom_converto_lib::util::resolve_input(&cmd.input, &["nsp", "xci", "nca"])?;
+                    let input = resolved.path();
+                    let kind = detect_container(input)?;
                     let mut opts = NxCompressOptions::for_kind(kind);
                     if let Some(level) = level {
                         opts.level = level;
@@ -2162,9 +2215,9 @@ async fn dispatch_command(
                             match cmd.output_template.as_deref() {
                                 Some(tmpl) => crate::util::templated_output(
                                     tmpl,
-                                    &cmd.input,
+                                    input,
                                     output_dir.as_deref(),
-                                    nx_derive_compressed_path(&cmd.input)
+                                    nx_derive_compressed_path(resolved.output_basis())
                                         .extension()
                                         .and_then(|e| e.to_str())
                                         .unwrap_or(""),
@@ -2172,7 +2225,7 @@ async fn dispatch_command(
                                     dry_run,
                                 )?,
                                 None => rom_converto_lib::util::place_in_dir(
-                                    &nx_derive_compressed_path(&cmd.input),
+                                    &nx_derive_compressed_path(resolved.output_basis()),
                                     output_dir.as_deref(),
                                 ),
                             }
@@ -2225,13 +2278,13 @@ async fn dispatch_command(
                     };
                     if !skip_space_check {
                         let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
-                        batch::space_preflight_for_size(file_len(&cmd.input), check_dir)?;
+                        batch::space_preflight_for_size(file_len(input), check_dir)?;
                     }
-                    let in_path = cmd.input.clone();
+                    let in_path = input.to_path_buf();
                     let out_path = output.clone();
                     let started = Instant::now();
                     compress_container_async_cancellable(
-                        cmd.input,
+                        in_path.clone(),
                         output,
                         opts,
                         keys,
@@ -2240,7 +2293,7 @@ async fn dispatch_command(
                     )
                     .await?;
                     finish_single(
-                        &in_path,
+                        &cmd.input,
                         &out_path,
                         TallyDirection::Compress,
                         "compress",
@@ -2311,6 +2364,9 @@ async fn dispatch_command(
                     .await?
                 } else {
                     ensure_input_exists(&cmd.input)?;
+                    let resolved =
+                        rom_converto_lib::util::resolve_input(&cmd.input, &["nsz", "xcz", "ncz"])?;
+                    let input = resolved.path();
                     let output = match cmd.output_flag.or(cmd.output) {
                         Some(p) => p,
                         None => {
@@ -2320,9 +2376,9 @@ async fn dispatch_command(
                             match cmd.output_template.as_deref() {
                                 Some(tmpl) => crate::util::templated_output(
                                     tmpl,
-                                    &cmd.input,
+                                    input,
                                     output_dir.as_deref(),
-                                    nx_derive_decompressed_path(&cmd.input)
+                                    nx_derive_decompressed_path(resolved.output_basis())
                                         .extension()
                                         .and_then(|e| e.to_str())
                                         .unwrap_or(""),
@@ -2330,7 +2386,7 @@ async fn dispatch_command(
                                     dry_run,
                                 )?,
                                 None => rom_converto_lib::util::place_in_dir(
-                                    &nx_derive_decompressed_path(&cmd.input),
+                                    &nx_derive_decompressed_path(resolved.output_basis()),
                                     output_dir.as_deref(),
                                 ),
                             }
@@ -2358,13 +2414,13 @@ async fn dispatch_command(
                     };
                     if !skip_space_check {
                         let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
-                        batch::space_preflight_for_size(file_len(&cmd.input), check_dir)?;
+                        batch::space_preflight_for_size(file_len(input), check_dir)?;
                     }
-                    let in_path = cmd.input.clone();
+                    let in_path = input.to_path_buf();
                     let out_path = output.clone();
                     let started = Instant::now();
                     decompress_container_async_cancellable(
-                        cmd.input,
+                        in_path.clone(),
                         output,
                         keys,
                         &progress,
@@ -2372,7 +2428,7 @@ async fn dispatch_command(
                     )
                     .await?;
                     finish_single(
-                        &in_path,
+                        &cmd.input,
                         &out_path,
                         TallyDirection::Decompress,
                         "decompress",
@@ -2390,7 +2446,12 @@ async fn dispatch_command(
                     return Ok(());
                 }
                 ensure_input_exists(&cmd.input)?;
-                let result = verify_container_async(cmd.input, keys, &progress).await?;
+                let resolved = rom_converto_lib::util::resolve_input(
+                    &cmd.input,
+                    &["nsp", "xci", "nca", "nsz", "xcz", "ncz"],
+                )?;
+                let result =
+                    verify_container_async(resolved.path().to_path_buf(), keys, &progress).await?;
                 log::info!("Container kind: {}", result.kind);
                 log::info!("Overall: {}", if result.ok { "OK" } else { "FAIL" });
                 for v in &result.ncas {
@@ -2411,8 +2472,9 @@ async fn dispatch_command(
             }
             NxCommands::Info(cmd) => {
                 ensure_input_exists(&cmd.input)?;
+                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, ALL_IMAGE_EXTS)?;
                 let info = rom_converto_lib::nintendo::nx::info::read_info(
-                    &cmd.input,
+                    resolved.path(),
                     cmd.keys.as_deref(),
                 )?;
                 if let Some(dir) = &cmd.save_icon {
@@ -2461,6 +2523,9 @@ async fn dispatch_command(
                     .await?
                 } else {
                     ensure_input_exists(&cmd.input)?;
+                    let resolved =
+                        rom_converto_lib::util::resolve_input(&cmd.input, &["iso", "cue"])?;
+                    let input = resolved.path();
                     let output = match cmd.output_flag.or(cmd.output) {
                         Some(p) => p,
                         None => {
@@ -2470,14 +2535,14 @@ async fn dispatch_command(
                             match cmd.output_template.as_deref() {
                                 Some(tmpl) => crate::util::templated_output(
                                     tmpl,
-                                    &cmd.input,
+                                    input,
                                     output_dir.as_deref(),
                                     "chd",
                                     None,
                                     dry_run,
                                 )?,
                                 None => rom_converto_lib::util::place_in_dir(
-                                    &cmd.input.with_extension("chd"),
+                                    &resolved.output_basis().with_extension("chd"),
                                     output_dir.as_deref(),
                                 ),
                             }
@@ -2486,7 +2551,7 @@ async fn dispatch_command(
                     let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
                     let decision = resolve_output(&output, policy)?;
                     if dry_run {
-                        let media = chd_media_label(&cmd.input);
+                        let media = chd_media_label(input);
                         return dry_run_single_verify(
                             "compress",
                             &cmd.input,
@@ -2531,15 +2596,14 @@ async fn dispatch_command(
                     };
                     if !skip_space_check {
                         let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
-                        batch::space_preflight_for_size(file_len(&cmd.input), check_dir)?;
+                        batch::space_preflight_for_size(file_len(input), check_dir)?;
                     }
                     opts.force = true;
-                    let in_path = cmd.input.clone();
                     let out_path = output.clone();
                     let started = Instant::now();
                     convert_disc_to_chd_cancellable(
                         &progress,
-                        cmd.input,
+                        input.to_path_buf(),
                         output,
                         mode,
                         opts,
@@ -2547,7 +2611,7 @@ async fn dispatch_command(
                     )
                     .await?;
                     finish_single(
-                        &in_path,
+                        &cmd.input,
                         &out_path,
                         TallyDirection::Compress,
                         "compress",
@@ -2581,6 +2645,8 @@ async fn dispatch_command(
                     .await?
                 } else {
                     ensure_input_exists(&cmd.input)?;
+                    let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["chd"])?;
+                    let input = resolved.path();
                     let output = match cmd.output_flag.or(cmd.output) {
                         Some(p) => p,
                         None => {
@@ -2593,14 +2659,14 @@ async fn dispatch_command(
                             match cmd.output_template.as_deref() {
                                 Some(tmpl) => crate::util::templated_output(
                                     tmpl,
-                                    &cmd.input,
+                                    input,
                                     Some(dir),
                                     "iso",
                                     None,
                                     dry_run,
                                 )?,
                                 None => rom_converto_lib::util::place_in_dir(
-                                    &cmd.input.with_extension(""),
+                                    &resolved.output_basis().with_extension(""),
                                     Some(dir),
                                 ),
                             }
@@ -2628,21 +2694,21 @@ async fn dispatch_command(
                     };
                     if !skip_space_check {
                         let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
-                        batch::space_preflight_for_size(file_len(&cmd.input), check_dir)?;
+                        batch::space_preflight_for_size(file_len(input), check_dir)?;
                     }
-                    let in_path = cmd.input.clone();
+                    let in_path = input.to_path_buf();
                     let out_path = output.clone();
                     let started = Instant::now();
                     extract_from_chd_cancellable(
                         &progress,
-                        cmd.input,
+                        in_path.clone(),
                         output,
                         cmd.parent,
                         cancel.clone(),
                     )
                     .await?;
                     finish_single(
-                        &in_path,
+                        &cmd.input,
                         &out_path,
                         TallyDirection::CountOnly,
                         "extract",
@@ -2669,7 +2735,14 @@ async fn dispatch_command(
                     .await?
                 } else {
                     ensure_input_exists(&cmd.input)?;
-                    verify_chd(&progress, cmd.input, cmd.parent, cmd.fix).await?
+                    let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["chd"])?;
+                    verify_chd(
+                        &progress,
+                        resolved.path().to_path_buf(),
+                        cmd.parent,
+                        cmd.fix,
+                    )
+                    .await?
                 }
             }
             ChdCommands::ToCso(cmd) => {
@@ -2707,6 +2780,8 @@ async fn dispatch_command(
                     .await?
                 } else {
                     ensure_input_exists(&cmd.input)?;
+                    let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["chd"])?;
+                    let input = resolved.path();
                     let output = match cmd.output_flag.or(cmd.output) {
                         Some(p) => p,
                         None => {
@@ -2716,14 +2791,14 @@ async fn dispatch_command(
                             match cmd.output_template.as_deref() {
                                 Some(tmpl) => crate::util::templated_output(
                                     tmpl,
-                                    &cmd.input,
+                                    input,
                                     output_dir.as_deref(),
                                     format.extension(),
                                     None,
                                     dry_run,
                                 )?,
                                 None => rom_converto_lib::util::place_in_dir(
-                                    &cmd.input.with_extension(format.extension()),
+                                    &resolved.output_basis().with_extension(format.extension()),
                                     output_dir.as_deref(),
                                 ),
                             }
@@ -2777,19 +2852,19 @@ async fn dispatch_command(
                     };
                     if !skip_space_check {
                         let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
-                        let required = rom_converto_lib::chd::info::read_info(&cmd.input)
+                        let required = rom_converto_lib::chd::info::read_info(input)
                             .map(|info| info.logical_bytes)
-                            .unwrap_or_else(|_| file_len(&cmd.input));
+                            .unwrap_or_else(|_| file_len(input));
                         batch::space_preflight_for_size(required, check_dir)?;
                     }
                     opts.force = true;
-                    let in_path = cmd.input.clone();
+                    let in_path = input.to_path_buf();
                     let out_path = output.clone();
                     let started = Instant::now();
-                    chd_to_cso_cancellable(&progress, cmd.input, output, opts, cancel.clone())
+                    chd_to_cso_cancellable(&progress, in_path, output, opts, cancel.clone())
                         .await?;
                     finish_single(
-                        &in_path,
+                        &cmd.input,
                         &out_path,
                         TallyDirection::Compress,
                         "compress",
@@ -2808,7 +2883,8 @@ async fn dispatch_command(
                     );
                 }
                 ensure_input_exists(&cmd.input)?;
-                let info = rom_converto_lib::chd::info::read_info(&cmd.input)?;
+                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, ALL_IMAGE_EXTS)?;
+                let info = rom_converto_lib::chd::info::read_info(resolved.path())?;
                 info_print::print(&rom_converto_lib::info::InfoResult::Chd(info), cmd.json)?;
             }
         },
@@ -2848,6 +2924,8 @@ async fn dispatch_command(
                     .await?
                 } else {
                     ensure_input_exists(&cmd.input)?;
+                    let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["iso"])?;
+                    let input = resolved.path();
                     let output = match cmd.output_flag.or(cmd.output) {
                         Some(p) => p,
                         None => {
@@ -2857,14 +2935,14 @@ async fn dispatch_command(
                             match cmd.output_template.as_deref() {
                                 Some(tmpl) => crate::util::templated_output(
                                     tmpl,
-                                    &cmd.input,
+                                    input,
                                     output_dir.as_deref(),
                                     format.extension(),
                                     None,
                                     dry_run,
                                 )?,
                                 None => rom_converto_lib::util::place_in_dir(
-                                    &cmd.input.with_extension(format.extension()),
+                                    &resolved.output_basis().with_extension(format.extension()),
                                     output_dir.as_deref(),
                                 ),
                             }
@@ -2918,16 +2996,21 @@ async fn dispatch_command(
                     };
                     if !skip_space_check {
                         let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
-                        batch::space_preflight_for_size(file_len(&cmd.input), check_dir)?;
+                        batch::space_preflight_for_size(file_len(input), check_dir)?;
                     }
                     opts.force = true;
-                    let in_path = cmd.input.clone();
                     let out_path = output.clone();
                     let started = Instant::now();
-                    compress_to_cso_cancellable(&progress, cmd.input, output, opts, cancel.clone())
-                        .await?;
+                    compress_to_cso_cancellable(
+                        &progress,
+                        input.to_path_buf(),
+                        output,
+                        opts,
+                        cancel.clone(),
+                    )
+                    .await?;
                     finish_single(
-                        &in_path,
+                        &cmd.input,
                         &out_path,
                         TallyDirection::Compress,
                         "compress",
@@ -2960,6 +3043,9 @@ async fn dispatch_command(
                     .await?
                 } else {
                     ensure_input_exists(&cmd.input)?;
+                    let resolved =
+                        rom_converto_lib::util::resolve_input(&cmd.input, &["cso", "zso", "dax"])?;
+                    let input = resolved.path();
                     let output = match cmd.output_flag.or(cmd.output) {
                         Some(p) => p,
                         None => {
@@ -2969,14 +3055,14 @@ async fn dispatch_command(
                             match cmd.output_template.as_deref() {
                                 Some(tmpl) => crate::util::templated_output(
                                     tmpl,
-                                    &cmd.input,
+                                    input,
                                     output_dir.as_deref(),
                                     "iso",
                                     None,
                                     dry_run,
                                 )?,
                                 None => rom_converto_lib::util::place_in_dir(
-                                    &cmd.input.with_extension("iso"),
+                                    &resolved.output_basis().with_extension("iso"),
                                     output_dir.as_deref(),
                                 ),
                             }
@@ -3004,21 +3090,21 @@ async fn dispatch_command(
                     };
                     if !skip_space_check {
                         let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
-                        batch::space_preflight_for_size(file_len(&cmd.input), check_dir)?;
+                        batch::space_preflight_for_size(file_len(input), check_dir)?;
                     }
-                    let in_path = cmd.input.clone();
+                    let in_path = input.to_path_buf();
                     let out_path = output.clone();
                     let started = Instant::now();
                     decompress_from_cso_cancellable(
                         &progress,
-                        cmd.input,
+                        in_path.clone(),
                         output,
                         true,
                         cancel.clone(),
                     )
                     .await?;
                     finish_single(
-                        &in_path,
+                        &cmd.input,
                         &out_path,
                         TallyDirection::Decompress,
                         "decompress",
@@ -3040,7 +3126,9 @@ async fn dispatch_command(
                     .await?
                 } else {
                     ensure_input_exists(&cmd.input)?;
-                    verify_cso(&progress, cmd.input, cmd.full).await?
+                    let resolved =
+                        rom_converto_lib::util::resolve_input(&cmd.input, &["cso", "zso", "dax"])?;
+                    verify_cso(&progress, resolved.path().to_path_buf(), cmd.full).await?
                 }
             }
             CsoCommands::ToChd(cmd) => {
@@ -3082,6 +3170,9 @@ async fn dispatch_command(
                     .await?
                 } else {
                     ensure_input_exists(&cmd.input)?;
+                    let resolved =
+                        rom_converto_lib::util::resolve_input(&cmd.input, &["cso", "zso", "dax"])?;
+                    let input = resolved.path();
                     let output = match cmd.output_flag.or(cmd.output) {
                         Some(p) => p,
                         None => {
@@ -3091,14 +3182,14 @@ async fn dispatch_command(
                             match cmd.output_template.as_deref() {
                                 Some(tmpl) => crate::util::templated_output(
                                     tmpl,
-                                    &cmd.input,
+                                    input,
                                     output_dir.as_deref(),
                                     "chd",
                                     None,
                                     dry_run,
                                 )?,
                                 None => rom_converto_lib::util::place_in_dir(
-                                    &cmd.input.with_extension("chd"),
+                                    &resolved.output_basis().with_extension("chd"),
                                     output_dir.as_deref(),
                                 ),
                             }
@@ -3151,26 +3242,19 @@ async fn dispatch_command(
                     };
                     if !skip_space_check {
                         let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
-                        let required = rom_converto_lib::cso::info::read_info(&cmd.input)
+                        let required = rom_converto_lib::cso::info::read_info(input)
                             .map(|info| info.uncompressed_size)
-                            .unwrap_or_else(|_| file_len(&cmd.input));
+                            .unwrap_or_else(|_| file_len(input));
                         batch::space_preflight_for_size(required, check_dir)?;
                     }
                     opts.force = true;
-                    let in_path = cmd.input.clone();
+                    let in_path = input.to_path_buf();
                     let out_path = output.clone();
                     let started = Instant::now();
-                    cso_to_chd_cancellable(
-                        &progress,
-                        cmd.input,
-                        output,
-                        mode,
-                        opts,
-                        cancel.clone(),
-                    )
-                    .await?;
+                    cso_to_chd_cancellable(&progress, in_path, output, mode, opts, cancel.clone())
+                        .await?;
                     finish_single(
-                        &in_path,
+                        &cmd.input,
                         &out_path,
                         TallyDirection::Compress,
                         "compress",
@@ -3189,7 +3273,8 @@ async fn dispatch_command(
                     );
                 }
                 ensure_input_exists(&cmd.input)?;
-                let info = rom_converto_lib::cso::info::read_info(&cmd.input)?;
+                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, ALL_IMAGE_EXTS)?;
+                let info = rom_converto_lib::cso::info::read_info(resolved.path())?;
                 info_print::print(&rom_converto_lib::info::InfoResult::Cso(info), cmd.json)?;
             }
         },
@@ -3241,7 +3326,14 @@ async fn dispatch_command(
                 .await?;
             } else {
                 ensure_input_exists(&cmd.input)?;
-                hash_single(&progress, &cmd.input, &algos, cmd.report.as_deref(), cache)?;
+                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, ALL_IMAGE_EXTS)?;
+                hash_single(
+                    &progress,
+                    resolved.path(),
+                    &algos,
+                    cmd.report.as_deref(),
+                    cache,
+                )?;
             }
         }
         Commands::Playlist(cmd) => {
@@ -3359,8 +3451,11 @@ async fn dispatch_command(
                     .await?;
                 } else {
                     ensure_input_exists(&cmd.input)?;
+                    let resolved =
+                        rom_converto_lib::util::resolve_input(&cmd.input, ALL_IMAGE_EXTS)?;
                     batch::dat_verify_single(
                         &progress,
+                        resolved.path(),
                         &cmd.input,
                         &algos,
                         &bounds,
@@ -3420,6 +3515,7 @@ async fn dispatch_command(
             }
             DatCommands::Identify(cmd) => {
                 ensure_input_exists(&cmd.input)?;
+                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, ALL_IMAGE_EXTS)?;
                 let algos = parse_algos(&cmd.algo).map_err(|e| anyhow::anyhow!(e))?;
                 let bounds = resolve_checksum_bounds(
                     cmd.input_checksum_min.as_deref(),
@@ -3432,7 +3528,7 @@ async fn dispatch_command(
                 let api_base = cmd.api_base.or_else(|| effective.dat.api_base.clone());
                 batch::dat_identify(
                     &progress,
-                    &cmd.input,
+                    resolved.path(),
                     &algos,
                     &bounds,
                     api_base.as_deref(),

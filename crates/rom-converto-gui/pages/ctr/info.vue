@@ -8,7 +8,7 @@ const { input, info, rawJson, error, loading } = storeToRefs(store);
 const CTR_FILTERS = [
   {
     name: "3DS container",
-    extensions: ["cia", "3ds", "cci", "cxi", "ncch", "zcia", "zcci", "zcxi", "z3dsx"],
+    extensions: ["cia", "3ds", "cci", "cxi", "ncch", "zcia", "zcci", "zcxi", "z3dsx", "zip", "7z", "rar", "tar", "tgz", "gz"],
   },
 ];
 </script>

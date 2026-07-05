@@ -355,6 +355,30 @@ fn ext_of(path: &Path) -> String {
         .to_string()
 }
 
+const CTR_DECRYPT_EXTS: &[&str] = &["cia", "3ds", "cci", "cxi"];
+const CTR_COMPRESS_EXTS: &[&str] = &["cia", "cci", "3ds", "cxi", "3dsx"];
+const CTR_DECOMPRESS_EXTS: &[&str] = &["zcia", "zcci", "zcxi", "z3dsx"];
+const CTR_CONVERT_EXTS: &[&str] = &["cia", "3ds", "cci"];
+const ALL_IMAGE_EXTS: &[&str] = &[
+    "iso", "gcm", "wbfs", "rvz", "gcz", "wia", "nkit", "chd", "cso", "zso", "dax", "cue", "cia",
+    "3ds", "cci", "cxi", "3dsx", "zcia", "zcci", "zcxi", "z3dsx", "nsp", "xci", "nca", "nsz",
+    "xcz", "ncz", "wud", "wux",
+];
+
+/// Resolve a read input, transparently extracting the first member matching
+/// `exts` when it is an archive. Extraction is blocking, so it runs off the
+/// async runtime. The returned guard owns the temp dir and must stay alive
+/// until the read that uses its `path()` completes.
+async fn resolve_archive_input(
+    input: PathBuf,
+    exts: &'static [&'static str],
+) -> Result<rom_converto_lib::util::ResolvedInput, String> {
+    tokio::task::spawn_blocking(move || rom_converto_lib::util::resolve_input(&input, exts))
+        .await
+        .map_err(err_to_string)?
+        .map_err(err_to_string)
+}
+
 /// Pick the output path for a write command. When a template is given it
 /// supersedes any explicit output, mirroring the CLI's `conflicts_with` rule;
 /// supplying both at once is rejected.
@@ -774,14 +798,16 @@ pub async fn cmd_decrypt_rom(
     let key = task_id.as_deref().unwrap_or("decrypt");
     let progress = Arc::new(TauriProgress::new(app, key));
     let dry_run = dry_run.unwrap_or(false);
-    let ext = ext_of(&derive_decrypted_path(&input));
+    let resolved = resolve_archive_input(input.clone(), CTR_DECRYPT_EXTS).await?;
+    let basis = resolved.output_basis().to_path_buf();
+    let ext = ext_of(&derive_decrypted_path(&basis));
     let desired = pick_output(
         output,
         output_template.as_deref(),
-        &input,
+        &basis,
         &ext,
         None,
-        || derive_decrypted_path(&input),
+        || derive_decrypted_path(&basis),
         dry_run,
     )?;
     if dry_run {
@@ -817,12 +843,13 @@ pub async fn cmd_decrypt_rom(
     let out_display = output.display().to_string();
     preflight_space(
         output.parent().unwrap_or(&output),
-        input_size(&input),
+        input_size(resolved.path()),
         skip_space_check,
     )?;
     let record_input = input.clone();
     let record_output = output.clone();
     let in_bytes = input_size(&input);
+    let resolved_path = resolved.path().to_path_buf();
     let token = begin(&state, key).await;
     // The streaming decrypt holds the worker-pool receiver across await points,
     // so its future is not Send; run on a dedicated thread with its own runtime.
@@ -832,7 +859,7 @@ pub async fn cmd_decrypt_rom(
             .build()
             .map_err(err_to_string)?;
         rt.block_on(decrypt_rom_cancellable(
-            &input,
+            &resolved_path,
             &output,
             progress.as_ref(),
             token,
@@ -879,14 +906,16 @@ pub async fn cmd_compress_rom(
     let key = task_id.as_deref().unwrap_or("compress");
     let progress = Arc::new(TauriProgress::new(app, key));
     let dry_run = dry_run.unwrap_or(false);
-    let ext = ext_of(&derive_compressed_path(&input));
+    let resolved = resolve_archive_input(input.clone(), CTR_COMPRESS_EXTS).await?;
+    let basis = resolved.output_basis().to_path_buf();
+    let ext = ext_of(&derive_compressed_path(&basis));
     let desired = pick_output(
         output,
         output_template.as_deref(),
-        &input,
+        &basis,
         &ext,
         None,
-        || derive_compressed_path(&input),
+        || derive_compressed_path(&basis),
         dry_run,
     )?;
     if dry_run {
@@ -922,16 +951,17 @@ pub async fn cmd_compress_rom(
     let out_display = output.display().to_string();
     preflight_space(
         output.parent().unwrap_or(&output),
-        input_size(&input),
+        input_size(resolved.path()),
         skip_space_check,
     )?;
     let record_input = input.clone();
     let record_output = output.clone();
     let in_bytes = input_size(&input);
+    let resolved_path = resolved.path().to_path_buf();
     let token = begin(&state, key).await;
     let result = tokio::spawn(async move {
         compress_rom_cancellable(
-            &input,
+            &resolved_path,
             &output,
             level,
             allow_encrypted,
@@ -976,14 +1006,16 @@ pub async fn cmd_decompress_rom(
     let key = task_id.as_deref().unwrap_or("decompress");
     let progress = Arc::new(TauriProgress::new(app, key));
     let dry_run = dry_run.unwrap_or(false);
-    let ext = ext_of(&derive_decompressed_path(&input));
+    let resolved = resolve_archive_input(input.clone(), CTR_DECOMPRESS_EXTS).await?;
+    let basis = resolved.output_basis().to_path_buf();
+    let ext = ext_of(&derive_decompressed_path(&basis));
     let desired = pick_output(
         output,
         output_template.as_deref(),
-        &input,
+        &basis,
         &ext,
         None,
-        || derive_decompressed_path(&input),
+        || derive_decompressed_path(&basis),
         dry_run,
     )?;
     if dry_run {
@@ -1019,15 +1051,16 @@ pub async fn cmd_decompress_rom(
     let out_display = output.display().to_string();
     preflight_space(
         output.parent().unwrap_or(&output),
-        input_size(&input),
+        input_size(resolved.path()),
         skip_space_check,
     )?;
     let record_input = input.clone();
     let record_output = output.clone();
     let in_bytes = input_size(&input);
+    let resolved_path = resolved.path().to_path_buf();
     let token = begin(&state, key).await;
     let result = tokio::spawn(async move {
-        decompress_rom_cancellable(&input, &output, progress.as_ref(), token).await
+        decompress_rom_cancellable(&resolved_path, &output, progress.as_ref(), token).await
     })
     .await
     .map_err(err_to_string)?
@@ -1070,13 +1103,15 @@ pub async fn cmd_chd_compress(
     let key = task_id.as_deref().unwrap_or("chd-compress");
     let progress = Arc::new(TauriProgress::new(app, key));
     let dry_run = dry_run.unwrap_or(false);
+    let resolved = resolve_archive_input(input_path.clone(), &["iso", "cue"]).await?;
+    let basis = resolved.output_basis().to_path_buf();
     let desired = pick_output(
         output,
         output_template.as_deref(),
-        &input_path,
+        &basis,
         "chd",
         None,
-        || input_path.with_extension("chd"),
+        || basis.with_extension("chd"),
         dry_run,
     )?;
     if dry_run {
@@ -1120,7 +1155,7 @@ pub async fn cmd_chd_compress(
     let out_display = output.display().to_string();
     preflight_space(
         output.parent().unwrap_or(&output),
-        input_size(&input_path),
+        input_size(resolved.path()),
         skip_space_check,
     )?;
     let mode = match mode.as_deref() {
@@ -1137,11 +1172,12 @@ pub async fn cmd_chd_compress(
     let record_input = input_path.clone();
     let record_output = output.clone();
     let progress_for_verify = progress.clone();
+    let resolved_path = resolved.path().to_path_buf();
     let token = begin(&state, key).await;
     let token_for_verify = token.clone();
     let started = Instant::now();
     let result = tokio::spawn(async move {
-        convert_disc_to_chd_cancellable(progress.as_ref(), input_path, output, mode, opts, token)
+        convert_disc_to_chd_cancellable(progress.as_ref(), resolved_path, output, mode, opts, token)
             .await
     })
     .await
@@ -1204,13 +1240,15 @@ pub async fn cmd_cso_compress(
     let key = task_id.as_deref().unwrap_or("cso-compress");
     let progress = Arc::new(TauriProgress::new(app, key));
     let dry_run = dry_run.unwrap_or(false);
+    let resolved = resolve_archive_input(input_path.clone(), &["iso"]).await?;
+    let basis = resolved.output_basis().to_path_buf();
     let desired = pick_output(
         output,
         output_template.as_deref(),
-        &input_path,
+        &basis,
         format.extension(),
         None,
-        || input_path.with_extension(format.extension()),
+        || basis.with_extension(format.extension()),
         dry_run,
     )?;
     if dry_run {
@@ -1254,7 +1292,7 @@ pub async fn cmd_cso_compress(
     let out_display = output.display().to_string();
     preflight_space(
         output.parent().unwrap_or(&output),
-        input_size(&input_path),
+        input_size(resolved.path()),
         skip_space_check,
     )?;
     let opts = CsoCompressOptions {
@@ -1266,11 +1304,12 @@ pub async fn cmd_cso_compress(
     let record_input = input_path.clone();
     let record_output = output.clone();
     let progress_for_verify = progress.clone();
+    let resolved_path = resolved.path().to_path_buf();
     let token = begin(&state, key).await;
     let token_for_verify = token.clone();
     let started = Instant::now();
     let result = tokio::spawn(async move {
-        compress_to_cso_cancellable(progress.as_ref(), input_path, output, opts, token).await
+        compress_to_cso_cancellable(progress.as_ref(), resolved_path, output, opts, token).await
     })
     .await
     .map_err(err_to_string)?
@@ -1332,13 +1371,15 @@ pub async fn cmd_cso_to_chd(
     let key = task_id.as_deref().unwrap_or("cso-to-chd");
     let progress = Arc::new(TauriProgress::new(app, key));
     let dry_run = dry_run.unwrap_or(false);
+    let resolved = resolve_archive_input(input_path.clone(), &["cso", "zso", "dax"]).await?;
+    let basis = resolved.output_basis().to_path_buf();
     let desired = pick_output(
         output,
         output_template.as_deref(),
-        &input_path,
+        &basis,
         "chd",
         None,
-        || input_path.with_extension("chd"),
+        || basis.with_extension("chd"),
         dry_run,
     )?;
     if dry_run {
@@ -1380,9 +1421,9 @@ pub async fn cmd_cso_to_chd(
         }
     };
     let out_display = output.display().to_string();
-    let required_space = rom_converto_lib::cso::info::read_info(&input_path)
+    let required_space = rom_converto_lib::cso::info::read_info(resolved.path())
         .map(|info| info.uncompressed_size)
-        .unwrap_or_else(|_| input_size(&input_path));
+        .unwrap_or_else(|_| input_size(resolved.path()));
     preflight_space(
         output.parent().unwrap_or(&output),
         required_space,
@@ -1402,11 +1443,12 @@ pub async fn cmd_cso_to_chd(
     let record_input = input_path.clone();
     let record_output = output.clone();
     let progress_for_verify = progress.clone();
+    let resolved_path = resolved.path().to_path_buf();
     let token = begin(&state, key).await;
     let token_for_verify = token.clone();
     let started = Instant::now();
     let result = tokio::spawn(async move {
-        cso_to_chd_cancellable(progress.as_ref(), input_path, output, mode, opts, token).await
+        cso_to_chd_cancellable(progress.as_ref(), resolved_path, output, mode, opts, token).await
     })
     .await
     .map_err(err_to_string)?
@@ -1460,13 +1502,15 @@ pub async fn cmd_cso_decompress(
     let key = task_id.as_deref().unwrap_or("cso-decompress");
     let progress = Arc::new(TauriProgress::new(app, key));
     let dry_run = dry_run.unwrap_or(false);
+    let resolved = resolve_archive_input(input_path.clone(), &["cso", "zso", "dax"]).await?;
+    let basis = resolved.output_basis().to_path_buf();
     let desired = pick_output(
         output,
         output_template.as_deref(),
-        &input_path,
+        &basis,
         "iso",
         None,
-        || input_path.with_extension("iso"),
+        || basis.with_extension("iso"),
         dry_run,
     )?;
     if dry_run {
@@ -1510,16 +1554,17 @@ pub async fn cmd_cso_decompress(
     let out_display = output.display().to_string();
     preflight_space(
         output.parent().unwrap_or(&output),
-        input_size(&input_path),
+        input_size(resolved.path()),
         skip_space_check,
     )?;
     let in_bytes = input_size(&input_path);
     let record_input = input_path.clone();
     let record_output = output.clone();
+    let resolved_path = resolved.path().to_path_buf();
     let token = begin(&state, key).await;
     let started = Instant::now();
     let result = tokio::spawn(async move {
-        decompress_from_cso_cancellable(progress.as_ref(), input_path, output, true, token).await
+        decompress_from_cso_cancellable(progress.as_ref(), resolved_path, output, true, token).await
     })
     .await
     .map_err(err_to_string)?
@@ -1558,7 +1603,9 @@ pub async fn cmd_cso_verify(
 ) -> Result<String, String> {
     let key = task_id.as_deref().unwrap_or("cso-verify");
     let progress = Arc::new(TauriProgress::new(app, key));
-    tokio::spawn(async move { verify_cso(progress.as_ref(), input_path.clone(), full).await })
+    let resolved = resolve_archive_input(input_path, &["cso", "zso", "dax"]).await?;
+    let resolved_path = resolved.path().to_path_buf();
+    tokio::spawn(async move { verify_cso(progress.as_ref(), resolved_path, full).await })
         .await
         .map_err(err_to_string)?
         .map_err(err_to_string)?;
@@ -1605,6 +1652,8 @@ pub async fn cmd_cue_merge(
         None => return Ok(format!("Skipped existing {}", output.display())),
     };
     let out_display = output.display().to_string();
+    let resolved = resolve_archive_input(cue_path, &["cue"]).await?;
+    let cue_path = resolved.path().to_path_buf();
     preflight_space(
         output.parent().unwrap_or(&output),
         input_size(&cue_path),
@@ -1638,13 +1687,15 @@ pub async fn cmd_chd_extract(
     let key = task_id.as_deref().unwrap_or("chd-extract");
     let progress = Arc::new(TauriProgress::new(app, key));
     let dry_run = dry_run.unwrap_or(false);
+    let resolved = resolve_archive_input(input.clone(), &["chd"]).await?;
+    let basis = resolved.output_basis().to_path_buf();
     let output = pick_output(
         output,
         output_template.as_deref(),
-        &input,
+        &basis,
         "cue",
         None,
-        || input.with_extension("cue"),
+        || basis.with_extension("cue"),
         dry_run,
     )?;
     if dry_run {
@@ -1670,11 +1721,12 @@ pub async fn cmd_chd_extract(
     let out_display = output.display().to_string();
     preflight_space(
         output.parent().unwrap_or(&output),
-        input_size(&input),
+        input_size(resolved.path()),
         skip_space_check,
     )?;
     let record_input = input.clone();
     let record_output = output.clone();
+    let resolved_path = resolved.path().to_path_buf();
     let token = begin(&state, key).await;
     let started = Instant::now();
     // ChdReader's deeply nested async types exceed the compiler's Send recursion
@@ -1686,7 +1738,7 @@ pub async fn cmd_chd_extract(
             .map_err(err_to_string)?;
         rt.block_on(extract_from_chd_cancellable(
             progress.as_ref(),
-            input,
+            resolved_path,
             output,
             parent,
             token,
@@ -1736,6 +1788,8 @@ pub async fn cmd_chd_verify(
 ) -> Result<String, String> {
     let key = task_id.as_deref().unwrap_or("chd-verify");
     let progress = Arc::new(TauriProgress::new(app, key));
+    let resolved = resolve_archive_input(input, &["chd"]).await?;
+    let resolved_path = resolved.path().to_path_buf();
     let token = begin(&state, key).await;
     let result = std::thread::spawn(move || -> Result<(), String> {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -1744,7 +1798,7 @@ pub async fn cmd_chd_verify(
             .map_err(err_to_string)?;
         rt.block_on(verify_chd_cancellable(
             progress.as_ref(),
-            input,
+            resolved_path,
             parent,
             fix,
             token,
@@ -1789,13 +1843,15 @@ pub async fn cmd_chd_to_cso(
     let key = task_id.as_deref().unwrap_or("chd-to-cso");
     let progress = Arc::new(TauriProgress::new(app, key));
     let dry_run = dry_run.unwrap_or(false);
+    let resolved = resolve_archive_input(input_path.clone(), &["chd"]).await?;
+    let basis = resolved.output_basis().to_path_buf();
     let desired = pick_output(
         output,
         output_template.as_deref(),
-        &input_path,
+        &basis,
         format.extension(),
         None,
-        || input_path.with_extension(format.extension()),
+        || basis.with_extension(format.extension()),
         dry_run,
     )?;
     if dry_run {
@@ -1837,9 +1893,9 @@ pub async fn cmd_chd_to_cso(
         }
     };
     let out_display = output.display().to_string();
-    let required_space = rom_converto_lib::chd::info::read_info(&input_path)
+    let required_space = rom_converto_lib::chd::info::read_info(resolved.path())
         .map(|info| info.logical_bytes)
-        .unwrap_or_else(|_| input_size(&input_path));
+        .unwrap_or_else(|_| input_size(resolved.path()));
     preflight_space(
         output.parent().unwrap_or(&output),
         required_space,
@@ -1854,6 +1910,7 @@ pub async fn cmd_chd_to_cso(
     let record_input = input_path.clone();
     let record_output = output.clone();
     let progress_for_verify = progress.clone();
+    let resolved_path = resolved.path().to_path_buf();
     let token = begin(&state, key).await;
     let token_for_verify = token.clone();
     let started = Instant::now();
@@ -1868,7 +1925,7 @@ pub async fn cmd_chd_to_cso(
             .map_err(err_to_string)?;
         rt.block_on(chd_to_cso_cancellable(
             progress.as_ref(),
-            input_path,
+            resolved_path,
             output,
             opts,
             token,
@@ -1931,13 +1988,16 @@ pub async fn cmd_compress_disc(
 ) -> Result<RunOutcome, String> {
     let progress = Arc::new(TauriProgress::new(app, &task_id));
     let dry_run = dry_run.unwrap_or(false);
+    let resolved =
+        resolve_archive_input(input.clone(), &["iso", "gcm", "gcz", "wbfs", "wia"]).await?;
+    let basis = resolved.output_basis().to_path_buf();
     let desired = pick_output(
         output,
         output_template.as_deref(),
-        &input,
+        &basis,
         "rvz",
         None,
-        || derive_rvz_path(&input),
+        || derive_rvz_path(&basis),
         dry_run,
     )?;
     if dry_run {
@@ -1981,7 +2041,7 @@ pub async fn cmd_compress_disc(
     let out_display = output.display().to_string();
     preflight_space(
         output.parent().unwrap_or(&output),
-        input_size(&input),
+        input_size(resolved.path()),
         skip_space_check,
     )?;
     let opts = RvzCompressOptions {
@@ -1996,11 +2056,12 @@ pub async fn cmd_compress_disc(
     let record_input = input.clone();
     let record_output = output.clone();
     let progress_for_verify = progress.clone();
+    let resolved_path = resolved.path().to_path_buf();
     let token = begin(&state, &task_id).await;
     let token_for_verify = token.clone();
     let started = Instant::now();
     let result = tokio::spawn(async move {
-        compress_disc_cancellable(&input, &output, opts, progress.as_ref(), token).await
+        compress_disc_cancellable(&resolved_path, &output, opts, progress.as_ref(), token).await
     })
     .await
     .map_err(err_to_string)?
@@ -2053,13 +2114,15 @@ pub async fn cmd_decompress_disc(
 ) -> Result<RunOutcome, String> {
     let progress = Arc::new(TauriProgress::new(app, &task_id));
     let dry_run = dry_run.unwrap_or(false);
+    let resolved = resolve_archive_input(input.clone(), &["rvz"]).await?;
+    let basis = resolved.output_basis().to_path_buf();
     let desired = pick_output(
         output,
         output_template.as_deref(),
-        &input,
+        &basis,
         "iso",
         None,
-        || derive_disc_path(&input),
+        || derive_disc_path(&basis),
         dry_run,
     )?;
     if dry_run {
@@ -2103,7 +2166,7 @@ pub async fn cmd_decompress_disc(
     let out_display = output.display().to_string();
     preflight_space(
         output.parent().unwrap_or(&output),
-        input_size(&input),
+        input_size(resolved.path()),
         skip_space_check,
     )?;
     let to_wbfs = output
@@ -2114,13 +2177,15 @@ pub async fn cmd_decompress_disc(
     let in_bytes = input_size(&input);
     let record_input = input.clone();
     let record_output = output.clone();
+    let resolved_path = resolved.path().to_path_buf();
     let token = begin(&state, &task_id).await;
     let started = Instant::now();
     let result = tokio::spawn(async move {
         if to_wbfs {
-            decompress_disc_to_wbfs_cancellable(&input, &output, progress.as_ref(), token).await
+            decompress_disc_to_wbfs_cancellable(&resolved_path, &output, progress.as_ref(), token)
+                .await
         } else {
-            decompress_disc_cancellable(&input, &output, progress.as_ref(), token).await
+            decompress_disc_cancellable(&resolved_path, &output, progress.as_ref(), token).await
         }
     })
     .await
@@ -2317,7 +2382,9 @@ pub async fn cmd_nx_compress(
     let key = task_id.as_deref().unwrap_or("nx-compress");
     let progress = Arc::new(TauriProgress::new(app, key));
     let dry_run = dry_run.unwrap_or(false);
-    let kind = detect_container(&input).map_err(err_to_string)?;
+    let resolved = resolve_archive_input(input.clone(), &["nsp", "xci", "nca"]).await?;
+    let basis = resolved.output_basis().to_path_buf();
+    let kind = detect_container(resolved.path()).map_err(err_to_string)?;
     let mut opts = NxCompressOptions::for_kind(kind);
     if let Some(level) = level {
         opts.level = level;
@@ -2333,14 +2400,14 @@ pub async fn cmd_nx_compress(
     } else if let Some(exp) = block_size_exp {
         opts.mode = NczMode::Block { size_exp: exp };
     }
-    let ext = ext_of(&nx_derive_compressed_path(&input));
+    let ext = ext_of(&nx_derive_compressed_path(&basis));
     let desired = pick_output(
         output,
         output_template.as_deref(),
-        &input,
+        &basis,
         &ext,
         keys.as_deref(),
-        || nx_derive_compressed_path(&input),
+        || nx_derive_compressed_path(&basis),
         dry_run,
     )?;
     if dry_run {
@@ -2389,7 +2456,7 @@ pub async fn cmd_nx_compress(
     let out_display = output.display().to_string();
     preflight_space(
         output.parent().unwrap_or(&output),
-        input_size(&input),
+        input_size(resolved.path()),
         skip_space_check,
     )?;
     let in_bytes = input_size(&input);
@@ -2397,12 +2464,20 @@ pub async fn cmd_nx_compress(
     let record_output = output.clone();
     let progress_for_verify = progress.clone();
     let keys_for_verify = keys.clone();
+    let resolved_path = resolved.path().to_path_buf();
     let token = begin(&state, key).await;
     let token_for_verify = token.clone();
     let started = Instant::now();
     let result = tokio::spawn(async move {
-        compress_container_async_cancellable(input, output, opts, keys, progress.as_ref(), token)
-            .await
+        compress_container_async_cancellable(
+            resolved_path,
+            output,
+            opts,
+            keys,
+            progress.as_ref(),
+            token,
+        )
+        .await
     })
     .await
     .map_err(err_to_string)?
@@ -2457,14 +2532,16 @@ pub async fn cmd_nx_decompress(
     let key = task_id.as_deref().unwrap_or("nx-decompress");
     let progress = Arc::new(TauriProgress::new(app, key));
     let dry_run = dry_run.unwrap_or(false);
-    let ext = ext_of(&nx_derive_decompressed_path(&input));
+    let resolved = resolve_archive_input(input.clone(), &["nsz", "xcz", "ncz"]).await?;
+    let basis = resolved.output_basis().to_path_buf();
+    let ext = ext_of(&nx_derive_decompressed_path(&basis));
     let desired = pick_output(
         output,
         output_template.as_deref(),
-        &input,
+        &basis,
         &ext,
         keys.as_deref(),
-        || nx_derive_decompressed_path(&input),
+        || nx_derive_decompressed_path(&basis),
         dry_run,
     )?;
     if dry_run {
@@ -2508,17 +2585,25 @@ pub async fn cmd_nx_decompress(
     let out_display = output.display().to_string();
     preflight_space(
         output.parent().unwrap_or(&output),
-        input_size(&input),
+        input_size(resolved.path()),
         skip_space_check,
     )?;
     let keys = load_keyset(keys.as_deref()).map_err(err_to_string)?;
     let in_bytes = input_size(&input);
     let record_input = input.clone();
     let record_output = output.clone();
+    let resolved_path = resolved.path().to_path_buf();
     let token = begin(&state, key).await;
     let started = Instant::now();
     let result = tokio::spawn(async move {
-        decompress_container_async_cancellable(input, output, keys, progress.as_ref(), token).await
+        decompress_container_async_cancellable(
+            resolved_path,
+            output,
+            keys,
+            progress.as_ref(),
+            token,
+        )
+        .await
     })
     .await
     .map_err(err_to_string)?
@@ -2557,12 +2642,16 @@ pub async fn cmd_nx_verify(
 ) -> Result<String, String> {
     let key = task_id.as_deref().unwrap_or("nx-verify");
     let progress = Arc::new(TauriProgress::new(app, key));
+    let resolved =
+        resolve_archive_input(input, &["nsp", "xci", "nca", "nsz", "xcz", "ncz"]).await?;
+    let resolved_path = resolved.path().to_path_buf();
     let keys = load_keyset(keys.as_deref()).map_err(err_to_string)?;
-    let result =
-        tokio::spawn(async move { verify_container_async(input, keys, progress.as_ref()).await })
-            .await
-            .map_err(err_to_string)?
-            .map_err(err_to_string)?;
+    let result = tokio::spawn(async move {
+        verify_container_async(resolved_path, keys, progress.as_ref()).await
+    })
+    .await
+    .map_err(err_to_string)?
+    .map_err(err_to_string)?;
     serde_json::to_string(&result).map_err(err_to_string)
 }
 
@@ -2583,14 +2672,16 @@ pub async fn cmd_convert_ctr(
     let key = task_id.as_deref().unwrap_or("ctr-convert");
     let progress = Arc::new(TauriProgress::new(app, key));
     let dry_run = dry_run.unwrap_or(false);
-    let ext = ext_of(&derive_converted_path(&input));
+    let resolved = resolve_archive_input(input.clone(), CTR_CONVERT_EXTS).await?;
+    let basis = resolved.output_basis().to_path_buf();
+    let ext = ext_of(&derive_converted_path(&basis));
     let desired = pick_output(
         output,
         output_template.as_deref(),
-        &input,
+        &basis,
         &ext,
         None,
-        || derive_converted_path(&input),
+        || derive_converted_path(&basis),
         dry_run,
     )?;
     if dry_run {
@@ -2629,17 +2720,18 @@ pub async fn cmd_convert_ctr(
     let out_display = output.display().to_string();
     preflight_space(
         output.parent().unwrap_or(&output),
-        input_size(&input),
+        input_size(resolved.path()),
         skip_space_check,
     )?;
     let in_bytes = input_size(&input);
     let record_input = input.clone();
     let record_output = output.clone();
     let progress_for_verify = progress.clone();
+    let resolved_path = resolved.path().to_path_buf();
     let token = begin(&state, key).await;
     let token_for_verify = token.clone();
     let result = tokio::spawn(async move {
-        convert_rom_cancellable(&input, &output, progress.as_ref(), token).await
+        convert_rom_cancellable(&resolved_path, &output, progress.as_ref(), token).await
     })
     .await
     .map_err(err_to_string)?
@@ -2676,13 +2768,16 @@ pub async fn cmd_verify_ctr(
 ) -> Result<String, String> {
     let key = task_id.as_deref().unwrap_or("ctr-verify");
     let progress = Arc::new(TauriProgress::new(app, key));
+    let resolved = resolve_archive_input(input, CTR_DECRYPT_EXTS).await?;
+    let resolved_path = resolved.path().to_path_buf();
     let opts = CtrVerifyOptions {
         verify_content_hashes: verify_content,
     };
-    let result = tokio::spawn(async move { verify_ctr(&input, &opts, progress.as_ref()).await })
-        .await
-        .map_err(err_to_string)?
-        .map_err(err_to_string)?;
+    let result =
+        tokio::spawn(async move { verify_ctr(&resolved_path, &opts, progress.as_ref()).await })
+            .await
+            .map_err(err_to_string)?
+            .map_err(err_to_string)?;
 
     serde_json::to_string(&result).map_err(err_to_string)
 }
@@ -2696,9 +2791,11 @@ pub async fn cmd_verify_dol(
 ) -> Result<String, String> {
     let key = task_id.as_deref().unwrap_or("dol-verify");
     let progress = Arc::new(TauriProgress::new(app, key));
+    let resolved = resolve_archive_input(input, &["iso", "gcm", "gcz", "rvz"]).await?;
+    let resolved_path = resolved.path().to_path_buf();
     let result = tokio::task::spawn_blocking(move || {
         let opts = DolVerifyOptions { full };
-        verify_dol(&input, &opts, progress.as_ref())
+        verify_dol(&resolved_path, &opts, progress.as_ref())
     })
     .await
     .map_err(err_to_string)?
@@ -2716,9 +2813,11 @@ pub async fn cmd_verify_rvl(
 ) -> Result<String, String> {
     let key = task_id.as_deref().unwrap_or("rvl-verify");
     let progress = Arc::new(TauriProgress::new(app, key));
+    let resolved = resolve_archive_input(input, &["iso", "wbfs", "gcz", "wia", "rvz"]).await?;
+    let resolved_path = resolved.path().to_path_buf();
     let result = tokio::task::spawn_blocking(move || {
         let opts = RvlVerifyOptions { full };
-        verify_rvl(&input, &opts, progress.as_ref())
+        verify_rvl(&resolved_path, &opts, progress.as_ref())
     })
     .await
     .map_err(err_to_string)?
@@ -2736,8 +2835,10 @@ pub async fn cmd_wup_verify(
 ) -> Result<String, String> {
     let key = task_id.as_deref().unwrap_or("wup-verify");
     let progress = Arc::new(TauriProgress::new(app, key));
+    let resolved = resolve_archive_input(input, &["wud", "wux"]).await?;
+    let resolved_path = resolved.path().to_path_buf();
     let result =
-        tokio::spawn(async move { verify_wup_async(input, keys, progress.as_ref()).await })
+        tokio::spawn(async move { verify_wup_async(resolved_path, keys, progress.as_ref()).await })
             .await
             .map_err(err_to_string)?
             .map_err(err_to_string)?;
@@ -2758,11 +2859,12 @@ pub async fn cmd_read_info(
         {
             return Ok(hit);
         }
+        let resolved = rom_converto_lib::util::resolve_input(&input, ALL_IMAGE_EXTS)?;
         let opts = InfoOptions {
             keys_path: keys.clone(),
             parent_path: None,
         };
-        let info = read_info(&input, &opts)?;
+        let info = read_info(resolved.path(), &opts)?;
         let arc = Arc::new(info);
         if let Some(key) = InfoCache::key_for(&input) {
             cache_inner.insert(key, arc.clone());

@@ -114,6 +114,17 @@ files and queues them, using the same junk-filtered library walk as the CLI. A R
 toggle with an optional max-depth controls how deep the scan goes, defaulting to full depth
 like the CLI `-R`.
 
+## Archive input
+
+Any page that reads a single image also accepts a `.zip`, `.7z`, `.rar`, `.tar`, or
+`.tar.gz`/`.tgz` holding one. Pick or drop the archive and the app extracts the first member
+matching the page's format to a temporary directory, runs it through the normal pipeline, and
+deletes it when the job finishes. Output lands next to the archive, named after the member (so
+`game.zip` holding `game.iso` produces `game.chd` beside the zip), and a matched `.cue` brings
+its referenced bin tracks with it. This applies to a single file; folder scans still queue
+plain files only, so unpack archives you want to batch from a tree. A single-file `.gz` with
+no tar container is not supported.
+
 ## Disk-space preflight
 
 Before any write-producing command runs, the GUI checks the output filesystem for free space,

@@ -7,7 +7,7 @@ const store = useWupInfoStore();
 const { input, keys, info, rawJson, error, loading } = storeToRefs(store);
 
 const WUA_FILTERS = [
-  { name: "WUA archive or disc image", extensions: ["wua", "wud", "wux"] },
+  { name: "WUA archive or disc image", extensions: ["wua", "wud", "wux", "zip", "7z", "rar", "tar", "tgz", "gz"] },
 ];
 
 type SourceKind = "directory" | "wua";

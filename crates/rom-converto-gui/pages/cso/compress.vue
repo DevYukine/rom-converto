@@ -184,7 +184,7 @@ function onRun() {
             label="Add more ISO files"
             model-value=""
             :multiple="true"
-            :filters="[{ name: 'ISO image', extensions: ['iso'] }]"
+            :filters="[{ name: 'ISO image', extensions: ['iso', 'zip', '7z', 'rar', 'tar', 'tgz', 'gz'] }]"
             @update:model-value="(p: string) => { if (p) handleSingleFile(p) }"
             @update:files="handleFiles"
           />
@@ -196,7 +196,7 @@ function onRun() {
               :model-value="input"
               label="Input ISO file"
               :multiple="true"
-              :filters="[{ name: 'ISO image', extensions: ['iso'] }]"
+              :filters="[{ name: 'ISO image', extensions: ['iso', 'zip', '7z', 'rar', 'tar', 'tgz', 'gz'] }]"
               :primary="true"
               @update:model-value="handleSingleFile"
               @update:files="handleFiles"

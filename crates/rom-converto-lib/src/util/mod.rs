@@ -3,6 +3,7 @@
 //! templating, and the worker pool that drives compression on background
 //! threads.
 
+pub mod archive;
 pub mod conflict;
 pub mod footgun;
 pub mod fs;
@@ -21,6 +22,7 @@ pub mod template;
 pub mod verify;
 pub mod worker_pool;
 
+pub use archive::{ArchiveMember, ResolvedInput, is_archive_path, list_members, resolve_input};
 pub use conflict::{ConflictPolicy, ConflictResolution, resolve_conflict};
 pub use footgun::{
     DREAMCAST_CHD_WARNING, NX_DAT_UNSUPPORTED_HINT, dreamcast_boot_signature,

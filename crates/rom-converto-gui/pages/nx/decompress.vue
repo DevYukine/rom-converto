@@ -84,7 +84,7 @@ async function browseInputs() {
   const result = await open({
     directory: false,
     multiple: true,
-    filters: [{ name: "Switch compressed", extensions: ["nsz", "xcz"] }],
+    filters: [{ name: "Switch compressed", extensions: ["nsz", "xcz", "zip", "7z", "rar", "tar", "tgz", "gz"] }],
   });
   if (!result) return;
   addPaths(Array.isArray(result) ? result : [result]);

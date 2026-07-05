@@ -68,7 +68,7 @@ function onRun() {
           <FileDropZone
             v-model="input"
             label="Input CUE file (multi-bin)"
-            :filters="[{ name: 'CUE Sheet', extensions: ['cue'] }]"
+            :filters="[{ name: 'CUE Sheet', extensions: ['cue', 'zip', '7z', 'rar', 'tar', 'tgz', 'gz'] }]"
             :primary="true"
           />
 

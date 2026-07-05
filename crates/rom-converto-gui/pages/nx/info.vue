@@ -6,7 +6,7 @@ const store = useNxInfoStore();
 const { input, keys, info, rawJson, error, loading } = storeToRefs(store);
 
 const NX_FILTERS = [
-  { name: "Switch container", extensions: ["nsp", "nsz", "xci", "xcz"] },
+  { name: "Switch container", extensions: ["nsp", "nsz", "xci", "xcz", "zip", "7z", "rar", "tar", "tgz", "gz"] },
 ];
 </script>
 

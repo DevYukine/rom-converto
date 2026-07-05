@@ -9,7 +9,7 @@ const progress = useProgress("ctr-verify");
 
 const isBatch = computed(() => queue.value.length > 0);
 
-const ROM_FILTERS = [{ name: '3DS ROM', extensions: ['cia', '3ds', 'cci', 'cxi', 'zcia', 'zcci', 'zcxi'] }];
+const ROM_FILTERS = [{ name: '3DS ROM', extensions: ['cia', '3ds', 'cci', 'cxi', 'zcia', 'zcci', 'zcxi', 'zip', '7z', 'rar', 'tar', 'tgz', 'gz'] }];
 
 type Legitimacy = "Piratelegit" | { Legit: string } | { Standard: "Encrypted" | "Decrypted" };
 

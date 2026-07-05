@@ -6,7 +6,7 @@ const store = useDolInfoStore();
 const { input, info, rawJson, error, loading } = storeToRefs(store);
 
 const DOL_FILTERS = [
-  { name: "GameCube disc image", extensions: ["iso", "gcm", "rvz"] },
+  { name: "GameCube disc image", extensions: ["iso", "gcm", "rvz", "zip", "7z", "rar", "tar", "tgz", "gz"] },
 ];
 </script>
 

@@ -150,7 +150,7 @@ function onRun() {
             label="Add more files"
             model-value=""
             :multiple="true"
-            :filters="[{ name: '3DS ROM', extensions: ['cia', 'cci', '3ds', 'cxi', '3dsx'] }]"
+            :filters="[{ name: '3DS ROM', extensions: ['cia', 'cci', '3ds', 'cxi', '3dsx', 'zip', '7z', 'rar', 'tar', 'tgz', 'gz'] }]"
             @update:model-value="(p: string) => { if (p) handleSingleFile(p) }"
             @update:files="handleFiles"
           />
@@ -161,7 +161,7 @@ function onRun() {
             :model-value="input"
             label="Input ROM"
             :multiple="true"
-            :filters="[{ name: '3DS ROM', extensions: ['cia', 'cci', '3ds', 'cxi', '3dsx'] }]"
+            :filters="[{ name: '3DS ROM', extensions: ['cia', 'cci', '3ds', 'cxi', '3dsx', 'zip', '7z', 'rar', 'tar', 'tgz', 'gz'] }]"
             :primary="true"
             @update:model-value="handleSingleFile"
             @update:files="handleFiles"

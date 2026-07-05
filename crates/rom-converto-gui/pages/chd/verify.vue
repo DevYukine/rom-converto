@@ -98,7 +98,7 @@ async function execute() {
             label="Add more CHD files"
             model-value=""
             :multiple="true"
-            :filters="[{ name: 'CHD', extensions: ['chd'] }]"
+            :filters="[{ name: 'CHD', extensions: ['chd', 'zip', '7z', 'rar', 'tar', 'tgz', 'gz'] }]"
             @update:model-value="(p: string) => { if (p) store.addToQueue(p) }"
             @update:files="handleFiles"
           />
@@ -109,7 +109,7 @@ async function execute() {
           :model-value="input"
           label="Input CHD file"
           :multiple="true"
-          :filters="[{ name: 'CHD', extensions: ['chd'] }]"
+          :filters="[{ name: 'CHD', extensions: ['chd', 'zip', '7z', 'rar', 'tar', 'tgz', 'gz'] }]"
           :primary="true"
           @update:model-value="handleSingleFile"
           @update:files="handleFiles"

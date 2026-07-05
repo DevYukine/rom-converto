@@ -117,6 +117,30 @@ removes the disk I/O of re-reading the files, not the lookup. Pass `--no-cache` 
 the cache for one run, or `--rebuild-cache` to discard it and repopulate it from the current
 run.
 
+### Archive input
+
+Where a command reads a single image, you can point it at a `.zip`, `.7z`, `.rar`, `.tar`,
+or `.tar.gz`/`.tgz` archive instead of a plain file. This covers `compress`, `decompress`,
+`convert`, `extract`, `verify`, and `info` across the `ctr`, `dol`, `rvl`, `nx`, `chd`, and
+`cso` command groups (including `chd to-cso` and `cso to-chd`), plus `hash` and single-file
+`dat verify`/`dat identify`. The first member matching the command's format is extracted
+to a temporary directory, run through the normal pipeline, and deleted when the command
+finishes. Output lands next to the archive, named after the member (so `game.zip` holding
+`game.iso` produces `game.chd` beside the zip). When a matched member is a `.cue`, the bin
+tracks it references are extracted alongside it.
+
+Archive input applies to a single file argument. The `--recursive` walkers still descend
+directories only, so keep archives out of a tree you scan with `-R`, or unpack them first.
+
+Members are chosen with the same allowlist the recursive walker uses: readmes, box art, OS
+junk, and nested archives are ignored. If several members match, the first in name order is
+used and the rest are noted. An archive with no matching member is an error as a direct input.
+
+Because the member is unpacked before processing, a run needs free temp space for the full
+uncompressed member; the disk-space preflight sizes on that uncompressed size. Encrypted
+archives fail with a clear error. Rar support is read only. Single-file `.gz` (a gzip with
+no tar container) is not supported; extract it first.
+
 ### Run reports
 
 Pass `--report <FILE>` to `compress`, `decompress`, `chd extract`, `hash`, or the
