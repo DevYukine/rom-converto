@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { storeToRefs } from "pinia";
+import { listen } from "@tauri-apps/api/event";
 import { useDatScanStore } from "~/stores/datScan";
+import type { ScanLevel } from "~/stores/datScan";
 import type { DatResultRow } from "~/components/DatResultList.vue";
 
 const store = useDatScanStore();
-const { input, maxDepth, result, error, loading } = storeToRefs(store);
-const { run } = useOperation({ result, error, loading });
+const { input, maxDepth, scanLevel, quick, result, error, loading } = storeToRefs(store);
+const { run, cancelled, abort } = useOperation({ result, error, loading });
 const progress = useProgress("dat-scan");
 const commandLine = ref("");
 
@@ -22,6 +24,12 @@ interface DatScanRow {
   error: string | null;
 }
 
+// Live per-file event streamed while the scan is still running; "pending" is
+// emitted as soon as a file is digested, before the bulk match query settles.
+interface DatScanRowEvent extends Omit<DatScanRow, "status"> {
+  status: DatScanRow["status"] | "pending";
+}
+
 interface DatScanResult {
   kind: "scan";
   matched: number;
@@ -34,6 +42,19 @@ interface DatScanResult {
 }
 
 const scanResult = ref<DatScanResult | null>(null);
+const liveRows = ref(new Map<string, DatScanRowEvent>());
+
+let unlistenRow: (() => void) | null = null;
+
+onMounted(async () => {
+  unlistenRow = await listen<DatScanRowEvent>("dat-scan-row", (event) => {
+    liveRows.value.set(event.payload.path, event.payload);
+  });
+});
+
+onUnmounted(() => {
+  unlistenRow?.();
+});
 
 const STATUS_COLOR: Record<DatScanRow["status"], "emerald" | "amber" | "zinc" | "red"> = {
   matched: "emerald",
@@ -62,6 +83,45 @@ const CHIPS: { key: keyof Omit<DatScanResult, "kind" | "rows">; label: string; c
   { key: "failed", label: "Failed", color: "red" },
 ];
 
+const SCAN_LEVELS: { label: string; value: ScanLevel }[] = [
+  { label: "CRC + Size", value: "crc" },
+  { label: "MD5", value: "md5" },
+  { label: "SHA-1", value: "sha1" },
+  { label: "SHA-256", value: "sha256" },
+];
+
+// Every level keeps crc32: it is nearly free to compute alongside the
+// stronger digest and remains the fallback match rung.
+const SCAN_LEVEL_ALGOS: Record<ScanLevel, string[]> = {
+  crc: ["crc32"],
+  md5: ["crc32", "md5"],
+  sha1: ["crc32", "sha1"],
+  sha256: ["crc32", "sha256"],
+};
+
+const SCAN_LEVEL_HINT: Record<ScanLevel, string> = {
+  crc: "Size plus CRC32 identifies almost everything and is the fastest level.",
+  md5: "Adds an MD5 digest per file for DATs that match on MD5.",
+  sha1: "Adds a SHA-1 digest per file for stronger match confidence.",
+  sha256: "Adds a SHA-256 digest per file; slowest, highest confidence.",
+};
+
+const statusFilter = ref<DatScanRow["status"] | "all">("all");
+
+const sourceRows = computed<DatScanRowEvent[]>(() =>
+  scanResult.value ? scanResult.value.rows : Array.from(liveRows.value.values()),
+);
+
+const statusCounts = computed<Record<string, number>>(() => {
+  const counts: Record<string, number> = {};
+  for (const r of sourceRows.value) counts[r.status] = (counts[r.status] ?? 0) + 1;
+  return counts;
+});
+
+function toggleFilter(status: DatScanRow["status"]) {
+  statusFilter.value = statusFilter.value === status ? "all" : status;
+}
+
 function onDepthInput(event: Event) {
   const raw = (event.target as HTMLInputElement).value;
   maxDepth.value = raw === "" ? null : Number(raw);
@@ -71,12 +131,16 @@ function scanArgs() {
   return {
     input: input.value,
     maxDepth: maxDepth.value,
+    algos: SCAN_LEVEL_ALGOS[scanLevel.value],
+    quick: quick.value,
   };
 }
 
 async function execute() {
   progress.reset();
   scanResult.value = null;
+  liveRows.value.clear();
+  statusFilter.value = "all";
   const args = scanArgs();
   commandLine.value = buildCliCommand("cmd_dat_scan", args);
   await run("cmd_dat_scan", args);
@@ -91,15 +155,30 @@ async function execute() {
   }
 }
 
-const rows = computed<DatResultRow[]>(() =>
-  (scanResult.value?.rows ?? []).map((r) => ({
+function toResultRow(r: DatScanRowEvent): DatResultRow {
+  return {
     key: r.path,
-    icon: r.status === "matched" ? "ok" : r.status === "failed" ? "error" : r.status === "misnamed" || r.status === "hint" ? "warn" : "info",
+    icon:
+      r.status === "pending"
+        ? "info"
+        : r.status === "matched"
+          ? "ok"
+          : r.status === "failed"
+            ? "error"
+            : r.status === "misnamed" || r.status === "hint"
+              ? "warn"
+              : "info",
     primary: basename(r.path),
     secondary: r.gameName ?? r.error ?? undefined,
-    badge: STATUS_LABEL[r.status],
-    badgeColor: STATUS_COLOR[r.status],
-  })),
+    badge: r.status === "pending" ? "Pending" : STATUS_LABEL[r.status],
+    badgeColor: r.status === "pending" ? "zinc" : STATUS_COLOR[r.status],
+  };
+}
+
+const rows = computed<DatResultRow[]>(() =>
+  sourceRows.value
+    .filter((r) => statusFilter.value === "all" || r.status === statusFilter.value)
+    .map(toResultRow),
 );
 </script>
 
@@ -113,30 +192,55 @@ const rows = computed<DatResultRow[]>(() =>
       :has-error="!!error"
     />
 
-    <template v-if="scanResult">
-      <div class="mb-4 flex flex-wrap gap-2">
-        <span
-          v-for="chip in CHIPS"
-          :key="chip.key"
-          class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium"
-          :class="{
+    <div v-if="sourceRows.length > 0" class="mb-4 flex flex-wrap gap-2">
+      <button
+        type="button"
+        class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition"
+        :class="statusFilter === 'all' ? 'bg-sky-500/15 text-sky-300 ring-1 ring-sky-500/40' : 'bg-zinc-700/30 text-zinc-400 hover:text-zinc-300'"
+        :aria-pressed="statusFilter === 'all'"
+        @click="statusFilter = 'all'"
+      >
+        All: {{ sourceRows.length }}
+      </button>
+      <button
+        v-for="chip in CHIPS"
+        :key="chip.key"
+        type="button"
+        class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition"
+        :class="[
+          {
             'bg-emerald-500/10 text-emerald-400': chip.color === 'emerald',
             'bg-amber-500/10 text-amber-400': chip.color === 'amber',
             'bg-zinc-700/30 text-zinc-400': chip.color === 'zinc',
             'bg-red-500/10 text-red-400': chip.color === 'red',
-          }"
-        >
-          {{ chip.label }}: {{ scanResult[chip.key] }}
-        </span>
-      </div>
+          },
+          statusFilter === chip.key ? 'ring-1 ring-current' : 'opacity-80 hover:opacity-100',
+        ]"
+        :aria-pressed="statusFilter === chip.key"
+        @click="toggleFilter(chip.key)"
+      >
+        {{ chip.label }}: {{ statusCounts[chip.key] ?? 0 }}
+      </button>
+    </div>
 
-      <div class="mb-4">
-        <DatResultList :rows="rows" />
-      </div>
-    </template>
+    <div v-if="rows.length > 0" class="mb-4">
+      <DatResultList :rows="rows" />
+    </div>
+    <div
+      v-else-if="sourceRows.length > 0"
+      class="mb-4 rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3 text-sm text-zinc-400"
+    >
+      No {{ statusFilter }} files in this scan.
+    </div>
+    <div
+      v-else-if="scanResult"
+      class="mb-4 rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3 text-sm text-zinc-400"
+    >
+      No files found under the selected directory.
+    </div>
 
-    <div v-else class="mb-4">
-      <OutputLog :command="commandLine" :result="result" :error="error" />
+    <div v-if="!scanResult || progress.warnings.value.length > 0" class="mb-4">
+      <OutputLog :command="commandLine" :result="result" :cancelled="cancelled ? 'Operation cancelled.' : undefined" :error="error" :warnings="progress.warnings.value" />
     </div>
 
     <OperationCard>
@@ -160,13 +264,25 @@ const rows = computed<DatResultRow[]>(() =>
           >
         </div>
 
+        <div>
+          <SegmentedControl v-model="scanLevel" label="Scan level" :options="SCAN_LEVELS" :disabled="loading" />
+          <p class="mt-1.5 text-xs text-zinc-500">{{ SCAN_LEVEL_HINT[scanLevel] }}</p>
+        </div>
+
+        <FlagToggle
+          v-model="quick"
+          label="Quick scan"
+          description="Trust a zip's own CRC32 for eligible cartridge images instead of extracting and hashing. Falls back automatically when that alone cannot identify the file."
+          :disabled="loading"
+        />
+
         <ProgressBar
           :percent="progress.percent.value"
           :message="progress.message.value"
           :running="progress.running.value"
         />
 
-        <RunButton :loading="loading" :disabled="!canRun" :disabled-reason="runBlockReason" @click="execute">
+        <RunButton :loading="loading" :disabled="!canRun" :disabled-reason="runBlockReason" @click="execute" @cancel="abort()">
           Scan
         </RunButton>
       </div>

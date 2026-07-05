@@ -73,7 +73,9 @@ A few CLI features have no GUI counterpart by design:
   flags; the GUI keeps options per page.
 - `info --json` is scripting output for the terminal; the GUI shows a rich info card.
 - `dat identify` and `dat fixdat` are terminal operations: a single-file database lookup and
-  a Logiqx fixdat builder. The GUI covers `dat verify`, `scan`, and `rename`.
+  a Logiqx fixdat builder. The GUI covers `dat verify`, `scan`, and `rename`. Scan streams each
+  file's match outcome live as it is processed and can be cancelled mid-run, keeping the
+  partial results shown so far on screen.
 - `dol migrate` and `rvl migrate` have no dedicated page. The Compress to RVZ pages accept
   legacy GCZ, WIA (Wii only), and NKit inputs and migrate them automatically, verifying the
   source first; migrate's CLI-only `--skip-verify` and `--deep` knobs have no GUI control.

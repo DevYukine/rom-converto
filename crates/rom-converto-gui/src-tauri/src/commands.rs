@@ -9,19 +9,16 @@ use rom_converto_lib::cso::{
     verify_cso,
 };
 use rom_converto_lib::cue::merge::merge_bin;
+use rom_converto_lib::dat::digest::quick_crc_digest;
 use rom_converto_lib::dat::model::{
     BulkIdentifyIdsResult, BulkIdentifyItem, BulkItemStatus, GameAndRelationMatchResult,
     GameFileMatchSearch,
 };
 use rom_converto_lib::dat::rename::{RenameAction, RenameCandidate, RenamePlan, plan_renames};
 use rom_converto_lib::dat::verdict::{DatVerdict, MatchStrength, match_strength, reconcile_tracks};
-use rom_converto_lib::dat::digest::quick_crc_digest;
 use rom_converto_lib::dat::{
     DEFAULT_API_BASE, PlaymatchClient, RomDigests, TrackDigests, digest_inner_async,
 };
-use rom_converto_lib::util::HashCache;
-use rom_converto_lib::util::NX_DAT_UNSUPPORTED_HINT;
-use rom_converto_lib::util::{ChecksumBounds, parse_checksum_bound};
 use rom_converto_lib::info::{InfoOptions, InfoResult, read_info};
 use rom_converto_lib::nintendo::ctr::convert::{convert_rom_cancellable, derive_converted_path};
 use rom_converto_lib::nintendo::ctr::verify::{CtrVerifyOptions, verify_ctr};
@@ -51,6 +48,8 @@ use rom_converto_lib::nintendo::wup::{
 };
 use rom_converto_lib::pipeline::{chd_to_cso_cancellable, cso_to_chd_cancellable};
 use rom_converto_lib::playlist::{PlaylistMode, PlaylistOptions, plan_playlists};
+use rom_converto_lib::util::HashCache;
+use rom_converto_lib::util::NX_DAT_UNSUPPORTED_HINT;
 use rom_converto_lib::util::fs::{collect_all_files, collect_files_with_exts};
 use rom_converto_lib::util::{
     CancelToken, ConflictPolicy, ConflictResolution, DEFAULT_SPACE_HEADROOM, FileStatus, HashAlgo,
@@ -59,6 +58,7 @@ use rom_converto_lib::util::{
     mixed_playlist_extensions, oversized_rvz_chunk, parse_algos, resolve_conflict, space_shortfall,
     write_report,
 };
+use rom_converto_lib::util::{ChecksumBounds, parse_checksum_bound};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -3193,7 +3193,10 @@ async fn run_dat_verify(
             let search = GameFileMatchSearch::from_digests(&q.member_name, &q.digests);
             let matched = client.identify_relations(&search, &token).await?;
             if match_strength(matched.game_match_type).is_verified() {
-                return Ok(verify_result_from_single(input.display().to_string(), &matched));
+                return Ok(verify_result_from_single(
+                    input.display().to_string(),
+                    &matched,
+                ));
             }
         }
     }
@@ -3330,7 +3333,7 @@ fn verify_result_from_tracks(
     }
 }
 
-#[derive(serde::Serialize)]
+#[derive(Clone, serde::Serialize)]
 struct DatScanRow {
     path: String,
     status: &'static str,
@@ -3356,9 +3359,20 @@ struct DatScanResult {
 /// One local file plus its computed digests, carried through the scan/rename
 /// pipeline so a digest failure becomes a row instead of aborting the batch.
 enum DigestedUnit {
-    Ok { path: PathBuf, digests: RomDigests },
-    Unsupported { path: PathBuf },
-    Failed { path: PathBuf, error: String },
+    Ok {
+        path: PathBuf,
+        digests: RomDigests,
+        /// Digests taken from the zip's own central directory rather than a
+        /// real read; scan redoes these in full when they fail to verify.
+        quick: bool,
+    },
+    Unsupported {
+        path: PathBuf,
+    },
+    Failed {
+        path: PathBuf,
+        error: String,
+    },
 }
 
 impl DigestedUnit {
@@ -3376,8 +3390,11 @@ impl DigestedUnit {
 /// the CLI driver's read-only semantics.
 async fn digest_all(
     progress: &TauriProgress,
+    cache: &HashCache,
     input_dir: &Path,
     max_depth: Option<usize>,
+    algos: &[HashAlgo],
+    quick: bool,
     token: &CancelToken,
 ) -> Result<Vec<DigestedUnit>, String> {
     // Cue sheets and playlists are set descriptors, not hashable images: they
@@ -3393,30 +3410,90 @@ async fn digest_all(
         })
         .collect();
     progress.set_phase("Hashing files");
-    let algos = vec![
-        rom_converto_lib::util::HashAlgo::Crc32,
-        rom_converto_lib::util::HashAlgo::Sha1,
-    ];
     let mut units = Vec::with_capacity(files.len());
     for file in files {
         if token.is_cancelled() {
             return Err("operation cancelled".to_string());
         }
-        match digest_inner_async(file.clone(), algos.clone(), progress, token.clone()).await {
-            Ok(digests) => units.push(DigestedUnit::Ok {
+        if let Some(hit) = cache.lookup_decoded(&file, algos) {
+            progress.emit_row(DatScanRow {
+                path: file.display().to_string(),
+                status: "pending",
+                game_name: None,
+                canonical_stem: None,
+                error: None,
+            });
+            units.push(DigestedUnit::Ok {
                 path: file,
-                digests,
-            }),
+                digests: RomDigests::Single(hit),
+                quick: false,
+            });
+            continue;
+        }
+        // Quick digests come from the zip's own central directory, not a
+        // real read of the content, so they are used as is and never stored
+        // in the cache.
+        if quick {
+            let probe = file.clone();
+            if let Ok(Some(q)) = tokio::task::spawn_blocking(move || quick_crc_digest(&probe)).await
+            {
+                progress.emit_row(DatScanRow {
+                    path: file.display().to_string(),
+                    status: "pending",
+                    game_name: None,
+                    canonical_stem: None,
+                    error: None,
+                });
+                units.push(DigestedUnit::Ok {
+                    path: file,
+                    digests: RomDigests::Single(q.digests),
+                    quick: true,
+                });
+                continue;
+            }
+        }
+        match digest_inner_async(file.clone(), algos.to_vec(), progress, token.clone()).await {
+            Ok(digests) => {
+                if let RomDigests::Single(d) = &digests {
+                    cache.store_decoded(&file, d);
+                }
+                progress.emit_row(DatScanRow {
+                    path: file.display().to_string(),
+                    status: "pending",
+                    game_name: None,
+                    canonical_stem: None,
+                    error: None,
+                });
+                units.push(DigestedUnit::Ok {
+                    path: file,
+                    digests,
+                    quick: false,
+                })
+            }
             Err(rom_converto_lib::dat::DatError::UnsupportedInnerHash { .. }) => {
+                progress.emit_row(DatScanRow {
+                    path: file.display().to_string(),
+                    status: DatVerdict::Unsupported.as_str(),
+                    game_name: None,
+                    canonical_stem: None,
+                    error: None,
+                });
                 units.push(DigestedUnit::Unsupported { path: file })
             }
             Err(rom_converto_lib::dat::DatError::Cancelled) => {
                 return Err("operation cancelled".to_string());
             }
-            Err(e) => units.push(DigestedUnit::Failed {
-                path: file,
-                error: e.to_string(),
-            }),
+            Err(e) => {
+                let error = e.to_string();
+                progress.emit_row(DatScanRow {
+                    path: file.display().to_string(),
+                    status: DatVerdict::Failed.as_str(),
+                    game_name: None,
+                    canonical_stem: None,
+                    error: Some(error.clone()),
+                });
+                units.push(DigestedUnit::Failed { path: file, error })
+            }
         }
     }
     Ok(units)
@@ -3436,24 +3513,56 @@ fn primary_digests(digests: &RomDigests) -> &rom_converto_lib::util::FileDigests
 pub async fn cmd_dat_scan(
     app: AppHandle,
     state: State<'_, ActiveCancel>,
+    cache: State<'_, Arc<HashCache>>,
     input: PathBuf,
     #[allow(non_snake_case)] maxDepth: Option<usize>,
+    algos: Option<Vec<String>>,
+    quick: Option<bool>,
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "dat-scan"));
+    // Scan level from the frontend selector; size plus CRC32 is the default
+    // tier, matching the CLI's `dat scan --algo` default.
+    let algos = match algos {
+        Some(list) if !list.is_empty() => parse_algos(&list.join(","))?,
+        _ => vec![HashAlgo::Crc32],
+    };
     let token = begin(&state, "dat-scan").await;
-    let result = run_dat_scan(progress, input, maxDepth, token).await;
+    let cache = cache.inner().clone();
+    let result = run_dat_scan(
+        progress,
+        cache.clone(),
+        input,
+        maxDepth,
+        algos,
+        quick.unwrap_or(false),
+        token,
+    )
+    .await;
     finish(&state, "dat-scan").await;
+    let _ = cache.save();
     let outcome = result?;
     serde_json::to_string(&outcome).map_err(err_to_string)
 }
 
 async fn run_dat_scan(
     progress: Arc<TauriProgress>,
+    cache: Arc<HashCache>,
     input: PathBuf,
     max_depth: Option<usize>,
+    algos: Vec<HashAlgo>,
+    quick: bool,
     token: CancelToken,
 ) -> Result<DatScanResult, String> {
-    let units = digest_all(progress.as_ref(), &input, max_depth, &token).await?;
+    let units = digest_all(
+        progress.as_ref(),
+        &cache,
+        &input,
+        max_depth,
+        &algos,
+        quick,
+        &token,
+    )
+    .await?;
 
     // Slot per unit, filled in either immediately (unsupported/failed) or
     // after the bulk query resolves (queryable). Keeps output row order
@@ -3462,13 +3571,23 @@ async fn run_dat_scan(
     let mut queryable = Vec::new();
     for (i, unit) in units.iter().enumerate() {
         match unit {
-            DigestedUnit::Ok { path, digests } => {
+            DigestedUnit::Ok {
+                path,
+                digests,
+                quick,
+            } => {
                 let file_name = path
                     .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("file")
                     .to_string();
-                queryable.push((i, path.clone(), file_name, primary_digests(digests).clone()));
+                queryable.push((
+                    i,
+                    path.clone(),
+                    file_name,
+                    primary_digests(digests).clone(),
+                    *quick,
+                ));
                 slots.push(None);
             }
             DigestedUnit::Unsupported { path } => slots.push(Some(DatScanRow {
@@ -3492,7 +3611,7 @@ async fn run_dat_scan(
     progress.set_phase("Querying matches");
     let items: Vec<BulkIdentifyItem> = queryable
         .iter()
-        .map(|(_, _, name, digests)| BulkIdentifyItem {
+        .map(|(_, _, name, digests, _)| BulkIdentifyItem {
             search: GameFileMatchSearch::from_digests(name, digests),
             key: None,
         })
@@ -3530,9 +3649,109 @@ async fn run_dat_scan(
             .map(|d| d.name.clone())
     };
 
-    for (queryable_idx, (unit_idx, path, _, _)) in queryable.iter().enumerate() {
+    for (queryable_idx, (unit_idx, path, _, _, _)) in queryable.iter().enumerate() {
         let result = bulk_results.iter().find(|r| r.index == queryable_idx);
-        slots[*unit_idx] = Some(scan_row_for(path, result, &name_for_id));
+        let row = scan_row_for(path, result, &name_for_id);
+        progress.emit_row(row.clone());
+        slots[*unit_idx] = Some(row);
+    }
+
+    // Quick digests come from the zip's central directory; when that alone
+    // did not hash-verify, redo the unit with a full decode at the requested
+    // scan level and query again, mirroring the CLI's quick redo pass.
+    let redo: Vec<(usize, PathBuf, String)> = queryable
+        .iter()
+        .filter(|(unit_idx, _, _, _, was_quick)| {
+            *was_quick
+                && !matches!(
+                    slots[*unit_idx].as_ref().map(|r| r.status),
+                    Some("matched") | Some("misnamed")
+                )
+        })
+        .map(|(unit_idx, path, name, _, _)| (*unit_idx, path.clone(), name.clone()))
+        .collect();
+    if !redo.is_empty() {
+        progress.set_phase("Rehashing quick misses");
+        let mut redo_items: Vec<BulkIdentifyItem> = Vec::new();
+        let mut redo_owner: Vec<(usize, PathBuf)> = Vec::new();
+        for (unit_idx, path, name) in redo {
+            if token.is_cancelled() {
+                return Err("operation cancelled".to_string());
+            }
+            match digest_inner_async(
+                path.clone(),
+                algos.clone(),
+                progress.as_ref(),
+                token.clone(),
+            )
+            .await
+            {
+                Ok(digests) => {
+                    if let RomDigests::Single(d) = &digests {
+                        cache.store_decoded(&path, d);
+                    }
+                    redo_items.push(BulkIdentifyItem {
+                        search: GameFileMatchSearch::from_digests(&name, primary_digests(&digests)),
+                        key: None,
+                    });
+                    redo_owner.push((unit_idx, path));
+                }
+                Err(rom_converto_lib::dat::DatError::Cancelled) => {
+                    return Err("operation cancelled".to_string());
+                }
+                Err(e) => {
+                    let row = DatScanRow {
+                        path: path.display().to_string(),
+                        status: DatVerdict::Failed.as_str(),
+                        game_name: None,
+                        canonical_stem: None,
+                        error: Some(e.to_string()),
+                    };
+                    progress.emit_row(row.clone());
+                    slots[unit_idx] = Some(row);
+                }
+            }
+        }
+        if !redo_items.is_empty() {
+            progress.set_phase("Querying matches");
+            let redo_results = client
+                .identify_bulk_ids(redo_items, &token)
+                .await
+                .map_err(err_to_string)?;
+            let mut redo_ids: Vec<String> = Vec::new();
+            for r in &redo_results {
+                if r.status == BulkItemStatus::Ok
+                    && let Some(m) = &r.matched
+                    && match_strength(m.game_match_type).is_verified()
+                    && let Some(id) = &m.id
+                {
+                    redo_ids.push(id.clone());
+                }
+            }
+            redo_ids.sort();
+            redo_ids.dedup();
+            let redo_games = if redo_ids.is_empty() {
+                Vec::new()
+            } else {
+                client
+                    .games_bulk(redo_ids, &token)
+                    .await
+                    .map_err(err_to_string)?
+            };
+            let redo_name_for_id = |id: &str| -> Option<String> {
+                redo_games
+                    .iter()
+                    .find(|g| g.id == id)
+                    .and_then(|g| g.data.as_ref())
+                    .map(|d| d.name.clone())
+            };
+            for (redo_idx, (unit_idx, path)) in redo_owner.iter().enumerate() {
+                let result = redo_results.iter().find(|r| r.index == redo_idx);
+                let row = scan_row_for(path, result, &redo_name_for_id);
+                progress.emit_row(row.clone());
+                slots[*unit_idx] = Some(row);
+            }
+        }
     }
 
     let mut tally = ScanTally::default();
@@ -3541,6 +3760,10 @@ async fn run_dat_scan(
         .map(|slot| slot.expect("every unit gets exactly one row"))
         .inspect(|row| tally.count(row.status))
         .collect();
+
+    if tally.unsupported > 0 {
+        progress.warn(NX_DAT_UNSUPPORTED_HINT);
+    }
 
     Ok(DatScanResult {
         kind: "scan",
@@ -3684,6 +3907,7 @@ struct DatRenameResult {
 pub async fn cmd_dat_rename(
     app: AppHandle,
     state: State<'_, ActiveCancel>,
+    cache: State<'_, Arc<HashCache>>,
     input: PathBuf,
     #[allow(non_snake_case)] maxDepth: Option<usize>,
     #[allow(non_snake_case)] dryRun: bool,
@@ -3691,8 +3915,19 @@ pub async fn cmd_dat_rename(
 ) -> Result<String, String> {
     let progress = Arc::new(TauriProgress::new(app, "dat-rename"));
     let token = begin(&state, "dat-rename").await;
-    let result = run_dat_rename(progress, input, maxDepth, dryRun, onConflict, token).await;
+    let cache = cache.inner().clone();
+    let result = run_dat_rename(
+        progress,
+        cache.clone(),
+        input,
+        maxDepth,
+        dryRun,
+        onConflict,
+        token,
+    )
+    .await;
     finish(&state, "dat-rename").await;
+    let _ = cache.save();
     let outcome = result?;
     serde_json::to_string(&outcome).map_err(err_to_string)
 }
@@ -3730,6 +3965,7 @@ async fn cue_sets_under(
 
 async fn run_dat_rename(
     progress: Arc<TauriProgress>,
+    cache: Arc<HashCache>,
     input: PathBuf,
     max_depth: Option<usize>,
     dry_run: bool,
@@ -3742,7 +3978,16 @@ async fn run_dat_rename(
         .iter()
         .flat_map(|(cue, bins)| std::iter::once(cue.clone()).chain(bins.iter().cloned()))
         .collect();
-    let units = digest_all(progress.as_ref(), &input, max_depth, &token).await?;
+    let units = digest_all(
+        progress.as_ref(),
+        &cache,
+        &input,
+        max_depth,
+        &[HashAlgo::Crc32, HashAlgo::Sha1],
+        false,
+        &token,
+    )
+    .await?;
 
     let client = PlaymatchClient::new(Some(DEFAULT_API_BASE));
     progress.set_phase("Querying matches");
@@ -3773,7 +4018,7 @@ async fn run_dat_rename(
             continue;
         }
         match unit {
-            DigestedUnit::Ok { path, digests } => {
+            DigestedUnit::Ok { path, digests, .. } => {
                 let file_name = path
                     .file_name()
                     .and_then(|n| n.to_str())

@@ -285,11 +285,14 @@ export function buildCliCommand(command: string, args: Record<string, unknown>):
       ]);
     }
     case "cmd_dat_verify":
-      return join(["dat", "verify", quote(str(args.input))]);
+      return join(["dat", "verify", args.quick === true && "--quick", quote(str(args.input))]);
     case "cmd_dat_scan": {
       const depth = args.maxDepth as number | null | undefined;
+      const algos = Array.isArray(args.algos) ? args.algos.join(",") : "";
       return join([
         "dat", "scan",
+        algos !== "" && algos !== "crc32" && `--algo ${algos}`,
+        args.quick === true && "--quick",
         depth != null ? `--max-depth ${depth}` : false,
         quote(str(args.input)),
       ]);

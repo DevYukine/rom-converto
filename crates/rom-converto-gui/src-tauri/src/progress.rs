@@ -99,3 +99,13 @@ impl ProgressReporter for TauriProgress {
         );
     }
 }
+
+impl TauriProgress {
+    /// Emits `payload` on `<task_id>-row`, a side channel distinct from the
+    /// `progress` bar-state events, used to stream live per-file outcomes.
+    /// Callers whose task_id has no frontend listener on this channel are
+    /// unaffected: the event is simply never subscribed to.
+    pub fn emit_row<T: Serialize + Clone>(&self, payload: T) {
+        let _ = self.app.emit(&format!("{}-row", self.task_id), payload);
+    }
+}
