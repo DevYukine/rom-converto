@@ -9,6 +9,7 @@ pub enum CtrCommands {
     CdnToCia(CdnToCiaCommand),
     GenerateCdnTicket(GenerateCdnTicketCommand),
     Decrypt(DecryptCommand),
+    Encrypt(EncryptCommand),
     Compress(CompressRomCommand),
     Decompress(DecompressRomCommand),
     Verify(VerifyCommand),
@@ -110,6 +111,62 @@ pub struct DecryptCommand {
     pub output: Option<PathBuf>,
 
     /// Output decrypted file path, defaults to <name>.decrypted.<ext> next to the input (ignored with --recursive)
+    #[arg(
+        short = 'o',
+        long = "output",
+        value_name = "OUTPUT",
+        conflicts_with = "output"
+    )]
+    pub output_flag: Option<PathBuf>,
+
+    /// Write output into this directory using the derived filename. Created if missing. Works with --recursive
+    #[arg(long = "output-dir", value_name = "DIR", conflicts_with_all = ["output", "output_flag"])]
+    pub output_dir: Option<PathBuf>,
+
+    /// Output path template applied per file. Tokens: {title}, {titleId}, {region},
+    /// {console}, {serial}, {ext}, {basename}. Resolves against extracted metadata;
+    /// missing tokens fall back to the input basename. Joined under --output-dir
+    #[arg(long = "output-template", value_name = "TEMPLATE", conflicts_with_all = ["output", "output_flag"])]
+    pub output_template: Option<String>,
+
+    /// Process all matching files in INPUT and its subdirectories
+    #[arg(long, short = 'R', default_value = "false")]
+    pub recursive: bool,
+
+    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited
+    #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
+    pub max_depth: Option<usize>,
+
+    /// What to do when an output already exists: error, overwrite, skip, or rename to a numbered sibling
+    #[arg(long = "on-conflict", value_enum, default_value_t = ConflictPolicyArg::Error)]
+    pub on_conflict: ConflictPolicyArg,
+
+    /// Alias for --on-conflict overwrite
+    #[arg(
+        long,
+        short = 'f',
+        default_value_t = false,
+        conflicts_with = "on_conflict"
+    )]
+    pub force: bool,
+}
+
+/// Encrypt a decrypted 3DS ROM file
+#[derive(Parser, Debug, Clone, Eq, PartialEq)]
+#[command(
+    long_about = "Encrypt a decrypted 3DS ROM file\n\nSupported input formats: .cia, .3ds, .cci, .cxi\nThe format is auto-detected from the file contents.\n\nIf OUTPUT is omitted the encrypted file is written next to the input as <name>.encrypted.<ext>.\n\nUse --recursive/-R to point INPUT at a directory and encrypt every matching file in it and its subdirectories; pass --max-depth N to limit the descent depth (1 = top level only). In batch mode OUTPUT is ignored and each encrypted file is written next to its source as <name>.encrypted.<ext>.",
+    after_long_help = "EXAMPLES:\n  Single file:     rom-converto ctr encrypt game.decrypted.cia\n  Explicit output: rom-converto ctr encrypt game.decrypted.3ds game.encrypted.3ds\n  Whole folder:    rom-converto ctr encrypt -R ./roms --output-dir ./encrypted\n"
+)]
+pub struct EncryptCommand {
+    /// Input decrypted ROM file path, or a directory when --recursive is set (.cia, .3ds, .cci, or .cxi)
+    #[arg(value_name = "INPUT")]
+    pub input: PathBuf,
+
+    /// Output encrypted file path, defaults to <name>.encrypted.<ext> next to the input (ignored with --recursive)
+    #[arg(value_name = "OUTPUT")]
+    pub output: Option<PathBuf>,
+
+    /// Output encrypted file path, defaults to <name>.encrypted.<ext> next to the input (ignored with --recursive)
     #[arg(
         short = 'o',
         long = "output",
@@ -389,6 +446,16 @@ mod tests {
             panic!("expected Compress");
         };
         assert!(c.force);
+    }
+
+    #[test]
+    fn parses_encrypt_output_dir() {
+        let h = Harness::parse_from(["bin", "encrypt", "game.cia", "--output-dir", "out"]);
+        let CtrCommands::Encrypt(c) = h.cmd else {
+            panic!("expected Encrypt");
+        };
+        assert_eq!(c.output_dir, Some(PathBuf::from("out")));
+        assert_eq!(c.output, None);
     }
 
     #[test]

@@ -46,6 +46,9 @@ rom-converto dol decompress game.rvz
 # Decrypt a 3DS ROM for emulator use
 rom-converto ctr decrypt game.cia game.decrypted.cia
 
+# Re-encrypt a decrypted 3DS ROM
+rom-converto ctr encrypt game.decrypted.cia game.encrypted.cia
+
 # Compress a whole folder of Switch games, previewing first
 rom-converto nx compress -R ./switch --dry-run
 rom-converto nx compress -R ./switch

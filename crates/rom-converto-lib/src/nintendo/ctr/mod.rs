@@ -5,6 +5,9 @@
 use crate::nintendo::ctr::cia::{decrypt_from_encrypted_cia, write_cia};
 use crate::nintendo::ctr::constants::NCCH_MAGIC_OFFSET;
 use crate::nintendo::ctr::decrypt::cia::{parse_and_decrypt_ncch, parse_and_decrypt_ncsd};
+pub use crate::nintendo::ctr::encrypt::{
+    derive_encrypted_path, encrypt_rom, encrypt_rom_batch_cancellable, encrypt_rom_cancellable,
+};
 use crate::nintendo::ctr::error::NintendoCTRError;
 use crate::nintendo::ctr::models::cia::CIA_HEADER_SIZE;
 use crate::nintendo::ctr::models::ticket::Ticket;
@@ -33,6 +36,7 @@ mod cia;
 mod constants;
 pub mod convert;
 mod decrypt;
+mod encrypt;
 pub mod error;
 pub mod exefs;
 pub mod info;

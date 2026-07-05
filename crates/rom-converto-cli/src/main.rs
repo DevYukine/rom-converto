@@ -47,7 +47,8 @@ use rom_converto_lib::nintendo::ctr::z3ds::{
 };
 use rom_converto_lib::nintendo::ctr::{
     CdnToCiaOptions, convert_cdn_to_cia_cancellable, decrypt_rom_batch_cancellable,
-    decrypt_rom_cancellable, derive_decrypted_path, generate_ticket_from_cdn,
+    decrypt_rom_cancellable, derive_decrypted_path, derive_encrypted_path,
+    encrypt_rom_batch_cancellable, encrypt_rom_cancellable, generate_ticket_from_cdn,
 };
 use rom_converto_lib::nintendo::dol::verify::{DolVerifyOptions, verify_dol};
 use rom_converto_lib::nintendo::legacy_input::{
@@ -101,6 +102,7 @@ pub mod built_info {
 // Extension sets mirror the lib-internal batch scanners so the closing
 // count summary matches what each lib batch function actually processed.
 const CTR_DECRYPT_EXTS: &[&str] = &["cia", "3ds", "cci", "cxi"];
+const CTR_ENCRYPT_EXTS: &[&str] = &["cia", "3ds", "cci", "cxi"];
 const CTR_COMPRESS_EXTS: &[&str] = &["cia", "cci", "3ds", "cxi", "3dsx"];
 const CTR_DECOMPRESS_EXTS: &[&str] = &["zcia", "zcci", "zcxi", "z3dsx"];
 const CTR_CONVERT_EXTS: &[&str] = &["cia", "3ds", "cci"];
@@ -911,6 +913,95 @@ async fn dispatch_command(
                     }
                     let started = Instant::now();
                     decrypt_rom_cancellable(input, &output, &progress, cancel.clone()).await?;
+                    log_single_summary(&cmd.input, &output, TallyDirection::Convert, started);
+                }
+            }
+            CtrCommands::Encrypt(cmd) => {
+                if cmd.recursive {
+                    if !cmd.input.is_dir() {
+                        anyhow::bail!(
+                            "INPUT must be a directory when --recursive is set: {}",
+                            cmd.input.display()
+                        );
+                    }
+                    let files =
+                        collect_files_with_exts(&cmd.input, CTR_ENCRYPT_EXTS, cmd.max_depth)?;
+                    if dry_run {
+                        dry_run_ctr_scan(
+                            "encrypt",
+                            &files,
+                            cmd.output_dir.as_deref(),
+                            policy_of(cmd.on_conflict, cmd.force),
+                            derive_encrypted_path,
+                        )?;
+                        return Ok(());
+                    }
+                    if !skip_space_check {
+                        let check_dir = cmd.output_dir.as_deref().unwrap_or(&cmd.input);
+                        batch::space_preflight(&files, check_dir)?;
+                    }
+                    let tally = Tally::new();
+                    let count = files.len();
+                    encrypt_rom_batch_cancellable(
+                        &cmd.input,
+                        cmd.output_dir.as_deref(),
+                        &progress,
+                        &total_progress,
+                        cmd.max_depth,
+                        cancel.clone(),
+                    )
+                    .await?;
+                    log_count_summary(count, tally);
+                } else {
+                    ensure_input_exists(&cmd.input)?;
+                    let resolved =
+                        rom_converto_lib::util::resolve_input(&cmd.input, CTR_ENCRYPT_EXTS)?;
+                    let input = resolved.path();
+                    let output = match cmd.output_flag.or(cmd.output) {
+                        Some(p) => p,
+                        None => {
+                            if !dry_run && let Some(dir) = cmd.output_dir.as_deref() {
+                                std::fs::create_dir_all(dir)?;
+                            }
+                            match cmd.output_template.as_deref() {
+                                Some(tmpl) => crate::util::templated_output(
+                                    tmpl,
+                                    input,
+                                    cmd.output_dir.as_deref(),
+                                    derive_encrypted_path(resolved.output_basis())
+                                        .extension()
+                                        .and_then(|e| e.to_str())
+                                        .unwrap_or(""),
+                                    None,
+                                    dry_run,
+                                )?,
+                                None => rom_converto_lib::util::place_in_dir(
+                                    &derive_encrypted_path(resolved.output_basis()),
+                                    cmd.output_dir.as_deref(),
+                                ),
+                            }
+                        }
+                    };
+                    let policy = policy_of(cmd.on_conflict, cmd.force);
+                    let decision = resolve_output(&output, policy)?;
+                    if dry_run {
+                        return dry_run_single(
+                            "encrypt", &cmd.input, &output, &decision, None, None, None,
+                        );
+                    }
+                    let output = match decision {
+                        WriteDecision::Skip => {
+                            log_skipped(&output);
+                            return Ok(());
+                        }
+                        WriteDecision::Write(p) => p,
+                    };
+                    if !skip_space_check {
+                        let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
+                        batch::space_preflight_for_size(file_len(input), check_dir)?;
+                    }
+                    let started = Instant::now();
+                    encrypt_rom_cancellable(input, &output, &progress, cancel.clone()).await?;
                     log_single_summary(&cmd.input, &output, TallyDirection::Convert, started);
                 }
             }

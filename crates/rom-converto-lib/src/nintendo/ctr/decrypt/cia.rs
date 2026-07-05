@@ -50,10 +50,11 @@ pub type Aes128Ctr = ctr::Ctr128BE<Aes128>;
 // (about 256 MiB), on top of one full ExeFS buffer (bounded at 8 MiB by the
 // 3DS spec) and small fixed headers. The whole ROM/partition is never held
 // in memory.
-const CHUNK_SIZE: usize = 32 * 1024 * 1024; // 32 MiB
+pub(crate) const ROMFS_CHUNK_SIZE: usize = 32 * 1024 * 1024; // 32 MiB
+const CHUNK_SIZE: usize = ROMFS_CHUNK_SIZE;
 const ROMFS_MAX_IN_FLIGHT: usize = 4;
 
-fn extra_crypto_index(uses_extra_crypto: u8) -> usize {
+pub(crate) fn extra_crypto_index(uses_extra_crypto: u8) -> usize {
     match uses_extra_crypto {
         0 => 0,
         1 => 1,
@@ -67,7 +68,7 @@ pub(crate) fn derive_ctr_key(key_x: u128, key_y: u128) -> [u8; 16] {
     u128::to_be_bytes(scramblekey(key_x, key_y))
 }
 
-fn fixed_key(fixed_crypto: u8) -> Option<[u8; 16]> {
+pub(crate) fn fixed_key(fixed_crypto: u8) -> Option<[u8; 16]> {
     (fixed_crypto != 0).then(|| u128::to_be_bytes(CTR_KEYS_1[(fixed_crypto as usize) - 1]))
 }
 
@@ -487,7 +488,11 @@ async fn write_to_file(
     Ok(())
 }
 
-async fn get_new_key(key_y: u128, header: &NcchHeader, title_id: String) -> anyhow::Result<u128> {
+pub(crate) async fn get_new_key(
+    key_y: u128,
+    header: &NcchHeader,
+    title_id: String,
+) -> anyhow::Result<u128> {
     lazy_static! {
         static ref SEEDS: HashMap<String, [u8; 16]> = {
             let db_path = Path::new("seeddb.bin");

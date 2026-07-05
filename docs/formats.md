@@ -28,7 +28,8 @@ collective phrase for all inputs is "ROMs and disc images".
 
 - **Z3DS** wraps a decrypted 3DS ROM in seekable zstd. Extensions are `.zcia`, `.zcci`,
   `.zcxi`, and `.z3dsx`. Compression only works on decrypted ROMs, since encrypted 3DS content
-  has a near-zero compression ratio.
+  has a near-zero compression ratio. Use `ctr encrypt` after decompression when you need an
+  encrypted `.cia`, `.3ds`, `.cci`, or `.cxi` again.
 - **RVZ** is Dolphin's compressed disc format for GameCube and Wii, with per-block compression
   and a partition-aware hash pipeline for Wii.
 - **GCZ, WIA, and NKit** are older compressed disc containers that rom-converto reads as

@@ -249,6 +249,7 @@ rom-converto ctr <SUBCOMMAND> <INPUT> [OUTPUT]
 | `cdn-to-cia <CDN_DIR> [OUTPUT]` | Convert a CDN directory to `.cia` |
 | `generate-cdn-ticket <CDN_DIR> [OUTPUT]` | Generate a `.tik` ticket from CDN content |
 | `decrypt <INPUT> [OUTPUT]` | Decrypt an encrypted ROM for emulator use |
+| `encrypt <INPUT> [OUTPUT]` | Encrypt a decrypted `.cia`, `.3ds`, `.cci`, or `.cxi` |
 | `compress <INPUT> [OUTPUT]` | Compress a decrypted ROM to Z3DS |
 | `decompress <INPUT> [OUTPUT]` | Decompress a Z3DS file back to the original ROM |
 | `convert <INPUT> [OUTPUT]` | Convert between `.cia` and `.cci`/`.3ds`, direction auto-detected |
@@ -260,7 +261,7 @@ in [Shared behaviors](#shared-behaviors)):
 
 | Flag | Applies to | Description |
 |---|---|---|
-| `--output-dir <DIR>` | `cdn-to-cia`, `decrypt`, `compress`, `decompress`, `convert` | Write outputs under this directory instead of beside each input |
+| `--output-dir <DIR>` | `cdn-to-cia`, `decrypt`, `encrypt`, `compress`, `decompress`, `convert` | Write outputs under this directory instead of beside each input |
 | `-C, --cleanup` | `cdn-to-cia` | Remove original CDN files after conversion |
 | `-T, --ensure-ticket-exists` | `cdn-to-cia` | Generate a ticket file if one is not found |
 | `-D, --decrypt` | `cdn-to-cia` | Also decrypt the CIA after creation |
@@ -270,12 +271,16 @@ in [Shared behaviors](#shared-behaviors)):
 | `--full` | `verify` | Also verify content hashes against the TMD (CIA only, slower). `--verify-content` is an alias |
 
 Generated tickets from `generate-cdn-ticket` use placeholder values and only work on modded
-consoles and emulators. `decrypt` supports `.cia`, `.3ds`, `.cci`, and `.cxi`, with the
-format detected automatically; place a `seeddb.bin` next to the executable to resolve seeds
-locally, otherwise the seed is fetched from Nintendo's API. `compress` inspects the crypto
-flags and refuses an input that still looks encrypted, pointing you to `ctr decrypt`, unless
-you pass `--allow-encrypted`. `convert` produces an unsigned CIA with a zero title key,
-compatible with CFW and emulators but not installable on stock hardware.
+consoles and emulators. `decrypt` and `encrypt` support `.cia`, `.3ds`, `.cci`, and `.cxi`,
+with the format detected automatically; place a `seeddb.bin` next to the executable to
+resolve seeds locally, otherwise the seed is fetched from Nintendo's API. `encrypt` is the
+inverse of the tool's decrypted output and rewrites CIA TMD hashes/content flags as it wraps
+content with the ticket title key, so encrypted CIA bytes may differ from an original source
+even when decrypting back to the same plaintext. `compress` inspects the crypto flags and
+refuses an input that still looks encrypted, pointing you to `ctr decrypt`, unless you pass
+`--allow-encrypted`.
+`convert` produces an unsigned CIA with a zero title key, compatible with CFW and emulators
+but not installable on stock hardware.
 
 ## dol (GameCube)
 
