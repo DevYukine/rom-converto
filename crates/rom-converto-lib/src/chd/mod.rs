@@ -794,6 +794,21 @@ pub async fn extract_from_chd_cancellable(
     Ok(())
 }
 
+/// Peek a CHD's metadata to tell DVD-mode (flat ISO) apart from
+/// CD-mode (bin/cue with CHT2 track metadata) without extracting
+/// anything. Used by [`crate::pipeline::chd_to_cso_cancellable`] to
+/// reject CD-mode CHDs up front, since CSO/ZSO have no track layout.
+pub async fn is_dvd_mode_chd(path: PathBuf) -> ChdResult<bool> {
+    tokio::task::spawn_blocking(move || -> ChdResult<bool> {
+        let handle = crate::chd::reader::open_chd_sync(&path)?;
+        Ok(handle
+            .metadata
+            .iter()
+            .any(|m| m.tag == CHD_METADATA_TAG_DVD))
+    })
+    .await?
+}
+
 /// DVD extract path: one flat `.iso`, no cue sheet.
 async fn extract_dvd_iso(
     progress: &dyn ProgressReporter,

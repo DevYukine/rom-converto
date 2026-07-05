@@ -1,21 +1,26 @@
 <script setup lang="ts">
 import { storeToRefs } from "pinia";
-import { useCsoDecompressStore } from "~/stores/cso-decompress";
+import { useChdToCsoStore } from "~/stores/chd-to-cso";
 import type { ComparisonSummary, ReportRecord, RunOutcome } from "~/types/report";
 
-const store = useCsoDecompressStore();
-const { input, output, onConflict, skipSpaceCheck, outputTemplate, reportFile, result, error, loading, queue, recursive, maxDepth } = storeToRefs(store);
+const store = useChdToCsoStore();
+const { input, output, format, onConflict, skipSpaceCheck, blockSize, outputTemplate, reportFile, verifyAfter, result, error, loading, queue, recursive, maxDepth } = storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
-const { expand } = useFolderScan(["cso", "zso", "dax"]);
+const { expand } = useFolderScan(["chd"]);
 const scanDepth = () => (recursive.value ? maxDepth.value : 1);
 const { run, cancelled, abort } = useOperation({ result, error, loading });
-const progress = useProgress("cso-decompress");
+const progress = useProgress("chd-to-cso");
 
 const previewMode = ref(false);
-const { preview, single: previewSingle, batch: previewBatch, error: previewError } = usePreview("cmd_cso_decompress");
+const { preview, single: previewSingle, batch: previewBatch, error: previewError } = usePreview("cmd_chd_to_cso");
 
 const isBatch = computed(() => queue.value.length > 0);
 const { canRun, runBlockReason, templateActive } = usePageGating({ input, queue, outputTemplate });
+
+const FORMAT_OPTIONS = [
+  { label: "CSO (PSP, PPSSPP)", value: "cso" },
+  { label: "ZSO (PS2 via OPL)", value: "zso" },
+];
 
 const commandLine = ref("");
 
@@ -24,35 +29,44 @@ function csoArgs(inputPath: string, outputPath: string) {
   return {
     inputPath,
     output: tmpl ? null : outputPath,
+    format: format.value,
     onConflict: onConflict.value,
     skipSpaceCheck: skipSpaceCheck.value,
+    blockSize: blockSize.value || null,
     outputTemplate: tmpl,
     report: !!reportFile.value,
     reportFile: reportFile.value || null,
+    verifyAfter: verifyAfter.value,
     dryRun: previewMode.value,
   };
 }
 
-const batch = useBatchOperation("cso-decompress", "cmd_cso_decompress", (item) =>
+const batch = useBatchOperation("chd-to-cso", "cmd_chd_to_cso", (item) =>
   csoArgs(item.input, item.output),
 );
-
 const comparisons = ref<ComparisonSummary[]>([]);
 
 watch([input, outputDir], () => {
-  if (input.value) output.value = resolve(deriveDiscIsoPath(input.value));
+  if (input.value) output.value = resolve(deriveCsoPath(input.value, format.value));
+});
+
+watch(format, (fmt) => {
+  if (input.value) output.value = resolve(deriveCsoPath(input.value, fmt));
+  for (const item of queue.value) {
+    if (item.status === "pending") item.output = resolve(deriveCsoPath(item.input, fmt));
+  }
 });
 
 watch(outputDir, () => {
-  for (const it of queue.value) {
-    if (it.status === "pending") it.output = resolve(deriveDiscIsoPath(it.input));
+  for (const item of queue.value) {
+    if (item.status === "pending") item.output = resolve(deriveCsoPath(item.input, format.value));
   }
 });
 
 async function handleFiles(paths: string[]) {
   for (const p of paths) {
     for (const f of await expand(p, scanDepth())) {
-      store.addToQueue(f, resolve(deriveDiscIsoPath(f)));
+      store.addToQueue(f, resolve(deriveCsoPath(f, format.value)));
     }
   }
 }
@@ -63,7 +77,7 @@ async function handleSingleFile(path: string) {
     input.value = path;
   } else {
     for (const f of found) {
-      store.addToQueue(f, resolve(deriveDiscIsoPath(f)));
+      store.addToQueue(f, resolve(deriveCsoPath(f, format.value)));
     }
   }
 }
@@ -74,7 +88,7 @@ async function execute() {
   comparisons.value = [];
   if (isBatch.value) {
     const rep = queue.value.find((i) => i.status === "pending") ?? queue.value[0];
-    commandLine.value = rep ? buildCliCommand("cmd_cso_decompress", csoArgs(rep.input, rep.output)) : "";
+    commandLine.value = rep ? buildCliCommand("cmd_chd_to_cso", csoArgs(rep.input, rep.output)) : "";
     await batch.start(
       queue,
       result,
@@ -86,13 +100,13 @@ async function execute() {
         if (comparison) comparisons.value.push(comparison);
       },
       async (item, err) => {
-        if (reportFile.value) await pushFailedRecord(records, item.input, "decompress", err);
+        if (reportFile.value) await pushFailedRecord(records, item.input, "compress", err);
       },
     );
   } else {
     const args = csoArgs(input.value, output.value);
-    commandLine.value = buildCliCommand("cmd_cso_decompress", args);
-    await runReportable("cmd_cso_decompress", args, { result, error, loading, cancelled }, records, "decompress", comparisons.value);
+    commandLine.value = buildCliCommand("cmd_chd_to_cso", args);
+    await runReportable("cmd_chd_to_cso", args, { result, error, loading, cancelled }, records, "compress", comparisons.value);
   }
   if (reportFile.value && records.length) {
     await writeRunReport(reportFile.value, records);
@@ -102,8 +116,8 @@ async function execute() {
 async function runPreview() {
   const rep = isBatch.value ? (queue.value.find((i) => i.status === "pending") ?? queue.value[0]) : null;
   commandLine.value = isBatch.value
-    ? rep ? buildCliCommand("cmd_cso_decompress", csoArgs(rep.input, rep.output)) : ""
-    : buildCliCommand("cmd_cso_decompress", csoArgs(input.value, output.value));
+    ? rep ? buildCliCommand("cmd_chd_to_cso", csoArgs(rep.input, rep.output)) : ""
+    : buildCliCommand("cmd_chd_to_cso", csoArgs(input.value, output.value));
   if (isBatch.value) {
     await previewBatch(queue, (item) => csoArgs(item.input, item.output));
   } else {
@@ -121,8 +135,8 @@ function onRun() {
 <template>
   <div>
     <PageHeader
-      title="Decompress CSO/ZSO/DAX"
-      description="Restore the original ISO from a CSO, ZSO, or DAX container. Drop multiple files for batch processing."
+      title="Extract CHD to CSO/ZSO"
+      description="Convert a .chd straight to .cso or .zso through a temporary ISO, which is removed automatically once the container is written. Only DVD-mode CHDs (PS2 DVD, PSP UMD) qualify; a CD-mode CHD is rejected. Drop multiple files for batch processing."
       :loading="loading || batch.running.value"
       :has-result="!!result"
       :has-error="!!error"
@@ -149,10 +163,10 @@ function onRun() {
           />
 
           <FileDropZone
-            label="Add more CSO/ZSO/DAX files"
+            label="Add more CHD files"
             model-value=""
             :multiple="true"
-            :filters="[{ name: 'Compressed ISO', extensions: ['cso', 'zso', 'dax'] }]"
+            :filters="[{ name: 'CHD', extensions: ['chd'] }]"
             @update:model-value="(p: string) => { if (p) handleSingleFile(p) }"
             @update:files="handleFiles"
           />
@@ -162,9 +176,9 @@ function onRun() {
           <div class="grid gap-5 lg:grid-cols-2">
             <FileDropZone
               :model-value="input"
-              label="Input CSO/ZSO/DAX file"
+              label="Input CHD file"
               :multiple="true"
-              :filters="[{ name: 'Compressed ISO', extensions: ['cso', 'zso', 'dax'] }]"
+              :filters="[{ name: 'CHD', extensions: ['chd'] }]"
               :primary="true"
               @update:model-value="handleSingleFile"
               @update:files="handleFiles"
@@ -177,7 +191,7 @@ function onRun() {
                 label="Output file (auto-filled)"
                 :save-dialog="true"
                 :disabled="true"
-                :filters="[{ name: 'ISO image', extensions: ['iso'] }]"
+                :filters="[{ name: 'Compressed ISO', extensions: ['cso', 'zso'] }]"
               />
             </InfoTooltip>
             <FileDropZone
@@ -185,12 +199,18 @@ function onRun() {
               v-model="output"
               label="Output file (auto-filled)"
               :save-dialog="true"
-              :filters="[{ name: 'ISO image', extensions: ['iso'] }]"
+              :filters="[{ name: 'Compressed ISO', extensions: ['cso', 'zso'] }]"
             />
           </div>
         </template>
 
-        <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
+        <div class="space-y-3 rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
+          <SegmentedControl
+            :model-value="format"
+            label="Format"
+            :options="FORMAT_OPTIONS"
+            @update:model-value="(v: string) => { format = v as 'cso' | 'zso' }"
+          />
           <ConflictPolicyControl v-model="onConflict" />
           <RecursiveOptions
             :recursive="recursive"
@@ -203,6 +223,28 @@ function onRun() {
             label="Skip free space check"
             description="Proceed even if the output filesystem looks too full to hold the result."
           />
+          <FlagToggle
+            v-model="verifyAfter"
+            label="Verify after conversion"
+            description="Re-check each output after writing it and note whether the format supports a full round-trip decode."
+          />
+          <FlagToggle
+            v-model="previewMode"
+            label="Preview (dry run)"
+            description="Show what each file would do without writing anything."
+          />
+          <label class="flex flex-col gap-1.5">
+            <span class="text-sm font-medium text-zinc-200">Block size</span>
+            <span class="text-xs text-zinc-400">
+              Power of two in bytes. Leave blank for the default of 2048, or 16384 for inputs of 2 GiB and beyond (matching maxcso).
+            </span>
+            <input
+              v-model.number="blockSize"
+              type="number"
+              placeholder="default"
+              class="mt-1 w-40 rounded-md border border-zinc-700 bg-zinc-800/50 px-3 py-1.5 text-sm text-zinc-200"
+            />
+          </label>
         </div>
 
         <label class="flex flex-col gap-1.5">
@@ -234,12 +276,6 @@ function onRun() {
           :running="progress.running.value"
         />
 
-        <FlagToggle
-          v-model="previewMode"
-          label="Preview (dry run)"
-          description="Show what each file would do without writing anything."
-        />
-
         <RunButton
           :loading="loading || batch.running.value"
           :batch-current="batch.currentIndex.value"
@@ -249,7 +285,7 @@ function onRun() {
           @click="onRun"
           @cancel="isBatch ? batch.abort() : abort()"
         >
-          {{ previewMode ? 'Preview' : (isBatch && queue.filter(i => i.status === 'pending').length > 1 ? `Decompress all (${queue.filter(i => i.status === 'pending').length})` : 'Decompress') }}
+          {{ previewMode ? 'Preview' : (isBatch && queue.filter(i => i.status === 'pending').length > 1 ? `Compress all (${queue.filter(i => i.status === 'pending').length})` : 'Compress') }}
         </RunButton>
       </div>
     </OperationCard>

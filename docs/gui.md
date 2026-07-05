@@ -21,11 +21,16 @@ the sidebar:
 | Wii | Compress to RVZ, Decompress RVZ, Verify Wii disc, Wii info |
 | Wii U | Compress to WUA, Decrypt NUS title, Verify Wii U title, Wii U info |
 | Switch | Compress to NSZ/XCZ, Decompress NSZ/XCZ, Verify Switch container, Switch info |
-| CHD | Compress to CHD, Extract CHD, Verify CHD, CHD info |
-| CSO/ZSO | Compress to CSO/ZSO, Decompress CSO/ZSO, Verify CSO/ZSO, CSO/ZSO info |
+| CHD | Compress to CHD, Extract CHD, Extract to CSO/ZSO, Verify CHD, CHD info |
+| CSO/ZSO | Compress to CSO/ZSO, Decompress CSO/ZSO, Compress to CHD, Verify CSO/ZSO, CSO/ZSO info |
 | CD (CUE/BIN) | Merge multi-bin |
 | Utilities | Hash, Playlist |
 | DAT | Verify, Scan, Rename |
+
+Compress to CHD (under CSO/ZSO) and Extract to CSO/ZSO (under CHD) each run as a single
+conversion job: the intermediate ISO is written to a temp path, converted, and removed
+automatically, with one progress bar and one comparison card for the whole job rather than
+two separate runs.
 
 ## CLI and GUI parity
 
@@ -34,8 +39,8 @@ CLI command to its GUI page.
 
 | CLI command | GUI page |
 |---|---|
-| `chd compress`, `extract`, `verify`, `info` | CHD |
-| `cso compress`, `decompress`, `verify`, `info` | CSO/ZSO |
+| `chd compress`, `extract`, `to-cso`, `verify`, `info` | CHD |
+| `cso compress`, `decompress`, `to-chd`, `verify`, `info` | CSO/ZSO |
 | `ctr` (all operations) | 3DS |
 | `dol compress`, `decompress`, `verify`, `info` | GameCube |
 | `rvl compress`, `decompress`, `verify`, `info` | Wii |
@@ -121,7 +126,8 @@ output path are mutually exclusive: entering a template disables the explicit ou
 ## Comparison card
 
 The compress-to-CHD, compress-to-CSO/ZSO, compress-to-RVZ (GameCube and Wii), compress-to-NSZ/XCZ,
-and CIA/CCI convert pages show a comparison card above the output log after each file finishes.
+CIA/CCI convert, CSO/ZSO-to-CHD, and CHD-to-CSO/ZSO pages show a comparison card above the output
+log after each file finishes.
 It lists the input and output size with the percent saved (or grown), the format transition (for
 example ISO to RVZ), and, when the "Verify after conversion" toggle is on, the output's SHA-1 and
 a verify badge. CHD, CSO/ZSO, and NSZ/XCZ re-decompress the whole output and note a round trip;

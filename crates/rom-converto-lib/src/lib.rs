@@ -6,11 +6,12 @@
 //! [`crate::nintendo::dol`], [`crate::nintendo::rvl`],
 //! [`crate::nintendo::wup`], [`crate::nintendo::nx`]); CD and DVD disc
 //! images go through [`crate::chd`] and [`crate::cue`], and PSP/PS2 ISOs
-//! through [`crate::cso`]. [`crate::config`] loads the config file and
-//! presets, [`crate::info`] renders per-format metadata, [`crate::playlist`]
-//! writes multi-disc `.m3u` files, and [`crate::util`] holds the shared
-//! conflict resolution, hashing, dry-run planning, and reporting machinery
-//! every format uses.
+//! through [`crate::cso`]. [`crate::pipeline`] chains CSO/ZSO and CHD
+//! conversion through a temporary ISO for one-step conversion between the
+//! two. [`crate::config`] loads the config file and presets, [`crate::info`]
+//! renders per-format metadata, [`crate::playlist`] writes multi-disc `.m3u`
+//! files, and [`crate::util`] holds the shared conflict resolution, hashing,
+//! dry-run planning, and reporting machinery every format uses.
 
 pub mod cd;
 pub mod chd;
@@ -20,5 +21,6 @@ pub mod cue;
 pub mod dat;
 pub mod info;
 pub mod nintendo;
+pub mod pipeline;
 pub mod playlist;
 pub mod util;

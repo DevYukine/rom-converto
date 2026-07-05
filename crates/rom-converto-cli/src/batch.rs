@@ -276,7 +276,7 @@ pub async fn cso_decompress(
 ) -> Result<()> {
     use rom_converto_lib::cso::decompress_from_cso_cancellable;
 
-    let files = collect_or_warn(input_dir, &["cso", "zso"], max_depth)?;
+    let files = collect_or_warn(input_dir, &["cso", "zso", "dax"], max_depth)?;
     if files.is_empty() {
         return Ok(());
     }
@@ -397,7 +397,7 @@ pub async fn cso_verify(
 ) -> Result<()> {
     use rom_converto_lib::cso::verify_cso;
 
-    let files = collect_or_warn(input_dir, &["cso", "zso"], max_depth)?;
+    let files = collect_or_warn(input_dir, &["cso", "zso", "dax"], max_depth)?;
     if files.is_empty() {
         return Ok(());
     }
@@ -1580,13 +1580,10 @@ pub async fn cso_compress(
     report_path: Option<&Path>,
     cancel: CancelToken,
 ) -> Result<()> {
-    use rom_converto_lib::cso::{CsoFormat, compress_to_cso_cancellable};
+    use rom_converto_lib::cso::compress_to_cso_cancellable;
 
     let ext = opts.format.extension();
-    let media = match opts.format {
-        CsoFormat::Cso => "CSO",
-        CsoFormat::Zso => "ZSO",
-    };
+    let media = opts.format.name();
     let files = collect_or_warn(input_dir, &["iso"], max_depth)?;
     if files.is_empty() {
         return Ok(());
@@ -1706,6 +1703,359 @@ pub async fn cso_compress(
         .await
         {
             if matches!(e, rom_converto_lib::cso::CsoError::Cancelled) {
+                break;
+            }
+            warn!("Failed to compress {}: {e}", path.display());
+            tally.record_failed();
+            records.push(failed_record(&path, "compress", input_bytes, started, e));
+        } else {
+            let out_bytes = file_len(&out_path);
+            tally.record_ok(input_bytes, out_bytes, started.elapsed());
+            records.push(ok_record(
+                &path,
+                &out_path,
+                "compress",
+                input_bytes,
+                out_bytes,
+                started,
+            ));
+        }
+        total_progress.advance(input_bytes);
+    }
+    total_progress.finish();
+    if cancel.is_cancelled() {
+        return Ok(());
+    }
+    finish_tally(
+        &tally,
+        TallyDirection::Compress,
+        &records,
+        dry_run,
+        report_path,
+    )
+}
+
+/// Best-effort uncompressed size read from a CSO/ZSO header, for the
+/// space preflight: the temporary ISO the pipeline decodes to needs
+/// room for the full disc, not just the compressed file's own size.
+fn cso_uncompressed_size(path: &Path) -> u64 {
+    rom_converto_lib::cso::info::read_info(path)
+        .map(|info| info.uncompressed_size)
+        .unwrap_or(0)
+}
+
+/// Best-effort flat-ISO size read from a CHD header, for the space
+/// preflight on the extract-then-compress direction.
+fn chd_logical_bytes(path: &Path) -> u64 {
+    rom_converto_lib::chd::info::read_info(path)
+        .map(|info| info.logical_bytes)
+        .unwrap_or(0)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn cso_to_chd(
+    progress: &dyn ProgressReporter,
+    total_progress: &crate::util::TotalProgress,
+    input_dir: &Path,
+    mode: Option<rom_converto_lib::chd::DiscMode>,
+    mut opts: rom_converto_lib::chd::ChdDvdOptions,
+    policy: ConflictPolicy,
+    output_dir: Option<&Path>,
+    output_template: Option<&str>,
+    max_depth: Option<usize>,
+    dry_run: bool,
+    skip_space_check: bool,
+    report_path: Option<&Path>,
+    cancel: CancelToken,
+) -> Result<()> {
+    use rom_converto_lib::pipeline::cso_to_chd_cancellable;
+
+    let files = collect_or_warn(input_dir, &["cso", "zso", "dax"], max_depth)?;
+    if files.is_empty() {
+        return Ok(());
+    }
+    if !dry_run && !skip_space_check {
+        let required: u64 = files.iter().map(|p| cso_uncompressed_size(p)).sum();
+        space_preflight_for_size(required, output_dir.unwrap_or(input_dir))?;
+    }
+    if !dry_run && let Some(dir) = output_dir {
+        std::fs::create_dir_all(dir)?;
+    }
+    opts.force = true;
+    let total = files.len();
+    total_progress.begin(total as u64, files_bytes(&files));
+    let mut tally = Tally::new();
+    let mut records: Vec<ReportRecord> = Vec::new();
+    for path in files {
+        if cancel.is_cancelled() {
+            break;
+        }
+        let output = match crate::util::batch_output(
+            &path,
+            &path.with_extension("chd"),
+            input_dir,
+            output_dir,
+            output_template,
+            "chd",
+            None,
+            dry_run,
+        ) {
+            Ok(p) => p,
+            Err(e) => {
+                warn!("{e}");
+                tally.record_skipped();
+                records.push(skipped_record(&path, "compress", Some(e.to_string())));
+                total_progress.advance(file_len(&path));
+                continue;
+            }
+        };
+        if !dry_run && let Some(parent) = output.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let decision = match resolve_output(&output, policy) {
+            Ok(d) => d,
+            Err(e) => {
+                warn!("{e}");
+                tally.record_skipped();
+                records.push(skipped_record(&path, "compress", Some(e.to_string())));
+                total_progress.advance(file_len(&path));
+                continue;
+            }
+        };
+        if dry_run {
+            dry_run_verify_record(
+                progress,
+                "compress",
+                &path,
+                &output,
+                &decision,
+                policy,
+                crate::util::OutputVerify::Chd,
+                None,
+                &mut tally,
+                &mut records,
+            )
+            .await;
+            total_progress.advance(file_len(&path));
+            continue;
+        }
+        let output = match decision {
+            WriteDecision::Write(p) => p,
+            WriteDecision::Skip if policy == ConflictPolicy::OverwriteInvalid => {
+                match crate::util::verify_existing_output(
+                    progress,
+                    &output,
+                    crate::util::OutputVerify::Chd,
+                )
+                .await
+                {
+                    crate::util::VerifyOutcome::Valid => {
+                        info!("Kept, output verified valid: {}", output.display());
+                        tally.record_skipped();
+                        records.push(skipped_record(
+                            &path,
+                            "compress",
+                            Some("output verified valid".into()),
+                        ));
+                        total_progress.advance(file_len(&path));
+                        continue;
+                    }
+                    crate::util::VerifyOutcome::Invalid => {
+                        info!(
+                            "Rewriting, output failed verification: {}",
+                            output.display()
+                        );
+                        output
+                    }
+                }
+            }
+            WriteDecision::Skip => {
+                info!("Skipped, output exists: {}", output.display());
+                tally.record_skipped();
+                records.push(skipped_record(&path, "compress", None));
+                total_progress.advance(file_len(&path));
+                continue;
+            }
+        };
+        let input_bytes = file_len(&path);
+        let out_path = output.clone();
+        let started = Instant::now();
+        if let Err(e) = cso_to_chd_cancellable(
+            progress,
+            path.clone(),
+            output,
+            mode,
+            opts.clone(),
+            cancel.clone(),
+        )
+        .await
+        {
+            if crate::is_cancelled_error(&e) {
+                break;
+            }
+            warn!("Failed to compress {}: {e}", path.display());
+            tally.record_failed();
+            records.push(failed_record(&path, "compress", input_bytes, started, e));
+        } else {
+            let out_bytes = file_len(&out_path);
+            tally.record_ok(input_bytes, out_bytes, started.elapsed());
+            records.push(ok_record(
+                &path,
+                &out_path,
+                "compress",
+                input_bytes,
+                out_bytes,
+                started,
+            ));
+        }
+        total_progress.advance(input_bytes);
+    }
+    total_progress.finish();
+    if cancel.is_cancelled() {
+        return Ok(());
+    }
+    finish_tally(
+        &tally,
+        TallyDirection::Compress,
+        &records,
+        dry_run,
+        report_path,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn chd_to_cso(
+    progress: &dyn ProgressReporter,
+    total_progress: &crate::util::TotalProgress,
+    input_dir: &Path,
+    mut opts: rom_converto_lib::cso::CsoCompressOptions,
+    policy: ConflictPolicy,
+    output_dir: Option<&Path>,
+    output_template: Option<&str>,
+    max_depth: Option<usize>,
+    dry_run: bool,
+    skip_space_check: bool,
+    report_path: Option<&Path>,
+    cancel: CancelToken,
+) -> Result<()> {
+    use rom_converto_lib::pipeline::chd_to_cso_cancellable;
+
+    let ext = opts.format.extension();
+    let files = collect_or_warn(input_dir, &["chd"], max_depth)?;
+    if files.is_empty() {
+        return Ok(());
+    }
+    if !dry_run && !skip_space_check {
+        let required: u64 = files.iter().map(|p| chd_logical_bytes(p)).sum();
+        space_preflight_for_size(required, output_dir.unwrap_or(input_dir))?;
+    }
+    if !dry_run && let Some(dir) = output_dir {
+        std::fs::create_dir_all(dir)?;
+    }
+    opts.force = true;
+    let total = files.len();
+    total_progress.begin(total as u64, files_bytes(&files));
+    let mut tally = Tally::new();
+    let mut records: Vec<ReportRecord> = Vec::new();
+    for path in files {
+        if cancel.is_cancelled() {
+            break;
+        }
+        let output = match crate::util::batch_output(
+            &path,
+            &path.with_extension(ext),
+            input_dir,
+            output_dir,
+            output_template,
+            ext,
+            None,
+            dry_run,
+        ) {
+            Ok(p) => p,
+            Err(e) => {
+                warn!("{e}");
+                tally.record_skipped();
+                records.push(skipped_record(&path, "compress", Some(e.to_string())));
+                total_progress.advance(file_len(&path));
+                continue;
+            }
+        };
+        if !dry_run && let Some(parent) = output.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let decision = match resolve_output(&output, policy) {
+            Ok(d) => d,
+            Err(e) => {
+                warn!("{e}");
+                tally.record_skipped();
+                records.push(skipped_record(&path, "compress", Some(e.to_string())));
+                total_progress.advance(file_len(&path));
+                continue;
+            }
+        };
+        if dry_run {
+            dry_run_verify_record(
+                progress,
+                "compress",
+                &path,
+                &output,
+                &decision,
+                policy,
+                crate::util::OutputVerify::Cso,
+                None,
+                &mut tally,
+                &mut records,
+            )
+            .await;
+            total_progress.advance(file_len(&path));
+            continue;
+        }
+        let output = match decision {
+            WriteDecision::Write(p) => p,
+            WriteDecision::Skip if policy == ConflictPolicy::OverwriteInvalid => {
+                match crate::util::verify_existing_output(
+                    progress,
+                    &output,
+                    crate::util::OutputVerify::Cso,
+                )
+                .await
+                {
+                    crate::util::VerifyOutcome::Valid => {
+                        info!("Kept, output verified valid: {}", output.display());
+                        tally.record_skipped();
+                        records.push(skipped_record(
+                            &path,
+                            "compress",
+                            Some("output verified valid".into()),
+                        ));
+                        total_progress.advance(file_len(&path));
+                        continue;
+                    }
+                    crate::util::VerifyOutcome::Invalid => {
+                        info!(
+                            "Rewriting, output failed verification: {}",
+                            output.display()
+                        );
+                        output
+                    }
+                }
+            }
+            WriteDecision::Skip => {
+                info!("Skipped, output exists: {}", output.display());
+                tally.record_skipped();
+                records.push(skipped_record(&path, "compress", None));
+                total_progress.advance(file_len(&path));
+                continue;
+            }
+        };
+        let input_bytes = file_len(&path);
+        let out_path = output.clone();
+        let started = Instant::now();
+        if let Err(e) =
+            chd_to_cso_cancellable(progress, path.clone(), output, opts.clone(), cancel.clone())
+                .await
+        {
+            if crate::is_cancelled_error(&e) {
                 break;
             }
             warn!("Failed to compress {}: {e}", path.display());

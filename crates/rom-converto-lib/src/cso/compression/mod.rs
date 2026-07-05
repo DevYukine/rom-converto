@@ -29,6 +29,7 @@ impl BlockCompressor {
                 false,
             ))),
             CsoFormat::Zso => Self::Lz4,
+            CsoFormat::Dax => unreachable!("DAX is decode-only"),
         }
     }
 
@@ -50,6 +51,7 @@ impl BlockCompressor {
 pub(crate) enum BlockDecompressor {
     Deflate(Box<flate2::Decompress>),
     Lz4,
+    Dax(Box<flate2::Decompress>),
 }
 
 impl BlockDecompressor {
@@ -57,6 +59,7 @@ impl BlockDecompressor {
         match format {
             CsoFormat::Cso => Self::Deflate(Box::new(flate2::Decompress::new(false))),
             CsoFormat::Zso => Self::Lz4,
+            CsoFormat::Dax => Self::Dax(Box::new(flate2::Decompress::new(true))),
         }
     }
 
@@ -66,8 +69,48 @@ impl BlockDecompressor {
                 deflate_decompress_with(inflate, data, expected_len).map_err(chd_to_cso)
             }
             Self::Lz4 => lz4_decompress_partial(data, expected_len),
+            Self::Dax(inflate) => dax_inflate(inflate, data, expected_len),
         }
     }
+}
+
+/// DAX frames are zlib streams (compress2, windowBits 15). Some
+/// third-party writers emit raw deflate instead, so when the zlib
+/// inflate fails, retry the same bytes as raw deflate before erroring.
+fn dax_inflate(
+    inflate: &mut flate2::Decompress,
+    src: &[u8],
+    expected_len: usize,
+) -> CsoResult<Vec<u8>> {
+    match inflate_once(inflate, src, expected_len, true) {
+        Ok(out) => Ok(out),
+        Err(_) => inflate_once(inflate, src, expected_len, false),
+    }
+}
+
+fn inflate_once(
+    inflate: &mut flate2::Decompress,
+    src: &[u8],
+    expected_len: usize,
+    zlib_header: bool,
+) -> CsoResult<Vec<u8>> {
+    inflate.reset(zlib_header);
+    let mut out = vec![0u8; expected_len];
+    let before = inflate.total_out();
+    let status = inflate
+        .decompress(src, &mut out, flate2::FlushDecompress::Finish)
+        .map_err(|e| CsoError::IoError(io::Error::other(format!("DAX inflate error: {e}"))))?;
+    match status {
+        flate2::Status::StreamEnd | flate2::Status::Ok => {}
+        flate2::Status::BufError => {
+            return Err(CsoError::IoError(io::Error::other(
+                "DAX inflate buffer error",
+            )));
+        }
+    }
+    let written = (inflate.total_out() - before) as usize;
+    out.truncate(written);
+    Ok(out)
 }
 
 // The lz4 crate only binds LZ4_decompress_safe, which rejects input

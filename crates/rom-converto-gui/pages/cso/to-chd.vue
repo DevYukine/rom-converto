@@ -1,58 +1,67 @@
 <script setup lang="ts">
 import { storeToRefs } from "pinia";
-import { useCsoDecompressStore } from "~/stores/cso-decompress";
+import { useCsoToChdStore } from "~/stores/cso-to-chd";
 import type { ComparisonSummary, ReportRecord, RunOutcome } from "~/types/report";
 
-const store = useCsoDecompressStore();
-const { input, output, onConflict, skipSpaceCheck, outputTemplate, reportFile, result, error, loading, queue, recursive, maxDepth } = storeToRefs(store);
+const store = useCsoToChdStore();
+const { input, output, onConflict, skipSpaceCheck, zstd, mode, hunkSize, outputTemplate, reportFile, verifyAfter, result, error, loading, queue, recursive, maxDepth } = storeToRefs(store);
 const { outputDir, resolve } = useOutputDir();
 const { expand } = useFolderScan(["cso", "zso", "dax"]);
 const scanDepth = () => (recursive.value ? maxDepth.value : 1);
 const { run, cancelled, abort } = useOperation({ result, error, loading });
-const progress = useProgress("cso-decompress");
+const progress = useProgress("cso-to-chd");
 
 const previewMode = ref(false);
-const { preview, single: previewSingle, batch: previewBatch, error: previewError } = usePreview("cmd_cso_decompress");
+const { preview, single: previewSingle, batch: previewBatch, error: previewError } = usePreview("cmd_cso_to_chd");
+
+const MODE_OPTIONS = [
+  { label: "Auto", value: "auto" },
+  { label: "CD", value: "cd" },
+  { label: "DVD", value: "dvd" },
+];
 
 const isBatch = computed(() => queue.value.length > 0);
-const { canRun, runBlockReason, templateActive } = usePageGating({ input, queue, outputTemplate });
-
 const commandLine = ref("");
 
-function csoArgs(inputPath: string, outputPath: string) {
+const { canRun, runBlockReason, templateActive } = usePageGating({ input, queue, outputTemplate });
+
+function chdArgs(inputPath: string, outputPath: string) {
   const tmpl = outputTemplate.value || null;
   return {
     inputPath,
     output: tmpl ? null : outputPath,
     onConflict: onConflict.value,
     skipSpaceCheck: skipSpaceCheck.value,
+    zstd: zstd.value,
+    mode: mode.value === "auto" ? null : mode.value,
+    hunkSize: hunkSize.value || null,
     outputTemplate: tmpl,
     report: !!reportFile.value,
     reportFile: reportFile.value || null,
+    verifyAfter: verifyAfter.value,
     dryRun: previewMode.value,
   };
 }
 
-const batch = useBatchOperation("cso-decompress", "cmd_cso_decompress", (item) =>
-  csoArgs(item.input, item.output),
+const batch = useBatchOperation("cso-to-chd", "cmd_cso_to_chd", (item) =>
+  chdArgs(item.input, item.output),
 );
-
 const comparisons = ref<ComparisonSummary[]>([]);
 
 watch([input, outputDir], () => {
-  if (input.value) output.value = resolve(deriveDiscIsoPath(input.value));
+  if (input.value) output.value = resolve(deriveChdPath(input.value));
 });
 
 watch(outputDir, () => {
   for (const it of queue.value) {
-    if (it.status === "pending") it.output = resolve(deriveDiscIsoPath(it.input));
+    if (it.status === "pending") it.output = resolve(deriveChdPath(it.input));
   }
 });
 
 async function handleFiles(paths: string[]) {
   for (const p of paths) {
     for (const f of await expand(p, scanDepth())) {
-      store.addToQueue(f, resolve(deriveDiscIsoPath(f)));
+      store.addToQueue(f, resolve(deriveChdPath(f)));
     }
   }
 }
@@ -63,7 +72,7 @@ async function handleSingleFile(path: string) {
     input.value = path;
   } else {
     for (const f of found) {
-      store.addToQueue(f, resolve(deriveDiscIsoPath(f)));
+      store.addToQueue(f, resolve(deriveChdPath(f)));
     }
   }
 }
@@ -74,7 +83,7 @@ async function execute() {
   comparisons.value = [];
   if (isBatch.value) {
     const rep = queue.value.find((i) => i.status === "pending") ?? queue.value[0];
-    commandLine.value = rep ? buildCliCommand("cmd_cso_decompress", csoArgs(rep.input, rep.output)) : "";
+    commandLine.value = rep ? buildCliCommand("cmd_cso_to_chd", chdArgs(rep.input, rep.output)) : "";
     await batch.start(
       queue,
       result,
@@ -86,13 +95,13 @@ async function execute() {
         if (comparison) comparisons.value.push(comparison);
       },
       async (item, err) => {
-        if (reportFile.value) await pushFailedRecord(records, item.input, "decompress", err);
+        if (reportFile.value) await pushFailedRecord(records, item.input, "compress", err);
       },
     );
   } else {
-    const args = csoArgs(input.value, output.value);
-    commandLine.value = buildCliCommand("cmd_cso_decompress", args);
-    await runReportable("cmd_cso_decompress", args, { result, error, loading, cancelled }, records, "decompress", comparisons.value);
+    const args = chdArgs(input.value, output.value);
+    commandLine.value = buildCliCommand("cmd_cso_to_chd", args);
+    await runReportable("cmd_cso_to_chd", args, { result, error, loading, cancelled }, records, "compress", comparisons.value);
   }
   if (reportFile.value && records.length) {
     await writeRunReport(reportFile.value, records);
@@ -102,12 +111,12 @@ async function execute() {
 async function runPreview() {
   const rep = isBatch.value ? (queue.value.find((i) => i.status === "pending") ?? queue.value[0]) : null;
   commandLine.value = isBatch.value
-    ? rep ? buildCliCommand("cmd_cso_decompress", csoArgs(rep.input, rep.output)) : ""
-    : buildCliCommand("cmd_cso_decompress", csoArgs(input.value, output.value));
+    ? rep ? buildCliCommand("cmd_cso_to_chd", chdArgs(rep.input, rep.output)) : ""
+    : buildCliCommand("cmd_cso_to_chd", chdArgs(input.value, output.value));
   if (isBatch.value) {
-    await previewBatch(queue, (item) => csoArgs(item.input, item.output));
+    await previewBatch(queue, (item) => chdArgs(item.input, item.output));
   } else {
-    await previewSingle(csoArgs(input.value, output.value));
+    await previewSingle(chdArgs(input.value, output.value));
   }
   if (previewError.value) error.value = previewError.value;
 }
@@ -121,8 +130,8 @@ function onRun() {
 <template>
   <div>
     <PageHeader
-      title="Decompress CSO/ZSO/DAX"
-      description="Restore the original ISO from a CSO, ZSO, or DAX container. Drop multiple files for batch processing."
+      title="Compress CSO/ZSO/DAX to CHD"
+      description="Convert a .cso, .zso, or .dax straight to .chd through a temporary ISO, which is removed automatically once the CHD is written. Drop multiple files for batch processing."
       :loading="loading || batch.running.value"
       :has-result="!!result"
       :has-error="!!error"
@@ -177,7 +186,7 @@ function onRun() {
                 label="Output file (auto-filled)"
                 :save-dialog="true"
                 :disabled="true"
-                :filters="[{ name: 'ISO image', extensions: ['iso'] }]"
+                :filters="[{ name: 'CHD', extensions: ['chd'] }]"
               />
             </InfoTooltip>
             <FileDropZone
@@ -185,12 +194,12 @@ function onRun() {
               v-model="output"
               label="Output file (auto-filled)"
               :save-dialog="true"
-              :filters="[{ name: 'ISO image', extensions: ['iso'] }]"
+              :filters="[{ name: 'CHD', extensions: ['chd'] }]"
             />
           </div>
         </template>
 
-        <div class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
+        <div class="space-y-3 rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3">
           <ConflictPolicyControl v-model="onConflict" />
           <RecursiveOptions
             :recursive="recursive"
@@ -203,6 +212,31 @@ function onRun() {
             label="Skip free space check"
             description="Proceed even if the output filesystem looks too full to hold the result."
           />
+          <FlagToggle
+            v-model="zstd"
+            label="zstd codec (DVD mode)"
+            description="Better ratio, but the CHD is rejected by AetherSX2/NetherSX2. Leave off for maximum compatibility"
+          />
+          <div class="space-y-1.5">
+            <SegmentedControl
+              :model-value="mode"
+              label="Disc mode"
+              :options="MODE_OPTIONS"
+              @update:model-value="(v: string) => { mode = v as 'auto' | 'cd' | 'dvd' }"
+            />
+            <p class="text-xs text-zinc-500">
+              Auto picks CD or DVD from the decoded ISO. Override only when detection is wrong.
+            </p>
+          </div>
+          <label class="flex flex-col gap-1.5">
+            <span class="text-sm font-medium text-zinc-200">Hunk size</span>
+            <input
+              v-model.number="hunkSize"
+              type="number"
+              placeholder="auto"
+              class="mt-1 w-40 rounded-md border border-zinc-700 bg-zinc-800/50 px-3 py-1.5 text-sm text-zinc-200"
+            />
+          </label>
         </div>
 
         <label class="flex flex-col gap-1.5">
@@ -235,6 +269,12 @@ function onRun() {
         />
 
         <FlagToggle
+          v-model="verifyAfter"
+          label="Verify after conversion"
+          description="Re-check each output after writing it and note whether the format supports a full round-trip decode."
+        />
+
+        <FlagToggle
           v-model="previewMode"
           label="Preview (dry run)"
           description="Show what each file would do without writing anything."
@@ -249,7 +289,7 @@ function onRun() {
           @click="onRun"
           @cancel="isBatch ? batch.abort() : abort()"
         >
-          {{ previewMode ? 'Preview' : (isBatch && queue.filter(i => i.status === 'pending').length > 1 ? `Decompress all (${queue.filter(i => i.status === 'pending').length})` : 'Decompress') }}
+          {{ previewMode ? 'Preview' : (isBatch && queue.filter(i => i.status === 'pending').length > 1 ? `Compress all (${queue.filter(i => i.status === 'pending').length})` : 'Compress') }}
         </RunButton>
       </div>
     </OperationCard>

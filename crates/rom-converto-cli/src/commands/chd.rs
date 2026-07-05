@@ -1,4 +1,5 @@
 use crate::commands::ConflictPolicyArg;
+use crate::commands::cso::CsoFormatArg;
 use crate::commands::info_command::InfoCommand;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -9,6 +10,7 @@ pub enum ChdCommands {
     Compress(CompressCommand),
     Extract(ExtractCommand),
     Verify(VerifyCommand),
+    ToCso(ToCsoCommand),
     Info(InfoCommand),
 }
 
@@ -148,6 +150,74 @@ pub struct ExtractCommand {
         conflicts_with = "on_conflict"
     )]
     pub force: bool,
+
+    /// Write a run report to FILE. Format inferred from the extension: .csv, .json, .html or .htm. Unknown extensions default to JSON. The file is overwritten directly
+    #[arg(long = "report", value_name = "FILE")]
+    pub report: Option<PathBuf>,
+}
+
+/// Extract a CHD straight to a CSO or ZSO, through a temporary ISO
+#[derive(Parser, Debug, Clone, Eq, PartialEq)]
+#[command(
+    long_about = "Extract a CHD straight to a CSO or ZSO, through a temporary ISO\n\nOnly DVD-mode CHDs (PS2 DVD, PSP UMD) qualify: a CD-mode CHD has no flat ISO for CSO/ZSO to hold. Extracts to a temporary ISO, then compresses it, and always deletes the temporary ISO afterward.",
+    after_long_help = "EXAMPLES:\n  Single file:     rom-converto chd to-cso game.chd\n  Explicit output: rom-converto chd to-cso game.chd game.zso --format zso\n  Whole folder:    rom-converto chd to-cso -R ./chd --output-dir ./cso\n"
+)]
+pub struct ToCsoCommand {
+    /// Input CHD path, or a directory with --recursive
+    #[arg(value_name = "INPUT")]
+    pub input: PathBuf,
+
+    /// Output path, defaults to the input format's extension
+    #[arg(value_name = "OUTPUT")]
+    pub output: Option<PathBuf>,
+
+    /// Output path, defaults to the input format's extension
+    #[arg(
+        short = 'o',
+        long = "output",
+        value_name = "OUTPUT",
+        conflicts_with = "output"
+    )]
+    pub output_flag: Option<PathBuf>,
+
+    /// Write output into this directory using the derived filename. Created if missing. Works with --recursive
+    #[arg(long = "output-dir", value_name = "DIR", conflicts_with_all = ["output", "output_flag"])]
+    pub output_dir: Option<PathBuf>,
+
+    /// Output path template applied per file. Tokens: {title}, {titleId}, {region},
+    /// {console}, {serial}, {ext}, {basename}. Resolves against extracted metadata;
+    /// missing tokens fall back to the input basename. Joined under --output-dir
+    #[arg(long = "output-template", value_name = "TEMPLATE", conflicts_with_all = ["output", "output_flag"])]
+    pub output_template: Option<String>,
+
+    /// Output container format
+    #[arg(long, value_enum, default_value_t = CsoFormatArg::Cso)]
+    pub format: CsoFormatArg,
+
+    /// Block size in bytes, a power of two. Defaults to 2048, or 16384 for inputs 2 GiB and beyond (matching maxcso)
+    #[arg(long, value_name = "BYTES")]
+    pub block_size: Option<u32>,
+
+    /// What to do when an output already exists: error, overwrite, skip, or rename to a numbered sibling
+    #[arg(long = "on-conflict", value_enum)]
+    pub on_conflict: Option<ConflictPolicyArg>,
+
+    /// Alias for --on-conflict overwrite
+    #[arg(
+        long,
+        short = 'f',
+        default_value_t = false,
+        conflicts_with = "on_conflict"
+    )]
+    pub force: bool,
+
+    /// Convert every .chd found in the INPUT directory and its subdirectories
+    #[arg(long, short = 'R', default_value_t = false)]
+    pub recursive: bool,
+
+    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited
+    #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
+    pub max_depth: Option<usize>,
 
     /// Write a run report to FILE. Format inferred from the extension: .csv, .json, .html or .htm. Unknown extensions default to JSON. The file is overwritten directly
     #[arg(long = "report", value_name = "FILE")]
@@ -374,5 +444,46 @@ mod tests {
             panic!("expected Extract");
         };
         assert_eq!(c.report, Some(PathBuf::from("out.csv")));
+    }
+
+    #[test]
+    fn parses_to_cso_defaults() {
+        let h = Harness::parse_from(["bin", "to-cso", "game.chd"]);
+        let ChdCommands::ToCso(c) = h.cmd else {
+            panic!("expected ToCso");
+        };
+        assert_eq!(c.input, PathBuf::from("game.chd"));
+        assert_eq!(c.output, None);
+        assert_eq!(c.format, CsoFormatArg::Cso);
+        assert!(!c.force && !c.recursive);
+    }
+
+    #[test]
+    fn parses_to_cso_format_and_recursive() {
+        let h = Harness::parse_from(["bin", "to-cso", "game.chd", "--format", "zso", "-R"]);
+        let ChdCommands::ToCso(c) = h.cmd else {
+            panic!("expected ToCso");
+        };
+        assert_eq!(c.format, CsoFormatArg::Zso);
+        assert!(c.recursive);
+    }
+
+    #[test]
+    fn to_cso_output_dir_conflicts_with_positional() {
+        let result = Harness::try_parse_from([
+            "bin",
+            "to-cso",
+            "game.chd",
+            "pos.cso",
+            "--output-dir",
+            "out",
+        ]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn to_cso_max_depth_requires_recursive() {
+        let result = Harness::try_parse_from(["bin", "to-cso", "dir", "--max-depth", "2"]);
+        assert!(result.is_err());
     }
 }

@@ -9,9 +9,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use binrw::BinRead;
 
 use crate::cso::compression::BlockDecompressor;
+use crate::cso::dax::DaxTables;
 use crate::cso::error::{CsoError, CsoResult};
 use crate::cso::models::{
-    CISO_HEADER_SIZE, CISO_INDEX_UNCOMPRESSED, CisoHeader, CsoFormat, valid_block_size,
+    CISO_HEADER_SIZE, CISO_INDEX_UNCOMPRESSED, CisoHeader, CsoFormat, DAX_MAGIC, valid_block_size,
 };
 use crate::util::CancelToken;
 use crate::util::hash::{FileDigests, HashAlgo, MultiHasher};
@@ -22,6 +23,8 @@ pub(crate) struct CsoSyncHandle {
     pub header: CisoHeader,
     pub format: CsoFormat,
     pub index: Vec<u32>,
+    /// Present only for DAX inputs; CSO/ZSO drive the `index` above.
+    pub dax: Option<DaxTables>,
     pub file: Arc<std::fs::File>,
     pub file_size: u64,
 }
@@ -32,6 +35,9 @@ pub(crate) fn open_cso_sync(path: &Path) -> CsoResult<CsoSyncHandle> {
 
     let mut header_bytes = [0u8; CISO_HEADER_SIZE as usize];
     file.read_exact(&mut header_bytes)?;
+    if header_bytes[..4] == DAX_MAGIC {
+        return crate::cso::dax::open_dax_sync(path, file_size);
+    }
     let header = CisoHeader::read(&mut std::io::Cursor::new(&header_bytes))?;
 
     let format = header
@@ -62,6 +68,7 @@ pub(crate) fn open_cso_sync(path: &Path) -> CsoResult<CsoSyncHandle> {
         header,
         format,
         index,
+        dax: None,
         file: Arc::new(std::fs::File::open(path)?),
         file_size,
     })
@@ -77,6 +84,9 @@ pub(crate) struct BlockSpec {
 
 /// Resolve one block's stored span and logical size from the index.
 pub(crate) fn block_spec(handle: &CsoSyncHandle, block: u64) -> CsoResult<BlockSpec> {
+    if let Some(dax) = &handle.dax {
+        return crate::cso::dax::dax_block_spec(handle, dax, block);
+    }
     let shift = handle.header.index_shift;
     let entry = handle.index[block as usize];
     let next = handle.index[block as usize + 1];

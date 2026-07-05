@@ -45,6 +45,7 @@ use rom_converto_lib::nintendo::wup::{
     TitleInput, WupCompressOptions, compress_titles_async_cancellable,
     decrypt_nus_title_async_cancellable, verify_wup_async,
 };
+use rom_converto_lib::pipeline::{chd_to_cso_cancellable, cso_to_chd_cancellable};
 use rom_converto_lib::playlist::{PlaylistMode, PlaylistOptions, plan_playlists};
 use rom_converto_lib::util::fs::{collect_all_files, collect_files_with_exts};
 use rom_converto_lib::util::{
@@ -1218,6 +1219,140 @@ pub async fn cmd_cso_compress(
     })
 }
 
+/// Compress a CSO/ZSO straight to a CHD through a temporary ISO, mirroring
+/// `cmd_chd_compress` but calling the pipeline's chained conversion so the
+/// temporary ISO is always cleaned up. DAX input is rejected by the pipeline
+/// itself before anything is written.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub async fn cmd_cso_to_chd(
+    app: AppHandle,
+    state: State<'_, ActiveCancel>,
+    input_path: PathBuf,
+    output: Option<PathBuf>,
+    zstd: Option<bool>,
+    hunk_size: Option<u32>,
+    mode: Option<String>,
+    on_conflict: Option<String>,
+    skip_space_check: bool,
+    output_template: Option<String>,
+    report: Option<bool>,
+    verify_after: Option<bool>,
+    dry_run: Option<bool>,
+) -> Result<RunOutcome, String> {
+    let progress = Arc::new(TauriProgress::new(app, "cso-to-chd"));
+    let dry_run = dry_run.unwrap_or(false);
+    let desired = pick_output(
+        output,
+        output_template.as_deref(),
+        &input_path,
+        "chd",
+        None,
+        || input_path.with_extension("chd"),
+        dry_run,
+    )?;
+    if dry_run {
+        let line = plan_line(
+            progress.as_ref(),
+            "compress",
+            &input_path,
+            &desired,
+            on_conflict.as_deref(),
+            None,
+            rom_converto_lib::util::OutputVerify::Chd,
+            None,
+        )
+        .await?;
+        return Ok(RunOutcome {
+            message: line.display_text(),
+            record: None,
+            input_bytes: 0,
+            output_bytes: 0,
+            comparison: None,
+        });
+    }
+    let output = match resolve_output(
+        progress.as_ref(),
+        &desired,
+        on_conflict.as_deref(),
+        rom_converto_lib::util::OutputVerify::Chd,
+    )
+    .await?
+    {
+        Some(p) => p,
+        None => {
+            return Ok(RunOutcome::skipped(
+                report.unwrap_or(false),
+                &input_path,
+                "compress",
+                &desired,
+            ));
+        }
+    };
+    let out_display = output.display().to_string();
+    let required_space = rom_converto_lib::cso::info::read_info(&input_path)
+        .map(|info| info.uncompressed_size)
+        .unwrap_or_else(|_| input_size(&input_path));
+    preflight_space(
+        output.parent().unwrap_or(&output),
+        required_space,
+        skip_space_check,
+    )?;
+    let mode = match mode.as_deref() {
+        Some("cd") => Some(DiscMode::Cd),
+        Some("dvd") => Some(DiscMode::Dvd),
+        _ => None,
+    };
+    let opts = ChdDvdOptions {
+        hunk_size,
+        allow_zstd: zstd.unwrap_or(false),
+        force: true,
+    };
+    let in_bytes = input_size(&input_path);
+    let record_input = input_path.clone();
+    let record_output = output.clone();
+    let progress_for_verify = progress.clone();
+    let token = begin(&state).await;
+    let token_for_verify = token.clone();
+    let started = Instant::now();
+    let result = tokio::spawn(async move {
+        cso_to_chd_cancellable(progress.as_ref(), input_path, output, mode, opts, token).await
+    })
+    .await
+    .map_err(err_to_string)?
+    .map_err(err_to_string);
+    finish(&state).await;
+    result?;
+    let out_bytes = input_size(&record_output);
+    let record = build_record(
+        report.unwrap_or(false),
+        &record_input,
+        &record_output,
+        "compress",
+        in_bytes,
+        out_bytes,
+        started.elapsed(),
+    );
+    let comparison = build_comparison(
+        progress_for_verify,
+        &record_input,
+        &record_output,
+        in_bytes,
+        out_bytes,
+        rom_converto_lib::util::OutputVerify::Chd,
+        verify_after.unwrap_or(false),
+        &token_for_verify,
+    )
+    .await;
+    Ok(RunOutcome {
+        message: format!("Wrote {out_display}"),
+        record,
+        input_bytes: in_bytes,
+        output_bytes: out_bytes,
+        comparison: Some(comparison),
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn cmd_cso_decompress(
@@ -1526,6 +1661,155 @@ pub async fn cmd_chd_verify(
     finish(&state).await;
     result??;
     Ok("CHD verification passed".to_string())
+}
+
+/// Extract a CHD straight to a CSO/ZSO through a temporary ISO, mirroring
+/// `cmd_cso_compress` but calling the pipeline's chained conversion. Only
+/// DVD-mode CHDs qualify; the pipeline rejects a CD-mode CHD before anything
+/// is written.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub async fn cmd_chd_to_cso(
+    app: AppHandle,
+    state: State<'_, ActiveCancel>,
+    input_path: PathBuf,
+    output: Option<PathBuf>,
+    format: String,
+    block_size: Option<u32>,
+    on_conflict: Option<String>,
+    skip_space_check: bool,
+    output_template: Option<String>,
+    report: Option<bool>,
+    verify_after: Option<bool>,
+    dry_run: Option<bool>,
+) -> Result<RunOutcome, String> {
+    let format = match format.as_str() {
+        "zso" => CsoFormat::Zso,
+        _ => CsoFormat::Cso,
+    };
+    let progress = Arc::new(TauriProgress::new(app, "chd-to-cso"));
+    let dry_run = dry_run.unwrap_or(false);
+    let desired = pick_output(
+        output,
+        output_template.as_deref(),
+        &input_path,
+        format.extension(),
+        None,
+        || input_path.with_extension(format.extension()),
+        dry_run,
+    )?;
+    if dry_run {
+        let line = plan_line(
+            progress.as_ref(),
+            "compress",
+            &input_path,
+            &desired,
+            on_conflict.as_deref(),
+            None,
+            rom_converto_lib::util::OutputVerify::Cso,
+            None,
+        )
+        .await?;
+        return Ok(RunOutcome {
+            message: line.display_text(),
+            record: None,
+            input_bytes: 0,
+            output_bytes: 0,
+            comparison: None,
+        });
+    }
+    let output = match resolve_output(
+        progress.as_ref(),
+        &desired,
+        on_conflict.as_deref(),
+        rom_converto_lib::util::OutputVerify::Cso,
+    )
+    .await?
+    {
+        Some(p) => p,
+        None => {
+            return Ok(RunOutcome::skipped(
+                report.unwrap_or(false),
+                &input_path,
+                "compress",
+                &desired,
+            ));
+        }
+    };
+    let out_display = output.display().to_string();
+    let required_space = rom_converto_lib::chd::info::read_info(&input_path)
+        .map(|info| info.logical_bytes)
+        .unwrap_or_else(|_| input_size(&input_path));
+    preflight_space(
+        output.parent().unwrap_or(&output),
+        required_space,
+        skip_space_check,
+    )?;
+    let opts = CsoCompressOptions {
+        format,
+        block_size,
+        force: true,
+    };
+    let in_bytes = input_size(&input_path);
+    let record_input = input_path.clone();
+    let record_output = output.clone();
+    let progress_for_verify = progress.clone();
+    let token = begin(&state).await;
+    let token_for_verify = token.clone();
+    let started = Instant::now();
+    // Chained on extract_from_chd_cancellable, whose deeply nested ChdReader
+    // types exceed the compiler's Send-inference recursion limit under
+    // tokio::spawn, so this runs on a dedicated thread with its own runtime,
+    // matching cmd_chd_extract.
+    let result = std::thread::spawn(move || -> Result<(), String> {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(err_to_string)?;
+        rt.block_on(chd_to_cso_cancellable(
+            progress.as_ref(),
+            input_path,
+            output,
+            opts,
+            token,
+        ))
+        .map_err(err_to_string)
+    })
+    .join()
+    .map_err(|_| {
+        "The operation failed unexpectedly. Try again, and report a bug if it keeps happening."
+            .to_string()
+    });
+    finish(&state).await;
+    result??;
+    let out_bytes = input_size(&record_output);
+    let record = build_record(
+        report.unwrap_or(false),
+        &record_input,
+        &record_output,
+        "compress",
+        in_bytes,
+        out_bytes,
+        started.elapsed(),
+    );
+    let comparison = build_comparison(
+        progress_for_verify,
+        &record_input,
+        &record_output,
+        in_bytes,
+        out_bytes,
+        rom_converto_lib::util::OutputVerify::Cso,
+        verify_after.unwrap_or(false),
+        &token_for_verify,
+    )
+    .await;
+    Ok(RunOutcome {
+        message: format!("Wrote {out_display}"),
+        record,
+        input_bytes: in_bytes,
+        output_bytes: out_bytes,
+        comparison: Some(comparison),
+    })
 }
 
 #[allow(clippy::too_many_arguments)]

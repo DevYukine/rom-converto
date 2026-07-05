@@ -69,6 +69,7 @@ use rom_converto_lib::nintendo::wup::{
     TitleInput, WupCompressOptions, compress_titles_async_cancellable,
     decrypt_nus_title_async_cancellable, verify_wup_async,
 };
+use rom_converto_lib::pipeline::{chd_to_cso_cancellable, cso_to_chd_cancellable};
 use rom_converto_lib::playlist::{PlaylistMode, PlaylistOptions, plan_playlists};
 use rom_converto_lib::util::fs::{collect_files_with_exts, is_os_junk_dir};
 use rom_converto_lib::util::{
@@ -2632,6 +2633,131 @@ async fn dispatch_command(
                     verify_chd(&progress, cmd.input, cmd.parent, cmd.fix).await?
                 }
             }
+            ChdCommands::ToCso(cmd) => {
+                let eff = &effective.cso;
+                let format = match cmd.format {
+                    CsoFormatArg::Cso => CsoFormat::Cso,
+                    CsoFormatArg::Zso => CsoFormat::Zso,
+                };
+                let mut opts = CsoCompressOptions {
+                    format,
+                    block_size: cmd.block_size.or(eff.block_size),
+                    force: cmd.force,
+                };
+                let output_dir = cmd.output_dir.clone().or_else(|| eff.output_dir.clone());
+                let report = cmd.report.clone().or_else(|| eff.report.clone());
+                let fallback = config::policy_fallback(&eff.on_conflict)?;
+                if cmd.recursive {
+                    require_dir(&cmd.input)?;
+                    let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
+                    batch::chd_to_cso(
+                        &progress,
+                        &total_progress,
+                        &cmd.input,
+                        opts,
+                        policy,
+                        output_dir.as_deref(),
+                        cmd.output_template.as_deref(),
+                        cmd.max_depth,
+                        dry_run,
+                        skip_space_check,
+                        report.as_deref(),
+                        cancel.clone(),
+                    )
+                    .await?
+                } else {
+                    ensure_input_exists(&cmd.input)?;
+                    let output = match cmd.output_flag.or(cmd.output) {
+                        Some(p) => p,
+                        None => {
+                            if !dry_run && let Some(dir) = output_dir.as_deref() {
+                                std::fs::create_dir_all(dir)?;
+                            }
+                            match cmd.output_template.as_deref() {
+                                Some(tmpl) => crate::util::templated_output(
+                                    tmpl,
+                                    &cmd.input,
+                                    output_dir.as_deref(),
+                                    format.extension(),
+                                    None,
+                                    dry_run,
+                                )?,
+                                None => rom_converto_lib::util::place_in_dir(
+                                    &cmd.input.with_extension(format.extension()),
+                                    output_dir.as_deref(),
+                                ),
+                            }
+                        }
+                    };
+                    let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
+                    let decision = resolve_output(&output, policy)?;
+                    let media = format.name();
+                    if dry_run {
+                        return dry_run_single_verify(
+                            "compress",
+                            &cmd.input,
+                            &output,
+                            &decision,
+                            policy,
+                            crate::util::OutputVerify::Cso,
+                            Some(media),
+                            None,
+                            &progress,
+                            report.as_deref(),
+                        )
+                        .await;
+                    }
+                    let output = match decision {
+                        WriteDecision::Skip
+                            if policy
+                                == rom_converto_lib::util::ConflictPolicy::OverwriteInvalid =>
+                        {
+                            match crate::util::verify_existing_output(
+                                &progress,
+                                &output,
+                                crate::util::OutputVerify::Cso,
+                            )
+                            .await
+                            {
+                                crate::util::VerifyOutcome::Valid => {
+                                    log_kept_valid(&output);
+                                    return Ok(());
+                                }
+                                crate::util::VerifyOutcome::Invalid => {
+                                    log_rewriting_invalid(&output);
+                                    output
+                                }
+                            }
+                        }
+                        WriteDecision::Skip => {
+                            log_skipped(&output);
+                            return Ok(());
+                        }
+                        WriteDecision::Write(p) => p,
+                    };
+                    if !skip_space_check {
+                        let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
+                        let required = rom_converto_lib::chd::info::read_info(&cmd.input)
+                            .map(|info| info.logical_bytes)
+                            .unwrap_or_else(|_| file_len(&cmd.input));
+                        batch::space_preflight_for_size(required, check_dir)?;
+                    }
+                    opts.force = true;
+                    let in_path = cmd.input.clone();
+                    let out_path = output.clone();
+                    let started = Instant::now();
+                    chd_to_cso_cancellable(&progress, cmd.input, output, opts, cancel.clone())
+                        .await?;
+                    finish_single(
+                        &in_path,
+                        &out_path,
+                        TallyDirection::Compress,
+                        "compress",
+                        started,
+                        report.as_deref(),
+                    )?;
+                }
+            }
             ChdCommands::Info(cmd) => {
                 if cmd.keys.is_some() {
                     anyhow::bail!("--keys is only supported by nx and wup info");
@@ -2705,10 +2831,7 @@ async fn dispatch_command(
                     };
                     let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
                     let decision = resolve_output(&output, policy)?;
-                    let media = match format {
-                        CsoFormat::Cso => "CSO",
-                        CsoFormat::Zso => "ZSO",
-                    };
+                    let media = format.name();
                     if dry_run {
                         return dry_run_single_verify(
                             "compress",
@@ -2877,6 +3000,141 @@ async fn dispatch_command(
                 } else {
                     ensure_input_exists(&cmd.input)?;
                     verify_cso(&progress, cmd.input, cmd.full).await?
+                }
+            }
+            CsoCommands::ToChd(cmd) => {
+                let eff = &effective.chd;
+                let mut opts = ChdDvdOptions {
+                    hunk_size: cmd.hunk_size.or(eff.hunk_size),
+                    allow_zstd: cmd.zstd,
+                    force: cmd.force,
+                };
+                let output_dir = cmd.output_dir.clone().or_else(|| eff.output_dir.clone());
+                let report = cmd.report.clone().or_else(|| eff.report.clone());
+                let fallback = config::policy_fallback(&eff.on_conflict)?;
+                let mode = if cmd.dvd {
+                    Some(DiscMode::Dvd)
+                } else if cmd.cd {
+                    Some(DiscMode::Cd)
+                } else {
+                    None
+                };
+                if cmd.recursive {
+                    require_dir(&cmd.input)?;
+                    let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
+                    batch::cso_to_chd(
+                        &progress,
+                        &total_progress,
+                        &cmd.input,
+                        mode,
+                        opts,
+                        policy,
+                        output_dir.as_deref(),
+                        cmd.output_template.as_deref(),
+                        cmd.max_depth,
+                        dry_run,
+                        skip_space_check,
+                        report.as_deref(),
+                        cancel.clone(),
+                    )
+                    .await?
+                } else {
+                    ensure_input_exists(&cmd.input)?;
+                    let output = match cmd.output_flag.or(cmd.output) {
+                        Some(p) => p,
+                        None => {
+                            if !dry_run && let Some(dir) = output_dir.as_deref() {
+                                std::fs::create_dir_all(dir)?;
+                            }
+                            match cmd.output_template.as_deref() {
+                                Some(tmpl) => crate::util::templated_output(
+                                    tmpl,
+                                    &cmd.input,
+                                    output_dir.as_deref(),
+                                    "chd",
+                                    None,
+                                    dry_run,
+                                )?,
+                                None => rom_converto_lib::util::place_in_dir(
+                                    &cmd.input.with_extension("chd"),
+                                    output_dir.as_deref(),
+                                ),
+                            }
+                        }
+                    };
+                    let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
+                    let decision = resolve_output(&output, policy)?;
+                    if dry_run {
+                        return dry_run_single_verify(
+                            "compress",
+                            &cmd.input,
+                            &output,
+                            &decision,
+                            policy,
+                            crate::util::OutputVerify::Chd,
+                            None,
+                            None,
+                            &progress,
+                            report.as_deref(),
+                        )
+                        .await;
+                    }
+                    let output = match decision {
+                        WriteDecision::Skip
+                            if policy
+                                == rom_converto_lib::util::ConflictPolicy::OverwriteInvalid =>
+                        {
+                            match crate::util::verify_existing_output(
+                                &progress,
+                                &output,
+                                crate::util::OutputVerify::Chd,
+                            )
+                            .await
+                            {
+                                crate::util::VerifyOutcome::Valid => {
+                                    log_kept_valid(&output);
+                                    return Ok(());
+                                }
+                                crate::util::VerifyOutcome::Invalid => {
+                                    log_rewriting_invalid(&output);
+                                    output
+                                }
+                            }
+                        }
+                        WriteDecision::Skip => {
+                            log_skipped(&output);
+                            return Ok(());
+                        }
+                        WriteDecision::Write(p) => p,
+                    };
+                    if !skip_space_check {
+                        let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
+                        let required = rom_converto_lib::cso::info::read_info(&cmd.input)
+                            .map(|info| info.uncompressed_size)
+                            .unwrap_or_else(|_| file_len(&cmd.input));
+                        batch::space_preflight_for_size(required, check_dir)?;
+                    }
+                    opts.force = true;
+                    let in_path = cmd.input.clone();
+                    let out_path = output.clone();
+                    let started = Instant::now();
+                    cso_to_chd_cancellable(
+                        &progress,
+                        cmd.input,
+                        output,
+                        mode,
+                        opts,
+                        cancel.clone(),
+                    )
+                    .await?;
+                    finish_single(
+                        &in_path,
+                        &out_path,
+                        TallyDirection::Compress,
+                        "compress",
+                        started,
+                        report.as_deref(),
+                    )?;
                 }
             }
             CsoCommands::Info(cmd) => {

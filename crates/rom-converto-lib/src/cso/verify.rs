@@ -82,6 +82,14 @@ pub async fn verify_cso(
 /// Index sanity: offsets monotonic and in bounds, sentinel equal to
 /// the file size, no raw bit on the sentinel.
 fn verify_structure(handle: &CsoSyncHandle) -> CsoResult<()> {
+    if handle.dax.is_some() {
+        // DAX carries no end-of-file sentinel; validate each frame's span.
+        for block in 0..handle.header.block_count() {
+            block_spec(handle, block)?;
+        }
+        return Ok(());
+    }
+
     let blocks = handle.header.block_count();
     let shift = handle.header.index_shift;
 

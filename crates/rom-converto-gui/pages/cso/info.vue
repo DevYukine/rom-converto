@@ -6,15 +6,15 @@ const store = useCsoInfoStore();
 const { input, info, rawJson, error, loading } = storeToRefs(store);
 
 const CSO_FILTERS = [
-  { name: "Compressed ISO", extensions: ["cso", "zso"] },
+  { name: "Compressed ISO", extensions: ["cso", "zso", "dax"] },
 ];
 </script>
 
 <template>
   <div>
     <PageHeader
-      title="CSO/ZSO info"
-      description="Read a .cso or .zso container: format and version, block geometry, index shift, raw block count, and compression ratio."
+      title="CSO/ZSO/DAX info"
+      description="Read a .cso, .zso, or .dax container: format and version, block geometry, index shift, raw block count, and compression ratio."
       :loading="loading"
       :has-result="!!info"
       :has-error="!!error"
@@ -28,7 +28,7 @@ const CSO_FILTERS = [
       <div class="space-y-5">
         <FileDropZone
           v-model="input"
-          label="CSO/ZSO file"
+          label="CSO/ZSO/DAX file"
           :primary="true"
           :filters="CSO_FILTERS"
         />

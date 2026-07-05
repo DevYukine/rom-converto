@@ -44,7 +44,9 @@ collective phrase for all inputs is "ROMs and disc images".
   MODE1/2048 ISOs; DVD-mode CHDs come from PS2-DVD and PSP ISOs. The CD/DVD media type is
   probed from the image.
 - **CSO / ZSO** compress a PSP or PS2 ISO block by block. CSO (CISO v1) targets PSP hardware
-  with CFW and PPSSPP; ZSO (LZ4) targets PS2 hardware via Open PS2 Loader.
+  with CFW and PPSSPP; ZSO (LZ4) targets PS2 hardware via Open PS2 Loader. Legacy `.dax` (PSP)
+  containers are accepted as a decode-only input for `decompress`, `verify`, `to-chd`, and
+  `info`; there is no DAX compression target.
 - **CUE/BIN** merging combines a multi-bin `.cue` (one `.bin` per track) into a single
   `.bin` + `.cue` pair for emulators that cannot load split images.
 

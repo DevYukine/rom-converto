@@ -9,10 +9,12 @@ import { useCtrGenerateTicketStore } from "~/stores/ctr-generate-ticket";
 import { useCtrInfoStore } from "~/stores/ctr-info";
 import { useChdCompressStore } from "~/stores/chd-compress";
 import { useChdExtractStore } from "~/stores/chd-extract";
+import { useChdToCsoStore } from "~/stores/chd-to-cso";
 import { useChdVerifyStore } from "~/stores/chd-verify";
 import { useChdInfoStore } from "~/stores/chd-info";
 import { useCsoCompressStore } from "~/stores/cso-compress";
 import { useCsoDecompressStore } from "~/stores/cso-decompress";
+import { useCsoToChdStore } from "~/stores/cso-to-chd";
 import { useCsoVerifyStore } from "~/stores/cso-verify";
 import { useCsoInfoStore } from "~/stores/cso-info";
 import { useCueMergeStore } from "~/stores/cue-merge";
@@ -122,6 +124,7 @@ const sections: SidebarSection[] = [
     links: [
       { to: "/chd/compress", label: "Compress to CHD", store: () => useChdCompressStore(), icon: "disc-down" },
       { to: "/chd/extract", label: "Extract CHD", store: () => useChdExtractStore(), icon: "disc-up" },
+      { to: "/chd/to-cso", label: "Extract to CSO/ZSO", store: () => useChdToCsoStore(), icon: "swap" },
       { to: "/chd/verify", label: "Verify CHD", store: () => useChdVerifyStore(), icon: "shield-check" },
       { to: "/chd/info", label: "CHD info", store: () => useChdInfoStore(), icon: "info" },
     ],
@@ -132,6 +135,7 @@ const sections: SidebarSection[] = [
     links: [
       { to: "/cso/compress", label: "Compress to CSO/ZSO", store: () => useCsoCompressStore(), icon: "compress" },
       { to: "/cso/decompress", label: "Decompress CSO/ZSO", store: () => useCsoDecompressStore(), icon: "expand" },
+      { to: "/cso/to-chd", label: "Compress to CHD", store: () => useCsoToChdStore(), icon: "swap" },
       { to: "/cso/verify", label: "Verify CSO/ZSO", store: () => useCsoVerifyStore(), icon: "shield-check" },
       { to: "/cso/info", label: "CSO/ZSO info", store: () => useCsoInfoStore(), icon: "info" },
     ],

@@ -361,6 +361,7 @@ rom-converto chd <SUBCOMMAND> <INPUT> [OUTPUT]
 | `compress <INPUT> [OUTPUT]` | Compress a `.cue` or `.iso` to `.chd`; CD vs DVD media is auto-detected |
 | `extract <INPUT> [OUTPUT]` | Extract a `.chd` back to `.bin` + `.cue` (CD) or `.iso` (DVD) |
 | `verify <INPUT>` | Verify the SHA-1 integrity of a `.chd` |
+| `to-cso <INPUT> [OUTPUT]` | Extract a DVD-mode `.chd` straight to `.cso` (default) or `.zso`, through a temporary ISO |
 | `info <INPUT>` | Inspect CHD metadata. See [info](#info) |
 
 | Flag | Applies to | Description |
@@ -368,13 +369,20 @@ rom-converto chd <SUBCOMMAND> <INPUT> [OUTPUT]
 | `--dvd` / `--cd` | `compress` | Override the auto-detected mode (CD mode needs a cue sheet) |
 | `--hunk-size <BYTES>` | `compress` | DVD hunk size, a multiple of 2048; defaults to 4096, or 2048 for detected PSP images |
 | `--zstd` | `compress` | Add zstd to the DVD codec set for a better ratio; some older players and cores do not support zstd-compressed CHD |
-| `--output-dir <DIR>` | `compress`, `extract` | Write outputs under this directory instead of beside each input |
+| `--format <cso\|zso>` | `to-cso` | Output container: CSO for PSP/PPSSPP, ZSO for PS2 via Open PS2 Loader |
+| `--block-size <BYTES>` | `to-cso` | Block size, a power of two; defaults to 2048 (16384 for 2 GiB+ inputs) |
+| `--output-dir <DIR>` | `compress`, `extract`, `to-cso` | Write outputs under this directory instead of beside each input |
 | `-p, --parent <PARENT>` | `extract`, `verify` | Specify a parent CHD for parent-child relationships |
 | `--fix` | `verify` | Correct SHA-1 values in the CHD header if mismatches are found |
 
 `compress` probes the CD/DVD media type from the image, so the createcd versus createdvd
 mixup cannot happen. Extract report rows carry zero byte sizes since extraction writes
 several files.
+
+`to-cso` only accepts a DVD-mode CHD (PS2 DVD, PSP UMD); a CD-mode CHD has no flat ISO for
+CSO/ZSO to hold, and is rejected up front. It extracts to a temporary ISO next to the output,
+runs the same CSO/ZSO writer `cso compress` uses, and always removes the temporary ISO
+afterward, whether the run succeeds, fails, or is cancelled.
 
 Advisory warning: compressing a `.cue` whose data track carries the Dreamcast IP.BIN
 signature into a CD-mode CHD prints a warning, since some cores only boot Dreamcast from a
@@ -389,19 +397,31 @@ rom-converto cso <SUBCOMMAND> <INPUT> [OUTPUT]
 | Subcommand | Description |
 |---|---|
 | `compress <INPUT> [OUTPUT]` | Compress an `.iso` to `.cso` (default) or `.zso` |
-| `decompress <INPUT> [OUTPUT]` | Restore the original `.iso` from a `.cso`/`.zso` |
-| `verify <INPUT>` | Validate the container index; `--full` decodes every block |
-| `info <INPUT>` | Inspect CSO/ZSO metadata. See [info](#info) |
+| `decompress <INPUT> [OUTPUT]` | Restore the original `.iso` from a `.cso`/`.zso`/`.dax` |
+| `verify <INPUT>` | Validate the container structure; `--full` decodes every block |
+| `to-chd <INPUT> [OUTPUT]` | Compress a `.cso`/`.zso`/`.dax` straight to `.chd`, through a temporary ISO |
+| `info <INPUT>` | Inspect CSO/ZSO/DAX metadata. See [info](#info) |
 
 | Flag | Applies to | Description |
 |---|---|---|
 | `--format <cso\|zso>` | `compress` | Output container: CSO for PSP/PPSSPP, ZSO for PS2 via Open PS2 Loader |
 | `--block-size <BYTES>` | `compress` | Block size, a power of two; defaults to 2048 (16384 for 2 GiB+ inputs) |
-| `--output-dir <DIR>` | `compress`, `decompress` | Write outputs under this directory instead of beside each input |
+| `--dvd` / `--cd` | `to-chd` | Override the auto-detected mode of the decoded ISO (CD mode needs a cue sheet) |
+| `--hunk-size <BYTES>` | `to-chd` | DVD hunk size, a multiple of 2048; defaults to 4096, or 2048 for detected PSP images |
+| `--zstd` | `to-chd` | Add zstd to the DVD codec set for a better ratio; some older players and cores do not support zstd-compressed CHD |
+| `--output-dir <DIR>` | `compress`, `decompress`, `to-chd` | Write outputs under this directory instead of beside each input |
 | `--full` | `verify` | Decode every block instead of only checking the index |
 
 Defaults are maxcso-compatible: 2 KiB blocks (16 KiB for 2 GiB+ inputs), automatic index
 shift for large images, and a per-block store-raw fallback.
+
+`to-chd` decodes to a temporary ISO next to the output, then runs the same disc-to-CHD
+writer `chd compress` uses (so any embedded GAME/NAME tags match a direct build), and always
+removes the temporary ISO afterward, whether the run succeeds, fails, or is cancelled.
+
+`decompress`, `verify`, `to-chd`, and `info` also accept legacy `.dax` (PSP) input; the
+container is detected by its magic, not its extension. DAX is decode-only, so `compress`
+still writes CSO or ZSO only.
 
 ## cue (CD)
 
@@ -548,7 +568,7 @@ Coverage per family: `ctr` reads CIA/NCSD/NCCH and Z3DS variants; `dol` reads `.
 `.gcm`, `.rvz`, `.gcz`, and NKit; `rvl` reads `.iso`, `.rvz`, `.wbfs`, `.wia`, `.gcz`, and
 NKit through the same streaming migration readers the `migrate` command uses; `wup` reads
 loadiine and NUS directories, `.wua` archives, and `.wud`/`.wux` disc images; `nx` reads
-NSP/NSZ/XCI/XCZ; `chd` reads CHD v5; `cso` reads CSO/ZSO. NFS and TGC are not
+NSP/NSZ/XCI/XCZ; `chd` reads CHD v5; `cso` reads CSO/ZSO/DAX. NFS and TGC are not
 supported.
 
 ## shell-completions

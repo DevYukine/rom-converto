@@ -68,8 +68,8 @@ async function execute() {
 <template>
   <div>
     <PageHeader
-      title="Verify CSO/ZSO"
-      description="Check a CSO/ZSO container: the index structure is always validated; the full pass decodes every block. The formats embed no checksums. Drop multiple files for batch processing."
+      title="Verify CSO/ZSO/DAX"
+      description="Check a CSO, ZSO, or DAX container: the structure is always validated; the full pass decodes every block. The formats embed no checksums. Drop multiple files for batch processing."
       :loading="loading || batch.running.value"
       :has-result="!!result"
       :has-error="!!error"
@@ -92,10 +92,10 @@ async function execute() {
           />
 
           <FileDropZone
-            label="Add more CSO/ZSO files"
+            label="Add more CSO/ZSO/DAX files"
             model-value=""
             :multiple="true"
-            :filters="[{ name: 'Compressed ISO', extensions: ['cso', 'zso'] }]"
+            :filters="[{ name: 'Compressed ISO', extensions: ['cso', 'zso', 'dax'] }]"
             @update:model-value="(p: string) => { if (p) store.addToQueue(p) }"
             @update:files="handleFiles"
           />
@@ -104,9 +104,9 @@ async function execute() {
         <FileDropZone
           v-else
           :model-value="input"
-          label="Input CSO/ZSO file"
+          label="Input CSO/ZSO/DAX file"
           :multiple="true"
-          :filters="[{ name: 'Compressed ISO', extensions: ['cso', 'zso'] }]"
+          :filters="[{ name: 'Compressed ISO', extensions: ['cso', 'zso', 'dax'] }]"
           :primary="true"
           @update:model-value="handleSingleFile"
           @update:files="handleFiles"

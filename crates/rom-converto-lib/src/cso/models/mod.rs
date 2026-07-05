@@ -26,6 +26,7 @@ use binrw::binrw;
 
 pub const CISO_MAGIC: [u8; 4] = *b"CISO";
 pub const ZISO_MAGIC: [u8; 4] = *b"ZISO";
+pub const DAX_MAGIC: [u8; 4] = *b"DAX\0";
 pub const CISO_HEADER_SIZE: u32 = 0x18;
 pub const CISO_INDEX_UNCOMPRESSED: u32 = 0x8000_0000;
 
@@ -37,10 +38,13 @@ pub const LARGE_INPUT_THRESHOLD: u64 = 0x8000_0000;
 
 const MAX_BLOCK_SIZE: u32 = 1024 * 1024;
 
+/// DAX is decode-only: it is accepted as an input for decompress and
+/// to-chd but is never a compression target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CsoFormat {
     Cso,
     Zso,
+    Dax,
 }
 
 impl CsoFormat {
@@ -48,6 +52,7 @@ impl CsoFormat {
         match self {
             CsoFormat::Cso => CISO_MAGIC,
             CsoFormat::Zso => ZISO_MAGIC,
+            CsoFormat::Dax => DAX_MAGIC,
         }
     }
 
@@ -55,6 +60,7 @@ impl CsoFormat {
         match magic {
             m if *m == CISO_MAGIC => Some(CsoFormat::Cso),
             m if *m == ZISO_MAGIC => Some(CsoFormat::Zso),
+            m if *m == DAX_MAGIC => Some(CsoFormat::Dax),
             _ => None,
         }
     }
@@ -63,6 +69,7 @@ impl CsoFormat {
         match self {
             CsoFormat::Cso => "cso",
             CsoFormat::Zso => "zso",
+            CsoFormat::Dax => "dax",
         }
     }
 
@@ -70,6 +77,7 @@ impl CsoFormat {
         match self {
             CsoFormat::Cso => "CSO",
             CsoFormat::Zso => "ZSO",
+            CsoFormat::Dax => "DAX",
         }
     }
 }

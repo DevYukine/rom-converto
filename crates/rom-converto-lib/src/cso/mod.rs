@@ -3,8 +3,8 @@
 //!
 //! Target matrix: real PSP hardware (CFW) and PPSSPP read CSO v1;
 //! Open PS2 Loader (>= 1.2) on real PS2 reads ZSO. CSO v2 was never
-//! adopted (PPSSPP rejects it) and DAX is legacy; both are
-//! unsupported.
+//! adopted (PPSSPP rejects it) and stays unsupported. DAX (legacy PSP)
+//! is accepted as a decode-only input.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -17,6 +17,7 @@ use crate::util::hash::{FileDigests, HashAlgo};
 use crate::util::{BYTES_PER_MB, CancelToken, ProgressReporter, await_with_progress_cancel};
 
 pub mod compression;
+pub(crate) mod dax;
 pub mod error;
 pub mod info;
 pub mod models;
@@ -406,6 +407,149 @@ mod tests {
     #[tokio::test]
     async fn zso_round_trips() {
         round_trip(CsoFormat::Zso, 16 * 2048, None).await;
+    }
+
+    /// Build a DAX container in memory. `nc_areas` are (first_frame,
+    /// frame_count) runs stored raw; when `raw_deflate_frame` is set,
+    /// that frame is written as bare deflate (no zlib wrapper) to
+    /// exercise the reader's fallback.
+    fn build_dax(
+        data: &[u8],
+        nc_areas: &[(u32, u32)],
+        version: u32,
+        raw_deflate_frame: Option<usize>,
+    ) -> Vec<u8> {
+        use flate2::{Compress, Compression, FlushCompress, Status};
+        use std::collections::HashSet;
+
+        const FRAME: usize = 0x2000;
+        let nframes = data.len().div_ceil(FRAME);
+        let raw: HashSet<usize> = nc_areas
+            .iter()
+            .flat_map(|(f, c)| (*f as usize)..(*f as usize + *c as usize))
+            .collect();
+
+        let deflate = |chunk: &[u8], zlib: bool| -> Vec<u8> {
+            let mut c = Compress::new(Compression::best(), zlib);
+            let mut out = vec![0u8; chunk.len() + chunk.len() / 100 + 64];
+            let status = c.compress(chunk, &mut out, FlushCompress::Finish).unwrap();
+            assert_eq!(status, Status::StreamEnd);
+            out.truncate(c.total_out() as usize);
+            out
+        };
+
+        let mut frames: Vec<Vec<u8>> = Vec::with_capacity(nframes);
+        for i in 0..nframes {
+            let chunk = &data[i * FRAME..((i + 1) * FRAME).min(data.len())];
+            if raw.contains(&i) {
+                frames.push(chunk.to_vec());
+            } else if raw_deflate_frame == Some(i) {
+                frames.push(deflate(chunk, false));
+            } else {
+                frames.push(deflate(chunk, true));
+            }
+        }
+
+        let table_size =
+            nframes * 4 + nframes * 2 + if version >= 1 { nc_areas.len() * 8 } else { 0 };
+        let mut file = Vec::new();
+        file.extend_from_slice(&models::DAX_MAGIC);
+        file.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        file.extend_from_slice(&version.to_le_bytes());
+        file.extend_from_slice(&(nc_areas.len() as u32).to_le_bytes());
+        file.extend_from_slice(&[0u8; 16]);
+
+        let mut cursor = (0x20 + table_size) as u32;
+        for f in &frames {
+            file.extend_from_slice(&cursor.to_le_bytes());
+            cursor += f.len() as u32;
+        }
+        for f in &frames {
+            file.extend_from_slice(&(f.len() as u16).to_le_bytes());
+        }
+        if version >= 1 {
+            for (first, count) in nc_areas {
+                file.extend_from_slice(&first.to_le_bytes());
+                file.extend_from_slice(&count.to_le_bytes());
+            }
+        }
+        for f in &frames {
+            file.extend_from_slice(f);
+        }
+        file
+    }
+
+    #[tokio::test]
+    async fn dax_round_trips_with_raw_and_compressed_frames() {
+        let dir = tempfile::tempdir().unwrap();
+        // 2 full frames plus a short tail; frame 1 stored raw via an NC area.
+        let data = mixed_payload(2 * 0x2000 + 0x1000);
+        let packed = dir.path().join("game.dax");
+        std::fs::write(&packed, build_dax(&data, &[(1, 1)], 1, None)).unwrap();
+
+        let restored = dir.path().join("restored.iso");
+        decompress_from_cso(&NoProgress, packed, restored.clone(), false)
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(&restored).unwrap(), data);
+    }
+
+    #[tokio::test]
+    async fn dax_digest_matches_decompressed_hash() {
+        use crate::util::hash::{HashAlgo, hash_file};
+        let dir = tempfile::tempdir().unwrap();
+        let data = mixed_payload(5 * 0x2000 + 0x800);
+        let iso = dir.path().join("game.iso");
+        std::fs::write(&iso, &data).unwrap();
+        let packed = dir.path().join("game.dax");
+        std::fs::write(&packed, build_dax(&data, &[(2, 2)], 1, None)).unwrap();
+
+        let algos = [HashAlgo::Crc32, HashAlgo::Sha1, HashAlgo::Sha256];
+        let bytes_done = Arc::new(AtomicU64::new(0));
+        let inner = digest_cso_inner(&packed, &algos, &bytes_done, &CancelToken::new()).unwrap();
+        let direct = hash_file(&iso, &algos, &NoProgress).unwrap();
+        assert_eq!(inner, direct);
+    }
+
+    #[tokio::test]
+    async fn dax_raw_deflate_frame_falls_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = mixed_payload(3 * 0x2000);
+        let packed = dir.path().join("game.dax");
+        // Frame 0 has no zlib wrapper; the reader must retry it as raw
+        // deflate after the zlib inflate rejects the missing header.
+        std::fs::write(&packed, build_dax(&data, &[], 1, Some(0))).unwrap();
+
+        let restored = dir.path().join("restored.iso");
+        decompress_from_cso(&NoProgress, packed, restored.clone(), false)
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(&restored).unwrap(), data);
+    }
+
+    #[tokio::test]
+    async fn dax_truncated_header_and_table_error_cleanly() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = mixed_payload(3 * 0x2000);
+        let full = build_dax(&data, &[(1, 1)], 1, None);
+
+        let short_header = dir.path().join("head.dax");
+        std::fs::write(&short_header, &full[..0x1C]).unwrap();
+        let out = dir.path().join("head.iso");
+        assert!(
+            decompress_from_cso(&NoProgress, short_header, out, false)
+                .await
+                .is_err()
+        );
+
+        let short_table = dir.path().join("table.dax");
+        std::fs::write(&short_table, &full[..0x24]).unwrap();
+        let out2 = dir.path().join("table.iso");
+        assert!(
+            decompress_from_cso(&NoProgress, short_table, out2, false)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

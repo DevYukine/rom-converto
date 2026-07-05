@@ -24,10 +24,13 @@ pub struct CsoInfo {
 pub fn read_info(path: &Path) -> CsoResult<CsoInfo> {
     let handle = open_cso_sync(path)?;
     let blocks = handle.header.block_count();
-    let raw_block_count = handle.index[..blocks as usize]
-        .iter()
-        .filter(|e| **e & CISO_INDEX_UNCOMPRESSED != 0)
-        .count() as u64;
+    let raw_block_count = match &handle.dax {
+        Some(dax) => dax.raw.iter().filter(|r| **r).count() as u64,
+        None => handle.index[..blocks as usize]
+            .iter()
+            .filter(|e| **e & CISO_INDEX_UNCOMPRESSED != 0)
+            .count() as u64,
+    };
 
     Ok(CsoInfo {
         format: handle.format.name().to_string(),

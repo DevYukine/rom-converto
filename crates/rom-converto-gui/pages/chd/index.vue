@@ -15,6 +15,13 @@ const operations = [
     icon: "disc-up",
   },
   {
+    to: "/chd/to-cso",
+    title: "Extract CHD to CSO/ZSO",
+    description: "Convert a DVD-mode .chd straight to .cso or .zso through a temporary ISO, in one step",
+    formats: ".chd",
+    icon: "swap",
+  },
+  {
     to: "/chd/verify",
     title: "Verify CHD",
     description: "Verify .chd integrity via SHA-1 checksums",
