@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 
 interface ProgressPayload {
   task_id: string;
-  kind: "start" | "inc" | "finish" | "phase";
+  kind: "start" | "inc" | "finish" | "phase" | "warn";
   total: number;
   current: number;
   message: string;
@@ -18,8 +18,12 @@ interface ProgressState {
   current: Ref<number>;
   message: Ref<string>;
   running: Ref<boolean>;
+  /** Advisory warnings; accumulate across a run (batch items share slots,
+   *  which pass `keepWarnings` on their per-item resets) and stay visible
+   *  after completion until the next run's full reset. */
+  warnings: Ref<string[]>;
   percent: ComputedRef<number>;
-  reset: () => void;
+  reset: (opts?: { keepWarnings?: boolean }) => void;
 }
 
 const registry = new Map<string, ProgressState>();
@@ -47,6 +51,11 @@ function initGlobalListener() {
       case "phase":
         state.message.value = p.message;
         break;
+      case "warn":
+        if (!state.warnings.value.includes(p.message)) {
+          state.warnings.value = [...state.warnings.value, p.message];
+        }
+        break;
       case "finish":
         state.running.value = false;
         break;
@@ -64,19 +73,21 @@ export function useProgress(taskId: string): ProgressState {
   const current = ref(0);
   const message = ref("");
   const running = ref(false);
+  const warnings = ref<string[]>([]);
 
   const percent = computed(() =>
     total.value > 0 ? Math.round((current.value / total.value) * 100) : 0,
   );
 
-  function reset() {
+  function reset(opts?: { keepWarnings?: boolean }) {
     total.value = 0;
     current.value = 0;
     message.value = "";
     running.value = false;
+    if (!opts?.keepWarnings) warnings.value = [];
   }
 
-  const state: ProgressState = { total, current, message, running, percent, reset };
+  const state: ProgressState = { total, current, message, running, warnings, percent, reset };
   registry.set(taskId, state);
   return state;
 }

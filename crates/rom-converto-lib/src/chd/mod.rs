@@ -17,14 +17,17 @@ use crate::cue::CueParser;
 use crate::cue::models::{CueFile, CueSheet, FileType, Index, Msf, Track, TrackType};
 use crate::util::hash::{FileDigests, HashAlgo, MultiHasher};
 use crate::util::iso9660::{DiscKind, detect_disc_kind};
-use crate::util::{BYTES_PER_MB, CancelToken, ProgressReporter, await_with_progress_cancel};
+use crate::util::{
+    BYTES_PER_MB, CancelToken, DREAMCAST_CHD_WARNING, ProgressReporter, await_with_progress_cancel,
+    dreamcast_boot_signature,
+};
 use log::{debug, info, warn};
 use sha1::{Digest, Sha1};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use tokio::fs;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 pub mod compression;
 pub mod error;
@@ -425,6 +428,24 @@ pub async fn convert_iso_to_cd_chd(
     Ok(())
 }
 
+/// Read up to 64 KiB from the head of a data track for the Dreamcast
+/// IP.BIN sniff. Advisory only: a missing or short file returns an empty
+/// buffer rather than propagating the IO error.
+async fn dreamcast_head_bytes(bin_path: &std::path::Path) -> Vec<u8> {
+    const HEAD_LEN: usize = 0x10000;
+    let Ok(mut file) = fs::File::open(bin_path).await else {
+        return Vec::new();
+    };
+    let mut buf = vec![0u8; HEAD_LEN];
+    match file.read(&mut buf).await {
+        Ok(n) => {
+            buf.truncate(n);
+            buf
+        }
+        Err(_) => Vec::new(),
+    }
+}
+
 pub async fn convert_to_chd(
     progress: &dyn ProgressReporter,
     cue_path: PathBuf,
@@ -446,6 +467,12 @@ pub async fn convert_to_chd(
         let cue_dir = cue_path.parent().unwrap_or(std::path::Path::new("."));
         cue_dir.join(&cue_sheet.files[0].filename)
     };
+
+    if matches!(cue_sheet.files[0].file_type, FileType::Binary)
+        && dreamcast_boot_signature(&dreamcast_head_bytes(&bin_path).await)
+    {
+        progress.warn(DREAMCAST_CHD_WARNING);
+    }
 
     debug!("Opening BIN file: {:?}", bin_path);
     let bin_size = fs::metadata(&bin_path).await?.len();
@@ -1653,6 +1680,36 @@ mod tests {
             result,
             Err(ChdError::IsoNotSectorAligned { size: 1000 })
         ));
+    }
+
+    #[tokio::test]
+    async fn dreamcast_head_sniff_hits_on_ip_bin_magic() {
+        let dir = tempfile::tempdir().unwrap();
+        let cue_path = dir.path().join("game.cue");
+        std::fs::write(
+            &cue_path,
+            "FILE \"track01.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n",
+        )
+        .unwrap();
+
+        let mut bin = vec![0u8; 0x1000];
+        bin[0x10..0x10 + "SEGA SEGAKATANA".len()].copy_from_slice(b"SEGA SEGAKATANA");
+        std::fs::write(dir.path().join("track01.bin"), &bin).unwrap();
+
+        let cue_sheet = CueParser::new(&cue_path).parse().await.unwrap();
+        assert!(matches!(cue_sheet.files[0].file_type, FileType::Binary));
+        let bin_path = dir.path().join(&cue_sheet.files[0].filename);
+        let head = dreamcast_head_bytes(&bin_path).await;
+        assert!(dreamcast_boot_signature(&head));
+    }
+
+    #[tokio::test]
+    async fn dreamcast_head_sniff_misses_on_plain_iso_track() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin_path = dir.path().join("track01.bin");
+        std::fs::write(&bin_path, vec![0u8; 0x1000]).unwrap();
+        let head = dreamcast_head_bytes(&bin_path).await;
+        assert!(!dreamcast_boot_signature(&head));
     }
 
     #[test]

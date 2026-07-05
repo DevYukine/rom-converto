@@ -85,4 +85,17 @@ impl ProgressReporter for TauriProgress {
             },
         );
     }
+
+    fn warn(&self, message: &str) {
+        let _ = self.app.emit(
+            "progress",
+            ProgressEvent {
+                task_id: self.task_id.clone(),
+                kind: "warn".to_string(),
+                total: 0,
+                current: 0,
+                message: message.to_string(),
+            },
+        );
+    }
 }

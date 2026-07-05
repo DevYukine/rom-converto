@@ -17,9 +17,9 @@ use rom_converto_lib::util::hash::MultiHasher;
 use rom_converto_lib::util::report::{DatReportRecord, write_dat_report};
 use rom_converto_lib::util::{
     CancelToken, ConflictPolicy, ConflictResolution, FileDigests, FileStatus, HashAlgo,
-    HashReportRecord, ProgressReporter, ReportFormat, ReportRecord, ReportTotals, Tally,
-    TallyDirection, hash_file, hash_file_cancellable, resolve_conflict, write_hash_report,
-    write_report,
+    HashReportRecord, NX_DAT_UNSUPPORTED_HINT, ProgressReporter, ReportFormat, ReportRecord,
+    ReportTotals, Tally, TallyDirection, hash_file, hash_file_cancellable, resolve_conflict,
+    write_hash_report, write_report,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -2304,6 +2304,9 @@ pub async fn dat_verify_single(
         }
         Err(e) => {
             let (verdict, msg) = digest_bucket(e)?;
+            if verdict == DatVerdict::Unsupported {
+                warn!("{NX_DAT_UNSUPPORTED_HINT}");
+            }
             let outcome = DatOutcome {
                 verdict,
                 match_algo: None,
@@ -2365,6 +2368,7 @@ pub async fn dat_verify_batch(
     let mut cache: HashMap<String, DatVerdict> = HashMap::new();
     let mut verified = 0usize;
     let mut hints = 0usize;
+    let mut unsupported = 0usize;
     for unit in &units {
         let unit_started = Instant::now();
         let path = unit.display_path().to_path_buf();
@@ -2382,6 +2386,9 @@ pub async fn dat_verify_batch(
             }
             Err(e) => {
                 let (verdict, msg) = digest_bucket(e)?;
+                if verdict == DatVerdict::Unsupported {
+                    unsupported += 1;
+                }
                 let status = if verdict == DatVerdict::Failed {
                     FileStatus::Failed
                 } else {
@@ -2401,6 +2408,9 @@ pub async fn dat_verify_batch(
     }
     total_progress.finish();
     info!("{verified} verified, {hints} hint");
+    if unsupported > 0 {
+        warn!("{NX_DAT_UNSUPPORTED_HINT}");
+    }
     if let Some(path) = report {
         write_dat_report(
             path,
@@ -2659,6 +2669,9 @@ pub async fn dat_scan(
         counts.unsupported,
         counts.failed
     );
+    if counts.unsupported > 0 {
+        warn!("{NX_DAT_UNSUPPORTED_HINT}");
+    }
     if let Some(path) = report {
         write_dat_report(
             path,

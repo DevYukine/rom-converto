@@ -4,6 +4,7 @@
 //! threads.
 
 pub mod conflict;
+pub mod footgun;
 pub mod fs;
 pub mod group_reader;
 pub mod hash;
@@ -20,6 +21,10 @@ pub mod verify;
 pub mod worker_pool;
 
 pub use conflict::{ConflictPolicy, ConflictResolution, resolve_conflict};
+pub use footgun::{
+    DREAMCAST_CHD_WARNING, NX_DAT_UNSUPPORTED_HINT, dreamcast_boot_signature,
+    mixed_playlist_extensions, oversized_rvz_chunk,
+};
 pub use fs::{DEFAULT_SPACE_HEADROOM, available_space, space_shortfall};
 pub use hash::{FileDigests, HashAlgo, hash_file, hash_file_cancellable, parse_algos};
 pub use plan::{PlanDecision, PlanLine, classify};
@@ -100,6 +105,13 @@ pub trait ProgressReporter: Send + Sync {
     /// is cleared when the operation finishes. Reporters that do not surface
     /// a label leave this a no-op.
     fn set_phase(&self, _label: &str) {}
+
+    /// Surface an advisory warning without failing the operation. Defaults
+    /// to the process log, which terminal consumers already display;
+    /// reporters with their own UI override this to show the message there.
+    fn warn(&self, message: &str) {
+        log::warn!("{message}");
+    }
 }
 
 pub struct NoProgress;

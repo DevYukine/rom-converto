@@ -5,6 +5,7 @@ defineProps<{
   preview?: string;
   cancelled?: string;
   error?: string;
+  warnings?: string[];
 }>();
 
 const commandCopied = ref(false);
@@ -38,7 +39,7 @@ async function copy(
 </script>
 
 <template>
-  <div v-if="command || result || preview || cancelled || error" class="space-y-2">
+  <div v-if="command || result || preview || cancelled || error || warnings?.length" class="space-y-2">
     <div
       v-if="command"
       class="flex items-start gap-2.5 rounded-lg border-l-2 border-zinc-600 bg-zinc-800/40 px-4 py-3"
@@ -70,6 +71,19 @@ async function copy(
       >
         {{ resultCopied ? "Copied" : "Copy" }}
       </button>
+    </div>
+
+    <div
+      v-for="warning in warnings"
+      :key="warning"
+      role="status"
+      aria-live="polite"
+      class="flex items-start gap-2.5 rounded-lg border-l-2 border-amber-400 bg-amber-400/5 px-4 py-3"
+    >
+      <svg class="mt-0.5 h-4 w-4 shrink-0 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+      </svg>
+      <pre class="max-h-64 flex-1 overflow-auto whitespace-pre-wrap break-words font-sans text-sm text-amber-300">{{ warning }}</pre>
     </div>
 
     <div

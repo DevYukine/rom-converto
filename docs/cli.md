@@ -267,6 +267,10 @@ output, while a recursive run skips it and continues.
 
 `dol verify` reads the same legacy GameCube containers as `migrate` (`.gcz`, NKit); a `.wia` holds a Wii disc image and is rejected with a pointer to `rvl verify`.
 
+Advisory warning: `--chunk-size` above 1 MiB on `compress` or `migrate` prints a warning
+that large chunks can stutter on weaker playback hardware, and suggests re-encoding at
+128 KiB. `rvl compress` and `rvl migrate` share the same RVZ pipeline and the same warning.
+
 ## rvl (Wii)
 
 ```
@@ -372,6 +376,10 @@ rom-converto chd <SUBCOMMAND> <INPUT> [OUTPUT]
 mixup cannot happen. Extract report rows carry zero byte sizes since extraction writes
 several files.
 
+Advisory warning: compressing a `.cue` whose data track carries the Dreamcast IP.BIN
+signature into a CD-mode CHD prints a warning, since some cores only boot Dreamcast from a
+GDI-based image. Convert from the GDI-based image instead if the CHD does not boot.
+
 ## cso (PSP / PS2)
 
 ```
@@ -444,6 +452,10 @@ so a renamed file still verifies correctly. Multi-track discs check every track.
 tracks it lists and hashes those, and `rename` always leaves a cue set untouched so its
 `FILE` lines stay consistent.
 
+Advisory warning: `verify` and `scan` print a warning once per run when any file reports
+`unsupported`, explaining that compressed Switch containers (`.nsz`, `.xcz`) need
+`nx decompress` first, which needs a `prod.keys` file.
+
 `verify` treats a filename-and-size match as a hint and reports it as not verified, while
 `identify` shows the same match as a weak result so a near-miss is still informative.
 `rename` renames only on a hash-verified match; a hint never renames a file. The target
@@ -505,6 +517,10 @@ after that base title. The match is case-insensitive on the word "Disc" and requ
 preceding `(` or whitespace, so titles that genuinely contain it are never mis-grouped. Disc
 numbers sort numerically, mixed extensions in one set are grouped together, and entries are
 relative paths with forward slashes.
+
+Advisory warning: a set that mixes more than one track format (for example `.cue` and
+`.chd` in the same game) prints a warning, since emulators expect every disc in a playlist
+to use the same format.
 
 ## info
 

@@ -72,7 +72,8 @@ use rom_converto_lib::nintendo::wup::{
 use rom_converto_lib::playlist::{PlaylistMode, PlaylistOptions, plan_playlists};
 use rom_converto_lib::util::fs::{collect_files_with_exts, is_os_junk_dir};
 use rom_converto_lib::util::{
-    FileDigests, HashAlgo, Tally, TallyDirection, hash_file, parse_algos,
+    FileDigests, HashAlgo, Tally, TallyDirection, hash_file, mixed_playlist_extensions,
+    oversized_rvz_chunk, parse_algos,
 };
 use std::io::IsTerminal;
 use std::mem::discriminant;
@@ -1238,6 +1239,9 @@ async fn dispatch_command(
                         .unwrap_or(RvzCompressOptions::default().chunk_size),
                     ..RvzCompressOptions::default()
                 };
+                if let Some(msg) = oversized_rvz_chunk(opts.chunk_size) {
+                    log::warn!("{msg}");
+                }
                 let output_dir = cmd.output_dir.clone().or_else(|| eff.output_dir.clone());
                 let report = cmd.report.clone().or_else(|| eff.report.clone());
                 let fallback = config::policy_fallback(&eff.on_conflict)?;
@@ -1350,6 +1354,9 @@ async fn dispatch_command(
             }
             DolCommands::Migrate(cmd) => {
                 let opts = resolve_migrate_opts(cmd.level, cmd.chunk_size, &effective.dol);
+                if let Some(msg) = oversized_rvz_chunk(opts.chunk_size) {
+                    log::warn!("{msg}");
+                }
                 let migrate_opts = MigrateOptions {
                     skip_verify: cmd.skip_verify,
                     deep_verify: false,
@@ -1551,6 +1558,9 @@ async fn dispatch_command(
                         .unwrap_or(RvzCompressOptions::default().chunk_size),
                     ..RvzCompressOptions::default()
                 };
+                if let Some(msg) = oversized_rvz_chunk(opts.chunk_size) {
+                    log::warn!("{msg}");
+                }
                 let output_dir = cmd.output_dir.clone().or_else(|| eff.output_dir.clone());
                 let report = cmd.report.clone().or_else(|| eff.report.clone());
                 let fallback = config::policy_fallback(&eff.on_conflict)?;
@@ -1660,6 +1670,9 @@ async fn dispatch_command(
             }
             RvlCommands::Migrate(cmd) => {
                 let opts = resolve_migrate_opts(cmd.level, cmd.chunk_size, &effective.rvl);
+                if let Some(msg) = oversized_rvz_chunk(opts.chunk_size) {
+                    log::warn!("{msg}");
+                }
                 let migrate_opts = MigrateOptions {
                     skip_verify: cmd.skip_verify,
                     deep_verify: cmd.deep,
@@ -2972,6 +2985,18 @@ async fn dispatch_command(
                 if plan.has_duplicate_numbers {
                     log::warn!(
                         "Duplicate disc numbers in set {}, including all entries",
+                        plan.base_title
+                    );
+                }
+                let entry_exts = plan
+                    .contents
+                    .lines()
+                    .filter_map(|line| Path::new(line).extension())
+                    .filter_map(|ext| ext.to_str());
+                if let Some(mixed) = mixed_playlist_extensions(entry_exts) {
+                    log::warn!(
+                        "Mixed track formats ({mixed}) in set {}; emulators expect every disc \
+                         in a playlist to use the same format",
                         plan.base_title
                     );
                 }

@@ -27,6 +27,12 @@ pub const DEFAULT_CHUNK_SIZE: u32 = 128 * 1024;
 /// for archive-quality output. The CLI lets users lower this for speed.
 pub const DEFAULT_COMPRESSION_LEVEL: i32 = 22;
 
+/// Chunk sizes above this read more data per seek than weak playback
+/// hardware (handhelds, older Android devices) can comfortably keep up
+/// with. 128/256/512 KiB stay silent; only the top end near
+/// [`MAX_CHUNK_SIZE`] warns.
+pub const WEAK_HW_CHUNK_WARN: u32 = 1024 * 1024;
+
 const _: () = assert!(
     MIN_CHUNK_SIZE.is_power_of_two(),
     "MIN_CHUNK_SIZE must be a power of two per the RVZ spec",

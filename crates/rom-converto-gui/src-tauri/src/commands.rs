@@ -50,8 +50,9 @@ use rom_converto_lib::util::fs::{collect_all_files, collect_files_with_exts};
 use rom_converto_lib::util::{
     CancelToken, ConflictPolicy, ConflictResolution, DEFAULT_SPACE_HEADROOM, FileStatus, HashAlgo,
     PlanLine, ProgressReporter, ReportFormat, ReportRecord, ReportTotals, TemplateTokens,
-    apply_template, available_space, format_bytes, hash_file_cancellable, parse_algos,
-    resolve_conflict, space_shortfall, write_report,
+    apply_template, available_space, format_bytes, hash_file_cancellable,
+    mixed_playlist_extensions, oversized_rvz_chunk, parse_algos, resolve_conflict, space_shortfall,
+    write_report,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -1604,6 +1605,9 @@ pub async fn cmd_compress_disc(
         chunk_size: chunk_size.unwrap_or(RvzCompressOptions::default().chunk_size),
         ..RvzCompressOptions::default()
     };
+    if let Some(msg) = oversized_rvz_chunk(opts.chunk_size) {
+        progress.warn(msg);
+    }
     let in_bytes = input_size(&input);
     let record_input = input.clone();
     let record_output = output.clone();
@@ -2419,6 +2423,7 @@ pub async fn cmd_hash(
 
 #[tauri::command]
 pub async fn cmd_playlist(
+    app: AppHandle,
     scan_dir: PathBuf,
     output_dir: Option<PathBuf>,
     mode: String,
@@ -2426,6 +2431,7 @@ pub async fn cmd_playlist(
     max_depth: Option<usize>,
     on_conflict: Option<String>,
 ) -> Result<String, String> {
+    let progress = TauriProgress::new(app, "playlist");
     tokio::task::spawn_blocking(move || -> Result<String, String> {
         let exts: Vec<String> = extensions
             .split(',')
@@ -2453,6 +2459,18 @@ pub async fn cmd_playlist(
         let mut written = 0usize;
         let mut skipped = 0usize;
         for plan in &plans {
+            let entry_exts = plan
+                .contents
+                .lines()
+                .filter_map(|line| Path::new(line).extension())
+                .filter_map(|ext| ext.to_str());
+            if let Some(mixed) = mixed_playlist_extensions(entry_exts) {
+                progress.warn(&format!(
+                    "Mixed track formats ({mixed}) in set {}; emulators expect every disc in a \
+                     playlist to use the same format",
+                    plan.base_title
+                ));
+            }
             match resolve_conflict(&plan.m3u_path, policy).map_err(err_to_string)? {
                 ConflictResolution::Write(p) => {
                     std::fs::write(&p, &plan.contents).map_err(err_to_string)?;

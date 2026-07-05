@@ -54,7 +54,7 @@ async function execute() {
     />
 
     <div class="mb-4">
-      <OutputLog :command="commandLine" :result="result" :error="error" />
+      <OutputLog :command="commandLine" :result="result" :error="error" :warnings="progress.warnings.value" />
     </div>
 
     <OperationCard>
