@@ -66,4 +66,4 @@ fs4 = "^1.1"
 zip = { version = "^2", default-features = false, features = ["deflate", "bzip2"] }
 sevenz-rust2 = "^0.21"
 tar = "^0.4"
-unrar = "^0.5"
+unrar = { package = "unrar-ng", version = "^0.7" }

@@ -4134,7 +4134,7 @@ dependencies = [
  "tokio-util",
  "toml 1.1.2+spec-1.1.0",
  "toml_edit 0.23.10+spec-1.0.0",
- "unrar",
+ "unrar-ng",
  "xts-mode",
  "zip",
  "zstd",
@@ -5826,22 +5826,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "81e544489bf3d8ef66c953931f56617f423cd4b5494be343d9b9d3dda037b9a3"
 
 [[package]]
-name = "unrar"
-version = "0.5.8"
+name = "unrar-ng"
+version = "0.7.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92ec61343a630d2b50d13216dea5125e157d3fc180a7d3f447d22fe146b648fc"
+checksum = "9ff7a01700c732826b5a3414f911cb72015642ebdf16566f2e88b36d5dc49aec"
 dependencies = [
  "bitflags 2.13.0",
  "regex",
- "unrar_sys",
+ "unrar-ng-sys",
  "widestring",
 ]
 
 [[package]]
-name = "unrar_sys"
-version = "0.5.8"
+name = "unrar-ng-sys"
+version = "0.7.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b77675b883cfbe6bf41e6b7a5cd6008e0a83ba497de3d96e41a064bbeead765"
+checksum = "72678d22d4d6aa9f0b905f5d6d5cd3e462c55631b526297d06fb1663532daa76"
 dependencies = [
  "cc",
  "libc",
