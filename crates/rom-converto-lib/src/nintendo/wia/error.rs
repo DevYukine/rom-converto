@@ -64,6 +64,8 @@ impl From<crate::nintendo::rvz::error::RvzError> for WiaError {
     }
 }
 
+pub type WiaResult<T> = Result<T, WiaError>;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -76,5 +78,3 @@ mod tests {
         );
     }
 }
-
-pub type WiaResult<T> = Result<T, WiaError>;

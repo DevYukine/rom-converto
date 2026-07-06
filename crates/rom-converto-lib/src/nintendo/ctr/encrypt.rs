@@ -138,7 +138,6 @@ async fn encrypt_ncch_cancellable(
             &tmp,
             0,
             [0u8; 8],
-            0,
             NcchSource::Standalone,
             progress,
             cancel,
@@ -268,7 +267,6 @@ async fn encrypt_ncsd_partitions(
             output,
             partition_offset,
             title_id,
-            i as u16,
             NcchSource::Ncsd,
             progress,
             cancel,
@@ -344,7 +342,6 @@ async fn encrypt_cia_cancellable(
                 &content_tmp,
                 0,
                 ticket_title_id,
-                record.content_index,
                 NcchSource::CiaContent {
                     content_index: record.content_index,
                 },
@@ -415,14 +412,6 @@ enum NcchSource {
 }
 
 impl NcchSource {
-    fn from_ncsd(self) -> bool {
-        matches!(self, Self::Ncsd)
-    }
-
-    fn single_ncch(self) -> bool {
-        matches!(self, Self::Standalone)
-    }
-
     fn cia_content_index(self) -> Option<u16> {
         match self {
             Self::CiaContent { content_index } => Some(content_index),
@@ -436,7 +425,6 @@ async fn encrypt_ncch_at(
     output: &Path,
     ncch_offset: u64,
     mut title_id: [u8; 8],
-    cidx: u16,
     source: NcchSource,
     progress: &dyn ProgressReporter,
     cancel: &CancelToken,
@@ -523,7 +511,6 @@ async fn encrypt_ncch_at(
         .await?;
     }
 
-    let _ = (cidx, source.from_ncsd(), source.single_ncch());
     write.flush().await?;
     Ok(())
 }

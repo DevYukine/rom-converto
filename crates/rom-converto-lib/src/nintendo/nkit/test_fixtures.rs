@@ -612,7 +612,7 @@ pub(crate) fn make_nkit_wii(iso: &[u8]) -> Vec<u8> {
     let mut preserved_flags = vec![false; groups];
     let mut preserved_bytes: Vec<u8> = Vec::new();
     let mut checked_sectors = 0usize;
-    for g in 0..groups {
+    for (g, preserved) in preserved_flags.iter_mut().enumerate().take(groups) {
         let blocks = group_blocks_at(data_sectors, g);
         for (s, p) in payloads.iter_mut().enumerate() {
             let doff = g * WII_GROUP_PAYLOAD_SIZE as usize + s * WII_SECTOR_PAYLOAD_SIZE;
@@ -624,7 +624,7 @@ pub(crate) fn make_nkit_wii(iso: &[u8]) -> Vec<u8> {
         }
         recompute_hash_regions_into(&payloads, &mut regions);
         if (0..blocks).any(|s| on_disc[checked_sectors + s] != regions[s]) {
-            preserved_flags[g] = true;
+            *preserved = true;
             for s in 0..blocks {
                 preserved_bytes.extend_from_slice(&on_disc[checked_sectors + s]);
             }

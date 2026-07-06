@@ -489,8 +489,10 @@ mod tests {
         let no_key = KeySet::default();
         assert_eq!(verify_label(&OutputVerify::Nx(Box::new(no_key))), None);
 
-        let mut with_key = KeySet::default();
-        with_key.header_key = Some([0u8; 32]);
+        let with_key = KeySet {
+            header_key: Some([0u8; 32]),
+            ..Default::default()
+        };
         assert_eq!(
             verify_label(&OutputVerify::Nx(Box::new(with_key))),
             Some("nx")

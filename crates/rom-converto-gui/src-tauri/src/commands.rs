@@ -2935,7 +2935,7 @@ pub async fn cmd_hash(
             let digests = hash_one(&input)?;
             lines.push(render_hash_row(&input, &digests, &parsed));
         }
-        let _ = cache.save();
+        cache.save();
         Ok(lines.join("\n"))
     })
     .await
@@ -3088,7 +3088,7 @@ pub async fn cmd_dat_verify(
     )
     .await;
     finish(&state, key).await;
-    let _ = cache.save();
+    cache.save();
     // Cancellation propagates as an Err carrying "operation cancelled",
     // matching the other verify commands and scan/rename. Any other failure
     // still renders as a single Failed card so genuine digest/API errors do
@@ -3242,14 +3242,14 @@ async fn verify_pass(
                 .unwrap_or("file")
                 .to_string();
             let search = GameFileMatchSearch::from_digests(&file_name, &d);
-            let matched = client.identify_relations(&search, &token).await?;
+            let matched = client.identify_relations(&search, token).await?;
             Ok(verify_result_from_single(path_str, &matched))
         }
         RomDigests::Tracks { tracks, whole } => {
             let stem = input.file_stem().and_then(|n| n.to_str()).unwrap_or("file");
             let whole_name = format!("{stem}.bin");
             let whole_search = GameFileMatchSearch::from_digests(&whole_name, &whole);
-            let whole_match = client.identify_relations(&whole_search, &token).await?;
+            let whole_match = client.identify_relations(&whole_search, token).await?;
             if match_strength(whole_match.game_match_type).is_verified() {
                 return Ok(verify_result_from_single(path_str, &whole_match));
             }
@@ -3257,7 +3257,7 @@ async fn verify_pass(
             let first_name = format!("{stem} (Track 1).bin");
             let first_digests = &tracks[0].digests;
             let first_search = GameFileMatchSearch::from_digests(&first_name, first_digests);
-            let track_match = client.identify_relations(&first_search, &token).await?;
+            let track_match = client.identify_relations(&first_search, token).await?;
             Ok(verify_result_from_tracks(path_str, &track_match, &tracks))
         }
     }
@@ -3539,7 +3539,7 @@ pub async fn cmd_dat_scan(
     )
     .await;
     finish(&state, "dat-scan").await;
-    let _ = cache.save();
+    cache.save();
     let outcome = result?;
     serde_json::to_string(&outcome).map_err(err_to_string)
 }
@@ -3927,7 +3927,7 @@ pub async fn cmd_dat_rename(
     )
     .await;
     finish(&state, "dat-rename").await;
-    let _ = cache.save();
+    cache.save();
     let outcome = result?;
     serde_json::to_string(&outcome).map_err(err_to_string)
 }
@@ -4525,7 +4525,7 @@ mod comparison_tests {
             &output,
             4,
             4,
-            rom_converto_lib::util::OutputVerify::Nx(Box::new(KeySet::default())),
+            rom_converto_lib::util::OutputVerify::Nx(Box::default()),
             true,
             &CancelToken::new(),
         )
