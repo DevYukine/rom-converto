@@ -3148,6 +3148,10 @@ struct DatVerifyResult {
     platform: Option<String>,
     #[serde(rename = "signatureGroup")]
     signature_group: Option<String>,
+    #[serde(rename = "datFile")]
+    dat_file: Option<String>,
+    #[serde(rename = "datFileId")]
+    dat_file_id: Option<String>,
     #[serde(rename = "datVersion")]
     dat_version: Option<String>,
     #[serde(rename = "externalIds")]
@@ -3214,6 +3218,8 @@ pub async fn cmd_dat_verify(
                 game_name: None,
                 platform: None,
                 signature_group: None,
+                dat_file: None,
+                dat_file_id: None,
                 dat_version: None,
                 external_ids: Vec::new(),
                 tracks: None,
@@ -3228,6 +3234,8 @@ pub async fn cmd_dat_verify(
             game_name: None,
             platform: None,
             signature_group: None,
+            dat_file: None,
+            dat_file_id: None,
             dat_version: None,
             external_ids: Vec::new(),
             tracks: None,
@@ -3391,7 +3399,22 @@ fn verify_result_from_single(
         game_name: matched.game.as_ref().map(|g| g.name.clone()),
         platform: matched.platform.as_ref().map(|p| p.name.clone()),
         signature_group: matched.signature_group.as_ref().map(|g| g.name.clone()),
-        dat_version: matched.dat_file_import.as_ref().map(|i| i.version.clone()),
+        dat_file: matched
+            .dat_file
+            .as_ref()
+            .map(|d| d.name.clone())
+            .or_else(|| matched.dat_file_import.as_ref().map(|i| i.name.clone())),
+        dat_file_id: matched.dat_file.as_ref().map(|d| d.id.clone()).or_else(|| {
+            matched
+                .dat_file_import
+                .as_ref()
+                .map(|i| i.dat_file_id.clone())
+        }),
+        dat_version: matched
+            .dat_file_import
+            .as_ref()
+            .map(|i| i.version.clone())
+            .or_else(|| matched.dat_file.as_ref().map(|d| d.current_version.clone())),
         external_ids: external_ids_from(matched),
         tracks: None,
         error: None,
@@ -3432,7 +3455,22 @@ fn verify_result_from_tracks(
         game_name: matched.game.as_ref().map(|g| g.name.clone()),
         platform: matched.platform.as_ref().map(|p| p.name.clone()),
         signature_group: matched.signature_group.as_ref().map(|g| g.name.clone()),
-        dat_version: matched.dat_file_import.as_ref().map(|i| i.version.clone()),
+        dat_file: matched
+            .dat_file
+            .as_ref()
+            .map(|d| d.name.clone())
+            .or_else(|| matched.dat_file_import.as_ref().map(|i| i.name.clone())),
+        dat_file_id: matched.dat_file.as_ref().map(|d| d.id.clone()).or_else(|| {
+            matched
+                .dat_file_import
+                .as_ref()
+                .map(|i| i.dat_file_id.clone())
+        }),
+        dat_version: matched
+            .dat_file_import
+            .as_ref()
+            .map(|i| i.version.clone())
+            .or_else(|| matched.dat_file.as_ref().map(|d| d.current_version.clone())),
         external_ids: external_ids_from(matched),
         tracks: Some(track_checks),
         error: None,
@@ -4379,6 +4417,8 @@ mod dat_result_serde_tests {
             game_name: Some("Some Game".into()),
             platform: Some("Platform".into()),
             signature_group: Some("SG".into()),
+            dat_file: Some("Some DAT".into()),
+            dat_file_id: Some("d-1".into()),
             dat_version: Some("2024".into()),
             external_ids: vec![ExternalIdJson {
                 provider: "prov".into(),
@@ -4403,6 +4443,8 @@ mod dat_result_serde_tests {
                 "gameName",
                 "platform",
                 "signatureGroup",
+                "datFile",
+                "datFileId",
                 "datVersion",
                 "externalIds",
                 "tracks",

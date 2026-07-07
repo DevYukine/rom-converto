@@ -27,6 +27,8 @@ interface DatVerifyResult {
   gameName: string | null;
   platform: string | null;
   signatureGroup: string | null;
+  datFile: string | null;
+  datFileId: string | null;
   datVersion: string | null;
   externalIds: { provider: string; id: string }[];
   tracks: DatTrackCheck[] | null;
@@ -149,7 +151,7 @@ const batchRows = computed<DatResultRow[]>(() =>
     key: r.path,
     icon: r.verdict === "verified" ? "ok" : r.verdict === "failed" ? "error" : r.verdict === "hint" ? "warn" : "info",
     primary: basename(r.path),
-    secondary: r.gameName ?? undefined,
+    secondary: [r.gameName, r.datFile].filter(Boolean).join(" - ") || undefined,
     badge: VERDICT_LABEL[r.verdict],
     badgeColor: VERDICT_COLOR[r.verdict],
   })),
@@ -206,7 +208,7 @@ const batchRows = computed<DatResultRow[]>(() =>
         </div>
 
         <div
-          v-if="verifyResult.gameName || verifyResult.platform || verifyResult.signatureGroup || verifyResult.datVersion"
+          v-if="verifyResult.gameName || verifyResult.platform || verifyResult.signatureGroup || verifyResult.datFile || verifyResult.datVersion"
           class="rounded-lg border border-zinc-800/50 bg-zinc-800/20 px-4 py-3"
         >
           <dl class="grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm">
@@ -221,6 +223,14 @@ const batchRows = computed<DatResultRow[]>(() =>
             <template v-if="verifyResult.signatureGroup">
               <dt class="text-zinc-500">Signature group</dt>
               <dd class="text-zinc-300">{{ verifyResult.signatureGroup }}</dd>
+            </template>
+            <template v-if="verifyResult.datFile">
+              <dt class="text-zinc-500">DAT file</dt>
+              <dd class="text-zinc-300">{{ verifyResult.datFile }}</dd>
+            </template>
+            <template v-if="verifyResult.datFileId">
+              <dt class="text-zinc-500">DAT file id</dt>
+              <dd class="font-mono text-xs text-zinc-300">{{ verifyResult.datFileId }}</dd>
             </template>
             <template v-if="verifyResult.datVersion">
               <dt class="text-zinc-500">DAT version</dt>

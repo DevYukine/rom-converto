@@ -439,6 +439,8 @@ pub struct DatReportRecord {
     pub game_id: Option<String>,
     pub platform: Option<String>,
     pub signature_group: Option<String>,
+    pub dat_file_name: Option<String>,
+    pub dat_file_id: Option<String>,
     pub dat_version: Option<String>,
     pub match_algo: Option<String>,
     pub detail: Option<String>,
@@ -471,20 +473,22 @@ pub fn write_dat_report(
     Ok(())
 }
 
-const DAT_CSV_HEADER: &str = "path,verdict,game_name,game_id,platform,signature_group,dat_version,match_algo,detail,size_bytes,status,elapsed_ms,error";
+const DAT_CSV_HEADER: &str = "path,verdict,game_name,game_id,platform,signature_group,dat_file_name,dat_file_id,dat_version,match_algo,detail,size_bytes,status,elapsed_ms,error";
 
 fn write_dat_csv<W: Write>(w: &mut W, records: &[DatReportRecord]) -> Result<()> {
     writeln!(w, "{DAT_CSV_HEADER}")?;
     for r in records {
         writeln!(
             w,
-            "{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
             csv_field(&r.path),
             csv_field(&r.verdict),
             csv_field(r.game_name.as_deref().unwrap_or("")),
             csv_field(r.game_id.as_deref().unwrap_or("")),
             csv_field(r.platform.as_deref().unwrap_or("")),
             csv_field(r.signature_group.as_deref().unwrap_or("")),
+            csv_field(r.dat_file_name.as_deref().unwrap_or("")),
+            csv_field(r.dat_file_id.as_deref().unwrap_or("")),
             csv_field(r.dat_version.as_deref().unwrap_or("")),
             csv_field(r.match_algo.as_deref().unwrap_or("")),
             csv_field(r.detail.as_deref().unwrap_or("")),
@@ -548,6 +552,8 @@ td.num{{text-align:right;font-variant-numeric:tabular-nums}}</style>"
         "Game id",
         "Platform",
         "Signature group",
+        "DAT file",
+        "DAT file id",
         "Dat version",
         "Match algo",
         "Detail",
@@ -587,6 +593,16 @@ td.num{{text-align:right;font-variant-numeric:tabular-nums}}</style>"
         write!(
             w,
             "<td>{}</td>",
+            html_escape(r.dat_file_name.as_deref().unwrap_or(""))
+        )?;
+        write!(
+            w,
+            "<td>{}</td>",
+            html_escape(r.dat_file_id.as_deref().unwrap_or(""))
+        )?;
+        write!(
+            w,
+            "<td>{}</td>",
             html_escape(r.dat_version.as_deref().unwrap_or(""))
         )?;
         write!(
@@ -616,7 +632,7 @@ td.num{{text-align:right;font-variant-numeric:tabular-nums}}</style>"
         "<td>{} files ({} ok, {} skipped, {} failed)</td>",
         totals.total_files, totals.ok, totals.skipped, totals.failed
     )?;
-    for _ in 0..8 {
+    for _ in 0..10 {
         write!(w, "<td></td>")?;
     }
     write!(
@@ -1008,6 +1024,8 @@ mod tests {
             game_id: Some("g-1".into()),
             platform: Some("PlayStation".into()),
             signature_group: Some("Redump".into()),
+            dat_file_name: Some("Sony - PlayStation - Games".into()),
+            dat_file_id: Some("d-1".into()),
             dat_version: Some("2026-06-01".into()),
             match_algo: Some("sha1".into()),
             detail: None,
@@ -1037,7 +1055,7 @@ mod tests {
         let row = lines.next().unwrap();
         assert_eq!(
             row,
-            "game.chd,verified,Some Game (USA),g-1,PlayStation,Redump,2026-06-01,sha1,,700000000,ok,850,",
+            "game.chd,verified,Some Game (USA),g-1,PlayStation,Redump,Sony - PlayStation - Games,d-1,2026-06-01,sha1,,700000000,ok,850,",
             "{row}"
         );
     }
@@ -1070,6 +1088,8 @@ mod tests {
             game_id: None,
             platform: None,
             signature_group: None,
+            dat_file_name: None,
+            dat_file_id: None,
             dat_version: None,
             match_algo: None,
             detail: None,
@@ -1080,7 +1100,7 @@ mod tests {
         };
         let out = render_dat(&[rec], ReportFormat::Csv);
         let row = out.lines().nth(1).unwrap();
-        assert_eq!(row, "unknown.iso,unknown,,,,,,,,0,failed,5,boom", "{row}");
+        assert_eq!(row, "unknown.iso,unknown,,,,,,,,,,0,failed,5,boom", "{row}");
     }
 
     #[test]
@@ -1089,6 +1109,7 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["files"][0]["verdict"], "verified");
         assert_eq!(v["files"][0]["game_name"], "Some Game (USA)");
+        assert_eq!(v["files"][0]["dat_file_name"], "Sony - PlayStation - Games");
         assert_eq!(v["files"][0]["match_algo"], "sha1");
         assert_eq!(v["files"][0]["status"], "ok");
         assert!(v["files"][0]["detail"].is_null());
@@ -1099,7 +1120,9 @@ mod tests {
         let out = render_dat(&[dat_ok_record()], ReportFormat::Html);
         assert!(out.contains("<th>Verdict</th>"), "{out}");
         assert!(out.contains("<th>Game</th>"), "{out}");
+        assert!(out.contains("<th>DAT file</th>"), "{out}");
         assert!(out.contains("Some Game (USA)"), "{out}");
+        assert!(out.contains("Sony - PlayStation - Games"), "{out}");
         assert!(out.contains("<tfoot"), "{out}");
     }
 

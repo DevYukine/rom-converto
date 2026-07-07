@@ -2408,18 +2408,21 @@ struct DatOutcome {
     game_id: Option<String>,
     platform: Option<String>,
     signature_group: Option<String>,
+    dat_file_name: Option<String>,
+    dat_file_id: Option<String>,
     dat_version: Option<String>,
     detail: Option<String>,
     size_bytes: u64,
 }
 
-/// The display fields lifted from a relations match: game name/id, platform,
-/// signature group, and dat version.
+/// The display fields lifted from a relations match.
 struct DisplayFields {
     game_name: Option<String>,
     game_id: Option<String>,
     platform: Option<String>,
     signature_group: Option<String>,
+    dat_file_name: Option<String>,
+    dat_file_id: Option<String>,
     dat_version: Option<String>,
 }
 
@@ -2429,7 +2432,21 @@ fn display_fields(m: &GameAndRelationMatchResult) -> DisplayFields {
         game_id: m.game.as_ref().map(|g| g.id.clone()),
         platform: m.platform.as_ref().map(|p| p.name.clone()),
         signature_group: m.signature_group.as_ref().map(|g| g.name.clone()),
-        dat_version: m.dat_file_import.as_ref().map(|i| i.version.clone()),
+        dat_file_name: m
+            .dat_file
+            .as_ref()
+            .map(|d| d.name.clone())
+            .or_else(|| m.dat_file_import.as_ref().map(|i| i.name.clone())),
+        dat_file_id: m
+            .dat_file
+            .as_ref()
+            .map(|d| d.id.clone())
+            .or_else(|| m.dat_file_import.as_ref().map(|i| i.dat_file_id.clone())),
+        dat_version: m
+            .dat_file_import
+            .as_ref()
+            .map(|i| i.version.clone())
+            .or_else(|| m.dat_file.as_ref().map(|d| d.current_version.clone())),
     }
 }
 
@@ -2503,6 +2520,8 @@ fn outcome_from_single(m: &GameAndRelationMatchResult, size: u64) -> DatOutcome 
         game_id: f.game_id,
         platform: f.platform,
         signature_group: f.signature_group,
+        dat_file_name: f.dat_file_name,
+        dat_file_id: f.dat_file_id,
         dat_version: f.dat_version,
         detail: None,
         size_bytes: size,
@@ -2554,6 +2573,8 @@ fn outcome_from_tracks(
         game_id: f.game_id,
         platform: f.platform,
         signature_group: f.signature_group,
+        dat_file_name: f.dat_file_name,
+        dat_file_id: f.dat_file_id,
         dat_version: f.dat_version,
         detail,
         size_bytes: size,
@@ -2588,6 +2609,8 @@ fn dat_record(
         game_id: outcome.game_id.clone(),
         platform: outcome.platform.clone(),
         signature_group: outcome.signature_group.clone(),
+        dat_file_name: outcome.dat_file_name.clone(),
+        dat_file_id: outcome.dat_file_id.clone(),
         dat_version: outcome.dat_version.clone(),
         match_algo: outcome.match_algo.map(|a| a.label().to_string()),
         detail: outcome.detail.clone(),
@@ -2613,6 +2636,8 @@ fn dat_error_record(
         game_id: None,
         platform: None,
         signature_group: None,
+        dat_file_name: None,
+        dat_file_id: None,
         dat_version: None,
         match_algo: None,
         detail: None,
@@ -2658,6 +2683,9 @@ fn print_verdict(path: &Path, outcome: &DatOutcome) {
             }
             if let Some(g) = &outcome.signature_group {
                 extra.push(format!("group: {g}"));
+            }
+            if let Some(d) = &outcome.dat_file_name {
+                extra.push(format!("DAT: {d}"));
             }
             if let Some(v) = &outcome.dat_version {
                 extra.push(format!("version: {v}"));
@@ -2849,6 +2877,8 @@ pub async fn dat_verify_single(
                     game_id: None,
                     platform: None,
                     signature_group: None,
+                    dat_file_name: None,
+                    dat_file_id: None,
                     dat_version: None,
                     detail: None,
                     size_bytes: 0,

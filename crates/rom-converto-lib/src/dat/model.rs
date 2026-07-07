@@ -405,10 +405,19 @@ mod tests {
     const RELATIONS: &str = r#"{
         "gameMatchType": "SHA1",
         "game": { "id": "g-1", "name": "Some Game (USA)", "currentInLatestDat": true },
-        "platform": { "id": "p-1", "name": "Some Platform" },
-        "company": { "id": "c-1", "name": "Some Company" },
-        "signatureGroup": { "id": "s-1", "name": "Some Group" },
-        "datFileImport": { "id": "i-1", "datFileId": "d-1", "name": "imp", "version": "2026-06-01", "importedAt": "2026-06-01T00:00:00Z" },
+      "platform": { "id": "p-1", "name": "Some Platform" },
+      "company": { "id": "c-1", "name": "Some Company" },
+      "signatureGroup": { "id": "s-1", "name": "Some Group" },
+      "datFile": {
+        "id": "d-1",
+        "name": "Some DAT",
+        "platformId": "p-1",
+        "signatureGroupId": "s-1",
+        "currentVersion": "2026-06-01",
+        "subset": null,
+        "tags": []
+      },
+      "datFileImport": { "id": "i-1", "datFileId": "d-1", "name": "imp", "version": "2026-06-01", "importedAt": "2026-06-01T00:00:00Z" },
         "gameFiles": [
             { "id": "f-1", "gameId": "g-1", "fileName": "Some Game (USA) (Track 01).bin",
               "fileSizeInBytes": 37633632, "sha1": "aaaa", "crc": "1234abcd", "currentInLatestDat": true },
@@ -467,6 +476,8 @@ mod tests {
         assert_eq!(r.game.as_ref().unwrap().name, "Some Game (USA)");
         assert_eq!(r.company.as_ref().unwrap().name, "Some Company");
         assert_eq!(r.signature_group.as_ref().unwrap().name, "Some Group");
+        assert_eq!(r.dat_file.as_ref().unwrap().name, "Some DAT");
+        assert_eq!(r.dat_file.as_ref().unwrap().id, "d-1");
         assert_eq!(r.dat_file_import.as_ref().unwrap().version, "2026-06-01");
         assert_eq!(r.game_files.len(), 2);
         assert_eq!(r.game_files[0].file_size_in_bytes, Some(37633632));
