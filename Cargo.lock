@@ -4039,7 +4039,7 @@ dependencies = [
 
 [[package]]
 name = "rom-converto-cli"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "anyhow",
  "built 0.8.1",
@@ -4069,7 +4069,7 @@ dependencies = [
 
 [[package]]
 name = "rom-converto-gui"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "anyhow",
  "log",
@@ -4088,7 +4088,7 @@ dependencies = [
 
 [[package]]
 name = "rom-converto-lib"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "aes",
  "anyhow",

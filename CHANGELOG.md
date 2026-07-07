@@ -1,3 +1,31 @@
+# [0.15.0](https://github.com/DevYukine/rom-converto/compare/v0.14.0...v0.15.0) (2026-07-07)
+
+
+### Bug Fixes
+
+* **gui:** keep DAT scan rows across navigation ([f095140](https://github.com/DevYukine/rom-converto/commit/f0951408e58976d8a88b0a2ecadb8ad2aeac1c70))
+
+
+### Features
+
+* accept zip, 7z, rar, and tar archive inputs transparently ([9363db3](https://github.com/DevYukine/rom-converto/commit/9363db35b69e902b15e90b5f2ae7e73f9a7fdd82))
+* **cli:** add overall batch progress bar with size and eta ([a4b2114](https://github.com/DevYukine/rom-converto/commit/a4b2114af8bd9babc573e7f3da905ec655e89f46))
+* **cli:** tiered checksum policy for dat verify and scan ([8e3f0e6](https://github.com/DevYukine/rom-converto/commit/8e3f0e6c916b16426209d120a81b278ae57de2db))
+* **ctr:** add encrypt command ([95f450a](https://github.com/DevYukine/rom-converto/commit/95f450a57a706e9a0dce220140dc674d6887e77a))
+* **dat:** show matched DAT file ([eec0881](https://github.com/DevYukine/rom-converto/commit/eec08813b277eb59202f74c7e4e7b8bb4efef220))
+* **gui:** add CTR encrypt page ([5027c0b](https://github.com/DevYukine/rom-converto/commit/5027c0b6c4ee19246dc1d73794c43197a043ac96))
+* **gui:** cancellable dat scan with live outcome rows ([77ceaa6](https://github.com/DevYukine/rom-converto/commit/77ceaa6c9e0ef1073029626172f5914a6e7ef050))
+* **gui:** managed batch queue with sections, reorder, retry ([0d7a6c2](https://github.com/DevYukine/rom-converto/commit/0d7a6c29eb4bdafb9428a60c3117823dc65f64fd))
+* **gui:** named presets backed by the config toml ([36af11a](https://github.com/DevYukine/rom-converto/commit/36af11ae1c2c100afaf0f89580702417252c9ed4))
+* **gui:** notify and taskbar progress on batch completion ([95ad1a4](https://github.com/DevYukine/rom-converto/commit/95ad1a4580bc524287381d21397501b597891155))
+* **gui:** show before/after comparison card after conversion ([472c126](https://github.com/DevYukine/rom-converto/commit/472c126932666a7ba774c9e41457ea22c210f491))
+* one-step cso/zso/dax to chd conversion and reverse ([41a57c6](https://github.com/DevYukine/rom-converto/commit/41a57c69a5f849061ab7b63e52cad5ef00a7cf86))
+* persistent content hash and verify cache ([1e903e2](https://github.com/DevYukine/rom-converto/commit/1e903e2089ffeb40d024baf87a172fcde5774710))
+* trust zip crc32 for quick dat verify ([37e8b9e](https://github.com/DevYukine/rom-converto/commit/37e8b9e397640065d024630908d66b743d59af4c))
+* warn on known format footguns ([4ccc311](https://github.com/DevYukine/rom-converto/commit/4ccc31181803727e3b9f98f812977d86d033adff))
+
+
+
 # [0.14.0](https://github.com/DevYukine/rom-converto/compare/v0.13.0...v0.14.0) (2026-07-03)
 
 
@@ -86,22 +114,6 @@
 * **chd:** route cd-media isos to cd-mode chd with chdman parity ([763f1c5](https://github.com/DevYukine/rom-converto/commit/763f1c56c6d9d76949353a8b4e676a140a7459af))
 * **ux:** consistent cli flags with --force/--output/--recursive everywhere, verify exit codes, gui verify pages and full cli option parity ([69fe088](https://github.com/DevYukine/rom-converto/commit/69fe0881e988432642f09869eff9af796d1b465c))
 * **verify:** disc integrity for dol/rvl/wup, chd extract/verify --recursive, ctr seed-crypto info, wup WUD/WUX info ([d6c3564](https://github.com/DevYukine/rom-converto/commit/d6c3564fffc519f5f03de85cce646f2e628369ca))
-
-
-
-# [0.10.0](https://github.com/DevYukine/rom-converto/compare/v0.9.1...v0.10.0) (2026-06-09)
-
-
-### Bug Fixes
-
-* **ctr:** embed retail cert chain and ticket content index for converted CIAs ([eacbdf0](https://github.com/DevYukine/rom-converto/commit/eacbdf07b201ea0de9d5c733a4a6a3da1dd0d152))
-
-
-### Features
-
-* **cue:** merge multi-bin disc images into a single bin/cue ([3775d40](https://github.com/DevYukine/rom-converto/commit/3775d40255767ee40d01eb61ff46798381ad4d91))
-* **info:** cross-console ROM inspection (CLI + GUI) ([99dcad4](https://github.com/DevYukine/rom-converto/commit/99dcad4686c63a8c1b5585ff0f7bc545f910041a))
-* **rvl:** add wbfs compression/decompression support ([767f929](https://github.com/DevYukine/rom-converto/commit/767f9296e7658ca9a98bcfdf20bce99d3db4c6c9))
 
 
 
