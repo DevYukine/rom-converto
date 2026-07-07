@@ -49,29 +49,39 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             classifier: linux-x64
+            force_cross: false
           - os: ubuntu-latest
             target: armv7-unknown-linux-gnueabihf
             classifier: linux-arm7
+            force_cross: false
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             classifier: linux-arm64
+            force_cross: false
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
             classifier: linux-x64-musl
+            force_cross: true
           - os: ubuntu-latest
             target: x86_64-unknown-freebsd
             classifier: freebsd-x64
+            force_cross: false
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             classifier: windows-x64
+            force_cross: false
           - os: macos-latest
             target: x86_64-apple-darwin
             classifier: macos-x64
+            force_cross: false
           - os: macos-latest
             target: aarch64-apple-darwin
             classifier: macos-arm64
+            force_cross: false
 
     runs-on: ${{ matrix.os }}
+    env:
+      CARGO_TARGET_X86_64_UNKNOWN_FREEBSD_RUSTFLAGS: "-l stdc++"
     steps:
       - name: Checkout Source code
         uses: actions/checkout@v6
@@ -85,6 +95,7 @@ jobs:
           target: ${{ matrix.target }}
           args: "--release -p rom-converto-cli"
           strip: true
+          force-use-cross: ${{ matrix.force_cross }}
 
       - name: Package binary (Unix)
         if: runner.os != 'Windows'
