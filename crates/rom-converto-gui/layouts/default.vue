@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useCtrCdnToCiaStore } from "~/stores/ctr-cdn-to-cia";
 import { useCtrDecryptStore } from "~/stores/ctr-decrypt";
+import { useCtrEncryptStore } from "~/stores/ctr-encrypt";
 import { useCtrCompressStore } from "~/stores/ctr-compress";
 import { useCtrDecompressStore } from "~/stores/ctr-decompress";
 import { useCtrVerifyStore } from "~/stores/ctr-verify";
@@ -74,6 +75,7 @@ const sections: SidebarSection[] = [
     links: [
       { to: "/ctr/cdn-to-cia", label: "CDN to CIA", store: () => useCtrCdnToCiaStore(), icon: "folder-arrow" },
       { to: "/ctr/decrypt", label: "Decrypt ROM", store: () => useCtrDecryptStore(), icon: "lock-open" },
+      { to: "/ctr/encrypt", label: "Encrypt ROM", store: () => useCtrEncryptStore(), icon: "lock-closed" },
       { to: "/ctr/compress", label: "Compress to Z3DS", store: () => useCtrCompressStore(), icon: "compress" },
       { to: "/ctr/decompress", label: "Decompress Z3DS", store: () => useCtrDecompressStore(), icon: "expand" },
       { to: "/ctr/verify", label: "Verify 3DS ROM", store: () => useCtrVerifyStore(), icon: "shield-check" },
@@ -316,6 +318,9 @@ function isActiveSection(key: string): boolean {
                     </svg>
                     <svg v-else-if="link.icon === 'lock-open'" aria-hidden="true" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
                       <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 10.5V6.75a4.5 4.5 0 119 0v3.75M3.75 21.75h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H3.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
+                    </svg>
+                    <svg v-else-if="link.icon === 'lock-closed'" aria-hidden="true" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
                     </svg>
                     <svg v-else-if="link.icon === 'compress'" aria-hidden="true" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
                       <path stroke-linecap="round" stroke-linejoin="round" d="M9 9V4.5M9 9H4.5M9 9L3.75 3.75M9 15v4.5M9 15H4.5M9 15l-5.25 5.25M15 9h4.5M15 9V4.5M15 9l5.25-5.25M15 15h4.5M15 15v4.5m0-4.5l5.25 5.25" />

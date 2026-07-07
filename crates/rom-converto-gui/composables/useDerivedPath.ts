@@ -81,6 +81,14 @@ export function deriveDecryptedPath(input: string): string {
   return `${stem}.decrypted.${ext || "cia"}`;
 }
 
+export function deriveEncryptedPath(input: string): string {
+  input = stripArchiveExt(input);
+  const ext = getExt(input);
+  const dot = input.lastIndexOf(".");
+  const stem = dot === -1 ? input : input.slice(0, dot);
+  return `${stem}.encrypted.${ext || "cia"}`;
+}
+
 const CONVERT_MAP: Record<string, string> = {
   cia: "3ds",
   "3ds": "cia",

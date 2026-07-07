@@ -28,7 +28,8 @@ use rom_converto_lib::nintendo::ctr::z3ds::{
 };
 use rom_converto_lib::nintendo::ctr::{
     CdnToCiaOptions, convert_cdn_to_cia_cancellable, decrypt_rom_cancellable,
-    derive_decrypted_path, generate_ticket_from_cdn,
+    derive_decrypted_path, derive_encrypted_path, encrypt_rom_cancellable,
+    generate_ticket_from_cdn,
 };
 use rom_converto_lib::nintendo::dol::verify::{DolVerifyOptions, verify_dol};
 use rom_converto_lib::nintendo::nx::{
@@ -359,6 +360,7 @@ fn ext_of(path: &Path) -> String {
 }
 
 const CTR_DECRYPT_EXTS: &[&str] = &["cia", "3ds", "cci", "cxi"];
+const CTR_ENCRYPT_EXTS: &[&str] = &["cia", "3ds", "cci", "cxi"];
 const CTR_COMPRESS_EXTS: &[&str] = &["cia", "cci", "3ds", "cxi", "3dsx"];
 const CTR_DECOMPRESS_EXTS: &[&str] = &["zcia", "zcci", "zcxi", "z3dsx"];
 const CTR_CONVERT_EXTS: &[&str] = &["cia", "3ds", "cci"];
@@ -862,6 +864,110 @@ pub async fn cmd_decrypt_rom(
             .build()
             .map_err(err_to_string)?;
         rt.block_on(decrypt_rom_cancellable(
+            &resolved_path,
+            &output,
+            progress.as_ref(),
+            token,
+        ))
+        .map_err(err_to_string)
+    })
+    .join()
+    .map_err(|_| {
+        "The operation failed unexpectedly. Try again, and report a bug if it keeps happening."
+            .to_string()
+    });
+    finish(&state, key).await;
+    result??;
+    let out_bytes = input_size(&record_output);
+    Ok(RunOutcome {
+        message: format!("Wrote {out_display}"),
+        record: None,
+        input_bytes: in_bytes,
+        output_bytes: out_bytes,
+        comparison: Some(comparison_sizes(
+            &record_input,
+            &record_output,
+            in_bytes,
+            out_bytes,
+        )),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub async fn cmd_encrypt_rom(
+    app: AppHandle,
+    state: State<'_, ActiveCancel>,
+    input: PathBuf,
+    output: Option<PathBuf>,
+    on_conflict: Option<String>,
+    skip_space_check: bool,
+    output_template: Option<String>,
+    dry_run: Option<bool>,
+    task_id: Option<String>,
+) -> Result<RunOutcome, String> {
+    let key = task_id.as_deref().unwrap_or("encrypt");
+    let progress = Arc::new(TauriProgress::new(app, key));
+    let dry_run = dry_run.unwrap_or(false);
+    let resolved = resolve_archive_input(input.clone(), CTR_ENCRYPT_EXTS).await?;
+    let basis = resolved.output_basis().to_path_buf();
+    let ext = ext_of(&derive_encrypted_path(&basis));
+    let desired = pick_output(
+        output,
+        output_template.as_deref(),
+        &basis,
+        &ext,
+        None,
+        || derive_encrypted_path(&basis),
+        dry_run,
+    )?;
+    if dry_run {
+        let line = plan_line(
+            progress.as_ref(),
+            "encrypt",
+            &input,
+            &desired,
+            on_conflict.as_deref(),
+            None,
+            rom_converto_lib::util::OutputVerify::None,
+            None,
+        )
+        .await?;
+        return Ok(RunOutcome::text(line.display_text()));
+    }
+    let output = match resolve_output(
+        progress.as_ref(),
+        &desired,
+        on_conflict.as_deref(),
+        rom_converto_lib::util::OutputVerify::None,
+    )
+    .await?
+    {
+        Some(p) => p,
+        None => {
+            return Ok(RunOutcome::text(format!(
+                "Skipped existing {}",
+                desired.display()
+            )));
+        }
+    };
+    let out_display = output.display().to_string();
+    preflight_space(
+        output.parent().unwrap_or(&output),
+        input_size(resolved.path()),
+        skip_space_check,
+    )?;
+    let record_input = input.clone();
+    let record_output = output.clone();
+    let in_bytes = input_size(&input);
+    let resolved_path = resolved.path().to_path_buf();
+    let token = begin(&state, key).await;
+    let result = std::thread::spawn(move || -> Result<(), String> {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(err_to_string)?;
+        rt.block_on(encrypt_rom_cancellable(
             &resolved_path,
             &output,
             progress.as_ref(),

@@ -30,6 +30,7 @@ fn main() {
             cmd_cdn_to_cia,
             cmd_generate_ticket,
             cmd_decrypt_rom,
+            cmd_encrypt_rom,
             cmd_compress_rom,
             cmd_decompress_rom,
             cmd_chd_compress,

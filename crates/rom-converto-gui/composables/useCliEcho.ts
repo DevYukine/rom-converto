@@ -163,6 +163,8 @@ export function buildCliCommand(command: string, args: Record<string, unknown>):
       return join([args.dryRun === true && "--dry-run", args.skipSpaceCheck === true && "--skip-space-check", "ctr", "decompress", conflict(args), template(args), quote(str(args.input)), outputArg(args)]);
     case "cmd_decrypt_rom":
       return join([args.dryRun === true && "--dry-run", args.skipSpaceCheck === true && "--skip-space-check", "ctr", "decrypt", conflict(args), template(args), quote(str(args.input)), outputArg(args)]);
+    case "cmd_encrypt_rom":
+      return join([args.dryRun === true && "--dry-run", args.skipSpaceCheck === true && "--skip-space-check", "ctr", "encrypt", conflict(args), template(args), quote(str(args.input)), outputArg(args)]);
     case "cmd_convert_ctr":
       return join([args.dryRun === true && "--dry-run", args.skipSpaceCheck === true && "--skip-space-check", "ctr", "convert", conflict(args), template(args), quote(str(args.input)), outputArg(args)]);
     case "cmd_verify_ctr":
