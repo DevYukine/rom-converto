@@ -1,62 +1,22 @@
 <script setup lang="ts">
 import { storeToRefs } from "pinia";
-import { listen } from "@tauri-apps/api/event";
 import { useDatScanStore } from "~/stores/datScan";
-import type { ScanLevel } from "~/stores/datScan";
+import type { DatScanRowEvent, DatScanResult, DatScanStatus, ScanLevel } from "~/stores/datScan";
 import type { DatResultRow } from "~/components/DatResultList.vue";
 
 const store = useDatScanStore();
-const { input, maxDepth, scanLevel, quick, result, error, loading } = storeToRefs(store);
+const { input, maxDepth, scanLevel, quick, result, error, loading, commandLine, statusFilter, scanResult, liveRows } = storeToRefs(store);
 const { run, cancelled, abort } = useOperation({ result, error, loading });
 const progress = useProgress("dat-scan");
-const commandLine = ref("");
+
+void store.ensureRowListener();
 
 const { canRun, runBlockReason } = usePageGating({
   input,
   emptyInputReason: "Select a directory to scan against the Playmatch database.",
 });
 
-interface DatScanRow {
-  path: string;
-  status: "matched" | "misnamed" | "hint" | "unknown" | "unsupported" | "failed";
-  gameName: string | null;
-  canonicalStem: string | null;
-  error: string | null;
-}
-
-// Live per-file event streamed while the scan is still running; "pending" is
-// emitted as soon as a file is digested, before the bulk match query settles.
-interface DatScanRowEvent extends Omit<DatScanRow, "status"> {
-  status: DatScanRow["status"] | "pending";
-}
-
-interface DatScanResult {
-  kind: "scan";
-  matched: number;
-  misnamed: number;
-  hint: number;
-  unknown: number;
-  unsupported: number;
-  failed: number;
-  rows: DatScanRow[];
-}
-
-const scanResult = ref<DatScanResult | null>(null);
-const liveRows = ref(new Map<string, DatScanRowEvent>());
-
-let unlistenRow: (() => void) | null = null;
-
-onMounted(async () => {
-  unlistenRow = await listen<DatScanRowEvent>("dat-scan-row", (event) => {
-    liveRows.value.set(event.payload.path, event.payload);
-  });
-});
-
-onUnmounted(() => {
-  unlistenRow?.();
-});
-
-const STATUS_COLOR: Record<DatScanRow["status"], "emerald" | "amber" | "zinc" | "red"> = {
+const STATUS_COLOR: Record<DatScanStatus, "emerald" | "amber" | "zinc" | "red"> = {
   matched: "emerald",
   misnamed: "amber",
   hint: "amber",
@@ -65,7 +25,7 @@ const STATUS_COLOR: Record<DatScanRow["status"], "emerald" | "amber" | "zinc" | 
   failed: "red",
 };
 
-const STATUS_LABEL: Record<DatScanRow["status"], string> = {
+const STATUS_LABEL: Record<DatScanStatus, string> = {
   matched: "Matched",
   misnamed: "Misnamed",
   hint: "Hint",
@@ -106,8 +66,6 @@ const SCAN_LEVEL_HINT: Record<ScanLevel, string> = {
   sha256: "Adds a SHA-256 digest per file; slowest, highest confidence.",
 };
 
-const statusFilter = ref<DatScanRow["status"] | "all">("all");
-
 const sourceRows = computed<DatScanRowEvent[]>(() =>
   scanResult.value ? scanResult.value.rows : Array.from(liveRows.value.values()),
 );
@@ -118,7 +76,7 @@ const statusCounts = computed<Record<string, number>>(() => {
   return counts;
 });
 
-function toggleFilter(status: DatScanRow["status"]) {
+function toggleFilter(status: DatScanStatus) {
   statusFilter.value = statusFilter.value === status ? "all" : status;
 }
 
@@ -138,9 +96,7 @@ function scanArgs() {
 
 async function execute() {
   progress.reset();
-  scanResult.value = null;
-  liveRows.value.clear();
-  statusFilter.value = "all";
+  store.clearScanState();
   const args = scanArgs();
   commandLine.value = buildCliCommand("cmd_dat_scan", args);
   await run("cmd_dat_scan", args);
