@@ -1,0 +1,180 @@
+name: Build GUI
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "Git ref to build. Defaults to the caller ref."
+        required: false
+        type: string
+        default: ""
+      release:
+        description: "Upload build outputs to a GitHub Release instead of workflow artifacts."
+        required: false
+        type: boolean
+        default: false
+      release_tag:
+        description: "Release tag to upload assets to when release is true."
+        required: false
+        type: string
+        default: ""
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: GUI - ${{ matrix.classifier }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            classifier: linux-x64
+            bundles: --bundles appimage,deb
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            classifier: windows-x64
+            bundles: --bundles nsis
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            classifier: macos-x64
+            bundles: >-
+              --bundles app,dmg
+              --ci
+              --config '{"bundle":{"macOS":{"signingIdentity":"-"}}}'
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            classifier: macos-arm64
+            bundles: >-
+              --bundles app,dmg
+              --ci
+              --config '{"bundle":{"macOS":{"signingIdentity":"-"}}}'
+
+    runs-on: ${{ matrix.os }}
+    env:
+      APPIMAGE_EXTRACT_AND_RUN: "1"
+      ROM_CONVERTO_RELEASE: ${{ inputs.release && '1' || '' }}
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: 11
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: crates/rom-converto-gui/pnpm-lock.yaml
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: gui-${{ inputs.release && 'release' || 'commit' }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            gui-${{ inputs.release && 'release' || 'commit' }}-${{ matrix.target }}-cargo-
+            gui-${{ matrix.target }}-cargo-
+
+      - name: Install frontend dependencies
+        working-directory: crates/rom-converto-gui
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Tauri bundles
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: crates/rom-converto-gui
+          tauriScript: pnpm tauri
+          args: --target ${{ matrix.target }} ${{ matrix.bundles }} -- --locked
+
+      - name: Package bundles
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          classifier="${{ matrix.classifier }}"
+          bundle_dir="target/${{ matrix.target }}/release/bundle"
+          mkdir -p artifact
+
+          case "$RUNNER_OS" in
+            Linux)
+              appimages=("$bundle_dir/appimage/"*.AppImage "$bundle_dir/appimage/"*.appimage)
+              debs=("$bundle_dir/deb/"*.deb)
+
+              (( ${#appimages[@]} > 0 ))
+              (( ${#debs[@]} > 0 ))
+
+              cp "${appimages[0]}" "artifact/rom-converto-gui-${classifier}.AppImage"
+              cp "${debs[0]}" "artifact/rom-converto-gui-${classifier}.deb"
+              ;;
+
+            macOS)
+              app="$bundle_dir/macos/rom-converto.app"
+              dmgs=("$bundle_dir/dmg/"*.dmg)
+
+              codesign --verify --deep --strict --verbose=2 "$app"
+              (( ${#dmgs[@]} > 0 ))
+
+              ditto -c -k --sequesterRsrc --keepParent \
+                "$app" \
+                "artifact/rom-converto-gui-${classifier}.app.zip"
+              cp "${dmgs[0]}" "artifact/rom-converto-gui-${classifier}.dmg"
+              ;;
+
+            Windows)
+              installers=("$bundle_dir/nsis/"*.exe)
+
+              (( ${#installers[@]} > 0 ))
+              cp "${installers[0]}" "artifact/rom-converto-gui-${classifier}-setup.exe"
+              ;;
+
+            *)
+              echo "Unsupported runner OS: $RUNNER_OS" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Upload workflow artifact
+        if: ${{ !inputs.release }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: rom-converto-gui-${{ matrix.classifier }}
+          path: artifact/
+          if-no-files-found: error
+
+      - name: Upload to release
+        if: ${{ inputs.release }}
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          files: artifact/*
