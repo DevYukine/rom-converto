@@ -99,7 +99,6 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
           key: gui-${{ inputs.release && 'release' || 'commit' }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             gui-${{ inputs.release && 'release' || 'commit' }}-${{ matrix.target }}-cargo-
