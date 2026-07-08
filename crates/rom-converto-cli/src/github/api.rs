@@ -3,11 +3,12 @@
 
 use crate::github::error::GithubError;
 use crate::github::model::GithubReleaseResponse;
-use crate::updater::release::ReleaseVersion;
+use crate::updater::release::{ReleaseAssetQuery, ReleaseVersion, select_release_asset_name};
 use crate::util::http::{CLIENT, USER_AGENT};
 use bytes::Bytes;
 use futures::Stream;
 use lazy_static::lazy_static;
+use log::debug;
 use reqwest::{Client, Method};
 use std::time::Duration;
 use tower::limit::RateLimit;
@@ -38,22 +39,36 @@ impl GithubApi {
         })
     }
 
-    pub async fn get_latest_release_file_by_name(
+    pub async fn get_latest_release_file_by_asset_query(
         &mut self,
         user: &str,
         repo: &str,
-        file_name: &str,
+        asset_query: &ReleaseAssetQuery,
     ) -> anyhow::Result<impl Stream<Item = reqwest::Result<Bytes>>> {
         let response = self.get_latest_release(user, repo).await?;
 
-        let asset = response.assets.iter().find(|asset| asset.name == file_name);
+        let asset_name = select_release_asset_name(
+            response.assets.iter().map(|asset| asset.name.as_str()),
+            asset_query,
+        );
 
-        let asset = match asset {
-            Some(asset) => asset,
+        let asset_name = match asset_name {
+            Some(asset_name) => asset_name,
             None => {
-                return Err(GithubError::NoAssetFound(file_name.to_string()).into());
+                return Err(GithubError::NoAssetFound(asset_query.expected_name.clone()).into());
             }
         };
+
+        let asset = response
+            .assets
+            .iter()
+            .find(|asset| asset.name == asset_name)
+            .ok_or_else(|| GithubError::NoAssetFound(asset_query.expected_name.clone()))?;
+
+        debug!(
+            "Selected GitHub release asset '{}' for expected asset '{}'",
+            asset.name, asset_query.expected_name
+        );
 
         let req = self
             .client

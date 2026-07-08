@@ -10,6 +10,7 @@ use release::compare_latest_release_to_current_version;
 use std::env::temp_dir;
 use tokio::fs::{File, create_dir_all};
 use tokio::io;
+use tokio::io::AsyncWriteExt;
 use tokio::io::BufWriter;
 
 mod constants;
@@ -98,18 +99,21 @@ pub async fn self_update(github_api: &mut GithubApi) -> anyhow::Result<()> {
 
     debug!("Created temp folder: {temp_folder_name:?}");
 
-    let filename = match release::get_filename_for_current_target_triple() {
-        Ok(file_name) => file_name,
+    let asset_query = match release::get_release_asset_query_for_current_target() {
+        Ok(asset_query) => asset_query,
         Err(_) => {
             error!("No prebuild found for your platform, you'll have to build it yourself.");
             return Ok(());
         }
     };
 
-    debug!("Got GitHub release filename: {filename}");
+    debug!(
+        "Looking for GitHub release asset matching: {}",
+        asset_query.expected_name
+    );
 
     let mut file_byte_stream = github_api
-        .get_latest_release_file_by_name(GH_USER, GH_REPO, filename.as_str())
+        .get_latest_release_file_by_asset_query(GH_USER, GH_REPO, &asset_query)
         .await?;
 
     let temp_file_path = temp_folder_name.join("rom-converto");
@@ -122,7 +126,21 @@ pub async fn self_update(github_api: &mut GithubApi) -> anyhow::Result<()> {
         io::copy(&mut item?.as_ref(), &mut buffered_file).await?;
     }
 
+    buffered_file.flush().await?;
+    drop(buffered_file);
+
     debug!("Downloaded the new release to: {temp_file_path:?}");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut permissions = tokio::fs::metadata(&temp_file_path).await?.permissions();
+        permissions.set_mode(0o755);
+        tokio::fs::set_permissions(&temp_file_path, permissions).await?;
+
+        debug!("Marked downloaded release as executable: {temp_file_path:?}");
+    }
 
     let current_exe = std::env::current_exe()?;
 
