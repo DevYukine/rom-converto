@@ -100,13 +100,14 @@ A TOML config file lets you set per-format default flags and named presets so lo
 
 ## How it works
 
-The project is a Cargo workspace with three crates:
+The project is a Cargo workspace with four crates:
 
 | Crate | Role |
 |---|---|
 | `rom-converto-lib` | All conversion, compression, encryption, and verification logic |
 | `rom-converto-cli` | Command line interface |
 | `rom-converto-gui` | Desktop app (Tauri + Nuxt) |
+| `rom-converto-benchmark` | Benchmark harness comparing rom-converto against external reference tools |
 
 Both the CLI and the GUI call the same library functions, so an equivalent run through either front end produces identical output.
 
@@ -119,6 +120,8 @@ Compression output is measured against each format's reference encoder (Dolphin,
 - [`benchmark/Wii.md`](benchmark/Wii.md): Wii RVZ results
 - [`benchmark/Switch.md`](benchmark/Switch.md): Switch NSZ/XCZ results
 - [`benchmark/CHD.md`](benchmark/CHD.md): CD/DVD CHD results
+
+Reproduce them with the `rom-converto-benchmark` crate; see [`docs/development.md`](docs/development.md) for the commands.
 
 ## Development
 

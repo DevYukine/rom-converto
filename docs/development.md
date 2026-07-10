@@ -5,9 +5,10 @@
 - A recent stable Rust toolchain. Install it from [rustup](https://www.rust-lang.org/tools/install).
 - For the GUI: [Node.js 22+](https://nodejs.org/) and [pnpm](https://pnpm.io/installation).
 
-The project is a Cargo workspace with three crates: `rom-converto-lib` (all conversion,
+The project is a Cargo workspace with four crates: `rom-converto-lib` (all conversion,
 compression, encryption, and verification logic), `rom-converto-cli` (the command line
-interface), and `rom-converto-gui` (the Tauri desktop app). Both front ends call the same
+interface), `rom-converto-gui` (the Tauri desktop app), and `rom-converto-benchmark` (a
+harness that compares rom-converto against reference tools). Both front ends call the same
 library functions.
 
 ## Running in development
@@ -57,6 +58,30 @@ skipped unless an environment variable points at the binary:
 ROMCONVERTO_CHDMAN=$(which chdman) cargo test -p rom-converto-lib chdman
 ROMCONVERTO_MAXCSO=$(which maxcso) cargo test -p rom-converto-lib maxcso
 ```
+
+## Running benchmarks
+
+The `rom-converto-benchmark` crate runs the compression comparisons behind the
+`benchmark/*.md` numbers with the same methodology on your own hardware. Build the
+release binary first, then run a platform:
+
+```
+cargo build --release -p rom-converto-cli
+cargo run -p rom-converto-benchmark -- <platform> [inputs]
+```
+
+| Platform subcommand | Reference tool | Input flags |
+|---|---|---|
+| `switch` | `nsz` | `--nsp`, `--xci`, `--keys` |
+| `wii` | `DolphinTool` | `--iso`, `--levels` |
+| `gamecube` | `DolphinTool` | `--iso`, `--levels` |
+| `chd` | `chdman` | `--cue` (with a sibling `.bin`) |
+| `ctr` (alias `3ds`) | `z3ds_compressor` | `--three-ds`, `--cia` (both decrypted) |
+
+Each reference tool must be installed and either on your `PATH` or placed next to the
+rom-converto binary. A missing tool stops the run with a message naming the tool to
+install. Inputs can also come from the `ROMCONVERTO_BENCH_*` environment variables, and
+`rom-converto-benchmark all` runs every platform whose variables are set.
 
 ## CI gates
 

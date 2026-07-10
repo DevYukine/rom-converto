@@ -1,52 +1,30 @@
 # Wii RVZ benchmark
 
-rom-converto versus `DolphinTool.exe` 2603a-x64 on Wii disc images,
-default 128 KiB chunk size, zstd level 5 and level 22.
+rom-converto versus `DolphinTool` on a Wii disc image with encrypted
+partitions, default 128 KiB chunk size, zstd level 5 and level 22. Full
+uninterpreted tables, hosts, and methodology:
 
-## Methodology
+- [Windows, x64](windows/Wii.md), DolphinTool 2632, head-to-head
+- [macOS, Apple Silicon](macos/Wii.md), rom-converto only (DolphinTool
+  ships no macOS arm64 CLI build)
 
-- **N = 10** runs per metric, **interleaved execution**: one Dolphin run,
-  3 s cooldown, one rom-converto run, 3 s cooldown, repeat.
-- `taskkill /F /IM DolphinTool.exe rom-converto.exe` between every run so
-  no modal error dialog or zombie process can leak state across runs.
-- **Warm stats exclude run 1** (cold cache).
-- Delta is the rom-converto / Dolphin ratio; values below 1.00× mean
-  rom-converto is faster.
-- After every compress, `DolphinTool.exe header -i <our.rvz>` runs as a
-  parse sanity check.
-- Harness: `benchmark/dolphin_benchmark.py` (not committed, host
-  dependent).
+## Summary
 
-Input: one 4.38 GB Wii test disc with two encrypted partitions.
-
-## Results
-
-| Operation | Dolphin warm mean | rom-converto warm mean | Delta | Size delta |
-|---|---:|---:|---:|---:|
-| Compress L5 | 2.575 s (sigma = 0.156) | 2.762 s (sigma = 0.107) | **1.07×** | −63,268 B (−0.0029 %) |
-| Compress L22 | 20.411 s (sigma = 0.817) | 21.040 s (sigma = 2.969) | **1.03×** | −62,132 B (−0.0029 %) |
-| Decompress | 6.664 s (sigma = 0.188) | **6.455 s (sigma = 0.159)** | **0.97×** | - |
-
-`DolphinTool.exe header` accepts every compressed output.
+| Operation | Windows vs Dolphin | Windows rom-converto | macOS rom-converto |
+|---|---:|---:|---:|
+| Compress L5 | 1.18x (Dolphin faster) | 4.959 s | 3.708 s |
+| Compress L22 | 1.02x faster | 32.715 s | 20.742 s |
+| Decompress | 1.02x faster | 7.573 s | 9.315 s |
 
 ## Interpretation
 
-Every Wii operation is within 7 % of Dolphin; decompress is slightly
-faster. Compression ratios are marginally better than Dolphin's on both
-L5 and L22, within zstd framing noise.
-
-The Wii path is more work per cluster than GameCube (SHA-1 + AES +
-hash hierarchy recompute + exception list build), so the fixed dispatcher
-overhead that hurts GC L5 gets amortised across more compute and the
-ratio stays close to 1.0× even at L5.
-
-## Cross-tool parity
-
-The gated integration test
-`nintendo::rvz::integration_tests::dolphin_parity_cross_tool_round_trip`
-runs a four-step bidirectional round trip for every ISO set via env
-var, comparing SHA-1 digests against the original disc. Both
-directions are byte identical for Wii inputs, including partitions
-whose declared `data_size` is not a multiple of the 2 MiB cluster
-size (partial last cluster, padding sectors in the following raw
-region).
+- On Windows every Wii operation lands within 18 % of Dolphin, with
+  L22 and decompress at effective parity (1.02x faster). The Wii path
+  does more work per cluster than GameCube (SHA-1, AES, hash hierarchy
+  recompute), which amortises the fixed dispatcher overhead that hurts
+  the GameCube L5 case.
+- Compression ratio is at parity on both levels (size deltas within
+  +-0.002 %).
+- The M4 is markedly faster than the 5900X on L5 and L22 compress on
+  this per-core-bound path, while the desktop wins decompress.
+- `DolphinTool header` accepts every rom-converto RVZ on Windows.
