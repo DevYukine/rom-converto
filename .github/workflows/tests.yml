@@ -33,8 +33,8 @@ jobs:
       - name: Install Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Run cargo check (lib + cli)
-        run: cargo check -p rom-converto-lib -p rom-converto-cli
+      - name: Run cargo check (lib + cli + benchmark)
+        run: cargo check -p rom-converto-lib -p rom-converto-cli -p rom-converto-benchmark
 
   test:
     name: Cargo test
@@ -55,8 +55,8 @@ jobs:
       - name: Install Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Run cargo test (lib + cli)
-        run: cargo test -p rom-converto-lib -p rom-converto-cli
+      - name: Run cargo test (lib + cli + benchmark)
+        run: cargo test -p rom-converto-lib -p rom-converto-cli -p rom-converto-benchmark
 
   fmt:
     name: Cargo fmt
@@ -94,5 +94,5 @@ jobs:
         with:
           components: clippy
 
-      - name: Run cargo clippy (lib + cli)
-        run: cargo clippy -p rom-converto-lib -p rom-converto-cli -- -D warnings
+      - name: Run cargo clippy (lib + cli + benchmark)
+        run: cargo clippy -p rom-converto-lib -p rom-converto-cli -p rom-converto-benchmark -- -D warnings
