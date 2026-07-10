@@ -159,7 +159,7 @@ pub async fn self_update(github_api: &mut GithubApi) -> anyhow::Result<()> {
 
     tokio::fs::remove_dir(&temp_folder_name).await?;
 
-    debug!("Removed temp folder: {:?}", &temp_folder_name);
+    debug!("Removed temp folder: {temp_folder_name:?}");
 
     info!(
         "Updated to version {latest_version} (be aware that the old executable will be deleted on next use)"
