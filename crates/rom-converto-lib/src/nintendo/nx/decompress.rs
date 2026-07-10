@@ -599,4 +599,146 @@ mod tests {
             recovered.len()
         );
     }
+
+    fn build_hfs0_partition(files: &[(&str, Vec<u8>)]) -> Vec<u8> {
+        let specs: Vec<Hfs0FileSpec> = files
+            .iter()
+            .map(|(name, data)| Hfs0FileSpec {
+                name: name.to_string(),
+                size: data.len() as u64,
+                sha256: hfs0_mod::hash_first_chunk(data, DEFAULT_HASHED_REGION),
+                hashed_region_size: DEFAULT_HASHED_REGION,
+            })
+            .collect();
+        // Real carts pad sub-partition headers to at least 0x200.
+        let hdr = hfs0_mod::build_header(
+            &specs,
+            &Hfs0LayoutHints {
+                target_total_header_size: Some(DEFAULT_HASHED_REGION as usize),
+                first_file_data_offset: 0,
+            },
+        )
+        .unwrap();
+        let mut out = hdr.bytes;
+        for (_, data) in files {
+            out.extend_from_slice(data);
+        }
+        out
+    }
+
+    fn build_stub_partition() -> Vec<u8> {
+        hfs0_mod::build_header(
+            &[],
+            &Hfs0LayoutHints {
+                target_total_header_size: Some(DEFAULT_HASHED_REGION as usize),
+                first_file_data_offset: 0,
+            },
+        )
+        .unwrap()
+        .bytes
+    }
+
+    fn build_synthetic_xci(partitions: &[(&str, Vec<u8>)]) -> Vec<u8> {
+        let specs: Vec<Hfs0FileSpec> = partitions
+            .iter()
+            .map(|(name, blob)| Hfs0FileSpec {
+                name: name.to_string(),
+                size: blob.len() as u64,
+                sha256: hfs0_mod::hash_first_chunk(blob, DEFAULT_HASHED_REGION),
+                hashed_region_size: DEFAULT_HASHED_REGION,
+            })
+            .collect();
+        let root_hdr = hfs0_mod::build_header(&specs, &Hfs0LayoutHints::default()).unwrap();
+        let mut out = vec![0u8; 0xF000];
+        out[0x100..0x104].copy_from_slice(b"HEAD");
+        out[0x130..0x138].copy_from_slice(&0xF000u64.to_le_bytes());
+        out.extend_from_slice(&root_hdr.bytes);
+        for (_, blob) in partitions {
+            out.extend_from_slice(blob);
+        }
+        out
+    }
+
+    /// XCZ must carry empty update/logo/normal partitions: nsz's XCZ
+    /// decompressor overlaps partitions whenever a non-secure one has
+    /// files, so content there can never survive an nsz round trip.
+    #[test]
+    fn xci_round_trip_stubs_content_bearing_non_secure_partitions() {
+        let nca = build_synthetic_nca(0x40200);
+        let update = build_hfs0_partition(&[
+            ("a.nca", vec![0x5A; 0x600]),
+            ("b.cnmt.nca", vec![0xA5; 0xE00]),
+        ]);
+        let logo = build_hfs0_partition(&[
+            ("NintendoLogo.png", vec![0x11; 0x300]),
+            ("StartupMovie.gif", vec![0x22; 0x500]),
+        ]);
+        let normal = build_stub_partition();
+        let secure =
+            build_hfs0_partition(&[("game.nca", nca.clone()), ("ticket.tik", vec![0xAB; 16])]);
+        let xci_blob = build_synthetic_xci(&[
+            ("update", update),
+            ("logo", logo),
+            ("normal", normal.clone()),
+            ("secure", secure.clone()),
+        ]);
+
+        let dir = tempfile::tempdir().unwrap();
+        let xci_path = dir.path().join("game.xci");
+        let xcz_path = dir.path().join("game.xcz");
+        let recovered_path = dir.path().join("recovered.xci");
+        fs::write(&xci_path, &xci_blob).unwrap();
+
+        let keys = synthetic_keyset();
+        let opts = NxCompressOptions {
+            level: 3,
+            mode: NczMode::Solid,
+        };
+        compress_container(&xci_path, &xcz_path, opts, &keys, &NoProgress, None).unwrap();
+
+        // Root entries must match the recomputed contiguous layout with
+        // update/logo collapsed to empty 0x200 stubs.
+        let mut reader = BufReader::new(File::open(&xcz_path).unwrap());
+        reader.seek(SeekFrom::Start(0xF000)).unwrap();
+        let root = hfs0_mod::Hfs0::read(&mut reader).unwrap();
+        let names: Vec<&str> = root.files.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["update", "logo", "normal", "secure"]);
+        let mut expect_offset = 0u64;
+        for entry in &root.files {
+            assert_eq!(entry.data_offset, expect_offset, "{}", entry.name);
+            expect_offset += entry.size;
+        }
+        for stubbed in &root.files[..3] {
+            assert_eq!(stubbed.size, 0x200, "{}", stubbed.name);
+            let part_abs = root.data_section_offset + stubbed.data_offset;
+            reader.seek(SeekFrom::Start(part_abs)).unwrap();
+            let sub = hfs0_mod::Hfs0::read(&mut reader).unwrap();
+            assert!(sub.files.is_empty(), "{}", stubbed.name);
+        }
+
+        // Decompressing must reproduce the source XCI with update/logo
+        // replaced by stubs and secure byte-identical.
+        decompress_container(&xcz_path, &recovered_path, &keys, &NoProgress, None).unwrap();
+        let expected_xci = build_synthetic_xci(&[
+            ("update", normal.clone()),
+            ("logo", normal.clone()),
+            ("normal", normal),
+            ("secure", secure),
+        ]);
+        let recovered = fs::read(&recovered_path).unwrap();
+        assert_eq!(expected_xci.len(), recovered.len());
+        if let Some(i) = (0..recovered.len()).find(|&i| expected_xci[i] != recovered[i]) {
+            panic!(
+                "recovered XCI diverges from stubbed source at 0x{i:x}: expected {:02x?} got {:02x?}",
+                &expected_xci[i..(i + 16).min(expected_xci.len())],
+                &recovered[i..(i + 16).min(recovered.len())],
+            );
+        }
+
+        // A stub-partition XCI must keep round-tripping unchanged:
+        // recompressing the recovered XCI reproduces the same XCZ.
+        let xcz2_path = dir.path().join("game2.xcz");
+        compress_container(&recovered_path, &xcz2_path, opts, &keys, &NoProgress, None).unwrap();
+        assert_eq!(fs::read(&xcz_path).unwrap(), fs::read(&xcz2_path).unwrap());
+    }
 }

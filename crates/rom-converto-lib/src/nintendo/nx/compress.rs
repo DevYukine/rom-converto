@@ -359,9 +359,31 @@ fn compress_xci(
     let mut new_partition_sizes = Vec::with_capacity(sub_partitions.len());
     let mut new_partition_first_chunk_hashes = Vec::with_capacity(sub_partitions.len());
 
-    for plan in &sub_partitions {
+    for (plan, root_entry) in sub_partitions.iter().zip(&root.files) {
         if cancel.is_some_and(|c| c.is_cancelled()) {
             return Err(NxError::Cancelled);
+        }
+        // nsz's XCZ decompressor (Hfs0Stream) starts each partition at the
+        // previous partition's header end, so any non-secure partition that
+        // carries files gets its data overwritten by the partitions that
+        // follow it. nsz -C therefore always writes empty update/logo/normal
+        // partitions; do the same or `nsz -D` produces a corrupt XCI.
+        if plan.partition_name != "secure" && !plan.sub.files.is_empty() {
+            let stub = hfs0_mod::build_header(
+                &[],
+                &Hfs0LayoutHints {
+                    target_total_header_size: Some(DEFAULT_HASHED_REGION as usize),
+                    first_file_data_offset: 0,
+                },
+            )?;
+            out.write_all(&stub.bytes)?;
+            new_partition_sizes.push(stub.bytes.len() as u64);
+            new_partition_first_chunk_hashes.push(hfs0_mod::hash_first_chunk(
+                &stub.bytes,
+                DEFAULT_HASHED_REGION,
+            ));
+            progress.inc(root_entry.size);
+            continue;
         }
         let part_start = out.stream_position()?;
         write_sub_partition(
@@ -383,8 +405,10 @@ fn compress_xci(
         final_root_specs.push(Hfs0FileSpec {
             name: plan.partition_name.clone(),
             size: new_partition_sizes[i],
+            // Stubbed partitions shrink below the input's hashed region.
+            hashed_region_size: (plan.partition_hashed_size as u64).min(new_partition_sizes[i])
+                as u32,
             sha256: new_partition_first_chunk_hashes[i],
-            hashed_region_size: plan.partition_hashed_size,
         });
     }
     let final_root_header = hfs0_mod::build_header(&final_root_specs, &root_hints)?;
