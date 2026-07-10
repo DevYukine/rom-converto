@@ -124,6 +124,25 @@ export function buildCliCommand(command: string, args: Record<string, unknown>):
         quote(str(args.cuePath)),
         quote(str(args.output)),
       ]);
+    case "cmd_cue_to_iso":
+      return join([
+        args.dryRun === true && "--dry-run",
+        args.skipSpaceCheck === true && "--skip-space-check",
+        "cue", "to-iso",
+        conflict(args),
+        quote(str(args.cuePath)),
+        quote(str(args.output)),
+      ]);
+    case "cmd_cue_to_cso":
+      return join([
+        args.dryRun === true && "--dry-run",
+        args.skipSpaceCheck === true && "--skip-space-check",
+        "cue", "to-cso",
+        args.format === "cso" && "--format cso",
+        conflict(args),
+        quote(str(args.cuePath)),
+        quote(str(args.output)),
+      ]);
     case "cmd_cdn_to_cia": {
       const output = str(args.output);
       return join([

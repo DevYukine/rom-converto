@@ -9,6 +9,7 @@ use rom_converto_lib::cso::{
     verify_cso,
 };
 use rom_converto_lib::cue::merge::merge_bin;
+use rom_converto_lib::cue::to_iso::cue_to_iso;
 use rom_converto_lib::dat::digest::quick_crc_digest;
 use rom_converto_lib::dat::model::{
     BulkIdentifyIdsResult, BulkIdentifyItem, BulkItemStatus, GameAndRelationMatchResult,
@@ -47,7 +48,7 @@ use rom_converto_lib::nintendo::wup::{
     TitleInput, WupCompressOptions, compress_titles_async_cancellable,
     decrypt_nus_title_async_cancellable, verify_wup_async,
 };
-use rom_converto_lib::pipeline::{chd_to_cso_cancellable, cso_to_chd_cancellable};
+use rom_converto_lib::pipeline::{chd_to_cso_cancellable, cso_to_chd_cancellable, cue_to_cso};
 use rom_converto_lib::playlist::{PlaylistMode, PlaylistOptions, plan_playlists};
 use rom_converto_lib::util::HashCache;
 use rom_converto_lib::util::NX_DAT_UNSUPPORTED_HINT;
@@ -1763,15 +1764,131 @@ pub async fn cmd_cue_merge(
     let out_display = output.display().to_string();
     let resolved = resolve_archive_input(cue_path, &["cue"]).await?;
     let cue_path = resolved.path().to_path_buf();
+    let required = rom_converto_lib::cue::referenced_files_size(&cue_path)
+        .await
+        .unwrap_or_else(|_| input_size(&cue_path));
     preflight_space(
         output.parent().unwrap_or(&output),
-        input_size(&cue_path),
+        required,
         skip_space_check,
     )?;
     tokio::spawn(async move { merge_bin(progress.as_ref(), cue_path, output, true).await })
         .await
         .map_err(err_to_string)?
         .map_err(err_to_string)?;
+    Ok(format!("Wrote {out_display}"))
+}
+
+#[tauri::command]
+pub async fn cmd_cue_to_iso(
+    app: AppHandle,
+    cue_path: PathBuf,
+    output: PathBuf,
+    on_conflict: Option<String>,
+    skip_space_check: bool,
+    dry_run: Option<bool>,
+) -> Result<String, String> {
+    let progress = Arc::new(TauriProgress::new(app, "cue-to-iso"));
+    if dry_run.unwrap_or(false) {
+        let line = plan_line(
+            progress.as_ref(),
+            "to-iso",
+            &cue_path,
+            &output,
+            on_conflict.as_deref(),
+            None,
+            rom_converto_lib::util::OutputVerify::None,
+            None,
+        )
+        .await?;
+        return Ok(line.display_text());
+    }
+    let output = match resolve_output(
+        progress.as_ref(),
+        &output,
+        on_conflict.as_deref(),
+        rom_converto_lib::util::OutputVerify::None,
+    )
+    .await?
+    {
+        Some(p) => p,
+        None => return Ok(format!("Skipped existing {}", output.display())),
+    };
+    let out_display = output.display().to_string();
+    let resolved = resolve_archive_input(cue_path, &["cue"]).await?;
+    let cue_path = resolved.path().to_path_buf();
+    let required = rom_converto_lib::cue::referenced_files_size(&cue_path)
+        .await
+        .unwrap_or_else(|_| input_size(&cue_path));
+    preflight_space(
+        output.parent().unwrap_or(&output),
+        required,
+        skip_space_check,
+    )?;
+    tokio::spawn(async move { cue_to_iso(progress.as_ref(), cue_path, output, true).await })
+        .await
+        .map_err(err_to_string)?
+        .map_err(err_to_string)?;
+    Ok(format!("Wrote {out_display}"))
+}
+
+#[tauri::command]
+pub async fn cmd_cue_to_cso(
+    app: AppHandle,
+    cue_path: PathBuf,
+    output: PathBuf,
+    format: String,
+    on_conflict: Option<String>,
+    skip_space_check: bool,
+    dry_run: Option<bool>,
+) -> Result<String, String> {
+    let format = match format.as_str() {
+        "cso" => CsoFormat::Cso,
+        _ => CsoFormat::Zso,
+    };
+    let progress = Arc::new(TauriProgress::new(app, "cue-to-cso"));
+    if dry_run.unwrap_or(false) {
+        let line = plan_line(
+            progress.as_ref(),
+            "to-cso",
+            &cue_path,
+            &output,
+            on_conflict.as_deref(),
+            None,
+            rom_converto_lib::util::OutputVerify::None,
+            None,
+        )
+        .await?;
+        return Ok(line.display_text());
+    }
+    let output = match resolve_output(
+        progress.as_ref(),
+        &output,
+        on_conflict.as_deref(),
+        rom_converto_lib::util::OutputVerify::None,
+    )
+    .await?
+    {
+        Some(p) => p,
+        None => return Ok(format!("Skipped existing {}", output.display())),
+    };
+    let out_display = output.display().to_string();
+    let resolved = resolve_archive_input(cue_path, &["cue"]).await?;
+    let cue_path = resolved.path().to_path_buf();
+    let required = rom_converto_lib::cue::referenced_files_size(&cue_path)
+        .await
+        .unwrap_or_else(|_| input_size(&cue_path));
+    preflight_space(
+        output.parent().unwrap_or(&output),
+        required,
+        skip_space_check,
+    )?;
+    tokio::spawn(
+        async move { cue_to_cso(progress.as_ref(), cue_path, output, format, true).await },
+    )
+    .await
+    .map_err(err_to_string)?
+    .map_err(err_to_string)?;
     Ok(format!("Wrote {out_display}"))
 }
 

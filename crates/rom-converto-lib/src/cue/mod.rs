@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 pub mod error;
 pub mod merge;
 pub mod models;
+pub mod to_iso;
 
 #[derive(Debug)]
 pub struct CueParser {
@@ -169,6 +170,23 @@ impl CueParser {
             frames: parts[2].parse()?,
         })
     }
+}
+
+/// Sums the on-disk size of the FILE entries a CUE sheet references, resolved
+/// relative to the CUE's own directory. Used to estimate output size for space
+/// preflight checks (raw sectors are larger than the ISO/output they produce,
+/// so this is a safe overestimate).
+pub async fn referenced_files_size(cue_path: impl AsRef<Path>) -> CueResult<u64> {
+    let cue_path = cue_path.as_ref();
+    let cue_sheet = CueParser::new(cue_path).parse().await?;
+    let cue_dir = cue_path.parent().unwrap_or(Path::new("."));
+
+    let mut total = 0u64;
+    for file in &cue_sheet.files {
+        let bin_path = cue_dir.join(&file.filename);
+        total += tokio::fs::metadata(&bin_path).await?.len();
+    }
+    Ok(total)
 }
 
 #[cfg(test)]

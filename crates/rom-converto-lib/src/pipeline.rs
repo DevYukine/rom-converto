@@ -16,8 +16,10 @@ use crate::chd::{
     is_dvd_mode_chd,
 };
 use crate::cso::{
-    CsoCompressOptions, compress_to_cso_cancellable, decompress_from_cso_cancellable,
+    CsoCompressOptions, CsoFormat, compress_to_cso, compress_to_cso_cancellable,
+    decompress_from_cso_cancellable,
 };
+use crate::cue::to_iso::cue_to_iso;
 use crate::util::{CancelToken, ProgressReporter};
 
 /// Sibling scratch ISO next to `output`, in the same spirit as
@@ -130,6 +132,38 @@ pub async fn chd_to_cso_cancellable(
     result
 }
 
+/// Compress a `.cue`/`.bin` straight to a `.cso`/`.zso`: extract the data
+/// track to a temporary ISO, then compress it, always removing the temporary
+/// ISO afterward.
+pub async fn cue_to_cso(
+    progress: &dyn ProgressReporter,
+    cue_path: PathBuf,
+    output_path: PathBuf,
+    format: CsoFormat,
+    force: bool,
+) -> Result<()> {
+    let temp_iso = temp_iso_path(&output_path);
+    let result: Result<()> = async {
+        cue_to_iso(progress, cue_path.clone(), temp_iso.clone(), true).await?;
+        compress_to_cso(
+            progress,
+            temp_iso.clone(),
+            output_path.clone(),
+            CsoCompressOptions {
+                format,
+                block_size: None,
+                force,
+            },
+        )
+        .await?;
+        Ok(())
+    }
+    .await;
+
+    let _ = std::fs::remove_file(&temp_iso);
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,6 +224,42 @@ mod tests {
     #[tokio::test]
     async fn cso_to_chd_round_trips() {
         round_trip_cso_to_chd(CsoFormat::Cso).await;
+    }
+
+    #[tokio::test]
+    async fn cue_to_cso_round_trips() {
+        use crate::cso::decompress_from_cso;
+
+        let dir = tempfile::tempdir().unwrap();
+        // Three MODE1/2048 sectors: the extracted ISO is the raw payload.
+        let iso = mixed_iso(3);
+        let bin_path = dir.path().join("game.bin");
+        std::fs::write(&bin_path, &iso).unwrap();
+        let cue_path = dir.path().join("game.cue");
+        std::fs::write(
+            &cue_path,
+            "FILE \"game.bin\" BINARY\r\n  TRACK 01 MODE1/2048\r\n    INDEX 01 00:00:00\r\n",
+        )
+        .unwrap();
+
+        let zso_path = dir.path().join("game.zso");
+        cue_to_cso(
+            &NoProgress,
+            cue_path,
+            zso_path.clone(),
+            CsoFormat::Zso,
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert!(!temp_iso_path(&zso_path).exists());
+
+        let restored = dir.path().join("restored.iso");
+        decompress_from_cso(&NoProgress, zso_path, restored.clone(), false)
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(&restored).unwrap(), iso);
     }
 
     #[tokio::test]

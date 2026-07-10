@@ -35,6 +35,7 @@ use rom_converto_lib::cso::{
     verify_cso,
 };
 use rom_converto_lib::cue::merge::merge_bin;
+use rom_converto_lib::cue::to_iso::cue_to_iso;
 use rom_converto_lib::nintendo::ctr::convert::{
     convert_rom_batch_cancellable, convert_rom_cancellable, derive_converted_path,
 };
@@ -70,7 +71,7 @@ use rom_converto_lib::nintendo::wup::{
     TitleInput, WupCompressOptions, compress_titles_async_cancellable,
     decrypt_nus_title_async_cancellable, verify_wup_async,
 };
-use rom_converto_lib::pipeline::{chd_to_cso_cancellable, cso_to_chd_cancellable};
+use rom_converto_lib::pipeline::{chd_to_cso_cancellable, cso_to_chd_cancellable, cue_to_cso};
 use rom_converto_lib::playlist::{PlaylistMode, PlaylistOptions, plan_playlists};
 use rom_converto_lib::util::fs::{collect_files_with_exts, is_os_junk_dir};
 use rom_converto_lib::util::{
@@ -3396,9 +3397,80 @@ async fn dispatch_command(
                 };
                 if !skip_space_check {
                     let check_dir = output_cue.parent().unwrap_or_else(|| Path::new("."));
-                    batch::space_preflight_for_size(file_len(&cmd.input_cue), check_dir)?;
+                    let required = rom_converto_lib::cue::referenced_files_size(&cmd.input_cue)
+                        .await
+                        .unwrap_or_else(|_| file_len(&cmd.input_cue));
+                    batch::space_preflight_for_size(required, check_dir)?;
                 }
                 merge_bin(&progress, cmd.input_cue, output_cue, true).await?
+            }
+            CueCommands::ToIso(cmd) => {
+                ensure_input_exists(&cmd.input)?;
+                let output = cmd
+                    .output
+                    .clone()
+                    .unwrap_or_else(|| cmd.input.with_extension("iso"));
+                let policy = policy_of(cmd.on_conflict, cmd.force);
+                let decision = resolve_output(&output, policy)?;
+                if dry_run {
+                    return dry_run_single(
+                        "to-iso", &cmd.input, &output, &decision, None, None, None,
+                    );
+                }
+                let output = match decision {
+                    WriteDecision::Skip => {
+                        log_skipped(&output);
+                        return Ok(());
+                    }
+                    WriteDecision::Write(p) => p,
+                };
+                if !skip_space_check {
+                    let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
+                    let required = rom_converto_lib::cue::referenced_files_size(&cmd.input)
+                        .await
+                        .unwrap_or_else(|_| file_len(&cmd.input));
+                    batch::space_preflight_for_size(required, check_dir)?;
+                }
+                cue_to_iso(&progress, cmd.input, output, true).await?
+            }
+            CueCommands::ToCso(cmd) => {
+                ensure_input_exists(&cmd.input)?;
+                let format = match cmd.format {
+                    CsoFormatArg::Cso => CsoFormat::Cso,
+                    CsoFormatArg::Zso => CsoFormat::Zso,
+                };
+                let output = cmd
+                    .output
+                    .clone()
+                    .unwrap_or_else(|| cmd.input.with_extension(format.extension()));
+                let policy = policy_of(cmd.on_conflict, cmd.force);
+                let decision = resolve_output(&output, policy)?;
+                if dry_run {
+                    return dry_run_single(
+                        "to-cso",
+                        &cmd.input,
+                        &output,
+                        &decision,
+                        Some(format.name()),
+                        None,
+                        None,
+                    );
+                }
+                let output = match decision {
+                    WriteDecision::Skip => {
+                        log_skipped(&output);
+                        return Ok(());
+                    }
+                    WriteDecision::Write(p) => p,
+                };
+                if !skip_space_check {
+                    let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
+                    let required = rom_converto_lib::cue::referenced_files_size(&cmd.input)
+                        .await
+                        .unwrap_or_else(|_| file_len(&cmd.input));
+                    batch::space_preflight_for_size(required, check_dir)?;
+                }
+                cue_to_cso(&progress, cmd.input, output, format, true).await?
             }
         },
         Commands::Hash(cmd) => {

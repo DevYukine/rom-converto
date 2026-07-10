@@ -42,6 +42,8 @@ fn main() {
             cmd_chd_to_cso,
             cmd_chd_verify,
             cmd_cue_merge,
+            cmd_cue_to_iso,
+            cmd_cue_to_cso,
             cmd_verify_ctr,
             cmd_convert_ctr,
             cmd_verify_dol,

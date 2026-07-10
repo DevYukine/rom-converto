@@ -19,6 +19,7 @@ import { useCsoToChdStore } from "~/stores/cso-to-chd";
 import { useCsoVerifyStore } from "~/stores/cso-verify";
 import { useCsoInfoStore } from "~/stores/cso-info";
 import { useCueMergeStore } from "~/stores/cue-merge";
+import { useCueConvertStore } from "~/stores/cue-convert";
 import { useDolCompressStore } from "~/stores/dol-compress";
 import { useDolDecompressStore } from "~/stores/dol-decompress";
 import { useDolVerifyStore } from "~/stores/dol-verify";
@@ -151,6 +152,7 @@ const sections: SidebarSection[] = [
     name: "CD (CUE/BIN)",
     links: [
       { to: "/cue/merge", label: "Merge multi-bin", store: () => useCueMergeStore(), icon: "compress" },
+      { to: "/cue/convert", label: "Convert to ISO/CSO/ZSO", store: () => useCueConvertStore(), icon: "swap" },
     ],
   },
   {
