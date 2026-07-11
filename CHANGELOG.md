@@ -1,3 +1,24 @@
+# [0.16.0](https://github.com/DevYukine/rom-converto/compare/v0.15.0...v0.16.0) (2026-07-11)
+
+
+### Bug Fixes
+
+* **ci:** avoid stale gui target cache ([bbd28e0](https://github.com/DevYukine/rom-converto/commit/bbd28e071f09825d65129d88c50db4e7e9a6a8f9))
+* **ci:** mirror rar platform fixes in release builds ([b5ec2b7](https://github.com/DevYukine/rom-converto/commit/b5ec2b78a0ebf04036b950462497fef8d7fb58f4))
+* **ci:** stabilize linux gui bundle build ([ef4709d](https://github.com/DevYukine/rom-converto/commit/ef4709de317045df43f764f1d273e210395e3847))
+* **cli:** make updater match release asset names ([a1eb1e7](https://github.com/DevYukine/rom-converto/commit/a1eb1e7fefe3c7685db3338df5778b26af88a4db))
+* **gui:** add tauri desktop icons ([02cdfa9](https://github.com/DevYukine/rom-converto/commit/02cdfa9217f73d3016ef7bfecc3f053e1918ff22))
+* **nx:** stub content-bearing non-secure partitions on xci compress ([e84e593](https://github.com/DevYukine/rom-converto/commit/e84e5934d2a0b751ff94b5a72f9707f976cec247))
+
+
+### Features
+
+* **benchmark:** add rom-converto-benchmark crate ([0db037a](https://github.com/DevYukine/rom-converto/commit/0db037af7a21bfe2a2a93ea9322d379793298cbe))
+* **ci:** add linux arm64 gui builds ([7a6462f](https://github.com/DevYukine/rom-converto/commit/7a6462f8fbf3d447d089158bb3e10bfbe4f9c571))
+* **cue:** add cue to iso and cso/zso conversion ([da4f16f](https://github.com/DevYukine/rom-converto/commit/da4f16fa8333855b79eee8ff902e92f629f7fbc7))
+
+
+
 # [0.15.0](https://github.com/DevYukine/rom-converto/compare/v0.14.0...v0.15.0) (2026-07-07)
 
 
@@ -102,18 +123,6 @@
 ### Features
 
 * unified output directory, larger default window, and GUI/CLI UX polish ([f361caa](https://github.com/DevYukine/rom-converto/commit/f361caa520537a4190bfd09445bc4fea74b87347))
-
-
-
-# [0.11.0](https://github.com/DevYukine/rom-converto/compare/v0.10.0...v0.11.0) (2026-06-12)
-
-
-### Features
-
-* **chd:** add dvd-mode chd for ps2/psp and cso/zso support ([c0a0195](https://github.com/DevYukine/rom-converto/commit/c0a019588b77fcb42c4a6adcabc9bee834352a3a))
-* **chd:** route cd-media isos to cd-mode chd with chdman parity ([763f1c5](https://github.com/DevYukine/rom-converto/commit/763f1c56c6d9d76949353a8b4e676a140a7459af))
-* **ux:** consistent cli flags with --force/--output/--recursive everywhere, verify exit codes, gui verify pages and full cli option parity ([69fe088](https://github.com/DevYukine/rom-converto/commit/69fe0881e988432642f09869eff9af796d1b465c))
-* **verify:** disc integrity for dol/rvl/wup, chd extract/verify --recursive, ctr seed-crypto info, wup WUD/WUX info ([d6c3564](https://github.com/DevYukine/rom-converto/commit/d6c3564fffc519f5f03de85cce646f2e628369ca))
 
 
 
