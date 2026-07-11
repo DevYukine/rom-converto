@@ -1,11 +1,11 @@
 import { defineStore } from "pinia";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "~/lib/ipc";
 import type { DatDefaults, Preset, UserConfig } from "~/types/config";
 
 // Backs the Settings page and every page's preset picker with the same
 // `rom-converto.toml` presets the CLI reads. `activePreset` is the one
-// selected globally; pages watch it via `usePreset` to apply the values
-// covered by their own store fields.
+// selected globally; PresetPicker applies its table into the page's own
+// store fields.
 export const useConfigStore = defineStore("config", () => {
   const configPath = ref<string | null>(null);
   const presets = ref<Record<string, Preset>>({});

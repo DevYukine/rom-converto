@@ -1,12 +1,14 @@
 import { defineStore } from "pinia";
 import type { BatchItem } from "~/types/batch";
+import { useUiStore } from "~/stores/ui";
 
 export const useDolCompressStore = defineStore("dol-compress", () => {
+  const ui = useUiStore();
   const input = ref("");
   const output = ref("");
   const level = ref(22);
   const chunkSize = ref(131072);
-  const onConflict = ref("overwrite");
+  const onConflict = ref(ui.defaultOnConflict);
   const skipSpaceCheck = ref(false);
   const outputTemplate = ref("");
   const reportFile = ref("");
@@ -42,7 +44,7 @@ export const useDolCompressStore = defineStore("dol-compress", () => {
     output.value = "";
     level.value = 22;
     chunkSize.value = 131072;
-    onConflict.value = "overwrite";
+    onConflict.value = ui.defaultOnConflict;
     skipSpaceCheck.value = false;
     outputTemplate.value = "";
     reportFile.value = "";

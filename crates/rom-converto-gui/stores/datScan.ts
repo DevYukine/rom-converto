@@ -1,5 +1,5 @@
 import { defineStore } from "pinia";
-import { listen } from "@tauri-apps/api/event";
+import { listen } from "~/lib/ipc";
 
 export type ScanLevel = "crc" | "md5" | "sha1" | "sha256";
 export type DatScanStatus = "matched" | "misnamed" | "hint" | "unknown" | "unsupported" | "failed";

@@ -13,9 +13,12 @@ function join(parts: Array<string | false | null | undefined>): string {
   return `> ${BINARY} ${tokens.join(" ")}`;
 }
 
-function discSub(args: Record<string, unknown>, verb: string): string[] {
-  const family = str(args.taskId).startsWith("dol") ? "dol" : "rvl";
-  return [family, verb];
+function discSub(args: Record<string, unknown>, verb: string, family: string): string[] {
+  // dol and rvl share cmd_compress_disc/cmd_decompress_disc; the console can't
+  // be read from the command, so callers pass it in. Fall back to the taskId
+  // prefix for fixed-key decompress jobs that don't.
+  const f = family || (str(args.taskId).startsWith("dol") ? "dol" : "rvl");
+  return [f, verb];
 }
 
 function conflict(args: Record<string, unknown>): string | false {
@@ -41,7 +44,7 @@ function outputArg(args: Record<string, unknown>): string | false {
   return value && quote(value);
 }
 
-export function buildCliCommand(command: string, args: Record<string, unknown>): string {
+export function buildCliCommand(command: string, args: Record<string, unknown>, console = ""): string {
   switch (command) {
     case "cmd_chd_compress": {
       const mode = str(args.mode);
@@ -115,6 +118,39 @@ export function buildCliCommand(command: string, args: Record<string, unknown>):
         args.full === true && "--full",
         quote(str(args.inputPath)),
       ]);
+    case "cmd_cso_to_chd": {
+      const mode = str(args.mode);
+      const hunk = args.hunkSize as number | null | undefined;
+      return join([
+        args.dryRun === true && "--dry-run",
+        args.skipSpaceCheck === true && "--skip-space-check",
+        "cso", "to-chd",
+        mode === "dvd" && "--dvd",
+        mode === "cd" && "--cd",
+        args.zstd === true && "--zstd",
+        hunk ? `--hunk-size ${hunk}` : false,
+        conflict(args),
+        template(args),
+        report(args),
+        quote(str(args.inputPath)),
+        outputArg(args),
+      ]);
+    }
+    case "cmd_chd_to_cso": {
+      const block = args.blockSize as number | null | undefined;
+      return join([
+        args.dryRun === true && "--dry-run",
+        args.skipSpaceCheck === true && "--skip-space-check",
+        "chd", "to-cso",
+        `--format ${str(args.format)}`,
+        block ? `--block-size ${block}` : false,
+        conflict(args),
+        template(args),
+        report(args),
+        quote(str(args.inputPath)),
+        outputArg(args),
+      ]);
+    }
     case "cmd_cue_merge":
       return join([
         args.dryRun === true && "--dry-run",
@@ -198,7 +234,7 @@ export function buildCliCommand(command: string, args: Record<string, unknown>):
       return join([
         args.dryRun === true && "--dry-run",
         args.skipSpaceCheck === true && "--skip-space-check",
-        ...discSub(args, "compress"),
+        ...discSub(args, "compress", console),
         level != null && level !== 22 ? `-l ${level}` : false,
         chunk != null && chunk !== 131072 ? `--chunk-size ${chunk}` : false,
         conflict(args),
@@ -209,7 +245,7 @@ export function buildCliCommand(command: string, args: Record<string, unknown>):
       ]);
     }
     case "cmd_decompress_disc":
-      return join([args.dryRun === true && "--dry-run", args.skipSpaceCheck === true && "--skip-space-check", ...discSub(args, "decompress"), conflict(args), template(args), report(args), quote(str(args.input)), outputArg(args)]);
+      return join([args.dryRun === true && "--dry-run", args.skipSpaceCheck === true && "--skip-space-check", ...discSub(args, "decompress", console), conflict(args), template(args), report(args), quote(str(args.input)), outputArg(args)]);
     case "cmd_verify_dol":
       return join(["dol", "verify", args.full === true && "--full", quote(str(args.input))]);
     case "cmd_verify_rvl":

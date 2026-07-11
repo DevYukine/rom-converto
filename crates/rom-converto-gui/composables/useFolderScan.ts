@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "~/lib/ipc";
 
 export function useFolderScan(exts: string[]) {
   async function expand(path: string, maxDepth: number | null): Promise<string[]> {

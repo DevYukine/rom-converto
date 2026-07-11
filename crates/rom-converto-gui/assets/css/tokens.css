@@ -1,0 +1,96 @@
+/* Theme tokens. Dark is the default (:root); light overrides under [data-theme="light"]. */
+
+:root {
+	--bg: #131316;
+	--bg2: #0c0c0e;
+	--bg2h: #101014;
+	--bg3: #101013;
+	--card: #1b1b1f;
+	--pop: #202024;
+	--pop2: #26262b;
+	--btnDim: #3a3a40;
+	--check1: #26262b;
+	--check2: #222227;
+	--t0: #ffffff;
+	--t1: #f2f2f4;
+	--t2: #e3e4e8;
+	--t3: #c4c5cc;
+	--t4: #9d9ea6;
+	--t5: #85868e;
+	--t6: #7c7d85;
+	--t7: #55565c;
+	--blue: #7db2f7;
+	--green: #3fb950;
+	--yellow: #e3b341;
+	--yellow2: #d29922;
+	--red: #f07a7e;
+	--knobOff: #c4c5cc;
+	--overlay: rgba(0, 0, 0, .55);
+	--shC: rgba(0, 0, 0, .55);
+	--a03: rgba(255, 255, 255, .03);
+	--a04: rgba(255, 255, 255, .04);
+	--a05: rgba(255, 255, 255, .05);
+	--a06: rgba(255, 255, 255, .06);
+	--a07: rgba(255, 255, 255, .07);
+	--a08: rgba(255, 255, 255, .08);
+	--a09: rgba(255, 255, 255, .09);
+	--a10: rgba(255, 255, 255, .1);
+	--a12: rgba(255, 255, 255, .12);
+	--a14: rgba(255, 255, 255, .14);
+	--a16: rgba(255, 255, 255, .16);
+	--a18: rgba(255, 255, 255, .18);
+	--a20: rgba(255, 255, 255, .2);
+	--a22: rgba(255, 255, 255, .22);
+	--a25: rgba(255, 255, 255, .25);
+	--a30: rgba(255, 255, 255, .3);
+	--a35: rgba(255, 255, 255, .35);
+	--a40: rgba(255, 255, 255, .4);
+}
+
+[data-theme="light"] {
+	--bg: #f2f2f5;
+	--bg2: #e7e7ec;
+	--bg2h: #dfdfe5;
+	--bg3: #ececf0;
+	--card: #ffffff;
+	--pop: #ffffff;
+	--pop2: #ffffff;
+	--btnDim: #b9bac3;
+	--check1: #e3e3e9;
+	--check2: #d9d9e0;
+	--t0: #17181c;
+	--t1: #212228;
+	--t2: #33343c;
+	--t3: #52535e;
+	--t4: #696a76;
+	--t5: #6f707d;
+	--t6: #747581;
+	--t7: #b4b5bd;
+	--blue: #2264c7;
+	--green: #1a7f37;
+	--yellow: #9a6700;
+	--yellow2: #b07d0a;
+	--red: #cf3438;
+	--knobOff: #ffffff;
+	--overlay: rgba(0, 0, 0, .35);
+	--shC: rgba(20, 24, 40, .2);
+	--a03: rgba(10, 12, 30, .04);
+	--a04: rgba(10, 12, 30, .05);
+	--a05: rgba(10, 12, 30, .06);
+	--a06: rgba(10, 12, 30, .07);
+	/* a07/a08 alpha are inverted vs dark theme (a07 > a08); kept verbatim from the source. */
+	--a07: rgba(10, 12, 30, .08);
+	--a08: rgba(10, 12, 30, .07);
+	--a09: rgba(10, 12, 30, .1);
+	--a10: rgba(10, 12, 30, .1);
+	--a12: rgba(10, 12, 30, .12);
+	--a14: rgba(10, 12, 30, .11);
+	--a16: rgba(10, 12, 30, .15);
+	--a18: rgba(10, 12, 30, .22);
+	--a20: rgba(10, 12, 30, .25);
+	--a22: rgba(10, 12, 30, .28);
+	--a25: rgba(10, 12, 30, .3);
+	--a30: rgba(10, 12, 30, .35);
+	--a35: rgba(10, 12, 30, .4);
+	--a40: rgba(10, 12, 30, .45);
+}

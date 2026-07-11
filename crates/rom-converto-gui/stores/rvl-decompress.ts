@@ -1,11 +1,13 @@
 import { defineStore } from "pinia";
 import type { BatchItem } from "~/types/batch";
+import { useUiStore } from "~/stores/ui";
 
 export const useRvlDecompressStore = defineStore("rvl-decompress", () => {
+  const ui = useUiStore();
   const input = ref("");
   const output = ref("");
   const format = ref<"iso" | "wbfs">("iso");
-  const onConflict = ref("overwrite");
+  const onConflict = ref(ui.defaultOnConflict);
   const skipSpaceCheck = ref(false);
   const outputTemplate = ref("");
   const reportFile = ref("");
@@ -39,7 +41,7 @@ export const useRvlDecompressStore = defineStore("rvl-decompress", () => {
     input.value = "";
     output.value = "";
     format.value = "iso";
-    onConflict.value = "overwrite";
+    onConflict.value = ui.defaultOnConflict;
     skipSpaceCheck.value = false;
     outputTemplate.value = "";
     reportFile.value = "";

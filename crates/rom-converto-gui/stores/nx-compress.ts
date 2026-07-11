@@ -1,5 +1,6 @@
 import { defineStore } from "pinia";
 import type { BatchItem } from "~/types/batch";
+import { useUiStore } from "~/stores/ui";
 
 export type NxMode = "solid" | "block";
 
@@ -8,6 +9,7 @@ export function isXciInput(input: string): boolean {
 }
 
 export const useNxCompressStore = defineStore("nx-compress", () => {
+  const ui = useUiStore();
   const queue = ref<BatchItem[]>([]);
   const recursive = ref(true);
   const maxDepth = ref<number | null>(null);
@@ -19,7 +21,7 @@ export const useNxCompressStore = defineStore("nx-compress", () => {
   // only kicks in when the user has not deliberately picked.
   const mode = ref<NxMode>("solid");
   const blockSizeExp = ref<number>(20);
-  const onConflict = ref("overwrite");
+  const onConflict = ref(ui.defaultOnConflict);
   const skipSpaceCheck = ref(false);
   const outputTemplate = ref("");
   const reportFile = ref("");
@@ -65,7 +67,7 @@ export const useNxCompressStore = defineStore("nx-compress", () => {
     level.value = 18;
     mode.value = "solid";
     blockSizeExp.value = 20;
-    onConflict.value = "overwrite";
+    onConflict.value = ui.defaultOnConflict;
     skipSpaceCheck.value = false;
     outputTemplate.value = "";
     reportFile.value = "";
@@ -89,6 +91,7 @@ export const useNxCompressStore = defineStore("nx-compress", () => {
     skipSpaceCheck,
     outputTemplate,
     reportFile,
+    userPickedMode,
     verifyAfter,
     result,
     error,

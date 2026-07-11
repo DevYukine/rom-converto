@@ -1,10 +1,12 @@
 import { defineStore } from "pinia";
 import type { BatchItem } from "~/types/batch";
+import { useUiStore } from "~/stores/ui";
 
 export const useCtrConvertStore = defineStore("ctr-convert", () => {
+  const ui = useUiStore();
   const input = ref("");
   const output = ref("");
-  const onConflict = ref("overwrite");
+  const onConflict = ref(ui.defaultOnConflict);
   const skipSpaceCheck = ref(false);
   const outputTemplate = ref("");
   const verifyAfter = ref(false);
@@ -37,7 +39,7 @@ export const useCtrConvertStore = defineStore("ctr-convert", () => {
   function $reset() {
     input.value = "";
     output.value = "";
-    onConflict.value = "overwrite";
+    onConflict.value = ui.defaultOnConflict;
     skipSpaceCheck.value = false;
     outputTemplate.value = "";
     verifyAfter.value = false;

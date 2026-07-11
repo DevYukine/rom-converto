@@ -4,11 +4,12 @@ export default defineNuxtConfig({
 	devtools: {enabled: false},
 	telemetry: false,
 	modules: ["@pinia/nuxt"],
+	components: [{ path: "~/components", pathPrefix: false }],
 	spaLoadingTemplate: "app/spa-loading-template.html",
 	experimental: {
 		payloadExtraction: false,
 	},
-	css: ["~/assets/css/main.css"],
+	css: ["~/assets/css/tokens.css", "~/assets/css/main.css"],
 	devServer: {
 		host: "localhost",
 		port: 3001,

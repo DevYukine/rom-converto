@@ -1,5 +1,5 @@
 import { ref, computed, type ComputedRef, type Ref } from "vue";
-import { listen } from "@tauri-apps/api/event";
+import { listen } from "~/lib/ipc";
 
 interface ProgressPayload {
   task_id: string;

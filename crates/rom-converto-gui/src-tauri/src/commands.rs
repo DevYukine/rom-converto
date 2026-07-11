@@ -3080,7 +3080,7 @@ pub async fn cmd_read_info(
 ) -> Result<String, String> {
     let cache_inner = cache.inner().clone();
     let result = tokio::task::spawn_blocking(move || -> Result<Arc<InfoResult>, anyhow::Error> {
-        if let Some(key) = InfoCache::key_for(&input)
+        if let Some(key) = InfoCache::key_for(&input, keys.as_deref())
             && let Some(hit) = cache_inner.get(&key)
         {
             return Ok(hit);
@@ -3092,7 +3092,7 @@ pub async fn cmd_read_info(
         };
         let info = read_info(resolved.path(), &opts)?;
         let arc = Arc::new(info);
-        if let Some(key) = InfoCache::key_for(&input) {
+        if let Some(key) = InfoCache::key_for(&input, keys.as_deref()) {
             cache_inner.insert(key, arc.clone());
         }
         Ok(arc)

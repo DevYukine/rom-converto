@@ -1,13 +1,15 @@
 import { defineStore } from "pinia";
 import type { BatchItem } from "~/types/batch";
+import { useUiStore } from "~/stores/ui";
 
 export const useNxDecompressStore = defineStore("nx-decompress", () => {
+  const ui = useUiStore();
   const queue = ref<BatchItem[]>([]);
   const recursive = ref(true);
   const maxDepth = ref<number | null>(null);
   const output = ref("");
   const keys = ref("");
-  const onConflict = ref("overwrite");
+  const onConflict = ref(ui.defaultOnConflict);
   const skipSpaceCheck = ref(false);
   const outputTemplate = ref("");
   const reportFile = ref("");
@@ -40,7 +42,7 @@ export const useNxDecompressStore = defineStore("nx-decompress", () => {
     maxDepth.value = null;
     output.value = "";
     keys.value = "";
-    onConflict.value = "overwrite";
+    onConflict.value = ui.defaultOnConflict;
     skipSpaceCheck.value = false;
     outputTemplate.value = "";
     reportFile.value = "";

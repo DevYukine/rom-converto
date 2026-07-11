@@ -1,12 +1,14 @@
 import { defineStore } from "pinia";
+import { useUiStore } from "~/stores/ui";
 
 export const usePlaylistStore = defineStore("playlist", () => {
+  const ui = useUiStore();
   const scanDir = ref("");
   const outputDir = ref("");
   const mode = ref("multiple");
   const extensions = ref("cue,chd,iso,cso,zso");
   const maxDepth = ref<number | null>(null);
-  const onConflict = ref("overwrite");
+  const onConflict = ref(ui.defaultOnConflict);
 
   const result = ref("");
   const error = ref("");
@@ -18,7 +20,7 @@ export const usePlaylistStore = defineStore("playlist", () => {
     mode.value = "multiple";
     extensions.value = "cue,chd,iso,cso,zso";
     maxDepth.value = null;
-    onConflict.value = "overwrite";
+    onConflict.value = ui.defaultOnConflict;
     result.value = "";
     error.value = "";
     loading.value = false;

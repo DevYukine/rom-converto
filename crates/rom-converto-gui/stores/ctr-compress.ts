@@ -1,14 +1,16 @@
 import { defineStore } from "pinia";
 import type { BatchItem } from "~/types/batch";
+import { useUiStore } from "~/stores/ui";
 
 export const useCtrCompressStore = defineStore("ctr-compress", () => {
+  const ui = useUiStore();
   const input = ref("");
   const output = ref("");
   // Zstd compression level: 0 = library default, 1..22 = explicit.
   // Sent straight to the backend; the lib treats 0 as "use default".
   const level = ref<number>(0);
   const allowEncrypted = ref<boolean>(false);
-  const onConflict = ref("overwrite");
+  const onConflict = ref(ui.defaultOnConflict);
   const skipSpaceCheck = ref(false);
   const outputTemplate = ref("");
 
@@ -42,7 +44,7 @@ export const useCtrCompressStore = defineStore("ctr-compress", () => {
     output.value = "";
     level.value = 0;
     allowEncrypted.value = false;
-    onConflict.value = "overwrite";
+    onConflict.value = ui.defaultOnConflict;
     skipSpaceCheck.value = false;
     outputTemplate.value = "";
     result.value = "";

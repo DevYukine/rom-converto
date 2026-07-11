@@ -1,5 +1,5 @@
 import type { Ref } from "vue";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "~/lib/ipc";
 import type { ComparisonSummary, ReportRecord, ReportTotals, RunOutcome } from "~/types/report";
 
 interface ReportableRefs {

@@ -1,5 +1,6 @@
 import { defineStore } from "pinia";
 import type { BatchItem } from "~/types/batch";
+import { useUiStore } from "~/stores/ui";
 
 /// True when the input path ends in `.wud` or `.wux`, so the UI
 /// knows to prompt for a master key. Mirrors the Rust extension check.
@@ -9,13 +10,14 @@ export function isDiscInput(input: string): boolean {
 }
 
 export const useWupCompressStore = defineStore("wup-compress", () => {
+  const ui = useUiStore();
   // Title inputs bundled into one .wua. Directories are loadiine or
   // NUS; files with .wud/.wux are disc images needing a master key.
   const queue = ref<BatchItem[]>([]);
   const output = ref("");
   // Zstd level: 0 = Cemu default (6), 1..22 = explicit.
   const level = ref<number>(0);
-  const onConflict = ref("overwrite");
+  const onConflict = ref(ui.defaultOnConflict);
   const skipSpaceCheck = ref(false);
   // Master key per disc input, keyed by BatchItem.id.
   const keys = ref<Record<string, string>>({});
@@ -68,7 +70,7 @@ export const useWupCompressStore = defineStore("wup-compress", () => {
     queue.value = [];
     output.value = "";
     level.value = 0;
-    onConflict.value = "overwrite";
+    onConflict.value = ui.defaultOnConflict;
     skipSpaceCheck.value = false;
     keys.value = {};
     result.value = "";

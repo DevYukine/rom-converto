@@ -1,52 +1,45 @@
 @import "tailwindcss";
 
-/* Prevent the browser from handling dropped files (opening them) */
 html, body {
-  overflow: hidden;
+	margin: 0;
+	height: 100%;
+	background: var(--bg);
+	font-family: system-ui, sans-serif;
+	overflow: hidden;
 }
 
-/* Custom scrollbar for the sidebar and main content */
-::-webkit-scrollbar {
-  width: 6px;
+/* Readability cap on very wide windows; the queue page stays fluid. */
+.rc-page {
+	width: 100%;
+	max-width: 1320px;
+	margin-inline: auto;
 }
 
-::-webkit-scrollbar-track {
-  background: transparent;
+@keyframes rcspin {
+	to { transform: rotate(360deg); }
 }
 
-::-webkit-scrollbar-thumb {
-  background: rgb(63 63 70 / 0.5);
-  border-radius: 3px;
-}
+::-webkit-scrollbar { width: 10px; }
+::-webkit-scrollbar-thumb { background: var(--a14); border-radius: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
 
-::-webkit-scrollbar-thumb:hover {
-  background: rgb(63 63 70 / 0.8);
-}
-
-/* Visible keyboard focus indicator (Preflight removes the UA outline and Tailwind v4 ships no default ring) */
+[tabindex]:focus-visible,
 a:focus-visible,
 button:focus-visible,
-summary:focus-visible,
-[role="button"]:focus-visible,
-[role="switch"]:focus-visible,
 input:focus-visible,
 select:focus-visible,
-textarea:focus-visible {
-  outline: 2px solid rgb(56 189 248);
-  outline-offset: 2px;
-  border-radius: 4px;
+textarea:focus-visible,
+[role="button"]:focus-visible,
+[role="switch"]:focus-visible {
+	outline: 2px solid var(--blue);
+	outline-offset: 1px;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-    scroll-behavior: auto !important;
-  }
-}
-
-/* Render native controls and the pre-hydration paint dark */
-:root {
-  color-scheme: dark;
+	*, *::before, *::after {
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.01ms !important;
+		scroll-behavior: auto !important;
+	}
 }
