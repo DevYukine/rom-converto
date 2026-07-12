@@ -15,9 +15,7 @@ use crate::nintendo::ctr::models::title_metadata::TitleMetadata;
 use crate::nintendo::ctr::title_key::generate_title_key;
 use crate::nintendo::ctr::util::fs::{find_title_file, find_tmd_file};
 use crate::nintendo::ctr::z3ds::models::underlying_magic;
-use crate::nintendo::ctr::z3ds::{
-    compress_rom_cancellable, derive_compressed_path, derive_decompressed_path,
-};
+use crate::nintendo::ctr::z3ds::{compress_rom_cancellable, derive_compressed_path};
 use crate::util::{
     CancelToken, ConflictPolicy, ConflictResolution, ProgressReporter, resolve_conflict,
     scratch_output_path,
@@ -28,6 +26,7 @@ use futures::TryFutureExt;
 use log::{debug, info, warn};
 use std::io::{Cursor, SeekFrom};
 use std::path::{Path, PathBuf};
+use tempfile::TempPath;
 use tokio::fs;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufWriter};
@@ -310,6 +309,13 @@ pub async fn convert_cdn_to_cia_cancellable(
 
             if let Err(err) = convert_cdn_to_cia_single(opts_clone, progress, cancel.clone()).await
             {
+                if err
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|err| err.kind() == std::io::ErrorKind::InvalidInput)
+                {
+                    total_progress.finish();
+                    return Err(err);
+                }
                 warn!(
                     "Failed to convert CDN directory {}: {}",
                     entry.path().display(),
@@ -347,29 +353,30 @@ async fn convert_cdn_to_cia_single(
         }
     };
 
-    // Conflict resolution runs against the final artifact. With --compress that
-    // is the .zcia, while the intermediate .cia keeps the working stem, so a
-    // rename slot is mapped back through derive_decompressed_path.
     let final_path = if opts.compress {
         derive_compressed_path(&output)
     } else {
         output.clone()
     };
-    let output = match resolve_conflict(&final_path, opts.on_conflict)? {
+    let cdn_dir = &opts.cdn_dir;
+    if opts.cleanup && path_is_within(&final_path, cdn_dir)? {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "output {} is inside CDN directory {}; cleanup would delete it",
+                final_path.display(),
+                cdn_dir.display()
+            ),
+        )
+        .into());
+    }
+    let final_output = match resolve_conflict(&final_path, opts.on_conflict)? {
         ConflictResolution::Skip => {
             info!("Skipped, output exists: {}", final_path.display());
             return Ok(());
         }
-        ConflictResolution::Write(resolved) => {
-            if opts.compress {
-                derive_decompressed_path(&resolved)
-            } else {
-                resolved
-            }
-        }
+        ConflictResolution::Write(resolved) => resolved,
     };
-
-    let cdn_dir = &opts.cdn_dir;
 
     let ticket_path = find_title_file(cdn_dir)
         .or_else(|err| async {
@@ -406,8 +413,18 @@ async fn convert_cdn_to_cia_single(
         );
     }
 
-    let tmp = scratch_output_path(&output);
-    let out = File::create(&tmp).await?;
+    let intermediate = if opts.compress {
+        Some(private_temp_path(&final_output, ".cia")?)
+    } else {
+        None
+    };
+    let output = intermediate.as_deref().unwrap_or(&final_output);
+    let write_path = if opts.compress {
+        output.to_path_buf()
+    } else {
+        scratch_output_path(output)
+    };
+    let out = File::create(&write_path).await?;
     let mut out_buffered = BufWriter::new(out);
     if let Err(err) = write_cia(
         cdn_dir,
@@ -422,16 +439,21 @@ async fn convert_cdn_to_cia_single(
     .await
     {
         drop(out_buffered);
-        fs::remove_file(&tmp).await.ok();
+        fs::remove_file(&write_path).await.ok();
         return Err(err);
     }
     out_buffered.flush().await?;
     drop(out_buffered);
-    fs::rename(&tmp, &output).await?;
+    if !opts.compress {
+        fs::rename(&write_path, output).await?;
+    }
 
-    info!("Created CIA file {}", output.display());
-
-    if opts.decrypt {
+    let mut decrypted_intermediate = None;
+    if opts.decrypt && opts.compress {
+        let decrypted = private_temp_path(&final_output, ".cia")?;
+        decrypt_cia_cancellable(output, &decrypted, progress, cancel.clone()).await?;
+        decrypted_intermediate = Some(decrypted);
+    } else if opts.decrypt {
         let decrypted_cia_path = output.with_extension("decrypted.cia");
 
         if let Err(err) =
@@ -449,18 +471,12 @@ async fn convert_cdn_to_cia_single(
     }
 
     if opts.compress {
-        let compressed_path = derive_compressed_path(&output);
-
-        if let Err(err) =
-            compress_rom_cancellable(&output, &compressed_path, None, false, progress, cancel).await
-        {
-            fs::remove_file(&output).await.ok();
-            return Err(err.into());
-        }
-
-        fs::remove_file(&output).await?;
-
-        debug!("Deleted intermediate CIA file: {}", output.display());
+        let output = decrypted_intermediate.as_deref().unwrap_or(output);
+        let compressed = private_temp_path(&final_output, ".zcia")?;
+        compress_rom_cancellable(output, &compressed, None, false, progress, cancel).await?;
+        compressed.persist(&final_output).map_err(|err| err.error)?;
+    } else {
+        info!("Created CIA file {}", output.display());
     }
 
     if opts.cleanup {
@@ -470,6 +486,48 @@ async fn convert_cdn_to_cia_single(
     }
 
     Ok(())
+}
+
+fn private_temp_path(output: &Path, suffix: &str) -> std::io::Result<TempPath> {
+    let parent = output.parent().unwrap_or_else(|| Path::new("."));
+    let path = tempfile::Builder::new()
+        .prefix(".rom-converto-")
+        .suffix(suffix)
+        .tempfile_in(parent)?
+        .into_temp_path();
+    std::fs::remove_file(&path)?;
+    Ok(path)
+}
+
+fn path_is_within(path: &Path, directory: &Path) -> std::io::Result<bool> {
+    let directory = directory.canonicalize()?;
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let mut ancestor = absolute.as_path();
+    let mut tail = Vec::new();
+    while !ancestor.exists() {
+        if let Some(name) = ancestor.file_name() {
+            tail.push(name.to_os_string());
+        }
+        ancestor = ancestor.parent().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "output path has no parent",
+            )
+        })?;
+    }
+    let mut path = ancestor.canonicalize()?;
+    for component in tail.into_iter().rev() {
+        if component == ".." {
+            path.pop();
+        } else if component != "." {
+            path.push(component);
+        }
+    }
+    Ok(path.starts_with(directory))
 }
 
 pub async fn decrypt_rom_batch(
@@ -593,6 +651,20 @@ mod tests {
             compress: false,
             output_dir: None,
             on_conflict,
+        }
+    }
+
+    fn single_opts(cdn_dir: PathBuf, output: PathBuf) -> CdnToCiaOptions {
+        CdnToCiaOptions {
+            cdn_dir,
+            output: Some(output),
+            cleanup: false,
+            recursive: false,
+            ensure_ticket_exists: false,
+            decrypt: false,
+            compress: false,
+            output_dir: None,
+            on_conflict: ConflictPolicy::Error,
         }
     }
 
@@ -745,6 +817,49 @@ mod tests {
         let out = root.join("title_a.cia");
         assert!(out.exists(), "missing {}", out.display());
         assert!(parses_as_cia(&out));
+    }
+
+    #[tokio::test]
+    async fn compressed_cdn_failure_preserves_existing_outputs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cdn_dir = tmp.path().join("title");
+        write_cdn_title(&cdn_dir, 0x0004000000030000);
+        let cia = tmp.path().join("title.cia");
+        let zcia = tmp.path().join("title.zcia");
+        std::fs::write(&cia, b"PREEXISTING CIA").unwrap();
+        std::fs::write(&zcia, b"PREEXISTING ZCIA").unwrap();
+
+        let mut opts = single_opts(cdn_dir, cia.clone());
+        opts.compress = true;
+        opts.on_conflict = ConflictPolicy::Overwrite;
+        convert_cdn_to_cia(opts, &NoProgress, &NoProgress)
+            .await
+            .expect_err("fixture content has no decryptable NCCH");
+
+        assert_eq!(std::fs::read(cia).unwrap(), b"PREEXISTING CIA");
+        assert_eq!(std::fs::read(zcia).unwrap(), b"PREEXISTING ZCIA");
+    }
+
+    #[tokio::test]
+    async fn cleanup_rejects_nested_output_before_writing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cdn_dir = tmp.path().join("title");
+        write_cdn_title(&cdn_dir, 0x0004000000030000);
+        let output = cdn_dir.join("nested").join("out.cia");
+        let mut opts = single_opts(cdn_dir.clone(), output.clone());
+        opts.cleanup = true;
+
+        let err = convert_cdn_to_cia(opts, &NoProgress, &NoProgress)
+            .await
+            .expect_err("cleanup must reject an output inside the source");
+
+        assert!(err.chain().any(|cause| {
+            cause
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|err| err.kind() == std::io::ErrorKind::InvalidInput)
+        }));
+        assert!(cdn_dir.exists());
+        assert!(!output.exists());
     }
 
     fn is_ctr_cancelled(err: &anyhow::Error) -> bool {
