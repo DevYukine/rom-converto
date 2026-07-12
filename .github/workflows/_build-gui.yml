@@ -159,9 +159,21 @@ jobs:
 
             Windows)
               installers=("$bundle_dir/nsis/"*.exe)
+              exes=(
+                "target/${{ matrix.target }}/release/rom-converto.exe"
+                "target/${{ matrix.target }}/release/rom-converto-gui.exe"
+              )
 
               (( ${#installers[@]} > 0 ))
               cp "${installers[0]}" "artifact/rom-converto-gui-${classifier}-setup.exe"
+
+              for exe in "${exes[@]}"; do
+                if [[ -f "$exe" ]]; then
+                  cp "$exe" "artifact/rom-converto-gui-${classifier}.exe"
+                  break
+                fi
+              done
+              [[ -f "artifact/rom-converto-gui-${classifier}.exe" ]]
               ;;
 
             *)
