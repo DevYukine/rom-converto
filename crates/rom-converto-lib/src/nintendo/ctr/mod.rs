@@ -413,18 +413,8 @@ async fn convert_cdn_to_cia_single(
         );
     }
 
-    let intermediate = if opts.compress {
-        Some(private_temp_path(&final_output, ".cia")?)
-    } else {
-        None
-    };
-    let output = intermediate.as_deref().unwrap_or(&final_output);
-    let write_path = if opts.compress {
-        output.to_path_buf()
-    } else {
-        scratch_output_path(output)
-    };
-    let out = File::create(&write_path).await?;
+    let encrypted = private_temp_path(&final_output, ".cia")?;
+    let out = File::create(&encrypted).await?;
     let mut out_buffered = BufWriter::new(out);
     if let Err(err) = write_cia(
         cdn_dir,
@@ -439,44 +429,31 @@ async fn convert_cdn_to_cia_single(
     .await
     {
         drop(out_buffered);
-        fs::remove_file(&write_path).await.ok();
         return Err(err);
     }
     out_buffered.flush().await?;
     drop(out_buffered);
-    if !opts.compress {
-        fs::rename(&write_path, output).await?;
-    }
 
-    let mut decrypted_intermediate = None;
-    if opts.decrypt && opts.compress {
+    let decrypted = if opts.decrypt {
         let decrypted = private_temp_path(&final_output, ".cia")?;
-        decrypt_cia_cancellable(output, &decrypted, progress, cancel.clone()).await?;
-        decrypted_intermediate = Some(decrypted);
-    } else if opts.decrypt {
-        let decrypted_cia_path = output.with_extension("decrypted.cia");
-
-        if let Err(err) =
-            decrypt_cia_cancellable(&output, &decrypted_cia_path, progress, cancel.clone()).await
-        {
-            fs::remove_file(&decrypted_cia_path).await.ok();
-            fs::remove_file(&output).await.ok();
-            return Err(err);
-        }
-
-        fs::remove_file(&output).await?;
-        fs::rename(&decrypted_cia_path, &output).await?;
-
-        debug!("Deleted original encrypted CIA file: {}", output.display());
-    }
+        decrypt_cia_cancellable(&encrypted, &decrypted, progress, cancel.clone()).await?;
+        Some(decrypted)
+    } else {
+        None
+    };
 
     if opts.compress {
-        let output = decrypted_intermediate.as_deref().unwrap_or(output);
+        let output = decrypted.as_deref().unwrap_or(&encrypted);
         let compressed = private_temp_path(&final_output, ".zcia")?;
         compress_rom_cancellable(output, &compressed, None, false, progress, cancel).await?;
-        compressed.persist(&final_output).map_err(|err| err.error)?;
+        publish_temp_path(compressed, &final_output, opts.on_conflict)?;
     } else {
-        info!("Created CIA file {}", output.display());
+        publish_temp_path(
+            decrypted.unwrap_or(encrypted),
+            &final_output,
+            opts.on_conflict,
+        )?;
+        info!("Created CIA file {}", final_output.display());
     }
 
     if opts.cleanup {
@@ -499,6 +476,15 @@ fn private_temp_path(output: &Path, suffix: &str) -> std::io::Result<TempPath> {
     Ok(path)
 }
 
+fn publish_temp_path(path: TempPath, output: &Path, policy: ConflictPolicy) -> std::io::Result<()> {
+    if policy == ConflictPolicy::Overwrite {
+        path.persist(output).map_err(|err| err.error)?;
+    } else {
+        path.persist_noclobber(output).map_err(|err| err.error)?;
+    }
+    Ok(())
+}
+
 fn path_is_within(path: &Path, directory: &Path) -> std::io::Result<bool> {
     let directory = directory.canonicalize()?;
     let absolute = if path.is_absolute() {
@@ -506,8 +492,23 @@ fn path_is_within(path: &Path, directory: &Path) -> std::io::Result<bool> {
     } else {
         std::env::current_dir()?.join(path)
     };
-    let mut ancestor = absolute.as_path();
-    let mut tail = Vec::new();
+    let mut ancestor = absolute.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "output path has no parent",
+        )
+    })?;
+    let mut tail = vec![
+        absolute
+            .file_name()
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "output path has no file name",
+                )
+            })?
+            .to_os_string(),
+    ];
     while !ancestor.exists() {
         if let Some(name) = ancestor.file_name() {
             tail.push(name.to_os_string());
@@ -841,6 +842,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn decrypted_cdn_failure_preserves_existing_output() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cdn_dir = tmp.path().join("title");
+        write_cdn_title(&cdn_dir, 0x0004000000030000);
+        let output = tmp.path().join("title.cia");
+        std::fs::write(&output, b"PREEXISTING CIA").unwrap();
+
+        let mut opts = single_opts(cdn_dir, output.clone());
+        opts.decrypt = true;
+        opts.on_conflict = ConflictPolicy::Overwrite;
+        convert_cdn_to_cia(opts, &NoProgress, &NoProgress)
+            .await
+            .expect_err("fixture content has no decryptable NCCH");
+
+        assert_eq!(std::fs::read(output).unwrap(), b"PREEXISTING CIA");
+    }
+
+    #[tokio::test]
+    async fn decrypted_cdn_cancel_preserves_existing_output() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cdn_dir = tmp.path().join("title");
+        write_cdn_title(&cdn_dir, 0x0004000000030000);
+        let output = tmp.path().join("title.cia");
+        std::fs::write(&output, b"PREEXISTING CIA").unwrap();
+        let mut opts = single_opts(cdn_dir, output.clone());
+        opts.decrypt = true;
+        opts.on_conflict = ConflictPolicy::Overwrite;
+        let cancel = CancelToken::new();
+        cancel.cancel();
+
+        convert_cdn_to_cia_cancellable(opts, &NoProgress, &NoProgress, cancel)
+            .await
+            .expect_err("a pre-cancelled conversion must abort");
+
+        assert_eq!(std::fs::read(output).unwrap(), b"PREEXISTING CIA");
+    }
+
+    #[test]
+    fn final_publish_only_clobbers_for_overwrite_policy() {
+        let tmp = tempfile::tempdir().unwrap();
+        for policy in [
+            ConflictPolicy::Error,
+            ConflictPolicy::Skip,
+            ConflictPolicy::Rename,
+            ConflictPolicy::OverwriteInvalid,
+        ] {
+            let output = tmp.path().join(format!("{policy:?}.cia"));
+            let staged = private_temp_path(&output, ".cia").unwrap();
+            std::fs::write(&staged, b"NEW").unwrap();
+            std::fs::write(&output, b"RACER").unwrap();
+
+            let err = publish_temp_path(staged, &output, policy).unwrap_err();
+            assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+            assert_eq!(std::fs::read(output).unwrap(), b"RACER");
+        }
+
+        let output = tmp.path().join("overwrite.cia");
+        let staged = private_temp_path(&output, ".cia").unwrap();
+        std::fs::write(&staged, b"NEW").unwrap();
+        std::fs::write(&output, b"OLD").unwrap();
+        publish_temp_path(staged, &output, ConflictPolicy::Overwrite).unwrap();
+        assert_eq!(std::fs::read(output).unwrap(), b"NEW");
+    }
+
+    #[tokio::test]
     async fn cleanup_rejects_nested_output_before_writing() {
         let tmp = tempfile::tempdir().unwrap();
         let cdn_dir = tmp.path().join("title");
@@ -860,6 +926,20 @@ mod tests {
         }));
         assert!(cdn_dir.exists());
         assert!(!output.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cleanup_containment_does_not_follow_final_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cdn_dir = tmp.path().join("title");
+        let outside = tmp.path().join("outside.cia");
+        std::fs::create_dir(&cdn_dir).unwrap();
+        std::fs::write(&outside, b"OUTSIDE").unwrap();
+        let output = cdn_dir.join("output.cia");
+        std::os::unix::fs::symlink(&outside, &output).unwrap();
+
+        assert!(path_is_within(&output, &cdn_dir).unwrap());
     }
 
     fn is_ctr_cancelled(err: &anyhow::Error) -> bool {
