@@ -206,15 +206,27 @@ fn is_content_filename(name: &str) -> bool {
             .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
 }
 
-/// Derive the default `.wua` output path from an input title
-/// directory name: `<dir>.wua` next to the directory.
-pub fn derive_wua_path(title_dir: &Path) -> PathBuf {
-    let mut out = title_dir.to_path_buf();
-    // `with_extension` handles both "dir/title" and "dir/title.foo".
-    if !out.set_extension("wua") {
-        out.push(".wua");
+/// Derive the default `.wua` output path from an input title directory or
+/// disc image. Only a real disc-image extension is replaced; anything else
+/// is kept whole so a name containing dots ("Super Mario Bros. U") is not
+/// truncated at its last dot.
+pub fn derive_wua_path(input: &Path) -> PathBuf {
+    let disc_ext = input.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+        ["wud", "wux", "iso"]
+            .iter()
+            .any(|d| e.eq_ignore_ascii_case(d))
+    });
+    if disc_ext {
+        return input.with_extension("wua");
     }
-    out
+    match input.file_name() {
+        Some(name) => {
+            let mut name = name.to_os_string();
+            name.push(".wua");
+            input.with_file_name(name)
+        }
+        None => input.join(".wua"),
+    }
 }
 
 /// Validate the zstd level before spinning up the writer. Zero is
@@ -1178,8 +1190,24 @@ mod tests {
             PathBuf::from("/roms/game.wua")
         );
         assert_eq!(
-            derive_wua_path(Path::new("/roms/game.dir")),
+            derive_wua_path(Path::new("/roms/game.wud")),
             PathBuf::from("/roms/game.wua")
+        );
+        assert_eq!(
+            derive_wua_path(Path::new("/roms/game.WUX")),
+            PathBuf::from("/roms/game.wua")
+        );
+    }
+
+    #[test]
+    fn derive_wua_path_keeps_dotted_title_names() {
+        assert_eq!(
+            derive_wua_path(Path::new("/roms/Super Mario Bros. U [0005000010101d00]")),
+            PathBuf::from("/roms/Super Mario Bros. U [0005000010101d00].wua")
+        );
+        assert_eq!(
+            derive_wua_path(Path::new("/roms/game.dir")),
+            PathBuf::from("/roms/game.dir.wua")
         );
     }
 }

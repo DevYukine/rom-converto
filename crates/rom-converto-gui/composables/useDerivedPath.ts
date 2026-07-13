@@ -13,16 +13,34 @@ const DECOMPRESS_MAP: Record<string, string> = {
   z3dsx: "3dsx",
 };
 
-function replaceExt(path: string, newExt: string): string {
-  const dot = path.lastIndexOf(".");
-  if (dot === -1) return `${path}.${newExt}`;
-  return `${path.slice(0, dot)}.${newExt}`;
-}
+// Extensions the ops read or write. Once an archive wrapper is stripped the
+// remaining name has no reliable extension, so only a trailing token from
+// this list is treated as one; anything else stays part of the title
+// ("10.000 Bullets (Europe)", "Super Mario Bros. U").
+const IMAGE_EXTS = new Set([
+  "3ds", "3dsx", "bin", "cci", "chd", "cia", "cso", "cue", "cxi", "dax",
+  "gcm", "gcz", "iso", "nsp", "nsz", "rvz", "wbfs", "wia", "wua", "wud",
+  "wux", "xci", "xcz", "z3ds", "z3dsx", "zcia", "zcci", "zcxi", "zso",
+]);
 
 function getExt(path: string): string {
   const dot = path.lastIndexOf(".");
   if (dot === -1) return "";
   return path.slice(dot + 1).toLowerCase();
+}
+
+function knownExt(path: string): string {
+  const ext = getExt(path);
+  return IMAGE_EXTS.has(ext) ? ext : "";
+}
+
+function stemOf(path: string): string {
+  if (knownExt(path)) return path.slice(0, path.lastIndexOf("."));
+  return path.replace(/\.+$/, "");
+}
+
+function replaceExt(path: string, newExt: string): string {
+  return `${stemOf(path)}.${newExt}`;
 }
 
 const ARCHIVE_EXTS = ["zip", "7z", "rar", "tar", "tgz", "gz"];
@@ -75,18 +93,12 @@ export function deriveDecompressedPath(input: string): string {
 
 export function deriveDecryptedPath(input: string): string {
   input = stripArchiveExt(input);
-  const ext = getExt(input);
-  const dot = input.lastIndexOf(".");
-  const stem = dot === -1 ? input : input.slice(0, dot);
-  return `${stem}.decrypted.${ext || "cia"}`;
+  return `${stemOf(input)}.decrypted.${knownExt(input) || "cia"}`;
 }
 
 export function deriveEncryptedPath(input: string): string {
   input = stripArchiveExt(input);
-  const ext = getExt(input);
-  const dot = input.lastIndexOf(".");
-  const stem = dot === -1 ? input : input.slice(0, dot);
-  return `${stem}.encrypted.${ext || "cia"}`;
+  return `${stemOf(input)}.encrypted.${knownExt(input) || "cia"}`;
 }
 
 const CONVERT_MAP: Record<string, string> = {
@@ -113,9 +125,7 @@ export function deriveCuePath(input: string): string {
 // with one of the input bin files.
 export function deriveMergedCuePath(input: string): string {
   input = stripArchiveExt(input);
-  const dot = input.lastIndexOf(".");
-  let stem = dot === -1 ? input : input.slice(0, dot);
-  stem = stem.replace(/\s*\(Track\s*\d+\)\s*$/i, "");
+  const stem = stemOf(input).replace(/\s*\(Track\s*\d+\)\s*$/i, "");
   return `${stem} (merged).cue`;
 }
 

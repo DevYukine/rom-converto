@@ -7,6 +7,7 @@
     "dev": "nuxt dev",
     "build": "nuxt generate",
     "preview": "nuxt preview",
+    "test": "vitest run",
     "tauri": "tauri"
   },
   "dependencies": {
@@ -23,6 +24,7 @@
     "nuxt": "^4",
     "tailwindcss": "^4",
     "typescript": "^6",
+    "vitest": "^4.1.10",
     "vue-tsc": "^3.2.6"
   }
 }
