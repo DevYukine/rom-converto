@@ -411,11 +411,11 @@ mod tests {
     use super::*;
     use std::io::Write;
 
-    fn write_zip(path: &Path, entries: &[(&str, &[u8])]) {
+    fn write_zip(path: &Path, method: zip::CompressionMethod, entries: &[(&str, &[u8])]) {
         let file = File::create(path).unwrap();
         let mut zip = zip::ZipWriter::new(file);
         let opts: zip::write::FileOptions<'_, ()> =
-            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+            zip::write::FileOptions::default().compression_method(method);
         for (name, data) in entries {
             zip.start_file(*name, opts).unwrap();
             zip.write_all(data).unwrap();
@@ -460,6 +460,7 @@ mod tests {
         let zip = dir.path().join("lib.zip");
         write_zip(
             &zip,
+            zip::CompressionMethod::Stored,
             &[
                 ("game.iso", b"iso-bytes"),
                 ("readme.txt", b"hi"),
@@ -481,12 +482,37 @@ mod tests {
     fn zip_round_trip_extraction() {
         let dir = tempfile::tempdir().unwrap();
         let zip = dir.path().join("g.zip");
-        write_zip(&zip, &[("readme.txt", b"junk"), ("game.iso", b"payload")]);
+        write_zip(
+            &zip,
+            zip::CompressionMethod::Stored,
+            &[("readme.txt", b"junk"), ("game.iso", b"payload")],
+        );
         let resolved = resolve_input(&zip, &["iso"]).unwrap();
         assert_eq!(std::fs::read(resolved.path()).unwrap(), b"payload");
         assert_eq!(resolved.path().file_name().unwrap(), "game.iso");
         // Output lands next to the archive, named after the member.
         assert_eq!(resolved.output_basis(), dir.path().join("game.iso"));
+    }
+
+    #[test]
+    fn zip_codec_round_trip_extraction() {
+        for method in [
+            zip::CompressionMethod::Stored,
+            zip::CompressionMethod::Deflated,
+            zip::CompressionMethod::Bzip2,
+            zip::CompressionMethod::Zstd,
+            zip::CompressionMethod::Xz,
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let zip = dir.path().join("g.zip");
+            write_zip(&zip, method, &[("game.iso", b"codec-payload")]);
+            let resolved = resolve_input(&zip, &["iso"]).unwrap();
+            assert_eq!(
+                std::fs::read(resolved.path()).unwrap(),
+                b"codec-payload",
+                "{method:?}"
+            );
+        }
     }
 
     #[test]
@@ -524,7 +550,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let zip = dir.path().join("evil.zip");
         // A parent-traversing name is dropped by enclosed_name.
-        write_zip(&zip, &[("../escape.iso", b"nope"), ("ok.iso", b"good")]);
+        write_zip(
+            &zip,
+            zip::CompressionMethod::Stored,
+            &[("../escape.iso", b"nope"), ("ok.iso", b"good")],
+        );
         let members = list_members(&zip).unwrap();
         assert!(members.iter().all(|m| !m.name.contains("..")));
         let resolved = resolve_input(&zip, &["iso"]).unwrap();
@@ -572,7 +602,11 @@ mod tests {
     fn no_match_is_hard_error_as_direct_input() {
         let dir = tempfile::tempdir().unwrap();
         let zip = dir.path().join("docs.zip");
-        write_zip(&zip, &[("readme.txt", b"x")]);
+        write_zip(
+            &zip,
+            zip::CompressionMethod::Stored,
+            &[("readme.txt", b"x")],
+        );
         assert!(resolve_input(&zip, &["iso"]).is_err());
     }
 
@@ -580,7 +614,11 @@ mod tests {
     fn multi_match_uses_first_sorted() {
         let dir = tempfile::tempdir().unwrap();
         let zip = dir.path().join("multi.zip");
-        write_zip(&zip, &[("b.iso", b"second"), ("a.iso", b"first")]);
+        write_zip(
+            &zip,
+            zip::CompressionMethod::Stored,
+            &[("b.iso", b"second"), ("a.iso", b"first")],
+        );
         let resolved = resolve_input(&zip, &["iso"]).unwrap();
         assert_eq!(resolved.path().file_name().unwrap(), "a.iso");
         assert_eq!(std::fs::read(resolved.path()).unwrap(), b"first");
@@ -593,6 +631,7 @@ mod tests {
         let cue = b"FILE \"disc.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n";
         write_zip(
             &zip,
+            zip::CompressionMethod::Stored,
             &[
                 ("disc.cue", cue.as_slice()),
                 ("disc.bin", b"bin-track-bytes"),

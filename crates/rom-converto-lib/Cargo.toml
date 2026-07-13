@@ -63,7 +63,7 @@ tempfile = "^3"
 fs4 = "^1.1"
 
 # Transparent archive input (zip/7z/rar/tar/tar.gz); gzip via flate2 above
-zip = { version = "^2", default-features = false, features = ["deflate", "bzip2"] }
-sevenz-rust2 = "^0.21"
+zip = { version = "^2", default-features = false, features = ["deflate", "deflate64", "bzip2", "lzma", "zstd", "xz"] }
+sevenz-rust2 = { version = "^0.21", features = ["brotli", "deflate", "lz4", "zstd"] }
 tar = "^0.4"
 unrar = { package = "unrar-ng", version = "^0.7" }
