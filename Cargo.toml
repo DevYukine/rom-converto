@@ -5,6 +5,7 @@ members = [
     "crates/rom-converto-cli",
     "crates/rom-converto-benchmark",
     "crates/rom-converto-gui/src-tauri",
+    "crates/rom-converto-ffi",
 ]
 
 [workspace.package]

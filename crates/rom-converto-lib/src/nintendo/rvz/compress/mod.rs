@@ -55,7 +55,7 @@ use crate::nintendo::rvz::format::{
 use crate::nintendo::rvz::regions::{DiscRegion, RegionPlan};
 use crate::nintendo::wbfs::WbfsReader;
 use crate::util::worker_pool::{Pool, parallelism};
-use crate::util::{CancelToken, ProgressReporter, await_with_progress_cancel};
+use crate::util::{CancelToken, ProgressReporter, await_with_progress_cancel, scratch_output_path};
 use binrw::{BinWrite, Endian};
 use log::info;
 use std::io::{BufReader, BufWriter, Cursor, Read, Seek, SeekFrom, Write};
@@ -161,9 +161,9 @@ pub(crate) async fn compress_iso_cancellable(
     };
     progress.start(iso_size, "Compressing disc to RVZ");
 
-    let write_path = scratch_output_path(output);
+    let write_path = scratch_output_path(output)?;
     let input_owned: PathBuf = input.to_path_buf();
-    let write_owned: PathBuf = write_path.clone();
+    let write_owned = write_path.to_path_buf();
     let cancel_bg = cancel.clone();
     let bytes_done = Arc::new(AtomicU64::new(0));
     let bytes_done_bg = bytes_done.clone();
@@ -180,7 +180,7 @@ pub(crate) async fn compress_iso_cancellable(
     });
 
     let cleanup = {
-        let write_path = write_path.clone();
+        let write_path = write_path.to_path_buf();
         move || -> RvzError {
             let _ = std::fs::remove_file(&write_path);
             RvzError::Cancelled
@@ -194,7 +194,7 @@ pub(crate) async fn compress_iso_cancellable(
                 return Err(err);
             }
         };
-    tokio::fs::rename(&write_path, output).await?;
+    crate::util::publish_temp(write_path, output, true)?;
 
     let ratio = (1.0 - compressed_size as f64 / iso_size.max(1) as f64) * 100.0;
     info!(
@@ -209,12 +209,6 @@ pub(crate) async fn compress_iso_cancellable(
 
 /// A sibling temp path in the output directory so an interrupted write
 /// never lands on the final name.
-fn scratch_output_path(output: &Path) -> PathBuf {
-    let mut name = output.file_name().unwrap_or_default().to_os_string();
-    name.push(".tmp");
-    output.with_file_name(name)
-}
-
 fn validate_chunk_size(chunk_size: u32) -> RvzResult<()> {
     if !(MIN_CHUNK_SIZE..=MAX_CHUNK_SIZE).contains(&chunk_size) || !chunk_size.is_power_of_two() {
         return Err(RvzError::InvalidChunkSize(

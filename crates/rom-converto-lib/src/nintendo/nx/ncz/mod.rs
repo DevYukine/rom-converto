@@ -13,5 +13,5 @@ pub mod reader;
 pub mod reencrypt;
 
 pub use compress::{NcaToNczOptions, NczMode, nca_to_ncz};
-pub use decompress::ncz_to_nca;
+pub use decompress::{ncz_to_nca, ncz_to_nca_cancellable};
 pub use reader::NczReader;

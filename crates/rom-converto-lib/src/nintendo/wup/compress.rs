@@ -431,13 +431,13 @@ fn compress_titles_with_cancel(
         read_total_bytes = read_total_bytes.saturating_add(n);
     }
 
-    let tmp = scratch_output_path(output);
+    let tmp = scratch_output_path(output)?;
     let result =
         compress_titles_into_tmp(&resolved, &tmp, opts, progress, cancelled, read_total_bytes);
 
     match result {
         Ok(()) => {
-            std::fs::rename(&tmp, output)?;
+            crate::util::publish_temp(tmp, output, true)?;
             progress.finish();
             Ok(())
         }
@@ -1071,7 +1071,7 @@ mod tests {
 
         assert!(matches!(result, Err(WupError::Cancelled)));
         assert!(!output.exists(), "no partial output");
-        assert!(!scratch_output_path(&output).exists(), "no leftover temp");
+        assert!(!crate::util::scratch_output_exists(&output).unwrap());
     }
 
     #[tokio::test]
@@ -1119,7 +1119,7 @@ mod tests {
 
         assert!(matches!(result, Err(WupError::Cancelled)));
         assert!(!output.exists(), "no partial output");
-        assert!(!scratch_output_path(&output).exists(), "no leftover temp");
+        assert!(!crate::util::scratch_output_exists(&output).unwrap());
     }
 
     #[tokio::test]
@@ -1142,7 +1142,7 @@ mod tests {
         .unwrap();
         token.cancel();
         assert!(output.exists(), "output survives a post-completion cancel");
-        assert!(!scratch_output_path(&output).exists(), "no leftover temp");
+        assert!(!crate::util::scratch_output_exists(&output).unwrap());
     }
 
     #[tokio::test]
@@ -1168,7 +1168,7 @@ mod tests {
 
         assert!(matches!(result, Err(WupError::Cancelled)));
         assert_eq!(std::fs::read(&output).unwrap(), original);
-        assert!(!scratch_output_path(&output).exists(), "no leftover temp");
+        assert!(!crate::util::scratch_output_exists(&output).unwrap());
     }
 
     #[test]

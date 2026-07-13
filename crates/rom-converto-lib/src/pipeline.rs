@@ -22,13 +22,19 @@ use crate::cso::{
 use crate::cue::to_iso::cue_to_iso;
 use crate::util::{CancelToken, ProgressReporter};
 
-/// Sibling scratch ISO next to `output`, in the same spirit as
-/// [`crate::util::scratch_output_path`] but suffixed `.iso.tmp` so it
-/// never collides with either format's own `.tmp` scratch file.
-fn temp_iso_path(output: &Path) -> PathBuf {
-    let mut name = output.file_name().unwrap_or_default().to_os_string();
-    name.push(".iso.tmp");
-    output.with_file_name(name)
+fn temp_iso_path(output: &Path) -> std::io::Result<tempfile::TempPath> {
+    let parent = output
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut prefix = std::ffi::OsString::from(".");
+    prefix.push(output.file_name().unwrap_or_default());
+    prefix.push(".");
+    tempfile::Builder::new()
+        .prefix(&prefix)
+        .suffix(".iso.tmp")
+        .tempfile_in(parent)
+        .map(tempfile::NamedTempFile::into_temp_path)
 }
 
 fn reject_unsupported_input(input: &Path) -> Result<()> {
@@ -60,19 +66,19 @@ pub async fn cso_to_chd_cancellable(
 ) -> Result<()> {
     reject_unsupported_input(&input_path)?;
 
-    let temp_iso = temp_iso_path(&output_path);
+    let temp_iso = temp_iso_path(&output_path)?;
     let result: Result<()> = async {
         decompress_from_cso_cancellable(
             progress,
             input_path.clone(),
-            temp_iso.clone(),
+            temp_iso.to_path_buf(),
             true,
             cancel.clone(),
         )
         .await?;
         convert_disc_to_chd_cancellable(
             progress,
-            temp_iso.clone(),
+            temp_iso.to_path_buf(),
             output_path.clone(),
             mode,
             opts.clone(),
@@ -83,7 +89,6 @@ pub async fn cso_to_chd_cancellable(
     }
     .await;
 
-    let _ = std::fs::remove_file(&temp_iso);
     result
 }
 
@@ -106,19 +111,19 @@ pub async fn chd_to_cso_cancellable(
         );
     }
 
-    let temp_iso = temp_iso_path(&output_path);
+    let temp_iso = temp_iso_path(&output_path)?;
     let result: Result<()> = async {
         extract_from_chd_cancellable(
             progress,
             input_path.clone(),
-            temp_iso.clone(),
+            temp_iso.to_path_buf(),
             None,
             cancel.clone(),
         )
         .await?;
         compress_to_cso_cancellable(
             progress,
-            temp_iso.clone(),
+            temp_iso.to_path_buf(),
             output_path.clone(),
             opts.clone(),
             cancel.clone(),
@@ -128,7 +133,6 @@ pub async fn chd_to_cso_cancellable(
     }
     .await;
 
-    let _ = std::fs::remove_file(&temp_iso);
     result
 }
 
@@ -142,12 +146,12 @@ pub async fn cue_to_cso(
     format: CsoFormat,
     force: bool,
 ) -> Result<()> {
-    let temp_iso = temp_iso_path(&output_path);
+    let temp_iso = temp_iso_path(&output_path)?;
     let result: Result<()> = async {
-        cue_to_iso(progress, cue_path.clone(), temp_iso.clone(), true).await?;
+        cue_to_iso(progress, cue_path.clone(), temp_iso.to_path_buf(), true).await?;
         compress_to_cso(
             progress,
-            temp_iso.clone(),
+            temp_iso.to_path_buf(),
             output_path.clone(),
             CsoCompressOptions {
                 format,
@@ -160,7 +164,6 @@ pub async fn cue_to_cso(
     }
     .await;
 
-    let _ = std::fs::remove_file(&temp_iso);
     result
 }
 
@@ -170,6 +173,10 @@ mod tests {
     use crate::chd::{extract_from_chd, verify_chd};
     use crate::cso::{CsoFormat, decompress_from_cso};
     use crate::util::NoProgress;
+
+    fn assert_no_temp_iso(output: &Path) {
+        assert!(!crate::util::scratch_output_exists(output).unwrap());
+    }
 
     fn mixed_iso(sectors: usize) -> Vec<u8> {
         crate::chd::test_fixtures::mixed_iso(sectors)
@@ -209,7 +216,7 @@ mod tests {
         .unwrap();
 
         // The temp ISO never survives a successful chain.
-        assert!(!temp_iso_path(&chd_path).exists());
+        assert_no_temp_iso(&chd_path);
 
         verify_chd(&NoProgress, chd_path.clone(), None, false)
             .await
@@ -253,7 +260,7 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(!temp_iso_path(&zso_path).exists());
+        assert_no_temp_iso(&zso_path);
 
         let restored = dir.path().join("restored.iso");
         decompress_from_cso(&NoProgress, zso_path, restored.clone(), false)
@@ -297,7 +304,7 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(!temp_iso_path(&cso_path).exists());
+        assert_no_temp_iso(&cso_path);
 
         let restored = dir.path().join("restored.iso");
         decompress_from_cso(&NoProgress, cso_path, restored.clone(), false)
@@ -343,7 +350,7 @@ mod tests {
         .unwrap_err();
         assert!(err.to_string().contains("CD-mode"));
         assert!(!cso_path.exists());
-        assert!(!temp_iso_path(&cso_path).exists());
+        assert_no_temp_iso(&cso_path);
     }
 
     #[tokio::test]
@@ -365,7 +372,7 @@ mod tests {
         .unwrap_err();
         assert!(err.to_string().contains("unsupported input format"));
         assert!(!chd_path.exists());
-        assert!(!temp_iso_path(&chd_path).exists());
+        assert_no_temp_iso(&chd_path);
     }
 
     #[tokio::test]
@@ -401,6 +408,6 @@ mod tests {
         .unwrap_err();
         assert!(err.to_string().contains("cancelled"));
         assert!(!chd_path.exists());
-        assert!(!temp_iso_path(&chd_path).exists());
+        assert_no_temp_iso(&chd_path);
     }
 }

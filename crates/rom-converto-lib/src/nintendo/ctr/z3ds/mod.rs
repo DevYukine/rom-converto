@@ -747,7 +747,7 @@ mod tests {
         assert!(matches!(result, Err(Z3dsError::Cancelled)));
         assert!(!out.exists(), "no partial output");
         assert!(
-            !crate::nintendo::ctr::z3ds::decompress::scratch_output_path(&out).exists(),
+            !crate::util::scratch_output_exists(&out).unwrap(),
             "no leftover temp"
         );
     }
@@ -786,7 +786,7 @@ mod tests {
             other => panic!("unexpected result: {other:?}"),
         }
         assert!(
-            !crate::nintendo::ctr::z3ds::decompress::scratch_output_path(&out).exists(),
+            !crate::util::scratch_output_exists(&out).unwrap(),
             "no leftover temp"
         );
     }

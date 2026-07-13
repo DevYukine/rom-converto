@@ -19,7 +19,7 @@ use crate::util::hash::{FileDigests, HashAlgo, MultiHasher};
 use crate::util::iso9660::{DiscKind, detect_disc_kind};
 use crate::util::{
     BYTES_PER_MB, CancelToken, DREAMCAST_CHD_WARNING, ProgressReporter, await_with_progress_cancel,
-    dreamcast_boot_signature,
+    dreamcast_boot_signature, scratch_output_path,
 };
 use log::{debug, info, warn};
 use sha1::{Digest, Sha1};
@@ -66,12 +66,6 @@ pub enum DiscMode {
 /// A sibling temp path in the output directory so an interrupted write
 /// never lands on the final name and a pre-existing overwrite target
 /// survives until the rename.
-fn scratch_output_path(output: &std::path::Path) -> PathBuf {
-    let mut name = output.file_name().unwrap_or_default().to_os_string();
-    name.push(".tmp");
-    output.with_file_name(name)
-}
-
 /// Remove the scratch file and report the cancellation; used as the
 /// `on_cancel` fallback for the race where the blocking pipeline
 /// finished a hunk just as the token fired.
@@ -265,9 +259,9 @@ async fn convert_iso_to_chd_with_kind(
         &format!("Compressing to CHD (~{:.2} MB)", total_mb),
     );
 
-    let write_path = scratch_output_path(&output_path);
+    let write_path = scratch_output_path(&output_path)?;
     let iso_owned = iso_path.clone();
-    let write_owned = write_path.clone();
+    let write_owned = write_path.to_path_buf();
     let allow_zstd = opts.allow_zstd;
     let cancel_bg = cancel.clone();
     let bytes_done = Arc::new(AtomicU64::new(0));
@@ -295,7 +289,7 @@ async fn convert_iso_to_chd_with_kind(
         let _ = fs::remove_file(&write_path).await;
         return Err(err);
     }
-    fs::rename(&write_path, &output_path).await?;
+    crate::util::publish_temp(write_path, &output_path, true)?;
 
     let chd_size = fs::metadata(&output_path).await?.len();
     let compression_ratio = (chd_size as f64 / iso_size as f64) * 100.0;
@@ -373,9 +367,9 @@ pub async fn convert_iso_to_cd_chd(
         &format!("Compressing to CHD (~{:.2} MB)", total_mb),
     );
 
-    let write_path = scratch_output_path(&output_path);
+    let write_path = scratch_output_path(&output_path)?;
     let iso_owned = iso_path.clone();
-    let write_owned = write_path.clone();
+    let write_owned = write_path.to_path_buf();
     let cancel_bg = cancel.clone();
     let bytes_done = Arc::new(AtomicU64::new(0));
     let bytes_done_bg = bytes_done.clone();
@@ -415,7 +409,7 @@ pub async fn convert_iso_to_cd_chd(
         let _ = fs::remove_file(&write_path).await;
         return Err(err);
     }
-    fs::rename(&write_path, &output_path).await?;
+    crate::util::publish_temp(write_path, &output_path, true)?;
 
     let chd_size = fs::metadata(&output_path).await?.len();
     let compression_ratio = (chd_size as f64 / iso_size as f64) * 100.0;
@@ -493,9 +487,9 @@ pub async fn convert_to_chd(
     // finalize) to a single `spawn_blocking` and poll a shared
     // `AtomicU64` for progress ticks. Same shape as the RVZ
     // compress entry in `nintendo/rvz/compress/mod.rs`.
-    let write_path = scratch_output_path(&output_path);
+    let write_path = scratch_output_path(&output_path)?;
     let bin_path_owned = bin_path.clone();
-    let write_owned = write_path.clone();
+    let write_owned = write_path.to_path_buf();
     let cue_sheet_owned = cue_sheet.clone();
     let cancel_bg = cancel.clone();
     let bytes_done = Arc::new(AtomicU64::new(0));
@@ -537,7 +531,7 @@ pub async fn convert_to_chd(
         let _ = fs::remove_file(&write_path).await;
         return Err(err);
     }
-    fs::rename(&write_path, &output_path).await?;
+    crate::util::publish_temp(write_path, &output_path, true)?;
 
     let chd_size = fs::metadata(&output_path).await?.len();
     let original_size = bin_size;
@@ -829,9 +823,9 @@ async fn extract_dvd_iso(
         &format!("Extracting from CHD (~{:.2} MB)", total_mb),
     );
 
-    let write_path = scratch_output_path(&iso_path);
+    let write_path = scratch_output_path(&iso_path)?;
     let input_owned = input_path.clone();
-    let write_owned = write_path.clone();
+    let write_owned = write_path.to_path_buf();
     let cancel_bg = cancel.clone();
     let bytes_done = Arc::new(AtomicU64::new(0));
     let bytes_done_bg = bytes_done.clone();
@@ -887,7 +881,7 @@ async fn extract_dvd_iso(
         let _ = fs::remove_file(&write_path).await;
         return Err(err);
     }
-    fs::rename(&write_path, &iso_path).await?;
+    crate::util::publish_temp(write_path, &iso_path, true)?;
 
     info!(
         "Extracted: {:.2} MB ISO from {}",

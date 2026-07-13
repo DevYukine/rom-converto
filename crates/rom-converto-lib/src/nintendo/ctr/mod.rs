@@ -24,7 +24,7 @@ use anyhow::Result;
 use binrw::BinRead;
 use futures::TryFutureExt;
 use log::{debug, info, warn};
-use std::io::{Cursor, SeekFrom};
+use std::io::{Cursor, SeekFrom, Write as _};
 use std::path::{Path, PathBuf};
 use tempfile::TempPath;
 use tokio::fs;
@@ -88,7 +88,7 @@ pub async fn decrypt_cia_cancellable(
     progress: &dyn ProgressReporter,
     cancel: CancelToken,
 ) -> Result<()> {
-    let tmp = scratch_output_path(output);
+    let tmp = scratch_output_path(output)?;
     let out = File::create(&tmp).await?;
     let mut out = BufWriter::new(out);
 
@@ -100,7 +100,7 @@ pub async fn decrypt_cia_cancellable(
 
     out.flush().await?;
     drop(out);
-    fs::rename(&tmp, output).await?;
+    crate::util::publish_temp(tmp, output, true)?;
 
     info!("Decrypted CIA file");
 
@@ -167,7 +167,7 @@ async fn decrypt_ncsd_cancellable(
     progress: &dyn ProgressReporter,
     cancel: &CancelToken,
 ) -> Result<()> {
-    let tmp = scratch_output_path(output);
+    let tmp = scratch_output_path(output)?;
 
     // The verbatim copy carries the NCSD header, inter-partition gaps, and any
     // plain partitions; parse_and_decrypt_ncsd overwrites each NCCH partition
@@ -191,7 +191,7 @@ async fn decrypt_ncsd_cancellable(
         return Err(err);
     }
 
-    fs::rename(&tmp, output).await?;
+    crate::util::publish_temp(tmp, output, true)?;
 
     info!("Decrypted NCSD file");
     Ok(())
@@ -203,7 +203,7 @@ async fn decrypt_ncch_cancellable(
     progress: &dyn ProgressReporter,
     cancel: &CancelToken,
 ) -> Result<()> {
-    let tmp = scratch_output_path(output);
+    let tmp = scratch_output_path(output)?;
 
     let result = async {
         let mut out = File::create(&tmp).await?;
@@ -218,17 +218,36 @@ async fn decrypt_ncch_cancellable(
         return Err(err);
     }
 
-    fs::rename(&tmp, output).await?;
+    crate::util::publish_temp(tmp, output, true)?;
 
     info!("Decrypted NCCH file");
     Ok(())
 }
 
 pub async fn generate_ticket_from_cdn(cdn_dir: &Path, output: &Path) -> Result<()> {
+    generate_ticket_from_cdn_cancellable(cdn_dir, output, &CancelToken::new()).await
+}
+
+pub async fn generate_ticket_from_cdn_cancellable(
+    cdn_dir: &Path,
+    output: &Path,
+    cancel: &CancelToken,
+) -> Result<()> {
+    generate_ticket_from_cdn_with_publish(cdn_dir, output, cancel, true).await
+}
+
+pub(crate) async fn generate_ticket_from_cdn_with_publish(
+    cdn_dir: &Path,
+    output: &Path,
+    cancel: &CancelToken,
+    overwrite: bool,
+) -> Result<()> {
+    check_cancel(cancel)?;
     let tmd_path = find_tmd_file(cdn_dir).await?;
     debug!("Found TMD file at {}", tmd_path.display());
 
     let mut ticket_metadata_data = Cursor::new(fs::read(&tmd_path).await?);
+    check_cancel(cancel)?;
     let title_metadata = TitleMetadata::read(&mut ticket_metadata_data)?;
 
     let title_id_str = format!("{:016X}", title_metadata.header.title_id);
@@ -244,12 +263,27 @@ pub async fn generate_ticket_from_cdn(cdn_dir: &Path, output: &Path) -> Result<(
         .replace("1111", &title_version_hex)
         .replace("dddddddddddddddd", &title_id_str);
 
-    let mut file = File::create(&output).await?;
-
-    file.write_all(&hex::decode(cetk)?).await?;
+    let bytes = hex::decode(cetk)?;
+    check_cancel(cancel)?;
+    let parent = output
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut file = tempfile::NamedTempFile::new_in(parent)?;
+    file.write_all(&bytes)?;
+    file.as_file().sync_all()?;
+    check_cancel(cancel)?;
+    crate::util::publish_temp(file.into_temp_path(), output, overwrite)?;
 
     info!("Created ticket at {}", output.display());
 
+    Ok(())
+}
+
+fn check_cancel(cancel: &CancelToken) -> Result<()> {
+    if cancel.is_cancelled() {
+        return Err(NintendoCTRError::Cancelled.into());
+    }
     Ok(())
 }
 
@@ -381,10 +415,23 @@ async fn convert_cdn_to_cia_single(
     let ticket_path = find_title_file(cdn_dir)
         .or_else(|err| async {
             if opts.ensure_ticket_exists {
-                let path = cdn_dir.join("ticket.tik");
+                check_cancel(&cancel)?;
+                let desired = cdn_dir.join("ticket.tik");
+                let path = match resolve_conflict(&desired, opts.on_conflict)? {
+                    ConflictResolution::Skip => desired,
+                    ConflictResolution::Write(path) => {
+                        generate_ticket_from_cdn_with_publish(
+                            cdn_dir,
+                            &path,
+                            &cancel,
+                            opts.on_conflict == ConflictPolicy::Overwrite,
+                        )
+                        .await?;
+                        path
+                    }
+                };
                 debug!("Path for ticket file: {}", path.display());
                 debug!("CDN Directory: {}", cdn_dir.display());
-                generate_ticket_from_cdn(cdn_dir, &path).await?;
                 Ok::<PathBuf, anyhow::Error>(path)
             } else {
                 Err(err.into())
@@ -433,7 +480,6 @@ async fn convert_cdn_to_cia_single(
     }
     out_buffered.flush().await?;
     drop(out_buffered);
-
     let decrypted = if opts.decrypt {
         let decrypted = private_temp_path(&final_output, ".cia")?;
         decrypt_cia_cancellable(&encrypted, &decrypted, progress, cancel.clone()).await?;
@@ -477,12 +523,7 @@ fn private_temp_path(output: &Path, suffix: &str) -> std::io::Result<TempPath> {
 }
 
 fn publish_temp_path(path: TempPath, output: &Path, policy: ConflictPolicy) -> std::io::Result<()> {
-    if policy == ConflictPolicy::Overwrite {
-        path.persist(output).map_err(|err| err.error)?;
-    } else {
-        path.persist_noclobber(output).map_err(|err| err.error)?;
-    }
-    Ok(())
+    crate::util::publish_temp(path, output, policy == ConflictPolicy::Overwrite)
 }
 
 fn path_is_within(path: &Path, directory: &Path) -> std::io::Result<bool> {
@@ -672,6 +713,25 @@ mod tests {
     fn parses_as_cia(path: &Path) -> bool {
         let bytes = std::fs::read(path).unwrap();
         CiaFile::read_options(&mut Cursor::new(&bytes), Endian::Little, ()).is_ok()
+    }
+
+    #[tokio::test]
+    async fn cancelled_ticket_generation_preserves_existing_output() {
+        let tmp = tempfile::tempdir().unwrap();
+        let output = tmp.path().join("ticket.tik");
+        std::fs::write(&output, b"existing").unwrap();
+        let cancel = CancelToken::new();
+        cancel.cancel();
+
+        let err = generate_ticket_from_cdn_cancellable(tmp.path(), &output, &cancel)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            err.downcast_ref::<NintendoCTRError>(),
+            Some(NintendoCTRError::Cancelled)
+        ));
+        assert_eq!(std::fs::read(output).unwrap(), b"existing");
     }
 
     #[tokio::test]
@@ -1000,7 +1060,7 @@ mod tests {
             "error chain must carry the cancelled variant"
         );
         assert!(!output.exists(), "no partial output");
-        assert!(!scratch_output_path(&output).exists(), "no leftover temp");
+        assert!(!crate::util::scratch_output_exists(&output).unwrap());
         assert!(
             !ncch_scratch_present(tmp.path()),
             "no leftover .ncch scratch"
@@ -1063,7 +1123,7 @@ mod tests {
 
         assert!(output.exists(), "output survives a post-completion cancel");
         assert!(parses_as_cia(&output), "decrypted output is a valid CIA");
-        assert!(!scratch_output_path(&output).exists(), "no leftover temp");
+        assert!(!crate::util::scratch_output_exists(&output).unwrap());
         assert!(
             !ncch_scratch_present(tmp.path()),
             "no leftover .ncch scratch"
@@ -1086,7 +1146,7 @@ mod tests {
         let err = result.expect_err("a pre-cancelled token must abort the decrypt");
         assert!(is_ctr_cancelled(&err));
         assert_eq!(std::fs::read(&output).unwrap(), original);
-        assert!(!scratch_output_path(&output).exists(), "no leftover temp");
+        assert!(!crate::util::scratch_output_exists(&output).unwrap());
     }
 
     #[tokio::test]

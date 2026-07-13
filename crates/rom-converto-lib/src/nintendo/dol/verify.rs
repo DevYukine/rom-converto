@@ -8,9 +8,9 @@
 
 use crate::nintendo::disc_input::open_disc_input;
 use crate::nintendo::dol::models::boot_bin::GcBootBin;
-use crate::nintendo::rvz::verify::{RvzStructuralVerify, verify_rvz_structure};
-use crate::util::ProgressReporter;
-use anyhow::{Context, Result};
+use crate::nintendo::rvz::verify::{RvzStructuralVerify, verify_rvz_structure_cancellable};
+use crate::util::{CancelToken, ProgressReporter};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use std::io::{Read, Seek, SeekFrom};
@@ -46,7 +46,22 @@ pub fn verify_dol(
     options: &DolVerifyOptions,
     progress: &dyn ProgressReporter,
 ) -> Result<DolVerifyResult> {
-    let rvz_structure = verify_rvz_structure(path).ok();
+    verify_dol_cancellable(path, options, progress, &CancelToken::new())
+}
+
+pub fn verify_dol_cancellable(
+    path: &Path,
+    options: &DolVerifyOptions,
+    progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
+) -> Result<DolVerifyResult> {
+    if cancel.is_cancelled() {
+        bail!("cancelled");
+    }
+    let rvz_structure = verify_rvz_structure_cancellable(path, cancel).ok();
+    if cancel.is_cancelled() {
+        bail!("cancelled");
+    }
 
     let mut reader =
         open_disc_input(path).with_context(|| format!("dol verify: open {}", path.display()))?;
@@ -77,7 +92,7 @@ pub fn verify_dol(
         reader
             .seek(SeekFrom::Start(0))
             .context("dol verify: rewind for digest")?;
-        let digest = sha1_stream(&mut reader, iso_size, progress)?;
+        let digest = sha1_stream(&mut reader, iso_size, progress, cancel)?;
         disc_sha1 = Some(hex::encode(digest));
     }
 
@@ -100,11 +115,15 @@ fn sha1_stream<R: Read>(
     reader: &mut R,
     total: u64,
     progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
 ) -> Result<[u8; 20]> {
     progress.start(total, "Verifying GameCube disc");
     let mut hasher = Sha1::new();
     let mut buf = vec![0u8; 4 * 1024 * 1024];
     loop {
+        if cancel.is_cancelled() {
+            bail!("cancelled");
+        }
         let n = reader.read(&mut buf)?;
         if n == 0 {
             break;

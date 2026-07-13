@@ -23,9 +23,9 @@ use crate::nintendo::rvl::partition::{
     HASH_REGION_BYTES, PartitionInfo, hash_region, read_and_decrypt_cluster, read_partition_info,
     recompute_hash_regions_into,
 };
-use crate::nintendo::rvz::verify::{RvzStructuralVerify, verify_rvz_structure};
-use crate::util::ProgressReporter;
-use anyhow::{Context, Result, anyhow};
+use crate::nintendo::rvz::verify::{RvzStructuralVerify, verify_rvz_structure_cancellable};
+use crate::util::{CancelToken, ProgressReporter};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
@@ -78,7 +78,22 @@ pub fn verify_rvl(
     options: &RvlVerifyOptions,
     progress: &dyn ProgressReporter,
 ) -> Result<RvlVerifyResult> {
-    let rvz_structure = verify_rvz_structure(path).ok();
+    verify_rvl_cancellable(path, options, progress, &CancelToken::new())
+}
+
+pub fn verify_rvl_cancellable(
+    path: &Path,
+    options: &RvlVerifyOptions,
+    progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
+) -> Result<RvlVerifyResult> {
+    if cancel.is_cancelled() {
+        bail!("cancelled");
+    }
+    let rvz_structure = verify_rvz_structure_cancellable(path, cancel).ok();
+    if cancel.is_cancelled() {
+        bail!("cancelled");
+    }
 
     let mut reader =
         open_disc_input(path).with_context(|| format!("rvl verify: open {}", path.display()))?;
@@ -93,6 +108,9 @@ pub fn verify_rvl(
         // sized to the total cluster count across all partitions.
         let mut infos: Vec<(u64, u32, Option<PartitionInfo>)> = Vec::with_capacity(entries.len());
         for e in &entries {
+            if cancel.is_cancelled() {
+                bail!("cancelled");
+            }
             let info = read_partition_info(&mut reader, e.offset, e.group, e.partition_type).ok();
             infos.push((e.offset, e.partition_type, info));
         }
@@ -111,7 +129,13 @@ pub fn verify_rvl(
                 i + 1
             ));
             match info {
-                Some(info) => partitions.push(verify_partition(&mut reader, &info, kind, progress)),
+                Some(info) => partitions.push(verify_partition(
+                    &mut reader,
+                    &info,
+                    kind,
+                    progress,
+                    cancel,
+                )?),
                 None => partitions.push(RvlPartitionVerify {
                     offset,
                     partition_type,
@@ -144,7 +168,8 @@ fn verify_partition<R: Read + Seek>(
     info: &PartitionInfo,
     kind: String,
     progress: &dyn ProgressReporter,
-) -> RvlPartitionVerify {
+    cancel: &CancelToken,
+) -> Result<RvlPartitionVerify> {
     let cluster_count = info.cluster_count();
     let data_start = info.data_start();
     let mut scratch = vec![[0u8; HASH_REGION_BYTES]; WII_BLOCKS_PER_GROUP];
@@ -155,6 +180,9 @@ fn verify_partition<R: Read + Seek>(
     let mut note = None;
 
     for cluster_idx in 0..cluster_count {
+        if cancel.is_cancelled() {
+            bail!("cancelled");
+        }
         let cluster_enc_start = cluster_idx * WII_GROUP_TOTAL_SIZE;
         if reader
             .seek(SeekFrom::Start(data_start + cluster_enc_start))
@@ -213,7 +241,7 @@ fn verify_partition<R: Read + Seek>(
     }
 
     let ok = mismatched == 0 && note.is_none();
-    RvlPartitionVerify {
+    Ok(RvlPartitionVerify {
         offset: info.partition_offset,
         partition_type: info.partition_type,
         kind,
@@ -223,7 +251,7 @@ fn verify_partition<R: Read + Seek>(
         sample_bad_clusters: sample,
         ok,
         note,
-    }
+    })
 }
 
 /// Returns `Ok(true)` when at least one suspect sector holds

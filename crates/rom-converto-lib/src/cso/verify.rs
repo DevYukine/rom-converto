@@ -16,18 +16,31 @@ use log::info;
 use crate::cso::error::{CsoError, CsoResult};
 use crate::cso::models::CISO_INDEX_UNCOMPRESSED;
 use crate::cso::reader::{CsoSyncHandle, block_spec, make_cso_extract_workers, open_cso_sync};
-use crate::util::{BYTES_PER_MB, ProgressReporter, await_with_progress};
+use crate::util::{BYTES_PER_MB, CancelToken, ProgressReporter, await_with_progress_cancel};
 
 pub async fn verify_cso(
     progress: &dyn ProgressReporter,
     input_path: PathBuf,
     full: bool,
 ) -> CsoResult<()> {
+    verify_cso_cancellable(progress, input_path, full, CancelToken::new()).await
+}
+
+pub async fn verify_cso_cancellable(
+    progress: &dyn ProgressReporter,
+    input_path: PathBuf,
+    full: bool,
+    cancel: CancelToken,
+) -> CsoResult<()> {
+    if cancel.is_cancelled() {
+        return Err(CsoError::Cancelled);
+    }
     let peek_path = input_path.clone();
+    let peek_cancel = cancel.clone();
     let (uncompressed_size, format) =
         tokio::task::spawn_blocking(move || -> CsoResult<(u64, crate::cso::CsoFormat)> {
             let handle = open_cso_sync(&peek_path)?;
-            verify_structure(&handle)?;
+            verify_structure(&handle, &peek_cancel)?;
             Ok((handle.header.uncompressed_size, handle.format))
         })
         .await??;
@@ -46,6 +59,7 @@ pub async fn verify_cso(
     let input_owned = input_path.clone();
     let bytes_done = Arc::new(AtomicU64::new(0));
     let bytes_done_bg = bytes_done.clone();
+    let cancel_bg = cancel.clone();
 
     let handle = tokio::task::spawn_blocking(move || -> CsoResult<()> {
         use crate::util::worker_pool::{Pool, drive, parallelism};
@@ -59,12 +73,18 @@ pub async fn verify_cso(
             handle.header.block_count(),
             parallelism() * 2,
             |block| {
+                if cancel_bg.is_cancelled() {
+                    return Err(CsoError::Cancelled);
+                }
                 Ok(crate::cso::reader::CsoExtractWork {
                     spec: block_spec(&handle, block)?,
                     block,
                 })
             },
             |_seq, out: crate::cso::reader::CsoExtractedOut| {
+                if cancel_bg.is_cancelled() {
+                    return Err(CsoError::Cancelled);
+                }
                 bytes_done_bg
                     .fetch_add(out.bytes.len() as u64, std::sync::atomic::Ordering::Relaxed);
                 Ok(())
@@ -74,17 +94,23 @@ pub async fn verify_cso(
         result
     });
 
-    await_with_progress(progress, &bytes_done, handle).await?;
+    await_with_progress_cancel(progress, &bytes_done, handle, &cancel, || {
+        CsoError::Cancelled
+    })
+    .await?;
     info!("All blocks decoded successfully");
     Ok(())
 }
 
 /// Index sanity: offsets monotonic and in bounds, sentinel equal to
 /// the file size, no raw bit on the sentinel.
-fn verify_structure(handle: &CsoSyncHandle) -> CsoResult<()> {
+fn verify_structure(handle: &CsoSyncHandle, cancel: &CancelToken) -> CsoResult<()> {
     if handle.dax.is_some() {
         // DAX carries no end-of-file sentinel; validate each frame's span.
         for block in 0..handle.header.block_count() {
+            if cancel.is_cancelled() {
+                return Err(CsoError::Cancelled);
+            }
             block_spec(handle, block)?;
         }
         return Ok(());
@@ -95,6 +121,9 @@ fn verify_structure(handle: &CsoSyncHandle) -> CsoResult<()> {
 
     let mut prev = 0u64;
     for (i, &entry) in handle.index.iter().enumerate() {
+        if cancel.is_cancelled() {
+            return Err(CsoError::Cancelled);
+        }
         let offset = ((entry & !CISO_INDEX_UNCOMPRESSED) as u64) << shift;
         if offset < prev {
             return Err(CsoError::CorruptIndex(format!(
@@ -105,6 +134,9 @@ fn verify_structure(handle: &CsoSyncHandle) -> CsoResult<()> {
     }
 
     for block in 0..blocks {
+        if cancel.is_cancelled() {
+            return Err(CsoError::Cancelled);
+        }
         block_spec(handle, block)?;
     }
 

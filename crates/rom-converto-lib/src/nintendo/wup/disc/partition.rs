@@ -105,6 +105,29 @@ impl<'d> ContentBytesSource for PartitionContentSource<'d> {
         self.disc.read_bytes(loc.disc_byte_offset, &mut out)?;
         Ok(out)
     }
+
+    fn visit_encrypted_content(
+        &mut self,
+        content_id: u32,
+        visitor: &mut dyn FnMut(&mut [u8]) -> WupResult<()>,
+    ) -> WupResult<()> {
+        let loc = self
+            .locations
+            .iter()
+            .find(|(id, _)| *id == content_id)
+            .map(|(_, l)| *l)
+            .ok_or(WupError::ContentNotFound { content_id })?;
+        let mut offset = 0u64;
+        let mut buf = vec![0u8; (loc.size.min(4 * 1024 * 1024)) as usize];
+        while offset < loc.size {
+            let n = (loc.size - offset).min(buf.len() as u64) as usize;
+            self.disc
+                .read_bytes(loc.disc_byte_offset + offset, &mut buf[..n])?;
+            visitor(&mut buf[..n])?;
+            offset += n as u64;
+        }
+        Ok(())
+    }
 }
 
 /// Decrypt a raw disc byte range with the disc key and a zero IV.

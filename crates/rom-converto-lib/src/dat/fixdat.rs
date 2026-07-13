@@ -1,6 +1,6 @@
 use crate::dat::digest::TrackDigests;
 use crate::dat::model::{DatFileGame, DatFileSummary, PlaymatchGameFile};
-use crate::util::FileDigests;
+use crate::util::{CancelToken, FileDigests};
 use std::borrow::Cow;
 use std::collections::HashSet;
 
@@ -117,6 +117,16 @@ pub fn write_fixdat_xml<W: std::io::Write>(
     dat: &DatFileSummary,
     entries: &[FixdatEntry],
 ) -> std::io::Result<()> {
+    write_fixdat_xml_cancellable(w, dat, entries, &CancelToken::new())
+}
+
+pub fn write_fixdat_xml_cancellable<W: std::io::Write>(
+    w: &mut W,
+    dat: &DatFileSummary,
+    entries: &[FixdatEntry],
+    cancel: &CancelToken,
+) -> std::io::Result<()> {
+    check_cancel(cancel)?;
     let title = format!("fixdat - {}", dat.name);
     writeln!(w, "<?xml version=\"1.0\"?>")?;
     writeln!(
@@ -135,6 +145,7 @@ pub fn write_fixdat_xml<W: std::io::Write>(
     writeln!(w, "\t</header>")?;
 
     for entry in entries {
+        check_cancel(cancel)?;
         writeln!(w, "\t<game name=\"{}\">", xml_escape(&entry.game_name))?;
         writeln!(
             w,
@@ -142,6 +153,7 @@ pub fn write_fixdat_xml<W: std::io::Write>(
             xml_escape(&entry.game_name)
         )?;
         for f in &entry.missing {
+            check_cancel(cancel)?;
             write!(w, "\t\t<rom name=\"{}\"", xml_escape(&f.file_name))?;
             if let Some(size) = f.file_size_in_bytes {
                 write!(w, " size=\"{size}\"")?;
@@ -163,7 +175,18 @@ pub fn write_fixdat_xml<W: std::io::Write>(
         writeln!(w, "\t</game>")?;
     }
 
+    check_cancel(cancel)?;
     writeln!(w, "</datafile>")?;
+    Ok(())
+}
+
+fn check_cancel(cancel: &CancelToken) -> std::io::Result<()> {
+    if cancel.is_cancelled() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Interrupted,
+            "cancelled",
+        ));
+    }
     Ok(())
 }
 
@@ -323,6 +346,12 @@ mod tests {
                 None,
             )],
         }];
+
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let err =
+            write_fixdat_xml_cancellable(&mut Vec::new(), &dat, &entries, &cancel).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::Interrupted);
 
         let mut buf = Vec::new();
         write_fixdat_xml(&mut buf, &dat, &entries).unwrap();

@@ -12,15 +12,16 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 
 use crate::nintendo::nx::container::{ContainerKind, detect_container};
-use crate::nintendo::nx::error::NxResult;
+use crate::nintendo::nx::error::{NxError, NxResult};
 use crate::nintendo::nx::keys::KeySet;
 use crate::nintendo::nx::models::hfs0 as hfs0_mod;
 use crate::nintendo::nx::models::pfs0 as pfs0_mod;
 use crate::nintendo::nx::models::ticket::Ticket;
-use crate::nintendo::nx::ncz::ncz_to_nca;
+use crate::nintendo::nx::ncz::ncz_to_nca_cancellable;
+use crate::nintendo::nx::util::positional_reader::PositionalReader;
 use crate::nintendo::nx::walker::NcaWalker;
-use crate::util::ProgressReporter;
 use crate::util::pread::file_read_exact_at;
+use crate::util::{CancelToken, ProgressReporter};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NxVerifyResult {
@@ -42,13 +43,23 @@ pub fn verify_container(
     keys: &KeySet,
     progress: &dyn ProgressReporter,
 ) -> NxResult<NxVerifyResult> {
+    verify_container_cancellable(input, keys, progress, &CancelToken::new())
+}
+
+pub fn verify_container_cancellable(
+    input: &Path,
+    keys: &KeySet,
+    progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
+) -> NxResult<NxVerifyResult> {
+    check_cancel(cancel)?;
     let kind = detect_container(input)?;
     progress.start(0, "Verifying Switch container");
     let in_file = Arc::new(File::open(input)?);
 
     let entries = match kind {
-        ContainerKind::Nsp | ContainerKind::Nsz => list_pfs0_entries(input)?,
-        ContainerKind::Xci | ContainerKind::Xcz => list_xci_entries(input)?,
+        ContainerKind::Nsp | ContainerKind::Nsz => list_pfs0_entries(input, cancel)?,
+        ContainerKind::Xci | ContainerKind::Xcz => list_xci_entries(input, cancel)?,
     };
 
     // Title-rights NCAs need a titlekey looked up by rights_id. The
@@ -56,6 +67,7 @@ pub fn verify_container(
     // container are merged in here so those NCAs can be opened.
     let mut keys = keys.clone();
     for entry in &entries {
+        check_cancel(cancel)?;
         if !entry.name.to_ascii_lowercase().ends_with(".tik") {
             continue;
         }
@@ -79,8 +91,9 @@ pub fn verify_container(
     let mut ncas = Vec::new();
     let mut overall_ok = true;
     for (i, entry) in nca_entries.iter().enumerate() {
+        check_cancel(cancel)?;
         progress.set_phase(&format!("Verifying NCA ({}/{})", i + 1, nca_total));
-        let verdict = verify_one(&in_file, entry, &keys, progress)?;
+        let verdict = verify_one(&in_file, entry, &keys, progress, cancel)?;
         if !verdict.ok {
             overall_ok = false;
         }
@@ -100,6 +113,16 @@ pub async fn verify_container_async(
     keys: KeySet,
     progress: &dyn ProgressReporter,
 ) -> NxResult<NxVerifyResult> {
+    verify_container_async_cancellable(input, keys, progress, CancelToken::new()).await
+}
+
+pub async fn verify_container_async_cancellable(
+    input: PathBuf,
+    keys: KeySet,
+    progress: &dyn ProgressReporter,
+    cancel: CancelToken,
+) -> NxResult<NxVerifyResult> {
+    check_cancel(&cancel)?;
     let total = tokio::fs::metadata(&input).await?.len();
     progress.start(total, "Verifying Switch container");
 
@@ -110,6 +133,7 @@ pub async fn verify_container_async(
         counter: bytes_done_bg,
         phase: phase.clone(),
     };
+    let cancel_bg = cancel.clone();
 
     let publish_phase = || {
         let label = std::mem::take(&mut *phase.lock().unwrap());
@@ -119,7 +143,7 @@ pub async fn verify_container_async(
     };
 
     let mut handle = tokio::task::spawn_blocking(move || -> NxResult<NxVerifyResult> {
-        verify_container(&input, &keys, &proxy)
+        verify_container_cancellable(&input, &keys, &proxy, &cancel_bg)
     });
 
     let result;
@@ -144,6 +168,7 @@ pub async fn verify_container_async(
     }
     publish_phase();
     progress.finish();
+    check_cancel(&cancel)?;
     Ok(result)
 }
 
@@ -171,7 +196,8 @@ struct Entry {
     size: u64,
 }
 
-fn list_pfs0_entries(path: &Path) -> NxResult<Vec<Entry>> {
+fn list_pfs0_entries(path: &Path, cancel: &CancelToken) -> NxResult<Vec<Entry>> {
+    check_cancel(cancel)?;
     let mut reader = BufReader::new(File::open(path)?);
     let pfs0 = pfs0_mod::Pfs0::read(&mut reader)?;
     Ok(pfs0
@@ -186,7 +212,8 @@ fn list_pfs0_entries(path: &Path) -> NxResult<Vec<Entry>> {
         .collect())
 }
 
-fn list_xci_entries(path: &Path) -> NxResult<Vec<Entry>> {
+fn list_xci_entries(path: &Path, cancel: &CancelToken) -> NxResult<Vec<Entry>> {
+    check_cancel(cancel)?;
     let hfs0_off = {
         let mut probe = File::open(path)?;
         crate::nintendo::nx::container::read_xci_hfs0_offset(&mut probe)?
@@ -196,6 +223,7 @@ fn list_xci_entries(path: &Path) -> NxResult<Vec<Entry>> {
     let root = hfs0_mod::Hfs0::read(&mut reader)?;
     let mut out = Vec::new();
     for root_entry in root.files {
+        check_cancel(cancel)?;
         let part_abs = root.data_section_offset + root_entry.data_offset;
         reader.seek(SeekFrom::Start(part_abs))?;
         let sub = hfs0_mod::Hfs0::read(&mut reader)?;
@@ -216,42 +244,50 @@ fn verify_one(
     entry: &Entry,
     keys: &KeySet,
     progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
 ) -> NxResult<NcaVerdict> {
+    check_cancel(cancel)?;
     let lower = entry.name.to_ascii_lowercase();
     if lower.ends_with(".ncz") {
-        let mut nca_bytes = vec![0u8; entry.size as usize];
-        file_read_exact_at(in_file, &mut nca_bytes, entry.abs_offset)?;
-        let mut decoded = Vec::with_capacity(entry.size as usize);
-        let mut cur = std::io::Cursor::new(&nca_bytes);
-        ncz_to_nca(&mut cur, &mut decoded, progress)?;
-        progress.inc(entry.size);
-        let verdict = check_nca_bytes(&decoded, &entry.name, &entry.partition, keys)?;
-        Ok(verdict)
+        let mut reader = PositionalReader::new(in_file.clone(), entry.abs_offset, entry.size);
+        let mut decoded = tempfile::NamedTempFile::new()?;
+        ncz_to_nca_cancellable(&mut reader, &mut decoded, progress, cancel)?;
+        check_cancel(cancel)?;
+        let size = decoded.as_file().metadata()?.len();
+        check_nca_file(
+            Arc::new(decoded.reopen()?),
+            0,
+            size,
+            &entry.name,
+            &entry.partition,
+            keys,
+            cancel,
+        )
     } else {
-        let mut nca_bytes = vec![0u8; entry.size as usize];
-        file_read_exact_at(in_file, &mut nca_bytes, entry.abs_offset)?;
         progress.inc(entry.size);
-        check_nca_bytes(&nca_bytes, &entry.name, &entry.partition, keys)
+        check_nca_file(
+            in_file.clone(),
+            entry.abs_offset,
+            entry.size,
+            &entry.name,
+            &entry.partition,
+            keys,
+            cancel,
+        )
     }
 }
 
-fn check_nca_bytes(
-    nca_bytes: &[u8],
+fn check_nca_file(
+    file: Arc<File>,
+    offset: u64,
+    size: u64,
     name: &str,
     partition: &Option<String>,
     keys: &KeySet,
+    cancel: &CancelToken,
 ) -> NxResult<NcaVerdict> {
-    let mut tmp = tempfile::NamedTempFile::new()?;
-    use std::io::Write;
-    tmp.write_all(nca_bytes)?;
-    tmp.flush()?;
-
-    let walker = NcaWalker::open(
-        Arc::new(File::open(tmp.path())?),
-        0,
-        nca_bytes.len() as u64,
-        keys,
-    );
+    check_cancel(cancel)?;
+    let walker = NcaWalker::open(file, offset, size, keys);
     let walker = match walker {
         Ok(w) => w,
         Err(_) => {
@@ -266,6 +302,7 @@ fn check_nca_bytes(
 
     let mut mismatches = 0usize;
     for section in &walker.sections {
+        check_cancel(cancel)?;
         let len = section.raw_size;
         if len == 0 {
             continue;
@@ -283,6 +320,13 @@ fn check_nca_bytes(
         ok: mismatches == 0,
         mismatched_sections: mismatches,
     })
+}
+
+fn check_cancel(cancel: &CancelToken) -> NxResult<()> {
+    if cancel.is_cancelled() {
+        return Err(NxError::Cancelled);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

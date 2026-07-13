@@ -14,7 +14,9 @@ use log::info;
 
 use crate::cd::IO_BUFFER_SIZE;
 use crate::util::hash::{FileDigests, HashAlgo};
-use crate::util::{BYTES_PER_MB, CancelToken, ProgressReporter, await_with_progress_cancel};
+use crate::util::{
+    BYTES_PER_MB, CancelToken, ProgressReporter, await_with_progress_cancel, scratch_output_path,
+};
 
 pub mod compression;
 pub(crate) mod dax;
@@ -28,17 +30,9 @@ pub(crate) mod writer;
 pub use error::{CsoError, CsoResult};
 pub use info::CsoInfo;
 pub use models::CsoFormat;
-pub use verify::verify_cso;
+pub use verify::{verify_cso, verify_cso_cancellable};
 
 use models::{pick_block_size, pick_index_shift, valid_block_size};
-
-/// See [`crate::util::scratch_output_path`]: sibling temp path so an
-/// interrupted write never lands on the final name.
-fn scratch_output_path(output: &std::path::Path) -> PathBuf {
-    let mut name = output.file_name().unwrap_or_default().to_os_string();
-    name.push(".tmp");
-    output.with_file_name(name)
-}
 
 #[derive(Debug, Clone)]
 pub struct CsoCompressOptions {
@@ -104,9 +98,9 @@ pub async fn compress_to_cso_cancellable(
         ),
     );
 
-    let write_path = scratch_output_path(&output_path);
+    let write_path = scratch_output_path(&output_path)?;
     let input_owned = input_path.clone();
-    let write_owned = write_path.clone();
+    let write_owned = write_path.to_path_buf();
     let format = opts.format;
     let cancel_bg = cancel.clone();
     let bytes_done = Arc::new(AtomicU64::new(0));
@@ -125,7 +119,7 @@ pub async fn compress_to_cso_cancellable(
     });
 
     let cleanup = {
-        let write_path = write_path.clone();
+        let write_path = write_path.to_path_buf();
         move || -> CsoError {
             let _ = std::fs::remove_file(&write_path);
             CsoError::Cancelled
@@ -138,7 +132,7 @@ pub async fn compress_to_cso_cancellable(
         return Err(err);
     }
 
-    tokio::fs::rename(&write_path, &output_path).await?;
+    crate::util::publish_temp(write_path, &output_path, true)?;
 
     let out_size = tokio::fs::metadata(&output_path).await?.len();
     info!(
@@ -241,9 +235,9 @@ pub async fn decompress_from_cso_cancellable(
         ),
     );
 
-    let write_path = scratch_output_path(&output_path);
+    let write_path = scratch_output_path(&output_path)?;
     let input_owned = input_path.clone();
-    let write_owned = write_path.clone();
+    let write_owned = write_path.to_path_buf();
     let cancel_bg = cancel.clone();
     let bytes_done = Arc::new(AtomicU64::new(0));
     let bytes_done_bg = bytes_done.clone();
@@ -269,7 +263,7 @@ pub async fn decompress_from_cso_cancellable(
     });
 
     let cleanup = {
-        let write_path = write_path.clone();
+        let write_path = write_path.to_path_buf();
         move || -> CsoError {
             let _ = std::fs::remove_file(&write_path);
             CsoError::Cancelled
@@ -282,7 +276,7 @@ pub async fn decompress_from_cso_cancellable(
         return Err(err);
     }
 
-    tokio::fs::rename(&write_path, &output_path).await?;
+    crate::util::publish_temp(write_path, &output_path, true)?;
 
     info!(
         "Decompressed: {:.2} MB ISO from {}",
@@ -660,7 +654,7 @@ mod tests {
 
         assert!(matches!(result, Err(CsoError::Cancelled)));
         assert!(!out.exists(), "no partial output");
-        assert!(!scratch_output_path(&out).exists(), "no leftover temp");
+        assert!(!crate::util::scratch_output_exists(&out).unwrap());
     }
 
     #[tokio::test]
@@ -695,7 +689,7 @@ mod tests {
             Ok(()) => assert!(out.exists()),
             other => panic!("unexpected result: {other:?}"),
         }
-        assert!(!scratch_output_path(&out).exists(), "no leftover temp");
+        assert!(!crate::util::scratch_output_exists(&out).unwrap());
     }
 
     #[tokio::test]
@@ -765,7 +759,7 @@ mod tests {
             }
             other => panic!("unexpected result: {other:?}"),
         }
-        assert!(!scratch_output_path(&out).exists(), "no leftover temp");
+        assert!(!crate::util::scratch_output_exists(&out).unwrap());
     }
 
     /// Cross-checks against real maxcso; set ROMCONVERTO_MAXCSO to

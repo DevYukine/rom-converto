@@ -36,11 +36,14 @@ pub use hash::{
 pub use hash_cache::{CachedTrack, CueDigests, HashCache};
 pub use plan::{PlanDecision, PlanLine, classify};
 pub use report::{
-    HashReportRecord, ReportFormat, ReportRecord, ReportTotals, write_hash_report, write_report,
+    HashReportRecord, ReportFormat, ReportRecord, ReportTotals, write_dat_report_cancellable,
+    write_hash_report, write_hash_report_cancellable, write_report, write_report_cancellable,
 };
 pub use tally::{FileEntry, FileStatus, Tally, TallyDirection, format_bytes};
 pub use template::{TemplateTokens, apply_template};
-pub use verify::{OutputVerify, VerifyOutcome, verify_existing_output};
+pub use verify::{
+    OutputVerify, VerifyOutcome, verify_existing_output, verify_existing_output_cancellable,
+};
 
 pub const BYTES_PER_MB: f64 = 1_000_000.0;
 
@@ -53,10 +56,83 @@ pub type CancelToken = tokio_util::sync::CancellationToken;
 /// A sibling temp path in the output directory so an interrupted write
 /// never lands on the final name and a pre-existing overwrite target
 /// survives until the rename.
-pub(crate) fn scratch_output_path(output: &std::path::Path) -> std::path::PathBuf {
-    let mut name = output.file_name().unwrap_or_default().to_os_string();
-    name.push(".tmp");
-    output.with_file_name(name)
+pub(crate) fn scratch_output_path(output: &std::path::Path) -> std::io::Result<tempfile::TempPath> {
+    let parent = output
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let mut prefix = std::ffi::OsString::from(".");
+    prefix.push(output.file_name().unwrap_or_default());
+    prefix.push(".");
+    tempfile::Builder::new()
+        .prefix(&prefix)
+        .suffix(".tmp")
+        .tempfile_in(parent)
+        .map(tempfile::NamedTempFile::into_temp_path)
+}
+
+pub(crate) fn publish_temp(
+    temp: tempfile::TempPath,
+    output: &std::path::Path,
+    overwrite: bool,
+) -> std::io::Result<()> {
+    let result = if overwrite {
+        temp.persist(output)
+    } else {
+        temp.persist_noclobber(output)
+    };
+    result.map(|_| ()).map_err(|err| err.error)
+}
+
+pub(crate) fn backup_existing(
+    path: &std::path::Path,
+) -> std::io::Result<Option<tempfile::TempPath>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    if !std::fs::symlink_metadata(path)?.file_type().is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("not a regular file: {}", path.display()),
+        ));
+    }
+    let backup = scratch_output_path(path)?;
+    std::fs::remove_file(&backup)?;
+    std::fs::rename(path, &backup)?;
+    Ok(Some(backup))
+}
+
+pub(crate) fn restore_temp(
+    temp: tempfile::TempPath,
+    path: &std::path::Path,
+) -> std::io::Result<()> {
+    match temp.persist(path) {
+        Ok(_) => Ok(()),
+        Err(err) => {
+            let error = err.error;
+            let _ = err.path.keep();
+            Err(error)
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn scratch_output_exists(output: &std::path::Path) -> std::io::Result<bool> {
+    let parent = output
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let prefix = format!(
+        ".{}.",
+        output.file_name().unwrap_or_default().to_string_lossy()
+    );
+    Ok(std::fs::read_dir(parent)?
+        .filter_map(|entry| entry.ok())
+        .any(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.starts_with(&prefix) && name.ends_with(".tmp")
+        }))
 }
 
 /// Re-root a derived output filename into `output_dir`, or return it unchanged
@@ -129,38 +205,6 @@ impl ProgressReporter for NoProgress {
     fn finish(&self) {}
 }
 
-/// Await a blocking pipeline while draining its shared byte counter
-/// into `progress` every 100 ms; calls `progress.finish()` at the end
-/// either way.
-pub(crate) async fn await_with_progress<T, E>(
-    progress: &dyn ProgressReporter,
-    bytes_done: &std::sync::Arc<std::sync::atomic::AtomicU64>,
-    mut handle: tokio::task::JoinHandle<Result<T, E>>,
-) -> Result<T, E>
-where
-    E: From<tokio::task::JoinError>,
-{
-    use std::sync::atomic::Ordering;
-
-    let result = loop {
-        match tokio::time::timeout(std::time::Duration::from_millis(100), &mut handle).await {
-            Ok(result) => break result,
-            Err(_) => {
-                let delta = bytes_done.swap(0, Ordering::Relaxed);
-                if delta > 0 {
-                    progress.inc(delta);
-                }
-            }
-        }
-    };
-    let remaining = bytes_done.swap(0, Ordering::Relaxed);
-    if remaining > 0 {
-        progress.inc(remaining);
-    }
-    progress.finish();
-    result?
-}
-
 /// Like [`await_with_progress`], but also watches `cancel`. The blocking
 /// pipeline observes the same token at its own loop boundaries and
 /// returns the codec's `Cancelled` error promptly; this helper only
@@ -206,7 +250,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::place_in_dir_mirrored;
+    use super::{place_in_dir_mirrored, publish_temp, scratch_output_path};
     use crate::util::{NoProgress, ProgressReporter};
     use std::path::{Path, PathBuf};
 
@@ -240,5 +284,37 @@ mod tests {
             Some(Path::new("/out")),
         );
         assert_eq!(out, PathBuf::from("/out/game.chd"));
+    }
+
+    #[test]
+    fn scratch_outputs_are_unique_siblings_and_clean_up_on_drop() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("game.rvz");
+        let first = scratch_output_path(&output).unwrap();
+        let second = scratch_output_path(&output).unwrap();
+        let first_path = first.to_path_buf();
+
+        assert_ne!(first.to_path_buf(), second.to_path_buf());
+        assert_eq!(first.parent(), output.parent());
+        assert!(first.exists());
+        drop(first);
+        assert!(!first_path.exists());
+    }
+
+    #[test]
+    fn publish_temp_replaces_or_preserves_cross_platform() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("out.bin");
+        std::fs::write(&output, b"old").unwrap();
+
+        let no_clobber = scratch_output_path(&output).unwrap();
+        std::fs::write(&no_clobber, b"new").unwrap();
+        assert!(publish_temp(no_clobber, &output, false).is_err());
+        assert_eq!(std::fs::read(&output).unwrap(), b"old");
+
+        let overwrite = scratch_output_path(&output).unwrap();
+        std::fs::write(&overwrite, b"new").unwrap();
+        publish_temp(overwrite, &output, true).unwrap();
+        assert_eq!(std::fs::read(&output).unwrap(), b"new");
     }
 }

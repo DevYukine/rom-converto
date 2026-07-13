@@ -2,7 +2,7 @@ use crate::cd::IO_BUFFER_SIZE;
 use crate::cue::CueParser;
 use crate::cue::error::CueError;
 use crate::cue::models::{CueSheet, FileType, Msf};
-use crate::util::{BYTES_PER_MB, ProgressReporter};
+use crate::util::{BYTES_PER_MB, CancelToken, ProgressReporter, scratch_output_path};
 use log::{debug, info};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -48,6 +48,9 @@ pub enum MergeError {
     /// The tracks in the CUE sheet do not share a single block size.
     #[error("CUE sheet mixes track types with different block sizes")]
     MixedBlockSizes,
+
+    #[error("operation cancelled")]
+    Cancelled,
 
     /// A `FILE` entry names a type other than `BINARY`, which cannot be concatenated as raw bytes.
     #[error("CUE sheet references a non-BINARY file, only raw .bin tracks can be merged: {0}")]
@@ -124,12 +127,88 @@ fn normalize_for_compare(path: &Path) -> PathBuf {
     }
 }
 
+fn restore_output(path: &Path, backup: Option<tempfile::TempPath>) -> std::io::Result<()> {
+    if path.exists()
+        && let Err(err) = std::fs::remove_file(path)
+    {
+        if let Some(backup) = backup {
+            let _ = backup.keep();
+        }
+        return Err(err);
+    }
+    if let Some(backup) = backup {
+        crate::util::restore_temp(backup, path)?;
+    }
+    Ok(())
+}
+
+fn publish_pair(
+    bin_temp: tempfile::TempPath,
+    bin_path: &Path,
+    cue_temp: tempfile::TempPath,
+    cue_path: &Path,
+    force: bool,
+) -> std::io::Result<()> {
+    let bin_backup = if force {
+        crate::util::backup_existing(bin_path)?
+    } else {
+        None
+    };
+    let cue_backup = if force {
+        match crate::util::backup_existing(cue_path) {
+            Ok(backup) => backup,
+            Err(err) => {
+                restore_output(bin_path, bin_backup)?;
+                return Err(err);
+            }
+        }
+    } else {
+        None
+    };
+
+    if let Err(err) = crate::util::publish_temp(bin_temp, bin_path, force) {
+        if force {
+            restore_output(bin_path, bin_backup)?;
+            restore_output(cue_path, cue_backup)?;
+        }
+        return Err(err);
+    }
+    if let Err(err) = crate::util::publish_temp(cue_temp, cue_path, force) {
+        restore_output(bin_path, bin_backup)?;
+        if force {
+            restore_output(cue_path, cue_backup)?;
+        }
+        return Err(err);
+    }
+    Ok(())
+}
+
 pub async fn merge_bin(
     progress: &dyn ProgressReporter,
     cue_path: PathBuf,
     output_cue_path: PathBuf,
     force: bool,
 ) -> MergeResult<()> {
+    merge_bin_cancellable(
+        progress,
+        cue_path,
+        output_cue_path,
+        force,
+        CancelToken::new(),
+    )
+    .await
+}
+
+pub async fn merge_bin_cancellable(
+    progress: &dyn ProgressReporter,
+    cue_path: PathBuf,
+    output_cue_path: PathBuf,
+    force: bool,
+    cancel: CancelToken,
+) -> MergeResult<()> {
+    if cancel.is_cancelled() {
+        return Err(MergeError::Cancelled);
+    }
     let output_bin_path = output_cue_path.with_extension("bin");
 
     if !force {
@@ -142,6 +221,9 @@ pub async fn merge_bin(
 
     debug!("Parsing CUE file: {:?}", cue_path);
     let cue_sheet = CueParser::new(&cue_path).parse().await?;
+    if cancel.is_cancelled() {
+        return Err(MergeError::Cancelled);
+    }
 
     if cue_sheet.files.is_empty() {
         return Err(MergeError::NoFiles);
@@ -177,6 +259,9 @@ pub async fn merge_bin(
     let mut bin_paths = Vec::with_capacity(cue_sheet.files.len());
     let mut plans = Vec::with_capacity(cue_sheet.files.len());
     for file in &cue_sheet.files {
+        if cancel.is_cancelled() {
+            return Err(MergeError::Cancelled);
+        }
         let bin_path = cue_dir.join(&file.filename);
         let Ok(metadata) = fs::metadata(&bin_path).await else {
             return Err(MergeError::BinNotFound(bin_path.display().to_string()));
@@ -227,19 +312,31 @@ pub async fn merge_bin(
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "merged.bin".to_string());
     let cue_text = build_merged_cue(&out_bin_filename, &cue_sheet, &plans);
+    if cancel.is_cancelled() {
+        return Err(MergeError::Cancelled);
+    }
+    let output_bin_tmp = scratch_output_path(&output_bin_path)?;
+    let output_cue_tmp = scratch_output_path(&output_cue_path)?;
 
     let bytes_done = Arc::new(AtomicU64::new(0));
     let bytes_done_bg = bytes_done.clone();
     let output_bin_owned = output_bin_path.clone();
     let output_cue_owned = output_cue_path.clone();
+    let cancel_bg = cancel.clone();
 
     let mut handle = tokio::task::spawn_blocking(move || -> MergeResult<()> {
-        let out_file = std::fs::File::create(&output_bin_owned)?;
+        if cancel_bg.is_cancelled() {
+            return Err(MergeError::Cancelled);
+        }
+        let out_file = std::fs::File::create(&output_bin_tmp)?;
         let mut writer = std::io::BufWriter::with_capacity(IO_BUFFER_SIZE, out_file);
         let mut buffer = vec![0u8; IO_BUFFER_SIZE];
         for bin_path in &bin_paths {
             let mut reader = std::fs::File::open(bin_path)?;
             loop {
+                if cancel_bg.is_cancelled() {
+                    return Err(MergeError::Cancelled);
+                }
                 let read = reader.read(&mut buffer)?;
                 if read == 0 {
                     break;
@@ -249,16 +346,23 @@ pub async fn merge_bin(
             }
         }
         writer.flush()?;
-        std::fs::write(&output_cue_owned, cue_text.as_bytes())?;
+        std::fs::write(&output_cue_tmp, cue_text.as_bytes())?;
+        if cancel_bg.is_cancelled() {
+            return Err(MergeError::Cancelled);
+        }
+        publish_pair(
+            output_bin_tmp,
+            &output_bin_owned,
+            output_cue_tmp,
+            &output_cue_owned,
+            force,
+        )?;
         Ok(())
     });
 
-    loop {
+    let result = loop {
         match tokio::time::timeout(std::time::Duration::from_millis(100), &mut handle).await {
-            Ok(result) => {
-                result??;
-                break;
-            }
+            Ok(result) => break result,
             Err(_) => {
                 let delta = bytes_done.swap(0, Ordering::Relaxed);
                 if delta > 0 {
@@ -266,12 +370,13 @@ pub async fn merge_bin(
                 }
             }
         }
-    }
+    };
     let remaining = bytes_done.swap(0, Ordering::Relaxed);
     if remaining > 0 {
         progress.inc(remaining);
     }
     progress.finish();
+    result??;
 
     info!(
         "Merged {} bin files ({:.2} MB) into {:?}",
@@ -541,5 +646,42 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, MergeError::OutputCollidesWithInput(_)));
+    }
+
+    #[tokio::test]
+    async fn cancelled_merge_preserves_existing_outputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let cue_path = dir.path().join("game.cue");
+        let output_cue = dir.path().join("merged.cue");
+        let output_bin = dir.path().join("merged.bin");
+        std::fs::write(&cue_path, b"unused").unwrap();
+        std::fs::write(&output_cue, b"old cue").unwrap();
+        std::fs::write(&output_bin, b"old bin").unwrap();
+        let cancel = CancelToken::new();
+        cancel.cancel();
+
+        let err = merge_bin_cancellable(&NoProgress, cue_path, output_cue.clone(), true, cancel)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, MergeError::Cancelled));
+        assert_eq!(std::fs::read(output_cue).unwrap(), b"old cue");
+        assert_eq!(std::fs::read(output_bin).unwrap(), b"old bin");
+    }
+
+    #[test]
+    fn pair_publish_rolls_back_first_no_clobber_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin_path = dir.path().join("merged.bin");
+        let cue_path = dir.path().join("merged.cue");
+        std::fs::write(&cue_path, b"raced cue").unwrap();
+        let bin_temp = scratch_output_path(&bin_path).unwrap();
+        let cue_temp = scratch_output_path(&cue_path).unwrap();
+        std::fs::write(&bin_temp, b"new bin").unwrap();
+        std::fs::write(&cue_temp, b"new cue").unwrap();
+
+        assert!(publish_pair(bin_temp, &bin_path, cue_temp, &cue_path, false).is_err());
+        assert!(!bin_path.exists());
+        assert_eq!(std::fs::read(cue_path).unwrap(), b"raced cue");
     }
 }

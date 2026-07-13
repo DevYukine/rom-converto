@@ -2,7 +2,7 @@ name: Create Release
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
 
 permissions:
   contents: write
@@ -25,9 +25,9 @@ jobs:
         uses: TriPSs/conventional-changelog-action@v6
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          version-file: './Cargo.toml'
+          version-file: "./Cargo.toml"
           version-path: "workspace.package.version"
-          pre-commit: '.github/scripts/pre-commit.js'
+          pre-commit: ".github/scripts/pre-commit.js"
       - name: Create Release
         if: ${{ steps.changelog.outputs.skipped == 'false' }}
         uses: ncipollo/release-action@v1
@@ -40,6 +40,16 @@ jobs:
     needs: changelog
     if: ${{ needs.changelog.outputs.skipped == 'false' }}
     uses: ./.github/workflows/_build-cli.yml
+    with:
+      ref: ${{ needs.changelog.outputs.tag }}
+      release: true
+      release_tag: ${{ needs.changelog.outputs.tag }}
+    secrets: inherit
+
+  build-ffi:
+    needs: changelog
+    if: ${{ needs.changelog.outputs.skipped == 'false' }}
+    uses: ./.github/workflows/_build-ffi.yml
     with:
       ref: ${{ needs.changelog.outputs.tag }}
       release: true

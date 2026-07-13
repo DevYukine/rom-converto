@@ -543,7 +543,6 @@ async fn main() -> Result<()> {
     if let Commands::ShellCompletions(cmd) = &cli.command {
         return run_shell_completions(cmd);
     }
-
     let (project_level, global_level) = logging::resolve_log_levels(cli.quiet, cli.verbose);
 
     let debug_file = match cli.debug_log.as_deref() {

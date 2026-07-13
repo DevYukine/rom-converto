@@ -34,7 +34,7 @@ use crate::nintendo::nx::models::ticket::Ticket;
 use crate::nintendo::nx::ncz::compress::{NcaToNczOptions, NczMode, nca_to_ncz};
 use crate::nintendo::nx::walker::NcaWalker;
 use crate::util::pread::file_read_exact_at;
-use crate::util::{CancelToken, ProgressReporter, await_with_progress_cancel};
+use crate::util::{CancelToken, ProgressReporter, await_with_progress_cancel, scratch_output_path};
 
 #[derive(Debug, Clone, Copy)]
 pub struct NxCompressOptions {
@@ -135,8 +135,8 @@ pub async fn compress_container_async_cancellable(
         counter: bytes_done_bg,
     };
 
-    let write_path = scratch_output_path(&output);
-    let write_owned = write_path.clone();
+    let write_path = scratch_output_path(&output)?;
+    let write_owned = write_path.to_path_buf();
     let cancel_bg = cancel.clone();
 
     let handle = tokio::task::spawn_blocking(move || -> NxResult<()> {
@@ -144,7 +144,7 @@ pub async fn compress_container_async_cancellable(
     });
 
     let cleanup = {
-        let write_path = write_path.clone();
+        let write_path = write_path.to_path_buf();
         move || -> NxError {
             let _ = std::fs::remove_file(&write_path);
             NxError::Cancelled
@@ -156,14 +156,8 @@ pub async fn compress_container_async_cancellable(
         let _ = tokio::fs::remove_file(&write_path).await;
         return Err(err);
     }
-    tokio::fs::rename(&write_path, &output).await?;
+    crate::util::publish_temp(write_path, &output, true)?;
     Ok(())
-}
-
-fn scratch_output_path(output: &Path) -> PathBuf {
-    let mut name = output.file_name().unwrap_or_default().to_os_string();
-    name.push(".tmp");
-    output.with_file_name(name)
 }
 
 struct AtomicProgress {

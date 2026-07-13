@@ -13,7 +13,9 @@ use crate::nintendo::ctr::z3ds::models::{
 };
 use crate::nintendo::ctr::z3ds::seekable::{FRAME_SIZE_CIA, FRAME_SIZE_DEFAULT};
 use crate::util::worker_pool::{Pool, parallelism};
-use crate::util::{BYTES_PER_MB, CancelToken, ProgressReporter, await_with_progress_cancel};
+use crate::util::{
+    BYTES_PER_MB, CancelToken, ProgressReporter, await_with_progress_cancel, scratch_output_path,
+};
 use binrw::{BinRead, BinWrite, Endian};
 use chrono::Utc;
 use log::{info, warn};
@@ -75,12 +77,6 @@ pub async fn compress_rom(
 
 /// A sibling temp path so an interrupted write never lands on the final
 /// name.
-fn scratch_output_path(output: &Path) -> std::path::PathBuf {
-    let mut name = output.file_name().unwrap_or_default().to_os_string();
-    name.push(".tmp");
-    output.with_file_name(name)
-}
-
 /// Like [`compress_rom`] but observes `cancel` at every frame boundary;
 /// on cancel the partial output is removed.
 pub async fn compress_rom_cancellable(
@@ -166,9 +162,9 @@ pub async fn compress_rom_cancellable(
     let bytes_done_clone = bytes_done.clone();
 
     // The paths are moved into the blocking task; borrows do not cross await.
-    let write_path = scratch_output_path(output);
+    let write_path = scratch_output_path(output)?;
     let input_owned = input.to_path_buf();
-    let write_owned = write_path.clone();
+    let write_owned = write_path.to_path_buf();
     let cancel_bg = cancel.clone();
     let metadata_bytes_owned = metadata_bytes;
 
@@ -228,7 +224,7 @@ pub async fn compress_rom_cancellable(
     });
 
     let cleanup = {
-        let write_path = write_path.clone();
+        let write_path = write_path.to_path_buf();
         move || -> Z3dsError {
             let _ = std::fs::remove_file(&write_path);
             Z3dsError::Cancelled
@@ -242,7 +238,7 @@ pub async fn compress_rom_cancellable(
                 return Err(err);
             }
         };
-    tokio::fs::rename(&write_path, output).await?;
+    crate::util::publish_temp(write_path, output, true)?;
 
     let ratio = (1.0 - compressed_size as f64 / uncompressed_size as f64) * 100.0;
     info!(

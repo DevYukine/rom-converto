@@ -3,6 +3,8 @@
 
 use std::path::{Path, PathBuf};
 
+use super::CancelToken;
+
 pub fn has_any_extension(path: &Path, exts: &[&str]) -> bool {
     path.is_file()
         && path
@@ -54,10 +56,21 @@ pub fn collect_files_with_exts(
     exts: &[&str],
     max_depth: Option<usize>,
 ) -> std::io::Result<Vec<PathBuf>> {
+    collect_files_with_exts_cancellable(dir, exts, max_depth, &CancelToken::new())
+}
+
+pub fn collect_files_with_exts_cancellable(
+    dir: &Path,
+    exts: &[&str],
+    max_depth: Option<usize>,
+    cancel: &CancelToken,
+) -> std::io::Result<Vec<PathBuf>> {
     let mut out = Vec::new();
     let mut stack = vec![(dir.to_path_buf(), 1usize)];
     while let Some((current, depth)) = stack.pop() {
+        cancelled(cancel)?;
         for entry in std::fs::read_dir(&current)? {
+            cancelled(cancel)?;
             let entry = entry?;
             let file_type = entry.file_type()?;
             let path = entry.path();
@@ -84,10 +97,20 @@ pub fn collect_files_with_exts(
 /// files directly in `dir` are depth 1, `None` descends without limit, and
 /// symlinked directories are not followed.
 pub fn collect_all_files(dir: &Path, max_depth: Option<usize>) -> std::io::Result<Vec<PathBuf>> {
+    collect_all_files_cancellable(dir, max_depth, &CancelToken::new())
+}
+
+pub fn collect_all_files_cancellable(
+    dir: &Path,
+    max_depth: Option<usize>,
+    cancel: &CancelToken,
+) -> std::io::Result<Vec<PathBuf>> {
     let mut out = Vec::new();
     let mut stack = vec![(dir.to_path_buf(), 1usize)];
     while let Some((current, depth)) = stack.pop() {
+        cancelled(cancel)?;
         for entry in std::fs::read_dir(&current)? {
+            cancelled(cancel)?;
             let entry = entry?;
             let file_type = entry.file_type()?;
             let path = entry.path();
@@ -104,6 +127,16 @@ pub fn collect_all_files(dir: &Path, max_depth: Option<usize>) -> std::io::Resul
     }
     out.sort();
     Ok(out)
+}
+
+fn cancelled(cancel: &CancelToken) -> std::io::Result<()> {
+    if cancel.is_cancelled() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Interrupted,
+            "cancelled",
+        ));
+    }
+    Ok(())
 }
 
 pub const DEFAULT_SPACE_HEADROOM: u64 = 256 * 1024 * 1024;

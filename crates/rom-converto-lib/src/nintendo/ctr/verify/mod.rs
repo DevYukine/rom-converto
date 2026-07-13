@@ -7,5 +7,6 @@ pub mod root_key;
 pub use chain::{
     BatchVerifySummary, CiaLegitimacy, CiaLegitimacySubType, CiaVerifyOptions, CiaVerifyResult,
     CtrVerifyOptions, CtrVerifyResult, NcchPartitionResult, NcsdVerifyResult, StandardSubType,
-    verify_cia, verify_ctr, verify_ctr_batch,
+    verify_cia, verify_cia_cancellable, verify_ctr, verify_ctr_batch, verify_ctr_batch_cancellable,
+    verify_ctr_cancellable,
 };

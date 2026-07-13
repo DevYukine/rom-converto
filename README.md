@@ -3,7 +3,7 @@
 [![Test Commit](https://github.com/DevYukine/rom-converto/actions/workflows/tests.yml/badge.svg)](https://github.com/DevYukine/rom-converto/actions/workflows/tests.yml)
 [![Latest release](https://img.shields.io/github/v/release/DevYukine/rom-converto)](https://github.com/DevYukine/rom-converto/releases/latest)
 
-rom-converto converts, compresses, verifies, encrypts, and decrypts ROMs and disc images for Nintendo 3DS, GameCube, Wii, Wii U, Nintendo Switch, and CD or DVD media. It ships as a cross-platform command line tool, a desktop GUI, and a Rust library that both front ends call. Its output matches the established encoder for each format, so a rom-converto file drops straight into the emulators and tools people already use.
+rom-converto converts, compresses, verifies, encrypts, and decrypts ROMs and disc images for Nintendo 3DS, GameCube, Wii, Wii U, Nintendo Switch, and CD or DVD media. It ships as a cross-platform command line tool, a desktop GUI, a Rust library, and a C ABI bridge for embedding. Its output matches the established encoder for each format, so a rom-converto file drops straight into the emulators and tools people already use.
 
 ## Supported formats
 
@@ -100,16 +100,17 @@ A TOML config file lets you set per-format default flags and named presets so lo
 
 ## How it works
 
-The project is a Cargo workspace with four crates:
+The project is a Cargo workspace with five crates:
 
 | Crate | Role |
 |---|---|
 | `rom-converto-lib` | All conversion, compression, encryption, and verification logic |
 | `rom-converto-cli` | Command line interface |
 | `rom-converto-gui` | Desktop app (Tauri + Nuxt) |
+| `rom-converto-ffi` | JSON-based C ABI bridge for embedding from C# and other hosts |
 | `rom-converto-benchmark` | Benchmark harness comparing rom-converto against external reference tools |
 
-Both the CLI and the GUI call the same library functions, so an equivalent run through either front end produces identical output.
+The CLI, GUI, and C ABI bridge call the same library code, so an equivalent run through any front end produces identical output. See [`docs/ffi.md`](docs/ffi.md) for ABI v1, typed JSON requests, callbacks, and release package contents.
 
 ## Benchmarks
 
@@ -125,7 +126,7 @@ Reproduce them with the `rom-converto-benchmark` crate; see [`docs/development.m
 
 ## Development
 
-You need a recent stable Rust toolchain, plus Node.js 22 or newer and pnpm for the GUI. Run the CLI with `cargo run -p rom-converto-cli` and the GUI with `pnpm tauri dev` from `crates/rom-converto-gui`. The CI gates are `cargo fmt --all -- --check`, `cargo check`, `cargo clippy -- -D warnings`, `cargo test`, and the GUI type-check and build. See [`docs/development.md`](docs/development.md).
+You need a recent stable Rust toolchain, plus Node.js 22 or newer and pnpm for the GUI. Run the CLI with `cargo run -p rom-converto-cli`, build the C ABI bridge with `cargo build --release -p rom-converto-ffi`, and run the GUI with `pnpm tauri dev` from `crates/rom-converto-gui`. The CI gates are `cargo fmt --all -- --check`, `cargo check`, `cargo clippy -- -D warnings`, `cargo test`, and the GUI type-check and build. See [`docs/development.md`](docs/development.md).
 
 ## Contributing
 

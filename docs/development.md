@@ -5,11 +5,11 @@
 - A recent stable Rust toolchain. Install it from [rustup](https://www.rust-lang.org/tools/install).
 - For the GUI: [Node.js 22+](https://nodejs.org/) and [pnpm](https://pnpm.io/installation).
 
-The project is a Cargo workspace with four crates: `rom-converto-lib` (all conversion,
-compression, encryption, and verification logic), `rom-converto-cli` (the command line
-interface), `rom-converto-gui` (the Tauri desktop app), and `rom-converto-benchmark` (a
-harness that compares rom-converto against reference tools). Both front ends call the same
-library functions.
+The project is a Cargo workspace with five crates: `rom-converto-lib` (all conversion,
+compression, encryption, verification, and shared JSON runner logic), `rom-converto-cli`
+(the command line interface), `rom-converto-gui` (the Tauri desktop app),
+`rom-converto-benchmark` (a harness that compares rom-converto against reference tools), and
+`rom-converto-ffi` (the C ABI bridge). All front ends call the same library code.
 
 ## Running in development
 
@@ -40,6 +40,22 @@ cargo build --release -p rom-converto-cli
 The binary lands at `target/release/rom-converto`. Set `ROM_CONVERTO_RELEASE=1` at build time
 to mark a release build, which shows the semantic version instead of the dev hash. The release
 CI workflow sets this automatically.
+
+Build the C ABI bridge with:
+
+```
+cargo build --release -p rom-converto-ffi
+```
+
+That produces the platform `cdylib` under `target/release` (`rom_converto_ffi.dll`,
+`librom_converto_ffi.so`, or `librom_converto_ffi.dylib`). Windows also produces
+`rom_converto_ffi.dll.lib`, the link-time import library. Unix release assets are
+`rom-converto-ffi-<classifier>.tar.gz`; Windows assets are
+`rom-converto-ffi-<classifier>.zip`. Each extracts to a
+`rom-converto-ffi-<classifier>` directory with the library,
+`include/rom_converto.h`, and `LICENSE`. The header is the C ABI source of truth.
+See [`ffi.md`](ffi.md) for its ownership, threading, callback, cancellation, and JSON
+contracts.
 
 For the GUI, build the Tauri bundle:
 
@@ -89,9 +105,9 @@ Every change runs these checks. Run them locally before opening a pull request:
 
 ```
 cargo fmt --all -- --check
-cargo check -p rom-converto-lib -p rom-converto-cli
-cargo clippy -p rom-converto-lib -p rom-converto-cli -- -D warnings
-cargo test -p rom-converto-lib -p rom-converto-cli
+cargo check -p rom-converto-lib -p rom-converto-cli -p rom-converto-benchmark -p rom-converto-ffi
+cargo clippy -p rom-converto-lib -p rom-converto-cli -p rom-converto-benchmark -p rom-converto-ffi -- -D warnings
+cargo test -p rom-converto-lib -p rom-converto-cli -p rom-converto-benchmark -p rom-converto-ffi
 ```
 
 For the GUI, from `crates/rom-converto-gui`:

@@ -150,7 +150,7 @@ pub async fn cci_to_cia_cancellable(
             .set_content_index(record.content_index as usize);
     }
 
-    let tmp = scratch_output_path(output);
+    let tmp = scratch_output_path(output)?;
     let out = File::create(&tmp).await.context("creating CIA output")?;
     let mut out = BufWriter::new(out);
 
@@ -185,7 +185,7 @@ pub async fn cci_to_cia_cancellable(
     }
 
     drop(out);
-    tokio::fs::rename(&tmp, output).await?;
+    crate::util::publish_temp(tmp, output, true)?;
     progress.finish();
 
     info!(

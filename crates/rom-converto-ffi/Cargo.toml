@@ -1,0 +1,16 @@
+[package]
+name = "rom-converto-ffi"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "C ABI bridge for embedding rom-converto."
+
+[lib]
+name = "rom_converto_ffi"
+crate-type = ["cdylib"]
+
+[dependencies]
+rom-converto-lib = { path = "../rom-converto-lib" }
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+

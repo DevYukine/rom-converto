@@ -108,7 +108,7 @@ pub async fn cia_to_cci_cancellable(
     let total_content_bytes: u64 = placements.iter().map(|p| p.layout.ncch_size).sum();
     progress.start(total_content_bytes, "Converting CIA to CCI");
 
-    let tmp = scratch_output_path(output);
+    let tmp = scratch_output_path(output)?;
     let out = File::create(&tmp).await.context("creating CCI output")?;
     let mut out = BufWriter::new(out);
 
@@ -173,7 +173,7 @@ pub async fn cia_to_cci_cancellable(
     }
 
     drop(out);
-    tokio::fs::rename(&tmp, output).await?;
+    crate::util::publish_temp(tmp, output, true)?;
     progress.finish();
 
     info!(

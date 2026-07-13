@@ -3,7 +3,8 @@
 //! result, so a corrupt or partial output gets rewritten and a valid one
 //! is kept.
 
-use super::ProgressReporter;
+use super::{CancelToken, ProgressReporter};
+use anyhow::Result;
 use std::path::Path;
 
 /// Which integrity check to run against an existing output under
@@ -33,16 +34,38 @@ pub async fn verify_existing_output(
     path: &Path,
     target: OutputVerify,
 ) -> VerifyOutcome {
-    use crate::chd::verify_chd;
-    use crate::cso::verify_cso;
-    use crate::nintendo::nx::verify_container_async;
-    use crate::nintendo::rvz::verify_rvz_structure;
+    verify_existing_output_cancellable(progress, path, target, CancelToken::new())
+        .await
+        .unwrap_or(VerifyOutcome::Invalid)
+}
+
+pub async fn verify_existing_output_cancellable(
+    progress: &dyn ProgressReporter,
+    path: &Path,
+    target: OutputVerify,
+    cancel: CancelToken,
+) -> Result<VerifyOutcome> {
+    use crate::chd::verify_chd_cancellable;
+    use crate::cso::verify_cso_cancellable;
+    use crate::nintendo::nx::verify_container_async_cancellable;
+    use crate::nintendo::rvz::verify::verify_rvz_structure_cancellable;
+    if cancel.is_cancelled() {
+        anyhow::bail!("cancelled");
+    }
     let ok = match target {
-        OutputVerify::Chd => verify_chd(progress, path.to_path_buf(), None, false)
-            .await
-            .is_ok(),
-        OutputVerify::Cso => verify_cso(progress, path.to_path_buf(), true).await.is_ok(),
-        OutputVerify::Rvz => verify_rvz_structure(path).map(|r| r.ok()).unwrap_or(false),
+        OutputVerify::Chd => {
+            verify_chd_cancellable(progress, path.to_path_buf(), None, false, cancel.clone())
+                .await
+                .is_ok()
+        }
+        OutputVerify::Cso => {
+            verify_cso_cancellable(progress, path.to_path_buf(), true, cancel.clone())
+                .await
+                .is_ok()
+        }
+        OutputVerify::Rvz => verify_rvz_structure_cancellable(path, &cancel)
+            .map(|r| r.ok())
+            .unwrap_or(false),
         OutputVerify::Nx(keys) => {
             if keys.header_key.is_none() {
                 log::debug!(
@@ -51,7 +74,14 @@ pub async fn verify_existing_output(
                 );
                 true
             } else {
-                match verify_container_async(path.to_path_buf(), *keys, progress).await {
+                match verify_container_async_cancellable(
+                    path.to_path_buf(),
+                    *keys,
+                    progress,
+                    cancel.clone(),
+                )
+                .await
+                {
                     Ok(result) => result.ok,
                     Err(e) => {
                         log::debug!(
@@ -71,11 +101,14 @@ pub async fn verify_existing_output(
             true
         }
     };
-    if ok {
+    if cancel.is_cancelled() {
+        anyhow::bail!("cancelled");
+    }
+    Ok(if ok {
         VerifyOutcome::Valid
     } else {
         VerifyOutcome::Invalid
-    }
+    })
 }
 
 #[cfg(test)]

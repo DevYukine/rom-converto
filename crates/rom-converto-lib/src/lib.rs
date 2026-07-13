@@ -23,4 +23,5 @@ pub mod info;
 pub mod nintendo;
 pub mod pipeline;
 pub mod playlist;
+pub mod runner;
 pub mod util;

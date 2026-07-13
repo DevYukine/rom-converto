@@ -6,7 +6,9 @@ use crate::nintendo::ctr::z3ds::error::{Z3dsError, Z3dsResult};
 use crate::nintendo::ctr::z3ds::models::Z3dsHeader;
 use crate::util::hash::{FileDigests, HashAlgo};
 use crate::util::worker_pool::{Pool, parallelism};
-use crate::util::{BYTES_PER_MB, CancelToken, ProgressReporter, await_with_progress_cancel};
+use crate::util::{
+    BYTES_PER_MB, CancelToken, ProgressReporter, await_with_progress_cancel, scratch_output_path,
+};
 use binrw::BinRead;
 use log::info;
 use std::io::{BufWriter, Cursor, Read};
@@ -14,14 +16,6 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::task;
-
-/// A sibling temp path so an interrupted write never lands on the final
-/// name.
-pub(super) fn scratch_output_path(output: &Path) -> std::path::PathBuf {
-    let mut name = output.file_name().unwrap_or_default().to_os_string();
-    name.push(".tmp");
-    output.with_file_name(name)
-}
 
 pub async fn decompress_rom(
     input: &Path,
@@ -70,9 +64,9 @@ pub async fn decompress_rom_cancellable(
     let bytes_done = Arc::new(AtomicU64::new(0));
     let bytes_done_clone = bytes_done.clone();
 
-    let write_path = scratch_output_path(output);
+    let write_path = scratch_output_path(output)?;
     let input_owned = input.to_path_buf();
-    let write_owned = write_path.clone();
+    let write_owned = write_path.to_path_buf();
     let cancel_bg = cancel.clone();
 
     let handle = task::spawn_blocking(move || -> Z3dsResult<u64> {
@@ -135,7 +129,7 @@ pub async fn decompress_rom_cancellable(
     });
 
     let cleanup = {
-        let write_path = write_path.clone();
+        let write_path = write_path.to_path_buf();
         move || -> Z3dsError {
             let _ = std::fs::remove_file(&write_path);
             Z3dsError::Cancelled
@@ -157,7 +151,7 @@ pub async fn decompress_rom_cancellable(
             actual: actual_size,
         });
     }
-    tokio::fs::rename(&write_path, output).await?;
+    crate::util::publish_temp(write_path, output, true)?;
 
     info!(
         "Decompressed {} -> {} ({:.2} MB)",

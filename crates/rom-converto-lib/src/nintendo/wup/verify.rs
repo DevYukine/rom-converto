@@ -16,21 +16,23 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 
+use crate::nintendo::wup::crypto::aes_cbc_decrypt_in_place;
 use crate::nintendo::wup::disc::compress::{
     content_partitions_with_index, find_matching_title, parse_si_titles, plan_partition,
 };
 use crate::nintendo::wup::disc::partition::PartitionContentSource;
 use crate::nintendo::wup::disc::{load_disc_key, open_disc, parse_partition_table};
+use crate::nintendo::wup::error::WupError;
 use crate::nintendo::wup::models::WupTmd;
-use crate::nintendo::wup::nus::content_stream::{ContentBytesSource, decrypt_raw_content};
+use crate::nintendo::wup::nus::content_stream::{ContentBytesSource, raw_content_iv};
 use crate::nintendo::wup::nus::fst_parser::{FstClusterHashMode, VirtualFs};
 use crate::nintendo::wup::nus::source::NusSource;
 use crate::nintendo::wup::nus::ticket_parser::TitleKey;
-use crate::util::ProgressReporter;
+use crate::util::{CancelToken, ProgressReporter};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WupVerifyResult {
@@ -58,6 +60,16 @@ pub fn verify_wup(
     key_override: Option<&Path>,
     progress: &dyn ProgressReporter,
 ) -> Result<WupVerifyResult> {
+    verify_wup_cancellable(input, key_override, progress, &CancelToken::new())
+}
+
+pub fn verify_wup_cancellable(
+    input: &Path,
+    key_override: Option<&Path>,
+    progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
+) -> Result<WupVerifyResult> {
+    check_cancel(cancel)?;
     if input.is_file() {
         let ext = input
             .extension()
@@ -65,17 +77,17 @@ pub fn verify_wup(
             .unwrap_or_default()
             .to_ascii_lowercase();
         return match ext.as_str() {
-            "wua" => structural_verdict(input, None, "wua"),
-            "wud" | "wux" => verify_disc(input, key_override, progress),
+            "wua" => structural_verdict(input, None, "wua", cancel),
+            "wud" | "wux" => verify_disc(input, key_override, progress, cancel),
             other => Err(anyhow!(
                 "wup verify: unsupported file type .{other}; expected .wua, .wud, or .wux"
             )),
         };
     }
     if is_loadiine_dir(input) {
-        return structural_verdict(input, None, "loadiine");
+        return structural_verdict(input, None, "loadiine", cancel);
     }
-    verify_nus(input, progress)
+    verify_nus(input, progress, cancel)
 }
 
 pub async fn verify_wup_async(
@@ -83,6 +95,16 @@ pub async fn verify_wup_async(
     key_override: Option<PathBuf>,
     progress: &dyn ProgressReporter,
 ) -> Result<WupVerifyResult> {
+    verify_wup_async_cancellable(input, key_override, progress, CancelToken::new()).await
+}
+
+pub async fn verify_wup_async_cancellable(
+    input: PathBuf,
+    key_override: Option<PathBuf>,
+    progress: &dyn ProgressReporter,
+    cancel: CancelToken,
+) -> Result<WupVerifyResult> {
+    check_cancel(&cancel)?;
     let total = tokio::fs::metadata(&input)
         .await
         .map(|m| m.len())
@@ -93,9 +115,10 @@ pub async fn verify_wup_async(
     let proxy = AtomicProgress {
         counter: bytes_done.clone(),
     };
+    let cancel_bg = cancel.clone();
 
     let mut handle = tokio::task::spawn_blocking(move || -> Result<WupVerifyResult> {
-        verify_wup(&input, key_override.as_deref(), &proxy)
+        verify_wup_cancellable(&input, key_override.as_deref(), &proxy, &cancel_bg)
     });
 
     let result;
@@ -118,11 +141,13 @@ pub async fn verify_wup_async(
         progress.inc(remaining);
     }
     progress.finish();
+    check_cancel(&cancel)?;
     Ok(result)
 }
 
 /// Decrypt each raw-mode content and compare its SHA-1 to the TMD hash.
 /// Returns `(verified, mismatched, skipped)` counts.
+#[cfg(test)]
 fn verify_title_contents(
     tmd: &WupTmd,
     fs: &VirtualFs,
@@ -130,26 +155,56 @@ fn verify_title_contents(
     source: &mut dyn ContentBytesSource,
     progress: &dyn ProgressReporter,
 ) -> Result<(usize, usize, usize)> {
+    verify_title_contents_cancellable(tmd, fs, title_key, source, progress, &CancelToken::new())
+}
+
+fn verify_title_contents_cancellable(
+    tmd: &WupTmd,
+    fs: &VirtualFs,
+    title_key: &TitleKey,
+    source: &mut dyn ContentBytesSource,
+    progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
+) -> Result<(usize, usize, usize)> {
     let mut verified = 0;
     let mut mismatched = 0;
     let mut skipped = 0;
 
     for (cluster_index, cluster) in fs.clusters.iter().enumerate() {
+        check_cancel(cancel)?;
         let Some(tmd_entry) = tmd.content_by_index(cluster_index as u16) else {
             skipped += 1;
             continue;
         };
         match cluster.hash_mode {
             FstClusterHashMode::Raw | FstClusterHashMode::RawStream => {
-                let encrypted = source
-                    .read_encrypted_content(tmd_entry.content_id)
-                    .map_err(|e| anyhow!("read content {}: {e}", tmd_entry.content_id))?;
-                let mut decrypted = decrypt_raw_content(encrypted, title_key, cluster_index as u16)
-                    .map_err(|e| anyhow!("decrypt content {}: {e}", tmd_entry.content_id))?;
-                if (tmd_entry.size as usize) < decrypted.len() {
-                    decrypted.truncate(tmd_entry.size as usize);
-                }
-                let digest: [u8; 20] = Sha1::digest(&decrypted).into();
+                let mut hasher = Sha1::new();
+                let mut iv = raw_content_iv(cluster_index as u16);
+                let mut remaining = tmd_entry.size;
+                source
+                    .visit_encrypted_content(tmd_entry.content_id, &mut |encrypted| {
+                        if cancel.is_cancelled() {
+                            return Err(WupError::Cancelled);
+                        }
+                        if !encrypted.len().is_multiple_of(16) {
+                            return Err(WupError::AesError(format!(
+                                "raw content length {} is not a multiple of 16",
+                                encrypted.len()
+                            )));
+                        }
+                        let next_iv: [u8; 16] = encrypted[encrypted.len() - 16..]
+                            .try_into()
+                            .expect("chunk is at least one AES block");
+                        aes_cbc_decrypt_in_place(&title_key.0, &iv, encrypted)?;
+                        let take = remaining.min(encrypted.len() as u64) as usize;
+                        hasher.update(&encrypted[..take]);
+                        remaining -= take as u64;
+                        iv = next_iv;
+                        Ok(())
+                    })
+                    .with_context(|| format!("read/decrypt content {}", tmd_entry.content_id))?;
+                check_cancel(cancel)?;
+                let digest: [u8; 20] = hasher.finalize().into();
                 if digest == tmd_entry.hash[..20] {
                     verified += 1;
                 } else {
@@ -166,7 +221,12 @@ fn verify_title_contents(
     Ok((verified, mismatched, skipped))
 }
 
-fn verify_nus(dir: &Path, progress: &dyn ProgressReporter) -> Result<WupVerifyResult> {
+fn verify_nus(
+    dir: &Path,
+    progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
+) -> Result<WupVerifyResult> {
+    check_cancel(cancel)?;
     let src = NusSource::open(dir).map_err(|e| anyhow!("wup verify: open NUS: {e}"))?;
     let title_id = src.tmd().title_id;
     let tmd = src.tmd().clone();
@@ -176,8 +236,14 @@ fn verify_nus(dir: &Path, progress: &dyn ProgressReporter) -> Result<WupVerifyRe
         .map_err(|e| anyhow!("wup verify: load FST: {e}"))?;
     let mut content_source = src.content_source();
 
-    let (verified, mismatched, skipped) =
-        verify_title_contents(&tmd, &fs, &title_key, &mut content_source, progress)?;
+    let (verified, mismatched, skipped) = verify_title_contents_cancellable(
+        &tmd,
+        &fs,
+        &title_key,
+        &mut content_source,
+        progress,
+        cancel,
+    )?;
     let ok = mismatched == 0;
     Ok(WupVerifyResult {
         kind: "nus".to_string(),
@@ -197,7 +263,9 @@ fn verify_disc(
     path: &Path,
     key_override: Option<&Path>,
     progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
 ) -> Result<WupVerifyResult> {
+    check_cancel(cancel)?;
     let mut disc = open_disc(path).map_err(|e| anyhow!("wup verify: open disc: {e}"))?;
     let key = load_disc_key(path, key_override).map_err(|e| anyhow!("wup verify: {e}"))?;
     let table = parse_partition_table(&mut *disc, &key)
@@ -216,6 +284,7 @@ fn verify_disc(
     let mut overall = true;
 
     for (toc_index, partition) in &content_partitions {
+        check_cancel(cancel)?;
         let Some(si_title) = find_matching_title(&si_titles, *toc_index) else {
             continue;
         };
@@ -223,8 +292,14 @@ fn verify_disc(
             .map_err(|e| anyhow!("wup verify: plan {}: {e}", partition.name))?;
         let title_id = plan.title_id;
         let mut source = PartitionContentSource::new(&mut *disc, plan.locations);
-        let (verified, mismatched, skipped) =
-            verify_title_contents(&plan.tmd, &plan.fs, &plan.title_key, &mut source, progress)?;
+        let (verified, mismatched, skipped) = verify_title_contents_cancellable(
+            &plan.tmd,
+            &plan.fs,
+            &plan.title_key,
+            &mut source,
+            progress,
+            cancel,
+        )?;
         let ok = mismatched == 0;
         overall &= ok;
         titles.push(TitleVerdict {
@@ -256,9 +331,12 @@ fn structural_verdict(
     path: &Path,
     key_override: Option<&Path>,
     kind_label: &str,
+    cancel: &CancelToken,
 ) -> Result<WupVerifyResult> {
+    check_cancel(cancel)?;
     let info = crate::nintendo::wup::info::read_info(path, key_override)
         .map_err(|e| anyhow!("wup verify: parse {kind_label}: {e}"))?;
+    check_cancel(cancel)?;
     let mut titles: Vec<TitleVerdict> = info
         .bundled_titles
         .iter()
@@ -288,6 +366,13 @@ fn structural_verdict(
     })
 }
 
+fn check_cancel(cancel: &CancelToken) -> Result<()> {
+    if cancel.is_cancelled() {
+        return Err(WupError::Cancelled.into());
+    }
+    Ok(())
+}
+
 fn is_loadiine_dir(dir: &Path) -> bool {
     dir.join("code/app.xml").is_file()
         && dir.join("meta/meta.xml").is_file()
@@ -310,6 +395,7 @@ impl ProgressReporter for AtomicProgress {
 mod tests {
     use super::*;
     use crate::nintendo::wup::models::tmd::{TmdContentEntry, TmdContentFlags};
+    use crate::nintendo::wup::nus::content_stream::decrypt_raw_content;
     use crate::nintendo::wup::nus::fst_parser::{FstCluster, VirtualFile};
     use crate::util::NoProgress;
 
@@ -324,6 +410,26 @@ mod tests {
         ) -> crate::nintendo::wup::WupResult<Vec<u8>> {
             assert_eq!(content_id, self.content_id);
             Ok(self.bytes.clone())
+        }
+    }
+
+    struct CancellingSource {
+        cancel: CancelToken,
+    }
+
+    impl ContentBytesSource for CancellingSource {
+        fn read_encrypted_content(&mut self, _: u32) -> crate::nintendo::wup::WupResult<Vec<u8>> {
+            unreachable!()
+        }
+
+        fn visit_encrypted_content(
+            &mut self,
+            _: u32,
+            visitor: &mut dyn FnMut(&mut [u8]) -> crate::nintendo::wup::WupResult<()>,
+        ) -> crate::nintendo::wup::WupResult<()> {
+            visitor(&mut [0u8; 16])?;
+            self.cancel.cancel();
+            visitor(&mut [0u8; 16])
         }
     }
 
@@ -413,5 +519,25 @@ mod tests {
         };
         let (v, m, s) = verify_title_contents(&tmd, &fs, &key, &mut src, &NoProgress).unwrap();
         assert_eq!((v, m, s), (0, 0, 1));
+    }
+
+    #[test]
+    fn raw_content_stops_between_streamed_chunks() {
+        let cancel = CancelToken::new();
+        let mut source = CancellingSource {
+            cancel: cancel.clone(),
+        };
+        let result = verify_title_contents_cancellable(
+            &tmd_with_one_content([0u8; 32]),
+            &fs_with_one_cluster(FstClusterHashMode::Raw),
+            &TitleKey([0u8; 16]),
+            &mut source,
+            &NoProgress,
+            &cancel,
+        );
+        assert!(matches!(
+            result.unwrap_err().downcast_ref::<WupError>(),
+            Some(WupError::Cancelled)
+        ));
     }
 }

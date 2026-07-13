@@ -102,7 +102,7 @@ async fn encrypt_ncsd_cancellable(
     let input_size = fs::metadata(input).await?.len();
     progress.start(input_size, "Encrypting NCSD");
 
-    let tmp = scratch_output_path(output);
+    let tmp = scratch_output_path(output)?;
     let result = async {
         fs::copy(input, &tmp).await?;
         encrypt_ncsd_partitions(input, &tmp, progress, cancel).await?;
@@ -115,7 +115,7 @@ async fn encrypt_ncsd_cancellable(
         return Err(err);
     }
 
-    fs::rename(&tmp, output).await?;
+    crate::util::publish_temp(tmp, output, true)?;
     progress.finish();
     info!("Encrypted NCSD file");
     Ok(())
@@ -130,7 +130,7 @@ async fn encrypt_ncch_cancellable(
     let input_size = fs::metadata(input).await?.len();
     progress.start(input_size, "Encrypting NCCH");
 
-    let tmp = scratch_output_path(output);
+    let tmp = scratch_output_path(output)?;
     let result = async {
         fs::copy(input, &tmp).await?;
         encrypt_ncch_at(
@@ -152,7 +152,7 @@ async fn encrypt_ncch_cancellable(
         return Err(err);
     }
 
-    fs::rename(&tmp, output).await?;
+    crate::util::publish_temp(tmp, output, true)?;
     progress.finish();
     info!("Encrypted NCCH file");
     Ok(())
@@ -286,8 +286,8 @@ async fn encrypt_cia_cancellable(
     let input_size = fs::metadata(input).await?.len();
     progress.start(input_size, "Encrypting CIA");
 
-    let tmp = scratch_output_path(output);
-    let content_tmp = scratch_content_path(output);
+    let tmp = scratch_output_path(output)?;
+    let content_tmp = scratch_output_path(output)?;
     let result = async {
         let mut std_in = std::fs::File::open(input)?;
         let mut header_buf = [0u8; CIA_HEADER_SIZE as usize];
@@ -399,7 +399,7 @@ async fn encrypt_cia_cancellable(
         return Err(err);
     }
 
-    fs::rename(&tmp, output).await?;
+    crate::util::publish_temp(tmp, output, true)?;
     info!("Encrypted CIA file");
     Ok(())
 }
@@ -812,12 +812,6 @@ fn hash_content_info_record(hasher: &mut Sha256, record: &ContentInfoRecord) -> 
     cursor.get_mut().extend_from_slice(&record.hash);
     hasher.update(cursor.get_ref());
     Ok(())
-}
-
-fn scratch_content_path(output: &Path) -> PathBuf {
-    let mut name = output.file_name().unwrap_or_default().to_os_string();
-    name.push(".content.tmp");
-    output.with_file_name(name)
 }
 
 struct CiaLayout {

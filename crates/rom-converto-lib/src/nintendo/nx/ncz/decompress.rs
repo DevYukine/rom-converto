@@ -17,8 +17,8 @@ use crate::nintendo::nx::ncz::decompress_worker::{
 };
 use crate::nintendo::nx::ncz::header::{NczBlockInfo, NczSectionEntry};
 use crate::nintendo::nx::ncz::reencrypt::ReencryptWriter;
-use crate::util::ProgressReporter;
 use crate::util::worker_pool::drive;
+use crate::util::{CancelToken, ProgressReporter};
 
 const STREAM_CHUNK: usize = 256 * 1024;
 const READ_BUFFER: usize = 4 * 1024 * 1024;
@@ -28,6 +28,16 @@ pub fn ncz_to_nca<R: Read + Send, W: Write>(
     out: &mut W,
     progress: &dyn ProgressReporter,
 ) -> NxResult<()> {
+    ncz_to_nca_cancellable(input, out, progress, &CancelToken::new())
+}
+
+pub fn ncz_to_nca_cancellable<R: Read + Send, W: Write>(
+    input: &mut R,
+    out: &mut W,
+    progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
+) -> NxResult<()> {
+    check_cancel(cancel)?;
     let mut input = io::BufReader::with_capacity(READ_BUFFER, input);
 
     let mut prefix = [0u8; NCA_PREFIX_SIZE];
@@ -35,22 +45,22 @@ pub fn ncz_to_nca<R: Read + Send, W: Write>(
     out.write_all(&prefix)?;
     progress.inc(NCA_PREFIX_SIZE as u64);
 
-    let sections = read_sections(&mut input)?;
-    let (block, payload_prefix) = read_block_or_payload_start(&mut input)?;
+    let sections = read_sections(&mut input, cancel)?;
+    let (block, payload_prefix) = read_block_or_payload_start(&mut input, cancel)?;
 
     let mut reenc = ReencryptWriter::new(out, &sections, NCA_PREFIX_SIZE as u64);
     match block {
-        Some(info) => decode_blocks_stream(&mut input, &info, &mut reenc, progress)?,
+        Some(info) => decode_blocks_stream(&mut input, &info, &mut reenc, progress, cancel)?,
         None => {
             let stash = payload_prefix.unwrap_or_default();
             let chained = Cursor::new(stash).chain(input);
-            decode_solid_stream(chained, &mut reenc, progress)?;
+            decode_solid_stream(chained, &mut reenc, progress, cancel)?;
         }
     }
     Ok(())
 }
 
-fn read_sections<R: Read>(input: &mut R) -> NxResult<Vec<NczSectionEntry>> {
+fn read_sections<R: Read>(input: &mut R, cancel: &CancelToken) -> NxResult<Vec<NczSectionEntry>> {
     let mut magic = [0u8; 8];
     input.read_exact(&mut magic)?;
     if magic != NCZSECTN_MAGIC {
@@ -63,6 +73,7 @@ fn read_sections<R: Read>(input: &mut R) -> NxResult<Vec<NczSectionEntry>> {
     let mut sections = Vec::with_capacity(count as usize);
     let mut entry = vec![0u8; NCZ_SECTION_ENTRY_SIZE];
     for _ in 0..count {
+        check_cancel(cancel)?;
         input.read_exact(&mut entry)?;
         let mut cur = Cursor::new(&entry);
         let offset = cur.read_i64::<LE>()?;
@@ -86,7 +97,9 @@ fn read_sections<R: Read>(input: &mut R) -> NxResult<Vec<NczSectionEntry>> {
 
 fn read_block_or_payload_start<R: Read>(
     input: &mut R,
+    cancel: &CancelToken,
 ) -> NxResult<(Option<NczBlockInfo>, Option<[u8; 8]>)> {
+    check_cancel(cancel)?;
     let mut peek = [0u8; 8];
     if let Err(e) = input.read_exact(&mut peek) {
         return if e.kind() == io::ErrorKind::UnexpectedEof {
@@ -109,6 +122,7 @@ fn read_block_or_payload_start<R: Read>(
     let decompressed_size = input.read_i64::<LE>()?;
     let mut compressed_block_sizes = Vec::with_capacity(num_blocks as usize);
     for _ in 0..num_blocks {
+        check_cancel(cancel)?;
         compressed_block_sizes.push(input.read_u32::<LE>()?);
     }
     Ok((
@@ -127,6 +141,7 @@ fn decode_solid_stream<R: Read + Send, W: Write>(
     input: R,
     reenc: &mut ReencryptWriter<W>,
     progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
 ) -> NxResult<()> {
     // Solid-mode bottleneck on a single thread is the chain
     // `zstd_decode -> CTR encrypt -> file write`, all CPU/IO bound
@@ -144,6 +159,7 @@ fn decode_solid_stream<R: Read + Send, W: Write>(
             let mut decoder = zstd::stream::read::Decoder::new(input)
                 .map_err(|e| NxError::ZstdError(format!("zstd decoder init: {e}")))?;
             loop {
+                check_cancel(cancel)?;
                 let mut buf = vec![0u8; STREAM_CHUNK];
                 let n = decoder
                     .read(&mut buf)
@@ -160,6 +176,7 @@ fn decode_solid_stream<R: Read + Send, W: Write>(
         });
 
         while let Ok(chunk) = rx.recv() {
+            check_cancel(cancel)?;
             reenc.write_all(&chunk)?;
             progress.inc(chunk.len() as u64);
         }
@@ -175,6 +192,7 @@ fn decode_blocks_stream<R: Read, W: Write>(
     info: &NczBlockInfo,
     reenc: &mut ReencryptWriter<W>,
     progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
 ) -> NxResult<()> {
     let block_size = info.block_size_bytes() as usize;
     let num_blocks = info.compressed_block_sizes.len();
@@ -186,6 +204,7 @@ fn decode_blocks_stream<R: Read, W: Write>(
         num_blocks as u64,
         n_threads * 2,
         |seq| -> NxResult<NczDecompressWork> {
+            check_cancel(cancel)?;
             let i = seq as usize;
             let csz = info.compressed_block_sizes[i] as usize;
             let is_last = i + 1 == num_blocks;
@@ -203,6 +222,7 @@ fn decode_blocks_stream<R: Read, W: Write>(
             })
         },
         |_seq, out_block| -> NxResult<()> {
+            check_cancel(cancel)?;
             reenc.write_all(&out_block.bytes)?;
             progress.inc(out_block.bytes.len() as u64);
             Ok(())
@@ -210,6 +230,13 @@ fn decode_blocks_stream<R: Read, W: Write>(
     );
     pool.shutdown();
     drive_result?;
+    Ok(())
+}
+
+fn check_cancel(cancel: &CancelToken) -> NxResult<()> {
+    if cancel.is_cancelled() {
+        return Err(NxError::Cancelled);
+    }
     Ok(())
 }
 

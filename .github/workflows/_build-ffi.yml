@@ -1,0 +1,123 @@
+name: Build FFI
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "Git ref to build. Defaults to the caller ref."
+        required: false
+        type: string
+        default: ""
+      release:
+        description: "Upload build outputs to a GitHub Release instead of workflow artifacts."
+        required: false
+        type: boolean
+        default: false
+      release_tag:
+        description: "Release tag to upload assets to when release is true."
+        required: false
+        type: string
+        default: ""
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: FFI - ${{ matrix.classifier }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            classifier: linux-x64
+            force_cross: false
+          - os: ubuntu-22.04
+            target: armv7-unknown-linux-gnueabihf
+            classifier: linux-arm7
+            force_cross: false
+          - os: ubuntu-22.04
+            target: aarch64-unknown-linux-gnu
+            classifier: linux-arm64
+            force_cross: false
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-musl
+            classifier: linux-x64-musl
+            force_cross: true
+          - os: ubuntu-22.04
+            target: x86_64-unknown-freebsd
+            classifier: freebsd-x64
+            force_cross: false
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            classifier: windows-x64
+            force_cross: false
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            classifier: macos-x64
+            force_cross: false
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            classifier: macos-arm64
+            force_cross: false
+
+    runs-on: ${{ matrix.os }}
+    env:
+      CARGO_TARGET_X86_64_UNKNOWN_FREEBSD_RUSTFLAGS: "-l stdc++"
+      ROM_CONVERTO_RELEASE: ${{ inputs.release && '1' || '' }}
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Build release library
+        uses: houseabsolute/actions-rust-cross@v1
+        with:
+          command: build
+          target: ${{ matrix.target }}
+          args: "--locked --release -p rom-converto-ffi"
+          strip: true
+          force-use-cross: ${{ matrix.force_cross }}
+
+      - name: Package library
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          package="rom-converto-ffi-${{ matrix.classifier }}"
+          mkdir -p "$package/include" artifact
+          cp crates/rom-converto-ffi/include/rom_converto.h "$package/include/"
+          cp LICENSE "$package/"
+
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            cp "target/${{ matrix.target }}/release/rom_converto_ffi.dll" "$package/"
+            cp "target/${{ matrix.target }}/release/rom_converto_ffi.dll.lib" "$package/"
+            archive="artifact/$package.zip"
+            rm -f "$archive"
+            7z a "$archive" "$package"
+          else
+            library="target/${{ matrix.target }}/release/librom_converto_ffi.so"
+            if [[ "$RUNNER_OS" == "macOS" ]]; then
+              library="target/${{ matrix.target }}/release/librom_converto_ffi.dylib"
+            fi
+            cp "$library" "$package/"
+            tar -czf "artifact/$package.tar.gz" "$package"
+          fi
+
+      - name: Upload workflow artifact
+        if: ${{ !inputs.release }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: rom-converto-ffi-${{ matrix.classifier }}
+          path: artifact/
+          if-no-files-found: error
+
+      - name: Upload to release
+        if: ${{ inputs.release }}
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          files: artifact/*

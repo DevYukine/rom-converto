@@ -1,5 +1,6 @@
 use super::detect::group_disc_files;
-use crate::util::fs::collect_files_with_exts;
+use crate::util::CancelToken;
+use crate::util::fs::collect_files_with_exts_cancellable;
 use std::path::{Component, Path, PathBuf};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -29,11 +30,29 @@ pub struct PlaylistPlan {
 /// walked once via the shared recursive collector; everything else is pure.
 /// No conflict resolution and no writing happen here; the caller owns those.
 pub fn plan_playlists(opts: &PlaylistOptions) -> std::io::Result<Vec<PlaylistPlan>> {
-    let files = collect_files_with_exts(opts.scan_dir, opts.extensions, opts.max_depth)?;
+    plan_playlists_cancellable(opts, &CancelToken::new())
+}
+
+pub fn plan_playlists_cancellable(
+    opts: &PlaylistOptions,
+    cancel: &CancelToken,
+) -> std::io::Result<Vec<PlaylistPlan>> {
+    let files = collect_files_with_exts_cancellable(
+        opts.scan_dir,
+        opts.extensions,
+        opts.max_depth,
+        cancel,
+    )?;
     let groups = group_disc_files(&files);
 
     let mut plans = Vec::new();
     for group in groups {
+        if cancel.is_cancelled() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "cancelled",
+            ));
+        }
         if matches!(opts.mode, PlaylistMode::Multiple) && group.len() <= 1 {
             continue;
         }

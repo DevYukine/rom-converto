@@ -12,6 +12,7 @@
 //! is recoverable regardless of which mode its cluster uses.
 
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::nintendo::wup::crypto::aes_cbc_decrypt_in_place;
@@ -26,6 +27,18 @@ use crate::nintendo::wup::nus::ticket_parser::TitleKey;
 /// layer above.
 pub trait ContentBytesSource {
     fn read_encrypted_content(&mut self, content_id: u32) -> WupResult<Vec<u8>>;
+
+    fn visit_encrypted_content(
+        &mut self,
+        content_id: u32,
+        visitor: &mut dyn FnMut(&mut [u8]) -> WupResult<()>,
+    ) -> WupResult<()> {
+        let mut bytes = self.read_encrypted_content(content_id)?;
+        for chunk in bytes.chunks_mut(4 * 1024 * 1024) {
+            visitor(chunk)?;
+        }
+        Ok(())
+    }
 }
 
 pub struct DirectoryContentSource {
@@ -55,6 +68,28 @@ impl ContentBytesSource for DirectoryContentSource {
             .resolve(content_id)
             .ok_or(WupError::ContentNotFound { content_id })?;
         std::fs::read(&path).map_err(|_| WupError::ContentNotFound { content_id })
+    }
+
+    fn visit_encrypted_content(
+        &mut self,
+        content_id: u32,
+        visitor: &mut dyn FnMut(&mut [u8]) -> WupResult<()>,
+    ) -> WupResult<()> {
+        let path = self
+            .resolver
+            .resolve(content_id)
+            .ok_or(WupError::ContentNotFound { content_id })?;
+        let mut file =
+            std::fs::File::open(path).map_err(|_| WupError::ContentNotFound { content_id })?;
+        let mut remaining = file.metadata()?.len();
+        let mut buf = vec![0u8; remaining.min(4 * 1024 * 1024) as usize];
+        while remaining > 0 {
+            let n = remaining.min(buf.len() as u64) as usize;
+            file.read_exact(&mut buf[..n])?;
+            visitor(&mut buf[..n])?;
+            remaining -= n as u64;
+        }
+        Ok(())
     }
 }
 
@@ -122,7 +157,7 @@ pub fn decrypt_hashed_content(encrypted: &[u8], title_key: &TitleKey) -> WupResu
 
 /// IV used for decrypting raw-mode cluster data: cluster index in
 /// the first two bytes (big-endian), zeros in the remaining 14.
-pub(super) fn raw_content_iv(cluster_index: u16) -> [u8; 16] {
+pub(crate) fn raw_content_iv(cluster_index: u16) -> [u8; 16] {
     let mut iv = [0u8; 16];
     iv[0] = (cluster_index >> 8) as u8;
     iv[1] = (cluster_index & 0xFF) as u8;

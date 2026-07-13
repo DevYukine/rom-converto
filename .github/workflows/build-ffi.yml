@@ -1,0 +1,17 @@
+name: "Build FFI for Commit"
+
+on:
+  pull_request:
+  push:
+    branches: ["develop"]
+    paths:
+      - crates/**
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/build-ffi.yml
+      - .github/workflows/_build-ffi.yml
+
+jobs:
+  build-ffi:
+    uses: ./.github/workflows/_build-ffi.yml
+    secrets: inherit

@@ -33,7 +33,7 @@ use crate::nintendo::wbfs::build_disc_usage;
 use crate::nintendo::wbfs::format::{
     DEFAULT_HD_SECTOR_SHIFT, DEFAULT_WBFS_SECTOR_SHIFT, WII_SECTOR_SIZE,
 };
-use crate::util::{CancelToken, ProgressReporter, await_with_progress_cancel};
+use crate::util::{CancelToken, ProgressReporter, await_with_progress_cancel, scratch_output_path};
 use binrw::{BinRead, Endian};
 use log::info;
 use sink::{DiscSink, IsoSink, UsageFilter, WbfsSink};
@@ -63,9 +63,9 @@ pub async fn decompress_disc_cancellable(
     let iso_size_guess = tokio::fs::metadata(input).await?.len();
     progress.start(iso_size_guess, "Decompressing RVZ");
 
-    let write_path = scratch_output_path(output);
+    let write_path = scratch_output_path(output)?;
     let input_owned: PathBuf = input.to_path_buf();
-    let write_owned: PathBuf = write_path.clone();
+    let write_owned = write_path.to_path_buf();
     let cancel_bg = cancel.clone();
     let bytes_done = Arc::new(AtomicU64::new(0));
     let bytes_done_bg = bytes_done.clone();
@@ -83,7 +83,7 @@ pub async fn decompress_disc_cancellable(
                 return Err(err);
             }
         };
-    tokio::fs::rename(&write_path, output).await?;
+    crate::util::publish_temp(write_path, output, true)?;
 
     info!(
         "Decompressed {} -> {} ({} bytes)",
@@ -92,12 +92,6 @@ pub async fn decompress_disc_cancellable(
         iso_size
     );
     Ok(())
-}
-
-fn scratch_output_path(output: &Path) -> PathBuf {
-    let mut name = output.file_name().unwrap_or_default().to_os_string();
-    name.push(".tmp");
-    output.with_file_name(name)
 }
 
 fn decompress_cleanup(write_path: &Path) -> impl FnOnce() -> RvzError {
@@ -132,9 +126,9 @@ pub async fn decompress_disc_to_wbfs_cancellable(
     let rvz_size = tokio::fs::metadata(input).await?.len();
     progress.start(rvz_size, "Decompressing RVZ to WBFS");
 
-    let write_path = scratch_output_path(output);
+    let write_path = scratch_output_path(output)?;
     let input_owned: PathBuf = input.to_path_buf();
-    let write_owned: PathBuf = write_path.clone();
+    let write_owned = write_path.to_path_buf();
     let cancel_bg = cancel.clone();
     let bytes_done = Arc::new(AtomicU64::new(0));
     let bytes_done_bg = bytes_done.clone();
@@ -152,7 +146,7 @@ pub async fn decompress_disc_to_wbfs_cancellable(
                 return Err(err);
             }
         };
-    tokio::fs::rename(&write_path, output).await?;
+    crate::util::publish_temp(write_path, output, true)?;
 
     info!(
         "Decompressed {} -> {} ({} bytes)",

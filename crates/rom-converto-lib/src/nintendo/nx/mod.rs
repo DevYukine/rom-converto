@@ -39,5 +39,8 @@ pub use error::{NxError, NxResult};
 pub use keys::{KeyAreaKind, KeySet, load_keyset};
 pub use models::{Hfs0, NcaHeader, Pfs0};
 pub use ncz::NczMode;
-pub use verify::{NcaVerdict, NxVerifyResult, verify_container, verify_container_async};
+pub use verify::{
+    NcaVerdict, NxVerifyResult, verify_container, verify_container_async,
+    verify_container_async_cancellable, verify_container_cancellable,
+};
 pub use walker::{NcaSection, NcaWalker};

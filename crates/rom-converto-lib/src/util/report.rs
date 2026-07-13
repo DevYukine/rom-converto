@@ -1,6 +1,7 @@
 //! Run reports: per-file records and run totals written to CSV, JSON, or
 //! HTML at the end of a batch run, via `--report`.
 
+use crate::util::CancelToken;
 use crate::util::tally::{FileStatus, format_bytes};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -129,15 +130,28 @@ pub fn write_report(
     totals: &ReportTotals,
     format: ReportFormat,
 ) -> Result<()> {
-    let file = std::fs::File::create(path)
-        .with_context(|| format!("creating report file {}", path.display()))?;
-    let mut w = BufWriter::new(file);
-    match format {
-        ReportFormat::Csv => write_csv(&mut w, records, totals)?,
-        ReportFormat::Json => write_json(&mut w, records, totals)?,
-        ReportFormat::Html => write_html(&mut w, records, totals)?,
+    write_report_cancellable(path, records, totals, format, &CancelToken::new())
+}
+
+pub fn write_report_cancellable(
+    path: &Path,
+    records: &[ReportRecord],
+    totals: &ReportTotals,
+    format: ReportFormat,
+    cancel: &CancelToken,
+) -> Result<()> {
+    check_cancel(cancel)?;
+    let mut tmp = report_temp(path)?;
+    {
+        let mut w = CancelWriter::new(BufWriter::new(tmp.as_file_mut()), cancel);
+        match format {
+            ReportFormat::Csv => write_csv(&mut w, records, totals)?,
+            ReportFormat::Json => write_json(&mut w, records, totals)?,
+            ReportFormat::Html => write_html(&mut w, records, totals)?,
+        }
+        w.flush()?;
     }
-    w.flush()?;
+    persist_report(tmp, path, cancel)?;
     Ok(())
 }
 
@@ -306,15 +320,28 @@ pub fn write_hash_report(
     totals: &ReportTotals,
     format: ReportFormat,
 ) -> Result<()> {
-    let file = std::fs::File::create(path)
-        .with_context(|| format!("creating report file {}", path.display()))?;
-    let mut w = BufWriter::new(file);
-    match format {
-        ReportFormat::Csv => write_hash_csv(&mut w, records)?,
-        ReportFormat::Json => write_hash_json(&mut w, records, totals)?,
-        ReportFormat::Html => write_hash_html(&mut w, records, totals)?,
+    write_hash_report_cancellable(path, records, totals, format, &CancelToken::new())
+}
+
+pub fn write_hash_report_cancellable(
+    path: &Path,
+    records: &[HashReportRecord],
+    totals: &ReportTotals,
+    format: ReportFormat,
+    cancel: &CancelToken,
+) -> Result<()> {
+    check_cancel(cancel)?;
+    let mut tmp = report_temp(path)?;
+    {
+        let mut w = CancelWriter::new(BufWriter::new(tmp.as_file_mut()), cancel);
+        match format {
+            ReportFormat::Csv => write_hash_csv(&mut w, records)?,
+            ReportFormat::Json => write_hash_json(&mut w, records, totals)?,
+            ReportFormat::Html => write_hash_html(&mut w, records, totals)?,
+        }
+        w.flush()?;
     }
-    w.flush()?;
+    persist_report(tmp, path, cancel)?;
     Ok(())
 }
 
@@ -461,16 +488,83 @@ pub fn write_dat_report(
     totals: &ReportTotals,
     format: ReportFormat,
 ) -> Result<()> {
-    let file = std::fs::File::create(path)
-        .with_context(|| format!("creating report file {}", path.display()))?;
-    let mut w = BufWriter::new(file);
-    match format {
-        ReportFormat::Csv => write_dat_csv(&mut w, records)?,
-        ReportFormat::Json => write_dat_json(&mut w, records, totals)?,
-        ReportFormat::Html => write_dat_html(&mut w, records, totals)?,
+    write_dat_report_cancellable(path, records, totals, format, &CancelToken::new())
+}
+
+pub fn write_dat_report_cancellable(
+    path: &Path,
+    records: &[DatReportRecord],
+    totals: &ReportTotals,
+    format: ReportFormat,
+    cancel: &CancelToken,
+) -> Result<()> {
+    check_cancel(cancel)?;
+    let mut tmp = report_temp(path)?;
+    {
+        let mut w = CancelWriter::new(BufWriter::new(tmp.as_file_mut()), cancel);
+        match format {
+            ReportFormat::Csv => write_dat_csv(&mut w, records)?,
+            ReportFormat::Json => write_dat_json(&mut w, records, totals)?,
+            ReportFormat::Html => write_dat_html(&mut w, records, totals)?,
+        }
+        w.flush()?;
     }
-    w.flush()?;
+    persist_report(tmp, path, cancel)?;
     Ok(())
+}
+
+fn report_temp(path: &Path) -> Result<tempfile::NamedTempFile> {
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    tempfile::Builder::new()
+        .prefix(".rom-converto-report-")
+        .suffix(".tmp")
+        .tempfile_in(parent)
+        .with_context(|| format!("creating report temp file in {}", parent.display()))
+}
+
+fn persist_report(tmp: tempfile::NamedTempFile, path: &Path, cancel: &CancelToken) -> Result<()> {
+    check_cancel(cancel)?;
+    tmp.as_file().sync_all()?;
+    check_cancel(cancel)?;
+    tmp.persist(path)
+        .with_context(|| format!("replacing report file {}", path.display()))?;
+    Ok(())
+}
+
+fn check_cancel(cancel: &CancelToken) -> std::io::Result<()> {
+    if cancel.is_cancelled() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Interrupted,
+            "cancelled",
+        ));
+    }
+    Ok(())
+}
+
+struct CancelWriter<'a, W> {
+    inner: W,
+    cancel: &'a CancelToken,
+}
+
+impl<'a, W> CancelWriter<'a, W> {
+    fn new(inner: W, cancel: &'a CancelToken) -> Self {
+        Self { inner, cancel }
+    }
+}
+
+impl<W: Write> Write for CancelWriter<'_, W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        check_cancel(self.cancel)?;
+        self.inner.write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        check_cancel(self.cancel)?;
+        self.inner.flush()
+    }
 }
 
 const DAT_CSV_HEADER: &str = "path,verdict,game_name,game_id,platform,signature_group,dat_file_name,dat_file_id,dat_version,match_algo,detail,size_bytes,status,elapsed_ms,error";
@@ -665,6 +759,48 @@ mod tests {
             1500,
             None,
         )
+    }
+
+    #[test]
+    fn cancelled_report_preserves_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("report.json");
+        std::fs::write(&path, b"existing").unwrap();
+        let cancel = CancelToken::new();
+        cancel.cancel();
+
+        assert!(
+            write_report_cancellable(
+                &path,
+                &[ok_record()],
+                &ReportTotals::default(),
+                ReportFormat::Json,
+                &cancel,
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"existing");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn report_replaces_existing_file_after_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("report.json");
+        std::fs::write(&path, b"existing").unwrap();
+
+        write_report_cancellable(
+            &path,
+            &[ok_record()],
+            &ReportTotals::default(),
+            ReportFormat::Json,
+            &CancelToken::new(),
+        )
+        .unwrap();
+        let report: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(report["files"].as_array().unwrap().len(), 1);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
     fn render(records: &[ReportRecord], totals: &ReportTotals, format: ReportFormat) -> String {

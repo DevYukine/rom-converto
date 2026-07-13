@@ -13,6 +13,8 @@ use std::fs::File;
 use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
 
+use crate::util::CancelToken;
+
 use crate::nintendo::rvz::constants::RVZ_MAGIC;
 use crate::nintendo::rvz::error::{RvzError, RvzResult};
 use crate::nintendo::rvz::format::sha1::{
@@ -46,10 +48,23 @@ impl RvzStructuralVerify {
 /// [`RvzError::InvalidMagic`] when `path` is not an RVZ file, which callers
 /// treat as "no structural data to check".
 pub fn verify_rvz_structure(path: &Path) -> RvzResult<RvzStructuralVerify> {
+    verify_rvz_structure_cancellable(path, &CancelToken::new())
+}
+
+pub fn verify_rvz_structure_cancellable(
+    path: &Path,
+    cancel: &CancelToken,
+) -> RvzResult<RvzStructuralVerify> {
+    if cancel.is_cancelled() {
+        return Err(RvzError::Cancelled);
+    }
     let mut reader = BufReader::with_capacity(64 * 1024, File::open(path)?);
 
     let mut head_bytes = vec![0u8; WIA_FILE_HEAD_SIZE];
     reader.read_exact(&mut head_bytes)?;
+    if cancel.is_cancelled() {
+        return Err(RvzError::Cancelled);
+    }
     let head = WiaFileHead::read_options(&mut Cursor::new(&head_bytes), Endian::Big, ())?;
     if head.magic != RVZ_MAGIC {
         return Err(RvzError::InvalidMagic(head.magic));
@@ -58,6 +73,9 @@ pub fn verify_rvz_structure(path: &Path) -> RvzResult<RvzStructuralVerify> {
 
     let mut disc_bytes = vec![0u8; head.disc_size as usize];
     reader.read_exact(&mut disc_bytes)?;
+    if cancel.is_cancelled() {
+        return Err(RvzError::Cancelled);
+    }
     let disc = WiaDisc::read_options(&mut Cursor::new(&disc_bytes), Endian::Big, ())?;
     let disc_hash_ok = compute_disc_hash(&disc) == head.disc_hash;
 
@@ -68,6 +86,9 @@ pub fn verify_rvz_structure(path: &Path) -> RvzResult<RvzStructuralVerify> {
         let mut cur = Cursor::new(&buf);
         let mut parts = Vec::with_capacity(disc.n_part as usize);
         for _ in 0..disc.n_part {
+            if cancel.is_cancelled() {
+                return Err(RvzError::Cancelled);
+            }
             parts.push(WiaPart::read_options(&mut cur, Endian::Big, ())?);
         }
         Some(compute_part_hash(&parts) == disc.part_hash)

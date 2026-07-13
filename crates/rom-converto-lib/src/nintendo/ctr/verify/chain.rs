@@ -3,6 +3,7 @@ use crate::nintendo::ctr::constants::{
     NCSD_PARTITION_COUNT, NCSD_PARTITION_ENTRY_SIZE, NCSD_PARTITION_TABLE_OFFSET,
 };
 use crate::nintendo::ctr::decrypt::util::{cbc_decrypt, gen_iv};
+use crate::nintendo::ctr::error::NintendoCTRError;
 use crate::nintendo::ctr::models::certificate::{Certificate, PublicKey};
 use crate::nintendo::ctr::models::cia::{CIA_HEADER_SIZE, CiaFileWithoutContent, CiaHeader};
 use crate::nintendo::ctr::models::ncch_header::NcchHeader;
@@ -11,7 +12,7 @@ use crate::nintendo::ctr::models::title_metadata::TitleMetadata;
 use crate::nintendo::ctr::util::align_64;
 use crate::nintendo::ctr::verify::root_key::{ROOT_CA_EXPONENT, ROOT_CA_MODULUS};
 use crate::nintendo::ctr::z3ds::models::Z3dsHeader;
-use crate::util::ProgressReporter;
+use crate::util::{CancelToken, ProgressReporter};
 use anyhow::{Context, Result};
 use binrw::{BinRead, BinWrite, Endian};
 use rsa::pkcs1v15::VerifyingKey;
@@ -19,7 +20,7 @@ use rsa::signature::Verifier;
 use rsa::{BigUint, RsaPublicKey};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::io::{Cursor, SeekFrom};
+use std::io::{Cursor, Read, SeekFrom};
 use std::path::Path;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
@@ -139,6 +140,16 @@ pub async fn verify_ctr(
     options: &CtrVerifyOptions,
     progress: &dyn ProgressReporter,
 ) -> Result<CtrVerifyResult> {
+    verify_ctr_cancellable(input, options, progress, &CancelToken::new()).await
+}
+
+pub async fn verify_ctr_cancellable(
+    input: &Path,
+    options: &CtrVerifyOptions,
+    progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
+) -> Result<CtrVerifyResult> {
+    check_cancel(cancel)?;
     let mut file = tokio::fs::File::open(input).await?;
     let file_size = file.metadata().await?.len();
 
@@ -148,18 +159,18 @@ pub async fn verify_ctr(
     file.seek(SeekFrom::Start(0)).await?;
 
     if probe_len >= 4 && &probe[0..4] == b"Z3DS" {
-        return verify_compressed(input, options, progress).await;
+        return verify_compressed(input, options, progress, cancel).await;
     }
 
     if probe_len >= 0x104 {
         let magic = &probe[0x100..0x104];
         if magic == b"NCSD" {
-            let result = verify_ncsd_file(input, progress).await?;
+            let result = verify_ncsd_file(input, progress, cancel).await?;
             return Ok(CtrVerifyResult::Ncsd(result));
         }
         if magic == b"NCCH" {
             // Standalone NCCH gets reported as a single-partition NCSD result.
-            let result = verify_standalone_ncch_file(input, progress).await?;
+            let result = verify_standalone_ncch_file(input, progress, cancel).await?;
             return Ok(CtrVerifyResult::Ncsd(result));
         }
     }
@@ -167,7 +178,7 @@ pub async fn verify_ctr(
     if probe_len >= 4 {
         let header_size = u32::from_le_bytes(probe[0..4].try_into()?);
         if header_size == CIA_HEADER_SIZE {
-            let result = verify_cia(input, options, progress).await?;
+            let result = verify_cia_cancellable(input, options, progress, cancel).await?;
             return Ok(CtrVerifyResult::Cia(result));
         }
     }
@@ -181,7 +192,9 @@ async fn verify_compressed(
     input: &Path,
     options: &CtrVerifyOptions,
     progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
 ) -> Result<CtrVerifyResult> {
+    check_cancel(cancel)?;
     let mut file = tokio::fs::File::open(input).await?;
 
     let mut header_buf = vec![0u8; 0x20];
@@ -211,14 +224,18 @@ async fn verify_compressed(
     let temp_path = temp_dir.path().join(format!("verify_temp.{ext}"));
     let temp_path_for_blocking = temp_path.clone();
     let input_path = input.to_path_buf();
-    tokio::task::spawn_blocking(move || -> Result<()> {
+    let cancel_bg = cancel.clone();
+    let result = tokio::task::spawn_blocking(move || -> Result<()> {
         use std::io::{BufReader, BufWriter, Read as _, Seek as _};
         let mut in_file = std::fs::File::open(&input_path)?;
         in_file.seek(SeekFrom::Start(payload_offset))?;
         // Cap the read at the declared compressed payload size to avoid
         // feeding trailing garbage or another concatenated section into the
         // decoder.
-        let limited = in_file.take(compressed_size);
+        let limited = CancelReader {
+            inner: in_file.take(compressed_size),
+            cancel: cancel_bg,
+        };
         let mut reader = BufReader::with_capacity(4 * 1024 * 1024, limited);
         let mut writer = BufWriter::with_capacity(
             4 * 1024 * 1024,
@@ -231,13 +248,20 @@ async fn verify_compressed(
             .sync_all()?;
         Ok(())
     })
-    .await??;
+    .await?;
+    if cancel.is_cancelled() {
+        return Err(NintendoCTRError::Cancelled.into());
+    }
+    result?;
     progress.inc(header.uncompressed_size / 4);
 
     progress.finish();
 
     // temp_dir's Drop removes the file after this function returns.
-    let mut result = Box::pin(verify_ctr(&temp_path, options, progress)).await?;
+    let mut result = Box::pin(verify_ctr_cancellable(
+        &temp_path, options, progress, cancel,
+    ))
+    .await?;
     match &mut result {
         CtrVerifyResult::Cia(c) => c.compressed = true,
         CtrVerifyResult::Ncsd(n) => n.compressed = true,
@@ -250,6 +274,16 @@ pub async fn verify_cia(
     options: &CtrVerifyOptions,
     progress: &dyn ProgressReporter,
 ) -> Result<CiaVerifyResult> {
+    verify_cia_cancellable(input, options, progress, &CancelToken::new()).await
+}
+
+pub async fn verify_cia_cancellable(
+    input: &Path,
+    options: &CtrVerifyOptions,
+    progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
+) -> Result<CiaVerifyResult> {
+    check_cancel(cancel)?;
     let mut file = tokio::fs::File::open(input).await?;
     let file_size = file.metadata().await?.len();
     progress.start(file_size, "Verifying CIA signatures");
@@ -280,6 +314,7 @@ pub async fn verify_cia(
     file.seek(SeekFrom::Start(CIA_HEADER_SIZE as u64)).await?;
     file.read_exact(&mut preamble[CIA_HEADER_SIZE as usize..])
         .await?;
+    check_cancel(cancel)?;
 
     let mut details = Vec::new();
 
@@ -307,6 +342,7 @@ pub async fn verify_cia(
     ));
 
     progress.inc(file_size / 4);
+    check_cancel(cancel)?;
 
     let ca_cert = find_cert_by_name_prefix(&cia_without_content.cert_chain, "CA");
     let cp_cert = find_cert_by_name_prefix(&cia_without_content.cert_chain, "CP");
@@ -365,6 +401,7 @@ pub async fn verify_cia(
     };
 
     progress.inc(file_size / 4);
+    check_cancel(cancel)?;
 
     // Verify TMD signature
     let tmd_signature_valid = if let Some(cp) = &cp_cert {
@@ -415,6 +452,7 @@ pub async fn verify_cia(
     };
 
     progress.inc(file_size / 4);
+    check_cancel(cancel)?;
 
     let content_hashes_valid = if options.verify_content_hashes {
         // Derive title key from ticket: AES-CBC decrypt the encrypted
@@ -429,10 +467,12 @@ pub async fn verify_cia(
             &cia_without_content.tmd,
             title_key_opt.as_ref(),
             &mut details,
+            cancel,
         )
         .await
         {
             Ok(valid) => Some(valid),
+            Err(e) if cancel.is_cancelled() => return Err(e),
             Err(e) => {
                 details.push(format!("Content hash verification failed: {e}"));
                 Some(false)
@@ -484,7 +524,9 @@ pub async fn verify_cia(
 async fn verify_ncsd_file(
     input: &Path,
     progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
 ) -> Result<NcsdVerifyResult> {
+    check_cancel(cancel)?;
     let mut file = tokio::fs::File::open(input).await?;
     let file_size = file.metadata().await?.len();
     progress.start(file_size, "Verifying NCSD integrity");
@@ -516,6 +558,7 @@ async fn verify_ncsd_file(
     let mut partition_count = 0usize;
 
     for i in 0..NCSD_PARTITION_COUNT {
+        check_cancel(cancel)?;
         let entry_offset = i * NCSD_PARTITION_ENTRY_SIZE;
         let offset_mu = u32::from_le_bytes(table_buf[entry_offset..entry_offset + 4].try_into()?);
         let size_mu = u32::from_le_bytes(table_buf[entry_offset + 4..entry_offset + 8].try_into()?);
@@ -533,9 +576,16 @@ async fn verify_ncsd_file(
             "Partition {i} ({name}): offset=0x{part_offset:X}, size=0x{part_size:X}"
         ));
 
-        let result =
-            verify_ncch_partition_from_file(&mut file, part_offset, part_size, i, &name, file_size)
-                .await?;
+        let result = verify_ncch_partition_from_file(
+            &mut file,
+            part_offset,
+            part_size,
+            i,
+            &name,
+            file_size,
+            cancel,
+        )
+        .await?;
         partitions.push(result);
 
         progress.inc(part_size);
@@ -558,13 +608,16 @@ async fn verify_ncsd_file(
 async fn verify_standalone_ncch_file(
     input: &Path,
     progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
 ) -> Result<NcsdVerifyResult> {
+    check_cancel(cancel)?;
     let mut file = tokio::fs::File::open(input).await?;
     let file_size = file.metadata().await?.len();
     progress.start(file_size, "Verifying NCCH integrity");
 
     let result =
-        verify_ncch_partition_from_file(&mut file, 0, file_size, 0, "Main", file_size).await?;
+        verify_ncch_partition_from_file(&mut file, 0, file_size, 0, "Main", file_size, cancel)
+            .await?;
 
     let title_id = result.title_id.clone();
 
@@ -587,7 +640,9 @@ async fn verify_ncch_partition_from_file(
     index: usize,
     name: &str,
     file_size: u64,
+    cancel: &CancelToken,
 ) -> Result<NcchPartitionResult> {
+    check_cancel(cancel)?;
     let mut details = Vec::new();
 
     if offset + 512 > file_size {
@@ -655,7 +710,7 @@ async fn verify_ncch_partition_from_file(
     let exheader_hash_valid = if header.exhdrsize > 0 {
         let exhdr_offset = offset + 0x200;
         let exhdr_size = header.exhdrsize as u64;
-        match read_and_hash(file, exhdr_offset, exhdr_size, file_size).await {
+        match read_and_hash(file, exhdr_offset, exhdr_size, file_size, cancel).await? {
             Some(hash) => {
                 let valid = hash == header.exhdrhash;
                 details.push(format!(
@@ -676,7 +731,7 @@ async fn verify_ncch_partition_from_file(
     let logo_hash_valid = if header.logosize > 0 {
         let logo_offset = offset + header.logooffset as u64 * mu;
         let logo_size = header.logosize as u64 * mu;
-        match read_and_hash(file, logo_offset, logo_size, file_size).await {
+        match read_and_hash(file, logo_offset, logo_size, file_size, cancel).await? {
             Some(hash) => {
                 let valid = hash == header.logohash;
                 details.push(format!("Logo hash: {}", if valid { "OK" } else { "FAIL" }));
@@ -695,7 +750,7 @@ async fn verify_ncch_partition_from_file(
     let exefs_hash_valid = if header.exefssize > 0 && header.exefshashsize > 0 {
         let exefs_offset = offset + header.exefsoffset as u64 * mu;
         let hash_size = header.exefshashsize as u64 * mu;
-        match read_and_hash(file, exefs_offset, hash_size, file_size).await {
+        match read_and_hash(file, exefs_offset, hash_size, file_size, cancel).await? {
             Some(hash) => {
                 let valid = hash == header.exefshash;
                 details.push(format!("ExeFS hash: {}", if valid { "OK" } else { "FAIL" }));
@@ -714,7 +769,7 @@ async fn verify_ncch_partition_from_file(
     let romfs_hash_valid = if header.romfssize > 0 && header.romfshashsize > 0 {
         let romfs_offset = offset + header.romfsoffset as u64 * mu;
         let hash_size = header.romfshashsize as u64 * mu;
-        match read_and_hash(file, romfs_offset, hash_size, file_size).await {
+        match read_and_hash(file, romfs_offset, hash_size, file_size, cancel).await? {
             Some(hash) => {
                 let valid = hash == header.romfshash;
                 details.push(format!("RomFS hash: {}", if valid { "OK" } else { "FAIL" }));
@@ -750,12 +805,16 @@ async fn read_and_hash(
     offset: u64,
     size: u64,
     file_size: u64,
-) -> Option<[u8; 32]> {
+    cancel: &CancelToken,
+) -> Result<Option<[u8; 32]>> {
+    check_cancel(cancel)?;
     if offset + size > file_size || size == 0 {
-        return None;
+        return Ok(None);
     }
 
-    file.seek(SeekFrom::Start(offset)).await.ok()?;
+    if file.seek(SeekFrom::Start(offset)).await.is_err() {
+        return Ok(None);
+    }
 
     // Read in chunks to avoid allocating huge buffers
     const CHUNK_SIZE: usize = 4 * 1024 * 1024;
@@ -763,15 +822,18 @@ async fn read_and_hash(
     let mut remaining = size as usize;
 
     while remaining > 0 {
+        check_cancel(cancel)?;
         let to_read = remaining.min(CHUNK_SIZE);
         let mut buf = vec![0u8; to_read];
-        file.read_exact(&mut buf).await.ok()?;
+        if file.read_exact(&mut buf).await.is_err() {
+            return Ok(None);
+        }
         hasher.update(&buf);
         remaining -= to_read;
     }
 
     let hash = hasher.finalize();
-    Some(hash.into())
+    Ok(Some(hash.into()))
 }
 
 fn classify(
@@ -912,6 +974,7 @@ async fn verify_content_hashes_streaming(
     tmd: &TitleMetadata,
     title_key: Option<&[u8; 16]>,
     details: &mut Vec<String>,
+    cancel: &CancelToken,
 ) -> Result<bool> {
     const CHUNK_BUF: usize = 4 * 1024 * 1024;
     let mut buf = vec![0u8; CHUNK_BUF];
@@ -919,6 +982,7 @@ async fn verify_content_hashes_streaming(
     let mut offset = content_start;
 
     for record in &tmd.content_chunk_records {
+        check_cancel(cancel)?;
         let size = record.content_size;
         if offset + size > file_size {
             details.push(format!(
@@ -958,6 +1022,7 @@ async fn verify_content_hashes_streaming(
         let mut cbc_iv = gen_iv(record.content_index);
         let mut remaining = size;
         while remaining > 0 {
+            check_cancel(cancel)?;
             let to_read = remaining.min(buf.len() as u64) as usize;
             file.read_exact(&mut buf[..to_read]).await?;
             if encrypted {
@@ -1015,7 +1080,31 @@ pub async fn verify_ctr_batch(
     total_progress: &dyn ProgressReporter,
     max_depth: Option<usize>,
 ) -> Result<BatchVerifySummary> {
-    let roms = crate::util::fs::collect_files_with_exts(input_dir, VERIFY_EXTS, max_depth)?;
+    verify_ctr_batch_cancellable(
+        input_dir,
+        options,
+        progress,
+        total_progress,
+        max_depth,
+        &CancelToken::new(),
+    )
+    .await
+}
+
+pub async fn verify_ctr_batch_cancellable(
+    input_dir: &Path,
+    options: &CtrVerifyOptions,
+    progress: &dyn ProgressReporter,
+    total_progress: &dyn ProgressReporter,
+    max_depth: Option<usize>,
+    cancel: &CancelToken,
+) -> Result<BatchVerifySummary> {
+    let roms = crate::util::fs::collect_files_with_exts_cancellable(
+        input_dir,
+        VERIFY_EXTS,
+        max_depth,
+        cancel,
+    )?;
 
     let mut summary = BatchVerifySummary::default();
 
@@ -1034,13 +1123,14 @@ pub async fn verify_ctr_batch(
     );
 
     for path in roms {
+        check_cancel(cancel)?;
         summary.total += 1;
         let display_name = path
             .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or("<unnamed>");
 
-        match verify_ctr(&path, options, progress).await {
+        match verify_ctr_cancellable(&path, options, progress, cancel).await {
             Ok(result) => {
                 let tag = if result.ok() { "[OK]" } else { "[FAIL]" };
                 if result.ok() {
@@ -1062,6 +1152,9 @@ pub async fn verify_ctr_batch(
                 }
             }
             Err(err) => {
+                if cancel.is_cancelled() {
+                    return Err(err);
+                }
                 summary.failed += 1;
                 log::warn!("[FAIL] {display_name} - {err}");
             }
@@ -1072,6 +1165,30 @@ pub async fn verify_ctr_batch(
 
     total_progress.finish();
     Ok(summary)
+}
+
+struct CancelReader<R> {
+    inner: R,
+    cancel: CancelToken,
+}
+
+impl<R: Read> Read for CancelReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.cancel.is_cancelled() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "cancelled",
+            ));
+        }
+        self.inner.read(buf)
+    }
+}
+
+fn check_cancel(cancel: &CancelToken) -> Result<()> {
+    if cancel.is_cancelled() {
+        return Err(NintendoCTRError::Cancelled.into());
+    }
+    Ok(())
 }
 
 #[cfg(test)]

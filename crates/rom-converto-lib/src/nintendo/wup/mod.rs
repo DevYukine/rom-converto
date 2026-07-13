@@ -44,5 +44,8 @@ pub use loadiine::{LoadiineTitle, detect_loadiine_title, walk_loadiine_files};
 pub use nus::decrypt::{
     decrypt_nus_title, decrypt_nus_title_async, decrypt_nus_title_async_cancellable,
 };
-pub use verify::{TitleVerdict, WupVerifyResult, verify_wup, verify_wup_async};
+pub use verify::{
+    TitleVerdict, WupVerifyResult, verify_wup, verify_wup_async, verify_wup_async_cancellable,
+    verify_wup_cancellable,
+};
 pub use zarchive_writer::ZArchiveWriter;

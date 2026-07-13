@@ -4102,6 +4102,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rom-converto-ffi"
+version = "0.16.0"
+dependencies = [
+ "rom-converto-lib",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "rom-converto-gui"
 version = "0.16.0"
 dependencies = [
