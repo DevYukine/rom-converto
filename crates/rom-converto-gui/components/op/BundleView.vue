@@ -57,10 +57,11 @@ function wupName(info: WupInfo): string {
 async function probe(part: Part) {
 	part.error = "";
 	try {
-		const info = await invoke<InfoResult>("cmd_read_info", {
+		const json = await invoke<string>("cmd_read_info", {
 			input: part.path,
 			keys: part.key || null,
 		});
+		const info = JSON.parse(json) as InfoResult;
 		if (info.kind !== "wup") {
 			part.error = "Not a Wii U title";
 			return;
