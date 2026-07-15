@@ -33,28 +33,36 @@ jobs:
             target: x86_64-unknown-linux-gnu
             classifier: linux-x64
             bundles: --bundles appimage,deb
+            config: '{}'
+            release_config: '{"bundle":{"createUpdaterArtifacts":true}}'
           - os: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
             classifier: linux-arm64
             bundles: --bundles appimage,deb
+            config: '{}'
+            release_config: '{"bundle":{"createUpdaterArtifacts":true}}'
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             classifier: windows-x64
             bundles: --bundles nsis
+            config: '{}'
+            release_config: '{"bundle":{"createUpdaterArtifacts":true}}'
           - os: macos-latest
             target: x86_64-apple-darwin
             classifier: macos-x64
             bundles: >-
               --bundles app,dmg
               --ci
-              --config '{"bundle":{"macOS":{"signingIdentity":"-"}}}'
+            config: '{"bundle":{"macOS":{"signingIdentity":"-"}}}'
+            release_config: '{"bundle":{"createUpdaterArtifacts":true,"macOS":{"signingIdentity":"-"}}}'
           - os: macos-latest
             target: aarch64-apple-darwin
             classifier: macos-arm64
             bundles: >-
               --bundles app,dmg
               --ci
-              --config '{"bundle":{"macOS":{"signingIdentity":"-"}}}'
+            config: '{"bundle":{"macOS":{"signingIdentity":"-"}}}'
+            release_config: '{"bundle":{"createUpdaterArtifacts":true,"macOS":{"signingIdentity":"-"}}}'
 
     runs-on: ${{ matrix.os }}
     env:
@@ -112,14 +120,31 @@ jobs:
         working-directory: crates/rom-converto-gui
         run: pnpm install --frozen-lockfile
 
+      - name: Verify updater signing key
+        if: ${{ inputs.release }}
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [[ -z "$TAURI_SIGNING_PRIVATE_KEY" ]]; then
+            echo "TAURI_SIGNING_PRIVATE_KEY is required for release builds" >&2
+            exit 1
+          fi
+
       - name: Build Tauri bundles
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ inputs.release && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ inputs.release && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
         with:
           projectPath: crates/rom-converto-gui
           tauriScript: pnpm tauri
-          args: --target ${{ matrix.target }} ${{ matrix.bundles }} -- --locked
+          args: >-
+            --target ${{ matrix.target }}
+            ${{ matrix.bundles }}
+            --config '${{ inputs.release && matrix.release_config || matrix.config }}'
+            -- --locked
           retryAttempts: 2
 
       - name: Package bundles
@@ -131,6 +156,9 @@ jobs:
           classifier="${{ matrix.classifier }}"
           bundle_dir="target/${{ matrix.target }}/release/bundle"
           mkdir -p artifact
+          if [[ -n "$ROM_CONVERTO_RELEASE" ]]; then
+            mkdir -p updater
+          fi
 
           case "$RUNNER_OS" in
             Linux)
@@ -142,6 +170,12 @@ jobs:
 
               cp "${appimages[0]}" "artifact/rom-converto-gui-${classifier}.AppImage"
               cp "${debs[0]}" "artifact/rom-converto-gui-${classifier}.deb"
+
+              if [[ -n "$ROM_CONVERTO_RELEASE" ]]; then
+                [[ -f "${appimages[0]}.sig" ]]
+                cp "${appimages[0]}" "updater/rom-converto-gui-${classifier}.AppImage"
+                cp "${appimages[0]}.sig" "updater/rom-converto-gui-${classifier}.AppImage.sig"
+              fi
               ;;
 
             macOS)
@@ -155,6 +189,14 @@ jobs:
                 "$app" \
                 "artifact/rom-converto-gui-${classifier}.app.zip"
               cp "${dmgs[0]}" "artifact/rom-converto-gui-${classifier}.dmg"
+
+              if [[ -n "$ROM_CONVERTO_RELEASE" ]]; then
+                updaters=("$bundle_dir/macos/"*.app.tar.gz)
+                (( ${#updaters[@]} > 0 ))
+                [[ -f "${updaters[0]}.sig" ]]
+                cp "${updaters[0]}" "updater/rom-converto-gui-${classifier}.app.tar.gz"
+                cp "${updaters[0]}.sig" "updater/rom-converto-gui-${classifier}.app.tar.gz.sig"
+              fi
               ;;
 
             Windows)
@@ -174,6 +216,12 @@ jobs:
                 fi
               done
               [[ -f "artifact/rom-converto-gui-${classifier}.exe" ]]
+
+              if [[ -n "$ROM_CONVERTO_RELEASE" ]]; then
+                [[ -f "${installers[0]}.sig" ]]
+                cp "${installers[0]}" "updater/rom-converto-gui-${classifier}-setup.exe"
+                cp "${installers[0]}.sig" "updater/rom-converto-gui-${classifier}-setup.exe.sig"
+              fi
               ;;
 
             *)
@@ -190,9 +238,84 @@ jobs:
           path: artifact/
           if-no-files-found: error
 
+      - name: Upload updater artifact
+        if: ${{ inputs.release }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: updater-${{ matrix.classifier }}
+          path: updater/
+          if-no-files-found: error
+
       - name: Upload to release
         if: ${{ inputs.release }}
-        uses: softprops/action-gh-release@v3
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ inputs.release_tag }}" artifact/* --repo "$GITHUB_REPOSITORY" --clobber
+
+  updater-manifest:
+    name: GUI updater manifest
+    needs: build
+    if: ${{ inputs.release }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download updater artifacts
+        uses: actions/download-artifact@v8
         with:
-          tag_name: ${{ inputs.release_tag }}
-          files: artifact/*
+          pattern: updater-*
+          path: updater
+          merge-multiple: true
+
+      - name: Create latest.json
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          release="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json body,publishedAt)"
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
+
+          jq -n \
+            --arg version "${RELEASE_TAG#v}" \
+            --arg notes "$(jq -r .body <<<"$release")" \
+            --arg pub_date "$(jq -r .publishedAt <<<"$release")" \
+            --arg base "$base" \
+            --arg linux_x64 "$(<updater/rom-converto-gui-linux-x64.AppImage.sig)" \
+            --arg linux_arm64 "$(<updater/rom-converto-gui-linux-arm64.AppImage.sig)" \
+            --arg windows_x64 "$(<updater/rom-converto-gui-windows-x64-setup.exe.sig)" \
+            --arg macos_x64 "$(<updater/rom-converto-gui-macos-x64.app.tar.gz.sig)" \
+            --arg macos_arm64 "$(<updater/rom-converto-gui-macos-arm64.app.tar.gz.sig)" \
+            '{
+              version: $version,
+              notes: $notes,
+              pub_date: $pub_date,
+              platforms: {
+                "linux-x86_64": {
+                  signature: $linux_x64,
+                  url: ($base + "/rom-converto-gui-linux-x64.AppImage")
+                },
+                "linux-aarch64": {
+                  signature: $linux_arm64,
+                  url: ($base + "/rom-converto-gui-linux-arm64.AppImage")
+                },
+                "windows-x86_64": {
+                  signature: $windows_x64,
+                  url: ($base + "/rom-converto-gui-windows-x64-setup.exe")
+                },
+                "darwin-x86_64": {
+                  signature: $macos_x64,
+                  url: ($base + "/rom-converto-gui-macos-x64.app.tar.gz")
+                },
+                "darwin-aarch64": {
+                  signature: $macos_arm64,
+                  url: ($base + "/rom-converto-gui-macos-arm64.app.tar.gz")
+                }
+              }
+            }' > latest.json
+
+      - name: Upload updater assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ inputs.release_tag }}" updater/* latest.json --repo "$GITHUB_REPOSITORY" --clobber
