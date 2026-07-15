@@ -29,4 +29,5 @@ node_modules
 dist
 
 # Tauri
+/.tauri/
 crates/rom-converto-gui/src-tauri/gen/schemas
