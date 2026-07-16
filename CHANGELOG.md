@@ -1,3 +1,26 @@
+# [0.17.0](https://github.com/DevYukine/rom-converto/compare/v0.16.0...v0.17.0) (2026-07-16)
+
+
+### Bug Fixes
+
+* **archive:** support additional input codecs ([eb5df98](https://github.com/DevYukine/rom-converto/commit/eb5df983a5815a66a4835ec30fed58e4d5cb448a))
+* **ci:** drop unsupported musl FFI build ([81a130f](https://github.com/DevYukine/rom-converto/commit/81a130f36f66d16137c06c6df3e5ffcd4835c4be))
+* **ci:** generate nuxt types on install so gui tests can resolve tsconfig ([467f18b](https://github.com/DevYukine/rom-converto/commit/467f18b7ca31e886eaa3395f176578d06b976dd4))
+* **ci:** pin linuxdeploy for Linux AppImages ([e36bfcc](https://github.com/DevYukine/rom-converto/commit/e36bfcc476bde43dca8703783c05f9e8c5efa633))
+* **ctr:** harden CDN output publication ([fe3696f](https://github.com/DevYukine/rom-converto/commit/fe3696ffc5d3d1b41169f7a61e26175839d931b7))
+* **ctr:** preserve CDN conversion outputs ([0bf6290](https://github.com/DevYukine/rom-converto/commit/0bf62902792d5c0a3b94ad12758b2b255c0a07c0))
+* **gui:** keep dots in output filenames when deriving from archives ([cb25d14](https://github.com/DevYukine/rom-converto/commit/cb25d142b7d4c1175786c3a1ddc8b043a19d663f))
+* **gui:** parse WUP metadata response ([4df3250](https://github.com/DevYukine/rom-converto/commit/4df3250c8b8e037350098b8b7321cc6948ba1877))
+
+
+### Features
+
+* **ffi:** add C ABI integration ([9464c15](https://github.com/DevYukine/rom-converto/commit/9464c15bd6cab26d89594681b1e35e05bb0fa728))
+* **gui:** add desktop updater ([bfec539](https://github.com/DevYukine/rom-converto/commit/bfec5394a8413967d3bab8ce0b10e518cef71ca0))
+* **gui:** redesign interface with operation-first layout and global queue ([040c371](https://github.com/DevYukine/rom-converto/commit/040c371e16edf139f9a15350e336ef62fb976dda))
+
+
+
 # [0.16.0](https://github.com/DevYukine/rom-converto/compare/v0.15.0...v0.16.0) (2026-07-11)
 
 
@@ -109,20 +132,6 @@
 * **lib:** add cancellable hash_file variant ([a58d7bc](https://github.com/DevYukine/rom-converto/commit/a58d7bcc2eed9c419d4b0c0a0e090e31e7da3999))
 * show dev-<hash> version for local builds ([3418c8e](https://github.com/DevYukine/rom-converto/commit/3418c8ea1de03adb97f44aeea4e2e7eaa26f46f7))
 * show progress phase labels ([d96b477](https://github.com/DevYukine/rom-converto/commit/d96b477b83b7be531d67b23268a5d1379584f100))
-
-
-
-# [0.12.0](https://github.com/DevYukine/rom-converto/compare/v0.11.0...v0.12.0) (2026-06-26)
-
-
-### Bug Fixes
-
-* **ctr:** align .ncch scratch filename casing so cia decrypt works on case-sensitive filesystems ([fc9b1a1](https://github.com/DevYukine/rom-converto/commit/fc9b1a1d4693f128b1a2f126cb0f15f2f11f7bb5))
-
-
-### Features
-
-* unified output directory, larger default window, and GUI/CLI UX polish ([f361caa](https://github.com/DevYukine/rom-converto/commit/f361caa520537a4190bfd09445bc4fea74b87347))
 
 
 
