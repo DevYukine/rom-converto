@@ -2,6 +2,7 @@
 
 [![Test Commit](https://github.com/DevYukine/rom-converto/actions/workflows/tests.yml/badge.svg)](https://github.com/DevYukine/rom-converto/actions/workflows/tests.yml)
 [![Latest release](https://img.shields.io/github/v/release/DevYukine/rom-converto)](https://github.com/DevYukine/rom-converto/releases/latest)
+[![Sponsor](https://img.shields.io/badge/Sponsor-DevYukine-EA4AAA?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/DevYukine)
 
 rom-converto converts, compresses, verifies, encrypts, and decrypts ROMs and disc images for Nintendo 3DS, GameCube, Wii, Wii U, Nintendo Switch, and CD or DVD media. It ships as a cross-platform command line tool, a desktop GUI, a Rust library, and a C ABI bridge for embedding. Its output matches the established encoder for each format, so a rom-converto file drops straight into the emulators and tools people already use.
 
