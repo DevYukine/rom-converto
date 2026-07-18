@@ -85,6 +85,11 @@ fn merge_chd(top: Option<&ChdDefaults>, base: Option<&ChdDefaults>) -> ChdDefaul
             top.and_then(|t| t.hunk_size),
             base.and_then(|b| b.hunk_size),
         ),
+        codecs: pick(
+            top.and_then(|t| t.codecs.clone()),
+            base.and_then(|b| b.codecs.clone()),
+        ),
+        level: pick(top.and_then(|t| t.level), base.and_then(|b| b.level)),
         on_conflict: pick(
             top.and_then(|t| t.on_conflict.clone()),
             base.and_then(|b| b.on_conflict.clone()),

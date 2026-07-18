@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, bail};
 
 use crate::chd::{
-    ChdDvdOptions, DiscMode, convert_disc_to_chd_cancellable, extract_from_chd_cancellable,
+    ChdOptions, DiscMode, convert_disc_to_chd_cancellable, extract_from_chd_cancellable,
     is_dvd_mode_chd,
 };
 use crate::cso::{
@@ -61,7 +61,7 @@ pub async fn cso_to_chd_cancellable(
     input_path: PathBuf,
     output_path: PathBuf,
     mode: Option<DiscMode>,
-    opts: ChdDvdOptions,
+    opts: ChdOptions,
     cancel: CancelToken,
 ) -> Result<()> {
     reject_unsupported_input(&input_path)?;
@@ -209,7 +209,7 @@ mod tests {
             cso_path,
             chd_path.clone(),
             None,
-            ChdDvdOptions::default(),
+            ChdOptions::default(),
             CancelToken::new(),
         )
         .await
@@ -287,7 +287,7 @@ mod tests {
             iso_path,
             chd_path.clone(),
             None,
-            ChdDvdOptions::default(),
+            ChdOptions::default(),
             CancelToken::new(),
         )
         .await
@@ -332,7 +332,7 @@ mod tests {
             &NoProgress,
             cue_path,
             chd_path.clone(),
-            false,
+            ChdOptions::default(),
             CancelToken::new(),
         )
         .await
@@ -365,7 +365,7 @@ mod tests {
             iso_path,
             chd_path.clone(),
             None,
-            ChdDvdOptions::default(),
+            ChdOptions::default(),
             CancelToken::new(),
         )
         .await
@@ -401,7 +401,7 @@ mod tests {
             cso_path,
             chd_path.clone(),
             None,
-            ChdDvdOptions::default(),
+            ChdOptions::default(),
             cancel,
         )
         .await

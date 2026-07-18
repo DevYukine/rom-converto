@@ -37,7 +37,14 @@ const BINDINGS: Record<string, { format: PresetFormat; useStore: () => OpStore; 
 	chd: {
 		format: "chd",
 		useStore: useChdCompressStore,
-		map: { hunk_size: "hunkSize", on_conflict: "onConflict", output_dir: "outputDir", report: "reportFile" },
+		map: {
+			hunk_size: "hunkSize",
+			codecs: "codecs",
+			level: "level",
+			on_conflict: "onConflict",
+			output_dir: "outputDir",
+			report: "reportFile",
+		},
 	},
 	cso: {
 		format: "cso",
@@ -55,6 +62,11 @@ const open = ref(false);
 const current = computed(() => config.activePreset || "None");
 const names = computed(() => Object.keys(config.presets).sort());
 
+function isSetValue(value: unknown): boolean {
+	if (value === null || value === undefined || value === "") return false;
+	return !Array.isArray(value) || value.length > 0;
+}
+
 function summary(name: string): string {
 	const binding = BINDINGS[props.console];
 	const preset = config.presets[name];
@@ -64,7 +76,7 @@ function summary(name: string): string {
 	const parts: string[] = [];
 	for (const key of Object.keys(binding.map)) {
 		const value = table[key];
-		if (value !== null && value !== undefined && value !== "") parts.push(`${key}: ${value}`);
+		if (isSetValue(value)) parts.push(`${key}: ${value}`);
 	}
 	return `${binding.format}: ${parts.join(" · ") || "defaults"}`;
 }
@@ -102,10 +114,10 @@ async function saveCurrent() {
 	saveError.value = "";
 	try {
 		const store = binding.useStore();
-		const table: Record<string, string | number> = {};
+		const table: Record<string, string | number | string[]> = {};
 		for (const [key, field] of Object.entries(binding.map)) {
 			const value = store[field];
-			if (value !== null && value !== undefined && value !== "") table[key] = value;
+			if (isSetValue(value)) table[key] = value;
 		}
 		const preset: Preset = { ...config.presets[trimmed], [binding.format]: table };
 		await config.savePreset(trimmed, preset);

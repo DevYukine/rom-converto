@@ -1274,7 +1274,7 @@ pub async fn chd_compress(
     progress: &dyn ProgressReporter,
     total_progress: &crate::util::TotalProgress,
     input_dir: &Path,
-    mut opts: rom_converto_lib::chd::ChdDvdOptions,
+    mut opts: rom_converto_lib::chd::ChdOptions,
     mode: Option<rom_converto_lib::chd::DiscMode>,
     policy: ConflictPolicy,
     output_dir: Option<&Path>,
@@ -1291,6 +1291,9 @@ pub async fn chd_compress(
     let files = collect_or_warn(input_dir, &["cue", "iso"], max_depth)?;
     if files.is_empty() {
         return Ok(());
+    }
+    if files.iter().any(|p| crate::resolved_dvd_mode(mode, p)) {
+        crate::maybe_log_dvd_codec_tip(true, opts.codecs.is_some());
     }
     if !dry_run && !skip_space_check {
         space_preflight(&files, output_dir.unwrap_or(input_dir))?;
@@ -1768,7 +1771,7 @@ pub async fn cso_to_chd(
     total_progress: &crate::util::TotalProgress,
     input_dir: &Path,
     mode: Option<rom_converto_lib::chd::DiscMode>,
-    mut opts: rom_converto_lib::chd::ChdDvdOptions,
+    mut opts: rom_converto_lib::chd::ChdOptions,
     policy: ConflictPolicy,
     output_dir: Option<&Path>,
     output_template: Option<&str>,
@@ -1784,6 +1787,9 @@ pub async fn cso_to_chd(
     let files = collect_or_warn(input_dir, &["cso", "zso", "dax"], max_depth)?;
     if files.is_empty() {
         return Ok(());
+    }
+    if mode == Some(rom_converto_lib::chd::DiscMode::Dvd) {
+        crate::maybe_log_dvd_codec_tip(true, opts.codecs.is_some());
     }
     if !dry_run && !skip_space_check {
         let required: u64 = files.iter().map(|p| cso_uncompressed_size(p)).sum();

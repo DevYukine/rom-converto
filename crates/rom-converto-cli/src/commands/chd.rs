@@ -2,7 +2,23 @@ use crate::commands::ConflictPolicyArg;
 use crate::commands::cso::CsoFormatArg;
 use crate::commands::info_command::InfoCommand;
 use clap::{Parser, Subcommand};
+use rom_converto_lib::chd::ChdCodec;
 use std::path::PathBuf;
+
+/// A parsed `-c/--codecs` value. Aliased (rather than spelled as `Vec<ChdCodec>`
+/// on the arg field) so clap-derive treats it as an opaque single value instead
+/// of peeling `Vec` and expecting one `ChdCodec` per occurrence.
+pub(crate) type ChdCodecList = Vec<ChdCodec>;
+
+/// Parses a `-c/--codecs` value: a comma-separated chdman-style codec
+/// list, validated for emptiness/duplicates/slot count. The CD-only-vs-DVD
+/// check needs the resolved disc mode, so it happens later against the
+/// lib's [`rom_converto_lib::chd::validate_codecs`].
+pub(crate) fn parse_chd_codecs(s: &str) -> Result<ChdCodecList, String> {
+    let codecs = rom_converto_lib::chd::parse_codec_list(s).map_err(|e| e.to_string())?;
+    rom_converto_lib::chd::validate_codecs(&codecs, false).map_err(|e| e.to_string())?;
+    Ok(codecs)
+}
 
 /// Commands specific to CHD formats
 #[derive(Subcommand, Debug, Eq, PartialEq)]
@@ -17,7 +33,7 @@ pub enum ChdCommands {
 /// Compress a disc image to a CHD (Compressed Hunks of Data) file
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
-    long_about = "Compress a disc image to a CHD (Compressed Hunks of Data) file\n\nA .cue input (with its .bin) becomes a CD-mode CHD. An .iso is probed for its console family: CD-media images (PS1, PS2-CD) become CD-mode CHDs with a single MODE1/2048 track (the chdman createcd equivalent), DVD-media images (PS2-DVD, PSP) become DVD-mode CHDs (the createdvd equivalent). The mode is picked automatically so the createcd/createdvd mixup cannot happen. Default DVD codecs are lzma+zlib, which every emulator reads, including AetherSX2/NetherSX2.",
+    long_about = "Compress a disc image to a CHD (Compressed Hunks of Data) file\n\nA .cue input (with its .bin) becomes a CD-mode CHD. An .iso is probed for its console family: CD-media images (PS1, PS2-CD) become CD-mode CHDs with a single MODE1/2048 track (the chdman createcd equivalent), DVD-media images (PS2-DVD, PSP) become DVD-mode CHDs (the createdvd equivalent). The mode is picked automatically so the createcd/createdvd mixup cannot happen. Default codecs match chdman (CD: cdlz,cdzl,cdfl; DVD: lzma,zlib,huff,flac) and every emulator reads them, including AetherSX2/NetherSX2; pick your own with --codecs.",
     after_long_help = "EXAMPLES:\n  Single file:     rom-converto chd compress game.cue\n  Explicit output: rom-converto chd compress game.iso out.chd\n  Whole folder:    rom-converto chd compress -R ./roms --output-dir ./chd\n"
 )]
 pub struct CompressCommand {
@@ -60,9 +76,18 @@ pub struct CompressCommand {
     #[arg(long, value_name = "BYTES")]
     pub hunk_size: Option<u32>,
 
-    /// Add zstd to the DVD codec set: slightly better ratio, but some older players and cores do not support zstd-compressed CHD
-    #[arg(long)]
-    pub zstd: bool,
+    /// Codec list for the CHD header's compressor slots: comma-separated chdman-style names, at most 4 of zlib, zstd, lzma, huff, flac, cdzl, cdzs, cdlz, cdfl. Defaults to cdlz,cdzl,cdfl for CD-mode and lzma,zlib,huff,flac for DVD-mode (chdman parity)
+    #[arg(short = 'c', long = "codecs", value_name = "LIST", value_parser = parse_chd_codecs)]
+    pub codecs: Option<ChdCodecList>,
+
+    /// Compression level in 1..=22. zstd uses the level directly; zlib and lzma cap at 9. Unset uses per-codec defaults (zstd 19, lzma 8, zlib 9)
+    #[arg(
+        short = 'l',
+        long = "level",
+        value_name = "LEVEL",
+        value_parser = clap::value_parser!(i32).range(1..=22)
+    )]
+    pub level: Option<i32>,
 
     /// What to do when an output already exists: error, overwrite, skip, or rename to a numbered sibling
     #[arg(long = "on-conflict", value_enum)]
@@ -269,8 +294,10 @@ mod tests {
         };
         assert_eq!(c.input, PathBuf::from("game.iso"));
         assert_eq!(c.output, None);
-        assert!(!c.dvd && !c.cd && !c.zstd && !c.force && !c.recursive);
+        assert!(!c.dvd && !c.cd && !c.force && !c.recursive);
         assert_eq!(c.hunk_size, None);
+        assert_eq!(c.codecs, None);
+        assert_eq!(c.level, None);
     }
 
     #[test]
@@ -283,15 +310,81 @@ mod tests {
             "--dvd",
             "--hunk-size",
             "2048",
-            "--zstd",
             "-R",
         ]);
         let ChdCommands::Compress(c) = h.cmd else {
             panic!("expected Compress");
         };
         assert_eq!(c.output, Some(PathBuf::from("game.chd")));
-        assert!(c.dvd && c.zstd && c.recursive);
+        assert!(c.dvd && c.recursive);
         assert_eq!(c.hunk_size, Some(2048));
+    }
+
+    #[test]
+    fn parses_compress_codecs_and_level() {
+        let h = Harness::parse_from([
+            "bin",
+            "compress",
+            "game.iso",
+            "--codecs",
+            "zstd,lzma,zlib,flac",
+            "--level",
+            "12",
+        ]);
+        let ChdCommands::Compress(c) = h.cmd else {
+            panic!("expected Compress");
+        };
+        assert_eq!(
+            c.codecs,
+            Some(vec![
+                ChdCodec::Zstd,
+                ChdCodec::Lzma,
+                ChdCodec::Zlib,
+                ChdCodec::Flac
+            ])
+        );
+        assert_eq!(c.level, Some(12));
+    }
+
+    #[test]
+    fn rejects_unknown_codec_name() {
+        let result = Harness::try_parse_from(["bin", "compress", "game.iso", "--codecs", "bogus"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_too_many_codecs() {
+        let result = Harness::try_parse_from([
+            "bin",
+            "compress",
+            "game.iso",
+            "--codecs",
+            "zlib,zstd,lzma,huff,flac",
+        ]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_level_out_of_range() {
+        let result = Harness::try_parse_from(["bin", "compress", "game.iso", "--level", "23"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn cd_codec_with_dvd_rejected_by_lib_validation() {
+        let h = Harness::parse_from([
+            "bin",
+            "compress",
+            "game.iso",
+            "--dvd",
+            "--codecs",
+            "cdlz,cdzl,cdfl",
+        ]);
+        let ChdCommands::Compress(c) = h.cmd else {
+            panic!("expected Compress");
+        };
+        let codecs = c.codecs.expect("codecs parsed");
+        assert!(rom_converto_lib::chd::validate_codecs(&codecs, true).is_err());
     }
 
     #[test]

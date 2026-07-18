@@ -424,7 +424,7 @@ pub struct RunOptions {
     pub format: Option<String>,
     pub block_size: Option<u32>,
     pub hunk_size: Option<u32>,
-    pub allow_zstd: Option<bool>,
+    pub codecs: Option<Vec<String>>,
     pub mode: Option<String>,
     pub parent: Option<PathBuf>,
     pub full: Option<bool>,

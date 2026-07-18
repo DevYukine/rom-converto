@@ -7,6 +7,7 @@ import { buildCliCommand } from "~/composables/useCliEcho";
 import ConfigCard from "~/components/ui/ConfigCard.vue";
 import LevelSlider from "~/components/ui/LevelSlider.vue";
 import Segmented from "~/components/ui/Segmented.vue";
+import Multiselect from "~/components/ui/Multiselect.vue";
 import ToggleSwitch from "~/components/ui/ToggleSwitch.vue";
 import KvRow from "~/components/ui/KvRow.vue";
 import CliChip from "~/components/ui/CliChip.vue";
@@ -201,6 +202,17 @@ function copied() {
 							clickable
 							@click="pickFile(field)"
 						/>
+						<div v-else-if="field.kind === 'multiselect'" class="rc-field">
+							<Multiselect
+								:model-value="store[field.key]"
+								:options="field.options"
+								:label="field.label"
+								:max="field.max"
+								:placeholder="field.placeholder"
+								@update:model-value="store[field.key] = $event"
+							/>
+							<p v-if="field.hint" class="rc-field__note">{{ field.hint }}</p>
+						</div>
 					</template>
 				</template>
 				<p v-if="def.note" class="rc-field__note">{{ def.note }}</p>

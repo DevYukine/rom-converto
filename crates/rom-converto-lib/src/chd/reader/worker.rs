@@ -19,6 +19,7 @@ use crate::chd::error::{ChdError, ChdResult};
 use crate::chd::map::{
     COMPRESSION_NONE, COMPRESSION_PARENT, COMPRESSION_SELF, MapEntry, crc16_ccitt,
 };
+use crate::chd::swap_audio_sector;
 use crate::util::CancelToken;
 use crate::util::hash::MultiHasher;
 use crate::util::pread::file_read_exact_at;
@@ -42,8 +43,9 @@ pub(crate) struct ChdExtractedOut {
 }
 
 /// Per-thread decompress worker. Owns the shared file handle + a
-/// reusable [`CdDecoderSet`] so LZMA probability tables and
-/// deflate state allocate exactly once per thread.
+/// reusable [`CdDecoderSet`] whose slots are resolved from the
+/// header compressor tags, so codec state allocates exactly once
+/// per thread and any chdman codec combination decodes correctly.
 pub(crate) struct ChdExtractWorker {
     decoders: CdDecoderSet,
     file: Arc<std::fs::File>,
@@ -51,9 +53,13 @@ pub(crate) struct ChdExtractWorker {
 }
 
 impl ChdExtractWorker {
-    pub fn new(file: Arc<std::fs::File>, hunk_bytes: usize) -> ChdResult<Self> {
+    pub fn new(
+        file: Arc<std::fs::File>,
+        hunk_bytes: usize,
+        compressors: [[u8; 4]; 4],
+    ) -> ChdResult<Self> {
         Ok(Self {
-            decoders: CdDecoderSet::new(hunk_bytes)?,
+            decoders: CdDecoderSet::new(compressors, hunk_bytes)?,
             file,
             hunk_bytes,
         })
@@ -66,33 +72,18 @@ impl Worker<ChdExtractWork, ChdExtractedOut, ChdError> for ChdExtractWorker {
         let entry = work.entry;
 
         let hunk = match entry.compression {
-            0 => {
+            slot @ 0..=3 => {
                 let mut compressed = vec![0u8; entry.length as usize];
                 file_read_exact_at(&self.file, &mut compressed, entry.offset)?;
-                self.decoders.decompress_cdlz(&compressed, hunk_bytes)?
-            }
-            1 => {
-                let mut compressed = vec![0u8; entry.length as usize];
-                file_read_exact_at(&self.file, &mut compressed, entry.offset)?;
-                self.decoders.decompress_cdzl(&compressed, hunk_bytes)?
-            }
-            2 => {
-                let mut compressed = vec![0u8; entry.length as usize];
-                file_read_exact_at(&self.file, &mut compressed, entry.offset)?;
-                self.decoders.decompress_cdfl(&compressed, hunk_bytes)?
+                self.decoders.decompress(slot, &compressed, hunk_bytes)?
             }
             COMPRESSION_NONE => {
                 let mut data = vec![0u8; hunk_bytes];
                 file_read_exact_at(&self.file, &mut data, entry.offset)?;
                 data
             }
-            _ => {
-                return Err(ChdError::UnknownCompressionCodec([
-                    entry.compression,
-                    0,
-                    0,
-                    0,
-                ]));
+            other => {
+                return Err(ChdError::UnknownCompressionCodec([other, 0, 0, 0]));
             }
         };
 
@@ -120,9 +111,10 @@ pub(crate) fn make_chd_extract_workers(
     n: usize,
     file: &Arc<std::fs::File>,
     hunk_bytes: usize,
+    compressors: [[u8; 4]; 4],
 ) -> ChdResult<Vec<ChdExtractWorker>> {
     (0..n)
-        .map(|_| ChdExtractWorker::new(file.clone(), hunk_bytes))
+        .map(|_| ChdExtractWorker::new(file.clone(), hunk_bytes, compressors))
         .collect()
 }
 
@@ -225,13 +217,14 @@ pub(crate) fn extract_hunks(
     writer: &mut BufWriter<std::fs::File>,
     hunk_bytes: usize,
     frame_sizes: &[usize],
+    frame_audio: &[bool],
     bytes_done: &Arc<AtomicU64>,
     cancel: &CancelToken,
 ) -> ChdResult<()> {
     let frames_per_hunk = hunk_bytes / FRAME_SIZE;
     let total_frames = frame_sizes.len();
 
-    run_extract_pipeline(pool, map, writer, bytes_done, cancel, |seq, out| {
+    run_extract_pipeline(pool, map, writer, bytes_done, cancel, |seq, mut out| {
         // Gather payload bytes from the interleaved hunk, dropping
         // the subcode and any tail past each track's datasize.
         // `chdman extractcd` writes datasize-wide bins; track padding
@@ -241,7 +234,13 @@ pub(crate) fn extract_hunks(
         let mut sectors = Vec::with_capacity(frames_in_hunk * SECTOR_SIZE);
         for frame in 0..frames_in_hunk {
             let off = frame * FRAME_SIZE;
-            sectors.extend_from_slice(&out.hunk[off..off + frame_sizes[first_frame + frame]]);
+            let size = frame_sizes[first_frame + frame];
+            // Audio frames are stored big-endian; swap back to the
+            // little-endian samples the extracted bin carries.
+            if frame_audio[first_frame + frame] {
+                swap_audio_sector(&mut out.hunk[off..off + size]);
+            }
+            sectors.extend_from_slice(&out.hunk[off..off + size]);
         }
         Ok(sectors)
     })
@@ -396,6 +395,7 @@ pub(crate) fn digest_hunks_per_track(
     hunk_bytes: usize,
     frame_sizes: &[usize],
     frame_track: &[usize],
+    frame_audio: &[bool],
     hashers: &mut [MultiHasher],
     whole: &mut MultiHasher,
     bytes_done: &Arc<AtomicU64>,
@@ -417,14 +417,20 @@ pub(crate) fn digest_hunks_per_track(
             let entry = resolve_entry(map, chunk_idx as u32)?;
             Ok(ChdExtractWork { entry })
         },
-        |seq, out| -> ChdResult<()> {
+        |seq, mut out| -> ChdResult<()> {
             let first_frame = seq as usize * frames_per_hunk;
             let frames_in_hunk = frames_per_hunk.min(total_frames.saturating_sub(first_frame));
             let mut folded = 0u64;
             for frame in 0..frames_in_hunk {
                 let idx = first_frame + frame;
                 let off = frame * FRAME_SIZE;
-                let slice = &out.hunk[off..off + frame_sizes[idx]];
+                let size = frame_sizes[idx];
+                // Match the extracted bin: audio frames are stored
+                // big-endian and swapped back on the way out.
+                if frame_audio[idx] {
+                    swap_audio_sector(&mut out.hunk[off..off + size]);
+                }
+                let slice = &out.hunk[off..off + size];
                 hashers[frame_track[idx]].update(slice);
                 whole.update(slice);
                 folded += slice.len() as u64;

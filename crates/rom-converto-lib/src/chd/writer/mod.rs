@@ -5,8 +5,7 @@ pub(crate) mod metadata;
 pub(crate) mod worker;
 
 use crate::cd::{FRAME_SIZE, IO_BUFFER_SIZE};
-use crate::chd::compression::dvd::dvd_compressors;
-use crate::chd::compression::tag_to_bytes;
+use crate::chd::compression::{ChdCodec, codec_header_slots};
 use crate::chd::compute_overall_sha1;
 use crate::chd::error::{ChdError, ChdResult};
 use crate::chd::map::{MapEntry, compress_v5_map};
@@ -14,7 +13,7 @@ use crate::chd::models::{
     CHD_V5_HEADER_SIZE, ChdHeaderV5, ChdVersion, DVD_SECTOR_SIZE, SHA1_BYTES,
 };
 use crate::chd::writer::metadata::{
-    MetadataBlock, MetadataHash, generate_cd_metadata, generate_dvd_metadata,
+    MetadataBlock, MetadataHash, cd_audio_frame_map, generate_cd_metadata, generate_dvd_metadata,
 };
 use crate::chd::writer::worker::{
     compress_hunks, compress_hunks_dvd, make_chd_compress_workers, make_chd_dvd_compress_workers,
@@ -42,9 +41,14 @@ pub struct ChdWriter {
     writer: BufWriter<std::fs::File>,
     writer_pos: u64,
     header: ChdHeaderV5,
+    codecs: Vec<ChdCodec>,
+    level: Option<i32>,
     map_entries: Vec<MapEntry>,
     raw_sha1: Sha1,
     metadata_hashes: Vec<MetadataHash>,
+    /// Per-frame audio flags; empty for DVD-mode writers. Audio frames
+    /// get their 16-bit sample bytes swapped on ingest to match chdman.
+    cd_audio_frames: Vec<bool>,
 }
 
 impl ChdWriter {
@@ -57,6 +61,8 @@ impl ChdWriter {
         data_sectors: u32,
         hunk_size: u32,
         cue_sheet: &CueSheet,
+        codecs: Vec<ChdCodec>,
+        level: Option<i32>,
     ) -> ChdResult<Self> {
         let file = std::fs::File::create(output_path)?;
         let writer = BufWriter::with_capacity(IO_BUFFER_SIZE, file);
@@ -67,16 +73,14 @@ impl ChdWriter {
             return Err(ChdError::InvalidHunkSize);
         }
 
-        // Fixed CD codec pack: cdlz, cdzl, cdfl. Matches chdman's
-        // `createcd` default and the three codecs the writer's
-        // `CdCodecSet` knows how to emit.
+        let slots = codec_header_slots(&codecs);
         let header = ChdHeaderV5 {
             length: CHD_V5_HEADER_SIZE,
             version: ChdVersion::V5,
-            compressor_0: tag_to_bytes("cdlz"),
-            compressor_1: tag_to_bytes("cdzl"),
-            compressor_2: tag_to_bytes("cdfl"),
-            compressor_3: [0; 4],
+            compressor_0: slots[0],
+            compressor_1: slots[1],
+            compressor_2: slots[2],
+            compressor_3: slots[3],
             logical_bytes,
             map_offset: 0,
             meta_offset: 0,
@@ -88,18 +92,19 @@ impl ChdWriter {
         };
 
         let metadata = generate_cd_metadata(cue_sheet, data_sectors)?;
-        Self::init(writer, header, metadata)
+        let cd_audio_frames = cd_audio_frame_map(cue_sheet, total_sectors);
+        Self::init(writer, header, codecs, level, metadata, cd_audio_frames)
     }
 
     /// DVD-mode writer: flat 2048-byte sectors, `logical_bytes` =
-    /// exact input size, `DVD ` marker metadata. `allow_zstd` adds
-    /// zstd as a third codec; the default compatibility set is
-    /// `[lzma, zlib]` (see [`dvd_compressors`]).
+    /// exact input size, `DVD ` marker metadata. `codecs` fills the
+    /// header compressor slots in order.
     pub fn create_dvd(
         output_path: impl AsRef<Path>,
         iso_bytes: u64,
         hunk_size: u32,
-        allow_zstd: bool,
+        codecs: Vec<ChdCodec>,
+        level: Option<i32>,
     ) -> ChdResult<Self> {
         if iso_bytes == 0 || !iso_bytes.is_multiple_of(DVD_SECTOR_SIZE as u64) {
             return Err(ChdError::IsoNotSectorAligned { size: iso_bytes });
@@ -113,14 +118,14 @@ impl ChdWriter {
         let file = std::fs::File::create(output_path)?;
         let writer = BufWriter::with_capacity(IO_BUFFER_SIZE, file);
 
-        let compressors = dvd_compressors(allow_zstd);
+        let slots = codec_header_slots(&codecs);
         let header = ChdHeaderV5 {
             length: CHD_V5_HEADER_SIZE,
             version: ChdVersion::V5,
-            compressor_0: compressors[0],
-            compressor_1: compressors[1],
-            compressor_2: compressors[2],
-            compressor_3: compressors[3],
+            compressor_0: slots[0],
+            compressor_1: slots[1],
+            compressor_2: slots[2],
+            compressor_3: slots[3],
             logical_bytes: iso_bytes,
             map_offset: 0,
             meta_offset: 0,
@@ -132,13 +137,16 @@ impl ChdWriter {
         };
 
         let metadata = generate_dvd_metadata()?;
-        Self::init(writer, header, metadata)
+        Self::init(writer, header, codecs, level, metadata, Vec::new())
     }
 
     fn init(
         mut writer: BufWriter<std::fs::File>,
         header: ChdHeaderV5,
+        codecs: Vec<ChdCodec>,
+        level: Option<i32>,
         metadata: MetadataBlock,
+        cd_audio_frames: Vec<bool>,
     ) -> ChdResult<Self> {
         let mut header_buf = Cursor::new(Vec::new());
         header.write(&mut header_buf)?;
@@ -153,9 +161,12 @@ impl ChdWriter {
             writer,
             writer_pos,
             header,
+            codecs,
+            level,
             map_entries: Vec::new(),
             raw_sha1: Sha1::new(),
             metadata_hashes: metadata.hashes,
+            cd_audio_frames,
         })
     }
 
@@ -172,7 +183,7 @@ impl ChdWriter {
     ) -> ChdResult<()> {
         let hunk_bytes = self.header.hunk_bytes as usize;
         let n_threads = parallelism();
-        let workers = make_chd_compress_workers(n_threads, hunk_bytes)?;
+        let workers = make_chd_compress_workers(n_threads, hunk_bytes, &self.codecs, self.level)?;
         let pool: Pool<worker::ChdCompressWork, worker::ChdCompressedOut, ChdError> =
             Pool::spawn(workers);
 
@@ -187,6 +198,7 @@ impl ChdWriter {
             data_sectors,
             sector_data_size,
             hunk_bytes,
+            &self.cd_audio_frames,
             bytes_done,
             cancel,
         );
@@ -202,8 +214,8 @@ impl ChdWriter {
         cancel: &CancelToken,
     ) -> ChdResult<()> {
         let hunk_bytes = self.header.hunk_bytes as usize;
-        let allow_zstd = self.header.compressor_2 == tag_to_bytes("zstd");
-        let workers = make_chd_dvd_compress_workers(parallelism(), hunk_bytes, allow_zstd)?;
+        let workers =
+            make_chd_dvd_compress_workers(parallelism(), hunk_bytes, &self.codecs, self.level)?;
         let pool: Pool<worker::ChdCompressWork, worker::ChdCompressedOut, ChdError> =
             Pool::spawn(workers);
 
@@ -266,8 +278,8 @@ impl ChdWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chd::compression::deflate_decompress;
-    use crate::chd::compression::lzma::LzmaDecoder;
+    use crate::chd::compression::default_dvd_codecs;
+    use crate::chd::compression::dvd::DvdDecoderSet;
     use crate::chd::map::{COMPRESSION_NONE, decompress_v5_map};
     use crate::chd::models::{CHD_METADATA_TAG_DVD, DVD_SECTOR_SIZE};
     use crate::util::NoProgress;
@@ -278,7 +290,16 @@ mod tests {
 
     use crate::chd::test_fixtures::mixed_iso;
 
-    fn write_dvd_chd(iso: &[u8], hunk_size: u32, allow_zstd: bool) -> Vec<u8> {
+    fn write_dvd_chd(iso: &[u8], hunk_size: u32, codecs: Vec<ChdCodec>) -> Vec<u8> {
+        write_dvd_chd_leveled(iso, hunk_size, codecs, None)
+    }
+
+    fn write_dvd_chd_leveled(
+        iso: &[u8],
+        hunk_size: u32,
+        codecs: Vec<ChdCodec>,
+        level: Option<i32>,
+    ) -> Vec<u8> {
         let dir = tempfile::tempdir().unwrap();
         let iso_path = dir.path().join("in.iso");
         let chd_path = dir.path().join("out.chd");
@@ -287,7 +308,7 @@ mod tests {
         let iso_file = std::fs::File::open(&iso_path).unwrap();
         let mut reader = BufReader::with_capacity(IO_BUFFER_SIZE, iso_file);
         let mut writer =
-            ChdWriter::create_dvd(&chd_path, iso.len() as u64, hunk_size, allow_zstd).unwrap();
+            ChdWriter::create_dvd(&chd_path, iso.len() as u64, hunk_size, codecs, level).unwrap();
         let bytes_done = Arc::new(AtomicU64::new(0));
         writer
             .compress_all_hunks_dvd(&mut reader, &bytes_done, &CancelToken::new())
@@ -310,14 +331,18 @@ mod tests {
         )
         .unwrap();
 
+        let compressors = [
+            header.compressor_0,
+            header.compressor_1,
+            header.compressor_2,
+            header.compressor_3,
+        ];
+        let mut decoder = DvdDecoderSet::new(compressors, hunk_bytes).unwrap();
         let mut out = Vec::new();
-        let mut lzma = LzmaDecoder::new(hunk_bytes).unwrap();
         for entry in &map {
             let stored = &chd[entry.offset as usize..entry.offset as usize + entry.length as usize];
             let hunk = match entry.compression {
-                0 => lzma.decompress(stored, hunk_bytes).unwrap(),
-                1 => deflate_decompress(stored, hunk_bytes).unwrap(),
-                2 => zstd::decode_all(stored).unwrap(),
+                slot @ 0..=3 => decoder.decompress(slot, stored, hunk_bytes).unwrap(),
                 COMPRESSION_NONE => stored.to_vec(),
                 other => panic!("unexpected compression type {other}"),
             };
@@ -332,7 +357,7 @@ mod tests {
     fn dvd_chd_writes_chdman_shaped_file() {
         // 11 sectors with hunk 4096 = 5 full hunks + 1 partial.
         let iso = mixed_iso(11);
-        let chd = write_dvd_chd(&iso, 4096, false);
+        let chd = write_dvd_chd(&iso, 4096, vec![ChdCodec::Lzma, ChdCodec::Zlib]);
 
         let header = ChdHeaderV5::read(&mut IoCursor::new(&chd)).unwrap();
         assert_eq!(header.length, CHD_V5_HEADER_SIZE);
@@ -358,9 +383,60 @@ mod tests {
     #[test]
     fn dvd_chd_with_zstd_round_trips() {
         let iso = mixed_iso(8);
-        let chd = write_dvd_chd(&iso, 2048, true);
+        let chd = write_dvd_chd(
+            &iso,
+            2048,
+            vec![ChdCodec::Lzma, ChdCodec::Zlib, ChdCodec::Zstd],
+        );
         let header = ChdHeaderV5::read(&mut IoCursor::new(&chd)).unwrap();
         assert_eq!(&header.compressor_2, b"zstd");
+        assert_eq!(decode_hunks(&chd, &header), iso);
+    }
+
+    #[test]
+    fn dvd_chd_round_trips_each_codec_set() {
+        let iso = mixed_iso(11);
+        for codecs in [
+            vec![ChdCodec::Zstd],
+            vec![ChdCodec::Huff],
+            vec![ChdCodec::Flac],
+            default_dvd_codecs(),
+        ] {
+            let chd = write_dvd_chd(&iso, 4096, codecs.clone());
+            let header = ChdHeaderV5::read(&mut IoCursor::new(&chd)).unwrap();
+            assert_eq!(
+                [
+                    header.compressor_0,
+                    header.compressor_1,
+                    header.compressor_2,
+                    header.compressor_3
+                ],
+                super::codec_header_slots(&codecs),
+            );
+            assert_eq!(decode_hunks(&chd, &header), iso, "codec set {codecs:?}");
+        }
+    }
+
+    #[test]
+    fn dvd_chd_levels_produce_readable_output() {
+        let iso = mixed_iso(11);
+        for level in [Some(1), Some(22)] {
+            let chd = write_dvd_chd_leveled(&iso, 4096, default_dvd_codecs(), level);
+            let header = ChdHeaderV5::read(&mut IoCursor::new(&chd)).unwrap();
+            assert_eq!(decode_hunks(&chd, &header), iso, "level {level:?}");
+        }
+    }
+
+    #[test]
+    fn header_slots_follow_custom_codec_order() {
+        let iso = mixed_iso(8);
+        let codecs = vec![ChdCodec::Zstd, ChdCodec::Lzma, ChdCodec::Zlib];
+        let chd = write_dvd_chd(&iso, 2048, codecs.clone());
+        let header = ChdHeaderV5::read(&mut IoCursor::new(&chd)).unwrap();
+        assert_eq!(&header.compressor_0, b"zstd");
+        assert_eq!(&header.compressor_1, b"lzma");
+        assert_eq!(&header.compressor_2, b"zlib");
+        assert_eq!(header.compressor_3, [0u8; 4]);
         assert_eq!(decode_hunks(&chd, &header), iso);
     }
 
@@ -388,15 +464,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("out.chd");
         assert!(matches!(
-            ChdWriter::create_dvd(&out, 4096 + 1, 4096, false),
+            ChdWriter::create_dvd(&out, 4096 + 1, 4096, default_dvd_codecs(), None),
             Err(ChdError::IsoNotSectorAligned { .. })
         ));
         assert!(matches!(
-            ChdWriter::create_dvd(&out, 4096, 3000, false),
+            ChdWriter::create_dvd(&out, 4096, 3000, default_dvd_codecs(), None),
             Err(ChdError::InvalidHunkSize)
         ));
         assert!(matches!(
-            ChdWriter::create_dvd(&out, 4096, 0, false),
+            ChdWriter::create_dvd(&out, 4096, 0, default_dvd_codecs(), None),
             Err(ChdError::InvalidHunkSize)
         ));
     }
@@ -418,7 +494,7 @@ mod tests {
             &NoProgress,
             ps2_path,
             ps2_out.clone(),
-            crate::chd::ChdDvdOptions::default(),
+            crate::chd::ChdOptions::default(),
             CancelToken::new(),
         )
         .await
@@ -441,7 +517,7 @@ mod tests {
             &NoProgress,
             psp_path,
             psp_out.clone(),
-            crate::chd::ChdDvdOptions::default(),
+            crate::chd::ChdOptions::default(),
             CancelToken::new(),
         )
         .await

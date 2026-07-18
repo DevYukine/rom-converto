@@ -10,7 +10,8 @@ export const useCsoToChdStore = defineStore("cso-to-chd", () => {
   const skipSpaceCheck = ref(false);
   const outputTemplate = ref("");
   const reportFile = ref("");
-  const zstd = ref(false);
+  const codecs = ref<string[]>([]);
+  const level = ref<number | null>(null);
   const mode = ref<"auto" | "cd" | "dvd">("auto");
   const hunkSize = ref<number | null>(null);
   const verifyAfter = ref(false);
@@ -43,7 +44,8 @@ export const useCsoToChdStore = defineStore("cso-to-chd", () => {
   function $reset() {
     input.value = "";
     output.value = "";
-    zstd.value = false;
+    codecs.value = [];
+    level.value = null;
     onConflict.value = ui.defaultOnConflict;
     skipSpaceCheck.value = false;
     outputTemplate.value = "";
@@ -66,7 +68,8 @@ export const useCsoToChdStore = defineStore("cso-to-chd", () => {
     skipSpaceCheck,
     outputTemplate,
     reportFile,
-    zstd,
+    codecs,
+    level,
     mode,
     hunkSize,
     verifyAfter,

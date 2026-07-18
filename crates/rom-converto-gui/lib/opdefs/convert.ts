@@ -1,4 +1,11 @@
 import { recursiveFields, registerOp, templateIsActive, type OpDef } from "./types";
+import {
+	CHD_CODEC_OPTIONS,
+	CHD_CODEC_PLACEHOLDER,
+	CHD_DVD_CODEC_OPTIONS,
+	CHD_DVD_ZSTD_HINT,
+	CHD_LEVEL_HINT,
+} from "./compress";
 import { useCtrConvertStore } from "~/stores/ctr-convert";
 import { useCsoToChdStore } from "~/stores/cso-to-chd";
 import { useChdToCsoStore } from "~/stores/chd-to-cso";
@@ -95,7 +102,26 @@ const cso: OpDef = {
 			{ label: "DVD", value: "dvd" },
 		] },
 		{ kind: "number", key: "hunkSize", label: "Hunk size", placeholder: "auto" },
-		{ kind: "toggle", key: "zstd", label: "zstd codec (DVD mode)" },
+		{
+			kind: "multiselect",
+			key: "codecs",
+			label: "Codecs",
+			options: CHD_CODEC_OPTIONS,
+			max: 4,
+			placeholder: CHD_CODEC_PLACEHOLDER,
+			visible: (s) => s.mode !== "dvd",
+		},
+		{
+			kind: "multiselect",
+			key: "codecs",
+			label: "Codecs",
+			options: CHD_DVD_CODEC_OPTIONS,
+			max: 4,
+			placeholder: CHD_CODEC_PLACEHOLDER,
+			hint: CHD_DVD_ZSTD_HINT,
+			visible: (s) => s.mode === "dvd",
+		},
+		{ kind: "number", key: "level", label: "Level", placeholder: "auto", hint: CHD_LEVEL_HINT },
 		...recursiveFields(),
 	],
 	note: "Decodes to a temporary ISO next to the output, builds the CHD, and always removes the temp ISO on success, failure or cancel.",
@@ -111,7 +137,8 @@ const cso: OpDef = {
 			output: tmpl ? null : withOutputDir(deriveChdPath(item.path), store.outputDir || ""),
 			onConflict: store.onConflict,
 			skipSpaceCheck: store.skipSpaceCheck,
-			zstd: store.zstd,
+			codecs: store.codecs.length ? store.codecs : null,
+			level: store.level,
 			mode: store.mode === "auto" ? null : store.mode,
 			hunkSize: store.hunkSize || null,
 			outputTemplate: store.outputTemplate || null,
@@ -122,7 +149,14 @@ const cso: OpDef = {
 			taskId,
 		};
 	},
-	chips: (store) => [store.mode !== "auto" ? store.mode : "", store.zstd ? "zstd" : ""].filter(Boolean).join(" · "),
+	chips: (store) =>
+		[
+			store.mode !== "auto" ? store.mode : "",
+			store.codecs.length ? store.codecs.join(", ") : "",
+			store.level ? `level ${store.level}` : "",
+		]
+			.filter(Boolean)
+			.join(" · "),
 };
 
 const chd: OpDef = {

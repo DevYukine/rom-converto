@@ -12,7 +12,15 @@ export interface StagedItem {
 	outExt: string;
 }
 
-export type FieldKind = "slider" | "segmented" | "toggle" | "kv" | "number" | "text" | "file";
+export type FieldKind =
+	| "slider"
+	| "segmented"
+	| "toggle"
+	| "kv"
+	| "number"
+	| "text"
+	| "file"
+	| "multiselect";
 
 interface FieldBase {
 	kind: FieldKind;
@@ -67,6 +75,15 @@ export interface FileField extends FieldBase {
 	display: (store: OpStore) => string;
 }
 
+// Store value is a string[]; selection order is preserved and doubles as
+// priority. Default [] means "auto".
+export interface MultiselectField extends FieldBase {
+	kind: "multiselect";
+	options: { value: string; label: string }[];
+	max?: number;
+	placeholder?: string;
+}
+
 export type FieldDef =
 	| SliderField
 	| SegmentedField
@@ -74,7 +91,8 @@ export type FieldDef =
 	| KvField
 	| NumberField
 	| TextField
-	| FileField;
+	| FileField
+	| MultiselectField;
 
 export interface OutputRow {
 	kind: "directory" | "template" | "text" | "report" | "save";

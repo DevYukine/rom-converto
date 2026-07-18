@@ -23,6 +23,8 @@ export interface NxDefaults {
 
 export interface ChdDefaults {
   hunk_size?: number | null;
+  codecs?: string[] | null;
+  level?: number | null;
   on_conflict?: string | null;
   output_dir?: string | null;
   report?: string | null;

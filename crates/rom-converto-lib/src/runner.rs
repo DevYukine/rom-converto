@@ -4,7 +4,7 @@
 //! Rust-side request and response schemas can evolve behind a versioned
 //! payload.
 
-use crate::chd::{ChdDvdOptions, DiscMode};
+use crate::chd::{ChdCodec, ChdOptions, DiscMode};
 use crate::cso::{CsoCompressOptions, CsoFormat};
 use crate::dat::fixdat::{LocalHashIndex, diff_library, write_fixdat_xml_cancellable};
 use crate::dat::model::{GameAndRelationMatchResult, GameFileMatchSearch};
@@ -720,9 +720,10 @@ async fn chd_compress(
             Some(RunData::Plan(line)),
         ));
     }
-    let opts = ChdDvdOptions {
+    let opts = ChdOptions {
         hunk_size: opt_u32(&req, "hunk_size")?,
-        allow_zstd: opt_bool(&req, "allow_zstd").unwrap_or(false),
+        codecs: opt_chd_codecs(&req)?,
+        level: opt_i32(&req, "level")?,
         force: true,
     };
     let mode = disc_mode(opt_str(&req, "mode"))?;
@@ -824,9 +825,10 @@ async fn cso_to_chd(
             Some(RunData::Plan(line)),
         ));
     }
-    let opts = ChdDvdOptions {
+    let opts = ChdOptions {
         hunk_size: opt_u32(&req, "hunk_size")?,
-        allow_zstd: opt_bool(&req, "allow_zstd").unwrap_or(false),
+        codecs: opt_chd_codecs(&req)?,
+        level: opt_i32(&req, "level")?,
         force: true,
     };
     run_file_op(&input, &output, "cso.to_chd", || async {
@@ -2846,7 +2848,6 @@ fn opt_bool(req: &RunRequest, key: &str) -> Option<bool> {
     match key {
         "recursive" => req.options.recursive,
         "full" => req.options.full,
-        "allow_zstd" => req.options.allow_zstd,
         "fix" => req.options.fix,
         "skip_verify" => req.options.skip_verify,
         "deep" => req.options.deep,
@@ -2866,6 +2867,20 @@ fn opt_i32(req: &RunRequest, key: &str) -> Result<Option<i32>> {
         "level" => req.options.level,
         _ => None,
     })
+}
+
+fn opt_chd_codecs(req: &RunRequest) -> Result<Option<Vec<ChdCodec>>> {
+    req.options
+        .codecs
+        .as_ref()
+        .map(|names| {
+            names
+                .iter()
+                .map(|name| name.parse::<ChdCodec>())
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|err| invalid_arg(err.to_string()))
+        })
+        .transpose()
 }
 
 fn opt_u32(req: &RunRequest, key: &str) -> Result<Option<u32>> {

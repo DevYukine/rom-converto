@@ -27,7 +27,7 @@ use clap_complete::{generate, generate_to};
 use indicatif::MultiProgress;
 use indicatif_log_bridge::LogWrapper;
 use rom_converto_lib::chd::{
-    ChdDvdOptions, DiscMode, convert_disc_to_chd_cancellable, extract_from_chd_cancellable,
+    ChdCodec, ChdOptions, DiscMode, convert_disc_to_chd_cancellable, extract_from_chd_cancellable,
     verify_chd, verify_chd_batch,
 };
 use rom_converto_lib::cso::{
@@ -481,6 +481,50 @@ fn chd_media_label(input: &Path) -> Option<String> {
             .map(|k| k.label().to_string()),
         _ => None,
     }
+}
+
+/// Resolves whether `chd compress`'s DVD-codec tip applies to a single input:
+/// an explicit --dvd/--cd flag settles it outright, otherwise falls back to
+/// the same best-effort probe the dry-run plan line uses.
+fn resolved_dvd_mode(mode: Option<DiscMode>, input: &Path) -> bool {
+    match mode {
+        Some(DiscMode::Dvd) => true,
+        Some(DiscMode::Cd) => false,
+        None => chd_media_label(input).as_deref() == Some("DVD"),
+    }
+}
+
+/// Emits the zstd-for-DVD codec tip once per run, when the resolved CHD
+/// flavor is DVD and the user did not pass an explicit --codecs list.
+fn maybe_log_dvd_codec_tip(dvd: bool, codecs_set: bool) {
+    if dvd && !codecs_set {
+        log::info!(
+            "tip: zstd usually compresses DVD images better than the default codecs; \
+             enable it with --codecs zstd,lzma,zlib,flac (note: some emulators' older \
+             libchdr builds (e.g. AetherSX2/NetherSX2) reject zstd CHDs)"
+        );
+    }
+}
+
+/// Resolves the codec list to hand `ChdOptions`: an explicit CLI value wins,
+/// otherwise the preset/config codec names are parsed, otherwise `None`
+/// (letting the lib apply its per-mode chdman default).
+fn resolve_chd_codecs(
+    cli: Option<Vec<ChdCodec>>,
+    preset: &Option<Vec<String>>,
+) -> Result<Option<Vec<ChdCodec>>> {
+    if let Some(codecs) = cli {
+        return Ok(Some(codecs));
+    }
+    preset
+        .as_ref()
+        .map(|names| {
+            names
+                .iter()
+                .map(|name| name.parse::<ChdCodec>().map_err(anyhow::Error::from))
+                .collect::<Result<Vec<_>>>()
+        })
+        .transpose()
 }
 
 /// Load an NX keyset, but under dry-run a missing keyfile is reported as a
@@ -2577,11 +2621,13 @@ async fn dispatch_command(
         Commands::Chd(inner) => match inner {
             ChdCommands::Compress(cmd) => {
                 let eff = &effective.chd;
-                let mut opts = ChdDvdOptions {
+                let mut opts = ChdOptions {
                     hunk_size: cmd.hunk_size.or(eff.hunk_size),
-                    allow_zstd: cmd.zstd,
+                    codecs: resolve_chd_codecs(cmd.codecs.clone(), &eff.codecs)?,
+                    level: cmd.level.or(eff.level),
                     force: cmd.force,
                 };
+                let codecs_set = opts.codecs.is_some();
                 let output_dir = cmd.output_dir.clone().or_else(|| eff.output_dir.clone());
                 let report = cmd.report.clone().or_else(|| eff.report.clone());
                 let fallback = config::policy_fallback(&eff.on_conflict)?;
@@ -2617,6 +2663,7 @@ async fn dispatch_command(
                     let resolved =
                         rom_converto_lib::util::resolve_input(&cmd.input, &["iso", "cue"])?;
                     let input = resolved.path();
+                    maybe_log_dvd_codec_tip(resolved_dvd_mode(mode, input), codecs_set);
                     let output = match cmd.output_flag.or(cmd.output) {
                         Some(p) => p,
                         None => {
@@ -3224,11 +3271,13 @@ async fn dispatch_command(
             }
             CsoCommands::ToChd(cmd) => {
                 let eff = &effective.chd;
-                let mut opts = ChdDvdOptions {
+                let mut opts = ChdOptions {
                     hunk_size: cmd.hunk_size.or(eff.hunk_size),
-                    allow_zstd: cmd.zstd,
+                    codecs: resolve_chd_codecs(cmd.codecs.clone(), &eff.codecs)?,
+                    level: cmd.level.or(eff.level),
                     force: cmd.force,
                 };
+                let codecs_set = opts.codecs.is_some();
                 let output_dir = cmd.output_dir.clone().or_else(|| eff.output_dir.clone());
                 let report = cmd.report.clone().or_else(|| eff.report.clone());
                 let fallback = config::policy_fallback(&eff.on_conflict)?;
@@ -3264,6 +3313,7 @@ async fn dispatch_command(
                     let resolved =
                         rom_converto_lib::util::resolve_input(&cmd.input, &["cso", "zso", "dax"])?;
                     let input = resolved.path();
+                    maybe_log_dvd_codec_tip(resolved_dvd_mode(mode, input), codecs_set);
                     let output = match cmd.output_flag.or(cmd.output) {
                         Some(p) => p,
                         None => {
@@ -3981,5 +4031,24 @@ mod migrate_opts_tests {
             RvzCompressOptions::default().compression_level
         );
         assert_eq!(opts.chunk_size, RvzCompressOptions::default().chunk_size);
+    }
+}
+
+#[cfg(test)]
+mod chd_codecs_tip_tests {
+    use super::*;
+
+    #[test]
+    fn preset_codecs_count_as_effectively_set() {
+        // A preset/config codec list must resolve to Some so the DVD zstd
+        // tip is suppressed for it, not just for an explicit --codecs flag.
+        let resolved = resolve_chd_codecs(None, &Some(vec!["zstd".to_string()])).unwrap();
+        assert!(resolved.is_some());
+    }
+
+    #[test]
+    fn no_cli_and_no_preset_leaves_codecs_unset() {
+        let resolved = resolve_chd_codecs(None, &None).unwrap();
+        assert!(resolved.is_none());
     }
 }

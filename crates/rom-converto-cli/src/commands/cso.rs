@@ -1,4 +1,5 @@
 use crate::commands::ConflictPolicyArg;
+use crate::commands::chd::{ChdCodecList, parse_chd_codecs};
 use crate::commands::info_command::InfoCommand;
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
@@ -195,9 +196,18 @@ pub struct ToChdCommand {
     #[arg(long, value_name = "BYTES")]
     pub hunk_size: Option<u32>,
 
-    /// Add zstd to the DVD codec set: slightly better ratio, but some older players and cores do not support zstd-compressed CHD
-    #[arg(long)]
-    pub zstd: bool,
+    /// Codec list for the CHD header's compressor slots: comma-separated chdman-style names, at most 4 of zlib, zstd, lzma, huff, flac, cdzl, cdzs, cdlz, cdfl. Defaults to cdlz,cdzl,cdfl for CD-mode and lzma,zlib,huff,flac for DVD-mode (chdman parity)
+    #[arg(short = 'c', long = "codecs", value_name = "LIST", value_parser = parse_chd_codecs)]
+    pub codecs: Option<ChdCodecList>,
+
+    /// Compression level in 1..=22. zstd uses the level directly; zlib and lzma cap at 9. Unset uses per-codec defaults (zstd 19, lzma 8, zlib 9)
+    #[arg(
+        short = 'l',
+        long = "level",
+        value_name = "LEVEL",
+        value_parser = clap::value_parser!(i32).range(1..=22)
+    )]
+    pub level: Option<i32>,
 
     /// What to do when an output already exists: error, overwrite, skip, or rename to a numbered sibling
     #[arg(long = "on-conflict", value_enum)]
@@ -252,6 +262,7 @@ pub struct VerifyCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rom_converto_lib::chd::ChdCodec;
 
     #[derive(Parser, Debug)]
     struct Harness {
@@ -372,8 +383,10 @@ mod tests {
         };
         assert_eq!(c.input, PathBuf::from("game.cso"));
         assert_eq!(c.output, None);
-        assert!(!c.dvd && !c.cd && !c.zstd && !c.force && !c.recursive);
+        assert!(!c.dvd && !c.cd && !c.force && !c.recursive);
         assert_eq!(c.hunk_size, None);
+        assert_eq!(c.codecs, None);
+        assert_eq!(c.level, None);
     }
 
     #[test]
@@ -386,15 +399,81 @@ mod tests {
             "--dvd",
             "--hunk-size",
             "2048",
-            "--zstd",
             "-R",
         ]);
         let CsoCommands::ToChd(c) = h.cmd else {
             panic!("expected ToChd");
         };
         assert_eq!(c.output, Some(PathBuf::from("game.chd")));
-        assert!(c.dvd && c.zstd && c.recursive);
+        assert!(c.dvd && c.recursive);
         assert_eq!(c.hunk_size, Some(2048));
+    }
+
+    #[test]
+    fn to_chd_parses_codecs_and_level() {
+        let h = Harness::parse_from([
+            "bin",
+            "to-chd",
+            "game.cso",
+            "--codecs",
+            "zstd,lzma,zlib,flac",
+            "--level",
+            "9",
+        ]);
+        let CsoCommands::ToChd(c) = h.cmd else {
+            panic!("expected ToChd");
+        };
+        assert_eq!(
+            c.codecs,
+            Some(vec![
+                ChdCodec::Zstd,
+                ChdCodec::Lzma,
+                ChdCodec::Zlib,
+                ChdCodec::Flac
+            ])
+        );
+        assert_eq!(c.level, Some(9));
+    }
+
+    #[test]
+    fn to_chd_rejects_unknown_codec_name() {
+        let result = Harness::try_parse_from(["bin", "to-chd", "game.cso", "--codecs", "bogus"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn to_chd_rejects_too_many_codecs() {
+        let result = Harness::try_parse_from([
+            "bin",
+            "to-chd",
+            "game.cso",
+            "--codecs",
+            "zlib,zstd,lzma,huff,flac",
+        ]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn to_chd_rejects_level_out_of_range() {
+        let result = Harness::try_parse_from(["bin", "to-chd", "game.cso", "--level", "0"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn to_chd_cd_codec_with_dvd_rejected_by_lib_validation() {
+        let h = Harness::parse_from([
+            "bin",
+            "to-chd",
+            "game.cso",
+            "--dvd",
+            "--codecs",
+            "cdlz,cdzl,cdfl",
+        ]);
+        let CsoCommands::ToChd(c) = h.cmd else {
+            panic!("expected ToChd");
+        };
+        let codecs = c.codecs.expect("codecs parsed");
+        assert!(rom_converto_lib::chd::validate_codecs(&codecs, true).is_err());
     }
 
     #[test]

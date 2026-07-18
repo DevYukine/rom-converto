@@ -11,11 +11,12 @@
 //! one [`CdCodecSet`] (persistent LZMA encoder + deflate contexts)
 //! for the lifetime of the compress call.
 
-use crate::cd::FRAME_SIZE;
+use crate::cd::{FRAME_SIZE, SECTOR_SIZE};
 use crate::chd::compression::dvd::DvdCodecSet;
-use crate::chd::compression::{CdCodecSet, ChdCompression};
+use crate::chd::compression::{CdCodecSet, ChdCodec, ChdCompression};
 use crate::chd::error::{ChdError, ChdResult};
 use crate::chd::map::{MapEntry, crc16_ccitt};
+use crate::chd::swap_audio_sector;
 use crate::util::CancelToken;
 use crate::util::worker_pool::{Pool, Worker, drive, parallelism};
 use sha1::{Digest, Sha1};
@@ -48,9 +49,9 @@ pub(super) struct ChdCompressWorker {
 }
 
 impl ChdCompressWorker {
-    pub fn new(hunk_bytes: usize) -> ChdResult<Self> {
+    pub fn new(hunk_bytes: usize, codecs: Vec<ChdCodec>, level: Option<i32>) -> ChdResult<Self> {
         Ok(Self {
-            codecs: CdCodecSet::new(hunk_bytes)?,
+            codecs: CdCodecSet::new(hunk_bytes, codecs, level)?,
         })
     }
 }
@@ -73,8 +74,12 @@ impl Worker<ChdCompressWork, ChdCompressedOut, ChdError> for ChdCompressWorker {
 pub(super) fn make_chd_compress_workers(
     n: usize,
     hunk_bytes: usize,
+    codecs: &[ChdCodec],
+    level: Option<i32>,
 ) -> ChdResult<Vec<ChdCompressWorker>> {
-    (0..n).map(|_| ChdCompressWorker::new(hunk_bytes)).collect()
+    (0..n)
+        .map(|_| ChdCompressWorker::new(hunk_bytes, codecs.to_vec(), level))
+        .collect()
 }
 
 /// DVD twin of [`ChdCompressWorker`]: same work/output shape, raw
@@ -101,12 +106,13 @@ impl Worker<ChdCompressWork, ChdCompressedOut, ChdError> for ChdDvdCompressWorke
 pub(super) fn make_chd_dvd_compress_workers(
     n: usize,
     hunk_bytes: usize,
-    allow_zstd: bool,
+    codecs: &[ChdCodec],
+    level: Option<i32>,
 ) -> ChdResult<Vec<ChdDvdCompressWorker>> {
     (0..n)
         .map(|_| {
             Ok(ChdDvdCompressWorker {
-                codecs: DvdCodecSet::new(hunk_bytes, allow_zstd)?,
+                codecs: DvdCodecSet::new(hunk_bytes, codecs.to_vec(), level)?,
             })
         })
         .collect()
@@ -145,6 +151,7 @@ pub(super) fn compress_hunks(
     data_sectors: u32,
     sector_data_size: usize,
     hunk_bytes: usize,
+    cd_audio_frames: &[bool],
     bytes_done: &Arc<AtomicU64>,
     cancel: &CancelToken,
 ) -> ChdResult<()> {
@@ -178,6 +185,19 @@ pub(super) fn compress_hunks(
                 let dst = s * FRAME_SIZE;
                 hunk[dst..dst + sector_data_size]
                     .copy_from_slice(&sector_buf[src..src + sector_data_size]);
+            }
+            // Byte-swap 16-bit samples of audio-track sectors before
+            // hashing or compressing, so the stored data and raw SHA-1
+            // match chdman (which swaps audio on ingest).
+            for s in 0..sectors_in_hunk {
+                if cd_audio_frames
+                    .get(first_sector as usize + s)
+                    .copied()
+                    .unwrap_or(false)
+                {
+                    let dst = s * FRAME_SIZE;
+                    swap_audio_sector(&mut hunk[dst..dst + SECTOR_SIZE]);
+                }
             }
             for s in 0..sectors_in_hunk {
                 let dst = s * FRAME_SIZE;

@@ -1,7 +1,7 @@
 use crate::info_cache::InfoCache;
 use crate::progress::TauriProgress;
 use rom_converto_lib::chd::{
-    ChdDvdOptions, DiscMode, convert_disc_to_chd_cancellable, extract_from_chd_cancellable,
+    ChdCodec, ChdOptions, DiscMode, convert_disc_to_chd_cancellable, extract_from_chd_cancellable,
     verify_chd_cancellable,
 };
 use rom_converto_lib::cso::{
@@ -1192,6 +1192,35 @@ pub async fn cmd_decompress_rom(
     })
 }
 
+/// Builds CHD creation options from explicit args, falling back to the
+/// ambient config's `[chd]` defaults, then to the format's built-in
+/// defaults.
+fn resolve_chd_opts(
+    hunk_size: Option<u32>,
+    codecs: Option<Vec<String>>,
+    level: Option<i32>,
+) -> Result<ChdOptions, String> {
+    let defaults = rom_converto_lib::config::load_config(None)
+        .ok()
+        .and_then(|cfg| cfg.chd);
+    let codecs = codecs
+        .or_else(|| defaults.as_ref().and_then(|d| d.codecs.clone()))
+        .map(|names| {
+            names
+                .iter()
+                .map(|name| name.parse::<ChdCodec>())
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(err_to_string)
+        })
+        .transpose()?;
+    Ok(ChdOptions {
+        hunk_size: hunk_size.or_else(|| defaults.as_ref().and_then(|d| d.hunk_size)),
+        codecs,
+        level: level.or_else(|| defaults.as_ref().and_then(|d| d.level)),
+        force: true,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn cmd_chd_compress(
@@ -1199,7 +1228,8 @@ pub async fn cmd_chd_compress(
     state: State<'_, ActiveCancel>,
     input_path: PathBuf,
     output: Option<PathBuf>,
-    zstd: Option<bool>,
+    codecs: Option<Vec<String>>,
+    level: Option<i32>,
     hunk_size: Option<u32>,
     mode: Option<String>,
     on_conflict: Option<String>,
@@ -1273,11 +1303,7 @@ pub async fn cmd_chd_compress(
         Some("dvd") => Some(DiscMode::Dvd),
         _ => None,
     };
-    let opts = ChdDvdOptions {
-        hunk_size,
-        allow_zstd: zstd.unwrap_or(false),
-        force: true,
-    };
+    let opts = resolve_chd_opts(hunk_size, codecs, level)?;
     let in_bytes = input_size(&input_path);
     let record_input = input_path.clone();
     let record_output = output.clone();
@@ -1467,7 +1493,8 @@ pub async fn cmd_cso_to_chd(
     state: State<'_, ActiveCancel>,
     input_path: PathBuf,
     output: Option<PathBuf>,
-    zstd: Option<bool>,
+    codecs: Option<Vec<String>>,
+    level: Option<i32>,
     hunk_size: Option<u32>,
     mode: Option<String>,
     on_conflict: Option<String>,
@@ -1544,11 +1571,7 @@ pub async fn cmd_cso_to_chd(
         Some("dvd") => Some(DiscMode::Dvd),
         _ => None,
     };
-    let opts = ChdDvdOptions {
-        hunk_size,
-        allow_zstd: zstd.unwrap_or(false),
-        force: true,
-    };
+    let opts = resolve_chd_opts(hunk_size, codecs, level)?;
     let in_bytes = input_size(&input_path);
     let record_input = input_path.clone();
     let record_output = output.clone();

@@ -30,6 +30,10 @@ use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 pub mod compression;
+pub use compression::{
+    ChdCodec, default_cd_codecs, default_dvd_codecs, deflate_level, lzma_level, parse_codec_list,
+    validate_codecs, zstd_level,
+};
 pub mod error;
 pub mod info;
 pub(crate) mod map;
@@ -44,16 +48,34 @@ pub const DVD_HUNK_BYTES_DEFAULT: u32 = 4096;
 /// to single-sector hunks.
 pub const DVD_HUNK_BYTES_PSP: u32 = 2048;
 
-/// Options for DVD-mode CHD creation (PS2/PSP ISO input).
+/// Options for CHD creation (CD and DVD modes).
 #[derive(Debug, Clone, Default)]
-pub struct ChdDvdOptions {
-    /// Hunk size override; the default is picked per detected
+pub struct ChdOptions {
+    /// Hunk size override; DVD mode's default is picked per detected
     /// console ([`DVD_HUNK_BYTES_DEFAULT`] / [`DVD_HUNK_BYTES_PSP`]).
     pub hunk_size: Option<u32>,
-    /// Add zstd as a third codec. Off by default: the libchdr in
-    /// AetherSX2/NetherSX2 rejects CHDs that list zstd.
-    pub allow_zstd: bool,
+    /// Codec list for the CHD header's compressor slots. `None` uses
+    /// the per-mode chdman default ([`default_cd_codecs`] /
+    /// [`default_dvd_codecs`]).
+    pub codecs: Option<Vec<ChdCodec>>,
+    /// Compression level in `1..=22`. `None` uses each codec's
+    /// default level.
+    pub level: Option<i32>,
     pub force: bool,
+}
+
+/// Validate the codec list and compression level in `opts` against
+/// the CHD flavor being written.
+fn validate_chd_options(opts: &ChdOptions, dvd: bool) -> ChdResult<()> {
+    if let Some(codecs) = &opts.codecs {
+        validate_codecs(codecs, dvd)?;
+    }
+    if let Some(level) = opts.level
+        && !(1..=22).contains(&level)
+    {
+        return Err(ChdError::InvalidCompressionLevel(level));
+    }
+    Ok(())
 }
 
 /// Which CHD flavor to produce.
@@ -87,7 +109,7 @@ pub async fn convert_disc_to_chd(
     input_path: PathBuf,
     output_path: PathBuf,
     mode: Option<DiscMode>,
-    opts: ChdDvdOptions,
+    opts: ChdOptions,
 ) -> ChdResult<()> {
     convert_disc_to_chd_cancellable(
         progress,
@@ -108,7 +130,7 @@ pub async fn convert_disc_to_chd_cancellable(
     input_path: PathBuf,
     output_path: PathBuf,
     mode: Option<DiscMode>,
-    opts: ChdDvdOptions,
+    opts: ChdOptions,
     cancel: CancelToken,
 ) -> ChdResult<()> {
     let is_cue = input_path
@@ -116,11 +138,11 @@ pub async fn convert_disc_to_chd_cancellable(
         .is_some_and(|e| e.eq_ignore_ascii_case("cue"));
     match (mode, is_cue) {
         (None | Some(DiscMode::Cd), true) => {
-            convert_to_chd(progress, input_path, output_path, opts.force, cancel).await
+            convert_to_chd(progress, input_path, output_path, opts, cancel).await
         }
         (Some(DiscMode::Dvd), true) => Err(ChdError::DvdModeNeedsIso),
         (Some(DiscMode::Cd), false) => {
-            convert_iso_to_cd_chd(progress, input_path, output_path, opts.force, cancel).await
+            convert_iso_to_cd_chd(progress, input_path, output_path, opts, cancel).await
         }
         (Some(DiscMode::Dvd), false) => {
             convert_iso_to_chd(progress, input_path, output_path, opts, cancel).await
@@ -139,8 +161,7 @@ pub async fn convert_disc_to_chd_cancellable(
                             input_path
                         );
                     }
-                    convert_iso_to_cd_chd(progress, input_path, output_path, opts.force, cancel)
-                        .await
+                    convert_iso_to_cd_chd(progress, input_path, output_path, opts, cancel).await
                 }
                 DiscKind::Ps2Dvd | DiscKind::Psp | DiscKind::UnknownIso => {
                     info!("{} detected, writing DVD-mode CHD", kind.label());
@@ -167,7 +188,7 @@ pub async fn convert_disc_to_chd_batch(
     progress: &dyn ProgressReporter,
     total_progress: &dyn ProgressReporter,
     input_dir: &std::path::Path,
-    opts: ChdDvdOptions,
+    opts: ChdOptions,
     output_dir: Option<&std::path::Path>,
     max_depth: Option<usize>,
 ) -> ChdResult<()> {
@@ -210,7 +231,7 @@ pub async fn convert_iso_to_chd(
     progress: &dyn ProgressReporter,
     iso_path: PathBuf,
     output_path: PathBuf,
-    opts: ChdDvdOptions,
+    opts: ChdOptions,
     cancel: CancelToken,
 ) -> ChdResult<()> {
     convert_iso_to_chd_with_kind(progress, iso_path, output_path, opts, None, cancel).await
@@ -222,10 +243,11 @@ async fn convert_iso_to_chd_with_kind(
     progress: &dyn ProgressReporter,
     iso_path: PathBuf,
     output_path: PathBuf,
-    opts: ChdDvdOptions,
+    opts: ChdOptions,
     kind: Option<DiscKind>,
     cancel: CancelToken,
 ) -> ChdResult<()> {
+    validate_chd_options(&opts, true)?;
     if fs::metadata(&output_path).await.is_ok() && !opts.force {
         return Err(ChdError::ChdFileAlreadyExists);
     }
@@ -262,7 +284,8 @@ async fn convert_iso_to_chd_with_kind(
     let write_path = scratch_output_path(&output_path)?;
     let iso_owned = iso_path.clone();
     let write_owned = write_path.to_path_buf();
-    let allow_zstd = opts.allow_zstd;
+    let codecs = opts.codecs.clone().unwrap_or_else(default_dvd_codecs);
+    let level = opts.level;
     let cancel_bg = cancel.clone();
     let bytes_done = Arc::new(AtomicU64::new(0));
     let bytes_done_bg = bytes_done.clone();
@@ -271,7 +294,7 @@ async fn convert_iso_to_chd_with_kind(
         let iso_file = std::fs::File::open(&iso_owned)?;
         let mut iso_reader = std::io::BufReader::with_capacity(IO_BUFFER_SIZE, iso_file);
 
-        let mut writer = ChdWriter::create_dvd(&write_owned, iso_size, hunk_size, allow_zstd)?;
+        let mut writer = ChdWriter::create_dvd(&write_owned, iso_size, hunk_size, codecs, level)?;
         writer.compress_all_hunks_dvd(&mut iso_reader, &bytes_done_bg, &cancel_bg)?;
         writer.finalize()?;
         Ok(())
@@ -342,10 +365,11 @@ pub async fn convert_iso_to_cd_chd(
     progress: &dyn ProgressReporter,
     iso_path: PathBuf,
     output_path: PathBuf,
-    force: bool,
+    opts: ChdOptions,
     cancel: CancelToken,
 ) -> ChdResult<()> {
-    if fs::metadata(&output_path).await.is_ok() && !force {
+    validate_chd_options(&opts, false)?;
+    if fs::metadata(&output_path).await.is_ok() && !opts.force {
         return Err(ChdError::ChdFileAlreadyExists);
     }
 
@@ -370,6 +394,8 @@ pub async fn convert_iso_to_cd_chd(
     let write_path = scratch_output_path(&output_path)?;
     let iso_owned = iso_path.clone();
     let write_owned = write_path.to_path_buf();
+    let codecs = opts.codecs.clone().unwrap_or_else(default_cd_codecs);
+    let level = opts.level;
     let cancel_bg = cancel.clone();
     let bytes_done = Arc::new(AtomicU64::new(0));
     let bytes_done_bg = bytes_done.clone();
@@ -384,6 +410,8 @@ pub async fn convert_iso_to_cd_chd(
             data_sectors,
             CD_HUNK_BYTES,
             &cue_sheet,
+            codecs,
+            level,
         )?;
         writer.compress_all_hunks(
             &mut iso_reader,
@@ -444,10 +472,11 @@ pub async fn convert_to_chd(
     progress: &dyn ProgressReporter,
     cue_path: PathBuf,
     output_path: PathBuf,
-    force: bool,
+    opts: ChdOptions,
     cancel: CancelToken,
 ) -> ChdResult<()> {
-    if fs::metadata(&output_path).await.is_ok() && !force {
+    validate_chd_options(&opts, false)?;
+    if fs::metadata(&output_path).await.is_ok() && !opts.force {
         return Err(ChdError::ChdFileAlreadyExists);
     }
 
@@ -491,6 +520,8 @@ pub async fn convert_to_chd(
     let bin_path_owned = bin_path.clone();
     let write_owned = write_path.to_path_buf();
     let cue_sheet_owned = cue_sheet.clone();
+    let codecs = opts.codecs.clone().unwrap_or_else(default_cd_codecs);
+    let level = opts.level;
     let cancel_bg = cancel.clone();
     let bytes_done = Arc::new(AtomicU64::new(0));
     let bytes_done_bg = bytes_done.clone();
@@ -505,6 +536,8 @@ pub async fn convert_to_chd(
             total_sectors,
             CD_HUNK_BYTES,
             &cue_sheet_owned,
+            codecs,
+            level,
         )?;
 
         writer.compress_all_hunks(
@@ -583,6 +616,24 @@ pub(crate) fn chd_frame_spans(tracks: &[ChdTrackInfo]) -> (Vec<usize>, Vec<usize
 /// is the value stored as each track's `FileDigests.size_bytes`.
 pub(crate) fn chd_track_decoded_size(track: &ChdTrackInfo) -> u64 {
     track.frames as u64 * chd_type_datasize(&track.track_type) as u64
+}
+
+/// Byte-swap the 16-bit samples of one audio sector in place. chdman
+/// stores CD audio big-endian and swaps back on extract; the writer
+/// and reader apply this to audio-track frames only.
+pub(crate) fn swap_audio_sector(sector: &mut [u8]) {
+    for pair in sector.chunks_exact_mut(2) {
+        pair.swap(0, 1);
+    }
+}
+
+/// Per-frame audio flags for the decoded CD stream, laid out like
+/// [`chd_frame_spans`]: `true` where the frame's track is AUDIO.
+pub(crate) fn chd_frame_audio(tracks: &[ChdTrackInfo]) -> Vec<bool> {
+    tracks
+        .iter()
+        .flat_map(|t| std::iter::repeat_n(t.track_type == "AUDIO", t.frames as usize))
+        .collect()
 }
 
 pub(crate) fn compute_overall_sha1(
@@ -736,12 +787,18 @@ pub async fn extract_from_chd_cancellable(
             .iter()
             .flat_map(|t| std::iter::repeat_n(chd_type_datasize(&t.track_type), t.frames as usize))
             .collect();
+        let frame_audio = chd_frame_audio(&tracks);
 
         let bin_file = std::fs::File::create(&bin_owned)?;
         let mut bin_writer = std::io::BufWriter::with_capacity(IO_BUFFER_SIZE, bin_file);
 
         let n_threads = parallelism();
-        let workers = make_chd_extract_workers(n_threads, &handle.file, hunk_bytes)?;
+        let workers = make_chd_extract_workers(
+            n_threads,
+            &handle.file,
+            hunk_bytes,
+            handle.header.compressors(),
+        )?;
         let pool: Pool<ChdExtractWork, ChdExtractedOut, ChdError> = Pool::spawn(workers);
 
         let extract_result = extract_hunks(
@@ -750,6 +807,7 @@ pub async fn extract_from_chd_cancellable(
             &mut bin_writer,
             hunk_bytes,
             &frame_sizes,
+            &frame_audio,
             &bytes_done_bg,
             &cancel_bg,
         );
@@ -973,6 +1031,7 @@ pub async fn verify_chd_cancellable(
                 n_threads,
                 &handle.file,
                 hunk_bytes,
+                handle.header.compressors(),
             )?)
         };
 
@@ -1116,19 +1175,25 @@ pub fn digest_chd_tracks(
     let tracks = parse_chd_track_metadata(meta_str)?;
 
     let (frame_sizes, frame_track) = chd_frame_spans(&tracks);
+    let frame_audio = chd_frame_audio(&tracks);
     let mut hashers: Vec<MultiHasher> =
         (0..tracks.len()).map(|_| MultiHasher::new(algos)).collect();
     let mut whole = MultiHasher::new(algos);
 
-    let pool: Pool<ChdExtractWork, ChdExtractedOut, ChdError> = Pool::spawn(
-        make_chd_extract_workers(n_threads, &handle.file, hunk_bytes)?,
-    );
+    let pool: Pool<ChdExtractWork, ChdExtractedOut, ChdError> =
+        Pool::spawn(make_chd_extract_workers(
+            n_threads,
+            &handle.file,
+            hunk_bytes,
+            handle.header.compressors(),
+        )?);
     let result = digest_hunks_per_track(
         &pool,
         &handle.map,
         hunk_bytes,
         &frame_sizes,
         &frame_track,
+        &frame_audio,
         &mut hashers,
         &mut whole,
         bytes_done,
@@ -1298,9 +1363,10 @@ mod tests {
             &NoProgress,
             iso_path,
             chd_path.clone(),
-            ChdDvdOptions {
+            ChdOptions {
                 hunk_size,
-                allow_zstd,
+                codecs: allow_zstd.then(|| vec![ChdCodec::Zstd]),
+                level: None,
                 force: false,
             },
             CancelToken::new(),
@@ -1331,6 +1397,58 @@ mod tests {
         round_trip(true, Some(2048)).await;
     }
 
+    /// `ChdOptions.codecs = None` must resolve to chdman's `createdvd`
+    /// default pack, filling the header slots in that exact order.
+    #[tokio::test]
+    async fn dvd_chd_default_codecs_match_chdman_slots() {
+        let dir = tempfile::tempdir().unwrap();
+        let iso = mixed_iso(8);
+        let iso_path = dir.path().join("game.iso");
+        std::fs::write(&iso_path, &iso).unwrap();
+        let chd_path = dir.path().join("game.chd");
+        convert_iso_to_chd(
+            &NoProgress,
+            iso_path,
+            chd_path.clone(),
+            ChdOptions::default(),
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+
+        let header = crate::chd::reader::open_chd_sync(&chd_path).unwrap().header;
+        assert_eq!(
+            header.compressors(),
+            [*b"lzma", *b"zlib", *b"huff", *b"flac"]
+        );
+    }
+
+    /// `ChdOptions.codecs = None` must resolve to chdman's `createcd`
+    /// default pack, filling the header slots in that exact order.
+    #[tokio::test]
+    async fn cd_chd_default_codecs_match_chdman_slots() {
+        let dir = tempfile::tempdir().unwrap();
+        let iso = mixed_iso(8);
+        let iso_path = dir.path().join("game.iso");
+        std::fs::write(&iso_path, &iso).unwrap();
+        let chd_path = dir.path().join("game.chd");
+        convert_iso_to_cd_chd(
+            &NoProgress,
+            iso_path,
+            chd_path.clone(),
+            ChdOptions::default(),
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+
+        let header = crate::chd::reader::open_chd_sync(&chd_path).unwrap().header;
+        assert_eq!(
+            header.compressors(),
+            [*b"cdlz", *b"cdzl", *b"cdfl", [0u8; 4]]
+        );
+    }
+
     #[tokio::test]
     async fn corrupted_dvd_chd_fails_verify_and_extract() {
         let dir = tempfile::tempdir().unwrap();
@@ -1343,7 +1461,7 @@ mod tests {
             &NoProgress,
             iso_path,
             chd_path.clone(),
-            ChdDvdOptions::default(),
+            ChdOptions::default(),
             CancelToken::new(),
         )
         .await
@@ -1408,7 +1526,7 @@ mod tests {
             &NoProgress,
             iso_path,
             our_chd.clone(),
-            ChdDvdOptions::default(),
+            ChdOptions::default(),
             CancelToken::new(),
         )
         .await
@@ -1470,7 +1588,7 @@ mod tests {
             iso_path,
             chd_path.clone(),
             None,
-            ChdDvdOptions::default(),
+            ChdOptions::default(),
         )
         .await
         .unwrap();
@@ -1546,7 +1664,7 @@ mod tests {
             iso_path,
             chd_path.clone(),
             Some(DiscMode::Cd),
-            ChdDvdOptions::default(),
+            ChdOptions::default(),
         )
         .await
         .unwrap();
@@ -1583,7 +1701,7 @@ mod tests {
             &NoProgress,
             iso_path,
             chd_path.clone(),
-            false,
+            ChdOptions::default(),
             CancelToken::new(),
         )
         .await
@@ -1629,7 +1747,7 @@ mod tests {
             &NoProgress,
             iso_path,
             chd_path.clone(),
-            ChdDvdOptions::default(),
+            ChdOptions::default(),
             CancelToken::new(),
         )
         .await
@@ -1666,7 +1784,7 @@ mod tests {
             cue_path,
             dir.path().join("game.chd"),
             Some(DiscMode::Dvd),
-            ChdDvdOptions::default(),
+            ChdOptions::default(),
         )
         .await;
         assert!(matches!(result, Err(ChdError::DvdModeNeedsIso)));
@@ -1681,7 +1799,7 @@ mod tests {
             &NoProgress,
             iso_path,
             dir.path().join("game.chd"),
-            false,
+            ChdOptions::default(),
             CancelToken::new(),
         )
         .await;
@@ -1825,7 +1943,7 @@ mod tests {
             &NoProgress,
             iso_path,
             our_chd.clone(),
-            false,
+            ChdOptions::default(),
             CancelToken::new(),
         )
         .await

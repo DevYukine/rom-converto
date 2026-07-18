@@ -1,6 +1,6 @@
 use crate::chd::error::ChdResult;
 use crate::chd::models::{CHD_METADATA_FLAG_HASHED, ChdMetadataHeader, SHA1_BYTES};
-use crate::cue::models::CueSheet;
+use crate::cue::models::{CueSheet, TrackType};
 use binrw::BinWrite;
 use sha1::{Digest, Sha1};
 use std::io::Cursor;
@@ -37,6 +37,35 @@ pub fn generate_dvd_metadata() -> ChdResult<MetadataBlock> {
             sha1,
         }],
     })
+}
+
+/// Per-frame audio flags for the CHD stream: `true` where the frame
+/// belongs to an AUDIO track. MAME byte-swaps audio sector samples on
+/// ingest and swaps them back on extract; the writer consults this to
+/// swap the right frames before hashing and compressing. Track spans
+/// use the same primary-index frame offsets as the CHT2 metadata.
+pub fn cd_audio_frame_map(cue_sheet: &CueSheet, total_frames: u32) -> Vec<bool> {
+    let track_starts: Vec<u32> = cue_sheet
+        .tracks
+        .iter()
+        .map(|track| track.primary_index_lba().unwrap_or(0))
+        .collect();
+
+    let mut map = vec![false; total_frames as usize];
+    for (idx, track) in cue_sheet.tracks.iter().enumerate() {
+        if !matches!(track.track_type, TrackType::Audio) {
+            continue;
+        }
+        let start = track_starts[idx].min(total_frames) as usize;
+        let end = track_starts
+            .get(idx + 1)
+            .copied()
+            .unwrap_or(total_frames)
+            .min(total_frames)
+            .max(start as u32) as usize;
+        map[start..end].fill(true);
+    }
+    map
 }
 
 pub fn generate_cd_metadata(cue_sheet: &CueSheet, total_frames: u32) -> ChdResult<MetadataBlock> {

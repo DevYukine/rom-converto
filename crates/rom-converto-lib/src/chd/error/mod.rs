@@ -1,5 +1,6 @@
 //! Error type for the CHD module.
 
+use crate::chd::compression::ChdCodec;
 use crate::cue::error::CueError;
 use thiserror::Error;
 
@@ -95,6 +96,34 @@ pub enum ChdError {
     /// The operation was cancelled by the caller.
     #[error("operation cancelled")]
     Cancelled,
+
+    /// A codec list named a codec chdman does not implement.
+    #[error("unknown compression codec name: {0}")]
+    UnknownCodecName(String),
+
+    /// A codec list was empty; at least one codec is required.
+    #[error("codec list must not be empty")]
+    EmptyCodecList,
+
+    /// A codec list has more entries than a CHD header's 4 compressor slots.
+    #[error("codec list has {0} entries; a CHD header supports at most 4")]
+    TooManyCodecs(usize),
+
+    /// A codec list names the same codec more than once.
+    #[error("duplicate codec in list: {0}")]
+    DuplicateCodec(ChdCodec),
+
+    /// A CD-only codec (cdzl/cdzs/cdlz/cdfl) was requested for a DVD-mode CHD.
+    #[error("{0} is a CD-only codec and cannot be used for a DVD-mode CHD")]
+    CdCodecOnDvd(ChdCodec),
+
+    /// A `--level` value outside the accepted compression level range.
+    #[error("compression level {0} out of range 1..=22")]
+    InvalidCompressionLevel(i32),
+
+    /// A compressed hunk is shorter than its header or length fields require.
+    #[error("malformed compressed hunk: truncated or corrupt")]
+    MalformedHunk,
 }
 
 impl From<crate::util::worker_pool::PoolChannelClosed> for ChdError {

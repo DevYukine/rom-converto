@@ -58,6 +58,10 @@ pub struct NxDefaults {
 #[serde(deny_unknown_fields)]
 pub struct ChdDefaults {
     pub hunk_size: Option<u32>,
+    /// Codec list, e.g. `["cdlz", "cdzl", "cdfl"]`.
+    pub codecs: Option<Vec<String>>,
+    /// Per-codec compression level.
+    pub level: Option<i32>,
     pub on_conflict: Option<String>,
     pub output_dir: Option<PathBuf>,
     pub report: Option<PathBuf>,

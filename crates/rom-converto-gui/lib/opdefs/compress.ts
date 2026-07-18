@@ -92,6 +92,23 @@ function outputRows(defaultDir: string, opts: { template?: boolean; report?: "fi
 	return rows;
 }
 
+export const CHD_CODEC_OPTIONS = [
+	{ value: "cdlz", label: "CD LZMA" },
+	{ value: "cdzl", label: "CD Deflate" },
+	{ value: "cdfl", label: "CD FLAC" },
+	{ value: "cdzs", label: "CD Zstandard" },
+	{ value: "lzma", label: "LZMA" },
+	{ value: "zlib", label: "Deflate" },
+	{ value: "zstd", label: "Zstandard" },
+	{ value: "huff", label: "Huffman" },
+	{ value: "flac", label: "FLAC" },
+];
+export const CHD_DVD_CODEC_OPTIONS = CHD_CODEC_OPTIONS.filter((o) => !o.value.startsWith("cd"));
+export const CHD_CODEC_PLACEHOLDER = "auto (cdlz, cdzl, cdfl for CD / lzma, zlib, huff, flac for DVD)";
+export const CHD_DVD_ZSTD_HINT =
+	"Consider adding Zstandard (zstd) for DVD images: better compression and faster decode, but rejected by AetherSX2/NetherSX2.";
+export const CHD_LEVEL_HINT = "1-22; zstd uses it directly, zlib/lzma cap at 9; auto = zstd 19, lzma 8, zlib 9";
+
 const discFields = (hint: string) => [
 	{ kind: "slider" as const, key: "level", label: "Zstd level", min: 1, max: 22, hint },
 	{
@@ -342,13 +359,25 @@ registerOp("compress", {
 			},
 			{ kind: "number", key: "hunkSize", label: "Hunk size", placeholder: "auto" },
 			{
-				kind: "toggle",
-				key: "zstd",
-				label: "zstd codec (DVD mode)",
-				note: (s) =>
-					s.zstd &&
-					"Better ratio, but the CHD is rejected by AetherSX2/NetherSX2. Leave off for maximum compatibility.",
+				kind: "multiselect",
+				key: "codecs",
+				label: "Codecs",
+				options: CHD_CODEC_OPTIONS,
+				max: 4,
+				placeholder: CHD_CODEC_PLACEHOLDER,
+				visible: (s) => s.mode !== "dvd",
 			},
+			{
+				kind: "multiselect",
+				key: "codecs",
+				label: "Codecs",
+				options: CHD_DVD_CODEC_OPTIONS,
+				max: 4,
+				placeholder: CHD_CODEC_PLACEHOLDER,
+				hint: CHD_DVD_ZSTD_HINT,
+				visible: (s) => s.mode === "dvd",
+			},
+			{ kind: "number", key: "level", label: "Level", placeholder: "auto", hint: CHD_LEVEL_HINT },
 			...recursiveFields(),
 		],
 		outputRows: outputRows("~/roms/chd", { template: true, report: "field" }),
@@ -363,7 +392,8 @@ registerOp("compress", {
 			taskId,
 			onConflict: store.onConflict,
 			skipSpaceCheck: store.skipSpaceCheck,
-			zstd: store.zstd,
+			codecs: store.codecs.length ? store.codecs : null,
+			level: store.level,
 			mode: store.mode === "auto" ? null : store.mode,
 			hunkSize: store.hunkSize || null,
 			outputTemplate: store.outputTemplate || null,
@@ -372,7 +402,7 @@ registerOp("compress", {
 			verifyAfter: store.verifyAfter,
 		}),
 		chips: (s) =>
-			`${s.mode}${s.zstd ? " · zstd" : ""}${s.hunkSize ? ` · hunk ${s.hunkSize}` : ""}`,
+			`${s.mode}${s.codecs.length ? ` · ${s.codecs.join(", ")}` : ""}${s.level ? ` · level ${s.level}` : ""}${s.hunkSize ? ` · hunk ${s.hunkSize}` : ""}`,
 	},
 
 	cso: {

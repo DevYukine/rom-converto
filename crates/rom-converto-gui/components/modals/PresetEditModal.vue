@@ -12,7 +12,7 @@ const emit = defineEmits<{ close: [] }>();
 
 const store = useConfigStore();
 
-type FieldKind = "number" | "text" | "conflict";
+type FieldKind = "number" | "text" | "conflict" | "list";
 interface FieldSpec {
 	key: string;
 	label: string;
@@ -48,6 +48,8 @@ const FORMAT_SCHEMA: Record<PresetFormat, FieldSpec[]> = {
 	],
 	chd: [
 		{ key: "hunk_size", label: "Hunk size", kind: "number" },
+		{ key: "codecs", label: "Codecs", kind: "list" },
+		{ key: "level", label: "Level", kind: "number" },
 		{ key: "on_conflict", label: "On conflict", kind: "conflict" },
 		{ key: "output_dir", label: "Output dir", kind: "text" },
 		{ key: "report", label: "Report", kind: "text" },
@@ -105,6 +107,19 @@ function onTextInput(format: PresetFormat, key: string, raw: string) {
 	setCell(format, key, raw === "" ? null : raw);
 }
 
+function listText(format: PresetFormat, key: string): string {
+	const value = cell(format, key);
+	return Array.isArray(value) ? value.join(", ") : "";
+}
+
+function onListInput(format: PresetFormat, key: string, raw: string) {
+	const values = raw
+		.split(",")
+		.map((v) => v.trim())
+		.filter(Boolean);
+	setCell(format, key, values.length ? values : null);
+}
+
 const saving = ref(false);
 const error = ref("");
 
@@ -145,6 +160,14 @@ async function save() {
 						class="rc-input"
 						:value="cell(format, field.key) ?? ''"
 						@input="onNumberInput(format, field.key, ($event.target as HTMLInputElement).value)"
+					/>
+					<input
+						v-else-if="field.kind === 'list'"
+						type="text"
+						class="rc-input"
+						placeholder="comma-separated"
+						:value="listText(format, field.key)"
+						@input="onListInput(format, field.key, ($event.target as HTMLInputElement).value)"
 					/>
 					<input
 						v-else
