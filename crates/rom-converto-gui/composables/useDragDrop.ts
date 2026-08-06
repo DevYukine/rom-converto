@@ -67,7 +67,12 @@ function initGlobalListener() {
       if (targetId) {
         const zone = zones.get(targetId);
         zone?.el.classList.remove("drop-hover");
-        zone?.handler(payload.paths);
+        // The OS delivers paths in selection order (starting at the file the
+        // user dragged from), not name order. Sort so the queue is predictable.
+        const paths = [...payload.paths].sort((a, b) =>
+          a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }),
+        );
+        zone?.handler(paths);
       }
       activeZoneId = null;
     }
