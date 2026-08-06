@@ -20,12 +20,28 @@ use rom_converto_lib::util::report::{DatReportRecord, write_dat_report};
 use rom_converto_lib::util::{
     CachedTrack, CancelToken, ChecksumBounds, ConflictPolicy, ConflictResolution, FileDigests,
     FileStatus, HashAlgo, HashCache, HashReportRecord, NX_DAT_UNSUPPORTED_HINT, ProgressReporter,
-    ReportFormat, ReportRecord, ReportTotals, Tally, TallyDirection, hash_file,
+    ReportFormat, ReportRecord, ReportRecordInput, ReportTotals, Tally, TallyDirection, hash_file,
     hash_file_cancellable, resolve_conflict, resolve_input, write_hash_report, write_report,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
+
+/// Options shared by every recursive batch arm.
+#[derive(Clone, Copy)]
+pub struct BatchRun<'a> {
+    pub progress: &'a dyn ProgressReporter,
+    pub total_progress: &'a crate::util::TotalProgress,
+    pub input_dir: &'a Path,
+    pub policy: ConflictPolicy,
+    pub output_dir: Option<&'a Path>,
+    pub output_template: Option<&'a str>,
+    pub max_depth: Option<usize>,
+    pub dry_run: bool,
+    pub skip_space_check: bool,
+    pub report_path: Option<&'a Path>,
+    pub cancel: &'a CancelToken,
+}
 
 fn file_len(path: &Path) -> u64 {
     std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
@@ -112,16 +128,16 @@ fn ok_record(
     output_bytes: u64,
     started: Instant,
 ) -> ReportRecord {
-    ReportRecord::new(
-        input.display().to_string(),
-        output.display().to_string(),
-        operation,
-        FileStatus::Ok,
+    ReportRecord::new(ReportRecordInput {
+        input_path: input.display().to_string(),
+        output_path: output.display().to_string(),
+        operation: operation.into(),
+        status: FileStatus::Ok,
         input_bytes,
         output_bytes,
-        elapsed_ms(started),
-        None,
-    )
+        elapsed_ms: elapsed_ms(started),
+        error: None,
+    })
 }
 
 fn failed_record(
@@ -131,29 +147,29 @@ fn failed_record(
     started: Instant,
     error: impl std::fmt::Display,
 ) -> ReportRecord {
-    ReportRecord::new(
-        input.display().to_string(),
-        String::new(),
-        operation,
-        FileStatus::Failed,
+    ReportRecord::new(ReportRecordInput {
+        input_path: input.display().to_string(),
+        output_path: String::new(),
+        operation: operation.into(),
+        status: FileStatus::Failed,
         input_bytes,
-        0,
-        elapsed_ms(started),
-        Some(error.to_string()),
-    )
+        output_bytes: 0,
+        elapsed_ms: elapsed_ms(started),
+        error: Some(error.to_string()),
+    })
 }
 
 fn skipped_record(input: &Path, operation: &str, error: Option<String>) -> ReportRecord {
-    ReportRecord::new(
-        input.display().to_string(),
-        String::new(),
-        operation,
-        FileStatus::Skipped,
-        0,
-        0,
-        0,
+    ReportRecord::new(ReportRecordInput {
+        input_path: input.display().to_string(),
+        output_path: String::new(),
+        operation: operation.into(),
+        status: FileStatus::Skipped,
+        input_bytes: 0,
+        output_bytes: 0,
+        elapsed_ms: 0,
         error,
-    )
+    })
 }
 
 struct VerifyTally {
@@ -162,23 +178,35 @@ struct VerifyTally {
     failed: usize,
 }
 
+struct DryRunVerify<'a> {
+    operation: &'a str,
+    input: &'a Path,
+    desired: &'a Path,
+    decision: &'a WriteDecision,
+    policy: ConflictPolicy,
+    target: crate::util::OutputVerify,
+    media: Option<&'a str>,
+}
+
 /// Dry-run plan entry for a batch arm that may verify. For `overwrite-invalid`
 /// with an existing output the read-only verify runs to choose the keep or
 /// rewrite label; every other case falls through to the existing plan path so
 /// the tally and report counts stay identical to a real run.
-#[allow(clippy::too_many_arguments)]
 async fn dry_run_verify_record(
     progress: &dyn ProgressReporter,
-    operation: &str,
-    input: &Path,
-    desired: &Path,
-    decision: &WriteDecision,
-    policy: ConflictPolicy,
-    target: crate::util::OutputVerify,
-    media: Option<&str>,
+    plan: DryRunVerify<'_>,
     tally: &mut Tally,
     records: &mut Vec<ReportRecord>,
 ) {
+    let DryRunVerify {
+        operation,
+        input,
+        desired,
+        decision,
+        policy,
+        target,
+        media,
+    } = plan;
     if policy == ConflictPolicy::OverwriteInvalid && desired.exists() {
         let (synth, outcome) =
             match crate::util::verify_existing_output(progress, desired, target).await {
@@ -262,20 +290,20 @@ fn finish_tally(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-pub async fn cso_decompress(
-    progress: &dyn ProgressReporter,
-    total_progress: &crate::util::TotalProgress,
-    input_dir: &Path,
-    policy: ConflictPolicy,
-    output_dir: Option<&Path>,
-    output_template: Option<&str>,
-    max_depth: Option<usize>,
-    dry_run: bool,
-    skip_space_check: bool,
-    report_path: Option<&Path>,
-    cancel: CancelToken,
-) -> Result<()> {
+pub async fn cso_decompress(run: &BatchRun<'_>) -> Result<()> {
+    let BatchRun {
+        progress,
+        total_progress,
+        input_dir,
+        policy,
+        output_dir,
+        output_template,
+        max_depth,
+        dry_run,
+        skip_space_check,
+        report_path,
+        cancel,
+    } = *run;
     use rom_converto_lib::cso::decompress_from_cso_cancellable;
 
     let files = collect_or_warn(input_dir, &["cso", "zso", "dax"], max_depth)?;
@@ -296,16 +324,16 @@ pub async fn cso_decompress(
         if cancel.is_cancelled() {
             break;
         }
-        let output = match crate::util::batch_output(
-            &path,
-            &path.with_extension("iso"),
+        let output = match crate::util::batch_output(crate::util::BatchOutput {
+            input: &path,
+            derived: &path.with_extension("iso"),
             input_dir,
             output_dir,
             output_template,
-            "iso",
-            None,
+            output_ext: "iso",
+            keys_path: None,
             dry_run,
-        ) {
+        }) {
             Ok(p) => p,
             Err(e) => {
                 warn!("{e}");
@@ -425,23 +453,25 @@ pub async fn cso_verify(
     finish_verify(VerifyTally { total, ok, failed })
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn rvz_compress(
-    progress: &dyn ProgressReporter,
-    total_progress: &crate::util::TotalProgress,
-    input_dir: &Path,
+    run: &BatchRun<'_>,
     exts: &[&str],
     opts: rom_converto_lib::nintendo::rvz::RvzCompressOptions,
-    policy: ConflictPolicy,
-    output_dir: Option<&Path>,
-    output_template: Option<&str>,
-    max_depth: Option<usize>,
-    dry_run: bool,
-    skip_space_check: bool,
-    report_path: Option<&Path>,
-    cancel: CancelToken,
     cache: &HashCache,
 ) -> Result<()> {
+    let BatchRun {
+        progress,
+        total_progress,
+        input_dir,
+        policy,
+        output_dir,
+        output_template,
+        max_depth,
+        dry_run,
+        skip_space_check,
+        report_path,
+        cancel,
+    } = *run;
     use rom_converto_lib::nintendo::rvz::{compress_disc_cancellable, derive_rvz_path};
 
     let files = collect_or_warn(input_dir, exts, max_depth)?;
@@ -462,16 +492,16 @@ pub async fn rvz_compress(
         if cancel.is_cancelled() {
             break;
         }
-        let output = match crate::util::batch_output(
-            &path,
-            &derive_rvz_path(&path),
+        let output = match crate::util::batch_output(crate::util::BatchOutput {
+            input: &path,
+            derived: &derive_rvz_path(&path),
             input_dir,
             output_dir,
             output_template,
-            "rvz",
-            None,
+            output_ext: "rvz",
+            keys_path: None,
             dry_run,
-        ) {
+        }) {
             Ok(p) => p,
             Err(e) => {
                 warn!("{e}");
@@ -497,13 +527,15 @@ pub async fn rvz_compress(
         if dry_run {
             dry_run_verify_record(
                 progress,
-                "compress",
-                &path,
-                &output,
-                &decision,
-                policy,
-                crate::util::OutputVerify::Rvz,
-                Some("RVZ"),
+                DryRunVerify {
+                    operation: "compress",
+                    input: &path,
+                    desired: &output,
+                    decision: &decision,
+                    policy,
+                    target: crate::util::OutputVerify::Rvz,
+                    media: Some("RVZ"),
+                },
                 &mut tally,
                 &mut records,
             )
@@ -588,20 +620,20 @@ pub async fn rvz_compress(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
-pub async fn rvz_decompress(
-    progress: &dyn ProgressReporter,
-    total_progress: &crate::util::TotalProgress,
-    input_dir: &Path,
-    policy: ConflictPolicy,
-    output_dir: Option<&Path>,
-    output_template: Option<&str>,
-    max_depth: Option<usize>,
-    dry_run: bool,
-    skip_space_check: bool,
-    report_path: Option<&Path>,
-    cancel: CancelToken,
-) -> Result<()> {
+pub async fn rvz_decompress(run: &BatchRun<'_>) -> Result<()> {
+    let BatchRun {
+        progress,
+        total_progress,
+        input_dir,
+        policy,
+        output_dir,
+        output_template,
+        max_depth,
+        dry_run,
+        skip_space_check,
+        report_path,
+        cancel,
+    } = *run;
     use rom_converto_lib::nintendo::rvz::{decompress_disc_cancellable, derive_disc_path};
 
     let files = collect_or_warn(input_dir, &["rvz"], max_depth)?;
@@ -622,16 +654,16 @@ pub async fn rvz_decompress(
         if cancel.is_cancelled() {
             break;
         }
-        let output = match crate::util::batch_output(
-            &path,
-            &derive_disc_path(&path),
+        let output = match crate::util::batch_output(crate::util::BatchOutput {
+            input: &path,
+            derived: &derive_disc_path(&path),
             input_dir,
             output_dir,
             output_template,
-            "iso",
-            None,
+            output_ext: "iso",
+            keys_path: None,
             dry_run,
-        ) {
+        }) {
             Ok(p) => p,
             Err(e) => {
                 warn!("{e}");
@@ -870,19 +902,19 @@ pub async fn nx_compress(
         } else if let Some(exp) = tuning.block_size_exp {
             opts.mode = NczMode::Block { size_exp: exp };
         }
-        let output = match crate::util::batch_output(
-            &path,
-            &derive_compressed_path(&path),
+        let output = match crate::util::batch_output(crate::util::BatchOutput {
+            input: &path,
+            derived: &derive_compressed_path(&path),
             input_dir,
-            tuning.output_dir.as_deref(),
-            tuning.output_template.as_deref(),
-            derive_compressed_path(&path)
+            output_dir: tuning.output_dir.as_deref(),
+            output_template: tuning.output_template.as_deref(),
+            output_ext: derive_compressed_path(&path)
                 .extension()
                 .and_then(|e| e.to_str())
                 .unwrap_or(""),
-            None,
+            keys_path: None,
             dry_run,
-        ) {
+        }) {
             Ok(p) => p,
             Err(e) => {
                 warn!("{e}");
@@ -909,13 +941,15 @@ pub async fn nx_compress(
             let media = format!("{kind:?}");
             dry_run_verify_record(
                 progress,
-                "compress",
-                &path,
-                &output,
-                &decision,
-                tuning.policy,
-                crate::util::OutputVerify::Nx(Box::new(keys.clone())),
-                Some(&media),
+                DryRunVerify {
+                    operation: "compress",
+                    input: &path,
+                    desired: &output,
+                    decision: &decision,
+                    policy: tuning.policy,
+                    target: crate::util::OutputVerify::Nx(Box::new(keys.clone())),
+                    media: Some(&media),
+                },
                 &mut tally,
                 &mut records,
             )
@@ -1008,21 +1042,23 @@ pub async fn nx_compress(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn nx_decompress(
-    progress: &dyn ProgressReporter,
-    total_progress: &crate::util::TotalProgress,
-    input_dir: &Path,
+    run: &BatchRun<'_>,
     keys: rom_converto_lib::nintendo::nx::KeySet,
-    policy: ConflictPolicy,
-    output_dir: Option<&Path>,
-    output_template: Option<&str>,
-    max_depth: Option<usize>,
-    dry_run: bool,
-    skip_space_check: bool,
-    report_path: Option<&Path>,
-    cancel: CancelToken,
 ) -> Result<()> {
+    let BatchRun {
+        progress,
+        total_progress,
+        input_dir,
+        policy,
+        output_dir,
+        output_template,
+        max_depth,
+        dry_run,
+        skip_space_check,
+        report_path,
+        cancel,
+    } = *run;
     use rom_converto_lib::nintendo::nx::{
         decompress_container_async_cancellable, derive_decompressed_path,
     };
@@ -1045,19 +1081,19 @@ pub async fn nx_decompress(
         if cancel.is_cancelled() {
             break;
         }
-        let output = match crate::util::batch_output(
-            &path,
-            &derive_decompressed_path(&path),
+        let output = match crate::util::batch_output(crate::util::BatchOutput {
+            input: &path,
+            derived: &derive_decompressed_path(&path),
             input_dir,
             output_dir,
             output_template,
-            derive_decompressed_path(&path)
+            output_ext: derive_decompressed_path(&path)
                 .extension()
                 .and_then(|e| e.to_str())
                 .unwrap_or(""),
-            None,
+            keys_path: None,
             dry_run,
-        ) {
+        }) {
             Ok(p) => p,
             Err(e) => {
                 warn!("{e}");
@@ -1269,23 +1305,25 @@ pub async fn wup_verify(
     finish_verify(VerifyTally { total, ok, failed })
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn chd_compress(
-    progress: &dyn ProgressReporter,
-    total_progress: &crate::util::TotalProgress,
-    input_dir: &Path,
+    run: &BatchRun<'_>,
     mut opts: rom_converto_lib::chd::ChdOptions,
     mode: Option<rom_converto_lib::chd::DiscMode>,
-    policy: ConflictPolicy,
-    output_dir: Option<&Path>,
-    output_template: Option<&str>,
-    max_depth: Option<usize>,
-    dry_run: bool,
-    skip_space_check: bool,
-    report_path: Option<&Path>,
-    cancel: CancelToken,
     cache: &HashCache,
 ) -> Result<()> {
+    let BatchRun {
+        progress,
+        total_progress,
+        input_dir,
+        policy,
+        output_dir,
+        output_template,
+        max_depth,
+        dry_run,
+        skip_space_check,
+        report_path,
+        cancel,
+    } = *run;
     use rom_converto_lib::chd::convert_disc_to_chd_cancellable;
 
     let files = collect_or_warn(input_dir, &["cue", "iso"], max_depth)?;
@@ -1310,16 +1348,16 @@ pub async fn chd_compress(
         if cancel.is_cancelled() {
             break;
         }
-        let output = match crate::util::batch_output(
-            &path,
-            &path.with_extension("chd"),
+        let output = match crate::util::batch_output(crate::util::BatchOutput {
+            input: &path,
+            derived: &path.with_extension("chd"),
             input_dir,
             output_dir,
             output_template,
-            "chd",
-            None,
+            output_ext: "chd",
+            keys_path: None,
             dry_run,
-        ) {
+        }) {
             Ok(p) => p,
             Err(e) => {
                 warn!("{e}");
@@ -1346,13 +1384,15 @@ pub async fn chd_compress(
             let media = crate::chd_media_label(&path);
             dry_run_verify_record(
                 progress,
-                "compress",
-                &path,
-                &output,
-                &decision,
-                policy,
-                crate::util::OutputVerify::Chd,
-                media.as_deref(),
+                DryRunVerify {
+                    operation: "compress",
+                    input: &path,
+                    desired: &output,
+                    decision: &decision,
+                    policy,
+                    target: crate::util::OutputVerify::Chd,
+                    media: media.as_deref(),
+                },
                 &mut tally,
                 &mut records,
             )
@@ -1445,21 +1485,20 @@ pub async fn chd_compress(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
-pub async fn chd_extract(
-    progress: &dyn ProgressReporter,
-    total_progress: &crate::util::TotalProgress,
-    input_dir: &Path,
-    parent: Option<PathBuf>,
-    policy: ConflictPolicy,
-    output_dir: Option<&Path>,
-    output_template: Option<&str>,
-    max_depth: Option<usize>,
-    dry_run: bool,
-    skip_space_check: bool,
-    report_path: Option<&Path>,
-    cancel: CancelToken,
-) -> Result<()> {
+pub async fn chd_extract(run: &BatchRun<'_>, parent: Option<PathBuf>) -> Result<()> {
+    let BatchRun {
+        progress,
+        total_progress,
+        input_dir,
+        policy,
+        output_dir,
+        output_template,
+        max_depth,
+        dry_run,
+        skip_space_check,
+        report_path,
+        cancel,
+    } = *run;
     use rom_converto_lib::chd::extract_from_chd_cancellable;
 
     let files = collect_or_warn(input_dir, &["chd"], max_depth)?;
@@ -1480,16 +1519,16 @@ pub async fn chd_extract(
         if cancel.is_cancelled() {
             break;
         }
-        let output = match crate::util::batch_output(
-            &path,
-            &path.with_extension(""),
+        let output = match crate::util::batch_output(crate::util::BatchOutput {
+            input: &path,
+            derived: &path.with_extension(""),
             input_dir,
             output_dir,
             output_template,
-            "iso",
-            None,
+            output_ext: "iso",
+            keys_path: None,
             dry_run,
-        ) {
+        }) {
             Ok(p) => p,
             Err(e) => {
                 warn!("{e}");
@@ -1576,22 +1615,24 @@ pub async fn chd_extract(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn cso_compress(
-    progress: &dyn ProgressReporter,
-    total_progress: &crate::util::TotalProgress,
-    input_dir: &Path,
+    run: &BatchRun<'_>,
     mut opts: rom_converto_lib::cso::CsoCompressOptions,
-    policy: ConflictPolicy,
-    output_dir: Option<&Path>,
-    output_template: Option<&str>,
-    max_depth: Option<usize>,
-    dry_run: bool,
-    skip_space_check: bool,
-    report_path: Option<&Path>,
-    cancel: CancelToken,
     cache: &HashCache,
 ) -> Result<()> {
+    let BatchRun {
+        progress,
+        total_progress,
+        input_dir,
+        policy,
+        output_dir,
+        output_template,
+        max_depth,
+        dry_run,
+        skip_space_check,
+        report_path,
+        cancel,
+    } = *run;
     use rom_converto_lib::cso::compress_to_cso_cancellable;
 
     let ext = opts.format.extension();
@@ -1615,16 +1656,16 @@ pub async fn cso_compress(
         if cancel.is_cancelled() {
             break;
         }
-        let output = match crate::util::batch_output(
-            &path,
-            &path.with_extension(ext),
+        let output = match crate::util::batch_output(crate::util::BatchOutput {
+            input: &path,
+            derived: &path.with_extension(ext),
             input_dir,
             output_dir,
             output_template,
-            ext,
-            None,
+            output_ext: ext,
+            keys_path: None,
             dry_run,
-        ) {
+        }) {
             Ok(p) => p,
             Err(e) => {
                 warn!("{e}");
@@ -1650,13 +1691,15 @@ pub async fn cso_compress(
         if dry_run {
             dry_run_verify_record(
                 progress,
-                "compress",
-                &path,
-                &output,
-                &decision,
-                policy,
-                crate::util::OutputVerify::Cso,
-                Some(media),
+                DryRunVerify {
+                    operation: "compress",
+                    input: &path,
+                    desired: &output,
+                    decision: &decision,
+                    policy,
+                    target: crate::util::OutputVerify::Cso,
+                    media: Some(media),
+                },
                 &mut tally,
                 &mut records,
             )
@@ -1765,23 +1808,25 @@ fn chd_logical_bytes(path: &Path) -> u64 {
         .unwrap_or(0)
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn cso_to_chd(
-    progress: &dyn ProgressReporter,
-    total_progress: &crate::util::TotalProgress,
-    input_dir: &Path,
+    run: &BatchRun<'_>,
     mode: Option<rom_converto_lib::chd::DiscMode>,
     mut opts: rom_converto_lib::chd::ChdOptions,
-    policy: ConflictPolicy,
-    output_dir: Option<&Path>,
-    output_template: Option<&str>,
-    max_depth: Option<usize>,
-    dry_run: bool,
-    skip_space_check: bool,
-    report_path: Option<&Path>,
-    cancel: CancelToken,
     cache: &HashCache,
 ) -> Result<()> {
+    let BatchRun {
+        progress,
+        total_progress,
+        input_dir,
+        policy,
+        output_dir,
+        output_template,
+        max_depth,
+        dry_run,
+        skip_space_check,
+        report_path,
+        cancel,
+    } = *run;
     use rom_converto_lib::pipeline::cso_to_chd_cancellable;
 
     let files = collect_or_warn(input_dir, &["cso", "zso", "dax"], max_depth)?;
@@ -1807,16 +1852,16 @@ pub async fn cso_to_chd(
         if cancel.is_cancelled() {
             break;
         }
-        let output = match crate::util::batch_output(
-            &path,
-            &path.with_extension("chd"),
+        let output = match crate::util::batch_output(crate::util::BatchOutput {
+            input: &path,
+            derived: &path.with_extension("chd"),
             input_dir,
             output_dir,
             output_template,
-            "chd",
-            None,
+            output_ext: "chd",
+            keys_path: None,
             dry_run,
-        ) {
+        }) {
             Ok(p) => p,
             Err(e) => {
                 warn!("{e}");
@@ -1842,13 +1887,15 @@ pub async fn cso_to_chd(
         if dry_run {
             dry_run_verify_record(
                 progress,
-                "compress",
-                &path,
-                &output,
-                &decision,
-                policy,
-                crate::util::OutputVerify::Chd,
-                None,
+                DryRunVerify {
+                    operation: "compress",
+                    input: &path,
+                    desired: &output,
+                    decision: &decision,
+                    policy,
+                    target: crate::util::OutputVerify::Chd,
+                    media: None,
+                },
                 &mut tally,
                 &mut records,
             )
@@ -1941,22 +1988,24 @@ pub async fn cso_to_chd(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn chd_to_cso(
-    progress: &dyn ProgressReporter,
-    total_progress: &crate::util::TotalProgress,
-    input_dir: &Path,
+    run: &BatchRun<'_>,
     mut opts: rom_converto_lib::cso::CsoCompressOptions,
-    policy: ConflictPolicy,
-    output_dir: Option<&Path>,
-    output_template: Option<&str>,
-    max_depth: Option<usize>,
-    dry_run: bool,
-    skip_space_check: bool,
-    report_path: Option<&Path>,
-    cancel: CancelToken,
     cache: &HashCache,
 ) -> Result<()> {
+    let BatchRun {
+        progress,
+        total_progress,
+        input_dir,
+        policy,
+        output_dir,
+        output_template,
+        max_depth,
+        dry_run,
+        skip_space_check,
+        report_path,
+        cancel,
+    } = *run;
     use rom_converto_lib::pipeline::chd_to_cso_cancellable;
 
     let ext = opts.format.extension();
@@ -1980,16 +2029,16 @@ pub async fn chd_to_cso(
         if cancel.is_cancelled() {
             break;
         }
-        let output = match crate::util::batch_output(
-            &path,
-            &path.with_extension(ext),
+        let output = match crate::util::batch_output(crate::util::BatchOutput {
+            input: &path,
+            derived: &path.with_extension(ext),
             input_dir,
             output_dir,
             output_template,
-            ext,
-            None,
+            output_ext: ext,
+            keys_path: None,
             dry_run,
-        ) {
+        }) {
             Ok(p) => p,
             Err(e) => {
                 warn!("{e}");
@@ -2015,13 +2064,15 @@ pub async fn chd_to_cso(
         if dry_run {
             dry_run_verify_record(
                 progress,
-                "compress",
-                &path,
-                &output,
-                &decision,
-                policy,
-                crate::util::OutputVerify::Cso,
-                None,
+                DryRunVerify {
+                    operation: "compress",
+                    input: &path,
+                    desired: &output,
+                    decision: &decision,
+                    policy,
+                    target: crate::util::OutputVerify::Cso,
+                    media: None,
+                },
                 &mut tally,
                 &mut records,
             )
@@ -2722,6 +2773,32 @@ fn print_verdict(path: &Path, outcome: &DatOutcome) {
     }
 }
 
+/// Shared inputs for the DAT verify arms.
+#[derive(Clone, Copy)]
+pub struct DatRun<'a> {
+    pub progress: &'a dyn ProgressReporter,
+    pub total_progress: &'a crate::util::TotalProgress,
+    pub cancel: &'a CancelToken,
+    pub cache: &'a HashCache,
+    pub algos: &'a [HashAlgo],
+    pub bounds: &'a ChecksumBounds,
+    pub quick: bool,
+    pub api_base: Option<&'a str>,
+    pub report: Option<&'a Path>,
+}
+
+/// Shared inputs for the DAT arms that resolve a whole tree through the bulk
+/// identify endpoints, which need no checksum tiering.
+#[derive(Clone, Copy)]
+pub struct DatBulkRun<'a> {
+    pub progress: &'a dyn ProgressReporter,
+    pub total_progress: &'a crate::util::TotalProgress,
+    pub cancel: &'a CancelToken,
+    pub cache: &'a HashCache,
+    pub api_base: Option<&'a str>,
+    pub report: Option<&'a Path>,
+}
+
 /// Map a digest error to a bucket: unsupported inner formats and transport or
 /// cancellation errors are distinguished from a plain per-file failure.
 fn digest_bucket(e: DatError) -> DatResult<(DatVerdict, String)> {
@@ -2816,35 +2893,38 @@ async fn quick_verify(
 /// try the CRC-only shortcut first, falling back to the unmodified
 /// escalation path when quick mode is off, the unit is not eligible, or the
 /// CRC-only search does not verify.
-#[allow(clippy::too_many_arguments)]
 async fn digest_and_resolve_verify_quick(
     client: &PlaymatchClient,
     unit: &DatUnit,
-    algos: &[HashAlgo],
-    bounds: &ChecksumBounds,
-    quick: bool,
-    progress: &dyn ProgressReporter,
-    cancel: &CancelToken,
-    cache: &HashCache,
+    run: &DatRun<'_>,
 ) -> DatResult<(RomDigests, DatOutcome)> {
+    let DatRun {
+        progress,
+        cancel,
+        cache,
+        algos,
+        bounds,
+        quick,
+        ..
+    } = *run;
     if quick && let Some(hit) = quick_verify(client, unit, cache, cancel).await? {
         return Ok(hit);
     }
     digest_and_resolve_verify(client, unit, algos, bounds, progress, cancel, cache).await
 }
 
-#[allow(clippy::too_many_arguments)]
-pub async fn dat_verify_single(
-    progress: &dyn ProgressReporter,
-    input: &Path,
-    algos: &[HashAlgo],
-    bounds: &ChecksumBounds,
-    quick: bool,
-    api_base: Option<&str>,
-    report: Option<&Path>,
-    cancel: &CancelToken,
-    cache: &HashCache,
-) -> Result<()> {
+pub async fn dat_verify_single(run: &DatRun<'_>, input: &Path) -> Result<()> {
+    let DatRun {
+        progress,
+        cancel,
+        cache,
+        algos,
+        bounds,
+        quick,
+        api_base,
+        report,
+        ..
+    } = *run;
     let started = Instant::now();
     let client = PlaymatchClient::new(api_base);
 
@@ -2916,20 +2996,17 @@ pub async fn dat_verify_single(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn dat_verify_batch(
-    progress: &dyn ProgressReporter,
-    total_progress: &crate::util::TotalProgress,
+    run: &DatRun<'_>,
     input_dir: &Path,
-    algos: &[HashAlgo],
-    bounds: &ChecksumBounds,
-    quick: bool,
     max_depth: Option<usize>,
-    api_base: Option<&str>,
-    report: Option<&Path>,
-    cancel: &CancelToken,
-    cache: &HashCache,
 ) -> Result<()> {
+    let DatRun {
+        total_progress,
+        api_base,
+        report,
+        ..
+    } = *run;
     let units = dat_collect(input_dir, max_depth).await?;
     if units.is_empty() {
         warn!("No files found under {}", input_dir.display());
@@ -2947,11 +3024,7 @@ pub async fn dat_verify_batch(
     for unit in &units {
         let unit_started = Instant::now();
         let path = unit.display_path().to_path_buf();
-        match digest_and_resolve_verify_quick(
-            &client, unit, algos, bounds, quick, progress, cancel, cache,
-        )
-        .await
-        {
+        match digest_and_resolve_verify_quick(&client, unit, run).await {
             Ok((digests, outcome)) => {
                 dedup_note(&mut dedup, &digests, outcome.verdict);
                 match outcome.verdict {
@@ -3191,19 +3264,21 @@ fn digest_bucket_dat(e: DatError) -> DatResult<Option<String>> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn dat_scan(
-    progress: &dyn ProgressReporter,
-    total_progress: &crate::util::TotalProgress,
+    run: &DatBulkRun<'_>,
     input_dir: &Path,
     max_depth: Option<usize>,
     algos: &[HashAlgo],
     quick: bool,
-    api_base: Option<&str>,
-    report: Option<&Path>,
-    cancel: &CancelToken,
-    cache: &HashCache,
 ) -> Result<()> {
+    let DatBulkRun {
+        progress,
+        total_progress,
+        cancel,
+        cache,
+        api_base,
+        report,
+    } = *run;
     let units = dat_collect(input_dir, max_depth).await?;
     if units.is_empty() {
         warn!("No files found under {}", input_dir.display());
@@ -3484,20 +3559,22 @@ fn scan_record(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn dat_rename(
-    progress: &dyn ProgressReporter,
-    total_progress: &crate::util::TotalProgress,
+    run: &DatBulkRun<'_>,
     input: &Path,
     recursive: bool,
     max_depth: Option<usize>,
-    api_base: Option<&str>,
     policy: ConflictPolicy,
     dry_run: bool,
-    report: Option<&Path>,
-    cancel: &CancelToken,
-    cache: &HashCache,
 ) -> Result<()> {
+    let DatBulkRun {
+        progress,
+        total_progress,
+        cancel,
+        cache,
+        api_base,
+        report,
+    } = *run;
     // Group cue members so a set is one unit; renaming a member .bin in
     // isolation would leave the cue's FILE line dangling. Cue sets are recorded
     // as a single skipped row (member renaming with FILE-line rewrite is not
@@ -3583,22 +3660,15 @@ pub async fn dat_rename(
         .collect();
 
     let plans = plan_renames(&candidates);
-    let mut renamed = 0usize;
-    let mut already = 0usize;
-    let mut skipped = 0usize;
+    let mut counts = RenameTally::default();
     for plan in &plans {
-        records.push(execute_rename(
-            plan,
-            dry_run,
-            policy,
-            &mut renamed,
-            &mut already,
-            &mut skipped,
-            started,
-        ));
+        records.push(execute_rename(plan, dry_run, policy, &mut counts, started));
     }
 
-    info!("{renamed} renamed, {already} already canonical, {skipped} skipped");
+    info!(
+        "{} renamed, {} already canonical, {} skipped",
+        counts.renamed, counts.already, counts.skipped
+    );
     if let Some(path) = report {
         write_dat_report(
             path,
@@ -3639,17 +3709,21 @@ fn candidate_from_match(
     }
 }
 
+#[derive(Default)]
+struct RenameTally {
+    renamed: usize,
+    already: usize,
+    skipped: usize,
+}
+
 /// Execute one rename plan (or preview it under dry-run), record the row, and
 /// bump the running counts. std::fs::rename replaces an existing destination on
 /// Windows, so an overwrite decision needs no separate delete.
-#[allow(clippy::too_many_arguments)]
 fn execute_rename(
     plan: &RenamePlan,
     dry_run: bool,
     policy: ConflictPolicy,
-    renamed: &mut usize,
-    already: &mut usize,
-    skipped: &mut usize,
+    counts: &mut RenameTally,
     started: Instant,
 ) -> DatReportRecord {
     let mut rec = dat_error_record(
@@ -3662,7 +3736,7 @@ fn execute_rename(
     rec.detail = plan.detail.clone();
     match plan.action {
         RenameAction::AlreadyCanonical => {
-            *already += 1;
+            counts.already += 1;
             rec.verdict = DatVerdict::Skipped.as_str().to_string();
             rec.detail = Some("already canonical".to_string());
         }
@@ -3670,18 +3744,18 @@ fn execute_rename(
         | RenameAction::SkipWeakMatch
         | RenameAction::SkipCollision
         | RenameAction::SkipDiscSetConflict => {
-            *skipped += 1;
+            counts.skipped += 1;
         }
         RenameAction::Rename => {
             let Some(target) = &plan.to else {
-                *skipped += 1;
+                counts.skipped += 1;
                 rec.verdict = DatVerdict::Failed.as_str().to_string();
                 rec.status = FileStatus::Failed;
                 rec.error = Some("rename plan missing target".to_string());
                 return rec;
             };
             if dry_run {
-                *renamed += 1;
+                counts.renamed += 1;
                 info!(
                     "Would rename {} -> {}",
                     plan.from.display(),
@@ -3693,25 +3767,25 @@ fn execute_rename(
             }
             match resolve_conflict(target, policy) {
                 Ok(ConflictResolution::Skip) => {
-                    *skipped += 1;
+                    counts.skipped += 1;
                     rec.detail = Some(format!("target exists: {}", target.display()));
                 }
                 Ok(ConflictResolution::Write(dest)) => match std::fs::rename(&plan.from, &dest) {
                     Ok(()) => {
-                        *renamed += 1;
+                        counts.renamed += 1;
                         info!("{} -> {}", plan.from.display(), dest.display());
                         rec.verdict = DatVerdict::Renamed.as_str().to_string();
                         rec.detail = Some(dest.display().to_string());
                     }
                     Err(e) => {
-                        *skipped += 1;
+                        counts.skipped += 1;
                         rec.verdict = DatVerdict::Failed.as_str().to_string();
                         rec.status = FileStatus::Failed;
                         rec.error = Some(e.to_string());
                     }
                 },
                 Err(e) => {
-                    *skipped += 1;
+                    counts.skipped += 1;
                     rec.verdict = DatVerdict::Failed.as_str().to_string();
                     rec.status = FileStatus::Failed;
                     rec.error = Some(e.to_string());

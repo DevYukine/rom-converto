@@ -44,7 +44,9 @@ impl WbfsReader {
 
         let mut head = [0u8; WBFS_HEAD_SIZE];
         read_at(&mut parts, 0, &mut head)?;
-        let magic: [u8; 4] = head[0..4].try_into().unwrap();
+        let magic: [u8; 4] = head[0..4]
+            .try_into()
+            .expect("4-byte slice of the fixed-size head array");
         if magic != WBFS_MAGIC {
             return Err(WbfsError::InvalidMagic(magic));
         }

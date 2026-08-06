@@ -43,24 +43,36 @@ pub fn templated_output(
     Ok(joined)
 }
 
+pub struct BatchOutput<'a> {
+    pub input: &'a Path,
+    pub derived: &'a Path,
+    pub input_dir: &'a Path,
+    pub output_dir: Option<&'a Path>,
+    pub output_template: Option<&'a str>,
+    pub output_ext: &'a str,
+    pub keys_path: Option<&'a Path>,
+    pub dry_run: bool,
+}
+
 /// Per-file output path for a recursive batch. With a template it resolves
 /// against the file's metadata and joins under `output_dir`; without one it
 /// mirrors the input subtree via `place_in_dir_mirrored`, preserving the
 /// existing recursive behavior unchanged.
-#[allow(clippy::too_many_arguments)]
-pub fn batch_output(
-    input: &Path,
-    derived: &Path,
-    input_dir: &Path,
-    output_dir: Option<&Path>,
-    output_template: Option<&str>,
-    output_ext: &str,
-    keys_path: Option<&Path>,
-    dry_run: bool,
-) -> anyhow::Result<PathBuf> {
-    match output_template {
-        Some(tmpl) => templated_output(tmpl, input, output_dir, output_ext, keys_path, dry_run),
-        None => Ok(place_in_dir_mirrored(derived, input_dir, output_dir)),
+pub fn batch_output(out: BatchOutput<'_>) -> anyhow::Result<PathBuf> {
+    match out.output_template {
+        Some(tmpl) => templated_output(
+            tmpl,
+            out.input,
+            out.output_dir,
+            out.output_ext,
+            out.keys_path,
+            out.dry_run,
+        ),
+        None => Ok(place_in_dir_mirrored(
+            out.derived,
+            out.input_dir,
+            out.output_dir,
+        )),
     }
 }
 
@@ -213,23 +225,33 @@ impl ProgressReporter for IndicatifProgress {
             .progress_chars("#>-");
         pg.set_style(style);
         pg.set_message(msg.to_string());
-        *self.bar.lock().unwrap() = Some(pg);
+        *self.bar.lock().expect("progress bar mutex poisoned") = Some(pg);
     }
 
     fn inc(&self, delta: u64) {
-        if let Some(bar) = self.bar.lock().unwrap().as_ref() {
+        if let Some(bar) = self
+            .bar
+            .lock()
+            .expect("progress bar mutex poisoned")
+            .as_ref()
+        {
             bar.inc(delta);
         }
     }
 
     fn finish(&self) {
-        if let Some(bar) = self.bar.lock().unwrap().take() {
+        if let Some(bar) = self.bar.lock().expect("progress bar mutex poisoned").take() {
             bar.finish_and_clear();
         }
     }
 
     fn set_phase(&self, label: &str) {
-        if let Some(bar) = self.bar.lock().unwrap().as_ref() {
+        if let Some(bar) = self
+            .bar
+            .lock()
+            .expect("progress bar mutex poisoned")
+            .as_ref()
+        {
             bar.set_message(label.to_string());
         }
     }
@@ -297,7 +319,7 @@ impl TotalProgress {
         };
         pg.set_style(style);
         pg.set_message(format!("0/{total_files} files"));
-        *self.bar.lock().unwrap() = Some(pg);
+        *self.bar.lock().expect("progress bar mutex poisoned") = Some(pg);
         self.taskbar_percent.store(0, Ordering::Relaxed);
         osc_taskbar(Some(0));
     }
@@ -308,7 +330,12 @@ impl TotalProgress {
     pub fn advance(&self, file_bytes: u64) {
         let done = self.done.fetch_add(1, Ordering::Relaxed) + 1;
         let total = self.total_files.load(Ordering::Relaxed);
-        if let Some(bar) = self.bar.lock().unwrap().as_ref() {
+        if let Some(bar) = self
+            .bar
+            .lock()
+            .expect("progress bar mutex poisoned")
+            .as_ref()
+        {
             bar.set_message(format!("{done}/{total} files"));
             if bar.length() == Some(0) {
                 bar.tick();
@@ -327,7 +354,7 @@ impl TotalProgress {
     }
 
     pub fn finish(&self) {
-        if let Some(bar) = self.bar.lock().unwrap().take() {
+        if let Some(bar) = self.bar.lock().expect("progress bar mutex poisoned").take() {
             bar.finish_and_clear();
         }
         osc_taskbar(None);

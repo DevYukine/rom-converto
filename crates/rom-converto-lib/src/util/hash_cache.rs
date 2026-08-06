@@ -152,7 +152,7 @@ impl HashCache {
         }
         let key = canonical_key(path)?;
         let fp = fingerprint(path)?;
-        let state = self.state.lock().unwrap();
+        let state = self.state.lock().expect("hash cache mutex poisoned");
         let entry = state.entries.get(&key)?;
         if !entry_matches(entry, fp) {
             return None;
@@ -194,7 +194,7 @@ impl HashCache {
         if too_recent(fp) {
             return;
         }
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock().expect("hash cache mutex poisoned");
         let entry = entry_for(&mut state.entries, key, fp);
         merge_digests(pick(entry), digests);
         state.dirty = true;
@@ -214,7 +214,7 @@ impl HashCache {
         }
         let key = canonical_key(cue)?;
         let fp = fingerprint(cue)?;
-        let state = self.state.lock().unwrap();
+        let state = self.state.lock().expect("hash cache mutex poisoned");
         let entry = state.entries.get(&key)?;
         if !entry_matches(entry, fp) {
             return None;
@@ -270,7 +270,7 @@ impl HashCache {
             }
             member_keys.push(mfp);
         }
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock().expect("hash cache mutex poisoned");
         let entry = entry_for(&mut state.entries, key, fp);
         entry.whole = Some(whole.clone());
         entry.tracks = Some(tracks.to_vec());
@@ -290,7 +290,7 @@ impl HashCache {
         let Some(fp) = fingerprint(path) else {
             return false;
         };
-        let state = self.state.lock().unwrap();
+        let state = self.state.lock().expect("hash cache mutex poisoned");
         let Some(entry) = state.entries.get(&key) else {
             return false;
         };
@@ -312,7 +312,7 @@ impl HashCache {
         if too_recent(fp) {
             return;
         }
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock().expect("hash cache mutex poisoned");
         let entry = entry_for(&mut state.entries, key, fp);
         entry.verify_valid.insert(label.to_string(), true);
         state.dirty = true;
@@ -324,7 +324,7 @@ impl HashCache {
         let Some(path) = &self.path else {
             return;
         };
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock().expect("hash cache mutex poisoned");
         if !state.dirty {
             return;
         }

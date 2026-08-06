@@ -1,5 +1,6 @@
 import { defineStore } from "pinia";
 import { invoke } from "~/lib/ipc";
+import { invokeArgs } from "~/lib/opdefs/types";
 import type { RunOutcome } from "~/types/report";
 import { useUiStore } from "~/stores/ui";
 import { useAlertsStore } from "~/stores/alerts";
@@ -210,7 +211,10 @@ export const useQueueStore = defineStore("queue", () => {
 		job.startedAt = Date.now();
 		useProgress(job.taskId).reset();
 		try {
-			const res = await invoke<RunOutcome>(job.command, job.args as Record<string, unknown>);
+			const res = await invoke<RunOutcome>(
+				job.command,
+				invokeArgs(job.command, job.args as Record<string, unknown>),
+			);
 			settle(job, res, null);
 		} catch (e) {
 			settle(job, null, String(e));

@@ -66,7 +66,6 @@ impl ZArchiveFooter {
     /// Build a new footer with the magic and version fields set,
     /// integrity hash zeroed, and caller-supplied section bounds plus
     /// total archive size.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         section_compressed_data: ZArchiveSectionInfo,
         section_offset_records: ZArchiveSectionInfo,

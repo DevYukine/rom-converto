@@ -56,7 +56,7 @@ impl WupTicket {
             ticket_format_version: bytes[OFFSET_TICKET_FORMAT_VERSION],
             encrypted_title_key: bytes[OFFSET_ENCRYPTED_TITLE_KEY..OFFSET_ENCRYPTED_TITLE_KEY + 16]
                 .try_into()
-                .unwrap(),
+                .expect("16-byte slice"),
             ticket_id: read_u64_be(bytes, OFFSET_TICKET_ID),
             device_id: read_u32_be(bytes, OFFSET_DEVICE_ID),
             title_id: read_u64_be(bytes, OFFSET_TITLE_ID),
@@ -75,15 +75,15 @@ impl WupTicket {
 }
 
 fn read_u16_be(bytes: &[u8], offset: usize) -> u16 {
-    u16::from_be_bytes(bytes[offset..offset + 2].try_into().unwrap())
+    u16::from_be_bytes(bytes[offset..offset + 2].try_into().expect("2-byte slice"))
 }
 
 fn read_u32_be(bytes: &[u8], offset: usize) -> u32 {
-    u32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap())
+    u32::from_be_bytes(bytes[offset..offset + 4].try_into().expect("4-byte slice"))
 }
 
 fn read_u64_be(bytes: &[u8], offset: usize) -> u64 {
-    u64::from_be_bytes(bytes[offset..offset + 8].try_into().unwrap())
+    u64::from_be_bytes(bytes[offset..offset + 8].try_into().expect("8-byte slice"))
 }
 
 #[cfg(test)]

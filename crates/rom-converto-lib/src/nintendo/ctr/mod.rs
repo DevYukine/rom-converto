@@ -2,7 +2,7 @@
 //! assembly, decryption, conversion between CIA and CCI, verification, and
 //! the Z3DS compression pipeline.
 
-use crate::nintendo::ctr::cia::{decrypt_from_encrypted_cia, write_cia};
+use crate::nintendo::ctr::cia::{CiaWriteArgs, decrypt_from_encrypted_cia, write_cia};
 use crate::nintendo::ctr::constants::NCCH_MAGIC_OFFSET;
 use crate::nintendo::ctr::decrypt::cia::{parse_and_decrypt_ncch, parse_and_decrypt_ncsd};
 pub use crate::nintendo::ctr::encrypt::{
@@ -464,14 +464,16 @@ async fn convert_cdn_to_cia_single(
     let out = File::create(&encrypted).await?;
     let mut out_buffered = BufWriter::new(out);
     if let Err(err) = write_cia(
-        cdn_dir,
         &mut out_buffered,
-        &title_metadata_path,
-        &ticket_path,
-        title_metadata,
-        ticket,
-        progress,
-        &cancel,
+        CiaWriteArgs {
+            path: cdn_dir,
+            tmd_path: &title_metadata_path,
+            tmd: title_metadata,
+            tik_path: &ticket_path,
+            tik: ticket,
+            progress,
+            cancel: &cancel,
+        },
     )
     .await
     {

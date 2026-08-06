@@ -24,8 +24,8 @@ use super::error::{NkitError, NkitResult};
 use super::format::{NKIT_MAGIC_VERSION, NkitHeader, clear_nkit_header};
 use super::gaps::{parse_junk_file_record, peek_record_type};
 use super::reader::{
-    NULLS_LEAD, NkitPlan, Span, SpanKind, WiiGroupSpec, WiiPiece, emit, expand_gap_record,
-    read_exact_at,
+    GapPositions, NULLS_LEAD, NkitPlan, Span, SpanKind, WiiGroupSpec, WiiPiece, emit,
+    expand_gap_record, read_exact_at,
 };
 use crate::nintendo::rvl::constants::{
     WII_GROUP_PAYLOAD_SIZE, WII_GROUP_TOTAL_SIZE, WII_SECTOR_PAYLOAD_SIZE, WII_SECTOR_SIZE_U64,
@@ -48,7 +48,8 @@ struct PartitionEntry {
 }
 
 fn parse_partition_table(header: &[u8]) -> NkitResult<Vec<PartitionEntry>> {
-    let be32 = |off: usize| u32::from_be_bytes(header[off..off + 4].try_into().unwrap());
+    let be32 =
+        |off: usize| u32::from_be_bytes(header[off..off + 4].try_into().expect("4-byte slice"));
     let mut out = Vec::new();
     for table in 0..4 {
         let count = be32(PARTITION_TABLE_OFFSET + table * 8) as usize;
@@ -185,13 +186,16 @@ fn build_pdata_plan<S: Read + Seek>(src: &mut S, src_base: u64) -> NkitResult<Pd
             "partition data carries no NKit header".into(),
         ));
     }
-    let hashed_size = u32::from_be_bytes(head[0x210..0x214].try_into().unwrap()) as u64 * 4;
+    let hashed_size =
+        u32::from_be_bytes(head[0x210..0x214].try_into().expect("4-byte slice")) as u64 * 4;
     let data_size = hashed_to_data(hashed_size);
-    let junk_id: [u8; 4] = head[..4].try_into().unwrap();
+    let junk_id: [u8; 4] = head[..4].try_into().expect("4-byte slice");
     let disc_num = head[6];
-    let dol_addr = u32::from_be_bytes(head[0x420..0x424].try_into().unwrap());
-    let fst_off = u32::from_be_bytes(head[0x424..0x428].try_into().unwrap()) as u64 * 4;
-    let fst_size = u32::from_be_bytes(head[0x428..0x42C].try_into().unwrap()) as u64 * 4;
+    let dol_addr = u32::from_be_bytes(head[0x420..0x424].try_into().expect("4-byte slice"));
+    let fst_off =
+        u32::from_be_bytes(head[0x424..0x428].try_into().expect("4-byte slice")) as u64 * 4;
+    let fst_size =
+        u32::from_be_bytes(head[0x428..0x42C].try_into().expect("4-byte slice")) as u64 * 4;
     if fst_off < PDATA_HEADER || fst_off + fst_size > data_size {
         return Err(NkitError::InvalidHeader(format!(
             "partition FST {fst_off:#x}+{fst_size:#x} outside its data"
@@ -364,16 +368,15 @@ fn expand_pd_gap<S: Read + Seek>(
     first_or_last: bool,
 ) -> NkitResult<()> {
     let mut spans: Vec<Span> = Vec::new();
-    expand_gap_record(
-        &mut spans,
-        src,
-        nkit_pos,
-        out_pos,
-        nulls_pos,
-        first_or_last,
-        [0u8; 4],
-        0,
-    )?;
+    let mut gap = GapPositions {
+        nkit_pos: *nkit_pos,
+        out_pos: *out_pos,
+        nulls_pos: *nulls_pos,
+    };
+    expand_gap_record(&mut spans, src, &mut gap, first_or_last, [0u8; 4], 0)?;
+    *nkit_pos = gap.nkit_pos;
+    *out_pos = gap.out_pos;
+    *nulls_pos = gap.nulls_pos;
     for s in spans {
         let kind = match s.kind {
             SpanKind::Zeros => WiiPiece::Zeros,
@@ -479,21 +482,17 @@ pub(crate) fn build_wii_plan<S: Read + Seek>(
         if src_pos < part.nkit_offset {
             let zeros_filler = prev_type == Some(1);
             let mut filler_spans: Vec<Span> = Vec::new();
-            let mut nulls_pos = out_pos + NULLS_LEAD;
             let junk_id = match prev_type {
                 Some(0) => prev_id,
                 _ => disc_junk_id,
             };
-            expand_gap_record(
-                &mut filler_spans,
-                src,
-                &mut src_pos,
-                &mut out_pos,
-                &mut nulls_pos,
-                true,
-                junk_id,
-                disc_num,
-            )?;
+            let mut gap = GapPositions {
+                nkit_pos: src_pos,
+                out_pos,
+                nulls_pos: out_pos + NULLS_LEAD,
+            };
+            expand_gap_record(&mut filler_spans, src, &mut gap, true, junk_id, disc_num)?;
+            out_pos = gap.out_pos;
             for mut s in filler_spans {
                 if zeros_filler && matches!(s.kind, SpanKind::Junk { .. }) {
                     s.kind = SpanKind::Zeros;
@@ -567,23 +566,19 @@ pub(crate) fn build_wii_plan<S: Read + Seek>(
     }
 
     if src_pos < nkit_len {
-        let mut nulls_pos = out_pos + NULLS_LEAD;
         let junk_id = match prev_type {
             Some(0) => prev_id,
             _ => disc_junk_id,
         };
         let zeros_filler = prev_type == Some(1);
         let mut filler_spans: Vec<Span> = Vec::new();
-        expand_gap_record(
-            &mut filler_spans,
-            src,
-            &mut src_pos,
-            &mut out_pos,
-            &mut nulls_pos,
-            true,
-            junk_id,
-            disc_num,
-        )?;
+        let mut gap = GapPositions {
+            nkit_pos: src_pos,
+            out_pos,
+            nulls_pos: out_pos + NULLS_LEAD,
+        };
+        expand_gap_record(&mut filler_spans, src, &mut gap, true, junk_id, disc_num)?;
+        out_pos = gap.out_pos;
         for mut s in filler_spans {
             if zeros_filler && matches!(s.kind, SpanKind::Junk { .. }) {
                 s.kind = SpanKind::Zeros;

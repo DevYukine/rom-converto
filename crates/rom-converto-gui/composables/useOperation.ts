@@ -1,6 +1,7 @@
 import type { Ref } from "vue";
 import { ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { invokeArgs } from "~/lib/opdefs/types";
 
 interface OperationRefs {
   result: Ref<string>;
@@ -24,7 +25,7 @@ export function useOperation(refs?: OperationRefs) {
     loading.value = true;
 
     try {
-      const res = await invoke<unknown>(command, args);
+      const res = await invoke<unknown>(command, invokeArgs(command, args));
       result.value =
         typeof res === "object" && res !== null && "message" in res
           ? String((res as { message?: unknown }).message)

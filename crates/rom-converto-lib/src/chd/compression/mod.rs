@@ -469,7 +469,11 @@ impl CdCodecSet {
         ecc_bytes: usize,
         complen_bytes: usize,
     ) -> ChdResult<Vec<u8>> {
-        let base_compressed = self.lzma.as_ref().unwrap().compress(base)?;
+        let base_compressed = self
+            .lzma
+            .as_ref()
+            .expect("compress_cdlz only called when codecs contains Cdlz, which forces lzma to be initialized")
+            .compress(base)?;
         let subcode_compressed = deflate_with_reset(&mut self.deflate, subcode)?;
         Ok(assemble_cd_output(
             ecc_flags,
@@ -522,7 +526,10 @@ impl CdCodecSet {
         ecc_bytes: usize,
         complen_bytes: usize,
     ) -> ChdResult<Vec<u8>> {
-        let zstd = self.zstd.as_mut().unwrap();
+        let zstd = self
+            .zstd
+            .as_mut()
+            .expect("compress_cdzs only called when codecs contains Cdzs, which forces zstd to be initialized");
         let base_compressed = zstd.compress(base)?;
         let subcode_compressed = zstd.compress(subcode)?;
         Ok(assemble_cd_output(
@@ -559,9 +566,15 @@ fn compress_raw_codec(
     zstd: Option<&mut ::zstd::bulk::Compressor<'static>>,
 ) -> Option<Vec<u8>> {
     match codec {
-        ChdCodec::Lzma => lzma.unwrap().compress(hunk).ok(),
+        ChdCodec::Lzma => lzma
+            .expect("caller only passes Lzma when self.lzma was initialized for it")
+            .compress(hunk)
+            .ok(),
         ChdCodec::Zlib => deflate_with_reset(deflate, hunk).ok(),
-        ChdCodec::Zstd => zstd.unwrap().compress(hunk).ok(),
+        ChdCodec::Zstd => zstd
+            .expect("caller only passes Zstd when self.zstd was initialized for it")
+            .compress(hunk)
+            .ok(),
         ChdCodec::Huff => {
             let mut out = Vec::new();
             huffman8_encode(hunk, &mut out).ok().map(|()| out)

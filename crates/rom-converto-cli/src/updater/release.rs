@@ -25,9 +25,15 @@ pub enum ReleaseVersionCompareResult {
 
 pub fn get_current_release_version() -> ReleaseVersion {
     ReleaseVersion {
-        major: built_info::PKG_VERSION_MAJOR.parse().unwrap(),
-        minor: built_info::PKG_VERSION_MINOR.parse().unwrap(),
-        patch: built_info::PKG_VERSION_PATCH.parse().unwrap(),
+        major: built_info::PKG_VERSION_MAJOR
+            .parse()
+            .expect("cargo package version components are numeric"),
+        minor: built_info::PKG_VERSION_MINOR
+            .parse()
+            .expect("cargo package version components are numeric"),
+        patch: built_info::PKG_VERSION_PATCH
+            .parse()
+            .expect("cargo package version components are numeric"),
     }
 }
 

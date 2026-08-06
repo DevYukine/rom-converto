@@ -444,8 +444,12 @@ impl HuffmanEncoder {
 
         let mut nextalloc = HUFFMAN_CODES;
         while list.len() > 1 {
-            let node1 = list.pop().unwrap();
-            let node0 = list.pop().unwrap();
+            let node1 = list
+                .pop()
+                .expect("list.len() > 1 checked by while condition");
+            let node0 = list
+                .pop()
+                .expect("list.len() > 1 checked by while condition, second pop after first");
 
             let new_index = nextalloc;
             nextalloc += 1;

@@ -2,6 +2,7 @@ import type { Ref } from "vue";
 import { ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import type { BatchItem } from "~/types/batch";
+import { invokeArgs } from "~/lib/opdefs/types";
 
 // Read a command's returned plan line. Report-capable commands return a
 // { message } object; the rest return a plain string.
@@ -26,7 +27,10 @@ export function usePreview(commandName: string) {
     error.value = "";
     previewing.value = true;
     try {
-      const res = await invoke<unknown>(commandName, { ...args, dryRun: true });
+      const res = await invoke<unknown>(
+        commandName,
+        invokeArgs(commandName, { ...args, dryRun: true }),
+      );
       preview.value = planText(res);
     } catch (e) {
       error.value = String(e);
@@ -46,10 +50,10 @@ export function usePreview(commandName: string) {
     try {
       for (const item of queue.value) {
         if (item.status === "done" || item.status === "error") continue;
-        const res = await invoke<unknown>(commandName, {
-          ...buildArgs(item),
-          dryRun: true,
-        });
+        const res = await invoke<unknown>(
+          commandName,
+          invokeArgs(commandName, { ...buildArgs(item), dryRun: true }),
+        );
         lines.push(planText(res));
       }
       preview.value = lines.join("\n");

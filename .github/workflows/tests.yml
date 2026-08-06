@@ -121,5 +121,15 @@ jobs:
         with:
           components: clippy
 
-      - name: Run cargo clippy (lib + cli + benchmark + ffi)
-        run: cargo clippy -p rom-converto-lib -p rom-converto-cli -p rom-converto-benchmark -p rom-converto-ffi -- -D warnings
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            xdg-utils
+
+      - name: Run cargo clippy (lib + cli + benchmark + ffi + gui)
+        run: cargo clippy -p rom-converto-lib -p rom-converto-cli -p rom-converto-benchmark -p rom-converto-ffi -p rom-converto-gui -- -W clippy::unwrap-used -D warnings

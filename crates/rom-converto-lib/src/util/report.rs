@@ -64,18 +64,31 @@ impl ReportFormat {
     }
 }
 
+/// Inputs for [`ReportRecord::new`]. Mirrors [`ReportRecord`] minus
+/// `ratio_pct`, which is derived from the byte counts and status.
+pub struct ReportRecordInput {
+    pub input_path: String,
+    pub output_path: String,
+    pub operation: String,
+    pub status: FileStatus,
+    pub input_bytes: u64,
+    pub output_bytes: u64,
+    pub elapsed_ms: u64,
+    pub error: Option<String>,
+}
+
 impl ReportRecord {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        input_path: String,
-        output_path: String,
-        operation: impl Into<String>,
-        status: FileStatus,
-        input_bytes: u64,
-        output_bytes: u64,
-        elapsed_ms: u64,
-        error: Option<String>,
-    ) -> Self {
+    pub fn new(input: ReportRecordInput) -> Self {
+        let ReportRecordInput {
+            input_path,
+            output_path,
+            operation,
+            status,
+            input_bytes,
+            output_bytes,
+            elapsed_ms,
+            error,
+        } = input;
         let ratio_pct = match status {
             FileStatus::Ok if input_bytes > 0 => {
                 let saved = (1.0 - output_bytes as f64 / input_bytes as f64) * 100.0;
@@ -86,7 +99,7 @@ impl ReportRecord {
         Self {
             input_path,
             output_path,
-            operation: operation.into(),
+            operation,
             status,
             input_bytes,
             output_bytes,
@@ -749,16 +762,16 @@ mod tests {
     use super::*;
 
     fn ok_record() -> ReportRecord {
-        ReportRecord::new(
-            "in.iso".into(),
-            "out.cso".into(),
-            "compress",
-            FileStatus::Ok,
-            1024 * 1024,
-            256 * 1024,
-            1500,
-            None,
-        )
+        ReportRecord::new(ReportRecordInput {
+            input_path: "in.iso".into(),
+            output_path: "out.cso".into(),
+            operation: ("compress").into(),
+            status: FileStatus::Ok,
+            input_bytes: 1024 * 1024,
+            output_bytes: 256 * 1024,
+            elapsed_ms: 1500,
+            error: None,
+        })
     }
 
     #[test]
@@ -827,48 +840,48 @@ mod tests {
 
     #[test]
     fn csv_escapes_comma_in_path() {
-        let rec = ReportRecord::new(
-            "a,b.iso".into(),
-            String::new(),
-            "compress",
-            FileStatus::Ok,
-            10,
-            5,
-            0,
-            None,
-        );
+        let rec = ReportRecord::new(ReportRecordInput {
+            input_path: "a,b.iso".into(),
+            output_path: String::new(),
+            operation: ("compress").into(),
+            status: FileStatus::Ok,
+            input_bytes: 10,
+            output_bytes: 5,
+            elapsed_ms: 0,
+            error: None,
+        });
         let out = render(&[rec], &ReportTotals::default(), ReportFormat::Csv);
         assert!(out.contains("\"a,b.iso\""), "{out}");
     }
 
     #[test]
     fn csv_escapes_quote_in_path() {
-        let rec = ReportRecord::new(
-            "a\"b.iso".into(),
-            String::new(),
-            "compress",
-            FileStatus::Ok,
-            10,
-            5,
-            0,
-            None,
-        );
+        let rec = ReportRecord::new(ReportRecordInput {
+            input_path: "a\"b.iso".into(),
+            output_path: String::new(),
+            operation: ("compress").into(),
+            status: FileStatus::Ok,
+            input_bytes: 10,
+            output_bytes: 5,
+            elapsed_ms: 0,
+            error: None,
+        });
         let out = render(&[rec], &ReportTotals::default(), ReportFormat::Csv);
         assert!(out.contains("\"a\"\"b.iso\""), "{out}");
     }
 
     #[test]
     fn csv_escapes_newline_in_path() {
-        let rec = ReportRecord::new(
-            "a\nb.iso".into(),
-            String::new(),
-            "compress",
-            FileStatus::Ok,
-            10,
-            5,
-            0,
-            None,
-        );
+        let rec = ReportRecord::new(ReportRecordInput {
+            input_path: "a\nb.iso".into(),
+            output_path: String::new(),
+            operation: ("compress").into(),
+            status: FileStatus::Ok,
+            input_bytes: 10,
+            output_bytes: 5,
+            elapsed_ms: 0,
+            error: None,
+        });
         let out = render(&[rec], &ReportTotals::default(), ReportFormat::Csv);
         assert!(out.contains("\"a\nb.iso\""), "{out}");
         assert_eq!(out.lines().count(), 3, "embedded newline split the row");
@@ -876,16 +889,16 @@ mod tests {
 
     #[test]
     fn json_stable_schema() {
-        let skipped = ReportRecord::new(
-            "s.iso".into(),
-            String::new(),
-            "compress",
-            FileStatus::Skipped,
-            0,
-            0,
-            0,
-            None,
-        );
+        let skipped = ReportRecord::new(ReportRecordInput {
+            input_path: "s.iso".into(),
+            output_path: String::new(),
+            operation: ("compress").into(),
+            status: FileStatus::Skipped,
+            input_bytes: 0,
+            output_bytes: 0,
+            elapsed_ms: 0,
+            error: None,
+        });
         let totals = ReportTotals {
             total_files: 2,
             ok: 1,
@@ -913,16 +926,16 @@ mod tests {
 
     #[test]
     fn html_escapes_angle_brackets() {
-        let rec = ReportRecord::new(
-            "<game>.iso".into(),
-            String::new(),
-            "compress",
-            FileStatus::Ok,
-            10,
-            5,
-            0,
-            None,
-        );
+        let rec = ReportRecord::new(ReportRecordInput {
+            input_path: "<game>.iso".into(),
+            output_path: String::new(),
+            operation: ("compress").into(),
+            status: FileStatus::Ok,
+            input_bytes: 10,
+            output_bytes: 5,
+            elapsed_ms: 0,
+            error: None,
+        });
         let out = render(&[rec], &ReportTotals::default(), ReportFormat::Html);
         assert!(out.contains("&lt;game&gt;.iso"), "{out}");
         assert!(!out.contains("<game>"), "{out}");
@@ -968,16 +981,16 @@ mod tests {
 
     #[test]
     fn failed_row_has_no_ratio() {
-        let rec = ReportRecord::new(
-            "in.iso".into(),
-            String::new(),
-            "compress",
-            FileStatus::Failed,
-            1024,
-            0,
-            10,
-            Some("boom".into()),
-        );
+        let rec = ReportRecord::new(ReportRecordInput {
+            input_path: "in.iso".into(),
+            output_path: String::new(),
+            operation: ("compress").into(),
+            status: FileStatus::Failed,
+            input_bytes: 1024,
+            output_bytes: 0,
+            elapsed_ms: 10,
+            error: Some("boom".into()),
+        });
         assert!(rec.ratio_pct.is_none());
         let csv = render(
             std::slice::from_ref(&rec),
@@ -995,16 +1008,16 @@ mod tests {
 
     #[test]
     fn decompress_ratio_negative() {
-        let rec = ReportRecord::new(
-            "in.cso".into(),
-            "out.iso".into(),
-            "decompress",
-            FileStatus::Ok,
-            256 * 1024,
-            1024 * 1024,
-            0,
-            None,
-        );
+        let rec = ReportRecord::new(ReportRecordInput {
+            input_path: "in.cso".into(),
+            output_path: "out.iso".into(),
+            operation: ("decompress").into(),
+            status: FileStatus::Ok,
+            input_bytes: 256 * 1024,
+            output_bytes: 1024 * 1024,
+            elapsed_ms: 0,
+            error: None,
+        });
         assert!(rec.ratio_pct.unwrap() < 0.0, "{:?}", rec.ratio_pct);
     }
 
@@ -1027,16 +1040,16 @@ mod tests {
 
     #[test]
     fn report_record_round_trips_through_json() {
-        let original = ReportRecord::new(
-            "in.iso".into(),
-            "out.cso".into(),
-            "compress",
-            FileStatus::Skipped,
-            1024 * 1024,
-            256 * 1024,
-            1500,
-            Some("note".into()),
-        );
+        let original = ReportRecord::new(ReportRecordInput {
+            input_path: "in.iso".into(),
+            output_path: "out.cso".into(),
+            operation: ("compress").into(),
+            status: FileStatus::Skipped,
+            input_bytes: 1024 * 1024,
+            output_bytes: 256 * 1024,
+            elapsed_ms: 1500,
+            error: Some("note".into()),
+        });
         let json = serde_json::to_string(&original).unwrap();
         let back: ReportRecord = serde_json::from_str(&json).unwrap();
         assert_eq!(back.input_path, original.input_path);

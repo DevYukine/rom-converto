@@ -275,6 +275,15 @@ pub(super) enum CompressedKind {
     Raw(Vec<u8>),
 }
 
+/// Output side shared by both region encoders: the file being
+/// written, the position the next chunk lands at, and the group
+/// table built so far.
+pub(super) struct RegionWriteState<'a> {
+    pub writer: &'a mut BufWriter<std::fs::File>,
+    pub writer_pos: &'a mut u64,
+    pub groups: &'a mut Vec<RvzGroup>,
+}
+
 /// Metadata returned by [`partition::encode_partition_region`]
 /// so [`compress_blocking`] can populate `WiaPart::pd[0]` and
 /// `WiaPart::pd[1]` with values that match Dolphin's
@@ -425,15 +434,19 @@ fn compress_reader<R: Read + Seek>(
                     raw::encode_raw_region(
                         &raw_pool,
                         &mut reader,
-                        &mut writer,
-                        &mut writer_pos,
-                        *offset,
-                        *size,
-                        iso_size,
-                        effective_chunk_size,
-                        &mut groups,
-                        &bytes_done,
-                        cancel,
+                        RegionWriteState {
+                            writer: &mut writer,
+                            writer_pos: &mut writer_pos,
+                            groups: &mut groups,
+                        },
+                        raw::RawRegionEncode {
+                            region_offset: *offset,
+                            region_size: *size,
+                            iso_size,
+                            chunk_size: effective_chunk_size,
+                            bytes_done: &bytes_done,
+                            cancel,
+                        },
                     )?;
                     let n_groups = groups.len() as u32 - group_index;
                     raw_data.push(WiaRawData {
@@ -450,13 +463,17 @@ fn compress_reader<R: Read + Seek>(
                             .as_ref()
                             .expect("partition_pool must exist if plan contains partitions"),
                         &mut reader,
-                        &mut writer,
-                        &mut writer_pos,
-                        info,
-                        effective_chunk_size,
-                        &mut groups,
-                        &bytes_done,
-                        cancel,
+                        RegionWriteState {
+                            writer: &mut writer,
+                            writer_pos: &mut writer_pos,
+                            groups: &mut groups,
+                        },
+                        partition::PartitionRegionEncode {
+                            info,
+                            chunk_size: effective_chunk_size,
+                            bytes_done: &bytes_done,
+                            cancel,
+                        },
                     )?;
                     let first_sector = (info.data_start() / WII_SECTOR_SIZE_U64) as u32;
                     partitions.push(WiaPart {

@@ -55,8 +55,8 @@ use rom_converto_lib::util::NX_DAT_UNSUPPORTED_HINT;
 use rom_converto_lib::util::fs::{collect_all_files, collect_files_with_exts};
 use rom_converto_lib::util::{
     CancelToken, ConflictPolicy, ConflictResolution, DEFAULT_SPACE_HEADROOM, FileStatus, HashAlgo,
-    PlanLine, ProgressReporter, ReportFormat, ReportRecord, ReportTotals, TemplateTokens,
-    apply_template, available_space, format_bytes, hash_file_cancellable,
+    PlanLine, ProgressReporter, ReportFormat, ReportRecord, ReportRecordInput, ReportTotals,
+    TemplateTokens, apply_template, available_space, format_bytes, hash_file_cancellable,
     mixed_playlist_extensions, oversized_rvz_chunk, parse_algos, resolve_conflict, space_shortfall,
     write_report,
 };
@@ -256,17 +256,28 @@ fn comparison_sizes(
 /// file in full. The output hash is computed under `spawn_blocking` so a
 /// multi-GB file doesn't stall the async runtime, and observes `cancel` so
 /// it can be interrupted like the conversion it follows.
-#[allow(clippy::too_many_arguments)]
-async fn build_comparison(
-    progress: Arc<dyn ProgressReporter>,
-    input: &Path,
-    output: &Path,
+struct ComparisonInput<'a> {
+    input: &'a Path,
+    output: &'a Path,
     input_bytes: u64,
     output_bytes: u64,
     target: rom_converto_lib::util::OutputVerify,
     verify_after: bool,
+}
+
+async fn build_comparison(
+    progress: Arc<dyn ProgressReporter>,
     cancel: &CancelToken,
+    args: ComparisonInput<'_>,
 ) -> ComparisonSummary {
+    let ComparisonInput {
+        input,
+        output,
+        input_bytes,
+        output_bytes,
+        target,
+        verify_after,
+    } = args;
     let mut summary = comparison_sizes(input, output, input_bytes, output_bytes);
 
     let (verify, output_sha1) = if verify_after {
@@ -388,7 +399,6 @@ async fn resolve_archive_input(
 /// Pick the output path for a write command. When a template is given it
 /// supersedes any explicit output, mirroring the CLI's `conflicts_with` rule;
 /// supplying both at once is rejected.
-#[allow(clippy::too_many_arguments)]
 fn pick_output(
     explicit: Option<PathBuf>,
     template: Option<&str>,
@@ -422,16 +432,16 @@ fn build_record(
         return None;
     }
     let elapsed_ms = elapsed.as_millis().min(u64::MAX as u128) as u64;
-    Some(ReportRecord::new(
-        input.display().to_string(),
-        output.display().to_string(),
-        operation,
-        FileStatus::Ok,
+    Some(ReportRecord::new(ReportRecordInput {
+        input_path: input.display().to_string(),
+        output_path: output.display().to_string(),
+        operation: operation.into(),
+        status: FileStatus::Ok,
         input_bytes,
         output_bytes,
         elapsed_ms,
-        None,
-    ))
+        error: None,
+    }))
 }
 
 /// Build a skipped record for a conflict-policy skip, matching the CLI's
@@ -440,16 +450,16 @@ fn build_skip_record(enabled: bool, input: &Path, operation: &str) -> Option<Rep
     if !enabled {
         return None;
     }
-    Some(ReportRecord::new(
-        input.display().to_string(),
-        String::new(),
-        operation,
-        FileStatus::Skipped,
-        0,
-        0,
-        0,
-        None,
-    ))
+    Some(ReportRecord::new(ReportRecordInput {
+        input_path: input.display().to_string(),
+        output_path: String::new(),
+        operation: operation.into(),
+        status: FileStatus::Skipped,
+        input_bytes: 0,
+        output_bytes: 0,
+        elapsed_ms: 0,
+        error: None,
+    }))
 }
 
 fn conflict_policy(s: Option<&str>) -> ConflictPolicy {
@@ -501,17 +511,29 @@ async fn resolve_output(
 /// read-only verify to choose keep-valid versus rewrite-invalid. Nothing is
 /// written; the only filesystem access is reading the input and the read-only
 /// verify. The resulting `PlanLine` renders byte-identically to the CLI plan.
-#[allow(clippy::too_many_arguments)]
-async fn plan_line(
-    progress: &dyn rom_converto_lib::util::ProgressReporter,
-    operation: &str,
-    input: &Path,
-    desired: &Path,
-    on_conflict: Option<&str>,
+struct PlanInput<'a> {
+    operation: &'a str,
+    input: &'a Path,
+    desired: &'a Path,
+    on_conflict: Option<&'a str>,
     media: Option<String>,
     verify: rom_converto_lib::util::OutputVerify,
     missing_keys: Option<String>,
+}
+
+async fn plan_line(
+    progress: &dyn rom_converto_lib::util::ProgressReporter,
+    args: PlanInput<'_>,
 ) -> Result<PlanLine, String> {
+    let PlanInput {
+        operation,
+        input,
+        desired,
+        on_conflict,
+        media,
+        verify,
+        missing_keys,
+    } = args;
     use rom_converto_lib::util::{PlanDecision, VerifyOutcome, classify, verify_existing_output};
     let policy = conflict_policy(on_conflict);
     let resolution = resolve_conflict(desired, policy).map_err(err_to_string)?;
@@ -714,11 +736,9 @@ pub fn cmd_file_size(path: PathBuf) -> u64 {
     input_size(&path)
 }
 
-#[allow(clippy::too_many_arguments)]
-#[tauri::command]
-pub async fn cmd_cdn_to_cia(
-    app: AppHandle,
-    state: State<'_, ActiveCancel>,
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CdnToCiaArgs {
     cdn_dir: PathBuf,
     output: Option<PathBuf>,
     decrypt: bool,
@@ -728,7 +748,25 @@ pub async fn cmd_cdn_to_cia(
     ensure_ticket_exists: bool,
     on_conflict: Option<String>,
     skip_space_check: bool,
+}
+
+#[tauri::command]
+pub async fn cmd_cdn_to_cia(
+    app: AppHandle,
+    state: State<'_, ActiveCancel>,
+    args: CdnToCiaArgs,
 ) -> Result<String, String> {
+    let CdnToCiaArgs {
+        cdn_dir,
+        output,
+        decrypt,
+        compress,
+        cleanup,
+        recursive,
+        ensure_ticket_exists,
+        on_conflict,
+        skip_space_check,
+    } = args;
     let progress = Arc::new(TauriProgress::new(app.clone(), "cdn-to-cia"));
     let total_progress = Arc::new(TauriProgress::new(app, "cdn-to-cia-total"));
     let opts = CdnToCiaOptions {
@@ -788,11 +826,9 @@ pub async fn cmd_generate_ticket(cdn_dir: PathBuf, output: PathBuf) -> Result<St
     Ok(format!("Wrote {out_display}"))
 }
 
-#[allow(clippy::too_many_arguments)]
-#[tauri::command]
-pub async fn cmd_decrypt_rom(
-    app: AppHandle,
-    state: State<'_, ActiveCancel>,
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DecryptRomArgs {
     input: PathBuf,
     output: Option<PathBuf>,
     on_conflict: Option<String>,
@@ -800,7 +836,23 @@ pub async fn cmd_decrypt_rom(
     output_template: Option<String>,
     dry_run: Option<bool>,
     task_id: Option<String>,
+}
+
+#[tauri::command]
+pub async fn cmd_decrypt_rom(
+    app: AppHandle,
+    state: State<'_, ActiveCancel>,
+    args: DecryptRomArgs,
 ) -> Result<RunOutcome, String> {
+    let DecryptRomArgs {
+        input,
+        output,
+        on_conflict,
+        skip_space_check,
+        output_template,
+        dry_run,
+        task_id,
+    } = args;
     let key = task_id.as_deref().unwrap_or("decrypt");
     let progress = Arc::new(TauriProgress::new(app, key));
     let dry_run = dry_run.unwrap_or(false);
@@ -819,13 +871,15 @@ pub async fn cmd_decrypt_rom(
     if dry_run {
         let line = plan_line(
             progress.as_ref(),
-            "decrypt",
-            &input,
-            &desired,
-            on_conflict.as_deref(),
-            None,
-            rom_converto_lib::util::OutputVerify::None,
-            None,
+            PlanInput {
+                operation: "decrypt",
+                input: &input,
+                desired: &desired,
+                on_conflict: on_conflict.as_deref(),
+                media: None,
+                verify: rom_converto_lib::util::OutputVerify::None,
+                missing_keys: None,
+            },
         )
         .await?;
         return Ok(RunOutcome::text(line.display_text()));
@@ -894,19 +948,21 @@ pub async fn cmd_decrypt_rom(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn cmd_encrypt_rom(
     app: AppHandle,
     state: State<'_, ActiveCancel>,
-    input: PathBuf,
-    output: Option<PathBuf>,
-    on_conflict: Option<String>,
-    skip_space_check: bool,
-    output_template: Option<String>,
-    dry_run: Option<bool>,
-    task_id: Option<String>,
+    args: DecryptRomArgs,
 ) -> Result<RunOutcome, String> {
+    let DecryptRomArgs {
+        input,
+        output,
+        on_conflict,
+        skip_space_check,
+        output_template,
+        dry_run,
+        task_id,
+    } = args;
     let key = task_id.as_deref().unwrap_or("encrypt");
     let progress = Arc::new(TauriProgress::new(app, key));
     let dry_run = dry_run.unwrap_or(false);
@@ -925,13 +981,15 @@ pub async fn cmd_encrypt_rom(
     if dry_run {
         let line = plan_line(
             progress.as_ref(),
-            "encrypt",
-            &input,
-            &desired,
-            on_conflict.as_deref(),
-            None,
-            rom_converto_lib::util::OutputVerify::None,
-            None,
+            PlanInput {
+                operation: "encrypt",
+                input: &input,
+                desired: &desired,
+                on_conflict: on_conflict.as_deref(),
+                media: None,
+                verify: rom_converto_lib::util::OutputVerify::None,
+                missing_keys: None,
+            },
         )
         .await?;
         return Ok(RunOutcome::text(line.display_text()));
@@ -998,11 +1056,9 @@ pub async fn cmd_encrypt_rom(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-#[tauri::command]
-pub async fn cmd_compress_rom(
-    app: AppHandle,
-    state: State<'_, ActiveCancel>,
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompressRomArgs {
     input: PathBuf,
     output: Option<PathBuf>,
     level: Option<i32>,
@@ -1012,7 +1068,25 @@ pub async fn cmd_compress_rom(
     output_template: Option<String>,
     dry_run: Option<bool>,
     task_id: Option<String>,
+}
+
+#[tauri::command]
+pub async fn cmd_compress_rom(
+    app: AppHandle,
+    state: State<'_, ActiveCancel>,
+    args: CompressRomArgs,
 ) -> Result<RunOutcome, String> {
+    let CompressRomArgs {
+        input,
+        output,
+        level,
+        allow_encrypted,
+        on_conflict,
+        skip_space_check,
+        output_template,
+        dry_run,
+        task_id,
+    } = args;
     let key = task_id.as_deref().unwrap_or("compress");
     let progress = Arc::new(TauriProgress::new(app, key));
     let dry_run = dry_run.unwrap_or(false);
@@ -1031,13 +1105,15 @@ pub async fn cmd_compress_rom(
     if dry_run {
         let line = plan_line(
             progress.as_ref(),
-            "compress",
-            &input,
-            &desired,
-            on_conflict.as_deref(),
-            None,
-            rom_converto_lib::util::OutputVerify::None,
-            None,
+            PlanInput {
+                operation: "compress",
+                input: &input,
+                desired: &desired,
+                on_conflict: on_conflict.as_deref(),
+                media: None,
+                verify: rom_converto_lib::util::OutputVerify::None,
+                missing_keys: None,
+            },
         )
         .await?;
         return Ok(RunOutcome::text(line.display_text()));
@@ -1100,19 +1176,21 @@ pub async fn cmd_compress_rom(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn cmd_decompress_rom(
     app: AppHandle,
     state: State<'_, ActiveCancel>,
-    input: PathBuf,
-    output: Option<PathBuf>,
-    on_conflict: Option<String>,
-    skip_space_check: bool,
-    output_template: Option<String>,
-    dry_run: Option<bool>,
-    task_id: Option<String>,
+    args: DecryptRomArgs,
 ) -> Result<RunOutcome, String> {
+    let DecryptRomArgs {
+        input,
+        output,
+        on_conflict,
+        skip_space_check,
+        output_template,
+        dry_run,
+        task_id,
+    } = args;
     let key = task_id.as_deref().unwrap_or("decompress");
     let progress = Arc::new(TauriProgress::new(app, key));
     let dry_run = dry_run.unwrap_or(false);
@@ -1131,13 +1209,15 @@ pub async fn cmd_decompress_rom(
     if dry_run {
         let line = plan_line(
             progress.as_ref(),
-            "decompress",
-            &input,
-            &desired,
-            on_conflict.as_deref(),
-            None,
-            rom_converto_lib::util::OutputVerify::None,
-            None,
+            PlanInput {
+                operation: "decompress",
+                input: &input,
+                desired: &desired,
+                on_conflict: on_conflict.as_deref(),
+                media: None,
+                verify: rom_converto_lib::util::OutputVerify::None,
+                missing_keys: None,
+            },
         )
         .await?;
         return Ok(RunOutcome::text(line.display_text()));
@@ -1221,11 +1301,9 @@ fn resolve_chd_opts(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-#[tauri::command]
-pub async fn cmd_chd_compress(
-    app: AppHandle,
-    state: State<'_, ActiveCancel>,
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChdCompressArgs {
     input_path: PathBuf,
     output: Option<PathBuf>,
     codecs: Option<Vec<String>>,
@@ -1239,7 +1317,29 @@ pub async fn cmd_chd_compress(
     verify_after: Option<bool>,
     dry_run: Option<bool>,
     task_id: Option<String>,
+}
+
+#[tauri::command]
+pub async fn cmd_chd_compress(
+    app: AppHandle,
+    state: State<'_, ActiveCancel>,
+    args: ChdCompressArgs,
 ) -> Result<RunOutcome, String> {
+    let ChdCompressArgs {
+        input_path,
+        output,
+        codecs,
+        level,
+        hunk_size,
+        mode,
+        on_conflict,
+        skip_space_check,
+        output_template,
+        report,
+        verify_after,
+        dry_run,
+        task_id,
+    } = args;
     let key = task_id.as_deref().unwrap_or("chd-compress");
     let progress = Arc::new(TauriProgress::new(app, key));
     let dry_run = dry_run.unwrap_or(false);
@@ -1257,13 +1357,15 @@ pub async fn cmd_chd_compress(
     if dry_run {
         let line = plan_line(
             progress.as_ref(),
-            "compress",
-            &input_path,
-            &desired,
-            on_conflict.as_deref(),
-            chd_media_label(&input_path),
-            rom_converto_lib::util::OutputVerify::Chd,
-            None,
+            PlanInput {
+                operation: "compress",
+                input: &input_path,
+                desired: &desired,
+                on_conflict: on_conflict.as_deref(),
+                media: chd_media_label(&input_path),
+                verify: rom_converto_lib::util::OutputVerify::Chd,
+                missing_keys: None,
+            },
         )
         .await?;
         return Ok(RunOutcome {
@@ -1333,13 +1435,15 @@ pub async fn cmd_chd_compress(
     );
     let comparison = build_comparison(
         progress_for_verify,
-        &record_input,
-        &record_output,
-        in_bytes,
-        out_bytes,
-        rom_converto_lib::util::OutputVerify::Chd,
-        verify_after.unwrap_or(false),
         &token_for_verify,
+        ComparisonInput {
+            input: &record_input,
+            output: &record_output,
+            input_bytes: in_bytes,
+            output_bytes: out_bytes,
+            target: rom_converto_lib::util::OutputVerify::Chd,
+            verify_after: verify_after.unwrap_or(false),
+        },
     )
     .await;
     Ok(RunOutcome {
@@ -1351,11 +1455,9 @@ pub async fn cmd_chd_compress(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-#[tauri::command]
-pub async fn cmd_cso_compress(
-    app: AppHandle,
-    state: State<'_, ActiveCancel>,
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CsoCompressArgs {
     input_path: PathBuf,
     output: Option<PathBuf>,
     format: String,
@@ -1367,7 +1469,27 @@ pub async fn cmd_cso_compress(
     verify_after: Option<bool>,
     dry_run: Option<bool>,
     task_id: Option<String>,
+}
+
+#[tauri::command]
+pub async fn cmd_cso_compress(
+    app: AppHandle,
+    state: State<'_, ActiveCancel>,
+    args: CsoCompressArgs,
 ) -> Result<RunOutcome, String> {
+    let CsoCompressArgs {
+        input_path,
+        output,
+        format,
+        block_size,
+        on_conflict,
+        skip_space_check,
+        output_template,
+        report,
+        verify_after,
+        dry_run,
+        task_id,
+    } = args;
     let format = match format.as_str() {
         "zso" => CsoFormat::Zso,
         _ => CsoFormat::Cso,
@@ -1390,13 +1512,15 @@ pub async fn cmd_cso_compress(
     if dry_run {
         let line = plan_line(
             progress.as_ref(),
-            "compress",
-            &input_path,
-            &desired,
-            on_conflict.as_deref(),
-            Some(format_name.to_string()),
-            rom_converto_lib::util::OutputVerify::Cso,
-            None,
+            PlanInput {
+                operation: "compress",
+                input: &input_path,
+                desired: &desired,
+                on_conflict: on_conflict.as_deref(),
+                media: Some(format_name.to_string()),
+                verify: rom_converto_lib::util::OutputVerify::Cso,
+                missing_keys: None,
+            },
         )
         .await?;
         return Ok(RunOutcome {
@@ -1464,13 +1588,15 @@ pub async fn cmd_cso_compress(
     );
     let comparison = build_comparison(
         progress_for_verify,
-        &record_input,
-        &record_output,
-        in_bytes,
-        out_bytes,
-        rom_converto_lib::util::OutputVerify::Cso,
-        verify_after.unwrap_or(false),
         &token_for_verify,
+        ComparisonInput {
+            input: &record_input,
+            output: &record_output,
+            input_bytes: in_bytes,
+            output_bytes: out_bytes,
+            target: rom_converto_lib::util::OutputVerify::Cso,
+            verify_after: verify_after.unwrap_or(false),
+        },
     )
     .await;
     Ok(RunOutcome {
@@ -1486,25 +1612,27 @@ pub async fn cmd_cso_compress(
 /// `cmd_chd_compress` but calling the pipeline's chained conversion so the
 /// temporary ISO is always cleaned up. DAX input is rejected by the pipeline
 /// itself before anything is written.
-#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn cmd_cso_to_chd(
     app: AppHandle,
     state: State<'_, ActiveCancel>,
-    input_path: PathBuf,
-    output: Option<PathBuf>,
-    codecs: Option<Vec<String>>,
-    level: Option<i32>,
-    hunk_size: Option<u32>,
-    mode: Option<String>,
-    on_conflict: Option<String>,
-    skip_space_check: bool,
-    output_template: Option<String>,
-    report: Option<bool>,
-    verify_after: Option<bool>,
-    dry_run: Option<bool>,
-    task_id: Option<String>,
+    args: ChdCompressArgs,
 ) -> Result<RunOutcome, String> {
+    let ChdCompressArgs {
+        input_path,
+        output,
+        codecs,
+        level,
+        hunk_size,
+        mode,
+        on_conflict,
+        skip_space_check,
+        output_template,
+        report,
+        verify_after,
+        dry_run,
+        task_id,
+    } = args;
     let key = task_id.as_deref().unwrap_or("cso-to-chd");
     let progress = Arc::new(TauriProgress::new(app, key));
     let dry_run = dry_run.unwrap_or(false);
@@ -1522,13 +1650,15 @@ pub async fn cmd_cso_to_chd(
     if dry_run {
         let line = plan_line(
             progress.as_ref(),
-            "compress",
-            &input_path,
-            &desired,
-            on_conflict.as_deref(),
-            None,
-            rom_converto_lib::util::OutputVerify::Chd,
-            None,
+            PlanInput {
+                operation: "compress",
+                input: &input_path,
+                desired: &desired,
+                on_conflict: on_conflict.as_deref(),
+                media: None,
+                verify: rom_converto_lib::util::OutputVerify::Chd,
+                missing_keys: None,
+            },
         )
         .await?;
         return Ok(RunOutcome {
@@ -1600,13 +1730,15 @@ pub async fn cmd_cso_to_chd(
     );
     let comparison = build_comparison(
         progress_for_verify,
-        &record_input,
-        &record_output,
-        in_bytes,
-        out_bytes,
-        rom_converto_lib::util::OutputVerify::Chd,
-        verify_after.unwrap_or(false),
         &token_for_verify,
+        ComparisonInput {
+            input: &record_input,
+            output: &record_output,
+            input_bytes: in_bytes,
+            output_bytes: out_bytes,
+            target: rom_converto_lib::util::OutputVerify::Chd,
+            verify_after: verify_after.unwrap_or(false),
+        },
     )
     .await;
     Ok(RunOutcome {
@@ -1618,11 +1750,9 @@ pub async fn cmd_cso_to_chd(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-#[tauri::command]
-pub async fn cmd_cso_decompress(
-    app: AppHandle,
-    state: State<'_, ActiveCancel>,
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CsoDecompressArgs {
     input_path: PathBuf,
     output: Option<PathBuf>,
     on_conflict: Option<String>,
@@ -1631,7 +1761,24 @@ pub async fn cmd_cso_decompress(
     report: Option<bool>,
     dry_run: Option<bool>,
     task_id: Option<String>,
+}
+
+#[tauri::command]
+pub async fn cmd_cso_decompress(
+    app: AppHandle,
+    state: State<'_, ActiveCancel>,
+    args: CsoDecompressArgs,
 ) -> Result<RunOutcome, String> {
+    let CsoDecompressArgs {
+        input_path,
+        output,
+        on_conflict,
+        skip_space_check,
+        output_template,
+        report,
+        dry_run,
+        task_id,
+    } = args;
     let key = task_id.as_deref().unwrap_or("cso-decompress");
     let progress = Arc::new(TauriProgress::new(app, key));
     let dry_run = dry_run.unwrap_or(false);
@@ -1649,13 +1796,15 @@ pub async fn cmd_cso_decompress(
     if dry_run {
         let line = plan_line(
             progress.as_ref(),
-            "decompress",
-            &input_path,
-            &desired,
-            on_conflict.as_deref(),
-            None,
-            rom_converto_lib::util::OutputVerify::None,
-            None,
+            PlanInput {
+                operation: "decompress",
+                input: &input_path,
+                desired: &desired,
+                on_conflict: on_conflict.as_deref(),
+                media: None,
+                verify: rom_converto_lib::util::OutputVerify::None,
+                missing_keys: None,
+            },
         )
         .await?;
         return Ok(RunOutcome {
@@ -1762,13 +1911,15 @@ pub async fn cmd_cue_merge(
     if dry_run.unwrap_or(false) {
         let line = plan_line(
             progress.as_ref(),
-            "merge",
-            &cue_path,
-            &output,
-            on_conflict.as_deref(),
-            Some(format!("+ {}", output.with_extension("bin").display())),
-            rom_converto_lib::util::OutputVerify::None,
-            None,
+            PlanInput {
+                operation: "merge",
+                input: &cue_path,
+                desired: &output,
+                on_conflict: on_conflict.as_deref(),
+                media: Some(format!("+ {}", output.with_extension("bin").display())),
+                verify: rom_converto_lib::util::OutputVerify::None,
+                missing_keys: None,
+            },
         )
         .await?;
         return Ok(line.display_text());
@@ -1815,13 +1966,15 @@ pub async fn cmd_cue_to_iso(
     if dry_run.unwrap_or(false) {
         let line = plan_line(
             progress.as_ref(),
-            "to-iso",
-            &cue_path,
-            &output,
-            on_conflict.as_deref(),
-            None,
-            rom_converto_lib::util::OutputVerify::None,
-            None,
+            PlanInput {
+                operation: "to-iso",
+                input: &cue_path,
+                desired: &output,
+                on_conflict: on_conflict.as_deref(),
+                media: None,
+                verify: rom_converto_lib::util::OutputVerify::None,
+                missing_keys: None,
+            },
         )
         .await?;
         return Ok(line.display_text());
@@ -1873,13 +2026,15 @@ pub async fn cmd_cue_to_cso(
     if dry_run.unwrap_or(false) {
         let line = plan_line(
             progress.as_ref(),
-            "to-cso",
-            &cue_path,
-            &output,
-            on_conflict.as_deref(),
-            None,
-            rom_converto_lib::util::OutputVerify::None,
-            None,
+            PlanInput {
+                operation: "to-cso",
+                input: &cue_path,
+                desired: &output,
+                on_conflict: on_conflict.as_deref(),
+                media: None,
+                verify: rom_converto_lib::util::OutputVerify::None,
+                missing_keys: None,
+            },
         )
         .await?;
         return Ok(line.display_text());
@@ -1919,11 +2074,9 @@ pub async fn cmd_cue_to_cso(
 // that exceed the compiler's recursion limit for Send inference. They run
 // on a dedicated thread with its own tokio runtime to sidestep the issue.
 
-#[allow(clippy::too_many_arguments)]
-#[tauri::command]
-pub async fn cmd_chd_extract(
-    app: AppHandle,
-    state: State<'_, ActiveCancel>,
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChdExtractArgs {
     input: PathBuf,
     output: Option<PathBuf>,
     parent: Option<PathBuf>,
@@ -1932,7 +2085,24 @@ pub async fn cmd_chd_extract(
     report: Option<bool>,
     dry_run: Option<bool>,
     task_id: Option<String>,
+}
+
+#[tauri::command]
+pub async fn cmd_chd_extract(
+    app: AppHandle,
+    state: State<'_, ActiveCancel>,
+    args: ChdExtractArgs,
 ) -> Result<RunOutcome, String> {
+    let ChdExtractArgs {
+        input,
+        output,
+        parent,
+        skip_space_check,
+        output_template,
+        report,
+        dry_run,
+        task_id,
+    } = args;
     let key = task_id.as_deref().unwrap_or("chd-extract");
     let progress = Arc::new(TauriProgress::new(app, key));
     let dry_run = dry_run.unwrap_or(false);
@@ -1950,13 +2120,15 @@ pub async fn cmd_chd_extract(
     if dry_run {
         let line = plan_line(
             progress.as_ref(),
-            "extract",
-            &input,
-            &output,
-            None,
-            None,
-            rom_converto_lib::util::OutputVerify::None,
-            None,
+            PlanInput {
+                operation: "extract",
+                input: &input,
+                desired: &output,
+                on_conflict: None,
+                media: None,
+                verify: rom_converto_lib::util::OutputVerify::None,
+                missing_keys: None,
+            },
         )
         .await?;
         return Ok(RunOutcome {
@@ -2068,23 +2240,25 @@ pub async fn cmd_chd_verify(
 /// `cmd_cso_compress` but calling the pipeline's chained conversion. Only
 /// DVD-mode CHDs qualify; the pipeline rejects a CD-mode CHD before anything
 /// is written.
-#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn cmd_chd_to_cso(
     app: AppHandle,
     state: State<'_, ActiveCancel>,
-    input_path: PathBuf,
-    output: Option<PathBuf>,
-    format: String,
-    block_size: Option<u32>,
-    on_conflict: Option<String>,
-    skip_space_check: bool,
-    output_template: Option<String>,
-    report: Option<bool>,
-    verify_after: Option<bool>,
-    dry_run: Option<bool>,
-    task_id: Option<String>,
+    args: CsoCompressArgs,
 ) -> Result<RunOutcome, String> {
+    let CsoCompressArgs {
+        input_path,
+        output,
+        format,
+        block_size,
+        on_conflict,
+        skip_space_check,
+        output_template,
+        report,
+        verify_after,
+        dry_run,
+        task_id,
+    } = args;
     let format = match format.as_str() {
         "zso" => CsoFormat::Zso,
         _ => CsoFormat::Cso,
@@ -2106,13 +2280,15 @@ pub async fn cmd_chd_to_cso(
     if dry_run {
         let line = plan_line(
             progress.as_ref(),
-            "compress",
-            &input_path,
-            &desired,
-            on_conflict.as_deref(),
-            None,
-            rom_converto_lib::util::OutputVerify::Cso,
-            None,
+            PlanInput {
+                operation: "compress",
+                input: &input_path,
+                desired: &desired,
+                on_conflict: on_conflict.as_deref(),
+                media: None,
+                verify: rom_converto_lib::util::OutputVerify::Cso,
+                missing_keys: None,
+            },
         )
         .await?;
         return Ok(RunOutcome {
@@ -2200,13 +2376,15 @@ pub async fn cmd_chd_to_cso(
     );
     let comparison = build_comparison(
         progress_for_verify,
-        &record_input,
-        &record_output,
-        in_bytes,
-        out_bytes,
-        rom_converto_lib::util::OutputVerify::Cso,
-        verify_after.unwrap_or(false),
         &token_for_verify,
+        ComparisonInput {
+            input: &record_input,
+            output: &record_output,
+            input_bytes: in_bytes,
+            output_bytes: out_bytes,
+            target: rom_converto_lib::util::OutputVerify::Cso,
+            verify_after: verify_after.unwrap_or(false),
+        },
     )
     .await;
     Ok(RunOutcome {
@@ -2218,11 +2396,9 @@ pub async fn cmd_chd_to_cso(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-#[tauri::command]
-pub async fn cmd_compress_disc(
-    app: AppHandle,
-    state: State<'_, ActiveCancel>,
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompressDiscArgs {
     input: PathBuf,
     output: Option<PathBuf>,
     level: Option<i32>,
@@ -2234,7 +2410,27 @@ pub async fn cmd_compress_disc(
     report: Option<bool>,
     verify_after: Option<bool>,
     dry_run: Option<bool>,
+}
+
+#[tauri::command]
+pub async fn cmd_compress_disc(
+    app: AppHandle,
+    state: State<'_, ActiveCancel>,
+    args: CompressDiscArgs,
 ) -> Result<RunOutcome, String> {
+    let CompressDiscArgs {
+        input,
+        output,
+        level,
+        chunk_size,
+        task_id,
+        on_conflict,
+        skip_space_check,
+        output_template,
+        report,
+        verify_after,
+        dry_run,
+    } = args;
     let progress = Arc::new(TauriProgress::new(app, &task_id));
     let dry_run = dry_run.unwrap_or(false);
     let resolved =
@@ -2252,13 +2448,15 @@ pub async fn cmd_compress_disc(
     if dry_run {
         let line = plan_line(
             progress.as_ref(),
-            "compress",
-            &input,
-            &desired,
-            on_conflict.as_deref(),
-            Some("RVZ".to_string()),
-            rom_converto_lib::util::OutputVerify::Rvz,
-            None,
+            PlanInput {
+                operation: "compress",
+                input: &input,
+                desired: &desired,
+                on_conflict: on_conflict.as_deref(),
+                media: Some("RVZ".to_string()),
+                verify: rom_converto_lib::util::OutputVerify::Rvz,
+                missing_keys: None,
+            },
         )
         .await?;
         return Ok(RunOutcome {
@@ -2329,13 +2527,15 @@ pub async fn cmd_compress_disc(
     );
     let comparison = build_comparison(
         progress_for_verify,
-        &record_input,
-        &record_output,
-        in_bytes,
-        out_bytes,
-        rom_converto_lib::util::OutputVerify::Rvz,
-        verify_after.unwrap_or(false),
         &token_for_verify,
+        ComparisonInput {
+            input: &record_input,
+            output: &record_output,
+            input_bytes: in_bytes,
+            output_bytes: out_bytes,
+            target: rom_converto_lib::util::OutputVerify::Rvz,
+            verify_after: verify_after.unwrap_or(false),
+        },
     )
     .await;
     Ok(RunOutcome {
@@ -2347,11 +2547,9 @@ pub async fn cmd_compress_disc(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-#[tauri::command]
-pub async fn cmd_decompress_disc(
-    app: AppHandle,
-    state: State<'_, ActiveCancel>,
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DecompressDiscArgs {
     input: PathBuf,
     output: Option<PathBuf>,
     task_id: String,
@@ -2360,7 +2558,24 @@ pub async fn cmd_decompress_disc(
     output_template: Option<String>,
     report: Option<bool>,
     dry_run: Option<bool>,
+}
+
+#[tauri::command]
+pub async fn cmd_decompress_disc(
+    app: AppHandle,
+    state: State<'_, ActiveCancel>,
+    args: DecompressDiscArgs,
 ) -> Result<RunOutcome, String> {
+    let DecompressDiscArgs {
+        input,
+        output,
+        task_id,
+        on_conflict,
+        skip_space_check,
+        output_template,
+        report,
+        dry_run,
+    } = args;
     let progress = Arc::new(TauriProgress::new(app, &task_id));
     let dry_run = dry_run.unwrap_or(false);
     let resolved = resolve_archive_input(input.clone(), &["rvz"]).await?;
@@ -2377,13 +2592,15 @@ pub async fn cmd_decompress_disc(
     if dry_run {
         let line = plan_line(
             progress.as_ref(),
-            "decompress",
-            &input,
-            &desired,
-            on_conflict.as_deref(),
-            None,
-            rom_converto_lib::util::OutputVerify::None,
-            None,
+            PlanInput {
+                operation: "decompress",
+                input: &input,
+                desired: &desired,
+                on_conflict: on_conflict.as_deref(),
+                media: None,
+                verify: rom_converto_lib::util::OutputVerify::None,
+                missing_keys: None,
+            },
         )
         .await?;
         return Ok(RunOutcome {
@@ -2465,11 +2682,9 @@ pub async fn cmd_decompress_disc(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-#[tauri::command]
-pub async fn cmd_wup_compress(
-    app: AppHandle,
-    state: State<'_, ActiveCancel>,
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WupCompressArgs {
     inputs: Vec<PathBuf>,
     output: PathBuf,
     level: Option<i32>,
@@ -2477,7 +2692,23 @@ pub async fn cmd_wup_compress(
     on_conflict: Option<String>,
     skip_space_check: bool,
     dry_run: Option<bool>,
+}
+
+#[tauri::command]
+pub async fn cmd_wup_compress(
+    app: AppHandle,
+    state: State<'_, ActiveCancel>,
+    args: WupCompressArgs,
 ) -> Result<String, String> {
+    let WupCompressArgs {
+        inputs,
+        output,
+        level,
+        keys,
+        on_conflict,
+        skip_space_check,
+        dry_run,
+    } = args;
     let progress = Arc::new(TauriProgress::new(app, "wup-compress"));
     if dry_run.unwrap_or(false) {
         use rom_converto_lib::nintendo::wup::compress::{TitleInputFormat, detect_title_format};
@@ -2492,13 +2723,15 @@ pub async fn cmd_wup_compress(
         let input = inputs.first().cloned().unwrap_or_else(|| output.clone());
         let line = plan_line(
             progress.as_ref(),
-            "compress",
-            &input,
-            &output,
-            on_conflict.as_deref(),
-            media.map(str::to_string),
-            rom_converto_lib::util::OutputVerify::None,
-            None,
+            PlanInput {
+                operation: "compress",
+                input: &input,
+                desired: &output,
+                on_conflict: on_conflict.as_deref(),
+                media: media.map(str::to_string),
+                verify: rom_converto_lib::util::OutputVerify::None,
+                missing_keys: None,
+            },
         )
         .await?;
         return Ok(line.display_text());
@@ -2569,13 +2802,15 @@ pub async fn cmd_wup_decrypt(
     if dry_run.unwrap_or(false) {
         let line = plan_line(
             progress.as_ref(),
-            "decrypt",
-            &input,
-            &output,
-            on_conflict.as_deref(),
-            None,
-            rom_converto_lib::util::OutputVerify::None,
-            None,
+            PlanInput {
+                operation: "decrypt",
+                input: &input,
+                desired: &output,
+                on_conflict: on_conflict.as_deref(),
+                media: None,
+                verify: rom_converto_lib::util::OutputVerify::None,
+                missing_keys: None,
+            },
         )
         .await?;
         return Ok(line.display_text());
@@ -2609,11 +2844,9 @@ pub async fn cmd_wup_decrypt(
     Ok(format!("Wrote {out_display}"))
 }
 
-#[allow(clippy::too_many_arguments)]
-#[tauri::command]
-pub async fn cmd_nx_compress(
-    app: AppHandle,
-    state: State<'_, ActiveCancel>,
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NxCompressArgs {
     input: PathBuf,
     output: Option<PathBuf>,
     keys: Option<PathBuf>,
@@ -2627,7 +2860,29 @@ pub async fn cmd_nx_compress(
     verify_after: Option<bool>,
     dry_run: Option<bool>,
     task_id: Option<String>,
+}
+
+#[tauri::command]
+pub async fn cmd_nx_compress(
+    app: AppHandle,
+    state: State<'_, ActiveCancel>,
+    args: NxCompressArgs,
 ) -> Result<RunOutcome, String> {
+    let NxCompressArgs {
+        input,
+        output,
+        keys,
+        level,
+        mode,
+        block_size_exp,
+        on_conflict,
+        skip_space_check,
+        output_template,
+        report,
+        verify_after,
+        dry_run,
+        task_id,
+    } = args;
     let key = task_id.as_deref().unwrap_or("nx-compress");
     let progress = Arc::new(TauriProgress::new(app, key));
     let dry_run = dry_run.unwrap_or(false);
@@ -2666,13 +2921,15 @@ pub async fn cmd_nx_compress(
         };
         let line = plan_line(
             progress.as_ref(),
-            "compress",
-            &input,
-            &desired,
-            on_conflict.as_deref(),
-            Some(format!("{kind:?}")),
-            rom_converto_lib::util::OutputVerify::Nx(Box::new(keyset)),
-            missing,
+            PlanInput {
+                operation: "compress",
+                input: &input,
+                desired: &desired,
+                on_conflict: on_conflict.as_deref(),
+                media: Some(format!("{kind:?}")),
+                verify: rom_converto_lib::util::OutputVerify::Nx(Box::new(keyset)),
+                missing_keys: missing,
+            },
         )
         .await?;
         return Ok(RunOutcome {
@@ -2745,13 +3002,15 @@ pub async fn cmd_nx_compress(
     );
     let comparison = build_comparison(
         progress_for_verify,
-        &record_input,
-        &record_output,
-        in_bytes,
-        out_bytes,
-        rom_converto_lib::util::OutputVerify::Nx(Box::new(keys_for_verify)),
-        verify_after.unwrap_or(false),
         &token_for_verify,
+        ComparisonInput {
+            input: &record_input,
+            output: &record_output,
+            input_bytes: in_bytes,
+            output_bytes: out_bytes,
+            target: rom_converto_lib::util::OutputVerify::Nx(Box::new(keys_for_verify)),
+            verify_after: verify_after.unwrap_or(false),
+        },
     )
     .await;
     Ok(RunOutcome {
@@ -2763,11 +3022,9 @@ pub async fn cmd_nx_compress(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-#[tauri::command]
-pub async fn cmd_nx_decompress(
-    app: AppHandle,
-    state: State<'_, ActiveCancel>,
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NxDecompressArgs {
     input: PathBuf,
     output: Option<PathBuf>,
     keys: Option<PathBuf>,
@@ -2777,7 +3034,25 @@ pub async fn cmd_nx_decompress(
     report: Option<bool>,
     dry_run: Option<bool>,
     task_id: Option<String>,
+}
+
+#[tauri::command]
+pub async fn cmd_nx_decompress(
+    app: AppHandle,
+    state: State<'_, ActiveCancel>,
+    args: NxDecompressArgs,
 ) -> Result<RunOutcome, String> {
+    let NxDecompressArgs {
+        input,
+        output,
+        keys,
+        on_conflict,
+        skip_space_check,
+        output_template,
+        report,
+        dry_run,
+        task_id,
+    } = args;
     let key = task_id.as_deref().unwrap_or("nx-decompress");
     let progress = Arc::new(TauriProgress::new(app, key));
     let dry_run = dry_run.unwrap_or(false);
@@ -2796,13 +3071,15 @@ pub async fn cmd_nx_decompress(
     if dry_run {
         let line = plan_line(
             progress.as_ref(),
-            "decompress",
-            &input,
-            &desired,
-            on_conflict.as_deref(),
-            None,
-            rom_converto_lib::util::OutputVerify::None,
-            None,
+            PlanInput {
+                operation: "decompress",
+                input: &input,
+                desired: &desired,
+                on_conflict: on_conflict.as_deref(),
+                media: None,
+                verify: rom_converto_lib::util::OutputVerify::None,
+                missing_keys: None,
+            },
         )
         .await?;
         return Ok(RunOutcome {
@@ -2904,11 +3181,9 @@ pub async fn cmd_nx_verify(
     serde_json::to_string(&result).map_err(err_to_string)
 }
 
-#[allow(clippy::too_many_arguments)]
-#[tauri::command]
-pub async fn cmd_convert_ctr(
-    app: AppHandle,
-    state: State<'_, ActiveCancel>,
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConvertCtrArgs {
     input: PathBuf,
     output: Option<PathBuf>,
     on_conflict: Option<String>,
@@ -2917,7 +3192,24 @@ pub async fn cmd_convert_ctr(
     verify_after: Option<bool>,
     dry_run: Option<bool>,
     task_id: Option<String>,
+}
+
+#[tauri::command]
+pub async fn cmd_convert_ctr(
+    app: AppHandle,
+    state: State<'_, ActiveCancel>,
+    args: ConvertCtrArgs,
 ) -> Result<RunOutcome, String> {
+    let ConvertCtrArgs {
+        input,
+        output,
+        on_conflict,
+        skip_space_check,
+        output_template,
+        verify_after,
+        dry_run,
+        task_id,
+    } = args;
     let key = task_id.as_deref().unwrap_or("ctr-convert");
     let progress = Arc::new(TauriProgress::new(app, key));
     let dry_run = dry_run.unwrap_or(false);
@@ -2936,13 +3228,15 @@ pub async fn cmd_convert_ctr(
     if dry_run {
         let line = plan_line(
             progress.as_ref(),
-            "convert",
-            &input,
-            &desired,
-            on_conflict.as_deref(),
-            None,
-            rom_converto_lib::util::OutputVerify::None,
-            None,
+            PlanInput {
+                operation: "convert",
+                input: &input,
+                desired: &desired,
+                on_conflict: on_conflict.as_deref(),
+                media: None,
+                verify: rom_converto_lib::util::OutputVerify::None,
+                missing_keys: None,
+            },
         )
         .await?;
         return Ok(RunOutcome {
@@ -2990,13 +3284,15 @@ pub async fn cmd_convert_ctr(
     let out_bytes = input_size(&record_output);
     let comparison = build_comparison(
         progress_for_verify,
-        &record_input,
-        &record_output,
-        in_bytes,
-        out_bytes,
-        rom_converto_lib::util::OutputVerify::None,
-        verify_after.unwrap_or(false),
         &token_for_verify,
+        ComparisonInput {
+            input: &record_input,
+            output: &record_output,
+            input_bytes: in_bytes,
+            output_bytes: out_bytes,
+            target: rom_converto_lib::util::OutputVerify::None,
+            verify_after: verify_after.unwrap_or(false),
+        },
     )
     .await;
     Ok(RunOutcome {
@@ -4685,13 +4981,15 @@ mod comparison_tests {
 
         let summary = build_comparison(
             Arc::new(NoProgress),
-            &input,
-            &output,
-            1024,
-            256,
-            rom_converto_lib::util::OutputVerify::Rvz,
-            false,
             &CancelToken::new(),
+            ComparisonInput {
+                input: &input,
+                output: &output,
+                input_bytes: 1024,
+                output_bytes: 256,
+                target: rom_converto_lib::util::OutputVerify::Rvz,
+                verify_after: false,
+            },
         )
         .await;
 
@@ -4710,13 +5008,15 @@ mod comparison_tests {
 
         let summary = build_comparison(
             Arc::new(NoProgress),
-            &input,
-            &output,
-            256,
-            1024,
-            rom_converto_lib::util::OutputVerify::None,
-            false,
             &CancelToken::new(),
+            ComparisonInput {
+                input: &input,
+                output: &output,
+                input_bytes: 256,
+                output_bytes: 1024,
+                target: rom_converto_lib::util::OutputVerify::None,
+                verify_after: false,
+            },
         )
         .await;
 
@@ -4733,13 +5033,15 @@ mod comparison_tests {
 
         let summary = build_comparison(
             Arc::new(NoProgress),
-            &input,
-            &output,
-            8,
-            8,
-            rom_converto_lib::util::OutputVerify::Chd,
-            false,
             &CancelToken::new(),
+            ComparisonInput {
+                input: &input,
+                output: &output,
+                input_bytes: 8,
+                output_bytes: 8,
+                target: rom_converto_lib::util::OutputVerify::Chd,
+                verify_after: false,
+            },
         )
         .await;
 
@@ -4757,13 +5059,15 @@ mod comparison_tests {
 
         let summary = build_comparison(
             Arc::new(NoProgress),
-            &input,
-            &output,
-            22,
-            25,
-            rom_converto_lib::util::OutputVerify::Chd,
-            true,
             &CancelToken::new(),
+            ComparisonInput {
+                input: &input,
+                output: &output,
+                input_bytes: 22,
+                output_bytes: 25,
+                target: rom_converto_lib::util::OutputVerify::Chd,
+                verify_after: true,
+            },
         )
         .await;
 
@@ -4783,13 +5087,15 @@ mod comparison_tests {
 
         let summary = build_comparison(
             Arc::new(NoProgress),
-            &input,
-            &output,
-            22,
-            24,
-            rom_converto_lib::util::OutputVerify::Rvz,
-            true,
             &CancelToken::new(),
+            ComparisonInput {
+                input: &input,
+                output: &output,
+                input_bytes: 22,
+                output_bytes: 24,
+                target: rom_converto_lib::util::OutputVerify::Rvz,
+                verify_after: true,
+            },
         )
         .await;
 
@@ -4809,13 +5115,15 @@ mod comparison_tests {
 
         let summary = build_comparison(
             Arc::new(NoProgress),
-            &input,
-            &output,
-            4,
-            4,
-            rom_converto_lib::util::OutputVerify::Nx(Box::default()),
-            true,
             &CancelToken::new(),
+            ComparisonInput {
+                input: &input,
+                output: &output,
+                input_bytes: 4,
+                output_bytes: 4,
+                target: rom_converto_lib::util::OutputVerify::Nx(Box::default()),
+                verify_after: true,
+            },
         )
         .await;
 
@@ -4836,13 +5144,15 @@ mod comparison_tests {
 
         let summary = build_comparison(
             Arc::new(NoProgress),
-            &input,
-            &output,
-            4,
-            4,
-            rom_converto_lib::util::OutputVerify::None,
-            true,
             &CancelToken::new(),
+            ComparisonInput {
+                input: &input,
+                output: &output,
+                input_bytes: 4,
+                output_bytes: 4,
+                target: rom_converto_lib::util::OutputVerify::None,
+                verify_after: true,
+            },
         )
         .await;
 

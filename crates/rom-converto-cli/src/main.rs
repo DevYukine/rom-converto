@@ -135,7 +135,7 @@ fn finish_single(
     report: Option<&Path>,
 ) -> Result<()> {
     use rom_converto_lib::util::{
-        FileStatus, ReportFormat, ReportRecord, ReportTotals, write_report,
+        FileStatus, ReportFormat, ReportRecord, ReportRecordInput, ReportTotals, write_report,
     };
 
     let elapsed = started.elapsed();
@@ -146,16 +146,16 @@ fn finish_single(
     log::info!("{}", tally.summary_line(direction));
     if let Some(path) = report {
         let elapsed_ms = elapsed.as_millis().min(u64::MAX as u128) as u64;
-        let record = ReportRecord::new(
-            input.display().to_string(),
-            output.display().to_string(),
-            op,
-            FileStatus::Ok,
-            in_bytes,
-            out_bytes,
+        let record = ReportRecord::new(ReportRecordInput {
+            input_path: input.display().to_string(),
+            output_path: output.display().to_string(),
+            operation: (op).into(),
+            status: FileStatus::Ok,
+            input_bytes: in_bytes,
+            output_bytes: out_bytes,
             elapsed_ms,
-            None,
-        );
+            error: None,
+        });
         let totals = ReportTotals {
             total_files: 1,
             ok: 1,
@@ -277,24 +277,37 @@ fn log_rewriting_invalid(output: &Path) {
     );
 }
 
+struct SingleVerifyPlan<'a> {
+    operation: &'a str,
+    input: &'a Path,
+    desired: &'a Path,
+    decision: &'a WriteDecision,
+    policy: rom_converto_lib::util::ConflictPolicy,
+    target: crate::util::OutputVerify,
+    media: Option<&'a str>,
+    missing_keys: Option<&'a str>,
+}
+
 /// Single-file dry-run preview for an `overwrite-invalid` arm. The verify is
 /// read-only, so it runs under dry-run to show whether the existing output
 /// would be kept or rewritten. The synthesized decision feeds the existing
 /// tally/report path so the plan counts match a real run.
-#[allow(clippy::too_many_arguments)]
 async fn dry_run_single_verify(
-    operation: &str,
-    input: &Path,
-    desired: &Path,
-    decision: &WriteDecision,
-    policy: rom_converto_lib::util::ConflictPolicy,
-    target: crate::util::OutputVerify,
-    media: Option<&str>,
-    missing_keys: Option<&str>,
+    plan: SingleVerifyPlan<'_>,
     progress: &dyn rom_converto_lib::util::ProgressReporter,
     report: Option<&Path>,
 ) -> Result<()> {
     use crate::util::{VerifyOutcome, verify_existing_output};
+    let SingleVerifyPlan {
+        operation,
+        input,
+        desired,
+        decision,
+        policy,
+        target,
+        media,
+        missing_keys,
+    } = plan;
     if policy != rom_converto_lib::util::ConflictPolicy::OverwriteInvalid || !desired.exists() {
         return dry_run_single(
             operation,
@@ -674,14 +687,16 @@ async fn main() -> Result<()> {
 
     let dispatch = dispatch_command(
         cli.command,
-        progress,
-        total_progress,
-        &effective,
-        dry_run,
-        skip_space_check,
-        cancel.clone(),
-        &mut github,
-        &cache,
+        DispatchCtx {
+            progress,
+            total_progress,
+            effective: &effective,
+            dry_run,
+            skip_space_check,
+            cancel: cancel.clone(),
+            github: &mut github,
+            cache: &cache,
+        },
     )
     .await;
 
@@ -729,18 +744,29 @@ fn is_cancelled_error(err: &anyhow::Error) -> bool {
     })
 }
 
-#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
-async fn dispatch_command(
-    command: Commands,
+struct DispatchCtx<'a> {
     progress: IndicatifProgress,
     total_progress: TotalProgress,
-    effective: &config::Effective,
+    effective: &'a config::Effective,
     dry_run: bool,
     skip_space_check: bool,
     cancel: rom_converto_lib::util::CancelToken,
-    github: &mut GithubApi,
-    cache: &rom_converto_lib::util::HashCache,
-) -> Result<()> {
+    github: &'a mut GithubApi,
+    cache: &'a rom_converto_lib::util::HashCache,
+}
+
+#[allow(clippy::too_many_lines)]
+async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()> {
+    let DispatchCtx {
+        progress,
+        total_progress,
+        effective,
+        dry_run,
+        skip_space_check,
+        cancel,
+        github,
+        cache,
+    } = ctx;
     match command {
         Commands::Ctr(inner) => match inner {
             CtrCommands::CdnToCia(cmd) => {
@@ -1440,23 +1466,20 @@ async fn dispatch_command(
                 let fallback = config::policy_fallback(&eff.on_conflict)?;
                 if cmd.recursive {
                     require_dir(&cmd.input)?;
-                    batch::rvz_compress(
-                        &progress,
-                        &total_progress,
-                        &cmd.input,
-                        &["iso", "gcm"],
-                        opts,
-                        resolve_policy(cmd.on_conflict, cmd.force, fallback),
-                        output_dir.as_deref(),
-                        cmd.output_template.as_deref(),
-                        cmd.max_depth,
+                    let run = batch::BatchRun {
+                        progress: &progress,
+                        total_progress: &total_progress,
+                        input_dir: &cmd.input,
+                        policy: resolve_policy(cmd.on_conflict, cmd.force, fallback),
+                        output_dir: output_dir.as_deref(),
+                        output_template: cmd.output_template.as_deref(),
+                        max_depth: cmd.max_depth,
                         dry_run,
                         skip_space_check,
-                        report.as_deref(),
-                        cancel.clone(),
-                        cache,
-                    )
-                    .await?
+                        report_path: report.as_deref(),
+                        cancel: &cancel,
+                    };
+                    batch::rvz_compress(&run, &["iso", "gcm"], opts, cache).await?
                 } else {
                     ensure_input_exists(&cmd.input)?;
                     let resolved =
@@ -1491,14 +1514,16 @@ async fn dispatch_command(
                     let decision = resolve_output(&output, policy)?;
                     if dry_run {
                         return dry_run_single_verify(
-                            "compress",
-                            &cmd.input,
-                            &output,
-                            &decision,
-                            policy,
-                            crate::util::OutputVerify::Rvz,
-                            Some("RVZ"),
-                            None,
+                            SingleVerifyPlan {
+                                operation: "compress",
+                                input: &cmd.input,
+                                desired: &output,
+                                decision: &decision,
+                                policy,
+                                target: crate::util::OutputVerify::Rvz,
+                                media: Some("RVZ"),
+                                missing_keys: None,
+                            },
                             &progress,
                             report.as_deref(),
                         )
@@ -1611,20 +1636,20 @@ async fn dispatch_command(
                 let fallback = config::policy_fallback(&eff.on_conflict)?;
                 if cmd.recursive {
                     require_dir(&cmd.input)?;
-                    batch::rvz_decompress(
-                        &progress,
-                        &total_progress,
-                        &cmd.input,
-                        resolve_policy(cmd.on_conflict, cmd.force, fallback),
-                        output_dir.as_deref(),
-                        cmd.output_template.as_deref(),
-                        cmd.max_depth,
+                    let run = batch::BatchRun {
+                        progress: &progress,
+                        total_progress: &total_progress,
+                        input_dir: &cmd.input,
+                        policy: resolve_policy(cmd.on_conflict, cmd.force, fallback),
+                        output_dir: output_dir.as_deref(),
+                        output_template: cmd.output_template.as_deref(),
+                        max_depth: cmd.max_depth,
                         dry_run,
                         skip_space_check,
-                        report.as_deref(),
-                        cancel.clone(),
-                    )
-                    .await?
+                        report_path: report.as_deref(),
+                        cancel: &cancel,
+                    };
+                    batch::rvz_decompress(&run).await?
                 } else {
                     ensure_input_exists(&cmd.input)?;
                     let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["rvz"])?;
@@ -1771,23 +1796,20 @@ async fn dispatch_command(
                 let fallback = config::policy_fallback(&eff.on_conflict)?;
                 if cmd.recursive {
                     require_dir(&cmd.input)?;
-                    batch::rvz_compress(
-                        &progress,
-                        &total_progress,
-                        &cmd.input,
-                        &["iso", "wbfs"],
-                        opts,
-                        resolve_policy(cmd.on_conflict, cmd.force, fallback),
-                        output_dir.as_deref(),
-                        cmd.output_template.as_deref(),
-                        cmd.max_depth,
+                    let run = batch::BatchRun {
+                        progress: &progress,
+                        total_progress: &total_progress,
+                        input_dir: &cmd.input,
+                        policy: resolve_policy(cmd.on_conflict, cmd.force, fallback),
+                        output_dir: output_dir.as_deref(),
+                        output_template: cmd.output_template.as_deref(),
+                        max_depth: cmd.max_depth,
                         dry_run,
                         skip_space_check,
-                        report.as_deref(),
-                        cancel.clone(),
-                        cache,
-                    )
-                    .await?
+                        report_path: report.as_deref(),
+                        cancel: &cancel,
+                    };
+                    batch::rvz_compress(&run, &["iso", "wbfs"], opts, cache).await?
                 } else {
                     ensure_input_exists(&cmd.input)?;
                     let resolved = rom_converto_lib::util::resolve_input(
@@ -1821,14 +1843,16 @@ async fn dispatch_command(
                     let decision = resolve_output(&output, policy)?;
                     if dry_run {
                         return dry_run_single_verify(
-                            "compress",
-                            &cmd.input,
-                            &output,
-                            &decision,
-                            policy,
-                            crate::util::OutputVerify::Rvz,
-                            Some("RVZ"),
-                            None,
+                            SingleVerifyPlan {
+                                operation: "compress",
+                                input: &cmd.input,
+                                desired: &output,
+                                decision: &decision,
+                                policy,
+                                target: crate::util::OutputVerify::Rvz,
+                                media: Some("RVZ"),
+                                missing_keys: None,
+                            },
                             &progress,
                             report.as_deref(),
                         )
@@ -1941,20 +1965,20 @@ async fn dispatch_command(
                 let fallback = config::policy_fallback(&eff.on_conflict)?;
                 if cmd.recursive {
                     require_dir(&cmd.input)?;
-                    batch::rvz_decompress(
-                        &progress,
-                        &total_progress,
-                        &cmd.input,
-                        resolve_policy(cmd.on_conflict, cmd.force, fallback),
-                        output_dir.as_deref(),
-                        cmd.output_template.as_deref(),
-                        cmd.max_depth,
+                    let run = batch::BatchRun {
+                        progress: &progress,
+                        total_progress: &total_progress,
+                        input_dir: &cmd.input,
+                        policy: resolve_policy(cmd.on_conflict, cmd.force, fallback),
+                        output_dir: output_dir.as_deref(),
+                        output_template: cmd.output_template.as_deref(),
+                        max_depth: cmd.max_depth,
                         dry_run,
                         skip_space_check,
-                        report.as_deref(),
-                        cancel.clone(),
-                    )
-                    .await?
+                        report_path: report.as_deref(),
+                        cancel: &cancel,
+                    };
+                    batch::rvz_decompress(&run).await?
                 } else {
                     ensure_input_exists(&cmd.input)?;
                     let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["rvz"])?;
@@ -2268,19 +2292,19 @@ async fn dispatch_command(
                     let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
                     let mut tally = Tally::new();
                     for input in &files {
-                        let desired = crate::util::batch_output(
+                        let desired = crate::util::batch_output(crate::util::BatchOutput {
                             input,
-                            &nx_derive_compressed_path(input),
-                            &cmd.input,
-                            output_dir.as_deref(),
-                            cmd.output_template.as_deref(),
-                            nx_derive_compressed_path(input)
+                            derived: &nx_derive_compressed_path(input),
+                            input_dir: &cmd.input,
+                            output_dir: output_dir.as_deref(),
+                            output_template: cmd.output_template.as_deref(),
+                            output_ext: nx_derive_compressed_path(input)
                                 .extension()
                                 .and_then(|e| e.to_str())
                                 .unwrap_or(""),
-                            cmd.keys.as_deref(),
-                            true,
-                        )?;
+                            keys_path: cmd.keys.as_deref(),
+                            dry_run: true,
+                        })?;
                         let decision = resolve_output(&desired, policy)?;
                         let media = detect_container(input).ok().map(|k| format!("{k:?}"));
                         dry_run::log_plan(
@@ -2370,14 +2394,16 @@ async fn dispatch_command(
                     let decision = resolve_output(&output, policy)?;
                     if dry_run {
                         return dry_run_single_verify(
-                            "compress",
-                            &cmd.input,
-                            &output,
-                            &decision,
-                            policy,
-                            crate::util::OutputVerify::Nx(Box::new(keys.clone())),
-                            Some(&format!("{kind:?}")),
-                            keys_note.as_deref(),
+                            SingleVerifyPlan {
+                                operation: "compress",
+                                input: &cmd.input,
+                                desired: &output,
+                                decision: &decision,
+                                policy,
+                                target: crate::util::OutputVerify::Nx(Box::new(keys.clone())),
+                                media: Some(&format!("{kind:?}")),
+                                missing_keys: keys_note.as_deref(),
+                            },
                             &progress,
                             report.as_deref(),
                         )
@@ -2453,19 +2479,19 @@ async fn dispatch_command(
                     let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
                     let mut tally = Tally::new();
                     for input in &files {
-                        let desired = crate::util::batch_output(
+                        let desired = crate::util::batch_output(crate::util::BatchOutput {
                             input,
-                            &nx_derive_decompressed_path(input),
-                            &cmd.input,
-                            output_dir.as_deref(),
-                            cmd.output_template.as_deref(),
-                            nx_derive_decompressed_path(input)
+                            derived: &nx_derive_decompressed_path(input),
+                            input_dir: &cmd.input,
+                            output_dir: output_dir.as_deref(),
+                            output_template: cmd.output_template.as_deref(),
+                            output_ext: nx_derive_decompressed_path(input)
                                 .extension()
                                 .and_then(|e| e.to_str())
                                 .unwrap_or(""),
-                            cmd.keys.as_deref(),
-                            true,
-                        )?;
+                            keys_path: cmd.keys.as_deref(),
+                            dry_run: true,
+                        })?;
                         let decision = resolve_output(&desired, policy)?;
                         dry_run::log_plan(
                             "decompress",
@@ -2482,21 +2508,20 @@ async fn dispatch_command(
                 }
                 if cmd.recursive {
                     require_dir(&cmd.input)?;
-                    batch::nx_decompress(
-                        &progress,
-                        &total_progress,
-                        &cmd.input,
-                        keys,
-                        resolve_policy(cmd.on_conflict, cmd.force, fallback),
-                        output_dir.as_deref(),
-                        cmd.output_template.as_deref(),
-                        cmd.max_depth,
+                    let run = batch::BatchRun {
+                        progress: &progress,
+                        total_progress: &total_progress,
+                        input_dir: &cmd.input,
+                        policy: resolve_policy(cmd.on_conflict, cmd.force, fallback),
+                        output_dir: output_dir.as_deref(),
+                        output_template: cmd.output_template.as_deref(),
+                        max_depth: cmd.max_depth,
                         dry_run,
                         skip_space_check,
-                        report.as_deref(),
-                        cancel.clone(),
-                    )
-                    .await?
+                        report_path: report.as_deref(),
+                        cancel: &cancel,
+                    };
+                    batch::nx_decompress(&run, keys).await?
                 } else {
                     ensure_input_exists(&cmd.input)?;
                     let resolved =
@@ -2641,23 +2666,20 @@ async fn dispatch_command(
                 if cmd.recursive {
                     require_dir(&cmd.input)?;
                     let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
-                    batch::chd_compress(
-                        &progress,
-                        &total_progress,
-                        &cmd.input,
-                        opts,
-                        mode,
+                    let run = batch::BatchRun {
+                        progress: &progress,
+                        total_progress: &total_progress,
+                        input_dir: &cmd.input,
                         policy,
-                        output_dir.as_deref(),
-                        cmd.output_template.as_deref(),
-                        cmd.max_depth,
+                        output_dir: output_dir.as_deref(),
+                        output_template: cmd.output_template.as_deref(),
+                        max_depth: cmd.max_depth,
                         dry_run,
                         skip_space_check,
-                        report.as_deref(),
-                        cancel.clone(),
-                        cache,
-                    )
-                    .await?
+                        report_path: report.as_deref(),
+                        cancel: &cancel,
+                    };
+                    batch::chd_compress(&run, opts, mode, cache).await?
                 } else {
                     ensure_input_exists(&cmd.input)?;
                     let resolved =
@@ -2691,14 +2713,16 @@ async fn dispatch_command(
                     if dry_run {
                         let media = chd_media_label(input);
                         return dry_run_single_verify(
-                            "compress",
-                            &cmd.input,
-                            &output,
-                            &decision,
-                            policy,
-                            crate::util::OutputVerify::Chd,
-                            media.as_deref(),
-                            None,
+                            SingleVerifyPlan {
+                                operation: "compress",
+                                input: &cmd.input,
+                                desired: &output,
+                                decision: &decision,
+                                policy,
+                                target: crate::util::OutputVerify::Chd,
+                                media: media.as_deref(),
+                                missing_keys: None,
+                            },
                             &progress,
                             report.as_deref(),
                         )
@@ -2766,21 +2790,20 @@ async fn dispatch_command(
                 if cmd.recursive {
                     require_dir(&cmd.input)?;
                     let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
-                    batch::chd_extract(
-                        &progress,
-                        &total_progress,
-                        &cmd.input,
-                        cmd.parent,
+                    let run = batch::BatchRun {
+                        progress: &progress,
+                        total_progress: &total_progress,
+                        input_dir: &cmd.input,
                         policy,
-                        output_dir.as_deref(),
-                        cmd.output_template.as_deref(),
-                        cmd.max_depth,
+                        output_dir: output_dir.as_deref(),
+                        output_template: cmd.output_template.as_deref(),
+                        max_depth: cmd.max_depth,
                         dry_run,
                         skip_space_check,
-                        report.as_deref(),
-                        cancel.clone(),
-                    )
-                    .await?
+                        report_path: report.as_deref(),
+                        cancel: &cancel,
+                    };
+                    batch::chd_extract(&run, cmd.parent).await?
                 } else {
                     ensure_input_exists(&cmd.input)?;
                     let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["chd"])?;
@@ -2900,22 +2923,20 @@ async fn dispatch_command(
                 if cmd.recursive {
                     require_dir(&cmd.input)?;
                     let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
-                    batch::chd_to_cso(
-                        &progress,
-                        &total_progress,
-                        &cmd.input,
-                        opts,
+                    let run = batch::BatchRun {
+                        progress: &progress,
+                        total_progress: &total_progress,
+                        input_dir: &cmd.input,
                         policy,
-                        output_dir.as_deref(),
-                        cmd.output_template.as_deref(),
-                        cmd.max_depth,
+                        output_dir: output_dir.as_deref(),
+                        output_template: cmd.output_template.as_deref(),
+                        max_depth: cmd.max_depth,
                         dry_run,
                         skip_space_check,
-                        report.as_deref(),
-                        cancel.clone(),
-                        cache,
-                    )
-                    .await?
+                        report_path: report.as_deref(),
+                        cancel: &cancel,
+                    };
+                    batch::chd_to_cso(&run, opts, cache).await?
                 } else {
                     ensure_input_exists(&cmd.input)?;
                     let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["chd"])?;
@@ -2947,14 +2968,16 @@ async fn dispatch_command(
                     let media = format.name();
                     if dry_run {
                         return dry_run_single_verify(
-                            "compress",
-                            &cmd.input,
-                            &output,
-                            &decision,
-                            policy,
-                            crate::util::OutputVerify::Cso,
-                            Some(media),
-                            None,
+                            SingleVerifyPlan {
+                                operation: "compress",
+                                input: &cmd.input,
+                                desired: &output,
+                                decision: &decision,
+                                policy,
+                                target: crate::util::OutputVerify::Cso,
+                                media: Some(media),
+                                missing_keys: None,
+                            },
                             &progress,
                             report.as_deref(),
                         )
@@ -3044,22 +3067,20 @@ async fn dispatch_command(
                 if cmd.recursive {
                     require_dir(&cmd.input)?;
                     let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
-                    batch::cso_compress(
-                        &progress,
-                        &total_progress,
-                        &cmd.input,
-                        opts,
+                    let run = batch::BatchRun {
+                        progress: &progress,
+                        total_progress: &total_progress,
+                        input_dir: &cmd.input,
                         policy,
-                        output_dir.as_deref(),
-                        cmd.output_template.as_deref(),
-                        cmd.max_depth,
+                        output_dir: output_dir.as_deref(),
+                        output_template: cmd.output_template.as_deref(),
+                        max_depth: cmd.max_depth,
                         dry_run,
                         skip_space_check,
-                        report.as_deref(),
-                        cancel.clone(),
-                        cache,
-                    )
-                    .await?
+                        report_path: report.as_deref(),
+                        cancel: &cancel,
+                    };
+                    batch::cso_compress(&run, opts, cache).await?
                 } else {
                     ensure_input_exists(&cmd.input)?;
                     let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["iso"])?;
@@ -3091,14 +3112,16 @@ async fn dispatch_command(
                     let media = format.name();
                     if dry_run {
                         return dry_run_single_verify(
-                            "compress",
-                            &cmd.input,
-                            &output,
-                            &decision,
-                            policy,
-                            crate::util::OutputVerify::Cso,
-                            Some(media),
-                            None,
+                            SingleVerifyPlan {
+                                operation: "compress",
+                                input: &cmd.input,
+                                desired: &output,
+                                decision: &decision,
+                                policy,
+                                target: crate::util::OutputVerify::Cso,
+                                media: Some(media),
+                                missing_keys: None,
+                            },
                             &progress,
                             report.as_deref(),
                         )
@@ -3165,20 +3188,20 @@ async fn dispatch_command(
                 if cmd.recursive {
                     require_dir(&cmd.input)?;
                     let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
-                    batch::cso_decompress(
-                        &progress,
-                        &total_progress,
-                        &cmd.input,
+                    let run = batch::BatchRun {
+                        progress: &progress,
+                        total_progress: &total_progress,
+                        input_dir: &cmd.input,
                         policy,
-                        output_dir.as_deref(),
-                        cmd.output_template.as_deref(),
-                        cmd.max_depth,
+                        output_dir: output_dir.as_deref(),
+                        output_template: cmd.output_template.as_deref(),
+                        max_depth: cmd.max_depth,
                         dry_run,
                         skip_space_check,
-                        report.as_deref(),
-                        cancel.clone(),
-                    )
-                    .await?
+                        report_path: report.as_deref(),
+                        cancel: &cancel,
+                    };
+                    batch::cso_decompress(&run).await?
                 } else {
                     ensure_input_exists(&cmd.input)?;
                     let resolved =
@@ -3291,23 +3314,20 @@ async fn dispatch_command(
                 if cmd.recursive {
                     require_dir(&cmd.input)?;
                     let policy = resolve_policy(cmd.on_conflict, cmd.force, fallback);
-                    batch::cso_to_chd(
-                        &progress,
-                        &total_progress,
-                        &cmd.input,
-                        mode,
-                        opts,
+                    let run = batch::BatchRun {
+                        progress: &progress,
+                        total_progress: &total_progress,
+                        input_dir: &cmd.input,
                         policy,
-                        output_dir.as_deref(),
-                        cmd.output_template.as_deref(),
-                        cmd.max_depth,
+                        output_dir: output_dir.as_deref(),
+                        output_template: cmd.output_template.as_deref(),
+                        max_depth: cmd.max_depth,
                         dry_run,
                         skip_space_check,
-                        report.as_deref(),
-                        cancel.clone(),
-                        cache,
-                    )
-                    .await?
+                        report_path: report.as_deref(),
+                        cancel: &cancel,
+                    };
+                    batch::cso_to_chd(&run, mode, opts, cache).await?
                 } else {
                     ensure_input_exists(&cmd.input)?;
                     let resolved =
@@ -3340,14 +3360,16 @@ async fn dispatch_command(
                     let decision = resolve_output(&output, policy)?;
                     if dry_run {
                         return dry_run_single_verify(
-                            "compress",
-                            &cmd.input,
-                            &output,
-                            &decision,
-                            policy,
-                            crate::util::OutputVerify::Chd,
-                            None,
-                            None,
+                            SingleVerifyPlan {
+                                operation: "compress",
+                                input: &cmd.input,
+                                desired: &output,
+                                decision: &decision,
+                                policy,
+                                target: crate::util::OutputVerify::Chd,
+                                media: None,
+                                missing_keys: None,
+                            },
                             &progress,
                             report.as_deref(),
                         )
@@ -3646,36 +3668,23 @@ async fn dispatch_command(
                     .map_err(|e| anyhow::anyhow!(e))?;
                 let api_base = cmd.api_base.or_else(|| effective.dat.api_base.clone());
                 let report = cmd.report.or_else(|| effective.dat.report.clone());
+                let run = batch::DatRun {
+                    progress: &progress,
+                    total_progress: &total_progress,
+                    cancel: &cancel,
+                    cache,
+                    algos: &algos,
+                    bounds: &bounds,
+                    quick: cmd.quick,
+                    api_base: api_base.as_deref(),
+                    report: report.as_deref(),
+                };
                 if cmd.recursive {
                     require_dir(&cmd.input)?;
-                    batch::dat_verify_batch(
-                        &progress,
-                        &total_progress,
-                        &cmd.input,
-                        &algos,
-                        &bounds,
-                        cmd.quick,
-                        cmd.max_depth,
-                        api_base.as_deref(),
-                        report.as_deref(),
-                        &cancel,
-                        cache,
-                    )
-                    .await?;
+                    batch::dat_verify_batch(&run, &cmd.input, cmd.max_depth).await?;
                 } else {
                     ensure_input_exists(&cmd.input)?;
-                    batch::dat_verify_single(
-                        &progress,
-                        &cmd.input,
-                        &algos,
-                        &bounds,
-                        cmd.quick,
-                        api_base.as_deref(),
-                        report.as_deref(),
-                        &cancel,
-                        cache,
-                    )
-                    .await?;
+                    batch::dat_verify_single(&run, &cmd.input).await?;
                 }
             }
             DatCommands::Scan(cmd) => {
@@ -3683,19 +3692,15 @@ async fn dispatch_command(
                 let algos = parse_algos(&cmd.algo).map_err(|e| anyhow::anyhow!(e))?;
                 let api_base = cmd.api_base.or_else(|| effective.dat.api_base.clone());
                 let report = cmd.report.or_else(|| effective.dat.report.clone());
-                batch::dat_scan(
-                    &progress,
-                    &total_progress,
-                    &cmd.input,
-                    cmd.max_depth,
-                    &algos,
-                    cmd.quick,
-                    api_base.as_deref(),
-                    report.as_deref(),
-                    &cancel,
+                let run = batch::DatBulkRun {
+                    progress: &progress,
+                    total_progress: &total_progress,
+                    cancel: &cancel,
                     cache,
-                )
-                .await?;
+                    api_base: api_base.as_deref(),
+                    report: report.as_deref(),
+                };
+                batch::dat_scan(&run, &cmd.input, cmd.max_depth, &algos, cmd.quick).await?;
             }
             DatCommands::Rename(cmd) => {
                 if cmd.recursive {
@@ -3710,18 +3715,21 @@ async fn dispatch_command(
                         .unwrap_or(crate::commands::ConflictPolicyArg::Error),
                     cmd.force,
                 );
+                let run = batch::DatBulkRun {
+                    progress: &progress,
+                    total_progress: &total_progress,
+                    cancel: &cancel,
+                    cache,
+                    api_base: api_base.as_deref(),
+                    report: report.as_deref(),
+                };
                 batch::dat_rename(
-                    &progress,
-                    &total_progress,
+                    &run,
                     &cmd.input,
                     cmd.recursive,
                     cmd.max_depth,
-                    api_base.as_deref(),
                     policy,
                     dry_run,
-                    report.as_deref(),
-                    &cancel,
-                    cache,
                 )
                 .await?;
             }

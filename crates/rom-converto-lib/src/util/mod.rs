@@ -36,8 +36,9 @@ pub use hash::{
 pub use hash_cache::{CachedTrack, CueDigests, HashCache};
 pub use plan::{PlanDecision, PlanLine, classify};
 pub use report::{
-    HashReportRecord, ReportFormat, ReportRecord, ReportTotals, write_dat_report_cancellable,
-    write_hash_report, write_hash_report_cancellable, write_report, write_report_cancellable,
+    HashReportRecord, ReportFormat, ReportRecord, ReportRecordInput, ReportTotals,
+    write_dat_report_cancellable, write_hash_report, write_hash_report_cancellable, write_report,
+    write_report_cancellable,
 };
 pub use tally::{FileEntry, FileStatus, Tally, TallyDirection, format_bytes};
 pub use template::{TemplateTokens, apply_template};

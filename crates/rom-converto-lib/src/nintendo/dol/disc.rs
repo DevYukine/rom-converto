@@ -6,7 +6,7 @@ use crate::nintendo::dol::constants::{GAMECUBE_MAGIC, GAMECUBE_MAGIC_OFFSET};
 pub fn is_gamecube(dhead: &[u8; 128]) -> bool {
     let bytes: [u8; 4] = dhead[GAMECUBE_MAGIC_OFFSET..GAMECUBE_MAGIC_OFFSET + 4]
         .try_into()
-        .unwrap();
+        .expect("GAMECUBE_MAGIC_OFFSET + 4 is within the 128-byte disc header");
     u32::from_be_bytes(bytes) == GAMECUBE_MAGIC
 }
 

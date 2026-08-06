@@ -278,8 +278,12 @@ fn build_tree(
 
     let mut nextalloc = numcodes;
     while list.len() > 1 {
-        let n1 = list.pop().unwrap();
-        let n0 = list.pop().unwrap();
+        let n1 = list
+            .pop()
+            .expect("list.len() > 1 checked by while condition");
+        let n0 = list
+            .pop()
+            .expect("list.len() > 1 checked by while condition, second pop after first");
         let newidx = nextalloc;
         nextalloc += 1;
         let weight = nodes[n0].weight + nodes[n1].weight;

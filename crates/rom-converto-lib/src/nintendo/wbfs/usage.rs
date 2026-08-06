@@ -159,8 +159,18 @@ fn mark_wii_partition_files<R: Read + Seek>(
     let mut boot = [0u8; 0x440];
     payload.seek(SeekFrom::Start(0))?;
     payload.read_exact(&mut boot)?;
-    let fst_offset = (u32::from_be_bytes(boot[0x424..0x428].try_into().unwrap()) as u64) << 2;
-    let fst_size = (u32::from_be_bytes(boot[0x428..0x42C].try_into().unwrap()) as u64) << 2;
+    let fst_offset = (u32::from_be_bytes(
+        boot[0x424..0x428]
+            .try_into()
+            .expect("4-byte slice of the fixed-size boot array"),
+    ) as u64)
+        << 2;
+    let fst_size = (u32::from_be_bytes(
+        boot[0x428..0x42C]
+            .try_into()
+            .expect("4-byte slice of the fixed-size boot array"),
+    ) as u64)
+        << 2;
 
     // boot.bin, bi2, apploader, main DOL, and the FST all precede the
     // file data on a real disc, so one range covers the front matter.

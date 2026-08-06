@@ -23,19 +23,32 @@ pub struct CiaReader {
     last_enc_block: u128,
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Inputs for [`CiaReader::new`].
+pub struct CiaReaderArgs {
+    pub file: File,
+    pub encrypted: bool,
+    pub path: PathBuf,
+    pub key: [u8; 16],
+    pub content_id: u32,
+    pub cidx: u16,
+    pub contentoff: u64,
+    pub single_ncch: bool,
+    pub from_ncsd: bool,
+}
+
 impl CiaReader {
-    pub fn new(
-        file: File,
-        encrypted: bool,
-        path: PathBuf,
-        key: [u8; 16],
-        content_id: u32,
-        cidx: u16,
-        contentoff: u64,
-        single_ncch: bool,
-        from_ncsd: bool,
-    ) -> CiaReader {
+    pub fn new(args: CiaReaderArgs) -> CiaReader {
+        let CiaReaderArgs {
+            file,
+            encrypted,
+            path,
+            key,
+            content_id,
+            cidx,
+            contentoff,
+            single_ncch,
+            from_ncsd,
+        } = args;
         CiaReader {
             file,
             encrypted,

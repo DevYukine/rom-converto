@@ -175,11 +175,19 @@ fn read_utf8_string(slice: &[u8]) -> String {
 }
 
 fn read_u32_at(buf: &[u8], off: usize) -> u32 {
-    u32::from_le_bytes(buf[off..off + 4].try_into().unwrap())
+    u32::from_le_bytes(
+        buf[off..off + 4]
+            .try_into()
+            .expect("4-byte slice always converts to [u8; 4]"),
+    )
 }
 
 fn read_i64_at(buf: &[u8], off: usize) -> i64 {
-    i64::from_le_bytes(buf[off..off + 8].try_into().unwrap())
+    i64::from_le_bytes(
+        buf[off..off + 8]
+            .try_into()
+            .expect("8-byte slice always converts to [u8; 8]"),
+    )
 }
 
 #[cfg(test)]

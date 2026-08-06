@@ -61,15 +61,17 @@ impl WuxReader {
         let mut header = [0u8; WUX_HEADER_SIZE as usize];
         file.read_exact(&mut header)?;
 
-        let magic0 = u32::from_le_bytes(header[0..4].try_into().unwrap());
-        let magic1 = u32::from_le_bytes(header[4..8].try_into().unwrap());
+        let magic0 = u32::from_le_bytes(header[0..4].try_into().expect("4-byte slice"));
+        let magic1 = u32::from_le_bytes(header[4..8].try_into().expect("4-byte slice"));
         if magic0 != WUX_MAGIC_0 || magic1 != WUX_MAGIC_1 {
             return Err(WupError::UnsupportedDiscFormat(path.as_ref().to_path_buf()));
         }
 
-        let sector_size = u32::from_le_bytes(header[8..12].try_into().unwrap()) as u64;
+        let sector_size =
+            u32::from_le_bytes(header[8..12].try_into().expect("4-byte slice")) as u64;
         // flags at [12..16] is ignored.
-        let uncompressed_size = u64::from_le_bytes(header[16..24].try_into().unwrap());
+        let uncompressed_size =
+            u64::from_le_bytes(header[16..24].try_into().expect("8-byte slice"));
         // header[24..32] is padding.
 
         if sector_size == 0 || sector_size > 0x1000_0000 {
@@ -92,7 +94,7 @@ impl WuxReader {
         file.read_exact(&mut index_bytes)?;
         let index_table: Vec<u32> = index_bytes
             .chunks_exact(4)
-            .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+            .map(|c| u32::from_le_bytes(c.try_into().expect("4-byte slice")))
             .collect();
 
         // Sector pool starts at the first sector-aligned offset past
@@ -160,7 +162,7 @@ impl WuxReader {
                 .enumerate()
                 .min_by_key(|(_, e)| e.last_use)
                 .map(|(i, _)| i)
-                .unwrap();
+                .expect("cache is at capacity, so non-empty");
             self.cache.swap_remove(oldest);
         }
         let stamp = self.next_stamp();
@@ -169,7 +171,7 @@ impl WuxReader {
             bytes,
             last_use: stamp,
         });
-        Ok(&self.cache.last().unwrap().bytes)
+        Ok(&self.cache.last().expect("just pushed").bytes)
     }
 
     fn next_stamp(&self) -> u64 {

@@ -121,11 +121,15 @@ impl GczLayout {
         let (ptr_bytes, hash_bytes) = table.split_at(nb * 8);
         let ptrs: Vec<u64> = ptr_bytes
             .chunks_exact(8)
-            .map(|c| u64::from_le_bytes(c.try_into().unwrap()))
+            .map(|c| {
+                u64::from_le_bytes(c.try_into().expect("chunks_exact(8) yields 8-byte chunks"))
+            })
             .collect();
         let hashes: Vec<u32> = hash_bytes
             .chunks_exact(4)
-            .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+            .map(|c| {
+                u32::from_le_bytes(c.try_into().expect("chunks_exact(4) yields 4-byte chunks"))
+            })
             .collect();
 
         Ok(Self {

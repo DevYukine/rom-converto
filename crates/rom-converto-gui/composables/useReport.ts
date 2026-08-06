@@ -1,6 +1,7 @@
 import type { Ref } from "vue";
 import { invoke } from "~/lib/ipc";
 import type { ComparisonSummary, ReportRecord, ReportTotals, RunOutcome } from "~/types/report";
+import { invokeArgs } from "~/lib/opdefs/types";
 
 interface ReportableRefs {
   result: Ref<string>;
@@ -61,7 +62,7 @@ export async function runReportable(
   refs.cancelled.value = false;
   refs.loading.value = true;
   try {
-    const res = await invoke<RunOutcome>(command, args);
+    const res = await invoke<RunOutcome>(command, invokeArgs(command, args));
     refs.result.value = res.message;
     if (res.record) records.push(res.record);
     if (comparisons && res.comparison) comparisons.push(res.comparison);

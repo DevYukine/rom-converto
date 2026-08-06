@@ -15,7 +15,7 @@ import PrimaryButton from "~/components/ui/PrimaryButton.vue";
 import DryRunModal from "~/components/modals/DryRunModal.vue";
 import type { DryRunLine } from "~/components/modals/DryRunModal.vue";
 import type { InfoResult, WupInfo } from "~/types/info";
-import { opCommand, opProgressKey } from "~/lib/opdefs/types";
+import { invokeArgs, opCommand, opProgressKey } from "~/lib/opdefs/types";
 import type { OpDef } from "~/lib/opdefs/types";
 
 const props = defineProps<{ def: OpDef }>();
@@ -266,7 +266,11 @@ async function dryRun() {
 		let note = "ok";
 		let conflict = false;
 		try {
-			const res = await invoke<{ message?: string }>(opCommand(props.def, store), { ...args, dryRun: true });
+			const command = opCommand(props.def, store);
+			const res = await invoke<{ message?: string }>(
+				command,
+				invokeArgs(command, { ...args, dryRun: true }),
+			);
 			const msg = typeof res === "object" && res ? String(res.message ?? "") : String(res);
 			if (msg) note = msg;
 			conflict = /exists|rename/i.test(msg);

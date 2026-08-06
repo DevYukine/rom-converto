@@ -58,7 +58,10 @@ pub fn list_files(fst: &[u8]) -> Result<Vec<FstNode>> {
                 break;
             }
         }
-        let parent_path = &dir_stack.last().unwrap().1;
+        let parent_path = &dir_stack
+            .last()
+            .expect("dir_stack starts with one entry and is only popped while len() > 1")
+            .1;
 
         let full_path = if parent_path.is_empty() {
             name.clone()

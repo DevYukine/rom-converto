@@ -765,7 +765,8 @@ pub async fn extract_from_chd_cancellable(
     let handle = tokio::task::spawn_blocking(move || -> ChdResult<()> {
         use crate::chd::reader::open_chd_sync;
         use crate::chd::reader::worker::{
-            ChdExtractWork, ChdExtractedOut, extract_hunks, make_chd_extract_workers,
+            ChdExtractWork, ChdExtractedOut, HunkExtractArgs, extract_hunks,
+            make_chd_extract_workers,
         };
         use crate::util::worker_pool::{Pool, parallelism};
 
@@ -803,13 +804,15 @@ pub async fn extract_from_chd_cancellable(
 
         let extract_result = extract_hunks(
             &pool,
-            &handle.map,
             &mut bin_writer,
-            hunk_bytes,
-            &frame_sizes,
-            &frame_audio,
-            &bytes_done_bg,
-            &cancel_bg,
+            HunkExtractArgs {
+                map: &handle.map,
+                hunk_bytes,
+                frame_sizes: &frame_sizes,
+                frame_audio: &frame_audio,
+                bytes_done: &bytes_done_bg,
+                cancel: &cancel_bg,
+            },
         );
         pool.shutdown();
         extract_result?;
@@ -1125,7 +1128,7 @@ pub fn digest_chd_tracks(
 ) -> ChdResult<(Vec<ChdTrackDigest>, FileDigests)> {
     use crate::chd::reader::open_chd_sync;
     use crate::chd::reader::worker::{
-        ChdExtractWork, ChdExtractedOut, digest_hunks_dvd, digest_hunks_per_track,
+        ChdExtractWork, ChdExtractedOut, TrackDigestArgs, digest_hunks_dvd, digest_hunks_per_track,
         make_chd_dvd_extract_workers, make_chd_extract_workers,
     };
     use crate::util::worker_pool::{Pool, parallelism};
@@ -1189,15 +1192,17 @@ pub fn digest_chd_tracks(
         )?);
     let result = digest_hunks_per_track(
         &pool,
-        &handle.map,
-        hunk_bytes,
-        &frame_sizes,
-        &frame_track,
-        &frame_audio,
-        &mut hashers,
-        &mut whole,
-        bytes_done,
-        cancel,
+        TrackDigestArgs {
+            map: &handle.map,
+            hunk_bytes,
+            frame_sizes: &frame_sizes,
+            frame_track: &frame_track,
+            frame_audio: &frame_audio,
+            hashers: &mut hashers,
+            whole: &mut whole,
+            bytes_done,
+            cancel,
+        },
     );
     pool.shutdown();
     result?;

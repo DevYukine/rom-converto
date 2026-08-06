@@ -39,9 +39,21 @@ pub(crate) fn open_dax_sync(path: &Path, file_size: u64) -> CsoResult<CsoSyncHan
     let mut header = [0u8; DAX_HEADER_SIZE];
     file.read_exact(&mut header)?;
 
-    let uncompressed_size = u32::from_le_bytes(header[4..8].try_into().unwrap()) as u64;
-    let version = u32::from_le_bytes(header[8..12].try_into().unwrap());
-    let nc_area_count = u32::from_le_bytes(header[12..16].try_into().unwrap()) as usize;
+    let uncompressed_size = u32::from_le_bytes(
+        header[4..8]
+            .try_into()
+            .expect("header[4..8] is always 4 bytes"),
+    ) as u64;
+    let version = u32::from_le_bytes(
+        header[8..12]
+            .try_into()
+            .expect("header[8..12] is always 4 bytes"),
+    );
+    let nc_area_count = u32::from_le_bytes(
+        header[12..16]
+            .try_into()
+            .expect("header[12..16] is always 4 bytes"),
+    ) as usize;
 
     if uncompressed_size == 0 {
         return Err(CsoError::InvalidHeader("empty DAX image".into()));
@@ -58,14 +70,14 @@ pub(crate) fn open_dax_sync(path: &Path, file_size: u64) -> CsoResult<CsoSyncHan
     file.read_exact(&mut offset_bytes)?;
     let offsets: Vec<u32> = offset_bytes
         .chunks_exact(4)
-        .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+        .map(|c| u32::from_le_bytes(c.try_into().expect("chunks_exact(4) yields 4-byte chunks")))
         .collect();
 
     let mut length_bytes = vec![0u8; nframes * 2];
     file.read_exact(&mut length_bytes)?;
     let lengths: Vec<u16> = length_bytes
         .chunks_exact(2)
-        .map(|c| u16::from_le_bytes(c.try_into().unwrap()))
+        .map(|c| u16::from_le_bytes(c.try_into().expect("chunks_exact(2) yields 2-byte chunks")))
         .collect();
 
     let mut raw = vec![false; nframes];
@@ -82,8 +94,12 @@ pub(crate) fn open_dax_sync(path: &Path, file_size: u64) -> CsoResult<CsoSyncHan
         let mut nc_bytes = vec![0u8; nc_area_count * 8];
         file.read_exact(&mut nc_bytes)?;
         for area in nc_bytes.chunks_exact(8) {
-            let first = u32::from_le_bytes(area[0..4].try_into().unwrap()) as usize;
-            let count = u32::from_le_bytes(area[4..8].try_into().unwrap()) as usize;
+            let first =
+                u32::from_le_bytes(area[0..4].try_into().expect("area[0..4] is always 4 bytes"))
+                    as usize;
+            let count =
+                u32::from_le_bytes(area[4..8].try_into().expect("area[4..8] is always 4 bytes"))
+                    as usize;
             let end = first
                 .checked_add(count)
                 .filter(|e| *e <= nframes)

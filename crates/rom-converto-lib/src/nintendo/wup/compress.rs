@@ -300,7 +300,8 @@ pub async fn compress_titles_async_cancellable(
     });
 
     let pump = |progress: &dyn ProgressReporter| {
-        let drained: Vec<ProgressEvent> = std::mem::take(&mut *events.lock().unwrap());
+        let drained: Vec<ProgressEvent> =
+            std::mem::take(&mut *events.lock().expect("progress event mutex poisoned"));
         apply_events(progress, drained);
     };
 
@@ -350,7 +351,7 @@ struct QueuedProgress {
 
 impl QueuedProgress {
     fn push(&self, ev: ProgressEvent) {
-        let mut guard = self.events.lock().unwrap();
+        let mut guard = self.events.lock().expect("progress event mutex poisoned");
         if let (ProgressEvent::Inc(delta), Some(ProgressEvent::Inc(last))) = (&ev, guard.last_mut())
         {
             *last = last.saturating_add(*delta);

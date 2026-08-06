@@ -77,7 +77,8 @@ fn probe(file: &File, file_len: u64) -> io::Result<DiscKind> {
 
     // The PVD may under-report on some masters; trust whichever of the
     // declared volume size and the actual image size is larger.
-    let volume_sectors = u32::from_le_bytes(pvd[80..84].try_into().unwrap()) as u64;
+    let volume_sectors =
+        u32::from_le_bytes(pvd[80..84].try_into().expect("slice is exactly 4 bytes")) as u64;
     let sectors = volume_sectors.max(file_len / SECTOR);
 
     let root = scan_root_directory(file, &pvd)?;
@@ -111,8 +112,10 @@ struct RootScan {
 
 fn scan_root_directory(file: &File, pvd: &[u8]) -> io::Result<RootScan> {
     let record = &pvd[156..190];
-    let root_lba = u32::from_le_bytes(record[2..6].try_into().unwrap());
-    let root_size = u32::from_le_bytes(record[10..14].try_into().unwrap()).min(MAX_ROOT_DIR_BYTES);
+    let root_lba = u32::from_le_bytes(record[2..6].try_into().expect("slice is exactly 4 bytes"));
+    let root_size =
+        u32::from_le_bytes(record[10..14].try_into().expect("slice is exactly 4 bytes"))
+            .min(MAX_ROOT_DIR_BYTES);
 
     let mut dir = vec![0u8; root_size as usize];
     file_read_exact_at(file, &mut dir, root_lba as u64 * SECTOR)?;
@@ -135,8 +138,10 @@ fn scan_root_directory(file: &File, pvd: &[u8]) -> io::Result<RootScan> {
         if 33 + ident_len <= rec_len {
             let name = strip_version(&entry[33..33 + ident_len]);
             if name.eq_ignore_ascii_case(b"SYSTEM.CNF") {
-                let lba = u32::from_le_bytes(entry[2..6].try_into().unwrap());
-                let size = u32::from_le_bytes(entry[10..14].try_into().unwrap());
+                let lba =
+                    u32::from_le_bytes(entry[2..6].try_into().expect("slice is exactly 4 bytes"));
+                let size =
+                    u32::from_le_bytes(entry[10..14].try_into().expect("slice is exactly 4 bytes"));
                 scan.system_cnf = Some((lba, size));
             } else if name.eq_ignore_ascii_case(b"PSP_GAME")
                 || name.eq_ignore_ascii_case(b"UMD_DATA.BIN")

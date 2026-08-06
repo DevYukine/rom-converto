@@ -210,9 +210,17 @@ pub(super) fn read_seek_table_footer(footer_bytes: &[u8]) -> Z3dsResult<(u32, u6
         )
         .into());
     }
-    let num_frames = u32::from_le_bytes(footer_bytes[0..4].try_into().unwrap());
+    let num_frames = u32::from_le_bytes(
+        footer_bytes[0..4]
+            .try_into()
+            .expect("footer_bytes[0..4] is always 4 bytes"),
+    );
     let descriptor = footer_bytes[4];
-    let magic = u32::from_le_bytes(footer_bytes[5..9].try_into().unwrap());
+    let magic = u32::from_le_bytes(
+        footer_bytes[5..9]
+            .try_into()
+            .expect("footer_bytes[5..9] is always 4 bytes"),
+    );
     if magic != SEEKABLE_MAGIC {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -247,7 +255,11 @@ pub(super) fn parse_seek_table(frame_bytes: &[u8]) -> Z3dsResult<Vec<FrameEntry>
         )
         .into());
     }
-    let skippable_magic = u32::from_le_bytes(frame_bytes[0..4].try_into().unwrap());
+    let skippable_magic = u32::from_le_bytes(
+        frame_bytes[0..4]
+            .try_into()
+            .expect("frame_bytes[0..4] is always 4 bytes"),
+    );
     if skippable_magic != SKIPPABLE_MAGIC {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -255,7 +267,11 @@ pub(super) fn parse_seek_table(frame_bytes: &[u8]) -> Z3dsResult<Vec<FrameEntry>
         )
         .into());
     }
-    let declared_payload_size = u32::from_le_bytes(frame_bytes[4..8].try_into().unwrap()) as usize;
+    let declared_payload_size = u32::from_le_bytes(
+        frame_bytes[4..8]
+            .try_into()
+            .expect("frame_bytes[4..8] is always 4 bytes"),
+    ) as usize;
     let expected_frame_size = 8 + declared_payload_size;
     if frame_bytes.len() != expected_frame_size {
         return Err(std::io::Error::new(
@@ -268,13 +284,13 @@ pub(super) fn parse_seek_table(frame_bytes: &[u8]) -> Z3dsResult<Vec<FrameEntry>
     let num_frames = u32::from_le_bytes(
         frame_bytes[footer_start..footer_start + 4]
             .try_into()
-            .unwrap(),
+            .expect("footer_start..footer_start+4 is always 4 bytes"),
     );
     let descriptor = frame_bytes[footer_start + 4];
     let trailing_magic = u32::from_le_bytes(
         frame_bytes[footer_start + 5..footer_start + 9]
             .try_into()
-            .unwrap(),
+            .expect("footer_start+5..footer_start+9 is always 4 bytes"),
     );
     if trailing_magic != SEEKABLE_MAGIC {
         return Err(std::io::Error::new(
@@ -295,8 +311,16 @@ pub(super) fn parse_seek_table(frame_bytes: &[u8]) -> Z3dsResult<Vec<FrameEntry>
     let mut entries = Vec::with_capacity(num_frames as usize);
     for chunk in entries_region.chunks_exact(entry_size) {
         entries.push(FrameEntry {
-            compressed_size: u32::from_le_bytes(chunk[0..4].try_into().unwrap()),
-            decompressed_size: u32::from_le_bytes(chunk[4..8].try_into().unwrap()),
+            compressed_size: u32::from_le_bytes(
+                chunk[0..4]
+                    .try_into()
+                    .expect("chunk[0..4] is always 4 bytes"),
+            ),
+            decompressed_size: u32::from_le_bytes(
+                chunk[4..8]
+                    .try_into()
+                    .expect("chunk[4..8] is always 4 bytes"),
+            ),
         });
         // The trailing 4-byte xxh64 checksum (chunk[8..12]) is
         // ignored. libzstd verifies stream checksums on the actual

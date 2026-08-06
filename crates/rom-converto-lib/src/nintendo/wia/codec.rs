@@ -115,7 +115,11 @@ fn parse_exception_lists(
             pos = data.len();
             continue;
         }
-        let n = u16::from_be_bytes(data[pos..pos + 2].try_into().unwrap()) as usize;
+        let n = u16::from_be_bytes(
+            data[pos..pos + 2]
+                .try_into()
+                .expect("pos + 2 <= data.len() checked above"),
+        ) as usize;
         pos += 2;
         if pos + n * 22 > data.len() {
             return Err(WiaError::Decode(format!(
@@ -126,8 +130,8 @@ fn parse_exception_lists(
         for i in 0..n {
             let e = &data[pos + i * 22..pos + (i + 1) * 22];
             list.push(HashException {
-                offset: u16::from_be_bytes(e[..2].try_into().unwrap()),
-                hash: e[2..22].try_into().unwrap(),
+                offset: u16::from_be_bytes(e[..2].try_into().expect("e is a 22-byte slice")),
+                hash: e[2..22].try_into().expect("e is a 22-byte slice"),
             });
         }
         pos += n * 22;
@@ -155,8 +159,16 @@ fn purge_decode(stream: &[u8], exception_bytes: &[u8], out_len: usize) -> WiaRes
         if stream.len() - pos < 28 {
             return Err(WiaError::Decode("truncated purge segment header".into()));
         }
-        let offset = u32::from_be_bytes(stream[pos..pos + 4].try_into().unwrap()) as usize;
-        let size = u32::from_be_bytes(stream[pos + 4..pos + 8].try_into().unwrap()) as usize;
+        let offset = u32::from_be_bytes(
+            stream[pos..pos + 4]
+                .try_into()
+                .expect("stream.len() - pos >= 28 checked above"),
+        ) as usize;
+        let size = u32::from_be_bytes(
+            stream[pos + 4..pos + 8]
+                .try_into()
+                .expect("stream.len() - pos >= 28 checked above"),
+        ) as usize;
         if stream.len() - pos - 8 < size {
             return Err(WiaError::Decode("truncated purge segment data".into()));
         }

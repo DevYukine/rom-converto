@@ -26,7 +26,7 @@ type Aes128CbcEnc = Encryptor<Aes128>;
 pub fn is_wii(dhead: &[u8; 128]) -> bool {
     let bytes: [u8; 4] = dhead[WII_MAGIC_OFFSET..WII_MAGIC_OFFSET + 4]
         .try_into()
-        .unwrap();
+        .expect("4-byte slice always converts to [u8; 4]");
     u32::from_be_bytes(bytes) == WII_MAGIC
 }
 

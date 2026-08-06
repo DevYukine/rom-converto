@@ -267,14 +267,16 @@ pub fn decompress_blocking(
             return Err(RvzError::Cancelled);
         }
         raw::decompress_raw_region(
-            region,
-            &groups,
-            chunk_size,
-            head.iso_file_size,
-            &shared_file,
-            None,
+            raw::RawRegionDecode {
+                region,
+                groups: &groups,
+                chunk_size,
+                iso_file_size: head.iso_file_size,
+                file: &shared_file,
+                usage: None,
+                bytes_done: &bytes_done,
+            },
             &mut sink,
-            &bytes_done,
         )?;
     }
 
@@ -337,14 +339,16 @@ fn decompress_to_wbfs_blocking(
             return Err(RvzError::Cancelled);
         }
         raw::decompress_raw_region(
-            region,
-            &groups,
-            chunk_size,
-            head.iso_file_size,
-            &shared_file,
-            Some(&filter),
+            raw::RawRegionDecode {
+                region,
+                groups: &groups,
+                chunk_size,
+                iso_file_size: head.iso_file_size,
+                file: &shared_file,
+                usage: Some(&filter),
+                bytes_done: &bytes_done,
+            },
             &mut sink,
-            &bytes_done,
         )?;
     }
 

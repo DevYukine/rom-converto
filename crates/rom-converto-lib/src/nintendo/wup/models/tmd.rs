@@ -126,11 +126,12 @@ impl WupTmd {
         for i in 0..num_content {
             let entry_start = entries_start + i * WUP_TMD_CONTENT_ENTRY_SIZE;
             let entry = &bytes[entry_start..entry_start + WUP_TMD_CONTENT_ENTRY_SIZE];
-            let content_id = u32::from_be_bytes(entry[0x00..0x04].try_into().unwrap());
-            let index = u16::from_be_bytes(entry[0x04..0x06].try_into().unwrap());
-            let type_bits = u16::from_be_bytes(entry[0x06..0x08].try_into().unwrap());
-            let size = u64::from_be_bytes(entry[0x08..0x10].try_into().unwrap());
-            let hash: [u8; 32] = entry[0x10..0x30].try_into().unwrap();
+            let content_id =
+                u32::from_be_bytes(entry[0x00..0x04].try_into().expect("4-byte slice"));
+            let index = u16::from_be_bytes(entry[0x04..0x06].try_into().expect("2-byte slice"));
+            let type_bits = u16::from_be_bytes(entry[0x06..0x08].try_into().expect("2-byte slice"));
+            let size = u64::from_be_bytes(entry[0x08..0x10].try_into().expect("8-byte slice"));
+            let hash: [u8; 32] = entry[0x10..0x30].try_into().expect("32-byte slice");
             contents.push(TmdContentEntry {
                 content_id,
                 index,
@@ -151,7 +152,7 @@ impl WupTmd {
             boot_index: read_u16_be(bytes, OFFSET_BOOT_INDEX),
             content_info_hash: bytes[OFFSET_CONTENT_INFO_HASH..OFFSET_CONTENT_INFO_HASH + 32]
                 .try_into()
-                .unwrap(),
+                .expect("32-byte slice"),
             contents,
         })
     }
@@ -164,15 +165,15 @@ impl WupTmd {
 }
 
 fn read_u16_be(bytes: &[u8], offset: usize) -> u16 {
-    u16::from_be_bytes(bytes[offset..offset + 2].try_into().unwrap())
+    u16::from_be_bytes(bytes[offset..offset + 2].try_into().expect("2-byte slice"))
 }
 
 fn read_u32_be(bytes: &[u8], offset: usize) -> u32 {
-    u32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap())
+    u32::from_be_bytes(bytes[offset..offset + 4].try_into().expect("4-byte slice"))
 }
 
 fn read_u64_be(bytes: &[u8], offset: usize) -> u64 {
-    u64::from_be_bytes(bytes[offset..offset + 8].try_into().unwrap())
+    u64::from_be_bytes(bytes[offset..offset + 8].try_into().expect("8-byte slice"))
 }
 
 #[cfg(test)]

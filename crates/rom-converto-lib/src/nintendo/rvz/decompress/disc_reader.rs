@@ -293,7 +293,10 @@ impl RvzDiscReader {
 
     fn get_raw_chunk(&mut self, group_idx: u32, work: &RawDecompressWork) -> RvzResult<Arc<[u8]>> {
         if let Some(pos) = self.raw_cache.iter().position(|(k, _)| *k == group_idx) {
-            let (k, v) = self.raw_cache.remove(pos).unwrap();
+            let (k, v) = self
+                .raw_cache
+                .remove(pos)
+                .expect("pos came from position() on this deque above");
             self.raw_cache.push_back((k, v.clone()));
             return Ok(v);
         }
@@ -320,7 +323,10 @@ impl RvzDiscReader {
     ) -> RvzResult<Arc<[u8]>> {
         let key = (part_idx, cluster_idx);
         if let Some(pos) = self.part_cache.iter().position(|(k, _)| *k == key) {
-            let (k, v) = self.part_cache.remove(pos).unwrap();
+            let (k, v) = self
+                .part_cache
+                .remove(pos)
+                .expect("pos came from position() on this deque above");
             self.part_cache.push_back((k, v.clone()));
             return Ok(v);
         }

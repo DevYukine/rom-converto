@@ -208,20 +208,33 @@ fn resolve_entry(map: &[MapEntry], hunk_index: u32) -> ChdResult<MapEntry> {
     }
 }
 
+/// Inputs for [`extract_hunks`]: the map to walk plus the per-frame
+/// geometry that shapes each decoded hunk into output bytes.
+pub(crate) struct HunkExtractArgs<'a> {
+    pub map: &'a [MapEntry],
+    pub hunk_bytes: usize,
+    pub frame_sizes: &'a [usize],
+    pub frame_audio: &'a [bool],
+    pub bytes_done: &'a Arc<AtomicU64>,
+    pub cancel: &'a CancelToken,
+}
+
 /// Drive the extract pipeline: pool of decompressors reading a
 /// shared file via positional reads, reorder-buffered drive,
 /// dedicated writer thread for the output bin.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn extract_hunks(
     pool: &Pool<ChdExtractWork, ChdExtractedOut, ChdError>,
-    map: &[MapEntry],
     writer: &mut BufWriter<std::fs::File>,
-    hunk_bytes: usize,
-    frame_sizes: &[usize],
-    frame_audio: &[bool],
-    bytes_done: &Arc<AtomicU64>,
-    cancel: &CancelToken,
+    args: HunkExtractArgs<'_>,
 ) -> ChdResult<()> {
+    let HunkExtractArgs {
+        map,
+        hunk_bytes,
+        frame_sizes,
+        frame_audio,
+        bytes_done,
+        cancel,
+    } = args;
     let frames_per_hunk = hunk_bytes / FRAME_SIZE;
     let total_frames = frame_sizes.len();
 
@@ -376,6 +389,20 @@ pub(crate) fn verify_hunks(
     )
 }
 
+/// Inputs for [`digest_hunks_per_track`]: extract geometry plus the
+/// per-track and whole-image hashers the frame payloads fold into.
+pub(crate) struct TrackDigestArgs<'a> {
+    pub map: &'a [MapEntry],
+    pub hunk_bytes: usize,
+    pub frame_sizes: &'a [usize],
+    pub frame_track: &'a [usize],
+    pub frame_audio: &'a [bool],
+    pub hashers: &'a mut [MultiHasher],
+    pub whole: &'a mut MultiHasher,
+    pub bytes_done: &'a Arc<AtomicU64>,
+    pub cancel: &'a CancelToken,
+}
+
 /// Digest-side variant of [`extract_hunks`]: the pool decodes every
 /// hunk in parallel and the ordered consume closure feeds each
 /// frame's payload slice into its track hasher (`hashers[track]`)
@@ -389,19 +416,21 @@ pub(crate) fn verify_hunks(
 /// the shaped output: track datasizes vary (2048/2336/2352) and one
 /// hunk can straddle a track boundary, so only the frame index is a
 /// reliable key.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn digest_hunks_per_track(
     pool: &Pool<ChdExtractWork, ChdExtractedOut, ChdError>,
-    map: &[MapEntry],
-    hunk_bytes: usize,
-    frame_sizes: &[usize],
-    frame_track: &[usize],
-    frame_audio: &[bool],
-    hashers: &mut [MultiHasher],
-    whole: &mut MultiHasher,
-    bytes_done: &Arc<AtomicU64>,
-    cancel: &CancelToken,
+    args: TrackDigestArgs<'_>,
 ) -> ChdResult<()> {
+    let TrackDigestArgs {
+        map,
+        hunk_bytes,
+        frame_sizes,
+        frame_track,
+        frame_audio,
+        hashers,
+        whole,
+        bytes_done,
+        cancel,
+    } = args;
     let hunk_count = map.len() as u64;
     let max_in_flight = parallelism() * 2;
     let frames_per_hunk = hunk_bytes / FRAME_SIZE;

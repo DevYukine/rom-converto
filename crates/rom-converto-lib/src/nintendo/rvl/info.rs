@@ -456,22 +456,22 @@ fn parse_tpl_header(tpl: &[u8]) -> Result<TplImageHeader> {
     let height = u16::from_be_bytes(
         tpl[image_header_offset..image_header_offset + 2]
             .try_into()
-            .unwrap(),
+            .expect("image_header_offset + 0x10 <= tpl.len() checked above"),
     ) as u32;
     let width = u16::from_be_bytes(
         tpl[image_header_offset + 2..image_header_offset + 4]
             .try_into()
-            .unwrap(),
+            .expect("image_header_offset + 0x10 <= tpl.len() checked above"),
     ) as u32;
     let format = u32::from_be_bytes(
         tpl[image_header_offset + 4..image_header_offset + 8]
             .try_into()
-            .unwrap(),
+            .expect("image_header_offset + 0x10 <= tpl.len() checked above"),
     );
     let data_offset = u32::from_be_bytes(
         tpl[image_header_offset + 8..image_header_offset + 12]
             .try_into()
-            .unwrap(),
+            .expect("image_header_offset + 0x10 <= tpl.len() checked above"),
     ) as usize;
 
     Ok(TplImageHeader {

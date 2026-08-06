@@ -54,8 +54,18 @@ impl NkitHeader {
                 &dhead[0x200..0x208]
             )));
         }
-        let be32 = |off: usize| u32::from_be_bytes(dhead[off..off + 4].try_into().unwrap());
-        let is_wii = crate::nintendo::rvl::is_wii(dhead[..0x80].try_into().unwrap());
+        let be32 = |off: usize| {
+            u32::from_be_bytes(
+                dhead[off..off + 4]
+                    .try_into()
+                    .expect("4-byte slice always converts to [u8; 4]"),
+            )
+        };
+        let is_wii = crate::nintendo::rvl::is_wii(
+            dhead[..0x80]
+                .try_into()
+                .expect("dhead is at least 0x440 bytes, checked above"),
+        );
         let raw_size = be32(0x210) as u64;
         let junk = &dhead[0x214..0x218];
         Ok(Self {
@@ -65,7 +75,7 @@ impl NkitHeader {
             forced_junk_id: if junk == [0u8; 4] {
                 None
             } else {
-                Some(junk.try_into().unwrap())
+                Some(junk.try_into().expect("junk is a 4-byte slice"))
             },
             update_partition_crc: be32(0x218),
             is_wii,
@@ -77,7 +87,7 @@ impl NkitHeader {
     pub fn junk_identity(&self, dhead: &[u8]) -> ([u8; 4], u8) {
         let id = self
             .forced_junk_id
-            .unwrap_or_else(|| dhead[..4].try_into().unwrap());
+            .unwrap_or_else(|| dhead[..4].try_into().expect("dhead[..4] is a 4-byte slice"));
         (id, dhead[6])
     }
 }
@@ -105,7 +115,8 @@ pub fn parse_gc_fst(fst: &[u8]) -> NkitResult<Vec<FstFile>> {
             "FST shorter than one entry".into(),
         ));
     }
-    let n_entries = u32::from_be_bytes(fst[8..12].try_into().unwrap()) as usize;
+    let n_entries =
+        u32::from_be_bytes(fst[8..12].try_into().expect("fst is at least 12 bytes")) as usize;
     if n_entries == 0 || n_entries * 12 > fst.len() {
         return Err(NkitError::InvalidHeader(format!(
             "FST declares {n_entries} entries but is {} bytes",
@@ -120,8 +131,9 @@ pub fn parse_gc_fst(fst: &[u8]) -> NkitResult<Vec<FstFile>> {
         }
         files.push(FstFile {
             entry_offset: i * 12,
-            data_offset: u32::from_be_bytes(e[4..8].try_into().unwrap()) as u64,
-            size: u32::from_be_bytes(e[8..12].try_into().unwrap()),
+            data_offset: u32::from_be_bytes(e[4..8].try_into().expect("e is a 12-byte slice"))
+                as u64,
+            size: u32::from_be_bytes(e[8..12].try_into().expect("e is a 12-byte slice")),
         });
     }
     Ok(files)

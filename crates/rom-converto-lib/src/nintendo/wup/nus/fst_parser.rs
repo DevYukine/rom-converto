@@ -306,15 +306,15 @@ fn read_nul_terminated(name_table: &[u8], offset: u32) -> WupResult<&str> {
 }
 
 fn read_u16_be(bytes: &[u8], offset: usize) -> u16 {
-    u16::from_be_bytes(bytes[offset..offset + 2].try_into().unwrap())
+    u16::from_be_bytes(bytes[offset..offset + 2].try_into().expect("2-byte slice"))
 }
 
 fn read_u32_be(bytes: &[u8], offset: usize) -> u32 {
-    u32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap())
+    u32::from_be_bytes(bytes[offset..offset + 4].try_into().expect("4-byte slice"))
 }
 
 fn read_u64_be(bytes: &[u8], offset: usize) -> u64 {
-    u64::from_be_bytes(bytes[offset..offset + 8].try_into().unwrap())
+    u64::from_be_bytes(bytes[offset..offset + 8].try_into().expect("8-byte slice"))
 }
 
 #[cfg(test)]

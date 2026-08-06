@@ -54,11 +54,15 @@ pub(crate) fn open_chd_sync(path: &std::path::Path) -> ChdResult<SyncChdHandle> 
         let mut head_buf = [0u8; 16];
         reader.read_exact(&mut head_buf)?;
 
-        let tag: [u8; 4] = head_buf[0..4].try_into().unwrap();
+        let tag: [u8; 4] = head_buf[0..4]
+            .try_into()
+            .expect("head_buf[0..4] is always 4 bytes");
         let flags = head_buf[4];
         let length =
             ((head_buf[5] as u32) << 16) | ((head_buf[6] as u32) << 8) | (head_buf[7] as u32);
-        let reserved: [u8; 8] = head_buf[8..16].try_into().unwrap();
+        let reserved: [u8; 8] = head_buf[8..16]
+            .try_into()
+            .expect("head_buf[8..16] is always 8 bytes");
 
         let mut data = vec![0u8; length as usize];
         reader.read_exact(&mut data)?;

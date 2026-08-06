@@ -16,7 +16,8 @@ use crate::chd::writer::metadata::{
     MetadataBlock, MetadataHash, cd_audio_frame_map, generate_cd_metadata, generate_dvd_metadata,
 };
 use crate::chd::writer::worker::{
-    compress_hunks, compress_hunks_dvd, make_chd_compress_workers, make_chd_dvd_compress_workers,
+    HunkCompressArgs, HunkWriteState, compress_hunks, compress_hunks_dvd,
+    make_chd_compress_workers, make_chd_dvd_compress_workers,
 };
 use crate::cue::models::CueSheet;
 use crate::util::CancelToken;
@@ -189,18 +190,22 @@ impl ChdWriter {
 
         let result = compress_hunks(
             &pool,
-            bin_reader,
-            &mut self.writer,
-            &mut self.writer_pos,
-            &mut self.map_entries,
-            &mut self.raw_sha1,
+            HunkWriteState {
+                writer: &mut self.writer,
+                writer_pos: &mut self.writer_pos,
+                map_entries: &mut self.map_entries,
+            },
+            HunkCompressArgs {
+                reader: bin_reader,
+                raw_sha1: &mut self.raw_sha1,
+                hunk_bytes,
+                bytes_done,
+                cancel,
+            },
             total_sectors,
             data_sectors,
             sector_data_size,
-            hunk_bytes,
             &self.cd_audio_frames,
-            bytes_done,
-            cancel,
         );
 
         pool.shutdown();
@@ -221,15 +226,19 @@ impl ChdWriter {
 
         let result = compress_hunks_dvd(
             &pool,
-            iso_reader,
-            &mut self.writer,
-            &mut self.writer_pos,
-            &mut self.map_entries,
-            &mut self.raw_sha1,
+            HunkWriteState {
+                writer: &mut self.writer,
+                writer_pos: &mut self.writer_pos,
+                map_entries: &mut self.map_entries,
+            },
+            HunkCompressArgs {
+                reader: iso_reader,
+                raw_sha1: &mut self.raw_sha1,
+                hunk_bytes,
+                bytes_done,
+                cancel,
+            },
             self.header.logical_bytes,
-            hunk_bytes,
-            bytes_done,
-            cancel,
         );
 
         pool.shutdown();

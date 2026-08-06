@@ -407,7 +407,10 @@ fn write_response(out: *mut *mut c_char, response: RunResponse) -> i32 {
 
 fn string_to_raw(s: String) -> *mut c_char {
     CString::new(s)
-        .unwrap_or_else(|_| CString::new("string contained interior nul").unwrap())
+        .unwrap_or_else(|_| {
+            CString::new("string contained interior nul")
+                .expect("literal contains no interior NUL bytes")
+        })
         .into_raw()
 }
 

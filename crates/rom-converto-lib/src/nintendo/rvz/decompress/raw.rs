@@ -188,22 +188,36 @@ pub(crate) fn build_raw_region_work_items(
     items
 }
 
+/// Inputs for one [`decompress_raw_region`] call: the region to
+/// decode plus the shared file, usage filter, and progress counter.
+pub(super) struct RawRegionDecode<'a> {
+    pub region: &'a WiaRawData,
+    pub groups: &'a [RvzGroup],
+    pub chunk_size: u64,
+    pub iso_file_size: u64,
+    pub file: &'a Arc<std::fs::File>,
+    pub usage: Option<&'a UsageFilter<'a>>,
+    pub bytes_done: &'a Arc<AtomicU64>,
+}
+
 /// Worker-pool raw-region decoder. Spawns a worker [`Pool`] seeded
 /// with persistent `zstd::bulk::Decompressor`s, builds the full
 /// work list for the region, and pumps it via [`drive`]. Output is
 /// written in submission order by the consume closure so
 /// `writer_pos` tracking stays valid.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn decompress_raw_region(
-    region: &WiaRawData,
-    groups: &[RvzGroup],
-    chunk_size: u64,
-    iso_file_size: u64,
-    file: &Arc<std::fs::File>,
-    usage: Option<&UsageFilter>,
+    args: RawRegionDecode<'_>,
     sink: &mut dyn DiscSink,
-    bytes_done: &Arc<AtomicU64>,
 ) -> RvzResult<()> {
+    let RawRegionDecode {
+        region,
+        groups,
+        chunk_size,
+        iso_file_size,
+        file,
+        usage,
+        bytes_done,
+    } = args;
     let items = build_raw_region_work_items(region, groups, chunk_size, iso_file_size, usage);
     if items.is_empty() {
         return Ok(());

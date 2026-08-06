@@ -29,7 +29,7 @@
 //! `Vec`s after the pool is warm. See `PartitionCompressWorker`.
 
 use super::{
-    CompressedKind, PartitionLayout, WriteMsg, push_compressed_chunk_via_channel,
+    CompressedKind, PartitionLayout, RegionWriteState, WriteMsg, push_compressed_chunk_via_channel,
     write_msg_drain_loop,
 };
 use crate::nintendo::rvl::constants::{
@@ -42,7 +42,6 @@ use crate::nintendo::rvl::partition::{
     split_chunk_exceptions_by_range,
 };
 use crate::nintendo::rvz::error::{RvzError, RvzResult};
-use crate::nintendo::rvz::format::RvzGroup;
 use crate::util::CancelToken;
 use crate::util::worker_pool::{Pool, Worker, drive, parallelism};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom};
@@ -138,6 +137,15 @@ pub(super) fn make_partition_compress_workers(
         .collect()
 }
 
+/// Partition geometry and progress plumbing for one
+/// [`encode_partition_region`] call.
+pub(super) struct PartitionRegionEncode<'a> {
+    pub info: &'a PartitionInfo,
+    pub chunk_size: u32,
+    pub bytes_done: &'a Arc<AtomicU64>,
+    pub cancel: &'a CancelToken,
+}
+
 /// Process the partition cluster by cluster via the generic worker
 /// [`Pool`]. Each worker owns a long-lived `zstd::bulk::Compressor`
 /// that stays alive for the full partition, avoiding a
@@ -147,18 +155,23 @@ pub(super) fn make_partition_compress_workers(
 /// supplies the per-cluster read (`produce`) and per-cluster write
 /// (`consume`) halves. Results land in monotonic cluster order so
 /// the group table stays consistent with the file offsets.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn encode_partition_region<R: Read + Seek>(
     pool: &Pool<PartitionWork, Vec<PartitionChunk>, RvzError>,
     reader: &mut BufReader<R>,
-    writer: &mut BufWriter<std::fs::File>,
-    writer_pos: &mut u64,
-    info: &PartitionInfo,
-    chunk_size: u32,
-    groups: &mut Vec<RvzGroup>,
-    bytes_done: &Arc<AtomicU64>,
-    cancel: &CancelToken,
+    state: RegionWriteState<'_>,
+    args: PartitionRegionEncode<'_>,
 ) -> RvzResult<PartitionLayout> {
+    let RegionWriteState {
+        writer,
+        writer_pos,
+        groups,
+    } = state;
+    let PartitionRegionEncode {
+        info,
+        chunk_size,
+        bytes_done,
+        cancel,
+    } = args;
     let title_key = info.title_key;
     let chunk_size_u64 = chunk_size as u64;
     let data_size = info.data_size;

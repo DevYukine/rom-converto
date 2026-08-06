@@ -2,7 +2,7 @@ use crate::util::WriteDecision;
 use anyhow::Result;
 use rom_converto_lib::util::{
     ConflictResolution, FileStatus, PlanDecision, PlanLine, ReportFormat, ReportRecord,
-    ReportTotals, Tally, TallyDirection, write_report,
+    ReportRecordInput, ReportTotals, Tally, TallyDirection, write_report,
 };
 use std::path::Path;
 
@@ -89,16 +89,16 @@ pub fn report_record(
         WriteDecision::Write(_) => file_len(input),
         WriteDecision::Skip => 0,
     };
-    ReportRecord::new(
-        input.display().to_string(),
-        output,
-        format!("{operation} (dry run)"),
+    ReportRecord::new(ReportRecordInput {
+        input_path: input.display().to_string(),
+        output_path: output,
+        operation: format!("{operation} (dry run)"),
         status,
         input_bytes,
-        0,
-        0,
-        None,
-    )
+        output_bytes: 0,
+        elapsed_ms: 0,
+        error: None,
+    })
 }
 
 /// Emit the dry-run summary line and, when a report path is given, export the

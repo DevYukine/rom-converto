@@ -61,7 +61,7 @@ pub(crate) fn open_cso_sync(path: &Path) -> CsoResult<CsoSyncHandle> {
     file.read_exact(&mut index_bytes)?;
     let index: Vec<u32> = index_bytes
         .chunks_exact(4)
-        .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+        .map(|c| u32::from_le_bytes(c.try_into().expect("chunks_exact(4) yields 4-byte chunks")))
         .collect();
 
     Ok(CsoSyncHandle {

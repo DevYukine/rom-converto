@@ -154,21 +154,34 @@ pub async fn decrypt_from_encrypted_cia(
     Ok(())
 }
 
+/// Inputs for [`write_cia`]. `path` is the CDN directory holding the
+/// content `.app` files; each metadata path is paired with its already
+/// parsed value because the certificate chain is read from the file
+/// while the parsed struct supplies the record list.
+pub struct CiaWriteArgs<'a> {
+    pub path: &'a Path,
+    pub tmd_path: &'a Path,
+    pub tmd: TitleMetadata,
+    pub tik_path: &'a Path,
+    pub tik: Ticket,
+    pub progress: &'a dyn ProgressReporter,
+    pub cancel: &'a CancelToken,
+}
+
 /// Writes out the CIA file by streaming content files from disk directly to
 /// the output, avoiding the previous behavior of loading every `.app` into
 /// memory and then serializing a full in-memory CIA. Peak memory is bounded by
 /// the TMD/ticket preamble (a few KB) plus a 4 MB copy buffer.
-#[allow(clippy::too_many_arguments)]
-pub async fn write_cia(
-    path: &Path,
-    out: &mut BufWriter<File>,
-    tmd_path: &Path,
-    tik_path: &Path,
-    tmd: TitleMetadata,
-    tik: Ticket,
-    progress: &dyn ProgressReporter,
-    cancel: &CancelToken,
-) -> anyhow::Result<()> {
+pub async fn write_cia(out: &mut BufWriter<File>, args: CiaWriteArgs<'_>) -> anyhow::Result<()> {
+    let CiaWriteArgs {
+        path,
+        tmd_path,
+        tmd,
+        tik_path,
+        tik,
+        progress,
+        cancel,
+    } = args;
     let total_content_size: u64 = tmd
         .content_chunk_records
         .iter()
@@ -444,14 +457,16 @@ mod tests {
             let f = File::create(&out_path).await.unwrap();
             let mut out = BufWriter::new(f);
             write_cia(
-                cdn,
                 &mut out,
-                &tmd_path,
-                &tik_path,
-                tmd.clone(),
-                ticket,
-                &NoProgress,
-                &CancelToken::new(),
+                CiaWriteArgs {
+                    path: cdn,
+                    tmd_path: &tmd_path,
+                    tmd: tmd.clone(),
+                    tik_path: &tik_path,
+                    tik: ticket,
+                    progress: &NoProgress,
+                    cancel: &CancelToken::new(),
+                },
             )
             .await
             .unwrap();
@@ -518,14 +533,16 @@ mod tests {
             let f = File::create(&out_path).await.unwrap();
             let mut out = BufWriter::new(f);
             write_cia(
-                cdn,
                 &mut out,
-                &tmd_path,
-                &tik_path,
-                tmd,
-                ticket,
-                &NoProgress,
-                &CancelToken::new(),
+                CiaWriteArgs {
+                    path: cdn,
+                    tmd_path: &tmd_path,
+                    tmd,
+                    tik_path: &tik_path,
+                    tik: ticket,
+                    progress: &NoProgress,
+                    cancel: &CancelToken::new(),
+                },
             )
             .await
             .unwrap();
@@ -591,14 +608,16 @@ mod tests {
         let f = File::create(&out_path).await.unwrap();
         let mut out = BufWriter::new(f);
         let err = write_cia(
-            cdn,
             &mut out,
-            &tmd_path,
-            &tik_path,
-            tmd,
-            ticket,
-            &NoProgress,
-            &CancelToken::new(),
+            CiaWriteArgs {
+                path: cdn,
+                tmd_path: &tmd_path,
+                tmd,
+                tik_path: &tik_path,
+                tik: ticket,
+                progress: &NoProgress,
+                cancel: &CancelToken::new(),
+            },
         )
         .await
         .unwrap_err();
@@ -653,14 +672,16 @@ mod tests {
         let f = File::create(&out_path).await.unwrap();
         let mut out = BufWriter::new(f);
         let err = write_cia(
-            cdn,
             &mut out,
-            &tmd_path,
-            &tik_path,
-            tmd,
-            ticket,
-            &NoProgress,
-            &CancelToken::new(),
+            CiaWriteArgs {
+                path: cdn,
+                tmd_path: &tmd_path,
+                tmd,
+                tik_path: &tik_path,
+                tik: ticket,
+                progress: &NoProgress,
+                cancel: &CancelToken::new(),
+            },
         )
         .await
         .unwrap_err();

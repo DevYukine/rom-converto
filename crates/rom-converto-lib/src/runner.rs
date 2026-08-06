@@ -18,9 +18,10 @@ use crate::nintendo::rvz::RvzCompressOptions;
 use crate::util::report::{DatReportRecord, write_dat_report_cancellable};
 use crate::util::{
     CancelToken, ChecksumBounds, ConflictPolicy, ConflictResolution, FileStatus, HashAlgo,
-    NoProgress, OutputVerify, PlanLine, ProgressReporter, ReportFormat, ReportRecord, ReportTotals,
-    VerifyOutcome, hash_file_cancellable, parse_algos, parse_checksum_bound, resolve_conflict,
-    verify_existing_output_cancellable, write_report_cancellable,
+    NoProgress, OutputVerify, PlanLine, ProgressReporter, ReportFormat, ReportRecord,
+    ReportRecordInput, ReportTotals, VerifyOutcome, hash_file_cancellable, parse_algos,
+    parse_checksum_bound, resolve_conflict, verify_existing_output_cancellable,
+    write_report_cancellable,
 };
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
@@ -58,11 +59,14 @@ pub struct RecordingProgress {
 
 impl RecordingProgress {
     pub fn take_events(&self) -> Vec<ProgressEvent> {
-        std::mem::take(&mut *self.events.lock().unwrap())
+        std::mem::take(&mut *self.events.lock().expect("progress event mutex poisoned"))
     }
 
     fn push(&self, event: ProgressEvent) {
-        self.events.lock().unwrap().push(event);
+        self.events
+            .lock()
+            .expect("progress event mutex poisoned")
+            .push(event);
     }
 }
 
@@ -542,31 +546,31 @@ async fn run_batch_request(
                     plans.push(line);
                 }
                 if response.records.is_empty() {
-                    records.push(ReportRecord::new(
-                        input.display().to_string(),
-                        String::new(),
-                        &req.operation,
-                        FileStatus::Ok,
-                        file_len(&input),
-                        0,
-                        0,
-                        None,
-                    ));
+                    records.push(ReportRecord::new(ReportRecordInput {
+                        input_path: input.display().to_string(),
+                        output_path: String::new(),
+                        operation: (&req.operation).into(),
+                        status: FileStatus::Ok,
+                        input_bytes: file_len(&input),
+                        output_bytes: 0,
+                        elapsed_ms: 0,
+                        error: None,
+                    }));
                 } else {
                     records.append(&mut response.records);
                 }
             }
             Err(err) if cancel.is_cancelled() || is_cancelled_error(&err) => return Err(err),
-            Err(err) => records.push(ReportRecord::new(
-                input.display().to_string(),
-                String::new(),
-                &req.operation,
-                FileStatus::Failed,
-                file_len(&input),
-                0,
-                0,
-                Some(err.to_string()),
-            )),
+            Err(err) => records.push(ReportRecord::new(ReportRecordInput {
+                input_path: input.display().to_string(),
+                output_path: String::new(),
+                operation: (&req.operation).into(),
+                status: FileStatus::Failed,
+                input_bytes: file_len(&input),
+                output_bytes: 0,
+                elapsed_ms: 0,
+                error: Some(err.to_string()),
+            })),
         }
     }
 
@@ -1316,14 +1320,16 @@ async fn ctr_generate_cdn_ticket(req: RunRequest, cancel: CancelToken) -> Result
     .await?;
     Ok(
         RunResponse::ok("CDN ticket generated.", None).with_record(ReportRecord::new(
-            input.display().to_string(),
-            output.display().to_string(),
-            "ctr.generate_cdn_ticket",
-            FileStatus::Ok,
-            file_len(&input),
-            file_len(&output),
-            0,
-            None,
+            ReportRecordInput {
+                input_path: input.display().to_string(),
+                output_path: output.display().to_string(),
+                operation: ("ctr.generate_cdn_ticket").into(),
+                status: FileStatus::Ok,
+                input_bytes: file_len(&input),
+                output_bytes: file_len(&output),
+                elapsed_ms: 0,
+                error: None,
+            },
         )),
     )
 }
@@ -1555,14 +1561,16 @@ async fn wup_decrypt(
     .await?;
     Ok(
         RunResponse::ok("WUP decrypt complete.", None).with_record(ReportRecord::new(
-            input.display().to_string(),
-            output.display().to_string(),
-            "wup.decrypt",
-            FileStatus::Ok,
-            file_len(&input),
-            0,
-            0,
-            None,
+            ReportRecordInput {
+                input_path: input.display().to_string(),
+                output_path: output.display().to_string(),
+                operation: ("wup.decrypt").into(),
+                status: FileStatus::Ok,
+                input_bytes: file_len(&input),
+                output_bytes: 0,
+                elapsed_ms: 0,
+                error: None,
+            },
         )),
     )
 }
@@ -1684,20 +1692,20 @@ async fn playlist_write(req: RunRequest, cancel: CancelToken) -> Result<RunRespo
             has_duplicate_numbers: plan.has_duplicate_numbers,
         });
         if req.dry_run {
-            records.push(ReportRecord::new(
-                input.display().to_string(),
-                output.display().to_string(),
-                "playlist.write",
-                if matches!(resolution, ConflictResolution::Skip) {
+            records.push(ReportRecord::new(ReportRecordInput {
+                input_path: input.display().to_string(),
+                output_path: output.display().to_string(),
+                operation: ("playlist.write").into(),
+                status: if matches!(resolution, ConflictResolution::Skip) {
                     FileStatus::Skipped
                 } else {
                     FileStatus::Ok
                 },
-                0,
-                0,
-                0,
-                None,
-            ));
+                input_bytes: 0,
+                output_bytes: 0,
+                elapsed_ms: 0,
+                error: None,
+            }));
             continue;
         }
         match resolution {
@@ -1706,27 +1714,27 @@ async fn playlist_write(req: RunRequest, cancel: CancelToken) -> Result<RunRespo
                     tokio::fs::create_dir_all(parent).await?;
                 }
                 tokio::fs::write(&path, plan.contents).await?;
-                records.push(ReportRecord::new(
-                    input.display().to_string(),
-                    path.display().to_string(),
-                    "playlist.write",
-                    FileStatus::Ok,
-                    0,
-                    file_len(&path),
-                    0,
-                    None,
-                ));
+                records.push(ReportRecord::new(ReportRecordInput {
+                    input_path: input.display().to_string(),
+                    output_path: path.display().to_string(),
+                    operation: ("playlist.write").into(),
+                    status: FileStatus::Ok,
+                    input_bytes: 0,
+                    output_bytes: file_len(&path),
+                    elapsed_ms: 0,
+                    error: None,
+                }));
             }
-            ConflictResolution::Skip => records.push(ReportRecord::new(
-                input.display().to_string(),
-                plan.m3u_path.display().to_string(),
-                "playlist.write",
-                FileStatus::Skipped,
-                0,
-                0,
-                0,
-                None,
-            )),
+            ConflictResolution::Skip => records.push(ReportRecord::new(ReportRecordInput {
+                input_path: input.display().to_string(),
+                output_path: plan.m3u_path.display().to_string(),
+                operation: ("playlist.write").into(),
+                status: FileStatus::Skipped,
+                input_bytes: 0,
+                output_bytes: 0,
+                elapsed_ms: 0,
+                error: None,
+            })),
         }
     }
     let totals = totals_for_records(&records, elapsed_ms(started));
@@ -2123,19 +2131,19 @@ async fn dat_rename(
                 plan.detail.clone(),
             ),
         };
-        records.push(ReportRecord::new(
-            plan.from.display().to_string(),
-            output
+        records.push(ReportRecord::new(ReportRecordInput {
+            input_path: plan.from.display().to_string(),
+            output_path: output
                 .as_ref()
                 .map(|p| p.display().to_string())
                 .unwrap_or_default(),
-            "dat.rename",
+            operation: ("dat.rename").into(),
             status,
-            file_len(&plan.from),
-            output.as_deref().map(file_len).unwrap_or(0),
-            0,
-            error.clone(),
-        ));
+            input_bytes: file_len(&plan.from),
+            output_bytes: output.as_deref().map(file_len).unwrap_or(0),
+            elapsed_ms: 0,
+            error: error.clone(),
+        }));
         rows.push(DatRenameRowData {
             from: plan.from,
             to: output,
@@ -2234,16 +2242,16 @@ async fn dat_fixdat(
             missing_count: missing.len(),
         })),
     )
-    .with_record(ReportRecord::new(
-        input.display().to_string(),
-        output.display().to_string(),
-        "dat.fixdat",
-        FileStatus::Ok,
-        0,
-        file_len(&output),
-        0,
-        None,
-    )))
+    .with_record(ReportRecord::new(ReportRecordInput {
+        input_path: input.display().to_string(),
+        output_path: output.display().to_string(),
+        operation: ("dat.fixdat").into(),
+        status: FileStatus::Ok,
+        input_bytes: 0,
+        output_bytes: file_len(&output),
+        elapsed_ms: 0,
+        error: None,
+    })))
 }
 
 fn info(req: RunRequest) -> Result<RunResponse> {
@@ -2348,16 +2356,16 @@ where
     let input_bytes = file_len(input);
     run().await?;
     let output_bytes = file_len(output);
-    let record = ReportRecord::new(
-        input.display().to_string(),
-        output.display().to_string(),
-        operation,
-        FileStatus::Ok,
+    let record = ReportRecord::new(ReportRecordInput {
+        input_path: input.display().to_string(),
+        output_path: output.display().to_string(),
+        operation: operation.into(),
+        status: FileStatus::Ok,
         input_bytes,
         output_bytes,
-        elapsed_ms(started),
-        None,
-    );
+        elapsed_ms: elapsed_ms(started),
+        error: None,
+    });
     let mut response = RunResponse::ok(
         "Operation complete.",
         Some(RunData::Comparison(RunComparisonData {
@@ -2373,14 +2381,16 @@ where
 
 fn skipped(input: &Path, desired: &Path, operation: &str) -> RunResponse {
     RunResponse::ok("Skipped existing output.", None).with_record(ReportRecord::new(
-        input.display().to_string(),
-        desired.display().to_string(),
-        operation,
-        FileStatus::Skipped,
-        0,
-        0,
-        0,
-        None,
+        ReportRecordInput {
+            input_path: input.display().to_string(),
+            output_path: desired.display().to_string(),
+            operation: operation.into(),
+            status: FileStatus::Skipped,
+            input_bytes: 0,
+            output_bytes: 0,
+            elapsed_ms: 0,
+            error: None,
+        },
     ))
 }
 
@@ -2653,20 +2663,20 @@ fn dat_error_report_record(path: &Path, error: String) -> DatReportRecord {
 }
 
 fn dat_run_record(path: &Path, verdict: &str, error: Option<String>) -> ReportRecord {
-    ReportRecord::new(
-        path.display().to_string(),
-        String::new(),
-        "dat",
-        if error.is_some() {
+    ReportRecord::new(ReportRecordInput {
+        input_path: path.display().to_string(),
+        output_path: String::new(),
+        operation: ("dat").into(),
+        status: if error.is_some() {
             FileStatus::Failed
         } else {
             FileStatus::Ok
         },
-        file_len(path),
-        0,
-        0,
-        error.or_else(|| (verdict == "failed").then(|| "DAT operation failed".to_string())),
-    )
+        input_bytes: file_len(path),
+        output_bytes: 0,
+        elapsed_ms: 0,
+        error: error.or_else(|| (verdict == "failed").then(|| "DAT operation failed".to_string())),
+    })
 }
 
 fn dat_batch_response(

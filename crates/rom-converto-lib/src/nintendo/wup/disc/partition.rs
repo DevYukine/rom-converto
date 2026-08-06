@@ -42,8 +42,8 @@ pub fn read_partition_header(
     if hdr[0..4] != PARTITION_HEADER_SIGNATURE {
         return Err(WupError::InvalidPartitionHeader);
     }
-    let header_size = u32::from_be_bytes(hdr[0x04..0x08].try_into().unwrap());
-    let fst_size = u32::from_be_bytes(hdr[0x14..0x18].try_into().unwrap());
+    let header_size = u32::from_be_bytes(hdr[0x04..0x08].try_into().expect("4-byte slice"));
+    let fst_size = u32::from_be_bytes(hdr[0x14..0x18].try_into().expect("4-byte slice"));
     Ok(PartitionHeader {
         header_size,
         fst_size,

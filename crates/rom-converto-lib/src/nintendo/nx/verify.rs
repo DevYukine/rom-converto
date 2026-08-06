@@ -136,7 +136,7 @@ pub async fn verify_container_async_cancellable(
     let cancel_bg = cancel.clone();
 
     let publish_phase = || {
-        let label = std::mem::take(&mut *phase.lock().unwrap());
+        let label = std::mem::take(&mut *phase.lock().expect("phase mutex poisoned"));
         if !label.is_empty() {
             progress.set_phase(&label);
         }
@@ -184,7 +184,7 @@ impl ProgressReporter for AtomicProgress {
     }
     fn finish(&self) {}
     fn set_phase(&self, label: &str) {
-        *self.phase.lock().unwrap() = label.to_string();
+        *self.phase.lock().expect("phase mutex poisoned") = label.to_string();
     }
 }
 

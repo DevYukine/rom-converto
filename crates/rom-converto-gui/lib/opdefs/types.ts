@@ -163,6 +163,36 @@ export function opProgressKey(def: OpDef, store: OpStore): string | undefined {
 	return typeof def.progressKey === "function" ? def.progressKey(store) : def.progressKey;
 }
 
+// Commands whose Rust handler takes a single `args` struct. Opdefs keep
+// building a flat payload (the queue and the CLI echo read it flat); it is
+// wrapped only on the way into `invoke`.
+export const NESTED_ARGS_COMMANDS = new Set([
+	"cmd_cdn_to_cia",
+	"cmd_decrypt_rom",
+	"cmd_encrypt_rom",
+	"cmd_compress_rom",
+	"cmd_decompress_rom",
+	"cmd_chd_compress",
+	"cmd_cso_compress",
+	"cmd_cso_to_chd",
+	"cmd_cso_decompress",
+	"cmd_chd_extract",
+	"cmd_chd_to_cso",
+	"cmd_compress_disc",
+	"cmd_decompress_disc",
+	"cmd_wup_compress",
+	"cmd_nx_compress",
+	"cmd_nx_decompress",
+	"cmd_convert_ctr",
+]);
+
+export function invokeArgs(
+	command: string,
+	payload: Record<string, unknown>,
+): Record<string, unknown> {
+	return NESTED_ARGS_COMMANDS.has(command) ? { args: payload } : payload;
+}
+
 export function recursiveFields(): FieldDef[] {
 	return [
 		{

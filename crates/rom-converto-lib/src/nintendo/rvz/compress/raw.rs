@@ -19,10 +19,12 @@
 //!   group entry (`data_off4 = 0, data_size = 0`) with no on-disk
 //!   footprint.
 
-use super::{CompressedKind, WriteMsg, push_compressed_chunk_via_channel, write_msg_drain_loop};
+use super::{
+    CompressedKind, RegionWriteState, WriteMsg, push_compressed_chunk_via_channel,
+    write_msg_drain_loop,
+};
 use crate::nintendo::rvl::constants::WII_SECTOR_SIZE_U64;
 use crate::nintendo::rvz::error::{RvzError, RvzResult};
-use crate::nintendo::rvz::format::RvzGroup;
 use crate::util::CancelToken;
 use crate::util::worker_pool::{Pool, Worker, drive, parallelism};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom};
@@ -80,6 +82,17 @@ pub(super) fn make_raw_compress_workers(
         .collect()
 }
 
+/// Disc geometry and progress plumbing for one [`encode_raw_region`]
+/// call.
+pub(super) struct RawRegionEncode<'a> {
+    pub region_offset: u64,
+    pub region_size: u64,
+    pub iso_size: u64,
+    pub chunk_size: u32,
+    pub bytes_done: &'a Arc<AtomicU64>,
+    pub cancel: &'a CancelToken,
+}
+
 /// Encode one raw region by sharding its chunks across the
 /// caller-provided persistent worker pool. [`drive`] handles
 /// submit/recv/reorder so this function only supplies the
@@ -88,20 +101,25 @@ pub(super) fn make_raw_compress_workers(
 /// entry). The pool itself is shared across all raw regions in
 /// one compress invocation so each compress run only pays the
 /// pool-spawn cost once.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn encode_raw_region<R: Read + Seek>(
     pool: &Pool<RawWork, CompressedChunk, RvzError>,
     reader: &mut BufReader<R>,
-    writer: &mut BufWriter<std::fs::File>,
-    writer_pos: &mut u64,
-    region_offset: u64,
-    region_size: u64,
-    iso_size: u64,
-    chunk_size: u32,
-    groups: &mut Vec<RvzGroup>,
-    bytes_done: &Arc<AtomicU64>,
-    cancel: &CancelToken,
+    state: RegionWriteState<'_>,
+    args: RawRegionEncode<'_>,
 ) -> RvzResult<()> {
+    let RegionWriteState {
+        writer,
+        writer_pos,
+        groups,
+    } = state;
+    let RawRegionEncode {
+        region_offset,
+        region_size,
+        iso_size,
+        chunk_size,
+        bytes_done,
+        cancel,
+    } = args;
     let chunk_size_u64 = chunk_size as u64;
 
     // Port of Dolphin's `data_offset -= data_offset % BLOCK_TOTAL_SIZE`

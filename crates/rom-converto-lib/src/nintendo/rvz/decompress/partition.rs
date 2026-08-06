@@ -255,7 +255,6 @@ pub(crate) fn make_one_partition_worker(
 /// Push one finished cluster's work item, unless the WBFS usage filter
 /// says every block the cluster occupies is scrubbed (then it is
 /// dropped and never reconstructed).
-#[allow(clippy::too_many_arguments)]
 fn push_cluster(
     work_items: &mut Vec<PartitionDecompressWork>,
     chunks: Vec<PartitionChunkSpec>,

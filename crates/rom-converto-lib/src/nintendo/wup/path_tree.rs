@@ -185,7 +185,7 @@ fn make_dir_recursive(node: &mut PathNode, components: &[&str], full_path: &str)
     if node.is_file {
         return Err(WupError::PathConflict(full_path.to_string()));
     }
-    let (first, rest) = components.split_first().unwrap();
+    let (first, rest) = components.split_first().expect("checked non-empty above");
     let idx = match node.children.iter().position(|c| c.name == *first) {
         Some(i) => {
             if node.children[i].is_file {
@@ -211,7 +211,7 @@ fn add_file_recursive<'a>(
     if node.is_file {
         return Err(WupError::PathConflict(full_path.to_string()));
     }
-    let (first, rest) = components.split_first().unwrap();
+    let (first, rest) = components.split_first().expect("checked non-empty above");
     if rest.is_empty() {
         // `first` is the filename.
         if node.children.iter().any(|c| c.name == *first) {
@@ -243,7 +243,7 @@ fn get_mut_recursive<'a>(node: &'a mut PathNode, components: &[&str]) -> Option<
     if components.is_empty() {
         return Some(node);
     }
-    let (first, rest) = components.split_first().unwrap();
+    let (first, rest) = components.split_first().expect("checked non-empty above");
     let idx = node.children.iter().position(|c| c.name == *first)?;
     get_mut_recursive(&mut node.children[idx], rest)
 }

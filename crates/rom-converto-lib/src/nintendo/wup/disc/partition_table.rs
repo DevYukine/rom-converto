@@ -145,7 +145,7 @@ pub fn parse_partition_table(
     let count = u32::from_be_bytes(
         sector[PARTITION_COUNT_OFFSET..PARTITION_COUNT_OFFSET + 4]
             .try_into()
-            .unwrap(),
+            .expect("4-byte slice"),
     ) as usize;
     if count == 0 || count > MAX_PARTITIONS {
         return Err(WupError::InvalidPartitionHeader);
@@ -160,8 +160,11 @@ pub fn parse_partition_table(
     for i in 0..count {
         let base = PARTITION_ENTRIES_OFFSET + i * PARTITION_ENTRY_SIZE;
         let name = parse_partition_name(&sector[base..base + 0x19]);
-        let start_sector =
-            u32::from_be_bytes(sector[base + 0x20..base + 0x24].try_into().unwrap()) as u64;
+        let start_sector = u32::from_be_bytes(
+            sector[base + 0x20..base + 0x24]
+                .try_into()
+                .expect("4-byte slice"),
+        ) as u64;
         let kind = PartitionKind::classify(&name);
         entries.push(PartitionEntry {
             name,

@@ -6,7 +6,7 @@ import { buildCliCommand } from "~/composables/useCliEcho";
 import PrimaryButton from "~/components/ui/PrimaryButton.vue";
 import DryRunModal from "~/components/modals/DryRunModal.vue";
 import type { DryRunLine } from "~/components/modals/DryRunModal.vue";
-import { opCommand, opProgressKey } from "~/lib/opdefs/types";
+import { invokeArgs, opCommand, opProgressKey } from "~/lib/opdefs/types";
 import type { OpDef, OpStore, StagedItem } from "~/lib/opdefs/types";
 
 const props = defineProps<{
@@ -63,7 +63,10 @@ async function dryRun() {
 		let note = "ok";
 		let conflict = false;
 		try {
-			const res = await invoke<{ message?: string }>(command, { ...args, dryRun: true });
+			const res = await invoke<{ message?: string }>(
+				command,
+				invokeArgs(command, { ...args, dryRun: true }),
+			);
 			const msg = typeof res === "object" && res ? String(res.message ?? "") : String(res);
 			if (msg) note = msg;
 			conflict = /exists|rename/i.test(msg);

@@ -105,7 +105,11 @@ fn write_freeblocks(sector0: &mut [u8], total_blocks: u64, wbfs_sec_sz: u64, hd_
             break;
         }
         let base = word * 4;
-        let mut w = u32::from_be_bytes(freeblks[base..base + 4].try_into().unwrap());
+        let mut w = u32::from_be_bytes(
+            freeblks[base..base + 4]
+                .try_into()
+                .expect("base+4 <= freeblks.len() == n_words * 4, word < n_words checked above"),
+        );
         w &= !(1u32 << (bit % 32));
         freeblks[base..base + 4].copy_from_slice(&w.to_be_bytes());
     }

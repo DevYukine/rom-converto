@@ -81,7 +81,11 @@ pub fn disc_info_size(wbfs_sec_sz_s: u8, hd_sec_sz: u64) -> u64 {
 pub fn reconstruct_disc_size(disc_header: &[u8], used_size: u64) -> u64 {
     let read_magic = |off: usize| -> u32 {
         if disc_header.len() >= off + 4 {
-            u32::from_be_bytes(disc_header[off..off + 4].try_into().unwrap())
+            u32::from_be_bytes(
+                disc_header[off..off + 4]
+                    .try_into()
+                    .expect("4-byte slice, length checked above"),
+            )
         } else {
             0
         }

@@ -399,7 +399,7 @@ pub fn pack_decode(mut src: &[u8], data_offset: u64) -> RvzResult<Vec<u8>> {
             if src.len() < 68 {
                 return Err(RvzError::Custom("truncated RVZ packing seed".to_string()));
             }
-            let seed: [u8; 68] = src[..68].try_into().unwrap();
+            let seed: [u8; 68] = src[..68].try_into().expect("src.len() >= 68 checked above");
             src = &src[68..];
             let mut lfg = LaggedFibonacci::init(&seed);
             lfg.forward_bytes((current_offset % RVZ_BLOCK_SIZE) as usize);

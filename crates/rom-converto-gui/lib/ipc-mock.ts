@@ -576,7 +576,13 @@ async function convertRun(cmd: string, a: Record<string, unknown>): Promise<RunO
 }
 
 export async function invoke<T = unknown>(cmd: string, args?: InvokeArgs): Promise<T> {
-	const a = (args ?? {}) as Record<string, unknown>;
+	const raw = (args ?? {}) as Record<string, unknown>;
+	// Commands taking a single `args` struct arrive nested; the handlers below
+	// all read the payload flat.
+	const a = (typeof raw.args === "object" && raw.args !== null ? raw.args : raw) as Record<
+		string,
+		unknown
+	>;
 	const handler = handlers[cmd];
 	if (handler) return handler(a) as Promise<T>;
 	return convertRun(cmd, a) as Promise<T>;

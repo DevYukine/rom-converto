@@ -174,12 +174,12 @@ pub fn read_partition_info<R: Read + Seek>(
         header
             [WII_PARTITION_HEADER_DATA_OFFSET_OFFSET..WII_PARTITION_HEADER_DATA_OFFSET_OFFSET + 4]
             .try_into()
-            .unwrap(),
+            .expect("4-byte slice of the fixed-size header array"),
     );
     let data_size_word = u32::from_be_bytes(
         header[WII_PARTITION_HEADER_DATA_SIZE_OFFSET..WII_PARTITION_HEADER_DATA_SIZE_OFFSET + 4]
             .try_into()
-            .unwrap(),
+            .expect("4-byte slice of the fixed-size header array"),
     );
     let data_offset = (data_offset_word as u64) << 2;
     let data_size = (data_size_word as u64) << 2;
@@ -677,7 +677,8 @@ pub fn parse_exception_header<'a>(
     if data.len() < 2 {
         return Err(RvzError::Custom("truncated partition chunk header".into()));
     }
-    let n = u16::from_be_bytes(data[..2].try_into().unwrap()) as usize;
+    let n =
+        u16::from_be_bytes(data[..2].try_into().expect("data.len() >= 2 checked above")) as usize;
     let entries_bytes = n * 22;
     let mut exception_area = 2 + entries_bytes;
     if align_to_4 {

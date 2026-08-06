@@ -382,15 +382,19 @@ fn compress_xci(
         let part_start = out.stream_position()?;
         write_sub_partition(
             &mut out,
-            &in_file,
-            plan,
-            opts,
-            &keys,
-            progress,
-            &mut new_partition_sizes,
-            &mut new_partition_first_chunk_hashes,
-            part_start,
-            cancel,
+            SubPartitionArgs {
+                in_file: &in_file,
+                plan,
+                opts,
+                keys: &keys,
+                progress,
+                part_start,
+                cancel,
+            },
+            SubPartitionOutputs {
+                sizes: &mut new_partition_sizes,
+                first_chunk_hashes: &mut new_partition_first_chunk_hashes,
+            },
         )?;
     }
 
@@ -425,19 +429,44 @@ struct SubPartitionPlan {
     sub: hfs0_mod::Hfs0,
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Per-partition accumulators the caller folds back into the root
+/// HFS0 header once every sub-partition is written.
+struct SubPartitionOutputs<'a> {
+    sizes: &'a mut Vec<u64>,
+    first_chunk_hashes: &'a mut Vec<[u8; 32]>,
+}
+
+/// Everything [`write_sub_partition`] reads: the source handle, the
+/// partition plan, compression settings, and the output offset the
+/// partition starts at.
+struct SubPartitionArgs<'a> {
+    in_file: &'a Arc<File>,
+    plan: &'a SubPartitionPlan,
+    opts: NxCompressOptions,
+    keys: &'a KeySet,
+    progress: &'a dyn ProgressReporter,
+    part_start: u64,
+    cancel: Option<&'a CancelToken>,
+}
+
 fn write_sub_partition(
     out: &mut File,
-    in_file: &Arc<File>,
-    plan: &SubPartitionPlan,
-    opts: NxCompressOptions,
-    keys: &KeySet,
-    progress: &dyn ProgressReporter,
-    new_partition_sizes: &mut Vec<u64>,
-    new_partition_first_chunk_hashes: &mut Vec<[u8; 32]>,
-    part_start: u64,
-    cancel: Option<&CancelToken>,
+    args: SubPartitionArgs<'_>,
+    outputs: SubPartitionOutputs<'_>,
 ) -> NxResult<()> {
+    let SubPartitionArgs {
+        in_file,
+        plan,
+        opts,
+        keys,
+        progress,
+        part_start,
+        cancel,
+    } = args;
+    let SubPartitionOutputs {
+        sizes,
+        first_chunk_hashes,
+    } = outputs;
     let new_names: Vec<String> = plan
         .sub
         .files
@@ -554,8 +583,8 @@ fn write_sub_partition(
     let mut sha = [0u8; 32];
     sha.copy_from_slice(&first_chunk);
 
-    new_partition_sizes.push(part_size);
-    new_partition_first_chunk_hashes.push(sha);
+    sizes.push(part_size);
+    first_chunk_hashes.push(sha);
     Ok(())
 }
 

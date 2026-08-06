@@ -16,7 +16,7 @@ use crate::nintendo::ctr::constants::{
     TMD_CONTENT_COUNT_OFFSET, TMD_CONTENT_RECORD_SIZE, TMD_CONTENT_RECORDS_OFFSET,
 };
 use crate::nintendo::ctr::decrypt::model::{CiaContent, NcchSection};
-use crate::nintendo::ctr::decrypt::reader::CiaReader;
+use crate::nintendo::ctr::decrypt::reader::{CiaReader, CiaReaderArgs};
 use crate::nintendo::ctr::decrypt::romfs_worker::{
     RomfsChunk, RomfsChunkWork, RomfsDecryptWorker, advance_counter,
 };
@@ -149,25 +149,30 @@ async fn copy_plain_section(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Keying for the ExHeader section: the section counter, the derived
+/// base key, and the fixed-key selector that overrides it.
+struct NcchCrypto<'a> {
+    ctr: &'a [u8; 16],
+    base_key: [u8; 16],
+    fixed_crypto: u8,
+}
+
 async fn write_exheader_section(
     cia: &mut CiaReader,
     writer: &mut BufWriter<&mut File>,
     size: u32,
-    ctr: &[u8; 16],
-    base_key: [u8; 16],
-    fixed_crypto: u8,
+    crypto: NcchCrypto<'_>,
     hasher: &mut ContentHasher<'_>,
     progress: &dyn ProgressReporter,
 ) -> anyhow::Result<()> {
-    let mut key = base_key;
-    if let Some(fixed) = fixed_key(fixed_crypto) {
+    let mut key = crypto.base_key;
+    if let Some(fixed) = fixed_key(crypto.fixed_crypto) {
         key = fixed;
     }
 
     let mut buf = vec![0u8; size as usize];
     cia.read(&mut buf).await.context("reading ExHeader")?;
-    Aes128Ctr::new_from_slices(&key, ctr)?.apply_keystream(&mut buf);
+    Aes128Ctr::new_from_slices(&key, crypto.ctr)?.apply_keystream(&mut buf);
     hash_bytes(hasher, &buf);
     writer.write_all(&buf).await.context("writing ExHeader")?;
     progress.inc(size as u64);
@@ -247,25 +252,33 @@ async fn write_exefs_section(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Keying for the RomFS section. Unlike [`NcchCrypto`] the key is
+/// derived here from the extra-crypto keyslot and `key_y`.
+struct RomfsCrypto<'a> {
+    ctr: &'a [u8; 16],
+    uses_extra_crypto: u8,
+    fixed_crypto: u8,
+    key_y: u128,
+}
+
 async fn write_romfs_section(
     cia: &mut CiaReader,
     writer: &mut BufWriter<&mut File>,
     size: u32,
-    ctr: &[u8; 16],
-    uses_extra_crypto: u8,
-    fixed_crypto: u8,
-    key_y: u128,
+    crypto: RomfsCrypto<'_>,
     hasher: &mut ContentHasher<'_>,
     progress: &dyn ProgressReporter,
     cancel: &CancelToken,
 ) -> anyhow::Result<()> {
-    let mut key = derive_ctr_key(CTR_KEYS_0[extra_crypto_index(uses_extra_crypto)], key_y);
-    if let Some(fixed) = fixed_key(fixed_crypto) {
+    let mut key = derive_ctr_key(
+        CTR_KEYS_0[extra_crypto_index(crypto.uses_extra_crypto)],
+        crypto.key_y,
+    );
+    if let Some(fixed) = fixed_key(crypto.fixed_crypto) {
         key = fixed;
     }
 
-    let base_ctr = *ctr;
+    let base_ctr = *crypto.ctr;
     // The producer reads through the CIA outer CBC layer (sequential), so
     // chunks must be read in order; only the per-chunk AES-CTR step runs in
     // parallel across the pool. The legacy path XORed cidx into byte 1 of every
@@ -417,7 +430,6 @@ struct NcchWriteOptions {
     keys: [u128; 2],
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn write_to_file(
     writer: &mut BufWriter<&mut File>,
     cia: &mut CiaReader,
@@ -442,9 +454,11 @@ async fn write_to_file(
                 cia,
                 writer,
                 opts.size,
-                &opts.counter,
-                base_key,
-                opts.fixed_crypto,
+                NcchCrypto {
+                    ctr: &opts.counter,
+                    base_key,
+                    fixed_crypto: opts.fixed_crypto,
+                },
                 hasher,
                 progress,
             )
@@ -473,10 +487,12 @@ async fn write_to_file(
                 cia,
                 writer,
                 opts.size,
-                &opts.counter,
-                opts.uses_extra_crypto,
-                opts.fixed_crypto,
-                opts.keys[1],
+                RomfsCrypto {
+                    ctr: &opts.counter,
+                    uses_extra_crypto: opts.uses_extra_crypto,
+                    fixed_crypto: opts.fixed_crypto,
+                    key_y: opts.keys[1],
+                },
                 hasher,
                 progress,
                 cancel,
@@ -536,17 +552,28 @@ pub(crate) async fn get_new_key(
     ))
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Where one NCCH lands in the output and which title it belongs to.
+/// `title_id` may be all zeros, in which case the NCCH header's own
+/// program ID is used.
+pub struct NcchOutput {
+    pub out_base: u64,
+    pub offs: u64,
+    pub title_id: [u8; 8],
+}
+
 pub async fn parse_ncch(
     cia: &mut CiaReader,
     out: &mut File,
-    out_base: u64,
-    offs: u64,
-    mut title_id: [u8; 8],
+    output: NcchOutput,
     mut hasher: ContentHasher<'_>,
     progress: &dyn ProgressReporter,
     cancel: &CancelToken,
 ) -> anyhow::Result<()> {
+    let NcchOutput {
+        out_base,
+        offs,
+        mut title_id,
+    } = output;
     if cia.from_ncsd {
         debug!("  Parsing {} NCCH", CTR_NCSD_PARTITIONS[cia.cidx as usize]);
     } else if cia.single_ncch {
@@ -746,24 +773,26 @@ pub async fn parse_and_decrypt_ncsd(
             "  Partition {i} ({partition_name}) at offset 0x{partition_offset:X}, size {size_mu} MU",
         );
 
-        let mut reader = CiaReader::new(
-            rom_file.try_clone().await?,
-            false,
-            input.to_path_buf(),
-            [0u8; 16],
-            i as u32,
-            i as u16,
-            0,
-            false,
-            true,
-        );
+        let mut reader = CiaReader::new(CiaReaderArgs {
+            file: rom_file.try_clone().await?,
+            encrypted: false,
+            path: input.to_path_buf(),
+            key: [0u8; 16],
+            content_id: i as u32,
+            cidx: i as u16,
+            contentoff: 0,
+            single_ncch: false,
+            from_ncsd: true,
+        });
 
         parse_ncch(
             &mut reader,
             out,
-            partition_offset,
-            partition_offset,
-            title_id,
+            NcchOutput {
+                out_base: partition_offset,
+                offs: partition_offset,
+                title_id,
+            },
             None,
             progress,
             cancel,
@@ -784,19 +813,31 @@ pub async fn parse_and_decrypt_ncch(
 
     let rom_file = File::open(input).await?;
 
-    let mut reader = CiaReader::new(
-        rom_file,
-        false,
-        input.to_path_buf(),
-        [0u8; 16],
-        0,
-        0,
-        0,
-        true,
-        false,
-    );
+    let mut reader = CiaReader::new(CiaReaderArgs {
+        file: rom_file,
+        encrypted: false,
+        path: input.to_path_buf(),
+        key: [0u8; 16],
+        content_id: 0,
+        cidx: 0,
+        contentoff: 0,
+        single_ncch: true,
+        from_ncsd: false,
+    });
 
-    parse_ncch(&mut reader, out, 0, 0, [0u8; 8], None, progress, cancel).await?;
+    parse_ncch(
+        &mut reader,
+        out,
+        NcchOutput {
+            out_base: 0,
+            offs: 0,
+            title_id: [0u8; 8],
+        },
+        None,
+        progress,
+        cancel,
+    )
+    .await?;
 
     Ok(())
 }
@@ -908,26 +949,28 @@ pub async fn parse_and_decrypt_cia(
                     rom_file
                         .seek(SeekFrom::Start(contentoffs + next_content_offs))
                         .await?;
-                    let mut cia_handle = CiaReader::new(
-                        rom_file.try_clone().await?,
-                        cenc,
-                        input.to_path_buf(),
-                        title_key,
-                        content.cid,
-                        content.cidx,
-                        contentoffs + next_content_offs,
-                        false,
-                        false,
-                    );
+                    let mut cia_handle = CiaReader::new(CiaReaderArgs {
+                        file: rom_file.try_clone().await?,
+                        encrypted: cenc,
+                        path: input.to_path_buf(),
+                        key: title_key,
+                        content_id: content.cid,
+                        cidx: content.cidx,
+                        contentoff: contentoffs + next_content_offs,
+                        single_ncch: false,
+                        from_ncsd: false,
+                    });
                     next_content_offs += align_64(content.csize);
 
                     let mut hasher = Sha256::new();
                     parse_ncch(
                         &mut cia_handle,
                         out,
-                        out_pos,
-                        0,
-                        tid[0..8].try_into()?,
+                        NcchOutput {
+                            out_base: out_pos,
+                            offs: 0,
+                            title_id: tid[0..8].try_into()?,
+                        },
                         Some(&mut hasher),
                         progress,
                         cancel,
@@ -983,17 +1026,17 @@ mod tests {
         let out_path = tmp.path().join("out.bin");
 
         let in_file = File::open(&in_path).await.unwrap();
-        let mut reader = CiaReader::new(
-            in_file,
-            false,
-            in_path.clone(),
-            [0u8; 16],
-            0,
-            0,
-            0,
-            true,
-            false,
-        );
+        let mut reader = CiaReader::new(CiaReaderArgs {
+            file: in_file,
+            encrypted: false,
+            path: in_path.clone(),
+            key: [0u8; 16],
+            content_id: 0,
+            cidx: 0,
+            contentoff: 0,
+            single_ncch: true,
+            from_ncsd: false,
+        });
         reader.seek(0).await.unwrap();
 
         let mut out = File::create(&out_path).await.unwrap();
@@ -1004,10 +1047,12 @@ mod tests {
                 &mut reader,
                 &mut writer,
                 size,
-                &counter,
-                0,
-                0,
-                key_y,
+                RomfsCrypto {
+                    ctr: &counter,
+                    uses_extra_crypto: 0,
+                    fixed_crypto: 0,
+                    key_y,
+                },
                 &mut hasher,
                 &NoProgress,
                 &CancelToken::new(),
@@ -1069,17 +1114,17 @@ mod tests {
         let out_path = tmp.path().join("out.bin");
 
         let in_file = File::open(&in_path).await.unwrap();
-        let mut reader = CiaReader::new(
-            in_file,
-            false,
-            in_path.clone(),
-            [0u8; 16],
-            0,
+        let mut reader = CiaReader::new(CiaReaderArgs {
+            file: in_file,
+            encrypted: false,
+            path: in_path.clone(),
+            key: [0u8; 16],
+            content_id: 0,
             cidx,
-            0,
-            false,
-            false,
-        );
+            contentoff: 0,
+            single_ncch: false,
+            from_ncsd: false,
+        });
         reader.seek(0).await.unwrap();
 
         let mut out = File::create(&out_path).await.unwrap();
@@ -1090,10 +1135,12 @@ mod tests {
                 &mut reader,
                 &mut writer,
                 size,
-                &counter,
-                0,
-                0,
-                key_y,
+                RomfsCrypto {
+                    ctr: &counter,
+                    uses_extra_crypto: 0,
+                    fixed_crypto: 0,
+                    key_y,
+                },
                 &mut hasher,
                 &NoProgress,
                 &CancelToken::new(),
@@ -1150,17 +1197,17 @@ mod tests {
         let out_path = tmp.path().join("out.bin");
 
         let in_file = File::open(&in_path).await.unwrap();
-        let mut reader = CiaReader::new(
-            in_file,
-            false,
-            in_path.clone(),
-            [0u8; 16],
-            0,
+        let mut reader = CiaReader::new(CiaReaderArgs {
+            file: in_file,
+            encrypted: false,
+            path: in_path.clone(),
+            key: [0u8; 16],
+            content_id: 0,
             cidx,
-            0,
-            true,
-            false,
-        );
+            contentoff: 0,
+            single_ncch: true,
+            from_ncsd: false,
+        });
         reader.seek(0).await.unwrap();
 
         let mut out = File::create(&out_path).await.unwrap();
@@ -1171,10 +1218,12 @@ mod tests {
                 &mut reader,
                 &mut writer,
                 size,
-                &counter,
-                0,
-                0,
-                key_y,
+                RomfsCrypto {
+                    ctr: &counter,
+                    uses_extra_crypto: 0,
+                    fixed_crypto: 0,
+                    key_y,
+                },
                 &mut hasher,
                 &NoProgress,
                 &CancelToken::new(),

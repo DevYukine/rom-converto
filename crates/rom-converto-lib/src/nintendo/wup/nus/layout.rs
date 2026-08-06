@@ -97,7 +97,10 @@ impl NusLayout {
             (None, p)
         } else if !numbered_tmds.is_empty() {
             numbered_tmds.sort_by_key(|&(v, _)| v);
-            let (v, p) = numbered_tmds.last().unwrap().clone();
+            let (v, p) = numbered_tmds
+                .last()
+                .expect("checked non-empty above")
+                .clone();
             (Some(v), p)
         } else {
             return Err(WupError::UnrecognizedTitleDirectory(dir.to_path_buf()));
@@ -123,7 +126,12 @@ impl NusLayout {
             numbered_ceteks.sort_by_key(|&(v, _)| v);
             let matched = chosen_tmd_version
                 .and_then(|v| numbered_ceteks.iter().find(|(cv, _)| *cv == v).cloned());
-            let chosen = matched.unwrap_or_else(|| numbered_ceteks.last().unwrap().clone());
+            let chosen = matched.unwrap_or_else(|| {
+                numbered_ceteks
+                    .last()
+                    .expect("checked non-empty above")
+                    .clone()
+            });
             TicketSource::OnDisk(chosen.1)
         } else {
             TicketSource::Derive

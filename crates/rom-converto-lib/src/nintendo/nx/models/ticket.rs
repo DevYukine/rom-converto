@@ -19,7 +19,8 @@ impl Ticket {
         if buf.len() < 4 {
             return Err(NxError::InvalidTicket);
         }
-        let signature_type = u32::from_le_bytes(buf[0..4].try_into().unwrap());
+        let signature_type =
+            u32::from_le_bytes(buf[0..4].try_into().expect("buf is at least 4 bytes"));
         // Signature type IDs from nsz Type.TicketSignature. Switch
         // retail tickets are typically 0x10004 (RSA-2048-SHA256) at
         // 0x100 bytes, which puts the ticket data at 0x140.

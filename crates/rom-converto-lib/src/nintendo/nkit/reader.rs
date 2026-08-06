@@ -128,21 +128,32 @@ pub(crate) fn emit(spans: &mut Vec<Span>, out_off: u64, len: u64, kind: SpanKind
     }
 }
 
+/// Running positions a gap expansion advances: the NKit read cursor,
+/// the restored-image write cursor, and the end of the leading-NUL
+/// run that may still be emitted.
+pub(crate) struct GapPositions {
+    pub nkit_pos: u64,
+    pub out_pos: u64,
+    pub nulls_pos: u64,
+}
+
 /// Decode one gap record into spans, applying the leading-NUL rule
 /// from NKit's `writeGap`: a run of zeroes (up to the tracked
 /// `nulls_pos`) precedes junk output, skipped for large mid-image
 /// gaps.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn expand_gap_record<S: Read + Seek>(
     spans: &mut Vec<Span>,
     src: &mut S,
-    nkit_pos: &mut u64,
-    out_pos: &mut u64,
-    nulls_pos: &mut u64,
+    pos: &mut GapPositions,
     first_or_last: bool,
     junk_id: [u8; 4],
     disc_num: u8,
 ) -> NkitResult<()> {
+    let GapPositions {
+        nkit_pos,
+        out_pos,
+        nulls_pos,
+    } = pos;
     let rec = parse_gap_record(src, *nkit_pos)?;
     *nkit_pos += rec.consumed;
     let size = rec.out_len;
@@ -221,12 +232,12 @@ fn build_plan<S: Read + Seek>(src: &mut S) -> NkitResult<NkitPlan> {
     let fst_off = u32::from_be_bytes(
         dhead[GC_FST_OFFSET_FIELD..GC_FST_OFFSET_FIELD + 4]
             .try_into()
-            .unwrap(),
+            .expect("4-byte slice of the 0x440 disc header"),
     ) as u64;
     let fst_size = u32::from_be_bytes(
         dhead[GC_FST_SIZE_FIELD..GC_FST_SIZE_FIELD + 4]
             .try_into()
-            .unwrap(),
+            .expect("4-byte slice of the 0x440 disc header"),
     ) as u64;
     if fst_off < 0x440 || fst_off + fst_size > nkit_len {
         return Err(NkitError::InvalidHeader(format!(
@@ -254,16 +265,14 @@ fn build_plan<S: Read + Seek>(src: &mut S) -> NkitResult<NkitPlan> {
             )));
         }
         if nkit_pos < target {
-            expand_gap_record(
-                &mut spans,
-                src,
-                &mut nkit_pos,
-                &mut out_pos,
-                &mut nulls_pos,
-                i == 0,
-                junk_id,
-                disc_num,
-            )?;
+            let mut gap = GapPositions {
+                nkit_pos,
+                out_pos,
+                nulls_pos,
+            };
+            expand_gap_record(&mut spans, src, &mut gap, i == 0, junk_id, disc_num)?;
+            nkit_pos = gap.nkit_pos;
+            out_pos = gap.out_pos;
             if nkit_pos > target {
                 return Err(NkitError::InvalidGap(
                     "gap record extends past the next file".into(),
@@ -302,16 +311,13 @@ fn build_plan<S: Read + Seek>(src: &mut S) -> NkitResult<NkitPlan> {
         }
     }
     if nkit_pos < nkit_len {
-        expand_gap_record(
-            &mut spans,
-            src,
-            &mut nkit_pos,
-            &mut out_pos,
-            &mut nulls_pos,
-            true,
-            junk_id,
-            disc_num,
-        )?;
+        let mut gap = GapPositions {
+            nkit_pos,
+            out_pos,
+            nulls_pos,
+        };
+        expand_gap_record(&mut spans, src, &mut gap, true, junk_id, disc_num)?;
+        out_pos = gap.out_pos;
     }
     if out_pos != image_size {
         return Err(NkitError::InvalidHeader(format!(

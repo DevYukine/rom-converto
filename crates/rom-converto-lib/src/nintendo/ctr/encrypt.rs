@@ -467,9 +467,11 @@ async fn encrypt_ncch_at(
             &mut write,
             ncch_offset + EXEFS_HEADER_SIZE as u64,
             header.exhdrsize as u64 * 2,
-            key,
-            counter,
-            None,
+            StreamCrypto {
+                key,
+                counter,
+                cia_cidx_fixup: None,
+            },
             progress,
             cancel,
         )
@@ -502,9 +504,11 @@ async fn encrypt_ncch_at(
             &mut write,
             ncch_offset + (header.romfsoffset as u64 * CTR_MEDIA_UNIT_SIZE as u64),
             header.romfssize as u64 * CTR_MEDIA_UNIT_SIZE as u64,
-            key,
-            counter,
-            cia_fixup,
+            StreamCrypto {
+                key,
+                counter,
+                cia_cidx_fixup: cia_fixup,
+            },
             progress,
             cancel,
         )
@@ -567,18 +571,29 @@ impl NcchCrypto {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+/// AES-CTR keying for one streamed section. `cia_cidx_fixup` carries
+/// the CIA content index whose low byte is XORed into byte 1 of every
+/// RomFS chunk, and is `None` for every other section.
+struct StreamCrypto {
+    key: [u8; 16],
+    counter: [u8; 16],
+    cia_cidx_fixup: Option<u8>,
+}
+
 async fn encrypt_stream_section(
     read: &mut File,
     write: &mut File,
     offset: u64,
     size: u64,
-    key: [u8; 16],
-    counter: [u8; 16],
-    cia_cidx_fixup: Option<u8>,
+    crypto: StreamCrypto,
     progress: &dyn ProgressReporter,
     cancel: &CancelToken,
 ) -> Result<()> {
+    let StreamCrypto {
+        key,
+        counter,
+        cia_cidx_fixup,
+    } = crypto;
     read.seek(SeekFrom::Start(offset)).await?;
     write.seek(SeekFrom::Start(offset)).await?;
 
@@ -991,9 +1006,11 @@ mod tests {
             &mut write,
             0,
             size as u64,
-            key,
-            counter,
-            Some(cidx),
+            StreamCrypto {
+                key,
+                counter,
+                cia_cidx_fixup: Some(cidx),
+            },
             &NoProgress,
             &CancelToken::new(),
         )
