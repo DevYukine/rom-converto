@@ -2,6 +2,7 @@
 import { computed, ref } from "vue";
 import { storeToRefs } from "pinia";
 import { basename } from "~/composables/useDerivedPath";
+import { invoke } from "~/lib/ipc";
 import { openContextMenu } from "~/composables/useContextMenu";
 import { useProgress } from "~/composables/useProgress";
 import { useDatVerifyStore } from "~/stores/datVerify";
@@ -44,10 +45,23 @@ const detailRow = ref<DatVerifyResult | null>(null);
 
 const ROM_FILTERS = [{ name: "ROM file", extensions: ["*"] }];
 
-function addPaths(paths: string[]) {
+// Scan success proves the path is a directory, so its file list is authoritative
+// even when empty; only a scan error (plain file) falls back to the path itself.
+// "*" lists every file, since verify accepts any format.
+async function expandPath(path: string): Promise<string[]> {
+	try {
+		return await invoke<string[]>("cmd_scan_dir", { dir: path, exts: ["*"], maxDepth: null });
+	} catch {
+		return [path];
+	}
+}
+
+async function addPaths(paths: string[]) {
 	for (const path of paths) {
-		if (staged.value.some((s) => s.path === path)) continue;
-		staged.value.push({ id: crypto.randomUUID(), path, name: basename(path), size: 0, outExt: "" });
+		for (const file of await expandPath(path)) {
+			if (staged.value.some((s) => s.path === file)) continue;
+			staged.value.push({ id: crypto.randomUUID(), path: file, name: basename(file), size: 0, outExt: "" });
+		}
 	}
 }
 

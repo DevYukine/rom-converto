@@ -4789,8 +4789,9 @@ fn execute_rename_plan(plan: &RenamePlan, dry_run: bool, policy: ConflictPolicy)
 }
 
 /// Recursively scan `dir` for files matching `exts`, applying the same junk
-/// filter and sort as the CLI batch walk. A non-directory path surfaces as an
-/// error so the caller can fall back to treating it as a single file.
+/// filter and sort as the CLI batch walk. A `"*"` entry in `exts` matches
+/// every file; an empty `exts` matches nothing. A non-directory path surfaces
+/// as an error so the caller can fall back to treating it as a single file.
 #[tauri::command]
 pub async fn cmd_scan_dir(
     dir: PathBuf,
@@ -4798,6 +4799,10 @@ pub async fn cmd_scan_dir(
     max_depth: Option<usize>,
 ) -> Result<Vec<PathBuf>, String> {
     tokio::task::spawn_blocking(move || {
+        // "*" lists every file; an empty list still matches nothing so folder-input ops stay unexpanded.
+        if exts.iter().any(|e| e == "*") {
+            return collect_all_files(&dir, max_depth).map_err(err_to_string);
+        }
         let ext_refs: Vec<&str> = exts.iter().map(String::as_str).collect();
         collect_files_with_exts(&dir, &ext_refs, max_depth).map_err(err_to_string)
     })
