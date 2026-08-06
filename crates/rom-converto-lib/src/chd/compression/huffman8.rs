@@ -455,8 +455,8 @@ fn export_tree_huffman(w: &mut BitWriter, nodes: &[Node], numcodes: usize) -> Ch
 
     let mut first_non_zero = 31i32;
     let mut last_non_zero = 0i32;
-    for index in 1..SMALL_CODES {
-        if small_nodes[index].numbits != 0 {
+    for (index, node) in small_nodes.iter().enumerate().take(SMALL_CODES).skip(1) {
+        if node.numbits != 0 {
             if first_non_zero == 31 {
                 first_non_zero = index as i32;
             }

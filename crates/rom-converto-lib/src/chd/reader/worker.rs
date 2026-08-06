@@ -211,6 +211,7 @@ fn resolve_entry(map: &[MapEntry], hunk_index: u32) -> ChdResult<MapEntry> {
 /// Drive the extract pipeline: pool of decompressors reading a
 /// shared file via positional reads, reorder-buffered drive,
 /// dedicated writer thread for the output bin.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn extract_hunks(
     pool: &Pool<ChdExtractWork, ChdExtractedOut, ChdError>,
     map: &[MapEntry],
