@@ -3,6 +3,7 @@ import { computed, ref } from "vue";
 import { storeToRefs } from "pinia";
 import { invoke } from "~/lib/ipc";
 import { basename } from "~/composables/useDerivedPath";
+import { openContextMenu } from "~/composables/useContextMenu";
 import { useProgress } from "~/composables/useProgress";
 import { useDatRenameStore } from "~/stores/datRename";
 import ConfigCard from "~/components/ui/ConfigCard.vue";
@@ -90,6 +91,15 @@ async function run(dry: boolean) {
 function apply() {
 	void run(false);
 }
+
+function contextItems(r: DatRenameRow) {
+	const items = [{ label: "Copy file path", value: r.from }];
+	if (r.to) items.push({ label: "Copy new name", value: basename(r.to) });
+	if (r.detail) items.push({ label: "Copy detail", value: r.detail });
+	const rowText = [basename(r.from), r.to ? basename(r.to) : r.detail].filter(Boolean).join(" · ");
+	items.push({ label: "Copy row", value: rowText });
+	return items;
+}
 </script>
 
 <template>
@@ -144,7 +154,7 @@ function apply() {
 				<span>{{ pendingCount }} file{{ pendingCount === 1 ? "" : "s" }} to rename</span>
 				<span class="rc-results__note">Only the filename changes. The file content is never touched.</span>
 			</div>
-			<div v-for="r in renameResult.rows" :key="r.from" class="rc-row">
+			<div v-for="r in renameResult.rows" :key="r.from" class="rc-row" @contextmenu="openContextMenu($event, contextItems(r))">
 				<StatusTag :status="TAG[r.action].tag" :label="TAG[r.action].label" :width="96" />
 				<div class="rc-row__text">
 					<span class="rc-row__name">{{ basename(r.from) }}</span>
@@ -264,6 +274,7 @@ function apply() {
 	border-radius: 10px;
 	background: var(--card);
 	overflow: hidden;
+	user-select: text;
 }
 
 .rc-results__head {

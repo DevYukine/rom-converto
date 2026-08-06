@@ -45,6 +45,7 @@ const alertsOpen = ref(false);
 
 		<AlertsFlyout v-if="alertsOpen" @close="alertsOpen = false" />
 		<ToastHost />
+		<ContextMenu />
 
 		<div v-if="isDraggingOver" class="drop-overlay">
 			<span>Release to load</span>

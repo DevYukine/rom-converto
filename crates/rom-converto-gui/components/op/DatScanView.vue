@@ -3,6 +3,7 @@ import { computed } from "vue";
 import { storeToRefs } from "pinia";
 import { invoke } from "~/lib/ipc";
 import { basename } from "~/composables/useDerivedPath";
+import { openContextMenu } from "~/composables/useContextMenu";
 import { useProgress } from "~/composables/useProgress";
 import { useDatScanStore } from "~/stores/datScan";
 import type { DatScanRowEvent, DatScanResult, DatScanStatus, ScanLevel } from "~/stores/datScan";
@@ -93,6 +94,14 @@ function detail(r: DatScanRowEvent): { text: string; tone: "green" | "red" | "mu
 }
 
 const detailRow = ref<DatScanRowEvent | null>(null);
+
+function contextItems(r: DatScanRowEvent) {
+	const d = detail(r);
+	const items = [{ label: "Copy file path", value: r.path }];
+	if (d) items.push({ label: "Copy details", value: d.text });
+	items.push({ label: "Copy row", value: [basename(r.path), d?.text].filter(Boolean).join(" · ") });
+	return items;
+}
 
 function onDepthInput(e: Event) {
 	const raw = (e.target as HTMLInputElement).value;
@@ -207,7 +216,7 @@ function cancel() {
 					· Rename all to canonical…
 				</button>
 			</div>
-			<div v-for="r in visibleRows" :key="r.path" class="rc-row">
+			<div v-for="r in visibleRows" :key="r.path" class="rc-row" @contextmenu="openContextMenu($event, contextItems(r))">
 				<StatusTag :status="TAG[r.status]?.tag ?? r.status" :label="TAG[r.status]?.label" />
 				<div class="rc-row__text">
 					<span class="rc-row__name">{{ basename(r.path) }}</span>
@@ -342,6 +351,7 @@ function cancel() {
 	border-radius: 10px;
 	background: var(--card);
 	overflow: hidden;
+	user-select: text;
 }
 
 .rc-results__head {

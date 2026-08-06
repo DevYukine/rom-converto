@@ -2,6 +2,7 @@
 import { computed, ref } from "vue";
 import { storeToRefs } from "pinia";
 import { basename } from "~/composables/useDerivedPath";
+import { openContextMenu } from "~/composables/useContextMenu";
 import { useProgress } from "~/composables/useProgress";
 import { useDatVerifyStore } from "~/stores/datVerify";
 import { useQueueStore } from "~/stores/queue";
@@ -133,6 +134,14 @@ function detailLines(r: DatVerifyResult): string[] {
 	lines.push(r.error ?? "The full hash does not match the database entry. The file may be modified or corrupt.");
 	return lines;
 }
+
+function contextItems(r: DatVerifyResult) {
+	const d = detail(r);
+	const items = [{ label: "Copy file path", value: r.path }];
+	if (d) items.push({ label: "Copy details", value: d.text });
+	items.push({ label: "Copy row", value: [basename(r.path), d?.text].filter(Boolean).join(" · ") });
+	return items;
+}
 </script>
 
 <template>
@@ -204,6 +213,7 @@ function detailLines(r: DatVerifyResult): string[] {
 				:key="r.path"
 				class="rc-row"
 				:class="{ 'rc-row--fail': r.verdict === 'failed' }"
+				@contextmenu="openContextMenu($event, contextItems(r))"
 			>
 				<StatusTag :status="TAG[r.verdict].tag" :label="TAG[r.verdict].label" />
 				<div class="rc-row__text">
@@ -278,6 +288,7 @@ function detailLines(r: DatVerifyResult): string[] {
 	border-radius: 10px;
 	background: var(--card);
 	overflow: hidden;
+	user-select: text;
 }
 
 .rc-results__head {
