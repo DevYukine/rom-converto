@@ -125,9 +125,9 @@ function contextItems(r: DatRenameRow) {
 		</div>
 
 		<DropZone
-			:drop-text="input || 'Drop a folder or file to preview renames'"
+			:drop-text="input || 'Drop a folder to preview renames'"
 			:multiple="false"
-			also-directory
+			directory
 			@add="setDir"
 		/>
 

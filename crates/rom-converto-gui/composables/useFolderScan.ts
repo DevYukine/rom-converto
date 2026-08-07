@@ -1,16 +1,18 @@
 import { invoke } from "~/lib/ipc";
 
 export function useFolderScan(exts: string[]) {
-  async function expand(path: string, maxDepth: number | null): Promise<string[]> {
+  // Returns null when the path is not a scannable directory. A successful
+  // scan is authoritative even when it finds nothing, so callers can tell an
+  // empty directory apart from a plain file.
+  async function expand(path: string, maxDepth: number | null): Promise<string[] | null> {
     try {
-      const found = await invoke<string[]>("cmd_scan_dir", {
+      return await invoke<string[]>("cmd_scan_dir", {
         dir: path,
         exts,
         maxDepth,
       });
-      return found.length > 0 ? found : [path];
     } catch {
-      return [path];
+      return null;
     }
   }
   return { expand };

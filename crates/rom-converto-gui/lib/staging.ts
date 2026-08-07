@@ -26,9 +26,17 @@ export function useStaging(def: OpDef) {
 		const store = def.useStore();
 		const recursive = store.recursive !== false;
 		const maxDepth = (store.maxDepth as number | null | undefined) ?? null;
+		// Ops with a folder picker take the directory itself when it holds no
+		// eligible files (NUS/CDN trees, hash). File-input ops must never stage
+		// a directory: their commands open the path as a regular file.
+		const folderInput = !!(def.browseDirectory || def.browseAlsoDirectory);
 		const files: string[] = [];
 		for (const p of paths) {
-			const expanded = recursive ? await scan.expand(p, maxDepth) : [p];
+			const scanned = await scan.expand(p, recursive ? maxDepth : 1);
+			let expanded: string[];
+			if (scanned === null) expanded = [p];
+			else if (scanned.length > 0) expanded = scanned;
+			else expanded = folderInput ? [p] : [];
 			for (const f of expanded) if (!files.includes(f)) files.push(f);
 		}
 		const added: StagedItem[] = [];

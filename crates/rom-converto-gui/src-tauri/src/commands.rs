@@ -3461,8 +3461,11 @@ pub async fn cmd_hash(
             Ok(digests)
         };
         let mut lines = Vec::new();
-        if recursive {
-            let files = collect_all_files(&input, max_depth).map_err(err_to_string)?;
+        // A staged directory with the recursive toggle off hashes its top-level
+        // files instead of failing to open the directory as a file.
+        if recursive || input.is_dir() {
+            let depth = if recursive { max_depth } else { Some(1) };
+            let files = collect_all_files(&input, depth).map_err(err_to_string)?;
             if files.is_empty() {
                 return Ok(format!("no files found in {}", input.display()));
             }
@@ -4552,6 +4555,9 @@ async fn run_dat_rename(
     on_conflict: String,
     token: CancelToken,
 ) -> Result<DatRenameResult, String> {
+    if !input.is_dir() {
+        return Err(format!("input is not a folder: {}", input.display()));
+    }
     let policy = conflict_policy(Some(on_conflict.as_str()));
     let cue_sets = cue_sets_under(&input, max_depth).await?;
     let cue_covered: std::collections::HashSet<PathBuf> = cue_sets
