@@ -53,9 +53,19 @@ pub async fn cia_to_cci_cancellable(
 
     let title_key = derive_title_key(&pre.ticket).context("deriving title key")?;
 
+    // Contents whose TMD record carries the optional flag may be missing
+    // from a partial (CDN-sourced) CIA; the header's content_index bitfield
+    // marks which ones are actually present. Older CIAs from this tool
+    // never set any bits, so an all-zero bitfield falls back to "every
+    // record is present".
+    let any_bit_set = pre.header.content_index.iter().any(|&b| b != 0);
+
     let mut partitions: Vec<PartitionLayout> = Vec::new();
     let mut byte_offset_into_content: u64 = 0;
     for chunk in &pre.tmd.content_chunk_records {
+        if any_bit_set && !pre.header.has_content_index(chunk.content_index as usize) {
+            continue;
+        }
         let idx = chunk.content_index;
         if idx < 3 {
             partitions.push(PartitionLayout {

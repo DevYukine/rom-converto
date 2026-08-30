@@ -74,9 +74,11 @@ pub const TICKET_SIG_BODY_OFFSET: u64 = 0x140;
 pub const TICKET_TITLE_KEY_OFFSET: u64 = 0x7F;
 pub const TICKET_TITLE_ID_OFFSET: u64 = 0x9C;
 pub const TICKET_COMMON_KEY_IDX_OFFSET: u64 = 0xB1;
+pub const TICKET_TITLE_VERSION_OFFSET: u64 = 0xA6;
 
 // TMD structure offsets (relative to start of TMD)
-pub const TMD_CONTENT_COUNT_OFFSET: u64 = 0x206;
+// Assumes the 0x140 RSA-2048 signature block, like TMD_CONTENT_RECORDS_OFFSET.
+pub const TMD_CONTENT_COUNT_OFFSET: u64 = 0x1DE;
 pub const TMD_CONTENT_RECORDS_OFFSET: u64 = 0xB04;
 pub const TMD_CONTENT_RECORD_SIZE: u64 = 48;
 

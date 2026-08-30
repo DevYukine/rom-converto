@@ -26,7 +26,9 @@ use crate::nintendo::ctr::decrypt::cia::{
 use crate::nintendo::ctr::decrypt::model::NcchSection;
 use crate::nintendo::ctr::decrypt::util::{derive_title_key_from_ticket, gen_iv};
 use crate::nintendo::ctr::error::NintendoCTRError;
-use crate::nintendo::ctr::models::cia::{CIA_HEADER_SIZE, CiaFile, CiaFileWithoutContent};
+use crate::nintendo::ctr::models::cia::{
+    CIA_HEADER_SIZE, CiaFile, CiaFileWithoutContent, CiaHeader,
+};
 use crate::nintendo::ctr::models::exe_fs_header::ExeFSHeader;
 use crate::nintendo::ctr::models::ncch_header::NcchHeader;
 use crate::nintendo::ctr::models::title_metadata::{ContentInfoRecord, TitleMetadata};
@@ -320,11 +322,26 @@ async fn encrypt_cia_cancellable(
         out.write_all(preamble.get_ref()).await?;
         out.flush().await?;
 
+        // Contents whose TMD record carries the optional flag may be missing
+        // from a partial (CDN-sourced) CIA; the header's content_index
+        // bitfield marks which ones are actually present. Older CIAs from
+        // this tool never set any bits, so an all-zero bitfield falls back
+        // to "every record is present".
+        let any_bit_set = encrypted_cia.header.content_index.iter().any(|&b| b != 0);
+
         let mut content_hashes = Vec::with_capacity(encrypted_cia.tmd.content_chunk_records.len());
         let mut next_content_offs = 0u64;
         for record in &encrypted_cia.tmd.content_chunk_records {
             if cancel.is_cancelled() {
                 return Err(anyhow::Error::from(NintendoCTRError::Cancelled));
+            }
+
+            if any_bit_set
+                && !encrypted_cia
+                    .header
+                    .has_content_index(record.content_index as usize)
+            {
+                continue;
             }
 
             let content_offset = layout.content_offset + next_content_offs;
@@ -366,7 +383,11 @@ async fn encrypt_cia_cancellable(
         }
 
         progress.finish();
-        update_tmd_hashes(&mut encrypted_cia.tmd, &content_hashes)?;
+        update_tmd_hashes(
+            &mut encrypted_cia.tmd,
+            &encrypted_cia.header,
+            &content_hashes,
+        )?;
 
         let mut finalized = Cursor::new(Vec::new());
         encrypted_cia.write_le(&mut finalized)?;
@@ -786,16 +807,35 @@ async fn write_cbc_encrypted_content(
     Ok(out)
 }
 
-fn update_tmd_hashes(tmd: &mut TitleMetadata, content_hashes: &[[u8; 32]]) -> Result<()> {
-    if content_hashes.len() != tmd.content_chunk_records.len() {
+fn update_tmd_hashes(
+    tmd: &mut TitleMetadata,
+    header: &CiaHeader,
+    content_hashes: &[[u8; 32]],
+) -> Result<()> {
+    let any_bit_set = header.content_index.iter().any(|&b| b != 0);
+    let is_present = |content_index: u16| -> bool {
+        !any_bit_set || header.has_content_index(content_index as usize)
+    };
+
+    let present_count = tmd
+        .content_chunk_records
+        .iter()
+        .filter(|r| is_present(r.content_index))
+        .count();
+    if content_hashes.len() != present_count {
         anyhow::bail!(
-            "encrypted {} contents but TMD declares {} records",
+            "encrypted {} contents but TMD declares {} present records",
             content_hashes.len(),
-            tmd.content_chunk_records.len()
+            present_count
         );
     }
 
-    for (record, hash) in tmd.content_chunk_records.iter_mut().zip(content_hashes) {
+    for (record, hash) in tmd
+        .content_chunk_records
+        .iter_mut()
+        .filter(|r| is_present(r.content_index))
+        .zip(content_hashes)
+    {
         record.hash = hash.to_vec();
     }
 
@@ -921,7 +961,6 @@ mod tests {
             SYNTH_CIA_TITLE_ID,
             vec![(0, 0, plain_content.clone(), content_hash)],
         );
-        update_tmd_hashes(&mut tmd, &[content_hash]).unwrap();
 
         let ticket_size = {
             let mut buf = Vec::new();
@@ -937,24 +976,28 @@ mod tests {
             buf.len() as u32
         };
 
-        let plain_cia = CiaFile {
-            header: crate::nintendo::ctr::models::cia::CiaHeader {
-                header_size: CIA_HEADER_SIZE,
-                cia_type: 0,
-                version: 0,
-                cert_chain_size: 0x0A00,
-                ticket_size,
-                tmd_size,
-                meta_size: 0,
-                content_size: plain_content.len() as u64,
-                content_index: vec![0x00; CIA_CONTENT_INDEX_SIZE],
-            },
+        let header = crate::nintendo::ctr::models::cia::CiaHeader {
+            header_size: CIA_HEADER_SIZE,
+            cia_type: 0,
+            version: 0,
+            cert_chain_size: 0x0A00,
+            ticket_size,
+            tmd_size,
+            meta_size: 0,
+            content_size: plain_content.len() as u64,
+            content_index: vec![0x00; CIA_CONTENT_INDEX_SIZE],
+        };
+        update_tmd_hashes(&mut tmd, &header, &[content_hash]).unwrap();
+
+        let mut plain_cia = CiaFile {
+            header,
             cert_chain,
             ticket,
             tmd,
             content_data: plain_content,
             meta_data: None,
         };
+        plain_cia.apply_content_indexes();
 
         let plain_path = dir.path().join("plain.cia");
         let encrypted_path = dir.path().join("encrypted.cia");

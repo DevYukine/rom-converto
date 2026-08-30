@@ -81,20 +81,38 @@ pub async fn decrypt_from_encrypted_cia(
     let content_hashes = parse_and_decrypt_cia(input, out_file, progress, cancel).await?;
     progress.finish();
 
-    if content_hashes.len() != decrypted_cia.tmd.content_chunk_records.len() {
-        anyhow::bail!(
-            "decrypted {} contents but TMD declares {} records",
-            content_hashes.len(),
-            decrypted_cia.tmd.content_chunk_records.len()
-        );
-    }
-    for (record, hash) in decrypted_cia
+    // Older CIAs produced by this tool never set the header's content_index
+    // bitmap. Treat an all-zero bitmap as "every declared record is present"
+    // so those files keep decrypting their content instead of silently
+    // becoming empty.
+    let legacy_all_present = decrypted_cia.header.content_index.iter().all(|&b| b == 0)
+        && !decrypted_cia.tmd.content_chunk_records.is_empty();
+    let present_count = decrypted_cia
         .tmd
         .content_chunk_records
-        .iter_mut()
-        .zip(content_hashes)
-    {
-        record.hash = hash.to_vec();
+        .iter()
+        .filter(|record| {
+            legacy_all_present
+                || decrypted_cia
+                    .header
+                    .has_content_index(record.content_index as usize)
+        })
+        .count();
+    if content_hashes.len() != present_count {
+        anyhow::bail!(
+            "decrypted {} contents but TMD declares {} present records",
+            content_hashes.len(),
+            present_count
+        );
+    }
+    let header = &decrypted_cia.header;
+    let mut hashes = content_hashes.into_iter();
+    for record in decrypted_cia.tmd.content_chunk_records.iter_mut() {
+        if (legacy_all_present || header.has_content_index(record.content_index as usize))
+            && let Some(hash) = hashes.next()
+        {
+            record.hash = hash.to_vec();
+        }
     }
 
     for content_info_record in &mut decrypted_cia.tmd.content_info_records {
@@ -182,10 +200,32 @@ pub async fn write_cia(out: &mut BufWriter<File>, args: CiaWriteArgs<'_>) -> any
         progress,
         cancel,
     } = args;
-    let total_content_size: u64 = tmd
-        .content_chunk_records
+    // Pre-scan for content files missing from the CDN directory. An optional
+    // content (e.g. DLC not owned by the account) can legitimately be
+    // absent; anything else missing is a hard error.
+    let mut present_indices: Vec<usize> = Vec::new();
+    for (i, record) in tmd.content_chunk_records.iter().enumerate() {
+        let content_file = format!("{:08x}", record.content_id);
+        let content_path = path.join(&content_file);
+        match tokio::fs::metadata(&content_path).await {
+            Ok(_) => present_indices.push(i),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if record.content_type.is_optional() {
+                    progress.warn(&format!(
+                        "skipping missing optional content {}",
+                        content_path.display()
+                    ));
+                } else {
+                    anyhow::bail!("missing content file {}", content_path.display());
+                }
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+
+    let total_content_size: u64 = present_indices
         .iter()
-        .map(|e| e.content_size)
+        .map(|&i| tmd.content_chunk_records[i].content_size)
         .sum();
     progress.start(total_content_size, "Building CIA");
 
@@ -221,21 +261,22 @@ pub async fn write_cia(out: &mut BufWriter<File>, args: CiaWriteArgs<'_>) -> any
         ticket: tik,
         tmd,
     };
-    for record in &cia_wo.tmd.content_chunk_records {
-        cia_wo
-            .header
-            .set_content_index(record.content_index as usize);
+    for &i in &present_indices {
+        let content_index = cia_wo.tmd.content_chunk_records[i].content_index;
+        cia_wo.header.set_content_index(content_index as usize);
     }
 
     let mut preamble = Vec::new();
     cia_wo.write_options(&mut Cursor::new(&mut preamble), Endian::Little, ())?;
     out.write_all(&preamble).await?;
 
-    // Stream each content file directly to the output. The size check below
-    // is what stops a truncated/corrupt .app from producing a CIA whose
-    // header content_size disagrees with the bytes actually written.
+    // Stream each surviving content file directly to the output. The size
+    // check below is what stops a truncated/corrupt .app from producing a
+    // CIA whose header content_size disagrees with the bytes actually
+    // written.
     let mut buf = vec![0u8; CONTENT_COPY_BUF];
-    for entry in &cia_wo.tmd.content_chunk_records {
+    for &i in &present_indices {
+        let entry = &cia_wo.tmd.content_chunk_records[i];
         let content_file = format!("{:08x}", entry.content_id);
         let content_path = path.join(&content_file);
 
@@ -379,6 +420,7 @@ fn merge_certificate_chains(
 mod tests {
     use super::*;
     use crate::nintendo::ctr::models::cia::CiaFile;
+    use crate::nintendo::ctr::models::title_metadata::ContentType;
     use crate::nintendo::ctr::test_fixtures::{append_be, make_cert, make_ticket, make_tmd};
     use crate::util::NoProgress;
 
@@ -841,5 +883,307 @@ mod tests {
             .filter_map(Result::ok)
             .any(|e| e.path().extension().and_then(|s| s.to_str()) == Some("ncch"));
         assert!(!leftover_ncch, "scratch .ncch files were left behind");
+    }
+
+    // Older CIAs produced by this tool never set the header's content_index
+    // bitmap; one with an all-zero bitmap must still decrypt every declared
+    // record instead of producing empty output.
+    #[tokio::test]
+    async fn decrypt_from_encrypted_cia_legacy_all_zero_index_decrypts_all() {
+        use crate::nintendo::ctr::test_fixtures::synth_encrypted_cia_multi_content;
+
+        let ids = [0x0000_0000u32, 0x0000_0001u32];
+        let (_tmp, in_path, contents) = synth_encrypted_cia_multi_content(&ids);
+
+        // Zero out the header's content_index bitmap (offset 0x20, length
+        // 0x2000) to simulate a legacy CIA that never populated it.
+        {
+            let mut bytes = std::fs::read(&in_path).unwrap();
+            bytes[0x20..0x20 + 0x2000].fill(0);
+            std::fs::write(&in_path, &bytes).unwrap();
+        }
+
+        let out_path = in_path.with_extension("dec.cia");
+        let f = File::create(&out_path).await.unwrap();
+        let mut out = BufWriter::new(f);
+        decrypt_from_encrypted_cia(&in_path, &mut out, &NoProgress, &CancelToken::new())
+            .await
+            .expect("an all-zero content_index must fall back to decrypting every record");
+        out.flush().await.unwrap();
+        drop(out);
+
+        let bytes = std::fs::read(&out_path).unwrap();
+        let cia = CiaFile::read_options(&mut Cursor::new(&bytes), Endian::Little, ())
+            .expect("decrypted CIA must parse");
+
+        assert_eq!(cia.tmd.content_chunk_records.len(), 2);
+        let split = contents[0].len();
+        assert_eq!(
+            cia.content_data.len(),
+            contents[0].len() + contents[1].len(),
+            "both contents must be decrypted, not zero"
+        );
+        assert_eq!(&cia.content_data[..split], contents[0].as_slice());
+        assert_eq!(&cia.content_data[split..], contents[1].as_slice());
+        assert_ne!(
+            cia.tmd.content_chunk_records[0].hash,
+            vec![0u8; 32],
+            "record 0 must get a recomputed hash"
+        );
+        assert_ne!(
+            cia.tmd.content_chunk_records[1].hash,
+            vec![0u8; 32],
+            "record 1 must get a recomputed hash"
+        );
+    }
+
+    /// Sets up a CDN directory with a 3-record TMD (content_id 0/1/2) where
+    /// content_id 1 is not written to disk. Returns the CDN dir, tmd/tik
+    /// paths, and the TMD (with the caller free to tweak record 1's
+    /// content_type before calling `write_cia`).
+    fn cdn_with_missing_middle_content(
+        title_id: u64,
+        missing_content_type: ContentType,
+    ) -> (
+        tempfile::TempDir,
+        std::path::PathBuf,
+        std::path::PathBuf,
+        TitleMetadata,
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let cdn = tmp.path();
+
+        let make_content = |seed: u8, len: usize| -> Vec<u8> {
+            (0..len).map(|i| seed.wrapping_add(i as u8)).collect()
+        };
+        let hash_of = |data: &[u8]| -> [u8; 32] {
+            let mut h = Sha256::new();
+            h.update(data);
+            let d = h.finalize();
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&d);
+            arr
+        };
+
+        let content_a = make_content(0x11, 0x800);
+        let content_c = make_content(0x33, 0x400);
+        std::fs::write(cdn.join("00000000"), &content_a).unwrap();
+        // content_id 1 is intentionally not written to disk.
+        std::fs::write(cdn.join("00000002"), &content_c).unwrap();
+
+        let mut tmd = make_tmd(
+            title_id,
+            vec![
+                (0, 0, content_a.clone(), hash_of(&content_a)),
+                (1, 1, vec![0u8; 0x400], [0u8; 32]),
+                (2, 2, content_c.clone(), hash_of(&content_c)),
+            ],
+        );
+        tmd.content_chunk_records[1].content_type = missing_content_type;
+
+        let tmd_path = cdn.join("tmd");
+        {
+            let mut buf = Vec::new();
+            append_be(&mut buf, &tmd);
+            append_be(&mut buf, &make_cert(b"CP0000000b", 0xBB));
+            append_be(&mut buf, &make_cert(b"CA00000003", 0xAA));
+            std::fs::write(&tmd_path, &buf).unwrap();
+        }
+        let tik_path = cdn.join("cetk");
+        {
+            let ticket = make_ticket(title_id);
+            let mut buf = Vec::new();
+            append_be(&mut buf, &ticket);
+            append_be(&mut buf, &make_cert(b"XS0000000c", 0xCC));
+            std::fs::write(&tik_path, &buf).unwrap();
+        }
+
+        (tmp, tmd_path, tik_path, tmd)
+    }
+
+    #[tokio::test]
+    async fn write_cia_skips_missing_optional_content() {
+        let title_id = 0x0004000000040000u64;
+        let (tmp, tmd_path, tik_path, tmd) =
+            cdn_with_missing_middle_content(title_id, ContentType(0x4001));
+        let cdn = tmp.path();
+        let ticket = make_ticket(title_id);
+
+        let out_path = cdn.join("out.cia");
+        let f = File::create(&out_path).await.unwrap();
+        let mut out = BufWriter::new(f);
+        write_cia(
+            &mut out,
+            CiaWriteArgs {
+                path: cdn,
+                tmd_path: &tmd_path,
+                tmd,
+                tik_path: &tik_path,
+                tik: ticket,
+                progress: &NoProgress,
+                cancel: &CancelToken::new(),
+            },
+        )
+        .await
+        .unwrap();
+        out.flush().await.unwrap();
+
+        let bytes = std::fs::read(&out_path).unwrap();
+        let cia = CiaFile::read_options(&mut Cursor::new(&bytes), Endian::Little, ())
+            .expect("CIA with a skipped optional content must still parse");
+
+        assert_eq!(
+            cia.tmd.content_chunk_records.len(),
+            3,
+            "TMD keeps all records intact"
+        );
+        assert_eq!(cia.header.content_size, 0x800 + 0x400);
+        assert!(cia.header.has_content_index(0));
+        assert!(
+            !cia.header.has_content_index(1),
+            "missing optional content must not be marked present"
+        );
+        assert!(cia.header.has_content_index(2));
+    }
+
+    #[tokio::test]
+    async fn write_cia_fails_on_missing_required_content() {
+        let title_id = 0x0004000000050000u64;
+        let (tmp, tmd_path, tik_path, tmd) =
+            cdn_with_missing_middle_content(title_id, ContentType(0x0001));
+        let cdn = tmp.path();
+        let ticket = make_ticket(title_id);
+
+        let out_path = cdn.join("out.cia");
+        let f = File::create(&out_path).await.unwrap();
+        let mut out = BufWriter::new(f);
+        let err = write_cia(
+            &mut out,
+            CiaWriteArgs {
+                path: cdn,
+                tmd_path: &tmd_path,
+                tmd,
+                tik_path: &tik_path,
+                tik: ticket,
+                progress: &NoProgress,
+                cancel: &CancelToken::new(),
+            },
+        )
+        .await
+        .unwrap_err();
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("00000001"),
+            "error must name the missing content path, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn decrypt_partial_cia_round_trips() {
+        use crate::nintendo::ctr::test_fixtures::{SYNTH_CIA_TITLE_ID, make_ncch_header_bytes};
+
+        let title_id = SYNTH_CIA_TITLE_ID;
+        let tmp = tempfile::tempdir().unwrap();
+        let cdn = tmp.path();
+
+        let mut content_a = make_ncch_header_bytes(title_id);
+        content_a[0x40] = 0xAA;
+        let mut content_c = make_ncch_header_bytes(title_id);
+        content_c[0x40] = 0xCC;
+
+        let hash_of = |data: &[u8]| -> [u8; 32] {
+            let mut h = Sha256::new();
+            h.update(data);
+            let d = h.finalize();
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&d);
+            arr
+        };
+        let hash_a = hash_of(&content_a);
+        let hash_c = hash_of(&content_c);
+
+        std::fs::write(cdn.join("00000000"), &content_a).unwrap();
+        // content_id 1 is optional and intentionally missing from the CDN directory.
+        std::fs::write(cdn.join("00000002"), &content_c).unwrap();
+
+        let mut tmd = make_tmd(
+            title_id,
+            vec![
+                (0, 0, content_a.clone(), hash_a),
+                (1, 1, make_ncch_header_bytes(title_id), [0u8; 32]),
+                (2, 2, content_c.clone(), hash_c),
+            ],
+        );
+        tmd.content_chunk_records[1].content_type = ContentType(0x4000);
+
+        let ticket = make_ticket(title_id);
+
+        let tmd_path = cdn.join("tmd");
+        {
+            let mut buf = Vec::new();
+            append_be(&mut buf, &tmd);
+            append_be(&mut buf, &make_cert(b"CP0000000b", 0xBB));
+            append_be(&mut buf, &make_cert(b"CA00000003", 0xAA));
+            std::fs::write(&tmd_path, &buf).unwrap();
+        }
+        let tik_path = cdn.join("cetk");
+        {
+            let mut buf = Vec::new();
+            append_be(&mut buf, &ticket);
+            append_be(&mut buf, &make_cert(b"XS0000000c", 0xCC));
+            std::fs::write(&tik_path, &buf).unwrap();
+        }
+
+        let out_path = cdn.join("partial.cia");
+        {
+            let f = File::create(&out_path).await.unwrap();
+            let mut out = BufWriter::new(f);
+            write_cia(
+                &mut out,
+                CiaWriteArgs {
+                    path: cdn,
+                    tmd_path: &tmd_path,
+                    tmd,
+                    tik_path: &tik_path,
+                    tik: ticket,
+                    progress: &NoProgress,
+                    cancel: &CancelToken::new(),
+                },
+            )
+            .await
+            .unwrap();
+            out.flush().await.unwrap();
+        }
+
+        let dec_path = cdn.join("partial.dec.cia");
+        let f = File::create(&dec_path).await.unwrap();
+        let mut out = BufWriter::new(f);
+        decrypt_from_encrypted_cia(&out_path, &mut out, &NoProgress, &CancelToken::new())
+            .await
+            .expect("decrypt must succeed for a CIA with a skipped optional content");
+        out.flush().await.unwrap();
+        drop(out);
+
+        let bytes = std::fs::read(&dec_path).unwrap();
+        let cia = CiaFile::read_options(&mut Cursor::new(&bytes), Endian::Little, ())
+            .expect("decrypted CIA must parse");
+
+        assert_eq!(cia.tmd.content_chunk_records.len(), 3);
+        assert_eq!(
+            cia.tmd.content_chunk_records[0].hash,
+            hash_a.to_vec(),
+            "present record 0 must get its recomputed hash"
+        );
+        assert_eq!(
+            cia.tmd.content_chunk_records[2].hash,
+            hash_c.to_vec(),
+            "present record 2 must get its recomputed hash"
+        );
+        assert_eq!(
+            cia.tmd.content_chunk_records[1].hash,
+            vec![0u8; 32],
+            "absent record's hash must be left untouched"
+        );
     }
 }

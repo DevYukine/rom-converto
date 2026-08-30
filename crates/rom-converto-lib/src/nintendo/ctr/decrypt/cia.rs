@@ -842,10 +842,12 @@ pub async fn parse_and_decrypt_ncch(
     Ok(())
 }
 
-/// Decrypts every NCCH content of a CIA and writes the decrypted bytes
-/// directly into `out` at its current position, in TMD-record order. Returns
-/// the SHA-256 of each decrypted content, indexed by record order, so the
-/// caller can recompute the TMD content hashes without a read-back pass.
+/// Decrypts every present NCCH content of a CIA and writes the decrypted
+/// bytes directly into `out` at its current position, in TMD-record order.
+/// Records excluded by the header's content_index bitmap are skipped.
+/// Returns the SHA-256 of each decrypted content, one per present record in
+/// the order those records were processed, so the caller can recompute the
+/// TMD content hashes without a read-back pass.
 pub async fn parse_and_decrypt_cia(
     input: &Path,
     out: &mut File,
@@ -903,11 +905,18 @@ pub async fn parse_and_decrypt_cia(
     let mut content_count: [u8; 2] = [0; 2];
     rom_file.read_exact(&mut content_count).await?;
 
-    let mut hashes: Vec<[u8; 32]> =
-        Vec::with_capacity(BigEndian::read_u16(&content_count) as usize);
+    let content_count = BigEndian::read_u16(&content_count);
+    // Older CIAs produced by this tool never set the header's content_index
+    // bitmap. Treat an all-zero bitmap as "every declared record is present"
+    // so those files keep decrypting their content instead of silently
+    // producing an empty output.
+    let legacy_all_present =
+        cia_header.content_index.iter().all(|&b| b == 0) && content_count as usize > 0;
+
+    let mut hashes: Vec<[u8; 32]> = Vec::with_capacity(content_count as usize);
     let mut next_content_offs = 0;
     let mut out_pos = out.stream_position().await?;
-    for i in 0..BigEndian::read_u16(&content_count) {
+    for i in 0..content_count {
         if cancel.is_cancelled() {
             return Err(NintendoCTRError::Cancelled.into());
         }
@@ -927,6 +936,10 @@ pub async fn parse_and_decrypt_cia(
             csize: record.content_size,
         };
 
+        if !legacy_all_present && !cia_header.has_content_index(content.cidx as usize) {
+            continue;
+        }
+
         let cenc = (content.ctype & 1) != 0;
 
         rom_file
@@ -943,47 +956,55 @@ pub async fn parse_and_decrypt_cia(
             magic = probe_buf[256..260].try_into()?;
         }
 
-        match std::str::from_utf8(&magic) {
-            Ok(utf8) => {
-                if utf8 == NCCH_MAGIC {
-                    rom_file
-                        .seek(SeekFrom::Start(contentoffs + next_content_offs))
-                        .await?;
-                    let mut cia_handle = CiaReader::new(CiaReaderArgs {
-                        file: rom_file.try_clone().await?,
-                        encrypted: cenc,
-                        path: input.to_path_buf(),
-                        key: title_key,
-                        content_id: content.cid,
-                        cidx: content.cidx,
-                        contentoff: contentoffs + next_content_offs,
-                        single_ncch: false,
-                        from_ncsd: false,
-                    });
-                    next_content_offs += align_64(content.csize);
-
-                    let mut hasher = Sha256::new();
-                    parse_ncch(
-                        &mut cia_handle,
-                        out,
-                        NcchOutput {
-                            out_base: out_pos,
-                            offs: 0,
-                            title_id: tid[0..8].try_into()?,
-                        },
-                        Some(&mut hasher),
-                        progress,
-                        cancel,
-                    )
-                    .await?;
-                    out_pos = out.stream_position().await?;
-                    hashes.push(hasher.finalize().into());
-                } else {
-                    return Err(anyhow!("CIA file cannot be parsed"));
-                }
-            }
-            Err(e) => return Err(anyhow!(e)),
+        if magic != NCCH_MAGIC.as_bytes() {
+            return Err(if cenc {
+                anyhow!(
+                    "content {:08x} (index {}) is not an NCCH after decryption; \
+                     the title key is likely wrong - supply the real cetk/ticket",
+                    content.cid,
+                    content.cidx
+                )
+            } else {
+                anyhow!(
+                    "content {:08x} (index {}) is not an NCCH",
+                    content.cid,
+                    content.cidx
+                )
+            });
         }
+
+        rom_file
+            .seek(SeekFrom::Start(contentoffs + next_content_offs))
+            .await?;
+        let mut cia_handle = CiaReader::new(CiaReaderArgs {
+            file: rom_file.try_clone().await?,
+            encrypted: cenc,
+            path: input.to_path_buf(),
+            key: title_key,
+            content_id: content.cid,
+            cidx: content.cidx,
+            contentoff: contentoffs + next_content_offs,
+            single_ncch: false,
+            from_ncsd: false,
+        });
+        next_content_offs += align_64(content.csize);
+
+        let mut hasher = Sha256::new();
+        parse_ncch(
+            &mut cia_handle,
+            out,
+            NcchOutput {
+                out_base: out_pos,
+                offs: 0,
+                title_id: tid[0..8].try_into()?,
+            },
+            Some(&mut hasher),
+            progress,
+            cancel,
+        )
+        .await?;
+        out_pos = out.stream_position().await?;
+        hashes.push(hasher.finalize().into());
     }
 
     Ok(hashes)

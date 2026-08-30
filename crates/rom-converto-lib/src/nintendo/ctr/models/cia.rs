@@ -31,6 +31,15 @@ impl CiaHeader {
             self.content_index[byte_index] |= 1 << bit_index;
         }
     }
+
+    pub fn has_content_index(&self, index: usize) -> bool {
+        let byte_index = index / 8;
+        let bit_index = 7 - (index % 8);
+        match self.content_index.get(byte_index) {
+            Some(byte) => byte & (1 << bit_index) != 0,
+            None => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, BinRead, BinWrite)]
@@ -753,5 +762,21 @@ mod tests {
         h.set_content_index(3);
         h.set_content_index(3);
         assert_eq!(h.content_index[0], 0x10);
+    }
+
+    #[test]
+    fn has_content_index_round_trips_with_set_content_index() {
+        let mut h = blank_header();
+        h.set_content_index(0);
+        h.set_content_index(7);
+        h.set_content_index(8);
+
+        assert!(h.has_content_index(0));
+        assert!(h.has_content_index(7));
+        assert!(h.has_content_index(8));
+        assert!(!h.has_content_index(1));
+        assert!(!h.has_content_index(9));
+        // Out of bounds must not panic and must report absent.
+        assert!(!h.has_content_index(0x10000));
     }
 }

@@ -8,7 +8,6 @@ use crate::nintendo::ctr::models::certificate::{Certificate, PublicKey};
 use crate::nintendo::ctr::models::cia::{CIA_HEADER_SIZE, CiaFileWithoutContent, CiaHeader};
 use crate::nintendo::ctr::models::ncch_header::NcchHeader;
 use crate::nintendo::ctr::models::ticket::Ticket;
-use crate::nintendo::ctr::models::title_metadata::TitleMetadata;
 use crate::nintendo::ctr::util::align_64;
 use crate::nintendo::ctr::verify::root_key::{ROOT_CA_EXPONENT, ROOT_CA_MODULUS};
 use crate::nintendo::ctr::z3ds::models::Z3dsHeader;
@@ -464,7 +463,7 @@ pub async fn verify_cia_cancellable(
             &mut file,
             content_start,
             file_size,
-            &cia_without_content.tmd,
+            &cia_without_content,
             title_key_opt.as_ref(),
             &mut details,
             cancel,
@@ -971,7 +970,7 @@ async fn verify_content_hashes_streaming(
     file: &mut tokio::fs::File,
     content_start: u64,
     file_size: u64,
-    tmd: &TitleMetadata,
+    cia: &CiaFileWithoutContent,
     title_key: Option<&[u8; 16]>,
     details: &mut Vec<String>,
     cancel: &CancelToken,
@@ -980,9 +979,24 @@ async fn verify_content_hashes_streaming(
     let mut buf = vec![0u8; CHUNK_BUF];
     let mut all_valid = true;
     let mut offset = content_start;
+    let header = &cia.header;
+    let tmd = &cia.tmd;
+
+    // Contents whose TMD record carries the optional flag may be omitted
+    // from the CIA; the header's content_index bitfield marks which ones
+    // are actually present. Older CIAs from this tool never set any bits,
+    // so an all-zero bitfield falls back to "every record is present".
+    let any_bit_set = header.content_index.iter().any(|&b| b != 0);
 
     for record in &tmd.content_chunk_records {
         check_cancel(cancel)?;
+        if any_bit_set && !header.has_content_index(record.content_index as usize) {
+            details.push(format!(
+                "Content {}: skipped (absent from CIA)",
+                record.content_id
+            ));
+            continue;
+        }
         let size = record.content_size;
         if offset + size > file_size {
             details.push(format!(
@@ -1290,6 +1304,116 @@ mod tests {
             }
             CtrVerifyResult::Ncsd(_) => panic!("expected Cia result"),
         }
+    }
+
+    #[tokio::test]
+    async fn verify_content_hashes_streaming_skips_absent_content_with_cleared_bit() {
+        use crate::nintendo::ctr::models::cia::CiaFile;
+        use crate::nintendo::ctr::test_fixtures::{
+            SYNTH_CIA_TITLE_ID, make_cert, make_ticket, make_tmd,
+        };
+
+        let content_of = |seed: u8| -> Vec<u8> {
+            (0..0x200usize)
+                .map(|i| seed.wrapping_add(i as u8))
+                .collect()
+        };
+        let hash_of = |data: &[u8]| -> [u8; 32] {
+            let mut h = Sha256::new();
+            h.update(data);
+            h.finalize().into()
+        };
+        let c0 = content_of(1);
+        let c1 = content_of(2);
+        let c2 = content_of(3);
+        let (h0, h1, h2) = (hash_of(&c0), hash_of(&c1), hash_of(&c2));
+
+        // Content index 1's TMD record is present, but its bytes are
+        // omitted from the file (optional content, CDN didn't include it).
+        let tmd = make_tmd(
+            SYNTH_CIA_TITLE_ID,
+            vec![
+                (0, 0, c0.clone(), h0),
+                (1, 1, c1.clone(), h1),
+                (2, 2, c2.clone(), h2),
+            ],
+        );
+
+        let cert_chain = vec![
+            make_cert(b"CA00000003", 0xAA),
+            make_cert(b"CP0000000b", 0xBB),
+            make_cert(b"XS0000000c", 0xCC),
+        ];
+        let ticket = make_ticket(SYNTH_CIA_TITLE_ID);
+        let ticket_size = {
+            let mut buf = Vec::new();
+            ticket
+                .write_options(&mut Cursor::new(&mut buf), Endian::Big, ())
+                .unwrap();
+            buf.len() as u32
+        };
+        let tmd_size = {
+            let mut buf = Vec::new();
+            tmd.write_options(&mut Cursor::new(&mut buf), Endian::Big, ())
+                .unwrap();
+            buf.len() as u32
+        };
+
+        let mut content_data = Vec::new();
+        content_data.extend_from_slice(&c0);
+        content_data.extend_from_slice(&c2);
+
+        let mut header = CiaHeader {
+            header_size: CIA_HEADER_SIZE,
+            cia_type: 0,
+            version: 0,
+            cert_chain_size: 0x0A00,
+            ticket_size,
+            tmd_size,
+            meta_size: 0,
+            content_size: content_data.len() as u64,
+            content_index: vec![0x00; 0x2000],
+        };
+        header.set_content_index(0);
+        header.set_content_index(2);
+        // Content index 1 is intentionally left unset.
+
+        let cia = CiaFile {
+            header,
+            cert_chain,
+            ticket,
+            tmd,
+            content_data,
+            meta_data: None,
+        };
+
+        let mut buf = Vec::new();
+        cia.write_options(&mut Cursor::new(&mut buf), Endian::Little, ())
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("partial.cia");
+        std::fs::write(&path, &buf).unwrap();
+
+        let progress = TestProgress::default();
+        let result = verify_cia(
+            &path,
+            &CtrVerifyOptions {
+                verify_content_hashes: true,
+            },
+            &progress,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.content_hashes_valid, Some(true));
+        assert!(
+            result
+                .details
+                .iter()
+                .any(|s| s.contains("Content 1") && s.contains("skipped")),
+            "expected a skipped-content detail for content 1, got: {:?}",
+            result.details
+        );
     }
 
     #[tokio::test]

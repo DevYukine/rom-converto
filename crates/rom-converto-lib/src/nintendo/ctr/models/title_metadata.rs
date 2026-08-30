@@ -168,6 +168,7 @@ impl ContentType {
 #[cfg(test)]
 pub mod tests {
     use super::*;
+    use crate::nintendo::ctr::constants::TMD_CONTENT_COUNT_OFFSET;
     use crate::nintendo::ctr::models::signature::SignatureType;
     use binrw::BinWrite;
     use std::io::Cursor;
@@ -306,5 +307,57 @@ pub mod tests {
             tmd.content_chunk_records[1].content_id,
             read_tmd.content_chunk_records[1].content_id
         );
+    }
+
+    #[test]
+    fn tmd_content_count_offset_reads_header_field() {
+        let mut content_info_records = vec![
+            ContentInfoRecord {
+                content_index_offset: 0,
+                content_command_count: 0,
+                hash: vec![0x00; 0x20],
+            };
+            64
+        ];
+        content_info_records[0].content_command_count = 1024;
+
+        let tmd = TitleMetadata {
+            signature_data: SignatureData {
+                signature_type: SignatureType::Rsa2048Sha256,
+                signature: vec![0xBB; 0x100],
+                padding: vec![0x00; 0x3C],
+            },
+            header: TitleMetadataHeader {
+                signature_issuer: vec![0x00; 0x40],
+                version: 1,
+                ca_crl_version: 0,
+                signer_crl_version: 0,
+                reserved1: 0,
+                system_version: 0,
+                title_id: 0x0004000000030000,
+                title_type: 0x00040010,
+                group_id: 0,
+                save_data_size: 0x00080000,
+                srl_private_save_data_size: 0,
+                reserved2: 0,
+                srl_flag: 0,
+                reserved3: vec![0x00; 0x31],
+                access_rights: 0,
+                title_version: 0x0100,
+                content_count: 1094,
+                boot_content: 0,
+                padding: 0,
+                content_info_records_hash: vec![0x00; 0x20],
+            },
+            content_info_records,
+            content_chunk_records: vec![],
+        };
+
+        let mut buf = Vec::new();
+        tmd.write(&mut Cursor::new(&mut buf)).unwrap();
+
+        let offset = TMD_CONTENT_COUNT_OFFSET as usize;
+        let value = u16::from_be_bytes([buf[offset], buf[offset + 1]]);
+        assert_eq!(value, 1094);
     }
 }

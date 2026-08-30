@@ -223,7 +223,7 @@ pub fn synth_cia(content_size: usize) -> (tempfile::TempDir, std::path::PathBuf,
     let ticket_size = serialized_size(&ticket);
     let tmd_size = serialized_size(&tmd);
 
-    let cia = CiaFile {
+    let mut cia = CiaFile {
         header: CiaHeader {
             header_size: CIA_HEADER_SIZE,
             cia_type: 0,
@@ -241,6 +241,7 @@ pub fn synth_cia(content_size: usize) -> (tempfile::TempDir, std::path::PathBuf,
         content_data,
         meta_data: None,
     };
+    cia.apply_content_indexes();
 
     let mut buf = Vec::new();
     cia.write_options(&mut Cursor::new(&mut buf), Endian::Little, ())
@@ -315,7 +316,7 @@ pub fn synth_cia_with_meta(
         buf.len() as u32
     };
 
-    let cia = CiaFile {
+    let mut cia = CiaFile {
         header: CiaHeader {
             header_size: CIA_HEADER_SIZE,
             cia_type: 0,
@@ -333,6 +334,7 @@ pub fn synth_cia_with_meta(
         content_data,
         meta_data: Some(meta.clone()),
     };
+    cia.apply_content_indexes();
 
     let mut buf = Vec::new();
     cia.write_options(&mut Cursor::new(&mut buf), Endian::Little, ())
@@ -396,7 +398,7 @@ pub fn synth_encrypted_cia_multi_content(
     let ticket_size = serialized_size(&ticket);
     let tmd_size = serialized_size(&tmd);
 
-    let cia = CiaFile {
+    let mut cia = CiaFile {
         header: CiaHeader {
             header_size: CIA_HEADER_SIZE,
             cia_type: 0,
@@ -414,6 +416,7 @@ pub fn synth_encrypted_cia_multi_content(
         content_data,
         meta_data: None,
     };
+    cia.apply_content_indexes();
 
     let mut buf = Vec::new();
     cia.write_options(&mut Cursor::new(&mut buf), Endian::Little, ())
