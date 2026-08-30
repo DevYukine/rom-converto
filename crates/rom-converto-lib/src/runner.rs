@@ -3230,6 +3230,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ctr_cdn_to_cia_dsiware_with_ticket_flag() {
+        use crate::nintendo::ctr::models::cia::CiaFile;
+        use crate::nintendo::ctr::test_fixtures::{append_be, make_cert, make_tmd};
+        use binrw::{BinRead, Endian};
+        use sha2::{Digest, Sha256};
+        use std::io::Cursor;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let cdn_dir = tmp.path().join("dsiware");
+        std::fs::create_dir_all(&cdn_dir).unwrap();
+
+        let content: Vec<u8> = (0..0x400u32).map(|i| i as u8).collect();
+        let mut hasher = Sha256::new();
+        hasher.update(&content);
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&hasher.finalize());
+        std::fs::write(cdn_dir.join("00000000"), &content).unwrap();
+
+        let title_id = 0x0004800400000000u64;
+        let tmd = make_tmd(title_id, vec![(0, 0, content, hash)], false);
+        let mut tmd_buf = Vec::new();
+        append_be(&mut tmd_buf, &tmd);
+        append_be(&mut tmd_buf, &make_cert(b"CP0000000b", 0xBB));
+        append_be(&mut tmd_buf, &make_cert(b"CA00000003", 0xAA));
+        std::fs::write(cdn_dir.join("tmd"), &tmd_buf).unwrap();
+
+        let req = json!({
+            "operation": "ctr.cdn_to_cia",
+            "input": cdn_dir,
+            "options": { "ensure_ticket_exists": true }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+
+        let output = tmp.path().join("dsiware.cia");
+        assert!(output.exists(), "missing {}", output.display());
+        let bytes = std::fs::read(&output).unwrap();
+        assert!(CiaFile::read_options(&mut Cursor::new(&bytes), Endian::Little, ()).is_ok());
+    }
+
+    #[tokio::test]
     async fn output_conflict_skip_avoids_fixdat_and_ticket_inputs() {
         let dir = tempfile::tempdir().unwrap();
         let output = dir.path().join("existing.xml");

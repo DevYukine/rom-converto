@@ -8,6 +8,7 @@ use crate::nintendo::ctr::constants::{
     TICKET_TITLE_VERSION_OFFSET,
 };
 use crate::nintendo::ctr::decrypt::cia::{parse_and_decrypt_ncch, parse_and_decrypt_ncsd};
+use crate::nintendo::ctr::decrypt::util::{cbc_decrypt, derive_title_key_from_ticket, gen_iv};
 pub use crate::nintendo::ctr::encrypt::{
     derive_encrypted_path, encrypt_rom, encrypt_rom_batch_cancellable, encrypt_rom_cancellable,
 };
@@ -25,8 +26,8 @@ use crate::util::{
 };
 use anyhow::Result;
 use binrw::BinRead;
-use futures::TryFutureExt;
 use log::{debug, info, warn};
+use sha2::{Digest, Sha256};
 use std::io::{Cursor, SeekFrom, Write as _};
 use std::path::{Path, PathBuf};
 use tempfile::TempPath;
@@ -45,7 +46,7 @@ pub mod info;
 pub mod models;
 pub mod seed;
 #[cfg(test)]
-mod test_fixtures;
+pub(crate) mod test_fixtures;
 pub mod title_key;
 mod util;
 pub mod verify;
@@ -76,6 +77,8 @@ pub fn derive_decrypted_path(input: &Path) -> PathBuf {
 }
 
 const DECRYPT_EXTS: &[&str] = &["cia", "3ds", "cci", "cxi"];
+
+const FORGED_KEY_VERIFY_BUF: usize = 4 * 1024 * 1024;
 
 pub async fn decrypt_cia(
     input: &Path,
@@ -422,32 +425,32 @@ async fn convert_cdn_to_cia_single(
         ConflictResolution::Write(resolved) => resolved,
     };
 
-    let ticket_path = find_title_file(cdn_dir)
-        .or_else(|err| async {
-            if opts.ensure_ticket_exists {
-                check_cancel(&cancel)?;
-                let desired = cdn_dir.join("ticket.tik");
-                let path = match resolve_conflict(&desired, opts.on_conflict)? {
-                    ConflictResolution::Skip => desired,
-                    ConflictResolution::Write(path) => {
-                        generate_ticket_from_cdn_with_publish(
-                            cdn_dir,
-                            &path,
-                            &cancel,
-                            opts.on_conflict == ConflictPolicy::Overwrite,
-                        )
-                        .await?;
-                        path
-                    }
-                };
-                debug!("Path for ticket file: {}", path.display());
-                debug!("CDN Directory: {}", cdn_dir.display());
-                Ok::<PathBuf, anyhow::Error>(path)
-            } else {
-                Err(err.into())
+    let (ticket_path, forged) = match find_title_file(cdn_dir).await {
+        Ok(path) => (path, false),
+        Err(err) => {
+            if !opts.ensure_ticket_exists {
+                return Err(err.into());
             }
-        })
-        .await?;
+            check_cancel(&cancel)?;
+            let desired = cdn_dir.join("ticket.tik");
+            let path = match resolve_conflict(&desired, opts.on_conflict)? {
+                ConflictResolution::Skip => desired,
+                ConflictResolution::Write(path) => {
+                    generate_ticket_from_cdn_with_publish(
+                        cdn_dir,
+                        &path,
+                        &cancel,
+                        opts.on_conflict == ConflictPolicy::Overwrite,
+                    )
+                    .await?;
+                    path
+                }
+            };
+            debug!("Path for ticket file: {}", path.display());
+            debug!("CDN Directory: {}", cdn_dir.display());
+            (path, true)
+        }
+    };
     debug!("Found Ticket file at {}", ticket_path.display());
 
     let title_metadata_path = find_tmd_file(cdn_dir).await?;
@@ -455,18 +458,35 @@ async fn convert_cdn_to_cia_single(
 
     let mut ticket_metadata_data = Cursor::new(fs::read(&title_metadata_path).await?);
     let title_metadata = TitleMetadata::read(&mut ticket_metadata_data)?;
+    let title_id = title_metadata.header.title_id;
 
-    let mut ticket_data = Cursor::new(fs::read(&ticket_path).await?);
-    let ticket = Ticket::read(&mut ticket_data)?;
+    let ticket_bytes = fs::read(&ticket_path).await?;
+    let ticket = Ticket::read(&mut Cursor::new(&ticket_bytes))?;
+
+    // A ticket left on disk by an earlier `generate-cdn-ticket` run carries the
+    // same derived key as one forged here, so key it off the key itself rather
+    // than off who wrote the file. Only a ticket forged this run is ours to delete.
+    let derived_title_key = hex::decode(generate_title_key(&format!("{title_id:016X}"), None)?)?;
+    if ticket.ticket_data.title_key == derived_title_key
+        && let Err(err) =
+            verify_forged_title_key(cdn_dir, &title_metadata, &ticket_bytes, &cancel).await
+    {
+        if forged && let Err(remove_err) = fs::remove_file(&ticket_path).await {
+            warn!(
+                "Failed to remove forged ticket {}: {remove_err}",
+                ticket_path.display()
+            );
+        }
+        return Err(err);
+    }
 
     debug!("Processing CIA conversion");
 
     let ticket_title_id = ticket.ticket_data.title_id;
-    let title_metadata_title_id = title_metadata.header.title_id;
 
-    if ticket_title_id != title_metadata_title_id {
+    if ticket_title_id != title_id {
         warn!(
-            "TICKET and TMD Title IDs do not match: TICKET=0x{ticket_title_id:016X}, TMD=0x{title_metadata_title_id:016X}"
+            "TICKET and TMD Title IDs do not match: TICKET=0x{ticket_title_id:016X}, TMD=0x{title_id:016X}"
         );
     }
 
@@ -518,6 +538,72 @@ async fn convert_cdn_to_cia_single(
         fs::remove_dir_all(cdn_dir).await?;
 
         debug!("Deleted CDN directory: {}", cdn_dir.display());
+    }
+
+    Ok(())
+}
+
+/// A forged ticket carries a title key derived from the title id, which only
+/// matches titles Nintendo keyed the same way. Left unchecked, a wrong
+/// derivation yields a CIA that installs and then fails to decrypt on-console,
+/// so decrypt the cheapest encrypted content and hash it against the TMD.
+async fn verify_forged_title_key(
+    cdn_dir: &Path,
+    tmd: &TitleMetadata,
+    ticket_bytes: &[u8],
+    cancel: &CancelToken,
+) -> Result<()> {
+    let Some(record) = tmd
+        .content_chunk_records
+        .iter()
+        .filter(|record| {
+            record.content_type.is_encrypted()
+                && record.content_size >= 16
+                && record.content_size % 16 == 0
+                && cdn_dir.join(format!("{:08x}", record.content_id)).is_file()
+        })
+        .min_by_key(|record| record.content_size)
+    else {
+        warn!(
+            "no encrypted content to verify the forged title key against for 0x{:016X}",
+            tmd.header.title_id
+        );
+        return Ok(());
+    };
+
+    let content_path = cdn_dir.join(format!("{:08x}", record.content_id));
+    let actual_size = fs::metadata(&content_path).await?.len();
+    if actual_size != record.content_size {
+        anyhow::bail!(
+            "content file {} size mismatch: TMD declares {} bytes but file is {} bytes",
+            content_path.display(),
+            record.content_size,
+            actual_size,
+        );
+    }
+
+    let title_key = derive_title_key_from_ticket(&mut Cursor::new(ticket_bytes), 0)?;
+    let mut file = File::open(&content_path).await?;
+    let mut buf = vec![0u8; FORGED_KEY_VERIFY_BUF.min(record.content_size as usize)];
+    let mut hasher = Sha256::new();
+    let mut iv = gen_iv(record.content_index);
+    let mut remaining = record.content_size;
+
+    while remaining > 0 {
+        check_cancel(cancel)?;
+        let to_read = remaining.min(buf.len() as u64) as usize;
+        file.read_exact(&mut buf[..to_read]).await?;
+        // The next chunk chains off this chunk's last ciphertext block, which
+        // in-place decryption is about to overwrite.
+        let next_iv: [u8; 16] = buf[to_read - 16..to_read].try_into().expect("16 bytes");
+        cbc_decrypt(&title_key, &iv, &mut buf[..to_read])?;
+        iv = next_iv;
+        hasher.update(&buf[..to_read]);
+        remaining -= to_read as u64;
+    }
+
+    if hasher.finalize().as_slice() != record.hash.as_slice() {
+        return Err(NintendoCTRError::ForgedTicketKeyMismatch(tmd.header.title_id).into());
     }
 
     Ok(())
@@ -680,7 +766,7 @@ mod tests {
 
         std::fs::write(dir.join("00000000"), &content).unwrap();
 
-        let tmd = make_tmd(title_id, vec![(0, 0, content.clone(), hash)]);
+        let tmd = make_tmd(title_id, vec![(0, 0, content.clone(), hash)], false);
         let mut tmd_buf = Vec::new();
         append_be(&mut tmd_buf, &tmd);
         append_be(&mut tmd_buf, &make_cert(b"CP0000000b", 0xBB));
@@ -722,6 +808,32 @@ mod tests {
         }
     }
 
+    /// The plaintext title key a forged ticket for `title_id` carries, i.e. what
+    /// `derive_title_key_from_ticket` recovers from the generated ticket.
+    fn derived_plain_title_key(title_id: u64) -> [u8; 16] {
+        let key = crate::nintendo::ctr::title_key::generate_key(
+            &format!("{title_id:016X}"),
+            crate::nintendo::ctr::constants::CTR_DEFAULT_TITLE_KEY_PASSWORD,
+        )
+        .unwrap();
+        hex::decode(key).unwrap().try_into().unwrap()
+    }
+
+    fn cbc_encrypt(key: &[u8; 16], iv: &[u8; 16], plain: &[u8]) -> Vec<u8> {
+        use aes::Aes128;
+        use block_padding::NoPadding;
+        use cbc::cipher::{BlockModeEncrypt, KeyIvInit};
+
+        let len = plain.len();
+        let mut buf = plain.to_vec();
+        buf.resize(len + 16, 0);
+        cbc::Encryptor::<Aes128>::new_from_slices(key, iv)
+            .unwrap()
+            .encrypt_padded::<NoPadding>(&mut buf, len)
+            .unwrap()
+            .to_vec()
+    }
+
     fn parses_as_cia(path: &Path) -> bool {
         let bytes = std::fs::read(path).unwrap();
         CiaFile::read_options(&mut Cursor::new(&bytes), Endian::Little, ()).is_ok()
@@ -752,7 +864,7 @@ mod tests {
 
         let tmp = tempfile::tempdir().unwrap();
         let cdn_dir = tmp.path();
-        let mut tmd = make_tmd(title_id, vec![]);
+        let mut tmd = make_tmd(title_id, vec![], false);
         tmd.header.title_version = 0;
         let mut tmd_buf = Vec::new();
         append_be(&mut tmd_buf, &tmd);
@@ -894,7 +1006,11 @@ mod tests {
         hash.copy_from_slice(&hasher.finalize());
         std::fs::write(dir.join("00000000"), &content).unwrap();
 
-        let tmd = make_tmd(0x0004000000030000, vec![(0, 0, content.clone(), hash)]);
+        let tmd = make_tmd(
+            0x0004000000030000,
+            vec![(0, 0, content.clone(), hash)],
+            false,
+        );
         let mut tmd_buf = Vec::new();
         append_be(&mut tmd_buf, &tmd);
         append_be(&mut tmd_buf, &make_cert(b"CP0000000b", 0xBB));
@@ -915,6 +1031,195 @@ mod tests {
         let out = root.join("title_a.cia");
         assert!(out.exists(), "missing {}", out.display());
         assert!(parses_as_cia(&out));
+    }
+
+    #[tokio::test]
+    async fn cdn_to_cia_dsiware_with_ticket_flag_forges_ticket() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cdn_dir = tmp.path().join("dsiware");
+        std::fs::create_dir_all(&cdn_dir).unwrap();
+
+        let make_content = |seed: u8| -> (Vec<u8>, [u8; 32]) {
+            let data: Vec<u8> = (0..0x400u32)
+                .map(|i| (i as u8).wrapping_add(seed))
+                .collect();
+            let mut hasher = Sha256::new();
+            hasher.update(&data);
+            let mut hash = [0u8; 32];
+            hash.copy_from_slice(&hasher.finalize());
+            (data, hash)
+        };
+        let (c0, h0) = make_content(0);
+        let (c2, h2) = make_content(2);
+        std::fs::write(cdn_dir.join("00000000"), &c0).unwrap();
+        std::fs::write(cdn_dir.join("00000002"), &c2).unwrap();
+
+        let title_id = 0x0004800400000000u64;
+        let tmd = make_tmd(title_id, vec![(0, 0, c0, h0), (2, 1, c2, h2)], false);
+        let mut tmd_buf = Vec::new();
+        append_be(&mut tmd_buf, &tmd);
+        append_be(&mut tmd_buf, &make_cert(b"CP0000000b", 0xBB));
+        append_be(&mut tmd_buf, &make_cert(b"CA00000003", 0xAA));
+        std::fs::write(cdn_dir.join("tmd.0"), &tmd_buf).unwrap();
+
+        let output = tmp.path().join("dsiware.cia");
+        let mut opts = single_opts(cdn_dir, output.clone());
+        opts.ensure_ticket_exists = true;
+        convert_cdn_to_cia(opts, &NoProgress, &NoProgress)
+            .await
+            .unwrap();
+
+        assert!(output.exists(), "missing {}", output.display());
+        assert!(parses_as_cia(&output));
+    }
+
+    #[tokio::test]
+    async fn cdn_to_cia_forged_ticket_rejects_undecryptable_content() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cdn_dir = tmp.path().join("dsiware");
+        std::fs::create_dir_all(&cdn_dir).unwrap();
+
+        let content: Vec<u8> = (0..0x400u32).map(|i| i as u8).collect();
+        let mut hasher = Sha256::new();
+        hasher.update(&content);
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&hasher.finalize());
+        std::fs::write(cdn_dir.join("00000000"), &content).unwrap();
+
+        let title_id = 0x0004800400000000u64;
+        let tmd = make_tmd(title_id, vec![(0, 0, content, hash)], true);
+        let mut tmd_buf = Vec::new();
+        append_be(&mut tmd_buf, &tmd);
+        append_be(&mut tmd_buf, &make_cert(b"CP0000000b", 0xBB));
+        append_be(&mut tmd_buf, &make_cert(b"CA00000003", 0xAA));
+        std::fs::write(cdn_dir.join("tmd"), &tmd_buf).unwrap();
+
+        let output = tmp.path().join("dsiware.cia");
+        let mut opts = single_opts(cdn_dir.clone(), output.clone());
+        opts.ensure_ticket_exists = true;
+        let err = convert_cdn_to_cia(opts, &NoProgress, &NoProgress)
+            .await
+            .expect_err("derived title key does not decrypt the content");
+
+        assert!(matches!(
+            err.downcast_ref::<NintendoCTRError>(),
+            Some(NintendoCTRError::ForgedTicketKeyMismatch(id)) if *id == title_id
+        ));
+        assert!(!output.exists(), "must not publish {}", output.display());
+        assert!(
+            !cdn_dir.join("ticket.tik").exists(),
+            "forged ticket must be removed after verification failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn cdn_to_cia_forged_ticket_accepts_content_encrypted_with_derived_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cdn_dir = tmp.path().join("dsiware");
+        std::fs::create_dir_all(&cdn_dir).unwrap();
+
+        let title_id = 0x0004800400000000u64;
+        // Over one verify buffer, so the CBC chaining crosses a chunk boundary.
+        let plain: Vec<u8> = (0..FORGED_KEY_VERIFY_BUF + 32)
+            .map(|i| (i as u8).wrapping_mul(37))
+            .collect();
+        let mut hasher = Sha256::new();
+        hasher.update(&plain);
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&hasher.finalize());
+
+        let encrypted = cbc_encrypt(&derived_plain_title_key(title_id), &gen_iv(0), &plain);
+        std::fs::write(cdn_dir.join("00000000"), &encrypted).unwrap();
+
+        let tmd = make_tmd(title_id, vec![(0, 0, plain, hash)], true);
+        let mut tmd_buf = Vec::new();
+        append_be(&mut tmd_buf, &tmd);
+        append_be(&mut tmd_buf, &make_cert(b"CP0000000b", 0xBB));
+        append_be(&mut tmd_buf, &make_cert(b"CA00000003", 0xAA));
+        std::fs::write(cdn_dir.join("tmd"), &tmd_buf).unwrap();
+
+        let output = tmp.path().join("dsiware.cia");
+        let mut opts = single_opts(cdn_dir, output.clone());
+        opts.ensure_ticket_exists = true;
+        convert_cdn_to_cia(opts, &NoProgress, &NoProgress)
+            .await
+            .unwrap();
+
+        assert!(output.exists(), "missing {}", output.display());
+        assert!(parses_as_cia(&output));
+    }
+
+    #[tokio::test]
+    async fn cdn_to_cia_preexisting_forged_ticket_is_verified_and_kept() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cdn_dir = tmp.path().join("dsiware");
+        std::fs::create_dir_all(&cdn_dir).unwrap();
+
+        let content: Vec<u8> = (0..0x400u32).map(|i| i as u8).collect();
+        let mut hasher = Sha256::new();
+        hasher.update(&content);
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&hasher.finalize());
+        std::fs::write(cdn_dir.join("00000000"), &content).unwrap();
+
+        let title_id = 0x0004800400000000u64;
+        let tmd = make_tmd(title_id, vec![(0, 0, content, hash)], true);
+        let mut tmd_buf = Vec::new();
+        append_be(&mut tmd_buf, &tmd);
+        append_be(&mut tmd_buf, &make_cert(b"CP0000000b", 0xBB));
+        append_be(&mut tmd_buf, &make_cert(b"CA00000003", 0xAA));
+        std::fs::write(cdn_dir.join("tmd"), &tmd_buf).unwrap();
+
+        let ticket_path = cdn_dir.join("ticket.tik");
+        generate_ticket_from_cdn(&cdn_dir, &ticket_path)
+            .await
+            .unwrap();
+
+        let output = tmp.path().join("dsiware.cia");
+        let opts = single_opts(cdn_dir, output.clone());
+        let err = convert_cdn_to_cia(opts, &NoProgress, &NoProgress)
+            .await
+            .expect_err("a ticket left by generate-cdn-ticket must still be verified");
+
+        assert!(matches!(
+            err.downcast_ref::<NintendoCTRError>(),
+            Some(NintendoCTRError::ForgedTicketKeyMismatch(id)) if *id == title_id
+        ));
+        assert!(!output.exists(), "must not publish {}", output.display());
+        assert!(
+            ticket_path.exists(),
+            "a ticket this run did not forge must be left in place"
+        );
+    }
+
+    #[tokio::test]
+    async fn cdn_to_cia_without_ticket_or_flag_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cdn_dir = tmp.path().join("title");
+        std::fs::create_dir_all(&cdn_dir).unwrap();
+
+        let content: Vec<u8> = (0..0x400u32).map(|i| i as u8).collect();
+        let mut hasher = Sha256::new();
+        hasher.update(&content);
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&hasher.finalize());
+        std::fs::write(cdn_dir.join("00000000"), &content).unwrap();
+
+        let tmd = make_tmd(0x0004000000030000, vec![(0, 0, content, hash)], false);
+        let mut tmd_buf = Vec::new();
+        append_be(&mut tmd_buf, &tmd);
+        std::fs::write(cdn_dir.join("tmd"), &tmd_buf).unwrap();
+
+        let output = tmp.path().join("title.cia");
+        let opts = single_opts(cdn_dir, output);
+        let err = convert_cdn_to_cia(opts, &NoProgress, &NoProgress)
+            .await
+            .expect_err("non-DSiWare without a ticket must not forge one");
+
+        assert!(matches!(
+            err.downcast_ref::<NintendoCTRError>(),
+            Some(NintendoCTRError::NoTitleFileFound(_))
+        ));
     }
 
     #[tokio::test]

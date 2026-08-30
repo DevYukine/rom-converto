@@ -1208,12 +1208,12 @@ fn check_cancel(cancel: &CancelToken) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::nintendo::ctr::test_fixtures::{TestProgress, synth_cia};
+    use crate::nintendo::ctr::test_fixtures::{SYNTH_CIA_TITLE_ID, TestProgress, synth_cia};
     use std::io::Write as _;
 
     #[tokio::test]
     async fn verify_cia_streaming_parses_header_and_tmd() {
-        let (_tmp, path, _) = synth_cia(0x2000);
+        let (_tmp, path, _) = synth_cia(SYNTH_CIA_TITLE_ID, 0x2000);
         let progress = TestProgress::default();
         let result = verify_cia(
             &path,
@@ -1241,7 +1241,7 @@ mod tests {
 
     #[tokio::test]
     async fn verify_cia_streaming_validates_content_hash() {
-        let (_tmp, path, _) = synth_cia(0x4000);
+        let (_tmp, path, _) = synth_cia(SYNTH_CIA_TITLE_ID, 0x4000);
         let progress = TestProgress::default();
         let result = verify_cia(
             &path,
@@ -1260,7 +1260,7 @@ mod tests {
     async fn verify_compressed_streams_into_temp_without_full_buffer() {
         use crate::nintendo::ctr::z3ds::{compress_rom, decompress_rom};
 
-        let (_tmp, cia_path, _) = synth_cia(0x3000);
+        let (_tmp, cia_path, _) = synth_cia(SYNTH_CIA_TITLE_ID, 0x3000);
 
         let zcia_path = cia_path.with_extension("zcia");
         let prog = crate::util::NoProgress;
@@ -1337,6 +1337,7 @@ mod tests {
                 (1, 1, c1.clone(), h1),
                 (2, 2, c2.clone(), h2),
             ],
+            false,
         );
 
         let cert_chain = vec![
@@ -1418,7 +1419,7 @@ mod tests {
 
     #[tokio::test]
     async fn verify_cia_streaming_detects_content_hash_mismatch() {
-        let (_tmp, path, _) = synth_cia(0x4000);
+        let (_tmp, path, _) = synth_cia(SYNTH_CIA_TITLE_ID, 0x4000);
 
         // Corrupt one byte in the content region. Content starts somewhere after
         // the TMD; scan for the deterministic pattern and flip a byte there.

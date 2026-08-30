@@ -121,17 +121,27 @@ pub fn make_ticket(title_id: u64) -> Ticket {
 /// Each record is `(content_id, content_index, data, hash)`. The info-records
 /// hash chain is computed correctly so the resulting TMD passes its own
 /// integrity checks.
-pub fn make_tmd(title_id: u64, records: Vec<(u32, u16, Vec<u8>, [u8; 32])>) -> TitleMetadata {
-    // Fixtures store plaintext bytes with a plaintext SHA-256, so they
-    // model a decrypted/devkit CIA. Encrypted-flag is cleared so the
-    // verifier hashes the stored bytes directly instead of trying to
-    // AES-CBC decrypt them first.
+///
+/// With `encrypted` false the records store plaintext bytes with a plaintext
+/// SHA-256, so they model a decrypted/devkit CIA and the verifier hashes the
+/// stored bytes directly. Pass true when the fixture writes AES-CBC ciphertext
+/// that must be decrypted before hashing.
+pub fn make_tmd(
+    title_id: u64,
+    records: Vec<(u32, u16, Vec<u8>, [u8; 32])>,
+    encrypted: bool,
+) -> TitleMetadata {
+    let content_type = {
+        let mut ty = ContentType(0x0000);
+        ty.set_encrypted(encrypted);
+        ty
+    };
     let content_chunk_records: Vec<ContentChunkRecord> = records
         .iter()
         .map(|(id, idx, data, hash)| ContentChunkRecord {
             content_id: *id,
             content_index: *idx,
-            content_type: ContentType(0x0000),
+            content_type,
             content_size: data.len() as u64,
             hash: hash.to_vec(),
         })
@@ -190,33 +200,28 @@ pub fn make_tmd(title_id: u64, records: Vec<(u32, u16, Vec<u8>, [u8; 32])>) -> T
     }
 }
 
-/// Build and persist a complete synthetic CIA file with `content_size` bytes
-/// of deterministic content. Returns the temp dir (drop guard), the on-disk
-/// path, and the SHA-256 of the content data.
-///
-/// The TMD title id is [`SYNTH_CIA_TITLE_ID`] and the ticket `console_id` is
-/// 0 (global). Signatures are forged dummy bytes, so downstream verifiers
-/// reject the signature checks. All layout, hash, and streaming checks pass.
-pub fn synth_cia(content_size: usize) -> (tempfile::TempDir, std::path::PathBuf, [u8; 32]) {
+/// Build and persist a complete synthetic CIA file for arbitrary content
+/// chunk records and raw content bytes. `records` and `content_data` must
+/// agree (records' offsets/sizes implied by their order and lengths in
+/// `content_data`). Signatures are forged dummy bytes, so downstream
+/// verifiers reject the signature checks. All layout, hash, and streaming
+/// checks pass.
+pub fn synth_cia_with_content(
+    title_id: u64,
+    records: Vec<(u32, u16, Vec<u8>, [u8; 32])>,
+    content_data: Vec<u8>,
+    encrypted: bool,
+) -> (tempfile::TempDir, std::path::PathBuf) {
     let tmp = tempfile::tempdir().unwrap();
     let out_path = tmp.path().join("test.cia");
-
-    // Deterministic content that won't accidentally look like a valid NCCH.
-    let content_data: Vec<u8> = (0..content_size)
-        .map(|i| (i as u8).wrapping_mul(37))
-        .collect();
-    let content_hash = sha256_array(&content_data);
 
     let cert_chain = vec![
         make_cert(b"CA00000003", 0xAA),
         make_cert(b"CP0000000b", 0xBB),
         make_cert(b"XS0000000c", 0xCC),
     ];
-    let ticket = make_ticket(SYNTH_CIA_TITLE_ID);
-    let tmd = make_tmd(
-        SYNTH_CIA_TITLE_ID,
-        vec![(0, 0, content_data.clone(), content_hash)],
-    );
+    let ticket = make_ticket(title_id);
+    let tmd = make_tmd(title_id, records, encrypted);
 
     // The CIA header must declare the real ticket and TMD lengths, since
     // their BinWrite impls do not pad to a fixed size.
@@ -232,7 +237,7 @@ pub fn synth_cia(content_size: usize) -> (tempfile::TempDir, std::path::PathBuf,
             ticket_size,
             tmd_size,
             meta_size: 0,
-            content_size: content_size as u64,
+            content_size: content_data.len() as u64,
             content_index: vec![0x00; 0x2000],
         },
         cert_chain,
@@ -250,6 +255,33 @@ pub fn synth_cia(content_size: usize) -> (tempfile::TempDir, std::path::PathBuf,
     let mut f = std::fs::File::create(&out_path).unwrap();
     f.write_all(&buf).unwrap();
     f.flush().unwrap();
+
+    (tmp, out_path)
+}
+
+/// Build and persist a complete synthetic CIA file with `content_size` bytes
+/// of deterministic content under `title_id`. Returns the temp dir (drop
+/// guard), the on-disk path, and the SHA-256 of the content data.
+///
+/// The ticket `console_id` is 0 (global). Signatures are forged dummy bytes,
+/// so downstream verifiers reject the signature checks. All layout, hash,
+/// and streaming checks pass.
+pub fn synth_cia(
+    title_id: u64,
+    content_size: usize,
+) -> (tempfile::TempDir, std::path::PathBuf, [u8; 32]) {
+    // Deterministic content that won't accidentally look like a valid NCCH.
+    let content_data: Vec<u8> = (0..content_size)
+        .map(|i| (i as u8).wrapping_mul(37))
+        .collect();
+    let content_hash = sha256_array(&content_data);
+
+    let (tmp, out_path) = synth_cia_with_content(
+        title_id,
+        vec![(0, 0, content_data.clone(), content_hash)],
+        content_data,
+        false,
+    );
 
     (tmp, out_path, content_hash)
 }
@@ -304,6 +336,7 @@ pub fn synth_cia_with_meta(
     let tmd = make_tmd(
         SYNTH_CIA_TITLE_ID,
         vec![(0, 0, content_data.clone(), content_hash)],
+        false,
     );
 
     let ticket_size = serialized_size(&ticket);
@@ -393,7 +426,7 @@ pub fn synth_encrypted_cia_multi_content(
         make_cert(b"XS0000000c", 0xCC),
     ];
     let ticket = make_ticket(SYNTH_CIA_TITLE_ID);
-    let tmd = make_tmd(SYNTH_CIA_TITLE_ID, records);
+    let tmd = make_tmd(SYNTH_CIA_TITLE_ID, records, false);
 
     let ticket_size = serialized_size(&ticket);
     let tmd_size = serialized_size(&tmd);

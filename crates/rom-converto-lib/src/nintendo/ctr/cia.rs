@@ -426,7 +426,11 @@ mod tests {
 
     #[test]
     fn tmd_with_trailing_certs_parses_as_tmd() {
-        let tmd = make_tmd(0x0004000000030000, vec![(0, 0, vec![0u8; 16], [0u8; 32])]);
+        let tmd = make_tmd(
+            0x0004000000030000,
+            vec![(0, 0, vec![0u8; 16], [0u8; 32])],
+            false,
+        );
         let mut buf = Vec::new();
         append_be(&mut buf, &tmd);
         append_be(&mut buf, &make_cert(b"CP0000000b", 0xBB));
@@ -472,6 +476,7 @@ mod tests {
                 (0, 0, content_a.clone(), hash_a),
                 (1, 1, content_b.clone(), hash_b),
             ],
+            false,
         );
         let ticket = make_ticket(title_id);
 
@@ -551,7 +556,7 @@ mod tests {
         std::fs::write(cdn.join("00000000"), &content_a).unwrap();
 
         let title_id = 0x0004000000110000u64;
-        let tmd = make_tmd(title_id, vec![(0, 0, content_a.clone(), hash_a)]);
+        let tmd = make_tmd(title_id, vec![(0, 0, content_a.clone(), hash_a)], false);
         let ticket = make_ticket(title_id);
 
         let tmd_path = cdn.join("tmd");
@@ -627,7 +632,7 @@ mod tests {
         std::fs::write(cdn.join("00000000"), &declared[..0x800]).unwrap();
 
         let title_id = 0x0004000000220000u64;
-        let tmd = make_tmd(title_id, vec![(0, 0, declared, hash)]);
+        let tmd = make_tmd(title_id, vec![(0, 0, declared, hash)], false);
         let ticket = make_ticket(title_id);
 
         let tmd_path = cdn.join("tmd");
@@ -691,7 +696,7 @@ mod tests {
         std::fs::write(cdn.join("00000000"), &on_disk).unwrap();
 
         let title_id = 0x0004000000330000u64;
-        let tmd = make_tmd(title_id, vec![(0, 0, declared, hash)]);
+        let tmd = make_tmd(title_id, vec![(0, 0, declared, hash)], false);
         let ticket = make_ticket(title_id);
 
         let tmd_path = cdn.join("tmd");
@@ -978,6 +983,7 @@ mod tests {
                 (1, 1, vec![0u8; 0x400], [0u8; 32]),
                 (2, 2, content_c.clone(), hash_of(&content_c)),
             ],
+            false,
         );
         tmd.content_chunk_records[1].content_type = missing_content_type;
 
@@ -1114,6 +1120,7 @@ mod tests {
                 (1, 1, make_ncch_header_bytes(title_id), [0u8; 32]),
                 (2, 2, content_c.clone(), hash_c),
             ],
+            false,
         );
         tmd.content_chunk_records[1].content_type = ContentType(0x4000);
 

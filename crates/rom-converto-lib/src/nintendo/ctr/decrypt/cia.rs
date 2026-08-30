@@ -27,7 +27,7 @@ use crate::nintendo::ctr::models::exe_fs_header::ExeFSHeader;
 use crate::nintendo::ctr::models::ncch_header::NcchHeader;
 use crate::nintendo::ctr::models::seeddb::SeedDatabase;
 use crate::nintendo::ctr::models::title_metadata::ContentChunkRecord;
-use crate::nintendo::ctr::util::align_64;
+use crate::nintendo::ctr::util::{align_64, is_twl_title_id};
 use crate::nintendo::ctr::z3ds::models::underlying_magic;
 use crate::util::worker_pool::{Pool, parallelism};
 use crate::util::{CancelToken, ProgressReporter};
@@ -882,9 +882,9 @@ pub async fn parse_and_decrypt_cia(
     let mut tid: [u8; 16] = [0; 16];
     rom_file.read_exact(&mut tid[0..8]).await?;
 
-    if hex::encode(tid).starts_with("00048") {
-        return Err(anyhow::anyhow!("unsupported CIA file"));
-    }
+    // TWL/DSiWare content is a modcrypt SRL, not an NCCH. A decrypt only strips
+    // the outer titlekey CBC layer; the NCCH probe/gate and parse are skipped.
+    let is_twl = is_twl_title_id(u64::from_be_bytes(tid[0..8].try_into()?));
 
     rom_file
         .seek(SeekFrom::Start(
@@ -942,35 +942,36 @@ pub async fn parse_and_decrypt_cia(
 
         let cenc = (content.ctype & 1) != 0;
 
-        rom_file
-            .seek(SeekFrom::Start(contentoffs + next_content_offs))
-            .await?;
-        let mut probe_buf: [u8; 512] = [0; 512];
-        rom_file.read_exact(&mut probe_buf).await?;
-        let mut magic: [u8; 4] = probe_buf[256..260].try_into()?;
+        if !is_twl {
+            rom_file
+                .seek(SeekFrom::Start(contentoffs + next_content_offs))
+                .await?;
+            let mut probe_buf: [u8; 512] = [0; 512];
+            rom_file.read_exact(&mut probe_buf).await?;
+            let mut magic: [u8; 4] = probe_buf[256..260].try_into()?;
 
-        let iv: [u8; 16] = gen_iv(content.cidx);
+            if cenc {
+                let iv: [u8; 16] = gen_iv(content.cidx);
+                cbc_decrypt(&title_key, &iv, &mut probe_buf)?;
+                magic = probe_buf[256..260].try_into()?;
+            }
 
-        if cenc {
-            cbc_decrypt(&title_key, &iv, &mut probe_buf)?;
-            magic = probe_buf[256..260].try_into()?;
-        }
-
-        if magic != NCCH_MAGIC.as_bytes() {
-            return Err(if cenc {
-                anyhow!(
-                    "content {:08x} (index {}) is not an NCCH after decryption; \
-                     the title key is likely wrong - supply the real cetk/ticket",
-                    content.cid,
-                    content.cidx
-                )
-            } else {
-                anyhow!(
-                    "content {:08x} (index {}) is not an NCCH",
-                    content.cid,
-                    content.cidx
-                )
-            });
+            if magic != NCCH_MAGIC.as_bytes() {
+                return Err(if cenc {
+                    anyhow!(
+                        "content {:08x} (index {}) is not an NCCH after decryption; \
+                         the title key is likely wrong - supply the real cetk/ticket",
+                        content.cid,
+                        content.cidx
+                    )
+                } else {
+                    anyhow!(
+                        "content {:08x} (index {}) is not an NCCH",
+                        content.cid,
+                        content.cidx
+                    )
+                });
+            }
         }
 
         rom_file
@@ -990,19 +991,39 @@ pub async fn parse_and_decrypt_cia(
         next_content_offs += align_64(content.csize);
 
         let mut hasher = Sha256::new();
-        parse_ncch(
-            &mut cia_handle,
-            out,
-            NcchOutput {
-                out_base: out_pos,
-                offs: 0,
-                title_id: tid[0..8].try_into()?,
-            },
-            Some(&mut hasher),
-            progress,
-            cancel,
-        )
-        .await?;
+        if is_twl {
+            // Strip only the outer titlekey CBC: stream the whole content
+            // through the reader and write the plaintext SRL verbatim. Modcrypt
+            // and any NCCH-layer work are left untouched.
+            cia_handle.seek(0).await?;
+            out.seek(SeekFrom::Start(out_pos)).await?;
+            let mut writer = BufWriter::new(&mut *out);
+            let mut h: ContentHasher = Some(&mut hasher);
+            copy_plain_section(
+                &mut cia_handle,
+                &mut writer,
+                content.csize as u32,
+                &mut h,
+                progress,
+                cancel,
+            )
+            .await?;
+            writer.flush().await?;
+        } else {
+            parse_ncch(
+                &mut cia_handle,
+                out,
+                NcchOutput {
+                    out_base: out_pos,
+                    offs: 0,
+                    title_id: tid[0..8].try_into()?,
+                },
+                Some(&mut hasher),
+                progress,
+                cancel,
+            )
+            .await?;
+        }
         out_pos = out.stream_position().await?;
         hashes.push(hasher.finalize().into());
     }
@@ -1266,6 +1287,83 @@ mod tests {
             decrypted, plaintext,
             "cidx fixup must be skipped for single-NCCH content"
         );
+    }
+
+    /// A TWL/DSiWare CIA (title id 0x00048...) must decrypt by stripping only
+    /// the outer titlekey CBC layer: the content is a modcrypt SRL, not an NCCH,
+    /// so the NCCH probe/gate and parse must be skipped. Drives the full assembly
+    /// so the output is a real CIA with the TMD encrypted bit cleared.
+    #[tokio::test]
+    async fn decrypt_twl_dsiware_cia_strips_titlekey_layer() {
+        use crate::nintendo::ctr::cia::decrypt_from_encrypted_cia;
+        use crate::nintendo::ctr::constants::CTR_COMMON_KEYS_HEX;
+        use crate::nintendo::ctr::models::cia::CiaFile;
+        use crate::nintendo::ctr::test_fixtures::synth_cia_with_content;
+        use binrw::Endian;
+
+        fn cbc_encrypt(key: &[u8; 16], iv: &[u8; 16], plain: &[u8]) -> Vec<u8> {
+            use block_padding::NoPadding;
+            use cbc::cipher::{BlockModeEncrypt, KeyIvInit};
+            let len = plain.len();
+            let mut buf = plain.to_vec();
+            buf.resize(len + 16, 0);
+            cbc::Encryptor::<Aes128>::new_from_slices(key, iv)
+                .unwrap()
+                .encrypt_padded::<NoPadding>(&mut buf, len)
+                .unwrap()
+                .to_vec()
+        }
+
+        let title_id: u64 = 0x0004_8004_0000_0000;
+
+        // Recover the plaintext title key the decrypt derives from the forged
+        // ticket (0xFF stored key, common key index 1), then encrypt the fixture
+        // content with it so the round-trip inverts back to plaintext.
+        let mut tid = [0u8; 16];
+        tid[..8].copy_from_slice(&title_id.to_be_bytes());
+        let mut title_key = [0xFFu8; 16];
+        cbc_decrypt(&CTR_COMMON_KEYS_HEX[1], &tid, &mut title_key).unwrap();
+
+        let plaintexts: Vec<Vec<u8>> = (0..2u32)
+            .map(|c| {
+                (0..0x1000u32)
+                    .map(|i| (i.wrapping_mul(31).wrapping_add(c * 7) % 251) as u8)
+                    .collect()
+            })
+            .collect();
+
+        let mut content_data = Vec::new();
+        let mut records = Vec::new();
+        for (cidx, plain) in plaintexts.iter().enumerate() {
+            let ct = cbc_encrypt(&title_key, &gen_iv(cidx as u16), plain);
+            records.push((cidx as u32, cidx as u16, ct.clone(), [0u8; 32]));
+            content_data.extend_from_slice(&ct);
+        }
+
+        let (tmp, in_path) = synth_cia_with_content(title_id, records, content_data, true);
+        let out_path = tmp.path().join("twl_dec.cia");
+
+        let out = File::create(&out_path).await.unwrap();
+        let mut writer = BufWriter::new(out);
+        // (a) no longer errors on a TWL CIA.
+        decrypt_from_encrypted_cia(&in_path, &mut writer, &NoProgress, &CancelToken::new())
+            .await
+            .unwrap();
+        writer.flush().await.unwrap();
+        drop(writer);
+
+        let out_bytes = std::fs::read(&out_path).unwrap();
+        // (c) output parses as a CIA.
+        let parsed =
+            CiaFile::read_options(&mut Cursor::new(&out_bytes), Endian::Little, ()).unwrap();
+
+        // (b) decrypted content equals the original plaintext.
+        assert_eq!(parsed.content_data, plaintexts.concat());
+
+        // (d) the TMD content record encrypted bit is cleared.
+        for rec in &parsed.tmd.content_chunk_records {
+            assert!(!rec.content_type.is_encrypted());
+        }
     }
 
     #[test]

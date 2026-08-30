@@ -132,7 +132,7 @@ Operation-specific request shapes:
 | Operations | Required shape | Relevant `options` |
 | --- | --- | --- |
 | `cso.*`, `chd.*`, `cso.to_chd`, `chd.to_cso`, `rvz.*`, `dol.*`, `rvl.*`, `ctr.decrypt`, `ctr.encrypt`, `ctr.compress`, `ctr.decompress`, `ctr.convert`, `nx.compress`, `nx.decompress`, `cue.merge` | `input`; `output` is optional unless the operation requires a destination. | Format-specific fields such as `format`, `mode`, `block_size`, `hunk_size`, `level`, `chunk_size`, `allow_zstd`, `skip_verify`, and `keys`. |
-| `ctr.cdn_to_cia` | CDN directory `input`; optional `output`. | `cleanup`, `ensure_ticket_exists`, `decrypt`, `compress`, `output_dir`. |
+| `ctr.cdn_to_cia` | CDN directory `input`; optional `output`. With `ensure_ticket_exists`, the generated ticket's key is checked against the content and the request fails with a clear error when it cannot decrypt. | `cleanup`, `ensure_ticket_exists`, `decrypt`, `compress`, `output_dir`. |
 | `ctr.generate_cdn_ticket` | CDN directory `input`; optional `output`. | None. |
 | `wup.compress` | `input`, or `options.inputs` containing paths or `{ "path", "format", "key", "key_path" }` objects; optional `output`. | `inputs`, `level`. |
 | `wup.decrypt`, `dat.fixdat` | Directory `input` and destination `output`. | `key` for `wup.decrypt`; `max_depth`, `api_base`, `dat_id`, `dat_name`, `platform`, `subset` for `dat.fixdat`. |

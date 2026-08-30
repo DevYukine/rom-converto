@@ -263,7 +263,7 @@ in [Shared behaviors](#shared-behaviors)):
 |---|---|---|
 | `--output-dir <DIR>` | `cdn-to-cia`, `decrypt`, `encrypt`, `compress`, `decompress`, `convert` | Write outputs under this directory instead of beside each input |
 | `-C, --cleanup` | `cdn-to-cia` | Remove original CDN files after conversion |
-| `-T, --ensure-ticket-exists` | `cdn-to-cia` | Generate a ticket file if one is not found |
+| `-T, --ensure-ticket-exists` | `cdn-to-cia` | Generate a ticket file if one is not found. The generated key is checked against the content, and the conversion fails with a clear error when it cannot decrypt instead of writing a broken CIA |
 | `-D, --decrypt` | `cdn-to-cia` | Also decrypt the CIA after creation |
 | `-Z, --compress` | `cdn-to-cia` | Also compress the CIA after creation (implies decrypt) |
 | `-l, --level <LEVEL>` | `compress` | Zstd compression level 0..=22 (0 = library default, 22 = maximum ratio) |
@@ -271,7 +271,9 @@ in [Shared behaviors](#shared-behaviors)):
 | `--full` | `verify` | Also verify content hashes against the TMD (CIA only, slower). `--verify-content` is an alias |
 
 Generated tickets from `generate-cdn-ticket` use placeholder values and only work on modded
-consoles and emulators. `decrypt` and `encrypt` support `.cia`, `.3ds`, `.cci`, and `.cxi`,
+consoles and emulators. `cdn-to-cia` checks a generated ticket's key against the content and
+fails with a clear error when it cannot decrypt, so supply the real ticket (cetk) for titles
+whose key is not derivable. `decrypt` and `encrypt` support `.cia`, `.3ds`, `.cci`, and `.cxi`,
 with the format detected automatically; place a `seeddb.bin` next to the executable to
 resolve seeds locally, otherwise the seed is fetched from Nintendo's API. `encrypt` is the
 inverse of the tool's decrypted output and rewrites CIA TMD hashes/content flags as it wraps

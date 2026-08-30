@@ -9,7 +9,8 @@ use crate::info::Image;
 use crate::nintendo::ctr::constants::{
     CTR_MEDIA_UNIT_SIZE, NCCH_FLAGS7_SEED_CRYPTO, NCCH_MAGIC, NCCH_MAGIC_OFFSET,
     NCSD_PARTITION_COUNT, NCSD_PARTITION_ENTRY_SIZE, NCSD_PARTITION_TABLE_OFFSET,
-    NCSD_TITLE_ID_OFFSET, TMD_CONTENT_RECORD_SIZE, TMD_CONTENT_RECORDS_OFFSET,
+    NCSD_TITLE_ID_OFFSET, TICKET_SIG_BODY_OFFSET, TICKET_TITLE_ID_OFFSET, TMD_CONTENT_RECORD_SIZE,
+    TMD_CONTENT_RECORDS_OFFSET,
 };
 use crate::nintendo::ctr::decrypt::util::{decrypt_first_ncch_block, derive_title_key_from_ticket};
 use crate::nintendo::ctr::exefs::read_icon_section;
@@ -17,7 +18,7 @@ use crate::nintendo::ctr::models::cia::{CIA_HEADER_SIZE, CiaHeader, MetaData};
 use crate::nintendo::ctr::models::ncch_header::NcchHeader;
 use crate::nintendo::ctr::models::smdh::{AgeRating, SMDH_LARGE_ICON_DIM, Smdh};
 use crate::nintendo::ctr::models::title_metadata::ContentChunkRecord;
-use crate::nintendo::ctr::util::align_64;
+use crate::nintendo::ctr::util::{align_64, is_twl_title_id};
 use crate::nintendo::ctr::z3ds::models::{
     Z3DS_HEADER_SIZE, Z3DS_MAGIC, Z3dsHeader, underlying_magic,
 };
@@ -184,23 +185,38 @@ fn read_cia_info(path: &Path, physical_bytes: u64) -> Result<CtrInfo> {
 
     let first_chunk = read_first_content_chunk(&mut reader, tmd_start)?;
     let content_encrypted = first_chunk.content_type.is_encrypted();
+    let ticket_title_id = read_ticket_title_id(&mut reader, ticket_start)?;
+    let is_twl = is_twl_title_id(ticket_title_id);
 
-    let ncch_hdr = if content_encrypted {
+    let block = if content_encrypted {
         let title_key = derive_title_key_from_ticket(&mut reader, ticket_start)?;
-        let block = decrypt_first_ncch_block(
+        decrypt_first_ncch_block(
             &mut reader,
             content_start,
             first_chunk.content_index,
             &title_key,
-        )?;
-        NcchHeader::read(&mut Cursor::new(&block))
-            .context("ctr info: parse decrypted NCCH header")?
+        )?
     } else {
         reader.seek(SeekFrom::Start(content_start))?;
-        read_ncch_header_at(&mut reader)?
+        let mut buf = [0u8; 0x200];
+        reader.read_exact(&mut buf)?;
+        buf
     };
-    let info_from_ncch = info_from_ncch_header(&ncch_hdr);
-    let (seed_crypto, seed_found, seed_keyy) = seed_fields(&ncch_hdr);
+
+    let (info_from_ncch, seed_crypto, seed_found, seed_keyy) = if is_twl {
+        (
+            info_from_srl_header(&block, ticket_title_id),
+            false,
+            None,
+            None,
+        )
+    } else {
+        let ncch_hdr =
+            NcchHeader::read(&mut Cursor::new(&block)).context("ctr info: parse NCCH header")?;
+        let summary = info_from_ncch_header(&ncch_hdr);
+        let (sc, sf, sk) = seed_fields(&ncch_hdr);
+        (summary, sc, sf, sk)
+    };
 
     let smdh = if cia_header.meta_size > 0 {
         reader.seek(SeekFrom::Start(meta_start))?;
@@ -395,6 +411,30 @@ fn info_from_ncch_header(hdr: &NcchHeader) -> NcchSummary {
     }
 }
 
+/// Build title info from a DSiWare (TWL) content's SRL cart header. `title_id`
+/// is the authoritative id from the TMD/ticket; the NCCH crypto/seed fields
+/// don't apply since the content isn't an NCCH.
+fn info_from_srl_header(block: &[u8; 0x200], title_id: u64) -> NcchSummary {
+    let title_id_hex = hex::encode_upper(title_id.to_be_bytes());
+    NcchSummary {
+        title_id: title_id_hex.clone(),
+        program_id: title_id_hex,
+        product_code: trim_nul_ascii(&block[0x0C..0x10]),
+        maker_code: trim_nul_ascii(&block[0x10..0x12]),
+        encrypted: false,
+    }
+}
+
+/// Reads the big-endian 8-byte title id from a ticket's signed body.
+fn read_ticket_title_id<R: Read + Seek>(reader: &mut R, ticket_offset: u64) -> Result<u64> {
+    reader.seek(SeekFrom::Start(
+        ticket_offset + TICKET_SIG_BODY_OFFSET + TICKET_TITLE_ID_OFFSET,
+    ))?;
+    let mut buf = [0u8; 8];
+    reader.read_exact(&mut buf)?;
+    Ok(u64::from_be_bytes(buf))
+}
+
 fn trim_nul_ascii(buf: &[u8]) -> String {
     let end = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
     String::from_utf8_lossy(&buf[..end]).into_owned()
@@ -557,5 +597,42 @@ mod tests {
         let info = read_info(&zcxi_path).unwrap();
         assert_eq!(info.format, CtrFormat::Ncch);
         assert!(info.compressed);
+    }
+
+    #[test]
+    fn read_info_on_dsiware_cia_uses_tmd_title_id_and_srl_header() {
+        use crate::nintendo::ctr::test_fixtures::synth_cia_with_content;
+        use sha2::{Digest, Sha256};
+
+        let title_id = 0x0004800400000000u64;
+
+        // SRL cart header: gamecode at 0x0C, makercode at 0x10.
+        let mut content = vec![0u8; 0x200];
+        content[0x0C..0x10].copy_from_slice(b"ABCD");
+        content[0x10..0x12].copy_from_slice(b"01");
+
+        let content_hash = {
+            let mut h = Sha256::new();
+            h.update(&content);
+            let d = h.finalize();
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&d);
+            arr
+        };
+
+        let (_tmp, cia_path) = synth_cia_with_content(
+            title_id,
+            vec![(0, 0, content.clone(), content_hash)],
+            content,
+            false,
+        );
+
+        let info = read_info(&cia_path).unwrap();
+        assert_eq!(info.format, CtrFormat::Cia);
+        assert_eq!(info.title_id, "0004800400000000");
+        assert_eq!(info.product_code, "ABCD");
+        assert_eq!(info.maker_code, "01");
+        assert!(!info.ncch_encrypted);
+        assert!(!info.seed_crypto);
     }
 }

@@ -652,7 +652,7 @@ mod tests {
             make_cert(b"XS0000000c", 0xCC),
         ];
         let ticket = make_ticket(title_id);
-        let tmd = make_tmd(title_id, vec![(0, 0, content.clone(), content_hash)]);
+        let tmd = make_tmd(title_id, vec![(0, 0, content.clone(), content_hash)], false);
 
         let ticket_size = {
             let mut buf = Vec::new();

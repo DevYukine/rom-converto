@@ -16,6 +16,14 @@ fn align(x: u64, y: u64) -> u64 {
     (x + (y - 1)) & mask
 }
 
+/// True for TWL/DSiWare title ids (title type `0x0004800x`): the high 20
+/// bits of the 64-bit title id equal `0x00048`. A TWL content is a modcrypt
+/// SRL, not an NCCH, so these titles bypass the NCCH-oriented decrypt,
+/// encrypt, info, and CCI conversion paths.
+pub fn is_twl_title_id(title_id: u64) -> bool {
+    (title_id >> 44) == 0x00048
+}
+
 pub fn pad_to_align_64(aligned_pos: u64, writer: &mut (impl Write + Seek)) -> BinResult<()> {
     if aligned_pos > writer.stream_position()? {
         // Write padding
@@ -77,6 +85,15 @@ pub mod tests {
 
         pad_to_align_64(aligned_pos, &mut buffer).unwrap();
         assert_eq!(buffer.get_ref().len(), 16);
+    }
+
+    #[test]
+    fn is_twl_title_id_matches_hex_prefix_check() {
+        assert!(is_twl_title_id(0x0004_8004_0000_0000));
+        assert!(is_twl_title_id(0x0004_800F_FFFF_FFFF));
+        assert!(!is_twl_title_id(0x0004_0000_0003_0000));
+        assert!(!is_twl_title_id(0x0004_9000_0000_0000));
+        assert!(!is_twl_title_id(0));
     }
 
     /// Proves the identity used by `check_cia_not_encrypted`:

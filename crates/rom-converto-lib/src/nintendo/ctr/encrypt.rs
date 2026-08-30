@@ -32,7 +32,7 @@ use crate::nintendo::ctr::models::cia::{
 use crate::nintendo::ctr::models::exe_fs_header::ExeFSHeader;
 use crate::nintendo::ctr::models::ncch_header::NcchHeader;
 use crate::nintendo::ctr::models::title_metadata::{ContentInfoRecord, TitleMetadata};
-use crate::nintendo::ctr::util::align_64;
+use crate::nintendo::ctr::util::{align_64, is_twl_title_id};
 use crate::nintendo::ctr::z3ds::models::underlying_magic;
 use crate::util::{CancelToken, ProgressReporter, scratch_output_path};
 
@@ -301,6 +301,10 @@ async fn encrypt_cia_cancellable(
         let layout = CiaLayout::new(&header);
         let title_key = derive_title_key_from_ticket(&mut std_in, layout.ticket_offset)?;
         let ticket_title_id = cia.ticket.ticket_data.title_id.to_be_bytes();
+        // TWL/DSiWare content is a modcrypt SRL, not an NCCH. Re-encrypting only
+        // re-applies the outer titlekey CBC layer; the NCCH walk is bypassed and
+        // the TMD content hash stays over the plaintext SRL.
+        let is_twl = is_twl_title_id(cia.ticket.ticket_data.title_id);
 
         let mut encrypted_cia = CiaFile {
             header: cia.header,
@@ -354,24 +358,27 @@ async fn encrypt_cia_cancellable(
             )
             .await?;
 
-            encrypt_ncch_at(
-                &content_tmp,
-                &content_tmp,
-                0,
-                ticket_title_id,
-                NcchSource::CiaContent {
-                    content_index: record.content_index,
-                },
-                progress,
-                cancel,
-            )
-            .await?;
+            if !is_twl {
+                encrypt_ncch_at(
+                    &content_tmp,
+                    &content_tmp,
+                    0,
+                    ticket_title_id,
+                    NcchSource::CiaContent {
+                        content_index: record.content_index,
+                    },
+                    progress,
+                    cancel,
+                )
+                .await?;
+            }
 
             let hash = write_cbc_encrypted_content(
                 &content_tmp,
                 out.get_mut(),
                 &title_key,
                 record.content_index,
+                is_twl,
                 progress,
                 cancel,
             )
@@ -770,6 +777,7 @@ async fn write_cbc_encrypted_content(
     output: &mut File,
     title_key: &[u8; 16],
     content_index: u16,
+    hash_plaintext: bool,
     progress: &dyn ProgressReporter,
     cancel: &CancelToken,
 ) -> Result<[u8; 32]> {
@@ -790,10 +798,17 @@ async fn write_cbc_encrypted_content(
 
         let take = remaining.min(COPY_BUF as u64) as usize;
         src.read_exact(&mut buf[..take]).await?;
+        // TWL TMD hashes cover the plaintext SRL, so hash before encrypting;
+        // NCCH TMD hashes cover the ciphertext, so hash after.
+        if hash_plaintext {
+            hasher.update(&buf[..take]);
+        }
         for block in buf[..take].as_chunks_mut::<16>().0 {
             cipher.encrypt_block(block.into());
         }
-        hasher.update(&buf[..take]);
+        if !hash_plaintext {
+            hasher.update(&buf[..take]);
+        }
         output.write_all(&buf[..take]).await?;
         progress.inc(take as u64);
         remaining -= take as u64;
@@ -958,6 +973,7 @@ mod tests {
         let mut tmd = make_tmd(
             SYNTH_CIA_TITLE_ID,
             vec![(0, 0, plain_content.clone(), content_hash)],
+            false,
         );
 
         let ticket_size = {
@@ -1018,6 +1034,122 @@ mod tests {
             CiaFile::read_options(&mut Cursor::new(&decrypted_bytes), Endian::Little, ()).unwrap();
         assert_bytes_eq(&decrypted_cia.content_data, &plain_cia.content_data);
         assert_bytes_eq(&decrypted_bytes, &buf);
+    }
+
+    #[tokio::test]
+    async fn cia_twl_encrypt_round_trip() {
+        use crate::nintendo::ctr::constants::CTR_COMMON_KEYS_HEX;
+        use crate::nintendo::ctr::decrypt::util::cbc_decrypt;
+
+        const TWL_TITLE_ID: u64 = 0x0004_8004_0000_0000;
+
+        let dir = tempfile::tempdir().unwrap();
+
+        // Plaintext TWL SRL content: block-aligned bytes that are not an NCCH.
+        let plain_content: Vec<u8> = (0..0x400u32)
+            .map(|i| (i as u8).wrapping_mul(53).wrapping_add(11))
+            .collect();
+        let content_hash = {
+            let mut h = Sha256::new();
+            h.update(&plain_content);
+            let mut out = [0u8; 32];
+            out.copy_from_slice(&h.finalize());
+            out
+        };
+
+        // Derive the title key exactly as decrypt does, then CBC-encrypt the
+        // plaintext SRL to produce the ciphertext the encrypted CIA ships.
+        let mut tid_iv = [0u8; 16];
+        tid_iv[..8].copy_from_slice(&TWL_TITLE_ID.to_be_bytes());
+        let mut title_key = [0xFFu8; 16]; // make_ticket's title_key field
+        cbc_decrypt(&CTR_COMMON_KEYS_HEX[1], &tid_iv, &mut title_key).unwrap();
+
+        let mut enc_content = plain_content.clone();
+        {
+            let mut cipher =
+                cbc::Encryptor::<Aes128>::new_from_slices(&title_key, &gen_iv(0)).unwrap();
+            for block in enc_content.as_chunks_mut::<16>().0 {
+                cipher.encrypt_block(block.into());
+            }
+        }
+
+        let cert_chain = vec![
+            make_cert(b"CA00000003", 0xAA),
+            make_cert(b"CP0000000b", 0xBB),
+            make_cert(b"XS0000000c", 0xCC),
+        ];
+        let ticket = make_ticket(TWL_TITLE_ID);
+        // TWL TMD hash is over plaintext, so store the plaintext hash.
+        let tmd = make_tmd(
+            TWL_TITLE_ID,
+            vec![(0, 0, plain_content.clone(), content_hash)],
+            true,
+        );
+
+        let ticket_size = {
+            let mut buf = Vec::new();
+            ticket
+                .write_options(&mut Cursor::new(&mut buf), Endian::Big, ())
+                .unwrap();
+            buf.len() as u32
+        };
+        let tmd_size = {
+            let mut buf = Vec::new();
+            tmd.write_options(&mut Cursor::new(&mut buf), Endian::Big, ())
+                .unwrap();
+            buf.len() as u32
+        };
+
+        let header = crate::nintendo::ctr::models::cia::CiaHeader {
+            header_size: CIA_HEADER_SIZE,
+            cia_type: 0,
+            version: 0,
+            cert_chain_size: 0x0A00,
+            ticket_size,
+            tmd_size,
+            meta_size: 0,
+            content_size: enc_content.len() as u64,
+            content_index: vec![0x00; CIA_CONTENT_INDEX_SIZE],
+        };
+
+        let mut encrypted_cia = CiaFile {
+            header,
+            cert_chain,
+            ticket,
+            tmd,
+            content_data: enc_content.clone(),
+            meta_data: None,
+        };
+        encrypted_cia.apply_content_indexes();
+
+        let original_path = dir.path().join("original.cia");
+        let decrypted_path = dir.path().join("decrypted.cia");
+        let reencrypted_path = dir.path().join("reencrypted.cia");
+        let mut buf = Vec::new();
+        encrypted_cia
+            .write_options(&mut Cursor::new(&mut buf), Endian::Little, ())
+            .unwrap();
+        std::fs::write(&original_path, &buf).unwrap();
+
+        crate::nintendo::ctr::decrypt_cia(&original_path, &decrypted_path, &NoProgress)
+            .await
+            .unwrap();
+        encrypt_rom(&decrypted_path, &reencrypted_path, &NoProgress)
+            .await
+            .unwrap();
+
+        let re_bytes = std::fs::read(&reencrypted_path).unwrap();
+        let re_cia =
+            CiaFile::read_options(&mut Cursor::new(&re_bytes), Endian::Little, ()).unwrap();
+        assert_bytes_eq(&re_cia.content_data, &enc_content);
+        assert!(
+            re_cia
+                .tmd
+                .content_chunk_records
+                .iter()
+                .all(|r| r.content_type.0 & 1 != 0),
+            "encrypted bit must be set on every TWL content record"
+        );
     }
 
     #[tokio::test]

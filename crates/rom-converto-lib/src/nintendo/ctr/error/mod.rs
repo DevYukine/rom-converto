@@ -13,6 +13,11 @@ pub enum NintendoCTRError {
     #[error("could not find at least one TMD file in the specified path: {0}")]
     NoTmdFileFound(PathBuf),
 
+    #[error(
+        "content for 0x{0:016X} does not match the TMD hash after decryption: either the title key cannot be derived from its title id, or the content file is corrupt; supply the real ticket (cetk) for this title, or re-dump the content"
+    )]
+    ForgedTicketKeyMismatch(u64),
+
     #[error("operation cancelled")]
     Cancelled,
 

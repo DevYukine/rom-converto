@@ -11,7 +11,7 @@ use crate::nintendo::ctr::models::ncsd_header::{
     NcsdPartitionEntry,
 };
 use crate::nintendo::ctr::models::ticket::Ticket;
-use crate::nintendo::ctr::util::align_64;
+use crate::nintendo::ctr::util::{align_64, is_twl_title_id};
 use crate::util::{CancelToken, ProgressReporter, scratch_output_path};
 use anyhow::{Context, Result, bail};
 use binrw::{BinRead, BinWrite};
@@ -50,6 +50,10 @@ pub async fn cia_to_cci_cancellable(
     let mut cur = Cursor::new(&preamble_buf);
     let pre = CiaFileWithoutContent::read_le(&mut cur).context("parsing CIA header/ticket/TMD")?;
     let content_start = align_64(cur.position());
+
+    if is_twl_title_id(pre.tmd.header.title_id) {
+        bail!("DSiWare/TWL titles cannot be converted to CCI/3DS cartridge format");
+    }
 
     let title_key = derive_title_key(&pre.ticket).context("deriving title key")?;
 
@@ -243,4 +247,34 @@ async fn pad_with(out: &mut BufWriter<File>, mut count: u64, byte: u8) -> Result
         count -= n as u64;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::nintendo::ctr::test_fixtures::synth_cia_with_content;
+    use crate::util::NoProgress;
+
+    #[tokio::test]
+    async fn rejects_dsiware_twl_title() {
+        let twl_title_id: u64 = 0x0004800400000000;
+        let content = vec![0u8; 0x10];
+
+        let (tmp, in_path) = synth_cia_with_content(
+            twl_title_id,
+            vec![(0, 0, content.clone(), [0u8; 32])],
+            content,
+            false,
+        );
+        let out_path = tmp.path().join("out.3ds");
+
+        let err = cia_to_cci(&in_path, &out_path, &NoProgress)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("DSiWare/TWL titles cannot be converted")
+        );
+        assert!(!out_path.exists());
+    }
 }
