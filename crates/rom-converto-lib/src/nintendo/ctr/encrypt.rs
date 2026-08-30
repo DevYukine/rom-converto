@@ -790,10 +790,8 @@ async fn write_cbc_encrypted_content(
 
         let take = remaining.min(COPY_BUF as u64) as usize;
         src.read_exact(&mut buf[..take]).await?;
-        for block in buf[..take].chunks_exact_mut(16) {
-            let block = <&mut aes::cipher::array::Array<_, _>>::try_from(block)
-                .map_err(|_| anyhow!("invalid AES block size"))?;
-            cipher.encrypt_block(block);
+        for block in buf[..take].as_chunks_mut::<16>().0 {
+            cipher.encrypt_block(block.into());
         }
         hasher.update(&buf[..take]);
         output.write_all(&buf[..take]).await?;

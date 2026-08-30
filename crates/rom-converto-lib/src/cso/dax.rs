@@ -69,15 +69,19 @@ pub(crate) fn open_dax_sync(path: &Path, file_size: u64) -> CsoResult<CsoSyncHan
     let mut offset_bytes = vec![0u8; nframes * 4];
     file.read_exact(&mut offset_bytes)?;
     let offsets: Vec<u32> = offset_bytes
-        .chunks_exact(4)
-        .map(|c| u32::from_le_bytes(c.try_into().expect("chunks_exact(4) yields 4-byte chunks")))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| u32::from_le_bytes(*c))
         .collect();
 
     let mut length_bytes = vec![0u8; nframes * 2];
     file.read_exact(&mut length_bytes)?;
     let lengths: Vec<u16> = length_bytes
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes(c.try_into().expect("chunks_exact(2) yields 2-byte chunks")))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| u16::from_le_bytes(*c))
         .collect();
 
     let mut raw = vec![false; nframes];
@@ -93,7 +97,7 @@ pub(crate) fn open_dax_sync(path: &Path, file_size: u64) -> CsoResult<CsoSyncHan
         }
         let mut nc_bytes = vec![0u8; nc_area_count * 8];
         file.read_exact(&mut nc_bytes)?;
-        for area in nc_bytes.chunks_exact(8) {
+        for area in nc_bytes.as_chunks::<8>().0 {
             let first =
                 u32::from_le_bytes(area[0..4].try_into().expect("area[0..4] is always 4 bytes"))
                     as usize;

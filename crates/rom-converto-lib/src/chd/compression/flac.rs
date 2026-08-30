@@ -120,10 +120,10 @@ pub enum Endian {
 
 pub fn samples_from_bytes(data: &[u8], endian: Endian) -> Vec<i32> {
     let mut samples = Vec::with_capacity(data.len() / 2);
-    for chunk in data.chunks_exact(2) {
+    for chunk in data.as_chunks::<2>().0 {
         let value = match endian {
-            Endian::Little => i16::from_le_bytes([chunk[0], chunk[1]]),
-            Endian::Big => i16::from_be_bytes([chunk[0], chunk[1]]),
+            Endian::Little => i16::from_le_bytes(*chunk),
+            Endian::Big => i16::from_be_bytes(*chunk),
         };
         samples.push(value as i32);
     }
@@ -302,7 +302,7 @@ mod tests {
 
     fn sine_audio_le(hunk_bytes: usize) -> Vec<u8> {
         let mut data = vec![0u8; hunk_bytes];
-        for (i, chunk) in data.chunks_exact_mut(2).enumerate() {
+        for (i, chunk) in data.as_chunks_mut::<2>().0.iter_mut().enumerate() {
             let v = ((i as f64 / 13.0).sin() * 6000.0) as i16;
             chunk.copy_from_slice(&v.to_le_bytes());
         }
@@ -311,7 +311,7 @@ mod tests {
 
     fn byte_swap_samples(data: &[u8]) -> Vec<u8> {
         let mut out = data.to_vec();
-        for chunk in out.chunks_exact_mut(2) {
+        for chunk in out.as_chunks_mut::<2>().0 {
             chunk.swap(0, 1);
         }
         out
@@ -334,7 +334,7 @@ mod tests {
         // Audio-like data so FLAC's predictors have something to do.
         let hunk_bytes = 8192usize;
         let mut data = vec![0u8; hunk_bytes];
-        for (i, chunk) in data.chunks_exact_mut(2).enumerate() {
+        for (i, chunk) in data.as_chunks_mut::<2>().0.iter_mut().enumerate() {
             let v = ((i as f64 / 13.0).sin() * 6000.0) as i16;
             chunk.copy_from_slice(&v.to_le_bytes());
         }

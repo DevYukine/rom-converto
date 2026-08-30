@@ -1068,7 +1068,7 @@ mod tests {
         let mut n = 0usize;
         for frame in 0..frames {
             let sector = &mut hunk[frame * FRAME_SIZE..frame * FRAME_SIZE + SECTOR_SIZE];
-            for pair in sector.chunks_exact_mut(2) {
+            for pair in sector.as_chunks_mut::<2>().0 {
                 let v = ((n as f64 / 20.0).sin() * 8000.0) as i16;
                 pair.copy_from_slice(&v.to_be_bytes());
                 n += 1;

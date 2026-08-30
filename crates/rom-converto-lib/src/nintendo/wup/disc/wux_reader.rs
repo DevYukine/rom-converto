@@ -93,8 +93,10 @@ impl WuxReader {
         let mut index_bytes = vec![0u8; index_bytes_len];
         file.read_exact(&mut index_bytes)?;
         let index_table: Vec<u32> = index_bytes
-            .chunks_exact(4)
-            .map(|c| u32::from_le_bytes(c.try_into().expect("4-byte slice")))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| u32::from_le_bytes(*c))
             .collect();
 
         // Sector pool starts at the first sector-aligned offset past

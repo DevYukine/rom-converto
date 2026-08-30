@@ -470,7 +470,7 @@ mod tests {
 
         let rgba = decode_cmpr_tiled(&data, 8, 8).unwrap();
         assert!(
-            rgba.chunks_exact(4).all(|c| c == [0, 0, 0, 0]),
+            rgba.as_chunks::<4>().0.iter().all(|c| *c == [0, 0, 0, 0]),
             "all-index-3 block with c0<=c1 must be fully transparent"
         );
     }
@@ -500,7 +500,7 @@ mod tests {
         }
         let rgba = decode_rgb565_morton_tiled(&data, 8, 8).unwrap();
         assert_eq!(rgba.len(), 8 * 8 * 4);
-        for chunk in rgba.chunks_exact(4) {
+        for chunk in rgba.as_chunks::<4>().0 {
             assert_eq!(chunk, &[0xFF, 0x00, 0x00, 0xFF]);
         }
     }
@@ -586,7 +586,7 @@ mod tests {
         }
         let rgba = decode_rgb5a3_tiled(&data, 4, 4).unwrap();
         assert_eq!(rgba.len(), 4 * 4 * 4);
-        for chunk in rgba.chunks_exact(4) {
+        for chunk in rgba.as_chunks::<4>().0 {
             assert_eq!(chunk, &[0xFF, 0x00, 0x00, 0xFF]);
         }
     }

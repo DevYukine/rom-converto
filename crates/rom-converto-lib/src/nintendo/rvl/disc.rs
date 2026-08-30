@@ -227,7 +227,7 @@ pub fn encrypt_sector(sector: &mut [u8; WII_SECTOR_SIZE], title_key: &[u8; 16]) 
 /// 0x400-byte sub-block contributes one SHA-1.
 pub fn hash_h0(plaintext: &[u8; WII_SECTOR_PAYLOAD_SIZE]) -> [[u8; 20]; 31] {
     let mut h0 = [[0u8; 20]; 31];
-    for (i, chunk) in plaintext.chunks_exact(0x400).enumerate().take(31) {
+    for (i, chunk) in plaintext.as_chunks::<0x400>().0.iter().enumerate().take(31) {
         let mut hasher = Sha1::new();
         hasher.update(chunk);
         h0[i] = hasher.finalize().into();

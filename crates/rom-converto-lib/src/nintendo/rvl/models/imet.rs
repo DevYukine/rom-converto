@@ -92,7 +92,7 @@ impl ImetHeader {
 
 fn read_utf16be_string(bytes: &[u8]) -> String {
     let mut units = Vec::with_capacity(bytes.len() / 2);
-    for chunk in bytes.chunks_exact(2) {
+    for chunk in bytes.as_chunks::<2>().0 {
         let u = u16::from_be_bytes([chunk[0], chunk[1]]);
         if u == 0 {
             break;

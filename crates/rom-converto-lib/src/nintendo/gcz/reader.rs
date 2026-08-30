@@ -120,16 +120,16 @@ impl GczLayout {
         inner.read_exact(&mut table)?;
         let (ptr_bytes, hash_bytes) = table.split_at(nb * 8);
         let ptrs: Vec<u64> = ptr_bytes
-            .chunks_exact(8)
-            .map(|c| {
-                u64::from_le_bytes(c.try_into().expect("chunks_exact(8) yields 8-byte chunks"))
-            })
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|c| u64::from_le_bytes(*c))
             .collect();
         let hashes: Vec<u32> = hash_bytes
-            .chunks_exact(4)
-            .map(|c| {
-                u32::from_le_bytes(c.try_into().expect("chunks_exact(4) yields 4-byte chunks"))
-            })
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| u32::from_le_bytes(*c))
             .collect();
 
         Ok(Self {

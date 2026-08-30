@@ -409,14 +409,12 @@ impl HuffmanEncoder {
     }
 
     fn build_tree(&mut self, totaldata: u32, totalweight: u32) -> u8 {
-        for node in &mut self.nodes {
-            *node = HuffNode {
-                parent: None,
-                weight: 0,
-                bits: 0,
-                num_bits: 0,
-            };
-        }
+        self.nodes.fill(HuffNode {
+            parent: None,
+            weight: 0,
+            bits: 0,
+            num_bits: 0,
+        });
 
         let mut list: Vec<usize> = Vec::with_capacity(HUFFMAN_CODES * 2);
         for code in 0..HUFFMAN_CODES {

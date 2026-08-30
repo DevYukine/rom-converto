@@ -622,7 +622,7 @@ pub(crate) fn chd_track_decoded_size(track: &ChdTrackInfo) -> u64 {
 /// stores CD audio big-endian and swaps back on extract; the writer
 /// and reader apply this to audio-track frames only.
 pub(crate) fn swap_audio_sector(sector: &mut [u8]) {
-    for pair in sector.chunks_exact_mut(2) {
+    for pair in sector.as_chunks_mut::<2>().0 {
         pair.swap(0, 1);
     }
 }

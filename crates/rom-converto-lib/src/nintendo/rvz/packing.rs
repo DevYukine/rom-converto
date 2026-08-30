@@ -48,8 +48,8 @@ impl LaggedFibonacci {
     /// `SetSeed(const u8*)` + `Initialize(false)` pair.
     pub fn init(seed: &[u8; 68]) -> Self {
         let mut seed_words = [0u32; SEED_SIZE];
-        for (word, chunk) in seed_words.iter_mut().zip(seed.chunks_exact(4)) {
-            *word = u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        for (word, chunk) in seed_words.iter_mut().zip(seed.as_chunks::<4>().0) {
+            *word = u32::from_be_bytes(*chunk);
         }
         Self::from_seed_words(&seed_words)
     }

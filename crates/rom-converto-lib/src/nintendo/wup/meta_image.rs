@@ -84,7 +84,7 @@ mod tests {
         assert_eq!(info.width, 2);
         assert_eq!(info.height, 2);
         assert_eq!(info.color_type, png::ColorType::Rgba);
-        for chunk in buf[..info.buffer_size()].chunks_exact(4) {
+        for chunk in buf[..info.buffer_size()].as_chunks::<4>().0 {
             assert_eq!(chunk, &[0x00, 0x00, 0xFF, 0xFF]);
         }
     }

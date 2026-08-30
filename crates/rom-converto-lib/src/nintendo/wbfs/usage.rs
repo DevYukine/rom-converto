@@ -55,9 +55,7 @@ impl DiscUsage {
     }
 
     pub fn mark_all(&mut self) {
-        for word in &mut self.bits {
-            *word = u64::MAX;
-        }
+        self.bits.fill(u64::MAX);
     }
 
     fn mark_sector(&mut self, sector: u64) {
