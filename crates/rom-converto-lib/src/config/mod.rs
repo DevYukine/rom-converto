@@ -227,10 +227,11 @@ fn resolve_paths(cfg: &mut UserConfig, base: &Path) {
 }
 
 fn resolve_relative(base: &Path, p: &mut Option<PathBuf>) {
-    if let Some(path) = p
-        && path.is_relative()
-    {
-        *path = base.join(&*path);
+    if let Some(path) = p {
+        *path = crate::util::expand_tilde(path);
+        if path.is_relative() {
+            *path = base.join(&*path);
+        }
     }
 }
 
@@ -289,6 +290,18 @@ mod tests {
         let cfg = parse_str("[presets.archive.nx]\nlevel = 22\n", base()).unwrap();
         let preset = &cfg.presets["archive"];
         assert_eq!(preset.nx.as_ref().unwrap().level, Some(22));
+    }
+
+    #[test]
+    fn tilde_output_dir_expands_to_home_not_config_dir() {
+        let Some(home) = dirs::home_dir() else {
+            return;
+        };
+        let cfg = parse_str("[chd]\noutput_dir = \"~/roms/output\"\n", base()).unwrap();
+        assert_eq!(
+            cfg.chd.unwrap().output_dir.unwrap(),
+            home.join("roms/output")
+        );
     }
 
     #[test]

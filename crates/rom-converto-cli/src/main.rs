@@ -593,7 +593,7 @@ fn wants_wbfs_output(path: &std::path::Path) -> bool {
 async fn main() -> Result<()> {
     dotenv::dotenv().ok();
 
-    let cli = Cli::parse();
+    let cli = Cli::parse_from(std::env::args_os().map(crate::util::expand_tilde_arg));
 
     // Must run before logger init; otherwise log lines leak into stdout
     // and corrupt the generated completion script.

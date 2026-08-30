@@ -13,6 +13,7 @@ pub mod hash_cache;
 pub mod http;
 pub mod iso9660;
 pub mod maker_codes;
+pub mod path;
 pub mod pixel;
 pub mod plan;
 pub mod pread;
@@ -34,6 +35,7 @@ pub use hash::{
     parse_checksum_bound,
 };
 pub use hash_cache::{CachedTrack, CueDigests, HashCache};
+pub use path::expand_tilde;
 pub use plan::{PlanDecision, PlanLine, classify};
 pub use report::{
     HashReportRecord, ReportFormat, ReportRecord, ReportRecordInput, ReportTotals,
@@ -56,7 +58,8 @@ pub type CancelToken = tokio_util::sync::CancellationToken;
 
 /// A sibling temp path in the output directory so an interrupted write
 /// never lands on the final name and a pre-existing overwrite target
-/// survives until the rename.
+/// survives until the rename. Creates the output's parent directories
+/// when missing, so every writer accepts a not-yet-existing output dir.
 pub(crate) fn scratch_output_path(output: &std::path::Path) -> std::io::Result<tempfile::TempPath> {
     let parent = output
         .parent()
@@ -65,6 +68,7 @@ pub(crate) fn scratch_output_path(output: &std::path::Path) -> std::io::Result<t
     let mut prefix = std::ffi::OsString::from(".");
     prefix.push(output.file_name().unwrap_or_default());
     prefix.push(".");
+    std::fs::create_dir_all(parent)?;
     tempfile::Builder::new()
         .prefix(&prefix)
         .suffix(".tmp")
@@ -317,5 +321,14 @@ mod tests {
         std::fs::write(&overwrite, b"new").unwrap();
         publish_temp(overwrite, &output, true).unwrap();
         assert_eq!(std::fs::read(&output).unwrap(), b"new");
+    }
+
+    #[test]
+    fn scratch_output_path_creates_missing_parent_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("missing/nested/out.chd");
+        let temp = scratch_output_path(&output).unwrap();
+        assert!(output.parent().unwrap().is_dir());
+        assert!(temp.exists());
     }
 }

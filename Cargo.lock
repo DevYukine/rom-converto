@@ -4150,6 +4150,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "const_format",
+ "dirs",
  "dotenv",
  "env_logger",
  "futures",

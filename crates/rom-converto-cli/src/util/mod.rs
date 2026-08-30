@@ -199,6 +199,30 @@ pub fn ensure_input_exists(path: &std::path::Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Expands a leading `~` in a raw CLI argument (or in a `--flag=~/...`
+/// value) before clap parses it, since Windows shells don't expand `~`
+/// themselves. Non-UTF-8 arguments and anything without a leading `~`
+/// pass through unchanged.
+pub fn expand_tilde_arg(arg: std::ffi::OsString) -> std::ffi::OsString {
+    let Some(s) = arg.to_str() else {
+        return arg;
+    };
+    if s.starts_with('~') {
+        return rom_converto_lib::util::expand_tilde(Path::new(s)).into_os_string();
+    }
+    if s.starts_with('-')
+        && let Some((flag, value)) = s.split_once('=')
+        && value.starts_with('~')
+    {
+        let expanded = rom_converto_lib::util::expand_tilde(Path::new(value));
+        let mut out = std::ffi::OsString::from(flag);
+        out.push("=");
+        out.push(expanded.as_os_str());
+        return out;
+    }
+    arg
+}
+
 const PROGRESS_TEMPLATE: &str = "{msg}\n{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({binary_bytes_per_sec}, {eta})";
 
 /// Bridges the library's `ProgressReporter` trait to indicatif `ProgressBar`.
@@ -598,5 +622,54 @@ mod tests {
         tp.begin(0, 0);
         tp.advance(0);
         tp.finish();
+    }
+
+    #[test]
+    fn expand_tilde_arg_expands_leading_tilde() {
+        let Some(home) = dirs::home_dir() else {
+            // No home directory resolvable in this environment; nothing to assert.
+            return;
+        };
+        assert_eq!(
+            expand_tilde_arg(std::ffi::OsString::from("~/x")),
+            home.join("x").into_os_string()
+        );
+    }
+
+    #[test]
+    fn expand_tilde_arg_expands_flag_value() {
+        let Some(home) = dirs::home_dir() else {
+            return;
+        };
+        let mut expected = std::ffi::OsString::from("--report=");
+        expected.push(home.join("x").as_os_str());
+        assert_eq!(
+            expand_tilde_arg(std::ffi::OsString::from("--report=~/x")),
+            expected
+        );
+    }
+
+    #[test]
+    fn expand_tilde_arg_leaves_unrelated_flag_value_unchanged() {
+        assert_eq!(
+            expand_tilde_arg(std::ffi::OsString::from("--level=5")),
+            std::ffi::OsString::from("--level=5")
+        );
+    }
+
+    #[test]
+    fn expand_tilde_arg_leaves_plain_arg_unchanged() {
+        assert_eq!(
+            expand_tilde_arg(std::ffi::OsString::from("plain.cue")),
+            std::ffi::OsString::from("plain.cue")
+        );
+    }
+
+    #[test]
+    fn expand_tilde_arg_leaves_short_flag_unchanged() {
+        assert_eq!(
+            expand_tilde_arg(std::ffi::OsString::from("-o")),
+            std::ffi::OsString::from("-o")
+        );
     }
 }
