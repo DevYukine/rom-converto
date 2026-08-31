@@ -4,6 +4,7 @@ const props = withDefaults(
 		modelValue: string;
 		options: { label: string; value: string }[];
 		label?: string;
+		tooltip?: string;
 		size?: "sm" | "md";
 		disabled?: boolean;
 		disabledOptions?: string[];
@@ -29,7 +30,7 @@ function select(value: string) {
 
 <template>
 	<div class="rc-segmented-wrap">
-		<span v-if="label" :id="labelId" class="rc-segmented-label">{{ label }}</span>
+		<FieldLabel v-if="label" :id="labelId" :label="label" :tooltip="tooltip" />
 		<div role="group" :aria-labelledby="label ? labelId : undefined" class="rc-segmented" :class="`rc-segmented--${size}`">
 			<template v-for="option in options" :key="option.value">
 				<InfoTooltip v-if="isDisabled(option.value) && disabledReason" :message="disabledReason">
@@ -58,11 +59,6 @@ function select(value: string) {
 	display: flex;
 	flex-direction: column;
 	gap: 6px;
-}
-
-.rc-segmented-label {
-	font-size: 12px;
-	color: var(--t2);
 }
 
 .rc-segmented {

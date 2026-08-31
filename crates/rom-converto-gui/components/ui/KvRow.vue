@@ -17,17 +17,11 @@ const emit = defineEmits<{
 
 <template>
 	<div class="rc-kv">
-		<span class="rc-kv__label">{{ label }}</span>
-		<button
-			v-if="clickable"
-			type="button"
-			class="rc-kv__value rc-kv__value--clickable"
-			:title="tooltip"
-			@click="emit('click')"
-		>
+		<FieldLabel :label="label" :tooltip="tooltip" />
+		<button v-if="clickable" type="button" class="rc-kv__value rc-kv__value--clickable" @click="emit('click')">
 			{{ value }}
 		</button>
-		<span v-else class="rc-kv__value" :class="`rc-kv__value--${color}`" :title="tooltip">{{ value }}</span>
+		<span v-else class="rc-kv__value" :class="`rc-kv__value--${color}`">{{ value }}</span>
 	</div>
 </template>
 
@@ -38,11 +32,6 @@ const emit = defineEmits<{
 	justify-content: space-between;
 	gap: 10px;
 	padding: 3px 0;
-}
-
-.rc-kv__label {
-	color: var(--t2);
-	font-size: 12px;
 }
 
 .rc-kv__value {

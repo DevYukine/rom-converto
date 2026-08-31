@@ -110,7 +110,10 @@ function runQuick(kind: "compress" | "verify") {
 		/>
 
 		<div class="rc-inspect__keys">
-			<span>Keys (optional)</span>
+			<FieldLabel
+				label="Keys (optional)"
+				tooltip="prod.keys for Switch containers, a disc master key for Wii U discs. Other consoles do not need it."
+			/>
 			<span class="rc-inspect__keys-path">{{ keysPath || "not set" }}</span>
 			<button type="button" @click="browseKeys">Browse</button>
 		</div>

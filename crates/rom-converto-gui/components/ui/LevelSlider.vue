@@ -6,6 +6,7 @@ const props = withDefaults(
 		max?: number;
 		label?: string;
 		hint?: string;
+		tooltip?: string;
 		disabled?: boolean;
 		formatValue?: (value: number) => string;
 	}>(),
@@ -35,7 +36,7 @@ function onInput(e: Event) {
 <template>
 	<div class="rc-slider-row">
 		<div class="rc-slider-row__head">
-			<span v-if="label" :id="labelId" class="rc-slider-row__label">{{ label }}</span>
+			<FieldLabel v-if="label" :id="labelId" :label="label" :tooltip="tooltip" />
 			<span class="rc-slider-row__value">{{ displayValue }}</span>
 		</div>
 		<input
@@ -66,11 +67,6 @@ function onInput(e: Event) {
 	display: flex;
 	justify-content: space-between;
 	align-items: baseline;
-}
-
-.rc-slider-row__label {
-	font-size: 12px;
-	color: var(--t2);
 }
 
 .rc-slider-row__value {

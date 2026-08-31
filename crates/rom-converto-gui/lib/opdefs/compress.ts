@@ -60,6 +60,7 @@ function outputRows(defaultDir: string, opts: { template?: boolean; report?: "fi
 			kind: "directory",
 			label: "Directory",
 			color: "blue",
+			tooltip: "Write output into this directory using the derived filename. Created automatically if missing.",
 			display: (s) => s.outputDir || defaultDir,
 			set: (s, v) => {
 				s.outputDir = v;
@@ -71,6 +72,8 @@ function outputRows(defaultDir: string, opts: { template?: boolean; report?: "fi
 			kind: "template",
 			label: "Template",
 			color: "blue",
+			tooltip:
+				"Output path template applied per file. Available tokens are {title}, {titleId}, {region}, {console}, {serial}, {ext} and {basename}. A missing token falls back to the input's file name.",
 			display: (s) => s.outputTemplate || "{console}/{title}.{ext}",
 			set: (s, v) => {
 				s.outputTemplate = v;
@@ -81,13 +84,20 @@ function outputRows(defaultDir: string, opts: { template?: boolean; report?: "fi
 		rows.push({
 			kind: "report",
 			label: "Run report",
+			tooltip:
+				"Write a run report to this file. The format is inferred from the extension (.csv, .json, .html or .htm); anything else defaults to JSON.",
 			display: (s) => (s.reportFile ? basename(s.reportFile) : "none"),
 			set: (s, v) => {
 				s.reportFile = v;
 			},
 		});
 	} else if (opts.report === "static") {
-		rows.push({ kind: "text", label: "Run report", display: () => "none" });
+		rows.push({
+			kind: "text",
+			label: "Run report",
+			tooltip: "Run reports aren't available for this command.",
+			display: () => "none",
+		});
 	}
 	return rows;
 }
@@ -110,12 +120,21 @@ export const CHD_DVD_ZSTD_HINT =
 export const CHD_LEVEL_HINT = "1-22; zstd uses it directly, zlib/lzma cap at 9; auto = zstd 19, lzma 8, zlib 9";
 
 const discFields = (hint: string) => [
-	{ kind: "slider" as const, key: "level", label: "Zstd level", min: 1, max: 22, hint },
+	{
+		kind: "slider" as const,
+		key: "level",
+		label: "Zstd level",
+		min: 1,
+		max: 22,
+		hint,
+		tooltip: "Negative levels are allowed for extra speed at the cost of ratio. Defaults to 22, archive quality.",
+	},
 	{
 		kind: "kv" as const,
 		key: "chunkSize",
 		label: "Chunk size",
-		tooltip: "--chunk-size · Chunks above 1 MiB can stutter on weaker hardware. 128 KiB is the safe default.",
+		tooltip:
+			"RVZ chunk size, a power of two between 32 KiB and 2 MiB. Defaults to 128 KiB, matching Dolphin's RVZ default. Chunks above 1 MiB can stutter on weaker hardware.",
 		display: (s: OpStore) => chunkLabel(s.chunkSize),
 		onClick: cycleChunk,
 	},
@@ -145,6 +164,7 @@ registerOp("compress", {
 				min: 1,
 				max: 22,
 				hint: "nsz default is 18. 22 is max but needs >1 GiB RAM to decompress on a Switch and may break installers.",
+				tooltip: "How hard zstd works to shrink each file. Higher levels produce smaller output but take longer to compress.",
 			},
 			{
 				kind: "segmented",
@@ -158,6 +178,8 @@ registerOp("compress", {
 					s.userPickedMode = true;
 				},
 				hint: "Solid: one zstd frame per NCA (NSP default). Block: random-read friendly (XCI default).",
+				tooltip:
+					"Solid packs each NCA as one zstd stream for the smallest file. Block compresses fixed-size blocks so the Switch can seek without unpacking everything.",
 			},
 			{
 				kind: "slider",
@@ -167,6 +189,7 @@ registerOp("compress", {
 				max: 32,
 				visible: (s) => s.mode === "block",
 				formatValue: (v) => `2^${v} = ${pow2Label(v)}`,
+				tooltip: "Size of each independently compressed block, as a power of two. Defaults to 20 (1 MiB), matching nsz.",
 			},
 			{
 				kind: "file",
@@ -174,6 +197,8 @@ registerOp("compress", {
 				label: "prod.keys",
 				filters: [{ name: "Keys", extensions: ["keys", "txt", "dat"] }],
 				display: (s) => (s.keys ? `${basename(s.keys)} ✓` : "none"),
+				tooltip:
+					"Path to prod.keys, used to decrypt the NCAs. Defaults to .switch/prod.keys in your home directory, then the app's own folder.",
 			},
 			...recursiveFields(),
 		],
@@ -302,12 +327,15 @@ registerOp("compress", {
 				min: 0,
 				max: 22,
 				hint: "0 uses the library default. 1 is fastest, 22 is max ratio.",
+				tooltip: "How much effort zstd spends shrinking the ROM. Higher produces smaller output at the cost of compression time.",
 				formatValue: (v) => (v === 0 ? "default (0)" : String(v)),
 			},
 			{
 				kind: "toggle",
 				key: "allowEncrypted",
 				label: "Allow encrypted input",
+				tooltip:
+					"Lets you compress a ROM that still looks encrypted, even though encrypted data barely compresses. Decrypt it first for real savings.",
 				note: (s) =>
 					s.allowEncrypted &&
 					"Compresses even if the ROM looks encrypted. Encrypted 3DS ROMs barely compress — ctr decrypt first for real savings.",
@@ -356,8 +384,17 @@ registerOp("compress", {
 					{ label: "DVD", value: "dvd" },
 				],
 				hint: "Auto probes CD vs DVD from the image. Override only when detection is wrong.",
+				tooltip:
+					"CD mode writes CD-style CHDs (PS1, PS2 CD) with a single MODE1/2048 track. DVD mode writes DVD-style CHDs (PS2 DVD, PSP).",
 			},
-			{ kind: "number", key: "hunkSize", label: "Hunk size", placeholder: "auto" },
+			{
+				kind: "number",
+				key: "hunkSize",
+				label: "Hunk size",
+				placeholder: "auto",
+				tooltip:
+					"DVD hunk size in bytes, a multiple of 2048. Defaults to 4096, or 2048 for detected PSP images since PPSSPP reads 2048-byte blocks.",
+			},
 			{
 				kind: "multiselect",
 				key: "codecs",
@@ -366,6 +403,8 @@ registerOp("compress", {
 				max: 4,
 				placeholder: CHD_CODEC_PLACEHOLDER,
 				visible: (s) => s.mode !== "dvd",
+				tooltip:
+					"Up to 4 compressor slots stored in the CHD header. Left empty, this defaults to cdlz, cdzl, cdfl. cdlz: CD-specific LZMA, best ratio. cdzl: CD-specific deflate, fast. cdzs: CD-specific zstd, good ratio and speed. cdfl: CD-specific FLAC, used for audio tracks. lzma: generic LZMA, best ratio but slow. zlib: generic deflate, fast. zstd: generic zstd, fast with a good ratio. huff: Huffman coding, very fast but a low ratio. flac: generic FLAC, for audio-like data.",
 			},
 			{
 				kind: "multiselect",
@@ -376,8 +415,18 @@ registerOp("compress", {
 				placeholder: CHD_CODEC_PLACEHOLDER,
 				hint: CHD_DVD_ZSTD_HINT,
 				visible: (s) => s.mode === "dvd",
+				tooltip:
+					"Up to 4 compressor slots stored in the CHD header. Left empty, this defaults to lzma, zlib, huff, flac. lzma: best ratio but slowest. zlib: fast with a moderate ratio. zstd: fast with a good ratio, see the note above. huff: Huffman coding, very fast but a low ratio. flac: for audio-like data.",
 			},
-			{ kind: "number", key: "level", label: "Level", placeholder: "auto", hint: CHD_LEVEL_HINT },
+			{
+				kind: "number",
+				key: "level",
+				label: "Level",
+				placeholder: "auto",
+				hint: CHD_LEVEL_HINT,
+				tooltip:
+					"How hard each selected codec works to compress. Higher is smaller but slower, and only applies to the codecs chosen above.",
+			},
 			...recursiveFields(),
 		],
 		outputRows: outputRows("~/roms/chd", { template: true, report: "field" }),
@@ -429,8 +478,16 @@ registerOp("compress", {
 					{ label: "ZSO", value: "zso" },
 				],
 				hint: "CSO for PSP hardware and PPSSPP. ZSO for PS2 via Open PS2 Loader.",
+				tooltip: "CSO uses deflate compression. ZSO uses LZ4, which decodes faster at a lower compression ratio.",
 			},
-			{ kind: "number", key: "blockSize", label: "Block size", placeholder: "default" },
+			{
+				kind: "number",
+				key: "blockSize",
+				label: "Block size",
+				placeholder: "default",
+				tooltip:
+					"Block size in bytes, a power of two. Defaults to 2048, or 16384 for inputs of 2 GiB and beyond, matching maxcso.",
+			},
 			...recursiveFields(),
 		],
 		outputRows: outputRows("~/roms/psp/compressed", { template: true, report: "field" }),

@@ -164,6 +164,12 @@ header key), the card reports it as not verified rather than showing a false pas
 Batch runs show one card per file. The toggle is off by default, since verification re-reads the
 output and adds time proportional to its size.
 
+## Option help
+
+Every option control carries a small info glyph next to its label. Hovering or keyboard-focusing
+it shows a tooltip explaining what the option does, with wording that matches the CLI help for
+the same flag. The conflict picker additionally describes each policy inline in its dropdown.
+
 ## Option gating
 
 The GUI disables options that do not apply to the current selection and explains why with a

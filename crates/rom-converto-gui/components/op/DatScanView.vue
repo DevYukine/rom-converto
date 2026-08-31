@@ -174,12 +174,19 @@ function cancel() {
 			<Segmented
 				:model-value="scanLevel"
 				:options="SCAN_LEVELS"
+				label="Level"
+				tooltip="CRC32 plus size identifies almost everything. Raise this to MD5, SHA-1, or SHA-256 only when a match needs a stronger digest."
 				@update:model-value="scanLevel = $event as ScanLevel"
 			/>
 			<p class="rc-caption">Quick scan trusts zip CRC32 where possible and falls back automatically.</p>
-			<ToggleSwitch :model-value="quick" label="Quick scan" @update:model-value="quick = $event" />
+			<ToggleSwitch
+				:model-value="quick"
+				label="Quick scan"
+				tooltip="Trusts a zip's own CRC32 for eligible cartridge images instead of extracting and hashing. Falls back automatically when that alone does not verify."
+				@update:model-value="quick = $event"
+			/>
 			<label class="rc-num">
-				<span class="rc-num__label">Max depth</span>
+				<FieldLabel label="Max depth" tooltip="Folder levels to scan. Leave it empty for unlimited." />
 				<input
 					type="number"
 					min="1"
@@ -321,11 +328,6 @@ function cancel() {
 	justify-content: space-between;
 	gap: 10px;
 	padding: 3px 0;
-}
-
-.rc-num__label {
-	font-size: 12px;
-	color: var(--t2);
 }
 
 .rc-num__input {

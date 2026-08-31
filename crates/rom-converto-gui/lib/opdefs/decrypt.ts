@@ -24,8 +24,21 @@ const ctr: OpDef = {
 	acceptedExts: ["cia", "3ds", "cci", "cxi", ...ARCHIVE_EXTS],
 	browseFilters: [{ name: "3DS", extensions: ["cia", "3ds", "cci", "cxi"] }],
 	fields: [
-		{ kind: "kv", key: "accepts", label: "Accepts", display: () => ".cia .3ds .cci .cxi" },
-		{ kind: "kv", key: "seeddb", label: "seeddb.bin", display: () => "found next to app ✓", color: "green" },
+		{
+			kind: "kv",
+			key: "accepts",
+			label: "Accepts",
+			display: () => ".cia .3ds .cci .cxi",
+			tooltip: "The format is auto detected from the file contents, so any of these can be dropped in.",
+		},
+		{
+			kind: "kv",
+			key: "seeddb",
+			label: "seeddb.bin",
+			display: () => "found next to app ✓",
+			color: "green",
+			tooltip: "Seeds needed for some titles resolve locally from seeddb.bin, falling back to Nintendo's API.",
+		},
 		...recursiveFields(),
 	],
 	note: "Format and encryption state are detected automatically. Seeds resolve locally from seeddb.bin, falling back to Nintendo's API.",
@@ -35,6 +48,7 @@ const ctr: OpDef = {
 			label: "Directory",
 			display: (s) => s.outputDir || "same as source",
 			set: (s, v) => { s.outputDir = v; },
+			tooltip: "Where the decrypted file is written. Leave empty to write it next to the source file.",
 		},
 		{
 			kind: "text",
@@ -79,7 +93,13 @@ const wup: OpDef = {
 	browseDirectory: true,
 	progressKey: "wup-decrypt",
 	fields: [
-		{ kind: "kv", key: "output", label: "Output", display: () => "meta/code/content tree" },
+		{
+			kind: "kv",
+			key: "output",
+			label: "Output",
+			display: () => "meta/code/content tree",
+			tooltip: "The decrypted title is written as a loadiine style folder tree that Cemu can load directly.",
+		},
 		{
 			kind: "kv",
 			key: "titleKey",
@@ -95,8 +115,14 @@ const wup: OpDef = {
 			label: "Directory",
 			display: (s) => s.output || "<input>_decrypted",
 			set: (s, v) => { s.output = v; },
+			tooltip: "Where the decrypted folder tree is written. Created if missing. Leave empty to use the input name with a _decrypted suffix.",
 		},
-		{ kind: "text", label: "Layout", display: () => "meta / code / content" },
+		{
+			kind: "text",
+			label: "Layout",
+			display: () => "meta / code / content",
+			tooltip: "The output is split into meta, code, and content folders, the layout Cemu expects.",
+		},
 	],
 	renameDisabled: true,
 	actionNote: "Already-decrypted files are skipped automatically and never queued.",

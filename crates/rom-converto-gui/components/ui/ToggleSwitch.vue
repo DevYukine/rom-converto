@@ -1,6 +1,7 @@
 <script setup lang="ts">
 const props = defineProps<{
 	label?: string;
+	tooltip?: string;
 	modelValue: boolean;
 	description?: string;
 	disabled?: boolean;
@@ -22,7 +23,7 @@ function toggle() {
 <template>
 	<div class="rc-toggle-row" :class="{ 'rc-toggle-row--disabled': disabled }">
 		<div v-if="label || description" class="rc-toggle-row__text">
-			<span v-if="label" :id="labelId" class="rc-toggle-row__label">{{ label }}</span>
+			<FieldLabel v-if="label" :id="labelId" :label="label" :tooltip="tooltip" />
 			<p v-if="description" :id="descriptionId" class="rc-toggle-row__desc">{{ description }}</p>
 		</div>
 		<button
@@ -55,11 +56,6 @@ function toggle() {
 
 .rc-toggle-row__text {
 	min-width: 0;
-}
-
-.rc-toggle-row__label {
-	font-size: 12px;
-	color: var(--t2);
 }
 
 .rc-toggle-row__desc {

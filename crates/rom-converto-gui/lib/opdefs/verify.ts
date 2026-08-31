@@ -34,6 +34,7 @@ registerOp("verify", {
 				key: "verifyContent",
 				label: "Verify content hashes",
 				description: "Also check SHA-256 hashes of all content data (CIA only, slower)",
+				tooltip: "Also verify content hashes against the TMD. CIA only, slower.",
 			},
 		],
 		outputRows: [],
@@ -59,7 +60,15 @@ registerOp("verify", {
 		dropText: DROP_TEXT,
 		acceptedExts: ["iso", "gcm", "rvz", "zip", "7z", "rar", "tar", "tgz", "gz"],
 		browseFilters: [{ name: "GameCube disc", extensions: ["iso", "gcm", "rvz", "zip", "7z", "rar", "tar", "tgz", "gz"] }],
-		fields: [{ kind: "toggle", key: "full", label: "Full verification" }],
+		fields: [
+			{
+				kind: "toggle",
+				key: "full",
+				label: "Full verification",
+				tooltip:
+					"Decodes the whole disc, validates the file system geometry, and computes a whole-disc SHA-1. GameCube discs carry no built-in integrity data, so this hash is informational, for matching against DAT files, not a pass or fail check.",
+			},
+		],
 		outputRows: [],
 		showConflict: false,
 		showVerify: false,
@@ -83,7 +92,15 @@ registerOp("verify", {
 		dropText: DROP_TEXT,
 		acceptedExts: ["iso", "wbfs", "rvz", "zip", "7z", "rar", "tar", "tgz", "gz"],
 		browseFilters: [{ name: "Wii disc", extensions: ["iso", "wbfs", "rvz", "zip", "7z", "rar", "tar", "tgz", "gz"] }],
-		fields: [{ kind: "toggle", key: "full", label: "Full verification" }],
+		fields: [
+			{
+				kind: "toggle",
+				key: "full",
+				label: "Full verification",
+				tooltip:
+					"Decrypts every partition cluster and recomputes the Wii hash tree, comparing it to the on-disc hashes to detect tampering or bit rot. This decrypts and hashes the entire disc, so it can be slow.",
+			},
+		],
 		outputRows: [],
 		showConflict: false,
 		showVerify: false,
@@ -115,6 +132,8 @@ registerOp("verify", {
 				label: "Disc master key file (optional, for .wud/.wux inputs only)",
 				filters: [{ name: "Disc key", extensions: ["key", "bin", "txt"] }],
 				display: (store) => store.keys || "none",
+				tooltip:
+					"The 16-byte disc master key, needed for .wud or .wux inputs. If left empty, a key file named <input>.key or game.key next to the disc is used automatically.",
 			},
 		],
 		outputRows: [],
@@ -149,6 +168,8 @@ registerOp("verify", {
 				label: "prod.keys",
 				filters: [{ name: "prod.keys", extensions: ["keys", "txt"] }],
 				display: (store) => store.keys || "none",
+				tooltip:
+					"Path to prod.keys, used to decrypt the container. If left empty, the default search paths are used instead.",
 			},
 		],
 		outputRows: [],
@@ -181,8 +202,16 @@ registerOp("verify", {
 				label: "Parent CHD (optional)",
 				filters: [{ name: "CHD", extensions: ["chd"] }],
 				display: (store) => store.parent || "none",
+				tooltip:
+					"Some CHDs are delta files that only store the differences against a base image. Pick that base CHD here if this file needs one.",
 			},
-			{ kind: "toggle", key: "fix", label: "Fix SHA-1", description: "Automatically fix incorrect SHA-1 values in the header" },
+			{
+				kind: "toggle",
+				key: "fix",
+				label: "Fix SHA-1",
+				description: "Automatically fix incorrect SHA-1 values in the header",
+				tooltip: "Rewrites wrong SHA-1 values in the CHD header so later verifies pass. The file is changed in place.",
+			},
 		],
 		outputRows: [],
 		showConflict: false,
@@ -218,6 +247,7 @@ registerOp("verify", {
 				key: "full",
 				label: "Full verification",
 				description: "Decode every block instead of only checking the index",
+				tooltip: "The format embeds no checksums, so this decodes every block instead of only checking the index.",
 			},
 		],
 		outputRows: [],

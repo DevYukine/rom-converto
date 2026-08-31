@@ -21,12 +21,15 @@ function outputRows(): OutputRow[] {
 			label: "Directory",
 			display: (s) => s.outputDir || "same as source",
 			set: (s, v) => { s.outputDir = v; },
+			tooltip: "Where extracted files are written. Leave empty to write each output next to its source file.",
 		},
 		{
 			kind: "template",
 			label: "Template",
 			display: (s) => s.outputTemplate || "",
 			set: (s, v) => { s.outputTemplate = v; },
+			tooltip:
+				"Optional filename pattern built from tokens like {title}, {titleId}, {region}, {console}, {serial}, {ext}, and {basename}. Values come from the file's extracted metadata; a token that can't be resolved falls back to the input's plain filename. Combined with the output directory above.",
 		},
 	];
 }
@@ -39,6 +42,8 @@ function outputRowsWithReport(): OutputRow[] {
 			label: "Run report",
 			display: (s) => (s.reportFile ? basename(s.reportFile) : "none"),
 			set: (s, v) => { s.reportFile = v; },
+			tooltip:
+				"Saves a summary of the run to this file when set. The format is chosen from the file extension (csv, json, html, or htm); any other extension defaults to json.",
 		},
 	];
 }
@@ -59,7 +64,13 @@ const ctr: OpDef = {
 	acceptedExts: ["zcia", "zcci", "zcxi", "z3dsx", ...ARCHIVE_EXTS],
 	browseFilters: [{ name: "Compressed 3DS", extensions: ["zcia", "zcci", "zcxi", "z3dsx"] }],
 	fields: [
-		{ kind: "kv", key: "accepts", label: "Accepts", display: () => ".zcia .zcci .zcxi .z3dsx" },
+		{
+			kind: "kv",
+			key: "accepts",
+			label: "Accepts",
+			display: () => ".zcia .zcci .zcxi .z3dsx",
+			tooltip: "Restores a Z3DS compressed CIA, CCI, CXI, or 3DSX file to its original format.",
+		},
 		...recursiveFields(),
 	],
 	note: "Restores the original ROM byte-identically.",
@@ -136,10 +147,16 @@ const rvl: OpDef = {
 	browseFilters: [{ name: "RVZ", extensions: ["rvz"] }],
 	progressKey: "rvl-decompress",
 	fields: [
-		{ kind: "segmented", key: "format", label: "Output format", options: [
-			{ label: "ISO", value: "iso" },
-			{ label: "WBFS", value: "wbfs" },
-		] },
+		{
+			kind: "segmented",
+			key: "format",
+			label: "Output format",
+			options: [
+				{ label: "ISO", value: "iso" },
+				{ label: "WBFS", value: "wbfs" },
+			],
+			tooltip: "WBFS is the format Wii disc loaders and USB drives expect; ISO is a plain, unwrapped disc image.",
+		},
 		...recursiveFields(),
 	],
 	note: "Output is byte-identical to Dolphin's own decoder.",
@@ -185,6 +202,8 @@ const nx: OpDef = {
 			label: "prod.keys",
 			filters: [{ name: "prod.keys", extensions: ["keys", "txt"] }],
 			display: (store) => store.keys || "none",
+			tooltip:
+				"The Switch console keys needed to decrypt NSZ/XCZ content. Left empty, the app looks for prod.keys in the default Switch keys folder, then next to the program itself.",
 		},
 		...recursiveFields(),
 	],
@@ -232,7 +251,8 @@ const chd: OpDef = {
 			label: "Parent CHD",
 			filters: [{ name: "CHD", extensions: ["chd"] }],
 			display: (s) => (s.parent ? basename(s.parent) : "none"),
-			tooltip: "-p / --parent for parent-child CHDs",
+			tooltip:
+				"Some CHDs are delta files that only store the differences against a base image. Pick that base CHD here so the full data can be rebuilt.",
 		},
 		...recursiveFields(),
 	],
@@ -274,7 +294,14 @@ const cso: OpDef = {
 	acceptedExts: ["cso", "zso", "dax", ...ARCHIVE_EXTS],
 	browseFilters: [{ name: "CSO/ZSO/DAX", extensions: ["cso", "zso", "dax"] }],
 	fields: [
-		{ kind: "kv", key: "accepts", label: "Accepts", display: () => ".cso .zso .dax" },
+		{
+			kind: "kv",
+			key: "accepts",
+			label: "Accepts",
+			display: () => ".cso .zso .dax",
+			tooltip:
+				"Restores a CSO, ZSO, or DAX compressed disc image to a plain ISO. The container type is detected by its contents, not its extension.",
+		},
 		...recursiveFields(),
 	],
 	note: "Container detected by magic, not extension. DAX (PSP legacy) is decode-only.",

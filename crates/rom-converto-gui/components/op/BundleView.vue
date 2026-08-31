@@ -375,6 +375,7 @@ onBeforeUnmount(() => {
 					:max="22"
 					label="Zstd level"
 					hint="0 uses Cemu's default (6). 1 is fastest, 22 is max ratio."
+					tooltip="Zstd compression level. 0 means the Cemu default of 6. Higher levels produce smaller output at the cost of compression time."
 					:format-value="(v) => (v === 0 ? 'default (0)' : String(v))"
 					@update:model-value="store.level = $event"
 				/>
@@ -382,7 +383,10 @@ onBeforeUnmount(() => {
 
 			<ConfigCard title="Safety">
 				<div class="rc-conflict-row">
-					<span class="rc-conflict-row__label">On conflict</span>
+					<FieldLabel
+						label="On conflict"
+						tooltip="What to do when the output file already exists. The choice is resolved before anything is written."
+					/>
 					<ConflictPopover
 						:model-value="store.onConflict"
 						@update:model-value="store.onConflict = $event"
@@ -391,6 +395,7 @@ onBeforeUnmount(() => {
 				<ToggleSwitch
 					:model-value="store.skipSpaceCheck"
 					label="Skip free-space check"
+					tooltip="Skips the free space estimate taken before writing. Use it only when the estimate is wrong for your disk."
 					@update:model-value="store.skipSpaceCheck = $event"
 				/>
 			</ConfigCard>
@@ -620,11 +625,6 @@ onBeforeUnmount(() => {
 	align-items: center;
 	justify-content: space-between;
 	padding: 3px 0;
-}
-
-.rc-conflict-row__label {
-	font-size: 12px;
-	color: var(--t2);
 }
 
 .rc-actions {

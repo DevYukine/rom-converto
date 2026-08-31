@@ -119,6 +119,7 @@ onMounted(async () => {
 				<div class="row">
 					<Segmented
 						label="Theme"
+						tooltip="Light and dark stay fixed regardless of the OS. System is the only option that changes with it."
 						:model-value="ui.theme"
 						:options="THEME_OPTIONS"
 						@update:model-value="(v: string) => (ui.theme = v as typeof ui.theme)"
@@ -128,6 +129,7 @@ onMounted(async () => {
 				<div class="row">
 					<Segmented
 						label="Interface scale"
+						tooltip="Scales the size of the whole interface, not just text."
 						:model-value="String(ui.scale)"
 						:options="SCALE_OPTIONS"
 						@update:model-value="setScale"
@@ -138,7 +140,10 @@ onMounted(async () => {
 
 			<ConfigCard title="Global queue">
 				<div class="row">
-					<span class="row__label">Concurrent jobs</span>
+					<FieldLabel
+						label="Concurrent jobs"
+						tooltip="More jobs finish the queue faster but compete for CPU and disk."
+					/>
 					<span class="stepper">
 						<button type="button" aria-label="Fewer concurrent jobs" @click="stepConcurrency(-1)">−</button>
 						{{ concurrency }}
@@ -149,19 +154,25 @@ onMounted(async () => {
 				<ToggleSwitch
 					v-model="ui.startImmediately"
 					label="Start jobs immediately"
+					tooltip="When on, added jobs start right away instead of waiting for you to press Start."
 					description="When off, jobs wait until you press Start in the queue."
 				/>
 				<ToggleSwitch
 					v-model="ui.taskbarProgress"
 					label="Taskbar / dock progress"
+					tooltip="Works on the Windows taskbar and the macOS or Linux dock icon."
 					description="Mirror queue progress on the app icon. Turns red on failure."
 				/>
 				<ToggleSwitch
 					v-model="ui.soundEnabled"
 					label="Completion sound"
+					tooltip="Plays a sound when the queue finishes."
 				/>
 				<div class="row">
-					<span class="row__label">Default on-conflict policy</span>
+					<FieldLabel
+						label="Default on-conflict policy"
+						tooltip="Applied to new jobs unless a page overrides it. What to do when the output file already exists."
+					/>
 					<ConflictPopover v-model="ui.defaultOnConflict" />
 					<p class="caption">Pages can still override before queuing.</p>
 				</div>

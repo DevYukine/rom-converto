@@ -133,7 +133,7 @@ function contextItems(r: DatRenameRow) {
 
 		<ConfigCard title="Options">
 			<label class="rc-num">
-				<span class="rc-num__label">Max depth</span>
+				<FieldLabel label="Max depth" tooltip="Folder levels to scan. Leave it empty for unlimited." />
 				<input
 					type="number"
 					min="1"
@@ -144,7 +144,10 @@ function contextItems(r: DatRenameRow) {
 				>
 			</label>
 			<div class="rc-conflict-row">
-				<span class="rc-conflict-row__label">On conflict</span>
+				<FieldLabel
+					label="On conflict"
+					tooltip="What to do when the output file already exists. The choice is resolved before anything is written."
+				/>
 				<ConflictPopover :model-value="onConflict" @update:model-value="onConflict = $event" />
 			</div>
 		</ConfigCard>
@@ -240,11 +243,6 @@ function contextItems(r: DatRenameRow) {
 	padding: 3px 0;
 }
 
-.rc-num__label {
-	font-size: 12px;
-	color: var(--t2);
-}
-
 .rc-num__input {
 	width: 110px;
 	background: var(--bg2);
@@ -262,11 +260,6 @@ function contextItems(r: DatRenameRow) {
 	align-items: center;
 	justify-content: space-between;
 	padding: 3px 0;
-}
-
-.rc-conflict-row__label {
-	font-size: 12px;
-	color: var(--t2);
 }
 
 .rc-results {

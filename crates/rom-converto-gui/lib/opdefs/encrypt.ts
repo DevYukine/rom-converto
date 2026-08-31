@@ -18,7 +18,13 @@ const ctr: OpDef = {
 	acceptedExts: ["cia", "3ds", "cci", "cxi", ...ARCHIVE_EXTS],
 	browseFilters: [{ name: "3DS", extensions: ["cia", "3ds", "cci", "cxi"] }],
 	fields: [
-		{ kind: "kv", key: "accepts", label: "Accepts", display: () => ".cia .3ds .cci .cxi" },
+		{
+			kind: "kv",
+			key: "accepts",
+			label: "Accepts",
+			display: () => ".cia .3ds .cci .cxi",
+			tooltip: "The format is auto detected from the file contents, so any of these can be dropped in.",
+		},
 		...recursiveFields(),
 	],
 	note: "CIA TMD hashes and content flags are rewritten as content is wrapped with the ticket title key, so encrypted bytes may differ from the original source, though decrypting still returns the same plaintext.",
@@ -28,6 +34,7 @@ const ctr: OpDef = {
 			label: "Directory",
 			display: (s) => s.outputDir || "same as source",
 			set: (s, v) => { s.outputDir = v; },
+			tooltip: "Where the encrypted file is written. Leave empty to write it next to the source file.",
 		},
 		{
 			kind: "text",

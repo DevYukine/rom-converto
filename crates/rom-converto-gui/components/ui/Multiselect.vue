@@ -3,6 +3,7 @@ const props = defineProps<{
 	modelValue: string[];
 	options: { value: string; label: string }[];
 	label?: string;
+	tooltip?: string;
 	max?: number;
 	placeholder?: string;
 }>();
@@ -39,7 +40,7 @@ function toggle(value: string) {
 
 <template>
 	<div class="rc-multiselect-wrap">
-		<span v-if="label" :id="labelId" class="rc-multiselect-label">{{ label }}</span>
+		<FieldLabel v-if="label" :id="labelId" :label="label" :tooltip="tooltip" />
 		<div role="group" :aria-labelledby="label ? labelId : undefined" class="rc-multiselect">
 			<button
 				v-for="option in options"
@@ -64,11 +65,6 @@ function toggle(value: string) {
 	display: flex;
 	flex-direction: column;
 	gap: 6px;
-}
-
-.rc-multiselect-label {
-	font-size: 12px;
-	color: var(--t2);
 }
 
 .rc-multiselect {

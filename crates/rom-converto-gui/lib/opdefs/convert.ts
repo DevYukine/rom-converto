@@ -21,12 +21,15 @@ function templateOutputRows(): OpDef["outputRows"] {
 			label: "Directory",
 			display: (s) => s.outputDir || "same as source",
 			set: (s, v) => { s.outputDir = v; },
+			tooltip: "Where converted files are written. Leave empty to write each output next to its source file.",
 		},
 		{
 			kind: "template",
 			label: "Template",
 			display: (s) => s.outputTemplate || "",
 			set: (s, v) => { s.outputTemplate = v; },
+			tooltip:
+				"Optional filename pattern built from tokens like {title}, {titleId}, {region}, {console}, {serial}, {ext}, and {basename}. Values come from the file's extracted metadata; a token that can't be resolved falls back to the input's plain filename. Combined with the output directory above.",
 		},
 	];
 }
@@ -39,6 +42,8 @@ function templateOutputRowsWithReport(): OpDef["outputRows"] {
 			label: "Run report",
 			display: (s) => (s.reportFile ? basename(s.reportFile) : "none"),
 			set: (s, v) => { s.reportFile = v; },
+			tooltip:
+				"Saves a summary of the run to this file when set. The format is chosen from the file extension (csv, json, html, or htm); any other extension defaults to json.",
 		},
 	];
 }
@@ -57,7 +62,14 @@ const ctr: OpDef = {
 	acceptedExts: ["cia", "3ds", "cci", ...ARCHIVE_EXTS],
 	browseFilters: [{ name: "3DS", extensions: ["cia", "3ds", "cci"] }],
 	fields: [
-		{ kind: "kv", key: "direction", label: "Direction", display: () => "auto (CIA ↔ CCI)" },
+		{
+			kind: "kv",
+			key: "direction",
+			label: "Direction",
+			display: () => "auto (CIA ↔ CCI)",
+			tooltip:
+				"Detected from the input file: a CIA converts to a 3DS/CCI cart image, while a 3DS or CCI file converts to a CIA.",
+		},
 		...recursiveFields(),
 	],
 	note: "Produces an unsigned CIA with a zero title key: works on CFW and emulators, not installable on stock hardware.",
@@ -96,12 +108,26 @@ const cso: OpDef = {
 	acceptedExts: ["cso", "zso", "dax", ...ARCHIVE_EXTS],
 	browseFilters: [{ name: "CSO/ZSO/DAX", extensions: ["cso", "zso", "dax"] }],
 	fields: [
-		{ kind: "segmented", key: "mode", label: "Disc mode", options: [
-			{ label: "Auto", value: "auto" },
-			{ label: "CD", value: "cd" },
-			{ label: "DVD", value: "dvd" },
-		] },
-		{ kind: "number", key: "hunkSize", label: "Hunk size", placeholder: "auto" },
+		{
+			kind: "segmented",
+			key: "mode",
+			label: "Disc mode",
+			options: [
+				{ label: "Auto", value: "auto" },
+				{ label: "CD", value: "cd" },
+				{ label: "DVD", value: "dvd" },
+			],
+			tooltip:
+				"How the CHD is structured: CD mode for PS1 and PS2-CD games, DVD mode for PS2-DVD and PSP games. Auto detects this from the disc image.",
+		},
+		{
+			kind: "number",
+			key: "hunkSize",
+			label: "Hunk size",
+			placeholder: "auto",
+			tooltip:
+				"Size of each compressed block in bytes, a multiple of 2048. Automatically uses 4096, or 2048 for detected PSP images since PPSSPP reads 2048 byte blocks.",
+		},
 		{
 			kind: "multiselect",
 			key: "codecs",
@@ -110,6 +136,8 @@ const cso: OpDef = {
 			max: 4,
 			placeholder: CHD_CODEC_PLACEHOLDER,
 			visible: (s) => s.mode !== "dvd",
+			tooltip:
+				"Compressors tried in order for each block, up to 4. CD deflate (cdzl), CD zstd (cdzs), CD lzma (cdlz), and CD flac (cdfl, for audio tracks) are built for CD-mode discs; deflate (zlib), zstd, lzma, huffman (huff), and flac work generically. Leave empty for the automatic CD-mode set (cdlz, cdzl, cdfl).",
 		},
 		{
 			kind: "multiselect",
@@ -120,8 +148,18 @@ const cso: OpDef = {
 			placeholder: CHD_CODEC_PLACEHOLDER,
 			hint: CHD_DVD_ZSTD_HINT,
 			visible: (s) => s.mode === "dvd",
+			tooltip:
+				"Compressors tried in order for each block, up to 4: deflate (zlib), zstd, lzma, huffman (huff), and flac. Leave empty for the automatic DVD-mode set (lzma, zlib, huff, flac).",
 		},
-		{ kind: "number", key: "level", label: "Level", placeholder: "auto", hint: CHD_LEVEL_HINT },
+		{
+			kind: "number",
+			key: "level",
+			label: "Level",
+			placeholder: "auto",
+			hint: CHD_LEVEL_HINT,
+			tooltip:
+				"Compression strength from 1 to 22. Zstandard uses the value directly; deflate and lzma cap at 9. Leave empty to use each codec's default (zstd 19, lzma 8, zlib 9).",
+		},
 		...recursiveFields(),
 	],
 	note: "Decodes to a temporary ISO next to the output, builds the CHD, and always removes the temp ISO on success, failure or cancel.",
@@ -173,11 +211,25 @@ const chd: OpDef = {
 	acceptedExts: ["chd", ...ARCHIVE_EXTS],
 	browseFilters: [{ name: "CHD", extensions: ["chd"] }],
 	fields: [
-		{ kind: "segmented", key: "format", label: "Format", options: [
-			{ label: "CSO", value: "cso" },
-			{ label: "ZSO", value: "zso" },
-		] },
-		{ kind: "number", key: "blockSize", label: "Block size", placeholder: "default" },
+		{
+			kind: "segmented",
+			key: "format",
+			label: "Format",
+			options: [
+				{ label: "CSO", value: "cso" },
+				{ label: "ZSO", value: "zso" },
+			],
+			tooltip:
+				"CSO (CISO v1, deflate) targets PSP hardware with custom firmware and PPSSPP. ZSO (ZISO, LZ4) targets Open PS2 Loader on real PS2 hardware and ARK-4 on PSP.",
+		},
+		{
+			kind: "number",
+			key: "blockSize",
+			label: "Block size",
+			placeholder: "default",
+			tooltip:
+				"Block size in bytes, a power of two. Defaults to 2048, or 16384 for inputs 2 GiB and larger, matching maxcso.",
+		},
 		...recursiveFields(),
 	],
 	note: "DVD-mode CHDs only: a CD-mode CHD has no flat ISO for CSO/ZSO to hold, and is rejected up front.",
@@ -241,6 +293,8 @@ const cue: OpDef = {
 			onSet: (s) => {
 				s.output = "";
 			},
+			tooltip:
+				"ISO extracts the plain data track. CSO (CISO v1, deflate) targets PSP hardware with custom firmware and PPSSPP. ZSO (ZISO, LZ4) targets Open PS2 Loader on real PS2 hardware and ARK-4 on PSP. Audio tracks are always skipped.",
 		},
 	],
 	note: "Audio tracks are skipped; only the data track is converted.",
@@ -250,6 +304,7 @@ const cue: OpDef = {
 			label: "Directory",
 			display: (s) => s.outputDir || "same as source",
 			set: (s, v) => { s.outputDir = v; },
+			tooltip: "Where the converted file is written. Leave empty to write it next to its source file.",
 		},
 		{
 			kind: "save",
@@ -257,6 +312,7 @@ const cue: OpDef = {
 			display: (s) => (s.output ? basename(s.output) : "(auto)"),
 			set: (s, v) => { s.output = v; },
 			filters: [{ name: "Image", extensions: ["iso", "cso", "zso"] }],
+			tooltip: "Pick an exact output file path. Leave unset to derive the name from the input and chosen format.",
 		},
 	],
 	actionNote: "Jobs start automatically. Parameters lock once queued.",

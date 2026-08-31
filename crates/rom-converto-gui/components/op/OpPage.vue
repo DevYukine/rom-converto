@@ -138,6 +138,7 @@ function copied() {
 							:max="field.max"
 							:label="field.label"
 							:hint="field.hint"
+							:tooltip="field.tooltip"
 							:format-value="field.formatValue"
 							@update:model-value="store[field.key] = $event"
 						/>
@@ -146,6 +147,7 @@ function copied() {
 								:model-value="store[field.key]"
 								:options="field.options"
 								:label="field.label"
+								:tooltip="field.tooltip"
 								@update:model-value="
 									store[field.key] = $event;
 									field.onSet?.(store);
@@ -157,6 +159,7 @@ function copied() {
 							<ToggleSwitch
 								:model-value="store[field.key]"
 								:label="field.label"
+								:tooltip="field.tooltip"
 								:description="field.description"
 								:disabled="field.disabled ? field.disabled(store) : false"
 								@update:model-value="store[field.key] = $event"
@@ -175,7 +178,7 @@ function copied() {
 							@click="field.onClick && field.onClick(store)"
 						/>
 						<label v-else-if="field.kind === 'number'" class="rc-num">
-							<span class="rc-num__label">{{ field.label }}</span>
+							<FieldLabel :label="field.label" :tooltip="field.tooltip" />
 							<input
 								type="number"
 								class="rc-num__input"
@@ -185,7 +188,7 @@ function copied() {
 							/>
 						</label>
 						<label v-else-if="field.kind === 'text'" class="rc-num">
-							<span class="rc-num__label">{{ field.label }}</span>
+							<FieldLabel :label="field.label" :tooltip="field.tooltip" />
 							<input
 								type="text"
 								class="rc-num__input rc-num__input--text"
@@ -207,6 +210,7 @@ function copied() {
 								:model-value="store[field.key]"
 								:options="field.options"
 								:label="field.label"
+								:tooltip="field.tooltip"
 								:max="field.max"
 								:placeholder="field.placeholder"
 								@update:model-value="store[field.key] = $event"
@@ -233,7 +237,10 @@ function copied() {
 
 			<ConfigCard v-if="showSafety" title="Safety">
 				<div v-if="showConflict" class="rc-conflict-row">
-					<span class="rc-conflict-row__label">On conflict</span>
+					<FieldLabel
+						label="On conflict"
+						tooltip="What to do when the output file already exists. The choice is resolved before anything is written."
+					/>
 					<ConflictPopover
 						:model-value="store.onConflict"
 						:rename-disabled="def.renameDisabled"
@@ -244,12 +251,14 @@ function copied() {
 					v-if="showVerify"
 					:model-value="store.verifyAfter"
 					:label="def.verifyLabel"
+					tooltip="Runs the same integrity check the verify page does on each output right after it is written."
 					@update:model-value="store.verifyAfter = $event"
 				/>
 				<ToggleSwitch
 					v-if="showSkip"
 					:model-value="store.skipSpaceCheck"
 					label="Skip free-space check"
+					tooltip="Skips the free space estimate taken before writing. Use it only when the estimate is wrong for your disk."
 					@update:model-value="store.skipSpaceCheck = $event"
 				/>
 			</ConfigCard>
@@ -330,22 +339,12 @@ function copied() {
 	padding: 3px 0;
 }
 
-.rc-conflict-row__label {
-	font-size: 12px;
-	color: var(--t2);
-}
-
 .rc-num {
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
 	gap: 10px;
 	padding: 3px 0;
-}
-
-.rc-num__label {
-	font-size: 12px;
-	color: var(--t2);
 }
 
 .rc-preset-tag {

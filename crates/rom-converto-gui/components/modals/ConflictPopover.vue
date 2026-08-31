@@ -14,11 +14,24 @@ const emit = defineEmits<{
 }>();
 
 const OPTIONS = [
-	{ label: "Error", value: "error" },
-	{ label: "Overwrite", value: "overwrite" },
-	{ label: "Skip", value: "skip" },
-	{ label: "Rename", value: "rename" },
-	{ label: "Overwrite if invalid", value: "overwrite-invalid" },
+	{ label: "Error", value: "error", description: "Refuse to write and stop." },
+	{ label: "Overwrite", value: "overwrite", description: "Replace the existing output." },
+	{
+		label: "Skip",
+		value: "skip",
+		description: "Leave the existing output and move on, counted as skipped.",
+	},
+	{
+		label: "Rename",
+		value: "rename",
+		description: "Write to the next free numbered name, so Game.chd becomes Game (1).chd.",
+	},
+	{
+		label: "Overwrite if invalid",
+		value: "overwrite-invalid",
+		description:
+			"Check the existing output, keep it if it passes, rewrite it if it fails or cannot be checked.",
+	},
 ];
 
 const labels: Record<string, string> = Object.fromEntries(OPTIONS.map((o) => [o.value, o.label]));
@@ -32,7 +45,7 @@ function isDisabled(value: string) {
 }
 
 function optionLabel(value: string) {
-	return isDisabled(value) ? `${labels[value]} — n/a` : labels[value];
+	return isDisabled(value) ? `${labels[value]} not available` : labels[value];
 }
 
 function toggle() {
@@ -104,7 +117,8 @@ onBeforeUnmount(() => {
 				:disabled="isDisabled(opt.value)"
 				@click="select(opt.value)"
 			>
-				{{ optionLabel(opt.value) }}
+				<span class="rc-opt-label">{{ optionLabel(opt.value) }}</span>
+				<span class="rc-opt-desc">{{ opt.description }}</span>
 			</button>
 		</div>
 	</div>
@@ -134,7 +148,7 @@ onBeforeUnmount(() => {
 	position: absolute;
 	right: 0;
 	top: 26px;
-	width: 186px;
+	width: 260px;
 	background: var(--pop);
 	border: 1px solid var(--a16);
 	border-radius: 8px;
@@ -146,6 +160,9 @@ onBeforeUnmount(() => {
 }
 
 .rc-opt {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
 	background: none;
 	border: none;
 	text-align: left;
@@ -154,6 +171,11 @@ onBeforeUnmount(() => {
 	color: var(--t3);
 	font-size: 12px;
 	cursor: pointer;
+}
+
+.rc-opt-desc {
+	font-size: 10.5px;
+	color: var(--t5);
 }
 
 .rc-opt:hover:not(:disabled) {

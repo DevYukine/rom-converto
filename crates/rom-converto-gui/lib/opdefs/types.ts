@@ -200,6 +200,8 @@ export function recursiveFields(): FieldDef[] {
 			key: "recursive",
 			label: "Recursive",
 			description: "Scan the dropped folder and process every file inside it",
+			tooltip:
+				"Processes every matching file inside a dropped folder, skipping junk files, instead of only the folder itself.",
 		},
 		{
 			kind: "number",
@@ -207,6 +209,7 @@ export function recursiveFields(): FieldDef[] {
 			label: "Max depth (optional)",
 			placeholder: "Unlimited",
 			visible: (s) => s.recursive !== false,
+			tooltip: "How many folder levels deep the scan goes. Empty means unlimited.",
 		},
 	];
 }

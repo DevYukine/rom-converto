@@ -76,17 +76,43 @@ const hash: OpDef = {
 	progressKey: "hash",
 
 	fields: [
-		{ kind: "toggle", key: algoKey("crc32"), label: "CRC32" },
-		{ kind: "toggle", key: algoKey("sha1"), label: "SHA-1" },
-		{ kind: "toggle", key: algoKey("md5"), label: "MD5" },
-		{ kind: "toggle", key: algoKey("sha256"), label: "SHA-256" },
-		{ kind: "toggle", key: "recursive", label: "Recursive" },
+		{
+			kind: "toggle",
+			key: algoKey("crc32"),
+			label: "CRC32",
+			tooltip: "A fast 32-bit checksum, good for catching corruption or duplicates. Just a digest of the file bytes, not a database lookup.",
+		},
+		{
+			kind: "toggle",
+			key: algoKey("sha1"),
+			label: "SHA-1",
+			tooltip: "A 160-bit hash, the digest most ROM hash sheets use. Just a digest of the file bytes, not a database lookup.",
+		},
+		{
+			kind: "toggle",
+			key: algoKey("md5"),
+			label: "MD5",
+			tooltip: "A 128-bit hash, still common for file verification. Just a digest of the file bytes, not a database lookup.",
+		},
+		{
+			kind: "toggle",
+			key: algoKey("sha256"),
+			label: "SHA-256",
+			tooltip: "A 256-bit hash with no known practical collisions, slower to compute than the others. Just a digest of the file bytes, not a database lookup.",
+		},
+		{
+			kind: "toggle",
+			key: "recursive",
+			label: "Recursive",
+			tooltip: "Hashes every file inside the dropped folder, including subdirectories, instead of only a single file.",
+		},
 		{
 			kind: "number",
 			key: "maxDepth",
 			label: "Max depth",
 			placeholder: "unlimited",
 			visible: (store) => !!store.recursive,
+			tooltip: "How many folder levels deep the scan goes. Leave blank for unlimited.",
 		},
 	],
 	note: "All digests are computed in one streaming pass per file. Plain checksums only, no database lookup.",
@@ -132,8 +158,20 @@ const playlist: OpDef = {
 				{ label: "Always", value: "always" },
 			],
 		},
-		{ kind: "text", key: "extensions", label: "Extensions", placeholder: "cue,chd,iso,cso,zso" },
-		{ kind: "number", key: "maxDepth", label: "Max depth", placeholder: "unlimited" },
+		{
+			kind: "text",
+			key: "extensions",
+			label: "Extensions",
+			placeholder: "cue,chd,iso,cso,zso",
+			tooltip: "Comma-separated list of disc image extensions to scan for, for example cue,chd,iso,cso,zso.",
+		},
+		{
+			kind: "number",
+			key: "maxDepth",
+			label: "Max depth",
+			placeholder: "unlimited",
+			tooltip: "How many folder levels deep the scan goes. Leave blank for unlimited.",
+		},
 	],
 	note: "Grouping follows standard disc-set naming tokens, filename-based only. A set mixing formats gets a warning.",
 	outputRows: [
@@ -144,6 +182,7 @@ const playlist: OpDef = {
 			set: (store, value) => {
 				store.outputDir = value;
 			},
+			tooltip: "Write the generated .m3u files here instead of next to the disc images.",
 		},
 	],
 
@@ -189,11 +228,13 @@ const merge: OpDef = {
 				const base = store.output ? basename(store.output) : "merged.cue";
 				store.output = withOutputDir(base, value);
 			},
+			tooltip: "Directory the merged .cue and .bin pair is written into.",
 		},
 		{
 			kind: "text",
 			label: "File",
 			display: (store) => (store.output ? basename(store.output) : "(auto)"),
+			tooltip: "Filename for the merged .cue file, the .bin is named to match.",
 		},
 	],
 
@@ -228,11 +269,38 @@ const cdn2cia: OpDef = {
 	progressKey: "cdn-to-cia",
 
 	fields: [
-		{ kind: "toggle", key: "decrypt", label: "Decrypt", disabled: (store) => !!store.compress, note: (store) => store.compress && "Forced on: Compress requires decrypted content." },
-		{ kind: "toggle", key: "compress", label: "Compress" },
-		{ kind: "toggle", key: "ensureTicket", label: "Generate ticket" },
-		{ kind: "toggle", key: "recursive", label: "Recursive" },
-		{ kind: "toggle", key: "cleanup", label: "Cleanup" },
+		{
+			kind: "toggle",
+			key: "decrypt",
+			label: "Decrypt",
+			disabled: (store) => !!store.compress,
+			note: (store) => store.compress && "Forced on: Compress requires decrypted content.",
+			tooltip: "Decrypt the CIA file after conversion, useful for emulators like Azahar.",
+		},
+		{
+			kind: "toggle",
+			key: "compress",
+			label: "Compress",
+			tooltip: "Compress into Z3DS .zcia format after conversion, which requires the CIA to be decrypted first.",
+		},
+		{
+			kind: "toggle",
+			key: "ensureTicket",
+			label: "Generate ticket",
+			tooltip: "Generates a ticket file in the CDN directory if one is missing. A generated ticket is not official and will not work on a stock 3DS, but works fine on emulators and custom firmware.",
+		},
+		{
+			kind: "toggle",
+			key: "recursive",
+			label: "Recursive",
+			tooltip: "Converts every CDN content subdirectory found, not just the top-level one.",
+		},
+		{
+			kind: "toggle",
+			key: "cleanup",
+			label: "Cleanup",
+			tooltip: "Deletes the original CDN content files after the CIA is created.",
+		},
 	],
 	outputRows: [
 		{
@@ -243,6 +311,7 @@ const cdn2cia: OpDef = {
 				const base = store.output ? basename(store.output) : "output.cia";
 				store.output = withOutputDir(base, value);
 			},
+			tooltip: "Directory the CIA file is written into.",
 		},
 		{
 			kind: "save",
@@ -252,6 +321,7 @@ const cdn2cia: OpDef = {
 				store.output = value;
 			},
 			filters: [{ name: "CIA", extensions: ["cia"] }],
+			tooltip: "Filename for the output CIA file.",
 		},
 	],
 
@@ -301,6 +371,7 @@ const ticket: OpDef = {
 				const base = store.output ? basename(store.output) : "ticket.tik";
 				store.output = withOutputDir(base, value);
 			},
+			tooltip: "Directory the ticket file is written into.",
 		},
 		{
 			kind: "save",
@@ -311,6 +382,7 @@ const ticket: OpDef = {
 			},
 			filters: [{ name: "Ticket", extensions: ["tik"] }],
 			defaultPath: "ticket.tik",
+			tooltip: "Filename for the generated ticket file.",
 		},
 	],
 
