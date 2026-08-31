@@ -1,3 +1,24 @@
+# [0.18.0](https://github.com/DevYukine/rom-converto/compare/v0.17.0...v0.18.0) (2026-08-31)
+
+
+### Bug Fixes
+
+* **ctr:** resolve cdn-to-cia failures with large tmds, key patching, and missing optional contents ([47666fb](https://github.com/DevYukine/rom-converto/commit/47666fb75137e813d37ea876be971e24780f61fa))
+* expand tilde paths and create missing output parent dirs ([657de6d](https://github.com/DevYukine/rom-converto/commit/657de6dec1472ee27ac628fc7420a8dd69aa9bb9))
+* **gui:** expand dropped folders before staging in dat verify ([a70c3db](https://github.com/DevYukine/rom-converto/commit/a70c3db649af55a16def6002fd1da3cfc84355a7))
+* **gui:** keep folder drops from being staged as files ([abd743f](https://github.com/DevYukine/rom-converto/commit/abd743f232baa49252576e5040c7d1278eca38c5))
+* **gui:** sort dropped files by name ([b9a7e5a](https://github.com/DevYukine/rom-converto/commit/b9a7e5acc016e8af70e084b171c64b7afa203c2e))
+* **lint:** resolve clippy errors in chd huffman and extract worker ([d4de224](https://github.com/DevYukine/rom-converto/commit/d4de2244462aa0baeeffa7bf9f383c4e50185d92))
+
+
+### Features
+
+* **chd:** support all chdman codecs with selectable codec sets and levels ([b3f8cc7](https://github.com/DevYukine/rom-converto/commit/b3f8cc7999ce6985d23f0ed98fcaf631c9bd44cb))
+* **ctr:** support DSiWare/TWL cias and verify forged cdn ticket keys ([b3c4212](https://github.com/DevYukine/rom-converto/commit/b3c4212fe90571f327f49fd394d3b6ea425370b8))
+* **gui:** add right-click copy and text selection to DAT results ([6db18a3](https://github.com/DevYukine/rom-converto/commit/6db18a333037be84eb8d8302b79ad9c76abb72d6))
+
+
+
 # [0.17.0](https://github.com/DevYukine/rom-converto/compare/v0.16.0...v0.17.0) (2026-07-16)
 
 
@@ -84,54 +105,6 @@
 * **cli:** gate dol and rvl verify by container console with legacy inputs documented ([e8be15e](https://github.com/DevYukine/rom-converto/commit/e8be15e770f4a827986ddd1d25d55cae20ced574))
 * **dat:** playmatch-backed verify, scan, rename, identify and fixdat (CLI + GUI) ([7ff04b0](https://github.com/DevYukine/rom-converto/commit/7ff04b00df3d35923ddbd6790c3971ed0910df06))
 * **nintendo:** migrate legacy GCZ, WIA, and NKit disc images to RVZ ([6e3ed7b](https://github.com/DevYukine/rom-converto/commit/6e3ed7b765c390ab35acf98e1970b68ff547634e))
-
-
-
-# [0.13.0](https://github.com/DevYukine/rom-converto/compare/v0.12.0...v0.13.0) (2026-06-30)
-
-
-### Bug Fixes
-
-* **cli:** apply --on-conflict to recursive cdn-to-cia ([56acf56](https://github.com/DevYukine/rom-converto/commit/56acf5634be6cfcfa28c62930e83b8dbb0a9578d))
-* **gui:** clear stale page error when starting a batch run ([157a1a4](https://github.com/DevYukine/rom-converto/commit/157a1a4641ee8a02f381ac3efd4bbeee018070d8))
-* **gui:** make hash run cancellable ([f99ec0d](https://github.com/DevYukine/rom-converto/commit/f99ec0d80031d3773396ec1b6b6e226183701fa3))
-* **gui:** move run output above the operation card ([dbc001f](https://github.com/DevYukine/rom-converto/commit/dbc001f80569e5f99b036e3373897a9d769dfe6a))
-* **gui:** reset stale run status and messages on a new run ([af0f251](https://github.com/DevYukine/rom-converto/commit/af0f2515c0dfb5f85d205a03c77cdfb885c8b9e6))
-* **gui:** treat decrypted and compressed 3DS files as passing in ctr verify ([5bc5448](https://github.com/DevYukine/rom-converto/commit/5bc544848c83fdfb6c872756cc7fbf6e4518b33d))
-* **gui:** truncate long filenames with a middle ellipsis in FileDropZone ([548f6a4](https://github.com/DevYukine/rom-converto/commit/548f6a4b609c62db29e6c66fd40cc257909b2456))
-* **lib:** detect encrypted CIA via TMD content-chunk flags in compress pre-flight ([c65db54](https://github.com/DevYukine/rom-converto/commit/c65db5499a8f5022cd500d96246fea72e05064da))
-* **lib:** skip OS and NAS junk files and dirs during scans ([5adf7b8](https://github.com/DevYukine/rom-converto/commit/5adf7b84295609eb01598da048a3b0167dafe7ff))
-* **lib:** support compressed Z3DS files in ctr info and console detection ([689e189](https://github.com/DevYukine/rom-converto/commit/689e189254a6dab528243c1ac542c4cc49629a7e))
-
-
-### Features
-
-* add disk headroom preflight before writes ([3da863c](https://github.com/DevYukine/rom-converto/commit/3da863c5d6717e120164d10e14b0114e61f43f7e))
-* cancel running operations ([38ce143](https://github.com/DevYukine/rom-converto/commit/38ce1436d2872a821cfc96707508af1d9362084a))
-* **cli:** add --dry-run ([809969e](https://github.com/DevYukine/rom-converto/commit/809969e3bcf51769067f945ec1a7d2a648bc31b6))
-* **cli:** add --on-conflict policy ([307bd15](https://github.com/DevYukine/rom-converto/commit/307bd15cc9d3b6cd5632b870b507010543c6dead))
-* **cli:** add --output-template ([af0bc25](https://github.com/DevYukine/rom-converto/commit/af0bc2535cf72e2b37f4c29c398a99e8ed26778b))
-* **cli:** add --report (csv, json, html) ([95d4ec9](https://github.com/DevYukine/rom-converto/commit/95d4ec9f7e6e18f598c45199f6c46c85e353d1eb))
-* **cli:** add config file with presets ([89fc82a](https://github.com/DevYukine/rom-converto/commit/89fc82aab4b3db0b93774b729e96b50561cfc5cb))
-* **cli:** add hash command ([57d0e04](https://github.com/DevYukine/rom-converto/commit/57d0e04b4799c86230a42979955a7d9b6946e155))
-* **cli:** add overwrite-invalid conflict mode ([53121cf](https://github.com/DevYukine/rom-converto/commit/53121cf530657c97dfb374459ceb79b7d1ed02ba))
-* **cli:** add playlist command ([52c4fe4](https://github.com/DevYukine/rom-converto/commit/52c4fe4b2cee88e0658a5ac0801425b10d5ef926))
-* **cli:** add verbosity ladder and --debug-log ([0ed0e0f](https://github.com/DevYukine/rom-converto/commit/0ed0e0f709914e9bf91e346620d5529bbe19e59a))
-* **cli:** make -R recurse, add --max-depth ([f242c1f](https://github.com/DevYukine/rom-converto/commit/f242c1f3f06ea7a257de748b352f61e14a62d3eb))
-* **cli:** show space saved after a run ([e8f1eff](https://github.com/DevYukine/rom-converto/commit/e8f1eff4f36dd7da1a4aa301cfd4b3ecb93d486a))
-* **ctr:** refuse to compress encrypted 3DS ROMs ([cfdef87](https://github.com/DevYukine/rom-converto/commit/cfdef87722790ea52b943918eaac39634da44f7f))
-* **gui:** add disk-headroom preflight and skip-space-check toggle ([02bba40](https://github.com/DevYukine/rom-converto/commit/02bba4011f6d4df3d60ae62f979c7a4165af5ce9))
-* **gui:** add dry-run preview backed by shared lib plan logic ([7d6139e](https://github.com/DevYukine/rom-converto/commit/7d6139e8e48eaf91e56f0f2b9dd05ab613c6cc1c))
-* **gui:** add hash and playlist pages and conflict-policy controls ([7c5363f](https://github.com/DevYukine/rom-converto/commit/7c5363fac9a289c595f9c819e07a21fce376c2e0))
-* **gui:** add overwrite-invalid conflict mode and recursive folder batch ([bc34b33](https://github.com/DevYukine/rom-converto/commit/bc34b33cc5f6215aac6f8f5a8190c6bcdf4ae4f0))
-* **gui:** add run-report export and output-path templating ([e588b1d](https://github.com/DevYukine/rom-converto/commit/e588b1d0e4d8b3afa41e4def8c378ad5fcbb03e3))
-* **gui:** default output next to source ([30aa545](https://github.com/DevYukine/rom-converto/commit/30aa5457784c53e36346320afbf4340c3a2a8817))
-* **gui:** echo the equivalent CLI command ([fe013b1](https://github.com/DevYukine/rom-converto/commit/fe013b1f6244af76e44d5da3bca50357e5331b92))
-* **gui:** gate run button and disable incompatible options with tooltips ([7e1e486](https://github.com/DevYukine/rom-converto/commit/7e1e486904f52e4d17a6fcc2ac87bc9410300829))
-* **gui:** show queue count on run button ([9d7c4b4](https://github.com/DevYukine/rom-converto/commit/9d7c4b408347377459c85f43c63f7b64a78fd694))
-* **lib:** add cancellable hash_file variant ([a58d7bc](https://github.com/DevYukine/rom-converto/commit/a58d7bcc2eed9c419d4b0c0a0e090e31e7da3999))
-* show dev-<hash> version for local builds ([3418c8e](https://github.com/DevYukine/rom-converto/commit/3418c8ea1de03adb97f44aeea4e2e7eaa26f46f7))
-* show progress phase labels ([d96b477](https://github.com/DevYukine/rom-converto/commit/d96b477b83b7be531d67b23268a5d1379584f100))
 
 
 
