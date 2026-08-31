@@ -67,6 +67,20 @@ and `--max-depth` (they change how much of a directory tree is processed),
 produce). Keeping these out of the config avoids silently changing what gets traversed or what
 file is written.
 
+## Switch `prod.keys`
+
+`nx` commands need a `prod.keys` file to derive per-NCA section keys. It is not part of the
+TOML config; when neither `--keys` (CLI) nor the prod.keys field (GUI) is set, the first
+existing file in this order is used:
+
+1. `~/.switch/prod.keys` (`%USERPROFILE%\.switch\prod.keys` on Windows), the same location
+   `nsz` uses.
+2. `prod.keys` next to the rom-converto executable.
+
+Drop the file into `~/.switch` once and every `nx` command and GUI operation finds it
+without any per-run setup. The file is read, never modified. An explicit path always wins
+over the defaults.
+
 ## Example
 
 ```toml

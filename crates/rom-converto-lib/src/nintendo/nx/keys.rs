@@ -109,15 +109,8 @@ impl KeySet {
 /// the fallback search is skipped so a typo'd `--keys` flag is loud
 /// instead of silently resolving to a different file.
 pub fn load_keyset(explicit: Option<&Path>) -> NxResult<KeySet> {
-    let candidates = match explicit {
-        Some(p) => vec![p.to_path_buf()],
-        None => default_candidate_paths(),
-    };
-    let path = candidates
-        .iter()
-        .find(|p| p.is_file())
-        .cloned()
-        .ok_or_else(|| NxError::KeyfileMissing(candidates.clone()))?;
+    let path = find_keys_file(explicit)
+        .ok_or_else(|| NxError::KeyfileMissing(candidate_paths(explicit)))?;
     let content = fs::read_to_string(&path)?;
     let mut keyset = KeySet::default();
     for raw in content.lines() {
@@ -132,6 +125,20 @@ pub fn load_keyset(explicit: Option<&Path>) -> NxResult<KeySet> {
         ingest(&mut keyset, key, value)?;
     }
     Ok(keyset)
+}
+
+/// The `prod.keys` file an operation would use: the explicit path when
+/// given (no fallback, same as `load_keyset`), else the first existing
+/// default candidate.
+pub fn find_keys_file(explicit: Option<&Path>) -> Option<PathBuf> {
+    candidate_paths(explicit).into_iter().find(|p| p.is_file())
+}
+
+fn candidate_paths(explicit: Option<&Path>) -> Vec<PathBuf> {
+    match explicit {
+        Some(p) => vec![p.to_path_buf()],
+        None => default_candidate_paths(),
+    }
 }
 
 fn default_candidate_paths() -> Vec<PathBuf> {

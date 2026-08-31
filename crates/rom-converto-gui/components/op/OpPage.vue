@@ -202,6 +202,7 @@ function copied() {
 							:label="field.label"
 							:value="field.display(store)"
 							:tooltip="field.tooltip"
+							:color="field.color?.(store)"
 							clickable
 							@click="pickFile(field)"
 						/>

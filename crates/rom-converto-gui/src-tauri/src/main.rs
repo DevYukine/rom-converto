@@ -58,6 +58,7 @@ fn main() {
             cmd_nx_compress,
             cmd_nx_decompress,
             cmd_nx_verify,
+            cmd_nx_keys_resolve,
             cmd_read_info,
             cmd_save_icon,
             cmd_hash,

@@ -36,7 +36,7 @@ pub use decompress::{
 };
 pub use derive_paths::{derive_compressed_path, derive_decompressed_path};
 pub use error::{NxError, NxResult};
-pub use keys::{KeyAreaKind, KeySet, load_keyset};
+pub use keys::{KeyAreaKind, KeySet, find_keys_file, load_keyset};
 pub use models::{Hfs0, NcaHeader, Pfs0};
 pub use ncz::NczMode;
 pub use verify::{

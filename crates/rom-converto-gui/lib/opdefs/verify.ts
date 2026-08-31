@@ -5,7 +5,8 @@ import { useWupVerifyStore } from "~/stores/wup-verify";
 import { useNxVerifyStore } from "~/stores/nx-verify";
 import { useChdVerifyStore } from "~/stores/chd-verify";
 import { useCsoVerifyStore } from "~/stores/cso-verify";
-import { registerOp } from "./types";
+import { nxKeysColor, nxKeysDisplay } from "./nx-keys";
+import { NX_KEYS_TOOLTIP, registerOp } from "./types";
 
 const SUBTITLE = "Checks hashes and container structure. Read-only.";
 const DROP_TEXT = "Drop files or a folder";
@@ -166,10 +167,10 @@ registerOp("verify", {
 				kind: "file",
 				key: "keys",
 				label: "prod.keys",
+				tooltip: NX_KEYS_TOOLTIP,
 				filters: [{ name: "prod.keys", extensions: ["keys", "txt"] }],
-				display: (store) => store.keys || "none",
-				tooltip:
-					"Path to prod.keys, used to decrypt the container. If left empty, the default search paths are used instead.",
+				display: nxKeysDisplay,
+				color: nxKeysColor,
 			},
 		],
 		outputRows: [],
@@ -179,7 +180,7 @@ registerOp("verify", {
 		actionNote: ACTION_NOTE,
 		deriveOutput: undefined,
 		buildArgs: (store, item) => ({ input: item.path, keys: store.keys || null }),
-		chips: (store) => (store.keys ? "prod.keys set" : "no prod.keys"),
+		chips: (store) => (store.keys ? "prod.keys set" : "prod.keys auto"),
 	},
 	chd: {
 		op: "verify",

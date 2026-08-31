@@ -1,4 +1,12 @@
-import { recursiveFields, registerOp, templateIsActive, type OpDef, type OutputRow } from "./types";
+import { nxKeysColor, nxKeysDisplay } from "./nx-keys";
+import {
+	NX_KEYS_TOOLTIP,
+	recursiveFields,
+	registerOp,
+	templateIsActive,
+	type OpDef,
+	type OutputRow,
+} from "./types";
 import { useCtrDecompressStore } from "~/stores/ctr-decompress";
 import { useDolDecompressStore } from "~/stores/dol-decompress";
 import { useRvlDecompressStore } from "~/stores/rvl-decompress";
@@ -200,10 +208,10 @@ const nx: OpDef = {
 			kind: "file",
 			key: "keys",
 			label: "prod.keys",
+			tooltip: NX_KEYS_TOOLTIP,
 			filters: [{ name: "prod.keys", extensions: ["keys", "txt"] }],
-			display: (store) => store.keys || "none",
-			tooltip:
-				"The Switch console keys needed to decrypt NSZ/XCZ content. Left empty, the app looks for prod.keys in the default Switch keys folder, then next to the program itself.",
+			display: nxKeysDisplay,
+			color: nxKeysColor,
 		},
 		...recursiveFields(),
 	],

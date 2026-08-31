@@ -1,14 +1,11 @@
 <script setup lang="ts">
-withDefaults(
-	defineProps<{
-		label: string;
-		value: string;
-		clickable?: boolean;
-		color?: "t3" | "blue" | "green" | "yellow";
-		tooltip?: string;
-	}>(),
-	{ color: "t3" },
-);
+defineProps<{
+	label: string;
+	value: string;
+	clickable?: boolean;
+	color?: "t3" | "blue" | "green" | "yellow" | "red";
+	tooltip?: string;
+}>();
 
 const emit = defineEmits<{
 	click: [];
@@ -18,10 +15,16 @@ const emit = defineEmits<{
 <template>
 	<div class="rc-kv">
 		<FieldLabel :label="label" :tooltip="tooltip" />
-		<button v-if="clickable" type="button" class="rc-kv__value rc-kv__value--clickable" @click="emit('click')">
+		<button
+			v-if="clickable"
+			type="button"
+			class="rc-kv__value rc-kv__value--clickable"
+			:class="color && `rc-kv__value--${color}`"
+			@click="emit('click')"
+		>
 			{{ value }}
 		</button>
-		<span v-else class="rc-kv__value" :class="`rc-kv__value--${color}`">{{ value }}</span>
+		<span v-else class="rc-kv__value" :class="`rc-kv__value--${color ?? 't3'}`">{{ value }}</span>
 	</div>
 </template>
 
@@ -43,6 +46,17 @@ const emit = defineEmits<{
 	text-align: right;
 }
 
+.rc-kv__value--clickable {
+	color: var(--blue);
+	cursor: pointer;
+}
+
+.rc-kv__value--clickable:hover {
+	text-decoration: underline;
+}
+
+/* Color variants come after --clickable so an explicit color wins over
+   the clickable-blue default. */
 .rc-kv__value--t3 {
 	color: var(--t3);
 }
@@ -59,12 +73,7 @@ const emit = defineEmits<{
 	color: var(--yellow);
 }
 
-.rc-kv__value--clickable {
-	color: var(--blue);
-	cursor: pointer;
-}
-
-.rc-kv__value--clickable:hover {
-	text-decoration: underline;
+.rc-kv__value--red {
+	color: var(--red);
 }
 </style>

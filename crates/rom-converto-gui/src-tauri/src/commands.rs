@@ -36,8 +36,8 @@ use rom_converto_lib::nintendo::dol::verify::{DolVerifyOptions, verify_dol};
 use rom_converto_lib::nintendo::nx::{
     KeySet, NczMode, NxCompressOptions, compress_container_async_cancellable,
     decompress_container_async_cancellable, derive_compressed_path as nx_derive_compressed_path,
-    derive_decompressed_path as nx_derive_decompressed_path, detect_container, load_keyset,
-    verify_container_async,
+    derive_decompressed_path as nx_derive_decompressed_path, detect_container, find_keys_file,
+    load_keyset, verify_container_async,
 };
 use rom_converto_lib::nintendo::rvl::verify::{RvlVerifyOptions, verify_rvl};
 use rom_converto_lib::nintendo::rvz::{
@@ -3389,6 +3389,13 @@ pub async fn cmd_wup_verify(
             .map_err(err_to_string)?;
 
     serde_json::to_string(&result).map_err(err_to_string)
+}
+
+/// Which `prod.keys` file nx operations would use right now, for the GUI
+/// status row. Home-relative results are shortened to `~` for display.
+#[tauri::command]
+pub fn cmd_nx_keys_resolve(keys: Option<PathBuf>) -> Option<String> {
+    find_keys_file(keys.as_deref()).map(|p| rom_converto_lib::util::contract_tilde(&p))
 }
 
 #[tauri::command]

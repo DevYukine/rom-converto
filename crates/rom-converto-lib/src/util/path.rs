@@ -27,9 +27,24 @@ fn expand_tilde_with(path: &Path, home: Option<&Path>) -> PathBuf {
     path.to_path_buf()
 }
 
+/// Shortens a path under the home directory to a `~`-prefixed display
+/// string. The inverse of `expand_tilde`, for showing paths compactly.
+pub fn contract_tilde(path: &Path) -> String {
+    contract_tilde_with(path, dirs::home_dir().as_deref())
+}
+
+fn contract_tilde_with(path: &Path, home: Option<&Path>) -> String {
+    if let Some(home) = home
+        && let Ok(rest) = path.strip_prefix(home)
+    {
+        return format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display());
+    }
+    path.display().to_string()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::expand_tilde_with;
+    use super::{contract_tilde_with, expand_tilde_with};
     use std::path::{Path, PathBuf};
 
     fn home() -> PathBuf {
@@ -88,5 +103,24 @@ mod tests {
     fn no_home_returns_unchanged() {
         let path = Path::new("~/x");
         assert_eq!(expand_tilde_with(path, None), path.to_path_buf());
+    }
+
+    #[test]
+    fn contract_shortens_home_prefixed_path() {
+        let sep = std::path::MAIN_SEPARATOR;
+        assert_eq!(
+            contract_tilde_with(&home().join(".switch").join("prod.keys"), Some(&home())),
+            format!("~{sep}.switch{sep}prod.keys")
+        );
+    }
+
+    #[test]
+    fn contract_leaves_foreign_and_homeless_paths() {
+        let path = Path::new("/opt/app/prod.keys");
+        assert_eq!(
+            contract_tilde_with(path, Some(&home())),
+            path.display().to_string()
+        );
+        assert_eq!(contract_tilde_with(path, None), path.display().to_string());
     }
 }

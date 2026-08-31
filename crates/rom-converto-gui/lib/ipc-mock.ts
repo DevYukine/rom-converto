@@ -508,6 +508,7 @@ type Handler = (args: Record<string, unknown>) => Promise<unknown>;
 
 const handlers: Record<string, Handler> = {
 	app_display_version: async () => "1.4.0",
+	cmd_nx_keys_resolve: async (a) => (a.keys ? String(a.keys) : "~/.switch/prod.keys"),
 	cmd_config_path: async () => "~/.config/rom-converto/rom-converto.toml",
 	cmd_load_config: async () => ({
 		presets: {

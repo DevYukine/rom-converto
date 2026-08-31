@@ -14,7 +14,15 @@ import { useDolCompressStore } from "~/stores/dol-compress";
 import { isXciInput, useNxCompressStore } from "~/stores/nx-compress";
 import { useRvlCompressStore } from "~/stores/rvl-compress";
 import { useWupCompressStore } from "~/stores/wup-compress";
-import { recursiveFields, registerOp, templateIsActive, type OpStore, type OutputRow } from "./types";
+import { nxKeysColor, nxKeysDisplay } from "./nx-keys";
+import {
+	NX_KEYS_TOOLTIP,
+	recursiveFields,
+	registerOp,
+	templateIsActive,
+	type OpStore,
+	type OutputRow,
+} from "./types";
 
 const ARCHIVE_EXTS = ["zip", "7z", "rar", "tar", "tgz", "gz"];
 
@@ -195,10 +203,10 @@ registerOp("compress", {
 				kind: "file",
 				key: "keys",
 				label: "prod.keys",
+				tooltip: NX_KEYS_TOOLTIP,
 				filters: [{ name: "Keys", extensions: ["keys", "txt", "dat"] }],
-				display: (s) => (s.keys ? `${basename(s.keys)} ✓` : "none"),
-				tooltip:
-					"Path to prod.keys, used to decrypt the NCAs. Defaults to .switch/prod.keys in your home directory, then the app's own folder.",
+				display: nxKeysDisplay,
+				color: nxKeysColor,
 			},
 			...recursiveFields(),
 		],

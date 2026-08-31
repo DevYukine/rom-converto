@@ -390,7 +390,7 @@ rom-converto nx <SUBCOMMAND> <INPUT> [-o OUTPUT]
 
 | Flag | Applies to | Description |
 |---|---|---|
-| `--keys <PRODKEYS>` | all | Path to `prod.keys`. Defaults to `$HOME/.switch/prod.keys` (`%USERPROFILE%/.switch/prod.keys` on Windows) |
+| `--keys <PRODKEYS>` | all | Path to `prod.keys`. Defaults to `$HOME/.switch/prod.keys` (`%USERPROFILE%\.switch\prod.keys` on Windows), then `prod.keys` next to the executable. See [Switch prod.keys](configuration.md#switch-prodkeys) |
 | `-l, --level <LEVEL>` | `compress` | Zstd compression level 1..=22 (defaults to 18, matching `nsz`) |
 | `--mode <MODE>` | `compress` | `solid` (one zstd frame per NCA, default for NSP) or `block` (default for XCI) |
 | `--block-size-exp <EXP>` | `compress` | Block-mode block size as `1 << exp` bytes, range 14..=32 (defaults to 20 = 1 MiB) |

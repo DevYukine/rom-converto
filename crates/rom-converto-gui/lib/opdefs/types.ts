@@ -22,6 +22,8 @@ export type FieldKind =
 	| "file"
 	| "multiselect";
 
+export type KvColor = "t3" | "blue" | "green" | "yellow" | "red";
+
 interface FieldBase {
 	kind: FieldKind;
 	key: string;
@@ -55,7 +57,7 @@ export interface ToggleField extends FieldBase {
 export interface KvField extends FieldBase {
 	kind: "kv";
 	display: (store: OpStore) => string;
-	color?: "t3" | "blue" | "green" | "yellow";
+	color?: KvColor;
 	onClick?: (store: OpStore) => void;
 }
 
@@ -73,6 +75,8 @@ export interface FileField extends FieldBase {
 	kind: "file";
 	filters?: { name: string; extensions: string[] }[];
 	display: (store: OpStore) => string;
+	// Overrides the clickable-blue value color, e.g. found/missing state.
+	color?: (store: OpStore) => KvColor | undefined;
 }
 
 // Store value is a string[]; selection order is preserved and doubles as
@@ -192,6 +196,11 @@ export function invokeArgs(
 ): Record<string, unknown> {
 	return NESTED_ARGS_COMMANDS.has(command) ? { args: payload } : payload;
 }
+
+// Mirrors default_candidate_paths() in rom-converto-lib nintendo/nx/keys.rs.
+export const NX_KEYS_AUTO = "auto (~/.switch/prod.keys)";
+export const NX_KEYS_TOOLTIP =
+	"Path to prod.keys, used to decrypt Switch content. When unset, the app looks in ~/.switch (the same location nsz uses), then next to the rom-converto executable.";
 
 export function recursiveFields(): FieldDef[] {
 	return [

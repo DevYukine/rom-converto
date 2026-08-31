@@ -35,7 +35,7 @@ pub use hash::{
     parse_checksum_bound,
 };
 pub use hash_cache::{CachedTrack, CueDigests, HashCache};
-pub use path::expand_tilde;
+pub use path::{contract_tilde, expand_tilde};
 pub use plan::{PlanDecision, PlanLine, classify};
 pub use report::{
     HashReportRecord, ReportFormat, ReportRecord, ReportRecordInput, ReportTotals,
