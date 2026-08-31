@@ -548,6 +548,40 @@ fn playlist_output_dir_is_created_when_missing() {
     assert!(!lines[0].starts_with('/'), "{contents}");
 }
 
+fn write_cue_set(dir: &Path) {
+    let bin = dir.join("game.bin");
+    fs::write(&bin, vec![0u8; 2352]).unwrap();
+    let cue = dir.join("game.cue");
+    fs::write(
+        &cue,
+        "FILE \"game.bin\" BINARY\r\n  TRACK 01 MODE1/2352\r\n    INDEX 01 00:00:00\r\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn cue_to_iso_recursive_dry_run_writes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    for name in ["disc_a", "disc_b"] {
+        let sub = dir.path().join(name);
+        fs::create_dir(&sub).unwrap();
+        write_cue_set(&sub);
+    }
+
+    let output = bin()
+        .args(["--dry-run", "cue", "to-iso", "-R"])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "{}", combined(&output));
+    assert!(no_files_with_ext(&dir.path().join("disc_a"), "iso"));
+    assert!(no_files_with_ext(&dir.path().join("disc_b"), "iso"));
+    let text = combined(&output);
+    assert!(text.contains("Would to-iso"), "{text}");
+    assert!(text.contains("Dry run:"), "{text}");
+}
+
 #[test]
 fn cue_merge_dry_run_notes_companion_bin() {
     let dir = tempfile::tempdir().unwrap();

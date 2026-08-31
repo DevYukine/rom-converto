@@ -2159,6 +2159,311 @@ pub async fn chd_to_cso(
     )
 }
 
+/// Per-file input size for a cue conversion: the referenced bin files' total
+/// size, since the .cue sheet's own on-disk size is meaningless for a space
+/// estimate or progress weighting. Falls back to the .cue file's own size if
+/// parsing or stat-ing the referenced files fails.
+async fn cue_input_bytes(cue_path: &Path) -> u64 {
+    rom_converto_lib::cue::referenced_files_size(cue_path)
+        .await
+        .unwrap_or_else(|_| file_len(cue_path))
+}
+
+pub async fn cue_to_iso(run: &BatchRun<'_>) -> Result<()> {
+    let BatchRun {
+        progress,
+        total_progress,
+        input_dir,
+        policy,
+        output_dir,
+        output_template,
+        max_depth,
+        dry_run,
+        skip_space_check,
+        report_path,
+        cancel,
+    } = *run;
+
+    let files = collect_or_warn(input_dir, &["cue"], max_depth)?;
+    if files.is_empty() {
+        return Ok(());
+    }
+    let mut sized = Vec::with_capacity(files.len());
+    for path in files {
+        let bytes = cue_input_bytes(&path).await;
+        sized.push((path, bytes));
+    }
+    let total_bytes: u64 = sized.iter().map(|(_, b)| *b).sum();
+    if !dry_run && !skip_space_check {
+        space_preflight_for_size(total_bytes, output_dir.unwrap_or(input_dir))?;
+    }
+    if !dry_run && let Some(dir) = output_dir {
+        std::fs::create_dir_all(dir)?;
+    }
+    let total = sized.len();
+    total_progress.begin(total as u64, total_bytes);
+    let mut tally = Tally::new();
+    let mut records: Vec<ReportRecord> = Vec::new();
+    for (path, input_bytes) in sized {
+        if cancel.is_cancelled() {
+            break;
+        }
+        let output = match crate::util::batch_output(crate::util::BatchOutput {
+            input: &path,
+            derived: &path.with_extension("iso"),
+            input_dir,
+            output_dir,
+            output_template,
+            output_ext: "iso",
+            keys_path: None,
+            dry_run,
+        }) {
+            Ok(p) => p,
+            Err(e) => {
+                warn!("{e}");
+                tally.record_skipped();
+                records.push(skipped_record(&path, "to-iso", Some(e.to_string())));
+                total_progress.advance(input_bytes);
+                continue;
+            }
+        };
+        if !dry_run && let Some(parent) = output.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let decision = match resolve_output(&output, policy) {
+            Ok(d) => d,
+            Err(e) => {
+                warn!("{e}");
+                tally.record_skipped();
+                records.push(skipped_record(&path, "to-iso", Some(e.to_string())));
+                total_progress.advance(input_bytes);
+                continue;
+            }
+        };
+        if dry_run {
+            crate::dry_run::log_plan("to-iso", &path, &output, &decision, None, None);
+            crate::dry_run::record(&mut tally, &path, &decision);
+            records.push(crate::dry_run::report_record(
+                "to-iso", &path, &output, &decision,
+            ));
+            total_progress.advance(input_bytes);
+            continue;
+        }
+        let output = match decision {
+            WriteDecision::Write(p) => p,
+            WriteDecision::Skip => {
+                info!("Skipped, output exists: {}", output.display());
+                tally.record_skipped();
+                records.push(skipped_record(&path, "to-iso", None));
+                total_progress.advance(input_bytes);
+                continue;
+            }
+        };
+        let out_path = output.clone();
+        let started = Instant::now();
+        if let Err(e) =
+            rom_converto_lib::cue::to_iso::cue_to_iso(progress, path.clone(), output, true).await
+        {
+            warn!("Failed to convert {}: {e}", path.display());
+            tally.record_failed();
+            records.push(failed_record(&path, "to-iso", input_bytes, started, e));
+        } else {
+            let out_bytes = file_len(&out_path);
+            tally.record_ok(input_bytes, out_bytes, started.elapsed());
+            records.push(ok_record(
+                &path,
+                &out_path,
+                "to-iso",
+                input_bytes,
+                out_bytes,
+                started,
+            ));
+        }
+        total_progress.advance(input_bytes);
+    }
+    total_progress.finish();
+    if cancel.is_cancelled() {
+        return Ok(());
+    }
+    finish_tally(
+        &tally,
+        TallyDirection::Convert,
+        &records,
+        dry_run,
+        report_path,
+    )
+}
+
+pub async fn cue_to_cso(
+    run: &BatchRun<'_>,
+    format: rom_converto_lib::cso::CsoFormat,
+    cache: &HashCache,
+) -> Result<()> {
+    let BatchRun {
+        progress,
+        total_progress,
+        input_dir,
+        policy,
+        output_dir,
+        output_template,
+        max_depth,
+        dry_run,
+        skip_space_check,
+        report_path,
+        cancel,
+    } = *run;
+
+    let ext = format.extension();
+    let files = collect_or_warn(input_dir, &["cue"], max_depth)?;
+    if files.is_empty() {
+        return Ok(());
+    }
+    let mut sized = Vec::with_capacity(files.len());
+    for path in files {
+        let bytes = cue_input_bytes(&path).await;
+        sized.push((path, bytes));
+    }
+    let total_bytes: u64 = sized.iter().map(|(_, b)| *b).sum();
+    if !dry_run && !skip_space_check {
+        space_preflight_for_size(total_bytes, output_dir.unwrap_or(input_dir))?;
+    }
+    if !dry_run && let Some(dir) = output_dir {
+        std::fs::create_dir_all(dir)?;
+    }
+    let total = sized.len();
+    total_progress.begin(total as u64, total_bytes);
+    let mut tally = Tally::new();
+    let mut records: Vec<ReportRecord> = Vec::new();
+    for (path, input_bytes) in sized {
+        if cancel.is_cancelled() {
+            break;
+        }
+        let output = match crate::util::batch_output(crate::util::BatchOutput {
+            input: &path,
+            derived: &path.with_extension(ext),
+            input_dir,
+            output_dir,
+            output_template,
+            output_ext: ext,
+            keys_path: None,
+            dry_run,
+        }) {
+            Ok(p) => p,
+            Err(e) => {
+                warn!("{e}");
+                tally.record_skipped();
+                records.push(skipped_record(&path, "to-cso", Some(e.to_string())));
+                total_progress.advance(input_bytes);
+                continue;
+            }
+        };
+        if !dry_run && let Some(parent) = output.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let decision = match resolve_output(&output, policy) {
+            Ok(d) => d,
+            Err(e) => {
+                warn!("{e}");
+                tally.record_skipped();
+                records.push(skipped_record(&path, "to-cso", Some(e.to_string())));
+                total_progress.advance(input_bytes);
+                continue;
+            }
+        };
+        if dry_run {
+            dry_run_verify_record(
+                progress,
+                DryRunVerify {
+                    operation: "to-cso",
+                    input: &path,
+                    desired: &output,
+                    decision: &decision,
+                    policy,
+                    target: crate::util::OutputVerify::Cso,
+                    media: None,
+                },
+                &mut tally,
+                &mut records,
+            )
+            .await;
+            total_progress.advance(input_bytes);
+            continue;
+        }
+        let output = match decision {
+            WriteDecision::Write(p) => p,
+            WriteDecision::Skip if policy == ConflictPolicy::OverwriteInvalid => {
+                match crate::util::verify_existing_cached(
+                    cache,
+                    progress,
+                    &output,
+                    crate::util::OutputVerify::Cso,
+                )
+                .await
+                {
+                    crate::util::VerifyOutcome::Valid => {
+                        info!("Kept, output verified valid: {}", output.display());
+                        tally.record_skipped();
+                        records.push(skipped_record(
+                            &path,
+                            "to-cso",
+                            Some("output verified valid".into()),
+                        ));
+                        total_progress.advance(input_bytes);
+                        continue;
+                    }
+                    crate::util::VerifyOutcome::Invalid => {
+                        info!(
+                            "Rewriting, output failed verification: {}",
+                            output.display()
+                        );
+                        output
+                    }
+                }
+            }
+            WriteDecision::Skip => {
+                info!("Skipped, output exists: {}", output.display());
+                tally.record_skipped();
+                records.push(skipped_record(&path, "to-cso", None));
+                total_progress.advance(input_bytes);
+                continue;
+            }
+        };
+        let out_path = output.clone();
+        let started = Instant::now();
+        if let Err(e) =
+            rom_converto_lib::pipeline::cue_to_cso(progress, path.clone(), output, format, true)
+                .await
+        {
+            warn!("Failed to convert {}: {e}", path.display());
+            tally.record_failed();
+            records.push(failed_record(&path, "to-cso", input_bytes, started, e));
+        } else {
+            let out_bytes = file_len(&out_path);
+            tally.record_ok(input_bytes, out_bytes, started.elapsed());
+            records.push(ok_record(
+                &path,
+                &out_path,
+                "to-cso",
+                input_bytes,
+                out_bytes,
+                started,
+            ));
+        }
+        total_progress.advance(input_bytes);
+    }
+    total_progress.finish();
+    if cancel.is_cancelled() {
+        return Ok(());
+    }
+    finish_tally(
+        &tally,
+        TallyDirection::Compress,
+        &records,
+        dry_run,
+        report_path,
+    )
+}
+
 fn hash_ok_record(path: &Path, d: &FileDigests, started: Instant) -> HashReportRecord {
     HashReportRecord {
         path: path.display().to_string(),

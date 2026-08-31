@@ -379,9 +379,10 @@ registerOp("compress", {
 		resultKind: "convert",
 		title: "Compress to CHD",
 		subtitle: "Output matches chdman createcd/createdvd.",
-		dropText: "Drop .cue+.bin pairs or .iso files",
+		dropText: "Drop .cue+.bin pairs, .iso files or folders",
 		acceptedExts: ["cue", "iso", ...ARCHIVE_EXTS],
 		browseFilters: [{ name: "Disc image", extensions: ["cue", "iso", ...ARCHIVE_EXTS] }],
+		browseAlsoDirectory: true,
 		defaultOutputDir: "~/roms/chd",
 		fields: [
 			{

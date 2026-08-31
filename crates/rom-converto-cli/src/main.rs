@@ -3720,72 +3720,126 @@ async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()>
                 merge_bin(&progress, cmd.input_cue, output_cue, true).await?
             }
             CueCommands::ToIso(cmd) => {
-                ensure_input_exists(&cmd.input)?;
-                let output = cmd
-                    .output
-                    .clone()
-                    .unwrap_or_else(|| cmd.input.with_extension("iso"));
-                let policy = policy_of(cmd.on_conflict, cmd.force);
-                let decision = resolve_output(&output, policy)?;
-                if dry_run {
-                    return dry_run_single(
-                        "to-iso", &cmd.input, &output, &decision, None, None, None,
-                    );
-                }
-                let output = match decision {
-                    WriteDecision::Skip => {
-                        log_skipped(&output);
-                        return Ok(());
+                if cmd.recursive {
+                    require_dir(&cmd.input)?;
+                    let policy = policy_of(cmd.on_conflict, cmd.force);
+                    let run = batch::BatchRun {
+                        progress: &progress,
+                        total_progress: &total_progress,
+                        input_dir: &cmd.input,
+                        policy,
+                        output_dir: cmd.output_dir.as_deref(),
+                        output_template: None,
+                        max_depth: cmd.max_depth,
+                        dry_run,
+                        skip_space_check,
+                        report_path: None,
+                        cancel: &cancel,
+                    };
+                    batch::cue_to_iso(&run).await?
+                } else {
+                    ensure_input_exists(&cmd.input)?;
+                    let output = match cmd.output.clone() {
+                        Some(p) => p,
+                        None => {
+                            if !dry_run && let Some(dir) = cmd.output_dir.as_deref() {
+                                std::fs::create_dir_all(dir)?;
+                            }
+                            rom_converto_lib::util::place_in_dir(
+                                &cmd.input.with_extension("iso"),
+                                cmd.output_dir.as_deref(),
+                            )
+                        }
+                    };
+                    let policy = policy_of(cmd.on_conflict, cmd.force);
+                    let decision = resolve_output(&output, policy)?;
+                    if dry_run {
+                        return dry_run_single(
+                            "to-iso", &cmd.input, &output, &decision, None, None, None,
+                        );
                     }
-                    WriteDecision::Write(p) => p,
-                };
-                if !skip_space_check {
-                    let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
-                    let required = rom_converto_lib::cue::referenced_files_size(&cmd.input)
-                        .await
-                        .unwrap_or_else(|_| file_len(&cmd.input));
-                    batch::space_preflight_for_size(required, check_dir)?;
+                    let output = match decision {
+                        WriteDecision::Skip => {
+                            log_skipped(&output);
+                            return Ok(());
+                        }
+                        WriteDecision::Write(p) => p,
+                    };
+                    if !skip_space_check {
+                        let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
+                        let required = rom_converto_lib::cue::referenced_files_size(&cmd.input)
+                            .await
+                            .unwrap_or_else(|_| file_len(&cmd.input));
+                        batch::space_preflight_for_size(required, check_dir)?;
+                    }
+                    cue_to_iso(&progress, cmd.input, output, true).await?
                 }
-                cue_to_iso(&progress, cmd.input, output, true).await?
             }
             CueCommands::ToCso(cmd) => {
-                ensure_input_exists(&cmd.input)?;
                 let format = match cmd.format {
                     CsoFormatArg::Cso => CsoFormat::Cso,
                     CsoFormatArg::Zso => CsoFormat::Zso,
                 };
-                let output = cmd
-                    .output
-                    .clone()
-                    .unwrap_or_else(|| cmd.input.with_extension(format.extension()));
-                let policy = policy_of(cmd.on_conflict, cmd.force);
-                let decision = resolve_output(&output, policy)?;
-                if dry_run {
-                    return dry_run_single(
-                        "to-cso",
-                        &cmd.input,
-                        &output,
-                        &decision,
-                        Some(format.name()),
-                        None,
-                        None,
-                    );
-                }
-                let output = match decision {
-                    WriteDecision::Skip => {
-                        log_skipped(&output);
-                        return Ok(());
+                if cmd.recursive {
+                    require_dir(&cmd.input)?;
+                    let policy = policy_of(cmd.on_conflict, cmd.force);
+                    let run = batch::BatchRun {
+                        progress: &progress,
+                        total_progress: &total_progress,
+                        input_dir: &cmd.input,
+                        policy,
+                        output_dir: cmd.output_dir.as_deref(),
+                        output_template: None,
+                        max_depth: cmd.max_depth,
+                        dry_run,
+                        skip_space_check,
+                        report_path: None,
+                        cancel: &cancel,
+                    };
+                    batch::cue_to_cso(&run, format, cache).await?
+                } else {
+                    ensure_input_exists(&cmd.input)?;
+                    let output = match cmd.output.clone() {
+                        Some(p) => p,
+                        None => {
+                            if !dry_run && let Some(dir) = cmd.output_dir.as_deref() {
+                                std::fs::create_dir_all(dir)?;
+                            }
+                            rom_converto_lib::util::place_in_dir(
+                                &cmd.input.with_extension(format.extension()),
+                                cmd.output_dir.as_deref(),
+                            )
+                        }
+                    };
+                    let policy = policy_of(cmd.on_conflict, cmd.force);
+                    let decision = resolve_output(&output, policy)?;
+                    if dry_run {
+                        return dry_run_single(
+                            "to-cso",
+                            &cmd.input,
+                            &output,
+                            &decision,
+                            Some(format.name()),
+                            None,
+                            None,
+                        );
                     }
-                    WriteDecision::Write(p) => p,
-                };
-                if !skip_space_check {
-                    let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
-                    let required = rom_converto_lib::cue::referenced_files_size(&cmd.input)
-                        .await
-                        .unwrap_or_else(|_| file_len(&cmd.input));
-                    batch::space_preflight_for_size(required, check_dir)?;
+                    let output = match decision {
+                        WriteDecision::Skip => {
+                            log_skipped(&output);
+                            return Ok(());
+                        }
+                        WriteDecision::Write(p) => p,
+                    };
+                    if !skip_space_check {
+                        let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
+                        let required = rom_converto_lib::cue::referenced_files_size(&cmd.input)
+                            .await
+                            .unwrap_or_else(|_| file_len(&cmd.input));
+                        batch::space_preflight_for_size(required, check_dir)?;
+                    }
+                    cue_to_cso(&progress, cmd.input, output, format, true).await?
                 }
-                cue_to_cso(&progress, cmd.input, output, format, true).await?
             }
         },
         Commands::Hash(cmd) => {

@@ -43,16 +43,20 @@ pub struct MergeCommand {
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
     long_about = "Convert a .cue/.bin disc image's data track to a plain .iso\n\nExtracts the first track (which must be a MODE1/MODE2 data track) to 2048-byte ISO sectors. Any audio tracks are skipped.",
-    after_long_help = "EXAMPLES:\n  Single file:     rom-converto cue to-iso game.cue\n  Explicit output: rom-converto cue to-iso game.cue game.iso\n"
+    after_long_help = "EXAMPLES:\n  Single file:     rom-converto cue to-iso game.cue\n  Explicit output: rom-converto cue to-iso game.cue game.iso\n  Whole folder:    rom-converto cue to-iso -R ./roms --output-dir ./iso\n"
 )]
 pub struct ToIsoCommand {
-    /// Input .cue file
+    /// Input .cue file, or a directory with --recursive
     #[arg(value_name = "INPUT")]
     pub input: PathBuf,
 
     /// Output .iso path, defaults to the input with extension replaced by .iso
     #[arg(value_name = "OUTPUT")]
     pub output: Option<PathBuf>,
+
+    /// Write output into this directory using the derived filename. Created if missing. Works with --recursive
+    #[arg(long = "output-dir", value_name = "DIR", conflicts_with = "output")]
+    pub output_dir: Option<PathBuf>,
 
     /// What to do when an output already exists: error, overwrite, skip, or rename to a numbered sibling
     #[arg(long = "on-conflict", value_enum, default_value_t = ConflictPolicyArg::Error)]
@@ -66,22 +70,34 @@ pub struct ToIsoCommand {
         conflicts_with = "on_conflict"
     )]
     pub force: bool,
+
+    /// Convert every .cue file found in the INPUT directory and its subdirectories
+    #[arg(long, short = 'R', default_value_t = false)]
+    pub recursive: bool,
+
+    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited
+    #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
+    pub max_depth: Option<usize>,
 }
 
 /// Convert a .cue/.bin disc image's data track straight to a .cso or .zso
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
     long_about = "Convert a .cue/.bin disc image's data track straight to a .cso or .zso\n\nExtracts the data track to a temporary ISO, then compresses it, always removing the temporary ISO afterward.",
-    after_long_help = "EXAMPLES:\n  Single file:     rom-converto cue to-cso game.cue\n  Explicit output: rom-converto cue to-cso game.cue game.cso --format cso\n"
+    after_long_help = "EXAMPLES:\n  Single file:     rom-converto cue to-cso game.cue\n  Explicit output: rom-converto cue to-cso game.cue game.cso --format cso\n  Whole folder:    rom-converto cue to-cso -R ./roms --output-dir ./cso\n"
 )]
 pub struct ToCsoCommand {
-    /// Input .cue file
+    /// Input .cue file, or a directory with --recursive
     #[arg(value_name = "INPUT")]
     pub input: PathBuf,
 
     /// Output path, defaults to the input with the format's extension
     #[arg(value_name = "OUTPUT")]
     pub output: Option<PathBuf>,
+
+    /// Write output into this directory using the derived filename. Created if missing. Works with --recursive
+    #[arg(long = "output-dir", value_name = "DIR", conflicts_with = "output")]
+    pub output_dir: Option<PathBuf>,
 
     /// Output container format
     #[arg(long, value_enum, default_value_t = CsoFormatArg::Zso)]
@@ -99,6 +115,14 @@ pub struct ToCsoCommand {
         conflicts_with = "on_conflict"
     )]
     pub force: bool,
+
+    /// Convert every .cue file found in the INPUT directory and its subdirectories
+    #[arg(long, short = 'R', default_value_t = false)]
+    pub recursive: bool,
+
+    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited
+    #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
+    pub max_depth: Option<usize>,
 }
 
 #[cfg(test)]
@@ -178,7 +202,43 @@ mod tests {
         assert_eq!(c.input, PathBuf::from("game.cue"));
         assert_eq!(c.output, None);
         assert_eq!(c.on_conflict, ConflictPolicyArg::Error);
-        assert!(!c.force);
+        assert!(!c.force && !c.recursive);
+    }
+
+    #[test]
+    fn parses_to_iso_recursive_flag() {
+        let h = Harness::parse_from(["bin", "to-iso", "-R", "roms"]);
+        let CueCommands::ToIso(c) = h.cmd else {
+            panic!("expected ToIso");
+        };
+        assert!(c.recursive);
+        assert_eq!(c.input, PathBuf::from("roms"));
+    }
+
+    #[test]
+    fn parses_to_iso_max_depth_and_output_dir() {
+        let h = Harness::parse_from([
+            "bin",
+            "to-iso",
+            "-R",
+            "--max-depth",
+            "2",
+            "roms",
+            "--output-dir",
+            "out",
+        ]);
+        let CueCommands::ToIso(c) = h.cmd else {
+            panic!("expected ToIso");
+        };
+        assert_eq!(c.max_depth, Some(2));
+        assert_eq!(c.output_dir, Some(PathBuf::from("out")));
+        assert_eq!(c.output, None);
+    }
+
+    #[test]
+    fn to_iso_max_depth_requires_recursive() {
+        let result = Harness::try_parse_from(["bin", "to-iso", "--max-depth", "2", "roms"]);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -199,5 +259,32 @@ mod tests {
         };
         assert_eq!(c.format, CsoFormatArg::Cso);
         assert_eq!(c.output, Some(PathBuf::from("game.cso")));
+    }
+
+    #[test]
+    fn parses_to_cso_recursive_max_depth_and_output_dir() {
+        let h = Harness::parse_from([
+            "bin",
+            "to-cso",
+            "-R",
+            "--max-depth",
+            "3",
+            "roms",
+            "--output-dir",
+            "out",
+        ]);
+        let CueCommands::ToCso(c) = h.cmd else {
+            panic!("expected ToCso");
+        };
+        assert!(c.recursive);
+        assert_eq!(c.max_depth, Some(3));
+        assert_eq!(c.output_dir, Some(PathBuf::from("out")));
+        assert_eq!(c.output, None);
+    }
+
+    #[test]
+    fn to_cso_max_depth_requires_recursive() {
+        let result = Harness::try_parse_from(["bin", "to-cso", "--max-depth", "2", "roms"]);
+        assert!(result.is_err());
     }
 }

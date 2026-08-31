@@ -275,10 +275,10 @@ const cue: OpDef = {
 	resultKind: "convert",
 	title: "Convert CUE/BIN",
 	subtitle: "Converts a CUE/BIN disc image's data track to ISO, or to a block-compressed CSO or ZSO.",
-	dropText: "Drop a .cue file or folder",
+	dropText: "Drop .cue files or folders",
 	acceptedExts: ["cue", ...ARCHIVE_EXTS],
 	browseFilters: [{ name: "CUE", extensions: ["cue"] }],
-	singleInput: true,
+	browseAlsoDirectory: true,
 	progressKey: (s) => (s.format === "iso" ? "cue-to-iso" : "cue-to-cso"),
 	fields: [
 		{
@@ -290,13 +290,10 @@ const cue: OpDef = {
 				{ label: "CSO", value: "cso" },
 				{ label: "ZSO", value: "zso" },
 			],
-			// A hand-picked output file carries the old format's extension; drop it.
-			onSet: (s) => {
-				s.output = "";
-			},
 			tooltip:
 				"ISO extracts the plain data track. CSO (CISO v1, deflate) targets PSP hardware with custom firmware and PPSSPP. ZSO (ZISO, LZ4) targets Open PS2 Loader on real PS2 hardware and ARK-4 on PSP. Audio tracks are always skipped.",
 		},
+		...recursiveFields(),
 	],
 	note: "Audio tracks are skipped; only the data track is converted.",
 	outputRows: [
@@ -307,19 +304,11 @@ const cue: OpDef = {
 			set: (s, v) => { s.outputDir = v; },
 			tooltip: "Where the converted file is written. Leave empty to write it next to its source file.",
 		},
-		{
-			kind: "save",
-			label: "File",
-			display: (s) => (s.output ? basename(s.output) : "(auto)"),
-			set: (s, v) => { s.output = v; },
-			filters: [{ name: "Image", extensions: ["iso", "cso", "zso"] }],
-			tooltip: "Pick an exact output file path. Leave unset to derive the name from the input and chosen format.",
-		},
 	],
 	actionNote: "Jobs start automatically. Parameters lock once queued.",
 	deriveOutput: (input, store) => deriveCueOutput(input, store.format),
 	buildArgs: (store, item) => {
-		const output = store.output || withOutputDir(deriveCueOutput(item.path, store.format), store.outputDir || "");
+		const output = withOutputDir(deriveCueOutput(item.path, store.format), store.outputDir || "");
 		if (store.format === "iso") {
 			return {
 				cuePath: item.path,

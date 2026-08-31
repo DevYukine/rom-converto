@@ -4,10 +4,11 @@ import { useUiStore } from "~/stores/ui";
 export const useCueConvertStore = defineStore("cue-convert", () => {
   const ui = useUiStore();
   const input = ref("");
-  const output = ref("");
   const format = ref<"iso" | "cso" | "zso">("zso");
   const onConflict = ref(ui.defaultOnConflict);
   const skipSpaceCheck = ref(false);
+  const recursive = ref(true);
+  const maxDepth = ref<number | null>(null);
 
   const result = ref("");
   const error = ref("");
@@ -15,10 +16,11 @@ export const useCueConvertStore = defineStore("cue-convert", () => {
 
   function $reset() {
     input.value = "";
-    output.value = "";
     format.value = "zso";
     onConflict.value = ui.defaultOnConflict;
     skipSpaceCheck.value = false;
+    recursive.value = true;
+    maxDepth.value = null;
     result.value = "";
     error.value = "";
     loading.value = false;
@@ -26,8 +28,9 @@ export const useCueConvertStore = defineStore("cue-convert", () => {
 
   return {
     input,
-    output,
     format,
+    recursive,
+    maxDepth,
     onConflict,
     skipSpaceCheck,
     result,
