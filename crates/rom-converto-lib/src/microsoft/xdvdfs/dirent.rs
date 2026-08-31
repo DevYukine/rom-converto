@@ -101,8 +101,16 @@ fn parse_dirent(table: &[u8], offset: usize) -> XdvdfsResult<Option<DirEntry>> {
 
     let left = u16::from_le_bytes([fixed[0], fixed[1]]);
     let right = u16::from_le_bytes([fixed[2], fixed[3]]);
-    let start_sector = u32::from_le_bytes(fixed[4..8].try_into().unwrap());
-    let size = u32::from_le_bytes(fixed[8..12].try_into().unwrap());
+    let start_sector = u32::from_le_bytes(
+        fixed[4..8]
+            .try_into()
+            .expect("fixed[4..8] is always 4 bytes"),
+    );
+    let size = u32::from_le_bytes(
+        fixed[8..12]
+            .try_into()
+            .expect("fixed[8..12] is always 4 bytes"),
+    );
     let attributes = fixed[12];
     let name_len = fixed[13] as usize;
 

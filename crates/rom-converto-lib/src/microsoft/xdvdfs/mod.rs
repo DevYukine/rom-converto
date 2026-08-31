@@ -112,9 +112,21 @@ impl XdvdfsVolume {
 
             let mut fields = [0u8; 16];
             reader.read_exact(&mut fields)?;
-            let root_sector = u32::from_le_bytes(fields[0..4].try_into().unwrap());
-            let root_size = u32::from_le_bytes(fields[4..8].try_into().unwrap());
-            let filetime = u64::from_le_bytes(fields[8..16].try_into().unwrap());
+            let root_sector = u32::from_le_bytes(
+                fields[0..4]
+                    .try_into()
+                    .expect("fields[0..4] is always 4 bytes"),
+            );
+            let root_size = u32::from_le_bytes(
+                fields[4..8]
+                    .try_into()
+                    .expect("fields[4..8] is always 4 bytes"),
+            );
+            let filetime = u64::from_le_bytes(
+                fields[8..16]
+                    .try_into()
+                    .expect("fields[8..16] is always 8 bytes"),
+            );
 
             reader.seek(SeekFrom::Start(descriptor_offset + TAIL_MAGIC_OFFSET))?;
             let mut tail = [0u8; 20];
