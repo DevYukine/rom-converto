@@ -4,7 +4,7 @@ import { invoke, save } from "~/lib/ipc";
 import { useToast } from "~/composables/useToast";
 import { parseHashLine } from "~/lib/hash-lines";
 import PrimaryButton from "~/components/ui/PrimaryButton.vue";
-import { imageToDataUrl, nxTitleKindDisplayName, pickIconImage, type InfoResult } from "~/types/info";
+import { imageToDataUrl, nxTitleKindDisplayName, pickIconImage, type InfoResult, type XboxInfo } from "~/types/info";
 
 const props = defineProps<{
 	info: InfoResult;
@@ -26,6 +26,8 @@ const CONSOLE_LABEL: Record<InfoResult["kind"], string> = {
 	nx: "SWITCH",
 	chd: "CHD",
 	cso: "CSO",
+	xbox: "XBOX",
+	xenon: "XBOX 360",
 };
 
 const iconUrl = computed(() => {
@@ -64,10 +66,32 @@ function formatBytes(n: number): string {
 	return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[unit]}`;
 }
 
+function formatXboxPartitionKind(pk: XboxInfo["partition_kind"]): string {
+	if (typeof pk === "object") return `X360 Extra (+${pk.x360_extra})`;
+	switch (pk) {
+		case "trimmed":
+			return "Trimmed";
+		case "xgd1":
+			return "XGD1";
+		case "xgd2":
+			return "XGD2";
+		case "xgd3":
+			return "XGD3";
+	}
+}
+
+function xenonRatio(logicalSize: number, compressedSize: number): number {
+	return logicalSize > 0 ? (1 - compressedSize / logicalSize) * 100 : 0;
+}
+
 const sizeBytes = computed(() => {
 	switch (props.info.kind) {
 		case "wup":
 			return props.info.total_content_size;
+		case "xbox":
+			return props.info.image_size;
+		case "xenon":
+			return props.info.compressed_size;
 		default:
 			return props.info.physical_bytes;
 	}
@@ -100,6 +124,10 @@ const title = computed(() => {
 			return info.version_string || `CHD v${info.version}`;
 		case "cso":
 			return `${info.format} image`;
+		case "xbox":
+			return `${formatXboxPartitionKind(info.partition_kind)} image`;
+		case "xenon":
+			return "Xbox 360 image";
 	}
 });
 
@@ -120,6 +148,10 @@ const formatBadge = computed(() => {
 			return "CHD";
 		case "cso":
 			return info.format.toUpperCase();
+		case "xbox":
+			return formatXboxPartitionKind(info.partition_kind).toUpperCase();
+		case "xenon":
+			return "XENON";
 	}
 });
 
@@ -200,6 +232,14 @@ const statRow = computed<Stat[]>(() => {
 			break;
 		case "cso":
 			stats.push({ label: "Ratio", value: `${info.compression_ratio.toFixed(1)}%`, color: "green" });
+			stats.push({ label: "Blocks", value: String(info.block_count) });
+			break;
+		case "xbox":
+			stats.push({ label: "Partition", value: formatXboxPartitionKind(info.partition_kind) });
+			stats.push({ label: "Files", value: String(info.file_count) });
+			break;
+		case "xenon":
+			stats.push({ label: "Ratio", value: `${xenonRatio(info.logical_size, info.compressed_size).toFixed(1)}%`, color: "green" });
 			stats.push({ label: "Blocks", value: String(info.block_count) });
 			break;
 	}
@@ -336,6 +376,22 @@ const details = computed<Stat[]>(() => {
 			add("Index shift", info.index_shift);
 			add("Uncompressed", formatBytes(info.uncompressed_size));
 			break;
+		case "xbox":
+			add("Partition", formatXboxPartitionKind(info.partition_kind));
+			add("Files", `${info.file_count} (${info.dir_count} dirs)`);
+			add("File data", formatBytes(info.total_file_bytes));
+			add("Image size", formatBytes(info.image_size));
+			break;
+		case "xenon":
+			add("Files", `${info.file_count} (${info.dir_count} dirs)`);
+			add("Logical size", formatBytes(info.logical_size));
+			add(
+				"Compressed",
+				`${formatBytes(info.compressed_size)} (${xenonRatio(info.logical_size, info.compressed_size).toFixed(1)}%)`,
+			);
+			add("Blocks", info.block_count);
+			add("default.xex", info.has_default_xex ? "present" : "missing");
+			break;
 	}
 	return rows;
 });
@@ -395,7 +451,9 @@ async function copyValue(value: string) {
 	showToast("Copied");
 }
 
-const canCopyTitleId = computed(() => props.info.kind !== "chd" && props.info.kind !== "cso");
+const canCopyTitleId = computed(
+	() => props.info.kind !== "chd" && props.info.kind !== "cso" && props.info.kind !== "xbox" && props.info.kind !== "xenon",
+);
 
 function copyTitleId() {
 	const info = props.info;

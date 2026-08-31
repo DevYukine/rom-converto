@@ -20,7 +20,8 @@ const DECOMPRESS_MAP: Record<string, string> = {
 const IMAGE_EXTS = new Set([
   "3ds", "3dsx", "bin", "cci", "chd", "cia", "cso", "cue", "cxi", "dax",
   "gcm", "gcz", "iso", "nsp", "nsz", "rvz", "wbfs", "wia", "wua", "wud",
-  "wux", "xci", "xcz", "z3ds", "z3dsx", "zcia", "zcci", "zcxi", "zso",
+  "wux", "xci", "xcz", "xiso", "z3ds", "z3dsx", "zar", "zcia", "zcci",
+  "zcxi", "zso",
 ]);
 
 function getExt(path: string): string {
@@ -188,4 +189,18 @@ export function deriveWuaPath(input: string): string {
 
   const sep = input.includes("\\") ? "\\" : "/";
   return parent ? `${parent}${sep}${base}.wua` : `${base}.wua`;
+}
+
+export function deriveXisoPath(input: string): string {
+  return replaceExt(stripArchiveExt(input), "xiso");
+}
+
+export function deriveZarPath(input: string): string {
+  return replaceExt(stripArchiveExt(input), "zar");
+}
+
+// Extract-to-directory ops (xbox, xenon) place output files under a sibling
+// directory rather than deriving a single output file.
+export function deriveExtractDir(input: string): string {
+  return `${stemOf(stripArchiveExt(input))}_extracted`;
 }

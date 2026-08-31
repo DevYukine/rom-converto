@@ -5,6 +5,7 @@ import {
 	deriveCsoPath,
 	deriveNszPath,
 	deriveRvzPath,
+	deriveZarPath,
 	withOutputDir,
 } from "~/composables/useDerivedPath";
 import { useChdCompressStore } from "~/stores/chd-compress";
@@ -14,6 +15,7 @@ import { useDolCompressStore } from "~/stores/dol-compress";
 import { isXciInput, useNxCompressStore } from "~/stores/nx-compress";
 import { useRvlCompressStore } from "~/stores/rvl-compress";
 import { useWupCompressStore } from "~/stores/wup-compress";
+import { useXenonCompressStore } from "~/stores/xenon-compress";
 import { nxKeysColor, nxKeysDisplay } from "./nx-keys";
 import {
 	NX_KEYS_TOOLTIP,
@@ -518,6 +520,42 @@ registerOp("compress", {
 			verifyAfter: store.verifyAfter,
 		}),
 		chips: (s) => `${s.format}${s.blockSize ? ` · block ${s.blockSize}` : ""}`,
+	},
+
+	xenon: {
+		op: "compress",
+		console: "xenon",
+		opLabel: "xenon compress",
+		storeId: "xenon-compress",
+		useStore: useXenonCompressStore,
+		command: "cmd_xenon_compress",
+		resultKind: "convert",
+		title: "Compress to ZAR",
+		subtitle: "Packs a full disc image or a directory of extracted files into a ZArchive Xenia can mount directly.",
+		dropText: "Drop .iso files or folders",
+		acceptedExts: ["iso", ...ARCHIVE_EXTS],
+		browseFilters: [{ name: "Xbox 360", extensions: ["iso"] }],
+		browseAlsoDirectory: true,
+		defaultOutputDir: "~/roms/xbox360/compressed",
+		fields: [...recursiveFields()],
+		outputRows: outputRows("~/roms/xbox360/compressed", { template: true, report: "field" }),
+		showVerify: true,
+		verifyLabel: "Verify after conversion",
+		actionNote:
+			"Jobs start automatically. Parameters can't be changed after queuing. Remove and re-add instead.",
+		deriveOutput: (input) => deriveZarPath(input),
+		buildArgs: (store, item, taskId) => ({
+			input: item.path,
+			output: outPath(store, deriveZarPath(item.path)),
+			taskId,
+			onConflict: store.onConflict,
+			skipSpaceCheck: store.skipSpaceCheck,
+			outputTemplate: store.outputTemplate || null,
+			report: !!store.reportFile,
+			reportFile: store.reportFile || null,
+			verifyAfter: store.verifyAfter,
+		}),
+		chips: () => "",
 	},
 
 	// Rendered by BundleView (see pages/[op]/[console].vue), not OpPage: Wii U

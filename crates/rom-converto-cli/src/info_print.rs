@@ -68,6 +68,8 @@ pub fn print(result: &InfoResult, json: bool) -> Result<()> {
         InfoResult::Rvl(info) => render_rvl(info),
         InfoResult::Wup(info) => render_wup(info),
         InfoResult::Nx(info) => render_nx(info),
+        InfoResult::Xbox(info) => render_xbox(info),
+        InfoResult::Xenon(info) => render_xenon(info),
     };
     print!("{}", rendered);
     Ok(())
@@ -650,6 +652,48 @@ fn render_nx(info: &rom_converto_lib::info::NxInfo) -> String {
     }
 
     out
+}
+
+fn render_xbox(info: &rom_converto_lib::info::XisoInfo) -> String {
+    use rom_converto_lib::microsoft::xdvdfs::PartitionKind;
+    let kind = match info.kind {
+        PartitionKind::Trimmed => "trimmed".to_string(),
+        PartitionKind::Xgd1 => "XGD1".to_string(),
+        PartitionKind::Xgd2 => "XGD2".to_string(),
+        PartitionKind::Xgd3 => "XGD3".to_string(),
+        PartitionKind::X360Extra(base) => format!("X360 extra (base 0x{:X})", base),
+    };
+
+    let mut t = KeyValueTable::new();
+    t.push("Format", "Xbox XISO");
+    t.push("Partition kind", kind);
+    t.push("Base offset", format!("0x{:X}", info.base));
+    t.push("Root sector", format!("{}", info.root_sector));
+    t.push("Root size", format!("{} bytes", info.root_size));
+    t.push("Files", format!("{}", info.file_count));
+    t.push("Directories", format!("{}", info.dir_count));
+    t.push("Total file bytes", format!("{}", info.total_file_bytes));
+    t.push("Image size", format!("{} bytes", info.image_size));
+    t.render()
+}
+
+fn render_xenon(info: &rom_converto_lib::info::ZarInfo) -> String {
+    let mut t = KeyValueTable::new();
+    t.push("Format", "Xbox 360 ZArchive");
+    t.push("Files", format!("{}", info.file_count));
+    t.push("Directories", format!("{}", info.dir_count));
+    t.push("Logical bytes", format!("{}", info.logical_size));
+    t.push("Compressed bytes", format!("{}", info.compressed_size));
+    t.push("Blocks", format!("{}", info.block_count));
+    t.push(
+        "default.xex",
+        if info.has_default_xex {
+            "present"
+        } else {
+            "not found"
+        },
+    );
+    t.render()
 }
 
 #[cfg(test)]

@@ -14,6 +14,8 @@ pub mod image;
 
 pub use crate::chd::info::ChdInfo;
 pub use crate::cso::info::CsoInfo;
+pub use crate::microsoft::xbox::XisoInfo;
+pub use crate::microsoft::xenon::ZarInfo;
 pub use crate::nintendo::ctr::info::CtrInfo;
 pub use crate::nintendo::dol::info::DolInfo;
 pub use crate::nintendo::nx::info::NxInfo;
@@ -31,6 +33,8 @@ pub enum InfoResult {
     Rvl(RvlInfo),
     Wup(WupInfo),
     Nx(NxInfo),
+    Xbox(XisoInfo),
+    Xenon(ZarInfo),
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -124,7 +128,23 @@ pub fn read_info(path: &Path, opts: &InfoOptions) -> Result<InfoResult> {
             path,
             opts.keys_path.as_deref(),
         )?)),
+        DetectedConsole::Xbox => Ok(InfoResult::Xbox(crate::microsoft::xbox::read_info(path)?)),
+        // sniff_xdvdfs also reports Xenon for a 360 XDVDFS *disc image*
+        // (extension .iso/.rvz), not just a .zar container; only the
+        // latter is a ZArchive the xenon reader can actually open.
+        DetectedConsole::Xenon if !is_zar_extension(path) => {
+            Ok(InfoResult::Xbox(crate::microsoft::xbox::read_info(path)?))
+        }
+        DetectedConsole::Xenon => Ok(InfoResult::Xenon(crate::microsoft::xenon::read_info(path)?)),
     }
+}
+
+/// True for `.zar` (case-insensitive), the only extension `detect_console`
+/// ever maps to `Xenon` for an actual ZArchive container.
+fn is_zar_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|s| s.eq_ignore_ascii_case("zar"))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,6 +156,8 @@ pub enum DetectedConsole {
     Rvl,
     Wup,
     Nx,
+    Xbox,
+    Xenon,
 }
 
 /// Detect which console family a path belongs to. Extension first, magic
@@ -163,6 +185,8 @@ pub fn detect_console(path: &Path) -> Result<DetectedConsole> {
         Some("wud") | Some("wux") | Some("wua") => return Ok(DetectedConsole::Wup),
         Some("gcm") => return Ok(DetectedConsole::Dol),
         Some("wbfs") => return Ok(DetectedConsole::Rvl),
+        Some("xiso") => return Ok(DetectedConsole::Xbox),
+        Some("zar") => return Ok(DetectedConsole::Xenon),
         Some("iso") | Some("rvz") => return sniff_disc_magic(path),
         _ => {}
     }
@@ -213,10 +237,47 @@ fn sniff_disc_magic(path: &Path) -> Result<DetectedConsole> {
         return Ok(DetectedConsole::Dol);
     }
 
+    if let Ok(console) = sniff_xdvdfs(&mut f) {
+        return Ok(console);
+    }
+
     Err(anyhow!(
-        "disc file at {} does not match GameCube or Wii magic",
+        "disc file at {} does not match GameCube, Wii, Xbox, or Xbox 360 magic",
         path.display()
     ))
+}
+
+/// Distinguishes Original Xbox from Xbox 360 for an `.iso` that missed the
+/// GameCube/Wii magic checks above: probes the shared XDVDFS disc
+/// filesystem with the widest known base-offset list, then classifies by
+/// partition kind. A `Trimmed` (base 0) image carries no base-offset hint,
+/// so its root directory is checked for a `default.xex` entry instead.
+fn sniff_xdvdfs<R: std::io::Read + std::io::Seek>(reader: &mut R) -> Result<DetectedConsole> {
+    use crate::microsoft::xdvdfs::{
+        PartitionKind, X360_PROBE_BASES, XdvdfsVolume, walk_root_table,
+    };
+
+    let volume = XdvdfsVolume::probe(reader, &X360_PROBE_BASES)?;
+    match volume.kind {
+        PartitionKind::Xgd1 => Ok(DetectedConsole::Xbox),
+        PartitionKind::Xgd2 | PartitionKind::Xgd3 | PartitionKind::X360Extra(_) => {
+            Ok(DetectedConsole::Xenon)
+        }
+        PartitionKind::Trimmed => {
+            let mut has_default_xex = false;
+            walk_root_table(reader, &volume, |entry| {
+                if entry.name_str().eq_ignore_ascii_case("default.xex") {
+                    has_default_xex = true;
+                }
+                Ok(())
+            })?;
+            Ok(if has_default_xex {
+                DetectedConsole::Xenon
+            } else {
+                DetectedConsole::Xbox
+            })
+        }
+    }
 }
 
 #[cfg(test)]
@@ -285,6 +346,101 @@ mod tests {
     }
 
     #[test]
+    fn detect_xbox_and_xenon_by_extension() {
+        let r = detect_console(Path::new("/tmp/game.xiso")).unwrap();
+        assert_eq!(r, DetectedConsole::Xbox);
+        let r = detect_console(Path::new("/tmp/game.zar")).unwrap();
+        assert_eq!(r, DetectedConsole::Xenon);
+    }
+
+    /// Builds a full 0x800-byte XDVDFS volume descriptor sector.
+    fn build_xdvdfs_descriptor(root_sector: u32, root_size: u32) -> Vec<u8> {
+        use crate::microsoft::xdvdfs::VOLUME_MAGIC;
+
+        let mut d = vec![0u8; 0x800];
+        d[0..20].copy_from_slice(VOLUME_MAGIC);
+        d[0x14..0x18].copy_from_slice(&root_sector.to_le_bytes());
+        d[0x18..0x1C].copy_from_slice(&root_size.to_le_bytes());
+        d[0x1C..0x24].copy_from_slice(&0u64.to_le_bytes());
+        d[0x7EC..0x800].copy_from_slice(VOLUME_MAGIC);
+        d
+    }
+
+    /// A single root-level file dirent with no children.
+    fn encode_root_file_dirent(name: &[u8]) -> Vec<u8> {
+        let mut e = Vec::with_capacity(14 + name.len());
+        e.extend_from_slice(&0u16.to_le_bytes()); // left
+        e.extend_from_slice(&0u16.to_le_bytes()); // right
+        e.extend_from_slice(&0u32.to_le_bytes()); // start_sector
+        e.extend_from_slice(&0u32.to_le_bytes()); // size
+        e.push(0); // attributes: plain file
+        e.push(name.len() as u8);
+        e.extend_from_slice(name);
+        e
+    }
+
+    /// A trimmed (base-0) XDVDFS image whose root directory holds a single
+    /// named file, for the Xbox-vs-Xbox-360 disambiguation tests.
+    fn build_trimmed_xdvdfs_iso(root_entry_name: &[u8]) -> Vec<u8> {
+        use crate::microsoft::xdvdfs::{SECTOR_SIZE, VOLUME_DESCRIPTOR_SECTOR};
+
+        let root_sector = 40u32;
+        let mut root = vec![0xFFu8; SECTOR_SIZE as usize];
+        let entry = encode_root_file_dirent(root_entry_name);
+        root[0..entry.len()].copy_from_slice(&entry);
+
+        let mut image = vec![0u8; ((root_sector as u64 + 1) * SECTOR_SIZE) as usize];
+        let descriptor_off = (VOLUME_DESCRIPTOR_SECTOR as u64 * SECTOR_SIZE) as usize;
+        image[descriptor_off..descriptor_off + 0x800]
+            .copy_from_slice(&build_xdvdfs_descriptor(root_sector, SECTOR_SIZE as u32));
+        let root_off = (root_sector as u64 * SECTOR_SIZE) as usize;
+        image[root_off..root_off + root.len()].copy_from_slice(&root);
+        image
+    }
+
+    #[test]
+    fn detect_iso_with_default_xbe_root_is_original_xbox() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("game.iso");
+        std::fs::write(&path, build_trimmed_xdvdfs_iso(b"DEFAULT.XBE")).unwrap();
+
+        let r = detect_console(&path).unwrap();
+        assert_eq!(r, DetectedConsole::Xbox);
+    }
+
+    #[test]
+    fn detect_iso_with_default_xex_root_is_xbox_360() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("game.iso");
+        std::fs::write(&path, build_trimmed_xdvdfs_iso(b"DEFAULT.XEX")).unwrap();
+
+        let r = detect_console(&path).unwrap();
+        assert_eq!(r, DetectedConsole::Xenon);
+    }
+
+    #[test]
+    fn read_info_routes_x360_iso_to_xbox_variant() {
+        use crate::microsoft::xdvdfs::PartitionKind;
+        use std::io::{Seek, Write};
+
+        const XGD2_BASE: u64 = 0x0FD9_0000;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("game.iso");
+        let trimmed = build_trimmed_xdvdfs_iso(b"DEFAULT.XEX");
+
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.seek(std::io::SeekFrom::Start(XGD2_BASE)).unwrap();
+        file.write_all(&trimmed).unwrap();
+        drop(file);
+
+        let opts = InfoOptions::default();
+        match read_info(&path, &opts).unwrap() {
+            InfoResult::Xbox(info) => assert_eq!(info.kind, PartitionKind::Xgd2),
+            other => panic!("expected Xbox variant, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn detect_unknown_extension_errors() {
         let err = detect_console(Path::new("/tmp/unknown.bin"));
         assert!(err.is_err());
@@ -310,6 +466,59 @@ mod tests {
         match back {
             InfoResult::Chd(c) => assert_eq!(c.physical_bytes, 12345),
             _ => panic!("expected Chd variant"),
+        }
+    }
+
+    #[test]
+    fn info_result_xbox_round_trips_via_json() {
+        use crate::microsoft::xdvdfs::PartitionKind;
+
+        let r = InfoResult::Xbox(XisoInfo {
+            kind: PartitionKind::Trimmed,
+            base: 0,
+            root_sector: 40,
+            root_size: 2048,
+            file_count: 3,
+            dir_count: 1,
+            total_file_bytes: 12345,
+            image_size: 999_999,
+        });
+        let s = serde_json::to_string(&r).unwrap();
+        // The variant tag and the struct's own (renamed) kind field must
+        // not collide on the wire.
+        assert!(s.contains("\"kind\":\"xbox\""));
+        assert!(s.contains("\"partition_kind\":\"trimmed\""));
+
+        let back: InfoResult = serde_json::from_str(&s).unwrap();
+        match back {
+            InfoResult::Xbox(x) => {
+                assert_eq!(x.kind, PartitionKind::Trimmed);
+                assert_eq!(x.file_count, 3);
+            }
+            _ => panic!("expected Xbox variant"),
+        }
+    }
+
+    #[test]
+    fn info_result_xenon_round_trips_via_json() {
+        let r = InfoResult::Xenon(ZarInfo {
+            file_count: 2,
+            dir_count: 1,
+            logical_size: 100,
+            compressed_size: 50,
+            block_count: 4,
+            has_default_xex: true,
+        });
+        let s = serde_json::to_string(&r).unwrap();
+        assert!(s.contains("\"kind\":\"xenon\""));
+
+        let back: InfoResult = serde_json::from_str(&s).unwrap();
+        match back {
+            InfoResult::Xenon(z) => {
+                assert_eq!(z.logical_size, 100);
+                assert!(z.has_default_xex);
+            }
+            _ => panic!("expected Xenon variant"),
         }
     }
 }

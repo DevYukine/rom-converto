@@ -304,6 +304,26 @@ export interface NxInfo {
   } | null;
 }
 
+export interface XboxInfo {
+  partition_kind: "trimmed" | "xgd1" | "xgd2" | "xgd3" | { x360_extra: number };
+  base: number;
+  root_sector: number;
+  root_size: number;
+  file_count: number;
+  dir_count: number;
+  total_file_bytes: number;
+  image_size: number;
+}
+
+export interface XenonInfo {
+  file_count: number;
+  dir_count: number;
+  logical_size: number;
+  compressed_size: number;
+  block_count: number;
+  has_default_xex: boolean;
+}
+
 export type InfoResult =
   | ({ kind: "chd" } & ChdInfo)
   | ({ kind: "cso" } & CsoInfo)
@@ -311,7 +331,9 @@ export type InfoResult =
   | ({ kind: "dol" } & DolInfo)
   | ({ kind: "rvl" } & RvlInfo)
   | ({ kind: "wup" } & WupInfo)
-  | ({ kind: "nx" } & NxInfo);
+  | ({ kind: "nx" } & NxInfo)
+  | ({ kind: "xbox" } & XboxInfo)
+  | ({ kind: "xenon" } & XenonInfo);
 
 export function nxTitleKindDisplayName(kind: string): string {
   switch (kind) {

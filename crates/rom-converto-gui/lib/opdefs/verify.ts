@@ -5,6 +5,7 @@ import { useWupVerifyStore } from "~/stores/wup-verify";
 import { useNxVerifyStore } from "~/stores/nx-verify";
 import { useChdVerifyStore } from "~/stores/chd-verify";
 import { useCsoVerifyStore } from "~/stores/cso-verify";
+import { useXenonVerifyStore } from "~/stores/xenon-verify";
 import { nxKeysColor, nxKeysDisplay } from "./nx-keys";
 import { NX_KEYS_TOOLTIP, registerOp } from "./types";
 
@@ -259,5 +260,29 @@ registerOp("verify", {
 		deriveOutput: undefined,
 		buildArgs: (store, item) => ({ inputPath: item.path, full: !!store.full }),
 		chips: (store) => (store.full ? "full verification" : "quick"),
+	},
+	xenon: {
+		op: "verify",
+		console: "xenon",
+		opLabel: "xenon verify",
+		storeId: "xenon-verify",
+		useStore: useXenonVerifyStore,
+		command: "cmd_xenon_verify",
+		resultKind: "verify",
+		progressKey: "xenon-verify",
+		title: "Verify Xbox 360 files",
+		subtitle: SUBTITLE,
+		dropText: DROP_TEXT,
+		acceptedExts: ["zar", "zip", "7z", "rar", "tar", "tgz", "gz"],
+		browseFilters: [{ name: "ZArchive", extensions: ["zar", "zip", "7z", "rar", "tar", "tgz", "gz"] }],
+		fields: [],
+		outputRows: [],
+		showConflict: false,
+		showVerify: false,
+		showDryRun: false,
+		actionNote: ACTION_NOTE,
+		deriveOutput: undefined,
+		buildArgs: (store, item) => ({ input: item.path }),
+		chips: () => "",
 	},
 });

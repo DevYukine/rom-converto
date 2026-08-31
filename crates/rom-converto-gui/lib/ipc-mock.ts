@@ -73,6 +73,7 @@ const FIXED_KEYS: Record<string, string> = {
 	cmd_nx_verify: "nx-verify",
 	cmd_chd_verify: "chd-verify",
 	cmd_cso_verify: "cso-verify",
+	cmd_xenon_verify: "xenon-verify",
 };
 
 // A path containing "fail", or setting `__mockFailNext = true` on window,
@@ -364,6 +365,28 @@ const CSO_INFO = {
 	raw_block_count: 20_000,
 };
 
+const XBOX_INFO = {
+	kind: "xbox",
+	partition_kind: "trimmed",
+	base: 0x10000,
+	root_sector: 0x108,
+	root_size: 16_384,
+	file_count: 420,
+	dir_count: 38,
+	total_file_bytes: 6_800_000_000,
+	image_size: 6_810_000_000,
+};
+
+const XENON_INFO = {
+	kind: "xenon",
+	file_count: 512,
+	dir_count: 44,
+	logical_size: 7_200_000_000,
+	compressed_size: 4_100_000_000,
+	block_count: 28_100,
+	has_default_xex: true,
+};
+
 const INFO_SAMPLES: Record<string, unknown> = {
 	nx: NX_INFO,
 	ctr: CTR_INFO,
@@ -372,6 +395,8 @@ const INFO_SAMPLES: Record<string, unknown> = {
 	wup: WUP_INFO,
 	chd: CHD_INFO,
 	cso: CSO_INFO,
+	xbox: XBOX_INFO,
+	xenon: XENON_INFO,
 };
 
 function infoKindFor(path: string): string {
@@ -383,6 +408,8 @@ function infoKindFor(path: string): string {
 	if (["wud", "wux"].includes(e)) return "wup";
 	if (["chd"].includes(e)) return "chd";
 	if (["cso", "zso", "dax"].includes(e)) return "cso";
+	if (["xiso"].includes(e)) return "xbox";
+	if (["zar"].includes(e)) return "xenon";
 	return "nx";
 }
 
@@ -425,6 +452,10 @@ function verifyPayload(command: string): string {
 			return JSON.stringify({ ok: pass });
 		case "cmd_cso_verify":
 			return JSON.stringify(pass ? { ok: true, mismatches: 0 } : { ok: false, mismatches: 3 });
+		case "cmd_xenon_verify":
+			return JSON.stringify(
+				pass ? { blocks: 28_100, logical_bytes: 7_200_000_000, hash_ok: true } : { blocks: 28_100, logical_bytes: 7_200_000_000, hash_ok: false },
+			);
 		default:
 			return JSON.stringify({ ok: true });
 	}
@@ -545,6 +576,7 @@ const handlers: Record<string, Handler> = {
 	cmd_nx_verify: async (a) => verifyRun("cmd_nx_verify", a),
 	cmd_chd_verify: async (a) => verifyRun("cmd_chd_verify", a),
 	cmd_cso_verify: async (a) => verifyRun("cmd_cso_verify", a),
+	cmd_xenon_verify: async (a) => verifyRun("cmd_xenon_verify", a),
 
 	cmd_hash: async (a) => hashResult(a),
 	cmd_playlist: async () => ({ message: "Wrote playlist" }),

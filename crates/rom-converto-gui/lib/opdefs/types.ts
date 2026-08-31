@@ -188,6 +188,10 @@ export const NESTED_ARGS_COMMANDS = new Set([
 	"cmd_nx_compress",
 	"cmd_nx_decompress",
 	"cmd_convert_ctr",
+	"cmd_xbox_convert",
+	"cmd_xbox_extract",
+	"cmd_xenon_compress",
+	"cmd_xenon_extract",
 ]);
 
 export function invokeArgs(

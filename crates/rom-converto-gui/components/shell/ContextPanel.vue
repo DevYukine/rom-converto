@@ -46,6 +46,7 @@ const CONSOLES: Record<string, ConsoleRow[]> = {
 		{ id: "nx", name: "Switch", hint: "→ NSZ/XCZ" },
 		{ id: "chd", name: "CD / DVD", hint: "→ CHD" },
 		{ id: "cso", name: "PSP / PS2", hint: "→ CSO/ZSO" },
+		{ id: "xenon", name: "Xbox 360", hint: "→ ZAR" },
 	],
 	extract: [
 		{ id: "ctr", name: "3DS", hint: "Z3DS →" },
@@ -54,6 +55,8 @@ const CONSOLES: Record<string, ConsoleRow[]> = {
 		{ id: "nx", name: "Switch", hint: "NSZ/XCZ →" },
 		{ id: "chd", name: "CD / DVD", hint: "CHD →" },
 		{ id: "cso", name: "PSP / PS2", hint: "CSO/ZSO →" },
+		{ id: "xbox", name: "Xbox", hint: "XISO →" },
+		{ id: "xenon", name: "Xbox 360", hint: "ZAR →" },
 	],
 	verify: [
 		{ id: "ctr", name: "3DS", hint: "" },
@@ -63,6 +66,7 @@ const CONSOLES: Record<string, ConsoleRow[]> = {
 		{ id: "nx", name: "Switch", hint: "NSP/XCI/NSZ" },
 		{ id: "chd", name: "CD / DVD (CHD)", hint: "" },
 		{ id: "cso", name: "PSP / PS2", hint: "" },
+		{ id: "xenon", name: "Xbox 360", hint: "" },
 	],
 	decrypt: [
 		{ id: "ctr", name: "3DS", hint: ".3ds .cci .cia" },
@@ -74,6 +78,7 @@ const CONSOLES: Record<string, ConsoleRow[]> = {
 		{ id: "cso", name: "PSP / PS2", hint: "ISO → CHD" },
 		{ id: "chd", name: "CD / DVD", hint: "CHD → CSO/ZSO" },
 		{ id: "cue", name: "CD (CUE/BIN)", hint: "→ ISO/CSO/ZSO" },
+		{ id: "xbox", name: "Xbox", hint: "ISO → XISO" },
 	],
 	dat: [
 		{ id: "scan", name: "Scan", hint: "" },

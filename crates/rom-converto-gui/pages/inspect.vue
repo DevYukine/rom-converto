@@ -60,7 +60,10 @@ async function browseKeys() {
 }
 
 function sizeOf(i: InfoResult): number {
-	return i.kind === "wup" ? i.total_content_size : i.physical_bytes;
+	if (i.kind === "wup") return i.total_content_size;
+	if (i.kind === "xbox") return i.image_size;
+	if (i.kind === "xenon") return i.compressed_size;
+	return i.physical_bytes;
 }
 
 const compressDef = computed(() => (info.value ? opDef("compress", info.value.kind) : undefined));

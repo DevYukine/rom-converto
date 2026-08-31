@@ -13,11 +13,14 @@ import { useRvlDecompressStore } from "~/stores/rvl-decompress";
 import { useNxDecompressStore } from "~/stores/nx-decompress";
 import { useChdExtractStore } from "~/stores/chd-extract";
 import { useCsoDecompressStore } from "~/stores/cso-decompress";
+import { useXboxExtractStore } from "~/stores/xbox-extract";
+import { useXenonExtractStore } from "~/stores/xenon-extract";
 import {
 	basename,
 	deriveDecompressedPath,
 	deriveDiscPath,
 	deriveDiscIsoPath,
+	deriveExtractDir,
 	deriveNspPath,
 	withOutputDir,
 } from "~/composables/useDerivedPath";
@@ -52,6 +55,20 @@ function outputRowsWithReport(): OutputRow[] {
 			set: (s, v) => { s.reportFile = v; },
 			tooltip:
 				"Saves a summary of the run to this file when set. The format is chosen from the file extension (csv, json, html, or htm); any other extension defaults to json.",
+		},
+	];
+}
+
+// xbox/xenon extract write to a whole directory instead of deriving a
+// single output file, and their Rust args have no template/report field.
+function directoryOutputRows(): OutputRow[] {
+	return [
+		{
+			kind: "directory",
+			label: "Directory",
+			display: (s) => s.outputDir || "same as source",
+			set: (s, v) => { s.outputDir = v; },
+			tooltip: "Where the extracted files are written. Leave empty to create a folder next to the input file.",
 		},
 	];
 }
@@ -335,4 +352,64 @@ const cso: OpDef = {
 	chips: () => "",
 };
 
-registerOp("extract", { ctr, dol, rvl, nx, chd, cso });
+const xbox: OpDef = {
+	op: "extract",
+	console: "xbox",
+	opLabel: "Extract",
+	storeId: "xbox-extract",
+	useStore: useXboxExtractStore,
+	command: "cmd_xbox_extract",
+	resultKind: "convert",
+	title: "Extract XISO",
+	subtitle: "Walks the disc's file tree and writes every file to a folder.",
+	dropText: "Drop an .xiso or .iso file",
+	acceptedExts: ["xiso", "iso", ...ARCHIVE_EXTS],
+	browseFilters: [{ name: "XISO", extensions: ["xiso", "iso"] }],
+	fields: recursiveFields(),
+	outputRows: directoryOutputRows(),
+	showVerify: true,
+	verifyLabel: "Verify after extraction",
+	actionNote: "Extraction never overwrites the source image.",
+	deriveOutput: deriveExtractDir,
+	buildArgs: (store, item, taskId) => ({
+		input: item.path,
+		outputDir: withOutputDir(deriveExtractDir(item.path), store.outputDir || ""),
+		onConflict: store.onConflict,
+		skipSpaceCheck: store.skipSpaceCheck,
+		dryRun: false,
+		taskId,
+	}),
+	chips: () => "",
+};
+
+const xenon: OpDef = {
+	op: "extract",
+	console: "xenon",
+	opLabel: "Extract",
+	storeId: "xenon-extract",
+	useStore: useXenonExtractStore,
+	command: "cmd_xenon_extract",
+	resultKind: "convert",
+	title: "Extract ZArchive",
+	subtitle: "Writes every file in the archive to a folder.",
+	dropText: "Drop a .zar file",
+	acceptedExts: ["zar", ...ARCHIVE_EXTS],
+	browseFilters: [{ name: "ZArchive", extensions: ["zar"] }],
+	fields: recursiveFields(),
+	outputRows: directoryOutputRows(),
+	showVerify: true,
+	verifyLabel: "Verify after extraction",
+	actionNote: "Extraction never overwrites the source archive.",
+	deriveOutput: deriveExtractDir,
+	buildArgs: (store, item, taskId) => ({
+		input: item.path,
+		outputDir: withOutputDir(deriveExtractDir(item.path), store.outputDir || ""),
+		onConflict: store.onConflict,
+		skipSpaceCheck: store.skipSpaceCheck,
+		dryRun: false,
+		taskId,
+	}),
+	chips: () => "",
+};
+
+registerOp("extract", { ctr, dol, rvl, nx, chd, cso, xbox, xenon });

@@ -14,6 +14,8 @@ use crate::commands::nx::NxCommands;
 use crate::commands::playlist::PlaylistModeArg;
 use crate::commands::rvl::RvlCommands;
 use crate::commands::wup::WupCommands;
+use crate::commands::xbox::XboxCommands;
+use crate::commands::xenon::XenonCommands;
 use crate::commands::{Cli, Commands, SelfUpdateCommand};
 use crate::github::api::GithubApi;
 use crate::updater::{check_for_new_version_and_notify, cleanup_old_executable, self_update};
@@ -36,6 +38,12 @@ use rom_converto_lib::cso::{
 };
 use rom_converto_lib::cue::merge::merge_bin;
 use rom_converto_lib::cue::to_iso::cue_to_iso;
+use rom_converto_lib::microsoft::xbox::{
+    XisoCreateOptions, convert_to_xiso_cancellable, extract_xiso_cancellable,
+};
+use rom_converto_lib::microsoft::xenon::{
+    extract_zar_cancellable, pack_zar_cancellable, verify_zar_cancellable,
+};
 use rom_converto_lib::nintendo::ctr::convert::{
     convert_rom_batch_cancellable, convert_rom_cancellable, derive_converted_path,
 };
@@ -113,17 +121,57 @@ const CTR_CONVERT_EXTS: &[&str] = &["cia", "3ds", "cci"];
 const ALL_IMAGE_EXTS: &[&str] = &[
     "iso", "gcm", "wbfs", "rvz", "gcz", "wia", "nkit", "chd", "cso", "zso", "dax", "cue", "cia",
     "3ds", "cci", "cxi", "3dsx", "zcia", "zcci", "zcxi", "z3dsx", "nsp", "xci", "nca", "nsz",
-    "xcz", "ncz", "wud", "wux",
+    "xcz", "ncz", "wud", "wux", "xiso", "zar",
 ];
 
 fn file_len(path: &Path) -> u64 {
     std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
 }
 
+/// Default output path for a directory-or-image input. A file input keeps
+/// `with_extension`; a directory input appends the extension to the full
+/// directory name so dotted names (`Game v1.0`) aren't mangled.
+fn derive_output_with_ext(input: &Path, ext: &str) -> std::path::PathBuf {
+    if input.is_dir() {
+        let mut name = input.file_name().unwrap_or_default().to_os_string();
+        name.push(".");
+        name.push(ext);
+        input.with_file_name(name)
+    } else {
+        input.with_extension(ext)
+    }
+}
+
 fn log_single_summary(input: &Path, output: &Path, direction: TallyDirection, started: Instant) {
     let mut tally = Tally::new();
-    tally.record_ok(file_len(input), file_len(output), started.elapsed());
+    tally.backdate(started);
+    tally.record_ok(input_len(input), file_len(output), started.elapsed());
     log::info!("{}", tally.summary_line(direction));
+}
+
+/// Input size for summaries: recursive byte total for a directory input,
+/// plain file length otherwise.
+fn input_len(path: &Path) -> u64 {
+    fn dir_len(dir: &Path) -> u64 {
+        std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| {
+                let path = entry.path();
+                match entry.metadata() {
+                    Ok(meta) if meta.is_dir() => dir_len(&path),
+                    Ok(meta) if meta.is_file() => meta.len(),
+                    _ => 0,
+                }
+            })
+            .sum()
+    }
+    if path.is_dir() {
+        dir_len(path)
+    } else {
+        file_len(path)
+    }
 }
 
 fn finish_single(
@@ -139,9 +187,10 @@ fn finish_single(
     };
 
     let elapsed = started.elapsed();
-    let in_bytes = file_len(input);
+    let in_bytes = input_len(input);
     let out_bytes = file_len(output);
     let mut tally = Tally::new();
+    tally.backdate(started);
     tally.record_ok(in_bytes, out_bytes, elapsed);
     log::info!("{}", tally.summary_line(direction));
     if let Some(path) = report {
@@ -720,6 +769,8 @@ fn is_cancelled_error(err: &anyhow::Error) -> bool {
     use rom_converto_lib::chd::error::ChdError;
     use rom_converto_lib::cso::CsoError;
     use rom_converto_lib::dat::DatError;
+    use rom_converto_lib::microsoft::xbox::XboxError;
+    use rom_converto_lib::microsoft::xenon::XenonError;
     use rom_converto_lib::nintendo::ctr::error::NintendoCTRError;
     use rom_converto_lib::nintendo::ctr::z3ds::error::Z3dsError;
     use rom_converto_lib::nintendo::nx::NxError;
@@ -741,6 +792,14 @@ fn is_cancelled_error(err: &anyhow::Error) -> bool {
             )
             || matches!(cause.downcast_ref::<WupError>(), Some(WupError::Cancelled))
             || matches!(cause.downcast_ref::<DatError>(), Some(DatError::Cancelled))
+            || matches!(
+                cause.downcast_ref::<XboxError>(),
+                Some(XboxError::Cancelled)
+            )
+            || matches!(
+                cause.downcast_ref::<XenonError>(),
+                Some(XenonError::Cancelled)
+            )
     })
 }
 
@@ -2641,6 +2700,191 @@ async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()>
                     save_nx_icon(&info, dir)?;
                 }
                 info_print::print(&rom_converto_lib::info::InfoResult::Nx(info), cmd.json)?;
+            }
+        },
+        Commands::Xbox(inner) => match inner {
+            XboxCommands::Convert(cmd) => {
+                ensure_input_exists(&cmd.input)?;
+                let output = cmd
+                    .output_flag
+                    .or(cmd.output)
+                    .unwrap_or_else(|| derive_output_with_ext(&cmd.input, "xiso"));
+                let policy = policy_of(crate::commands::ConflictPolicyArg::Error, cmd.force);
+                let decision = resolve_output(&output, policy)?;
+                if dry_run {
+                    return dry_run_single(
+                        "convert", &cmd.input, &output, &decision, None, None, None,
+                    );
+                }
+                let output = match decision {
+                    WriteDecision::Skip => {
+                        log_skipped(&output);
+                        return Ok(());
+                    }
+                    WriteDecision::Write(p) => p,
+                };
+                if !skip_space_check {
+                    let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
+                    let required_space = if cmd.input.is_dir() {
+                        rom_converto_lib::microsoft::xbox::input_total_bytes(&cmd.input)
+                            .unwrap_or_else(|_| file_len(&cmd.input))
+                    } else {
+                        file_len(&cmd.input)
+                    };
+                    batch::space_preflight_for_size(required_space, check_dir)?;
+                }
+                let started = Instant::now();
+                let opts = XisoCreateOptions {
+                    media_patch: !cmd.no_media_patch,
+                };
+                convert_to_xiso_cancellable(&cmd.input, &output, opts, &progress, cancel.clone())
+                    .await?;
+                log_single_summary(&cmd.input, &output, TallyDirection::Convert, started);
+            }
+            XboxCommands::Extract(cmd) => {
+                ensure_input_exists(&cmd.input)?;
+                let policy = policy_of(crate::commands::ConflictPolicyArg::Error, false);
+                match resolve_output_dir(&cmd.output_dir, policy)? {
+                    WriteDecision::Skip => {
+                        log_skipped(&cmd.output_dir);
+                        return Ok(());
+                    }
+                    WriteDecision::Write(_) => {}
+                }
+                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["xiso", "iso"])?;
+                let started = Instant::now();
+                extract_xiso_cancellable(
+                    resolved.path(),
+                    &cmd.output_dir,
+                    &progress,
+                    cancel.clone(),
+                )
+                .await?;
+                log_single_summary(
+                    &cmd.input,
+                    &cmd.output_dir,
+                    TallyDirection::CountOnly,
+                    started,
+                );
+            }
+            XboxCommands::Info(cmd) => {
+                if cmd.keys.is_some() {
+                    anyhow::bail!("--keys is only supported by nx and wup info");
+                }
+                if cmd.save_icon.is_some() {
+                    anyhow::bail!(
+                        "--save-icon is not supported for xbox: the format has no embedded artwork"
+                    );
+                }
+                ensure_input_exists(&cmd.input)?;
+                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, ALL_IMAGE_EXTS)?;
+                let info = rom_converto_lib::microsoft::xbox::read_info(resolved.path())?;
+                info_print::print(&rom_converto_lib::info::InfoResult::Xbox(info), cmd.json)?;
+            }
+        },
+        Commands::Xenon(inner) => match inner {
+            XenonCommands::Compress(cmd) => {
+                ensure_input_exists(&cmd.input)?;
+                let output = cmd
+                    .output_flag
+                    .or(cmd.output)
+                    .unwrap_or_else(|| derive_output_with_ext(&cmd.input, "zar"));
+                let policy = policy_of(crate::commands::ConflictPolicyArg::Error, cmd.force);
+                let decision = resolve_output(&output, policy)?;
+                if dry_run {
+                    return dry_run_single(
+                        "compress", &cmd.input, &output, &decision, None, None, None,
+                    );
+                }
+                let output = match decision {
+                    WriteDecision::Skip => {
+                        log_skipped(&output);
+                        return Ok(());
+                    }
+                    WriteDecision::Write(p) => p,
+                };
+                if !skip_space_check {
+                    let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
+                    let required_space = if cmd.input.is_dir() {
+                        rom_converto_lib::microsoft::xenon::total_input_bytes(&cmd.input)
+                            .unwrap_or_else(|_| file_len(&cmd.input))
+                    } else {
+                        file_len(&cmd.input)
+                    };
+                    batch::space_preflight_for_size(required_space, check_dir)?;
+                }
+                let started = Instant::now();
+                pack_zar_cancellable(&cmd.input, &output, &progress, cancel.clone()).await?;
+                log_single_summary(&cmd.input, &output, TallyDirection::Compress, started);
+            }
+            XenonCommands::Extract(cmd) => {
+                ensure_input_exists(&cmd.input)?;
+                let policy = policy_of(crate::commands::ConflictPolicyArg::Error, false);
+                match resolve_output_dir(&cmd.output_dir, policy)? {
+                    WriteDecision::Skip => {
+                        log_skipped(&cmd.output_dir);
+                        return Ok(());
+                    }
+                    WriteDecision::Write(_) => {}
+                }
+                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["zar"])?;
+                let started = Instant::now();
+                extract_zar_cancellable(
+                    resolved.path(),
+                    &cmd.output_dir,
+                    &progress,
+                    cancel.clone(),
+                )
+                .await?;
+                log_single_summary(
+                    &cmd.input,
+                    &cmd.output_dir,
+                    TallyDirection::CountOnly,
+                    started,
+                );
+            }
+            XenonCommands::Verify(cmd) => {
+                ensure_input_exists(&cmd.input)?;
+                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["zar"])?;
+                let result =
+                    verify_zar_cancellable(resolved.path(), &progress, cancel.clone()).await?;
+                log::info!("Blocks: {}", result.blocks);
+                log::info!("Logical bytes: {}", result.logical_bytes);
+                log::info!("Hash: {}", ok_str(result.hash_ok));
+                if !result.ok() {
+                    anyhow::bail!("verification failed");
+                }
+            }
+            XenonCommands::Info(cmd) => {
+                if cmd.keys.is_some() {
+                    anyhow::bail!("--keys is only supported by nx and wup info");
+                }
+                if cmd.save_icon.is_some() {
+                    anyhow::bail!(
+                        "--save-icon is not supported for xenon: the format has no embedded artwork"
+                    );
+                }
+                ensure_input_exists(&cmd.input)?;
+                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, ALL_IMAGE_EXTS)?;
+                // A not-yet-packed disc image is a valid xenon input for
+                // compress, so info falls back to its XDVDFS layout rather
+                // than failing on the missing ZArchive magic.
+                match rom_converto_lib::microsoft::xenon::read_info(resolved.path()) {
+                    Ok(info) => info_print::print(
+                        &rom_converto_lib::info::InfoResult::Xenon(info),
+                        cmd.json,
+                    )?,
+                    Err(rom_converto_lib::microsoft::xenon::XenonError::Zar(
+                        rom_converto_lib::microsoft::zar::ZarError::BadMagic(_),
+                    )) => {
+                        let info = rom_converto_lib::microsoft::xbox::read_info(resolved.path())?;
+                        info_print::print(
+                            &rom_converto_lib::info::InfoResult::Xbox(info),
+                            cmd.json,
+                        )?;
+                    }
+                    Err(err) => return Err(err.into()),
+                }
             }
         },
         Commands::Chd(inner) => match inner {

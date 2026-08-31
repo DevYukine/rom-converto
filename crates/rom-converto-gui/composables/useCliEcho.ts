@@ -356,6 +356,49 @@ export function buildCliCommand(command: string, args: Record<string, unknown>, 
         quote(str(args.input)),
       ]);
     }
+    case "cmd_xbox_convert":
+      return join([
+        args.dryRun === true && "--dry-run",
+        args.skipSpaceCheck === true && "--skip-space-check",
+        "xbox", "convert",
+        args.mediaPatch === false && "--no-media-patch",
+        conflict(args),
+        template(args),
+        report(args),
+        quote(str(args.input)),
+        outputArg(args),
+      ]);
+    case "cmd_xbox_extract":
+      return join([
+        args.dryRun === true && "--dry-run",
+        args.skipSpaceCheck === true && "--skip-space-check",
+        "xbox", "extract",
+        conflict(args),
+        quote(str(args.input)),
+        quote(str(args.outputDir)),
+      ]);
+    case "cmd_xenon_compress":
+      return join([
+        args.dryRun === true && "--dry-run",
+        args.skipSpaceCheck === true && "--skip-space-check",
+        "xenon", "compress",
+        conflict(args),
+        template(args),
+        report(args),
+        quote(str(args.input)),
+        outputArg(args),
+      ]);
+    case "cmd_xenon_extract":
+      return join([
+        args.dryRun === true && "--dry-run",
+        args.skipSpaceCheck === true && "--skip-space-check",
+        "xenon", "extract",
+        conflict(args),
+        quote(str(args.input)),
+        quote(str(args.outputDir)),
+      ]);
+    case "cmd_xenon_verify":
+      return join(["xenon", "verify", quote(str(args.input))]);
     case "cmd_dat_rename": {
       const depth = args.maxDepth as number | null | undefined;
       const policy = str(args.onConflict);

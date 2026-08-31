@@ -73,6 +73,13 @@ impl Tally {
         self.entries.push(entry);
     }
 
+    /// Re-anchors the summary clock. For a tally created only after the
+    /// work finished (single-file summaries), the default `new()` anchor
+    /// would report a near-zero elapsed time.
+    pub fn backdate(&mut self, started: Instant) {
+        self.started = started;
+    }
+
     pub fn record_ok(&mut self, input_bytes: u64, output_bytes: u64, elapsed: Duration) {
         self.record(FileEntry {
             input_bytes,

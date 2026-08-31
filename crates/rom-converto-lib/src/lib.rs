@@ -1,12 +1,15 @@
 //! Reads, converts, compresses, decompresses, encrypts, decrypts, and
 //! verifies ROMs and disc images for the Nintendo 3DS, GameCube, Wii,
-//! Wii U, and Switch, plus CD and DVD disc images and PSP/PS2 ISOs.
+//! Wii U, and Switch, the Xbox and Xbox 360, plus CD and DVD disc images
+//! and PSP/PS2 ISOs.
 //!
-//! Each platform lives under [`crate::nintendo`] ([`crate::nintendo::ctr`],
-//! [`crate::nintendo::dol`], [`crate::nintendo::rvl`],
-//! [`crate::nintendo::wup`], [`crate::nintendo::nx`]); CD and DVD disc
-//! images go through [`crate::chd`] and [`crate::cue`], and PSP/PS2 ISOs
-//! through [`crate::cso`]. [`crate::pipeline`] chains CSO/ZSO and CHD
+//! Each Nintendo platform lives under [`crate::nintendo`]
+//! ([`crate::nintendo::ctr`], [`crate::nintendo::dol`],
+//! [`crate::nintendo::rvl`], [`crate::nintendo::wup`],
+//! [`crate::nintendo::nx`]); Microsoft platforms under [`crate::microsoft`]
+//! ([`crate::microsoft::xbox`], [`crate::microsoft::xenon`]); CD and DVD
+//! disc images go through [`crate::chd`] and [`crate::cue`], and PSP/PS2
+//! ISOs through [`crate::cso`]. [`crate::pipeline`] chains CSO/ZSO and CHD
 //! conversion through a temporary ISO for one-step conversion between the
 //! two. [`crate::config`] loads the config file and presets, [`crate::info`]
 //! renders per-format metadata, [`crate::playlist`] writes multi-disc `.m3u`
@@ -20,6 +23,7 @@ pub mod cso;
 pub mod cue;
 pub mod dat;
 pub mod info;
+pub mod microsoft;
 pub mod nintendo;
 pub mod pipeline;
 pub mod playlist;

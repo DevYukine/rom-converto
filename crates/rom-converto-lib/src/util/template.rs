@@ -124,6 +124,12 @@ impl TemplateTokens {
             InfoResult::Cso(_) => {
                 tokens.console = Some("CSO".to_string());
             }
+            InfoResult::Xbox(_) => {
+                tokens.console = Some("Xbox".to_string());
+            }
+            InfoResult::Xenon(_) => {
+                tokens.console = Some("Xbox 360".to_string());
+            }
         }
 
         tokens.title = tokens.title.and_then(|t| non_empty(t.trim().to_string()));

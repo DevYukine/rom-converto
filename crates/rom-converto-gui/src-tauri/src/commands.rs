@@ -21,6 +21,14 @@ use rom_converto_lib::dat::{
     DEFAULT_API_BASE, PlaymatchClient, RomDigests, TrackDigests, digest_inner_async,
 };
 use rom_converto_lib::info::{InfoOptions, InfoResult, read_info};
+use rom_converto_lib::microsoft::xbox::{
+    XisoCreateOptions, convert_to_xiso_cancellable, extract_xiso_cancellable,
+    read_info as xbox_read_info,
+};
+use rom_converto_lib::microsoft::xenon::{
+    extract_zar_cancellable, pack_zar_cancellable, read_info as xenon_read_info,
+    verify_zar_cancellable,
+};
 use rom_converto_lib::nintendo::ctr::convert::{convert_rom_cancellable, derive_converted_path};
 use rom_converto_lib::nintendo::ctr::verify::{CtrVerifyOptions, verify_ctr};
 use rom_converto_lib::nintendo::ctr::z3ds::{
@@ -379,7 +387,7 @@ const CTR_CONVERT_EXTS: &[&str] = &["cia", "3ds", "cci"];
 const ALL_IMAGE_EXTS: &[&str] = &[
     "iso", "gcm", "wbfs", "rvz", "gcz", "wia", "nkit", "chd", "cso", "zso", "dax", "cue", "cia",
     "3ds", "cci", "cxi", "3dsx", "zcia", "zcci", "zcxi", "z3dsx", "nsp", "xci", "nca", "nsz",
-    "xcz", "ncz", "wud", "wux",
+    "xcz", "ncz", "wud", "wux", "xiso", "zar",
 ];
 
 /// Resolve a read input, transparently extracting the first member matching
@@ -3398,6 +3406,487 @@ pub fn cmd_nx_keys_resolve(keys: Option<PathBuf>) -> Option<String> {
     find_keys_file(keys.as_deref()).map(|p| rom_converto_lib::util::contract_tilde(&p))
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct XboxConvertArgs {
+    input: PathBuf,
+    output: Option<PathBuf>,
+    media_patch: Option<bool>,
+    task_id: String,
+    on_conflict: Option<String>,
+    skip_space_check: bool,
+    output_template: Option<String>,
+    report: Option<bool>,
+    verify_after: Option<bool>,
+    dry_run: Option<bool>,
+}
+
+#[tauri::command]
+pub async fn cmd_xbox_convert(
+    app: AppHandle,
+    state: State<'_, ActiveCancel>,
+    args: XboxConvertArgs,
+) -> Result<RunOutcome, String> {
+    let XboxConvertArgs {
+        input,
+        output,
+        media_patch,
+        task_id,
+        on_conflict,
+        skip_space_check,
+        output_template,
+        report,
+        verify_after,
+        dry_run,
+    } = args;
+    let progress = Arc::new(TauriProgress::new(app, &task_id));
+    let dry_run = dry_run.unwrap_or(false);
+    let resolved = resolve_archive_input(input.clone(), &["iso"]).await?;
+    let basis = resolved.output_basis().to_path_buf();
+    let desired = pick_output(
+        output,
+        output_template.as_deref(),
+        &basis,
+        "xiso",
+        None,
+        || basis.with_extension("xiso"),
+        dry_run,
+    )?;
+    if dry_run {
+        let line = plan_line(
+            progress.as_ref(),
+            PlanInput {
+                operation: "convert",
+                input: &input,
+                desired: &desired,
+                on_conflict: on_conflict.as_deref(),
+                media: Some("XISO".to_string()),
+                verify: rom_converto_lib::util::OutputVerify::None,
+                missing_keys: None,
+            },
+        )
+        .await?;
+        return Ok(RunOutcome {
+            message: line.display_text(),
+            record: None,
+            input_bytes: 0,
+            output_bytes: 0,
+            comparison: None,
+        });
+    }
+    let output = match resolve_output(
+        progress.as_ref(),
+        &desired,
+        on_conflict.as_deref(),
+        rom_converto_lib::util::OutputVerify::None,
+    )
+    .await?
+    {
+        Some(p) => p,
+        None => {
+            return Ok(RunOutcome::skipped(
+                report.unwrap_or(false),
+                &input,
+                "convert",
+                &desired,
+            ));
+        }
+    };
+    let out_display = output.display().to_string();
+    let required_space = if resolved.path().is_dir() {
+        rom_converto_lib::microsoft::xbox::input_total_bytes(resolved.path())
+            .unwrap_or_else(|_| input_size(resolved.path()))
+    } else {
+        input_size(resolved.path())
+    };
+    preflight_space(
+        output.parent().unwrap_or(&output),
+        required_space,
+        skip_space_check,
+    )?;
+    let opts = XisoCreateOptions {
+        media_patch: media_patch.unwrap_or(XisoCreateOptions::default().media_patch),
+    };
+    let in_bytes = input_size(&input);
+    let record_input = input.clone();
+    let record_output = output.clone();
+    let progress_for_verify = progress.clone();
+    let resolved_path = resolved.path().to_path_buf();
+    let token = begin(&state, &task_id).await;
+    let token_for_verify = token.clone();
+    let started = Instant::now();
+    let result = tokio::spawn(async move {
+        convert_to_xiso_cancellable(&resolved_path, &output, opts, progress.as_ref(), token).await
+    })
+    .await
+    .map_err(err_to_string)?
+    .map_err(err_to_string);
+    finish(&state, &task_id).await;
+    result?;
+    let out_bytes = input_size(&record_output);
+    let record = build_record(
+        report.unwrap_or(false),
+        &record_input,
+        &record_output,
+        "convert",
+        in_bytes,
+        out_bytes,
+        started.elapsed(),
+    );
+    let comparison = build_comparison(
+        progress_for_verify,
+        &token_for_verify,
+        ComparisonInput {
+            input: &record_input,
+            output: &record_output,
+            input_bytes: in_bytes,
+            output_bytes: out_bytes,
+            target: rom_converto_lib::util::OutputVerify::None,
+            verify_after: verify_after.unwrap_or(false),
+        },
+    )
+    .await;
+    Ok(RunOutcome {
+        message: format!("Wrote {out_display}"),
+        record,
+        input_bytes: in_bytes,
+        output_bytes: out_bytes,
+        comparison: Some(comparison),
+    })
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct XboxExtractArgs {
+    input: PathBuf,
+    output_dir: PathBuf,
+    on_conflict: Option<String>,
+    skip_space_check: bool,
+    dry_run: Option<bool>,
+    task_id: Option<String>,
+}
+
+#[tauri::command]
+pub async fn cmd_xbox_extract(
+    app: AppHandle,
+    state: State<'_, ActiveCancel>,
+    args: XboxExtractArgs,
+) -> Result<String, String> {
+    let XboxExtractArgs {
+        input,
+        output_dir,
+        on_conflict,
+        skip_space_check,
+        dry_run,
+        task_id,
+    } = args;
+    let key = task_id.as_deref().unwrap_or("xbox-extract");
+    let progress = Arc::new(TauriProgress::new(app, key));
+    if dry_run.unwrap_or(false) {
+        let line = plan_line(
+            progress.as_ref(),
+            PlanInput {
+                operation: "extract",
+                input: &input,
+                desired: &output_dir,
+                on_conflict: on_conflict.as_deref(),
+                media: None,
+                verify: rom_converto_lib::util::OutputVerify::None,
+                missing_keys: None,
+            },
+        )
+        .await?;
+        return Ok(line.display_text());
+    }
+    let output_dir = match resolve_output(
+        progress.as_ref(),
+        &output_dir,
+        on_conflict.as_deref(),
+        rom_converto_lib::util::OutputVerify::None,
+    )
+    .await?
+    {
+        Some(p) => p,
+        None => return Ok(format!("Skipped existing {}", output_dir.display())),
+    };
+    let out_display = output_dir.display().to_string();
+    let resolved = resolve_archive_input(input, &["xiso", "iso"]).await?;
+    let resolved_path = resolved.path().to_path_buf();
+    let required_space = {
+        let resolved_path = resolved_path.clone();
+        tokio::task::spawn_blocking(move || {
+            xbox_read_info(&resolved_path)
+                .map(|info| info.total_file_bytes)
+                .unwrap_or_else(|_| input_size(&resolved_path))
+        })
+        .await
+        .map_err(err_to_string)?
+    };
+    preflight_space(&output_dir, required_space, skip_space_check)?;
+    let token = begin(&state, key).await;
+    let result = tokio::spawn(async move {
+        extract_xiso_cancellable(&resolved_path, &output_dir, progress.as_ref(), token).await
+    })
+    .await
+    .map_err(err_to_string)?
+    .map_err(err_to_string);
+    finish(&state, key).await;
+    result?;
+    Ok(format!("Wrote {out_display}"))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct XenonCompressArgs {
+    input: PathBuf,
+    output: Option<PathBuf>,
+    task_id: String,
+    on_conflict: Option<String>,
+    skip_space_check: bool,
+    output_template: Option<String>,
+    report: Option<bool>,
+    verify_after: Option<bool>,
+    dry_run: Option<bool>,
+}
+
+#[tauri::command]
+pub async fn cmd_xenon_compress(
+    app: AppHandle,
+    state: State<'_, ActiveCancel>,
+    args: XenonCompressArgs,
+) -> Result<RunOutcome, String> {
+    let XenonCompressArgs {
+        input,
+        output,
+        task_id,
+        on_conflict,
+        skip_space_check,
+        output_template,
+        report,
+        verify_after,
+        dry_run,
+    } = args;
+    let progress = Arc::new(TauriProgress::new(app, &task_id));
+    let dry_run = dry_run.unwrap_or(false);
+    let resolved = resolve_archive_input(input.clone(), &["iso"]).await?;
+    let basis = resolved.output_basis().to_path_buf();
+    let desired = pick_output(
+        output,
+        output_template.as_deref(),
+        &basis,
+        "zar",
+        None,
+        || basis.with_extension("zar"),
+        dry_run,
+    )?;
+    if dry_run {
+        let line = plan_line(
+            progress.as_ref(),
+            PlanInput {
+                operation: "compress",
+                input: &input,
+                desired: &desired,
+                on_conflict: on_conflict.as_deref(),
+                media: Some("ZAR".to_string()),
+                verify: rom_converto_lib::util::OutputVerify::None,
+                missing_keys: None,
+            },
+        )
+        .await?;
+        return Ok(RunOutcome {
+            message: line.display_text(),
+            record: None,
+            input_bytes: 0,
+            output_bytes: 0,
+            comparison: None,
+        });
+    }
+    let output = match resolve_output(
+        progress.as_ref(),
+        &desired,
+        on_conflict.as_deref(),
+        rom_converto_lib::util::OutputVerify::None,
+    )
+    .await?
+    {
+        Some(p) => p,
+        None => {
+            return Ok(RunOutcome::skipped(
+                report.unwrap_or(false),
+                &input,
+                "compress",
+                &desired,
+            ));
+        }
+    };
+    let out_display = output.display().to_string();
+    let required_space = if resolved.path().is_dir() {
+        rom_converto_lib::microsoft::xenon::total_input_bytes(resolved.path())
+            .unwrap_or_else(|_| input_size(resolved.path()))
+    } else {
+        input_size(resolved.path())
+    };
+    preflight_space(
+        output.parent().unwrap_or(&output),
+        required_space,
+        skip_space_check,
+    )?;
+    let in_bytes = input_size(&input);
+    let record_input = input.clone();
+    let record_output = output.clone();
+    let progress_for_verify = progress.clone();
+    let resolved_path = resolved.path().to_path_buf();
+    let token = begin(&state, &task_id).await;
+    let token_for_verify = token.clone();
+    let started = Instant::now();
+    let result = tokio::spawn(async move {
+        pack_zar_cancellable(&resolved_path, &output, progress.as_ref(), token).await
+    })
+    .await
+    .map_err(err_to_string)?
+    .map_err(err_to_string);
+    finish(&state, &task_id).await;
+    result?;
+    let out_bytes = input_size(&record_output);
+    let record = build_record(
+        report.unwrap_or(false),
+        &record_input,
+        &record_output,
+        "compress",
+        in_bytes,
+        out_bytes,
+        started.elapsed(),
+    );
+    let comparison = build_comparison(
+        progress_for_verify,
+        &token_for_verify,
+        ComparisonInput {
+            input: &record_input,
+            output: &record_output,
+            input_bytes: in_bytes,
+            output_bytes: out_bytes,
+            target: rom_converto_lib::util::OutputVerify::None,
+            verify_after: verify_after.unwrap_or(false),
+        },
+    )
+    .await;
+    Ok(RunOutcome {
+        message: format!("Wrote {out_display}"),
+        record,
+        input_bytes: in_bytes,
+        output_bytes: out_bytes,
+        comparison: Some(comparison),
+    })
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct XenonExtractArgs {
+    input: PathBuf,
+    output_dir: PathBuf,
+    on_conflict: Option<String>,
+    skip_space_check: bool,
+    dry_run: Option<bool>,
+    task_id: Option<String>,
+}
+
+#[tauri::command]
+pub async fn cmd_xenon_extract(
+    app: AppHandle,
+    state: State<'_, ActiveCancel>,
+    args: XenonExtractArgs,
+) -> Result<String, String> {
+    let XenonExtractArgs {
+        input,
+        output_dir,
+        on_conflict,
+        skip_space_check,
+        dry_run,
+        task_id,
+    } = args;
+    let key = task_id.as_deref().unwrap_or("xenon-extract");
+    let progress = Arc::new(TauriProgress::new(app, key));
+    if dry_run.unwrap_or(false) {
+        let line = plan_line(
+            progress.as_ref(),
+            PlanInput {
+                operation: "extract",
+                input: &input,
+                desired: &output_dir,
+                on_conflict: on_conflict.as_deref(),
+                media: None,
+                verify: rom_converto_lib::util::OutputVerify::None,
+                missing_keys: None,
+            },
+        )
+        .await?;
+        return Ok(line.display_text());
+    }
+    let output_dir = match resolve_output(
+        progress.as_ref(),
+        &output_dir,
+        on_conflict.as_deref(),
+        rom_converto_lib::util::OutputVerify::None,
+    )
+    .await?
+    {
+        Some(p) => p,
+        None => return Ok(format!("Skipped existing {}", output_dir.display())),
+    };
+    let out_display = output_dir.display().to_string();
+    let resolved = resolve_archive_input(input, &["zar"]).await?;
+    let resolved_path = resolved.path().to_path_buf();
+    let required_space = {
+        let resolved_path = resolved_path.clone();
+        tokio::task::spawn_blocking(move || {
+            xenon_read_info(&resolved_path)
+                .map(|info| info.logical_size)
+                .unwrap_or_else(|_| input_size(&resolved_path))
+        })
+        .await
+        .map_err(err_to_string)?
+    };
+    preflight_space(&output_dir, required_space, skip_space_check)?;
+    let token = begin(&state, key).await;
+    let result = tokio::spawn(async move {
+        extract_zar_cancellable(&resolved_path, &output_dir, progress.as_ref(), token).await
+    })
+    .await
+    .map_err(err_to_string)?
+    .map_err(err_to_string);
+    finish(&state, key).await;
+    result?;
+    Ok(format!("Wrote {out_display}"))
+}
+
+#[tauri::command]
+pub async fn cmd_xenon_verify(
+    app: AppHandle,
+    state: State<'_, ActiveCancel>,
+    input: PathBuf,
+    task_id: Option<String>,
+) -> Result<String, String> {
+    let key = task_id.as_deref().unwrap_or("xenon-verify");
+    let progress = Arc::new(TauriProgress::new(app, key));
+    let resolved = resolve_archive_input(input, &["zar"]).await?;
+    let resolved_path = resolved.path().to_path_buf();
+    let token = begin(&state, key).await;
+    let result = tokio::spawn(async move {
+        verify_zar_cancellable(&resolved_path, progress.as_ref(), token).await
+    })
+    .await
+    .map_err(err_to_string)?
+    .map_err(err_to_string);
+    finish(&state, key).await;
+    let verify = result?;
+    serde_json::to_string(&serde_json::json!({
+        "blocks": verify.blocks,
+        "logical_bytes": verify.logical_bytes,
+        "hash_ok": verify.hash_ok,
+    }))
+    .map_err(err_to_string)
+}
+
 #[tauri::command]
 pub async fn cmd_read_info(
     cache: State<'_, Arc<InfoCache>>,
@@ -4842,6 +5331,8 @@ fn extract_icon_png(info: &InfoResult) -> Option<Vec<u8>> {
             .map(|i| i.png_bytes.clone()),
         InfoResult::Chd(_) => None,
         InfoResult::Cso(_) => None,
+        InfoResult::Xbox(_) => None,
+        InfoResult::Xenon(_) => None,
     }
 }
 

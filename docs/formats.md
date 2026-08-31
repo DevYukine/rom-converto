@@ -19,6 +19,8 @@ the tool and docs.
 | CD / DVD (`chd`) | disc image | `.cue`+`.bin`, `.iso` | CHD | compress / extract |
 | PSP / PS2 (`cso`) | ISO | `.iso` | CSO, ZSO | compress / decompress |
 | CD (`cue`) | disc image | `.cue`+`.bin` | merged `.bin`/`.cue` | merge |
+| Original Xbox (`xbox`) | disc image | `.iso`, game directory | XISO | convert / extract |
+| Xbox 360 (`xenon`) | disc image | `.iso`, game directory | ZAR | compress / extract |
 
 Restoring a CHD is always called "extract", because it recreates sidecar files (`.bin`+`.cue`
 for CD, `.iso` for DVD). Every other format uses "decompress" for the reverse operation. The
@@ -50,6 +52,10 @@ collective phrase for all inputs is "ROMs and disc images".
   `info`; there is no DAX compression target.
 - **CUE/BIN** merging combines a multi-bin `.cue` (one `.bin` per track) into a single
   `.bin` + `.cue` pair for emulators that cannot load split images.
+- **XISO** is the trimmed Xbox disc filesystem image. A full disc image carries video-partition
+  padding; rebuilding to XISO drops it, typically shrinking the file substantially.
+- **ZAR** is the ZArchive container: zstd level 6 in 64 KiB blocks with an integrity hash.
+  Supported by Xenia since 2024.
 
 ## Output compatibility
 
@@ -69,6 +75,9 @@ The Wii U `.wua` pipeline has no comparable reference CLI (Cemu ships the format
 standalone compressor), so no head-to-head numbers are published for it. See the
 [benchmark files](../README.md#benchmarks) for measured performance.
 
+XISO and ZAR have no comparable reference CLI either. XISO loads in xemu and on modded
+consoles; ZAR loads in Xenia.
+
 ## Where each format works
 
 | Target | Recommended format |
@@ -81,6 +90,8 @@ standalone compressor), so no head-to-head numbers are published for it. See the
 | Switch emulation | NSZ / XCZ |
 | Wii U emulation (Cemu) | WUA |
 | 3DS emulation (Azahar) | decrypted ROM, or Z3DS for storage |
+| Original Xbox emulation (xemu) | XISO |
+| Xbox 360 emulation (Xenia) | ZAR |
 
 DVD-mode CHDs use compatibility-first codecs (`lzma` + `zlib`) that load everywhere, including
 AetherSX2 and NetherSX2. The opt-in `--zstd` flag adds a better ratio for modern players; some

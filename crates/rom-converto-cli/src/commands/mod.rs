@@ -10,6 +10,8 @@ use crate::commands::nx::NxCommands;
 use crate::commands::playlist::PlaylistCommand;
 use crate::commands::rvl::RvlCommands;
 use crate::commands::wup::WupCommands;
+use crate::commands::xbox::XboxCommands;
+use crate::commands::xenon::XenonCommands;
 use clap::{Parser, Subcommand};
 use rom_converto_lib::util::ConflictPolicy;
 use std::path::PathBuf;
@@ -27,6 +29,8 @@ pub mod nx;
 pub mod playlist;
 pub mod rvl;
 pub mod wup;
+pub mod xbox;
+pub mod xenon;
 
 /// Encrypt, decrypt, compress, convert, and verify ROMs and disc images
 #[derive(Parser, Debug)]
@@ -35,7 +39,7 @@ pub mod wup;
 	author,                   // pulls env!("CARGO_PKG_AUTHORS")
 	version = env!("ROM_CONVERTO_DISPLAY_VERSION"),
 	about,                    // doc-comment or Cargo.toml description
-	long_about = "Encrypt, decrypt, compress, convert, and verify ROMs and disc images\n\nEach top-level command is a console/format family (ctr, dol, rvl, wup, nx, chd, cso, cue); each has operations like compress, decompress, verify and info. Output is auto-derived from the input unless you pass an explicit OUTPUT, -o/--output, or --output-dir. Pass -R/--recursive to process every matching file in a directory.",
+	long_about = "Encrypt, decrypt, compress, convert, and verify ROMs and disc images\n\nEach top-level command is a console/format family (ctr, dol, rvl, wup, nx, chd, cso, cue, xbox, xenon); each has operations like compress, decompress, verify and info. Output is auto-derived from the input unless you pass an explicit OUTPUT, -o/--output, or --output-dir. Pass -R/--recursive to process every matching file in a directory.",
 	help_template = "\
 {before-help}{name} {version}\n\
 {about-with-newline}\n\
@@ -105,6 +109,12 @@ pub enum Commands {
 
     #[command(subcommand)]
     Nx(NxCommands),
+
+    #[command(subcommand)]
+    Xbox(XboxCommands),
+
+    #[command(subcommand)]
+    Xenon(XenonCommands),
 
     #[command(subcommand)]
     Chd(ChdCommands),

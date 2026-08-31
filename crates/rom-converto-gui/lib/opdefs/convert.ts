@@ -10,7 +10,8 @@ import { useCtrConvertStore } from "~/stores/ctr-convert";
 import { useCsoToChdStore } from "~/stores/cso-to-chd";
 import { useChdToCsoStore } from "~/stores/chd-to-cso";
 import { useCueConvertStore } from "~/stores/cue-convert";
-import { basename, deriveConvertedPath, deriveChdPath, deriveCsoPath, deriveDiscIsoPath, withOutputDir } from "~/composables/useDerivedPath";
+import { useXboxConvertStore } from "~/stores/xbox-convert";
+import { basename, deriveConvertedPath, deriveChdPath, deriveCsoPath, deriveDiscIsoPath, deriveXisoPath, withOutputDir } from "~/composables/useDerivedPath";
 
 const ARCHIVE_EXTS = ["zip", "7z", "rar", "tar", "tgz", "gz"];
 
@@ -340,4 +341,53 @@ const cue: OpDef = {
 	chips: (store) => store.format,
 };
 
-registerOp("convert", { ctr, cso, chd, cue });
+const xbox: OpDef = {
+	op: "convert",
+	console: "xbox",
+	opLabel: "Convert",
+	storeId: "xbox-convert",
+	useStore: useXboxConvertStore,
+	command: "cmd_xbox_convert",
+	resultKind: "convert",
+	title: "Convert ISO → XISO",
+	subtitle: "Trims a full disc image down to the game partition, or packs a directory of extracted files.",
+	dropText: "Drop a full disc image (.iso), or a folder of extracted game files",
+	acceptedExts: ["iso", ...ARCHIVE_EXTS],
+	browseFilters: [{ name: "Xbox", extensions: ["iso"] }],
+	browseAlsoDirectory: true,
+	fields: [
+		{
+			kind: "toggle",
+			key: "mediaPatch",
+			label: "XBE media patch",
+			tooltip:
+				"Patches the XDK media-type check in every .xbe so the image boots on BIOSes that need it. Inert on files that do not, so leaving it on is safe.",
+		},
+		...recursiveFields(),
+	],
+	note: "The media patch is inert on .xbe files that don't need it, so leaving it on is safe by default.",
+	outputRows: templateOutputRowsWithReport(),
+	showVerify: true,
+	verifyLabel: "Verify after conversion",
+	actionNote: "Jobs start automatically. Parameters lock once queued.",
+	deriveOutput: deriveXisoPath,
+	buildArgs: (store, item, taskId) => {
+		const tmpl = templateIsActive(store);
+		return {
+			input: item.path,
+			output: tmpl ? null : withOutputDir(deriveXisoPath(item.path), store.outputDir || ""),
+			mediaPatch: store.mediaPatch,
+			taskId,
+			onConflict: store.onConflict,
+			skipSpaceCheck: store.skipSpaceCheck,
+			outputTemplate: store.outputTemplate || null,
+			report: !!store.reportFile,
+			reportFile: store.reportFile || null,
+			verifyAfter: store.verifyAfter,
+			dryRun: false,
+		};
+	},
+	chips: (store) => (store.mediaPatch ? "" : "no media patch"),
+};
+
+registerOp("convert", { ctr, cso, chd, cue, xbox });

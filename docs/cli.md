@@ -483,6 +483,46 @@ Merge a multi-bin `.cue` (one `.bin` per track) into a single `.bin` + `.cue` pa
 emulators that cannot load split images. The merged `.bin` is named after the output `.cue`.
 `merge` takes `--on-conflict` (and `-f`) only; the `.bin` sidecar follows the renamed `.cue`.
 
+## xbox (Original Xbox)
+
+```
+rom-converto xbox <SUBCOMMAND> <INPUT> [OUTPUT]
+```
+
+| Subcommand | Description |
+|---|---|
+| `convert <INPUT> [OUTPUT]` | Convert a full disc image or a game directory to a trimmed `.xiso` |
+| `extract <INPUT> <OUTPUT_DIR>` | Extract a `.xiso` or full disc image to files |
+| `info <INPUT>` | Inspect Xbox disc layout. See [info](#info) |
+
+| Flag | Applies to | Description |
+|---|---|---|
+| `-o, --output <FILE>` | `convert` | Output file path |
+| `--no-media-patch` | `convert` | Skip XBE media patching, which runs by default |
+
+`convert` accepts a full disc image (`.iso`) or an extracted game directory, and rebuilds the
+disc layout so video-partition padding is removed. Takes `-f`/`--force` and the shared conflict
+policy. Output works in xemu and on modded consoles.
+
+`info` prints layout details: XGD1, XGD2, XGD3, or trimmed, plus file counts and sizes.
+
+## xenon (Xbox 360)
+
+```
+rom-converto xenon <SUBCOMMAND> <INPUT> [OUTPUT]
+```
+
+| Subcommand | Description |
+|---|---|
+| `compress <INPUT> [OUTPUT]` | Pack a full disc image or an extracted game directory into a `.zar` |
+| `extract <INPUT> <OUTPUT_DIR>` | Extract a `.zar` back to files |
+| `verify <INPUT>` | Check the archive integrity hash and decode every block |
+| `info <INPUT>` | Inspect Xbox 360 archive stats. See [info](#info) |
+
+`compress` reads the disc filesystem directly and streams it into the `.zar` archive, with no
+intermediate extraction to disk, using zstd across all CPU cores. Content is stored with
+`default.xex` at the archive root, which Xenia requires to load it.
+
 ## dat
 
 ```
