@@ -13,7 +13,7 @@ use crate::chd::models::{
     CHD_V5_HEADER_SIZE, ChdHeaderV5, ChdVersion, DVD_SECTOR_SIZE, SHA1_BYTES,
 };
 use crate::chd::writer::metadata::{
-    MetadataBlock, MetadataHash, cd_audio_frame_map, generate_cd_metadata, generate_dvd_metadata,
+    MetadataBlock, MetadataHash, cd_frame_layout, generate_cd_metadata, generate_dvd_metadata,
 };
 use crate::chd::writer::worker::{
     HunkCompressArgs, HunkWriteState, compress_hunks, compress_hunks_dvd,
@@ -47,18 +47,22 @@ pub struct ChdWriter {
     map_entries: Vec<MapEntry>,
     raw_sha1: Sha1,
     metadata_hashes: Vec<MetadataHash>,
+    /// Per-frame source flags; empty for DVD-mode writers. `false`
+    /// frames are the per-track zero padding chdman appends to reach
+    /// a 4-frame boundary; nothing is read from the source for them.
+    cd_frame_data: Vec<bool>,
     /// Per-frame audio flags; empty for DVD-mode writers. Audio frames
     /// get their 16-bit sample bytes swapped on ingest to match chdman.
     cd_audio_frames: Vec<bool>,
 }
 
 impl ChdWriter {
-    /// `total_sectors` sizes the logical data (it includes track
-    /// padding frames); `data_sectors` is the real frame count the
-    /// CHT2 `FRAMES:` metadata records, matching chdman.
+    /// `data_sectors` is the real frame count the CHT2 `FRAMES:`
+    /// metadata records; the physical stream pads every track to a
+    /// 4-frame boundary like chdman, so the logical size can exceed
+    /// `data_sectors * FRAME_SIZE`.
     pub fn create(
         output_path: impl AsRef<Path>,
-        total_sectors: u32,
         data_sectors: u32,
         hunk_size: u32,
         cue_sheet: &CueSheet,
@@ -68,7 +72,8 @@ impl ChdWriter {
         let file = std::fs::File::create(output_path)?;
         let writer = BufWriter::with_capacity(IO_BUFFER_SIZE, file);
 
-        let logical_bytes = total_sectors as u64 * FRAME_SIZE as u64;
+        let (cd_frame_data, cd_audio_frames) = cd_frame_layout(cue_sheet, data_sectors);
+        let logical_bytes = cd_frame_data.len() as u64 * FRAME_SIZE as u64;
         let unit_bytes = FRAME_SIZE as u32;
         if !hunk_size.is_multiple_of(unit_bytes) {
             return Err(ChdError::InvalidHunkSize);
@@ -93,8 +98,15 @@ impl ChdWriter {
         };
 
         let metadata = generate_cd_metadata(cue_sheet, data_sectors)?;
-        let cd_audio_frames = cd_audio_frame_map(cue_sheet, total_sectors);
-        Self::init(writer, header, codecs, level, metadata, cd_audio_frames)
+        Self::init(
+            writer,
+            header,
+            codecs,
+            level,
+            metadata,
+            cd_frame_data,
+            cd_audio_frames,
+        )
     }
 
     /// DVD-mode writer: flat 2048-byte sectors, `logical_bytes` =
@@ -138,7 +150,15 @@ impl ChdWriter {
         };
 
         let metadata = generate_dvd_metadata()?;
-        Self::init(writer, header, codecs, level, metadata, Vec::new())
+        Self::init(
+            writer,
+            header,
+            codecs,
+            level,
+            metadata,
+            Vec::new(),
+            Vec::new(),
+        )
     }
 
     fn init(
@@ -147,6 +167,7 @@ impl ChdWriter {
         codecs: Vec<ChdCodec>,
         level: Option<i32>,
         metadata: MetadataBlock,
+        cd_frame_data: Vec<bool>,
         cd_audio_frames: Vec<bool>,
     ) -> ChdResult<Self> {
         let mut header_buf = Cursor::new(Vec::new());
@@ -167,17 +188,17 @@ impl ChdWriter {
             map_entries: Vec::new(),
             raw_sha1: Sha1::new(),
             metadata_hashes: metadata.hashes,
+            cd_frame_data,
             cd_audio_frames,
         })
     }
 
-    /// `total_sectors` includes track padding frames; `data_sectors`
-    /// of `sector_data_size` bytes each are read from the source.
+    /// Reads `sector_data_size` bytes from the source for every data
+    /// frame of the padded layout; the per-track padding frames stay
+    /// zero but are still hashed, matching chdman.
     pub fn compress_all_hunks(
         &mut self,
         bin_reader: &mut BufReader<std::fs::File>,
-        total_sectors: u32,
-        data_sectors: u32,
         sector_data_size: usize,
         bytes_done: &Arc<AtomicU64>,
         cancel: &CancelToken,
@@ -202,8 +223,7 @@ impl ChdWriter {
                 bytes_done,
                 cancel,
             },
-            total_sectors,
-            data_sectors,
+            &self.cd_frame_data,
             sector_data_size,
             &self.cd_audio_frames,
         );

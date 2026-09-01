@@ -240,6 +240,15 @@ pub fn apply_template(template: &str, tokens: &TemplateTokens) -> Result<PathBuf
     Ok(out)
 }
 
+/// Sanitizes an untrusted string into a safe filename stem: path
+/// separators and other illegal filename characters become `_`, control
+/// characters are dropped, and Windows reserved names get a suffix. Use
+/// for embedded metadata (title IDs, game IDs) that becomes part of an
+/// output filename, so a hostile ROM cannot steer the write path.
+pub fn sanitize_file_stem(stem: &str) -> String {
+    sanitize_component(stem)
+}
+
 fn has_drive_prefix(s: &str) -> bool {
     let bytes = s.as_bytes();
     bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
@@ -405,6 +414,13 @@ mod tests {
         t.title = Some("a<b>c:d\"e|f?g*h".to_string());
         let p = apply_template("{title}.{ext}", &t).unwrap();
         assert_eq!(p, PathBuf::from("a_b_c_d_e_f_g_h.rvz"));
+    }
+
+    #[test]
+    fn sanitize_file_stem_neutralizes_traversal() {
+        assert_eq!(sanitize_file_stem("../../etc/passwd"), ".._.._etc_passwd");
+        assert_eq!(sanitize_file_stem("AB:CD\\EF"), "AB_CD_EF");
+        assert_eq!(sanitize_file_stem("GAME01"), "GAME01");
     }
 
     #[test]

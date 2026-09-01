@@ -132,15 +132,17 @@ impl TrackType {
         }
     }
 
-    /// Returns the CHD track metadata type string. Types with no direct CHD
-    /// equivalent (`CdG`, `CdI2336`, `CdI2352`) fall back to `"MODE1_RAW"`.
+    /// Returns the CHD track metadata type string, matching chdman's
+    /// `get_info_from_type_string` (`MODE2/2336` is `MODE2`, `CDI/2352` is
+    /// `MODE2_RAW`). Types with no direct CHD equivalent (`CdG`, `CdI2336`)
+    /// fall back to `"MODE1_RAW"`.
     pub fn chd_metadata_type(self) -> &'static str {
         match self {
             TrackType::Audio => "AUDIO",
             TrackType::Mode1_2352 => "MODE1_RAW",
             TrackType::Mode1_2048 => "MODE1",
-            TrackType::Mode2_2352 => "MODE2_RAW",
-            TrackType::Mode2_2336 => "MODE2_FORM1",
+            TrackType::Mode2_2352 | TrackType::CdI2352 => "MODE2_RAW",
+            TrackType::Mode2_2336 => "MODE2",
             _ => "MODE1_RAW",
         }
     }
@@ -262,15 +264,15 @@ mod tests {
         assert_eq!(TrackType::Mode1_2352.chd_metadata_type(), "MODE1_RAW");
         assert_eq!(TrackType::Mode1_2048.chd_metadata_type(), "MODE1");
         assert_eq!(TrackType::Mode2_2352.chd_metadata_type(), "MODE2_RAW");
-        assert_eq!(TrackType::Mode2_2336.chd_metadata_type(), "MODE2_FORM1");
+        assert_eq!(TrackType::Mode2_2336.chd_metadata_type(), "MODE2");
+        assert_eq!(TrackType::CdI2352.chd_metadata_type(), "MODE2_RAW");
     }
 
     #[test]
     fn chd_metadata_type_fallback() {
-        // CdG, CdI2336, CdI2352 all fall back to MODE1_RAW
+        // CdG and CdI2336 fall back to MODE1_RAW
         assert_eq!(TrackType::CdG.chd_metadata_type(), "MODE1_RAW");
         assert_eq!(TrackType::CdI2336.chd_metadata_type(), "MODE1_RAW");
-        assert_eq!(TrackType::CdI2352.chd_metadata_type(), "MODE1_RAW");
     }
 
     #[test]

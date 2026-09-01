@@ -4,7 +4,9 @@ pub(crate) mod worker;
 use crate::cd::IO_BUFFER_SIZE;
 use crate::chd::error::{ChdError, ChdResult};
 use crate::chd::map::{MapEntry, decompress_v5_map};
-use crate::chd::models::{CHD_V5_HEADER_SIZE, ChdHeaderV5, ChdMetadataHeader, ChdVersion};
+use crate::chd::models::{
+    CHD_METADATA_HEADER_BYTES, CHD_V5_HEADER_SIZE, ChdHeaderV5, ChdMetadataHeader, ChdVersion,
+};
 use binrw::BinRead;
 use byteorder::{BigEndian, ByteOrder};
 use std::io::Cursor;
@@ -49,7 +51,7 @@ pub(crate) fn open_chd_sync(path: &std::path::Path) -> ChdResult<SyncChdHandle> 
     let mut offset = header.meta_offset;
     while offset != 0 {
         reader.seek(std::io::SeekFrom::Start(offset))?;
-        let mut head_buf = [0u8; 16];
+        let mut head_buf = [0u8; CHD_METADATA_HEADER_BYTES];
         reader.read_exact(&mut head_buf)?;
 
         let tag: [u8; 4] = head_buf[0..4]
@@ -72,8 +74,11 @@ pub(crate) fn open_chd_sync(path: &std::path::Path) -> ChdResult<SyncChdHandle> 
             data,
         });
 
+        // Follow the chain only forward: chdman writes entries in
+        // ascending order, and a malformed next pointer must not
+        // loop the walk forever.
         let next_offset = BigEndian::read_u64(&reserved);
-        offset = if next_offset != 0 { next_offset } else { 0 };
+        offset = if next_offset > offset { next_offset } else { 0 };
     }
 
     // A second handle for the worker pool's positional reads. The

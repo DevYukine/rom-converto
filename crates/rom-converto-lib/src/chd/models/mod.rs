@@ -8,6 +8,9 @@ pub const CHD_METADATA_TAG_CD: [u8; 4] = *b"CHT2";
 pub const CHD_METADATA_TAG_DVD: [u8; 4] = *b"DVD ";
 pub const CHD_METADATA_FLAG_HASHED: u8 = 0x01;
 pub const CHD_METADATA_RESERVED_BYTES: usize = 8;
+/// On-disk size of a metadata entry header: tag + flags + 24-bit
+/// length + the reserved/next-offset bytes.
+pub const CHD_METADATA_HEADER_BYTES: usize = 16;
 pub const SHA1_BYTES: usize = 20;
 
 /// DVD-mode unit size: plain 2048-byte sectors, no subcode.

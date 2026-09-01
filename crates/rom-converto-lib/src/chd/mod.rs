@@ -5,9 +5,11 @@
 //! to disc form is called extract rather than decompress; see
 //! [`crate::chd::error`] for the failure modes.
 
-use crate::cd::{CD_HUNK_BYTES, IO_BUFFER_SIZE, SECTOR_SIZE};
+use crate::cd::{CD_HUNK_BYTES, FRAME_SIZE, IO_BUFFER_SIZE, SECTOR_SIZE};
 use crate::chd::error::{ChdError, ChdResult};
-use crate::chd::models::{CHD_METADATA_TAG_CD, CHD_METADATA_TAG_DVD, ChdHeaderV5, SHA1_BYTES};
+use crate::chd::models::{
+    CHD_METADATA_TAG_CD, CHD_METADATA_TAG_DVD, ChdHeaderV5, ChdMetadataHeader, SHA1_BYTES,
+};
 use crate::chd::reader::cue_generator::{
     ChdTrackInfo, chd_type_datasize, generate_cue_sheet, parse_chd_track_metadata,
 };
@@ -405,7 +407,6 @@ pub async fn convert_iso_to_cd_chd(
 
         let mut writer = ChdWriter::create(
             &write_owned,
-            total_sectors,
             data_sectors,
             CD_HUNK_BYTES,
             &cue_sheet,
@@ -414,8 +415,6 @@ pub async fn convert_iso_to_cd_chd(
         )?;
         writer.compress_all_hunks(
             &mut iso_reader,
-            total_sectors,
-            data_sectors,
             sector_data_size as usize,
             &bytes_done_bg,
             &cancel_bg,
@@ -501,6 +500,18 @@ pub async fn convert_to_chd(
         progress.warn(DREAMCAST_CHD_WARNING);
     }
 
+    // The single-bin ingest reads uniform 2352-byte raw sectors; any
+    // other track width would silently produce a corrupt CHD.
+    if let Some(track) = cue_sheet
+        .tracks
+        .iter()
+        .find(|t| t.track_type.block_size() != SECTOR_SIZE as u32)
+    {
+        return Err(ChdError::UnsupportedCueTrackWidth {
+            cue_type: track.track_type.cue_string(),
+        });
+    }
+
     debug!("Opening BIN file: {:?}", bin_path);
     let bin_size = fs::metadata(&bin_path).await?.len();
     let total_sectors: u32 = (bin_size / SECTOR_SIZE as u64)
@@ -537,21 +548,13 @@ pub async fn convert_to_chd(
         let mut writer = ChdWriter::create(
             &write_owned,
             total_sectors,
-            total_sectors,
             CD_HUNK_BYTES,
             &cue_sheet_owned,
             codecs,
             level,
         )?;
 
-        writer.compress_all_hunks(
-            &mut bin_reader,
-            total_sectors,
-            total_sectors,
-            SECTOR_SIZE,
-            &bytes_done_bg,
-            &cancel_bg,
-        )?;
+        writer.compress_all_hunks(&mut bin_reader, SECTOR_SIZE, &bytes_done_bg, &cancel_bg)?;
         writer.finalize()?;
         Ok(())
     });
@@ -596,23 +599,68 @@ pub struct ChdTrackDigest {
     pub digests: FileDigests,
 }
 
-/// Per-frame span map for the decoded CD stream: `frame_sizes[i]` is
-/// the payload width of frame `i` and `frame_track[i]` is the index
-/// (into `tracks`) of the track that owns frame `i`. Both vecs are
-/// laid out exactly as `convert_to_cue_bin`/`extract_hunks` shape the
-/// stream, so hashing frame by frame through them reproduces the bin
-/// `chdman extractcd` writes. Pure so it is unit-testable against a
-/// synthetic CHT2 metadata string.
-pub(crate) fn chd_frame_spans(tracks: &[ChdTrackInfo]) -> (Vec<usize>, Vec<usize>) {
-    let frame_sizes: Vec<usize> = tracks
+/// Concatenated text of every CHT2 metadata entry, in chain order.
+/// chdman writes one entry per track, while older rom-converto builds
+/// packed every track into a single entry; joining with a space parses
+/// both layouts identically.
+pub(crate) fn cd_track_metadata_text(metadata: &[ChdMetadataHeader]) -> Option<String> {
+    let parts: Vec<String> = metadata
         .iter()
-        .flat_map(|t| std::iter::repeat_n(chd_type_datasize(&t.track_type), t.frames as usize))
+        .filter(|m| m.tag == CHD_METADATA_TAG_CD)
+        .map(|m| {
+            String::from_utf8_lossy(&m.data)
+                .trim_end_matches('\0')
+                .trim()
+                .to_string()
+        })
         .collect();
-    let frame_track: Vec<usize> = tracks
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" "))
+    }
+}
+
+/// Whether a CHD's physical stream uses chdman's per-track 4-frame
+/// padding. Pre-padding rom-converto builds wrote the frames
+/// back-to-back; those files are recognized by a physical frame count
+/// (`logical_bytes / FRAME_SIZE`) that matches the raw `FRAMES:` sum
+/// and not the padded one. Anything else, chdman output included, is
+/// treated as padded.
+pub(crate) fn chd_layout_is_padded(tracks: &[ChdTrackInfo], physical_frames: u64) -> bool {
+    let unpadded: u64 = tracks.iter().map(|t| t.frames as u64).sum();
+    let padded: u64 = tracks
         .iter()
-        .enumerate()
-        .flat_map(|(i, t)| std::iter::repeat_n(i, t.frames as usize))
-        .collect();
+        .map(|t| padded_track_frames(t.frames) as u64)
+        .sum();
+    physical_frames != unpadded || unpadded == padded
+}
+
+/// Per-frame span map for the physical CHD CD stream: `frame_sizes[i]`
+/// is the payload width of frame `i` and `frame_track[i]` is the index
+/// (into `tracks`) of the track that owns frame `i`. chdman pads every
+/// track to a 4-frame boundary, so each track's `FRAMES:` payload
+/// frames are followed by padding frames of width 0 that contribute
+/// nothing to the output; `padded` is false only for legacy unpadded
+/// layouts (see [`chd_layout_is_padded`]). Both vecs are laid out
+/// exactly as `extract_hunks` shapes the stream, so hashing frame by
+/// frame through them reproduces the bin `chdman extractcd` writes.
+/// Pure so it is unit-testable against a synthetic CHT2 metadata
+/// string.
+pub(crate) fn chd_frame_spans(tracks: &[ChdTrackInfo], padded: bool) -> (Vec<usize>, Vec<usize>) {
+    let mut frame_sizes = Vec::new();
+    let mut frame_track = Vec::new();
+    for (i, t) in tracks.iter().enumerate() {
+        let physical = if padded {
+            padded_track_frames(t.frames)
+        } else {
+            t.frames
+        } as usize;
+        let datasize = chd_type_datasize(&t.track_type);
+        frame_sizes.extend(std::iter::repeat_n(datasize, t.frames as usize));
+        frame_sizes.extend(std::iter::repeat_n(0, physical - t.frames as usize));
+        frame_track.extend(std::iter::repeat_n(i, physical));
+    }
     (frame_sizes, frame_track)
 }
 
@@ -631,12 +679,20 @@ pub(crate) fn swap_audio_sector(sector: &mut [u8]) {
     }
 }
 
-/// Per-frame audio flags for the decoded CD stream, laid out like
-/// [`chd_frame_spans`]: `true` where the frame's track is AUDIO.
-pub(crate) fn chd_frame_audio(tracks: &[ChdTrackInfo]) -> Vec<bool> {
+/// Per-frame audio flags for the physical CD stream, laid out like
+/// [`chd_frame_spans`] (per-track padding frames included when
+/// `padded`): `true` where the frame's track is AUDIO.
+pub(crate) fn chd_frame_audio(tracks: &[ChdTrackInfo], padded: bool) -> Vec<bool> {
     tracks
         .iter()
-        .flat_map(|t| std::iter::repeat_n(t.track_type == "AUDIO", t.frames as usize))
+        .flat_map(|t| {
+            let physical = if padded {
+                padded_track_frames(t.frames)
+            } else {
+                t.frames
+            } as usize;
+            std::iter::repeat_n(t.track_type == "AUDIO", physical)
+        })
         .collect()
 }
 
@@ -698,9 +754,8 @@ pub async fn extract_from_chd_cancellable(
     // CD bin/cue) is known and the progress bar can size itself
     // before the big spawn_blocking kicks off. `total_frames` comes
     // from the CHT2 track metadata, not from `header.logical_bytes`:
-    // chdman rounds logical_bytes up to a full hunk boundary, so it
-    // can overstate the real sector count by up to
-    // `frames_per_hunk - 1`.
+    // logical_bytes counts the padded physical frames, which the
+    // extracted bin drops.
     let input_for_peek = input_path.clone();
     let (header, total_bin_bytes, is_dvd) =
         tokio::task::spawn_blocking(move || -> ChdResult<(ChdHeaderV5, u64, bool)> {
@@ -712,16 +767,10 @@ pub async fn extract_from_chd_cancellable(
             {
                 return Ok((handle.header, 0, true));
             }
-            let cd_meta = handle
-                .metadata
-                .iter()
-                .find(|m| m.tag == CHD_METADATA_TAG_CD)
-                .ok_or_else(|| {
-                    ChdError::InvalidTrackMetadata("no CHT2 metadata found".to_string())
-                })?;
-            let meta_str = String::from_utf8_lossy(&cd_meta.data);
-            let meta_str = meta_str.trim_end_matches('\0');
-            let tracks = parse_chd_track_metadata(meta_str)?;
+            let meta_str = cd_track_metadata_text(&handle.metadata).ok_or_else(|| {
+                ChdError::InvalidTrackMetadata("no CHT2 metadata found".to_string())
+            })?;
+            let tracks = parse_chd_track_metadata(&meta_str)?;
             let total_bin_bytes: u64 = tracks
                 .iter()
                 .map(|t| t.frames as u64 * chd_type_datasize(&t.track_type) as u64)
@@ -780,23 +829,17 @@ pub async fn extract_from_chd_cancellable(
 
         let handle = open_chd_sync(&input_owned)?;
 
-        let cd_meta = handle
-            .metadata
-            .iter()
-            .find(|m| m.tag == CHD_METADATA_TAG_CD)
+        let meta_str = cd_track_metadata_text(&handle.metadata)
             .ok_or_else(|| ChdError::InvalidTrackMetadata("no CHT2 metadata found".to_string()))?;
-        let meta_str = String::from_utf8_lossy(&cd_meta.data);
-        let meta_str = meta_str.trim_end_matches('\0');
-        let tracks = parse_chd_track_metadata(meta_str)?;
+        let tracks = parse_chd_track_metadata(&meta_str)?;
 
         let hunk_bytes = handle.header.hunk_bytes as usize;
-        // Use the CHT2 `FRAMES:` sums, not `logical_bytes`; see
-        // the outer peek above.
-        let frame_sizes: Vec<usize> = tracks
-            .iter()
-            .flat_map(|t| std::iter::repeat_n(chd_type_datasize(&t.track_type), t.frames as usize))
-            .collect();
-        let frame_audio = chd_frame_audio(&tracks);
+        // Frame maps come from the CHT2 `FRAMES:` counts; padding
+        // frames carry width 0 so they drop out of the bin. Legacy
+        // rom-converto CHDs stored the stream unpadded.
+        let padded = chd_layout_is_padded(&tracks, handle.header.logical_bytes / FRAME_SIZE as u64);
+        let (frame_sizes, _) = chd_frame_spans(&tracks, padded);
+        let frame_audio = chd_frame_audio(&tracks, padded);
 
         let bin_file = std::fs::File::create(&bin_owned)?;
         let mut bin_writer = std::io::BufWriter::with_capacity(IO_BUFFER_SIZE, bin_file);
@@ -1181,17 +1224,13 @@ pub fn digest_chd_tracks(
         return Ok((Vec::new(), whole.finalize(logical_bytes)));
     }
 
-    let cd_meta = handle
-        .metadata
-        .iter()
-        .find(|m| m.tag == CHD_METADATA_TAG_CD)
+    let meta_str = cd_track_metadata_text(&handle.metadata)
         .ok_or_else(|| ChdError::InvalidTrackMetadata("no CHT2 metadata found".to_string()))?;
-    let meta_str = String::from_utf8_lossy(&cd_meta.data);
-    let meta_str = meta_str.trim_end_matches('\0');
-    let tracks = parse_chd_track_metadata(meta_str)?;
+    let tracks = parse_chd_track_metadata(&meta_str)?;
 
-    let (frame_sizes, frame_track) = chd_frame_spans(&tracks);
-    let frame_audio = chd_frame_audio(&tracks);
+    let padded = chd_layout_is_padded(&tracks, handle.header.logical_bytes / FRAME_SIZE as u64);
+    let (frame_sizes, frame_track) = chd_frame_spans(&tracks, padded);
+    let frame_audio = chd_frame_audio(&tracks, padded);
     let mut hashers: Vec<MultiHasher> =
         (0..tracks.len()).map(|_| MultiHasher::new(algos)).collect();
     let mut whole = MultiHasher::new(algos);
@@ -1579,14 +1618,7 @@ mod tests {
 
     fn cd_track_metadata(path: &std::path::Path) -> String {
         let handle = crate::chd::reader::open_chd_sync(path).unwrap();
-        let meta = handle
-            .metadata
-            .iter()
-            .find(|m| m.tag == CHD_METADATA_TAG_CD)
-            .expect("CHT2 metadata present");
-        String::from_utf8_lossy(&meta.data)
-            .trim_end_matches('\0')
-            .to_string()
+        cd_track_metadata_text(&handle.metadata).expect("CHT2 metadata present")
     }
 
     fn has_dvd_tag(path: &std::path::Path) -> bool {
@@ -1867,7 +1899,7 @@ mod tests {
     #[test]
     fn frame_spans_single_data_track() {
         let tracks = parse_chd_track_metadata("TRACK:1 TYPE:MODE1 FRAMES:20 PREGAP:0").unwrap();
-        let (sizes, track) = chd_frame_spans(&tracks);
+        let (sizes, track) = chd_frame_spans(&tracks, true);
         assert_eq!(sizes.len(), 20);
         assert_eq!(track.len(), 20);
         assert!(sizes.iter().all(|&s| s == 2048));
@@ -1885,7 +1917,7 @@ mod tests {
         let meta =
             "TRACK:1 TYPE:MODE1_RAW FRAMES:300 PREGAP:0 TRACK:2 TYPE:AUDIO FRAMES:500 PREGAP:150";
         let tracks = parse_chd_track_metadata(meta).unwrap();
-        let (sizes, track) = chd_frame_spans(&tracks);
+        let (sizes, track) = chd_frame_spans(&tracks, true);
 
         assert_eq!(sizes.len(), 800);
         assert_eq!(track.len(), 800);
@@ -1900,17 +1932,134 @@ mod tests {
         assert_eq!(whole, 800 * 2352);
     }
 
+    /// Track frame counts that are not 4-frame multiples: each track's
+    /// payload frames are followed by width-0 padding frames (10 -> 12,
+    /// 5 -> 8, 7 -> 8 physical frames), matching chdman's layout.
     #[test]
     fn frame_spans_mixed_datasizes() {
         let meta = "TRACK:1 TYPE:MODE1 FRAMES:10 TRACK:2 TYPE:MODE2_FORM1 FRAMES:5 TRACK:3 TYPE:AUDIO FRAMES:7";
         let tracks = parse_chd_track_metadata(meta).unwrap();
-        let (sizes, track) = chd_frame_spans(&tracks);
-        assert_eq!(sizes.len(), 22);
+        let (sizes, track) = chd_frame_spans(&tracks, true);
+        assert_eq!(sizes.len(), 28);
         assert_eq!(&sizes[0..10], &[2048; 10]);
-        assert_eq!(&sizes[10..15], &[2336; 5]);
-        assert_eq!(&sizes[15..22], &[2352; 7]);
-        assert_eq!(&track[9..12], &[0, 1, 1]);
-        assert_eq!(&track[14..16], &[1, 2]);
+        assert_eq!(&sizes[10..12], &[0; 2]);
+        assert_eq!(&sizes[12..17], &[2048; 5]);
+        assert_eq!(&sizes[17..20], &[0; 3]);
+        assert_eq!(&sizes[20..27], &[2352; 7]);
+        assert_eq!(sizes[27], 0);
+        assert_eq!(&track[9..13], &[0, 0, 0, 1]);
+        assert_eq!(&track[19..21], &[1, 2]);
+
+        let audio = chd_frame_audio(&tracks, true);
+        assert_eq!(audio.len(), 28);
+        assert!(!audio[19]);
+        assert!(audio[20..28].iter().all(|&a| a));
+    }
+
+    /// Pre-padding rom-converto builds wrote multi-track streams
+    /// unpadded; when the physical frame count matches the raw
+    /// `FRAMES:` sum the reader must not inject padding.
+    #[test]
+    fn frame_spans_legacy_unpadded_layout() {
+        let meta = "TRACK:1 TYPE:MODE1_RAW FRAMES:10 TRACK:2 TYPE:AUDIO FRAMES:7";
+        let tracks = parse_chd_track_metadata(meta).unwrap();
+        assert!(!chd_layout_is_padded(&tracks, 17));
+        assert!(chd_layout_is_padded(&tracks, 20));
+
+        let (sizes, track) = chd_frame_spans(&tracks, false);
+        assert_eq!(sizes.len(), 17);
+        assert!(sizes.iter().all(|&s| s == 2352));
+        assert_eq!(&track[9..11], &[0, 1]);
+        let audio = chd_frame_audio(&tracks, false);
+        assert_eq!(audio.len(), 17);
+        assert!(!audio[9]);
+        assert!(audio[10]);
+    }
+
+    /// Non-2352 cue tracks would corrupt the uniform raw-sector
+    /// ingest, so they must be refused instead of converted.
+    #[tokio::test]
+    async fn convert_to_chd_rejects_non_raw_cue_tracks() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("game.bin"), vec![0u8; 2048 * 4]).unwrap();
+        let cue_path = dir.path().join("game.cue");
+        std::fs::write(
+            &cue_path,
+            "FILE \"game.bin\" BINARY\n  TRACK 01 MODE1/2048\n    INDEX 01 00:00:00\n",
+        )
+        .unwrap();
+        let err = convert_to_chd(
+            &NoProgress,
+            cue_path,
+            dir.path().join("game.chd"),
+            ChdOptions::default(),
+            CancelToken::new(),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ChdError::UnsupportedCueTrackWidth { .. }));
+    }
+
+    /// 10-frame MODE1/2352 data track + 7-frame AUDIO track; neither
+    /// count is a 4-frame multiple, so both need interior padding.
+    fn write_two_track_cue(dir: &std::path::Path) -> (PathBuf, Vec<u8>) {
+        let mut bin = vec![0u8; 17 * 2352];
+        let mut state = 0x0123_4567_89AB_CDEFu64;
+        for b in bin.iter_mut() {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            *b = state as u8;
+        }
+        let bin_path = dir.join("game.bin");
+        std::fs::write(&bin_path, &bin).unwrap();
+        let cue_path = dir.join("game.cue");
+        std::fs::write(
+            &cue_path,
+            "FILE \"game.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n  TRACK 02 AUDIO\n    INDEX 01 00:00:10\n",
+        )
+        .unwrap();
+        (cue_path, bin)
+    }
+
+    /// Multi-track cue/bin with track frame counts that are not 4-frame
+    /// multiples: the writer must pad each track to a 4-frame boundary
+    /// like `chdman createcd` (10 -> 12, 7 -> 8 frames), and extraction
+    /// must drop the interior padding to restore the original bin
+    /// byte-for-byte.
+    #[tokio::test]
+    async fn multi_track_cue_round_trips_with_padding() {
+        let dir = tempfile::tempdir().unwrap();
+        let (cue_path, bin) = write_two_track_cue(dir.path());
+
+        let chd_path = dir.path().join("game.chd");
+        convert_to_chd(
+            &NoProgress,
+            cue_path,
+            chd_path.clone(),
+            ChdOptions::default(),
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+
+        let meta = cd_track_metadata(&chd_path);
+        assert!(meta.contains("FRAMES:10"), "metadata: {meta}");
+        assert!(meta.contains("FRAMES:7"), "metadata: {meta}");
+        {
+            let handle = crate::chd::reader::open_chd_sync(&chd_path).unwrap();
+            assert_eq!(handle.header.logical_bytes, 20 * 2448);
+        }
+
+        verify_chd(&NoProgress, chd_path.clone(), None, false)
+            .await
+            .unwrap();
+
+        let out_cue = dir.path().join("restored.cue");
+        extract_from_chd(&NoProgress, chd_path, out_cue.clone(), None)
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(out_cue.with_extension("bin")).unwrap(), bin);
     }
 
     /// Cross-checks the CD-iso path against real chdman; set
@@ -1960,6 +2109,75 @@ mod tests {
         convert_iso_to_cd_chd(
             &NoProgress,
             iso_path,
+            our_chd.clone(),
+            ChdOptions::default(),
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+        let status = std::process::Command::new(&chdman)
+            .args(["verify", "-i"])
+            .arg(&our_chd)
+            .status()
+            .expect("run chdman verify");
+        assert!(status.success(), "chdman rejected our CD CHD");
+
+        let info_sha1s = |path: &std::path::Path| -> Vec<String> {
+            let out = std::process::Command::new(&chdman)
+                .args(["info", "-i"])
+                .arg(path)
+                .output()
+                .expect("run chdman info");
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .filter(|l| l.contains("SHA1"))
+                .map(str::to_string)
+                .collect()
+        };
+        assert_eq!(
+            info_sha1s(&their_chd),
+            info_sha1s(&our_chd),
+            "SHA1s must match chdman's output byte-for-byte"
+        );
+    }
+
+    /// Cue/bin twin of [`chdman_cd_iso_parity`]: a multi-track cue
+    /// whose track frame counts are not 4-frame multiples, so the
+    /// interior track padding and the audio byte swap are both
+    /// exercised. Both SHA1s reported by `chdman info` must match
+    /// between the two files, and extracting chdman's own CHD must
+    /// restore the original bin.
+    #[tokio::test]
+    async fn chdman_cd_cue_parity() {
+        let Some(chdman) = std::env::var_os("ROMCONVERTO_CHDMAN") else {
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let (cue_path, bin) = write_two_track_cue(dir.path());
+
+        let their_chd = dir.path().join("their.chd");
+        let status = std::process::Command::new(&chdman)
+            .args(["createcd", "-i"])
+            .arg(&cue_path)
+            .arg("-o")
+            .arg(&their_chd)
+            .status()
+            .expect("run chdman createcd");
+        assert!(status.success(), "chdman createcd failed");
+
+        let restored_cue = dir.path().join("restored.cue");
+        extract_from_chd(&NoProgress, their_chd.clone(), restored_cue.clone(), None)
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read(restored_cue.with_extension("bin")).unwrap(),
+            bin
+        );
+
+        let our_chd = dir.path().join("our.chd");
+        convert_to_chd(
+            &NoProgress,
+            cue_path,
             our_chd.clone(),
             ChdOptions::default(),
             CancelToken::new(),

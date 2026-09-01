@@ -1,6 +1,11 @@
 use crate::chd::error::{ChdError, ChdResult};
 use crate::cue::models::Msf;
 
+/// Upper bound on a CHT2 `FRAMES:` value: far above any real disc
+/// (~360k frames) while keeping the padding math clear of u32
+/// overflow on hostile metadata.
+const MAX_TRACK_FRAMES: u32 = 0x00FF_FFFF;
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ChdTrackInfo {
     pub track_number: u8,
@@ -39,9 +44,13 @@ pub(crate) fn parse_chd_track_metadata(metadata_str: &str) -> ChdResult<Vec<ChdT
                 }
                 "FRAMES" => {
                     if let Some(ref mut track) = current {
-                        track.frames = value
+                        let frames: u32 = value
                             .parse()
                             .map_err(|_| ChdError::InvalidTrackMetadata(token.to_string()))?;
+                        if frames > MAX_TRACK_FRAMES {
+                            return Err(ChdError::InvalidTrackMetadata(token.to_string()));
+                        }
+                        track.frames = frames;
                     }
                 }
                 "PREGAP" => {
@@ -134,19 +143,22 @@ fn chd_type_to_cue_type(chd_type: &str) -> &'static str {
         "MODE1_RAW" => "MODE1/2352",
         "MODE1" => "MODE1/2048",
         "MODE2_RAW" => "MODE2/2352",
-        "MODE2_FORM1" => "MODE2/2336",
-        "MODE2_FORM2" => "MODE2/2352",
+        "MODE2" | "MODE2_FORM_MIX" => "MODE2/2336",
+        "MODE2_FORM1" => "MODE2/2048",
+        "MODE2_FORM2" => "MODE2/2324",
         _ => "MODE1/2352",
     }
 }
 
-/// Bytes of frame payload the extracted bin carries per track type.
-/// Mirrors [`chd_type_to_cue_type`] so the generated cue sheet and
-/// the bin widths always agree.
+/// Bytes of frame payload the extracted bin carries per track type,
+/// matching the datasizes in chdman's `get_info_from_type_string`
+/// (`src/lib/util/cdrom.cpp`). Mirrors [`chd_type_to_cue_type`] so
+/// the generated cue sheet and the bin widths always agree.
 pub(crate) fn chd_type_datasize(chd_type: &str) -> usize {
     match chd_type {
-        "MODE1" => 2048,
-        "MODE2_FORM1" => 2336,
+        "MODE1" | "MODE2_FORM1" => 2048,
+        "MODE2_FORM2" => 2324,
+        "MODE2" | "MODE2_FORM_MIX" => 2336,
         _ => 2352,
     }
 }
@@ -203,13 +215,21 @@ mod tests {
     }
 
     #[test]
+    fn parse_oversized_frames_fails() {
+        let result = parse_chd_track_metadata("TRACK:1 TYPE:MODE1_RAW FRAMES:4294967295");
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn type_mappings() {
         assert_eq!(chd_type_to_cue_type("AUDIO"), "AUDIO");
         assert_eq!(chd_type_to_cue_type("MODE1_RAW"), "MODE1/2352");
         assert_eq!(chd_type_to_cue_type("MODE1"), "MODE1/2048");
         assert_eq!(chd_type_to_cue_type("MODE2_RAW"), "MODE2/2352");
-        assert_eq!(chd_type_to_cue_type("MODE2_FORM1"), "MODE2/2336");
-        assert_eq!(chd_type_to_cue_type("MODE2_FORM2"), "MODE2/2352");
+        assert_eq!(chd_type_to_cue_type("MODE2"), "MODE2/2336");
+        assert_eq!(chd_type_to_cue_type("MODE2_FORM1"), "MODE2/2048");
+        assert_eq!(chd_type_to_cue_type("MODE2_FORM2"), "MODE2/2324");
+        assert_eq!(chd_type_to_cue_type("MODE2_FORM_MIX"), "MODE2/2336");
     }
 
     #[test]
@@ -290,7 +310,10 @@ mod tests {
         assert_eq!(chd_type_datasize("MODE1"), 2048);
         assert_eq!(chd_type_datasize("MODE1_RAW"), 2352);
         assert_eq!(chd_type_datasize("MODE2_RAW"), 2352);
-        assert_eq!(chd_type_datasize("MODE2_FORM1"), 2336);
+        assert_eq!(chd_type_datasize("MODE2"), 2336);
+        assert_eq!(chd_type_datasize("MODE2_FORM1"), 2048);
+        assert_eq!(chd_type_datasize("MODE2_FORM2"), 2324);
+        assert_eq!(chd_type_datasize("MODE2_FORM_MIX"), 2336);
         assert_eq!(chd_type_datasize("AUDIO"), 2352);
         assert_eq!(chd_type_datasize("BOGUS"), 2352);
     }

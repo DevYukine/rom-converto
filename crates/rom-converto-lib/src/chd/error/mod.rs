@@ -46,6 +46,14 @@ pub enum ChdError {
     #[error("DVD mode needs a flat .iso input; a .cue describes a CD-layout disc, drop --dvd")]
     DvdModeNeedsIso,
 
+    /// A cue track whose sector width is not 2352 bytes; the CD ingest
+    /// reads a uniform raw-sector bin.
+    #[error(
+        "cue track type {cue_type} is not a 2352-byte raw track; convert from a raw bin/cue \
+         dump (or a flat .iso for 2048-byte data discs)"
+    )]
+    UnsupportedCueTrackWidth { cue_type: &'static str },
+
     /// Compressing a CHD map hunk failed.
     #[error("CHD map compression failed")]
     MapCompressionError,

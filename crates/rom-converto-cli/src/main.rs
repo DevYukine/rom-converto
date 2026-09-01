@@ -4412,10 +4412,11 @@ fn save_dol_banner(info: &rom_converto_lib::info::DolInfo, dir: &std::path::Path
         return Ok(());
     };
     std::fs::create_dir_all(dir)?;
-    let stem = if info.game_id.is_empty() {
+    let stem = rom_converto_lib::util::template::sanitize_file_stem(&info.game_id);
+    let stem = if stem.is_empty() {
         "gamecube-banner".to_string()
     } else {
-        info.game_id.clone()
+        stem
     };
     let path = dir.join(format!("{stem}.png"));
     std::fs::write(&path, &img.png_bytes)?;
@@ -4429,10 +4430,11 @@ fn save_ctr_icon(info: &rom_converto_lib::info::CtrInfo, dir: &std::path::Path) 
         return Ok(());
     };
     std::fs::create_dir_all(dir)?;
-    let stem = if info.title_id.is_empty() {
+    let stem = rom_converto_lib::util::template::sanitize_file_stem(&info.title_id);
+    let stem = if stem.is_empty() {
         "ctr-icon".to_string()
     } else {
-        info.title_id.clone()
+        stem
     };
     let path = dir.join(format!("{stem}.png"));
     std::fs::write(&path, &img.png_bytes)?;
@@ -4453,7 +4455,10 @@ fn save_xex_icon(
         return Ok(());
     };
     std::fs::create_dir_all(dir)?;
-    let path = dir.join(format!("{}.png", xex.title_id_hex));
+    let path = dir.join(format!(
+        "{}.png",
+        rom_converto_lib::util::template::sanitize_file_stem(&xex.title_id_hex)
+    ));
     std::fs::write(&path, &img.png_bytes)?;
     log::info!("Wrote {}", path.display());
     Ok(())
@@ -4485,10 +4490,11 @@ fn save_rvl_image(info: &rom_converto_lib::info::RvlInfo, dir: &std::path::Path)
         return Ok(());
     };
     std::fs::create_dir_all(dir)?;
-    let stem = if info.game_id.is_empty() {
+    let stem = rom_converto_lib::util::template::sanitize_file_stem(&info.game_id);
+    let stem = if stem.is_empty() {
         "wii-banner".to_string()
     } else {
-        info.game_id.clone()
+        stem
     };
     let path = dir.join(format!("{stem}.png"));
     std::fs::write(&path, &img.png_bytes)?;
@@ -4502,7 +4508,10 @@ fn save_wup_image(info: &rom_converto_lib::info::WupInfo, dir: &std::path::Path)
         return Ok(());
     };
     std::fs::create_dir_all(dir)?;
-    let path = dir.join(format!("{}.png", info.title_id_hex));
+    let path = dir.join(format!(
+        "{}.png",
+        rom_converto_lib::util::template::sanitize_file_stem(&info.title_id_hex)
+    ));
     std::fs::write(&path, &img.png_bytes)?;
     log::info!("Wrote {}", path.display());
     Ok(())

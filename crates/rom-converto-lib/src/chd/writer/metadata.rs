@@ -1,11 +1,13 @@
 use crate::chd::error::ChdResult;
-use crate::chd::models::{CHD_METADATA_FLAG_HASHED, ChdMetadataHeader, SHA1_BYTES};
+use crate::chd::models::{
+    CHD_METADATA_FLAG_HASHED, CHD_METADATA_HEADER_BYTES, CHD_V5_HEADER_SIZE, ChdMetadataHeader,
+    SHA1_BYTES,
+};
 use crate::cue::models::{CueSheet, TrackType};
 use binrw::BinWrite;
 use sha1::{Digest, Sha1};
 use std::io::Cursor;
 
-const TRACK_INFO_SEPARATOR: char = ' ';
 // chdman leaves PGTYPE at its MODE1 default unless the pregap data is
 // stored in-file, which this writer never does.
 const PREGAP_TYPE: &str = "MODE1";
@@ -39,78 +41,109 @@ pub fn generate_dvd_metadata() -> ChdResult<MetadataBlock> {
     })
 }
 
-/// Per-frame audio flags for the CHD stream: `true` where the frame
-/// belongs to an AUDIO track. MAME byte-swaps audio sector samples on
-/// ingest and swaps them back on extract; the writer consults this to
-/// swap the right frames before hashing and compressing. Track spans
-/// use the same primary-index frame offsets as the CHT2 metadata.
-pub fn cd_audio_frame_map(cue_sheet: &CueSheet, total_frames: u32) -> Vec<bool> {
-    let track_starts: Vec<u32> = cue_sheet
+/// Per-track `(start, frames)` spans in source frames, derived from
+/// each track's INDEX 01 offset. The first track always starts at 0
+/// so a nonzero first INDEX cannot silently drop the head of the bin.
+fn track_spans(cue_sheet: &CueSheet, data_frames: u32) -> Vec<(u32, u32)> {
+    let starts: Vec<u32> = cue_sheet
         .tracks
         .iter()
-        .map(|track| track.primary_index_lba().unwrap_or(0))
+        .enumerate()
+        .map(|(idx, track)| {
+            if idx == 0 {
+                0
+            } else {
+                track.primary_index_lba().unwrap_or(0).min(data_frames)
+            }
+        })
         .collect();
-
-    let mut map = vec![false; total_frames as usize];
-    for (idx, track) in cue_sheet.tracks.iter().enumerate() {
-        if !matches!(track.track_type, TrackType::Audio) {
-            continue;
-        }
-        let start = track_starts[idx].min(total_frames) as usize;
-        let end = track_starts
-            .get(idx + 1)
-            .copied()
-            .unwrap_or(total_frames)
-            .min(total_frames)
-            .max(start as u32) as usize;
-        map[start..end].fill(true);
-    }
-    map
+    (0..cue_sheet.tracks.len())
+        .map(|idx| {
+            let start = starts[idx];
+            let end = starts
+                .get(idx + 1)
+                .copied()
+                .unwrap_or(data_frames)
+                .clamp(start, data_frames);
+            (start, end - start)
+        })
+        .collect()
 }
 
-pub fn generate_cd_metadata(cue_sheet: &CueSheet, total_frames: u32) -> ChdResult<MetadataBlock> {
-    let mut metadata_buffer = Vec::new();
-
-    // CDs use a single metadata entry that lists every track.
-    let mut track_info = String::new();
-    let track_starts: Vec<u32> = cue_sheet
+/// Per-frame maps for the physical CHD stream, each track padded to
+/// chdman's 4-frame boundary. `.0` is `true` where the frame carries
+/// source data (`false` for the zero padding frames appended per
+/// track); `.1` is `true` where the frame belongs to an AUDIO track.
+/// MAME byte-swaps audio sector samples on ingest and swaps them back
+/// on extract; the writer consults `.1` to swap the right frames
+/// before hashing and compressing. Track spans use the same
+/// primary-index frame offsets as the CHT2 metadata; `data_frames` is
+/// the unpadded source frame count.
+pub fn cd_frame_layout(cue_sheet: &CueSheet, data_frames: u32) -> (Vec<bool>, Vec<bool>) {
+    let mut is_data = Vec::new();
+    let mut is_audio = Vec::new();
+    for (track, (_, frames)) in cue_sheet
         .tracks
         .iter()
-        .map(|track| track.primary_index_lba().unwrap_or(0))
-        .collect();
+        .zip(track_spans(cue_sheet, data_frames))
+    {
+        let padded = crate::chd::padded_track_frames(frames);
+        let audio = matches!(track.track_type, TrackType::Audio);
+        is_data.extend(std::iter::repeat_n(true, frames as usize));
+        is_data.extend(std::iter::repeat_n(false, (padded - frames) as usize));
+        is_audio.extend(std::iter::repeat_n(audio, padded as usize));
+    }
+    (is_data, is_audio)
+}
 
-    for (idx, track) in cue_sheet.tracks.iter().enumerate() {
-        if idx > 0 {
-            track_info.push(TRACK_INFO_SEPARATOR);
-        }
-
-        let start_frame = track_starts[idx];
-        let end_frame = track_starts.get(idx + 1).copied().unwrap_or(total_frames);
-        let frames = end_frame.saturating_sub(start_frame);
+/// One CHT2 metadata entry per track, chained through the reserved
+/// bytes (the on-disk `next` offset), exactly as chdman's
+/// `write_metadata` lays them out right after the V5 header.
+pub fn generate_cd_metadata(cue_sheet: &CueSheet, total_frames: u32) -> ChdResult<MetadataBlock> {
+    let mut entries = Vec::new();
+    for (track, (_, frames)) in cue_sheet
+        .tracks
+        .iter()
+        .zip(track_spans(cue_sheet, total_frames))
+    {
         let pregap = track.pregap.map(|p| p.to_lba()).unwrap_or(0);
 
         // Format: TRACK:n TYPE:type SUBTYPE:NONE FRAMES:nnn PREGAP:n PGTYPE:type PGSUB:NONE POSTGAP:0
-        track_info.push_str(&format!(
+        entries.push(ChdMetadataHeader::new_cd_metadata(format!(
             "TRACK:{} TYPE:{} SUBTYPE:NONE FRAMES:{} PREGAP:{} PGTYPE:{} PGSUB:NONE POSTGAP:0",
             track.number,
             track.track_type.chd_metadata_type(),
             frames,
             pregap,
             PREGAP_TYPE
-        ));
+        )));
     }
 
-    let metadata = ChdMetadataHeader::new_cd_metadata(track_info);
-    let mut cursor = Cursor::new(&mut metadata_buffer);
-    metadata.write(&mut cursor)?;
+    // Each entry's reserved field is the absolute file offset of the
+    // next entry (the metadata list starts right after the header);
+    // the last entry keeps zeros to terminate the chain.
+    let mut offset = CHD_V5_HEADER_SIZE as u64;
+    let count = entries.len();
+    for (i, entry) in entries.iter_mut().enumerate() {
+        let size = CHD_METADATA_HEADER_BYTES as u64 + entry.data.len() as u64;
+        if i + 1 < count {
+            entry.reserved = (offset + size).to_be_bytes();
+        }
+        offset += size;
+    }
 
+    let mut metadata_buffer = Vec::new();
     let mut hashes = Vec::new();
-    if metadata.flags & CHD_METADATA_FLAG_HASHED != 0 {
-        let sha1: [u8; SHA1_BYTES] = Sha1::digest(&metadata.data).into();
-        hashes.push(MetadataHash {
-            tag: metadata.tag,
-            sha1,
-        });
+    let mut cursor = Cursor::new(&mut metadata_buffer);
+    for entry in &entries {
+        entry.write(&mut cursor)?;
+        if entry.flags & CHD_METADATA_FLAG_HASHED != 0 {
+            let sha1: [u8; SHA1_BYTES] = Sha1::digest(&entry.data).into();
+            hashes.push(MetadataHash {
+                tag: entry.tag,
+                sha1,
+            });
+        }
     }
 
     Ok(MetadataBlock {

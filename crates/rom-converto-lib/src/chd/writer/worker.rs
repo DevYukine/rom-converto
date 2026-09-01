@@ -147,11 +147,11 @@ pub(super) struct HunkCompressArgs<'a> {
 ///   calls `write_all` on the output `BufWriter` so writes overlap
 ///   with reads and compresses.
 ///
-/// `total_sectors` includes any track padding frames; only the first
-/// `data_sectors` are read from the source (`sector_data_size` bytes
-/// each, 2352 for raw bin tracks, 2048 for MODE1/2048 ISO data). The
-/// padding frames stay zero but are still hashed: chdman includes
-/// them in the raw SHA-1.
+/// `frame_data[i]` marks the frames read from the source
+/// (`sector_data_size` bytes each, 2352 for raw bin tracks, 2048 for
+/// MODE1/2048 ISO data); the interleaved per-track padding frames
+/// stay zero but are still hashed: chdman includes them in the raw
+/// SHA-1.
 ///
 /// `state.writer_pos` is the file position **before** the next
 /// compressed hunk would land. The caller owns it and passes it
@@ -160,8 +160,7 @@ pub(super) fn compress_hunks(
     pool: &Pool<ChdCompressWork, ChdCompressedOut, ChdError>,
     state: HunkWriteState<'_>,
     args: HunkCompressArgs<'_>,
-    total_sectors: u32,
-    data_sectors: u32,
+    frame_data: &[bool],
     sector_data_size: usize,
     cd_audio_frames: &[bool],
 ) -> ChdResult<()> {
@@ -173,7 +172,8 @@ pub(super) fn compress_hunks(
         cancel,
     } = args;
     let frames_per_hunk = hunk_bytes / FRAME_SIZE;
-    let total_hunks = total_sectors.div_ceil(frames_per_hunk as u32) as u64;
+    let total_sectors = frame_data.len();
+    let total_hunks = total_sectors.div_ceil(frames_per_hunk) as u64;
 
     run_pipeline(
         pool,
@@ -185,28 +185,24 @@ pub(super) fn compress_hunks(
             if cancel.is_cancelled() {
                 return Err(ChdError::Cancelled);
             }
-            let first_sector = (chunk_idx as u32) * frames_per_hunk as u32;
-            let sectors_in_hunk = frames_per_hunk.min((total_sectors - first_sector) as usize);
-            let read_sectors =
-                (data_sectors.saturating_sub(first_sector) as usize).min(sectors_in_hunk);
-            let read_bytes = read_sectors * sector_data_size;
-
-            let mut sector_buf = vec![0u8; read_bytes];
-            reader.read_exact(&mut sector_buf)?;
+            let first_sector = chunk_idx as usize * frames_per_hunk;
+            let sectors_in_hunk = frames_per_hunk.min(total_sectors - first_sector);
 
             let mut hunk = vec![0u8; hunk_bytes];
-            for s in 0..read_sectors {
-                let src = s * sector_data_size;
-                let dst = s * FRAME_SIZE;
-                hunk[dst..dst + sector_data_size]
-                    .copy_from_slice(&sector_buf[src..src + sector_data_size]);
+            let mut read_bytes = 0usize;
+            for s in 0..sectors_in_hunk {
+                if frame_data[first_sector + s] {
+                    let dst = s * FRAME_SIZE;
+                    reader.read_exact(&mut hunk[dst..dst + sector_data_size])?;
+                    read_bytes += sector_data_size;
+                }
             }
             // Byte-swap 16-bit samples of audio-track sectors before
             // hashing or compressing, so the stored data and raw SHA-1
             // match chdman (which swaps audio on ingest).
             for s in 0..sectors_in_hunk {
                 if cd_audio_frames
-                    .get(first_sector as usize + s)
+                    .get(first_sector + s)
                     .copied()
                     .unwrap_or(false)
                 {
