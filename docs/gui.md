@@ -35,7 +35,10 @@ the sidebar:
 | Switch | Compress to NSZ/XCZ, Decompress NSZ/XCZ, Verify Switch container, Switch info |
 | CHD | Compress to CHD, Extract CHD, Extract to CSO/ZSO, Verify CHD, CHD info |
 | CSO/ZSO | Compress to CSO/ZSO, Decompress CSO/ZSO, Compress to CHD, Verify CSO/ZSO, CSO/ZSO info |
-| CD (CUE/BIN) | Merge multi-bin |
+| CD (CUE/BIN) | Merge multi-bin, Convert CUE/BIN |
+| Xbox | Convert ISO → XISO, Extract XISO, Xbox info |
+| Xbox 360 | Compress to ZAR, Extract ZArchive, Verify Xbox 360, Xbox 360 info |
+| PlayStation 3 | Decrypt ISO, PS3 info |
 | Utilities | Hash, Playlist, Settings |
 | DAT | Verify, Scan, Rename |
 
@@ -59,6 +62,10 @@ CLI command to its GUI page.
 | `wup compress`, `decrypt`, `verify`, `info` | Wii U |
 | `nx compress`, `decompress`, `verify`, `info` | Switch |
 | `cue merge` | Merge multi-bin |
+| `cue to-iso`, `to-cso` | Convert CUE/BIN |
+| `xbox convert`, `extract`, `info` | Xbox |
+| `xenon compress`, `extract`, `verify`, `info` | Xbox 360 |
+| `ps3 decrypt`, `info` | PlayStation 3 |
 | `hash` | Utilities: Hash |
 | `playlist` | Utilities: Playlist |
 | `dat verify`, `scan`, `rename` | DAT |
@@ -169,6 +176,10 @@ output and adds time proportional to its size.
 Every option control carries a small info glyph next to its label. Hovering or keyboard-focusing
 it shows a tooltip explaining what the option does, with wording that matches the CLI help for
 the same flag. The conflict picker additionally describes each policy inline in its dropdown.
+
+The prod.keys row on Switch pages is colored green once the key file resolves and red when
+none is found. It is re-probed live as files are added, so dropping keys into the default
+location turns the row green without restarting the app.
 
 ## Option gating
 

@@ -41,7 +41,7 @@ pub mod xenon;
 	author,                   // pulls env!("CARGO_PKG_AUTHORS")
 	version = env!("ROM_CONVERTO_DISPLAY_VERSION"),
 	about,                    // doc-comment or Cargo.toml description
-	long_about = "Encrypt, decrypt, compress, convert, and verify ROMs and disc images\n\nEach top-level command is a console/format family (ctr, dol, rvl, wup, nx, chd, cso, cue, xbox, xenon); each has operations like compress, decompress, verify and info. Output is auto-derived from the input unless you pass an explicit OUTPUT, -o/--output, or --output-dir. Pass -R/--recursive to process every matching file in a directory.",
+	long_about = "Encrypt, decrypt, compress, convert, and verify ROMs and disc images\n\nEach top-level command is a console/format family (ctr, dol, rvl, wup, nx, chd, cso, cue, ps3, xbox, xenon); each has operations like compress, decompress, verify and info. Output is auto-derived from the input unless you pass an explicit OUTPUT, -o/--output, or --output-dir. Pass -R/--recursive to process every matching file in a directory.",
 	help_template = "\
 {before-help}{name} {version}\n\
 {about-with-newline}\n\

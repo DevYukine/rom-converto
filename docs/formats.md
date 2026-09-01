@@ -21,6 +21,7 @@ the tool and docs.
 | CD (`cue`) | disc image | `.cue`+`.bin` | merged `.bin`/`.cue` | merge |
 | Original Xbox (`xbox`) | disc image | `.iso`, game directory | XISO | convert / extract |
 | Xbox 360 (`xenon`) | disc image | `.iso`, game directory | ZAR | compress / extract |
+| PlayStation 3 (`ps3`) | disc image | encrypted `.iso` | decrypted `.iso` | decrypt |
 
 Restoring a CHD is always called "extract", because it recreates sidecar files (`.bin`+`.cue`
 for CD, `.iso` for DVD). Every other format uses "decompress" for the reverse operation. The
@@ -56,6 +57,9 @@ collective phrase for all inputs is "ROMs and disc images".
   padding; rebuilding to XISO drops it, typically shrinking the file substantially.
 - **ZAR** is the ZArchive container: zstd level 6 in 64 KiB blocks with an integrity hash.
   Supported by Xenia since 2024.
+- **PS3 decrypt** turns an encrypted disc `.iso` into a plain `.iso`. It is an AES-128-CBC
+  sector decrypt: only the sector spans the disc's region table marks encrypted are
+  transformed; the rest passes through unchanged.
 
 ## Output compatibility
 
@@ -92,6 +96,7 @@ consoles; ZAR loads in Xenia.
 | 3DS emulation (Azahar) | decrypted ROM, or Z3DS for storage |
 | Original Xbox emulation (xemu) | XISO |
 | Xbox 360 emulation (Xenia) | ZAR |
+| PlayStation 3 emulation (RPCS3) | decrypted `.iso` |
 
 DVD-mode CHDs use compatibility-first codecs (`lzma` + `zlib`) that load everywhere, including
 AetherSX2 and NetherSX2. The opt-in `--zstd` flag adds a better ratio for modern players; some

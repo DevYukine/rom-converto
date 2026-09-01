@@ -147,7 +147,7 @@ const ps3: OpDef = {
 	resultKind: "convert",
 	title: "Decrypt PS3 ISO",
 	subtitle: "Removes disc encryption for emulator use.",
-	dropText: "Drop encrypted .iso files or folders. Needs a sibling .dkey or an explicit key file",
+	dropText: "Drop encrypted .iso files or folders. Uses the built-in key database or a sibling .dkey if no key is set",
 	acceptedExts: ["iso", ...ARCHIVE_EXTS],
 	browseFilters: [{ name: "PS3 ISO", extensions: ["iso"] }],
 	fields: [
@@ -157,7 +157,7 @@ const ps3: OpDef = {
 			label: "Disc key (.dkey)",
 			filters: [{ name: "Disc key", extensions: ["dkey"] }],
 			display: (s) => (s.key ? `${basename(s.key)} ✓` : "sibling .dkey"),
-			tooltip: "The disc's 16-byte data key. When left empty, a sibling <input>.dkey next to the ISO is used automatically.",
+			tooltip: "The disc's 16-byte data key. When left empty, it is looked up in the built-in database by the disc's title ID, then a sibling <input>.dkey next to the ISO.",
 		},
 		{
 			kind: "toggle",
@@ -168,7 +168,7 @@ const ps3: OpDef = {
 		},
 		...recursiveFields(),
 	],
-	note: "The data key is resolved from the key field above, else a sibling <input>.dkey.",
+	note: "The data key is resolved from the key field above, else the built-in database by title ID, else a sibling <input>.dkey.",
 	outputRows: [
 		{
 			kind: "directory",

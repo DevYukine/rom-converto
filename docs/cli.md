@@ -121,13 +121,13 @@ run.
 
 Where a command reads a single image, you can point it at a `.zip`, `.7z`, `.rar`, `.tar`,
 or `.tar.gz`/`.tgz` archive instead of a plain file. This covers `compress`, `decompress`,
-`convert`, `extract`, `verify`, and `info` across the `ctr`, `dol`, `rvl`, `nx`, `chd`, and
-`cso` command groups (including `chd to-cso` and `cso to-chd`), plus `hash` and single-file
-`dat verify`/`dat identify`. The first member matching the command's format is extracted
-to a temporary directory, run through the normal pipeline, and deleted when the command
-finishes. Output lands next to the archive, named after the member (so `game.zip` holding
-`game.iso` produces `game.chd` beside the zip). When a matched member is a `.cue`, the bin
-tracks it references are extracted alongside it.
+`convert`, `extract`, `verify`, and `info` across the `ctr`, `dol`, `rvl`, `nx`, `chd`, `cso`,
+and `ps3` command groups (including `chd to-cso` and `cso to-chd`), plus `hash` and
+single-file `dat verify`/`dat identify`. The first member matching the command's format is
+extracted to a temporary directory, run through the normal pipeline, and deleted when the
+command finishes. Output lands next to the archive, named after the member (so `game.zip`
+holding `game.iso` produces `game.chd` beside the zip). When a matched member is a `.cue`,
+the bin tracks it references are extracted alongside it.
 
 Archive input applies to a single file argument. The `--recursive` walkers still descend
 directories only, so keep archives out of a tree you scan with `-R`, or unpack them first.
@@ -143,8 +143,8 @@ no tar container) is not supported; extract it first.
 
 ### Run reports
 
-Pass `--report <FILE>` to `compress`, `decompress`, `chd extract`, `hash`, or the
-`dat verify`, `scan`, and `rename` commands to write a structured report after the run.
+Pass `--report <FILE>` to `compress`, `decompress`, `chd extract`, `ps3 decrypt`, `hash`, or
+the `dat verify`, `scan`, and `rename` commands to write a structured report after the run.
 The format is chosen from the file extension: `.csv` writes CSV, `.json` writes JSON,
 `.html` and `.htm` write a self-contained HTML table, and any other extension writes JSON.
 The report file is overwritten directly and does not go through `--on-conflict`. The
@@ -210,7 +210,8 @@ rejected.
 `--output-template` conflicts with an explicit `OUTPUT` positional or `-o`/`--output`, and
 is command-line only (not read from the config file). `wup compress` does not accept it,
 because it packs many inputs into one `.wua`. CTR supports it for single-file runs; its
-recursive runs use the mirrored layout.
+recursive runs use the mirrored layout. `ps3 decrypt` also supports it, single-file runs
+only.
 
 ### Cancellation
 
@@ -476,12 +477,58 @@ still writes CSO or ZSO only.
 ## cue (CD)
 
 ```
-rom-converto cue merge <INPUT_CUE> <OUTPUT_CUE>
+rom-converto cue <SUBCOMMAND> <INPUT> [OUTPUT]
 ```
 
-Merge a multi-bin `.cue` (one `.bin` per track) into a single `.bin` + `.cue` pair, for
-emulators that cannot load split images. The merged `.bin` is named after the output `.cue`.
-`merge` takes `--on-conflict` (and `-f`) only; the `.bin` sidecar follows the renamed `.cue`.
+| Subcommand | Description |
+|---|---|
+| `merge <INPUT_CUE> <OUTPUT_CUE>` | Merge a multi-bin `.cue` into a single `.bin` + `.cue` pair |
+| `to-iso <INPUT> [OUTPUT]` | Convert a `.cue`/`.bin` disc image's data track to a plain `.iso` |
+| `to-cso <INPUT> [OUTPUT]` | Convert a `.cue`/`.bin` disc image's data track straight to `.cso`/`.zso` |
+
+| Flag | Applies to | Description |
+|---|---|---|
+| `--output-dir <DIR>` | `to-iso`, `to-cso` | Write outputs under this directory instead of beside each input |
+| `--format <cso\|zso>` | `to-cso` | Output container: CSO for PSP/PPSSPP, ZSO for PS2 via Open PS2 Loader (default `zso`) |
+| `-R, --recursive` | `to-iso`, `to-cso` | Convert every `.cue` found in `INPUT` and its subdirectories |
+| `--max-depth <N>` | `to-iso`, `to-cso` | Maximum directory depth under `--recursive`. 1 = top level only |
+
+`merge` combines one `.bin` per track (for emulators that cannot load split images) into a
+single `.bin` named after the output `.cue`. It takes `--on-conflict` (and `-f`) only; the
+`.bin` sidecar follows the renamed `.cue`.
+
+`to-iso` extracts the first track, which must be a MODE1/MODE2 data track, to 2048-byte ISO
+sectors; any audio tracks are skipped. `to-cso` extracts the data track to a temporary ISO,
+compresses it, and always removes the temporary ISO afterward.
+
+## ps3 (PlayStation 3)
+
+```
+rom-converto ps3 <SUBCOMMAND> <INPUT> [OUTPUT]
+```
+
+| Subcommand | Description |
+|---|---|
+| `decrypt <INPUT> [OUTPUT]` | Decrypt an encrypted PS3 ISO into a plain ISO |
+| `info <INPUT>` | Inspect PS3 disc metadata. See [info](#info) |
+
+| Flag | Applies to | Description |
+|---|---|---|
+| `--key <FILE>` | `decrypt` | Disc data key file (`.dkey`). Optional, see key resolution below. Can't be combined with `--recursive` |
+| `--skip-probe` | `decrypt` | Skip the encryption and key verification probe (use if a correct key is rejected) |
+| `--output-dir <DIR>` | `decrypt` | Write outputs under this directory instead of beside each input |
+| `--output-template <TEMPLATE>` | `decrypt` | Output path template for single-file runs. See [Output-path templates](#output-path-templates) |
+| `-R, --recursive` | `decrypt` | Decrypt every `.iso` found in `INPUT` and its subdirectories |
+| `--max-depth <N>` | `decrypt` | Maximum directory depth under `--recursive`. 1 = top level only |
+| `--report <FILE>` | `decrypt` | Write a run report. See [Run reports](#run-reports) |
+
+The disc alternates plain and encrypted sector regions; encrypted regions are AES-128-CBC
+decrypted with the per-disc data key. Output covers the region table's sector span, so
+trailing padding past it is not copied.
+
+The data key is resolved in order: explicit `--key`, else the built-in disc key database
+looked up by the disc's title ID, else a sibling `<input>.dkey`. `--key` cannot be combined
+with `--recursive`, since one key can't be right for every disc in a batch.
 
 ## xbox (Original Xbox)
 
@@ -675,13 +722,14 @@ field (`ISO`, `RVZ`, `WBFS`, `GCZ`, `WIA`, or `NKit`).
 |---|---|
 | `--json` | Emit a machine-readable payload instead of the formatted report |
 | `--save-icon <DIR>` | Write the embedded icon as `<title_id>.png` into `DIR`. Supported by `ctr`, `dol`, `rvl`, `nx`, `wup`, and `xenon`; `chd` and `cso` carry no artwork; `xbox` carries an XPR title image that is not extracted |
-| `--keys <FILE>` | `prod.keys` for `nx info`, or a disc master key file for `wup info` on `.wud`/`.wux`. Other consoles do not use it |
+| `--keys <FILE>` | `prod.keys` for `nx info`, a disc master key file for `wup info` on `.wud`/`.wux`, or a `.dkey` file for `ps3 info`. Other consoles do not use it |
 
 Coverage per family: `ctr` reads CIA/NCSD/NCCH and Z3DS variants; `dol` reads `.iso`,
 `.gcm`, `.rvz`, `.gcz`, and NKit; `rvl` reads `.iso`, `.rvz`, `.wbfs`, `.wia`, `.gcz`, and
 NKit through the same streaming migration readers the `migrate` command uses; `wup` reads
 loadiine and NUS directories, `.wua` archives, and `.wud`/`.wux` disc images; `nx` reads
-NSP/NSZ/XCI/XCZ; `chd` reads CHD v5; `cso` reads CSO/ZSO/DAX. NFS and TGC are not
+NSP/NSZ/XCI/XCZ; `chd` reads CHD v5; `cso` reads CSO/ZSO/DAX; `ps3` reads the region table
+and title metadata from plain or encrypted ISOs, no key required. NFS and TGC are not
 supported.
 
 ## shell-completions

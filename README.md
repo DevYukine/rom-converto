@@ -20,6 +20,7 @@ rom-converto converts, compresses, verifies, encrypts, and decrypts ROMs and dis
 | CD (`cue`) | `.cue`+`.bin` | merged `.bin`/`.cue` | any emulator |
 | Xbox (`xbox`) | full disc image or folder | XISO | xemu |
 | Xbox 360 (`xenon`) | full disc image or folder | ZAR | Xenia |
+| PlayStation 3 (`ps3`) | encrypted `.iso` | decrypted `.iso` | RPCS3 |
 
 For RVZ and NSZ/XCZ the output is byte-identical to the reference encoder (Dolphin, nsz) at matching settings, so it verifies against that tool and loads in the same players. CSO/ZSO output is maxcso-compatible and CHD output matches chdman's `createcd`/`createdvd`, so both interoperate with their reference tools. See [`docs/formats.md`](docs/formats.md) for what each format is and where it works.
 
@@ -79,7 +80,8 @@ Each top-level command is a console or format family, and every family has opera
 | `cso` | Compress and verify PSP/PS2 ISOs (CSO/ZSO) |
 | `cue` | Merge a multi-bin `.cue` into one `.bin`/`.cue` pair |
 | `xbox` | Convert, extract, and inspect Original Xbox disc images (XISO) |
-| `xenon` | Compress, extract, and verify Xbox 360 disc images (ZAR) |
+| `xenon` | Compress, extract, verify, and inspect Xbox 360 disc images (ZAR) |
+| `ps3` | Decrypt and inspect PlayStation 3 disc images |
 | `dat` | Identify, verify, and rename ROMs against the Playmatch database |
 | `hash` | Compute CRC32, SHA-1, MD5, and SHA-256 digests |
 | `playlist` | Generate `.m3u` files for multi-disc sets |

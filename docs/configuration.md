@@ -81,6 +81,18 @@ Drop the file into `~/.switch` once and every `nx` command and GUI operation fin
 without any per-run setup. The file is read, never modified. An explicit path always wins
 over the defaults.
 
+## PlayStation 3 disc keys
+
+`ps3 decrypt` needs the disc's AES-128 data key to decrypt encrypted sectors. It is resolved
+in this order:
+
+1. `--key <FILE>`, an explicit `.dkey` file.
+2. The built-in key database, looked up by the disc's title ID.
+3. A sibling `<input>.dkey` file next to the input ISO.
+
+Most discs are covered by the built-in database, so no key file is needed. Pass `--key` only
+for a disc the database doesn't cover.
+
 ## Example
 
 ```toml
