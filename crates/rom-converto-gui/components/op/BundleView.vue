@@ -148,7 +148,7 @@ const bundles = computed<Bundle[]>(() => {
 	});
 });
 
-// Parts still resolving: awaiting a disc key or a failed probe.
+// Parts still resolving: reading, or a failed probe.
 const unresolved = computed(() => parts.value.filter((p) => !p.titleIdHex));
 
 const readyBundles = computed(() => bundles.value.filter((b) => b.complete));
@@ -324,7 +324,7 @@ onBeforeUnmount(() => {
 		</div>
 
 		<div v-if="unresolved.length" class="rc-card rc-card--warn">
-			<div class="rc-card__head">Needs a master key or unreadable</div>
+			<div class="rc-card__head">Unreadable or key not auto-detected</div>
 			<div v-for="p in unresolved" :key="p.id" class="rc-part">
 				<span class="rc-part__name">{{ p.name }}</span>
 				<span class="rc-part__meta">{{ p.error || "reading…" }}</span>
