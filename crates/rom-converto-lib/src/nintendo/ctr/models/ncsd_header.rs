@@ -4,6 +4,7 @@ pub const NCSD_HEADER_SIZE: usize = 0x200;
 pub const NCSD_FIRST_PARTITION_OFFSET: u64 = 0x4000;
 pub const NCSD_PARTITION_FS_TYPE_NORMAL: u8 = 0x01;
 
+/// Offset and size (in media units) of one NCSD partition slot.
 #[derive(BinRead, BinWrite, Debug, Clone)]
 #[brw(little)]
 pub struct NcsdPartitionEntry {
@@ -15,6 +16,8 @@ impl NcsdPartitionEntry {
     pub const EMPTY: Self = Self { offset: 0, size: 0 };
 }
 
+/// Fixed-size (0x200-byte) NCSD cartridge image header, listing up to 8
+/// NCCH partitions.
 #[derive(BinRead, BinWrite, Debug, Clone)]
 #[brw(little)]
 pub struct NcsdHeader {
@@ -36,6 +39,7 @@ pub struct NcsdHeader {
 impl NcsdHeader {
     pub const MAGIC: [u8; 4] = *b"NCSD";
 
+    /// Returns a header with the NCSD magic set and every other field zeroed.
     pub fn blank() -> Self {
         Self {
             signature: [0u8; 0x100],

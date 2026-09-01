@@ -10,6 +10,7 @@ use std::io::Cursor;
 
 pub const FST_ENTRY_SIZE: usize = 0x0C;
 
+/// One entry from a Wii partition FST: a file with its byte offset and size, or a directory.
 #[derive(Debug, Clone)]
 pub enum FstNode {
     File {
@@ -22,6 +23,7 @@ pub enum FstNode {
     },
 }
 
+/// Walks a Wii partition FST and returns every file and directory entry, with file offsets shifted back to byte units.
 pub fn list_files(fst: &[u8]) -> Result<Vec<FstNode>> {
     if fst.len() < FST_ENTRY_SIZE {
         return Err(anyhow!("Wii FST too small"));
@@ -89,6 +91,7 @@ pub fn list_files(fst: &[u8]) -> Result<Vec<FstNode>> {
     Ok(out)
 }
 
+/// Looks up a file by exact path and returns its `(offset, size)` in bytes.
 pub fn find_file(fst: &[u8], path: &str) -> Result<Option<(u64, u64)>> {
     for node in list_files(fst)? {
         if let FstNode::File {

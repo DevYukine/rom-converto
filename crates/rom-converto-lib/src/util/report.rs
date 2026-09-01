@@ -9,6 +9,7 @@ use std::borrow::Cow;
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
+/// One file's outcome in a conversion run report.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ReportRecord {
     pub input_path: String,
@@ -26,6 +27,7 @@ pub struct ReportRecord {
     pub error: Option<String>,
 }
 
+/// Aggregate counters for a conversion run report.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ReportTotals {
     pub total_files: usize,
@@ -41,6 +43,7 @@ pub struct ReportTotals {
     pub elapsed_ms: u64,
 }
 
+/// On-disk format for a `--report` file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReportFormat {
     Csv,
@@ -78,6 +81,8 @@ pub struct ReportRecordInput {
 }
 
 impl ReportRecord {
+    /// Builds a record from `input`, deriving `ratio_pct` from the byte
+    /// counts and status.
     pub fn new(input: ReportRecordInput) -> Self {
         let ReportRecordInput {
             input_path,
@@ -146,6 +151,7 @@ pub fn write_report(
     write_report_cancellable(path, records, totals, format, &CancelToken::new())
 }
 
+/// Cancellable twin of [`write_report`].
 pub fn write_report_cancellable(
     path: &Path,
     records: &[ReportRecord],
@@ -310,6 +316,7 @@ td.num{{text-align:right;font-variant-numeric:tabular-nums}}</style>"
     Ok(())
 }
 
+/// One file's outcome in a hash run report.
 #[derive(Clone, Debug, Serialize)]
 pub struct HashReportRecord {
     pub path: String,
@@ -336,6 +343,7 @@ pub fn write_hash_report(
     write_hash_report_cancellable(path, records, totals, format, &CancelToken::new())
 }
 
+/// Cancellable twin of [`write_hash_report`].
 pub fn write_hash_report_cancellable(
     path: &Path,
     records: &[HashReportRecord],
@@ -471,6 +479,7 @@ td.num{{text-align:right;font-variant-numeric:tabular-nums}}</style>"
     Ok(())
 }
 
+/// One file's outcome in a dat-matching run report.
 #[derive(Clone, Debug, Serialize)]
 pub struct DatReportRecord {
     pub path: String,
@@ -504,6 +513,7 @@ pub fn write_dat_report(
     write_dat_report_cancellable(path, records, totals, format, &CancelToken::new())
 }
 
+/// Cancellable twin of [`write_dat_report`].
 pub fn write_dat_report_cancellable(
     path: &Path,
     records: &[DatReportRecord],

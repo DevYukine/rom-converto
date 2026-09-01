@@ -42,6 +42,7 @@ const REGION_FLAGS: &[(u32, &str)] = &[
     (0x80000000, "Manufacturing"),
 ];
 
+/// Title metadata parsed from a `default.xbe`'s certificate.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct XbeInfo {
     pub title_id: u32,

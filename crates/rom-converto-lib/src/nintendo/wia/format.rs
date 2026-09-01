@@ -41,6 +41,7 @@ pub struct WiaGroup {
 }
 
 impl WiaGroup {
+    /// Byte offset of the group's stored data, from the on-disk `data_off4` field.
     pub fn data_offset(&self) -> u64 {
         (self.data_off4 as u64) << 2
     }

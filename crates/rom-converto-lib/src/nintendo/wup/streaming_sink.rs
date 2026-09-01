@@ -77,6 +77,11 @@ pub struct StreamPipelineHandle<'scope, W: Write + Send + 'scope> {
 }
 
 impl<'scope, W: Write + Send + 'scope> StreamPipelineHandle<'scope, W> {
+    /// Joins the driver and writer threads in order and returns the
+    /// aggregated [`StreamResult`].
+    ///
+    /// # Errors
+    /// Returns [`WupError::WorkerPoolClosed`] if either thread panicked.
     pub fn join(self) -> WupResult<StreamResult<W>> {
         self.driver_handle
             .join()
@@ -240,6 +245,8 @@ pub struct StreamingSink {
 }
 
 impl StreamingSink {
+    /// Builds a sink that pushes 64 KiB blocks into `block_tx` and
+    /// tracks the emerging file tree.
     pub fn new(block_tx: SyncSender<Vec<u8>>) -> Self {
         Self {
             block_tx,
@@ -256,8 +263,7 @@ impl StreamingSink {
     /// the name-table and file-tree sections.
     pub fn flush_trailing(mut self) -> WupResult<PathTree> {
         if !self.write_buffer.is_empty() {
-            let pad_len = COMPRESSED_BLOCK_SIZE - self.write_buffer.len();
-            self.write_buffer.extend(std::iter::repeat_n(0u8, pad_len));
+            self.write_buffer.resize(COMPRESSED_BLOCK_SIZE, 0);
             let block = std::mem::replace(
                 &mut self.write_buffer,
                 Vec::with_capacity(COMPRESSED_BLOCK_SIZE),
@@ -288,9 +294,8 @@ impl ArchiveSink for StreamingSink {
         let mut remaining = data;
 
         while !remaining.is_empty() {
+            // Fast path: full block straight through, no buffering.
             if self.write_buffer.is_empty() && remaining.len() >= COMPRESSED_BLOCK_SIZE {
-                // Fast path: full block straight through without
-                // buffering.
                 let block = remaining[..COMPRESSED_BLOCK_SIZE].to_vec();
                 self.block_tx
                     .send(block)
@@ -314,8 +319,8 @@ impl ArchiveSink for StreamingSink {
             }
         }
 
-        if let Some(path) = self.current_file_path.clone()
-            && let Some(node) = self.tree.get_mut(&path)
+        if let Some(path) = self.current_file_path.as_deref()
+            && let Some(node) = self.tree.get_mut(path)
         {
             node.file_size += total_data_size;
         }

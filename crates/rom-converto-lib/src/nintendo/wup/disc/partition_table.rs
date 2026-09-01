@@ -103,12 +103,14 @@ pub struct PartitionTable {
 }
 
 impl PartitionTable {
+    /// Returns the System Install partition entry, if present.
     pub fn find_si(&self) -> Option<&PartitionEntry> {
         self.entries
             .iter()
             .find(|e| matches!(e.kind, PartitionKind::SystemInstall))
     }
 
+    /// Iterates over Game, Update, and Dlc partitions, in table order.
     pub fn content_partitions(&self) -> impl Iterator<Item = &PartitionEntry> {
         self.entries.iter().filter(|e| {
             matches!(

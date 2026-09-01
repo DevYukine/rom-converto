@@ -1,6 +1,7 @@
 use crate::nintendo::ctr::constants::{
     CTR_COMMON_KEYS_HEX, CTR_MEDIA_UNIT_SIZE, CTR_NCSD_PARTITIONS, NCCH_MAGIC_OFFSET,
     NCSD_PARTITION_COUNT, NCSD_PARTITION_ENTRY_SIZE, NCSD_PARTITION_TABLE_OFFSET,
+    NCSD_TITLE_ID_OFFSET,
 };
 use crate::nintendo::ctr::decrypt::util::{cbc_decrypt, gen_iv};
 use crate::nintendo::ctr::error::NintendoCTRError;
@@ -23,13 +24,17 @@ use std::io::{Cursor, Read, SeekFrom};
 use std::path::Path;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
+/// Options controlling a CIA or CCI/3DS verification run.
 #[derive(Debug, Clone, Default)]
 pub struct CtrVerifyOptions {
     pub verify_content_hashes: bool,
 }
 
+/// Alias kept for CIA-specific call sites; identical to [`CtrVerifyOptions`].
 pub type CiaVerifyOptions = CtrVerifyOptions;
 
+/// Result of verifying a CIA's certificate chain, signatures, and (if
+/// requested) content hashes.
 #[derive(Debug, Clone, Serialize)]
 pub struct CiaVerifyResult {
     pub legitimacy: CiaLegitimacy,
@@ -47,6 +52,8 @@ pub struct CiaVerifyResult {
     pub compressed: bool,
 }
 
+/// Classification of a CIA's ticket/TMD signer, derived from which
+/// certificates and signatures validate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum CiaLegitimacy {
     Legit(CiaLegitimacySubType),
@@ -54,6 +61,8 @@ pub enum CiaLegitimacy {
     Standard(StandardSubType),
 }
 
+/// Distinguishes a Legit CIA signed by the eShop CA (`Global`) from one
+/// signed by a personalized ticket (`Personalized`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum CiaLegitimacySubType {
     Global,
@@ -88,6 +97,7 @@ impl std::fmt::Display for CiaLegitimacy {
     }
 }
 
+/// Verification result for one NCCH partition within an NCSD image.
 #[derive(Debug, Clone, Serialize)]
 pub struct NcchPartitionResult {
     pub index: usize,
@@ -103,6 +113,8 @@ pub struct NcchPartitionResult {
     pub details: Vec<String>,
 }
 
+/// Verification result for an NCSD (CCI/`.3ds`) cartridge image, covering
+/// every partition.
 #[derive(Debug, Clone, Serialize)]
 pub struct NcsdVerifyResult {
     pub ncsd_magic_valid: bool,
@@ -114,6 +126,7 @@ pub struct NcsdVerifyResult {
     pub compressed: bool,
 }
 
+/// Verification result for a CIA or CCI/3DS input, tagged by detected format.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "format")]
 pub enum CtrVerifyResult {
@@ -122,6 +135,8 @@ pub enum CtrVerifyResult {
 }
 
 impl CtrVerifyResult {
+    /// Returns whether verification found no content-hash mismatch (CIA) or
+    /// every NCCH magic and the NCSD magic are valid (CCI/3DS).
     pub fn ok(&self) -> bool {
         match self {
             // Legitimacy classification is informational; only an actual
@@ -134,6 +149,8 @@ impl CtrVerifyResult {
     }
 }
 
+/// Verifies a CIA or CCI/3DS at `input` against the built-in root key,
+/// detecting the format automatically (including Z3DS-compressed inputs).
 pub async fn verify_ctr(
     input: &Path,
     options: &CtrVerifyOptions,
@@ -142,6 +159,7 @@ pub async fn verify_ctr(
     verify_ctr_cancellable(input, options, progress, &CancelToken::new()).await
 }
 
+/// Like [`verify_ctr`] but observes `cancel`.
 pub async fn verify_ctr_cancellable(
     input: &Path,
     options: &CtrVerifyOptions,
@@ -268,6 +286,8 @@ async fn verify_compressed(
     Ok(result)
 }
 
+/// Verifies a CIA at `input`: its certificate chain, ticket/TMD signatures,
+/// and (if requested) content hashes.
 pub async fn verify_cia(
     input: &Path,
     options: &CtrVerifyOptions,
@@ -276,6 +296,7 @@ pub async fn verify_cia(
     verify_cia_cancellable(input, options, progress, &CancelToken::new()).await
 }
 
+/// Like [`verify_cia`] but observes `cancel`.
 pub async fn verify_cia_cancellable(
     input: &Path,
     options: &CtrVerifyOptions,
@@ -347,7 +368,6 @@ pub async fn verify_cia_cancellable(
     let cp_cert = find_cert_by_name_prefix(&cia_without_content.cert_chain, "CP");
     let xs_cert = find_cert_by_name_prefix(&cia_without_content.cert_chain, "XS");
 
-    // Verify CA cert using Root key
     let ca_cert_valid = if let Some(ca) = &ca_cert {
         let body = serialize_cert_body(ca);
         let valid = verify_rsa_signature(&ROOT_CA_MODULUS, ROOT_CA_EXPONENT, &ca.signature, &body);
@@ -361,7 +381,6 @@ pub async fn verify_cia_cancellable(
         false
     };
 
-    // Verify CP cert (TMD signer)
     let tmd_signer_cert_valid = if let (Some(ca), Some(cp)) = (&ca_cert, &cp_cert) {
         if let Some((modulus, exponent)) = extract_rsa_key(&ca.public_key) {
             let body = serialize_cert_body(cp);
@@ -380,7 +399,6 @@ pub async fn verify_cia_cancellable(
         false
     };
 
-    // Verify XS cert (ticket signer)
     let ticket_signer_cert_valid = if let (Some(ca), Some(xs)) = (&ca_cert, &xs_cert) {
         if let Some((modulus, exponent)) = extract_rsa_key(&ca.public_key) {
             let body = serialize_cert_body(xs);
@@ -402,7 +420,6 @@ pub async fn verify_cia_cancellable(
     progress.inc(file_size / 4);
     check_cancel(cancel)?;
 
-    // Verify TMD signature
     let tmd_signature_valid = if let Some(cp) = &cp_cert {
         if let Some((modulus, exponent)) = extract_rsa_key(&cp.public_key) {
             let body = serialize_tmd_body(&cia_without_content.tmd);
@@ -426,7 +443,6 @@ pub async fn verify_cia_cancellable(
         false
     };
 
-    // Verify ticket signature
     let ticket_signature_valid = if let Some(xs) = &xs_cert {
         if let Some((modulus, exponent)) = extract_rsa_key(&xs.public_key) {
             let body = serialize_ticket_body(&cia_without_content.ticket);
@@ -541,8 +557,8 @@ async fn verify_ncsd_file(
         if ncsd_magic_valid { "VALID" } else { "INVALID" }
     ));
 
-    // Title ID lives at NCSD header offset 0x108 (u64 LE).
-    file.seek(SeekFrom::Start(0x108)).await?;
+    // NCSD title ID is stored little-endian.
+    file.seek(SeekFrom::Start(NCSD_TITLE_ID_OFFSET)).await?;
     let mut tid_buf = [0u8; 8];
     file.read_exact(&mut tid_buf).await?;
     let title_id = format!("{:016X}", u64::from_le_bytes(tid_buf));
@@ -856,8 +872,7 @@ fn classify(
         CiaLegitimacy::Legit(sub)
     } else if tmd_valid && !ticket_valid {
         match content_hashes {
-            Some(true) => CiaLegitimacy::Piratelegit,
-            None => CiaLegitimacy::Piratelegit,
+            Some(true) | None => CiaLegitimacy::Piratelegit,
             Some(false) => CiaLegitimacy::Standard(standard_sub),
         }
     } else {
@@ -1078,6 +1093,7 @@ async fn verify_content_hashes_streaming(
     Ok(all_valid)
 }
 
+/// Aggregate pass/fail counts from a batch verify run.
 #[derive(Debug, Clone, Default)]
 pub struct BatchVerifySummary {
     pub total: usize,
@@ -1087,6 +1103,8 @@ pub struct BatchVerifySummary {
 
 const VERIFY_EXTS: &[&str] = &["cia", "3ds", "cci", "cxi", "zcia", "zcci", "zcxi"];
 
+/// Verifies every supported ROM file found under `input_dir`, logging each
+/// result and returning an aggregate summary.
 pub async fn verify_ctr_batch(
     input_dir: &Path,
     options: &CtrVerifyOptions,
@@ -1105,6 +1123,7 @@ pub async fn verify_ctr_batch(
     .await
 }
 
+/// Like [`verify_ctr_batch`] but observes `cancel` between files.
 pub async fn verify_ctr_batch_cancellable(
     input_dir: &Path,
     options: &CtrVerifyOptions,
@@ -1421,11 +1440,8 @@ mod tests {
     async fn verify_cia_streaming_detects_content_hash_mismatch() {
         let (_tmp, path, _) = synth_cia(SYNTH_CIA_TITLE_ID, 0x4000);
 
-        // Corrupt one byte in the content region. Content starts somewhere after
-        // the TMD; scan for the deterministic pattern and flip a byte there.
-        // Using known layout: content_start = align_64(CIA_HEADER_SIZE +
-        // cert_chain_size + ticket_size + tmd_size). For this fixture the
-        // content is at the tail of the file.
+        // This fixture puts the content at the tail of the file, so a byte near
+        // the end is inside the content region.
         let len = std::fs::metadata(&path).unwrap().len();
         let corrupt_offset = len - 0x100; // inside the content region
         {

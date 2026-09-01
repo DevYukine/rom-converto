@@ -52,6 +52,7 @@ pub enum FstClusterHashMode {
 }
 
 impl FstClusterHashMode {
+    /// Maps a raw `FSTHeader_ClusterEntry.hashMode` byte to its variant.
     pub fn from_u8(v: u8) -> Self {
         match v {
             0 => FstClusterHashMode::Raw,
@@ -142,7 +143,6 @@ pub fn parse_fst(bytes: &[u8]) -> WupResult<VirtualFs> {
         return Err(WupError::InvalidFst);
     }
 
-    // Parse cluster table.
     let mut clusters = Vec::with_capacity(num_clusters);
     for i in 0..num_clusters {
         let start = FST_HEADER_SIZE + i * FST_CLUSTER_ENTRY_SIZE;
@@ -156,9 +156,8 @@ pub fn parse_fst(bytes: &[u8]) -> WupResult<VirtualFs> {
         });
     }
 
-    // Parse the first file entry (the root directory) to learn the
-    // total entry count. Then walk every entry and resolve path
-    // names from the string table that follows the entry array.
+    // The root entry's size field carries the total entry count; the
+    // name string table follows the entry array.
     let entries_start = clusters_end;
     if bytes.len() < entries_start + FST_FILE_ENTRY_SIZE {
         return Err(WupError::InvalidFst);
@@ -392,7 +391,6 @@ mod tests {
         buf[c0 + 16..c0 + 20].copy_from_slice(&0x1000u32.to_be_bytes()); // group_id
         buf[c0 + 20] = 0; // hash_mode = Raw
 
-        // Helper to write one file/dir entry.
         let entries_start = header_size + cluster_table_size;
         let write_entry = |buf: &mut Vec<u8>,
                            idx: usize,
@@ -412,23 +410,14 @@ mod tests {
             buf[start + 14..start + 16].copy_from_slice(&cluster.to_be_bytes());
         };
 
-        //   0: root            (parent=0, end=9)
         write_entry(&mut buf, 0, true, "", 0, 9, 0);
-        //   1: meta dir        (parent=0, end=4)
         write_entry(&mut buf, 1, true, "meta", 0, 4, 0);
-        //   2: meta.xml
         write_entry(&mut buf, 2, false, "meta.xml", 0x0000, 0x0100, 0);
-        //   3: icon.tga
         write_entry(&mut buf, 3, false, "icon.tga", 0x0100, 0x4000, 0);
-        //   4: code dir        (parent=0, end=7)
         write_entry(&mut buf, 4, true, "code", 0, 7, 0);
-        //   5: app.xml
         write_entry(&mut buf, 5, false, "app.xml", 0x4100, 0x0080, 0);
-        //   6: main.rpx
         write_entry(&mut buf, 6, false, "main.rpx", 0x4180, 0x2_0000, 0);
-        //   7: content dir     (parent=0, end=9)
         write_entry(&mut buf, 7, true, "content", 0, 9, 0);
-        //   8: shader.bin
         write_entry(&mut buf, 8, false, "shader.bin", 0x2_4180, 0x8_0000, 0);
 
         // Name string table

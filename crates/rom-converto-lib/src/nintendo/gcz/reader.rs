@@ -199,12 +199,14 @@ impl GczLayout {
 
 type ProduceFn = Box<dyn FnMut(u64) -> GczResult<GczBlockWork> + Send>;
 
+/// `Read + Seek` view over a GCZ container's decompressed data.
 pub struct GczReader {
     pipeline: PipelinedGroupReader<GczBlockWork, GczError, ProduceFn>,
     header: GczHeader,
 }
 
 impl GczReader {
+    /// Opens the GCZ file at `path`.
     pub fn open(path: &Path) -> GczResult<Self> {
         Self::from_source(File::open(path)?)
     }
@@ -226,10 +228,13 @@ impl GczReader {
         })
     }
 
+    /// Size of the decompressed logical disc image in bytes.
     pub fn data_size(&self) -> u64 {
         self.header.data_size
     }
 
+    /// The header's `sub_type` field (0 = GameCube, 1 = Wii). Dolphin
+    /// writes it but never reads it back.
     pub fn sub_type(&self) -> u32 {
         self.header.sub_type
     }

@@ -8,6 +8,9 @@ use std::sync::Arc;
 
 use crate::util::pread::file_read_exact_at;
 
+/// `Read` implementation that streams a fixed byte range of a shared
+/// file, starting at `offset` and stopping after `remaining` bytes,
+/// without loading the range into memory up front.
 pub struct PositionalReader {
     file: Arc<File>,
     offset: u64,
@@ -15,6 +18,8 @@ pub struct PositionalReader {
 }
 
 impl PositionalReader {
+    /// Creates a reader over `length` bytes of `file` starting at
+    /// `offset`.
     pub fn new(file: Arc<File>, offset: u64, length: u64) -> Self {
         Self {
             file,

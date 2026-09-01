@@ -32,11 +32,13 @@ use std::path::Path;
 
 const SAMPLE_CAP: usize = 8;
 
+/// Knobs for [`verify_rvl`]. `full` enables the slow per-partition hash-tree walk.
 #[derive(Debug, Clone, Default)]
 pub struct RvlVerifyOptions {
     pub full: bool,
 }
 
+/// Outcome of a Wii disc verification pass.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RvlVerifyResult {
     pub game_id: String,
@@ -47,6 +49,7 @@ pub struct RvlVerifyResult {
     pub ok: bool,
 }
 
+/// Hash-tree verification result for one Wii partition, from the `--full` pass.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RvlPartitionVerify {
     pub offset: u64,
@@ -73,6 +76,7 @@ fn partition_kind_name(t: u32) -> &'static str {
     }
 }
 
+/// Verifies a Wii disc image: RVZ container hashes plus, with `options.full`, the decrypted partition hash tree.
 pub fn verify_rvl(
     path: &Path,
     options: &RvlVerifyOptions,
@@ -81,6 +85,7 @@ pub fn verify_rvl(
     verify_rvl_cancellable(path, options, progress, &CancelToken::new())
 }
 
+/// Like [`verify_rvl`] but observes `cancel`, checked between clusters and partitions.
 pub fn verify_rvl_cancellable(
     path: &Path,
     options: &RvlVerifyOptions,

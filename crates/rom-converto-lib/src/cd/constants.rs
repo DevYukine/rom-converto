@@ -1,3 +1,6 @@
+//! CD-ROM sector, timing, and audio byte-layout constants shared by the
+//! CUE and CHD codecs.
+
 // CD format constants
 pub const SECTOR_SIZE: usize = 2352;
 pub const SUBCODE_SIZE: usize = 96;

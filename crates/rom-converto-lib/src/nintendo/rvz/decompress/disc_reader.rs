@@ -33,6 +33,9 @@ use super::raw::{
 const RAW_CACHE_CAP: usize = 8;
 const PART_CACHE_CAP: usize = 4;
 
+/// `Read + Seek` view over an RVZ container that decodes only the groups
+/// touched by each call, caching recently decoded raw chunks and
+/// partition clusters.
 pub struct RvzDiscReader {
     #[allow(dead_code)]
     head: WiaFileHead,
@@ -54,6 +57,7 @@ pub struct RvzDiscReader {
 type PartCacheEntry = ((usize, u64), Arc<[u8]>);
 
 impl RvzDiscReader {
+    /// Opens the RVZ container at `path` and reads its metadata tables.
     pub fn open(path: &Path) -> RvzResult<Self> {
         let mut reader = BufReader::with_capacity(1024 * 1024, File::open(path)?);
 
@@ -144,6 +148,7 @@ impl RvzDiscReader {
         })
     }
 
+    /// Size of the logical (decompressed) disc image in bytes.
     pub fn iso_size(&self) -> u64 {
         self.iso_size
     }

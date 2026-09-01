@@ -2,6 +2,8 @@
 
 use thiserror::Error;
 
+/// Errors from parsing, restoring, or writing NKit disc images (`.nkit.iso` /
+/// `.nkit.gcz`).
 #[derive(Debug, Error)]
 pub enum NkitError {
     /// Wraps an underlying I/O failure.
@@ -24,7 +26,7 @@ pub enum NkitError {
     #[error("invalid NKit gap encoding: {0}")]
     InvalidGap(String),
 
-    /// The computed CRC32 does not match the value stored in the NKit header; the file is corrupted or was produced by an incompatible NKit version.
+    /// The computed CRC32 does not match the value stored in the NKit header.
     #[error(
         "NKit CRC32 mismatch: stored {stored:#010x}, computed {computed:#010x} over {what}; \
          the file is corrupted or was not produced by a compatible NKit version"
@@ -49,4 +51,5 @@ impl From<crate::util::worker_pool::PoolChannelClosed> for NkitError {
     }
 }
 
+/// Convenience alias for results returned by NKit parsing and restoration.
 pub type NkitResult<T> = Result<T, NkitError>;

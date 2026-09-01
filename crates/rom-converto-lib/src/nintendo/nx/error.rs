@@ -4,6 +4,8 @@ use thiserror::Error;
 
 use crate::util::worker_pool::PoolChannelClosed;
 
+/// Errors from parsing, encrypting, compressing, or decompressing
+/// Nintendo Switch (NX) containers and their NCA/PFS0/HFS0 contents.
 #[derive(Debug, Error)]
 pub enum NxError {
     #[error(transparent)]
@@ -96,4 +98,5 @@ impl From<PoolChannelClosed> for NxError {
     }
 }
 
+/// Convenience alias for results returned by the NX (Switch) module.
 pub type NxResult<T> = Result<T, NxError>;

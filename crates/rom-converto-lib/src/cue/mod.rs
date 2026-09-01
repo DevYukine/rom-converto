@@ -10,18 +10,23 @@ pub mod merge;
 pub mod models;
 pub mod to_iso;
 
+/// Parses a `.cue` sheet file into a [`CueSheet`].
 #[derive(Debug)]
 pub struct CueParser {
     cue_path: PathBuf,
 }
 
 impl CueParser {
+    /// Creates a parser for the `.cue` file at `cue_path`.
     pub fn new(cue_path: impl AsRef<Path>) -> Self {
         Self {
             cue_path: cue_path.as_ref().to_path_buf(),
         }
     }
 
+    /// Parses the CUE sheet line by line, handling `FILE`, `TRACK`,
+    /// `INDEX`, `PREGAP`, and `POSTGAP` directives; `REM` lines and blank
+    /// lines are skipped.
     pub async fn parse(&self) -> CueResult<CueSheet> {
         let data = tokio::fs::read(&self.cue_path).await?;
         let reader = Cursor::new(data);

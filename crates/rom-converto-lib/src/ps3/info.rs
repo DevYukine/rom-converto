@@ -13,6 +13,8 @@ use crate::ps3::region::{SECTOR_SIZE, parse_region_table};
 use crate::ps3::sfb::Sfb;
 use crate::ps3::sfo::Sfo;
 
+/// Summary of a PS3 disc's region table and plaintext `PARAM.SFO`/
+/// `PS3_DISC.SFB` metadata.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Ps3Info {
     pub title: Option<String>,
@@ -30,6 +32,11 @@ pub struct Ps3Info {
     pub size_bytes: u64,
 }
 
+/// Reads a PS3 disc's region-table stats and plaintext metadata; no
+/// disc key is needed since it never touches encrypted sectors.
+///
+/// # Errors
+/// Returns an error if the sector 0 region table cannot be parsed.
 pub fn read_ps3_info(path: &Path) -> Ps3Result<Ps3Info> {
     let size_bytes = std::fs::metadata(path)?.len();
     let mut file = std::fs::File::open(path)?;

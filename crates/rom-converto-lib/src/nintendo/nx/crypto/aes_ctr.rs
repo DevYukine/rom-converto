@@ -8,8 +8,18 @@ use ctr::Ctr128BE;
 
 use crate::nintendo::nx::error::{NxError, NxResult};
 
+/// AES-128 in CTR mode with a 128-bit big-endian counter, as used for
+/// NCA section data.
 pub type AesCtr = Ctr128BE<Aes128>;
 
+/// Applies the AES-CTR keystream to `data` in place. Symmetric: the
+/// same call encrypts or decrypts depending on which side holds the
+/// plaintext.
+///
+/// # Errors
+/// Returns [`NxError::AesError`] if `key` or `counter` cannot
+/// initialize the cipher (never happens for the fixed 16-byte sizes
+/// this crate passes).
 pub fn apply_ctr(key: &[u8; 16], counter: &[u8; 16], data: &mut [u8]) -> NxResult<()> {
     let mut cipher = AesCtr::new_from_slices(key, counter)
         .map_err(|e| NxError::AesError(format!("Ctr128BE init: {e}")))?;
@@ -17,6 +27,8 @@ pub fn apply_ctr(key: &[u8; 16], counter: &[u8; 16], data: &mut [u8]) -> NxResul
     Ok(())
 }
 
+/// Builds the 128-bit counter for `nca_offset`: the 8-byte `ctr_iv`
+/// followed by the big-endian block index (`nca_offset / 16`).
 pub fn counter_for_offset(ctr_iv: &[u8; 8], nca_offset: u64) -> [u8; 16] {
     let mut out = [0u8; 16];
     out[..8].copy_from_slice(ctr_iv);

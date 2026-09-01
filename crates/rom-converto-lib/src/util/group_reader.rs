@@ -44,6 +44,9 @@ pub fn in_flight_cap(max_group_bytes: u64) -> usize {
     parallelism().min(by_budget.max(1)).max(2)
 }
 
+/// Reads a decoded byte stream out of fixed-size compressed groups,
+/// decoding ahead of the read position on a worker pool while returning
+/// bytes to the caller in order.
 pub struct PipelinedGroupReader<W, E, P>
 where
     W: Send + 'static,
@@ -106,6 +109,7 @@ where
         }
     }
 
+    /// Total decoded length of the stream.
     pub fn logical_size(&self) -> u64 {
         self.logical_size
     }

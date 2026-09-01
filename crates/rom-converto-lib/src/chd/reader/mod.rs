@@ -38,7 +38,6 @@ pub(crate) fn open_chd_sync(path: &std::path::Path) -> ChdResult<SyncChdHandle> 
         return Err(ChdError::UnsupportedChdVersion);
     }
 
-    // Seek to map offset and read to end.
     reader.seek(std::io::SeekFrom::Start(header.map_offset))?;
     let mut map_data = Vec::new();
     reader.read_to_end(&mut map_data)?;
@@ -46,7 +45,6 @@ pub(crate) fn open_chd_sync(path: &std::path::Path) -> ChdResult<SyncChdHandle> 
     let hunk_count = header.logical_bytes.div_ceil(header.hunk_bytes as u64) as u32;
     let map = decompress_v5_map(&map_data, hunk_count, header.hunk_bytes, header.unit_bytes)?;
 
-    // Walk metadata starting at header.meta_offset.
     let mut metadata = Vec::new();
     let mut offset = header.meta_offset;
     while offset != 0 {

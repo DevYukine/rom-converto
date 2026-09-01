@@ -8,6 +8,8 @@ use std::io::{Read, Seek, SeekFrom, Write};
 
 pub const CIA_HEADER_SIZE: u32 = 0x2020;
 
+/// Fixed-size CIA container header (0x2020 bytes), preceding the certificate
+/// chain, ticket, TMD, content, and optional meta data.
 #[derive(Debug, Clone, BinRead, BinWrite)]
 #[brw(little)]
 pub struct CiaHeader {
@@ -24,6 +26,7 @@ pub struct CiaHeader {
 }
 
 impl CiaHeader {
+    /// Sets the bit for `content_index` in the content index bitmask.
     pub fn set_content_index(&mut self, content_index: usize) {
         let byte_index = content_index / 8;
         let bit_index = 7 - (content_index % 8);
@@ -32,6 +35,8 @@ impl CiaHeader {
         }
     }
 
+    /// Returns whether the bit for `index` is set in the content index
+    /// bitmask.
     pub fn has_content_index(&self, index: usize) -> bool {
         let byte_index = index / 8;
         let bit_index = 7 - (index % 8);
@@ -42,6 +47,7 @@ impl CiaHeader {
     }
 }
 
+/// The optional CIA meta data block: dependency list, core version, and icon.
 #[derive(Debug, Clone, BinRead, BinWrite)]
 #[brw(little)]
 pub struct MetaData {
@@ -118,6 +124,8 @@ pub struct CiaFileWithoutContent {
 }
 
 impl CiaFile {
+    /// Sets the header's content index bit for every content chunk record
+    /// in the TMD.
     pub fn apply_content_indexes(&mut self) {
         for record in &self.tmd.content_chunk_records {
             self.header.set_content_index(record.content_index as usize);

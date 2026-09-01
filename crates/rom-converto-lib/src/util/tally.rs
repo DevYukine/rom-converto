@@ -5,6 +5,8 @@ use std::time::{Duration, Instant};
 
 const KIB: f64 = 1024.0;
 
+/// Formats `n` bytes as a human-readable size (`B`, `KiB`, `MiB`, `GiB`,
+/// `TiB`), one decimal place above `B`.
 pub fn format_bytes(n: u64) -> String {
     let n = n as f64;
     if n < KIB {
@@ -20,6 +22,7 @@ pub fn format_bytes(n: u64) -> String {
     format!("{value:.1} {}", units[unit])
 }
 
+/// Per-file outcome recorded in a [`Tally`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FileStatus {
     /// Converted successfully.
@@ -41,6 +44,7 @@ pub enum TallyDirection {
     DryRun,
 }
 
+/// One file's byte counts, status, and elapsed time in a [`Tally`].
 #[derive(Clone, Debug)]
 pub struct FileEntry {
     pub input_bytes: u64,
@@ -49,6 +53,8 @@ pub struct FileEntry {
     pub elapsed: Duration,
 }
 
+/// Accumulates per-file outcomes across a run and renders the final
+/// summary line.
 #[derive(Debug)]
 pub struct Tally {
     entries: Vec<FileEntry>,
@@ -62,6 +68,7 @@ impl Default for Tally {
 }
 
 impl Tally {
+    /// Creates an empty tally, anchoring its elapsed-time clock now.
     pub fn new() -> Self {
         Self {
             entries: Vec::new(),
@@ -69,6 +76,7 @@ impl Tally {
         }
     }
 
+    /// Appends `entry` to the tally.
     pub fn record(&mut self, entry: FileEntry) {
         self.entries.push(entry);
     }
@@ -80,6 +88,7 @@ impl Tally {
         self.started = started;
     }
 
+    /// Records a successful conversion.
     pub fn record_ok(&mut self, input_bytes: u64, output_bytes: u64, elapsed: Duration) {
         self.record(FileEntry {
             input_bytes,
@@ -89,6 +98,7 @@ impl Tally {
         });
     }
 
+    /// Records a failed conversion with zero bytes and zero elapsed time.
     pub fn record_failed(&mut self) {
         self.record(FileEntry {
             input_bytes: 0,
@@ -98,6 +108,7 @@ impl Tally {
         });
     }
 
+    /// Records a skipped file with zero bytes and zero elapsed time.
     pub fn record_skipped(&mut self) {
         self.record(FileEntry {
             input_bytes: 0,
@@ -107,22 +118,27 @@ impl Tally {
         });
     }
 
+    /// Returns every recorded entry, in record order.
     pub fn entries(&self) -> &[FileEntry] {
         &self.entries
     }
 
+    /// Total number of recorded entries, across all statuses.
     pub fn count(&self) -> usize {
         self.entries.len()
     }
 
+    /// Number of entries with [`FileStatus::Ok`].
     pub fn ok_count(&self) -> usize {
         self.with_status(FileStatus::Ok)
     }
 
+    /// Number of entries with [`FileStatus::Skipped`].
     pub fn skipped_count(&self) -> usize {
         self.with_status(FileStatus::Skipped)
     }
 
+    /// Number of entries with [`FileStatus::Failed`].
     pub fn failed_count(&self) -> usize {
         self.with_status(FileStatus::Failed)
     }
@@ -131,10 +147,12 @@ impl Tally {
         self.entries.iter().filter(|e| e.status == status).count()
     }
 
+    /// Sum of `input_bytes` over successful entries.
     pub fn total_input_bytes(&self) -> u64 {
         self.ok_entries().map(|e| e.input_bytes).sum()
     }
 
+    /// Sum of `output_bytes` over successful entries.
     pub fn total_output_bytes(&self) -> u64 {
         self.ok_entries().map(|e| e.output_bytes).sum()
     }
@@ -143,15 +161,20 @@ impl Tally {
         self.entries.iter().filter(|e| e.status == FileStatus::Ok)
     }
 
+    /// Time since the tally was created, or since [`Tally::backdate`].
     pub fn elapsed(&self) -> Duration {
         self.started.elapsed()
     }
 
+    /// Renders a plain `"{n} files in T"` line without size or status
+    /// detail, for operations that don't track ok/failed/skipped counts.
     pub fn count_summary(count: usize, elapsed: Duration) -> String {
         let prefix = count_prefix(count, 0, 0);
         format!("{prefix} in {}", format_duration(elapsed))
     }
 
+    /// Renders the final `"{n} files: A -> B, saved C (p%) in T"`-style
+    /// summary line, shaped by `direction`.
     pub fn summary_line(&self, direction: TallyDirection) -> String {
         let ok = self.ok_count();
         let failed = self.failed_count();

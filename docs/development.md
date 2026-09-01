@@ -99,6 +99,24 @@ rom-converto binary. A missing tool stops the run with a message naming the tool
 install. Inputs can also come from the `ROMCONVERTO_BENCH_*` environment variables, and
 `rom-converto-benchmark all` runs every platform whose variables are set.
 
+## Doc comments
+
+Every public function, method, associated function, struct, enum, trait, type alias, and
+module in `rom-converto-lib` carries a doc comment. Struct fields, enum variants, and
+constants are exempt. Conventions, following [RFC 1574](https://rust-lang.github.io/rfcs/1574-more-api-documentation-conventions.html)
+and the [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/documentation.html):
+
+- The first line is one summary sentence in third-person present ("Parses...", "Returns..."),
+  never "This function...". Keep it on one line; everything before the first blank line shows
+  up in module listings.
+- Add detail lines only for non-obvious facts: format offsets, invariants, failure semantics.
+  Do not restate the signature or add an `# Arguments` list.
+- `# Errors` on `Result` functions when the failure modes are not obvious, one or two lines.
+  `# Panics` on functions that can panic. `# Safety` on every `unsafe` item, stating the
+  caller's obligations.
+- Module files start with a one-to-three line `//!` saying what the module handles.
+- Link other items with intra-doc links (`[`Type`]`), not URLs.
+
 ## CI gates
 
 Every change runs these checks. Run them locally before opening a pull request:

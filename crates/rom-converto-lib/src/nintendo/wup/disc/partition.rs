@@ -27,6 +27,10 @@ pub struct PartitionHeader {
     pub fst_size: u32,
 }
 
+/// Reads and validates the plaintext header at `partition_byte_offset`.
+///
+/// # Errors
+/// Returns [`WupError::InvalidPartitionHeader`] if the signature does not match.
 pub fn read_partition_header(
     disc: &mut dyn DiscSectorSource,
     partition_byte_offset: u64,
@@ -58,6 +62,10 @@ pub struct PartitionContentLocation {
     pub size: u64,
 }
 
+/// Computes the absolute disc byte range for a content file given its
+/// FST-reported sector offset. `content_offset_sectors == 0` maps to
+/// the start of the content area; otherwise the offset is
+/// `(sector - 1) * SECTOR_SIZE` into the area.
 pub fn compute_content_location(
     partition_byte_offset: u64,
     header_size: u64,
@@ -79,12 +87,15 @@ pub fn compute_content_location(
     }
 }
 
+/// [`ContentBytesSource`] that reads content files directly out of a
+/// disc partition using precomputed content locations.
 pub struct PartitionContentSource<'d> {
     disc: &'d mut dyn DiscSectorSource,
     locations: Vec<(u32, PartitionContentLocation)>,
 }
 
 impl<'d> PartitionContentSource<'d> {
+    /// Builds a source over `disc` using `locations` to resolve content ids.
     pub fn new(
         disc: &'d mut dyn DiscSectorSource,
         locations: Vec<(u32, PartitionContentLocation)>,

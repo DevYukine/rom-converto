@@ -26,7 +26,6 @@ pub fn is_twl_title_id(title_id: u64) -> bool {
 
 pub fn pad_to_align_64(aligned_pos: u64, writer: &mut (impl Write + Seek)) -> BinResult<()> {
     if aligned_pos > writer.stream_position()? {
-        // Write padding
         let padding_size = (aligned_pos - writer.stream_position()?) as usize;
         const ZERO_BUF: [u8; 64] = [0u8; 64];
         let mut remaining = padding_size;

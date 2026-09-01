@@ -2,6 +2,7 @@
 
 use thiserror::Error;
 
+/// Errors from reading, decoding, or writing an RVZ container.
 #[derive(Debug, Error)]
 pub enum RvzError {
     #[error(transparent)]
@@ -83,4 +84,5 @@ impl From<crate::nintendo::wia::error::WiaError> for RvzError {
     }
 }
 
+/// Result alias for RVZ operations.
 pub type RvzResult<T> = Result<T, RvzError>;

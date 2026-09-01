@@ -26,12 +26,25 @@ fn make_cipher(header_key: &[u8; 32]) -> NxResult<Xts128<Aes128>> {
     Ok(Xts128::<Aes128>::new(c1, c2))
 }
 
+/// Decrypts an NCA header in place with AES-XTS, using 0x200-byte
+/// sectors and a big-endian sector-index tweak (sector 0 at the start
+/// of the header).
+///
+/// # Errors
+/// Returns [`NxError::AesError`] if `header_key`'s two 16-byte halves
+/// fail to initialize the AES-128 ciphers.
 pub fn decrypt_nca_header(buf: &mut [u8; NCA_HEADER_SIZE], header_key: &[u8; 32]) -> NxResult<()> {
     let xts = make_cipher(header_key)?;
     xts.decrypt_area(buf, NCA_XTS_SECTOR, 0, nca_tweak);
     Ok(())
 }
 
+/// Encrypts an NCA header in place with AES-XTS. See
+/// [`decrypt_nca_header`] for the sector and tweak layout.
+///
+/// # Errors
+/// Returns [`NxError::AesError`] if `header_key`'s two 16-byte halves
+/// fail to initialize the AES-128 ciphers.
 pub fn encrypt_nca_header(buf: &mut [u8; NCA_HEADER_SIZE], header_key: &[u8; 32]) -> NxResult<()> {
     let xts = make_cipher(header_key)?;
     xts.encrypt_area(buf, NCA_XTS_SECTOR, 0, nca_tweak);

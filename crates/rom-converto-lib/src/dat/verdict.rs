@@ -1,7 +1,12 @@
+//! Classifies Playmatch match results into a [`DatVerdict`] and reconciles
+//! multi-track disc sets against DAT file lists.
+
 use crate::dat::digest::TrackDigests;
 use crate::dat::model::{GameMatchType, PlaymatchGameFile};
 use crate::util::HashAlgo;
 
+/// How strongly a Playmatch match result is backed: a verified hash, a
+/// name/size hint, or no match.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MatchStrength {
     Verified(HashAlgo),
@@ -10,11 +15,14 @@ pub enum MatchStrength {
 }
 
 impl MatchStrength {
+    /// True when the match is backed by a verified hash, not just a
+    /// name/size hint.
     pub fn is_verified(self) -> bool {
         matches!(self, MatchStrength::Verified(_))
     }
 }
 
+/// Maps a [`GameMatchType`] to its [`MatchStrength`].
 pub fn match_strength(t: GameMatchType) -> MatchStrength {
     match t {
         GameMatchType::Sha256 => MatchStrength::Verified(HashAlgo::Sha256),
@@ -26,6 +34,7 @@ pub fn match_strength(t: GameMatchType) -> MatchStrength {
     }
 }
 
+/// Final per-file verdict after DAT matching and local reconciliation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DatVerdict {
     Verified,
@@ -39,6 +48,7 @@ pub enum DatVerdict {
 }
 
 impl DatVerdict {
+    /// Lowercase string form of the verdict, used in reports.
     pub fn as_str(self) -> &'static str {
         match self {
             DatVerdict::Verified => "verified",
@@ -53,6 +63,7 @@ impl DatVerdict {
     }
 }
 
+/// Reconciliation result for one disc track against the DAT file list.
 #[derive(Debug, Clone)]
 pub struct TrackCheck {
     pub track_number: u32,
@@ -61,6 +72,7 @@ pub struct TrackCheck {
     pub ok: bool,
 }
 
+/// Reconciliation result for an entire multi-track disc set.
 #[derive(Debug, Clone)]
 pub struct SetReconciliation {
     pub tracks: Vec<TrackCheck>,

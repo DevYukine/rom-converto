@@ -10,6 +10,7 @@ use crate::microsoft::zar::ZarReader;
 
 use super::error::XenonResult;
 
+/// Summary of a ZArchive's tree contents and root `default.xex` metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ZarInfo {
     pub file_count: u64,
@@ -22,6 +23,11 @@ pub struct ZarInfo {
     pub xex: Option<crate::microsoft::xex::XexInfo>,
 }
 
+/// Reads a ZArchive's file/directory counts, sizes, and root
+/// `default.xex` metadata, without decoding any block payload.
+///
+/// # Errors
+/// Returns an error if the archive's footer or structure is invalid.
 pub fn read_info(path: &Path) -> XenonResult<ZarInfo> {
     let compressed_size = std::fs::metadata(path)?.len();
     let mut reader = ZarReader::open(BufReader::with_capacity(

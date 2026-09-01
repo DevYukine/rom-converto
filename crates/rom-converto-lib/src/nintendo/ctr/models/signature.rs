@@ -24,6 +24,7 @@ pub enum SignatureType {
 }
 
 impl SignatureType {
+    /// Returns the signature payload size in bytes for this signature type.
     pub fn signature_size(&self) -> usize {
         match self {
             Self::Rsa4096Sha1 | Self::Rsa4096Sha256 => 0x200,
@@ -32,10 +33,10 @@ impl SignatureType {
         }
     }
 
+    /// Returns the alignment padding size in bytes that follows the
+    /// signature payload for this signature type.
     pub fn padding_size(&self) -> usize {
-        // According to the documentation:
-        // RSA signatures have 0x3C padding
-        // ECC signatures have 0x40 padding
+        // RSA signatures have 0x3C padding, ECC signatures 0x40.
         match self {
             Self::Rsa4096Sha1 | Self::Rsa4096Sha256 => 0x3C,
             Self::Rsa2048Sha1 | Self::Rsa2048Sha256 => 0x3C,
@@ -75,7 +76,6 @@ mod tests {
 
     #[test]
     fn test_signature_padding() {
-        // According to documentation: RSA has 0x3C padding, ECC has 0x40 padding
         assert_eq!(SignatureType::Rsa4096Sha256.padding_size(), 0x3C);
         assert_eq!(SignatureType::Rsa2048Sha256.padding_size(), 0x3C);
         assert_eq!(SignatureType::EcdsaSha256.padding_size(), 0x40);

@@ -1,3 +1,7 @@
+//! FLAC hunk compression for the CHD `flac` codec: encodes whole
+//! 16-bit-stereo hunks and stores only the raw frames, matching chdman's
+//! headerless layout.
+
 use crate::cd::{BYTES_PER_STEREO_SAMPLE, CD_CHANNELS, SECTOR_SIZE};
 use crate::chd::compression::{ChdCompressor, tag_to_bytes};
 use crate::chd::error::{ChdError, ChdResult};
@@ -11,6 +15,7 @@ use std::io::{self, Cursor};
 pub(crate) const CD_SAMPLE_RATE: usize = 44_100;
 const FLAC_BITS_PER_SAMPLE: usize = 16;
 
+/// [`ChdCompressor`] for the CHD `flac` codec: whole 16-bit-stereo hunks only.
 #[derive(Debug, Clone)]
 #[allow(dead_code)] // CHD spec codec: non-CD hunk compression.
 pub struct FlacCompressor;
@@ -113,11 +118,13 @@ fn flac_block_size(samples_per_channel: usize) -> usize {
     )
 }
 
+/// Byte order for decoding or encoding raw 16-bit PCM samples.
 pub enum Endian {
     Little,
     Big,
 }
 
+/// Decodes 16-bit PCM bytes into `i32` samples in the given byte order.
 pub fn samples_from_bytes(data: &[u8], endian: Endian) -> Vec<i32> {
     let mut samples = Vec::with_capacity(data.len() / 2);
     for chunk in data.as_chunks::<2>().0 {
@@ -130,6 +137,7 @@ pub fn samples_from_bytes(data: &[u8], endian: Endian) -> Vec<i32> {
     samples
 }
 
+/// Encodes `i32` samples back to 16-bit PCM bytes in the given byte order.
 pub fn bytes_from_samples(samples: &[i32], endian: &Endian) -> Vec<u8> {
     let mut output = Vec::with_capacity(samples.len() * 2);
     for &sample in samples {

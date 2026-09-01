@@ -18,6 +18,8 @@ use crate::nintendo::wup::nus::content_stream::{
 use crate::nintendo::wup::nus::fst_parser::{FstClusterHashMode, VirtualFs};
 use crate::nintendo::wup::nus::ticket_parser::TitleKey;
 
+/// [`MetaSource`] backed by one decrypted disc partition, caching
+/// decrypted clusters by index.
 pub struct DiscMetaSource<'d> {
     source: PartitionContentSource<'d>,
     title_key: TitleKey,
@@ -27,6 +29,7 @@ pub struct DiscMetaSource<'d> {
 }
 
 impl<'d> DiscMetaSource<'d> {
+    /// Builds a source over `source`, starting with an empty cluster cache.
     pub fn new(
         source: PartitionContentSource<'d>,
         title_key: TitleKey,

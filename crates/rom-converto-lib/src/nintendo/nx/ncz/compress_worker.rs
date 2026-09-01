@@ -8,10 +8,13 @@
 use crate::nintendo::nx::error::{NxError, NxResult};
 use crate::util::worker_pool::{Pool, Worker, parallelism};
 
+/// One plaintext NCA block queued for a compression worker.
 pub struct NczBlockWork {
     pub plaintext: Vec<u8>,
 }
 
+/// Result of compressing one block: the bytes to write out plus
+/// whether they ended up stored raw.
 pub struct NczCompressedBlock {
     pub bytes: Vec<u8>,
     /// True when the compressed form was no smaller than the plaintext
@@ -21,12 +24,20 @@ pub struct NczCompressedBlock {
     pub original_len: usize,
 }
 
+/// Per-thread compression state: a persistent zstd context plus a
+/// `compress_bound`-sized scratch buffer, so the hot loop allocates nothing.
 pub struct NczCompressWorker {
     compressor: zstd::bulk::Compressor<'static>,
     scratch: Vec<u8>,
 }
 
 impl NczCompressWorker {
+    /// Builds a worker with a zstd compressor at `level` and a
+    /// scratch buffer sized for `block_size`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if zstd compressor initialization fails.
     pub fn new(level: i32, block_size: usize) -> NxResult<Self> {
         let compressor = zstd::bulk::Compressor::new(level)
             .map_err(|e| NxError::ZstdError(format!("zstd compressor init: {e}")))?;
@@ -61,6 +72,12 @@ impl Worker<NczBlockWork, NczCompressedBlock, NxError> for NczCompressWorker {
     }
 }
 
+/// Spawns a pool of `n_threads` compression workers, each with its
+/// own zstd compressor at `level` sized for `block_size`.
+///
+/// # Errors
+///
+/// Returns an error if any worker fails to initialize its zstd compressor.
 pub fn spawn_ncz_pool(
     level: i32,
     block_size: usize,
@@ -73,6 +90,7 @@ pub fn spawn_ncz_pool(
     Ok(Pool::spawn(workers))
 }
 
+/// Returns the default number of compression worker threads (host parallelism).
 pub fn default_thread_count() -> usize {
     parallelism()
 }

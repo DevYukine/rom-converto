@@ -1,9 +1,15 @@
+//! Error type for the Wii U (WUP) pipeline: NUS decryption, disc
+//! reading, ZArchive read/write, and the loadiine/NUS/disc info paths.
+
 use std::path::PathBuf;
 
 use thiserror::Error;
 
 use crate::util::worker_pool::PoolChannelClosed;
 
+/// Error type covering every stage of Wii U title handling: NUS layout
+/// discovery, ticket/TMD/FST parsing, AES decryption, disc partition
+/// reading, and ZArchive read/write.
 #[derive(Debug, Error)]
 pub enum WupError {
     #[error(transparent)]
@@ -112,4 +118,5 @@ impl From<PoolChannelClosed> for WupError {
     }
 }
 
+/// Result alias used throughout the `wup` module.
 pub type WupResult<T> = Result<T, WupError>;

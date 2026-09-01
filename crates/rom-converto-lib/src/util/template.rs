@@ -17,6 +17,7 @@ const WINDOWS_RESERVED: &[&str] = &[
     "COM8", "COM9", "LPT0", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
 ];
 
+/// Metadata values substitutable into an output path template.
 pub struct TemplateTokens {
     pub title: Option<String>,
     pub title_id: Option<String>,
@@ -28,6 +29,8 @@ pub struct TemplateTokens {
 }
 
 impl TemplateTokens {
+    /// Builds tokens from `info`, falling back to `input`'s basename and
+    /// `output_ext` when metadata is missing or `info` is `None`.
     pub fn new(info: Option<&InfoResult>, input: &Path, output_ext: &str) -> Self {
         let basename = input
             .file_stem()
@@ -184,6 +187,12 @@ fn nx_title(titles: &[crate::nintendo::nx::info::NxNacpTitle]) -> Option<String>
         .and_then(non_empty)
 }
 
+/// Substitutes `tokens` into `template` and sanitizes the result into a
+/// filesystem-safe relative path.
+///
+/// # Errors
+/// Returns an error if `template` is absolute or any component resolves to
+/// `..`.
 pub fn apply_template(template: &str, tokens: &TemplateTokens) -> Result<PathBuf> {
     if template.starts_with('/') || template.starts_with('\\') || has_drive_prefix(template) {
         bail!("output template must resolve to a relative path without parent traversal");

@@ -2,6 +2,7 @@
 
 use thiserror::Error;
 
+/// Errors from reading or decoding a GCZ container.
 #[derive(Debug, Error)]
 pub enum GczError {
     /// Wraps an underlying I/O failure.
@@ -53,4 +54,5 @@ impl From<crate::util::worker_pool::PoolChannelClosed> for GczError {
     }
 }
 
+/// Result alias for GCZ operations.
 pub type GczResult<T> = Result<T, GczError>;

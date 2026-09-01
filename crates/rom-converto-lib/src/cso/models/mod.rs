@@ -48,6 +48,7 @@ pub enum CsoFormat {
 }
 
 impl CsoFormat {
+    /// Returns the format's 4-byte header magic.
     pub fn magic(self) -> [u8; 4] {
         match self {
             CsoFormat::Cso => CISO_MAGIC,
@@ -56,6 +57,7 @@ impl CsoFormat {
         }
     }
 
+    /// Maps a 4-byte header magic to its format, or `None` if unrecognized.
     pub fn from_magic(magic: &[u8; 4]) -> Option<Self> {
         match magic {
             m if *m == CISO_MAGIC => Some(CsoFormat::Cso),
@@ -65,6 +67,7 @@ impl CsoFormat {
         }
     }
 
+    /// Returns the format's conventional file extension, without a dot.
     pub fn extension(self) -> &'static str {
         match self {
             CsoFormat::Cso => "cso",
@@ -73,6 +76,7 @@ impl CsoFormat {
         }
     }
 
+    /// Returns the format's display name.
     pub fn name(self) -> &'static str {
         match self {
             CsoFormat::Cso => "CSO",
@@ -82,6 +86,8 @@ impl CsoFormat {
     }
 }
 
+/// The 24-byte CISO/ZISO on-disk header. See the module docs for field
+/// offsets and semantics.
 #[binrw]
 #[brw(little)]
 #[derive(Debug, Clone)]
@@ -96,6 +102,8 @@ pub struct CisoHeader {
 }
 
 impl CisoHeader {
+    /// Builds a version-1 header for `format` with the given size, block
+    /// size, and index shift.
     pub fn new(
         format: CsoFormat,
         uncompressed_size: u64,
@@ -113,23 +121,30 @@ impl CisoHeader {
         }
     }
 
+    /// Resolves the header's magic bytes to a [`CsoFormat`].
     pub fn format(&self) -> Option<CsoFormat> {
         CsoFormat::from_magic(&self.magic)
     }
 
+    /// Number of data blocks covering `uncompressed_size` at `block_size`.
     pub fn block_count(&self) -> u64 {
         block_count(self.uncompressed_size, self.block_size)
     }
 }
 
+/// Number of blocks needed to cover `uncompressed_size` bytes at `block_size`.
 pub fn block_count(uncompressed_size: u64, block_size: u32) -> u64 {
     uncompressed_size.div_ceil(block_size as u64)
 }
 
+/// True if `block_size` is a power of two within the supported range
+/// (2 KiB to 1 MiB).
 pub fn valid_block_size(block_size: u32) -> bool {
     block_size.is_power_of_two() && (DEFAULT_BLOCK_SIZE..=MAX_BLOCK_SIZE).contains(&block_size)
 }
 
+/// Picks the block size maxcso would use for an input of `input_size`
+/// bytes: 16384 at or above 2 GiB, 2048 otherwise.
 pub fn pick_block_size(input_size: u64) -> u32 {
     if input_size >= LARGE_INPUT_THRESHOLD {
         LARGE_INPUT_BLOCK_SIZE

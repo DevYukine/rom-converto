@@ -21,6 +21,7 @@ pub struct ZArchiveSectionInfo {
 }
 
 impl ZArchiveSectionInfo {
+    /// Builds a section descriptor from its offset and size.
     pub fn new(offset: u64, size: u64) -> Self {
         Self { offset, size }
     }

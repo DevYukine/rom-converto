@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use anyhow::Result;
 use rom_converto_lib::info::InfoResult;
 use rom_converto_lib::microsoft::xex::XexInfo;

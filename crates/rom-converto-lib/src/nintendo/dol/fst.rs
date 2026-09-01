@@ -12,6 +12,8 @@ use std::io::Cursor;
 
 pub const FST_ENTRY_SIZE: usize = 0x0C;
 
+/// One entry decoded from an FST: a file with its data offset and size,
+/// or a directory (its extent is only used internally while walking).
 #[derive(Debug, Clone)]
 pub enum FstNode {
     File {
@@ -24,6 +26,8 @@ pub enum FstNode {
     },
 }
 
+/// Walks a GameCube FST and returns every file and directory it contains,
+/// with paths joined by the parent directories found along the way.
 pub fn list_files(fst: &[u8]) -> Result<Vec<FstNode>> {
     if fst.len() < FST_ENTRY_SIZE {
         return Err(anyhow!("FST too small"));
@@ -91,6 +95,8 @@ pub fn list_files(fst: &[u8]) -> Result<Vec<FstNode>> {
     Ok(out)
 }
 
+/// Looks up `path` in the FST and returns its `(offset, size)` if it
+/// names a file.
 pub fn find_file(fst: &[u8], path: &str) -> Result<Option<(u64, u64)>> {
     for node in list_files(fst)? {
         if let FstNode::File {

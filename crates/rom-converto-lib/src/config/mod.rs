@@ -15,6 +15,7 @@ pub use write::*;
 pub const CONFIG_FILENAMES: [&str; 2] = ["rom-converto.toml", ".rom-converto.toml"];
 pub const USER_CONFIG_SUBPATH: &str = "rom-converto/config.toml";
 
+/// Top-level `rom-converto.toml` structure: per-format defaults plus named presets.
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct UserConfig {
@@ -29,6 +30,7 @@ pub struct UserConfig {
     pub presets: HashMap<String, Preset>,
 }
 
+/// Config defaults shared by the GameCube/Wii (`dol`/`rvl`) disc formats.
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DiscDefaults {
@@ -42,6 +44,7 @@ pub struct DiscDefaults {
     pub report: Option<PathBuf>,
 }
 
+/// Config defaults for Switch (`nx`) NSZ/XCZ conversion.
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct NxDefaults {
@@ -54,6 +57,7 @@ pub struct NxDefaults {
     pub report: Option<PathBuf>,
 }
 
+/// Config defaults for CHD compression/extraction.
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChdDefaults {
@@ -67,6 +71,7 @@ pub struct ChdDefaults {
     pub report: Option<PathBuf>,
 }
 
+/// Config defaults for CSO/ZSO compression.
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CsoDefaults {
@@ -76,6 +81,7 @@ pub struct CsoDefaults {
     pub report: Option<PathBuf>,
 }
 
+/// Config defaults for Wii U (`wup`) package conversion.
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct WupDefaults {
@@ -84,6 +90,7 @@ pub struct WupDefaults {
     pub on_conflict: Option<String>,
 }
 
+/// Config defaults for DAT-based verification and matching.
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DatDefaults {
@@ -95,6 +102,8 @@ pub struct DatDefaults {
     pub input_checksum_max: Option<String>,
 }
 
+/// A named bundle of per-format defaults that fully replaces the matching
+/// top-level defaults when applied.
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Preset {

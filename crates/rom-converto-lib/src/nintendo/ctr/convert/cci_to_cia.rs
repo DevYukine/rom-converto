@@ -36,6 +36,7 @@ const EXHEADER_SAVE_DATA_SIZE_OFFSET: usize = 0x1C0;
 const NCCH_EXHEADER_HASH_OFFSET: usize = 0x160;
 const CONTENT_COPY_BUF: usize = 4 * 1024 * 1024;
 
+/// Converts a CCI (`.3ds`) cartridge image at `input` into a CIA at `output`.
 pub async fn cci_to_cia(
     input: &Path,
     output: &Path,
@@ -44,6 +45,7 @@ pub async fn cci_to_cia(
     cci_to_cia_cancellable(input, output, progress, CancelToken::new()).await
 }
 
+/// Like [`cci_to_cia`] but observes `cancel`.
 pub async fn cci_to_cia_cancellable(
     input: &Path,
     output: &Path,

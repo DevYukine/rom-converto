@@ -34,13 +34,16 @@ use crate::nintendo::wup::nus::source::NusSource;
 use crate::nintendo::wup::nus::ticket_parser::TitleKey;
 use crate::util::{CancelToken, ProgressReporter};
 
+/// Overall verification outcome for one input.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WupVerifyResult {
+    /// Input kind: `"nus"`, `"disc"`, `"wua"`, or `"loadiine"`.
     pub kind: String,
     pub ok: bool,
     pub titles: Vec<TitleVerdict>,
 }
 
+/// Per-title hash-check outcome.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TitleVerdict {
     pub title_id: u64,
@@ -55,6 +58,12 @@ pub struct TitleVerdict {
     pub skipped_content: usize,
 }
 
+/// Verifies a Wii U input, dispatching on its file type or directory
+/// layout: `.wua`, `.wud`/`.wux` disc images, loadiine directories,
+/// or NUS directories.
+///
+/// # Errors
+/// Returns an error for an unrecognized file extension or an unreadable input.
 pub fn verify_wup(
     input: &Path,
     key_override: Option<&Path>,
@@ -63,6 +72,11 @@ pub fn verify_wup(
     verify_wup_cancellable(input, key_override, progress, &CancelToken::new())
 }
 
+/// Cancellable version of [`verify_wup`].
+///
+/// # Errors
+/// Returns an error if `cancel` fires, the input type is unrecognized,
+/// or the input cannot be read.
 pub fn verify_wup_cancellable(
     input: &Path,
     key_override: Option<&Path>,
@@ -90,6 +104,10 @@ pub fn verify_wup_cancellable(
     verify_nus(input, progress, cancel)
 }
 
+/// Async wrapper around [`verify_wup`].
+///
+/// # Errors
+/// See [`verify_wup`].
 pub async fn verify_wup_async(
     input: PathBuf,
     key_override: Option<PathBuf>,
@@ -98,6 +116,10 @@ pub async fn verify_wup_async(
     verify_wup_async_cancellable(input, key_override, progress, CancelToken::new()).await
 }
 
+/// Async, cancellable version of [`verify_wup`].
+///
+/// # Errors
+/// See [`verify_wup_cancellable`].
 pub async fn verify_wup_async_cancellable(
     input: PathBuf,
     key_override: Option<PathBuf>,

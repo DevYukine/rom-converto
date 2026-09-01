@@ -26,6 +26,12 @@ const COPY_BUF: usize = 4 * 1024 * 1024;
 const CARD1_MIN_IMAGE_SIZE: u64 = 0x8000000;
 const NCSD_PADDING_BYTE: u8 = 0xFF;
 
+/// Converts a CIA at `input` into a CCI (`.3ds`) cartridge image at `output`.
+///
+/// # Errors
+///
+/// Returns an error if the CIA's title ID is a DSiWare/TWL title, which
+/// cannot be represented as a CCI.
 pub async fn cia_to_cci(
     input: &Path,
     output: &Path,
@@ -34,6 +40,7 @@ pub async fn cia_to_cci(
     cia_to_cci_cancellable(input, output, progress, CancelToken::new()).await
 }
 
+/// Like [`cia_to_cci`] but observes `cancel`.
 pub async fn cia_to_cci_cancellable(
     input: &Path,
     output: &Path,

@@ -14,6 +14,12 @@ use log::debug;
 use pbkdf2::pbkdf2;
 use sha1::Sha1;
 
+/// Derives the unencrypted title key from `title_id` and `password` via
+/// PBKDF2-HMAC-SHA1 (20 iterations) over an MD5 salt of the secret.
+///
+/// # Errors
+///
+/// Returns an error if `title_id`'s hex portion cannot be decoded.
 pub fn generate_key(mut title_id: &str, password: &str) -> TitleKeyResult<String> {
     if let Some(stripped) = title_id.strip_prefix("0x") {
         title_id = stripped;
@@ -25,7 +31,6 @@ pub fn generate_key(mut title_id: &str, password: &str) -> TitleKeyResult<String
     let secret_hex = format!("{CTR_TITLE_KEY_SECRET}{tid}");
     let secret_bytes = decode(&secret_hex)?;
 
-    // MD5(secret_bytes)
     let salt = md5::compute(&secret_bytes);
 
     // PBKDF2-HMAC-SHA1(password, salt, 20 iter) → 16-byte key
@@ -68,6 +73,13 @@ fn encrypt_title_key(
     Ok(encode(ciphertext))
 }
 
+/// Derives and encrypts the title key for `title_id` under the retail
+/// common key, ready to embed in a ticket.
+///
+/// # Errors
+///
+/// Returns an error if `title_id` or its derived key cannot be decoded, or
+/// if AES-CBC encryption fails.
 pub fn generate_title_key(title_id: &str, password: Option<String>) -> TitleKeyResult<String> {
     let password = password.unwrap_or_else(|| CTR_DEFAULT_TITLE_KEY_PASSWORD.to_string());
     let common_key = CTR_COMMON_KEYS[0];

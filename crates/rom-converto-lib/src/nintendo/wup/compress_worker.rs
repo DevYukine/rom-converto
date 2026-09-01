@@ -47,6 +47,8 @@ pub struct ZArchiveCompressWorker {
 }
 
 impl ZArchiveCompressWorker {
+    /// Builds a worker with a persistent compressor at `level`.
+    /// `level == 0` selects [`ZARCHIVE_DEFAULT_ZSTD_LEVEL`].
     pub fn new(level: i32) -> WupResult<Self> {
         let effective_level = if level == 0 {
             ZARCHIVE_DEFAULT_ZSTD_LEVEL

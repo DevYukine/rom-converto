@@ -12,6 +12,8 @@ use byteorder::{LE, ReadBytesExt, WriteBytesExt};
 use crate::nintendo::nx::constants::{PFS0_ENTRY_SIZE, PFS0_HEADER_SIZE, PFS0_MAGIC};
 use crate::nintendo::nx::error::{NxError, NxResult};
 
+/// One decoded PFS0 entry: name, offset relative to
+/// `Pfs0::data_section_offset`, and size.
 #[derive(Debug, Clone)]
 pub struct Pfs0FileRef {
     pub name: String,
@@ -19,6 +21,8 @@ pub struct Pfs0FileRef {
     pub size: u64,
 }
 
+/// Parsed PFS0 container: the decoded file table plus the absolute
+/// offset where concatenated file data begins.
 #[derive(Debug, Clone)]
 pub struct Pfs0 {
     pub files: Vec<Pfs0FileRef>,
@@ -76,6 +80,9 @@ impl Pfs0 {
     }
 }
 
+/// Optional layout parameters for [`build_header`], used to reproduce
+/// a byte-identical PFS0 container when round-tripping an existing
+/// NSP.
 #[derive(Debug, Clone, Default)]
 pub struct Pfs0LayoutHints {
     /// Pad the string table so the total header size matches the
@@ -146,12 +153,17 @@ pub fn build_header(
     Ok(Pfs0HeaderBytes { bytes, entries })
 }
 
+/// Output of [`build_header`]: the serialized PFS0 header bytes ready
+/// to write, plus the parallel entry records describing where each
+/// file lands in the data section.
 #[derive(Debug, Clone)]
 pub struct Pfs0HeaderBytes {
     pub bytes: Vec<u8>,
     pub entries: Vec<Pfs0EntryRecord>,
 }
 
+/// One PFS0 entry as written into the header: offset (relative to the
+/// data section) and size of the file, plus its name-table offset.
 #[derive(Debug, Clone, Copy)]
 pub struct Pfs0EntryRecord {
     pub data_offset: u64,

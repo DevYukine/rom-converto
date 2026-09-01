@@ -2,6 +2,7 @@
 
 use thiserror::Error;
 
+/// Errors from reading or building a WBFS container.
 #[derive(Debug, Error)]
 pub enum WbfsError {
     #[error(transparent)]
@@ -32,4 +33,5 @@ pub enum WbfsError {
     Custom(String),
 }
 
+/// Result alias for WBFS operations.
 pub type WbfsResult<T> = Result<T, WbfsError>;

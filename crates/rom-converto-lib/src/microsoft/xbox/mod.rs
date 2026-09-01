@@ -23,6 +23,7 @@ use tokio::task;
 
 use crate::util::{CancelToken, ProgressReporter, await_with_progress_cancel, scratch_output_path};
 
+/// Options for building an XISO from a directory or an existing XDVDFS image.
 #[derive(Debug, Clone, Copy)]
 pub struct XisoCreateOptions {
     /// Rewrite the XDK media-type check in every `.xbe`. On by default:

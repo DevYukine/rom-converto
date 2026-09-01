@@ -1,5 +1,7 @@
 use binrw::{BinRead, BinWrite};
 
+/// A `seeddb.bin` seed database: a count followed by that many [`SeedEntry`]
+/// records.
 #[derive(BinRead, BinWrite, Debug, Clone)]
 #[brw(little)]
 pub struct SeedDatabase {
@@ -9,6 +11,8 @@ pub struct SeedDatabase {
     pub seeds: Vec<SeedEntry>,
 }
 
+/// One seed database entry: a title ID (`key`, big-endian hex) mapped to its
+/// 16-byte seed (`value`).
 #[derive(BinRead, BinWrite, Debug, Clone)]
 #[non_exhaustive]
 pub struct SeedEntry {

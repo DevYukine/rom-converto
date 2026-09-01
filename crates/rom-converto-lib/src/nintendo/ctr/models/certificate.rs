@@ -2,6 +2,7 @@ use crate::nintendo::ctr::models::signature::SignatureType;
 use binrw::{BinRead, BinWrite};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, BinRead, BinWrite)]
+/// Which public key encoding [`Certificate::public_key`] uses.
 #[brw(repr = u32)]
 pub enum KeyType {
     /// The public key (modulus and public exponent) is 4096 bits long, used for RSA signatures.
@@ -46,6 +47,7 @@ pub struct Certificate {
 }
 
 // The type of public key stored is determined by checking the key type.
+/// A public key, encoded per [`KeyType`].
 #[derive(Debug, Clone, BinRead, BinWrite)]
 #[br(import(key_type: KeyType))]
 pub enum PublicKey {

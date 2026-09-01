@@ -23,6 +23,7 @@ pub struct ZarVerifyResult {
 }
 
 impl ZarVerifyResult {
+    /// True if the archive's stored integrity hash matched.
     pub fn ok(&self) -> bool {
         self.hash_ok
     }

@@ -16,6 +16,7 @@ pub const GCZ_MAGIC: u32 = 0xB10B_C001;
 pub const GCZ_HEADER_SIZE: u64 = 32;
 pub const GCZ_UNCOMPRESSED_FLAG: u64 = 1 << 63;
 
+/// The 32-byte GCZ header, stored little-endian at the start of the file.
 #[derive(Debug, Clone, Copy, BinRead, BinWrite)]
 #[brw(little)]
 pub struct GczHeader {
@@ -29,6 +30,8 @@ pub struct GczHeader {
 }
 
 impl GczHeader {
+    /// Checks the magic, block size, and that `num_blocks` matches
+    /// `data_size` divided into `block_size`-sized blocks.
     pub fn validate(&self) -> GczResult<()> {
         if self.magic != GCZ_MAGIC {
             return Err(GczError::InvalidMagic(self.magic));

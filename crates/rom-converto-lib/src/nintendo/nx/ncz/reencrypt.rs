@@ -27,6 +27,9 @@ use crate::nintendo::nx::ncz::header::NczSectionEntry;
 
 type AesCtr = Ctr128BE<Aes128>;
 
+/// `Write` adapter that re-encrypts plaintext NCA bytes with each
+/// section's AES-CTR keystream as they pass through, tracked by a
+/// running `position_in_nca` cursor.
 pub struct ReencryptWriter<'a, W: Write> {
     inner: W,
     sections: &'a [NczSectionEntry],
@@ -41,6 +44,8 @@ struct CurrentSection {
 }
 
 impl<'a, W: Write> ReencryptWriter<'a, W> {
+    /// Creates a writer over `inner` that re-encrypts bytes written to
+    /// it as if they started at `start_position_in_nca` in the NCA.
     pub fn new(inner: W, sections: &'a [NczSectionEntry], start_position_in_nca: u64) -> Self {
         Self {
             inner,
@@ -51,6 +56,7 @@ impl<'a, W: Write> ReencryptWriter<'a, W> {
         }
     }
 
+    /// Consumes the writer and returns the wrapped inner writer.
     pub fn into_inner(self) -> W {
         self.inner
     }

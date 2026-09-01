@@ -23,6 +23,14 @@ use crate::util::{CancelToken, ProgressReporter};
 const STREAM_CHUNK: usize = 256 * 1024;
 const READ_BUFFER: usize = 4 * 1024 * 1024;
 
+/// Decompresses an NCZ stream from `input` into a re-encrypted NCA
+/// written to `out`. Convenience wrapper over `ncz_to_nca_cancellable`
+/// with a token that is never cancelled.
+///
+/// # Errors
+///
+/// Returns an error if the NCZ headers are malformed, decompression
+/// fails, or I/O on `input` / `out` fails.
 pub fn ncz_to_nca<R: Read + Send, W: Write>(
     input: &mut R,
     out: &mut W,
@@ -31,6 +39,15 @@ pub fn ncz_to_nca<R: Read + Send, W: Write>(
     ncz_to_nca_cancellable(input, out, progress, &CancelToken::new())
 }
 
+/// Streams an NCZ container from `input`, decompressing its payload
+/// (solid or block mode) and re-encrypting it through a
+/// `ReencryptWriter` before writing the resulting NCA bytes to `out`.
+/// Checked against `cancel` between steps so a caller can abort early.
+///
+/// # Errors
+///
+/// Returns an error if the NCZ headers are malformed, decompression
+/// fails, `cancel` is triggered, or I/O on `input` / `out` fails.
 pub fn ncz_to_nca_cancellable<R: Read + Send, W: Write>(
     input: &mut R,
     out: &mut W,

@@ -118,6 +118,7 @@ impl<R: Read + Seek> ZarReader<R> {
         })
     }
 
+    /// The archive's parsed footer.
     pub fn footer(&self) -> &Footer {
         &self.footer
     }

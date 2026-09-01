@@ -20,6 +20,8 @@ use crate::nintendo::nx::walker::NcaWalker;
 use crate::util::ProgressReporter;
 use crate::util::worker_pool::drive;
 
+/// NCZ payload layout: one continuous zstd stream, or fixed-size
+/// blocks that can be decompressed independently.
 #[derive(Debug, Clone, Copy)]
 pub enum NczMode {
     Solid,
@@ -34,6 +36,7 @@ impl Default for NczMode {
     }
 }
 
+/// Options controlling NCA -> NCZ compression: block layout and zstd level.
 #[derive(Debug, Clone, Copy)]
 pub struct NcaToNczOptions {
     pub mode: NczMode,
@@ -67,6 +70,14 @@ impl NcaToNczOptions {
     }
 }
 
+/// Writes `walker`'s NCA payload out as an NCZ container: the raw
+/// prefix, the section table, then the payload compressed per
+/// `opts.mode` (solid single-stream or independently decompressable blocks).
+///
+/// # Errors
+///
+/// Returns an error if `opts` fails validation, if reading from
+/// `walker` or writing to `out` fails, or if zstd compression fails.
 pub fn nca_to_ncz<W: Write + Seek>(
     walker: &NcaWalker,
     out: &mut W,

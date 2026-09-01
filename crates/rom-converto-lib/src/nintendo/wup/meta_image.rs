@@ -14,6 +14,13 @@ const TGA_HEADER_PREFIX: [u8; 12] = [0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 const MIN_TGA_SIZE: usize = 18;
 const MAX_TGA_SIZE: usize = 8 * 1024 * 1024;
 
+/// Decodes a Wii U `meta/iconTex.tga` (plain uncompressed type-2 TGA)
+/// and re-encodes it as PNG.
+///
+/// # Errors
+/// Returns an error if `bytes` is out of the expected size range, its
+/// header does not match the uncompressed Wii U TGA layout, or the
+/// `image` crate fails to decode it.
 pub fn decode_meta_tga(bytes: &[u8]) -> Result<Image> {
     validate_meta_tga_magic(bytes)?;
     let reader = image::ImageReader::with_format(Cursor::new(bytes), image::ImageFormat::Tga);

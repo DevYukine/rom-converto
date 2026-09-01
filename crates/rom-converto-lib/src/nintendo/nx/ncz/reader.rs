@@ -43,6 +43,10 @@ struct BlockPayload {
     decompressed_payload_size: u64,
 }
 
+/// Random-access reader over an NCZ file: caches the raw prefix
+/// bytes and the parsed section table, and holds the (possibly
+/// already decompressed) payload for on-demand block decompression
+/// and re-encryption on read.
 pub struct NczReader {
     prefix: Box<[u8; NCA_PREFIX_SIZE]>,
     sections: Vec<NczSectionEntry>,
@@ -50,6 +54,16 @@ pub struct NczReader {
 }
 
 impl NczReader {
+    /// Opens `file` as an NCZ container starting at
+    /// `nca_offset_in_container`. Reads the prefix and headers; for
+    /// block mode it only records block offsets/sizes for later
+    /// on-demand decompression, while solid mode decompresses the
+    /// whole payload up front since it can't be randomly accessed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `ncz_total_size` is smaller than the NCA
+    /// prefix, the headers are malformed, or zstd decompression fails.
     pub fn open(
         file: Arc<File>,
         nca_offset_in_container: u64,
@@ -105,6 +119,8 @@ impl NczReader {
         })
     }
 
+    /// Returns the total decompressed NCA size: the fixed prefix plus
+    /// the decompressed payload size.
     pub fn decompressed_nca_size(&self) -> u64 {
         let payload_size = match &self.payload {
             NczPayload::Block(b) => b.decompressed_payload_size,

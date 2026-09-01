@@ -11,6 +11,7 @@ use std::io::{Cursor, Read};
 pub const WII_TMD_HEADER_OFFSET: usize = 0x140;
 pub const WII_TMD_CONTENT_RECORD_SIZE: usize = 0x24;
 
+/// Parsed Wii Title Metadata: the signed title header plus its content records.
 #[derive(Debug, Clone)]
 pub struct WiiTmd {
     pub signature_issuer: String,
@@ -30,6 +31,7 @@ pub struct WiiTmd {
     pub contents: Vec<WiiTmdContent>,
 }
 
+/// One content record from a TMD: the content's id, index, type, size, and SHA-1 hash.
 #[derive(Debug, Clone)]
 pub struct WiiTmdContent {
     pub content_id: u32,
@@ -40,6 +42,7 @@ pub struct WiiTmdContent {
 }
 
 impl WiiTmd {
+    /// Parses a TMD starting at [`WII_TMD_HEADER_OFFSET`], the fixed RSA-2048 SHA-1 signature size.
     pub fn parse(buf: &[u8]) -> Result<Self> {
         if buf.len() < WII_TMD_HEADER_OFFSET + 0xA4 {
             return Err(anyhow!("Wii TMD too small ({} bytes)", buf.len()));
@@ -119,6 +122,7 @@ impl WiiTmd {
         })
     }
 
+    /// Region name for the TMD's `region` field, or `"Unknown"` for an unrecognized value.
     pub fn region_name(&self) -> &'static str {
         match self.region {
             0 => "Japan",

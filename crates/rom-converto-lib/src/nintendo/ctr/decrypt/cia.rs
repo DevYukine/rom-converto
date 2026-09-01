@@ -389,7 +389,6 @@ async fn fetch_seed(title_id: &str) -> anyhow::Result<[u8; 16]> {
             .expect("Failed to create HTTP client");
     }
 
-    // Build a future for each country, returning Ok(bytes) on 200 or Err otherwise
     let requests = CTR_SEED_COUNTRIES.iter().map(|&country| {
         let client = &*CLIENT;
         debug!("Fetching seed for {country} ({title_id})");
@@ -407,7 +406,6 @@ async fn fetch_seed(title_id: &str) -> anyhow::Result<[u8; 16]> {
         })
     });
 
-    // Run all requests in parallel and take the first successful one
     let (bytes, _others) = select_ok(requests).await?;
 
     let key: [u8; 16] = <[u8; 16]>::try_from(bytes.as_ref())
@@ -639,9 +637,8 @@ pub async fn parse_ncch(
     hash_bytes(&mut hasher, &tmp);
     writer.write_all(&tmp).await?;
 
-    let mut counter: [u8; 16];
     if header.exhdrsize != 0 {
-        counter = get_ncch_aes_counter(&header, NcchSection::ExHeader);
+        let counter = get_ncch_aes_counter(&header, NcchSection::ExHeader);
         write_to_file(
             &mut writer,
             cia,
@@ -665,7 +662,7 @@ pub async fn parse_ncch(
     }
 
     if header.exefssize != 0 {
-        counter = get_ncch_aes_counter(&header, NcchSection::ExeFS);
+        let counter = get_ncch_aes_counter(&header, NcchSection::ExeFS);
         write_to_file(
             &mut writer,
             cia,
@@ -689,7 +686,7 @@ pub async fn parse_ncch(
     }
 
     if header.romfssize != 0 {
-        counter = get_ncch_aes_counter(&header, NcchSection::RomFS);
+        let counter = get_ncch_aes_counter(&header, NcchSection::RomFS);
         write_to_file(
             &mut writer,
             cia,
@@ -1345,7 +1342,6 @@ mod tests {
 
         let out = File::create(&out_path).await.unwrap();
         let mut writer = BufWriter::new(out);
-        // (a) no longer errors on a TWL CIA.
         decrypt_from_encrypted_cia(&in_path, &mut writer, &NoProgress, &CancelToken::new())
             .await
             .unwrap();
@@ -1353,14 +1349,11 @@ mod tests {
         drop(writer);
 
         let out_bytes = std::fs::read(&out_path).unwrap();
-        // (c) output parses as a CIA.
         let parsed =
             CiaFile::read_options(&mut Cursor::new(&out_bytes), Endian::Little, ()).unwrap();
 
-        // (b) decrypted content equals the original plaintext.
         assert_eq!(parsed.content_data, plaintexts.concat());
 
-        // (d) the TMD content record encrypted bit is cleared.
         for rec in &parsed.tmd.content_chunk_records {
             assert!(!rec.content_type.is_encrypted());
         }

@@ -467,12 +467,14 @@ fn read_group_stored(f: &mut File, group: &WiaGroup) -> WiaResult<Vec<u8>> {
 
 type ProduceFn = Box<dyn FnMut(u64) -> WiaResult<WiaSegmentWork> + Send>;
 
+/// `Read + Seek` view over a WIA container's decoded data.
 pub struct WiaReader {
     pipeline: PipelinedGroupReader<WiaSegmentWork, WiaError, ProduceFn>,
     iso_size: u64,
 }
 
 impl WiaReader {
+    /// Opens the WIA file at `path` and parses its metadata tables.
     pub fn open(path: &Path) -> WiaResult<Self> {
         let mut f = File::open(path)?;
         let layout = WiaLayout::parse(&mut f)?;
@@ -510,6 +512,7 @@ impl WiaReader {
         })
     }
 
+    /// Size of the logical (decoded) disc image in bytes.
     pub fn iso_size(&self) -> u64 {
         self.iso_size
     }

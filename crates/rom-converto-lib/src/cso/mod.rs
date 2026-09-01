@@ -34,6 +34,7 @@ pub use verify::{verify_cso, verify_cso_cancellable};
 
 use models::{pick_block_size, pick_index_shift, valid_block_size};
 
+/// Options for a CSO/ZSO compression run.
 #[derive(Debug, Clone)]
 pub struct CsoCompressOptions {
     pub format: CsoFormat,

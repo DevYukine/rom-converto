@@ -1,5 +1,6 @@
 use thiserror::Error;
 
+/// Errors from Z3DS compression and decompression.
 #[derive(Debug, Error)]
 pub enum Z3dsError {
     #[error(transparent)]
@@ -49,4 +50,5 @@ impl From<crate::util::worker_pool::PoolChannelClosed> for Z3dsError {
     }
 }
 
+/// Convenience alias for a `Result` with [`Z3dsError`].
 pub type Z3dsResult<T> = Result<T, Z3dsError>;

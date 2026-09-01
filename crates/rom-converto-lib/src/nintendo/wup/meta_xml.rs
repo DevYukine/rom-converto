@@ -10,6 +10,8 @@ use crate::nintendo::wup::app_xml::extract_tag;
 use anyhow::{Result, anyhow};
 use std::collections::HashMap;
 
+/// Language a `meta.xml` multilingual field (`longname_*`, `shortname_*`,
+/// `publisher_*`) can be tagged with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WupLanguage {
     Japanese,
@@ -42,6 +44,7 @@ impl WupLanguage {
         (WupLanguage::TraditionalChinese, "zht"),
     ];
 
+    /// Converts to the crate-wide [`LanguageCode`] enum.
     pub fn to_language_code(self) -> LanguageCode {
         match self {
             Self::Japanese => LanguageCode::Japanese,
@@ -60,6 +63,7 @@ impl WupLanguage {
     }
 }
 
+/// Age rating board with a `pc_<key>` tag directly in `meta.xml`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WupRatingOrganization {
     Cero,
@@ -73,6 +77,8 @@ pub enum WupRatingOrganization {
     Grb,
 }
 
+/// Additional age rating boards, tagged the same way as
+/// [`WupRatingOrganization`] but kept separate to match the upstream grouping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WupRatingOrganizationExt {
     Bbfc,
@@ -102,6 +108,7 @@ impl WupRatingOrganizationExt {
     ];
 }
 
+/// Fields parsed out of a Wii U `meta/meta.xml`.
 #[derive(Debug, Clone, Default)]
 pub struct MetaXml {
     pub long_names: MultilingualString,
@@ -145,6 +152,10 @@ pub struct MetaXml {
 }
 
 impl MetaXml {
+    /// Parses `meta.xml` content from raw bytes.
+    ///
+    /// # Errors
+    /// Returns an error if `xml` is not valid UTF-8.
     pub fn from_bytes(xml: &[u8]) -> Result<Self> {
         let text = std::str::from_utf8(xml).map_err(|_| anyhow!("meta.xml is not valid UTF-8"))?;
 
@@ -155,7 +166,7 @@ impl MetaXml {
         let product_code = extract_tag(text, "product_code").map(|s| s.trim().to_string());
         let company_code = extract_tag(text, "company_code").map(|s| s.trim().to_string());
 
-        let region = extract_tag(text, "region").and_then(|s| parse_int_flexible::<u32>(s.trim()));
+        let region = extract_tag(text, "region").and_then(|s| s.trim().parse::<u32>().ok());
         let title_version =
             extract_tag(text, "title_version").and_then(|s| s.trim().parse::<u32>().ok());
 
@@ -190,18 +201,17 @@ impl MetaXml {
             .or_else(|| extract_tag(text, "boss_id").and_then(|s| s.trim().parse().ok()));
         let mastering_date = extract_tag(text, "mastering_date").map(|s| s.trim().to_string());
         let content_platform = extract_tag(text, "content_platform").map(|s| s.trim().to_string());
-        let logo_type =
-            extract_tag(text, "logo_type").and_then(|s| parse_int_flexible::<u32>(s.trim()));
+        let logo_type = extract_tag(text, "logo_type").and_then(|s| s.trim().parse::<u32>().ok());
         let app_launch_type =
-            extract_tag(text, "app_launch_type").and_then(|s| parse_int_flexible::<u32>(s.trim()));
+            extract_tag(text, "app_launch_type").and_then(|s| s.trim().parse::<u32>().ok());
         let invisible_flag = extract_tag(text, "invisible_flag").map(parse_bool_flag);
         let no_managed_flag = extract_tag(text, "no_managed_flag").map(parse_bool_flag);
         let eula_version =
-            extract_tag(text, "eula_version").and_then(|s| parse_int_flexible::<u32>(s.trim()));
+            extract_tag(text, "eula_version").and_then(|s| s.trim().parse::<u32>().ok());
         let drc_use = extract_tag(text, "drc_use").map(parse_bool_flag);
         let e_manual = extract_tag(text, "e_manual").map(parse_bool_flag);
         let e_manual_version =
-            extract_tag(text, "e_manual_version").and_then(|s| parse_int_flexible::<u32>(s.trim()));
+            extract_tag(text, "e_manual_version").and_then(|s| s.trim().parse::<u32>().ok());
         let ext_dev_nunchaku = extract_tag(text, "ext_dev_nunchaku").map(parse_bool_flag);
         let ext_dev_classic = extract_tag(text, "ext_dev_classic").map(parse_bool_flag);
         let ext_dev_urcc = extract_tag(text, "ext_dev_urcc").map(parse_bool_flag);
@@ -210,39 +220,24 @@ impl MetaXml {
         let ext_dev_etc = extract_tag(text, "ext_dev_etc").map(parse_bool_flag);
         let ext_dev_etc_name = extract_tag(text, "ext_dev_etc_name").map(|s| s.trim().to_string());
 
+        // 0xFF is the "no rating from this board" sentinel.
         let mut age_ratings = HashMap::new();
-        for (org, key) in WupRatingOrganization::ALL {
-            let tag = format!("pc_{}", key);
+        for (_, key) in WupRatingOrganization::ALL {
+            let tag = format!("pc_{key}");
             if let Some(value_str) = extract_tag(text, &tag)
-                && let Some(value) = parse_int_flexible::<u8>(value_str.trim())
+                && let Ok(value) = value_str.trim().parse::<u8>()
                 && value != 0xFF
             {
-                let static_key: &'static str = match org {
-                    WupRatingOrganization::Cero => "cero",
-                    WupRatingOrganization::Esrb => "esrb",
-                    WupRatingOrganization::PegiGen => "pegi_gen",
-                    WupRatingOrganization::PegiPrt => "pegi_prt",
-                    WupRatingOrganization::PegiBbfc => "pegi_bbfc",
-                    WupRatingOrganization::Oflc => "oflc",
-                    WupRatingOrganization::Usk => "usk",
-                    WupRatingOrganization::Cob => "cob",
-                    WupRatingOrganization::Grb => "grb",
-                };
-                age_ratings.insert(static_key, value);
+                age_ratings.insert(key, value);
             }
         }
-        for (org, key) in WupRatingOrganizationExt::ALL {
-            let tag = format!("pc_{}", key);
+        for (_, key) in WupRatingOrganizationExt::ALL {
+            let tag = format!("pc_{key}");
             if let Some(value_str) = extract_tag(text, &tag)
-                && let Some(value) = parse_int_flexible::<u8>(value_str.trim())
+                && let Ok(value) = value_str.trim().parse::<u8>()
                 && value != 0xFF
             {
-                let static_key: &'static str = match org {
-                    WupRatingOrganizationExt::Bbfc => "bbfc",
-                    WupRatingOrganizationExt::PegiFin => "pegi_fin",
-                    WupRatingOrganizationExt::Cgsrr => "cgsrr",
-                };
-                age_ratings.insert(static_key, value);
+                age_ratings.insert(key, value);
             }
         }
 
@@ -291,7 +286,7 @@ impl MetaXml {
 
 fn build_multilingual(text: &str, prefix: &str) -> MultilingualString {
     let pairs = WupLanguage::ALL.iter().filter_map(|(lang, key)| {
-        let tag = format!("{}{}", prefix, key);
+        let tag = format!("{prefix}{key}");
         let value = extract_tag(text, &tag)?;
         let trimmed = value.trim();
         if trimmed.is_empty() {
@@ -305,10 +300,6 @@ fn build_multilingual(text: &str, prefix: &str) -> MultilingualString {
 
 fn parse_bool_flag(s: &str) -> bool {
     matches!(s.trim(), "1" | "true" | "TRUE")
-}
-
-fn parse_int_flexible<T: std::str::FromStr>(s: &str) -> Option<T> {
-    s.parse::<T>().ok()
 }
 
 #[cfg(test)]
@@ -342,8 +333,8 @@ mod tests {
         let m = MetaXml::from_bytes(sample_meta_xml().as_bytes()).unwrap();
         assert_eq!(m.product_code.as_deref(), Some("WUP-N-AMKE"));
         assert_eq!(m.company_code.as_deref(), Some("00"));
-        // The XML carries "00000002"; even when typed as hexBinary, parse_int_flexible
-        // reads it as a decimal string, which still yields 2 (= USA bit).
+        // The XML carries "00000002"; even when typed as hexBinary the
+        // value is parsed as decimal, which still yields 2 (= USA bit).
         assert_eq!(m.region, Some(2));
         assert_eq!(m.title_version, Some(1));
         assert_eq!(m.save_size, Some(2_097_152));

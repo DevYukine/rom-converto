@@ -9,6 +9,7 @@
 
 use crate::nintendo::wup::error::{WupError, WupResult};
 
+/// Parsed fields of a loadiine `code/app.xml`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppXml {
     pub title_id: u64,
@@ -18,12 +19,22 @@ pub struct AppXml {
 }
 
 impl AppXml {
+    /// Parses `app.xml` content from raw bytes. `source` is used only
+    /// to identify the file in error messages.
+    ///
+    /// # Errors
+    /// Returns [`WupError::InvalidAppXml`] if `xml` is not valid UTF-8
+    /// or is missing/malformed required tags.
     pub fn from_bytes(xml: &[u8], source: &std::path::Path) -> WupResult<Self> {
         let text =
             std::str::from_utf8(xml).map_err(|_| WupError::InvalidAppXml(source.to_path_buf()))?;
         parse(text, source)
     }
 
+    /// Reads and parses `app.xml` from disk.
+    ///
+    /// # Errors
+    /// Propagates I/O errors and [`WupError::InvalidAppXml`] from [`Self::from_bytes`].
     pub fn read_from_path(path: &std::path::Path) -> WupResult<Self> {
         let bytes = std::fs::read(path)?;
         Self::from_bytes(&bytes, path)

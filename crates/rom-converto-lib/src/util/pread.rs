@@ -11,6 +11,9 @@
 //! Shared by every decompress worker pool that wants a single
 //! `Arc<File>` backing many concurrent readers.
 
+/// Reads exactly `buf.len()` bytes from `file` starting at `offset`,
+/// without moving the shared file cursor. Safe to call concurrently from
+/// multiple threads on the same `File`.
 #[cfg(windows)]
 pub fn file_read_exact_at(
     file: &std::fs::File,

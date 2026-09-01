@@ -40,10 +40,12 @@ fn invalid_arg(message: impl Into<String>) -> anyhow::Error {
     InvalidArgument(message.into()).into()
 }
 
+/// Returns the runner's request/response schema manifest as JSON.
 pub fn schema_json() -> Value {
     serde_json::to_value(RunSchemaManifest::current()).expect("runner schema serializes")
 }
 
+/// Request, response, and progress-event types for [`run_json`] and friends.
 pub mod models;
 
 use models::{
@@ -52,12 +54,15 @@ use models::{
     RunComparisonData, RunData, RunOptions, RunPlansData, RunRequest, RunResponse,
     RunSchemaManifest, RunStatus, WupTitleInputOption,
 };
+/// [`ProgressReporter`] that buffers events instead of emitting them live,
+/// for callers that read them back after the run completes.
 #[derive(Default)]
 pub struct RecordingProgress {
     events: Mutex<Vec<ProgressEvent>>,
 }
 
 impl RecordingProgress {
+    /// Drains and returns every event recorded so far.
     pub fn take_events(&self) -> Vec<ProgressEvent> {
         std::mem::take(&mut *self.events.lock().expect("progress event mutex poisoned"))
     }
@@ -99,6 +104,8 @@ impl ProgressReporter for RecordingProgress {
     }
 }
 
+/// Runs one JSON-encoded [`RunRequest`] and returns the JSON-encoded
+/// [`RunResponse`], with progress events collected into the response.
 pub async fn run_json(request_json: &str, cancel: CancelToken) -> RunResponse {
     let progress = RecordingProgress::default();
     let mut response = run_json_with_progress(request_json, &progress, cancel).await;
@@ -106,6 +113,8 @@ pub async fn run_json(request_json: &str, cancel: CancelToken) -> RunResponse {
     response
 }
 
+/// Runs one JSON-encoded [`RunRequest`], reporting progress live to
+/// `progress` instead of buffering it.
 pub async fn run_json_with_progress(
     request_json: &str,
     progress: &dyn ProgressReporter,
@@ -138,6 +147,7 @@ pub async fn run_json_with_progress(
     }
 }
 
+/// Parses and dispatches one [`RunRequest`] to its operation handler.
 pub async fn run_request(
     req: RunRequest,
     progress: &dyn ProgressReporter,
@@ -3014,6 +3024,8 @@ fn error_chain(err: &anyhow::Error) -> Option<String> {
     (!details.is_empty()).then(|| details.join(": "))
 }
 
+/// True when `err`'s chain carries a per-format `Cancelled` variant or the
+/// literal string "cancelled".
 pub fn is_cancelled_error(err: &anyhow::Error) -> bool {
     use crate::chd::error::ChdError;
     use crate::cso::CsoError;
@@ -3047,6 +3059,7 @@ pub fn is_cancelled_error(err: &anyhow::Error) -> bool {
     })
 }
 
+/// Runs one JSON-encoded [`RunRequest`], discarding progress events.
 pub async fn run_json_no_progress(request_json: &str) -> RunResponse {
     run_json_with_progress(request_json, &NoProgress, CancelToken::new()).await
 }

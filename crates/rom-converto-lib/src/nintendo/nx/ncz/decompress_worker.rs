@@ -6,6 +6,7 @@
 use crate::nintendo::nx::error::{NxError, NxResult};
 use crate::util::worker_pool::{Pool, Worker, parallelism};
 
+/// One compressed NCZ block queued for a decompression worker.
 pub struct NczDecompressWork {
     pub compressed: Vec<u8>,
     /// Logical (plaintext) block size. Equal to `compressed.len()`
@@ -15,10 +16,13 @@ pub struct NczDecompressWork {
     pub raw: bool,
 }
 
+/// Decompressed output of one block, ready to feed into `ReencryptWriter`.
 pub struct NczDecompressedBlock {
     pub bytes: Vec<u8>,
 }
 
+/// Stateless decompression worker; each block carries its own zstd
+/// frame so no per-worker context needs to persist between blocks.
 pub struct NczDecompressWorker;
 
 impl Worker<NczDecompressWork, NczDecompressedBlock, NxError> for NczDecompressWorker {
@@ -41,6 +45,7 @@ impl Worker<NczDecompressWork, NczDecompressedBlock, NxError> for NczDecompressW
     }
 }
 
+/// Spawns a pool of `n_threads` stateless decompression workers.
 pub fn spawn_ncz_decompress_pool(
     n_threads: usize,
 ) -> Pool<NczDecompressWork, NczDecompressedBlock, NxError> {
@@ -48,6 +53,7 @@ pub fn spawn_ncz_decompress_pool(
     Pool::spawn(workers)
 }
 
+/// Returns the default number of decompression worker threads (host parallelism).
 pub fn default_thread_count() -> usize {
     parallelism()
 }

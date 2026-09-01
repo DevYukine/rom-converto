@@ -1,3 +1,6 @@
+//! Decrypts a NUS-layout title directory into a flat loadiine-style
+//! file tree.
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -107,6 +110,8 @@ fn decrypt_nus_title_with_cancel(
     Ok((title_id, title_version))
 }
 
+/// Async wrapper around [`decrypt_nus_title`] that runs the decrypt on
+/// a blocking task and reports progress incrementally.
 pub async fn decrypt_nus_title_async(
     title_dir: PathBuf,
     output_dir: PathBuf,
@@ -115,6 +120,14 @@ pub async fn decrypt_nus_title_async(
     decrypt_nus_title_async_cancellable(title_dir, output_dir, progress, CancelToken::new()).await
 }
 
+/// Async, cancellable version of [`decrypt_nus_title`]. Polls the
+/// blocking decrypt task every 100ms to relay progress and check
+/// `cancel`; on cancellation, removes an output directory this call
+/// created (never one the caller already had).
+///
+/// # Errors
+/// Returns [`WupError::Cancelled`] if `cancel` fires before the
+/// decrypt finishes, plus any error [`decrypt_nus_title`] can return.
 pub async fn decrypt_nus_title_async_cancellable(
     title_dir: PathBuf,
     output_dir: PathBuf,

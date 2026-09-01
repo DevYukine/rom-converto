@@ -18,6 +18,10 @@ use crate::nintendo::wup::nus::content_stream::{
 };
 use crate::nintendo::wup::nus::ticket_parser::TitleKey;
 
+/// Decrypts a byte range of a raw-mode content file without loading
+/// the whole file. Seeks to the AES block preceding `byte_offset` to
+/// recover the correct chaining IV, then trims the decrypted buffer
+/// down to the requested range.
 pub fn decrypt_raw_range<R: Read + Seek>(
     reader: &mut R,
     title_key: &TitleKey,
@@ -50,6 +54,10 @@ pub fn decrypt_raw_range<R: Read + Seek>(
     Ok(buf[head_skip..head_skip + byte_len].to_vec())
 }
 
+/// Decrypts a byte range of a hashed-mode content file. Reads only
+/// the 64 KiB physical blocks that overlap `[virtual_offset,
+/// virtual_offset + virtual_len)`, deriving each block's data IV from
+/// its own hash prefix.
 pub fn decrypt_hashed_range<R: Read + Seek>(
     reader: &mut R,
     title_key: &TitleKey,

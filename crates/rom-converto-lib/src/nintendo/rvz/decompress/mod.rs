@@ -44,6 +44,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use tokio::task;
 
+/// Decompresses an RVZ container at `input` back into an ISO at `output`.
 pub async fn decompress_disc(
     input: &Path,
     output: &Path,
@@ -243,6 +244,8 @@ fn parse_rvz_metadata(input: &Path) -> RvzResult<RvzMetadata> {
     Ok((shared_file, head, disc, parts, raw_data, groups))
 }
 
+/// Synchronous RVZ-to-ISO decompression: parses the container metadata,
+/// then decodes every raw region and partition in order into `output`.
 pub fn decompress_blocking(
     input: &Path,
     output: &Path,

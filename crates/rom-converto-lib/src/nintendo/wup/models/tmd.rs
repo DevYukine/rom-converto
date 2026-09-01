@@ -45,14 +45,17 @@ impl TmdContentFlags {
     /// streaming with IV = 0.
     pub const HASHED: TmdContentFlags = TmdContentFlags(0x0002);
 
+    /// Wraps a raw TMD `type` field, preserving unknown bits.
     pub const fn from_bits(bits: u16) -> Self {
         Self(bits)
     }
 
+    /// Returns the raw bit pattern.
     pub const fn bits(self) -> u16 {
         self.0
     }
 
+    /// True if every bit set in `other` is also set here.
     pub const fn contains(self, other: Self) -> bool {
         (self.0 & other.0) == other.0
     }

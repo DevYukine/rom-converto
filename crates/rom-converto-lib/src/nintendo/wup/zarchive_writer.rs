@@ -157,9 +157,7 @@ impl<W: Write> ZArchiveWriter<W> {
         let mut remaining = data;
 
         while !remaining.is_empty() {
-            // Fast path: the partial-buffer is empty and there is at
-            // least one full block of data, so copy it straight
-            // into a fresh owned block without touching write_buffer.
+            // Fast path: full block straight through, no buffering.
             if self.write_buffer.is_empty() && remaining.len() >= COMPRESSED_BLOCK_SIZE {
                 self.pending_blocks
                     .push(remaining[..COMPRESSED_BLOCK_SIZE].to_vec());
@@ -167,9 +165,6 @@ impl<W: Write> ZArchiveWriter<W> {
                 continue;
             }
 
-            // Slow path: top up the partial buffer. When it fills to
-            // 64 KiB, hand ownership off as a pending block and
-            // allocate a fresh buffer for subsequent appends.
             let free_in_buffer = COMPRESSED_BLOCK_SIZE - self.write_buffer.len();
             let to_copy = remaining.len().min(free_in_buffer);
             self.write_buffer.extend_from_slice(&remaining[..to_copy]);
@@ -183,9 +178,8 @@ impl<W: Write> ZArchiveWriter<W> {
             }
         }
 
-        // Update the current file's size, if a file is open.
-        if let Some(path) = self.current_file_path.clone()
-            && let Some(node) = self.tree.get_mut(&path)
+        if let Some(path) = self.current_file_path.as_deref()
+            && let Some(node) = self.tree.get_mut(path)
         {
             node.file_size += total_data_size;
         }
@@ -248,8 +242,8 @@ impl<W: Write> ZArchiveWriter<W> {
         // below doesn't count against it.
         self.current_file_path = None;
 
-        // 1. Flush the trailing write buffer by padding it to a
-        //    full 64 KiB block, mirroring upstream's behavior.
+        // Pad the trailing buffer to a full 64 KiB block, mirroring
+        // upstream's behavior.
         if !self.write_buffer.is_empty() {
             let pad_len = COMPRESSED_BLOCK_SIZE - self.write_buffer.len();
             let padding = vec![0u8; pad_len];
@@ -264,10 +258,8 @@ impl<W: Write> ZArchiveWriter<W> {
             p.start(0, "Finalizing archive");
         }
 
-        // 2. Compress every pending block through the worker pool.
-        //    This populates self.offset_records, self.bytes_written,
-        //    and the hasher as if the whole thing had run through
-        //    a sequential pipeline.
+        // Populates offset_records, bytes_written, and the hasher as
+        // if the blocks had run through a sequential pipeline.
         let pending = std::mem::take(&mut self.pending_blocks);
         compress_blocks(
             pool,
@@ -729,11 +721,9 @@ pub(crate) mod tests {
         );
     }
 
-    // ----------------------------------------------------------------
-    // Minimal ZArchive reader used only in tests. Not part of the
-    // public API; a production reader would live in its own module
-    // with error handling rather than `.unwrap()`.
-    // ----------------------------------------------------------------
+    /// Minimal ZArchive reader used only in tests. A production
+    /// reader would live in its own module with error handling
+    /// rather than `.unwrap()`.
     pub(crate) mod test_reader {
         use crate::nintendo::wup::constants::{
             COMPRESSED_BLOCK_SIZE, ENTRIES_PER_OFFSET_RECORD, ZARCHIVE_FOOTER_MAGIC,

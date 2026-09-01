@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 
 use super::CancelToken;
 
+/// True if `path` is a file whose extension case-insensitively matches one
+/// of `exts`.
 pub fn has_any_extension(path: &Path, exts: &[&str]) -> bool {
     path.is_file()
         && path
@@ -14,6 +16,8 @@ pub fn has_any_extension(path: &Path, exts: &[&str]) -> bool {
             .unwrap_or(false)
 }
 
+/// True for OS-generated junk file names: `._*`, `.DS_Store`, `Thumbs.db`,
+/// `desktop.ini`, `.localized`.
 pub fn is_os_junk_file(name: &str) -> bool {
     name.starts_with("._")
         || matches!(
@@ -22,6 +26,8 @@ pub fn is_os_junk_file(name: &str) -> bool {
         )
 }
 
+/// True for OS- and NAS-generated junk directory names (Synology, Apple,
+/// Windows recycle bins, `lost+found`, and similar).
 pub fn is_os_junk_dir(name: &str) -> bool {
     matches!(
         name,
@@ -59,6 +65,7 @@ pub fn collect_files_with_exts(
     collect_files_with_exts_cancellable(dir, exts, max_depth, &CancelToken::new())
 }
 
+/// Cancellable twin of [`collect_files_with_exts`].
 pub fn collect_files_with_exts_cancellable(
     dir: &Path,
     exts: &[&str],
@@ -100,6 +107,7 @@ pub fn collect_all_files(dir: &Path, max_depth: Option<usize>) -> std::io::Resul
     collect_all_files_cancellable(dir, max_depth, &CancelToken::new())
 }
 
+/// Cancellable twin of [`collect_all_files`].
 pub fn collect_all_files_cancellable(
     dir: &Path,
     max_depth: Option<usize>,
@@ -141,6 +149,7 @@ fn cancelled(cancel: &CancelToken) -> std::io::Result<()> {
 
 pub const DEFAULT_SPACE_HEADROOM: u64 = 256 * 1024 * 1024;
 
+/// Free space, in bytes, on the filesystem containing `path`.
 pub fn available_space(path: &Path) -> std::io::Result<u64> {
     fs4::available_space(path)
 }

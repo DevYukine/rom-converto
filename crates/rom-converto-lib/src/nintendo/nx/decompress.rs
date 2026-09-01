@@ -22,6 +22,13 @@ use crate::nintendo::nx::util::PositionalReader;
 use crate::util::pread::file_read_exact_at;
 use crate::util::{CancelToken, ProgressReporter, await_with_progress_cancel, scratch_output_path};
 
+/// Decompresses an NSZ or XCZ container back into NSP/XCI, dispatching
+/// to [`decompress_pfs0`] or [`decompress_xci`] based on the detected
+/// kind.
+///
+/// # Errors
+/// Fails if `input` is not a compressed NSZ/XCZ, or on the underlying
+/// I/O, zstd, or NCA-parsing errors.
 pub fn decompress_container(
     input: &Path,
     output: &Path,
@@ -43,6 +50,11 @@ pub fn decompress_container(
     }
 }
 
+/// Async wrapper around [`decompress_container`] that runs the
+/// blocking work on a `spawn_blocking` task and cannot be cancelled.
+///
+/// # Errors
+/// See [`decompress_container`].
 pub async fn decompress_container_async(
     input: PathBuf,
     output: PathBuf,
@@ -370,7 +382,7 @@ fn decompress_one_file<W: Write>(
 }
 
 fn renamed_to_decompressed(name: &str) -> String {
-    if let Some(stem) = name.strip_suffix_inplace_ignore_case(".cnmt.ncz") {
+    if let Some(stem) = strip_suffix_ignore_case(name, ".cnmt.ncz") {
         return format!("{stem}.cnmt.nca");
     }
     if name.to_ascii_lowercase().ends_with(".ncz") {
@@ -380,21 +392,14 @@ fn renamed_to_decompressed(name: &str) -> String {
     name.to_string()
 }
 
-trait StripSuffixIgnoreCase {
-    fn strip_suffix_inplace_ignore_case(&self, suffix: &str) -> Option<&str>;
-}
-
-impl StripSuffixIgnoreCase for str {
-    fn strip_suffix_inplace_ignore_case(&self, suffix: &str) -> Option<&str> {
-        if self.len() >= suffix.len() {
-            let split = self.len() - suffix.len();
-            let tail = &self[split..];
-            if tail.eq_ignore_ascii_case(suffix) {
-                return Some(&self[..split]);
-            }
+fn strip_suffix_ignore_case<'a>(s: &'a str, suffix: &str) -> Option<&'a str> {
+    if s.len() >= suffix.len() {
+        let split = s.len() - suffix.len();
+        if s[split..].eq_ignore_ascii_case(suffix) {
+            return Some(&s[..split]);
         }
-        None
     }
+    None
 }
 
 fn copy_range<W: Write>(file: &File, abs_offset: u64, size: u64, out: &mut W) -> NxResult<u64> {

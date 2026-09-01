@@ -1,19 +1,25 @@
+//! Parsed CUE sheet data model: files, tracks, indices, and time positions.
+
 use crate::cd::{FRAMES_PER_SECOND, SECONDS_PER_MINUTE};
 
 const PRIMARY_INDEX: u8 = 1;
 
+/// A parsed CUE sheet: the files it references and the tracks laid out
+/// across them.
 #[derive(Debug, Clone)]
 pub struct CueSheet {
     pub files: Vec<CueFile>,
     pub tracks: Vec<Track>,
 }
 
+/// One `FILE` entry in a CUE sheet.
 #[derive(Debug, Clone)]
 pub struct CueFile {
     pub filename: String,
     pub file_type: FileType,
 }
 
+/// One `TRACK` entry in a CUE sheet.
 #[derive(Debug, Clone)]
 pub struct Track {
     pub number: u8,
@@ -25,6 +31,7 @@ pub struct Track {
     pub file_index: usize,
 }
 
+/// One `INDEX` entry within a track.
 #[derive(Debug, Clone, Copy)]
 pub struct Index {
     /// The CUE `INDEX` number (0 = pregap start, 1 = track start, and so on),
@@ -33,6 +40,7 @@ pub struct Index {
     pub position: Msf,
 }
 
+/// A minutes:seconds:frames CD time position (75 frames per second).
 #[derive(Debug, Clone, Copy)]
 pub struct Msf {
     pub minutes: u8,
@@ -41,6 +49,7 @@ pub struct Msf {
 }
 
 impl Msf {
+    /// Converts a logical block address to a minutes:seconds:frames position.
     pub fn from_lba(lba: u32) -> Self {
         let frames = (lba % FRAMES_PER_SECOND) as u8;
         let total_seconds = lba / FRAMES_PER_SECOND;
@@ -53,6 +62,7 @@ impl Msf {
         }
     }
 
+    /// Converts the position to a logical block address.
     pub fn to_lba(self) -> u32 {
         (self.minutes as u32 * SECONDS_PER_MINUTE + self.seconds as u32) * FRAMES_PER_SECOND
             + self.frames as u32
@@ -70,6 +80,8 @@ impl std::fmt::Display for Msf {
 }
 
 impl Track {
+    /// Returns the LBA of the track's INDEX 01 (the track's start), or
+    /// `None` if it has no INDEX 01.
     pub fn primary_index_lba(&self) -> Option<u32> {
         self.indices
             .iter()
@@ -78,6 +90,7 @@ impl Track {
     }
 }
 
+/// CD track mode, as named in a CUE sheet's `TRACK` line.
 #[derive(Debug, Clone, Copy)]
 pub enum TrackType {
     Audio,
@@ -91,6 +104,8 @@ pub enum TrackType {
 }
 
 impl TrackType {
+    /// Bytes per sector for this track type: 2352 for most modes, 2448 for
+    /// `CdG`, 2048 for `Mode1_2048`, 2336 for `Mode2_2336`/`CdI2336`.
     pub fn block_size(self) -> u32 {
         match self {
             TrackType::Audio
@@ -103,6 +118,7 @@ impl TrackType {
         }
     }
 
+    /// Returns the CUE sheet `TRACK` type string, e.g. `"MODE1/2048"`.
     pub fn cue_string(self) -> &'static str {
         match self {
             TrackType::Audio => "AUDIO",
@@ -116,6 +132,8 @@ impl TrackType {
         }
     }
 
+    /// Returns the CHD track metadata type string. Types with no direct CHD
+    /// equivalent (`CdG`, `CdI2336`, `CdI2352`) fall back to `"MODE1_RAW"`.
     pub fn chd_metadata_type(self) -> &'static str {
         match self {
             TrackType::Audio => "AUDIO",
@@ -128,6 +146,7 @@ impl TrackType {
     }
 }
 
+/// CD track data type, as named in a CUE sheet's `FILE` line.
 #[derive(Debug, Clone, Copy)]
 pub enum FileType {
     Binary,

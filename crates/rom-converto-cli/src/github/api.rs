@@ -52,12 +52,8 @@ impl GithubApi {
             asset_query,
         );
 
-        let asset_name = match asset_name {
-            Some(asset_name) => asset_name,
-            None => {
-                return Err(GithubError::NoAssetFound(asset_query.expected_name.clone()).into());
-            }
-        };
+        let asset_name = asset_name
+            .ok_or_else(|| GithubError::NoAssetFound(asset_query.expected_name.clone()))?;
 
         let asset = response
             .assets
@@ -98,14 +94,9 @@ impl GithubApi {
                     .expect("static release tag pattern");
         }
 
-        let tag_captures = RE.captures(&response.tag_name);
-
-        let tag_captures = match tag_captures {
-            Some(captures) => captures,
-            None => {
-                return Err(GithubError::CannotParseReleaseVersion(response.tag_name).into());
-            }
-        };
+        let tag_captures = RE
+            .captures(&response.tag_name)
+            .ok_or_else(|| GithubError::CannotParseReleaseVersion(response.tag_name.clone()))?;
 
         let major = tag_captures
             .name("major")

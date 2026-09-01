@@ -40,6 +40,8 @@ const ENCRYPT_EXTS: &[&str] = &["cia", "3ds", "cci", "cxi"];
 const COPY_BUF: usize = 4 * 1024 * 1024;
 const CRYPTO_BUF: usize = 4 * 1024 * 1024;
 
+/// Derives the output path for an encrypted ROM by inserting `.encrypted`
+/// before the file extension.
 pub fn derive_encrypted_path(input: &Path) -> PathBuf {
     let stem = input.file_stem().and_then(|s| s.to_str()).unwrap_or("out");
     let ext = input.extension().and_then(|s| s.to_str()).unwrap_or("");
@@ -51,6 +53,8 @@ pub fn derive_encrypted_path(input: &Path) -> PathBuf {
     input.with_file_name(name)
 }
 
+/// Encrypts a CIA, NCSD (`.3ds`/`.cci`), or standalone NCCH (`.cxi`) ROM to
+/// `output`, detecting the format from its magic bytes.
 pub async fn encrypt_rom(
     input: &Path,
     output: &Path,
@@ -59,6 +63,7 @@ pub async fn encrypt_rom(
     encrypt_rom_cancellable(input, output, progress, CancelToken::new()).await
 }
 
+/// Like [`encrypt_rom`] but observes `cancel` throughout.
 pub async fn encrypt_rom_cancellable(
     input: &Path,
     output: &Path,
@@ -160,6 +165,8 @@ async fn encrypt_ncch_cancellable(
     Ok(())
 }
 
+/// Encrypts every supported ROM file (`.cia`, `.3ds`, `.cci`, `.cxi`) found
+/// under `input_dir`, observing `cancel` between files.
 pub async fn encrypt_rom_batch_cancellable(
     input_dir: &Path,
     output_dir: Option<&Path>,

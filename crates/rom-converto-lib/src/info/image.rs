@@ -15,6 +15,7 @@ pub struct Image {
 }
 
 impl Image {
+    /// Builds an [`Image`] from an encoded PNG and its decoded dimensions.
     pub fn new(png_bytes: Vec<u8>, width: u32, height: u32) -> Self {
         Self {
             png_bytes,

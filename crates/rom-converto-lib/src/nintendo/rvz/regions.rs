@@ -32,6 +32,7 @@ pub enum DiscRegion {
 }
 
 impl DiscRegion {
+    /// Byte offset in the disc image where this region starts.
     pub fn offset(&self) -> u64 {
         match self {
             DiscRegion::Raw { offset, .. } => *offset,
@@ -39,6 +40,7 @@ impl DiscRegion {
         }
     }
 
+    /// Length of this region in bytes.
     pub fn size(&self) -> u64 {
         match self {
             DiscRegion::Raw { size, .. } => *size,

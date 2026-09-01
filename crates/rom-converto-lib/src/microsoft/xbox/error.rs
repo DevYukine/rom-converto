@@ -4,6 +4,7 @@ use thiserror::Error;
 
 use crate::microsoft::xdvdfs::XdvdfsError;
 
+/// Errors from Original Xbox XISO creation and extraction.
 #[derive(Debug, Error)]
 pub enum XboxError {
     #[error(transparent)]
@@ -39,4 +40,5 @@ pub enum XboxError {
     UnsafeName { name: String },
 }
 
+/// Convenience alias for a [`Result`] with [`XboxError`].
 pub type XboxResult<T> = Result<T, XboxError>;

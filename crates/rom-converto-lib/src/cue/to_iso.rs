@@ -20,6 +20,7 @@ const USER_DATA_SIZE: usize = 2048;
 /// Submode bit that marks a MODE2 XA sector as Form2 (2324-byte payload).
 const FORM2_SUBMODE_BIT: u8 = 0x20;
 
+/// Errors from extracting a CUE/BIN data track to a plain ISO.
 #[derive(Debug, Error)]
 pub enum ToIsoError {
     /// Wraps an underlying I/O failure.
@@ -80,6 +81,7 @@ pub enum ToIsoError {
     Form2Sector(u64),
 }
 
+/// Result alias for CUE-to-ISO extraction.
 pub type ToIsoResult<T> = Result<T, ToIsoError>;
 
 /// True for the data-track modes this extractor understands.

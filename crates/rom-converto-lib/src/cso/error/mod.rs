@@ -2,6 +2,7 @@
 
 use thiserror::Error;
 
+/// Errors from CSO/ZSO compression, decompression, and verification.
 #[derive(Debug, Error)]
 pub enum CsoError {
     /// Wraps an underlying I/O failure.
@@ -59,4 +60,5 @@ impl From<crate::util::worker_pool::PoolChannelClosed> for CsoError {
     }
 }
 
+/// Result alias for CSO/ZSO operations.
 pub type CsoResult<T> = Result<T, CsoError>;

@@ -29,6 +29,8 @@ use std::sync::atomic::AtomicU64;
 use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+/// CHD hunk codecs: the compressor set chdman implements and the raw
+/// compress/decompress primitives the CD and DVD paths build on.
 pub mod compression;
 pub use compression::{
     ChdCodec, default_cd_codecs, default_dvd_codecs, deflate_level, lzma_level, parse_codec_list,
@@ -85,9 +87,6 @@ pub enum DiscMode {
     Dvd,
 }
 
-/// A sibling temp path in the output directory so an interrupted write
-/// never lands on the final name and a pre-existing overwrite target
-/// survives until the rename.
 /// Remove the scratch file and report the cancellation; used as the
 /// `on_cancel` fallback for the race where the blocking pipeline
 /// finished a hunk just as the token fired.
@@ -468,6 +467,11 @@ async fn dreamcast_head_bytes(bin_path: &std::path::Path) -> Vec<u8> {
     }
 }
 
+/// Compresses a CUE/BIN CD image into a V5 CHD file at `output_path`.
+///
+/// # Errors
+/// Returns [`ChdError::ChdFileAlreadyExists`] if the output exists and
+/// `opts.force` is unset.
 pub async fn convert_to_chd(
     progress: &dyn ProgressReporter,
     cue_path: PathBuf,
@@ -655,6 +659,10 @@ pub(crate) fn compute_overall_sha1(
     overall.finalize().into()
 }
 
+/// Extracts a CHD back to its CD (cue/bin) or DVD (iso) form at `output_path`.
+///
+/// # Errors
+/// Returns [`ChdError::ParentChdNotSupported`] if `parent_path` is set.
 pub async fn extract_from_chd(
     progress: &dyn ProgressReporter,
     input_path: PathBuf,
@@ -952,6 +960,11 @@ async fn extract_dvd_iso(
     Ok(())
 }
 
+/// Verifies a CHD's hunks against their stored CRC/SHA-1, optionally
+/// rewriting the header's hashes when `fix` is set and mismatches are found.
+///
+/// # Errors
+/// Returns [`ChdError::ParentChdNotSupported`] if `parent_path` is set.
 pub async fn verify_chd(
     progress: &dyn ProgressReporter,
     input_path: PathBuf,

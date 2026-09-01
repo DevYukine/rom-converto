@@ -22,6 +22,7 @@ pub struct TitleMetadata {
     pub content_chunk_records: Vec<ContentChunkRecord>,
 }
 
+/// The fixed-size fields of a TMD, preceding its content info/chunk records.
 #[derive(Debug, Clone, BinRead, BinWrite)]
 #[brw(big)]
 pub struct TitleMetadataHeader {
@@ -73,6 +74,7 @@ pub struct TitleMetadataHeader {
     pub content_info_records_hash: Vec<u8>,
 }
 
+/// Hashes and counts a contiguous run of [`ContentChunkRecord`]s.
 #[derive(Debug, Clone, BinRead, BinWrite)]
 #[brw(big)]
 pub struct ContentInfoRecord {
@@ -88,6 +90,8 @@ pub struct ContentInfoRecord {
     pub hash: Vec<u8>,
 }
 
+/// Describes one content file belonging to a title: its ID, index, type,
+/// size, and SHA-256 hash.
 #[derive(Debug, Clone, BinRead, BinWrite)]
 #[brw(big)]
 pub struct ContentChunkRecord {
@@ -116,22 +120,27 @@ impl ContentType {
     pub const OPTIONAL: u16 = 0x4000;
     pub const SHARED: u16 = 0x8000;
 
+    /// Returns whether the encrypted flag is set.
     pub fn is_encrypted(&self) -> bool {
         self.0 & Self::ENCRYPTED != 0
     }
 
+    /// Returns whether the disc flag is set.
     pub fn is_disc(&self) -> bool {
         self.0 & Self::DISC != 0
     }
 
+    /// Returns whether the optional flag is set.
     pub fn is_optional(&self) -> bool {
         self.0 & Self::OPTIONAL != 0
     }
 
+    /// Returns whether the shared flag is set.
     pub fn is_shared(&self) -> bool {
         self.0 & Self::SHARED != 0
     }
 
+    /// Sets or clears the encrypted flag.
     pub fn set_encrypted(&mut self, encrypted: bool) {
         if encrypted {
             self.0 |= Self::ENCRYPTED;
@@ -140,6 +149,7 @@ impl ContentType {
         }
     }
 
+    /// Sets or clears the disc flag.
     pub fn set_disc(&mut self, disc: bool) {
         if disc {
             self.0 |= Self::DISC;
@@ -148,6 +158,7 @@ impl ContentType {
         }
     }
 
+    /// Sets or clears the optional flag.
     pub fn set_optional(&mut self, optional: bool) {
         if optional {
             self.0 |= Self::OPTIONAL;
@@ -156,6 +167,7 @@ impl ContentType {
         }
     }
 
+    /// Sets or clears the shared flag.
     pub fn set_shared(&mut self, shared: bool) {
         if shared {
             self.0 |= Self::SHARED;

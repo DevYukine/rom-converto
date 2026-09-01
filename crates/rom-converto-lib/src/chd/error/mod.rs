@@ -4,6 +4,7 @@ use crate::chd::compression::ChdCodec;
 use crate::cue::error::CueError;
 use thiserror::Error;
 
+/// Errors from CHD creation, extraction, and verification.
 #[derive(Debug, Error)]
 pub enum ChdError {
     /// Wraps an underlying I/O failure.
@@ -132,4 +133,5 @@ impl From<crate::util::worker_pool::PoolChannelClosed> for ChdError {
     }
 }
 
+/// Convenience alias for a [`Result`] with [`ChdError`].
 pub type ChdResult<T> = Result<T, ChdError>;

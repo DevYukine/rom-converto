@@ -10,6 +10,8 @@ use crate::nintendo::nx::constants::{
 };
 use crate::nintendo::nx::error::{NxError, NxResult};
 
+/// One NCZSECTN entry: an NCA section's byte range plus the
+/// encryption type, key, and counter needed to re-encrypt it after decompression.
 #[derive(Debug, Clone, Copy)]
 pub struct NczSectionEntry {
     pub offset: i64,
@@ -19,6 +21,8 @@ pub struct NczSectionEntry {
     pub crypto_counter: [u8; 16],
 }
 
+/// Parsed NCZBLOCK header: block-mode layout plus the per-block
+/// compressed sizes needed to locate each block in the payload.
 #[derive(Debug, Clone)]
 pub struct NczBlockInfo {
     pub version: u8,
@@ -32,11 +36,18 @@ pub struct NczBlockInfo {
 }
 
 impl NczBlockInfo {
+    /// Returns the block size in bytes (`1 << block_size_exp`).
     pub fn block_size_bytes(&self) -> u64 {
         1u64 << self.block_size_exp
     }
 }
 
+/// Writes the NCZSECTN header: magic, section count, then each
+/// section's offset, size, crypto type, and key/counter.
+///
+/// # Errors
+///
+/// Returns an error if writing to `writer` fails.
 pub fn write_nczsectn<W: Write>(writer: &mut W, sections: &[NczSectionEntry]) -> NxResult<()> {
     writer.write_all(&NCZSECTN_MAGIC)?;
     writer.write_i64::<LE>(sections.len() as i64)?;
@@ -51,6 +62,13 @@ pub fn write_nczsectn<W: Write>(writer: &mut W, sections: &[NczSectionEntry]) ->
     Ok(())
 }
 
+/// Writes the NCZBLOCK header: magic, version/kind/block-size-exp,
+/// decompressed size, and the per-block compressed size table.
+///
+/// # Errors
+///
+/// Returns an error if `info.block_size_exp` is out of range or
+/// writing to `writer` fails.
 pub fn write_nczblock<W: Write>(writer: &mut W, info: &NczBlockInfo) -> NxResult<()> {
     if !(MIN_BLOCK_SIZE_EXP..=MAX_BLOCK_SIZE_EXP).contains(&info.block_size_exp) {
         return Err(NxError::BlockSizeOutOfRange(info.block_size_exp));
@@ -68,6 +86,8 @@ pub fn write_nczblock<W: Write>(writer: &mut W, info: &NczBlockInfo) -> NxResult
     Ok(())
 }
 
+/// Result of reading an NCZ file's headers: the section table, the
+/// optional block-mode layout, and where the payload starts.
 #[derive(Debug, Clone)]
 pub struct ParsedHeaders {
     pub sections: Vec<NczSectionEntry>,

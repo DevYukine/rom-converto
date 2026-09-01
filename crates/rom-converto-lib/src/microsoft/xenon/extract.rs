@@ -45,6 +45,7 @@ fn validate_entry_path(path: &str) -> XenonResult<()> {
     Ok(())
 }
 
+/// Counts from a completed ZArchive extraction.
 pub struct XenonExtractSummary {
     pub file_count: u64,
     pub dir_count: u64,

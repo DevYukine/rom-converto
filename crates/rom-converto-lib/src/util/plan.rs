@@ -5,6 +5,8 @@
 use super::conflict::ConflictResolution;
 use std::path::{Path, PathBuf};
 
+/// What a dry-run planner decided to do with one input, before any file is
+/// touched.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PlanDecision {
     New,
@@ -15,6 +17,8 @@ pub enum PlanDecision {
     RewriteInvalid,
 }
 
+/// One rendered line of a dry-run preview: an operation, its input/output
+/// paths, and the decision made for it.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PlanLine {
     pub operation: String,
@@ -26,6 +30,7 @@ pub struct PlanLine {
 }
 
 impl PlanLine {
+    /// Renders the "Would ..." line the CLI and GUI show in preview mode.
     pub fn display_text(&self) -> String {
         let label = match &self.decision {
             PlanDecision::Overwrite => "[overwrite]".to_string(),

@@ -5,6 +5,8 @@ use std::path::PathBuf;
 
 use super::{RUN_SCHEMA, totals_for};
 
+/// The runner's request/response schema: required and optional request
+/// fields, response fields, supported operations, and common option names.
 #[derive(Debug, Serialize)]
 pub struct RunSchemaManifest {
     pub schema: &'static str,
@@ -14,6 +16,7 @@ pub struct RunSchemaManifest {
     pub common_options: CommonOptionsSchema,
 }
 
+/// Version and schema manifest returned by the C ABI's version query.
 #[derive(Debug, Serialize)]
 pub struct FfiVersionManifest {
     pub schema: &'static str,
@@ -24,6 +27,7 @@ pub struct FfiVersionManifest {
 }
 
 impl FfiVersionManifest {
+    /// Builds the manifest for the given ABI version and library version.
     pub fn current(schema: &'static str, abi_version: u32, library_version: &'static str) -> Self {
         Self {
             schema,
@@ -36,6 +40,7 @@ impl FfiVersionManifest {
 }
 
 impl RunSchemaManifest {
+    /// Builds the current runner schema manifest.
     pub fn current() -> Self {
         Self {
             schema: RUN_SCHEMA,
@@ -121,12 +126,15 @@ impl RunSchemaManifest {
     }
 }
 
+/// Schema of a [`RunRequest`]: which fields are required and what type
+/// each field is.
 #[derive(Debug, Serialize)]
 pub struct RequestSchema {
     pub required: &'static [&'static str],
     pub fields: RequestFieldsSchema,
 }
 
+/// Type name of each [`RunRequest`] field, for the schema manifest.
 #[derive(Debug, Serialize)]
 pub struct RequestFieldsSchema {
     pub schema: &'static str,
@@ -139,12 +147,14 @@ pub struct RequestFieldsSchema {
     pub options: &'static str,
 }
 
+/// Schema of a [`RunResponse`]: status codes and the set of possible fields.
 #[derive(Debug, Serialize)]
 pub struct ResponseSchema {
     pub status_codes: StatusCodeSchema,
     pub fields: &'static [&'static str],
 }
 
+/// Numeric status codes for each [`RunStatus`] variant.
 #[derive(Debug, Serialize)]
 pub struct StatusCodeSchema {
     pub ok: i32,
@@ -168,6 +178,7 @@ impl StatusCodeSchema {
     }
 }
 
+/// Type names of the [`RunOptions`] fields shared across operations.
 #[derive(Debug, Serialize)]
 pub struct CommonOptionsSchema {
     pub on_conflict: &'static [&'static str],
@@ -178,6 +189,7 @@ pub struct CommonOptionsSchema {
     pub report: &'static str,
 }
 
+/// Outcome category of a run, mapped to a stable numeric exit code.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunStatus {
@@ -190,6 +202,7 @@ pub enum RunStatus {
 }
 
 impl RunStatus {
+    /// Numeric exit code for this status.
     pub fn as_i32(self) -> i32 {
         match self {
             Self::Ok => 0,
@@ -213,6 +226,8 @@ impl RunStatus {
     }
 }
 
+/// JSON-encoded result of one run: status, message, records, progress
+/// events, and operation-specific data.
 #[derive(Debug, Serialize)]
 pub struct RunResponse {
     pub schema: &'static str,
@@ -233,6 +248,7 @@ pub struct RunResponse {
 }
 
 impl RunResponse {
+    /// Builds a successful response carrying `data`.
     pub fn ok(message: impl Into<String>, data: Option<RunData>) -> Self {
         Self {
             schema: RUN_SCHEMA,
@@ -248,6 +264,7 @@ impl RunResponse {
         }
     }
 
+    /// Builds a failed response with the given status and message.
     pub fn error(status: RunStatus, message: impl Into<String>, details: Option<String>) -> Self {
         Self {
             schema: RUN_SCHEMA,
@@ -270,6 +287,8 @@ impl RunResponse {
     }
 }
 
+/// Operation-specific payload of a [`RunResponse`], one variant per
+/// operation family.
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 pub enum RunData {
@@ -292,16 +311,19 @@ pub enum RunData {
     FixdatWritten(FixdatWrittenData),
 }
 
+/// Dry-run plan lines for an operation that plans to a list of actions.
 #[derive(Debug, Serialize)]
 pub struct RunPlansData {
     pub plans: Vec<PlanLine>,
 }
 
+/// Wraps a [`ComparisonData`] for the response's `data` field.
 #[derive(Debug, Serialize)]
 pub struct RunComparisonData {
     pub comparison: ComparisonData,
 }
 
+/// Input/output size comparison for a completed conversion.
 #[derive(Debug, Serialize)]
 pub struct ComparisonData {
     pub input_bytes: u64,
@@ -311,6 +333,7 @@ pub struct ComparisonData {
     pub output_format: String,
 }
 
+/// Dry-run plan for a simple one-input-one-output operation.
 #[derive(Debug, Serialize)]
 pub struct BasicPlanData {
     pub operation: &'static str,
@@ -318,11 +341,14 @@ pub struct BasicPlanData {
     pub output: PathBuf,
 }
 
+/// Result of a `playlist.write` run: the playlists that were (or would be)
+/// written.
 #[derive(Debug, Serialize)]
 pub struct PlaylistsData {
     pub playlists: Vec<PlaylistPlanData>,
 }
 
+/// One planned or written `.m3u` playlist.
 #[derive(Debug, Serialize)]
 pub struct PlaylistPlanData {
     pub base_title: String,
@@ -332,6 +358,7 @@ pub struct PlaylistPlanData {
     pub has_duplicate_numbers: bool,
 }
 
+/// Result of matching one local file against the Playmatch DAT database.
 #[derive(Debug, Serialize)]
 pub struct DatMatchData {
     pub kind: &'static str,
@@ -349,17 +376,20 @@ pub struct DatMatchData {
     pub error: Option<String>,
 }
 
+/// Result of a `dat.scan` run: one [`DatMatchData`] per scanned file.
 #[derive(Debug, Serialize)]
 pub struct DatScanData {
     pub rows: Vec<DatMatchData>,
 }
 
+/// Result of a `dat.rename` run: the planned or applied renames.
 #[derive(Debug, Serialize)]
 pub struct DatRenameData {
     pub rows: Vec<DatRenameRowData>,
     pub dry_run: bool,
 }
 
+/// One planned or applied rename.
 #[derive(Debug, Serialize)]
 pub struct DatRenameRowData {
     pub from: PathBuf,
@@ -368,18 +398,22 @@ pub struct DatRenameRowData {
     pub detail: Option<String>,
 }
 
+/// Dry-run result of a `dat.fixdat` run: the DAT file and how many entries
+/// would be written.
 #[derive(Debug, Serialize)]
 pub struct FixdatPlanData {
     pub dat_file: DatFileSummary,
     pub missing_count: usize,
 }
 
+/// Result of a `dat.fixdat` run: the DAT file and how many entries were written.
 #[derive(Debug, Serialize)]
 pub struct FixdatWrittenData {
     pub dat_file: DatFileSummary,
     pub missing_count: usize,
 }
 
+/// One progress update emitted during a run.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProgressEvent {
@@ -390,6 +424,8 @@ pub enum ProgressEvent {
     Warn { message: String },
 }
 
+/// Deserialized JSON request: operation name, input/output paths, and
+/// per-operation options.
 #[derive(Clone, Debug, Deserialize)]
 pub struct RunRequest {
     #[serde(default)]
@@ -410,6 +446,8 @@ pub struct RunRequest {
     pub dry_run: bool,
 }
 
+/// Per-operation options accepted in a [`RunRequest`], validated
+/// per-operation by the handler that reads them.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RunOptions {
@@ -457,6 +495,8 @@ pub struct RunOptions {
     pub subset: Option<String>,
 }
 
+/// One Wii U title input: a bare path, or a path with an explicit format
+/// and key.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum WupTitleInputOption {

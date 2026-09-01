@@ -72,6 +72,7 @@ impl Default for PathTree {
 }
 
 impl PathTree {
+    /// Builds an empty tree with a single root directory.
     pub fn new() -> Self {
         Self {
             root: PathNode::new_directory(String::new()),
@@ -262,14 +263,10 @@ fn sort_recursive(node: &mut PathNode) {
 /// interprets a positive result as `a < b` so a normal ascending
 /// `sort_by` reproduces upstream's child order.
 fn sort_cmp(a: &str, b: &str) -> std::cmp::Ordering {
-    let c = compare_node_name(a.as_bytes(), b.as_bytes());
     // Upstream uses `CompareNodeName(a, b) > 0` as its less-than
     // predicate, so positive means "a should sort before b".
-    match c.cmp(&0) {
-        std::cmp::Ordering::Greater => std::cmp::Ordering::Less,
-        std::cmp::Ordering::Less => std::cmp::Ordering::Greater,
-        std::cmp::Ordering::Equal => std::cmp::Ordering::Equal,
-    }
+    let c = compare_node_name(a.as_bytes(), b.as_bytes());
+    c.cmp(&0).reverse()
 }
 
 /// Port of the ZArchive `CompareNodeName` routine.
@@ -307,8 +304,6 @@ pub fn compare_node_name(n1: &[u8], n2: &[u8]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ---- compare_node_name ----
 
     #[test]
     fn compare_node_name_equal() {
@@ -359,8 +354,6 @@ mod tests {
         assert!(compare_node_name(b"code", b"meta") > 0);
     }
 
-    // ---- sort_cmp ----
-
     #[test]
     fn sort_cmp_ascending_order() {
         let mut names = vec!["meta", "code", "content"];
@@ -375,8 +368,6 @@ mod tests {
         // After case fold: "a.xml" < "abc.xml" < "bar.xml"
         assert_eq!(names, vec!["a.xml", "abc.xml", "Bar.xml"]);
     }
-
-    // ---- PathTree make_dir ----
 
     #[test]
     fn make_dir_creates_single_directory() {
@@ -429,8 +420,6 @@ mod tests {
         let err = tree.make_dir("meta").unwrap_err();
         assert!(matches!(err, WupError::PathConflict(_)));
     }
-
-    // ---- PathTree add_file ----
 
     #[test]
     fn add_file_at_root() {
@@ -489,8 +478,6 @@ mod tests {
         assert!(matches!(err, WupError::PathConflict(_)));
     }
 
-    // ---- PathTree get_mut ----
-
     #[test]
     fn get_mut_finds_nested_file() {
         let mut tree = PathTree::new();
@@ -511,8 +498,6 @@ mod tests {
         let root = tree.get_mut("").unwrap();
         assert!(!root.is_file);
     }
-
-    // ---- PathTree sort ----
 
     #[test]
     fn sort_sorts_root_children() {
@@ -573,8 +558,6 @@ mod tests {
         assert_eq!(order_a, order_b);
     }
 
-    // ---- PathTree bfs_entries ----
-
     #[test]
     fn bfs_root_only() {
         let tree = PathTree::new();
@@ -630,7 +613,7 @@ mod tests {
         // Expected BFS order (children sorted ascending at each level):
         //   0: root
         //   1: a
-        //   2: b         (children of a, after sibling; but 'b' < 'sibling'? 'b'=0x62, 's'=0x73 -> b first)
+        //   2: b         (child of a; 'b' sorts before 'sibling')
         //   3: sibling
         //   4: c         (child of b)
         //   5: leaf1     (child of c)

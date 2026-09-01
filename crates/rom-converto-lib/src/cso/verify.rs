@@ -18,6 +18,8 @@ use crate::cso::models::CISO_INDEX_UNCOMPRESSED;
 use crate::cso::reader::{CsoSyncHandle, block_spec, make_cso_extract_workers, open_cso_sync};
 use crate::util::{BYTES_PER_MB, CancelToken, ProgressReporter, await_with_progress_cancel};
 
+/// Verifies a CSO/ZSO file's structure, and its block payloads when `full`
+/// is set. See the module docs for what each pass checks.
 pub async fn verify_cso(
     progress: &dyn ProgressReporter,
     input_path: PathBuf,
@@ -26,6 +28,7 @@ pub async fn verify_cso(
     verify_cso_cancellable(progress, input_path, full, CancelToken::new()).await
 }
 
+/// Cancellable twin of [`verify_cso`].
 pub async fn verify_cso_cancellable(
     progress: &dyn ProgressReporter,
     input_path: PathBuf,

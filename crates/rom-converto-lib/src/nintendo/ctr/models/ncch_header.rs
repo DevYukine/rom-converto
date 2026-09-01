@@ -1,6 +1,8 @@
 use crate::nintendo::ctr::constants::NCCH_FLAGS7_NOCRYPTO;
 use binrw::{BinRead, BinWrite};
 
+/// Fixed-size (0x200-byte) NCCH partition header, preceding the ExHeader,
+/// ExeFS, and RomFS regions.
 #[derive(BinRead, BinWrite, Debug)]
 #[brw(little)]
 pub struct NcchHeader {
@@ -37,6 +39,8 @@ pub struct NcchHeader {
 }
 
 impl NcchHeader {
+    /// Returns whether the NoCrypto flag (byte 7 of `flags`) is clear,
+    /// meaning the partition's ExeFS/RomFS are encrypted.
     pub fn is_encrypted(&self) -> bool {
         (self.flags[7] & NCCH_FLAGS7_NOCRYPTO) == 0
     }

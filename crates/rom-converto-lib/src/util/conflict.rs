@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 
 const MAX_RENAME_SLOTS: u32 = 9999;
 
+/// The `--on-conflict` policy to apply when a planned output path already
+/// exists.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConflictPolicy {
     Error,
@@ -16,6 +18,8 @@ pub enum ConflictPolicy {
     OverwriteInvalid,
 }
 
+/// Outcome of resolving a conflict: write to a path (possibly renamed), or
+/// skip the file entirely.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConflictResolution {
     Write(PathBuf),

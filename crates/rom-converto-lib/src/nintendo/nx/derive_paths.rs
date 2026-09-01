@@ -2,6 +2,9 @@
 
 use std::path::{Path, PathBuf};
 
+/// Derives the compressed output path for `input`: an `.xci`
+/// extension (case-insensitive) maps to lowercase `.xcz`, everything
+/// else maps to `.nsz`.
 pub fn derive_compressed_path(input: &Path) -> PathBuf {
     let new_ext = match input.extension().and_then(|s| s.to_str()) {
         Some(e) if e.eq_ignore_ascii_case("xci") => "xcz",
@@ -10,6 +13,9 @@ pub fn derive_compressed_path(input: &Path) -> PathBuf {
     input.with_extension(new_ext)
 }
 
+/// Derives the decompressed output path for `input`: an `.xcz`
+/// extension (case-insensitive) maps to lowercase `.xci`, everything
+/// else maps to `.nsp`.
 pub fn derive_decompressed_path(input: &Path) -> PathBuf {
     let new_ext = match input.extension().and_then(|s| s.to_str()) {
         Some(e) if e.eq_ignore_ascii_case("xcz") => "xci",

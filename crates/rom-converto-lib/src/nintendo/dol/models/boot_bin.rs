@@ -22,6 +22,7 @@ pub const BOOT_BIN_FST_SIZE_FIELD: u64 = 0x428;
 pub const APPLOADER_OFFSET: u64 = 0x2440;
 pub const APPLOADER_DATE_LEN: usize = 16;
 
+/// Region byte stored in bi2.bin.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GcRegion {
     Japan,
@@ -32,6 +33,8 @@ pub enum GcRegion {
 }
 
 impl GcRegion {
+    /// Maps a bi2.bin region code to a [`GcRegion`], keeping unrecognized
+    /// codes as [`GcRegion::Unknown`] instead of failing.
     pub fn from_code(code: u32) -> Self {
         match code {
             0 => Self::Japan,
@@ -43,6 +46,7 @@ impl GcRegion {
     }
 }
 
+/// Fields read from a GameCube disc's boot.bin and bi2.bin headers.
 #[derive(Debug, Clone)]
 pub struct GcBootBin {
     pub game_id: String,
@@ -59,6 +63,12 @@ pub struct GcBootBin {
 }
 
 impl GcBootBin {
+    /// Reads boot.bin and bi2.bin starting at the reader's current
+    /// position.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the GameCube magic at 0x1C does not match.
     pub fn read<R: Read + Seek>(reader: &mut R) -> Result<Self> {
         let start = reader.stream_position()?;
 

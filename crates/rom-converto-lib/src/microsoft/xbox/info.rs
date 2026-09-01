@@ -14,6 +14,7 @@ use crate::microsoft::xdvdfs::{
 };
 use crate::microsoft::xex::read_xex_info;
 
+/// Summary of an XISO's probed partition layout and root title metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct XisoInfo {
     /// Renamed on the wire: [`crate::info::InfoResult`] already tags its
@@ -65,6 +66,11 @@ fn read_root_file<R: Read + Seek>(
     Some(buf)
 }
 
+/// Probes an XISO and summarizes its partition layout, file/dir counts,
+/// and root `default.xbe`/`default.xex` metadata.
+///
+/// # Errors
+/// Returns an error if no XDVDFS volume descriptor is found at any probed base.
 pub fn read_info(path: &Path) -> XboxResult<XisoInfo> {
     let mut file = File::open(path)?;
     let image_size = file.metadata()?.len();

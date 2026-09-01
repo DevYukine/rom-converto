@@ -85,12 +85,14 @@ impl ChunkSectorPos {
         }
     }
 
+    /// Decrypted-payload byte offset of this chunk's first sector, from the partition's payload start.
     #[inline]
     pub fn chunk_data_offset_pay(&self) -> u64 {
         self.cluster_idx * WII_GROUP_PAYLOAD_SIZE
             + (self.first_sector_in_chunk as u64) * (WII_SECTOR_PAYLOAD_SIZE as u64)
     }
 
+    /// Decrypted payload bytes this chunk covers.
     #[inline]
     pub fn payload_len(&self) -> usize {
         self.chunk_n_sectors * WII_SECTOR_PAYLOAD_SIZE
@@ -149,6 +151,7 @@ impl PartitionInfo {
         self.data_size.div_ceil(WII_GROUP_TOTAL_SIZE)
     }
 
+    /// Absolute byte offset where the partition's encrypted data begins.
     pub fn data_start(&self) -> u64 {
         self.partition_offset + self.data_offset
     }
@@ -201,6 +204,7 @@ pub fn read_partition_info<R: Read + Seek>(
     })
 }
 
+/// One decrypted 2 MiB cluster: each sector's on-disc hash region and decrypted payload, in sector order.
 pub struct DecryptedCluster {
     pub on_disc_hash_regions: Vec<[u8; HASH_REGION_BYTES]>,
     pub payloads: Vec<[u8; WII_SECTOR_PAYLOAD_SIZE]>,
@@ -216,6 +220,7 @@ impl Default for DecryptedCluster {
 }
 
 impl DecryptedCluster {
+    /// Empty cluster with capacity pre-reserved for a full [`WII_BLOCKS_PER_GROUP`] sectors.
     pub fn new() -> Self {
         Self::default()
     }
@@ -609,6 +614,7 @@ pub fn serialize_exception_header(exceptions: &[HashException]) -> RvzResult<Vec
     Ok(out)
 }
 
+/// Like [`serialize_exception_header`] but appends into a caller-owned buffer instead of allocating one.
 pub fn serialize_exception_header_into(
     exceptions: &[HashException],
     out: &mut Vec<u8>,
@@ -642,12 +648,15 @@ pub struct ExceptionEntriesRef<'a> {
 }
 
 impl<'a> ExceptionEntriesRef<'a> {
+    /// Number of exception entries in this view.
     pub fn len(&self) -> usize {
         self.count
     }
+    /// True when the view holds no exception entries.
     pub fn is_empty(&self) -> bool {
         self.count == 0
     }
+    /// Decodes each entry from its raw bytes on the fly, without materializing a `Vec`.
     pub fn iter(&self) -> impl Iterator<Item = HashException> + 'a {
         let bytes = self.entries;
         (0..self.count).map(move |i| {
@@ -694,6 +703,7 @@ pub fn parse_exception_header<'a>(
     Ok((view, &data[exception_area..]))
 }
 
+/// Splits a chunk's payload region into one array per sector.
 pub fn split_payloads(data: &[u8]) -> RvzResult<Vec<[u8; WII_SECTOR_PAYLOAD_SIZE]>> {
     if data.len() < WII_GROUP_PAYLOAD_SIZE as usize {
         return Err(RvzError::Custom(

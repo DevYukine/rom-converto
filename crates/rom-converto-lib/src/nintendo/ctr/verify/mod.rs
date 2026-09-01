@@ -2,6 +2,8 @@
 //! the built-in root key and per-partition legitimacy checks.
 
 mod chain;
+/// The built-in 3DS root CA public key used to anchor certificate chain
+/// verification.
 pub mod root_key;
 
 pub use chain::{

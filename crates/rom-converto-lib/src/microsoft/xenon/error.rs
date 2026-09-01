@@ -5,6 +5,7 @@ use thiserror::Error;
 use crate::microsoft::xdvdfs::XdvdfsError;
 use crate::microsoft::zar::format::ZarError;
 
+/// Errors from the Xbox 360 (Xenon) ISO/ZArchive pipeline.
 #[derive(Debug, Error)]
 pub enum XenonError {
     #[error(transparent)]
@@ -40,4 +41,5 @@ impl From<crate::util::worker_pool::PoolChannelClosed> for XenonError {
     }
 }
 
+/// Convenience alias for a [`Result`] with [`XenonError`].
 pub type XenonResult<T> = Result<T, XenonError>;

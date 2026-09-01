@@ -30,6 +30,11 @@ pub const GC_FST_SIZE_FIELD: usize = 0x428;
 /// Standard full GameCube disc size (`NStream.FullSizeGameCube`).
 pub const GC_FULL_SIZE: u64 = 0x5705_8000;
 
+/// Parsed NKit header from the reserved region at 0x200 of Boot.bin.
+///
+/// `image_size` is already normalized to bytes: the on-disk field is
+/// divided by 4 for Wii images, so callers never need to apply that
+/// scaling themselves.
 #[derive(Debug, Clone, Copy)]
 pub struct NkitHeader {
     pub source_crc: u32,

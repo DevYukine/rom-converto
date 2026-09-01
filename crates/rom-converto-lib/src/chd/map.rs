@@ -254,8 +254,6 @@ fn write_u48_be(buf: &mut [u8], value: u64) {
     buf.copy_from_slice(&bytes[2..]);
 }
 
-// BitWriter (compression)
-
 #[derive(Debug)]
 struct BitWriter {
     data: Vec<u8>,
@@ -298,8 +296,6 @@ impl BitWriter {
         self.data
     }
 }
-
-// BitReader (decompression)
 
 #[derive(Debug)]
 pub(crate) struct BitReader {
@@ -344,8 +340,6 @@ impl BitReader {
     }
 }
 
-// HuffNode
-
 #[derive(Debug, Clone, Copy)]
 struct HuffNode {
     parent: Option<usize>,
@@ -353,8 +347,6 @@ struct HuffNode {
     bits: u32,
     num_bits: u8,
 }
-
-// HuffmanEncoder (compression)
 
 #[derive(Debug)]
 struct HuffmanEncoder {
@@ -572,8 +564,6 @@ fn write_rle_tree_bits(bitbuf: &mut BitWriter, value: u32, mut repcount: u32, nu
     }
 }
 
-// HuffmanDecoder (decompression)
-
 #[derive(Debug)]
 pub(crate) struct HuffmanDecoder {
     /// Lookup table indexed by HUFFMAN_MAX_BITS-width value: (symbol, num_bits)
@@ -627,7 +617,7 @@ impl HuffmanDecoder {
     }
 
     fn from_bit_lengths(bit_lengths: &[u8; HUFFMAN_CODES]) -> ChdResult<Self> {
-        // Step 1: Build canonical codes (same algorithm as assign_canonical_codes in encoder)
+        // Same canonical-code algorithm as HuffmanEncoder::assign_canonical_codes.
         let mut bithisto = [0u32; BITHISTO_LEN];
         for &bits in bit_lengths.iter() {
             if (bits as usize) <= CANONICAL_MAX_BITS {
@@ -642,7 +632,6 @@ impl HuffmanDecoder {
             curstart = nextstart;
         }
 
-        // Step 2: Assign codes to symbols
         let mut codes = [(0u32, 0u8); HUFFMAN_CODES]; // (code, num_bits)
         for symbol in 0..HUFFMAN_CODES {
             let bits = bit_lengths[symbol];
@@ -652,7 +641,6 @@ impl HuffmanDecoder {
             }
         }
 
-        // Step 3: Build lookup table (indexed by HUFFMAN_MAX_BITS-width value)
         let table_size = 1usize << HUFFMAN_MAX_BITS;
         let mut lookup = vec![(0u8, 0u8); table_size];
 
@@ -696,7 +684,6 @@ pub(crate) fn decompress_v5_map(
         return Err(ChdError::MapDecompressionError);
     }
 
-    // Parse 16-byte header
     let compressed_len = BigEndian::read_u32(&map_data[0..4]) as usize;
     let first_offset = read_u48_be(&map_data[4..10]);
     let map_crc = BigEndian::read_u16(&map_data[10..12]);
@@ -711,10 +698,8 @@ pub(crate) fn decompress_v5_map(
     let compressed = map_data[MAP_HEADER_SIZE..MAP_HEADER_SIZE + compressed_len].to_vec();
     let mut bits = BitReader::new(compressed);
 
-    // Import Huffman tree
     let decoder = HuffmanDecoder::import_tree_rle(&mut bits)?;
 
-    // Decode all Huffman symbols (compression types with RLE)
     // Decode compression types using the same logic as the encoder's pass 2.
     // The encoder's pass 2 reads compression_rle[] sequentially:
     //   - if count==0: read next symbol. RLE_SMALL/LARGE set count. Other values set lastcomp.
@@ -745,7 +730,6 @@ pub(crate) fn decompress_v5_map(
         }
     }
 
-    // Decode per-hunk data from the bitstream
     let mut entries = Vec::with_capacity(hunk_count as usize);
     let mut cur_offset = first_offset;
     let mut last_self = 0u32;
@@ -841,7 +825,6 @@ pub(crate) fn decompress_v5_map(
         entries.push(entry);
     }
 
-    // Verify CRC: rebuild raw map and check
     let raw_map = encode_raw_map(&entries);
     let computed_crc = crc16_ccitt(&raw_map);
     if computed_crc != map_crc {
@@ -874,13 +857,9 @@ mod tests {
         let hunk_bytes = 19584u32;
         let unit_bytes = 2448u32;
 
-        // Compress
         let compressed = compress_v5_map(&entries, hunk_bytes, unit_bytes).unwrap();
-
-        // Decompress
         let decompressed = decompress_v5_map(&compressed, 100, hunk_bytes, unit_bytes).unwrap();
 
-        // Compare
         assert_eq!(entries.len(), decompressed.len());
         for (i, (orig, dec)) in entries.iter().zip(decompressed.iter()).enumerate() {
             assert_eq!(

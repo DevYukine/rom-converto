@@ -40,18 +40,24 @@ mod constants;
 pub mod convert;
 mod decrypt;
 mod encrypt;
+/// Error types for CTR (3DS) operations.
 pub mod error;
 pub mod exefs;
 pub mod info;
+/// Binary-format structs for CTR container and metadata layouts (CIA, NCCH,
+/// NCSD, ticket, TMD, SMDH, certificates).
 pub mod models;
 pub mod seed;
 #[cfg(test)]
 pub(crate) mod test_fixtures;
+/// Derives and encrypts 3DS title keys from a title ID.
 pub mod title_key;
 mod util;
 pub mod verify;
+/// Custom Z3DS compression container format and its (de)compression pipeline.
 pub mod z3ds;
 
+/// Options controlling a CDN-directory-to-CIA conversion.
 #[derive(Debug, Clone)]
 pub struct CdnToCiaOptions {
     pub cdn_dir: PathBuf,
@@ -65,6 +71,8 @@ pub struct CdnToCiaOptions {
     pub on_conflict: ConflictPolicy,
 }
 
+/// Derives the output path for a decrypted ROM by inserting `.decrypted`
+/// before the file extension.
 pub fn derive_decrypted_path(input: &Path) -> PathBuf {
     let stem = input.file_stem().and_then(|s| s.to_str()).unwrap_or("out");
     let ext = input.extension().and_then(|s| s.to_str()).unwrap_or("");
@@ -80,6 +88,7 @@ const DECRYPT_EXTS: &[&str] = &["cia", "3ds", "cci", "cxi"];
 
 const FORGED_KEY_VERIFY_BUF: usize = 4 * 1024 * 1024;
 
+/// Decrypts a CIA file to `output`, deriving the title key from its own ticket.
 pub async fn decrypt_cia(
     input: &Path,
     output: &Path,
@@ -88,6 +97,7 @@ pub async fn decrypt_cia(
     decrypt_cia_cancellable(input, output, progress, CancelToken::new()).await
 }
 
+/// Like [`decrypt_cia`] but observes `cancel` during decryption.
 pub async fn decrypt_cia_cancellable(
     input: &Path,
     output: &Path,
@@ -113,6 +123,8 @@ pub async fn decrypt_cia_cancellable(
     Ok(())
 }
 
+/// Decrypts a CIA, NCSD (`.3ds`/`.cci`), or standalone NCCH (`.cxi`) ROM to
+/// `output`, detecting the format from its magic bytes.
 pub async fn decrypt_rom(
     input: &Path,
     output: &Path,
@@ -121,6 +133,7 @@ pub async fn decrypt_rom(
     decrypt_rom_cancellable(input, output, progress, CancelToken::new()).await
 }
 
+/// Like [`decrypt_rom`] but observes `cancel` throughout.
 pub async fn decrypt_rom_cancellable(
     input: &Path,
     output: &Path,
@@ -230,10 +243,13 @@ async fn decrypt_ncch_cancellable(
     Ok(())
 }
 
+/// Synthesizes a ticket (`cetk`) for a CDN title dump, deriving the title
+/// key from the title ID read out of its TMD.
 pub async fn generate_ticket_from_cdn(cdn_dir: &Path, output: &Path) -> Result<()> {
     generate_ticket_from_cdn_cancellable(cdn_dir, output, &CancelToken::new()).await
 }
 
+/// Like [`generate_ticket_from_cdn`] but observes `cancel`.
 pub async fn generate_ticket_from_cdn_cancellable(
     cdn_dir: &Path,
     output: &Path,
@@ -300,6 +316,8 @@ fn check_cancel(cancel: &CancelToken) -> Result<()> {
     Ok(())
 }
 
+/// Assembles a CIA from a CDN title dump, or from every subdirectory of one
+/// when `opts.recursive` is set.
 pub async fn convert_cdn_to_cia(
     opts: CdnToCiaOptions,
     progress: &dyn ProgressReporter,
@@ -308,6 +326,7 @@ pub async fn convert_cdn_to_cia(
     convert_cdn_to_cia_cancellable(opts, progress, total_progress, CancelToken::new()).await
 }
 
+/// Like [`convert_cdn_to_cia`] but observes `cancel`.
 pub async fn convert_cdn_to_cia_cancellable(
     opts: CdnToCiaOptions,
     progress: &dyn ProgressReporter,
@@ -670,6 +689,8 @@ fn path_is_within(path: &Path, directory: &Path) -> std::io::Result<bool> {
     Ok(path.starts_with(directory))
 }
 
+/// Decrypts every supported ROM file (`.cia`, `.3ds`, `.cci`, `.cxi`) found
+/// under `input_dir`.
 pub async fn decrypt_rom_batch(
     input_dir: &Path,
     output_dir: Option<&Path>,
@@ -688,6 +709,7 @@ pub async fn decrypt_rom_batch(
     .await
 }
 
+/// Like [`decrypt_rom_batch`] but observes `cancel` between files.
 pub async fn decrypt_rom_batch_cancellable(
     input_dir: &Path,
     output_dir: Option<&Path>,

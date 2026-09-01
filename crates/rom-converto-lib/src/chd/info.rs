@@ -8,6 +8,8 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+/// Summary of a CHD file's header, hashes, tracks, and optional DVD
+/// geometry, for the `info` command.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ChdInfo {
     pub version: u8,
@@ -29,6 +31,7 @@ pub struct ChdInfo {
     pub dvd: Option<ChdDvdInfo>,
 }
 
+/// One CD track parsed from the CHD's CHT2 metadata.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ChdTrack {
     pub number: u8,
@@ -41,6 +44,7 @@ pub struct ChdTrack {
     pub postgap: Option<u32>,
 }
 
+/// DVD-only geometry derived from a CHD's `DVD ` metadata tag.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ChdDvdInfo {
     /// Total 2048-byte sectors derived from header.logical_bytes.
@@ -48,6 +52,7 @@ pub struct ChdDvdInfo {
     pub layer_class: DvdLayerClass,
 }
 
+/// Single- vs dual-layer DVD, inferred from total sector count.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum DvdLayerClass {
@@ -56,12 +61,17 @@ pub enum DvdLayerClass {
     DualLayer,
 }
 
+/// One CHD metadata tag's fourcc and byte length.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChdMetadataTagSummary {
     pub tag: String,
     pub length: u32,
 }
 
+/// Reads a CHD's header, hashes, tracks, and metadata into a [`ChdInfo`] summary.
+///
+/// # Errors
+/// Returns an error if the file cannot be opened or is not a valid V5 CHD.
 pub fn read_info(path: &Path) -> Result<ChdInfo> {
     let handle = open_chd_sync(path).map_err(into_anyhow)?;
     let header = &handle.header;

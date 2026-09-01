@@ -12,18 +12,24 @@ use std::path::PathBuf;
 
 use crate::nintendo::wup::wua::ZArchiveReader;
 
+/// Fetches files by virtual `meta/...` / `code/...` path from a title,
+/// independent of whether it is backed by a directory or a `.wua` archive.
 pub trait MetaSource {
+    /// Reads the file at `virtual_path`, or `Ok(None)` if it does not exist.
     fn read(&mut self, virtual_path: &str) -> Result<Option<Vec<u8>>>;
+    /// Reports whether `virtual_path` exists, without returning its bytes.
     fn exists(&mut self, virtual_path: &str) -> Result<bool> {
         Ok(self.read(virtual_path)?.is_some())
     }
 }
 
+/// [`MetaSource`] backed by a plain directory on disk (loadiine layout).
 pub struct DirSource {
     pub root: PathBuf,
 }
 
 impl DirSource {
+    /// Builds a source rooted at `root`.
     pub fn new(root: PathBuf) -> Self {
         Self { root }
     }
@@ -39,17 +45,20 @@ impl MetaSource for DirSource {
     }
 }
 
+/// [`MetaSource`] backed by one title directory inside a `.wua` archive.
 pub struct WuaSource<'a> {
     pub reader: &'a mut ZArchiveReader,
     pub title_prefix: String,
 }
 
 impl<'a> WuaSource<'a> {
+    /// Builds a source for `title_dir` inside `reader`, normalizing the
+    /// prefix to always end with a trailing slash.
     pub fn new(reader: &'a mut ZArchiveReader, title_dir: &str) -> Self {
         let prefix = if title_dir.ends_with('/') {
             title_dir.to_string()
         } else {
-            format!("{}/", title_dir)
+            format!("{title_dir}/")
         };
         Self {
             reader,

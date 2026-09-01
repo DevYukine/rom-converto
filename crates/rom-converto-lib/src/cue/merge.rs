@@ -1,3 +1,6 @@
+//! Merges a multi-bin CUE sheet's tracks into one bin file plus a rebased
+//! single-file `.cue`.
+
 use crate::cd::IO_BUFFER_SIZE;
 use crate::cue::CueParser;
 use crate::cue::error::CueError;
@@ -11,6 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use thiserror::Error;
 use tokio::fs;
 
+/// Errors from merging a multi-bin CUE sheet into a single bin file.
 #[derive(Debug, Error)]
 pub enum MergeError {
     /// Wraps an underlying I/O failure.
@@ -69,6 +73,7 @@ pub enum MergeError {
     },
 }
 
+/// Result alias for bin-merge operations.
 pub type MergeResult<T> = Result<T, MergeError>;
 
 pub(crate) struct MergeFilePlan {
@@ -183,6 +188,13 @@ fn publish_pair(
     Ok(())
 }
 
+/// Merges every bin file a CUE sheet references into one bin, writing a
+/// rebased single-file `.cue` alongside it.
+///
+/// # Errors
+/// Fails if the sheet is already single-file, references non-BINARY or
+/// mixed-block-size tracks, a bin file is missing or has the wrong size,
+/// or the output path collides with an input file.
 pub async fn merge_bin(
     progress: &dyn ProgressReporter,
     cue_path: PathBuf,
@@ -199,6 +211,7 @@ pub async fn merge_bin(
     .await
 }
 
+/// Cancellable twin of [`merge_bin`].
 pub async fn merge_bin_cancellable(
     progress: &dyn ProgressReporter,
     cue_path: PathBuf,

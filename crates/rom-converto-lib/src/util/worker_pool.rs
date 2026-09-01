@@ -72,6 +72,7 @@ impl std::error::Error for PoolChannelClosed {}
 /// Implementations should own any expensive, reusable state (codec
 /// contexts, scratch buffers) so the hot loop never allocates.
 pub trait Worker<W, O, E> {
+    /// Processes one work item on the calling worker thread.
     fn process(&mut self, work: W) -> Result<O, E>;
 }
 

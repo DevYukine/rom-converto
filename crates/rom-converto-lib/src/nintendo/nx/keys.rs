@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 
 use crate::nintendo::nx::error::{NxError, NxResult};
 
+/// The three key area categories an NCA key area entry can be encrypted
+/// under, matching the `key_area_key_<kind>_<idx>` prod.keys naming.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 pub enum KeyAreaKind {
     Application,
@@ -36,6 +38,10 @@ impl KeyAreaKind {
     }
 }
 
+/// Keys parsed from a `prod.keys` file (and any merged `title.keys` or
+/// inline tickets), indexed the way NCA decryption looks them up: master
+/// keys and titlekeks by revision index, key area keys by `(kind, idx)`,
+/// and title keys by rights ID.
 #[derive(Debug, Default, Clone)]
 pub struct KeySet {
     pub header_key: Option<[u8; 32]>,
@@ -46,12 +52,22 @@ pub struct KeySet {
 }
 
 impl KeySet {
+    /// Returns the header key used to decrypt NCA headers.
+    ///
+    /// # Errors
+    /// Returns `NxError::MissingKey` if `header_key` was not present in
+    /// the loaded keyfile.
     pub fn header_key(&self) -> NxResult<&[u8; 32]> {
         self.header_key.as_ref().ok_or_else(|| NxError::MissingKey {
             name: "header_key".into(),
         })
     }
 
+    /// Returns the key area key for the given area kind and master key
+    /// revision index.
+    ///
+    /// # Errors
+    /// Returns `NxError::MissingKey` if no matching entry was loaded.
     pub fn key_area_key(&self, kind: KeyAreaKind, idx: u8) -> NxResult<&[u8; 16]> {
         self.key_area_keys
             .get(&(kind, idx))
@@ -60,6 +76,10 @@ impl KeySet {
             })
     }
 
+    /// Returns the master key for the given revision index.
+    ///
+    /// # Errors
+    /// Returns `NxError::MissingKey` if no matching entry was loaded.
     pub fn master_key(&self, idx: u8) -> NxResult<&[u8; 16]> {
         self.master_keys
             .get(&idx)
@@ -68,12 +88,22 @@ impl KeySet {
             })
     }
 
+    /// Returns the titlekek for the given master key revision index, used
+    /// to unwrap a ticket's encrypted title key.
+    ///
+    /// # Errors
+    /// Returns `NxError::MissingKey` if no matching entry was loaded.
     pub fn titlekek(&self, idx: u8) -> NxResult<&[u8; 16]> {
         self.titlekeks.get(&idx).ok_or_else(|| NxError::MissingKey {
             name: format!("titlekek_{:02x}", idx),
         })
     }
 
+    /// Returns the encrypted title key registered for the given rights
+    /// ID, from a merged `title.keys` file or an inline ticket.
+    ///
+    /// # Errors
+    /// Returns `NxError::MissingKey` if no matching entry was loaded.
     pub fn title_key(&self, rights_id: &[u8; 16]) -> NxResult<&[u8; 16]> {
         self.title_keys
             .get(rights_id)

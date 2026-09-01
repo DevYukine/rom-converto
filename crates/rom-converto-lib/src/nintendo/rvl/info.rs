@@ -1,3 +1,6 @@
+//! Wii disc metadata extraction: the disc header, partition table, TMD,
+//! and the decoded IMET banner icon, for the `rvl info` command.
+
 use crate::info::{Image, MultilingualString};
 use crate::nintendo::rvl::constants::{
     WII_MAGIC, WII_MAGIC_OFFSET, WII_PARTITION_HEADER_TMD_SIZE_OFFSET,
@@ -20,6 +23,7 @@ use serde::{Deserialize, Serialize};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
+/// Metadata extracted from a Wii disc image: the disc header, partitions, TMD, and banner.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RvlInfo {
     pub physical_bytes: u64,
@@ -37,6 +41,7 @@ pub struct RvlInfo {
     pub image: Option<Image>,
 }
 
+/// One entry from the disc's partition table.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RvlPartitionSummary {
     pub offset: u64,
@@ -45,6 +50,7 @@ pub struct RvlPartitionSummary {
     pub kind: String,
 }
 
+/// Fields from the data partition's Title Metadata, surfaced for `rvl info`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RvlTmdInfo {
     pub title_id: u64,
@@ -56,6 +62,7 @@ pub struct RvlTmdInfo {
     pub access_rights: u32,
 }
 
+/// Reads disc header, partition table, TMD, and banner metadata from a Wii disc image.
 pub fn read_info(path: &Path) -> Result<RvlInfo> {
     let physical_bytes = std::fs::metadata(path)
         .with_context(|| format!("rvl info: stat {}", path.display()))?
@@ -552,7 +559,6 @@ fn map_imet_language(
 #[cfg(test)]
 mod banner_tests {
     use super::*;
-    use byteorder::WriteBytesExt;
 
     fn write_be_u32(buf: &mut [u8], v: u32) {
         buf[..4].copy_from_slice(&v.to_be_bytes());
@@ -825,12 +831,6 @@ mod banner_tests {
     fn locates_u8_archive_at_0x640() {
         let bnr = build_synthetic_opening_bnr();
         assert_eq!(locate_outer_u8(&bnr), Some(0x640));
-    }
-
-    #[allow(dead_code)]
-    fn _silence_unused(_: &mut [u8]) {
-        let mut b = [0u8; 4];
-        b.as_mut_slice().write_u32::<BE_>(0).unwrap();
     }
 }
 

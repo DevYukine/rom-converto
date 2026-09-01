@@ -26,6 +26,10 @@ pub mod flac;
 pub mod huffman8;
 pub mod lzma;
 
+/// Converts a 4-character codec tag into its byte representation.
+///
+/// # Panics
+/// Panics if `tag` is not exactly 4 bytes.
 pub const fn tag_to_bytes(tag: &str) -> [u8; 4] {
     let bytes = tag.as_bytes();
     assert!(bytes.len() == 4, "tag must be exactly 4 bytes");
@@ -191,6 +195,9 @@ pub(crate) fn codec_header_slots(codecs: &[ChdCodec]) -> [[u8; 4]; 4] {
     slots
 }
 
+/// Compression method recorded in a CHD map entry: a header codec slot
+/// index, or a special encoding (uncompressed, self-referential, or from
+/// a parent CHD).
 // IMPORTANT: These values map to positions in the header, not codec IDs
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[allow(dead_code)] // CHD spec values: Self_ and Parent are used in map constants.
@@ -204,10 +211,18 @@ pub enum ChdCompression {
     Parent = 6, // From parent CHD
 }
 
+/// A hunk compressor: encodes raw hunk bytes and reports the codec's
+/// chdman fourcc tag.
 #[allow(dead_code)] // Trait methods are part of the CHD codec API
 pub trait ChdCompressor: Debug {
+    /// Human-readable compressor name, used in diagnostics.
     fn name(&self) -> &'static str;
+    /// The codec's fourcc tag as stored in the CHD header's compressor slots.
     fn tag_bytes(&self) -> [u8; 4];
+    /// Compresses one hunk's raw bytes.
+    ///
+    /// # Errors
+    /// Returns an error if the codec cannot compress this hunk.
     fn compress(&self, data: &[u8]) -> ChdResult<Vec<u8>>;
 }
 
@@ -287,7 +302,6 @@ where
     let mut base = base_decompress(base_compressed, expected_base_len)?;
     let subcode = subcode_decompress(subcode_compressed, expected_subcode_len)?;
 
-    // ECC restoration: for each frame that had its ECC stripped, restore it
     for frame in 0..frames {
         if ecc_flags[frame / 8] & (1 << (frame % 8)) != 0 {
             let sector = &mut base[frame * SECTOR_SIZE..(frame + 1) * SECTOR_SIZE];

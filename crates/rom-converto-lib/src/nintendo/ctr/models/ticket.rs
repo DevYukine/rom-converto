@@ -11,6 +11,7 @@ pub struct Ticket {
     pub ticket_data: TicketData,
 }
 
+/// The ticket fields covered by [`Ticket::signature_data`].
 #[derive(Debug, Clone, BinRead, BinWrite)]
 #[brw(big)]
 pub struct TicketData {
@@ -68,6 +69,7 @@ pub struct TicketData {
     pub content_index: ContentIndex,
 }
 
+/// Variable-length content index block terminating [`TicketData`].
 #[derive(Debug, Clone, BinRead, BinWrite)]
 #[brw(big)]
 pub struct ContentIndex {

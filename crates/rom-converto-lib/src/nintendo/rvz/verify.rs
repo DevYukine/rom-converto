@@ -39,6 +39,8 @@ pub struct RvzStructuralVerify {
 }
 
 impl RvzStructuralVerify {
+    /// True if every stored hash present matched (a missing partition
+    /// table hash does not fail the check).
     pub fn ok(&self) -> bool {
         self.file_head_hash_ok && self.disc_hash_ok && self.part_hash_ok != Some(false)
     }
@@ -51,6 +53,7 @@ pub fn verify_rvz_structure(path: &Path) -> RvzResult<RvzStructuralVerify> {
     verify_rvz_structure_cancellable(path, &CancelToken::new())
 }
 
+/// Like [`verify_rvz_structure`] but observes `cancel` between stages.
 pub fn verify_rvz_structure_cancellable(
     path: &Path,
     cancel: &CancelToken,

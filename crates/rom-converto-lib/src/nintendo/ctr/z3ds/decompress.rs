@@ -17,6 +17,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::task;
 
+/// Decompresses a Z3DS container at `input` back to the original ROM at
+/// `output`.
 pub async fn decompress_rom(
     input: &Path,
     output: &Path,
@@ -33,8 +35,8 @@ pub async fn decompress_rom_cancellable(
     progress: &dyn ProgressReporter,
     cancel: CancelToken,
 ) -> Z3dsResult<()> {
-    // Header parse needs only the first 0x20 bytes; the rest is
-    // passed through the blocking task that runs the worker pool.
+    // Only the 0x20-byte header is needed here; the payload is handled by the
+    // blocking task that runs the worker pool.
     let (underlying_size_mb, total_work, uncompressed_size) = {
         let mut f = std::fs::File::open(input)?;
         let mut header_buf = vec![0u8; 0x20];
@@ -59,8 +61,7 @@ pub async fn decompress_rom_cancellable(
         ),
     );
 
-    // Atomic counter relaying progress out of the blocking thread,
-    // same pattern as compress_rom.
+    // Relays progress out of the blocking thread, same pattern as compress_rom.
     let bytes_done = Arc::new(AtomicU64::new(0));
     let bytes_done_clone = bytes_done.clone();
 
@@ -70,10 +71,8 @@ pub async fn decompress_rom_cancellable(
     let cancel_bg = cancel.clone();
 
     let handle = task::spawn_blocking(move || -> Z3dsResult<u64> {
-        // Re-open the file to read the header inside the blocking
-        // task and pick up the payload offset + compressed size.
-        // Keeping the header read in both places is cheap (32
-        // bytes) and avoids shipping the struct across the await.
+        // Re-reading the 32-byte header here is cheaper than shipping the parsed
+        // struct across the await.
         let mut header_file = std::fs::File::open(&input_owned)?;
         let mut header_buf = vec![0u8; 0x20];
         header_file.read_exact(&mut header_buf)?;
@@ -84,24 +83,16 @@ pub async fn decompress_rom_cancellable(
         let compressed_size = header.compressed_size;
         let uncompressed_size = header.uncompressed_size;
 
-        // Open the compressed file behind an Arc<File> so every
-        // worker can pread from it concurrently without fighting
-        // over a shared cursor.
+        // Arc<File> so every worker can pread concurrently without fighting over
+        // a shared cursor.
         let in_file = Arc::new(std::fs::File::open(&input_owned)?);
 
-        // Plan: parse the seek table via two small positional reads
-        // and produce one work item per frame with an absolute
-        // offset into `in_file`.
         let work_items = plan_decompress_work(&in_file, payload_offset, compressed_size)?;
 
-        // Progress accounting: `progress.start` was called with
-        // `compressed_size + uncompressed_size`, so the bar reaches
-        // 100 % only if both halves get ticked. The parallel driver
-        // ticks one `uncompressed_size` per frame from its consume
-        // closure; the whole compressed_size (frames +
-        // seek table) is pre-ticked here, since the reads that produce them have
-        // effectively already happened as workers pread their own
-        // frames.
+        // `progress.start` was called with compressed_size + uncompressed_size,
+        // so the bar only reaches 100% if both halves get ticked. The driver ticks
+        // uncompressed_size per frame; the compressed half is pre-ticked here
+        // because workers pread their own frames.
         bytes_done_clone.fetch_add(compressed_size, Ordering::Relaxed);
 
         let out_file = std::fs::File::create(&write_owned)?;
@@ -163,14 +154,13 @@ pub async fn decompress_rom_cancellable(
     Ok(())
 }
 
-/// Digest a Z3DS file's decoded content in a single streaming
-/// pass, no temp files, mirroring [`decompress_rom_cancellable`]'s
-/// blocking body but folding each decompressed frame into the hashers
-/// instead of a `BufWriter`. The returned `size_bytes` is the decoded
-/// ROM size.
+/// Digests a Z3DS file's decoded content in one streaming pass, with no temp
+/// files: the blocking body of [`decompress_rom_cancellable`] with each frame
+/// folded into the hashers instead of a `BufWriter`. The returned `size_bytes`
+/// is the decoded ROM size.
 ///
-/// Synchronous: intended to run inside the caller's `spawn_blocking`.
-/// Progress is relayed through the shared `bytes_done` counter.
+/// Synchronous, intended to run inside the caller's `spawn_blocking`. Progress
+/// is relayed through the shared `bytes_done` counter.
 pub fn digest_z3ds_inner(
     input: &Path,
     algos: &[HashAlgo],

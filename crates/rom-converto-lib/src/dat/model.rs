@@ -1,6 +1,11 @@
+//! Wire types (request and response structs) for the Playmatch API,
+//! mirroring its v2 REST schema.
+
 use crate::util::FileDigests;
 use serde::{Deserialize, Serialize};
 
+/// How a file matched: by hash tier (SHA-256/SHA-1/MD5/CRC), by file name
+/// and size only, or not at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GameMatchType {
     #[serde(rename = "SHA256")]
@@ -16,6 +21,8 @@ pub enum GameMatchType {
 }
 
 impl GameMatchType {
+    /// True for the hash-verified match tiers (SHA-256, SHA-1, MD5, CRC),
+    /// false for the name/size hint or no match.
     pub fn is_hash_verified(self) -> bool {
         matches!(
             self,
@@ -25,6 +32,8 @@ impl GameMatchType {
 }
 
 // ---- identify request (query params for GET, body items for bulk) ----
+/// Query parameters for a single-file identify request: file name, size,
+/// and whichever hashes are available.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GameFileMatchSearch {
@@ -41,6 +50,7 @@ pub struct GameFileMatchSearch {
 }
 
 impl GameFileMatchSearch {
+    /// Builds a search from a file name and its computed [`FileDigests`].
     pub fn from_digests(file_name: &str, d: &FileDigests) -> Self {
         Self {
             file_name: file_name.to_string(),
@@ -53,6 +63,8 @@ impl GameFileMatchSearch {
     }
 }
 
+/// One file in a bulk identify request, with an optional caller-supplied
+/// `key` for correlating results.
 #[derive(Debug, Clone, Serialize)]
 pub struct BulkIdentifyItem {
     #[serde(flatten)]
@@ -61,12 +73,15 @@ pub struct BulkIdentifyItem {
     pub key: Option<String>,
 }
 
+/// Body of a bulk identify request: the list of files to look up.
 #[derive(Debug, Clone, Serialize)]
 pub struct BulkIdentifyRequest {
     pub items: Vec<BulkIdentifyItem>,
 }
 
 // ---- identify responses ----
+/// Result of a single-file `/identify/ids` lookup: match type, matched
+/// game id, and external metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GameMetadataMatchResult {
@@ -81,6 +96,7 @@ pub struct GameMetadataMatchResult {
 // String so new providers never break deserialization. Consumers that print
 // external ids filter to match_type "Automatic" or "Manual" AND
 // provider_id.is_some().
+/// One external database cross-reference (e.g. IGDB) for a matched game.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExternalMetadata {
@@ -92,6 +108,7 @@ pub struct ExternalMetadata {
     pub comment: Option<String>,
 }
 
+/// Per-item outcome of a bulk identify request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum BulkItemStatus {
@@ -100,6 +117,7 @@ pub enum BulkItemStatus {
     Error,
 }
 
+/// Error detail for a bulk item that failed or was rejected as invalid.
 #[derive(Debug, Clone, Deserialize)]
 pub struct BulkItemError {
     pub code: String,
@@ -108,6 +126,8 @@ pub struct BulkItemError {
     pub field: Option<String>,
 }
 
+/// One item's result from `/identify/bulk/ids`, keyed by its request index
+/// and optional `key`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BulkIdentifyIdsResult {
@@ -121,6 +141,7 @@ pub struct BulkIdentifyIdsResult {
     pub error: Option<BulkItemError>,
 }
 
+/// Aggregate counts for a bulk identify response.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BulkIdentifySummary {
@@ -131,12 +152,15 @@ pub struct BulkIdentifySummary {
     pub unmatched: u64,
 }
 
+/// Body of a `/identify/bulk/ids` response: summary plus per-item results.
 #[derive(Debug, Clone, Deserialize)]
 pub struct BulkIdentifyIdsResponse {
     pub summary: BulkIdentifySummary,
     pub results: Vec<BulkIdentifyIdsResult>,
 }
 
+/// One item's result from `/identify/bulk/relations`, keyed by its request
+/// index and optional `key`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BulkIdentifyRelationsResult {
@@ -150,6 +174,7 @@ pub struct BulkIdentifyRelationsResult {
     pub error: Option<BulkItemError>,
 }
 
+/// Body of a `/identify/bulk/relations` response: summary plus per-item results.
 #[derive(Debug, Clone, Deserialize)]
 pub struct BulkIdentifyRelationsResponse {
     pub summary: BulkIdentifySummary,
@@ -157,6 +182,8 @@ pub struct BulkIdentifyRelationsResponse {
 }
 
 // ---- relations result (spec: GameAndRelationMatchResultV2) ----
+/// Result of a single-file `/identify/relations` lookup: match type plus
+/// the matched game, platform, company, and DAT file, when known.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GameAndRelationMatchResult {
@@ -179,12 +206,14 @@ pub struct GameAndRelationMatchResult {
     pub external_metadata: Vec<ExternalMetadata>,
 }
 
+/// A company as returned by the Playmatch API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlaymatchCompany {
     pub id: String,
     pub name: String,
 }
 
+/// A game as returned by the Playmatch API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlaymatchGame {
@@ -197,6 +226,7 @@ pub struct PlaymatchGame {
     pub last_seen_dat_version: Option<String>,
 }
 
+/// A file entry of a DAT game, with its hashes and DAT presence.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlaymatchGameFile {
@@ -218,18 +248,21 @@ pub struct PlaymatchGameFile {
     pub last_seen_dat_version: Option<String>,
 }
 
+/// A platform as returned by the Playmatch API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlaymatchPlatform {
     pub id: String,
     pub name: String,
 }
 
+/// A signature group (DAT provider grouping) as returned by the Playmatch API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlaymatchSignatureGroup {
     pub id: String,
     pub name: String,
 }
 
+/// A DAT file's identity and current version, as returned by the Playmatch API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlaymatchDatFile {
@@ -244,6 +277,7 @@ pub struct PlaymatchDatFile {
     pub tags: Option<Vec<String>>,
 }
 
+/// One recorded import of a DAT file version.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlaymatchDatFileImport {
@@ -255,11 +289,13 @@ pub struct PlaymatchDatFileImport {
 }
 
 // ---- games bulk (POST /games/bulk, BulkIdsRequest) ----
+/// Body of a `/games/bulk` request: the game ids to fetch.
 #[derive(Debug, Clone, Serialize)]
 pub struct BulkIdsRequest {
     pub ids: Vec<String>,
 }
 
+/// A game's metadata as returned by `/games/bulk`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GameMetadataResponse {
@@ -270,6 +306,7 @@ pub struct GameMetadataResponse {
 }
 
 // BulkByIdStatusV2 = ok | notFound
+/// Per-id outcome of a `/games/bulk` request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum BulkByIdStatus {
@@ -277,6 +314,7 @@ pub enum BulkByIdStatus {
     NotFound,
 }
 
+/// One id's result from `/games/bulk`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BulkGameByIdResult {
@@ -286,18 +324,22 @@ pub struct BulkGameByIdResult {
     pub data: Option<GameMetadataResponse>,
 }
 
+/// Body of a `/games/bulk` response: the list of per-id results.
 #[derive(Debug, Clone, Deserialize)]
 pub struct BulkGamesByIdResponse {
     pub results: Vec<BulkGameByIdResult>,
 }
 
 // ---- dat-files enumeration ----
+/// An id/name pair, used across the API for platform, signature group, and
+/// company references.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NamedRef {
     pub id: String,
     pub name: String,
 }
 
+/// Summary of one DAT file, as listed by `/dat-files`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DatFileSummary {
@@ -316,6 +358,7 @@ pub struct DatFileSummary {
     pub tags: Vec<String>,
 }
 
+/// The most recent recorded import of a DAT file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LatestDatFileImport {
@@ -324,6 +367,7 @@ pub struct LatestDatFileImport {
     pub imported_at: String,
 }
 
+/// A game as listed under a DAT file, with its files when requested.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DatFileGame {
@@ -336,6 +380,7 @@ pub struct DatFileGame {
     pub files: Option<Vec<PlaymatchGameFile>>,
 }
 
+/// A platform as returned by `/platforms` and `/platforms/search`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlatformMetadataResponse {
@@ -346,12 +391,14 @@ pub struct PlatformMetadataResponse {
 }
 
 // ---- pagination envelope (spec: PageOf<T> + PageMeta) ----
+/// One page of paginated API results.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Page<T> {
     pub data: Vec<T>,
     pub pagination: PageMeta,
 }
 
+/// Pagination cursor and page-size metadata for a [`Page`].
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PageMeta {
@@ -365,6 +412,7 @@ pub struct PageMeta {
 }
 
 // ---- error body (spec: V2ErrorBody) ----
+/// Body of a non-2xx Playmatch API error response.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ApiErrorBody {
     pub code: String,

@@ -30,6 +30,9 @@ fn header_bytes(layout: &WiaLayout) -> u64 {
         + layout.disc.group_size as u64
 }
 
+/// Total bytes [`verify_wia_blocking`] will report progress over for
+/// `deep`: the header chain plus tables when `false`, or every stored
+/// group's bytes when `true`.
 pub fn verify_total(path: &Path, deep: bool) -> WiaResult<u64> {
     let mut f = File::open(path)?;
     let layout = WiaLayout::parse(&mut f)?;
@@ -40,6 +43,9 @@ pub fn verify_total(path: &Path, deep: bool) -> WiaResult<u64> {
     })
 }
 
+/// Verifies the WIA header chain and, when `deep` is set, decodes every
+/// group through its codec on the worker pool to catch payload
+/// corruption the header chain cannot see.
 pub fn verify_wia_blocking(
     path: &Path,
     deep: bool,

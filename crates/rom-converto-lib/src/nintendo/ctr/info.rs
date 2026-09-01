@@ -31,6 +31,7 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter, Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
 
+/// Metadata extracted from a CIA, NCSD, NCCH, or Z3DS-wrapped 3DS ROM.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CtrInfo {
     pub format: CtrFormat,
@@ -52,6 +53,7 @@ pub struct CtrInfo {
     pub compressed: bool,
 }
 
+/// Which container format a ROM was detected as.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CtrFormat {
@@ -62,6 +64,7 @@ pub enum CtrFormat {
     Ncch,
 }
 
+/// Fields of a parsed SMDH relevant to `info` output.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CtrSmdhInfo {
     pub titles: Vec<CtrSmdhTitle>,
@@ -73,6 +76,7 @@ pub struct CtrSmdhInfo {
     pub age_ratings: Vec<CtrSmdhAgeRating>,
 }
 
+/// A single language entry from the SMDH title table.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CtrSmdhTitle {
     pub language: String,
@@ -81,6 +85,7 @@ pub struct CtrSmdhTitle {
     pub publisher: String,
 }
 
+/// A single region's age rating from the SMDH age-rating block.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CtrSmdhAgeRating {
     pub region: String,
@@ -89,6 +94,7 @@ pub struct CtrSmdhAgeRating {
     pub banned: bool,
 }
 
+/// Detects the ROM format at `path` and extracts its [`CtrInfo`] metadata.
 pub fn read_info(path: &Path) -> Result<CtrInfo> {
     let physical_bytes = std::fs::metadata(path)
         .with_context(|| format!("ctr info: stat {}", path.display()))?

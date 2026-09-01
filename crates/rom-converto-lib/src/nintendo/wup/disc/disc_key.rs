@@ -15,6 +15,7 @@ use crate::nintendo::wup::error::{WupError, WupResult};
 pub struct DiscKey(pub [u8; 16]);
 
 impl DiscKey {
+    /// Returns the raw 16 key bytes.
     pub fn as_bytes(&self) -> &[u8; 16] {
         &self.0
     }

@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use thiserror::Error;
 
+/// Errors from PS3 ISO decryption and metadata reading.
 #[derive(Debug, Error)]
 pub enum Ps3Error {
     /// Wraps an underlying I/O failure.
@@ -62,4 +63,5 @@ impl From<crate::util::worker_pool::PoolChannelClosed> for Ps3Error {
     }
 }
 
+/// Convenience alias for a [`Result`] with [`Ps3Error`].
 pub type Ps3Result<T> = Result<T, Ps3Error>;

@@ -60,6 +60,7 @@ const REGION_FLAGS: &[(u32, &str)] = &[
     (0xFF00_0000, "Other"),
 ];
 
+/// Title metadata parsed from a `default.xex`'s optional headers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct XexInfo {
     pub title_id: u32,
@@ -302,6 +303,8 @@ fn read_xdbf_meta(
     Some(xdbf::parse_xdbf(basefile.get(start..end)?))
 }
 
+/// Parses a `default.xex`'s title, version, region, and icon metadata.
+/// Returns `None` if `bytes` is not a valid XEX2 image.
 pub fn read_xex_info(bytes: &[u8]) -> Option<XexInfo> {
     if bytes.get(0..4)? != MAGIC {
         return None;

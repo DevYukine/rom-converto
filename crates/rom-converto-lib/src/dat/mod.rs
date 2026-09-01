@@ -1,3 +1,6 @@
+//! Playmatch API client and the DAT-driven matching, verification, rename,
+//! and fixdat workflows built on top of it.
+
 pub mod client;
 pub mod digest;
 pub mod error;

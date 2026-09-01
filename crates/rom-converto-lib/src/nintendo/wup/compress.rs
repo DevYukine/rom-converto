@@ -185,10 +185,11 @@ fn has_any_content_file(dir: &Path) -> WupResult<bool> {
         if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
             continue;
         }
-        let Some(name) = entry.file_name().to_str().map(|s| s.to_string()) else {
+        let file_name = entry.file_name();
+        let Some(name) = file_name.to_str() else {
             continue;
         };
-        if is_content_filename(&name) {
+        if is_content_filename(name) {
             return Ok(true);
         }
     }
@@ -265,6 +266,13 @@ pub async fn compress_titles_async(
     compress_titles_async_cancellable(titles, output, opts, progress, CancelToken::new()).await
 }
 
+/// Cancellable variant of [`compress_titles_async`]. Runs the sync
+/// pipeline inside `spawn_blocking`, sharing a cancel flag that
+/// `cancel` can flip to abort the worker pool early.
+///
+/// # Errors
+/// Returns [`WupError::InvalidCompressionLevel`] if `opts.zstd_level`
+/// is out of range, or [`WupError::InvalidPath`] if `titles` is empty.
 pub async fn compress_titles_async_cancellable(
     titles: Vec<TitleInput>,
     output: PathBuf,
@@ -500,7 +508,7 @@ fn compress_titles_into_tmp(
     // output file back to the main thread along with the hasher,
     // byte counter, and offset-records table needed to emit the
     // metadata sections.
-    let (stream_result, tree) = std::thread::scope(|s| -> WupResult<_> {
+    let (stream_result, mut tree) = std::thread::scope(|s| -> WupResult<_> {
         let (block_tx, handle) =
             spawn_stream_pipeline(s, pool, total_blocks, buf_writer, Some(progress));
         let mut sink = StreamingSink::new(block_tx);
@@ -555,7 +563,6 @@ fn compress_titles_into_tmp(
     let mut inner = stream_result.inner;
     let mut hasher = stream_result.hasher;
     let mut bytes_written = stream_result.bytes_written;
-    let mut tree = tree;
     write_zarchive_tail(
         &mut inner,
         &mut hasher,

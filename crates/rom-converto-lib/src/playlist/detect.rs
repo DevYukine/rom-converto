@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+/// Files sharing a parsed base title, ordered by disc number.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscGroup {
     pub base_title: String,
@@ -9,10 +10,12 @@ pub struct DiscGroup {
 }
 
 impl DiscGroup {
+    /// Number of discs in the group.
     pub fn len(&self) -> usize {
         self.discs.len()
     }
 
+    /// True if the group holds no discs.
     pub fn is_empty(&self) -> bool {
         self.discs.is_empty()
     }

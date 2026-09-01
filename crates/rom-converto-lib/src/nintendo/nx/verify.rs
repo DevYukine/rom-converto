@@ -1,6 +1,8 @@
-//! Hash-only verify: walks every NCA in a container, decrypts each
-//! section, and recomputes the FsHeader's stored chunk hashes. The
-//! result is `serde::Serialize` so the GUI can render it as a table.
+//! Decrypt-only verify: walks every NCA in a container and confirms
+//! each section's header decrypts and every section reads back
+//! without an I/O or encryption error. This does not check the
+//! FsHeader's hash tree; the result is `serde::Serialize` so the GUI
+//! can render it as a table.
 
 use std::fs::File;
 use std::io::{BufReader, Seek, SeekFrom};
@@ -23,6 +25,7 @@ use crate::nintendo::nx::walker::NcaWalker;
 use crate::util::pread::file_read_exact_at;
 use crate::util::{CancelToken, ProgressReporter};
 
+/// Outcome of verifying every NCA in one Switch container.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NxVerifyResult {
     pub kind: String,
@@ -30,6 +33,9 @@ pub struct NxVerifyResult {
     pub ncas: Vec<NcaVerdict>,
 }
 
+/// Decrypt-only verify result for a single NCA (or NCZ, decompressed
+/// first): whether its header decrypted and every present section
+/// could be read back without error.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NcaVerdict {
     pub name: String,
@@ -38,6 +44,8 @@ pub struct NcaVerdict {
     pub mismatched_sections: usize,
 }
 
+/// Verifies a Switch container synchronously, with no cancellation
+/// support.
 pub fn verify_container(
     input: &Path,
     keys: &KeySet,
@@ -46,6 +54,9 @@ pub fn verify_container(
     verify_container_cancellable(input, keys, progress, &CancelToken::new())
 }
 
+/// Verifies a Switch container: lists its PFS0/HFS0 entries, merges
+/// any bundled tickets into `keys` so rights-protected NCAs can be
+/// opened, then decrypts and reads back every NCA/NCZ section.
 pub fn verify_container_cancellable(
     input: &Path,
     keys: &KeySet,
@@ -108,6 +119,8 @@ pub fn verify_container_cancellable(
     })
 }
 
+/// Async wrapper over [`verify_container_cancellable`], with no
+/// cancellation support.
 pub async fn verify_container_async(
     input: PathBuf,
     keys: KeySet,
@@ -116,6 +129,9 @@ pub async fn verify_container_async(
     verify_container_async_cancellable(input, keys, progress, CancelToken::new()).await
 }
 
+/// Runs [`verify_container_cancellable`] on a blocking task and polls
+/// it every 100ms to forward its progress and phase-label updates to
+/// `progress` without blocking the async runtime.
 pub async fn verify_container_async_cancellable(
     input: PathBuf,
     keys: KeySet,

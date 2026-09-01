@@ -2,6 +2,7 @@
 
 use thiserror::Error;
 
+/// Errors from reading, decoding, or writing a WIA container.
 #[derive(Debug, Error)]
 pub enum WiaError {
     /// Wraps an underlying I/O failure.
@@ -64,6 +65,7 @@ impl From<crate::nintendo::rvz::error::RvzError> for WiaError {
     }
 }
 
+/// Result alias for WIA operations.
 pub type WiaResult<T> = Result<T, WiaError>;
 
 #[cfg(test)]

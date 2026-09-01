@@ -19,10 +19,8 @@ use std::io::{BufReader, BufWriter, Read, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// One uncompressed frame ready to hand to a worker. The `Vec<u8>`
-/// is sized exactly to the bytes read from the input (which matches
-/// the configured max frame size except for the short final frame),
-/// so the worker can compress it without any further bookkeeping.
+/// One uncompressed frame ready to hand to a worker, sized exactly to the bytes
+/// read (the max frame size, except for the short final frame).
 pub(super) struct Z3dsCompressWork {
     pub uncompressed: Vec<u8>,
 }
@@ -35,10 +33,9 @@ pub(super) struct Z3dsCompressedFrame {
     pub uncompressed_size: u32,
 }
 
-/// Per-thread Z3DS compress worker. Owns one persistent
-/// `zstd::bulk::Compressor` so the zstd CCtx (lookup tables, match
-/// finder state, window buffer) is allocated exactly once per thread
-/// instead of once per frame.
+/// Per-thread compress worker owning one persistent `zstd::bulk::Compressor`,
+/// so the CCtx (lookup tables, match finder state, window buffer) is allocated
+/// once per thread instead of once per frame.
 pub(super) struct Z3dsCompressWorker {
     compressor: zstd::bulk::Compressor<'static>,
 }
@@ -107,25 +104,16 @@ fn read_frame<R: Read>(reader: &mut R, max_frame_size: usize) -> Z3dsResult<Opti
     Ok(Some(buf))
 }
 
-/// Drive the parallel Z3DS compress pipeline:
+/// Drives the parallel compress pipeline: the produce closure reads frames
+/// sequentially, pool workers compress them, and a dedicated writer thread
+/// drains a bounded channel so writes overlap with reads and compression.
 ///
-/// * **Reader (dispatcher thread)**: sequential `BufReader` over the
-///   decrypted input. Produces one frame per `drive` call.
-/// * **Workers (pool threads)**: receive frames, zstd-compress them
-///   through a persistent `bulk::Compressor`, return the compressed
-///   bytes plus the original uncompressed size.
-/// * **Writer (dedicated thread)**: drains a bounded channel and
-///   calls `write_all` on the output `BufWriter` so writes overlap
-///   with reads and compresses.
-/// * **Seek table**: accumulated on the main thread in the `consume`
-///   closure (in strict order via `drive`), then written to the
-///   `BufWriter` on the main thread after the writer thread has
-///   been joined. Keeps the writer thread focused on one kind of
-///   bytes and avoids interleaving frame writes with footer writes.
+/// The seek table is accumulated in the ordered `consume` closure and written
+/// on the main thread once the writer thread has joined, so frame writes never
+/// interleave with footer writes.
 ///
-/// Returns the total number of bytes written to `writer` (frames +
-/// seek table), which is the value that goes into the Z3DS header's
-/// `compressed_size` field.
+/// Returns the total bytes written to `writer` (frames plus seek table), the
+/// value that goes into the Z3DS header's `compressed_size` field.
 pub(super) fn encode_seekable(
     pool: &Pool<Z3dsCompressWork, Z3dsCompressedFrame, Z3dsError>,
     reader: &mut BufReader<std::fs::File>,
@@ -168,10 +156,8 @@ pub(super) fn encode_seekable(
                 let uncompressed = read_frame(reader, max_frame_size)?.unwrap_or_default();
                 Ok(Z3dsCompressWork { uncompressed })
             },
-            // consume: append seek-table entry, forward bytes to the
-            // writer thread, bump progress. Runs in strict seq order
-            // so entries come out byte-identical to a sequential
-            // pass.
+            // consume: runs in strict seq order, so the seek-table entries come
+            // out byte-identical to a sequential pass.
             |_seq, out| -> Z3dsResult<()> {
                 entries.push(FrameEntry {
                     compressed_size: out.compressed.len() as u32,
@@ -196,9 +182,7 @@ pub(super) fn encode_seekable(
 
     scope_result?;
 
-    // Writer thread has exited and released its mutable borrow of
-    // `writer`, so the main thread can append the seek table footer
-    // directly.
+    // The writer thread has exited and released its borrow of `writer`.
     let footer_bytes = write_seek_table(writer, &entries)?;
     Ok(frames_bytes + footer_bytes)
 }

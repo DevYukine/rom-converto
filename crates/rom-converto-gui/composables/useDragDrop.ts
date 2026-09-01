@@ -13,7 +13,6 @@ const zones = new Map<string, DropZone>();
 let activeZoneId: string | null = null;
 let initialized = false;
 
-// Reactive state for the full-screen overlay
 export const isDraggingOver = ref(false);
 
 function findZoneAtPoint(x: number, y: number): string | null {

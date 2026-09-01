@@ -2,6 +2,7 @@
 
 use thiserror::Error;
 
+/// Errors from reading an XDVDFS volume.
 #[derive(Debug, Error)]
 pub enum XdvdfsError {
     #[error("no XDVDFS volume descriptor found at any probed base")]
@@ -17,4 +18,5 @@ pub enum XdvdfsError {
     Io(#[from] std::io::Error),
 }
 
+/// Convenience alias for a [`Result`] with [`XdvdfsError`].
 pub type XdvdfsResult<T> = Result<T, XdvdfsError>;

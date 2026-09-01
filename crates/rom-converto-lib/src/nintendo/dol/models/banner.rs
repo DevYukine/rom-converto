@@ -21,12 +21,14 @@ pub const BANNER_LANG_BLOCK_SIZE: usize = 0x140;
 pub const BNR1_FILE_SIZE: usize = 0x1820 + BANNER_LANG_BLOCK_SIZE;
 pub const BNR2_FILE_SIZE: usize = 0x1820 + 6 * BANNER_LANG_BLOCK_SIZE;
 
+/// Which `opening.bnr` layout a banner uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BannerFormat {
     Bnr1,
     Bnr2,
 }
 
+/// Language of one banner title block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BannerLanguage {
     /// BNR1 carries a single language slot (region-dependent: typically
@@ -41,6 +43,8 @@ pub enum BannerLanguage {
     Italian,
 }
 
+/// One decoded title block: short and long game/maker names plus the
+/// description text, all Latin-1 and trimmed at the first NUL.
 #[derive(Debug, Clone)]
 pub struct BannerTitle {
     pub language: BannerLanguage,
@@ -51,6 +55,8 @@ pub struct BannerTitle {
     pub description: String,
 }
 
+/// Parsed `opening.bnr`: its format, one title block per language, and
+/// the raw banner image.
 #[derive(Debug, Clone)]
 pub struct GcBanner {
     pub format: BannerFormat,
@@ -60,6 +66,8 @@ pub struct GcBanner {
 }
 
 impl GcBanner {
+    /// Parses an `opening.bnr` buffer, detecting BNR1 vs BNR2 from its
+    /// magic and decoding one title block per language it carries.
     pub fn parse(buf: &[u8]) -> Result<Self> {
         if buf.len() < BNR1_FILE_SIZE {
             return Err(anyhow!("opening.bnr too small: {} bytes", buf.len()));

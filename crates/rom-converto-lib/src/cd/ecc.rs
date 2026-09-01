@@ -202,11 +202,11 @@ static QOFFSETS: [[u16; 43]; 52] = [
     [0x867, 0x003, 0x05b, 0x0b3, 0x10b, 0x163, 0x1bb, 0x213, 0x26b, 0x2c3, 0x31b, 0x373, 0x3cb, 0x423, 0x47b, 0x4d3, 0x52b, 0x583, 0x5db, 0x633, 0x68b, 0x6e3, 0x73b, 0x793, 0x7eb, 0x843, 0x89b, 0x037, 0x08f, 0x0e7, 0x13f, 0x197, 0x1ef, 0x247, 0x29f, 0x2f7, 0x34f, 0x3a7, 0x3ff, 0x457, 0x4af, 0x507, 0x55f],
 ];
 
+const MODE_OFFSET: usize = 0x00F;
+
 /// Returns the source byte for ECC computation at the given offset.
 /// Offset is relative to after the sync header (byte 12).
 /// For Mode 2 sectors, the first 4 bytes (subheader) are masked as zeros.
-const MODE_OFFSET: usize = 0x00F;
-
 #[inline]
 fn ecc_source_byte(sector: &[u8], offset: usize) -> u8 {
     if sector[MODE_OFFSET] == 2 && offset < 4 {
@@ -235,7 +235,6 @@ fn ecc_compute_bytes(sector: &[u8], row: &[u16]) -> (u8, u8) {
 pub fn ecc_verify(sector: &[u8]) -> bool {
     debug_assert!(sector.len() >= SECTOR_SIZE);
 
-    // Verify P bytes
     for byte in 0..ECC_P_NUM_BYTES {
         let (val1, val2) = ecc_compute_bytes(sector, &POFFSETS[byte]);
         if sector[ECC_P_OFFSET + byte] != val1
@@ -245,7 +244,6 @@ pub fn ecc_verify(sector: &[u8]) -> bool {
         }
     }
 
-    // Verify Q bytes
     for byte in 0..ECC_Q_NUM_BYTES {
         let (val1, val2) = ecc_compute_bytes(sector, &QOFFSETS[byte]);
         if sector[ECC_Q_OFFSET + byte] != val1
@@ -269,14 +267,12 @@ pub fn ecc_clear(sector: &mut [u8]) {
 pub fn ecc_generate(sector: &mut [u8]) {
     debug_assert!(sector.len() >= SECTOR_SIZE);
 
-    // Generate P bytes
     for byte in 0..ECC_P_NUM_BYTES {
         let (val1, val2) = ecc_compute_bytes(sector, &POFFSETS[byte]);
         sector[ECC_P_OFFSET + byte] = val1;
         sector[ECC_P_OFFSET + ECC_P_NUM_BYTES + byte] = val2;
     }
 
-    // Generate Q bytes
     for byte in 0..ECC_Q_NUM_BYTES {
         let (val1, val2) = ecc_compute_bytes(sector, &QOFFSETS[byte]);
         sector[ECC_Q_OFFSET + byte] = val1;
@@ -289,7 +285,6 @@ pub fn has_valid_ecc(sector: &[u8]) -> bool {
     if sector.len() < SECTOR_SIZE {
         return false;
     }
-    // Check sync header
     if sector[..12] != CD_SYNC_HEADER {
         return false;
     }
@@ -301,9 +296,7 @@ pub fn has_valid_ecc(sector: &[u8]) -> bool {
 /// Does NOT zero EDC (bytes 2064-2067) or the intermediate zero gap.
 pub fn strip_sector_ecc(sector: &mut [u8]) {
     debug_assert!(sector.len() >= SECTOR_SIZE);
-    // Zero sync header (bytes 0-11)
     sector[..12].fill(0);
-    // Zero ECC P and Q parity
     ecc_clear(sector);
 }
 
@@ -311,9 +304,7 @@ pub fn strip_sector_ecc(sector: &mut [u8]) {
 /// Writes back the sync header and regenerates ECC P/Q parity bytes.
 pub fn restore_sector_ecc(sector: &mut [u8]) {
     debug_assert!(sector.len() >= SECTOR_SIZE);
-    // Restore sync header
     sector[..12].copy_from_slice(&CD_SYNC_HEADER);
-    // Regenerate ECC P and Q parity
     ecc_generate(sector);
 }
 

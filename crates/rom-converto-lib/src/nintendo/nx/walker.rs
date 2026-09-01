@@ -31,7 +31,11 @@ use crate::nintendo::nx::keys::KeySet;
 use crate::nintendo::nx::models::nca::{NcaHeader, initial_ctr_for_offset};
 use crate::util::pread::file_read_exact_at;
 
+/// Backing store an [`NcaWalker`] reads NCA bytes from. Implemented for
+/// `File`; lets tests substitute an in-memory or synthetic source.
 pub trait NcaInput: Send + Sync {
+    /// Fills `buf` from the backing store starting at absolute
+    /// `offset`, failing if fewer bytes than `buf.len()` are available.
     fn read_exact_at(&self, buf: &mut [u8], offset: u64) -> NxResult<()>;
 }
 
@@ -41,6 +45,9 @@ impl NcaInput for File {
     }
 }
 
+/// One present FS section of an NCA: its raw byte range, encryption
+/// flavour, derived AES-128 key, and section CTR base used to compute
+/// the initial counter for any offset within the section.
 #[derive(Debug, Clone)]
 pub struct NcaSection {
     pub index: usize,
@@ -52,6 +59,9 @@ pub struct NcaSection {
     pub section_ctr_high: u32,
 }
 
+/// Opened NCA: its decrypted header plus every present section's
+/// plaintext key, ready for positional decrypted reads via
+/// [`NcaWalker::read_section_plain`].
 pub struct NcaWalker {
     file: Arc<dyn NcaInput>,
     nca_offset: u64,
@@ -62,6 +72,11 @@ pub struct NcaWalker {
 }
 
 impl NcaWalker {
+    /// Reads and XTS-decrypts the NCA header at `nca_offset`, then
+    /// derives the body key for every present section: from the
+    /// bundled `.tik` titlekey (decrypted with `titlekek_<master_idx>`)
+    /// when the NCA is rights-protected, otherwise from the header's
+    /// encrypted key area.
     pub fn open(
         file: Arc<dyn NcaInput>,
         nca_offset: u64,
@@ -126,14 +141,18 @@ impl NcaWalker {
         })
     }
 
+    /// Returns the NCA's absolute start offset within the container.
     pub fn nca_offset(&self) -> u64 {
         self.nca_offset
     }
 
+    /// Returns the NCA's total size in bytes.
     pub fn nca_size(&self) -> u64 {
         self.nca_size
     }
 
+    /// Reads raw (still encrypted where applicable) bytes at an
+    /// absolute offset into the backing file.
     pub fn read_exact_at(&self, buf: &mut [u8], offset: u64) -> NxResult<()> {
         self.file.read_exact_at(buf, offset)
     }
@@ -190,8 +209,6 @@ mod tests {
         header[0x207] = 0; // key_index = Application
         header[0x220] = 1; // key_generation_new (master_key_00)
 
-        // Section 0: starts at 0x4000 sectors=>byte 0x800000? Too big.
-        // Use 0x4000 bytes from start of NCA (sector 0..N).
         let section_start_byte = 0x4000u64;
         let section_size = plaintext_section.len() as u64;
         let section_end_byte = section_start_byte + section_size;

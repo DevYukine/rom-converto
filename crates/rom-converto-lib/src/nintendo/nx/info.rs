@@ -48,6 +48,10 @@ pub struct NxInfo {
     pub full: Option<NxFullInfo>,
 }
 
+/// Container file format for a Switch input.
+///
+/// NSP and XCI are the uncompressed digital-package and cartridge-image
+/// layouts; NSZ and XCZ are their NCZ-compressed counterparts.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum NxContainerKind {
@@ -58,6 +62,10 @@ pub enum NxContainerKind {
     Xcz,
 }
 
+/// Whether a container was distributed digitally or on a cartridge.
+///
+/// Derived directly from [`NxContainerKind`]: XCI/XCZ are cartridge dumps,
+/// NSP/NSZ are digital packages.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum NxDistribution {
@@ -67,6 +75,7 @@ pub enum NxDistribution {
 }
 
 impl NxDistribution {
+    /// Returns the human-readable label for this distribution kind.
     pub fn display_name(self) -> &'static str {
         match self {
             Self::Digital => "Digital",
@@ -90,6 +99,7 @@ pub enum NxStructure {
 }
 
 impl NxStructure {
+    /// Returns the human-readable label for this structure classification.
     pub fn display_name(self) -> &'static str {
         match self {
             Self::Unknown => "Unknown",
@@ -112,6 +122,12 @@ impl From<ContainerKind> for NxContainerKind {
     }
 }
 
+/// One file entry from a container's flat listing.
+///
+/// `partition` names the enclosing HFS0 sub-partition for XCI/XCZ inputs
+/// and is `None` for the flat PFS0 layout of NSP/NSZ. `abs_offset` is the
+/// byte offset of the file's data from the start of the physical input
+/// file, not from the start of its partition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContainerFileSummary {
     pub partition: Option<String>,
@@ -120,6 +136,7 @@ pub struct ContainerFileSummary {
     pub size: u64,
 }
 
+/// Summary of one parsed `.tik` ticket found in the container.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TicketSummary {
     pub file_name: String,
@@ -127,6 +144,7 @@ pub struct TicketSummary {
     pub master_key_revision: u8,
 }
 
+/// Summary of one HFS0 sub-partition inside an XCI/XCZ cartridge image.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct XciPartitionSummary {
     pub name: String,
@@ -154,6 +172,8 @@ pub struct NxFullInfo {
     pub control: Option<NxControl>,
 }
 
+/// Decoded `control.nacp` fields plus the extracted icon, populated once
+/// the Control NCA has been located and successfully decrypted.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct NxControl {
     pub titles: Vec<NxNacpTitle>,
@@ -184,12 +204,17 @@ pub struct NxControl {
     pub icon_language: Option<String>,
 }
 
+/// One entry from the NACP `rating_age` table, decoded to a named rating
+/// organization plus its assigned age. Entries with a negative or `0xFF`
+/// value in the source table are filtered out before this type is built.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgeRatingEntry {
     pub organization: String,
     pub age: i8,
 }
 
+/// One localized title entry from the NACP, giving the display name and
+/// publisher for a single language.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NxNacpTitle {
     pub language: String,
@@ -197,6 +222,8 @@ pub struct NxNacpTitle {
     pub publisher: String,
 }
 
+/// Title kind decoded from a CNMT's content-type byte
+/// (`CNMT_TYPE_*` constants in [`crate::nintendo::nx::models::cnmt`]).
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CnmtTitleKind {
@@ -225,6 +252,7 @@ impl CnmtTitleKind {
         }
     }
 
+    /// Returns the human-readable label for this title kind.
     pub fn display_name(self) -> &'static str {
         match self {
             Self::Application => "Game",
@@ -239,6 +267,8 @@ impl CnmtTitleKind {
     }
 }
 
+/// One content entry from a CNMT's content table: the content ID as hex,
+/// its content type name (meta, program, control, ...), and its size.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CnmtContentSummary {
     pub content_id: String,
@@ -246,6 +276,8 @@ pub struct CnmtContentSummary {
     pub size: u64,
 }
 
+/// A sibling CNMT found alongside the primary title's CNMT in the same
+/// container (e.g. a bundled patch or add-on content).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RelatedTitleSummary {
     pub title_id: u64,

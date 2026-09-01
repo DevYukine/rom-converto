@@ -1,5 +1,8 @@
+//! Error type and result alias for the Playmatch API client.
+
 use thiserror::Error;
 
+/// Errors from the Playmatch API client.
 #[derive(Debug, Error)]
 pub enum DatError {
     #[error(transparent)]
@@ -24,4 +27,5 @@ pub enum DatError {
     Cancelled,
 }
 
+/// Result alias for Playmatch API client operations.
 pub type DatResult<T> = Result<T, DatError>;

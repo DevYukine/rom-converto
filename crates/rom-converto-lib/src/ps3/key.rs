@@ -13,6 +13,7 @@ use crate::ps3::error::{Ps3Error, Ps3Result};
 pub struct Ps3Key(pub [u8; 16]);
 
 impl Ps3Key {
+    /// The raw 16-byte AES-128 key.
     pub fn as_bytes(&self) -> &[u8; 16] {
         &self.0
     }

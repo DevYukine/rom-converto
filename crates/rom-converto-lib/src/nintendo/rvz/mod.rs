@@ -47,6 +47,9 @@ pub use verify::{RvzStructuralVerify, verify_rvz_structure};
 
 use std::path::{Path, PathBuf};
 
+/// Derives an output `.rvz` path from `input`, collapsing NKit's
+/// `.nkit.iso`/`.nkit.gcz` double extension so the result is
+/// `name.rvz` rather than `name.nkit.rvz`.
 pub fn derive_rvz_path(input: &Path) -> PathBuf {
     // Strip NKit's double extension so game.nkit.iso becomes
     // game.rvz instead of game.nkit.rvz.
@@ -59,10 +62,12 @@ pub fn derive_rvz_path(input: &Path) -> PathBuf {
     input.with_extension("rvz")
 }
 
+/// Derives an output `.iso` path from `input` by replacing its extension.
 pub fn derive_disc_path(input: &Path) -> PathBuf {
     input.with_extension("iso")
 }
 
+/// Derives an output `.wbfs` path from `input` by replacing its extension.
 pub fn derive_wbfs_path(input: &Path) -> PathBuf {
     input.with_extension("wbfs")
 }

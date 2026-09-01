@@ -16,6 +16,7 @@ pub const U8_MAGIC: u32 = 0x55AA_382D;
 pub const U8_NODE_SIZE: usize = 12;
 pub const U8_HEADER_SIZE: usize = 0x20;
 
+/// Parsed U8 archive: the node table plus a borrowed view of the underlying bytes for file lookups.
 #[derive(Debug, Clone)]
 pub struct U8Archive<'a> {
     data: &'a [u8],
@@ -32,6 +33,7 @@ struct U8Node {
 }
 
 impl<'a> U8Archive<'a> {
+    /// Parses a U8 archive's header and node table, without copying file payloads.
     pub fn parse(data: &'a [u8]) -> Result<Self> {
         if data.len() < U8_HEADER_SIZE {
             return Err(anyhow!("U8 archive shorter than header"));
@@ -93,6 +95,7 @@ impl<'a> U8Archive<'a> {
         })
     }
 
+    /// Looks up a file by exact slash-separated path, walking the directory tree component by component.
     pub fn find(&self, path: &str) -> Option<&'a [u8]> {
         let components: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
         if components.is_empty() {
@@ -102,6 +105,7 @@ impl<'a> U8Archive<'a> {
         self.find_in_dir(0, total_nodes, &components)
     }
 
+    /// Lists every file in the archive with its full path and payload bytes.
     pub fn list_paths(&self) -> Vec<(String, &'a [u8])> {
         let mut out = Vec::new();
         if self.nodes.is_empty() {

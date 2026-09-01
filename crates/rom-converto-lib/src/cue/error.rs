@@ -2,6 +2,7 @@
 
 use thiserror::Error;
 
+/// Errors from parsing a CUE sheet.
 #[derive(Debug, Error)]
 pub enum CueError {
     /// Wraps an underlying I/O failure.
@@ -37,4 +38,5 @@ pub enum CueError {
     MissingClosingQuote,
 }
 
+/// Result alias for CUE sheet parsing.
 pub type CueResult<T> = Result<T, CueError>;

@@ -186,10 +186,10 @@ pub struct CiaWriteArgs<'a> {
     pub cancel: &'a CancelToken,
 }
 
-/// Writes out the CIA file by streaming content files from disk directly to
-/// the output, avoiding the previous behavior of loading every `.app` into
-/// memory and then serializing a full in-memory CIA. Peak memory is bounded by
-/// the TMD/ticket preamble (a few KB) plus a 4 MB copy buffer.
+/// Writes a CIA, streaming content files from disk straight to the output.
+///
+/// Peak memory is bounded by the TMD/ticket preamble (a few KB) plus a 4 MB
+/// copy buffer.
 pub async fn write_cia(out: &mut BufWriter<File>, args: CiaWriteArgs<'_>) -> anyhow::Result<()> {
     let CiaWriteArgs {
         path,
@@ -320,27 +320,19 @@ pub async fn write_cia(out: &mut BufWriter<File>, args: CiaWriteArgs<'_>) -> any
     Ok(())
 }
 
-/// Reads a certificate chain from the end of a TMD or Ticket file
+/// Reads the certificate chain that trails a TMD or Ticket file.
 async fn read_certificate_chain(file_path: &Path) -> anyhow::Result<Vec<Certificate>> {
     let content = tokio::fs::read(file_path).await?;
     let mut cursor = Cursor::new(&content);
 
-    // First, parse the main structure to find where certificates start
-    let _ = {
-        let start_pos = cursor.position();
-
-        // The file starts with either a TMD or a Ticket; certificates follow.
-        if let Ok(_tmd) = TitleMetadata::read_options(&mut cursor, Endian::Big, ()) {
-            cursor.position()
-        } else {
-            std::io::Seek::seek(&mut cursor, SeekFrom::Start(start_pos))?;
-            if let Ok(_ticket) = Ticket::read_options(&mut cursor, Endian::Big, ()) {
-                cursor.position()
-            } else {
-                return Err(anyhow::anyhow!("file is neither TMD nor ticket"));
-            }
-        }
-    };
+    // The file starts with either a TMD or a Ticket; certificates follow, so
+    // parse the leading structure only to advance the cursor past it.
+    let start_pos = cursor.position();
+    if TitleMetadata::read_options(&mut cursor, Endian::Big, ()).is_err() {
+        std::io::Seek::seek(&mut cursor, SeekFrom::Start(start_pos))?;
+        Ticket::read_options(&mut cursor, Endian::Big, ())
+            .map_err(|_| anyhow::anyhow!("file is neither TMD nor ticket"))?;
+    }
 
     let mut certificates = Vec::new();
 
@@ -371,49 +363,30 @@ async fn read_certificate_chain(file_path: &Path) -> anyhow::Result<Vec<Certific
     Ok(certificates)
 }
 
-/// Merges certificate chains from TMD and Ticket, avoiding duplicates
+/// Merges the TMD and Ticket certificate chains into the CIA cert chain.
 fn merge_certificate_chains(
     tmd_certs: Vec<Certificate>,
     tik_certs: Vec<Certificate>,
 ) -> Vec<Certificate> {
-    let mut merged = Vec::new();
-    let mut seen_names = std::collections::HashSet::new();
-
     fn get_cert_name(cert: &Certificate) -> String {
         String::from_utf8_lossy(&cert.name)
             .trim_end_matches('\0')
             .to_string()
     }
 
-    // CIA cert chain order is CA → XS → CP. CA may live in either source.
-    for cert in tmd_certs.iter().chain(tik_certs.iter()) {
-        let name = get_cert_name(cert);
-        if name.starts_with("CA") && !seen_names.contains(&name) {
-            seen_names.insert(name.clone());
-            merged.push(cert.clone());
-            break;
-        }
-    }
+    // CIA cert chain order is CA, then XS, then CP. CA may live in either source.
+    let ca = tmd_certs
+        .iter()
+        .chain(tik_certs.iter())
+        .find(|c| get_cert_name(c).starts_with("CA"));
+    let xs = tik_certs
+        .iter()
+        .find(|c| get_cert_name(c).starts_with("XS"));
+    let cp = tmd_certs
+        .iter()
+        .find(|c| get_cert_name(c).starts_with("CP"));
 
-    for cert in tik_certs.iter() {
-        let name = get_cert_name(cert);
-        if name.starts_with("XS") && !seen_names.contains(&name) {
-            seen_names.insert(name.clone());
-            merged.push(cert.clone());
-            break;
-        }
-    }
-
-    for cert in tmd_certs.iter() {
-        let name = get_cert_name(cert);
-        if name.starts_with("CP") && !seen_names.contains(&name) {
-            seen_names.insert(name.clone());
-            merged.push(cert.clone());
-            break;
-        }
-    }
-
-    merged
+    ca.into_iter().chain(xs).chain(cp).cloned().collect()
 }
 
 #[cfg(test)]

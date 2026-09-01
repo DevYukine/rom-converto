@@ -39,6 +39,7 @@ pub struct Z3dsHeader {
 }
 
 impl Z3dsHeader {
+    /// Builds a header with the current format version and fixed header size.
     pub fn new(
         underlying_magic: [u8; 4],
         metadata_size: u32,
@@ -65,6 +66,7 @@ pub struct Z3dsMetadataItem {
 }
 
 impl Z3dsMetadataItem {
+    /// Builds a metadata item from a name and raw data.
     pub fn new(name: impl Into<String>, data: impl Into<Vec<u8>>) -> Self {
         Self {
             name: name.into(),
@@ -72,6 +74,7 @@ impl Z3dsMetadataItem {
         }
     }
 
+    /// Builds a metadata item from a name and a UTF-8 string value.
     pub fn new_str(name: impl Into<String>, value: &str) -> Self {
         Self::new(name, value.as_bytes().to_vec())
     }
@@ -84,6 +87,7 @@ pub struct Z3dsMetadata {
 }
 
 impl Z3dsMetadata {
+    /// Builds a metadata block from a list of items.
     pub fn new(items: Vec<Z3dsMetadataItem>) -> Self {
         Self { items }
     }

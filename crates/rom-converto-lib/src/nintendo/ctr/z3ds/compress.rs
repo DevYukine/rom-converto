@@ -57,6 +57,13 @@ const _: () = assert!(
     "ENCRYPTION_PROBE_SIZE too small for high-MU NCSD partitions",
 );
 
+/// Compresses `input` into a Z3DS container at `output`.
+///
+/// # Errors
+///
+/// Returns [`Z3dsError::InputNotDecrypted`] or
+/// [`Z3dsError::EncryptionStateUnknown`] if `input` looks encrypted and
+/// `allow_encrypted` is false.
 pub async fn compress_rom(
     input: &Path,
     output: &Path,
@@ -75,8 +82,6 @@ pub async fn compress_rom(
     .await
 }
 
-/// A sibling temp path so an interrupted write never lands on the final
-/// name.
 /// Like [`compress_rom`] but observes `cancel` at every frame boundary;
 /// on cancel the partial output is removed.
 pub async fn compress_rom_cancellable(
@@ -166,7 +171,6 @@ pub async fn compress_rom_cancellable(
     let input_owned = input.to_path_buf();
     let write_owned = write_path.to_path_buf();
     let cancel_bg = cancel.clone();
-    let metadata_bytes_owned = metadata_bytes;
 
     let handle = task::spawn_blocking(move || -> Z3dsResult<(u64, u64)> {
         // std::fs (not tokio) lets the reader and writer hand off directly to zstd.
@@ -180,11 +184,10 @@ pub async fn compress_rom_cancellable(
         // seeking back to offset 0 once compressed_size is known.
         let placeholder_header = vec![0u8; Z3DS_HEADER_SIZE as usize];
         writer.write_all(&placeholder_header)?;
-        writer.write_all(&metadata_bytes_owned)?;
+        writer.write_all(&metadata_bytes)?;
 
-        // Spawn a worker pool with one persistent zstd encoder per
-        // thread. The pool is torn down at the end of this closure
-        // so its lifetime is bounded by one compress invocation.
+        // One persistent zstd encoder per thread, torn down at the end of this
+        // closure so the pool's lifetime is bounded by one compress invocation.
         let n_threads = parallelism();
         let workers = make_z3ds_compress_workers(n_threads, zstd_level)?;
         let pool: Pool<Z3dsCompressWork, Z3dsCompressedFrame, Z3dsError> = Pool::spawn(workers);
@@ -265,11 +268,13 @@ pub(crate) fn check_not_encrypted(data: &[u8], ext: &str) -> Z3dsResult<()> {
     }
 }
 
-/// NCCH header flags are at offset 0x100 (signature) + 0x188 = 0x188 from the
-/// start of the NCCH block. Bit 2 of flags[7] being set means NoCrypto.
-/// If that bit is clear the partition is encrypted. When the header cannot be
-/// read or the NCCH magic is absent, the crypto state is unknown and the check
-/// fails safe rather than letting a possibly encrypted ROM through.
+/// Returns an error unless the NCCH at `ncch_offset` is marked NoCrypto.
+///
+/// The header body follows the 0x100-byte signature, putting flags at 0x188
+/// from the start of the NCCH block. Bit 2 of flags[7] set means NoCrypto; if
+/// it is clear the partition is encrypted. When the header cannot be read or
+/// the NCCH magic is absent the crypto state is unknown, and the check fails
+/// safe rather than letting a possibly encrypted ROM through.
 pub(crate) fn check_ncch_not_encrypted(data: &[u8], ncch_offset: usize) -> Z3dsResult<()> {
     let magic_start = ncch_offset + NCCH_MAGIC_OFFSET;
     if data.len() < magic_start + 4 {
@@ -290,8 +295,10 @@ pub(crate) fn check_ncch_not_encrypted(data: &[u8], ncch_offset: usize) -> Z3dsR
     Ok(())
 }
 
-/// NCSD header at offset 0x100 contains the NCCH header for partition 0.
-/// The first partition starts right after the NCSD header at offset 0x4000 by default.
+/// Returns an error unless partition 0 of the NCSD is marked NoCrypto.
+///
+/// NCSD magic sits at 0x100. Partition 0's offset comes from the partition
+/// table at 0x120, in media units (0x4000 bytes in for a default layout).
 pub(crate) fn check_ncsd_not_encrypted(data: &[u8]) -> Z3dsResult<()> {
     let magic_end = NCCH_MAGIC_OFFSET + 4;
     if data.len() < magic_end || data[NCCH_MAGIC_OFFSET..magic_end] != underlying_magic::NCSD {

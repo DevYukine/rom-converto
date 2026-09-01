@@ -105,14 +105,17 @@ pub struct RvzGroup {
 impl RvzGroup {
     const COMPRESSED_FLAG: u32 = 1 << 31;
 
+    /// True if the group's stored data is zstd-compressed, from bit 31 of `data_size`.
     pub fn is_compressed(&self) -> bool {
         self.data_size & Self::COMPRESSED_FLAG != 0
     }
 
+    /// The stored size in bytes, with the compressed flag bit masked off.
     pub fn compressed_size(&self) -> u32 {
         self.data_size & !Self::COMPRESSED_FLAG
     }
 
+    /// Builds a group descriptor for a zstd-compressed chunk.
     pub fn new_compressed(data_off4: u32, compressed_size: u32, rvz_packed_size: u32) -> Self {
         Self {
             data_off4,
@@ -121,6 +124,7 @@ impl RvzGroup {
         }
     }
 
+    /// Builds a group descriptor for a chunk stored without compression.
     pub fn new_uncompressed(data_off4: u32, size: u32) -> Self {
         Self {
             data_off4,

@@ -16,11 +16,13 @@ use sha1::{Digest, Sha1};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
+/// Options for [`verify_dol`].
 #[derive(Debug, Clone, Default)]
 pub struct DolVerifyOptions {
     pub full: bool,
 }
 
+/// Result of verifying a GameCube disc image.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DolVerifyResult {
     pub game_id: String,
@@ -33,6 +35,8 @@ pub struct DolVerifyResult {
     pub ok: bool,
 }
 
+/// FST geometry checked by the `--full` pass, plus any notes about what
+/// was found.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DolStructuralReport {
     pub fst_offset: u32,
@@ -41,6 +45,8 @@ pub struct DolStructuralReport {
     pub notes: Vec<String>,
 }
 
+/// Verifies a GameCube disc image at `path`. See the module docs for
+/// what fast mode and `--full` each check.
 pub fn verify_dol(
     path: &Path,
     options: &DolVerifyOptions,
@@ -49,6 +55,7 @@ pub fn verify_dol(
     verify_dol_cancellable(path, options, progress, &CancelToken::new())
 }
 
+/// Like [`verify_dol`] but observes `cancel` between stages.
 pub fn verify_dol_cancellable(
     path: &Path,
     options: &DolVerifyOptions,

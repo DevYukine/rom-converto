@@ -1,3 +1,5 @@
+//! Shared HTTP client for outbound requests (DAT downloads, update checks).
+
 use std::sync::LazyLock;
 use std::time::Duration;
 
@@ -6,6 +8,8 @@ use std::time::Duration;
 // segment is emitted.
 pub const USER_AGENT: &str = concat!("rom-converto/", env!("CARGO_PKG_VERSION"));
 
+/// Shared `reqwest` client: the crate's user agent, a 30s request timeout,
+/// and a 10s connect timeout.
 pub static CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
     reqwest::Client::builder()
         .user_agent(USER_AGENT)

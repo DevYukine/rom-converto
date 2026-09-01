@@ -34,6 +34,9 @@ const WUX_HEADER_SIZE: u64 = 0x20;
 /// entries is a big win over re-reading from disk.
 const CACHE_CAPACITY: usize = 4;
 
+/// Reads a WUX container as a sequence of logical disc sectors,
+/// resolving each through the index table and an LRU of decoded
+/// physical sectors.
 pub struct WuxReader {
     file: BufReader<File>,
     logical_sector_count: u64,
@@ -53,6 +56,12 @@ struct CacheEntry {
 }
 
 impl WuxReader {
+    /// Opens and validates a WUX file: magic, sector/size alignment,
+    /// index table, and that every index lands inside the physical pool.
+    ///
+    /// # Errors
+    /// Returns [`WupError::UnsupportedDiscFormat`] for a bad magic or
+    /// sector size, or [`WupError::DiscTruncated`] for size mismatches.
     pub fn open<P: AsRef<Path>>(path: P) -> WupResult<Self> {
         let f = File::open(path.as_ref())?;
         let file_len = f.metadata()?.len();

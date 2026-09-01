@@ -28,6 +28,7 @@ pub const SMDH_LARGE_ICON_DIM: u32 = 48;
 
 pub const SMDH_LANGUAGE_COUNT: usize = 16;
 
+/// Language slot in the SMDH title table, in on-disk order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum SmdhLanguage {
@@ -62,6 +63,7 @@ impl SmdhLanguage {
     ];
 }
 
+/// Region slot in the SMDH age-rating block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgeRatingRegion {
     Cero = 0,
@@ -89,6 +91,8 @@ impl AgeRatingRegion {
     ];
 }
 
+/// A parsed SMDH: title table, region lock, flags, age ratings, and both
+/// icon sizes as raw RGB565 Morton-tiled bytes.
 #[derive(Debug, Clone)]
 pub struct Smdh {
     pub titles: Vec<SmdhTitle>,
@@ -101,6 +105,7 @@ pub struct Smdh {
     pub large_icon: Vec<u8>,
 }
 
+/// One language's title strings from an SMDH.
 #[derive(Debug, Clone)]
 pub struct SmdhTitle {
     pub language: SmdhLanguage,
@@ -109,6 +114,7 @@ pub struct SmdhTitle {
     pub publisher: String,
 }
 
+/// A decoded age rating for one region, from [`Smdh::enabled_age_ratings`].
 #[derive(Debug, Clone, Copy)]
 pub struct AgeRating {
     pub region: AgeRatingRegion,
@@ -120,6 +126,12 @@ pub struct AgeRating {
 }
 
 impl Smdh {
+    /// Parses an SMDH from `buf`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `buf` is shorter than [`SMDH_TOTAL_SIZE`] or does
+    /// not start with the SMDH magic.
     pub fn parse(buf: &[u8]) -> Result<Self> {
         if buf.len() < SMDH_TOTAL_SIZE {
             return Err(anyhow!(
@@ -180,6 +192,8 @@ impl Smdh {
         })
     }
 
+    /// Returns the age ratings whose "enabled" bit is set, decoded from the
+    /// raw age-rating bytes.
     pub fn enabled_age_ratings(&self) -> Vec<AgeRating> {
         AgeRatingRegion::ALL
             .iter()

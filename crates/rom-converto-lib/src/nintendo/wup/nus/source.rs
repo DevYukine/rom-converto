@@ -23,6 +23,9 @@ use crate::nintendo::wup::title_key_derive::derive_title_key;
 
 const FST_INITIAL_PROBE: usize = 4 * 1024 * 1024;
 
+/// [`MetaSource`] backed by a NUS-layout title directory, decrypting
+/// each requested file's byte range on demand instead of extracting
+/// the whole title up front.
 pub struct NusSource {
     layout: NusLayout,
     title_key: TitleKey,
@@ -31,6 +34,12 @@ pub struct NusSource {
 }
 
 impl NusSource {
+    /// Opens `dir`, reading its TMD and resolving the title key from
+    /// the on-disk ticket or by derivation.
+    ///
+    /// # Errors
+    /// Returns an error if `dir` is not a recognized NUS layout, the
+    /// TMD cannot be parsed, or the ticket cannot be read.
     pub fn open(dir: &Path) -> Result<Self> {
         let layout = NusLayout::discover(dir).map_err(|e| anyhow!("nus layout: {}", e))?;
         let tmd = read_tmd_file(&layout.tmd_path).map_err(|e| anyhow!("read tmd: {}", e))?;
@@ -50,6 +59,7 @@ impl NusSource {
         })
     }
 
+    /// The title's parsed TMD.
     pub fn tmd(&self) -> &WupTmd {
         &self.tmd
     }

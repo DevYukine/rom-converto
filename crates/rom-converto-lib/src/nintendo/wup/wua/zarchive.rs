@@ -22,6 +22,9 @@ use crate::nintendo::wup::models::file_tree::FileDirectoryEntry;
 use crate::nintendo::wup::models::footer::ZArchiveFooter;
 use crate::nintendo::wup::models::offset_record::CompressionOffsetRecord;
 
+/// Read-only handle onto one `.wua` file. Holds the parsed index
+/// sections (names, file tree, offset records) in memory; file data
+/// is decompressed on demand from the still-open backing file.
 pub struct ZArchiveReader {
     file: File,
     names: Vec<u8>,
@@ -32,6 +35,13 @@ pub struct ZArchiveReader {
 }
 
 impl ZArchiveReader {
+    /// Opens `path`, parses its footer and index sections, and
+    /// builds a directory-to-children lookup for traversal.
+    ///
+    /// # Errors
+    /// Returns [`WupError::InvalidZArchive`] if the file is too short,
+    /// its footer magic/version don't match, its recorded total size
+    /// disagrees with the file length, or any index section fails to parse.
     pub fn open(path: &Path) -> WupResult<Self> {
         let mut file = File::open(path)?;
         let total = file.metadata()?.len();
@@ -116,6 +126,7 @@ impl ZArchiveReader {
         })
     }
 
+    /// Names of every entry directly under the archive root.
     pub fn top_level_names(&self) -> Vec<String> {
         let Some(root_children) = self.children_by_dir.get(&0) else {
             return Vec::new();
@@ -129,6 +140,9 @@ impl ZArchiveReader {
             .collect()
     }
 
+    /// Names of the files directly inside `dir_path` (not recursive,
+    /// and excludes subdirectories). Returns an empty list if the
+    /// path is missing or names a file.
     pub fn list_files_in_dir(&self, dir_path: &str) -> Vec<String> {
         let idx = match self.resolve(dir_path) {
             Some(i) => i,
@@ -152,6 +166,9 @@ impl ZArchiveReader {
             .collect()
     }
 
+    /// Recursively lists every file under `dir_path`, as paths
+    /// relative to `dir_path` joined with `/`. Returns an empty list
+    /// if the path is missing or names a file.
     pub fn walk_files(&self, dir_path: &str) -> Vec<String> {
         let Some(root_idx) = self.resolve(dir_path) else {
             return Vec::new();
@@ -190,12 +207,18 @@ impl ZArchiveReader {
         out
     }
 
+    /// True if `path` resolves to an existing file entry.
     pub fn has_file(&self, path: &str) -> bool {
         self.resolve(path)
             .map(|idx| self.entries[idx as usize].is_file())
             .unwrap_or(false)
     }
 
+    /// Reads and decompresses the full contents of the file at `path`.
+    ///
+    /// # Errors
+    /// Returns [`WupError::InvalidZArchive`] if `path` does not exist
+    /// or names a directory.
     pub fn read_file(&mut self, path: &str) -> WupResult<Vec<u8>> {
         let idx = self
             .resolve(path)

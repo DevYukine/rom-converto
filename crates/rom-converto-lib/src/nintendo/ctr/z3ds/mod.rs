@@ -8,7 +8,9 @@ mod compress;
 mod compress_worker;
 mod decompress;
 mod decompress_worker;
+/// Error type for Z3DS compression and decompression.
 pub mod error;
+/// Z3DS container header and metadata block layouts.
 pub mod models;
 mod seekable;
 
@@ -64,6 +66,8 @@ pub fn derive_decompressed_path(input: &Path) -> PathBuf {
     map_extension(input, DECOMPRESS_MAP, "3ds")
 }
 
+/// Compresses every supported ROM file (`.cia`, `.cci`, `.3ds`, `.cxi`,
+/// `.3dsx`) found under `input_dir` into Z3DS containers.
 pub async fn compress_rom_batch(
     input_dir: &Path,
     level: Option<i32>,
@@ -114,6 +118,8 @@ pub async fn compress_rom_batch(
     Ok(())
 }
 
+/// Decompresses every supported Z3DS file (`.zcia`, `.zcci`, `.zcxi`,
+/// `.z3dsx`) found under `input_dir`.
 pub async fn decompress_rom_batch(
     input_dir: &Path,
     output_dir: Option<&Path>,

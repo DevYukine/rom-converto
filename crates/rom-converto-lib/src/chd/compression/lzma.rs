@@ -1,3 +1,6 @@
+//! LZMA hunk compression for the CHD `lzma` codec, via a persistent
+//! encoder handle matching chdman's `configure_properties` approach.
+
 use crate::chd::error::ChdResult;
 use lzma_sdk_sys::*;
 use std::io;

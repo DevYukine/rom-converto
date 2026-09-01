@@ -101,6 +101,8 @@ pub fn read_exefs_section(
     Ok(decrypted[start..end].to_vec())
 }
 
+/// Decrypts and returns the `icon` ExeFS section (the SMDH) from
+/// `exefs_encrypted`.
 pub fn read_icon_section(header: &NcchHeader, exefs_encrypted: &[u8]) -> Result<Vec<u8>> {
     read_exefs_section(header, exefs_encrypted, &EXEFS_SECTION_ICON)
 }

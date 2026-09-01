@@ -1,7 +1,11 @@
+//! Plans canonical renames of matched files to their DAT `fileName`, with
+//! filesystem sanitization and collision/disc-set guards.
+
 use crate::playlist::{group_disc_files, parse_disc_token};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+/// A local file plus its resolved DAT match, as input to [`plan_renames`].
 #[derive(Debug, Clone)]
 pub struct RenameCandidate {
     pub path: PathBuf,
@@ -11,6 +15,7 @@ pub struct RenameCandidate {
     pub verified: bool,
 }
 
+/// Outcome of planning a rename for one candidate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RenameAction {
     Rename,
@@ -21,6 +26,7 @@ pub enum RenameAction {
     SkipDiscSetConflict,
 }
 
+/// Planned rename (or skip) for one candidate, with the reason when skipped.
 #[derive(Debug, Clone)]
 pub struct RenamePlan {
     pub from: PathBuf,

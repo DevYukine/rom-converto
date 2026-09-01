@@ -17,6 +17,9 @@ use crate::nintendo::rvz::decompress::RvzDiscReader;
 use crate::nintendo::wbfs::WbfsReader;
 use crate::nintendo::wia::WiaReader;
 
+/// A disc image source that abstracts over the container format, so
+/// callers can read a plain byte stream regardless of whether the file
+/// is an ISO, RVZ, WBFS, GCZ, WIA, or NKit container.
 pub enum DiscInput {
     File(BufReader<File>),
     Rvz(Box<RvzDiscReader>),
@@ -27,6 +30,7 @@ pub enum DiscInput {
 }
 
 impl DiscInput {
+    /// Name of the underlying container format, for display in info and verify output.
     pub fn container_name(&self) -> &'static str {
         match self {
             Self::File(_) => "ISO",
@@ -38,6 +42,7 @@ impl DiscInput {
         }
     }
 
+    /// Size of the logical (decompressed) disc image in bytes.
     pub fn iso_size(&mut self) -> Result<u64> {
         match self {
             Self::File(r) => {
@@ -81,6 +86,8 @@ impl Seek for DiscInput {
     }
 }
 
+/// Opens `path` as a disc image, detecting the container format from its
+/// extension or magic bytes and falling back to a plain file otherwise.
 pub fn open_disc_input(path: &Path) -> Result<DiscInput> {
     let ext = path
         .extension()

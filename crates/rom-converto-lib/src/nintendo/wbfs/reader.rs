@@ -30,6 +30,8 @@ struct Part {
     len: u64,
 }
 
+/// `Read + Seek` view over a (possibly split) WBFS container that
+/// reconstructs the logical disc from its `wlba` block table.
 pub struct WbfsReader {
     parts: Vec<Part>,
     wbfs_sec_sz: u64,
@@ -39,6 +41,12 @@ pub struct WbfsReader {
 }
 
 impl WbfsReader {
+    /// Opens the WBFS container at `path`, plus any `.wbf1` .. `.wbf9`
+    /// split siblings, and reads the single disc's slot and block table.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`WbfsError::NoDiscs`] if no slot in the table is used.
     pub fn open(path: &Path) -> WbfsResult<Self> {
         let mut parts = open_parts(path)?;
 
@@ -105,6 +113,8 @@ impl WbfsReader {
         })
     }
 
+    /// Size of the logical disc image in bytes, reconstructed from the
+    /// disc header and the highest used block in the `wlba` table.
     pub fn disc_size(&self) -> u64 {
         self.disc_size
     }

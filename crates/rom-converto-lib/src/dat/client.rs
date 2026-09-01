@@ -1,3 +1,6 @@
+//! HTTP client for the Playmatch API: paginated listing, single and bulk
+//! file identification, and retry/backoff handling.
+
 use crate::dat::error::{DatError, DatResult};
 use crate::dat::model::*;
 use crate::util::http::CLIENT;
@@ -15,11 +18,13 @@ const PAGE_LIMIT: u64 = 50;
 const MAX_PAGES: usize = 10_000;
 const MAX_RETRIES: u32 = 5;
 
+/// HTTP client for the Playmatch DAT-matching API.
 pub struct PlaymatchClient {
     base: String,
     http: &'static reqwest::Client,
 }
 
+/// Query filters for [`PlaymatchClient::list_dat_files`].
 #[derive(Debug, Clone, Default)]
 pub struct DatFileFilter {
     pub platform_id: Option<String>,
@@ -30,6 +35,7 @@ pub struct DatFileFilter {
 }
 
 impl PlaymatchClient {
+    /// Creates a client targeting `api_base`, or [`DEFAULT_API_BASE`] when `None`.
     pub fn new(api_base: Option<&str>) -> Self {
         let base = api_base
             .unwrap_or(DEFAULT_API_BASE)
@@ -171,6 +177,8 @@ fn jitter_ms() -> u64 {
 // cost is measured on real serialization of each item plus one byte for the
 // array comma/bracket framing, so the flattened `fileSize` number is counted as
 // it goes over the wire.
+/// Splits `items` into chunks obeying both [`BULK_MAX_ITEMS`] and
+/// [`BULK_MAX_BODY_BYTES`], preserving order.
 pub fn chunk_bulk_items(items: Vec<BulkIdentifyItem>) -> DatResult<Vec<Vec<BulkIdentifyItem>>> {
     let mut chunks: Vec<Vec<BulkIdentifyItem>> = Vec::new();
     let mut current: Vec<BulkIdentifyItem> = Vec::new();
@@ -210,6 +218,8 @@ fn item_serialized_len(item: &BulkIdentifyItem) -> DatResult<usize> {
 }
 
 impl PlaymatchClient {
+    /// Looks up a single file by [`GameFileMatchSearch`] and returns its
+    /// Playmatch match type and id.
     pub async fn identify_ids(
         &self,
         q: &GameFileMatchSearch,
@@ -219,6 +229,8 @@ impl PlaymatchClient {
         self.send_json(req, cancel).await
     }
 
+    /// Looks up a single file and returns its full game, platform, company,
+    /// and DAT file relations.
     pub async fn identify_relations(
         &self,
         q: &GameFileMatchSearch,
@@ -228,6 +240,8 @@ impl PlaymatchClient {
         self.send_json(req, cancel).await
     }
 
+    /// Looks up multiple files in one or more chunked bulk requests,
+    /// returning match ids only.
     pub async fn identify_bulk_ids(
         &self,
         items: Vec<BulkIdentifyItem>,
@@ -244,6 +258,8 @@ impl PlaymatchClient {
         .await
     }
 
+    /// Looks up multiple files in one or more chunked bulk requests,
+    /// returning full relations.
     pub async fn identify_bulk_relations(
         &self,
         items: Vec<BulkIdentifyItem>,
@@ -378,6 +394,8 @@ impl PlaymatchClient {
             .collect()
     }
 
+    /// Fetches metadata for the given game ids, batched in
+    /// [`BULK_MAX_ITEMS`]-sized requests.
     pub async fn games_bulk(
         &self,
         ids: Vec<String>,
@@ -445,6 +463,7 @@ impl PlaymatchClient {
         Err(DatError::Truncated(MAX_PAGES))
     }
 
+    /// Lists DAT files matching `filter`, paginating through the full result set.
     pub async fn list_dat_files(
         &self,
         filter: &DatFileFilter,
@@ -469,6 +488,8 @@ impl PlaymatchClient {
         self.paginate("/dat-files", &query, None, cancel).await
     }
 
+    /// Lists all current games (and their files, if `include_files`) in
+    /// `dat_file_id`, paginating through the full result set.
     pub async fn dat_file_games(
         &self,
         dat_file_id: &str,
@@ -485,6 +506,7 @@ impl PlaymatchClient {
             .await
     }
 
+    /// Searches platforms by name.
     pub async fn platforms_search(
         &self,
         query: &str,
@@ -494,6 +516,7 @@ impl PlaymatchClient {
         self.paginate("/platforms/search", &q, None, cancel).await
     }
 
+    /// Lists all platforms.
     pub async fn platforms(
         &self,
         cancel: &CancelToken,

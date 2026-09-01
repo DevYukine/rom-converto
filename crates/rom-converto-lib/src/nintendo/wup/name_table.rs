@@ -24,6 +24,7 @@ pub struct NameTableBuilder {
 }
 
 impl NameTableBuilder {
+    /// Builds an empty name table.
     pub fn new() -> Self {
         Self::default()
     }

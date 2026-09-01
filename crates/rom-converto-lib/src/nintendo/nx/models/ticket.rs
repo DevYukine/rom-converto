@@ -7,6 +7,10 @@
 
 use crate::nintendo::nx::error::{NxError, NxResult};
 
+/// Fields extracted from a Switch `.tik` needed for NCA title-key
+/// decryption: `rights_id` (matches the NCA header's `rights_id` at
+/// offset 0x230), the still-encrypted `encrypted_title_key`, and
+/// `master_key_revision` used to pick the right `titlekek_xx`.
 #[derive(Debug, Clone)]
 pub struct Ticket {
     pub rights_id: [u8; 16],
@@ -15,6 +19,16 @@ pub struct Ticket {
 }
 
 impl Ticket {
+    /// Parses a raw ticket buffer: reads the signature type to compute
+    /// the fixed signature size and the resulting 0x40-aligned ticket
+    /// data offset, then reads the title key, master key revision, and
+    /// rights id from fixed offsets within that data block.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NxError::InvalidTicket`] if `buf` is too short, or if
+    /// the signature type isn't one of the recognized RSA/ECDSA/HMAC
+    /// IDs.
     pub fn parse(buf: &[u8]) -> NxResult<Self> {
         if buf.len() < 4 {
             return Err(NxError::InvalidTicket);

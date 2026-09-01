@@ -132,6 +132,7 @@ impl From<crate::util::worker_pool::PoolChannelClosed> for ZarError {
     }
 }
 
+/// Convenience alias for a [`Result`] with [`ZarError`].
 pub type ZarResult<T> = Result<T, ZarError>;
 
 /// One `{offset, size}` pair from the footer.
@@ -290,6 +291,7 @@ impl FileDirectoryEntry {
         }
     }
 
+    /// True if this node is a file; false if it is a directory.
     pub fn is_file(&self) -> bool {
         self.name_offset_and_type_flag & 0x8000_0000 != 0
     }
@@ -304,6 +306,7 @@ impl FileDirectoryEntry {
         self.word1 as u64 | ((self.word3 as u64 & 0xFFFF) << 32)
     }
 
+    /// The file's logical size in bytes.
     pub fn file_size(&self) -> u64 {
         self.word2 as u64 | ((self.word3 as u64 & 0xFFFF_0000) << 16)
     }

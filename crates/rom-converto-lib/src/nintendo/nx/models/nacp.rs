@@ -68,6 +68,8 @@ impl NacpLanguage {
         Self::BrazilianPortuguese,
     ];
 
+    /// Returns the icon asset file name for this language slot inside
+    /// the control archive, e.g. `icon_AmericanEnglish.dat`.
     pub fn icon_file_name(self) -> &'static str {
         match self {
             Self::AmericanEnglish => "icon_AmericanEnglish.dat",
@@ -90,6 +92,9 @@ impl NacpLanguage {
     }
 }
 
+/// Parsed `control.nacp`: the populated per-language titles plus the
+/// fixed-offset fields that follow the 0x3000-byte title table (see
+/// the `NACP_OFFSET_*` constants).
 #[derive(Debug, Clone)]
 pub struct Nacp {
     pub titles: Vec<NacpTitle>,
@@ -110,6 +115,9 @@ pub struct Nacp {
     pub screen_orientation: u8,
 }
 
+/// One populated `ApplicationTitle` slot: language plus its
+/// NUL-terminated name (up to `NACP_NAME_SIZE` bytes) and publisher
+/// (up to `NACP_PUBLISHER_SIZE` bytes).
 #[derive(Debug, Clone)]
 pub struct NacpTitle {
     pub language: NacpLanguage,
@@ -118,6 +126,15 @@ pub struct NacpTitle {
 }
 
 impl Nacp {
+    /// Parses a `control.nacp` buffer: walks the 16 fixed-size
+    /// `ApplicationTitle` slots, skipping any whose name and publisher
+    /// are both empty, then reads the remaining fields at their fixed
+    /// offsets.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `buf` is shorter than the fixed 0x4000-byte
+    /// NACP size.
     pub fn parse(buf: &[u8]) -> NxResult<Self> {
         if buf.len() < 0x4000 {
             return Err(NxError::InvalidNcaHeader);

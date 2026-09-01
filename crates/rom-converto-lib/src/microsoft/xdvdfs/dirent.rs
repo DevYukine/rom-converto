@@ -48,6 +48,7 @@ pub struct DirEntry {
 }
 
 impl DirEntry {
+    /// True if this entry's attributes mark it as a directory.
     pub fn is_directory(&self) -> bool {
         self.attributes & ATTR_DIRECTORY != 0
     }

@@ -35,6 +35,7 @@ pub struct ContentFilenameResolver {
 }
 
 impl ContentFilenameResolver {
+    /// Builds a resolver rooted at `root`.
     pub fn new<P: Into<PathBuf>>(root: P) -> Self {
         Self { root: root.into() }
     }

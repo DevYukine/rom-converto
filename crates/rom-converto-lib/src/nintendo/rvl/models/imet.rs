@@ -16,6 +16,7 @@ pub const IMET_NAME_CHARS: usize = 0x54;
 pub const IMET_NAME_BYTES: usize = IMET_NAME_CHARS * 2;
 pub const IMET_TOTAL_NAMES_BYTES: usize = IMET_NAME_LANG_COUNT * IMET_NAME_BYTES;
 
+/// A localized name slot in the IMET header, in on-disc order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImetLanguage {
     Japanese,
@@ -39,6 +40,7 @@ impl ImetLanguage {
     ];
 }
 
+/// Parsed IMET header: the icon/banner/sound stream sizes plus the localized titles found.
 #[derive(Debug, Clone)]
 pub struct ImetHeader {
     pub icon_size: u32,
@@ -47,6 +49,7 @@ pub struct ImetHeader {
     pub names: Vec<ImetName>,
 }
 
+/// One localized title decoded from the IMET name table.
 #[derive(Debug, Clone)]
 pub struct ImetName {
     pub language: ImetLanguage,
@@ -54,6 +57,7 @@ pub struct ImetName {
 }
 
 impl ImetHeader {
+    /// Parses the IMET header at [`IMET_HEADER_OFFSET`], decoding every non-empty localized name.
     pub fn parse(buf: &[u8]) -> Result<Self> {
         if buf.len() < IMET_NAMES_OFFSET + IMET_TOTAL_NAMES_BYTES {
             return Err(anyhow!("IMET header truncated"));

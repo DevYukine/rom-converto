@@ -36,6 +36,7 @@ use crate::nintendo::nx::walker::NcaWalker;
 use crate::util::pread::file_read_exact_at;
 use crate::util::{CancelToken, ProgressReporter, await_with_progress_cancel, scratch_output_path};
 
+/// Compression settings for turning an NSP/XCI into an NSZ/XCZ.
 #[derive(Debug, Clone, Copy)]
 pub struct NxCompressOptions {
     pub level: i32,
@@ -68,6 +69,12 @@ impl NxCompressOptions {
         }
     }
 
+    /// Checks that `level` and, for block mode, `size_exp` fall within
+    /// their supported ranges.
+    ///
+    /// # Errors
+    /// Returns [`NxError::InvalidCompressionLevel`] or
+    /// [`NxError::BlockSizeOutOfRange`] when a value is out of range.
     pub fn validate(self) -> NxResult<Self> {
         if !(MIN_ZSTD_LEVEL..=MAX_ZSTD_LEVEL).contains(&self.level) {
             return Err(NxError::InvalidCompressionLevel {
@@ -85,6 +92,12 @@ impl NxCompressOptions {
     }
 }
 
+/// Compresses an NSP or XCI container into NSZ/XCZ, dispatching to
+/// [`compress_pfs0`] or [`compress_xci`] based on the detected kind.
+///
+/// # Errors
+/// Fails if `input` is not an uncompressed NSP/XCI, if `opts` is
+/// invalid, or on the underlying I/O or NCA-parsing errors.
 pub fn compress_container(
     input: &Path,
     output: &Path,
@@ -105,6 +118,11 @@ pub fn compress_container(
     }
 }
 
+/// Async wrapper around [`compress_container`] that runs the blocking
+/// work on a `spawn_blocking` task and cannot be cancelled.
+///
+/// # Errors
+/// See [`compress_container`].
 pub async fn compress_container_async(
     input: PathBuf,
     output: PathBuf,
@@ -632,7 +650,7 @@ fn load_tickets_from_xci(
 
 fn renamed_to_compressed(name: &str) -> String {
     let lower = name.to_ascii_lowercase();
-    if let Some(stripped) = name.strip_suffix_inplace_ignore_case(".cnmt.nca") {
+    if let Some(stripped) = strip_suffix_ignore_case(name, ".cnmt.nca") {
         return format!("{stripped}.cnmt.ncz");
     }
     if lower.ends_with(".nca") {
@@ -642,21 +660,14 @@ fn renamed_to_compressed(name: &str) -> String {
     name.to_string()
 }
 
-trait StripSuffixIgnoreCase {
-    fn strip_suffix_inplace_ignore_case(&self, suffix: &str) -> Option<&str>;
-}
-
-impl StripSuffixIgnoreCase for str {
-    fn strip_suffix_inplace_ignore_case(&self, suffix: &str) -> Option<&str> {
-        if self.len() >= suffix.len() {
-            let split = self.len() - suffix.len();
-            let tail = &self[split..];
-            if tail.eq_ignore_ascii_case(suffix) {
-                return Some(&self[..split]);
-            }
+fn strip_suffix_ignore_case<'a>(s: &'a str, suffix: &str) -> Option<&'a str> {
+    if s.len() >= suffix.len() {
+        let split = s.len() - suffix.len();
+        if s[split..].eq_ignore_ascii_case(suffix) {
+            return Some(&s[..split]);
         }
-        None
     }
+    None
 }
 
 fn copy_range<W: Write>(file: &File, abs_offset: u64, size: u64, out: &mut W) -> NxResult<u64> {

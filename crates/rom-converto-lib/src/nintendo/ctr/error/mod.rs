@@ -2,6 +2,7 @@ use crate::util::worker_pool::PoolChannelClosed;
 use std::path::PathBuf;
 use thiserror::Error;
 
+/// Errors from CTR (3DS) container parsing, decryption, and conversion.
 #[derive(Error, Debug)]
 pub enum NintendoCTRError {
     #[error(transparent)]
@@ -31,4 +32,5 @@ impl From<PoolChannelClosed> for NintendoCTRError {
     }
 }
 
+/// Convenience alias for a `Result` with [`NintendoCTRError`].
 pub type NintendoCTRResult<T> = Result<T, NintendoCTRError>;

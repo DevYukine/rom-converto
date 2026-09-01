@@ -25,6 +25,7 @@ const CD_MAX_SECTORS: u64 = 452_849;
 /// extent length from ballooning the probe.
 const MAX_ROOT_DIR_BYTES: u32 = 256 * 1024;
 
+/// Console family identified from an ISO9660 disc image.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiscKind {
     Ps2Dvd,
@@ -35,6 +36,7 @@ pub enum DiscKind {
 }
 
 impl DiscKind {
+    /// Returns the disc kind's human-readable label, e.g. `"PS2 (DVD)"`.
     pub fn label(self) -> &'static str {
         match self {
             DiscKind::Ps2Dvd => "PS2 (DVD)",
@@ -54,6 +56,9 @@ pub fn detect_disc_kind(path: &Path) -> io::Result<DiscKind> {
     detect_disc_kind_file(&file)
 }
 
+/// Same detection as [`detect_disc_kind`], for an already-open file handle.
+/// Malformed or truncated images degrade to [`DiscKind::UnknownIso`]; only
+/// I/O errors other than end-of-file propagate.
 pub fn detect_disc_kind_file(file: &File) -> io::Result<DiscKind> {
     let file_len = file.metadata()?.len();
     match probe(file, file_len) {

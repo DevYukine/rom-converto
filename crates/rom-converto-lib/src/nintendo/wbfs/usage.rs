@@ -45,6 +45,7 @@ pub struct DiscUsage {
 }
 
 impl DiscUsage {
+    /// Creates an all-unused usage map sized for a disc of `disc_size` bytes.
     pub fn new(disc_size: u64) -> Self {
         let sector_count = disc_size.div_ceil(WII_SECTOR_SIZE_U64);
         let words = (sector_count as usize).div_ceil(64);
@@ -54,6 +55,8 @@ impl DiscUsage {
         }
     }
 
+    /// Marks every sector used, the conservative fallback for a disc
+    /// whose structure could not be fully parsed.
     pub fn mark_all(&mut self) {
         self.bits.fill(u64::MAX);
     }
@@ -65,6 +68,7 @@ impl DiscUsage {
         self.bits[(sector / 64) as usize] |= 1u64 << (sector % 64);
     }
 
+    /// True if `sector` is marked used; out-of-range sectors read as unused.
     pub fn sector_used(&self, sector: u64) -> bool {
         if sector >= self.sector_count {
             return false;

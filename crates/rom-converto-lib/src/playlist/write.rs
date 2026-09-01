@@ -3,12 +3,15 @@ use crate::util::CancelToken;
 use crate::util::fs::collect_files_with_exts_cancellable;
 use std::path::{Component, Path, PathBuf};
 
+/// When to write a playlist: only for groups with more than one disc, or always.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlaylistMode {
     Multiple,
     Always,
 }
 
+/// Inputs for [`plan_playlists`]: where to scan, which extensions to
+/// group, and the write mode.
 pub struct PlaylistOptions<'a> {
     pub scan_dir: &'a Path,
     pub output_dir: Option<&'a Path>,
@@ -17,6 +20,7 @@ pub struct PlaylistOptions<'a> {
     pub max_depth: Option<usize>,
 }
 
+/// One M3U playlist to write: its path, contents, and disc count.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlaylistPlan {
     pub base_title: String,
@@ -33,6 +37,10 @@ pub fn plan_playlists(opts: &PlaylistOptions) -> std::io::Result<Vec<PlaylistPla
     plan_playlists_cancellable(opts, &CancelToken::new())
 }
 
+/// Like [`plan_playlists`] but observes `cancel` while walking `opts.scan_dir`.
+///
+/// # Errors
+/// Returns an error if the directory walk fails or is cancelled.
 pub fn plan_playlists_cancellable(
     opts: &PlaylistOptions,
     cancel: &CancelToken,

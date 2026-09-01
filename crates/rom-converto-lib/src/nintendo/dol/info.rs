@@ -1,3 +1,6 @@
+//! GameCube disc metadata extraction: boot.bin fields plus the parsed
+//! `opening.bnr` banner and its decoded image, for the `dol info` command.
+
 use crate::info::Image;
 use crate::nintendo::dol::fst::find_file;
 use crate::nintendo::dol::models::banner::{BANNER_IMAGE_HEIGHT, BANNER_IMAGE_WIDTH, GcBanner};
@@ -8,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
+/// Metadata read from a GameCube disc image: boot.bin fields plus the
+/// decoded banner, if present.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DolInfo {
     pub physical_bytes: u64,
@@ -25,12 +30,15 @@ pub struct DolInfo {
     pub banner_image: Option<Image>,
 }
 
+/// Decoded `opening.bnr` banner, with all title blocks it carries.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GcBannerInfo {
     pub format: String,
     pub titles: Vec<GcBannerTitleInfo>,
 }
 
+/// One language block of a banner: short/long game and maker names plus
+/// the description text.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GcBannerTitleInfo {
     pub language: String,
@@ -41,6 +49,9 @@ pub struct GcBannerTitleInfo {
     pub description: String,
 }
 
+/// Reads boot.bin and, if present, the `opening.bnr` banner from a
+/// GameCube disc image at `path`. Banner read failures are logged and
+/// treated as absent rather than propagated, since not all discs carry one.
 pub fn read_info(path: &Path) -> Result<DolInfo> {
     let physical_bytes = std::fs::metadata(path)
         .with_context(|| format!("dol info: stat {}", path.display()))?

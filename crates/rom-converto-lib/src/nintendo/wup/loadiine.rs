@@ -101,11 +101,9 @@ pub fn walk_loadiine_files(title_dir: &Path) -> WupResult<Vec<LoadiineFile>> {
         }
         walk_subdir(&sub, top, &mut out)?;
     }
-    // No cross-top-level sort: entries already come out in the order
-    // the top-level loop visits them (meta, code, content) with each
-    // subtree sorted locally, which is sufficient for deterministic
-    // output. The ZArchive writer resorts by its own compare
-    // function later anyway.
+    // No cross-top-level sort: per-subtree sorting plus the fixed
+    // meta/code/content visit order is already deterministic, and the
+    // ZArchive writer resorts with its own compare function anyway.
     Ok(out)
 }
 
@@ -149,7 +147,7 @@ pub(crate) fn compress_loadiine_title_with_cancel(
         if cancelled.is_some_and(|c| c.load(Ordering::Relaxed)) {
             return Err(WupError::Cancelled);
         }
-        let archive_path = format!("{}/{}", archive_folder, file.relative_path);
+        let archive_path = format!("{archive_folder}/{}", file.relative_path);
         sink.start_new_file(&archive_path)?;
         let mut reader = std::io::BufReader::new(std::fs::File::open(&file.absolute_path)?);
         loop {

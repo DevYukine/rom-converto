@@ -1,9 +1,14 @@
+//! Builds a Logiqx fixdat XML of DAT-listed files missing from a local
+//! library, matched by hash precedence SHA-256 > SHA-1 > MD5 > CRC32+size.
+
 use crate::dat::digest::TrackDigests;
 use crate::dat::model::{DatFileGame, DatFileSummary, PlaymatchGameFile};
 use crate::util::{CancelToken, FileDigests};
 use std::borrow::Cow;
 use std::collections::HashSet;
 
+/// Hash index of local files, used to test Playmatch [`PlaymatchGameFile`]
+/// entries for local presence.
 #[derive(Debug, Clone, Default)]
 pub struct LocalHashIndex {
     sha256: HashSet<String>,
@@ -13,6 +18,7 @@ pub struct LocalHashIndex {
 }
 
 impl LocalHashIndex {
+    /// Adds one file's digests to the index, indexing every hash it carries.
     pub fn insert(&mut self, d: &FileDigests) {
         if let Some(h) = &d.sha256 {
             self.sha256.insert(norm(h));
@@ -28,6 +34,7 @@ impl LocalHashIndex {
         }
     }
 
+    /// Adds the digests of every disc track.
     pub fn insert_tracks(&mut self, t: &[TrackDigests]) {
         for track in t {
             self.insert(&track.digests);
@@ -62,6 +69,7 @@ fn norm_crc(c: &str) -> String {
     format!("{:0>8}", c.trim().to_ascii_lowercase())
 }
 
+/// A DAT game with at least one file missing locally.
 #[derive(Debug, Clone)]
 pub struct FixdatEntry {
     pub game_name: String,
@@ -120,6 +128,8 @@ pub fn write_fixdat_xml<W: std::io::Write>(
     write_fixdat_xml_cancellable(w, dat, entries, &CancelToken::new())
 }
 
+/// Writes `entries` as a Logiqx fixdat XML to `w`, checking `cancel`
+/// between games and rom entries.
 pub fn write_fixdat_xml_cancellable<W: std::io::Write>(
     w: &mut W,
     dat: &DatFileSummary,

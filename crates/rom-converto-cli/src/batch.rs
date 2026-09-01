@@ -4275,7 +4275,7 @@ pub async fn dat_fixdat(
     let total_games = games.len();
 
     let units = dat_collect(&args.input, args.max_depth).await?;
-    total_progress_hash(progress, units.len());
+    progress.set_phase(&format!("Hashing {} files", units.len()));
     let mut index = LocalHashIndex::default();
     for unit in &units {
         if cancel.is_cancelled() {
@@ -4334,10 +4334,6 @@ fn algos_index() -> &'static [HashAlgo] {
         HashAlgo::Md5,
         HashAlgo::Sha256,
     ]
-}
-
-fn total_progress_hash(progress: &dyn ProgressReporter, count: usize) {
-    progress.set_phase(&format!("Hashing {count} files"));
 }
 
 /// Resolve the one DAT to diff against: an explicit `--dat-id` is found by

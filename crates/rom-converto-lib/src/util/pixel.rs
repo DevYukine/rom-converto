@@ -321,6 +321,12 @@ fn mix_half(a: u8, b: u8) -> u8 {
     ((a as u16 + b as u16) / 2) as u8
 }
 
+/// Encodes `rgba` (tightly packed RGBA8, `width` x `height`) as a PNG byte
+/// stream.
+///
+/// # Errors
+/// Returns an error if `rgba`'s length does not match `width * height * 4`,
+/// or if the PNG encoder fails.
 pub fn encode_png(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
     let expected = (width as usize) * (height as usize) * 4;
     if rgba.len() != expected {

@@ -15,6 +15,8 @@ pub const CNMT_TYPE_PATCH: u8 = 0x81;
 pub const CNMT_TYPE_ADD_ON_CONTENT: u8 = 0x82;
 pub const CNMT_TYPE_DELTA: u8 = 0x83;
 
+/// Parsed PackagedContentMeta (`.cnmt`) header and content table, as
+/// stored uncompressed in a Meta NCA's section 0.
 #[derive(Debug, Clone)]
 pub struct Cnmt {
     pub title_id: u64,
@@ -34,6 +36,8 @@ pub struct Cnmt {
     pub contents: Vec<CnmtContent>,
 }
 
+/// One entry in the CNMT content table: identifies an NCA that belongs
+/// to this content meta and the hash used to verify it.
 #[derive(Debug, Clone)]
 pub struct CnmtContent {
     pub hash: [u8; 32],
@@ -52,6 +56,15 @@ pub const CNMT_CONTENT_TYPE_LEGAL_INFORMATION: u8 = 5;
 pub const CNMT_CONTENT_TYPE_DELTA_FRAGMENT: u8 = 6;
 
 impl Cnmt {
+    /// Parses a raw `.cnmt` buffer: the fixed 0x20-byte header, the
+    /// `extended_header_size`-byte extended header, then `content_count`
+    /// 0x38-byte content entries (32-byte hash, 16-byte content id,
+    /// 6-byte little-endian size, type, id_offset).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `buf` is shorter than the fixed header, or
+    /// truncated partway through the extended header or content table.
     pub fn parse(buf: &[u8]) -> NxResult<Self> {
         if buf.len() < 0x20 {
             return Err(NxError::InvalidNcaHeader);
@@ -121,15 +134,7 @@ impl Cnmt {
     /// [`Self::required_download_system_version`] otherwise.
     pub fn required_system_version(&self) -> u64 {
         match self.content_type {
-            CNMT_TYPE_APPLICATION => {
-                if self.extended_header.len() >= 0x10 {
-                    let mut bytes = [0u8; 8];
-                    bytes.copy_from_slice(&self.extended_header[0x08..0x10]);
-                    return u64::from_le_bytes(bytes);
-                }
-                self.required_download_system_version
-            }
-            CNMT_TYPE_PATCH => {
+            CNMT_TYPE_APPLICATION | CNMT_TYPE_PATCH => {
                 if self.extended_header.len() >= 0x10 {
                     let mut bytes = [0u8; 8];
                     bytes.copy_from_slice(&self.extended_header[0x08..0x10]);
@@ -158,6 +163,9 @@ impl Cnmt {
         }
     }
 
+    /// `RequiredApplicationVersion` from the AddOnContent extended
+    /// header at offset 0x08 (4 bytes, widened to `u64`). `None` for
+    /// any other content type or if the extended header is too short.
     pub fn required_application_version(&self) -> Option<u64> {
         if self.content_type == CNMT_TYPE_ADD_ON_CONTENT && self.extended_header.len() >= 0x0C {
             let mut bytes = [0u8; 4];

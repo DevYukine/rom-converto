@@ -13,6 +13,10 @@ use crate::nintendo::nx::crypto::derive::{KEY_AREA_OFFSET, KEY_AREA_TOTAL};
 use crate::nintendo::nx::error::{NxError, NxResult};
 use crate::nintendo::nx::keys::KeyAreaKind;
 
+/// Parsed NCA3 header, read from the 0xC00 plaintext bytes produced by
+/// XTS-decrypting the on-disk header. Holds content metadata, up to
+/// `NCA_MAX_SECTIONS` filesystem section entries/headers, and the
+/// still-encrypted key area.
 #[derive(Debug, Clone)]
 pub struct NcaHeader {
     pub content_size: u64,
@@ -34,6 +38,9 @@ pub const CONTENT_TYPE_MANUAL: u8 = 3;
 pub const CONTENT_TYPE_DATA: u8 = 4;
 pub const CONTENT_TYPE_PUBLIC_DATA: u8 = 5;
 
+/// One entry in the NCA's filesystem section table: the start and end
+/// sector (each 0x200 bytes) that locate a section's bytes within the
+/// NCA.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct FsEntry {
     pub start_sector: u32,
@@ -41,19 +48,27 @@ pub struct FsEntry {
 }
 
 impl FsEntry {
+    /// Returns `true` if this describes a real section. An unused slot
+    /// is zeroed, so `end_sector` equals `start_sector`.
     pub fn is_present(&self) -> bool {
         self.end_sector > self.start_sector
     }
 
+    /// Returns the section's absolute byte offset within the NCA.
     pub fn byte_offset(&self) -> u64 {
         u64::from(self.start_sector) * 0x200
     }
 
+    /// Returns the section's size in bytes.
     pub fn byte_size(&self) -> u64 {
         u64::from(self.end_sector - self.start_sector) * 0x200
     }
 }
 
+/// Parsed per-section filesystem header: format version, section type
+/// fields (`fs_type`, `hash_type`, `encryption_type`,
+/// `metadata_hash_type`), and the section's initial AES-CTR counter
+/// halves.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct FsHeader {
     pub version: u16,
@@ -66,6 +81,15 @@ pub struct FsHeader {
 }
 
 impl NcaHeader {
+    /// Parses a fixed `NCA_HEADER_SIZE` plaintext buffer as an NCA3
+    /// header: validates the magic at 0x200, then reads content
+    /// metadata, the `FsEntry`/`FsHeader` tables, and the encrypted key
+    /// area.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NxError::InvalidNcaHeader`] if the magic at 0x200
+    /// doesn't match `NCA3_MAGIC`.
     pub fn parse(buf: &[u8; NCA_HEADER_SIZE]) -> NxResult<Self> {
         if buf[0x200..0x204] != NCA3_MAGIC {
             return Err(NxError::InvalidNcaHeader);

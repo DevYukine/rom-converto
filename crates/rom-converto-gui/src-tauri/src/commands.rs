@@ -4221,12 +4221,10 @@ pub async fn cmd_playlist(
     .map_err(err_to_string)?
 }
 
-// ---- dat verify/scan/rename ----
-//
-// Digesting and Playmatch calls are both async-native (digest_inner_async
-// already runs the blocking decode in spawn_blocking; PlaymatchClient is
-// plain reqwest), so these commands run on the Tauri async runtime directly,
-// unlike the CHD extract/verify commands above.
+// Dat verify/scan/rename: digesting and Playmatch calls are both async-native
+// (digest_inner_async already runs the blocking decode in spawn_blocking;
+// PlaymatchClient is plain reqwest), so these commands run on the Tauri async
+// runtime directly, unlike the CHD extract/verify commands above.
 
 #[derive(serde::Serialize)]
 struct DatTrackCheckJson {

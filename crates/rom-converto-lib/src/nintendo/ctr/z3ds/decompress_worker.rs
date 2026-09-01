@@ -34,9 +34,7 @@ pub(super) struct Z3dsDecompressWork {
     pub uncompressed_size: u32,
 }
 
-/// Decoded frame bytes. Sized exactly to the frame's declared
-/// uncompressed size; the writer closure forwards this to a
-/// `BufWriter<std::fs::File>` via a dedicated writer thread.
+/// Decoded frame bytes, sized exactly to the frame's declared uncompressed size.
 pub(super) struct Z3dsDecompressedFrame {
     pub bytes: Vec<u8>,
 }
@@ -80,19 +78,13 @@ pub(super) fn make_z3ds_decompress_workers(
         .collect()
 }
 
-/// Plan one decompress invocation: read the seek-table footer from
-/// the end of the payload, read the full skippable frame, parse
-/// entries, and build absolute `file_offset`s for each compressed
-/// frame.
-///
-/// Returns the work items in submission order. The caller passes
-/// them one by one through `drive()`.
+/// Plans one decompress invocation from the seek table at the end of the
+/// payload, returning one work item per compressed frame in submission order.
 pub(super) fn plan_decompress_work(
     file: &std::fs::File,
     payload_offset: u64,
     compressed_size: u64,
 ) -> Z3dsResult<Vec<Z3dsDecompressWork>> {
-    // 1. Read the 9-byte footer at the very end of the payload.
     let footer_offset = payload_offset
         .checked_add(compressed_size)
         .and_then(|end| end.checked_sub(9))
@@ -106,7 +98,7 @@ pub(super) fn plan_decompress_work(
     file_read_exact_at(file, &mut footer, footer_offset)?;
     let (_num_frames, skippable_total) = read_seek_table_footer(&footer)?;
 
-    // 2. Read the full skippable frame (header + entries + footer).
+    // Full skippable frame: header + entries + footer.
     let frame_start = payload_offset
         .checked_add(compressed_size)
         .and_then(|end| end.checked_sub(skippable_total))
@@ -120,10 +112,8 @@ pub(super) fn plan_decompress_work(
     file_read_exact_at(file, &mut frame_bytes, frame_start)?;
     let entries: Vec<FrameEntry> = parse_seek_table(&frame_bytes)?;
 
-    // 3. Build work items with cumulative offsets starting from the
-    //    payload offset. Sanity-check that the sum of compressed
-    //    frame sizes + seek-table size equals the declared
-    //    compressed_size, so a corrupted file fails fast.
+    // The sum of compressed frame sizes plus the seek table must equal the
+    // declared compressed_size, so a corrupted file fails at plan time.
     let mut work = Vec::with_capacity(entries.len());
     let mut cursor = payload_offset;
     let mut frames_bytes_sum: u64 = 0;
@@ -167,19 +157,8 @@ fn pick_max_in_flight(max_uncompressed: u32) -> usize {
     }
 }
 
-/// Drive the worker-pool Z3DS decompress pipeline:
-///
-/// * **Planner (main thread, before spawning)**: reads the seek
-///   table footer and skippable frame via positional reads and
-///   builds one `Z3dsDecompressWork` per frame with an absolute
-///   `file_offset`.
-/// * **Workers (pool threads)**: receive work items, positional-read
-///   the compressed frame via the shared `Arc<std::fs::File>`,
-///   decompress into a fresh `Vec<u8>` sized to the declared
-///   uncompressed size through a persistent `zstd::bulk::Decompressor`.
-/// * **Writer (dedicated thread)**: drains a bounded channel and
-///   calls `write_all` on the output `BufWriter` in strict frame
-///   order (the driver's `drive()` reorder buffer).
+/// Drives the worker-pool decompress pipeline, handing decoded frames to a
+/// dedicated writer thread in strict frame order.
 pub(super) fn decompress_frames(
     pool: &Pool<Z3dsDecompressWork, Z3dsDecompressedFrame, Z3dsError>,
     writer: &mut BufWriter<std::fs::File>,
@@ -192,8 +171,7 @@ pub(super) fn decompress_frames(
         return Ok(());
     }
 
-    // Derive the in-flight cap from the largest declared frame so
-    // the CIA case (32 MB frames) stays under its memory budget.
+    // Cap in-flight work by the largest declared frame, not the frame count.
     let max_uncompressed = work_items
         .iter()
         .map(|w| w.uncompressed_size)
@@ -212,8 +190,7 @@ pub(super) fn decompress_frames(
             Ok(())
         });
 
-        // Move the work items into the closure so `produce` can
-        // hand them out by sequence index without cloning.
+        // Moved into the closure so `produce` hands items out without cloning.
         let mut work_iter = work_items.into_iter();
         let drive_result = drive(
             pool,
@@ -250,12 +227,9 @@ pub(super) fn decompress_frames(
     scope_result
 }
 
-/// Digest-side twin of [`decompress_frames`]: the pool decompresses
-/// every frame in parallel and the ordered consume closure folds each
-/// frame into `hasher` instead of a writer thread. `drive`'s reorder
-/// buffer keeps strict frame order, so the digest matches one taken
-/// over the fully decompressed output. `size_bytes` is the sum of the
-/// declared uncompressed frame sizes.
+/// Digest-side twin of [`decompress_frames`]: folds each decoded frame into a
+/// [`MultiHasher`] instead of writing it. `drive`'s reorder buffer keeps strict
+/// frame order, so the digest matches one taken over the decompressed output.
 pub(super) fn digest_frames(
     pool: &Pool<Z3dsDecompressWork, Z3dsDecompressedFrame, Z3dsError>,
     work_items: Vec<Z3dsDecompressWork>,

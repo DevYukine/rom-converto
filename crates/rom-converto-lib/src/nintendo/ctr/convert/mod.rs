@@ -19,6 +19,8 @@ const CIA_EXTS: &[&str] = &["cia"];
 const CCI_EXTS: &[&str] = &["3ds", "cci"];
 const CONVERT_EXTS: &[&str] = &["cia", "3ds", "cci"];
 
+/// Derives the output path for a format conversion: `.cia` becomes `.3ds`,
+/// `.3ds`/`.cci` become `.cia`, anything else becomes `.out`.
 pub fn derive_converted_path(input: &Path) -> PathBuf {
     let stem = input.file_stem().and_then(|s| s.to_str()).unwrap_or("out");
     let ext = input
@@ -34,6 +36,12 @@ pub fn derive_converted_path(input: &Path) -> PathBuf {
     input.with_file_name(format!("{stem}.{new_ext}"))
 }
 
+/// Converts a CIA to CCI/3DS or vice versa, dispatched by `input`'s
+/// extension.
+///
+/// # Errors
+///
+/// Returns an error if `input`'s extension is not `.cia`, `.3ds`, or `.cci`.
 pub async fn convert_rom(
     input: &Path,
     output: &Path,
@@ -42,6 +50,7 @@ pub async fn convert_rom(
     convert_rom_cancellable(input, output, progress, CancelToken::new()).await
 }
 
+/// Like [`convert_rom`] but observes `cancel`.
 pub async fn convert_rom_cancellable(
     input: &Path,
     output: &Path,
@@ -66,6 +75,8 @@ pub async fn convert_rom_cancellable(
     }
 }
 
+/// Converts every supported ROM file (`.cia`, `.3ds`, `.cci`) found under
+/// `input_dir`.
 pub async fn convert_rom_batch(
     input_dir: &Path,
     output_dir: Option<&Path>,
@@ -84,6 +95,7 @@ pub async fn convert_rom_batch(
     .await
 }
 
+/// Like [`convert_rom_batch`] but observes `cancel` between files.
 pub async fn convert_rom_batch_cancellable(
     input_dir: &Path,
     output_dir: Option<&Path>,

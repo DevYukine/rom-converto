@@ -24,6 +24,7 @@ const XCI_HEAD_MAGIC_OFFSET: u64 = 0x100;
 const XCI_HEAD_MAGIC: [u8; 4] = *b"HEAD";
 const XCI_HFS0_OFFSET_FIELD: u64 = 0x130;
 
+/// The four Switch container formats this crate can read or produce.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum ContainerKind {
     Nsp,
@@ -33,10 +34,12 @@ pub enum ContainerKind {
 }
 
 impl ContainerKind {
+    /// Returns `true` for the NCZ-bearing formats (NSZ, XCZ).
     pub fn is_compressed(self) -> bool {
         matches!(self, ContainerKind::Nsz | ContainerKind::Xcz)
     }
 
+    /// Returns `true` for the gamecard-image formats (XCI, XCZ).
     pub fn is_xci(self) -> bool {
         matches!(self, ContainerKind::Xci | ContainerKind::Xcz)
     }
@@ -65,6 +68,11 @@ pub fn detect_container(path: &Path) -> NxResult<ContainerKind> {
     Err(NxError::UnknownContainer)
 }
 
+/// Reads the HFS0 root offset from the gamecard header at byte 0x130
+/// (`partition_fs_header_address`).
+///
+/// # Errors
+/// Fails on the underlying seek/read I/O errors.
 pub fn read_xci_hfs0_offset(file: &mut File) -> NxResult<u64> {
     file.seek(SeekFrom::Start(XCI_HFS0_OFFSET_FIELD))?;
     Ok(file.read_u64::<LE>()?)
@@ -97,12 +105,18 @@ pub struct ContainerEntry {
     pub size: u64,
 }
 
+/// A container's detected kind plus its flattened file listing.
 #[derive(Debug, Clone)]
 pub struct ContainerListing {
     pub kind: ContainerKind,
     pub entries: Vec<ContainerEntry>,
 }
 
+/// Detects the container kind of `path` and lists every file inside it.
+///
+/// # Errors
+/// Fails if the container's magic bytes are unrecognized, or on the
+/// underlying I/O or header-parsing errors.
 pub fn list_container(path: &Path) -> NxResult<ContainerListing> {
     let kind = detect_container(path)?;
     let entries = match kind {

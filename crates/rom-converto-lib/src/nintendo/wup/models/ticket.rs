@@ -11,7 +11,7 @@ use crate::nintendo::wup::error::{WupError, WupResult};
 
 /// Fixed base size of a Wii U ticket header. Optional V1 extensions
 /// (AOC content rights) sit beyond this offset but are not parsed
-/// in v1.
+/// here.
 pub const WUP_TICKET_BASE_SIZE: usize = 0x220;
 
 /// Expected ticket format version ("v1" Wii U ticket) that Cemu's
@@ -68,7 +68,7 @@ impl WupTicket {
     /// True if the ticket is bound to a specific device (as opposed
     /// to a generic retail download). Personalised tickets need an
     /// extra depersonalisation step before the title key can be
-    /// decrypted with the common key, which v1 does not support.
+    /// decrypted with the common key, which is not supported here.
     pub fn is_personalized(&self) -> bool {
         self.device_id != 0
     }

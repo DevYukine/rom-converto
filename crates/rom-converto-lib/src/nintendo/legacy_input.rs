@@ -27,6 +27,7 @@ const NKIT_MAGIC_OFFSET: u64 = 0x200;
 const NKIT_MAGIC: &[u8; 4] = b"NKIT";
 const WIA_MAGIC: [u8; 4] = [b'W', b'I', b'A', 0x01];
 
+/// A legacy container format the migration pipeline can detect and convert to RVZ.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LegacyFormat {
     Gcz,
@@ -36,6 +37,7 @@ pub enum LegacyFormat {
 }
 
 impl LegacyFormat {
+    /// Human-readable name for error messages and logs.
     pub fn name(&self) -> &'static str {
         match self {
             LegacyFormat::Gcz => "GCZ",

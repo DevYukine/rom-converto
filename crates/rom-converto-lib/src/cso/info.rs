@@ -8,6 +8,7 @@ use crate::cso::error::CsoResult;
 use crate::cso::models::CISO_INDEX_UNCOMPRESSED;
 use crate::cso::reader::open_cso_sync;
 
+/// CSO/ZSO/DAX header fields and derived compression stats.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CsoInfo {
     pub format: String,
@@ -21,6 +22,8 @@ pub struct CsoInfo {
     pub raw_block_count: u64,
 }
 
+/// Reads the header of the CSO/ZSO/DAX file at `path` and computes its
+/// compression ratio and raw (stored, uncompressed) block count.
 pub fn read_info(path: &Path) -> CsoResult<CsoInfo> {
     let handle = open_cso_sync(path)?;
     let blocks = handle.header.block_count();

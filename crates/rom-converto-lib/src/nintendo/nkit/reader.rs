@@ -536,6 +536,9 @@ impl Worker<NkitSpanWork, Vec<u8>, NkitError> for NkitSpanWorker {
 
 type ProduceFn = Box<dyn FnMut(u64) -> NkitResult<NkitSpanWork> + Send>;
 
+/// `Read` view over an NKit image that restores the original disc data
+/// on the fly, verifying the result against the source CRC32 as it is
+/// consumed.
 pub struct NkitReader {
     pipeline: PipelinedGroupReader<NkitSpanWork, NkitError, ProduceFn>,
     image_size: u64,
@@ -550,6 +553,7 @@ pub struct NkitReader {
 }
 
 impl NkitReader {
+    /// Opens an NKit image file and indexes it into a restoration plan.
     pub fn open(path: &Path) -> NkitResult<Self> {
         Self::from_source(File::open(path)?)
     }
@@ -651,6 +655,7 @@ impl NkitReader {
         })
     }
 
+    /// Total size in bytes of the restored disc image.
     pub fn image_size(&self) -> u64 {
         self.image_size
     }

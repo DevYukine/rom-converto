@@ -20,6 +20,7 @@ pub enum OutputVerify {
     None,
 }
 
+/// Result of running the integrity check.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VerifyOutcome {
     Valid,
@@ -39,6 +40,8 @@ pub async fn verify_existing_output(
         .unwrap_or(VerifyOutcome::Invalid)
 }
 
+/// Cancellable twin of [`verify_existing_output`], propagating verification
+/// and cancellation errors instead of collapsing them into `Invalid`.
 pub async fn verify_existing_output_cancellable(
     progress: &dyn ProgressReporter,
     path: &Path,

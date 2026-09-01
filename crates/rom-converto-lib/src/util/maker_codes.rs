@@ -4,6 +4,8 @@
 //! Table ported from Dolphin's `Source/Core/DiscIO/Enums.cpp`
 //! `GetCompanyFromID` map (MIT licensed). Lookup is case-insensitive.
 
+/// Looks up a two-character maker code, case-insensitively. Returns `None`
+/// for the wrong length or a code not in the table.
 pub fn lookup_maker(code: &str) -> Option<&'static str> {
     let bytes = code.as_bytes();
     if bytes.len() != 2 {

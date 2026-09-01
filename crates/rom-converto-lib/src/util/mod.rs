@@ -185,8 +185,11 @@ pub fn place_in_dir_mirrored(
 /// Consumers implement this to bridge progress updates to their
 /// preferred UI (CLI progress bars, GUI events, and similar).
 pub trait ProgressReporter: Send + Sync {
+    /// Begins a new progress span of `total` units, labeled `msg`.
     fn start(&self, total: u64, msg: &str);
+    /// Advances the current span by `delta` units.
     fn inc(&self, delta: u64);
+    /// Marks the current span complete.
     fn finish(&self);
     /// Announce the active phase of a multi-step operation. The label
     /// replaces the operation message until the next phase or `start`, and
@@ -202,6 +205,7 @@ pub trait ProgressReporter: Send + Sync {
     }
 }
 
+/// No-op [`ProgressReporter`] for callers that do not need progress output.
 pub struct NoProgress;
 
 impl ProgressReporter for NoProgress {

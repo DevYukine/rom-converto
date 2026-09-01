@@ -10,15 +10,19 @@
 pub mod compress;
 pub mod constants;
 pub mod container;
+/// NCA header and section-data encryption/decryption (AES-XTS, AES-CTR).
 pub mod crypto;
 pub mod decompress;
 pub mod derive_paths;
+/// Error type shared by every NX (Switch) operation.
 pub mod error;
 pub mod info;
 pub mod keys;
+/// Parsed on-disk structures: PFS0, HFS0, NCA headers, tickets.
 pub mod models;
 pub mod ncz;
 pub mod romfs;
+/// Small I/O helpers shared across the NX modules (e.g. positional reads).
 pub mod util;
 pub mod verify;
 pub mod walker;

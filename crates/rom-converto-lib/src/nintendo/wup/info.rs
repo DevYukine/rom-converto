@@ -22,6 +22,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+/// Title metadata extracted from a Wii U input, regardless of source
+/// (NUS directory, loadiine directory, `.wua`, or `.wud`/`.wux` disc).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WupInfo {
     pub title_id: u64,
@@ -46,6 +48,8 @@ pub struct WupInfo {
     pub image: Option<Image>,
 }
 
+/// One title bundled alongside the primary title in a multi-title
+/// `.wua` archive or disc (base game, update, or DLC).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BundledTitle {
     pub title_id: u64,
@@ -54,6 +58,8 @@ pub struct BundledTitle {
     pub title_version: u32,
 }
 
+/// Fields parsed from `meta/meta.xml`, plus a maker name resolved
+/// from the company code.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WupMetaInfo {
     pub long_names: MultilingualString,
@@ -97,6 +103,12 @@ pub struct WupMetaInfo {
     pub age_ratings: HashMap<String, u8>,
 }
 
+/// Reads title metadata from `path`, dispatching by extension
+/// (`.wua`, `.wud`/`.wux`) or by directory layout (loadiine vs NUS).
+///
+/// # Errors
+/// Returns an error for an unsupported file extension, or one
+/// propagated from the chosen source-specific reader.
 pub fn read_info(path: &Path, key_override: Option<&Path>) -> Result<WupInfo> {
     if path.is_file() {
         let ext = path

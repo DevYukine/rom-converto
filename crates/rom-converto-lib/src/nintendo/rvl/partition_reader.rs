@@ -15,6 +15,7 @@ use crate::nintendo::rvl::partition::PartitionInfo;
 use anyhow::Result;
 use std::io::{Read, Seek, SeekFrom};
 
+/// A decrypted, single-sector-cached [`Read`] + [`Seek`] view over one Wii partition's payload bytes.
 pub struct PartitionPayloadReader<R: Read + Seek> {
     inner: R,
     title_key: [u8; 16],
@@ -26,6 +27,7 @@ pub struct PartitionPayloadReader<R: Read + Seek> {
 }
 
 impl<R: Read + Seek> PartitionPayloadReader<R> {
+    /// Wraps `inner` as a decrypted payload stream for the partition described by `info`.
     pub fn new(inner: R, info: &PartitionInfo) -> Self {
         let sector_count = info.data_size / WII_SECTOR_SIZE as u64;
         let payload_len = sector_count * WII_SECTOR_PAYLOAD_SIZE as u64;
@@ -40,6 +42,7 @@ impl<R: Read + Seek> PartitionPayloadReader<R> {
         }
     }
 
+    /// Total decrypted payload bytes in the partition.
     pub fn payload_len(&self) -> u64 {
         self.payload_len
     }

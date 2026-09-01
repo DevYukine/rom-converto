@@ -16,6 +16,9 @@ use crate::nintendo::nx::error::{NxError, NxResult};
 
 pub const DEFAULT_HASHED_REGION: u32 = 0x200;
 
+/// One decoded HFS0 entry: name, location relative to
+/// `Hfs0::data_section_offset`, size, and the SHA-256 verification hash
+/// over the entry's first `hashed_region_size` bytes.
 #[derive(Debug, Clone)]
 pub struct Hfs0FileRef {
     pub name: String,
@@ -25,6 +28,8 @@ pub struct Hfs0FileRef {
     pub sha256: [u8; 32],
 }
 
+/// Parsed HFS0 partition: the decoded file table plus the absolute
+/// offset where file data begins.
 #[derive(Debug, Clone)]
 pub struct Hfs0 {
     pub files: Vec<Hfs0FileRef>,
@@ -32,6 +37,15 @@ pub struct Hfs0 {
 }
 
 impl Hfs0 {
+    /// Reads an HFS0 header from the reader's current position: magic,
+    /// file count, string table size, `file_count` 0x40-byte entries,
+    /// then the string table. Leaves the reader seeked to
+    /// `data_section_offset`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NxError::Hfs0BadMagic`] if the magic doesn't match, or
+    /// propagates I/O errors on a truncated header.
     pub fn read<R: Read + Seek>(reader: &mut R) -> NxResult<Self> {
         let header_pos = reader.stream_position()?;
 
@@ -83,12 +97,18 @@ impl Hfs0 {
     }
 }
 
+/// Output of [`build_header`]: the serialized HFS0 header bytes ready
+/// to write, plus the parallel entry records describing where each
+/// file lands in the data section.
 #[derive(Debug, Clone)]
 pub struct Hfs0HeaderBytes {
     pub bytes: Vec<u8>,
     pub entries: Vec<Hfs0EntryRecord>,
 }
 
+/// One HFS0 entry as written into the header: offset (relative to the
+/// data section) and size of the file, its name-table offset, and the
+/// hashed-region size and SHA-256 used for integrity verification.
 #[derive(Debug, Clone, Copy)]
 pub struct Hfs0EntryRecord {
     pub data_offset: u64,
@@ -98,6 +118,9 @@ pub struct Hfs0EntryRecord {
     pub sha256: [u8; 32],
 }
 
+/// Input to [`build_header`] describing one file to place in the
+/// partition, including its precomputed hash over `hashed_region_size`
+/// bytes.
 #[derive(Debug, Clone)]
 pub struct Hfs0FileSpec {
     pub name: String,
@@ -106,6 +129,9 @@ pub struct Hfs0FileSpec {
     pub hashed_region_size: u32,
 }
 
+/// Optional layout parameters for [`build_header`], used to reproduce
+/// a byte-identical HFS0 header when round-tripping an existing
+/// gamecard partition.
 #[derive(Debug, Clone, Default)]
 pub struct Hfs0LayoutHints {
     /// Pad the string table so the total HFS0 header size matches
@@ -119,6 +145,11 @@ pub struct Hfs0LayoutHints {
     pub first_file_data_offset: u64,
 }
 
+/// Builds an HFS0 header (magic, entry table, string table) for
+/// `specs` in order, honoring `hints` for the total header size and
+/// starting data offset so the result can round-trip byte-for-byte.
+/// The string table is 0x10-aligned by default; per-entry hashes and
+/// hashed-region sizes are taken from `specs`, not recomputed.
 pub fn build_header(specs: &[Hfs0FileSpec], hints: &Hfs0LayoutHints) -> NxResult<Hfs0HeaderBytes> {
     let mut string_table: Vec<u8> = Vec::new();
     let mut name_offsets = Vec::with_capacity(specs.len());
@@ -173,6 +204,9 @@ pub fn build_header(specs: &[Hfs0FileSpec], hints: &Hfs0LayoutHints) -> NxResult
     Ok(Hfs0HeaderBytes { bytes, entries })
 }
 
+/// Computes the SHA-256 over the first `hashed_region_size` bytes of
+/// `data` (clamped to `data.len()`), matching the region an HFS0 entry
+/// hashes for verification.
 pub fn hash_first_chunk(data: &[u8], hashed_region_size: u32) -> [u8; 32] {
     let take = (hashed_region_size as usize).min(data.len());
     let mut h = Sha256::new();

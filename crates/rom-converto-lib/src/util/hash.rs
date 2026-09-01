@@ -7,6 +7,7 @@ use sha2::Digest as _;
 use std::io::Read;
 use std::path::Path;
 
+/// A supported file-digest algorithm.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HashAlgo {
     Crc32,
@@ -16,6 +17,8 @@ pub enum HashAlgo {
 }
 
 impl HashAlgo {
+    /// Returns the algorithm's lowercase name, as used in `--algo` and
+    /// report columns.
     pub fn label(self) -> &'static str {
         match self {
             HashAlgo::Crc32 => "crc32",
@@ -37,6 +40,8 @@ impl HashAlgo {
     }
 }
 
+/// A file's computed digests, one field per algorithm plus its size.
+/// Fields for algorithms that were not requested are `None`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FileDigests {
     pub crc32: Option<String>,
@@ -47,6 +52,8 @@ pub struct FileDigests {
 }
 
 impl FileDigests {
+    /// Returns the digest string for `algo`, or `None` if it was not
+    /// computed.
     pub fn value(&self, algo: HashAlgo) -> Option<&str> {
         match algo {
             HashAlgo::Crc32 => self.crc32.as_deref(),
@@ -71,6 +78,7 @@ pub struct MultiHasher {
 static CRC32_ISO_HDLC: Crc<u32> = Crc::<u32>::new(&CRC_32_ISO_HDLC);
 
 impl MultiHasher {
+    /// Allocates hasher state only for the requested `algos`.
     pub fn new(algos: &[HashAlgo]) -> Self {
         let want = |a: HashAlgo| algos.contains(&a);
         Self {
@@ -81,6 +89,7 @@ impl MultiHasher {
         }
     }
 
+    /// Feeds `chunk` to every active hasher.
     pub fn update(&mut self, chunk: &[u8]) {
         if let Some(d) = self.crc.as_mut() {
             d.update(chunk);
@@ -96,6 +105,8 @@ impl MultiHasher {
         }
     }
 
+    /// Finalizes every active hasher into hex-encoded digests, stamped with
+    /// `size_bytes`.
     pub fn finalize(self, size_bytes: u64) -> FileDigests {
         FileDigests {
             crc32: self.crc.map(|d| format!("{:08x}", d.finalize())),
@@ -177,6 +188,10 @@ pub struct ChecksumBounds {
 }
 
 impl ChecksumBounds {
+    /// Builds the bounds, rejecting a `min` stronger than `max`.
+    ///
+    /// # Errors
+    /// Returns an error message if `min`'s cost rank exceeds `max`'s.
     pub fn new(min: HashAlgo, max: HashAlgo) -> Result<Self, String> {
         if min.cost_rank() > max.cost_rank() {
             return Err(format!(
@@ -266,6 +281,7 @@ pub fn hash_file_cancellable(
     Ok(hasher.finalize(size_bytes))
 }
 
+/// Computes `algos` digests for the file at `path` in one streaming pass.
 pub fn hash_file(
     path: &Path,
     algos: &[HashAlgo],

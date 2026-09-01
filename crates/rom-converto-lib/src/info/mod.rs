@@ -24,6 +24,8 @@ pub use crate::nintendo::wup::info::WupInfo;
 pub use crate::ps3::Ps3Info;
 pub use image::Image;
 
+/// Per-console metadata read by [`read_info`], tagged with a `kind`
+/// field on the wire.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum InfoResult {
@@ -39,12 +41,16 @@ pub enum InfoResult {
     Ps3(Ps3Info),
 }
 
+/// A string carried per-language, as found in console-specific metadata
+/// blocks (3DS SMDH, Wii IMET, Wii U meta.xml, Switch NACP, ...).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MultilingualString {
     pub entries: Vec<(LanguageCode, String)>,
 }
 
 impl MultilingualString {
+    /// Builds a [`MultilingualString`] from `(language, text)` pairs,
+    /// dropping any pair with empty text.
     pub fn from_pairs<I>(pairs: I) -> Self
     where
         I: IntoIterator<Item = (LanguageCode, String)>,
@@ -54,6 +60,7 @@ impl MultilingualString {
         Self { entries }
     }
 
+    /// True if no language has a non-empty entry.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
@@ -100,6 +107,8 @@ pub enum LanguageCode {
     TaiwaneseChinese,
 }
 
+/// Options for [`read_info`]: an optional keys file and parent image
+/// path, used only by the formats that need them.
 #[derive(Debug, Clone, Default)]
 pub struct InfoOptions {
     pub keys_path: Option<PathBuf>,
@@ -152,6 +161,7 @@ fn is_zar_extension(path: &Path) -> bool {
         .is_some_and(|s| s.eq_ignore_ascii_case("zar"))
 }
 
+/// Console family identified by [`detect_console`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DetectedConsole {
     Chd,

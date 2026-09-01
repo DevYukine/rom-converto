@@ -26,8 +26,15 @@ use crate::nintendo::wup::nus::ticket_parser::TitleKey;
 /// ranges inside a GM partition). Raw vs hashed decryption sits one
 /// layer above.
 pub trait ContentBytesSource {
+    /// Reads the full encrypted bytes of one content file by its TMD
+    /// content id.
     fn read_encrypted_content(&mut self, content_id: u32) -> WupResult<Vec<u8>>;
 
+    /// Streams one content file's encrypted bytes to `visitor` in 4
+    /// MiB chunks instead of returning them all at once. The default
+    /// implementation still buffers the whole content via
+    /// [`Self::read_encrypted_content`]; override it to stream
+    /// straight from the backing store.
     fn visit_encrypted_content(
         &mut self,
         content_id: u32,
@@ -41,11 +48,13 @@ pub trait ContentBytesSource {
     }
 }
 
+/// [`ContentBytesSource`] backed by a NUS-layout title directory on disk.
 pub struct DirectoryContentSource {
     resolver: crate::nintendo::wup::nus::layout::ContentFilenameResolver,
 }
 
 impl DirectoryContentSource {
+    /// Builds a source rooted at `title_dir`.
     pub fn new<P: Into<PathBuf>>(title_dir: P) -> Self {
         Self {
             resolver: crate::nintendo::wup::nus::layout::ContentFilenameResolver::new(
@@ -54,6 +63,7 @@ impl DirectoryContentSource {
         }
     }
 
+    /// Builds a source from an already-resolved filename resolver.
     pub fn with_resolver(
         resolver: crate::nintendo::wup::nus::layout::ContentFilenameResolver,
     ) -> Self {
@@ -117,6 +127,8 @@ pub fn decrypt_raw_content(
     Ok(data)
 }
 
+/// Decrypts content 0 (the FST), a raw-mode content always keyed with
+/// cluster index 0. Shorthand for `decrypt_raw_content(data, key, 0)`.
 pub fn decrypt_content_0(data: Vec<u8>, title_key: &TitleKey) -> WupResult<Vec<u8>> {
     decrypt_raw_content(data, title_key, 0)
 }
@@ -178,6 +190,8 @@ pub struct ContentLoader<'a, S: ContentBytesSource> {
 }
 
 impl<'a, S: ContentBytesSource> ContentLoader<'a, S> {
+    /// Builds a loader over `source` for the title described by `tmd`
+    /// and `fs`, with an empty decrypted-cluster cache.
     pub fn new(source: S, title_key: TitleKey, tmd: &'a WupTmd, fs: &'a VirtualFs) -> Self {
         Self {
             source,
@@ -188,6 +202,14 @@ impl<'a, S: ContentBytesSource> ContentLoader<'a, S> {
         }
     }
 
+    /// Returns the decrypted bytes of `cluster_index`, decrypting and
+    /// caching it on first access. Later calls for the same index are
+    /// served from the cache.
+    ///
+    /// # Errors
+    /// Returns [`WupError::ContentNotFound`] if the cluster or its TMD
+    /// entry is missing, and [`WupError::UnsupportedContentMode`] for
+    /// an unrecognized hash mode.
     pub fn decrypted_cluster(&mut self, cluster_index: u16) -> WupResult<&[u8]> {
         if !self.cache.contains_key(&cluster_index) {
             let cluster =
@@ -247,11 +269,13 @@ impl<'a, S: ContentBytesSource> ContentLoader<'a, S> {
         Ok(cluster[start as usize..end as usize].to_vec())
     }
 
+    /// Looks up the TMD content entry backing `cluster_index`.
     pub fn tmd_entry_for(&self, cluster_index: u16) -> Option<&TmdContentEntry> {
         self.tmd.content_by_index(cluster_index)
     }
 }
 
+/// Builds a [`ContentLoader`] over a NUS-layout title directory.
 pub fn content_loader_for_directory<'a>(
     title_dir: &Path,
     title_key: TitleKey,

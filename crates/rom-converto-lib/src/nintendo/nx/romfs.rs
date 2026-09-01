@@ -16,6 +16,9 @@ use std::io::Cursor;
 const ROMFS_HEADER_SIZE: u64 = 0x50;
 const INVALID_OFFSET: u32 = 0xFFFF_FFFF;
 
+/// Fixed-size RomFS header: offsets and sizes of the four metadata
+/// tables (directory hash/meta, file hash/meta) plus the start of the
+/// file-data block that follows them.
 #[derive(Debug, Clone)]
 pub struct RomfsHeader {
     pub header_size: u64,
@@ -31,6 +34,11 @@ pub struct RomfsHeader {
 }
 
 impl RomfsHeader {
+    /// Parses the header from the start of a RomFS image.
+    ///
+    /// # Errors
+    /// Returns an error if `buf` is shorter than the fixed header size
+    /// or its declared `header_size` field is not `0x50`.
     pub fn parse(buf: &[u8]) -> NxResult<Self> {
         if buf.len() < ROMFS_HEADER_SIZE as usize {
             return Err(NxError::InvalidNcaHeader);
@@ -64,6 +72,7 @@ impl RomfsHeader {
     }
 }
 
+/// One file entry resolved from the RomFS metadata table.
 #[derive(Debug, Clone)]
 pub struct RomfsFile {
     pub name: String,
@@ -74,17 +83,23 @@ pub struct RomfsFile {
     pub parent_dir_offset: u32,
 }
 
+/// Read-only view over a parsed RomFS image, borrowing the raw bytes
+/// and exposing file lookup and data extraction.
 pub struct RomfsReader<'a> {
     image: &'a [u8],
     pub header: RomfsHeader,
 }
 
 impl<'a> RomfsReader<'a> {
+    /// Parses the RomFS header from `image` and wraps it for lookups.
     pub fn new(image: &'a [u8]) -> NxResult<Self> {
         let header = RomfsHeader::parse(image)?;
         Ok(Self { image, header })
     }
 
+    /// Walks the file metadata table and returns every file entry it
+    /// finds, following each entry's sibling offset (falling back to
+    /// the next fixed-layout record when the sibling link is absent).
     pub fn list_files(&self) -> NxResult<Vec<RomfsFile>> {
         let meta_off = self.header.file_meta_table_offset as usize;
         let meta_size = self.header.file_meta_table_size as usize;
@@ -126,10 +141,16 @@ impl<'a> RomfsReader<'a> {
         Ok(out)
     }
 
+    /// Looks up a file named `name` directly under the RomFS root
+    /// directory (offset `0`).
     pub fn find_root_file(&self, name: &str) -> NxResult<Option<RomfsFile>> {
         self.find_file(0, name)
     }
 
+    /// Looks up a file named `name` under the directory at
+    /// `parent_dir_offset`. Tries the file hash table first and falls
+    /// back to a linear scan of all files if the table is missing or
+    /// too small to use.
     pub fn find_file(&self, parent_dir_offset: u32, name: &str) -> NxResult<Option<RomfsFile>> {
         if let Some(found) = self.find_via_hash_table(parent_dir_offset, name)? {
             return Ok(Some(found));
@@ -184,6 +205,8 @@ impl<'a> RomfsReader<'a> {
         Ok(None)
     }
 
+    /// Reads a file's raw data bytes out of the image, at
+    /// `header.file_data_offset + file.data_offset`.
     pub fn read_file(&self, file: &RomfsFile) -> NxResult<Vec<u8>> {
         let start = self.header.file_data_offset + file.data_offset;
         let end = start + file.data_size;

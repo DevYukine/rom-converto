@@ -1,8 +1,6 @@
 export * from "./types";
 
-// Each op module calls registerOp() at import time. Add one line per op as its
-// def lands (T8 compress, T9 extract/decrypt/encrypt/convert, T10 verify,
-// T11 dat, T12 tools):
+// Each op module calls registerOp() at import time. Add one line per op as its def lands.
 import "./compress";
 import "./extract";
 import "./decrypt";
