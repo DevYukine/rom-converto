@@ -493,6 +493,8 @@ mod tests {
             dir_count: 1,
             total_file_bytes: 12345,
             image_size: 999_999,
+            xbe: None,
+            xex: None,
         });
         let s = serde_json::to_string(&r).unwrap();
         // The variant tag and the struct's own (renamed) kind field must
@@ -505,6 +507,8 @@ mod tests {
             InfoResult::Xbox(x) => {
                 assert_eq!(x.kind, PartitionKind::Trimmed);
                 assert_eq!(x.file_count, 3);
+                assert!(x.xbe.is_none());
+                assert!(x.xex.is_none());
             }
             _ => panic!("expected Xbox variant"),
         }
@@ -519,6 +523,7 @@ mod tests {
             compressed_size: 50,
             block_count: 4,
             has_default_xex: true,
+            xex: None,
         });
         let s = serde_json::to_string(&r).unwrap();
         assert!(s.contains("\"kind\":\"xenon\""));
@@ -528,6 +533,7 @@ mod tests {
             InfoResult::Xenon(z) => {
                 assert_eq!(z.logical_size, 100);
                 assert!(z.has_default_xex);
+                assert!(z.xex.is_none());
             }
             _ => panic!("expected Xenon variant"),
         }

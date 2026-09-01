@@ -5,4 +5,5 @@
 pub mod xbox;
 pub mod xdvdfs;
 pub mod xenon;
+pub mod xex;
 pub mod zar;

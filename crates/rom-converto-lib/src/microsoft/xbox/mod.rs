@@ -7,10 +7,12 @@ mod create;
 mod error;
 mod extract;
 mod info;
+mod xbe;
 
 pub use create::input_total_bytes;
 pub use error::{XboxError, XboxResult};
 pub use info::{XisoInfo, read_info};
+pub use xbe::XbeInfo;
 
 use std::path::Path;
 use std::sync::Arc;

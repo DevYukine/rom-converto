@@ -304,6 +304,41 @@ export interface NxInfo {
   } | null;
 }
 
+export interface XbeInfo {
+  title_id: number;
+  title_id_hex: string;
+  title_id_code: string;
+  title_name: string;
+  alternate_title_ids: number[];
+  allowed_media: number;
+  allowed_media_names: string[];
+  region: number;
+  region_names: string[];
+  ratings: number;
+  disc_number: number;
+  version: number;
+  cert_timestamp: number;
+}
+
+export interface XexInfo {
+  title_id: number;
+  title_id_hex: string;
+  media_id: number;
+  version: string;
+  version_raw: number;
+  base_version: string;
+  base_version_raw: number;
+  disc_number: number;
+  disc_count: number;
+  platform: number;
+  original_pe_name: string | null;
+  region: number;
+  region_names: string[];
+  allowed_media: number;
+  title_name: string | null;
+  icon: Image | null;
+}
+
 export interface XboxInfo {
   partition_kind: "trimmed" | "xgd1" | "xgd2" | "xgd3" | { x360_extra: number };
   base: number;
@@ -313,6 +348,8 @@ export interface XboxInfo {
   dir_count: number;
   total_file_bytes: number;
   image_size: number;
+  xbe: XbeInfo | null;
+  xex: XexInfo | null;
 }
 
 export interface XenonInfo {
@@ -322,6 +359,7 @@ export interface XenonInfo {
   compressed_size: number;
   block_count: number;
   has_default_xex: boolean;
+  xex: XexInfo | null;
 }
 
 export interface Ps3Info {
@@ -387,6 +425,10 @@ export function pickIconImage(info: InfoResult): Image | null {
       return info.image;
     case "nx":
       return info.full?.control?.icon ?? null;
+    case "xbox":
+      return info.xex?.icon ?? null;
+    case "xenon":
+      return info.xex?.icon ?? null;
     default:
       return null;
   }

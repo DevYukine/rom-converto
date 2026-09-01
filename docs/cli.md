@@ -504,7 +504,11 @@ rom-converto xbox <SUBCOMMAND> <INPUT> [OUTPUT]
 disc layout so video-partition padding is removed. Takes `-f`/`--force` and the shared conflict
 policy. Output works in xemu and on modded consoles.
 
-`info` prints layout details: XGD1, XGD2, XGD3, or trimmed, plus file counts and sizes.
+`info` prints layout details: XGD1, XGD2, XGD3, or trimmed, plus file counts and sizes. When
+a root `default.xbe` is present, it also prints the XBE title metadata (title ID, name,
+version, disc number, region, allowed media, ratings). A root `default.xex` (a 360 XDVDFS
+disc routed here) prints XEX title metadata instead. `--save-icon` is not supported: OG Xbox
+title images are packed in an XPR resource that is not extracted.
 
 ## xenon (Xbox 360)
 
@@ -522,6 +526,10 @@ rom-converto xenon <SUBCOMMAND> <INPUT> [OUTPUT]
 `compress` reads the disc filesystem directly and streams it into the `.zar` archive, with no
 intermediate extraction to disk, using zstd across all CPU cores. Content is stored with
 `default.xex` at the archive root, which Xenia requires to load it.
+
+`info` prints archive stats and, when `default.xex` is present, its XEX title metadata
+(title ID, name, version, disc number, region, allowed media) plus the decoded icon.
+`--save-icon <DIR>` writes that icon as `<title_id_hex>.png`.
 
 ## dat
 
@@ -666,7 +674,7 @@ field (`ISO`, `RVZ`, `WBFS`, `GCZ`, `WIA`, or `NKit`).
 | Flag | Description |
 |---|---|
 | `--json` | Emit a machine-readable payload instead of the formatted report |
-| `--save-icon <DIR>` | Write the embedded icon as `<title_id>.png` into `DIR`. Supported by `ctr`, `dol`, `rvl`, `nx`, and `wup`; `chd` and `cso` carry no artwork |
+| `--save-icon <DIR>` | Write the embedded icon as `<title_id>.png` into `DIR`. Supported by `ctr`, `dol`, `rvl`, `nx`, `wup`, and `xenon`; `chd` and `cso` carry no artwork; `xbox` carries an XPR title image that is not extracted |
 | `--keys <FILE>` | `prod.keys` for `nx info`, or a disc master key file for `wup info` on `.wud`/`.wux`. Other consoles do not use it |
 
 Coverage per family: `ctr` reads CIA/NCSD/NCCH and Z3DS variants; `dol` reads `.iso`,

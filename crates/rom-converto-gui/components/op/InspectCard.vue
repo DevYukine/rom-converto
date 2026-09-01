@@ -128,9 +128,9 @@ const title = computed(() => {
 		case "cso":
 			return `${info.format} image`;
 		case "xbox":
-			return `${formatXboxPartitionKind(info.partition_kind)} image`;
+			return info.xbe?.title_name || info.xex?.title_name || `${formatXboxPartitionKind(info.partition_kind)} image`;
 		case "xenon":
-			return "Xbox 360 image";
+			return info.xex?.title_name || "Xbox 360 image";
 		case "ps3":
 			return info.title || info.title_id || "PS3 disc";
 	}
@@ -245,14 +245,19 @@ const statRow = computed<Stat[]>(() => {
 			stats.push({ label: "Ratio", value: `${info.compression_ratio.toFixed(1)}%`, color: "green" });
 			stats.push({ label: "Blocks", value: String(info.block_count) });
 			break;
-		case "xbox":
+		case "xbox": {
+			const titleIdHex = info.xbe?.title_id_hex ?? info.xex?.title_id_hex;
+			if (titleIdHex) stats.push({ label: "Title ID", value: titleIdHex });
 			stats.push({ label: "Partition", value: formatXboxPartitionKind(info.partition_kind) });
 			stats.push({ label: "Files", value: String(info.file_count) });
 			break;
-		case "xenon":
+		}
+		case "xenon": {
+			if (info.xex?.title_id_hex) stats.push({ label: "Title ID", value: info.xex.title_id_hex });
 			stats.push({ label: "Ratio", value: `${xenonRatio(info.logical_size, info.compressed_size).toFixed(1)}%`, color: "green" });
 			stats.push({ label: "Blocks", value: String(info.block_count) });
 			break;
+		}
 		case "ps3":
 			if (info.title_id) stats.push({ label: "Title ID", value: info.title_id });
 			break;
@@ -395,6 +400,21 @@ const details = computed<Stat[]>(() => {
 			add("Files", `${info.file_count} (${info.dir_count} dirs)`);
 			add("File data", formatBytes(info.total_file_bytes));
 			add("Image size", formatBytes(info.image_size));
+			if (info.xbe) {
+				add("Title ID", `${info.xbe.title_id_hex} (${info.xbe.title_id_code})`);
+				add("Version", info.xbe.version);
+				if (info.xbe.region_names.length) add("Region", info.xbe.region_names.join(", "));
+				if (info.xbe.allowed_media_names.length) add("Media", info.xbe.allowed_media_names.join(", "));
+				add("Disc", info.xbe.disc_number);
+			}
+			if (info.xex) {
+				add("Title ID", info.xex.title_id_hex);
+				add("Media ID", info.xex.media_id);
+				add("Version", info.xex.version);
+				add("Disc", `${info.xex.disc_number}/${info.xex.disc_count}`);
+				if (info.xex.region_names.length) add("Region", info.xex.region_names.join(", "));
+				if (info.xex.original_pe_name) add("Original PE name", info.xex.original_pe_name);
+			}
 			break;
 		case "xenon":
 			add("Files", `${info.file_count} (${info.dir_count} dirs)`);
@@ -405,6 +425,14 @@ const details = computed<Stat[]>(() => {
 			);
 			add("Blocks", info.block_count);
 			add("default.xex", info.has_default_xex ? "present" : "missing");
+			if (info.xex) {
+				add("Title ID", info.xex.title_id_hex);
+				add("Media ID", info.xex.media_id);
+				add("Version", info.xex.version);
+				add("Disc", `${info.xex.disc_number}/${info.xex.disc_count}`);
+				if (info.xex.region_names.length) add("Region", info.xex.region_names.join(", "));
+				if (info.xex.original_pe_name) add("Original PE name", info.xex.original_pe_name);
+			}
 			break;
 		case "ps3":
 			add("Region", info.region);
@@ -477,9 +505,13 @@ async function copyValue(value: string) {
 	showToast("Copied");
 }
 
-const canCopyTitleId = computed(
-	() => props.info.kind !== "chd" && props.info.kind !== "cso" && props.info.kind !== "xbox" && props.info.kind !== "xenon",
-);
+const canCopyTitleId = computed(() => {
+	const info = props.info;
+	if (info.kind === "chd" || info.kind === "cso") return false;
+	if (info.kind === "xbox") return !!(info.xbe || info.xex);
+	if (info.kind === "xenon") return !!info.xex;
+	return true;
+});
 
 function copyTitleId() {
 	const info = props.info;
@@ -502,6 +534,12 @@ function copyTitleId() {
 			break;
 		case "ps3":
 			value = info.title_id ?? "";
+			break;
+		case "xbox":
+			value = info.xbe?.title_id_hex ?? info.xex?.title_id_hex ?? "";
+			break;
+		case "xenon":
+			value = info.xex?.title_id_hex ?? "";
 			break;
 		default:
 			return;

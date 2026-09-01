@@ -2901,6 +2901,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "lzxd"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c17f346186eccb574ba5581acefc514f0c70a642db4f96e245034a0a158a7168"
+
+[[package]]
 name = "mac-notification-sys"
 version = "0.6.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4230,6 +4236,7 @@ dependencies = [
  "log",
  "lz4",
  "lzma-sdk-sys",
+ "lzxd",
  "md-5",
  "md5",
  "pbkdf2",

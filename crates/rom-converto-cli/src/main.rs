@@ -2808,7 +2808,7 @@ async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()>
                 }
                 if cmd.save_icon.is_some() {
                     anyhow::bail!(
-                        "--save-icon is not supported for xbox: the format has no embedded artwork"
+                        "--save-icon is not supported for xbox: the XPR title image is not extracted (OG Xbox title images are XPR-packed, out of scope)"
                     );
                 }
                 ensure_input_exists(&cmd.input)?;
@@ -2894,25 +2894,28 @@ async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()>
                 if cmd.keys.is_some() {
                     anyhow::bail!("--keys is only supported by nx and wup info");
                 }
-                if cmd.save_icon.is_some() {
-                    anyhow::bail!(
-                        "--save-icon is not supported for xenon: the format has no embedded artwork"
-                    );
-                }
                 ensure_input_exists(&cmd.input)?;
                 let resolved = rom_converto_lib::util::resolve_input(&cmd.input, ALL_IMAGE_EXTS)?;
                 // A not-yet-packed disc image is a valid xenon input for
                 // compress, so info falls back to its XDVDFS layout rather
                 // than failing on the missing ZArchive magic.
                 match rom_converto_lib::microsoft::xenon::read_info(resolved.path()) {
-                    Ok(info) => info_print::print(
-                        &rom_converto_lib::info::InfoResult::Xenon(info),
-                        cmd.json,
-                    )?,
+                    Ok(info) => {
+                        if let Some(dir) = &cmd.save_icon {
+                            save_xex_icon(info.xex.as_ref(), dir)?;
+                        }
+                        info_print::print(
+                            &rom_converto_lib::info::InfoResult::Xenon(info),
+                            cmd.json,
+                        )?
+                    }
                     Err(rom_converto_lib::microsoft::xenon::XenonError::Zar(
                         rom_converto_lib::microsoft::zar::ZarError::BadMagic(_),
                     )) => {
                         let info = rom_converto_lib::microsoft::xbox::read_info(resolved.path())?;
+                        if let Some(dir) = &cmd.save_icon {
+                            save_xex_icon(info.xex.as_ref(), dir)?;
+                        }
                         info_print::print(
                             &rom_converto_lib::info::InfoResult::Xbox(info),
                             cmd.json,
@@ -4399,6 +4402,25 @@ fn save_ctr_icon(info: &rom_converto_lib::info::CtrInfo, dir: &std::path::Path) 
         info.title_id.clone()
     };
     let path = dir.join(format!("{stem}.png"));
+    std::fs::write(&path, &img.png_bytes)?;
+    log::info!("Wrote {}", path.display());
+    Ok(())
+}
+
+fn save_xex_icon(
+    xex: Option<&rom_converto_lib::microsoft::xex::XexInfo>,
+    dir: &std::path::Path,
+) -> Result<()> {
+    let Some(xex) = xex else {
+        log::warn!("No default.xex found; nothing to save");
+        return Ok(());
+    };
+    let Some(img) = &xex.icon else {
+        log::warn!("No XEX icon decoded; nothing to save");
+        return Ok(());
+    };
+    std::fs::create_dir_all(dir)?;
+    let path = dir.join(format!("{}.png", xex.title_id_hex));
     std::fs::write(&path, &img.png_bytes)?;
     log::info!("Wrote {}", path.display());
     Ok(())

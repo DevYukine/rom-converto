@@ -2,6 +2,7 @@
 
 use anyhow::Result;
 use rom_converto_lib::info::InfoResult;
+use rom_converto_lib::microsoft::xex::XexInfo;
 use std::fmt::Write;
 
 pub struct KeyValueTable {
@@ -675,7 +676,48 @@ fn render_xbox(info: &rom_converto_lib::info::XisoInfo) -> String {
     t.push("Directories", format!("{}", info.dir_count));
     t.push("Total file bytes", format!("{}", info.total_file_bytes));
     t.push("Image size", format!("{} bytes", info.image_size));
-    t.render()
+    let mut out = t.render();
+
+    if let Some(xbe) = &info.xbe {
+        out.push('\n');
+        out.push_str(&format!("Title name: {}\n", xbe.title_name));
+        out.push_str(&format!(
+            "Title ID: {} ({})\n",
+            xbe.title_id_hex, xbe.title_id_code
+        ));
+        out.push_str(&format!("Version: {}\n", xbe.version));
+        out.push_str(&format!("Disc number: {}\n", xbe.disc_number));
+        out.push_str(&format!(
+            "Region: {}\n",
+            if xbe.region_names.is_empty() {
+                format!("0x{:08X}", xbe.region)
+            } else {
+                xbe.region_names.join(", ")
+            }
+        ));
+        out.push_str(&format!(
+            "Allowed media: {}\n",
+            xbe.allowed_media_names.join(", ")
+        ));
+        out.push_str(&format!("Ratings: 0x{:08X}\n", xbe.ratings));
+        out.push_str(&format!("Cert timestamp: {}\n", xbe.cert_timestamp));
+        if !xbe.alternate_title_ids.is_empty() {
+            out.push_str(&format!(
+                "Alternate title IDs: {}\n",
+                xbe.alternate_title_ids
+                    .iter()
+                    .map(|id| format!("{:08X}", id))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+    }
+
+    if let Some(xex) = &info.xex {
+        render_xex_section(&mut out, xex);
+    }
+
+    out
 }
 
 fn render_ps3(info: &rom_converto_lib::info::Ps3Info) -> String {
@@ -731,7 +773,39 @@ fn render_xenon(info: &rom_converto_lib::info::ZarInfo) -> String {
             "not found"
         },
     );
-    t.render()
+    let mut out = t.render();
+
+    if let Some(xex) = &info.xex {
+        render_xex_section(&mut out, xex);
+    }
+
+    out
+}
+
+fn render_xex_section(out: &mut String, xex: &XexInfo) {
+    out.push('\n');
+    if let Some(name) = &xex.title_name {
+        out.push_str(&format!("Title name: {}\n", name));
+    }
+    out.push_str(&format!("Title ID: {}\n", xex.title_id_hex));
+    out.push_str(&format!("Media ID: {:08X}\n", xex.media_id));
+    out.push_str(&format!("Version: {}\n", xex.version));
+    out.push_str(&format!("Base version: {}\n", xex.base_version));
+    out.push_str(&format!("Disc: {}/{}\n", xex.disc_number, xex.disc_count));
+    out.push_str(&format!("Platform: {}\n", xex.platform));
+    if let Some(pe) = &xex.original_pe_name {
+        out.push_str(&format!("Original PE name: {}\n", pe));
+    }
+    out.push_str(&format!("Region: {}\n", xex.region_names.join(", ")));
+    out.push_str(&format!("Allowed media: 0x{:08X}\n", xex.allowed_media));
+    if let Some(img) = &xex.icon {
+        out.push_str(&format!(
+            "Icon: {}x{} PNG ({} bytes)\n",
+            img.width,
+            img.height,
+            img.png_bytes.len()
+        ));
+    }
 }
 
 #[cfg(test)]
@@ -763,5 +837,123 @@ mod tests {
         assert!(out.contains("Format:"));
         assert!(out.contains("CHD v5"));
         assert!(out.contains("42"));
+    }
+
+    fn xiso_info(
+        xbe: Option<rom_converto_lib::microsoft::xbox::XbeInfo>,
+        xex: Option<XexInfo>,
+    ) -> rom_converto_lib::info::XisoInfo {
+        rom_converto_lib::info::XisoInfo {
+            kind: rom_converto_lib::microsoft::xdvdfs::PartitionKind::Xgd2,
+            base: 0,
+            root_sector: 0,
+            root_size: 0,
+            file_count: 1,
+            dir_count: 1,
+            total_file_bytes: 100,
+            image_size: 200,
+            xbe,
+            xex,
+        }
+    }
+
+    fn xbe_info() -> rom_converto_lib::microsoft::xbox::XbeInfo {
+        rom_converto_lib::microsoft::xbox::XbeInfo {
+            title_id: 0x4D530539,
+            title_id_hex: "4D530539".to_string(),
+            title_id_code: "MS-1337".to_string(),
+            title_name: "Test Game".to_string(),
+            alternate_title_ids: vec![0x11223344],
+            allowed_media: 1,
+            allowed_media_names: vec!["Hard Disk".to_string()],
+            region: 1,
+            region_names: vec!["North America".to_string()],
+            ratings: 0,
+            disc_number: 1,
+            version: 1,
+            cert_timestamp: 0,
+        }
+    }
+
+    fn xex_info() -> XexInfo {
+        XexInfo {
+            title_id: 0x4D5307E6,
+            title_id_hex: "4D5307E6".to_string(),
+            media_id: 0x12345678,
+            version: "1.0.0.0".to_string(),
+            version_raw: 0,
+            base_version: "1.0.0.0".to_string(),
+            base_version_raw: 0,
+            disc_number: 1,
+            disc_count: 1,
+            platform: 0,
+            original_pe_name: Some("default.exe".to_string()),
+            region: 0xFFFFFFFF,
+            region_names: vec!["World".to_string()],
+            allowed_media: 0xFF,
+            title_name: Some("Test Xenon Game".to_string()),
+            icon: None,
+        }
+    }
+
+    #[test]
+    fn render_xbox_shows_xbe_section_when_present() {
+        let info = xiso_info(Some(xbe_info()), None);
+        let out = render_xbox(&info);
+        assert!(out.contains("Title name: Test Game"));
+        assert!(out.contains("Title ID: 4D530539 (MS-1337)"));
+        assert!(out.contains("Region: North America"));
+        assert!(out.contains("Allowed media: Hard Disk"));
+        assert!(out.contains("Ratings: 0x00000000"));
+        assert!(out.contains("Cert timestamp: 0"));
+        assert!(out.contains("Alternate title IDs: 11223344"));
+    }
+
+    #[test]
+    fn render_xbox_omits_xbe_section_when_absent() {
+        let info = xiso_info(None, None);
+        let out = render_xbox(&info);
+        assert!(!out.contains("Title name:"));
+        assert!(!out.contains("Alternate title IDs:"));
+    }
+
+    #[test]
+    fn render_xbox_shows_xex_section_when_present() {
+        let info = xiso_info(None, Some(xex_info()));
+        let out = render_xbox(&info);
+        assert!(out.contains("Title name: Test Xenon Game"));
+        assert!(out.contains("Media ID: 12345678"));
+        assert!(out.contains("Disc: 1/1"));
+    }
+
+    #[test]
+    fn render_xenon_shows_xex_section_when_present() {
+        let info = rom_converto_lib::info::ZarInfo {
+            file_count: 1,
+            dir_count: 1,
+            logical_size: 100,
+            compressed_size: 50,
+            block_count: 1,
+            has_default_xex: true,
+            xex: Some(xex_info()),
+        };
+        let out = render_xenon(&info);
+        assert!(out.contains("Title name: Test Xenon Game"));
+        assert!(out.contains("Original PE name: default.exe"));
+    }
+
+    #[test]
+    fn render_xenon_omits_xex_section_when_absent() {
+        let info = rom_converto_lib::info::ZarInfo {
+            file_count: 1,
+            dir_count: 1,
+            logical_size: 100,
+            compressed_size: 50,
+            block_count: 1,
+            has_default_xex: false,
+            xex: None,
+        };
+        let out = render_xenon(&info);
+        assert!(!out.contains("Title name:"));
     }
 }

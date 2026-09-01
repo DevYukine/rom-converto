@@ -375,6 +375,22 @@ const XBOX_INFO = {
 	dir_count: 38,
 	total_file_bytes: 6_800_000_000,
 	image_size: 6_810_000_000,
+	xbe: {
+		title_id: 0x4d5a0058,
+		title_id_hex: "4D5A0058",
+		title_id_code: "MZ-058",
+		title_name: "Halo 2",
+		alternate_title_ids: [],
+		allowed_media: 0xffffffff,
+		allowed_media_names: ["DVD", "HardDisk"],
+		region: 0x00000001,
+		region_names: ["North America"],
+		ratings: 0,
+		disc_number: 1,
+		version: 1,
+		cert_timestamp: 0,
+	},
+	xex: null,
 };
 
 const XENON_INFO = {
@@ -385,6 +401,32 @@ const XENON_INFO = {
 	compressed_size: 4_100_000_000,
 	block_count: 28_100,
 	has_default_xex: true,
+	xex: {
+		title_id: 0x4d5308e3,
+		title_id_hex: "4D5308E3",
+		media_id: 0x4a3c1f02,
+		version: "1.0.0.0",
+		version_raw: 0,
+		base_version: "1.0.0.0",
+		base_version_raw: 0,
+		disc_number: 1,
+		disc_count: 1,
+		platform: 0,
+		original_pe_name: "default.xex",
+		region: 0x000000ff,
+		region_names: ["North America", "Europe"],
+		allowed_media: 0xffffffff,
+		title_name: "Gears of War",
+		icon: {
+			png_bytes: [
+				137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 31, 21,
+				196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 156, 99, 248, 207, 192, 240, 31, 0, 5, 0, 1, 255, 137, 153, 61,
+				29, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+			],
+			width: 64,
+			height: 64,
+		},
+	},
 };
 
 const INFO_SAMPLES: Record<string, unknown> = {
