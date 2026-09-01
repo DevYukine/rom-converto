@@ -58,6 +58,7 @@ export interface ChdInfo {
   metadata_tags: Array<{ tag: string; length: number }>;
   version_string: string | null;
   dvd: { total_sectors: number; layer_class: string } | null;
+  content: DiscContent | null;
 }
 
 export interface CsoInfo {
@@ -70,6 +71,7 @@ export interface CsoInfo {
   compression_ratio: number;
   block_count: number;
   raw_block_count: number;
+  content: DiscContent | null;
 }
 
 export interface CtrSmdhTitle {
@@ -378,6 +380,31 @@ export interface Ps3Info {
   size_bytes: number;
 }
 
+export interface PsxInfo {
+  disc_kind: string;
+  boot_executable: string | null;
+  title_id: string | null;
+  volume_id: string | null;
+  version: string | null;
+  total_sectors: number;
+  size_bytes: number;
+}
+
+export interface PspInfo {
+  title: string | null;
+  title_id: string | null;
+  version: string | null;
+  firmware: string | null;
+  category: string | null;
+  total_sectors: number;
+  size_bytes: number;
+  icon: Image | null;
+}
+
+export type DiscContent =
+  | ({ kind: "psx" } & PsxInfo)
+  | ({ kind: "psp" } & PspInfo);
+
 export type InfoResult =
   | ({ kind: "chd" } & ChdInfo)
   | ({ kind: "cso" } & CsoInfo)
@@ -388,7 +415,9 @@ export type InfoResult =
   | ({ kind: "nx" } & NxInfo)
   | ({ kind: "xbox" } & XboxInfo)
   | ({ kind: "xenon" } & XenonInfo)
-  | ({ kind: "ps3" } & Ps3Info);
+  | ({ kind: "ps3" } & Ps3Info)
+  | ({ kind: "psx" } & PsxInfo)
+  | ({ kind: "psp" } & PspInfo);
 
 export function nxTitleKindDisplayName(kind: string): string {
   switch (kind) {
@@ -429,6 +458,11 @@ export function pickIconImage(info: InfoResult): Image | null {
       return info.xex?.icon ?? null;
     case "xenon":
       return info.xex?.icon ?? null;
+    case "chd":
+    case "cso":
+      return info.content?.kind === "psp" ? info.content.icon : null;
+    case "psp":
+      return info.icon;
     default:
       return null;
   }

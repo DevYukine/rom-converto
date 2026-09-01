@@ -23,10 +23,6 @@ pub enum Ps3Error {
     #[error("invalid PS3 region table: {0}")]
     InvalidRegionTable(String),
 
-    /// A `PARAM.SFO` (`\0PSF`) blob is malformed or truncated.
-    #[error("invalid PS3 PARAM.SFO: {0}")]
-    InvalidSfo(String),
-
     /// A `PS3_DISC.SFB` (`.SFB`) blob is malformed or truncated.
     #[error("invalid PS3 PS3_DISC.SFB: {0}")]
     InvalidSfb(String),

@@ -24,11 +24,15 @@ impl CueParser {
         }
     }
 
-    /// Parses the CUE sheet line by line, handling `FILE`, `TRACK`,
+    /// Reads and parses the CUE sheet at the parser's path.
+    pub async fn parse(&self) -> CueResult<CueSheet> {
+        self.parse_bytes(&tokio::fs::read(&self.cue_path).await?)
+    }
+
+    /// Parses CUE sheet bytes line by line, handling `FILE`, `TRACK`,
     /// `INDEX`, `PREGAP`, and `POSTGAP` directives; `REM` lines and blank
     /// lines are skipped.
-    pub async fn parse(&self) -> CueResult<CueSheet> {
-        let data = tokio::fs::read(&self.cue_path).await?;
+    pub fn parse_bytes(&self, data: &[u8]) -> CueResult<CueSheet> {
         let reader = Cursor::new(data);
 
         let mut cue_sheet = CueSheet {

@@ -20,7 +20,7 @@ use rom_converto_lib::dat::verdict::{DatVerdict, MatchStrength, match_strength, 
 use rom_converto_lib::dat::{
     DEFAULT_API_BASE, PlaymatchClient, RomDigests, TrackDigests, digest_inner_async,
 };
-use rom_converto_lib::info::{InfoOptions, InfoResult, read_info};
+use rom_converto_lib::info::{DiscContent, InfoOptions, InfoResult, read_info};
 use rom_converto_lib::microsoft::xbox::{
     XisoCreateOptions, convert_to_xiso_cancellable, extract_xiso_cancellable,
     read_info as xbox_read_info,
@@ -5499,8 +5499,8 @@ fn extract_icon_png(info: &InfoResult) -> Option<Vec<u8>> {
             .and_then(|f| f.control.as_ref())
             .and_then(|c| c.icon.as_ref())
             .map(|i| i.png_bytes.clone()),
-        InfoResult::Chd(_) => None,
-        InfoResult::Cso(_) => None,
+        InfoResult::Chd(c) => c.content.as_ref().and_then(disc_content_icon_png),
+        InfoResult::Cso(c) => c.content.as_ref().and_then(disc_content_icon_png),
         InfoResult::Xbox(x) => x
             .xex
             .as_ref()
@@ -5512,6 +5512,15 @@ fn extract_icon_png(info: &InfoResult) -> Option<Vec<u8>> {
             .and_then(|x| x.icon.as_ref())
             .map(|i| i.png_bytes.clone()),
         InfoResult::Ps3(_) => None,
+        InfoResult::Psx(_) => None,
+        InfoResult::Psp(p) => p.icon.as_ref().map(|i| i.png_bytes.clone()),
+    }
+}
+
+fn disc_content_icon_png(content: &DiscContent) -> Option<Vec<u8>> {
+    match content {
+        DiscContent::Psp(p) => p.icon.as_ref().map(|i| i.png_bytes.clone()),
+        DiscContent::Psx(_) => None,
     }
 }
 

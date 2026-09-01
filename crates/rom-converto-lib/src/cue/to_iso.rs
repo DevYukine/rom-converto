@@ -97,7 +97,7 @@ fn is_supported_data_track(track_type: TrackType) -> bool {
 
 /// Slice the 2048-byte user data out of one raw sector. `sector_index` is the
 /// absolute sector position, used only for a Form2 error message.
-fn extract_user_data(
+pub(crate) fn extract_user_data(
     track_type: TrackType,
     sector: &[u8],
     sector_index: u64,

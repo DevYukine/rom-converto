@@ -47,6 +47,12 @@ conversion job: the intermediate ISO is written to a temp path, converted, and r
 automatically, with one progress bar and one comparison card for the whole job rather than
 two separate runs.
 
+The Inspect page (reached from the sidebar's Inspect icon, not a per-console page) reads any
+supported file the same way the CLI's `rom-converto info` does. Dropping a PS1 or PS2 image
+(`.iso`, `.cue`) or a PSP `.iso` shows its disc kind and normalized title ID, and a PSP disc
+also shows its icon. Inspecting a CHD or CSO/ZSO also shows the PlayStation disc it contains,
+when one is detected, alongside the container's own info.
+
 ## CLI and GUI parity
 
 Every GUI control forwards to the same library function the CLI uses. The table maps each

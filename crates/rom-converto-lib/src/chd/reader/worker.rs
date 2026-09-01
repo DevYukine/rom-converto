@@ -188,7 +188,7 @@ pub(crate) fn make_chd_dvd_extract_workers(
 /// Resolve any `COMPRESSION_SELF` entry into its target by chasing
 /// the reference chain. SELF only points at earlier hunks, so the
 /// chain terminates. PARENT is not supported yet.
-fn resolve_entry(map: &[MapEntry], hunk_index: u32) -> ChdResult<MapEntry> {
+pub(crate) fn resolve_entry(map: &[MapEntry], hunk_index: u32) -> ChdResult<MapEntry> {
     let mut idx = hunk_index as usize;
     let mut guard = 0usize;
     loop {

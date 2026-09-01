@@ -4120,6 +4120,39 @@ async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()>
                 )?;
             }
         }
+        Commands::Info(cmd) => {
+            ensure_input_exists(&cmd.input)?;
+            let resolved = rom_converto_lib::util::resolve_input(&cmd.input, ALL_IMAGE_EXTS)?;
+            let info = rom_converto_lib::info::read_info(
+                resolved.path(),
+                &rom_converto_lib::info::InfoOptions {
+                    keys_path: cmd.keys.clone(),
+                    parent_path: None,
+                },
+            )?;
+            if let Some(dir) = &cmd.save_icon {
+                use rom_converto_lib::info::InfoResult;
+                match &info {
+                    InfoResult::Ctr(i) => save_ctr_icon(i, dir)?,
+                    InfoResult::Dol(i) => save_dol_banner(i, dir)?,
+                    InfoResult::Rvl(i) => save_rvl_image(i, dir)?,
+                    InfoResult::Wup(i) => save_wup_image(i, dir)?,
+                    InfoResult::Nx(i) => save_nx_icon(i, dir)?,
+                    InfoResult::Xbox(i) => save_xex_icon(i.xex.as_ref(), dir)?,
+                    InfoResult::Xenon(i) => save_xex_icon(i.xex.as_ref(), dir)?,
+                    InfoResult::Psp(i) => save_psp_icon(i, dir)?,
+                    InfoResult::Chd(_)
+                    | InfoResult::Cso(_)
+                    | InfoResult::Ps3(_)
+                    | InfoResult::Psx(_) => {
+                        anyhow::bail!(
+                            "--save-icon is not supported for this format: no embedded artwork"
+                        );
+                    }
+                }
+            }
+            info_print::print(&info, cmd.json)?;
+        }
         Commands::Playlist(cmd) => {
             require_dir(&cmd.input)?;
 
@@ -4470,6 +4503,22 @@ fn save_wup_image(info: &rom_converto_lib::info::WupInfo, dir: &std::path::Path)
     };
     std::fs::create_dir_all(dir)?;
     let path = dir.join(format!("{}.png", info.title_id_hex));
+    std::fs::write(&path, &img.png_bytes)?;
+    log::info!("Wrote {}", path.display());
+    Ok(())
+}
+
+fn save_psp_icon(info: &rom_converto_lib::info::PspInfo, dir: &std::path::Path) -> Result<()> {
+    let Some(img) = &info.icon else {
+        log::warn!("No ICON0.PNG decoded; nothing to save");
+        return Ok(());
+    };
+    std::fs::create_dir_all(dir)?;
+    let stem = info
+        .title_id
+        .clone()
+        .unwrap_or_else(|| "psp-icon".to_string());
+    let path = dir.join(format!("{stem}.png"));
     std::fs::write(&path, &img.png_bytes)?;
     log::info!("Wrote {}", path.display());
     Ok(())

@@ -6,6 +6,7 @@
 //! top-level [`read_info`] dispatcher that the GUI uses to read any
 //! supported file without knowing its format in advance.
 
+use crate::util::iso9660::DiscKind;
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -22,6 +23,7 @@ pub use crate::nintendo::nx::info::NxInfo;
 pub use crate::nintendo::rvl::info::RvlInfo;
 pub use crate::nintendo::wup::info::WupInfo;
 pub use crate::ps3::Ps3Info;
+pub use crate::sony_disc::{DiscContent, PspInfo, PsxInfo};
 pub use image::Image;
 
 /// Per-console metadata read by [`read_info`], tagged with a `kind`
@@ -39,6 +41,8 @@ pub enum InfoResult {
     Xbox(XisoInfo),
     Xenon(ZarInfo),
     Ps3(Ps3Info),
+    Psx(PsxInfo),
+    Psp(PspInfo),
 }
 
 /// A string carried per-language, as found in console-specific metadata
@@ -150,6 +154,8 @@ pub fn read_info(path: &Path, opts: &InfoOptions) -> Result<InfoResult> {
         DetectedConsole::Ps3 => Ok(InfoResult::Ps3(
             crate::ps3::read_ps3_info(path).map_err(|e| anyhow!("ps3 info: {e}"))?,
         )),
+        DetectedConsole::Psx => Ok(InfoResult::Psx(crate::sony_disc::read_psx_info(path)?)),
+        DetectedConsole::Psp => Ok(InfoResult::Psp(crate::sony_disc::read_psp_info(path)?)),
     }
 }
 
@@ -174,6 +180,8 @@ pub enum DetectedConsole {
     Xbox,
     Xenon,
     Ps3,
+    Psx,
+    Psp,
 }
 
 /// Detect which console family a path belongs to. Extension first, magic
@@ -203,6 +211,7 @@ pub fn detect_console(path: &Path) -> Result<DetectedConsole> {
         Some("wbfs") => return Ok(DetectedConsole::Rvl),
         Some("xiso") => return Ok(DetectedConsole::Xbox),
         Some("zar") => return Ok(DetectedConsole::Xenon),
+        Some("cue") => return Ok(DetectedConsole::Psx),
         Some("iso") | Some("rvz") => return sniff_disc_magic(path),
         _ => {}
     }
@@ -262,8 +271,14 @@ fn sniff_disc_magic(path: &Path) -> Result<DetectedConsole> {
         return Ok(DetectedConsole::Ps3);
     }
 
+    match crate::util::iso9660::detect_disc_kind_file(&f)? {
+        DiscKind::Ps1 | DiscKind::Ps2Cd | DiscKind::Ps2Dvd => return Ok(DetectedConsole::Psx),
+        DiscKind::Psp => return Ok(DetectedConsole::Psp),
+        DiscKind::UnknownIso => {}
+    }
+
     Err(anyhow!(
-        "disc file at {} does not match GameCube, Wii, Xbox, Xbox 360, or PS3 magic",
+        "disc file at {} does not match GameCube, Wii, Xbox, Xbox 360, PS3, PS1, PS2, or PSP magic",
         path.display()
     ))
 }
@@ -458,6 +473,49 @@ mod tests {
         match read_info(&path, &opts).unwrap() {
             InfoResult::Xbox(info) => assert_eq!(info.kind, PartitionKind::Xgd2),
             other => panic!("expected Xbox variant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn detect_psx_by_cue_extension() {
+        let r = detect_console(Path::new("/tmp/game.cue")).expect("detect cue");
+        assert_eq!(r, DetectedConsole::Psx);
+    }
+
+    #[test]
+    fn detect_playstation_isos_by_iso9660_probe() {
+        use crate::util::iso9660::test_fixtures::{IsoSpec, make_iso};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        for (name, iso, want) in [
+            (
+                "ps2.iso",
+                make_iso(&IsoSpec {
+                    system_id: b"PLAYSTATION",
+                    volume_sectors: 2_000_000,
+                    root_entries: &[(b"SYSTEM.CNF;1", false)],
+                    file_content: b"BOOT2 = cdrom0:\\SLUS_203.12;1\r\n",
+                }),
+                DetectedConsole::Psx,
+            ),
+            (
+                "psp.iso",
+                make_iso(&IsoSpec {
+                    system_id: b"PSP GAME",
+                    volume_sectors: 800_000,
+                    root_entries: &[],
+                    file_content: &[],
+                }),
+                DetectedConsole::Psp,
+            ),
+        ] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, iso).expect("write image");
+            assert_eq!(
+                detect_console(&path).expect("detect console"),
+                want,
+                "{name}"
+            );
         }
     }
 

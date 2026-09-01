@@ -4,6 +4,7 @@
 
 use crate::chd::reader::cue_generator::parse_chd_track_metadata;
 use crate::chd::reader::open_chd_sync;
+use crate::sony_disc::DiscContent;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -29,6 +30,9 @@ pub struct ChdInfo {
     pub version_string: Option<String>,
     /// DVD-only fields derived when a `DVD ` metadata tag is present.
     pub dvd: Option<ChdDvdInfo>,
+    /// Metadata of the PlayStation-family disc the CHD carries, when it
+    /// carries one.
+    pub content: Option<DiscContent>,
 }
 
 /// One CD track parsed from the CHD's CHT2 metadata.
@@ -129,6 +133,7 @@ pub fn read_info(path: &Path) -> Result<ChdInfo> {
         metadata_tags,
         version_string,
         dvd,
+        content: crate::sony_disc::chd_disc_content(path),
     })
 }
 

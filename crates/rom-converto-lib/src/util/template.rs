@@ -140,6 +140,23 @@ impl TemplateTokens {
                 tokens.console = Some("PS3".to_string());
                 tokens.serial = p.title_id.clone().and_then(non_empty);
             }
+            InfoResult::Psx(p) => {
+                tokens.title_id = p.title_id.clone().and_then(non_empty);
+                tokens.console = if p.disc_kind.starts_with("PS1") {
+                    Some("PS1".to_string())
+                } else if p.disc_kind.starts_with("PS2") {
+                    Some("PS2".to_string())
+                } else {
+                    None
+                };
+                tokens.serial = p.title_id.clone().and_then(non_empty);
+            }
+            InfoResult::Psp(p) => {
+                tokens.title = p.title.clone().and_then(non_empty);
+                tokens.title_id = p.title_id.clone().and_then(non_empty);
+                tokens.console = Some("PSP".to_string());
+                tokens.serial = p.title_id.clone().and_then(non_empty);
+            }
         }
 
         tokens.title = tokens.title.and_then(|t| non_empty(t.trim().to_string()));

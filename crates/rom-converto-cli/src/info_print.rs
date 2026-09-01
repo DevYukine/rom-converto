@@ -1,5 +1,5 @@
 use anyhow::Result;
-use rom_converto_lib::info::InfoResult;
+use rom_converto_lib::info::{DiscContent, InfoResult};
 use rom_converto_lib::microsoft::xex::XexInfo;
 use std::fmt::Write;
 
@@ -70,6 +70,8 @@ pub fn print(result: &InfoResult, json: bool) -> Result<()> {
         InfoResult::Xbox(info) => render_xbox(info),
         InfoResult::Xenon(info) => render_xenon(info),
         InfoResult::Ps3(info) => render_ps3(info),
+        InfoResult::Psx(info) => render_psx(info),
+        InfoResult::Psp(info) => render_psp(info),
     };
     print!("{}", rendered);
     Ok(())
@@ -90,7 +92,13 @@ fn render_cso(info: &rom_converto_lib::info::CsoInfo) -> String {
         "Compression ratio",
         format!("{:.2}%", info.compression_ratio),
     );
-    t.render()
+    let mut out = t.render();
+
+    if let Some(content) = &info.content {
+        push_disc_content(&mut out, content);
+    }
+
+    out
 }
 
 fn render_chd(info: &rom_converto_lib::info::ChdInfo) -> String {
@@ -154,6 +162,10 @@ fn render_chd(info: &rom_converto_lib::info::ChdInfo) -> String {
         for tag in &info.metadata_tags {
             out.push_str(&format!("  {}  ({} bytes)\n", tag.tag, tag.length));
         }
+    }
+
+    if let Some(content) = &info.content {
+        push_disc_content(&mut out, content);
     }
 
     out
@@ -753,6 +765,75 @@ fn render_ps3(info: &rom_converto_lib::info::Ps3Info) -> String {
         t.push("Parental level", format!("{}", p));
     }
     t.render()
+}
+
+fn render_psx(info: &rom_converto_lib::info::PsxInfo) -> String {
+    let mut t = KeyValueTable::new();
+    t.push("Format", info.disc_kind.clone());
+    if let Some(v) = &info.title_id {
+        t.push("Title ID", v.clone());
+    }
+    if let Some(v) = &info.boot_executable {
+        t.push("Boot executable", v.clone());
+    }
+    if let Some(v) = &info.volume_id {
+        t.push("Volume ID", v.clone());
+    }
+    if let Some(v) = &info.version {
+        t.push("Version", v.clone());
+    }
+    t.push("Sectors", format!("{}", info.total_sectors));
+    t.push("Size", format!("{}", info.size_bytes));
+    t.render()
+}
+
+fn render_psp(info: &rom_converto_lib::info::PspInfo) -> String {
+    let mut t = KeyValueTable::new();
+    t.push("Format", "PSP UMD");
+    if let Some(v) = &info.title {
+        t.push("Title", v.clone());
+    }
+    if let Some(v) = &info.title_id {
+        t.push("Title ID", v.clone());
+    }
+    if let Some(v) = &info.version {
+        t.push("Version", v.clone());
+    }
+    if let Some(v) = &info.firmware {
+        t.push("Firmware", v.clone());
+    }
+    if let Some(v) = &info.category {
+        t.push("Category", v.clone());
+    }
+    t.push("Sectors", format!("{}", info.total_sectors));
+    t.push("Size", format!("{}", info.size_bytes));
+    let mut out = t.render();
+
+    if let Some(img) = &info.icon {
+        out.push_str(&format!(
+            "\nIcon: {}x{} PNG ({} bytes)\n",
+            img.width,
+            img.height,
+            img.png_bytes.len()
+        ));
+    }
+
+    out
+}
+
+/// Appends a `Content:` section rendering the PlayStation-family disc a
+/// CHD or CSO container carries, indented under the container's own table.
+fn push_disc_content(out: &mut String, content: &DiscContent) {
+    let inner = match content {
+        DiscContent::Psx(psx) => render_psx(psx),
+        DiscContent::Psp(psp) => render_psp(psp),
+    };
+    out.push_str("\nContent:\n");
+    for line in inner.lines() {
+        out.push_str("  ");
+        out.push_str(line);
+        out.push('\n');
+    }
 }
 
 fn render_xenon(info: &rom_converto_lib::info::ZarInfo) -> String {

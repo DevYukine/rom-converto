@@ -26,6 +26,8 @@ For RVZ and NSZ/XCZ the output is byte-identical to the reference encoder (Dolph
 
 Single-image commands (compress, decompress, convert, extract, verify, info, and `hash`) also read a `.zip`, `.7z`, `.rar`, `.tar`, or `.tar.gz`/`.tgz` archive directly and operate on the first matching member. See [`docs/cli.md`](docs/cli.md) for the details.
 
+`rom-converto info <input>` auto-detects the console and inspects any format above without naming it, including PS1/PS2 (`.iso`, `.cue`+`.bin`) and PSP (`.iso`) title metadata; `chd info` and `cso info` also report the PlayStation disc found inside the container, when there is one.
+
 ## Installation
 
 Download a prebuilt binary from the [GitHub Releases](https://github.com/DevYukine/rom-converto/releases) page. The CLI and GUI are published for Windows, macOS, and Linux.
@@ -82,6 +84,7 @@ Each top-level command is a console or format family, and every family has opera
 | `xbox` | Convert, extract, and inspect Original Xbox disc images (XISO) |
 | `xenon` | Compress, extract, verify, and inspect Xbox 360 disc images (ZAR) |
 | `ps3` | Decrypt and inspect PlayStation 3 disc images |
+| `info` | Auto-detect the console and inspect any supported ROM or disc image |
 | `dat` | Identify, verify, and rename ROMs against the Playmatch database |
 | `hash` | Compute CRC32, SHA-1, MD5, and SHA-256 digests |
 | `playlist` | Generate `.m3u` files for multi-disc sets |

@@ -6,6 +6,7 @@ use crate::commands::cue::CueCommands;
 use crate::commands::dat::DatCommands;
 use crate::commands::dol::DolCommands;
 use crate::commands::hash::HashCommand;
+use crate::commands::info_command::InfoCommand;
 use crate::commands::nx::NxCommands;
 use crate::commands::playlist::PlaylistCommand;
 use crate::commands::ps3::Ps3Commands;
@@ -134,6 +135,9 @@ pub enum Commands {
     Dat(DatCommands),
 
     Hash(HashCommand),
+
+    /// Auto-detect the console of a ROM or disc image and print its metadata
+    Info(InfoCommand),
 
     Playlist(PlaylistCommand),
 

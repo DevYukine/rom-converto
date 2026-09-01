@@ -11,7 +11,7 @@ use crate::ps3::error::Ps3Result;
 use crate::ps3::fs::read_plain_files;
 use crate::ps3::region::{SECTOR_SIZE, parse_region_table};
 use crate::ps3::sfb::Sfb;
-use crate::ps3::sfo::Sfo;
+use crate::util::sfo::Sfo;
 
 /// Summary of a PS3 disc's region table and plaintext `PARAM.SFO`/
 /// `PS3_DISC.SFB` metadata.

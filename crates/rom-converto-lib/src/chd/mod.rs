@@ -39,7 +39,7 @@ pub use compression::{
 pub mod error;
 pub mod info;
 pub(crate) mod map;
-mod models;
+pub(crate) mod models;
 pub(crate) mod reader;
 pub(crate) mod writer;
 
@@ -331,7 +331,7 @@ async fn convert_iso_to_chd_with_kind(
 /// logical size 12 * 2448 and a data SHA-1 over all 12 frames.
 const CD_TRACK_PADDING: u32 = 4;
 
-fn padded_track_frames(data_sectors: u32) -> u32 {
+pub(crate) fn padded_track_frames(data_sectors: u32) -> u32 {
     data_sectors.div_ceil(CD_TRACK_PADDING) * CD_TRACK_PADDING
 }
 

@@ -4,7 +4,7 @@ import { invoke, save } from "~/lib/ipc";
 import { useToast } from "~/composables/useToast";
 import { parseHashLine } from "~/lib/hash-lines";
 import PrimaryButton from "~/components/ui/PrimaryButton.vue";
-import { imageToDataUrl, nxTitleKindDisplayName, pickIconImage, type InfoResult, type XboxInfo } from "~/types/info";
+import { imageToDataUrl, nxTitleKindDisplayName, pickIconImage, type DiscContent, type InfoResult, type XboxInfo } from "~/types/info";
 
 const props = defineProps<{
 	info: InfoResult;
@@ -29,6 +29,8 @@ const CONSOLE_LABEL: Record<InfoResult["kind"], string> = {
 	xbox: "XBOX",
 	xenon: "XBOX 360",
 	ps3: "PS3",
+	psx: "PLAYSTATION",
+	psp: "PSP",
 };
 
 const iconUrl = computed(() => {
@@ -94,6 +96,8 @@ const sizeBytes = computed(() => {
 		case "xenon":
 			return props.info.compressed_size;
 		case "ps3":
+		case "psx":
+		case "psp":
 			return props.info.size_bytes;
 		default:
 			return props.info.physical_bytes;
@@ -133,6 +137,10 @@ const title = computed(() => {
 			return info.xex?.title_name || "Xbox 360 image";
 		case "ps3":
 			return info.title || info.title_id || "PS3 disc";
+		case "psx":
+			return info.title_id || info.volume_id || "PlayStation disc";
+		case "psp":
+			return info.title || info.title_id || "PSP disc";
 	}
 });
 
@@ -159,10 +167,18 @@ const formatBadge = computed(() => {
 			return "XENON";
 		case "ps3":
 			return "ISO";
+		case "psx":
+			return "DISC";
+		case "psp":
+			return "ISO";
 	}
 });
 
-const consoleBadge = computed(() => CONSOLE_LABEL[props.info.kind]);
+const consoleBadge = computed(() => {
+	const info = props.info;
+	if (info.kind === "psx") return info.disc_kind.toUpperCase();
+	return CONSOLE_LABEL[info.kind];
+});
 
 const metaLine = computed(() => {
 	const info = props.info;
@@ -200,6 +216,13 @@ const metaLine = computed(() => {
 		case "ps3":
 			if (info.region) parts.push(info.region);
 			if (info.version) parts.push(`v${info.version}`);
+			break;
+		case "psx":
+			if (info.version) parts.push(`v${info.version}`);
+			break;
+		case "psp":
+			if (info.firmware) parts.push(`fw ${info.firmware}`);
+			if (info.category) parts.push(info.category);
 			break;
 	}
 	return parts.filter(Boolean).join(" · ");
@@ -298,6 +321,16 @@ const contents = computed<ContentRow[]>(() => {
 	}
 });
 
+function addContentRows(add: (label: string, value: string | number | null | undefined) => void, content: DiscContent | null) {
+	if (!content) return;
+	if (content.kind === "psx") {
+		add("Disc Title ID", content.title_id);
+	} else {
+		add("Disc Title", content.title);
+		add("Disc Title ID", content.title_id);
+	}
+}
+
 const details = computed<Stat[]>(() => {
 	const info = props.info;
 	const rows: Stat[] = [];
@@ -387,6 +420,7 @@ const details = computed<Stat[]>(() => {
 			add("Logical size", formatBytes(info.logical_bytes));
 			if (info.dvd) add("DVD", `${info.dvd.total_sectors} sectors · ${info.dvd.layer_class}`);
 			if (info.metadata_tags.length) add("Metadata", info.metadata_tags.map((t) => t.tag).join(", "));
+			addContentRows(add, info.content);
 			break;
 		case "cso":
 			add("Format", `${info.format} v${info.version}`);
@@ -394,6 +428,7 @@ const details = computed<Stat[]>(() => {
 			add("Blocks", `${info.block_count} (${info.raw_block_count} raw)`);
 			add("Index shift", info.index_shift);
 			add("Uncompressed", formatBytes(info.uncompressed_size));
+			addContentRows(add, info.content);
 			break;
 		case "xbox":
 			add("Partition", formatXboxPartitionKind(info.partition_kind));
@@ -445,6 +480,19 @@ const details = computed<Stat[]>(() => {
 			add("Regions", info.region_count);
 			add("Total Sectors", info.total_sectors);
 			add("Encrypted Sectors", info.encrypted_sectors);
+			break;
+		case "psx":
+			add("Boot executable", info.boot_executable);
+			add("Volume ID", info.volume_id);
+			add("Version", info.version);
+			add("Total Sectors", info.total_sectors);
+			break;
+		case "psp":
+			add("Title ID", info.title_id);
+			add("Version", info.version);
+			add("Firmware", info.firmware);
+			add("Category", info.category);
+			add("Total Sectors", info.total_sectors);
 			break;
 	}
 	return rows;
@@ -533,6 +581,12 @@ function copyTitleId() {
 			value = info.full ? hex16(info.full.application_title_id) : "";
 			break;
 		case "ps3":
+			value = info.title_id ?? "";
+			break;
+		case "psx":
+			value = info.title_id ?? "";
+			break;
+		case "psp":
 			value = info.title_id ?? "";
 			break;
 		case "xbox":

@@ -21,12 +21,6 @@ const TITLE_STRING_ID: u16 = 0x8000;
 const NAMESPACE_IMAGE: u16 = 2;
 const ICON_ID: u64 = 0x8000;
 
-const PNG_SIGNATURE: &[u8; 4] = &[0x89, 0x50, 0x4E, 0x47];
-const PNG_IHDR_TAG: &[u8; 4] = b"IHDR";
-const PNG_IHDR_TAG_OFFSET: usize = 12;
-const PNG_IHDR_WIDTH: usize = 16;
-const PNG_IHDR_HEIGHT: usize = 20;
-
 #[derive(Default)]
 pub(crate) struct XdbfMeta {
     pub title_name: Option<String>,
@@ -98,19 +92,6 @@ fn xstr_title(data: &[u8]) -> Option<String> {
     None
 }
 
-fn png_image(data: &[u8]) -> Option<Image> {
-    if !data.starts_with(PNG_SIGNATURE)
-        || data.get(PNG_IHDR_TAG_OFFSET..PNG_IHDR_TAG_OFFSET + 4) != Some(PNG_IHDR_TAG)
-    {
-        return None;
-    }
-    Some(Image::new(
-        data.to_vec(),
-        read_u32(data, PNG_IHDR_WIDTH)?,
-        read_u32(data, PNG_IHDR_HEIGHT)?,
-    ))
-}
-
 /// SPA files disagree on whether string tables live in namespace 3 or 5, so
 /// entries are matched on the `XSTR` magic instead of the namespace number.
 pub(crate) fn parse_xdbf(bytes: &[u8]) -> XdbfMeta {
@@ -127,7 +108,7 @@ pub(crate) fn parse_xdbf(bytes: &[u8]) -> XdbfMeta {
             meta.title_name = xstr_title(data);
         }
         if meta.icon.is_none() && entry.namespace == NAMESPACE_IMAGE && entry.id == ICON_ID {
-            meta.icon = png_image(data);
+            meta.icon = Image::from_png(data.to_vec());
         }
     }
     meta

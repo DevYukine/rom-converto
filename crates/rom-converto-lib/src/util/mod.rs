@@ -18,6 +18,7 @@ pub mod pixel;
 pub mod plan;
 pub mod pread;
 pub mod report;
+pub mod sfo;
 pub mod tally;
 pub mod template;
 pub mod verify;

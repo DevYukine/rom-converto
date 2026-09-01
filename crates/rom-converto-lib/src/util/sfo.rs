@@ -1,8 +1,8 @@
-//! `\0PSF` (PARAM.SFO) key/value parser.
+//! `\0PSF` (PARAM.SFO) key/value parser, shared by the PS3 disc and PSP
+//! UMD metadata readers.
 
 use std::collections::BTreeMap;
-
-use crate::ps3::error::{Ps3Error, Ps3Result};
+use std::io;
 
 const MAGIC: &[u8; 4] = b"\0PSF";
 const HEADER_LEN: usize = 20;
@@ -14,15 +14,19 @@ const FMT_UTF8_SPECIAL: u16 = 0x0004;
 const FMT_UTF8: u16 = 0x0204;
 const FMT_U32: u16 = 0x0404;
 
+/// One `\0PSF` entry value; only the UTF-8 and `u32` formats are kept.
 #[derive(Debug, Clone)]
 pub enum SfoValue {
     Str(String),
     U32(u32),
 }
 
+/// A parsed `\0PSF` key/value table.
 pub struct Sfo(BTreeMap<String, SfoValue>);
 
 impl Sfo {
+    /// Returns the string value for `key`, or `None` when it is absent or
+    /// holds another type.
     pub fn get_str(&self, key: &str) -> Option<&str> {
         match self.0.get(key) {
             Some(SfoValue::Str(s)) => Some(s.as_str()),
@@ -30,6 +34,8 @@ impl Sfo {
         }
     }
 
+    /// Returns the `u32` value for `key`, or `None` when it is absent or
+    /// holds another type.
     pub fn get_u32(&self, key: &str) -> Option<u32> {
         match self.0.get(key) {
             Some(SfoValue::U32(v)) => Some(*v),
@@ -37,21 +43,23 @@ impl Sfo {
         }
     }
 
-    pub fn parse(data: &[u8]) -> Ps3Result<Sfo> {
+    /// Parses a `\0PSF` blob. Malformed individual entries are skipped;
+    /// only a bad header or an oversized index table errors.
+    pub fn parse(data: &[u8]) -> io::Result<Sfo> {
         if data.len() < HEADER_LEN || &data[0..4] != MAGIC {
-            return Err(Ps3Error::InvalidSfo("missing \\0PSF header".into()));
+            return Err(invalid("missing \\0PSF header"));
         }
         let key_table_start = read_u32(data, 8) as usize;
         let data_table_start = read_u32(data, 12) as usize;
         let num_entries = read_u32(data, 16);
         if num_entries > MAX_ENTRIES {
-            return Err(Ps3Error::InvalidSfo(format!(
+            return Err(invalid(format!(
                 "entry count {num_entries} exceeds cap {MAX_ENTRIES}"
             )));
         }
         let index_end = HEADER_LEN + num_entries as usize * INDEX_ENTRY_LEN;
         if index_end > data.len() {
-            return Err(Ps3Error::InvalidSfo("index table exceeds input".into()));
+            return Err(invalid("index table exceeds input"));
         }
 
         // Offsets past this point come from the file; every access is
@@ -94,6 +102,10 @@ impl Sfo {
     }
 }
 
+fn invalid(msg: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, msg)
+}
+
 fn read_u16(data: &[u8], off: usize) -> u16 {
     u16::from_le_bytes(data[off..off + 2].try_into().expect("2-byte slice"))
 }
@@ -109,15 +121,16 @@ fn read_c_string(data: &[u8], pos: usize) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod test_fixtures {
     use super::*;
 
-    enum Val {
+    pub enum Val {
         Str(&'static str),
         U32(u32),
     }
 
-    fn build_sfo(entries: &[(&str, Val)]) -> Vec<u8> {
+    /// Builds a minimal `\0PSF` blob holding `entries`.
+    pub fn build_sfo(entries: &[(&str, Val)]) -> Vec<u8> {
         let mut key_table = Vec::new();
         let mut key_offsets = Vec::new();
         for (k, _) in entries {
@@ -166,6 +179,12 @@ mod tests {
         out.extend_from_slice(&data_table);
         out
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_fixtures::{Val, build_sfo};
+    use super::*;
 
     #[test]
     fn parses_strings_and_u32() {

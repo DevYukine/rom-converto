@@ -28,7 +28,6 @@ pub(crate) mod fs;
 pub(crate) mod key;
 pub(crate) mod region;
 pub(crate) mod sfb;
-pub(crate) mod sfo;
 pub(crate) mod worker;
 
 pub use error::{Ps3Error, Ps3Result};
