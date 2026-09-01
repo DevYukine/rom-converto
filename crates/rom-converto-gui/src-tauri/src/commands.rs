@@ -60,7 +60,7 @@ use rom_converto_lib::pipeline::{chd_to_cso_cancellable, cso_to_chd_cancellable,
 use rom_converto_lib::playlist::{PlaylistMode, PlaylistOptions, plan_playlists};
 use rom_converto_lib::ps3::{
     Ps3Error, decrypt_ps3_iso_cancellable, derive_decrypted_path as derive_ps3_decrypted_path,
-    load_ps3_key,
+    resolve_ps3_key,
 };
 use rom_converto_lib::util::HashCache;
 use rom_converto_lib::util::NX_DAT_UNSUPPORTED_HINT;
@@ -2969,7 +2969,8 @@ pub async fn cmd_ps3_decrypt(
         input_size(resolved.path()),
         skip_space_check,
     )?;
-    let ps3_key = load_ps3_key(&basis, key.as_deref()).map_err(err_to_string)?;
+    let ps3_key =
+        resolve_ps3_key(resolved.path(), &basis, key.as_deref()).map_err(err_to_string)?;
     let in_bytes = input_size(&input);
     let record_input = input.clone();
     let record_output = output.clone();

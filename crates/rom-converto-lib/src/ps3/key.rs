@@ -42,24 +42,51 @@ impl Ps3Key {
     }
 }
 
-/// Resolve and load the data key for `input`.
+/// Resolve the data key for `disc_path`.
 ///
-/// Precedence: explicit `override_path` when supplied, else the sibling
-/// `<input_stem>.dkey`. Returns [`Ps3Error::KeyMissing`] naming the
-/// override path if it was given but doesn't exist, or `input` if
-/// neither exists.
-pub fn load_ps3_key(input: &Path, override_path: Option<&Path>) -> Ps3Result<Ps3Key> {
-    let chosen = match override_path {
-        Some(p) if p.is_file() => p.to_path_buf(),
-        Some(p) => return Err(Ps3Error::KeyMissing(p.to_path_buf())),
-        None => resolve_sibling_key_path(input)
-            .ok_or_else(|| Ps3Error::KeyMissing(input.to_path_buf()))?,
-    };
-    fs::read(&chosen)
+/// Precedence: an explicit `override_path` (`--key`) always wins; else
+/// the embedded disc-key database keyed by the disc's `TITLE_ID`; else a
+/// sibling `<key_basis>.dkey`. `key_basis` is the naming basis for the
+/// sibling lookup (the original input), which can differ from
+/// `disc_path` when the disc was extracted from an archive.
+///
+/// Returns [`Ps3Error::KeyMissing`] naming the override path when it was
+/// given but doesn't exist, or `key_basis` when no key is found anywhere.
+pub fn resolve_ps3_key(
+    disc_path: &Path,
+    key_basis: &Path,
+    override_path: Option<&Path>,
+) -> Ps3Result<Ps3Key> {
+    if let Some(p) = override_path {
+        return if p.is_file() {
+            load_key_file(p)
+        } else {
+            Err(Ps3Error::KeyMissing(p.to_path_buf()))
+        };
+    }
+    if let Some(key) = embedded_key_for_disc(disc_path) {
+        return Ok(key);
+    }
+    if let Some(sibling) = resolve_sibling_key_path(key_basis) {
+        return load_key_file(&sibling);
+    }
+    Err(Ps3Error::KeyMissing(key_basis.to_path_buf()))
+}
+
+/// Read the disc's `TITLE_ID` from the plaintext metadata and look it up
+/// in the embedded database. Any read/parse failure yields `None` so
+/// resolution falls through to a `.dkey` file.
+fn embedded_key_for_disc(disc_path: &Path) -> Option<Ps3Key> {
+    let title_id = crate::ps3::read_ps3_info(disc_path).ok()?.title_id?;
+    crate::ps3::embedded_keys::embedded_key(&title_id)
+}
+
+fn load_key_file(path: &Path) -> Ps3Result<Ps3Key> {
+    fs::read(path)
         .map_err(|e| {
             Ps3Error::Io(std::io::Error::new(
                 e.kind(),
-                format!("{}: {e}", chosen.display()),
+                format!("{}: {e}", path.display()),
             ))
         })
         .and_then(|contents| Ps3Key::from_dkey_contents(&contents))
@@ -75,6 +102,9 @@ fn resolve_sibling_key_path(input: &Path) -> Option<PathBuf> {
 mod tests {
     use super::*;
 
+    const HEX_KEY: &str = "000102030405060708090A0B0C0D0E0F";
+    const RAW_KEY: [u8; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+
     #[test]
     fn missing_override_path_reports_key_missing_for_the_override() {
         let dir = tempfile::tempdir().unwrap();
@@ -82,17 +112,42 @@ mod tests {
         std::fs::write(&input, b"").unwrap();
         let override_path = dir.path().join("nope.dkey");
 
-        let err = load_ps3_key(&input, Some(&override_path)).unwrap_err();
+        let err = resolve_ps3_key(&input, &input, Some(&override_path)).unwrap_err();
         assert!(matches!(err, Ps3Error::KeyMissing(p) if p == override_path));
     }
 
     #[test]
-    fn no_sibling_dkey_reports_key_missing_for_the_input() {
+    fn override_file_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("game.iso");
+        std::fs::write(&input, b"").unwrap();
+        let override_path = dir.path().join("k.dkey");
+        std::fs::write(&override_path, HEX_KEY).unwrap();
+
+        let key = resolve_ps3_key(&input, &input, Some(&override_path)).unwrap();
+        assert_eq!(key, Ps3Key(RAW_KEY));
+    }
+
+    #[test]
+    fn falls_back_to_sibling_dkey() {
+        // A non-PS3 input can't resolve an embedded key, so a sibling
+        // .dkey is used.
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("game.iso");
+        std::fs::write(&input, b"").unwrap();
+        std::fs::write(dir.path().join("game.dkey"), HEX_KEY).unwrap();
+
+        let key = resolve_ps3_key(&input, &input, None).unwrap();
+        assert_eq!(key, Ps3Key(RAW_KEY));
+    }
+
+    #[test]
+    fn no_key_anywhere_reports_key_missing_for_the_basis() {
         let dir = tempfile::tempdir().unwrap();
         let input = dir.path().join("game.iso");
         std::fs::write(&input, b"").unwrap();
 
-        let err = load_ps3_key(&input, None).unwrap_err();
+        let err = resolve_ps3_key(&input, &input, None).unwrap_err();
         assert!(matches!(err, Ps3Error::KeyMissing(p) if p == input));
     }
 }

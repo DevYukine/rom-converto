@@ -13,7 +13,7 @@ pub enum Ps3Commands {
 /// Decrypt a PS3 ISO into a plain ISO
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
-    long_about = "Decrypt a PS3 ISO into a plain ISO\n\nThe disc alternates plain and encrypted sector regions; encrypted regions are AES-128-CBC decrypted with the per-disc data key. Output covers the region-table's sector span; trailing padding past it is not copied.\n\nThe data key is resolved from --key, else a sibling <input>.dkey.",
+    long_about = "Decrypt a PS3 ISO into a plain ISO\n\nThe disc alternates plain and encrypted sector regions; encrypted regions are AES-128-CBC decrypted with the per-disc data key. Output covers the region-table's sector span; trailing padding past it is not copied.\n\nThe data key is resolved from --key, else the built-in database keyed by the disc's title ID, else a sibling <input>.dkey.",
     after_long_help = "EXAMPLES:\n  Single file:     rom-converto ps3 decrypt game.iso\n  Explicit key:    rom-converto ps3 decrypt --key game.dkey game.iso game.dec.iso\n  Whole folder:    rom-converto ps3 decrypt -R ./roms --output-dir ./decrypted\n"
 )]
 pub struct DecryptPs3Command {
@@ -44,9 +44,10 @@ pub struct DecryptPs3Command {
     #[arg(long = "output-template", value_name = "TEMPLATE", conflicts_with_all = ["output", "output_flag"])]
     pub output_template: Option<String>,
 
-    /// Disc data key file (.dkey). Auto-discovers a sibling `<input>.dkey` when omitted.
-    /// Can't be combined with --recursive: one key can't be right for every disc in the
-    /// batch. Place a per-disc <name>.dkey file next to each ISO instead
+    /// Disc data key file (.dkey). Optional: when omitted the key is looked up in the
+    /// built-in database by the disc's title ID, then a sibling `<input>.dkey`. Pass this
+    /// to override that for a disc the database doesn't cover. Can't be combined with
+    /// --recursive: one key can't be right for every disc in the batch
     #[arg(long = "key", value_name = "FILE", conflicts_with = "recursive")]
     pub key: Option<PathBuf>,
 

@@ -82,7 +82,7 @@ use rom_converto_lib::nintendo::wup::{
 };
 use rom_converto_lib::pipeline::{chd_to_cso_cancellable, cso_to_chd_cancellable, cue_to_cso};
 use rom_converto_lib::playlist::{PlaylistMode, PlaylistOptions, plan_playlists};
-use rom_converto_lib::ps3::{decrypt_ps3_iso_cancellable, load_ps3_key, read_ps3_info};
+use rom_converto_lib::ps3::{decrypt_ps3_iso_cancellable, read_ps3_info, resolve_ps3_key};
 use rom_converto_lib::util::fs::{collect_files_with_exts, is_os_junk_dir};
 use rom_converto_lib::util::{
     ChecksumBounds, FileDigests, HashAlgo, Tally, TallyDirection, hash_file,
@@ -3003,7 +3003,7 @@ async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()>
                         let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
                         batch::space_preflight_for_size(file_len(input), check_dir)?;
                     }
-                    let key = load_ps3_key(resolved.output_basis(), cmd.key.as_deref())?;
+                    let key = resolve_ps3_key(input, resolved.output_basis(), cmd.key.as_deref())?;
                     let in_path = input.to_path_buf();
                     let out_path = output.clone();
                     let started = Instant::now();
@@ -3046,7 +3046,7 @@ async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()>
                 let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["iso"])?;
                 let input = resolved.path();
                 let size = file_len(input);
-                let key = load_ps3_key(resolved.output_basis(), cmd.keys.as_deref());
+                let key = resolve_ps3_key(input, resolved.output_basis(), cmd.keys.as_deref());
                 let info = read_ps3_info(input);
                 let meta = info.as_ref().ok();
                 if cmd.json {

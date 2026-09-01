@@ -432,7 +432,7 @@ pub async fn ps3_decrypt(run: &BatchRun<'_>, skip_probe: bool) -> Result<()> {
         report_path,
         cancel,
     } = *run;
-    use rom_converto_lib::ps3::{Ps3Error, decrypt_ps3_iso_cancellable, load_ps3_key};
+    use rom_converto_lib::ps3::{Ps3Error, decrypt_ps3_iso_cancellable, resolve_ps3_key};
 
     let files = collect_or_warn(input_dir, &["iso"], max_depth)?;
     if files.is_empty() {
@@ -504,7 +504,7 @@ pub async fn ps3_decrypt(run: &BatchRun<'_>, skip_probe: bool) -> Result<()> {
                 continue;
             }
         };
-        let disc_key = match load_ps3_key(&path, None) {
+        let disc_key = match resolve_ps3_key(&path, &path, None) {
             Ok(k) => k,
             Err(e) => {
                 warn!("Failed to resolve PS3 key for {}: {e}", path.display());

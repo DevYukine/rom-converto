@@ -23,6 +23,7 @@ pub mod error;
 pub mod info;
 
 pub(crate) mod crypto;
+pub(crate) mod embedded_keys;
 pub(crate) mod fs;
 pub(crate) mod key;
 pub(crate) mod region;
@@ -32,7 +33,7 @@ pub(crate) mod worker;
 
 pub use error::{Ps3Error, Ps3Result};
 pub use info::{Ps3Info, read_ps3_info};
-pub use key::{Ps3Key, load_ps3_key};
+pub use key::{Ps3Key, resolve_ps3_key};
 
 use crypto::decrypt_sector;
 pub use region::{Region, SECTOR_SIZE, parse_region_table};
