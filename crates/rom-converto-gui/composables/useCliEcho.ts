@@ -314,6 +314,19 @@ export function buildCliCommand(command: string, args: Record<string, unknown>, 
         conflict(args),
         quote(str(args.input)),
       ]);
+    case "cmd_ps3_decrypt": {
+      const key = str(args.key);
+      return join([
+        args.dryRun === true && "--dry-run",
+        args.skipSpaceCheck === true && "--skip-space-check",
+        "ps3", "decrypt",
+        key && `--key ${quote(key)}`,
+        conflict(args),
+        template(args),
+        quote(str(args.input)),
+        outputArg(args),
+      ]);
+    }
     case "cmd_wup_verify": {
       const keys = str(args.keys);
       return join(["wup", "verify", keys && `--key ${quote(keys)}`, quote(str(args.input))]);

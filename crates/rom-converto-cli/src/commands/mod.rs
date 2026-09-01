@@ -8,6 +8,7 @@ use crate::commands::dol::DolCommands;
 use crate::commands::hash::HashCommand;
 use crate::commands::nx::NxCommands;
 use crate::commands::playlist::PlaylistCommand;
+use crate::commands::ps3::Ps3Commands;
 use crate::commands::rvl::RvlCommands;
 use crate::commands::wup::WupCommands;
 use crate::commands::xbox::XboxCommands;
@@ -27,6 +28,7 @@ pub mod hash;
 pub mod info_command;
 pub mod nx;
 pub mod playlist;
+pub mod ps3;
 pub mod rvl;
 pub mod wup;
 pub mod xbox;
@@ -115,6 +117,9 @@ pub enum Commands {
 
     #[command(subcommand)]
     Xenon(XenonCommands),
+
+    #[command(subcommand)]
+    Ps3(Ps3Commands),
 
     #[command(subcommand)]
     Chd(ChdCommands),

@@ -12,6 +12,7 @@ use crate::commands::dat::DatCommands;
 use crate::commands::dol::DolCommands;
 use crate::commands::nx::NxCommands;
 use crate::commands::playlist::PlaylistModeArg;
+use crate::commands::ps3::Ps3Commands;
 use crate::commands::rvl::RvlCommands;
 use crate::commands::wup::WupCommands;
 use crate::commands::xbox::XboxCommands;
@@ -81,6 +82,7 @@ use rom_converto_lib::nintendo::wup::{
 };
 use rom_converto_lib::pipeline::{chd_to_cso_cancellable, cso_to_chd_cancellable, cue_to_cso};
 use rom_converto_lib::playlist::{PlaylistMode, PlaylistOptions, plan_playlists};
+use rom_converto_lib::ps3::{decrypt_ps3_iso_cancellable, load_ps3_key, read_ps3_info};
 use rom_converto_lib::util::fs::{collect_files_with_exts, is_os_junk_dir};
 use rom_converto_lib::util::{
     ChecksumBounds, FileDigests, HashAlgo, Tally, TallyDirection, hash_file,
@@ -211,6 +213,37 @@ fn finish_single(
             total_input_bytes: in_bytes,
             total_output_bytes: out_bytes,
             elapsed_ms,
+            ..ReportTotals::default()
+        };
+        write_report(path, &[record], &totals, ReportFormat::from_path(path))?;
+    }
+    Ok(())
+}
+
+fn skipped_single(
+    input: &Path,
+    op: &str,
+    reason: impl std::fmt::Display,
+    report: Option<&Path>,
+) -> Result<()> {
+    use rom_converto_lib::util::{
+        FileStatus, ReportFormat, ReportRecord, ReportRecordInput, ReportTotals, write_report,
+    };
+
+    if let Some(path) = report {
+        let record = ReportRecord::new(ReportRecordInput {
+            input_path: input.display().to_string(),
+            output_path: String::new(),
+            operation: op.into(),
+            status: FileStatus::Skipped,
+            input_bytes: 0,
+            output_bytes: 0,
+            elapsed_ms: 0,
+            error: Some(reason.to_string()),
+        });
+        let totals = ReportTotals {
+            total_files: 1,
+            skipped: 1,
             ..ReportTotals::default()
         };
         write_report(path, &[record], &totals, ReportFormat::from_path(path))?;
@@ -776,6 +809,7 @@ fn is_cancelled_error(err: &anyhow::Error) -> bool {
     use rom_converto_lib::nintendo::nx::NxError;
     use rom_converto_lib::nintendo::rvz::RvzError;
     use rom_converto_lib::nintendo::wup::WupError;
+    use rom_converto_lib::ps3::Ps3Error;
 
     err.chain().any(|cause| {
         matches!(cause.downcast_ref::<ChdError>(), Some(ChdError::Cancelled))
@@ -800,6 +834,7 @@ fn is_cancelled_error(err: &anyhow::Error) -> bool {
                 cause.downcast_ref::<XenonError>(),
                 Some(XenonError::Cancelled)
             )
+            || matches!(cause.downcast_ref::<Ps3Error>(), Some(Ps3Error::Cancelled))
     })
 }
 
@@ -1492,7 +1527,7 @@ async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()>
             }
             CtrCommands::Info(cmd) => {
                 if cmd.keys.is_some() {
-                    anyhow::bail!("--keys is only supported by nx and wup info");
+                    anyhow::bail!("--keys is only supported by nx, wup, and ps3 info");
                 }
                 ensure_input_exists(&cmd.input)?;
                 let resolved = rom_converto_lib::util::resolve_input(&cmd.input, ALL_IMAGE_EXTS)?;
@@ -1822,7 +1857,7 @@ async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()>
             }
             DolCommands::Info(cmd) => {
                 if cmd.keys.is_some() {
-                    anyhow::bail!("--keys is only supported by nx and wup info");
+                    anyhow::bail!("--keys is only supported by nx, wup, and ps3 info");
                 }
                 ensure_input_exists(&cmd.input)?;
                 let resolved = rom_converto_lib::util::resolve_input(&cmd.input, ALL_IMAGE_EXTS)?;
@@ -2169,7 +2204,7 @@ async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()>
             }
             RvlCommands::Info(cmd) => {
                 if cmd.keys.is_some() {
-                    anyhow::bail!("--keys is only supported by nx and wup info");
+                    anyhow::bail!("--keys is only supported by nx, wup, and ps3 info");
                 }
                 ensure_input_exists(&cmd.input)?;
                 let resolved = rom_converto_lib::util::resolve_input(&cmd.input, ALL_IMAGE_EXTS)?;
@@ -2887,6 +2922,220 @@ async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()>
                 }
             }
         },
+        Commands::Ps3(inner) => match inner {
+            Ps3Commands::Decrypt(cmd) => {
+                let output_dir = cmd.output_dir.clone();
+                let report = cmd.report.clone();
+                if cmd.recursive {
+                    require_dir(&cmd.input)?;
+                    let policy = resolve_policy(
+                        cmd.on_conflict,
+                        cmd.force,
+                        rom_converto_lib::util::ConflictPolicy::Error,
+                    );
+                    let run = batch::BatchRun {
+                        progress: &progress,
+                        total_progress: &total_progress,
+                        input_dir: &cmd.input,
+                        policy,
+                        output_dir: output_dir.as_deref(),
+                        output_template: cmd.output_template.as_deref(),
+                        max_depth: cmd.max_depth,
+                        dry_run,
+                        skip_space_check,
+                        report_path: report.as_deref(),
+                        cancel: &cancel,
+                    };
+                    batch::ps3_decrypt(&run, cmd.skip_probe).await?
+                } else {
+                    ensure_input_exists(&cmd.input)?;
+                    let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["iso"])?;
+                    let input = resolved.path();
+                    let output = match cmd.output_flag.or(cmd.output) {
+                        Some(p) => p,
+                        None => {
+                            if !dry_run && let Some(dir) = output_dir.as_deref() {
+                                std::fs::create_dir_all(dir)?;
+                            }
+                            match cmd.output_template.as_deref() {
+                                Some(tmpl) => crate::util::templated_output(
+                                    tmpl,
+                                    input,
+                                    output_dir.as_deref(),
+                                    "iso",
+                                    None,
+                                    dry_run,
+                                )?,
+                                None => rom_converto_lib::util::place_in_dir(
+                                    &rom_converto_lib::ps3::derive_decrypted_path(
+                                        resolved.output_basis(),
+                                    ),
+                                    output_dir.as_deref(),
+                                ),
+                            }
+                        }
+                    };
+                    let policy = resolve_policy(
+                        cmd.on_conflict,
+                        cmd.force,
+                        rom_converto_lib::util::ConflictPolicy::Error,
+                    );
+                    let decision = resolve_output(&output, policy)?;
+                    if dry_run {
+                        return dry_run_single(
+                            "decrypt",
+                            &cmd.input,
+                            &output,
+                            &decision,
+                            None,
+                            None,
+                            report.as_deref(),
+                        );
+                    }
+                    let output = match decision {
+                        WriteDecision::Skip => {
+                            log_skipped(&output);
+                            return Ok(());
+                        }
+                        WriteDecision::Write(p) => p,
+                    };
+                    if !skip_space_check {
+                        let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
+                        batch::space_preflight_for_size(file_len(input), check_dir)?;
+                    }
+                    let key = load_ps3_key(resolved.output_basis(), cmd.key.as_deref())?;
+                    let in_path = input.to_path_buf();
+                    let out_path = output.clone();
+                    let started = Instant::now();
+                    match decrypt_ps3_iso_cancellable(
+                        &progress,
+                        in_path,
+                        output,
+                        key,
+                        true,
+                        cmd.skip_probe,
+                        cancel.clone(),
+                    )
+                    .await
+                    {
+                        Ok(()) => {}
+                        Err(e @ rom_converto_lib::ps3::Ps3Error::AlreadyDecrypted) => {
+                            log::info!("{} is already decrypted", cmd.input.display());
+                            skipped_single(&cmd.input, "decrypt", e, report.as_deref())?;
+                            return Ok(());
+                        }
+                        Err(e) => return Err(e.into()),
+                    }
+                    finish_single(
+                        &cmd.input,
+                        &out_path,
+                        TallyDirection::Convert,
+                        "decrypt",
+                        started,
+                        report.as_deref(),
+                    )?;
+                }
+            }
+            Ps3Commands::Info(cmd) => {
+                if cmd.save_icon.is_some() {
+                    anyhow::bail!(
+                        "--save-icon is not supported for ps3: the format has no embedded artwork"
+                    );
+                }
+                ensure_input_exists(&cmd.input)?;
+                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["iso"])?;
+                let input = resolved.path();
+                let size = file_len(input);
+                let key = load_ps3_key(resolved.output_basis(), cmd.keys.as_deref());
+                let info = read_ps3_info(input);
+                let meta = info.as_ref().ok();
+                if cmd.json {
+                    let key_json = match &key {
+                        Ok(_) => serde_json::json!({"resolved": true}),
+                        Err(e) => serde_json::json!({"resolved": false, "error": e.to_string()}),
+                    };
+                    let regions_json = match &info {
+                        Ok(i) => serde_json::json!({
+                            "regionCount": i.region_count,
+                            "totalSectors": i.total_sectors,
+                            "encryptedSectors": i.encrypted_sectors,
+                        }),
+                        Err(e) => serde_json::json!({"error": e.to_string()}),
+                    };
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "path": input.display().to_string(),
+                            "sizeBytes": size,
+                            "dataKey": key_json,
+                            "regions": regions_json,
+                            "title": meta.and_then(|i| i.title.clone()),
+                            "titleId": meta.and_then(|i| i.title_id.clone()),
+                            "region": meta.and_then(|i| i.region.clone()),
+                            "version": meta.and_then(|i| i.version.clone()),
+                            "appVer": meta.and_then(|i| i.app_ver.clone()),
+                            "resolution": meta.and_then(|i| i.resolution.clone()),
+                            "soundFormat": meta.and_then(|i| i.sound_format.clone()),
+                            "firmware": meta.and_then(|i| i.firmware.clone()),
+                            "parentalLevel": meta.and_then(|i| i.parental_level),
+                        }))?
+                    );
+                } else {
+                    let mut table = info_print::KeyValueTable::new();
+                    table.push("Path", input.display().to_string());
+                    if let Some(i) = meta {
+                        if let Some(v) = &i.title {
+                            table.push("Title", v.clone());
+                        }
+                        if let Some(v) = &i.title_id {
+                            table.push("Title ID", v.clone());
+                        }
+                        if let Some(v) = &i.region {
+                            table.push("Region", v.clone());
+                        }
+                        if let Some(v) = &i.version {
+                            table.push("Version", v.clone());
+                        }
+                        if let Some(v) = &i.app_ver {
+                            table.push("App version", v.clone());
+                        }
+                    }
+                    table.push("Size", rom_converto_lib::util::format_bytes(size));
+                    table.push(
+                        "Data key",
+                        match &key {
+                            Ok(_) => "resolved".to_string(),
+                            Err(e) => format!("not resolved ({e})"),
+                        },
+                    );
+                    match &info {
+                        Ok(i) => {
+                            table.push("Regions", format!("{}", i.region_count));
+                            table.push("Total sectors", format!("{}", i.total_sectors));
+                            table.push("Encrypted sectors", format!("{}", i.encrypted_sectors));
+                        }
+                        Err(e) => {
+                            table.push("Regions", format!("unavailable ({e})"));
+                        }
+                    }
+                    if let Some(i) = meta {
+                        if let Some(v) = &i.resolution {
+                            table.push("Resolution", v.clone());
+                        }
+                        if let Some(v) = &i.sound_format {
+                            table.push("Sound format", v.clone());
+                        }
+                        if let Some(v) = &i.firmware {
+                            table.push("Firmware", v.clone());
+                        }
+                        if let Some(p) = i.parental_level {
+                            table.push("Parental level", format!("{}", p));
+                        }
+                    }
+                    print!("{}", table.render());
+                }
+            }
+        },
         Commands::Chd(inner) => match inner {
             ChdCommands::Compress(cmd) => {
                 let eff = &effective.chd;
@@ -3280,7 +3529,7 @@ async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()>
             }
             ChdCommands::Info(cmd) => {
                 if cmd.keys.is_some() {
-                    anyhow::bail!("--keys is only supported by nx and wup info");
+                    anyhow::bail!("--keys is only supported by nx, wup, and ps3 info");
                 }
                 if cmd.save_icon.is_some() {
                     anyhow::bail!(
@@ -3672,7 +3921,7 @@ async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()>
             }
             CsoCommands::Info(cmd) => {
                 if cmd.keys.is_some() {
-                    anyhow::bail!("--keys is only supported by nx and wup info");
+                    anyhow::bail!("--keys is only supported by nx, wup, and ps3 info");
                 }
                 if cmd.save_icon.is_some() {
                     anyhow::bail!(

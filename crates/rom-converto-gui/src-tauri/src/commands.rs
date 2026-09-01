@@ -58,6 +58,10 @@ use rom_converto_lib::nintendo::wup::{
 };
 use rom_converto_lib::pipeline::{chd_to_cso_cancellable, cso_to_chd_cancellable, cue_to_cso};
 use rom_converto_lib::playlist::{PlaylistMode, PlaylistOptions, plan_playlists};
+use rom_converto_lib::ps3::{
+    Ps3Error, decrypt_ps3_iso_cancellable, derive_decrypted_path as derive_ps3_decrypted_path,
+    load_ps3_key,
+};
 use rom_converto_lib::util::HashCache;
 use rom_converto_lib::util::NX_DAT_UNSUPPORTED_HINT;
 use rom_converto_lib::util::fs::{collect_all_files, collect_files_with_exts};
@@ -102,6 +106,30 @@ impl RunOutcome {
         Self {
             message: format!("Skipped existing {}", desired.display()),
             record: build_skip_record(report, input, operation),
+            input_bytes: 0,
+            output_bytes: 0,
+            comparison: None,
+        }
+    }
+
+    /// A skip because the input is already in the target format (PS3's
+    /// already-decrypted check), distinct from a conflict-policy skip: there
+    /// is no output path, and the record's error carries the detection reason.
+    fn skipped_already_done(report: bool, input: &Path, reason: &Ps3Error) -> Self {
+        Self {
+            message: format!("Skipped {}: already decrypted", input.display()),
+            record: report.then(|| {
+                ReportRecord::new(ReportRecordInput {
+                    input_path: input.display().to_string(),
+                    output_path: String::new(),
+                    operation: "decrypt".into(),
+                    status: FileStatus::Skipped,
+                    input_bytes: 0,
+                    output_bytes: 0,
+                    elapsed_ms: 0,
+                    error: Some(reason.to_string()),
+                })
+            }),
             input_bytes: 0,
             output_bytes: 0,
             comparison: None,
@@ -2854,6 +2882,149 @@ pub async fn cmd_wup_decrypt(
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct Ps3DecryptArgs {
+    input: PathBuf,
+    output: Option<PathBuf>,
+    key: Option<PathBuf>,
+    #[serde(default)]
+    skip_probe: bool,
+    on_conflict: Option<String>,
+    skip_space_check: bool,
+    output_template: Option<String>,
+    report: Option<bool>,
+    dry_run: Option<bool>,
+    task_id: Option<String>,
+}
+
+#[tauri::command]
+pub async fn cmd_ps3_decrypt(
+    app: AppHandle,
+    state: State<'_, ActiveCancel>,
+    args: Ps3DecryptArgs,
+) -> Result<RunOutcome, String> {
+    let Ps3DecryptArgs {
+        input,
+        output,
+        key,
+        skip_probe,
+        on_conflict,
+        skip_space_check,
+        output_template,
+        report,
+        dry_run,
+        task_id,
+    } = args;
+    let task_key = task_id.as_deref().unwrap_or("ps3-decrypt");
+    let progress = Arc::new(TauriProgress::new(app, task_key));
+    let dry_run = dry_run.unwrap_or(false);
+    let resolved = resolve_archive_input(input.clone(), &["iso"]).await?;
+    let basis = resolved.output_basis().to_path_buf();
+    let ext = ext_of(&derive_ps3_decrypted_path(&basis));
+    let desired = pick_output(
+        output,
+        output_template.as_deref(),
+        &basis,
+        &ext,
+        key.as_deref(),
+        || derive_ps3_decrypted_path(&basis),
+        dry_run,
+    )?;
+    if dry_run {
+        let line = plan_line(
+            progress.as_ref(),
+            PlanInput {
+                operation: "decrypt",
+                input: &input,
+                desired: &desired,
+                on_conflict: on_conflict.as_deref(),
+                media: None,
+                verify: rom_converto_lib::util::OutputVerify::None,
+                missing_keys: None,
+            },
+        )
+        .await?;
+        return Ok(RunOutcome::text(line.display_text()));
+    }
+    let output = match resolve_output(
+        progress.as_ref(),
+        &desired,
+        on_conflict.as_deref(),
+        rom_converto_lib::util::OutputVerify::None,
+    )
+    .await?
+    {
+        Some(p) => p,
+        None => {
+            return Ok(RunOutcome::skipped(
+                report.unwrap_or(false),
+                &input,
+                "decrypt",
+                &desired,
+            ));
+        }
+    };
+    let out_display = output.display().to_string();
+    preflight_space(
+        output.parent().unwrap_or(&output),
+        input_size(resolved.path()),
+        skip_space_check,
+    )?;
+    let ps3_key = load_ps3_key(&basis, key.as_deref()).map_err(err_to_string)?;
+    let in_bytes = input_size(&input);
+    let record_input = input.clone();
+    let record_output = output.clone();
+    let resolved_path = resolved.path().to_path_buf();
+    let token = begin(&state, task_key).await;
+    let started = Instant::now();
+    let decrypt_result = tokio::spawn(async move {
+        decrypt_ps3_iso_cancellable(
+            progress.as_ref(),
+            resolved_path,
+            output,
+            ps3_key,
+            true,
+            skip_probe,
+            token,
+        )
+        .await
+    })
+    .await
+    .map_err(err_to_string)?;
+    finish(&state, task_key).await;
+    if let Err(e @ Ps3Error::AlreadyDecrypted) = &decrypt_result {
+        return Ok(RunOutcome::skipped_already_done(
+            report.unwrap_or(false),
+            &record_input,
+            e,
+        ));
+    }
+    decrypt_result.map_err(err_to_string)?;
+    let out_bytes = input_size(&record_output);
+    let record = build_record(
+        report.unwrap_or(false),
+        &record_input,
+        &record_output,
+        "decrypt",
+        in_bytes,
+        out_bytes,
+        started.elapsed(),
+    );
+    Ok(RunOutcome {
+        message: format!("Wrote {out_display}"),
+        record,
+        input_bytes: in_bytes,
+        output_bytes: out_bytes,
+        comparison: Some(comparison_sizes(
+            &record_input,
+            &record_output,
+            in_bytes,
+            out_bytes,
+        )),
+    })
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct NxCompressArgs {
     input: PathBuf,
     output: Option<PathBuf>,
@@ -5333,6 +5504,7 @@ fn extract_icon_png(info: &InfoResult) -> Option<Vec<u8>> {
         InfoResult::Cso(_) => None,
         InfoResult::Xbox(_) => None,
         InfoResult::Xenon(_) => None,
+        InfoResult::Ps3(_) => None,
     }
 }
 

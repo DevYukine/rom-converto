@@ -130,6 +130,13 @@ impl TemplateTokens {
             InfoResult::Xenon(_) => {
                 tokens.console = Some("Xbox 360".to_string());
             }
+            InfoResult::Ps3(p) => {
+                tokens.title = p.title.clone().and_then(non_empty);
+                tokens.title_id = p.title_id.clone().and_then(non_empty);
+                tokens.region = p.region.clone().and_then(non_empty);
+                tokens.console = Some("PS3".to_string());
+                tokens.serial = p.title_id.clone().and_then(non_empty);
+            }
         }
 
         tokens.title = tokens.title.and_then(|t| non_empty(t.trim().to_string()));

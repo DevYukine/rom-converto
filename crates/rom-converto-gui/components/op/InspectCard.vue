@@ -28,6 +28,7 @@ const CONSOLE_LABEL: Record<InfoResult["kind"], string> = {
 	cso: "CSO",
 	xbox: "XBOX",
 	xenon: "XBOX 360",
+	ps3: "PS3",
 };
 
 const iconUrl = computed(() => {
@@ -92,6 +93,8 @@ const sizeBytes = computed(() => {
 			return props.info.image_size;
 		case "xenon":
 			return props.info.compressed_size;
+		case "ps3":
+			return props.info.size_bytes;
 		default:
 			return props.info.physical_bytes;
 	}
@@ -128,6 +131,8 @@ const title = computed(() => {
 			return `${formatXboxPartitionKind(info.partition_kind)} image`;
 		case "xenon":
 			return "Xbox 360 image";
+		case "ps3":
+			return info.title || info.title_id || "PS3 disc";
 	}
 });
 
@@ -152,6 +157,8 @@ const formatBadge = computed(() => {
 			return formatXboxPartitionKind(info.partition_kind).toUpperCase();
 		case "xenon":
 			return "XENON";
+		case "ps3":
+			return "ISO";
 	}
 });
 
@@ -189,6 +196,10 @@ const metaLine = computed(() => {
 			break;
 		case "cso":
 			parts.push(`block ${info.block_size}`);
+			break;
+		case "ps3":
+			if (info.region) parts.push(info.region);
+			if (info.version) parts.push(`v${info.version}`);
 			break;
 	}
 	return parts.filter(Boolean).join(" · ");
@@ -241,6 +252,9 @@ const statRow = computed<Stat[]>(() => {
 		case "xenon":
 			stats.push({ label: "Ratio", value: `${xenonRatio(info.logical_size, info.compressed_size).toFixed(1)}%`, color: "green" });
 			stats.push({ label: "Blocks", value: String(info.block_count) });
+			break;
+		case "ps3":
+			if (info.title_id) stats.push({ label: "Title ID", value: info.title_id });
 			break;
 	}
 	return stats;
@@ -392,6 +406,18 @@ const details = computed<Stat[]>(() => {
 			add("Blocks", info.block_count);
 			add("default.xex", info.has_default_xex ? "present" : "missing");
 			break;
+		case "ps3":
+			add("Region", info.region);
+			add("Version", info.version);
+			add("App Version", info.app_ver);
+			add("Resolution", info.resolution);
+			add("Sound Format", info.sound_format);
+			add("Firmware", info.firmware);
+			if (info.parental_level != null) add("Parental Level", info.parental_level);
+			add("Regions", info.region_count);
+			add("Total Sectors", info.total_sectors);
+			add("Encrypted Sectors", info.encrypted_sectors);
+			break;
 	}
 	return rows;
 });
@@ -473,6 +499,9 @@ function copyTitleId() {
 			break;
 		case "nx":
 			value = info.full ? hex16(info.full.application_title_id) : "";
+			break;
+		case "ps3":
+			value = info.title_id ?? "";
 			break;
 		default:
 			return;

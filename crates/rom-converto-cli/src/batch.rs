@@ -418,6 +418,162 @@ pub async fn cso_decompress(run: &BatchRun<'_>) -> Result<()> {
     )
 }
 
+pub async fn ps3_decrypt(run: &BatchRun<'_>, skip_probe: bool) -> Result<()> {
+    let BatchRun {
+        progress,
+        total_progress,
+        input_dir,
+        policy,
+        output_dir,
+        output_template,
+        max_depth,
+        dry_run,
+        skip_space_check,
+        report_path,
+        cancel,
+    } = *run;
+    use rom_converto_lib::ps3::{Ps3Error, decrypt_ps3_iso_cancellable, load_ps3_key};
+
+    let files = collect_or_warn(input_dir, &["iso"], max_depth)?;
+    if files.is_empty() {
+        return Ok(());
+    }
+    if !dry_run && !skip_space_check {
+        space_preflight(&files, output_dir.unwrap_or(input_dir))?;
+    }
+    if !dry_run && let Some(dir) = output_dir {
+        std::fs::create_dir_all(dir)?;
+    }
+    let total = files.len();
+    total_progress.begin(total as u64, files_bytes(&files));
+    let mut tally = Tally::new();
+    let mut records: Vec<ReportRecord> = Vec::new();
+    for path in files {
+        if cancel.is_cancelled() {
+            break;
+        }
+        let derived = rom_converto_lib::ps3::derive_decrypted_path(&path);
+        let output = match crate::util::batch_output(crate::util::BatchOutput {
+            input: &path,
+            derived: &derived,
+            input_dir,
+            output_dir,
+            output_template,
+            output_ext: "iso",
+            keys_path: None,
+            dry_run,
+        }) {
+            Ok(p) => p,
+            Err(e) => {
+                warn!("{e}");
+                tally.record_skipped();
+                records.push(skipped_record(&path, "decrypt", Some(e.to_string())));
+                total_progress.advance(file_len(&path));
+                continue;
+            }
+        };
+        if !dry_run && let Some(parent) = output.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let decision = match resolve_output(&output, policy) {
+            Ok(d) => d,
+            Err(e) => {
+                warn!("{e}");
+                tally.record_skipped();
+                records.push(skipped_record(&path, "decrypt", Some(e.to_string())));
+                total_progress.advance(file_len(&path));
+                continue;
+            }
+        };
+        if dry_run {
+            crate::dry_run::log_plan("decrypt", &path, &output, &decision, None, None);
+            crate::dry_run::record(&mut tally, &path, &decision);
+            records.push(crate::dry_run::report_record(
+                "decrypt", &path, &output, &decision,
+            ));
+            total_progress.advance(file_len(&path));
+            continue;
+        }
+        let output = match decision {
+            WriteDecision::Write(p) => p,
+            WriteDecision::Skip => {
+                info!("Skipped, output exists: {}", output.display());
+                tally.record_skipped();
+                records.push(skipped_record(&path, "decrypt", None));
+                total_progress.advance(file_len(&path));
+                continue;
+            }
+        };
+        let disc_key = match load_ps3_key(&path, None) {
+            Ok(k) => k,
+            Err(e) => {
+                warn!("Failed to resolve PS3 key for {}: {e}", path.display());
+                tally.record_failed();
+                records.push(failed_record(
+                    &path,
+                    "decrypt",
+                    file_len(&path),
+                    Instant::now(),
+                    e,
+                ));
+                total_progress.advance(file_len(&path));
+                continue;
+            }
+        };
+        let input_bytes = file_len(&path);
+        let out_path = output.clone();
+        let started = Instant::now();
+        if let Err(e) = decrypt_ps3_iso_cancellable(
+            progress,
+            path.clone(),
+            output,
+            disc_key,
+            true,
+            skip_probe,
+            cancel.clone(),
+        )
+        .await
+        {
+            match e {
+                Ps3Error::Cancelled => break,
+                Ps3Error::AlreadyDecrypted => {
+                    info!("Skipped, already decrypted: {}", path.display());
+                    tally.record_skipped();
+                    records.push(skipped_record(&path, "decrypt", Some(e.to_string())));
+                }
+                _ => {
+                    warn!("Failed to decrypt {}: {e}", path.display());
+                    tally.record_failed();
+                    records.push(failed_record(&path, "decrypt", input_bytes, started, e));
+                }
+            }
+        } else {
+            let out_bytes = file_len(&out_path);
+            tally.record_ok(input_bytes, out_bytes, started.elapsed());
+            records.push(ok_record(
+                &path,
+                &out_path,
+                "decrypt",
+                input_bytes,
+                out_bytes,
+                started,
+            ));
+        }
+        total_progress.advance(input_bytes);
+    }
+    total_progress.finish();
+    if cancel.is_cancelled() {
+        return Ok(());
+    }
+    finish_tally(
+        &tally,
+        TallyDirection::Convert,
+        &records,
+        dry_run,
+        report_path,
+    )
+}
+
 pub async fn cso_verify(
     progress: &dyn ProgressReporter,
     total_progress: &crate::util::TotalProgress,

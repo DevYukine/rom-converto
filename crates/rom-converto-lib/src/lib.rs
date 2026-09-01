@@ -27,5 +27,6 @@ pub mod microsoft;
 pub mod nintendo;
 pub mod pipeline;
 pub mod playlist;
+pub mod ps3;
 pub mod runner;
 pub mod util;

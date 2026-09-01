@@ -71,6 +71,7 @@ const CONSOLES: Record<string, ConsoleRow[]> = {
 	decrypt: [
 		{ id: "ctr", name: "3DS", hint: ".3ds .cci .cia" },
 		{ id: "wup", name: "Wii U", hint: "NUS titles" },
+		{ id: "ps3", name: "PlayStation 3", hint: "requires .dkey" },
 	],
 	encrypt: [{ id: "ctr", name: "3DS", hint: ".3ds .cci .cia" }],
 	convert: [

@@ -1,7 +1,8 @@
 import { recursiveFields, registerOp, templateIsActive, type OpDef } from "./types";
 import { useCtrDecryptStore } from "~/stores/ctr-decrypt";
 import { useWupDecryptStore } from "~/stores/wup-decrypt";
-import { deriveDecryptedPath, withOutputDir } from "~/composables/useDerivedPath";
+import { usePs3DecryptStore } from "~/stores/ps3-decrypt";
+import { basename, deriveDecryptedPath, withOutputDir } from "~/composables/useDerivedPath";
 
 const ARCHIVE_EXTS = ["zip", "7z", "rar", "tar", "tgz", "gz"];
 
@@ -60,7 +61,7 @@ const ctr: OpDef = {
 	showVerify: true,
 	verifyLabel: "Verify after decryption",
 	actionNote: "Already-decrypted files are skipped automatically and never queued.",
-	deriveOutput: deriveDecryptedPath,
+	deriveOutput: (input) => deriveDecryptedPath(input),
 	buildArgs: (store, item, taskId) => {
 		const tmpl = templateIsActive(store);
 		return {
@@ -136,4 +137,70 @@ const wup: OpDef = {
 	chips: () => "",
 };
 
-registerOp("decrypt", { ctr, wup });
+const ps3: OpDef = {
+	op: "decrypt",
+	console: "ps3",
+	opLabel: "Decrypt",
+	storeId: "ps3-decrypt",
+	useStore: usePs3DecryptStore,
+	command: "cmd_ps3_decrypt",
+	resultKind: "convert",
+	title: "Decrypt PS3 ISO",
+	subtitle: "Removes disc encryption for emulator use.",
+	dropText: "Drop encrypted .iso files or folders. Needs a sibling .dkey or an explicit key file",
+	acceptedExts: ["iso", ...ARCHIVE_EXTS],
+	browseFilters: [{ name: "PS3 ISO", extensions: ["iso"] }],
+	fields: [
+		{
+			kind: "file",
+			key: "key",
+			label: "Disc key (.dkey)",
+			filters: [{ name: "Disc key", extensions: ["dkey"] }],
+			display: (s) => (s.key ? `${basename(s.key)} ✓` : "sibling .dkey"),
+			tooltip: "The disc's 16-byte data key. When left empty, a sibling <input>.dkey next to the ISO is used automatically.",
+		},
+		{
+			kind: "toggle",
+			key: "skipProbe",
+			label: "Skip verification probe",
+			tooltip:
+				"Skips the encryption and disc-key check before converting. Use if a correct key is rejected because the disc's sampled sectors are all compressed data.",
+		},
+		...recursiveFields(),
+	],
+	note: "The data key is resolved from the key field above, else a sibling <input>.dkey.",
+	outputRows: [
+		{
+			kind: "directory",
+			label: "Directory",
+			display: (s) => s.outputDir || "same as source",
+			set: (s, v) => { s.outputDir = v; },
+			tooltip: "Where the decrypted file is written. Leave empty to write it next to the source file.",
+		},
+		{
+			kind: "text",
+			label: "Filename",
+			display: () => "{name}.decrypted.{ext}",
+			tooltip: "The suffix keeps the output from colliding with the source.",
+		},
+	],
+	actionNote: "Already-decrypted files are detected and skipped during conversion.",
+	deriveOutput: (input) => deriveDecryptedPath(input, "iso"),
+	buildArgs: (store, item, taskId) => {
+		const tmpl = templateIsActive(store);
+		return {
+			input: item.path,
+			output: tmpl ? null : withOutputDir(deriveDecryptedPath(item.path, "iso"), store.outputDir || ""),
+			key: store.key || null,
+			skipProbe: store.skipProbe,
+			onConflict: store.onConflict,
+			skipSpaceCheck: store.skipSpaceCheck,
+			outputTemplate: store.outputTemplate || null,
+			dryRun: false,
+			taskId,
+		};
+	},
+	chips: (store) => (store.key ? "key set" : "no key"),
+};
+
+registerOp("decrypt", { ctr, wup, ps3 });

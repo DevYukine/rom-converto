@@ -63,6 +63,7 @@ function sizeOf(i: InfoResult): number {
 	if (i.kind === "wup") return i.total_content_size;
 	if (i.kind === "xbox") return i.image_size;
 	if (i.kind === "xenon") return i.compressed_size;
+	if (i.kind === "ps3") return i.size_bytes;
 	return i.physical_bytes;
 }
 

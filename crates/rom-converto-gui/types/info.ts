@@ -324,6 +324,22 @@ export interface XenonInfo {
   has_default_xex: boolean;
 }
 
+export interface Ps3Info {
+  title: string | null;
+  title_id: string | null;
+  region: string | null;
+  version: string | null;
+  app_ver: string | null;
+  resolution: string | null;
+  sound_format: string | null;
+  firmware: string | null;
+  parental_level: number | null;
+  region_count: number;
+  total_sectors: number;
+  encrypted_sectors: number;
+  size_bytes: number;
+}
+
 export type InfoResult =
   | ({ kind: "chd" } & ChdInfo)
   | ({ kind: "cso" } & CsoInfo)
@@ -333,7 +349,8 @@ export type InfoResult =
   | ({ kind: "wup" } & WupInfo)
   | ({ kind: "nx" } & NxInfo)
   | ({ kind: "xbox" } & XboxInfo)
-  | ({ kind: "xenon" } & XenonInfo);
+  | ({ kind: "xenon" } & XenonInfo)
+  | ({ kind: "ps3" } & Ps3Info);
 
 export function nxTitleKindDisplayName(kind: string): string {
   switch (kind) {

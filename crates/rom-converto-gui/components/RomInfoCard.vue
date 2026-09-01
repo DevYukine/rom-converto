@@ -38,6 +38,8 @@ const title = computed(() => {
       return `CHD v${props.info.version}`;
     case "cso":
       return `${props.info.format} v${props.info.version}`;
+    case "ps3":
+      return props.info.title || props.info.title_id || "PS3 disc";
     default:
       return "Unknown";
   }
@@ -61,6 +63,8 @@ const subtitle = computed(() => {
       return props.info.compressors.join(", ");
     case "cso":
       return "";
+    case "ps3":
+      return props.info.region ?? "";
   }
 });
 
@@ -321,6 +325,24 @@ const fields = computed<Field[]>(() => {
       f.push({ label: "Physical size", value: formatBytes(props.info.physical_bytes) });
       break;
     }
+    case "ps3": {
+      if (props.info.title) f.push({ label: "Title", value: props.info.title });
+      if (props.info.title_id) f.push({ label: "Title ID", value: props.info.title_id });
+      if (props.info.region) f.push({ label: "Region", value: props.info.region });
+      if (props.info.version) f.push({ label: "Version", value: props.info.version });
+      if (props.info.app_ver) f.push({ label: "App Version", value: props.info.app_ver });
+      if (props.info.resolution) f.push({ label: "Resolution", value: props.info.resolution });
+      if (props.info.sound_format) f.push({ label: "Sound Format", value: props.info.sound_format });
+      if (props.info.firmware) f.push({ label: "Firmware", value: props.info.firmware });
+      if (props.info.parental_level !== null && props.info.parental_level !== undefined) {
+        f.push({ label: "Parental Level", value: String(props.info.parental_level) });
+      }
+      f.push({ label: "Size", value: formatBytes(props.info.size_bytes) });
+      f.push({ label: "Regions", value: String(props.info.region_count) });
+      f.push({ label: "Total Sectors", value: String(props.info.total_sectors) });
+      f.push({ label: "Encrypted Sectors", value: String(props.info.encrypted_sectors) });
+      break;
+    }
   }
   return f;
 });
@@ -414,6 +436,9 @@ function copyTitleId() {
           .padStart(16, "0")
           .toUpperCase();
       }
+      break;
+    case "ps3":
+      value = props.info.title_id ?? "";
       break;
     default:
       return;

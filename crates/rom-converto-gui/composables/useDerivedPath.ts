@@ -92,9 +92,9 @@ export function deriveDecompressedPath(input: string): string {
   return replaceExt(input, DECOMPRESS_MAP[ext] ?? "3ds");
 }
 
-export function deriveDecryptedPath(input: string): string {
+export function deriveDecryptedPath(input: string, fallbackExt = "cia"): string {
   input = stripArchiveExt(input);
-  return `${stemOf(input)}.decrypted.${knownExt(input) || "cia"}`;
+  return `${stemOf(input)}.decrypted.${knownExt(input) || fallbackExt}`;
 }
 
 export function deriveEncryptedPath(input: string): string {

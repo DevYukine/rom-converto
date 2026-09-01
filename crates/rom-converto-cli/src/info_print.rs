@@ -70,6 +70,7 @@ pub fn print(result: &InfoResult, json: bool) -> Result<()> {
         InfoResult::Nx(info) => render_nx(info),
         InfoResult::Xbox(info) => render_xbox(info),
         InfoResult::Xenon(info) => render_xenon(info),
+        InfoResult::Ps3(info) => render_ps3(info),
     };
     print!("{}", rendered);
     Ok(())
@@ -674,6 +675,43 @@ fn render_xbox(info: &rom_converto_lib::info::XisoInfo) -> String {
     t.push("Directories", format!("{}", info.dir_count));
     t.push("Total file bytes", format!("{}", info.total_file_bytes));
     t.push("Image size", format!("{} bytes", info.image_size));
+    t.render()
+}
+
+fn render_ps3(info: &rom_converto_lib::info::Ps3Info) -> String {
+    let mut t = KeyValueTable::new();
+    t.push("Format", "PS3 ISO");
+    if let Some(v) = &info.title {
+        t.push("Title", v.clone());
+    }
+    if let Some(v) = &info.title_id {
+        t.push("Title ID", v.clone());
+    }
+    if let Some(v) = &info.region {
+        t.push("Region", v.clone());
+    }
+    if let Some(v) = &info.version {
+        t.push("Version", v.clone());
+    }
+    if let Some(v) = &info.app_ver {
+        t.push("App version", v.clone());
+    }
+    t.push("Physical bytes", format!("{}", info.size_bytes));
+    t.push("Regions", format!("{}", info.region_count));
+    t.push("Total sectors", format!("{}", info.total_sectors));
+    t.push("Encrypted sectors", format!("{}", info.encrypted_sectors));
+    if let Some(v) = &info.resolution {
+        t.push("Resolution", v.clone());
+    }
+    if let Some(v) = &info.sound_format {
+        t.push("Sound format", v.clone());
+    }
+    if let Some(v) = &info.firmware {
+        t.push("Firmware", v.clone());
+    }
+    if let Some(p) = info.parental_level {
+        t.push("Parental level", format!("{}", p));
+    }
     t.render()
 }
 

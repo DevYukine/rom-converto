@@ -21,6 +21,7 @@ pub use crate::nintendo::dol::info::DolInfo;
 pub use crate::nintendo::nx::info::NxInfo;
 pub use crate::nintendo::rvl::info::RvlInfo;
 pub use crate::nintendo::wup::info::WupInfo;
+pub use crate::ps3::Ps3Info;
 pub use image::Image;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,6 +36,7 @@ pub enum InfoResult {
     Nx(NxInfo),
     Xbox(XisoInfo),
     Xenon(ZarInfo),
+    Ps3(Ps3Info),
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -136,6 +138,9 @@ pub fn read_info(path: &Path, opts: &InfoOptions) -> Result<InfoResult> {
             Ok(InfoResult::Xbox(crate::microsoft::xbox::read_info(path)?))
         }
         DetectedConsole::Xenon => Ok(InfoResult::Xenon(crate::microsoft::xenon::read_info(path)?)),
+        DetectedConsole::Ps3 => Ok(InfoResult::Ps3(
+            crate::ps3::read_ps3_info(path).map_err(|e| anyhow!("ps3 info: {e}"))?,
+        )),
     }
 }
 
@@ -158,6 +163,7 @@ pub enum DetectedConsole {
     Nx,
     Xbox,
     Xenon,
+    Ps3,
 }
 
 /// Detect which console family a path belongs to. Extension first, magic
@@ -241,8 +247,13 @@ fn sniff_disc_magic(path: &Path) -> Result<DetectedConsole> {
         return Ok(console);
     }
 
+    // PS3 discs are ISO9660; the reliable marker is /PS3_DISC.SFB in root.
+    if let Ok(true) = crate::ps3::fs::is_ps3_disc(&mut f) {
+        return Ok(DetectedConsole::Ps3);
+    }
+
     Err(anyhow!(
-        "disc file at {} does not match GameCube, Wii, Xbox, or Xbox 360 magic",
+        "disc file at {} does not match GameCube, Wii, Xbox, Xbox 360, or PS3 magic",
         path.display()
     ))
 }

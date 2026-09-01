@@ -8,6 +8,7 @@ import DryRunModal from "~/components/modals/DryRunModal.vue";
 import type { DryRunLine } from "~/components/modals/DryRunModal.vue";
 import { invokeArgs, opCommand, opProgressKey } from "~/lib/opdefs/types";
 import type { OpDef, OpStore, StagedItem } from "~/lib/opdefs/types";
+import { useToast } from "~/composables/useToast";
 
 const props = defineProps<{
 	def: OpDef;
@@ -18,6 +19,7 @@ const props = defineProps<{
 const emit = defineEmits<{ enqueued: [] }>();
 
 const queue = useQueueStore();
+const { show: showToast } = useToast();
 
 const count = computed(() => props.items.length);
 const label = computed(() => (count.value > 0 ? `Add ${count.value} to queue` : "Nothing staged"));
@@ -26,8 +28,17 @@ function taskIdFor(): string {
 	return opProgressKey(props.def, props.store) ?? `job-${crypto.randomUUID()}`;
 }
 
+// An explicit PS3 key file only applies to a single queued ISO; multiple
+// staged ISOs need per-disc .dkey files instead.
+function blockedByExplicitKey(): boolean {
+	if (props.def.storeId !== "ps3-decrypt" || !props.store.key || count.value <= 1) return false;
+	showToast("Explicit key needs a single ISO. Use per-disc .dkey files beside the inputs instead.", 3000);
+	return true;
+}
+
 function enqueue() {
 	if (!count.value) return;
+	if (blockedByExplicitKey()) return;
 	const groupId = props.store.reportFile ? crypto.randomUUID() : undefined;
 	const specs = props.items.map((item) => {
 		const taskId = taskIdFor();
@@ -54,6 +65,7 @@ const dryOpen = ref(false);
 
 async function dryRun() {
 	if (!count.value) return;
+	if (blockedByExplicitKey()) return;
 	const lines: DryRunLine[] = [];
 	let cmd = "";
 	for (const item of props.items) {

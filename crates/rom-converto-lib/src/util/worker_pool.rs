@@ -236,8 +236,10 @@ where
     let mut run_result: Result<(), E> = Ok(());
 
     while write_seq < total {
-        // Submit as much as back-pressure allows.
-        while run_result.is_ok() && in_flight < max_in_flight && submit_seq < total {
+        // Bound in_flight + pending so out-of-order results can't pile up past
+        // max_in_flight. Safe: at the cap the drain loop below always frees a slot.
+        while run_result.is_ok() && in_flight + pending.len() < max_in_flight && submit_seq < total
+        {
             match produce(submit_seq) {
                 Ok(work) => match pool.submit(submit_seq, work) {
                     Ok(()) => {
