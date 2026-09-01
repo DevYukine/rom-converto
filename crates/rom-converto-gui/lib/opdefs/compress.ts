@@ -573,7 +573,7 @@ registerOp("compress", {
 		subtitle:
 			"Packs base game, update and DLC into one Cemu-ready .wua archive. One bundle, one job.",
 		dropText:
-			"Drop NUS or loadiine title folders, or .wud / .wux disc images. Base, update and DLC are detected by title ID",
+			"Drop NUS or loadiine title folders, or .wud / .wux disc images. Base, update and DLC are detected by title ID. Disc master keys are optional: the built-in key database is used if none is set",
 		acceptedExts: ["wud", "wux"],
 		browseFilters: [{ name: "Disc image", extensions: ["wud", "wux"] }],
 		defaultOutputDir: "~/roms/wiiu/bundled",

@@ -17,11 +17,11 @@ pub enum WupCommands {
 #[command(
     long_about = "Verify Wii U content integrity by recomputing each content's SHA-1 against the TMD content hashes\n\n\
 For NUS directories and .wud / .wux discs, every raw-mode content is decrypted and its SHA-1 compared against the TMD hash. Hashed-mode content is reported as skipped (its TMD hash covers the hash tree, not the content). .wua and loadiine inputs are already decrypted and carry no TMD, so they get a structural readability check only.\n\n\
-Disc images need the 16-byte master key, resolved from --key, a sibling <input>.key, or game.key next to the disc.",
+Disc images resolve their 16-byte master key automatically: --key, a sibling <input>.key or game.key, the built-in key database matched by filename, then an automatic probe of the built-in database.",
     after_long_help = "EXAMPLES:\n  NUS directory: rom-converto wup verify ./title_dir\n  Disc with key: rom-converto wup verify --key game.key game.wud\n  Whole folder:  rom-converto wup verify -R ./titles\n"
 )]
 pub struct VerifyWupCommand {
-    /// Disc master key file (.wud / .wux only). Auto-discovers `<input>.key` or `game.key` when omitted
+    /// Disc master key file (.wud / .wux only). Resolved automatically if omitted: sibling `<input>.key` or `game.key`, then the built-in key database by filename, then a probe of the built-in database
     #[arg(long = "key", value_name = "KEYFILE")]
     pub key: Option<PathBuf>,
 
@@ -74,10 +74,12 @@ pub struct DecryptWupCommand {
                   - loadiine directory: already-decrypted `meta/`, `code/`, `content/`\n  \
                   - NUS directory: `title.tmd`, `title.tik`, `*.app` (auto-decrypted)\n  \
                   - disc image: `.wud` or `.wux` file (requires per-disc key)\n\n\
-                  Disc images need a 16-byte master key. Keys are resolved in order:\n  \
+                  Disc images resolve their 16-byte master key automatically. Keys are\n  \
+                  resolved in order:\n  \
                   1. `--key` flag, paired positionally with disc inputs\n  \
-                  2. sibling `<input>.key` file\n  \
-                  3. `game.key` in the same directory as the disc\n\n\
+                  2. sibling `<input>.key` file, or `game.key` in the same directory\n  \
+                  3. built-in key database, matched by filename\n  \
+                  4. built-in key database, probed against the disc\n\n\
                   Multiple titles (base + update + DLC) can be bundled into a single\n\
                   archive by passing each input as a separate positional argument.",
     after_long_help = "EXAMPLES:\n  Single title:    rom-converto wup compress -o game.wua ./title_base\n  Disc with key:   rom-converto wup compress -o game.wua --key game.key game.wud\n  Bundle titles:   rom-converto wup compress -o game.wua ./title_base ./title_update ./title_dlc\n"
@@ -96,7 +98,7 @@ pub struct CompressWupCommand {
     )]
     pub level: Option<i32>,
 
-    /// Disc master key file path(s). Applies only to disc image inputs. When supplied multiple times, keys are paired with disc inputs in the order they appear on the command line; the Nth `--key` applies to the Nth disc input. Non-disc inputs silently skip past their positional slot. Omit entirely to let the loader auto-discover `<input>.key` or `game.key` next to each disc
+    /// Disc master key file path(s). Applies only to disc image inputs. When supplied multiple times, keys are paired with disc inputs in the order they appear on the command line; the Nth `--key` applies to the Nth disc input. Non-disc inputs silently skip past their positional slot. Omit entirely to let the loader resolve automatically: sibling `<input>.key` or `game.key`, then the built-in key database by filename, then a probe of the built-in database
     #[arg(long = "key", value_name = "KEYFILE")]
     pub key: Vec<PathBuf>,
 

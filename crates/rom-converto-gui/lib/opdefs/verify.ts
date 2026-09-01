@@ -135,7 +135,7 @@ registerOp("verify", {
 				filters: [{ name: "Disc key", extensions: ["key", "bin", "txt"] }],
 				display: (store) => store.keys || "none",
 				tooltip:
-					"The 16-byte disc master key, needed for .wud or .wux inputs. If left empty, a key file named <input>.key or game.key next to the disc is used automatically.",
+					"The disc's 16-byte master key, only needed for .wud or .wux inputs. When left empty, a sibling <input>.key or game.key next to the disc is used, then the built-in key database matched by the disc's file name, then a trial decrypt against every embedded key.",
 			},
 		],
 		outputRows: [],

@@ -366,14 +366,20 @@ rom-converto wup <SUBCOMMAND> ...
 | `-o, --output <FILE>` | `compress` | Output `.wua` file path |
 | `-o, --output <DIR>` | `decrypt` | Output directory |
 | `-l, --level <LEVEL>` | `compress` | Zstd compression level 0..=22 (0 = Cemu default of 6) |
-| `--key <KEYFILE>` | `compress`, `verify` | Disc master key file for `.wud`/`.wux` inputs. Pass once per disc input in positional order on `compress` |
+| `--key <KEYFILE>` | `compress`, `verify` | Disc master key file for `.wud`/`.wux` inputs (optional). Pass once per disc input in positional order on `compress`. See key resolution below |
 
 `wup` commands do not take `--output-dir` or `--output-template`, because `compress` packs
-many inputs into a single archive and `decrypt` writes a directory tree. `compress`
-auto-detects each input as a loadiine directory, a NUS directory, or a disc image, and
-resolves disc keys from `--key`, a sibling `<disc>.key` file, or `game.key`. `decrypt`
-handles both the canonical Nintendo layout (`title.tmd` + `title.tik` + `{id}.app`) and the
-community layout variant (`tmd.<N>` + optional `cetk.<N>` + extensionless content files);
+many inputs into a single archive and `decrypt` writes a directory tree. `compress` and
+`verify` auto-detect each input as a loadiine directory, a NUS directory, or a disc image.
+
+For disc images (`.wud`/`.wux`), the disc key is optional. It is resolved in order:
+explicit `--key`, else a sibling `<disc>.key` or `game.key` file, else the built-in disc key
+database matched by the input filename, else automatic probe of the built-in database against
+the disc, else an error if none match. `--key` cannot be combined with `--recursive`, since
+one key can't be right for every disc in a batch.
+
+`decrypt` handles both the canonical Nintendo layout (`title.tmd` + `title.tik` + `{id}.app`)
+and the community layout variant (`tmd.<N>` + optional `cetk.<N>` + extensionless content files);
 when no ticket is present the title key is derived from the title id.
 
 ## nx (Nintendo Switch)
@@ -729,7 +735,7 @@ field (`ISO`, `RVZ`, `WBFS`, `GCZ`, `WIA`, or `NKit`).
 |---|---|
 | `--json` | Emit a machine-readable payload instead of the formatted report |
 | `--save-icon <DIR>` | Write the embedded icon as `<title_id>.png` into `DIR`. Supported by `ctr`, `dol`, `rvl`, `nx`, `wup`, `xenon`, and PSP images; `chd` and `cso` carry no artwork of their own; `xbox` carries an XPR title image that is not extracted; PS1/PS2 discs carry no artwork |
-| `--keys <FILE>` | `prod.keys` for `nx info`, a disc master key file for `wup info` on `.wud`/`.wux`, or a `.dkey` file for `ps3 info`. Other consoles do not use it |
+| `--keys <FILE>` | `prod.keys` for `nx info`, a disc master key file for `wup info` on `.wud`/`.wux` (optional), or a `.dkey` file for `ps3 info`. Other consoles do not use it |
 
 Coverage per family: `ctr` reads CIA/NCSD/NCCH and Z3DS variants; `dol` reads `.iso`,
 `.gcm`, `.rvz`, `.gcz`, and NKit; `rvl` reads `.iso`, `.rvz`, `.wbfs`, `.wia`, `.gcz`, and

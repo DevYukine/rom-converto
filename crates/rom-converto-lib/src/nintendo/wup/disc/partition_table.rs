@@ -178,6 +178,39 @@ pub fn parse_partition_table(
     Ok(PartitionTable { entries })
 }
 
+/// Read sector 3 (the encrypted TOC) and return its first 16 bytes.
+///
+/// Because the disc-level CBC IV is zero, this first ciphertext block
+/// is enough to trial-decrypt and test a candidate key.
+pub(crate) fn read_toc_first_block(disc: &mut dyn DiscSectorSource) -> WupResult<[u8; 16]> {
+    let sector_index = PARTITION_TOC_OFFSET / SECTOR_SIZE as u64;
+    if sector_index >= disc.total_sectors() {
+        return Err(WupError::DiscTruncated {
+            expected: PARTITION_TOC_OFFSET + SECTOR_SIZE as u64,
+            actual: disc.total_sectors() * SECTOR_SIZE as u64,
+        });
+    }
+    let mut sector = vec![0u8; SECTOR_SIZE];
+    disc.read_sector(sector_index, &mut sector)?;
+    let mut first = [0u8; 16];
+    first.copy_from_slice(&sector[..16]);
+    Ok(first)
+}
+
+/// Test a candidate disc key against the TOC first ciphertext block.
+///
+/// Decrypts the single block with a zero IV (the disc-level CBC IV)
+/// and checks the decrypted sentinel. Cheaper than decrypting the
+/// whole 32 KiB sector per candidate.
+pub(crate) fn toc_key_matches(encrypted_first_block: &[u8; 16], key: &DiscKey) -> bool {
+    let mut block = *encrypted_first_block;
+    let iv = [0u8; 16];
+    if aes_cbc_decrypt_in_place(key.as_bytes(), &iv, &mut block).is_err() {
+        return false;
+    }
+    block[0..4] == DECRYPTED_AREA_SIGNATURE
+}
+
 fn parse_partition_name(raw: &[u8]) -> String {
     let end = raw.iter().position(|&b| b == 0).unwrap_or(raw.len());
     String::from_utf8_lossy(&raw[..end]).into_owned()

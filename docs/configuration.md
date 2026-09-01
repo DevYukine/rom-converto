@@ -93,6 +93,20 @@ in this order:
 Most discs are covered by the built-in database, so no key file is needed. Pass `--key` only
 for a disc the database doesn't cover.
 
+## Wii U disc keys
+
+`wup compress` and `wup verify` on `.wud`/`.wux` disc images optionally need the disc master
+key to decrypt content. It is resolved in this order:
+
+1. `--key <FILE>`, an explicit key file.
+2. A sibling `<disc>.key` or `game.key` file next to the input.
+3. The built-in key database, matched by the input filename.
+4. Automatic probe of the built-in database against the disc.
+5. An error if no key is found.
+
+Most discs are covered by the built-in database, so no key file is needed. Pass `--key` only
+for a disc the database doesn't cover.
+
 ## Example
 
 ```toml
