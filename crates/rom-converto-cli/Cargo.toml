@@ -36,7 +36,7 @@ indicatif-log-bridge = "0.2.3"
 [dev-dependencies]
 dirs = "^6"
 tempfile = "^3"
-zip = { version = "^2", default-features = false, features = ["deflate"] }
+zip = { version = "^8", default-features = false, features = ["deflate"] }
 
 [build-dependencies]
 built = "^0.8"

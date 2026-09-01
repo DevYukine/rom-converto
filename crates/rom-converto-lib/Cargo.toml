@@ -42,7 +42,7 @@ serde_json.workspace = true
 crc = "^3.4"
 dirs = "^6"
 toml = "^1.1"
-toml_edit = { version = "^0.23", features = ["serde"] }
+toml_edit = { version = "^0.25", features = ["serde"] }
 
 # Pixel codecs for `info` icon extraction
 png = "^0.18"
@@ -64,7 +64,7 @@ tempfile = "^3"
 fs4 = "^1.1"
 
 # Transparent archive input (zip/7z/rar/tar/tar.gz); gzip via flate2 above
-zip = { version = "^2", default-features = false, features = ["deflate", "deflate64", "bzip2", "lzma", "zstd", "xz"] }
-sevenz-rust2 = { version = "^0.21", features = ["brotli", "deflate", "lz4", "zstd"] }
+zip = { version = "^8", default-features = false, features = ["deflate", "deflate64", "bzip2", "lzma", "zstd", "xz"] }
+sevenz-rust2 = { version = "^0.22", features = ["brotli", "deflate", "lz4", "zstd"] }
 tar = "^0.4"
 unrar = { package = "unrar-ng", version = "^0.7" }
