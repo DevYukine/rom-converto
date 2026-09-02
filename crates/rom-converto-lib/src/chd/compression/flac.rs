@@ -96,6 +96,10 @@ pub(crate) fn encode_flac_samples(
 
     let mut config = config::Encoder::default();
     config.block_size = flac_block_size(block_size);
+    // flacenc's par mode spawns fresh OS threads per encode call; hunk
+    // compression already runs on a worker pool, so in-encoder threading
+    // only adds spawn overhead (a ~100x slowdown on small DVD hunks).
+    config.multithread = false;
     let config = config
         .into_verified()
         .map_err(|(_, err)| io::Error::other(err))?;
