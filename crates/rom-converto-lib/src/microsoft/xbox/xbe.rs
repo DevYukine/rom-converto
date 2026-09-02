@@ -3,9 +3,24 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::xpr::decode_xpr0;
+use crate::info::Image;
+
 const MAGIC: &[u8; 4] = b"XBEH";
 const BASE_ADDRESS_OFFSET: usize = 0x104;
 const CERT_ADDRESS_OFFSET: usize = 0x118;
+const SECTION_COUNT_OFFSET: usize = 0x11C;
+const SECTION_HEADERS_ADDRESS_OFFSET: usize = 0x120;
+
+const SECTION_HEADER_SIZE: usize = 0x38;
+const SECTION_RAW_ADDRESS: usize = 0x0C;
+const SECTION_RAW_SIZE: usize = 0x10;
+const SECTION_NAME_ADDRESS: usize = 0x14;
+const MAX_SECTIONS: u32 = 256;
+const MAX_SECTION_NAME_LEN: usize = 64;
+
+/// Sections a title image can live in, best first.
+const ICON_SECTIONS: [&str; 2] = ["$$XTIMAGE", "$$XSIMAGE"];
 
 const CERT_TIMEDATE: usize = 0x04;
 const CERT_TITLE_ID: usize = 0x08;
@@ -43,7 +58,7 @@ const REGION_FLAGS: &[(u32, &str)] = &[
 ];
 
 /// Title metadata parsed from a `default.xbe`'s certificate.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct XbeInfo {
     pub title_id: u32,
     pub title_id_hex: String,
@@ -58,9 +73,13 @@ pub struct XbeInfo {
     pub disc_number: u32,
     pub version: u32,
     pub cert_timestamp: u32,
+    /// Title image decoded from the XBE's `$$XTIMAGE` section, when it holds
+    /// an XPR0 texture in a format the decoder supports.
+    #[serde(default)]
+    pub icon: Option<Image>,
 }
 
-fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
+pub(super) fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
     bytes
         .get(offset..offset.checked_add(4)?)?
         .try_into()
@@ -97,6 +116,36 @@ fn title_name(bytes: &[u8]) -> String {
     String::from_utf16_lossy(&units[..end])
 }
 
+/// Raw contents of the section named `name`, located through the XBE's
+/// section table. Every field is bounds-checked; a malformed table just
+/// yields `None`.
+fn section_data<'a>(bytes: &'a [u8], base_address: u32, name: &str) -> Option<&'a [u8]> {
+    let count = read_u32(bytes, SECTION_COUNT_OFFSET)?;
+    if count > MAX_SECTIONS {
+        return None;
+    }
+    let headers =
+        read_u32(bytes, SECTION_HEADERS_ADDRESS_OFFSET)?.checked_sub(base_address)? as usize;
+
+    for i in 0..count as usize {
+        let header = headers.checked_add(i * SECTION_HEADER_SIZE)?;
+        let name_offset = read_u32(bytes, header.checked_add(SECTION_NAME_ADDRESS)?)?
+            .checked_sub(base_address)? as usize;
+        let tail = bytes.get(name_offset..)?;
+        let end = tail
+            .iter()
+            .take(MAX_SECTION_NAME_LEN)
+            .position(|&b| b == 0)?;
+        if &tail[..end] != name.as_bytes() {
+            continue;
+        }
+        let raw_address = read_u32(bytes, header.checked_add(SECTION_RAW_ADDRESS)?)? as usize;
+        let raw_size = read_u32(bytes, header.checked_add(SECTION_RAW_SIZE)?)? as usize;
+        return bytes.get(raw_address..raw_address.checked_add(raw_size)?);
+    }
+    None
+}
+
 pub(crate) fn parse_xbe(bytes: &[u8]) -> Option<XbeInfo> {
     if bytes.get(0..4)? != MAGIC {
         return None;
@@ -126,6 +175,13 @@ pub(crate) fn parse_xbe(bytes: &[u8]) -> Option<XbeInfo> {
     let version = read_u32(bytes, cert + CERT_VERSION)?;
     let cert_timestamp = read_u32(bytes, cert + CERT_TIMEDATE)?;
 
+    // The icon is decorative: anything unreadable about it leaves the rest
+    // of the certificate metadata intact.
+    let icon = ICON_SECTIONS
+        .iter()
+        .find_map(|name| section_data(bytes, base_address, name))
+        .and_then(decode_xpr0);
+
     Some(XbeInfo {
         title_id,
         title_id_hex: format!("{title_id:08X}"),
@@ -140,15 +196,20 @@ pub(crate) fn parse_xbe(bytes: &[u8]) -> Option<XbeInfo> {
         disc_number,
         version,
         cert_timestamp,
+        icon,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::microsoft::xbox::xpr::tests::build_xpr0_dxt1_4x4;
 
     const BASE_ADDRESS: u32 = 0x10000;
     const CERT_OFFSET: usize = 0x180;
+    const SECTION_HEADERS_OFFSET: usize = 0x300;
+    const SECTION_NAME_OFFSET: usize = 0x400;
+    const SECTION_DATA_OFFSET: usize = 0x500;
 
     fn build_xbe(title_name_units: &[u16]) -> Vec<u8> {
         let mut buf = vec![0u8; 0x1000];
@@ -187,7 +248,30 @@ mod tests {
         buf[cert + CERT_DISC_NUMBER..cert + CERT_DISC_NUMBER + 4]
             .copy_from_slice(&1u32.to_le_bytes());
         buf[cert + CERT_VERSION..cert + CERT_VERSION + 4].copy_from_slice(&3u32.to_le_bytes());
+
+        write_icon_section(&mut buf, ICON_SECTIONS[0], &build_xpr0_dxt1_4x4());
         buf
+    }
+
+    /// Writes a one-entry section table whose only section is `name`,
+    /// carrying `data`.
+    fn write_icon_section(buf: &mut [u8], name: &str, data: &[u8]) {
+        buf[SECTION_COUNT_OFFSET..SECTION_COUNT_OFFSET + 4].copy_from_slice(&1u32.to_le_bytes());
+        let headers_rva = BASE_ADDRESS + SECTION_HEADERS_OFFSET as u32;
+        buf[SECTION_HEADERS_ADDRESS_OFFSET..SECTION_HEADERS_ADDRESS_OFFSET + 4]
+            .copy_from_slice(&headers_rva.to_le_bytes());
+
+        let h = SECTION_HEADERS_OFFSET;
+        buf[h + SECTION_RAW_ADDRESS..h + SECTION_RAW_ADDRESS + 4]
+            .copy_from_slice(&(SECTION_DATA_OFFSET as u32).to_le_bytes());
+        buf[h + SECTION_RAW_SIZE..h + SECTION_RAW_SIZE + 4]
+            .copy_from_slice(&(data.len() as u32).to_le_bytes());
+        let name_rva = BASE_ADDRESS + SECTION_NAME_OFFSET as u32;
+        buf[h + SECTION_NAME_ADDRESS..h + SECTION_NAME_ADDRESS + 4]
+            .copy_from_slice(&name_rva.to_le_bytes());
+
+        buf[SECTION_NAME_OFFSET..SECTION_NAME_OFFSET + name.len()].copy_from_slice(name.as_bytes());
+        buf[SECTION_DATA_OFFSET..SECTION_DATA_OFFSET + data.len()].copy_from_slice(data);
     }
 
     fn utf16_units(s: &str) -> Vec<u16> {
@@ -241,6 +325,59 @@ mod tests {
     fn truncated_buffer_returns_none() {
         let buf = build_xbe(&utf16_units("Test Game"));
         assert!(parse_xbe(&buf[..CERT_OFFSET]).is_none());
+    }
+
+    #[test]
+    fn icon_is_decoded_from_the_xtimage_section() {
+        let buf = build_xbe(&utf16_units("Test Game"));
+        let icon = parse_xbe(&buf).unwrap().icon.expect("icon decoded");
+        assert_eq!((icon.width, icon.height), (4, 4));
+        assert_eq!(&icon.png_bytes[..4], &[0x89, b'P', b'N', b'G']);
+    }
+
+    #[test]
+    fn icon_is_decoded_from_the_xsimage_section() {
+        let mut buf = build_xbe(&utf16_units("Test Game"));
+        buf[SECTION_NAME_OFFSET..SECTION_NAME_OFFSET + ICON_SECTIONS[1].len()]
+            .copy_from_slice(ICON_SECTIONS[1].as_bytes());
+        assert!(parse_xbe(&buf).unwrap().icon.is_some());
+    }
+
+    #[test]
+    fn unnamed_icon_section_yields_no_icon() {
+        let mut buf = build_xbe(&utf16_units("Test Game"));
+        buf[SECTION_NAME_OFFSET] = b'X';
+        let info = parse_xbe(&buf).unwrap();
+        assert!(info.icon.is_none());
+        assert_eq!(info.title_name, "Test Game");
+    }
+
+    #[test]
+    fn malformed_section_table_yields_no_icon() {
+        let mut buf = build_xbe(&utf16_units("Test Game"));
+        // Section headers below the image base: not addressable.
+        buf[SECTION_HEADERS_ADDRESS_OFFSET..SECTION_HEADERS_ADDRESS_OFFSET + 4]
+            .copy_from_slice(&(BASE_ADDRESS - 0x100).to_le_bytes());
+        let info = parse_xbe(&buf).unwrap();
+        assert!(info.icon.is_none());
+        assert_eq!(info.title_name, "Test Game");
+    }
+
+    #[test]
+    fn bad_xpr_magic_yields_no_icon() {
+        let mut buf = build_xbe(&utf16_units("Test Game"));
+        buf[SECTION_DATA_OFFSET] = b'Y';
+        let info = parse_xbe(&buf).unwrap();
+        assert!(info.icon.is_none());
+        assert_eq!(info.title_name, "Test Game");
+    }
+
+    #[test]
+    fn absurd_section_count_yields_no_icon() {
+        let mut buf = build_xbe(&utf16_units("Test Game"));
+        buf[SECTION_COUNT_OFFSET..SECTION_COUNT_OFFSET + 4]
+            .copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(parse_xbe(&buf).unwrap().icon.is_none());
     }
 
     #[test]

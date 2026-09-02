@@ -6,7 +6,9 @@
 
 #![cfg(test)]
 
-use crate::nintendo::ctr::constants::{NCCH_FLAGS_OFFSET, NCCH_FLAGS7_NOCRYPTO, NCCH_MAGIC};
+use crate::nintendo::ctr::constants::{
+    CTR_MEDIA_UNIT_SIZE, NCCH_FLAGS_OFFSET, NCCH_FLAGS7_NOCRYPTO, NCCH_MAGIC,
+};
 use crate::nintendo::ctr::models::certificate::{Certificate, KeyType, PublicKey};
 use crate::nintendo::ctr::models::cia::{CIA_HEADER_SIZE, CiaFile, CiaHeader, MetaData};
 use crate::nintendo::ctr::models::signature::{SignatureData, SignatureType};
@@ -295,6 +297,26 @@ pub fn make_ncch_header_bytes(title_id: u64) -> Vec<u8> {
     bytes[0x108..0x110].copy_from_slice(&title_id.to_le_bytes());
     bytes[NCCH_FLAGS_OFFSET + 7] = NCCH_FLAGS7_NOCRYPTO;
     bytes
+}
+
+/// Build the bytes of a minimal NCSD image: magic and image size at 0x100,
+/// a partition table at 0x120 with a single boot (index 0) NoCrypto NCCH
+/// partition, and every other slot left zeroed.
+pub fn make_fake_ncsd(title_id: u64) -> Vec<u8> {
+    let ncch = make_ncch_header_bytes(title_id);
+    let partition_offset_mu: u32 = 4;
+    let partition_size_mu: u32 = ncch.len() as u32 / CTR_MEDIA_UNIT_SIZE;
+    let ncch_start = partition_offset_mu as usize * CTR_MEDIA_UNIT_SIZE as usize;
+    let total_size = ncch_start + ncch.len();
+
+    let mut data = vec![0u8; total_size];
+    data[0x100..0x104].copy_from_slice(b"NCSD");
+    let image_size_mu = (total_size as u64 / CTR_MEDIA_UNIT_SIZE as u64) as u32;
+    data[0x104..0x108].copy_from_slice(&image_size_mu.to_le_bytes());
+    data[0x120..0x124].copy_from_slice(&partition_offset_mu.to_le_bytes());
+    data[0x124..0x128].copy_from_slice(&partition_size_mu.to_le_bytes());
+    data[ncch_start..ncch_start + ncch.len()].copy_from_slice(&ncch);
+    data
 }
 
 /// Build a [`MetaData`] block (0x3AC0 bytes) filled with a per-field offset

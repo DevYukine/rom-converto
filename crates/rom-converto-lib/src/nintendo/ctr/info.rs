@@ -9,8 +9,8 @@ use crate::info::Image;
 use crate::nintendo::ctr::constants::{
     CTR_MEDIA_UNIT_SIZE, NCCH_FLAGS7_SEED_CRYPTO, NCCH_MAGIC, NCCH_MAGIC_OFFSET,
     NCSD_PARTITION_COUNT, NCSD_PARTITION_ENTRY_SIZE, NCSD_PARTITION_TABLE_OFFSET,
-    NCSD_TITLE_ID_OFFSET, TICKET_SIG_BODY_OFFSET, TICKET_TITLE_ID_OFFSET, TMD_CONTENT_RECORD_SIZE,
-    TMD_CONTENT_RECORDS_OFFSET,
+    NCSD_TITLE_ID_OFFSET, TICKET_SIG_BODY_OFFSET, TICKET_TITLE_ID_OFFSET, TMD_CONTENT_COUNT_OFFSET,
+    TMD_CONTENT_RECORD_SIZE, TMD_CONTENT_RECORDS_OFFSET,
 };
 use crate::nintendo::ctr::decrypt::util::{decrypt_first_ncch_block, derive_title_key_from_ticket};
 use crate::nintendo::ctr::exefs::read_icon_section;
@@ -25,7 +25,7 @@ use crate::nintendo::ctr::z3ds::models::{
 use crate::util::pixel::{decode_rgb565_morton_tiled, encode_png};
 use anyhow::{Context, Result, anyhow};
 use binrw::BinRead;
-use byteorder::{LE, ReadBytesExt};
+use byteorder::{BE, LE, ReadBytesExt};
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Cursor, Read, Seek, SeekFrom};
@@ -51,6 +51,12 @@ pub struct CtrInfo {
     pub small_icon: Option<Image>,
     #[serde(default)]
     pub compressed: bool,
+    /// NCSD partition table entries. Empty for non-NCSD inputs.
+    #[serde(default)]
+    pub ncsd_partitions: Vec<CtrPartitionEntry>,
+    /// TMD content chunk entries. Empty for non-CIA inputs.
+    #[serde(default)]
+    pub cia_contents: Vec<CtrContentEntry>,
 }
 
 /// Which container format a ROM was detected as.
@@ -92,6 +98,24 @@ pub struct CtrSmdhAgeRating {
     pub age: u8,
     pub pending: bool,
     pub banned: bool,
+}
+
+/// A single partition entry from an NCSD partition table.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CtrPartitionEntry {
+    pub index: u8,
+    pub name: String,
+    pub offset: u64,
+    pub size: u64,
+}
+
+/// A single content entry from a CIA's TMD content chunk records.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CtrContentEntry {
+    pub index: u16,
+    pub content_id: String,
+    pub size: u64,
+    pub encrypted: bool,
 }
 
 /// Detects the ROM format at `path` and extracts its [`CtrInfo`] metadata.
@@ -191,6 +215,7 @@ fn read_cia_info(path: &Path, physical_bytes: u64) -> Result<CtrInfo> {
 
     let first_chunk = read_first_content_chunk(&mut reader, tmd_start)?;
     let content_encrypted = first_chunk.content_type.is_encrypted();
+    let cia_contents = read_cia_contents(&mut reader, tmd_start)?;
     let ticket_title_id = read_ticket_title_id(&mut reader, ticket_start)?;
     let is_twl = is_twl_title_id(ticket_title_id);
 
@@ -259,6 +284,8 @@ fn read_cia_info(path: &Path, physical_bytes: u64) -> Result<CtrInfo> {
         smdh: smdh_info,
         icon,
         small_icon,
+        ncsd_partitions: Vec::new(),
+        cia_contents,
     })
 }
 
@@ -279,6 +306,8 @@ fn read_ncsd_info(path: &Path, physical_bytes: u64) -> Result<CtrInfo> {
         return Err(anyhow!("ctr info: NCSD has no boot partition"));
     }
     let first_offset = first_offset_mu as u64 * CTR_MEDIA_UNIT_SIZE as u64;
+
+    let ncsd_partitions = parse_ncsd_partition_table(&table);
 
     reader.seek(SeekFrom::Start(first_offset))?;
     let ncch_hdr = read_ncch_header_at(&mut reader)?;
@@ -326,6 +355,8 @@ fn read_ncsd_info(path: &Path, physical_bytes: u64) -> Result<CtrInfo> {
         smdh: smdh_info,
         icon,
         small_icon,
+        ncsd_partitions,
+        cia_contents: Vec::new(),
     })
 }
 
@@ -375,6 +406,8 @@ fn read_ncch_info(path: &Path, physical_bytes: u64) -> Result<CtrInfo> {
         smdh: smdh_info,
         icon,
         small_icon,
+        ncsd_partitions: Vec::new(),
+        cia_contents: Vec::new(),
     })
 }
 
@@ -466,6 +499,77 @@ fn read_first_content_chunk<R: Read + Seek>(
     reader.read_exact(&mut buf)?;
     ContentChunkRecord::read_be(&mut Cursor::new(&buf))
         .context("ctr info: parse first TMD content record")
+}
+
+/// Reads every TMD content chunk record (capped at 64) for a CIA's `cia_contents`.
+///
+/// A bogus `content_count` is bounded by what's actually left in the file so
+/// it can't read past a truncated TMD; a short or failed record read just
+/// stops the scan instead of failing the whole info read.
+fn read_cia_contents<R: Read + Seek>(
+    reader: &mut R,
+    tmd_start: u64,
+) -> Result<Vec<CtrContentEntry>> {
+    reader.seek(SeekFrom::Start(tmd_start + TMD_CONTENT_COUNT_OFFSET))?;
+    let content_count = reader.read_u16::<BE>()? as usize;
+    let count = content_count.min(64);
+
+    let records_start = tmd_start + TMD_CONTENT_RECORDS_OFFSET;
+    let file_len = reader.seek(SeekFrom::End(0))?;
+    let available = file_len.saturating_sub(records_start) / TMD_CONTENT_RECORD_SIZE;
+    let count = count.min(available as usize);
+
+    reader.seek(SeekFrom::Start(records_start))?;
+    let mut out = Vec::with_capacity(count);
+    for _ in 0..count {
+        let mut buf = vec![0u8; TMD_CONTENT_RECORD_SIZE as usize];
+        if reader.read_exact(&mut buf).is_err() {
+            break;
+        }
+        let Ok(rec) = ContentChunkRecord::read_be(&mut Cursor::new(&buf)) else {
+            break;
+        };
+        out.push(CtrContentEntry {
+            index: rec.content_index,
+            content_id: format!("{:08x}", rec.content_id),
+            size: rec.content_size,
+            encrypted: rec.content_type.is_encrypted(),
+        });
+    }
+    Ok(out)
+}
+
+/// Parses an NCSD partition table into non-empty [`CtrPartitionEntry`] rows.
+fn parse_ncsd_partition_table(table: &[u8]) -> Vec<CtrPartitionEntry> {
+    (0..NCSD_PARTITION_COUNT)
+        .filter_map(|i| {
+            let base = i * NCSD_PARTITION_ENTRY_SIZE;
+            let offset_mu =
+                u32::from_le_bytes(table[base..base + 4].try_into().expect("4-byte slice"));
+            let size_mu =
+                u32::from_le_bytes(table[base + 4..base + 8].try_into().expect("4-byte slice"));
+            if size_mu == 0 {
+                return None;
+            }
+            Some(CtrPartitionEntry {
+                index: i as u8,
+                name: ncsd_partition_name(i as u8),
+                offset: offset_mu as u64 * CTR_MEDIA_UNIT_SIZE as u64,
+                size: size_mu as u64 * CTR_MEDIA_UNIT_SIZE as u64,
+            })
+        })
+        .collect()
+}
+
+fn ncsd_partition_name(index: u8) -> String {
+    match index {
+        0 => "Application (CXI)".to_string(),
+        1 => "Manual".to_string(),
+        2 => "Download Play".to_string(),
+        6 => "N3DS Update".to_string(),
+        7 => "Update".to_string(),
+        n => format!("Partition {n}"),
+    }
 }
 
 fn read_ncsd_image_size<R: Read + Seek>(reader: &mut R) -> Result<u64> {
@@ -640,5 +744,27 @@ mod tests {
         assert_eq!(info.maker_code, "01");
         assert!(!info.ncch_encrypted);
         assert!(!info.seed_crypto);
+        assert_eq!(info.cia_contents.len(), 1);
+        assert_eq!(info.cia_contents[0].index, 0);
+        assert_eq!(info.cia_contents[0].content_id, "00000000");
+        assert_eq!(info.cia_contents[0].size, 0x200);
+        assert!(!info.cia_contents[0].encrypted);
+    }
+
+    #[test]
+    fn read_info_on_ncsd_lists_boot_partition() {
+        use crate::nintendo::ctr::test_fixtures::{SYNTH_CIA_TITLE_ID, make_fake_ncsd};
+
+        let dir = tempfile::tempdir().unwrap();
+        let ncsd_path = dir.path().join("game.3ds");
+        std::fs::write(&ncsd_path, make_fake_ncsd(SYNTH_CIA_TITLE_ID)).unwrap();
+
+        let info = read_info(&ncsd_path).unwrap();
+        assert_eq!(info.format, CtrFormat::Ncsd);
+        assert!(!info.ncsd_partitions.is_empty());
+        let boot = &info.ncsd_partitions[0];
+        assert_eq!(boot.index, 0);
+        assert_eq!(boot.name, "Application (CXI)");
+        assert!(boot.size > 0);
     }
 }

@@ -1,5 +1,5 @@
 //! PSP UMD metadata from `PSP_GAME/PARAM.SFO`, plus the game's
-//! `ICON0.PNG` when the disc carries one.
+//! `ICON0.PNG` and `PIC1.PNG` when the disc carries them.
 
 use std::io;
 
@@ -21,6 +21,8 @@ pub struct PspInfo {
     /// Logical size of the disc, not of the file or container it came in.
     pub size_bytes: u64,
     pub icon: Option<Image>,
+    #[serde(default)]
+    pub background: Option<Image>,
 }
 
 pub(crate) fn read<S: SectorSource>(src: &mut S, volume: &Volume) -> io::Result<PspInfo> {
@@ -43,6 +45,9 @@ pub(crate) fn read<S: SectorSource>(src: &mut S, volume: &Volume) -> io::Result<
     }
     info.icon = volume
         .read_file(src, "PSP_GAME/ICON0.PNG")?
+        .and_then(Image::from_png);
+    info.background = volume
+        .read_file(src, "PSP_GAME/PIC1.PNG")?
         .and_then(Image::from_png);
 
     Ok(info)

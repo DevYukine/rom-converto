@@ -47,6 +47,45 @@ impl Default for KeyValueTable {
     }
 }
 
+/// Leading field order shared by every ROM section; keys outside it keep
+/// the order the renderer pushed them in.
+const ROM_KEY_ORDER: [&str; 6] = [
+    "Title",
+    "Title ID",
+    "Content type",
+    "Version",
+    "Region",
+    "Size",
+];
+
+fn order_rom(t: &mut KeyValueTable) {
+    t.rows.sort_by_key(|(k, _)| {
+        ROM_KEY_ORDER
+            .iter()
+            .position(|c| c == k)
+            .unwrap_or(ROM_KEY_ORDER.len())
+    });
+}
+
+fn section(out: &mut String, name: &str, t: &KeyValueTable) {
+    if t.rows.is_empty() {
+        return;
+    }
+    nested(out, name, &t.render());
+}
+
+fn nested(out: &mut String, name: &str, body: &str) {
+    out.push_str(&format!("{}:\n", name));
+    for line in body.lines() {
+        if line.is_empty() {
+            out.push('\n');
+        } else {
+            out.push_str(&format!("  {}\n", line));
+        }
+    }
+    out.push('\n');
+}
+
 fn format_maker(code: &str, name: Option<&str>) -> String {
     match name {
         Some(n) if !n.is_empty() => format!("{} ({})", code, n),
@@ -78,68 +117,69 @@ pub fn print(result: &InfoResult, json: bool) -> Result<()> {
 }
 
 fn render_cso(info: &rom_converto_lib::info::CsoInfo) -> String {
-    let mut t = KeyValueTable::new();
-    t.push("Format", format!("{} v{}", info.format, info.version));
-    t.push("Block size", format!("{} bytes", info.block_size));
-    t.push("Index shift", format!("{}", info.index_shift));
-    t.push(
+    let mut c = KeyValueTable::new();
+    c.push("Format", format!("{} v{}", info.format, info.version));
+    c.push("Block size", format!("{} bytes", info.block_size));
+    c.push("Index shift", format!("{}", info.index_shift));
+    c.push(
         "Blocks",
         format!("{} ({} stored raw)", info.block_count, info.raw_block_count),
     );
-    t.push("Uncompressed bytes", format!("{}", info.uncompressed_size));
-    t.push("Physical bytes", format!("{}", info.physical_bytes));
-    t.push(
+    c.push("Uncompressed bytes", format!("{}", info.uncompressed_size));
+    c.push("Physical bytes", format!("{}", info.physical_bytes));
+    c.push(
         "Compression ratio",
         format!("{:.2}%", info.compression_ratio),
     );
-    let mut out = t.render();
 
-    if let Some(content) = &info.content {
-        push_disc_content(&mut out, content);
-    }
-
+    let mut out = String::new();
+    section(&mut out, "Container", &c);
+    section(&mut out, "ROM", &disc_rom_table(info.content.as_ref()));
     out
 }
 
 fn render_chd(info: &rom_converto_lib::info::ChdInfo) -> String {
-    let mut t = KeyValueTable::new();
-    t.push("Format", format!("CHD v{}", info.version));
+    let mut c = KeyValueTable::new();
+    c.push("Format", format!("CHD v{}", info.version));
     if info.compressors.is_empty() {
-        t.push("Compressors", "(none)");
+        c.push("Compressors", "(none)");
     } else {
-        t.push("Compressors", info.compressors.join(", "));
+        c.push("Compressors", info.compressors.join(", "));
     }
-    t.push("Hunk size", format!("{} bytes", info.hunk_bytes));
-    t.push("Unit size", format!("{} bytes", info.unit_bytes));
-    t.push("Hunks", format!("{}", info.hunk_count));
-    t.push("Logical bytes", format!("{}", info.logical_bytes));
-    t.push("Physical bytes", format!("{}", info.physical_bytes));
-    t.push(
+    c.push("Hunk size", format!("{} bytes", info.hunk_bytes));
+    c.push("Unit size", format!("{} bytes", info.unit_bytes));
+    c.push("Hunks", format!("{}", info.hunk_count));
+    c.push("Logical bytes", format!("{}", info.logical_bytes));
+    c.push("Physical bytes", format!("{}", info.physical_bytes));
+    c.push(
         "Compression ratio",
         format!("{:.2}%", info.compression_ratio),
     );
-    t.push("Raw SHA1", info.raw_sha1.clone());
-    t.push("SHA1", info.sha1.clone());
+    c.push("Raw SHA1", info.raw_sha1.clone());
+    c.push("SHA1", info.sha1.clone());
     if let Some(parent) = &info.parent_sha1 {
-        t.push("Parent SHA1", parent.clone());
+        c.push("Parent SHA1", parent.clone());
     }
     if let Some(vers) = &info.version_string {
-        t.push("chdman version", vers.clone());
+        c.push("chdman version", vers.clone());
     }
     if let Some(dvd) = &info.dvd {
         let layer = match dvd.layer_class {
             rom_converto_lib::chd::info::DvdLayerClass::SingleLayer => "single-layer (4.7 GB)",
             rom_converto_lib::chd::info::DvdLayerClass::DualLayer => "dual-layer (8.5 GB)",
         };
-        t.push(
+        c.push(
             "DVD geometry",
             format!("{} sectors, {}", dvd.total_sectors, layer),
         );
     }
-    let mut out = t.render();
+
+    let mut out = String::new();
+    section(&mut out, "Container", &c);
+    section(&mut out, "ROM", &disc_rom_table(info.content.as_ref()));
 
     if !info.tracks.is_empty() {
-        out.push_str("\nTracks:\n");
+        let mut inner = String::from("Tracks:\n");
         for tr in &info.tracks {
             let postgap = tr
                 .postgap
@@ -150,25 +190,44 @@ fn render_chd(info: &rom_converto_lib::info::ChdInfo) -> String {
                 .as_deref()
                 .map(|s| format!(" subcode={}", s))
                 .unwrap_or_default();
-            out.push_str(&format!(
-                "  {:>2}  {:<12}  frames={:<8} pregap={}{}{}\n",
-                tr.number, tr.track_type, tr.frames, tr.pregap, subtype, postgap
+            let pgtype = tr
+                .pgtype
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .map(|s| format!(" pgtype={}", s))
+                .unwrap_or_default();
+            let pgsub = tr
+                .pgsub
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .map(|s| format!(" pgsub={}", s))
+                .unwrap_or_default();
+            inner.push_str(&format!(
+                "  {:>2}  {:<12}  frames={:<8} pregap={}{}{}{}{}\n",
+                tr.number, tr.track_type, tr.frames, tr.pregap, pgtype, pgsub, subtype, postgap
             ));
         }
+        nested(&mut out, "Inner files", &inner);
     }
 
     if !info.metadata_tags.is_empty() {
-        out.push_str("\nMetadata tags:\n");
+        out.push_str("Metadata tags:\n");
         for tag in &info.metadata_tags {
             out.push_str(&format!("  {}  ({} bytes)\n", tag.tag, tag.length));
         }
-    }
-
-    if let Some(content) = &info.content {
-        push_disc_content(&mut out, content);
+        out.push('\n');
     }
 
     out
+}
+
+/// ROM table for the PlayStation-family disc a CHD or CSO carries.
+fn disc_rom_table(content: Option<&DiscContent>) -> KeyValueTable {
+    match content {
+        Some(DiscContent::Psx(psx)) => psx_rom_table(psx),
+        Some(DiscContent::Psp(psp)) => psp_rom_table(psp),
+        None => KeyValueTable::new(),
+    }
 }
 
 fn render_ctr(info: &rom_converto_lib::info::CtrInfo) -> String {
@@ -183,12 +242,18 @@ fn render_ctr(info: &rom_converto_lib::info::CtrInfo) -> String {
     let mut t = KeyValueTable::new();
     t.push("Format", fmt);
     t.push("Title ID", info.title_id.clone());
+    t.push("Content type", ctr_content_type(&info.title_id, fmt));
     t.push("Program ID", info.program_id.clone());
     t.push("Product code", info.product_code.clone());
     t.push(
         "Maker code",
         format_maker(&info.maker_code, info.maker_name.as_deref()),
     );
+    if let Some(s) = &info.smdh
+        && !s.region_names.is_empty()
+    {
+        t.push("Region", s.region_names.join(", "));
+    }
     if let Some(sz) = info.cartridge_size {
         t.push("Cartridge size", format!("{} bytes", sz));
     }
@@ -214,16 +279,16 @@ fn render_ctr(info: &rom_converto_lib::info::CtrInfo) -> String {
             t.push("Derived KeyY", keyy.clone());
         }
     }
-    let mut out = t.render();
+    order_rom(&mut t);
+
+    let mut out = String::new();
+    section(&mut out, "ROM", &t);
 
     if let Some(s) = &info.smdh {
-        if !s.region_names.is_empty() {
-            out.push_str(&format!("\nRegion: {}\n", s.region_names.join(", ")));
-        }
-        out.push_str(&format!("Flags: 0x{:08X}\n", s.flags));
+        out.push_str(&format!("Flags: 0x{:08X}\n\n", s.flags));
 
         if !s.titles.is_empty() {
-            out.push_str("\nTitles:\n");
+            out.push_str("Titles:\n");
             for t in &s.titles {
                 out.push_str(&format!(
                     "  {:<22}  {} ({})\n",
@@ -232,9 +297,10 @@ fn render_ctr(info: &rom_converto_lib::info::CtrInfo) -> String {
                     t.publisher
                 ));
             }
+            out.push('\n');
         }
         if !s.age_ratings.is_empty() {
-            out.push_str("\nAge ratings:\n");
+            out.push_str("Age ratings:\n");
             for r in &s.age_ratings {
                 let banned = if r.banned { " banned" } else { "" };
                 let pending = if r.pending { " pending" } else { "" };
@@ -243,12 +309,40 @@ fn render_ctr(info: &rom_converto_lib::info::CtrInfo) -> String {
                     r.region, r.age, banned, pending
                 ));
             }
+            out.push('\n');
         }
+    }
+
+    let mut inner = String::new();
+    if !info.ncsd_partitions.is_empty() {
+        inner.push_str("Partitions:\n");
+        for p in &info.ncsd_partitions {
+            inner.push_str(&format!(
+                "  {}  {}  {} bytes @ 0x{:X}\n",
+                p.index, p.name, p.size, p.offset
+            ));
+        }
+    }
+    if !info.cia_contents.is_empty() {
+        if !inner.is_empty() {
+            inner.push('\n');
+        }
+        inner.push_str("Contents:\n");
+        for c in &info.cia_contents {
+            let encrypted = if c.encrypted { "  encrypted" } else { "" };
+            inner.push_str(&format!(
+                "  {}  {}  {} bytes{}\n",
+                c.index, c.content_id, c.size, encrypted
+            ));
+        }
+    }
+    if !inner.is_empty() {
+        nested(&mut out, "Inner files", &inner);
     }
 
     if let Some(img) = &info.icon {
         out.push_str(&format!(
-            "\nIcon: {}x{} PNG ({} bytes)\n",
+            "Icon: {}x{} PNG ({} bytes)\n\n",
             img.width,
             img.height,
             img.png_bytes.len()
@@ -258,9 +352,22 @@ fn render_ctr(info: &rom_converto_lib::info::CtrInfo) -> String {
     out
 }
 
+/// 3DS content class from the title-id high word, falling back to the
+/// container format when the high word names no known class.
+fn ctr_content_type(title_id: &str, format: &str) -> String {
+    match title_id.get(..8) {
+        Some("00040000") => "Game".to_string(),
+        Some("0004000E") => "Update".to_string(),
+        Some("0004008C") => "DLC".to_string(),
+        Some("00040010") | Some("00040030") => "System".to_string(),
+        _ => format.to_uppercase(),
+    }
+}
+
 fn render_dol(info: &rom_converto_lib::info::DolInfo) -> String {
     let mut t = KeyValueTable::new();
     t.push("Format", format!("GameCube ({})", info.container));
+    t.push("Content type", "Game");
     t.push("Game ID", info.game_id.clone());
     t.push(
         "Maker code",
@@ -278,12 +385,34 @@ fn render_dol(info: &rom_converto_lib::info::DolInfo) -> String {
         t.push("Apploader date", date.clone());
     }
     t.push("Physical bytes", format!("{}", info.physical_bytes));
-    let mut out = t.render();
+    order_rom(&mut t);
+
+    let mut out = String::new();
+    section(&mut out, "ROM", &t);
+
+    if !info.fst_root.is_empty() {
+        let mut inner = String::new();
+        for e in &info.fst_root {
+            if e.is_dir {
+                inner.push_str(&format!("  {}/\n", e.name));
+            } else {
+                inner.push_str(&format!("  {}  {} bytes\n", e.name, e.size));
+            }
+        }
+        let total = info.fst_file_count as usize + info.fst_dir_count as usize;
+        if total > info.fst_root.len() {
+            inner.push_str(&format!(
+                "  {} files, {} dirs\n",
+                info.fst_file_count, info.fst_dir_count
+            ));
+        }
+        nested(&mut out, "Inner files", &inner);
+    }
 
     if let Some(banner) = &info.banner {
-        out.push_str(&format!("\nBanner format: {}\n", banner.format));
+        out.push_str(&format!("Banner format: {}\n\n", banner.format));
         if !banner.titles.is_empty() {
-            out.push_str("\nBanner titles:\n");
+            out.push_str("Banner titles:\n");
             for t in &banner.titles {
                 out.push_str(&format!(
                     "  {:<10}  {} ({})\n    {}\n",
@@ -293,12 +422,13 @@ fn render_dol(info: &rom_converto_lib::info::DolInfo) -> String {
                     t.description.replace('\n', " ")
                 ));
             }
+            out.push('\n');
         }
     }
 
     if let Some(img) = &info.banner_image {
         out.push_str(&format!(
-            "\nBanner image: {}x{} PNG ({} bytes)\n",
+            "Banner image: {}x{} PNG ({} bytes)\n\n",
             img.width,
             img.height,
             img.png_bytes.len()
@@ -311,6 +441,7 @@ fn render_dol(info: &rom_converto_lib::info::DolInfo) -> String {
 fn render_rvl(info: &rom_converto_lib::info::RvlInfo) -> String {
     let mut t = KeyValueTable::new();
     t.push("Format", format!("Wii ({})", info.container));
+    t.push("Content type", "Game");
     t.push("Game ID", info.game_id.clone());
     t.push(
         "Maker code",
@@ -324,6 +455,7 @@ fn render_rvl(info: &rom_converto_lib::info::RvlInfo) -> String {
     if let Some(tmd) = &info.tmd {
         t.push("Title ID", format!("{:016X}", tmd.title_id));
         t.push("Title version", format!("{}", tmd.title_version));
+        t.push("System version", format!("{:016X}", tmd.system_version));
         if let Some(ios) = tmd.ios_slot {
             t.push("IOS slot", format!("IOS{}", ios));
         }
@@ -331,35 +463,55 @@ fn render_rvl(info: &rom_converto_lib::info::RvlInfo) -> String {
         t.push("Content count", format!("{}", tmd.content_count));
         t.push("Access rights", format!("0x{:08X}", tmd.access_rights));
     }
-    let mut out = t.render();
+    order_rom(&mut t);
+
+    let mut out = String::new();
+    section(&mut out, "ROM", &t);
 
     if !info.partitions.is_empty() {
-        out.push_str("\nPartitions:\n");
+        let mut inner = String::from("Partitions:\n");
         for p in &info.partitions {
-            out.push_str(&format!(
+            inner.push_str(&format!(
                 "  group={} type={} ({:<7})  offset=0x{:X}\n",
                 p.group, p.partition_type, p.kind, p.offset
             ));
         }
+        nested(&mut out, "Inner files", &inner);
     }
 
     if let Some(names) = &info.imet_names
         && !names.is_empty()
     {
-        out.push_str("\nIMET banner names:\n");
+        out.push_str("IMET banner names:\n");
         for (lang, name) in &names.entries {
             out.push_str(&format!("  {:<10?}  {}\n", lang, name));
         }
+        out.push('\n');
     }
 
     out
+}
+
+/// "disc"/"nus" sources ship encrypted; "loadiine"/"wua" are already
+/// decrypted extractions.
+fn wup_encryption(source_kind: &str) -> Option<&'static str> {
+    if source_kind.starts_with("disc") || source_kind.starts_with("nus") {
+        Some("encrypted")
+    } else if source_kind.starts_with("loadiine") || source_kind.starts_with("wua") {
+        Some("decrypted")
+    } else {
+        None
+    }
 }
 
 fn render_wup(info: &rom_converto_lib::info::WupInfo) -> String {
     let mut t = KeyValueTable::new();
     t.push("Format", format!("Wii U ({})", info.source_kind));
     t.push("Title ID", info.title_id_hex.clone());
-    t.push("Title type", info.title_type.clone());
+    t.push("Content type", info.title_type.clone());
+    if let Some(e) = wup_encryption(&info.source_kind) {
+        t.push("Encryption", e);
+    }
     if let Some(uv) = info.update_version {
         t.push(
             "Title version",
@@ -367,6 +519,11 @@ fn render_wup(info: &rom_converto_lib::info::WupInfo) -> String {
         );
     } else {
         t.push("Title version", format!("v{}", info.title_version));
+    }
+    if let Some(meta) = &info.meta
+        && !meta.region_names.is_empty()
+    {
+        t.push("Region", meta.region_names.join(", "));
     }
     t.push("Group ID", format!("0x{:04X}", info.group_id));
     t.push("Access rights", format!("0x{:08X}", info.access_rights));
@@ -383,22 +540,38 @@ fn render_wup(info: &rom_converto_lib::info::WupInfo) -> String {
     if let Some(sdk) = info.sdk_version {
         t.push("SDK version", format!("{}", sdk));
     }
-    let mut out = t.render();
+    order_rom(&mut t);
 
+    let mut out = String::new();
+    section(&mut out, "ROM", &t);
+
+    let mut inner = String::new();
     if !info.bundled_titles.is_empty() {
-        out.push_str("\nBundled titles:\n");
+        inner.push_str("Bundled titles:\n");
         for bt in &info.bundled_titles {
-            out.push_str(&format!(
+            inner.push_str(&format!(
                 "  {}  {:<8}  v{}\n",
                 bt.title_id_hex, bt.title_type, bt.title_version
             ));
         }
     }
+    if !info.disc_partitions.is_empty() {
+        if !inner.is_empty() {
+            inner.push('\n');
+        }
+        inner.push_str("Disc partitions:\n");
+        for p in &info.disc_partitions {
+            inner.push_str(&format!(
+                "  {}  {}  sector {}\n",
+                p.name, p.kind, p.start_sector
+            ));
+        }
+    }
+    if !inner.is_empty() {
+        nested(&mut out, "Inner files", &inner);
+    }
 
     if let Some(meta) = &info.meta {
-        if !meta.region_names.is_empty() {
-            out.push_str(&format!("\nRegion: {}\n", meta.region_names.join(", ")));
-        }
         if let Some(code) = &meta.product_code {
             out.push_str(&format!("Product code: {}\n", code));
         }
@@ -457,25 +630,29 @@ fn render_wup(info: &rom_converto_lib::info::WupInfo) -> String {
         if !accessories.is_empty() {
             out.push_str(&format!("Accessories: {}\n", accessories.join(", ")));
         }
+        out.push('\n');
         if !meta.long_names.is_empty() {
-            out.push_str("\nLong names:\n");
+            out.push_str("Long names:\n");
             for (lang, name) in &meta.long_names.entries {
                 out.push_str(&format!("  {:<22?}  {}\n", lang, name));
             }
+            out.push('\n');
         }
         if !meta.publishers.is_empty() {
-            out.push_str("\nPublishers:\n");
+            out.push_str("Publishers:\n");
             for (lang, name) in &meta.publishers.entries {
                 out.push_str(&format!("  {:<22?}  {}\n", lang, name));
             }
+            out.push('\n');
         }
         if !meta.age_ratings.is_empty() {
-            out.push_str("\nAge ratings:\n");
+            out.push_str("Age ratings:\n");
             let mut keys: Vec<&String> = meta.age_ratings.keys().collect();
             keys.sort();
             for k in keys {
                 out.push_str(&format!("  {:<10}  {}\n", k, meta.age_ratings[k]));
             }
+            out.push('\n');
         }
     }
 
@@ -492,9 +669,9 @@ fn render_nx(info: &rom_converto_lib::info::NxInfo) -> String {
         NxContainerKind::Xcz => "XCZ",
     };
 
-    let mut t = KeyValueTable::new();
-    t.push("Format", format!("Switch {}", kind_str));
-    t.push(
+    let mut c = KeyValueTable::new();
+    c.push("Format", format!("Switch {}", kind_str));
+    c.push(
         "Compressed",
         if info.is_compressed {
             "yes (zstd)"
@@ -502,16 +679,33 @@ fn render_nx(info: &rom_converto_lib::info::NxInfo) -> String {
             "no"
         },
     );
-    t.push("Distribution", info.distribution.display_name());
-    t.push("Structure", info.structure.display_name());
-    t.push("Physical bytes", format!("{}", info.physical_bytes));
-    t.push("Files", format!("{}", info.files.len()));
-    t.push("NCA files", format!("{}", info.nca_names.len()));
-    t.push("CNMT NCAs", format!("{}", info.cnmt_nca_names.len()));
-    t.push("Tickets", format!("{}", info.tickets.len()));
+    c.push("Distribution", info.distribution.display_name());
+    c.push("Structure", info.structure.display_name());
+    c.push("Physical bytes", format!("{}", info.physical_bytes));
+    c.push("Files", format!("{}", info.files.len()));
+    c.push("NCA files", format!("{}", info.nca_names.len()));
+    c.push("CNMT NCAs", format!("{}", info.cnmt_nca_names.len()));
+    c.push("Tickets", format!("{}", info.tickets.len()));
+    c.push(
+        "Encryption",
+        match info.container_kind {
+            // NCZ crypto sections are stored decrypted; the AES-CTR is
+            // re-applied on read.
+            NxContainerKind::Nsz | NxContainerKind::Xcz => "decrypted (ncz sections)",
+            NxContainerKind::Nsp | NxContainerKind::Xci => {
+                if info.tickets.is_empty() {
+                    "encrypted (standard keys)"
+                } else {
+                    "encrypted (titlekey)"
+                }
+            }
+        },
+    );
+
+    let mut t = KeyValueTable::new();
     if let Some(full) = &info.full {
         t.push("Title ID", format!("{:016X}", full.application_title_id));
-        t.push("Title kind", full.title_kind.display_name());
+        t.push("Content type", full.title_kind.display_name());
         t.push(
             "Title version",
             format!("{} (0x{:x})", full.title_version, full.title_version),
@@ -542,47 +736,63 @@ fn render_nx(info: &rom_converto_lib::info::NxInfo) -> String {
             "limited (prod.keys not loaded or not provided)".to_string(),
         );
     }
-    let mut out = t.render();
+    order_rom(&mut t);
 
+    let mut out = String::new();
+    section(&mut out, "Container", &c);
+    section(&mut out, "ROM", &t);
+
+    let mut inner = String::new();
     if let Some(parts) = &info.xci_partitions {
-        out.push_str("\nXCI partitions:\n");
+        inner.push_str("XCI partitions:\n");
         for p in parts {
-            out.push_str(&format!(
+            inner.push_str(&format!(
                 "  {:<8} {} files, {} bytes\n",
                 p.name, p.file_count, p.total_size
             ));
         }
     }
+    if let Some(full) = &info.full
+        && !full.contents.is_empty()
+    {
+        if !inner.is_empty() {
+            inner.push('\n');
+        }
+        inner.push_str("CNMT contents:\n");
+        for c in &full.contents {
+            inner.push_str(&format!(
+                "  {:<10}  {:>12} bytes  id={}\n",
+                c.content_type, c.size, c.content_id
+            ));
+        }
+    }
+    if !info.cnmt_nca_names.is_empty() {
+        if !inner.is_empty() {
+            inner.push('\n');
+        }
+        inner.push_str("CNMT NCAs:\n");
+        for n in &info.cnmt_nca_names {
+            inner.push_str(&format!("  {}\n", n));
+        }
+    }
+    if !inner.is_empty() {
+        nested(&mut out, "Inner files", &inner);
+    }
 
     if !info.tickets.is_empty() {
-        out.push_str("\nTickets:\n");
+        out.push_str("Tickets:\n");
         for tk in &info.tickets {
             out.push_str(&format!(
                 "  {:<40}  rights_id={}  master_key_rev={}\n",
                 tk.file_name, tk.rights_id, tk.master_key_revision
             ));
         }
-    }
-
-    if !info.cnmt_nca_names.is_empty() {
-        out.push_str("\nCNMT NCAs:\n");
-        for n in &info.cnmt_nca_names {
-            out.push_str(&format!("  {}\n", n));
-        }
+        out.push('\n');
     }
 
     if let Some(full) = &info.full {
-        if !full.contents.is_empty() {
-            out.push_str("\nCNMT contents:\n");
-            for c in &full.contents {
-                out.push_str(&format!(
-                    "  {:<10}  {:>12} bytes  id={}\n",
-                    c.content_type, c.size, c.content_id
-                ));
-            }
-        }
         if !full.related_titles.is_empty() {
-            out.push_str("\nRelated titles:\n");
+            out.push_str("Related titles:\n");
             for r in &full.related_titles {
                 out.push_str(&format!(
                     "  {:016X}  {:<14}  v{}\n",
@@ -591,9 +801,10 @@ fn render_nx(info: &rom_converto_lib::info::NxInfo) -> String {
                     r.version
                 ));
             }
+            out.push('\n');
         }
         if let Some(ctrl) = &full.control {
-            out.push_str(&format!("\nDisplay version: {}\n", ctrl.display_version));
+            out.push_str(&format!("Display version: {}\n", ctrl.display_version));
             out.push_str(&format!(
                 "Startup user account: {}\n",
                 ctrl.startup_user_account_name
@@ -622,22 +833,25 @@ fn render_nx(info: &rom_converto_lib::info::NxInfo) -> String {
                     ctrl.supported_languages.join(", ")
                 ));
             }
+            out.push('\n');
             if !ctrl.age_ratings.is_empty() {
-                out.push_str("\nAge ratings:\n");
+                out.push_str("Age ratings:\n");
                 for r in &ctrl.age_ratings {
                     out.push_str(&format!("  {:<14}  {}\n", r.organization, r.age));
                 }
+                out.push('\n');
             }
             if !ctrl.titles.is_empty() {
-                out.push_str("\nTitles:\n");
+                out.push_str("Titles:\n");
                 for t in &ctrl.titles {
                     out.push_str(&format!(
                         "  {:<22}  {}  ({})\n",
                         t.language, t.name, t.publisher
                     ));
                 }
+                out.push('\n');
             }
-            out.push_str("\nSave data sizes (bytes):\n");
+            out.push_str("Save data sizes (bytes):\n");
             out.push_str(&format!("  user             {}\n", ctrl.user_account_save));
             out.push_str(&format!(
                 "  user journal     {}\n",
@@ -649,11 +863,12 @@ fn render_nx(info: &rom_converto_lib::info::NxInfo) -> String {
                 ctrl.device_save_journal
             ));
             out.push_str(&format!("  bcat             {}\n", ctrl.bcat_save));
+            out.push('\n');
             if let Some(lang) = &ctrl.icon_language
                 && let Some(img) = &ctrl.icon
             {
                 out.push_str(&format!(
-                    "\nIcon: {}x{} PNG ({} bytes, language {})\n",
+                    "Icon: {}x{} PNG ({} bytes, language {})\n\n",
                     img.width,
                     img.height,
                     img.png_bytes.len(),
@@ -676,55 +891,81 @@ fn render_xbox(info: &rom_converto_lib::info::XisoInfo) -> String {
         PartitionKind::X360Extra(base) => format!("X360 extra (base 0x{:X})", base),
     };
 
-    let mut t = KeyValueTable::new();
-    t.push("Format", "Xbox XISO");
-    t.push("Partition kind", kind);
-    t.push("Base offset", format!("0x{:X}", info.base));
-    t.push("Root sector", format!("{}", info.root_sector));
-    t.push("Root size", format!("{} bytes", info.root_size));
-    t.push("Files", format!("{}", info.file_count));
-    t.push("Directories", format!("{}", info.dir_count));
-    t.push("Total file bytes", format!("{}", info.total_file_bytes));
-    t.push("Image size", format!("{} bytes", info.image_size));
-    let mut out = t.render();
+    let mut c = KeyValueTable::new();
+    c.push("Format", "Xbox XISO");
+    c.push("Partition kind", kind);
+    c.push("Base offset", format!("0x{:X}", info.base));
+    c.push("Root sector", format!("{}", info.root_sector));
+    c.push("Root size", format!("{} bytes", info.root_size));
+    c.push("Files", format!("{}", info.file_count));
+    c.push("Directories", format!("{}", info.dir_count));
+    c.push("Total file bytes", format!("{}", info.total_file_bytes));
+    c.push("Image size", format!("{} bytes", info.image_size));
 
+    let mut t = KeyValueTable::new();
+    if info.xbe.is_some() || info.xex.is_some() {
+        t.push("Content type", "Game");
+    }
     if let Some(xbe) = &info.xbe {
-        out.push('\n');
-        out.push_str(&format!("Title name: {}\n", xbe.title_name));
-        out.push_str(&format!(
-            "Title ID: {} ({})\n",
-            xbe.title_id_hex, xbe.title_id_code
-        ));
-        out.push_str(&format!("Version: {}\n", xbe.version));
-        out.push_str(&format!("Disc number: {}\n", xbe.disc_number));
-        out.push_str(&format!(
-            "Region: {}\n",
+        t.push("Title name", xbe.title_name.clone());
+        t.push(
+            "Title ID",
+            format!("{} ({})", xbe.title_id_hex, xbe.title_id_code),
+        );
+        t.push("Version", format!("{}", xbe.version));
+        t.push("Disc number", format!("{}", xbe.disc_number));
+        t.push(
+            "Region",
             if xbe.region_names.is_empty() {
                 format!("0x{:08X}", xbe.region)
             } else {
                 xbe.region_names.join(", ")
-            }
-        ));
-        out.push_str(&format!(
-            "Allowed media: {}\n",
-            xbe.allowed_media_names.join(", ")
-        ));
-        out.push_str(&format!("Ratings: 0x{:08X}\n", xbe.ratings));
-        out.push_str(&format!("Cert timestamp: {}\n", xbe.cert_timestamp));
+            },
+        );
+        t.push("Allowed media", xbe.allowed_media_names.join(", "));
+        if let Some(img) = &xbe.icon {
+            t.push(
+                "Icon",
+                format!(
+                    "{}x{} PNG ({} bytes)",
+                    img.width,
+                    img.height,
+                    img.png_bytes.len()
+                ),
+            );
+        }
+        t.push("Ratings", format!("0x{:08X}", xbe.ratings));
+        t.push("Cert timestamp", format!("{}", xbe.cert_timestamp));
         if !xbe.alternate_title_ids.is_empty() {
-            out.push_str(&format!(
-                "Alternate title IDs: {}\n",
+            t.push(
+                "Alternate title IDs",
                 xbe.alternate_title_ids
                     .iter()
                     .map(|id| format!("{:08X}", id))
                     .collect::<Vec<_>>()
-                    .join(", ")
-            ));
+                    .join(", "),
+            );
         }
     }
-
     if let Some(xex) = &info.xex {
-        render_xex_section(&mut out, xex);
+        push_xex_rows(&mut t, xex, info.xbe.is_none());
+    }
+    order_rom(&mut t);
+
+    let mut out = String::new();
+    section(&mut out, "Container", &c);
+    section(&mut out, "ROM", &t);
+
+    if !info.root_entries.is_empty() {
+        let mut inner = String::new();
+        for e in &info.root_entries {
+            if e.is_dir {
+                inner.push_str(&format!("  {}/\n", e.name));
+            } else {
+                inner.push_str(&format!("  {}  {} bytes\n", e.name, e.size));
+            }
+        }
+        nested(&mut out, "Inner files", &inner);
     }
 
     out
@@ -733,6 +974,7 @@ fn render_xbox(info: &rom_converto_lib::info::XisoInfo) -> String {
 fn render_ps3(info: &rom_converto_lib::info::Ps3Info) -> String {
     let mut t = KeyValueTable::new();
     t.push("Format", "PS3 ISO");
+    t.push("Content type", "Game");
     if let Some(v) = &info.title {
         t.push("Title", v.clone());
     }
@@ -751,6 +993,12 @@ fn render_ps3(info: &rom_converto_lib::info::Ps3Info) -> String {
     t.push("Physical bytes", format!("{}", info.size_bytes));
     t.push("Regions", format!("{}", info.region_count));
     t.push("Total sectors", format!("{}", info.total_sectors));
+    if let Some(encrypted) = info.encrypted {
+        t.push(
+            "Encryption",
+            if encrypted { "encrypted" } else { "decrypted" },
+        );
+    }
     t.push("Encrypted sectors", format!("{}", info.encrypted_sectors));
     if let Some(v) = &info.resolution {
         t.push("Resolution", v.clone());
@@ -764,12 +1012,41 @@ fn render_ps3(info: &rom_converto_lib::info::Ps3Info) -> String {
     if let Some(p) = info.parental_level {
         t.push("Parental level", format!("{}", p));
     }
-    t.render()
+    if let Some(img) = &info.icon {
+        t.push(
+            "Icon",
+            format!(
+                "{}x{} PNG ({} bytes)",
+                img.width,
+                img.height,
+                img.png_bytes.len()
+            ),
+        );
+    }
+    order_rom(&mut t);
+
+    let mut out = String::new();
+    section(&mut out, "ROM", &t);
+
+    if !info.root_files.is_empty() {
+        let mut inner = String::new();
+        for e in &info.root_files {
+            if e.is_dir {
+                inner.push_str(&format!("  {}/\n", e.name));
+            } else {
+                inner.push_str(&format!("  {}  {} bytes\n", e.name, e.size));
+            }
+        }
+        nested(&mut out, "Inner files", &inner);
+    }
+
+    out
 }
 
-fn render_psx(info: &rom_converto_lib::info::PsxInfo) -> String {
+fn psx_rom_table(info: &rom_converto_lib::info::PsxInfo) -> KeyValueTable {
     let mut t = KeyValueTable::new();
     t.push("Format", info.disc_kind.clone());
+    t.push("Content type", "Game");
     if let Some(v) = &info.title_id {
         t.push("Title ID", v.clone());
     }
@@ -784,12 +1061,23 @@ fn render_psx(info: &rom_converto_lib::info::PsxInfo) -> String {
     }
     t.push("Sectors", format!("{}", info.total_sectors));
     t.push("Size", format!("{}", info.size_bytes));
-    t.render()
+    order_rom(&mut t);
+    t
 }
 
-fn render_psp(info: &rom_converto_lib::info::PspInfo) -> String {
+fn render_psx(info: &rom_converto_lib::info::PsxInfo) -> String {
+    let mut out = String::new();
+    section(&mut out, "ROM", &psx_rom_table(info));
+    out
+}
+
+fn psp_rom_table(info: &rom_converto_lib::info::PspInfo) -> KeyValueTable {
     let mut t = KeyValueTable::new();
     t.push("Format", "PSP UMD");
+    t.push(
+        "Content type",
+        info.category.clone().unwrap_or_else(|| "Game".to_string()),
+    );
     if let Some(v) = &info.title {
         t.push("Title", v.clone());
     }
@@ -802,49 +1090,49 @@ fn render_psp(info: &rom_converto_lib::info::PspInfo) -> String {
     if let Some(v) = &info.firmware {
         t.push("Firmware", v.clone());
     }
-    if let Some(v) = &info.category {
-        t.push("Category", v.clone());
-    }
     t.push("Sectors", format!("{}", info.total_sectors));
     t.push("Size", format!("{}", info.size_bytes));
-    let mut out = t.render();
-
     if let Some(img) = &info.icon {
-        out.push_str(&format!(
-            "\nIcon: {}x{} PNG ({} bytes)\n",
-            img.width,
-            img.height,
-            img.png_bytes.len()
-        ));
+        t.push(
+            "Icon",
+            format!(
+                "{}x{} PNG ({} bytes)",
+                img.width,
+                img.height,
+                img.png_bytes.len()
+            ),
+        );
     }
+    if let Some(img) = &info.background {
+        t.push(
+            "Background",
+            format!(
+                "{}x{} PNG ({} bytes)",
+                img.width,
+                img.height,
+                img.png_bytes.len()
+            ),
+        );
+    }
+    order_rom(&mut t);
+    t
+}
 
+fn render_psp(info: &rom_converto_lib::info::PspInfo) -> String {
+    let mut out = String::new();
+    section(&mut out, "ROM", &psp_rom_table(info));
     out
 }
 
-/// Appends a `Content:` section rendering the PlayStation-family disc a
-/// CHD or CSO container carries, indented under the container's own table.
-fn push_disc_content(out: &mut String, content: &DiscContent) {
-    let inner = match content {
-        DiscContent::Psx(psx) => render_psx(psx),
-        DiscContent::Psp(psp) => render_psp(psp),
-    };
-    out.push_str("\nContent:\n");
-    for line in inner.lines() {
-        out.push_str("  ");
-        out.push_str(line);
-        out.push('\n');
-    }
-}
-
 fn render_xenon(info: &rom_converto_lib::info::ZarInfo) -> String {
-    let mut t = KeyValueTable::new();
-    t.push("Format", "Xbox 360 ZArchive");
-    t.push("Files", format!("{}", info.file_count));
-    t.push("Directories", format!("{}", info.dir_count));
-    t.push("Logical bytes", format!("{}", info.logical_size));
-    t.push("Compressed bytes", format!("{}", info.compressed_size));
-    t.push("Blocks", format!("{}", info.block_count));
-    t.push(
+    let mut c = KeyValueTable::new();
+    c.push("Format", "Xbox 360 ZArchive");
+    c.push("Files", format!("{}", info.file_count));
+    c.push("Directories", format!("{}", info.dir_count));
+    c.push("Logical bytes", format!("{}", info.logical_size));
+    c.push("Compressed bytes", format!("{}", info.compressed_size));
+    c.push("Blocks", format!("{}", info.block_count));
+    c.push(
         "default.xex",
         if info.has_default_xex {
             "present"
@@ -852,44 +1140,75 @@ fn render_xenon(info: &rom_converto_lib::info::ZarInfo) -> String {
             "not found"
         },
     );
-    let mut out = t.render();
 
+    let mut t = KeyValueTable::new();
     if let Some(xex) = &info.xex {
-        render_xex_section(&mut out, xex);
+        t.push("Content type", "Game");
+        push_xex_rows(&mut t, xex, true);
+    }
+    order_rom(&mut t);
+
+    let mut out = String::new();
+    section(&mut out, "Container", &c);
+    section(&mut out, "ROM", &t);
+
+    if !info.root_entries.is_empty() {
+        let mut inner = String::new();
+        for e in &info.root_entries {
+            if e.is_file {
+                inner.push_str(&format!("  {}  {} bytes\n", e.name, e.size));
+            } else {
+                inner.push_str(&format!("  {}/\n", e.name));
+            }
+        }
+        nested(&mut out, "Inner files", &inner);
     }
 
     out
 }
 
-fn render_xex_section(out: &mut String, xex: &XexInfo) {
-    out.push('\n');
+fn push_xex_rows(t: &mut KeyValueTable, xex: &XexInfo, include_shared: bool) {
     if let Some(name) = &xex.title_name {
-        out.push_str(&format!("Title name: {}\n", name));
+        t.push("Title name", name.clone());
     }
-    out.push_str(&format!("Title ID: {}\n", xex.title_id_hex));
-    out.push_str(&format!("Media ID: {:08X}\n", xex.media_id));
-    out.push_str(&format!("Version: {}\n", xex.version));
-    out.push_str(&format!("Base version: {}\n", xex.base_version));
-    out.push_str(&format!("Disc: {}/{}\n", xex.disc_number, xex.disc_count));
-    out.push_str(&format!("Platform: {}\n", xex.platform));
+    if include_shared {
+        t.push("Title ID", xex.title_id_hex.clone());
+    }
+    t.push("Media ID", format!("{:08X}", xex.media_id));
+    if include_shared {
+        t.push("Version", xex.version.clone());
+    }
+    t.push("Base version", xex.base_version.clone());
+    t.push("Disc", format!("{}/{}", xex.disc_number, xex.disc_count));
+    t.push("Platform", format!("{}", xex.platform));
     if let Some(pe) = &xex.original_pe_name {
-        out.push_str(&format!("Original PE name: {}\n", pe));
+        t.push("Original PE name", pe.clone());
     }
-    out.push_str(&format!("Region: {}\n", xex.region_names.join(", ")));
-    out.push_str(&format!("Allowed media: 0x{:08X}\n", xex.allowed_media));
-    if let Some(img) = &xex.icon {
-        out.push_str(&format!(
-            "Icon: {}x{} PNG ({} bytes)\n",
-            img.width,
-            img.height,
-            img.png_bytes.len()
-        ));
+    if include_shared {
+        t.push("Region", xex.region_names.join(", "));
+    }
+    t.push("Allowed media", format!("0x{:08X}", xex.allowed_media));
+    if include_shared && let Some(img) = &xex.icon {
+        t.push(
+            "Icon",
+            format!(
+                "{}x{} PNG ({} bytes)",
+                img.width,
+                img.height,
+                img.png_bytes.len()
+            ),
+        );
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn has_field(out: &str, key: &str, value: &str) -> bool {
+        out.lines()
+            .any(|l| l.trim_start().starts_with(&format!("{key}:")) && l.contains(value))
+    }
 
     #[test]
     fn table_aligns_to_longest_key() {
@@ -913,9 +1232,8 @@ mod tests {
             ..Default::default()
         };
         let out = render_chd(&info);
-        assert!(out.contains("Format:"));
-        assert!(out.contains("CHD v5"));
-        assert!(out.contains("42"));
+        assert!(has_field(&out, "Format", "CHD v5"));
+        assert!(has_field(&out, "Physical bytes", "42"));
     }
 
     fn xiso_info(
@@ -933,6 +1251,7 @@ mod tests {
             image_size: 200,
             xbe,
             xex,
+            root_entries: Vec::new(),
         }
     }
 
@@ -951,6 +1270,11 @@ mod tests {
             disc_number: 1,
             version: 1,
             cert_timestamp: 0,
+            icon: Some(rom_converto_lib::info::Image::new(
+                vec![0x89, b'P', b'N', b'G'],
+                128,
+                128,
+            )),
         }
     }
 
@@ -979,13 +1303,14 @@ mod tests {
     fn render_xbox_shows_xbe_section_when_present() {
         let info = xiso_info(Some(xbe_info()), None);
         let out = render_xbox(&info);
-        assert!(out.contains("Title name: Test Game"));
-        assert!(out.contains("Title ID: 4D530539 (MS-1337)"));
-        assert!(out.contains("Region: North America"));
-        assert!(out.contains("Allowed media: Hard Disk"));
-        assert!(out.contains("Ratings: 0x00000000"));
-        assert!(out.contains("Cert timestamp: 0"));
-        assert!(out.contains("Alternate title IDs: 11223344"));
+        assert!(has_field(&out, "Title name", "Test Game"));
+        assert!(has_field(&out, "Title ID", "4D530539 (MS-1337)"));
+        assert!(has_field(&out, "Region", "North America"));
+        assert!(has_field(&out, "Allowed media", "Hard Disk"));
+        assert!(has_field(&out, "Ratings", "0x00000000"));
+        assert!(has_field(&out, "Cert timestamp", "0"));
+        assert!(has_field(&out, "Alternate title IDs", "11223344"));
+        assert!(has_field(&out, "Icon", "128x128 PNG (4 bytes)"));
     }
 
     #[test]
@@ -1000,9 +1325,33 @@ mod tests {
     fn render_xbox_shows_xex_section_when_present() {
         let info = xiso_info(None, Some(xex_info()));
         let out = render_xbox(&info);
-        assert!(out.contains("Title name: Test Xenon Game"));
-        assert!(out.contains("Media ID: 12345678"));
-        assert!(out.contains("Disc: 1/1"));
+        assert!(has_field(&out, "Title name", "Test Xenon Game"));
+        assert!(has_field(&out, "Media ID", "12345678"));
+        assert!(has_field(&out, "Disc", "1/1"));
+    }
+
+    #[test]
+    fn render_xbox_does_not_duplicate_shared_keys_when_xbe_and_xex_present() {
+        let info = xiso_info(Some(xbe_info()), Some(xex_info()));
+        let out = render_xbox(&info);
+        let count = |key: &str| {
+            out.lines()
+                .filter(|l| l.trim_start().starts_with(&format!("{key}:")))
+                .count()
+        };
+        assert_eq!(count("Title ID"), 1);
+        assert_eq!(count("Version"), 1);
+        assert_eq!(count("Region"), 1);
+        assert_eq!(count("Icon"), 1);
+        assert!(has_field(&out, "Media ID", "12345678"));
+    }
+
+    #[test]
+    fn render_xbox_omits_rom_section_when_no_xbe_or_xex() {
+        let info = xiso_info(None, None);
+        let out = render_xbox(&info);
+        assert!(!out.contains("ROM:"));
+        assert!(!out.contains("Content type:"));
     }
 
     #[test]
@@ -1015,10 +1364,11 @@ mod tests {
             block_count: 1,
             has_default_xex: true,
             xex: Some(xex_info()),
+            root_entries: Vec::new(),
         };
         let out = render_xenon(&info);
-        assert!(out.contains("Title name: Test Xenon Game"));
-        assert!(out.contains("Original PE name: default.exe"));
+        assert!(has_field(&out, "Title name", "Test Xenon Game"));
+        assert!(has_field(&out, "Original PE name", "default.exe"));
     }
 
     #[test]
@@ -1031,8 +1381,224 @@ mod tests {
             block_count: 1,
             has_default_xex: false,
             xex: None,
+            root_entries: Vec::new(),
         };
         let out = render_xenon(&info);
         assert!(!out.contains("Title name:"));
+        assert!(!out.contains("ROM:"));
+        assert!(!out.contains("Content type:"));
+    }
+
+    #[test]
+    fn render_ctr_shows_ncsd_partitions_and_cia_contents() {
+        let info = rom_converto_lib::info::CtrInfo {
+            ncsd_partitions: vec![rom_converto_lib::nintendo::ctr::info::CtrPartitionEntry {
+                index: 0,
+                name: "Main".to_string(),
+                offset: 0x4000,
+                size: 0x1000,
+            }],
+            cia_contents: vec![rom_converto_lib::nintendo::ctr::info::CtrContentEntry {
+                index: 0,
+                content_id: "00000000".to_string(),
+                size: 100,
+                encrypted: true,
+            }],
+            ..Default::default()
+        };
+        let out = render_ctr(&info);
+        assert!(out.contains("0  Main  4096 bytes @ 0x4000"));
+        assert!(out.contains("0  00000000  100 bytes  encrypted"));
+    }
+
+    #[test]
+    fn render_dol_shows_fst_root_and_totals_when_truncated() {
+        let info = rom_converto_lib::info::DolInfo {
+            fst_root: vec![
+                rom_converto_lib::nintendo::dol::info::DolFstEntry {
+                    name: "boot.dol".to_string(),
+                    size: 123,
+                    is_dir: false,
+                },
+                rom_converto_lib::nintendo::dol::info::DolFstEntry {
+                    name: "files".to_string(),
+                    size: 0,
+                    is_dir: true,
+                },
+            ],
+            fst_file_count: 5,
+            fst_dir_count: 2,
+            ..Default::default()
+        };
+        let out = render_dol(&info);
+        assert!(out.contains("boot.dol  123 bytes"));
+        assert!(out.contains("files/"));
+        assert!(out.contains("5 files, 2 dirs"));
+    }
+
+    #[test]
+    fn render_wup_shows_disc_partitions() {
+        let info = rom_converto_lib::info::WupInfo {
+            disc_partitions: vec![rom_converto_lib::nintendo::wup::info::WupDiscPartition {
+                name: "GM_DISC".to_string(),
+                kind: "Game".to_string(),
+                start_sector: 100,
+            }],
+            ..Default::default()
+        };
+        let out = render_wup(&info);
+        assert!(out.contains("GM_DISC  Game  sector 100"));
+    }
+
+    #[test]
+    fn wup_encryption_derives_from_source_kind() {
+        assert_eq!(wup_encryption("disc (Test Game)"), Some("encrypted"));
+        assert_eq!(wup_encryption("nus"), Some("encrypted"));
+        assert_eq!(wup_encryption("loadiine"), Some("decrypted"));
+        assert_eq!(wup_encryption("wua (Test Game)"), Some("decrypted"));
+        assert_eq!(wup_encryption("something else"), None);
+    }
+
+    #[test]
+    fn render_wup_shows_encryption_row() {
+        let info = rom_converto_lib::info::WupInfo {
+            source_kind: "disc (Test Game)".to_string(),
+            ..Default::default()
+        };
+        let out = render_wup(&info);
+        assert!(has_field(&out, "Encryption", "encrypted"));
+    }
+
+    #[test]
+    fn render_ps3_shows_icon_and_root_files() {
+        let info = rom_converto_lib::info::Ps3Info {
+            icon: Some(rom_converto_lib::info::Image {
+                png_bytes: vec![0u8; 10],
+                width: 128,
+                height: 128,
+            }),
+            root_files: vec![rom_converto_lib::ps3::info::Ps3RootEntry {
+                name: "PS3_GAME".to_string(),
+                size: 0,
+                is_dir: true,
+            }],
+            encrypted: Some(false),
+            ..Default::default()
+        };
+        let out = render_ps3(&info);
+        assert!(has_field(&out, "Icon", "128x128 PNG (10 bytes)"));
+        assert!(has_field(&out, "Encryption", "decrypted"));
+        assert!(out.contains("PS3_GAME/"));
+    }
+
+    #[test]
+    fn render_ps3_omits_the_encryption_row_when_undetermined() {
+        let info = rom_converto_lib::info::Ps3Info::default();
+        let out = render_ps3(&info);
+        assert!(!out.contains("Encryption"));
+    }
+
+    #[test]
+    fn render_nx_shows_encryption_row() {
+        let info = rom_converto_lib::info::NxInfo::default();
+        let out = render_nx(&info);
+        assert!(has_field(&out, "Encryption", "encrypted (standard keys)"));
+
+        let info = rom_converto_lib::info::NxInfo {
+            tickets: vec![rom_converto_lib::nintendo::nx::info::TicketSummary {
+                file_name: "01020304.tik".to_string(),
+                rights_id: "deadbeef".to_string(),
+                master_key_revision: 0,
+            }],
+            ..Default::default()
+        };
+        let out = render_nx(&info);
+        assert!(has_field(&out, "Encryption", "encrypted (titlekey)"));
+    }
+
+    #[test]
+    fn render_nx_reports_ncz_containers_as_decrypted() {
+        use rom_converto_lib::nintendo::nx::info::NxContainerKind;
+
+        for kind in [NxContainerKind::Nsz, NxContainerKind::Xcz] {
+            let info = rom_converto_lib::info::NxInfo {
+                container_kind: kind,
+                tickets: vec![rom_converto_lib::nintendo::nx::info::TicketSummary {
+                    file_name: "01020304.tik".to_string(),
+                    rights_id: "deadbeef".to_string(),
+                    master_key_revision: 0,
+                }],
+                ..Default::default()
+            };
+            let out = render_nx(&info);
+            assert!(has_field(&out, "Encryption", "decrypted (ncz sections)"));
+        }
+
+        let info = rom_converto_lib::info::NxInfo {
+            container_kind: NxContainerKind::Xci,
+            ..Default::default()
+        };
+        let out = render_nx(&info);
+        assert!(has_field(&out, "Encryption", "encrypted (standard keys)"));
+    }
+
+    #[test]
+    fn render_psp_shows_icon_and_background() {
+        let info = rom_converto_lib::info::PspInfo {
+            icon: Some(rom_converto_lib::info::Image {
+                png_bytes: vec![0u8; 10],
+                width: 144,
+                height: 80,
+            }),
+            background: Some(rom_converto_lib::info::Image {
+                png_bytes: vec![0u8; 20],
+                width: 480,
+                height: 272,
+            }),
+            ..Default::default()
+        };
+        let out = render_psp(&info);
+        assert!(has_field(&out, "Icon", "144x80 PNG (10 bytes)"));
+        assert!(has_field(&out, "Background", "480x272 PNG (20 bytes)"));
+    }
+
+    #[test]
+    fn render_chd_appends_pgtype_and_pgsub_to_track_line() {
+        let info = rom_converto_lib::info::ChdInfo {
+            version: 5,
+            tracks: vec![rom_converto_lib::chd::info::ChdTrack {
+                number: 1,
+                track_type: "MODE1/2048".to_string(),
+                frames: 100,
+                pregap: 0,
+                subtype: None,
+                pgtype: Some("MODE1".to_string()),
+                pgsub: Some("RW".to_string()),
+                postgap: None,
+            }],
+            ..Default::default()
+        };
+        let out = render_chd(&info);
+        assert!(out.contains("pgtype=MODE1"));
+        assert!(out.contains("pgsub=RW"));
+    }
+
+    #[test]
+    fn render_rvl_shows_system_version() {
+        let info = rom_converto_lib::info::RvlInfo {
+            tmd: Some(rom_converto_lib::nintendo::rvl::info::RvlTmdInfo {
+                title_id: 0x0001000012345678,
+                title_id_hex: "0001000012345678".to_string(),
+                title_version: 1,
+                system_version: 0x0000000100000021,
+                ios_slot: None,
+                region_name: "NTSC-U".to_string(),
+                content_count: 1,
+                access_rights: 0,
+            }),
+            ..Default::default()
+        };
+        let out = render_rvl(&info);
+        assert!(has_field(&out, "System version", "0000000100000021"));
     }
 }

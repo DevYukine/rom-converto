@@ -34,6 +34,22 @@ pub struct XisoInfo {
     /// Xbox 360 title metadata from a root `default.xex` (a 360 XDVDFS disc
     /// image routes here too), when present.
     pub xex: Option<crate::microsoft::xex::XexInfo>,
+    /// Entries in the volume's root directory, up to [`MAX_ROOT_ENTRIES`],
+    /// sorted by name.
+    #[serde(default)]
+    pub root_entries: Vec<XisoRootEntry>,
+}
+
+/// Cap on the number of root directory entries collected into
+/// [`XisoInfo::root_entries`].
+const MAX_ROOT_ENTRIES: usize = 64;
+
+/// One entry in an XISO's root directory.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct XisoRootEntry {
+    pub name: String,
+    pub size: u32,
+    pub is_dir: bool,
 }
 
 /// Reads a named non-directory file from the volume's root directory,
@@ -94,6 +110,19 @@ pub fn read_info(path: &Path) -> XboxResult<XisoInfo> {
     let xex = read_root_file(&mut file, &volume, "default.xex", image_size)
         .and_then(|b| read_xex_info(&b));
 
+    let mut root_entries = Vec::new();
+    walk_root_table(&mut file, &volume, |entry| {
+        if root_entries.len() < MAX_ROOT_ENTRIES {
+            root_entries.push(XisoRootEntry {
+                name: entry.name_str().to_string(),
+                size: entry.size,
+                is_dir: entry.is_directory(),
+            });
+        }
+        Ok(())
+    })?;
+    root_entries.sort_by(|a, b| a.name.cmp(&b.name));
+
     Ok(XisoInfo {
         kind: volume.kind,
         base: volume.base,
@@ -105,6 +134,7 @@ pub fn read_info(path: &Path) -> XboxResult<XisoInfo> {
         image_size,
         xbe,
         xex,
+        root_entries,
     })
 }
 
@@ -192,6 +222,10 @@ mod tests {
         assert_eq!(parsed.title_name, "Test Game");
         assert_eq!(parsed.title_id_code, "MS-004");
         assert!(info.xex.is_none());
+        assert_eq!(info.root_entries.len(), 1);
+        assert_eq!(info.root_entries[0].name, "default.xbe");
+        assert_eq!(info.root_entries[0].size, xbe.len() as u32);
+        assert!(!info.root_entries[0].is_dir);
     }
 
     #[test]

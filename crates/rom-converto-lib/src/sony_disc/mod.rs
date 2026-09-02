@@ -162,7 +162,11 @@ mod tests {
             },
             &SubDir {
                 name: b"PSP_GAME",
-                files: &[(b"PARAM.SFO;1", &sfo), (b"ICON0.PNG;1", &png(144, 80))],
+                files: &[
+                    (b"PARAM.SFO;1", &sfo),
+                    (b"ICON0.PNG;1", &png(144, 80)),
+                    (b"PIC1.PNG;1", &png(480, 272)),
+                ],
             },
         )
     }
@@ -247,6 +251,8 @@ mod tests {
         assert_eq!(info.total_sectors, 800_000);
         let icon = info.icon.expect("icon0.png");
         assert_eq!((icon.width, icon.height), (144, 80));
+        let background = info.background.expect("pic1.png");
+        assert_eq!((background.width, background.height), (480, 272));
     }
 
     #[test]

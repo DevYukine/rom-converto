@@ -2,7 +2,7 @@
 //! `opening.bnr` banner and its decoded image, for the `dol info` command.
 
 use crate::info::Image;
-use crate::nintendo::dol::fst::find_file;
+use crate::nintendo::dol::fst::{FstNode, find_file, list_files};
 use crate::nintendo::dol::models::banner::{BANNER_IMAGE_HEIGHT, BANNER_IMAGE_WIDTH, GcBanner};
 use crate::nintendo::dol::models::boot_bin::GcBootBin;
 use crate::util::pixel::{decode_rgb5a3_tiled, encode_png};
@@ -10,6 +10,10 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
+
+/// Cap on the number of entries returned in [`DolInfo::fst_root`], to keep
+/// the info payload small for discs with very large root directories.
+const FST_ROOT_CAP: usize = 64;
 
 /// Metadata read from a GameCube disc image: boot.bin fields plus the
 /// decoded banner, if present.
@@ -28,6 +32,21 @@ pub struct DolInfo {
     pub apploader_date: Option<String>,
     pub banner: Option<GcBannerInfo>,
     pub banner_image: Option<Image>,
+    #[serde(default)]
+    pub fst_root: Vec<DolFstEntry>,
+    #[serde(default)]
+    pub fst_file_count: u32,
+    #[serde(default)]
+    pub fst_dir_count: u32,
+}
+
+/// One top-level entry of the disc's file layout (a path with no `/`),
+/// as listed from the FST.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DolFstEntry {
+    pub name: String,
+    pub size: u64,
+    pub is_dir: bool,
 }
 
 /// Decoded `opening.bnr` banner, with all title blocks it carries.
@@ -63,11 +82,26 @@ pub fn read_info(path: &Path) -> Result<DolInfo> {
 
     let boot = GcBootBin::read(&mut reader).context("dol info: parse boot.bin")?;
 
-    let banner_info = read_banner(&mut reader, &boot).unwrap_or_else(|e| {
-        log::debug!("dol info: banner read skipped ({})", e);
-        (None, None)
+    let fst_bytes = read_fst_bytes(&mut reader, &boot).unwrap_or_else(|e| {
+        log::debug!("dol info: fst read skipped ({})", e);
+        None
     });
-    let (banner, banner_image) = banner_info;
+
+    let (fst_root, fst_file_count, fst_dir_count) = match fst_bytes.as_deref() {
+        Some(fst) => fst_summary(fst).unwrap_or_else(|e| {
+            log::debug!("dol info: fst listing skipped ({})", e);
+            Default::default()
+        }),
+        None => Default::default(),
+    };
+
+    let (banner, banner_image) = match fst_bytes.as_deref() {
+        Some(fst) => read_banner(&mut reader, fst).unwrap_or_else(|e| {
+            log::debug!("dol info: banner read skipped ({})", e);
+            (None, None)
+        }),
+        None => (None, None),
+    };
 
     let maker_name =
         crate::util::maker_codes::lookup_maker(&boot.maker_code).map(|s| s.to_string());
@@ -86,21 +120,62 @@ pub fn read_info(path: &Path) -> Result<DolInfo> {
         apploader_date: boot.apploader_date,
         banner,
         banner_image,
+        fst_root,
+        fst_file_count,
+        fst_dir_count,
     })
 }
 
-fn read_banner<R: Read + Seek>(
-    reader: &mut R,
-    boot: &GcBootBin,
-) -> Result<(Option<GcBannerInfo>, Option<Image>)> {
+/// Reads the raw FST blob referenced by `boot`, if it carries valid
+/// geometry. Returns `None` rather than erroring when a disc has no FST.
+fn read_fst_bytes<R: Read + Seek>(reader: &mut R, boot: &GcBootBin) -> Result<Option<Vec<u8>>> {
     if boot.fst_size == 0 || boot.fst_offset == 0 {
-        return Ok((None, None));
+        return Ok(None);
     }
     reader.seek(SeekFrom::Start(boot.fst_offset as u64))?;
     let mut fst = vec![0u8; boot.fst_size as usize];
     reader.read_exact(&mut fst)?;
+    Ok(Some(fst))
+}
 
-    let Some((bnr_offset, bnr_size)) = find_file(&fst, "opening.bnr")? else {
+/// Summarizes an FST into its top-level entries (capped at
+/// [`FST_ROOT_CAP`]) plus total file and directory counts.
+fn fst_summary(fst: &[u8]) -> Result<(Vec<DolFstEntry>, u32, u32)> {
+    let mut root = Vec::new();
+    let mut file_count = 0u32;
+    let mut dir_count = 0u32;
+    for node in list_files(fst)? {
+        match node {
+            FstNode::File { path, size, .. } => {
+                file_count += 1;
+                if !path.contains('/') && root.len() < FST_ROOT_CAP {
+                    root.push(DolFstEntry {
+                        name: path,
+                        size,
+                        is_dir: false,
+                    });
+                }
+            }
+            FstNode::Directory { path } => {
+                dir_count += 1;
+                if !path.contains('/') && root.len() < FST_ROOT_CAP {
+                    root.push(DolFstEntry {
+                        name: path,
+                        size: 0,
+                        is_dir: true,
+                    });
+                }
+            }
+        }
+    }
+    Ok((root, file_count, dir_count))
+}
+
+fn read_banner<R: Read + Seek>(
+    reader: &mut R,
+    fst: &[u8],
+) -> Result<(Option<GcBannerInfo>, Option<Image>)> {
+    let Some((bnr_offset, bnr_size)) = find_file(fst, "opening.bnr")? else {
         return Ok((None, None));
     };
 
@@ -136,7 +211,9 @@ fn read_banner<R: Read + Seek>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::nintendo::dol::test_fixtures::make_fake_gamecube_iso;
+    use crate::nintendo::dol::test_fixtures::{
+        make_fake_gamecube_iso, make_fake_gamecube_iso_with_fst,
+    };
     use crate::nintendo::gcz::test_fixtures::make_gcz;
     use std::io::Write;
 
@@ -154,5 +231,24 @@ mod tests {
         f.write_all(&make_gcz(&original, 0x8000, 0)).unwrap();
         drop(f);
         assert_eq!(read_info(&gcz).unwrap().container, "GCZ");
+    }
+
+    #[test]
+    fn info_reports_fst_root_and_counts() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = make_fake_gamecube_iso_with_fst(0x40000);
+        let iso = dir.path().join("game.iso");
+        std::fs::write(&iso, &original).unwrap();
+
+        let info = read_info(&iso).unwrap();
+        assert_eq!(info.fst_file_count, 2);
+        assert_eq!(info.fst_dir_count, 1);
+        assert_eq!(info.fst_root.len(), 2);
+        assert!(
+            info.fst_root
+                .iter()
+                .any(|e| e.name == "opening.bnr" && !e.is_dir)
+        );
+        assert!(info.fst_root.iter().any(|e| e.name == "sub" && e.is_dir));
     }
 }

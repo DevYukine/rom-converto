@@ -2806,14 +2806,12 @@ async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()>
                 if cmd.keys.is_some() {
                     anyhow::bail!("--keys is only supported by nx and wup info");
                 }
-                if cmd.save_icon.is_some() {
-                    anyhow::bail!(
-                        "--save-icon is not supported for xbox: the XPR title image is not extracted (OG Xbox title images are XPR-packed, out of scope)"
-                    );
-                }
                 ensure_input_exists(&cmd.input)?;
                 let resolved = rom_converto_lib::util::resolve_input(&cmd.input, ALL_IMAGE_EXTS)?;
                 let info = rom_converto_lib::microsoft::xbox::read_info(resolved.path())?;
+                if let Some(dir) = &cmd.save_icon {
+                    save_xbox_icon(&info, dir)?;
+                }
                 info_print::print(&rom_converto_lib::info::InfoResult::Xbox(info), cmd.json)?;
             }
         },
@@ -3040,17 +3038,20 @@ async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()>
                 }
             }
             Ps3Commands::Info(cmd) => {
-                if cmd.save_icon.is_some() {
-                    anyhow::bail!(
-                        "--save-icon is not supported for ps3: the format has no embedded artwork"
-                    );
-                }
                 ensure_input_exists(&cmd.input)?;
                 let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["iso"])?;
                 let input = resolved.path();
                 let size = file_len(input);
                 let key = resolve_ps3_key(input, resolved.output_basis(), cmd.keys.as_deref());
                 let info = read_ps3_info(input);
+                if let Some(dir) = &cmd.save_icon {
+                    match &info {
+                        Ok(i) => save_ps3_icon(i, dir)?,
+                        Err(e) => {
+                            anyhow::bail!("failed to read PS3 metadata for --save-icon: {e}")
+                        }
+                    }
+                }
                 let meta = info.as_ref().ok();
                 if cmd.json {
                     let key_json = match &key {
@@ -4138,13 +4139,11 @@ async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()>
                     InfoResult::Rvl(i) => save_rvl_image(i, dir)?,
                     InfoResult::Wup(i) => save_wup_image(i, dir)?,
                     InfoResult::Nx(i) => save_nx_icon(i, dir)?,
-                    InfoResult::Xbox(i) => save_xex_icon(i.xex.as_ref(), dir)?,
+                    InfoResult::Xbox(i) => save_xbox_icon(i, dir)?,
                     InfoResult::Xenon(i) => save_xex_icon(i.xex.as_ref(), dir)?,
                     InfoResult::Psp(i) => save_psp_icon(i, dir)?,
-                    InfoResult::Chd(_)
-                    | InfoResult::Cso(_)
-                    | InfoResult::Ps3(_)
-                    | InfoResult::Psx(_) => {
+                    InfoResult::Ps3(i) => save_ps3_icon(i, dir)?,
+                    InfoResult::Chd(_) | InfoResult::Cso(_) | InfoResult::Psx(_) => {
                         anyhow::bail!(
                             "--save-icon is not supported for this format: no embedded artwork"
                         );
@@ -4458,6 +4457,44 @@ fn save_xex_icon(
     let path = dir.join(format!(
         "{}.png",
         rom_converto_lib::util::template::sanitize_file_stem(&xex.title_id_hex)
+    ));
+    std::fs::write(&path, &img.png_bytes)?;
+    log::info!("Wrote {}", path.display());
+    Ok(())
+}
+
+/// Prefers the OG Xbox XBE title image, falling back to the Xbox 360 XEX
+/// icon when the disc only carries a `default.xex` — mirrors the GUI's
+/// `extract_icon_png`.
+fn save_xbox_icon(info: &rom_converto_lib::info::XisoInfo, dir: &std::path::Path) -> Result<()> {
+    if let Some(xbe) = &info.xbe
+        && let Some(img) = &xbe.icon
+    {
+        std::fs::create_dir_all(dir)?;
+        let path = dir.join(format!(
+            "{}.png",
+            rom_converto_lib::util::template::sanitize_file_stem(&xbe.title_id_hex)
+        ));
+        std::fs::write(&path, &img.png_bytes)?;
+        log::info!("Wrote {}", path.display());
+        return Ok(());
+    }
+    save_xex_icon(info.xex.as_ref(), dir)
+}
+
+fn save_ps3_icon(info: &rom_converto_lib::info::Ps3Info, dir: &std::path::Path) -> Result<()> {
+    let Some(img) = &info.icon else {
+        log::warn!("No PS3_GAME/ICON0.PNG decoded; nothing to save");
+        return Ok(());
+    };
+    std::fs::create_dir_all(dir)?;
+    let stem = info
+        .title_id
+        .clone()
+        .unwrap_or_else(|| "ps3-icon".to_string());
+    let path = dir.join(format!(
+        "{}.png",
+        rom_converto_lib::util::template::sanitize_file_stem(&stem)
     ));
     std::fs::write(&path, &img.png_bytes)?;
     log::info!("Wrote {}", path.display());

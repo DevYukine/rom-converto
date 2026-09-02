@@ -54,6 +54,11 @@ pub struct RvlPartitionSummary {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RvlTmdInfo {
     pub title_id: u64,
+    /// [`Self::title_id`] formatted as 16 uppercase hex digits, so callers
+    /// that need exact precision in JS/JSON (where `u64` loses precision
+    /// above 2^53) can use this instead.
+    #[serde(default)]
+    pub title_id_hex: String,
     pub title_version: u16,
     pub system_version: u64,
     pub ios_slot: Option<u32>,
@@ -266,6 +271,7 @@ fn read_tmd_at<R: Read + Seek>(reader: &mut R, partition_offset: u64) -> Result<
     let tmd = WiiTmd::parse(&buf)?;
     Ok(RvlTmdInfo {
         title_id: tmd.title_id,
+        title_id_hex: format!("{:016X}", tmd.title_id),
         title_version: tmd.title_version,
         system_version: tmd.system_version,
         ios_slot: tmd.ios_slot(),
@@ -852,5 +858,21 @@ mod container_tests {
         let wia = dir.path().join("game.wia");
         std::fs::write(&wia, make_wia(&original, 3, 0x20_0000)).unwrap();
         assert_eq!(read_info(&wia).unwrap().container, "WIA");
+    }
+
+    #[test]
+    fn tmd_title_id_hex_matches_u64_id() {
+        const ID: u64 = 0x01AB_CDEF_0123_4801;
+        let tmd = RvlTmdInfo {
+            title_id: ID,
+            title_id_hex: format!("{:016X}", ID),
+            title_version: 0,
+            system_version: 0,
+            ios_slot: None,
+            region_name: "USA".to_string(),
+            content_count: 0,
+            access_rights: 0,
+        };
+        assert_eq!(tmd.title_id_hex, "01ABCDEF01234801");
     }
 }

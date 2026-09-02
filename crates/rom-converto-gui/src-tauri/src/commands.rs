@@ -5502,16 +5502,17 @@ fn extract_icon_png(info: &InfoResult) -> Option<Vec<u8>> {
         InfoResult::Chd(c) => c.content.as_ref().and_then(disc_content_icon_png),
         InfoResult::Cso(c) => c.content.as_ref().and_then(disc_content_icon_png),
         InfoResult::Xbox(x) => x
-            .xex
+            .xbe
             .as_ref()
-            .and_then(|x| x.icon.as_ref())
+            .and_then(|b| b.icon.as_ref())
+            .or_else(|| x.xex.as_ref().and_then(|x| x.icon.as_ref()))
             .map(|i| i.png_bytes.clone()),
         InfoResult::Xenon(z) => z
             .xex
             .as_ref()
             .and_then(|x| x.icon.as_ref())
             .map(|i| i.png_bytes.clone()),
-        InfoResult::Ps3(_) => None,
+        InfoResult::Ps3(p) => p.icon.as_ref().map(|i| i.png_bytes.clone()),
         InfoResult::Psx(_) => None,
         InfoResult::Psp(p) => p.icon.as_ref().map(|i| i.png_bytes.clone()),
     }

@@ -536,6 +536,9 @@ The data key is resolved in order: explicit `--key`, else the built-in disc key 
 looked up by the disc's title ID, else a sibling `<input>.dkey`. `--key` cannot be combined
 with `--recursive`, since one key can't be right for every disc in a batch.
 
+`info --save-icon <DIR>` writes the `ICON0.PNG` icon as `<title_id>.png`; no key is needed
+to read it.
+
 ## xbox (Original Xbox)
 
 ```
@@ -560,8 +563,9 @@ policy. Output works in xemu and on modded consoles.
 `info` prints layout details: XGD1, XGD2, XGD3, or trimmed, plus file counts and sizes. When
 a root `default.xbe` is present, it also prints the XBE title metadata (title ID, name,
 version, disc number, region, allowed media, ratings). A root `default.xex` (a 360 XDVDFS
-disc routed here) prints XEX title metadata instead. `--save-icon` is not supported: OG Xbox
-title images are packed in an XPR resource that is not extracted.
+disc routed here) prints XEX title metadata instead. `--save-icon <DIR>` writes the XBE title
+image as `<title_id_hex>.png`, falling back to the XEX icon when only a `default.xex` is
+present.
 
 ## xenon (Xbox 360)
 
@@ -715,11 +719,30 @@ rom-converto <console> info <INPUT> [--json] [--save-icon DIR] [--keys FILE]
 rom-converto info <INPUT> [--json] [--save-icon DIR] [--keys FILE]
 ```
 
-Inspect a ROM file or title directory and print the embedded metadata: title, version,
-region, content layout, age ratings, and the embedded icon where the format carries one.
+Inspect a ROM file or title directory and print its embedded metadata. The report is
+grouped into up to three sections: `Container:` for the outer format (only `chd`, `cso`,
+`nx`, `xbox`, and `xenon` have one), `ROM:` for the title itself, and `Inner files:` for
+what the container holds. `ROM:` leads with `Title`, `Title ID`, `Content type`, `Version`,
+`Region`, and `Size`, then any format-specific fields; a section with nothing to show is
+omitted. `Inner files:` lists NCSD partitions or CIA contents for 3DS, the GameCube FST
+root, Wii partitions, Wii U bundled titles or disc partitions, Switch XCI partitions and
+CNMT contents, an Xbox or Xbox 360 root listing, a PS3 root listing, or CHD tracks.
+
+A format that carries artwork shows it inline as `WxH PNG (N bytes)`: 3DS, GameCube, Switch,
+Xbox (its XBE title image), Xbox 360, PS3 (`ICON0.PNG`), and PSP report an icon this way, and
+PSP also reports its `PIC1.PNG` background art. Wii and Wii U carry an icon too, extractable
+with `--save-icon`, but neither prints it in the text report.
+
+Where it can be determined, the report adds an encryption row: 3DS as `NCCH encrypted:
+yes`/`no`; PS3 and Wii U as `Encryption: encrypted`/`decrypted` (PS3's from a key-based
+probe, omitted when undetermined; Wii U's from the source kind); Switch as a
+`Container:`-level `Encryption` row (`encrypted (titlekey)` or `encrypted (standard keys)`
+for `nsp`/`xci`, `decrypted (ncz sections)` for `nsz`/`xcz`).
+
 Maker and company codes are resolved to the publisher name. Encrypted 3DS CIA inputs are
 decrypted on the fly to read the NCCH header, and nothing is written to disk. Add `--json`
-for a machine-readable payload (the GUI uses the same shape).
+for a machine-readable payload (the GUI uses the same shape); Switch title IDs are carried
+there as 16-character hex strings, in fields such as `application_title_id_hex`.
 
 The generic `rom-converto info <INPUT>` form auto-detects the console from the input's
 extension, and its header magic for the disc-image extensions shared across consoles, then
@@ -727,14 +750,14 @@ prints the same report as the matching `<console> info`. It covers every family 
 below, so a script inspecting a mixed library does not need to know each file's console up
 front.
 
-For `dol` and `rvl`, the report names the container it read: the text output prints it as
-`Format: GameCube (GCZ)` or `Format: Wii (WIA)`, and `--json` carries it as the `container`
-field (`ISO`, `RVZ`, `WBFS`, `GCZ`, `WIA`, or `NKit`).
+For `dol` and `rvl`, the report names the container it read: the `ROM:` section's `Format`
+row reads `GameCube (GCZ)` or `Wii (WIA)`, and `--json` carries it as the `container` field
+(`ISO`, `RVZ`, `WBFS`, `GCZ`, `WIA`, or `NKit`).
 
 | Flag | Description |
 |---|---|
 | `--json` | Emit a machine-readable payload instead of the formatted report |
-| `--save-icon <DIR>` | Write the embedded icon as `<title_id>.png` into `DIR`. Supported by `ctr`, `dol`, `rvl`, `nx`, `wup`, `xenon`, and PSP images; `chd` and `cso` carry no artwork of their own; `xbox` carries an XPR title image that is not extracted; PS1/PS2 discs carry no artwork |
+| `--save-icon <DIR>` | Write the embedded icon as `<title_id>.png` into `DIR`. Supported by `ctr`, `dol`, `rvl`, `nx`, `wup`, `xbox`, `xenon`, `ps3`, and PSP images. Not supported for `chd`, `cso`, or PS1/PS2 discs, even where their report shows an icon inline (a PSP disc nested inside a `chd`/`cso`) |
 | `--keys <FILE>` | `prod.keys` for `nx info`, a disc master key file for `wup info` on `.wud`/`.wux` (optional), or a `.dkey` file for `ps3 info`. Other consoles do not use it |
 
 Coverage per family: `ctr` reads CIA/NCSD/NCCH and Z3DS variants; `dol` reads `.iso`,
@@ -742,17 +765,20 @@ Coverage per family: `ctr` reads CIA/NCSD/NCCH and Z3DS variants; `dol` reads `.
 NKit through the same streaming migration readers the `migrate` command uses; `wup` reads
 loadiine and NUS directories, `.wua` archives, and `.wud`/`.wux` disc images; `nx` reads
 NSP/NSZ/XCI/XCZ; `chd` reads CHD v5; `cso` reads CSO/ZSO/DAX; `ps3` reads the region table
-and title metadata from plain or encrypted ISOs, no key required. PS1 and PS2 discs (plain
-`.iso`, or `.cue`+`.bin`) report the disc kind, boot executable, normalized title ID (for
-example `SLUS-20312`), volume ID, and version read from `SYSTEM.CNF`. PSP discs (`.iso`)
-report title, title ID, version, firmware, category, and the `ICON0.PNG` icon read from
-`PARAM.SFO`. NFS and TGC are not supported.
+and title metadata from plain or encrypted ISOs, no key required, and reports an
+`Encryption` row from a key-based probe plus the `ICON0.PNG` icon when either can be read.
+PS1 and PS2 discs (plain `.iso`, or `.cue`+`.bin`) report the disc kind, boot executable,
+normalized title ID (for example `SLUS-20312`), volume ID, and version read from
+`SYSTEM.CNF`. PSP discs (`.iso`) report title, title ID, version, firmware, category, and
+the `ICON0.PNG` icon and `PIC1.PNG` background art read from `PARAM.SFO`. NFS and TGC are
+not supported.
 
 `chd info` and `cso info` also probe the disc a container holds: when it is a PS1, PS2, or
-PSP disc, the text report adds an indented `Content:` section with the same fields as the
-PS1/PS2/PSP coverage above, and `--json` carries it as a nested `content` object. A CHD or
-CSO whose probe fails, or that holds no PlayStation-family disc, still prints its own
-container info; `content` is simply absent.
+PSP disc, its fields (icon and background art included, for a PSP disc) become the
+container's own `ROM:` section, with the disc kind reported as the platform; `--json`
+carries the same data as a nested `content` object. A CHD or CSO whose probe fails, or that
+holds no PlayStation-family disc, still prints its `Container:` section with no `ROM:`
+section; `content` is simply absent.
 
 ## shell-completions
 

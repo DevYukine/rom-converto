@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { invoke, open } from "~/lib/ipc";
 import { opDef } from "~/lib/opdefs";
 import { useQueueStore } from "~/stores/queue";
@@ -14,12 +14,32 @@ import type { StagedItem } from "~/lib/opdefs/types";
 const queue = useQueueStore();
 const { show: showToast } = useToast();
 
+const KEYS_STORAGE_KEY = "rom-converto:inspect-keys";
+
+function readPersistedKeys(): string {
+	try {
+		return localStorage.getItem(KEYS_STORAGE_KEY) || "";
+	} catch {
+		// localStorage unavailable; fall back to no default.
+		return "";
+	}
+}
+
 const input = ref("");
-const keysPath = ref("");
+const keysPath = ref(readPersistedKeys());
 const rawJson = ref("");
 const info = ref<InfoResult | null>(null);
 const loading = ref(false);
 const error = ref("");
+
+watch(keysPath, (v) => {
+	try {
+		if (v) localStorage.setItem(KEYS_STORAGE_KEY, v);
+		else localStorage.removeItem(KEYS_STORAGE_KEY);
+	} catch {
+		// localStorage unavailable; keysPath just won't persist.
+	}
+});
 
 // Guards against overlapping loads: a slow response for the previous file
 // must not overwrite the info of the one picked after it.

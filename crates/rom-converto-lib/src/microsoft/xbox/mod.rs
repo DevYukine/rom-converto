@@ -8,6 +8,7 @@ mod error;
 mod extract;
 mod info;
 mod xbe;
+mod xpr;
 
 pub use create::input_total_bytes;
 pub use error::{XboxError, XboxResult};

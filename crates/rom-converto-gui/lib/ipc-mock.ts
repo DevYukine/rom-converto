@@ -142,6 +142,7 @@ const NX_INFO = {
 	xci_partitions: null,
 	full: {
 		application_title_id: 0x0100aaaa00bbb000,
+		application_title_id_hex: "0100AAAA00BBB000",
 		title_version: 0,
 		title_kind: "application",
 		storage_id: 0,
@@ -149,6 +150,7 @@ const NX_INFO = {
 		required_system_version: 0,
 		required_application_version: null,
 		base_application_id: null,
+		base_application_id_hex: null,
 		content_count: 3,
 		total_content_size: 12_400_000_000,
 		contents: [{ content_id: HEX40.slice(0, 32), content_type: "program", size: 11_800_000_000 }],
@@ -211,6 +213,11 @@ const CTR_INFO = {
 	icon: null,
 	small_icon: null,
 	compressed: false,
+	ncsd_partitions: [],
+	cia_contents: [
+		{ index: 0, content_id: "00000000", size: 500_000_000, encrypted: false },
+		{ index: 1, content_id: "00000001", size: 12_000_000, encrypted: false },
+	],
 };
 
 const DOL_INFO = {
@@ -235,6 +242,13 @@ const DOL_INFO = {
 		],
 	},
 	banner_image: null,
+	fst_root: [
+		{ name: "opening.bnr", size: 98_304, is_dir: false },
+		{ name: "audio", size: 0, is_dir: true },
+		{ name: "scenes", size: 0, is_dir: true },
+	],
+	fst_file_count: 812,
+	fst_dir_count: 46,
 };
 
 const RVL_INFO = {
@@ -254,6 +268,7 @@ const RVL_INFO = {
 	],
 	tmd: {
 		title_id: 0x0000000152534d50,
+		title_id_hex: "0000000152534D50",
 		title_version: 0,
 		system_version: 0,
 		ios_slot: null,
@@ -331,6 +346,7 @@ const WUP_INFO = {
 		online_account_use: null,
 		age_ratings: {},
 	},
+	disc_partitions: [],
 };
 
 const CHD_INFO = {
@@ -391,6 +407,10 @@ const XBOX_INFO = {
 		cert_timestamp: 0,
 	},
 	xex: null,
+	root_entries: [
+		{ name: "default.xbe", size: 4_100_000, is_dir: false },
+		{ name: "media", size: 0, is_dir: true },
+	],
 };
 
 const XENON_INFO = {
@@ -427,6 +447,10 @@ const XENON_INFO = {
 			height: 64,
 		},
 	},
+	root_entries: [
+		{ name: "default.xex", size: 9_400_000, is_file: true },
+		{ name: "data", size: 0, is_file: false },
+	],
 };
 
 const INFO_SAMPLES: Record<string, unknown> = {

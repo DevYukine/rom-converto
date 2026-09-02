@@ -48,10 +48,16 @@ automatically, with one progress bar and one comparison card for the whole job r
 two separate runs.
 
 The Inspect page (reached from the sidebar's Inspect icon, not a per-console page) reads any
-supported file the same way the CLI's `rom-converto info` does. Dropping a PS1 or PS2 image
-(`.iso`, `.cue`) or a PSP `.iso` shows its disc kind and normalized title ID, and a PSP disc
-also shows its icon. Inspecting a CHD or CSO/ZSO also shows the PlayStation disc it contains,
-when one is detected, alongside the container's own info.
+supported file the same way the CLI's `rom-converto info` does. The card lays out Container,
+ROM, inner files, and hashes as a fixed grid, so each lands in the same spot regardless of
+console. A content-type chip next to the title colors Game, Update, DLC, and Demo
+differently, and multi-language fields such as titles, publishers, and age ratings show
+their resolved display name rather than a raw code. The icon and, for a PSP disc, its
+background art render above the grid; dropping a PS1 or PS2 image (`.iso`, `.cue`) or a PSP
+`.iso` shows its disc kind and normalized title ID. Inspecting a CHD or CSO/ZSO also shows
+the PlayStation disc it contains, when one is detected, alongside the container's own info.
+The keys path (`prod.keys` for Switch, an optional disc master key for Wii U) is entered
+once on this page and persists across files and app restarts.
 
 ## CLI and GUI parity
 

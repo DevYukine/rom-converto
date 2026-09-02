@@ -537,6 +537,47 @@ mod tests {
         assert_eq!(out[3 * SECTOR_SIZE..4 * SECTOR_SIZE], plain3[..]);
     }
 
+    #[test]
+    fn read_ps3_info_leaves_encryption_undetermined_without_a_key() {
+        let key = Ps3Key([0x24u8; 16]);
+        let (image, _, _) = synthetic_image(&key);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("game.iso");
+        std::fs::write(&path, &image).unwrap();
+
+        // No PARAM.SFO to key the embedded database on and no sibling
+        // .dkey, so there is nothing to probe with.
+        let info = read_ps3_info(&path).unwrap();
+        assert_eq!(info.encrypted, None);
+    }
+
+    #[tokio::test]
+    async fn probe_encrypted_tells_the_encrypted_image_from_its_decrypted_output() {
+        let key = Ps3Key([0x24u8; 16]);
+        let (image, _, _) = synthetic_image(&key);
+        let (regions, _) = parse_region_table(&image[..SECTOR_SIZE]).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("game.iso");
+        let output = dir.path().join("game.decrypted.iso");
+        std::fs::write(&input, &image).unwrap();
+
+        assert_eq!(
+            info::probe_encrypted(&input, &regions, Some(&key)),
+            Some(true)
+        );
+
+        decrypt_ps3_iso(&NoProgress, input, output.clone(), key, false, false)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            info::probe_encrypted(&output, &regions, Some(&key)),
+            Some(false)
+        );
+    }
+
     #[tokio::test]
     async fn trailing_padding_is_ignored() {
         let key = Ps3Key([0x24u8; 16]);

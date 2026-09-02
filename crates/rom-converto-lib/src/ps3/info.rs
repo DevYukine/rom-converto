@@ -7,9 +7,12 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::ps3::error::Ps3Result;
+use crate::info::Image;
+use crate::ps3::embedded_keys::embedded_key;
+use crate::ps3::error::{Ps3Error, Ps3Result};
 use crate::ps3::fs::read_plain_files;
-use crate::ps3::region::{SECTOR_SIZE, parse_region_table};
+use crate::ps3::key::{self, Ps3Key};
+use crate::ps3::region::{Region, SECTOR_SIZE, parse_region_table};
 use crate::ps3::sfb::Sfb;
 use crate::util::sfo::Sfo;
 
@@ -29,7 +32,27 @@ pub struct Ps3Info {
     pub region_count: usize,
     pub total_sectors: u32,
     pub encrypted_sectors: u64,
+    /// Whether the disc's encrypted regions still hold ciphertext, or
+    /// `None` when no verdict is possible: no disc key was available, or
+    /// the probe couldn't decide. The region table survives decryption,
+    /// so `encrypted_sectors > 0` alone doesn't mean encrypted.
+    #[serde(default)]
+    pub encrypted: Option<bool>,
     pub size_bytes: u64,
+    /// `PS3_GAME/ICON0.PNG` when present.
+    #[serde(default)]
+    pub icon: Option<Image>,
+    /// ISO9660 root directory listing, dot entries excluded.
+    #[serde(default)]
+    pub root_files: Vec<Ps3RootEntry>,
+}
+
+/// One entry from a PS3 disc's ISO9660 root directory listing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Ps3RootEntry {
+    pub name: String,
+    pub size: u32,
+    pub is_dir: bool,
 }
 
 /// Reads a PS3 disc's region-table stats and plaintext metadata; no
@@ -79,6 +102,12 @@ pub fn read_ps3_info(path: &Path) -> Ps3Result<Ps3Info> {
                 info.title_id = sfb.get("TITLE_ID").map(str::to_string);
             }
         }
+        info.icon = files.icon0.and_then(Image::from_png);
+        info.root_files = files
+            .root_entries
+            .into_iter()
+            .map(|(name, size, is_dir)| Ps3RootEntry { name, size, is_dir })
+            .collect();
     }
 
     info.region = info
@@ -86,7 +115,33 @@ pub fn read_ps3_info(path: &Path) -> Ps3Result<Ps3Info> {
         .as_deref()
         .and_then(region_from_title_id)
         .map(str::to_string);
+
+    // Needs the TITLE_ID the block above reads, so it can't run earlier.
+    let disc_key =
+        info.title_id.as_deref().and_then(embedded_key).or_else(|| {
+            key::resolve_sibling_key_path(path).and_then(|p| key::load_key_file(&p).ok())
+        });
+    info.encrypted = probe_encrypted(path, &regions, disc_key.as_ref());
     Ok(info)
+}
+
+/// Whether the encrypted regions still hold ciphertext, as far as the
+/// decrypt path's sample probe can tell: `None` when there is no key to
+/// probe with, or when every sample stayed high-diversity after
+/// decryption (a wrong key and a decrypted disc look alike there).
+pub(super) fn probe_encrypted(
+    path: &Path,
+    regions: &[Region],
+    key: Option<&Ps3Key>,
+) -> Option<bool> {
+    if !regions.iter().any(|r| !r.plain) {
+        return Some(false);
+    }
+    match super::probe_key_against_samples(path, regions, key?) {
+        Ok(()) => Some(true),
+        Err(Ps3Error::AlreadyDecrypted) => Some(false),
+        Err(_) => None,
+    }
 }
 
 fn region_from_title_id(id: &str) -> Option<&'static str> {
@@ -135,6 +190,27 @@ fn decode_sound_format(bits: u32) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ps3::fs::tests::{TINY_PNG, build_ps3_iso_with_icon};
+
+    #[test]
+    fn read_info_returns_icon_and_root_files() {
+        let mut image = build_ps3_iso_with_icon(b"sfb-bytes", b"sfo-bytes", TINY_PNG);
+        // Overwrite sector 0 (unused by fs.rs) with a one-region, all-plain
+        // region table so `read_ps3_info` accepts the image.
+        let total_sectors = (image.len() / SECTOR_SIZE) as u32;
+        image[0..4].copy_from_slice(&1u32.to_be_bytes());
+        image[0x0C..0x10].copy_from_slice(&(total_sectors - 1).to_be_bytes());
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("game.iso");
+        std::fs::write(&path, &image).expect("write fixture");
+
+        let info = read_ps3_info(&path).expect("read_ps3_info");
+        assert!(info.icon.is_some());
+        assert!(info.root_files.iter().any(|e| e.name == "PS3_GAME"));
+        // No encrypted regions at all, so no key is needed to say so.
+        assert_eq!(info.encrypted, Some(false));
+    }
 
     #[test]
     fn region_mapping() {

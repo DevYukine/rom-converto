@@ -21,6 +21,20 @@ pub struct ZarInfo {
     pub has_default_xex: bool,
     /// Xbox 360 title metadata from a root `default.xex`, when present.
     pub xex: Option<crate::microsoft::xex::XexInfo>,
+    /// Entries at the archive's root, up to [`MAX_ROOT_ENTRIES`].
+    #[serde(default)]
+    pub root_entries: Vec<ZarRootEntry>,
+}
+
+/// Cap on the number of root entries collected into [`ZarInfo::root_entries`].
+const MAX_ROOT_ENTRIES: usize = 64;
+
+/// One entry at a ZArchive's root.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ZarRootEntry {
+    pub name: String,
+    pub size: u64,
+    pub is_file: bool,
 }
 
 /// Reads a ZArchive's file/directory counts, sizes, and root
@@ -39,6 +53,7 @@ pub fn read_info(path: &Path) -> XenonResult<ZarInfo> {
     let mut dir_count = 0u64;
     let mut logical_size = 0u64;
     let mut has_default_xex = false;
+    let mut root_entries = Vec::new();
     for entry in reader.entries()? {
         if entry.is_file {
             file_count += 1;
@@ -48,6 +63,13 @@ pub fn read_info(path: &Path) -> XenonResult<ZarInfo> {
             }
         } else {
             dir_count += 1;
+        }
+        if !entry.path.contains('/') && root_entries.len() < MAX_ROOT_ENTRIES {
+            root_entries.push(ZarRootEntry {
+                name: entry.path.clone(),
+                size: entry.size,
+                is_file: entry.is_file,
+            });
         }
     }
 
@@ -63,6 +85,7 @@ pub fn read_info(path: &Path) -> XenonResult<ZarInfo> {
         block_count: reader.block_count(),
         has_default_xex,
         xex,
+        root_entries,
     })
 }
 
@@ -109,6 +132,17 @@ mod tests {
         // "xex-bytes" is not a valid XEX2, so the found-and-read plumbing
         // runs but the parse degrades to None.
         assert!(info.xex.is_none());
+        assert!(
+            info.root_entries
+                .iter()
+                .any(|e| e.name == "default.xex" && e.is_file)
+        );
+        assert!(
+            info.root_entries
+                .iter()
+                .any(|e| e.name == "data" && !e.is_file)
+        );
+        assert_eq!(info.root_entries.len(), 2);
     }
 
     #[test]

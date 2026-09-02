@@ -561,8 +561,13 @@ mod tests {
             dir_count: 1,
             total_file_bytes: 12345,
             image_size: 999_999,
-            xbe: None,
+            xbe: Some(crate::microsoft::xbox::XbeInfo {
+                title_name: "Test Game".to_string(),
+                icon: Some(Image::new(vec![0x89, b'P', b'N', b'G'], 128, 128)),
+                ..Default::default()
+            }),
             xex: None,
+            root_entries: Vec::new(),
         });
         let s = serde_json::to_string(&r).unwrap();
         // The variant tag and the struct's own (renamed) kind field must
@@ -575,7 +580,9 @@ mod tests {
             InfoResult::Xbox(x) => {
                 assert_eq!(x.kind, PartitionKind::Trimmed);
                 assert_eq!(x.file_count, 3);
-                assert!(x.xbe.is_none());
+                let xbe = x.xbe.expect("xbe");
+                assert_eq!(xbe.title_name, "Test Game");
+                assert_eq!(xbe.icon.expect("icon").width, 128);
                 assert!(x.xex.is_none());
             }
             _ => panic!("expected Xbox variant"),
@@ -592,6 +599,7 @@ mod tests {
             block_count: 4,
             has_default_xex: true,
             xex: None,
+            root_entries: Vec::new(),
         });
         let s = serde_json::to_string(&r).unwrap();
         assert!(s.contains("\"kind\":\"xenon\""));
@@ -604,6 +612,150 @@ mod tests {
                 assert!(z.xex.is_none());
             }
             _ => panic!("expected Xenon variant"),
+        }
+    }
+
+    #[test]
+    fn info_result_nx_round_trips_via_json() {
+        use crate::nintendo::nx::info::NxFullInfo;
+
+        const ID: u64 = 0x01AB_CDEF_0123_4801;
+
+        let r = InfoResult::Nx(NxInfo {
+            full: Some(NxFullInfo {
+                application_title_id: ID,
+                application_title_id_hex: format!("{:016X}", ID),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        let s = serde_json::to_string(&r).unwrap();
+        assert!(s.contains("\"application_title_id_hex\":\"01ABCDEF01234801\""));
+
+        let back: InfoResult = serde_json::from_str(&s).unwrap();
+        match back {
+            InfoResult::Nx(nx) => {
+                let full = nx.full.expect("full info");
+                assert_eq!(full.application_title_id, ID);
+                assert_eq!(full.application_title_id_hex, "01ABCDEF01234801");
+            }
+            _ => panic!("expected Nx variant"),
+        }
+    }
+
+    #[test]
+    fn info_result_dol_round_trips_via_json() {
+        use crate::nintendo::dol::info::DolFstEntry;
+
+        let r = InfoResult::Dol(DolInfo {
+            game_id: "GALE01".to_string(),
+            fst_root: vec![DolFstEntry {
+                name: "opening.bnr".to_string(),
+                size: 1496,
+                is_dir: false,
+            }],
+            fst_file_count: 1,
+            fst_dir_count: 0,
+            ..Default::default()
+        });
+        let s = serde_json::to_string(&r).unwrap();
+        assert!(s.contains("\"fst_root\""));
+
+        let back: InfoResult = serde_json::from_str(&s).unwrap();
+        match back {
+            InfoResult::Dol(d) => {
+                assert_eq!(d.fst_root.len(), 1);
+                assert_eq!(d.fst_root[0].name, "opening.bnr");
+                assert_eq!(d.fst_file_count, 1);
+            }
+            _ => panic!("expected Dol variant"),
+        }
+    }
+
+    #[test]
+    fn info_result_ctr_round_trips_via_json() {
+        use crate::nintendo::ctr::info::{CtrContentEntry, CtrPartitionEntry};
+
+        let r = InfoResult::Ctr(CtrInfo {
+            ncsd_partitions: vec![CtrPartitionEntry {
+                index: 0,
+                name: "Game".to_string(),
+                offset: 0x4000,
+                size: 0x100000,
+            }],
+            cia_contents: vec![CtrContentEntry {
+                index: 0,
+                content_id: "00000000".to_string(),
+                size: 12345,
+                encrypted: true,
+            }],
+            ..Default::default()
+        });
+        let s = serde_json::to_string(&r).unwrap();
+
+        let back: InfoResult = serde_json::from_str(&s).unwrap();
+        match back {
+            InfoResult::Ctr(c) => {
+                assert_eq!(c.ncsd_partitions.len(), 1);
+                assert_eq!(c.ncsd_partitions[0].name, "Game");
+                assert_eq!(c.cia_contents.len(), 1);
+                assert_eq!(c.cia_contents[0].content_id, "00000000");
+            }
+            _ => panic!("expected Ctr variant"),
+        }
+    }
+
+    #[test]
+    fn info_result_wup_round_trips_via_json() {
+        use crate::nintendo::wup::info::WupDiscPartition;
+
+        let r = InfoResult::Wup(WupInfo {
+            disc_partitions: vec![WupDiscPartition {
+                name: "GM12345678".to_string(),
+                kind: "Game".to_string(),
+                start_sector: 40,
+            }],
+            ..Default::default()
+        });
+        let s = serde_json::to_string(&r).unwrap();
+
+        let back: InfoResult = serde_json::from_str(&s).unwrap();
+        match back {
+            InfoResult::Wup(w) => {
+                assert_eq!(w.disc_partitions.len(), 1);
+                assert_eq!(w.disc_partitions[0].name, "GM12345678");
+                assert_eq!(w.disc_partitions[0].kind, "Game");
+            }
+            _ => panic!("expected Wup variant"),
+        }
+    }
+
+    #[test]
+    fn info_result_ps3_round_trips_via_json() {
+        use crate::ps3::info::Ps3RootEntry;
+
+        let r = InfoResult::Ps3(Ps3Info {
+            icon: Some(Image::new(vec![0x89, b'P', b'N', b'G'], 128, 128)),
+            root_files: vec![Ps3RootEntry {
+                name: "PS3_GAME".to_string(),
+                size: 2048,
+                is_dir: true,
+            }],
+            encrypted: Some(true),
+            ..Default::default()
+        });
+        let s = serde_json::to_string(&r).unwrap();
+
+        let back: InfoResult = serde_json::from_str(&s).unwrap();
+        match back {
+            InfoResult::Ps3(p) => {
+                let icon = p.icon.expect("icon");
+                assert_eq!(icon.width, 128);
+                assert_eq!(p.root_files.len(), 1);
+                assert_eq!(p.root_files[0].name, "PS3_GAME");
+                assert_eq!(p.encrypted, Some(true));
+            }
+            _ => panic!("expected Ps3 variant"),
         }
     }
 }

@@ -30,10 +30,10 @@ const emit = defineEmits<{
 
 <style scoped>
 .rc-kv {
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
+	display: grid;
+	grid-template-columns: minmax(0, max-content) minmax(0, 1fr);
 	gap: 10px;
+	align-items: start;
 	padding: 3px 0;
 }
 
@@ -44,6 +44,9 @@ const emit = defineEmits<{
 	background: none;
 	padding: 0;
 	text-align: right;
+	min-width: 0;
+	white-space: normal;
+	overflow-wrap: anywhere;
 }
 
 .rc-kv__value--clickable {

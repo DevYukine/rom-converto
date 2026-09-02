@@ -4,7 +4,18 @@ import { invoke, save } from "~/lib/ipc";
 import { useToast } from "~/composables/useToast";
 import { parseHashLine } from "~/lib/hash-lines";
 import PrimaryButton from "~/components/ui/PrimaryButton.vue";
-import { imageToDataUrl, nxTitleKindDisplayName, pickIconImage, type DiscContent, type InfoResult, type XboxInfo } from "~/types/info";
+import ContentTypeChip from "~/components/ui/ContentTypeChip.vue";
+import KvRow from "~/components/ui/KvRow.vue";
+import InnerFilesList from "~/components/op/InnerFilesList.vue";
+import {
+	buildInspectView,
+	englishFirst,
+	formatBytes,
+	formatMaker,
+	formatXboxPartitionKind,
+	xenonRatio,
+} from "~/lib/inspect-view";
+import { imageToDataUrl, pickBackgroundImage, pickIconImage, type InfoResult } from "~/types/info";
 
 const props = defineProps<{
 	info: InfoResult;
@@ -33,59 +44,19 @@ const CONSOLE_LABEL: Record<InfoResult["kind"], string> = {
 	psp: "PSP",
 };
 
+const view = computed(() => buildInspectView(props.info));
+
 const iconUrl = computed(() => {
 	const img = pickIconImage(props.info);
 	return img ? imageToDataUrl(img) : null;
 });
 
-function formatMaker(code: string, name: string | null): string {
-	return name ? `${code} (${name})` : code;
-}
+const iconCaption = computed(() => (props.info.kind === "nx" && !props.info.full ? "load prod.keys" : "game icon"));
 
-// Language tags differ per format ("AmericanEnglish", "english", "american_english");
-// normalize before comparing. Falls back to the first entry.
-function englishFirst<T>(items: T[] | undefined, lang: (item: T) => string): T | undefined {
-	if (!items?.length) return undefined;
-	for (const pref of ["americanenglish", "english", "britishenglish"]) {
-		const hit = items.find((item) => lang(item).replace(/[_\s]/g, "").toLowerCase() === pref);
-		if (hit) return hit;
-	}
-	return items[0];
-}
-
-function hex16(n: number): string {
-	return n.toString(16).padStart(16, "0").toUpperCase();
-}
-
-function formatBytes(n: number): string {
-	if (n < 1024) return `${n} B`;
-	const units = ["KiB", "MiB", "GiB", "TiB"];
-	let value = n / 1024;
-	let unit = 0;
-	while (value >= 1024 && unit < units.length - 1) {
-		value /= 1024;
-		unit += 1;
-	}
-	return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[unit]}`;
-}
-
-function formatXboxPartitionKind(pk: XboxInfo["partition_kind"]): string {
-	if (typeof pk === "object") return `X360 Extra (+${pk.x360_extra})`;
-	switch (pk) {
-		case "trimmed":
-			return "Trimmed";
-		case "xgd1":
-			return "XGD1";
-		case "xgd2":
-			return "XGD2";
-		case "xgd3":
-			return "XGD3";
-	}
-}
-
-function xenonRatio(logicalSize: number, compressedSize: number): number {
-	return logicalSize > 0 ? (1 - compressedSize / logicalSize) * 100 : 0;
-}
+const backgroundUrl = computed(() => {
+	const img = pickBackgroundImage(props.info);
+	return img ? imageToDataUrl(img) : null;
+});
 
 const sizeBytes = computed(() => {
 	switch (props.info.kind) {
@@ -127,10 +98,18 @@ const title = computed(() => {
 			return englishFirst(info.meta?.long_names?.entries, (e) => e[0])?.[1] || info.title_id_hex;
 		case "nx":
 			return englishFirst(info.full?.control?.titles, (t) => t.language)?.name || info.container_kind.toUpperCase();
-		case "chd":
-			return info.version_string || `CHD v${info.version}`;
-		case "cso":
-			return `${info.format} image`;
+		case "chd": {
+			const fallback = info.version_string || `CHD v${info.version}`;
+			if (info.content?.kind === "psp") return info.content.title || info.content.title_id || fallback;
+			if (info.content?.kind === "psx") return info.content.volume_id || info.content.title_id || fallback;
+			return fallback;
+		}
+		case "cso": {
+			const fallback = `${info.format} image`;
+			if (info.content?.kind === "psp") return info.content.title || info.content.title_id || fallback;
+			if (info.content?.kind === "psx") return info.content.volume_id || info.content.title_id || fallback;
+			return fallback;
+		}
 		case "xbox":
 			return info.xbe?.title_name || info.xex?.title_name || `${formatXboxPartitionKind(info.partition_kind)} image`;
 		case "xenon":
@@ -138,7 +117,7 @@ const title = computed(() => {
 		case "ps3":
 			return info.title || info.title_id || "PS3 disc";
 		case "psx":
-			return info.title_id || info.volume_id || "PlayStation disc";
+			return info.volume_id || info.title_id || "PlayStation disc";
 		case "psp":
 			return info.title || info.title_id || "PSP disc";
 	}
@@ -177,6 +156,10 @@ const formatBadge = computed(() => {
 const consoleBadge = computed(() => {
 	const info = props.info;
 	if (info.kind === "psx") return info.disc_kind.toUpperCase();
+	if (info.kind === "chd" || info.kind === "cso") {
+		if (info.content?.kind === "psx") return info.content.disc_kind.toUpperCase();
+		if (info.content?.kind === "psp") return "PSP";
+	}
 	return CONSOLE_LABEL[info.kind];
 });
 
@@ -208,10 +191,20 @@ const metaLine = computed(() => {
 			break;
 		}
 		case "chd":
-			parts.push(info.compressors.join(", "));
+			if (info.content) {
+				if (info.content.title_id) parts.push(info.content.title_id);
+				if (info.content.version) parts.push(`v${info.content.version}`);
+			} else {
+				parts.push(info.compressors.join(", "));
+			}
 			break;
 		case "cso":
-			parts.push(`block ${info.block_size}`);
+			if (info.content) {
+				if (info.content.title_id) parts.push(info.content.title_id);
+				if (info.content.version) parts.push(`v${info.content.version}`);
+			} else {
+				parts.push(`block ${info.block_size}`);
+			}
 			break;
 		case "ps3":
 			if (info.region) parts.push(info.region);
@@ -249,22 +242,24 @@ const statRow = computed<Stat[]>(() => {
 			break;
 		case "rvl":
 			stats.push({ label: "Game ID", value: info.game_id });
-			if (info.tmd) stats.push({ label: "Title ID", value: hex16(info.tmd.title_id) });
+			if (info.tmd) stats.push({ label: "Title ID", value: info.tmd.title_id_hex });
 			break;
 		case "wup":
 			stats.push({ label: "Title ID", value: info.title_id_hex });
 			stats.push({ label: "Contents", value: String(info.content_count) });
 			break;
 		case "nx":
-			if (info.full) stats.push({ label: "Title ID", value: hex16(info.full.application_title_id) });
+			if (info.full) stats.push({ label: "Title ID", value: info.full.application_title_id_hex });
 			stats.push({ label: "NCA files", value: String(info.nca_names.length) });
 			if (info.is_compressed) stats.push({ label: "Compressed", value: "zstd", color: "green" });
 			break;
 		case "chd":
+			if (info.content?.title_id) stats.push({ label: "Title ID", value: info.content.title_id });
 			stats.push({ label: "Ratio", value: `${info.compression_ratio.toFixed(1)}%`, color: "green" });
 			stats.push({ label: "Hunks", value: String(info.hunk_count) });
 			break;
 		case "cso":
+			if (info.content?.title_id) stats.push({ label: "Title ID", value: info.content.title_id });
 			stats.push({ label: "Ratio", value: `${info.compression_ratio.toFixed(1)}%`, color: "green" });
 			stats.push({ label: "Blocks", value: String(info.block_count) });
 			break;
@@ -283,230 +278,10 @@ const statRow = computed<Stat[]>(() => {
 		}
 		case "ps3":
 			if (info.title_id) stats.push({ label: "Title ID", value: info.title_id });
+			if (info.encrypted !== null) stats.push({ label: "Encryption", value: info.encrypted ? "encrypted" : "decrypted ✓" });
 			break;
 	}
 	return stats;
-});
-
-interface ContentRow {
-	name: string;
-	detail: string;
-}
-
-const contents = computed<ContentRow[]>(() => {
-	const info = props.info;
-	switch (info.kind) {
-		case "nx":
-			return info.files.map((f) => ({
-				name: f.name,
-				detail: f.partition ? `${formatBytes(f.size)} · ${f.partition}` : formatBytes(f.size),
-			}));
-		case "wup":
-			return info.bundled_titles.map((b) => ({
-				name: b.title_type,
-				detail: `${b.title_id_hex} · v${b.title_version}`,
-			}));
-		case "rvl":
-			return info.partitions.map((p) => ({
-				name: p.kind,
-				detail: `group ${p.group} · 0x${p.offset.toString(16).toUpperCase()}`,
-			}));
-		case "chd":
-			return info.tracks.map((t) => ({
-				name: `Track ${t.number}`,
-				detail: `${t.track_type} · ${t.frames} frames`,
-			}));
-		default:
-			return [];
-	}
-});
-
-function addContentRows(add: (label: string, value: string | number | null | undefined) => void, content: DiscContent | null) {
-	if (!content) return;
-	if (content.kind === "psx") {
-		add("Disc Title ID", content.title_id);
-	} else {
-		add("Disc Title", content.title);
-		add("Disc Title ID", content.title_id);
-	}
-}
-
-const details = computed<Stat[]>(() => {
-	const info = props.info;
-	const rows: Stat[] = [];
-	const add = (label: string, value: string | number | null | undefined) => {
-		if (value === null || value === undefined || value === "") return;
-		rows.push({ label, value: String(value) });
-	};
-	switch (info.kind) {
-		case "ctr":
-			add("Format", info.format.toUpperCase());
-			add("Program ID", info.program_id);
-			add("Product code", info.product_code);
-			add("Maker", formatMaker(info.maker_code, info.maker_name));
-			if (info.cartridge_size) add("Cartridge", formatBytes(info.cartridge_size));
-			if (info.smdh) {
-				if (info.smdh.region_names.length) add("Region", info.smdh.region_names.join(", "));
-				add("EULA", `v${info.smdh.eula_version_major}.${info.smdh.eula_version_minor}`);
-				if (info.smdh.age_ratings.length) {
-					add("Age ratings", info.smdh.age_ratings.map((r) => `${r.region} ${r.age}`).join(", "));
-				}
-			}
-			break;
-		case "dol":
-			add("Container", info.container.toUpperCase());
-			add("Region", info.region);
-			add("Maker", formatMaker(info.maker_code, info.maker_name));
-			add("Disc", `#${info.disc_number} v${info.disc_version}`);
-			add("Apploader", info.apploader_date);
-			add("Audio streaming", info.audio_streaming ? "yes" : "no");
-			break;
-		case "rvl":
-			add("Container", info.container.toUpperCase());
-			add("Region", info.region);
-			add("Maker", formatMaker(info.maker_code, info.maker_name));
-			add("Disc", `#${info.disc_number} v${info.disc_version}`);
-			if (info.tmd) {
-				add("Title version", `v${info.tmd.title_version}`);
-				if (info.tmd.ios_slot != null) add("IOS", `IOS${info.tmd.ios_slot}`);
-				add("TMD region", info.tmd.region_name);
-				add("TMD contents", info.tmd.content_count);
-			}
-			break;
-		case "wup": {
-			add("Title type", info.title_type);
-			add("Title version", `v${info.title_version}`);
-			add("Contents", `${info.content_count} · ${formatBytes(info.total_content_size)}`);
-			if (info.os_version != null) add("OS version", info.os_version);
-			if (info.update_version != null) add("Update", `v${info.update_version}`);
-			const m = info.meta;
-			if (m) {
-				add("Product code", m.product_code);
-				add("Company", m.company_name ?? m.company_code);
-				if (m.region_names.length) add("Region", m.region_names.join(", "));
-				add("Mastered", m.mastering_date);
-				if (m.save_size) add("Save size", formatBytes(m.save_size));
-			}
-			break;
-		}
-		case "nx": {
-			add("Container", info.container_kind.toUpperCase());
-			add("Distribution", info.distribution);
-			add("Structure", info.structure);
-			add("NCAs", `${info.nca_names.length} (${info.cnmt_nca_names.length} meta)`);
-			if (info.tickets.length) add("Tickets", info.tickets.length);
-			const f = info.full;
-			if (f) {
-				add("Kind", nxTitleKindDisplayName(f.title_kind));
-				add("Title version", `v${f.title_version}`);
-				if (f.base_application_id != null) add("Base title", hex16(f.base_application_id));
-				add("Contents", `${f.content_count} · ${formatBytes(f.total_content_size)}`);
-				const c = f.control;
-				if (c) {
-					add("Display version", c.display_version);
-					if (c.supported_languages.length) add("Languages", c.supported_languages.join(", "));
-					if (c.age_ratings.length) {
-						add("Age ratings", c.age_ratings.map((r) => `${r.organization} ${r.age}`).join(", "));
-					}
-				}
-			}
-			break;
-		}
-		case "chd":
-			add("CHD version", info.version);
-			add("Codecs", info.compressors.join(", "));
-			add("Hunk", `${formatBytes(info.hunk_bytes)} × ${info.hunk_count}`);
-			add("Unit", formatBytes(info.unit_bytes));
-			add("Logical size", formatBytes(info.logical_bytes));
-			if (info.dvd) add("DVD", `${info.dvd.total_sectors} sectors · ${info.dvd.layer_class}`);
-			if (info.metadata_tags.length) add("Metadata", info.metadata_tags.map((t) => t.tag).join(", "));
-			addContentRows(add, info.content);
-			break;
-		case "cso":
-			add("Format", `${info.format} v${info.version}`);
-			add("Block size", formatBytes(info.block_size));
-			add("Blocks", `${info.block_count} (${info.raw_block_count} raw)`);
-			add("Index shift", info.index_shift);
-			add("Uncompressed", formatBytes(info.uncompressed_size));
-			addContentRows(add, info.content);
-			break;
-		case "xbox":
-			add("Partition", formatXboxPartitionKind(info.partition_kind));
-			add("Files", `${info.file_count} (${info.dir_count} dirs)`);
-			add("File data", formatBytes(info.total_file_bytes));
-			add("Image size", formatBytes(info.image_size));
-			if (info.xbe) {
-				add("Title ID", `${info.xbe.title_id_hex} (${info.xbe.title_id_code})`);
-				add("Version", info.xbe.version);
-				if (info.xbe.region_names.length) add("Region", info.xbe.region_names.join(", "));
-				if (info.xbe.allowed_media_names.length) add("Media", info.xbe.allowed_media_names.join(", "));
-				add("Disc", info.xbe.disc_number);
-			}
-			if (info.xex) {
-				add("Title ID", info.xex.title_id_hex);
-				add("Media ID", info.xex.media_id);
-				add("Version", info.xex.version);
-				add("Disc", `${info.xex.disc_number}/${info.xex.disc_count}`);
-				if (info.xex.region_names.length) add("Region", info.xex.region_names.join(", "));
-				if (info.xex.original_pe_name) add("Original PE name", info.xex.original_pe_name);
-			}
-			break;
-		case "xenon":
-			add("Files", `${info.file_count} (${info.dir_count} dirs)`);
-			add("Logical size", formatBytes(info.logical_size));
-			add(
-				"Compressed",
-				`${formatBytes(info.compressed_size)} (${xenonRatio(info.logical_size, info.compressed_size).toFixed(1)}%)`,
-			);
-			add("Blocks", info.block_count);
-			add("default.xex", info.has_default_xex ? "present" : "missing");
-			if (info.xex) {
-				add("Title ID", info.xex.title_id_hex);
-				add("Media ID", info.xex.media_id);
-				add("Version", info.xex.version);
-				add("Disc", `${info.xex.disc_number}/${info.xex.disc_count}`);
-				if (info.xex.region_names.length) add("Region", info.xex.region_names.join(", "));
-				if (info.xex.original_pe_name) add("Original PE name", info.xex.original_pe_name);
-			}
-			break;
-		case "ps3":
-			add("Region", info.region);
-			add("Version", info.version);
-			add("App Version", info.app_ver);
-			add("Resolution", info.resolution);
-			add("Sound Format", info.sound_format);
-			add("Firmware", info.firmware);
-			if (info.parental_level != null) add("Parental Level", info.parental_level);
-			add("Regions", info.region_count);
-			add("Total Sectors", info.total_sectors);
-			add("Encrypted Sectors", info.encrypted_sectors);
-			break;
-		case "psx":
-			add("Boot executable", info.boot_executable);
-			add("Volume ID", info.volume_id);
-			add("Version", info.version);
-			add("Total Sectors", info.total_sectors);
-			break;
-		case "psp":
-			add("Title ID", info.title_id);
-			add("Version", info.version);
-			add("Firmware", info.firmware);
-			add("Category", info.category);
-			add("Total Sectors", info.total_sectors);
-			break;
-	}
-	return rows;
-});
-
-const hashes = computed<Stat[]>(() => {
-	const info = props.info;
-	if (info.kind !== "chd") return [];
-	const rows: Stat[] = [
-		{ label: "Raw SHA-1", value: info.raw_sha1 },
-		{ label: "SHA-1", value: info.sha1 },
-	];
-	if (info.parent_sha1) rows.push({ label: "Parent SHA-1", value: info.parent_sha1 });
-	return rows;
 });
 
 const computedHashes = ref<Stat[]>([]);
@@ -572,13 +347,13 @@ function copyTitleId() {
 			value = info.game_id;
 			break;
 		case "rvl":
-			value = info.tmd ? hex16(info.tmd.title_id) : info.game_id;
+			value = info.tmd ? info.tmd.title_id_hex : info.game_id;
 			break;
 		case "wup":
 			value = info.title_id_hex;
 			break;
 		case "nx":
-			value = info.full ? hex16(info.full.application_title_id) : "";
+			value = info.full?.application_title_id_hex ?? "";
 			break;
 		case "ps3":
 			value = info.title_id ?? "";
@@ -612,17 +387,21 @@ async function saveIcon() {
 
 <template>
 	<div class="rc-inspect-card">
+		<div v-if="backgroundUrl" class="rc-inspect-card__banner">
+			<img :src="backgroundUrl" alt="" />
+		</div>
 		<div class="rc-inspect-card__top">
 			<div class="rc-inspect-card__icon">
 				<img v-if="iconUrl" :src="iconUrl" alt="" />
-				<span v-else class="rc-inspect-card__icon-caption">game icon</span>
+				<span v-else class="rc-inspect-card__icon-caption">{{ iconCaption }}</span>
 			</div>
 
 			<div class="rc-inspect-card__main">
 				<div class="rc-inspect-card__title-row">
 					<span class="rc-inspect-card__title">{{ title }}</span>
-					<span class="rc-inspect-card__badge rc-inspect-card__badge--format">{{ formatBadge }}</span>
+					<ContentTypeChip v-if="view.contentType" :type="view.contentType" />
 					<span class="rc-inspect-card__badge rc-inspect-card__badge--console">{{ consoleBadge }}</span>
+					<span class="rc-inspect-card__badge rc-inspect-card__badge--format">{{ formatBadge }}</span>
 				</div>
 				<div v-if="metaLine" class="rc-inspect-card__meta">{{ metaLine }}</div>
 				<div class="rc-inspect-card__stats">
@@ -642,31 +421,40 @@ async function saveIcon() {
 
 		<div class="rc-inspect-card__grid">
 			<div class="rc-inspect-card__col">
-				<h4>Details</h4>
-				<div v-if="details.length === 0" class="rc-inspect-card__empty">No further details in this metadata.</div>
-				<div v-for="d in details" :key="d.label" class="rc-inspect-card__row">
-					<span class="rc-inspect-card__row-name">{{ d.label }}</span>
-					<span class="rc-inspect-card__row-detail" :title="d.value">{{ d.value }}</span>
-				</div>
+				<h4>Container</h4>
+				<div v-if="view.container.length === 0" class="rc-inspect-card__empty">Not a container format.</div>
+				<KvRow v-for="f in view.container" :key="f.label" :label="f.label" :value="f.value" />
 			</div>
 			<div class="rc-inspect-card__col">
-				<h4>Contents</h4>
-				<div v-if="contents.length === 0" class="rc-inspect-card__empty">No inner file listing for this format.</div>
-				<div v-for="(c, i) in contents" :key="`${c.name}-${i}`" class="rc-inspect-card__row">
-					<span class="rc-inspect-card__row-name" :title="c.name">{{ c.name }}</span>
-					<span class="rc-inspect-card__row-detail">{{ c.detail }}</span>
+				<h4>ROM</h4>
+				<div v-if="view.rom.length === 0" class="rc-inspect-card__empty">
+					No ROM metadata detected inside this container.
 				</div>
+				<KvRow v-for="f in view.rom" :key="f.label" :label="f.label" :value="f.value" />
+			</div>
+			<div class="rc-inspect-card__col">
+				<InnerFilesList :title="view.innerTitle" :items="view.innerFiles" />
 			</div>
 			<div class="rc-inspect-card__col">
 				<h4>Hashes</h4>
-				<div v-for="h in hashes" :key="h.label" class="rc-inspect-card__row">
-					<span class="rc-inspect-card__row-name rc-inspect-card__row-name--fixed">{{ h.label }}</span>
-					<button type="button" class="rc-inspect-card__row-detail rc-inspect-card__row-copy" :title="`${h.value} · click to copy`" @click="copyValue(h.value)">{{ h.value }}</button>
-				</div>
-				<div v-for="h in computedHashes" :key="h.label" class="rc-inspect-card__row">
-					<span class="rc-inspect-card__row-name rc-inspect-card__row-name--fixed">{{ h.label }}</span>
-					<button type="button" class="rc-inspect-card__row-detail rc-inspect-card__row-copy" :title="`${h.value} · click to copy`" @click="copyValue(h.value)">{{ h.value }}</button>
-				</div>
+				<KvRow
+					v-for="h in view.hashes"
+					:key="h.label"
+					:label="h.label"
+					:value="h.value"
+					clickable
+					tooltip="Click to copy"
+					@click="copyValue(h.value)"
+				/>
+				<KvRow
+					v-for="h in computedHashes"
+					:key="h.label"
+					:label="h.label"
+					:value="h.value"
+					clickable
+					tooltip="Click to copy"
+					@click="copyValue(h.value)"
+				/>
 				<div v-if="hashError" class="rc-inspect-card__error">{{ hashError }}</div>
 				<button
 					v-if="computedHashes.length === 0"
@@ -690,6 +478,18 @@ async function saveIcon() {
 	border: 1px solid var(--a10);
 	border-radius: 10px;
 	background: var(--card);
+}
+
+.rc-inspect-card__banner {
+	max-height: 140px;
+	overflow: hidden;
+	border-radius: 10px 10px 0 0;
+}
+
+.rc-inspect-card__banner img {
+	width: 100%;
+	object-fit: cover;
+	display: block;
 }
 
 .rc-inspect-card__top {
@@ -742,6 +542,8 @@ async function saveIcon() {
 	font-size: 17px;
 	font-weight: 700;
 	color: var(--t0);
+	min-width: 0;
+	overflow-wrap: anywhere;
 }
 
 .rc-inspect-card__badge {
@@ -812,9 +614,15 @@ async function saveIcon() {
 
 .rc-inspect-card__grid {
 	display: grid;
-	grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
-	gap: 16px;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 16px 24px;
 	padding: 14px 16px;
+}
+
+@media (max-width: 900px) {
+	.rc-inspect-card__grid {
+		grid-template-columns: 1fr;
+	}
 }
 
 .rc-inspect-card__col h4 {
@@ -824,49 +632,6 @@ async function saveIcon() {
 	text-transform: uppercase;
 	letter-spacing: 0.8px;
 	color: var(--t4);
-}
-
-.rc-inspect-card__row {
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	gap: 10px;
-	padding: 3px 0;
-}
-
-.rc-inspect-card__row-name {
-	font-family: ui-monospace, monospace;
-	font-size: 11.5px;
-	color: var(--t3);
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-
-.rc-inspect-card__row-name--fixed {
-	flex-shrink: 0;
-}
-
-.rc-inspect-card__row-detail {
-	min-width: 0;
-	font-family: ui-monospace, monospace;
-	font-size: 11px;
-	color: var(--t4);
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-	text-align: right;
-}
-
-.rc-inspect-card__row-copy {
-	background: none;
-	border: none;
-	padding: 0;
-	cursor: pointer;
-}
-
-.rc-inspect-card__row-copy:hover {
-	color: var(--blue);
 }
 
 .rc-inspect-card__hash-btn {
@@ -889,9 +654,7 @@ async function saveIcon() {
 .rc-inspect-card__error {
 	font-size: 11px;
 	color: var(--red);
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
+	overflow-wrap: anywhere;
 }
 
 .rc-inspect-card__empty {

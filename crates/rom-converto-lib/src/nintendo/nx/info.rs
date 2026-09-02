@@ -156,6 +156,11 @@ pub struct XciPartitionSummary {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct NxFullInfo {
     pub application_title_id: u64,
+    /// [`Self::application_title_id`] formatted as 16 uppercase hex digits,
+    /// so callers that need exact precision in JS/JSON (where `u64` loses
+    /// precision above 2^53) can use this instead.
+    #[serde(default)]
+    pub application_title_id_hex: String,
     pub title_version: u32,
     pub title_kind: CnmtTitleKind,
     pub storage_id: u8,
@@ -163,6 +168,9 @@ pub struct NxFullInfo {
     pub required_system_version: u64,
     pub required_application_version: Option<u64>,
     pub base_application_id: Option<u64>,
+    /// [`Self::base_application_id`] formatted as 16 uppercase hex digits.
+    #[serde(default)]
+    pub base_application_id_hex: Option<String>,
     pub content_count: u16,
     pub total_content_size: u64,
     pub contents: Vec<CnmtContentSummary>,
@@ -281,6 +289,9 @@ pub struct CnmtContentSummary {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RelatedTitleSummary {
     pub title_id: u64,
+    /// [`Self::title_id`] formatted as 16 uppercase hex digits.
+    #[serde(default)]
+    pub title_id_hex: String,
     pub kind: CnmtTitleKind,
     pub version: u32,
 }
@@ -432,20 +443,25 @@ fn try_full_info(
         .filter(|(i, _)| *i != primary_idx)
         .map(|(_, c)| RelatedTitleSummary {
             title_id: c.title_id,
+            title_id_hex: format!("{:016X}", c.title_id),
             kind: CnmtTitleKind::from_byte(c.content_type),
             version: c.version,
         })
         .collect();
 
+    let base_application_id = primary.base_application_id();
+
     Ok(Some(NxFullInfo {
         application_title_id: primary.title_id,
+        application_title_id_hex: format!("{:016X}", primary.title_id),
         title_version: primary.version,
         title_kind: CnmtTitleKind::from_byte(primary.content_type),
         storage_id: primary.storage_id,
         attributes: primary.attributes,
         required_system_version: primary.required_system_version(),
         required_application_version: primary.required_application_version(),
-        base_application_id: primary.base_application_id(),
+        base_application_id,
+        base_application_id_hex: base_application_id.map(|id| format!("{:016X}", id)),
         content_count: primary.content_count,
         total_content_size,
         contents,
@@ -918,5 +934,31 @@ mod tests {
             NxContainerKind::from(ContainerKind::Xcz),
             NxContainerKind::Xcz
         );
+    }
+
+    #[test]
+    fn title_id_hex_twins_match_u64_ids() {
+        const ID: u64 = 0x01AB_CDEF_0123_4801;
+
+        let full = NxFullInfo {
+            application_title_id: ID,
+            application_title_id_hex: format!("{:016X}", ID),
+            base_application_id: Some(ID),
+            base_application_id_hex: Some(format!("{:016X}", ID)),
+            ..Default::default()
+        };
+        assert_eq!(full.application_title_id_hex, "01ABCDEF01234801");
+        assert_eq!(
+            full.base_application_id_hex.as_deref(),
+            Some("01ABCDEF01234801")
+        );
+
+        let related = RelatedTitleSummary {
+            title_id: ID,
+            title_id_hex: format!("{:016X}", ID),
+            kind: CnmtTitleKind::Patch,
+            version: 1,
+        };
+        assert_eq!(related.title_id_hex, "01ABCDEF01234801");
     }
 }

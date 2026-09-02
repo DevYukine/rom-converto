@@ -14,10 +14,16 @@ const MAX_FILE_BYTES: u32 = 4 << 20;
 const DISC_SFB: &str = "PS3_DISC.SFB";
 const PS3_GAME: &str = "PS3_GAME";
 const PARAM_SFO: &str = "PARAM.SFO";
+const ICON0_PNG: &str = "ICON0.PNG";
+const MAX_ROOT_ENTRIES: usize = 64;
 
 pub struct PlainFiles {
     pub disc_sfb: Option<Vec<u8>>,
     pub param_sfo: Option<Vec<u8>>,
+    pub icon0: Option<Vec<u8>>,
+    /// `(name, size, is_dir)` for each root directory entry, dot entries
+    /// skipped, capped at [`MAX_ROOT_ENTRIES`].
+    pub root_entries: Vec<(String, u32, bool)>,
 }
 
 #[derive(Clone, Copy)]
@@ -32,6 +38,8 @@ pub fn read_plain_files<R: Read + Seek>(reader: &mut R) -> Ps3Result<PlainFiles>
         return Ok(PlainFiles {
             disc_sfb: None,
             param_sfo: None,
+            icon0: None,
+            root_entries: Vec::new(),
         });
     };
     let root_dir = read_extent(reader, &root, MAX_DIR_BYTES)?;
@@ -41,20 +49,31 @@ pub fn read_plain_files<R: Read + Seek>(reader: &mut R) -> Ps3Result<PlainFiles>
         _ => None,
     };
 
-    let param_sfo = match find_in_dir(&root_dir, PS3_GAME) {
+    let (param_sfo, icon0) = match find_in_dir(&root_dir, PS3_GAME) {
         Some(e) if e.is_dir => {
             let game_dir = read_extent(reader, &e, MAX_DIR_BYTES)?;
-            match find_in_dir(&game_dir, PARAM_SFO) {
+            let sfo = match find_in_dir(&game_dir, PARAM_SFO) {
                 Some(f) if !f.is_dir => Some(read_extent(reader, &f, MAX_FILE_BYTES)?),
                 _ => None,
-            }
+            };
+            // Decorative asset: a corrupt/out-of-range record must not fail
+            // the whole info read.
+            let icon = match find_in_dir(&game_dir, ICON0_PNG) {
+                Some(f) if !f.is_dir => read_extent(reader, &f, MAX_FILE_BYTES).ok(),
+                _ => None,
+            };
+            (sfo, icon)
         }
-        _ => None,
+        _ => (None, None),
     };
+
+    let root_entries = dir_entries(&root_dir, MAX_ROOT_ENTRIES);
 
     Ok(PlainFiles {
         disc_sfb,
         param_sfo,
+        icon0,
+        root_entries,
     })
 }
 
@@ -123,6 +142,39 @@ fn name_matches(raw: &[u8], name: &str) -> bool {
     raw[..end].eq_ignore_ascii_case(name.as_bytes())
 }
 
+/// Lists `(name, size, is_dir)` for a directory's records, skipping the two
+/// dot entries and stopping at `cap` entries.
+fn dir_entries(dir: &[u8], cap: usize) -> Vec<(String, u32, bool)> {
+    let mut out = Vec::new();
+    let mut off = 0usize;
+    while off < dir.len() && out.len() < cap {
+        let rec_len = dir[off] as usize;
+        if rec_len == 0 {
+            // A zero length byte pads out the rest of the logical sector.
+            off = (off / SECTOR_SIZE + 1) * SECTOR_SIZE;
+            continue;
+        }
+        if rec_len < 34 || off + rec_len > dir.len() {
+            break;
+        }
+        let rec = &dir[off..off + rec_len];
+        let name_len = rec[32] as usize;
+        if 33 + name_len <= rec_len {
+            let raw = &rec[33..33 + name_len];
+            if raw != [0u8]
+                && raw != [1u8]
+                && let Some(entry) = record_fields(rec)
+            {
+                let end = raw.iter().position(|&b| b == b';').unwrap_or(raw.len());
+                let name = String::from_utf8_lossy(&raw[..end]).into_owned();
+                out.push((name, entry.size, entry.is_dir));
+            }
+        }
+        off += rec_len;
+    }
+    out
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -145,13 +197,30 @@ pub(crate) mod tests {
         out.extend_from_slice(&rec);
     }
 
-    /// Root + PS3_DISC.SFB + PS3_GAME/PARAM.SFO across fixed sectors.
+    /// A real, minimal (1x1) PNG so `Image::from_png` parses it as a valid image.
+    pub const TINY_PNG: &[u8] = &[
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F,
+        0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41, 0x54, 0x78, 0xDA, 0x63, 0x64,
+        0xF8, 0xCF, 0x50, 0x0F, 0x00, 0x03, 0x86, 0x01, 0x80, 0x5A, 0x34, 0x7D, 0x6B, 0x00, 0x00,
+        0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+    ];
+
+    /// Root + PS3_DISC.SFB + PS3_GAME/PARAM.SFO/ICON0.PNG across fixed sectors.
     pub fn build_ps3_iso(sfb: &[u8], sfo: &[u8]) -> Vec<u8> {
+        build_ps3_iso_with_icon(sfb, sfo, &[])
+    }
+
+    /// Same as [`build_ps3_iso`] but also writes `PS3_GAME/ICON0.PNG` when
+    /// `icon` is non-empty.
+    pub fn build_ps3_iso_with_icon(sfb: &[u8], sfo: &[u8], icon: &[u8]) -> Vec<u8> {
         const ROOT_LBA: u32 = 17;
         const SFB_LBA: u32 = 18;
         const GAME_LBA: u32 = 19;
         const SFO_LBA: u32 = 20;
-        let mut iso = vec![0u8; 21 * SECTOR_SIZE];
+        const ICON_LBA: u32 = 21;
+        let sector_count = if icon.is_empty() { 21 } else { 22 };
+        let mut iso = vec![0u8; sector_count * SECTOR_SIZE];
 
         let pvd = &mut iso[16 * SECTOR_SIZE..17 * SECTOR_SIZE];
         pvd[0] = 1;
@@ -175,6 +244,9 @@ pub(crate) mod tests {
         dir_record(&mut gd, &[0], GAME_LBA, SECTOR_SIZE as u32, true);
         dir_record(&mut gd, &[1], ROOT_LBA, SECTOR_SIZE as u32, true);
         dir_record(&mut gd, b"PARAM.SFO;1", SFO_LBA, sfo.len() as u32, false);
+        if !icon.is_empty() {
+            dir_record(&mut gd, b"ICON0.PNG;1", ICON_LBA, icon.len() as u32, false);
+        }
         iso[GAME_LBA as usize * SECTOR_SIZE..GAME_LBA as usize * SECTOR_SIZE + gd.len()]
             .copy_from_slice(&gd);
 
@@ -182,6 +254,10 @@ pub(crate) mod tests {
             .copy_from_slice(sfb);
         iso[SFO_LBA as usize * SECTOR_SIZE..SFO_LBA as usize * SECTOR_SIZE + sfo.len()]
             .copy_from_slice(sfo);
+        if !icon.is_empty() {
+            iso[ICON_LBA as usize * SECTOR_SIZE..ICON_LBA as usize * SECTOR_SIZE + icon.len()]
+                .copy_from_slice(icon);
+        }
         iso
     }
 
@@ -191,6 +267,20 @@ pub(crate) mod tests {
         let files = read_plain_files(&mut Cursor::new(iso)).unwrap();
         assert_eq!(files.disc_sfb.unwrap(), b"sfb-bytes");
         assert_eq!(files.param_sfo.unwrap(), b"sfo-bytes");
+    }
+
+    #[test]
+    fn fetches_icon_and_root_entries() {
+        let iso = build_ps3_iso_with_icon(b"sfb-bytes", b"sfo-bytes", TINY_PNG);
+        let files = read_plain_files(&mut Cursor::new(iso)).unwrap();
+        assert_eq!(files.icon0.unwrap(), TINY_PNG);
+        let names: Vec<&str> = files
+            .root_entries
+            .iter()
+            .map(|(name, _, _)| name.as_str())
+            .collect();
+        assert!(names.contains(&"PS3_DISC.SFB"));
+        assert!(names.contains(&"PS3_GAME"));
     }
 
     #[test]

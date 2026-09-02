@@ -26,7 +26,7 @@ For RVZ and NSZ/XCZ the output is byte-identical to the reference encoder (Dolph
 
 Single-image commands (compress, decompress, convert, extract, verify, info, and `hash`) also read a `.zip`, `.7z`, `.rar`, `.tar`, or `.tar.gz`/`.tgz` archive directly and operate on the first matching member. See [`docs/cli.md`](docs/cli.md) for the details.
 
-`rom-converto info <input>` auto-detects the console and inspects any format above without naming it, including PS1/PS2 (`.iso`, `.cue`+`.bin`) and PSP (`.iso`) title metadata; `chd info` and `cso info` also report the PlayStation disc found inside the container, when there is one.
+`rom-converto info <input>` auto-detects the console and inspects any format above without naming it, including PS1/PS2 (`.iso`, `.cue`+`.bin`) and PSP (`.iso`) title metadata, embedded icons, and encryption state where it can be determined; `chd info` and `cso info` also report the PlayStation disc found inside the container, when there is one.
 
 ## Installation
 

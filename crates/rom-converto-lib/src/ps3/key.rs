@@ -82,7 +82,7 @@ fn embedded_key_for_disc(disc_path: &Path) -> Option<Ps3Key> {
     crate::ps3::embedded_keys::embedded_key(&title_id)
 }
 
-fn load_key_file(path: &Path) -> Ps3Result<Ps3Key> {
+pub(super) fn load_key_file(path: &Path) -> Ps3Result<Ps3Key> {
     fs::read(path)
         .map_err(|e| {
             Ps3Error::Io(std::io::Error::new(
@@ -93,7 +93,7 @@ fn load_key_file(path: &Path) -> Ps3Result<Ps3Key> {
         .and_then(|contents| Ps3Key::from_dkey_contents(&contents))
 }
 
-fn resolve_sibling_key_path(input: &Path) -> Option<PathBuf> {
+pub(super) fn resolve_sibling_key_path(input: &Path) -> Option<PathBuf> {
     let mut sibling = input.to_path_buf();
     sibling.set_extension("dkey");
     sibling.is_file().then_some(sibling)

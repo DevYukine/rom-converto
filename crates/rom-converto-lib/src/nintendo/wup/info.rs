@@ -46,6 +46,23 @@ pub struct WupInfo {
     /// to `title_version`.
     pub update_version: Option<u32>,
     pub image: Option<Image>,
+    /// All partitions from the disc's partition table. Empty for
+    /// `.wua`/NUS/loadiine inputs, which have no disc TOC to read.
+    #[serde(default)]
+    pub disc_partitions: Vec<WupDiscPartition>,
+}
+
+/// One entry from a Wii U disc's partition table (TOC), as surfaced
+/// by the disc `info` path.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WupDiscPartition {
+    /// Full name from the TOC (with trailing NULs stripped).
+    pub name: String,
+    /// Partition kind, formatted from [`PartitionKind`] (e.g. `"Game"`,
+    /// `"SystemInstall"`, or the raw name for an unrecognized `Other` kind).
+    pub kind: String,
+    /// Start sector on disc.
+    pub start_sector: u64,
 }
 
 /// One title bundled alongside the primary title in a multi-title
@@ -208,7 +225,33 @@ fn read_disc(path: &Path, key_override: Option<&Path>) -> Result<WupInfo> {
     info.content_count = content_count;
     info.total_content_size = total_content_size;
     info.bundled_titles = bundled_titles;
+    info.disc_partitions = table
+        .entries
+        .iter()
+        .map(disc_partition_from_entry)
+        .collect();
     Ok(info)
+}
+
+/// Maps a parsed [`PartitionEntry`] from the disc TOC to its `info` output form.
+fn disc_partition_from_entry(entry: &PartitionEntry) -> WupDiscPartition {
+    WupDiscPartition {
+        name: entry.name.clone(),
+        kind: partition_kind_name(&entry.kind),
+        start_sector: entry.start_sector,
+    }
+}
+
+/// Clean display name for a [`PartitionKind`], avoiding Rust's `Debug`
+/// wrapper (e.g. `Other("XX")`) on the wire.
+fn partition_kind_name(kind: &PartitionKind) -> String {
+    match kind {
+        PartitionKind::SystemInstall => "SystemInstall".to_string(),
+        PartitionKind::Game => "Game".to_string(),
+        PartitionKind::Update => "Update".to_string(),
+        PartitionKind::Dlc => "Dlc".to_string(),
+        PartitionKind::Other(s) => s.clone(),
+    }
 }
 
 fn read_wua(path: &Path) -> Result<WupInfo> {
@@ -328,6 +371,7 @@ fn read_loadiine(
         bundled_titles: Vec::new(),
         update_version: None,
         image,
+        disc_partitions: Vec::new(),
     })
 }
 
@@ -410,6 +454,7 @@ fn read_nus(dir: &Path) -> Result<WupInfo> {
         bundled_titles: Vec::new(),
         update_version: None,
         image,
+        disc_partitions: Vec::new(),
     })
 }
 
@@ -515,4 +560,22 @@ fn region_mask_names(mask: u32) -> Vec<String> {
         out.push("Taiwan".to_string());
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disc_partition_from_entry_maps_fields() {
+        let entry = PartitionEntry {
+            name: "GM_LAYOUT_0".to_string(),
+            start_sector: 0x1234,
+            kind: PartitionKind::Game,
+        };
+        let mapped = disc_partition_from_entry(&entry);
+        assert_eq!(mapped.name, "GM_LAYOUT_0");
+        assert_eq!(mapped.kind, "Game");
+        assert_eq!(mapped.start_sector, 0x1234);
+    }
 }

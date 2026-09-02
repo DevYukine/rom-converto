@@ -81,6 +81,20 @@ export interface CtrSmdhTitle {
   publisher: string;
 }
 
+export interface CtrPartitionEntry {
+  index: number;
+  name: string;
+  offset: number;
+  size: number;
+}
+
+export interface CtrContentEntry {
+  index: number;
+  content_id: string;
+  size: number;
+  encrypted: boolean;
+}
+
 export interface CtrInfo {
   format: "cia" | "ncsd" | "ncch" | "unknown";
   physical_bytes: number;
@@ -108,6 +122,14 @@ export interface CtrInfo {
   icon: Image | null;
   small_icon: Image | null;
   compressed: boolean;
+  ncsd_partitions: CtrPartitionEntry[];
+  cia_contents: CtrContentEntry[];
+}
+
+export interface DolFstEntry {
+  name: string;
+  size: number;
+  is_dir: boolean;
 }
 
 export interface DolInfo {
@@ -134,6 +156,9 @@ export interface DolInfo {
     }>;
   } | null;
   banner_image: Image | null;
+  fst_root: DolFstEntry[];
+  fst_file_count: number;
+  fst_dir_count: number;
 }
 
 export interface RvlInfo {
@@ -154,6 +179,7 @@ export interface RvlInfo {
   }>;
   tmd: {
     title_id: number;
+    title_id_hex: string;
     title_version: number;
     system_version: number;
     ios_slot: number | null;
@@ -170,6 +196,12 @@ export interface BundledTitle {
   title_id_hex: string;
   title_type: string;
   title_version: number;
+}
+
+export interface WupDiscPartition {
+  name: string;
+  kind: string;
+  start_sector: number;
 }
 
 export interface WupInfo {
@@ -228,6 +260,7 @@ export interface WupInfo {
     online_account_use: boolean | null;
     age_ratings: Record<string, number>;
   } | null;
+  disc_partitions: WupDiscPartition[];
 }
 
 export interface NxContainerFile {
@@ -256,6 +289,7 @@ export interface NxInfo {
     | null;
   full: {
     application_title_id: number;
+    application_title_id_hex: string;
     title_version: number;
     title_kind: string;
     storage_id: number;
@@ -263,6 +297,7 @@ export interface NxInfo {
     required_system_version: number;
     required_application_version: number | null;
     base_application_id: number | null;
+    base_application_id_hex: string | null;
     content_count: number;
     total_content_size: number;
     contents: Array<{
@@ -272,6 +307,7 @@ export interface NxInfo {
     }>;
     related_titles: Array<{
       title_id: number;
+      title_id_hex: string;
       kind: string;
       version: number;
     }>;
@@ -320,6 +356,7 @@ export interface XbeInfo {
   disc_number: number;
   version: number;
   cert_timestamp: number;
+  icon: Image | null;
 }
 
 export interface XexInfo {
@@ -341,6 +378,12 @@ export interface XexInfo {
   icon: Image | null;
 }
 
+export interface XisoRootEntry {
+  name: string;
+  size: number;
+  is_dir: boolean;
+}
+
 export interface XboxInfo {
   partition_kind: "trimmed" | "xgd1" | "xgd2" | "xgd3" | { x360_extra: number };
   base: number;
@@ -352,6 +395,13 @@ export interface XboxInfo {
   image_size: number;
   xbe: XbeInfo | null;
   xex: XexInfo | null;
+  root_entries: XisoRootEntry[];
+}
+
+export interface ZarRootEntry {
+  name: string;
+  size: number;
+  is_file: boolean;
 }
 
 export interface XenonInfo {
@@ -362,6 +412,13 @@ export interface XenonInfo {
   block_count: number;
   has_default_xex: boolean;
   xex: XexInfo | null;
+  root_entries: ZarRootEntry[];
+}
+
+export interface Ps3RootEntry {
+  name: string;
+  size: number;
+  is_dir: boolean;
 }
 
 export interface Ps3Info {
@@ -377,7 +434,10 @@ export interface Ps3Info {
   region_count: number;
   total_sectors: number;
   encrypted_sectors: number;
+  encrypted: boolean | null;
   size_bytes: number;
+  icon: Image | null;
+  root_files: Ps3RootEntry[];
 }
 
 export interface PsxInfo {
@@ -399,6 +459,7 @@ export interface PspInfo {
   total_sectors: number;
   size_bytes: number;
   icon: Image | null;
+  background: Image | null;
 }
 
 export type DiscContent =
@@ -419,29 +480,6 @@ export type InfoResult =
   | ({ kind: "psx" } & PsxInfo)
   | ({ kind: "psp" } & PspInfo);
 
-export function nxTitleKindDisplayName(kind: string): string {
-  switch (kind) {
-    case "application":
-      return "Game";
-    case "patch":
-      return "Update";
-    case "add_on_content":
-      return "DLC";
-    case "delta":
-      return "Delta";
-    case "system_program":
-      return "System Program";
-    case "system_data":
-      return "System Data";
-    case "system_update":
-      return "System Update";
-    case "unknown":
-      return "Unknown";
-    default:
-      return kind;
-  }
-}
-
 export function pickIconImage(info: InfoResult): Image | null {
   switch (info.kind) {
     case "ctr":
@@ -455,14 +493,28 @@ export function pickIconImage(info: InfoResult): Image | null {
     case "nx":
       return info.full?.control?.icon ?? null;
     case "xbox":
-      return info.xex?.icon ?? null;
+      return info.xbe?.icon ?? info.xex?.icon ?? null;
     case "xenon":
       return info.xex?.icon ?? null;
     case "chd":
     case "cso":
       return info.content?.kind === "psp" ? info.content.icon : null;
+    case "ps3":
+      return info.icon;
     case "psp":
       return info.icon;
+    default:
+      return null;
+  }
+}
+
+export function pickBackgroundImage(info: InfoResult): Image | null {
+  switch (info.kind) {
+    case "chd":
+    case "cso":
+      return info.content?.kind === "psp" ? info.content.background : null;
+    case "psp":
+      return info.background;
     default:
       return null;
   }

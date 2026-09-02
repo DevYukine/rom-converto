@@ -281,9 +281,126 @@ pub fn decode_cmpr_tiled(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>
     Ok(out)
 }
 
+/// Decode DXT1 (BC1) pixel data into RGBA8.
+///
+/// 4x4 blocks are 8 bytes each and stored row-major over the surface. The
+/// two RGB565 endpoints are little-endian and the 2-bit selector for each
+/// texel is packed least significant first, which is where this differs from
+/// the GameCube's [`decode_cmpr_tiled`].
+///
+/// `width` and `height` must both be multiples of 4.
+pub fn decode_dxt1(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
+    if !width.is_multiple_of(4) || !height.is_multiple_of(4) {
+        return Err(anyhow!(
+            "dxt1 dimensions must be multiples of 4 (got {}x{})",
+            width,
+            height
+        ));
+    }
+    let expected = (width as usize / 4) * (height as usize / 4) * 8;
+    if data.len() < expected {
+        return Err(anyhow!(
+            "dxt1 input too short: {} bytes for {}x{}",
+            data.len(),
+            width,
+            height
+        ));
+    }
+
+    let w = width as usize;
+    let mut out = vec![0u8; w * height as usize * 4];
+    let mut src = 0usize;
+
+    for by in (0..height as usize).step_by(4) {
+        for bx in (0..w).step_by(4) {
+            let block = &data[src..src + 8];
+            src += 8;
+            let palette = dxt_palette(
+                u16::from_le_bytes([block[0], block[1]]),
+                u16::from_le_bytes([block[2], block[3]]),
+            );
+            for py in 0..4usize {
+                let mut bits = block[4 + py];
+                for px in 0..4usize {
+                    let idx = bits & 0x3;
+                    bits >>= 2;
+                    let out_off = ((by + py) * w + bx + px) * 4;
+                    out[out_off..out_off + 4].copy_from_slice(&palette[idx as usize]);
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Decode swizzled A8R8G8B8 pixel data into RGBA8.
+///
+/// The Xbox GPU stores a texture in Morton (Z-order) layout across the whole
+/// surface rather than in fixed tiles: a texel's offset interleaves the bits
+/// of its x and y coordinates, and once one axis runs out of bits the
+/// remaining bits of the other follow directly.
+///
+/// `width` and `height` must both be powers of two.
+pub fn decode_a8r8g8b8_swizzled(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
+    if !width.is_power_of_two() || !height.is_power_of_two() {
+        return Err(anyhow!(
+            "swizzled dimensions must be powers of two (got {}x{})",
+            width,
+            height
+        ));
+    }
+    let expected = (width as usize) * (height as usize) * 4;
+    if data.len() < expected {
+        return Err(anyhow!(
+            "swizzled a8r8g8b8 input too short: {} bytes for {}x{}",
+            data.len(),
+            width,
+            height
+        ));
+    }
+
+    let mut out = vec![0u8; expected];
+    for y in 0..height {
+        for x in 0..width {
+            let src = swizzled_offset(x, y, width, height) as usize * 4;
+            let dst = ((y * width + x) as usize) * 4;
+            // Stored as a little-endian ARGB dword: B, G, R, A.
+            out[dst] = data[src + 2];
+            out[dst + 1] = data[src + 1];
+            out[dst + 2] = data[src];
+            out[dst + 3] = data[src + 3];
+        }
+    }
+    Ok(out)
+}
+
+#[inline]
+fn swizzled_offset(x: u32, y: u32, width: u32, height: u32) -> u32 {
+    let mut offset = 0;
+    let mut bit = 0;
+    let mut i = 0;
+    while (1 << i) < width || (1 << i) < height {
+        if (1 << i) < width {
+            offset |= ((x >> i) & 1) << bit;
+            bit += 1;
+        }
+        if (1 << i) < height {
+            offset |= ((y >> i) & 1) << bit;
+            bit += 1;
+        }
+        i += 1;
+    }
+    offset
+}
+
 fn cmpr_block_palette(block: &[u8]) -> [[u8; 4]; 4] {
-    let c0 = u16::from_be_bytes([block[0], block[1]]);
-    let c1 = u16::from_be_bytes([block[2], block[3]]);
+    dxt_palette(
+        u16::from_be_bytes([block[0], block[1]]),
+        u16::from_be_bytes([block[2], block[3]]),
+    )
+}
+
+fn dxt_palette(c0: u16, c1: u16) -> [[u8; 4]; 4] {
     let (r0, g0, b0) = rgb565_to_rgb8(c0);
     let (r1, g1, b1) = rgb565_to_rgb8(c1);
 
@@ -651,5 +768,80 @@ mod tests {
     #[test]
     fn decode_i4_rejects_short_input() {
         assert!(decode_i4_tiled(&[0u8; 10], 8, 8).is_err());
+    }
+
+    #[test]
+    fn swizzled_offset_walks_z_order() {
+        // 4x4: bits interleave x0 y0 x1 y1, so the first 2x2 quad is 0..3
+        // and the quad to its right starts at 4.
+        let offsets: Vec<u32> = (0..4)
+            .flat_map(|y| (0..4).map(move |x| swizzled_offset(x, y, 4, 4)))
+            .collect();
+        assert_eq!(
+            offsets,
+            vec![0, 1, 4, 5, 2, 3, 6, 7, 8, 9, 12, 13, 10, 11, 14, 15]
+        );
+        // Non-square: once y runs out of bits the remaining x bits follow
+        // directly, so an 8x2 surface interleaves only x0 with y0.
+        assert_eq!(swizzled_offset(2, 0, 8, 2), 4);
+        assert_eq!(swizzled_offset(0, 1, 8, 2), 2);
+    }
+
+    #[test]
+    fn decode_swizzled_a8r8g8b8_unswizzles_and_reorders_channels() {
+        // Store a distinct blue value per texel at its swizzled offset, so a
+        // correct unswizzle yields the raster index back in the B channel.
+        let mut data = vec![0u8; 4 * 4 * 4];
+        for y in 0..4u32 {
+            for x in 0..4u32 {
+                let off = swizzled_offset(x, y, 4, 4) as usize * 4;
+                data[off] = (y * 4 + x) as u8; // B
+                data[off + 1] = 0x40; // G
+                data[off + 2] = 0x80; // R
+                data[off + 3] = 0xFF; // A
+            }
+        }
+
+        let rgba = decode_a8r8g8b8_swizzled(&data, 4, 4).unwrap();
+        for i in 0..16usize {
+            assert_eq!(&rgba[i * 4..i * 4 + 4], &[0x80, 0x40, i as u8, 0xFF]);
+        }
+    }
+
+    #[test]
+    fn decode_dxt1_solid_block_fills_every_texel() {
+        // Equal endpoints (3-color mode) with all-zero selectors: every
+        // texel takes endpoint 0.
+        let mut block = Vec::new();
+        block.extend_from_slice(&0x001Fu16.to_le_bytes());
+        block.extend_from_slice(&0x001Fu16.to_le_bytes());
+        block.extend_from_slice(&[0u8; 4]);
+
+        let rgba = decode_dxt1(&block, 4, 4).unwrap();
+        assert_eq!(rgba.len(), 4 * 4 * 4);
+        assert!(rgba.chunks_exact(4).all(|p| p == [0x00, 0x00, 0xFF, 0xFF]));
+    }
+
+    #[test]
+    fn decode_dxt1_selectors_are_least_significant_first() {
+        // c0 (red) > c1 (blue) selects the opaque 4-color mode; selector byte
+        // 0b11_10_01_00 maps the first row's texels to indices 0,1,2,3.
+        let mut block = Vec::new();
+        block.extend_from_slice(&0xF800u16.to_le_bytes());
+        block.extend_from_slice(&0x001Fu16.to_le_bytes());
+        block.extend_from_slice(&[0b11_10_01_00u8; 4]);
+
+        let rgba = decode_dxt1(&block, 4, 4).unwrap();
+        assert_eq!(&rgba[0..4], &[0xFF, 0x00, 0x00, 0xFF]);
+        assert_eq!(&rgba[4..8], &[0x00, 0x00, 0xFF, 0xFF]);
+        assert_eq!(
+            &rgba[8..12],
+            &[mix_third(0xFF, 0x00), 0x00, mix_third(0x00, 0xFF), 0xFF]
+        );
+    }
+
+    #[test]
+    fn decode_dxt1_rejects_short_input() {
+        assert!(decode_dxt1(&[0u8; 4], 4, 4).is_err());
     }
 }
