@@ -13,16 +13,25 @@
 
 use crate::cd::{FRAME_SIZE, SECTOR_SIZE};
 use crate::chd::compression::dvd::DvdCodecSet;
-use crate::chd::compression::{CdCodecSet, ChdCodec, ChdCompression};
+use crate::chd::compression::{CdCodecSet, ChdCodec, ChdCompression, avhuff};
 use crate::chd::error::{ChdError, ChdResult};
-use crate::chd::map::{MapEntry, crc16_ccitt};
+use crate::chd::map::{COMPRESSION_SELF, MapEntry, crc16_ccitt};
+use crate::chd::models::SHA1_BYTES;
 use crate::chd::swap_audio_sector;
+use crate::laserdisc::avi::{AviFile, LdParams};
+use crate::laserdisc::vbi::{VBI_PACKED_BYTES, vbi_metadata_pack, vbi_parse_all};
 use crate::util::CancelToken;
 use crate::util::worker_pool::{Pool, Worker, drive, parallelism};
 use sha1::{Digest, Sha1};
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
+use std::io::{BufReader, BufWriter, Read, Seek, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+/// YUY16 words hold luma in the high byte, which is the plane VBI codes
+/// are read from.
+const VBI_LUMA_SHIFT: u32 = 8;
 
 /// One hunk worth of input bytes, already interleaved as
 /// `[sector0 || zero_subcode0 || sector1 || zero_subcode1 || ...]`
@@ -39,6 +48,9 @@ pub(super) struct ChdCompressedOut {
     pub compressed: Vec<u8>,
     pub compression: u8,
     pub crc16: u16,
+    /// SHA-1 over the raw hunk, set only by paths that dedup
+    /// identical hunks into `COMPRESSION_SELF` map entries.
+    pub sha1: Option<[u8; SHA1_BYTES]>,
 }
 
 /// Per-thread CHD compress worker. Owns one persistent
@@ -67,6 +79,7 @@ impl Worker<ChdCompressWork, ChdCompressedOut, ChdError> for ChdCompressWorker {
             compressed,
             compression,
             crc16,
+            sha1: None,
         })
     }
 }
@@ -99,6 +112,7 @@ impl Worker<ChdCompressWork, ChdCompressedOut, ChdError> for ChdDvdCompressWorke
             compressed,
             compression,
             crc16,
+            sha1: None,
         })
     }
 }
@@ -116,6 +130,30 @@ pub(super) fn make_chd_dvd_compress_workers(
             })
         })
         .collect()
+}
+
+/// Laserdisc worker: one video field per hunk, `avhu` only. chdman
+/// refuses to store an uncompressed A/V hunk (the reader rejects them),
+/// so a failed or oversized encode is fatal rather than a fallback.
+pub(super) struct ChdLdCompressWorker;
+
+impl Worker<ChdCompressWork, ChdCompressedOut, ChdError> for ChdLdCompressWorker {
+    fn process(&mut self, work: ChdCompressWork) -> ChdResult<ChdCompressedOut> {
+        let crc16 = crc16_ccitt(&work.hunk);
+        let sha1: [u8; SHA1_BYTES] = Sha1::digest(&work.hunk).into();
+        let compressed = avhuff::encode(&work.hunk)?;
+        if compressed.len() >= work.hunk.len() {
+            return Err(
+                std::io::Error::other("avhuff frame did not compress below the hunk size").into(),
+            );
+        }
+        Ok(ChdCompressedOut {
+            compressed,
+            compression: ChdCompression::Codec0 as u8,
+            crc16,
+            sha1: Some(sha1),
+        })
+    }
 }
 
 /// Output side of a compress run: the file being written, the
@@ -259,11 +297,129 @@ pub(super) fn compress_hunks_dvd(
     )
 }
 
+/// Input side of the laserdisc compress path: the AVI, the geometry it
+/// resolved to, and the VBI blob the dispatcher fills in field order
+/// (empty when the field height is neither NTSC nor PAL).
+pub(super) struct LdCompressArgs<'a, R> {
+    pub avi: &'a mut AviFile<R>,
+    pub params: &'a LdParams,
+    pub raw_sha1: &'a mut Sha1,
+    pub vbi: &'a mut [u8],
+    pub bytes_done: &'a Arc<AtomicU64>,
+    pub cancel: &'a CancelToken,
+}
+
+/// Audio window of output field `effframe` as `(first_sample, samples)`.
+/// The ceiling division runs on the absolute field index, which is what
+/// spreads a non-integral samples-per-field count without drift.
+pub(super) fn ld_audio_window(params: &LdParams, effframe: u32) -> (u64, u32) {
+    let at = |field: u64| {
+        (u64::from(params.rate) * field * 1_000_000).div_ceil(u64::from(params.fps_times_1million))
+    };
+    let first = at(u64::from(effframe));
+    (first, (at(u64::from(effframe) + 1) - first) as u32)
+}
+
+fn avi_err(err: anyhow::Error) -> ChdError {
+    std::io::Error::other(err).into()
+}
+
+/// Laserdisc produce path: hunk *n* is output field *n*. Interlaced
+/// input takes both fields from one AVI frame, so consecutive fields
+/// share a single decode; a field is the frame's rows from `n % 2`
+/// stepping by the interlace factor. VBI is parsed on that same field
+/// and packed by the dispatcher, since the blob is indexed by field.
+pub(super) fn compress_hunks_ld<R: Read + Seek>(
+    pool: &Pool<ChdCompressWork, ChdCompressedOut, ChdError>,
+    state: HunkWriteState<'_>,
+    args: LdCompressArgs<'_, R>,
+) -> ChdResult<()> {
+    let LdCompressArgs {
+        avi,
+        params,
+        raw_sha1,
+        vbi,
+        bytes_done,
+        cancel,
+    } = args;
+
+    let width_u16 =
+        u16::try_from(params.width).map_err(|_| avi_err(anyhow::anyhow!("frame width > 65535")))?;
+    let height_u16 = u16::try_from(params.height)
+        .map_err(|_| avi_err(anyhow::anyhow!("field height > 65535")))?;
+    let interlace_factor = if params.interlaced { 2 } else { 1 };
+    let width = params.width as usize;
+    let height = params.height as usize;
+    let hunk_bytes = params.bytes_per_frame as usize;
+    let pack_vbi = !vbi.is_empty();
+
+    let mut frame = vec![0u16; width * height * interlace_factor];
+    let mut cached_frame: Option<u32> = None;
+    let mut field = vec![0u16; width * height];
+    let mut audio = vec![Vec::<i16>::new(); params.channels as usize];
+
+    run_pipeline(
+        pool,
+        state,
+        u64::from(params.frame_count),
+        |chunk_idx| -> ChdResult<ChdCompressWork> {
+            if cancel.is_cancelled() {
+                return Err(ChdError::Cancelled);
+            }
+            let effframe = chunk_idx as u32;
+            let source_frame = effframe / interlace_factor as u32;
+            if cached_frame != Some(source_frame) {
+                avi.read_video_frame(source_frame, &mut frame)
+                    .map_err(avi_err)?;
+                cached_frame = Some(source_frame);
+            }
+            let first_row = effframe as usize % interlace_factor;
+            for (row, dest) in field.chunks_exact_mut(width).enumerate() {
+                let src = (first_row + row * interlace_factor) * width;
+                dest.copy_from_slice(&frame[src..src + width]);
+            }
+
+            let (first_sample, samples) = ld_audio_window(params, effframe);
+            for (channel, buf) in audio.iter_mut().enumerate() {
+                buf.clear();
+                buf.resize(samples as usize, 0);
+                avi.read_sound_samples(channel as u32, first_sample, samples, buf)
+                    .map_err(avi_err)?;
+            }
+
+            if pack_vbi {
+                let metadata = vbi_parse_all(&field, width, width, VBI_LUMA_SHIFT);
+                let start = effframe as usize * VBI_PACKED_BYTES;
+                let record = vbi
+                    .get_mut(start..start + VBI_PACKED_BYTES)
+                    .ok_or_else(|| avi_err(anyhow::anyhow!("VBI blob is short of one record")))?;
+                vbi_metadata_pack(record, effframe, &metadata);
+            }
+
+            let channels: Vec<&[i16]> = audio.iter().map(Vec::as_slice).collect();
+            let mut hunk = avhuff::assemble_raw_frame(width_u16, height_u16, &field, &channels)?;
+            if hunk.len() > hunk_bytes {
+                return Err(avi_err(anyhow::anyhow!(
+                    "assembled frame is larger than the hunk size"
+                )));
+            }
+            hunk.resize(hunk_bytes, 0);
+            raw_sha1.update(&hunk);
+            bytes_done.fetch_add(hunk_bytes as u64, Ordering::Relaxed);
+            Ok(ChdCompressWork { hunk })
+        },
+    )
+}
+
 /// Shared compress scaffold: `drive` the pool with the mode-specific
 /// `produce` closure while a dedicated writer thread drains a bounded
 /// channel, so reads, codec trials, and writes overlap. The consume
 /// side is mode-independent: append a map entry, forward bytes,
 /// advance the writer position.
+///
+/// Outputs carrying a raw-hunk SHA-1 additionally go through chdman's
+/// self-map dedup: a hunk whose (crc16, sha1) was already written
+/// becomes a `COMPRESSION_SELF` back-reference and stores no bytes.
 fn run_pipeline<F>(
     pool: &Pool<ChdCompressWork, ChdCompressedOut, ChdError>,
     state: HunkWriteState<'_>,
@@ -280,6 +436,7 @@ where
     } = state;
     let max_in_flight = parallelism() * 2;
     let mut local_writer_pos = *writer_pos;
+    let mut written_hunks: HashMap<(u16, [u8; SHA1_BYTES]), u64> = HashMap::new();
     let (write_tx, write_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(max_in_flight * 2);
 
     let scope_result: ChdResult<()> = std::thread::scope(|s| {
@@ -296,7 +453,23 @@ where
             total_hunks,
             max_in_flight,
             produce,
-            |_seq, out: ChdCompressedOut| -> ChdResult<()> {
+            |seq, out: ChdCompressedOut| -> ChdResult<()> {
+                if let Some(sha1) = out.sha1 {
+                    match written_hunks.entry((out.crc16, sha1)) {
+                        Entry::Occupied(first) => {
+                            map_entries.push(MapEntry {
+                                compression: COMPRESSION_SELF,
+                                length: 0,
+                                offset: *first.get(),
+                                crc16: 0,
+                            });
+                            return Ok(());
+                        }
+                        Entry::Vacant(slot) => {
+                            slot.insert(seq);
+                        }
+                    }
+                }
                 let offset = local_writer_pos;
                 let length = out.compressed.len() as u32;
                 map_entries.push(MapEntry {

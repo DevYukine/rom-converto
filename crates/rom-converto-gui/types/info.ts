@@ -33,6 +33,33 @@ export interface MultilingualString {
   entries: Array<[LanguageCode, string]>;
 }
 
+export interface LdClvTime {
+  hours: number;
+  minutes: number;
+}
+
+export interface ChdLdInfo {
+  fps: string;
+  width: number;
+  height: number;
+  interlaced: boolean;
+  channels: number;
+  sample_rate: number;
+  frame_count: number;
+  vbi: {
+    disc_type: "cav" | "clv" | "unknown";
+    white_flag_count: number;
+    cav_picture_min: number | null;
+    cav_picture_max: number | null;
+    clv_start_time: LdClvTime | null;
+    clv_end_time: LdClvTime | null;
+    chapter_min: number | null;
+    chapter_max: number | null;
+    lead_in: boolean;
+    lead_out: boolean;
+  } | null;
+}
+
 export interface ChdInfo {
   version: number;
   compressors: string[];
@@ -58,6 +85,7 @@ export interface ChdInfo {
   metadata_tags: Array<{ tag: string; length: number }>;
   version_string: string | null;
   dvd: { total_sectors: number; layer_class: string } | null;
+  ld: ChdLdInfo | null;
   content: DiscContent | null;
 }
 
@@ -462,6 +490,43 @@ export interface PspInfo {
   background: Image | null;
 }
 
+export interface LdVbiSummary {
+  fields_scanned: number;
+  white_flag_count: number;
+  lead_in: boolean;
+  lead_out: boolean;
+  disc_type: "cav" | "clv" | "unknown";
+  cav_picture_min: number | null;
+  cav_picture_max: number | null;
+  clv_start: LdClvTime | null;
+  clv_end: LdClvTime | null;
+  chapter_min: number | null;
+  chapter_max: number | null;
+  fields_without_code: number;
+}
+
+export interface LdAviInfo {
+  video_fourcc: string;
+  video_width: number;
+  video_height: number;
+  fps: number;
+  frame_count: number;
+  duration_seconds: number;
+  audio_channels: number;
+  audio_rate: number;
+  audio_bits: number;
+  audio_sample_count: number;
+  file_size_bytes: number;
+  interlaced: boolean;
+  field_height: number;
+  fields: number;
+  max_samples_per_field: number;
+  bytes_per_frame: number;
+  fps_times_1million: number;
+  av_metadata: string;
+  vbi: LdVbiSummary | null;
+}
+
 export type DiscContent =
   | ({ kind: "psx" } & PsxInfo)
   | ({ kind: "psp" } & PspInfo);
@@ -478,7 +543,8 @@ export type InfoResult =
   | ({ kind: "xenon" } & XenonInfo)
   | ({ kind: "ps3" } & Ps3Info)
   | ({ kind: "psx" } & PsxInfo)
-  | ({ kind: "psp" } & PspInfo);
+  | ({ kind: "psp" } & PspInfo)
+  | ({ kind: "laser_disc" } & LdAviInfo);
 
 export function pickIconImage(info: InfoResult): Image | null {
   switch (info.kind) {
@@ -503,6 +569,8 @@ export function pickIconImage(info: InfoResult): Image | null {
       return info.icon;
     case "psp":
       return info.icon;
+    case "laser_disc":
+      return null;
     default:
       return null;
   }

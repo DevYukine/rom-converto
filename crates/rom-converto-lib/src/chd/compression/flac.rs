@@ -70,7 +70,7 @@ impl ChdCompressor for FlacCompressor {
 /// Strip the fLaC magic and metadata blocks, returning the raw frames.
 /// chdman's raw `flac` hunks are stored headerless; the decoder
 /// resynthesizes STREAMINFO from the hunk size.
-fn strip_flac_stream_header(stream: &[u8]) -> &[u8] {
+pub(super) fn strip_flac_stream_header(stream: &[u8]) -> &[u8] {
     let mut off = 4; // skip "fLaC"
     loop {
         let last = stream[off] & 0x80 != 0;

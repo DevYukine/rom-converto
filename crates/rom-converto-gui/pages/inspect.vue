@@ -84,6 +84,7 @@ function sizeOf(i: InfoResult): number {
 	if (i.kind === "xbox") return i.image_size;
 	if (i.kind === "xenon") return i.compressed_size;
 	if (i.kind === "ps3" || i.kind === "psx" || i.kind === "psp") return i.size_bytes;
+	if (i.kind === "laser_disc") return i.file_size_bytes;
 	return i.physical_bytes;
 }
 

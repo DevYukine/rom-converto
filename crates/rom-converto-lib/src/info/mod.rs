@@ -15,6 +15,7 @@ pub mod image;
 
 pub use crate::chd::info::ChdInfo;
 pub use crate::cso::info::CsoInfo;
+pub use crate::laserdisc::info::LdAviInfo;
 pub use crate::microsoft::xbox::XisoInfo;
 pub use crate::microsoft::xenon::ZarInfo;
 pub use crate::nintendo::ctr::info::CtrInfo;
@@ -43,6 +44,7 @@ pub enum InfoResult {
     Ps3(Ps3Info),
     Psx(PsxInfo),
     Psp(PspInfo),
+    LaserDisc(LdAviInfo),
 }
 
 /// A string carried per-language, as found in console-specific metadata
@@ -156,6 +158,9 @@ pub fn read_info(path: &Path, opts: &InfoOptions) -> Result<InfoResult> {
         )),
         DetectedConsole::Psx => Ok(InfoResult::Psx(crate::sony_disc::read_psx_info(path)?)),
         DetectedConsole::Psp => Ok(InfoResult::Psp(crate::sony_disc::read_psp_info(path)?)),
+        DetectedConsole::LaserDisc => Ok(InfoResult::LaserDisc(crate::laserdisc::info::read_info(
+            path,
+        )?)),
     }
 }
 
@@ -182,6 +187,7 @@ pub enum DetectedConsole {
     Ps3,
     Psx,
     Psp,
+    LaserDisc,
 }
 
 /// Detect which console family a path belongs to. Extension first, magic
@@ -212,6 +218,7 @@ pub fn detect_console(path: &Path) -> Result<DetectedConsole> {
         Some("xiso") => return Ok(DetectedConsole::Xbox),
         Some("zar") => return Ok(DetectedConsole::Xenon),
         Some("cue") => return Ok(DetectedConsole::Psx),
+        Some("avi") => return Ok(DetectedConsole::LaserDisc),
         Some("iso") | Some("rvz") => return sniff_disc_magic(path),
         _ => {}
     }
@@ -352,6 +359,12 @@ mod tests {
     fn detect_chd_by_extension() {
         let r = detect_console(Path::new("/tmp/disc.chd")).unwrap();
         assert_eq!(r, DetectedConsole::Chd);
+    }
+
+    #[test]
+    fn detect_laserdisc_by_extension() {
+        let r = detect_console(Path::new("/tmp/capture.avi")).unwrap();
+        assert_eq!(r, DetectedConsole::LaserDisc);
     }
 
     #[test]

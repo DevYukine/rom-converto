@@ -378,10 +378,10 @@ registerOp("compress", {
 		command: "cmd_chd_compress",
 		resultKind: "convert",
 		title: "Compress to CHD",
-		subtitle: "Output matches chdman createcd/createdvd.",
-		dropText: "Drop .cue+.bin pairs, .iso files or folders",
-		acceptedExts: ["cue", "iso", ...ARCHIVE_EXTS],
-		browseFilters: [{ name: "Disc image", extensions: ["cue", "iso", ...ARCHIVE_EXTS] }],
+		subtitle: "Output matches chdman createcd/createdvd/createld.",
+		dropText: "Drop .cue+.bin pairs, .iso or .avi files or folders",
+		acceptedExts: ["cue", "iso", "avi", ...ARCHIVE_EXTS],
+		browseFilters: [{ name: "Disc image", extensions: ["cue", "iso", "avi", ...ARCHIVE_EXTS] }],
 		browseAlsoDirectory: true,
 		defaultOutputDir: "~/roms/chd",
 		fields: [
@@ -393,18 +393,20 @@ registerOp("compress", {
 					{ label: "Auto", value: "auto" },
 					{ label: "CD", value: "cd" },
 					{ label: "DVD", value: "dvd" },
+					{ label: "LD", value: "ld" },
 				],
-				hint: "Auto probes CD vs DVD from the image. Override only when detection is wrong.",
+				hint: "Auto probes CD vs DVD from the image, or picks LD for .avi input. Override only when detection is wrong.",
 				tooltip:
-					"CD mode writes CD-style CHDs (PS1, PS2 CD) with a single MODE1/2048 track. DVD mode writes DVD-style CHDs (PS2 DVD, PSP).",
+					"CD mode writes CD-style CHDs (PS1, PS2 CD) with a single MODE1/2048 track. DVD mode writes DVD-style CHDs (PS2 DVD, PSP). LD mode writes a LaserDisc CHD from an .avi rip.",
 			},
 			{
 				kind: "number",
 				key: "hunkSize",
 				label: "Hunk size",
 				placeholder: "auto",
+				visible: (s) => s.mode !== "ld",
 				tooltip:
-					"DVD hunk size in bytes, a multiple of 2048. Defaults to 4096, or 2048 for detected PSP images since PPSSPP reads 2048-byte blocks.",
+					"DVD hunk size in bytes, a multiple of 2048. Defaults to 4096, or 2048 for detected PSP images since PPSSPP reads 2048-byte blocks. Not used in LD mode.",
 			},
 			{
 				kind: "multiselect",
@@ -413,7 +415,7 @@ registerOp("compress", {
 				options: CHD_CODEC_OPTIONS,
 				max: 4,
 				placeholder: CHD_CODEC_PLACEHOLDER,
-				visible: (s) => s.mode !== "dvd",
+				visible: (s) => s.mode !== "dvd" && s.mode !== "ld",
 				tooltip:
 					"Up to 4 compressor slots stored in the CHD header. Left empty, this defaults to cdlz, cdzl, cdfl. cdlz: CD-specific LZMA, best ratio. cdzl: CD-specific deflate, fast. cdzs: CD-specific zstd, good ratio and speed. cdfl: CD-specific FLAC, used for audio tracks. lzma: generic LZMA, best ratio but slow. zlib: generic deflate, fast. zstd: generic zstd, fast with a good ratio. huff: Huffman coding, very fast but a low ratio. flac: generic FLAC, for audio-like data.",
 			},
@@ -435,8 +437,9 @@ registerOp("compress", {
 				label: "Level",
 				placeholder: "auto",
 				hint: CHD_LEVEL_HINT,
+				visible: (s) => s.mode !== "ld",
 				tooltip:
-					"How hard each selected codec works to compress. Higher is smaller but slower, and only applies to the codecs chosen above.",
+					"How hard each selected codec works to compress. Higher is smaller but slower, and only applies to the codecs chosen above. Not used in LD mode.",
 			},
 			...recursiveFields(),
 		],

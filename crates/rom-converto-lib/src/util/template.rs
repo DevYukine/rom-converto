@@ -157,6 +157,9 @@ impl TemplateTokens {
                 tokens.console = Some("PSP".to_string());
                 tokens.serial = p.title_id.clone().and_then(non_empty);
             }
+            InfoResult::LaserDisc(_) => {
+                tokens.console = Some("LaserDisc".to_string());
+            }
         }
 
         tokens.title = tokens.title.and_then(|t| non_empty(t.trim().to_string()));

@@ -2959,6 +2959,7 @@ fn disc_mode(value: Option<&str>) -> Result<Option<DiscMode>> {
         None | Some("auto") => Ok(None),
         Some("cd") => Ok(Some(DiscMode::Cd)),
         Some("dvd") => Ok(Some(DiscMode::Dvd)),
+        Some("ld") => Ok(Some(DiscMode::Ld)),
         Some(other) => Err(invalid_arg(format!("invalid CHD mode {other:?}"))),
     }
 }
@@ -3077,6 +3078,11 @@ mod tests {
         assert_eq!(RunStatus::PartialFailure.as_i32(), 3);
         assert_eq!(RunStatus::Cancelled.as_i32(), 130);
         assert_eq!(RunStatus::InternalError.as_i32(), 255);
+    }
+
+    #[test]
+    fn disc_mode_parses_ld() {
+        assert_eq!(disc_mode(Some("ld")).unwrap(), Some(DiscMode::Ld));
     }
 
     #[tokio::test]

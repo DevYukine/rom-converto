@@ -111,6 +111,7 @@ pub fn print(result: &InfoResult, json: bool) -> Result<()> {
         InfoResult::Ps3(info) => render_ps3(info),
         InfoResult::Psx(info) => render_psx(info),
         InfoResult::Psp(info) => render_psp(info),
+        InfoResult::LaserDisc(info) => render_laserdisc(info),
     };
     print!("{}", rendered);
     Ok(())
@@ -177,6 +178,55 @@ fn render_chd(info: &rom_converto_lib::info::ChdInfo) -> String {
     let mut out = String::new();
     section(&mut out, "Container", &c);
     section(&mut out, "ROM", &disc_rom_table(info.content.as_ref()));
+
+    if let Some(ld) = &info.ld {
+        out.push_str("\nLaserDisc:\n");
+        let mut l = KeyValueTable::new();
+        l.push("FPS", ld.fps.clone());
+        l.push("Field size", format!("{}x{}", ld.width, ld.height));
+        l.push("Interlaced", if ld.interlaced { "yes" } else { "no" });
+        l.push(
+            "Audio",
+            format!("{} ch, {} Hz", ld.channels, ld.sample_rate),
+        );
+        l.push("Frames", format!("{}", ld.frame_count));
+        out.push_str(&l.render());
+
+        if let Some(vbi) = &ld.vbi {
+            use rom_converto_lib::chd::info::LdDiscType;
+            out.push_str("\nVBI:\n");
+            let mut v = KeyValueTable::new();
+            v.push(
+                "Disc type",
+                match vbi.disc_type {
+                    LdDiscType::Cav => "CAV",
+                    LdDiscType::Clv => "CLV",
+                    LdDiscType::Unknown => "unknown",
+                },
+            );
+            if let (Some(min), Some(max)) = (vbi.cav_picture_min, vbi.cav_picture_max) {
+                v.push("CAV picture range", format!("{}-{}", min, max));
+            }
+            if let (Some(start), Some(end)) = (&vbi.clv_start_time, &vbi.clv_end_time) {
+                v.push(
+                    "CLV time range",
+                    format!(
+                        "{}:{:02}-{}:{:02}",
+                        start.hours, start.minutes, end.hours, end.minutes
+                    ),
+                );
+            }
+            if let (Some(min), Some(max)) = (vbi.chapter_min, vbi.chapter_max) {
+                v.push("Chapters", format!("{}-{}", min, max));
+            }
+            v.push("White flags", format!("{}", vbi.white_flag_count));
+            v.push(
+                "Lead-in / lead-out",
+                format!("{} / {}", vbi.lead_in, vbi.lead_out),
+            );
+            out.push_str(&v.render());
+        }
+    }
 
     if !info.tracks.is_empty() {
         let mut inner = String::from("Tracks:\n");
@@ -1124,6 +1174,87 @@ fn render_psp(info: &rom_converto_lib::info::PspInfo) -> String {
     out
 }
 
+fn render_laserdisc(info: &rom_converto_lib::info::LdAviInfo) -> String {
+    use rom_converto_lib::laserdisc::info::LdDiscType;
+
+    let mut t = KeyValueTable::new();
+    t.push("Format", format!("LaserDisc AVI ({})", info.video_fourcc));
+    t.push(
+        "Video",
+        format!(
+            "{}x{} @ {:.3} fps, {} frames",
+            info.video_width, info.video_height, info.fps, info.frame_count
+        ),
+    );
+    t.push("Duration", format!("{:.1}s", info.duration_seconds));
+    t.push(
+        "Audio",
+        format!(
+            "{} ch, {} Hz, {}-bit, {} samples",
+            info.audio_channels, info.audio_rate, info.audio_bits, info.audio_sample_count
+        ),
+    );
+    t.push("Size", format!("{}", info.file_size_bytes));
+    let mut out = t.render();
+
+    out.push_str("\nCHD projection:\n");
+    let mut p = KeyValueTable::new();
+    p.push("Interlaced", if info.interlaced { "yes" } else { "no" });
+    p.push(
+        "Field size",
+        format!("{}x{}", info.video_width, info.field_height),
+    );
+    p.push("Fields", format!("{}", info.fields));
+    p.push(
+        "Max samples/field",
+        format!("{}", info.max_samples_per_field),
+    );
+    p.push("Hunk bytes", format!("{}", info.bytes_per_frame));
+    p.push("AVAV metadata", info.av_metadata.clone());
+    out.push_str(&p.render());
+
+    if let Some(vbi) = &info.vbi {
+        out.push_str("\nVBI:\n");
+        let mut v = KeyValueTable::new();
+        v.push("Fields scanned", format!("{}", vbi.fields_scanned));
+        v.push("White flags", format!("{}", vbi.white_flag_count));
+        v.push(
+            "Lead-in / lead-out",
+            format!("{} / {}", vbi.lead_in, vbi.lead_out),
+        );
+        v.push(
+            "Disc type",
+            match vbi.disc_type {
+                LdDiscType::Cav => "CAV",
+                LdDiscType::Clv => "CLV",
+                LdDiscType::Unknown => "unknown",
+            },
+        );
+        if let (Some(min), Some(max)) = (vbi.cav_picture_min, vbi.cav_picture_max) {
+            v.push("CAV picture range", format!("{}-{}", min, max));
+        }
+        if let (Some(start), Some(end)) = (&vbi.clv_start, &vbi.clv_end) {
+            v.push(
+                "CLV timecode range",
+                format!(
+                    "{:02}:{:02}-{:02}:{:02}",
+                    start.hours, start.minutes, end.hours, end.minutes
+                ),
+            );
+        }
+        if let (Some(min), Some(max)) = (vbi.chapter_min, vbi.chapter_max) {
+            v.push("Chapters", format!("{}-{}", min, max));
+        }
+        v.push(
+            "Fields without code",
+            format!("{}", vbi.fields_without_code),
+        );
+        out.push_str(&v.render());
+    }
+
+    out
+}
+
 fn render_xenon(info: &rom_converto_lib::info::ZarInfo) -> String {
     let mut c = KeyValueTable::new();
     c.push("Format", "Xbox 360 ZArchive");
@@ -1234,6 +1365,51 @@ mod tests {
         let out = render_chd(&info);
         assert!(has_field(&out, "Format", "CHD v5"));
         assert!(has_field(&out, "Physical bytes", "42"));
+    }
+
+    #[test]
+    fn render_chd_writes_laserdisc_block() {
+        use rom_converto_lib::chd::info::{ChdLdInfo, ChdLdVbiInfo, LdClvTime, LdDiscType};
+
+        let info = rom_converto_lib::info::ChdInfo {
+            version: 5,
+            ld: Some(ChdLdInfo {
+                fps: "59.940058".to_string(),
+                width: 720,
+                height: 240,
+                interlaced: true,
+                channels: 2,
+                sample_rate: 48000,
+                frame_count: 1000,
+                vbi: Some(ChdLdVbiInfo {
+                    disc_type: LdDiscType::Clv,
+                    white_flag_count: 12,
+                    clv_start_time: Some(LdClvTime {
+                        hours: 0,
+                        minutes: 5,
+                    }),
+                    clv_end_time: Some(LdClvTime {
+                        hours: 1,
+                        minutes: 10,
+                    }),
+                    chapter_min: Some(1),
+                    chapter_max: Some(9),
+                    lead_in: true,
+                    lead_out: false,
+                    ..Default::default()
+                }),
+            }),
+            ..Default::default()
+        };
+        let out = render_chd(&info);
+        assert!(out.contains("LaserDisc:"));
+        assert!(out.contains("59.940058"));
+        assert!(out.contains("720x240"));
+        assert!(out.contains("VBI:"));
+        assert!(out.contains("CLV"));
+        assert!(out.contains("0:05-1:10"));
+        assert!(out.contains("Chapters"));
+        assert!(out.contains("1-9"));
     }
 
     fn xiso_info(

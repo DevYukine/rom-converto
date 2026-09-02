@@ -8,7 +8,8 @@
 use crate::cd::{CD_HUNK_BYTES, FRAME_SIZE, IO_BUFFER_SIZE, SECTOR_SIZE};
 use crate::chd::error::{ChdError, ChdResult};
 use crate::chd::models::{
-    CHD_METADATA_TAG_CD, CHD_METADATA_TAG_DVD, ChdHeaderV5, ChdMetadataHeader, SHA1_BYTES,
+    CHD_METADATA_TAG_AV, CHD_METADATA_TAG_CD, CHD_METADATA_TAG_DVD, ChdHeaderV5, ChdMetadataHeader,
+    SHA1_BYTES,
 };
 use crate::chd::reader::cue_generator::{
     ChdTrackInfo, chd_type_datasize, generate_cue_sheet, parse_chd_track_metadata,
@@ -17,6 +18,7 @@ use crate::chd::writer::ChdWriter;
 use crate::chd::writer::metadata::MetadataHash;
 use crate::cue::CueParser;
 use crate::cue::models::{CueFile, CueSheet, FileType, Index, Msf, Track, TrackType};
+use crate::laserdisc::avi::AviFile;
 use crate::util::hash::{FileDigests, HashAlgo, MultiHasher};
 use crate::util::iso9660::{DiscKind, detect_disc_kind};
 use crate::util::{
@@ -87,6 +89,8 @@ fn validate_chd_options(opts: &ChdOptions, dvd: bool) -> ChdResult<()> {
 pub enum DiscMode {
     Cd,
     Dvd,
+    /// Laserdisc A/V CHD (`chdman createld`), written from a `.avi` rip.
+    Ld,
 }
 
 /// Remove the scratch file and report the cancellation; used as the
@@ -134,6 +138,22 @@ pub async fn convert_disc_to_chd_cancellable(
     opts: ChdOptions,
     cancel: CancelToken,
 ) -> ChdResult<()> {
+    let is_avi = input_path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("avi"));
+    match mode {
+        Some(DiscMode::Ld) if !is_avi => return Err(ChdError::LdModeNeedsAvi),
+        Some(m @ (DiscMode::Cd | DiscMode::Dvd)) if is_avi => {
+            return Err(ChdError::AviNeedsLdMode(m));
+        }
+        _ => {}
+    }
+    if is_avi {
+        info!("LaserDisc AVI detected, writing LD CHD (createld)");
+        return convert_avi_to_chd_cancellable(progress, input_path, output_path, opts, cancel)
+            .await;
+    }
+
     let is_cue = input_path
         .extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("cue"));
@@ -148,6 +168,7 @@ pub async fn convert_disc_to_chd_cancellable(
         (Some(DiscMode::Dvd), false) => {
             convert_iso_to_chd(progress, input_path, output_path, opts, cancel).await
         }
+        (Some(DiscMode::Ld), _) => unreachable!("Ld handled above"),
         (None, false) => {
             let detect_path = input_path.clone();
             let kind =
@@ -181,10 +202,10 @@ pub async fn convert_disc_to_chd_cancellable(
     }
 }
 
-/// Compress every `.cue` and `.iso` under `input_dir`, descending into
-/// subdirectories up to `max_depth` (`None` for unlimited). Outputs land
-/// next to their inputs with the extension replaced by `.chd`, or mirror
-/// the source tree under `output_dir` when one is given.
+/// Compress every `.cue`, `.iso`, and `.avi` under `input_dir`, descending
+/// into subdirectories up to `max_depth` (`None` for unlimited). Outputs
+/// land next to their inputs with the extension replaced by `.chd`, or
+/// mirror the source tree under `output_dir` when one is given.
 pub async fn convert_disc_to_chd_batch(
     progress: &dyn ProgressReporter,
     total_progress: &dyn ProgressReporter,
@@ -193,9 +214,13 @@ pub async fn convert_disc_to_chd_batch(
     output_dir: Option<&std::path::Path>,
     max_depth: Option<usize>,
 ) -> ChdResult<()> {
-    let discs = crate::util::fs::collect_files_with_exts(input_dir, &["cue", "iso"], max_depth)?;
+    let discs =
+        crate::util::fs::collect_files_with_exts(input_dir, &["cue", "iso", "avi"], max_depth)?;
     if discs.is_empty() {
-        warn!("No .cue or .iso inputs found in {}", input_dir.display());
+        warn!(
+            "No .cue, .iso, or .avi inputs found in {}",
+            input_dir.display()
+        );
         return Ok(());
     }
 
@@ -439,6 +464,83 @@ pub async fn convert_iso_to_cd_chd(
 
     let chd_size = fs::metadata(&output_path).await?.len();
     let compression_ratio = (chd_size as f64 / iso_size as f64) * 100.0;
+    info!(
+        "Original: {:.2} MB, CHD: {:.2} MB ({:.1}% compression ratio)",
+        total_mb,
+        chd_size as f64 / BYTES_PER_MB,
+        compression_ratio
+    );
+    Ok(())
+}
+
+/// Compress a laserdisc `.avi` rip to an LD-mode CHD, the equivalent of
+/// `chdman createld`. The `avhu` codec, per-field hunk size, and field
+/// count are all derived from the AVI's own headers, so `opts.codecs`,
+/// `opts.level`, and `opts.hunk_size` must be unset.
+///
+/// # Errors
+/// Returns [`ChdError::LdRejectsOverride`] if `opts` sets a codec list,
+/// compression level, or hunk size.
+pub async fn convert_avi_to_chd_cancellable(
+    progress: &dyn ProgressReporter,
+    avi_path: PathBuf,
+    output_path: PathBuf,
+    opts: ChdOptions,
+    cancel: CancelToken,
+) -> ChdResult<()> {
+    if opts.codecs.is_some() {
+        return Err(ChdError::LdRejectsOverride { knob: "codecs" });
+    }
+    if opts.level.is_some() {
+        return Err(ChdError::LdRejectsOverride { knob: "level" });
+    }
+    if opts.hunk_size.is_some() {
+        return Err(ChdError::LdRejectsOverride { knob: "hunk-size" });
+    }
+    if fs::metadata(&output_path).await.is_ok() && !opts.force {
+        return Err(ChdError::ChdFileAlreadyExists);
+    }
+
+    let avi_size = fs::metadata(&avi_path).await?.len();
+    let total_mb = avi_size as f64 / BYTES_PER_MB;
+    progress.start(
+        avi_size,
+        &format!("Compressing to CHD (~{:.2} MB)", total_mb),
+    );
+
+    let write_path = scratch_output_path(&output_path)?;
+    let avi_owned = avi_path.clone();
+    let write_owned = write_path.to_path_buf();
+    let cancel_bg = cancel.clone();
+    let bytes_done = Arc::new(AtomicU64::new(0));
+    let bytes_done_bg = bytes_done.clone();
+
+    let handle = tokio::task::spawn_blocking(move || -> ChdResult<()> {
+        let mut avi = AviFile::open(&avi_owned)?;
+        let params = avi.ld_params()?;
+
+        let mut writer = ChdWriter::create_ld(&write_owned, &params)?;
+        writer.compress_all_hunks_ld(&mut avi, &params, &bytes_done_bg, &cancel_bg)?;
+        writer.finalize()?;
+        Ok(())
+    });
+
+    if let Err(err) = await_with_progress_cancel(
+        progress,
+        &bytes_done,
+        handle,
+        &cancel,
+        cancel_cleanup(&write_path),
+    )
+    .await
+    {
+        let _ = fs::remove_file(&write_path).await;
+        return Err(err);
+    }
+    crate::util::publish_temp(write_path, &output_path, true)?;
+
+    let chd_size = fs::metadata(&output_path).await?.len();
+    let compression_ratio = (chd_size as f64 / avi_size as f64) * 100.0;
     info!(
         "Original: {:.2} MB, CHD: {:.2} MB ({:.1}% compression ratio)",
         total_mb,
@@ -760,6 +862,9 @@ pub async fn extract_from_chd_cancellable(
     let (header, total_bin_bytes, is_dvd) =
         tokio::task::spawn_blocking(move || -> ChdResult<(ChdHeaderV5, u64, bool)> {
             let handle = crate::chd::reader::open_chd_sync(&input_for_peek)?;
+            if handle.metadata.iter().any(|m| m.tag == CHD_METADATA_TAG_AV) {
+                return Err(ChdError::LdExtractionUnsupported);
+            }
             if handle
                 .metadata
                 .iter()
@@ -907,6 +1012,9 @@ pub async fn extract_from_chd_cancellable(
 pub async fn is_dvd_mode_chd(path: PathBuf) -> ChdResult<bool> {
     tokio::task::spawn_blocking(move || -> ChdResult<bool> {
         let handle = crate::chd::reader::open_chd_sync(&path)?;
+        if handle.metadata.iter().any(|m| m.tag == CHD_METADATA_TAG_AV) {
+            return Err(ChdError::LdExtractionUnsupported);
+        }
         Ok(handle
             .metadata
             .iter()
@@ -2208,6 +2316,222 @@ mod tests {
             info_sha1s(&our_chd),
             "SHA1s must match chdman's output byte-for-byte"
         );
+    }
+
+    use crate::laserdisc::avi::test_fixtures::{
+        AviSpec, build_avi, pattern_frame, pattern_samples,
+    };
+
+    /// Small non-interlaced synthetic laserdisc AVI: fast to compress
+    /// while still exercising real avhuff encode/decode.
+    fn ld_avi() -> Vec<u8> {
+        let frames: Vec<Vec<u8>> = (0..2).map(|i| pattern_frame(64, 48, i as u8)).collect();
+        let samples = pattern_samples(4000, 1);
+        build_avi(&AviSpec {
+            width: 64,
+            height: 48,
+            timescale: 30000,
+            sampletime: 1001,
+            video_format: *b"YUY2",
+            frames: &frames,
+            channels: 1,
+            sample_rate: 48_000,
+            sample_bits: 16,
+            samples: &samples,
+            index: true,
+            block_align_override: None,
+            video_length_override: None,
+        })
+    }
+
+    fn has_av_tag(path: &std::path::Path) -> bool {
+        let handle = crate::chd::reader::open_chd_sync(path).unwrap();
+        handle.metadata.iter().any(|m| m.tag == CHD_METADATA_TAG_AV)
+    }
+
+    #[tokio::test]
+    async fn avi_auto_routes_to_ld_chd() {
+        let dir = tempfile::tempdir().unwrap();
+        let avi_path = dir.path().join("game.avi");
+        std::fs::write(&avi_path, ld_avi()).unwrap();
+        let chd_path = dir.path().join("game.chd");
+
+        convert_disc_to_chd(
+            &NoProgress,
+            avi_path,
+            chd_path.clone(),
+            None,
+            ChdOptions::default(),
+        )
+        .await
+        .unwrap();
+
+        let header = crate::chd::reader::open_chd_sync(&chd_path).unwrap().header;
+        assert_eq!(header.compressor_0, *b"avhu");
+        assert!(has_av_tag(&chd_path));
+    }
+
+    #[tokio::test]
+    async fn avi_with_compressed_video_errors_naming_the_fourcc() {
+        let dir = tempfile::tempdir().unwrap();
+        let avi_path = dir.path().join("game.avi");
+        let frames: Vec<Vec<u8>> = (0..2).map(|i| pattern_frame(64, 48, i as u8)).collect();
+        let samples = pattern_samples(4000, 1);
+        let data = build_avi(&AviSpec {
+            width: 64,
+            height: 48,
+            timescale: 30000,
+            sampletime: 1001,
+            video_format: *b"HFYU",
+            frames: &frames,
+            channels: 1,
+            sample_rate: 48_000,
+            sample_bits: 16,
+            samples: &samples,
+            index: true,
+            block_align_override: None,
+            video_length_override: None,
+        });
+        std::fs::write(&avi_path, data).unwrap();
+        let chd_path = dir.path().join("game.chd");
+
+        let err = convert_avi_to_chd_cancellable(
+            &NoProgress,
+            avi_path,
+            chd_path,
+            ChdOptions::default(),
+            CancelToken::new(),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("HFYU"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn ld_mode_on_iso_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let iso_path = dir.path().join("game.iso");
+        std::fs::write(&iso_path, mixed_iso(4)).unwrap();
+        let chd_path = dir.path().join("game.chd");
+
+        let err = convert_disc_to_chd(
+            &NoProgress,
+            iso_path,
+            chd_path,
+            Some(DiscMode::Ld),
+            ChdOptions::default(),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ChdError::LdModeNeedsAvi));
+    }
+
+    #[tokio::test]
+    async fn dvd_mode_on_avi_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let avi_path = dir.path().join("game.avi");
+        std::fs::write(&avi_path, ld_avi()).unwrap();
+        let chd_path = dir.path().join("game.chd");
+
+        let err = convert_disc_to_chd(
+            &NoProgress,
+            avi_path,
+            chd_path,
+            Some(DiscMode::Dvd),
+            ChdOptions::default(),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ChdError::AviNeedsLdMode(DiscMode::Dvd)));
+    }
+
+    #[tokio::test]
+    async fn ld_rejects_option_overrides() {
+        let dir = tempfile::tempdir().unwrap();
+        let avi_path = dir.path().join("game.avi");
+        std::fs::write(&avi_path, ld_avi()).unwrap();
+
+        for opts in [
+            ChdOptions {
+                codecs: Some(vec![ChdCodec::Zstd]),
+                ..Default::default()
+            },
+            ChdOptions {
+                level: Some(5),
+                ..Default::default()
+            },
+            ChdOptions {
+                hunk_size: Some(4096),
+                ..Default::default()
+            },
+        ] {
+            let chd_path = dir.path().join("game.chd");
+            let err = convert_disc_to_chd(&NoProgress, avi_path.clone(), chd_path, None, opts)
+                .await
+                .unwrap_err();
+            assert!(matches!(err, ChdError::LdRejectsOverride { .. }));
+        }
+    }
+
+    #[tokio::test]
+    async fn ld_chd_verify_passes_then_fails_after_corruption() {
+        let dir = tempfile::tempdir().unwrap();
+        let avi_path = dir.path().join("game.avi");
+        std::fs::write(&avi_path, ld_avi()).unwrap();
+        let chd_path = dir.path().join("game.chd");
+
+        convert_disc_to_chd(
+            &NoProgress,
+            avi_path,
+            chd_path.clone(),
+            None,
+            ChdOptions::default(),
+        )
+        .await
+        .unwrap();
+
+        verify_chd(&NoProgress, chd_path.clone(), None, false)
+            .await
+            .unwrap();
+
+        let mut chd = std::fs::read(&chd_path).unwrap();
+        let data_start = 124 + 17;
+        let mid = data_start + (chd.len() - data_start) / 2;
+        chd[mid] ^= 0xFF;
+        std::fs::write(&chd_path, &chd).unwrap();
+
+        assert!(
+            verify_chd(&NoProgress, chd_path, None, false)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn ld_chd_extraction_is_unsupported() {
+        let dir = tempfile::tempdir().unwrap();
+        let avi_path = dir.path().join("game.avi");
+        std::fs::write(&avi_path, ld_avi()).unwrap();
+        let chd_path = dir.path().join("game.chd");
+
+        convert_disc_to_chd(
+            &NoProgress,
+            avi_path,
+            chd_path.clone(),
+            None,
+            ChdOptions::default(),
+        )
+        .await
+        .unwrap();
+
+        let out = dir.path().join("restored");
+        let err = extract_from_chd(&NoProgress, chd_path.clone(), out, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ChdError::LdExtractionUnsupported));
+
+        let err = is_dvd_mode_chd(chd_path).await.unwrap_err();
+        assert!(matches!(err, ChdError::LdExtractionUnsupported));
     }
 }
 

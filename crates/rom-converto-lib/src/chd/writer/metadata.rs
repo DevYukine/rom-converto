@@ -1,9 +1,11 @@
 use crate::chd::error::ChdResult;
 use crate::chd::models::{
-    CHD_METADATA_FLAG_HASHED, CHD_METADATA_HEADER_BYTES, CHD_V5_HEADER_SIZE, ChdMetadataHeader,
-    SHA1_BYTES,
+    CHD_METADATA_FLAG_HASHED, CHD_METADATA_HEADER_BYTES, CHD_METADATA_RESERVED_BYTES,
+    CHD_METADATA_TAG_AV, CHD_METADATA_TAG_AV_LD, CHD_V5_HEADER_SIZE, ChdMetadataHeader, SHA1_BYTES,
 };
 use crate::cue::models::{CueSheet, TrackType};
+use crate::laserdisc::avi::LdParams;
+use crate::laserdisc::vbi::VBI_PACKED_BYTES;
 use binrw::BinWrite;
 use sha1::{Digest, Sha1};
 use std::io::Cursor;
@@ -119,9 +121,56 @@ pub fn generate_cd_metadata(cue_sheet: &CueSheet, total_frames: u32) -> ChdResul
         )));
     }
 
-    // Each entry's reserved field is the absolute file offset of the
-    // next entry (the metadata list starts right after the header);
-    // the last entry keeps zeros to terminate the chain.
+    chain_and_serialize(entries)
+}
+
+/// NTSC and PAL field heights. chdman emits the `AVLD` blob only for
+/// these two, so anything else is a plain A/V CHD.
+const LD_VBI_FIELD_HEIGHTS: [u32; 2] = [524 / 2, 624 / 2];
+
+/// Size of the `AVLD` VBI blob these parameters call for: one packed
+/// record per field at NTSC and PAL field heights, nothing otherwise.
+pub fn ld_vbi_bytes(params: &LdParams, vbi_frames: usize) -> usize {
+    if LD_VBI_FIELD_HEIGHTS.contains(&params.height) {
+        vbi_frames * VBI_PACKED_BYTES
+    } else {
+        0
+    }
+}
+
+/// `AVAV` A/V metadata, plus a reserved `AVLD` VBI blob of
+/// `vbi_frames` packed records when the field height is NTSC or PAL.
+///
+/// The blob is emitted zero-filled; the writer backfills it once every
+/// field has been parsed. That is safe because the `AVLD` entry is not
+/// hashed, so it never feeds the overall SHA-1.
+pub fn generate_ld_metadata(params: &LdParams, vbi_frames: usize) -> ChdResult<MetadataBlock> {
+    let mut av_data = params.av_metadata().into_bytes();
+    av_data.push(0);
+
+    let mut entries = vec![ChdMetadataHeader {
+        tag: CHD_METADATA_TAG_AV,
+        flags: CHD_METADATA_FLAG_HASHED,
+        reserved: [0; CHD_METADATA_RESERVED_BYTES],
+        data: av_data,
+    }];
+    let vbi_bytes = ld_vbi_bytes(params, vbi_frames);
+    if vbi_bytes > 0 {
+        entries.push(ChdMetadataHeader {
+            tag: CHD_METADATA_TAG_AV_LD,
+            flags: 0,
+            reserved: [0; CHD_METADATA_RESERVED_BYTES],
+            data: vec![0; vbi_bytes],
+        });
+    }
+
+    chain_and_serialize(entries)
+}
+
+/// Link the entries through their reserved `next` offsets (the metadata
+/// list starts right after the V5 header) and serialize them, hashing
+/// every entry that carries the checksum flag.
+fn chain_and_serialize(mut entries: Vec<ChdMetadataHeader>) -> ChdResult<MetadataBlock> {
     let mut offset = CHD_V5_HEADER_SIZE as u64;
     let count = entries.len();
     for (i, entry) in entries.iter_mut().enumerate() {

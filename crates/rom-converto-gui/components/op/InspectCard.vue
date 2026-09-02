@@ -42,6 +42,7 @@ const CONSOLE_LABEL: Record<InfoResult["kind"], string> = {
 	ps3: "PS3",
 	psx: "PLAYSTATION",
 	psp: "PSP",
+	laser_disc: "LASERDISC",
 };
 
 const view = computed(() => buildInspectView(props.info));
@@ -70,6 +71,8 @@ const sizeBytes = computed(() => {
 		case "psx":
 		case "psp":
 			return props.info.size_bytes;
+		case "laser_disc":
+			return props.info.file_size_bytes;
 		default:
 			return props.info.physical_bytes;
 	}
@@ -120,6 +123,8 @@ const title = computed(() => {
 			return info.volume_id || info.title_id || "PlayStation disc";
 		case "psp":
 			return info.title || info.title_id || "PSP disc";
+		case "laser_disc":
+			return "LaserDisc rip";
 	}
 });
 
@@ -150,6 +155,8 @@ const formatBadge = computed(() => {
 			return "DISC";
 		case "psp":
 			return "ISO";
+		case "laser_disc":
+			return "AVI";
 	}
 });
 
@@ -216,6 +223,9 @@ const metaLine = computed(() => {
 		case "psp":
 			if (info.firmware) parts.push(`fw ${info.firmware}`);
 			if (info.category) parts.push(info.category);
+			break;
+		case "laser_disc":
+			parts.push(`${info.video_width}x${info.video_height}`, `${info.fps.toFixed(2)} fps`);
 			break;
 	}
 	return parts.filter(Boolean).join(" · ");
@@ -330,7 +340,7 @@ async function copyValue(value: string) {
 
 const canCopyTitleId = computed(() => {
 	const info = props.info;
-	if (info.kind === "chd" || info.kind === "cso") return false;
+	if (info.kind === "chd" || info.kind === "cso" || info.kind === "laser_disc") return false;
 	if (info.kind === "xbox") return !!(info.xbe || info.xex);
 	if (info.kind === "xenon") return !!info.xex;
 	return true;

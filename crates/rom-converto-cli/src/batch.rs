@@ -1631,7 +1631,7 @@ pub async fn chd_compress(
     } = *run;
     use rom_converto_lib::chd::convert_disc_to_chd_cancellable;
 
-    let files = collect_or_warn(input_dir, &["cue", "iso"], max_depth)?;
+    let files = collect_or_warn(input_dir, &["cue", "iso", "avi"], max_depth)?;
     if files.is_empty() {
         return Ok(());
     }

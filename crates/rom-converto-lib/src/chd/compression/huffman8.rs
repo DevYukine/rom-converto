@@ -393,6 +393,22 @@ fn compute_tree_from_histo(
     assign_canonical_codes(nodes, numcodes, maxbits)
 }
 
+/// Build MAME-canonical huffman codes for `histo` over `numcodes`
+/// symbols capped at `maxbits`, returning `(code, length)` per symbol.
+/// Shared with the avhuff codec, whose contexts are 272 codes wide.
+pub(super) fn canonical_codes(
+    histo: &[u32],
+    numcodes: usize,
+    maxbits: u8,
+) -> ChdResult<Vec<(u32, u8)>> {
+    let mut nodes = vec![Node::default(); numcodes * 2];
+    compute_tree_from_histo(histo, numcodes, maxbits, &mut nodes)?;
+    Ok(nodes[..numcodes]
+        .iter()
+        .map(|node| (node.bits, node.numbits))
+        .collect())
+}
+
 /// Port of MAME `export_tree_huffman`: RLE-compress the main tree's code
 /// lengths, build a 24-code/6-bit huffman tree over the RLE tokens,
 /// then write the small-tree header followed by the huffman-coded RLE

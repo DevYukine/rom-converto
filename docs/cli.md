@@ -433,7 +433,7 @@ ROM with no secure area, and a ROM already in the requested state, are skipped r
 treated as an error. DSi-enhanced carts get their KEY1 secure area processed the same way;
 the DSi modcrypt region is left untouched.
 
-## chd (CD / DVD)
+## chd (CD / DVD / LaserDisc)
 
 ```
 rom-converto chd <SUBCOMMAND> <INPUT> [OUTPUT]
@@ -441,16 +441,16 @@ rom-converto chd <SUBCOMMAND> <INPUT> [OUTPUT]
 
 | Subcommand | Description |
 |---|---|
-| `compress <INPUT> [OUTPUT]` | Compress a `.cue` or `.iso` to `.chd`; CD vs DVD media is auto-detected |
-| `extract <INPUT> [OUTPUT]` | Extract a `.chd` back to `.bin` + `.cue` (CD) or `.iso` (DVD) |
+| `compress <INPUT> [OUTPUT]` | Compress a `.cue`, `.iso`, or `.avi` to `.chd`; CD, DVD, and LaserDisc media are auto-detected |
+| `extract <INPUT> [OUTPUT]` | Extract a `.chd` back to `.bin` + `.cue` (CD) or `.iso` (DVD); LaserDisc CHDs are not supported |
 | `verify <INPUT>` | Verify the SHA-1 integrity of a `.chd` |
 | `to-cso <INPUT> [OUTPUT]` | Extract a DVD-mode `.chd` straight to `.cso` (default) or `.zso`, through a temporary ISO |
 | `info <INPUT>` | Inspect CHD metadata. See [info](#info) |
 
 | Flag | Applies to | Description |
 |---|---|---|
-| `--dvd` / `--cd` | `compress` | Override the auto-detected mode (CD mode needs a cue sheet) |
-| `--hunk-size <BYTES>` | `compress` | DVD hunk size, a multiple of 2048; defaults to 4096, or 2048 for detected PSP images |
+| `--dvd` / `--cd` / `--ld` | `compress` | Override the auto-detected mode (CD mode needs a cue sheet, LD mode needs a `.avi`) |
+| `--hunk-size <BYTES>` | `compress` | DVD hunk size, a multiple of 2048; defaults to 4096, or 2048 for detected PSP images. Not accepted in LD mode |
 | `--zstd` | `compress` | Add zstd to the DVD codec set for a better ratio; some older players and cores do not support zstd-compressed CHD |
 | `--format <cso\|zso>` | `to-cso` | Output container: CSO for PSP/PPSSPP, ZSO for PS2 via Open PS2 Loader |
 | `--block-size <BYTES>` | `to-cso` | Block size, a power of two; defaults to 2048 (16384 for 2 GiB+ inputs) |
@@ -458,14 +458,27 @@ rom-converto chd <SUBCOMMAND> <INPUT> [OUTPUT]
 | `-p, --parent <PARENT>` | `extract`, `verify` | Specify a parent CHD for parent-child relationships |
 | `--fix` | `verify` | Correct SHA-1 values in the CHD header if mismatches are found |
 
-`compress` probes the CD/DVD media type from the image, so the createcd versus createdvd
-mixup cannot happen. Extract report rows carry zero byte sizes since extraction writes
-several files.
+`compress` probes the media type from the image: a `.cue` is CD mode, an `.iso` is CD or DVD
+mode depending on the detected console, and an `.avi` is LD mode, the `createld` equivalent.
+The createcd/createdvd mixup cannot happen. LD mode always writes an avhuff-compressed CHD and
+does not accept `--codecs`, `--level`, or `--hunk-size`, since the codec and per-field hunk
+size are fixed by the AVI. The input must be uncompressed 4:2:2 video (YUY2, UYVY, or VYUY)
+with 8- or 16-bit PCM audio; a compressed video codec such as HuffYUV is rejected, naming the
+codec found. Extract report rows carry zero byte sizes since extraction writes several files.
 
-`to-cso` only accepts a DVD-mode CHD (PS2 DVD, PSP UMD); a CD-mode CHD has no flat ISO for
-CSO/ZSO to hold, and is rejected up front. It extracts to a temporary ISO next to the output,
-runs the same CSO/ZSO writer `cso compress` uses, and always removes the temporary ISO
+`to-cso` only accepts a DVD-mode CHD (PS2 DVD, PSP UMD); a CD-mode or LD-mode CHD has no flat
+ISO for CSO/ZSO to hold, and is rejected up front. It extracts to a temporary ISO next to the
+output, runs the same CSO/ZSO writer `cso compress` uses, and always removes the temporary ISO
 afterward, whether the run succeeds, fails, or is cancelled.
+
+`extract` does not support LaserDisc CHDs yet; it errors out naming the limitation rather than
+writing a partial file.
+
+`info` on an LD-mode CHD prints an LD block (fps, field size, interlacing, audio, frame count)
+decoded from the `AVAV` metadata, plus a VBI summary (CAV picture numbers, CLV timecodes,
+chapters, white flags, lead-in/out) decoded from the `AVLD` metadata. Running `info` on a
+LaserDisc rip's `.avi` directly prints the same container and VBI report before compression;
+see [info](#info).
 
 Advisory warning: compressing a `.cue` whose data track carries the Dreamcast IP.BIN
 signature into a CD-mode CHD prints a warning, since some cores only boot Dreamcast from a
@@ -798,6 +811,11 @@ normalized title ID (for example `SLUS-20312`), volume ID, and version read from
 `SYSTEM.CNF`. PSP discs (`.iso`) report title, title ID, version, firmware, category, and
 the `ICON0.PNG` icon and `PIC1.PNG` background art read from `PARAM.SFO`. NFS and TGC are
 not supported.
+
+A LaserDisc rip's `.avi` reports its container header (video codec, resolution, fps,
+frame count, audio) and the CHD field geometry compression would project, and, when the
+video is uncompressed (YUY2/UYVY/VYUY), a VBI summary decoded from every field. A compressed
+AVI still gets container info, just no VBI summary.
 
 `chd info` and `cso info` also probe the disc a container holds: when it is a PS1, PS2, or
 PSP disc, its fields (icon and background art included, for a PSP disc) become the

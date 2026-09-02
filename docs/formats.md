@@ -47,6 +47,12 @@ collective phrase for all inputs is "ROMs and disc images".
 - **CHD** is MAME's compressed hunk format. CD-mode CHDs come from `.bin`+`.cue` pairs or
   MODE1/2048 ISOs; DVD-mode CHDs come from PS2-DVD and PSP ISOs. The CD/DVD media type is
   probed from the image.
+- **LaserDisc CHD** is an `AVAV`-tagged CHD built from a laserdisc rip's `.avi`, the `createld`
+  equivalent. Every hunk is one field of avhuff-compressed audio/video (the `AVAV` metadata
+  records fps, field size, interlacing, and audio channels/rate), and an `AVLD` metadata tag carries
+  the VBI data decoded from the source: CAV picture numbers or CLV timecodes, chapter marks,
+  white flags, and lead-in/out. The input must be uncompressed 4:2:2 video (YUY2, UYVY, or
+  VYUY) with 8- or 16-bit PCM audio; MAME reads the result.
 - **CSO / ZSO** compress a PSP or PS2 ISO block by block. CSO (CISO v1) targets PSP hardware
   with CFW and PPSSPP; ZSO (LZ4) targets PS2 hardware via Open PS2 Loader. Legacy `.dax` (PSP)
   containers are accepted as a decode-only input for `decompress`, `verify`, `to-chd`, and

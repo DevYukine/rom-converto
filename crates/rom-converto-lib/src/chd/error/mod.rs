@@ -1,5 +1,6 @@
 //! Error type for the CHD module.
 
+use crate::chd::DiscMode;
 use crate::chd::compression::ChdCodec;
 use crate::cue::error::CueError;
 use thiserror::Error;
@@ -133,6 +134,27 @@ pub enum ChdError {
     /// A compressed hunk is shorter than its header or length fields require.
     #[error("malformed compressed hunk: truncated or corrupt")]
     MalformedHunk,
+
+    /// Wraps an AVI parse failure from the laserdisc reader.
+    #[error("laserdisc AVI error: {0}")]
+    LdAviError(#[from] anyhow::Error),
+
+    /// `--mode ld` was given with a non-`.avi` input.
+    #[error("LD mode needs a .avi input")]
+    LdModeNeedsAvi,
+
+    /// `--mode cd`/`--mode dvd` was given with an `.avi` input.
+    #[error("{0:?} mode cannot be used with a .avi input; laserdisc AVIs need LD mode")]
+    AviNeedsLdMode(DiscMode),
+
+    /// LD mode does not accept a codec, level, or hunk-size override;
+    /// the `avhu` codec and per-field hunk size are fixed by the AVI.
+    #[error("LD mode does not support overriding {knob}")]
+    LdRejectsOverride { knob: &'static str },
+
+    /// Extracting a laserdisc (`AVAV`-tagged) CHD is not implemented.
+    #[error("LaserDisc CHDs cannot be extracted yet")]
+    LdExtractionUnsupported,
 }
 
 impl From<crate::util::worker_pool::PoolChannelClosed> for ChdError {

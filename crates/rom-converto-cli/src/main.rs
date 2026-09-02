@@ -576,6 +576,7 @@ fn chd_media_label(input: &Path) -> Option<String> {
         .map(|s| s.to_ascii_lowercase());
     match ext.as_deref() {
         Some("cue") => Some("CD".to_string()),
+        Some("avi") => Some("LaserDisc".to_string()),
         Some("iso") => rom_converto_lib::util::iso9660::detect_disc_kind(input)
             .ok()
             .map(|k| k.label().to_string()),
@@ -589,7 +590,7 @@ fn chd_media_label(input: &Path) -> Option<String> {
 fn resolved_dvd_mode(mode: Option<DiscMode>, input: &Path) -> bool {
     match mode {
         Some(DiscMode::Dvd) => true,
-        Some(DiscMode::Cd) => false,
+        Some(DiscMode::Cd) | Some(DiscMode::Ld) => false,
         None => chd_media_label(input).as_deref() == Some("DVD"),
     }
 }
@@ -3392,6 +3393,8 @@ async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()>
                     Some(DiscMode::Dvd)
                 } else if cmd.cd {
                     Some(DiscMode::Cd)
+                } else if cmd.ld {
+                    Some(DiscMode::Ld)
                 } else {
                     None
                 };
@@ -3415,7 +3418,7 @@ async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()>
                 } else {
                     ensure_input_exists(&cmd.input)?;
                     let resolved =
-                        rom_converto_lib::util::resolve_input(&cmd.input, &["iso", "cue"])?;
+                        rom_converto_lib::util::resolve_input(&cmd.input, &["iso", "cue", "avi"])?;
                     let input = resolved.path();
                     maybe_log_dvd_codec_tip(resolved_dvd_mode(mode, input), codecs_set);
                     let output = match cmd.output_flag.or(cmd.output) {
@@ -4378,7 +4381,10 @@ async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()>
                     InfoResult::Xenon(i) => save_xex_icon(i.xex.as_ref(), dir)?,
                     InfoResult::Psp(i) => save_psp_icon(i, dir)?,
                     InfoResult::Ps3(i) => save_ps3_icon(i, dir)?,
-                    InfoResult::Chd(_) | InfoResult::Cso(_) | InfoResult::Psx(_) => {
+                    InfoResult::Chd(_)
+                    | InfoResult::Cso(_)
+                    | InfoResult::Psx(_)
+                    | InfoResult::LaserDisc(_) => {
                         anyhow::bail!(
                             "--save-icon is not supported for this format: no embedded artwork"
                         );

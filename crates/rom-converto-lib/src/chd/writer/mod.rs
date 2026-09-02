@@ -14,17 +14,20 @@ use crate::chd::models::{
 };
 use crate::chd::writer::metadata::{
     MetadataBlock, MetadataHash, cd_frame_layout, generate_cd_metadata, generate_dvd_metadata,
+    generate_ld_metadata, ld_vbi_bytes,
 };
 use crate::chd::writer::worker::{
-    HunkCompressArgs, HunkWriteState, compress_hunks, compress_hunks_dvd,
-    make_chd_compress_workers, make_chd_dvd_compress_workers,
+    ChdLdCompressWorker, HunkCompressArgs, HunkWriteState, LdCompressArgs, compress_hunks,
+    compress_hunks_dvd, compress_hunks_ld, make_chd_compress_workers,
+    make_chd_dvd_compress_workers,
 };
 use crate::cue::models::CueSheet;
+use crate::laserdisc::avi::{AviFile, LdParams};
 use crate::util::CancelToken;
 use crate::util::worker_pool::{Pool, parallelism};
 use binrw::BinWrite;
 use sha1::{Digest, Sha1};
-use std::io::{BufReader, BufWriter, Cursor, Seek, SeekFrom, Write};
+use std::io::{BufReader, BufWriter, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
@@ -54,6 +57,12 @@ pub struct ChdWriter {
     /// Per-frame audio flags; empty for DVD-mode writers. Audio frames
     /// get their 16-bit sample bytes swapped on ingest to match chdman.
     cd_audio_frames: Vec<bool>,
+    /// Packed VBI records, one per field; empty unless this is a
+    /// laserdisc writer whose field height calls for an `AVLD` blob.
+    ld_vbi: Vec<u8>,
+    /// File offset of the reserved `AVLD` payload, backfilled with
+    /// [`Self::ld_vbi`] at finalize.
+    ld_vbi_offset: u64,
 }
 
 impl ChdWriter {
@@ -190,6 +199,8 @@ impl ChdWriter {
             metadata_hashes: metadata.hashes,
             cd_frame_data,
             cd_audio_frames,
+            ld_vbi: Vec::new(),
+            ld_vbi_offset: 0,
         })
     }
 
@@ -265,6 +276,92 @@ impl ChdWriter {
         result
     }
 
+    /// Laserdisc writer: one hunk per output field, `avhu`-compressed,
+    /// carrying the `AVAV` geometry string and, at NTSC/PAL field
+    /// heights, an `AVLD` blob reserved now and backfilled by
+    /// [`Self::finalize`] once every field's VBI has been parsed.
+    pub fn create_ld(output_path: impl AsRef<Path>, params: &LdParams) -> ChdResult<Self> {
+        let hunk_bytes = params.bytes_per_frame;
+        if hunk_bytes == 0 {
+            return Err(ChdError::InvalidHunkSize);
+        }
+
+        let file = std::fs::File::create(output_path)?;
+        let writer = BufWriter::with_capacity(IO_BUFFER_SIZE, file);
+
+        let codecs = vec![ChdCodec::AvHuff];
+        let slots = codec_header_slots(&codecs);
+        let header = ChdHeaderV5 {
+            length: CHD_V5_HEADER_SIZE,
+            version: ChdVersion::V5,
+            compressor_0: slots[0],
+            compressor_1: slots[1],
+            compressor_2: slots[2],
+            compressor_3: slots[3],
+            logical_bytes: u64::from(params.frame_count) * u64::from(hunk_bytes),
+            map_offset: 0,
+            meta_offset: 0,
+            hunk_bytes,
+            unit_bytes: hunk_bytes,
+            raw_sha1: [0; SHA1_BYTES],
+            sha1: [0; SHA1_BYTES],
+            parent_sha1: [0; SHA1_BYTES],
+        };
+
+        let frames = params.frame_count as usize;
+        let vbi_bytes = ld_vbi_bytes(params, frames);
+        let metadata = generate_ld_metadata(params, frames)?;
+        // The reserved blob is the tail of the metadata block, which
+        // itself starts right after the V5 header.
+        let vbi_offset = CHD_V5_HEADER_SIZE as u64 + metadata.bytes.len() as u64 - vbi_bytes as u64;
+
+        let mut this = Self::init(
+            writer,
+            header,
+            codecs,
+            None,
+            metadata,
+            Vec::new(),
+            Vec::new(),
+        )?;
+        this.ld_vbi = vec![0; vbi_bytes];
+        this.ld_vbi_offset = vbi_offset;
+        Ok(this)
+    }
+
+    pub fn compress_all_hunks_ld<R: Read + Seek>(
+        &mut self,
+        avi: &mut AviFile<R>,
+        params: &LdParams,
+        bytes_done: &Arc<AtomicU64>,
+        cancel: &CancelToken,
+    ) -> ChdResult<()> {
+        let workers: Vec<ChdLdCompressWorker> =
+            (0..parallelism()).map(|_| ChdLdCompressWorker).collect();
+        let pool: Pool<worker::ChdCompressWork, worker::ChdCompressedOut, ChdError> =
+            Pool::spawn(workers);
+
+        let result = compress_hunks_ld(
+            &pool,
+            HunkWriteState {
+                writer: &mut self.writer,
+                writer_pos: &mut self.writer_pos,
+                map_entries: &mut self.map_entries,
+            },
+            LdCompressArgs {
+                avi,
+                params,
+                raw_sha1: &mut self.raw_sha1,
+                vbi: &mut self.ld_vbi,
+                bytes_done,
+                cancel,
+            },
+        );
+
+        pool.shutdown();
+        result
+    }
+
     pub fn finalize(mut self) -> ChdResult<u64> {
         // Append the compressed map table right after the last
         // hunk. The map offset goes into the header on the final
@@ -286,6 +383,13 @@ impl ChdWriter {
         self.header.meta_offset = meta_offset;
         self.header.raw_sha1 = raw_sha1;
         self.header.sha1 = compute_overall_sha1(raw_sha1, &self.metadata_hashes);
+
+        // The AVLD blob is unhashed reserved space, so filling it in
+        // after both SHA-1s are settled cannot disturb them.
+        if !self.ld_vbi.is_empty() {
+            self.writer.seek(SeekFrom::Start(self.ld_vbi_offset))?;
+            self.writer.write_all(&self.ld_vbi)?;
+        }
 
         // Seek back and rewrite the header with the finalized
         // offsets and hashes. `BufWriter::seek` flushes the
@@ -309,15 +413,26 @@ mod tests {
     use super::*;
     use crate::chd::compression::default_dvd_codecs;
     use crate::chd::compression::dvd::DvdDecoderSet;
-    use crate::chd::map::{COMPRESSION_NONE, decompress_v5_map};
+    use crate::chd::map::{COMPRESSION_NONE, COMPRESSION_SELF, decompress_v5_map};
     use crate::chd::models::{CHD_METADATA_TAG_DVD, DVD_SECTOR_SIZE};
+    use crate::chd::reader::worker::resolve_entry;
+    use crate::chd::verify_chd;
     use crate::util::NoProgress;
     use crate::util::iso9660::test_fixtures::{IsoSpec, make_iso};
     use binrw::BinRead;
     use std::io::Cursor as IoCursor;
     use std::sync::atomic::Ordering;
 
+    use crate::chd::compression::avhuff;
+    use crate::chd::models::{
+        CHD_METADATA_FLAG_HASHED, CHD_METADATA_TAG_AV, CHD_METADATA_TAG_AV_LD, ChdMetadataHeader,
+    };
     use crate::chd::test_fixtures::mixed_iso;
+    use crate::chd::writer::worker::ld_audio_window;
+    use crate::laserdisc::avi::test_fixtures::{
+        AviSpec, build_avi, pattern_frame, pattern_samples,
+    };
+    use crate::laserdisc::vbi::VBI_PACKED_BYTES;
 
     fn write_dvd_chd(iso: &[u8], hunk_size: u32, codecs: Vec<ChdCodec>) -> Vec<u8> {
         write_dvd_chd_leveled(iso, hunk_size, codecs, None)
@@ -348,17 +463,21 @@ mod tests {
         std::fs::read(&chd_path).unwrap()
     }
 
-    fn decode_hunks(chd: &[u8], header: &ChdHeaderV5) -> Vec<u8> {
-        let hunk_bytes = header.hunk_bytes as usize;
-        let hunk_count = header.logical_bytes.div_ceil(hunk_bytes as u64) as u32;
+    fn read_map(chd: &[u8], header: &ChdHeaderV5) -> Vec<MapEntry> {
+        let hunk_count = header.logical_bytes.div_ceil(header.hunk_bytes as u64) as u32;
         let map_size = ((chd.len() as u64 - header.map_offset).min(u32::MAX as u64)) as usize;
-        let map = decompress_v5_map(
+        decompress_v5_map(
             &chd[header.map_offset as usize..header.map_offset as usize + map_size],
             hunk_count,
             header.hunk_bytes,
             header.unit_bytes,
         )
-        .unwrap();
+        .unwrap()
+    }
+
+    fn decode_hunks(chd: &[u8], header: &ChdHeaderV5) -> Vec<u8> {
+        let hunk_bytes = header.hunk_bytes as usize;
+        let map = read_map(chd, header);
 
         let compressors = [
             header.compressor_0,
@@ -368,7 +487,8 @@ mod tests {
         ];
         let mut decoder = DvdDecoderSet::new(compressors, hunk_bytes).unwrap();
         let mut out = Vec::new();
-        for entry in &map {
+        for hunk_index in 0..map.len() {
+            let entry = resolve_entry(&map, hunk_index as u32).unwrap();
             let stored = &chd[entry.offset as usize..entry.offset as usize + entry.length as usize];
             let hunk = match entry.compression {
                 slot @ 0..=3 => decoder.decompress(slot, stored, hunk_bytes).unwrap(),
@@ -554,5 +674,299 @@ mod tests {
         let header =
             ChdHeaderV5::read(&mut IoCursor::new(std::fs::read(&psp_out).unwrap())).unwrap();
         assert_eq!(header.hunk_bytes, crate::chd::DVD_HUNK_BYTES_PSP);
+    }
+
+    /// Synthetic laserdisc AVI: NTSC-rate YUY2 video plus 16-bit PCM.
+    fn ld_avi(width: u32, height: u32, frames: usize, channels: u16, samples: usize) -> Vec<u8> {
+        let video: Vec<Vec<u8>> = (0..frames)
+            .map(|i| pattern_frame(width, height, i as u8))
+            .collect();
+        let audio = pattern_samples(samples, channels as usize);
+        build_avi(&AviSpec {
+            width,
+            height,
+            timescale: 30000,
+            sampletime: 1001,
+            video_format: *b"YUY2",
+            frames: &video,
+            channels,
+            sample_rate: 48_000,
+            sample_bits: 16,
+            samples: &audio,
+            index: true,
+            block_align_override: None,
+            video_length_override: None,
+        })
+    }
+
+    fn ld_params_of(avi: &[u8]) -> LdParams {
+        AviFile::new(IoCursor::new(avi.to_vec()))
+            .unwrap()
+            .ld_params()
+            .unwrap()
+    }
+
+    fn write_ld_chd(avi_bytes: &[u8]) -> Vec<u8> {
+        let dir = tempfile::tempdir().unwrap();
+        write_ld_chd_at(avi_bytes, &dir.path().join("out.chd"))
+    }
+
+    fn write_ld_chd_at(avi_bytes: &[u8], chd_path: &Path) -> Vec<u8> {
+        let mut avi = AviFile::new(IoCursor::new(avi_bytes.to_vec())).unwrap();
+        let params = avi.ld_params().unwrap();
+
+        let mut writer = ChdWriter::create_ld(chd_path, &params).unwrap();
+        let bytes_done = Arc::new(AtomicU64::new(0));
+        writer
+            .compress_all_hunks_ld(&mut avi, &params, &bytes_done, &CancelToken::new())
+            .unwrap();
+        assert_eq!(
+            bytes_done.load(Ordering::Relaxed),
+            u64::from(params.frame_count) * u64::from(params.bytes_per_frame)
+        );
+        writer.finalize().unwrap();
+        std::fs::read(chd_path).unwrap()
+    }
+
+    /// Walk the metadata chain from the header's `meta_offset`.
+    fn read_metadata(chd: &[u8], header: &ChdHeaderV5) -> Vec<ChdMetadataHeader> {
+        let mut entries = Vec::new();
+        let mut pos = header.meta_offset;
+        loop {
+            let mut cursor = IoCursor::new(chd);
+            cursor.set_position(pos);
+            let entry = ChdMetadataHeader::read(&mut cursor).unwrap();
+            let next = u64::from_be_bytes(entry.reserved);
+            entries.push(entry);
+            if next == 0 {
+                break;
+            }
+            pos = next;
+        }
+        entries
+    }
+
+    /// Re-derive the raw hunk stream straight from the AVI: each output
+    /// field is the frame's rows from `n % interlace_factor`, plus that
+    /// field's audio window, zero-padded to the hunk size.
+    fn expected_ld_stream(avi_bytes: &[u8], params: &LdParams) -> Vec<u8> {
+        let mut avi = AviFile::new(IoCursor::new(avi_bytes.to_vec())).unwrap();
+        let factor = if params.interlaced { 2 } else { 1 };
+        let width = params.width as usize;
+        let height = params.height as usize;
+        let mut frame = vec![0u16; width * height * factor];
+        let mut out = Vec::new();
+
+        for effframe in 0..params.frame_count {
+            avi.read_video_frame(effframe / factor as u32, &mut frame)
+                .unwrap();
+            let first_row = effframe as usize % factor;
+            let mut field = Vec::with_capacity(width * height);
+            for row in 0..height {
+                let start = (first_row + row * factor) * width;
+                field.extend_from_slice(&frame[start..start + width]);
+            }
+
+            let (first_sample, samples) = ld_audio_window(params, effframe);
+            let audio: Vec<Vec<i16>> = (0..params.channels)
+                .map(|channel| {
+                    let mut buf = vec![0i16; samples as usize];
+                    avi.read_sound_samples(channel, first_sample, samples, &mut buf)
+                        .unwrap();
+                    buf
+                })
+                .collect();
+            let channels: Vec<&[i16]> = audio.iter().map(Vec::as_slice).collect();
+
+            let mut hunk = avhuff::assemble_raw_frame(
+                params.width as u16,
+                params.height as u16,
+                &field,
+                &channels,
+            )
+            .unwrap();
+            hunk.resize(params.bytes_per_frame as usize, 0);
+            out.extend_from_slice(&hunk);
+        }
+        out
+    }
+
+    #[test]
+    fn ld_chd_writes_chdman_shaped_file() {
+        let avi = ld_avi(48, 524, 3, 1, 6000);
+        let params = ld_params_of(&avi);
+        assert!(params.interlaced);
+        assert_eq!((params.height, params.frame_count), (262, 6));
+        assert_eq!(params.bytes_per_frame, 12 + 801 * 2 + 48 * 262 * 2);
+
+        let chd = write_ld_chd(&avi);
+        let header = ChdHeaderV5::read(&mut IoCursor::new(&chd)).unwrap();
+        assert_eq!(&header.compressor_0, b"avhu");
+        assert_eq!(
+            [
+                header.compressor_1,
+                header.compressor_2,
+                header.compressor_3
+            ],
+            [[0u8; 4]; 3]
+        );
+        assert_eq!(header.hunk_bytes, params.bytes_per_frame);
+        assert_eq!(header.unit_bytes, params.bytes_per_frame);
+        assert_eq!(
+            header.logical_bytes,
+            u64::from(params.frame_count) * u64::from(params.bytes_per_frame)
+        );
+        assert_eq!(header.meta_offset, CHD_V5_HEADER_SIZE as u64);
+
+        let entries = read_metadata(&chd, &header);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].tag, CHD_METADATA_TAG_AV);
+        assert_eq!(entries[0].flags, CHD_METADATA_FLAG_HASHED);
+        let mut expected_av = params.av_metadata().into_bytes();
+        expected_av.push(0);
+        assert_eq!(entries[0].data, expected_av);
+
+        assert_eq!(entries[1].tag, CHD_METADATA_TAG_AV_LD);
+        assert_eq!(entries[1].flags, 0);
+        assert_eq!(
+            entries[1].data.len(),
+            params.frame_count as usize * VBI_PACKED_BYTES
+        );
+        // Every record was backfilled: the leading u24be is the field index.
+        for field in 0..params.frame_count {
+            let record = &entries[1].data[field as usize * VBI_PACKED_BYTES..][..3];
+            assert_eq!(record, &field.to_be_bytes()[1..4]);
+        }
+
+        let raw = expected_ld_stream(&avi, &params);
+        let raw_sha1: [u8; SHA1_BYTES] = Sha1::digest(&raw).into();
+        assert_eq!(header.raw_sha1, raw_sha1);
+        let av_hash = MetadataHash {
+            tag: CHD_METADATA_TAG_AV,
+            sha1: Sha1::digest(&expected_av).into(),
+        };
+        assert_eq!(header.sha1, compute_overall_sha1(raw_sha1, &[av_hash]));
+
+        assert_eq!(decode_hunks(&chd, &header), raw);
+    }
+
+    #[test]
+    fn ld_chd_skips_avld_outside_ntsc_and_pal_heights() {
+        let avi = ld_avi(64, 48, 2, 1, 4000);
+        let params = ld_params_of(&avi);
+        assert!(!params.interlaced);
+        assert_eq!((params.height, params.frame_count), (48, 2));
+
+        let chd = write_ld_chd(&avi);
+        let header = ChdHeaderV5::read(&mut IoCursor::new(&chd)).unwrap();
+        let entries = read_metadata(&chd, &header);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].tag, CHD_METADATA_TAG_AV);
+        assert_eq!(
+            decode_hunks(&chd, &header),
+            expected_ld_stream(&avi, &params)
+        );
+    }
+
+    #[test]
+    fn ld_chd_emits_avld_for_progressive_ntsc_field_height() {
+        let avi = ld_avi(64, 262, 2, 1, 4000);
+        let params = ld_params_of(&avi);
+        assert!(!params.interlaced);
+        assert_eq!((params.height, params.frame_count), (262, 2));
+
+        let chd = write_ld_chd(&avi);
+        let header = ChdHeaderV5::read(&mut IoCursor::new(&chd)).unwrap();
+        let entries = read_metadata(&chd, &header);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[1].tag, CHD_METADATA_TAG_AV_LD);
+        assert_eq!(
+            entries[1].data.len(),
+            params.frame_count as usize * VBI_PACKED_BYTES
+        );
+    }
+
+    /// Progressive AVI whose fields all carry the same pixels and silence.
+    /// 30 fps against a 48000 Hz rate makes every audio window exactly
+    /// `48000 / 30` samples, so consecutive hunks come out byte-identical.
+    fn ld_avi_repeating(frames: usize) -> Vec<u8> {
+        let (width, height) = (48, 262);
+        let video: Vec<Vec<u8>> = (0..frames)
+            .map(|_| pattern_frame(width, height, 3))
+            .collect();
+        let samples = vec![0i16; 1600 * frames];
+        build_avi(&AviSpec {
+            width,
+            height,
+            timescale: 30,
+            sampletime: 1,
+            video_format: *b"YUY2",
+            frames: &video,
+            channels: 1,
+            sample_rate: 48_000,
+            sample_bits: 16,
+            samples: &samples,
+            index: true,
+            block_align_override: None,
+            video_length_override: None,
+        })
+    }
+
+    #[tokio::test]
+    async fn ld_chd_dedups_repeated_fields_into_self_entries() {
+        let avi = ld_avi_repeating(4);
+        let params = ld_params_of(&avi);
+        assert!(!params.interlaced);
+        assert_eq!(
+            (params.frame_count, params.max_samples_per_frame),
+            (4, 1600)
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let chd_path = dir.path().join("out.chd");
+        let chd = write_ld_chd_at(&avi, &chd_path);
+        let header = ChdHeaderV5::read(&mut IoCursor::new(&chd)).unwrap();
+
+        let map = read_map(&chd, &header);
+        assert_eq!(map.len(), 4);
+        assert_eq!(map[0].compression, 0);
+        for entry in &map[1..] {
+            assert_eq!(entry.compression, COMPRESSION_SELF);
+            assert_eq!(entry.offset, 0);
+            assert_eq!(entry.length, 0);
+        }
+
+        assert_eq!(
+            decode_hunks(&chd, &header),
+            expected_ld_stream(&avi, &params)
+        );
+        verify_chd(&NoProgress, chd_path, None, false)
+            .await
+            .unwrap();
+    }
+
+    #[test]
+    fn ld_audio_windows_tile_the_ceiling_formula() {
+        let avi = ld_avi(48, 524, 3, 1, 6000);
+        let params = ld_params_of(&avi);
+        let at = |field: u64| {
+            (u64::from(params.rate) * field * 1_000_000)
+                .div_ceil(u64::from(params.fps_times_1million))
+        };
+
+        let mut next = 0u64;
+        let mut total = 0u64;
+        for field in 0..params.frame_count {
+            let (first, samples) = ld_audio_window(&params, field);
+            assert_eq!(first, at(u64::from(field)));
+            assert_eq!(first, next);
+            assert!(
+                samples == params.max_samples_per_frame
+                    || samples + 1 == params.max_samples_per_frame
+            );
+            next = first + u64::from(samples);
+            total += u64::from(samples);
+        }
+        assert_eq!(total, at(u64::from(params.frame_count)));
     }
 }

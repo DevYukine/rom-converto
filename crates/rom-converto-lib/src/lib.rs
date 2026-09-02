@@ -24,6 +24,7 @@ pub mod cso;
 pub mod cue;
 pub mod dat;
 pub mod info;
+pub mod laserdisc;
 pub mod microsoft;
 pub mod nintendo;
 pub mod pipeline;

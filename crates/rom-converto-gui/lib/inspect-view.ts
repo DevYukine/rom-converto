@@ -1,5 +1,5 @@
 import { ageRatingDisplayName, contentTypeDisplayName, enumDisplayName, languageDisplayName } from "./display";
-import type { DiscContent, InfoResult, XboxInfo } from "~/types/info";
+import type { ChdLdInfo, DiscContent, InfoResult, LdClvTime, XboxInfo } from "~/types/info";
 
 export interface InspectField {
 	label: string;
@@ -89,6 +89,29 @@ const CTR_CONTENT_TYPES: Record<string, string> = {
 	"00040030": "System",
 };
 
+function ldClvTime(t: LdClvTime): string {
+	return `${t.hours}:${String(t.minutes).padStart(2, "0")}`;
+}
+
+function ldDiscTypeLabel(discType: "cav" | "clv" | "unknown"): string {
+	return discType === "unknown" ? "unknown" : discType.toUpperCase();
+}
+
+function ldVbiSummary(vbi: NonNullable<ChdLdInfo["vbi"]>): string {
+	const parts = [ldDiscTypeLabel(vbi.disc_type)];
+	if (vbi.cav_picture_min != null && vbi.cav_picture_max != null) {
+		parts.push(`pic ${vbi.cav_picture_min}-${vbi.cav_picture_max}`);
+	}
+	if (vbi.clv_start_time && vbi.clv_end_time) {
+		parts.push(`${ldClvTime(vbi.clv_start_time)}-${ldClvTime(vbi.clv_end_time)}`);
+	}
+	if (vbi.chapter_min != null && vbi.chapter_max != null) {
+		parts.push(`ch ${vbi.chapter_min}-${vbi.chapter_max}`);
+	}
+	parts.push(`${vbi.white_flag_count} white flags`);
+	return parts.join(" · ");
+}
+
 function discContentRom(content: DiscContent): InspectField[] {
 	const rom: InspectField[] = [];
 	if (content.kind === "psx") {
@@ -129,6 +152,14 @@ export function buildInspectView(info: InfoResult): InspectView {
 			add(container, "Hunk", `${formatBytes(info.hunk_bytes)} × ${info.hunk_count}`);
 			add(container, "Unit", formatBytes(info.unit_bytes));
 			if (info.dvd) add(container, "DVD", `${info.dvd.total_sectors} sectors · ${info.dvd.layer_class}`);
+			if (info.ld) {
+				add(container, "LD FPS", info.ld.fps);
+				add(container, "LD Field Size", `${info.ld.width}x${info.ld.height}`);
+				add(container, "LD Interlaced", info.ld.interlaced ? "yes" : "no");
+				add(container, "LD Audio", `${info.ld.channels} ch · ${info.ld.sample_rate} Hz`);
+				add(container, "LD Frames", info.ld.frame_count);
+				if (info.ld.vbi) add(container, "LD VBI", ldVbiSummary(info.ld.vbi));
+			}
 			add(container, "Metadata", info.metadata_tags.map((t) => t.tag).join(", "));
 			if (info.content) rom = discContentRom(info.content);
 			innerTitle = "Tracks";
@@ -522,6 +553,35 @@ export function buildInspectView(info: InfoResult): InspectView {
 		case "psx":
 		case "psp": {
 			rom = discContentRom(info);
+			break;
+		}
+		case "laser_disc": {
+			add(container, "Format", `LaserDisc AVI (${info.video_fourcc})`);
+			add(container, "Resolution", `${info.video_width}x${info.video_height}`);
+			add(container, "FPS", info.fps.toFixed(3));
+			add(container, "Duration", `${info.duration_seconds.toFixed(1)}s`);
+			add(container, "Frame Count", info.frame_count);
+			add(container, "Audio", `${info.audio_channels} ch · ${info.audio_rate} Hz · ${info.audio_bits}-bit`);
+			add(container, "Size", formatBytes(info.file_size_bytes));
+			add(container, "Interlaced", info.interlaced ? "yes" : "no");
+			add(container, "Hunk Bytes", formatBytes(info.bytes_per_frame));
+			add(container, "Fields", info.fields);
+			if (info.vbi) {
+				const vbi = info.vbi;
+				add(container, "Disc Type", ldDiscTypeLabel(vbi.disc_type));
+				if (vbi.cav_picture_min != null && vbi.cav_picture_max != null) {
+					add(container, "Picture Range", `${vbi.cav_picture_min}-${vbi.cav_picture_max}`);
+				}
+				if (vbi.clv_start && vbi.clv_end) {
+					add(container, "Time Range", `${ldClvTime(vbi.clv_start)}-${ldClvTime(vbi.clv_end)}`);
+				}
+				if (vbi.chapter_min != null && vbi.chapter_max != null) {
+					add(container, "Chapters", `${vbi.chapter_min}-${vbi.chapter_max}`);
+				}
+				add(container, "White Flags", vbi.white_flag_count);
+				add(container, "Lead-in / Lead-out", `${vbi.lead_in ? "yes" : "no"} / ${vbi.lead_out ? "yes" : "no"}`);
+				add(container, "Fields Without Code", vbi.fields_without_code);
+			}
 			break;
 		}
 	}

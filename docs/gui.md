@@ -48,14 +48,20 @@ conversion job: the intermediate ISO is written to a temp path, converted, and r
 automatically, with one progress bar and one comparison card for the whole job rather than
 two separate runs.
 
+Compress to CHD accepts `.cue`, `.iso`, and `.avi` and auto-detects CD, DVD, or LD mode from
+the input, the same as the CLI; a mode picker lets you override it. Picking or auto-detecting
+LD mode hides the codec, level, and hunk-size fields, since LD-mode CHDs always use avhuff
+with a per-field hunk size fixed by the AVI.
+
 The Inspect page (reached from the sidebar's Inspect icon, not a per-console page) reads any
 supported file the same way the CLI's `rom-converto info` does. The card lays out Container,
 ROM, inner files, and hashes as a fixed grid, so each lands in the same spot regardless of
 console. A content-type chip next to the title colors Game, Update, DLC, and Demo
 differently, and multi-language fields such as titles, publishers, and age ratings show
 their resolved display name rather than a raw code. The icon and, for a PSP disc, its
-background art render above the grid; dropping a PS1 or PS2 image (`.iso`, `.cue`) or a PSP
-`.iso` shows its disc kind and normalized title ID. Inspecting a CHD or CSO/ZSO also shows
+background art render above the grid; dropping a laserdisc rip's `.avi` shows its
+container info and, for uncompressed video, a VBI summary. Dropping a PS1 or PS2 image
+(`.iso`, `.cue`) or a PSP `.iso` shows its disc kind and normalized title ID. Inspecting a CHD or CSO/ZSO also shows
 the PlayStation disc it contains, when one is detected, alongside the container's own info.
 The keys path (`prod.keys` for Switch, an optional disc master key for Wii U) is entered
 once on this page and persists across files and app restarts.

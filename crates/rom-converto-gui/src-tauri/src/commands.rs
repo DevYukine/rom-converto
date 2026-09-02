@@ -426,7 +426,7 @@ const CTR_CONVERT_EXTS: &[&str] = &["cia", "3ds", "cci"];
 const ALL_IMAGE_EXTS: &[&str] = &[
     "iso", "gcm", "wbfs", "rvz", "gcz", "wia", "nkit", "chd", "cso", "zso", "dax", "cue", "cia",
     "3ds", "cci", "cxi", "3dsx", "zcia", "zcci", "zcxi", "z3dsx", "nsp", "xci", "nca", "nsz",
-    "xcz", "ncz", "wud", "wux", "xiso", "zar",
+    "xcz", "ncz", "wud", "wux", "xiso", "zar", "avi",
 ];
 
 /// Resolve a read input, transparently extracting the first member matching
@@ -615,6 +615,7 @@ fn chd_media_label(input: &Path) -> Option<String> {
         .map(|s| s.to_ascii_lowercase());
     match ext.as_deref() {
         Some("cue") => Some("CD".to_string()),
+        Some("avi") => Some("LaserDisc".to_string()),
         Some("iso") => rom_converto_lib::util::iso9660::detect_disc_kind(input)
             .ok()
             .map(|k| k.label().to_string()),
@@ -1390,7 +1391,7 @@ pub async fn cmd_chd_compress(
     let key = task_id.as_deref().unwrap_or("chd-compress");
     let progress = Arc::new(TauriProgress::new(app, key));
     let dry_run = dry_run.unwrap_or(false);
-    let resolved = resolve_archive_input(input_path.clone(), &["iso", "cue"]).await?;
+    let resolved = resolve_archive_input(input_path.clone(), &["iso", "cue", "avi"]).await?;
     let basis = resolved.output_basis().to_path_buf();
     let desired = pick_output(
         output,
@@ -1450,6 +1451,7 @@ pub async fn cmd_chd_compress(
     let mode = match mode.as_deref() {
         Some("cd") => Some(DiscMode::Cd),
         Some("dvd") => Some(DiscMode::Dvd),
+        Some("ld") => Some(DiscMode::Ld),
         _ => None,
     };
     let opts = resolve_chd_opts(hunk_size, codecs, level)?;
@@ -5791,6 +5793,7 @@ fn extract_icon_png(info: &InfoResult) -> Option<Vec<u8>> {
         InfoResult::Ps3(p) => p.icon.as_ref().map(|i| i.png_bytes.clone()),
         InfoResult::Psx(_) => None,
         InfoResult::Psp(p) => p.icon.as_ref().map(|i| i.png_bytes.clone()),
+        InfoResult::LaserDisc(_) => None,
     }
 }
 

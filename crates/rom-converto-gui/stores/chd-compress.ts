@@ -12,7 +12,7 @@ export const useChdCompressStore = defineStore("chd-compress", () => {
   const reportFile = ref("");
   const codecs = ref<string[]>([]);
   const level = ref<number | null>(null);
-  const mode = ref<"auto" | "cd" | "dvd">("auto");
+  const mode = ref<"auto" | "cd" | "dvd" | "ld">("auto");
   const hunkSize = ref<number | null>(null);
   const verifyAfter = ref(false);
 

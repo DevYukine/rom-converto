@@ -33,11 +33,11 @@ pub enum ChdCommands {
 /// Compress a disc image to a CHD (Compressed Hunks of Data) file
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
-    long_about = "Compress a disc image to a CHD (Compressed Hunks of Data) file\n\nA .cue input (with its .bin) becomes a CD-mode CHD. An .iso is probed for its console family: CD-media images (PS1, PS2-CD) become CD-mode CHDs with a single MODE1/2048 track (the chdman createcd equivalent), DVD-media images (PS2-DVD, PSP) become DVD-mode CHDs (the createdvd equivalent). The mode is picked automatically so the createcd/createdvd mixup cannot happen. Default codecs match chdman (CD: cdlz,cdzl,cdfl; DVD: lzma,zlib,huff,flac) and every emulator reads them, including AetherSX2/NetherSX2; pick your own with --codecs.",
+    long_about = "Compress a disc image to a CHD (Compressed Hunks of Data) file\n\nA .cue input (with its .bin) becomes a CD-mode CHD. An .iso is probed for its console family: CD-media images (PS1, PS2-CD) become CD-mode CHDs with a single MODE1/2048 track (the chdman createcd equivalent), DVD-media images (PS2-DVD, PSP) become DVD-mode CHDs (the createdvd equivalent). An .avi input auto-detects LaserDisc mode (the chdman createld equivalent): avhuff-compressed audio/video with VBI metadata. The mode is picked automatically so the createcd/createdvd mixup cannot happen. Default codecs match chdman (CD: cdlz,cdzl,cdfl; DVD: lzma,zlib,huff,flac) and every emulator reads them, including AetherSX2/NetherSX2; pick your own with --codecs. LaserDisc CHDs always use avhuff and ignore --codecs, --level, and --hunk-size.",
     after_long_help = "EXAMPLES:\n  Single file:     rom-converto chd compress game.cue\n  Explicit output: rom-converto chd compress game.iso out.chd\n  Whole folder:    rom-converto chd compress -R ./roms --output-dir ./chd\n"
 )]
 pub struct CompressCommand {
-    /// Input image (.cue, or .iso with CD/DVD media auto-detected), or a directory with --recursive
+    /// Input image (.cue, .iso with CD/DVD media auto-detected, or .avi for LaserDisc), or a directory with --recursive
     #[arg(value_name = "INPUT")]
     pub input: PathBuf,
 
@@ -65,12 +65,16 @@ pub struct CompressCommand {
     pub output_template: Option<String>,
 
     /// Force DVD mode (.iso input only)
-    #[arg(long, conflicts_with = "cd")]
+    #[arg(long, conflicts_with_all = ["cd", "ld"])]
     pub dvd: bool,
 
     /// Force CD mode (a .cue, or a CD-media .iso)
-    #[arg(long, conflicts_with = "dvd")]
+    #[arg(long, conflicts_with_all = ["dvd", "ld"])]
     pub cd: bool,
+
+    /// Force LaserDisc mode (.avi input only)
+    #[arg(long, conflicts_with_all = ["cd", "dvd"])]
+    pub ld: bool,
 
     /// DVD hunk size in bytes, a multiple of 2048. Defaults to 4096, or 2048 for detected PSP images (PPSSPP reads 2048-byte blocks)
     #[arg(long, value_name = "BYTES")]
@@ -390,6 +394,27 @@ mod tests {
     #[test]
     fn rejects_cd_and_dvd_together() {
         let result = Harness::try_parse_from(["bin", "compress", "x.cue", "--cd", "--dvd"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parses_compress_ld_flag() {
+        let h = Harness::parse_from(["bin", "compress", "--ld", "game.avi"]);
+        let ChdCommands::Compress(c) = h.cmd else {
+            panic!("expected Compress");
+        };
+        assert!(c.ld && !c.cd && !c.dvd);
+    }
+
+    #[test]
+    fn rejects_ld_and_cd_together() {
+        let result = Harness::try_parse_from(["bin", "compress", "game.avi", "--ld", "--cd"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_ld_and_dvd_together() {
+        let result = Harness::try_parse_from(["bin", "compress", "game.avi", "--ld", "--dvd"]);
         assert!(result.is_err());
     }
 

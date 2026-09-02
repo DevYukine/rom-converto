@@ -20,6 +20,7 @@ use std::io::{Read, Write};
 const CD_SHORT_HUNK_LIMIT: usize = 0x1_0000;
 const CD_ECC_DIVISOR: usize = 8;
 
+pub mod avhuff;
 pub mod cdfl;
 pub mod dvd;
 pub mod flac;
@@ -50,6 +51,9 @@ pub enum ChdCodec {
     Cdzs,
     Cdlz,
     Cdfl,
+    /// A/V huffman: the laserdisc frame codec. Not user-selectable;
+    /// `createld` is the only producer.
+    AvHuff,
 }
 
 impl ChdCodec {
@@ -65,6 +69,7 @@ impl ChdCodec {
             ChdCodec::Cdzs => "cdzs",
             ChdCodec::Cdlz => "cdlz",
             ChdCodec::Cdfl => "cdfl",
+            ChdCodec::AvHuff => "avhu",
         })
     }
 
@@ -80,6 +85,7 @@ impl ChdCodec {
             b"cdzs" => Some(ChdCodec::Cdzs),
             b"cdlz" => Some(ChdCodec::Cdlz),
             b"cdfl" => Some(ChdCodec::Cdfl),
+            b"avhu" => Some(ChdCodec::AvHuff),
             _ => None,
         }
     }
@@ -150,7 +156,8 @@ pub fn parse_codec_list(s: &str) -> Result<Vec<ChdCodec>, ChdError> {
 }
 
 /// Validate a codec list for CHD header use: non-empty, at most the 4
-/// header compressor slots, no duplicates, and (for DVD-mode CHDs) no
+/// header compressor slots, no duplicates, no `avhu` (laserdisc-only,
+/// and chdman does not expose it either), and (for DVD-mode CHDs) no
 /// CD-only codec since DVD hunks are never CD frame-split.
 pub fn validate_codecs(codecs: &[ChdCodec], dvd: bool) -> Result<(), ChdError> {
     if codecs.is_empty() {
@@ -162,6 +169,9 @@ pub fn validate_codecs(codecs: &[ChdCodec], dvd: bool) -> Result<(), ChdError> {
     for (i, codec) in codecs.iter().enumerate() {
         if codecs[..i].contains(codec) {
             return Err(ChdError::DuplicateCodec(*codec));
+        }
+        if *codec == ChdCodec::AvHuff {
+            return Err(ChdError::UnknownCodecName(codec.to_string()));
         }
         if dvd && codec.is_cd_only() {
             return Err(ChdError::CdCodecOnDvd(*codec));
@@ -594,7 +604,9 @@ fn compress_raw_codec(
             huffman8_encode(hunk, &mut out).ok().map(|()| out)
         }
         ChdCodec::Flac => FlacCompressor.compress(hunk).ok(),
-        ChdCodec::Cdlz | ChdCodec::Cdzl | ChdCodec::Cdfl | ChdCodec::Cdzs => None,
+        ChdCodec::Cdlz | ChdCodec::Cdzl | ChdCodec::Cdfl | ChdCodec::Cdzs | ChdCodec::AvHuff => {
+            None
+        }
     }
 }
 
@@ -671,6 +683,7 @@ impl RawDecoders {
             ChdCodec::Zstd => Ok(self.zstd.decompress(data, output_len)?),
             ChdCodec::Huff => huffman8::huffman8_decode(data, output_len),
             ChdCodec::Flac => flac::flac_decompress_chd_raw(data, output_len),
+            ChdCodec::AvHuff => avhuff::decode(data, output_len),
             cd @ (ChdCodec::Cdlz | ChdCodec::Cdzl | ChdCodec::Cdfl | ChdCodec::Cdzs) => {
                 Err(ChdError::UnknownCompressionCodec(cd.tag()))
             }
@@ -1112,10 +1125,10 @@ mod tests {
 
     #[test]
     fn cd_decoder_rejects_unsupported_tag() {
-        let result = CdDecoderSet::new([*b"avhu", [0; 4], [0; 4], [0; 4]], 8 * FRAME_SIZE);
+        let result = CdDecoderSet::new([*b"zzzz", [0; 4], [0; 4], [0; 4]], 8 * FRAME_SIZE);
         assert!(matches!(
             result,
-            Err(ChdError::UnknownCompressionCodec(tag)) if &tag == b"avhu"
+            Err(ChdError::UnknownCompressionCodec(tag)) if &tag == b"zzzz"
         ));
     }
 }
