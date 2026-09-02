@@ -7,6 +7,7 @@ interface ProgressPayload {
   total: number;
   current: number;
   message: string;
+  fraction?: number;
 }
 
 // Concrete `Ref<T>` / `ComputedRef<T>` rather than

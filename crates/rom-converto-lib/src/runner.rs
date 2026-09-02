@@ -54,37 +54,80 @@ use models::{
     RunComparisonData, RunData, RunOptions, RunPlansData, RunRequest, RunResponse,
     RunSchemaManifest, RunStatus, WupTitleInputOption,
 };
+/// Tracks total/done across a `start()..inc()*` sequence to compute the
+/// cumulative completion fraction reported on each `Advance` event. `start()`
+/// resets the tally.
+#[derive(Default)]
+pub struct ProgressTally {
+    total: u64,
+    done: u64,
+}
+
+impl ProgressTally {
+    /// Resets the tally for a new run of `total` units.
+    pub fn start(&mut self, total: u64) {
+        self.total = total;
+        self.done = 0;
+    }
+
+    /// Records `delta` more units done and returns the cumulative fraction,
+    /// or `None` when the total is 0 or unknown.
+    pub fn advance(&mut self, delta: u64) -> Option<f64> {
+        self.done = self.done.saturating_add(delta);
+        (self.total > 0).then(|| (self.done as f64 / self.total as f64).min(1.0))
+    }
+}
+
 /// [`ProgressReporter`] that buffers events instead of emitting them live,
 /// for callers that read them back after the run completes.
 #[derive(Default)]
 pub struct RecordingProgress {
-    events: Mutex<Vec<ProgressEvent>>,
+    state: Mutex<RecordingProgressState>,
+}
+
+#[derive(Default)]
+struct RecordingProgressState {
+    events: Vec<ProgressEvent>,
+    tally: ProgressTally,
 }
 
 impl RecordingProgress {
     /// Drains and returns every event recorded so far.
     pub fn take_events(&self) -> Vec<ProgressEvent> {
-        std::mem::take(&mut *self.events.lock().expect("progress event mutex poisoned"))
+        std::mem::take(
+            &mut self
+                .state
+                .lock()
+                .expect("progress event mutex poisoned")
+                .events,
+        )
     }
 
     fn push(&self, event: ProgressEvent) {
-        self.events
+        self.state
             .lock()
             .expect("progress event mutex poisoned")
+            .events
             .push(event);
     }
 }
 
 impl ProgressReporter for RecordingProgress {
     fn start(&self, total: u64, msg: &str) {
-        self.push(ProgressEvent::Start {
+        let mut state = self.state.lock().expect("progress event mutex poisoned");
+        state.tally.start(total);
+        state.events.push(ProgressEvent::Start {
             total,
             message: msg.to_string(),
         });
     }
 
     fn inc(&self, delta: u64) {
-        self.push(ProgressEvent::Advance { delta });
+        let mut state = self.state.lock().expect("progress event mutex poisoned");
+        let fraction = state.tally.advance(delta);
+        state
+            .events
+            .push(ProgressEvent::Advance { delta, fraction });
     }
 
     fn finish(&self) {
@@ -3083,6 +3126,30 @@ mod tests {
     #[test]
     fn disc_mode_parses_ld() {
         assert_eq!(disc_mode(Some("ld")).unwrap(), Some(DiscMode::Ld));
+    }
+
+    #[test]
+    fn progress_tally_computes_cumulative_fraction() {
+        let mut tally = ProgressTally::default();
+        tally.start(100);
+        assert_eq!(tally.advance(25), Some(0.25));
+        assert_eq!(tally.advance(25), Some(0.5));
+    }
+
+    #[test]
+    fn progress_tally_with_zero_total_is_none() {
+        let mut tally = ProgressTally::default();
+        tally.start(0);
+        assert_eq!(tally.advance(1), None);
+    }
+
+    #[test]
+    fn progress_tally_start_resets() {
+        let mut tally = ProgressTally::default();
+        tally.start(100);
+        tally.advance(50);
+        tally.start(10);
+        assert_eq!(tally.advance(5), Some(0.5));
     }
 
     #[tokio::test]

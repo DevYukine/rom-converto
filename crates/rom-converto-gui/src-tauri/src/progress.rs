@@ -1,5 +1,7 @@
+use rom_converto_lib::runner::ProgressTally;
 use rom_converto_lib::util::ProgressReporter;
 use serde::Serialize;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tauri::{AppHandle, Emitter};
 
@@ -10,6 +12,8 @@ struct ProgressEvent {
     total: u64,
     current: u64,
     message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fraction: Option<f64>,
 }
 
 /// Bridges the library's `ProgressReporter` trait to Tauri events.
@@ -19,6 +23,7 @@ pub struct TauriProgress {
     app: AppHandle,
     task_id: String,
     current: AtomicU64,
+    tally: Mutex<ProgressTally>,
 }
 
 impl TauriProgress {
@@ -27,6 +32,7 @@ impl TauriProgress {
             app,
             task_id: task_id.into(),
             current: AtomicU64::new(0),
+            tally: Mutex::new(ProgressTally::default()),
         }
     }
 }
@@ -34,6 +40,10 @@ impl TauriProgress {
 impl ProgressReporter for TauriProgress {
     fn start(&self, total: u64, msg: &str) {
         self.current.store(0, Ordering::Relaxed);
+        self.tally
+            .lock()
+            .expect("progress tally mutex poisoned")
+            .start(total);
         let _ = self.app.emit(
             "progress",
             ProgressEvent {
@@ -42,12 +52,18 @@ impl ProgressReporter for TauriProgress {
                 total,
                 current: 0,
                 message: msg.to_string(),
+                fraction: None,
             },
         );
     }
 
     fn inc(&self, delta: u64) {
         let current = self.current.fetch_add(delta, Ordering::Relaxed) + delta;
+        let fraction = self
+            .tally
+            .lock()
+            .expect("progress tally mutex poisoned")
+            .advance(delta);
         let _ = self.app.emit(
             "progress",
             ProgressEvent {
@@ -56,6 +72,7 @@ impl ProgressReporter for TauriProgress {
                 total: 0,
                 current,
                 message: String::new(),
+                fraction,
             },
         );
     }
@@ -69,6 +86,7 @@ impl ProgressReporter for TauriProgress {
                 total: 0,
                 current: 0,
                 message: String::new(),
+                fraction: None,
             },
         );
     }
@@ -82,6 +100,7 @@ impl ProgressReporter for TauriProgress {
                 total: 0,
                 current: 0,
                 message: label.to_string(),
+                fraction: None,
             },
         );
     }
@@ -95,6 +114,7 @@ impl ProgressReporter for TauriProgress {
                 total: 0,
                 current: 0,
                 message: message.to_string(),
+                fraction: None,
             },
         );
     }

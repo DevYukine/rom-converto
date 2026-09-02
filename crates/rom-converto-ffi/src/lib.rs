@@ -1,5 +1,5 @@
 use rom_converto_lib::runner::models::{FfiVersionManifest, ProgressEvent, RunResponse, RunStatus};
-use rom_converto_lib::runner::run_json_with_progress;
+use rom_converto_lib::runner::{ProgressTally, run_json_with_progress};
 use rom_converto_lib::util::{CancelToken, ProgressReporter};
 use std::collections::HashMap;
 use std::ffi::{CStr, CString, c_char, c_void};
@@ -36,6 +36,7 @@ struct ProgressCallbackState {
 
 struct FfiProgress {
     callback: ProgressCallbackState,
+    tally: Mutex<ProgressTally>,
 }
 
 struct ActiveRun<'a> {
@@ -61,6 +62,7 @@ impl RomConvertoContext {
         let cancel = CancelToken::new();
         let progress = FfiProgress {
             callback: state.progress,
+            tally: Mutex::new(ProgressTally::default()),
         };
         state.active = true;
         state.cancel = Some(cancel.clone());
@@ -164,6 +166,10 @@ impl FfiProgress {
 
 impl ProgressReporter for FfiProgress {
     fn start(&self, total: u64, msg: &str) {
+        self.tally
+            .lock()
+            .expect("progress tally mutex poisoned")
+            .start(total);
         self.emit(ProgressEvent::Start {
             total,
             message: msg.to_string(),
@@ -171,7 +177,12 @@ impl ProgressReporter for FfiProgress {
     }
 
     fn inc(&self, delta: u64) {
-        self.emit(ProgressEvent::Advance { delta });
+        let fraction = self
+            .tally
+            .lock()
+            .expect("progress tally mutex poisoned")
+            .advance(delta);
+        self.emit(ProgressEvent::Advance { delta, fraction });
     }
 
     fn finish(&self) {

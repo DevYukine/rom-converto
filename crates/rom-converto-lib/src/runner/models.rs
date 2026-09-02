@@ -417,11 +417,24 @@ pub struct FixdatWrittenData {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProgressEvent {
-    Start { total: u64, message: String },
-    Advance { delta: u64 },
+    Start {
+        total: u64,
+        message: String,
+    },
+    Advance {
+        delta: u64,
+        /// Cumulative fraction done (0.0-1.0) since the preceding `Start`,
+        /// clamped to 1.0. `None` when the total was 0 or unknown.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        fraction: Option<f64>,
+    },
     Finish,
-    Phase { message: String },
-    Warn { message: String },
+    Phase {
+        message: String,
+    },
+    Warn {
+        message: String,
+    },
 }
 
 /// Deserialized JSON request: operation name, input/output paths, and
