@@ -11,7 +11,9 @@ function pct(job: QueueJob) {
 }
 function jobSpeed(job: QueueJob) {
 	const p = useProgress(job.taskId);
-	return p.running.value ? (p.current.value / 1e6).toFixed(0) : "0";
+	if (!p.running.value || !job.startedAt) return "0";
+	const secs = (Date.now() - job.startedAt) / 1000;
+	return secs > 0 ? (p.current.value / secs / 1e6).toFixed(1) : "0";
 }
 
 const dragId = ref<string | null>(null);
