@@ -1,3 +1,22 @@
+# [0.20.0](https://github.com/DevYukine/rom-converto/compare/v0.19.0...v0.20.0) (2026-09-02)
+
+
+### Bug Fixes
+
+* **gui:** compute queue drawer MB/s from elapsed time instead of bytes done ([fdc7d2b](https://github.com/DevYukine/rom-converto/commit/fdc7d2bef56cf2176ff276e82be9b10bac0d33e6))
+
+
+### Features
+
+* **info:** overhaul inspect view with uniform sections, inner files, icons, and encryption state ([41864bc](https://github.com/DevYukine/rom-converto/commit/41864bc1fbe1a1088865b66dbc83c350865136a7))
+
+
+### Performance Improvements
+
+* **chd:** disable flacenc per-call thread spawning in flac hunk trials ([fc5b111](https://github.com/DevYukine/rom-converto/commit/fc5b1113acb027f5391c82176393c534ab5239d5))
+
+
+
 # [0.19.0](https://github.com/DevYukine/rom-converto/compare/v0.18.0...v0.19.0) (2026-09-01)
 
 
@@ -84,34 +103,6 @@
 * **benchmark:** add rom-converto-benchmark crate ([0db037a](https://github.com/DevYukine/rom-converto/commit/0db037af7a21bfe2a2a93ea9322d379793298cbe))
 * **ci:** add linux arm64 gui builds ([7a6462f](https://github.com/DevYukine/rom-converto/commit/7a6462f8fbf3d447d089158bb3e10bfbe4f9c571))
 * **cue:** add cue to iso and cso/zso conversion ([da4f16f](https://github.com/DevYukine/rom-converto/commit/da4f16fa8333855b79eee8ff902e92f629f7fbc7))
-
-
-
-# [0.15.0](https://github.com/DevYukine/rom-converto/compare/v0.14.0...v0.15.0) (2026-07-07)
-
-
-### Bug Fixes
-
-* **gui:** keep DAT scan rows across navigation ([f095140](https://github.com/DevYukine/rom-converto/commit/f0951408e58976d8a88b0a2ecadb8ad2aeac1c70))
-
-
-### Features
-
-* accept zip, 7z, rar, and tar archive inputs transparently ([9363db3](https://github.com/DevYukine/rom-converto/commit/9363db35b69e902b15e90b5f2ae7e73f9a7fdd82))
-* **cli:** add overall batch progress bar with size and eta ([a4b2114](https://github.com/DevYukine/rom-converto/commit/a4b2114af8bd9babc573e7f3da905ec655e89f46))
-* **cli:** tiered checksum policy for dat verify and scan ([8e3f0e6](https://github.com/DevYukine/rom-converto/commit/8e3f0e6c916b16426209d120a81b278ae57de2db))
-* **ctr:** add encrypt command ([95f450a](https://github.com/DevYukine/rom-converto/commit/95f450a57a706e9a0dce220140dc674d6887e77a))
-* **dat:** show matched DAT file ([eec0881](https://github.com/DevYukine/rom-converto/commit/eec08813b277eb59202f74c7e4e7b8bb4efef220))
-* **gui:** add CTR encrypt page ([5027c0b](https://github.com/DevYukine/rom-converto/commit/5027c0b6c4ee19246dc1d73794c43197a043ac96))
-* **gui:** cancellable dat scan with live outcome rows ([77ceaa6](https://github.com/DevYukine/rom-converto/commit/77ceaa6c9e0ef1073029626172f5914a6e7ef050))
-* **gui:** managed batch queue with sections, reorder, retry ([0d7a6c2](https://github.com/DevYukine/rom-converto/commit/0d7a6c29eb4bdafb9428a60c3117823dc65f64fd))
-* **gui:** named presets backed by the config toml ([36af11a](https://github.com/DevYukine/rom-converto/commit/36af11ae1c2c100afaf0f89580702417252c9ed4))
-* **gui:** notify and taskbar progress on batch completion ([95ad1a4](https://github.com/DevYukine/rom-converto/commit/95ad1a4580bc524287381d21397501b597891155))
-* **gui:** show before/after comparison card after conversion ([472c126](https://github.com/DevYukine/rom-converto/commit/472c126932666a7ba774c9e41457ea22c210f491))
-* one-step cso/zso/dax to chd conversion and reverse ([41a57c6](https://github.com/DevYukine/rom-converto/commit/41a57c69a5f849061ab7b63e52cad5ef00a7cf86))
-* persistent content hash and verify cache ([1e903e2](https://github.com/DevYukine/rom-converto/commit/1e903e2089ffeb40d024baf87a172fcde5774710))
-* trust zip crc32 for quick dat verify ([37e8b9e](https://github.com/DevYukine/rom-converto/commit/37e8b9e397640065d024630908d66b743d59af4c))
-* warn on known format footguns ([4ccc311](https://github.com/DevYukine/rom-converto/commit/4ccc31181803727e3b9f98f812977d86d033adff))
 
 
 
