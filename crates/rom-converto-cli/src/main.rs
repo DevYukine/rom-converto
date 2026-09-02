@@ -10,6 +10,7 @@ use crate::commands::ctr::CtrCommands;
 use crate::commands::cue::CueCommands;
 use crate::commands::dat::DatCommands;
 use crate::commands::dol::DolCommands;
+use crate::commands::nds::NdsCommands;
 use crate::commands::nx::NxCommands;
 use crate::commands::playlist::PlaylistModeArg;
 use crate::commands::ps3::Ps3Commands;
@@ -64,6 +65,10 @@ use rom_converto_lib::nintendo::dol::verify::{DolVerifyOptions, verify_dol};
 use rom_converto_lib::nintendo::legacy_input::{
     ALL_MIGRATE_FORMATS, DOL_MIGRATE_FORMATS, LegacyFormat, MigrateOptions, detect_legacy_format,
     ensure_format_allowed, ensure_format_allowed_for, migrate_disc_batch, migrate_disc_cancellable,
+};
+use rom_converto_lib::nintendo::nds::{
+    NdsError, decrypt_nds_rom_cancellable, derive_decrypted_path as nds_derive_decrypted_path,
+    derive_encrypted_path as nds_derive_encrypted_path, encrypt_nds_rom_cancellable,
 };
 use rom_converto_lib::nintendo::nx::{
     NczMode, NxCompressOptions, compress_container_async_cancellable,
@@ -806,6 +811,7 @@ fn is_cancelled_error(err: &anyhow::Error) -> bool {
     use rom_converto_lib::microsoft::xenon::XenonError;
     use rom_converto_lib::nintendo::ctr::error::NintendoCTRError;
     use rom_converto_lib::nintendo::ctr::z3ds::error::Z3dsError;
+    use rom_converto_lib::nintendo::nds::NdsError;
     use rom_converto_lib::nintendo::nx::NxError;
     use rom_converto_lib::nintendo::rvz::RvzError;
     use rom_converto_lib::nintendo::wup::WupError;
@@ -835,6 +841,7 @@ fn is_cancelled_error(err: &anyhow::Error) -> bool {
                 Some(XenonError::Cancelled)
             )
             || matches!(cause.downcast_ref::<Ps3Error>(), Some(Ps3Error::Cancelled))
+            || matches!(cause.downcast_ref::<NdsError>(), Some(NdsError::Cancelled))
     })
 }
 
@@ -3137,6 +3144,234 @@ async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()>
                         }
                     }
                     print!("{}", table.render());
+                }
+            }
+        },
+        Commands::Nds(inner) => match inner {
+            NdsCommands::Encrypt(cmd) => {
+                let output_dir = cmd.output_dir.clone();
+                let report = cmd.report.clone();
+                if cmd.recursive {
+                    require_dir(&cmd.input)?;
+                    let policy = resolve_policy(
+                        cmd.on_conflict,
+                        cmd.force,
+                        rom_converto_lib::util::ConflictPolicy::Error,
+                    );
+                    let run = batch::BatchRun {
+                        progress: &progress,
+                        total_progress: &total_progress,
+                        input_dir: &cmd.input,
+                        policy,
+                        output_dir: output_dir.as_deref(),
+                        output_template: cmd.output_template.as_deref(),
+                        max_depth: cmd.max_depth,
+                        dry_run,
+                        skip_space_check,
+                        report_path: report.as_deref(),
+                        cancel: &cancel,
+                    };
+                    batch::nds_crypt(&run, true).await?
+                } else {
+                    ensure_input_exists(&cmd.input)?;
+                    let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["nds"])?;
+                    let input = resolved.path();
+                    let output = match cmd.output_flag.or(cmd.output) {
+                        Some(p) => p,
+                        None => {
+                            if !dry_run && let Some(dir) = output_dir.as_deref() {
+                                std::fs::create_dir_all(dir)?;
+                            }
+                            match cmd.output_template.as_deref() {
+                                Some(tmpl) => crate::util::templated_output(
+                                    tmpl,
+                                    input,
+                                    output_dir.as_deref(),
+                                    "nds",
+                                    None,
+                                    dry_run,
+                                )?,
+                                None => rom_converto_lib::util::place_in_dir(
+                                    &nds_derive_encrypted_path(resolved.output_basis()),
+                                    output_dir.as_deref(),
+                                ),
+                            }
+                        }
+                    };
+                    let policy = resolve_policy(
+                        cmd.on_conflict,
+                        cmd.force,
+                        rom_converto_lib::util::ConflictPolicy::Error,
+                    );
+                    let decision = resolve_output(&output, policy)?;
+                    if dry_run {
+                        return dry_run_single(
+                            "encrypt",
+                            &cmd.input,
+                            &output,
+                            &decision,
+                            None,
+                            None,
+                            report.as_deref(),
+                        );
+                    }
+                    let output = match decision {
+                        WriteDecision::Skip => {
+                            log_skipped(&output);
+                            return Ok(());
+                        }
+                        WriteDecision::Write(p) => p,
+                    };
+                    if !skip_space_check {
+                        let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
+                        batch::space_preflight_for_size(file_len(input), check_dir)?;
+                    }
+                    let in_path = input.to_path_buf();
+                    let out_path = output.clone();
+                    let started = Instant::now();
+                    match encrypt_nds_rom_cancellable(
+                        &progress,
+                        in_path,
+                        output,
+                        true,
+                        cancel.clone(),
+                    )
+                    .await
+                    {
+                        Ok(()) => {}
+                        Err(
+                            e @ (NdsError::AlreadyEncrypted
+                            | NdsError::AlreadyDecrypted
+                            | NdsError::NoSecureArea
+                            | NdsError::TooSmall),
+                        ) => {
+                            log::info!("Skipped, {e}: {}", cmd.input.display());
+                            skipped_single(&cmd.input, "encrypt", e, report.as_deref())?;
+                            return Ok(());
+                        }
+                        Err(e) => return Err(e.into()),
+                    }
+                    finish_single(
+                        &cmd.input,
+                        &out_path,
+                        TallyDirection::Convert,
+                        "encrypt",
+                        started,
+                        report.as_deref(),
+                    )?;
+                }
+            }
+            NdsCommands::Decrypt(cmd) => {
+                let output_dir = cmd.output_dir.clone();
+                let report = cmd.report.clone();
+                if cmd.recursive {
+                    require_dir(&cmd.input)?;
+                    let policy = resolve_policy(
+                        cmd.on_conflict,
+                        cmd.force,
+                        rom_converto_lib::util::ConflictPolicy::Error,
+                    );
+                    let run = batch::BatchRun {
+                        progress: &progress,
+                        total_progress: &total_progress,
+                        input_dir: &cmd.input,
+                        policy,
+                        output_dir: output_dir.as_deref(),
+                        output_template: cmd.output_template.as_deref(),
+                        max_depth: cmd.max_depth,
+                        dry_run,
+                        skip_space_check,
+                        report_path: report.as_deref(),
+                        cancel: &cancel,
+                    };
+                    batch::nds_crypt(&run, false).await?
+                } else {
+                    ensure_input_exists(&cmd.input)?;
+                    let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["nds"])?;
+                    let input = resolved.path();
+                    let output = match cmd.output_flag.or(cmd.output) {
+                        Some(p) => p,
+                        None => {
+                            if !dry_run && let Some(dir) = output_dir.as_deref() {
+                                std::fs::create_dir_all(dir)?;
+                            }
+                            match cmd.output_template.as_deref() {
+                                Some(tmpl) => crate::util::templated_output(
+                                    tmpl,
+                                    input,
+                                    output_dir.as_deref(),
+                                    "nds",
+                                    None,
+                                    dry_run,
+                                )?,
+                                None => rom_converto_lib::util::place_in_dir(
+                                    &nds_derive_decrypted_path(resolved.output_basis()),
+                                    output_dir.as_deref(),
+                                ),
+                            }
+                        }
+                    };
+                    let policy = resolve_policy(
+                        cmd.on_conflict,
+                        cmd.force,
+                        rom_converto_lib::util::ConflictPolicy::Error,
+                    );
+                    let decision = resolve_output(&output, policy)?;
+                    if dry_run {
+                        return dry_run_single(
+                            "decrypt",
+                            &cmd.input,
+                            &output,
+                            &decision,
+                            None,
+                            None,
+                            report.as_deref(),
+                        );
+                    }
+                    let output = match decision {
+                        WriteDecision::Skip => {
+                            log_skipped(&output);
+                            return Ok(());
+                        }
+                        WriteDecision::Write(p) => p,
+                    };
+                    if !skip_space_check {
+                        let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
+                        batch::space_preflight_for_size(file_len(input), check_dir)?;
+                    }
+                    let in_path = input.to_path_buf();
+                    let out_path = output.clone();
+                    let started = Instant::now();
+                    match decrypt_nds_rom_cancellable(
+                        &progress,
+                        in_path,
+                        output,
+                        true,
+                        cancel.clone(),
+                    )
+                    .await
+                    {
+                        Ok(()) => {}
+                        Err(
+                            e @ (NdsError::AlreadyEncrypted
+                            | NdsError::AlreadyDecrypted
+                            | NdsError::NoSecureArea
+                            | NdsError::TooSmall),
+                        ) => {
+                            log::info!("Skipped, {e}: {}", cmd.input.display());
+                            skipped_single(&cmd.input, "decrypt", e, report.as_deref())?;
+                            return Ok(());
+                        }
+                        Err(e) => return Err(e.into()),
+                    }
+                    finish_single(
+                        &cmd.input,
+                        &out_path,
+                        TallyDirection::Convert,
+                        "decrypt",
+                        started,
+                        report.as_deref(),
+                    )?;
                 }
             }
         },

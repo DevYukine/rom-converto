@@ -99,6 +99,17 @@ rom-converto binary. A missing tool stops the run with a message naming the tool
 install. Inputs can also come from the `ROMCONVERTO_BENCH_*` environment variables, and
 `rom-converto-benchmark all` runs every platform whose variables are set.
 
+## Embedded key tables
+
+`resources/` holds key material baked into the binary for end-of-life consoles.
+
+`nds_blowfish.bin` (4168 bytes) is the Nintendo DS cartridge KEY1 table. To regenerate it,
+take the `encr_data` array from devkitPro [ndstool](https://github.com/devkitPro/ndstool)
+`source/encryption.cpp` (blob `0de8f088b79a0e73bc31601f767ee674fa31badb`) and concatenate its
+byte literals in order. The result is byte-identical to the table SabreTools/NDecrypt
+validates against its embedded SHA-512, and hashes to
+`bedd20bd7f9cac742ad760e2448d4043e0d37121b67a1be3a6b8afbb8a34f08e` (SHA-256).
+
 ## Doc comments
 
 Every public function, method, associated function, struct, enum, trait, type alias, and

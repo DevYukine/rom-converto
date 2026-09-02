@@ -143,7 +143,8 @@ no tar container) is not supported; extract it first.
 
 ### Run reports
 
-Pass `--report <FILE>` to `compress`, `decompress`, `chd extract`, `ps3 decrypt`, `hash`, or
+Pass `--report <FILE>` to `compress`, `decompress`, `chd extract`, `ps3 decrypt`,
+`nds encrypt`/`decrypt`, `hash`, or
 the `dat verify`, `scan`, and `rename` commands to write a structured report after the run.
 The format is chosen from the file extension: `.csv` writes CSV, `.json` writes JSON,
 `.html` and `.htm` write a self-contained HTML table, and any other extension writes JSON.
@@ -210,8 +211,8 @@ rejected.
 `--output-template` conflicts with an explicit `OUTPUT` positional or `-o`/`--output`, and
 is command-line only (not read from the config file). `wup compress` does not accept it,
 because it packs many inputs into one `.wua`. CTR supports it for single-file runs; its
-recursive runs use the mirrored layout. `ps3 decrypt` also supports it, single-file runs
-only.
+recursive runs use the mirrored layout. `ps3 decrypt` and `nds encrypt`/`decrypt` also
+support it, single-file runs only.
 
 ### Cancellation
 
@@ -406,6 +407,31 @@ rom-converto nx <SUBCOMMAND> <INPUT> [-o OUTPUT]
 `prod.keys` is required to derive the per-NCA section keys; the file is read but never
 modified. Output is byte-identical to `nsz` and `nsz -D` at matching settings, and `verify`
 works on already-compressed containers without decompressing first.
+
+## nds (Nintendo DS)
+
+```
+rom-converto nds <SUBCOMMAND> <INPUT> [OUTPUT]
+```
+
+| Subcommand | Description |
+|---|---|
+| `encrypt <INPUT> [OUTPUT]` | Encrypt a decrypted Nintendo DS ROM's KEY1 secure area |
+| `decrypt <INPUT> [OUTPUT]` | Decrypt an encrypted Nintendo DS ROM's KEY1 secure area |
+
+| Flag | Applies to | Description |
+|---|---|---|
+| `--output-dir <DIR>` | `encrypt`, `decrypt` | Write outputs under this directory instead of beside each input |
+| `--output-template <TEMPLATE>` | `encrypt`, `decrypt` | Output path template for single-file runs. See [Output-path templates](#output-path-templates) |
+| `-R, --recursive` | `encrypt`, `decrypt` | Process every `.nds` found in `INPUT` and its subdirectories |
+| `--max-depth <N>` | `encrypt`, `decrypt` | Maximum directory depth under `--recursive`. 1 = top level only |
+| `--report <FILE>` | `encrypt`, `decrypt` | Write a run report. See [Run reports](#run-reports) |
+
+Both commands auto-detect whether the ROM's secure area is already in the requested state
+and rewrite only the first 0x800 bytes of the KEY1 secure area at offset 0x4000. A homebrew
+ROM with no secure area, and a ROM already in the requested state, are skipped rather than
+treated as an error. DSi-enhanced carts get their KEY1 secure area processed the same way;
+the DSi modcrypt region is left untouched.
 
 ## chd (CD / DVD)
 

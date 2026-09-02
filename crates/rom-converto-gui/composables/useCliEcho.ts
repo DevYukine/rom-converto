@@ -327,6 +327,10 @@ export function buildCliCommand(command: string, args: Record<string, unknown>, 
         outputArg(args),
       ]);
     }
+    case "cmd_nds_encrypt":
+      return join([args.dryRun === true && "--dry-run", args.skipSpaceCheck === true && "--skip-space-check", "nds", "encrypt", conflict(args), template(args), quote(str(args.input)), outputArg(args)]);
+    case "cmd_nds_decrypt":
+      return join([args.dryRun === true && "--dry-run", args.skipSpaceCheck === true && "--skip-space-check", "nds", "decrypt", conflict(args), template(args), quote(str(args.input)), outputArg(args)]);
     case "cmd_wup_verify": {
       const keys = str(args.keys);
       return join(["wup", "verify", keys && `--key ${quote(keys)}`, quote(str(args.input))]);

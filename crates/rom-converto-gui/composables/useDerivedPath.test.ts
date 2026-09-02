@@ -74,6 +74,11 @@ describe("plain image inputs keep extension replacement", () => {
     expect(deriveChdPath(`${DOTTED}.iso`)).toBe(`${DOTTED}.chd`);
     expect(deriveDecryptedPath(`${DOTTED}.cia`)).toBe(`${DOTTED}.decrypted.cia`);
   });
+
+  it("derives decrypted/encrypted nds paths", () => {
+    expect(deriveDecryptedPath("game.nds")).toBe("game.decrypted.nds");
+    expect(deriveEncryptedPath("game.nds")).toBe("game.encrypted.nds");
+  });
 });
 
 describe("merged cue derivation", () => {

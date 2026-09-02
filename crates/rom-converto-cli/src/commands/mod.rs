@@ -7,6 +7,7 @@ use crate::commands::dat::DatCommands;
 use crate::commands::dol::DolCommands;
 use crate::commands::hash::HashCommand;
 use crate::commands::info_command::InfoCommand;
+use crate::commands::nds::NdsCommands;
 use crate::commands::nx::NxCommands;
 use crate::commands::playlist::PlaylistCommand;
 use crate::commands::ps3::Ps3Commands;
@@ -27,6 +28,7 @@ pub mod dat;
 pub mod dol;
 pub mod hash;
 pub mod info_command;
+pub mod nds;
 pub mod nx;
 pub mod playlist;
 pub mod ps3;
@@ -42,7 +44,7 @@ pub mod xenon;
 	author,                   // pulls env!("CARGO_PKG_AUTHORS")
 	version = env!("ROM_CONVERTO_DISPLAY_VERSION"),
 	about,                    // doc-comment or Cargo.toml description
-	long_about = "Encrypt, decrypt, compress, convert, and verify ROMs and disc images\n\nEach top-level command is a console/format family (ctr, dol, rvl, wup, nx, chd, cso, cue, ps3, xbox, xenon); each has operations like compress, decompress, verify and info. Output is auto-derived from the input unless you pass an explicit OUTPUT, -o/--output, or --output-dir. Pass -R/--recursive to process every matching file in a directory.",
+	long_about = "Encrypt, decrypt, compress, convert, and verify ROMs and disc images\n\nEach top-level command is a console/format family (ctr, dol, rvl, wup, nx, chd, cso, cue, ps3, nds, xbox, xenon); each has operations like compress, decompress, verify and info. Output is auto-derived from the input unless you pass an explicit OUTPUT, -o/--output, or --output-dir. Pass -R/--recursive to process every matching file in a directory.",
 	help_template = "\
 {before-help}{name} {version}\n\
 {about-with-newline}\n\
@@ -121,6 +123,9 @@ pub enum Commands {
 
     #[command(subcommand)]
     Ps3(Ps3Commands),
+
+    #[command(subcommand)]
+    Nds(NdsCommands),
 
     #[command(subcommand)]
     Chd(ChdCommands),

@@ -31,7 +31,7 @@ const SUBTITLES: Record<string, string> = {
 	extract: "Decompress back to the raw format.",
 	verify: "Integrity checks. No files are written.",
 	decrypt: "Remove encryption for emulator use.",
-	encrypt: "Re-encrypts decrypted ROMs. Currently only 3DS supports this.",
+	encrypt: "Re-encrypts decrypted ROMs.",
 	convert: "Change container or format.",
 	dat: "Match against the Playmatch DAT database.",
 	tools: "Utilities that don't convert.",
@@ -72,8 +72,12 @@ const CONSOLES: Record<string, ConsoleRow[]> = {
 		{ id: "ctr", name: "3DS", hint: ".3ds .cci .cia" },
 		{ id: "wup", name: "Wii U", hint: "NUS titles" },
 		{ id: "ps3", name: "PlayStation 3", hint: "built-in keys" },
+		{ id: "nds", name: "Nintendo DS", hint: "KEY1 secure area" },
 	],
-	encrypt: [{ id: "ctr", name: "3DS", hint: ".3ds .cci .cia" }],
+	encrypt: [
+		{ id: "ctr", name: "3DS", hint: ".3ds .cci .cia" },
+		{ id: "nds", name: "Nintendo DS", hint: "KEY1 secure area" },
+	],
 	convert: [
 		{ id: "ctr", name: "3DS", hint: "CIA ↔ CCI" },
 		{ id: "cso", name: "PSP / PS2", hint: "ISO → CHD" },

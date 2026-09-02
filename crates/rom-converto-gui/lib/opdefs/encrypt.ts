@@ -1,5 +1,6 @@
 import { recursiveFields, registerOp, templateIsActive, type OpDef } from "./types";
 import { useCtrEncryptStore } from "~/stores/ctr-encrypt";
+import { useNdsEncryptStore } from "~/stores/nds-encrypt";
 import { deriveEncryptedPath, withOutputDir } from "~/composables/useDerivedPath";
 
 const ARCHIVE_EXTS = ["zip", "7z", "rar", "tar", "tgz", "gz"];
@@ -62,4 +63,51 @@ const ctr: OpDef = {
 	chips: () => "",
 };
 
-registerOp("encrypt", { ctr });
+const nds: OpDef = {
+	op: "encrypt",
+	console: "nds",
+	opLabel: "Encrypt",
+	storeId: "nds-encrypt",
+	useStore: useNdsEncryptStore,
+	command: "cmd_nds_encrypt",
+	resultKind: "convert",
+	title: "Encrypt Nintendo DS ROMs",
+	subtitle: "Restores standard encryption on decrypted dumps.",
+	dropText: "Drop decrypted .nds files or folders. Encryption state is detected automatically",
+	acceptedExts: ["nds", ...ARCHIVE_EXTS],
+	browseFilters: [{ name: "Nintendo DS", extensions: ["nds"] }],
+	fields: [...recursiveFields()],
+	note: "Only the KEY1 secure area is rewritten; homebrew ROMs without a secure area are skipped.",
+	outputRows: [
+		{
+			kind: "directory",
+			label: "Directory",
+			display: (s) => s.outputDir || "same as source",
+			set: (s, v) => { s.outputDir = v; },
+			tooltip: "Where the encrypted file is written. Leave empty to write it next to the source file.",
+		},
+		{
+			kind: "text",
+			label: "Filename",
+			display: () => "{name}.encrypted.{ext}",
+			tooltip: "The suffix keeps the output from colliding with the source, same as {name}.decrypted.{ext} for decryption.",
+		},
+	],
+	actionNote: "Already-encrypted files are skipped automatically and never queued.",
+	deriveOutput: deriveEncryptedPath,
+	buildArgs: (store, item, taskId) => {
+		const tmpl = templateIsActive(store);
+		return {
+			input: item.path,
+			output: tmpl ? null : withOutputDir(deriveEncryptedPath(item.path), store.outputDir || ""),
+			onConflict: store.onConflict,
+			skipSpaceCheck: store.skipSpaceCheck,
+			outputTemplate: store.outputTemplate || null,
+			dryRun: false,
+			taskId,
+		};
+	},
+	chips: () => "",
+};
+
+registerOp("encrypt", { ctr, nds });

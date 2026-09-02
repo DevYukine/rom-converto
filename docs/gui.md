@@ -28,6 +28,7 @@ the sidebar:
 
 | Family | Pages |
 |---|---|
+| Nintendo DS | Encrypt ROM, Decrypt ROM |
 | 3DS | CDN to CIA, Decrypt ROM, Compress to Z3DS, Decompress Z3DS, Verify 3DS ROM, Convert CIA/CCI, Generate ticket, 3DS info |
 | GameCube | Compress to RVZ, Decompress RVZ, Verify GameCube disc, GameCube info |
 | Wii | Compress to RVZ, Decompress RVZ, Verify Wii disc, Wii info |
@@ -66,6 +67,7 @@ CLI command to its GUI page.
 
 | CLI command | GUI page |
 |---|---|
+| `nds encrypt`, `decrypt` | Nintendo DS |
 | `chd compress`, `extract`, `to-cso`, `verify`, `info` | CHD |
 | `cso compress`, `decompress`, `to-chd`, `verify`, `info` | CSO/ZSO |
 | `ctr` (all operations) | 3DS |

@@ -193,6 +193,8 @@ export const NESTED_ARGS_COMMANDS = new Set([
 	"cmd_xenon_compress",
 	"cmd_xenon_extract",
 	"cmd_ps3_decrypt",
+	"cmd_nds_encrypt",
+	"cmd_nds_decrypt",
 ]);
 
 export function invokeArgs(

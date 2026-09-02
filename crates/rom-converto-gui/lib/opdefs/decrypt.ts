@@ -2,6 +2,7 @@ import { recursiveFields, registerOp, templateIsActive, type OpDef } from "./typ
 import { useCtrDecryptStore } from "~/stores/ctr-decrypt";
 import { useWupDecryptStore } from "~/stores/wup-decrypt";
 import { usePs3DecryptStore } from "~/stores/ps3-decrypt";
+import { useNdsDecryptStore } from "~/stores/nds-decrypt";
 import { basename, deriveDecryptedPath, withOutputDir } from "~/composables/useDerivedPath";
 
 const ARCHIVE_EXTS = ["zip", "7z", "rar", "tar", "tgz", "gz"];
@@ -203,4 +204,51 @@ const ps3: OpDef = {
 	chips: (store) => (store.key ? "key set" : "no key"),
 };
 
-registerOp("decrypt", { ctr, wup, ps3 });
+const nds: OpDef = {
+	op: "decrypt",
+	console: "nds",
+	opLabel: "Decrypt",
+	storeId: "nds-decrypt",
+	useStore: useNdsDecryptStore,
+	command: "cmd_nds_decrypt",
+	resultKind: "convert",
+	title: "Decrypt Nintendo DS ROMs",
+	subtitle: "Removes encryption for emulator use.",
+	dropText: "Drop encrypted .nds files or folders. Encryption state is detected automatically",
+	acceptedExts: ["nds", ...ARCHIVE_EXTS],
+	browseFilters: [{ name: "Nintendo DS", extensions: ["nds"] }],
+	fields: [...recursiveFields()],
+	note: "Only the KEY1 secure area is rewritten; homebrew ROMs without a secure area are skipped.",
+	outputRows: [
+		{
+			kind: "directory",
+			label: "Directory",
+			display: (s) => s.outputDir || "same as source",
+			set: (s, v) => { s.outputDir = v; },
+			tooltip: "Where the decrypted file is written. Leave empty to write it next to the source file.",
+		},
+		{
+			kind: "text",
+			label: "Filename",
+			display: () => "{name}.decrypted.{ext}",
+			tooltip: "The suffix keeps the output from colliding with the source.",
+		},
+	],
+	actionNote: "Already-decrypted files are skipped automatically and never queued.",
+	deriveOutput: (input) => deriveDecryptedPath(input),
+	buildArgs: (store, item, taskId) => {
+		const tmpl = templateIsActive(store);
+		return {
+			input: item.path,
+			output: tmpl ? null : withOutputDir(deriveDecryptedPath(item.path), store.outputDir || ""),
+			onConflict: store.onConflict,
+			skipSpaceCheck: store.skipSpaceCheck,
+			outputTemplate: store.outputTemplate || null,
+			dryRun: false,
+			taskId,
+		};
+	},
+	chips: () => "",
+};
+
+registerOp("decrypt", { ctr, wup, ps3, nds });

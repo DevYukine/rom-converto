@@ -56,6 +56,8 @@ fn main() {
             cmd_wup_compress,
             cmd_wup_decrypt,
             cmd_ps3_decrypt,
+            cmd_nds_encrypt,
+            cmd_nds_decrypt,
             cmd_nx_compress,
             cmd_nx_decompress,
             cmd_nx_verify,

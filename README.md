@@ -10,6 +10,7 @@ rom-converto converts, compresses, verifies, encrypts, and decrypts ROMs and dis
 
 | Platform | Input | Output | Compatible with |
 |---|---|---|---|
+| Nintendo DS (`nds`) | encrypted or decrypted `.nds` | the opposite state | melonDS, DeSmuME |
 | Nintendo 3DS (`ctr`) | `.3ds`, `.cci`, `.cxi`, `.cia`, CDN content | Z3DS | Azahar |
 | GameCube (`dol`) | `.iso`, `.gcm`, `.gcz`, NKit | RVZ | Dolphin |
 | Wii (`rvl`) | `.iso`, `.wbfs`, `.wia`, `.gcz`, NKit | RVZ | Dolphin |
@@ -73,6 +74,7 @@ Each top-level command is a console or format family, and every family has opera
 
 | Command | Purpose |
 |---|---|
+| `nds` | Encrypt and decrypt Nintendo DS ROM secure areas |
 | `ctr` | Convert, decrypt, compress, and verify Nintendo 3DS ROMs |
 | `dol` | Compress, migrate, and verify GameCube disc images (RVZ) |
 | `rvl` | Compress, migrate, and verify Wii disc images (RVZ) |

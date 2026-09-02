@@ -41,6 +41,10 @@ use rom_converto_lib::nintendo::ctr::{
     generate_ticket_from_cdn,
 };
 use rom_converto_lib::nintendo::dol::verify::{DolVerifyOptions, verify_dol};
+use rom_converto_lib::nintendo::nds::{
+    NdsError, decrypt_nds_rom_cancellable, derive_decrypted_path as derive_nds_decrypted_path,
+    derive_encrypted_path as derive_nds_encrypted_path, encrypt_nds_rom_cancellable,
+};
 use rom_converto_lib::nintendo::nx::{
     KeySet, NczMode, NxCompressOptions, compress_container_async_cancellable,
     decompress_container_async_cancellable, derive_compressed_path as nx_derive_compressed_path,
@@ -112,17 +116,24 @@ impl RunOutcome {
         }
     }
 
-    /// A skip because the input is already in the target format (PS3's
-    /// already-decrypted check), distinct from a conflict-policy skip: there
-    /// is no output path, and the record's error carries the detection reason.
-    fn skipped_already_done(report: bool, input: &Path, reason: &Ps3Error) -> Self {
+    /// A skip because the input is already in the target format (PS3's and
+    /// NDS's already-done checks), distinct from a conflict-policy skip:
+    /// there is no output path, and the record's error carries the
+    /// detection reason.
+    fn skipped_already_done(
+        report: bool,
+        input: &Path,
+        operation: &str,
+        message: &str,
+        reason: &impl std::fmt::Display,
+    ) -> Self {
         Self {
-            message: format!("Skipped {}: already decrypted", input.display()),
+            message: format!("Skipped {}: {message}", input.display()),
             record: report.then(|| {
                 ReportRecord::new(ReportRecordInput {
                     input_path: input.display().to_string(),
                     output_path: String::new(),
-                    operation: "decrypt".into(),
+                    operation: operation.into(),
                     status: FileStatus::Skipped,
                     input_bytes: 0,
                     output_bytes: 0,
@@ -2996,10 +3007,275 @@ pub async fn cmd_ps3_decrypt(
         return Ok(RunOutcome::skipped_already_done(
             report.unwrap_or(false),
             &record_input,
+            "decrypt",
+            "already decrypted",
             e,
         ));
     }
     decrypt_result.map_err(err_to_string)?;
+    let out_bytes = input_size(&record_output);
+    let record = build_record(
+        report.unwrap_or(false),
+        &record_input,
+        &record_output,
+        "decrypt",
+        in_bytes,
+        out_bytes,
+        started.elapsed(),
+    );
+    Ok(RunOutcome {
+        message: format!("Wrote {out_display}"),
+        record,
+        input_bytes: in_bytes,
+        output_bytes: out_bytes,
+        comparison: Some(comparison_sizes(
+            &record_input,
+            &record_output,
+            in_bytes,
+            out_bytes,
+        )),
+    })
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NdsCryptArgs {
+    input: PathBuf,
+    output: Option<PathBuf>,
+    on_conflict: Option<String>,
+    skip_space_check: bool,
+    output_template: Option<String>,
+    report: Option<bool>,
+    dry_run: Option<bool>,
+    task_id: Option<String>,
+}
+
+#[tauri::command]
+pub async fn cmd_nds_encrypt(
+    app: AppHandle,
+    state: State<'_, ActiveCancel>,
+    args: NdsCryptArgs,
+) -> Result<RunOutcome, String> {
+    let NdsCryptArgs {
+        input,
+        output,
+        on_conflict,
+        skip_space_check,
+        output_template,
+        report,
+        dry_run,
+        task_id,
+    } = args;
+    let task_key = task_id.as_deref().unwrap_or("nds-encrypt");
+    let progress = Arc::new(TauriProgress::new(app, task_key));
+    let dry_run = dry_run.unwrap_or(false);
+    let resolved = resolve_archive_input(input.clone(), &["nds"]).await?;
+    let basis = resolved.output_basis().to_path_buf();
+    let ext = ext_of(&derive_nds_encrypted_path(&basis));
+    let desired = pick_output(
+        output,
+        output_template.as_deref(),
+        &basis,
+        &ext,
+        None,
+        || derive_nds_encrypted_path(&basis),
+        dry_run,
+    )?;
+    if dry_run {
+        let line = plan_line(
+            progress.as_ref(),
+            PlanInput {
+                operation: "encrypt",
+                input: &input,
+                desired: &desired,
+                on_conflict: on_conflict.as_deref(),
+                media: None,
+                verify: rom_converto_lib::util::OutputVerify::None,
+                missing_keys: None,
+            },
+        )
+        .await?;
+        return Ok(RunOutcome::text(line.display_text()));
+    }
+    let output = match resolve_output(
+        progress.as_ref(),
+        &desired,
+        on_conflict.as_deref(),
+        rom_converto_lib::util::OutputVerify::None,
+    )
+    .await?
+    {
+        Some(p) => p,
+        None => {
+            return Ok(RunOutcome::skipped(
+                report.unwrap_or(false),
+                &input,
+                "encrypt",
+                &desired,
+            ));
+        }
+    };
+    let out_display = output.display().to_string();
+    preflight_space(
+        output.parent().unwrap_or(&output),
+        input_size(resolved.path()),
+        skip_space_check,
+    )?;
+    let in_bytes = input_size(&input);
+    let record_input = input.clone();
+    let record_output = output.clone();
+    let resolved_path = resolved.path().to_path_buf();
+    let token = begin(&state, task_key).await;
+    let started = Instant::now();
+    let crypt_result = tokio::spawn(async move {
+        encrypt_nds_rom_cancellable(progress.as_ref(), resolved_path, output, true, token).await
+    })
+    .await
+    .map_err(err_to_string)?;
+    finish(&state, task_key).await;
+    if let Err(err) = &crypt_result {
+        let reason = match err {
+            NdsError::AlreadyEncrypted => Some("already encrypted"),
+            NdsError::NoSecureArea => Some("no secure area"),
+            NdsError::TooSmall => Some("too small for a secure area"),
+            _ => None,
+        };
+        if let Some(reason) = reason {
+            return Ok(RunOutcome::skipped_already_done(
+                report.unwrap_or(false),
+                &record_input,
+                "encrypt",
+                reason,
+                err,
+            ));
+        }
+    }
+    crypt_result.map_err(err_to_string)?;
+    let out_bytes = input_size(&record_output);
+    let record = build_record(
+        report.unwrap_or(false),
+        &record_input,
+        &record_output,
+        "encrypt",
+        in_bytes,
+        out_bytes,
+        started.elapsed(),
+    );
+    Ok(RunOutcome {
+        message: format!("Wrote {out_display}"),
+        record,
+        input_bytes: in_bytes,
+        output_bytes: out_bytes,
+        comparison: Some(comparison_sizes(
+            &record_input,
+            &record_output,
+            in_bytes,
+            out_bytes,
+        )),
+    })
+}
+
+#[tauri::command]
+pub async fn cmd_nds_decrypt(
+    app: AppHandle,
+    state: State<'_, ActiveCancel>,
+    args: NdsCryptArgs,
+) -> Result<RunOutcome, String> {
+    let NdsCryptArgs {
+        input,
+        output,
+        on_conflict,
+        skip_space_check,
+        output_template,
+        report,
+        dry_run,
+        task_id,
+    } = args;
+    let task_key = task_id.as_deref().unwrap_or("nds-decrypt");
+    let progress = Arc::new(TauriProgress::new(app, task_key));
+    let dry_run = dry_run.unwrap_or(false);
+    let resolved = resolve_archive_input(input.clone(), &["nds"]).await?;
+    let basis = resolved.output_basis().to_path_buf();
+    let ext = ext_of(&derive_nds_decrypted_path(&basis));
+    let desired = pick_output(
+        output,
+        output_template.as_deref(),
+        &basis,
+        &ext,
+        None,
+        || derive_nds_decrypted_path(&basis),
+        dry_run,
+    )?;
+    if dry_run {
+        let line = plan_line(
+            progress.as_ref(),
+            PlanInput {
+                operation: "decrypt",
+                input: &input,
+                desired: &desired,
+                on_conflict: on_conflict.as_deref(),
+                media: None,
+                verify: rom_converto_lib::util::OutputVerify::None,
+                missing_keys: None,
+            },
+        )
+        .await?;
+        return Ok(RunOutcome::text(line.display_text()));
+    }
+    let output = match resolve_output(
+        progress.as_ref(),
+        &desired,
+        on_conflict.as_deref(),
+        rom_converto_lib::util::OutputVerify::None,
+    )
+    .await?
+    {
+        Some(p) => p,
+        None => {
+            return Ok(RunOutcome::skipped(
+                report.unwrap_or(false),
+                &input,
+                "decrypt",
+                &desired,
+            ));
+        }
+    };
+    let out_display = output.display().to_string();
+    preflight_space(
+        output.parent().unwrap_or(&output),
+        input_size(resolved.path()),
+        skip_space_check,
+    )?;
+    let in_bytes = input_size(&input);
+    let record_input = input.clone();
+    let record_output = output.clone();
+    let resolved_path = resolved.path().to_path_buf();
+    let token = begin(&state, task_key).await;
+    let started = Instant::now();
+    let crypt_result = tokio::spawn(async move {
+        decrypt_nds_rom_cancellable(progress.as_ref(), resolved_path, output, true, token).await
+    })
+    .await
+    .map_err(err_to_string)?;
+    finish(&state, task_key).await;
+    if let Err(err) = &crypt_result {
+        let reason = match err {
+            NdsError::AlreadyDecrypted => Some("already decrypted"),
+            NdsError::NoSecureArea => Some("no secure area"),
+            NdsError::TooSmall => Some("too small for a secure area"),
+            _ => None,
+        };
+        if let Some(reason) = reason {
+            return Ok(RunOutcome::skipped_already_done(
+                report.unwrap_or(false),
+                &record_input,
+                "decrypt",
+                reason,
+                err,
+            ));
+        }
+    }
+    crypt_result.map_err(err_to_string)?;
     let out_bytes = input_size(&record_output);
     let record = build_record(
         report.unwrap_or(false),
