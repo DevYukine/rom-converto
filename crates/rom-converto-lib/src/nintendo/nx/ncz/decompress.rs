@@ -376,6 +376,43 @@ mod tests {
         round_trip_with_mode(NczMode::Block { size_exp: 14 }, 0x40200);
     }
 
+    /// nsz has written NCZBLOCK version 2 / type 1 since the format's
+    /// first commit; strict third-party readers may reject other values.
+    #[test]
+    fn block_mode_emits_nsz_version_and_type() {
+        use crate::nintendo::nx::ncz::header::read_headers;
+        use std::io::{Seek, SeekFrom};
+
+        let plaintext: Vec<u8> = (0..0x40000).map(|i| (i & 0xFF) as u8).collect();
+        let nca_bytes = build_synthetic_nca(&plaintext);
+        let mut tmp = NamedTempFile::new().unwrap();
+        tmp.write_all(&nca_bytes).unwrap();
+        tmp.flush().unwrap();
+
+        let file = Arc::new(File::open(tmp.path()).unwrap());
+        let keys = synthetic_keyset();
+        let walker = NcaWalker::open(file, 0, nca_bytes.len() as u64, &keys).unwrap();
+
+        let mut ncz_cur = Cursor::new(Vec::new());
+        nca_to_ncz(
+            &walker,
+            &mut ncz_cur,
+            NcaToNczOptions {
+                mode: NczMode::Block { size_exp: 14 },
+                level: 3,
+            },
+            &NoProgress,
+        )
+        .unwrap();
+
+        let mut cur = Cursor::new(ncz_cur.into_inner());
+        cur.seek(SeekFrom::Start(NCA_PREFIX_SIZE as u64)).unwrap();
+        let parsed = read_headers(&mut cur).unwrap();
+        let block = parsed.block.expect("block-mode NCZ must carry NCZBLOCK");
+        assert_eq!(block.version, 2);
+        assert_eq!(block.kind, 1);
+    }
+
     fn build_synthetic_nsp(nca_bytes: &[u8]) -> Vec<u8> {
         let specs = vec![
             ("game.nca".to_string(), nca_bytes.len() as u64),

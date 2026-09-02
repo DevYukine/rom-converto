@@ -167,9 +167,11 @@ fn write_block<W: Write + Seek>(
     let n_threads = default_thread_count().min(num_blocks.max(1));
     let pool = spawn_ncz_pool(level, block_size, n_threads)?;
 
+    // nsz has emitted version 2 / type 1 since the format's first
+    // commit; readers that validate these bytes expect them.
     let placeholder_info = NczBlockInfo {
-        version: 1,
-        kind: 0,
+        version: 2,
+        kind: 1,
         block_size_exp: size_exp,
         decompressed_size: payload_size as i64,
         compressed_block_sizes: vec![0u32; num_blocks],
@@ -196,8 +198,8 @@ fn write_block<W: Write + Seek>(
 
     let payload_end = out.stream_position()?;
     let final_info = NczBlockInfo {
-        version: 1,
-        kind: 0,
+        version: 2,
+        kind: 1,
         block_size_exp: size_exp,
         decompressed_size: payload_size as i64,
         compressed_block_sizes: sizes,

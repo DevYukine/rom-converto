@@ -493,7 +493,7 @@ mod tests {
     use crate::nintendo::nx::crypto::aes_xts::encrypt_nca_header;
     use crate::nintendo::nx::models::nca::{FsHeader, initial_ctr_for_offset};
     use crate::nintendo::nx::models::pfs0;
-    use crate::nintendo::nx::ncz::compress::NczMode;
+    use crate::nintendo::nx::ncz::compress::{NcaToNczOptions, NczMode, nca_to_ncz};
     use crate::nintendo::nx::test_fixtures::{
         TEST_BODY_KEY, encrypt_key_area_block, synthetic_keyset,
     };
@@ -658,9 +658,10 @@ mod tests {
         out
     }
 
-    /// XCZ must carry empty update/logo/normal partitions: nsz's XCZ
-    /// decompressor overlaps partitions whenever a non-secure one has
-    /// files, so content there can never survive an nsz round trip.
+    /// XCZ carries empty update/logo/normal partitions to match nsz's
+    /// default secure-only layout (nsz retains the rest only with
+    /// --keep; its pre-5.0.0 decompressor also corrupted such files by
+    /// overlapping partitions).
     #[test]
     fn xci_round_trip_stubs_content_bearing_non_secure_partitions() {
         let nca = build_synthetic_nca(0x40200);
@@ -739,5 +740,69 @@ mod tests {
         let xcz2_path = dir.path().join("game2.xcz");
         compress_container(&recovered_path, &xcz2_path, opts, &keys, &NoProgress, None).unwrap();
         assert_eq!(fs::read(&xcz_path).unwrap(), fs::read(&xcz2_path).unwrap());
+    }
+
+    /// nsz 5.0.0 fixed its decompressor's partition overlap, so
+    /// `--keep` XCZs with real .ncz entries outside `secure` circulate;
+    /// decompression must rebuild those partitions too.
+    #[test]
+    fn decompresses_content_bearing_non_secure_partitions() {
+        use crate::nintendo::nx::walker::NcaWalker;
+        use std::io::Cursor;
+
+        let nca = build_synthetic_nca(0x40200);
+        let dir = tempfile::tempdir().unwrap();
+        let nca_path = dir.path().join("game.nca");
+        fs::write(&nca_path, &nca).unwrap();
+
+        let keys = synthetic_keyset();
+        let nca_file = Arc::new(File::open(&nca_path).unwrap());
+        let walker = NcaWalker::open(nca_file, 0, nca.len() as u64, &keys).unwrap();
+        let mut ncz_cur = Cursor::new(Vec::new());
+        nca_to_ncz(
+            &walker,
+            &mut ncz_cur,
+            NcaToNczOptions {
+                mode: NczMode::Solid,
+                level: 3,
+            },
+            &NoProgress,
+        )
+        .unwrap();
+        let ncz = ncz_cur.into_inner();
+
+        let update = build_hfs0_partition(&[("update.ncz", ncz.clone())]);
+        let secure = build_hfs0_partition(&[("game.ncz", ncz)]);
+        let xcz_blob = build_synthetic_xci(&[("update", update), ("secure", secure)]);
+        let xcz_path = dir.path().join("game.xcz");
+        let recovered_path = dir.path().join("recovered.xci");
+        fs::write(&xcz_path, &xcz_blob).unwrap();
+
+        decompress_container(&xcz_path, &recovered_path, &keys, &NoProgress, None).unwrap();
+
+        let mut reader = BufReader::new(File::open(&recovered_path).unwrap());
+        reader.seek(SeekFrom::Start(0xF000)).unwrap();
+        let root = hfs0_mod::Hfs0::read(&mut reader).unwrap();
+        for (part, expected_name) in [("update", "update.nca"), ("secure", "game.nca")] {
+            let entry = root
+                .files
+                .iter()
+                .find(|f| f.name == part)
+                .unwrap_or_else(|| panic!("missing partition {part}"));
+            let part_abs = root.data_section_offset + entry.data_offset;
+            reader.seek(SeekFrom::Start(part_abs)).unwrap();
+            let sub = hfs0_mod::Hfs0::read(&mut reader).unwrap();
+            assert_eq!(sub.files.len(), 1, "{part}");
+            assert_eq!(sub.files[0].name, expected_name);
+            assert_eq!(sub.files[0].size, nca.len() as u64, "{part}");
+            reader
+                .seek(SeekFrom::Start(
+                    sub.data_section_offset + sub.files[0].data_offset,
+                ))
+                .unwrap();
+            let mut got = vec![0u8; nca.len()];
+            reader.read_exact(&mut got).unwrap();
+            assert_eq!(got, nca, "{part} NCA bytes diverge");
+        }
     }
 }
