@@ -24,26 +24,9 @@ rom-converto converts, compresses, verifies, encrypts, and decrypts ROMs and dis
 | Xbox 360 (`xenon`) | full disc image or folder | ZAR | Xenia |
 | PlayStation 3 (`ps3`) | encrypted `.iso` | decrypted `.iso` | RPCS3 |
 
-For RVZ and NSZ/XCZ the output is byte-identical to the reference encoder (Dolphin, nsz) at matching settings, so it verifies against that tool and loads in the same players. CSO/ZSO output is maxcso-compatible and CHD output matches chdman's `createcd`/`createdvd`/`createld`, so both interoperate with their reference tools. See [`docs/formats.md`](docs/formats.md) for what each format is and where it works.
+RVZ and NSZ/XCZ output is byte-identical to the reference encoder (Dolphin, nsz) at matching settings; CSO/ZSO and CHD interoperate with maxcso and chdman. See [`docs/formats.md`](docs/formats.md) for what each format is, where it works, and the compatibility notes.
 
-Single-image commands (compress, decompress, convert, extract, verify, info, and `hash`) also read a `.zip`, `.7z`, `.rar`, `.tar`, or `.tar.gz`/`.tgz` archive directly and operate on the first matching member. See [`docs/cli.md`](docs/cli.md) for the details.
-
-`rom-converto info <input>` auto-detects the console and inspects any format above without naming it, including PS1/PS2 (`.iso`, `.cue`+`.bin`) and PSP (`.iso`) title metadata, embedded icons, and encryption state where it can be determined; `chd info` and `cso info` also report the PlayStation disc found inside the container, when there is one. Content type is normalized to Game, Update, DLC, or Demo across every platform that has one, with the raw platform code alongside it. It also reads:
-
-| Format | Reported |
-|---|---|
-| Nintendo DS `.nds`, `.dsi` | header fields, header CRC16, secure-area encryption state, banner titles, 32x32 icon |
-| Nintendo 3DS `.3dsx` homebrew | the embedded SMDH title and icon, when present; also works compressed as `.z3dsx` |
-| PSP `EBOOT.PBP` (`.pbp`) | `PARAM.SFO` fields, icon, segment layout, and what `DATA.PSAR` holds (`NPUMDIMG` is an encrypted PSN image) |
-| GameCube/Wii `.gcz`, `.wia` | routed to GameCube or Wii by the wrapped disc's magic |
-| PSP/PS2 `.dax` | header stats, like CSO/ZSO |
-| PS Vita `.vpk` | title, title ID, content ID, category, item counts, and the VPK bubble icon |
-| PSN `.pkg` (PSP, PS3, PS Vita) | platform, title, title ID, content ID, category, item counts, and the ICON0 preview icon; PS3 packages are decrypted with the built-in key |
-| Cartridge ROMs | header fields plus the stored and recomputed checksum each format defines |
-
-The cartridge systems are NES (`.nes`), SNES (`.sfc`, `.smc`), Nintendo 64 (`.z64`, `.n64`, `.v64`), Game Boy and Color (`.gb`, `.gbc`), Game Boy Advance (`.gba`), Mega Drive (`.md`, `.gen`, `.smd`), Master System (`.sms`), Game Gear (`.gg`), Virtual Boy (`.vb`), WonderSwan (`.ws`, `.wsc`), Neo Geo Pocket (`.ngp`, `.ngc`), Atari Lynx (`.lnx`), and Atari 7800 (`.a78`). A `.ngc` file is checked for the SNK license string before it is read as a GameCube disc, since both use that extension.
-
-Pass `--batch` with a directory, or `--paths-file` with a list, to inspect many files in one run. `rom-converto capabilities` prints the operations and info extensions the installed binary supports as JSON.
+`rom-converto info <input>` auto-detects the console and inspects any format above, plus NDS ROMs, 3DS homebrew (`.3dsx`), PSP `EBOOT.PBP`, PS Vita `.vpk`, PSN `.pkg` (PSP, PS3, PS Vita), and 14 cartridge systems from NES to Atari 7800. It reports title metadata, embedded icons, encryption state, and a content type normalized to Game, Update, DLC, or Demo across platforms. Single-image commands also read `.zip`, `.7z`, `.rar`, and `.tar` archives directly. Full inspection coverage is in [`docs/cli.md`](docs/cli.md).
 
 ## Installation
 
@@ -69,9 +52,6 @@ rom-converto dol decompress game.rvz
 # Decrypt a 3DS ROM for emulator use
 rom-converto ctr decrypt game.cia game.decrypted.cia
 
-# Re-encrypt a decrypted 3DS ROM
-rom-converto ctr encrypt game.decrypted.cia game.encrypted.cia
-
 # Compress a whole folder of Switch games, previewing first
 rom-converto nx compress -R ./switch --dry-run
 rom-converto nx compress -R ./switch
@@ -80,84 +60,33 @@ rom-converto nx compress -R ./switch
 rom-converto hash -R ./roms --report hashes.csv
 ```
 
-Add `-R`/`--recursive` to any conversion to process a directory tree, and `--dry-run` to
-preview a run without writing anything. Launch the desktop app with `pnpm tauri dev` from
-`crates/rom-converto-gui`, or run a downloaded GUI binary.
+Add `-R`/`--recursive` to any conversion to process a directory tree, and `--dry-run` to preview a run without writing anything.
 
 ## Command line
 
-Each top-level command is a console or format family, and every family has operations such as `compress`, `decompress`, `verify`, and `info`.
+Each top-level command is a console or format family (`nds`, `ctr`, `dol`, `rvl`, `wup`, `nx`, `chd`, `cso`, `cue`, `xbox`, `xenon`, `ps3`, `psp`, `vita`) with operations such as `compress`, `decompress`, `verify`, and `info`. Standalone commands cover cross-console inspection (`info`), ROM identification against the Playmatch database (`dat`), hashing (`hash`), `.m3u` playlists (`playlist`), plus `capabilities`, `shell-completions`, and `self-update`.
 
-| Command | Purpose |
-|---|---|
-| `nds` | Encrypt, decrypt, and inspect Nintendo DS ROMs |
-| `ctr` | Convert, decrypt, compress, and verify Nintendo 3DS ROMs |
-| `dol` | Compress, migrate, and verify GameCube disc images (RVZ) |
-| `rvl` | Compress, migrate, and verify Wii disc images (RVZ) |
-| `wup` | Bundle and decrypt Wii U titles (WUA) |
-| `nx` | Compress and verify Switch containers (NSZ/XCZ) |
-| `chd` | Compress, extract, and verify CD/DVD/LaserDisc images (CHD) |
-| `cso` | Compress and verify PSP/PS2 ISOs (CSO/ZSO) |
-| `cue` | Merge a multi-bin `.cue` into one `.bin`/`.cue` pair |
-| `xbox` | Convert, extract, and inspect Original Xbox disc images (XISO) |
-| `xenon` | Compress, extract, verify, and inspect Xbox 360 disc images (ZAR) |
-| `ps3` | Decrypt and inspect PlayStation 3 disc images |
-| `psp` | Inspect and extract PSP `EBOOT.PBP` containers |
-| `vita` | Inspect PS Vita VPK/PKG packages and extract a PKG |
-| `info` | Auto-detect the console and inspect any supported ROM or disc image |
-| `capabilities` | Print the supported operations and info extensions as JSON |
-| `dat` | Identify, verify, and rename ROMs against the Playmatch database |
-| `hash` | Compute CRC32, SHA-1, MD5, and SHA-256 digests |
-| `playlist` | Generate `.m3u` files for multi-disc sets |
-| `shell-completions` | Print a tab-completion script for your shell |
-| `self-update` | Replace the binary with a newer GitHub release |
-
-Several behaviors are shared across commands: the conflict policy (`--on-conflict`), dry-run preview, the verbosity ladder, output-path templates, and run reports. They are explained once in the full reference at [`docs/cli.md`](docs/cli.md), which also lists every flag per command. Run `rom-converto <command> --help` for the same detail in the terminal.
+The full reference with every command and flag, and the behaviors shared across commands (conflict policy, dry-run, output-path templates, run reports), is [`docs/cli.md`](docs/cli.md). `rom-converto <command> --help` gives the same detail in the terminal.
 
 ## Desktop GUI
 
-The desktop app runs the same operations as the CLI over the same library, so an equivalent run produces identical output. It runs on Windows, macOS, and Linux, and adds:
-
-- Drag-and-drop batch queues that process many files in one run.
-- Live progress and a cancel button that aborts a running conversion and discards its partial output.
-- A preview toggle that shows the plan for a run without writing anything.
-- A rich info card for inspecting a ROM's metadata and icon.
-
-See [`docs/gui.md`](docs/gui.md) for the page overview and the full CLI parity table.
+The desktop app runs the same operations as the CLI over the same library, so an equivalent run produces identical output. It runs on Windows, macOS, and Linux, and adds drag-and-drop batch queues, live progress with cancel, a dry-run preview toggle, and a rich info card for inspecting a ROM's metadata and icon. See [`docs/gui.md`](docs/gui.md).
 
 ## Configuration
 
-A TOML config file lets you set per-format default flags and named presets so long flag combinations do not have to be retyped. The config is searched in the current directory and the per-user config directory, and its values sit below command-line flags in precedence. Details and a full example are in [`docs/configuration.md`](docs/configuration.md).
+A TOML config file lets you set per-format default flags and named presets so long flag combinations do not have to be retyped. Details and a full example are in [`docs/configuration.md`](docs/configuration.md).
 
 ## How it works
 
-The project is a Cargo workspace with five crates:
-
-| Crate | Role |
-|---|---|
-| `rom-converto-lib` | All conversion, compression, encryption, and verification logic |
-| `rom-converto-cli` | Command line interface |
-| `rom-converto-gui` | Desktop app (Tauri + Nuxt) |
-| `rom-converto-ffi` | JSON-based C ABI bridge for embedding from C# and other hosts |
-| `rom-converto-benchmark` | Benchmark harness comparing rom-converto against external reference tools |
-
-The CLI, GUI, and C ABI bridge call the same library code, so an equivalent run through any front end produces identical output. See [`docs/ffi.md`](docs/ffi.md) for ABI v1, typed JSON requests, callbacks, and release package contents.
+The project is a Cargo workspace: one library crate holds all conversion logic, and the CLI, desktop GUI, and C ABI bridge are thin front ends over it, so an equivalent run through any of them produces identical output. See [`docs/development.md`](docs/development.md) for the workspace layout and [`docs/ffi.md`](docs/ffi.md) for embedding.
 
 ## Benchmarks
 
-Compression output is measured against each format's reference encoder (Dolphin, chdman, nsz, and the Azahar Z3DS compressor) on their own defaults. Full methodology and per-run numbers live in the benchmark files:
-
-- [`benchmark/3DS.md`](benchmark/3DS.md): 3DS Z3DS results
-- [`benchmark/GameCube.md`](benchmark/GameCube.md): GameCube RVZ results
-- [`benchmark/Wii.md`](benchmark/Wii.md): Wii RVZ results
-- [`benchmark/Switch.md`](benchmark/Switch.md): Switch NSZ/XCZ results
-- [`benchmark/CHD.md`](benchmark/CHD.md): CD/DVD CHD results
-
-Reproduce them with the `rom-converto-benchmark` crate; see [`docs/development.md`](docs/development.md) for the commands.
+Compression output is measured against each format's reference encoder (Dolphin, chdman, nsz, and the Azahar Z3DS compressor) on their own defaults. Per-run numbers: [3DS](benchmark/3DS.md), [GameCube](benchmark/GameCube.md), [Wii](benchmark/Wii.md), [Switch](benchmark/Switch.md), [CHD](benchmark/CHD.md). Methodology and reproduction commands are in [`docs/development.md`](docs/development.md).
 
 ## Development
 
-You need a recent stable Rust toolchain, plus Node.js 22 or newer and pnpm for the GUI. Run the CLI with `cargo run -p rom-converto-cli`, build the C ABI bridge with `cargo build --release -p rom-converto-ffi`, and run the GUI with `pnpm tauri dev` from `crates/rom-converto-gui`. The CI gates are `cargo fmt --all -- --check`, `cargo check`, `cargo clippy -- -D warnings`, `cargo test`, and the GUI type-check and build. See [`docs/development.md`](docs/development.md).
+You need a recent stable Rust toolchain, plus Node.js 22 or newer and pnpm for the GUI. Setup, dev commands, and the CI gates are in [`docs/development.md`](docs/development.md).
 
 ## Contributing
 

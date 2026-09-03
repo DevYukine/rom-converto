@@ -8,6 +8,35 @@ quick overview see the [README](../README.md); for what each output format is se
 Run `rom-converto --help` or `rom-converto <command> --help` for the same detail in the
 terminal.
 
+## Commands
+
+Each top-level command is a console or format family, and every family has operations such
+as `compress`, `decompress`, `verify`, and `info`.
+
+| Command | Purpose |
+|---|---|
+| `nds` | Encrypt, decrypt, and inspect Nintendo DS ROMs |
+| `ctr` | Convert, decrypt, compress, and verify Nintendo 3DS ROMs |
+| `dol` | Compress, migrate, and verify GameCube disc images (RVZ) |
+| `rvl` | Compress, migrate, and verify Wii disc images (RVZ) |
+| `wup` | Bundle and decrypt Wii U titles (WUA) |
+| `nx` | Compress and verify Switch containers (NSZ/XCZ) |
+| `chd` | Compress, extract, and verify CD/DVD/LaserDisc images (CHD) |
+| `cso` | Compress and verify PSP/PS2 ISOs (CSO/ZSO) |
+| `cue` | Merge a multi-bin `.cue` into one `.bin`/`.cue` pair |
+| `xbox` | Convert, extract, and inspect Original Xbox disc images (XISO) |
+| `xenon` | Compress, extract, verify, and inspect Xbox 360 disc images (ZAR) |
+| `ps3` | Decrypt and inspect PlayStation 3 disc images |
+| `psp` | Inspect and extract PSP `EBOOT.PBP` containers |
+| `vita` | Inspect PS Vita VPK/PKG packages and extract a PKG |
+| `info` | Auto-detect the console and inspect any supported ROM or disc image |
+| `capabilities` | Print the supported operations and info extensions as JSON |
+| `dat` | Identify, verify, and rename ROMs against the Playmatch database |
+| `hash` | Compute CRC32, SHA-1, MD5, and SHA-256 digests |
+| `playlist` | Generate `.m3u` files for multi-disc sets |
+| `shell-completions` | Print a tab-completion script for your shell |
+| `self-update` | Replace the binary with a newer GitHub release |
+
 ## Global flags
 
 These flags work on every command.
@@ -418,6 +447,7 @@ rom-converto nds <SUBCOMMAND> <INPUT> [OUTPUT]
 |---|---|
 | `encrypt <INPUT> [OUTPUT]` | Encrypt a decrypted Nintendo DS ROM's KEY1 secure area |
 | `decrypt <INPUT> [OUTPUT]` | Decrypt an encrypted Nintendo DS ROM's KEY1 secure area |
+| `info <INPUT>` | Report the header fields, header CRC16, secure-area encryption state, banner titles, and 32x32 icon of a `.nds`/`.dsi` ROM |
 
 | Flag | Applies to | Description |
 |---|---|---|
@@ -627,6 +657,35 @@ intermediate extraction to disk, using zstd across all CPU cores. Content is sto
 (title ID, name, version, disc number, region, allowed media) plus the decoded icon.
 `--save-icon <DIR>` writes that icon as `<title_id_hex>.png`.
 
+## psp (PSP EBOOT.PBP)
+
+```
+rom-converto psp info <INPUT> [--json] [--save-icon DIR]
+rom-converto psp extract <INPUT> <OUTPUT_DIR>
+rom-converto psp to-iso <INPUT> [OUTPUT] [--output-template TEMPLATE]
+```
+
+`info` on an `EBOOT.PBP` reports the `PARAM.SFO` fields, the embedded icon, the segment
+layout, and what `DATA.PSAR` holds (`NPUMDIMG` is an encrypted PSN image). `extract` writes
+each present segment (`PARAM.SFO`, `ICON0.PNG`, ..., `DATA.PSAR`) into `OUTPUT_DIR` under
+its standard name; `DATA.PSAR` is written as stored, so it stays encrypted for an
+`NPUMDIMG` image. `to-iso` decrypts an `NPUMDIMG` EBOOT into a plain ISO, and also accepts
+a PSN `.pkg` directly, reading the EBOOT out of the decrypted package. `OUTPUT` defaults to
+`<INPUT>.iso`; `--output-template` takes the same tokens as the other commands.
+
+## vita (PS Vita)
+
+```
+rom-converto vita info <INPUT> [--json] [--save-icon DIR]
+rom-converto vita extract <INPUT> <OUTPUT_DIR>
+```
+
+`info` reads a `.vpk` (title, title ID, content ID, category, item counts, bubble icon) or
+a PSN `.pkg`; `.pkg` coverage including the PSP and PS3 variants is described under
+[info](#info). `extract` decrypts a PKG with its embedded key index and writes every file
+item into `OUTPUT_DIR`, keeping the paths from the item table. Vita file items stay
+PFS-encrypted as stored; the package structure and plaintext items extract as-is.
+
 ## dat
 
 ```
@@ -801,10 +860,13 @@ row reads `GameCube (GCZ)` or `Wii (WIA)`, and `--json` carries it as the `conta
 | Flag | Description |
 |---|---|
 | `--json` | Emit a machine-readable payload instead of the formatted report |
+| `--batch` | Treat a directory `INPUT` as a batch scan (every supported file under it) instead of a Wii U title directory |
+| `--paths-file <FILE>` | Inspect the files listed one per line in `FILE` instead of naming an `INPUT`; blank lines and `#` comments are skipped |
 | `--save-icon <DIR>` | Write the embedded icon as `<title_id>.png` into `DIR`. Supported by `ctr`, `dol`, `rvl`, `nx`, `wup`, `xbox`, `xenon`, `ps3`, PSP images, and PKG. Not supported for `chd`, `cso`, or PS1/PS2 discs, even where their report shows an icon inline (a PSP disc nested inside a `chd`/`cso`) |
 | `--keys <FILE>` | `prod.keys` for `nx info`, a disc master key file for `wup info` on `.wud`/`.wux` (optional), or a `.dkey` file for `ps3 info`. Other consoles do not use it |
 
-Coverage per family: `ctr` reads CIA/NCSD/NCCH, `.3dsx` homebrew, and Z3DS variants
+Coverage per family: `nds` reads `.nds`/`.dsi` ROMs (header fields, header CRC16,
+secure-area encryption state, banner titles, and the 32x32 icon); `ctr` reads CIA/NCSD/NCCH, `.3dsx` homebrew, and Z3DS variants
 (compressed `.z3dsx` included); `dol` reads `.iso`,
 `.gcm`, `.rvz`, `.gcz`, and NKit; `rvl` reads `.iso`, `.rvz`, `.wbfs`, `.wia`, `.gcz`, and
 NKit through the same streaming migration readers the `migrate` command uses; `wup` reads
@@ -824,6 +886,14 @@ the same title and icon fields as a CIA; a `.z3dsx` decompresses first and repor
 PSP and Vita use the existing per-key-type derivation. The `ICON0.PNG` preview is
 extracted best-effort for the report, `--save-icon`, and the GUI card.
 
+Cartridge ROMs report their header fields plus the stored and recomputed checksum each
+format defines. The cartridge systems are NES (`.nes`), SNES (`.sfc`, `.smc`), Nintendo 64
+(`.z64`, `.n64`, `.v64`), Game Boy and Color (`.gb`, `.gbc`), Game Boy Advance (`.gba`),
+Mega Drive (`.md`, `.gen`, `.smd`), Master System (`.sms`), Game Gear (`.gg`), Virtual Boy
+(`.vb`), WonderSwan (`.ws`, `.wsc`), Neo Geo Pocket (`.ngp`, `.ngc`), Atari Lynx (`.lnx`),
+and Atari 7800 (`.a78`). A `.ngc` file is checked for the SNK license string before it is
+read as a GameCube disc, since both use that extension.
+
 A LaserDisc rip's `.avi` reports its container header (video codec, resolution, fps,
 frame count, audio) and the CHD field geometry compression would project, and, when the
 video is uncompressed (YUY2/UYVY/VYUY), a VBI summary decoded from every field. A compressed
@@ -835,6 +905,17 @@ container's own `ROM:` section, with the disc kind reported as the platform; `--
 carries the same data as a nested `content` object. A CHD or CSO whose probe fails, or that
 holds no PlayStation-family disc, still prints its `Container:` section with no `ROM:`
 section; `content` is simply absent.
+
+## capabilities
+
+```
+rom-converto capabilities
+```
+
+Print the operations and info extensions the installed binary supports as JSON, for
+frontends and scripts that need to know what this build can do before calling it. The
+payload carries the supported operations, the full `info` extension list, and the JSON
+runner schema.
 
 ## shell-completions
 
