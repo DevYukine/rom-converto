@@ -1445,9 +1445,16 @@ pub async fn cmd_chd_compress(
         }
     };
     let out_display = output.display().to_string();
+    let in_bytes = if ext_of(resolved.path()).eq_ignore_ascii_case("cue") {
+        rom_converto_lib::cue::referenced_files_size(resolved.path())
+            .await
+            .unwrap_or_else(|_| input_size(resolved.path()))
+    } else {
+        input_size(resolved.path())
+    };
     preflight_space(
         output.parent().unwrap_or(&output),
-        input_size(resolved.path()),
+        in_bytes,
         skip_space_check,
     )?;
     let mode = match mode.as_deref() {
@@ -1457,7 +1464,6 @@ pub async fn cmd_chd_compress(
         _ => None,
     };
     let opts = resolve_chd_opts(hunk_size, codecs, level)?;
-    let in_bytes = input_size(&input_path);
     let record_input = input_path.clone();
     let record_output = output.clone();
     let progress_for_verify = progress.clone();
@@ -3945,7 +3951,7 @@ pub async fn cmd_xbox_convert(
         }
     };
     let out_display = output.display().to_string();
-    let required_space = if resolved.path().is_dir() {
+    let in_bytes = if resolved.path().is_dir() {
         rom_converto_lib::microsoft::xbox::input_total_bytes(resolved.path())
             .unwrap_or_else(|_| input_size(resolved.path()))
     } else {
@@ -3953,13 +3959,12 @@ pub async fn cmd_xbox_convert(
     };
     preflight_space(
         output.parent().unwrap_or(&output),
-        required_space,
+        in_bytes,
         skip_space_check,
     )?;
     let opts = XisoCreateOptions {
         media_patch: media_patch.unwrap_or(XisoCreateOptions::default().media_patch),
     };
-    let in_bytes = input_size(&input);
     let record_input = input.clone();
     let record_output = output.clone();
     let progress_for_verify = progress.clone();
@@ -4172,7 +4177,7 @@ pub async fn cmd_xenon_compress(
         }
     };
     let out_display = output.display().to_string();
-    let required_space = if resolved.path().is_dir() {
+    let in_bytes = if resolved.path().is_dir() {
         rom_converto_lib::microsoft::xenon::total_input_bytes(resolved.path())
             .unwrap_or_else(|_| input_size(resolved.path()))
     } else {
@@ -4180,10 +4185,9 @@ pub async fn cmd_xenon_compress(
     };
     preflight_space(
         output.parent().unwrap_or(&output),
-        required_space,
+        in_bytes,
         skip_space_check,
     )?;
-    let in_bytes = input_size(&input);
     let record_input = input.clone();
     let record_output = output.clone();
     let progress_for_verify = progress.clone();
