@@ -66,7 +66,7 @@ use rom_converto_lib::ps3::{
     Ps3Error, decrypt_ps3_iso_cancellable, derive_decrypted_path as derive_ps3_decrypted_path,
     resolve_ps3_key,
 };
-use rom_converto_lib::sony::psp::extract_segments;
+use rom_converto_lib::sony::psp::{extract_segments, to_iso as psp_to_iso};
 use rom_converto_lib::sony::vita::pkg::extract as vita_pkg_extract;
 use rom_converto_lib::util::HashCache;
 use rom_converto_lib::util::NX_DAT_UNSUPPORTED_HINT;
@@ -4309,6 +4309,138 @@ pub async fn cmd_xenon_extract(
     finish(&state, key).await;
     result?;
     Ok(format!("Wrote {out_display}"))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PspToIsoArgs {
+    input: PathBuf,
+    output: Option<PathBuf>,
+    on_conflict: Option<String>,
+    skip_space_check: bool,
+    output_template: Option<String>,
+    report: Option<bool>,
+    verify_after: Option<bool>,
+    dry_run: Option<bool>,
+    task_id: Option<String>,
+}
+
+#[tauri::command]
+pub async fn cmd_psp_to_iso(
+    app: AppHandle,
+    state: State<'_, ActiveCancel>,
+    args: PspToIsoArgs,
+) -> Result<RunOutcome, String> {
+    let PspToIsoArgs {
+        input,
+        output,
+        on_conflict,
+        skip_space_check,
+        output_template,
+        report,
+        verify_after,
+        dry_run,
+        task_id,
+    } = args;
+    let key = task_id.as_deref().unwrap_or("psp-to-iso");
+    let progress = Arc::new(TauriProgress::new(app, key));
+    let dry_run = dry_run.unwrap_or(false);
+    let resolved = resolve_archive_input(input.clone(), &["pbp"]).await?;
+    let basis = resolved.output_basis().to_path_buf();
+    let desired = pick_output(
+        output,
+        output_template.as_deref(),
+        &basis,
+        "iso",
+        None,
+        || basis.with_extension("iso"),
+        dry_run,
+    )?;
+    if dry_run {
+        let line = plan_line(
+            progress.as_ref(),
+            PlanInput {
+                operation: "convert",
+                input: &input,
+                desired: &desired,
+                on_conflict: on_conflict.as_deref(),
+                media: None,
+                verify: rom_converto_lib::util::OutputVerify::None,
+                missing_keys: None,
+            },
+        )
+        .await?;
+        return Ok(RunOutcome::text(line.display_text()));
+    }
+    let output = match resolve_output(
+        progress.as_ref(),
+        &desired,
+        on_conflict.as_deref(),
+        rom_converto_lib::util::OutputVerify::None,
+    )
+    .await?
+    {
+        Some(p) => p,
+        None => {
+            return Ok(RunOutcome::skipped(
+                report.unwrap_or(false),
+                &input,
+                "convert",
+                &desired,
+            ));
+        }
+    };
+    let out_display = output.display().to_string();
+    preflight_space(
+        output.parent().unwrap_or(&output),
+        input_size(resolved.path()),
+        skip_space_check,
+    )?;
+    let in_bytes = input_size(&input);
+    let record_input = input.clone();
+    let record_output = output.clone();
+    let progress_for_verify = progress.clone();
+    let resolved_path = resolved.path().to_path_buf();
+    let token = begin(&state, key).await;
+    let token_for_verify = token.clone();
+    let started = Instant::now();
+    let result =
+        tokio::task::spawn_blocking(move || psp_to_iso(progress.as_ref(), &resolved_path, &output))
+            .await
+            .map_err(err_to_string)?
+            .map_err(err_to_string);
+    finish(&state, key).await;
+    result?;
+    let out_bytes = input_size(&record_output);
+    let record = build_record(
+        report.unwrap_or(false),
+        &record_input,
+        &record_output,
+        "convert",
+        in_bytes,
+        out_bytes,
+        started.elapsed(),
+    );
+    let comparison = build_comparison(
+        progress_for_verify,
+        &token_for_verify,
+        ComparisonInput {
+            input: &record_input,
+            output: &record_output,
+            input_bytes: in_bytes,
+            output_bytes: out_bytes,
+            target: rom_converto_lib::util::OutputVerify::None,
+            verify_after: verify_after.unwrap_or(false),
+        },
+    )
+    .await;
+    Ok(RunOutcome {
+        message: format!("Wrote {out_display}"),
+        record,
+        input_bytes: in_bytes,
+        output_bytes: out_bytes,
+        comparison: Some(comparison),
+    })
 }
 
 #[derive(serde::Deserialize)]

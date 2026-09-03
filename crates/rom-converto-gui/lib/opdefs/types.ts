@@ -195,6 +195,9 @@ export const NESTED_ARGS_COMMANDS = new Set([
 	"cmd_ps3_decrypt",
 	"cmd_nds_encrypt",
 	"cmd_nds_decrypt",
+	"cmd_psp_to_iso",
+	"cmd_psp_extract",
+	"cmd_vita_extract",
 ]);
 
 export function invokeArgs(

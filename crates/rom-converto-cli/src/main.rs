@@ -3196,6 +3196,54 @@ async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()>
                     started,
                 );
             }
+            PspCommands::ToIso(cmd) => {
+                ensure_input_exists(&cmd.input)?;
+                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["pbp"])?;
+                let input = resolved.path();
+                let output = match cmd.output.clone() {
+                    Some(p) => p,
+                    None => match cmd.output_template.as_deref() {
+                        Some(tmpl) => {
+                            crate::util::templated_output(tmpl, input, None, "iso", None, dry_run)?
+                        }
+                        None => resolved.output_basis().with_extension("iso"),
+                    },
+                };
+                let policy = policy_of(cmd.on_conflict, cmd.force);
+                let decision = resolve_output(&output, policy)?;
+                if dry_run {
+                    return dry_run_single(
+                        "convert",
+                        &cmd.input,
+                        &output,
+                        &decision,
+                        None,
+                        None,
+                        cmd.report.as_deref(),
+                    );
+                }
+                let output = match decision {
+                    WriteDecision::Skip => {
+                        log_skipped(&output);
+                        return Ok(());
+                    }
+                    WriteDecision::Write(p) => p,
+                };
+                if !skip_space_check {
+                    let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
+                    batch::space_preflight_for_size(file_len(input), check_dir)?;
+                }
+                let started = Instant::now();
+                rom_converto_lib::sony::psp::to_iso(&progress, input, &output)?;
+                finish_single(
+                    &cmd.input,
+                    &output,
+                    TallyDirection::Convert,
+                    "convert",
+                    started,
+                    cmd.report.as_deref(),
+                )?;
+            }
         },
         Commands::Vita(inner) => match inner {
             VitaCommands::Info(cmd) => {

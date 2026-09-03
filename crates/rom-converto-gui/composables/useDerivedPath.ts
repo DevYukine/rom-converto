@@ -19,8 +19,8 @@ const DECOMPRESS_MAP: Record<string, string> = {
 // ("10.000 Bullets (Europe)", "Super Mario Bros. U").
 const IMAGE_EXTS = new Set([
   "3ds", "3dsx", "bin", "cci", "chd", "cia", "cso", "cue", "cxi", "dax",
-  "gcm", "gcz", "iso", "nds", "nsp", "nsz", "rvz", "wbfs", "wia", "wua",
-  "wud", "wux", "xci", "xcz", "xiso", "z3ds", "z3dsx", "zar", "zcia",
+  "gcm", "gcz", "iso", "nds", "nsp", "nsz", "pbp", "rvz", "wbfs", "wia",
+  "wua", "wud", "wux", "xci", "xcz", "xiso", "z3ds", "z3dsx", "zar", "zcia",
   "zcci", "zcxi", "zso",
 ]);
 

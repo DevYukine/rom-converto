@@ -11,6 +11,7 @@ import { useCsoToChdStore } from "~/stores/cso-to-chd";
 import { useChdToCsoStore } from "~/stores/chd-to-cso";
 import { useCueConvertStore } from "~/stores/cue-convert";
 import { useXboxConvertStore } from "~/stores/xbox-convert";
+import { usePspToIsoStore } from "~/stores/psp-to-iso";
 import { basename, deriveConvertedPath, deriveChdPath, deriveCsoPath, deriveDiscIsoPath, deriveXisoPath, withOutputDir } from "~/composables/useDerivedPath";
 
 const ARCHIVE_EXTS = ["zip", "7z", "rar", "tar", "tgz", "gz"];
@@ -379,4 +380,42 @@ const xbox: OpDef = {
 	chips: (store) => (store.mediaPatch ? "" : "no media patch"),
 };
 
-registerOp("convert", { ctr, cso, chd, cue, xbox });
+const psp: OpDef = {
+	op: "convert",
+	console: "psp",
+	opLabel: "Convert",
+	storeId: "psp-to-iso",
+	useStore: usePspToIsoStore,
+	command: "cmd_psp_to_iso",
+	resultKind: "convert",
+	title: "Convert EBOOT.PBP → ISO",
+	subtitle: "Decrypts a PSN-distributed NPUMDIMG EBOOT.PBP and writes the plain disc image.",
+	dropText: "Drop an EBOOT.PBP file",
+	acceptedExts: ["pbp", ...ARCHIVE_EXTS],
+	browseFilters: [{ name: "PBP", extensions: ["pbp"] }],
+	fields: recursiveFields(),
+	note: "Only PSN-distributed NPUMDIMG UMD images convert; homebrew and PS1 Classic EBOOTs fail with a clear error.",
+	outputRows: templateOutputRowsWithReport(),
+	showVerify: true,
+	verifyLabel: "Verify after conversion",
+	actionNote: "Jobs start automatically. Parameters lock once queued.",
+	deriveOutput: deriveDiscIsoPath,
+	buildArgs: (store, item, taskId) => {
+		const tmpl = templateIsActive(store);
+		return {
+			input: item.path,
+			output: tmpl ? null : withOutputDir(deriveDiscIsoPath(item.path), store.outputDir || ""),
+			onConflict: store.onConflict,
+			skipSpaceCheck: store.skipSpaceCheck,
+			outputTemplate: store.outputTemplate || null,
+			report: !!store.reportFile,
+			reportFile: store.reportFile || null,
+			verifyAfter: store.verifyAfter,
+			dryRun: false,
+			taskId,
+		};
+	},
+	chips: () => "",
+};
+
+registerOp("convert", { ctr, cso, chd, cue, xbox, psp });

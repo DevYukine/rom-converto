@@ -141,7 +141,10 @@ fn read_capped<R: Read + Seek>(reader: &mut R, segment: Segment) -> Result<Optio
     Ok(Some(buf))
 }
 
-fn read_psar_kind<R: Read + Seek>(reader: &mut R, segment: Segment) -> Result<Option<PsarKind>> {
+pub(crate) fn read_psar_kind<R: Read + Seek>(
+    reader: &mut R,
+    segment: Segment,
+) -> Result<Option<PsarKind>> {
     if segment.size < 8 {
         return Ok(None);
     }

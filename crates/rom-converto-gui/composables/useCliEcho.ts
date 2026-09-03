@@ -416,6 +416,33 @@ export function buildCliCommand(command: string, args: Record<string, unknown>, 
       ]);
     case "cmd_xenon_verify":
       return join(["xenon", "verify", quote(str(args.input))]);
+    case "cmd_psp_extract":
+      return join([
+        args.dryRun === true && "--dry-run",
+        args.skipSpaceCheck === true && "--skip-space-check",
+        "psp", "extract",
+        quote(str(args.input)),
+        quote(str(args.outputDir)),
+      ]);
+    case "cmd_psp_to_iso":
+      return join([
+        args.dryRun === true && "--dry-run",
+        args.skipSpaceCheck === true && "--skip-space-check",
+        "psp", "to-iso",
+        conflict(args),
+        template(args),
+        report(args),
+        quote(str(args.input)),
+        outputArg(args),
+      ]);
+    case "cmd_vita_extract":
+      return join([
+        args.dryRun === true && "--dry-run",
+        args.skipSpaceCheck === true && "--skip-space-check",
+        "vita", "extract",
+        quote(str(args.input)),
+        quote(str(args.outputDir)),
+      ]);
     case "cmd_dat_rename": {
       const depth = args.maxDepth as number | null | undefined;
       const policy = str(args.onConflict);

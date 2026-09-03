@@ -1,8 +1,8 @@
 //! Plain extraction of the segments an `EBOOT.PBP` carries.
 //!
-//! This unpacks the container only. `DATA.PSAR` comes out as stored, still
-//! encrypted for `NPUMDIMG` images, because the PSP ISO decryption keys and
-//! algorithm are not implemented here.
+//! This unpacks the container only. `DATA.PSAR` comes out as stored, so it
+//! stays encrypted for `NPUMDIMG` images; [`crate::sony::psp::npumd::to_iso`]
+//! decrypts those into an ISO.
 
 use std::fs::File;
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};

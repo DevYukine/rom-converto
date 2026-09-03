@@ -75,6 +75,10 @@ describe("plain image inputs keep extension replacement", () => {
     expect(deriveDecryptedPath(`${DOTTED}.cia`)).toBe(`${DOTTED}.decrypted.cia`);
   });
 
+  it("derives iso from an EBOOT.PBP without doubling the extension", () => {
+    expect(deriveDiscIsoPath("EBOOT.PBP")).toBe("EBOOT.iso");
+  });
+
   it("derives decrypted/encrypted nds paths", () => {
     expect(deriveDecryptedPath("game.nds")).toBe("game.decrypted.nds");
     expect(deriveEncryptedPath("game.nds")).toBe("game.encrypted.nds");
