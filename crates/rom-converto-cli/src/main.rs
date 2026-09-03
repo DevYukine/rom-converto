@@ -1539,8 +1539,9 @@ async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()>
                 if cmd.keys.is_some() {
                     anyhow::bail!("--keys is only supported by nx, wup, and ps3 info");
                 }
-                ensure_input_exists(&cmd.input)?;
-                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, ALL_IMAGE_EXTS)?;
+                let input = require_info_input(&cmd.input)?;
+                ensure_input_exists(input)?;
+                let resolved = rom_converto_lib::util::resolve_input(input, ALL_IMAGE_EXTS)?;
                 let info = rom_converto_lib::nintendo::ctr::info::read_info(resolved.path())?;
                 if let Some(dir) = &cmd.save_icon {
                     save_ctr_icon(&info, dir)?;
@@ -1869,8 +1870,9 @@ async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()>
                 if cmd.keys.is_some() {
                     anyhow::bail!("--keys is only supported by nx, wup, and ps3 info");
                 }
-                ensure_input_exists(&cmd.input)?;
-                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, ALL_IMAGE_EXTS)?;
+                let input = require_info_input(&cmd.input)?;
+                ensure_input_exists(input)?;
+                let resolved = rom_converto_lib::util::resolve_input(input, ALL_IMAGE_EXTS)?;
                 let info = rom_converto_lib::nintendo::dol::info::read_info(resolved.path())?;
                 if let Some(dir) = &cmd.save_icon {
                     save_dol_banner(&info, dir)?;
@@ -2216,8 +2218,9 @@ async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()>
                 if cmd.keys.is_some() {
                     anyhow::bail!("--keys is only supported by nx, wup, and ps3 info");
                 }
-                ensure_input_exists(&cmd.input)?;
-                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, ALL_IMAGE_EXTS)?;
+                let input = require_info_input(&cmd.input)?;
+                ensure_input_exists(input)?;
+                let resolved = rom_converto_lib::util::resolve_input(input, ALL_IMAGE_EXTS)?;
                 let info = rom_converto_lib::nintendo::rvl::info::read_info(resolved.path())?;
                 if let Some(dir) = &cmd.save_icon {
                     save_rvl_image(&info, dir)?;
@@ -2364,8 +2367,9 @@ async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()>
                 }
             }
             WupCommands::Info(cmd) => {
-                ensure_input_exists(&cmd.input)?;
-                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, ALL_IMAGE_EXTS)?;
+                let input = require_info_input(&cmd.input)?;
+                ensure_input_exists(input)?;
+                let resolved = rom_converto_lib::util::resolve_input(input, ALL_IMAGE_EXTS)?;
                 let info = rom_converto_lib::nintendo::wup::info::read_info(
                     resolved.path(),
                     cmd.keys.as_deref(),
@@ -2735,8 +2739,9 @@ async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()>
                 }
             }
             NxCommands::Info(cmd) => {
-                ensure_input_exists(&cmd.input)?;
-                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, ALL_IMAGE_EXTS)?;
+                let input = require_info_input(&cmd.input)?;
+                ensure_input_exists(input)?;
+                let resolved = rom_converto_lib::util::resolve_input(input, ALL_IMAGE_EXTS)?;
                 let info = rom_converto_lib::nintendo::nx::info::read_info(
                     resolved.path(),
                     cmd.keys.as_deref(),
@@ -2816,8 +2821,9 @@ async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()>
                 if cmd.keys.is_some() {
                     anyhow::bail!("--keys is only supported by nx and wup info");
                 }
-                ensure_input_exists(&cmd.input)?;
-                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, ALL_IMAGE_EXTS)?;
+                let input = require_info_input(&cmd.input)?;
+                ensure_input_exists(input)?;
+                let resolved = rom_converto_lib::util::resolve_input(input, ALL_IMAGE_EXTS)?;
                 let info = rom_converto_lib::microsoft::xbox::read_info(resolved.path())?;
                 if let Some(dir) = &cmd.save_icon {
                     save_xbox_icon(&info, dir)?;
@@ -2902,8 +2908,9 @@ async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()>
                 if cmd.keys.is_some() {
                     anyhow::bail!("--keys is only supported by nx and wup info");
                 }
-                ensure_input_exists(&cmd.input)?;
-                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, ALL_IMAGE_EXTS)?;
+                let input = require_info_input(&cmd.input)?;
+                ensure_input_exists(input)?;
+                let resolved = rom_converto_lib::util::resolve_input(input, ALL_IMAGE_EXTS)?;
                 // A not-yet-packed disc image is a valid xenon input for
                 // compress, so info falls back to its XDVDFS layout rather
                 // than failing on the missing ZArchive magic.
@@ -3048,8 +3055,9 @@ async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()>
                 }
             }
             Ps3Commands::Info(cmd) => {
-                ensure_input_exists(&cmd.input)?;
-                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["iso"])?;
+                let input = require_info_input(&cmd.input)?;
+                ensure_input_exists(input)?;
+                let resolved = rom_converto_lib::util::resolve_input(input, &["iso"])?;
                 let input = resolved.path();
                 let size = file_len(input);
                 let key = resolve_ps3_key(input, resolved.output_basis(), cmd.keys.as_deref());
@@ -3155,8 +3163,9 @@ async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()>
                 if cmd.keys.is_some() {
                     anyhow::bail!("--keys is only supported by nx, wup, and ps3 info");
                 }
-                ensure_input_exists(&cmd.input)?;
-                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["pbp"])?;
+                let input = require_info_input(&cmd.input)?;
+                ensure_input_exists(input)?;
+                let resolved = rom_converto_lib::util::resolve_input(input, &["pbp"])?;
                 let info = rom_converto_lib::sony::psp::read_info(resolved.path())?;
                 if let Some(dir) = &cmd.save_icon {
                     save_pbp_icon(&info, dir)?;
@@ -3193,8 +3202,9 @@ async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()>
                 if cmd.keys.is_some() {
                     anyhow::bail!("--keys is only supported by nx, wup, and ps3 info");
                 }
-                ensure_input_exists(&cmd.input)?;
-                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["vpk", "pkg"])?;
+                let input = require_info_input(&cmd.input)?;
+                ensure_input_exists(input)?;
+                let resolved = rom_converto_lib::util::resolve_input(input, &["vpk", "pkg"])?;
                 let info = rom_converto_lib::info::read_info(
                     resolved.path(),
                     &rom_converto_lib::info::InfoOptions::default(),
@@ -3460,8 +3470,9 @@ async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()>
                 if cmd.keys.is_some() {
                     anyhow::bail!("--keys is only supported by nx, wup, and ps3 info");
                 }
-                ensure_input_exists(&cmd.input)?;
-                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["nds", "dsi"])?;
+                let input = require_info_input(&cmd.input)?;
+                ensure_input_exists(input)?;
+                let resolved = rom_converto_lib::util::resolve_input(input, &["nds", "dsi"])?;
                 let info = rom_converto_lib::nintendo::nds::info::read_info(resolved.path())?;
                 if let Some(dir) = &cmd.save_icon {
                     save_nds_icon(&info, dir)?;
@@ -3871,8 +3882,9 @@ async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()>
                         "--save-icon is not supported for chd: the format has no embedded artwork"
                     );
                 }
-                ensure_input_exists(&cmd.input)?;
-                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, ALL_IMAGE_EXTS)?;
+                let input = require_info_input(&cmd.input)?;
+                ensure_input_exists(input)?;
+                let resolved = rom_converto_lib::util::resolve_input(input, ALL_IMAGE_EXTS)?;
                 let info = rom_converto_lib::chd::info::read_info(resolved.path())?;
                 info_print::print(&rom_converto_lib::info::InfoResult::Chd(info), cmd.json)?;
             }
@@ -4263,8 +4275,9 @@ async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()>
                         "--save-icon is not supported for cso: the format has no embedded artwork"
                     );
                 }
-                ensure_input_exists(&cmd.input)?;
-                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, ALL_IMAGE_EXTS)?;
+                let input = require_info_input(&cmd.input)?;
+                ensure_input_exists(input)?;
+                let resolved = rom_converto_lib::util::resolve_input(input, ALL_IMAGE_EXTS)?;
                 let info = rom_converto_lib::cso::info::read_info(resolved.path())?;
                 info_print::print(&rom_converto_lib::info::InfoResult::Cso(info), cmd.json)?;
             }
@@ -4426,6 +4439,16 @@ async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()>
                 }
             }
         },
+        Commands::Capabilities(_) => {
+            let manifest = serde_json::json!({
+                "schema": "rom-converto.capabilities.v1",
+                "name": "rom-converto",
+                "version": env!("ROM_CONVERTO_DISPLAY_VERSION"),
+                "info_extensions": rom_converto_lib::info::SUPPORTED_INFO_EXTENSIONS,
+                "runner": rom_converto_lib::runner::schema_json(),
+            });
+            println!("{}", serde_json::to_string_pretty(&manifest)?);
+        }
         Commands::Hash(cmd) => {
             let algos = parse_algos(&cmd.algo).map_err(|e| anyhow::anyhow!(e))?;
             if cmd.recursive {
@@ -4453,19 +4476,43 @@ async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()>
             }
         }
         Commands::Info(cmd) => {
-            ensure_input_exists(&cmd.input)?;
-            let resolved = rom_converto_lib::util::resolve_input(&cmd.input, ALL_IMAGE_EXTS)?;
-            let info = rom_converto_lib::info::read_info(
-                resolved.path(),
-                &rom_converto_lib::info::InfoOptions {
-                    keys_path: cmd.keys.clone(),
-                    parent_path: None,
-                },
-            )?;
-            if let Some(dir) = &cmd.save_icon {
-                save_info_icon(&info, dir)?;
+            let opts = rom_converto_lib::info::InfoOptions {
+                keys_path: cmd.keys.clone(),
+                parent_path: None,
+            };
+            let batch_paths = if let Some(paths_file) = &cmd.paths_file {
+                Some(read_info_paths_file(paths_file)?)
+            } else {
+                let input = cmd
+                    .input
+                    .as_ref()
+                    .expect("clap requires INPUT or --paths-file");
+                if cmd.batch && input.is_dir() {
+                    let paths = collect_info_batch_files(input)?;
+                    if paths.is_empty() {
+                        anyhow::bail!("no supported files found under {}", input.display());
+                    }
+                    Some(paths)
+                } else {
+                    None
+                }
+            };
+
+            if let Some(paths) = batch_paths {
+                run_info_batch(&paths, &opts, cmd.json, cmd.save_icon.as_deref());
+            } else {
+                let input = cmd
+                    .input
+                    .as_ref()
+                    .expect("clap requires INPUT or --paths-file");
+                ensure_input_exists(input)?;
+                let resolved = rom_converto_lib::util::resolve_input(input, ALL_IMAGE_EXTS)?;
+                let info = rom_converto_lib::info::read_info(resolved.path(), &opts)?;
+                if let Some(dir) = &cmd.save_icon {
+                    save_info_icon(&info, dir)?;
+                }
+                info_print::print(&info, cmd.json)?;
             }
-            info_print::print(&info, cmd.json)?;
         }
         Commands::Playlist(cmd) => {
             require_dir(&cmd.input)?;
@@ -4702,6 +4749,130 @@ fn require_dir(input: &std::path::Path) -> Result<()> {
         anyhow::bail!("expected a directory: {}", input.display());
     }
     Ok(())
+}
+
+/// Unwraps a per-console `info` subcommand's INPUT; these subcommands don't
+/// support `--paths-file`, so INPUT is always required.
+fn require_info_input(input: &Option<std::path::PathBuf>) -> Result<&Path> {
+    input
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("INPUT is required"))
+}
+
+/// Reads one input path per line from `path`; blank lines and `#` comments
+/// are skipped.
+fn read_info_paths_file(path: &Path) -> Result<Vec<std::path::PathBuf>> {
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read paths file: {}", path.display()))?;
+    Ok(content
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(std::path::PathBuf::from)
+        .collect())
+}
+
+/// Recursively collects files under `dir` whose lowercase extension is in
+/// [`rom_converto_lib::info::SUPPORTED_INFO_EXTENSIONS`], sorted for a
+/// deterministic batch order.
+fn collect_info_batch_files(dir: &Path) -> Result<Vec<std::path::PathBuf>> {
+    fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) -> Result<()> {
+        for entry in std::fs::read_dir(dir)
+            .with_context(|| format!("failed to read directory: {}", dir.display()))?
+        {
+            let entry =
+                entry.with_context(|| format!("failed to read directory: {}", dir.display()))?;
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, out)?;
+            } else if path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.to_ascii_lowercase())
+                .is_some_and(|e| {
+                    rom_converto_lib::info::SUPPORTED_INFO_EXTENSIONS.contains(&e.as_str())
+                })
+            {
+                out.push(path);
+            }
+        }
+        Ok(())
+    }
+    let mut out = Vec::new();
+    walk(dir, &mut out)?;
+    out.sort();
+    Ok(out)
+}
+
+/// One result row of a batch `info` run, serialized as either
+/// `{"path","ok":true,"info"}` or `{"path","ok":false,"error"}`.
+#[derive(serde::Serialize)]
+struct InfoBatchEntry {
+    path: String,
+    ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    info: Option<rom_converto_lib::info::InfoResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+fn info_for_batch_entry(
+    path: &Path,
+    opts: &rom_converto_lib::info::InfoOptions,
+    save_icon: Option<&Path>,
+) -> Result<rom_converto_lib::info::InfoResult> {
+    let info = rom_converto_lib::info::read_info(path, opts)?;
+    if let Some(dir) = save_icon {
+        save_info_icon(&info, dir)?;
+    }
+    Ok(info)
+}
+
+/// Runs `info` over every path, printing a single JSON array with `--json`
+/// or a separated pretty section per file otherwise. Per-file failures are
+/// reported inline and never affect the process exit code.
+fn run_info_batch(
+    paths: &[std::path::PathBuf],
+    opts: &rom_converto_lib::info::InfoOptions,
+    json: bool,
+    save_icon: Option<&Path>,
+) {
+    if json {
+        let mut results = Vec::with_capacity(paths.len());
+        for path in paths {
+            let path_str = path.display().to_string();
+            match info_for_batch_entry(path, opts, save_icon) {
+                Ok(info) => results.push(InfoBatchEntry {
+                    path: path_str,
+                    ok: true,
+                    info: Some(info),
+                    error: None,
+                }),
+                Err(e) => results.push(InfoBatchEntry {
+                    path: path_str,
+                    ok: false,
+                    info: None,
+                    error: Some(e.to_string()),
+                }),
+            }
+        }
+        match serde_json::to_string_pretty(&results) {
+            Ok(s) => println!("{s}"),
+            Err(e) => log::error!("failed to serialize batch results: {e}"),
+        }
+    } else {
+        for path in paths {
+            println!("==> {}", path.display());
+            match info_for_batch_entry(path, opts, save_icon) {
+                Ok(info) => {
+                    if let Err(e) = info_print::print(&info, false) {
+                        log::warn!("{}: {}", path.display(), e);
+                    }
+                }
+                Err(e) => log::warn!("{}: {}", path.display(), e),
+            }
+        }
+    }
 }
 
 fn ok_str(b: bool) -> &'static str {

@@ -28,7 +28,18 @@ For RVZ and NSZ/XCZ the output is byte-identical to the reference encoder (Dolph
 
 Single-image commands (compress, decompress, convert, extract, verify, info, and `hash`) also read a `.zip`, `.7z`, `.rar`, `.tar`, or `.tar.gz`/`.tgz` archive directly and operate on the first matching member. See [`docs/cli.md`](docs/cli.md) for the details.
 
-`rom-converto info <input>` auto-detects the console and inspects any format above without naming it, including PS1/PS2 (`.iso`, `.cue`+`.bin`) and PSP (`.iso`) title metadata, embedded icons, and encryption state where it can be determined; `chd info` and `cso info` also report the PlayStation disc found inside the container, when there is one.
+`rom-converto info <input>` auto-detects the console and inspects any format above without naming it, including PS1/PS2 (`.iso`, `.cue`+`.bin`) and PSP (`.iso`) title metadata, embedded icons, and encryption state where it can be determined; `chd info` and `cso info` also report the PlayStation disc found inside the container, when there is one. It also reads:
+
+| Format | Reported |
+|---|---|
+| Nintendo DS `.nds`, `.dsi` | header fields, header CRC16, secure-area encryption state, banner titles, 32x32 icon |
+| PSP `EBOOT.PBP` (`.pbp`) | `PARAM.SFO` fields, icon, segment layout, and what `DATA.PSAR` holds (`NPUMDIMG` is an encrypted PSN image) |
+| PS Vita `.vpk`, `.pkg` | title, title ID, content ID, category, item counts, and the VPK bubble icon |
+| Cartridge ROMs | header fields plus the stored and recomputed checksum each format defines |
+
+The cartridge systems are NES (`.nes`), SNES (`.sfc`, `.smc`), Nintendo 64 (`.z64`, `.n64`, `.v64`), Game Boy and Color (`.gb`, `.gbc`), Game Boy Advance (`.gba`), Mega Drive (`.md`, `.gen`, `.smd`), Master System (`.sms`), Game Gear (`.gg`), Virtual Boy (`.vb`), WonderSwan (`.ws`, `.wsc`), Neo Geo Pocket (`.ngp`, `.ngc`), Atari Lynx (`.lnx`), and Atari 7800 (`.a78`). A `.ngc` file is checked for the SNK license string before it is read as a GameCube disc, since both use that extension.
+
+Pass `--batch` with a directory, or `--paths-file` with a list, to inspect many files in one run. `rom-converto capabilities` prints the operations and info extensions the installed binary supports as JSON.
 
 ## Installation
 
@@ -75,7 +86,7 @@ Each top-level command is a console or format family, and every family has opera
 
 | Command | Purpose |
 |---|---|
-| `nds` | Encrypt and decrypt Nintendo DS ROM secure areas |
+| `nds` | Encrypt, decrypt, and inspect Nintendo DS ROMs |
 | `ctr` | Convert, decrypt, compress, and verify Nintendo 3DS ROMs |
 | `dol` | Compress, migrate, and verify GameCube disc images (RVZ) |
 | `rvl` | Compress, migrate, and verify Wii disc images (RVZ) |
@@ -87,7 +98,10 @@ Each top-level command is a console or format family, and every family has opera
 | `xbox` | Convert, extract, and inspect Original Xbox disc images (XISO) |
 | `xenon` | Compress, extract, verify, and inspect Xbox 360 disc images (ZAR) |
 | `ps3` | Decrypt and inspect PlayStation 3 disc images |
+| `psp` | Inspect and extract PSP `EBOOT.PBP` containers |
+| `vita` | Inspect PS Vita VPK/PKG packages and extract a PKG |
 | `info` | Auto-detect the console and inspect any supported ROM or disc image |
+| `capabilities` | Print the supported operations and info extensions as JSON |
 | `dat` | Identify, verify, and rename ROMs against the Playmatch database |
 | `hash` | Compute CRC32, SHA-1, MD5, and SHA-256 digests |
 | `playlist` | Generate `.m3u` files for multi-disc sets |

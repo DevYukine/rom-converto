@@ -122,6 +122,15 @@ pub enum LanguageCode {
     TaiwaneseChinese,
 }
 
+/// Every extension [`detect_console`] accepts. Must stay in sync with it.
+pub const SUPPORTED_INFO_EXTENSIONS: &[&str] = &[
+    "chd", "cso", "zso", "cia", "3ds", "cci", "cxi", "ncch", "zcia", "zcci", "zcxi", "z3dsx",
+    "nsp", "nsz", "xci", "xcz", "wud", "wux", "wua", "gcm", "wbfs", "xiso", "zar", "cue", "iso",
+    "rvz", "nds", "dsi", "pbp", "vpk", "pkg", "nes", "sfc", "smc", "z64", "n64", "v64", "gb",
+    "gbc", "gba", "md", "gen", "smd", "sms", "gg", "vb", "ws", "wsc", "ngp", "ngc", "lnx", "a78",
+    "avi",
+];
+
 /// Options for [`read_info`]: an optional keys file and parent image
 /// path, used only by the formats that need them.
 #[derive(Debug, Clone, Default)]
@@ -644,6 +653,16 @@ mod tests {
         let unknown = dir.path().join("other.ngc");
         std::fs::write(&unknown, vec![0u8; 0x100]).expect("write unknown");
         assert!(detect_console(&unknown).is_err());
+    }
+
+    #[test]
+    fn supported_extensions_cover_every_retro_extension() {
+        for ext in crate::retro::RETRO_EXTENSIONS {
+            assert!(
+                SUPPORTED_INFO_EXTENSIONS.contains(ext),
+                "missing retro extension {ext}"
+            );
+        }
     }
 
     #[test]

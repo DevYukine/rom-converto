@@ -1,3 +1,4 @@
+use crate::commands::capabilities::CapabilitiesCommand;
 use crate::commands::chd::ChdCommands;
 use crate::commands::completions::ShellCompletionsCommand;
 use crate::commands::cso::CsoCommands;
@@ -21,6 +22,7 @@ use clap::{Parser, Subcommand};
 use rom_converto_lib::util::ConflictPolicy;
 use std::path::PathBuf;
 
+pub mod capabilities;
 pub mod chd;
 pub mod completions;
 pub mod cso;
@@ -148,6 +150,8 @@ pub enum Commands {
 
     #[command(subcommand)]
     Dat(DatCommands),
+
+    Capabilities(CapabilitiesCommand),
 
     Hash(HashCommand),
 
