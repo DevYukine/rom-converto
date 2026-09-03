@@ -2,6 +2,7 @@
 //! and the decoded IMET banner icon, for the `rvl info` command.
 
 use crate::info::{Image, MultilingualString};
+use crate::nintendo::rvl::banner;
 use crate::nintendo::rvl::constants::{
     WII_MAGIC, WII_MAGIC_OFFSET, WII_PARTITION_HEADER_TMD_SIZE_OFFSET,
 };
@@ -314,12 +315,12 @@ fn read_opening_bnr<R: Read + Seek>(reader: &mut R) -> Result<Vec<u8>> {
 /// opening.bnr := [0x40 padding] [0x600 IMET] [outer U8 archive]
 /// outer U8 := /meta/banner.bin /meta/icon.bin /meta/sound.bin
 /// meta/banner.bin := optional "LZ77"-magic LZSS wrapper around an
-///                    inner U8 archive that holds arc/timg/<name>.tpl.
-///                    Real banners ship dozens of TPLs under arc/timg/;
-///                    see `select_banner_tpl` for how the displayed banner
-///                    texture is chosen without parsing arc/blyt/*.brlyt.
-/// banner.tpl := standard GameCube/Wii TPL, RGB5A3 or CMPR, a few hundred
-///               pixels on a side.
+///                    inner U8 archive holding arc/blyt/*.brlyt,
+///                    arc/timg/*.tpl and arc/anim/*.brlan.
+///
+/// The layout is composed by [`banner::render_banner`]; banner.bin is tried
+/// first, then icon.bin, and only if neither layout renders does this fall
+/// back to picking a single texture with [`select_banner_tpl`].
 fn extract_icon_image(bnr: &[u8]) -> Result<Image> {
     let u8_offset = locate_outer_u8(bnr)
         .ok_or_else(|| anyhow!("rvl info: U8 archive magic not found in opening.bnr"))?;
@@ -327,50 +328,90 @@ fn extract_icon_image(bnr: &[u8]) -> Result<Image> {
     let outer = U8Archive::parse(&bnr[u8_offset..])
         .map_err(|e| anyhow!("parse outer U8 at offset 0x{:x}: {}", u8_offset, e))?;
 
-    let (label, raw) = if let Some(b) = outer.find("meta/banner.bin") {
-        ("meta/banner.bin", b)
-    } else if let Some(b) = outer.find("meta/icon.bin") {
-        ("meta/icon.bin", b)
-    } else if let Some(b) = outer.find_path_ending_with("/banner.bin") {
-        ("*/banner.bin", b)
-    } else if let Some(b) = outer.find_path_ending_with("/icon.bin") {
-        ("*/icon.bin", b)
-    } else {
+    let mut raw_payloads: Vec<(&str, &[u8])> = Vec::new();
+    for (label, exact, suffix) in [
+        ("banner.bin", "meta/banner.bin", "/banner.bin"),
+        ("icon.bin", "meta/icon.bin", "/icon.bin"),
+    ] {
+        if let Some(raw) = outer
+            .find(exact)
+            .or_else(|| outer.find_path_ending_with(suffix))
+        {
+            raw_payloads.push((label, raw));
+        }
+    }
+    if raw_payloads.is_empty() {
         return Err(anyhow!(
             "rvl info: neither banner.bin nor icon.bin found in opening.bnr U8"
         ));
-    };
-    log::debug!(
-        "rvl info: using {} ({} bytes, first 4: {:02X?})",
-        label,
-        raw.len(),
-        &raw[..raw.len().min(4)]
-    );
+    }
 
-    let payload = unwrap_disc_banner_payload(raw)
-        .with_context(|| format!("rvl info: unwrap {} container", label))?;
+    // banner.bin is tried before icon.bin, decompressing each payload lazily
+    // so a payload that never gets used is never decompressed.
+    for (label, raw) in &raw_payloads {
+        let payload = match unwrap_disc_banner_payload(raw) {
+            Ok(payload) => payload,
+            Err(e) => {
+                log::debug!("rvl info: unwrap {} container failed: {}", label, e);
+                continue;
+            }
+        };
+        let inner = match U8Archive::parse(&payload) {
+            Ok(inner) => inner,
+            Err(e) => {
+                log::debug!("rvl info: parse inner {} U8 failed: {}", label, e);
+                continue;
+            }
+        };
+        match banner::render_banner(&inner) {
+            Ok((rgba, w, h)) => {
+                if rgba.iter().skip(3).step_by(4).any(|&alpha| alpha != 0) {
+                    return Ok(Image::new(encode_png(&rgba, w, h)?, w, h));
+                }
+                log::debug!(
+                    "rvl info: {} layout rendered a fully transparent image, skipping",
+                    label
+                );
+            }
+            Err(e) => log::debug!("rvl info: {} layout render failed: {}", label, e),
+        }
+    }
 
-    let inner = U8Archive::parse(&payload)
-        .with_context(|| format!("rvl info: parse inner {} U8", label))?;
+    // No layout rendered anything visible; fall back to picking a single
+    // texture, trying every payload before giving up.
+    for (label, raw) in &raw_payloads {
+        let payload = match unwrap_disc_banner_payload(raw) {
+            Ok(payload) => payload,
+            Err(_) => continue,
+        };
+        let inner = match U8Archive::parse(&payload) {
+            Ok(inner) => inner,
+            Err(_) => continue,
+        };
+        let Some(tpl_bytes) =
+            select_banner_tpl(&inner).or_else(|| inner.find_path_ending_with(".tpl"))
+        else {
+            continue;
+        };
+        match decode_tpl(tpl_bytes) {
+            Ok((rgba, w, h)) => return Ok(Image::new(encode_png(&rgba, w, h)?, w, h)),
+            Err(e) => log::debug!("rvl info: {} tpl decode failed: {}", label, e),
+        }
+    }
 
-    let tpl_bytes = select_banner_tpl(&inner)
-        .or_else(|| inner.find_path_ending_with(".tpl"))
-        .ok_or_else(|| anyhow!("rvl info: no .tpl file inside {}", label))?;
-
-    let (rgba, w, h) = decode_tpl(tpl_bytes)?;
-    let png = encode_png(&rgba, w, h)?;
-    Ok(Image::new(png, w, h))
+    Err(anyhow!(
+        "rvl info: no renderable .tpl found in banner.bin or icon.bin"
+    ))
 }
 
-/// Pick the banner texture out of the many TPLs a real opening.bnr carries.
+/// Last-resort pick when no layout renders: choose one texture out of the many
+/// TPLs a real opening.bnr carries.
 ///
-/// The layout in arc/blyt/*.brlyt names the displayed banner texture, but
-/// parsing it is heavy. In practice the banner is the game's title art, whose
-/// filename carries "title" or "logo" (the sibling textures are small UI
-/// chrome, or oversized decorative overlays like a full-screen cloud that a
-/// naive largest-area pick would wrongly select). The largest title or logo
-/// texture that decodes is chosen, falling back to the largest decodable
-/// texture of any name.
+/// The banner is usually the game's title art, whose filename carries "title"
+/// or "logo" (the sibling textures are small UI chrome, or oversized
+/// decorative overlays like a full-screen cloud that a naive largest-area pick
+/// would wrongly select). The largest title or logo texture that decodes is
+/// chosen, falling back to the largest decodable texture of any name.
 fn select_banner_tpl<'a>(inner: &U8Archive<'a>) -> Option<&'a [u8]> {
     let candidates: Vec<(String, u64, &'a [u8])> = inner
         .list_paths()
@@ -565,6 +606,10 @@ fn map_imet_language(
 #[cfg(test)]
 mod banner_tests {
     use super::*;
+    use crate::nintendo::rvl::banner::test_fixtures::{
+        MaterialSpec, PaneSpec, build_brlyt, build_solid_tpl,
+    };
+    use crate::nintendo::rvl::test_fixtures::build_u8_archive;
 
     fn write_be_u32(buf: &mut [u8], v: u32) {
         buf[..4].copy_from_slice(&v.to_be_bytes());
@@ -649,142 +694,6 @@ mod banner_tests {
         assert!(rgba.iter().all(|&b| b == 0xFF));
     }
 
-    fn build_u8_archive(entries: &[(&str, Vec<u8>)]) -> Vec<u8> {
-        // Inlined rather than imported from `models/u8_archive::tests`
-        // so this banner test stays self-contained.
-
-        #[derive(Debug)]
-        struct N {
-            is_dir: bool,
-            name: String,
-            data: Vec<u8>,
-            children: Vec<N>,
-        }
-        fn insert(root: &mut N, parts: &[&str], data: Vec<u8>) {
-            if parts.len() == 1 {
-                root.children.push(N {
-                    is_dir: false,
-                    name: parts[0].to_string(),
-                    data,
-                    children: Vec::new(),
-                });
-                return;
-            }
-            let head = parts[0];
-            let pos = root
-                .children
-                .iter()
-                .position(|c| c.is_dir && c.name == head);
-            let idx = match pos {
-                Some(i) => i,
-                None => {
-                    root.children.push(N {
-                        is_dir: true,
-                        name: head.to_string(),
-                        data: Vec::new(),
-                        children: Vec::new(),
-                    });
-                    root.children.len() - 1
-                }
-            };
-            insert(&mut root.children[idx], &parts[1..], data);
-        }
-
-        let mut root = N {
-            is_dir: true,
-            name: String::new(),
-            data: Vec::new(),
-            children: Vec::new(),
-        };
-        for (path, data) in entries {
-            let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-            insert(&mut root, &parts, data.clone());
-        }
-
-        let mut nodes: Vec<(bool, u32, u32, u32)> = Vec::new(); // (is_dir, name_off, data_off_or_0, size)
-        let mut string_table: Vec<u8> = vec![0];
-        let mut payloads: Vec<Vec<u8>> = Vec::new();
-
-        fn intern(t: &mut Vec<u8>, name: &str) -> u32 {
-            if name.is_empty() {
-                return 0;
-            }
-            let off = t.len() as u32;
-            t.extend_from_slice(name.as_bytes());
-            t.push(0);
-            off
-        }
-
-        fn emit(
-            node: &N,
-            nodes: &mut Vec<(bool, u32, u32, u32)>,
-            st: &mut Vec<u8>,
-            payloads: &mut Vec<Vec<u8>>,
-        ) {
-            let name_off = intern(st, &node.name);
-            let my_idx = nodes.len();
-            nodes.push((node.is_dir, name_off, 0, 0));
-            if node.is_dir {
-                for child in &node.children {
-                    emit(child, nodes, st, payloads);
-                }
-                let end_excl = nodes.len() as u32;
-                nodes[my_idx].3 = end_excl;
-            } else {
-                nodes[my_idx].3 = node.data.len() as u32;
-                payloads.push(node.data.clone());
-            }
-        }
-
-        emit(&root, &mut nodes, &mut string_table, &mut payloads);
-        let n = nodes.len();
-
-        let header_size = 0x20usize;
-        let node_table_off = header_size;
-        let node_table_size = n * 12;
-        let string_table_off = node_table_off + node_table_size;
-        let mut data_off = string_table_off + string_table.len();
-        data_off = (data_off + 0x1F) & !0x1F;
-
-        let mut total = data_off;
-        let mut file_offs: Vec<u32> = Vec::new();
-        for p in &payloads {
-            file_offs.push(total as u32);
-            total += p.len();
-        }
-        let mut out = vec![0u8; total];
-
-        write_be_u32(&mut out[0..], 0x55AA382D);
-        write_be_u32(&mut out[4..], node_table_off as u32);
-        write_be_u32(&mut out[8..], (node_table_size + string_table.len()) as u32);
-        write_be_u32(&mut out[12..], data_off as u32);
-
-        let mut fc = 0usize;
-        for (i, (is_dir, name_off, _data_off, size)) in nodes.iter().enumerate() {
-            let off = node_table_off + i * 12;
-            let header = ((*is_dir as u32) << 24) | (name_off & 0x00FF_FFFF);
-            write_be_u32(&mut out[off..], header);
-            let real_data_off = if *is_dir {
-                0
-            } else {
-                let v = file_offs[fc];
-                fc += 1;
-                v
-            };
-            write_be_u32(&mut out[off + 4..], real_data_off);
-            write_be_u32(&mut out[off + 8..], *size);
-        }
-
-        out[string_table_off..string_table_off + string_table.len()].copy_from_slice(&string_table);
-
-        let mut cur = data_off;
-        for p in &payloads {
-            out[cur..cur + p.len()].copy_from_slice(p);
-            cur += p.len();
-        }
-        out
-    }
-
     fn build_synthetic_opening_bnr() -> Vec<u8> {
         let (tpl, _) = build_test_tpl(192, 64);
         let inner_u8 = build_u8_archive(&[("arc/timg/banner.tpl", tpl)]);
@@ -837,6 +746,32 @@ mod banner_tests {
     fn locates_u8_archive_at_0x640() {
         let bnr = build_synthetic_opening_bnr();
         assert_eq!(locate_outer_u8(&bnr), Some(0x640));
+    }
+
+    #[test]
+    fn renders_the_layout_instead_of_picking_a_texture() {
+        // The layout's 96x48 canvas differs from the 192x64 texture the
+        // heuristic would have picked, so the dimensions say which path ran.
+        let brlyt = build_brlyt(
+            96.0,
+            48.0,
+            &["tex.tpl"],
+            &[MaterialSpec::default()],
+            &[PaneSpec::picture("pic")],
+        );
+        let (banner_tpl, _) = build_test_tpl(192, 64);
+        let inner_u8 = build_u8_archive(&[
+            ("arc/blyt/banner.brlyt", brlyt),
+            ("arc/timg/tex.tpl", build_solid_tpl(0xFC00)),
+            ("arc/timg/zzz_title.tpl", banner_tpl),
+        ]);
+        let outer_u8 = build_u8_archive(&[("meta/banner.bin", inner_u8)]);
+        let mut bnr = vec![0u8; 0x640];
+        bnr[0x40..0x44].copy_from_slice(b"IMET");
+        bnr.extend_from_slice(&outer_u8);
+
+        let image = extract_icon_image(&bnr).expect("banner extraction must succeed");
+        assert_eq!((image.width, image.height), (96, 48));
     }
 }
 

@@ -217,8 +217,150 @@ pub fn decode_i4_tiled(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>> 
                         out[out_off] = v;
                         out[out_off + 1] = v;
                         out[out_off + 2] = v;
-                        out[out_off + 3] = 0xFF;
+                        out[out_off + 3] = v;
                     }
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Decode GameCube/Wii TPL format 1 (I8) tiled pixel data into RGBA8.
+///
+/// 8x4 tiles of one intensity byte per texel; GX replicates the intensity
+/// into all four channels including alpha.
+pub fn decode_i8_tiled(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
+    decode_gx_tiled("i8", data, width, height, (8, 4, 32), |tile, i| {
+        let v = tile[i];
+        [v, v, v, v]
+    })
+}
+
+/// Decode GameCube/Wii TPL format 2 (IA4) tiled pixel data into RGBA8.
+///
+/// 8x4 tiles of one byte per texel: the high nibble is alpha, the low nibble
+/// intensity, each scaled by 17 to fill a byte.
+pub fn decode_ia4_tiled(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
+    decode_gx_tiled("ia4", data, width, height, (8, 4, 32), |tile, i| {
+        let b = tile[i];
+        let a = (b >> 4) * 17;
+        let v = (b & 0x0F) * 17;
+        [v, v, v, a]
+    })
+}
+
+/// Decode GameCube/Wii TPL format 3 (IA8) tiled pixel data into RGBA8.
+///
+/// 4x4 tiles of one big-endian halfword per texel: high byte alpha, low byte
+/// intensity.
+pub fn decode_ia8_tiled(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
+    decode_gx_tiled("ia8", data, width, height, (4, 4, 32), |tile, i| {
+        let a = tile[i * 2];
+        let v = tile[i * 2 + 1];
+        [v, v, v, a]
+    })
+}
+
+/// Decode GameCube/Wii TPL format 4 (RGB565) tiled pixel data into RGBA8.
+///
+/// 4x4 tiles of big-endian RGB565 halfwords in raster order. This is the GX
+/// block layout, not the 3DS Z-order one that
+/// [`decode_rgb565_morton_tiled`] handles.
+pub fn decode_rgb565_gx_tiled(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
+    decode_gx_tiled("rgb565", data, width, height, (4, 4, 32), |tile, i| {
+        let (r, g, b) = rgb565_to_rgb8(u16::from_be_bytes([tile[i * 2], tile[i * 2 + 1]]));
+        [r, g, b, 0xFF]
+    })
+}
+
+/// Decode GameCube/Wii TPL format 8 (CI4) tiled pixel data into RGBA8.
+///
+/// 8x8 tiles of 4-bit palette indices, high nibble first. Indices past the
+/// end of `palette` decode as transparent black.
+pub fn decode_ci4_tiled(
+    data: &[u8],
+    width: u32,
+    height: u32,
+    palette: &[[u8; 4]],
+) -> Result<Vec<u8>> {
+    decode_gx_tiled("ci4", data, width, height, (8, 8, 32), |tile, i| {
+        let byte = tile[i / 2];
+        let idx = if i.is_multiple_of(2) {
+            byte >> 4
+        } else {
+            byte & 0x0F
+        };
+        palette.get(idx as usize).copied().unwrap_or([0, 0, 0, 0])
+    })
+}
+
+/// Decode GameCube/Wii TPL format 9 (CI8) tiled pixel data into RGBA8.
+///
+/// 8x4 tiles of one palette index byte per texel. Indices past the end of
+/// `palette` decode as transparent black.
+pub fn decode_ci8_tiled(
+    data: &[u8],
+    width: u32,
+    height: u32,
+    palette: &[[u8; 4]],
+) -> Result<Vec<u8>> {
+    decode_gx_tiled("ci8", data, width, height, (8, 4, 32), |tile, i| {
+        palette
+            .get(tile[i] as usize)
+            .copied()
+            .unwrap_or([0, 0, 0, 0])
+    })
+}
+
+/// Walk a GX-tiled surface, calling `texel` with the tile's bytes and the
+/// texel's raster index inside that tile.
+///
+/// `tile` is (width, height, bytes) of one block; `width` and `height` must
+/// be whole multiples of the block dimensions.
+fn decode_gx_tiled(
+    label: &str,
+    data: &[u8],
+    width: u32,
+    height: u32,
+    tile: (usize, usize, usize),
+    texel: impl Fn(&[u8], usize) -> [u8; 4],
+) -> Result<Vec<u8>> {
+    let (tile_w, tile_h, tile_bytes) = tile;
+    let w = width as usize;
+    let h = height as usize;
+    if !w.is_multiple_of(tile_w) || !h.is_multiple_of(tile_h) {
+        return Err(anyhow!(
+            "{} dimensions must be multiples of {}x{} (got {}x{})",
+            label,
+            tile_w,
+            tile_h,
+            width,
+            height
+        ));
+    }
+    let tiles_x = w / tile_w;
+    let expected = tiles_x * (h / tile_h) * tile_bytes;
+    if data.len() < expected {
+        return Err(anyhow!(
+            "{} input too short: {} bytes for {}x{}, need {}",
+            label,
+            data.len(),
+            width,
+            height,
+            expected
+        ));
+    }
+
+    let mut out = vec![0u8; w * h * 4];
+    for ty in 0..h / tile_h {
+        for tx in 0..tiles_x {
+            let tile_off = (ty * tiles_x + tx) * tile_bytes;
+            let bytes = &data[tile_off..tile_off + tile_bytes];
+            for py in 0..tile_h {
+                for px in 0..tile_w {
+                    let out_off = ((ty * tile_h + py) * w + tx * tile_w + px) * 4;
+                    out[out_off..out_off + 4].copy_from_slice(&texel(bytes, py * tile_w + px));
                 }
             }
         }
@@ -475,8 +617,9 @@ fn morton_index_8x8(x: u32, y: u32) -> u32 {
     (x & 1) | ((y & 1) << 1) | ((x & 2) << 1) | ((y & 2) << 2) | ((x & 4) << 2) | ((y & 4) << 3)
 }
 
+/// Expands one big-endian RGB5A3 halfword to RGBA8.
 #[inline]
-fn rgb5a3_to_rgba8(pixel: u16) -> (u8, u8, u8, u8) {
+pub fn rgb5a3_to_rgba8(pixel: u16) -> (u8, u8, u8, u8) {
     if pixel & 0x8000 != 0 {
         // Opaque branch: 0 _ rrrrr ggggg bbbbb
         let r5 = ((pixel >> 10) & 0x1F) as u8;
@@ -500,8 +643,9 @@ fn rgb5a3_to_rgba8(pixel: u16) -> (u8, u8, u8, u8) {
     }
 }
 
+/// Expands one RGB565 halfword to RGB8.
 #[inline]
-fn rgb565_to_rgb8(pixel: u16) -> (u8, u8, u8) {
+pub fn rgb565_to_rgb8(pixel: u16) -> (u8, u8, u8) {
     let r5 = ((pixel >> 11) & 0x1F) as u8;
     let g6 = ((pixel >> 5) & 0x3F) as u8;
     let b5 = (pixel & 0x1F) as u8;
@@ -751,7 +895,7 @@ mod tests {
         // One 8x8 tile (32 bytes) filled with 0x0F: even pixels take the
         // high nibble (0x0 -> black), odd pixels the low nibble (0xF -> white).
         let rgba = decode_i4_tiled(&[0x0Fu8; 32], 8, 8).unwrap();
-        assert_eq!(&rgba[0..4], &[0, 0, 0, 0xFF]);
+        assert_eq!(&rgba[0..4], &[0, 0, 0, 0]);
         assert_eq!(&rgba[4..8], &[0xFF, 0xFF, 0xFF, 0xFF]);
     }
 
@@ -768,6 +912,90 @@ mod tests {
     #[test]
     fn decode_i4_rejects_short_input() {
         assert!(decode_i4_tiled(&[0u8; 10], 8, 8).is_err());
+    }
+
+    #[test]
+    fn i8_tile_is_raster_order_within_an_8x4_block() {
+        // One 8x4 tile whose bytes count up, so texel (x, y) holds y*8 + x.
+        let data: Vec<u8> = (0..32u8).collect();
+        let rgba = decode_i8_tiled(&data, 8, 4).unwrap();
+        assert_eq!(&rgba[0..4], &[0, 0, 0, 0]);
+        // (1, 0) -> byte 1, (0, 1) -> byte 8.
+        assert_eq!(&rgba[4..8], &[1, 1, 1, 1]);
+        let off = 8 * 4;
+        assert_eq!(&rgba[off..off + 4], &[8, 8, 8, 8]);
+    }
+
+    #[test]
+    fn i8_tiles_are_row_major() {
+        // 16x4 = two tiles side by side; first all 0x11, second all 0x22.
+        let mut data = vec![0x11u8; 32];
+        data.extend_from_slice(&[0x22u8; 32]);
+        let rgba = decode_i8_tiled(&data, 16, 4).unwrap();
+        assert_eq!(&rgba[0..4], &[0x11, 0x11, 0x11, 0x11]);
+        let off = 8 * 4;
+        assert_eq!(&rgba[off..off + 4], &[0x22, 0x22, 0x22, 0x22]);
+    }
+
+    #[test]
+    fn ia4_splits_alpha_and_intensity_nibbles() {
+        let mut data = vec![0u8; 32];
+        data[0] = 0xF0; // A = 15*17 = 255, I = 0
+        data[1] = 0x0F; // A = 0, I = 255
+        data[2] = 0x88; // both 8*17 = 136
+        let rgba = decode_ia4_tiled(&data, 8, 4).unwrap();
+        assert_eq!(&rgba[0..4], &[0, 0, 0, 0xFF]);
+        assert_eq!(&rgba[4..8], &[0xFF, 0xFF, 0xFF, 0]);
+        assert_eq!(&rgba[8..12], &[136, 136, 136, 136]);
+    }
+
+    #[test]
+    fn ia8_reads_alpha_from_the_high_byte() {
+        let mut data = vec![0u8; 32];
+        data[0] = 0x80;
+        data[1] = 0x40;
+        let rgba = decode_ia8_tiled(&data, 4, 4).unwrap();
+        assert_eq!(&rgba[0..4], &[0x40, 0x40, 0x40, 0x80]);
+    }
+
+    #[test]
+    fn rgb565_gx_tiles_are_raster_order() {
+        // 8x4 = two 4x4 tiles; first tile red, second tile blue.
+        let mut data = Vec::new();
+        data.extend(std::iter::repeat_n(0xF800u16.to_be_bytes(), 16).flatten());
+        data.extend(std::iter::repeat_n(0x001Fu16.to_be_bytes(), 16).flatten());
+        let rgba = decode_rgb565_gx_tiled(&data, 8, 4).unwrap();
+        assert_eq!(&rgba[0..4], &[0xFF, 0x00, 0x00, 0xFF]);
+        let off = 4 * 4;
+        assert_eq!(&rgba[off..off + 4], &[0x00, 0x00, 0xFF, 0xFF]);
+    }
+
+    #[test]
+    fn ci8_looks_up_the_palette() {
+        let palette = [[1, 2, 3, 4], [5, 6, 7, 8]];
+        let mut data = vec![0u8; 32];
+        data[1] = 1;
+        data[2] = 9; // out of range -> transparent black
+        let rgba = decode_ci8_tiled(&data, 8, 4, &palette).unwrap();
+        assert_eq!(&rgba[0..4], &[1, 2, 3, 4]);
+        assert_eq!(&rgba[4..8], &[5, 6, 7, 8]);
+        assert_eq!(&rgba[8..12], &[0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn ci4_reads_the_high_nibble_first() {
+        let palette = [[1, 2, 3, 4], [5, 6, 7, 8]];
+        let data = vec![0x01u8; 32];
+        let rgba = decode_ci4_tiled(&data, 8, 8, &palette).unwrap();
+        assert_eq!(&rgba[0..4], &[1, 2, 3, 4]);
+        assert_eq!(&rgba[4..8], &[5, 6, 7, 8]);
+    }
+
+    #[test]
+    fn gx_tiled_rejects_unaligned_dimensions_and_short_input() {
+        assert!(decode_i8_tiled(&[0u8; 64], 7, 4).is_err());
+        assert!(decode_i8_tiled(&[0u8; 64], 8, 3).is_err());
+        assert!(decode_i8_tiled(&[0u8; 8], 8, 4).is_err());
     }
 
     #[test]

@@ -5,6 +5,7 @@
 //! walking, AES-CBC sector encryption helpers, and the embedded Wii common
 //! keys.
 
+pub(crate) mod banner;
 pub mod common_keys;
 pub mod constants;
 pub mod disc;

@@ -19,6 +19,137 @@ use aes::{
 use block_padding::NoPadding;
 use cbc::Encryptor;
 
+/// Build a U8 archive holding `entries`, creating intermediate directories
+/// for every slash-separated path.
+pub fn build_u8_archive(entries: &[(&str, Vec<u8>)]) -> Vec<u8> {
+    struct Node {
+        is_dir: bool,
+        name: String,
+        data: Vec<u8>,
+        children: Vec<Node>,
+    }
+
+    fn insert(root: &mut Node, parts: &[&str], data: Vec<u8>) {
+        if parts.len() == 1 {
+            root.children.push(Node {
+                is_dir: false,
+                name: parts[0].to_string(),
+                data,
+                children: Vec::new(),
+            });
+            return;
+        }
+        let head = parts[0];
+        let idx = match root
+            .children
+            .iter()
+            .position(|c| c.is_dir && c.name == head)
+        {
+            Some(i) => i,
+            None => {
+                root.children.push(Node {
+                    is_dir: true,
+                    name: head.to_string(),
+                    data: Vec::new(),
+                    children: Vec::new(),
+                });
+                root.children.len() - 1
+            }
+        };
+        insert(&mut root.children[idx], &parts[1..], data);
+    }
+
+    fn intern(table: &mut Vec<u8>, name: &str) -> u32 {
+        if name.is_empty() {
+            return 0;
+        }
+        let off = table.len() as u32;
+        table.extend_from_slice(name.as_bytes());
+        table.push(0);
+        off
+    }
+
+    // (is_dir, name_offset, size); a directory's size is the exclusive end
+    // index of its subtree, a file's is its byte length.
+    fn emit(
+        node: &Node,
+        nodes: &mut Vec<(bool, u32, u32)>,
+        table: &mut Vec<u8>,
+        payloads: &mut Vec<Vec<u8>>,
+    ) {
+        let name_off = intern(table, &node.name);
+        let idx = nodes.len();
+        nodes.push((node.is_dir, name_off, 0));
+        if node.is_dir {
+            for child in &node.children {
+                emit(child, nodes, table, payloads);
+            }
+            nodes[idx].2 = nodes.len() as u32;
+        } else {
+            nodes[idx].2 = node.data.len() as u32;
+            payloads.push(node.data.clone());
+        }
+    }
+
+    let mut root = Node {
+        is_dir: true,
+        name: String::new(),
+        data: Vec::new(),
+        children: Vec::new(),
+    };
+    for (path, data) in entries {
+        let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        insert(&mut root, &parts, data.clone());
+    }
+
+    let mut nodes: Vec<(bool, u32, u32)> = Vec::new();
+    let mut string_table: Vec<u8> = vec![0];
+    let mut payloads: Vec<Vec<u8>> = Vec::new();
+    emit(&root, &mut nodes, &mut string_table, &mut payloads);
+
+    let node_table_off = 0x20usize;
+    let node_table_size = nodes.len() * 12;
+    let string_table_off = node_table_off + node_table_size;
+    let data_off = (string_table_off + string_table.len() + 0x1F) & !0x1F;
+
+    let mut total = data_off;
+    let mut file_offsets: Vec<u32> = Vec::new();
+    for payload in &payloads {
+        file_offsets.push(total as u32);
+        total += payload.len();
+    }
+
+    let mut out = vec![0u8; total];
+    out[0..4].copy_from_slice(&0x55AA_382Du32.to_be_bytes());
+    out[4..8].copy_from_slice(&(node_table_off as u32).to_be_bytes());
+    out[8..12].copy_from_slice(&((node_table_size + string_table.len()) as u32).to_be_bytes());
+    out[12..16].copy_from_slice(&(data_off as u32).to_be_bytes());
+
+    let mut file_cursor = 0usize;
+    for (i, (is_dir, name_off, size)) in nodes.iter().enumerate() {
+        let off = node_table_off + i * 12;
+        let header = ((*is_dir as u32) << 24) | (name_off & 0x00FF_FFFF);
+        out[off..off + 4].copy_from_slice(&header.to_be_bytes());
+        let data_offset = if *is_dir {
+            0
+        } else {
+            let v = file_offsets[file_cursor];
+            file_cursor += 1;
+            v
+        };
+        out[off + 4..off + 8].copy_from_slice(&data_offset.to_be_bytes());
+        out[off + 8..off + 12].copy_from_slice(&size.to_be_bytes());
+    }
+
+    out[string_table_off..string_table_off + string_table.len()].copy_from_slice(&string_table);
+    let mut cursor = data_off;
+    for payload in &payloads {
+        out[cursor..cursor + payload.len()].copy_from_slice(payload);
+        cursor += payload.len();
+    }
+    out
+}
+
 /// Build a fake Wii disc image with the Wii magic at the correct offset and
 /// a compressible repeating pattern for the body. The raw-data path accepts
 /// this as a valid Wii disc without needing a real partition table.
