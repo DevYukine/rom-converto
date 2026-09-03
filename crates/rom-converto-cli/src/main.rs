@@ -4974,11 +4974,11 @@ fn save_info_icon(info: &rom_converto_lib::info::InfoResult, dir: &std::path::Pa
         InfoResult::Nds(i) => save_nds_icon(i, dir),
         InfoResult::Pbp(i) => save_pbp_icon(i, dir),
         InfoResult::Vpk(i) => save_vpk_icon(i, dir),
+        InfoResult::Pkg(i) => save_pkg_icon(i, dir),
         InfoResult::Chd(_)
         | InfoResult::Cso(_)
         | InfoResult::Psx(_)
         | InfoResult::Retro(_)
-        | InfoResult::Pkg(_)
         | InfoResult::LaserDisc(_) => {
             anyhow::bail!("--save-icon is not supported for this format: no embedded artwork")
         }
@@ -5179,6 +5179,25 @@ fn save_vpk_icon(info: &rom_converto_lib::info::VpkInfo, dir: &std::path::Path) 
         .title_id
         .clone()
         .unwrap_or_else(|| "vpk-icon".to_string());
+    let path = dir.join(format!(
+        "{}.png",
+        rom_converto_lib::util::template::sanitize_file_stem(&stem)
+    ));
+    std::fs::write(&path, &img.png_bytes)?;
+    log::info!("Wrote {}", path.display());
+    Ok(())
+}
+
+fn save_pkg_icon(info: &rom_converto_lib::info::PkgInfo, dir: &std::path::Path) -> Result<()> {
+    let Some(img) = &info.icon else {
+        log::warn!("No icon0.png decoded; nothing to save");
+        return Ok(());
+    };
+    std::fs::create_dir_all(dir)?;
+    let stem = info
+        .title_id
+        .clone()
+        .unwrap_or_else(|| "pkg-icon".to_string());
     let path = dir.join(format!(
         "{}.png",
         rom_converto_lib::util::template::sanitize_file_stem(&stem)

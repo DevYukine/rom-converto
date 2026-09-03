@@ -56,6 +56,35 @@ pub enum InfoResult {
     Pkg(PkgInfo),
 }
 
+/// Normalized content category shared by every console that distinguishes
+/// base games from add-on content, so the CLI and GUI can render one
+/// vocabulary (Game / Update / DLC / Demo / System) regardless of the raw
+/// per-console code (PSP "UG", Vita "gp", PS3 "DG", title-id high words).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContentKind {
+    Game,
+    Update,
+    Dlc,
+    Demo,
+    /// A console system title, such as a 3DS system applet or firmware
+    /// module, rather than a game.
+    System,
+}
+
+impl ContentKind {
+    /// Human-facing name, matching the GUI's content-type vocabulary.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            ContentKind::Game => "Game",
+            ContentKind::Update => "Update",
+            ContentKind::Dlc => "DLC",
+            ContentKind::Demo => "Demo",
+            ContentKind::System => "System",
+        }
+    }
+}
+
 /// A string carried per-language, as found in console-specific metadata
 /// blocks (3DS SMDH, Wii IMET, Wii U meta.xml, Switch NACP, ...).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -124,11 +153,11 @@ pub enum LanguageCode {
 
 /// Every extension [`detect_console`] accepts. Must stay in sync with it.
 pub const SUPPORTED_INFO_EXTENSIONS: &[&str] = &[
-    "chd", "cso", "zso", "cia", "3ds", "cci", "cxi", "ncch", "zcia", "zcci", "zcxi", "z3dsx",
-    "nsp", "nsz", "xci", "xcz", "wud", "wux", "wua", "gcm", "wbfs", "xiso", "zar", "cue", "iso",
-    "rvz", "nds", "dsi", "pbp", "vpk", "pkg", "nes", "sfc", "smc", "z64", "n64", "v64", "gb",
-    "gbc", "gba", "md", "gen", "smd", "32x", "sms", "gg", "vb", "ws", "wsc", "ngp", "ngc", "lnx",
-    "a78", "fds", "gdi", "avi",
+    "chd", "cso", "zso", "dax", "cia", "3ds", "cci", "cxi", "ncch", "zcia", "zcci", "zcxi",
+    "z3dsx", "3dsx", "nsp", "nsz", "xci", "xcz", "wud", "wux", "wua", "gcm", "wbfs", "gcz", "wia",
+    "xiso", "zar", "cue", "iso", "rvz", "nds", "dsi", "pbp", "vpk", "pkg", "nes", "sfc", "smc",
+    "z64", "n64", "v64", "gb", "gbc", "gba", "md", "gen", "smd", "32x", "sms", "gg", "vb", "ws",
+    "wsc", "ngp", "ngc", "lnx", "a78", "fds", "gdi", "avi",
 ];
 
 /// Options for [`read_info`]: an optional keys file and parent image
@@ -236,15 +265,16 @@ pub fn detect_console(path: &Path) -> Result<DetectedConsole> {
 
     match lower_ext.as_deref() {
         Some("chd") => return Ok(DetectedConsole::Chd),
-        Some("cso") | Some("zso") => return Ok(DetectedConsole::Cso),
+        Some("cso") | Some("zso") | Some("dax") => return Ok(DetectedConsole::Cso),
         Some("cia") | Some("3ds") | Some("cci") | Some("cxi") | Some("ncch") | Some("zcia")
-        | Some("zcci") | Some("zcxi") | Some("z3dsx") => {
+        | Some("zcci") | Some("zcxi") | Some("z3dsx") | Some("3dsx") => {
             return Ok(DetectedConsole::Ctr);
         }
         Some("nsp") | Some("nsz") | Some("xci") | Some("xcz") => return Ok(DetectedConsole::Nx),
         Some("wud") | Some("wux") | Some("wua") => return Ok(DetectedConsole::Wup),
         Some("gcm") => return Ok(DetectedConsole::Dol),
         Some("wbfs") => return Ok(DetectedConsole::Rvl),
+        Some("gcz") | Some("wia") => return sniff_legacy_disc(path),
         Some("xiso") => return Ok(DetectedConsole::Xbox),
         Some("zar") => return Ok(DetectedConsole::Xenon),
         Some("cue") => return Ok(sniff_cue(path)),
@@ -288,6 +318,30 @@ fn sniff_ngc(path: &Path) -> Result<DetectedConsole> {
 
     Err(anyhow!(
         "ngc file at {} carries neither the Neo Geo Pocket license string nor the GameCube disc magic",
+        path.display()
+    ))
+}
+
+/// Distinguishes GameCube from Wii for a `.gcz` or `.wia` container: opens
+/// it through [`crate::nintendo::disc_input::open_disc_input`] to
+/// decompress it transparently, then checks the same disc-id magic
+/// [`sniff_disc_magic`] uses for a plain `.iso`.
+fn sniff_legacy_disc(path: &Path) -> Result<DetectedConsole> {
+    use std::io::Read;
+
+    let mut reader = crate::nintendo::disc_input::open_disc_input(path)?;
+    let mut head = [0u8; 0x20];
+    reader.read_exact(&mut head)?;
+
+    if head[0x18..0x1C] == [0x5D, 0x1C, 0x9E, 0xA3] {
+        return Ok(DetectedConsole::Rvl);
+    }
+    if head[0x1C..0x20] == [0xC2, 0x33, 0x9F, 0x3D] {
+        return Ok(DetectedConsole::Dol);
+    }
+
+    Err(anyhow!(
+        "disc file at {} does not match GameCube or Wii magic",
         path.display()
     ))
 }
@@ -413,6 +467,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn content_kind_serializes_snake_case_and_displays() {
+        assert_eq!(
+            serde_json::to_string(&ContentKind::Dlc).expect("serialize"),
+            "\"dlc\""
+        );
+        assert_eq!(ContentKind::Dlc.display_name(), "DLC");
+        assert_eq!(ContentKind::Update.display_name(), "Update");
+    }
+
+    #[test]
     fn multilingual_primary_prefers_english() {
         let m = MultilingualString::from_pairs([
             (LanguageCode::Japanese, "ジャパン".to_string()),
@@ -468,6 +532,18 @@ mod tests {
             let r = detect_console(Path::new(&p)).unwrap();
             assert_eq!(r, DetectedConsole::Ctr, "ext {} should route to Ctr", ext);
         }
+    }
+
+    #[test]
+    fn detect_dax_by_extension() {
+        let r = detect_console(Path::new("/tmp/disc.dax")).unwrap();
+        assert_eq!(r, DetectedConsole::Cso);
+    }
+
+    #[test]
+    fn detect_3dsx_by_extension() {
+        let r = detect_console(Path::new("/tmp/homebrew.3dsx")).unwrap();
+        assert_eq!(r, DetectedConsole::Ctr);
     }
 
     #[test]
@@ -756,6 +832,32 @@ mod tests {
         let unknown = dir.path().join("other.ngc");
         std::fs::write(&unknown, vec![0u8; 0x100]).expect("write unknown");
         assert!(detect_console(&unknown).is_err());
+    }
+
+    #[test]
+    fn detect_gcz_and_wia_sniff_legacy_disc() {
+        use crate::nintendo::dol::test_fixtures::make_fake_gamecube_iso;
+        use crate::nintendo::gcz::test_fixtures::make_gcz;
+        use crate::nintendo::rvl::test_fixtures::make_fake_wii_iso_with_partition;
+        use crate::nintendo::wia::test_fixtures::make_wia;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+
+        let gc_iso = make_fake_gamecube_iso(0x40000);
+        let gcz = dir.path().join("game.gcz");
+        std::fs::write(&gcz, make_gcz(&gc_iso, 0x8000, 0)).expect("write gcz");
+        assert_eq!(
+            detect_console(&gcz).expect("detect console"),
+            DetectedConsole::Dol
+        );
+
+        let wii_iso = make_fake_wii_iso_with_partition(2);
+        let wia = dir.path().join("game.wia");
+        std::fs::write(&wia, make_wia(&wii_iso, 3, 0x20_0000)).expect("write wia");
+        assert_eq!(
+            detect_console(&wia).expect("detect console"),
+            DetectedConsole::Rvl
+        );
     }
 
     #[test]

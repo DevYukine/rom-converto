@@ -8,7 +8,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::info::Image;
+use crate::info::{ContentKind, Image};
 use crate::util::sfo::Sfo;
 
 const SFO_MEMBER: &str = "sce_sys/param.sfo";
@@ -30,6 +30,9 @@ pub struct VpkInfo {
     pub category: Option<String>,
     /// Human label for [`VpkInfo::category`], when the code is a known one.
     pub category_label: Option<String>,
+    /// Normalized category, derived from [`VpkInfo::category`].
+    #[serde(default)]
+    pub content_kind: Option<ContentKind>,
     pub icon: Option<Image>,
     /// Number of file members, not counting directory entries.
     pub file_count: u32,
@@ -77,6 +80,10 @@ pub fn read_info(path: &Path) -> Result<VpkInfo> {
         info.app_ver = sfo.get_str("APP_VER").map(str::to_string);
         info.category = sfo.get_str("CATEGORY").map(str::to_string);
         info.category_label = info.category.as_deref().and_then(category_label);
+        info.content_kind = info
+            .category
+            .as_deref()
+            .and_then(content_kind_from_category);
     }
     if let Some(i) = icon_index {
         info.icon = read_member(&mut zip, i, MAX_ICON_BYTES)?.and_then(Image::from_png);
@@ -106,6 +113,16 @@ fn category_label(category: &str) -> Option<String> {
         _ => return None,
     };
     Some(label.to_string())
+}
+
+/// Maps a Vita `param.sfo` `CATEGORY` code to the shared content vocabulary.
+fn content_kind_from_category(category: &str) -> Option<ContentKind> {
+    match category {
+        "gd" | "gda" => Some(ContentKind::Game),
+        "gp" => Some(ContentKind::Update),
+        "ac" => Some(ContentKind::Dlc),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -172,11 +189,26 @@ mod tests {
         assert_eq!(info.app_ver.as_deref(), Some("01.02"));
         assert_eq!(info.category.as_deref(), Some("gd"));
         assert_eq!(info.category_label.as_deref(), Some("Application"));
+        assert_eq!(info.content_kind, Some(ContentKind::Game));
         assert_eq!(info.file_count, 3);
         assert_eq!(info.total_size, sfo.len() as u64 + icon.len() as u64 + 64);
 
         let icon = info.icon.expect("icon0.png");
         assert_eq!((icon.width, icon.height), (128, 128));
+    }
+
+    #[test]
+    fn maps_category_to_content_kind() {
+        for (category, want) in [("gp", ContentKind::Update), ("ac", ContentKind::Dlc)] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("game.vpk");
+            let sfo = build_sfo(&[("CATEGORY", Val::Str(category))]);
+            write_vpk(&path, &[("sce_sys/param.sfo", &sfo)]);
+
+            let info = read_info(&path).unwrap();
+            assert_eq!(info.category.as_deref(), Some(category));
+            assert_eq!(info.content_kind, Some(want), "category {category}");
+        }
     }
 
     #[test]

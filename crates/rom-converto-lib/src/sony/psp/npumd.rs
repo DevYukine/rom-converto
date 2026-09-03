@@ -283,6 +283,7 @@ mod tests {
     /// Wraps `eboot` as the sole `EBOOT.PBP` item of a synthetic PSP package.
     fn build_psp_pkg(content_type: u32, eboot: Vec<u8>) -> Vec<u8> {
         crate::sony::vita::pkg::test_fixtures::build_pkg(
+            2,
             1,
             content_type,
             &[crate::sony::vita::pkg::test_fixtures::Entry {
@@ -368,6 +369,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let input = dir.path().join("game.pkg");
         let pkg = crate::sony::vita::pkg::test_fixtures::build_pkg(
+            2,
             1,
             7,
             &[crate::sony::vita::pkg::test_fixtures::Entry {

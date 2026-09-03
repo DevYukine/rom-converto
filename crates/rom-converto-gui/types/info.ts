@@ -8,6 +8,8 @@ export interface Image {
   height: number;
 }
 
+export type ContentKind = "game" | "update" | "dlc" | "demo" | "system";
+
 export type LanguageCode =
   | "japanese"
   | "english"
@@ -124,7 +126,7 @@ export interface CtrContentEntry {
 }
 
 export interface CtrInfo {
-  format: "cia" | "ncsd" | "ncch" | "unknown";
+  format: "cia" | "ncsd" | "ncch" | "unknown" | "threedsx";
   physical_bytes: number;
   title_id: string;
   program_id: string;
@@ -133,6 +135,7 @@ export interface CtrInfo {
   maker_name: string | null;
   cartridge_size: number | null;
   ncch_encrypted: boolean;
+  content_kind: ContentKind | null;
   smdh: {
     titles: CtrSmdhTitle[];
     region_lock: number;
@@ -236,6 +239,7 @@ export interface WupInfo {
   title_id: number;
   title_id_hex: string;
   title_type: string;
+  content_kind: ContentKind | null;
   title_version: number;
   group_id: number;
   access_rights: number;
@@ -459,6 +463,8 @@ export interface Ps3Info {
   sound_format: string | null;
   firmware: string | null;
   parental_level: number | null;
+  category: string | null;
+  content_kind: ContentKind | null;
   region_count: number;
   total_sectors: number;
   encrypted_sectors: number;
@@ -484,6 +490,7 @@ export interface PspInfo {
   version: string | null;
   firmware: string | null;
   category: string | null;
+  content_kind: ContentKind | null;
   total_sectors: number;
   size_bytes: number;
   icon: Image | null;
@@ -869,6 +876,7 @@ export interface PbpInfo {
   disc_version: string | null;
   category: string | null;
   category_label: string | null;
+  content_kind: ContentKind | null;
   psp_system_ver: string | null;
   parental_level: number | null;
   region: number | null;
@@ -884,6 +892,7 @@ export interface VpkInfo {
   app_ver: string | null;
   category: string | null;
   category_label: string | null;
+  content_kind: ContentKind | null;
   icon: Image | null;
   file_count: number;
   total_size: number;
@@ -893,11 +902,14 @@ export interface PkgInfo {
   content_id: string;
   pkg_revision: number;
   pkg_type: number;
+  platform: "ps3" | "psp" | "vita";
   content_type: number;
   content_type_label: string | null;
+  content_kind: ContentKind | null;
   category: string | null;
   title: string | null;
   title_id: string | null;
+  icon: Image | null;
   item_count: number;
   total_size: number;
   data_offset: number;
@@ -956,6 +968,8 @@ export function pickIconImage(info: InfoResult): Image | null {
     case "pbp":
       return info.icon;
     case "vpk":
+      return info.icon;
+    case "pkg":
       return info.icon;
     default:
       return null;

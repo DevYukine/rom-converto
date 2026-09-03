@@ -5,7 +5,7 @@ use std::io;
 
 use serde::{Deserialize, Serialize};
 
-use crate::info::Image;
+use crate::info::{ContentKind, Image};
 use crate::util::iso9660::{SectorSource, Volume};
 use crate::util::sfo::Sfo;
 
@@ -17,6 +17,10 @@ pub struct PspInfo {
     pub version: Option<String>,
     pub firmware: Option<String>,
     pub category: Option<String>,
+    /// Normalized category, derived from [`PspInfo::category`]. A UMD
+    /// always carries a game, never an update or DLC.
+    #[serde(default)]
+    pub content_kind: Option<ContentKind>,
     pub total_sectors: u64,
     /// Logical size of the disc, not of the file or container it came in.
     pub size_bytes: u64,
@@ -42,6 +46,10 @@ pub(crate) fn read<S: SectorSource>(src: &mut S, volume: &Volume) -> io::Result<
         info.version = sfo.get_str("DISC_VERSION").map(str::to_string);
         info.firmware = sfo.get_str("PSP_SYSTEM_VER").map(str::to_string);
         info.category = sfo.get_str("CATEGORY").map(str::to_string);
+        info.content_kind = info
+            .category
+            .as_deref()
+            .and_then(content_kind_from_category);
     }
     info.icon = volume
         .read_file(src, "PSP_GAME/ICON0.PNG")?
@@ -51,4 +59,13 @@ pub(crate) fn read<S: SectorSource>(src: &mut S, volume: &Volume) -> io::Result<
         .and_then(Image::from_png);
 
     Ok(info)
+}
+
+/// A UMD's `CATEGORY` only ever names a game; there is no update or DLC
+/// category on this medium.
+fn content_kind_from_category(category: &str) -> Option<ContentKind> {
+    match category {
+        "UG" | "MG" | "ME" | "MS" => Some(ContentKind::Game),
+        _ => None,
+    }
 }

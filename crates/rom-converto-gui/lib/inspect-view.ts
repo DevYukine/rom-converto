@@ -4,6 +4,7 @@ import type {
 	DiscContent,
 	InfoResult,
 	LdClvTime,
+	PkgInfo,
 	PsarKind,
 	RetroDetails,
 	RetroInfo,
@@ -78,6 +79,16 @@ export function xenonRatio(logicalSize: number, compressedSize: number): number 
 	return logicalSize > 0 ? (1 - compressedSize / logicalSize) * 100 : 0;
 }
 
+const PKG_PLATFORM_LABEL: Record<PkgInfo["platform"], string> = {
+	ps3: "PS3",
+	psp: "PSP",
+	vita: "PS Vita",
+};
+
+export function pkgPlatformBadge(platform: PkgInfo["platform"]): string {
+	return PKG_PLATFORM_LABEL[platform] ?? "PKG";
+}
+
 function add(list: InspectField[], label: string, value: string | number | null | undefined) {
 	if (value === null || value === undefined || value === "") return;
 	list.push({ label, value: String(value) });
@@ -89,14 +100,6 @@ export function wupEncryption(sourceKind: string): string | null {
 	if (sourceKind.startsWith("loadiine") || sourceKind.startsWith("wua")) return "decrypted";
 	return null;
 }
-
-const CTR_CONTENT_TYPES: Record<string, string> = {
-	"00040000": "Game",
-	"0004000E": "Update",
-	"0004008C": "DLC",
-	"00040010": "System",
-	"00040030": "System",
-};
 
 function ldClvTime(t: LdClvTime): string {
 	return `${t.hours}:${String(t.minutes).padStart(2, "0")}`;
@@ -135,7 +138,7 @@ function discContentRom(content: DiscContent): InspectField[] {
 	} else {
 		add(rom, "Title", content.title);
 		add(rom, "Title ID", content.title_id);
-		add(rom, "Content Type", content.category ? enumDisplayName(content.category) : "Game");
+		add(rom, "Content Type", content.content_kind ? contentTypeDisplayName(content.content_kind) : "Game");
 		add(rom, "Version", content.version);
 		add(rom, "Size", formatBytes(content.size_bytes));
 		add(rom, "Firmware", content.firmware);
@@ -450,7 +453,7 @@ export function buildInspectView(info: InfoResult): InspectView {
 			const title = englishFirst(smdh?.titles, (t) => t.language);
 			add(rom, "Title", title?.long_description || info.product_code || info.title_id);
 			add(rom, "Title ID", info.title_id);
-			add(rom, "Content Type", CTR_CONTENT_TYPES[info.title_id.slice(0, 8).toUpperCase()] ?? info.format.toUpperCase());
+			add(rom, "Content Type", info.content_kind ? contentTypeDisplayName(info.content_kind) : info.format.toUpperCase());
 			if (smdh) {
 				add(rom, "Region", smdh.region_names.join(", "));
 				add(rom, "Languages", smdh.titles.map((t) => languageDisplayName(t.language)).join(", "));
@@ -551,7 +554,7 @@ export function buildInspectView(info: InfoResult): InspectView {
 			const meta = info.meta;
 			add(rom, "Title", englishFirst(meta?.long_names.entries, (e) => e[0])?.[1] || info.title_id_hex);
 			add(rom, "Title ID", info.title_id_hex);
-			add(rom, "Content Type", info.title_type);
+			add(rom, "Content Type", info.content_kind ? contentTypeDisplayName(info.content_kind) : info.title_type);
 			add(rom, "Encryption", wupEncryption(info.source_kind));
 			add(
 				rom,
@@ -784,7 +787,7 @@ export function buildInspectView(info: InfoResult): InspectView {
 		case "ps3": {
 			add(rom, "Title", info.title);
 			add(rom, "Title ID", info.title_id);
-			add(rom, "Content Type", "Game");
+			add(rom, "Content Type", info.content_kind ? contentTypeDisplayName(info.content_kind) : "Game");
 			add(rom, "Version", info.version);
 			add(rom, "Region", info.region);
 			add(rom, "Size", formatBytes(info.size_bytes));
@@ -873,7 +876,7 @@ export function buildInspectView(info: InfoResult): InspectView {
 		case "pbp": {
 			add(rom, "Title", info.title);
 			add(rom, "Title ID", info.disc_id);
-			add(rom, "Content Type", info.category_label ?? (info.category ? enumDisplayName(info.category) : "Game"));
+			add(rom, "Content Type", info.content_kind ? contentTypeDisplayName(info.content_kind) : (info.category_label ?? info.category ?? "Game"));
 			add(rom, "Version", info.disc_version);
 			add(rom, "Size", formatBytes(info.physical_bytes));
 			add(rom, "System Version", info.psp_system_ver);
@@ -889,7 +892,7 @@ export function buildInspectView(info: InfoResult): InspectView {
 		case "vpk": {
 			add(rom, "Title", info.title);
 			add(rom, "Title ID", info.title_id);
-			add(rom, "Content Type", info.category_label ?? (info.category ? enumDisplayName(info.category) : "Game"));
+			add(rom, "Content Type", info.content_kind ? contentTypeDisplayName(info.content_kind) : (info.category_label ?? info.category ?? "Game"));
 			add(rom, "Content ID", info.content_id);
 			add(rom, "Version", info.app_ver);
 			add(rom, "Size", formatBytes(info.total_size));
@@ -899,7 +902,11 @@ export function buildInspectView(info: InfoResult): InspectView {
 		case "pkg": {
 			add(rom, "Title", info.title);
 			add(rom, "Title ID", info.title_id);
-			add(rom, "Content Type", info.content_type_label ?? info.category ?? "Game");
+			add(
+				rom,
+				"Content Type",
+				info.content_kind ? contentTypeDisplayName(info.content_kind) : (info.content_type_label ?? info.category ?? "Game"),
+			);
 			add(rom, "Content ID", info.content_id);
 			add(rom, "Size", formatBytes(info.total_size));
 			add(rom, "Items", info.item_count);

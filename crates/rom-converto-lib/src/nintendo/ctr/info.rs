@@ -5,7 +5,7 @@
 //! its 48x48 icon as PNG) when one is available. CIA inputs without a
 //! MetaData block fall back to ExeFS extraction from the boot content.
 
-use crate::info::Image;
+use crate::info::{ContentKind, Image};
 use crate::nintendo::ctr::constants::{
     CTR_MEDIA_UNIT_SIZE, NCCH_FLAGS7_SEED_CRYPTO, NCCH_MAGIC, NCCH_MAGIC_OFFSET,
     NCSD_PARTITION_COUNT, NCSD_PARTITION_ENTRY_SIZE, NCSD_PARTITION_TABLE_OFFSET,
@@ -16,7 +16,7 @@ use crate::nintendo::ctr::decrypt::util::{decrypt_first_ncch_block, derive_title
 use crate::nintendo::ctr::exefs::read_icon_section;
 use crate::nintendo::ctr::models::cia::{CIA_HEADER_SIZE, CiaHeader, MetaData};
 use crate::nintendo::ctr::models::ncch_header::NcchHeader;
-use crate::nintendo::ctr::models::smdh::{AgeRating, SMDH_LARGE_ICON_DIM, Smdh};
+use crate::nintendo::ctr::models::smdh::{AgeRating, SMDH_LARGE_ICON_DIM, SMDH_TOTAL_SIZE, Smdh};
 use crate::nintendo::ctr::models::title_metadata::ContentChunkRecord;
 use crate::nintendo::ctr::util::{align_64, is_twl_title_id};
 use crate::nintendo::ctr::z3ds::models::{
@@ -46,6 +46,10 @@ pub struct CtrInfo {
     pub seed_crypto: bool,
     pub seed_found: Option<bool>,
     pub seed_keyy: Option<String>,
+    /// Normalized Game/Update/DLC/Demo/System classification derived from
+    /// `title_id`.
+    #[serde(default)]
+    pub content_kind: Option<ContentKind>,
     pub smdh: Option<CtrSmdhInfo>,
     pub icon: Option<Image>,
     pub small_icon: Option<Image>,
@@ -68,6 +72,7 @@ pub enum CtrFormat {
     Cia,
     Ncsd,
     Ncch,
+    Threedsx,
 }
 
 /// Fields of a parsed SMDH relevant to `info` output.
@@ -137,6 +142,10 @@ pub fn read_info(path: &Path) -> Result<CtrInfo> {
         return read_z3ds_info(path, physical_bytes);
     }
 
+    if &probe[0..4] == b"3DSX" {
+        return read_3dsx_info(path, physical_bytes);
+    }
+
     // NCSD / NCCH have magic at 0x100; CIA has a 4-byte header_size at 0.
     if n >= 0x104 {
         let magic = &probe[0x100..0x104];
@@ -173,6 +182,7 @@ fn read_z3ds_info(path: &Path, physical_bytes: u64) -> Result<CtrInfo> {
         underlying_magic::CIA => "cia",
         underlying_magic::NCSD => "3ds",
         underlying_magic::NCCH => "cxi",
+        underlying_magic::THREEDSX => "3dsx",
         _ => "bin",
     };
     let temp_path = temp_dir.path().join(format!("info_temp.{ext}"));
@@ -265,6 +275,7 @@ fn read_cia_info(path: &Path, physical_bytes: u64) -> Result<CtrInfo> {
         None => (None, None),
     };
     let smdh_info = smdh.map(smdh_to_info);
+    let content_kind = content_kind_from_title_id(&info_from_ncch.title_id);
 
     Ok(CtrInfo {
         format: CtrFormat::Cia,
@@ -281,6 +292,7 @@ fn read_cia_info(path: &Path, physical_bytes: u64) -> Result<CtrInfo> {
         seed_crypto,
         seed_found,
         seed_keyy,
+        content_kind,
         smdh: smdh_info,
         icon,
         small_icon,
@@ -336,6 +348,7 @@ fn read_ncsd_info(path: &Path, physical_bytes: u64) -> Result<CtrInfo> {
         None => (None, None),
     };
     let smdh_info = smdh.map(smdh_to_info);
+    let content_kind = content_kind_from_title_id(&info_from_ncch.title_id);
 
     Ok(CtrInfo {
         format: CtrFormat::Ncsd,
@@ -352,6 +365,7 @@ fn read_ncsd_info(path: &Path, physical_bytes: u64) -> Result<CtrInfo> {
         seed_crypto,
         seed_found,
         seed_keyy,
+        content_kind,
         smdh: smdh_info,
         icon,
         small_icon,
@@ -387,6 +401,7 @@ fn read_ncch_info(path: &Path, physical_bytes: u64) -> Result<CtrInfo> {
         None => (None, None),
     };
     let smdh_info = smdh.map(smdh_to_info);
+    let content_kind = content_kind_from_title_id(&info_from_ncch.title_id);
 
     Ok(CtrInfo {
         format: CtrFormat::Ncch,
@@ -403,12 +418,89 @@ fn read_ncch_info(path: &Path, physical_bytes: u64) -> Result<CtrInfo> {
         seed_crypto,
         seed_found,
         seed_keyy,
+        content_kind,
         smdh: smdh_info,
         icon,
         small_icon,
         ncsd_partitions: Vec::new(),
         cia_contents: Vec::new(),
     })
+}
+
+/// Reads a 3DSX homebrew executable's optional embedded SMDH.
+///
+/// 3DSX files have no title id, so [`CtrInfo::content_kind`] is always
+/// `None` and title/program/product/maker fields stay empty.
+fn read_3dsx_info(path: &Path, physical_bytes: u64) -> Result<CtrInfo> {
+    let file = File::open(path)?;
+    let mut reader = BufReader::new(file);
+
+    let mut magic = [0u8; 4];
+    reader.read_exact(&mut magic)?;
+    if magic != *b"3DSX" {
+        return Err(anyhow!("ctr info: not a 3DSX file"));
+    }
+    let header_size = reader.read_u16::<LE>()?;
+
+    let smdh = if header_size >= 0x2C {
+        reader.seek(SeekFrom::Start(0x20))?;
+        let smdh_offset = reader.read_u32::<LE>()?;
+        let smdh_size = reader.read_u32::<LE>()?;
+        if smdh_size as usize == SMDH_TOTAL_SIZE {
+            let mut buf = vec![0u8; SMDH_TOTAL_SIZE];
+            reader
+                .seek(SeekFrom::Start(smdh_offset as u64))
+                .ok()
+                .and_then(|_| reader.read_exact(&mut buf).ok())
+                .and_then(|()| Smdh::parse(&buf).ok())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let (icon, small_icon) = match &smdh {
+        Some(s) => decode_smdh_icons(s),
+        None => (None, None),
+    };
+    let smdh_info = smdh.map(smdh_to_info);
+
+    Ok(CtrInfo {
+        format: CtrFormat::Threedsx,
+        compressed: false,
+        physical_bytes,
+        title_id: String::new(),
+        program_id: String::new(),
+        product_code: String::new(),
+        maker_code: String::new(),
+        maker_name: None,
+        cartridge_size: None,
+        ncch_encrypted: false,
+        seed_crypto: false,
+        seed_found: None,
+        seed_keyy: None,
+        content_kind: None,
+        smdh: smdh_info,
+        icon,
+        small_icon,
+        ncsd_partitions: Vec::new(),
+        cia_contents: Vec::new(),
+    })
+}
+
+/// Derives the shared Game/Update/DLC classification from the first 8 hex
+/// chars of a CTR title id (title type + category), matching the ids the
+/// title-id-based content routes already use.
+fn content_kind_from_title_id(title_id: &str) -> Option<ContentKind> {
+    let prefix = title_id.get(0..8)?;
+    match prefix.to_ascii_lowercase().as_str() {
+        "00040000" => Some(ContentKind::Game),
+        "0004000e" => Some(ContentKind::Update),
+        "0004008c" => Some(ContentKind::Dlc),
+        "00040010" | "00040030" => Some(ContentKind::System),
+        _ => None,
+    }
 }
 
 struct NcchSummary {
@@ -766,5 +858,160 @@ mod tests {
         assert_eq!(boot.index, 0);
         assert_eq!(boot.name, "Application (CXI)");
         assert!(boot.size > 0);
+    }
+
+    /// Builds a minimal 0x36C0-byte SMDH with an English title and a
+    /// zero-filled (but correctly sized) icon pair, matching the fixture
+    /// style in `models::smdh::tests::build_minimal_smdh`.
+    fn build_minimal_smdh(short: &str, publisher: &str) -> Vec<u8> {
+        use crate::nintendo::ctr::models::smdh::{
+            SMDH_MAGIC, SMDH_REGION_LOCK_OFFSET, SMDH_TITLE_ENTRY_SIZE, SMDH_TITLES_OFFSET,
+            SMDH_TOTAL_SIZE,
+        };
+
+        let mut buf = vec![0u8; SMDH_TOTAL_SIZE];
+        buf[0..4].copy_from_slice(&SMDH_MAGIC);
+        let entry_off = SMDH_TITLES_OFFSET + SMDH_TITLE_ENTRY_SIZE; // English slot
+        for (i, u) in short.encode_utf16().enumerate() {
+            let off = entry_off + i * 2;
+            buf[off..off + 2].copy_from_slice(&u.to_le_bytes());
+        }
+        for (i, u) in publisher.encode_utf16().enumerate() {
+            let off = entry_off + 0x180 + i * 2;
+            buf[off..off + 2].copy_from_slice(&u.to_le_bytes());
+        }
+        buf[SMDH_REGION_LOCK_OFFSET..SMDH_REGION_LOCK_OFFSET + 4]
+            .copy_from_slice(&0x7FFF_FFFFu32.to_le_bytes());
+        buf
+    }
+
+    /// Builds a minimal 3DSX file with an extended header and an embedded
+    /// SMDH placed right after the header.
+    fn build_minimal_3dsx_with_smdh(smdh: &[u8]) -> Vec<u8> {
+        const HEADER_SIZE: u16 = 0x2C;
+        let mut data = vec![0u8; HEADER_SIZE as usize];
+        data[0..4].copy_from_slice(b"3DSX");
+        data[0x04..0x06].copy_from_slice(&HEADER_SIZE.to_le_bytes());
+        let smdh_offset = HEADER_SIZE as u32;
+        let smdh_size = smdh.len() as u32;
+        data[0x20..0x24].copy_from_slice(&smdh_offset.to_le_bytes());
+        data[0x24..0x28].copy_from_slice(&smdh_size.to_le_bytes());
+        data.extend_from_slice(smdh);
+        data
+    }
+
+    #[test]
+    fn read_info_on_3dsx_decodes_embedded_smdh() {
+        let smdh = build_minimal_smdh("Homebrew", "Author");
+        let data = build_minimal_3dsx_with_smdh(&smdh);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("game.3dsx");
+        std::fs::write(&path, &data).unwrap();
+
+        let info = read_info(&path).unwrap();
+        assert_eq!(info.format, CtrFormat::Threedsx);
+        assert!(!info.compressed);
+        assert_eq!(info.content_kind, None);
+        let smdh_info = info.smdh.expect("smdh should be decoded");
+        let title = smdh_info
+            .titles
+            .iter()
+            .find(|t| t.language == "English")
+            .expect("english title");
+        assert_eq!(title.short_description, "Homebrew");
+        assert_eq!(title.publisher, "Author");
+        assert!(info.icon.is_some());
+    }
+
+    #[tokio::test]
+    async fn read_info_on_z3dsx_decompresses_and_reports_compressed() {
+        let smdh = build_minimal_smdh("Homebrew", "Author");
+        let data = build_minimal_3dsx_with_smdh(&smdh);
+
+        let dir = tempfile::tempdir().unwrap();
+        let dsx_path = dir.path().join("game.3dsx");
+        let z3dsx_path = dir.path().join("game.z3dsx");
+        std::fs::write(&dsx_path, &data).unwrap();
+
+        compress_rom(&dsx_path, &z3dsx_path, None, false, &NoProgress)
+            .await
+            .unwrap();
+
+        let info = read_info(&z3dsx_path).unwrap();
+        assert_eq!(info.format, CtrFormat::Threedsx);
+        assert!(info.compressed);
+        assert!(info.smdh.is_some());
+    }
+
+    #[test]
+    fn read_info_on_3dsx_without_smdh_still_succeeds() {
+        // header_size below 0x2C means no extended header / no SMDH fields.
+        let data = vec![b'3', b'D', b'S', b'X', 0x20, 0x00, 0, 0];
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("game.3dsx");
+        std::fs::write(&path, &data).unwrap();
+
+        let info = read_info(&path).unwrap();
+        assert_eq!(info.format, CtrFormat::Threedsx);
+        assert!(info.smdh.is_none());
+        assert!(info.icon.is_none());
+    }
+
+    #[test]
+    fn read_info_on_3dsx_with_bogus_smdh_size_still_succeeds() {
+        // A header claiming a huge smdh_size (not matching SMDH_TOTAL_SIZE)
+        // must not be trusted for an allocation; the read still succeeds,
+        // just without a decoded SMDH.
+        let smdh = build_minimal_smdh("Homebrew", "Author");
+        let mut data = build_minimal_3dsx_with_smdh(&smdh);
+        data[0x24..0x28].copy_from_slice(&u32::MAX.to_le_bytes());
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("game.3dsx");
+        std::fs::write(&path, &data).unwrap();
+
+        let info = read_info(&path).unwrap();
+        assert_eq!(info.format, CtrFormat::Threedsx);
+        assert!(info.smdh.is_none());
+        assert!(info.icon.is_none());
+    }
+
+    fn cia_with_title_id(title_id: u64) -> (tempfile::TempDir, std::path::PathBuf) {
+        use crate::nintendo::ctr::test_fixtures::{make_ncch_header_bytes, synth_cia_with_content};
+        use sha2::{Digest, Sha256};
+
+        let content = make_ncch_header_bytes(title_id);
+        let content_hash = {
+            let mut h = Sha256::new();
+            h.update(&content);
+            let d = h.finalize();
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&d);
+            arr
+        };
+        synth_cia_with_content(
+            title_id,
+            vec![(0, 0, content.clone(), content_hash)],
+            content,
+            false,
+        )
+    }
+
+    #[test]
+    fn content_kind_maps_update_title_id() {
+        let (_tmp, cia_path) = cia_with_title_id(0x0004000E_12345678u64);
+        let info = read_info(&cia_path).unwrap();
+        assert_eq!(info.title_id, "0004000E12345678");
+        assert_eq!(info.content_kind, Some(ContentKind::Update));
+    }
+
+    #[test]
+    fn content_kind_maps_system_title_id() {
+        for title_id in [0x0004001000030000u64, 0x0004003000030000u64] {
+            let (_tmp, cia_path) = cia_with_title_id(title_id);
+            let info = read_info(&cia_path).unwrap();
+            assert_eq!(info.content_kind, Some(ContentKind::System));
+        }
     }
 }

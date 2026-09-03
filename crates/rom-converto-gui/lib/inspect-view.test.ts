@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildInspectView, wupEncryption } from "./inspect-view";
+import { buildInspectView, pkgPlatformBadge, wupEncryption } from "./inspect-view";
 import type { InfoResult } from "~/types/info";
 
 function view(info: Partial<InfoResult> & { kind: InfoResult["kind"] }) {
@@ -32,6 +32,29 @@ describe("buildInspectView ctr", () => {
 		});
 		expect(v.innerTitle).toBe("Partitions");
 		expect(v.innerFiles).toEqual([{ name: "Game", detail: "2.0 KiB · 0x4000" }]);
+	});
+
+	it("renders the System content kind for a system title id", () => {
+		const v = view({
+			kind: "ctr",
+			format: "cia",
+			physical_bytes: 1024,
+			title_id: "0004001000030000",
+			program_id: "",
+			product_code: "",
+			maker_code: "01",
+			maker_name: null,
+			cartridge_size: null,
+			ncch_encrypted: false,
+			content_kind: "system",
+			smdh: null,
+			icon: null,
+			small_icon: null,
+			compressed: false,
+			ncsd_partitions: [],
+			cia_contents: [],
+		});
+		expect(row(v.rom, "Content Type")).toBe("System");
 	});
 
 	it("falls back to CIA contents and flags encrypted entries", () => {
@@ -505,6 +528,26 @@ describe("buildInspectView retro", () => {
 	});
 });
 
+describe("buildInspectView psp", () => {
+	it("prefers content_kind over the raw category code for Content Type", () => {
+		const v = view({
+			kind: "psp",
+			title: "TEST PSP GAME",
+			title_id: "ULUS12345",
+			version: "1.00",
+			firmware: "6.61",
+			category: "UG",
+			content_kind: "game",
+			total_sectors: 100,
+			size_bytes: 1024,
+			icon: null,
+			background: null,
+		});
+		expect(row(v.rom, "Content Type")).toBe("Game");
+		expect(v.contentType).toBe("Game");
+	});
+});
+
 describe("buildInspectView pbp", () => {
 	it("notes the encrypted PSN image for an NPUMDIMG PSAR and lists present segments", () => {
 		const v = view({
@@ -554,6 +597,40 @@ describe("buildInspectView vpk", () => {
 		expect(row(v.rom, "Content Type")).toBe("Game");
 		expect(row(v.rom, "Files")).toBe("42");
 	});
+
+	it("prefers content_kind over category_label for Content Type", () => {
+		const v = view({
+			kind: "vpk",
+			title: "TEST VITA UPDATE",
+			title_id: "PCSE00000",
+			content_id: "EP0000-PCSE00000_00-0000000000000000",
+			app_ver: "01.00",
+			category: "gp",
+			category_label: "Patch",
+			content_kind: "update",
+			icon: null,
+			file_count: 3,
+			total_size: 1024,
+		});
+		expect(row(v.rom, "Content Type")).toBe("Update");
+	});
+
+	it("falls back to the raw category code when neither content_kind nor category_label is known", () => {
+		const v = view({
+			kind: "vpk",
+			title: "TEST VITA UNKNOWN",
+			title_id: "PCSE00000",
+			content_id: "EP0000-PCSE00000_00-0000000000000000",
+			app_ver: "01.00",
+			category: "gdc",
+			category_label: null,
+			content_kind: null,
+			icon: null,
+			file_count: 3,
+			total_size: 1024,
+		});
+		expect(row(v.rom, "Content Type")).toBe("gdc");
+	});
 });
 
 describe("buildInspectView pkg", () => {
@@ -579,6 +656,17 @@ describe("buildInspectView pkg", () => {
 		});
 		expect(row(v.rom, "Content Type")).toBe("Game");
 		expect(row(v.rom, "Data")).toBe("1.0 KiB @ 0x00001000");
+	});
+});
+
+describe("pkgPlatformBadge", () => {
+	it("badges a PSP pkg as PSP, not Vita", () => {
+		expect(pkgPlatformBadge("psp")).toBe("PSP");
+	});
+
+	it("badges the other pkg platforms", () => {
+		expect(pkgPlatformBadge("ps3")).toBe("PS3");
+		expect(pkgPlatformBadge("vita")).toBe("PS Vita");
 	});
 });
 

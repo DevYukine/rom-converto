@@ -1,11 +1,13 @@
-//! PS Vita `.pkg` packages: big-endian header and plaintext metadata for
-//! [`read_info`], plus AES-128-CTR item extraction in [`extract`].
+//! PSN `.pkg` packages for PSP, PS3, and PS Vita: big-endian header and
+//! plaintext metadata for [`read_info`], plus AES-128-CTR item extraction
+//! in [`extract`].
 //!
-//! The Vita is end-of-life and its package keys are long published, so they
-//! are embedded here. Key selection and derivation follow the `pkg2zip`
-//! lineage: type 1 uses the PSP key directly, types 2 to 4 derive the CTR
-//! key by AES-ECB encrypting the header's `pkg_data_iv` under the matching
-//! Vita key.
+//! All three consoles are end-of-life and their package keys are long
+//! published, so they are embedded here. Key selection and derivation
+//! follow the `pkg2zip` lineage: PS3 packages always use the PS3 key,
+//! PSP/Vita key type 1 uses the PSP key directly, and types 2 to 4 derive
+//! the CTR key by AES-ECB encrypting the header's `pkg_data_iv` under the
+//! matching Vita key.
 
 use std::fs::File;
 use std::io;
@@ -17,6 +19,7 @@ use aes::cipher::{BlockCipherEncrypt, KeyInit, KeyIvInit, StreamCipher, StreamCi
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 
+use crate::info::{ContentKind, Image};
 use crate::util::ProgressReporter;
 use crate::util::sfo::Sfo;
 
@@ -34,6 +37,8 @@ const MAX_SFO_BYTES: u32 = 1 << 20;
 const MAX_NAME_BYTES: u32 = 4096;
 /// Cap on the metadata entry count, to bound a corrupt header's loop.
 const MAX_META_COUNT: u32 = 4096;
+/// Cap on an `icon0.png` item read out of an untrusted package.
+const MAX_ICON_BYTES: u64 = 4 << 20;
 
 const PKG_PS3_KEY: [u8; 16] = [
     0x2e, 0x7b, 0x71, 0xd7, 0xc9, 0xc9, 0xa1, 0x4e, 0xa3, 0x22, 0x1f, 0x18, 0x88, 0x28, 0xb8, 0xf8,
@@ -51,6 +56,20 @@ const PKG_VITA_4: [u8; 16] = [
     0xaf, 0x07, 0xfd, 0x59, 0x65, 0x25, 0x27, 0xba, 0xf1, 0x33, 0x89, 0x66, 0x8b, 0x17, 0xd9, 0xea,
 ];
 
+/// Console family a PSN `.pkg` targets.
+///
+/// Derived from the header's `pkg_type` field (1 for PS3, 2 for PSP or
+/// Vita) and, for type 2, whether the metadata content type is one of the
+/// PSX/PSP-style codes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PkgPlatform {
+    Ps3,
+    Psp,
+    #[default]
+    Vita,
+}
+
 /// Metadata read from a `.pkg` header and its plaintext metadata block.
 /// Every field here is readable without any key.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -58,14 +77,26 @@ pub struct PkgInfo {
     pub content_id: String,
     pub pkg_revision: u16,
     pub pkg_type: u16,
+    /// Console family this package targets.
+    #[serde(default)]
+    pub platform: PkgPlatform,
     /// Raw metadata content type, as stored.
     pub content_type: u32,
     /// Human label for [`PkgInfo::content_type`], when the code is known.
     pub content_type_label: Option<String>,
+    /// Normalized content category: from the `PARAM.SFO` `CATEGORY` when
+    /// present, otherwise a best-effort guess from [`PkgInfo::content_type`].
+    #[serde(default)]
+    pub content_kind: Option<ContentKind>,
     /// `CATEGORY` from the package's plaintext `PARAM.SFO`.
     pub category: Option<String>,
     pub title: Option<String>,
     pub title_id: Option<String>,
+    /// `icon0.png` (PSP/PS3 `ICON0.PNG` or Vita `sce_sys/icon0.png`),
+    /// decrypted and decoded best-effort; `None` on any read or decode
+    /// failure.
+    #[serde(default)]
+    pub icon: Option<Image>,
     pub item_count: u32,
     pub total_size: u64,
     pub data_offset: u64,
@@ -121,18 +152,26 @@ struct Meta {
 pub fn read_info(path: &Path) -> Result<PkgInfo> {
     let mut file =
         File::open(path).with_context(|| format!("vita pkg info: open {}", path.display()))?;
+    let pkg_size = file.metadata()?.len();
     let header = read_header(&mut file, path)?;
     let meta = read_meta(&mut file, &header)?;
+    let platform = classify_platform(header.pkg_type, meta.content_type);
+    // Icon lookup needs whole references into `header`/`meta`, so it runs
+    // before either is partially moved into the `PkgInfo` literal below.
+    let icon = read_icon(&mut file, &header, &meta, platform, pkg_size);
 
     let mut info = PkgInfo {
         content_id: header.content_id,
         pkg_revision: header.revision,
         pkg_type: header.pkg_type,
+        platform,
         content_type: meta.content_type,
         content_type_label: None,
+        content_kind: None,
         category: None,
         title: None,
         title_id: None,
+        icon,
         item_count: header.item_count,
         total_size: header.total_size,
         data_offset: header.data_offset,
@@ -157,8 +196,40 @@ pub fn read_info(path: &Path) -> Result<PkgInfo> {
         }
     }
     info.content_type_label = content_type_label(meta.content_type, info.category.as_deref());
+    info.content_kind = content_kind(meta.content_type, info.category.as_deref());
 
     Ok(info)
+}
+
+/// Best-effort icon lookup: finds the item table entry whose name ends
+/// with `icon0.png` (case-insensitively), decrypts it, and decodes it as a
+/// PNG. Any failure along the way — an unsupported key type, a corrupt
+/// item table, a truncated payload, or a non-PNG file — yields `None`
+/// instead of failing the caller's read.
+fn read_icon(
+    file: &mut File,
+    header: &Header,
+    meta: &Meta,
+    platform: PkgPlatform,
+    pkg_size: u64,
+) -> Option<Image> {
+    let main_key = derive_key(header.key_type, &header.iv, platform).ok()?;
+    let items = read_items(file, header, meta, &main_key, pkg_size, Some("icon0.png")).ok()?;
+    let entry = items
+        .into_iter()
+        .find(|r| !r.item.is_dir && r.item.name.to_ascii_lowercase().ends_with("icon0.png"))?;
+    if entry.item.data_size > MAX_ICON_BYTES {
+        return None;
+    }
+
+    let mut buf = vec![0u8; entry.item.data_size as usize];
+    file.seek(SeekFrom::Start(header.data_offset + entry.item.data_offset))
+        .ok()?;
+    file.read_exact(&mut buf).ok()?;
+    ctr_at(&entry.key, &header.iv, entry.item.data_offset)
+        .ok()?
+        .apply_keystream(&mut buf);
+    Image::from_png(buf)
 }
 
 /// Decrypts the item table of the `.pkg` at `path` and writes every file
@@ -174,9 +245,10 @@ pub fn extract(
     let pkg_size = file.metadata()?.len();
     let header = read_header(&mut file, path)?;
     let meta = read_meta(&mut file, &header)?;
+    let platform = classify_platform(header.pkg_type, meta.content_type);
 
-    let main_key = derive_key(header.key_type, &header.iv)?;
-    let raw = read_items(&mut file, &header, &meta, &main_key, pkg_size)?;
+    let main_key = derive_key(header.key_type, &header.iv, platform)?;
+    let raw = read_items(&mut file, &header, &meta, &main_key, pkg_size, None)?;
 
     let total: u64 = raw
         .iter()
@@ -245,8 +317,9 @@ pub fn open_item(path: &Path, name_suffix: &str) -> Result<PkgItemReader> {
     let pkg_size = file.metadata()?.len();
     let header = read_header(&mut file, path)?;
     let meta = read_meta(&mut file, &header)?;
-    let main_key = derive_key(header.key_type, &header.iv)?;
-    let raw = read_items(&mut file, &header, &meta, &main_key, pkg_size)?;
+    let platform = classify_platform(header.pkg_type, meta.content_type);
+    let main_key = derive_key(header.key_type, &header.iv, platform)?;
+    let raw = read_items(&mut file, &header, &meta, &main_key, pkg_size, None)?;
 
     let suffix = name_suffix.to_ascii_lowercase();
     let entry = raw
@@ -316,6 +389,16 @@ fn read_header(file: &mut File, path: &Path) -> Result<Header> {
         bail!("vita pkg: bad magic in {}", path.display());
     }
 
+    // Bit 15 of pkg_revision marks a finalized (retail) package; a debug
+    // build without it is not encrypted with the retail keys embedded here.
+    let revision = be_u16(&head, 4);
+    if revision & 0x8000 == 0 {
+        bail!(
+            "vita pkg: unsupported debug (non-finalized) pkg in {}",
+            path.display()
+        );
+    }
+
     let content_id = {
         let raw = &head[0x30..0x30 + 0x24];
         let end = raw.iter().position(|&b| b == 0).unwrap_or(raw.len());
@@ -325,7 +408,7 @@ fn read_header(file: &mut File, path: &Path) -> Result<Header> {
     iv.copy_from_slice(&head[0x70..0x80]);
 
     Ok(Header {
-        revision: be_u16(&head, 4),
+        revision,
         pkg_type: be_u16(&head, 6),
         meta_offset: u64::from(be_u32(&head, 8)),
         meta_count: be_u32(&head, 12),
@@ -378,6 +461,7 @@ fn read_items(
     meta: &Meta,
     main_key: &[u8; 16],
     pkg_size: u64,
+    stop_at_suffix: Option<&str>,
 ) -> Result<Vec<RawItem>> {
     let table_bytes = u64::from(header.item_count)
         .checked_mul(ITEM_LEN)
@@ -434,18 +518,28 @@ fn read_items(
         file.seek(SeekFrom::Start(header.data_offset + name_offset))?;
         file.read_exact(&mut name)?;
         ctr_at(&key, &header.iv, name_offset)?.apply_keystream(&mut name);
+        let name = String::from_utf8_lossy(&name).into_owned();
+
+        let is_dir = flags == 4 || flags == 18;
+        // A caller looking for one specific file (by name suffix) doesn't
+        // need the rest of the table decrypted once it's found.
+        let matched =
+            !is_dir && stop_at_suffix.is_some_and(|suf| name.to_ascii_lowercase().ends_with(suf));
 
         items.push(RawItem {
             item: PkgItem {
-                name: String::from_utf8_lossy(&name).into_owned(),
+                name,
                 name_offset,
                 name_size,
                 data_offset,
                 data_size,
-                is_dir: flags == 4 || flags == 18,
+                is_dir,
             },
             key,
         });
+        if matched {
+            break;
+        }
     }
     Ok(items)
 }
@@ -461,7 +555,11 @@ fn ctr_at(key: &[u8; 16], iv: &[u8; 16], offset: u64) -> Result<Aes128Ctr> {
 }
 
 /// Resolves the CTR key for `key_type` from the embedded package keys.
-fn derive_key(key_type: u8, iv: &[u8; 16]) -> Result<[u8; 16]> {
+/// PS3 packages always use the PS3 key, regardless of `key_type`.
+fn derive_key(key_type: u8, iv: &[u8; 16], platform: PkgPlatform) -> Result<[u8; 16]> {
+    if platform == PkgPlatform::Ps3 {
+        return Ok(PKG_PS3_KEY);
+    }
     let vita_key = match key_type {
         1 => return Ok(PKG_PSP_KEY),
         2 => PKG_VITA_2,
@@ -472,6 +570,46 @@ fn derive_key(key_type: u8, iv: &[u8; 16]) -> Result<[u8; 16]> {
     let mut block = *iv;
     Aes128::new(&vita_key.into()).encrypt_block((&mut block).into());
     Ok(block)
+}
+
+/// Classifies which console family a `.pkg` targets from the header's
+/// `pkg_type` field: 1 is PS3; 2 with a PSX/PSP-style metadata content
+/// type is PSP; anything else is Vita.
+fn classify_platform(pkg_type: u16, content_type: u32) -> PkgPlatform {
+    match pkg_type {
+        1 => PkgPlatform::Ps3,
+        2 if matches!(content_type, 6 | 7 | 0xE | 0xF | 0x10) => PkgPlatform::Psp,
+        _ => PkgPlatform::Vita,
+    }
+}
+
+/// Normalizes a package's `content_type`/`category` into the shared
+/// [`ContentKind`] vocabulary. `category` takes priority when present;
+/// otherwise falls back to well-known `content_type` codes.
+fn content_kind(content_type: u32, category: Option<&str>) -> Option<ContentKind> {
+    category
+        .and_then(map_category)
+        .or_else(|| map_content_type(content_type))
+}
+
+// Vita "gd" (Game) and PS3 "GD" (Update) differ only by case, so codes must
+// never be case-normalized here.
+fn map_category(cat: &str) -> Option<ContentKind> {
+    match cat {
+        "gd" | "gda" | "DG" | "HG" | "UG" | "MG" | "ME" => Some(ContentKind::Game),
+        "gp" | "GD" => Some(ContentKind::Update),
+        "ac" | "AC" => Some(ContentKind::Dlc),
+        _ => None,
+    }
+}
+
+fn map_content_type(content_type: u32) -> Option<ContentKind> {
+    match content_type {
+        0x16 => Some(ContentKind::Dlc),
+        0x15 => Some(ContentKind::Game),
+        6 | 7 | 0xE | 0xF | 0x10 => Some(ContentKind::Game),
+        _ => None,
+    }
 }
 
 /// Joins an item name onto `root`, rejecting absolute paths and any
@@ -536,17 +674,35 @@ pub(crate) mod test_fixtures {
         pub psp_type: u8,
     }
 
-    /// Builds a synthetic Vita `.pkg` encrypted with the embedded key for
-    /// `key_type`, laid out the way the real format is.
-    pub fn build_pkg(key_type: u8, content_type: u32, entries: &[Entry]) -> Vec<u8> {
-        let iv = [0x11u8; 16];
-        let key = derive_key(key_type, &iv).expect("derive key");
+    /// Builds a synthetic `.pkg` encrypted with the embedded key for
+    /// `key_type`, laid out the way the real format is. `pkg_type` is the
+    /// header field that [`classify_platform`] reads (1 for PS3, 2 for
+    /// PSP/Vita).
+    pub fn build_pkg(pkg_type: u16, key_type: u8, content_type: u32, entries: &[Entry]) -> Vec<u8> {
+        build_pkg_with_category(pkg_type, key_type, content_type, Some("gd"), entries)
+    }
 
-        let sfo = build_sfo(&[
-            ("CATEGORY", Val::Str("gd")),
-            ("TITLE", Val::Str("Synthetic")),
-            ("TITLE_ID", Val::Str("PCSF00002")),
-        ]);
+    /// Same as [`build_pkg`], but lets the test choose the `PARAM.SFO`
+    /// `CATEGORY` (or omit it), to exercise the `content_type` fallback in
+    /// [`content_kind`].
+    pub fn build_pkg_with_category(
+        pkg_type: u16,
+        key_type: u8,
+        content_type: u32,
+        category: Option<&'static str>,
+        entries: &[Entry],
+    ) -> Vec<u8> {
+        let iv = [0x11u8; 16];
+        let platform = classify_platform(pkg_type, content_type);
+        let key = derive_key(key_type, &iv, platform).expect("derive key");
+
+        let mut sfo_fields: Vec<(&str, Val)> = Vec::new();
+        if let Some(cat) = category {
+            sfo_fields.push(("CATEGORY", Val::Str(cat)));
+        }
+        sfo_fields.push(("TITLE", Val::Str("Synthetic")));
+        sfo_fields.push(("TITLE_ID", Val::Str("PCSF00002")));
+        let sfo = build_sfo(&sfo_fields);
 
         // Plaintext region: header, metadata entries, then PARAM.SFO.
         let meta_offset = HEADER_LEN as u64;
@@ -613,8 +769,8 @@ pub(crate) mod test_fixtures {
         let total_size = data_offset + enc_len;
         let mut out = vec![0u8; HEADER_LEN];
         out[0..4].copy_from_slice(&PKG_MAGIC.to_be_bytes());
-        out[4..6].copy_from_slice(&1u16.to_be_bytes());
-        out[6..8].copy_from_slice(&1u16.to_be_bytes());
+        out[4..6].copy_from_slice(&0x8001u16.to_be_bytes()); // finalized bit set
+        out[6..8].copy_from_slice(&pkg_type.to_be_bytes());
         out[8..12].copy_from_slice(&(meta_offset as u32).to_be_bytes());
         out[12..16].copy_from_slice(&(meta_entries.len() as u32).to_be_bytes());
         out[20..24].copy_from_slice(&(entries.len() as u32).to_be_bytes());
@@ -655,7 +811,7 @@ pub(crate) mod test_fixtures {
 
 #[cfg(test)]
 mod tests {
-    use super::test_fixtures::{Entry, build_pkg};
+    use super::test_fixtures::{Entry, build_pkg, build_pkg_with_category};
     use super::*;
     use crate::util::NoProgress;
 
@@ -690,30 +846,45 @@ mod tests {
     fn reads_header_and_plaintext_metadata() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("app.pkg");
-        std::fs::write(&path, build_pkg(3, 0x15, &entries())).unwrap();
+        std::fs::write(&path, build_pkg(2, 3, 0x15, &entries())).unwrap();
 
         let info = read_info(&path).unwrap();
         assert_eq!(info.content_id, "EP9000-PCSF00002_00-SYNTHETIC000000");
         assert_eq!(info.key_type, 3);
+        assert_eq!(info.platform, PkgPlatform::Vita);
         assert_eq!(info.content_type, 0x15);
         assert_eq!(info.content_type_label.as_deref(), Some("Vita application"));
+        assert_eq!(info.content_kind, Some(ContentKind::Game));
         assert_eq!(info.item_count, 3);
         assert_eq!(info.title.as_deref(), Some("Synthetic"));
         assert_eq!(info.title_id.as_deref(), Some("PCSF00002"));
         assert_eq!(info.category.as_deref(), Some("gd"));
         assert_eq!(info.meta_ids, vec![1, 2, 13, 14]);
+        assert!(info.icon.is_none());
     }
 
     #[test]
     fn corrupted_magic_errors() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("bad.pkg");
-        let mut bytes = build_pkg(3, 0x15, &entries());
+        let mut bytes = build_pkg(2, 3, 0x15, &entries());
         bytes[0] = 0x00;
         std::fs::write(&path, bytes).unwrap();
 
         let err = read_info(&path).unwrap_err().to_string();
         assert!(err.contains("bad magic"), "{err}");
+    }
+
+    #[test]
+    fn non_finalized_pkg_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("debug.pkg");
+        let mut bytes = build_pkg(2, 3, 0x15, &entries());
+        bytes[4..6].copy_from_slice(&1u16.to_be_bytes()); // clear the finalized bit
+        std::fs::write(&path, bytes).unwrap();
+
+        let err = read_info(&path).unwrap_err().to_string();
+        assert!(err.contains("non-finalized"), "{err}");
     }
 
     #[test]
@@ -723,7 +894,7 @@ mod tests {
             let path = dir.path().join("app.pkg");
             let out = dir.path().join("out");
             let want = entries();
-            std::fs::write(&path, build_pkg(key_type, 0x15, &want)).unwrap();
+            std::fs::write(&path, build_pkg(2, key_type, 0x15, &want)).unwrap();
 
             let items = extract(&path, &out, &NoProgress).unwrap();
             assert_eq!(items.len(), 3);
@@ -745,10 +916,87 @@ mod tests {
         let path = dir.path().join("game.pkg");
         let out = dir.path().join("out");
         let want = entries();
-        std::fs::write(&path, build_pkg(1, 7, &want)).unwrap();
+        std::fs::write(&path, build_pkg(2, 1, 7, &want)).unwrap();
 
         extract(&path, &out, &NoProgress).unwrap();
         assert_eq!(std::fs::read(out.join("eboot.bin")).unwrap(), want[2].data);
+    }
+
+    #[test]
+    fn ps3_shaped_pkg_reports_ps3_platform_and_decrypts_with_the_ps3_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("game.pkg");
+        let out = dir.path().join("out");
+        let want = entries();
+        std::fs::write(&path, build_pkg(1, 0, 0x01, &want)).unwrap();
+
+        let info = read_info(&path).unwrap();
+        assert_eq!(info.platform, PkgPlatform::Ps3);
+
+        extract(&path, &out, &NoProgress).unwrap();
+        assert_eq!(
+            std::fs::read(out.join("sce_sys/param.sfo")).unwrap(),
+            want[1].data
+        );
+        assert_eq!(std::fs::read(out.join("eboot.bin")).unwrap(), want[2].data);
+    }
+
+    #[test]
+    fn psp_shaped_pkg_reports_psp_platform_and_game_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("game.pkg");
+        // Real PSP packages carry a PSP category ("MG", "ME", ...), never
+        // the Vita "gd"; asserting Game here exercises the CATEGORY branch.
+        std::fs::write(
+            &path,
+            build_pkg_with_category(2, 1, 6, Some("MG"), &entries()),
+        )
+        .unwrap();
+
+        let info = read_info(&path).unwrap();
+        assert_eq!(info.platform, PkgPlatform::Psp);
+        assert_eq!(info.content_kind, Some(ContentKind::Game));
+    }
+
+    #[test]
+    fn psp_shaped_pkg_without_category_falls_back_to_content_type() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("game.pkg");
+        std::fs::write(&path, build_pkg_with_category(2, 1, 7, None, &entries())).unwrap();
+
+        let info = read_info(&path).unwrap();
+        assert_eq!(info.platform, PkgPlatform::Psp);
+        assert_eq!(info.category, None);
+        assert_eq!(info.content_kind, Some(ContentKind::Game));
+    }
+
+    /// A real, minimal PNG so `Image::from_png` parses it as a valid image.
+    fn png(width: u32, height: u32) -> Vec<u8> {
+        let mut out = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        out.extend_from_slice(&13u32.to_be_bytes());
+        out.extend_from_slice(b"IHDR");
+        out.extend_from_slice(&width.to_be_bytes());
+        out.extend_from_slice(&height.to_be_bytes());
+        out.extend_from_slice(&[8, 6, 0, 0, 0]);
+        out
+    }
+
+    #[test]
+    fn icon_is_decoded_when_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("app.pkg");
+        let mut entries = entries();
+        entries.push(Entry {
+            name: "sce_sys/icon0.png",
+            data: png(64, 48),
+            is_dir: false,
+            psp_type: 0x90,
+        });
+        std::fs::write(&path, build_pkg(2, 3, 0x15, &entries)).unwrap();
+
+        let info = read_info(&path).unwrap();
+        let icon = info.icon.expect("icon0.png");
+        assert_eq!((icon.width, icon.height), (64, 48));
     }
 
     #[test]
@@ -757,7 +1005,7 @@ mod tests {
         let path = dir.path().join("game.pkg");
         let out = dir.path().join("out");
         let want = entries_with(0x00);
-        std::fs::write(&path, build_pkg(1, 7, &want)).unwrap();
+        std::fs::write(&path, build_pkg(2, 1, 7, &want)).unwrap();
 
         let items = extract(&path, &out, &NoProgress).unwrap();
         assert_eq!(items[2].name, "eboot.bin");
@@ -770,7 +1018,7 @@ mod tests {
         let path = dir.path().join("game.pkg");
         let out = dir.path().join("out");
         let want = entries();
-        std::fs::write(&path, build_pkg(1, 7, &want)).unwrap();
+        std::fs::write(&path, build_pkg(2, 1, 7, &want)).unwrap();
         extract(&path, &out, &NoProgress).unwrap();
         let full = std::fs::read(out.join("eboot.bin")).unwrap();
 
@@ -800,7 +1048,7 @@ mod tests {
     fn open_item_names_the_package_when_nothing_matches() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("game.pkg");
-        std::fs::write(&path, build_pkg(1, 7, &entries())).unwrap();
+        std::fs::write(&path, build_pkg(2, 1, 7, &entries())).unwrap();
 
         let err = open_item(&path, "EBOOT.PBP")
             .err()
@@ -812,7 +1060,7 @@ mod tests {
 
     #[test]
     fn unsupported_key_type_errors() {
-        assert!(derive_key(5, &[0u8; 16]).is_err());
+        assert!(derive_key(5, &[0u8; 16], PkgPlatform::Vita).is_err());
     }
 
     #[test]
@@ -828,7 +1076,7 @@ mod tests {
 
     #[test]
     fn truncated_pkg_errors_without_panic() {
-        let full = build_pkg(3, 0x15, &entries());
+        let full = build_pkg(2, 3, 0x15, &entries());
         let dir = tempfile::tempdir().unwrap();
         for len in (0..full.len()).step_by(37) {
             let path = dir.path().join(format!("t{len}.pkg"));

@@ -39,7 +39,8 @@ collective phrase for all inputs is "ROMs and disc images".
   GameCube and Wii inputs. `dol migrate` and `rvl migrate` convert them to RVZ after an
   integrity check, and `compress` migrates a legacy container automatically when it is given
   one. GCZ (`.gcz`) and NKit (`.nkit.iso`, `.nkit.gcz`) are accepted on both consoles; WIA
-  (`.wia`) is Wii only.
+  (`.wia`) is Wii only. `info` reads a `.gcz` or `.wia` directly too, picking GameCube or Wii
+  from the disc magic it wraps.
 - **WUA** is Cemu's Wii U archive format. One archive can bundle a base title, update, and DLC,
   each under its own `<titleId>_v<version>/` folder.
 - **NSZ / XCZ** compress a Switch NSP or XCI with zstd inside the NCZ format, in solid mode

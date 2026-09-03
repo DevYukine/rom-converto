@@ -778,16 +778,21 @@ probe, omitted when undetermined; Wii U's from the source kind); Switch as a
 `Container:`-level `Encryption` row (`encrypted (titlekey)` or `encrypted (standard keys)`
 for `nsp`/`xci`, `decrypted (ncz sections)` for `nsz`/`xcz`).
 
+Content type is normalized to `Game`, `Update`, `DLC`, or `Demo` across every family that
+carries one, with the raw platform code kept in parentheses where one exists, for example
+`Game (UG)` for a PSP UMD. This applies to 3DS, Wii U, PS3, PSP, PS1/PS2 disc content, PBP,
+VPK, and PKG; Switch already used these names.
+
 Maker and company codes are resolved to the publisher name. Encrypted 3DS CIA inputs are
 decrypted on the fly to read the NCCH header, and nothing is written to disk. Add `--json`
 for a machine-readable payload (the GUI uses the same shape); Switch title IDs are carried
 there as 16-character hex strings, in fields such as `application_title_id_hex`.
 
 The generic `rom-converto info <INPUT>` form auto-detects the console from the input's
-extension, and its header magic for the disc-image extensions shared across consoles, then
-prints the same report as the matching `<console> info`. It covers every family listed
-below, so a script inspecting a mixed library does not need to know each file's console up
-front.
+extension, and its header magic for the disc-image extensions shared across consoles
+(`.iso`, `.cue`, `.gcz`, `.wia`), then prints the same report as the matching `<console>
+info`. It covers every family listed below, so a script inspecting a mixed library does not
+need to know each file's console up front.
 
 For `dol` and `rvl`, the report names the container it read: the `ROM:` section's `Format`
 row reads `GameCube (GCZ)` or `Wii (WIA)`, and `--json` carries it as the `container` field
@@ -796,10 +801,11 @@ row reads `GameCube (GCZ)` or `Wii (WIA)`, and `--json` carries it as the `conta
 | Flag | Description |
 |---|---|
 | `--json` | Emit a machine-readable payload instead of the formatted report |
-| `--save-icon <DIR>` | Write the embedded icon as `<title_id>.png` into `DIR`. Supported by `ctr`, `dol`, `rvl`, `nx`, `wup`, `xbox`, `xenon`, `ps3`, and PSP images. Not supported for `chd`, `cso`, or PS1/PS2 discs, even where their report shows an icon inline (a PSP disc nested inside a `chd`/`cso`) |
+| `--save-icon <DIR>` | Write the embedded icon as `<title_id>.png` into `DIR`. Supported by `ctr`, `dol`, `rvl`, `nx`, `wup`, `xbox`, `xenon`, `ps3`, PSP images, and PKG. Not supported for `chd`, `cso`, or PS1/PS2 discs, even where their report shows an icon inline (a PSP disc nested inside a `chd`/`cso`) |
 | `--keys <FILE>` | `prod.keys` for `nx info`, a disc master key file for `wup info` on `.wud`/`.wux` (optional), or a `.dkey` file for `ps3 info`. Other consoles do not use it |
 
-Coverage per family: `ctr` reads CIA/NCSD/NCCH and Z3DS variants; `dol` reads `.iso`,
+Coverage per family: `ctr` reads CIA/NCSD/NCCH, `.3dsx` homebrew, and Z3DS variants
+(compressed `.z3dsx` included); `dol` reads `.iso`,
 `.gcm`, `.rvz`, `.gcz`, and NKit; `rvl` reads `.iso`, `.rvz`, `.wbfs`, `.wia`, `.gcz`, and
 NKit through the same streaming migration readers the `migrate` command uses; `wup` reads
 loadiine and NUS directories, `.wua` archives, and `.wud`/`.wux` disc images; `nx` reads
@@ -810,7 +816,13 @@ PS1 and PS2 discs (plain `.iso`, or `.cue`+`.bin`) report the disc kind, boot ex
 normalized title ID (for example `SLUS-20312`), volume ID, and version read from
 `SYSTEM.CNF`. PSP discs (`.iso`) report title, title ID, version, firmware, category, and
 the `ICON0.PNG` icon and `PIC1.PNG` background art read from `PARAM.SFO`. NFS and TGC are
-not supported.
+not supported. A `.3dsx` homebrew executable reads its embedded SMDH, when it has one, for
+the same title and icon fields as a CIA; a `.z3dsx` decompresses first and reports the same.
+
+`.pkg` inspection covers PSP, PS3, and PS Vita packages, naming the platform in a
+`Platform` row. PS3 packages get their item listing decrypted with the built-in PS3 key;
+PSP and Vita use the existing per-key-type derivation. The `ICON0.PNG` preview is
+extracted best-effort for the report, `--save-icon`, and the GUI card.
 
 A LaserDisc rip's `.avi` reports its container header (video codec, resolution, fps,
 frame count, audio) and the CHD field geometry compression would project, and, when the

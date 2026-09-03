@@ -8,7 +8,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::info::Image;
+use crate::info::{ContentKind, Image};
 use crate::sony::psp::pbp::{DATA_PSAR, ICON0_PNG, PARAM_SFO, Pbp, SEGMENT_NAMES, Segment};
 use crate::util::sfo::Sfo;
 
@@ -50,6 +50,10 @@ pub struct PbpInfo {
     /// The raw `CATEGORY` code, kept verbatim even when undecoded.
     pub category: Option<String>,
     pub category_label: Option<String>,
+    /// Normalized category, derived from [`PbpInfo::category`]. A UMD
+    /// image never carries an update or DLC category.
+    #[serde(default)]
+    pub content_kind: Option<ContentKind>,
     pub psp_system_ver: Option<String>,
     pub parental_level: Option<u32>,
     pub region: Option<u32>,
@@ -81,6 +85,7 @@ pub fn read_info(path: &Path) -> Result<PbpInfo> {
         .as_deref()
         .and_then(category_label)
         .map(str::to_string);
+    let content_kind = category.as_deref().and_then(content_kind_from_category);
 
     Ok(PbpInfo {
         physical_bytes: pbp.file_size,
@@ -99,6 +104,7 @@ pub fn read_info(path: &Path) -> Result<PbpInfo> {
             .map(str::to_string),
         category,
         category_label,
+        content_kind,
         psp_system_ver: sfo
             .as_ref()
             .and_then(|s| s.get_str("PSP_SYSTEM_VER"))
@@ -127,6 +133,15 @@ fn category_label(code: &str) -> Option<&'static str> {
         "UG" => Some("UMD game"),
         "MG" => Some("Memory Stick game"),
         "ME" | "MS" => Some("PS1 Classic"),
+        _ => None,
+    }
+}
+
+/// A UMD/EBOOT `CATEGORY` only ever names a game; there is no update or
+/// DLC category on this medium.
+fn content_kind_from_category(code: &str) -> Option<ContentKind> {
+    match code {
+        "UG" | "MG" | "ME" | "MS" => Some(ContentKind::Game),
         _ => None,
     }
 }
@@ -225,6 +240,7 @@ mod tests {
         assert_eq!(info.disc_version.as_deref(), Some("1.02"));
         assert_eq!(info.category.as_deref(), Some("UG"));
         assert_eq!(info.category_label.as_deref(), Some("UMD game"));
+        assert_eq!(info.content_kind, Some(ContentKind::Game));
         assert_eq!(info.psp_system_ver.as_deref(), Some("6.20"));
         assert_eq!(info.parental_level, Some(5));
         assert_eq!(info.region, Some(0x8000));
@@ -260,17 +276,18 @@ mod tests {
 
     #[test]
     fn decodes_only_known_category_codes() {
-        for (code, want) in [
-            ("UG", Some("UMD game")),
-            ("MG", Some("Memory Stick game")),
-            ("ME", Some("PS1 Classic")),
-            ("MS", Some("PS1 Classic")),
-            ("XX", None),
+        for (code, want, want_kind) in [
+            ("UG", Some("UMD game"), Some(ContentKind::Game)),
+            ("MG", Some("Memory Stick game"), Some(ContentKind::Game)),
+            ("ME", Some("PS1 Classic"), Some(ContentKind::Game)),
+            ("MS", Some("PS1 Classic"), Some(ContentKind::Game)),
+            ("XX", None, None),
         ] {
             let (_dir, path) = write(&eboot(code, b"NPUMDIMG"));
             let info = read_info(&path).expect("read info");
             assert_eq!(info.category.as_deref(), Some(code));
             assert_eq!(info.category_label.as_deref(), want, "category {code}");
+            assert_eq!(info.content_kind, want_kind, "category {code}");
         }
     }
 

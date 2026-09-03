@@ -248,6 +248,7 @@ mod tests {
         assert_eq!(info.version.as_deref(), Some("1.00"));
         assert_eq!(info.firmware.as_deref(), Some("3.71"));
         assert_eq!(info.category.as_deref(), Some("UG"));
+        assert_eq!(info.content_kind, Some(crate::info::ContentKind::Game));
         assert_eq!(info.total_sectors, 800_000);
         let icon = info.icon.expect("icon0.png");
         assert_eq!((icon.width, icon.height), (144, 80));

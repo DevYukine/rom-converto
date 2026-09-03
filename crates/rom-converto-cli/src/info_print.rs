@@ -292,12 +292,18 @@ fn render_ctr(info: &rom_converto_lib::info::CtrInfo) -> String {
         CtrFormat::Ncsd => "3DS NCSD/CCI",
         CtrFormat::Ncch => "3DS NCCH/CXI",
         CtrFormat::Unknown => "3DS",
+        CtrFormat::Threedsx => "3DSX homebrew",
     };
 
     let mut t = KeyValueTable::new();
     t.push("Format", fmt);
     t.push("Title ID", info.title_id.clone());
-    t.push("Content type", ctr_content_type(&info.title_id, fmt));
+    t.push(
+        "Content type",
+        info.content_kind
+            .map(|k| k.display_name().to_string())
+            .unwrap_or_else(|| fmt.to_string()),
+    );
     t.push("Program ID", info.program_id.clone());
     t.push("Product code", info.product_code.clone());
     t.push(
@@ -405,18 +411,6 @@ fn render_ctr(info: &rom_converto_lib::info::CtrInfo) -> String {
     }
 
     out
-}
-
-/// 3DS content class from the title-id high word, falling back to the
-/// container format when the high word names no known class.
-fn ctr_content_type(title_id: &str, format: &str) -> String {
-    match title_id.get(..8) {
-        Some("00040000") => "Game".to_string(),
-        Some("0004000E") => "Update".to_string(),
-        Some("0004008C") => "DLC".to_string(),
-        Some("00040010") | Some("00040030") => "System".to_string(),
-        _ => format.to_uppercase(),
-    }
 }
 
 fn render_dol(info: &rom_converto_lib::info::DolInfo) -> String {
@@ -563,7 +557,13 @@ fn render_wup(info: &rom_converto_lib::info::WupInfo) -> String {
     let mut t = KeyValueTable::new();
     t.push("Format", format!("Wii U ({})", info.source_kind));
     t.push("Title ID", info.title_id_hex.clone());
-    t.push("Content type", info.title_type.clone());
+    t.push(
+        "Content type",
+        match info.content_kind {
+            Some(kind) => format!("{} ({})", kind.display_name(), info.title_type),
+            None => info.title_type.clone(),
+        },
+    );
     if let Some(e) = wup_encryption(&info.source_kind) {
         t.push("Encryption", e);
     }
@@ -1029,7 +1029,14 @@ fn render_xbox(info: &rom_converto_lib::info::XisoInfo) -> String {
 fn render_ps3(info: &rom_converto_lib::info::Ps3Info) -> String {
     let mut t = KeyValueTable::new();
     t.push("Format", "PS3 ISO");
-    t.push("Content type", "Game");
+    t.push(
+        "Content type",
+        match (info.content_kind, &info.category) {
+            (Some(kind), Some(raw)) => format!("{} ({})", kind.display_name(), raw),
+            (None, Some(raw)) => raw.clone(),
+            _ => "Game".to_string(),
+        },
+    );
     if let Some(v) = &info.title {
         t.push("Title", v.clone());
     }
@@ -1131,7 +1138,13 @@ fn psp_rom_table(info: &rom_converto_lib::info::PspInfo) -> KeyValueTable {
     t.push("Format", "PSP UMD");
     t.push(
         "Content type",
-        info.category.clone().unwrap_or_else(|| "Game".to_string()),
+        match info.content_kind {
+            Some(kind) => match &info.category {
+                Some(raw) => format!("{} ({})", kind.display_name(), raw),
+                None => kind.display_name().to_string(),
+            },
+            None => info.category.clone().unwrap_or_else(|| "Game".to_string()),
+        },
     );
     if let Some(v) = &info.title {
         t.push("Title", v.clone());
@@ -1957,9 +1970,12 @@ fn render_pbp(info: &rom_converto_lib::info::PbpInfo) -> String {
     if let Some(v) = &info.category {
         t.push(
             "Content type",
-            match &info.category_label {
-                Some(label) => format!("{} ({})", label, v),
-                None => v.clone(),
+            match info.content_kind {
+                Some(kind) => format!("{} ({})", kind.display_name(), v),
+                None => match &info.category_label {
+                    Some(label) => format!("{} ({})", label, v),
+                    None => v.clone(),
+                },
             },
         );
     }
@@ -2029,9 +2045,12 @@ fn render_vpk(info: &rom_converto_lib::info::VpkInfo) -> String {
     if let Some(v) = &info.category {
         t.push(
             "Content type",
-            match &info.category_label {
-                Some(label) => format!("{} ({})", label, v),
-                None => v.clone(),
+            match info.content_kind {
+                Some(kind) => format!("{} ({})", kind.display_name(), v),
+                None => match &info.category_label {
+                    Some(label) => format!("{} ({})", label, v),
+                    None => v.clone(),
+                },
             },
         );
     }
@@ -2055,8 +2074,18 @@ fn render_vpk(info: &rom_converto_lib::info::VpkInfo) -> String {
 }
 
 fn render_pkg(info: &rom_converto_lib::info::PkgInfo) -> String {
+    use rom_converto_lib::sony::vita::pkg::PkgPlatform;
+
     let mut c = KeyValueTable::new();
-    c.push("Format", "PS Vita PKG");
+    c.push("Format", "PSN PKG");
+    c.push(
+        "Platform",
+        match info.platform {
+            PkgPlatform::Ps3 => "PS3",
+            PkgPlatform::Psp => "PSP",
+            PkgPlatform::Vita => "PS Vita",
+        },
+    );
     c.push("Revision", format!("0x{:04X}", info.pkg_revision));
     c.push("Package type", format!("{}", info.pkg_type));
     c.push("Key type", format!("{}", info.key_type));
@@ -2099,7 +2128,24 @@ fn render_pkg(info: &rom_converto_lib::info::PkgInfo) -> String {
         },
     );
     if let Some(v) = &info.category {
-        t.push("Category", v.clone());
+        t.push(
+            "Category",
+            match info.content_kind {
+                Some(kind) => format!("{} ({})", kind.display_name(), v),
+                None => v.clone(),
+            },
+        );
+    }
+    if let Some(img) = &info.icon {
+        t.push(
+            "Icon",
+            format!(
+                "{}x{} PNG ({} bytes)",
+                img.width,
+                img.height,
+                img.png_bytes.len()
+            ),
+        );
     }
     order_rom(&mut t);
 
@@ -2365,6 +2411,28 @@ mod tests {
     }
 
     #[test]
+    fn render_ctr_shows_normalized_content_type() {
+        let info = rom_converto_lib::info::CtrInfo {
+            title_id: "0004000000030800".to_string(),
+            content_kind: Some(rom_converto_lib::info::ContentKind::Game),
+            ..Default::default()
+        };
+        let out = render_ctr(&info);
+        assert!(has_field(&out, "Content type", "Game"));
+    }
+
+    #[test]
+    fn render_ctr_shows_system_content_type() {
+        let info = rom_converto_lib::info::CtrInfo {
+            title_id: "0004001000030800".to_string(),
+            content_kind: Some(rom_converto_lib::info::ContentKind::System),
+            ..Default::default()
+        };
+        let out = render_ctr(&info);
+        assert!(has_field(&out, "Content type", "System"));
+    }
+
+    #[test]
     fn render_dol_shows_fst_root_and_totals_when_truncated() {
         let info = rom_converto_lib::info::DolInfo {
             fst_root: vec![
@@ -2452,6 +2520,16 @@ mod tests {
     }
 
     #[test]
+    fn render_ps3_shows_raw_category_when_content_kind_is_unknown() {
+        let info = rom_converto_lib::info::Ps3Info {
+            category: Some("XX".to_string()),
+            ..Default::default()
+        };
+        let out = render_ps3(&info);
+        assert!(has_field(&out, "Content type", "XX"));
+    }
+
+    #[test]
     fn render_nx_shows_encryption_row() {
         let info = rom_converto_lib::info::NxInfo::default();
         let out = render_nx(&info);
@@ -2513,6 +2591,17 @@ mod tests {
         let out = render_psp(&info);
         assert!(has_field(&out, "Icon", "144x80 PNG (10 bytes)"));
         assert!(has_field(&out, "Background", "480x272 PNG (20 bytes)"));
+    }
+
+    #[test]
+    fn render_psp_shows_normalized_content_type() {
+        let info = rom_converto_lib::info::PspInfo {
+            category: Some("UG".to_string()),
+            content_kind: Some(rom_converto_lib::info::ContentKind::Game),
+            ..Default::default()
+        };
+        let out = render_psp(&info);
+        assert!(has_field(&out, "Content type", "Game (UG)"));
     }
 
     #[test]
@@ -2634,6 +2723,7 @@ mod tests {
             disc_version: Some("1.02".to_string()),
             category: Some("UG".to_string()),
             category_label: Some("UMD game".to_string()),
+            content_kind: Some(rom_converto_lib::info::ContentKind::Game),
             psp_system_ver: Some("6.20".to_string()),
             parental_level: Some(5),
             region: Some(0x8000),
@@ -2660,7 +2750,7 @@ mod tests {
             "DATA.PSAR",
             "NPUMDIMG (encrypted PSN UMD image)"
         ));
-        assert!(has_field(&out, "Content type", "UMD game (UG)"));
+        assert!(has_field(&out, "Content type", "Game (UG)"));
         assert!(out.contains("PARAM.SFO"));
         assert!(out.contains("absent"));
     }
@@ -2683,6 +2773,18 @@ mod tests {
     }
 
     #[test]
+    fn render_vpk_shows_normalized_content_type() {
+        let info = rom_converto_lib::info::VpkInfo {
+            category: Some("gp".to_string()),
+            category_label: Some("Patch".to_string()),
+            content_kind: Some(rom_converto_lib::info::ContentKind::Update),
+            ..Default::default()
+        };
+        let out = render_vpk(&info);
+        assert!(has_field(&out, "Content type", "Update (gp)"));
+    }
+
+    #[test]
     fn render_pkg_shows_content_type_and_key_type() {
         let info = rom_converto_lib::info::PkgInfo {
             content_id: "EP9000-PCSF00001_00-EXAMPLE000000000".to_string(),
@@ -2693,6 +2795,7 @@ mod tests {
             ..Default::default()
         };
         let out = render_pkg(&info);
+        assert!(has_field(&out, "Format", "PSN PKG"));
         assert!(has_field(&out, "Content type", "PS Vita application (21)"));
         assert!(has_field(&out, "Key type", "2"));
         assert!(has_field(
@@ -2700,5 +2803,18 @@ mod tests {
             "Content ID",
             "EP9000-PCSF00001_00-EXAMPLE000000000"
         ));
+    }
+
+    #[test]
+    fn render_pkg_shows_platform_row() {
+        use rom_converto_lib::sony::vita::pkg::PkgPlatform;
+
+        let info = rom_converto_lib::info::PkgInfo {
+            platform: PkgPlatform::Psp,
+            content_id: "UP9000-NPUG80001_00-EXAMPLE000000000".to_string(),
+            ..Default::default()
+        };
+        let out = render_pkg(&info);
+        assert!(has_field(&out, "Platform", "PSP"));
     }
 }

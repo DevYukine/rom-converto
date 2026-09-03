@@ -28,13 +28,17 @@ For RVZ and NSZ/XCZ the output is byte-identical to the reference encoder (Dolph
 
 Single-image commands (compress, decompress, convert, extract, verify, info, and `hash`) also read a `.zip`, `.7z`, `.rar`, `.tar`, or `.tar.gz`/`.tgz` archive directly and operate on the first matching member. See [`docs/cli.md`](docs/cli.md) for the details.
 
-`rom-converto info <input>` auto-detects the console and inspects any format above without naming it, including PS1/PS2 (`.iso`, `.cue`+`.bin`) and PSP (`.iso`) title metadata, embedded icons, and encryption state where it can be determined; `chd info` and `cso info` also report the PlayStation disc found inside the container, when there is one. It also reads:
+`rom-converto info <input>` auto-detects the console and inspects any format above without naming it, including PS1/PS2 (`.iso`, `.cue`+`.bin`) and PSP (`.iso`) title metadata, embedded icons, and encryption state where it can be determined; `chd info` and `cso info` also report the PlayStation disc found inside the container, when there is one. Content type is normalized to Game, Update, DLC, or Demo across every platform that has one, with the raw platform code alongside it. It also reads:
 
 | Format | Reported |
 |---|---|
 | Nintendo DS `.nds`, `.dsi` | header fields, header CRC16, secure-area encryption state, banner titles, 32x32 icon |
+| Nintendo 3DS `.3dsx` homebrew | the embedded SMDH title and icon, when present; also works compressed as `.z3dsx` |
 | PSP `EBOOT.PBP` (`.pbp`) | `PARAM.SFO` fields, icon, segment layout, and what `DATA.PSAR` holds (`NPUMDIMG` is an encrypted PSN image) |
-| PS Vita `.vpk`, `.pkg` | title, title ID, content ID, category, item counts, and the VPK bubble icon |
+| GameCube/Wii `.gcz`, `.wia` | routed to GameCube or Wii by the wrapped disc's magic |
+| PSP/PS2 `.dax` | header stats, like CSO/ZSO |
+| PS Vita `.vpk` | title, title ID, content ID, category, item counts, and the VPK bubble icon |
+| PSN `.pkg` (PSP, PS3, PS Vita) | platform, title, title ID, content ID, category, item counts, and the ICON0 preview icon; PS3 packages are decrypted with the built-in key |
 | Cartridge ROMs | header fields plus the stored and recomputed checksum each format defines |
 
 The cartridge systems are NES (`.nes`), SNES (`.sfc`, `.smc`), Nintendo 64 (`.z64`, `.n64`, `.v64`), Game Boy and Color (`.gb`, `.gbc`), Game Boy Advance (`.gba`), Mega Drive (`.md`, `.gen`, `.smd`), Master System (`.sms`), Game Gear (`.gg`), Virtual Boy (`.vb`), WonderSwan (`.ws`, `.wsc`), Neo Geo Pocket (`.ngp`, `.ngc`), Atari Lynx (`.lnx`), and Atari 7800 (`.a78`). A `.ngc` file is checked for the SNK license string before it is read as a GameCube disc, since both use that extension.

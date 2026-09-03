@@ -6062,7 +6062,7 @@ fn extract_icon_png(info: &InfoResult) -> Option<Vec<u8>> {
         InfoResult::Retro(_) => None,
         InfoResult::Pbp(p) => p.icon.as_ref().map(|i| i.png_bytes.clone()),
         InfoResult::Vpk(v) => v.icon.as_ref().map(|i| i.png_bytes.clone()),
-        InfoResult::Pkg(_) => None,
+        InfoResult::Pkg(p) => p.icon.as_ref().map(|i| i.png_bytes.clone()),
     }
 }
 

@@ -3,6 +3,7 @@ import { computed, ref, watch } from "vue";
 import { invoke, save } from "~/lib/ipc";
 import { useToast } from "~/composables/useToast";
 import { parseHashLine } from "~/lib/hash-lines";
+import { contentTypeDisplayName } from "~/lib/display";
 import PrimaryButton from "~/components/ui/PrimaryButton.vue";
 import ContentTypeChip from "~/components/ui/ContentTypeChip.vue";
 import KvRow from "~/components/ui/KvRow.vue";
@@ -13,6 +14,7 @@ import {
 	formatBytes,
 	formatMaker,
 	formatXboxPartitionKind,
+	pkgPlatformBadge,
 	RETRO_SYSTEM_NAMES,
 	retroTitle,
 	xenonRatio,
@@ -199,6 +201,7 @@ const consoleBadge = computed(() => {
 		if (info.content?.kind === "psx") return info.content.disc_kind.toUpperCase();
 		if (info.content?.kind === "psp") return "PSP";
 	}
+	if (info.kind === "pkg") return pkgPlatformBadge(info.platform);
 	return CONSOLE_LABEL[info.kind];
 });
 
@@ -254,7 +257,8 @@ const metaLine = computed(() => {
 			break;
 		case "psp":
 			if (info.firmware) parts.push(`fw ${info.firmware}`);
-			if (info.category) parts.push(info.category);
+			if (info.content_kind) parts.push(contentTypeDisplayName(info.content_kind));
+			else if (info.category) parts.push(info.category);
 			break;
 		case "laser_disc":
 			parts.push(`${info.video_width}x${info.video_height}`, `${info.fps.toFixed(2)} fps`);
@@ -263,15 +267,18 @@ const metaLine = computed(() => {
 			parts.push(info.maker_code, info.unit_code_name);
 			break;
 		case "pbp":
-			if (info.category_label ?? info.category) parts.push(info.category_label ?? info.category ?? "");
+			if (info.content_kind) parts.push(contentTypeDisplayName(info.content_kind));
+			else if (info.category_label ?? info.category) parts.push(info.category_label ?? info.category ?? "");
 			if (info.disc_version) parts.push(`v${info.disc_version}`);
 			break;
 		case "vpk":
-			if (info.category_label ?? info.category) parts.push(info.category_label ?? info.category ?? "");
+			if (info.content_kind) parts.push(contentTypeDisplayName(info.content_kind));
+			else if (info.category_label ?? info.category) parts.push(info.category_label ?? info.category ?? "");
 			if (info.app_ver) parts.push(`v${info.app_ver}`);
 			break;
 		case "pkg":
-			if (info.content_type_label ?? info.category) parts.push(info.content_type_label ?? info.category ?? "");
+			if (info.content_kind) parts.push(contentTypeDisplayName(info.content_kind));
+			else if (info.content_type_label ?? info.category) parts.push(info.content_type_label ?? info.category ?? "");
 			break;
 	}
 	return parts.filter(Boolean).join(" · ");

@@ -1,7 +1,7 @@
 //! `info` extractor for Wii U (WUP) titles. Accepts NUS directories,
 //! loadiine directories, `.wua` archives, and `.wud` / `.wux` disc images.
 
-use crate::info::{Image, MultilingualString};
+use crate::info::{ContentKind, Image, MultilingualString};
 use crate::nintendo::wup::app_xml::AppXml;
 use crate::nintendo::wup::disc::compress::{
     content_partitions_with_index, find_matching_title, parse_si_titles, plan_partition,
@@ -29,6 +29,9 @@ pub struct WupInfo {
     pub title_id: u64,
     pub title_id_hex: String,
     pub title_type: String,
+    /// Normalized content kind, derived from [`WupInfo::title_id`]'s high word.
+    #[serde(default)]
+    pub content_kind: Option<ContentKind>,
     pub title_version: u32,
     pub group_id: u16,
     pub access_rights: u32,
@@ -359,6 +362,7 @@ fn read_loadiine(
         title_id,
         title_id_hex: format!("{:016X}", title_id),
         title_type: title_type_name(title_id),
+        content_kind: content_kind_from_title_id(title_id),
         title_version: loadiine.title_version,
         group_id: 0,
         access_rights: 0,
@@ -442,6 +446,7 @@ fn read_nus(dir: &Path) -> Result<WupInfo> {
         title_id,
         title_id_hex: format!("{:016X}", title_id),
         title_type: title_type_name(title_id),
+        content_kind: content_kind_from_title_id(title_id),
         title_version,
         group_id,
         access_rights,
@@ -467,6 +472,19 @@ fn title_type_name(title_id: u64) -> String {
         0x0005000E => "Update".to_string(),
         0x00050010 => "System".to_string(),
         other => format!("Unknown(0x{:08X})", other),
+    }
+}
+
+/// Maps a title ID's high word to the shared content vocabulary; `None`
+/// for system titles and any other high word not in this table.
+fn content_kind_from_title_id(title_id: u64) -> Option<ContentKind> {
+    let high = (title_id >> 32) as u32;
+    match high {
+        0x00050000 => Some(ContentKind::Game),
+        0x00050002 => Some(ContentKind::Demo),
+        0x0005000C => Some(ContentKind::Dlc),
+        0x0005000E => Some(ContentKind::Update),
+        _ => None,
     }
 }
 
@@ -577,5 +595,14 @@ mod tests {
         assert_eq!(mapped.name, "GM_LAYOUT_0");
         assert_eq!(mapped.kind, "Game");
         assert_eq!(mapped.start_sector, 0x1234);
+    }
+
+    #[test]
+    fn content_kind_from_title_id_maps_known_and_unmapped_high_words() {
+        assert_eq!(
+            content_kind_from_title_id(0x0005000E00050000),
+            Some(ContentKind::Update)
+        );
+        assert_eq!(content_kind_from_title_id(0x0005001000050000), None);
     }
 }

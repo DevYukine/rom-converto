@@ -7,7 +7,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::info::Image;
+use crate::info::{ContentKind, Image};
 use crate::ps3::embedded_keys::embedded_key;
 use crate::ps3::error::{Ps3Error, Ps3Result};
 use crate::ps3::fs::read_plain_files;
@@ -29,6 +29,12 @@ pub struct Ps3Info {
     pub sound_format: Option<String>,
     pub firmware: Option<String>,
     pub parental_level: Option<u32>,
+    /// The raw `PARAM.SFO` `CATEGORY` code, kept verbatim even when undecoded.
+    #[serde(default)]
+    pub category: Option<String>,
+    /// Normalized category, derived from [`Ps3Info::category`].
+    #[serde(default)]
+    pub content_kind: Option<ContentKind>,
     pub region_count: usize,
     pub total_sectors: u32,
     pub encrypted_sectors: u64,
@@ -92,6 +98,11 @@ pub fn read_ps3_info(path: &Path) -> Ps3Result<Ps3Info> {
             info.parental_level = sfo.get_u32("PARENTAL_LEVEL");
             info.resolution = sfo.get_u32("RESOLUTION").and_then(decode_resolution);
             info.sound_format = sfo.get_u32("SOUND_FORMAT").and_then(decode_sound_format);
+            info.category = sfo.get_str("CATEGORY").map(str::to_string);
+            info.content_kind = info
+                .category
+                .as_deref()
+                .and_then(content_kind_from_category);
         }
         if let Some(sfb) = files.disc_sfb.as_deref().and_then(|b| Sfb::parse(b).ok()) {
             // The SFB carries the authoritative physical-disc VERSION.
@@ -144,6 +155,16 @@ pub(super) fn probe_encrypted(
     }
 }
 
+/// Maps a PS3 `PARAM.SFO` `CATEGORY` code to the shared content vocabulary.
+fn content_kind_from_category(category: &str) -> Option<ContentKind> {
+    match category {
+        "DG" | "HG" => Some(ContentKind::Game),
+        "GD" => Some(ContentKind::Update),
+        "AC" => Some(ContentKind::Dlc),
+        _ => None,
+    }
+}
+
 fn region_from_title_id(id: &str) -> Option<&'static str> {
     let b = id.as_bytes();
     if b.len() < 4 || (&b[0..2] != b"BL" && &b[0..2] != b"BC") {
@@ -191,6 +212,24 @@ fn decode_sound_format(bits: u32) -> Option<String> {
 mod tests {
     use super::*;
     use crate::ps3::fs::tests::{TINY_PNG, build_ps3_iso_with_icon};
+    use crate::util::sfo::test_fixtures::{Val, build_sfo};
+
+    #[test]
+    fn read_info_returns_category_and_content_kind() {
+        let sfo = build_sfo(&[("CATEGORY", Val::Str("DG"))]);
+        let mut image = build_ps3_iso_with_icon(b"sfb-bytes", &sfo, &[]);
+        let total_sectors = (image.len() / SECTOR_SIZE) as u32;
+        image[0..4].copy_from_slice(&1u32.to_be_bytes());
+        image[0x0C..0x10].copy_from_slice(&(total_sectors - 1).to_be_bytes());
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("game.iso");
+        std::fs::write(&path, &image).expect("write fixture");
+
+        let info = read_ps3_info(&path).expect("read_ps3_info");
+        assert_eq!(info.category.as_deref(), Some("DG"));
+        assert_eq!(info.content_kind, Some(ContentKind::Game));
+    }
 
     #[test]
     fn read_info_returns_icon_and_root_files() {

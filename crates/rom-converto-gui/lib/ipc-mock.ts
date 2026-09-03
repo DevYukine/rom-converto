@@ -197,6 +197,7 @@ const CTR_INFO = {
 	maker_name: "Sample",
 	cartridge_size: null,
 	ncch_encrypted: false,
+	content_kind: "game",
 	smdh: {
 		titles: [
 			// Japanese comes first in SMDH layout order; the card must still pick English.
@@ -290,6 +291,7 @@ const WUP_INFO = {
 	title_id: 0x0005000010112200,
 	title_id_hex: "0005000010112200",
 	title_type: "application",
+	content_kind: "game",
 	title_version: 0,
 	group_id: 0,
 	access_rights: 0,
@@ -518,6 +520,7 @@ const PBP_INFO = {
 	disc_version: "1.00",
 	category: "MG",
 	category_label: "Game",
+	content_kind: "game",
 	psp_system_ver: "6.61",
 	parental_level: 1,
 	region: null,
@@ -538,6 +541,7 @@ const VPK_INFO = {
 	app_ver: "01.00",
 	category: "gd",
 	category_label: "Game",
+	content_kind: "game",
 	icon: null,
 	file_count: 420,
 	total_size: 900_000_000,
@@ -548,11 +552,14 @@ const PKG_INFO = {
 	content_id: "EP0001-PCSE00001_00-SAMPLEVITA000001",
 	pkg_revision: 1,
 	pkg_type: 1,
+	platform: "vita",
 	content_type: 21,
 	content_type_label: "Game",
+	content_kind: "game",
 	category: "gd",
 	title: "Sample Vita Title",
 	title_id: "PCSE00001",
+	icon: null,
 	item_count: 420,
 	total_size: 900_000_000,
 	data_offset: 0x1000,
@@ -584,7 +591,7 @@ function infoKindFor(path: string): string {
 	const e = extOf(path);
 	if (["nsp", "xci", "nsz", "xcz"].includes(e)) return "nx";
 	if (["cia", "3ds", "cci", "cxi", "ncch", "3dsx", "zcia", "zcci", "zcxi", "z3dsx"].includes(e)) return "ctr";
-	if (["gcm"].includes(e)) return "dol";
+	if (["gcm", "gcz"].includes(e)) return "dol";
 	if (["wbfs", "wia"].includes(e)) return "rvl";
 	if (["wud", "wux"].includes(e)) return "wup";
 	if (["chd"].includes(e)) return "chd";
