@@ -10,7 +10,10 @@ use crate::util::iso9660::{SectorSource, Volume};
 /// Metadata read from a PS1 or PS2 disc image.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PsxInfo {
-    pub disc_kind: String,
+    /// Console family, `"PS1"` or `"PS2"`.
+    pub console: String,
+    /// Physical medium of the source disc, `"CD"` or `"DVD"`.
+    pub media: String,
     pub boot_executable: Option<String>,
     pub title_id: Option<String>,
     pub volume_id: Option<String>,
@@ -27,7 +30,8 @@ pub(crate) fn read<S: SectorSource>(src: &mut S, volume: &Volume) -> io::Result<
     let boot_executable = cnf_value(&cnf, "BOOT2").or_else(|| cnf_value(&cnf, "BOOT"));
 
     Ok(PsxInfo {
-        disc_kind: volume.kind.label().to_string(),
+        console: volume.kind.console_label().to_string(),
+        media: volume.kind.media_label().to_string(),
         title_id: boot_executable.as_deref().and_then(normalize_title_id),
         boot_executable,
         volume_id: (!volume.volume_id.is_empty()).then(|| volume.volume_id.clone()),

@@ -76,6 +76,26 @@ impl DiscKind {
             DiscKind::UnknownIso => "unknown",
         }
     }
+
+    /// Console family alone, without the medium: `"PS1"`, `"PS2"`, `"PSP"`.
+    pub fn console_label(self) -> &'static str {
+        match self {
+            DiscKind::Ps2Dvd | DiscKind::Ps2Cd => "PS2",
+            DiscKind::Psp => "PSP",
+            DiscKind::Ps1 => "PS1",
+            DiscKind::UnknownIso => "unknown",
+        }
+    }
+
+    /// Physical medium the disc shipped on: `"CD"`, `"DVD"`, or `"UMD"`.
+    pub fn media_label(self) -> &'static str {
+        match self {
+            DiscKind::Ps2Dvd => "DVD",
+            DiscKind::Ps2Cd | DiscKind::Ps1 => "CD",
+            DiscKind::Psp => "UMD",
+            DiscKind::UnknownIso => "unknown",
+        }
+    }
 }
 
 /// A probed ISO9660 volume: its console family, volume identifier, sector

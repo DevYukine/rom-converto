@@ -44,7 +44,7 @@ const CONSOLE_LABEL: Record<InfoResult["kind"], string> = {
 	xbox: "XBOX",
 	xenon: "XBOX 360",
 	ps3: "PS3",
-	psx: "PLAYSTATION",
+	psx: "PS1",
 	psp: "PSP",
 	laser_disc: "LASERDISC",
 	nds: "DS",
@@ -61,7 +61,13 @@ const iconUrl = computed(() => {
 	return img ? imageToDataUrl(img) : null;
 });
 
-const iconCaption = computed(() => (props.info.kind === "nx" && !props.info.full ? "load prod.keys" : "game icon"));
+const iconCaption = computed(() => {
+	if (props.info.kind === "nx" && !props.info.full) return "load prod.keys";
+	// Vita pkg artwork sits behind PFS; it only decrypts with a license
+	// (work.bin / .rif) next to the package.
+	if (props.info.kind === "pkg" && props.info.platform === "vita") return "add work.bin";
+	return "game icon";
+});
 
 const backgroundUrl = computed(() => {
 	const img = pickBackgroundImage(props.info);
@@ -152,15 +158,21 @@ const title = computed(() => {
 	}
 });
 
+// Raw disc images all read "DISC" regardless of the extension they came
+// with (.iso, .gcm, .cue); compressed or archive containers keep their
+// format name.
+const RETRO_DISC_SYSTEMS = new Set(["sega_saturn", "sega_cd", "dreamcast"]);
+
 const formatBadge = computed(() => {
 	const info = props.info;
 	switch (info.kind) {
 		case "ctr":
 			return info.format.toUpperCase();
 		case "dol":
-			return info.container.toUpperCase();
-		case "rvl":
-			return info.container.toUpperCase();
+		case "rvl": {
+			const container = info.container.toUpperCase();
+			return container === "ISO" || container === "GCM" ? "DISC" : container;
+		}
 		case "wup":
 			return info.source_kind.toUpperCase();
 		case "nx":
@@ -170,21 +182,21 @@ const formatBadge = computed(() => {
 		case "cso":
 			return info.format.toUpperCase();
 		case "xbox":
-			return formatXboxPartitionKind(info.partition_kind).toUpperCase();
+			return "DISC";
 		case "xenon":
-			return "XENON";
+			return "ZAR";
 		case "ps3":
-			return "ISO";
+			return "DISC";
 		case "psx":
 			return "DISC";
 		case "psp":
-			return "ISO";
+			return "DISC";
 		case "laser_disc":
 			return "AVI";
 		case "nds":
 			return "NDS";
 		case "retro":
-			return RETRO_SYSTEM_NAMES[info.details.system].toUpperCase();
+			return RETRO_DISC_SYSTEMS.has(info.details.system) ? "DISC" : "ROM";
 		case "pbp":
 			return "EBOOT.PBP";
 		case "vpk":
@@ -196,13 +208,58 @@ const formatBadge = computed(() => {
 
 const consoleBadge = computed(() => {
 	const info = props.info;
-	if (info.kind === "psx") return info.disc_kind.toUpperCase();
+	if (info.kind === "psx") return info.console;
 	if (info.kind === "chd" || info.kind === "cso") {
-		if (info.content?.kind === "psx") return info.content.disc_kind.toUpperCase();
+		if (info.content?.kind === "psx") return info.content.console;
 		if (info.content?.kind === "psp") return "PSP";
 	}
 	if (info.kind === "pkg") return pkgPlatformBadge(info.platform);
+	if (info.kind === "retro") return RETRO_SYSTEM_NAMES[info.details.system].toUpperCase();
 	return CONSOLE_LABEL[info.kind];
+});
+
+// Physical medium of disc-based inputs; null for cartridges and digital
+// packages, which have no disc to describe.
+const mediaBadge = computed(() => {
+	const info = props.info;
+	switch (info.kind) {
+		case "psx":
+			return info.media;
+		case "psp":
+			return "UMD";
+		case "ps3":
+			return "BD";
+		case "dol":
+			return "MiniDVD";
+		case "rvl":
+			return "DVD";
+		case "xbox":
+			return "DVD";
+		case "chd":
+			if (info.content?.kind === "psx") return info.content.media;
+			if (info.content?.kind === "psp") return "UMD";
+			if (info.ld) return "LaserDisc";
+			if (info.dvd) return "DVD";
+			return info.tracks.length ? "CD" : null;
+		case "cso":
+			if (info.content?.kind === "psx") return info.content.media;
+			if (info.content?.kind === "psp") return "UMD";
+			return null;
+		case "laser_disc":
+			return "LaserDisc";
+		case "retro":
+			switch (info.details.system) {
+				case "sega_saturn":
+				case "sega_cd":
+					return "CD";
+				case "dreamcast":
+					return "GD-ROM";
+				default:
+					return null;
+			}
+		default:
+			return null;
+	}
 });
 
 const metaLine = computed(() => {
@@ -500,6 +557,7 @@ async function saveIcon() {
 					<ContentTypeChip v-if="view.contentType" :type="view.contentType" />
 					<span class="rc-inspect-card__badge rc-inspect-card__badge--console">{{ consoleBadge }}</span>
 					<span class="rc-inspect-card__badge rc-inspect-card__badge--format">{{ formatBadge }}</span>
+					<span v-if="mediaBadge" class="rc-inspect-card__badge rc-inspect-card__badge--media">{{ mediaBadge }}</span>
 				</div>
 				<div v-if="metaLine" class="rc-inspect-card__meta">{{ metaLine }}</div>
 				<div class="rc-inspect-card__stats">
@@ -660,6 +718,11 @@ async function saveIcon() {
 .rc-inspect-card__badge--console {
 	background: var(--a10);
 	color: var(--t3);
+}
+
+.rc-inspect-card__badge--media {
+	background: rgba(163, 113, 247, 0.16);
+	color: var(--purple);
 }
 
 .rc-inspect-card__meta {

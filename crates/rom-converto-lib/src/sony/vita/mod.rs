@@ -1,6 +1,7 @@
 //! PS Vita VPK, PKG, and NoNpDrm license support.
 
 pub mod nonpdrm;
+pub(crate) mod pfs;
 pub mod pkg;
 pub mod vpk;
 

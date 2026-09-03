@@ -213,7 +213,8 @@ mod tests {
         let path = write(dir.path(), "game.iso", &ps1_iso());
 
         let info = read_psx_info(&path).expect("read ps1 info");
-        assert_eq!(info.disc_kind, "PS1");
+        assert_eq!(info.console, "PS1");
+        assert_eq!(info.media, "CD");
         assert_eq!(info.title_id.as_deref(), Some("SLUS-00001"));
         assert_eq!(
             info.boot_executable.as_deref(),
@@ -230,7 +231,8 @@ mod tests {
         let path = write(dir.path(), "game.iso", &ps2_iso());
 
         let info = read_psx_info(&path).expect("read ps2 info");
-        assert_eq!(info.disc_kind, "PS2 (DVD)");
+        assert_eq!(info.console, "PS2");
+        assert_eq!(info.media, "DVD");
         assert_eq!(info.title_id.as_deref(), Some("SLUS-20312"));
         assert_eq!(info.version.as_deref(), Some("1.01"));
         assert_eq!(info.volume_id.as_deref(), Some("SLUS_203.12"));

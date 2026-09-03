@@ -19,6 +19,7 @@ use aes::cipher::{BlockCipherEncrypt, KeyInit, KeyIvInit, StreamCipher, StreamCi
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 
+use super::{nonpdrm, pfs};
 use crate::info::{ContentKind, Image};
 use crate::util::ProgressReporter;
 use crate::util::sfo::Sfo;
@@ -37,8 +38,11 @@ const MAX_SFO_BYTES: u32 = 1 << 20;
 const MAX_NAME_BYTES: u32 = 4096;
 /// Cap on the metadata entry count, to bound a corrupt header's loop.
 const MAX_META_COUNT: u32 = 4096;
-/// Cap on an `icon0.png` item read out of an untrusted package.
+/// Cap on an `icon0.png` or `pic0.png` item read out of an untrusted package.
 const MAX_ICON_BYTES: u64 = 4 << 20;
+/// Cap on a `sce_pfs` database read out of an untrusted package. These grow
+/// with the file count, so they need far more headroom than an icon.
+const MAX_PFS_DB_BYTES: u64 = 64 << 20;
 
 const PKG_PS3_KEY: [u8; 16] = [
     0x2e, 0x7b, 0x71, 0xd7, 0xc9, 0xc9, 0xa1, 0x4e, 0xa3, 0x22, 0x1f, 0x18, 0x88, 0x28, 0xb8, 0xf8,
@@ -97,6 +101,10 @@ pub struct PkgInfo {
     /// failure.
     #[serde(default)]
     pub icon: Option<Image>,
+    /// `sce_sys/pic0.png`, the Vita LiveArea background. `None` for the
+    /// other platforms, and whenever the image cannot be recovered.
+    #[serde(default)]
+    pub background: Option<Image>,
     pub item_count: u32,
     pub total_size: u64,
     pub data_offset: u64,
@@ -156,9 +164,21 @@ pub fn read_info(path: &Path) -> Result<PkgInfo> {
     let header = read_header(&mut file, path)?;
     let meta = read_meta(&mut file, &header)?;
     let platform = classify_platform(header.pkg_type, meta.content_type);
-    // Icon lookup needs whole references into `header`/`meta`, so it runs
+    // Artwork lookup needs whole references into `header`/`meta`, so it runs
     // before either is partially moved into the `PkgInfo` literal below.
-    let icon = read_icon(&mut file, &header, &meta, platform, pkg_size);
+    // Vita artwork sits under PFS; the package-layer read only helps when
+    // the entry is stored unencrypted, so it runs as the fallback there.
+    let (icon, background) = if platform == PkgPlatform::Vita {
+        let (icon, background) =
+            read_vita_pfs_art(&mut file, &header, &meta, pkg_size, path).unwrap_or_default();
+        let icon = icon.or_else(|| read_icon(&mut file, &header, &meta, platform, pkg_size));
+        (icon, background)
+    } else {
+        (
+            read_icon(&mut file, &header, &meta, platform, pkg_size),
+            None,
+        )
+    };
 
     let mut info = PkgInfo {
         content_id: header.content_id,
@@ -172,6 +192,7 @@ pub fn read_info(path: &Path) -> Result<PkgInfo> {
         title: None,
         title_id: None,
         icon,
+        background,
         item_count: header.item_count,
         total_size: header.total_size,
         data_offset: header.data_offset,
@@ -201,24 +222,26 @@ pub fn read_info(path: &Path) -> Result<PkgInfo> {
     Ok(info)
 }
 
-/// Best-effort icon lookup: finds the item table entry whose name ends
-/// with `icon0.png` (case-insensitively), decrypts it, and decodes it as a
-/// PNG. Any failure along the way — an unsupported key type, a corrupt
-/// item table, a truncated payload, or a non-PNG file — yields `None`
-/// instead of failing the caller's read.
-fn read_icon(
+/// Best-effort read of the single item whose name ends with `suffix`
+/// (compared case-insensitively), decrypted at the package layer. Any
+/// failure along the way — an unsupported key type, a corrupt item table, a
+/// missing or oversized item, a truncated payload — yields `None` instead
+/// of failing the caller's read.
+fn read_item_bytes(
     file: &mut File,
     header: &Header,
     meta: &Meta,
     platform: PkgPlatform,
     pkg_size: u64,
-) -> Option<Image> {
+    suffix: &str,
+    max_bytes: u64,
+) -> Option<Vec<u8>> {
     let main_key = derive_key(header.key_type, &header.iv, platform).ok()?;
-    let items = read_items(file, header, meta, &main_key, pkg_size, Some("icon0.png")).ok()?;
+    let items = read_items(file, header, meta, &main_key, pkg_size, Some(suffix)).ok()?;
     let entry = items
         .into_iter()
-        .find(|r| !r.item.is_dir && r.item.name.to_ascii_lowercase().ends_with("icon0.png"))?;
-    if entry.item.data_size > MAX_ICON_BYTES {
+        .find(|r| !r.item.is_dir && r.item.name.to_ascii_lowercase().ends_with(suffix))?;
+    if entry.item.data_size > max_bytes {
         return None;
     }
 
@@ -229,7 +252,106 @@ fn read_icon(
     ctr_at(&entry.key, &header.iv, entry.item.data_offset)
         .ok()?
         .apply_keystream(&mut buf);
+    Some(buf)
+}
+
+/// Best-effort icon lookup, for the platforms that store `icon0.png`
+/// straight under the package layer.
+fn read_icon(
+    file: &mut File,
+    header: &Header,
+    meta: &Meta,
+    platform: PkgPlatform,
+    pkg_size: u64,
+) -> Option<Image> {
+    let buf = read_item_bytes(
+        file,
+        header,
+        meta,
+        platform,
+        pkg_size,
+        "icon0.png",
+        MAX_ICON_BYTES,
+    )?;
     Image::from_png(buf)
+}
+
+/// Vita artwork stays PFS-encrypted underneath the package layer, so it
+/// only decodes once the klicensee from a license beside the package is
+/// applied. Returns `(icon0.png, pic0.png)`, each `None` when it cannot be
+/// recovered; a missing license is the normal case, not an error.
+fn read_vita_pfs_art(
+    file: &mut File,
+    header: &Header,
+    meta: &Meta,
+    pkg_size: u64,
+    pkg_path: &Path,
+) -> Option<(Option<Image>, Option<Image>)> {
+    let klicensee = find_license(pkg_path, &header.content_id)?;
+    let platform = PkgPlatform::Vita;
+    let pflist = read_item_bytes(
+        file,
+        header,
+        meta,
+        platform,
+        pkg_size,
+        "sce_pfs/pflist",
+        MAX_PFS_DB_BYTES,
+    )?;
+    let pflist = String::from_utf8(pflist).ok()?;
+    let unicv = read_item_bytes(
+        file,
+        header,
+        meta,
+        platform,
+        pkg_size,
+        "sce_pfs/unicv.db",
+        MAX_PFS_DB_BYTES,
+    )?;
+
+    let mut decode = |name: &str| -> Option<Image> {
+        let mut buf =
+            read_item_bytes(file, header, meta, platform, pkg_size, name, MAX_ICON_BYTES)?;
+        pfs::decrypt_file(&klicensee, &pflist, name, &unicv, &mut buf).ok()?;
+        Image::from_png(buf)
+    };
+    Some((decode("sce_sys/icon0.png"), decode("sce_sys/pic0.png")))
+}
+
+/// Looks for a NoNpDrm license beside the package and returns its
+/// klicensee. A license whose content id matches the package wins; with no
+/// exact match, the first usable `work.bin`, then any `.rif`, is taken.
+fn find_license(pkg_path: &Path, content_id: &str) -> Option<[u8; 16]> {
+    // A bare relative file name has `Some("")` as its parent, which
+    // read_dir rejects; treat it as the current directory.
+    let dir = match pkg_path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+
+    let mut fallback = None;
+    if let Ok((id, key)) = nonpdrm::read_license_key(&dir.join("work.bin")) {
+        if id == content_id {
+            return Some(key);
+        }
+        fallback = Some(key);
+    }
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+        if !(name == "work.bin" || name.ends_with(".rif")) {
+            continue;
+        }
+        let Ok((id, key)) = nonpdrm::read_license_key(&entry.path()) else {
+            continue;
+        };
+        if id == content_id {
+            return Some(key);
+        }
+        if fallback.is_none() {
+            fallback = Some(key);
+        }
+    }
+    fallback
 }
 
 /// Decrypts the item table of the `.pkg` at `path` and writes every file
@@ -997,6 +1119,106 @@ mod tests {
         let info = read_info(&path).unwrap();
         let icon = info.icon.expect("icon0.png");
         assert_eq!((icon.width, icon.height), (64, 48));
+    }
+
+    /// Vita artwork carries a second, PFS encryption layer that only comes
+    /// off with the klicensee from the license sitting beside the package.
+    #[test]
+    fn vita_artwork_is_pfs_decrypted_with_the_license_beside_the_package() {
+        use crate::sony::vita::pfs::test_fixtures::{build_unicv, encrypt_file};
+
+        const SECTOR: usize = 0x8000;
+        const KLICENSEE: [u8; 16] = [0x5A; 16];
+        let icon_seed = [0x11u8; 20];
+        let pic_seed = [0x22u8; 20];
+
+        // Longer than one sector and not block aligned, so the sector loop
+        // and the ciphertext stealing tail both run.
+        let mut icon = png(64, 48);
+        icon.resize(40_029, 0xCD);
+        let mut pic = png(960, 544);
+        pic.resize(1_234, 0xEF);
+        let plain_icon = icon.clone();
+        encrypt_file(&KLICENSEE, &icon_seed, SECTOR, &mut icon);
+        encrypt_file(&KLICENSEE, &pic_seed, SECTOR, &mut pic);
+        assert_ne!(icon, plain_icon);
+
+        let pflist = [
+            "# List of PFS files/dirs (Don't edit this file).",
+            "#\tpfs_mode\t10",
+            "sce_sys\tsys\tdir\t0x00000001\t0\t00",
+            "sce_sys/icon0.png\tsys\t\t0x00000003\t40029\t00",
+            "sce_sys/pic0.png\tsys\t\t0x00000005\t1234\t00",
+        ]
+        .join("\n");
+
+        let mut entries = entries();
+        for (name, data) in [
+            ("sce_pfs/pflist", pflist.into_bytes()),
+            (
+                "sce_pfs/unicv.db",
+                build_unicv(SECTOR as u32, &[(3, icon_seed), (5, pic_seed)]),
+            ),
+            ("sce_sys/icon0.png", icon),
+            ("sce_sys/pic0.png", pic),
+        ] {
+            entries.push(Entry {
+                name,
+                data,
+                is_dir: false,
+                psp_type: 0x90,
+            });
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("app.pkg");
+        std::fs::write(&path, build_pkg(2, 3, 0x15, &entries)).unwrap();
+        let mut license = vec![0u8; 0x200];
+        license[0x50..0x60].copy_from_slice(&KLICENSEE);
+        std::fs::write(dir.path().join("work.bin"), license).unwrap();
+
+        let info = read_info(&path).unwrap();
+        let icon = info.icon.expect("icon0.png");
+        assert_eq!((icon.width, icon.height), (64, 48));
+        assert_eq!(icon.png_bytes, plain_icon);
+        let background = info.background.expect("pic0.png");
+        assert_eq!((background.width, background.height), (960, 544));
+    }
+
+    /// Without a license the package layer alone leaves the artwork
+    /// unreadable, and that stays a `None` field rather than an error.
+    #[test]
+    fn vita_artwork_is_absent_without_a_license() {
+        use crate::sony::vita::pfs::test_fixtures::{build_unicv, encrypt_file};
+
+        let seed = [0x11u8; 20];
+        let mut icon = png(64, 48);
+        encrypt_file(&[0x5A; 16], &seed, 0x8000, &mut icon);
+
+        let mut entries = entries();
+        for (name, data) in [
+            (
+                "sce_pfs/pflist",
+                b"sce_sys/icon0.png\tsys\t\t0x00000003\t29\t00".to_vec(),
+            ),
+            ("sce_pfs/unicv.db", build_unicv(0x8000, &[(3, seed)])),
+            ("sce_sys/icon0.png", icon),
+        ] {
+            entries.push(Entry {
+                name,
+                data,
+                is_dir: false,
+                psp_type: 0x90,
+            });
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("app.pkg");
+        std::fs::write(&path, build_pkg(2, 3, 0x15, &entries)).unwrap();
+
+        let info = read_info(&path).unwrap();
+        assert!(info.icon.is_none());
+        assert!(info.background.is_none());
     }
 
     #[test]

@@ -132,7 +132,7 @@ function discContentRom(content: DiscContent): InspectField[] {
 		add(rom, "Content Type", "Game");
 		add(rom, "Version", content.version);
 		add(rom, "Size", formatBytes(content.size_bytes));
-		add(rom, "Disc Kind", content.disc_kind);
+		add(rom, "Media", content.media);
 		add(rom, "Boot Executable", content.boot_executable);
 		add(rom, "Total Sectors", content.total_sectors);
 	} else {

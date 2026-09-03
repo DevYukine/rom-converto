@@ -84,6 +84,32 @@ pub fn read_info(path: &Path) -> Result<NoNpDrmInfo> {
     parse(&data).with_context(|| format!("nonpdrm info: parse {}", path.display()))
 }
 
+/// Reads the content id and klicensee a `work.bin` or `.rif` license
+/// carries; the klicensee is the key the content's PFS layer is encrypted
+/// under.
+///
+/// # Errors
+/// Returns an error if the file cannot be read, is not a license record,
+/// or carries an all-zero (absent) klicensee.
+pub fn read_license_key(path: &Path) -> Result<(String, [u8; 16])> {
+    use std::io::Read;
+
+    // Bounded read: only the fixed record head is needed, and license
+    // discovery may probe neighbouring files of arbitrary size.
+    let mut head = [0u8; RIF_SIZE];
+    std::fs::File::open(path)
+        .and_then(|mut f| f.read_exact(&mut head))
+        .with_context(|| format!("nonpdrm klicensee: read {}", path.display()))?;
+    let info = parse(&head)?;
+    if !info.has_klicensee {
+        bail!("nonpdrm: license {} carries no klicensee", path.display());
+    }
+    let key = head[KLICENSEE_OFFSET..KLICENSEE_OFFSET + KLICENSEE_LEN]
+        .try_into()
+        .expect("16-byte slice");
+    Ok((info.content_id, key))
+}
+
 /// Parses a license record. Accepts the application and PSM record sizes.
 pub fn parse(data: &[u8]) -> Result<NoNpDrmInfo> {
     if data.len() < RIF_SIZE {

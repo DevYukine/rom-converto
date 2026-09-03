@@ -1107,7 +1107,8 @@ fn render_ps3(info: &rom_converto_lib::info::Ps3Info) -> String {
 
 fn psx_rom_table(info: &rom_converto_lib::info::PsxInfo) -> KeyValueTable {
     let mut t = KeyValueTable::new();
-    t.push("Format", info.disc_kind.clone());
+    t.push("Format", format!("{} disc", info.console));
+    t.push("Media", info.media.clone());
     t.push("Content type", "Game");
     if let Some(v) = &info.title_id {
         t.push("Title ID", v.clone());
@@ -2065,6 +2066,17 @@ fn render_vpk(info: &rom_converto_lib::info::VpkInfo) -> String {
             ),
         );
     }
+    if let Some(img) = &info.background {
+        t.push(
+            "Background",
+            format!(
+                "{}x{} PNG ({} bytes)",
+                img.width,
+                img.height,
+                img.png_bytes.len()
+            ),
+        );
+    }
     order_rom(&mut t);
 
     let mut out = String::new();
@@ -2139,6 +2151,17 @@ fn render_pkg(info: &rom_converto_lib::info::PkgInfo) -> String {
     if let Some(img) = &info.icon {
         t.push(
             "Icon",
+            format!(
+                "{}x{} PNG ({} bytes)",
+                img.width,
+                img.height,
+                img.png_bytes.len()
+            ),
+        );
+    }
+    if let Some(img) = &info.background {
+        t.push(
+            "Background",
             format!(
                 "{}x{} PNG ({} bytes)",
                 img.width,

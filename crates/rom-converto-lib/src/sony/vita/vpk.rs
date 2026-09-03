@@ -13,6 +13,7 @@ use crate::util::sfo::Sfo;
 
 const SFO_MEMBER: &str = "sce_sys/param.sfo";
 const ICON_MEMBER: &str = "sce_sys/icon0.png";
+const BACKGROUND_MEMBER: &str = "sce_sys/pic0.png";
 
 /// Cap on a `param.sfo` read out of an untrusted archive.
 const MAX_SFO_BYTES: u64 = 1 << 20;
@@ -34,6 +35,9 @@ pub struct VpkInfo {
     #[serde(default)]
     pub content_kind: Option<ContentKind>,
     pub icon: Option<Image>,
+    /// `sce_sys/pic0.png`, the LiveArea background artwork.
+    #[serde(default)]
+    pub background: Option<Image>,
     /// Number of file members, not counting directory entries.
     pub file_count: u32,
     /// Total uncompressed size of all file members.
@@ -49,6 +53,7 @@ pub fn read_info(path: &Path) -> Result<VpkInfo> {
     let mut info = VpkInfo::default();
     let mut sfo_index = None;
     let mut icon_index = None;
+    let mut background_index = None;
     for i in 0..zip.len() {
         let entry = zip.by_index(i)?;
         // enclosed_name is None for absolute or parent-traversing paths.
@@ -65,6 +70,7 @@ pub fn read_info(path: &Path) -> Result<VpkInfo> {
         match name.as_str() {
             SFO_MEMBER => sfo_index = Some(i),
             ICON_MEMBER => icon_index = Some(i),
+            BACKGROUND_MEMBER => background_index = Some(i),
             _ => {}
         }
     }
@@ -87,6 +93,9 @@ pub fn read_info(path: &Path) -> Result<VpkInfo> {
     }
     if let Some(i) = icon_index {
         info.icon = read_member(&mut zip, i, MAX_ICON_BYTES)?.and_then(Image::from_png);
+    }
+    if let Some(i) = background_index {
+        info.background = read_member(&mut zip, i, MAX_ICON_BYTES)?.and_then(Image::from_png);
     }
 
     Ok(info)
@@ -170,11 +179,13 @@ mod tests {
             ("TITLE_ID", Val::Str("PCSF00001")),
         ]);
         let icon = png(128, 128);
+        let background = png(960, 544);
         write_vpk(
             &path,
             &[
                 ("sce_sys/param.sfo", &sfo),
                 ("sce_sys/icon0.png", &icon),
+                ("sce_sys/pic0.png", &background),
                 ("eboot.bin", &[0u8; 64]),
             ],
         );
@@ -190,11 +201,16 @@ mod tests {
         assert_eq!(info.category.as_deref(), Some("gd"));
         assert_eq!(info.category_label.as_deref(), Some("Application"));
         assert_eq!(info.content_kind, Some(ContentKind::Game));
-        assert_eq!(info.file_count, 3);
-        assert_eq!(info.total_size, sfo.len() as u64 + icon.len() as u64 + 64);
+        assert_eq!(info.file_count, 4);
+        assert_eq!(
+            info.total_size,
+            sfo.len() as u64 + icon.len() as u64 + background.len() as u64 + 64
+        );
 
         let icon = info.icon.expect("icon0.png");
         assert_eq!((icon.width, icon.height), (128, 128));
+        let background = info.background.expect("pic0.png");
+        assert_eq!((background.width, background.height), (960, 544));
     }
 
     #[test]

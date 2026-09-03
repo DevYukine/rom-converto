@@ -475,7 +475,8 @@ export interface Ps3Info {
 }
 
 export interface PsxInfo {
-  disc_kind: string;
+  console: string;
+  media: string;
   boot_executable: string | null;
   title_id: string | null;
   volume_id: string | null;
@@ -894,6 +895,7 @@ export interface VpkInfo {
   category_label: string | null;
   content_kind: ContentKind | null;
   icon: Image | null;
+  background: Image | null;
   file_count: number;
   total_size: number;
 }
@@ -910,6 +912,7 @@ export interface PkgInfo {
   title: string | null;
   title_id: string | null;
   icon: Image | null;
+  background: Image | null;
   item_count: number;
   total_size: number;
   data_offset: number;
@@ -982,6 +985,9 @@ export function pickBackgroundImage(info: InfoResult): Image | null {
     case "cso":
       return info.content?.kind === "psp" ? info.content.background : null;
     case "psp":
+      return info.background;
+    case "vpk":
+    case "pkg":
       return info.background;
     default:
       return null;
