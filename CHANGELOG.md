@@ -1,3 +1,37 @@
+# [0.21.0](https://github.com/DevYukine/rom-converto/compare/v0.20.0...v0.21.0) (2026-09-03)
+
+
+### Bug Fixes
+
+* **gui:** size cue and folder inputs by content so queue savings are correct ([c06f019](https://github.com/DevYukine/rom-converto/commit/c06f01932856db349581faca146725c9214f55d8))
+* **nx:** emit NCZBLOCK version 2 type 1 to match nsz and cover keep-style xcz decompress ([aebeeef](https://github.com/DevYukine/rom-converto/commit/aebeeef164b7d7ed0701a0fbcdfc9557b9891f1a))
+
+
+### Features
+
+* **chd:** create laserdisc chds from avi with auto-detect and ld info ([61c7e7a](https://github.com/DevYukine/rom-converto/commit/61c7e7ab805dc7c5e08a0e14afce909df1277eb8))
+* **cli:** add batch info mode and capabilities manifest ([9be637e](https://github.com/DevYukine/rom-converto/commit/9be637ebbc6c4ce04a892c4a283b7f43ae693836))
+* **info:** normalize content type across consoles, route dax/3dsx/gcz/wia and inspect PSP/PS3/Vita pkg with icons ([0f303e2](https://github.com/DevYukine/rom-converto/commit/0f303e2770f25a2daff70e346e7f1ec12273d11f))
+* **info:** split disc console/media with a media chip across consoles and decrypt vita pkg artwork through pfs with a neighboring license ([ddf7608](https://github.com/DevYukine/rom-converto/commit/ddf7608a379d9419cf2fddfc2cc807dfd284617d))
+* **nds:** add DS cartridge info across lib, CLI and GUI ([8b90185](https://github.com/DevYukine/rom-converto/commit/8b90185cc813b5a913e30a8b13f4996e1d2ebb88))
+* **nds:** add DS secure area encryption and decryption across lib, CLI and GUI ([7f85d21](https://github.com/DevYukine/rom-converto/commit/7f85d214c59224ad167cddb79be41dea7382e267))
+* **progress:** report cumulative completion fraction on advance events ([d39af46](https://github.com/DevYukine/rom-converto/commit/d39af46a1e1b4151d66c921e0bda7a398409bf3a))
+* **psp:** accept PSN pkg input for to-iso via a seekable decrypted package item reader ([885a958](https://github.com/DevYukine/rom-converto/commit/885a9587e92f93aec6ab2981e4486e49ce48f572))
+* **psp:** add PBP EBOOT info and segment extraction across lib, CLI and GUI ([6bd4cd5](https://github.com/DevYukine/rom-converto/commit/6bd4cd5a9a6fe0eedc7e96d1588ddc0d0f99fa12))
+* **psp:** convert NPUMDIMG EBOOT.PBP to ISO with kirk and amctrl decryption across lib, CLI and GUI ([a0aaba4](https://github.com/DevYukine/rom-converto/commit/a0aaba4f27625628a80354e9f202c51a048d43a3))
+* **psp:** read psp/ps3 pkg title from the item param.sfo and extract pic1/pic0 as background ([c20d1b8](https://github.com/DevYukine/rom-converto/commit/c20d1b8e5bbe552a0de5ff362bf4b9792f8fb928))
+* **retro:** add cartridge-era console inspection across lib, CLI and GUI ([427fb40](https://github.com/DevYukine/rom-converto/commit/427fb40c9e595ddf55f7cc470ddbe496e17171a9))
+* **retro:** add Sega Saturn, Sega CD, Dreamcast, 32X and FDS inspection with Sega-aware cue and iso routing ([62ee28f](https://github.com/DevYukine/rom-converto/commit/62ee28f2349143e0abebab4fe46619a77b16abc6))
+* **rvl:** render the opening.bnr channel banner from brlyt layout, brlan animation and tpl textures for the inspect image ([7f4c4c1](https://github.com/DevYukine/rom-converto/commit/7f4c4c109b8ec3f3d9eafedf7cec8be4b35067ca))
+* **vita:** add VPK, PKG and NoNpDrm support across lib, CLI and GUI ([04e7a4b](https://github.com/DevYukine/rom-converto/commit/04e7a4b4139759f58df3899e08f75ab9aa972e1e))
+
+
+### Performance Improvements
+
+* **nx:** peek nca content type before opening ncz in info control scan ([5183d4f](https://github.com/DevYukine/rom-converto/commit/5183d4f070f6f65e55d1aa55a132c3c26e300989))
+
+
+
 # [0.20.0](https://github.com/DevYukine/rom-converto/compare/v0.19.0...v0.20.0) (2026-09-02)
 
 
@@ -82,27 +116,6 @@
 * **ffi:** add C ABI integration ([9464c15](https://github.com/DevYukine/rom-converto/commit/9464c15bd6cab26d89594681b1e35e05bb0fa728))
 * **gui:** add desktop updater ([bfec539](https://github.com/DevYukine/rom-converto/commit/bfec5394a8413967d3bab8ce0b10e518cef71ca0))
 * **gui:** redesign interface with operation-first layout and global queue ([040c371](https://github.com/DevYukine/rom-converto/commit/040c371e16edf139f9a15350e336ef62fb976dda))
-
-
-
-# [0.16.0](https://github.com/DevYukine/rom-converto/compare/v0.15.0...v0.16.0) (2026-07-11)
-
-
-### Bug Fixes
-
-* **ci:** avoid stale gui target cache ([bbd28e0](https://github.com/DevYukine/rom-converto/commit/bbd28e071f09825d65129d88c50db4e7e9a6a8f9))
-* **ci:** mirror rar platform fixes in release builds ([b5ec2b7](https://github.com/DevYukine/rom-converto/commit/b5ec2b78a0ebf04036b950462497fef8d7fb58f4))
-* **ci:** stabilize linux gui bundle build ([ef4709d](https://github.com/DevYukine/rom-converto/commit/ef4709de317045df43f764f1d273e210395e3847))
-* **cli:** make updater match release asset names ([a1eb1e7](https://github.com/DevYukine/rom-converto/commit/a1eb1e7fefe3c7685db3338df5778b26af88a4db))
-* **gui:** add tauri desktop icons ([02cdfa9](https://github.com/DevYukine/rom-converto/commit/02cdfa9217f73d3016ef7bfecc3f053e1918ff22))
-* **nx:** stub content-bearing non-secure partitions on xci compress ([e84e593](https://github.com/DevYukine/rom-converto/commit/e84e5934d2a0b751ff94b5a72f9707f976cec247))
-
-
-### Features
-
-* **benchmark:** add rom-converto-benchmark crate ([0db037a](https://github.com/DevYukine/rom-converto/commit/0db037af7a21bfe2a2a93ea9322d379793298cbe))
-* **ci:** add linux arm64 gui builds ([7a6462f](https://github.com/DevYukine/rom-converto/commit/7a6462f8fbf3d447d089158bb3e10bfbe4f9c571))
-* **cue:** add cue to iso and cso/zso conversion ([da4f16f](https://github.com/DevYukine/rom-converto/commit/da4f16fa8333855b79eee8ff902e92f629f7fbc7))
 
 
 
