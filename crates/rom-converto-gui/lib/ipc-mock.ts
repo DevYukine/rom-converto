@@ -509,6 +509,27 @@ const RETRO_INFO = {
 	},
 };
 
+const PBP_INFO = {
+	kind: "pbp",
+	physical_bytes: 180_000_000,
+	version: 0x00000100,
+	title: "Sample PSP Title",
+	disc_id: "ULUS10000",
+	disc_version: "1.00",
+	category: "MG",
+	category_label: "Game",
+	psp_system_ver: "6.61",
+	parental_level: 1,
+	region: null,
+	icon: null,
+	segments: [
+		{ name: "PARAM.SFO", offset: 0, size: 1_024, present: true },
+		{ name: "ICON0.PNG", offset: 1_024, size: 20_000, present: true },
+		{ name: "DATA.PSAR", offset: 21_024, size: 179_900_000, present: true },
+	],
+	psar_kind: { kind: "npumdimg" },
+};
+
 const VPK_INFO = {
 	kind: "vpk",
 	title: "Sample Vita Title",
@@ -554,6 +575,7 @@ const INFO_SAMPLES: Record<string, unknown> = {
 	xenon: XENON_INFO,
 	nds: NDS_INFO,
 	retro: RETRO_INFO,
+	pbp: PBP_INFO,
 	vpk: VPK_INFO,
 	pkg: PKG_INFO,
 };
@@ -570,6 +592,7 @@ function infoKindFor(path: string): string {
 	if (["xiso"].includes(e)) return "xbox";
 	if (["zar"].includes(e)) return "xenon";
 	if (["nds", "dsi"].includes(e)) return "nds";
+	if (["pbp"].includes(e)) return "pbp";
 	if (["vpk"].includes(e)) return "vpk";
 	if (["pkg"].includes(e)) return "pkg";
 	if (["nes", "sfc", "smc", "z64", "n64", "v64", "gb", "gbc", "gba", "md", "gen", "smd", "sms", "gg", "vb", "ws", "wsc", "ngp", "ngc", "lnx", "a78"].includes(e)) return "retro";

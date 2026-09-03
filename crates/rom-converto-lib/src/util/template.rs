@@ -172,6 +172,12 @@ impl TemplateTokens {
                 tokens.console = Some("NDS".to_string());
                 tokens.serial = non_empty(n.game_code.clone());
             }
+            InfoResult::Pbp(p) => {
+                tokens.title = p.title.clone().and_then(non_empty);
+                tokens.title_id = p.disc_id.clone().and_then(non_empty);
+                tokens.console = Some("PSP".to_string());
+                tokens.serial = p.disc_id.clone().and_then(non_empty);
+            }
             InfoResult::Vpk(v) => {
                 tokens.title = v.title.clone().and_then(non_empty);
                 tokens.title_id = v.title_id.clone().and_then(non_empty);

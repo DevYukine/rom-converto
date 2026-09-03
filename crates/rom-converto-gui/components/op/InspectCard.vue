@@ -47,6 +47,7 @@ const CONSOLE_LABEL: Record<InfoResult["kind"], string> = {
 	laser_disc: "LASERDISC",
 	nds: "DS",
 	retro: "RETRO",
+	pbp: "PSP",
 	vpk: "VITA",
 	pkg: "VITA",
 };
@@ -140,6 +141,8 @@ const title = computed(() => {
 			return englishFirst(info.banner?.titles.entries, (e) => e[0])?.[1] || info.game_title;
 		case "retro":
 			return retroTitle(info.details) || RETRO_SYSTEM_NAMES[info.details.system];
+		case "pbp":
+			return info.title || info.disc_id || "PSP image";
 		case "vpk":
 			return info.title || info.title_id || "Vita package";
 		case "pkg":
@@ -180,6 +183,8 @@ const formatBadge = computed(() => {
 			return "NDS";
 		case "retro":
 			return RETRO_SYSTEM_NAMES[info.details.system].toUpperCase();
+		case "pbp":
+			return "EBOOT.PBP";
 		case "vpk":
 			return "VPK";
 		case "pkg":
@@ -256,6 +261,10 @@ const metaLine = computed(() => {
 			break;
 		case "nds":
 			parts.push(info.maker_code, info.unit_code_name);
+			break;
+		case "pbp":
+			if (info.category_label ?? info.category) parts.push(info.category_label ?? info.category ?? "");
+			if (info.disc_version) parts.push(`v${info.disc_version}`);
 			break;
 		case "vpk":
 			if (info.category_label ?? info.category) parts.push(info.category_label ?? info.category ?? "");
@@ -336,6 +345,10 @@ const statRow = computed<Stat[]>(() => {
 			break;
 		case "retro":
 			stats.push({ label: "System", value: RETRO_SYSTEM_NAMES[info.details.system] });
+			break;
+		case "pbp":
+			if (info.disc_id) stats.push({ label: "Disc ID", value: info.disc_id });
+			stats.push({ label: "Segments", value: String(info.segments.filter((s) => s.present).length) });
 			break;
 		case "vpk":
 			if (info.title_id) stats.push({ label: "Title ID", value: info.title_id });
@@ -438,6 +451,9 @@ function copyTitleId() {
 			break;
 		case "nds":
 			value = info.game_code;
+			break;
+		case "pbp":
+			value = info.disc_id ?? "";
 			break;
 		case "vpk":
 			value = info.title_id ?? "";

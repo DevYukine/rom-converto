@@ -14,6 +14,7 @@ use crate::commands::nds::NdsCommands;
 use crate::commands::nx::NxCommands;
 use crate::commands::playlist::PlaylistModeArg;
 use crate::commands::ps3::Ps3Commands;
+use crate::commands::psp::PspCommands;
 use crate::commands::rvl::RvlCommands;
 use crate::commands::vita::VitaCommands;
 use crate::commands::wup::WupCommands;
@@ -3149,6 +3150,44 @@ async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()>
                 }
             }
         },
+        Commands::Psp(inner) => match inner {
+            PspCommands::Info(cmd) => {
+                if cmd.keys.is_some() {
+                    anyhow::bail!("--keys is only supported by nx, wup, and ps3 info");
+                }
+                ensure_input_exists(&cmd.input)?;
+                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["pbp"])?;
+                let info = rom_converto_lib::sony::psp::read_info(resolved.path())?;
+                if let Some(dir) = &cmd.save_icon {
+                    save_pbp_icon(&info, dir)?;
+                }
+                info_print::print(&rom_converto_lib::info::InfoResult::Pbp(info), cmd.json)?;
+            }
+            PspCommands::Extract(cmd) => {
+                ensure_input_exists(&cmd.input)?;
+                let policy = policy_of(crate::commands::ConflictPolicyArg::Error, false);
+                match resolve_output_dir(&cmd.output_dir, policy)? {
+                    WriteDecision::Skip => {
+                        log_skipped(&cmd.output_dir);
+                        return Ok(());
+                    }
+                    WriteDecision::Write(_) => {}
+                }
+                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["pbp"])?;
+                let started = Instant::now();
+                rom_converto_lib::sony::psp::extract_segments(
+                    &progress,
+                    resolved.path(),
+                    &cmd.output_dir,
+                )?;
+                log_single_summary(
+                    &cmd.input,
+                    &cmd.output_dir,
+                    TallyDirection::CountOnly,
+                    started,
+                );
+            }
+        },
         Commands::Vita(inner) => match inner {
             VitaCommands::Info(cmd) => {
                 if cmd.keys.is_some() {
@@ -4714,6 +4753,7 @@ fn save_info_icon(info: &rom_converto_lib::info::InfoResult, dir: &std::path::Pa
         InfoResult::Psp(i) => save_psp_icon(i, dir),
         InfoResult::Ps3(i) => save_ps3_icon(i, dir),
         InfoResult::Nds(i) => save_nds_icon(i, dir),
+        InfoResult::Pbp(i) => save_pbp_icon(i, dir),
         InfoResult::Vpk(i) => save_vpk_icon(i, dir),
         InfoResult::Chd(_)
         | InfoResult::Cso(_)
@@ -4887,6 +4927,25 @@ fn save_nds_icon(info: &rom_converto_lib::info::NdsInfo, dir: &std::path::Path) 
     };
     let path = dir.join(format!("{stem}.png"));
     std::fs::write(&path, &banner.icon.png_bytes)?;
+    log::info!("Wrote {}", path.display());
+    Ok(())
+}
+
+fn save_pbp_icon(info: &rom_converto_lib::info::PbpInfo, dir: &std::path::Path) -> Result<()> {
+    let Some(img) = &info.icon else {
+        log::warn!("No ICON0.PNG decoded; nothing to save");
+        return Ok(());
+    };
+    std::fs::create_dir_all(dir)?;
+    let stem = info
+        .disc_id
+        .clone()
+        .unwrap_or_else(|| "pbp-icon".to_string());
+    let path = dir.join(format!(
+        "{}.png",
+        rom_converto_lib::util::template::sanitize_file_stem(&stem)
+    ));
+    std::fs::write(&path, &img.png_bytes)?;
     log::info!("Wrote {}", path.display());
     Ok(())
 }

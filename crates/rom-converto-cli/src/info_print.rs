@@ -114,6 +114,7 @@ pub fn print(result: &InfoResult, json: bool) -> Result<()> {
         InfoResult::LaserDisc(info) => render_laserdisc(info),
         InfoResult::Nds(info) => render_nds(info),
         InfoResult::Retro(info) => render_retro(info),
+        InfoResult::Pbp(info) => render_pbp(info),
         InfoResult::Vpk(info) => render_vpk(info),
         InfoResult::Pkg(info) => render_pkg(info),
     };
@@ -1793,6 +1794,93 @@ fn retro_a78(info: &rom_converto_lib::retro::A78Info) -> KeyValueTable {
     t
 }
 
+/// Spells out what the `DATA.PSAR` magic means, including that an
+/// `NPUMDIMG` payload is an encrypted PSN UMD image.
+fn psar_kind_label(kind: &rom_converto_lib::sony::psp::PsarKind) -> String {
+    use rom_converto_lib::sony::psp::PsarKind;
+    match kind {
+        PsarKind::Npumdimg => "NPUMDIMG (encrypted PSN UMD image)".to_string(),
+        PsarKind::Psisoimg => "PSISOIMG (PS1 Classic disc image)".to_string(),
+        PsarKind::Pstitleimg => "PSTITLEIMG (PS1 Classic multi-disc container)".to_string(),
+        PsarKind::Unknown { magic } => format!("unknown (magic {})", magic),
+    }
+}
+
+fn render_pbp(info: &rom_converto_lib::info::PbpInfo) -> String {
+    let mut c = KeyValueTable::new();
+    c.push("Format", format!("PSP PBP v0x{:X}", info.version));
+    c.push("Physical bytes", format!("{}", info.physical_bytes));
+    c.push(
+        "DATA.PSAR",
+        match &info.psar_kind {
+            Some(kind) => psar_kind_label(kind),
+            None => "absent".to_string(),
+        },
+    );
+
+    let mut t = KeyValueTable::new();
+    if let Some(v) = &info.title {
+        t.push("Title", v.clone());
+    }
+    if let Some(v) = &info.disc_id {
+        t.push("Title ID", v.clone());
+    }
+    if let Some(v) = &info.disc_version {
+        t.push("Version", v.clone());
+    }
+    if let Some(v) = &info.category {
+        t.push(
+            "Content type",
+            match &info.category_label {
+                Some(label) => format!("{} ({})", label, v),
+                None => v.clone(),
+            },
+        );
+    }
+    if let Some(v) = &info.psp_system_ver {
+        t.push("Firmware", v.clone());
+    }
+    if let Some(v) = info.region {
+        t.push("Region", format!("0x{:X}", v));
+    }
+    if let Some(v) = info.parental_level {
+        t.push("Parental level", format!("{}", v));
+    }
+    if let Some(img) = &info.icon {
+        t.push(
+            "Icon",
+            format!(
+                "{}x{} PNG ({} bytes)",
+                img.width,
+                img.height,
+                img.png_bytes.len()
+            ),
+        );
+    }
+    order_rom(&mut t);
+
+    let mut out = String::new();
+    section(&mut out, "Container", &c);
+    section(&mut out, "ROM", &t);
+
+    if !info.segments.is_empty() {
+        let mut inner = String::new();
+        for s in &info.segments {
+            if s.present {
+                inner.push_str(&format!(
+                    "  {:<10}  offset=0x{:X}  {} bytes\n",
+                    s.name, s.offset, s.size
+                ));
+            } else {
+                inner.push_str(&format!("  {:<10}  absent\n", s.name));
+            }
+        }
+        nested(&mut out, "Inner files", &inner);
+    }
+
+    out
+}
+
 fn render_vpk(info: &rom_converto_lib::info::VpkInfo) -> String {
     let mut c = KeyValueTable::new();
     c.push("Format", "PS Vita VPK");
@@ -2406,6 +2494,49 @@ mod tests {
         assert!(has_field(&out, "Computed checksum", "0x5B"));
         assert!(has_field(&out, "Checksum valid", "no"));
         assert!(has_field(&out, "Size", "4096"));
+    }
+
+    #[test]
+    fn render_pbp_states_npumdimg_is_encrypted_and_lists_segments() {
+        use rom_converto_lib::sony::psp::{PbpSegmentInfo, PsarKind};
+
+        let info = rom_converto_lib::info::PbpInfo {
+            physical_bytes: 1024,
+            version: 0x10000,
+            title: Some("Test EBOOT".to_string()),
+            disc_id: Some("NPUH10041".to_string()),
+            disc_version: Some("1.02".to_string()),
+            category: Some("UG".to_string()),
+            category_label: Some("UMD game".to_string()),
+            psp_system_ver: Some("6.20".to_string()),
+            parental_level: Some(5),
+            region: Some(0x8000),
+            icon: None,
+            segments: vec![
+                PbpSegmentInfo {
+                    name: "PARAM.SFO".to_string(),
+                    offset: 0x28,
+                    size: 100,
+                    present: true,
+                },
+                PbpSegmentInfo {
+                    name: "PIC0.PNG".to_string(),
+                    offset: 0x8C,
+                    size: 0,
+                    present: false,
+                },
+            ],
+            psar_kind: Some(PsarKind::Npumdimg),
+        };
+        let out = render_pbp(&info);
+        assert!(has_field(
+            &out,
+            "DATA.PSAR",
+            "NPUMDIMG (encrypted PSN UMD image)"
+        ));
+        assert!(has_field(&out, "Content type", "UMD game (UG)"));
+        assert!(out.contains("PARAM.SFO"));
+        assert!(out.contains("absent"));
     }
 
     #[test]

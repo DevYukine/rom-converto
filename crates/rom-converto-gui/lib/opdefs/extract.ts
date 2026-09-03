@@ -15,6 +15,7 @@ import { useChdExtractStore } from "~/stores/chd-extract";
 import { useCsoDecompressStore } from "~/stores/cso-decompress";
 import { useXboxExtractStore } from "~/stores/xbox-extract";
 import { useXenonExtractStore } from "~/stores/xenon-extract";
+import { usePspExtractStore } from "~/stores/psp-extract";
 import { useVitaExtractStore } from "~/stores/vita-extract";
 import {
 	basename,
@@ -413,6 +414,37 @@ const xenon: OpDef = {
 	chips: () => "",
 };
 
+const psp: OpDef = {
+	op: "extract",
+	console: "psp",
+	opLabel: "Extract",
+	storeId: "psp-extract",
+	useStore: usePspExtractStore,
+	command: "cmd_psp_extract",
+	resultKind: "convert",
+	title: "Extract EBOOT.PBP",
+	subtitle: "Writes every segment (SFO, icons, DATA.PSAR, ...) to a folder.",
+	dropText: "Drop an EBOOT.PBP file",
+	acceptedExts: ["pbp", ...ARCHIVE_EXTS],
+	browseFilters: [{ name: "PBP", extensions: ["pbp"] }],
+	fields: recursiveFields(),
+	note: "DATA.PSAR is written as stored: still encrypted for PSN (NPUMDIMG) images.",
+	outputRows: directoryOutputRows(),
+	showVerify: true,
+	verifyLabel: "Verify after extraction",
+	actionNote: "Extraction never overwrites the source file.",
+	deriveOutput: deriveExtractDir,
+	buildArgs: (store, item, taskId) => ({
+		input: item.path,
+		outputDir: withOutputDir(deriveExtractDir(item.path), store.outputDir || ""),
+		onConflict: store.onConflict,
+		skipSpaceCheck: store.skipSpaceCheck,
+		dryRun: false,
+		taskId,
+	}),
+	chips: () => "",
+};
+
 const vita: OpDef = {
 	op: "extract",
 	console: "vita",
@@ -443,4 +475,4 @@ const vita: OpDef = {
 	chips: () => "",
 };
 
-registerOp("extract", { ctr, dol, rvl, nx, chd, cso, xbox, xenon, vita });
+registerOp("extract", { ctr, dol, rvl, nx, chd, cso, xbox, xenon, psp, vita });

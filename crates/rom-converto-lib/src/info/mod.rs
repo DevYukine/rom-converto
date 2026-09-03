@@ -26,6 +26,7 @@ pub use crate::nintendo::rvl::info::RvlInfo;
 pub use crate::nintendo::wup::info::WupInfo;
 pub use crate::ps3::Ps3Info;
 pub use crate::retro::RetroInfo;
+pub use crate::sony::psp::PbpInfo;
 pub use crate::sony::vita::{PkgInfo, VpkInfo};
 pub use crate::sony_disc::{DiscContent, PspInfo, PsxInfo};
 pub use image::Image;
@@ -50,6 +51,7 @@ pub enum InfoResult {
     LaserDisc(LdAviInfo),
     Nds(NdsInfo),
     Retro(RetroInfo),
+    Pbp(PbpInfo),
     Vpk(VpkInfo),
     Pkg(PkgInfo),
 }
@@ -172,6 +174,7 @@ pub fn read_info(path: &Path, opts: &InfoOptions) -> Result<InfoResult> {
             path,
         )?)),
         DetectedConsole::Retro => Ok(InfoResult::Retro(crate::retro::read_info(path)?)),
+        DetectedConsole::Pbp => Ok(InfoResult::Pbp(crate::sony::psp::read_info(path)?)),
         DetectedConsole::Vpk => Ok(InfoResult::Vpk(crate::sony::vita::vpk::read_info(path)?)),
         DetectedConsole::Pkg => Ok(InfoResult::Pkg(crate::sony::vita::pkg::read_info(path)?)),
     }
@@ -203,6 +206,7 @@ pub enum DetectedConsole {
     LaserDisc,
     Nds,
     Retro,
+    Pbp,
     Vpk,
     Pkg,
 }
@@ -237,6 +241,7 @@ pub fn detect_console(path: &Path) -> Result<DetectedConsole> {
         Some("cue") => return Ok(DetectedConsole::Psx),
         Some("avi") => return Ok(DetectedConsole::LaserDisc),
         Some("nds") | Some("dsi") => return Ok(DetectedConsole::Nds),
+        Some("pbp") => return Ok(DetectedConsole::Pbp),
         Some("vpk") => return Ok(DetectedConsole::Vpk),
         Some("pkg") => return Ok(DetectedConsole::Pkg),
         Some("ngc") => return sniff_ngc(path),
@@ -586,6 +591,7 @@ mod tests {
         for (ext, want) in [
             ("nds", DetectedConsole::Nds),
             ("dsi", DetectedConsole::Nds),
+            ("pbp", DetectedConsole::Pbp),
             ("vpk", DetectedConsole::Vpk),
             ("pkg", DetectedConsole::Pkg),
         ] {

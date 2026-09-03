@@ -368,6 +368,37 @@ describe("buildInspectView retro", () => {
 	});
 });
 
+describe("buildInspectView pbp", () => {
+	it("notes the encrypted PSN image for an NPUMDIMG PSAR and lists present segments", () => {
+		const v = view({
+			kind: "pbp",
+			physical_bytes: 4096,
+			version: 0x10000,
+			title: "TEST GAME",
+			disc_id: "ULUS12345",
+			disc_version: "1.00",
+			category: "MG",
+			category_label: "Game",
+			psp_system_ver: "6.61",
+			parental_level: 1,
+			region: null,
+			icon: null,
+			segments: [
+				{ name: "PARAM.SFO", offset: 0, size: 200, present: true },
+				{ name: "ICON1.PMF", offset: 200, size: 0, present: false },
+				{ name: "DATA.PSAR", offset: 400, size: 2048, present: true },
+			],
+			psar_kind: { kind: "npumdimg" },
+		});
+		expect(row(v.rom, "DATA.PSAR")).toBe("NPUMDIMG (encrypted PSN image; DATA.PSAR is extracted as stored)");
+		expect(v.innerTitle).toBe("Segments");
+		expect(v.innerFiles).toEqual([
+			{ name: "PARAM.SFO", detail: "200 B · 0x00000000" },
+			{ name: "DATA.PSAR", detail: "2.0 KiB · 0x00000190" },
+		]);
+	});
+});
+
 describe("buildInspectView vpk", () => {
 	it("shows title, category and file count", () => {
 		const v = view({

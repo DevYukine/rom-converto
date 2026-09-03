@@ -4,6 +4,7 @@ import type {
 	DiscContent,
 	InfoResult,
 	LdClvTime,
+	PsarKind,
 	RetroDetails,
 	RetroInfo,
 	XboxInfo,
@@ -314,6 +315,19 @@ function retroRom(info: RetroInfo): InspectField[] {
 			break;
 	}
 	return rom;
+}
+
+function psarKindLabel(k: PsarKind): string {
+	switch (k.kind) {
+		case "npumdimg":
+			return "NPUMDIMG (encrypted PSN image; DATA.PSAR is extracted as stored)";
+		case "psisoimg":
+			return "PSISOIMG";
+		case "pstitleimg":
+			return "PSTITLEIMG";
+		case "unknown":
+			return `unknown (magic ${k.magic})`;
+	}
 }
 
 export function buildInspectView(info: InfoResult): InspectView {
@@ -798,6 +812,22 @@ export function buildInspectView(info: InfoResult): InspectView {
 		}
 		case "retro": {
 			rom = retroRom(info);
+			break;
+		}
+		case "pbp": {
+			add(rom, "Title", info.title);
+			add(rom, "Title ID", info.disc_id);
+			add(rom, "Content Type", info.category_label ?? (info.category ? enumDisplayName(info.category) : "Game"));
+			add(rom, "Version", info.disc_version);
+			add(rom, "Size", formatBytes(info.physical_bytes));
+			add(rom, "System Version", info.psp_system_ver);
+			add(rom, "Parental Level", info.parental_level);
+			add(rom, "Region", info.region);
+			add(rom, "DATA.PSAR", info.psar_kind ? psarKindLabel(info.psar_kind) : null);
+			innerTitle = "Segments";
+			innerFiles = info.segments
+				.filter((s) => s.present)
+				.map((s) => ({ name: s.name, detail: `${formatBytes(s.size)} · 0x${hex(s.offset, 8)}` }));
 			break;
 		}
 		case "vpk": {

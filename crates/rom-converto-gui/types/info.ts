@@ -764,6 +764,35 @@ export interface RetroInfo {
   details: RetroDetails;
 }
 
+export interface PbpSegmentInfo {
+  name: string;
+  offset: number;
+  size: number;
+  present: boolean;
+}
+
+export type PsarKind =
+  | { kind: "npumdimg" }
+  | { kind: "psisoimg" }
+  | { kind: "pstitleimg" }
+  | { kind: "unknown"; magic: string };
+
+export interface PbpInfo {
+  physical_bytes: number;
+  version: number;
+  title: string | null;
+  disc_id: string | null;
+  disc_version: string | null;
+  category: string | null;
+  category_label: string | null;
+  psp_system_ver: string | null;
+  parental_level: number | null;
+  region: number | null;
+  icon: Image | null;
+  segments: PbpSegmentInfo[];
+  psar_kind: PsarKind | null;
+}
+
 export interface VpkInfo {
   title: string | null;
   title_id: string | null;
@@ -811,6 +840,7 @@ export type InfoResult =
   | ({ kind: "laser_disc" } & LdAviInfo)
   | ({ kind: "nds" } & NdsInfo)
   | ({ kind: "retro" } & RetroInfo)
+  | ({ kind: "pbp" } & PbpInfo)
   | ({ kind: "vpk" } & VpkInfo)
   | ({ kind: "pkg" } & PkgInfo);
 
@@ -839,6 +869,8 @@ export function pickIconImage(info: InfoResult): Image | null {
       return info.icon;
     case "nds":
       return info.banner?.icon ?? null;
+    case "pbp":
+      return info.icon;
     case "vpk":
       return info.icon;
     default:
