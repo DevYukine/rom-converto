@@ -174,11 +174,33 @@ pub fn read_info(path: &Path) -> Result<PkgInfo> {
         let icon = icon.or_else(|| read_icon(&mut file, &header, &meta, platform, pkg_size));
         (icon, background)
     } else {
-        (
-            read_icon(&mut file, &header, &meta, platform, pkg_size),
-            None,
-        )
+        // PSP and PS3 packages keep ICON0.PNG and the PIC0/PIC1 backdrop as
+        // plaintext top-level items, no PFS layer. PIC1 is the full-screen
+        // backdrop; PIC0 is the smaller window art some titles ship instead.
+        let icon = read_icon(&mut file, &header, &meta, platform, pkg_size);
+        let background = read_png_item(&mut file, &header, &meta, platform, pkg_size, "pic1.png")
+            .or_else(|| read_png_item(&mut file, &header, &meta, platform, pkg_size, "pic0.png"));
+        (icon, background)
     };
+
+    // PSP and PS3 packages carry no metadata-region SFO; the title lives in
+    // a plaintext top-level PARAM.SFO item instead. Read it here, before
+    // `header`/`meta` are partially moved into the struct below. Vita keeps
+    // its copy PFS encrypted, so only the metadata SFO is trusted there.
+    let item_sfo = (platform != PkgPlatform::Vita)
+        .then(|| {
+            read_named_item_bytes(
+                &mut file,
+                &header,
+                &meta,
+                platform,
+                pkg_size,
+                "PARAM.SFO",
+                MAX_SFO_BYTES as u64,
+            )
+        })
+        .flatten()
+        .and_then(|bytes| Sfo::parse(&bytes).ok());
 
     let mut info = PkgInfo {
         content_id: header.content_id,
@@ -216,6 +238,15 @@ pub fn read_info(path: &Path) -> Result<PkgInfo> {
             info.title_id = sfo.get_str("TITLE_ID").map(str::to_string);
         }
     }
+
+    if info.title.is_none()
+        && let Some(sfo) = &item_sfo
+    {
+        info.category = sfo.get_str("CATEGORY").map(str::to_string);
+        info.title = sfo.get_str("TITLE").map(str::to_string);
+        info.title_id = sfo.get_str("TITLE_ID").map(str::to_string);
+    }
+
     info.content_type_label = content_type_label(meta.content_type, info.category.as_deref());
     info.content_kind = content_kind(meta.content_type, info.category.as_deref());
 
@@ -241,6 +272,39 @@ fn read_item_bytes(
     let entry = items
         .into_iter()
         .find(|r| !r.item.is_dir && r.item.name.to_ascii_lowercase().ends_with(suffix))?;
+    read_entry_payload(file, header, &entry, max_bytes)
+}
+
+/// Best-effort read of the single top-level item named exactly `name`
+/// (case-insensitively), decrypted at the package layer. Unlike
+/// [`read_item_bytes`] a nested item that merely ends with the same name
+/// cannot match, so a `PARAM.SFO` under a subdirectory never shadows the
+/// package's own. Any failure yields `None`.
+fn read_named_item_bytes(
+    file: &mut File,
+    header: &Header,
+    meta: &Meta,
+    platform: PkgPlatform,
+    pkg_size: u64,
+    name: &str,
+    max_bytes: u64,
+) -> Option<Vec<u8>> {
+    let main_key = derive_key(header.key_type, &header.iv, platform).ok()?;
+    let items = read_items(file, header, meta, &main_key, pkg_size, None).ok()?;
+    let entry = items
+        .into_iter()
+        .find(|r| !r.item.is_dir && r.item.name.eq_ignore_ascii_case(name))?;
+    read_entry_payload(file, header, &entry, max_bytes)
+}
+
+/// Reads and CTR-decrypts one item's payload, rejecting anything larger
+/// than `max_bytes`.
+fn read_entry_payload(
+    file: &mut File,
+    header: &Header,
+    entry: &RawItem,
+    max_bytes: u64,
+) -> Option<Vec<u8>> {
     if entry.item.data_size > max_bytes {
         return None;
     }
@@ -264,13 +328,26 @@ fn read_icon(
     platform: PkgPlatform,
     pkg_size: u64,
 ) -> Option<Image> {
+    read_png_item(file, header, meta, platform, pkg_size, "icon0.png")
+}
+
+/// Reads the package-layer item whose name ends with `suffix` and decodes
+/// it as a PNG, best-effort. `None` on any read or decode failure.
+fn read_png_item(
+    file: &mut File,
+    header: &Header,
+    meta: &Meta,
+    platform: PkgPlatform,
+    pkg_size: u64,
+    suffix: &str,
+) -> Option<Image> {
     let buf = read_item_bytes(
         file,
         header,
         meta,
         platform,
         pkg_size,
-        "icon0.png",
+        suffix,
         MAX_ICON_BYTES,
     )?;
     Image::from_png(buf)
@@ -814,6 +891,29 @@ pub(crate) mod test_fixtures {
         category: Option<&'static str>,
         entries: &[Entry],
     ) -> Vec<u8> {
+        build_pkg_inner(pkg_type, key_type, content_type, category, true, entries)
+    }
+
+    /// A package with no metadata-region `PARAM.SFO`, the way real PSP and
+    /// PS3 packages ship: the title has to come from a top-level `PARAM.SFO`
+    /// item instead.
+    pub fn build_pkg_without_meta_sfo(
+        pkg_type: u16,
+        key_type: u8,
+        content_type: u32,
+        entries: &[Entry],
+    ) -> Vec<u8> {
+        build_pkg_inner(pkg_type, key_type, content_type, None, false, entries)
+    }
+
+    fn build_pkg_inner(
+        pkg_type: u16,
+        key_type: u8,
+        content_type: u32,
+        category: Option<&'static str>,
+        metadata_sfo: bool,
+        entries: &[Entry],
+    ) -> Vec<u8> {
         let iv = [0x11u8; 16];
         let platform = classify_platform(pkg_type, content_type);
         let key = derive_key(key_type, &iv, platform).expect("derive key");
@@ -826,17 +926,22 @@ pub(crate) mod test_fixtures {
         sfo_fields.push(("TITLE_ID", Val::Str("PCSF00002")));
         let sfo = build_sfo(&sfo_fields);
 
-        // Plaintext region: header, metadata entries, then PARAM.SFO.
+        // Plaintext region: header, metadata entries, then (optionally) the
+        // metadata PARAM.SFO.
         let meta_offset = HEADER_LEN as u64;
-        let meta_entries: [(u32, u32, u32); 4] = [
-            (1, 0, 0),
-            (2, content_type, 0),
-            (13, 0, 0),
-            (14, 0, sfo.len() as u32),
-        ];
+        let mut meta_entries: Vec<(u32, u32, u32)> =
+            vec![(1, 0, 0), (2, content_type, 0), (13, 0, 0)];
+        if metadata_sfo {
+            meta_entries.push((14, 0, sfo.len() as u32));
+        }
         let meta_len = meta_entries.len() * 16;
         let sfo_offset = meta_offset + meta_len as u64;
-        let data_offset = align16(sfo_offset + sfo.len() as u64);
+        let plaintext_end = if metadata_sfo {
+            sfo_offset + sfo.len() as u64
+        } else {
+            sfo_offset
+        };
+        let data_offset = align16(plaintext_end);
 
         // Encrypted region: item table, then names, then payloads.
         let psp_style = matches!(content_type, 6 | 7 | 0xE | 0xF | 0x10);
@@ -920,7 +1025,9 @@ pub(crate) mod test_fixtures {
             };
             out.extend_from_slice(&second.to_be_bytes());
         }
-        out.extend_from_slice(&sfo);
+        if metadata_sfo {
+            out.extend_from_slice(&sfo);
+        }
         out.resize(data_offset as usize, 0);
         out.extend_from_slice(&enc);
         out
@@ -933,9 +1040,12 @@ pub(crate) mod test_fixtures {
 
 #[cfg(test)]
 mod tests {
-    use super::test_fixtures::{Entry, build_pkg, build_pkg_with_category};
+    use super::test_fixtures::{
+        Entry, build_pkg, build_pkg_with_category, build_pkg_without_meta_sfo,
+    };
     use super::*;
     use crate::util::NoProgress;
+    use crate::util::sfo::test_fixtures::{Val, build_sfo};
 
     fn entries_with(psp_type: u8) -> Vec<Entry> {
         vec![
@@ -1119,6 +1229,88 @@ mod tests {
         let info = read_info(&path).unwrap();
         let icon = info.icon.expect("icon0.png");
         assert_eq!((icon.width, icon.height), (64, 48));
+    }
+
+    /// PSP and PS3 packages carry no metadata-region SFO; the title comes
+    /// from a top-level `PARAM.SFO` item, and the backdrop from `PIC1`/`PIC0`.
+    #[test]
+    fn psp_package_reads_title_and_background_from_items() {
+        let sfo = build_sfo(&[
+            ("CATEGORY", Val::Str("PP")),
+            ("TITLE", Val::Str("Fate/EXTRA")),
+            ("TITLE_ID", Val::Str("ULES01561")),
+        ]);
+        let entries = vec![
+            Entry {
+                name: "PARAM.SFO",
+                data: sfo,
+                is_dir: false,
+                psp_type: 0x90,
+            },
+            Entry {
+                name: "ICON0.PNG",
+                data: png(144, 80),
+                is_dir: false,
+                psp_type: 0x90,
+            },
+            Entry {
+                name: "PIC0.PNG",
+                data: png(310, 180),
+                is_dir: false,
+                psp_type: 0x90,
+            },
+        ];
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("game.pkg");
+        // pkg_type 2 + content type 7 classifies as PSP.
+        std::fs::write(&path, build_pkg_without_meta_sfo(2, 1, 7, &entries)).unwrap();
+
+        let info = read_info(&path).unwrap();
+        assert_eq!(info.platform, PkgPlatform::Psp);
+        assert_eq!(info.title.as_deref(), Some("Fate/EXTRA"));
+        assert_eq!(info.title_id.as_deref(), Some("ULES01561"));
+        assert_eq!(info.category.as_deref(), Some("PP"));
+        assert_eq!(info.content_kind, Some(ContentKind::Game));
+        assert_eq!(info.icon.expect("icon").width, 144);
+        let bg = info.background.expect("pic0 background");
+        assert_eq!((bg.width, bg.height), (310, 180));
+    }
+
+    /// `PIC1` is the full-screen backdrop and wins over the smaller `PIC0`
+    /// when a package ships both.
+    #[test]
+    fn psp_package_prefers_pic1_over_pic0() {
+        let entries = vec![
+            Entry {
+                name: "PARAM.SFO",
+                data: build_sfo(&[("TITLE", Val::Str("X"))]),
+                is_dir: false,
+                psp_type: 0x90,
+            },
+            Entry {
+                name: "PIC0.PNG",
+                data: png(310, 180),
+                is_dir: false,
+                psp_type: 0x90,
+            },
+            Entry {
+                name: "PIC1.PNG",
+                data: png(480, 272),
+                is_dir: false,
+                psp_type: 0x90,
+            },
+        ];
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("game.pkg");
+        std::fs::write(&path, build_pkg_without_meta_sfo(2, 1, 7, &entries)).unwrap();
+
+        let bg = read_info(&path)
+            .unwrap()
+            .background
+            .expect("pic1 background");
+        assert_eq!((bg.width, bg.height), (480, 272));
     }
 
     /// Vita artwork carries a second, PFS encryption layer that only comes
