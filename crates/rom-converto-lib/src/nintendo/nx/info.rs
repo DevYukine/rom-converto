@@ -481,38 +481,43 @@ fn try_read_control(
         if !is_nca_entry(name) || is_cnmt_nca_entry(name) {
             continue;
         }
-        let (walker_file, walker_off, walker_size): (
-            Arc<dyn crate::nintendo::nx::walker::NcaInput>,
-            u64,
-            u64,
-        ) = if is_ncz_entry(name) {
-            match crate::nintendo::nx::ncz::NczReader::open(
-                file.clone(),
-                entry.abs_offset,
-                entry.size,
-            ) {
-                Ok(reader) => {
-                    let nca_size = reader.decompressed_nca_size();
-                    (Arc::new(reader), 0u64, nca_size)
-                }
-                Err(e) => {
-                    log::debug!("nx info: open ncz {} ({})", name, e);
-                    continue;
-                }
-            }
-        } else {
-            (file.clone(), entry.abs_offset, entry.size)
-        };
-        let walker = match NcaWalker::open(walker_file, walker_off, walker_size, keys) {
+        // NCZ stores the NCA header verbatim ahead of the compressed
+        // payload, so peek the content type straight from the container
+        // and skip non-control entries before opening the NCZ (a solid
+        // NCZ decompresses its whole payload on open).
+        let peek = match NcaWalker::open(file.clone(), entry.abs_offset, entry.size, keys) {
             Ok(w) => w,
             Err(e) => {
                 log::debug!("nx info: open {} ({})", name, e);
                 continue;
             }
         };
-        if walker.header.content_type != CONTENT_TYPE_CONTROL {
+        if peek.header.content_type != CONTENT_TYPE_CONTROL {
             continue;
         }
+        let walker = if is_ncz_entry(name) {
+            let reader = match crate::nintendo::nx::ncz::NczReader::open(
+                file.clone(),
+                entry.abs_offset,
+                entry.size,
+            ) {
+                Ok(reader) => reader,
+                Err(e) => {
+                    log::debug!("nx info: open ncz {} ({})", name, e);
+                    continue;
+                }
+            };
+            let nca_size = reader.decompressed_nca_size();
+            match NcaWalker::open(Arc::new(reader), 0, nca_size, keys) {
+                Ok(w) => w,
+                Err(e) => {
+                    log::debug!("nx info: open ncz nca {} ({})", name, e);
+                    continue;
+                }
+            }
+        } else {
+            peek
+        };
         match read_control_payload(&walker) {
             Ok(c) => return Ok(Some(c)),
             Err(e) => log::debug!("nx info: control parse failed for {} ({})", name, e),
