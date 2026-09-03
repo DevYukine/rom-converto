@@ -307,6 +307,67 @@ describe("buildInspectView nds", () => {
 	});
 });
 
+describe("buildInspectView retro", () => {
+	it("reports the SNES checksum and region", () => {
+		const v = view({
+			kind: "retro",
+			file_size: 0x8000,
+			details: {
+				system: "snes",
+				mapping: "LoROM",
+				copier_header: false,
+				header_offset: 0x7fc0,
+				title: "TEST CARTRIDGE",
+				map_mode: 0x20,
+				fastrom: false,
+				chipset: 0,
+				coprocessor: null,
+				rom_size_kb: 1024,
+				sram_size_kb: 8,
+				country: 1,
+				region: "USA and Canada",
+				licensee: 0x33,
+				version: 0,
+				checksum: 0x1234,
+				checksum_complement: 0xedcb,
+				computed_checksum: 0x5678,
+				checksum_valid: false,
+			},
+		});
+		expect(row(v.rom, "Title")).toBe("TEST CARTRIDGE");
+		expect(row(v.rom, "System")).toBe("SNES");
+		expect(row(v.rom, "Checksum")).toBe("0x1234 (invalid, computed 0x5678)");
+	});
+
+	it("omits the Title row for systems with no header title", () => {
+		const v = view({
+			kind: "retro",
+			file_size: 0x8000,
+			details: {
+				system: "nes",
+				nes2: false,
+				prg_rom_bytes: 32 * 1024,
+				chr_rom_bytes: 8 * 1024,
+				mapper: 1,
+				submapper: null,
+				mirroring: "horizontal",
+				battery: false,
+				trainer: false,
+				four_screen: false,
+				console_type: "Nintendo Entertainment System",
+				timing: "NTSC",
+				prg_ram_bytes: null,
+				prg_nvram_bytes: null,
+				chr_ram_bytes: null,
+				chr_nvram_bytes: null,
+			},
+		});
+		expect(row(v.rom, "Title")).toBeUndefined();
+		expect(row(v.rom, "System")).toBe("NES");
+		expect(row(v.rom, "Format")).toBe("iNES");
+	});
+});
+
 describe("buildInspectView chd", () => {
 	it("combines pregap, postgap, and subtype into the track detail", () => {
 		const v = view({

@@ -25,6 +25,7 @@ pub use crate::nintendo::nx::info::NxInfo;
 pub use crate::nintendo::rvl::info::RvlInfo;
 pub use crate::nintendo::wup::info::WupInfo;
 pub use crate::ps3::Ps3Info;
+pub use crate::retro::RetroInfo;
 pub use crate::sony_disc::{DiscContent, PspInfo, PsxInfo};
 pub use image::Image;
 
@@ -47,6 +48,7 @@ pub enum InfoResult {
     Psp(PspInfo),
     LaserDisc(LdAviInfo),
     Nds(NdsInfo),
+    Retro(RetroInfo),
 }
 
 /// A string carried per-language, as found in console-specific metadata
@@ -166,6 +168,7 @@ pub fn read_info(path: &Path, opts: &InfoOptions) -> Result<InfoResult> {
         DetectedConsole::Nds => Ok(InfoResult::Nds(crate::nintendo::nds::info::read_info(
             path,
         )?)),
+        DetectedConsole::Retro => Ok(InfoResult::Retro(crate::retro::read_info(path)?)),
     }
 }
 
@@ -194,6 +197,7 @@ pub enum DetectedConsole {
     Psp,
     LaserDisc,
     Nds,
+    Retro,
 }
 
 /// Detect which console family a path belongs to. Extension first, magic
@@ -226,12 +230,41 @@ pub fn detect_console(path: &Path) -> Result<DetectedConsole> {
         Some("cue") => return Ok(DetectedConsole::Psx),
         Some("avi") => return Ok(DetectedConsole::LaserDisc),
         Some("nds") | Some("dsi") => return Ok(DetectedConsole::Nds),
+        Some("ngc") => return sniff_ngc(path),
         Some("iso") | Some("rvz") => return sniff_disc_magic(path),
+        Some(ext) if crate::retro::RETRO_EXTENSIONS.contains(&ext) => {
+            return Ok(DetectedConsole::Retro);
+        }
         _ => {}
     }
 
     Err(anyhow!(
         "could not detect console for path: {}",
+        path.display()
+    ))
+}
+
+/// `.ngc` is a Neo Geo Pocket Color extension, but GameCube dumps in the
+/// wild also use it, so the header has to break the tie.
+fn sniff_ngc(path: &Path) -> Result<DetectedConsole> {
+    use std::fs::File;
+    use std::io::Read;
+
+    let mut f = File::open(path)?;
+    let mut head = [0u8; 0x20];
+    f.read_exact(&mut head)?;
+
+    if &head[..28] == b"COPYRIGHT BY SNK CORPORATION"
+        || &head[..28] == b" LICENSED BY SNK CORPORATION"
+    {
+        return Ok(DetectedConsole::Retro);
+    }
+    if head[0x1C..0x20] == [0xC2, 0x33, 0x9F, 0x3D] {
+        return Ok(DetectedConsole::Dol);
+    }
+
+    Err(anyhow!(
+        "ngc file at {} carries neither the Neo Geo Pocket license string nor the GameCube disc magic",
         path.display()
     ))
 }
@@ -555,6 +588,48 @@ mod tests {
     }
 
     #[test]
+    fn detect_retro_extensions_except_ngc() {
+        for ext in crate::retro::RETRO_EXTENSIONS
+            .iter()
+            .filter(|e| **e != "ngc")
+        {
+            let p = format!("/tmp/x.{}", ext);
+            assert_eq!(
+                detect_console(Path::new(&p)).expect("detect console"),
+                DetectedConsole::Retro,
+                "ext {ext}"
+            );
+        }
+    }
+
+    #[test]
+    fn detect_ngc_sniffs_neo_geo_pocket_and_gamecube() {
+        let dir = tempfile::tempdir().expect("temp dir");
+
+        let ngp = dir.path().join("snk.ngc");
+        let mut rom = b"COPYRIGHT BY SNK CORPORATION".to_vec();
+        rom.resize(0x100, 0);
+        std::fs::write(&ngp, &rom).expect("write ngp");
+        assert_eq!(
+            detect_console(&ngp).expect("detect console"),
+            DetectedConsole::Retro
+        );
+
+        let gc = dir.path().join("disc.ngc");
+        let mut disc = vec![0u8; 0x100];
+        disc[0x1C..0x20].copy_from_slice(&[0xC2, 0x33, 0x9F, 0x3D]);
+        std::fs::write(&gc, &disc).expect("write gamecube");
+        assert_eq!(
+            detect_console(&gc).expect("detect console"),
+            DetectedConsole::Dol
+        );
+
+        let unknown = dir.path().join("other.ngc");
+        std::fs::write(&unknown, vec![0u8; 0x100]).expect("write unknown");
+        assert!(detect_console(&unknown).is_err());
+    }
+
+    #[test]
     fn info_result_nds_round_trips_via_json() {
         use crate::nintendo::nds::info::NdsSecureAreaState;
 
@@ -574,6 +649,33 @@ mod tests {
                 assert_eq!(n.secure_area, NdsSecureAreaState::Encrypted);
             }
             _ => panic!("expected Nds variant"),
+        }
+    }
+
+    #[test]
+    fn info_result_retro_round_trips_via_json() {
+        use crate::retro::{RetroDetails, VbInfo};
+
+        let r = InfoResult::Retro(RetroInfo {
+            file_size: 1024,
+            details: RetroDetails::VirtualBoy(VbInfo {
+                title: "TEST".to_string(),
+                maker_code: "01".to_string(),
+                game_code: "VTEJ".to_string(),
+                version: 0,
+            }),
+        });
+        let s = serde_json::to_string(&r).unwrap();
+        assert!(s.contains("\"kind\":\"retro\""));
+        assert!(s.contains("\"system\":\"virtual_boy\""));
+
+        let back: InfoResult = serde_json::from_str(&s).unwrap();
+        match back {
+            InfoResult::Retro(retro) => {
+                assert_eq!(retro.file_size, 1024);
+                assert!(matches!(retro.details, RetroDetails::VirtualBoy(_)));
+            }
+            _ => panic!("expected Retro variant"),
         }
     }
 

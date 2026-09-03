@@ -1,5 +1,13 @@
 import { ageRatingDisplayName, contentTypeDisplayName, enumDisplayName, languageDisplayName } from "./display";
-import type { ChdLdInfo, DiscContent, InfoResult, LdClvTime, XboxInfo } from "~/types/info";
+import type {
+	ChdLdInfo,
+	DiscContent,
+	InfoResult,
+	LdClvTime,
+	RetroDetails,
+	RetroInfo,
+	XboxInfo,
+} from "~/types/info";
 
 export interface InspectField {
 	label: string;
@@ -137,6 +145,175 @@ function discContentRom(content: DiscContent): InspectField[] {
 
 function crcField(rom: InspectField[], label: string, stored: number, computed: number, valid: boolean, width: number) {
 	add(rom, label, `0x${hex(stored, width)} (${valid ? "valid" : `invalid, computed 0x${hex(computed, width)}`})`);
+}
+
+export const RETRO_SYSTEM_NAMES: Record<RetroDetails["system"], string> = {
+	nes: "NES",
+	snes: "SNES",
+	n64: "Nintendo 64",
+	game_boy: "Game Boy",
+	gba: "Game Boy Advance",
+	mega_drive: "Mega Drive / Genesis",
+	master_system: "Master System",
+	game_gear: "Game Gear",
+	virtual_boy: "Virtual Boy",
+	wonder_swan: "WonderSwan",
+	neo_geo_pocket: "Neo Geo Pocket",
+	lynx: "Atari Lynx",
+	atari7800: "Atari 7800",
+};
+
+export function retroTitle(d: RetroDetails): string | undefined {
+	switch (d.system) {
+		case "snes":
+			return d.title;
+		case "n64":
+			return d.internal_name;
+		case "game_boy":
+			return d.title;
+		case "gba":
+			return d.title;
+		case "mega_drive":
+			return d.overseas_title || d.domestic_title;
+		case "virtual_boy":
+			return d.title;
+		case "neo_geo_pocket":
+			return d.title;
+		case "lynx":
+			return d.cart_name;
+		case "atari7800":
+			return d.title;
+		default:
+			return undefined;
+	}
+}
+
+function retroRom(info: RetroInfo): InspectField[] {
+	const rom: InspectField[] = [];
+	const d = info.details;
+	add(rom, "Title", retroTitle(d));
+	add(rom, "Content Type", "Game");
+	add(rom, "System", RETRO_SYSTEM_NAMES[d.system]);
+	add(rom, "Size", formatBytes(info.file_size));
+	switch (d.system) {
+		case "nes":
+			add(rom, "Format", d.nes2 ? "NES 2.0" : "iNES");
+			add(rom, "Mapper", d.submapper != null ? `${d.mapper}.${d.submapper}` : d.mapper);
+			add(rom, "Console Type", d.console_type);
+			add(rom, "Timing", d.timing);
+			add(rom, "Mirroring", d.four_screen ? "four-screen" : d.mirroring);
+			add(rom, "PRG ROM", formatBytes(d.prg_rom_bytes));
+			add(rom, "CHR ROM", formatBytes(d.chr_rom_bytes));
+			if (d.prg_ram_bytes) add(rom, "PRG RAM", formatBytes(d.prg_ram_bytes));
+			if (d.prg_nvram_bytes) add(rom, "PRG NVRAM", formatBytes(d.prg_nvram_bytes));
+			if (d.chr_ram_bytes) add(rom, "CHR RAM", formatBytes(d.chr_ram_bytes));
+			if (d.chr_nvram_bytes) add(rom, "CHR NVRAM", formatBytes(d.chr_nvram_bytes));
+			add(rom, "Battery", d.battery ? "yes" : "no");
+			add(rom, "Trainer", d.trainer ? "yes" : "no");
+			break;
+		case "snes":
+			add(rom, "Mapping", d.mapping);
+			add(rom, "Region", d.region);
+			add(rom, "FastROM", d.fastrom ? "yes" : "no");
+			add(rom, "Chipset", `0x${hex(d.chipset, 2)}`);
+			add(rom, "Coprocessor", d.coprocessor);
+			add(rom, "ROM Size", `${d.rom_size_kb} KiB`);
+			add(rom, "SRAM Size", `${d.sram_size_kb} KiB`);
+			add(rom, "Licensee", `0x${hex(d.licensee, 2)}`);
+			add(rom, "Version", d.version);
+			add(rom, "Copier Header", d.copier_header ? "yes" : "no");
+			crcField(rom, "Checksum", d.checksum, d.computed_checksum, d.checksum_valid, 4);
+			break;
+		case "n64":
+			add(rom, "Game ID", d.game_id);
+			add(rom, "Media", d.media);
+			add(rom, "Region", d.region ?? d.region_code);
+			add(rom, "Version", d.version);
+			add(rom, "Byte Order", d.byte_order.toUpperCase());
+			add(rom, "CIC", d.cic);
+			add(rom, "CRC1", d.crc1);
+			add(rom, "CRC2", d.crc2);
+			add(rom, "Bootcode CRC32", d.bootcode_crc32);
+			break;
+		case "game_boy":
+			add(rom, "Mode", d.cgb ?? (d.sgb_flag === 0x03 ? "SGB" : "DMG"));
+			add(rom, "Cart Type", d.cart_type_name ?? `0x${hex(d.cart_type, 2)}`);
+			if (d.rom_bytes) add(rom, "ROM Size", formatBytes(d.rom_bytes));
+			if (d.ram_bytes) add(rom, "RAM Size", formatBytes(d.ram_bytes));
+			add(rom, "Destination", d.destination_name);
+			add(rom, "Publisher", d.licensee);
+			add(rom, "Manufacturer Code", d.manufacturer_code);
+			add(rom, "Version", d.version);
+			add(rom, "Logo Valid", d.logo_valid ? "yes" : "no");
+			crcField(rom, "Header Checksum", d.header_checksum, d.computed_header_checksum, d.header_checksum_valid, 2);
+			crcField(rom, "Global Checksum", d.global_checksum, d.computed_global_checksum, d.global_checksum_valid, 4);
+			break;
+		case "gba":
+			add(rom, "Game Code", d.game_code);
+			add(rom, "Region", d.region);
+			add(rom, "Maker", d.maker_code);
+			add(rom, "Version", d.version);
+			add(rom, "Logo Valid", d.logo_valid ? "yes" : "no");
+			crcField(rom, "Header Checksum", d.header_checksum, d.computed_header_checksum, d.header_checksum_valid, 2);
+			break;
+		case "mega_drive":
+			add(rom, "Domestic Title", d.domestic_title);
+			add(rom, "Serial", d.serial);
+			add(rom, "Console", d.console);
+			add(rom, "Region", d.region.join(", "));
+			add(rom, "Device Support", d.device_support.join(", "));
+			add(rom, "Copyright", d.copyright);
+			add(rom, "Format", d.format);
+			add(rom, "ROM Range", `0x${hex(d.rom_start, 8)}–0x${hex(d.rom_end, 8)}`);
+			crcField(rom, "Checksum", d.checksum, d.computed_checksum, d.checksum_valid, 4);
+			break;
+		case "master_system":
+		case "game_gear":
+			add(rom, "Region", d.region);
+			add(rom, "Product Code", d.product_code);
+			add(rom, "Version", d.version);
+			if (d.rom_size_kb) add(rom, "ROM Size", `${d.rom_size_kb} KiB`);
+			crcField(rom, "Checksum", d.checksum, d.computed_checksum, d.checksum_valid, 4);
+			break;
+		case "virtual_boy":
+			add(rom, "Maker", d.maker_code);
+			add(rom, "Game Code", d.game_code);
+			add(rom, "Version", d.version);
+			break;
+		case "wonder_swan":
+			add(rom, "Publisher ID", d.publisher_id);
+			add(rom, "Game ID", d.game_id);
+			add(rom, "Color", d.color ? "color" : "mono");
+			add(rom, "Save", d.save);
+			add(rom, "Version", d.version);
+			crcField(rom, "Checksum", d.checksum, d.computed_checksum, d.checksum_valid, 4);
+			break;
+		case "neo_geo_pocket":
+			add(rom, "License", d.license);
+			add(rom, "Machine", d.machine_name);
+			add(rom, "Catalog ID", d.catalog_id);
+			add(rom, "Subcatalog ID", d.subcatalog_id);
+			add(rom, "Startup Address", `0x${hex(d.startup_address, 8)}`);
+			break;
+		case "lynx":
+			add(rom, "Manufacturer", d.manufacturer);
+			add(rom, "Rotation", d.rotation_name ?? String(d.rotation));
+			add(rom, "Bank 0 Page Size", d.bank0_page_size);
+			add(rom, "Bank 1 Page Size", d.bank1_page_size);
+			add(rom, "Version", d.version);
+			break;
+		case "atari7800":
+			add(rom, "TV Type", d.tv_type);
+			add(rom, "Cart Size", formatBytes(d.cart_size));
+			add(rom, "Cart Type", `0x${hex(d.cart_type, 4)}`);
+			add(rom, "Cart Features", d.cart_features.join(", "));
+			add(rom, "Controller 1", d.controller1_name);
+			add(rom, "Controller 2", d.controller2_name);
+			add(rom, "Save Device", d.save_device);
+			add(rom, "Version", d.version);
+			break;
+	}
+	return rom;
 }
 
 export function buildInspectView(info: InfoResult): InspectView {
@@ -617,6 +794,10 @@ export function buildInspectView(info: InfoResult): InspectView {
 				{ name: "ARM9", detail: `${formatBytes(info.arm9.size)} · entry 0x${hex(info.arm9.entry_address, 8)}` },
 				{ name: "ARM7", detail: `${formatBytes(info.arm7.size)} · entry 0x${hex(info.arm7.entry_address, 8)}` },
 			];
+			break;
+		}
+		case "retro": {
+			rom = retroRom(info);
 			break;
 		}
 	}

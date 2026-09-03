@@ -486,6 +486,29 @@ const NDS_INFO = {
 	},
 };
 
+const RETRO_INFO = {
+	kind: "retro",
+	file_size: 1_048_576,
+	details: {
+		system: "nes",
+		nes2: false,
+		prg_rom_bytes: 131_072,
+		chr_rom_bytes: 8_192,
+		mapper: 1,
+		submapper: null,
+		mirroring: "Horizontal",
+		battery: false,
+		trainer: false,
+		four_screen: false,
+		console_type: "NES",
+		timing: "NTSC",
+		prg_ram_bytes: null,
+		prg_nvram_bytes: null,
+		chr_ram_bytes: null,
+		chr_nvram_bytes: null,
+	},
+};
+
 const INFO_SAMPLES: Record<string, unknown> = {
 	nx: NX_INFO,
 	ctr: CTR_INFO,
@@ -497,6 +520,7 @@ const INFO_SAMPLES: Record<string, unknown> = {
 	xbox: XBOX_INFO,
 	xenon: XENON_INFO,
 	nds: NDS_INFO,
+	retro: RETRO_INFO,
 };
 
 function infoKindFor(path: string): string {
@@ -511,6 +535,7 @@ function infoKindFor(path: string): string {
 	if (["xiso"].includes(e)) return "xbox";
 	if (["zar"].includes(e)) return "xenon";
 	if (["nds", "dsi"].includes(e)) return "nds";
+	if (["nes", "sfc", "smc", "z64", "n64", "v64", "gb", "gbc", "gba", "md", "gen", "smd", "sms", "gg", "vb", "ws", "wsc", "ngp", "ngc", "lnx", "a78"].includes(e)) return "retro";
 	return "nx";
 }
 

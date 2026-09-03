@@ -113,6 +113,7 @@ pub fn print(result: &InfoResult, json: bool) -> Result<()> {
         InfoResult::Psp(info) => render_psp(info),
         InfoResult::LaserDisc(info) => render_laserdisc(info),
         InfoResult::Nds(info) => render_nds(info),
+        InfoResult::Retro(info) => render_retro(info),
     };
     print!("{}", rendered);
     Ok(())
@@ -1443,6 +1444,353 @@ fn render_nds(info: &rom_converto_lib::info::NdsInfo) -> String {
     out
 }
 
+fn push_checksum(t: &mut KeyValueTable, stored: String, computed: String, valid: bool) {
+    t.push("Checksum", stored);
+    t.push("Computed checksum", computed);
+    t.push("Checksum valid", if valid { "yes" } else { "no" });
+}
+
+fn yes_no(v: bool) -> &'static str {
+    if v { "yes" } else { "no" }
+}
+
+fn render_retro(info: &rom_converto_lib::info::RetroInfo) -> String {
+    use rom_converto_lib::retro::RetroDetails;
+
+    let (system, mut t) = match &info.details {
+        RetroDetails::Nes(n) => ("NES", retro_nes(n)),
+        RetroDetails::Snes(s) => ("SNES", retro_snes(s)),
+        RetroDetails::N64(n) => ("Nintendo 64", retro_n64(n)),
+        RetroDetails::GameBoy(g) => ("Game Boy", retro_gb(g)),
+        RetroDetails::Gba(g) => ("Game Boy Advance", retro_gba(g)),
+        RetroDetails::MegaDrive(m) => ("Mega Drive", retro_md(m)),
+        RetroDetails::MasterSystem(s) => ("Master System", retro_sms(s)),
+        RetroDetails::GameGear(s) => ("Game Gear", retro_sms(s)),
+        RetroDetails::VirtualBoy(v) => ("Virtual Boy", retro_vb(v)),
+        RetroDetails::WonderSwan(w) => ("WonderSwan", retro_ws(w)),
+        RetroDetails::NeoGeoPocket(n) => ("Neo Geo Pocket", retro_ngp(n)),
+        RetroDetails::Lynx(l) => ("Atari Lynx", retro_lynx(l)),
+        RetroDetails::Atari7800(a) => ("Atari 7800", retro_a78(a)),
+    };
+    t.push("Format", system);
+    t.push("Content type", "Game");
+    t.push("Size", format!("{}", info.file_size));
+    order_rom(&mut t);
+
+    let mut out = String::new();
+    section(&mut out, "ROM", &t);
+    out
+}
+
+fn retro_nes(info: &rom_converto_lib::retro::NesInfo) -> KeyValueTable {
+    let mut t = KeyValueTable::new();
+    t.push("Header", if info.nes2 { "NES 2.0" } else { "iNES" });
+    t.push(
+        "Mapper",
+        match info.submapper {
+            Some(sub) => format!("{} (submapper {})", info.mapper, sub),
+            None => format!("{}", info.mapper),
+        },
+    );
+    t.push("PRG ROM", format!("{} bytes", info.prg_rom_bytes));
+    t.push("CHR ROM", format!("{} bytes", info.chr_rom_bytes));
+    t.push("Mirroring", info.mirroring.clone());
+    t.push("Battery", yes_no(info.battery));
+    t.push("Trainer", yes_no(info.trainer));
+    t.push("Four screen", yes_no(info.four_screen));
+    t.push("Console type", info.console_type.clone());
+    t.push("Timing", info.timing.clone());
+    for (key, value) in [
+        ("PRG RAM", info.prg_ram_bytes),
+        ("PRG NVRAM", info.prg_nvram_bytes),
+        ("CHR RAM", info.chr_ram_bytes),
+        ("CHR NVRAM", info.chr_nvram_bytes),
+    ] {
+        if let Some(bytes) = value {
+            t.push(key, format!("{} bytes", bytes));
+        }
+    }
+    t
+}
+
+fn retro_snes(info: &rom_converto_lib::retro::SnesInfo) -> KeyValueTable {
+    let mut t = KeyValueTable::new();
+    t.push("Title", info.title.clone());
+    t.push("Mapping", info.mapping.clone());
+    t.push("Copier header", yes_no(info.copier_header));
+    t.push("Header offset", format!("0x{:X}", info.header_offset));
+    t.push("Map mode", format!("0x{:02X}", info.map_mode));
+    t.push("FastROM", yes_no(info.fastrom));
+    t.push("Chipset", format!("0x{:02X}", info.chipset));
+    if let Some(co) = &info.coprocessor {
+        t.push("Coprocessor", co.clone());
+    }
+    t.push("ROM size", format!("{} KiB", info.rom_size_kb));
+    t.push("SRAM size", format!("{} KiB", info.sram_size_kb));
+    t.push(
+        "Region",
+        match &info.region {
+            Some(r) => format!("{} (0x{:02X})", r, info.country),
+            None => format!("0x{:02X}", info.country),
+        },
+    );
+    t.push("Licensee", format!("0x{:02X}", info.licensee));
+    t.push("Version", format!("{}", info.version));
+    push_checksum(
+        &mut t,
+        format!(
+            "0x{:04X} (complement 0x{:04X})",
+            info.checksum, info.checksum_complement
+        ),
+        format!("0x{:04X}", info.computed_checksum),
+        info.checksum_valid,
+    );
+    t
+}
+
+fn retro_n64(info: &rom_converto_lib::retro::N64Info) -> KeyValueTable {
+    let mut t = KeyValueTable::new();
+    t.push("Title", info.internal_name.clone());
+    t.push("Title ID", info.game_id.clone());
+    t.push("Byte order", info.byte_order.clone());
+    t.push("Media", info.media.clone());
+    t.push(
+        "Region",
+        match &info.region {
+            Some(r) => format!("{} ({})", r, info.region_code),
+            None => info.region_code.clone(),
+        },
+    );
+    t.push("Version", format!("{}", info.version));
+    t.push("CRC1", info.crc1.clone());
+    t.push("CRC2", info.crc2.clone());
+    t.push("Boot code CRC32", info.bootcode_crc32.clone());
+    if let Some(cic) = &info.cic {
+        t.push("CIC", cic.clone());
+    }
+    t
+}
+
+fn retro_gb(info: &rom_converto_lib::retro::GbInfo) -> KeyValueTable {
+    let mut t = KeyValueTable::new();
+    t.push("Title", info.title.clone());
+    if let Some(code) = &info.manufacturer_code {
+        t.push("Manufacturer code", code.clone());
+    }
+    t.push(
+        "CGB",
+        match &info.cgb {
+            Some(c) => format!("{} (0x{:02X})", c, info.cgb_flag),
+            None => format!("0x{:02X}", info.cgb_flag),
+        },
+    );
+    t.push("SGB flag", format!("0x{:02X}", info.sgb_flag));
+    t.push(
+        "Cartridge type",
+        match &info.cart_type_name {
+            Some(n) => format!("{} (0x{:02X})", n, info.cart_type),
+            None => format!("0x{:02X}", info.cart_type),
+        },
+    );
+    if let Some(bytes) = info.rom_bytes {
+        t.push("ROM size", format!("{} bytes", bytes));
+    }
+    if let Some(bytes) = info.ram_bytes {
+        t.push("RAM size", format!("{} bytes", bytes));
+    }
+    t.push(
+        "Destination",
+        match &info.destination_name {
+            Some(n) => format!("{} (0x{:02X})", n, info.destination),
+            None => format!("0x{:02X}", info.destination),
+        },
+    );
+    t.push("Licensee", info.licensee.clone());
+    t.push("Version", format!("{}", info.version));
+    t.push("Logo valid", yes_no(info.logo_valid));
+    t.push(
+        "Header checksum",
+        format!(
+            "0x{:02X} (computed 0x{:02X}, {})",
+            info.header_checksum,
+            info.computed_header_checksum,
+            if info.header_checksum_valid {
+                "valid"
+            } else {
+                "invalid"
+            }
+        ),
+    );
+    push_checksum(
+        &mut t,
+        format!("0x{:04X}", info.global_checksum),
+        format!("0x{:04X}", info.computed_global_checksum),
+        info.global_checksum_valid,
+    );
+    t
+}
+
+fn retro_gba(info: &rom_converto_lib::retro::GbaInfo) -> KeyValueTable {
+    let mut t = KeyValueTable::new();
+    t.push("Title", info.title.clone());
+    t.push("Title ID", info.game_code.clone());
+    if let Some(region) = &info.region {
+        t.push("Region", region.clone());
+    }
+    t.push("Maker code", info.maker_code.clone());
+    t.push("Version", format!("{}", info.version));
+    t.push("Logo valid", yes_no(info.logo_valid));
+    push_checksum(
+        &mut t,
+        format!("0x{:02X}", info.header_checksum),
+        format!("0x{:02X}", info.computed_header_checksum),
+        info.header_checksum_valid,
+    );
+    t
+}
+
+fn retro_md(info: &rom_converto_lib::retro::MdInfo) -> KeyValueTable {
+    let mut t = KeyValueTable::new();
+    t.push("Title", info.overseas_title.clone());
+    t.push("Domestic title", info.domestic_title.clone());
+    t.push("Title ID", info.serial.clone());
+    t.push("Layout", info.format.clone());
+    t.push("Console", info.console.clone());
+    t.push("Copyright", info.copyright.clone());
+    t.push("Device support", info.device_support.join(", "));
+    t.push("Region", info.region.join(", "));
+    t.push(
+        "ROM range",
+        format!("0x{:X}..0x{:X}", info.rom_start, info.rom_end),
+    );
+    push_checksum(
+        &mut t,
+        format!("0x{:04X}", info.checksum),
+        format!("0x{:04X}", info.computed_checksum),
+        info.checksum_valid,
+    );
+    t
+}
+
+fn retro_sms(info: &rom_converto_lib::retro::SmsInfo) -> KeyValueTable {
+    let mut t = KeyValueTable::new();
+    t.push("Title ID", format!("{}", info.product_code));
+    t.push("Header offset", format!("0x{:X}", info.header_offset));
+    t.push("Version", format!("{}", info.version));
+    t.push(
+        "Region",
+        match &info.region {
+            Some(r) => format!("{} (0x{:X})", r, info.region_code),
+            None => format!("0x{:X}", info.region_code),
+        },
+    );
+    t.push(
+        "ROM size",
+        match info.rom_size_kb {
+            Some(kb) => format!("{} KiB (code 0x{:X})", kb, info.rom_size_code),
+            None => format!("code 0x{:X}", info.rom_size_code),
+        },
+    );
+    push_checksum(
+        &mut t,
+        format!("0x{:04X}", info.checksum),
+        format!("0x{:04X}", info.computed_checksum),
+        info.checksum_valid,
+    );
+    t
+}
+
+fn retro_vb(info: &rom_converto_lib::retro::VbInfo) -> KeyValueTable {
+    let mut t = KeyValueTable::new();
+    t.push("Title", info.title.clone());
+    t.push("Title ID", info.game_code.clone());
+    t.push("Maker code", info.maker_code.clone());
+    t.push("Version", format!("{}", info.version));
+    t
+}
+
+fn retro_ws(info: &rom_converto_lib::retro::WsInfo) -> KeyValueTable {
+    let mut t = KeyValueTable::new();
+    t.push("Title ID", format!("0x{:02X}", info.game_id));
+    t.push("Publisher ID", format!("0x{:02X}", info.publisher_id));
+    t.push("Color", yes_no(info.color));
+    t.push(
+        "Save",
+        match &info.save {
+            Some(s) => format!("{} (0x{:02X})", s, info.save_type),
+            None => format!("0x{:02X}", info.save_type),
+        },
+    );
+    t.push("Version", format!("{}", info.version));
+    push_checksum(
+        &mut t,
+        format!("0x{:04X}", info.checksum),
+        format!("0x{:04X}", info.computed_checksum),
+        info.checksum_valid,
+    );
+    t
+}
+
+fn retro_ngp(info: &rom_converto_lib::retro::NgpInfo) -> KeyValueTable {
+    let mut t = KeyValueTable::new();
+    t.push("Title", info.title.clone());
+    t.push("License", info.license.clone());
+    t.push("Startup address", format!("0x{:08X}", info.startup_address));
+    t.push("Catalog ID", format!("{}", info.catalog_id));
+    t.push("Subcatalog ID", format!("{}", info.subcatalog_id));
+    t.push(
+        "Machine",
+        match &info.machine_name {
+            Some(n) => format!("{} (0x{:02X})", n, info.machine),
+            None => format!("0x{:02X}", info.machine),
+        },
+    );
+    t
+}
+
+fn retro_lynx(info: &rom_converto_lib::retro::LynxInfo) -> KeyValueTable {
+    let mut t = KeyValueTable::new();
+    t.push("Title", info.cart_name.clone());
+    t.push("Manufacturer", info.manufacturer.clone());
+    t.push("Version", format!("{}", info.version));
+    t.push("Bank 0 page size", format!("{}", info.bank0_page_size));
+    t.push("Bank 1 page size", format!("{}", info.bank1_page_size));
+    t.push(
+        "Rotation",
+        match &info.rotation_name {
+            Some(n) => format!("{} ({})", n, info.rotation),
+            None => format!("{}", info.rotation),
+        },
+    );
+    t
+}
+
+fn retro_a78(info: &rom_converto_lib::retro::A78Info) -> KeyValueTable {
+    let mut t = KeyValueTable::new();
+    t.push("Title", info.title.clone());
+    t.push("Version", format!("{}", info.version));
+    t.push("Cart size", format!("{} bytes", info.cart_size));
+    t.push("Cart type", format!("0x{:04X}", info.cart_type));
+    t.push("Cart features", info.cart_features.join(", "));
+    t.push(
+        "Controller 1",
+        match &info.controller1_name {
+            Some(n) => format!("{} ({})", n, info.controller1),
+            None => format!("{}", info.controller1),
+        },
+    );
+    t.push(
+        "Controller 2",
+        match &info.controller2_name {
+            Some(n) => format!("{} ({})", n, info.controller2),
+            None => format!("{}", info.controller2),
+        },
+    );
+    t.push("TV type", info.tv_type.clone());
+    t.push("Save device", format!("{}", info.save_device));
+    t
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1927,5 +2275,32 @@ mod tests {
         assert!(has_field(&out, "Title", "Test Game"));
         assert!(has_field(&out, "Icon", "32x32 PNG (10 bytes)"));
         assert!(out.contains("Banner titles:"));
+    }
+
+    #[test]
+    fn render_retro_shows_checksum_lines() {
+        use rom_converto_lib::retro::{GbaInfo, RetroDetails};
+
+        let info = rom_converto_lib::info::RetroInfo {
+            file_size: 4096,
+            details: RetroDetails::Gba(GbaInfo {
+                title: "TEST GAME".to_string(),
+                game_code: "AXVE".to_string(),
+                region: Some("Europe".to_string()),
+                maker_code: "01".to_string(),
+                version: 1,
+                header_checksum: 0x5A,
+                computed_header_checksum: 0x5B,
+                header_checksum_valid: false,
+                logo_valid: true,
+            }),
+        };
+        let out = render_retro(&info);
+        assert!(has_field(&out, "Format", "Game Boy Advance"));
+        assert!(has_field(&out, "Title", "TEST GAME"));
+        assert!(has_field(&out, "Checksum", "0x5A"));
+        assert!(has_field(&out, "Computed checksum", "0x5B"));
+        assert!(has_field(&out, "Checksum valid", "no"));
+        assert!(has_field(&out, "Size", "4096"));
     }
 }

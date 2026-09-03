@@ -13,6 +13,8 @@ import {
 	formatBytes,
 	formatMaker,
 	formatXboxPartitionKind,
+	RETRO_SYSTEM_NAMES,
+	retroTitle,
 	xenonRatio,
 } from "~/lib/inspect-view";
 import { imageToDataUrl, pickBackgroundImage, pickIconImage, type InfoResult } from "~/types/info";
@@ -44,6 +46,7 @@ const CONSOLE_LABEL: Record<InfoResult["kind"], string> = {
 	psp: "PSP",
 	laser_disc: "LASERDISC",
 	nds: "DS",
+	retro: "RETRO",
 };
 
 const view = computed(() => buildInspectView(props.info));
@@ -74,6 +77,8 @@ const sizeBytes = computed(() => {
 			return props.info.size_bytes;
 		case "laser_disc":
 			return props.info.file_size_bytes;
+		case "retro":
+			return props.info.file_size;
 		default:
 			return props.info.physical_bytes;
 	}
@@ -128,6 +133,8 @@ const title = computed(() => {
 			return "LaserDisc rip";
 		case "nds":
 			return englishFirst(info.banner?.titles.entries, (e) => e[0])?.[1] || info.game_title;
+		case "retro":
+			return retroTitle(info.details) || RETRO_SYSTEM_NAMES[info.details.system];
 	}
 });
 
@@ -162,6 +169,8 @@ const formatBadge = computed(() => {
 			return "AVI";
 		case "nds":
 			return "NDS";
+		case "retro":
+			return RETRO_SYSTEM_NAMES[info.details.system].toUpperCase();
 	}
 });
 
@@ -305,6 +314,9 @@ const statRow = computed<Stat[]>(() => {
 				value: info.secure_area === "not_present" ? "not present" : info.secure_area === "decrypted" ? "decrypted ✓" : "encrypted",
 			});
 			break;
+		case "retro":
+			stats.push({ label: "System", value: RETRO_SYSTEM_NAMES[info.details.system] });
+			break;
 	}
 	return stats;
 });
@@ -358,6 +370,7 @@ const canCopyTitleId = computed(() => {
 	if (info.kind === "chd" || info.kind === "cso" || info.kind === "laser_disc") return false;
 	if (info.kind === "xbox") return !!(info.xbe || info.xex);
 	if (info.kind === "xenon") return !!info.xex;
+	if (info.kind === "retro") return false;
 	return true;
 });
 

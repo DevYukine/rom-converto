@@ -172,6 +172,9 @@ impl TemplateTokens {
                 tokens.console = Some("NDS".to_string());
                 tokens.serial = non_empty(n.game_code.clone());
             }
+            // The cartridge systems name themselves per variant, and none of
+            // them is a conversion target, so no tokens are derived.
+            InfoResult::Retro(_) => {}
         }
 
         tokens.title = tokens.title.and_then(|t| non_empty(t.trim().to_string()));

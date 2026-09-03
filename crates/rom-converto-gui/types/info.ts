@@ -574,6 +574,196 @@ export interface NdsInfo {
   banner: NdsBannerInfo | null;
 }
 
+export interface NesInfo {
+  nes2: boolean;
+  prg_rom_bytes: number;
+  chr_rom_bytes: number;
+  mapper: number;
+  submapper: number | null;
+  mirroring: string;
+  battery: boolean;
+  trainer: boolean;
+  four_screen: boolean;
+  console_type: string;
+  timing: string;
+  prg_ram_bytes: number | null;
+  prg_nvram_bytes: number | null;
+  chr_ram_bytes: number | null;
+  chr_nvram_bytes: number | null;
+}
+
+export interface SnesInfo {
+  mapping: string;
+  copier_header: boolean;
+  header_offset: number;
+  title: string;
+  map_mode: number;
+  fastrom: boolean;
+  chipset: number;
+  coprocessor: string | null;
+  rom_size_kb: number;
+  sram_size_kb: number;
+  country: number;
+  region: string | null;
+  licensee: number;
+  version: number;
+  checksum: number;
+  checksum_complement: number;
+  computed_checksum: number;
+  checksum_valid: boolean;
+}
+
+export interface N64Info {
+  byte_order: string;
+  internal_name: string;
+  game_id: string;
+  media: string;
+  region_code: string;
+  region: string | null;
+  version: number;
+  crc1: string;
+  crc2: string;
+  bootcode_crc32: string;
+  cic: string | null;
+}
+
+export interface GbInfo {
+  logo_valid: boolean;
+  title: string;
+  manufacturer_code: string | null;
+  cgb_flag: number;
+  cgb: string | null;
+  sgb_flag: number;
+  cart_type: number;
+  cart_type_name: string | null;
+  rom_bytes: number | null;
+  ram_bytes: number | null;
+  destination: number;
+  destination_name: string | null;
+  licensee: string;
+  version: number;
+  header_checksum: number;
+  computed_header_checksum: number;
+  header_checksum_valid: boolean;
+  global_checksum: number;
+  computed_global_checksum: number;
+  global_checksum_valid: boolean;
+}
+
+export interface GbaInfo {
+  title: string;
+  game_code: string;
+  region: string | null;
+  maker_code: string;
+  version: number;
+  header_checksum: number;
+  computed_header_checksum: number;
+  header_checksum_valid: boolean;
+  logo_valid: boolean;
+}
+
+export interface MdInfo {
+  format: string;
+  console: string;
+  copyright: string;
+  domestic_title: string;
+  overseas_title: string;
+  serial: string;
+  device_support: string[];
+  region: string[];
+  rom_start: number;
+  rom_end: number;
+  checksum: number;
+  computed_checksum: number;
+  checksum_valid: boolean;
+}
+
+export interface SmsInfo {
+  header_offset: number;
+  product_code: number;
+  version: number;
+  region_code: number;
+  region: string | null;
+  rom_size_code: number;
+  rom_size_kb: number | null;
+  checksum: number;
+  computed_checksum: number;
+  checksum_valid: boolean;
+}
+
+export interface VbInfo {
+  title: string;
+  maker_code: string;
+  game_code: string;
+  version: number;
+}
+
+export interface WsInfo {
+  publisher_id: number;
+  color: boolean;
+  game_id: number;
+  save_type: number;
+  save: string | null;
+  version: number;
+  checksum: number;
+  computed_checksum: number;
+  checksum_valid: boolean;
+}
+
+export interface NgpInfo {
+  license: string;
+  startup_address: number;
+  catalog_id: number;
+  subcatalog_id: number;
+  machine: number;
+  machine_name: string | null;
+  title: string;
+}
+
+export interface LynxInfo {
+  bank0_page_size: number;
+  bank1_page_size: number;
+  version: number;
+  cart_name: string;
+  manufacturer: string;
+  rotation: number;
+  rotation_name: string | null;
+}
+
+export interface A78Info {
+  version: number;
+  title: string;
+  cart_size: number;
+  cart_type: number;
+  cart_features: string[];
+  controller1: number;
+  controller1_name: string | null;
+  controller2: number;
+  controller2_name: string | null;
+  tv_type: string;
+  save_device: number;
+}
+
+export type RetroDetails =
+  | ({ system: "nes" } & NesInfo)
+  | ({ system: "snes" } & SnesInfo)
+  | ({ system: "n64" } & N64Info)
+  | ({ system: "game_boy" } & GbInfo)
+  | ({ system: "gba" } & GbaInfo)
+  | ({ system: "mega_drive" } & MdInfo)
+  | ({ system: "master_system" } & SmsInfo)
+  | ({ system: "game_gear" } & SmsInfo)
+  | ({ system: "virtual_boy" } & VbInfo)
+  | ({ system: "wonder_swan" } & WsInfo)
+  | ({ system: "neo_geo_pocket" } & NgpInfo)
+  | ({ system: "lynx" } & LynxInfo)
+  | ({ system: "atari7800" } & A78Info);
+
+export interface RetroInfo {
+  file_size: number;
+  details: RetroDetails;
+}
+
 export type InfoResult =
   | ({ kind: "chd" } & ChdInfo)
   | ({ kind: "cso" } & CsoInfo)
@@ -588,7 +778,8 @@ export type InfoResult =
   | ({ kind: "psx" } & PsxInfo)
   | ({ kind: "psp" } & PspInfo)
   | ({ kind: "laser_disc" } & LdAviInfo)
-  | ({ kind: "nds" } & NdsInfo);
+  | ({ kind: "nds" } & NdsInfo)
+  | ({ kind: "retro" } & RetroInfo);
 
 export function pickIconImage(info: InfoResult): Image | null {
   switch (info.kind) {

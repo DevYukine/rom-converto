@@ -4675,6 +4675,7 @@ fn save_info_icon(info: &rom_converto_lib::info::InfoResult, dir: &std::path::Pa
         InfoResult::Chd(_)
         | InfoResult::Cso(_)
         | InfoResult::Psx(_)
+        | InfoResult::Retro(_)
         | InfoResult::LaserDisc(_) => {
             anyhow::bail!("--save-icon is not supported for this format: no embedded artwork")
         }
