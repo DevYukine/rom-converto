@@ -2,15 +2,18 @@
 import { useUiStore } from "~/stores/ui";
 import { useQueueStore } from "~/stores/queue";
 import { useConfigStore } from "~/stores/config";
+import { useUpdatesStore } from "~/stores/updates";
 import { isDraggingOver } from "~/composables/useDragDrop";
 
 useUiStore();
 const queue = useQueueStore();
 const config = useConfigStore();
+const updates = useUpdatesStore();
 const route = useRoute();
 
 onMounted(() => {
 	if (!config.loaded) config.loadConfig();
+	updates.start();
 });
 
 const CONTEXT_OPS = new Set([
@@ -45,6 +48,7 @@ const alertsOpen = ref(false);
 
 		<AlertsFlyout v-if="alertsOpen" @close="alertsOpen = false" />
 		<ToastHost />
+		<UpdateToast />
 		<ContextMenu />
 
 		<div v-if="isDraggingOver" class="drop-overlay">

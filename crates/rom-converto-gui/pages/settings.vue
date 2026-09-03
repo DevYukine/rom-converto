@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { invoke, isTauri } from "~/lib/ipc";
-import { createUpdater, type UpdateState } from "~/lib/updater";
 import { useConfigStore } from "~/stores/config";
+import { useUpdatesStore } from "~/stores/updates";
 import { useUiStore } from "~/stores/ui";
 import { useJobConcurrency } from "~/composables/useJobConcurrency";
 import type { Preset, PresetFormat } from "~/types/config";
@@ -76,8 +76,8 @@ async function deletePreset(name: string) {
 }
 
 const version = ref("");
-const updateState = ref<UpdateState>({ phase: "current", availableVersion: "", error: "" });
-const updater = createUpdater(isTauri, (state) => (updateState.value = state));
+const updates = useUpdatesStore();
+const updateState = toRef(updates, "state");
 const updateBusy = computed(() => ["checking", "downloading", "installing"].includes(updateState.value.phase));
 const updateStatus = computed(() => {
 	const current = `v${version.value || "…"}`;
@@ -93,9 +93,8 @@ const updateStatus = computed(() => {
 });
 
 function updateAction() {
-	if (updateState.value.phase === "available") return updater.installUpdate();
-	if (updateState.value.phase === "error") return updater.checkForUpdate();
-	return openChangelog();
+	if (updateState.value.phase === "available") return updates.install();
+	return updates.check();
 }
 
 async function openChangelog() {
@@ -105,7 +104,6 @@ async function openChangelog() {
 }
 
 onMounted(async () => {
-	if (isTauri) void updater.checkForUpdate();
 	version.value = await invoke<string>("app_display_version");
 });
 </script>
@@ -220,11 +218,20 @@ onMounted(async () => {
 			</ConfigCard>
 
 			<ConfigCard title="Updates">
+				<ToggleSwitch
+					v-model="updates.autoCheck"
+					label="Check for updates automatically"
+					tooltip="Checks shortly after launch and every four hours while the app is open. Nothing installs until you choose to."
+					description="Shows a small notice when a new version is available."
+				/>
 				<div class="row">
 					<span class="status" role="status" aria-live="polite">{{ updateStatus }}</span>
-					<button type="button" class="outlined" :disabled="updateBusy" @click="updateAction">
-						{{ updateState.phase === "available" ? "Install update" : updateState.phase === "error" ? "Retry" : "Changelog" }}
-					</button>
+					<span class="row__buttons">
+						<button type="button" class="outlined" :disabled="updateBusy || (updateState.phase === 'available' && updates.blocked)" @click="updateAction">
+							{{ updateState.phase === "available" ? "Install update" : "Check now" }}
+						</button>
+						<button type="button" class="outlined" @click="openChangelog">Changelog</button>
+					</span>
 				</div>
 			</ConfigCard>
 		</div>
@@ -264,6 +271,11 @@ h1 {
 	align-items: flex-start;
 	gap: 4px;
 	padding: 6px 0;
+}
+
+.row__buttons {
+	display: flex;
+	gap: 8px;
 }
 
 .row__label {

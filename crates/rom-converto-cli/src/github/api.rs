@@ -90,7 +90,7 @@ impl GithubApi {
 
         lazy_static! {
             static ref RE: regex::Regex =
-                regex::Regex::new(r#"(?P<major>\d.*)\.(?P<minor>\d.*)\.(?P<patch>\d.*)"#)
+                regex::Regex::new(r#"(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)"#)
                     .expect("static release tag pattern");
         }
 

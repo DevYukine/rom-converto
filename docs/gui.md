@@ -93,7 +93,10 @@ CLI command to its GUI page.
 A few CLI features have no GUI counterpart by design:
 
 - `shell-completions` and `self-update` are terminal and Tauri concerns; the desktop app
-  updates itself through Tauri.
+  updates itself through Tauri. It checks shortly after launch and every four hours, shows a
+  small notice in the bottom right when a release is available, and only installs when you
+  choose to. Later hides the notice until the next launch, Skip hides that version for good,
+  and Settings can turn the automatic check off.
 - `-v`/`--verbose`, `--debug-log`, and `-q`/`--quiet` are terminal logging controls; the
   GUI shows operation output in its own log panel.
 - `--config`, `--preset`, and `--no-update-check` are file-based configuration and updater

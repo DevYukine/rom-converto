@@ -741,7 +741,11 @@ async fn main() -> Result<()> {
     }
     log::set_max_level(max_level);
 
-    cleanup_old_executable().await?;
+    // Non-fatal: a locked or read-only leftover from a previous self-update
+    // must not stop the freshly installed binary from running.
+    if let Err(e) = cleanup_old_executable().await {
+        log::debug!("Could not remove old executable: {e}");
+    }
 
     let mut github = GithubApi::new()?;
 

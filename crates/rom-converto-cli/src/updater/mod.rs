@@ -7,8 +7,7 @@ use crate::updater::release::ReleaseVersionCompareResult;
 use futures::StreamExt;
 use log::{debug, error, info, warn};
 use release::compare_latest_release_to_current_version;
-use std::env::temp_dir;
-use tokio::fs::{File, create_dir_all};
+use tokio::fs::File;
 use tokio::io;
 use tokio::io::AsyncWriteExt;
 use tokio::io::BufWriter;
@@ -23,18 +22,16 @@ pub async fn cleanup_old_executable() -> anyhow::Result<()> {
         .parent()
         .ok_or_else(|| anyhow::anyhow!("current executable path has no parent directory"))?;
 
-    debug!("Checking if an outdated executable exists");
+    // `_old` is the binary a self-update replaced; `_new` is a download a
+    // failed self-update left behind.
+    for name in ["rom-converto_old", "rom-converto_new"] {
+        let leftover = current_exe_parent.join(name);
 
-    let outdated_exe = current_exe_parent.join("rom-converto_old");
+        if tokio::fs::try_exists(&leftover).await? {
+            tokio::fs::remove_file(&leftover).await?;
 
-    let exists = tokio::fs::try_exists(&outdated_exe).await?;
-
-    debug!("Outdated executable exists: {exists}");
-
-    if exists {
-        tokio::fs::remove_file(&outdated_exe).await?;
-
-        debug!("Removed outdated executable: {outdated_exe:?}");
+            debug!("Removed leftover executable: {leftover:?}");
+        }
     }
 
     Ok(())
@@ -93,12 +90,6 @@ pub async fn self_update(github_api: &mut GithubApi) -> anyhow::Result<()> {
 
     info!("New version {latest_version} available, updating");
 
-    let temp_folder_name = temp_dir().join("rom-converto-update");
-
-    create_dir_all(&temp_folder_name).await?;
-
-    debug!("Created temp folder: {temp_folder_name:?}");
-
     let asset_query = match release::get_release_asset_query_for_current_target() {
         Ok(asset_query) => asset_query,
         Err(_) => {
@@ -116,7 +107,15 @@ pub async fn self_update(github_api: &mut GithubApi) -> anyhow::Result<()> {
         .get_latest_release_file_by_asset_query(GH_USER, GH_REPO, &asset_query)
         .await?;
 
-    let temp_file_path = temp_folder_name.join("rom-converto");
+    let current_exe = std::env::current_exe()?;
+    let exe_dir = current_exe
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("current executable path has no parent directory"))?;
+
+    // Staged next to the binary so the final swap is a same-mount rename:
+    // a rename from the temp dir fails with EXDEV or ERROR_NOT_SAME_DEVICE
+    // when temp lives on tmpfs or another drive.
+    let temp_file_path = exe_dir.join("rom-converto_new");
 
     let file = File::create(&temp_file_path).await?;
 
@@ -127,6 +126,9 @@ pub async fn self_update(github_api: &mut GithubApi) -> anyhow::Result<()> {
     }
 
     buffered_file.flush().await?;
+    // The swap below renames onto a path that no longer exists, so nothing
+    // orders the data before the rename; a crash could leave an empty binary.
+    buffered_file.get_ref().sync_all().await?;
     drop(buffered_file);
 
     debug!("Downloaded the new release to: {temp_file_path:?}");
@@ -142,24 +144,25 @@ pub async fn self_update(github_api: &mut GithubApi) -> anyhow::Result<()> {
         debug!("Marked downloaded release as executable: {temp_file_path:?}");
     }
 
-    let current_exe = std::env::current_exe()?;
-
-    let current_exe_renamed = current_exe
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("current executable path has no parent directory"))?
-        .join("rom-converto_old");
+    let current_exe_renamed = exe_dir.join("rom-converto_old");
 
     tokio::fs::rename(&current_exe, &current_exe_renamed).await?;
 
     debug!("Renamed current executable to: {current_exe_renamed:?}");
 
-    tokio::fs::rename(&temp_file_path, &current_exe).await?;
+    if let Err(e) = tokio::fs::rename(&temp_file_path, &current_exe).await {
+        // Put the running binary back so the user is never left without one.
+        if let Err(rollback) = tokio::fs::rename(&current_exe_renamed, &current_exe).await {
+            anyhow::bail!(
+                "failed to install the new binary ({e}) and could not restore the old one ({rollback}); rename {} back to {} by hand",
+                current_exe_renamed.display(),
+                current_exe.display()
+            );
+        }
+        return Err(e.into());
+    }
 
     debug!("Renamed the temporary downloaded file to {current_exe:?}");
-
-    tokio::fs::remove_dir(&temp_folder_name).await?;
-
-    debug!("Removed temp folder: {temp_folder_name:?}");
 
     info!(
         "Updated to version {latest_version} (be aware that the old executable will be deleted on next use)"
