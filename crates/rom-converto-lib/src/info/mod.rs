@@ -20,6 +20,7 @@ pub use crate::microsoft::xbox::XisoInfo;
 pub use crate::microsoft::xenon::ZarInfo;
 pub use crate::nintendo::ctr::info::CtrInfo;
 pub use crate::nintendo::dol::info::DolInfo;
+pub use crate::nintendo::nds::info::NdsInfo;
 pub use crate::nintendo::nx::info::NxInfo;
 pub use crate::nintendo::rvl::info::RvlInfo;
 pub use crate::nintendo::wup::info::WupInfo;
@@ -45,6 +46,7 @@ pub enum InfoResult {
     Psx(PsxInfo),
     Psp(PspInfo),
     LaserDisc(LdAviInfo),
+    Nds(NdsInfo),
 }
 
 /// A string carried per-language, as found in console-specific metadata
@@ -161,6 +163,9 @@ pub fn read_info(path: &Path, opts: &InfoOptions) -> Result<InfoResult> {
         DetectedConsole::LaserDisc => Ok(InfoResult::LaserDisc(crate::laserdisc::info::read_info(
             path,
         )?)),
+        DetectedConsole::Nds => Ok(InfoResult::Nds(crate::nintendo::nds::info::read_info(
+            path,
+        )?)),
     }
 }
 
@@ -188,6 +193,7 @@ pub enum DetectedConsole {
     Psx,
     Psp,
     LaserDisc,
+    Nds,
 }
 
 /// Detect which console family a path belongs to. Extension first, magic
@@ -219,6 +225,7 @@ pub fn detect_console(path: &Path) -> Result<DetectedConsole> {
         Some("zar") => return Ok(DetectedConsole::Xenon),
         Some("cue") => return Ok(DetectedConsole::Psx),
         Some("avi") => return Ok(DetectedConsole::LaserDisc),
+        Some("nds") | Some("dsi") => return Ok(DetectedConsole::Nds),
         Some("iso") | Some("rvz") => return sniff_disc_magic(path),
         _ => {}
     }
@@ -529,6 +536,44 @@ mod tests {
                 want,
                 "{name}"
             );
+        }
+    }
+
+    #[test]
+    fn detect_nds_and_sony_handheld_by_extension() {
+        for (ext, want) in [
+            ("nds", DetectedConsole::Nds),
+            ("dsi", DetectedConsole::Nds),
+        ] {
+            let p = format!("/tmp/x.{}", ext);
+            assert_eq!(
+                detect_console(Path::new(&p)).expect("detect console"),
+                want,
+                "ext {ext}"
+            );
+        }
+    }
+
+    #[test]
+    fn info_result_nds_round_trips_via_json() {
+        use crate::nintendo::nds::info::NdsSecureAreaState;
+
+        let r = InfoResult::Nds(NdsInfo {
+            game_title: "TEST GAME".to_string(),
+            game_code: "ARCE".to_string(),
+            secure_area: NdsSecureAreaState::Encrypted,
+            ..Default::default()
+        });
+        let s = serde_json::to_string(&r).unwrap();
+        assert!(s.contains("\"kind\":\"nds\""));
+
+        let back: InfoResult = serde_json::from_str(&s).unwrap();
+        match back {
+            InfoResult::Nds(n) => {
+                assert_eq!(n.game_code, "ARCE");
+                assert_eq!(n.secure_area, NdsSecureAreaState::Encrypted);
+            }
+            _ => panic!("expected Nds variant"),
         }
     }
 

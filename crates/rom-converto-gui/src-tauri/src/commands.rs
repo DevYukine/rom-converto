@@ -5794,6 +5794,7 @@ fn extract_icon_png(info: &InfoResult) -> Option<Vec<u8>> {
         InfoResult::Psx(_) => None,
         InfoResult::Psp(p) => p.icon.as_ref().map(|i| i.png_bytes.clone()),
         InfoResult::LaserDisc(_) => None,
+        InfoResult::Nds(n) => n.banner.as_ref().map(|b| b.icon.png_bytes.clone()),
     }
 }
 

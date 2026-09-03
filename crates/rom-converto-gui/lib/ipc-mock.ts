@@ -453,6 +453,39 @@ const XENON_INFO = {
 	],
 };
 
+const NDS_INFO = {
+	kind: "nds",
+	physical_bytes: 33_554_432,
+	game_title: "SAMPLE GAME",
+	game_code: "ASME",
+	maker_code: "01",
+	unit_code: 0,
+	unit_code_name: "NDS",
+	region: 0,
+	rom_version: 0,
+	device_capacity: 9,
+	capacity_bytes: 33_554_432,
+	ntr_rom_size: 33_554_432,
+	arm9: { rom_offset: 0x4000, entry_address: 0x2000000, load_address: 0x2000000, size: 0x40000 },
+	arm7: { rom_offset: 0x8000, entry_address: 0x2380000, load_address: 0x2380000, size: 0x30000 },
+	fnt_offset: 0x50000,
+	fnt_size: 4_096,
+	fat_offset: 0x54000,
+	fat_size: 2_048,
+	header_crc16: 0xabcd,
+	header_crc16_computed: 0xabcd,
+	header_crc16_valid: true,
+	secure_area: "decrypted",
+	banner: {
+		banner_version: 1,
+		titles: { entries: [["english", "Sample NDS Title"]] },
+		banner_crc16: 0x1234,
+		banner_crc16_computed: 0x1234,
+		banner_crc16_valid: true,
+		icon: null,
+	},
+};
+
 const INFO_SAMPLES: Record<string, unknown> = {
 	nx: NX_INFO,
 	ctr: CTR_INFO,
@@ -463,6 +496,7 @@ const INFO_SAMPLES: Record<string, unknown> = {
 	cso: CSO_INFO,
 	xbox: XBOX_INFO,
 	xenon: XENON_INFO,
+	nds: NDS_INFO,
 };
 
 function infoKindFor(path: string): string {
@@ -476,6 +510,7 @@ function infoKindFor(path: string): string {
 	if (["cso", "zso", "dax"].includes(e)) return "cso";
 	if (["xiso"].includes(e)) return "xbox";
 	if (["zar"].includes(e)) return "xenon";
+	if (["nds", "dsi"].includes(e)) return "nds";
 	return "nx";
 }
 

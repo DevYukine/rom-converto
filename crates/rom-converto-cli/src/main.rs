@@ -3375,6 +3375,18 @@ async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()>
                     )?;
                 }
             }
+            NdsCommands::Info(cmd) => {
+                if cmd.keys.is_some() {
+                    anyhow::bail!("--keys is only supported by nx, wup, and ps3 info");
+                }
+                ensure_input_exists(&cmd.input)?;
+                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["nds", "dsi"])?;
+                let info = rom_converto_lib::nintendo::nds::info::read_info(resolved.path())?;
+                if let Some(dir) = &cmd.save_icon {
+                    save_nds_icon(&info, dir)?;
+                }
+                info_print::print(&rom_converto_lib::info::InfoResult::Nds(info), cmd.json)?;
+            }
         },
         Commands::Chd(inner) => match inner {
             ChdCommands::Compress(cmd) => {
@@ -4370,26 +4382,7 @@ async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()>
                 },
             )?;
             if let Some(dir) = &cmd.save_icon {
-                use rom_converto_lib::info::InfoResult;
-                match &info {
-                    InfoResult::Ctr(i) => save_ctr_icon(i, dir)?,
-                    InfoResult::Dol(i) => save_dol_banner(i, dir)?,
-                    InfoResult::Rvl(i) => save_rvl_image(i, dir)?,
-                    InfoResult::Wup(i) => save_wup_image(i, dir)?,
-                    InfoResult::Nx(i) => save_nx_icon(i, dir)?,
-                    InfoResult::Xbox(i) => save_xbox_icon(i, dir)?,
-                    InfoResult::Xenon(i) => save_xex_icon(i.xex.as_ref(), dir)?,
-                    InfoResult::Psp(i) => save_psp_icon(i, dir)?,
-                    InfoResult::Ps3(i) => save_ps3_icon(i, dir)?,
-                    InfoResult::Chd(_)
-                    | InfoResult::Cso(_)
-                    | InfoResult::Psx(_)
-                    | InfoResult::LaserDisc(_) => {
-                        anyhow::bail!(
-                            "--save-icon is not supported for this format: no embedded artwork"
-                        );
-                    }
-                }
+                save_info_icon(&info, dir)?;
             }
             info_print::print(&info, cmd.json)?;
         }
@@ -4664,6 +4657,30 @@ fn save_dol_banner(info: &rom_converto_lib::info::DolInfo, dir: &std::path::Path
     Ok(())
 }
 
+/// Dispatches an [`InfoResult`](rom_converto_lib::info::InfoResult) to its
+/// format-specific icon/banner saver.
+fn save_info_icon(info: &rom_converto_lib::info::InfoResult, dir: &std::path::Path) -> Result<()> {
+    use rom_converto_lib::info::InfoResult;
+    match info {
+        InfoResult::Ctr(i) => save_ctr_icon(i, dir),
+        InfoResult::Dol(i) => save_dol_banner(i, dir),
+        InfoResult::Rvl(i) => save_rvl_image(i, dir),
+        InfoResult::Wup(i) => save_wup_image(i, dir),
+        InfoResult::Nx(i) => save_nx_icon(i, dir),
+        InfoResult::Xbox(i) => save_xbox_icon(i, dir),
+        InfoResult::Xenon(i) => save_xex_icon(i.xex.as_ref(), dir),
+        InfoResult::Psp(i) => save_psp_icon(i, dir),
+        InfoResult::Ps3(i) => save_ps3_icon(i, dir),
+        InfoResult::Nds(i) => save_nds_icon(i, dir),
+        InfoResult::Chd(_)
+        | InfoResult::Cso(_)
+        | InfoResult::Psx(_)
+        | InfoResult::LaserDisc(_) => {
+            anyhow::bail!("--save-icon is not supported for this format: no embedded artwork")
+        }
+    }
+}
+
 fn save_ctr_icon(info: &rom_converto_lib::info::CtrInfo, dir: &std::path::Path) -> Result<()> {
     let Some(img) = &info.icon else {
         log::warn!("No SMDH icon decoded; nothing to save");
@@ -4807,6 +4824,24 @@ fn save_psp_icon(info: &rom_converto_lib::info::PspInfo, dir: &std::path::Path) 
         .unwrap_or_else(|| "psp-icon".to_string());
     let path = dir.join(format!("{stem}.png"));
     std::fs::write(&path, &img.png_bytes)?;
+    log::info!("Wrote {}", path.display());
+    Ok(())
+}
+
+fn save_nds_icon(info: &rom_converto_lib::info::NdsInfo, dir: &std::path::Path) -> Result<()> {
+    let Some(banner) = &info.banner else {
+        log::warn!("No DS banner decoded; nothing to save");
+        return Ok(());
+    };
+    std::fs::create_dir_all(dir)?;
+    let stem = rom_converto_lib::util::template::sanitize_file_stem(&info.game_code);
+    let stem = if stem.is_empty() {
+        "nds-icon".to_string()
+    } else {
+        stem
+    };
+    let path = dir.join(format!("{stem}.png"));
+    std::fs::write(&path, &banner.icon.png_bytes)?;
     log::info!("Wrote {}", path.display());
     Ok(())
 }

@@ -112,6 +112,7 @@ pub fn print(result: &InfoResult, json: bool) -> Result<()> {
         InfoResult::Psx(info) => render_psx(info),
         InfoResult::Psp(info) => render_psp(info),
         InfoResult::LaserDisc(info) => render_laserdisc(info),
+        InfoResult::Nds(info) => render_nds(info),
     };
     print!("{}", rendered);
     Ok(())
@@ -1332,6 +1333,116 @@ fn push_xex_rows(t: &mut KeyValueTable, xex: &XexInfo, include_shared: bool) {
     }
 }
 
+fn render_nds(info: &rom_converto_lib::info::NdsInfo) -> String {
+    use rom_converto_lib::nintendo::nds::info::NdsSecureAreaState;
+
+    let mut c = KeyValueTable::new();
+    c.push("Physical bytes", format!("{}", info.physical_bytes));
+    c.push(
+        "Cartridge capacity",
+        format!(
+            "{} bytes (code {})",
+            info.capacity_bytes, info.device_capacity
+        ),
+    );
+    c.push("NTR ROM size", format!("{}", info.ntr_rom_size));
+    c.push(
+        "ARM9",
+        format!(
+            "rom=0x{:X} entry=0x{:08X} load=0x{:08X} size={}",
+            info.arm9.rom_offset, info.arm9.entry_address, info.arm9.load_address, info.arm9.size
+        ),
+    );
+    c.push(
+        "ARM7",
+        format!(
+            "rom=0x{:X} entry=0x{:08X} load=0x{:08X} size={}",
+            info.arm7.rom_offset, info.arm7.entry_address, info.arm7.load_address, info.arm7.size
+        ),
+    );
+    c.push(
+        "File name table",
+        format!("offset=0x{:X} size={}", info.fnt_offset, info.fnt_size),
+    );
+    c.push(
+        "File allocation table",
+        format!("offset=0x{:X} size={}", info.fat_offset, info.fat_size),
+    );
+    c.push(
+        "Header CRC16",
+        format!(
+            "0x{:04X} (computed 0x{:04X}, {})",
+            info.header_crc16,
+            info.header_crc16_computed,
+            if info.header_crc16_valid {
+                "valid"
+            } else {
+                "invalid"
+            }
+        ),
+    );
+    c.push(
+        "Secure area",
+        match info.secure_area {
+            NdsSecureAreaState::NotPresent => "not present",
+            NdsSecureAreaState::Encrypted => "encrypted",
+            NdsSecureAreaState::Decrypted => "decrypted",
+        },
+    );
+
+    let mut t = KeyValueTable::new();
+    t.push("Format", format!("Nintendo DS ({})", info.unit_code_name));
+    t.push("Content type", "Game");
+    if let Some(name) = info.banner.as_ref().and_then(|b| b.titles.primary()) {
+        t.push("Title", name.replace('\n', " "));
+    }
+    t.push("Game title", info.game_title.clone());
+    t.push("Title ID", info.game_code.clone());
+    t.push("Maker code", info.maker_code.clone());
+    t.push("Region", format!("0x{:02X}", info.region));
+    t.push("Version", format!("{}", info.rom_version));
+    t.push("Size", format!("{}", info.physical_bytes));
+    if let Some(banner) = &info.banner {
+        t.push(
+            "Icon",
+            format!(
+                "{}x{} PNG ({} bytes)",
+                banner.icon.width,
+                banner.icon.height,
+                banner.icon.png_bytes.len()
+            ),
+        );
+    }
+    order_rom(&mut t);
+
+    let mut out = String::new();
+    section(&mut out, "Container", &c);
+    section(&mut out, "ROM", &t);
+
+    if let Some(banner) = &info.banner {
+        out.push_str(&format!(
+            "Banner version: {} (CRC16 0x{:04X}, computed 0x{:04X}, {})\n\n",
+            banner.banner_version,
+            banner.banner_crc16,
+            banner.banner_crc16_computed,
+            if banner.banner_crc16_valid {
+                "valid"
+            } else {
+                "invalid"
+            }
+        ));
+        if !banner.titles.is_empty() {
+            out.push_str("Banner titles:\n");
+            for (lang, name) in &banner.titles.entries {
+                out.push_str(&format!("  {:<10?}  {}\n", lang, name.replace('\n', " ")));
+            }
+            out.push('\n');
+        }
+    }
+
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1776,5 +1887,45 @@ mod tests {
         };
         let out = render_rvl(&info);
         assert!(has_field(&out, "System version", "0000000100000021"));
+    }
+
+    #[test]
+    fn render_nds_shows_secure_area_crc_and_banner_titles() {
+        use rom_converto_lib::info::{LanguageCode, MultilingualString};
+        use rom_converto_lib::nintendo::nds::info::{NdsBannerInfo, NdsSecureAreaState};
+
+        let info = rom_converto_lib::info::NdsInfo {
+            game_code: "ARCE".to_string(),
+            secure_area: NdsSecureAreaState::Encrypted,
+            header_crc16: 0x1234,
+            header_crc16_computed: 0x1234,
+            header_crc16_valid: true,
+            banner: Some(NdsBannerInfo {
+                banner_version: 1,
+                titles: MultilingualString::from_pairs([(
+                    LanguageCode::English,
+                    "Test Game".to_string(),
+                )]),
+                banner_crc16: 0xABCD,
+                banner_crc16_computed: 0xABCD,
+                banner_crc16_valid: true,
+                icon: rom_converto_lib::info::Image {
+                    png_bytes: vec![0u8; 10],
+                    width: 32,
+                    height: 32,
+                },
+            }),
+            ..Default::default()
+        };
+        let out = render_nds(&info);
+        assert!(has_field(&out, "Secure area", "encrypted"));
+        assert!(has_field(
+            &out,
+            "Header CRC16",
+            "0x1234 (computed 0x1234, valid)"
+        ));
+        assert!(has_field(&out, "Title", "Test Game"));
+        assert!(has_field(&out, "Icon", "32x32 PNG (10 bytes)"));
+        assert!(out.contains("Banner titles:"));
     }
 }

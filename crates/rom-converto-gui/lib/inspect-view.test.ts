@@ -240,6 +240,73 @@ describe("buildInspectView ps3", () => {
 	});
 });
 
+describe("buildInspectView nds", () => {
+	it("shows the secure area state and CRC validity", () => {
+		const v = view({
+			kind: "nds",
+			physical_bytes: 0x200000,
+			game_title: "TEST GAME",
+			game_code: "ATSE",
+			maker_code: "01",
+			unit_code: 0,
+			unit_code_name: "NDS",
+			region: 0,
+			rom_version: 0,
+			device_capacity: 7,
+			capacity_bytes: 0x200000,
+			ntr_rom_size: 0x200000,
+			arm9: { rom_offset: 0x4000, entry_address: 0x2000000, load_address: 0x2000000, size: 0x40000 },
+			arm7: { rom_offset: 0x8000, entry_address: 0x2380000, load_address: 0x2380000, size: 0x30000 },
+			fnt_offset: 0,
+			fnt_size: 0,
+			fat_offset: 0,
+			fat_size: 0,
+			header_crc16: 0xabcd,
+			header_crc16_computed: 0xabcd,
+			header_crc16_valid: true,
+			secure_area: "decrypted",
+			banner: null,
+		});
+		expect(row(v.rom, "Encryption")).toBe("decrypted");
+		expect(row(v.rom, "Header CRC16")).toBe("0xABCD (valid)");
+		expect(v.innerTitle).toBe("ARM Binaries");
+		expect(v.innerFiles).toEqual([
+			{ name: "ARM9", detail: "256 KiB · entry 0x02000000" },
+			{ name: "ARM7", detail: "192 KiB · entry 0x02380000" },
+		]);
+	});
+
+	it("flags an invalid CRC with the computed value", () => {
+		const v = view({
+			kind: "nds",
+			physical_bytes: 0x200000,
+			game_title: "TEST GAME",
+			game_code: "ATSE",
+			maker_code: "01",
+			unit_code: 0,
+			unit_code_name: "NDS",
+			region: 0,
+			rom_version: 0,
+			device_capacity: 7,
+			capacity_bytes: 0x200000,
+			ntr_rom_size: 0x200000,
+			arm9: { rom_offset: 0, entry_address: 0, load_address: 0, size: 0 },
+			arm7: { rom_offset: 0, entry_address: 0, load_address: 0, size: 0 },
+			fnt_offset: 0,
+			fnt_size: 0,
+			fat_offset: 0,
+			fat_size: 0,
+			header_crc16: 0x0001,
+			header_crc16_computed: 0x0002,
+			header_crc16_valid: false,
+			secure_area: "not_present",
+			banner: null,
+		});
+		expect(row(v.rom, "Encryption")).toBe("not present");
+		expect(row(v.rom, "Header CRC16")).toBe("0x0001 (invalid, computed 0x0002)");
+	});
+});
+
 describe("buildInspectView chd", () => {
 	it("combines pregap, postgap, and subtype into the track detail", () => {
 		const v = view({

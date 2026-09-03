@@ -531,6 +531,49 @@ export type DiscContent =
   | ({ kind: "psx" } & PsxInfo)
   | ({ kind: "psp" } & PspInfo);
 
+export interface NdsArmInfo {
+  rom_offset: number;
+  entry_address: number;
+  load_address: number;
+  size: number;
+}
+
+export type NdsSecureAreaState = "not_present" | "encrypted" | "decrypted";
+
+export interface NdsBannerInfo {
+  banner_version: number;
+  titles: MultilingualString;
+  banner_crc16: number;
+  banner_crc16_computed: number;
+  banner_crc16_valid: boolean;
+  icon: Image;
+}
+
+export interface NdsInfo {
+  physical_bytes: number;
+  game_title: string;
+  game_code: string;
+  maker_code: string;
+  unit_code: number;
+  unit_code_name: string;
+  region: number;
+  rom_version: number;
+  device_capacity: number;
+  capacity_bytes: number;
+  ntr_rom_size: number;
+  arm9: NdsArmInfo;
+  arm7: NdsArmInfo;
+  fnt_offset: number;
+  fnt_size: number;
+  fat_offset: number;
+  fat_size: number;
+  header_crc16: number;
+  header_crc16_computed: number;
+  header_crc16_valid: boolean;
+  secure_area: NdsSecureAreaState;
+  banner: NdsBannerInfo | null;
+}
+
 export type InfoResult =
   | ({ kind: "chd" } & ChdInfo)
   | ({ kind: "cso" } & CsoInfo)
@@ -544,7 +587,8 @@ export type InfoResult =
   | ({ kind: "ps3" } & Ps3Info)
   | ({ kind: "psx" } & PsxInfo)
   | ({ kind: "psp" } & PspInfo)
-  | ({ kind: "laser_disc" } & LdAviInfo);
+  | ({ kind: "laser_disc" } & LdAviInfo)
+  | ({ kind: "nds" } & NdsInfo);
 
 export function pickIconImage(info: InfoResult): Image | null {
   switch (info.kind) {
@@ -569,8 +613,8 @@ export function pickIconImage(info: InfoResult): Image | null {
       return info.icon;
     case "psp":
       return info.icon;
-    case "laser_disc":
-      return null;
+    case "nds":
+      return info.banner?.icon ?? null;
     default:
       return null;
   }

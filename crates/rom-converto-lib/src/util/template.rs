@@ -160,6 +160,18 @@ impl TemplateTokens {
             InfoResult::LaserDisc(_) => {
                 tokens.console = Some("LaserDisc".to_string());
             }
+            InfoResult::Nds(n) => {
+                tokens.title = n
+                    .banner
+                    .as_ref()
+                    .and_then(|b| b.titles.primary())
+                    .map(str::to_string)
+                    .and_then(non_empty)
+                    .or_else(|| non_empty(n.game_title.clone()));
+                tokens.title_id = non_empty(n.game_code.clone());
+                tokens.console = Some("NDS".to_string());
+                tokens.serial = non_empty(n.game_code.clone());
+            }
         }
 
         tokens.title = tokens.title.and_then(|t| non_empty(t.trim().to_string()));

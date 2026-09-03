@@ -43,6 +43,7 @@ const CONSOLE_LABEL: Record<InfoResult["kind"], string> = {
 	psx: "PLAYSTATION",
 	psp: "PSP",
 	laser_disc: "LASERDISC",
+	nds: "DS",
 };
 
 const view = computed(() => buildInspectView(props.info));
@@ -125,6 +126,8 @@ const title = computed(() => {
 			return info.title || info.title_id || "PSP disc";
 		case "laser_disc":
 			return "LaserDisc rip";
+		case "nds":
+			return englishFirst(info.banner?.titles.entries, (e) => e[0])?.[1] || info.game_title;
 	}
 });
 
@@ -157,6 +160,8 @@ const formatBadge = computed(() => {
 			return "ISO";
 		case "laser_disc":
 			return "AVI";
+		case "nds":
+			return "NDS";
 	}
 });
 
@@ -227,6 +232,9 @@ const metaLine = computed(() => {
 		case "laser_disc":
 			parts.push(`${info.video_width}x${info.video_height}`, `${info.fps.toFixed(2)} fps`);
 			break;
+		case "nds":
+			parts.push(info.maker_code, info.unit_code_name);
+			break;
 	}
 	return parts.filter(Boolean).join(" · ");
 });
@@ -289,6 +297,13 @@ const statRow = computed<Stat[]>(() => {
 		case "ps3":
 			if (info.title_id) stats.push({ label: "Title ID", value: info.title_id });
 			if (info.encrypted !== null) stats.push({ label: "Encryption", value: info.encrypted ? "encrypted" : "decrypted ✓" });
+			break;
+		case "nds":
+			stats.push({ label: "Game Code", value: info.game_code });
+			stats.push({
+				label: "Encryption",
+				value: info.secure_area === "not_present" ? "not present" : info.secure_area === "decrypted" ? "decrypted ✓" : "encrypted",
+			});
 			break;
 	}
 	return stats;
@@ -379,6 +394,9 @@ function copyTitleId() {
 			break;
 		case "xenon":
 			value = info.xex?.title_id_hex ?? "";
+			break;
+		case "nds":
+			value = info.game_code;
 			break;
 		default:
 			return;

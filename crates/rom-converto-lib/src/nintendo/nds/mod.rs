@@ -20,6 +20,7 @@ use crate::util::{
 
 pub mod embedded_keys;
 pub mod error;
+pub mod info;
 pub mod key1;
 
 #[cfg(test)]

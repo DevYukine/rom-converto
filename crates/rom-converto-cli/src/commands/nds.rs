@@ -1,4 +1,5 @@
 use crate::commands::ConflictPolicyArg;
+use crate::commands::info_command::InfoCommand;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
@@ -7,6 +8,7 @@ use std::path::PathBuf;
 pub enum NdsCommands {
     Encrypt(EncryptNdsCommand),
     Decrypt(DecryptNdsCommand),
+    Info(InfoCommand),
 }
 
 /// Encrypt an NDS ROM's secure area
