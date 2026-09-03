@@ -595,7 +595,13 @@ function infoKindFor(path: string): string {
 	if (["pbp"].includes(e)) return "pbp";
 	if (["vpk"].includes(e)) return "vpk";
 	if (["pkg"].includes(e)) return "pkg";
-	if (["nes", "sfc", "smc", "z64", "n64", "v64", "gb", "gbc", "gba", "md", "gen", "smd", "sms", "gg", "vb", "ws", "wsc", "ngp", "ngc", "lnx", "a78"].includes(e)) return "retro";
+	if (
+		[
+			"nes", "sfc", "smc", "z64", "n64", "v64", "gb", "gbc", "gba", "md", "gen", "smd", "32x", "sms", "gg", "vb", "ws",
+			"wsc", "ngp", "ngc", "lnx", "a78", "fds", "gdi",
+		].includes(e)
+	)
+		return "retro";
 	return "nx";
 }
 

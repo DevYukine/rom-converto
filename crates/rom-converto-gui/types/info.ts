@@ -744,6 +744,85 @@ export interface A78Info {
   save_device: number;
 }
 
+export interface FdsSide {
+  licensee_code: number;
+  game_name: string;
+  game_type_code: number;
+  game_type: string | null;
+  version: number;
+  side_number: number;
+  disk_number: number;
+  disk_type_code: number;
+  disk_type: string | null;
+  boot_read_file_code: number;
+  manufacture_date_raw: string;
+  manufacture_date: string | null;
+}
+
+export interface FdsInfo {
+  fwnes_header: boolean;
+  side_count: number;
+  sides: FdsSide[];
+}
+
+export interface SaturnInfo {
+  sector_size: number;
+  hardware_id: string;
+  maker_id: string;
+  product_number: string;
+  version: string;
+  release_date: string;
+  device_info: string;
+  area_symbols: string;
+  regions: string[];
+  peripheral_symbols: string;
+  peripherals: string[];
+  title: string;
+}
+
+export interface SegaCdInfo {
+  sector_size: number;
+  hardware_id: string;
+  console: string;
+  copyright: string;
+  domestic_title: string;
+  overseas_title: string;
+  serial: string;
+  device_support: string[];
+  region: string[];
+}
+
+export interface GdiTrack {
+  number: number;
+  lba: number;
+  track_type: number;
+  sector_size: number;
+  filename: string;
+}
+
+export interface GdiIndex {
+  track_count: number;
+  tracks: GdiTrack[];
+}
+
+export interface DreamcastInfo {
+  sector_size: number;
+  hardware_id: string;
+  maker_id: string;
+  device_info: string;
+  area_symbols: string;
+  regions: string[];
+  peripherals_raw: string;
+  peripherals: string[];
+  product_number: string;
+  version: string;
+  release_date: string;
+  boot_filename: string;
+  maker_name: string;
+  title: string;
+  gdi: GdiIndex | null;
+}
+
 export type RetroDetails =
   | ({ system: "nes" } & NesInfo)
   | ({ system: "snes" } & SnesInfo)
@@ -757,7 +836,12 @@ export type RetroDetails =
   | ({ system: "wonder_swan" } & WsInfo)
   | ({ system: "neo_geo_pocket" } & NgpInfo)
   | ({ system: "lynx" } & LynxInfo)
-  | ({ system: "atari7800" } & A78Info);
+  | ({ system: "atari7800" } & A78Info)
+  | ({ system: "sega32x" } & MdInfo)
+  | ({ system: "fds" } & FdsInfo)
+  | ({ system: "sega_saturn" } & SaturnInfo)
+  | ({ system: "sega_cd" } & SegaCdInfo)
+  | ({ system: "dreamcast" } & DreamcastInfo);
 
 export interface RetroInfo {
   file_size: number;

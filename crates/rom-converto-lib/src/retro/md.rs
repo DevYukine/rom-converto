@@ -98,14 +98,14 @@ fn deinterleave_smd(data: &[u8]) -> Vec<u8> {
 
 /// Trims a fixed-width title field and squeezes its internal padding runs
 /// down to single spaces.
-fn collapse(bytes: &[u8]) -> String {
+pub(super) fn collapse(bytes: &[u8]) -> String {
     ascii_trim(bytes)
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
 }
 
-fn device_support(bytes: &[u8]) -> Vec<String> {
+pub(super) fn device_support(bytes: &[u8]) -> Vec<String> {
     bytes
         .iter()
         .filter_map(|&b| {
@@ -138,7 +138,7 @@ fn device_support(bytes: &[u8]) -> Vec<String> {
 
 /// Decodes the region field, which is either old-style region letters or a
 /// single new-style hex digit whose bits select the regions.
-fn region(bytes: &[u8]) -> Vec<String> {
+pub(super) fn region(bytes: &[u8]) -> Vec<String> {
     let field = ascii_trim(bytes);
     if !field.is_empty() && field.chars().all(|c| matches!(c, 'J' | 'U' | 'E')) {
         return field

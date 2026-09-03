@@ -162,6 +162,11 @@ export const RETRO_SYSTEM_NAMES: Record<RetroDetails["system"], string> = {
 	neo_geo_pocket: "Neo Geo Pocket",
 	lynx: "Atari Lynx",
 	atari7800: "Atari 7800",
+	sega32x: "Sega 32X",
+	fds: "Famicom Disk System",
+	sega_saturn: "Sega Saturn",
+	sega_cd: "Sega CD",
+	dreamcast: "Dreamcast",
 };
 
 export function retroTitle(d: RetroDetails): string | undefined {
@@ -183,6 +188,16 @@ export function retroTitle(d: RetroDetails): string | undefined {
 		case "lynx":
 			return d.cart_name;
 		case "atari7800":
+			return d.title;
+		case "sega32x":
+			return d.overseas_title || d.domestic_title;
+		case "fds":
+			return d.sides[0]?.game_name;
+		case "sega_saturn":
+			return d.title;
+		case "sega_cd":
+			return d.overseas_title || d.domestic_title;
+		case "dreamcast":
 			return d.title;
 		default:
 			return undefined;
@@ -258,6 +273,7 @@ function retroRom(info: RetroInfo): InspectField[] {
 			crcField(rom, "Header Checksum", d.header_checksum, d.computed_header_checksum, d.header_checksum_valid, 2);
 			break;
 		case "mega_drive":
+		case "sega32x":
 			add(rom, "Domestic Title", d.domestic_title);
 			add(rom, "Serial", d.serial);
 			add(rom, "Console", d.console);
@@ -312,6 +328,46 @@ function retroRom(info: RetroInfo): InspectField[] {
 			add(rom, "Controller 2", d.controller2_name);
 			add(rom, "Save Device", d.save_device);
 			add(rom, "Version", d.version);
+			break;
+		case "fds": {
+			add(rom, "Format", d.fwnes_header ? "fwNES" : "Headerless");
+			add(rom, "Sides", d.side_count);
+			const side = d.sides[0];
+			if (side) {
+				add(rom, "Game Type", side.game_type ?? `0x${hex(side.game_type_code, 2)}`);
+				add(rom, "Disk Type", side.disk_type ?? `0x${hex(side.disk_type_code, 2)}`);
+				add(rom, "Version", side.version);
+				add(rom, "Manufacture Date", side.manufacture_date ?? side.manufacture_date_raw);
+			}
+			break;
+		}
+		case "sega_saturn":
+			add(rom, "Maker", d.maker_id);
+			add(rom, "Product Number", d.product_number);
+			add(rom, "Version", d.version);
+			add(rom, "Release Date", d.release_date);
+			add(rom, "Device Info", d.device_info);
+			add(rom, "Region", d.regions.join(", "));
+			add(rom, "Peripherals", d.peripherals.join(", "));
+			break;
+		case "sega_cd":
+			add(rom, "Domestic Title", d.domestic_title);
+			add(rom, "Serial", d.serial);
+			add(rom, "Console", d.console);
+			add(rom, "Region", d.region.join(", "));
+			add(rom, "Device Support", d.device_support.join(", "));
+			add(rom, "Copyright", d.copyright);
+			break;
+		case "dreamcast":
+			add(rom, "Maker", d.maker_name || d.maker_id);
+			add(rom, "Product Number", d.product_number);
+			add(rom, "Version", d.version);
+			add(rom, "Release Date", d.release_date);
+			add(rom, "Device Info", d.device_info);
+			add(rom, "Region", d.regions.join(", "));
+			add(rom, "Peripherals", d.peripherals.join(", "));
+			add(rom, "Boot File", d.boot_filename);
+			if (d.gdi) add(rom, "GDI Tracks", d.gdi.track_count);
 			break;
 	}
 	return rom;

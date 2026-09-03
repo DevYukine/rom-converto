@@ -1474,6 +1474,11 @@ fn render_retro(info: &rom_converto_lib::info::RetroInfo) -> String {
         RetroDetails::NeoGeoPocket(n) => ("Neo Geo Pocket", retro_ngp(n)),
         RetroDetails::Lynx(l) => ("Atari Lynx", retro_lynx(l)),
         RetroDetails::Atari7800(a) => ("Atari 7800", retro_a78(a)),
+        RetroDetails::Sega32x(m) => ("Sega 32X", retro_md(m)),
+        RetroDetails::Fds(f) => ("Famicom Disk System", retro_fds(f)),
+        RetroDetails::SegaSaturn(s) => ("Sega Saturn", retro_saturn(s)),
+        RetroDetails::SegaCd(s) => ("Sega CD", retro_segacd(s)),
+        RetroDetails::Dreamcast(d) => ("Dreamcast", retro_dreamcast(d)),
     };
     t.push("Format", system);
     t.push("Content type", "Game");
@@ -1791,6 +1796,127 @@ fn retro_a78(info: &rom_converto_lib::retro::A78Info) -> KeyValueTable {
     );
     t.push("TV type", info.tv_type.clone());
     t.push("Save device", format!("{}", info.save_device));
+    t
+}
+
+fn retro_fds(info: &rom_converto_lib::retro::FdsInfo) -> KeyValueTable {
+    let mut t = KeyValueTable::new();
+    if let Some(first) = info.sides.first() {
+        t.push("Title", first.game_name.clone());
+        t.push("Version", format!("{}", first.version));
+        t.push("Licensee code", format!("0x{:02X}", first.licensee_code));
+        t.push(
+            "Game type",
+            match &first.game_type {
+                Some(g) => format!("{} (0x{:02X})", g, first.game_type_code),
+                None => format!("0x{:02X}", first.game_type_code),
+            },
+        );
+        t.push(
+            "Disk type",
+            match &first.disk_type {
+                Some(d) => format!("{} ({})", d, first.disk_type_code),
+                None => format!("{}", first.disk_type_code),
+            },
+        );
+        t.push(
+            "Boot read file code",
+            format!("{}", first.boot_read_file_code),
+        );
+        t.push(
+            "Manufacture date",
+            match &first.manufacture_date {
+                Some(d) => format!("{} ({})", d, first.manufacture_date_raw),
+                None => first.manufacture_date_raw.clone(),
+            },
+        );
+    }
+    t.push("Header", if info.fwnes_header { "fwNES" } else { "raw" });
+    t.push("Sides", format!("{}", info.side_count));
+    for side in &info.sides {
+        t.push(
+            format!("Disk {} side {}", side.disk_number, side.side_number),
+            side.game_name.clone(),
+        );
+    }
+    t
+}
+
+fn retro_saturn(info: &rom_converto_lib::retro::SaturnInfo) -> KeyValueTable {
+    let mut t = KeyValueTable::new();
+    t.push("Title", info.title.clone());
+    t.push("Title ID", info.product_number.clone());
+    t.push("Version", info.version.clone());
+    t.push(
+        "Region",
+        format!("{} ({})", info.regions.join(", "), info.area_symbols),
+    );
+    t.push("Hardware ID", info.hardware_id.clone());
+    t.push("Maker ID", info.maker_id.clone());
+    t.push("Release date", info.release_date.clone());
+    t.push("Device info", info.device_info.clone());
+    t.push(
+        "Peripherals",
+        format!(
+            "{} ({})",
+            info.peripherals.join(", "),
+            info.peripheral_symbols
+        ),
+    );
+    t.push("Sector size", format!("{} bytes", info.sector_size));
+    t
+}
+
+fn retro_segacd(info: &rom_converto_lib::retro::SegaCdInfo) -> KeyValueTable {
+    let mut t = KeyValueTable::new();
+    t.push("Title", info.overseas_title.clone());
+    t.push("Domestic title", info.domestic_title.clone());
+    t.push("Title ID", info.serial.clone());
+    t.push("Region", info.region.join(", "));
+    t.push("Hardware ID", info.hardware_id.clone());
+    t.push("Console", info.console.clone());
+    t.push("Copyright", info.copyright.clone());
+    t.push("Device support", info.device_support.join(", "));
+    t.push("Sector size", format!("{} bytes", info.sector_size));
+    t
+}
+
+fn retro_dreamcast(info: &rom_converto_lib::retro::DreamcastInfo) -> KeyValueTable {
+    let mut t = KeyValueTable::new();
+    t.push("Title", info.title.clone());
+    t.push("Title ID", info.product_number.clone());
+    t.push("Version", info.version.clone());
+    t.push(
+        "Region",
+        format!("{} ({})", info.regions.join(", "), info.area_symbols),
+    );
+    t.push("Hardware ID", info.hardware_id.clone());
+    t.push("Maker ID", info.maker_id.clone());
+    t.push("Maker name", info.maker_name.clone());
+    t.push("Release date", info.release_date.clone());
+    t.push("Device info", info.device_info.clone());
+    t.push("Boot file", info.boot_filename.clone());
+    t.push(
+        "Peripherals",
+        format!(
+            "{} (0x{})",
+            info.peripherals.join(", "),
+            info.peripherals_raw
+        ),
+    );
+    t.push("Sector size", format!("{} bytes", info.sector_size));
+    if let Some(gdi) = &info.gdi {
+        t.push("Tracks", format!("{}", gdi.track_count));
+        for track in &gdi.tracks {
+            t.push(
+                format!("Track {}", track.number),
+                format!(
+                    "lba={} type={} sector={} {}",
+                    track.lba, track.track_type, track.sector_size, track.filename
+                ),
+            );
+        }
+    }
     t
 }
 

@@ -127,8 +127,8 @@ pub const SUPPORTED_INFO_EXTENSIONS: &[&str] = &[
     "chd", "cso", "zso", "cia", "3ds", "cci", "cxi", "ncch", "zcia", "zcci", "zcxi", "z3dsx",
     "nsp", "nsz", "xci", "xcz", "wud", "wux", "wua", "gcm", "wbfs", "xiso", "zar", "cue", "iso",
     "rvz", "nds", "dsi", "pbp", "vpk", "pkg", "nes", "sfc", "smc", "z64", "n64", "v64", "gb",
-    "gbc", "gba", "md", "gen", "smd", "sms", "gg", "vb", "ws", "wsc", "ngp", "ngc", "lnx", "a78",
-    "avi",
+    "gbc", "gba", "md", "gen", "smd", "32x", "sms", "gg", "vb", "ws", "wsc", "ngp", "ngc", "lnx",
+    "a78", "fds", "gdi", "avi",
 ];
 
 /// Options for [`read_info`]: an optional keys file and parent image
@@ -247,7 +247,7 @@ pub fn detect_console(path: &Path) -> Result<DetectedConsole> {
         Some("wbfs") => return Ok(DetectedConsole::Rvl),
         Some("xiso") => return Ok(DetectedConsole::Xbox),
         Some("zar") => return Ok(DetectedConsole::Xenon),
-        Some("cue") => return Ok(DetectedConsole::Psx),
+        Some("cue") => return Ok(sniff_cue(path)),
         Some("avi") => return Ok(DetectedConsole::LaserDisc),
         Some("nds") | Some("dsi") => return Ok(DetectedConsole::Nds),
         Some("pbp") => return Ok(DetectedConsole::Pbp),
@@ -290,6 +290,20 @@ fn sniff_ngc(path: &Path) -> Result<DetectedConsole> {
         "ngc file at {} carries neither the Neo Geo Pocket license string nor the GameCube disc magic",
         path.display()
     ))
+}
+
+/// A cue sheet is a PlayStation disc unless the file its first `FILE`
+/// entry names opens with a Sega disc hardware id. Anything that keeps
+/// the sheet from being read falls back to PlayStation.
+fn sniff_cue(path: &Path) -> DetectedConsole {
+    let sega = crate::retro::cue_first_file(path)
+        .and_then(|bin| crate::retro::read_disc_head(&bin))
+        .is_ok_and(|head| crate::retro::probe_sega_disc(&head).is_some());
+    if sega {
+        DetectedConsole::Retro
+    } else {
+        DetectedConsole::Psx
+    }
 }
 
 fn sniff_disc_magic(path: &Path) -> Result<DetectedConsole> {
@@ -347,8 +361,16 @@ fn sniff_disc_magic(path: &Path) -> Result<DetectedConsole> {
         DiscKind::UnknownIso => {}
     }
 
+    // Saturn, Sega CD, and Dreamcast discs are ISO9660 too; they identify
+    // themselves through the hardware id in their first sector instead.
+    if let Ok(head) = crate::retro::read_disc_head(path)
+        && crate::retro::probe_sega_disc(&head).is_some()
+    {
+        return Ok(DetectedConsole::Retro);
+    }
+
     Err(anyhow!(
-        "disc file at {} does not match GameCube, Wii, Xbox, Xbox 360, PS3, PS1, PS2, or PSP magic",
+        "disc file at {} does not match GameCube, Wii, Xbox, Xbox 360, PS3, PS1, PS2, PSP, Saturn, Sega CD, or Dreamcast magic",
         path.display()
     ))
 }
@@ -556,6 +578,87 @@ mod tests {
     fn detect_psx_by_cue_extension() {
         let r = detect_console(Path::new("/tmp/game.cue")).expect("detect cue");
         assert_eq!(r, DetectedConsole::Psx);
+    }
+
+    #[test]
+    fn detect_cue_routes_sega_cd_to_retro_and_playstation_to_psx() {
+        use crate::util::iso9660::test_fixtures::{IsoSpec, make_iso};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+
+        let mut sega_bin = crate::retro::segacd::tests::cooked_sector();
+        sega_bin.resize(2048 * 4, 0);
+        std::fs::write(dir.path().join("sega.bin"), &sega_bin).expect("write bin");
+        let sega_cue = dir.path().join("sega.cue");
+        std::fs::write(
+            &sega_cue,
+            b"FILE \"sega.bin\" BINARY\r\n  TRACK 01 MODE1/2048\r\n    INDEX 01 00:00:00\r\n",
+        )
+        .expect("write cue");
+        assert_eq!(
+            detect_console(&sega_cue).expect("detect console"),
+            DetectedConsole::Retro
+        );
+
+        std::fs::write(
+            dir.path().join("ps1.bin"),
+            make_iso(&IsoSpec {
+                system_id: b"PLAYSTATION",
+                volume_sectors: 250_000,
+                root_entries: &[(b"SYSTEM.CNF;1", false)],
+                file_content: b"BOOT = cdrom:\\SLUS_000.01;1\r\n",
+            }),
+        )
+        .expect("write bin");
+        let ps1_cue = dir.path().join("ps1.cue");
+        std::fs::write(
+            &ps1_cue,
+            b"FILE \"ps1.bin\" BINARY\r\n  TRACK 01 MODE1/2048\r\n    INDEX 01 00:00:00\r\n",
+        )
+        .expect("write cue");
+        assert_eq!(
+            detect_console(&ps1_cue).expect("detect console"),
+            DetectedConsole::Psx
+        );
+    }
+
+    #[test]
+    fn detect_sega_disc_isos_by_hardware_id() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        for (name, sector) in [
+            ("saturn.iso", crate::retro::saturn::tests::cooked_sector()),
+            ("segacd.iso", crate::retro::segacd::tests::cooked_sector()),
+            ("dc.iso", crate::retro::dreamcast::tests::cooked_sector()),
+            ("saturn_raw.iso", crate::retro::saturn::tests::raw_sector()),
+        ] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, &sector).expect("write image");
+            assert_eq!(
+                detect_console(&path).expect("detect console"),
+                DetectedConsole::Retro,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn read_info_routes_a_gdi_to_dreamcast() {
+        use crate::retro::RetroDetails;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let gdi = crate::retro::dreamcast::tests::gdi_fixture(dir.path());
+
+        assert_eq!(
+            detect_console(&gdi).expect("detect console"),
+            DetectedConsole::Retro
+        );
+        match read_info(&gdi, &InfoOptions::default()).expect("read gdi info") {
+            InfoResult::Retro(retro) => match retro.details {
+                RetroDetails::Dreamcast(dc) => assert_eq!(dc.product_number, "T-00001N"),
+                other => panic!("expected Dreamcast details, got {other:?}"),
+            },
+            other => panic!("expected Retro variant, got {other:?}"),
+        }
     }
 
     #[test]

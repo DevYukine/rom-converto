@@ -366,6 +366,143 @@ describe("buildInspectView retro", () => {
 		expect(row(v.rom, "System")).toBe("NES");
 		expect(row(v.rom, "Format")).toBe("iNES");
 	});
+
+	it("reports the Sega 32X title from the shared Mega Drive header", () => {
+		const v = view({
+			kind: "retro",
+			file_size: 0x8000,
+			details: {
+				system: "sega32x",
+				format: "Raw",
+				console: "SEGA 32X",
+				copyright: "(C)TEST 1994.NOV",
+				domestic_title: "DOMESTIC 32X",
+				overseas_title: "OVERSEAS 32X",
+				serial: "GM 00001009-00",
+				device_support: ["3-button controller"],
+				region: ["Japan", "Americas"],
+				rom_start: 0,
+				rom_end: 0x7fff,
+				checksum: 0x1234,
+				computed_checksum: 0x1234,
+				checksum_valid: true,
+			},
+		});
+		expect(row(v.rom, "Title")).toBe("OVERSEAS 32X");
+		expect(row(v.rom, "System")).toBe("Sega 32X");
+		expect(row(v.rom, "Console")).toBe("SEGA 32X");
+		expect(row(v.rom, "Checksum")).toBe("0x1234 (valid)");
+	});
+
+	it("reports the FDS first disk side", () => {
+		const v = view({
+			kind: "retro",
+			file_size: 0x1FDD8,
+			details: {
+				system: "fds",
+				fwnes_header: true,
+				side_count: 2,
+				sides: [
+					{
+						licensee_code: 1,
+						game_name: "TST",
+						game_type_code: 0x20,
+						game_type: "Normal disk",
+						version: 2,
+						side_number: 0,
+						disk_number: 0,
+						disk_type_code: 0,
+						disk_type: "FMC (normal card)",
+						boot_read_file_code: 5,
+						manufacture_date_raw: "610401",
+						manufacture_date: "1986-04-01",
+					},
+				],
+			},
+		});
+		expect(row(v.rom, "Title")).toBe("TST");
+		expect(row(v.rom, "System")).toBe("Famicom Disk System");
+		expect(row(v.rom, "Sides")).toBe("2");
+		expect(row(v.rom, "Manufacture Date")).toBe("1986-04-01");
+	});
+
+	it("reports the Sega Saturn IP header", () => {
+		const v = view({
+			kind: "retro",
+			file_size: 0x800,
+			details: {
+				system: "sega_saturn",
+				sector_size: 2048,
+				hardware_id: "SEGA SEGASATURN",
+				maker_id: "SEGA TP T-000",
+				product_number: "T-0001G",
+				version: "V1.000",
+				release_date: "19950301",
+				device_info: "CD-1/1",
+				area_symbols: "JTUE",
+				regions: ["Japan", "Asia NTSC", "North America", "Europe"],
+				peripheral_symbols: "JAM",
+				peripherals: ["Control pad", "Analog controller", "Mouse"],
+				title: "TEST GAME",
+			},
+		});
+		expect(row(v.rom, "Title")).toBe("TEST GAME");
+		expect(row(v.rom, "System")).toBe("Sega Saturn");
+		expect(row(v.rom, "Product Number")).toBe("T-0001G");
+		expect(row(v.rom, "Region")).toBe("Japan, Asia NTSC, North America, Europe");
+	});
+
+	it("reports the Sega CD boot sector with no checksum fields", () => {
+		const v = view({
+			kind: "retro",
+			file_size: 0x800,
+			details: {
+				system: "sega_cd",
+				sector_size: 2048,
+				hardware_id: "SEGADISCSYSTEM",
+				console: "SEGA MEGA DRIVE",
+				copyright: "(C)TEST 1993.SEP",
+				domestic_title: "DOMESTIC CD",
+				overseas_title: "OVERSEAS CD",
+				serial: "GM T-00001-00",
+				device_support: ["3-button controller", "CD-ROM"],
+				region: ["Japan", "Americas", "Europe"],
+			},
+		});
+		expect(row(v.rom, "Title")).toBe("OVERSEAS CD");
+		expect(row(v.rom, "System")).toBe("Sega CD");
+		expect(row(v.rom, "Serial")).toBe("GM T-00001-00");
+		expect(row(v.rom, "Checksum")).toBeUndefined();
+	});
+
+	it("reports the Dreamcast IP header and gdi track count", () => {
+		const v = view({
+			kind: "retro",
+			file_size: 0x800,
+			details: {
+				system: "dreamcast",
+				sector_size: 2048,
+				hardware_id: "SEGA SEGAKATANA",
+				maker_id: "SEGA ENTERPRISES",
+				device_info: "1234 GD-ROM1/1",
+				area_symbols: "JUE",
+				regions: ["Japan", "North America", "Europe"],
+				peripherals_raw: "00000E10",
+				peripherals: ["VGA box", "Jump pack", "Microphone", "Memory card"],
+				product_number: "T-00001N",
+				version: "V1.002",
+				release_date: "20000317",
+				boot_filename: "1ST_READ.BIN",
+				maker_name: "TEST PUBLISHER",
+				title: "TEST GAME",
+				gdi: { track_count: 4, tracks: [] },
+			},
+		});
+		expect(row(v.rom, "Title")).toBe("TEST GAME");
+		expect(row(v.rom, "System")).toBe("Dreamcast");
+		expect(row(v.rom, "Maker")).toBe("TEST PUBLISHER");
+		expect(row(v.rom, "GDI Tracks")).toBe("4");
+	});
 });
 
 describe("buildInspectView pbp", () => {
