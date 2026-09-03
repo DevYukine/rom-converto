@@ -8,6 +8,7 @@
 //! Vita key.
 
 use std::fs::File;
+use std::io;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 
@@ -215,6 +216,94 @@ pub fn extract(
     progress.finish();
 
     Ok(raw.into_iter().map(|r| r.item).collect())
+}
+
+/// Streaming reader over one item's decrypted payload, seekable anywhere
+/// inside it. Returned by [`open_item`].
+pub struct PkgItemReader {
+    file: File,
+    /// Absolute offset of the item's payload in the package file.
+    start: u64,
+    /// The item's offset inside the encrypted region, which is also where
+    /// its keystream starts.
+    data_offset: u64,
+    size: u64,
+    key: [u8; 16],
+    iv: [u8; 16],
+    pos: u64,
+}
+
+/// Opens the single non-directory item whose name ends with `name_suffix`,
+/// compared case-insensitively, in the `.pkg` at `path`.
+///
+/// # Errors
+/// Returns an error if the package cannot be parsed, its key type is
+/// unsupported, or no item matches `name_suffix`.
+pub fn open_item(path: &Path, name_suffix: &str) -> Result<PkgItemReader> {
+    let mut file =
+        File::open(path).with_context(|| format!("vita pkg: open {}", path.display()))?;
+    let pkg_size = file.metadata()?.len();
+    let header = read_header(&mut file, path)?;
+    let meta = read_meta(&mut file, &header)?;
+    let main_key = derive_key(header.key_type, &header.iv)?;
+    let raw = read_items(&mut file, &header, &meta, &main_key, pkg_size)?;
+
+    let suffix = name_suffix.to_ascii_lowercase();
+    let entry = raw
+        .into_iter()
+        .find(|r| !r.item.is_dir && r.item.name.to_ascii_lowercase().ends_with(&suffix))
+        .ok_or_else(|| {
+            let label = content_type_label(meta.content_type, None)
+                .unwrap_or_else(|| format!("content type {}", meta.content_type));
+            anyhow!(
+                "vita pkg: {} ({label}) carries no {name_suffix}",
+                header.content_id
+            )
+        })?;
+
+    Ok(PkgItemReader {
+        file,
+        start: header.data_offset + entry.item.data_offset,
+        data_offset: entry.item.data_offset,
+        size: entry.item.data_size,
+        key: entry.key,
+        iv: header.iv,
+        pos: 0,
+    })
+}
+
+impl Read for PkgItemReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let left = self.size.saturating_sub(self.pos);
+        let n = buf.len().min(left as usize);
+        if n == 0 {
+            return Ok(0);
+        }
+        self.file.seek(SeekFrom::Start(self.start + self.pos))?;
+        self.file.read_exact(&mut buf[..n])?;
+        ctr_at(&self.key, &self.iv, self.data_offset + self.pos)
+            .map_err(io::Error::other)?
+            .apply_keystream(&mut buf[..n]);
+        self.pos += n as u64;
+        Ok(n)
+    }
+}
+
+impl Seek for PkgItemReader {
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        let next = match pos {
+            SeekFrom::Start(n) => i128::from(n),
+            SeekFrom::Current(d) => i128::from(self.pos) + i128::from(d),
+            SeekFrom::End(d) => i128::from(self.size) + i128::from(d),
+        };
+        self.pos = u64::try_from(next).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "vita pkg: seek outside the item",
+            )
+        })?;
+        Ok(self.pos)
+    }
 }
 
 fn read_header(file: &mut File, path: &Path) -> Result<Header> {
@@ -673,6 +762,52 @@ mod tests {
         let items = extract(&path, &out, &NoProgress).unwrap();
         assert_eq!(items[2].name, "eboot.bin");
         assert_eq!(std::fs::read(out.join("eboot.bin")).unwrap(), want[2].data);
+    }
+
+    #[test]
+    fn item_reader_matches_the_extracted_bytes_at_any_offset() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("game.pkg");
+        let out = dir.path().join("out");
+        let want = entries();
+        std::fs::write(&path, build_pkg(1, 7, &want)).unwrap();
+        extract(&path, &out, &NoProgress).unwrap();
+        let full = std::fs::read(out.join("eboot.bin")).unwrap();
+
+        let mut reader = open_item(&path, "EBOOT.BIN").unwrap();
+        for (start, len) in [(0usize, 16usize), (1, 4095), (4000, 1000), (4999, 1)] {
+            reader.seek(SeekFrom::Start(start as u64)).unwrap();
+            let mut buf = vec![0u8; len];
+            reader.read_exact(&mut buf).unwrap();
+            assert_eq!(buf, full[start..start + len], "at {start}+{len}");
+        }
+
+        reader.seek(SeekFrom::End(-8)).unwrap();
+        let mut tail = Vec::new();
+        reader.read_to_end(&mut tail).unwrap();
+        assert_eq!(tail, full[full.len() - 8..]);
+
+        reader
+            .seek(SeekFrom::Start(full.len() as u64 + 64))
+            .unwrap();
+        assert_eq!(reader.read(&mut [0u8; 32]).unwrap(), 0);
+
+        assert!(reader.seek(SeekFrom::Start(0)).is_ok());
+        assert!(reader.seek(SeekFrom::Current(-1)).is_err());
+    }
+
+    #[test]
+    fn open_item_names_the_package_when_nothing_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("game.pkg");
+        std::fs::write(&path, build_pkg(1, 7, &entries())).unwrap();
+
+        let err = open_item(&path, "EBOOT.PBP")
+            .err()
+            .expect("no EBOOT.PBP item")
+            .to_string();
+        assert!(err.contains("EP9000-PCSF00002_00-SYNTHETIC000000"), "{err}");
+        assert!(err.contains("PSP game"), "{err}");
     }
 
     #[test]

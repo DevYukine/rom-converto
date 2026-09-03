@@ -79,6 +79,10 @@ describe("plain image inputs keep extension replacement", () => {
     expect(deriveDiscIsoPath("EBOOT.PBP")).toBe("EBOOT.iso");
   });
 
+  it("derives iso from a PSN pkg without doubling the extension", () => {
+    expect(deriveDiscIsoPath("game.pkg")).toBe("game.iso");
+  });
+
   it("derives decrypted/encrypted nds paths", () => {
     expect(deriveDecryptedPath("game.nds")).toBe("game.decrypted.nds");
     expect(deriveEncryptedPath("game.nds")).toBe("game.encrypted.nds");

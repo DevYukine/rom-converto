@@ -27,21 +27,48 @@ const BODY: std::ops::Range<usize> = 0x40..0xa0;
 const FLAG_PLAIN: u32 = 4;
 const TABLE_ENTRY_LEN: u64 = 32;
 
-/// Decrypts the `NPUMDIMG` image inside the `EBOOT.PBP` at `input` and writes
-/// the resulting ISO to `output`.
+/// Decrypts the `NPUMDIMG` image carried by `input` and writes the resulting
+/// ISO to `output`. `input` is either an `EBOOT.PBP` or a PSN `.pkg` package
+/// whose `EBOOT.PBP` item is read in place.
 ///
 /// # Errors
-/// Returns an error if `input` is not a PBP, its `DATA.PSAR` is not an
+/// Returns an error if `input` is neither format, its `DATA.PSAR` is not an
 /// `NPUMDIMG` image, the decrypted header is inconsistent, or any read,
 /// write, or block decompression fails.
 pub fn to_iso(progress: &dyn ProgressReporter, input: &Path, output: &Path) -> Result<()> {
     let mut file =
         File::open(input).with_context(|| format!("psp to-iso: open {}", input.display()))?;
-    let pbp =
-        Pbp::read(&mut file).with_context(|| format!("psp to-iso: parse {}", input.display()))?;
+    let mut magic = [0u8; 4];
+    file.read_exact(&mut magic)
+        .with_context(|| format!("psp to-iso: read {}", input.display()))?;
+
+    match &magic {
+        b"\0PBP" => convert(progress, &mut file, input, output),
+        &[0x7F, b'P', b'K', b'G'] => {
+            let info = crate::sony::vita::pkg::read_info(input)?;
+            if info.content_type == 6 {
+                bail!("psp to-iso: PS1 Classic packages cannot be converted to a PSP ISO");
+            }
+            let mut item = crate::sony::vita::pkg::open_item(input, "EBOOT.PBP")?;
+            convert(progress, &mut item, input, output)
+        }
+        _ => bail!(
+            "psp to-iso: {} is neither an EBOOT.PBP nor a PSN .pkg package",
+            input.display()
+        ),
+    }
+}
+
+fn convert<R: Read + Seek>(
+    progress: &dyn ProgressReporter,
+    file: &mut R,
+    input: &Path,
+    output: &Path,
+) -> Result<()> {
+    let pbp = Pbp::read(file).with_context(|| format!("psp to-iso: parse {}", input.display()))?;
     let psar = pbp.segments[DATA_PSAR];
 
-    match read_psar_kind(&mut file, psar)? {
+    match read_psar_kind(file, psar)? {
         Some(PsarKind::Npumdimg) => {}
         Some(PsarKind::Psisoimg) => bail!(
             "psp to-iso: DATA.PSAR holds a PSISOIMG PS1 Classic image, not an NPUMDIMG UMD image"
@@ -242,12 +269,29 @@ mod tests {
             .collect()
     }
 
+    fn eboot_bytes(psar: &[u8]) -> Vec<u8> {
+        build_pbp(0x10000, &[b"sfo", &[], &[], &[], &[], &[], b"psp", psar])
+    }
+
     fn write_eboot(psar: &[u8]) -> (tempfile::TempDir, std::path::PathBuf) {
-        let bytes = build_pbp(0x10000, &[b"sfo", &[], &[], &[], &[], &[], b"psp", psar]);
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("EBOOT.PBP");
-        std::fs::write(&path, bytes).expect("write eboot");
+        std::fs::write(&path, eboot_bytes(psar)).expect("write eboot");
         (dir, path)
+    }
+
+    /// Wraps `eboot` as the sole `EBOOT.PBP` item of a synthetic PSP package.
+    fn build_psp_pkg(content_type: u32, eboot: Vec<u8>) -> Vec<u8> {
+        crate::sony::vita::pkg::test_fixtures::build_pkg(
+            1,
+            content_type,
+            &[crate::sony::vita::pkg::test_fixtures::Entry {
+                name: "USRDIR/CONTENT/EBOOT.PBP",
+                data: eboot,
+                is_dir: false,
+                psp_type: 0x90,
+            }],
+        )
     }
 
     #[test]
@@ -296,6 +340,72 @@ mod tests {
         psar[0x50] ^= 0xFF;
         let (dir, input) = write_eboot(&psar);
         assert!(to_iso(&NoProgress, &input, &dir.path().join("out.iso")).is_err());
+    }
+
+    #[test]
+    fn converts_an_eboot_read_straight_out_of_a_pkg() {
+        let sectors = vec![sector(0x11), sector(0x22), sector(0x33)];
+        let eboot = eboot_bytes(&build_npumdimg(&sectors, false));
+        let dir = tempfile::tempdir().expect("temp dir");
+
+        let pbp_input = dir.path().join("EBOOT.PBP");
+        std::fs::write(&pbp_input, &eboot).expect("write eboot");
+        let pbp_output = dir.path().join("from-pbp.iso");
+        to_iso(&NoProgress, &pbp_input, &pbp_output).expect("pbp to iso");
+
+        let pkg_input = dir.path().join("game.pkg");
+        std::fs::write(&pkg_input, build_psp_pkg(7, eboot)).expect("write pkg");
+        let pkg_output = dir.path().join("from-pkg.iso");
+        to_iso(&NoProgress, &pkg_input, &pkg_output).expect("pkg to iso");
+
+        let iso = std::fs::read(&pkg_output).expect("read iso");
+        assert_eq!(iso, sectors.concat());
+        assert_eq!(iso, std::fs::read(&pbp_output).expect("read iso"));
+    }
+
+    #[test]
+    fn rejects_a_pkg_without_an_eboot() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let input = dir.path().join("game.pkg");
+        let pkg = crate::sony::vita::pkg::test_fixtures::build_pkg(
+            1,
+            7,
+            &[crate::sony::vita::pkg::test_fixtures::Entry {
+                name: "USRDIR/CONTENT/PARAM.SFO",
+                data: vec![0xAB; 64],
+                is_dir: false,
+                psp_type: 0x90,
+            }],
+        );
+        std::fs::write(&input, pkg).expect("write pkg");
+
+        let err = to_iso(&NoProgress, &input, &dir.path().join("out.iso")).expect_err("rejected");
+        assert!(err.to_string().contains("EBOOT.PBP"), "{err}");
+    }
+
+    #[test]
+    fn rejects_a_ps1_classic_pkg() {
+        let eboot = eboot_bytes(&build_npumdimg(&[sector(0x44)], false));
+        let dir = tempfile::tempdir().expect("temp dir");
+        let input = dir.path().join("classic.pkg");
+        std::fs::write(&input, build_psp_pkg(6, eboot)).expect("write pkg");
+
+        let err = to_iso(&NoProgress, &input, &dir.path().join("out.iso")).expect_err("rejected");
+        assert!(err.to_string().contains("PS1 Classic packages"), "{err}");
+    }
+
+    #[test]
+    fn rejects_an_input_that_is_neither_a_pbp_nor_a_pkg() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let input = dir.path().join("garbage.bin");
+        std::fs::write(&input, b"JUNKJUNK").expect("write garbage");
+
+        let err = to_iso(&NoProgress, &input, &dir.path().join("out.iso")).expect_err("rejected");
+        let text = err.to_string();
+        assert!(
+            text.contains("EBOOT.PBP") && text.contains(".pkg"),
+            "{text}"
+        );
     }
 
     #[test]

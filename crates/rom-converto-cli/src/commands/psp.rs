@@ -30,17 +30,18 @@ pub struct ExtractCommand {
     pub output_dir: PathBuf,
 }
 
-/// Convert a PSP EBOOT.PBP to an ISO
+/// Convert a PSP EBOOT.PBP or PSN .pkg to an ISO
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
-    long_about = "Convert a PSP EBOOT.PBP to an ISO\n\n\
-Decrypts the NPUMDIMG image inside DATA.PSAR and writes the UMD ISO it holds. PS1 Classic \
-EBOOTs (PSISOIMG/PSTITLEIMG) are not converted. Defaults to <INPUT>.iso next to the input.",
+    long_about = "Convert a PSP EBOOT.PBP or PSN .pkg to an ISO\n\n\
+Decrypts the NPUMDIMG image inside DATA.PSAR and writes the UMD ISO it holds. A PSN .pkg is \
+read in place, so its EBOOT.PBP need not be extracted first. PS1 Classic EBOOTs and packages \
+(PSISOIMG/PSTITLEIMG) are not converted. Defaults to <INPUT>.iso next to the input.",
     after_long_help = "EXAMPLES:\n  rom-converto psp to-iso EBOOT.PBP\n  \
-rom-converto psp to-iso EBOOT.PBP game.iso\n"
+rom-converto psp to-iso game.pkg\n  rom-converto psp to-iso EBOOT.PBP game.iso\n"
 )]
 pub struct ToIsoCommand {
-    /// Input EBOOT path (.pbp)
+    /// Input EBOOT or package path (.pbp or .pkg)
     #[arg(value_name = "INPUT")]
     pub input: PathBuf,
 

@@ -4345,7 +4345,7 @@ pub async fn cmd_psp_to_iso(
     let key = task_id.as_deref().unwrap_or("psp-to-iso");
     let progress = Arc::new(TauriProgress::new(app, key));
     let dry_run = dry_run.unwrap_or(false);
-    let resolved = resolve_archive_input(input.clone(), &["pbp"]).await?;
+    let resolved = resolve_archive_input(input.clone(), &["pbp", "pkg"]).await?;
     let basis = resolved.output_basis().to_path_buf();
     let desired = pick_output(
         output,

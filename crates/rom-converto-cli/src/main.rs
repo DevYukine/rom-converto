@@ -3198,7 +3198,7 @@ async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()>
             }
             PspCommands::ToIso(cmd) => {
                 ensure_input_exists(&cmd.input)?;
-                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["pbp"])?;
+                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["pbp", "pkg"])?;
                 let input = resolved.path();
                 let output = match cmd.output.clone() {
                     Some(p) => p,
