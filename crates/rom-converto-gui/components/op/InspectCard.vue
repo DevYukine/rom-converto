@@ -47,6 +47,8 @@ const CONSOLE_LABEL: Record<InfoResult["kind"], string> = {
 	laser_disc: "LASERDISC",
 	nds: "DS",
 	retro: "RETRO",
+	vpk: "VITA",
+	pkg: "VITA",
 };
 
 const view = computed(() => buildInspectView(props.info));
@@ -79,6 +81,9 @@ const sizeBytes = computed(() => {
 			return props.info.file_size_bytes;
 		case "retro":
 			return props.info.file_size;
+		case "vpk":
+		case "pkg":
+			return props.info.total_size;
 		default:
 			return props.info.physical_bytes;
 	}
@@ -135,6 +140,10 @@ const title = computed(() => {
 			return englishFirst(info.banner?.titles.entries, (e) => e[0])?.[1] || info.game_title;
 		case "retro":
 			return retroTitle(info.details) || RETRO_SYSTEM_NAMES[info.details.system];
+		case "vpk":
+			return info.title || info.title_id || "Vita package";
+		case "pkg":
+			return info.title || info.title_id || "Vita package";
 	}
 });
 
@@ -171,6 +180,10 @@ const formatBadge = computed(() => {
 			return "NDS";
 		case "retro":
 			return RETRO_SYSTEM_NAMES[info.details.system].toUpperCase();
+		case "vpk":
+			return "VPK";
+		case "pkg":
+			return "PKG";
 	}
 });
 
@@ -244,6 +257,13 @@ const metaLine = computed(() => {
 		case "nds":
 			parts.push(info.maker_code, info.unit_code_name);
 			break;
+		case "vpk":
+			if (info.category_label ?? info.category) parts.push(info.category_label ?? info.category ?? "");
+			if (info.app_ver) parts.push(`v${info.app_ver}`);
+			break;
+		case "pkg":
+			if (info.content_type_label ?? info.category) parts.push(info.content_type_label ?? info.category ?? "");
+			break;
 	}
 	return parts.filter(Boolean).join(" · ");
 });
@@ -316,6 +336,14 @@ const statRow = computed<Stat[]>(() => {
 			break;
 		case "retro":
 			stats.push({ label: "System", value: RETRO_SYSTEM_NAMES[info.details.system] });
+			break;
+		case "vpk":
+			if (info.title_id) stats.push({ label: "Title ID", value: info.title_id });
+			stats.push({ label: "Files", value: String(info.file_count) });
+			break;
+		case "pkg":
+			if (info.title_id) stats.push({ label: "Title ID", value: info.title_id });
+			stats.push({ label: "Items", value: String(info.item_count) });
 			break;
 	}
 	return stats;
@@ -410,6 +438,12 @@ function copyTitleId() {
 			break;
 		case "nds":
 			value = info.game_code;
+			break;
+		case "vpk":
+			value = info.title_id ?? "";
+			break;
+		case "pkg":
+			value = info.title_id ?? "";
 			break;
 		default:
 			return;

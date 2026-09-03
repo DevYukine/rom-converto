@@ -86,6 +86,7 @@ function sizeOf(i: InfoResult): number {
 	if (i.kind === "ps3" || i.kind === "psx" || i.kind === "psp") return i.size_bytes;
 	if (i.kind === "laser_disc") return i.file_size_bytes;
 	if (i.kind === "retro") return i.file_size;
+	if (i.kind === "vpk" || i.kind === "pkg") return i.total_size;
 	return i.physical_bytes;
 }
 

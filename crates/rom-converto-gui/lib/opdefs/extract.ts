@@ -15,6 +15,7 @@ import { useChdExtractStore } from "~/stores/chd-extract";
 import { useCsoDecompressStore } from "~/stores/cso-decompress";
 import { useXboxExtractStore } from "~/stores/xbox-extract";
 import { useXenonExtractStore } from "~/stores/xenon-extract";
+import { useVitaExtractStore } from "~/stores/vita-extract";
 import {
 	basename,
 	deriveDecompressedPath,
@@ -412,4 +413,34 @@ const xenon: OpDef = {
 	chips: () => "",
 };
 
-registerOp("extract", { ctr, dol, rvl, nx, chd, cso, xbox, xenon });
+const vita: OpDef = {
+	op: "extract",
+	console: "vita",
+	opLabel: "Extract",
+	storeId: "vita-extract",
+	useStore: useVitaExtractStore,
+	command: "cmd_vita_extract",
+	resultKind: "convert",
+	title: "Extract PKG",
+	subtitle: "Decrypts the item table and writes every file to a folder.",
+	dropText: "Drop a .pkg file",
+	acceptedExts: ["pkg", ...ARCHIVE_EXTS],
+	browseFilters: [{ name: "PKG", extensions: ["pkg"] }],
+	fields: recursiveFields(),
+	outputRows: directoryOutputRows(),
+	showVerify: true,
+	verifyLabel: "Verify after extraction",
+	actionNote: "Extraction never overwrites the source file.",
+	deriveOutput: deriveExtractDir,
+	buildArgs: (store, item, taskId) => ({
+		input: item.path,
+		outputDir: withOutputDir(deriveExtractDir(item.path), store.outputDir || ""),
+		onConflict: store.onConflict,
+		skipSpaceCheck: store.skipSpaceCheck,
+		dryRun: false,
+		taskId,
+	}),
+	chips: () => "",
+};
+
+registerOp("extract", { ctr, dol, rvl, nx, chd, cso, xbox, xenon, vita });

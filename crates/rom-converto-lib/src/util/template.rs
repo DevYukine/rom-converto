@@ -172,6 +172,18 @@ impl TemplateTokens {
                 tokens.console = Some("NDS".to_string());
                 tokens.serial = non_empty(n.game_code.clone());
             }
+            InfoResult::Vpk(v) => {
+                tokens.title = v.title.clone().and_then(non_empty);
+                tokens.title_id = v.title_id.clone().and_then(non_empty);
+                tokens.console = Some("Vita".to_string());
+                tokens.serial = v.title_id.clone().and_then(non_empty);
+            }
+            InfoResult::Pkg(p) => {
+                tokens.title = p.title.clone().and_then(non_empty);
+                tokens.title_id = p.title_id.clone().and_then(non_empty);
+                tokens.console = Some("Vita".to_string());
+                tokens.serial = p.title_id.clone().and_then(non_empty);
+            }
             // The cartridge systems name themselves per variant, and none of
             // them is a conversion target, so no tokens are derived.
             InfoResult::Retro(_) => {}

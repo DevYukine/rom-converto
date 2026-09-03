@@ -26,6 +26,7 @@ pub use crate::nintendo::rvl::info::RvlInfo;
 pub use crate::nintendo::wup::info::WupInfo;
 pub use crate::ps3::Ps3Info;
 pub use crate::retro::RetroInfo;
+pub use crate::sony::vita::{PkgInfo, VpkInfo};
 pub use crate::sony_disc::{DiscContent, PspInfo, PsxInfo};
 pub use image::Image;
 
@@ -49,6 +50,8 @@ pub enum InfoResult {
     LaserDisc(LdAviInfo),
     Nds(NdsInfo),
     Retro(RetroInfo),
+    Vpk(VpkInfo),
+    Pkg(PkgInfo),
 }
 
 /// A string carried per-language, as found in console-specific metadata
@@ -169,6 +172,8 @@ pub fn read_info(path: &Path, opts: &InfoOptions) -> Result<InfoResult> {
             path,
         )?)),
         DetectedConsole::Retro => Ok(InfoResult::Retro(crate::retro::read_info(path)?)),
+        DetectedConsole::Vpk => Ok(InfoResult::Vpk(crate::sony::vita::vpk::read_info(path)?)),
+        DetectedConsole::Pkg => Ok(InfoResult::Pkg(crate::sony::vita::pkg::read_info(path)?)),
     }
 }
 
@@ -198,6 +203,8 @@ pub enum DetectedConsole {
     LaserDisc,
     Nds,
     Retro,
+    Vpk,
+    Pkg,
 }
 
 /// Detect which console family a path belongs to. Extension first, magic
@@ -230,6 +237,8 @@ pub fn detect_console(path: &Path) -> Result<DetectedConsole> {
         Some("cue") => return Ok(DetectedConsole::Psx),
         Some("avi") => return Ok(DetectedConsole::LaserDisc),
         Some("nds") | Some("dsi") => return Ok(DetectedConsole::Nds),
+        Some("vpk") => return Ok(DetectedConsole::Vpk),
+        Some("pkg") => return Ok(DetectedConsole::Pkg),
         Some("ngc") => return sniff_ngc(path),
         Some("iso") | Some("rvz") => return sniff_disc_magic(path),
         Some(ext) if crate::retro::RETRO_EXTENSIONS.contains(&ext) => {
@@ -577,6 +586,8 @@ mod tests {
         for (ext, want) in [
             ("nds", DetectedConsole::Nds),
             ("dsi", DetectedConsole::Nds),
+            ("vpk", DetectedConsole::Vpk),
+            ("pkg", DetectedConsole::Pkg),
         ] {
             let p = format!("/tmp/x.{}", ext);
             assert_eq!(

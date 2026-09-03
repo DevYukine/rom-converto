@@ -368,6 +368,52 @@ describe("buildInspectView retro", () => {
 	});
 });
 
+describe("buildInspectView vpk", () => {
+	it("shows title, category and file count", () => {
+		const v = view({
+			kind: "vpk",
+			title: "TEST VITA GAME",
+			title_id: "PCSE00000",
+			content_id: "EP0000-PCSE00000_00-0000000000000000",
+			app_ver: "01.00",
+			category: "gd",
+			category_label: "Game",
+			icon: null,
+			file_count: 42,
+			total_size: 1024 * 1024,
+		});
+		expect(row(v.rom, "Title")).toBe("TEST VITA GAME");
+		expect(row(v.rom, "Content Type")).toBe("Game");
+		expect(row(v.rom, "Files")).toBe("42");
+	});
+});
+
+describe("buildInspectView pkg", () => {
+	it("shows content type, size and data range", () => {
+		const v = view({
+			kind: "pkg",
+			content_id: "EP0000-PCSE00000_00-0000000000000000",
+			pkg_revision: 1,
+			pkg_type: 1,
+			content_type: 21,
+			content_type_label: "Game",
+			category: null,
+			title: "TEST VITA GAME",
+			title_id: "PCSE00000",
+			item_count: 10,
+			total_size: 2048,
+			data_offset: 0x1000,
+			data_size: 1024,
+			key_type: 2,
+			drm_type: null,
+			package_flags: null,
+			meta_ids: [],
+		});
+		expect(row(v.rom, "Content Type")).toBe("Game");
+		expect(row(v.rom, "Data")).toBe("1.0 KiB @ 0x00001000");
+	});
+});
+
 describe("buildInspectView chd", () => {
 	it("combines pregap, postgap, and subtype into the track detail", () => {
 		const v = view({

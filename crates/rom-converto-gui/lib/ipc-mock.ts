@@ -509,6 +509,39 @@ const RETRO_INFO = {
 	},
 };
 
+const VPK_INFO = {
+	kind: "vpk",
+	title: "Sample Vita Title",
+	title_id: "PCSE00001",
+	content_id: "EP0001-PCSE00001_00-SAMPLEVITA000001",
+	app_ver: "01.00",
+	category: "gd",
+	category_label: "Game",
+	icon: null,
+	file_count: 420,
+	total_size: 900_000_000,
+};
+
+const PKG_INFO = {
+	kind: "pkg",
+	content_id: "EP0001-PCSE00001_00-SAMPLEVITA000001",
+	pkg_revision: 1,
+	pkg_type: 1,
+	content_type: 21,
+	content_type_label: "Game",
+	category: "gd",
+	title: "Sample Vita Title",
+	title_id: "PCSE00001",
+	item_count: 420,
+	total_size: 900_000_000,
+	data_offset: 0x1000,
+	data_size: 899_990_000,
+	key_type: 2,
+	drm_type: 1,
+	package_flags: 0,
+	meta_ids: [1, 2, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15, 16, 17, 18],
+};
+
 const INFO_SAMPLES: Record<string, unknown> = {
 	nx: NX_INFO,
 	ctr: CTR_INFO,
@@ -521,6 +554,8 @@ const INFO_SAMPLES: Record<string, unknown> = {
 	xenon: XENON_INFO,
 	nds: NDS_INFO,
 	retro: RETRO_INFO,
+	vpk: VPK_INFO,
+	pkg: PKG_INFO,
 };
 
 function infoKindFor(path: string): string {
@@ -535,6 +570,8 @@ function infoKindFor(path: string): string {
 	if (["xiso"].includes(e)) return "xbox";
 	if (["zar"].includes(e)) return "xenon";
 	if (["nds", "dsi"].includes(e)) return "nds";
+	if (["vpk"].includes(e)) return "vpk";
+	if (["pkg"].includes(e)) return "pkg";
 	if (["nes", "sfc", "smc", "z64", "n64", "v64", "gb", "gbc", "gba", "md", "gen", "smd", "sms", "gg", "vb", "ws", "wsc", "ngp", "ngc", "lnx", "a78"].includes(e)) return "retro";
 	return "nx";
 }

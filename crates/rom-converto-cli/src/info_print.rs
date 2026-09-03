@@ -114,6 +114,8 @@ pub fn print(result: &InfoResult, json: bool) -> Result<()> {
         InfoResult::LaserDisc(info) => render_laserdisc(info),
         InfoResult::Nds(info) => render_nds(info),
         InfoResult::Retro(info) => render_retro(info),
+        InfoResult::Vpk(info) => render_vpk(info),
+        InfoResult::Pkg(info) => render_pkg(info),
     };
     print!("{}", rendered);
     Ok(())
@@ -1791,6 +1793,108 @@ fn retro_a78(info: &rom_converto_lib::retro::A78Info) -> KeyValueTable {
     t
 }
 
+fn render_vpk(info: &rom_converto_lib::info::VpkInfo) -> String {
+    let mut c = KeyValueTable::new();
+    c.push("Format", "PS Vita VPK");
+    c.push("Files", format!("{}", info.file_count));
+    c.push("Total size", format!("{} bytes", info.total_size));
+
+    let mut t = KeyValueTable::new();
+    if let Some(v) = &info.title {
+        t.push("Title", v.clone());
+    }
+    if let Some(v) = &info.title_id {
+        t.push("Title ID", v.clone());
+    }
+    if let Some(v) = &info.content_id {
+        t.push("Content ID", v.clone());
+    }
+    if let Some(v) = &info.app_ver {
+        t.push("Version", v.clone());
+    }
+    if let Some(v) = &info.category {
+        t.push(
+            "Content type",
+            match &info.category_label {
+                Some(label) => format!("{} ({})", label, v),
+                None => v.clone(),
+            },
+        );
+    }
+    if let Some(img) = &info.icon {
+        t.push(
+            "Icon",
+            format!(
+                "{}x{} PNG ({} bytes)",
+                img.width,
+                img.height,
+                img.png_bytes.len()
+            ),
+        );
+    }
+    order_rom(&mut t);
+
+    let mut out = String::new();
+    section(&mut out, "Container", &c);
+    section(&mut out, "ROM", &t);
+    out
+}
+
+fn render_pkg(info: &rom_converto_lib::info::PkgInfo) -> String {
+    let mut c = KeyValueTable::new();
+    c.push("Format", "PS Vita PKG");
+    c.push("Revision", format!("0x{:04X}", info.pkg_revision));
+    c.push("Package type", format!("{}", info.pkg_type));
+    c.push("Key type", format!("{}", info.key_type));
+    c.push("Items", format!("{}", info.item_count));
+    c.push("Total size", format!("{} bytes", info.total_size));
+    c.push(
+        "Data region",
+        format!("offset=0x{:X} size={}", info.data_offset, info.data_size),
+    );
+    if let Some(v) = info.drm_type {
+        c.push("DRM type", format!("{}", v));
+    }
+    if let Some(v) = info.package_flags {
+        c.push("Package flags", format!("0x{:08X}", v));
+    }
+    if !info.meta_ids.is_empty() {
+        c.push(
+            "Metadata entries",
+            info.meta_ids
+                .iter()
+                .map(|id| format!("0x{:X}", id))
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+    }
+
+    let mut t = KeyValueTable::new();
+    if let Some(v) = &info.title {
+        t.push("Title", v.clone());
+    }
+    if let Some(v) = &info.title_id {
+        t.push("Title ID", v.clone());
+    }
+    t.push("Content ID", info.content_id.clone());
+    t.push(
+        "Content type",
+        match &info.content_type_label {
+            Some(label) => format!("{} ({})", label, info.content_type),
+            None => format!("{}", info.content_type),
+        },
+    );
+    if let Some(v) = &info.category {
+        t.push("Category", v.clone());
+    }
+    order_rom(&mut t);
+
+    let mut out = String::new();
+    section(&mut out, "Container", &c);
+    section(&mut out, "ROM", &t);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2302,5 +2406,42 @@ mod tests {
         assert!(has_field(&out, "Computed checksum", "0x5B"));
         assert!(has_field(&out, "Checksum valid", "no"));
         assert!(has_field(&out, "Size", "4096"));
+    }
+
+    #[test]
+    fn render_vpk_shows_category_label_and_totals() {
+        let info = rom_converto_lib::info::VpkInfo {
+            title: Some("Example Game".to_string()),
+            title_id: Some("PCSF00001".to_string()),
+            category: Some("gd".to_string()),
+            category_label: Some("Application".to_string()),
+            file_count: 3,
+            total_size: 4096,
+            ..Default::default()
+        };
+        let out = render_vpk(&info);
+        assert!(has_field(&out, "Content type", "Application (gd)"));
+        assert!(has_field(&out, "Files", "3"));
+        assert!(has_field(&out, "Total size", "4096 bytes"));
+    }
+
+    #[test]
+    fn render_pkg_shows_content_type_and_key_type() {
+        let info = rom_converto_lib::info::PkgInfo {
+            content_id: "EP9000-PCSF00001_00-EXAMPLE000000000".to_string(),
+            content_type_label: Some("PS Vita application".to_string()),
+            content_type: 0x15,
+            key_type: 2,
+            item_count: 4,
+            ..Default::default()
+        };
+        let out = render_pkg(&info);
+        assert!(has_field(&out, "Content type", "PS Vita application (21)"));
+        assert!(has_field(&out, "Key type", "2"));
+        assert!(has_field(
+            &out,
+            "Content ID",
+            "EP9000-PCSF00001_00-EXAMPLE000000000"
+        ));
     }
 }

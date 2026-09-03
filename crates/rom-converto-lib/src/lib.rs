@@ -32,5 +32,6 @@ pub mod playlist;
 pub mod ps3;
 pub mod retro;
 pub mod runner;
+pub mod sony;
 pub mod sony_disc;
 pub mod util;

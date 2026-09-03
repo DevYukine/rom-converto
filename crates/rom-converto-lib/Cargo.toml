@@ -33,6 +33,7 @@ sha2 = "^0.10"
 md_5 = { version = "^0.10", package = "md-5" }
 rsa = { version = "^0.9", features = ["sha2"] }
 
+base64 = "^0.22"
 hex = "^0.4"
 md5 = "^0.8"
 sha256 = "^1.6"

@@ -67,6 +67,7 @@ fn main() {
             cmd_xenon_compress,
             cmd_xenon_extract,
             cmd_xenon_verify,
+            cmd_vita_extract,
             cmd_read_info,
             cmd_save_icon,
             cmd_hash,

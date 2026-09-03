@@ -66,6 +66,7 @@ use rom_converto_lib::ps3::{
     Ps3Error, decrypt_ps3_iso_cancellable, derive_decrypted_path as derive_ps3_decrypted_path,
     resolve_ps3_key,
 };
+use rom_converto_lib::sony::vita::pkg::extract as vita_pkg_extract;
 use rom_converto_lib::util::HashCache;
 use rom_converto_lib::util::NX_DAT_UNSUPPORTED_HINT;
 use rom_converto_lib::util::fs::{collect_all_files, collect_files_with_exts};
@@ -4309,6 +4310,69 @@ pub async fn cmd_xenon_extract(
     Ok(format!("Wrote {out_display}"))
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VitaExtractArgs {
+    input: PathBuf,
+    output_dir: PathBuf,
+    on_conflict: Option<String>,
+    skip_space_check: bool,
+    dry_run: Option<bool>,
+    task_id: Option<String>,
+}
+
+#[tauri::command]
+pub async fn cmd_vita_extract(app: AppHandle, args: VitaExtractArgs) -> Result<String, String> {
+    let VitaExtractArgs {
+        input,
+        output_dir,
+        on_conflict,
+        skip_space_check,
+        dry_run,
+        task_id,
+    } = args;
+    let key = task_id.as_deref().unwrap_or("vita-extract");
+    let progress = Arc::new(TauriProgress::new(app, key));
+    if dry_run.unwrap_or(false) {
+        let line = plan_line(
+            progress.as_ref(),
+            PlanInput {
+                operation: "extract",
+                input: &input,
+                desired: &output_dir,
+                on_conflict: on_conflict.as_deref(),
+                media: None,
+                verify: rom_converto_lib::util::OutputVerify::None,
+                missing_keys: None,
+            },
+        )
+        .await?;
+        return Ok(line.display_text());
+    }
+    let output_dir = match resolve_output(
+        progress.as_ref(),
+        &output_dir,
+        on_conflict.as_deref(),
+        rom_converto_lib::util::OutputVerify::None,
+    )
+    .await?
+    {
+        Some(p) => p,
+        None => return Ok(format!("Skipped existing {}", output_dir.display())),
+    };
+    let out_display = output_dir.display().to_string();
+    let resolved = resolve_archive_input(input, &["pkg"]).await?;
+    let resolved_path = resolved.path().to_path_buf();
+    preflight_space(&output_dir, input_size(&resolved_path), skip_space_check)?;
+    tokio::task::spawn_blocking(move || {
+        vita_pkg_extract(&resolved_path, &output_dir, progress.as_ref())
+    })
+    .await
+    .map_err(err_to_string)?
+    .map_err(err_to_string)?;
+    Ok(format!("Wrote {out_display}"))
+}
+
 #[tauri::command]
 pub async fn cmd_xenon_verify(
     app: AppHandle,
@@ -5796,6 +5860,8 @@ fn extract_icon_png(info: &InfoResult) -> Option<Vec<u8>> {
         InfoResult::LaserDisc(_) => None,
         InfoResult::Nds(n) => n.banner.as_ref().map(|b| b.icon.png_bytes.clone()),
         InfoResult::Retro(_) => None,
+        InfoResult::Vpk(v) => v.icon.as_ref().map(|i| i.png_bytes.clone()),
+        InfoResult::Pkg(_) => None,
     }
 }
 

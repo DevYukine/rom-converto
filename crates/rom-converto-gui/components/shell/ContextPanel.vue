@@ -57,6 +57,7 @@ const CONSOLES: Record<string, ConsoleRow[]> = {
 		{ id: "cso", name: "PSP / PS2", hint: "CSO/ZSO →" },
 		{ id: "xbox", name: "Xbox", hint: "XISO →" },
 		{ id: "xenon", name: "Xbox 360", hint: "ZAR →" },
+		{ id: "vita", name: "PS Vita", hint: "PKG →" },
 	],
 	verify: [
 		{ id: "ctr", name: "3DS", hint: "" },

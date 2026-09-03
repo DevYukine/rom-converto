@@ -764,6 +764,37 @@ export interface RetroInfo {
   details: RetroDetails;
 }
 
+export interface VpkInfo {
+  title: string | null;
+  title_id: string | null;
+  content_id: string | null;
+  app_ver: string | null;
+  category: string | null;
+  category_label: string | null;
+  icon: Image | null;
+  file_count: number;
+  total_size: number;
+}
+
+export interface PkgInfo {
+  content_id: string;
+  pkg_revision: number;
+  pkg_type: number;
+  content_type: number;
+  content_type_label: string | null;
+  category: string | null;
+  title: string | null;
+  title_id: string | null;
+  item_count: number;
+  total_size: number;
+  data_offset: number;
+  data_size: number;
+  key_type: number;
+  drm_type: number | null;
+  package_flags: number | null;
+  meta_ids: number[];
+}
+
 export type InfoResult =
   | ({ kind: "chd" } & ChdInfo)
   | ({ kind: "cso" } & CsoInfo)
@@ -779,7 +810,9 @@ export type InfoResult =
   | ({ kind: "psp" } & PspInfo)
   | ({ kind: "laser_disc" } & LdAviInfo)
   | ({ kind: "nds" } & NdsInfo)
-  | ({ kind: "retro" } & RetroInfo);
+  | ({ kind: "retro" } & RetroInfo)
+  | ({ kind: "vpk" } & VpkInfo)
+  | ({ kind: "pkg" } & PkgInfo);
 
 export function pickIconImage(info: InfoResult): Image | null {
   switch (info.kind) {
@@ -806,6 +839,8 @@ export function pickIconImage(info: InfoResult): Image | null {
       return info.icon;
     case "nds":
       return info.banner?.icon ?? null;
+    case "vpk":
+      return info.icon;
     default:
       return null;
   }

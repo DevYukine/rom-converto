@@ -15,6 +15,7 @@ use crate::commands::nx::NxCommands;
 use crate::commands::playlist::PlaylistModeArg;
 use crate::commands::ps3::Ps3Commands;
 use crate::commands::rvl::RvlCommands;
+use crate::commands::vita::VitaCommands;
 use crate::commands::wup::WupCommands;
 use crate::commands::xbox::XboxCommands;
 use crate::commands::xenon::XenonCommands;
@@ -3148,6 +3149,47 @@ async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()>
                 }
             }
         },
+        Commands::Vita(inner) => match inner {
+            VitaCommands::Info(cmd) => {
+                if cmd.keys.is_some() {
+                    anyhow::bail!("--keys is only supported by nx, wup, and ps3 info");
+                }
+                ensure_input_exists(&cmd.input)?;
+                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["vpk", "pkg"])?;
+                let info = rom_converto_lib::info::read_info(
+                    resolved.path(),
+                    &rom_converto_lib::info::InfoOptions::default(),
+                )?;
+                if let Some(dir) = &cmd.save_icon {
+                    save_info_icon(&info, dir)?;
+                }
+                info_print::print(&info, cmd.json)?;
+            }
+            VitaCommands::Extract(cmd) => {
+                ensure_input_exists(&cmd.input)?;
+                let policy = policy_of(crate::commands::ConflictPolicyArg::Error, false);
+                match resolve_output_dir(&cmd.output_dir, policy)? {
+                    WriteDecision::Skip => {
+                        log_skipped(&cmd.output_dir);
+                        return Ok(());
+                    }
+                    WriteDecision::Write(_) => {}
+                }
+                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["pkg"])?;
+                let started = Instant::now();
+                rom_converto_lib::sony::vita::pkg::extract(
+                    resolved.path(),
+                    &cmd.output_dir,
+                    &progress,
+                )?;
+                log_single_summary(
+                    &cmd.input,
+                    &cmd.output_dir,
+                    TallyDirection::CountOnly,
+                    started,
+                );
+            }
+        },
         Commands::Nds(inner) => match inner {
             NdsCommands::Encrypt(cmd) => {
                 let output_dir = cmd.output_dir.clone();
@@ -4672,10 +4714,12 @@ fn save_info_icon(info: &rom_converto_lib::info::InfoResult, dir: &std::path::Pa
         InfoResult::Psp(i) => save_psp_icon(i, dir),
         InfoResult::Ps3(i) => save_ps3_icon(i, dir),
         InfoResult::Nds(i) => save_nds_icon(i, dir),
+        InfoResult::Vpk(i) => save_vpk_icon(i, dir),
         InfoResult::Chd(_)
         | InfoResult::Cso(_)
         | InfoResult::Psx(_)
         | InfoResult::Retro(_)
+        | InfoResult::Pkg(_)
         | InfoResult::LaserDisc(_) => {
             anyhow::bail!("--save-icon is not supported for this format: no embedded artwork")
         }
@@ -4843,6 +4887,25 @@ fn save_nds_icon(info: &rom_converto_lib::info::NdsInfo, dir: &std::path::Path) 
     };
     let path = dir.join(format!("{stem}.png"));
     std::fs::write(&path, &banner.icon.png_bytes)?;
+    log::info!("Wrote {}", path.display());
+    Ok(())
+}
+
+fn save_vpk_icon(info: &rom_converto_lib::info::VpkInfo, dir: &std::path::Path) -> Result<()> {
+    let Some(img) = &info.icon else {
+        log::warn!("No sce_sys/icon0.png decoded; nothing to save");
+        return Ok(());
+    };
+    std::fs::create_dir_all(dir)?;
+    let stem = info
+        .title_id
+        .clone()
+        .unwrap_or_else(|| "vpk-icon".to_string());
+    let path = dir.join(format!(
+        "{}.png",
+        rom_converto_lib::util::template::sanitize_file_stem(&stem)
+    ));
+    std::fs::write(&path, &img.png_bytes)?;
     log::info!("Wrote {}", path.display());
     Ok(())
 }
