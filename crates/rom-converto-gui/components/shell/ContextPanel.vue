@@ -101,6 +101,8 @@ const CONSOLES: Record<string, ConsoleRow[]> = {
 		{ id: "merge", name: "Merge multi-bin", hint: "" },
 		{ id: "cdn2cia", name: "CDN → CIA", hint: "" },
 		{ id: "ticket", name: "Generate ticket", hint: "" },
+		{ id: "nx-merge", name: "Merge Switch NSP/XCI", hint: "→ super NSP/XCI" },
+		{ id: "nx-split", name: "Split Switch NSP/XCI", hint: "per-title" },
 	],
 };
 

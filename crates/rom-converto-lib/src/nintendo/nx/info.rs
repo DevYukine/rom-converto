@@ -11,22 +11,21 @@ use crate::nintendo::nx::container::{
     ContainerKind, ContainerListing, list_container, read_xci_hfs0_offset,
 };
 use crate::nintendo::nx::keys::{KeySet, load_keyset};
+use crate::nintendo::nx::meta;
 use crate::nintendo::nx::models::cnmt::{
     CNMT_TYPE_ADD_ON_CONTENT, CNMT_TYPE_APPLICATION, CNMT_TYPE_DELTA, CNMT_TYPE_PATCH,
     CNMT_TYPE_SYSTEM_DATA, CNMT_TYPE_SYSTEM_PROGRAM, CNMT_TYPE_SYSTEM_UPDATE, Cnmt,
 };
 use crate::nintendo::nx::models::hfs0::Hfs0;
 use crate::nintendo::nx::models::nacp::{Nacp, NacpLanguage};
-use crate::nintendo::nx::models::nca::{CONTENT_TYPE_CONTROL, CONTENT_TYPE_META};
-use crate::nintendo::nx::models::pfs0::Pfs0;
+use crate::nintendo::nx::models::nca::CONTENT_TYPE_CONTROL;
 use crate::nintendo::nx::models::ticket::Ticket;
 use crate::nintendo::nx::romfs::RomfsReader;
 use crate::nintendo::nx::walker::NcaWalker;
-use crate::util::pread::file_read_exact_at;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs::File;
-use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
+use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -401,7 +400,7 @@ fn try_full_info(
     keys_path: Option<&Path>,
 ) -> Result<Option<NxFullInfo>> {
     let mut keys = load_keyset(keys_path).with_context(|| "nx info: load prod.keys")?;
-    merge_inline_tickets(path, listing, &mut keys);
+    meta::merge_inline_tickets(path, listing, &mut keys);
 
     let file = Arc::new(File::open(path)?);
     let mut cnmts: Vec<Cnmt> = Vec::new();
@@ -409,7 +408,7 @@ fn try_full_info(
         if !entry.name.to_ascii_lowercase().ends_with(".cnmt.nca") {
             continue;
         }
-        match read_meta_cnmt(file.clone(), entry.abs_offset, entry.size, &keys) {
+        match meta::read_meta_cnmt(file.clone(), entry.abs_offset, entry.size, &keys) {
             Ok(c) => cnmts.push(c),
             Err(e) => log::debug!("nx info: skipping {} ({})", entry.name, e),
         }
@@ -765,89 +764,6 @@ fn jpeg_to_png(jpeg: &[u8]) -> Result<(Vec<u8>, u32, u32)> {
     let (w, h) = rgba.dimensions();
     let png = crate::util::pixel::encode_png(rgba.as_raw(), w, h)?;
     Ok((png, w, h))
-}
-
-fn merge_inline_tickets(path: &Path, listing: &ContainerListing, keys: &mut KeySet) {
-    let Ok(file) = File::open(path) else {
-        return;
-    };
-    let file = Arc::new(file);
-    for entry in &listing.entries {
-        if !entry.name.to_ascii_lowercase().ends_with(".tik") {
-            continue;
-        }
-        let mut buf = vec![0u8; entry.size as usize];
-        if file_read_exact_at(&file, &mut buf, entry.abs_offset).is_err() {
-            continue;
-        }
-        if let Ok(ticket) = Ticket::parse(&buf) {
-            keys.title_keys
-                .insert(ticket.rights_id, ticket.encrypted_title_key);
-        }
-    }
-}
-
-fn read_meta_cnmt(file: Arc<File>, nca_offset: u64, nca_size: u64, keys: &KeySet) -> Result<Cnmt> {
-    let walker = NcaWalker::open(file, nca_offset, nca_size, keys)
-        .map_err(|e| anyhow::anyhow!("open meta nca: {}", e))?;
-    if walker.header.content_type != CONTENT_TYPE_META {
-        return Err(anyhow::anyhow!(
-            "not a meta NCA (content_type={})",
-            walker.header.content_type
-        ));
-    }
-    let section = walker
-        .sections
-        .first()
-        .ok_or_else(|| anyhow::anyhow!("meta NCA has no sections"))?;
-
-    // Hash region precedes the PFS0; scan the first chunk for the PFS0
-    // magic instead of plumbing through HashedHierarchicalSha256 offsets.
-    let scan_len = section.raw_size.min(0x4000);
-    let scan_len_aligned = (scan_len + 15) & !15;
-    let mut scan = vec![0u8; scan_len_aligned as usize];
-    walker
-        .read_section_plain(section, 0, &mut scan)
-        .map_err(|e| anyhow::anyhow!("read meta section: {}", e))?;
-    let pfs0_off = scan
-        .windows(4)
-        .position(|w| w == b"PFS0")
-        .ok_or_else(|| anyhow::anyhow!("no PFS0 magic in meta section"))? as u64;
-
-    let pfs0_section_offset = pfs0_off;
-    // Read enough bytes to cover the PFS0 header + string table + at
-    // least one .cnmt file. 64 KB is conservative; meta NCAs are tiny.
-    let read_len = section
-        .raw_size
-        .saturating_sub(pfs0_section_offset)
-        .min(0x10000);
-    let read_len_aligned = (read_len + 15) & !15;
-    let read_start = pfs0_section_offset & !15;
-    let read_offset_in_data = (pfs0_section_offset - read_start) as usize;
-    let mut buf = vec![0u8; read_len_aligned as usize];
-    walker
-        .read_section_plain(section, read_start, &mut buf)
-        .map_err(|e| anyhow::anyhow!("read meta pfs0: {}", e))?;
-    let pfs0_bytes = &buf[read_offset_in_data..];
-
-    let mut cur = Cursor::new(pfs0_bytes);
-    let pfs0 = Pfs0::read(&mut cur).map_err(|e| anyhow::anyhow!("parse meta pfs0: {}", e))?;
-    let cnmt_entry = pfs0
-        .files
-        .iter()
-        .find(|f| f.name.to_ascii_lowercase().ends_with(".cnmt"))
-        .ok_or_else(|| anyhow::anyhow!("no .cnmt file in meta pfs0"))?;
-
-    // The PFS0 was read at `read_start`; file payload starts at the
-    // PFS0's reported data_section_offset (relative to its own start).
-    let data_start_in_buf = (read_offset_in_data as u64 + pfs0.data_section_offset) as usize;
-    let cnmt_start = data_start_in_buf + cnmt_entry.data_offset as usize;
-    let cnmt_end = cnmt_start + cnmt_entry.size as usize;
-    if cnmt_end > buf.len() {
-        return Err(anyhow::anyhow!("meta pfs0 read window too small"));
-    }
-    let cnmt_bytes = &buf[cnmt_start..cnmt_end];
-    Cnmt::parse(cnmt_bytes).map_err(|e| anyhow::anyhow!("parse cnmt: {}", e))
 }
 
 fn pick_primary_cnmt(cnmts: &[Cnmt]) -> usize {

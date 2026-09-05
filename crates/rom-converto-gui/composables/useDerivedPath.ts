@@ -199,6 +199,17 @@ export function deriveZarPath(input: string): string {
   return replaceExt(stripArchiveExt(input), "zar");
 }
 
+// Mirrors `rom-converto nx merge`'s default output: the first input's stem
+// plus " (Merged)" and the chosen container extension, beside that input.
+export function deriveNxMergedPath(input: string, format: string): string {
+  return `${stemOf(stripArchiveExt(input))} (Merged).${format}`;
+}
+
+// Mirrors `rom-converto nx split`'s default output directory.
+export function deriveNxSplitDir(input: string): string {
+  return `${stemOf(stripArchiveExt(input))}_split`;
+}
+
 // Extract-to-directory ops (xbox, xenon) place output files under a sibling
 // directory rather than deriving a single output file.
 export function deriveExtractDir(input: string): string {

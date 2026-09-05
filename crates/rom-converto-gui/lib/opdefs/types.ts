@@ -137,6 +137,8 @@ export interface OpDef {
 
 	fields: FieldDef[];
 	note?: string;
+	// Prominent callout shown between the page head and the drop zone.
+	warning?: string;
 	outputRows: OutputRow[];
 
 	showConflict?: boolean;
@@ -152,6 +154,9 @@ export interface OpDef {
 	// Output path shown in the staged-row meta and the dry-run plan.
 	deriveOutput?: (input: string, store: OpStore) => string;
 	buildArgs: (store: OpStore, item: StagedItem, taskId: string) => Record<string, unknown>;
+	// When set, all staged items build a single spec instead of one per item
+	// (e.g. merge, which combines every dropped file into one output).
+	buildArgsAll?: (store: OpStore, items: StagedItem[], taskId: string) => Record<string, unknown>;
 	chips: (store: OpStore) => string;
 }
 
@@ -214,6 +219,8 @@ export const NESTED_ARGS_COMMANDS = new Set([
 	"cmd_psp_extract",
 	"cmd_vita_extract",
 	"cmd_xenon_convert",
+	"cmd_nx_merge",
+	"cmd_nx_split",
 ]);
 
 export function invokeArgs(

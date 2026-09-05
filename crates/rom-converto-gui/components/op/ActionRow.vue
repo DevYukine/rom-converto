@@ -3,6 +3,7 @@ import { computed, ref } from "vue";
 import { invoke } from "~/lib/ipc";
 import { useQueueStore } from "~/stores/queue";
 import { buildCliCommand } from "~/composables/useCliEcho";
+import { basename } from "~/composables/useDerivedPath";
 import PrimaryButton from "~/components/ui/PrimaryButton.vue";
 import DryRunModal from "~/components/modals/DryRunModal.vue";
 import type { DryRunLine } from "~/components/modals/DryRunModal.vue";
@@ -39,6 +40,25 @@ function blockedByExplicitKey(): boolean {
 function enqueue() {
 	if (!count.value) return;
 	if (blockedByExplicitKey()) return;
+	if (props.def.buildArgsAll) {
+		const taskId = taskIdFor();
+		const args = props.def.buildArgsAll(props.store, props.items, taskId);
+		queue.enqueue([
+			{
+				name: basename(String(args.output ?? "")) || `${count.value} files`,
+				opLabel: props.def.opLabel,
+				command: opCommand(props.def, props.store),
+				args,
+				taskId,
+				chips: props.def.chips(props.store),
+				resultKind: props.def.resultKind,
+				routeBack: { storeId: props.def.storeId },
+				inputBytes: props.items.reduce((n, item) => n + item.size, 0),
+			},
+		]);
+		emit("enqueued");
+		return;
+	}
 	const groupId = props.store.reportFile ? crypto.randomUUID() : undefined;
 	const specs = props.items.map((item) => {
 		const taskId = taskIdFor();
@@ -68,6 +88,35 @@ async function dryRun() {
 	if (blockedByExplicitKey()) return;
 	const lines: DryRunLine[] = [];
 	let cmd = "";
+	if (props.def.buildArgsAll) {
+		const args = props.def.buildArgsAll(props.store, props.items, taskIdFor());
+		const command = opCommand(props.def, props.store);
+		cmd = buildCliCommand(command, args, props.def.console);
+		let note = "ok";
+		let conflict = false;
+		try {
+			const res = await invoke<{ message?: string }>(
+				command,
+				invokeArgs(command, { ...args, dryRun: true }),
+			);
+			const msg = typeof res === "object" && res ? String(res.message ?? "") : String(res);
+			if (msg) note = msg;
+			conflict = /exists|rename/i.test(msg);
+		} catch (e) {
+			note = String(e);
+			conflict = true;
+		}
+		lines.push({
+			source: `${count.value} files`,
+			output: String(args.output ?? ""),
+			note,
+			conflict,
+		});
+		dryLines.value = lines;
+		dryCommand.value = cmd;
+		dryOpen.value = true;
+		return;
+	}
 	for (const item of props.items) {
 		const args = props.def.buildArgs(props.store, item, taskIdFor());
 		const command = opCommand(props.def, props.store);

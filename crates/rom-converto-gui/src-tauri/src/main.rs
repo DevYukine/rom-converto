@@ -62,6 +62,8 @@ fn main() {
             cmd_nx_compress,
             cmd_nx_decompress,
             cmd_nx_verify,
+            cmd_nx_merge,
+            cmd_nx_split,
             cmd_nx_keys_resolve,
             cmd_xbox_convert,
             cmd_xbox_extract,

@@ -46,10 +46,11 @@ use rom_converto_lib::nintendo::nds::{
     derive_encrypted_path as derive_nds_encrypted_path, encrypt_nds_rom_cancellable,
 };
 use rom_converto_lib::nintendo::nx::{
-    KeySet, NczMode, NxCompressOptions, compress_container_async_cancellable,
+    KeySet, NczMode, NxCompressOptions, NxMergeFormat, compress_container_async_cancellable,
     decompress_container_async_cancellable, derive_compressed_path as nx_derive_compressed_path,
     derive_decompressed_path as nx_derive_decompressed_path, detect_container, find_keys_file,
-    load_keyset, verify_container_async,
+    load_keyset, merge_containers_async_cancellable, split_container_async_cancellable,
+    verify_container_async,
 };
 use rom_converto_lib::nintendo::rvl::verify::{RvlVerifyOptions, verify_rvl};
 use rom_converto_lib::nintendo::rvz::{
@@ -552,6 +553,53 @@ async fn resolve_output(
                 Ok(None)
             }
         }
+    }
+}
+
+/// Whether a directory output path already holds something a write would
+/// clobber. A path that exists but is a file counts as occupied.
+fn output_dir_occupied(path: &Path) -> Result<bool, String> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    if path.is_file() {
+        return Ok(true);
+    }
+    Ok(std::fs::read_dir(path)
+        .map_err(err_to_string)?
+        .next()
+        .is_some())
+}
+
+/// Resolve a directory output. Directories cannot auto-number, so `rename`
+/// is rejected; `skip` keeps a directory that already holds files and
+/// `error` refuses it. Mirrors the CLI's `resolve_output_dir`.
+fn resolve_output_dir(path: &Path, on_conflict: Option<&str>) -> Result<Option<PathBuf>, String> {
+    if !output_dir_occupied(path)? {
+        return Ok(Some(path.to_path_buf()));
+    }
+    let policy = conflict_policy(on_conflict);
+    if path.is_file() {
+        return match policy {
+            ConflictPolicy::Overwrite => Ok(Some(path.to_path_buf())),
+            ConflictPolicy::Skip | ConflictPolicy::OverwriteInvalid => Ok(None),
+            _ => Err(format!(
+                "output path exists and is a file, use --on-conflict overwrite to replace it: {}",
+                path.display()
+            )),
+        };
+    }
+    match policy {
+        ConflictPolicy::Overwrite => Ok(Some(path.to_path_buf())),
+        ConflictPolicy::Skip | ConflictPolicy::OverwriteInvalid => Ok(None),
+        ConflictPolicy::Rename => Err(format!(
+            "rename is not supported for directory outputs, use overwrite/skip/error: {}",
+            path.display()
+        )),
+        ConflictPolicy::Error => Err(format!(
+            "output directory is not empty, use overwrite to replace it: {}",
+            path.display()
+        )),
     }
 }
 
@@ -3791,6 +3839,193 @@ pub async fn cmd_nx_verify(
     .map_err(err_to_string)?
     .map_err(err_to_string)?;
     serde_json::to_string(&result).map_err(err_to_string)
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NxMergeArgs {
+    inputs: Vec<PathBuf>,
+    output: PathBuf,
+    format: Option<String>,
+    keys: Option<PathBuf>,
+    on_conflict: Option<String>,
+    skip_space_check: bool,
+    dry_run: Option<bool>,
+    task_id: Option<String>,
+}
+
+#[tauri::command]
+pub async fn cmd_nx_merge(
+    app: AppHandle,
+    state: State<'_, ActiveCancel>,
+    args: NxMergeArgs,
+) -> Result<RunOutcome, String> {
+    let NxMergeArgs {
+        inputs,
+        output,
+        format,
+        keys,
+        on_conflict,
+        skip_space_check,
+        dry_run,
+        task_id,
+    } = args;
+    let key = task_id.as_deref().unwrap_or("nx-merge");
+    let progress = Arc::new(TauriProgress::new(app, key));
+    let format = match format.as_deref() {
+        Some("xci") => NxMergeFormat::Xci,
+        _ => NxMergeFormat::Nsp,
+    };
+    let media = match format {
+        NxMergeFormat::Nsp => "NSP",
+        NxMergeFormat::Xci => "XCI",
+    };
+    if dry_run.unwrap_or(false) {
+        let missing = load_keyset(keys.as_deref()).err().map(|e| e.to_string());
+        let input = inputs.first().cloned().unwrap_or_else(|| output.clone());
+        let line = plan_line(
+            progress.as_ref(),
+            PlanInput {
+                operation: "merge",
+                input: &input,
+                desired: &output,
+                on_conflict: on_conflict.as_deref(),
+                media: Some(media.to_string()),
+                verify: rom_converto_lib::util::OutputVerify::None,
+                missing_keys: missing,
+            },
+        )
+        .await?;
+        return Ok(RunOutcome::text(line.display_text()));
+    }
+    let keys = load_keyset(keys.as_deref()).map_err(err_to_string)?;
+    let output = match resolve_output(
+        progress.as_ref(),
+        &output,
+        on_conflict.as_deref(),
+        rom_converto_lib::util::OutputVerify::None,
+    )
+    .await?
+    {
+        Some(p) => p,
+        None => {
+            return Ok(RunOutcome::text(format!(
+                "Skipped existing {}",
+                output.display()
+            )));
+        }
+    };
+    let out_display = output.display().to_string();
+    let record_input = inputs.first().cloned().unwrap_or_else(|| output.clone());
+    let in_bytes: u64 = inputs.iter().map(|p| input_size(p)).sum();
+    preflight_space(
+        output.parent().unwrap_or(&output),
+        in_bytes,
+        skip_space_check,
+    )?;
+    let record_output = output.clone();
+    let token = begin(&state, key).await;
+    let result = tokio::spawn(async move {
+        merge_containers_async_cancellable(inputs, output, format, keys, progress.as_ref(), token)
+            .await
+    })
+    .await
+    .map_err(err_to_string)?
+    .map_err(err_to_string);
+    finish(&state, key).await;
+    result?;
+    let out_bytes = input_size(&record_output);
+    Ok(RunOutcome {
+        message: format!("Wrote {out_display}"),
+        record: None,
+        input_bytes: in_bytes,
+        output_bytes: out_bytes,
+        comparison: Some(comparison_sizes(
+            &record_input,
+            &record_output,
+            in_bytes,
+            out_bytes,
+        )),
+    })
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NxSplitArgs {
+    input: PathBuf,
+    output_dir: PathBuf,
+    keys: Option<PathBuf>,
+    on_conflict: Option<String>,
+    skip_space_check: bool,
+    dry_run: Option<bool>,
+    task_id: Option<String>,
+}
+
+#[tauri::command]
+pub async fn cmd_nx_split(
+    app: AppHandle,
+    state: State<'_, ActiveCancel>,
+    args: NxSplitArgs,
+) -> Result<String, String> {
+    let NxSplitArgs {
+        input,
+        output_dir,
+        keys,
+        on_conflict,
+        skip_space_check,
+        dry_run,
+        task_id,
+    } = args;
+    let key = task_id.as_deref().unwrap_or("nx-split");
+    let progress = Arc::new(TauriProgress::new(app, key));
+    if dry_run.unwrap_or(false) {
+        // The output is a directory, so the plan uses the same
+        // directory-aware decision the real run does rather than
+        // `plan_line`'s per-file conflict resolution.
+        let occupied = output_dir_occupied(&output_dir)?;
+        let decision = match resolve_output_dir(&output_dir, on_conflict.as_deref())? {
+            None => rom_converto_lib::util::PlanDecision::Skip,
+            Some(_) if occupied => rom_converto_lib::util::PlanDecision::Overwrite,
+            Some(_) => rom_converto_lib::util::PlanDecision::New,
+        };
+        let line = rom_converto_lib::util::PlanLine {
+            operation: "split".to_string(),
+            input: input.clone(),
+            output: output_dir.clone(),
+            decision,
+            media: None,
+            missing_keys: load_keyset(keys.as_deref()).err().map(|e| e.to_string()),
+        };
+        return Ok(line.display_text());
+    }
+    let output_dir = match resolve_output_dir(&output_dir, on_conflict.as_deref())? {
+        Some(p) => p,
+        None => return Ok(format!("Skipped existing {}", output_dir.display())),
+    };
+    let out_display = output_dir.display().to_string();
+    let resolved = resolve_archive_input(input, &["nsp", "xci"]).await?;
+    let resolved_path = resolved.path().to_path_buf();
+    let keys = load_keyset(keys.as_deref()).map_err(err_to_string)?;
+    preflight_space(&output_dir, input_size(&resolved_path), skip_space_check)?;
+    let token = begin(&state, key).await;
+    let result = tokio::spawn(async move {
+        split_container_async_cancellable(resolved_path, output_dir, keys, progress.as_ref(), token)
+            .await
+    })
+    .await
+    .map_err(err_to_string)?
+    .map_err(err_to_string);
+    finish(&state, key).await;
+    let files = result?;
+    let names: Vec<String> = files
+        .iter()
+        .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .collect();
+    Ok(format!(
+        "Wrote {} files to {out_display}: {}",
+        files.len(),
+        names.join(", ")
+    ))
 }
 
 #[derive(serde::Deserialize)]

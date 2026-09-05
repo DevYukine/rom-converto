@@ -12,7 +12,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 
 use sha2::{Digest, Sha256};
 
@@ -34,7 +34,9 @@ use crate::nintendo::nx::models::ticket::Ticket;
 use crate::nintendo::nx::ncz::compress::{NcaToNczOptions, NczMode, nca_to_ncz};
 use crate::nintendo::nx::walker::NcaWalker;
 use crate::util::pread::file_read_exact_at;
-use crate::util::{CancelToken, ProgressReporter, await_with_progress_cancel, scratch_output_path};
+use crate::util::{
+    AtomicProgress, CancelToken, ProgressReporter, await_with_progress_cancel, scratch_output_path,
+};
 
 /// Compression settings for turning an NSP/XCI into an NSZ/XCZ.
 #[derive(Debug, Clone, Copy)]
@@ -176,18 +178,6 @@ pub async fn compress_container_async_cancellable(
     }
     crate::util::publish_temp(write_path, &output, true)?;
     Ok(())
-}
-
-struct AtomicProgress {
-    counter: Arc<AtomicU64>,
-}
-
-impl ProgressReporter for AtomicProgress {
-    fn start(&self, _: u64, _: &str) {}
-    fn inc(&self, delta: u64) {
-        self.counter.fetch_add(delta, Ordering::Relaxed);
-    }
-    fn finish(&self) {}
 }
 
 fn compress_pfs0(

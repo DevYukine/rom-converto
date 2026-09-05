@@ -290,6 +290,33 @@ export function buildCliCommand(command: string, args: Record<string, unknown>, 
       const keys = str(args.keys);
       return join(["nx", "verify", keys && `--keys ${quote(keys)}`, quote(str(args.input))]);
     }
+    case "cmd_nx_merge": {
+      const inputs = Array.isArray(args.inputs) ? (args.inputs as string[]) : [];
+      const keys = str(args.keys);
+      return join([
+        args.dryRun === true && "--dry-run",
+        args.skipSpaceCheck === true && "--skip-space-check",
+        "nx", "merge",
+        keys && `--keys ${quote(keys)}`,
+        args.format === "xci" && "--format xci",
+        conflict(args),
+        `-o ${quote(str(args.output))}`,
+        ...inputs.map((i) => quote(i)),
+      ]);
+    }
+    case "cmd_nx_split": {
+      const keys = str(args.keys);
+      const outputDir = str(args.outputDir);
+      return join([
+        args.dryRun === true && "--dry-run",
+        args.skipSpaceCheck === true && "--skip-space-check",
+        "nx", "split",
+        keys && `--keys ${quote(keys)}`,
+        outputDir && `--output-dir ${quote(outputDir)}`,
+        conflict(args),
+        quote(str(args.input)),
+      ]);
+    }
     case "cmd_wup_compress": {
       const inputs = Array.isArray(args.inputs) ? (args.inputs as string[]) : [];
       const keys = Array.isArray(args.keys) ? (args.keys as string[]) : [];

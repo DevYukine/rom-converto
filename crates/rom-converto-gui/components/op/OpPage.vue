@@ -106,6 +106,8 @@ function copied() {
 			<CliChip :command="cli" @copy="copied" />
 		</div>
 
+		<div v-if="def.warning" role="note" class="rc-warning">{{ def.warning }}</div>
+
 		<DropZone
 			:drop-text="def.dropText"
 			:filters="def.browseFilters"
@@ -312,6 +314,16 @@ function copied() {
 	margin: 4px 0 0;
 	font-size: 11.5px;
 	color: var(--t4);
+}
+
+.rc-warning {
+	border: 1px solid rgba(210, 153, 34, 0.4);
+	border-radius: 10px;
+	background: rgba(210, 153, 34, 0.1);
+	padding: 10px 14px;
+	font-size: 12px;
+	line-height: 1.5;
+	color: var(--yellow);
 }
 
 .rc-grid {

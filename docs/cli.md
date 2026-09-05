@@ -423,6 +423,8 @@ rom-converto nx <SUBCOMMAND> <INPUT> [-o OUTPUT]
 | `compress <INPUT> [-o OUTPUT]` | Compress a `.nsp` to `.nsz` or a `.xci` to `.xcz` |
 | `decompress <INPUT> [-o OUTPUT]` | Decompress a `.nsz`/`.xcz` back to `.nsp`/`.xci` |
 | `verify <INPUT>` | Verify per-NCA hash integrity of any Switch container |
+| `merge <INPUT>... [-o OUTPUT]` | Merge a base container with its update and DLC into a single super NSP or XCI |
+| `split <INPUT> [--output-dir DIR]` | Split a super NSP or XCI into one `.nsp` per title |
 | `info <INPUT>` | Inspect Switch container metadata. See [info](#info) |
 
 | Flag | Applies to | Description |
@@ -431,11 +433,29 @@ rom-converto nx <SUBCOMMAND> <INPUT> [-o OUTPUT]
 | `-l, --level <LEVEL>` | `compress` | Zstd compression level 1..=22 (defaults to 18, matching `nsz`) |
 | `--mode <MODE>` | `compress` | `solid` (one zstd frame per NCA, default for NSP) or `block` (default for XCI) |
 | `--block-size-exp <EXP>` | `compress` | Block-mode block size as `1 << exp` bytes, range 14..=32 (defaults to 20 = 1 MiB) |
-| `--output-dir <DIR>` | `compress`, `decompress` | Write outputs under this directory instead of beside each input |
+| `--output-dir <DIR>` | `compress`, `decompress`, `split` | Write outputs under this directory instead of beside each input. `merge` has no such flag, but its derived default output honors the config `[nx] output_dir` |
+| `--format <nsp\|xci>` | `merge` | Output container format. `nsp` (default) accepts a mix of NSP and XCI inputs; `xci` requires every input to already be an XCI |
+| `--on-conflict <POLICY>` | `merge`, `split` | What to do when the output already exists. `split` writes a directory, so `rename` is not supported there. See [Conflict policy](#conflict-policy) |
+| `-f, --force` | `merge`, `split` | Shorthand for `--on-conflict overwrite` |
 
 `prod.keys` is required to derive the per-NCA section keys; the file is read but never
 modified. Output is byte-identical to `nsz` and `nsz -D` at matching settings, and `verify`
 works on already-compressed containers without decompressing first.
+
+`merge` and `split` reject NSZ/XCZ inputs; decompress them first. `merge` takes a base
+container plus any number of update and DLC containers and folds them into one super
+container, keeping the highest-version content metadata per title and deduplicating shared
+NCAs. `split` reverses this: it walks every title in the input and writes one `.nsp` per
+title back out. NSP output keeps only the `.nca`, `.tik`, and `.cert` entries; XCI output
+keeps only the `.nca` entries, since a gamecard image carries no tickets. Scene sidecars
+such as `.cnmt.xml` are dropped either way.
+
+Without `-o`, `merge` writes `<first input's name> (Merged).nsp` (or `.xci`) next to the
+first input. Without `--output-dir`, `split` writes into `<input's name>_split` next to the
+input.
+
+Advisory warning: a merged container fails signature verification. CFW installers reject it
+unless signature checks are disabled (not advised); it is intended for emulators.
 
 ## nds (Nintendo DS)
 

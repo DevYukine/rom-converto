@@ -74,10 +74,12 @@ use rom_converto_lib::nintendo::nds::{
     derive_encrypted_path as nds_derive_encrypted_path, encrypt_nds_rom_cancellable,
 };
 use rom_converto_lib::nintendo::nx::{
-    NczMode, NxCompressOptions, compress_container_async_cancellable,
+    NczMode, NxCompressOptions, NxMergeFormat, compress_container_async_cancellable,
     decompress_container_async_cancellable, derive_compressed_path as nx_derive_compressed_path,
-    derive_decompressed_path as nx_derive_decompressed_path, detect_container, load_keyset,
-    verify_container_async,
+    derive_decompressed_path as nx_derive_decompressed_path,
+    derive_merged_path as nx_derive_merged_path, derive_split_dir as nx_derive_split_dir,
+    detect_container, load_keyset, merge_containers_async_cancellable,
+    split_container_async_cancellable, verify_container_async,
 };
 use rom_converto_lib::nintendo::rvl::verify::{RvlVerifyOptions, verify_rvl};
 use rom_converto_lib::nintendo::rvz::{
@@ -2764,6 +2766,91 @@ async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()>
                 }
                 if !result.ok {
                     anyhow::bail!("verification failed");
+                }
+            }
+            NxCommands::Merge(cmd) => {
+                let eff = &effective.nx;
+                let keys = load_keyset(cmd.keys.as_deref())?;
+                for input in &cmd.inputs {
+                    ensure_input_exists(input)?;
+                }
+                let format = match cmd.format.as_deref() {
+                    Some("xci") => NxMergeFormat::Xci,
+                    Some("nsp") | None => NxMergeFormat::Nsp,
+                    _ => unreachable!("clap value_parser already validated"),
+                };
+                let ext = match format {
+                    NxMergeFormat::Nsp => "nsp",
+                    NxMergeFormat::Xci => "xci",
+                };
+                let output = match cmd.output {
+                    Some(p) => p,
+                    None => {
+                        let output_dir = eff.output_dir.clone();
+                        if let Some(dir) = output_dir.as_deref() {
+                            std::fs::create_dir_all(dir)?;
+                        }
+                        rom_converto_lib::util::place_in_dir(
+                            &nx_derive_merged_path(&cmd.inputs[0], ext),
+                            output_dir.as_deref(),
+                        )
+                    }
+                };
+                let policy = policy_of(
+                    cmd.on_conflict
+                        .unwrap_or(crate::commands::ConflictPolicyArg::Error),
+                    cmd.force,
+                );
+                let decision = resolve_output(&output, policy)?;
+                let output = match decision {
+                    WriteDecision::Skip => {
+                        log_skipped(&output);
+                        return Ok(());
+                    }
+                    WriteDecision::Write(p) => p,
+                };
+                merge_containers_async_cancellable(
+                    cmd.inputs,
+                    output.clone(),
+                    format,
+                    keys,
+                    &progress,
+                    cancel.clone(),
+                )
+                .await?;
+                log::info!("wrote {}", output.display());
+            }
+            NxCommands::Split(cmd) => {
+                let eff = &effective.nx;
+                let keys = load_keyset(cmd.keys.as_deref())?;
+                ensure_input_exists(&cmd.input)?;
+                let output_dir = cmd
+                    .output_dir
+                    .clone()
+                    .or_else(|| eff.output_dir.clone())
+                    .unwrap_or_else(|| nx_derive_split_dir(&cmd.input));
+                let policy = policy_of(
+                    cmd.on_conflict
+                        .unwrap_or(crate::commands::ConflictPolicyArg::Error),
+                    cmd.force,
+                );
+                match resolve_output_dir(&output_dir, policy)? {
+                    WriteDecision::Skip => {
+                        log_skipped(&output_dir);
+                        return Ok(());
+                    }
+                    WriteDecision::Write(_) => {}
+                }
+                let outputs = split_container_async_cancellable(
+                    cmd.input,
+                    output_dir,
+                    keys,
+                    &progress,
+                    cancel.clone(),
+                )
+                .await?;
+                for path in &outputs {
+                    log::info!("wrote {}", path.display());
                 }
             }
             NxCommands::Info(cmd) => {

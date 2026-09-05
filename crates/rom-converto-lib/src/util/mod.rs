@@ -215,6 +215,21 @@ impl ProgressReporter for NoProgress {
     fn finish(&self) {}
 }
 
+/// Bridges a blocking worker's byte counter to the async progress
+/// reporter, which cannot cross the `spawn_blocking` boundary.
+pub(crate) struct AtomicProgress {
+    pub(crate) counter: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl ProgressReporter for AtomicProgress {
+    fn start(&self, _: u64, _: &str) {}
+    fn inc(&self, delta: u64) {
+        self.counter
+            .fetch_add(delta, std::sync::atomic::Ordering::Relaxed);
+    }
+    fn finish(&self) {}
+}
+
 /// Like [`await_with_progress`], but also watches `cancel`. The blocking
 /// pipeline observes the same token at its own loop boundaries and
 /// returns the codec's `Cancelled` error promptly; this helper only

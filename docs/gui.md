@@ -40,7 +40,7 @@ the sidebar:
 | Xbox | Convert ISO → XISO, Extract XISO, Xbox info |
 | Xbox 360 | Compress to ZAR, Convert ISO to GoD, Extract ZArchive, Verify Xbox 360, Xbox 360 info |
 | PlayStation 3 | Decrypt ISO, PS3 info |
-| Utilities | Hash, Playlist, Settings |
+| Utilities | Hash, Playlist, Merge Switch NSP/XCI, Split Switch NSP/XCI, Settings |
 | DAT | Verify, Scan, Rename |
 
 Compress to CHD (under CSO/ZSO) and Extract to CSO/ZSO (under CHD) each run as a single
@@ -75,6 +75,15 @@ the PlayStation disc it contains, when one is detected, alongside the container'
 The keys path (`prod.keys` for Switch, an optional disc master key for Wii U) is entered
 once on this page and persists across files and app restarts.
 
+The Merge Switch NSP/XCI page combines every staged file into one queue job producing a
+single super container, and shows a persistent warning above the drop zone: merged containers
+fail signature verification; CFW installers reject them unless signature checks are disabled
+(not advised). They are intended for emulators. With no output picked it
+writes `<first input's name> (Merged).nsp` (or `.xci`) next to the first input.
+
+The Split Switch NSP/XCI page writes one `.nsp` per title. With no output directory picked
+it uses `<name>_split` next to the input.
+
 ## CLI and GUI parity
 
 Every GUI control forwards to the same library function the CLI uses. The table maps each
@@ -97,6 +106,8 @@ CLI command to its GUI page.
 | `ps3 decrypt`, `info` | PlayStation 3 |
 | `hash` | Utilities: Hash |
 | `playlist` | Utilities: Playlist |
+| `nx merge` | Utilities: Merge Switch NSP/XCI |
+| `nx split` | Utilities: Split Switch NSP/XCI |
 | `dat verify`, `scan`, `rename` | DAT |
 
 A few CLI features have no GUI counterpart by design:

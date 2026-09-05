@@ -11,6 +11,8 @@ import {
   deriveGodDir,
   deriveMergedCuePath,
   deriveNszPath,
+  deriveNxMergedPath,
+  deriveNxSplitDir,
   deriveRvzPath,
   deriveWuaPath,
   stripArchiveExt,
@@ -110,6 +112,28 @@ describe("god dir derivation", () => {
   it("appends _god to the stripped stem, keeping dots in the title", () => {
     expect(deriveGodDir(`${DOTTED}.zip`)).toBe(`${DOTTED}_god`);
     expect(deriveGodDir("game.iso")).toBe("game_god");
+	});
+});
+
+describe("nx merge and split derivation", () => {
+  it("drops the input extension and keeps the merged name beside the input", () => {
+    expect(deriveNxMergedPath("D:\\switch\\Game.nsp", "nsp")).toBe(
+      "D:\\switch\\Game (Merged).nsp",
+    );
+    expect(deriveNxSplitDir("D:\\switch\\Game.xci")).toBe(
+      "D:\\switch\\Game_split",
+    );
+  });
+
+  it("takes the container extension from the chosen format", () => {
+    expect(deriveNxMergedPath("Game.nsp", "xci")).toBe("Game (Merged).xci");
+  });
+
+  it("strips an archive wrapper without truncating a dotted title", () => {
+    expect(deriveNxMergedPath(`${DOTTED}.zip`, "nsp")).toBe(
+      `${DOTTED} (Merged).nsp`,
+    );
+    expect(deriveNxSplitDir(`${DOTTED}.zip`)).toBe(`${DOTTED}_split`);
   });
 });
 

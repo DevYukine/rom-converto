@@ -4,6 +4,7 @@ pub mod nacp;
 pub mod nca;
 pub mod pfs0;
 pub mod ticket;
+pub mod xci;
 
 pub use hfs0::{Hfs0, Hfs0FileRef};
 pub use nca::{FsEntry, FsHeader, NcaHeader};

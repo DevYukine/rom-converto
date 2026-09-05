@@ -9,6 +9,8 @@ pub enum NxCommands {
     Compress(NxCompressCommand),
     Decompress(NxDecompressCommand),
     Verify(NxVerifyCommand),
+    Merge(NxMergeCommand),
+    Split(NxSplitCommand),
     Info(InfoCommand),
 }
 
@@ -179,6 +181,75 @@ pub struct NxVerifyCommand {
     pub max_depth: Option<usize>,
 }
 
+/// Merge a base container with its update and DLC into a single super NSP or XCI
+#[derive(Parser, Debug, Clone, Eq, PartialEq)]
+#[command(
+    long_about = "Merge a base container with its update and DLC into a single super NSP or XCI\n\nThe highest-version content metadata wins per title; NCAs shared between inputs are deduplicated. `--format nsp` (default) accepts a mix of NSP and XCI inputs; `--format xci` requires every input to already be an XCI.",
+    after_long_help = "EXAMPLES:\n  Super NSP: rom-converto nx merge base.nsp update.nsp dlc.nsp -o super.nsp\n  Super XCI: rom-converto nx merge base.xci update.xci --format xci -o super.xci\n"
+)]
+pub struct NxMergeCommand {
+    /// Path to `prod.keys`. Defaults to `$HOME/.switch/prod.keys` on Linux/macOS or `%USERPROFILE%/.switch/prod.keys` on Windows, then the binary's own directory
+    #[arg(long = "keys", value_name = "PRODKEYS")]
+    pub keys: Option<PathBuf>,
+
+    /// Base container plus its update and DLC containers, in any order. NSZ/XCZ inputs must be decompressed first
+    #[arg(required = true, num_args = 1.., value_name = "INPUT")]
+    pub inputs: Vec<PathBuf>,
+
+    /// Output path. Defaults to `<first input's name> (Merged).<nsp|xci>` next to the first input
+    #[arg(short = 'o', long = "output", value_name = "OUTPUT")]
+    pub output: Option<PathBuf>,
+
+    /// Output container format. `nsp` (default) accepts a mix of NSP and XCI inputs; `xci` requires every input to already be an XCI
+    #[arg(long = "format", value_parser = ["nsp", "xci"])]
+    pub format: Option<String>,
+
+    /// What to do when an output already exists: error, overwrite, skip, or rename to a numbered sibling
+    #[arg(long = "on-conflict", value_enum)]
+    pub on_conflict: Option<ConflictPolicyArg>,
+
+    /// Alias for --on-conflict overwrite
+    #[arg(
+        long,
+        short = 'f',
+        default_value_t = false,
+        conflicts_with = "on_conflict"
+    )]
+    pub force: bool,
+}
+
+/// Split a super NSP or XCI into one NSP per title
+#[derive(Parser, Debug, Clone, Eq, PartialEq)]
+#[command(
+    after_long_help = "EXAMPLES:\n  rom-converto nx split super.nsp\n  rom-converto nx split super.xci --output-dir ./split\n"
+)]
+pub struct NxSplitCommand {
+    /// Path to `prod.keys`. Defaults to `$HOME/.switch/prod.keys` on Linux/macOS or `%USERPROFILE%/.switch/prod.keys` on Windows, then the binary's own directory
+    #[arg(long = "keys", value_name = "PRODKEYS")]
+    pub keys: Option<PathBuf>,
+
+    /// Input NSP or XCI containing multiple titles. NSZ/XCZ inputs must be decompressed first
+    #[arg(value_name = "INPUT")]
+    pub input: PathBuf,
+
+    /// Directory to write the per-title `.nsp` outputs into. Created if missing. Defaults to `<input's name>_split` next to the input
+    #[arg(long = "output-dir", value_name = "DIR")]
+    pub output_dir: Option<PathBuf>,
+
+    /// What to do when the output directory already exists: error, overwrite, or skip. `rename` is rejected for directory outputs
+    #[arg(long = "on-conflict", value_enum)]
+    pub on_conflict: Option<ConflictPolicyArg>,
+
+    /// Alias for --on-conflict overwrite
+    #[arg(
+        long,
+        short = 'f',
+        default_value_t = false,
+        conflicts_with = "on_conflict"
+    )]
+    pub force: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -343,5 +414,42 @@ mod tests {
             panic!("expected Compress");
         };
         assert!(c.on_conflict.is_none());
+    }
+
+    #[test]
+    fn parses_merge_multiple_inputs() {
+        let h = Harness::parse_from(["bin", "merge", "a.nsp", "b.nsp", "c.nsp", "-o", "out.nsp"]);
+        let NxCommands::Merge(c) = h.cmd else {
+            panic!("expected Merge");
+        };
+        assert_eq!(
+            c.inputs,
+            vec![
+                PathBuf::from("a.nsp"),
+                PathBuf::from("b.nsp"),
+                PathBuf::from("c.nsp"),
+            ]
+        );
+        assert_eq!(c.output, Some(PathBuf::from("out.nsp")));
+        assert!(c.format.is_none());
+    }
+
+    #[test]
+    fn parses_merge_format_xci() {
+        let h = Harness::parse_from(["bin", "merge", "base.xci", "upd.xci", "--format", "xci"]);
+        let NxCommands::Merge(c) = h.cmd else {
+            panic!("expected Merge");
+        };
+        assert_eq!(c.format.as_deref(), Some("xci"));
+    }
+
+    #[test]
+    fn parses_split_output_dir() {
+        let h = Harness::parse_from(["bin", "split", "super.nsp", "--output-dir", "out"]);
+        let NxCommands::Split(c) = h.cmd else {
+            panic!("expected Split");
+        };
+        assert_eq!(c.input, PathBuf::from("super.nsp"));
+        assert_eq!(c.output_dir, Some(PathBuf::from("out")));
     }
 }

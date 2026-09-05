@@ -82,6 +82,36 @@ pub enum NxError {
 
     #[error("operation cancelled")]
     Cancelled,
+
+    #[error("compressed container {0} is not supported here; decompress it to NSP/XCI first")]
+    CompressedInputUnsupported(PathBuf),
+
+    #[error("no title content (CNMT) found in {0}")]
+    NoContentInInput(PathBuf),
+
+    #[error("super-XCI merge requires XCI inputs; {0} is an NSP (use --format nsp)")]
+    XciMergeRequiresXciInputs(PathBuf),
+
+    #[error("input {input} is missing NCA {nca_id} referenced by its CNMT", input = .input.display())]
+    MissingReferencedNca { input: PathBuf, nca_id: String },
+
+    #[error("merge needs at least one input container")]
+    NoInputs,
+
+    #[error("merge output {0} is also one of the inputs")]
+    OutputIsInput(PathBuf),
+
+    #[error("NCA content type {content_type} is not meta (expected a .cnmt.nca)")]
+    NotMetaNca { content_type: u8 },
+
+    #[error("meta NCA has no filesystem sections")]
+    MetaNcaNoSections,
+
+    #[error("meta NCA holds no .cnmt file")]
+    MetaMissingCnmt,
+
+    #[error("meta NCA .cnmt entry runs past the end of its section")]
+    MetaCnmtTruncated,
 }
 
 fn format_paths(paths: &[PathBuf]) -> String {

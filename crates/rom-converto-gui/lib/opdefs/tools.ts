@@ -4,8 +4,17 @@ import { usePlaylistStore } from "~/stores/playlist";
 import { useCueMergeStore } from "~/stores/cue-merge";
 import { useCtrCdnToCiaStore } from "~/stores/ctr-cdn-to-cia";
 import { useCtrGenerateTicketStore } from "~/stores/ctr-generate-ticket";
-import { basename, deriveMergedCuePath, withOutputDir } from "~/composables/useDerivedPath";
-import { registerOp, type OpDef, type OpStore } from "./types";
+import { useNxMergeStore } from "~/stores/nx-merge";
+import { useNxSplitStore } from "~/stores/nx-split";
+import {
+	basename,
+	deriveMergedCuePath,
+	deriveNxMergedPath,
+	deriveNxSplitDir,
+	withOutputDir,
+} from "~/composables/useDerivedPath";
+import { nxKeysColor, nxKeysDisplay } from "./nx-keys";
+import { NX_KEYS_TOOLTIP, registerOp, type OpDef, type OpStore } from "./types";
 
 function dirName(path: string): string {
 	const norm = path.replace(/[\\/]+$/, "");
@@ -398,4 +407,162 @@ const ticket: OpDef = {
 	chips: () => "ticket",
 };
 
-registerOp("tools", { hash, playlist, merge, cdn2cia, ticket });
+function nxMergedPath(input: string, store: OpStore): string {
+	return deriveNxMergedPath(input, String(store.format));
+}
+
+const nxMerge: OpDef = {
+	op: "tools",
+	console: "nx-merge",
+	opLabel: "Tools",
+	storeId: "nx-merge",
+	useStore: () => useNxMergeStore(),
+	command: "cmd_nx_merge",
+	resultKind: "convert",
+
+	title: "Merge Switch NSP/XCI",
+	subtitle: "Combines multiple NSP/XCI parts into one super container.",
+	dropText: "Drop NSP or XCI files to merge",
+	acceptedExts: ["nsp", "xci"],
+	browseFilters: [{ name: "Switch container", extensions: ["nsp", "xci"] }],
+	progressKey: "nx-merge",
+
+	fields: [
+		{
+			kind: "segmented",
+			key: "format",
+			label: "Output format",
+			options: [
+				{ label: "NSP", value: "nsp" },
+				{ label: "XCI", value: "xci" },
+			],
+			tooltip:
+				"NSP accepts a mix of NSP and XCI inputs. XCI requires every input to already be an XCI, and produces a bootable cartridge image.",
+		},
+		{
+			kind: "file",
+			key: "keys",
+			label: "prod.keys",
+			tooltip: NX_KEYS_TOOLTIP,
+			filters: [{ name: "Keys", extensions: ["keys", "txt", "dat"] }],
+			display: nxKeysDisplay,
+			color: nxKeysColor,
+		},
+	],
+	warning:
+		"Merged containers fail signature verification; CFW installers reject them unless signature checks are disabled (not advised). Intended for emulators.",
+	outputRows: [
+		{
+			kind: "directory",
+			label: "Directory",
+			display: (store) => (store.output ? dirName(store.output) : "(next to input)"),
+			set: (store, value) => {
+				const base = store.output ? basename(store.output) : `merged.${store.format}`;
+				store.output = withOutputDir(base, value);
+			},
+			tooltip: "Directory the merged container is written into.",
+		},
+		{
+			kind: "save",
+			label: "File",
+			display: (store) => (store.output ? basename(store.output) : "(auto)"),
+			set: (store, value) => {
+				store.output = value;
+			},
+			filters: [{ name: "Switch container", extensions: ["nsp", "xci"] }],
+			tooltip: "Filename for the merged container.",
+		},
+	],
+
+	showConflict: true,
+	showDryRun: true,
+	actionNote: "All staged files merge into one queue job producing a single output.",
+
+	deriveOutput: (input, store) => store.output || nxMergedPath(input, store),
+	buildArgs: (store, item, taskId) => ({
+		inputs: [item.path],
+		output: store.output || nxMergedPath(item.path, store),
+		format: store.format,
+		keys: store.keys || null,
+		onConflict: store.onConflict,
+		skipSpaceCheck: store.skipSpaceCheck,
+		taskId,
+	}),
+	buildArgsAll: (store, items, taskId) => ({
+		inputs: items.map((i) => i.path),
+		output: store.output || (items[0] ? nxMergedPath(items[0].path, store) : ""),
+		format: store.format,
+		keys: store.keys || null,
+		onConflict: store.onConflict,
+		skipSpaceCheck: store.skipSpaceCheck,
+		taskId,
+	}),
+	chips: (store) => `format:${store.format}`,
+};
+
+const nxSplit: OpDef = {
+	op: "tools",
+	console: "nx-split",
+	opLabel: "Tools",
+	storeId: "nx-split",
+	useStore: () => useNxSplitStore(),
+	command: "cmd_nx_split",
+	resultKind: "text",
+
+	title: "Split Switch NSP/XCI",
+	subtitle: "Splits a merged NSP/XCI back into its per-title parts.",
+	dropText: "Drop an NSP or XCI file",
+	acceptedExts: ["nsp", "xci"],
+	browseFilters: [{ name: "Switch container", extensions: ["nsp", "xci"] }],
+	singleInput: true,
+	progressKey: "nx-split",
+
+	fields: [
+		{
+			kind: "file",
+			key: "keys",
+			label: "prod.keys",
+			tooltip: NX_KEYS_TOOLTIP,
+			filters: [{ name: "Keys", extensions: ["keys", "txt", "dat"] }],
+			display: nxKeysDisplay,
+			color: nxKeysColor,
+		},
+	],
+	outputRows: [
+		{
+			kind: "directory",
+			label: "Output directory",
+			display: (store) => store.outputDir || "same as source",
+			set: (store, value) => {
+				store.outputDir = value;
+			},
+			tooltip:
+				"Where the split titles are written. Leave empty to use a <name>_split folder next to the input file.",
+		},
+	],
+
+	showConflict: true,
+	showDryRun: true,
+	actionNote: "Runs in the global queue like everything else.",
+
+	deriveOutput: (input, store) => store.outputDir || deriveNxSplitDir(input),
+	buildArgs: (store, item, taskId) => ({
+		input: item.path,
+		outputDir: store.outputDir || deriveNxSplitDir(item.path),
+		keys: store.keys || null,
+		onConflict: store.onConflict,
+		skipSpaceCheck: store.skipSpaceCheck,
+		taskId,
+	}),
+	chips: () => "",
+};
+
+registerOp("tools", {
+	hash,
+	playlist,
+	merge,
+	cdn2cia,
+	ticket,
+	"nx-merge": nxMerge,
+	"nx-split": nxSplit,
+});

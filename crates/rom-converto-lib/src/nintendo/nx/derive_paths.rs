@@ -24,6 +24,23 @@ pub fn derive_decompressed_path(input: &Path) -> PathBuf {
     input.with_extension(new_ext)
 }
 
+/// Derives the default merge output for `first_input`: its stem plus
+/// ` (Merged)` and the requested container extension, beside the input.
+pub fn derive_merged_path(first_input: &Path, ext: &str) -> PathBuf {
+    let stem = first_input
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy();
+    first_input.with_file_name(format!("{stem} (Merged).{ext}"))
+}
+
+/// Derives the default split output directory for `input`: its stem plus
+/// `_split`, beside the input.
+pub fn derive_split_dir(input: &Path) -> PathBuf {
+    let stem = input.file_stem().unwrap_or_default().to_string_lossy();
+    input.with_file_name(format!("{stem}_split"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -73,6 +90,18 @@ mod tests {
         assert_eq!(
             derive_decompressed_path(Path::new("Foo.XCZ")),
             PathBuf::from("Foo.xci")
+        );
+    }
+
+    #[test]
+    fn merged_and_split_defaults_drop_the_input_extension() {
+        assert_eq!(
+            derive_merged_path(Path::new("/games/Foo.nsp"), "xci"),
+            PathBuf::from("/games/Foo (Merged).xci")
+        );
+        assert_eq!(
+            derive_split_dir(Path::new("/games/Foo.nsp")),
+            PathBuf::from("/games/Foo_split")
         );
     }
 
