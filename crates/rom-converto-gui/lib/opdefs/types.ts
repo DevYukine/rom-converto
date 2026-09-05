@@ -155,6 +155,20 @@ export interface OpDef {
 	chips: (store: OpStore) => string;
 }
 
+// Ops that write a whole directory instead of deriving a single output
+// file, so they have no template/report row.
+export function directoryOutputRows(tooltip: string): OutputRow[] {
+	return [
+		{
+			kind: "directory",
+			label: "Directory",
+			display: (s) => s.outputDir || "same as source",
+			set: (s, v) => { s.outputDir = v; },
+			tooltip,
+		},
+	];
+}
+
 export function templateIsActive(store: OpStore): boolean {
 	return typeof store.outputTemplate === "string" && store.outputTemplate.length > 0;
 }
@@ -199,6 +213,7 @@ export const NESTED_ARGS_COMMANDS = new Set([
 	"cmd_psp_to_iso",
 	"cmd_psp_extract",
 	"cmd_vita_extract",
+	"cmd_xenon_convert",
 ]);
 
 export function invokeArgs(

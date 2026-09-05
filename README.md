@@ -21,7 +21,7 @@ rom-converto converts, compresses, verifies, encrypts, and decrypts ROMs and dis
 | PSP / PS2 (`cso`) | `.iso` | CSO, ZSO | maxcso, PPSSPP, Open PS2 Loader |
 | CD (`cue`) | `.cue`+`.bin` | merged `.bin`/`.cue` | any emulator |
 | Xbox (`xbox`) | full disc image or folder | XISO | xemu |
-| Xbox 360 (`xenon`) | full disc image or folder | ZAR | Xenia |
+| Xbox 360 (`xenon`) | full disc image or folder | ZAR, GoD | Xenia |
 | PlayStation 3 (`ps3`) | encrypted `.iso` | decrypted `.iso` | RPCS3 |
 
 RVZ and NSZ/XCZ output is byte-identical to the reference encoder (Dolphin, nsz) at matching settings; CSO/ZSO and CHD interoperate with maxcso and chdman. See [`docs/formats.md`](docs/formats.md) for what each format is, where it works, and the compatibility notes.

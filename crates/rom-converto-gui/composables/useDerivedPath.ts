@@ -204,3 +204,9 @@ export function deriveZarPath(input: string): string {
 export function deriveExtractDir(input: string): string {
   return `${stemOf(stripArchiveExt(input))}_extracted`;
 }
+
+// Xbox 360 ISO -> GoD conversion writes a directory of container files
+// rather than a single output file.
+export function deriveGodDir(input: string): string {
+  return `${stemOf(stripArchiveExt(input))}_god`;
+}

@@ -74,15 +74,10 @@ fn xstr_title(data: &[u8]) -> Option<String> {
         let len = read_u16(data, at + 2)? as usize;
         let text = data.get(at + 4..at + 4 + len)?;
         if id == TITLE_STRING_ID {
-            let units: Vec<u16> = text
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .copied()
-                .map(u16::from_be_bytes)
-                .collect();
+            // SPA string tables are UTF-8 even though the rest of XDBF is
+            // big-endian.
             return Some(
-                String::from_utf16_lossy(&units)
+                String::from_utf8_lossy(text)
                     .trim_end_matches('\0')
                     .to_string(),
             );
@@ -121,13 +116,9 @@ pub(super) fn build_xdbf(title: &str, png: &[u8]) -> Vec<u8> {
     xstr.extend_from_slice(&0u32.to_be_bytes());
     xstr.extend_from_slice(&2u16.to_be_bytes());
     for (id, text) in [(0x0001u16, "Publisher"), (TITLE_STRING_ID, title)] {
-        let units: Vec<u8> = text
-            .encode_utf16()
-            .flat_map(|unit| unit.to_be_bytes())
-            .collect();
         xstr.extend_from_slice(&id.to_be_bytes());
-        xstr.extend_from_slice(&(units.len() as u16).to_be_bytes());
-        xstr.extend_from_slice(&units);
+        xstr.extend_from_slice(&(text.len() as u16).to_be_bytes());
+        xstr.extend_from_slice(text.as_bytes());
     }
     // A string table under namespace 3, matching what SPA files ship.
     let records = [
@@ -178,6 +169,12 @@ pub(super) mod tests {
         let icon = meta.icon.expect("icon entry is present");
         assert_eq!((icon.width, icon.height), (64, 64));
         assert_eq!(icon.png_bytes, png);
+    }
+
+    #[test]
+    fn a_multi_byte_title_decodes_as_utf8() {
+        let meta = parse_xdbf(&build_xdbf("Pokémon", &build_png(1, 1)));
+        assert_eq!(meta.title_name.as_deref(), Some("Pokémon"));
     }
 
     #[test]

@@ -1,4 +1,4 @@
-import { recursiveFields, registerOp, templateIsActive, type OpDef } from "./types";
+import { directoryOutputRows, recursiveFields, registerOp, templateIsActive, type OpDef } from "./types";
 import {
 	CHD_CODEC_OPTIONS,
 	CHD_CODEC_PLACEHOLDER,
@@ -13,7 +13,8 @@ import { useChdToCsoStore } from "~/stores/chd-to-cso";
 import { useCueConvertStore } from "~/stores/cue-convert";
 import { useXboxConvertStore } from "~/stores/xbox-convert";
 import { usePspToIsoStore } from "~/stores/psp-to-iso";
-import { basename, deriveConvertedPath, deriveChdPath, deriveCsoPath, deriveDiscIsoPath, deriveXisoPath, withOutputDir } from "~/composables/useDerivedPath";
+import { useXenonConvertStore } from "~/stores/xenon-convert";
+import { basename, deriveConvertedPath, deriveChdPath, deriveCsoPath, deriveDiscIsoPath, deriveGodDir, deriveXisoPath, withOutputDir } from "~/composables/useDerivedPath";
 
 const ARCHIVE_EXTS = ["zip", "7z", "rar", "tar", "tgz", "gz"];
 
@@ -514,4 +515,45 @@ const psp: OpDef = {
 	chips: () => "",
 };
 
-registerOp("convert", { ctr, cso, chd, "chd-migrate": chdMigrate, cue, xbox, psp });
+const xenon: OpDef = {
+	op: "convert",
+	console: "xenon",
+	opLabel: "Convert",
+	storeId: "xenon-convert",
+	useStore: useXenonConvertStore,
+	command: "cmd_xenon_convert",
+	resultKind: "convert",
+	title: "Convert ISO → GoD",
+	subtitle: "Converts a full disc image into a Games on Demand (GoD) container that a console installs.",
+	dropText: "Drop a full disc image (.iso)",
+	acceptedExts: ["iso", ...ARCHIVE_EXTS],
+	browseFilters: [{ name: "Xbox 360", extensions: ["iso"] }],
+	fields: [
+		{
+			kind: "text",
+			key: "title",
+			label: "Title (optional)",
+			placeholder: "auto",
+			tooltip: "Display name written into the GoD container header.",
+		},
+		...recursiveFields(),
+	],
+	note: "The output installs on modified consoles and emulators, not on retail hardware.",
+	outputRows: directoryOutputRows(
+		"Where the GoD container is written. Leave empty to create a folder next to the input file.",
+	),
+	actionNote: "Jobs start automatically. Parameters lock once queued.",
+	deriveOutput: deriveGodDir,
+	buildArgs: (store, item, taskId) => ({
+		input: item.path,
+		outputDir: withOutputDir(deriveGodDir(item.path), store.outputDir || ""),
+		title: store.title || null,
+		onConflict: store.onConflict,
+		skipSpaceCheck: store.skipSpaceCheck,
+		dryRun: false,
+		taskId,
+	}),
+	chips: (store) => (store.title ? "custom title" : ""),
+};
+
+registerOp("convert", { ctr, cso, chd, "chd-migrate": chdMigrate, cue, xbox, psp, xenon });

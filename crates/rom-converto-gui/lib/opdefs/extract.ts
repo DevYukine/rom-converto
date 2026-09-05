@@ -1,6 +1,7 @@
 import { nxKeysColor, nxKeysDisplay } from "./nx-keys";
 import {
 	NX_KEYS_TOOLTIP,
+	directoryOutputRows,
 	recursiveFields,
 	registerOp,
 	templateIsActive,
@@ -61,19 +62,8 @@ function outputRowsWithReport(): OutputRow[] {
 	];
 }
 
-// xbox/xenon extract write to a whole directory instead of deriving a
-// single output file, and their Rust args have no template/report field.
-function directoryOutputRows(): OutputRow[] {
-	return [
-		{
-			kind: "directory",
-			label: "Directory",
-			display: (s) => s.outputDir || "same as source",
-			set: (s, v) => { s.outputDir = v; },
-			tooltip: "Where the extracted files are written. Leave empty to create a folder next to the input file.",
-		},
-	];
-}
+const EXTRACT_DIR_TOOLTIP =
+	"Where the extracted files are written. Leave empty to create a folder next to the input file.";
 
 const ARCHIVE_EXTS = ["zip", "7z", "rar", "tar", "tgz", "gz"];
 
@@ -368,7 +358,7 @@ const xbox: OpDef = {
 	acceptedExts: ["xiso", "iso", ...ARCHIVE_EXTS],
 	browseFilters: [{ name: "XISO", extensions: ["xiso", "iso"] }],
 	fields: recursiveFields(),
-	outputRows: directoryOutputRows(),
+	outputRows: directoryOutputRows(EXTRACT_DIR_TOOLTIP),
 	showVerify: true,
 	verifyLabel: "Verify after extraction",
 	actionNote: "Extraction never overwrites the source image.",
@@ -398,7 +388,7 @@ const xenon: OpDef = {
 	acceptedExts: ["zar", ...ARCHIVE_EXTS],
 	browseFilters: [{ name: "ZArchive", extensions: ["zar"] }],
 	fields: recursiveFields(),
-	outputRows: directoryOutputRows(),
+	outputRows: directoryOutputRows(EXTRACT_DIR_TOOLTIP),
 	showVerify: true,
 	verifyLabel: "Verify after extraction",
 	actionNote: "Extraction never overwrites the source archive.",
@@ -429,7 +419,7 @@ const psp: OpDef = {
 	browseFilters: [{ name: "PBP", extensions: ["pbp"] }],
 	fields: recursiveFields(),
 	note: "DATA.PSAR is written as stored: still encrypted for PSN (NPUMDIMG) images.",
-	outputRows: directoryOutputRows(),
+	outputRows: directoryOutputRows(EXTRACT_DIR_TOOLTIP),
 	showVerify: true,
 	verifyLabel: "Verify after extraction",
 	actionNote: "Extraction never overwrites the source file.",
@@ -459,7 +449,7 @@ const vita: OpDef = {
 	acceptedExts: ["pkg", ...ARCHIVE_EXTS],
 	browseFilters: [{ name: "PKG", extensions: ["pkg"] }],
 	fields: recursiveFields(),
-	outputRows: directoryOutputRows(),
+	outputRows: directoryOutputRows(EXTRACT_DIR_TOOLTIP),
 	showVerify: true,
 	verifyLabel: "Verify after extraction",
 	actionNote: "Extraction never overwrites the source file.",

@@ -66,6 +66,7 @@ fn main() {
             cmd_xbox_convert,
             cmd_xbox_extract,
             cmd_xenon_compress,
+            cmd_xenon_convert,
             cmd_xenon_extract,
             cmd_xenon_verify,
             cmd_psp_to_iso,

@@ -20,7 +20,7 @@ the tool and docs.
 | PSP / PS2 (`cso`) | ISO | `.iso` | CSO, ZSO | compress / decompress |
 | CD (`cue`) | disc image | `.cue`+`.bin` | merged `.bin`/`.cue` | merge |
 | Original Xbox (`xbox`) | disc image | `.iso`, game directory | XISO | convert / extract |
-| Xbox 360 (`xenon`) | disc image | `.iso`, game directory | ZAR | compress / extract |
+| Xbox 360 (`xenon`) | disc image | `.iso`, game directory | ZAR, GoD | compress / extract / convert |
 | PlayStation 3 (`ps3`) | disc image | encrypted `.iso` | decrypted `.iso` | decrypt |
 
 Restoring a CHD is always called "extract", because it recreates sidecar files (`.bin`+`.cue`
@@ -64,6 +64,10 @@ collective phrase for all inputs is "ROMs and disc images".
   padding; rebuilding to XISO drops it, typically shrinking the file substantially.
 - **ZAR** is the ZArchive container: zstd level 6 in 64 KiB blocks with an integrity hash.
   Supported by Xenia since 2024.
+- **GoD** (Games on Demand) is the container format Xbox 360 consoles use for installed
+  titles: a header file plus hashed data part files, split into `<TITLEID>/00007000/<MEDIAID>`
+  and `<MEDIAID>.data/DataNNNN`. The container is unsigned, so it works on modified consoles
+  and emulators, not on unmodified retail systems.
 - **PS3 decrypt** turns an encrypted disc `.iso` into a plain `.iso`. It is an AES-128-CBC
   sector decrypt: only the sector spans the disc's region table marks encrypted are
   transformed; the rest passes through unchanged.

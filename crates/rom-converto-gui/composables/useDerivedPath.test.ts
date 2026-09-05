@@ -8,6 +8,7 @@ import {
   deriveDecryptedPath,
   deriveDiscIsoPath,
   deriveEncryptedPath,
+  deriveGodDir,
   deriveMergedCuePath,
   deriveNszPath,
   deriveRvzPath,
@@ -102,6 +103,13 @@ describe("wua derivation", () => {
     expect(deriveWuaPath("D:\\wiiu\\Super Mario Bros. U (Europe)")).toBe(
       "D:\\wiiu\\Super Mario Bros. U.wua",
     );
+  });
+});
+
+describe("god dir derivation", () => {
+  it("appends _god to the stripped stem, keeping dots in the title", () => {
+    expect(deriveGodDir(`${DOTTED}.zip`)).toBe(`${DOTTED}_god`);
+    expect(deriveGodDir("game.iso")).toBe("game_god");
   });
 });
 

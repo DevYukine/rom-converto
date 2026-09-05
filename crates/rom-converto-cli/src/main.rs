@@ -46,7 +46,8 @@ use rom_converto_lib::microsoft::xbox::{
     XisoCreateOptions, convert_to_xiso_cancellable, extract_xiso_cancellable,
 };
 use rom_converto_lib::microsoft::xenon::{
-    extract_zar_cancellable, pack_zar_cancellable, verify_zar_cancellable,
+    convert_to_god_cancellable, extract_zar_cancellable, pack_zar_cancellable,
+    verify_zar_cancellable,
 };
 use rom_converto_lib::nintendo::ctr::convert::{
     convert_rom_batch_cancellable, convert_rom_cancellable, derive_converted_path,
@@ -149,6 +150,14 @@ fn derive_output_with_ext(input: &Path, ext: &str) -> std::path::PathBuf {
     } else {
         input.with_extension(ext)
     }
+}
+
+/// Default GoD output directory for `input`: its file stem with `_god`
+/// appended, alongside the input.
+fn derive_god_dir(input: &Path) -> std::path::PathBuf {
+    let mut name = input.file_stem().unwrap_or_default().to_os_string();
+    name.push("_god");
+    input.with_file_name(name)
 }
 
 fn log_single_summary(input: &Path, output: &Path, direction: TallyDirection, started: Instant) {
@@ -829,7 +838,7 @@ fn is_cancelled_error(err: &anyhow::Error) -> bool {
     use rom_converto_lib::cso::CsoError;
     use rom_converto_lib::dat::DatError;
     use rom_converto_lib::microsoft::xbox::XboxError;
-    use rom_converto_lib::microsoft::xenon::XenonError;
+    use rom_converto_lib::microsoft::xenon::{GodError, XenonError};
     use rom_converto_lib::nintendo::ctr::error::NintendoCTRError;
     use rom_converto_lib::nintendo::ctr::z3ds::error::Z3dsError;
     use rom_converto_lib::nintendo::nds::NdsError;
@@ -863,6 +872,7 @@ fn is_cancelled_error(err: &anyhow::Error) -> bool {
             )
             || matches!(cause.downcast_ref::<Ps3Error>(), Some(Ps3Error::Cancelled))
             || matches!(cause.downcast_ref::<NdsError>(), Some(NdsError::Cancelled))
+            || matches!(cause.downcast_ref::<GodError>(), Some(GodError::Cancelled))
     })
 }
 
@@ -2883,6 +2893,56 @@ async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()>
                 let started = Instant::now();
                 pack_zar_cancellable(&cmd.input, &output, &progress, cancel.clone()).await?;
                 log_single_summary(&cmd.input, &output, TallyDirection::Compress, started);
+            }
+            XenonCommands::Convert(cmd) => {
+                ensure_input_exists(&cmd.input)?;
+                let output_dir = cmd
+                    .output_dir
+                    .clone()
+                    .unwrap_or_else(|| derive_god_dir(&cmd.input));
+                let policy = policy_of(cmd.on_conflict, cmd.force);
+                let decision = resolve_output_dir(&output_dir, policy)?;
+                if dry_run {
+                    return dry_run_single(
+                        "convert",
+                        &cmd.input,
+                        &output_dir,
+                        &decision,
+                        None,
+                        None,
+                        None,
+                    );
+                }
+                let output_dir = match decision {
+                    WriteDecision::Skip => {
+                        log_skipped(&output_dir);
+                        return Ok(());
+                    }
+                    WriteDecision::Write(p) => p,
+                };
+                if !skip_space_check {
+                    // On top of the payload: one hash block per 0xCC data
+                    // blocks, plus the container header.
+                    let len = file_len(&cmd.input);
+                    batch::space_preflight_for_size(len + len / 0xCC + 0xB000, &output_dir)?;
+                }
+                let started = Instant::now();
+                let summary = convert_to_god_cancellable(
+                    &cmd.input,
+                    &output_dir,
+                    cmd.title.as_deref(),
+                    &progress,
+                    cancel.clone(),
+                )
+                .await?;
+                log::info!("Title ID: {:08X}", summary.title_id);
+                log::info!("Media ID: {:08X}", summary.media_id);
+                log::info!(
+                    "{} parts, {} bytes",
+                    summary.part_count,
+                    summary.total_bytes
+                );
+                log_single_summary(&cmd.input, &output_dir, TallyDirection::CountOnly, started);
             }
             XenonCommands::Extract(cmd) => {
                 ensure_input_exists(&cmd.input)?;

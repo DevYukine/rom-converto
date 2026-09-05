@@ -25,7 +25,7 @@ as `compress`, `decompress`, `verify`, and `info`.
 | `cso` | Compress and verify PSP/PS2 ISOs (CSO/ZSO) |
 | `cue` | Merge a multi-bin `.cue` into one `.bin`/`.cue` pair |
 | `xbox` | Convert, extract, and inspect Original Xbox disc images (XISO) |
-| `xenon` | Compress, extract, verify, and inspect Xbox 360 disc images (ZAR) |
+| `xenon` | Compress, extract, verify, convert to GoD, and inspect Xbox 360 disc images (ZAR) |
 | `ps3` | Decrypt and inspect PlayStation 3 disc images |
 | `psp` | Inspect and extract PSP `EBOOT.PBP` containers |
 | `vita` | Inspect PS Vita VPK/PKG packages and extract a PKG |
@@ -658,13 +658,24 @@ rom-converto xenon <SUBCOMMAND> <INPUT> [OUTPUT]
 | Subcommand | Description |
 |---|---|
 | `compress <INPUT> [OUTPUT]` | Pack a full disc image or an extracted game directory into a `.zar` |
+| `convert <INPUT> [OUTPUT_DIR]` | Convert a full disc image into a Games on Demand (GoD) container |
 | `extract <INPUT> <OUTPUT_DIR>` | Extract a `.zar` back to files |
 | `verify <INPUT>` | Check the archive integrity hash and decode every block |
 | `info <INPUT>` | Inspect Xbox 360 archive stats. See [info](#info) |
 
+| Flag | Applies to | Description |
+|---|---|---|
+| `--title <NAME>` | `convert` | Display name written into the container header, overriding the name read from the executable |
+
 `compress` reads the disc filesystem directly and streams it into the `.zar` archive, with no
 intermediate extraction to disk, using zstd across all CPU cores. Content is stored with
 `default.xex` at the archive root, which Xenia requires to load it.
+
+`convert` reads a full disc image and writes a GoD container. Takes `-f`/`--force` and the
+shared conflict policy. Default output directory is `<stem>_god` next to the input. Output
+layout is a header file at `<TITLEID>/00007000/<MEDIAID>` plus part files at
+`<MEDIAID>.data/DataNNNN`. The image is trimmed to used data automatically. The container is
+unsigned: it works on modified consoles and in emulators, not on unmodified retail systems.
 
 `info` prints archive stats and, when `default.xex` is present, its XEX title metadata
 (title ID, name, version, disc number, region, allowed media) plus the decoded icon.

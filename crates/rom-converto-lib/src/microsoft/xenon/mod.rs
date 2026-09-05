@@ -1,15 +1,21 @@
 //! Xbox 360 ("xenon") ISO -> XDVDFS -> ZArchive pipeline. Content
 //! always lands at the archive root, matching what Xenia expects to
-//! mount.
+//! mount. [`convert_to_god`] takes the same ISOs the other way, into the
+//! Games on Demand layout a console installs.
 
 mod error;
 mod extract;
+mod god;
 mod info;
 mod pack;
 mod verify;
 
+#[cfg(test)]
+pub(crate) mod test_fixtures;
+
 pub use error::{XenonError, XenonResult};
 pub use extract::XenonExtractSummary;
+pub use god::{GodError, GodResult, GodSummary, convert_to_god, convert_to_god_cancellable};
 pub use info::{ZarInfo, read_info};
 pub use pack::{XenonPackSummary, total_input_bytes};
 pub use verify::ZarVerifyResult;

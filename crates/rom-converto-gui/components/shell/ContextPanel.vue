@@ -88,6 +88,7 @@ const CONSOLES: Record<string, ConsoleRow[]> = {
 		{ id: "cue", name: "CD (CUE/BIN)", hint: "→ ISO/CSO/ZSO" },
 		{ id: "xbox", name: "Xbox", hint: "ISO → XISO" },
 		{ id: "psp", name: "PSP", hint: "PBP → ISO" },
+		{ id: "xenon", name: "Xbox 360", hint: "ISO → GoD" },
 	],
 	dat: [
 		{ id: "scan", name: "Scan", hint: "" },

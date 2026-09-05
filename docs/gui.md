@@ -38,7 +38,7 @@ the sidebar:
 | CSO/ZSO | Compress to CSO/ZSO, Decompress CSO/ZSO, Compress to CHD, Verify CSO/ZSO, CSO/ZSO info |
 | CD (CUE/BIN) | Merge multi-bin, Convert CUE/BIN |
 | Xbox | Convert ISO → XISO, Extract XISO, Xbox info |
-| Xbox 360 | Compress to ZAR, Extract ZArchive, Verify Xbox 360, Xbox 360 info |
+| Xbox 360 | Compress to ZAR, Convert ISO to GoD, Extract ZArchive, Verify Xbox 360, Xbox 360 info |
 | PlayStation 3 | Decrypt ISO, PS3 info |
 | Utilities | Hash, Playlist, Settings |
 | DAT | Verify, Scan, Rename |
@@ -93,7 +93,7 @@ CLI command to its GUI page.
 | `cue merge` | Merge multi-bin |
 | `cue to-iso`, `to-cso` | Convert CUE/BIN |
 | `xbox convert`, `extract`, `info` | Xbox |
-| `xenon compress`, `extract`, `verify`, `info` | Xbox 360 |
+| `xenon compress`, `convert`, `extract`, `verify`, `info` | Xbox 360 |
 | `ps3 decrypt`, `info` | PlayStation 3 |
 | `hash` | Utilities: Hash |
 | `playlist` | Utilities: Playlist |

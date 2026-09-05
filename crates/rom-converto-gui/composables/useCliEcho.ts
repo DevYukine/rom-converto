@@ -414,6 +414,16 @@ export function buildCliCommand(command: string, args: Record<string, unknown>, 
         quote(str(args.input)),
         quote(str(args.outputDir)),
       ]);
+    case "cmd_xenon_convert":
+      return join([
+        args.dryRun === true && "--dry-run",
+        args.skipSpaceCheck === true && "--skip-space-check",
+        "xenon", "convert",
+        conflict(args),
+        str(args.title) && `--title ${quote(str(args.title))}`,
+        quote(str(args.input)),
+        quote(str(args.outputDir)),
+      ]);
     case "cmd_xenon_verify":
       return join(["xenon", "verify", quote(str(args.input))]);
     case "cmd_psp_extract":

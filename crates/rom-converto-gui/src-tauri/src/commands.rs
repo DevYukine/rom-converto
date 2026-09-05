@@ -26,8 +26,8 @@ use rom_converto_lib::microsoft::xbox::{
     read_info as xbox_read_info,
 };
 use rom_converto_lib::microsoft::xenon::{
-    extract_zar_cancellable, pack_zar_cancellable, read_info as xenon_read_info,
-    verify_zar_cancellable,
+    convert_to_god_cancellable, extract_zar_cancellable, pack_zar_cancellable,
+    read_info as xenon_read_info, verify_zar_cancellable,
 };
 use rom_converto_lib::nintendo::ctr::convert::{convert_rom_cancellable, derive_converted_path};
 use rom_converto_lib::nintendo::ctr::verify::{CtrVerifyOptions, verify_ctr};
@@ -4716,6 +4716,88 @@ pub async fn cmd_vita_extract(app: AppHandle, args: VitaExtractArgs) -> Result<S
     .await
     .map_err(err_to_string)?
     .map_err(err_to_string)?;
+    Ok(format!("Wrote {out_display}"))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct XenonConvertArgs {
+    input: PathBuf,
+    output_dir: PathBuf,
+    title: Option<String>,
+    on_conflict: Option<String>,
+    skip_space_check: bool,
+    dry_run: Option<bool>,
+    task_id: Option<String>,
+}
+
+#[tauri::command]
+pub async fn cmd_xenon_convert(
+    app: AppHandle,
+    state: State<'_, ActiveCancel>,
+    args: XenonConvertArgs,
+) -> Result<String, String> {
+    let XenonConvertArgs {
+        input,
+        output_dir,
+        title,
+        on_conflict,
+        skip_space_check,
+        dry_run,
+        task_id,
+    } = args;
+    let key = task_id.as_deref().unwrap_or("xenon-convert");
+    let progress = Arc::new(TauriProgress::new(app, key));
+    if dry_run.unwrap_or(false) {
+        let line = plan_line(
+            progress.as_ref(),
+            PlanInput {
+                operation: "convert",
+                input: &input,
+                desired: &output_dir,
+                on_conflict: on_conflict.as_deref(),
+                media: None,
+                verify: rom_converto_lib::util::OutputVerify::None,
+                missing_keys: None,
+            },
+        )
+        .await?;
+        return Ok(line.display_text());
+    }
+    let output_dir = match resolve_output(
+        progress.as_ref(),
+        &output_dir,
+        on_conflict.as_deref(),
+        rom_converto_lib::util::OutputVerify::None,
+    )
+    .await?
+    {
+        Some(p) => p,
+        None => return Ok(format!("Skipped existing {}", output_dir.display())),
+    };
+    let out_display = output_dir.display().to_string();
+    let resolved = resolve_archive_input(input, &["iso"]).await?;
+    let resolved_path = resolved.path().to_path_buf();
+    // On top of the payload: one hash block per 0xCC data blocks, plus
+    // the container header.
+    let len = input_size(&resolved_path);
+    preflight_space(&output_dir, len + len / 0xCC + 0xB000, skip_space_check)?;
+    let token = begin(&state, key).await;
+    let result = tokio::spawn(async move {
+        convert_to_god_cancellable(
+            &resolved_path,
+            &output_dir,
+            title.as_deref(),
+            progress.as_ref(),
+            token,
+        )
+        .await
+    })
+    .await
+    .map_err(err_to_string)?
+    .map_err(err_to_string);
+    finish(&state, key).await;
+    result?;
     Ok(format!("Wrote {out_display}"))
 }
 
