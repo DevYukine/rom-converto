@@ -406,6 +406,10 @@ export function buildInspectView(info: InfoResult): InspectView {
 			add(container, "Hunk", `${formatBytes(info.hunk_bytes)} × ${info.hunk_count}`);
 			add(container, "Unit", formatBytes(info.unit_bytes));
 			if (info.dvd) add(container, "DVD", `${info.dvd.total_sectors} sectors · ${info.dvd.layer_class}`);
+			if (info.hard_disk) {
+				const hd = info.hard_disk;
+				add(container, "Hard Disk", `${hd.cylinders}/${hd.heads}/${hd.sectors} · ${hd.sector_bytes} B/sector`);
+			}
 			if (info.ld) {
 				add(container, "LD FPS", info.ld.fps);
 				add(container, "LD Field Size", `${info.ld.width}x${info.ld.height}`);
@@ -429,7 +433,9 @@ export function buildInspectView(info: InfoResult): InspectView {
 			});
 			add(hashes, "Raw SHA-1", info.raw_sha1);
 			add(hashes, "SHA-1", info.sha1);
+			add(hashes, "MD5", info.md5);
 			add(hashes, "Parent SHA-1", info.parent_sha1);
+			add(hashes, "Parent MD5", info.parent_md5);
 			break;
 		}
 		case "cso": {

@@ -63,9 +63,29 @@ pub enum ChdError {
     #[error("CHD map decompression failed")]
     MapDecompressionError,
 
-    /// The CHD file is not version 5, the only version this crate reads and writes.
-    #[error("unsupported CHD version: expected V5")]
+    /// The CHD file is not version 5, the only version this operation handles.
+    #[error("unsupported CHD version: expected V5, run `chd migrate` to convert a V1-V4 CHD")]
     UnsupportedChdVersion,
+
+    /// A V1-V4 CHD header failed one of chdman's validity checks.
+    #[error("invalid CHD v{version} header: {reason}")]
+    InvalidLegacyHeader { version: u8, reason: String },
+
+    /// A V1-V4 map entry uses a hunk type this crate does not decode.
+    #[error("unsupported CHD v1-v4 map entry type: {0}")]
+    UnsupportedLegacyMapEntry(u8),
+
+    /// A decompressed V1-V4 hunk's CRC-32 does not match the map entry.
+    #[error("CRC-32 mismatch for hunk {hunk}: expected {expected:#010x}, got {actual:#010x}")]
+    LegacyHunkCrcMismatch {
+        hunk: u32,
+        expected: u32,
+        actual: u32,
+    },
+
+    /// A migrate target is already the version it would be migrated to.
+    #[error("CHD is already version 5")]
+    ChdAlreadyV5,
 
     /// The CHD map references a compression codec this crate does not implement.
     #[error("unknown compression codec: {0:02x?}")]

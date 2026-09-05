@@ -7,9 +7,11 @@
 
 use crate::cd::{CD_HUNK_BYTES, FRAME_SIZE, IO_BUFFER_SIZE, SECTOR_SIZE};
 use crate::chd::error::{ChdError, ChdResult};
+use crate::chd::legacy::LEGACY_COMPRESSION_AV;
 use crate::chd::models::{
-    CHD_METADATA_TAG_AV, CHD_METADATA_TAG_CD, CHD_METADATA_TAG_DVD, ChdHeaderV5, ChdMetadataHeader,
-    SHA1_BYTES,
+    CHD_METADATA_FLAG_HASHED, CHD_METADATA_RESERVED_BYTES, CHD_METADATA_TAG_AV,
+    CHD_METADATA_TAG_CD, CHD_METADATA_TAG_DVD, CHD_METADATA_TAG_HARD_DISK, ChdHeaderV5,
+    ChdMetadataHeader, SHA1_BYTES,
 };
 use crate::chd::reader::cue_generator::{
     ChdTrackInfo, chd_type_datasize, generate_cue_sheet, parse_chd_track_metadata,
@@ -42,6 +44,7 @@ pub use compression::{
 };
 pub mod error;
 pub mod info;
+pub(crate) mod legacy;
 pub(crate) mod map;
 pub(crate) mod models;
 pub(crate) mod reader;
@@ -701,14 +704,32 @@ pub struct ChdTrackDigest {
     pub digests: FileDigests,
 }
 
-/// Concatenated text of every CHT2 metadata entry, in chain order.
+/// Older text track-metadata tags, checked as fallbacks after `CHT2`.
+/// `CHTR` predates `CHT2`'s pregap/postgap fields; `CHGD`/`CHGT` are
+/// GD-ROM equivalents. `CHCD` (old CD-ROM TOC) is binary, not text,
+/// and is intentionally never matched here.
+const CHD_METADATA_TAG_CD_TRACK: [u8; 4] = *b"CHTR";
+const CHD_METADATA_TAG_GD_TRACK: [u8; 4] = *b"CHGD";
+const CHD_METADATA_TAG_GD_TRACK_LEGACY: [u8; 4] = *b"CHGT";
+
+/// Concatenated text of every metadata entry for the first present
+/// track-tag family, in `CHT2`, `CHTR`, `CHGD`, `CHGT` priority order.
 /// chdman writes one entry per track, while older rom-converto builds
 /// packed every track into a single entry; joining with a space parses
-/// both layouts identically.
+/// both layouts identically. Families are never mixed within one file.
 pub(crate) fn cd_track_metadata_text(metadata: &[ChdMetadataHeader]) -> Option<String> {
+    const TAG_PRIORITY: [[u8; 4]; 4] = [
+        CHD_METADATA_TAG_CD,
+        CHD_METADATA_TAG_CD_TRACK,
+        CHD_METADATA_TAG_GD_TRACK,
+        CHD_METADATA_TAG_GD_TRACK_LEGACY,
+    ];
+    let tag = TAG_PRIORITY
+        .iter()
+        .find(|tag| metadata.iter().any(|m| m.tag == **tag))?;
     let parts: Vec<String> = metadata
         .iter()
-        .filter(|m| m.tag == CHD_METADATA_TAG_CD)
+        .filter(|m| m.tag == *tag)
         .map(|m| {
             String::from_utf8_lossy(&m.data)
                 .trim_end_matches('\0')
@@ -716,11 +737,7 @@ pub(crate) fn cd_track_metadata_text(metadata: &[ChdMetadataHeader]) -> Option<S
                 .to_string()
         })
         .collect();
-    if parts.is_empty() {
-        None
-    } else {
-        Some(parts.join(" "))
-    }
+    Some(parts.join(" "))
 }
 
 /// Whether a CHD's physical stream uses chdman's per-track 4-frame
@@ -1487,6 +1504,239 @@ pub async fn verify_chd_batch(
     }
     total_progress.finish();
     info!("Verified {total} files: {ok} OK, {failed} failed");
+    Ok(())
+}
+
+/// Default destination for a migrated CHD. Input and output share the
+/// `.chd` extension, so the derived name gets a `v5` infix to keep the
+/// V5 output off its own source.
+pub fn migrated_chd_path(input: &std::path::Path) -> PathBuf {
+    input.with_extension("v5.chd")
+}
+
+/// Rewrites a V1-V4 CHD as a V5 CHD. The decoded raw stream and every
+/// metadata entry are copied through unchanged, so the output's raw SHA-1
+/// reproduces the source's.
+pub async fn migrate_chd_to_v5(
+    progress: &dyn ProgressReporter,
+    input_path: PathBuf,
+    output_path: PathBuf,
+    opts: ChdOptions,
+) -> ChdResult<()> {
+    migrate_chd_to_v5_cancellable(progress, input_path, output_path, opts, CancelToken::new()).await
+}
+
+/// Like [`migrate_chd_to_v5`] but observes `cancel` at every hunk
+/// boundary; on cancel the scratch CHD is removed and the destination is
+/// left untouched.
+pub async fn migrate_chd_to_v5_cancellable(
+    progress: &dyn ProgressReporter,
+    input_path: PathBuf,
+    output_path: PathBuf,
+    opts: ChdOptions,
+    cancel: CancelToken,
+) -> ChdResult<()> {
+    match legacy::peek_chd_version(&input_path)? {
+        Some(5) => return Err(ChdError::ChdAlreadyV5),
+        Some(version) if version > 5 => return Err(ChdError::UnsupportedChdVersion),
+        // Not a CHD at all: fall through and let the reader report the bad magic.
+        _ => {}
+    }
+    if fs::metadata(&output_path).await.is_ok() && !opts.force {
+        return Err(ChdError::ChdFileAlreadyExists);
+    }
+
+    let open_path = input_path.clone();
+    let source = tokio::task::spawn_blocking(move || legacy::LegacyChd::open(&open_path)).await??;
+    // V1/V2 keep their geometry in header fields V5 dropped, so it rides
+    // along as the `GDDD` entry chdman writes.
+    let geometry = source
+        .header()
+        .chs
+        .as_ref()
+        .map(|chs| (chs.cylinders, chs.heads, chs.sectors, chs.sector_bytes));
+    let unit_bytes = source.header().unit_bytes;
+    let logical_bytes = source.header().logical_bytes;
+    let is_dvd = unit_bytes != FRAME_SIZE as u32;
+    // A/V hunks are `avhu` frames; the generic slots store them faithfully but
+    // far larger than chdman would.
+    if source.header().compression == LEGACY_COMPRESSION_AV {
+        warn!(
+            "{} is an A/V CHD; the V5 output will not be avhuff-compressed and will be much larger",
+            input_path.display()
+        );
+    }
+    validate_chd_options(&opts, is_dvd)?;
+
+    // Re-hunking would rewrite the map for no gain, so the source hunk
+    // size carries over unless the caller overrides it.
+    let hunk_bytes = match opts.hunk_size {
+        Some(size) if size == 0 || !size.is_multiple_of(unit_bytes) => {
+            return Err(ChdError::InvalidHunkSize);
+        }
+        Some(size) => size,
+        None => source.header().hunk_bytes,
+    };
+    let codecs = opts.codecs.clone().unwrap_or_else(|| {
+        if is_dvd {
+            default_dvd_codecs()
+        } else {
+            default_cd_codecs()
+        }
+    });
+
+    let total_mb = logical_bytes as f64 / BYTES_PER_MB;
+    progress.start(
+        logical_bytes,
+        &format!("Migrating to CHD V5 (~{:.2} MB)", total_mb),
+    );
+
+    let write_path = scratch_output_path(&output_path)?;
+    let write_owned = write_path.to_path_buf();
+    let level = opts.level;
+    let cancel_bg = cancel.clone();
+    let bytes_done = Arc::new(AtomicU64::new(0));
+    let bytes_done_bg = bytes_done.clone();
+
+    let handle = tokio::task::spawn_blocking(move || -> ChdResult<()> {
+        // Copied out field by field before `into_raw_reader` consumes the
+        // source; ChdMetadataHeader is not Clone.
+        let mut metadata: Vec<ChdMetadataHeader> = source
+            .metadata()
+            .iter()
+            .map(|entry| ChdMetadataHeader {
+                tag: entry.tag,
+                flags: entry.flags,
+                reserved: entry.reserved,
+                data: entry.data.clone(),
+            })
+            .collect();
+        if let Some((cylinders, heads, sectors, sector_bytes)) = geometry {
+            let mut data =
+                format!("CYLS:{cylinders},HEADS:{heads},SECS:{sectors},BPS:{sector_bytes}")
+                    .into_bytes();
+            data.push(0);
+            metadata.push(ChdMetadataHeader {
+                tag: CHD_METADATA_TAG_HARD_DISK,
+                flags: CHD_METADATA_FLAG_HASHED,
+                reserved: [0; CHD_METADATA_RESERVED_BYTES],
+                data,
+            });
+        }
+        // chdman's `copy` rewrites the pre-CHT2 `CHTR` entries as hashed
+        // CHT2, so the migrated disc hashes like a current createcd and
+        // matches MAME's checksums. `CHGD` stays verbatim: its upgrade
+        // also byte-swaps the audio frames.
+        if metadata.iter().any(|m| m.tag == CHD_METADATA_TAG_CD_TRACK)
+            && !metadata.iter().any(|m| m.tag == CHD_METADATA_TAG_CD)
+        {
+            let text = cd_track_metadata_text(&metadata).unwrap_or_default();
+            let tracks = parse_chd_track_metadata(&text)?;
+            metadata.retain(|m| m.tag != CHD_METADATA_TAG_CD_TRACK);
+            metadata.extend(tracks.iter().map(|t| {
+                ChdMetadataHeader::new_cd_metadata(format!(
+                    "TRACK:{} TYPE:{} SUBTYPE:{} FRAMES:{} PREGAP:0 PGTYPE:MODE1 PGSUB:NONE POSTGAP:0",
+                    t.track_number,
+                    t.track_type,
+                    t.subtype.as_deref().unwrap_or("NONE"),
+                    t.frames
+                ))
+            }));
+        }
+        let mut writer = ChdWriter::create_raw(
+            &write_owned,
+            logical_bytes,
+            hunk_bytes,
+            unit_bytes,
+            metadata,
+            codecs,
+            level,
+        )?;
+        let mut reader = source.into_raw_reader();
+        writer.compress_all_hunks_raw(&mut reader, &bytes_done_bg, &cancel_bg)?;
+        writer.finalize()?;
+        Ok(())
+    });
+
+    if let Err(err) = await_with_progress_cancel(
+        progress,
+        &bytes_done,
+        handle,
+        &cancel,
+        cancel_cleanup(&write_path),
+    )
+    .await
+    {
+        let _ = fs::remove_file(&write_path).await;
+        return Err(err);
+    }
+    crate::util::publish_temp(write_path, &output_path, true)?;
+
+    let chd_size = fs::metadata(&output_path).await?.len();
+    info!(
+        "Migrated to CHD V5: {:.2} MB raw, {:.2} MB written",
+        total_mb,
+        chd_size as f64 / BYTES_PER_MB
+    );
+    Ok(())
+}
+
+/// Batch twin of [`migrate_chd_to_v5`], mirroring
+/// [`convert_disc_to_chd_batch`]: every `.chd` under `input_dir` that is
+/// not already V5 is migrated.
+pub async fn migrate_chd_to_v5_batch(
+    progress: &dyn ProgressReporter,
+    total_progress: &dyn ProgressReporter,
+    input_dir: &std::path::Path,
+    opts: ChdOptions,
+    output_dir: Option<&std::path::Path>,
+    max_depth: Option<usize>,
+    in_place: bool,
+) -> ChdResult<()> {
+    let chds = crate::util::fs::collect_files_with_exts(input_dir, &["chd"], max_depth)?;
+    if chds.is_empty() {
+        warn!("No .chd inputs found in {}", input_dir.display());
+        return Ok(());
+    }
+
+    if let Some(dir) = output_dir {
+        std::fs::create_dir_all(dir)?;
+    }
+
+    total_progress.start(
+        chds.len() as u64,
+        &format!("Migrating {} chd files", chds.len()),
+    );
+
+    for path in chds {
+        match legacy::peek_chd_version(&path) {
+            Ok(Some(5)) => {
+                warn!("Skipping {}: already CHD V5", path.display());
+                total_progress.inc(1);
+                continue;
+            }
+            Err(err) => {
+                warn!("Skipping {}: {err}", path.display());
+                total_progress.inc(1);
+                continue;
+            }
+            _ => {}
+        }
+        let output = match (in_place, output_dir) {
+            (true, _) => path.clone(),
+            (false, Some(_)) => crate::util::place_in_dir_mirrored(&path, input_dir, output_dir),
+            (false, None) => migrated_chd_path(&path),
+        };
+        if let Some(parent) = output.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        if let Err(err) = migrate_chd_to_v5(progress, path.clone(), output, opts.clone()).await {
+            warn!("Failed to migrate {}: {err}", path.display());
+        }
+        total_progress.inc(1);
+    }
+
+    total_progress.finish();
     Ok(())
 }
 
@@ -2532,6 +2782,244 @@ mod tests {
 
         let err = is_dvd_mode_chd(chd_path).await.unwrap_err();
         assert!(matches!(err, ChdError::LdExtractionUnsupported));
+    }
+
+    fn metadata_header(tag: [u8; 4], text: &str) -> ChdMetadataHeader {
+        let mut data = text.as_bytes().to_vec();
+        data.push(0);
+        ChdMetadataHeader {
+            tag,
+            flags: crate::chd::models::CHD_METADATA_FLAG_HASHED,
+            reserved: [0; crate::chd::models::CHD_METADATA_RESERVED_BYTES],
+            data,
+        }
+    }
+
+    #[test]
+    fn cd_track_metadata_text_prefers_cht2_over_chtr() {
+        let metadata = vec![
+            metadata_header(
+                CHD_METADATA_TAG_CD_TRACK,
+                "TRACK:1 TYPE:MODE1_RAW FRAMES:300",
+            ),
+            metadata_header(CHD_METADATA_TAG_CD, "TRACK:1 TYPE:AUDIO FRAMES:150"),
+        ];
+        let text = cd_track_metadata_text(&metadata).expect("CHT2 present");
+        assert_eq!(text, "TRACK:1 TYPE:AUDIO FRAMES:150");
+    }
+
+    #[test]
+    fn cd_track_metadata_text_none_for_chcd_only() {
+        let metadata = vec![metadata_header(*b"CHCD", "binary toc, not text")];
+        assert!(cd_track_metadata_text(&metadata).is_none());
+    }
+
+    /// Hand-built V4 CHD holding `raw` as uncompressed `hunk_bytes` hunks,
+    /// with `metadata` chained after the map and the header hashes filled
+    /// in the way chdman would. An empty list leaves the chain absent, as
+    /// chdman's `createraw` does.
+    fn v4_raw_image(raw: &[u8], hunk_bytes: usize, metadata: &[ChdMetadataHeader]) -> Vec<u8> {
+        const V4_HEADER_BYTES: usize = 108;
+
+        let hunks = raw.len() / hunk_bytes;
+        let raw_sha1: [u8; SHA1_BYTES] = Sha1::digest(raw).into();
+        let hashes: Vec<MetadataHash> = metadata
+            .iter()
+            .filter(|m| m.flags & CHD_METADATA_FLAG_HASHED != 0)
+            .map(|m| MetadataHash {
+                tag: m.tag,
+                sha1: Sha1::digest(&m.data).into(),
+            })
+            .collect();
+
+        let mut image = vec![0u8; V4_HEADER_BYTES + hunks * 16];
+        image[0..8].copy_from_slice(b"MComprHD");
+        image[8..12].copy_from_slice(&(V4_HEADER_BYTES as u32).to_be_bytes());
+        image[12..16].copy_from_slice(&4u32.to_be_bytes());
+        // zlib, though every map entry below stores its hunk uncompressed.
+        image[20..24].copy_from_slice(&1u32.to_be_bytes());
+        image[24..28].copy_from_slice(&(hunks as u32).to_be_bytes());
+        image[28..36].copy_from_slice(&(raw.len() as u64).to_be_bytes());
+        image[44..48].copy_from_slice(&(hunk_bytes as u32).to_be_bytes());
+        image[48..68].copy_from_slice(&compute_overall_sha1(raw_sha1, &hashes));
+        image[88..108].copy_from_slice(&raw_sha1);
+
+        if !metadata.is_empty() {
+            let meta_offset = image.len() as u64;
+            image[36..44].copy_from_slice(&meta_offset.to_be_bytes());
+        }
+        for (i, m) in metadata.iter().enumerate() {
+            // Tag, flags, 24-bit length, next pointer (zero on the last).
+            image.extend_from_slice(&m.tag);
+            image.push(m.flags);
+            image.extend_from_slice(&(m.data.len() as u32).to_be_bytes()[1..]);
+            let next = if i + 1 == metadata.len() {
+                0
+            } else {
+                image.len() as u64 + 8 + m.data.len() as u64
+            };
+            image.extend_from_slice(&next.to_be_bytes());
+            image.extend_from_slice(&m.data);
+        }
+
+        let data_offset = image.len();
+        for hunk in 0..hunks {
+            let entry = V4_HEADER_BYTES + hunk * 16;
+            image[entry..entry + 8]
+                .copy_from_slice(&((data_offset + hunk * hunk_bytes) as u64).to_be_bytes());
+            image[entry + 12..entry + 14].copy_from_slice(&(hunk_bytes as u16).to_be_bytes());
+            // UNCOMPRESSED, CRC check suppressed.
+            image[entry + 15] = 0x12;
+        }
+        image.extend_from_slice(raw);
+        image
+    }
+
+    async fn migrate_image(image: &[u8]) -> crate::chd::reader::SyncChdHandle {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("legacy.chd");
+        std::fs::write(&src, image).unwrap();
+        let out = dir.path().join("migrated.chd");
+
+        migrate_chd_to_v5(&NoProgress, src, out.clone(), ChdOptions::default())
+            .await
+            .unwrap();
+        verify_chd(&NoProgress, out.clone(), None, false)
+            .await
+            .unwrap();
+        crate::chd::reader::open_chd_sync(&out).unwrap()
+    }
+
+    /// A V4 header stores the SHA-1 of the decoded raw data and the
+    /// chained overall digest, so a migration that copies the stream and
+    /// the metadata through byte for byte must reproduce both.
+    #[tokio::test]
+    async fn migrate_v4_chd_preserves_header_hashes() {
+        let raw = mixed_iso(6);
+        let image = v4_raw_image(&raw, 4096, &[ChdMetadataHeader::new_dvd_metadata()]);
+
+        let handle = migrate_image(&image).await;
+        assert_eq!(handle.header.raw_sha1, image[88..108]);
+        assert_eq!(handle.header.sha1, image[48..68]);
+        assert_eq!(handle.header.logical_bytes, raw.len() as u64);
+        assert!(
+            handle
+                .metadata
+                .iter()
+                .any(|entry| entry.tag == CHD_METADATA_TAG_DVD)
+        );
+    }
+
+    /// chdman's `createraw` writes no metadata at all. The migrated V5
+    /// must then carry a zero metadata offset, or readers walk the first
+    /// hunk as a metadata entry and the overall SHA-1 stops verifying.
+    #[tokio::test]
+    async fn migrate_metadata_less_chd_leaves_meta_offset_zero() {
+        let raw = mixed_iso(6);
+        let image = v4_raw_image(&raw, 4096, &[]);
+
+        let handle = migrate_image(&image).await;
+        assert_eq!(handle.header.meta_offset, 0);
+        assert!(handle.metadata.is_empty());
+        assert_eq!(handle.header.sha1, image[48..68]);
+    }
+
+    /// Pre-2009 CD CHDs carry unhashed `CHTR` track entries. chdman's
+    /// `copy` rewrites them as hashed CHT2 with the pregap fields at their
+    /// defaults, and the migration has to do the same so the overall
+    /// SHA-1 lands on the value current chdman builds produce.
+    #[tokio::test]
+    async fn migrate_upgrades_chtr_track_metadata_to_cht2() {
+        // Two legacy CD hunks of four 2448-byte frames each.
+        let raw: Vec<u8> = (0..2 * CD_HUNK_BYTES as usize)
+            .map(|i| (i % 251) as u8)
+            .collect();
+        let chtr = ChdMetadataHeader {
+            tag: CHD_METADATA_TAG_CD_TRACK,
+            flags: 0,
+            reserved: [0; CHD_METADATA_RESERVED_BYTES],
+            data: b"TRACK:1 TYPE:MODE1_RAW SUBTYPE:NONE FRAMES:8 ".to_vec(),
+        };
+        let image = v4_raw_image(&raw, CD_HUNK_BYTES as usize, &[chtr]);
+
+        let handle = migrate_image(&image).await;
+        let cht2 = ChdMetadataHeader::new_cd_metadata(
+            "TRACK:1 TYPE:MODE1_RAW SUBTYPE:NONE FRAMES:8 PREGAP:0 PGTYPE:MODE1 PGSUB:NONE POSTGAP:0"
+                .to_string(),
+        );
+        assert_eq!(handle.metadata.len(), 1);
+        assert_eq!(handle.metadata[0].tag, CHD_METADATA_TAG_CD);
+        assert_eq!(handle.metadata[0].flags, CHD_METADATA_FLAG_HASHED);
+        assert_eq!(handle.metadata[0].data, cht2.data);
+        let expected = compute_overall_sha1(
+            handle.header.raw_sha1,
+            &[MetadataHash {
+                tag: cht2.tag,
+                sha1: Sha1::digest(&cht2.data).into(),
+            }],
+        );
+        assert_eq!(handle.header.sha1, expected);
+    }
+
+    /// V1 keeps its geometry in header fields V5 does not have, so migrating
+    /// has to re-express it as the `GDDD` entry or the image stops being
+    /// recognizable as a hard disk.
+    #[tokio::test]
+    async fn migrate_v1_chd_carries_geometry_into_gddd() {
+        const V1_HEADER_BYTES: usize = 76;
+        const SECTOR_BYTES: u32 = 512;
+        const HUNK_SECTORS: u32 = 8;
+        const CYLINDERS: u32 = 2;
+        const HEADS: u32 = 1;
+        const SECTORS: u32 = 8;
+
+        let hunk_bytes = (SECTOR_BYTES * HUNK_SECTORS) as usize;
+        let raw = mixed_iso(4)[..hunk_bytes * 2].to_vec();
+        let hunks = raw.len() / hunk_bytes;
+        let data_offset = V1_HEADER_BYTES + hunks * 8;
+
+        let mut image = vec![0u8; data_offset];
+        image[0..8].copy_from_slice(b"MComprHD");
+        image[8..12].copy_from_slice(&(V1_HEADER_BYTES as u32).to_be_bytes());
+        image[12..16].copy_from_slice(&1u32.to_be_bytes());
+        image[20..24].copy_from_slice(&1u32.to_be_bytes());
+        image[24..28].copy_from_slice(&HUNK_SECTORS.to_be_bytes());
+        image[28..32].copy_from_slice(&(hunks as u32).to_be_bytes());
+        image[32..36].copy_from_slice(&CYLINDERS.to_be_bytes());
+        image[36..40].copy_from_slice(&HEADS.to_be_bytes());
+        image[40..44].copy_from_slice(&SECTORS.to_be_bytes());
+
+        // V1 entries pack the length in the top 20 bits; length == hunk_bytes
+        // marks the hunk uncompressed.
+        for hunk in 0..hunks {
+            let offset = data_offset + hunk * hunk_bytes;
+            let packed = ((hunk_bytes as u64) << 44) | offset as u64;
+            let base = V1_HEADER_BYTES + hunk * 8;
+            image[base..base + 8].copy_from_slice(&packed.to_be_bytes());
+        }
+        image.extend_from_slice(&raw);
+
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("legacy.chd");
+        std::fs::write(&src, &image).unwrap();
+        let out = dir.path().join("migrated.chd");
+
+        migrate_chd_to_v5(&NoProgress, src, out.clone(), ChdOptions::default())
+            .await
+            .unwrap();
+
+        let handle = crate::chd::reader::open_chd_sync(&out).unwrap();
+        assert_eq!(handle.header.unit_bytes, SECTOR_BYTES);
+        assert_eq!(handle.header.logical_bytes, raw.len() as u64);
+        let gddd = handle
+            .metadata
+            .iter()
+            .find(|entry| entry.tag == CHD_METADATA_TAG_HARD_DISK)
+            .expect("geometry carried over");
+        assert_eq!(
+            String::from_utf8_lossy(&gddd.data).trim_end_matches('\0'),
+            "CYLS:2,HEADS:1,SECS:8,BPS:512"
+        );
     }
 }
 

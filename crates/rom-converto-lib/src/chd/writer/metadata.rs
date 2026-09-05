@@ -167,6 +167,15 @@ pub fn generate_ld_metadata(params: &LdParams, vbi_frames: usize) -> ChdResult<M
     chain_and_serialize(entries)
 }
 
+/// Serializes metadata entries copied verbatim from another CHD, relinking
+/// their `next` offsets for the new file's layout.
+pub fn copy_metadata(mut entries: Vec<ChdMetadataHeader>) -> ChdResult<MetadataBlock> {
+    for entry in &mut entries {
+        entry.reserved = [0; CHD_METADATA_RESERVED_BYTES];
+    }
+    chain_and_serialize(entries)
+}
+
 /// Link the entries through their reserved `next` offsets (the metadata
 /// list starts right after the V5 header) and serialize them, hashing
 /// every entry that carries the checksum flag.

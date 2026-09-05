@@ -58,8 +58,8 @@ These flags work on every command.
 
 ### Conflict policy
 
-Every command that writes an output file except `migrate` takes `--on-conflict <POLICY>` to
-decide what happens when the output already exists:
+Every command that writes an output file except `dol migrate` and `rvl migrate` takes
+`--on-conflict <POLICY>` to decide what happens when the output already exists:
 
 - `error` (default): refuse and stop.
 - `overwrite`: replace the existing output.
@@ -472,6 +472,7 @@ rom-converto chd <SUBCOMMAND> <INPUT> [OUTPUT]
 | Subcommand | Description |
 |---|---|
 | `compress <INPUT> [OUTPUT]` | Compress a `.cue`, `.iso`, or `.avi` to `.chd`; CD, DVD, and LaserDisc media are auto-detected |
+| `migrate <INPUT> [OUTPUT]` | Rewrite a CHD of format version 1 to 4 as a version 5 CHD |
 | `extract <INPUT> [OUTPUT]` | Extract a `.chd` back to `.bin` + `.cue` (CD) or `.iso` (DVD); LaserDisc CHDs are not supported |
 | `verify <INPUT>` | Verify the SHA-1 integrity of a `.chd` |
 | `to-cso <INPUT> [OUTPUT]` | Extract a DVD-mode `.chd` straight to `.cso` (default) or `.zso`, through a temporary ISO |
@@ -480,11 +481,12 @@ rom-converto chd <SUBCOMMAND> <INPUT> [OUTPUT]
 | Flag | Applies to | Description |
 |---|---|---|
 | `--dvd` / `--cd` / `--ld` | `compress` | Override the auto-detected mode (CD mode needs a cue sheet, LD mode needs a `.avi`) |
-| `--hunk-size <BYTES>` | `compress` | DVD hunk size, a multiple of 2048; defaults to 4096, or 2048 for detected PSP images. Not accepted in LD mode |
+| `--hunk-size <BYTES>` | `compress`, `migrate` | DVD hunk size, a multiple of 2048; defaults to 4096, or 2048 for detected PSP images. Not accepted in LD mode. `migrate` inherits the source hunk size unless set |
 | `--zstd` | `compress` | Add zstd to the DVD codec set for a better ratio; some older players and cores do not support zstd-compressed CHD |
 | `--format <cso\|zso>` | `to-cso` | Output container: CSO for PSP/PPSSPP, ZSO for PS2 via Open PS2 Loader |
 | `--block-size <BYTES>` | `to-cso` | Block size, a power of two; defaults to 2048 (16384 for 2 GiB+ inputs) |
-| `--output-dir <DIR>` | `compress`, `extract`, `to-cso` | Write outputs under this directory instead of beside each input |
+| `--in-place` | `migrate` | Replace each source file with its migrated version 5 CHD |
+| `--output-dir <DIR>` | `compress`, `migrate`, `extract`, `to-cso` | Write outputs under this directory instead of beside each input |
 | `-p, --parent <PARENT>` | `extract`, `verify` | Specify a parent CHD for parent-child relationships |
 | `--fix` | `verify` | Correct SHA-1 values in the CHD header if mismatches are found |
 
@@ -495,6 +497,17 @@ does not accept `--codecs`, `--level`, or `--hunk-size`, since the codec and per
 size are fixed by the AVI. The input must be uncompressed 4:2:2 video (YUY2, UYVY, or VYUY)
 with 8- or 16-bit PCM audio; a compressed video codec such as HuffYUV is rejected, naming the
 codec found. Extract report rows carry zero byte sizes since extraction writes several files.
+
+`migrate` converts CHD format versions 1 through 4 to version 5. The raw data is copied
+through unchanged, so the image content is untouched and only the container and its
+compression are rebuilt. Metadata is copied verbatim with one exception that mirrors
+`chdman copy`: the pre-2009 `CHTR` track entries are rewritten as `CHT2`, so the overall
+SHA-1 of the output matches what a current chdman build produces for the same disc. A version 5 input is rejected. The hunk size and
+the unit size are inherited from the source, so the codecs default to the CD or the DVD set
+accordingly; `--hunk-size`, `--codecs`, and `--level` override that. Since the output keeps
+the `.chd` extension, the derived name gets a `v5` infix (`game.chd` becomes `game.v5.chd`)
+so the source is left alone. Pass an output path or `--output-dir` to place it elsewhere, or
+`--in-place` to replace the source.
 
 `to-cso` only accepts a DVD-mode CHD (PS2 DVD, PSP UMD); a CD-mode or LD-mode CHD has no flat
 ISO for CSO/ZSO to hold, and is rejected up front. It extracts to a temporary ISO next to the

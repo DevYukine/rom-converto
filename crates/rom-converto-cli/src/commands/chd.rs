@@ -24,6 +24,7 @@ pub(crate) fn parse_chd_codecs(s: &str) -> Result<ChdCodecList, String> {
 #[derive(Subcommand, Debug, Eq, PartialEq)]
 pub enum ChdCommands {
     Compress(CompressCommand),
+    Migrate(MigrateCommand),
     Extract(ExtractCommand),
     Verify(VerifyCommand),
     ToCso(ToCsoCommand),
@@ -107,6 +108,87 @@ pub struct CompressCommand {
     pub force: bool,
 
     /// Compress every .cue and .iso found in the INPUT directory and its subdirectories
+    #[arg(long, short = 'R', default_value_t = false)]
+    pub recursive: bool,
+
+    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited
+    #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
+    pub max_depth: Option<usize>,
+
+    /// Write a run report to FILE. Format inferred from the extension: .csv, .json, .html or .htm. Unknown extensions default to JSON. The file is overwritten directly
+    #[arg(long = "report", value_name = "FILE")]
+    pub report: Option<PathBuf>,
+}
+
+/// Rewrite a legacy CHD as a version 5 CHD
+#[derive(Parser, Debug, Clone, Eq, PartialEq)]
+#[command(
+    long_about = "Rewrite a legacy CHD as a version 5 CHD\n\nConverts CHD format versions 1 through 4 into version 5. The raw data and every metadata entry are copied through unchanged, so the image content is untouched and only the container and its compression are rebuilt. A version 5 input is rejected. Hunk size defaults to the source's, and codecs default to chdman's CD or DVD set depending on the source's unit size.\n\nInput and output share the .chd extension, so the derived output name gets a v5 infix (game.chd becomes game.v5.chd) and the source is left alone. Pass --in-place to replace the source instead.",
+    after_long_help = "EXAMPLES:\n  Single file:     rom-converto chd migrate old.chd\n  Explicit output: rom-converto chd migrate old.chd new.chd\n  In place:        rom-converto chd migrate --in-place old.chd\n  Whole folder:    rom-converto chd migrate -R ./chd --output-dir ./v5\n"
+)]
+pub struct MigrateCommand {
+    /// Input CHD file, or a directory of .chd files when --recursive is set
+    #[arg(value_name = "INPUT")]
+    pub input: PathBuf,
+
+    /// Output chd file path
+    #[arg(value_name = "OUTPUT")]
+    pub output: Option<PathBuf>,
+
+    /// Output chd file path
+    #[arg(
+        short = 'o',
+        long = "output",
+        value_name = "OUTPUT",
+        conflicts_with = "output"
+    )]
+    pub output_flag: Option<PathBuf>,
+
+    /// Write output into this directory using the derived filename. Created if missing. Works with --recursive
+    #[arg(long = "output-dir", value_name = "DIR", conflicts_with_all = ["output", "output_flag"])]
+    pub output_dir: Option<PathBuf>,
+
+    /// Output path template applied per file. Tokens: {title}, {titleId}, {region},
+    /// {console}, {serial}, {ext}, {basename}. Resolves against extracted metadata;
+    /// missing tokens fall back to the input basename. Joined under --output-dir
+    #[arg(long = "output-template", value_name = "TEMPLATE", conflicts_with_all = ["output", "output_flag"])]
+    pub output_template: Option<String>,
+
+    /// Replace the source file with the migrated v5 CHD instead of writing a .v5.chd sibling
+    #[arg(long = "in-place", conflicts_with_all = ["output", "output_flag", "output_dir", "output_template"])]
+    pub in_place: bool,
+
+    /// Hunk size in bytes, a multiple of the source's unit size. Defaults to the source's hunk size
+    #[arg(long, value_name = "BYTES")]
+    pub hunk_size: Option<u32>,
+
+    /// Codec list for the CHD header's compressor slots: comma-separated chdman-style names, at most 4 of zlib, zstd, lzma, huff, flac, cdzl, cdzs, cdlz, cdfl. Defaults to cdlz,cdzl,cdfl for CD-mode sources and lzma,zlib,huff,flac for DVD-mode sources (chdman parity)
+    #[arg(short = 'c', long = "codecs", value_name = "LIST", value_parser = parse_chd_codecs)]
+    pub codecs: Option<ChdCodecList>,
+
+    /// Compression level in 1..=22. zstd uses the level directly; zlib and lzma cap at 9. Unset uses per-codec defaults (zstd 19, lzma 8, zlib 9)
+    #[arg(
+        short = 'l',
+        long = "level",
+        value_name = "LEVEL",
+        value_parser = clap::value_parser!(i32).range(1..=22)
+    )]
+    pub level: Option<i32>,
+
+    /// What to do when an output already exists: error, overwrite, skip, or rename to a numbered sibling
+    #[arg(long = "on-conflict", value_enum)]
+    pub on_conflict: Option<ConflictPolicyArg>,
+
+    /// Alias for --on-conflict overwrite
+    #[arg(
+        long,
+        short = 'f',
+        default_value_t = false,
+        conflicts_with = "on_conflict"
+    )]
+    pub force: bool,
+
+    /// Migrate every .chd found in the INPUT directory and its subdirectories
     #[arg(long, short = 'R', default_value_t = false)]
     pub recursive: bool,
 
@@ -596,6 +678,37 @@ mod tests {
             "--output-dir",
             "out",
         ]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parses_migrate_with_explicit_output() {
+        let h = Harness::parse_from(["bin", "migrate", "in.chd", "out.chd"]);
+        let ChdCommands::Migrate(c) = h.cmd else {
+            panic!("expected Migrate");
+        };
+        assert_eq!(c.input, PathBuf::from("in.chd"));
+        assert_eq!(c.output, Some(PathBuf::from("out.chd")));
+        assert!(!c.in_place && !c.recursive && !c.force);
+        assert_eq!(c.hunk_size, None);
+        assert_eq!(c.codecs, None);
+        assert_eq!(c.level, None);
+    }
+
+    #[test]
+    fn parses_migrate_in_place() {
+        let h = Harness::parse_from(["bin", "migrate", "--in-place", "in.chd"]);
+        let ChdCommands::Migrate(c) = h.cmd else {
+            panic!("expected Migrate");
+        };
+        assert!(c.in_place);
+        assert_eq!(c.output, None);
+    }
+
+    #[test]
+    fn migrate_in_place_conflicts_with_output() {
+        let result =
+            Harness::try_parse_from(["bin", "migrate", "in.chd", "--in-place", "-o", "out.chd"]);
         assert!(result.is_err());
     }
 

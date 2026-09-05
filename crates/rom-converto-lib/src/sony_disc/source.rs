@@ -10,14 +10,15 @@ use std::io;
 use std::path::Path;
 
 use crate::cd::FRAME_SIZE;
-use crate::chd::models::{CHD_METADATA_TAG_CD, CHD_METADATA_TAG_DVD};
+use crate::chd::legacy::LegacyChd;
+use crate::chd::models::{CHD_METADATA_TAG_DVD, ChdMetadataHeader};
 use crate::chd::padded_track_frames;
 use crate::chd::reader::cue_generator::{ChdTrackInfo, parse_chd_track_metadata};
 use crate::chd::reader::worker::{
     ChdDvdExtractWorker, ChdExtractWork, ChdExtractWorker, make_chd_dvd_extract_workers,
     make_chd_extract_workers, resolve_entry,
 };
-use crate::chd::reader::{SyncChdHandle, open_chd_sync};
+use crate::chd::reader::{SyncChdHandle, chd_version, open_chd_sync};
 use crate::cso::compression::BlockDecompressor;
 use crate::cso::reader::{CsoSyncHandle, block_spec, open_cso_sync};
 use crate::cue::CueParser;
@@ -182,64 +183,96 @@ enum ChdDecoder {
     Dvd(ChdDvdExtractWorker),
 }
 
+/// Hunk decode, the only part of a CHD read that differs between the V5
+/// and the v1-v4 format.
+enum ChdSource {
+    V5 {
+        handle: SyncChdHandle,
+        decoder: ChdDecoder,
+    },
+    Legacy(LegacyChd),
+}
+
+impl ChdSource {
+    fn decode(&mut self, index: u32, hunk: &mut Vec<u8>) -> io::Result<()> {
+        match self {
+            ChdSource::V5 { handle, decoder } => {
+                if index as usize >= handle.map.len() {
+                    return Err(past_end());
+                }
+                let entry = resolve_entry(&handle.map, index).map_err(io::Error::other)?;
+                let out = match decoder {
+                    ChdDecoder::Cd(worker) => worker.process(ChdExtractWork { entry }),
+                    ChdDecoder::Dvd(worker) => worker.process(ChdExtractWork { entry }),
+                }
+                .map_err(io::Error::other)?;
+                *hunk = out.hunk;
+                Ok(())
+            }
+            ChdSource::Legacy(chd) => {
+                hunk.resize(chd.header().hunk_bytes as usize, 0);
+                chd.read_hunk(index, hunk).map_err(io::Error::other)
+            }
+        }
+    }
+}
+
 /// The disc inside a CHD, decoded a hunk at a time. CD images expose the
 /// first data track only.
 pub(crate) struct ChdSectors {
-    handle: SyncChdHandle,
-    decoder: ChdDecoder,
+    source: ChdSource,
     layout: ChdLayout,
+    hunk_bytes: usize,
     sectors: u64,
     cached: Option<u64>,
     hunk: Vec<u8>,
 }
 
 impl ChdSectors {
-    /// Opens the CHD at `path`.
+    /// Opens the CHD at `path`, of any supported format version.
     pub fn open(path: &Path) -> io::Result<Self> {
-        let handle = open_chd_sync(path).map_err(io::Error::other)?;
-        let hunk_bytes = handle.header.hunk_bytes as usize;
-        let compressors = handle.header.compressors();
-        let is_dvd = handle
-            .metadata
-            .iter()
-            .any(|m| m.tag == CHD_METADATA_TAG_DVD);
-
-        let (layout, sectors, decoder) = if is_dvd {
-            if hunk_bytes == 0 || !hunk_bytes.is_multiple_of(SECTOR) {
-                return Err(invalid("DVD CHD hunk size is not a multiple of 2048 bytes"));
-            }
-            let worker = make_chd_dvd_extract_workers(1, &handle.file, hunk_bytes, compressors)
-                .map_err(io::Error::other)?
-                .pop()
-                .expect("one worker requested");
-            (
-                ChdLayout::Dvd,
-                handle.header.logical_bytes / SECTOR as u64,
-                ChdDecoder::Dvd(worker),
-            )
-        } else {
-            if hunk_bytes == 0 || !hunk_bytes.is_multiple_of(FRAME_SIZE) {
-                return Err(invalid("CD CHD hunk size is not a multiple of 2448 bytes"));
-            }
-            let (track_type, first_frame, frames) = first_data_track(&handle)?;
-            let worker = make_chd_extract_workers(1, &handle.file, hunk_bytes, compressors)
-                .map_err(io::Error::other)?
-                .pop()
-                .expect("one worker requested");
-            (
-                ChdLayout::Cd {
-                    track_type,
-                    first_frame,
-                },
-                frames,
-                ChdDecoder::Cd(worker),
-            )
-        };
+        let (source, layout, hunk_bytes, sectors) =
+            match chd_version(path).map_err(io::Error::other)? {
+                5 => {
+                    let handle = open_chd_sync(path).map_err(io::Error::other)?;
+                    let hunk_bytes = handle.header.hunk_bytes as usize;
+                    let (layout, sectors) =
+                        chd_layout(&handle.metadata, hunk_bytes, handle.header.logical_bytes)?;
+                    let compressors = handle.header.compressors();
+                    let decoder = match layout {
+                        ChdLayout::Dvd => ChdDecoder::Dvd(
+                            make_chd_dvd_extract_workers(1, &handle.file, hunk_bytes, compressors)
+                                .map_err(io::Error::other)?
+                                .pop()
+                                .expect("one worker requested"),
+                        ),
+                        ChdLayout::Cd { .. } => ChdDecoder::Cd(
+                            make_chd_extract_workers(1, &handle.file, hunk_bytes, compressors)
+                                .map_err(io::Error::other)?
+                                .pop()
+                                .expect("one worker requested"),
+                        ),
+                    };
+                    (
+                        ChdSource::V5 { handle, decoder },
+                        layout,
+                        hunk_bytes,
+                        sectors,
+                    )
+                }
+                _ => {
+                    let chd = LegacyChd::open(path).map_err(io::Error::other)?;
+                    let hunk_bytes = chd.header().hunk_bytes as usize;
+                    let logical_bytes = chd.header().logical_bytes;
+                    let (layout, sectors) = chd_layout(chd.metadata(), hunk_bytes, logical_bytes)?;
+                    (ChdSource::Legacy(chd), layout, hunk_bytes, sectors)
+                }
+            };
 
         Ok(Self {
-            handle,
-            decoder,
+            source,
             layout,
+            hunk_bytes,
             sectors,
             cached: None,
             hunk: Vec::new(),
@@ -251,19 +284,36 @@ impl ChdSectors {
             return Ok(());
         }
         let index = u32::try_from(hunk).map_err(|_| past_end())?;
-        if index as usize >= self.handle.map.len() {
-            return Err(past_end());
-        }
-        let entry = resolve_entry(&self.handle.map, index).map_err(io::Error::other)?;
-        let out = match &mut self.decoder {
-            ChdDecoder::Cd(worker) => worker.process(ChdExtractWork { entry }),
-            ChdDecoder::Dvd(worker) => worker.process(ChdExtractWork { entry }),
-        }
-        .map_err(io::Error::other)?;
-        self.hunk = out.hunk;
+        self.source.decode(index, &mut self.hunk)?;
         self.cached = Some(hunk);
         Ok(())
     }
+}
+
+/// Hunk layout and readable sector count for a CHD's metadata, shared by
+/// both format generations.
+fn chd_layout(
+    metadata: &[ChdMetadataHeader],
+    hunk_bytes: usize,
+    logical_bytes: u64,
+) -> io::Result<(ChdLayout, u64)> {
+    if metadata.iter().any(|m| m.tag == CHD_METADATA_TAG_DVD) {
+        if hunk_bytes == 0 || !hunk_bytes.is_multiple_of(SECTOR) {
+            return Err(invalid("DVD CHD hunk size is not a multiple of 2048 bytes"));
+        }
+        return Ok((ChdLayout::Dvd, logical_bytes / SECTOR as u64));
+    }
+    if hunk_bytes == 0 || !hunk_bytes.is_multiple_of(FRAME_SIZE) {
+        return Err(invalid("CD CHD hunk size is not a multiple of 2448 bytes"));
+    }
+    let (track_type, first_frame, frames) = first_data_track(metadata)?;
+    Ok((
+        ChdLayout::Cd {
+            track_type,
+            first_frame,
+        },
+        frames,
+    ))
 }
 
 impl SectorSource for ChdSectors {
@@ -271,7 +321,7 @@ impl SectorSource for ChdSectors {
         if lba as u64 >= self.sectors {
             return Err(past_end());
         }
-        let hunk_bytes = self.handle.header.hunk_bytes as usize;
+        let hunk_bytes = self.hunk_bytes;
         // `open` rejects a hunk size that is not a whole number of units,
         // so no sector or frame straddles a hunk boundary.
         match self.layout {
@@ -312,14 +362,10 @@ impl SectorSource for ChdSectors {
 
 /// First MODE1/MODE2 track of a CD CHD: its cue-side mode, its start
 /// frame in the hunk stream, and its frame count.
-fn first_data_track(handle: &SyncChdHandle) -> io::Result<(TrackType, u64, u64)> {
-    let meta = handle
-        .metadata
-        .iter()
-        .find(|m| m.tag == CHD_METADATA_TAG_CD)
-        .ok_or_else(|| invalid("CHD carries neither DVD nor CHT2 metadata"))?;
-    let text = String::from_utf8_lossy(&meta.data);
-    let tracks = parse_chd_track_metadata(text.trim_end_matches('\0')).map_err(io::Error::other)?;
+fn first_data_track(metadata: &[ChdMetadataHeader]) -> io::Result<(TrackType, u64, u64)> {
+    let text = crate::chd::cd_track_metadata_text(metadata)
+        .ok_or_else(|| invalid("CHD carries neither DVD nor track metadata"))?;
+    let tracks = parse_chd_track_metadata(&text).map_err(io::Error::other)?;
     pick_data_track(&tracks)
 }
 

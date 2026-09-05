@@ -84,6 +84,7 @@ const CONSOLES: Record<string, ConsoleRow[]> = {
 		{ id: "ctr", name: "3DS", hint: "CIA ↔ CCI" },
 		{ id: "cso", name: "PSP / PS2", hint: "ISO → CHD" },
 		{ id: "chd", name: "CD / DVD", hint: "CHD → CSO/ZSO" },
+		{ id: "chd-migrate", name: "CHD (old)", hint: "v1-v4 → v5" },
 		{ id: "cue", name: "CD (CUE/BIN)", hint: "→ ISO/CSO/ZSO" },
 		{ id: "xbox", name: "Xbox", hint: "ISO → XISO" },
 		{ id: "psp", name: "PSP", hint: "PBP → ISO" },

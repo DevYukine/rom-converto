@@ -161,10 +161,20 @@ fn render_chd(info: &rom_converto_lib::info::ChdInfo) -> String {
         "Compression ratio",
         format!("{:.2}%", info.compression_ratio),
     );
-    c.push("Raw SHA1", info.raw_sha1.clone());
-    c.push("SHA1", info.sha1.clone());
+    if let Some(raw_sha1) = &info.raw_sha1 {
+        c.push("Raw SHA1", raw_sha1.clone());
+    }
+    if let Some(sha1) = &info.sha1 {
+        c.push("SHA1", sha1.clone());
+    }
+    if let Some(md5) = &info.md5 {
+        c.push("MD5", md5.clone());
+    }
     if let Some(parent) = &info.parent_sha1 {
         c.push("Parent SHA1", parent.clone());
+    }
+    if let Some(parent_md5) = &info.parent_md5 {
+        c.push("Parent MD5", parent_md5.clone());
     }
     if let Some(vers) = &info.version_string {
         c.push("chdman version", vers.clone());
@@ -177,6 +187,15 @@ fn render_chd(info: &rom_converto_lib::info::ChdInfo) -> String {
         c.push(
             "DVD geometry",
             format!("{} sectors, {}", dvd.total_sectors, layer),
+        );
+    }
+    if let Some(hd) = &info.hard_disk {
+        c.push(
+            "Hard disk",
+            format!(
+                "{} cyl, {} heads, {} sectors, {} bytes/sector",
+                hd.cylinders, hd.heads, hd.sectors, hd.sector_bytes
+            ),
         );
     }
 

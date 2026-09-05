@@ -6,6 +6,7 @@ import {
 	CHD_DVD_ZSTD_HINT,
 	CHD_LEVEL_HINT,
 } from "./compress";
+import { useChdMigrateStore } from "~/stores/chd-migrate";
 import { useCtrConvertStore } from "~/stores/ctr-convert";
 import { useCsoToChdStore } from "~/stores/cso-to-chd";
 import { useChdToCsoStore } from "~/stores/chd-to-cso";
@@ -260,6 +261,100 @@ const chd: OpDef = {
 	chips: (store) => store.format,
 };
 
+// A migrated CHD keeps the .chd extension, so the output is a distinct sibling
+// and the source is never silently overwritten.
+function deriveChdV5Path(input: string): string {
+	return deriveChdPath(input).replace(/\.chd$/i, ".v5.chd");
+}
+
+const chdMigrate: OpDef = {
+	op: "convert",
+	console: "chd-migrate",
+	opLabel: "chd migrate",
+	storeId: "chd-migrate",
+	useStore: useChdMigrateStore,
+	command: "cmd_chd_migrate",
+	resultKind: "convert",
+	title: "Migrate CHD to v5",
+	subtitle:
+		"Rewrites a CHD in format version 1 to 4 as a version 5 CHD. The raw data and every metadata entry are copied through unchanged.",
+	dropText: "Drop .chd files or folders",
+	acceptedExts: ["chd", ...ARCHIVE_EXTS],
+	browseFilters: [{ name: "CHD", extensions: ["chd"] }],
+	browseAlsoDirectory: true,
+	fields: [
+		{
+			kind: "number",
+			key: "hunkSize",
+			label: "Hunk size",
+			placeholder: "source",
+			tooltip:
+				"Size of each compressed block in bytes. Left empty, the migrated CHD keeps the source's hunk size.",
+		},
+		{
+			kind: "multiselect",
+			key: "codecs",
+			label: "Codecs",
+			options: CHD_CODEC_OPTIONS,
+			max: 4,
+			placeholder: "auto (CD or DVD set, from the source's unit size)",
+			tooltip:
+				"Up to 4 compressor slots stored in the CHD header. Left empty, this follows the source's unit size: cdlz, cdzl, cdfl for a CD, lzma, zlib, huff, flac for a DVD. cdlz: CD-specific LZMA, best ratio. cdzl: CD-specific deflate, fast. cdzs: CD-specific zstd, good ratio and speed. cdfl: CD-specific FLAC, used for audio tracks. lzma: generic LZMA, best ratio but slow. zlib: generic deflate, fast. zstd: generic zstd, fast with a good ratio. huff: Huffman coding, very fast but a low ratio. flac: generic FLAC, for audio-like data.",
+		},
+		{
+			kind: "number",
+			key: "level",
+			label: "Level",
+			placeholder: "auto",
+			hint: CHD_LEVEL_HINT,
+			tooltip:
+				"How hard each selected codec works to compress. Higher is smaller but slower, and only applies to the codecs chosen above.",
+		},
+		...recursiveFields(),
+	],
+	note: "A CHD that is already version 5 is rejected: there is nothing to migrate.",
+	outputRows: [
+		...templateOutputRowsWithReport(),
+		{
+			kind: "text",
+			label: "Name",
+			display: () => "<name>.v5.chd",
+			tooltip:
+				"The migrated CHD keeps the .chd extension, so it is written next to the source as <name>.v5.chd rather than over it.",
+		},
+	],
+	showVerify: true,
+	verifyLabel: "Verify after conversion",
+	actionNote: "Jobs start automatically. Parameters lock once queued.",
+	deriveOutput: deriveChdV5Path,
+	buildArgs: (store, item, taskId) => {
+		const tmpl = templateIsActive(store);
+		return {
+			inputPath: item.path,
+			output: tmpl ? null : withOutputDir(deriveChdV5Path(item.path), store.outputDir || ""),
+			onConflict: store.onConflict,
+			skipSpaceCheck: store.skipSpaceCheck,
+			codecs: store.codecs.length ? store.codecs : null,
+			level: store.level,
+			hunkSize: store.hunkSize || null,
+			outputTemplate: store.outputTemplate || null,
+			report: !!store.reportFile,
+			reportFile: store.reportFile || null,
+			verifyAfter: store.verifyAfter,
+			dryRun: false,
+			taskId,
+		};
+	},
+	chips: (store) =>
+		[
+			store.codecs.length ? store.codecs.join(", ") : "",
+			store.level ? `level ${store.level}` : "",
+			store.hunkSize ? `hunk ${store.hunkSize}` : "",
+		]
+			.filter(Boolean)
+			.join(" · "),
+};
+
 // ISO goes through cmd_cue_to_iso (no format arg); CSO and ZSO share
 // cmd_cue_to_cso, which takes the container format as an argument.
 function deriveCueOutput(input: string, format: string): string {
@@ -419,4 +514,4 @@ const psp: OpDef = {
 	chips: () => "",
 };
 
-registerOp("convert", { ctr, cso, chd, cue, xbox, psp });
+registerOp("convert", { ctr, cso, chd, "chd-migrate": chdMigrate, cue, xbox, psp });

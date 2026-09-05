@@ -10,11 +10,11 @@ use crate::chd::compute_overall_sha1;
 use crate::chd::error::{ChdError, ChdResult};
 use crate::chd::map::{MapEntry, compress_v5_map};
 use crate::chd::models::{
-    CHD_V5_HEADER_SIZE, ChdHeaderV5, ChdVersion, DVD_SECTOR_SIZE, SHA1_BYTES,
+    CHD_V5_HEADER_SIZE, ChdHeaderV5, ChdMetadataHeader, ChdVersion, DVD_SECTOR_SIZE, SHA1_BYTES,
 };
 use crate::chd::writer::metadata::{
-    MetadataBlock, MetadataHash, cd_frame_layout, generate_cd_metadata, generate_dvd_metadata,
-    generate_ld_metadata, ld_vbi_bytes,
+    MetadataBlock, MetadataHash, cd_frame_layout, copy_metadata, generate_cd_metadata,
+    generate_dvd_metadata, generate_ld_metadata, ld_vbi_bytes,
 };
 use crate::chd::writer::worker::{
     ChdLdCompressWorker, HunkCompressArgs, HunkWriteState, LdCompressArgs, compress_hunks,
@@ -27,7 +27,7 @@ use crate::util::CancelToken;
 use crate::util::worker_pool::{Pool, parallelism};
 use binrw::BinWrite;
 use sha1::{Digest, Sha1};
-use std::io::{BufReader, BufWriter, Cursor, Read, Seek, SeekFrom, Write};
+use std::io::{BufWriter, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
@@ -170,9 +170,62 @@ impl ChdWriter {
         )
     }
 
+    /// Raw passthrough writer: `logical_bytes` of an already-laid-out stream,
+    /// with `metadata` copied verbatim from the source container.
+    pub fn create_raw(
+        output_path: impl AsRef<Path>,
+        logical_bytes: u64,
+        hunk_bytes: u32,
+        unit_bytes: u32,
+        metadata: Vec<ChdMetadataHeader>,
+        codecs: Vec<ChdCodec>,
+        level: Option<i32>,
+    ) -> ChdResult<Self> {
+        if logical_bytes == 0
+            || hunk_bytes == 0
+            || hunk_bytes > MAX_DVD_HUNK_BYTES
+            || unit_bytes == 0
+            || !hunk_bytes.is_multiple_of(unit_bytes)
+        {
+            return Err(ChdError::InvalidHunkSize);
+        }
+
+        let file = std::fs::File::create(output_path)?;
+        let writer = BufWriter::with_capacity(IO_BUFFER_SIZE, file);
+
+        let slots = codec_header_slots(&codecs);
+        let header = ChdHeaderV5 {
+            length: CHD_V5_HEADER_SIZE,
+            version: ChdVersion::V5,
+            compressor_0: slots[0],
+            compressor_1: slots[1],
+            compressor_2: slots[2],
+            compressor_3: slots[3],
+            logical_bytes,
+            map_offset: 0,
+            meta_offset: 0,
+            hunk_bytes,
+            unit_bytes,
+            raw_sha1: [0; SHA1_BYTES],
+            sha1: [0; SHA1_BYTES],
+            parent_sha1: [0; SHA1_BYTES],
+        };
+
+        let metadata = copy_metadata(metadata)?;
+        Self::init(
+            writer,
+            header,
+            codecs,
+            level,
+            metadata,
+            Vec::new(),
+            Vec::new(),
+        )
+    }
+
     fn init(
         mut writer: BufWriter<std::fs::File>,
-        header: ChdHeaderV5,
+        mut header: ChdHeaderV5,
         codecs: Vec<ChdCodec>,
         level: Option<i32>,
         metadata: MetadataBlock,
@@ -185,6 +238,14 @@ impl ChdWriter {
         writer.write_all(&header_bytes)?;
         let mut writer_pos = header_bytes.len() as u64;
 
+        // A zero offset is how readers learn there is no metadata
+        // chain; a metadata-less legacy source must not point at the
+        // first hunk.
+        header.meta_offset = if metadata.bytes.is_empty() {
+            0
+        } else {
+            writer_pos
+        };
         writer.write_all(metadata.bytes.as_slice())?;
         writer_pos += metadata.bytes.len() as u64;
 
@@ -207,9 +268,9 @@ impl ChdWriter {
     /// Reads `sector_data_size` bytes from the source for every data
     /// frame of the padded layout; the per-track padding frames stay
     /// zero but are still hashed, matching chdman.
-    pub fn compress_all_hunks(
+    pub fn compress_all_hunks<R: Read>(
         &mut self,
-        bin_reader: &mut BufReader<std::fs::File>,
+        bin_reader: &mut R,
         sector_data_size: usize,
         bytes_done: &Arc<AtomicU64>,
         cancel: &CancelToken,
@@ -243,9 +304,9 @@ impl ChdWriter {
         result
     }
 
-    pub fn compress_all_hunks_dvd(
+    pub fn compress_all_hunks_dvd<R: Read>(
         &mut self,
-        iso_reader: &mut BufReader<std::fs::File>,
+        iso_reader: &mut R,
         bytes_done: &Arc<AtomicU64>,
         cancel: &CancelToken,
     ) -> ChdResult<()> {
@@ -264,6 +325,55 @@ impl ChdWriter {
             },
             HunkCompressArgs {
                 reader: iso_reader,
+                raw_sha1: &mut self.raw_sha1,
+                hunk_bytes,
+                bytes_done,
+                cancel,
+            },
+            self.header.logical_bytes,
+        );
+
+        pool.shutdown();
+        result
+    }
+
+    /// Compresses a raw stream straight through: no frame interleave, no
+    /// audio swap, no padding synthesis. The CD codec set is used when the
+    /// units are CD frames so a migrated CD image still gets `cdlz`/`cdzl`/`cdfl`.
+    pub fn compress_all_hunks_raw<R: Read>(
+        &mut self,
+        reader: &mut R,
+        bytes_done: &Arc<AtomicU64>,
+        cancel: &CancelToken,
+    ) -> ChdResult<()> {
+        let hunk_bytes = self.header.hunk_bytes as usize;
+        let n_threads = parallelism();
+        let pool: Pool<worker::ChdCompressWork, worker::ChdCompressedOut, ChdError> =
+            if self.header.unit_bytes == FRAME_SIZE as u32 {
+                Pool::spawn(make_chd_compress_workers(
+                    n_threads,
+                    hunk_bytes,
+                    &self.codecs,
+                    self.level,
+                )?)
+            } else {
+                Pool::spawn(make_chd_dvd_compress_workers(
+                    n_threads,
+                    hunk_bytes,
+                    &self.codecs,
+                    self.level,
+                )?)
+            };
+
+        let result = compress_hunks_dvd(
+            &pool,
+            HunkWriteState {
+                writer: &mut self.writer,
+                writer_pos: &mut self.writer_pos,
+                map_entries: &mut self.map_entries,
+            },
+            HunkCompressArgs {
+                reader,
                 raw_sha1: &mut self.raw_sha1,
                 hunk_bytes,
                 bytes_done,
@@ -376,11 +486,9 @@ impl ChdWriter {
         self.writer.write_all(&map_data)?;
         self.writer_pos += map_data.len() as u64;
 
-        let meta_offset = self.header.length as u64;
         let raw_sha1: [u8; SHA1_BYTES] = self.raw_sha1.finalize().into();
 
         self.header.map_offset = map_offset;
-        self.header.meta_offset = meta_offset;
         self.header.raw_sha1 = raw_sha1;
         self.header.sha1 = compute_overall_sha1(raw_sha1, &self.metadata_hashes);
 
@@ -420,7 +528,7 @@ mod tests {
     use crate::util::NoProgress;
     use crate::util::iso9660::test_fixtures::{IsoSpec, make_iso};
     use binrw::BinRead;
-    use std::io::Cursor as IoCursor;
+    use std::io::{BufReader, Cursor as IoCursor};
     use std::sync::atomic::Ordering;
 
     use crate::chd::compression::avhuff;
@@ -624,6 +732,57 @@ mod tests {
             ChdWriter::create_dvd(&out, 4096, 0, default_dvd_codecs(), None),
             Err(ChdError::InvalidHunkSize)
         ));
+    }
+
+    #[test]
+    fn raw_chd_passes_the_stream_and_metadata_through() {
+        let raw = mixed_iso(12);
+        let dir = tempfile::tempdir().unwrap();
+        let chd_path = dir.path().join("out.chd");
+
+        // Stale `next` offsets from the source file must not survive the copy.
+        let entries = vec![
+            ChdMetadataHeader::new_dvd_metadata(),
+            ChdMetadataHeader {
+                tag: *b"TEST",
+                flags: CHD_METADATA_FLAG_HASHED,
+                reserved: [0xff; 8],
+                data: b"COPIED\0".to_vec(),
+            },
+        ];
+
+        let mut writer = ChdWriter::create_raw(
+            &chd_path,
+            raw.len() as u64,
+            4096,
+            2048,
+            entries,
+            default_dvd_codecs(),
+            None,
+        )
+        .unwrap();
+        let bytes_done = Arc::new(AtomicU64::new(0));
+        writer
+            .compress_all_hunks_raw(
+                &mut IoCursor::new(raw.clone()),
+                &bytes_done,
+                &CancelToken::new(),
+            )
+            .unwrap();
+        writer.finalize().unwrap();
+
+        let chd = std::fs::read(&chd_path).unwrap();
+        let header = ChdHeaderV5::read(&mut IoCursor::new(&chd)).unwrap();
+        assert_eq!(header.logical_bytes, raw.len() as u64);
+        assert_eq!(header.unit_bytes, 2048);
+        assert_eq!(decode_hunks(&chd, &header), raw);
+
+        let out = read_metadata(&chd, &header);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].tag, CHD_METADATA_TAG_DVD);
+        assert_eq!(out[1].tag, *b"TEST");
+        assert_eq!(out[1].data, b"COPIED\0");
+        assert_eq!(u64::from_be_bytes(out[1].reserved), 0);
     }
 
     #[tokio::test]

@@ -36,6 +36,7 @@ fn main() {
             cmd_compress_rom,
             cmd_decompress_rom,
             cmd_chd_compress,
+            cmd_chd_migrate,
             cmd_cso_compress,
             cmd_cso_to_chd,
             cmd_cso_decompress,

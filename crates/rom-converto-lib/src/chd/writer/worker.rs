@@ -25,7 +25,7 @@ use crate::util::worker_pool::{Pool, Worker, drive, parallelism};
 use sha1::{Digest, Sha1};
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
-use std::io::{BufReader, BufWriter, Read, Seek, Write};
+use std::io::{BufWriter, Read, Seek, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -165,8 +165,8 @@ pub(super) struct HunkWriteState<'a> {
 }
 
 /// Input side shared by the CD and DVD compress paths.
-pub(super) struct HunkCompressArgs<'a> {
-    pub reader: &'a mut BufReader<std::fs::File>,
+pub(super) struct HunkCompressArgs<'a, R> {
+    pub reader: &'a mut R,
     pub raw_sha1: &'a mut Sha1,
     pub hunk_bytes: usize,
     pub bytes_done: &'a Arc<AtomicU64>,
@@ -194,10 +194,10 @@ pub(super) struct HunkCompressArgs<'a> {
 /// `state.writer_pos` is the file position **before** the next
 /// compressed hunk would land. The caller owns it and passes it
 /// through; this function updates it in place.
-pub(super) fn compress_hunks(
+pub(super) fn compress_hunks<R: Read>(
     pool: &Pool<ChdCompressWork, ChdCompressedOut, ChdError>,
     state: HunkWriteState<'_>,
-    args: HunkCompressArgs<'_>,
+    args: HunkCompressArgs<'_, R>,
     frame_data: &[bool],
     sector_data_size: usize,
     cd_audio_frames: &[bool],
@@ -262,10 +262,10 @@ pub(super) fn compress_hunks(
 /// subcode. The raw SHA-1 covers exactly `logical_bytes`; the zero
 /// padding of the final partial hunk is compressed but never hashed,
 /// matching chdman.
-pub(super) fn compress_hunks_dvd(
+pub(super) fn compress_hunks_dvd<R: Read>(
     pool: &Pool<ChdCompressWork, ChdCompressedOut, ChdError>,
     state: HunkWriteState<'_>,
-    args: HunkCompressArgs<'_>,
+    args: HunkCompressArgs<'_, R>,
     logical_bytes: u64,
 ) -> ChdResult<()> {
     let HunkCompressArgs {

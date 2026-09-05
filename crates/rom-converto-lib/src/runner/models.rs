@@ -71,6 +71,7 @@ impl RunSchemaManifest {
                 "cso.to_chd",
                 "cso.to-chd",
                 "chd.compress",
+                "chd.migrate",
                 "chd.extract",
                 "chd.verify",
                 "chd.to_cso",

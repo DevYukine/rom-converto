@@ -34,7 +34,7 @@ use indicatif::MultiProgress;
 use indicatif_log_bridge::LogWrapper;
 use rom_converto_lib::chd::{
     ChdCodec, ChdOptions, DiscMode, convert_disc_to_chd_cancellable, extract_from_chd_cancellable,
-    verify_chd, verify_chd_batch,
+    migrate_chd_to_v5_batch, migrate_chd_to_v5_cancellable, verify_chd, verify_chd_batch,
 };
 use rom_converto_lib::cso::{
     CsoCompressOptions, CsoFormat, compress_to_cso_cancellable, decompress_from_cso_cancellable,
@@ -191,12 +191,26 @@ fn finish_single(
     started: Instant,
     report: Option<&Path>,
 ) -> Result<()> {
+    let in_bytes = input_len(input);
+    finish_single_sized(input, in_bytes, output, direction, op, started, report)
+}
+
+/// [`finish_single`] for operations that can replace their own input, where
+/// the source size has to be measured before the write.
+fn finish_single_sized(
+    input: &Path,
+    in_bytes: u64,
+    output: &Path,
+    direction: TallyDirection,
+    op: &str,
+    started: Instant,
+    report: Option<&Path>,
+) -> Result<()> {
     use rom_converto_lib::util::{
         FileStatus, ReportFormat, ReportRecord, ReportRecordInput, ReportTotals, write_report,
     };
 
     let elapsed = started.elapsed();
-    let in_bytes = input_len(input);
     let out_bytes = file_len(output);
     let mut tally = Tally::new();
     tally.backdate(started);
@@ -3673,6 +3687,145 @@ async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()>
                     )?;
                 }
             }
+            ChdCommands::Migrate(cmd) => {
+                let eff = &effective.chd;
+                let mut opts = ChdOptions {
+                    hunk_size: cmd.hunk_size.or(eff.hunk_size),
+                    codecs: resolve_chd_codecs(cmd.codecs.clone(), &eff.codecs)?,
+                    level: cmd.level.or(eff.level),
+                    force: cmd.force || cmd.in_place,
+                };
+                // --in-place names the destination itself, so a configured
+                // output directory must not pull the write elsewhere.
+                let output_dir = if cmd.in_place {
+                    None
+                } else {
+                    cmd.output_dir.clone().or_else(|| eff.output_dir.clone())
+                };
+                let report = cmd.report.clone().or_else(|| eff.report.clone());
+                let fallback = config::policy_fallback(&eff.on_conflict)?;
+                if cmd.recursive {
+                    require_dir(&cmd.input)?;
+                    if dry_run {
+                        // The lib batch migrator writes as it walks, so the
+                        // plan is enumerated here instead.
+                        let inputs = collect_files_with_exts(&cmd.input, &["chd"], cmd.max_depth)?;
+                        let mut tally = Tally::new();
+                        let mut records = Vec::with_capacity(inputs.len());
+                        for file in &inputs {
+                            let desired = match (cmd.in_place, output_dir.as_deref()) {
+                                (true, _) => file.clone(),
+                                (false, Some(_)) => rom_converto_lib::util::place_in_dir_mirrored(
+                                    file,
+                                    &cmd.input,
+                                    output_dir.as_deref(),
+                                ),
+                                (false, None) => rom_converto_lib::chd::migrated_chd_path(file),
+                            };
+                            let decision = WriteDecision::Write(desired.clone());
+                            dry_run::log_plan("migrate", file, &desired, &decision, None, None);
+                            dry_run::record(&mut tally, file, &decision);
+                            records
+                                .push(dry_run::report_record("migrate", file, &desired, &decision));
+                        }
+                        return dry_run::finish(&tally, &records, report.as_deref());
+                    }
+                    migrate_chd_to_v5_batch(
+                        &progress,
+                        &total_progress,
+                        &cmd.input,
+                        opts,
+                        output_dir.as_deref(),
+                        cmd.max_depth,
+                        cmd.in_place,
+                    )
+                    .await?
+                } else {
+                    ensure_input_exists(&cmd.input)?;
+                    if cmd.in_place && rom_converto_lib::util::is_archive_path(&cmd.input) {
+                        anyhow::bail!(
+                            "--in-place needs a plain .chd, not an archive: {}",
+                            cmd.input.display()
+                        );
+                    }
+                    let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["chd"])?;
+                    let input = resolved.path();
+                    let output = if cmd.in_place {
+                        input.to_path_buf()
+                    } else {
+                        match cmd.output_flag.clone().or_else(|| cmd.output.clone()) {
+                            Some(p) => p,
+                            None => {
+                                if !dry_run && let Some(dir) = output_dir.as_deref() {
+                                    std::fs::create_dir_all(dir)?;
+                                }
+                                match cmd.output_template.as_deref() {
+                                    Some(tmpl) => crate::util::templated_output(
+                                        tmpl,
+                                        input,
+                                        output_dir.as_deref(),
+                                        "chd",
+                                        None,
+                                        dry_run,
+                                    )?,
+                                    None => match output_dir.as_deref() {
+                                        Some(dir) => rom_converto_lib::util::place_in_dir(
+                                            &resolved.output_basis().with_extension("chd"),
+                                            Some(dir),
+                                        ),
+                                        None => rom_converto_lib::chd::migrated_chd_path(
+                                            resolved.output_basis(),
+                                        ),
+                                    },
+                                }
+                            }
+                        }
+                    };
+                    let policy =
+                        resolve_policy(cmd.on_conflict, cmd.force || cmd.in_place, fallback);
+                    let decision = resolve_output(&output, policy)?;
+                    if dry_run {
+                        return dry_run_single(
+                            "migrate",
+                            &cmd.input,
+                            &output,
+                            &decision,
+                            None,
+                            None,
+                            report.as_deref(),
+                        );
+                    }
+                    let output = match decision {
+                        WriteDecision::Skip => {
+                            log_skipped(&output);
+                            return Ok(());
+                        }
+                        WriteDecision::Write(p) => p,
+                    };
+                    if !skip_space_check {
+                        let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
+                        batch::space_preflight_for_size(file_len(input), check_dir)?;
+                    }
+                    opts.force = true;
+                    let in_path = input.to_path_buf();
+                    let out_path = output.clone();
+                    let started = Instant::now();
+                    // --in-place overwrites the source, so its size has to be
+                    // taken before the write to keep the summary honest.
+                    let in_bytes = input_len(&cmd.input);
+                    migrate_chd_to_v5_cancellable(&progress, in_path, output, opts, cancel.clone())
+                        .await?;
+                    finish_single_sized(
+                        &cmd.input,
+                        in_bytes,
+                        &out_path,
+                        TallyDirection::Compress,
+                        "migrate",
+                        started,
+                        report.as_deref(),
+                    )?;
+                }
+            }
             ChdCommands::Extract(cmd) => {
                 let eff = &effective.chd;
                 let output_dir = cmd.output_dir.clone().or_else(|| eff.output_dir.clone());
@@ -5344,6 +5497,26 @@ mod migrate_opts_tests {
             RvzCompressOptions::default().compression_level
         );
         assert_eq!(opts.chunk_size, RvzCompressOptions::default().chunk_size);
+    }
+}
+
+#[cfg(test)]
+mod chd_migrate_target_tests {
+    use super::*;
+    use crate::commands::chd::MigrateCommand;
+
+    #[test]
+    fn derived_output_is_a_v5_sibling_not_the_input() {
+        let derived = rom_converto_lib::chd::migrated_chd_path(Path::new("roms/game.chd"));
+        assert_eq!(derived, Path::new("roms/game.v5.chd"));
+    }
+
+    #[test]
+    fn in_place_conflicts_with_an_explicit_output() {
+        assert!(
+            MigrateCommand::try_parse_from(["migrate", "--in-place", "-o", "out.chd", "in.chd"])
+                .is_err()
+        );
     }
 }
 

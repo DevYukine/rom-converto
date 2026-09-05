@@ -25,6 +25,12 @@ pub(crate) struct SyncChdHandle {
     pub file: Arc<std::fs::File>,
 }
 
+/// The on-disk CHD format version of `path`, without parsing the rest of
+/// the header. Callers use it to pick between the V5 and the v1-v4 reader.
+pub(crate) fn chd_version(path: &std::path::Path) -> ChdResult<u32> {
+    crate::chd::legacy::peek_chd_version(path)?.ok_or(ChdError::UnsupportedChdVersion)
+}
+
 pub(crate) fn open_chd_sync(path: &std::path::Path) -> ChdResult<SyncChdHandle> {
     use std::io::{BufReader as StdBufReader, Read, Seek};
 

@@ -507,6 +507,7 @@ async fn run_single_request(
         "cso.decompress" => cso_decompress(req, progress, cancel).await,
         "cso.verify" => cso_verify(req, progress, cancel).await,
         "chd.compress" => chd_compress(req, progress, cancel).await,
+        "chd.migrate" => chd_migrate(req, progress, cancel).await,
         "chd.extract" => chd_extract(req, progress, cancel).await,
         "chd.verify" => chd_verify(req, progress, cancel).await,
         "cso.to_chd" | "cso.to-chd" => cso_to_chd(req, progress, cancel).await,
@@ -790,6 +791,54 @@ async fn chd_compress(
             input.clone(),
             output.clone(),
             mode,
+            opts,
+            cancel,
+        )
+        .await
+        .map_err(anyhow::Error::from)
+    })
+    .await
+}
+
+async fn chd_migrate(
+    req: RunRequest,
+    progress: &dyn ProgressReporter,
+    cancel: CancelToken,
+) -> Result<RunResponse> {
+    let input = required_input(&req)?;
+    // A migrated CHD keeps the .chd extension, so the derived name carries a
+    // v5 infix to stay off its own source.
+    let desired = output_or(&req, || crate::chd::migrated_chd_path(&input))?;
+    let plan = prepare_output(
+        progress,
+        &req,
+        &input,
+        &desired,
+        "chd.migrate",
+        OutputVerify::Chd,
+        &cancel,
+    )
+    .await?;
+    let Some(output) = plan.output else {
+        return Ok(skipped(&input, &desired, "chd.migrate"));
+    };
+    if let Some(line) = plan.line {
+        return Ok(RunResponse::ok(
+            "Dry run planned.",
+            Some(RunData::Plan(line)),
+        ));
+    }
+    let opts = ChdOptions {
+        hunk_size: opt_u32(&req, "hunk_size")?,
+        codecs: opt_chd_codecs(&req)?,
+        level: opt_i32(&req, "level")?,
+        force: true,
+    };
+    run_file_op(&input, &output, "chd.migrate", || async {
+        crate::chd::migrate_chd_to_v5_cancellable(
+            progress,
+            input.clone(),
+            output.clone(),
             opts,
             cancel,
         )
@@ -2492,6 +2541,7 @@ fn batch_exts(operation: &str) -> Result<&'static [&'static str]> {
         "cso.compress" => Ok(&["iso"]),
         "cso.decompress" | "cso.verify" | "cso.to_chd" | "cso.to-chd" => Ok(&["cso", "zso", "dax"]),
         "chd.compress" => Ok(&["iso", "cue"]),
+        "chd.migrate" => Ok(&["chd"]),
         "chd.extract" | "chd.verify" | "chd.to_cso" | "chd.to-cso" => Ok(&["chd"]),
         "dol.compress" => Ok(&["iso", "gcm"]),
         "rvl.compress" => Ok(&["iso", "wbfs"]),

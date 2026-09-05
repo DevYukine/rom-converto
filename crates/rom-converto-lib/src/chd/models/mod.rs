@@ -6,6 +6,9 @@ use binrw::{BinRead, BinWrite, binrw};
 pub const CHD_V5_HEADER_SIZE: u32 = 124;
 pub const CHD_METADATA_TAG_CD: [u8; 4] = *b"CHT2";
 pub const CHD_METADATA_TAG_DVD: [u8; 4] = *b"DVD ";
+
+/// Hard disk geometry: `CYLS:%d,HEADS:%d,SECS:%d,BPS:%d`.
+pub const CHD_METADATA_TAG_HARD_DISK: [u8; 4] = *b"GDDD";
 /// Core A/V metadata of a laserdisc CHD: the `FPS:... WIDTH:...` string.
 pub const CHD_METADATA_TAG_AV: [u8; 4] = *b"AVAV";
 /// Per-field packed VBI blob; its presence is what marks an A/V CHD as

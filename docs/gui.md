@@ -34,7 +34,7 @@ the sidebar:
 | Wii | Compress to RVZ, Decompress RVZ, Verify Wii disc, Wii info |
 | Wii U | Compress to WUA, Decrypt NUS title, Verify Wii U title, Wii U info |
 | Switch | Compress to NSZ/XCZ, Decompress NSZ/XCZ, Verify Switch container, Switch info |
-| CHD | Compress to CHD, Extract CHD, Extract to CSO/ZSO, Verify CHD, CHD info |
+| CHD | Compress to CHD, Migrate CHD to v5, Extract CHD, Extract to CSO/ZSO, Verify CHD, CHD info |
 | CSO/ZSO | Compress to CSO/ZSO, Decompress CSO/ZSO, Compress to CHD, Verify CSO/ZSO, CSO/ZSO info |
 | CD (CUE/BIN) | Merge multi-bin, Convert CUE/BIN |
 | Xbox | Convert ISO → XISO, Extract XISO, Xbox info |
@@ -52,6 +52,15 @@ Compress to CHD accepts `.cue`, `.iso`, and `.avi` and auto-detects CD, DVD, or 
 the input, the same as the CLI; a mode picker lets you override it. Picking or auto-detecting
 LD mode hides the codec, level, and hunk-size fields, since LD-mode CHDs always use avhuff
 with a per-field hunk size fixed by the AVI.
+
+Migrate CHD to v5 rewrites a CHD in format version 1 to 4 as a version 5 CHD. The decoded raw
+stream is copied through unchanged, so only the container and the compression are rebuilt.
+Metadata is kept verbatim except for the pre-2009 `CHTR` track entries, which become `CHT2`
+the way `chdman copy` does so the overall SHA-1 matches current chdman output. Hunk size defaults to the source's, and the codecs default to the CD
+or DVD set matching the source's unit size. Input and output share the `.chd` extension, so the
+output is written next to the source as `<name>.v5.chd` instead of over it. A CHD that is
+already version 5 is rejected. The CLI's `--in-place` has no GUI equivalent on purpose:
+queued jobs always write to a path you can see before they run.
 
 The Inspect page (reached from the sidebar's Inspect icon, not a per-console page) reads any
 supported file the same way the CLI's `rom-converto info` does. The card lays out Container,
@@ -74,7 +83,7 @@ CLI command to its GUI page.
 | CLI command | GUI page |
 |---|---|
 | `nds encrypt`, `decrypt` | Nintendo DS |
-| `chd compress`, `extract`, `to-cso`, `verify`, `info` | CHD |
+| `chd compress`, `migrate`, `extract`, `to-cso`, `verify`, `info` | CHD |
 | `cso compress`, `decompress`, `to-chd`, `verify`, `info` | CSO/ZSO |
 | `ctr` (all operations) | 3DS |
 | `dol compress`, `decompress`, `verify`, `info` | GameCube |

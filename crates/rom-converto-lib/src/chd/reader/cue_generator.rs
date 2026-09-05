@@ -209,6 +209,34 @@ mod tests {
     }
 
     #[test]
+    fn parse_chtr_track_has_no_gap_fields() {
+        // CHTR shape: "TRACK:%d TYPE:%s SUBTYPE:%s FRAMES:%d", no gap fields at all.
+        let meta = "TRACK:1 TYPE:MODE1_RAW SUBTYPE:NONE FRAMES:300";
+        let tracks = parse_chd_track_metadata(meta).unwrap();
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].track_number, 1);
+        assert_eq!(tracks[0].track_type, "MODE1_RAW");
+        assert_eq!(tracks[0].frames, 300);
+        assert_eq!(tracks[0].pregap, 0);
+        assert_eq!(tracks[0].pgtype, None);
+        assert_eq!(tracks[0].pgsub, None);
+        assert_eq!(tracks[0].postgap, None);
+    }
+
+    #[test]
+    fn parse_chgd_track_ignores_pad() {
+        // CHGD shape adds an unknown "PAD:%d" key ahead of the gap fields.
+        let meta = "TRACK:1 TYPE:MODE1_RAW SUBTYPE:NONE FRAMES:300 PAD:12 PREGAP:0 PGTYPE:MODE1 PGSUB:NONE POSTGAP:0";
+        let tracks = parse_chd_track_metadata(meta).unwrap();
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].frames, 300);
+        assert_eq!(tracks[0].pregap, 0);
+        assert_eq!(tracks[0].pgtype.as_deref(), Some("MODE1"));
+        assert_eq!(tracks[0].pgsub.as_deref(), Some("NONE"));
+        assert_eq!(tracks[0].postgap, Some(0));
+    }
+
+    #[test]
     fn parse_invalid_track_number_fails() {
         let result = parse_chd_track_metadata("TRACK:abc TYPE:MODE1_RAW FRAMES:100");
         assert!(result.is_err());

@@ -16,7 +16,7 @@ the tool and docs.
 | Wii (`rvl`) | disc image | `.iso`, `.wbfs`, `.wia`, `.gcz`, NKit | RVZ | compress / migrate / decompress |
 | Wii U (`wup`) | title (NUS or loadiine); disc image for `.wud`/`.wux` | NUS, loadiine, `.wud`, `.wux` | WUA | compress; decrypt |
 | Switch (`nx`) | container | NSP, XCI | NSZ, XCZ | compress / decompress |
-| CD / DVD (`chd`) | disc image | `.cue`+`.bin`, `.iso` | CHD | compress / extract |
+| CD / DVD (`chd`) | disc image | `.cue`+`.bin`, `.iso`, CHD v1 to v4 | CHD | compress / extract / migrate |
 | PSP / PS2 (`cso`) | ISO | `.iso` | CSO, ZSO | compress / decompress |
 | CD (`cue`) | disc image | `.cue`+`.bin` | merged `.bin`/`.cue` | merge |
 | Original Xbox (`xbox`) | disc image | `.iso`, game directory | XISO | convert / extract |
@@ -80,7 +80,7 @@ chdman.
 | RVZ | Dolphin | Byte-identical in both directions on GameCube and Wii, including RVZ migrated from a GCZ, WIA, or NKit source |
 | NSZ / XCZ | nsz | Byte-identical to `nsz` and `nsz -D`; matching CLI defaults |
 | CSO / ZSO | maxcso | maxcso-compatible defaults, including index shift and store-raw fallback |
-| CHD | chdman | `createcd` and `createdvd` equivalents; also reads chdman DVD CHDs with `huff` and `flac` hunks |
+| CHD | chdman | `createcd` and `createdvd` equivalents; also reads chdman DVD CHDs with `huff` and `flac` hunks, and inspects or migrates v1 to v4 files from older chdman builds |
 
 The Wii U `.wua` pipeline has no comparable reference CLI (Cemu ships the format but not a
 standalone compressor), so no head-to-head numbers are published for it. See the

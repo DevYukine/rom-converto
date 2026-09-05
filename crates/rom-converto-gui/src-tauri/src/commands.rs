@@ -2,7 +2,7 @@ use crate::info_cache::InfoCache;
 use crate::progress::TauriProgress;
 use rom_converto_lib::chd::{
     ChdCodec, ChdOptions, DiscMode, convert_disc_to_chd_cancellable, extract_from_chd_cancellable,
-    verify_chd_cancellable,
+    migrate_chd_to_v5_cancellable, verify_chd_cancellable,
 };
 use rom_converto_lib::cso::{
     CsoCompressOptions, CsoFormat, compress_to_cso_cancellable, decompress_from_cso_cancellable,
@@ -1486,6 +1486,152 @@ pub async fn cmd_chd_compress(
         &record_input,
         &record_output,
         "compress",
+        in_bytes,
+        out_bytes,
+        started.elapsed(),
+    );
+    let comparison = build_comparison(
+        progress_for_verify,
+        &token_for_verify,
+        ComparisonInput {
+            input: &record_input,
+            output: &record_output,
+            input_bytes: in_bytes,
+            output_bytes: out_bytes,
+            target: rom_converto_lib::util::OutputVerify::Chd,
+            verify_after: verify_after.unwrap_or(false),
+        },
+    )
+    .await;
+    Ok(RunOutcome {
+        message: format!("Wrote {out_display}"),
+        record,
+        input_bytes: in_bytes,
+        output_bytes: out_bytes,
+        comparison: Some(comparison),
+    })
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChdMigrateArgs {
+    input_path: PathBuf,
+    output: Option<PathBuf>,
+    codecs: Option<Vec<String>>,
+    level: Option<i32>,
+    hunk_size: Option<u32>,
+    on_conflict: Option<String>,
+    skip_space_check: bool,
+    output_template: Option<String>,
+    report: Option<bool>,
+    verify_after: Option<bool>,
+    dry_run: Option<bool>,
+    task_id: Option<String>,
+}
+
+#[tauri::command]
+pub async fn cmd_chd_migrate(
+    app: AppHandle,
+    state: State<'_, ActiveCancel>,
+    args: ChdMigrateArgs,
+) -> Result<RunOutcome, String> {
+    let ChdMigrateArgs {
+        input_path,
+        output,
+        codecs,
+        level,
+        hunk_size,
+        on_conflict,
+        skip_space_check,
+        output_template,
+        report,
+        verify_after,
+        dry_run,
+        task_id,
+    } = args;
+    let key = task_id.as_deref().unwrap_or("chd-migrate");
+    let progress = Arc::new(TauriProgress::new(app, key));
+    let dry_run = dry_run.unwrap_or(false);
+    let resolved = resolve_archive_input(input_path.clone(), &["chd"]).await?;
+    let basis = resolved.output_basis().to_path_buf();
+    let desired = pick_output(
+        output,
+        output_template.as_deref(),
+        &basis,
+        "chd",
+        None,
+        || rom_converto_lib::chd::migrated_chd_path(&basis),
+        dry_run,
+    )?;
+    if dry_run {
+        let line = plan_line(
+            progress.as_ref(),
+            PlanInput {
+                operation: "migrate",
+                input: &input_path,
+                desired: &desired,
+                on_conflict: on_conflict.as_deref(),
+                media: None,
+                verify: rom_converto_lib::util::OutputVerify::Chd,
+                missing_keys: None,
+            },
+        )
+        .await?;
+        return Ok(RunOutcome {
+            message: line.display_text(),
+            record: None,
+            input_bytes: 0,
+            output_bytes: 0,
+            comparison: None,
+        });
+    }
+    let output = match resolve_output(
+        progress.as_ref(),
+        &desired,
+        on_conflict.as_deref(),
+        rom_converto_lib::util::OutputVerify::Chd,
+    )
+    .await?
+    {
+        Some(p) => p,
+        None => {
+            return Ok(RunOutcome::skipped(
+                report.unwrap_or(false),
+                &input_path,
+                "migrate",
+                &desired,
+            ));
+        }
+    };
+    let out_display = output.display().to_string();
+    let in_bytes = input_size(resolved.path());
+    preflight_space(
+        output.parent().unwrap_or(&output),
+        in_bytes,
+        skip_space_check,
+    )?;
+    let opts = resolve_chd_opts(hunk_size, codecs, level)?;
+    let record_input = input_path.clone();
+    let record_output = output.clone();
+    let progress_for_verify = progress.clone();
+    let resolved_path = resolved.path().to_path_buf();
+    let token = begin(&state, key).await;
+    let token_for_verify = token.clone();
+    let started = Instant::now();
+    let result = tokio::spawn(async move {
+        migrate_chd_to_v5_cancellable(progress.as_ref(), resolved_path, output, opts, token).await
+    })
+    .await
+    .map_err(err_to_string)?
+    .map_err(err_to_string);
+    finish(&state, key).await;
+    result?;
+    let out_bytes = input_size(&record_output);
+    let record = build_record(
+        report.unwrap_or(false),
+        &record_input,
+        &record_output,
+        "migrate",
         in_bytes,
         out_bytes,
         started.elapsed(),

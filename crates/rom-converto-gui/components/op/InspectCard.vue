@@ -240,6 +240,7 @@ const mediaBadge = computed(() => {
 			if (info.content?.kind === "psp") return "UMD";
 			if (info.ld) return "LaserDisc";
 			if (info.dvd) return "DVD";
+			if (info.hard_disk) return "Hard Disk";
 			return info.tracks.length ? "CD" : null;
 		case "cso":
 			if (info.content?.kind === "psx") return info.content.media;

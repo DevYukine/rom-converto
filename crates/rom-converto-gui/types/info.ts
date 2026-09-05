@@ -71,9 +71,11 @@ export interface ChdInfo {
   logical_bytes: number;
   physical_bytes: number;
   compression_ratio: number;
-  raw_sha1: string;
-  sha1: string;
+  raw_sha1: string | null;
+  sha1: string | null;
+  md5: string | null;
   parent_sha1: string | null;
+  parent_md5: string | null;
   tracks: Array<{
     number: number;
     track_type: string;
@@ -87,6 +89,7 @@ export interface ChdInfo {
   metadata_tags: Array<{ tag: string; length: number }>;
   version_string: string | null;
   dvd: { total_sectors: number; layer_class: string } | null;
+  hard_disk: { cylinders: number; heads: number; sectors: number; sector_bytes: number } | null;
   ld: ChdLdInfo | null;
   content: DiscContent | null;
 }
