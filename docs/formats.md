@@ -1,115 +1,138 @@
 # Formats
 
-rom-converto reads a per-platform input and writes a matching output format. This page
-explains what each output format is, which term applies to each platform's input, and where
-each format works.
+rom-converto converts selected ROM and disc-image formats. It also inspects a wider
+set of files with `info`. Use `rom-converto capabilities` for the exact operations
+and `info` extensions in the installed build.
 
-## Terminology
+## Conversion formats
 
-The input vocabulary is per platform on purpose. These are the exact terms used everywhere in
-the tool and docs.
+| Family | Input | Output | Main operations |
+|---|---|---|---|
+| Nintendo 3DS (`ctr`) | `.cia`, `.3ds`/`.cci`, `.cxi`, `.3dsx`; CDN content | Z3DS: `.zcia`, `.zcci`, `.zcxi`, `.z3dsx`; encrypted/decrypted ROMs; CIA/CCI | compress, decompress, encrypt, decrypt, CIA/CCI conversion, CDN to CIA |
+| GameCube (`dol`) | `.iso`, `.gcm`; legacy `.gcz`, `.nkit.iso`, `.nkit.gcz` | `.rvz`, then `.iso` on decompress | compress, migrate, decompress |
+| Wii (`rvl`) | `.iso`, `.wbfs`; legacy `.gcz`, `.wia`, NKit | `.rvz`, then `.iso` or `.wbfs` | compress, migrate, decompress |
+| Wii U (`wup`) | NUS or loadiine title directory, `.wud`, `.wux` | `.wua` | compress, decrypt NUS to loadiine |
+| Switch (`nx`) | `.nsp`, `.xci` | `.nsz`, `.xcz`, merged NSP/XCI, or per-title NSPs | compress, decompress, merge, split |
+| CHD (`chd`) | `.cue` with tracks, suitable `.iso`, LaserDisc `.avi`, or legacy CHD v1 to v4 | CHD v5 | compress, migrate, extract, convert DVD CHD to CSO/ZSO |
+| CSO (`cso`) | `.iso` | `.cso` or `.zso` | compress, decompress, convert to CHD |
+| CUE (`cue`) | Multi-file `.cue`/`.bin` | single `.cue`/`.bin`, `.iso`, CSO/ZSO | merge, to-iso, to-cso |
+| Original Xbox (`xbox`) | Full XDVDFS `.iso` or extracted game directory | `.xiso` | convert, extract |
+| Xbox 360 (`xenon`) | XDVDFS `.iso`; extracted game directories for ZAR only | `.zar` or GoD install tree | compress, extract, convert |
+| PlayStation 3 (`ps3`) | Encrypted disc `.iso` | Plain `.iso` | decrypt |
+| Nintendo DS (`nds`) | `.nds`, `.dsi` | Same extension | encrypt or decrypt the secure area |
+| PSP (`psp`) | `EBOOT.PBP` or PSN `.pkg` | extracted files or `.iso` | extract, to-iso |
+| PS Vita (`vita`) | `.pkg` | extracted files | extract |
 
-| Platform (code) | Input term | Input formats | Output format | Operation |
-|---|---|---|---|---|
-| Nintendo 3DS (`ctr`) | ROM | `.3ds`, `.cci`, `.cxi`, `.cia`; CDN content | Z3DS | compress / decompress |
-| GameCube (`dol`) | disc image | `.iso`, `.gcm`, `.gcz`, NKit | RVZ | compress / migrate / decompress |
-| Wii (`rvl`) | disc image | `.iso`, `.wbfs`, `.wia`, `.gcz`, NKit | RVZ | compress / migrate / decompress |
-| Wii U (`wup`) | title (NUS or loadiine); disc image for `.wud`/`.wux` | NUS, loadiine, `.wud`, `.wux` | WUA | compress; decrypt |
-| Switch (`nx`) | container | NSP, XCI | NSZ, XCZ | compress / decompress |
-| CD / DVD (`chd`) | disc image | `.cue`+`.bin`, `.iso`, CHD v1 to v4 | CHD | compress / extract / migrate |
-| PSP / PS2 (`cso`) | ISO | `.iso` | CSO, ZSO | compress / decompress |
-| CD (`cue`) | disc image | `.cue`+`.bin` | merged `.bin`/`.cue` | merge |
-| Original Xbox (`xbox`) | disc image | `.iso`, game directory | XISO | convert / extract |
-| Xbox 360 (`xenon`) | disc image | `.iso`, game directory | ZAR, GoD | compress / extract / convert |
-| PlayStation 3 (`ps3`) | disc image | encrypted `.iso` | decrypted `.iso` | decrypt |
+`.dax` is a legacy, decode-only input for CSO commands. It cannot be created.
+CHD extraction recreates `.bin` plus `.cue` for CD media and an `.iso` for DVD
+media, so its reverse operation is named `extract`.
 
-Restoring a CHD is always called "extract", because it recreates sidecar files (`.bin`+`.cue`
-for CD, `.iso` for DVD). Every other format uses "decompress" for the reverse operation. The
-collective phrase for all inputs is "ROMs and disc images".
+## Format notes
 
-## What each format is
+### Z3DS
 
-- **Z3DS** wraps a decrypted 3DS ROM in seekable zstd. Extensions are `.zcia`, `.zcci`,
-  `.zcxi`, and `.z3dsx`. Compression only works on decrypted ROMs, since encrypted 3DS content
-  has a near-zero compression ratio. Use `ctr encrypt` after decompression when you need an
-  encrypted `.cia`, `.3ds`, `.cci`, or `.cxi` again.
-- **RVZ** is Dolphin's compressed disc format for GameCube and Wii, with per-block compression
-  and a partition-aware hash pipeline for Wii.
-- **GCZ, WIA, and NKit** are older compressed disc containers that rom-converto reads as
-  GameCube and Wii inputs. `dol migrate` and `rvl migrate` convert them to RVZ after an
-  integrity check, and `compress` migrates a legacy container automatically when it is given
-  one. GCZ (`.gcz`) and NKit (`.nkit.iso`, `.nkit.gcz`) are accepted on both consoles; WIA
-  (`.wia`) is Wii only. `info` reads a `.gcz` or `.wia` directly too, picking GameCube or Wii
-  from the disc magic it wraps.
-- **WUA** is Cemu's Wii U archive format. One archive can bundle a base title, update, and DLC,
-  each under its own `<titleId>_v<version>/` folder.
-- **NSZ / XCZ** compress a Switch NSP or XCI with zstd inside the NCZ format, in solid mode
-  (one frame per NCA) or block mode (fixed-size frames for random reads).
-- **CHD** is MAME's compressed hunk format. CD-mode CHDs come from `.bin`+`.cue` pairs or
-  MODE1/2048 ISOs; DVD-mode CHDs come from PS2-DVD and PSP ISOs. The CD/DVD media type is
-  probed from the image.
-- **LaserDisc CHD** is an `AVAV`-tagged CHD built from a laserdisc rip's `.avi`, the `createld`
-  equivalent. Every hunk is one field of avhuff-compressed audio/video (the `AVAV` metadata
-  records fps, field size, interlacing, and audio channels/rate), and an `AVLD` metadata tag carries
-  the VBI data decoded from the source: CAV picture numbers or CLV timecodes, chapter marks,
-  white flags, and lead-in/out. The input must be uncompressed 4:2:2 video (YUY2, UYVY, or
-  VYUY) with 8- or 16-bit PCM audio; MAME reads the result.
-- **CSO / ZSO** compress a PSP or PS2 ISO block by block. CSO (CISO v1) targets PSP hardware
-  with CFW and PPSSPP; ZSO (LZ4) targets PS2 hardware via Open PS2 Loader. Legacy `.dax` (PSP)
-  containers are accepted as a decode-only input for `decompress`, `verify`, `to-chd`, and
-  `info`; there is no DAX compression target.
-- **CUE/BIN** merging combines a multi-bin `.cue` (one `.bin` per track) into a single
-  `.bin` + `.cue` pair for emulators that cannot load split images.
-- **XISO** is the trimmed Xbox disc filesystem image. A full disc image carries video-partition
-  padding; rebuilding to XISO drops it, typically shrinking the file substantially.
-- **ZAR** is the ZArchive container: zstd level 6 in 64 KiB blocks with an integrity hash.
-  Supported by Xenia since 2024.
-- **GoD** (Games on Demand) is the container format Xbox 360 consoles use for installed
-  titles: a header file plus hashed data part files, split into `<TITLEID>/00007000/<MEDIAID>`
-  and `<MEDIAID>.data/DataNNNN`. The container is unsigned, so it works on modified consoles
-  and emulators, not on unmodified retail systems.
-- **PS3 decrypt** turns an encrypted disc `.iso` into a plain `.iso`. It is an AES-128-CBC
-  sector decrypt: only the sector spans the disc's region table marks encrypted are
-  transformed; the rest passes through unchanged.
+Z3DS uses seekable zstd around a 3DS ROM. By default, `ctr compress` rejects an
+encrypted input. Decrypt first, or pass `--allow-encrypted` when that tradeoff is
+intentional. `ctr decompress`, `ctr encrypt`, and `ctr decrypt` use the matching ROM
+extension. `ctr convert` changes `.cia` and `.3ds`/`.cci`; its CIA output is unsigned
+and intended for CFW or emulators, not a stock 3DS.
 
-## Output compatibility
+### RVZ and legacy Nintendo disc containers
 
-Every output format matches the established encoder for its platform, so a file verifies
-against that tool and loads in the same players. RVZ and NSZ/XCZ are byte-identical to the
-reference encoder at matching settings; CSO/ZSO and CHD are format-compatible with maxcso and
-chdman.
+RVZ is the GameCube and Wii output container. `dol migrate` accepts GCZ and NKit.
+`rvl migrate` also accepts WIA. Migration checks the legacy container before writing
+RVZ. An RVZ decompresses to ISO for GameCube; Wii writes WBFS only when the requested
+output name ends in `.wbfs`.
 
-| Format | Reference tool | Notes |
+### WUA
+
+WUA is the Wii U archive used by Cemu. A single archive can contain base, update, and
+DLC title inputs. A WUA is not a general Wii U disc-image replacement: use `wup compress`
+only with the accepted title layouts or a `.wud`/`.wux` disc image.
+
+### NSZ and XCZ
+
+`nx compress` maps NSP to NSZ and XCI to XCZ. The command needs `prod.keys` to process
+the NCAs. `solid` stores one zstd frame per NCA. `block` stores independent frames and
+uses `block_size_exp` to set the block size.
+
+`nx merge` combines uncompressed NSP/XCI containers; `nx split` writes per-title NSPs.
+Merge selects the highest content versions and drops unselected files, so splitting
+is not a lossless reversal. Selected NCA bytes are preserved, but generated XCI headers
+are unsigned. The tool warns that merged output is intended for emulator use.
+
+### CHD
+
+CHD mode is chosen from the input: CUE input makes a CD CHD, suitable ISO input is
+probed as CD or DVD, and `.avi` selects LaserDisc. `--cd`, `--dvd`, and `--ld` override
+the automatic choice where the command permits it. LaserDisc input must use uncompressed
+YUY2, UYVY, or VYUY video and 8- or 16-bit PCM audio. LaserDisc CHDs can be written but
+are not extracted by this tool.
+
+`info` reads CHD versions 1 through 5. `chd migrate` upgrades supported v1 to v4
+files to v5 while preserving decoded data and updating legacy metadata. It writes
+`<name>.v5.chd` by default; `--in-place` replaces the source. Parent-dependent images
+are unsupported, and legacy audio/video images may grow substantially. See the
+[CLI reference](cli.md#chd-cd--dvd--laserdisc) for options and limits.
+
+Stored legacy hashes are shown by `info`, but migration does not validate them.
+`extract`, `verify`, and `to-cso` require v5, so migrate older files first.
+
+### CSO and ZSO
+
+CSO is a CISO v1 container. ZSO uses LZ4 blocks. Choose the output with
+`cso compress --format cso` or `--format zso`. These containers are block-compressed
+ISO storage; use the target software's documentation to choose a format it supports.
+
+### XISO, ZAR, and GoD
+
+XISO contains an original Xbox XDVDFS game partition. Converting a full disc image
+trims it to that content. ZAR is the Xbox 360 ZArchive written by `xenon compress`.
+Both commands also accept an extracted game directory.
+
+`xenon convert` writes an Xbox 360 disc ISO as Games on Demand (GoD): a header at
+`<TITLEID>/00007000/<MEDIAID>` and parts under `<MEDIAID>.data/DataNNNN`. It trims
+unused disc data and adds hashes; it does not compress the data. The container is
+unsigned and intended for modified consoles. This command requires a disc image
+with a root `default.xex`, not an extracted game folder.
+
+## Recommended formats
+
+Choose a format for the emulator or loader you use. These recommendations cover
+rom-converto's compression and disc-conversion targets. Sources checked September 5, 2026.
+
+| Console / media | Recommended format | Target and limits |
 |---|---|---|
-| RVZ | Dolphin | Byte-identical in both directions on GameCube and Wii, including RVZ migrated from a GCZ, WIA, or NKit source |
-| NSZ / XCZ | nsz | Byte-identical to `nsz` and `nsz -D`; matching CLI defaults |
-| CSO / ZSO | maxcso | maxcso-compatible defaults, including index shift and store-raw fallback |
-| CHD | chdman | `createcd` and `createdvd` equivalents; also reads chdman DVD CHDs with `huff` and `flac` hunks, and inspects or migrates v1 to v4 files from older chdman builds |
+| Nintendo 3DS | Z3DS (`.zcci`) | [Azahar 2123+](https://github.com/azahar-emu/azahar/releases/tag/2123), using decrypted ROMs. Compressed CIA packages (`.zcia`) are installed instead. |
+| GameCube / Wii | RVZ | [Dolphin](https://github.com/dolphin-emu/dolphin/blob/master/Readme.md). For a real Wii with [USB Loader GX](https://github.com/wiidev/usbloadergx/blob/enhanced/source/usbloader/wbfs/wbfs_fat.cpp), decompress to WBFS or ISO. |
+| Wii U | WUA | [Cemu](https://github.com/cemu-project/Cemu/blob/main/src/Cafe/TitleList/TitleList.cpp). Can bundle the base game, updates, and DLC. |
+| Switch | NSP / XCI for playback | [Eden](https://github.com/eden-emulator/mirror/blob/master/src/core/loader/loader.cpp) loads NSP/XCI. [NSZ / XCZ](https://github.com/nicoboss/nsz/blob/master/docs/usage.md) are compressed storage formats; use `nx decompress` first. |
+| PlayStation | CHD | [DuckStation](https://github.com/stenzek/duckstation/blob/master/README.md). Convert from CUE/BIN and retain any required SBI file for LibCrypt games. |
+| PlayStation 2 | CHD for emulation; ZSO for hardware | [PCSX2](https://github.com/PCSX2/pcsx2/blob/master/pcsx2/VMManager.cpp) reads CHD. Use ZSO with [Open PS2 Loader](https://github.com/ps2homebrew/Open-PS2-Loader/blob/master/README.md) on a real PS2. |
+| PSP | CSO | [PPSSPP and real PSPs with custom firmware](https://www.ppsspp.org/docs/getting-started/dumping-games/). PPSSPP also reads DVD-mode CHD, but CSO works across both targets. |
+| Saturn | CHD | [Beetle Saturn](https://docs.libretro.com/library/beetle_saturn/). Convert from the CUE sheet to retain the track layout. |
+| Xbox | XISO (`.iso`) | [xemu](https://github.com/xemu-project/xemu-website/blob/master/docs/docs/disc-images.md) requires the game-partition image, not a full Redump ISO. XISO trims data; it does not compress it. |
+| Xbox 360 | ZAR | Loads directly in [Xenia Canary](https://github.com/xenia-canary/xenia-canary/blob/canary_experimental/src/xenia/emulator.cc). Upstream Xenia does not support ZAR. |
+| LaserDisc | CHD | [MAME](https://docs.mamedev.org/tools/chdman.html), using LaserDisc mode with AVHUFF and a supported AVI input. |
 
-The Wii U `.wua` pipeline has no comparable reference CLI (Cemu ships the format but not a
-standalone compressor), so no head-to-head numbers are published for it. See the
-[benchmark files](../README.md#benchmarks) for measured performance.
+DS, PS3, and Vita operations do not produce compressed formats. Dreamcast GDI is
+inspection-only input; rom-converto cannot convert it to CHD.
 
-XISO and ZAR have no comparable reference CLI either. XISO loads in xemu and on modded
-consoles; ZAR loads in Xenia.
+## Inspection support
 
-## Where each format works
+`info` reads metadata from all conversion formats plus PS1/PS2/PSP disc images,
+Dreamcast GDI, and cartridge images for NES, SNES, Nintendo 64, Game Boy and Game Boy
+Color, Game Boy Advance, Mega Drive/Genesis, 32X, Master System, Game Gear, Virtual Boy,
+WonderSwan, Neo Geo Pocket, Lynx, Atari 7800, and FDS. It identifies shared `.iso`,
+`.rvz`, `.gcz`, `.wia`, `.cue`, and `.ngc` extensions from file content where needed.
+An extension alone is not proof that a file is a valid image.
 
-| Target | Recommended format |
-|---|---|
-| PCSX2 / NetherSX2 (PS2 emulators) | DVD-mode CHD (default codecs) |
-| PPSSPP (PSP emulator) | CHD or CSO |
-| Real PSP with CFW | CSO |
-| Real PS2 via Open PS2 Loader | ZSO |
-| GameCube / Wii emulation (Dolphin) | RVZ |
-| Switch emulation | NSZ / XCZ |
-| Wii U emulation (Cemu) | WUA |
-| 3DS emulation (Azahar) | decrypted ROM, or Z3DS for storage |
-| Original Xbox emulation (xemu) | XISO |
-| Xbox 360 emulation (Xenia) | ZAR |
-| PlayStation 3 emulation (RPCS3) | decrypted `.iso` |
+## Examples
 
-DVD-mode CHDs use compatibility-first codecs (`lzma` + `zlib`) that load everywhere, including
-AetherSX2 and NetherSX2. The opt-in `--zstd` flag adds a better ratio for modern players; some
-older players and cores do not support zstd-compressed CHD. PSP images get 2048-byte hunks
-automatically, which is what PPSSPP expects.
+```text
+rom-converto dol compress game.gcm game.rvz
+rom-converto rvl decompress game.rvz game.wbfs
+rom-converto nx compress --keys prod.keys game.nsp
+rom-converto chd compress game.cue game.chd
+rom-converto xbox convert ./extracted-game game.xiso
+```

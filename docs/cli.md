@@ -1,17 +1,12 @@
 # CLI reference
 
-This is the full reference for the `rom-converto` command line tool. It covers the global
-flags, the behaviors shared across commands, and one section per command family. For a
-quick overview see the [README](../README.md); for what each output format is see
-[`formats.md`](formats.md).
+Complete reference for the `rom-converto` command line tool. See the [README](../README.md)
+for installation and quick-start examples, or [Formats](formats.md) for format details.
 
-Run `rom-converto --help` or `rom-converto <command> --help` for the same detail in the
-terminal.
+Use `rom-converto --help`, `rom-converto <command> --help`, or
+`rom-converto <command> <subcommand> --help` for built-in help.
 
 ## Commands
-
-Each top-level command is a console or format family, and every family has operations such
-as `compress`, `decompress`, `verify`, and `info`.
 
 | Command | Purpose |
 |---|---|
@@ -20,12 +15,12 @@ as `compress`, `decompress`, `verify`, and `info`.
 | `dol` | Compress, migrate, and verify GameCube disc images (RVZ) |
 | `rvl` | Compress, migrate, and verify Wii disc images (RVZ) |
 | `wup` | Bundle and decrypt Wii U titles (WUA) |
-| `nx` | Compress and verify Switch containers (NSZ/XCZ) |
+| `nx` | Compress, decompress, verify, and inspect Switch containers; merge or split unpacked NSP/XCI |
 | `chd` | Compress, extract, and verify CD/DVD/LaserDisc images (CHD) |
 | `cso` | Compress and verify PSP/PS2 ISOs (CSO/ZSO) |
 | `cue` | Merge a multi-bin `.cue` into one `.bin`/`.cue` pair |
 | `xbox` | Convert, extract, and inspect Original Xbox disc images (XISO) |
-| `xenon` | Compress, extract, verify, convert to GoD, and inspect Xbox 360 disc images (ZAR) |
+| `xenon` | Compress Xbox 360 images to ZAR, convert ISO to GoD, extract, verify, and inspect |
 | `ps3` | Decrypt and inspect PlayStation 3 disc images |
 | `psp` | Inspect and extract PSP `EBOOT.PBP` containers |
 | `vita` | Inspect PS Vita VPK/PKG packages and extract a PKG |
@@ -36,10 +31,11 @@ as `compress`, `decompress`, `verify`, and `info`.
 | `playlist` | Generate `.m3u` files for multi-disc sets |
 | `shell-completions` | Print a tab-completion script for your shell |
 | `self-update` | Replace the binary with a newer GitHub release |
+| `help [COMMAND]` | Show help for the CLI or a command |
 
 ## Global flags
 
-These flags work on every command.
+These flags work before or after any subcommand.
 
 | Flag | Description |
 |---|---|
@@ -53,26 +49,42 @@ These flags work on every command.
 | `--skip-space-check` | Skip the free-space preflight before writing output. See [Disk-space preflight](#disk-space-preflight) |
 | `--no-cache` | Ignore the persistent hash and verify cache for this run. See [Hash and verify cache](#hash-and-verify-cache) |
 | `--rebuild-cache` | Discard the cache and rebuild it from this run |
+| `-h`, `--help` | Show help |
+
+`-V` and `--version` show the version at the top level. Use
+`rom-converto help <command>` or `rom-converto <command> --help` for command help.
 
 ## Shared behaviors
 
+### Common output and batch flags
+
+These flags appear on most file conversion commands. Each command's `--help` shows the
+exact set it accepts.
+
+| Flag | Description |
+|---|---|
+| `[OUTPUT]` or `-o, --output <PATH>` | Set one output path. The positional and flag forms conflict |
+| `--output-dir <DIR>` | Put derived outputs under `DIR`. Conflicts with an explicit output |
+| `--output-template <TEMPLATE>` | Build output paths from metadata tokens. Conflicts with an explicit output |
+| `-R, --recursive` | Process supported files under the input directory |
+| `--max-depth <N>` | Limit recursive depth. `1` scans only the input directory. Requires `-R` unless the command is always recursive |
+| `--on-conflict <POLICY>` | Choose how to handle an existing output |
+| `-f, --force` | Overwrite an existing output. Conflicts with `--on-conflict` |
+| `--report <FILE>` | Write a CSV, HTML, or JSON run report |
+
 ### Conflict policy
 
-Every command that writes an output file except `dol migrate` and `rvl migrate` takes
-`--on-conflict <POLICY>` to decide what happens when the output already exists:
+Most commands that write files take `--on-conflict <POLICY>`:
 
 - `error` (default): refuse and stop.
 - `overwrite`: replace the existing output.
-- `skip`: leave the existing output and move on, counted as skipped in the summary.
+- `skip`: keep the existing output and continue.
 - `rename`: write to the next free numbered sibling, so `Game.chd` becomes `Game (1).chd`.
-- `overwrite-invalid`: verify the existing output, keep it if it passes (counted as
-  skipped), and rewrite it if it fails or cannot be verified. A missing output is always
-  written.
+- `overwrite-invalid`: keep a valid output; rewrite an invalid or unverifiable output.
 
-`-f`, `--force` is shorthand for `--on-conflict overwrite` and cannot be combined with
-`--on-conflict`. For `wup decrypt` the output is a directory, so `rename` is not supported
-there and falls back to `error`. For `chd extract` and `cue merge`, which write more than
-one file, the policy applies to the base output path and the sidecars follow it.
+`-f`, `--force` means `--on-conflict overwrite`. The two flags conflict. `wup decrypt`
+cannot rename an output directory, so `rename` acts as `error`. For `chd extract` and
+`cue merge`, the policy applies to the main path and its sidecars.
 
 `overwrite-invalid` runs the same integrity check the `verify` command does before
 deciding. What it checks depends on the format:
@@ -84,101 +96,59 @@ deciding. What it checks depends on the format:
 | `nx compress` | Decrypts every NCA section and checks the hash hierarchy; needs `prod.keys`. Falls back to existence-based skip when keys are absent |
 | `chd extract`, `cso decompress`, `dol`/`rvl`/`nx decompress` | Raw output has no integrity check, so it falls back to existence-based skip |
 
-Recursive `ctr` commands manage their own output paths and behave the same way under this
-policy.
-
 ### Dry run
 
-`--dry-run` previews a command without writing any output. It prints one plan line per
-file showing the operation, the resolved output path, the conflict decision, the detected
-media or format, and any missing keys, for example
-`Would compress game.iso -> game.cso (CSO) [overwrite]`. Under `overwrite-invalid` the
-verify is read-only, so the preview runs it and shows `[keep (valid)]` or
-`[rewrite (invalid)]` for an existing output. It runs the same input resolution,
-detection, and conflict checks as a real run, exits 0 on a valid plan, and exits nonzero
-only for real input errors such as a missing file. Pass `--report` alongside it to export
-the plan.
+`--dry-run` resolves inputs and output paths, detects formats, checks conflicts, and prints
+one plan line per file. It does not write converted ROMs or rename source files. It can
+still write a requested `--report` or `--debug-log`, rebuild the persistent cache with
+`--rebuild-cache`, and contact services used for metadata, DAT lookup, seeds, or update
+checks. Add `--no-update-check` when a fully local preview is required.
 
-For the recursive `ctr` file batches (`decrypt`, `compress`, `decompress`, `verify`) the
-preview lists resolved output paths only, since those batches do not expose a per-file
-conflict policy. Recursive `cdn-to-cia` does honor `--on-conflict`, so its preview shows
-the decision per produced `.cia`.
+With `overwrite-invalid`, the preview reads and verifies an existing output before showing
+`keep (valid)` or `rewrite (invalid)`. Recursive `ctr` batches show resolved output paths;
+recursive `ctr cdn-to-cia` also shows each conflict decision.
 
 ### Verbosity
 
-Console verbosity is a three-step ladder. `-v` shows debug-level messages from the
-rom-converto modules, `-vv` raises them to trace level, and `-vvv` shows trace-level
-output from every module including dependencies. `--quiet` suppresses everything except
-warnings and errors and takes precedence over `-v`.
-
-Separately, `--debug-log <FILE>` writes a full trace log (every module at trace level,
-with timestamps and module targets) to `FILE` for the current run, regardless of console
-verbosity. The file is created fresh at startup and is useful for attaching a complete log
-to a bug report without flooding the terminal. If it cannot be opened, the command stops
-with an error before doing any work.
+`-v` shows debug messages, `-vv` shows rom-converto trace messages, and `-vvv` includes
+dependency traces. `--quiet` wins over `-v`. `--debug-log <FILE>` always writes a fresh,
+timestamped trace log. A log-open failure stops the command.
 
 ### Disk-space preflight
 
-Before any write-producing operation, the CLI estimates how much space the outputs need,
-using the total size of the input files as a conservative floor, and checks the free space
-on the output filesystem. If there is not enough room it aborts before writing anything,
-naming the directory, the estimated need, and the space available. This is a best-effort
-check: it cannot know exact output sizes, and decompression in particular can produce far
-more than the compressed input, so the estimate is a floor. The value is catching a
-near-full disk before a long batch starts. If the free-space query fails, the check is
-skipped and the run proceeds. Under `--dry-run` nothing is written, so the check never
-aborts. Pass `--skip-space-check` to disable the preflight.
+Before writing output, the CLI checks that the output filesystem has at least as much free
+space as the input size. This is a floor, especially for decompression. A failed free-space
+query does not stop the run. `--dry-run` skips this check. Use `--skip-space-check` to
+disable it.
 
 ### Hash and verify cache
 
-Commands that read whole files, `hash -R`, `dat verify`, `dat scan`, and the
-`--on-conflict overwrite-invalid` integrity check, keep a persistent cache so a repeat run
-over an unchanged collection reads results instead of re-reading the bytes. The cache lives
-at `<config dir>/rom-converto/hash-cache.json.gz`, next to the user config (see
-[Configuration](configuration.md)). Each entry is keyed by the file path and fingerprinted
-by size and modification time; if either changes the entry is recomputed automatically, so
-an edited or replaced file is never served a stale digest. Turning a re-audit of a large
-stable library from hours of I/O into seconds is the point.
-
-Only digests and `overwrite-invalid` verify verdicts are cached. `dat verify` still queries
-the remote database every run, because that database can change between runs; the cache only
-removes the disk I/O of re-reading the files, not the lookup. Pass `--no-cache` to ignore
-the cache for one run, or `--rebuild-cache` to discard it and repopulate it from the current
-run.
+`hash -R`, DAT commands, and `overwrite-invalid` checks cache digests and verification
+results in `<config dir>/rom-converto/hash-cache.json.gz`. Entries are invalidated when file
+size or modification time changes. DAT commands still query the remote database.
+`--no-cache` ignores the cache. `--rebuild-cache` deletes it first and repopulates it.
 
 ### Archive input
 
-Where a command reads a single image, you can point it at a `.zip`, `.7z`, `.rar`, `.tar`,
-or `.tar.gz`/`.tgz` archive instead of a plain file. This covers `compress`, `decompress`,
-`convert`, `extract`, `verify`, and `info` across the `ctr`, `dol`, `rvl`, `nx`, `chd`, `cso`,
-and `ps3` command groups (including `chd to-cso` and `cso to-chd`), plus `hash` and
-single-file `dat verify`/`dat identify`. The first member matching the command's format is
-extracted to a temporary directory, run through the normal pipeline, and deleted when the
-command finishes. Output lands next to the archive, named after the member (so `game.zip`
-holding `game.iso` produces `game.chd` beside the zip). When a matched member is a `.cue`,
-the bin tracks it references are extracted alongside it.
+`nx merge`, `nx split`, and `xenon convert` require unpacked inputs in the CLI.
 
-Archive input applies to a single file argument. The `--recursive` walkers still descend
-directories only, so keep archives out of a tree you scan with `-R`, or unpack them first.
+Single-file operations can read `.zip`, `.7z`, `.rar`, `.tar`, `.tar.gz`, and `.tgz`
+archives. This applies to conversion, extraction, verification, and info under `ctr`, `dol`,
+`rvl`, `nx`, `chd`, `cso`, and `ps3`, including `chd to-cso` and `cso to-chd`. It also
+applies to `hash`, `dat verify`, and `dat identify`.
 
-Members are chosen with the same allowlist the recursive walker uses: readmes, box art, OS
-junk, and nested archives are ignored. If several members match, the first in name order is
-used and the rest are noted. An archive with no matching member is an error as a direct input.
-
-Because the member is unpacked before processing, a run needs free temp space for the full
-uncompressed member; the disk-space preflight sizes on that uncompressed size. Encrypted
-archives fail with a clear error. Rar support is read only. Single-file `.gz` (a gzip with
-no tar container) is not supported; extract it first.
+The first matching member in name order is extracted to a temporary directory. Cue track
+files are extracted with their cue sheet. Output is named after the member and written next
+to the archive unless another output path is set. Recursive walkers do not open archives.
+Encrypted archives and plain `.gz` files are unsupported. RAR input is read only. The temp
+filesystem needs room for the unpacked input.
 
 ### Run reports
 
-Pass `--report <FILE>` to `compress`, `decompress`, `chd extract`, `ps3 decrypt`,
-`nds encrypt`/`decrypt`, `hash`, or
-the `dat verify`, `scan`, and `rename` commands to write a structured report after the run.
-The format is chosen from the file extension: `.csv` writes CSV, `.json` writes JSON,
-`.html` and `.htm` write a self-contained HTML table, and any other extension writes JSON.
-The report file is overwritten directly and does not go through `--on-conflict`. The
-numbers match the closing summary line.
+`--report <FILE>` is available on conversion commands, `chd extract`, `ps3 decrypt`,
+`nds encrypt` and `decrypt`, `hash`, and `dat verify`, `scan`, and `rename`. `.csv` writes
+CSV, `.html` or `.htm` writes HTML, and all other extensions write JSON. Reports overwrite
+the target directly and ignore `--on-conflict`.
 
 The conversion report columns are stable and in this order: `input_path`, `output_path`,
 `operation`, `status`, `input_bytes`, `output_bytes`, `ratio_pct`, `elapsed_ms`, `error`.
@@ -187,22 +157,15 @@ positive when compression shrank the file and negative when decompression expand
 empty or `null` for skipped, failed, or zero-input rows. Extract rows carry zero byte
 sizes since extraction writes several files.
 
-The JSON file is an object with a `files` array and a `totals` object
-(`total_files`, `ok`, `skipped`, `failed`, `total_input_bytes`, `total_output_bytes`,
-`elapsed_ms`). The CSV file has a header row and one row per file with RFC 4180 quoting and
-no totals row. The HTML file is a single self-contained page with a totals row in the table
-footer. The `hash` command uses its own column schema, since it produces digests rather
-than a converted file: `path`, `crc32`, `sha1`, `md5`, `sha256`, `size_bytes`, `status`,
-`elapsed_ms`, `error`.
+JSON contains `files` and `totals`. CSV has one header and one row per file. HTML is
+self-contained. Hash reports use `path`, digest columns, `size_bytes`, `status`,
+`elapsed_ms`, and `error`.
 
-The `dat verify`, `scan`, and `rename` commands use their own schema too, since they record
-database verdicts rather than a converted file: `path`, `verdict`, `game_name`, `game_id`,
+DAT reports use: `path`, `verdict`, `game_name`, `game_id`,
 `platform`, `signature_group`, `dat_version`, `match_algo`, `detail`, `size_bytes`,
 `status`, `elapsed_ms`, `error`. `status` is `ok` or `failed`, separate from the finer
 `verdict` (`verified`, `matched`, `hint`, `unknown`, `misnamed`, `renamed`, `skipped`,
-`unsupported`, or `failed`); an `unsupported` verdict still counts as `ok`. The JSON file wraps the records
-in a `files` array with a `totals` object (`total_files`, `ok`, `skipped`, `failed`,
-`total_input_bytes`, `total_output_bytes`, `elapsed_ms`).
+`unsupported`, or `failed`). `unsupported` still counts as `ok`.
 
 ### Output-path templates
 
@@ -254,6 +217,10 @@ once it finishes. In a batch run the file in progress is cancelled and the loop 
 already converted are kept. A cancelled run is reported with its own status rather than as a
 failure.
 
+Switch split and GoD conversion write multiple output files directly. Overwriting
+these outputs is not atomic: failure or cancellation can remove replaced files.
+Use a new output directory to retain an existing copy.
+
 ### Progress
 
 A recursive `-R` run shows two bars: an overall one pinned on top with files done/total,
@@ -266,6 +233,8 @@ After `compress`, `decompress`, and `convert` operations the tool prints a closi
 of bytes processed and space saved or expanded, for example
 `12 files: 12.4 GiB -> 4.1 GiB, saved 8.3 GiB (67%) in 2m14s`. Verify and extract operations
 print a file count and elapsed time instead.
+
+GoD conversion prints a count summary rather than compression savings.
 
 ---
 
@@ -414,48 +383,63 @@ when no ticket is present the title key is derived from the title id.
 
 ## nx (Nintendo Switch)
 
-```
-rom-converto nx <SUBCOMMAND> <INPUT> [-o OUTPUT]
+```sh
+rom-converto nx <SUBCOMMAND> <INPUT>
 ```
 
 | Subcommand | Description |
 |---|---|
-| `compress <INPUT> [-o OUTPUT]` | Compress a `.nsp` to `.nsz` or a `.xci` to `.xcz` |
-| `decompress <INPUT> [-o OUTPUT]` | Decompress a `.nsz`/`.xcz` back to `.nsp`/`.xci` |
-| `verify <INPUT>` | Verify per-NCA hash integrity of any Switch container |
-| `merge <INPUT>... [-o OUTPUT]` | Merge a base container with its update and DLC into a single super NSP or XCI |
-| `split <INPUT> [--output-dir DIR]` | Split a super NSP or XCI into one `.nsp` per title |
-| `info <INPUT>` | Inspect Switch container metadata. See [info](#info) |
+| `compress <INPUT> [-o OUTPUT]` | Compress NSP to NSZ or XCI to XCZ |
+| `decompress <INPUT> [-o OUTPUT]` | Restore NSZ/XCZ to NSP/XCI |
+| `merge <INPUT>... [-o OUTPUT]` | Combine base, update, or DLC containers into one NSP or XCI |
+| `split <INPUT> [--output-dir DIR]` | Write one NSP per title from an NSP or XCI |
+| `verify <INPUT>` | Check NCA hashes, including in compressed containers |
+| `info <INPUT>` | Inspect container metadata. See [info](#info) |
 
 | Flag | Applies to | Description |
 |---|---|---|
-| `--keys <PRODKEYS>` | all | Path to `prod.keys`. Defaults to `$HOME/.switch/prod.keys` (`%USERPROFILE%\.switch\prod.keys` on Windows), then `prod.keys` next to the executable. See [Switch prod.keys](configuration.md#switch-prodkeys) |
-| `-l, --level <LEVEL>` | `compress` | Zstd compression level 1..=22 (defaults to 18, matching `nsz`) |
+| `--keys <PRODKEYS>` | all | Use this key file. Otherwise search the user's `.switch/prod.keys`, then beside the executable. See [key files](configuration.md#key-files) |
+| `-l, --level <LEVEL>` | `compress` | Zstd level 1..=22; default 18 |
 | `--mode <MODE>` | `compress` | `solid` (one zstd frame per NCA, default for NSP) or `block` (default for XCI) |
-| `--block-size-exp <EXP>` | `compress` | Block-mode block size as `1 << exp` bytes, range 14..=32 (defaults to 20 = 1 MiB) |
-| `--output-dir <DIR>` | `compress`, `decompress`, `split` | Write outputs under this directory instead of beside each input. `merge` has no such flag, but its derived default output honors the config `[nx] output_dir` |
-| `--format <nsp\|xci>` | `merge` | Output container format. `nsp` (default) accepts a mix of NSP and XCI inputs; `xci` requires every input to already be an XCI |
-| `--on-conflict <POLICY>` | `merge`, `split` | What to do when the output already exists. `split` writes a directory, so `rename` is not supported there. See [Conflict policy](#conflict-policy) |
-| `-f, --force` | `merge`, `split` | Shorthand for `--on-conflict overwrite` |
+| `--block-size-exp <EXP>` | `compress` | Block size is `1 << exp` bytes; range 14..=32, default 20 (1 MiB) |
+| `--output-dir <DIR>` | `compress`, `decompress`, `split` | Choose the output directory |
+| `--format <nsp\|xci>` | `merge` | Default NSP. XCI output requires every input to be an XCI |
+| `--on-conflict <POLICY>`, `-f, --force` | `merge`, `split` | Default `error`; `-f` means overwrite. The flags conflict |
 
-`prod.keys` is required to derive the per-NCA section keys; the file is read but never
-modified. Output is byte-identical to `nsz` and `nsz -D` at matching settings, and `verify`
-works on already-compressed containers without decompressing first.
+A valid `prod.keys` is required and is never modified. Merge and split accept only
+uncompressed NSP/XCI inputs; decompress NSZ/XCZ first.
 
-`merge` and `split` reject NSZ/XCZ inputs; decompress them first. `merge` takes a base
-container plus any number of update and DLC containers and folds them into one super
-container, keeping the highest-version content metadata per title and deduplicating shared
-NCAs. `split` reverses this: it walks every title in the input and writes one `.nsp` per
-title back out. NSP output keeps only the `.nca`, `.tik`, and `.cert` entries; XCI output
-keeps only the `.nca` entries, since a gamecard image carries no tickets. Scene sidecars
-such as `.cnmt.xml` are dropped either way.
+### Merge and split
 
-Without `-o`, `merge` writes `<first input's name> (Merged).nsp` (or `.xci`) next to the
-first input. Without `--output-dir`, `split` writes into `<input's name>_split` next to the
-input.
+Merge keeps the highest CNMT version for each title and content type, then deduplicates
+the selected NCAs. NSP output includes tickets and certificates; XCI output includes
+NCAs only. Other sidecars are dropped. Split always writes NSPs, named from the input
+stem, title ID, version, and an update/DLC marker where applicable. It cannot restore
+versions or files discarded by a merge.
 
-Advisory warning: a merged container fails signature verification. CFW installers reject it
-unless signature checks are disabled (not advised); it is intended for emulators.
+Merge targets emulator use and always displays a signature warning. Selected NCA
+bytes are copied unchanged; XCI output has newly generated, unsigned gamecard headers.
+
+Default outputs:
+
+- Merge: `<first stem> (Merged).nsp` or `.xci`, beside the first input.
+- Split: a `<stem>_split` directory beside the input.
+- The configured `[nx].output_dir`, including presets, overrides those directories.
+  An explicit `-o` (merge) or `--output-dir` (split) takes precedence.
+
+Neither command supports recursion, reports, output templates, or a positional output.
+Merge has no `--output-dir` flag; use `-o`. Configured conflict policies are not used:
+set `--on-conflict` or `-f` on the command.
+
+`overwrite-invalid` acts as `skip` because these commands do not verify existing
+outputs. Split rejects `rename` in the CLI. Its overwrite mode reuses the directory,
+replacing planned NSP files while leaving unrelated files in place.
+
+```sh
+rom-converto nx merge base.nsp update.nsp dlc.nsp --keys prod.keys -o merged.nsp
+rom-converto nx merge base.xci update.xci --format xci -o merged.xci
+rom-converto nx split merged.nsp --output-dir ./titles
+```
 
 ## nds (Nintendo DS)
 
@@ -492,20 +476,21 @@ rom-converto chd <SUBCOMMAND> <INPUT> [OUTPUT]
 | Subcommand | Description |
 |---|---|
 | `compress <INPUT> [OUTPUT]` | Compress a `.cue`, `.iso`, or `.avi` to `.chd`; CD, DVD, and LaserDisc media are auto-detected |
-| `migrate <INPUT> [OUTPUT]` | Rewrite a CHD of format version 1 to 4 as a version 5 CHD |
+| `migrate <INPUT> [OUTPUT]` | Rewrite a CHD v1 to v4 as v5; defaults to `<name>.v5.chd` |
 | `extract <INPUT> [OUTPUT]` | Extract a `.chd` back to `.bin` + `.cue` (CD) or `.iso` (DVD); LaserDisc CHDs are not supported |
-| `verify <INPUT>` | Verify the SHA-1 integrity of a `.chd` |
+| `verify <INPUT>` | Verify SHA-1 integrity of a v5 CHD; migrate older versions first |
 | `to-cso <INPUT> [OUTPUT]` | Extract a DVD-mode `.chd` straight to `.cso` (default) or `.zso`, through a temporary ISO |
-| `info <INPUT>` | Inspect CHD metadata. See [info](#info) |
+| `info <INPUT>` | Inspect CHD v1 to v5 metadata and stored hashes. See [info](#info) |
 
 | Flag | Applies to | Description |
 |---|---|---|
 | `--dvd` / `--cd` / `--ld` | `compress` | Override the auto-detected mode (CD mode needs a cue sheet, LD mode needs a `.avi`) |
-| `--hunk-size <BYTES>` | `compress`, `migrate` | DVD hunk size, a multiple of 2048; defaults to 4096, or 2048 for detected PSP images. Not accepted in LD mode. `migrate` inherits the source hunk size unless set |
-| `--zstd` | `compress` | Add zstd to the DVD codec set for a better ratio; some older players and cores do not support zstd-compressed CHD |
+| `--hunk-size <BYTES>` | `compress`, `migrate` | DVD compression uses a multiple of 2048, defaulting to 4096 (2048 for detected PSP images). Migration inherits the source size; overrides must be a nonzero multiple of its unit size |
+| `-c, --codecs <LIST>` | `compress`, `migrate` | Up to four comma-separated codecs: `zlib`, `zstd`, `lzma`, `huff`, `flac`, `cdzl`, `cdzs`, `cdlz`, `cdfl` |
+| `-l, --level <LEVEL>` | `compress`, `migrate` | Compression level 1..=22. Zlib and LZMA cap at 9 |
+| `--in-place` | `migrate` | Replace the source with its v5 conversion. Conflicts with explicit output paths, `--output-dir`, and `--output-template` |
 | `--format <cso\|zso>` | `to-cso` | Output container: CSO for PSP/PPSSPP, ZSO for PS2 via Open PS2 Loader |
 | `--block-size <BYTES>` | `to-cso` | Block size, a power of two; defaults to 2048 (16384 for 2 GiB+ inputs) |
-| `--in-place` | `migrate` | Replace each source file with its migrated version 5 CHD |
 | `--output-dir <DIR>` | `compress`, `migrate`, `extract`, `to-cso` | Write outputs under this directory instead of beside each input |
 | `-p, --parent <PARENT>` | `extract`, `verify` | Specify a parent CHD for parent-child relationships |
 | `--fix` | `verify` | Correct SHA-1 values in the CHD header if mismatches are found |
@@ -518,16 +503,31 @@ size are fixed by the AVI. The input must be uncompressed 4:2:2 video (YUY2, UYV
 with 8- or 16-bit PCM audio; a compressed video codec such as HuffYUV is rejected, naming the
 codec found. Extract report rows carry zero byte sizes since extraction writes several files.
 
-`migrate` converts CHD format versions 1 through 4 to version 5. The raw data is copied
-through unchanged, so the image content is untouched and only the container and its
-compression are rebuilt. Metadata is copied verbatim with one exception that mirrors
-`chdman copy`: the pre-2009 `CHTR` track entries are rewritten as `CHT2`, so the overall
-SHA-1 of the output matches what a current chdman build produces for the same disc. A version 5 input is rejected. The hunk size and
-the unit size are inherited from the source, so the codecs default to the CD or the DVD set
-accordingly; `--hunk-size`, `--codecs`, and `--level` override that. Since the output keeps
-the `.chd` extension, the derived name gets a `v5` infix (`game.chd` becomes `game.v5.chd`)
-so the source is left alone. Pass an output path or `--output-dir` to place it elsewhere, or
-`--in-place` to replace the source.
+`migrate` preserves decoded data while rebuilding the container. It supports legacy
+zlib, uncompressed, and audio/video CHDs, including hard-disk images. Parent-dependent
+CHDs, unsupported map entries, and files already at v5 are rejected. Audio/video
+migration does not write AVHUFF, so the output may be much larger.
+
+Migration inherits the source hunk and unit sizes. Defaults use CD codecs for 2448-byte
+units and general codecs otherwise; CD-only codecs require 2448-byte units. Metadata
+is copied, with two exceptions: v1/v2 disk geometry becomes `GDDD` metadata, and old
+`CHTR` track entries become `CHT2` when no `CHCD` metadata is present.
+
+Migration checks legacy map data and available hunk CRCs, but does not validate the
+source's stored MD5 or SHA-1. `extract`, `verify`, and `to-cso` require v5 input.
+
+Current CLI migration limits:
+
+- `--in-place` always replaces the source, even with `--on-conflict skip`.
+- With `-R`, use `--output-dir` to mirror the input folders elsewhere. Explicit output
+  paths, `--output-template`, `--on-conflict`, and `--report` are ignored.
+- Recursive runs keep going after a file fails. Existing outputs fail that item unless
+  `-f` or `--in-place` is set.
+
+```sh
+rom-converto chd migrate old.chd
+rom-converto chd migrate -R ./chd --output-dir ./v5 --dry-run
+```
 
 `to-cso` only accepts a DVD-mode CHD (PS2 DVD, PSP UMD); a CD-mode or LD-mode CHD has no flat
 ISO for CSO/ZSO to hold, and is rejected up front. It extracts to a temporary ISO next to the
@@ -567,7 +567,8 @@ rom-converto cso <SUBCOMMAND> <INPUT> [OUTPUT]
 | `--block-size <BYTES>` | `compress` | Block size, a power of two; defaults to 2048 (16384 for 2 GiB+ inputs) |
 | `--dvd` / `--cd` | `to-chd` | Override the auto-detected mode of the decoded ISO (CD mode needs a cue sheet) |
 | `--hunk-size <BYTES>` | `to-chd` | DVD hunk size, a multiple of 2048; defaults to 4096, or 2048 for detected PSP images |
-| `--zstd` | `to-chd` | Add zstd to the DVD codec set for a better ratio; some older players and cores do not support zstd-compressed CHD |
+| `-c, --codecs <LIST>` | `to-chd` | Up to four comma-separated CHD codecs. Uses the same values and defaults as `chd compress` |
+| `-l, --level <LEVEL>` | `to-chd` | Compression level 1..=22. Zlib and LZMA cap at 9 |
 | `--output-dir <DIR>` | `compress`, `decompress`, `to-chd` | Write outputs under this directory instead of beside each input |
 | `--full` | `verify` | Decode every block instead of only checking the index |
 
@@ -671,35 +672,50 @@ present.
 
 ## xenon (Xbox 360)
 
-```
-rom-converto xenon <SUBCOMMAND> <INPUT> [OUTPUT]
+```sh
+rom-converto xenon <SUBCOMMAND> <INPUT>
 ```
 
 | Subcommand | Description |
 |---|---|
-| `compress <INPUT> [OUTPUT]` | Pack a full disc image or an extracted game directory into a `.zar` |
-| `convert <INPUT> [OUTPUT_DIR]` | Convert a full disc image into a Games on Demand (GoD) container |
-| `extract <INPUT> <OUTPUT_DIR>` | Extract a `.zar` back to files |
-| `verify <INPUT>` | Check the archive integrity hash and decode every block |
-| `info <INPUT>` | Inspect Xbox 360 archive stats. See [info](#info) |
+| `compress <INPUT> [OUTPUT]` | Pack a disc ISO or extracted game folder into ZAR |
+| `convert <INPUT> [OUTPUT_DIR]` | Convert a disc ISO to an unsigned Games on Demand install tree |
+| `extract <INPUT> <OUTPUT_DIR>` | Extract ZAR files |
+| `verify <INPUT>` | Verify a ZAR archive |
+| `info <INPUT>` | Inspect Xbox 360 disc or archive metadata. See [info](#info) |
 
-| Flag | Applies to | Description |
-|---|---|---|
-| `--title <NAME>` | `convert` | Display name written into the container header, overriding the name read from the executable |
+`compress` writes ZAR directly from the disc without extracting it first, using zstd
+across CPU cores. The archive puts `default.xex` at its root for Xenia Canary.
 
-`compress` reads the disc filesystem directly and streams it into the `.zar` archive, with no
-intermediate extraction to disk, using zstd across all CPU cores. Content is stored with
-`default.xex` at the archive root, which Xenia requires to load it.
+`info` reads title ID, name, version, disc number, region, allowed media, and the icon
+from `default.xex` when present. `--save-icon <DIR>` saves the icon as `<title_id_hex>.png`.
 
-`convert` reads a full disc image and writes a GoD container. Takes `-f`/`--force` and the
-shared conflict policy. Default output directory is `<stem>_god` next to the input. Output
-layout is a header file at `<TITLEID>/00007000/<MEDIAID>` plus part files at
-`<MEDIAID>.data/DataNNNN`. The image is trimmed to used data automatically. The container is
-unsigned: it works on modified consoles and in emulators, not on unmodified retail systems.
+### Convert to GoD
 
-`info` prints archive stats and, when `default.xex` is present, its XEX title metadata
-(title ID, name, version, disc number, region, allowed media) plus the decoded icon.
-`--save-icon <DIR>` writes that icon as `<title_id_hex>.png`.
+| Flag | Description |
+|---|---|
+| `--title <NAME>` | Override the display title read from `default.xex` |
+| `--on-conflict <POLICY>` | Choose how to handle an existing output directory |
+| `-f, --force` | Overwrite; conflicts with `--on-conflict` |
+
+`convert` requires a disc ISO with a root `default.xex`; extracted folders and archives
+are not accepted by the CLI. The optional output directory is positional. There is no
+`-o`, recursion, output-template, report, or GoD verification option. No key file is
+required. The default output is `<stem>_god` beside the input.
+
+The output has a header at `<TITLEID>/00007000/<MEDIAID>` and parts under
+`<MEDIAID>.data/DataNNNN`. It trims unused disc data and adds hashes, without compression.
+The header is unsigned and intended for modified consoles.
+
+An existing non-empty directory fails by default. `skip` and `overwrite-invalid`
+skip existing directories because GoD has no integrity probe. CLI `rename` is
+unsupported. Overwrite replaces the matching title/media files, preserving other
+titles in the tree.
+
+```sh
+rom-converto xenon convert game.iso
+rom-converto xenon convert game.iso ./god --title "Game title" --dry-run
+```
 
 ## psp (PSP EBOOT.PBP)
 
@@ -861,94 +877,30 @@ rom-converto <console> info <INPUT> [--json] [--save-icon DIR] [--keys FILE]
 rom-converto info <INPUT> [--json] [--save-icon DIR] [--keys FILE]
 ```
 
-Inspect a ROM file or title directory and print its embedded metadata. The report is
-grouped into up to three sections: `Container:` for the outer format (only `chd`, `cso`,
-`nx`, `xbox`, and `xenon` have one), `ROM:` for the title itself, and `Inner files:` for
-what the container holds. `ROM:` leads with `Title`, `Title ID`, `Content type`, `Version`,
-`Region`, and `Size`, then any format-specific fields; a section with nothing to show is
-omitted. `Inner files:` lists NCSD partitions or CIA contents for 3DS, the GameCube FST
-root, Wii partitions, Wii U bundled titles or disc partitions, Switch XCI partitions and
-CNMT contents, an Xbox or Xbox 360 root listing, a PS3 root listing, or CHD tracks.
+Inspect embedded metadata. The generic `info` command auto-detects the format from the
+extension and, for shared disc extensions, header data. Console-specific `info` commands
+read the same metadata directly.
 
-A format that carries artwork shows it inline as `WxH PNG (N bytes)`: 3DS, GameCube, Switch,
-Xbox (its XBE title image), Xbox 360, PS3 (`ICON0.PNG`), and PSP report an icon this way, and
-PSP also reports its `PIC1.PNG` background art. Wii and Wii U carry an icon too, extractable
-with `--save-icon`, but neither prints it in the text report.
-
-Where it can be determined, the report adds an encryption row: 3DS as `NCCH encrypted:
-yes`/`no`; PS3 and Wii U as `Encryption: encrypted`/`decrypted` (PS3's from a key-based
-probe, omitted when undetermined; Wii U's from the source kind); Switch as a
-`Container:`-level `Encryption` row (`encrypted (titlekey)` or `encrypted (standard keys)`
-for `nsp`/`xci`, `decrypted (ncz sections)` for `nsz`/`xcz`).
-
-Content type is normalized to `Game`, `Update`, `DLC`, or `Demo` across every family that
-carries one, with the raw platform code kept in parentheses where one exists, for example
-`Game (UG)` for a PSP UMD. This applies to 3DS, Wii U, PS3, PSP, PS1/PS2 disc content, PBP,
-VPK, and PKG; Switch already used these names.
-
-Maker and company codes are resolved to the publisher name. Encrypted 3DS CIA inputs are
-decrypted on the fly to read the NCCH header, and nothing is written to disk. Add `--json`
-for a machine-readable payload (the GUI uses the same shape); Switch title IDs are carried
-there as 16-character hex strings, in fields such as `application_title_id_hex`.
-
-The generic `rom-converto info <INPUT>` form auto-detects the console from the input's
-extension, and its header magic for the disc-image extensions shared across consoles
-(`.iso`, `.cue`, `.gcz`, `.wia`), then prints the same report as the matching `<console>
-info`. It covers every family listed below, so a script inspecting a mixed library does not
-need to know each file's console up front.
-
-For `dol` and `rvl`, the report names the container it read: the `ROM:` section's `Format`
-row reads `GameCube (GCZ)` or `Wii (WIA)`, and `--json` carries it as the `container` field
-(`ISO`, `RVZ`, `WBFS`, `GCZ`, `WIA`, or `NKit`).
+Text output uses `Container`, `ROM`, and `Inner files` sections when relevant. `--json`
+returns the same data as structured JSON. Encrypted 3DS CIA headers are read in memory.
 
 | Flag | Description |
 |---|---|
 | `--json` | Emit a machine-readable payload instead of the formatted report |
-| `--batch` | Treat a directory `INPUT` as a batch scan (every supported file under it) instead of a Wii U title directory |
-| `--paths-file <FILE>` | Inspect the files listed one per line in `FILE` instead of naming an `INPUT`; blank lines and `#` comments are skipped |
-| `--save-icon <DIR>` | Write the embedded icon as `<title_id>.png` into `DIR`. Supported by `ctr`, `dol`, `rvl`, `nx`, `wup`, `xbox`, `xenon`, `ps3`, PSP images, and PKG. Not supported for `chd`, `cso`, or PS1/PS2 discs, even where their report shows an icon inline (a PSP disc nested inside a `chd`/`cso`) |
+| `--batch` | Generic `info` only. Recursively inspect every supported file under directory `INPUT` instead of reading it as one title |
+| `--paths-file <FILE>` | Generic `info` only. Read one input path per line; skip blank lines and `#` comments. Conflicts with `INPUT` |
+| `--save-icon <DIR>` | Write embedded artwork to `DIR`. Supported for `ctr`, `dol`, `rvl`, `nx`, `wup`, `xbox`, `xenon`, `ps3`, PSP images, VPK, and PKG |
 | `--keys <FILE>` | `prod.keys` for `nx info`, a disc master key file for `wup info` on `.wud`/`.wux` (optional), or a `.dkey` file for `ps3 info`. Other consoles do not use it |
 
-Coverage per family: `nds` reads `.nds`/`.dsi` ROMs (header fields, header CRC16,
-secure-area encryption state, banner titles, and the 32x32 icon); `ctr` reads CIA/NCSD/NCCH, `.3dsx` homebrew, and Z3DS variants
-(compressed `.z3dsx` included); `dol` reads `.iso`,
-`.gcm`, `.rvz`, `.gcz`, and NKit; `rvl` reads `.iso`, `.rvz`, `.wbfs`, `.wia`, `.gcz`, and
-NKit through the same streaming migration readers the `migrate` command uses; `wup` reads
-loadiine and NUS directories, `.wua` archives, and `.wud`/`.wux` disc images; `nx` reads
-NSP/NSZ/XCI/XCZ; `chd` reads CHD v5; `cso` reads CSO/ZSO/DAX; `ps3` reads the region table
-and title metadata from plain or encrypted ISOs, no key required, and reports an
-`Encryption` row from a key-based probe plus the `ICON0.PNG` icon when either can be read.
-PS1 and PS2 discs (plain `.iso`, or `.cue`+`.bin`) report the disc kind, boot executable,
-normalized title ID (for example `SLUS-20312`), volume ID, and version read from
-`SYSTEM.CNF`. PSP discs (`.iso`) report title, title ID, version, firmware, category, and
-the `ICON0.PNG` icon and `PIC1.PNG` background art read from `PARAM.SFO`. NFS and TGC are
-not supported. A `.3dsx` homebrew executable reads its embedded SMDH, when it has one, for
-the same title and icon fields as a CIA; a `.z3dsx` decompresses first and reports the same.
+Supported inputs include every console and format listed in [Formats](formats.md), plus
+common cartridge ROMs: NES, SNES, Nintendo 64, Game Boy, Game Boy Color, Game Boy Advance,
+Mega Drive, Master System, Game Gear, Virtual Boy, WonderSwan, Neo Geo Pocket, Atari Lynx,
+and Atari 7800. It also reads PS1, PS2, and PSP discs; PSP, PS3, and Vita PKG files;
+`.3dsx` and `.z3dsx`; and LaserDisc AVI files. NFS and TGC are unsupported.
 
-`.pkg` inspection covers PSP, PS3, and PS Vita packages, naming the platform in a
-`Platform` row. PS3 packages get their item listing decrypted with the built-in PS3 key;
-PSP and Vita use the existing per-key-type derivation. The `ICON0.PNG` preview is
-extracted best-effort for the report, `--save-icon`, and the GUI card.
-
-Cartridge ROMs report their header fields plus the stored and recomputed checksum each
-format defines. The cartridge systems are NES (`.nes`), SNES (`.sfc`, `.smc`), Nintendo 64
-(`.z64`, `.n64`, `.v64`), Game Boy and Color (`.gb`, `.gbc`), Game Boy Advance (`.gba`),
-Mega Drive (`.md`, `.gen`, `.smd`), Master System (`.sms`), Game Gear (`.gg`), Virtual Boy
-(`.vb`), WonderSwan (`.ws`, `.wsc`), Neo Geo Pocket (`.ngp`, `.ngc`), Atari Lynx (`.lnx`),
-and Atari 7800 (`.a78`). A `.ngc` file is checked for the SNK license string before it is
-read as a GameCube disc, since both use that extension.
-
-A LaserDisc rip's `.avi` reports its container header (video codec, resolution, fps,
-frame count, audio) and the CHD field geometry compression would project, and, when the
-video is uncompressed (YUY2/UYVY/VYUY), a VBI summary decoded from every field. A compressed
-AVI still gets container info, just no VBI summary.
-
-`chd info` and `cso info` also probe the disc a container holds: when it is a PS1, PS2, or
-PSP disc, its fields (icon and background art included, for a PSP disc) become the
-container's own `ROM:` section, with the disc kind reported as the platform; `--json`
-carries the same data as a nested `content` object. A CHD or CSO whose probe fails, or that
-holds no PlayStation-family disc, still prints its `Container:` section with no `ROM:`
-section; `content` is simply absent.
+`chd info` and `cso info` probe an inner PS1, PS2, or PSP disc when possible. A failed
+probe does not hide the outer container details. `--save-icon` is unavailable for CHD,
+CSO, PS1, PS2, retro cartridge, and LaserDisc inputs.
 
 ## capabilities
 

@@ -1,120 +1,68 @@
 # Configuration
 
-A TOML config file lets you set per-format default flags and named presets so you do not have
-to repeat long flag combinations. The config is optional: with no config file the built-in
-defaults apply.
+`rom-converto.toml` is optional. It supplies defaults for repeated conversion
+options and named presets. Without a config file, commands use built-in defaults.
 
-The GUI reads and writes the same `[presets.<name>]` tables described below through its
-Settings view; see [Configuration](gui.md#configuration) in the GUI docs. Everything else in
-this page (top-level format defaults, precedence, search order) is CLI-only: the GUI only ever
-reads and writes presets, never the bare `[dol]`/`[nx]`/etc. tables.
+## Finding the config file
 
-## Search order
+The CLI uses the first existing path in this order:
 
-The first existing file in this order is used:
+1. `--config <FILE>`. This is the only path considered when the flag is present.
+   A missing file is an error.
+2. `./rom-converto.toml`
+3. `./.rom-converto.toml`
+4. The user config file:
 
-1. The path given to `--config <FILE>`. If you pass `--config` and the file does not exist,
-   the command stops with an error.
-2. `./rom-converto.toml` in the current directory.
-3. `./.rom-converto.toml` in the current directory.
-4. The per-user config directory:
-   - Linux: `~/.config/rom-converto/config.toml`
-   - macOS: `~/Library/Application Support/rom-converto/config.toml`
-   - Windows: `%APPDATA%\rom-converto\config.toml`
+| Platform | Path |
+|---|---|
+| Linux | `~/.config/rom-converto/config.toml` |
+| macOS | `~/Library/Application Support/rom-converto/config.toml` |
+| Windows | `%APPDATA%\rom-converto\config.toml` |
+
+Malformed TOML and unknown keys are errors. Relative `output_dir` and `report` paths
+resolve from the selected config file's directory. The GUI reads and writes presets in
+the same file, while preserving relative paths when it saves them.
+`ROM_CONVERTO_CONFIG` is not a supported environment variable. Use `--config`.
 
 ## Precedence
 
-For each setting, the value is resolved in this order, highest first:
+For each setting, the CLI uses:
 
-1. An explicit flag on the command line.
-2. The selected `--preset` value for that format.
-3. The config file format default for that format.
-4. The built-in default.
+1. An explicit command-line flag.
+2. The selected `--preset` value.
+3. The matching top-level table.
+4. The command's built-in default.
 
-An unset flag never overrides a preset or config value. For example, if a preset sets
-`level = 22` and you run a compress without `-l`, the level is 22; passing `-l 5` uses 5.
+Preset tables merge field by field over their matching top-level table. A preset that
+sets only `dol.level`, for example, still inherits `dol.chunk_size` from `[dol]`.
+An unknown preset is an error.
 
-## Behavior
+## Tables and keys
 
-- A missing config file is not an error: the built-in defaults apply.
-- A malformed config file is a hard error that names the file, so a typo is not silently
-  ignored. Unknown keys are rejected the same way.
-- An unknown `--preset` name stops with an error that lists the available preset names.
-- Relative `output_dir` and `report` paths resolve against the directory that holds the
-  config file, not the current directory.
-- The persistent hash and verify cache is stored next to the per-user config, at
-  `rom-converto/hash-cache.json.gz` in the config directory. It holds no settings and needs
-  no configuration; delete the file or run with `--rebuild-cache` to reset it. See
-  [Hash and verify cache](cli.md#hash-and-verify-cache).
+| Table | Accepted keys |
+|---|---|
+| `[dol]`, `[rvl]` | `level`, `chunk_size`, `on_conflict`, `output_dir`, `report` |
+| `[nx]` | `level`, `mode`, `block_size_exp`, `on_conflict`, `output_dir`, `report` |
+| `[chd]` | `hunk_size`, `codecs`, `level`, `on_conflict`, `output_dir`, `report` |
+| `[cso]` | `block_size`, `on_conflict`, `output_dir`, `report` |
+| `[wup]` | `level`, `on_conflict` |
+| `[dat]` | `api_base`, `report`, `input_checksum_min`, `input_checksum_max` |
 
-## Covered settings
+`[presets.NAME]` can contain any of these format tables. `on_conflict` accepts
+`error`, `overwrite`, `skip`, `rename`, or `overwrite-invalid`.
 
-The config covers the tuning knobs worth repeating: `level`, `chunk_size`, `block_size_exp`,
-`mode`, `hunk_size`, `block_size`, `on_conflict`, `output_dir`, `report`, and `api_base`,
-each under the matching format table. The format tables are `[dol]`, `[rvl]`, `[nx]`,
-`[chd]`, `[cso]`, `[wup]`, and `[dat]`.
-
-`[dat]` also takes `input_checksum_min` and `input_checksum_max`, the config equivalent of
-`dat verify`/`dat identify`'s `--input-checksum-min`/`--input-checksum-max` (see
-[dat](cli.md#dat)). A CLI flag still takes precedence.
-
-For `[dol]` and `[rvl]`, `level` and `chunk_size` apply to both `compress` and `migrate`; a CLI flag still takes precedence.
-
-Some flags are deliberately command-line only and are not read from the config: `--recursive`
-and `--max-depth` (they change how much of a directory tree is processed),
-`--output-template` (it changes which output file is written), the `cso` `--format`, and the
-`chd` `--dvd`/`--cd`/`--zstd` selectors (they change which output container or codec set you
-produce). Keeping these out of the config avoids silently changing what gets traversed or what
-file is written.
-
-## Switch `prod.keys`
-
-`nx` commands need a `prod.keys` file to derive per-NCA section keys. It is not part of the
-TOML config; when neither `--keys` (CLI) nor the prod.keys field (GUI) is set, the first
-existing file in this order is used:
-
-1. `~/.switch/prod.keys` (`%USERPROFILE%\.switch\prod.keys` on Windows), the same location
-   `nsz` uses.
-2. `prod.keys` next to the rom-converto executable.
-
-Drop the file into `~/.switch` once and every `nx` command and GUI operation finds it
-without any per-run setup. The file is read, never modified. An explicit path always wins
-over the defaults.
-
-## PlayStation 3 disc keys
-
-`ps3 decrypt` needs the disc's AES-128 data key to decrypt encrypted sectors. It is resolved
-in this order:
-
-1. `--key <FILE>`, an explicit `.dkey` file.
-2. The built-in key database, looked up by the disc's title ID.
-3. A sibling `<input>.dkey` file next to the input ISO.
-
-Most discs are covered by the built-in database, so no key file is needed. Pass `--key` only
-for a disc the database doesn't cover.
-
-## Wii U disc keys
-
-`wup compress` and `wup verify` on `.wud`/`.wux` disc images optionally need the disc master
-key to decrypt content. It is resolved in this order:
-
-1. `--key <FILE>`, an explicit key file.
-2. A sibling `<disc>.key` or `game.key` file next to the input.
-3. The built-in key database, matched by the input filename.
-4. Automatic probe of the built-in database against the disc.
-5. An error if no key is found.
-
-Most discs are covered by the built-in database, so no key file is needed. Pass `--key` only
-for a disc the database doesn't cover.
-
-## Example
+`chunk_size` is a power of two from 32 KiB through 2 MiB. `nx.level` is 1 through
+22, `nx.block_size_exp` is 14 through 32, and `wup.level` is 0 through 22. CHD
+`codecs` is an array, for example `['cdlz', 'cdzl', 'cdfl']`. Command-line selectors
+such as CHD `--cd`/`--dvd`/`--ld`, CSO `--format`, recursion, and output templates are
+not config settings.
 
 ```toml
 [dol]
-level = 22
+level = 18
 chunk_size = 131072
-on_conflict = "skip"
 output_dir = "./rvz"
+on_conflict = "skip"
 
 [nx]
 level = 18
@@ -123,23 +71,41 @@ block_size_exp = 20
 
 [chd]
 hunk_size = 4096
+codecs = ["cdlz", "cdzl", "cdfl"]
 
-[dat]
-api_base = "https://playmatch.retrorealm.dev/api/v2"
-report = "./dat-report.json"
-input_checksum_min = "crc32"
-input_checksum_max = "sha256"
+[presets.fast.dol]
+level = 5
 
-[presets.archive]
-dol = { level = 22, chunk_size = 131072 }
-nx = { level = 22, mode = "solid" }
-
-[presets.fast]
-dol = { level = 5 }
-nx = { level = 10 }
+[presets.archive.nx]
+level = 22
+mode = "solid"
 ```
 
-Run a preset with `rom-converto dol compress game.iso --preset archive`.
+Run a preset with `rom-converto dol compress game.iso --preset fast`.
 
-The `mode` key for `nx` is the NX codec mode (`solid` or `block`, the same as `nx --mode`); it
-is unrelated to these named presets, which are bundles of settings you choose by name.
+NX merge and split use the configured `nx.output_dir`, including presets, but do not
+inherit `nx.on_conflict`. Set their conflict policy on the command line.
+
+## Key files
+
+Key files are supplied separately from TOML configuration.
+
+| Family | Resolution order |
+|---|---|
+| Switch `nx` | `--keys <FILE>`, then `~/.switch/prod.keys` on Linux/macOS or `%USERPROFILE%\.switch\prod.keys` on Windows, then `prod.keys` beside the executable |
+| Wii U disc input | `--key <FILE>`, then sibling `<input>.key` or `game.key`, then the built-in database by filename, then a database probe |
+| PS3 decrypt | `--key <FILE>`, then the built-in database by title ID, then sibling `<input>.dkey` |
+
+Wii U key discovery applies to `.wud` and `.wux` inputs. `wup compress` may receive
+multiple `--key` arguments; they are paired with disc inputs in command-line order.
+A Wii U key is 16 raw bytes or 32 hexadecimal characters. A PS3 `.dkey` contains the
+final 16-byte disc key as 32 hexadecimal characters; raw 16-byte `d1 .key` and IRD
+files are not accepted.
+
+3DS seed crypto also does not use TOML. `ctr decrypt` checks `seeddb.bin` in the
+current working directory, then fetches a missing seed from Nintendo's CDN. `ctr info`
+uses the local file only and reports whether a matching seed verifies.
+
+The persistent hash and verify cache is separate from configuration. It is stored at
+`rom-converto/hash-cache.json.gz` under the user config directory. Use
+`--rebuild-cache` to recreate it.

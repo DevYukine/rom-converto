@@ -1,105 +1,71 @@
 # C ABI
 
-`rom-converto-ffi` is the stable C ABI for hosts that can call C functions. Each
-release asset extracts to a `rom-converto-ffi-<classifier>` directory containing
-the platform library, `include/rom_converto.h`, and `LICENSE`. Unix assets are
-`.tar.gz`; Windows assets are `.zip` and also contain
-`rom_converto_ffi.dll.lib`, the link-time import library. Link against the import
-library and load `rom_converto_ffi.dll` on Windows. Load
-`librom_converto_ffi.so` on Linux and FreeBSD, or `librom_converto_ffi.dylib` on
-macOS.
+`rom-converto-ffi` is the C ABI for hosts that embed rom-converto. Build it with:
 
-## ABI versioning
-
-ABI v1 is the contract for the seven functions declared in
-`include/rom_converto.h`, their C types, ownership, status values, and callback
-behavior. Other DLL exports are implementation details and are unsupported. ABI v1
-is independent of the Rust library's semantic version and of the JSON runner schema.
-A release may change its library version without changing ABI v1. The current JSON
-runner schema is `rom-converto.run.v1`.
-
-Call `rom_converto_version_json` to obtain `abi_version`, `library_version`, the
-runner schema manifest, supported operations, common options, and status codes.
-Its returned string follows the ownership rule below.
-
-Within ABI v1, changes are additive only: new optional JSON fields, response
-fields, `data` fields, operations, progress kinds, and status codes may be added.
-Existing header-declared functions, signatures, status meanings, required JSON
-fields, and existing field meanings do not change. Hosts must ignore unknown JSON
-object fields and unknown progress kinds, and must not require an exact field set.
-
-## Functions and ownership
-
-```c
-RomConvertoContext* rom_converto_context_new(void);
-void rom_converto_context_free(RomConvertoContext* ctx);
-void rom_converto_context_cancel(RomConvertoContext* ctx);
-void rom_converto_context_set_progress(
-    RomConvertoContext* ctx,
-    void (*callback)(const char* event_json, void* user_data),
-    void* user_data
-);
-int32_t rom_converto_run_json(
-    RomConvertoContext* ctx,
-    const char* request_json,
-    char** response_json_out
-);
-void rom_converto_string_free(char* ptr);
-char* rom_converto_version_json(void);
+```sh
+cargo build --release -p rom-converto-ffi
 ```
 
-- `rom_converto_context_new` returns an opaque context. Free it exactly once with
-  `rom_converto_context_free`. Passing null to `rom_converto_context_free` is safe.
-- `request_json` is a NUL-terminated UTF-8 string borrowed for the call.
-- `response_json_out` receives an owned NUL-terminated UTF-8 string when non-null.
-  Release it exactly once with `rom_converto_string_free`.
-- `rom_converto_version_json` returns the same owned string type. Release it with
-  `rom_converto_string_free`.
-- Only free pointers returned by `rom_converto_run_json` or
-  `rom_converto_version_json` with `rom_converto_string_free`. Passing null to
-  `rom_converto_string_free` is safe.
+The crate builds a `cdylib`: `rom_converto_ffi.dll` on Windows,
+`librom_converto_ffi.so` on Linux and FreeBSD, and
+`librom_converto_ffi.dylib` on macOS. Release archives include the library,
+`include/rom_converto.h`, and `LICENSE`. Windows also includes
+`rom_converto_ffi.dll.lib` for link time.
 
-## Context, callbacks, and cancellation
+Include `rom_converto.h` and bind only its seven declared functions. ABI version
+1 is reported by `rom_converto_version_json`; it also reports the library version,
+the `rom-converto.run.v1` runner manifest, supported operations, and status codes.
+Treat unknown JSON fields, status codes, and progress kinds as forward-compatible
+extensions. ABI v1 is independent of the Rust package version and changes only
+add optional data; existing declarations, required request fields, and meanings
+remain the contract.
 
-Use one context for one active `rom_converto_run_json` call. A concurrent second
-run returns `invalid_argument`. Sequential runs are allowed after the prior call
-returns.
+## Lifetime and calls
 
-Set the progress callback before starting a run. Replacing or clearing it (pass a
-null callback) waits for an active run to finish. The callback receives a borrowed,
-temporary UTF-8 JSON pointer. Copy it before returning. Keep the callback and
-`user_data` valid until replacement returns or the context is freed. The callback
-may run on an implementation thread, must not throw or unwind across the C
-boundary, and must not call `rom_converto_context_set_progress` or
-`rom_converto_context_free` on the same context.
+```c
+RomConvertoContext *ctx = rom_converto_context_new();
+char *response = NULL;
+int32_t status = rom_converto_run_json(ctx, request_json, &response);
+/* use response */
+rom_converto_string_free(response);
+rom_converto_context_free(ctx);
+```
 
-`rom_converto_context_cancel` may be called from another thread while a run is
-active. It requests cancellation and returns without waiting. `rom_converto_context_free`
-cancels and waits for an active run, so it must not be called from that run's
-callback. A cancellation request made before a run does not carry into a later run.
+`request_json` is borrowed, NUL-terminated UTF-8. A non-null response is owned
+by the caller and must be released exactly once with `rom_converto_string_free`.
+The string returned by `rom_converto_version_json` follows the same rule. Both
+free functions accept null.
 
-## Status codes
+Use one context for one active `rom_converto_run_json` call. A second concurrent
+run returns `ROM_CONVERTO_INVALID_ARGUMENT`; reuse the context only after the
+first call returns. `rom_converto_context_cancel` is safe from another thread and
+requests cancellation without waiting. `rom_converto_context_free` cancels and
+waits for an active run.
 
-| Code | `code` | Meaning |
-| ---: | --- | --- |
-| `0` | `ok` | The requested operation completed. |
-| `1` | `failed` | The operation failed. |
-| `2` | `invalid_argument` | The context, JSON, schema, operation, or arguments were invalid. |
-| `3` | `partial_failure` | A batch completed with both successful and failed records. |
-| `130` | `cancelled` | Cancellation was observed. |
-| `255` | `internal_error` | An internal failure occurred. |
+## Progress callbacks
 
-`rom_converto_run_json` returns the same numeric status written to the response.
-When a response is present, show `message` to users and reserve `details` and
-`records[].error` for logs or an expandable error view.
+Register a callback before running:
 
-## Request schema
+```c
+rom_converto_context_set_progress(ctx, on_progress, user_data);
+```
 
-Requests are typed UTF-8 JSON. `schema` is optional for compatibility, but
-production hosts should send `"rom-converto.run.v1"`; a supplied schema must match
-exactly. `operation` is required. `op` and `command` are accepted aliases for
-it. Paths are strings in the host platform's normal path syntax. `options` rejects
-unknown fields.
+The callback receives borrowed UTF-8 event JSON that is valid only for that call.
+Copy it if it must outlive the callback. Keep the callback and `user_data` valid
+until replacing or clearing the registration returns, or until the context is
+freed. The callback can run on an implementation thread. It must not unwind
+across the C boundary or call `rom_converto_context_set_progress` or
+`rom_converto_context_free` for the same context.
+
+Progress events currently use `start`, `advance`, `phase`, `warn`, and `finish`
+kinds. `advance` also carries a fractional total where available.
+
+## JSON runner
+
+Send a UTF-8 JSON request with an `operation`. Send
+`"schema":"rom-converto.run.v1"` in production. The schema field is optional
+for compatibility, but if supplied it must match. `op` and `command` are aliases
+for `operation`.
 
 ```json
 {
@@ -107,112 +73,33 @@ unknown fields.
   "operation": "cso.compress",
   "input": "C:\\Games\\game.iso",
   "output": "C:\\Games\\game.cso",
-  "config": "C:\\Games\\rom-converto.toml",
-  "preset": "archive",
-  "dry_run": false,
-  "options": {
-    "on_conflict": "error",
-    "recursive": false,
-    "output_dir": "C:\\Games\\converted",
-    "output_template": "{stem}.{ext}",
-    "max_depth": 2,
-    "report": "C:\\Games\\report.json"
-  }
+  "options": { "on_conflict": "error" }
 }
 ```
 
-Common `options` are `on_conflict` (`error`, `overwrite`, `skip`, `rename`, or
-`overwrite_invalid`; `overwrite-invalid` is an accepted alias), `recursive`,
-`output_dir`, `output_template`, `max_depth`, and `report`. `output` and
-`options.output_template` are mutually exclusive. Set `dry_run` to receive a plan
-without changing files.
+`rom_converto_version_json` is the source of truth for operation names and their
+options. Common options include `on_conflict`, `recursive`, `output_dir`,
+`output_template`, `max_depth`, and `report`. `output` and
+`options.output_template` cannot both be set. `dry_run: true` returns the plan
+without writing files.
 
-Operation-specific request shapes:
+The `chd.migrate` operation upgrades legacy CHDs to v5. It supports per-file conflict
+policies and reports, but ignores `options.output_dir` and `options.output_template`.
+Set top-level `output` for a single file; recursive runs write sibling `.v5.chd` files.
+It has no `in_place` option. The schema remains `rom-converto.run.v1`.
 
-| Operations | Required shape | Relevant `options` |
-| --- | --- | --- |
-| `cso.*`, `chd.*`, `cso.to_chd`, `chd.to_cso`, `rvz.*`, `dol.*`, `rvl.*`, `ctr.decrypt`, `ctr.encrypt`, `ctr.compress`, `ctr.decompress`, `ctr.convert`, `nx.compress`, `nx.decompress`, `cue.merge` | `input`; `output` is optional unless the operation requires a destination. | Format-specific fields such as `format`, `mode`, `block_size`, `hunk_size`, `level`, `chunk_size`, `allow_zstd`, `skip_verify`, and `keys`. |
-| `ctr.cdn_to_cia` | CDN directory `input`; optional `output`. With `ensure_ticket_exists`, the generated ticket's key is checked against the content and the request fails with a clear error when it cannot decrypt. | `cleanup`, `ensure_ticket_exists`, `decrypt`, `compress`, `output_dir`. |
-| `ctr.generate_cdn_ticket` | CDN directory `input`; optional `output`. | None. |
-| `wup.compress` | `input`, or `options.inputs` containing paths or `{ "path", "format", "key", "key_path" }` objects; optional `output`. | `inputs`, `level`. |
-| `wup.decrypt`, `dat.fixdat` | Directory `input` and destination `output`. | `key` for `wup.decrypt`; `max_depth`, `api_base`, `dat_id`, `dat_name`, `platform`, `subset` for `dat.fixdat`. |
-| `*.verify`, `hash`, `info` | `input`. | `full`, `deep`, `deep_verify`, `allow_encrypted`, `content_hashes`, `key`, or `algo` as applicable. |
-| `playlist.write` | Directory `input`. | `extensions`, `playlist_mode`, `output_dir`, `max_depth`. |
-| `dat.verify`, `dat.identify` | File `input`. | `algo`, `api_base`, `report`, `input_checksum_min`, `input_checksum_max`. |
-| `dat.scan` | Directory `input`. | `algo`, `api_base`, `max_depth`, `report`. |
-| `dat.rename` | File or directory `input`. | `algo`, `api_base`, `max_depth`, `on_conflict`. |
+Switch merge/split and Xbox 360 GoD conversion are available through the CLI and GUI,
+but have no JSON runner operation or C ABI entry point.
 
-The version manifest is authoritative for operation names. For `dat.verify` and
-`dat.identify`, checksum bounds accept `crc32`, `md5`, `sha1`, or `sha256`;
-the defaults are `crc32` and `sha256`, and the minimum cannot be stronger than
-the maximum. `options.algo` cannot request a digest stronger than
-`input_checksum_max`. Where an operation accepts a single file input, it also
-accepts a `.zip`, `.7z`, `.rar`, `.tar`, `.tar.gz`, or `.tgz` archive using
-the first matching member. Reject a request when the operation requires a shape not
-supplied above rather than inferring a path.
+Responses include `schema`, `ok`, numeric `status`, string `code`, `message`,
+and optional `details`, `totals`, `records`, and operation-specific `data`. Show
+`message` to users; retain `details` and record errors for diagnostics.
 
-## Response and progress schemas
-
-Every response has this envelope. Fields marked optional are omitted when not
-applicable.
-
-```json
-{
-  "schema": "rom-converto.run.v1",
-  "ok": true,
-  "status": 0,
-  "code": "ok",
-  "message": "...",
-  "details": "...",
-  "totals": {
-    "total_files": 1,
-    "ok": 1,
-    "skipped": 0,
-    "failed": 0,
-    "total_input_bytes": 0,
-    "total_output_bytes": 0,
-    "elapsed_ms": 0
-  },
-  "records": [{
-    "input_path": "...",
-    "output_path": "...",
-    "operation": "...",
-    "status": "ok",
-    "input_bytes": 0,
-    "output_bytes": 0,
-    "ratio_pct": 0,
-    "elapsed_ms": 0,
-    "error": null
-  }],
-  "data": {}
-}
-```
-
-`totals` and `records` describe file or batch work. `data` is the
-operation-specific result:
-
-| Operations | `data` shape |
-| --- | --- |
-| File conversion and `dry_run` | A plan with `operation`, `input`, `output`, decision fields, and optional media or missing-key detail. Recursive dry runs return `{ "plans": [...] }`. |
-| File conversion after writing | `{ "comparison": { "input_bytes", "output_bytes", "ratio_pct", "input_format", "output_format" } }` when a comparison applies. |
-| `hash` | `{ "crc32", "sha1", "md5", "sha256", "size_bytes" }`; unrequested digests are null. |
-| `*.verify`, `info` | A format-specific verification or inspection object. |
-| `playlist.write` | `{ "playlists": [{ "base_title", "output", "contents", "disc_count", "has_duplicate_numbers" }] }`. |
-| `dat.verify`, `dat.identify` | A match object with `kind`, `path`, `verdict`, match metadata, and optional `error`. |
-| `dat.scan` | `{ "rows": [match, ...] }`. |
-| `dat.rename` | `{ "rows": [{ "from", "to", "action", "detail" }], "dry_run": bool }`. |
-| `dat.fixdat` | `{ "dat_file": ..., "missing_count": number }`. |
-
-Progress is delivered only to the registered callback as one JSON object per
-invocation. Its tagged shapes are:
-
-```json
-{ "kind": "start", "total": 42, "message": "..." }
-{ "kind": "advance", "delta": 1 }
-{ "kind": "phase", "message": "..." }
-{ "kind": "warn", "message": "..." }
-{ "kind": "finish" }
-```
-
-There is no first-party C# wrapper or smoke test yet. Hosts should bind directly
-to `include/rom_converto.h` and apply this contract.
+| Status | Code |
+| ---: | --- |
+| 0 | `ok` |
+| 1 | `failed` |
+| 2 | `invalid_argument` |
+| 3 | `partial_failure` |
+| 130 | `cancelled` |
+| 255 | `internal_error` |

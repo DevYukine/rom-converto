@@ -1,104 +1,142 @@
 # rom-converto
 
-[![Test Commit](https://github.com/DevYukine/rom-converto/actions/workflows/tests.yml/badge.svg)](https://github.com/DevYukine/rom-converto/actions/workflows/tests.yml)
+[![Tests](https://github.com/DevYukine/rom-converto/actions/workflows/tests.yml/badge.svg)](https://github.com/DevYukine/rom-converto/actions/workflows/tests.yml)
 [![Latest release](https://img.shields.io/github/v/release/DevYukine/rom-converto)](https://github.com/DevYukine/rom-converto/releases/latest)
 [![Sponsor](https://img.shields.io/badge/Sponsor-DevYukine-EA4AAA?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/DevYukine)
 
-rom-converto converts, compresses, verifies, encrypts, and decrypts ROMs and disc images for Nintendo 3DS, GameCube, Wii, Wii U, Nintendo Switch, and CD or DVD media. It ships as a cross-platform command line tool, a desktop GUI, a Rust library, and a C ABI bridge for embedding. Its output matches the established encoder for each format, so a rom-converto file drops straight into the emulators and tools people already use.
+Convert, compress, decrypt, and verify ROMs and disc images. Available as a command line tool and desktop app for Windows, macOS, and Linux.
 
-## Supported formats
+[Download](https://github.com/DevYukine/rom-converto/releases/latest) · [Quick start](#quick-start) · [CLI reference](docs/cli.md) · [Desktop app](docs/gui.md)
 
-| Platform | Input | Output | Compatible with |
-|---|---|---|---|
-| Nintendo DS (`nds`) | encrypted or decrypted `.nds` | the opposite state | melonDS, DeSmuME |
-| Nintendo 3DS (`ctr`) | `.3ds`, `.cci`, `.cxi`, `.cia`, CDN content | Z3DS | Azahar |
-| GameCube (`dol`) | `.iso`, `.gcm`, `.gcz`, NKit | RVZ | Dolphin |
-| Wii (`rvl`) | `.iso`, `.wbfs`, `.wia`, `.gcz`, NKit | RVZ | Dolphin |
-| Wii U (`wup`) | NUS or loadiine title, `.wud`, `.wux` | WUA | Cemu |
-| Switch (`nx`) | NSP, XCI | NSZ, XCZ | nsz |
-| CD / DVD (`chd`) | `.cue`+`.bin`, `.iso` | CHD | chdman, PPSSPP, PCSX2 |
-| LaserDisc (`chd`) | `.avi` | CHD | MAME |
-| PSP / PS2 (`cso`) | `.iso` | CSO, ZSO | maxcso, PPSSPP, Open PS2 Loader |
-| CD (`cue`) | `.cue`+`.bin` | merged `.bin`/`.cue` | any emulator |
-| Xbox (`xbox`) | full disc image or folder | XISO | xemu |
-| Xbox 360 (`xenon`) | full disc image or folder | ZAR, GoD | Xenia |
-| PlayStation 3 (`ps3`) | encrypted `.iso` | decrypted `.iso` | RPCS3 |
+## Supported consoles and formats
 
-RVZ and NSZ/XCZ output is byte-identical to the reference encoder (Dolphin, nsz) at matching settings; CSO/ZSO and CHD interoperate with maxcso and chdman. See [`docs/formats.md`](docs/formats.md) for what each format is, where it works, and the compatibility notes.
+| Console or media | Main operations |
+|---|---|
+| Nintendo DS | Encrypt and decrypt NDS ROMs |
+| Nintendo 3DS | Encrypt, decrypt, and convert CIA/CCI; compress decrypted ROMs to Z3DS; build CIA from CDN content |
+| GameCube | Compress ISO/GCM to RVZ; migrate GCZ and NKit to RVZ; decompress RVZ |
+| Wii | Compress ISO/WBFS to RVZ; migrate GCZ, WIA, and NKit to RVZ; decompress RVZ |
+| Wii U | Pack NUS, loadiine, WUD, or WUX into WUA; decrypt NUS to a game folder |
+| Nintendo Switch | Compress NSP/XCI to NSZ/XCZ and decompress them; merge or split unpacked NSP/XCI |
+| CD / DVD | Compress CUE/BIN or ISO to CHD; migrate CHD v1 to v4 into v5; extract CHD; merge CUE/BIN tracks |
+| LaserDisc | Compress AVI to CHD |
+| PSP / PS2 | Compress ISO to CSO/ZSO; decompress CSO/ZSO/DAX; convert between these and CHD |
+| PSP | Extract EBOOT.PBP and PKG; convert supported packages to ISO |
+| PS Vita | Extract PKG files |
+| Xbox | Convert a disc image or game folder to XISO; extract disc files |
+| Xbox 360 | Pack a disc image or game folder into ZAR; convert a disc ISO to GoD; extract ZAR files |
+| PlayStation 3 | Decrypt disc ISOs |
 
-`rom-converto info <input>` auto-detects the console and inspects any format above, plus NDS ROMs, 3DS homebrew (`.3dsx`), PSP `EBOOT.PBP`, PS Vita `.vpk`, PSN `.pkg` (PSP, PS3, PS Vita), and 14 cartridge systems from NES to Atari 7800. It reports title metadata, embedded icons, encryption state, and a content type normalized to Game, Update, DLC, or Demo across platforms. Single-image commands also read `.zip`, `.7z`, `.rar`, and `.tar` archives directly. Full inspection coverage is in [`docs/cli.md`](docs/cli.md).
+`info` also inspects PSP, PS Vita, PSN packages, and classic cartridge ROMs. Inspection support does not imply conversion support. See [formats and compatibility](docs/formats.md) for extensions, limits, and emulator guidance.
 
-## Installation
+**Preview first:** add `--dry-run` to a conversion to see planned outputs. Use `-R` (`--recursive`) on commands that support folder scans.
 
-Download a prebuilt binary from the [GitHub Releases](https://github.com/DevYukine/rom-converto/releases) page. The CLI and GUI are published for Windows, macOS, and Linux.
+## Install
 
-To build from source you need a recent stable Rust toolchain:
+Download the CLI or desktop app for your system from [Releases](https://github.com/DevYukine/rom-converto/releases/latest). CLI releases are standalone binaries. Rename yours to `rom-converto` (`rom-converto.exe` on Windows) and add its folder to your `PATH`. On Linux and macOS, run `chmod +x rom-converto` first.
 
+```sh
+rom-converto --version
+rom-converto --help
 ```
-cargo build --release -p rom-converto-cli
-```
 
-The binary lands at `target/release/rom-converto`. Building the GUI additionally needs Node.js 22 or newer and pnpm; see [`docs/development.md`](docs/development.md).
+Switch conversions need `prod.keys`. Wii U and PS3 disc operations resolve disc keys automatically where possible. See [key setup](docs/configuration.md).
 
 ## Quick start
 
-```
-# Compress a GameCube disc image to RVZ
-rom-converto dol compress game.iso
+Compress one GameCube image, or preview a whole folder:
 
-# Decompress it back to a raw ISO
+```sh
+rom-converto dol compress game.iso
+rom-converto dol compress -R ./games --output-dir ./rvz --dry-run
+```
+
+Run the batch after reviewing the preview:
+
+```sh
+rom-converto dol compress -R ./games --output-dir ./rvz
+```
+
+Other common tasks:
+
+```sh
+# Restore an RVZ to ISO
 rom-converto dol decompress game.rvz
 
-# Decrypt a 3DS ROM for emulator use
-rom-converto ctr decrypt game.cia game.decrypted.cia
+# Decrypt a 3DS ROM
+rom-converto ctr decrypt game.cia
 
-# Compress a whole folder of Switch games, previewing first
-rom-converto nx compress -R ./switch --dry-run
-rom-converto nx compress -R ./switch
+# Compress a Switch game
+rom-converto nx compress game.nsp --keys prod.keys
 
-# Hash a directory and write a report
-rom-converto hash -R ./roms --report hashes.csv
+# Inspect a file
+rom-converto info game.iso
+
+# Hash a folder and save the results
+rom-converto hash -R ./games --report hashes.csv
 ```
 
-Add `-R`/`--recursive` to any conversion to process a directory tree, and `--dry-run` to preview a run without writing anything.
+Most conversions derive the output name from the input. Use an explicit output path or `--output-dir` where supported.
 
-## Command line
+### Useful options
 
-Each top-level command is a console or format family (`nds`, `ctr`, `dol`, `rvl`, `wup`, `nx`, `chd`, `cso`, `cue`, `xbox`, `xenon`, `ps3`, `psp`, `vita`) with operations such as `compress`, `decompress`, `verify`, and `info`. Standalone commands cover cross-console inspection (`info`), ROM identification against the Playmatch database (`dat`), hashing (`hash`), `.m3u` playlists (`playlist`), plus `capabilities`, `shell-completions`, and `self-update`.
+| Option | Use it to |
+|---|---|
+| `--dry-run` | Preview a conversion, rename, or playlist operation before running it |
+| `-R`, `--recursive` | Process matching files in a folder and its subfolders |
+| `--max-depth 1` | Limit a supported folder scan to the top level |
+| `--output-dir ./converted` | Choose an output folder |
+| `--on-conflict skip` | Keep existing outputs and skip those files |
+| `-f`, `--force` | Overwrite existing outputs |
+| `--report run.json` | Save results as JSON, CSV, or HTML, based on the extension |
+| `--config settings.toml`, `--preset fast` | Reuse defaults and named settings |
+| `-h`, `--help` | Show options for the selected command |
 
-The full reference with every command and flag, and the behaviors shared across commands (conflict policy, dry-run, output-path templates, run reports), is [`docs/cli.md`](docs/cli.md). `rom-converto <command> --help` gives the same detail in the terminal.
+Options vary by command. Check `rom-converto dol compress --help`, for example. Dry runs can still read inputs, contact services, and write requested logs or reports; see [CLI behavior](docs/cli.md).
 
-## Desktop GUI
+## Documentation
 
-The desktop app runs the same operations as the CLI over the same library, so an equivalent run produces identical output. It runs on Windows, macOS, and Linux, and adds drag-and-drop batch queues, live progress with cancel, a dry-run preview toggle, and a rich info card for inspecting a ROM's metadata and icon. See [`docs/gui.md`](docs/gui.md).
-
-## Configuration
-
-A TOML config file lets you set per-format default flags and named presets so long flag combinations do not have to be retyped. Details and a full example are in [`docs/configuration.md`](docs/configuration.md).
-
-## How it works
-
-The project is a Cargo workspace: one library crate holds all conversion logic, and the CLI, desktop GUI, and C ABI bridge are thin front ends over it, so an equivalent run through any of them produces identical output. See [`docs/development.md`](docs/development.md) for the workspace layout and [`docs/ffi.md`](docs/ffi.md) for embedding.
-
-## Benchmarks
-
-Compression output is measured against each format's reference encoder (Dolphin, chdman, nsz, and the Azahar Z3DS compressor) on their own defaults. Per-run numbers: [3DS](benchmark/3DS.md), [GameCube](benchmark/GameCube.md), [Wii](benchmark/Wii.md), [Switch](benchmark/Switch.md), [CHD](benchmark/CHD.md). Methodology and reproduction commands are in [`docs/development.md`](docs/development.md).
+| Guide | Contents |
+|---|---|
+| [CLI reference](docs/cli.md) | Every command and option, output paths, batch behavior, reports |
+| [Formats](docs/formats.md) | Supported inputs, outputs, verification, compatibility |
+| [Configuration](docs/configuration.md) | Config files, presets, key lookup |
+| [Desktop app](docs/gui.md) | Queues, inspection, settings, updates |
+| [Development](docs/development.md) | Build, test, workspace layout, benchmarks |
+| [C API](docs/ffi.md) | Embed the library in another application |
 
 ## Development
 
-You need a recent stable Rust toolchain, plus Node.js 22 or newer and pnpm for the GUI. Setup, dev commands, and the CI gates are in [`docs/development.md`](docs/development.md).
+Build the CLI with a current stable Rust toolchain:
+
+```sh
+cargo build --release -p rom-converto-cli
+```
+
+The binary is `target/release/rom-converto` (`rom-converto.exe` on Windows). Desktop development also uses Node.js 22 and pnpm. See [development setup](docs/development.md) for platform dependencies and checks.
+
+### Built with
+
+- **Rust** for conversion logic, a **Clap** CLI, and **Tokio** for asynchronous work.
+- **Tauri 2**, **Nuxt 4 / Vue**, **TypeScript**, **Tailwind CSS**, and **Pinia** for the desktop app.
+- **RustCrypto** crates for encryption and hashing; **Zstandard**, **LZMA**, **zlib**, and other codecs for format-specific compression.
+- A shared Rust library used by the CLI, desktop app, and C API.
+
+### Benchmarks
+
+See results for [3DS](benchmark/3DS.md), [GameCube](benchmark/GameCube.md), [Wii](benchmark/Wii.md), [Switch](benchmark/Switch.md), and [CHD](benchmark/CHD.md). [Development](docs/development.md) covers how to reproduce them.
 
 ## Contributing
 
-Issues and pull requests are welcome. Commits follow [Conventional Commits](https://www.conventionalcommits.org/), because the release version, GitHub Releases, and `CHANGELOG.md` are generated from the commit history.
+Issues and pull requests are welcome. Keep changes focused and run the checks in the [development guide](docs/development.md). Use [Conventional Commits](https://www.conventionalcommits.org/); releases and the changelog are generated from commit history.
 
 ## License
 
-rom-converto is licensed under the [MIT license](LICENSE).
+[MIT](LICENSE).
 
 ## Acknowledgments
 
-These projects and resources were helpful during development:
+The original 3DS work builds on these projects and resources:
 
 - [Makerom/Ctrtool](https://github.com/3DSGuy/Project_CTR)
 - [Cia-Unix](https://github.com/shijimasoft/cia-unix)

@@ -1,156 +1,116 @@
 # Development
 
-## Prerequisites
+## Requirements
 
-- A recent stable Rust toolchain. Install it from [rustup](https://www.rust-lang.org/tools/install).
-- For the GUI: [Node.js 22+](https://nodejs.org/) and [pnpm](https://pnpm.io/installation).
+- Current stable Rust, installed with [rustup](https://rustup.rs/).
+- Node.js 22 and pnpm 11 for the desktop app.
 
-The project is a Cargo workspace with five crates: `rom-converto-lib` (all conversion,
-compression, encryption, verification, and shared JSON runner logic), `rom-converto-cli`
-(the command line interface), `rom-converto-gui` (the Tauri desktop app),
-`rom-converto-benchmark` (a harness that compares rom-converto against reference tools), and
-`rom-converto-ffi` (the C ABI bridge). All front ends call the same library code.
+For the desktop app, follow the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your platform, including Windows build tools or macOS Xcode tools. Ubuntu CI installs:
 
-## Running in development
-
-Run the CLI directly from the workspace:
-
+```sh
+sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev xdg-utils
 ```
+
+This is a Rust 2024 Cargo workspace:
+
+| Crate | Purpose |
+| --- | --- |
+| `rom-converto-lib` | Conversion, verification, configuration, and JSON runner code. |
+| `rom-converto-cli` | Command-line application. |
+| `rom-converto-gui` | Tauri desktop application. Its Nuxt frontend is in `crates/rom-converto-gui`. |
+| `rom-converto-ffi` | C ABI embedding library. |
+| `rom-converto-benchmark` | Reference-tool comparison harness. |
+
+All front ends call `rom-converto-lib`.
+
+## Run and build
+
+Run the CLI from the workspace root:
+
+```sh
 cargo run -p rom-converto-cli -- dol compress game.iso
 ```
 
-Run the GUI from its crate directory. The GUI uses pnpm, not npm:
+Run the desktop app:
 
-```
+```sh
 cd crates/rom-converto-gui
-pnpm install
+pnpm install --frozen-lockfile
 pnpm tauri dev
 ```
 
-Local development builds show the version as `dev-<shorthash>` from the current git commit;
-the same applies to the GUI version label. If the source is not a git checkout, the build
-falls back to the plain semantic version.
+Build release artifacts:
 
-## Building release binaries
-
-```
+```sh
 cargo build --release -p rom-converto-cli
-```
-
-The binary lands at `target/release/rom-converto`. Set `ROM_CONVERTO_RELEASE=1` at build time
-to mark a release build, which shows the semantic version instead of the dev hash. The release
-CI workflow sets this automatically.
-
-Build the C ABI bridge with:
-
-```
 cargo build --release -p rom-converto-ffi
-```
-
-That produces the platform `cdylib` under `target/release` (`rom_converto_ffi.dll`,
-`librom_converto_ffi.so`, or `librom_converto_ffi.dylib`). Windows also produces
-`rom_converto_ffi.dll.lib`, the link-time import library. Unix release assets are
-`rom-converto-ffi-<classifier>.tar.gz`; Windows assets are
-`rom-converto-ffi-<classifier>.zip`. Each extracts to a
-`rom-converto-ffi-<classifier>` directory with the library,
-`include/rom_converto.h`, and `LICENSE`. The header is the C ABI source of truth.
-See [`ffi.md`](ffi.md) for its ownership, threading, callback, cancellation, and JSON
-contracts.
-
-For the GUI, build the Tauri bundle:
-
-```
 cd crates/rom-converto-gui
-pnpm install
 pnpm tauri build
 ```
 
-## Cross-tool parity tests
+The CLI is `target/release/rom-converto`. The FFI build produces a `cdylib` in
+`target/release`; see [FFI](ffi.md). Development builds display `dev-<git short
+hash>`. Set `ROM_CONVERTO_RELEASE=1` to display the semantic version, as release
+automation does.
 
-Some tests cross-check output against the reference tools when they are available. They are
-skipped unless an environment variable points at the binary:
+## Checks
 
+The GitHub workflow runs these Rust checks:
+
+```sh
+cargo fmt --all -- --check
+cargo check -p rom-converto-lib -p rom-converto-cli -p rom-converto-benchmark -p rom-converto-ffi
+cargo test -p rom-converto-lib -p rom-converto-cli -p rom-converto-benchmark -p rom-converto-ffi
+cargo clippy -p rom-converto-lib -p rom-converto-cli -p rom-converto-benchmark -p rom-converto-ffi -p rom-converto-gui -- -W clippy::unwrap-used -D warnings
 ```
+
+Frontend unit tests use Vitest:
+
+```sh
+cd crates/rom-converto-gui
+pnpm install --frozen-lockfile
+pnpm test
+```
+
+`pnpm build` generates the Nuxt static frontend. CI packages the GUI with Tauri
+on Windows, macOS, and Linux.
+
+## Reference-tool tests and benchmarks
+
+Optional parity tests need the reference program:
+
+```sh
 ROMCONVERTO_CHDMAN=$(which chdman) cargo test -p rom-converto-lib chdman
 ROMCONVERTO_MAXCSO=$(which maxcso) cargo test -p rom-converto-lib maxcso
 ```
 
-## Running benchmarks
+Run a benchmark after a release CLI build:
 
-The `rom-converto-benchmark` crate runs the compression comparisons behind the
-`benchmark/*.md` numbers with the same methodology on your own hardware. Build the
-release binary first, then run a platform:
-
-```
+```sh
 cargo build --release -p rom-converto-cli
 cargo run -p rom-converto-benchmark -- <platform> [inputs]
 ```
 
-| Platform subcommand | Reference tool | Input flags |
-|---|---|---|
-| `switch` | `nsz` | `--nsp`, `--xci`, `--keys` |
-| `wii` | `DolphinTool` | `--iso`, `--levels` |
-| `gamecube` | `DolphinTool` | `--iso`, `--levels` |
-| `chd` | `chdman` | `--cue` (with a sibling `.bin`) |
-| `ctr` (alias `3ds`) | `z3ds_compressor` | `--three-ds`, `--cia` (both decrypted) |
+Supported platforms are `switch`, `wii`, `gamecube`, `chd`, and `ctr` (`3ds` is
+an alias). Reference tools must be on `PATH` or next to the CLI. Inputs can come
+from command options or `ROMCONVERTO_BENCH_*` variables; `all` runs each platform
+whose variables are set.
 
-Each reference tool must be installed and either on your `PATH` or placed next to the
-rom-converto binary. A missing tool stops the run with a message naming the tool to
-install. Inputs can also come from the `ROMCONVERTO_BENCH_*` environment variables, and
-`rom-converto-benchmark all` runs every platform whose variables are set.
+## Embedded DS key table
 
-## Embedded key tables
+`resources/nds_blowfish.bin` is the 4,168-byte Nintendo DS KEY1 table embedded in
+the binary. Regenerate it from the `encr_data` literals in devkitPro
+[ndstool](https://github.com/devkitPro/ndstool) `source/encryption.cpp` at blob
+`0de8f088b79a0e73bc31601f767ee674fa31badb`, preserving byte order. Its SHA-256 is
+`bedd20bd7f9cac742ad760e2448d4043e0d37121b67a1be3a6b8afbb8a34f08e`.
 
-`resources/` holds key material baked into the binary for end-of-life consoles.
+## Documentation and releases
 
-`nds_blowfish.bin` (4168 bytes) is the Nintendo DS cartridge KEY1 table. To regenerate it,
-take the `encr_data` array from devkitPro [ndstool](https://github.com/devkitPro/ndstool)
-`source/encryption.cpp` (blob `0de8f088b79a0e73bc31601f767ee674fa31badb`) and concatenate its
-byte literals in order. The result is byte-identical to the table SabreTools/NDecrypt
-validates against its embedded SHA-512, and hashes to
-`bedd20bd7f9cac742ad760e2448d4043e0d37121b67a1be3a6b8afbb8a34f08e` (SHA-256).
+Public `rom-converto-lib` APIs need Rust documentation. Start modules with a
+short `//!` description, use a one-line third-person summary for public items,
+and add `# Errors`, `# Panics`, or `# Safety` when applicable. Prefer intra-doc
+links.
 
-## Doc comments
-
-Every public function, method, associated function, struct, enum, trait, type alias, and
-module in `rom-converto-lib` carries a doc comment. Struct fields, enum variants, and
-constants are exempt. Conventions, following [RFC 1574](https://rust-lang.github.io/rfcs/1574-more-api-documentation-conventions.html)
-and the [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/documentation.html):
-
-- The first line is one summary sentence in third-person present ("Parses...", "Returns..."),
-  never "This function...". Keep it on one line; everything before the first blank line shows
-  up in module listings.
-- Add detail lines only for non-obvious facts: format offsets, invariants, failure semantics.
-  Do not restate the signature or add an `# Arguments` list.
-- `# Errors` on `Result` functions when the failure modes are not obvious, one or two lines.
-  `# Panics` on functions that can panic. `# Safety` on every `unsafe` item, stating the
-  caller's obligations.
-- Module files start with a one-to-three line `//!` saying what the module handles.
-- Link other items with intra-doc links (`[`Type`]`), not URLs.
-
-## CI gates
-
-Every change runs these checks. Run them locally before opening a pull request:
-
-```
-cargo fmt --all -- --check
-cargo check -p rom-converto-lib -p rom-converto-cli -p rom-converto-benchmark -p rom-converto-ffi
-cargo clippy -p rom-converto-lib -p rom-converto-cli -p rom-converto-benchmark -p rom-converto-ffi -- -D warnings
-cargo test -p rom-converto-lib -p rom-converto-cli -p rom-converto-benchmark -p rom-converto-ffi
-```
-
-For the GUI, from `crates/rom-converto-gui`:
-
-```
-pnpm exec nuxt prepare
-pnpm exec vue-tsc --noEmit
-pnpm run build
-```
-
-## Releases
-
-Commits follow [Conventional Commits](https://www.conventionalcommits.org/). The release
-version, GitHub Releases, and `CHANGELOG.md` are generated from the commit history, so
-`CHANGELOG.md` is never hand-edited. Write commit messages that describe the change in the
-Conventional Commits format (`feat:`, `fix:`, `docs:`, `refactor:`, and so on) and the release
-automation does the rest.
+Use Conventional Commit messages. Release automation derives the version,
+GitHub release, and `CHANGELOG.md` from commit history, so do not edit the
+changelog by hand.
