@@ -3,23 +3,14 @@ import { computed, ref, watch } from "vue";
 import { invoke, save } from "~/lib/ipc";
 import { useToast } from "~/composables/useToast";
 import { parseHashLine } from "~/lib/hash-lines";
-import { contentTypeDisplayName } from "~/lib/display";
 import PrimaryButton from "~/components/ui/PrimaryButton.vue";
 import ContentTypeChip from "~/components/ui/ContentTypeChip.vue";
 import KvRow from "~/components/ui/KvRow.vue";
 import InnerFilesList from "~/components/op/InnerFilesList.vue";
-import {
-	buildInspectView,
-	englishFirst,
-	formatBytes,
-	formatMaker,
-	formatXboxPartitionKind,
-	pkgPlatformBadge,
-	RETRO_SYSTEM_NAMES,
-	retroTitle,
-	xenonRatio,
-} from "~/lib/inspect-view";
-import { imageToDataUrl, pickBackgroundImage, pickIconImage, type InfoResult } from "~/types/info";
+import { buildInspectView, formatBytes, moduleFor } from "~/lib/inspect-view";
+import type { Stat } from "~/lib/inspect-view";
+import type { InfoResult } from "~/types/info";
+import { imageToDataUrl, pickBackgroundImage, pickIconImage } from "~/lib/info";
 
 const props = defineProps<{
 	info: InfoResult;
@@ -33,26 +24,8 @@ const emit = defineEmits<{ compress: []; verify: [] }>();
 
 const { show: showToast } = useToast();
 
-const CONSOLE_LABEL: Record<InfoResult["kind"], string> = {
-	ctr: "3DS",
-	dol: "GAMECUBE",
-	rvl: "WII",
-	wup: "WII U",
-	nx: "SWITCH",
-	chd: "CHD",
-	cso: "CSO",
-	xbox: "XBOX",
-	xenon: "XBOX 360",
-	ps3: "PS3",
-	psx: "PS1",
-	psp: "PSP",
-	laser_disc: "LASERDISC",
-	nds: "DS",
-	retro: "RETRO",
-	pbp: "PSP",
-	vpk: "VITA",
-	pkg: "VITA",
-};
+// Everything console-specific lives in the kind module; this card only lays it out.
+const mod = computed(() => moduleFor(props.info));
 
 const view = computed(() => buildInspectView(props.info));
 
@@ -74,358 +47,16 @@ const backgroundUrl = computed(() => {
 	return img ? imageToDataUrl(img) : null;
 });
 
-const sizeBytes = computed(() => {
-	switch (props.info.kind) {
-		case "wup":
-			return props.info.total_content_size;
-		case "xbox":
-			return props.info.image_size;
-		case "xenon":
-			return props.info.compressed_size;
-		case "ps3":
-		case "psx":
-		case "psp":
-			return props.info.size_bytes;
-		case "laser_disc":
-			return props.info.file_size_bytes;
-		case "retro":
-			return props.info.file_size;
-		case "vpk":
-		case "pkg":
-			return props.info.total_size;
-		default:
-			return props.info.physical_bytes;
-	}
-});
+const title = computed(() => mod.value.title(props.info));
+const formatBadge = computed(() => mod.value.format(props.info));
+const consoleBadge = computed(() => mod.value.console(props.info));
+const mediaBadge = computed(() => mod.value.media?.(props.info) ?? null);
+const metaLine = computed(() => (mod.value.meta?.(props.info) ?? []).filter(Boolean).join(" · "));
 
-const title = computed(() => {
-	const info = props.info;
-	switch (info.kind) {
-		case "ctr":
-			return (
-				englishFirst(info.smdh?.titles, (t) => t.language)?.long_description ||
-				info.product_code ||
-				info.title_id
-			);
-		case "dol": {
-			const t = englishFirst(info.banner?.titles, (b) => b.language);
-			return t?.long_game_name || t?.short_game_name || info.game_name || info.game_id;
-		}
-		case "rvl":
-			return (
-				englishFirst(info.imet_names?.entries, (e) => e[0])?.[1] ||
-				info.game_name ||
-				info.game_id
-			);
-		case "wup":
-			return englishFirst(info.meta?.long_names?.entries, (e) => e[0])?.[1] || info.title_id_hex;
-		case "nx":
-			return englishFirst(info.full?.control?.titles, (t) => t.language)?.name || info.container_kind.toUpperCase();
-		case "chd": {
-			const fallback = info.version_string || `CHD v${info.version}`;
-			if (info.content?.kind === "psp") return info.content.title || info.content.title_id || fallback;
-			if (info.content?.kind === "psx") return info.content.volume_id || info.content.title_id || fallback;
-			return fallback;
-		}
-		case "cso": {
-			const fallback = `${info.format} image`;
-			if (info.content?.kind === "psp") return info.content.title || info.content.title_id || fallback;
-			if (info.content?.kind === "psx") return info.content.volume_id || info.content.title_id || fallback;
-			return fallback;
-		}
-		case "xbox":
-			return info.xbe?.title_name || info.xex?.title_name || `${formatXboxPartitionKind(info.partition_kind)} image`;
-		case "xenon":
-			return info.xex?.title_name || "Xbox 360 image";
-		case "ps3":
-			return info.title || info.title_id || "PS3 disc";
-		case "psx":
-			return info.volume_id || info.title_id || "PlayStation disc";
-		case "psp":
-			return info.title || info.title_id || "PSP disc";
-		case "laser_disc":
-			return "LaserDisc rip";
-		case "nds":
-			return englishFirst(info.banner?.titles.entries, (e) => e[0])?.[1] || info.game_title;
-		case "retro":
-			return retroTitle(info.details) || RETRO_SYSTEM_NAMES[info.details.system];
-		case "pbp":
-			return info.title || info.disc_id || "PSP image";
-		case "vpk":
-			return info.title || info.title_id || "Vita package";
-		case "pkg":
-			return info.title || info.title_id || "Vita package";
-	}
-});
-
-// Raw disc images all read "DISC" regardless of the extension they came
-// with (.iso, .gcm, .cue); compressed or archive containers keep their
-// format name.
-const RETRO_DISC_SYSTEMS = new Set(["sega_saturn", "sega_cd", "dreamcast"]);
-
-const formatBadge = computed(() => {
-	const info = props.info;
-	switch (info.kind) {
-		case "ctr":
-			return info.format.toUpperCase();
-		case "dol":
-		case "rvl": {
-			const container = info.container.toUpperCase();
-			return container === "ISO" || container === "GCM" ? "DISC" : container;
-		}
-		case "wup":
-			return info.source_kind.toUpperCase();
-		case "nx":
-			return info.container_kind.toUpperCase();
-		case "chd":
-			return "CHD";
-		case "cso":
-			return info.format.toUpperCase();
-		case "xbox":
-			return "DISC";
-		case "xenon":
-			return "ZAR";
-		case "ps3":
-			return "DISC";
-		case "psx":
-			return "DISC";
-		case "psp":
-			return "DISC";
-		case "laser_disc":
-			return "AVI";
-		case "nds":
-			return "NDS";
-		case "retro":
-			return RETRO_DISC_SYSTEMS.has(info.details.system) ? "DISC" : "ROM";
-		case "pbp":
-			return "EBOOT.PBP";
-		case "vpk":
-			return "VPK";
-		case "pkg":
-			return "PKG";
-	}
-});
-
-const consoleBadge = computed(() => {
-	const info = props.info;
-	if (info.kind === "psx") return info.console;
-	if (info.kind === "chd" || info.kind === "cso") {
-		if (info.content?.kind === "psx") return info.content.console;
-		if (info.content?.kind === "psp") return "PSP";
-	}
-	if (info.kind === "pkg") return pkgPlatformBadge(info.platform);
-	if (info.kind === "retro") return RETRO_SYSTEM_NAMES[info.details.system].toUpperCase();
-	return CONSOLE_LABEL[info.kind];
-});
-
-// Physical medium of disc-based inputs; null for cartridges and digital
-// packages, which have no disc to describe.
-const mediaBadge = computed(() => {
-	const info = props.info;
-	switch (info.kind) {
-		case "psx":
-			return info.media;
-		case "psp":
-			return "UMD";
-		case "ps3":
-			return "BD";
-		case "dol":
-			return "MiniDVD";
-		case "rvl":
-			return "DVD";
-		case "xbox":
-			return "DVD";
-		case "chd":
-			if (info.content?.kind === "psx") return info.content.media;
-			if (info.content?.kind === "psp") return "UMD";
-			if (info.ld) return "LaserDisc";
-			if (info.dvd) return "DVD";
-			if (info.hard_disk) return "Hard Disk";
-			return info.tracks.length ? "CD" : null;
-		case "cso":
-			if (info.content?.kind === "psx") return info.content.media;
-			if (info.content?.kind === "psp") return "UMD";
-			return null;
-		case "laser_disc":
-			return "LaserDisc";
-		case "retro":
-			switch (info.details.system) {
-				case "sega_saturn":
-				case "sega_cd":
-					return "CD";
-				case "dreamcast":
-					return "GD-ROM";
-				default:
-					return null;
-			}
-		default:
-			return null;
-	}
-});
-
-const metaLine = computed(() => {
-	const info = props.info;
-	const parts: string[] = [];
-	switch (info.kind) {
-		case "ctr":
-			parts.push(formatMaker(info.maker_code, info.maker_name));
-			if (info.smdh?.region_names?.length) parts.push(info.smdh.region_names.join(", "));
-			break;
-		case "dol":
-			parts.push(formatMaker(info.maker_code, info.maker_name), info.region);
-			break;
-		case "rvl":
-			parts.push(formatMaker(info.maker_code, info.maker_name), info.region);
-			break;
-		case "wup": {
-			const pub = englishFirst(info.meta?.publishers?.entries, (e) => e[0])?.[1];
-			if (pub) parts.push(pub);
-			if (info.meta?.region_names?.length) parts.push(info.meta.region_names.join(", "));
-			break;
-		}
-		case "nx": {
-			const ctrl = info.full?.control;
-			const pub = englishFirst(ctrl?.titles, (t) => t.language)?.publisher;
-			if (pub) parts.push(pub);
-			if (ctrl?.display_version) parts.push(`v${ctrl.display_version}`);
-			break;
-		}
-		case "chd":
-			if (info.content) {
-				if (info.content.title_id) parts.push(info.content.title_id);
-				if (info.content.version) parts.push(`v${info.content.version}`);
-			} else {
-				parts.push(info.compressors.join(", "));
-			}
-			break;
-		case "cso":
-			if (info.content) {
-				if (info.content.title_id) parts.push(info.content.title_id);
-				if (info.content.version) parts.push(`v${info.content.version}`);
-			} else {
-				parts.push(`block ${info.block_size}`);
-			}
-			break;
-		case "ps3":
-			if (info.region) parts.push(info.region);
-			if (info.version) parts.push(`v${info.version}`);
-			break;
-		case "psx":
-			if (info.version) parts.push(`v${info.version}`);
-			break;
-		case "psp":
-			if (info.firmware) parts.push(`fw ${info.firmware}`);
-			if (info.content_kind) parts.push(contentTypeDisplayName(info.content_kind));
-			else if (info.category) parts.push(info.category);
-			break;
-		case "laser_disc":
-			parts.push(`${info.video_width}x${info.video_height}`, `${info.fps.toFixed(2)} fps`);
-			break;
-		case "nds":
-			parts.push(info.maker_code, info.unit_code_name);
-			break;
-		case "pbp":
-			if (info.content_kind) parts.push(contentTypeDisplayName(info.content_kind));
-			else if (info.category_label ?? info.category) parts.push(info.category_label ?? info.category ?? "");
-			if (info.disc_version) parts.push(`v${info.disc_version}`);
-			break;
-		case "vpk":
-			if (info.content_kind) parts.push(contentTypeDisplayName(info.content_kind));
-			else if (info.category_label ?? info.category) parts.push(info.category_label ?? info.category ?? "");
-			if (info.app_ver) parts.push(`v${info.app_ver}`);
-			break;
-		case "pkg":
-			if (info.content_kind) parts.push(contentTypeDisplayName(info.content_kind));
-			else if (info.content_type_label ?? info.category) parts.push(info.content_type_label ?? info.category ?? "");
-			break;
-	}
-	return parts.filter(Boolean).join(" · ");
-});
-
-interface Stat {
-	label: string;
-	value: string;
-	color?: "t3" | "blue" | "green" | "yellow";
-}
-
-const statRow = computed<Stat[]>(() => {
-	const info = props.info;
-	const stats: Stat[] = [{ label: "Size", value: formatBytes(sizeBytes.value) }];
-	switch (info.kind) {
-		case "ctr":
-			stats.push({ label: "Title ID", value: info.title_id });
-			stats.push({ label: "Encryption", value: info.ncch_encrypted ? "encrypted" : "decrypted ✓" });
-			if (info.compressed) stats.push({ label: "Compressed", value: "zstd" });
-			break;
-		case "dol":
-			stats.push({ label: "Game ID", value: info.game_id });
-			stats.push({ label: "Disc", value: `#${info.disc_number} v${info.disc_version}` });
-			break;
-		case "rvl":
-			stats.push({ label: "Game ID", value: info.game_id });
-			if (info.tmd) stats.push({ label: "Title ID", value: info.tmd.title_id_hex });
-			break;
-		case "wup":
-			stats.push({ label: "Title ID", value: info.title_id_hex });
-			stats.push({ label: "Contents", value: String(info.content_count) });
-			break;
-		case "nx":
-			if (info.full) stats.push({ label: "Title ID", value: info.full.application_title_id_hex });
-			stats.push({ label: "NCA files", value: String(info.nca_names.length) });
-			if (info.is_compressed) stats.push({ label: "Compressed", value: "zstd", color: "green" });
-			break;
-		case "chd":
-			if (info.content?.title_id) stats.push({ label: "Title ID", value: info.content.title_id });
-			stats.push({ label: "Ratio", value: `${info.compression_ratio.toFixed(1)}%`, color: "green" });
-			stats.push({ label: "Hunks", value: String(info.hunk_count) });
-			break;
-		case "cso":
-			if (info.content?.title_id) stats.push({ label: "Title ID", value: info.content.title_id });
-			stats.push({ label: "Ratio", value: `${info.compression_ratio.toFixed(1)}%`, color: "green" });
-			stats.push({ label: "Blocks", value: String(info.block_count) });
-			break;
-		case "xbox": {
-			const titleIdHex = info.xbe?.title_id_hex ?? info.xex?.title_id_hex;
-			if (titleIdHex) stats.push({ label: "Title ID", value: titleIdHex });
-			stats.push({ label: "Partition", value: formatXboxPartitionKind(info.partition_kind) });
-			stats.push({ label: "Files", value: String(info.file_count) });
-			break;
-		}
-		case "xenon": {
-			if (info.xex?.title_id_hex) stats.push({ label: "Title ID", value: info.xex.title_id_hex });
-			stats.push({ label: "Ratio", value: `${xenonRatio(info.logical_size, info.compressed_size).toFixed(1)}%`, color: "green" });
-			stats.push({ label: "Blocks", value: String(info.block_count) });
-			break;
-		}
-		case "ps3":
-			if (info.title_id) stats.push({ label: "Title ID", value: info.title_id });
-			if (info.encrypted !== null) stats.push({ label: "Encryption", value: info.encrypted ? "encrypted" : "decrypted ✓" });
-			break;
-		case "nds":
-			stats.push({ label: "Game Code", value: info.game_code });
-			stats.push({
-				label: "Encryption",
-				value: info.secure_area === "not_present" ? "not present" : info.secure_area === "decrypted" ? "decrypted ✓" : "encrypted",
-			});
-			break;
-		case "retro":
-			stats.push({ label: "System", value: RETRO_SYSTEM_NAMES[info.details.system] });
-			break;
-		case "pbp":
-			if (info.disc_id) stats.push({ label: "Disc ID", value: info.disc_id });
-			stats.push({ label: "Segments", value: String(info.segments.filter((s) => s.present).length) });
-			break;
-		case "vpk":
-			if (info.title_id) stats.push({ label: "Title ID", value: info.title_id });
-			stats.push({ label: "Files", value: String(info.file_count) });
-			break;
-		case "pkg":
-			if (info.title_id) stats.push({ label: "Title ID", value: info.title_id });
-			stats.push({ label: "Items", value: String(info.item_count) });
-			break;
-	}
-	return stats;
-});
+const statRow = computed<Stat[]>(() => [
+	{ label: "Size", value: formatBytes(mod.value.size(props.info)) },
+	...(mod.value.stats?.(props.info) ?? []),
+]);
 
 const computedHashes = ref<Stat[]>([]);
 const hashing = ref(false);
@@ -471,64 +102,13 @@ async function copyValue(value: string) {
 	showToast("Copied");
 }
 
-const canCopyTitleId = computed(() => {
-	const info = props.info;
-	if (info.kind === "chd" || info.kind === "cso" || info.kind === "laser_disc") return false;
-	if (info.kind === "xbox") return !!(info.xbe || info.xex);
-	if (info.kind === "xenon") return !!info.xex;
-	if (info.kind === "retro") return false;
-	return true;
-});
+// null means the kind has no title ID to offer; an empty string means it has
+// one in principle but not in this file.
+const titleIdValue = computed(() => mod.value.titleId?.(props.info) ?? null);
+const canCopyTitleId = computed(() => titleIdValue.value !== null);
 
 function copyTitleId() {
-	const info = props.info;
-	let value = "";
-	switch (info.kind) {
-		case "ctr":
-			value = info.title_id;
-			break;
-		case "dol":
-			value = info.game_id;
-			break;
-		case "rvl":
-			value = info.tmd ? info.tmd.title_id_hex : info.game_id;
-			break;
-		case "wup":
-			value = info.title_id_hex;
-			break;
-		case "nx":
-			value = info.full?.application_title_id_hex ?? "";
-			break;
-		case "ps3":
-			value = info.title_id ?? "";
-			break;
-		case "psx":
-			value = info.title_id ?? "";
-			break;
-		case "psp":
-			value = info.title_id ?? "";
-			break;
-		case "xbox":
-			value = info.xbe?.title_id_hex ?? info.xex?.title_id_hex ?? "";
-			break;
-		case "xenon":
-			value = info.xex?.title_id_hex ?? "";
-			break;
-		case "nds":
-			value = info.game_code;
-			break;
-		case "pbp":
-			value = info.disc_id ?? "";
-			break;
-		case "vpk":
-			value = info.title_id ?? "";
-			break;
-		case "pkg":
-			value = info.title_id ?? "";
-			break;
-		default:
-			return;
-	}
+	const value = titleIdValue.value;
 	if (!value) return;
 	navigator.clipboard?.writeText(value).then(() => showToast("Copied"));
 }
