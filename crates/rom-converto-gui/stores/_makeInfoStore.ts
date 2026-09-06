@@ -2,7 +2,7 @@
 // every info store must keep this exact shape.
 
 import { defineStore } from "pinia";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "~/lib/ipc";
 import type { InfoResult } from "~/types/info";
 
 export function makeInfoStore(id: string) {

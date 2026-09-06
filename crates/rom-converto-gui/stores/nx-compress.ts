@@ -1,5 +1,4 @@
 import { defineStore } from "pinia";
-import type { BatchItem } from "~/types/batch";
 import { useUiStore } from "~/stores/ui";
 
 export type NxMode = "solid" | "block";
@@ -10,15 +9,13 @@ export function isXciInput(input: string): boolean {
 
 export const useNxCompressStore = defineStore("nx-compress", () => {
   const ui = useUiStore();
-  const queue = ref<BatchItem[]>([]);
   const recursive = ref(true);
   const maxDepth = ref<number | null>(null);
   const output = ref("");
   const keys = ref("");
   const level = ref<number>(18);
-  // Defaults follow nsz: solid for NSP, block for XCI. Switching to
-  // block while a queue contains an XCI is a no-op; the auto switch
-  // only kicks in when the user has not deliberately picked.
+  // Defaults follow nsz: solid for NSP, block for XCI. The auto switch
+  // only kicks in when the user has not deliberately picked a mode.
   const mode = ref<NxMode>("solid");
   const blockSizeExp = ref<number>(20);
   const onConflict = ref(ui.defaultOnConflict);
@@ -28,38 +25,12 @@ export const useNxCompressStore = defineStore("nx-compress", () => {
   const userPickedMode = ref(false);
   const verifyAfter = ref(false);
 
-  const result = ref("");
-  const error = ref("");
-  const loading = ref(false);
-
-  function addToQueue(inputPath: string) {
-    if (queue.value.some((i) => i.input === inputPath)) return;
-    queue.value.push({
-      id: crypto.randomUUID(),
-      input: inputPath,
-      output: "",
-      status: "pending",
-    });
-    if (!userPickedMode.value && isXciInput(inputPath)) {
-      mode.value = "block";
-    }
-  }
-
-  function removeFromQueue(id: string) {
-    queue.value = queue.value.filter((item) => item.id !== id);
-  }
-
-  function clearQueue() {
-    queue.value = [];
-  }
-
   function setMode(m: NxMode) {
     mode.value = m;
     userPickedMode.value = true;
   }
 
   function $reset() {
-    queue.value = [];
     recursive.value = true;
     maxDepth.value = null;
     output.value = "";
@@ -73,13 +44,9 @@ export const useNxCompressStore = defineStore("nx-compress", () => {
     reportFile.value = "";
     userPickedMode.value = false;
     verifyAfter.value = false;
-    result.value = "";
-    error.value = "";
-    loading.value = false;
   }
 
   return {
-    queue,
     recursive,
     maxDepth,
     output,
@@ -93,12 +60,6 @@ export const useNxCompressStore = defineStore("nx-compress", () => {
     reportFile,
     userPickedMode,
     verifyAfter,
-    result,
-    error,
-    loading,
-    addToQueue,
-    removeFromQueue,
-    clearQueue,
     setMode,
     $reset,
   };

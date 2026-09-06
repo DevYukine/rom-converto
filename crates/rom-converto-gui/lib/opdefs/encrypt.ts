@@ -1,4 +1,4 @@
-import { recursiveFields, registerOp, templateIsActive, type OpDef } from "./types";
+import { recursiveFields, templateIsActive, type OpDef } from "./types";
 import { useCtrEncryptStore } from "~/stores/ctr-encrypt";
 import { useNdsEncryptStore } from "~/stores/nds-encrypt";
 import { deriveEncryptedPath, withOutputDir } from "~/composables/useDerivedPath";
@@ -110,4 +110,4 @@ const nds: OpDef = {
 	chips: () => "",
 };
 
-registerOp("encrypt", { ctr, nds });
+export const encryptOps: OpDef[] = [ctr, nds];

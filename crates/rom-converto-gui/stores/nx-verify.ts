@@ -1,5 +1,4 @@
-import { defineStore } from "pinia";
-import type { BatchItem } from "~/types/batch";
+import { makeOpStore } from "./_makeOpStore";
 
 export interface NcaVerdict {
   name: string;
@@ -14,55 +13,8 @@ export interface NxVerifyResult {
   ncas: NcaVerdict[];
 }
 
-export const useNxVerifyStore = defineStore("nx-verify", () => {
-  const input = ref("");
-  const keys = ref("");
-
-  const verdict = ref<NxVerifyResult | null>(null);
-  const result = ref("");
-  const error = ref("");
-  const loading = ref(false);
-
-  const queue = ref<BatchItem[]>([]);
-
-  function addToQueue(filePath: string) {
-    queue.value.push({
-      id: crypto.randomUUID(),
-      input: filePath,
-      output: "",
-      status: "pending",
-    });
-  }
-
-  function removeFromQueue(id: string) {
-    queue.value = queue.value.filter((item) => item.id !== id);
-  }
-
-  function clearQueue() {
-    queue.value = [];
-  }
-
-  function $reset() {
-    input.value = "";
-    keys.value = "";
-    verdict.value = null;
-    result.value = "";
-    error.value = "";
-    loading.value = false;
-    queue.value = [];
-  }
-
-  return {
-    input,
-    keys,
-    verdict,
-    result,
-    error,
-    loading,
-    queue,
-    addToQueue,
-    removeFromQueue,
-    clearQueue,
-    $reset,
-  };
-});
+export const useNxVerifyStore = makeOpStore("nx-verify", () => ({
+  input: "",
+  keys: "",
+  verdict: null as NxVerifyResult | null,
+}));

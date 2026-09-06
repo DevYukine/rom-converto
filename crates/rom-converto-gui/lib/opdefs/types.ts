@@ -174,6 +174,19 @@ export function directoryOutputRows(tooltip: string): OutputRow[] {
 	];
 }
 
+// The output/safety tail every report-capable write op appends verbatim.
+export function commonArgs(store: OpStore, taskId: string): Record<string, unknown> {
+	return {
+		taskId,
+		onConflict: store.onConflict,
+		skipSpaceCheck: store.skipSpaceCheck,
+		outputTemplate: store.outputTemplate || null,
+		report: !!store.reportFile,
+		reportFile: store.reportFile || null,
+		verifyAfter: store.verifyAfter,
+	};
+}
+
 export function templateIsActive(store: OpStore): boolean {
 	return typeof store.outputTemplate === "string" && store.outputTemplate.length > 0;
 }
@@ -258,13 +271,15 @@ export function recursiveFields(): FieldDef[] {
 
 const registry = new Map<string, Map<string, OpDef>>();
 
-export function registerOp(op: string, defs: Record<string, OpDef>): void {
-	let consoles = registry.get(op);
-	if (!consoles) {
-		consoles = new Map();
-		registry.set(op, consoles);
+export function registerOps(defs: OpDef[]): void {
+	for (const def of defs) {
+		let consoles = registry.get(def.op);
+		if (!consoles) {
+			consoles = new Map();
+			registry.set(def.op, consoles);
+		}
+		consoles.set(def.console, def);
 	}
-	for (const [console, def] of Object.entries(defs)) consoles.set(console, def);
 }
 
 export function opDef(op: string, console: string): OpDef | undefined {

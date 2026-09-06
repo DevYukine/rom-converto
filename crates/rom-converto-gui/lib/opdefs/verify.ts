@@ -7,14 +7,14 @@ import { useChdVerifyStore } from "~/stores/chd-verify";
 import { useCsoVerifyStore } from "~/stores/cso-verify";
 import { useXenonVerifyStore } from "~/stores/xenon-verify";
 import { nxKeysColor, nxKeysDisplay } from "./nx-keys";
-import { NX_KEYS_TOOLTIP, registerOp } from "./types";
+import { NX_KEYS_TOOLTIP, type OpDef } from "./types";
 
 const SUBTITLE = "Checks hashes and container structure. Read-only.";
 const DROP_TEXT = "Drop files or a folder";
 const ACTION_NOTE = "Verify jobs run in the global queue too. Results appear below as they finish.";
 
-registerOp("verify", {
-	ctr: {
+export const verifyOps: OpDef[] = [
+	{
 		op: "verify",
 		console: "ctr",
 		opLabel: "ctr verify",
@@ -48,7 +48,7 @@ registerOp("verify", {
 		buildArgs: (store, item) => ({ input: item.path, verifyContent: !!store.verifyContent }),
 		chips: (store) => (store.verifyContent ? "content hashes" : "structure only"),
 	},
-	dol: {
+	{
 		op: "verify",
 		console: "dol",
 		opLabel: "dol verify",
@@ -80,7 +80,7 @@ registerOp("verify", {
 		buildArgs: (store, item) => ({ input: item.path, full: !!store.full }),
 		chips: (store) => (store.full ? "full verification" : "quick"),
 	},
-	rvl: {
+	{
 		op: "verify",
 		console: "rvl",
 		opLabel: "rvl verify",
@@ -112,7 +112,7 @@ registerOp("verify", {
 		buildArgs: (store, item) => ({ input: item.path, full: !!store.full }),
 		chips: (store) => (store.full ? "full verification" : "quick"),
 	},
-	wup: {
+	{
 		op: "verify",
 		console: "wup",
 		opLabel: "wup verify",
@@ -147,7 +147,7 @@ registerOp("verify", {
 		buildArgs: (store, item) => ({ input: item.path, keys: store.keys || null }),
 		chips: (store) => (store.keys ? "disc key set" : "no disc key"),
 	},
-	nx: {
+	{
 		op: "verify",
 		console: "nx",
 		opLabel: "nx verify",
@@ -183,7 +183,7 @@ registerOp("verify", {
 		buildArgs: (store, item) => ({ input: item.path, keys: store.keys || null }),
 		chips: (store) => (store.keys ? "prod.keys set" : "prod.keys auto"),
 	},
-	chd: {
+	{
 		op: "verify",
 		console: "chd",
 		opLabel: "chd verify",
@@ -229,7 +229,7 @@ registerOp("verify", {
 			return parts.length ? parts.join(" · ") : "default";
 		},
 	},
-	cso: {
+	{
 		op: "verify",
 		console: "cso",
 		opLabel: "cso verify",
@@ -261,7 +261,7 @@ registerOp("verify", {
 		buildArgs: (store, item) => ({ inputPath: item.path, full: !!store.full }),
 		chips: (store) => (store.full ? "full verification" : "quick"),
 	},
-	xenon: {
+	{
 		op: "verify",
 		console: "xenon",
 		opLabel: "xenon verify",
@@ -285,4 +285,4 @@ registerOp("verify", {
 		buildArgs: (store, item) => ({ input: item.path }),
 		chips: () => "",
 	},
-});
+];

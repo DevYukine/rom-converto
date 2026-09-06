@@ -14,7 +14,7 @@ import {
 	withOutputDir,
 } from "~/composables/useDerivedPath";
 import { nxKeysColor, nxKeysDisplay } from "./nx-keys";
-import { NX_KEYS_TOOLTIP, registerOp, type OpDef, type OpStore } from "./types";
+import { NX_KEYS_TOOLTIP, type OpDef, type OpStore } from "./types";
 
 function dirName(path: string): string {
 	const norm = path.replace(/[\\/]+$/, "");
@@ -557,12 +557,4 @@ const nxSplit: OpDef = {
 	chips: () => "",
 };
 
-registerOp("tools", {
-	hash,
-	playlist,
-	merge,
-	cdn2cia,
-	ticket,
-	"nx-merge": nxMerge,
-	"nx-split": nxSplit,
-});
+export const toolOps: OpDef[] = [hash, playlist, merge, cdn2cia, ticket, nxMerge, nxSplit];

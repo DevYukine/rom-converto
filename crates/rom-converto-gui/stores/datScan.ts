@@ -34,13 +34,12 @@ export const useDatScanStore = defineStore("dat-scan", () => {
   const maxDepth = ref<number | null>(null);
   const scanLevel = ref<ScanLevel>("crc");
   const quick = ref(false);
-  const result = ref("");
-  const error = ref("");
-  const loading = ref(false);
   const commandLine = ref("");
   const statusFilter = ref<DatScanStatus | "all">("all");
   const scanResult = ref<DatScanResult | null>(null);
   const liveRows = ref(new Map<string, DatScanRowEvent>());
+  const error = ref("");
+  const loading = ref(false);
   let rowListener: Promise<void> | null = null;
 
   function clearScanState() {
@@ -65,10 +64,9 @@ export const useDatScanStore = defineStore("dat-scan", () => {
     maxDepth.value = null;
     scanLevel.value = "crc";
     quick.value = false;
-    result.value = "";
+    commandLine.value = "";
     error.value = "";
     loading.value = false;
-    commandLine.value = "";
     clearScanState();
   }
 
@@ -77,13 +75,12 @@ export const useDatScanStore = defineStore("dat-scan", () => {
     maxDepth,
     scanLevel,
     quick,
-    result,
-    error,
-    loading,
     commandLine,
     statusFilter,
     scanResult,
     liveRows,
+    error,
+    loading,
     clearScanState,
     setLiveRow,
     ensureRowListener,

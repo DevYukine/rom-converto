@@ -3,7 +3,6 @@ import {
 	NX_KEYS_TOOLTIP,
 	directoryOutputRows,
 	recursiveFields,
-	registerOp,
 	templateIsActive,
 	type OpDef,
 	type OutputRow,
@@ -465,4 +464,4 @@ const vita: OpDef = {
 	chips: () => "",
 };
 
-registerOp("extract", { ctr, dol, rvl, nx, chd, cso, xbox, xenon, psp, vita });
+export const extractOps: OpDef[] = [ctr, dol, rvl, nx, chd, cso, xbox, xenon, psp, vita];

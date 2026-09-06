@@ -1,72 +1,13 @@
-import { defineStore } from "pinia";
-import type { BatchItem } from "~/types/batch";
+import { makeOpStore } from "./_makeOpStore";
 import { useUiStore } from "~/stores/ui";
 
-export const useNxDecompressStore = defineStore("nx-decompress", () => {
-  const ui = useUiStore();
-  const queue = ref<BatchItem[]>([]);
-  const recursive = ref(true);
-  const maxDepth = ref<number | null>(null);
-  const output = ref("");
-  const keys = ref("");
-  const onConflict = ref(ui.defaultOnConflict);
-  const skipSpaceCheck = ref(false);
-  const outputTemplate = ref("");
-  const reportFile = ref("");
-
-  const result = ref("");
-  const error = ref("");
-  const loading = ref(false);
-
-  function addToQueue(inputPath: string) {
-    if (queue.value.some((i) => i.input === inputPath)) return;
-    queue.value.push({
-      id: crypto.randomUUID(),
-      input: inputPath,
-      output: "",
-      status: "pending",
-    });
-  }
-
-  function removeFromQueue(id: string) {
-    queue.value = queue.value.filter((item) => item.id !== id);
-  }
-
-  function clearQueue() {
-    queue.value = [];
-  }
-
-  function $reset() {
-    queue.value = [];
-    recursive.value = true;
-    maxDepth.value = null;
-    output.value = "";
-    keys.value = "";
-    onConflict.value = ui.defaultOnConflict;
-    skipSpaceCheck.value = false;
-    outputTemplate.value = "";
-    reportFile.value = "";
-    result.value = "";
-    error.value = "";
-    loading.value = false;
-  }
-
-  return {
-    queue,
-    recursive,
-    maxDepth,
-    output,
-    keys,
-    onConflict,
-    skipSpaceCheck,
-    outputTemplate,
-    reportFile,
-    result,
-    error,
-    loading,
-    addToQueue,
-    removeFromQueue,
-    clearQueue,
-    $reset,
-  };
-});
+export const useNxDecompressStore = makeOpStore("nx-decompress", () => ({
+  recursive: true,
+  maxDepth: null as number | null,
+  output: "",
+  keys: "",
+  onConflict: useUiStore().defaultOnConflict,
+  skipSpaceCheck: false,
+  outputTemplate: "",
+  reportFile: "",
+}));

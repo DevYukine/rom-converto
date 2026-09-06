@@ -19,9 +19,10 @@ import { useXenonCompressStore } from "~/stores/xenon-compress";
 import { nxKeysColor, nxKeysDisplay } from "./nx-keys";
 import {
 	NX_KEYS_TOOLTIP,
+	commonArgs,
 	recursiveFields,
-	registerOp,
 	templateIsActive,
+	type OpDef,
 	type OpStore,
 	type OutputRow,
 } from "./types";
@@ -151,8 +152,8 @@ const discFields = (hint: string) => [
 	...recursiveFields(),
 ];
 
-registerOp("compress", {
-	nx: {
+export const compressOps: OpDef[] = [
+	{
 		op: "compress",
 		console: "nx",
 		opLabel: "nx compress",
@@ -229,19 +230,13 @@ registerOp("compress", {
 			level: store.level,
 			mode: store.mode,
 			blockSizeExp: store.blockSizeExp,
-			taskId,
-			onConflict: store.onConflict,
-			skipSpaceCheck: store.skipSpaceCheck,
-			outputTemplate: store.outputTemplate || null,
-			report: !!store.reportFile,
-			reportFile: store.reportFile || null,
-			verifyAfter: store.verifyAfter,
+			...commonArgs(store, taskId),
 		}),
 		chips: (s) =>
 			`level ${s.level} · ${s.mode}${s.mode === "block" ? ` · 2^${s.blockSizeExp}` : ""}`,
 	},
 
-	dol: {
+	{
 		op: "compress",
 		console: "dol",
 		opLabel: "dol compress",
@@ -267,18 +262,12 @@ registerOp("compress", {
 			output: outPath(store, deriveRvzPath(item.path)),
 			level: store.level,
 			chunkSize: store.chunkSize,
-			taskId,
-			onConflict: store.onConflict,
-			skipSpaceCheck: store.skipSpaceCheck,
-			outputTemplate: store.outputTemplate || null,
-			report: !!store.reportFile,
-			reportFile: store.reportFile || null,
-			verifyAfter: store.verifyAfter,
+			...commonArgs(store, taskId),
 		}),
 		chips: (s) => `level ${s.level} · ${chunkLabel(s.chunkSize).split(" (")[0]}`,
 	},
 
-	rvl: {
+	{
 		op: "compress",
 		console: "rvl",
 		opLabel: "rvl compress",
@@ -304,18 +293,12 @@ registerOp("compress", {
 			output: outPath(store, deriveRvzPath(item.path)),
 			level: store.level,
 			chunkSize: store.chunkSize,
-			taskId,
-			onConflict: store.onConflict,
-			skipSpaceCheck: store.skipSpaceCheck,
-			outputTemplate: store.outputTemplate || null,
-			report: !!store.reportFile,
-			reportFile: store.reportFile || null,
-			verifyAfter: store.verifyAfter,
+			...commonArgs(store, taskId),
 		}),
 		chips: (s) => `level ${s.level} · ${chunkLabel(s.chunkSize).split(" (")[0]}`,
 	},
 
-	ctr: {
+	{
 		op: "compress",
 		console: "ctr",
 		opLabel: "ctr compress",
@@ -369,7 +352,7 @@ registerOp("compress", {
 		chips: (s) => `level ${s.level}${s.allowEncrypted ? " · allow-encrypted" : ""}`,
 	},
 
-	chd: {
+	{
 		op: "compress",
 		console: "chd",
 		opLabel: "chd compress",
@@ -452,23 +435,17 @@ registerOp("compress", {
 		buildArgs: (store, item, taskId) => ({
 			inputPath: item.path,
 			output: outPath(store, deriveChdPath(item.path)),
-			taskId,
-			onConflict: store.onConflict,
-			skipSpaceCheck: store.skipSpaceCheck,
 			codecs: store.codecs.length ? store.codecs : null,
 			level: store.level,
 			mode: store.mode === "auto" ? null : store.mode,
 			hunkSize: store.hunkSize || null,
-			outputTemplate: store.outputTemplate || null,
-			report: !!store.reportFile,
-			reportFile: store.reportFile || null,
-			verifyAfter: store.verifyAfter,
+			...commonArgs(store, taskId),
 		}),
 		chips: (s) =>
 			`${s.mode}${s.codecs.length ? ` · ${s.codecs.join(", ")}` : ""}${s.level ? ` · level ${s.level}` : ""}${s.hunkSize ? ` · hunk ${s.hunkSize}` : ""}`,
 	},
 
-	cso: {
+	{
 		op: "compress",
 		console: "cso",
 		opLabel: "cso compress",
@@ -514,19 +491,13 @@ registerOp("compress", {
 			inputPath: item.path,
 			output: outPath(store, deriveCsoPath(item.path, store.format)),
 			format: store.format,
-			taskId,
-			onConflict: store.onConflict,
-			skipSpaceCheck: store.skipSpaceCheck,
 			blockSize: store.blockSize || null,
-			outputTemplate: store.outputTemplate || null,
-			report: !!store.reportFile,
-			reportFile: store.reportFile || null,
-			verifyAfter: store.verifyAfter,
+			...commonArgs(store, taskId),
 		}),
 		chips: (s) => `${s.format}${s.blockSize ? ` · block ${s.blockSize}` : ""}`,
 	},
 
-	xenon: {
+	{
 		op: "compress",
 		console: "xenon",
 		opLabel: "xenon compress",
@@ -551,20 +522,14 @@ registerOp("compress", {
 		buildArgs: (store, item, taskId) => ({
 			input: item.path,
 			output: outPath(store, deriveZarPath(item.path)),
-			taskId,
-			onConflict: store.onConflict,
-			skipSpaceCheck: store.skipSpaceCheck,
-			outputTemplate: store.outputTemplate || null,
-			report: !!store.reportFile,
-			reportFile: store.reportFile || null,
-			verifyAfter: store.verifyAfter,
+			...commonArgs(store, taskId),
 		}),
 		chips: () => "",
 	},
 
 	// Rendered by BundleView (see pages/[op]/[console].vue), not OpPage: Wii U
 	// bundles are N inputs to one .wua, grouped by title ID.
-	wup: {
+	{
 		op: "compress",
 		console: "wup",
 		opLabel: "wup compress",
@@ -595,4 +560,4 @@ registerOp("compress", {
 		}),
 		chips: (s) => `level ${s.level}`,
 	},
-});
+];

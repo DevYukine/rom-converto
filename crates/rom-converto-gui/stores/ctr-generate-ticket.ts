@@ -1,27 +1,6 @@
-import { defineStore } from "pinia";
+import { makeOpStore } from "./_makeOpStore";
 
-export const useCtrGenerateTicketStore = defineStore("ctr-generate-ticket", () => {
-  const cdnDir = ref("");
-  const output = ref("");
-
-  const result = ref("");
-  const error = ref("");
-  const loading = ref(false);
-
-  function $reset() {
-    cdnDir.value = "";
-    output.value = "";
-    result.value = "";
-    error.value = "";
-    loading.value = false;
-  }
-
-  return {
-    cdnDir,
-    output,
-    result,
-    error,
-    loading,
-    $reset,
-  };
-});
+export const useCtrGenerateTicketStore = makeOpStore("ctr-generate-ticket", () => ({
+  cdnDir: "",
+  output: "",
+}));

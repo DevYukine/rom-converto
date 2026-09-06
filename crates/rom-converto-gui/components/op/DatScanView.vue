@@ -5,6 +5,7 @@ import { invoke } from "~/lib/ipc";
 import { basename } from "~/composables/useDerivedPath";
 import { openContextMenu } from "~/composables/useContextMenu";
 import { useProgress } from "~/composables/useProgress";
+import { rowContextItems, useResultRows } from "~/composables/useResultRows";
 import { useDatScanStore } from "~/stores/datScan";
 import type { DatScanRowEvent, DatScanResult, DatScanStatus, ScanLevel } from "~/stores/datScan";
 import { useAlertsStore } from "~/stores/alerts";
@@ -63,25 +64,13 @@ const sourceRows = computed<DatScanRowEvent[]>(() =>
 	scanResult.value ? scanResult.value.rows : Array.from(liveRows.value.values()),
 );
 
-const counts = computed<Record<string, number>>(() => {
-	const c: Record<string, number> = {};
-	for (const r of sourceRows.value) c[r.status] = (c[r.status] ?? 0) + 1;
-	return c;
-});
-
-const visibleRows = computed(() =>
-	sourceRows.value.filter((r) => statusFilter.value === "all" || r.status === statusFilter.value),
-);
+const { counts, visibleRows, toggleFilter } = useResultRows(sourceRows, (r) => r.status, statusFilter);
 
 const filterLabel = computed(() =>
 	statusFilter.value === "all" ? "all files" : (TAG[statusFilter.value]?.label ?? statusFilter.value),
 );
 
 const showRenameLink = computed(() => statusFilter.value === "all" || statusFilter.value === "misnamed");
-
-function toggleFilter(status: DatScanStatus) {
-	statusFilter.value = statusFilter.value === status ? "all" : status;
-}
 
 function detail(r: DatScanRowEvent): { text: string; tone: "green" | "red" | "muted" } | null {
 	if (r.status === "failed") return r.error ? { text: r.error, tone: "red" } : null;
@@ -96,11 +85,7 @@ function detail(r: DatScanRowEvent): { text: string; tone: "green" | "red" | "mu
 const detailRow = ref<DatScanRowEvent | null>(null);
 
 function contextItems(r: DatScanRowEvent) {
-	const d = detail(r);
-	const items = [{ label: "Copy file path", value: r.path }];
-	if (d) items.push({ label: "Copy details", value: d.text });
-	items.push({ label: "Copy row", value: [basename(r.path), d?.text].filter(Boolean).join(" · ") });
-	return items;
+	return rowContextItems(r.path, detail(r)?.text);
 }
 
 function onDepthInput(e: Event) {

@@ -1,4 +1,10 @@
-import { directoryOutputRows, recursiveFields, registerOp, templateIsActive, type OpDef } from "./types";
+import {
+	commonArgs,
+	directoryOutputRows,
+	recursiveFields,
+	templateIsActive,
+	type OpDef,
+} from "./types";
 import {
 	CHD_CODEC_OPTIONS,
 	CHD_CODEC_PLACEHOLDER,
@@ -177,18 +183,12 @@ const cso: OpDef = {
 		return {
 			inputPath: item.path,
 			output: tmpl ? null : withOutputDir(deriveChdPath(item.path), store.outputDir || ""),
-			onConflict: store.onConflict,
-			skipSpaceCheck: store.skipSpaceCheck,
 			codecs: store.codecs.length ? store.codecs : null,
 			level: store.level,
 			mode: store.mode === "auto" ? null : store.mode,
 			hunkSize: store.hunkSize || null,
-			outputTemplate: store.outputTemplate || null,
-			report: !!store.reportFile,
-			reportFile: store.reportFile || null,
-			verifyAfter: store.verifyAfter,
+			...commonArgs(store, taskId),
 			dryRun: false,
-			taskId,
 		};
 	},
 	chips: (store) =>
@@ -248,15 +248,9 @@ const chd: OpDef = {
 			inputPath: item.path,
 			output: tmpl ? null : withOutputDir(deriveCsoPath(item.path, store.format), store.outputDir || ""),
 			format: store.format,
-			onConflict: store.onConflict,
-			skipSpaceCheck: store.skipSpaceCheck,
 			blockSize: store.blockSize || null,
-			outputTemplate: store.outputTemplate || null,
-			report: !!store.reportFile,
-			reportFile: store.reportFile || null,
-			verifyAfter: store.verifyAfter,
+			...commonArgs(store, taskId),
 			dryRun: false,
-			taskId,
 		};
 	},
 	chips: (store) => store.format,
@@ -333,17 +327,11 @@ const chdMigrate: OpDef = {
 		return {
 			inputPath: item.path,
 			output: tmpl ? null : withOutputDir(deriveChdV5Path(item.path), store.outputDir || ""),
-			onConflict: store.onConflict,
-			skipSpaceCheck: store.skipSpaceCheck,
 			codecs: store.codecs.length ? store.codecs : null,
 			level: store.level,
 			hunkSize: store.hunkSize || null,
-			outputTemplate: store.outputTemplate || null,
-			report: !!store.reportFile,
-			reportFile: store.reportFile || null,
-			verifyAfter: store.verifyAfter,
+			...commonArgs(store, taskId),
 			dryRun: false,
-			taskId,
 		};
 	},
 	chips: (store) =>
@@ -463,13 +451,7 @@ const xbox: OpDef = {
 			input: item.path,
 			output: tmpl ? null : withOutputDir(deriveXisoPath(item.path), store.outputDir || ""),
 			mediaPatch: store.mediaPatch,
-			taskId,
-			onConflict: store.onConflict,
-			skipSpaceCheck: store.skipSpaceCheck,
-			outputTemplate: store.outputTemplate || null,
-			report: !!store.reportFile,
-			reportFile: store.reportFile || null,
-			verifyAfter: store.verifyAfter,
+			...commonArgs(store, taskId),
 			dryRun: false,
 		};
 	},
@@ -502,14 +484,8 @@ const psp: OpDef = {
 		return {
 			input: item.path,
 			output: tmpl ? null : withOutputDir(deriveDiscIsoPath(item.path), store.outputDir || ""),
-			onConflict: store.onConflict,
-			skipSpaceCheck: store.skipSpaceCheck,
-			outputTemplate: store.outputTemplate || null,
-			report: !!store.reportFile,
-			reportFile: store.reportFile || null,
-			verifyAfter: store.verifyAfter,
+			...commonArgs(store, taskId),
 			dryRun: false,
-			taskId,
 		};
 	},
 	chips: () => "",
@@ -556,4 +532,4 @@ const xenon: OpDef = {
 	chips: (store) => (store.title ? "custom title" : ""),
 };
 
-registerOp("convert", { ctr, cso, chd, "chd-migrate": chdMigrate, cue, xbox, psp, xenon });
+export const convertOps: OpDef[] = [ctr, cso, chd, chdMigrate, cue, xbox, psp, xenon];

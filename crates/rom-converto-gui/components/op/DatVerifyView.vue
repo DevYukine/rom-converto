@@ -5,6 +5,7 @@ import { basename } from "~/composables/useDerivedPath";
 import { invoke } from "~/lib/ipc";
 import { openContextMenu } from "~/composables/useContextMenu";
 import { useProgress } from "~/composables/useProgress";
+import { rowContextItems, useResultRows } from "~/composables/useResultRows";
 import { useDatVerifyStore } from "~/stores/datVerify";
 import { useQueueStore } from "~/stores/queue";
 import type { StagedItem } from "~/lib/opdefs/types";
@@ -120,19 +121,7 @@ const TAG: Record<Verdict, { tag: string; label: string }> = {
 	failed: { tag: "FAILED", label: "Failed" },
 };
 
-const counts = computed<Record<string, number>>(() => {
-	const c: Record<string, number> = {};
-	for (const r of results.value) c[r.verdict] = (c[r.verdict] ?? 0) + 1;
-	return c;
-});
-
-const visibleRows = computed(() =>
-	results.value.filter((r) => statusFilter.value === "all" || r.verdict === statusFilter.value),
-);
-
-function toggleFilter(verdict: Verdict) {
-	statusFilter.value = statusFilter.value === verdict ? "all" : verdict;
-}
+const { counts, visibleRows, toggleFilter } = useResultRows(results, (r) => r.verdict, statusFilter);
 
 function detail(r: DatVerifyResult): { text: string; tone: "green" | "red" | "muted" } | null {
 	if (r.verdict === "failed") return { text: r.error ?? "Hash differs from the database entry.", tone: "red" };
@@ -150,11 +139,7 @@ function detailLines(r: DatVerifyResult): string[] {
 }
 
 function contextItems(r: DatVerifyResult) {
-	const d = detail(r);
-	const items = [{ label: "Copy file path", value: r.path }];
-	if (d) items.push({ label: "Copy details", value: d.text });
-	items.push({ label: "Copy row", value: [basename(r.path), d?.text].filter(Boolean).join(" · ") });
-	return items;
+	return rowContextItems(r.path, detail(r)?.text);
 }
 </script>
 

@@ -13,10 +13,7 @@ export const useConfigStore = defineStore("config", () => {
   const activePreset = ref<string | null>(null);
   const loaded = ref(false);
   const error = ref("");
-  // Unused by settings logic; present only so the sidebar's generic
-  // status-dot lookup (which expects loading/result/error) can include it.
   const loading = ref(false);
-  const result = ref("");
 
   async function loadConfig() {
     if (loading.value || loaded.value) return;
@@ -76,7 +73,6 @@ export const useConfigStore = defineStore("config", () => {
     loaded,
     error,
     loading,
-    result,
     loadConfig,
     savePreset,
     deletePreset,

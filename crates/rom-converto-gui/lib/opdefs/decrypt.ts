@@ -1,4 +1,4 @@
-import { recursiveFields, registerOp, templateIsActive, type OpDef } from "./types";
+import { recursiveFields, templateIsActive, type OpDef } from "./types";
 import { useCtrDecryptStore } from "~/stores/ctr-decrypt";
 import { useWupDecryptStore } from "~/stores/wup-decrypt";
 import { usePs3DecryptStore } from "~/stores/ps3-decrypt";
@@ -251,4 +251,4 @@ const nds: OpDef = {
 	chips: () => "",
 };
 
-registerOp("decrypt", { ctr, wup, ps3, nds });
+export const decryptOps: OpDef[] = [ctr, wup, ps3, nds];
