@@ -1,9 +1,31 @@
-use crate::commands::ConflictPolicyArg;
 use crate::commands::cso::CsoFormatArg;
 use crate::commands::info_command::InfoCommand;
+use crate::commands::{BatchArgs, ConflictArgs, OutputArgs};
 use clap::{Parser, Subcommand};
 use rom_converto_lib::chd::ChdCodec;
 use std::path::PathBuf;
+
+use crate::commands::support::{
+    ALL_IMAGE_EXTS, DispatchCtx, chd_media_label, finish_single, finish_single_sized, input_len,
+    maybe_log_dvd_codec_tip, require_dir, require_info_input, resolve_chd_codecs,
+    resolved_dvd_mode,
+};
+use crate::util::{
+    SingleOutput, WriteDecision, ensure_input_exists, file_len, log_skipped, resolve_output,
+    resolve_policy, resolve_single_output,
+};
+use crate::{batch, config, dry_run, info_print};
+use anyhow::Result;
+use rom_converto_lib::chd::{
+    ChdOptions, DiscMode, convert_disc_to_chd, extract_from_chd, migrate_chd_to_v5,
+    migrate_chd_to_v5_batch, verify_chd, verify_chd_batch,
+};
+use rom_converto_lib::cso::{CsoCompressOptions, CsoFormat};
+use rom_converto_lib::pipeline::chd_to_cso;
+use rom_converto_lib::util::fs::collect_files_with_exts;
+use rom_converto_lib::util::{CancelToken, Tally, TallyDirection};
+use std::path::Path;
+use std::time::Instant;
 
 /// A parsed `-c/--codecs` value. Aliased (rather than spelled as `Vec<ChdCodec>`
 /// on the arg field) so clap-derive treats it as an opaque single value instead
@@ -55,15 +77,8 @@ pub struct CompressCommand {
     )]
     pub output_flag: Option<PathBuf>,
 
-    /// Write output into this directory using the derived filename. Created if missing. Works with --recursive
-    #[arg(long = "output-dir", value_name = "DIR", conflicts_with_all = ["output", "output_flag"])]
-    pub output_dir: Option<PathBuf>,
-
-    /// Output path template applied per file. Tokens: {title}, {titleId}, {region},
-    /// {console}, {serial}, {ext}, {basename}. Resolves against extracted metadata;
-    /// missing tokens fall back to the input basename. Joined under --output-dir
-    #[arg(long = "output-template", value_name = "TEMPLATE", conflicts_with_all = ["output", "output_flag"])]
-    pub output_template: Option<String>,
+    #[command(flatten)]
+    pub out: OutputArgs,
 
     /// Force DVD mode (.iso input only)
     #[arg(long, conflicts_with_all = ["cd", "ld"])]
@@ -94,30 +109,15 @@ pub struct CompressCommand {
     )]
     pub level: Option<i32>,
 
-    /// What to do when an output already exists: error, overwrite, skip, or rename to a numbered sibling
-    #[arg(long = "on-conflict", value_enum)]
-    pub on_conflict: Option<ConflictPolicyArg>,
-
-    /// Alias for --on-conflict overwrite
-    #[arg(
-        long,
-        short = 'f',
-        default_value_t = false,
-        conflicts_with = "on_conflict"
-    )]
-    pub force: bool,
+    #[command(flatten)]
+    pub conflict: ConflictArgs,
 
     /// Compress every .cue and .iso found in the INPUT directory and its subdirectories
     #[arg(long, short = 'R', default_value_t = false)]
     pub recursive: bool,
 
-    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited
-    #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
-    pub max_depth: Option<usize>,
-
-    /// Write a run report to FILE. Format inferred from the extension: .csv, .json, .html or .htm. Unknown extensions default to JSON. The file is overwritten directly
-    #[arg(long = "report", value_name = "FILE")]
-    pub report: Option<PathBuf>,
+    #[command(flatten)]
+    pub batch: BatchArgs,
 }
 
 /// Rewrite a legacy CHD as a version 5 CHD
@@ -144,15 +144,8 @@ pub struct MigrateCommand {
     )]
     pub output_flag: Option<PathBuf>,
 
-    /// Write output into this directory using the derived filename. Created if missing. Works with --recursive
-    #[arg(long = "output-dir", value_name = "DIR", conflicts_with_all = ["output", "output_flag"])]
-    pub output_dir: Option<PathBuf>,
-
-    /// Output path template applied per file. Tokens: {title}, {titleId}, {region},
-    /// {console}, {serial}, {ext}, {basename}. Resolves against extracted metadata;
-    /// missing tokens fall back to the input basename. Joined under --output-dir
-    #[arg(long = "output-template", value_name = "TEMPLATE", conflicts_with_all = ["output", "output_flag"])]
-    pub output_template: Option<String>,
+    #[command(flatten)]
+    pub out: OutputArgs,
 
     /// Replace the source file with the migrated v5 CHD instead of writing a .v5.chd sibling
     #[arg(long = "in-place", conflicts_with_all = ["output", "output_flag", "output_dir", "output_template"])]
@@ -175,30 +168,15 @@ pub struct MigrateCommand {
     )]
     pub level: Option<i32>,
 
-    /// What to do when an output already exists: error, overwrite, skip, or rename to a numbered sibling
-    #[arg(long = "on-conflict", value_enum)]
-    pub on_conflict: Option<ConflictPolicyArg>,
-
-    /// Alias for --on-conflict overwrite
-    #[arg(
-        long,
-        short = 'f',
-        default_value_t = false,
-        conflicts_with = "on_conflict"
-    )]
-    pub force: bool,
+    #[command(flatten)]
+    pub conflict: ConflictArgs,
 
     /// Migrate every .chd found in the INPUT directory and its subdirectories
     #[arg(long, short = 'R', default_value_t = false)]
     pub recursive: bool,
 
-    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited
-    #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
-    pub max_depth: Option<usize>,
-
-    /// Write a run report to FILE. Format inferred from the extension: .csv, .json, .html or .htm. Unknown extensions default to JSON. The file is overwritten directly
-    #[arg(long = "report", value_name = "FILE")]
-    pub report: Option<PathBuf>,
+    #[command(flatten)]
+    pub batch: BatchArgs,
 }
 
 /// Extract files from a CHD file to a specified output directory
@@ -227,15 +205,8 @@ pub struct ExtractCommand {
     )]
     pub output_flag: Option<PathBuf>,
 
-    /// Write output into this directory using the derived filename. Created if missing. Works with --recursive
-    #[arg(long = "output-dir", value_name = "DIR", conflicts_with_all = ["output", "output_flag"])]
-    pub output_dir: Option<PathBuf>,
-
-    /// Output path template applied per file. Tokens: {title}, {titleId}, {region},
-    /// {console}, {serial}, {ext}, {basename}. Resolves against extracted metadata;
-    /// missing tokens fall back to the input basename. Joined under --output-dir
-    #[arg(long = "output-template", value_name = "TEMPLATE", conflicts_with_all = ["output", "output_flag"])]
-    pub output_template: Option<String>,
+    #[command(flatten)]
+    pub out: OutputArgs,
 
     /// Optional parent CHD file (for CHDs that reference a parent); not allowed with --recursive
     #[arg(long, short = 'p', value_name = "PARENT", conflicts_with = "recursive")]
@@ -249,18 +220,8 @@ pub struct ExtractCommand {
     #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
     pub max_depth: Option<usize>,
 
-    /// What to do when an output already exists: error, overwrite, skip, or rename to a numbered sibling
-    #[arg(long = "on-conflict", value_enum)]
-    pub on_conflict: Option<ConflictPolicyArg>,
-
-    /// Alias for --on-conflict overwrite
-    #[arg(
-        long,
-        short = 'f',
-        default_value_t = false,
-        conflicts_with = "on_conflict"
-    )]
-    pub force: bool,
+    #[command(flatten)]
+    pub conflict: ConflictArgs,
 
     /// Write a run report to FILE. Format inferred from the extension: .csv, .json, .html or .htm. Unknown extensions default to JSON. The file is overwritten directly
     #[arg(long = "report", value_name = "FILE")]
@@ -291,15 +252,8 @@ pub struct ToCsoCommand {
     )]
     pub output_flag: Option<PathBuf>,
 
-    /// Write output into this directory using the derived filename. Created if missing. Works with --recursive
-    #[arg(long = "output-dir", value_name = "DIR", conflicts_with_all = ["output", "output_flag"])]
-    pub output_dir: Option<PathBuf>,
-
-    /// Output path template applied per file. Tokens: {title}, {titleId}, {region},
-    /// {console}, {serial}, {ext}, {basename}. Resolves against extracted metadata;
-    /// missing tokens fall back to the input basename. Joined under --output-dir
-    #[arg(long = "output-template", value_name = "TEMPLATE", conflicts_with_all = ["output", "output_flag"])]
-    pub output_template: Option<String>,
+    #[command(flatten)]
+    pub out: OutputArgs,
 
     /// Output container format
     #[arg(long, value_enum, default_value_t = CsoFormatArg::Cso)]
@@ -309,30 +263,15 @@ pub struct ToCsoCommand {
     #[arg(long, value_name = "BYTES")]
     pub block_size: Option<u32>,
 
-    /// What to do when an output already exists: error, overwrite, skip, or rename to a numbered sibling
-    #[arg(long = "on-conflict", value_enum)]
-    pub on_conflict: Option<ConflictPolicyArg>,
-
-    /// Alias for --on-conflict overwrite
-    #[arg(
-        long,
-        short = 'f',
-        default_value_t = false,
-        conflicts_with = "on_conflict"
-    )]
-    pub force: bool,
+    #[command(flatten)]
+    pub conflict: ConflictArgs,
 
     /// Convert every .chd found in the INPUT directory and its subdirectories
     #[arg(long, short = 'R', default_value_t = false)]
     pub recursive: bool,
 
-    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited
-    #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
-    pub max_depth: Option<usize>,
-
-    /// Write a run report to FILE. Format inferred from the extension: .csv, .json, .html or .htm. Unknown extensions default to JSON. The file is overwritten directly
-    #[arg(long = "report", value_name = "FILE")]
-    pub report: Option<PathBuf>,
+    #[command(flatten)]
+    pub batch: BatchArgs,
 }
 
 /// Verify the integrity of a CHD file
@@ -362,9 +301,505 @@ pub struct VerifyCommand {
     pub max_depth: Option<usize>,
 }
 
+/// Runs one `chd` subcommand.
+pub async fn run(command: ChdCommands, ctx: DispatchCtx<'_>) -> Result<()> {
+    let DispatchCtx {
+        progress,
+        total_progress,
+        effective,
+        dry_run,
+        skip_space_check,
+        cancel,
+        cache,
+        ..
+    } = ctx;
+    match command {
+        ChdCommands::Compress(cmd) => {
+            let eff = &effective.chd;
+            let mut opts = ChdOptions {
+                hunk_size: cmd.hunk_size.or(eff.hunk_size),
+                codecs: resolve_chd_codecs(cmd.codecs.clone(), &eff.codecs)?,
+                level: cmd.level.or(eff.level),
+                force: cmd.conflict.force,
+            };
+            let codecs_set = opts.codecs.is_some();
+            let output_dir = cmd
+                .out
+                .output_dir
+                .clone()
+                .or_else(|| eff.output_dir.clone());
+            let report = cmd.batch.report.clone().or_else(|| eff.report.clone());
+            let fallback = config::policy_fallback(&eff.on_conflict)?;
+            let mode = if cmd.dvd {
+                Some(DiscMode::Dvd)
+            } else if cmd.cd {
+                Some(DiscMode::Cd)
+            } else if cmd.ld {
+                Some(DiscMode::Ld)
+            } else {
+                None
+            };
+            if cmd.recursive {
+                require_dir(&cmd.input)?;
+                let policy = resolve_policy(cmd.conflict.on_conflict, cmd.conflict.force, fallback);
+                let run = batch::BatchRun {
+                    progress: &progress,
+                    total_progress: &total_progress,
+                    input_dir: &cmd.input,
+                    policy,
+                    output_dir: output_dir.as_deref(),
+                    output_template: cmd.out.output_template.as_deref(),
+                    max_depth: cmd.batch.max_depth,
+                    dry_run,
+                    skip_space_check,
+                    report_path: report.as_deref(),
+                    cancel: &cancel,
+                };
+                batch::chd_compress(&run, opts, mode, cache).await?
+            } else {
+                ensure_input_exists(&cmd.input)?;
+                let resolved =
+                    rom_converto_lib::util::resolve_input(&cmd.input, &["iso", "cue", "avi"])?;
+                let input = resolved.path();
+                maybe_log_dvd_codec_tip(resolved_dvd_mode(mode, input), codecs_set);
+                let policy = resolve_policy(cmd.conflict.on_conflict, cmd.conflict.force, fallback);
+                let media = if dry_run {
+                    chd_media_label(input)
+                } else {
+                    None
+                };
+                let Some(output) = resolve_single_output(
+                    SingleOutput {
+                        operation: "compress",
+                        cli_input: &cmd.input,
+                        input,
+                        explicit: cmd.output_flag.or(cmd.output),
+                        derived: resolved.output_basis().with_extension("chd"),
+                        output_dir: output_dir.as_deref(),
+                        output_template: cmd.out.output_template.as_deref(),
+                        output_ext: "chd",
+                        keys_path: None,
+                        policy,
+                        verify: crate::util::OutputVerify::Chd,
+                        media: media.as_deref(),
+                        missing_keys: None,
+                        report: report.as_deref(),
+                        dry_run,
+                        cancel: cancel.clone(),
+                    },
+                    &progress,
+                )
+                .await?
+                else {
+                    return Ok(());
+                };
+                if !skip_space_check {
+                    let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
+                    batch::space_preflight_for_size(file_len(input), check_dir)?;
+                }
+                opts.force = true;
+                let out_path = output.clone();
+                let started = Instant::now();
+                convert_disc_to_chd(
+                    &progress,
+                    input.to_path_buf(),
+                    output,
+                    mode,
+                    opts,
+                    cancel.clone(),
+                )
+                .await?;
+                finish_single(
+                    &cmd.input,
+                    &out_path,
+                    TallyDirection::Compress,
+                    "compress",
+                    started,
+                    report.as_deref(),
+                )?;
+            }
+        }
+        ChdCommands::Migrate(cmd) => {
+            let eff = &effective.chd;
+            let mut opts = ChdOptions {
+                hunk_size: cmd.hunk_size.or(eff.hunk_size),
+                codecs: resolve_chd_codecs(cmd.codecs.clone(), &eff.codecs)?,
+                level: cmd.level.or(eff.level),
+                force: cmd.conflict.force || cmd.in_place,
+            };
+            // --in-place names the destination itself, so a configured
+            // output directory must not pull the write elsewhere.
+            let output_dir = if cmd.in_place {
+                None
+            } else {
+                cmd.out
+                    .output_dir
+                    .clone()
+                    .or_else(|| eff.output_dir.clone())
+            };
+            let report = cmd.batch.report.clone().or_else(|| eff.report.clone());
+            let fallback = config::policy_fallback(&eff.on_conflict)?;
+            if cmd.recursive {
+                require_dir(&cmd.input)?;
+                if dry_run {
+                    // The lib batch migrator writes as it walks, so the
+                    // plan is enumerated here instead.
+                    let inputs = collect_files_with_exts(
+                        &cmd.input,
+                        &["chd"],
+                        cmd.batch.max_depth,
+                        &CancelToken::new(),
+                    )?;
+                    let mut tally = Tally::new();
+                    let mut records = Vec::with_capacity(inputs.len());
+                    for file in &inputs {
+                        let desired = match (cmd.in_place, output_dir.as_deref()) {
+                            (true, _) => file.clone(),
+                            (false, Some(_)) => rom_converto_lib::util::place_in_dir_mirrored(
+                                file,
+                                &cmd.input,
+                                output_dir.as_deref(),
+                            ),
+                            (false, None) => rom_converto_lib::chd::migrated_chd_path(file),
+                        };
+                        let decision = WriteDecision::Write(desired.clone());
+                        dry_run::log_plan("migrate", file, &desired, &decision, None, None);
+                        dry_run::record(&mut tally, file, &decision);
+                        records.push(dry_run::report_record("migrate", file, &desired, &decision));
+                    }
+                    return dry_run::finish(&tally, &records, report.as_deref());
+                }
+                migrate_chd_to_v5_batch(
+                    &progress,
+                    &total_progress,
+                    &cmd.input,
+                    opts,
+                    output_dir.as_deref(),
+                    cmd.batch.max_depth,
+                    cmd.in_place,
+                )
+                .await?
+            } else {
+                ensure_input_exists(&cmd.input)?;
+                if cmd.in_place && rom_converto_lib::util::is_archive_path(&cmd.input) {
+                    anyhow::bail!(
+                        "--in-place needs a plain .chd, not an archive: {}",
+                        cmd.input.display()
+                    );
+                }
+                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["chd"])?;
+                let input = resolved.path();
+                let output = if cmd.in_place {
+                    input.to_path_buf()
+                } else {
+                    match cmd.output_flag.clone().or_else(|| cmd.output.clone()) {
+                        Some(p) => p,
+                        None => {
+                            if !dry_run && let Some(dir) = output_dir.as_deref() {
+                                std::fs::create_dir_all(dir)?;
+                            }
+                            match cmd.out.output_template.as_deref() {
+                                Some(tmpl) => crate::util::templated_output(
+                                    tmpl,
+                                    input,
+                                    output_dir.as_deref(),
+                                    "chd",
+                                    None,
+                                    dry_run,
+                                )?,
+                                None => match output_dir.as_deref() {
+                                    Some(dir) => rom_converto_lib::util::place_in_dir(
+                                        &resolved.output_basis().with_extension("chd"),
+                                        Some(dir),
+                                    ),
+                                    None => rom_converto_lib::chd::migrated_chd_path(
+                                        resolved.output_basis(),
+                                    ),
+                                },
+                            }
+                        }
+                    }
+                };
+                let policy = resolve_policy(
+                    cmd.conflict.on_conflict,
+                    cmd.conflict.force || cmd.in_place,
+                    fallback,
+                );
+                let decision = resolve_output(&output, policy)?;
+                if dry_run {
+                    return dry_run::single(
+                        "migrate",
+                        &cmd.input,
+                        &output,
+                        &decision,
+                        None,
+                        None,
+                        report.as_deref(),
+                    );
+                }
+                let output = match decision {
+                    WriteDecision::Skip => {
+                        log_skipped(&output);
+                        return Ok(());
+                    }
+                    WriteDecision::Write(p) => p,
+                };
+                if !skip_space_check {
+                    let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
+                    batch::space_preflight_for_size(file_len(input), check_dir)?;
+                }
+                opts.force = true;
+                let in_path = input.to_path_buf();
+                let out_path = output.clone();
+                let started = Instant::now();
+                // --in-place overwrites the source, so its size has to be
+                // taken before the write to keep the summary honest.
+                let in_bytes = input_len(&cmd.input);
+                migrate_chd_to_v5(&progress, in_path, output, opts, cancel.clone()).await?;
+                finish_single_sized(
+                    &cmd.input,
+                    in_bytes,
+                    &out_path,
+                    TallyDirection::Compress,
+                    "migrate",
+                    started,
+                    report.as_deref(),
+                )?;
+            }
+        }
+        ChdCommands::Extract(cmd) => {
+            let eff = &effective.chd;
+            let output_dir = cmd
+                .out
+                .output_dir
+                .clone()
+                .or_else(|| eff.output_dir.clone());
+            let report = cmd.report.clone().or_else(|| eff.report.clone());
+            let fallback = config::policy_fallback(&eff.on_conflict)?;
+            if cmd.recursive {
+                require_dir(&cmd.input)?;
+                let policy = resolve_policy(cmd.conflict.on_conflict, cmd.conflict.force, fallback);
+                let run = batch::BatchRun {
+                    progress: &progress,
+                    total_progress: &total_progress,
+                    input_dir: &cmd.input,
+                    policy,
+                    output_dir: output_dir.as_deref(),
+                    output_template: cmd.out.output_template.as_deref(),
+                    max_depth: cmd.max_depth,
+                    dry_run,
+                    skip_space_check,
+                    report_path: report.as_deref(),
+                    cancel: &cancel,
+                };
+                batch::chd_extract(&run, cmd.parent).await?
+            } else {
+                ensure_input_exists(&cmd.input)?;
+                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["chd"])?;
+                let input = resolved.path();
+                let explicit = cmd.output_flag.or(cmd.output);
+                if explicit.is_none() && output_dir.is_none() {
+                    anyhow::bail!(
+                        "chd extract needs an OUTPUT path or --output-dir without --recursive"
+                    );
+                }
+                let policy = resolve_policy(cmd.conflict.on_conflict, cmd.conflict.force, fallback);
+                let Some(output) = resolve_single_output(
+                    SingleOutput {
+                        operation: "extract",
+                        cli_input: &cmd.input,
+                        input,
+                        explicit,
+                        derived: resolved.output_basis().with_extension(""),
+                        output_dir: output_dir.as_deref(),
+                        output_template: cmd.out.output_template.as_deref(),
+                        output_ext: "iso",
+                        keys_path: None,
+                        policy,
+                        verify: crate::util::OutputVerify::None,
+                        media: None,
+                        missing_keys: None,
+                        report: report.as_deref(),
+                        dry_run,
+                        cancel: cancel.clone(),
+                    },
+                    &progress,
+                )
+                .await?
+                else {
+                    return Ok(());
+                };
+                if !skip_space_check {
+                    let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
+                    batch::space_preflight_for_size(file_len(input), check_dir)?;
+                }
+                let in_path = input.to_path_buf();
+                let out_path = output.clone();
+                let started = Instant::now();
+                extract_from_chd(
+                    &progress,
+                    in_path.clone(),
+                    output,
+                    cmd.parent,
+                    cancel.clone(),
+                )
+                .await?;
+                finish_single(
+                    &cmd.input,
+                    &out_path,
+                    TallyDirection::CountOnly,
+                    "extract",
+                    started,
+                    report.as_deref(),
+                )?;
+            }
+        }
+        ChdCommands::Verify(cmd) => {
+            if cmd.recursive {
+                if !cmd.input.is_dir() {
+                    anyhow::bail!(
+                        "INPUT must be a directory when --recursive is set: {}",
+                        cmd.input.display()
+                    );
+                }
+                verify_chd_batch(
+                    &progress,
+                    &total_progress,
+                    cmd.input,
+                    cmd.fix,
+                    cmd.max_depth,
+                )
+                .await?
+            } else {
+                ensure_input_exists(&cmd.input)?;
+                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["chd"])?;
+                verify_chd(
+                    &progress,
+                    resolved.path().to_path_buf(),
+                    cmd.parent,
+                    cmd.fix,
+                    CancelToken::new(),
+                )
+                .await?
+            }
+        }
+        ChdCommands::ToCso(cmd) => {
+            let eff = &effective.cso;
+            let format = match cmd.format {
+                CsoFormatArg::Cso => CsoFormat::Cso,
+                CsoFormatArg::Zso => CsoFormat::Zso,
+            };
+            let mut opts = CsoCompressOptions {
+                format,
+                block_size: cmd.block_size.or(eff.block_size),
+                force: cmd.conflict.force,
+            };
+            let output_dir = cmd
+                .out
+                .output_dir
+                .clone()
+                .or_else(|| eff.output_dir.clone());
+            let report = cmd.batch.report.clone().or_else(|| eff.report.clone());
+            let fallback = config::policy_fallback(&eff.on_conflict)?;
+            if cmd.recursive {
+                require_dir(&cmd.input)?;
+                let policy = resolve_policy(cmd.conflict.on_conflict, cmd.conflict.force, fallback);
+                let run = batch::BatchRun {
+                    progress: &progress,
+                    total_progress: &total_progress,
+                    input_dir: &cmd.input,
+                    policy,
+                    output_dir: output_dir.as_deref(),
+                    output_template: cmd.out.output_template.as_deref(),
+                    max_depth: cmd.batch.max_depth,
+                    dry_run,
+                    skip_space_check,
+                    report_path: report.as_deref(),
+                    cancel: &cancel,
+                };
+                batch::chd_to_cso(&run, opts, cache).await?
+            } else {
+                ensure_input_exists(&cmd.input)?;
+                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["chd"])?;
+                let input = resolved.path();
+                let policy = resolve_policy(cmd.conflict.on_conflict, cmd.conflict.force, fallback);
+                let media = format.name();
+                let derived = resolved.output_basis().with_extension(format.extension());
+                let output_ext = derived
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                let Some(output) = resolve_single_output(
+                    SingleOutput {
+                        operation: "compress",
+                        cli_input: &cmd.input,
+                        input,
+                        explicit: cmd.output_flag.or(cmd.output),
+                        derived,
+                        output_dir: output_dir.as_deref(),
+                        output_template: cmd.out.output_template.as_deref(),
+                        output_ext: &output_ext,
+                        keys_path: None,
+                        policy,
+                        verify: crate::util::OutputVerify::Cso,
+                        media: Some(media),
+                        missing_keys: None,
+                        report: report.as_deref(),
+                        dry_run,
+                        cancel: cancel.clone(),
+                    },
+                    &progress,
+                )
+                .await?
+                else {
+                    return Ok(());
+                };
+                if !skip_space_check {
+                    let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
+                    let required = rom_converto_lib::chd::info::read_info(input)
+                        .map(|info| info.logical_bytes)
+                        .unwrap_or_else(|_| file_len(input));
+                    batch::space_preflight_for_size(required, check_dir)?;
+                }
+                opts.force = true;
+                let in_path = input.to_path_buf();
+                let out_path = output.clone();
+                let started = Instant::now();
+                chd_to_cso(&progress, in_path, output, opts, cancel.clone()).await?;
+                finish_single(
+                    &cmd.input,
+                    &out_path,
+                    TallyDirection::Compress,
+                    "compress",
+                    started,
+                    report.as_deref(),
+                )?;
+            }
+        }
+        ChdCommands::Info(cmd) => {
+            if cmd.keys.is_some() {
+                anyhow::bail!("--keys is only supported by nx, wup, and ps3 info");
+            }
+            if cmd.save_icon.is_some() {
+                anyhow::bail!(
+                    "--save-icon is not supported for chd: the format has no embedded artwork"
+                );
+            }
+            let input = require_info_input(&cmd.input)?;
+            ensure_input_exists(input)?;
+            let resolved = rom_converto_lib::util::resolve_input(input, ALL_IMAGE_EXTS)?;
+            let info = rom_converto_lib::chd::info::read_info(resolved.path())?;
+            info_print::print(&rom_converto_lib::info::InfoResult::Chd(info), cmd.json)?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::ConflictPolicyArg;
 
     #[derive(Parser, Debug)]
     struct Harness {
@@ -380,7 +815,7 @@ mod tests {
         };
         assert_eq!(c.input, PathBuf::from("game.iso"));
         assert_eq!(c.output, None);
-        assert!(!c.dvd && !c.cd && !c.force && !c.recursive);
+        assert!(!c.dvd && !c.cd && !c.conflict.force && !c.recursive);
         assert_eq!(c.hunk_size, None);
         assert_eq!(c.codecs, None);
         assert_eq!(c.level, None);
@@ -554,7 +989,7 @@ mod tests {
         let ChdCommands::Compress(c) = h.cmd else {
             panic!("expected Compress");
         };
-        assert_eq!(c.output_dir, Some(PathBuf::from("out")));
+        assert_eq!(c.out.output_dir, Some(PathBuf::from("out")));
         assert_eq!(c.output, None);
     }
 
@@ -580,7 +1015,7 @@ mod tests {
         let ChdCommands::Compress(c) = h.cmd else {
             panic!("expected Compress");
         };
-        assert_eq!(c.on_conflict, Some(ConflictPolicyArg::Skip));
+        assert_eq!(c.conflict.on_conflict, Some(ConflictPolicyArg::Skip));
     }
 
     #[test]
@@ -589,7 +1024,7 @@ mod tests {
         let ChdCommands::Compress(c) = h.cmd else {
             panic!("expected Compress");
         };
-        assert_eq!(c.on_conflict, Some(ConflictPolicyArg::Rename));
+        assert_eq!(c.conflict.on_conflict, Some(ConflictPolicyArg::Rename));
     }
 
     #[test]
@@ -598,8 +1033,8 @@ mod tests {
         let ChdCommands::Compress(c) = h.cmd else {
             panic!("expected Compress");
         };
-        assert!(c.force);
-        assert!(c.on_conflict.is_none());
+        assert!(c.conflict.force);
+        assert!(c.conflict.on_conflict.is_none());
     }
 
     #[test]
@@ -615,7 +1050,7 @@ mod tests {
         let ChdCommands::Compress(c) = h.cmd else {
             panic!("expected Compress");
         };
-        assert!(c.on_conflict.is_none());
+        assert!(c.conflict.on_conflict.is_none());
     }
 
     #[test]
@@ -625,7 +1060,7 @@ mod tests {
             panic!("expected Extract");
         };
         assert!(c.output.is_none());
-        assert_eq!(c.output_dir, Some(PathBuf::from("out")));
+        assert_eq!(c.out.output_dir, Some(PathBuf::from("out")));
     }
 
     #[test]
@@ -634,7 +1069,7 @@ mod tests {
         let ChdCommands::Compress(c) = h.cmd else {
             panic!("expected Compress");
         };
-        assert_eq!(c.report, Some(PathBuf::from("out.json")));
+        assert_eq!(c.batch.report, Some(PathBuf::from("out.json")));
     }
 
     #[test]
@@ -655,7 +1090,7 @@ mod tests {
         assert_eq!(c.input, PathBuf::from("game.chd"));
         assert_eq!(c.output, None);
         assert_eq!(c.format, CsoFormatArg::Cso);
-        assert!(!c.force && !c.recursive);
+        assert!(!c.conflict.force && !c.recursive);
     }
 
     #[test]
@@ -689,7 +1124,7 @@ mod tests {
         };
         assert_eq!(c.input, PathBuf::from("in.chd"));
         assert_eq!(c.output, Some(PathBuf::from("out.chd")));
-        assert!(!c.in_place && !c.recursive && !c.force);
+        assert!(!c.in_place && !c.recursive && !c.conflict.force);
         assert_eq!(c.hunk_size, None);
         assert_eq!(c.codecs, None);
         assert_eq!(c.level, None);

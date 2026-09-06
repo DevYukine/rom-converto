@@ -1,7 +1,29 @@
-use crate::commands::ConflictPolicyArg;
 use crate::commands::info_command::InfoCommand;
+use crate::commands::{BatchArgs, ConflictArgs, ConflictPolicyArg, OutputArgs};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
+
+use crate::commands::support::{
+    ALL_IMAGE_EXTS, DispatchCtx, finish_single, load_keyset_for_plan, require_dir,
+    require_info_input, save_nx_icon,
+};
+use crate::util::{
+    SingleOutput, WriteDecision, ensure_input_exists, file_len, log_skipped, resolve_output,
+    resolve_output_dir, resolve_policy, resolve_single_output,
+};
+use crate::{batch, config, dry_run, info_print};
+use anyhow::Result;
+use rom_converto_lib::nintendo::nx::{
+    NczMode, NxCompressOptions, NxMergeFormat, compress_container_async,
+    decompress_container_async, derive_compressed_path as nx_derive_compressed_path,
+    derive_decompressed_path as nx_derive_decompressed_path,
+    derive_merged_path as nx_derive_merged_path, derive_split_dir as nx_derive_split_dir,
+    detect_container, load_keyset, merge_containers_async, split_container_async,
+    verify_container_async,
+};
+use rom_converto_lib::util::{CancelToken, Tally, TallyDirection};
+use std::path::Path;
+use std::time::Instant;
 
 /// Commands specific to Nintendo Switch (NX) NSP/XCI containers
 #[derive(Subcommand, Debug, Eq, PartialEq)]
@@ -42,15 +64,8 @@ pub struct NxCompressCommand {
     )]
     pub output_flag: Option<PathBuf>,
 
-    /// Write output into this directory using the derived filename. Created if missing. Works with --recursive
-    #[arg(long = "output-dir", value_name = "DIR", conflicts_with_all = ["output", "output_flag"])]
-    pub output_dir: Option<PathBuf>,
-
-    /// Output path template applied per file. Tokens: {title}, {titleId}, {region},
-    /// {console}, {serial}, {ext}, {basename}. Resolves against extracted metadata;
-    /// missing tokens fall back to the input basename. Joined under --output-dir
-    #[arg(long = "output-template", value_name = "TEMPLATE", conflicts_with_all = ["output", "output_flag"])]
-    pub output_template: Option<String>,
+    #[command(flatten)]
+    pub out: OutputArgs,
 
     /// Zstd compression level. nsz default is 18; the maximum 22 needs over 1 GiB of RAM during decompression on the Switch
     #[arg(
@@ -69,30 +84,15 @@ pub struct NxCompressCommand {
     #[arg(long = "block-size-exp", value_parser = clap::value_parser!(u8).range(14..=32))]
     pub block_size_exp: Option<u8>,
 
-    /// What to do when an output already exists: error, overwrite, skip, or rename to a numbered sibling
-    #[arg(long = "on-conflict", value_enum)]
-    pub on_conflict: Option<ConflictPolicyArg>,
-
-    /// Alias for --on-conflict overwrite
-    #[arg(
-        long,
-        short = 'f',
-        default_value_t = false,
-        conflicts_with = "on_conflict"
-    )]
-    pub force: bool,
+    #[command(flatten)]
+    pub conflict: ConflictArgs,
 
     /// Compress every .nsp and .xci found in the INPUT directory and its subdirectories
     #[arg(long, short = 'R', default_value_t = false)]
     pub recursive: bool,
 
-    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited
-    #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
-    pub max_depth: Option<usize>,
-
-    /// Write a run report to FILE. Format inferred from the extension: .csv, .json, .html or .htm. Unknown extensions default to JSON. The file is overwritten directly
-    #[arg(long = "report", value_name = "FILE")]
-    pub report: Option<PathBuf>,
+    #[command(flatten)]
+    pub batch: BatchArgs,
 }
 
 /// Decompress an NSZ back to NSP or an XCZ back to XCI
@@ -122,40 +122,18 @@ pub struct NxDecompressCommand {
     )]
     pub output_flag: Option<PathBuf>,
 
-    /// Write output into this directory using the derived filename. Created if missing. Works with --recursive
-    #[arg(long = "output-dir", value_name = "DIR", conflicts_with_all = ["output", "output_flag"])]
-    pub output_dir: Option<PathBuf>,
+    #[command(flatten)]
+    pub out: OutputArgs,
 
-    /// Output path template applied per file. Tokens: {title}, {titleId}, {region},
-    /// {console}, {serial}, {ext}, {basename}. Resolves against extracted metadata;
-    /// missing tokens fall back to the input basename. Joined under --output-dir
-    #[arg(long = "output-template", value_name = "TEMPLATE", conflicts_with_all = ["output", "output_flag"])]
-    pub output_template: Option<String>,
-
-    /// What to do when an output already exists: error, overwrite, skip, or rename to a numbered sibling
-    #[arg(long = "on-conflict", value_enum)]
-    pub on_conflict: Option<ConflictPolicyArg>,
-
-    /// Alias for --on-conflict overwrite
-    #[arg(
-        long,
-        short = 'f',
-        default_value_t = false,
-        conflicts_with = "on_conflict"
-    )]
-    pub force: bool,
+    #[command(flatten)]
+    pub conflict: ConflictArgs,
 
     /// Decompress every .nsz and .xcz found in the INPUT directory and its subdirectories
     #[arg(long, short = 'R', default_value_t = false)]
     pub recursive: bool,
 
-    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited
-    #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
-    pub max_depth: Option<usize>,
-
-    /// Write a run report to FILE. Format inferred from the extension: .csv, .json, .html or .htm. Unknown extensions default to JSON. The file is overwritten directly
-    #[arg(long = "report", value_name = "FILE")]
-    pub report: Option<PathBuf>,
+    #[command(flatten)]
+    pub batch: BatchArgs,
 }
 
 /// Verify hash integrity of every NCA in a Switch container
@@ -204,18 +182,8 @@ pub struct NxMergeCommand {
     #[arg(long = "format", value_parser = ["nsp", "xci"])]
     pub format: Option<String>,
 
-    /// What to do when an output already exists: error, overwrite, skip, or rename to a numbered sibling
-    #[arg(long = "on-conflict", value_enum)]
-    pub on_conflict: Option<ConflictPolicyArg>,
-
-    /// Alias for --on-conflict overwrite
-    #[arg(
-        long,
-        short = 'f',
-        default_value_t = false,
-        conflicts_with = "on_conflict"
-    )]
-    pub force: bool,
+    #[command(flatten)]
+    pub conflict: ConflictArgs,
 }
 
 /// Split a super NSP or XCI into one NSP per title
@@ -248,6 +216,435 @@ pub struct NxSplitCommand {
         conflicts_with = "on_conflict"
     )]
     pub force: bool,
+}
+
+/// Runs one `nx` subcommand.
+pub async fn run(command: NxCommands, ctx: DispatchCtx<'_>) -> Result<()> {
+    let DispatchCtx {
+        progress,
+        total_progress,
+        effective,
+        dry_run,
+        skip_space_check,
+        cancel,
+        cache,
+        ..
+    } = ctx;
+    match command {
+        NxCommands::Compress(cmd) => {
+            let eff = &effective.nx;
+            let (keys, keys_note) = load_keyset_for_plan(cmd.keys.as_deref(), dry_run)?;
+            let level = cmd.level.or(eff.level);
+            let mode = cmd.mode.clone().or_else(|| eff.mode.clone());
+            let block_size_exp = cmd.block_size_exp.or(eff.block_size_exp);
+            let output_dir = cmd
+                .out
+                .output_dir
+                .clone()
+                .or_else(|| eff.output_dir.clone());
+            let report = cmd.batch.report.clone().or_else(|| eff.report.clone());
+            let fallback = config::policy_fallback(&eff.on_conflict)?;
+            if cmd.recursive && dry_run {
+                require_dir(&cmd.input)?;
+                let files = rom_converto_lib::util::fs::collect_files_with_exts(
+                    &cmd.input,
+                    &["nsp", "xci"],
+                    cmd.batch.max_depth,
+                    &CancelToken::new(),
+                )?;
+                let policy = resolve_policy(cmd.conflict.on_conflict, cmd.conflict.force, fallback);
+                let mut tally = Tally::new();
+                for input in &files {
+                    let desired = crate::util::batch_output(crate::util::BatchOutput {
+                        input,
+                        derived: &nx_derive_compressed_path(input),
+                        input_dir: &cmd.input,
+                        output_dir: output_dir.as_deref(),
+                        output_template: cmd.out.output_template.as_deref(),
+                        output_ext: nx_derive_compressed_path(input)
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .unwrap_or(""),
+                        keys_path: cmd.keys.as_deref(),
+                        dry_run: true,
+                    })?;
+                    let decision = resolve_output(&desired, policy)?;
+                    let media = detect_container(input).ok().map(|k| format!("{k:?}"));
+                    dry_run::log_plan(
+                        "compress",
+                        input,
+                        &desired,
+                        &decision,
+                        media.as_deref(),
+                        keys_note.as_deref(),
+                    );
+                    dry_run::record(&mut tally, input, &decision);
+                }
+                log::info!("{}", tally.summary_line(TallyDirection::DryRun));
+                return Ok(());
+            }
+            if cmd.recursive {
+                require_dir(&cmd.input)?;
+                let tuning = batch::NxCompressTuning {
+                    level,
+                    mode,
+                    block_size_exp,
+                    policy: resolve_policy(cmd.conflict.on_conflict, cmd.conflict.force, fallback),
+                    output_dir,
+                    output_template: cmd.out.output_template,
+                    max_depth: cmd.batch.max_depth,
+                    dry_run,
+                    skip_space_check,
+                    report,
+                };
+                batch::nx_compress(
+                    &progress,
+                    &total_progress,
+                    &cmd.input,
+                    keys,
+                    tuning,
+                    cancel.clone(),
+                    cache,
+                )
+                .await?
+            } else {
+                ensure_input_exists(&cmd.input)?;
+                let resolved =
+                    rom_converto_lib::util::resolve_input(&cmd.input, &["nsp", "xci", "nca"])?;
+                let input = resolved.path();
+                let kind = detect_container(input)?;
+                let mut opts = NxCompressOptions::for_kind(kind);
+                if let Some(level) = level {
+                    opts.level = level;
+                }
+                if let Some(mode) = mode.as_deref() {
+                    opts.mode = match mode {
+                        "solid" => NczMode::Solid,
+                        "block" => NczMode::Block {
+                            size_exp: block_size_exp.unwrap_or(20),
+                        },
+                        _ => unreachable!("clap value_parser already validated"),
+                    };
+                } else if let Some(exp) = block_size_exp {
+                    opts.mode = NczMode::Block { size_exp: exp };
+                }
+                let policy = resolve_policy(cmd.conflict.on_conflict, cmd.conflict.force, fallback);
+                let derived = nx_derive_compressed_path(resolved.output_basis());
+                let output_ext = derived
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                let Some(output) = resolve_single_output(
+                    SingleOutput {
+                        operation: "compress",
+                        cli_input: &cmd.input,
+                        input,
+                        explicit: cmd.output_flag.or(cmd.output),
+                        derived,
+                        output_dir: output_dir.as_deref(),
+                        output_template: cmd.out.output_template.as_deref(),
+                        output_ext: &output_ext,
+                        keys_path: cmd.keys.as_deref(),
+                        policy,
+                        verify: crate::util::OutputVerify::Nx(Box::new(keys.clone())),
+                        media: Some(&format!("{kind:?}")),
+                        missing_keys: keys_note.as_deref(),
+                        report: report.as_deref(),
+                        dry_run,
+                        cancel: cancel.clone(),
+                    },
+                    &progress,
+                )
+                .await?
+                else {
+                    return Ok(());
+                };
+                if !skip_space_check {
+                    let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
+                    batch::space_preflight_for_size(file_len(input), check_dir)?;
+                }
+                let in_path = input.to_path_buf();
+                let out_path = output.clone();
+                let started = Instant::now();
+                compress_container_async(
+                    in_path.clone(),
+                    output,
+                    opts,
+                    keys,
+                    &progress,
+                    cancel.clone(),
+                )
+                .await?;
+                finish_single(
+                    &cmd.input,
+                    &out_path,
+                    TallyDirection::Compress,
+                    "compress",
+                    started,
+                    report.as_deref(),
+                )?;
+            }
+        }
+        NxCommands::Decompress(cmd) => {
+            let eff = &effective.nx;
+            let (keys, keys_note) = load_keyset_for_plan(cmd.keys.as_deref(), dry_run)?;
+            let output_dir = cmd
+                .out
+                .output_dir
+                .clone()
+                .or_else(|| eff.output_dir.clone());
+            let report = cmd.batch.report.clone().or_else(|| eff.report.clone());
+            let fallback = config::policy_fallback(&eff.on_conflict)?;
+            if cmd.recursive && dry_run {
+                require_dir(&cmd.input)?;
+                let files = rom_converto_lib::util::fs::collect_files_with_exts(
+                    &cmd.input,
+                    &["nsz", "xcz"],
+                    cmd.batch.max_depth,
+                    &CancelToken::new(),
+                )?;
+                let policy = resolve_policy(cmd.conflict.on_conflict, cmd.conflict.force, fallback);
+                let mut tally = Tally::new();
+                for input in &files {
+                    let desired = crate::util::batch_output(crate::util::BatchOutput {
+                        input,
+                        derived: &nx_derive_decompressed_path(input),
+                        input_dir: &cmd.input,
+                        output_dir: output_dir.as_deref(),
+                        output_template: cmd.out.output_template.as_deref(),
+                        output_ext: nx_derive_decompressed_path(input)
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .unwrap_or(""),
+                        keys_path: cmd.keys.as_deref(),
+                        dry_run: true,
+                    })?;
+                    let decision = resolve_output(&desired, policy)?;
+                    dry_run::log_plan(
+                        "decompress",
+                        input,
+                        &desired,
+                        &decision,
+                        None,
+                        keys_note.as_deref(),
+                    );
+                    dry_run::record(&mut tally, input, &decision);
+                }
+                log::info!("{}", tally.summary_line(TallyDirection::DryRun));
+                return Ok(());
+            }
+            if cmd.recursive {
+                require_dir(&cmd.input)?;
+                let run = batch::BatchRun {
+                    progress: &progress,
+                    total_progress: &total_progress,
+                    input_dir: &cmd.input,
+                    policy: resolve_policy(cmd.conflict.on_conflict, cmd.conflict.force, fallback),
+                    output_dir: output_dir.as_deref(),
+                    output_template: cmd.out.output_template.as_deref(),
+                    max_depth: cmd.batch.max_depth,
+                    dry_run,
+                    skip_space_check,
+                    report_path: report.as_deref(),
+                    cancel: &cancel,
+                };
+                batch::nx_decompress(&run, keys).await?
+            } else {
+                ensure_input_exists(&cmd.input)?;
+                let resolved =
+                    rom_converto_lib::util::resolve_input(&cmd.input, &["nsz", "xcz", "ncz"])?;
+                let input = resolved.path();
+                let policy = resolve_policy(cmd.conflict.on_conflict, cmd.conflict.force, fallback);
+                let derived = nx_derive_decompressed_path(resolved.output_basis());
+                let output_ext = derived
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                let Some(output) = resolve_single_output(
+                    SingleOutput {
+                        operation: "decompress",
+                        cli_input: &cmd.input,
+                        input,
+                        explicit: cmd.output_flag.or(cmd.output),
+                        derived,
+                        output_dir: output_dir.as_deref(),
+                        output_template: cmd.out.output_template.as_deref(),
+                        output_ext: &output_ext,
+                        keys_path: cmd.keys.as_deref(),
+                        policy,
+                        verify: crate::util::OutputVerify::None,
+                        media: None,
+                        missing_keys: keys_note.as_deref(),
+                        report: report.as_deref(),
+                        dry_run,
+                        cancel: cancel.clone(),
+                    },
+                    &progress,
+                )
+                .await?
+                else {
+                    return Ok(());
+                };
+                if !skip_space_check {
+                    let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
+                    batch::space_preflight_for_size(file_len(input), check_dir)?;
+                }
+                let in_path = input.to_path_buf();
+                let out_path = output.clone();
+                let started = Instant::now();
+                decompress_container_async(
+                    in_path.clone(),
+                    output,
+                    keys,
+                    &progress,
+                    cancel.clone(),
+                )
+                .await?;
+                finish_single(
+                    &cmd.input,
+                    &out_path,
+                    TallyDirection::Decompress,
+                    "decompress",
+                    started,
+                    report.as_deref(),
+                )?;
+            }
+        }
+        NxCommands::Verify(cmd) => {
+            let keys = load_keyset(cmd.keys.as_deref())?;
+            if cmd.recursive {
+                require_dir(&cmd.input)?;
+                batch::nx_verify(&progress, &total_progress, &cmd.input, keys, cmd.max_depth)
+                    .await?;
+                return Ok(());
+            }
+            ensure_input_exists(&cmd.input)?;
+            let resolved = rom_converto_lib::util::resolve_input(
+                &cmd.input,
+                &["nsp", "xci", "nca", "nsz", "xcz", "ncz"],
+            )?;
+            let result = verify_container_async(
+                resolved.path().to_path_buf(),
+                keys,
+                &progress,
+                CancelToken::new(),
+            )
+            .await?;
+            log::info!("Container kind: {}", result.kind);
+            log::info!("Overall: {}", if result.ok { "OK" } else { "FAIL" });
+            for v in &result.ncas {
+                let prefix = match &v.partition {
+                    Some(p) => format!("[{p}] "),
+                    None => String::new(),
+                };
+                log::info!(
+                    "  {prefix}{}: {} (sections mismatched: {})",
+                    v.name,
+                    if v.ok { "OK" } else { "FAIL" },
+                    v.mismatched_sections
+                );
+            }
+            if !result.ok {
+                anyhow::bail!("verification failed");
+            }
+        }
+        NxCommands::Merge(cmd) => {
+            let eff = &effective.nx;
+            let keys = load_keyset(cmd.keys.as_deref())?;
+            for input in &cmd.inputs {
+                ensure_input_exists(input)?;
+            }
+            let format = match cmd.format.as_deref() {
+                Some("xci") => NxMergeFormat::Xci,
+                Some("nsp") | None => NxMergeFormat::Nsp,
+                _ => unreachable!("clap value_parser already validated"),
+            };
+            let ext = match format {
+                NxMergeFormat::Nsp => "nsp",
+                NxMergeFormat::Xci => "xci",
+            };
+            let output = match cmd.output {
+                Some(p) => p,
+                None => {
+                    let output_dir = eff.output_dir.clone();
+                    if let Some(dir) = output_dir.as_deref() {
+                        std::fs::create_dir_all(dir)?;
+                    }
+                    rom_converto_lib::util::place_in_dir(
+                        &nx_derive_merged_path(&cmd.inputs[0], ext),
+                        output_dir.as_deref(),
+                    )
+                }
+            };
+            let policy = resolve_policy(
+                cmd.conflict.on_conflict,
+                cmd.conflict.force,
+                rom_converto_lib::util::ConflictPolicy::Error,
+            );
+            let decision = resolve_output(&output, policy)?;
+            let output = match decision {
+                WriteDecision::Skip => {
+                    log_skipped(&output);
+                    return Ok(());
+                }
+                WriteDecision::Write(p) => p,
+            };
+            merge_containers_async(
+                cmd.inputs,
+                output.clone(),
+                format,
+                keys,
+                &progress,
+                cancel.clone(),
+            )
+            .await?;
+            log::info!("wrote {}", output.display());
+        }
+        NxCommands::Split(cmd) => {
+            let eff = &effective.nx;
+            let keys = load_keyset(cmd.keys.as_deref())?;
+            ensure_input_exists(&cmd.input)?;
+            let output_dir = cmd
+                .output_dir
+                .clone()
+                .or_else(|| eff.output_dir.clone())
+                .unwrap_or_else(|| nx_derive_split_dir(&cmd.input));
+            let policy = resolve_policy(
+                cmd.on_conflict,
+                cmd.force,
+                rom_converto_lib::util::ConflictPolicy::Error,
+            );
+            match resolve_output_dir(&output_dir, policy)? {
+                WriteDecision::Skip => {
+                    log_skipped(&output_dir);
+                    return Ok(());
+                }
+                WriteDecision::Write(_) => {}
+            }
+            let outputs =
+                split_container_async(cmd.input, output_dir, keys, &progress, cancel.clone())
+                    .await?;
+            for path in &outputs {
+                log::info!("wrote {}", path.display());
+            }
+        }
+        NxCommands::Info(cmd) => {
+            let input = require_info_input(&cmd.input)?;
+            ensure_input_exists(input)?;
+            let resolved = rom_converto_lib::util::resolve_input(input, ALL_IMAGE_EXTS)?;
+            let info = rom_converto_lib::nintendo::nx::info::read_info(
+                resolved.path(),
+                cmd.keys.as_deref(),
+            )?;
+            if let Some(dir) = &cmd.save_icon {
+                save_nx_icon(&info, dir)?;
+            }
+            info_print::print(&rom_converto_lib::info::InfoResult::Nx(info), cmd.json)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -324,7 +721,7 @@ mod tests {
             panic!("expected Decompress");
         };
         assert_eq!(c.input, PathBuf::from("g.nsz"));
-        assert!(!c.force);
+        assert!(!c.conflict.force);
     }
 
     #[test]
@@ -333,7 +730,7 @@ mod tests {
         let NxCommands::Compress(c) = h.cmd else {
             panic!("expected Compress");
         };
-        assert!(c.force);
+        assert!(c.conflict.force);
     }
 
     #[test]
@@ -371,7 +768,7 @@ mod tests {
         let NxCommands::Compress(c) = h.cmd else {
             panic!("expected Compress");
         };
-        assert_eq!(c.output_dir, Some(PathBuf::from("out")));
+        assert_eq!(c.out.output_dir, Some(PathBuf::from("out")));
         assert!(c.output.is_none());
     }
 
@@ -395,7 +792,7 @@ mod tests {
         let NxCommands::Compress(c) = h.cmd else {
             panic!("expected Compress");
         };
-        assert_eq!(c.report, Some(PathBuf::from("out.json")));
+        assert_eq!(c.batch.report, Some(PathBuf::from("out.json")));
     }
 
     #[test]
@@ -404,7 +801,7 @@ mod tests {
         let NxCommands::Decompress(c) = h.cmd else {
             panic!("expected Decompress");
         };
-        assert_eq!(c.report, Some(PathBuf::from("out.csv")));
+        assert_eq!(c.batch.report, Some(PathBuf::from("out.csv")));
     }
 
     #[test]
@@ -413,7 +810,7 @@ mod tests {
         let NxCommands::Compress(c) = h.cmd else {
             panic!("expected Compress");
         };
-        assert!(c.on_conflict.is_none());
+        assert!(c.conflict.on_conflict.is_none());
     }
 
     #[test]

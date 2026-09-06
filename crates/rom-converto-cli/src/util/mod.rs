@@ -4,12 +4,12 @@ use crate::commands::ConflictPolicyArg;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use rom_converto_lib::info::{InfoOptions, read_info};
 use rom_converto_lib::util::{
-    ConflictPolicy, ConflictResolution, ProgressReporter, TemplateTokens, apply_template,
-    place_in_dir_mirrored, resolve_conflict,
+    CancelToken, ConflictPolicy, ConflictResolution, ProgressReporter, TemplateTokens,
+    apply_template, place_in_dir_mirrored, resolve_conflict,
 };
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 /// Resolve an `--output-template` to a concrete output path joined under
 /// `base_dir`. Metadata is read best-effort: a failed or key-less read
@@ -41,6 +41,26 @@ pub fn templated_output(
         std::fs::create_dir_all(parent)?;
     }
     Ok(joined)
+}
+
+pub fn file_len(path: &Path) -> u64 {
+    std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
+}
+
+pub fn totals_from(tally: &rom_converto_lib::util::Tally) -> rom_converto_lib::util::ReportTotals {
+    rom_converto_lib::util::ReportTotals {
+        total_files: tally.count(),
+        ok: tally.ok_count(),
+        skipped: tally.skipped_count(),
+        failed: tally.failed_count(),
+        total_input_bytes: tally.total_input_bytes(),
+        total_output_bytes: tally.total_output_bytes(),
+        elapsed_ms: tally.elapsed().as_millis().min(u64::MAX as u128) as u64,
+    }
+}
+
+pub fn ok_str(b: bool) -> &'static str {
+    if b { "OK" } else { "FAIL" }
 }
 
 pub struct BatchOutput<'a> {
@@ -105,31 +125,21 @@ pub async fn verify_existing_cached(
     progress: &dyn ProgressReporter,
     path: &Path,
     target: OutputVerify,
-) -> VerifyOutcome {
+    cancel: CancelToken,
+) -> anyhow::Result<VerifyOutcome> {
     let label = verify_label(&target);
     if let Some(label) = label
         && cache.lookup_verify(path, label)
     {
-        return VerifyOutcome::Valid;
+        return Ok(VerifyOutcome::Valid);
     }
-    let outcome = verify_existing_output(progress, path, target).await;
+    let outcome = verify_existing_output(progress, path, target, cancel).await?;
     if outcome == VerifyOutcome::Valid
         && let Some(label) = label
     {
         cache.store_verify(path, label, true);
     }
-    outcome
-}
-
-/// Map the lone `--force` shorthand onto a policy. `--force` and
-/// `--on-conflict` are mutually exclusive in clap, so a set `force`
-/// always means the policy is its default and overwrite is intended.
-pub fn policy_of(on_conflict: ConflictPolicyArg, force: bool) -> ConflictPolicy {
-    if force {
-        ConflictPolicy::Overwrite
-    } else {
-        on_conflict.into()
-    }
+    Ok(outcome)
 }
 
 /// Resolves the effective conflict policy for commands that read a
@@ -145,6 +155,146 @@ pub fn resolve_policy(
         ConflictPolicy::Overwrite
     } else {
         on_conflict.map(Into::into).unwrap_or(fallback)
+    }
+}
+
+pub fn log_skipped(output: &Path) {
+    log::info!("Skipped, output exists: {}", output.display());
+}
+
+pub fn log_kept_valid(output: &Path) {
+    log::info!("Kept, output verified valid: {}", output.display());
+}
+
+pub fn log_rewriting_invalid(output: &Path) {
+    log::info!(
+        "Rewriting, output failed verification: {}",
+        output.display()
+    );
+}
+
+/// One single-file conversion's output plan: where the write should land and
+/// what to do if something is already there.
+pub struct SingleOutput<'a> {
+    pub operation: &'a str,
+    /// The path the user typed, used for logs, tallies and reports.
+    pub cli_input: &'a Path,
+    /// The resolved input, which differs from `cli_input` for archive members.
+    pub input: &'a Path,
+    /// An explicit OUTPUT or `-o`, which short-circuits the derivation.
+    pub explicit: Option<PathBuf>,
+    /// The default output path, before `--output-dir` is applied.
+    pub derived: PathBuf,
+    pub output_dir: Option<&'a Path>,
+    pub output_template: Option<&'a str>,
+    pub output_ext: &'a str,
+    pub keys_path: Option<&'a Path>,
+    pub policy: ConflictPolicy,
+    /// `OutputVerify::None` opts the operation out of `overwrite-invalid`,
+    /// since there is nothing to check an existing output against.
+    pub verify: OutputVerify,
+    pub media: Option<&'a str>,
+    pub missing_keys: Option<&'a str>,
+    pub report: Option<&'a Path>,
+    pub dry_run: bool,
+    pub cancel: CancelToken,
+}
+
+/// Resolves where a single-file conversion writes, handling the explicit
+/// path, `--output-dir`, `--output-template`, the conflict policy and the
+/// dry-run preview. `None` means the caller is done: the plan was printed,
+/// the output was skipped, or an existing output verified clean.
+pub async fn resolve_single_output(
+    plan: SingleOutput<'_>,
+    progress: &dyn ProgressReporter,
+) -> anyhow::Result<Option<PathBuf>> {
+    let SingleOutput {
+        operation,
+        cli_input,
+        input,
+        explicit,
+        derived,
+        output_dir,
+        output_template,
+        output_ext,
+        keys_path,
+        policy,
+        verify,
+        media,
+        missing_keys,
+        report,
+        dry_run,
+        cancel,
+    } = plan;
+
+    let desired = match explicit {
+        Some(p) => p,
+        None => {
+            if !dry_run && let Some(dir) = output_dir {
+                std::fs::create_dir_all(dir)?;
+            }
+            match output_template {
+                Some(tmpl) => {
+                    templated_output(tmpl, input, output_dir, output_ext, keys_path, dry_run)?
+                }
+                None => rom_converto_lib::util::place_in_dir(&derived, output_dir),
+            }
+        }
+    };
+
+    let decision = resolve_output(&desired, policy)?;
+    let verifiable = !matches!(verify, OutputVerify::None);
+
+    if dry_run {
+        if verifiable {
+            crate::dry_run::single_verify(
+                crate::dry_run::SingleVerifyPlan {
+                    operation,
+                    input: cli_input,
+                    desired: &desired,
+                    decision: &decision,
+                    policy,
+                    target: verify,
+                    media,
+                    missing_keys,
+                    cancel,
+                },
+                progress,
+                report,
+            )
+            .await?;
+        } else {
+            crate::dry_run::single(
+                operation,
+                cli_input,
+                &desired,
+                &decision,
+                media,
+                missing_keys,
+                report,
+            )?;
+        }
+        return Ok(None);
+    }
+
+    match decision {
+        WriteDecision::Skip if verifiable && policy == ConflictPolicy::OverwriteInvalid => {
+            match verify_existing_output(progress, &desired, verify, cancel).await? {
+                VerifyOutcome::Valid => {
+                    log_kept_valid(&desired);
+                    Ok(None)
+                }
+                VerifyOutcome::Invalid => {
+                    log_rewriting_invalid(&desired);
+                    Ok(Some(desired))
+                }
+            }
+        }
+        WriteDecision::Skip => {
+            log_skipped(&desired);
+            Ok(None)
+        }
+        WriteDecision::Write(p) => Ok(Some(p)),
     }
 }
 
@@ -225,6 +375,13 @@ pub fn expand_tilde_arg(arg: std::ffi::OsString) -> std::ffi::OsString {
 
 const PROGRESS_TEMPLATE: &str = "{msg}\n{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({binary_bytes_per_sec}, {eta})";
 
+/// A poisoned progress-bar mutex only means a panic happened while a bar was
+/// being swapped; the bar itself stays usable, so the guard is recovered
+/// rather than propagating a second panic out of a progress callback.
+fn bar(slot: &Mutex<Option<ProgressBar>>) -> MutexGuard<'_, Option<ProgressBar>> {
+    slot.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// Bridges the library's `ProgressReporter` trait to indicatif `ProgressBar`.
 pub struct IndicatifProgress {
     mp: MultiProgress,
@@ -249,33 +406,23 @@ impl ProgressReporter for IndicatifProgress {
             .progress_chars("#>-");
         pg.set_style(style);
         pg.set_message(msg.to_string());
-        *self.bar.lock().expect("progress bar mutex poisoned") = Some(pg);
+        *bar(&self.bar) = Some(pg);
     }
 
     fn inc(&self, delta: u64) {
-        if let Some(bar) = self
-            .bar
-            .lock()
-            .expect("progress bar mutex poisoned")
-            .as_ref()
-        {
+        if let Some(bar) = bar(&self.bar).as_ref() {
             bar.inc(delta);
         }
     }
 
     fn finish(&self) {
-        if let Some(bar) = self.bar.lock().expect("progress bar mutex poisoned").take() {
+        if let Some(bar) = bar(&self.bar).take() {
             bar.finish_and_clear();
         }
     }
 
     fn set_phase(&self, label: &str) {
-        if let Some(bar) = self
-            .bar
-            .lock()
-            .expect("progress bar mutex poisoned")
-            .as_ref()
-        {
+        if let Some(bar) = bar(&self.bar).as_ref() {
             bar.set_message(label.to_string());
         }
     }
@@ -343,7 +490,7 @@ impl TotalProgress {
         };
         pg.set_style(style);
         pg.set_message(format!("0/{total_files} files"));
-        *self.bar.lock().expect("progress bar mutex poisoned") = Some(pg);
+        *bar(&self.bar) = Some(pg);
         self.taskbar_percent.store(0, Ordering::Relaxed);
         osc_taskbar(Some(0));
     }
@@ -354,12 +501,7 @@ impl TotalProgress {
     pub fn advance(&self, file_bytes: u64) {
         let done = self.done.fetch_add(1, Ordering::Relaxed) + 1;
         let total = self.total_files.load(Ordering::Relaxed);
-        if let Some(bar) = self
-            .bar
-            .lock()
-            .expect("progress bar mutex poisoned")
-            .as_ref()
-        {
+        if let Some(bar) = bar(&self.bar).as_ref() {
             bar.set_message(format!("{done}/{total} files"));
             if bar.length() == Some(0) {
                 bar.tick();
@@ -377,8 +519,8 @@ impl TotalProgress {
         }
     }
 
-    pub fn finish(&self) {
-        if let Some(bar) = self.bar.lock().expect("progress bar mutex poisoned").take() {
+    pub fn finish_bar(&self) {
+        if let Some(bar) = bar(&self.bar).take() {
             bar.finish_and_clear();
         }
         osc_taskbar(None);
@@ -398,7 +540,7 @@ impl ProgressReporter for TotalProgress {
     }
 
     fn finish(&self) {
-        TotalProgress::finish(self);
+        self.finish_bar();
     }
 }
 
@@ -406,22 +548,6 @@ impl ProgressReporter for TotalProgress {
 mod tests {
     use super::*;
     use tempfile::tempdir;
-
-    #[test]
-    fn policy_of_force_maps_to_overwrite() {
-        assert_eq!(
-            policy_of(ConflictPolicyArg::Error, true),
-            ConflictPolicy::Overwrite
-        );
-    }
-
-    #[test]
-    fn policy_of_uses_on_conflict_when_no_force() {
-        assert_eq!(
-            policy_of(ConflictPolicyArg::Skip, false),
-            ConflictPolicy::Skip
-        );
-    }
 
     #[test]
     fn resolve_policy_flag_wins() {
@@ -613,7 +739,7 @@ mod tests {
         tp.advance(100);
         assert_eq!(tp.done.load(Ordering::Relaxed), 3);
         assert_eq!(tp.bar.lock().unwrap().as_ref().unwrap().position(), 300);
-        tp.finish();
+        tp.finish_bar();
     }
 
     #[test]
@@ -621,7 +747,7 @@ mod tests {
         let tp = TotalProgress::new(hidden_multi_progress());
         tp.begin(0, 0);
         tp.advance(0);
-        tp.finish();
+        tp.finish_bar();
     }
 
     #[test]

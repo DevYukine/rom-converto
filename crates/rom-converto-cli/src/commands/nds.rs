@@ -1,7 +1,23 @@
-use crate::commands::ConflictPolicyArg;
 use crate::commands::info_command::InfoCommand;
+use crate::commands::{BatchArgs, ConflictArgs, OutputArgs};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
+
+use crate::commands::support::{
+    DispatchCtx, finish_single, require_dir, require_info_input, save_nds_icon, skipped_single,
+};
+use crate::util::{
+    SingleOutput, ensure_input_exists, file_len, resolve_policy, resolve_single_output,
+};
+use crate::{batch, info_print};
+use anyhow::Result;
+use rom_converto_lib::nintendo::nds::{
+    NdsError, decrypt_nds_rom, derive_decrypted_path as nds_derive_decrypted_path,
+    derive_encrypted_path as nds_derive_encrypted_path, encrypt_nds_rom,
+};
+use rom_converto_lib::util::TallyDirection;
+use std::path::Path;
+use std::time::Instant;
 
 /// Commands for Nintendo DS secure-area crypto
 #[derive(Subcommand, Debug, Eq, PartialEq)]
@@ -35,40 +51,18 @@ pub struct EncryptNdsCommand {
     )]
     pub output_flag: Option<PathBuf>,
 
-    /// Write output into this directory using the derived filename. Created if missing. Works with --recursive
-    #[arg(long = "output-dir", value_name = "DIR", conflicts_with_all = ["output", "output_flag"])]
-    pub output_dir: Option<PathBuf>,
+    #[command(flatten)]
+    pub out: OutputArgs,
 
-    /// Output path template applied per file. Tokens: {title}, {titleId}, {region},
-    /// {console}, {serial}, {ext}, {basename}. Resolves against extracted metadata;
-    /// missing tokens fall back to the input basename. Joined under --output-dir
-    #[arg(long = "output-template", value_name = "TEMPLATE", conflicts_with_all = ["output", "output_flag"])]
-    pub output_template: Option<String>,
-
-    /// What to do when an output already exists: error, overwrite, skip, or rename to a numbered sibling
-    #[arg(long = "on-conflict", value_enum)]
-    pub on_conflict: Option<ConflictPolicyArg>,
-
-    /// Alias for --on-conflict overwrite
-    #[arg(
-        long,
-        short = 'f',
-        default_value_t = false,
-        conflicts_with = "on_conflict"
-    )]
-    pub force: bool,
+    #[command(flatten)]
+    pub conflict: ConflictArgs,
 
     /// Encrypt every .nds found in the INPUT directory and its subdirectories
     #[arg(long, short = 'R', default_value_t = false)]
     pub recursive: bool,
 
-    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited
-    #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
-    pub max_depth: Option<usize>,
-
-    /// Write a run report to FILE. Format inferred from the extension: .csv, .json, .html or .htm. Unknown extensions default to JSON. The file is overwritten directly
-    #[arg(long = "report", value_name = "FILE")]
-    pub report: Option<PathBuf>,
+    #[command(flatten)]
+    pub batch: BatchArgs,
 }
 
 /// Decrypt an NDS ROM's secure area
@@ -95,40 +89,224 @@ pub struct DecryptNdsCommand {
     )]
     pub output_flag: Option<PathBuf>,
 
-    /// Write output into this directory using the derived filename. Created if missing. Works with --recursive
-    #[arg(long = "output-dir", value_name = "DIR", conflicts_with_all = ["output", "output_flag"])]
-    pub output_dir: Option<PathBuf>,
+    #[command(flatten)]
+    pub out: OutputArgs,
 
-    /// Output path template applied per file. Tokens: {title}, {titleId}, {region},
-    /// {console}, {serial}, {ext}, {basename}. Resolves against extracted metadata;
-    /// missing tokens fall back to the input basename. Joined under --output-dir
-    #[arg(long = "output-template", value_name = "TEMPLATE", conflicts_with_all = ["output", "output_flag"])]
-    pub output_template: Option<String>,
-
-    /// What to do when an output already exists: error, overwrite, skip, or rename to a numbered sibling
-    #[arg(long = "on-conflict", value_enum)]
-    pub on_conflict: Option<ConflictPolicyArg>,
-
-    /// Alias for --on-conflict overwrite
-    #[arg(
-        long,
-        short = 'f',
-        default_value_t = false,
-        conflicts_with = "on_conflict"
-    )]
-    pub force: bool,
+    #[command(flatten)]
+    pub conflict: ConflictArgs,
 
     /// Decrypt every .nds found in the INPUT directory and its subdirectories
     #[arg(long, short = 'R', default_value_t = false)]
     pub recursive: bool,
 
-    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited
-    #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
-    pub max_depth: Option<usize>,
+    #[command(flatten)]
+    pub batch: BatchArgs,
+}
 
-    /// Write a run report to FILE. Format inferred from the extension: .csv, .json, .html or .htm. Unknown extensions default to JSON. The file is overwritten directly
-    #[arg(long = "report", value_name = "FILE")]
-    pub report: Option<PathBuf>,
+/// Runs one `nds` subcommand.
+pub async fn run(command: NdsCommands, ctx: DispatchCtx<'_>) -> Result<()> {
+    let DispatchCtx {
+        progress,
+        total_progress,
+        dry_run,
+        skip_space_check,
+        cancel,
+        ..
+    } = ctx;
+    match command {
+        NdsCommands::Encrypt(cmd) => {
+            let output_dir = cmd.out.output_dir.clone();
+            let report = cmd.batch.report.clone();
+            if cmd.recursive {
+                require_dir(&cmd.input)?;
+                let policy = resolve_policy(
+                    cmd.conflict.on_conflict,
+                    cmd.conflict.force,
+                    rom_converto_lib::util::ConflictPolicy::Error,
+                );
+                let run = batch::BatchRun {
+                    progress: &progress,
+                    total_progress: &total_progress,
+                    input_dir: &cmd.input,
+                    policy,
+                    output_dir: output_dir.as_deref(),
+                    output_template: cmd.out.output_template.as_deref(),
+                    max_depth: cmd.batch.max_depth,
+                    dry_run,
+                    skip_space_check,
+                    report_path: report.as_deref(),
+                    cancel: &cancel,
+                };
+                batch::nds_crypt(&run, true).await?
+            } else {
+                ensure_input_exists(&cmd.input)?;
+                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["nds"])?;
+                let input = resolved.path();
+                let policy = resolve_policy(
+                    cmd.conflict.on_conflict,
+                    cmd.conflict.force,
+                    rom_converto_lib::util::ConflictPolicy::Error,
+                );
+                let Some(output) = resolve_single_output(
+                    SingleOutput {
+                        operation: "encrypt",
+                        cli_input: &cmd.input,
+                        input,
+                        explicit: cmd.output_flag.or(cmd.output),
+                        derived: nds_derive_encrypted_path(resolved.output_basis()),
+                        output_dir: output_dir.as_deref(),
+                        output_template: cmd.out.output_template.as_deref(),
+                        output_ext: "nds",
+                        keys_path: None,
+                        policy,
+                        verify: crate::util::OutputVerify::None,
+                        media: None,
+                        missing_keys: None,
+                        report: report.as_deref(),
+                        dry_run,
+                        cancel: cancel.clone(),
+                    },
+                    &progress,
+                )
+                .await?
+                else {
+                    return Ok(());
+                };
+                if !skip_space_check {
+                    let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
+                    batch::space_preflight_for_size(file_len(input), check_dir)?;
+                }
+                let in_path = input.to_path_buf();
+                let out_path = output.clone();
+                let started = Instant::now();
+                match encrypt_nds_rom(&progress, in_path, output, true, cancel.clone()).await {
+                    Ok(()) => {}
+                    Err(
+                        e @ (NdsError::AlreadyEncrypted
+                        | NdsError::AlreadyDecrypted
+                        | NdsError::NoSecureArea
+                        | NdsError::TooSmall),
+                    ) => {
+                        log::info!("Skipped, {e}: {}", cmd.input.display());
+                        skipped_single(&cmd.input, "encrypt", e, report.as_deref())?;
+                        return Ok(());
+                    }
+                    Err(e) => return Err(e.into()),
+                }
+                finish_single(
+                    &cmd.input,
+                    &out_path,
+                    TallyDirection::Convert,
+                    "encrypt",
+                    started,
+                    report.as_deref(),
+                )?;
+            }
+        }
+        NdsCommands::Decrypt(cmd) => {
+            let output_dir = cmd.out.output_dir.clone();
+            let report = cmd.batch.report.clone();
+            if cmd.recursive {
+                require_dir(&cmd.input)?;
+                let policy = resolve_policy(
+                    cmd.conflict.on_conflict,
+                    cmd.conflict.force,
+                    rom_converto_lib::util::ConflictPolicy::Error,
+                );
+                let run = batch::BatchRun {
+                    progress: &progress,
+                    total_progress: &total_progress,
+                    input_dir: &cmd.input,
+                    policy,
+                    output_dir: output_dir.as_deref(),
+                    output_template: cmd.out.output_template.as_deref(),
+                    max_depth: cmd.batch.max_depth,
+                    dry_run,
+                    skip_space_check,
+                    report_path: report.as_deref(),
+                    cancel: &cancel,
+                };
+                batch::nds_crypt(&run, false).await?
+            } else {
+                ensure_input_exists(&cmd.input)?;
+                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["nds"])?;
+                let input = resolved.path();
+                let policy = resolve_policy(
+                    cmd.conflict.on_conflict,
+                    cmd.conflict.force,
+                    rom_converto_lib::util::ConflictPolicy::Error,
+                );
+                let Some(output) = resolve_single_output(
+                    SingleOutput {
+                        operation: "decrypt",
+                        cli_input: &cmd.input,
+                        input,
+                        explicit: cmd.output_flag.or(cmd.output),
+                        derived: nds_derive_decrypted_path(resolved.output_basis()),
+                        output_dir: output_dir.as_deref(),
+                        output_template: cmd.out.output_template.as_deref(),
+                        output_ext: "nds",
+                        keys_path: None,
+                        policy,
+                        verify: crate::util::OutputVerify::None,
+                        media: None,
+                        missing_keys: None,
+                        report: report.as_deref(),
+                        dry_run,
+                        cancel: cancel.clone(),
+                    },
+                    &progress,
+                )
+                .await?
+                else {
+                    return Ok(());
+                };
+                if !skip_space_check {
+                    let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
+                    batch::space_preflight_for_size(file_len(input), check_dir)?;
+                }
+                let in_path = input.to_path_buf();
+                let out_path = output.clone();
+                let started = Instant::now();
+                match decrypt_nds_rom(&progress, in_path, output, true, cancel.clone()).await {
+                    Ok(()) => {}
+                    Err(
+                        e @ (NdsError::AlreadyEncrypted
+                        | NdsError::AlreadyDecrypted
+                        | NdsError::NoSecureArea
+                        | NdsError::TooSmall),
+                    ) => {
+                        log::info!("Skipped, {e}: {}", cmd.input.display());
+                        skipped_single(&cmd.input, "decrypt", e, report.as_deref())?;
+                        return Ok(());
+                    }
+                    Err(e) => return Err(e.into()),
+                }
+                finish_single(
+                    &cmd.input,
+                    &out_path,
+                    TallyDirection::Convert,
+                    "decrypt",
+                    started,
+                    report.as_deref(),
+                )?;
+            }
+        }
+        NdsCommands::Info(cmd) => {
+            if cmd.keys.is_some() {
+                anyhow::bail!("--keys is only supported by nx, wup, and ps3 info");
+            }
+            let input = require_info_input(&cmd.input)?;
+            ensure_input_exists(input)?;
+            let resolved = rom_converto_lib::util::resolve_input(input, &["nds", "dsi"])?;
+            let info = rom_converto_lib::nintendo::nds::info::read_info(resolved.path())?;
+            if let Some(dir) = &cmd.save_icon {
+                save_nds_icon(&info, dir)?;
+            }
+            info_print::print(&rom_converto_lib::info::InfoResult::Nds(info), cmd.json)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -157,8 +335,8 @@ mod tests {
         let NdsCommands::Encrypt(c) = h.cmd else {
             panic!("expected Encrypt");
         };
-        assert!(c.force);
-        assert!(c.on_conflict.is_none());
+        assert!(c.conflict.force);
+        assert!(c.conflict.on_conflict.is_none());
     }
 
     #[test]

@@ -1,6 +1,12 @@
-use crate::commands::ConflictPolicyArg;
+use crate::commands::{BatchArgs, ConflictPolicyArg};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
+
+use crate::batch;
+use crate::commands::support::{ALL_IMAGE_EXTS, DispatchCtx, require_dir, resolve_checksum_bounds};
+use crate::util::{ensure_input_exists, resolve_policy};
+use anyhow::Result;
+use rom_converto_lib::util::parse_algos;
 
 /// Identify, verify and rename ROMs against the Playmatch database
 #[derive(Subcommand, Debug, Eq, PartialEq)]
@@ -34,13 +40,8 @@ pub struct DatVerifyCommand {
     #[arg(long, short = 'R', default_value_t = false)]
     pub recursive: bool,
 
-    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited
-    #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
-    pub max_depth: Option<usize>,
-
-    /// Write a run report to FILE. Format inferred from the extension: .csv, .json, .html or .htm. Unknown extensions default to JSON. The file is overwritten directly
-    #[arg(long = "report", value_name = "FILE")]
-    pub report: Option<PathBuf>,
+    #[command(flatten)]
+    pub batch: BatchArgs,
 
     /// Playmatch API base URL (defaults to the public instance)
     #[arg(long = "api-base", value_name = "URL")]
@@ -85,8 +86,8 @@ mod verify_tests {
         let c = parse(&["bin", "verify", "game.chd"]);
         assert_eq!(c.algo, "crc32,sha1");
         assert!(!c.recursive);
-        assert_eq!(c.max_depth, None);
-        assert_eq!(c.report, None);
+        assert_eq!(c.batch.max_depth, None);
+        assert_eq!(c.batch.report, None);
         assert_eq!(c.api_base, None);
         assert_eq!(c.input_checksum_min, None);
         assert_eq!(c.input_checksum_max, None);
@@ -127,7 +128,7 @@ mod verify_tests {
             "sha256",
         ]);
         assert!(c.recursive);
-        assert_eq!(c.max_depth, Some(2));
+        assert_eq!(c.batch.max_depth, Some(2));
         assert_eq!(c.algo, "sha256");
     }
 
@@ -148,7 +149,7 @@ mod verify_tests {
             "--api-base",
             "https://example.test/api/v2",
         ]);
-        assert_eq!(c.report, Some(PathBuf::from("out.json")));
+        assert_eq!(c.batch.report, Some(PathBuf::from("out.json")));
         assert_eq!(c.api_base.as_deref(), Some("https://example.test/api/v2"));
     }
 }
@@ -596,4 +597,144 @@ mod fixdat_tests {
         ]);
         assert!(result.is_err());
     }
+}
+
+/// Runs one `dat` subcommand.
+pub async fn run(command: DatCommands, ctx: DispatchCtx<'_>) -> Result<()> {
+    let DispatchCtx {
+        progress,
+        total_progress,
+        effective,
+        dry_run,
+        cancel,
+        cache,
+        ..
+    } = ctx;
+    match command {
+        DatCommands::Verify(cmd) => {
+            let algos = parse_algos(&cmd.algo).map_err(|e| anyhow::anyhow!(e))?;
+            let bounds = resolve_checksum_bounds(
+                cmd.input_checksum_min.as_deref(),
+                cmd.input_checksum_max.as_deref(),
+                &effective.dat,
+            )?;
+            bounds
+                .validate_requested(&algos)
+                .map_err(|e| anyhow::anyhow!(e))?;
+            let api_base = cmd.api_base.or_else(|| effective.dat.api_base.clone());
+            let report = cmd.batch.report.or_else(|| effective.dat.report.clone());
+            let run = batch::DatRun {
+                progress: &progress,
+                total_progress: &total_progress,
+                cancel: &cancel,
+                cache,
+                algos: &algos,
+                bounds: &bounds,
+                quick: cmd.quick,
+                api_base: api_base.as_deref(),
+                report: report.as_deref(),
+            };
+            if cmd.recursive {
+                require_dir(&cmd.input)?;
+                batch::dat_verify_batch(&run, &cmd.input, cmd.batch.max_depth).await?;
+            } else {
+                ensure_input_exists(&cmd.input)?;
+                batch::dat_verify_single(&run, &cmd.input).await?;
+            }
+        }
+        DatCommands::Scan(cmd) => {
+            require_dir(&cmd.input)?;
+            let algos = parse_algos(&cmd.algo).map_err(|e| anyhow::anyhow!(e))?;
+            let api_base = cmd.api_base.or_else(|| effective.dat.api_base.clone());
+            let report = cmd.report.or_else(|| effective.dat.report.clone());
+            let run = batch::DatBulkRun {
+                progress: &progress,
+                total_progress: &total_progress,
+                cancel: &cancel,
+                cache,
+                api_base: api_base.as_deref(),
+                report: report.as_deref(),
+            };
+            batch::dat_scan(&run, &cmd.input, cmd.max_depth, &algos, cmd.quick).await?;
+        }
+        DatCommands::Rename(cmd) => {
+            if cmd.recursive {
+                require_dir(&cmd.input)?;
+            } else {
+                ensure_input_exists(&cmd.input)?;
+            }
+            let api_base = cmd.api_base.or_else(|| effective.dat.api_base.clone());
+            let report = cmd.report.or_else(|| effective.dat.report.clone());
+            let policy = resolve_policy(
+                cmd.on_conflict,
+                cmd.force,
+                rom_converto_lib::util::ConflictPolicy::Error,
+            );
+            let run = batch::DatBulkRun {
+                progress: &progress,
+                total_progress: &total_progress,
+                cancel: &cancel,
+                cache,
+                api_base: api_base.as_deref(),
+                report: report.as_deref(),
+            };
+            batch::dat_rename(
+                &run,
+                &cmd.input,
+                cmd.recursive,
+                cmd.max_depth,
+                policy,
+                dry_run,
+            )
+            .await?;
+        }
+        DatCommands::Identify(cmd) => {
+            ensure_input_exists(&cmd.input)?;
+            let resolved = rom_converto_lib::util::resolve_input(&cmd.input, ALL_IMAGE_EXTS)?;
+            let algos = parse_algos(&cmd.algo).map_err(|e| anyhow::anyhow!(e))?;
+            let bounds = resolve_checksum_bounds(
+                cmd.input_checksum_min.as_deref(),
+                cmd.input_checksum_max.as_deref(),
+                &effective.dat,
+            )?;
+            bounds
+                .validate_requested(&algos)
+                .map_err(|e| anyhow::anyhow!(e))?;
+            let api_base = cmd.api_base.or_else(|| effective.dat.api_base.clone());
+            batch::dat_identify(
+                &progress,
+                resolved.path(),
+                &algos,
+                &bounds,
+                api_base.as_deref(),
+                &cancel,
+                cache,
+            )
+            .await?;
+        }
+        DatCommands::Fixdat(cmd) => {
+            require_dir(&cmd.input)?;
+            let api_base = cmd
+                .api_base
+                .clone()
+                .or_else(|| effective.dat.api_base.clone());
+            let policy = resolve_policy(
+                cmd.on_conflict,
+                cmd.force,
+                rom_converto_lib::util::ConflictPolicy::Error,
+            );
+            let args = batch::DatFixdatArgs {
+                input: cmd.input,
+                output: cmd.output,
+                platform: cmd.platform,
+                dat_id: cmd.dat_id,
+                dat_name: cmd.dat_name,
+                subset: cmd.subset,
+                max_depth: cmd.max_depth,
+                api_base,
+            };
+            batch::dat_fixdat(&progress, &args, dry_run, policy, &cancel, cache).await?;
+        }
+    }
+    Ok(())
 }

@@ -1,4 +1,3 @@
-use crate::commands::capabilities::CapabilitiesCommand;
 use crate::commands::chd::ChdCommands;
 use crate::commands::completions::ShellCompletionsCommand;
 use crate::commands::cso::CsoCommands;
@@ -8,6 +7,7 @@ use crate::commands::dat::DatCommands;
 use crate::commands::dol::DolCommands;
 use crate::commands::hash::HashCommand;
 use crate::commands::info_command::InfoCommand;
+use crate::commands::misc::{CapabilitiesCommand, SelfUpdateCommand};
 use crate::commands::nds::NdsCommands;
 use crate::commands::nx::NxCommands;
 use crate::commands::playlist::PlaylistCommand;
@@ -18,11 +18,10 @@ use crate::commands::vita::VitaCommands;
 use crate::commands::wup::WupCommands;
 use crate::commands::xbox::XboxCommands;
 use crate::commands::xenon::XenonCommands;
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use rom_converto_lib::util::ConflictPolicy;
 use std::path::PathBuf;
 
-pub mod capabilities;
 pub mod chd;
 pub mod completions;
 pub mod cso;
@@ -32,12 +31,14 @@ pub mod dat;
 pub mod dol;
 pub mod hash;
 pub mod info_command;
+pub mod misc;
 pub mod nds;
 pub mod nx;
 pub mod playlist;
 pub mod ps3;
 pub mod psp;
 pub mod rvl;
+pub mod support;
 pub mod vita;
 pub mod wup;
 pub mod xbox;
@@ -165,12 +166,52 @@ pub enum Commands {
     ShellCompletions(ShellCompletionsCommand),
 }
 
-/// Check for and install a newer version of the CLI
-#[derive(Parser, Debug, Clone, Eq, PartialEq)]
-#[command(
-    long_about = "Check for and install a newer version of the CLI\n\nDownloads and installs the latest release if one is available."
-)]
-pub struct SelfUpdateCommand {}
+/// The `--output-dir` / `--output-template` pair shared by every command that
+/// derives a single output path from its input.
+#[derive(Args, Debug, Clone, Eq, PartialEq)]
+pub struct OutputArgs {
+    /// Write output into this directory using the derived filename. Created if missing. Works with --recursive
+    #[arg(long = "output-dir", value_name = "DIR", conflicts_with_all = ["output", "output_flag"])]
+    pub output_dir: Option<PathBuf>,
+
+    /// Output path template applied per file. Tokens: {title}, {titleId}, {region},
+    /// {console}, {serial}, {ext}, {basename}. Resolves against extracted metadata;
+    /// missing tokens fall back to the input basename. Joined under --output-dir
+    #[arg(long = "output-template", value_name = "TEMPLATE", conflicts_with_all = ["output", "output_flag"])]
+    pub output_template: Option<String>,
+}
+
+/// The `--on-conflict` / `--force` pair. `on_conflict` stays optional so an
+/// unset flag falls through to the config or preset value.
+#[derive(Args, Debug, Clone, Eq, PartialEq)]
+pub struct ConflictArgs {
+    /// What to do when an output already exists: error, overwrite, skip, or rename to a numbered sibling (defaults to the config value, else error)
+    #[arg(long = "on-conflict", value_enum)]
+    pub on_conflict: Option<ConflictPolicyArg>,
+
+    /// Alias for --on-conflict overwrite
+    #[arg(
+        long,
+        short = 'f',
+        default_value_t = false,
+        conflicts_with = "on_conflict"
+    )]
+    pub force: bool,
+}
+
+/// The `--max-depth` / `--report` pair shared by the recursive commands.
+/// `--recursive` itself stays per-command since its help text names the
+/// extensions that command walks.
+#[derive(Args, Debug, Clone, Eq, PartialEq)]
+pub struct BatchArgs {
+    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited
+    #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
+    pub max_depth: Option<usize>,
+
+    /// Write a run report to FILE. Format inferred from the extension: .csv, .json, .html or .htm. Unknown extensions default to JSON. The file is overwritten directly
+    #[arg(long = "report", value_name = "FILE")]
+    pub report: Option<PathBuf>,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum ConflictPolicyArg {

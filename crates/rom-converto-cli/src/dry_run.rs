@@ -1,8 +1,8 @@
-use crate::util::WriteDecision;
+use crate::util::{WriteDecision, file_len, totals_from};
 use anyhow::Result;
 use rom_converto_lib::util::{
-    ConflictResolution, FileStatus, PlanDecision, PlanLine, ReportFormat, ReportRecord,
-    ReportRecordInput, ReportTotals, Tally, TallyDirection, write_report,
+    CancelToken, ConflictResolution, FileStatus, PlanDecision, PlanLine, ReportFormat,
+    ReportRecord, ReportRecordInput, Tally, TallyDirection, write_report,
 };
 use std::path::Path;
 
@@ -112,25 +112,97 @@ pub fn finish(tally: &Tally, records: &[ReportRecord], report: Option<&Path>) ->
             records,
             &totals_from(tally),
             ReportFormat::from_path(path),
+            &CancelToken::new(),
         )?;
     }
     Ok(())
 }
 
-fn totals_from(tally: &Tally) -> ReportTotals {
-    ReportTotals {
-        total_files: tally.count(),
-        ok: tally.ok_count(),
-        skipped: tally.skipped_count(),
-        failed: tally.failed_count(),
-        total_input_bytes: tally.total_input_bytes(),
-        total_output_bytes: tally.total_output_bytes(),
-        elapsed_ms: tally.elapsed().as_millis().min(u64::MAX as u128) as u64,
-    }
+pub struct SingleVerifyPlan<'a> {
+    pub operation: &'a str,
+    pub input: &'a Path,
+    pub desired: &'a Path,
+    pub decision: &'a WriteDecision,
+    pub policy: rom_converto_lib::util::ConflictPolicy,
+    pub target: crate::util::OutputVerify,
+    pub media: Option<&'a str>,
+    pub missing_keys: Option<&'a str>,
+    pub cancel: CancelToken,
 }
 
-fn file_len(path: &Path) -> u64 {
-    std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
+/// Single-file dry-run preview for an `overwrite-invalid` arm. The verify is
+/// read-only, so it runs under dry-run to show whether the existing output
+/// would be kept or rewritten. The synthesized decision feeds the existing
+/// tally/report path so the plan counts match a real run.
+pub async fn single_verify(
+    plan: SingleVerifyPlan<'_>,
+    progress: &dyn rom_converto_lib::util::ProgressReporter,
+    report: Option<&Path>,
+) -> Result<()> {
+    use crate::util::{VerifyOutcome, verify_existing_output};
+    let SingleVerifyPlan {
+        operation,
+        input,
+        desired,
+        decision,
+        policy,
+        target,
+        media,
+        missing_keys,
+        cancel,
+    } = plan;
+    if policy != rom_converto_lib::util::ConflictPolicy::OverwriteInvalid || !desired.exists() {
+        return single(
+            operation,
+            input,
+            desired,
+            decision,
+            media,
+            missing_keys,
+            report,
+        );
+    }
+    let (synth, outcome) = match verify_existing_output(progress, desired, target, cancel).await? {
+        VerifyOutcome::Valid => (
+            WriteDecision::Skip,
+            rom_converto_lib::util::PlanDecision::KeepValid,
+        ),
+        VerifyOutcome::Invalid => (
+            WriteDecision::Write(desired.to_path_buf()),
+            rom_converto_lib::util::PlanDecision::RewriteInvalid,
+        ),
+    };
+    log_plan_decision(
+        operation,
+        input,
+        desired,
+        &synth,
+        outcome,
+        media,
+        missing_keys,
+    );
+    let mut tally = Tally::new();
+    record(&mut tally, input, &synth);
+    let records = [report_record(operation, input, desired, &synth)];
+    finish(&tally, &records, report)
+}
+
+/// Emit the plan line, summary, and optional report for a single-file
+/// dry-run, then return so the caller can short-circuit before the lib write.
+pub fn single(
+    operation: &str,
+    input: &Path,
+    desired: &Path,
+    decision: &WriteDecision,
+    media: Option<&str>,
+    missing_keys: Option<&str>,
+    report: Option<&Path>,
+) -> Result<()> {
+    log_plan(operation, input, desired, decision, media, missing_keys);
+    let mut tally = Tally::new();
+    record(&mut tally, input, decision);
+    let records = [report_record(operation, input, desired, decision)];
+    finish(&tally, &records, report)
 }
 
 #[cfg(test)]

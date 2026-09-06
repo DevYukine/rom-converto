@@ -1,5 +1,5 @@
 use rom_converto_lib::config::{
-    ChdDefaults, CsoDefaults, DatDefaults, DiscDefaults, NxDefaults, Preset, UserConfig,
+    ChdDefaults, CsoDefaults, DatDefaults, DiscDefaults, MergeOver, NxDefaults, Preset, UserConfig,
     WupDefaults,
 };
 use rom_converto_lib::util::ConflictPolicy;
@@ -21,144 +21,14 @@ pub struct Effective {
 
 pub fn resolve(cfg: &UserConfig, preset: Option<&Preset>) -> Effective {
     Effective {
-        dol: merge_disc(preset.and_then(|p| p.dol.as_ref()), cfg.dol.as_ref()),
-        rvl: merge_disc(preset.and_then(|p| p.rvl.as_ref()), cfg.rvl.as_ref()),
-        nx: merge_nx(preset.and_then(|p| p.nx.as_ref()), cfg.nx.as_ref()),
-        chd: merge_chd(preset.and_then(|p| p.chd.as_ref()), cfg.chd.as_ref()),
-        cso: merge_cso(preset.and_then(|p| p.cso.as_ref()), cfg.cso.as_ref()),
-        wup: merge_wup(preset.and_then(|p| p.wup.as_ref()), cfg.wup.as_ref()),
-        dat: merge_dat(preset.and_then(|p| p.dat.as_ref()), cfg.dat.as_ref()),
+        dol: DiscDefaults::merge_layers(preset.and_then(|p| p.dol.as_ref()), cfg.dol.as_ref()),
+        rvl: DiscDefaults::merge_layers(preset.and_then(|p| p.rvl.as_ref()), cfg.rvl.as_ref()),
+        nx: NxDefaults::merge_layers(preset.and_then(|p| p.nx.as_ref()), cfg.nx.as_ref()),
+        chd: ChdDefaults::merge_layers(preset.and_then(|p| p.chd.as_ref()), cfg.chd.as_ref()),
+        cso: CsoDefaults::merge_layers(preset.and_then(|p| p.cso.as_ref()), cfg.cso.as_ref()),
+        wup: WupDefaults::merge_layers(preset.and_then(|p| p.wup.as_ref()), cfg.wup.as_ref()),
+        dat: DatDefaults::merge_layers(preset.and_then(|p| p.dat.as_ref()), cfg.dat.as_ref()),
     }
-}
-
-fn merge_disc(top: Option<&DiscDefaults>, base: Option<&DiscDefaults>) -> DiscDefaults {
-    DiscDefaults {
-        level: pick(top.and_then(|t| t.level), base.and_then(|b| b.level)),
-        chunk_size: pick(
-            top.and_then(|t| t.chunk_size),
-            base.and_then(|b| b.chunk_size),
-        ),
-        on_conflict: pick(
-            top.and_then(|t| t.on_conflict.clone()),
-            base.and_then(|b| b.on_conflict.clone()),
-        ),
-        output_dir: pick(
-            top.and_then(|t| t.output_dir.clone()),
-            base.and_then(|b| b.output_dir.clone()),
-        ),
-        report: pick(
-            top.and_then(|t| t.report.clone()),
-            base.and_then(|b| b.report.clone()),
-        ),
-    }
-}
-
-fn merge_nx(top: Option<&NxDefaults>, base: Option<&NxDefaults>) -> NxDefaults {
-    NxDefaults {
-        level: pick(top.and_then(|t| t.level), base.and_then(|b| b.level)),
-        mode: pick(
-            top.and_then(|t| t.mode.clone()),
-            base.and_then(|b| b.mode.clone()),
-        ),
-        block_size_exp: pick(
-            top.and_then(|t| t.block_size_exp),
-            base.and_then(|b| b.block_size_exp),
-        ),
-        on_conflict: pick(
-            top.and_then(|t| t.on_conflict.clone()),
-            base.and_then(|b| b.on_conflict.clone()),
-        ),
-        output_dir: pick(
-            top.and_then(|t| t.output_dir.clone()),
-            base.and_then(|b| b.output_dir.clone()),
-        ),
-        report: pick(
-            top.and_then(|t| t.report.clone()),
-            base.and_then(|b| b.report.clone()),
-        ),
-    }
-}
-
-fn merge_chd(top: Option<&ChdDefaults>, base: Option<&ChdDefaults>) -> ChdDefaults {
-    ChdDefaults {
-        hunk_size: pick(
-            top.and_then(|t| t.hunk_size),
-            base.and_then(|b| b.hunk_size),
-        ),
-        codecs: pick(
-            top.and_then(|t| t.codecs.clone()),
-            base.and_then(|b| b.codecs.clone()),
-        ),
-        level: pick(top.and_then(|t| t.level), base.and_then(|b| b.level)),
-        on_conflict: pick(
-            top.and_then(|t| t.on_conflict.clone()),
-            base.and_then(|b| b.on_conflict.clone()),
-        ),
-        output_dir: pick(
-            top.and_then(|t| t.output_dir.clone()),
-            base.and_then(|b| b.output_dir.clone()),
-        ),
-        report: pick(
-            top.and_then(|t| t.report.clone()),
-            base.and_then(|b| b.report.clone()),
-        ),
-    }
-}
-
-fn merge_cso(top: Option<&CsoDefaults>, base: Option<&CsoDefaults>) -> CsoDefaults {
-    CsoDefaults {
-        block_size: pick(
-            top.and_then(|t| t.block_size),
-            base.and_then(|b| b.block_size),
-        ),
-        on_conflict: pick(
-            top.and_then(|t| t.on_conflict.clone()),
-            base.and_then(|b| b.on_conflict.clone()),
-        ),
-        output_dir: pick(
-            top.and_then(|t| t.output_dir.clone()),
-            base.and_then(|b| b.output_dir.clone()),
-        ),
-        report: pick(
-            top.and_then(|t| t.report.clone()),
-            base.and_then(|b| b.report.clone()),
-        ),
-    }
-}
-
-fn merge_wup(top: Option<&WupDefaults>, base: Option<&WupDefaults>) -> WupDefaults {
-    WupDefaults {
-        level: pick(top.and_then(|t| t.level), base.and_then(|b| b.level)),
-        on_conflict: pick(
-            top.and_then(|t| t.on_conflict.clone()),
-            base.and_then(|b| b.on_conflict.clone()),
-        ),
-    }
-}
-
-fn merge_dat(top: Option<&DatDefaults>, base: Option<&DatDefaults>) -> DatDefaults {
-    DatDefaults {
-        api_base: pick(
-            top.and_then(|t| t.api_base.clone()),
-            base.and_then(|b| b.api_base.clone()),
-        ),
-        report: pick(
-            top.and_then(|t| t.report.clone()),
-            base.and_then(|b| b.report.clone()),
-        ),
-        input_checksum_min: pick(
-            top.and_then(|t| t.input_checksum_min.clone()),
-            base.and_then(|b| b.input_checksum_min.clone()),
-        ),
-        input_checksum_max: pick(
-            top.and_then(|t| t.input_checksum_max.clone()),
-            base.and_then(|b| b.input_checksum_max.clone()),
-        ),
-    }
-}
-
-fn pick<T>(top: Option<T>, base: Option<T>) -> Option<T> {
-    top.or(base)
 }
 
 pub fn conflict_from_str(s: &str) -> anyhow::Result<ConflictPolicy> {

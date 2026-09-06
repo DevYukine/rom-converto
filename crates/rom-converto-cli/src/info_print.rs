@@ -2540,7 +2540,7 @@ mod tests {
                 width: 128,
                 height: 128,
             }),
-            root_files: vec![rom_converto_lib::ps3::info::Ps3RootEntry {
+            root_files: vec![rom_converto_lib::sony::ps3::info::Ps3RootEntry {
                 name: "PS3_GAME".to_string(),
                 size: 0,
                 is_dir: true,

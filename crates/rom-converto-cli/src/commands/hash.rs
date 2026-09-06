@@ -1,5 +1,12 @@
+use crate::commands::BatchArgs;
 use clap::Parser;
 use std::path::PathBuf;
+
+use crate::batch;
+use crate::commands::support::{ALL_IMAGE_EXTS, DispatchCtx, hash_single, require_dir};
+use crate::util::ensure_input_exists;
+use anyhow::Result;
+use rom_converto_lib::util::parse_algos;
 
 /// Compute checksums for a file or, with --recursive, every file in a directory
 ///
@@ -22,13 +29,43 @@ pub struct HashCommand {
     #[arg(long, short = 'R', default_value_t = false)]
     pub recursive: bool,
 
-    /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited
-    #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
-    pub max_depth: Option<usize>,
+    #[command(flatten)]
+    pub batch: BatchArgs,
+}
 
-    /// Write a run report to FILE. Format inferred from the extension: .csv, .json, .html or .htm. Unknown extensions default to JSON. The file is overwritten directly
-    #[arg(long = "report", value_name = "FILE")]
-    pub report: Option<PathBuf>,
+/// Runs one `hash` subcommand.
+pub async fn run(cmd: crate::commands::hash::HashCommand, ctx: DispatchCtx<'_>) -> Result<()> {
+    let DispatchCtx {
+        progress,
+        total_progress,
+        cache,
+        ..
+    } = ctx;
+    let algos = parse_algos(&cmd.algo).map_err(|e| anyhow::anyhow!(e))?;
+    if cmd.recursive {
+        require_dir(&cmd.input)?;
+        batch::hash_batch(
+            &progress,
+            &total_progress,
+            &cmd.input,
+            &algos,
+            cmd.batch.max_depth,
+            cmd.batch.report.as_deref(),
+            cache,
+        )
+        .await?;
+    } else {
+        ensure_input_exists(&cmd.input)?;
+        let resolved = rom_converto_lib::util::resolve_input(&cmd.input, ALL_IMAGE_EXTS)?;
+        hash_single(
+            &progress,
+            resolved.path(),
+            &algos,
+            cmd.batch.report.as_deref(),
+            cache,
+        )?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -57,8 +94,8 @@ mod tests {
         let c = parse(&["bin", "hash", "game.iso"]);
         assert_eq!(c.algo, "crc32,sha1");
         assert!(!c.recursive);
-        assert_eq!(c.max_depth, None);
-        assert_eq!(c.report, None);
+        assert_eq!(c.batch.max_depth, None);
+        assert_eq!(c.batch.report, None);
     }
 
     #[test]
@@ -74,14 +111,14 @@ mod tests {
             "sha256",
         ]);
         assert!(c.recursive);
-        assert_eq!(c.max_depth, Some(2));
+        assert_eq!(c.batch.max_depth, Some(2));
         assert_eq!(c.algo, "sha256");
     }
 
     #[test]
     fn parses_report_flag() {
         let c = parse(&["bin", "hash", "f", "--report", "out.json"]);
-        assert_eq!(c.report, Some(PathBuf::from("out.json")));
+        assert_eq!(c.batch.report, Some(PathBuf::from("out.json")));
     }
 
     #[test]

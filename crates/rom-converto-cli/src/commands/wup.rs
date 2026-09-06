@@ -1,7 +1,23 @@
-use crate::commands::ConflictPolicyArg;
 use crate::commands::info_command::InfoCommand;
+use crate::commands::{ConflictArgs, ConflictPolicyArg};
 use clap::{Parser, Subcommand};
+use rom_converto_lib::util::CancelToken;
 use std::path::PathBuf;
+
+use crate::commands::support::{
+    ALL_IMAGE_EXTS, DispatchCtx, require_dir, require_info_input, save_wup_image,
+};
+use crate::util::{
+    WriteDecision, ensure_input_exists, file_len, log_skipped, resolve_output, resolve_output_dir,
+    resolve_policy,
+};
+use crate::{batch, config, dry_run, info_print};
+use anyhow::Result;
+use rom_converto_lib::nintendo::wup::{
+    TitleInput, WupCompressOptions, compress_titles_async, decrypt_nus_title_async,
+    verify_wup_async,
+};
+use std::path::Path;
 
 /// Commands specific to Wii U (WUP) formats
 #[derive(Subcommand, Debug, Eq, PartialEq)]
@@ -106,18 +122,175 @@ pub struct CompressWupCommand {
     #[arg(required = true, num_args = 1.., value_name = "INPUT")]
     pub inputs: Vec<PathBuf>,
 
-    /// What to do when an output already exists: error, overwrite, skip, or rename to a numbered sibling
-    #[arg(long = "on-conflict", value_enum)]
-    pub on_conflict: Option<ConflictPolicyArg>,
+    #[command(flatten)]
+    pub conflict: ConflictArgs,
+}
 
-    /// Alias for --on-conflict overwrite
-    #[arg(
-        long,
-        short = 'f',
-        default_value_t = false,
-        conflicts_with = "on_conflict"
-    )]
-    pub force: bool,
+/// Runs one `wup` subcommand.
+pub async fn run(command: WupCommands, ctx: DispatchCtx<'_>) -> Result<()> {
+    let DispatchCtx {
+        progress,
+        total_progress,
+        effective,
+        dry_run,
+        skip_space_check,
+        cancel,
+        ..
+    } = ctx;
+    match command {
+        WupCommands::Compress(cmd) => {
+            let eff = &effective.wup;
+            let policy = resolve_policy(
+                cmd.conflict.on_conflict,
+                cmd.conflict.force,
+                config::policy_fallback(&eff.on_conflict)?,
+            );
+            let decision = resolve_output(&cmd.output, policy)?;
+            if dry_run {
+                use rom_converto_lib::nintendo::wup::compress::TitleInputFormat;
+                let media = cmd
+                    .inputs
+                    .first()
+                    .and_then(|p| {
+                        rom_converto_lib::nintendo::wup::compress::detect_title_format(p).ok()
+                    })
+                    .map(|f| match f {
+                        TitleInputFormat::Loadiine => "Loadiine",
+                        TitleInputFormat::Nus => "NUS",
+                        TitleInputFormat::Disc => "disc",
+                    });
+                let input = cmd
+                    .inputs
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| cmd.output.clone());
+                return dry_run::single(
+                    "compress",
+                    &input,
+                    &cmd.output,
+                    &decision,
+                    media,
+                    None,
+                    None,
+                );
+            }
+            let output = match decision {
+                WriteDecision::Skip => {
+                    log_skipped(&cmd.output);
+                    return Ok(());
+                }
+                WriteDecision::Write(p) => p,
+            };
+            if !skip_space_check {
+                let required: u64 = cmd.inputs.iter().map(|p| file_len(p)).sum();
+                let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
+                batch::space_preflight_for_size(required, check_dir)?;
+            }
+            let opts = WupCompressOptions {
+                zstd_level: cmd
+                    .level
+                    .or(eff.level)
+                    .unwrap_or(WupCompressOptions::default().zstd_level),
+            };
+            // Pair --key values with disc inputs in positional
+            // order. Non-disc inputs skip past their key slot.
+            let mut key_iter = cmd.key.into_iter();
+            let titles: Vec<TitleInput> = cmd
+                .inputs
+                .into_iter()
+                .map(|p| {
+                    let is_disc = p
+                        .extension()
+                        .and_then(|s| s.to_str())
+                        .map(|s| s.eq_ignore_ascii_case("wud") || s.eq_ignore_ascii_case("wux"))
+                        .unwrap_or(false)
+                        && p.is_file();
+                    let mut t = TitleInput::auto(p);
+                    if is_disc {
+                        t.key_path = key_iter.next();
+                    }
+                    t
+                })
+                .collect();
+            compress_titles_async(titles, output, opts, &progress, cancel.clone()).await?
+        }
+        WupCommands::Decrypt(cmd) => {
+            ensure_input_exists(&cmd.input)?;
+            let policy = resolve_policy(
+                Some(cmd.on_conflict),
+                cmd.force,
+                rom_converto_lib::util::ConflictPolicy::Error,
+            );
+            let decision = resolve_output_dir(&cmd.output, policy)?;
+            if dry_run {
+                return dry_run::single(
+                    "decrypt",
+                    &cmd.input,
+                    &cmd.output,
+                    &decision,
+                    None,
+                    None,
+                    None,
+                );
+            }
+            match decision {
+                WriteDecision::Skip => {
+                    log_skipped(&cmd.output);
+                    return Ok(());
+                }
+                WriteDecision::Write(_) => {}
+            }
+            if !skip_space_check {
+                batch::space_preflight_for_size(file_len(&cmd.input), &cmd.output)?;
+            }
+            decrypt_nus_title_async(cmd.input, cmd.output, &progress, cancel.clone()).await?
+        }
+        WupCommands::Verify(cmd) => {
+            if cmd.recursive {
+                require_dir(&cmd.input)?;
+                batch::wup_verify(&progress, &total_progress, &cmd.input, cmd.max_depth).await?
+            } else {
+                ensure_input_exists(&cmd.input)?;
+                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["wud", "wux"])?;
+                let result = verify_wup_async(
+                    resolved.path().to_path_buf(),
+                    cmd.key,
+                    &progress,
+                    CancelToken::new(),
+                )
+                .await?;
+                log::info!("Source kind: {}", result.kind);
+                log::info!("Overall: {}", if result.ok { "OK" } else { "FAIL" });
+                for t in &result.titles {
+                    log::info!(
+                        "  {}: {} (verified: {}, mismatched: {}, skipped: {})",
+                        t.title_id_hex,
+                        if t.ok { "OK" } else { "FAIL" },
+                        t.verified_content,
+                        t.mismatched_content,
+                        t.skipped_content
+                    );
+                }
+                if !result.ok {
+                    anyhow::bail!("verification failed");
+                }
+            }
+        }
+        WupCommands::Info(cmd) => {
+            let input = require_info_input(&cmd.input)?;
+            ensure_input_exists(input)?;
+            let resolved = rom_converto_lib::util::resolve_input(input, ALL_IMAGE_EXTS)?;
+            let info = rom_converto_lib::nintendo::wup::info::read_info(
+                resolved.path(),
+                cmd.keys.as_deref(),
+            )?;
+            if let Some(dir) = &cmd.save_icon {
+                save_wup_image(&info, dir)?;
+            }
+            info_print::print(&rom_converto_lib::info::InfoResult::Wup(info), cmd.json)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -226,7 +399,7 @@ mod tests {
         let WupCommands::Compress(c) = h.cmd else {
             panic!("expected Compress");
         };
-        assert!(c.force);
+        assert!(c.conflict.force);
     }
 
     #[test]
@@ -235,6 +408,6 @@ mod tests {
         let WupCommands::Compress(c) = h.cmd else {
             panic!("expected Compress");
         };
-        assert!(c.on_conflict.is_none());
+        assert!(c.conflict.on_conflict.is_none());
     }
 }

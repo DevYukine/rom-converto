@@ -2,6 +2,15 @@ use crate::commands::info_command::InfoCommand;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
+use crate::commands::support::{
+    DispatchCtx, log_single_summary, require_info_input, save_info_icon,
+};
+use crate::info_print;
+use crate::util::{WriteDecision, ensure_input_exists, log_skipped, resolve_output_dir};
+use anyhow::Result;
+use rom_converto_lib::util::TallyDirection;
+use std::time::Instant;
+
 /// Commands for PS Vita packages: VPK and PKG info, PKG extraction
 #[derive(Subcommand, Debug, Eq, PartialEq)]
 pub enum VitaCommands {
@@ -25,6 +34,54 @@ pub struct ExtractCommand {
     /// Directory to extract into, created if missing
     #[arg(value_name = "OUTPUT_DIR")]
     pub output_dir: PathBuf,
+}
+
+/// Runs one `vita` subcommand.
+pub async fn run(command: VitaCommands, ctx: DispatchCtx<'_>) -> Result<()> {
+    let DispatchCtx { progress, .. } = ctx;
+    match command {
+        VitaCommands::Info(cmd) => {
+            if cmd.keys.is_some() {
+                anyhow::bail!("--keys is only supported by nx, wup, and ps3 info");
+            }
+            let input = require_info_input(&cmd.input)?;
+            ensure_input_exists(input)?;
+            let resolved = rom_converto_lib::util::resolve_input(input, &["vpk", "pkg"])?;
+            let info = rom_converto_lib::info::read_info(
+                resolved.path(),
+                &rom_converto_lib::info::InfoOptions::default(),
+            )?;
+            if let Some(dir) = &cmd.save_icon {
+                save_info_icon(&info, dir)?;
+            }
+            info_print::print(&info, cmd.json)?;
+        }
+        VitaCommands::Extract(cmd) => {
+            ensure_input_exists(&cmd.input)?;
+            let policy = rom_converto_lib::util::ConflictPolicy::Error;
+            match resolve_output_dir(&cmd.output_dir, policy)? {
+                WriteDecision::Skip => {
+                    log_skipped(&cmd.output_dir);
+                    return Ok(());
+                }
+                WriteDecision::Write(_) => {}
+            }
+            let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["pkg"])?;
+            let started = Instant::now();
+            rom_converto_lib::sony::vita::pkg::extract(
+                resolved.path(),
+                &cmd.output_dir,
+                &progress,
+            )?;
+            log_single_summary(
+                &cmd.input,
+                &cmd.output_dir,
+                TallyDirection::CountOnly,
+                started,
+            );
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

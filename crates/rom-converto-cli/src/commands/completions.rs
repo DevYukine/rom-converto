@@ -1,5 +1,5 @@
-use clap::Parser;
-use clap_complete::Shell;
+use clap::{CommandFactory, Parser};
+use clap_complete::{Shell, generate, generate_to};
 use std::path::PathBuf;
 
 /// Generate shell completion scripts for the rom-converto CLI
@@ -24,6 +24,27 @@ pub struct ShellCompletionsCommand {
     /// Write the completion script into DIR using the canonical filename for that shell, instead of writing to stdout. Prints the path on success
     #[arg(long, short = 'o', value_name = "DIR")]
     pub out_dir: Option<PathBuf>,
+}
+
+pub fn run(cmd: &ShellCompletionsCommand) -> anyhow::Result<()> {
+    // The package is rom-converto-cli but the installed binary is
+    // rom-converto; completions must key off the binary name the user
+    // actually types. CARGO_BIN_NAME tracks the [[bin]] name even if
+    // the crate is renamed.
+    let bin = env!("CARGO_BIN_NAME");
+    let mut clap_cmd = crate::commands::Cli::command().name(bin).bin_name(bin);
+
+    match &cmd.out_dir {
+        Some(dir) => {
+            std::fs::create_dir_all(dir)?;
+            let path = generate_to(cmd.shell, &mut clap_cmd, bin, dir)?;
+            println!("{}", path.display());
+        }
+        None => {
+            generate(cmd.shell, &mut clap_cmd, bin, &mut std::io::stdout().lock());
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

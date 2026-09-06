@@ -1,6 +1,15 @@
-use crate::commands::ConflictPolicyArg;
+use crate::commands::ConflictArgs;
 use clap::Parser;
 use std::path::PathBuf;
+
+use crate::commands::support::{DispatchCtx, require_dir};
+use crate::dry_run;
+use crate::util::{WriteDecision, resolve_output, resolve_policy};
+use anyhow::Result;
+use rom_converto_lib::playlist::{PlaylistMode, PlaylistOptions, plan_playlists};
+use rom_converto_lib::util::{CancelToken, Tally, mixed_playlist_extensions};
+use std::path::Path;
+use std::time::Instant;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum PlaylistModeArg {
@@ -41,18 +50,100 @@ pub struct PlaylistCommand {
     #[arg(long = "max-depth", value_name = "N")]
     pub max_depth: Option<usize>,
 
-    /// What to do when an output already exists: error, overwrite, skip, or rename to a numbered sibling
-    #[arg(long = "on-conflict", value_enum)]
-    pub on_conflict: Option<ConflictPolicyArg>,
+    #[command(flatten)]
+    pub conflict: ConflictArgs,
+}
 
-    /// Alias for --on-conflict overwrite
-    #[arg(
-        long,
-        short = 'f',
-        default_value_t = false,
-        conflicts_with = "on_conflict"
-    )]
-    pub force: bool,
+/// Runs one `playlist` subcommand.
+pub async fn run(cmd: PlaylistCommand, ctx: DispatchCtx<'_>) -> Result<()> {
+    let DispatchCtx { dry_run, .. } = ctx;
+    require_dir(&cmd.input)?;
+
+    let exts: Vec<String> = cmd
+        .extensions
+        .split(',')
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let ext_refs: Vec<&str> = exts.iter().map(String::as_str).collect();
+
+    let mode = match cmd.playlist_mode {
+        PlaylistModeArg::Multiple => PlaylistMode::Multiple,
+        PlaylistModeArg::Always => PlaylistMode::Always,
+    };
+
+    let plans = plan_playlists(
+        &PlaylistOptions {
+            scan_dir: &cmd.input,
+            output_dir: cmd.output_dir.as_deref(),
+            extensions: &ext_refs,
+            mode,
+            max_depth: cmd.max_depth,
+        },
+        &CancelToken::new(),
+    )?;
+
+    // An .m3u has no integrity check, so overwrite-invalid degrades to skip.
+    let policy = resolve_policy(
+        cmd.conflict.on_conflict,
+        cmd.conflict.force,
+        rom_converto_lib::util::ConflictPolicy::Error,
+    );
+
+    if !dry_run && let Some(dir) = cmd.output_dir.as_deref() {
+        std::fs::create_dir_all(dir)?;
+    }
+
+    let mut tally = Tally::new();
+    let started = Instant::now();
+
+    for plan in &plans {
+        if plan.has_duplicate_numbers {
+            log::warn!(
+                "Duplicate disc numbers in set {}, including all entries",
+                plan.base_title
+            );
+        }
+        let entry_exts = plan
+            .contents
+            .lines()
+            .filter_map(|line| Path::new(line).extension())
+            .filter_map(|ext| ext.to_str());
+        if let Some(mixed) = mixed_playlist_extensions(entry_exts) {
+            log::warn!(
+                "Mixed track formats ({mixed}) in set {}; emulators expect every disc \
+                     in a playlist to use the same format",
+                plan.base_title
+            );
+        }
+        let decision = resolve_output(&plan.m3u_path, policy)?;
+        if dry_run {
+            dry_run::log_plan("write", &cmd.input, &plan.m3u_path, &decision, None, None);
+            for line in plan.contents.lines() {
+                log::info!("    {line}");
+            }
+            dry_run::record(&mut tally, &cmd.input, &decision);
+            continue;
+        }
+        match decision {
+            WriteDecision::Write(path) => {
+                std::fs::write(&path, &plan.contents)?;
+                log::info!("Wrote {} ({} discs)", path.display(), plan.disc_count);
+                tally.record_ok(0, 0, std::time::Duration::ZERO);
+            }
+            WriteDecision::Skip => {
+                log::info!("Skipped existing {}", plan.m3u_path.display());
+                tally.record_skipped();
+            }
+        }
+    }
+
+    if dry_run {
+        dry_run::finish(&tally, &[], None)?;
+    } else {
+        log::info!("{}", Tally::count_summary(tally.count(), started.elapsed()));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -82,8 +173,8 @@ mod tests {
         assert_eq!(c.playlist_mode, PlaylistModeArg::Multiple);
         assert_eq!(c.extensions, "cue,chd,iso,cso,zso");
         assert_eq!(c.max_depth, None);
-        assert_eq!(c.on_conflict, None);
-        assert!(!c.force);
+        assert_eq!(c.conflict.on_conflict, None);
+        assert!(!c.conflict.force);
         assert_eq!(c.output_dir, None);
     }
 
@@ -112,7 +203,7 @@ mod tests {
     fn parses_output_dir_and_force() {
         let c = parse(&["bin", "playlist", "roms", "--output-dir", "out", "-f"]);
         assert_eq!(c.output_dir, Some(PathBuf::from("out")));
-        assert!(c.force);
+        assert!(c.conflict.force);
     }
 
     #[test]

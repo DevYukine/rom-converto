@@ -2,6 +2,21 @@ use crate::commands::info_command::InfoCommand;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
+use crate::commands::support::{
+    ALL_IMAGE_EXTS, DispatchCtx, derive_output_with_ext, log_single_summary, require_info_input,
+    save_xbox_icon,
+};
+use crate::util::{
+    WriteDecision, ensure_input_exists, file_len, log_skipped, resolve_output, resolve_output_dir,
+    resolve_policy,
+};
+use crate::{batch, dry_run, info_print};
+use anyhow::Result;
+use rom_converto_lib::microsoft::xbox::{XisoCreateOptions, convert_to_xiso, extract_xiso};
+use rom_converto_lib::util::TallyDirection;
+use std::path::Path;
+use std::time::Instant;
+
 /// Commands specific to the original Xbox XISO format
 #[derive(Subcommand, Debug, Eq, PartialEq)]
 pub enum XboxCommands {
@@ -64,6 +79,94 @@ pub struct ExtractCommand {
     /// Directory to extract into, created if missing
     #[arg(value_name = "OUTPUT_DIR")]
     pub output_dir: PathBuf,
+}
+
+/// Runs one `xbox` subcommand.
+pub async fn run(command: XboxCommands, ctx: DispatchCtx<'_>) -> Result<()> {
+    let DispatchCtx {
+        progress,
+        dry_run,
+        skip_space_check,
+        cancel,
+        ..
+    } = ctx;
+    match command {
+        XboxCommands::Convert(cmd) => {
+            ensure_input_exists(&cmd.input)?;
+            let output = cmd
+                .output_flag
+                .or(cmd.output)
+                .unwrap_or_else(|| derive_output_with_ext(&cmd.input, "xiso"));
+            let policy = resolve_policy(
+                None,
+                cmd.force,
+                rom_converto_lib::util::ConflictPolicy::Error,
+            );
+            let decision = resolve_output(&output, policy)?;
+            if dry_run {
+                return dry_run::single(
+                    "convert", &cmd.input, &output, &decision, None, None, None,
+                );
+            }
+            let output = match decision {
+                WriteDecision::Skip => {
+                    log_skipped(&output);
+                    return Ok(());
+                }
+                WriteDecision::Write(p) => p,
+            };
+            if !skip_space_check {
+                let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
+                let required_space = if cmd.input.is_dir() {
+                    rom_converto_lib::microsoft::xbox::input_total_bytes(&cmd.input)
+                        .unwrap_or_else(|_| file_len(&cmd.input))
+                } else {
+                    file_len(&cmd.input)
+                };
+                batch::space_preflight_for_size(required_space, check_dir)?;
+            }
+            let started = Instant::now();
+            let opts = XisoCreateOptions {
+                media_patch: !cmd.no_media_patch,
+            };
+            convert_to_xiso(&cmd.input, &output, opts, &progress, cancel.clone()).await?;
+            log_single_summary(&cmd.input, &output, TallyDirection::Convert, started);
+        }
+        XboxCommands::Extract(cmd) => {
+            ensure_input_exists(&cmd.input)?;
+            let policy = rom_converto_lib::util::ConflictPolicy::Error;
+            match resolve_output_dir(&cmd.output_dir, policy)? {
+                WriteDecision::Skip => {
+                    log_skipped(&cmd.output_dir);
+                    return Ok(());
+                }
+                WriteDecision::Write(_) => {}
+            }
+            let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["xiso", "iso"])?;
+            let started = Instant::now();
+            extract_xiso(resolved.path(), &cmd.output_dir, &progress, cancel.clone()).await?;
+            log_single_summary(
+                &cmd.input,
+                &cmd.output_dir,
+                TallyDirection::CountOnly,
+                started,
+            );
+        }
+        XboxCommands::Info(cmd) => {
+            if cmd.keys.is_some() {
+                anyhow::bail!("--keys is only supported by nx and wup info");
+            }
+            let input = require_info_input(&cmd.input)?;
+            ensure_input_exists(input)?;
+            let resolved = rom_converto_lib::util::resolve_input(input, ALL_IMAGE_EXTS)?;
+            let info = rom_converto_lib::microsoft::xbox::read_info(resolved.path())?;
+            if let Some(dir) = &cmd.save_icon {
+                save_xbox_icon(&info, dir)?;
+            }
+            info_print::print(&rom_converto_lib::info::InfoResult::Xbox(info), cmd.json)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

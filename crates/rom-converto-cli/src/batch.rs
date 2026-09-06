@@ -1,4 +1,7 @@
-use crate::util::{WriteDecision, resolve_output};
+use crate::commands::support::{
+    ALL_IMAGE_EXTS, chd_media_label, maybe_log_dvd_codec_tip, print_hash_row, resolved_dvd_mode,
+};
+use crate::util::{WriteDecision, file_len, resolve_output, totals_from};
 use anyhow::Result;
 use log::{info, warn};
 use rom_converto_lib::cue::CueParser;
@@ -18,10 +21,10 @@ use rom_converto_lib::util::fs::{collect_all_files, collect_files_with_exts, is_
 use rom_converto_lib::util::hash::MultiHasher;
 use rom_converto_lib::util::report::{DatReportRecord, write_dat_report};
 use rom_converto_lib::util::{
-    CachedTrack, CancelToken, ChecksumBounds, ConflictPolicy, ConflictResolution, FileDigests,
-    FileStatus, HashAlgo, HashCache, HashReportRecord, NX_DAT_UNSUPPORTED_HINT, ProgressReporter,
-    ReportFormat, ReportRecord, ReportRecordInput, ReportTotals, Tally, TallyDirection, hash_file,
-    hash_file_cancellable, resolve_conflict, resolve_input, write_hash_report, write_report,
+    CachedTrack, CancelToken, Cancelled, ChecksumBounds, ConflictPolicy, ConflictResolution,
+    FileDigests, FileStatus, HashAlgo, HashCache, HashReportRecord, NX_DAT_UNSUPPORTED_HINT,
+    ProgressReporter, ReportFormat, ReportRecord, ReportRecordInput, ReportTotals, Tally,
+    TallyDirection, hash_file, resolve_conflict, resolve_input, write_hash_report, write_report,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -41,10 +44,6 @@ pub struct BatchRun<'a> {
     pub skip_space_check: bool,
     pub report_path: Option<&'a Path>,
     pub cancel: &'a CancelToken,
-}
-
-fn file_len(path: &Path) -> u64 {
-    std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
 }
 
 /// Sum of on-disk sizes for the aggregate progress bar's total byte length.
@@ -102,18 +101,6 @@ pub(crate) fn space_preflight_for_size(required: u64, check_dir: &Path) -> Resul
         ),
     }
     Ok(())
-}
-
-pub(crate) fn totals_from(tally: &Tally) -> ReportTotals {
-    ReportTotals {
-        total_files: tally.count(),
-        ok: tally.ok_count(),
-        skipped: tally.skipped_count(),
-        failed: tally.failed_count(),
-        total_input_bytes: tally.total_input_bytes(),
-        total_output_bytes: tally.total_output_bytes(),
-        elapsed_ms: tally.elapsed().as_millis().min(u64::MAX as u128) as u64,
-    }
 }
 
 fn elapsed_ms(started: Instant) -> u64 {
@@ -186,6 +173,7 @@ struct DryRunVerify<'a> {
     policy: ConflictPolicy,
     target: crate::util::OutputVerify,
     media: Option<&'a str>,
+    cancel: CancelToken,
 }
 
 /// Dry-run plan entry for a batch arm that may verify. For `overwrite-invalid`
@@ -197,7 +185,7 @@ async fn dry_run_verify_record(
     plan: DryRunVerify<'_>,
     tally: &mut Tally,
     records: &mut Vec<ReportRecord>,
-) {
+) -> Result<()> {
     let DryRunVerify {
         operation,
         input,
@@ -206,10 +194,11 @@ async fn dry_run_verify_record(
         policy,
         target,
         media,
+        cancel,
     } = plan;
     if policy == ConflictPolicy::OverwriteInvalid && desired.exists() {
         let (synth, outcome) =
-            match crate::util::verify_existing_output(progress, desired, target).await {
+            match crate::util::verify_existing_output(progress, desired, target, cancel).await? {
                 crate::util::VerifyOutcome::Valid => (
                     WriteDecision::Skip,
                     rom_converto_lib::util::PlanDecision::KeepValid,
@@ -224,13 +213,160 @@ async fn dry_run_verify_record(
         records.push(crate::dry_run::report_record(
             operation, input, desired, &synth,
         ));
-        return;
+        return Ok(());
     }
     crate::dry_run::log_plan(operation, input, desired, decision, media, None);
     crate::dry_run::record(tally, input, decision);
     records.push(crate::dry_run::report_record(
         operation, input, desired, decision,
     ));
+    Ok(())
+}
+
+/// One batch file's output plan: the same derive, conflict-resolve, dry-run
+/// and skip handling every batch arm needs before it can call its conversion.
+struct BatchFile<'a> {
+    operation: &'a str,
+    input: &'a Path,
+    derived: PathBuf,
+    input_dir: &'a Path,
+    output_dir: Option<&'a Path>,
+    output_template: Option<&'a str>,
+    output_ext: &'a str,
+    keys_path: Option<&'a Path>,
+    policy: ConflictPolicy,
+    /// `OutputVerify::None` opts the file out of `overwrite-invalid`, since
+    /// there is nothing to check an existing output against.
+    verify: crate::util::OutputVerify,
+    media: Option<&'a str>,
+    dry_run: bool,
+    cache: Option<&'a HashCache>,
+    cancel: CancelToken,
+}
+
+/// Resolves where one batch file writes, recording the plan or the skip as it
+/// goes. `None` means this file is done and the caller should move to the next
+/// one; the aggregate progress bar has already been advanced.
+async fn batch_file_output(
+    plan: BatchFile<'_>,
+    progress: &dyn ProgressReporter,
+    total_progress: &crate::util::TotalProgress,
+    tally: &mut Tally,
+    records: &mut Vec<ReportRecord>,
+) -> Result<Option<PathBuf>> {
+    let BatchFile {
+        operation,
+        input,
+        derived,
+        input_dir,
+        output_dir,
+        output_template,
+        output_ext,
+        keys_path,
+        policy,
+        verify,
+        media,
+        dry_run,
+        cache,
+        cancel,
+    } = plan;
+
+    let skip = |tally: &mut Tally, records: &mut Vec<ReportRecord>, error: Option<String>| {
+        tally.record_skipped();
+        records.push(skipped_record(input, operation, error));
+        total_progress.advance(file_len(input));
+    };
+
+    let output = match crate::util::batch_output(crate::util::BatchOutput {
+        input,
+        derived: &derived,
+        input_dir,
+        output_dir,
+        output_template,
+        output_ext,
+        keys_path,
+        dry_run,
+    }) {
+        Ok(p) => p,
+        Err(e) => {
+            warn!("{e}");
+            skip(tally, records, Some(e.to_string()));
+            return Ok(None);
+        }
+    };
+    if !dry_run && let Some(parent) = output.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let decision = match resolve_output(&output, policy) {
+        Ok(d) => d,
+        Err(e) => {
+            warn!("{e}");
+            skip(tally, records, Some(e.to_string()));
+            return Ok(None);
+        }
+    };
+
+    let verifiable = !matches!(verify, crate::util::OutputVerify::None);
+
+    if dry_run {
+        if verifiable {
+            dry_run_verify_record(
+                progress,
+                DryRunVerify {
+                    operation,
+                    input,
+                    desired: &output,
+                    decision: &decision,
+                    policy,
+                    target: verify,
+                    media,
+                    cancel,
+                },
+                tally,
+                records,
+            )
+            .await?;
+        } else {
+            crate::dry_run::log_plan(operation, input, &output, &decision, media, None);
+            crate::dry_run::record(tally, input, &decision);
+            records.push(crate::dry_run::report_record(
+                operation, input, &output, &decision,
+            ));
+        }
+        total_progress.advance(file_len(input));
+        return Ok(None);
+    }
+
+    match decision {
+        WriteDecision::Write(p) => Ok(Some(p)),
+        WriteDecision::Skip if verifiable && policy == ConflictPolicy::OverwriteInvalid => {
+            let outcome = match cache {
+                Some(cache) => {
+                    crate::util::verify_existing_cached(cache, progress, &output, verify, cancel)
+                        .await?
+                }
+                None => {
+                    crate::util::verify_existing_output(progress, &output, verify, cancel).await?
+                }
+            };
+            match outcome {
+                crate::util::VerifyOutcome::Valid => {
+                    crate::util::log_kept_valid(&output);
+                    skip(tally, records, Some("output verified valid".into()));
+                    Ok(None)
+                }
+                crate::util::VerifyOutcome::Invalid => {
+                    crate::util::log_rewriting_invalid(&output);
+                    Ok(Some(output))
+                }
+            }
+        }
+        WriteDecision::Skip => {
+            crate::util::log_skipped(&output);
+            skip(tally, records, None);
+            Ok(None)
+        }
+    }
 }
 
 fn collect_or_warn(
@@ -238,7 +374,7 @@ fn collect_or_warn(
     exts: &[&str],
     max_depth: Option<usize>,
 ) -> Result<Vec<PathBuf>> {
-    let files = collect_files_with_exts(input_dir, exts, max_depth)?;
+    let files = collect_files_with_exts(input_dir, exts, max_depth, &CancelToken::new())?;
     if files.is_empty() {
         warn!(
             "No matching files found in {} (looked for {:?})",
@@ -281,6 +417,7 @@ fn finish_tally(
             records,
             &totals_from(tally),
             ReportFormat::from_path(path),
+            &CancelToken::new(),
         )?;
     }
     let failed = tally.failed_count();
@@ -304,7 +441,7 @@ pub async fn cso_decompress(run: &BatchRun<'_>) -> Result<()> {
         report_path,
         cancel,
     } = *run;
-    use rom_converto_lib::cso::decompress_from_cso_cancellable;
+    use rom_converto_lib::cso::decompress_from_cso;
 
     let files = collect_or_warn(input_dir, &["cso", "zso", "dax"], max_depth)?;
     if files.is_empty() {
@@ -324,68 +461,39 @@ pub async fn cso_decompress(run: &BatchRun<'_>) -> Result<()> {
         if cancel.is_cancelled() {
             break;
         }
-        let output = match crate::util::batch_output(crate::util::BatchOutput {
-            input: &path,
-            derived: &path.with_extension("iso"),
-            input_dir,
-            output_dir,
-            output_template,
-            output_ext: "iso",
-            keys_path: None,
-            dry_run,
-        }) {
-            Ok(p) => p,
-            Err(e) => {
-                warn!("{e}");
-                tally.record_skipped();
-                records.push(skipped_record(&path, "decompress", Some(e.to_string())));
-                total_progress.advance(file_len(&path));
-                continue;
-            }
-        };
-        if !dry_run && let Some(parent) = output.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let decision = match resolve_output(&output, policy) {
-            Ok(d) => d,
-            Err(e) => {
-                warn!("{e}");
-                tally.record_skipped();
-                records.push(skipped_record(&path, "decompress", Some(e.to_string())));
-                total_progress.advance(file_len(&path));
-                continue;
-            }
-        };
-        if dry_run {
-            crate::dry_run::log_plan("decompress", &path, &output, &decision, None, None);
-            crate::dry_run::record(&mut tally, &path, &decision);
-            records.push(crate::dry_run::report_record(
-                "decompress",
-                &path,
-                &output,
-                &decision,
-            ));
-            total_progress.advance(file_len(&path));
+        let Some(output) = batch_file_output(
+            BatchFile {
+                operation: "decompress",
+                input: &path,
+                derived: path.with_extension("iso"),
+                input_dir,
+                output_dir,
+                output_template,
+                output_ext: "iso",
+                keys_path: None,
+                policy,
+                verify: crate::util::OutputVerify::None,
+                media: None,
+                dry_run,
+                cache: None,
+                cancel: cancel.clone(),
+            },
+            progress,
+            total_progress,
+            &mut tally,
+            &mut records,
+        )
+        .await?
+        else {
             continue;
-        }
-        let output = match decision {
-            WriteDecision::Write(p) => p,
-            WriteDecision::Skip => {
-                info!("Skipped, output exists: {}", output.display());
-                tally.record_skipped();
-                records.push(skipped_record(&path, "decompress", None));
-                total_progress.advance(file_len(&path));
-                continue;
-            }
         };
         let input_bytes = file_len(&path);
         let out_path = output.clone();
         let started = Instant::now();
         if let Err(e) =
-            decompress_from_cso_cancellable(progress, path.clone(), output, true, cancel.clone())
-                .await
+            decompress_from_cso(progress, path.clone(), output, true, cancel.clone()).await
         {
-            if matches!(e, rom_converto_lib::cso::CsoError::Cancelled) {
+            if matches!(e, rom_converto_lib::cso::CsoError::Cancelled(_)) {
                 break;
             }
             warn!("Failed to decompress {}: {e}", path.display());
@@ -405,7 +513,7 @@ pub async fn cso_decompress(run: &BatchRun<'_>) -> Result<()> {
         }
         total_progress.advance(input_bytes);
     }
-    total_progress.finish();
+    total_progress.finish_bar();
     if cancel.is_cancelled() {
         return Ok(());
     }
@@ -432,7 +540,7 @@ pub async fn ps3_decrypt(run: &BatchRun<'_>, skip_probe: bool) -> Result<()> {
         report_path,
         cancel,
     } = *run;
-    use rom_converto_lib::ps3::{Ps3Error, decrypt_ps3_iso_cancellable, resolve_ps3_key};
+    use rom_converto_lib::sony::ps3::{Ps3Error, decrypt_ps3_iso, resolve_ps3_key};
 
     let files = collect_or_warn(input_dir, &["iso"], max_depth)?;
     if files.is_empty() {
@@ -452,57 +560,32 @@ pub async fn ps3_decrypt(run: &BatchRun<'_>, skip_probe: bool) -> Result<()> {
         if cancel.is_cancelled() {
             break;
         }
-        let derived = rom_converto_lib::ps3::derive_decrypted_path(&path);
-        let output = match crate::util::batch_output(crate::util::BatchOutput {
-            input: &path,
-            derived: &derived,
-            input_dir,
-            output_dir,
-            output_template,
-            output_ext: "iso",
-            keys_path: None,
-            dry_run,
-        }) {
-            Ok(p) => p,
-            Err(e) => {
-                warn!("{e}");
-                tally.record_skipped();
-                records.push(skipped_record(&path, "decrypt", Some(e.to_string())));
-                total_progress.advance(file_len(&path));
-                continue;
-            }
-        };
-        if !dry_run && let Some(parent) = output.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let decision = match resolve_output(&output, policy) {
-            Ok(d) => d,
-            Err(e) => {
-                warn!("{e}");
-                tally.record_skipped();
-                records.push(skipped_record(&path, "decrypt", Some(e.to_string())));
-                total_progress.advance(file_len(&path));
-                continue;
-            }
-        };
-        if dry_run {
-            crate::dry_run::log_plan("decrypt", &path, &output, &decision, None, None);
-            crate::dry_run::record(&mut tally, &path, &decision);
-            records.push(crate::dry_run::report_record(
-                "decrypt", &path, &output, &decision,
-            ));
-            total_progress.advance(file_len(&path));
+        let derived = rom_converto_lib::sony::ps3::derive_decrypted_path(&path);
+        let Some(output) = batch_file_output(
+            BatchFile {
+                operation: "decrypt",
+                input: &path,
+                derived,
+                input_dir,
+                output_dir,
+                output_template,
+                output_ext: "iso",
+                keys_path: None,
+                policy,
+                verify: crate::util::OutputVerify::None,
+                media: None,
+                dry_run,
+                cache: None,
+                cancel: cancel.clone(),
+            },
+            progress,
+            total_progress,
+            &mut tally,
+            &mut records,
+        )
+        .await?
+        else {
             continue;
-        }
-        let output = match decision {
-            WriteDecision::Write(p) => p,
-            WriteDecision::Skip => {
-                info!("Skipped, output exists: {}", output.display());
-                tally.record_skipped();
-                records.push(skipped_record(&path, "decrypt", None));
-                total_progress.advance(file_len(&path));
-                continue;
-            }
         };
         let disc_key = match resolve_ps3_key(&path, &path, None) {
             Ok(k) => k,
@@ -523,7 +606,7 @@ pub async fn ps3_decrypt(run: &BatchRun<'_>, skip_probe: bool) -> Result<()> {
         let input_bytes = file_len(&path);
         let out_path = output.clone();
         let started = Instant::now();
-        if let Err(e) = decrypt_ps3_iso_cancellable(
+        if let Err(e) = decrypt_ps3_iso(
             progress,
             path.clone(),
             output,
@@ -535,7 +618,7 @@ pub async fn ps3_decrypt(run: &BatchRun<'_>, skip_probe: bool) -> Result<()> {
         .await
         {
             match e {
-                Ps3Error::Cancelled => break,
+                Ps3Error::Cancelled(_) => break,
                 Ps3Error::AlreadyDecrypted => {
                     info!("Skipped, already decrypted: {}", path.display());
                     tally.record_skipped();
@@ -561,7 +644,7 @@ pub async fn ps3_decrypt(run: &BatchRun<'_>, skip_probe: bool) -> Result<()> {
         }
         total_progress.advance(input_bytes);
     }
-    total_progress.finish();
+    total_progress.finish_bar();
     if cancel.is_cancelled() {
         return Ok(());
     }
@@ -592,8 +675,7 @@ pub async fn nds_crypt(run: &BatchRun<'_>, encrypt: bool) -> Result<()> {
         cancel,
     } = *run;
     use rom_converto_lib::nintendo::nds::{
-        NdsError, decrypt_nds_rom_cancellable, derive_decrypted_path, derive_encrypted_path,
-        encrypt_nds_rom_cancellable,
+        NdsError, decrypt_nds_rom, derive_decrypted_path, derive_encrypted_path, encrypt_nds_rom,
     };
 
     let operation = if encrypt { "encrypt" } else { "decrypt" };
@@ -620,68 +702,43 @@ pub async fn nds_crypt(run: &BatchRun<'_>, encrypt: bool) -> Result<()> {
         } else {
             derive_decrypted_path(&path)
         };
-        let output = match crate::util::batch_output(crate::util::BatchOutput {
-            input: &path,
-            derived: &derived,
-            input_dir,
-            output_dir,
-            output_template,
-            output_ext: "nds",
-            keys_path: None,
-            dry_run,
-        }) {
-            Ok(p) => p,
-            Err(e) => {
-                warn!("{e}");
-                tally.record_skipped();
-                records.push(skipped_record(&path, operation, Some(e.to_string())));
-                total_progress.advance(file_len(&path));
-                continue;
-            }
-        };
-        if !dry_run && let Some(parent) = output.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let decision = match resolve_output(&output, policy) {
-            Ok(d) => d,
-            Err(e) => {
-                warn!("{e}");
-                tally.record_skipped();
-                records.push(skipped_record(&path, operation, Some(e.to_string())));
-                total_progress.advance(file_len(&path));
-                continue;
-            }
-        };
-        if dry_run {
-            crate::dry_run::log_plan(operation, &path, &output, &decision, None, None);
-            crate::dry_run::record(&mut tally, &path, &decision);
-            records.push(crate::dry_run::report_record(
-                operation, &path, &output, &decision,
-            ));
-            total_progress.advance(file_len(&path));
+        let Some(output) = batch_file_output(
+            BatchFile {
+                operation,
+                input: &path,
+                derived,
+                input_dir,
+                output_dir,
+                output_template,
+                output_ext: "nds",
+                keys_path: None,
+                policy,
+                verify: crate::util::OutputVerify::None,
+                media: None,
+                dry_run,
+                cache: None,
+                cancel: cancel.clone(),
+            },
+            progress,
+            total_progress,
+            &mut tally,
+            &mut records,
+        )
+        .await?
+        else {
             continue;
-        }
-        let output = match decision {
-            WriteDecision::Write(p) => p,
-            WriteDecision::Skip => {
-                info!("Skipped, output exists: {}", output.display());
-                tally.record_skipped();
-                records.push(skipped_record(&path, operation, None));
-                total_progress.advance(file_len(&path));
-                continue;
-            }
         };
         let input_bytes = file_len(&path);
         let out_path = output.clone();
         let started = Instant::now();
         let result = if encrypt {
-            encrypt_nds_rom_cancellable(progress, path.clone(), output, true, cancel.clone()).await
+            encrypt_nds_rom(progress, path.clone(), output, true, cancel.clone()).await
         } else {
-            decrypt_nds_rom_cancellable(progress, path.clone(), output, true, cancel.clone()).await
+            decrypt_nds_rom(progress, path.clone(), output, true, cancel.clone()).await
         };
         if let Err(e) = result {
             match e {
-                NdsError::Cancelled => break,
+                NdsError::Cancelled(_) => break,
                 NdsError::AlreadyEncrypted
                 | NdsError::AlreadyDecrypted
                 | NdsError::NoSecureArea
@@ -710,7 +767,7 @@ pub async fn nds_crypt(run: &BatchRun<'_>, encrypt: bool) -> Result<()> {
         }
         total_progress.advance(input_bytes);
     }
-    total_progress.finish();
+    total_progress.finish_bar();
     if cancel.is_cancelled() {
         return Ok(());
     }
@@ -742,7 +799,7 @@ pub async fn cso_verify(
     let mut failed = 0usize;
     for path in files {
         let bytes = file_len(&path);
-        match verify_cso(progress, path.clone(), full).await {
+        match verify_cso(progress, path.clone(), full, CancelToken::new()).await {
             Ok(()) => {
                 ok += 1;
                 info!("[OK] {}", path.display());
@@ -754,7 +811,7 @@ pub async fn cso_verify(
         }
         total_progress.advance(bytes);
     }
-    total_progress.finish();
+    total_progress.finish_bar();
     finish_verify(VerifyTally { total, ok, failed })
 }
 
@@ -777,7 +834,7 @@ pub async fn rvz_compress(
         report_path,
         cancel,
     } = *run;
-    use rom_converto_lib::nintendo::rvz::{compress_disc_cancellable, derive_rvz_path};
+    use rom_converto_lib::nintendo::rvz::{compress_disc, derive_rvz_path};
 
     let files = collect_or_warn(input_dir, exts, max_depth)?;
     if files.is_empty() {
@@ -797,102 +854,36 @@ pub async fn rvz_compress(
         if cancel.is_cancelled() {
             break;
         }
-        let output = match crate::util::batch_output(crate::util::BatchOutput {
-            input: &path,
-            derived: &derive_rvz_path(&path),
-            input_dir,
-            output_dir,
-            output_template,
-            output_ext: "rvz",
-            keys_path: None,
-            dry_run,
-        }) {
-            Ok(p) => p,
-            Err(e) => {
-                warn!("{e}");
-                tally.record_skipped();
-                records.push(skipped_record(&path, "compress", Some(e.to_string())));
-                total_progress.advance(file_len(&path));
-                continue;
-            }
-        };
-        if !dry_run && let Some(parent) = output.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let decision = match resolve_output(&output, policy) {
-            Ok(d) => d,
-            Err(e) => {
-                warn!("{e}");
-                tally.record_skipped();
-                records.push(skipped_record(&path, "compress", Some(e.to_string())));
-                total_progress.advance(file_len(&path));
-                continue;
-            }
-        };
-        if dry_run {
-            dry_run_verify_record(
-                progress,
-                DryRunVerify {
-                    operation: "compress",
-                    input: &path,
-                    desired: &output,
-                    decision: &decision,
-                    policy,
-                    target: crate::util::OutputVerify::Rvz,
-                    media: Some("RVZ"),
-                },
-                &mut tally,
-                &mut records,
-            )
-            .await;
-            total_progress.advance(file_len(&path));
+        let Some(output) = batch_file_output(
+            BatchFile {
+                operation: "compress",
+                input: &path,
+                derived: derive_rvz_path(&path),
+                input_dir,
+                output_dir,
+                output_template,
+                output_ext: "rvz",
+                keys_path: None,
+                policy,
+                verify: crate::util::OutputVerify::Rvz,
+                media: Some("RVZ"),
+                dry_run,
+                cache: Some(cache),
+                cancel: cancel.clone(),
+            },
+            progress,
+            total_progress,
+            &mut tally,
+            &mut records,
+        )
+        .await?
+        else {
             continue;
-        }
-        let output = match decision {
-            WriteDecision::Write(p) => p,
-            WriteDecision::Skip if policy == ConflictPolicy::OverwriteInvalid => {
-                match crate::util::verify_existing_cached(
-                    cache,
-                    progress,
-                    &output,
-                    crate::util::OutputVerify::Rvz,
-                )
-                .await
-                {
-                    crate::util::VerifyOutcome::Valid => {
-                        info!("Kept, output verified valid: {}", output.display());
-                        tally.record_skipped();
-                        records.push(skipped_record(
-                            &path,
-                            "compress",
-                            Some("output verified valid".into()),
-                        ));
-                        total_progress.advance(file_len(&path));
-                        continue;
-                    }
-                    crate::util::VerifyOutcome::Invalid => {
-                        info!(
-                            "Rewriting, output failed verification: {}",
-                            output.display()
-                        );
-                        output
-                    }
-                }
-            }
-            WriteDecision::Skip => {
-                info!("Skipped, output exists: {}", output.display());
-                tally.record_skipped();
-                records.push(skipped_record(&path, "compress", None));
-                total_progress.advance(file_len(&path));
-                continue;
-            }
         };
         let input_bytes = file_len(&path);
         let started = Instant::now();
-        if let Err(e) =
-            compress_disc_cancellable(&path, &output, opts, progress, cancel.clone()).await
-        {
-            if matches!(e, rom_converto_lib::nintendo::rvz::RvzError::Cancelled) {
+        if let Err(e) = compress_disc(&path, &output, opts, progress, cancel.clone()).await {
+            if matches!(e, rom_converto_lib::nintendo::rvz::RvzError::Cancelled(_)) {
                 break;
             }
             warn!("Failed to compress {}: {e}", path.display());
@@ -912,7 +903,7 @@ pub async fn rvz_compress(
         }
         total_progress.advance(input_bytes);
     }
-    total_progress.finish();
+    total_progress.finish_bar();
     if cancel.is_cancelled() {
         return Ok(());
     }
@@ -939,7 +930,7 @@ pub async fn rvz_decompress(run: &BatchRun<'_>) -> Result<()> {
         report_path,
         cancel,
     } = *run;
-    use rom_converto_lib::nintendo::rvz::{decompress_disc_cancellable, derive_disc_path};
+    use rom_converto_lib::nintendo::rvz::{decompress_disc, derive_disc_path};
 
     let files = collect_or_warn(input_dir, &["rvz"], max_depth)?;
     if files.is_empty() {
@@ -959,65 +950,36 @@ pub async fn rvz_decompress(run: &BatchRun<'_>) -> Result<()> {
         if cancel.is_cancelled() {
             break;
         }
-        let output = match crate::util::batch_output(crate::util::BatchOutput {
-            input: &path,
-            derived: &derive_disc_path(&path),
-            input_dir,
-            output_dir,
-            output_template,
-            output_ext: "iso",
-            keys_path: None,
-            dry_run,
-        }) {
-            Ok(p) => p,
-            Err(e) => {
-                warn!("{e}");
-                tally.record_skipped();
-                records.push(skipped_record(&path, "decompress", Some(e.to_string())));
-                total_progress.advance(file_len(&path));
-                continue;
-            }
-        };
-        if !dry_run && let Some(parent) = output.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let decision = match resolve_output(&output, policy) {
-            Ok(d) => d,
-            Err(e) => {
-                warn!("{e}");
-                tally.record_skipped();
-                records.push(skipped_record(&path, "decompress", Some(e.to_string())));
-                total_progress.advance(file_len(&path));
-                continue;
-            }
-        };
-        if dry_run {
-            crate::dry_run::log_plan("decompress", &path, &output, &decision, None, None);
-            crate::dry_run::record(&mut tally, &path, &decision);
-            records.push(crate::dry_run::report_record(
-                "decompress",
-                &path,
-                &output,
-                &decision,
-            ));
-            total_progress.advance(file_len(&path));
+        let Some(output) = batch_file_output(
+            BatchFile {
+                operation: "decompress",
+                input: &path,
+                derived: derive_disc_path(&path),
+                input_dir,
+                output_dir,
+                output_template,
+                output_ext: "iso",
+                keys_path: None,
+                policy,
+                verify: crate::util::OutputVerify::None,
+                media: None,
+                dry_run,
+                cache: None,
+                cancel: cancel.clone(),
+            },
+            progress,
+            total_progress,
+            &mut tally,
+            &mut records,
+        )
+        .await?
+        else {
             continue;
-        }
-        let output = match decision {
-            WriteDecision::Write(p) => p,
-            WriteDecision::Skip => {
-                info!("Skipped, output exists: {}", output.display());
-                tally.record_skipped();
-                records.push(skipped_record(&path, "decompress", None));
-                total_progress.advance(file_len(&path));
-                continue;
-            }
         };
         let input_bytes = file_len(&path);
         let started = Instant::now();
-        if let Err(e) = decompress_disc_cancellable(&path, &output, progress, cancel.clone()).await
-        {
-            if matches!(e, rom_converto_lib::nintendo::rvz::RvzError::Cancelled) {
+        if let Err(e) = decompress_disc(&path, &output, progress, cancel.clone()).await {
+            if matches!(e, rom_converto_lib::nintendo::rvz::RvzError::Cancelled(_)) {
                 break;
             }
             warn!("Failed to decompress {}: {e}", path.display());
@@ -1037,7 +999,7 @@ pub async fn rvz_decompress(run: &BatchRun<'_>) -> Result<()> {
         }
         total_progress.advance(input_bytes);
     }
-    total_progress.finish();
+    total_progress.finish_bar();
     if cancel.is_cancelled() {
         return Ok(());
     }
@@ -1070,7 +1032,7 @@ pub async fn dol_verify(
     let mut failed = 0usize;
     for path in files {
         let bytes = file_len(&path);
-        match verify_dol(&path, &opts, progress) {
+        match verify_dol(&path, &opts, progress, &CancelToken::new()) {
             Ok(result) if result.ok => {
                 ok += 1;
                 info!("[OK] {}", path.display());
@@ -1086,7 +1048,7 @@ pub async fn dol_verify(
         }
         total_progress.advance(bytes);
     }
-    total_progress.finish();
+    total_progress.finish_bar();
     finish_verify(VerifyTally { total, ok, failed })
 }
 
@@ -1110,7 +1072,7 @@ pub async fn rvl_verify(
     let mut failed = 0usize;
     for path in files {
         let bytes = file_len(&path);
-        match verify_rvl(&path, &opts, progress) {
+        match verify_rvl(&path, &opts, progress, &CancelToken::new()) {
             Ok(result) if result.ok => {
                 ok += 1;
                 info!("[OK] {}", path.display());
@@ -1126,7 +1088,7 @@ pub async fn rvl_verify(
         }
         total_progress.advance(bytes);
     }
-    total_progress.finish();
+    total_progress.finish_bar();
     finish_verify(VerifyTally { total, ok, failed })
 }
 
@@ -1153,7 +1115,7 @@ pub async fn nx_compress(
     cache: &HashCache,
 ) -> Result<()> {
     use rom_converto_lib::nintendo::nx::{
-        NczMode, NxCompressOptions, compress_container_async_cancellable, derive_compressed_path,
+        NczMode, NxCompressOptions, compress_container_async, derive_compressed_path,
         detect_container,
     };
 
@@ -1207,104 +1169,43 @@ pub async fn nx_compress(
         } else if let Some(exp) = tuning.block_size_exp {
             opts.mode = NczMode::Block { size_exp: exp };
         }
-        let output = match crate::util::batch_output(crate::util::BatchOutput {
-            input: &path,
-            derived: &derive_compressed_path(&path),
-            input_dir,
-            output_dir: tuning.output_dir.as_deref(),
-            output_template: tuning.output_template.as_deref(),
-            output_ext: derive_compressed_path(&path)
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or(""),
-            keys_path: None,
-            dry_run,
-        }) {
-            Ok(p) => p,
-            Err(e) => {
-                warn!("{e}");
-                tally.record_skipped();
-                records.push(skipped_record(&path, "compress", Some(e.to_string())));
-                total_progress.advance(file_len(&path));
-                continue;
-            }
-        };
-        if !dry_run && let Some(parent) = output.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let decision = match resolve_output(&output, tuning.policy) {
-            Ok(d) => d,
-            Err(e) => {
-                warn!("{e}");
-                tally.record_skipped();
-                records.push(skipped_record(&path, "compress", Some(e.to_string())));
-                total_progress.advance(file_len(&path));
-                continue;
-            }
-        };
-        if dry_run {
-            let media = format!("{kind:?}");
-            dry_run_verify_record(
-                progress,
-                DryRunVerify {
-                    operation: "compress",
-                    input: &path,
-                    desired: &output,
-                    decision: &decision,
-                    policy: tuning.policy,
-                    target: crate::util::OutputVerify::Nx(Box::new(keys.clone())),
-                    media: Some(&media),
-                },
-                &mut tally,
-                &mut records,
-            )
-            .await;
-            total_progress.advance(file_len(&path));
+        let derived = derive_compressed_path(&path);
+        let output_ext = derived
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_string();
+        let media = format!("{kind:?}");
+        let Some(output) = batch_file_output(
+            BatchFile {
+                operation: "compress",
+                input: &path,
+                derived,
+                input_dir,
+                output_dir: tuning.output_dir.as_deref(),
+                output_template: tuning.output_template.as_deref(),
+                output_ext: &output_ext,
+                keys_path: None,
+                policy: tuning.policy,
+                verify: crate::util::OutputVerify::Nx(Box::new(keys.clone())),
+                media: Some(&media),
+                dry_run,
+                cache: Some(cache),
+                cancel: cancel.clone(),
+            },
+            progress,
+            total_progress,
+            &mut tally,
+            &mut records,
+        )
+        .await?
+        else {
             continue;
-        }
-        let output = match decision {
-            WriteDecision::Write(p) => p,
-            WriteDecision::Skip if tuning.policy == ConflictPolicy::OverwriteInvalid => {
-                match crate::util::verify_existing_cached(
-                    cache,
-                    progress,
-                    &output,
-                    crate::util::OutputVerify::Nx(Box::new(keys.clone())),
-                )
-                .await
-                {
-                    crate::util::VerifyOutcome::Valid => {
-                        info!("Kept, output verified valid: {}", output.display());
-                        tally.record_skipped();
-                        records.push(skipped_record(
-                            &path,
-                            "compress",
-                            Some("output verified valid".into()),
-                        ));
-                        total_progress.advance(file_len(&path));
-                        continue;
-                    }
-                    crate::util::VerifyOutcome::Invalid => {
-                        info!(
-                            "Rewriting, output failed verification: {}",
-                            output.display()
-                        );
-                        output
-                    }
-                }
-            }
-            WriteDecision::Skip => {
-                info!("Skipped, output exists: {}", output.display());
-                tally.record_skipped();
-                records.push(skipped_record(&path, "compress", None));
-                total_progress.advance(file_len(&path));
-                continue;
-            }
         };
         let input_bytes = file_len(&path);
         let out_path = output.clone();
         let started = Instant::now();
-        if let Err(e) = compress_container_async_cancellable(
+        if let Err(e) = compress_container_async(
             path.clone(),
             output,
             opts,
@@ -1314,7 +1215,7 @@ pub async fn nx_compress(
         )
         .await
         {
-            if matches!(e, rom_converto_lib::nintendo::nx::NxError::Cancelled) {
+            if matches!(e, rom_converto_lib::nintendo::nx::NxError::Cancelled(_)) {
                 break;
             }
             warn!("Failed to compress {}: {e}", path.display());
@@ -1334,7 +1235,7 @@ pub async fn nx_compress(
         }
         total_progress.advance(input_bytes);
     }
-    total_progress.finish();
+    total_progress.finish_bar();
     if cancel.is_cancelled() {
         return Ok(());
     }
@@ -1364,9 +1265,7 @@ pub async fn nx_decompress(
         report_path,
         cancel,
     } = *run;
-    use rom_converto_lib::nintendo::nx::{
-        decompress_container_async_cancellable, derive_decompressed_path,
-    };
+    use rom_converto_lib::nintendo::nx::{decompress_container_async, derive_decompressed_path};
 
     let files = collect_or_warn(input_dir, &["nsz", "xcz"], max_depth)?;
     if files.is_empty() {
@@ -1386,76 +1285,46 @@ pub async fn nx_decompress(
         if cancel.is_cancelled() {
             break;
         }
-        let output = match crate::util::batch_output(crate::util::BatchOutput {
-            input: &path,
-            derived: &derive_decompressed_path(&path),
-            input_dir,
-            output_dir,
-            output_template,
-            output_ext: derive_decompressed_path(&path)
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or(""),
-            keys_path: None,
-            dry_run,
-        }) {
-            Ok(p) => p,
-            Err(e) => {
-                warn!("{e}");
-                tally.record_skipped();
-                records.push(skipped_record(&path, "decompress", Some(e.to_string())));
-                total_progress.advance(file_len(&path));
-                continue;
-            }
-        };
-        if !dry_run && let Some(parent) = output.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let decision = match resolve_output(&output, policy) {
-            Ok(d) => d,
-            Err(e) => {
-                warn!("{e}");
-                tally.record_skipped();
-                records.push(skipped_record(&path, "decompress", Some(e.to_string())));
-                total_progress.advance(file_len(&path));
-                continue;
-            }
-        };
-        if dry_run {
-            crate::dry_run::log_plan("decompress", &path, &output, &decision, None, None);
-            crate::dry_run::record(&mut tally, &path, &decision);
-            records.push(crate::dry_run::report_record(
-                "decompress",
-                &path,
-                &output,
-                &decision,
-            ));
-            total_progress.advance(file_len(&path));
+        let derived = derive_decompressed_path(&path);
+        let output_ext = derived
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_string();
+        let Some(output) = batch_file_output(
+            BatchFile {
+                operation: "decompress",
+                input: &path,
+                derived,
+                input_dir,
+                output_dir,
+                output_template,
+                output_ext: &output_ext,
+                keys_path: None,
+                policy,
+                verify: crate::util::OutputVerify::None,
+                media: None,
+                dry_run,
+                cache: None,
+                cancel: cancel.clone(),
+            },
+            progress,
+            total_progress,
+            &mut tally,
+            &mut records,
+        )
+        .await?
+        else {
             continue;
-        }
-        let output = match decision {
-            WriteDecision::Write(p) => p,
-            WriteDecision::Skip => {
-                info!("Skipped, output exists: {}", output.display());
-                tally.record_skipped();
-                records.push(skipped_record(&path, "decompress", None));
-                total_progress.advance(file_len(&path));
-                continue;
-            }
         };
         let input_bytes = file_len(&path);
         let out_path = output.clone();
         let started = Instant::now();
-        if let Err(e) = decompress_container_async_cancellable(
-            path.clone(),
-            output,
-            keys.clone(),
-            progress,
-            cancel.clone(),
-        )
-        .await
+        if let Err(e) =
+            decompress_container_async(path.clone(), output, keys.clone(), progress, cancel.clone())
+                .await
         {
-            if matches!(e, rom_converto_lib::nintendo::nx::NxError::Cancelled) {
+            if matches!(e, rom_converto_lib::nintendo::nx::NxError::Cancelled(_)) {
                 break;
             }
             warn!("Failed to decompress {}: {e}", path.display());
@@ -1475,7 +1344,7 @@ pub async fn nx_decompress(
         }
         total_progress.advance(input_bytes);
     }
-    total_progress.finish();
+    total_progress.finish_bar();
     if cancel.is_cancelled() {
         return Ok(());
     }
@@ -1507,7 +1376,8 @@ pub async fn nx_verify(
     let mut failed = 0usize;
     for path in files {
         let bytes = file_len(&path);
-        match verify_container_async(path.clone(), keys.clone(), progress).await {
+        match verify_container_async(path.clone(), keys.clone(), progress, CancelToken::new()).await
+        {
             Ok(result) if result.ok => {
                 ok += 1;
                 info!("[OK] {}", path.display());
@@ -1523,7 +1393,7 @@ pub async fn nx_verify(
         }
         total_progress.advance(bytes);
     }
-    total_progress.finish();
+    total_progress.finish_bar();
     finish_verify(VerifyTally { total, ok, failed })
 }
 
@@ -1558,7 +1428,8 @@ pub async fn wup_verify(
 ) -> Result<()> {
     use rom_converto_lib::nintendo::wup::verify_wup_async;
 
-    let mut inputs = collect_files_with_exts(input_dir, &["wud", "wux"], max_depth)?;
+    let mut inputs =
+        collect_files_with_exts(input_dir, &["wud", "wux"], max_depth, &CancelToken::new())?;
     if let Ok(entries) = std::fs::read_dir(input_dir) {
         let mut dirs: Vec<PathBuf> = entries
             .flatten()
@@ -1590,7 +1461,7 @@ pub async fn wup_verify(
     let mut failed = 0usize;
     for path in inputs {
         let bytes = file_len(&path);
-        match verify_wup_async(path.clone(), None, progress).await {
+        match verify_wup_async(path.clone(), None, progress, CancelToken::new()).await {
             Ok(result) if result.ok => {
                 ok += 1;
                 info!("[OK] {}", path.display());
@@ -1606,7 +1477,7 @@ pub async fn wup_verify(
         }
         total_progress.advance(bytes);
     }
-    total_progress.finish();
+    total_progress.finish_bar();
     finish_verify(VerifyTally { total, ok, failed })
 }
 
@@ -1629,14 +1500,14 @@ pub async fn chd_compress(
         report_path,
         cancel,
     } = *run;
-    use rom_converto_lib::chd::convert_disc_to_chd_cancellable;
+    use rom_converto_lib::chd::convert_disc_to_chd;
 
     let files = collect_or_warn(input_dir, &["cue", "iso", "avi"], max_depth)?;
     if files.is_empty() {
         return Ok(());
     }
-    if files.iter().any(|p| crate::resolved_dvd_mode(mode, p)) {
-        crate::maybe_log_dvd_codec_tip(true, opts.codecs.is_some());
+    if files.iter().any(|p| resolved_dvd_mode(mode, p)) {
+        maybe_log_dvd_codec_tip(true, opts.codecs.is_some());
     }
     if !dry_run && !skip_space_check {
         space_preflight(&files, output_dir.unwrap_or(input_dir))?;
@@ -1653,101 +1524,37 @@ pub async fn chd_compress(
         if cancel.is_cancelled() {
             break;
         }
-        let output = match crate::util::batch_output(crate::util::BatchOutput {
-            input: &path,
-            derived: &path.with_extension("chd"),
-            input_dir,
-            output_dir,
-            output_template,
-            output_ext: "chd",
-            keys_path: None,
-            dry_run,
-        }) {
-            Ok(p) => p,
-            Err(e) => {
-                warn!("{e}");
-                tally.record_skipped();
-                records.push(skipped_record(&path, "compress", Some(e.to_string())));
-                total_progress.advance(file_len(&path));
-                continue;
-            }
-        };
-        if !dry_run && let Some(parent) = output.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let decision = match resolve_output(&output, policy) {
-            Ok(d) => d,
-            Err(e) => {
-                warn!("{e}");
-                tally.record_skipped();
-                records.push(skipped_record(&path, "compress", Some(e.to_string())));
-                total_progress.advance(file_len(&path));
-                continue;
-            }
-        };
-        if dry_run {
-            let media = crate::chd_media_label(&path);
-            dry_run_verify_record(
-                progress,
-                DryRunVerify {
-                    operation: "compress",
-                    input: &path,
-                    desired: &output,
-                    decision: &decision,
-                    policy,
-                    target: crate::util::OutputVerify::Chd,
-                    media: media.as_deref(),
-                },
-                &mut tally,
-                &mut records,
-            )
-            .await;
-            total_progress.advance(file_len(&path));
+        let media = chd_media_label(&path);
+        let Some(output) = batch_file_output(
+            BatchFile {
+                operation: "compress",
+                input: &path,
+                derived: path.with_extension("chd"),
+                input_dir,
+                output_dir,
+                output_template,
+                output_ext: "chd",
+                keys_path: None,
+                policy,
+                verify: crate::util::OutputVerify::Chd,
+                media: media.as_deref(),
+                dry_run,
+                cache: Some(cache),
+                cancel: cancel.clone(),
+            },
+            progress,
+            total_progress,
+            &mut tally,
+            &mut records,
+        )
+        .await?
+        else {
             continue;
-        }
-        let output = match decision {
-            WriteDecision::Write(p) => p,
-            WriteDecision::Skip if policy == ConflictPolicy::OverwriteInvalid => {
-                match crate::util::verify_existing_cached(
-                    cache,
-                    progress,
-                    &output,
-                    crate::util::OutputVerify::Chd,
-                )
-                .await
-                {
-                    crate::util::VerifyOutcome::Valid => {
-                        info!("Kept, output verified valid: {}", output.display());
-                        tally.record_skipped();
-                        records.push(skipped_record(
-                            &path,
-                            "compress",
-                            Some("output verified valid".into()),
-                        ));
-                        total_progress.advance(file_len(&path));
-                        continue;
-                    }
-                    crate::util::VerifyOutcome::Invalid => {
-                        info!(
-                            "Rewriting, output failed verification: {}",
-                            output.display()
-                        );
-                        output
-                    }
-                }
-            }
-            WriteDecision::Skip => {
-                info!("Skipped, output exists: {}", output.display());
-                tally.record_skipped();
-                records.push(skipped_record(&path, "compress", None));
-                total_progress.advance(file_len(&path));
-                continue;
-            }
         };
         let input_bytes = file_len(&path);
         let out_path = output.clone();
         let started = Instant::now();
-        if let Err(e) = convert_disc_to_chd_cancellable(
+        if let Err(e) = convert_disc_to_chd(
             progress,
             path.clone(),
             output,
@@ -1757,7 +1564,7 @@ pub async fn chd_compress(
         )
         .await
         {
-            if matches!(e, rom_converto_lib::chd::error::ChdError::Cancelled) {
+            if matches!(e, rom_converto_lib::chd::error::ChdError::Cancelled(_)) {
                 break;
             }
             warn!("Failed to compress {}: {e}", path.display());
@@ -1777,7 +1584,7 @@ pub async fn chd_compress(
         }
         total_progress.advance(input_bytes);
     }
-    total_progress.finish();
+    total_progress.finish_bar();
     if cancel.is_cancelled() {
         return Ok(());
     }
@@ -1804,7 +1611,7 @@ pub async fn chd_extract(run: &BatchRun<'_>, parent: Option<PathBuf>) -> Result<
         report_path,
         cancel,
     } = *run;
-    use rom_converto_lib::chd::extract_from_chd_cancellable;
+    use rom_converto_lib::chd::extract_from_chd;
 
     let files = collect_or_warn(input_dir, &["chd"], max_depth)?;
     if files.is_empty() {
@@ -1824,69 +1631,36 @@ pub async fn chd_extract(run: &BatchRun<'_>, parent: Option<PathBuf>) -> Result<
         if cancel.is_cancelled() {
             break;
         }
-        let output = match crate::util::batch_output(crate::util::BatchOutput {
-            input: &path,
-            derived: &path.with_extension(""),
-            input_dir,
-            output_dir,
-            output_template,
-            output_ext: "iso",
-            keys_path: None,
-            dry_run,
-        }) {
-            Ok(p) => p,
-            Err(e) => {
-                warn!("{e}");
-                tally.record_skipped();
-                records.push(skipped_record(&path, "extract", Some(e.to_string())));
-                total_progress.advance(file_len(&path));
-                continue;
-            }
-        };
-        if !dry_run && let Some(p) = output.parent() {
-            std::fs::create_dir_all(p)?;
-        }
-        let decision = match resolve_output(&output, policy) {
-            Ok(d) => d,
-            Err(e) => {
-                warn!("{e}");
-                tally.record_skipped();
-                records.push(skipped_record(&path, "extract", Some(e.to_string())));
-                total_progress.advance(file_len(&path));
-                continue;
-            }
-        };
-        if dry_run {
-            crate::dry_run::log_plan("extract", &path, &output, &decision, None, None);
-            crate::dry_run::record(&mut tally, &path, &decision);
-            records.push(crate::dry_run::report_record(
-                "extract", &path, &output, &decision,
-            ));
-            total_progress.advance(file_len(&path));
+        let Some(output) = batch_file_output(
+            BatchFile {
+                operation: "extract",
+                input: &path,
+                derived: path.with_extension(""),
+                input_dir,
+                output_dir,
+                output_template,
+                output_ext: "iso",
+                keys_path: None,
+                policy,
+                verify: crate::util::OutputVerify::None,
+                media: None,
+                dry_run,
+                cache: None,
+                cancel: cancel.clone(),
+            },
+            progress,
+            total_progress,
+            &mut tally,
+            &mut records,
+        )
+        .await?
+        else {
             continue;
-        }
-        let output = match decision {
-            WriteDecision::Write(p) => p,
-            WriteDecision::Skip => {
-                if policy == ConflictPolicy::OverwriteInvalid {
-                    crate::util::verify_existing_output(
-                        progress,
-                        &output,
-                        crate::util::OutputVerify::None,
-                    )
-                    .await;
-                }
-                info!("Skipped, output exists: {}", output.display());
-                tally.record_skipped();
-                records.push(skipped_record(&path, "extract", None));
-                total_progress.advance(file_len(&path));
-                continue;
-            }
         };
         let input_bytes = file_len(&path);
         let out_path = output.clone();
         let started = Instant::now();
-        if let Err(e) = extract_from_chd_cancellable(
+        if let Err(e) = extract_from_chd(
             progress,
             path.clone(),
             output,
@@ -1895,7 +1669,7 @@ pub async fn chd_extract(run: &BatchRun<'_>, parent: Option<PathBuf>) -> Result<
         )
         .await
         {
-            if matches!(e, rom_converto_lib::chd::error::ChdError::Cancelled) {
+            if matches!(e, rom_converto_lib::chd::error::ChdError::Cancelled(_)) {
                 break;
             }
             warn!("Failed to extract {}: {e}", path.display());
@@ -1907,7 +1681,7 @@ pub async fn chd_extract(run: &BatchRun<'_>, parent: Option<PathBuf>) -> Result<
         }
         total_progress.advance(input_bytes);
     }
-    total_progress.finish();
+    total_progress.finish_bar();
     if cancel.is_cancelled() {
         return Ok(());
     }
@@ -1938,7 +1712,7 @@ pub async fn cso_compress(
         report_path,
         cancel,
     } = *run;
-    use rom_converto_lib::cso::compress_to_cso_cancellable;
+    use rom_converto_lib::cso::compress_to_cso;
 
     let ext = opts.format.extension();
     let media = opts.format.name();
@@ -1961,109 +1735,39 @@ pub async fn cso_compress(
         if cancel.is_cancelled() {
             break;
         }
-        let output = match crate::util::batch_output(crate::util::BatchOutput {
-            input: &path,
-            derived: &path.with_extension(ext),
-            input_dir,
-            output_dir,
-            output_template,
-            output_ext: ext,
-            keys_path: None,
-            dry_run,
-        }) {
-            Ok(p) => p,
-            Err(e) => {
-                warn!("{e}");
-                tally.record_skipped();
-                records.push(skipped_record(&path, "compress", Some(e.to_string())));
-                total_progress.advance(file_len(&path));
-                continue;
-            }
-        };
-        if !dry_run && let Some(parent) = output.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let decision = match resolve_output(&output, policy) {
-            Ok(d) => d,
-            Err(e) => {
-                warn!("{e}");
-                tally.record_skipped();
-                records.push(skipped_record(&path, "compress", Some(e.to_string())));
-                total_progress.advance(file_len(&path));
-                continue;
-            }
-        };
-        if dry_run {
-            dry_run_verify_record(
-                progress,
-                DryRunVerify {
-                    operation: "compress",
-                    input: &path,
-                    desired: &output,
-                    decision: &decision,
-                    policy,
-                    target: crate::util::OutputVerify::Cso,
-                    media: Some(media),
-                },
-                &mut tally,
-                &mut records,
-            )
-            .await;
-            total_progress.advance(file_len(&path));
+        let Some(output) = batch_file_output(
+            BatchFile {
+                operation: "compress",
+                input: &path,
+                derived: path.with_extension(ext),
+                input_dir,
+                output_dir,
+                output_template,
+                output_ext: ext,
+                keys_path: None,
+                policy,
+                verify: crate::util::OutputVerify::Cso,
+                media: Some(media),
+                dry_run,
+                cache: Some(cache),
+                cancel: cancel.clone(),
+            },
+            progress,
+            total_progress,
+            &mut tally,
+            &mut records,
+        )
+        .await?
+        else {
             continue;
-        }
-        let output = match decision {
-            WriteDecision::Write(p) => p,
-            WriteDecision::Skip if policy == ConflictPolicy::OverwriteInvalid => {
-                match crate::util::verify_existing_cached(
-                    cache,
-                    progress,
-                    &output,
-                    crate::util::OutputVerify::Cso,
-                )
-                .await
-                {
-                    crate::util::VerifyOutcome::Valid => {
-                        info!("Kept, output verified valid: {}", output.display());
-                        tally.record_skipped();
-                        records.push(skipped_record(
-                            &path,
-                            "compress",
-                            Some("output verified valid".into()),
-                        ));
-                        total_progress.advance(file_len(&path));
-                        continue;
-                    }
-                    crate::util::VerifyOutcome::Invalid => {
-                        info!(
-                            "Rewriting, output failed verification: {}",
-                            output.display()
-                        );
-                        output
-                    }
-                }
-            }
-            WriteDecision::Skip => {
-                info!("Skipped, output exists: {}", output.display());
-                tally.record_skipped();
-                records.push(skipped_record(&path, "compress", None));
-                total_progress.advance(file_len(&path));
-                continue;
-            }
         };
         let input_bytes = file_len(&path);
         let out_path = output.clone();
         let started = Instant::now();
-        if let Err(e) = compress_to_cso_cancellable(
-            progress,
-            path.clone(),
-            output,
-            opts.clone(),
-            cancel.clone(),
-        )
-        .await
+        if let Err(e) =
+            compress_to_cso(progress, path.clone(), output, opts.clone(), cancel.clone()).await
         {
-            if matches!(e, rom_converto_lib::cso::CsoError::Cancelled) {
+            if matches!(e, rom_converto_lib::cso::CsoError::Cancelled(_)) {
                 break;
             }
             warn!("Failed to compress {}: {e}", path.display());
@@ -2083,7 +1787,7 @@ pub async fn cso_compress(
         }
         total_progress.advance(input_bytes);
     }
-    total_progress.finish();
+    total_progress.finish_bar();
     if cancel.is_cancelled() {
         return Ok(());
     }
@@ -2132,14 +1836,14 @@ pub async fn cso_to_chd(
         report_path,
         cancel,
     } = *run;
-    use rom_converto_lib::pipeline::cso_to_chd_cancellable;
+    use rom_converto_lib::pipeline::cso_to_chd;
 
     let files = collect_or_warn(input_dir, &["cso", "zso", "dax"], max_depth)?;
     if files.is_empty() {
         return Ok(());
     }
     if mode == Some(rom_converto_lib::chd::DiscMode::Dvd) {
-        crate::maybe_log_dvd_codec_tip(true, opts.codecs.is_some());
+        maybe_log_dvd_codec_tip(true, opts.codecs.is_some());
     }
     if !dry_run && !skip_space_check {
         let required: u64 = files.iter().map(|p| cso_uncompressed_size(p)).sum();
@@ -2157,100 +1861,36 @@ pub async fn cso_to_chd(
         if cancel.is_cancelled() {
             break;
         }
-        let output = match crate::util::batch_output(crate::util::BatchOutput {
-            input: &path,
-            derived: &path.with_extension("chd"),
-            input_dir,
-            output_dir,
-            output_template,
-            output_ext: "chd",
-            keys_path: None,
-            dry_run,
-        }) {
-            Ok(p) => p,
-            Err(e) => {
-                warn!("{e}");
-                tally.record_skipped();
-                records.push(skipped_record(&path, "compress", Some(e.to_string())));
-                total_progress.advance(file_len(&path));
-                continue;
-            }
-        };
-        if !dry_run && let Some(parent) = output.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let decision = match resolve_output(&output, policy) {
-            Ok(d) => d,
-            Err(e) => {
-                warn!("{e}");
-                tally.record_skipped();
-                records.push(skipped_record(&path, "compress", Some(e.to_string())));
-                total_progress.advance(file_len(&path));
-                continue;
-            }
-        };
-        if dry_run {
-            dry_run_verify_record(
-                progress,
-                DryRunVerify {
-                    operation: "compress",
-                    input: &path,
-                    desired: &output,
-                    decision: &decision,
-                    policy,
-                    target: crate::util::OutputVerify::Chd,
-                    media: None,
-                },
-                &mut tally,
-                &mut records,
-            )
-            .await;
-            total_progress.advance(file_len(&path));
+        let Some(output) = batch_file_output(
+            BatchFile {
+                operation: "compress",
+                input: &path,
+                derived: path.with_extension("chd"),
+                input_dir,
+                output_dir,
+                output_template,
+                output_ext: "chd",
+                keys_path: None,
+                policy,
+                verify: crate::util::OutputVerify::Chd,
+                media: None,
+                dry_run,
+                cache: Some(cache),
+                cancel: cancel.clone(),
+            },
+            progress,
+            total_progress,
+            &mut tally,
+            &mut records,
+        )
+        .await?
+        else {
             continue;
-        }
-        let output = match decision {
-            WriteDecision::Write(p) => p,
-            WriteDecision::Skip if policy == ConflictPolicy::OverwriteInvalid => {
-                match crate::util::verify_existing_cached(
-                    cache,
-                    progress,
-                    &output,
-                    crate::util::OutputVerify::Chd,
-                )
-                .await
-                {
-                    crate::util::VerifyOutcome::Valid => {
-                        info!("Kept, output verified valid: {}", output.display());
-                        tally.record_skipped();
-                        records.push(skipped_record(
-                            &path,
-                            "compress",
-                            Some("output verified valid".into()),
-                        ));
-                        total_progress.advance(file_len(&path));
-                        continue;
-                    }
-                    crate::util::VerifyOutcome::Invalid => {
-                        info!(
-                            "Rewriting, output failed verification: {}",
-                            output.display()
-                        );
-                        output
-                    }
-                }
-            }
-            WriteDecision::Skip => {
-                info!("Skipped, output exists: {}", output.display());
-                tally.record_skipped();
-                records.push(skipped_record(&path, "compress", None));
-                total_progress.advance(file_len(&path));
-                continue;
-            }
         };
         let input_bytes = file_len(&path);
         let out_path = output.clone();
         let started = Instant::now();
-        if let Err(e) = cso_to_chd_cancellable(
+        if let Err(e) = cso_to_chd(
             progress,
             path.clone(),
             output,
@@ -2260,7 +1900,7 @@ pub async fn cso_to_chd(
         )
         .await
         {
-            if crate::is_cancelled_error(&e) {
+            if rom_converto_lib::runner::is_cancelled_error(&e) {
                 break;
             }
             warn!("Failed to compress {}: {e}", path.display());
@@ -2280,7 +1920,7 @@ pub async fn cso_to_chd(
         }
         total_progress.advance(input_bytes);
     }
-    total_progress.finish();
+    total_progress.finish_bar();
     if cancel.is_cancelled() {
         return Ok(());
     }
@@ -2311,7 +1951,7 @@ pub async fn chd_to_cso(
         report_path,
         cancel,
     } = *run;
-    use rom_converto_lib::pipeline::chd_to_cso_cancellable;
+    use rom_converto_lib::pipeline::chd_to_cso;
 
     let ext = opts.format.extension();
     let files = collect_or_warn(input_dir, &["chd"], max_depth)?;
@@ -2334,104 +1974,39 @@ pub async fn chd_to_cso(
         if cancel.is_cancelled() {
             break;
         }
-        let output = match crate::util::batch_output(crate::util::BatchOutput {
-            input: &path,
-            derived: &path.with_extension(ext),
-            input_dir,
-            output_dir,
-            output_template,
-            output_ext: ext,
-            keys_path: None,
-            dry_run,
-        }) {
-            Ok(p) => p,
-            Err(e) => {
-                warn!("{e}");
-                tally.record_skipped();
-                records.push(skipped_record(&path, "compress", Some(e.to_string())));
-                total_progress.advance(file_len(&path));
-                continue;
-            }
-        };
-        if !dry_run && let Some(parent) = output.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let decision = match resolve_output(&output, policy) {
-            Ok(d) => d,
-            Err(e) => {
-                warn!("{e}");
-                tally.record_skipped();
-                records.push(skipped_record(&path, "compress", Some(e.to_string())));
-                total_progress.advance(file_len(&path));
-                continue;
-            }
-        };
-        if dry_run {
-            dry_run_verify_record(
-                progress,
-                DryRunVerify {
-                    operation: "compress",
-                    input: &path,
-                    desired: &output,
-                    decision: &decision,
-                    policy,
-                    target: crate::util::OutputVerify::Cso,
-                    media: None,
-                },
-                &mut tally,
-                &mut records,
-            )
-            .await;
-            total_progress.advance(file_len(&path));
+        let Some(output) = batch_file_output(
+            BatchFile {
+                operation: "compress",
+                input: &path,
+                derived: path.with_extension(ext),
+                input_dir,
+                output_dir,
+                output_template,
+                output_ext: ext,
+                keys_path: None,
+                policy,
+                verify: crate::util::OutputVerify::Cso,
+                media: None,
+                dry_run,
+                cache: Some(cache),
+                cancel: cancel.clone(),
+            },
+            progress,
+            total_progress,
+            &mut tally,
+            &mut records,
+        )
+        .await?
+        else {
             continue;
-        }
-        let output = match decision {
-            WriteDecision::Write(p) => p,
-            WriteDecision::Skip if policy == ConflictPolicy::OverwriteInvalid => {
-                match crate::util::verify_existing_cached(
-                    cache,
-                    progress,
-                    &output,
-                    crate::util::OutputVerify::Cso,
-                )
-                .await
-                {
-                    crate::util::VerifyOutcome::Valid => {
-                        info!("Kept, output verified valid: {}", output.display());
-                        tally.record_skipped();
-                        records.push(skipped_record(
-                            &path,
-                            "compress",
-                            Some("output verified valid".into()),
-                        ));
-                        total_progress.advance(file_len(&path));
-                        continue;
-                    }
-                    crate::util::VerifyOutcome::Invalid => {
-                        info!(
-                            "Rewriting, output failed verification: {}",
-                            output.display()
-                        );
-                        output
-                    }
-                }
-            }
-            WriteDecision::Skip => {
-                info!("Skipped, output exists: {}", output.display());
-                tally.record_skipped();
-                records.push(skipped_record(&path, "compress", None));
-                total_progress.advance(file_len(&path));
-                continue;
-            }
         };
         let input_bytes = file_len(&path);
         let out_path = output.clone();
         let started = Instant::now();
         if let Err(e) =
-            chd_to_cso_cancellable(progress, path.clone(), output, opts.clone(), cancel.clone())
-                .await
+            chd_to_cso(progress, path.clone(), output, opts.clone(), cancel.clone()).await
         {
-            if crate::is_cancelled_error(&e) {
+            if rom_converto_lib::runner::is_cancelled_error(&e) {
                 break;
             }
             warn!("Failed to compress {}: {e}", path.display());
@@ -2451,7 +2026,7 @@ pub async fn chd_to_cso(
         }
         total_progress.advance(input_bytes);
     }
-    total_progress.finish();
+    total_progress.finish_bar();
     if cancel.is_cancelled() {
         return Ok(());
     }
@@ -2513,56 +2088,31 @@ pub async fn cue_to_iso(run: &BatchRun<'_>) -> Result<()> {
         if cancel.is_cancelled() {
             break;
         }
-        let output = match crate::util::batch_output(crate::util::BatchOutput {
-            input: &path,
-            derived: &path.with_extension("iso"),
-            input_dir,
-            output_dir,
-            output_template,
-            output_ext: "iso",
-            keys_path: None,
-            dry_run,
-        }) {
-            Ok(p) => p,
-            Err(e) => {
-                warn!("{e}");
-                tally.record_skipped();
-                records.push(skipped_record(&path, "to-iso", Some(e.to_string())));
-                total_progress.advance(input_bytes);
-                continue;
-            }
-        };
-        if !dry_run && let Some(parent) = output.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let decision = match resolve_output(&output, policy) {
-            Ok(d) => d,
-            Err(e) => {
-                warn!("{e}");
-                tally.record_skipped();
-                records.push(skipped_record(&path, "to-iso", Some(e.to_string())));
-                total_progress.advance(input_bytes);
-                continue;
-            }
-        };
-        if dry_run {
-            crate::dry_run::log_plan("to-iso", &path, &output, &decision, None, None);
-            crate::dry_run::record(&mut tally, &path, &decision);
-            records.push(crate::dry_run::report_record(
-                "to-iso", &path, &output, &decision,
-            ));
-            total_progress.advance(input_bytes);
+        let Some(output) = batch_file_output(
+            BatchFile {
+                operation: "to-iso",
+                input: &path,
+                derived: path.with_extension("iso"),
+                input_dir,
+                output_dir,
+                output_template,
+                output_ext: "iso",
+                keys_path: None,
+                policy,
+                verify: crate::util::OutputVerify::None,
+                media: None,
+                dry_run,
+                cache: None,
+                cancel: cancel.clone(),
+            },
+            progress,
+            total_progress,
+            &mut tally,
+            &mut records,
+        )
+        .await?
+        else {
             continue;
-        }
-        let output = match decision {
-            WriteDecision::Write(p) => p,
-            WriteDecision::Skip => {
-                info!("Skipped, output exists: {}", output.display());
-                tally.record_skipped();
-                records.push(skipped_record(&path, "to-iso", None));
-                total_progress.advance(input_bytes);
-                continue;
-            }
         };
         let out_path = output.clone();
         let started = Instant::now();
@@ -2586,7 +2136,7 @@ pub async fn cue_to_iso(run: &BatchRun<'_>) -> Result<()> {
         }
         total_progress.advance(input_bytes);
     }
-    total_progress.finish();
+    total_progress.finish_bar();
     if cancel.is_cancelled() {
         return Ok(());
     }
@@ -2643,95 +2193,31 @@ pub async fn cue_to_cso(
         if cancel.is_cancelled() {
             break;
         }
-        let output = match crate::util::batch_output(crate::util::BatchOutput {
-            input: &path,
-            derived: &path.with_extension(ext),
-            input_dir,
-            output_dir,
-            output_template,
-            output_ext: ext,
-            keys_path: None,
-            dry_run,
-        }) {
-            Ok(p) => p,
-            Err(e) => {
-                warn!("{e}");
-                tally.record_skipped();
-                records.push(skipped_record(&path, "to-cso", Some(e.to_string())));
-                total_progress.advance(input_bytes);
-                continue;
-            }
-        };
-        if !dry_run && let Some(parent) = output.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let decision = match resolve_output(&output, policy) {
-            Ok(d) => d,
-            Err(e) => {
-                warn!("{e}");
-                tally.record_skipped();
-                records.push(skipped_record(&path, "to-cso", Some(e.to_string())));
-                total_progress.advance(input_bytes);
-                continue;
-            }
-        };
-        if dry_run {
-            dry_run_verify_record(
-                progress,
-                DryRunVerify {
-                    operation: "to-cso",
-                    input: &path,
-                    desired: &output,
-                    decision: &decision,
-                    policy,
-                    target: crate::util::OutputVerify::Cso,
-                    media: None,
-                },
-                &mut tally,
-                &mut records,
-            )
-            .await;
-            total_progress.advance(input_bytes);
+        let Some(output) = batch_file_output(
+            BatchFile {
+                operation: "to-cso",
+                input: &path,
+                derived: path.with_extension(ext),
+                input_dir,
+                output_dir,
+                output_template,
+                output_ext: ext,
+                keys_path: None,
+                policy,
+                verify: crate::util::OutputVerify::Cso,
+                media: None,
+                dry_run,
+                cache: Some(cache),
+                cancel: cancel.clone(),
+            },
+            progress,
+            total_progress,
+            &mut tally,
+            &mut records,
+        )
+        .await?
+        else {
             continue;
-        }
-        let output = match decision {
-            WriteDecision::Write(p) => p,
-            WriteDecision::Skip if policy == ConflictPolicy::OverwriteInvalid => {
-                match crate::util::verify_existing_cached(
-                    cache,
-                    progress,
-                    &output,
-                    crate::util::OutputVerify::Cso,
-                )
-                .await
-                {
-                    crate::util::VerifyOutcome::Valid => {
-                        info!("Kept, output verified valid: {}", output.display());
-                        tally.record_skipped();
-                        records.push(skipped_record(
-                            &path,
-                            "to-cso",
-                            Some("output verified valid".into()),
-                        ));
-                        total_progress.advance(input_bytes);
-                        continue;
-                    }
-                    crate::util::VerifyOutcome::Invalid => {
-                        info!(
-                            "Rewriting, output failed verification: {}",
-                            output.display()
-                        );
-                        output
-                    }
-                }
-            }
-            WriteDecision::Skip => {
-                info!("Skipped, output exists: {}", output.display());
-                tally.record_skipped();
-                records.push(skipped_record(&path, "to-cso", None));
-                total_progress.advance(input_bytes);
-                continue;
-            }
         };
         let out_path = output.clone();
         let started = Instant::now();
@@ -2756,7 +2242,7 @@ pub async fn cue_to_cso(
         }
         total_progress.advance(input_bytes);
     }
-    total_progress.finish();
+    total_progress.finish_bar();
     if cancel.is_cancelled() {
         return Ok(());
     }
@@ -2810,7 +2296,7 @@ pub async fn hash_batch(
     report_path: Option<&Path>,
     cache: &HashCache,
 ) -> Result<()> {
-    let files = collect_all_files(input_dir, max_depth)?;
+    let files = collect_all_files(input_dir, max_depth, &CancelToken::new())?;
     if files.is_empty() {
         warn!("No files found in {}", input_dir.display());
         return Ok(());
@@ -2825,7 +2311,7 @@ pub async fn hash_batch(
         let hashed = match cache.lookup_raw(&path, algos) {
             Some(d) => Ok(d),
             None => {
-                let computed = hash_file(&path, algos, progress);
+                let computed = hash_file(&path, algos, progress, &CancelToken::new());
                 if let Ok(d) = &computed {
                     cache.store_raw(&path, d);
                 }
@@ -2834,7 +2320,7 @@ pub async fn hash_batch(
         };
         match hashed {
             Ok(d) => {
-                crate::print_hash_row(&path, &d, algos);
+                print_hash_row(&path, &d, algos);
                 tally.record_ok(d.size_bytes, 0, started.elapsed());
                 records.push(hash_ok_record(&path, &d, started));
             }
@@ -2846,7 +2332,7 @@ pub async fn hash_batch(
         }
         total_progress.advance(bytes);
     }
-    total_progress.finish();
+    total_progress.finish_bar();
     info!("{}", tally.summary_line(TallyDirection::CountOnly));
     // Hashing is read-only diagnostics, so a per-file read failure must not
     // abort the run: it is recorded and the run continues. The report is still
@@ -2857,6 +2343,7 @@ pub async fn hash_batch(
             &records,
             &totals_from(&tally),
             ReportFormat::from_path(path),
+            &CancelToken::new(),
         )?;
     }
     Ok(())
@@ -2902,7 +2389,7 @@ impl DatUnit {
 /// grouped bins plus report-ish sidecar files from the flat list. Bins with no
 /// owning cue stay as standalone File units.
 async fn dat_collect(input_dir: &Path, max_depth: Option<usize>) -> Result<Vec<DatUnit>> {
-    let files = collect_all_files(input_dir, max_depth)?;
+    let files = collect_all_files(input_dir, max_depth, &CancelToken::new())?;
     let mut cues: Vec<PathBuf> = Vec::new();
     let mut others: Vec<PathBuf> = Vec::new();
     for f in files {
@@ -3022,11 +2509,11 @@ fn digest_cue_set(
     let mut whole_size: u64 = 0;
     for (i, bin) in set.bins.iter().enumerate() {
         if cancel.is_cancelled() {
-            return Err(DatError::Cancelled);
+            return Err(Cancelled.into());
         }
-        let digests = hash_file_cancellable(bin, algos, progress, cancel).map_err(|e| {
+        let digests = hash_file(bin, algos, progress, cancel).map_err(|e| {
             if e.kind() == std::io::ErrorKind::Interrupted {
-                DatError::Cancelled
+                DatError::Cancelled(Cancelled)
             } else {
                 DatError::IoError(e)
             }
@@ -3059,7 +2546,7 @@ fn fold_file(path: &Path, hasher: &mut MultiHasher, cancel: &CancelToken) -> Dat
             break;
         }
         if cancel.is_cancelled() {
-            return Err(DatError::Cancelled);
+            return Err(Cancelled.into());
         }
         hasher.update(&buf[..n]);
     }
@@ -3413,7 +2900,7 @@ pub struct DatBulkRun<'a> {
 /// cancellation errors are distinguished from a plain per-file failure.
 fn digest_bucket(e: DatError) -> DatResult<(DatVerdict, String)> {
     match e {
-        DatError::Cancelled => Err(DatError::Cancelled),
+        DatError::Cancelled(_) => Err(Cancelled.into()),
         DatError::Transport(_) => Err(e),
         DatError::UnsupportedInnerHash { .. } => Ok((DatVerdict::Unsupported, e.to_string())),
         other => Ok((DatVerdict::Failed, other.to_string())),
@@ -3552,7 +3039,7 @@ pub async fn dat_verify_single(run: &DatRun<'_>, input: &Path) -> Result<()> {
         print_verdict(input, &outcome);
         dat_record(input, &outcome, FileStatus::Ok, started)
     } else {
-        let resolved_input = resolve_input(input, crate::ALL_IMAGE_EXTS)?;
+        let resolved_input = resolve_input(input, ALL_IMAGE_EXTS)?;
         let unit = DatUnit::File(resolved_input.path().to_path_buf());
         let resolved =
             digest_and_resolve_verify(&client, &unit, algos, bounds, progress, cancel, cache).await;
@@ -3601,6 +3088,7 @@ pub async fn dat_verify_single(run: &DatRun<'_>, input: &Path) -> Result<()> {
             &records,
             &dat_totals(&records, started.elapsed()),
             ReportFormat::from_path(path),
+            &CancelToken::new(),
         )?;
     }
     Ok(())
@@ -3667,7 +3155,7 @@ pub async fn dat_verify_batch(
         }
         total_progress.advance(unit_bytes(unit));
     }
-    total_progress.finish();
+    total_progress.finish_bar();
     info!("{verified} verified, {hints} hint");
     if unsupported > 0 {
         warn!("{NX_DAT_UNSUPPORTED_HINT}");
@@ -3678,6 +3166,7 @@ pub async fn dat_verify_batch(
             &records,
             &dat_totals(&records, started.elapsed()),
             ReportFormat::from_path(path),
+            &CancelToken::new(),
         )?;
     }
     Ok(())
@@ -3835,7 +3324,7 @@ async fn digest_scan_units(
     let mut out = Vec::with_capacity(units.len());
     for (i, unit) in units.iter().enumerate() {
         if cancel.is_cancelled() {
-            return Err(DatError::Cancelled);
+            return Err(Cancelled.into());
         }
         let quick_digest = quick_scan_digest(unit, quick, cache);
         let is_quick = quick_digest.is_some();
@@ -3859,7 +3348,7 @@ async fn digest_scan_units(
         }
         total_progress.advance(unit_bytes(unit));
     }
-    total_progress.finish();
+    total_progress.finish_bar();
     Ok(out)
 }
 
@@ -3867,7 +3356,7 @@ async fn digest_scan_units(
 /// Some(msg) means a plain per-file failure; transport/cancel propagate.
 fn digest_bucket_dat(e: DatError) -> DatResult<Option<String>> {
     match e {
-        DatError::Cancelled => Err(DatError::Cancelled),
+        DatError::Cancelled(_) => Err(Cancelled.into()),
         DatError::Transport(_) => Err(e),
         DatError::UnsupportedInnerHash { .. } => Ok(None),
         other => Ok(Some(other.to_string())),
@@ -3952,7 +3441,7 @@ pub async fn dat_scan(
                 continue;
             }
             if cancel.is_cancelled() {
-                return Err(DatError::Cancelled.into());
+                return Err(Cancelled.into());
             }
             match digest_unit(&units[unit_index], algos, progress, cancel, cache).await {
                 Ok(full_digests) => {
@@ -4073,6 +3562,7 @@ pub async fn dat_scan(
             &records,
             &dat_totals(&records, started.elapsed()),
             ReportFormat::from_path(path),
+            &CancelToken::new(),
         )?;
     }
     Ok(())
@@ -4207,7 +3697,7 @@ pub async fn dat_rename(
     let mut records: Vec<DatReportRecord> = Vec::new();
     for unit in &units {
         if cancel.is_cancelled() {
-            return Err(DatError::Cancelled.into());
+            return Err(Cancelled.into());
         }
         let path = unit.display_path();
         if let DatUnit::CueSet(_) = unit {
@@ -4251,7 +3741,7 @@ pub async fn dat_rename(
         }
         total_progress.advance(unit_bytes(unit));
     }
-    total_progress.finish();
+    total_progress.finish_bar();
 
     progress.set_phase("Querying Playmatch");
     let bulk = client.identify_bulk_relations(items, cancel).await?;
@@ -4285,6 +3775,7 @@ pub async fn dat_rename(
             &records,
             &dat_totals(&records, started.elapsed()),
             ReportFormat::from_path(path),
+            &CancelToken::new(),
         )?;
     }
     Ok(())
@@ -4428,7 +3919,7 @@ pub async fn dat_fixdat(
     let mut index = LocalHashIndex::default();
     for unit in &units {
         if cancel.is_cancelled() {
-            return Err(DatError::Cancelled.into());
+            return Err(Cancelled.into());
         }
         match digest_unit(unit, algos_index(), progress, cancel, cache).await {
             Ok(RomDigests::Single(d)) => index.insert(&d),
@@ -4463,7 +3954,7 @@ pub async fn dat_fixdat(
     };
     let file = std::fs::File::create(&out_path)?;
     let mut w = std::io::BufWriter::new(file);
-    write_fixdat_xml(&mut w, &dat, &entries)?;
+    write_fixdat_xml(&mut w, &dat, &entries, &CancelToken::new())?;
     use std::io::Write;
     w.flush()?;
     info!(

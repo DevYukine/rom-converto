@@ -1,6 +1,14 @@
 use clap::{ArgGroup, Parser};
 use std::path::PathBuf;
 
+use crate::commands::support::{
+    ALL_IMAGE_EXTS, DispatchCtx, collect_info_batch_files, read_info_paths_file,
+    require_info_input, run_info_batch, save_info_icon,
+};
+use crate::info_print;
+use crate::util::ensure_input_exists;
+use anyhow::Result;
+
 /// Print metadata about a ROM or disc image: title, region, hashes and embedded artwork
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
@@ -31,6 +39,43 @@ pub struct InfoCommand {
     /// Path to prod.keys for Switch, a disc master key file for Wii U .wud/.wux info, or a .dkey file for PS3 info. Other consoles do not use it
     #[arg(long, value_name = "FILE")]
     pub keys: Option<PathBuf>,
+}
+
+/// Runs one `info` subcommand.
+pub async fn run(cmd: InfoCommand, ctx: DispatchCtx<'_>) -> Result<()> {
+    let DispatchCtx { .. } = ctx;
+    let opts = rom_converto_lib::info::InfoOptions {
+        keys_path: cmd.keys.clone(),
+        parent_path: None,
+    };
+    let batch_paths = if let Some(paths_file) = &cmd.paths_file {
+        Some(read_info_paths_file(paths_file)?)
+    } else {
+        let input = require_info_input(&cmd.input)?;
+        if cmd.batch && input.is_dir() {
+            let paths = collect_info_batch_files(input)?;
+            if paths.is_empty() {
+                anyhow::bail!("no supported files found under {}", input.display());
+            }
+            Some(paths)
+        } else {
+            None
+        }
+    };
+
+    if let Some(paths) = batch_paths {
+        run_info_batch(&paths, &opts, cmd.json, cmd.save_icon.as_deref());
+    } else {
+        let input = require_info_input(&cmd.input)?;
+        ensure_input_exists(input)?;
+        let resolved = rom_converto_lib::util::resolve_input(input, ALL_IMAGE_EXTS)?;
+        let info = rom_converto_lib::info::read_info(resolved.path(), &opts)?;
+        if let Some(dir) = &cmd.save_icon {
+            save_info_icon(&info, dir)?;
+        }
+        info_print::print(&info, cmd.json)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
