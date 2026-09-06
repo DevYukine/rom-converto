@@ -6,7 +6,6 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use sha2::{Digest, Sha256};
 
@@ -20,7 +19,7 @@ use crate::nintendo::nx::models::pfs0 as pfs0_mod;
 use crate::nintendo::nx::ncz::ncz_to_nca;
 use crate::nintendo::nx::util::PositionalReader;
 use crate::util::pread::file_read_exact_at;
-use crate::util::{CancelToken, ProgressReporter, await_with_progress_cancel, scratch_output_path};
+use crate::util::{AtomicProgress, CancelToken, Cancelled, ProgressReporter, run_scratch_write};
 
 /// Decompresses an NSZ or XCZ container back into NSP/XCI, dispatching
 /// to [`decompress_pfs0`] or [`decompress_xci`] based on the detected
@@ -50,23 +49,9 @@ pub fn decompress_container(
     }
 }
 
-/// Async wrapper around [`decompress_container`] that runs the
-/// blocking work on a `spawn_blocking` task and cannot be cancelled.
-///
-/// # Errors
-/// See [`decompress_container`].
+/// Restore the NSZ/XCZ container at `input` to its NSP/XCI form at
+/// `output`; on cancel the partial output is removed.
 pub async fn decompress_container_async(
-    input: PathBuf,
-    output: PathBuf,
-    keys: KeySet,
-    progress: &dyn ProgressReporter,
-) -> NxResult<()> {
-    decompress_container_async_cancellable(input, output, keys, progress, CancelToken::new()).await
-}
-
-/// Like [`decompress_container_async`] but observes `cancel` between NCA
-/// entries; on cancel the partial output is removed.
-pub async fn decompress_container_async_cancellable(
     input: PathBuf,
     output: PathBuf,
     keys: KeySet,
@@ -74,48 +59,20 @@ pub async fn decompress_container_async_cancellable(
     cancel: CancelToken,
 ) -> NxResult<()> {
     let total = tokio::fs::metadata(&input).await?.len();
-    let bytes_done = Arc::new(AtomicU64::new(0));
-    let bytes_done_bg = bytes_done.clone();
     progress.start(total, "Decompressing Switch container");
-    let proxy = AtomicProgress {
-        counter: bytes_done_bg,
-    };
-
-    let write_path = scratch_output_path(&output)?;
-    let write_owned = write_path.to_path_buf();
-    let cancel_bg = cancel.clone();
-
-    let handle = tokio::task::spawn_blocking(move || -> NxResult<()> {
-        decompress_container(&input, &write_owned, &keys, &proxy, Some(&cancel_bg))
-    });
-
-    let cleanup = {
-        let write_path = write_path.to_path_buf();
-        move || -> NxError {
-            let _ = std::fs::remove_file(&write_path);
-            NxError::Cancelled
-        }
-    };
-    if let Err(err) =
-        await_with_progress_cancel(progress, &bytes_done, handle, &cancel, cleanup).await
-    {
-        let _ = tokio::fs::remove_file(&write_path).await;
-        return Err(err);
-    }
-    crate::util::publish_temp(write_path, &output, true)?;
-    Ok(())
-}
-
-struct AtomicProgress {
-    counter: Arc<AtomicU64>,
-}
-
-impl ProgressReporter for AtomicProgress {
-    fn start(&self, _: u64, _: &str) {}
-    fn inc(&self, delta: u64) {
-        self.counter.fetch_add(delta, Ordering::Relaxed);
-    }
-    fn finish(&self) {}
+    run_scratch_write(
+        &output,
+        true,
+        progress,
+        &cancel,
+        move |write_path, bytes_done, cancel| {
+            let proxy = AtomicProgress {
+                counter: bytes_done,
+            };
+            decompress_container(&input, &write_path, &keys, &proxy, Some(&cancel))
+        },
+    )
+    .await
 }
 
 fn decompress_pfs0(
@@ -165,7 +122,7 @@ fn decompress_pfs0(
     let mut sizes = Vec::with_capacity(pfs0.files.len());
     for f in &pfs0.files {
         if cancel.is_some_and(|c| c.is_cancelled()) {
-            return Err(NxError::Cancelled);
+            return Err(Cancelled.into());
         }
         let abs = pfs0.data_section_offset + f.data_offset;
         // Source extension picks the path: only `.ncz` files carry
@@ -297,7 +254,7 @@ fn decompress_xci(
         let mut sub_specs = Vec::with_capacity(plan.sub.files.len());
         for (i, f) in plan.sub.files.iter().enumerate() {
             if cancel.is_some_and(|c| c.is_cancelled()) {
-                return Err(NxError::Cancelled);
+                return Err(Cancelled.into());
             }
             let abs = plan.sub.data_section_offset + f.data_offset;
             let new_name = &new_names[i];
@@ -377,7 +334,7 @@ fn decompress_one_file<W: Write>(
 ) -> NxResult<u64> {
     let mut reader = PositionalReader::new(in_file.clone(), abs_offset, size);
     let mut counter = ByteCounter::new(out);
-    ncz_to_nca(&mut reader, &mut counter, progress)?;
+    ncz_to_nca(&mut reader, &mut counter, progress, &CancelToken::new())?;
     Ok(counter.bytes_written)
 }
 

@@ -12,7 +12,6 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
 
 use sha2::{Digest, Sha256};
 
@@ -34,9 +33,7 @@ use crate::nintendo::nx::models::ticket::Ticket;
 use crate::nintendo::nx::ncz::compress::{NcaToNczOptions, NczMode, nca_to_ncz};
 use crate::nintendo::nx::walker::NcaWalker;
 use crate::util::pread::file_read_exact_at;
-use crate::util::{
-    AtomicProgress, CancelToken, ProgressReporter, await_with_progress_cancel, scratch_output_path,
-};
+use crate::util::{AtomicProgress, CancelToken, Cancelled, ProgressReporter, run_scratch_write};
 
 /// Compression settings for turning an NSP/XCI into an NSZ/XCZ.
 #[derive(Debug, Clone, Copy)]
@@ -120,26 +117,10 @@ pub fn compress_container(
     }
 }
 
-/// Async wrapper around [`compress_container`] that runs the blocking
-/// work on a `spawn_blocking` task and cannot be cancelled.
-///
-/// # Errors
-/// See [`compress_container`].
-pub async fn compress_container_async(
-    input: PathBuf,
-    output: PathBuf,
-    opts: NxCompressOptions,
-    keys: KeySet,
-    progress: &dyn ProgressReporter,
-) -> NxResult<()> {
-    compress_container_async_cancellable(input, output, opts, keys, progress, CancelToken::new())
-        .await
-}
-
-/// Like [`compress_container_async`] but observes `cancel` between NCA
-/// entries; on cancel the partial output is removed (the writer targets
+/// Compress the NSP/XCI container at `input` into its NSZ/XCZ form at
+/// `output`; on cancel the partial output is removed (the writer targets
 /// a sibling temp file renamed into place only on success).
-pub async fn compress_container_async_cancellable(
+pub async fn compress_container_async(
     input: PathBuf,
     output: PathBuf,
     opts: NxCompressOptions,
@@ -148,36 +129,20 @@ pub async fn compress_container_async_cancellable(
     cancel: CancelToken,
 ) -> NxResult<()> {
     let total = tokio::fs::metadata(&input).await?.len();
-    let bytes_done = Arc::new(AtomicU64::new(0));
-    let bytes_done_bg = bytes_done.clone();
     progress.start(total, "Compressing Switch container");
-    let proxy = AtomicProgress {
-        counter: bytes_done_bg,
-    };
-
-    let write_path = scratch_output_path(&output)?;
-    let write_owned = write_path.to_path_buf();
-    let cancel_bg = cancel.clone();
-
-    let handle = tokio::task::spawn_blocking(move || -> NxResult<()> {
-        compress_container(&input, &write_owned, opts, &keys, &proxy, Some(&cancel_bg))
-    });
-
-    let cleanup = {
-        let write_path = write_path.to_path_buf();
-        move || -> NxError {
-            let _ = std::fs::remove_file(&write_path);
-            NxError::Cancelled
-        }
-    };
-    if let Err(err) =
-        await_with_progress_cancel(progress, &bytes_done, handle, &cancel, cleanup).await
-    {
-        let _ = tokio::fs::remove_file(&write_path).await;
-        return Err(err);
-    }
-    crate::util::publish_temp(write_path, &output, true)?;
-    Ok(())
+    run_scratch_write(
+        &output,
+        true,
+        progress,
+        &cancel,
+        move |write_path, bytes_done, cancel| {
+            let proxy = AtomicProgress {
+                counter: bytes_done,
+            };
+            compress_container(&input, &write_path, opts, &keys, &proxy, Some(&cancel))
+        },
+    )
+    .await
 }
 
 fn compress_pfs0(
@@ -254,7 +219,7 @@ fn compress_pfs0(
     let mut sizes = Vec::with_capacity(pfs0.files.len());
     for (i, f) in pfs0.files.iter().enumerate() {
         if cancel.is_some_and(|c| c.is_cancelled()) {
-            return Err(NxError::Cancelled);
+            return Err(Cancelled.into());
         }
         let abs = pfs0.data_section_offset + f.data_offset;
         let new_name = &new_names[i];
@@ -363,7 +328,7 @@ fn compress_xci(
 
     for (plan, root_entry) in sub_partitions.iter().zip(&root.files) {
         if cancel.is_some_and(|c| c.is_cancelled()) {
-            return Err(NxError::Cancelled);
+            return Err(Cancelled.into());
         }
         // nsz's XCZ decompressor (Hfs0Stream) starts each partition at the
         // previous partition's header end, so any non-secure partition that
@@ -531,7 +496,7 @@ fn write_sub_partition(
     let mut sub_specs: Vec<Hfs0FileSpec> = Vec::with_capacity(plan.sub.files.len());
     for (i, f) in plan.sub.files.iter().enumerate() {
         if cancel.is_some_and(|c| c.is_cancelled()) {
-            return Err(NxError::Cancelled);
+            return Err(Cancelled.into());
         }
         let abs = plan.sub.data_section_offset + f.data_offset;
         let new_name = &new_names[i];
@@ -596,22 +561,35 @@ fn write_sub_partition(
     Ok(())
 }
 
+/// Read the ticket stored at `abs` and fold its title key into `keys`.
+/// A ticket that does not parse is ignored: it carries no key the
+/// rest of the pipeline can use.
+fn ingest_ticket(in_file: &Arc<File>, abs: u64, size: u64, keys: &mut KeySet) -> NxResult<()> {
+    let mut buf = vec![0u8; size as usize];
+    crate::util::pread::file_read_exact_at(in_file, &mut buf, abs)?;
+    if let Ok(ticket) = Ticket::parse(&buf) {
+        keys.title_keys
+            .insert(ticket.rights_id, ticket.encrypted_title_key);
+    }
+    Ok(())
+}
+
+fn is_ticket(name: &str) -> bool {
+    name.to_ascii_lowercase().ends_with(".tik")
+}
+
 fn load_tickets_into_keyset(
     in_file: &Arc<File>,
     pfs0: &pfs0_mod::Pfs0,
     keys: &mut KeySet,
 ) -> NxResult<()> {
-    for f in &pfs0.files {
-        if !f.name.to_ascii_lowercase().ends_with(".tik") {
-            continue;
-        }
-        let abs = pfs0.data_section_offset + f.data_offset;
-        let mut buf = vec![0u8; f.size as usize];
-        crate::util::pread::file_read_exact_at(in_file, &mut buf, abs)?;
-        if let Ok(ticket) = Ticket::parse(&buf) {
-            keys.title_keys
-                .insert(ticket.rights_id, ticket.encrypted_title_key);
-        }
+    for f in pfs0.files.iter().filter(|f| is_ticket(&f.name)) {
+        ingest_ticket(
+            in_file,
+            pfs0.data_section_offset + f.data_offset,
+            f.size,
+            keys,
+        )?;
     }
     Ok(())
 }
@@ -622,17 +600,13 @@ fn load_tickets_from_xci(
     keys: &mut KeySet,
 ) -> NxResult<()> {
     for plan in sub_partitions {
-        for f in &plan.sub.files {
-            if !f.name.to_ascii_lowercase().ends_with(".tik") {
-                continue;
-            }
-            let abs = plan.sub.data_section_offset + f.data_offset;
-            let mut buf = vec![0u8; f.size as usize];
-            crate::util::pread::file_read_exact_at(in_file, &mut buf, abs)?;
-            if let Ok(ticket) = Ticket::parse(&buf) {
-                keys.title_keys
-                    .insert(ticket.rights_id, ticket.encrypted_title_key);
-            }
+        for f in plan.sub.files.iter().filter(|f| is_ticket(&f.name)) {
+            ingest_ticket(
+                in_file,
+                plan.sub.data_section_offset + f.data_offset,
+                f.size,
+                keys,
+            )?;
         }
     }
     Ok(())

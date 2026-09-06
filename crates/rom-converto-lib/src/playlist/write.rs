@@ -1,6 +1,6 @@
 use super::detect::group_disc_files;
-use crate::util::CancelToken;
-use crate::util::fs::collect_files_with_exts_cancellable;
+use crate::util::fs::collect_files_with_exts;
+use crate::util::{CancelToken, Cancelled};
 use std::path::{Component, Path, PathBuf};
 
 /// When to write a playlist: only for groups with more than one disc, or always.
@@ -30,27 +30,15 @@ pub struct PlaylistPlan {
     pub has_duplicate_numbers: bool,
 }
 
-/// Build the set of playlists to write for a scan directory. The directory is
-/// walked once via the shared recursive collector; everything else is pure.
-/// No conflict resolution and no writing happen here; the caller owns those.
-pub fn plan_playlists(opts: &PlaylistOptions) -> std::io::Result<Vec<PlaylistPlan>> {
-    plan_playlists_cancellable(opts, &CancelToken::new())
-}
-
-/// Like [`plan_playlists`] but observes `cancel` while walking `opts.scan_dir`.
+/// Plan one playlist per multi-disc group found under `opts.scan_dir`.
 ///
 /// # Errors
 /// Returns an error if the directory walk fails or is cancelled.
-pub fn plan_playlists_cancellable(
+pub fn plan_playlists(
     opts: &PlaylistOptions,
     cancel: &CancelToken,
 ) -> std::io::Result<Vec<PlaylistPlan>> {
-    let files = collect_files_with_exts_cancellable(
-        opts.scan_dir,
-        opts.extensions,
-        opts.max_depth,
-        cancel,
-    )?;
+    let files = collect_files_with_exts(opts.scan_dir, opts.extensions, opts.max_depth, cancel)?;
     let groups = group_disc_files(&files);
 
     let mut plans = Vec::new();
@@ -58,7 +46,7 @@ pub fn plan_playlists_cancellable(
         if cancel.is_cancelled() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::Interrupted,
-                "cancelled",
+                Cancelled,
             ));
         }
         if matches!(opts.mode, PlaylistMode::Multiple) && group.len() <= 1 {
@@ -164,8 +152,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         touch(&dir.path().join("Sonic.cue"));
         let ext = exts();
-        let plans =
-            plan_playlists(&options(dir.path(), None, &ext, PlaylistMode::Multiple)).unwrap();
+        let plans = plan_playlists(
+            &options(dir.path(), None, &ext, PlaylistMode::Multiple),
+            &CancelToken::new(),
+        )
+        .unwrap();
         assert!(plans.is_empty());
     }
 
@@ -174,7 +165,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         touch(&dir.path().join("Sonic.cue"));
         let ext = exts();
-        let plans = plan_playlists(&options(dir.path(), None, &ext, PlaylistMode::Always)).unwrap();
+        let plans = plan_playlists(
+            &options(dir.path(), None, &ext, PlaylistMode::Always),
+            &CancelToken::new(),
+        )
+        .unwrap();
         assert_eq!(plans.len(), 1);
         assert_eq!(plans[0].contents, "Sonic.cue\n");
     }
@@ -185,8 +180,11 @@ mod tests {
         touch(&dir.path().join("Game (Disc 2).cue"));
         touch(&dir.path().join("Game (Disc 1).cue"));
         let ext = exts();
-        let plans =
-            plan_playlists(&options(dir.path(), None, &ext, PlaylistMode::Multiple)).unwrap();
+        let plans = plan_playlists(
+            &options(dir.path(), None, &ext, PlaylistMode::Multiple),
+            &CancelToken::new(),
+        )
+        .unwrap();
         assert_eq!(plans.len(), 1);
         assert_eq!(plans[0].contents, "Game (Disc 1).cue\nGame (Disc 2).cue\n");
     }
@@ -197,8 +195,11 @@ mod tests {
         touch(&dir.path().join("Game (Disc 1).cue"));
         touch(&dir.path().join("Game (Disc 2).cue"));
         let ext = exts();
-        let plans =
-            plan_playlists(&options(dir.path(), None, &ext, PlaylistMode::Multiple)).unwrap();
+        let plans = plan_playlists(
+            &options(dir.path(), None, &ext, PlaylistMode::Multiple),
+            &CancelToken::new(),
+        )
+        .unwrap();
         for line in plans[0].contents.lines() {
             assert!(!line.starts_with('/'));
             assert!(!line.contains('/'));
@@ -211,8 +212,11 @@ mod tests {
         touch(&dir.path().join("Game (Disc 1).cue"));
         touch(&dir.path().join("Game (Disc 2).cue"));
         let ext = exts();
-        let plans =
-            plan_playlists(&options(dir.path(), None, &ext, PlaylistMode::Multiple)).unwrap();
+        let plans = plan_playlists(
+            &options(dir.path(), None, &ext, PlaylistMode::Multiple),
+            &CancelToken::new(),
+        )
+        .unwrap();
         assert_eq!(
             plans[0].m3u_path.file_name().unwrap().to_str().unwrap(),
             "Game.m3u"
@@ -227,8 +231,11 @@ mod tests {
         touch(&sub.join("Game (Disc 1).cue"));
         touch(&dir.path().join("Game (Disc 2).cue"));
         let ext = exts();
-        let plans =
-            plan_playlists(&options(dir.path(), None, &ext, PlaylistMode::Multiple)).unwrap();
+        let plans = plan_playlists(
+            &options(dir.path(), None, &ext, PlaylistMode::Multiple),
+            &CancelToken::new(),
+        )
+        .unwrap();
         assert_eq!(plans[0].m3u_path.parent().unwrap(), dir.path());
         let lines: Vec<&str> = plans[0].contents.lines().collect();
         assert!(lines.contains(&"sub/Game (Disc 1).cue"));
@@ -242,12 +249,10 @@ mod tests {
         touch(&dir.path().join("Game (Disc 1).cue"));
         touch(&dir.path().join("Game (Disc 2).cue"));
         let ext = exts();
-        let plans = plan_playlists(&options(
-            dir.path(),
-            Some(out.path()),
-            &ext,
-            PlaylistMode::Multiple,
-        ))
+        let plans = plan_playlists(
+            &options(dir.path(), Some(out.path()), &ext, PlaylistMode::Multiple),
+            &CancelToken::new(),
+        )
         .unwrap();
         assert_eq!(plans[0].m3u_path.parent().unwrap(), out.path());
         for line in plans[0].contents.lines() {
@@ -261,8 +266,11 @@ mod tests {
         touch(&dir.path().join("Game (Disc 1).cue"));
         touch(&dir.path().join("Game (Disc 1).chd"));
         let ext = exts();
-        let plans =
-            plan_playlists(&options(dir.path(), None, &ext, PlaylistMode::Multiple)).unwrap();
+        let plans = plan_playlists(
+            &options(dir.path(), None, &ext, PlaylistMode::Multiple),
+            &CancelToken::new(),
+        )
+        .unwrap();
         assert_eq!(plans.len(), 1);
         assert!(plans[0].has_duplicate_numbers);
     }

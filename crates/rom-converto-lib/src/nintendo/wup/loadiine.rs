@@ -14,15 +14,16 @@
 //! across filesystems, so rebuilding the same loadiine dir always
 //! produces the same block layout inside the archive.
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::nintendo::wup::app_xml::AppXml;
 use crate::nintendo::wup::error::{WupError, WupResult};
-use crate::nintendo::wup::zarchive_writer::ArchiveSink;
+use crate::util::Cancelled;
 use crate::util::ProgressReporter;
+use crate::zar::ZarWriter;
 
 /// Top-level subdirectories a loadiine title is allowed to contain.
 /// Anything else at the root is silently ignored by the walker.
@@ -124,17 +125,9 @@ pub fn estimate_loadiine_uncompressed_bytes(title_dir: &Path) -> WupResult<u64> 
 /// [`crate::nintendo::wup::compress::compress_titles`] dispatcher
 /// for the loadiine branch. Reads each file in 1 MiB chunks so
 /// individual hundreds-of-MB files don't inflate peak memory.
-pub fn compress_loadiine_title(
+pub(crate) fn compress_loadiine_title<W: Write>(
     title: &LoadiineTitle,
-    sink: &mut dyn ArchiveSink,
-    progress: &dyn ProgressReporter,
-) -> WupResult<()> {
-    compress_loadiine_title_with_cancel(title, sink, progress, None)
-}
-
-pub(crate) fn compress_loadiine_title_with_cancel(
-    title: &LoadiineTitle,
-    sink: &mut dyn ArchiveSink,
+    sink: &mut ZarWriter<'_, W>,
     progress: &dyn ProgressReporter,
     cancelled: Option<&AtomicBool>,
 ) -> WupResult<()> {
@@ -145,10 +138,10 @@ pub(crate) fn compress_loadiine_title_with_cancel(
     let mut buffer = vec![0u8; READ_CHUNK_SIZE];
     for file in &files {
         if cancelled.is_some_and(|c| c.load(Ordering::Relaxed)) {
-            return Err(WupError::Cancelled);
+            return Err(Cancelled.into());
         }
         let archive_path = format!("{archive_folder}/{}", file.relative_path);
-        sink.start_new_file(&archive_path)?;
+        sink.start_file(&archive_path)?;
         let mut reader = std::io::BufReader::new(std::fs::File::open(&file.absolute_path)?);
         loop {
             let n = reader.read(&mut buffer)?;

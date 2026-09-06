@@ -10,6 +10,7 @@
 //! - Optional trailing certificate chain (unused here).
 
 use crate::nintendo::wup::error::{WupError, WupResult};
+use crate::util::bytes::{u16_be, u32_be, u64_be};
 
 /// Size of the base TMD header including the 64-entry ContentInfo
 /// array at `+0x204` (64 x 36 = 2304 bytes).
@@ -113,9 +114,9 @@ impl WupTmd {
         if bytes.len() < WUP_TMD_HEADER_SIZE {
             return Err(WupError::InvalidTmd);
         }
-        let title_id = read_u64_be(bytes, OFFSET_TITLE_ID);
-        let title_version = read_u16_be(bytes, OFFSET_TITLE_VERSION);
-        let num_content = read_u16_be(bytes, OFFSET_NUM_CONTENT) as usize;
+        let title_id = u64_be(bytes, OFFSET_TITLE_ID);
+        let title_version = u16_be(bytes, OFFSET_TITLE_VERSION);
+        let num_content = u16_be(bytes, OFFSET_NUM_CONTENT) as usize;
 
         let entries_start = WUP_TMD_HEADER_SIZE;
         let entries_end = entries_start
@@ -145,14 +146,14 @@ impl WupTmd {
         }
 
         Ok(Self {
-            signature_type: read_u32_be(bytes, OFFSET_SIGNATURE_TYPE),
+            signature_type: u32_be(bytes, OFFSET_SIGNATURE_TYPE),
             tmd_version: bytes[OFFSET_TMD_VERSION],
             title_id,
-            title_type: read_u32_be(bytes, OFFSET_TITLE_TYPE),
-            group_id: read_u16_be(bytes, OFFSET_GROUP_ID),
-            access_rights: read_u32_be(bytes, OFFSET_ACCESS_RIGHTS),
+            title_type: u32_be(bytes, OFFSET_TITLE_TYPE),
+            group_id: u16_be(bytes, OFFSET_GROUP_ID),
+            access_rights: u32_be(bytes, OFFSET_ACCESS_RIGHTS),
             title_version,
-            boot_index: read_u16_be(bytes, OFFSET_BOOT_INDEX),
+            boot_index: u16_be(bytes, OFFSET_BOOT_INDEX),
             content_info_hash: bytes[OFFSET_CONTENT_INFO_HASH..OFFSET_CONTENT_INFO_HASH + 32]
                 .try_into()
                 .expect("32-byte slice"),
@@ -165,18 +166,6 @@ impl WupTmd {
     pub fn content_by_index(&self, index: u16) -> Option<&TmdContentEntry> {
         self.contents.iter().find(|c| c.index == index)
     }
-}
-
-fn read_u16_be(bytes: &[u8], offset: usize) -> u16 {
-    u16::from_be_bytes(bytes[offset..offset + 2].try_into().expect("2-byte slice"))
-}
-
-fn read_u32_be(bytes: &[u8], offset: usize) -> u32 {
-    u32::from_be_bytes(bytes[offset..offset + 4].try_into().expect("4-byte slice"))
-}
-
-fn read_u64_be(bytes: &[u8], offset: usize) -> u64 {
-    u64::from_be_bytes(bytes[offset..offset + 8].try_into().expect("8-byte slice"))
 }
 
 #[cfg(test)]

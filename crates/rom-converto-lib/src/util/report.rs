@@ -1,8 +1,8 @@
 //! Run reports: per-file records and run totals written to CSV, JSON, or
 //! HTML at the end of a batch run, via `--report`.
 
-use crate::util::CancelToken;
 use crate::util::tally::{FileStatus, format_bytes};
+use crate::util::{CancelToken, Cancelled};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::borrow::Cow;
@@ -139,43 +139,303 @@ fn de_status<'de, D: Deserializer<'de>>(d: D) -> Result<FileStatus, D::Error> {
     }
 }
 
-/// Write a run report to `path`. The file is created and truncated directly,
-/// bypassing the ROM on-conflict machinery: the report path is an output the
-/// user named explicitly, not a converted ROM.
-pub fn write_report(
-    path: &Path,
-    records: &[ReportRecord],
-    totals: &ReportTotals,
-    format: ReportFormat,
-) -> Result<()> {
-    write_report_cancellable(path, records, totals, format, &CancelToken::new())
-}
-
 /// Cancellable twin of [`write_report`].
-pub fn write_report_cancellable(
+pub fn write_report(
     path: &Path,
     records: &[ReportRecord],
     totals: &ReportTotals,
     format: ReportFormat,
     cancel: &CancelToken,
 ) -> Result<()> {
-    check_cancel(cancel)?;
-    let mut tmp = report_temp(path)?;
-    {
-        let mut w = CancelWriter::new(BufWriter::new(tmp.as_file_mut()), cancel);
-        match format {
-            ReportFormat::Csv => write_csv(&mut w, records, totals)?,
-            ReportFormat::Json => write_json(&mut w, records, totals)?,
-            ReportFormat::Html => write_html(&mut w, records, totals)?,
-        }
-        w.flush()?;
-    }
-    persist_report(tmp, path, cancel)?;
-    Ok(())
+    write_rows(path, records, totals, format, cancel)
 }
 
-const CSV_HEADER: &str =
-    "input_path,output_path,operation,status,input_bytes,output_bytes,ratio_pct,elapsed_ms,error";
+/// One file's outcome in a hash run report.
+#[derive(Clone, Debug, Serialize)]
+pub struct HashReportRecord {
+    pub path: String,
+    pub crc32: Option<String>,
+    pub sha1: Option<String>,
+    pub md5: Option<String>,
+    pub sha256: Option<String>,
+    pub size_bytes: u64,
+    #[serde(serialize_with = "ser_status")]
+    pub status: FileStatus,
+    pub elapsed_ms: u64,
+    pub error: Option<String>,
+}
+
+/// Cancellable twin of [`write_hash_report`].
+pub fn write_hash_report(
+    path: &Path,
+    records: &[HashReportRecord],
+    totals: &ReportTotals,
+    format: ReportFormat,
+    cancel: &CancelToken,
+) -> Result<()> {
+    write_rows(path, records, totals, format, cancel)
+}
+
+/// One file's outcome in a dat-matching run report.
+#[derive(Clone, Debug, Serialize)]
+pub struct DatReportRecord {
+    pub path: String,
+    pub verdict: String,
+    pub game_name: Option<String>,
+    pub game_id: Option<String>,
+    pub platform: Option<String>,
+    pub signature_group: Option<String>,
+    pub dat_file_name: Option<String>,
+    pub dat_file_id: Option<String>,
+    pub dat_version: Option<String>,
+    pub match_algo: Option<String>,
+    pub detail: Option<String>,
+    pub size_bytes: u64,
+    #[serde(serialize_with = "ser_status")]
+    pub status: FileStatus,
+    pub elapsed_ms: u64,
+    pub error: Option<String>,
+}
+
+/// Cancellable twin of [`write_dat_report`].
+pub fn write_dat_report(
+    path: &Path,
+    records: &[DatReportRecord],
+    totals: &ReportTotals,
+    format: ReportFormat,
+    cancel: &CancelToken,
+) -> Result<()> {
+    write_rows(path, records, totals, format, cancel)
+}
+
+/// One report shape: its columns and how a record fills them. Each format
+/// has a single writer that renders any implementor, so the three report
+/// kinds share one CSV, one JSON, and one HTML renderer.
+trait ReportRow: Serialize {
+    const CSV_HEADER: &'static str;
+    const TITLE: &'static str;
+    const HEADING: &'static str;
+    const COLUMNS: &'static [&'static str];
+
+    /// This record's cells, in column order.
+    fn cells(&self) -> Vec<Cell<'_>>;
+
+    /// The HTML footer row, in the same column order.
+    fn totals_cells(totals: &ReportTotals) -> Vec<Cell<'static>>;
+}
+
+/// One cell: CSV writes the raw value, HTML the human-readable one,
+/// right-aligned for the numeric kinds.
+enum Cell<'a> {
+    Text(Cow<'a, str>),
+    Bytes(u64),
+    Millis(u64),
+    /// Space saved as a percentage, blank when there is nothing to compare.
+    Pct(Option<f64>),
+}
+
+impl Cell<'_> {
+    fn csv(&self) -> Cow<'_, str> {
+        match self {
+            Cell::Text(s) => csv_field(s),
+            Cell::Bytes(n) | Cell::Millis(n) => Cow::Owned(n.to_string()),
+            Cell::Pct(v) => Cow::Owned(v.map(|v| format!("{v:.1}")).unwrap_or_default()),
+        }
+    }
+
+    /// The cell body and whether it is right-aligned.
+    fn html(&self) -> (String, bool) {
+        match self {
+            Cell::Text(s) => (html_escape(s), false),
+            Cell::Bytes(n) => (format_bytes(*n), true),
+            Cell::Millis(n) => (format!("{n} ms"), true),
+            Cell::Pct(v) => (v.map(|v| format!("{v:.1}%")).unwrap_or_default(), true),
+        }
+    }
+}
+
+fn text(s: &str) -> Cell<'_> {
+    Cell::Text(Cow::Borrowed(s))
+}
+
+fn opt(s: Option<&str>) -> Cell<'_> {
+    text(s.unwrap_or(""))
+}
+
+impl ReportRow for ReportRecord {
+    const CSV_HEADER: &'static str = "input_path,output_path,operation,status,input_bytes,output_bytes,ratio_pct,elapsed_ms,error";
+    const TITLE: &'static str = "rom-converto run report";
+    const HEADING: &'static str = "Run report";
+    const COLUMNS: &'static [&'static str] = &[
+        "Input",
+        "Output",
+        "Operation",
+        "Status",
+        "Input size",
+        "Output size",
+        "Ratio",
+        "Elapsed",
+        "Error",
+    ];
+
+    fn cells(&self) -> Vec<Cell<'_>> {
+        vec![
+            text(&self.input_path),
+            text(&self.output_path),
+            text(&self.operation),
+            text(status_str(self.status)),
+            Cell::Bytes(self.input_bytes),
+            Cell::Bytes(self.output_bytes),
+            Cell::Pct(self.ratio_pct),
+            Cell::Millis(self.elapsed_ms),
+            opt(self.error.as_deref()),
+        ]
+    }
+
+    fn totals_cells(totals: &ReportTotals) -> Vec<Cell<'static>> {
+        vec![
+            Cell::Text(Cow::Owned(format!(
+                "{} files ({} ok, {} skipped, {} failed)",
+                totals.total_files, totals.ok, totals.skipped, totals.failed
+            ))),
+            text(""),
+            text(""),
+            text("totals"),
+            Cell::Bytes(totals.total_input_bytes),
+            Cell::Bytes(totals.total_output_bytes),
+            text(""),
+            Cell::Millis(totals.elapsed_ms),
+            text(""),
+        ]
+    }
+}
+
+impl ReportRow for HashReportRecord {
+    const CSV_HEADER: &'static str =
+        "path,crc32,sha1,md5,sha256,size_bytes,status,elapsed_ms,error";
+    const TITLE: &'static str = "rom-converto hash report";
+    const HEADING: &'static str = "Hash report";
+    const COLUMNS: &'static [&'static str] = &[
+        "Path", "CRC32", "SHA1", "MD5", "SHA256", "Size", "Status", "Elapsed", "Error",
+    ];
+
+    fn cells(&self) -> Vec<Cell<'_>> {
+        vec![
+            text(&self.path),
+            opt(self.crc32.as_deref()),
+            opt(self.sha1.as_deref()),
+            opt(self.md5.as_deref()),
+            opt(self.sha256.as_deref()),
+            Cell::Bytes(self.size_bytes),
+            text(status_str(self.status)),
+            Cell::Millis(self.elapsed_ms),
+            opt(self.error.as_deref()),
+        ]
+    }
+
+    fn totals_cells(totals: &ReportTotals) -> Vec<Cell<'static>> {
+        vec![
+            Cell::Text(Cow::Owned(format!(
+                "{} files ({} ok, {} failed)",
+                totals.total_files, totals.ok, totals.failed
+            ))),
+            text(""),
+            text(""),
+            text(""),
+            text("totals"),
+            Cell::Bytes(totals.total_input_bytes),
+            text(""),
+            Cell::Millis(totals.elapsed_ms),
+            text(""),
+        ]
+    }
+}
+
+impl ReportRow for DatReportRecord {
+    const CSV_HEADER: &'static str = "path,verdict,game_name,game_id,platform,signature_group,dat_file_name,dat_file_id,dat_version,match_algo,detail,size_bytes,status,elapsed_ms,error";
+    const TITLE: &'static str = "rom-converto dat report";
+    const HEADING: &'static str = "Dat report";
+    const COLUMNS: &'static [&'static str] = &[
+        "Path",
+        "Verdict",
+        "Game",
+        "Game id",
+        "Platform",
+        "Signature group",
+        "DAT file",
+        "DAT file id",
+        "Dat version",
+        "Match algo",
+        "Detail",
+        "Size",
+        "Status",
+        "Elapsed",
+        "Error",
+    ];
+
+    fn cells(&self) -> Vec<Cell<'_>> {
+        vec![
+            text(&self.path),
+            text(&self.verdict),
+            opt(self.game_name.as_deref()),
+            opt(self.game_id.as_deref()),
+            opt(self.platform.as_deref()),
+            opt(self.signature_group.as_deref()),
+            opt(self.dat_file_name.as_deref()),
+            opt(self.dat_file_id.as_deref()),
+            opt(self.dat_version.as_deref()),
+            opt(self.match_algo.as_deref()),
+            opt(self.detail.as_deref()),
+            Cell::Bytes(self.size_bytes),
+            text(status_str(self.status)),
+            Cell::Millis(self.elapsed_ms),
+            opt(self.error.as_deref()),
+        ]
+    }
+
+    fn totals_cells(totals: &ReportTotals) -> Vec<Cell<'static>> {
+        let mut cells = vec![Cell::Text(Cow::Owned(format!(
+            "{} files ({} ok, {} skipped, {} failed)",
+            totals.total_files, totals.ok, totals.skipped, totals.failed
+        )))];
+        cells.extend((0..10).map(|_| text("")));
+        cells.extend([
+            Cell::Bytes(totals.total_input_bytes),
+            text(""),
+            Cell::Millis(totals.elapsed_ms),
+            text(""),
+        ]);
+        cells
+    }
+}
+
+/// Render `records` to `path` through a temp file, so a failed or cancelled
+/// write leaves any existing report in place.
+fn write_rows<R: ReportRow>(
+    path: &Path,
+    records: &[R],
+    totals: &ReportTotals,
+    format: ReportFormat,
+    cancel: &CancelToken,
+) -> Result<()> {
+    check_cancel(cancel)?;
+    crate::util::atomic_write(path, true, |file| -> Result<()> {
+        {
+            let mut w = CancelWriter::new(BufWriter::new(&mut *file), cancel);
+            match format {
+                ReportFormat::Csv => write_csv(&mut w, records)?,
+                ReportFormat::Json => write_json(&mut w, records, totals)?,
+                ReportFormat::Html => write_html(&mut w, records, totals)?,
+            }
+            w.flush()?;
+        }
+        check_cancel(cancel)?;
+        file.sync_all()?;
+        check_cancel(cancel)?;
+        Ok(())
+    })
+    .with_context(|| format!("writing report file {}", path.display()))
+}
 
 fn csv_field(s: &str) -> Cow<'_, str> {
     if s.contains([',', '"', '\n', '\r']) {
@@ -185,35 +445,27 @@ fn csv_field(s: &str) -> Cow<'_, str> {
     }
 }
 
-fn write_csv<W: Write>(w: &mut W, records: &[ReportRecord], _totals: &ReportTotals) -> Result<()> {
-    writeln!(w, "{CSV_HEADER}")?;
+fn write_csv<W: Write, R: ReportRow>(w: &mut W, records: &[R]) -> Result<()> {
+    writeln!(w, "{}", R::CSV_HEADER)?;
     for r in records {
-        let ratio = r.ratio_pct.map(|v| format!("{v:.1}")).unwrap_or_default();
-        let error = r.error.as_deref().unwrap_or("");
-        writeln!(
-            w,
-            "{},{},{},{},{},{},{},{},{}",
-            csv_field(&r.input_path),
-            csv_field(&r.output_path),
-            csv_field(&r.operation),
-            status_str(r.status),
-            r.input_bytes,
-            r.output_bytes,
-            ratio,
-            r.elapsed_ms,
-            csv_field(error),
-        )?;
+        let cells = r.cells();
+        let row: Vec<Cow<'_, str>> = cells.iter().map(Cell::csv).collect();
+        writeln!(w, "{}", row.join(","))?;
     }
     Ok(())
 }
 
 #[derive(Serialize)]
-struct ReportDoc<'a> {
-    files: &'a [ReportRecord],
+struct ReportDoc<'a, R> {
+    files: &'a [R],
     totals: &'a ReportTotals,
 }
 
-fn write_json<W: Write>(w: &mut W, records: &[ReportRecord], totals: &ReportTotals) -> Result<()> {
+fn write_json<W: Write, R: ReportRow>(
+    w: &mut W,
+    records: &[R],
+    totals: &ReportTotals,
+) -> Result<()> {
     let doc = ReportDoc {
         files: records,
         totals,
@@ -238,12 +490,16 @@ fn html_escape(s: &str) -> String {
     out
 }
 
-fn write_html<W: Write>(w: &mut W, records: &[ReportRecord], totals: &ReportTotals) -> Result<()> {
+fn write_html<W: Write, R: ReportRow>(
+    w: &mut W,
+    records: &[R],
+    totals: &ReportTotals,
+) -> Result<()> {
     writeln!(w, "<!DOCTYPE html>")?;
     writeln!(w, "<html lang=\"en\">")?;
     writeln!(w, "<head>")?;
     writeln!(w, "<meta charset=\"utf-8\">")?;
-    writeln!(w, "<title>rom-converto run report</title>")?;
+    writeln!(w, "<title>{}</title>", R::TITLE)?;
     writeln!(
         w,
         "<style>body{{font-family:sans-serif;margin:1.5rem}}\
@@ -255,60 +511,22 @@ td.num{{text-align:right;font-variant-numeric:tabular-nums}}</style>"
     )?;
     writeln!(w, "</head>")?;
     writeln!(w, "<body>")?;
-    writeln!(w, "<h1>Run report</h1>")?;
+    writeln!(w, "<h1>{}</h1>", R::HEADING)?;
     writeln!(w, "<table>")?;
     writeln!(w, "<thead><tr>")?;
-    for col in [
-        "Input",
-        "Output",
-        "Operation",
-        "Status",
-        "Input size",
-        "Output size",
-        "Ratio",
-        "Elapsed",
-        "Error",
-    ] {
+    for col in R::COLUMNS {
         write!(w, "<th>{col}</th>")?;
     }
     writeln!(w, "</tr></thead>")?;
     writeln!(w, "<tbody>")?;
     for r in records {
-        let ratio = r.ratio_pct.map(|v| format!("{v:.1}%")).unwrap_or_default();
-        let error = r.error.as_deref().unwrap_or("");
         write!(w, "<tr>")?;
-        write!(w, "<td>{}</td>", html_escape(&r.input_path))?;
-        write!(w, "<td>{}</td>", html_escape(&r.output_path))?;
-        write!(w, "<td>{}</td>", html_escape(&r.operation))?;
-        write!(w, "<td>{}</td>", status_str(r.status))?;
-        write!(w, "<td class=\"num\">{}</td>", format_bytes(r.input_bytes))?;
-        write!(w, "<td class=\"num\">{}</td>", format_bytes(r.output_bytes))?;
-        write!(w, "<td class=\"num\">{}</td>", html_escape(&ratio))?;
-        write!(w, "<td class=\"num\">{} ms</td>", r.elapsed_ms)?;
-        write!(w, "<td>{}</td>", html_escape(error))?;
+        write_html_cells(w, &r.cells())?;
         writeln!(w, "</tr>")?;
     }
     writeln!(w, "</tbody>")?;
     writeln!(w, "<tfoot><tr>")?;
-    write!(
-        w,
-        "<td>{} files ({} ok, {} skipped, {} failed)</td>",
-        totals.total_files, totals.ok, totals.skipped, totals.failed
-    )?;
-    write!(w, "<td></td><td></td><td>totals</td>")?;
-    write!(
-        w,
-        "<td class=\"num\">{}</td>",
-        format_bytes(totals.total_input_bytes)
-    )?;
-    write!(
-        w,
-        "<td class=\"num\">{}</td>",
-        format_bytes(totals.total_output_bytes)
-    )?;
-    write!(w, "<td></td>")?;
-    write!(w, "<td class=\"num\">{} ms</td>", totals.elapsed_ms)?;
-    write!(w, "<td></td>")?;
+    write_html_cells(w, &R::totals_cells(totals))?;
     writeln!(w, "</tr></tfoot>")?;
     writeln!(w, "</table>")?;
     writeln!(w, "</body>")?;
@@ -316,244 +534,13 @@ td.num{{text-align:right;font-variant-numeric:tabular-nums}}</style>"
     Ok(())
 }
 
-/// One file's outcome in a hash run report.
-#[derive(Clone, Debug, Serialize)]
-pub struct HashReportRecord {
-    pub path: String,
-    pub crc32: Option<String>,
-    pub sha1: Option<String>,
-    pub md5: Option<String>,
-    pub sha256: Option<String>,
-    pub size_bytes: u64,
-    #[serde(serialize_with = "ser_status")]
-    pub status: FileStatus,
-    pub elapsed_ms: u64,
-    pub error: Option<String>,
-}
-
-/// Write a hash run report to `path`, reusing the same CSV/JSON/HTML
-/// infrastructure as `write_report`. Digest columns replace the
-/// conversion-shaped output/ratio columns, since hashing has no output file.
-pub fn write_hash_report(
-    path: &Path,
-    records: &[HashReportRecord],
-    totals: &ReportTotals,
-    format: ReportFormat,
-) -> Result<()> {
-    write_hash_report_cancellable(path, records, totals, format, &CancelToken::new())
-}
-
-/// Cancellable twin of [`write_hash_report`].
-pub fn write_hash_report_cancellable(
-    path: &Path,
-    records: &[HashReportRecord],
-    totals: &ReportTotals,
-    format: ReportFormat,
-    cancel: &CancelToken,
-) -> Result<()> {
-    check_cancel(cancel)?;
-    let mut tmp = report_temp(path)?;
-    {
-        let mut w = CancelWriter::new(BufWriter::new(tmp.as_file_mut()), cancel);
-        match format {
-            ReportFormat::Csv => write_hash_csv(&mut w, records)?,
-            ReportFormat::Json => write_hash_json(&mut w, records, totals)?,
-            ReportFormat::Html => write_hash_html(&mut w, records, totals)?,
+fn write_html_cells<W: Write>(w: &mut W, cells: &[Cell<'_>]) -> Result<()> {
+    for cell in cells {
+        match cell.html() {
+            (body, true) => write!(w, "<td class=\"num\">{body}</td>")?,
+            (body, false) => write!(w, "<td>{body}</td>")?,
         }
-        w.flush()?;
     }
-    persist_report(tmp, path, cancel)?;
-    Ok(())
-}
-
-const HASH_CSV_HEADER: &str = "path,crc32,sha1,md5,sha256,size_bytes,status,elapsed_ms,error";
-
-fn write_hash_csv<W: Write>(w: &mut W, records: &[HashReportRecord]) -> Result<()> {
-    writeln!(w, "{HASH_CSV_HEADER}")?;
-    for r in records {
-        writeln!(
-            w,
-            "{},{},{},{},{},{},{},{},{}",
-            csv_field(&r.path),
-            r.crc32.as_deref().unwrap_or(""),
-            r.sha1.as_deref().unwrap_or(""),
-            r.md5.as_deref().unwrap_or(""),
-            r.sha256.as_deref().unwrap_or(""),
-            r.size_bytes,
-            status_str(r.status),
-            r.elapsed_ms,
-            csv_field(r.error.as_deref().unwrap_or("")),
-        )?;
-    }
-    Ok(())
-}
-
-#[derive(Serialize)]
-struct HashReportDoc<'a> {
-    files: &'a [HashReportRecord],
-    totals: &'a ReportTotals,
-}
-
-fn write_hash_json<W: Write>(
-    w: &mut W,
-    records: &[HashReportRecord],
-    totals: &ReportTotals,
-) -> Result<()> {
-    let doc = HashReportDoc {
-        files: records,
-        totals,
-    };
-    serde_json::to_writer_pretty(&mut *w, &doc)?;
-    writeln!(w)?;
-    Ok(())
-}
-
-fn write_hash_html<W: Write>(
-    w: &mut W,
-    records: &[HashReportRecord],
-    totals: &ReportTotals,
-) -> Result<()> {
-    writeln!(w, "<!DOCTYPE html>")?;
-    writeln!(w, "<html lang=\"en\">")?;
-    writeln!(w, "<head>")?;
-    writeln!(w, "<meta charset=\"utf-8\">")?;
-    writeln!(w, "<title>rom-converto hash report</title>")?;
-    writeln!(
-        w,
-        "<style>body{{font-family:sans-serif;margin:1.5rem}}\
-table{{border-collapse:collapse;width:100%}}\
-th,td{{border:1px solid #ccc;padding:4px 8px;text-align:left;font-size:14px}}\
-thead th{{background:#f0f0f0}}\
-tfoot td{{font-weight:bold;background:#f7f7f7}}\
-td.num{{text-align:right;font-variant-numeric:tabular-nums}}</style>"
-    )?;
-    writeln!(w, "</head>")?;
-    writeln!(w, "<body>")?;
-    writeln!(w, "<h1>Hash report</h1>")?;
-    writeln!(w, "<table>")?;
-    writeln!(w, "<thead><tr>")?;
-    for col in [
-        "Path", "CRC32", "SHA1", "MD5", "SHA256", "Size", "Status", "Elapsed", "Error",
-    ] {
-        write!(w, "<th>{col}</th>")?;
-    }
-    writeln!(w, "</tr></thead>")?;
-    writeln!(w, "<tbody>")?;
-    for r in records {
-        write!(w, "<tr>")?;
-        write!(w, "<td>{}</td>", html_escape(&r.path))?;
-        write!(w, "<td>{}</td>", r.crc32.as_deref().unwrap_or(""))?;
-        write!(w, "<td>{}</td>", r.sha1.as_deref().unwrap_or(""))?;
-        write!(w, "<td>{}</td>", r.md5.as_deref().unwrap_or(""))?;
-        write!(w, "<td>{}</td>", r.sha256.as_deref().unwrap_or(""))?;
-        write!(w, "<td class=\"num\">{}</td>", format_bytes(r.size_bytes))?;
-        write!(w, "<td>{}</td>", status_str(r.status))?;
-        write!(w, "<td class=\"num\">{} ms</td>", r.elapsed_ms)?;
-        write!(
-            w,
-            "<td>{}</td>",
-            html_escape(r.error.as_deref().unwrap_or(""))
-        )?;
-        writeln!(w, "</tr>")?;
-    }
-    writeln!(w, "</tbody>")?;
-    writeln!(w, "<tfoot><tr>")?;
-    write!(
-        w,
-        "<td>{} files ({} ok, {} failed)</td>",
-        totals.total_files, totals.ok, totals.failed
-    )?;
-    write!(w, "<td></td><td></td><td></td><td>totals</td>")?;
-    write!(
-        w,
-        "<td class=\"num\">{}</td>",
-        format_bytes(totals.total_input_bytes)
-    )?;
-    write!(w, "<td></td>")?;
-    write!(w, "<td class=\"num\">{} ms</td>", totals.elapsed_ms)?;
-    write!(w, "<td></td>")?;
-    writeln!(w, "</tr></tfoot>")?;
-    writeln!(w, "</table>")?;
-    writeln!(w, "</body>")?;
-    writeln!(w, "</html>")?;
-    Ok(())
-}
-
-/// One file's outcome in a dat-matching run report.
-#[derive(Clone, Debug, Serialize)]
-pub struct DatReportRecord {
-    pub path: String,
-    pub verdict: String,
-    pub game_name: Option<String>,
-    pub game_id: Option<String>,
-    pub platform: Option<String>,
-    pub signature_group: Option<String>,
-    pub dat_file_name: Option<String>,
-    pub dat_file_id: Option<String>,
-    pub dat_version: Option<String>,
-    pub match_algo: Option<String>,
-    pub detail: Option<String>,
-    pub size_bytes: u64,
-    #[serde(serialize_with = "ser_status")]
-    pub status: FileStatus,
-    pub elapsed_ms: u64,
-    pub error: Option<String>,
-}
-
-/// Write a dat run report to `path`, reusing the same CSV/JSON/HTML
-/// infrastructure as `write_report`. Verdict and game metadata columns
-/// replace the conversion-shaped output/ratio columns, since a dat run
-/// identifies files rather than converting them.
-pub fn write_dat_report(
-    path: &Path,
-    records: &[DatReportRecord],
-    totals: &ReportTotals,
-    format: ReportFormat,
-) -> Result<()> {
-    write_dat_report_cancellable(path, records, totals, format, &CancelToken::new())
-}
-
-/// Cancellable twin of [`write_dat_report`].
-pub fn write_dat_report_cancellable(
-    path: &Path,
-    records: &[DatReportRecord],
-    totals: &ReportTotals,
-    format: ReportFormat,
-    cancel: &CancelToken,
-) -> Result<()> {
-    check_cancel(cancel)?;
-    let mut tmp = report_temp(path)?;
-    {
-        let mut w = CancelWriter::new(BufWriter::new(tmp.as_file_mut()), cancel);
-        match format {
-            ReportFormat::Csv => write_dat_csv(&mut w, records)?,
-            ReportFormat::Json => write_dat_json(&mut w, records, totals)?,
-            ReportFormat::Html => write_dat_html(&mut w, records, totals)?,
-        }
-        w.flush()?;
-    }
-    persist_report(tmp, path, cancel)?;
-    Ok(())
-}
-
-fn report_temp(path: &Path) -> Result<tempfile::NamedTempFile> {
-    let parent = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    tempfile::Builder::new()
-        .prefix(".rom-converto-report-")
-        .suffix(".tmp")
-        .tempfile_in(parent)
-        .with_context(|| format!("creating report temp file in {}", parent.display()))
-}
-
-fn persist_report(tmp: tempfile::NamedTempFile, path: &Path, cancel: &CancelToken) -> Result<()> {
-    check_cancel(cancel)?;
-    tmp.as_file().sync_all()?;
-    check_cancel(cancel)?;
-    tmp.persist(path)
-        .with_context(|| format!("replacing report file {}", path.display()))?;
     Ok(())
 }
 
@@ -561,7 +548,7 @@ fn check_cancel(cancel: &CancelToken) -> std::io::Result<()> {
     if cancel.is_cancelled() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::Interrupted,
-            "cancelled",
+            Cancelled,
         ));
     }
     Ok(())
@@ -590,183 +577,6 @@ impl<W: Write> Write for CancelWriter<'_, W> {
     }
 }
 
-const DAT_CSV_HEADER: &str = "path,verdict,game_name,game_id,platform,signature_group,dat_file_name,dat_file_id,dat_version,match_algo,detail,size_bytes,status,elapsed_ms,error";
-
-fn write_dat_csv<W: Write>(w: &mut W, records: &[DatReportRecord]) -> Result<()> {
-    writeln!(w, "{DAT_CSV_HEADER}")?;
-    for r in records {
-        writeln!(
-            w,
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
-            csv_field(&r.path),
-            csv_field(&r.verdict),
-            csv_field(r.game_name.as_deref().unwrap_or("")),
-            csv_field(r.game_id.as_deref().unwrap_or("")),
-            csv_field(r.platform.as_deref().unwrap_or("")),
-            csv_field(r.signature_group.as_deref().unwrap_or("")),
-            csv_field(r.dat_file_name.as_deref().unwrap_or("")),
-            csv_field(r.dat_file_id.as_deref().unwrap_or("")),
-            csv_field(r.dat_version.as_deref().unwrap_or("")),
-            csv_field(r.match_algo.as_deref().unwrap_or("")),
-            csv_field(r.detail.as_deref().unwrap_or("")),
-            r.size_bytes,
-            status_str(r.status),
-            r.elapsed_ms,
-            csv_field(r.error.as_deref().unwrap_or("")),
-        )?;
-    }
-    Ok(())
-}
-
-#[derive(Serialize)]
-struct DatReportDoc<'a> {
-    files: &'a [DatReportRecord],
-    totals: &'a ReportTotals,
-}
-
-fn write_dat_json<W: Write>(
-    w: &mut W,
-    records: &[DatReportRecord],
-    totals: &ReportTotals,
-) -> Result<()> {
-    let doc = DatReportDoc {
-        files: records,
-        totals,
-    };
-    serde_json::to_writer_pretty(&mut *w, &doc)?;
-    writeln!(w)?;
-    Ok(())
-}
-
-fn write_dat_html<W: Write>(
-    w: &mut W,
-    records: &[DatReportRecord],
-    totals: &ReportTotals,
-) -> Result<()> {
-    writeln!(w, "<!DOCTYPE html>")?;
-    writeln!(w, "<html lang=\"en\">")?;
-    writeln!(w, "<head>")?;
-    writeln!(w, "<meta charset=\"utf-8\">")?;
-    writeln!(w, "<title>rom-converto dat report</title>")?;
-    writeln!(
-        w,
-        "<style>body{{font-family:sans-serif;margin:1.5rem}}\
-table{{border-collapse:collapse;width:100%}}\
-th,td{{border:1px solid #ccc;padding:4px 8px;text-align:left;font-size:14px}}\
-thead th{{background:#f0f0f0}}\
-tfoot td{{font-weight:bold;background:#f7f7f7}}\
-td.num{{text-align:right;font-variant-numeric:tabular-nums}}</style>"
-    )?;
-    writeln!(w, "</head>")?;
-    writeln!(w, "<body>")?;
-    writeln!(w, "<h1>Dat report</h1>")?;
-    writeln!(w, "<table>")?;
-    writeln!(w, "<thead><tr>")?;
-    for col in [
-        "Path",
-        "Verdict",
-        "Game",
-        "Game id",
-        "Platform",
-        "Signature group",
-        "DAT file",
-        "DAT file id",
-        "Dat version",
-        "Match algo",
-        "Detail",
-        "Size",
-        "Status",
-        "Elapsed",
-        "Error",
-    ] {
-        write!(w, "<th>{col}</th>")?;
-    }
-    writeln!(w, "</tr></thead>")?;
-    writeln!(w, "<tbody>")?;
-    for r in records {
-        write!(w, "<tr>")?;
-        write!(w, "<td>{}</td>", html_escape(&r.path))?;
-        write!(w, "<td>{}</td>", html_escape(&r.verdict))?;
-        write!(
-            w,
-            "<td>{}</td>",
-            html_escape(r.game_name.as_deref().unwrap_or(""))
-        )?;
-        write!(
-            w,
-            "<td>{}</td>",
-            html_escape(r.game_id.as_deref().unwrap_or(""))
-        )?;
-        write!(
-            w,
-            "<td>{}</td>",
-            html_escape(r.platform.as_deref().unwrap_or(""))
-        )?;
-        write!(
-            w,
-            "<td>{}</td>",
-            html_escape(r.signature_group.as_deref().unwrap_or(""))
-        )?;
-        write!(
-            w,
-            "<td>{}</td>",
-            html_escape(r.dat_file_name.as_deref().unwrap_or(""))
-        )?;
-        write!(
-            w,
-            "<td>{}</td>",
-            html_escape(r.dat_file_id.as_deref().unwrap_or(""))
-        )?;
-        write!(
-            w,
-            "<td>{}</td>",
-            html_escape(r.dat_version.as_deref().unwrap_or(""))
-        )?;
-        write!(
-            w,
-            "<td>{}</td>",
-            html_escape(r.match_algo.as_deref().unwrap_or(""))
-        )?;
-        write!(
-            w,
-            "<td>{}</td>",
-            html_escape(r.detail.as_deref().unwrap_or(""))
-        )?;
-        write!(w, "<td class=\"num\">{}</td>", format_bytes(r.size_bytes))?;
-        write!(w, "<td>{}</td>", status_str(r.status))?;
-        write!(w, "<td class=\"num\">{} ms</td>", r.elapsed_ms)?;
-        write!(
-            w,
-            "<td>{}</td>",
-            html_escape(r.error.as_deref().unwrap_or(""))
-        )?;
-        writeln!(w, "</tr>")?;
-    }
-    writeln!(w, "</tbody>")?;
-    writeln!(w, "<tfoot><tr>")?;
-    write!(
-        w,
-        "<td>{} files ({} ok, {} skipped, {} failed)</td>",
-        totals.total_files, totals.ok, totals.skipped, totals.failed
-    )?;
-    for _ in 0..10 {
-        write!(w, "<td></td>")?;
-    }
-    write!(
-        w,
-        "<td class=\"num\">{}</td>",
-        format_bytes(totals.total_input_bytes)
-    )?;
-    write!(w, "<td></td>")?;
-    write!(w, "<td class=\"num\">{} ms</td>", totals.elapsed_ms)?;
-    write!(w, "<td></td>")?;
-    writeln!(w, "</tr></tfoot>")?;
-    writeln!(w, "</table>")?;
-    writeln!(w, "</body>")?;
-    writeln!(w, "</html>")?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -793,7 +603,7 @@ mod tests {
         cancel.cancel();
 
         assert!(
-            write_report_cancellable(
+            write_report(
                 &path,
                 &[ok_record()],
                 &ReportTotals::default(),
@@ -812,7 +622,7 @@ mod tests {
         let path = dir.path().join("report.json");
         std::fs::write(&path, b"existing").unwrap();
 
-        write_report_cancellable(
+        write_report(
             &path,
             &[ok_record()],
             &ReportTotals::default(),
@@ -829,7 +639,7 @@ mod tests {
     fn render(records: &[ReportRecord], totals: &ReportTotals, format: ReportFormat) -> String {
         let mut buf = Vec::new();
         match format {
-            ReportFormat::Csv => write_csv(&mut buf, records, totals).unwrap(),
+            ReportFormat::Csv => write_csv(&mut buf, records).unwrap(),
             ReportFormat::Json => write_json(&mut buf, records, totals).unwrap(),
             ReportFormat::Html => write_html(&mut buf, records, totals).unwrap(),
         }
@@ -840,7 +650,7 @@ mod tests {
     fn csv_header_and_one_ok_row() {
         let out = render(&[ok_record()], &ReportTotals::default(), ReportFormat::Csv);
         let mut lines = out.lines();
-        assert_eq!(lines.next().unwrap(), CSV_HEADER);
+        assert_eq!(lines.next().unwrap(), ReportRecord::CSV_HEADER);
         let row = lines.next().unwrap();
         assert_eq!(
             row, "in.iso,out.cso,compress,ok,1048576,262144,75.0,1500,",
@@ -1130,9 +940,9 @@ mod tests {
         let totals = ReportTotals::default();
         let mut buf = Vec::new();
         match format {
-            ReportFormat::Csv => write_hash_csv(&mut buf, records).unwrap(),
-            ReportFormat::Json => write_hash_json(&mut buf, records, &totals).unwrap(),
-            ReportFormat::Html => write_hash_html(&mut buf, records, &totals).unwrap(),
+            ReportFormat::Csv => write_csv(&mut buf, records).unwrap(),
+            ReportFormat::Json => write_json(&mut buf, records, &totals).unwrap(),
+            ReportFormat::Html => write_html(&mut buf, records, &totals).unwrap(),
         }
         String::from_utf8(buf).unwrap()
     }
@@ -1141,7 +951,7 @@ mod tests {
     fn hash_csv_header_and_empty_cells() {
         let out = render_hash(&[hash_ok_record()], ReportFormat::Csv);
         let mut lines = out.lines();
-        assert_eq!(lines.next().unwrap(), HASH_CSV_HEADER);
+        assert_eq!(lines.next().unwrap(), HashReportRecord::CSV_HEADER);
         let row = lines.next().unwrap();
         assert!(
             row.contains("a9993e364706816aba3e25717850c26c9cd0d89d,,,2048,ok,12,"),
@@ -1199,9 +1009,9 @@ mod tests {
         let totals = ReportTotals::default();
         let mut buf = Vec::new();
         match format {
-            ReportFormat::Csv => write_dat_csv(&mut buf, records).unwrap(),
-            ReportFormat::Json => write_dat_json(&mut buf, records, &totals).unwrap(),
-            ReportFormat::Html => write_dat_html(&mut buf, records, &totals).unwrap(),
+            ReportFormat::Csv => write_csv(&mut buf, records).unwrap(),
+            ReportFormat::Json => write_json(&mut buf, records, &totals).unwrap(),
+            ReportFormat::Html => write_html(&mut buf, records, &totals).unwrap(),
         }
         String::from_utf8(buf).unwrap()
     }
@@ -1210,7 +1020,7 @@ mod tests {
     fn dat_csv_header_and_one_row() {
         let out = render_dat(&[dat_ok_record()], ReportFormat::Csv);
         let mut lines = out.lines();
-        assert_eq!(lines.next().unwrap(), DAT_CSV_HEADER);
+        assert_eq!(lines.next().unwrap(), DatReportRecord::CSV_HEADER);
         let row = lines.next().unwrap();
         assert_eq!(
             row,
@@ -1292,6 +1102,96 @@ mod tests {
         let out = render_dat(&[rec], ReportFormat::Html);
         assert!(out.contains("&lt;script&gt;"), "{out}");
         assert!(!out.contains("<script>"), "{out}");
+    }
+
+    /// Golden: the full HTML document for one row, so a change to the shared
+    /// renderer that alters a byte of output fails here.
+    #[test]
+    fn html_golden_conversion_row() {
+        assert_eq!(
+            render(&[ok_record()], &ReportTotals::default(), ReportFormat::Html),
+            r##"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>rom-converto run report</title>
+<style>body{font-family:sans-serif;margin:1.5rem}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ccc;padding:4px 8px;text-align:left;font-size:14px}thead th{background:#f0f0f0}tfoot td{font-weight:bold;background:#f7f7f7}td.num{text-align:right;font-variant-numeric:tabular-nums}</style>
+</head>
+<body>
+<h1>Run report</h1>
+<table>
+<thead><tr>
+<th>Input</th><th>Output</th><th>Operation</th><th>Status</th><th>Input size</th><th>Output size</th><th>Ratio</th><th>Elapsed</th><th>Error</th></tr></thead>
+<tbody>
+<tr><td>in.iso</td><td>out.cso</td><td>compress</td><td>ok</td><td class="num">1.0 MiB</td><td class="num">256.0 KiB</td><td class="num">75.0%</td><td class="num">1500 ms</td><td></td></tr>
+</tbody>
+<tfoot><tr>
+<td>0 files (0 ok, 0 skipped, 0 failed)</td><td></td><td></td><td>totals</td><td class="num">0 B</td><td class="num">0 B</td><td></td><td class="num">0 ms</td><td></td></tr></tfoot>
+</table>
+</body>
+</html>
+"##
+        );
+    }
+
+    /// Golden: the full HTML document for one row, so a change to the shared
+    /// renderer that alters a byte of output fails here.
+    #[test]
+    fn html_golden_hash_row() {
+        assert_eq!(
+            render_hash(&[hash_ok_record()], ReportFormat::Html),
+            r##"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>rom-converto hash report</title>
+<style>body{font-family:sans-serif;margin:1.5rem}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ccc;padding:4px 8px;text-align:left;font-size:14px}thead th{background:#f0f0f0}tfoot td{font-weight:bold;background:#f7f7f7}td.num{text-align:right;font-variant-numeric:tabular-nums}</style>
+</head>
+<body>
+<h1>Hash report</h1>
+<table>
+<thead><tr>
+<th>Path</th><th>CRC32</th><th>SHA1</th><th>MD5</th><th>SHA256</th><th>Size</th><th>Status</th><th>Elapsed</th><th>Error</th></tr></thead>
+<tbody>
+<tr><td>game.iso</td><td>352441c2</td><td>a9993e364706816aba3e25717850c26c9cd0d89d</td><td></td><td></td><td class="num">2.0 KiB</td><td>ok</td><td class="num">12 ms</td><td></td></tr>
+</tbody>
+<tfoot><tr>
+<td>0 files (0 ok, 0 failed)</td><td></td><td></td><td></td><td>totals</td><td class="num">0 B</td><td></td><td class="num">0 ms</td><td></td></tr></tfoot>
+</table>
+</body>
+</html>
+"##
+        );
+    }
+
+    /// Golden: the full HTML document for one row, so a change to the shared
+    /// renderer that alters a byte of output fails here.
+    #[test]
+    fn html_golden_dat_row() {
+        assert_eq!(
+            render_dat(&[dat_ok_record()], ReportFormat::Html),
+            r##"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>rom-converto dat report</title>
+<style>body{font-family:sans-serif;margin:1.5rem}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ccc;padding:4px 8px;text-align:left;font-size:14px}thead th{background:#f0f0f0}tfoot td{font-weight:bold;background:#f7f7f7}td.num{text-align:right;font-variant-numeric:tabular-nums}</style>
+</head>
+<body>
+<h1>Dat report</h1>
+<table>
+<thead><tr>
+<th>Path</th><th>Verdict</th><th>Game</th><th>Game id</th><th>Platform</th><th>Signature group</th><th>DAT file</th><th>DAT file id</th><th>Dat version</th><th>Match algo</th><th>Detail</th><th>Size</th><th>Status</th><th>Elapsed</th><th>Error</th></tr></thead>
+<tbody>
+<tr><td>game.chd</td><td>verified</td><td>Some Game (USA)</td><td>g-1</td><td>PlayStation</td><td>Redump</td><td>Sony - PlayStation - Games</td><td>d-1</td><td>2026-06-01</td><td>sha1</td><td></td><td class="num">667.6 MiB</td><td>ok</td><td class="num">850 ms</td><td></td></tr>
+</tbody>
+<tfoot><tr>
+<td>0 files (0 ok, 0 skipped, 0 failed)</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td class="num">0 B</td><td></td><td class="num">0 ms</td><td></td></tr></tfoot>
+</table>
+</body>
+</html>
+"##
+        );
     }
 
     #[test]

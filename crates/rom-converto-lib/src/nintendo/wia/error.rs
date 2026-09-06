@@ -46,8 +46,8 @@ pub enum WiaError {
     Decode(String),
 
     /// The operation was cancelled by the caller.
-    #[error("operation cancelled")]
-    Cancelled,
+    #[error("{0}")]
+    Cancelled(#[from] crate::util::Cancelled),
 
     #[error("{0}")]
     Custom(String),

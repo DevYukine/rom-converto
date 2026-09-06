@@ -2,11 +2,9 @@
 //! dumpers produce.
 
 use super::ascii_trim;
+use crate::util::hash::CRC32;
 use anyhow::{Result, anyhow};
-use crc::{CRC_32_ISO_HDLC, Crc};
 use serde::{Deserialize, Serialize};
-
-static CRC32_ISO_HDLC: Crc<u32> = Crc::<u32>::new(&CRC_32_ISO_HDLC);
 
 /// The header plus the IPL3 boot code, the region the parser needs in
 /// native byte order.
@@ -47,7 +45,7 @@ pub fn parse(data: &[u8]) -> Result<N64Info> {
         _ => return Err(anyhow!("n64: unrecognized byte order signature")),
     };
 
-    let bootcode_crc32 = CRC32_ISO_HDLC.checksum(&head[0x40..HEAD_LEN]);
+    let bootcode_crc32 = CRC32.checksum(&head[0x40..HEAD_LEN]);
 
     Ok(N64Info {
         byte_order: byte_order.to_string(),

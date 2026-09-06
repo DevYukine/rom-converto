@@ -1,10 +1,10 @@
 use crate::cd::ecc::{has_valid_ecc, restore_sector_ecc, strip_sector_ecc};
 use crate::cd::{FRAME_SIZE, SECTOR_SIZE, SUBCODE_SIZE};
 use crate::chd::compression::cdfl::CD_SYNC_HEADER;
-use crate::chd::compression::flac::FlacCompressor;
 use crate::chd::compression::huffman8::huffman8_encode;
 use crate::chd::compression::lzma::LzmaEncoder;
 use crate::chd::error::{ChdError, ChdResult};
+use crate::util::deflate::{deflate_decompress_with, deflate_with_reset};
 use byteorder::{BigEndian, ByteOrder};
 #[cfg(test)]
 use flate2::Compression;
@@ -12,8 +12,6 @@ use flate2::Compression;
 use flate2::read::DeflateDecoder;
 #[cfg(test)]
 use flate2::write::DeflateEncoder;
-use std::fmt::Debug;
-use std::io;
 #[cfg(test)]
 use std::io::{Read, Write};
 
@@ -219,21 +217,6 @@ pub enum ChdCompression {
     None = 4,   // Uncompressed
     Self_ = 5,  // Same as another hunk
     Parent = 6, // From parent CHD
-}
-
-/// A hunk compressor: encodes raw hunk bytes and reports the codec's
-/// chdman fourcc tag.
-#[allow(dead_code)] // Trait methods are part of the CHD codec API
-pub trait ChdCompressor: Debug {
-    /// Human-readable compressor name, used in diagnostics.
-    fn name(&self) -> &'static str;
-    /// The codec's fourcc tag as stored in the CHD header's compressor slots.
-    fn tag_bytes(&self) -> [u8; 4];
-    /// Compresses one hunk's raw bytes.
-    ///
-    /// # Errors
-    /// Returns an error if the codec cannot compress this hunk.
-    fn compress(&self, data: &[u8]) -> ChdResult<Vec<u8>>;
 }
 
 // The plain one-shot compress_cd_hunk/decompress_cd_hunk/deflate_*
@@ -603,34 +586,11 @@ fn compress_raw_codec(
             let mut out = Vec::new();
             huffman8_encode(hunk, &mut out).ok().map(|()| out)
         }
-        ChdCodec::Flac => FlacCompressor.compress(hunk).ok(),
+        ChdCodec::Flac => flac::flac_compress(hunk).ok(),
         ChdCodec::Cdlz | ChdCodec::Cdzl | ChdCodec::Cdfl | ChdCodec::Cdzs | ChdCodec::AvHuff => {
             None
         }
     }
-}
-
-pub(crate) fn deflate_with_reset(
-    compressor: &mut flate2::Compress,
-    data: &[u8],
-) -> ChdResult<Vec<u8>> {
-    compressor.reset();
-    // Deflate worst case is slightly larger than input
-    let max_out = data.len() + data.len() / 100 + 600;
-    let mut output = vec![0u8; max_out];
-    let before_out = compressor.total_out();
-    let status = compressor
-        .compress(data, &mut output, flate2::FlushCompress::Finish)
-        .map_err(|e| io::Error::other(format!("deflate compress error: {e}")))?;
-    match status {
-        flate2::Status::StreamEnd => {}
-        _ => {
-            return Err(io::Error::other("deflate compression did not finish in one call").into());
-        }
-    }
-    let written = (compressor.total_out() - before_out) as usize;
-    output.truncate(written);
-    Ok(output)
 }
 
 fn assemble_cd_output(
@@ -679,7 +639,11 @@ impl RawDecoders {
     ) -> ChdResult<Vec<u8>> {
         match codec {
             ChdCodec::Lzma => self.lzma.decompress(data, output_len),
-            ChdCodec::Zlib => deflate_decompress_with(&mut self.deflate, data, output_len),
+            ChdCodec::Zlib => Ok(deflate_decompress_with(
+                &mut self.deflate,
+                data,
+                output_len,
+            )?),
             ChdCodec::Zstd => Ok(self.zstd.decompress(data, output_len)?),
             ChdCodec::Huff => huffman8::huffman8_decode(data, output_len),
             ChdCodec::Flac => flac::flac_decompress_chd_raw(data, output_len),
@@ -698,7 +662,11 @@ impl RawDecoders {
     ) -> ChdResult<Vec<u8>> {
         match stream {
             CdStream::Lzma => self.lzma.decompress(data, expected_len),
-            CdStream::Deflate => deflate_decompress_with(&mut self.deflate, data, expected_len),
+            CdStream::Deflate => Ok(deflate_decompress_with(
+                &mut self.deflate,
+                data,
+                expected_len,
+            )?),
             CdStream::Zstd => Ok(self.zstd.decompress(data, expected_len)?),
         }
     }
@@ -847,28 +815,6 @@ fn interleave_cd_hunk(
         output.extend_from_slice(&base_bytes[base_offset..base_offset + SECTOR_SIZE]);
         output.extend_from_slice(&subcode[subcode_offset..subcode_offset + SUBCODE_SIZE]);
     }
-    Ok(output)
-}
-
-pub(crate) fn deflate_decompress_with(
-    decompress: &mut flate2::Decompress,
-    src: &[u8],
-    expected_len: usize,
-) -> ChdResult<Vec<u8>> {
-    decompress.reset(false);
-    let mut output = vec![0u8; expected_len];
-    let before_out = decompress.total_out();
-    let status = decompress
-        .decompress(src, &mut output, flate2::FlushDecompress::Finish)
-        .map_err(|e| io::Error::other(format!("deflate decompress error: {e}")))?;
-    match status {
-        flate2::Status::StreamEnd | flate2::Status::Ok => {}
-        flate2::Status::BufError => {
-            return Err(io::Error::other("deflate decompress buffer error").into());
-        }
-    }
-    let written = (decompress.total_out() - before_out) as usize;
-    output.truncate(written);
     Ok(output)
 }
 

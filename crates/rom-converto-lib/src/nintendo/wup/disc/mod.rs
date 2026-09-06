@@ -93,7 +93,6 @@ pub mod sector_stream;
 pub mod wud_reader;
 pub mod wux_reader;
 
-pub use compress::compress_disc_title;
 pub use disc_key::{DiscKey, load_disc_key};
 pub use embedded_keys::{embedded_key_by_name, embedded_keys};
 pub use meta_source::DiscMetaSource;

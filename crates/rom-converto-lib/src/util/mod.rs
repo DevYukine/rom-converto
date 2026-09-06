@@ -3,8 +3,11 @@
 //! templating, and the worker pool that drives compression on background
 //! threads.
 
+pub mod aes;
 pub mod archive;
+pub mod bytes;
 pub mod conflict;
+pub mod deflate;
 pub mod footgun;
 pub mod fs;
 pub mod group_reader;
@@ -32,22 +35,18 @@ pub use footgun::{
 };
 pub use fs::{DEFAULT_SPACE_HEADROOM, available_space, space_shortfall};
 pub use hash::{
-    ChecksumBounds, FileDigests, HashAlgo, hash_file, hash_file_cancellable, parse_algos,
-    parse_checksum_bound,
+    ChecksumBounds, FileDigests, HashAlgo, hash_file, parse_algos, parse_checksum_bound,
 };
 pub use hash_cache::{CachedTrack, CueDigests, HashCache};
-pub use path::{contract_tilde, expand_tilde};
+pub use path::{contract_tilde, expand_tilde, with_tag};
 pub use plan::{PlanDecision, PlanLine, classify};
 pub use report::{
     HashReportRecord, ReportFormat, ReportRecord, ReportRecordInput, ReportTotals,
-    write_dat_report_cancellable, write_hash_report, write_hash_report_cancellable, write_report,
-    write_report_cancellable,
+    write_dat_report, write_hash_report, write_report,
 };
 pub use tally::{FileEntry, FileStatus, Tally, TallyDirection, format_bytes};
 pub use template::{TemplateTokens, apply_template};
-pub use verify::{
-    OutputVerify, VerifyOutcome, verify_existing_output, verify_existing_output_cancellable,
-};
+pub use verify::{OutputVerify, VerifyOutcome, verify_existing_output};
 
 pub const BYTES_PER_MB: f64 = 1_000_000.0;
 
@@ -56,6 +55,28 @@ pub const BYTES_PER_MB: f64 = 1_000_000.0;
 /// observe it at chunk/hunk/block boundaries and stop with the codec's
 /// `Cancelled` error.
 pub type CancelToken = tokio_util::sync::CancellationToken;
+
+/// The cancellation error itself. Every module error enum wraps it in a
+/// `Cancelled` variant that keeps it as `source()`, so [`Cancelled::in_chain`]
+/// finds it by type wherever it surfaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("operation cancelled")]
+pub struct Cancelled;
+
+impl Cancelled {
+    /// True when any error in `err`'s chain is a cancellation, including
+    /// one carried as the payload of an `io::Error` (std does not expose
+    /// the payload through `source()`, so it must be unwrapped explicitly).
+    pub fn in_chain(err: &anyhow::Error) -> bool {
+        err.chain().any(|cause| {
+            cause.is::<Cancelled>()
+                || cause
+                    .downcast_ref::<std::io::Error>()
+                    .and_then(std::io::Error::get_ref)
+                    .is_some_and(|inner| inner.is::<Cancelled>())
+        })
+    }
+}
 
 /// A sibling temp path in the output directory so an interrupted write
 /// never lands on the final name and a pre-existing overwrite target
@@ -88,6 +109,26 @@ pub(crate) fn publish_temp(
         temp.persist_noclobber(output)
     };
     result.map(|_| ()).map_err(|err| err.error)
+}
+
+/// Write `output` through [`scratch_output_path`]: `write` fills a sibling
+/// temp file that is published to the final name only once it returns, so a
+/// failed or interrupted write leaves the existing file untouched.
+pub(crate) fn atomic_write<E, F>(
+    output: &std::path::Path,
+    overwrite: bool,
+    write: F,
+) -> Result<(), E>
+where
+    E: From<std::io::Error>,
+    F: FnOnce(&mut std::fs::File) -> Result<(), E>,
+{
+    let temp = scratch_output_path(output)?;
+    let mut file = std::fs::File::create(&temp)?;
+    write(&mut file)?;
+    drop(file);
+    publish_temp(temp, output, overwrite)?;
+    Ok(())
 }
 
 pub(crate) fn backup_existing(
@@ -230,22 +271,53 @@ impl ProgressReporter for AtomicProgress {
     fn finish(&self) {}
 }
 
-/// Like [`await_with_progress`], but also watches `cancel`. The blocking
-/// pipeline observes the same token at its own loop boundaries and
-/// returns the codec's `Cancelled` error promptly; this helper only
-/// covers the rare race where the pipeline finishes a unit just as the
-/// token fires, mapping any non-error outcome to `on_cancel()`. The
-/// `on_cancel` closure performs the partial-output cleanup and returns
-/// the codec's `Cancelled` variant.
+/// Drive a blocking writer against a scratch sibling of `output`, relaying
+/// its byte counter to `progress`, and publish the scratch file on success.
+/// On any error, cancellation included, the scratch file is removed when the
+/// [`tempfile::TempPath`] drops.
+pub(crate) async fn run_scratch_write<T, E>(
+    output: &std::path::Path,
+    overwrite: bool,
+    progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
+    job: impl FnOnce(
+        std::path::PathBuf,
+        std::sync::Arc<std::sync::atomic::AtomicU64>,
+        CancelToken,
+    ) -> Result<T, E>
+    + Send
+    + 'static,
+) -> Result<T, E>
+where
+    T: Send + 'static,
+    E: From<Cancelled> + From<std::io::Error> + From<tokio::task::JoinError> + Send + 'static,
+{
+    let write_path = scratch_output_path(output)?;
+    let bytes_done = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let handle = tokio::task::spawn_blocking({
+        let write_owned = write_path.to_path_buf();
+        let bytes_done = bytes_done.clone();
+        let cancel = cancel.clone();
+        move || job(write_owned, bytes_done, cancel)
+    });
+    let value = await_with_progress_cancel(progress, &bytes_done, handle, cancel).await?;
+    publish_temp(write_path, output, overwrite)?;
+    Ok(value)
+}
+
+/// Poll a blocking task, draining `bytes_done` into `progress` until it
+/// finishes, while also watching `cancel`. The blocking pipeline observes
+/// the same token at its own loop boundaries and returns `Cancelled`
+/// promptly; this helper only covers the rare race where the pipeline
+/// finishes a unit just as the token fires.
 pub(crate) async fn await_with_progress_cancel<T, E>(
     progress: &dyn ProgressReporter,
     bytes_done: &std::sync::Arc<std::sync::atomic::AtomicU64>,
     mut handle: tokio::task::JoinHandle<Result<T, E>>,
     cancel: &CancelToken,
-    on_cancel: impl FnOnce() -> E,
 ) -> Result<T, E>
 where
-    E: From<tokio::task::JoinError>,
+    E: From<Cancelled> + From<tokio::task::JoinError>,
 {
     use std::sync::atomic::Ordering;
 
@@ -268,7 +340,7 @@ where
 
     let value = result?;
     if value.is_ok() && cancel.is_cancelled() {
-        return Err(on_cancel());
+        return Err(Cancelled.into());
     }
     value
 }
@@ -282,6 +354,21 @@ mod tests {
     #[test]
     fn no_progress_set_phase_is_a_no_op() {
         NoProgress.set_phase("anything");
+    }
+
+    #[test]
+    fn cancelled_is_found_through_module_enums_and_io_payloads() {
+        use super::Cancelled;
+        let typed =
+            anyhow::Error::from(crate::chd::error::ChdError::from(Cancelled)).context("outer");
+        assert!(Cancelled::in_chain(&typed));
+        let io = anyhow::Error::from(std::io::Error::new(
+            std::io::ErrorKind::Interrupted,
+            Cancelled,
+        ));
+        assert!(Cancelled::in_chain(&io));
+        let other = anyhow::anyhow!("operation cancelled");
+        assert!(!Cancelled::in_chain(&other));
     }
 
     #[test]

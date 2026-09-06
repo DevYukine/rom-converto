@@ -14,7 +14,8 @@
 use crate::nintendo::ctr::z3ds::error::{Z3dsError, Z3dsResult};
 use crate::nintendo::ctr::z3ds::seekable::{FrameEntry, write_seek_table};
 use crate::util::CancelToken;
-use crate::util::worker_pool::{Pool, Worker, drive, parallelism};
+use crate::util::Cancelled;
+use crate::util::worker_pool::{Pool, PoolChannelClosed, Worker, drive, parallelism};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -151,7 +152,7 @@ pub(super) fn encode_seekable(
             // produce: read the next frame from the sequential reader.
             |_seq| -> Z3dsResult<Z3dsCompressWork> {
                 if cancel.is_cancelled() {
-                    return Err(Z3dsError::Cancelled);
+                    return Err(Cancelled.into());
                 }
                 let uncompressed = read_frame(reader, max_frame_size)?.unwrap_or_default();
                 Ok(Z3dsCompressWork { uncompressed })
@@ -167,7 +168,7 @@ pub(super) fn encode_seekable(
                 bytes_done.fetch_add(out.uncompressed_size as u64, Ordering::Relaxed);
                 write_tx
                     .send(out.compressed)
-                    .map_err(|_| Z3dsError::WorkerPoolClosed)?;
+                    .map_err(|_| Z3dsError::WorkerPoolClosed(PoolChannelClosed))?;
                 Ok(())
             },
         );

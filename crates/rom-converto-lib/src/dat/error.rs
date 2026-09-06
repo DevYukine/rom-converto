@@ -23,8 +23,8 @@ pub enum DatError {
     Container(String),
     #[error("{0}")]
     InvalidInput(String),
-    #[error("operation cancelled")]
-    Cancelled,
+    #[error("{0}")]
+    Cancelled(#[from] crate::util::Cancelled),
 }
 
 /// Result alias for Playmatch API client operations.

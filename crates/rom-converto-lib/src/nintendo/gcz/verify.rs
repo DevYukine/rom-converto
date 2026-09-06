@@ -15,6 +15,7 @@ use super::error::{GczError, GczResult};
 use super::format::adler32;
 use super::reader::GczLayout;
 use crate::util::CancelToken;
+use crate::util::Cancelled;
 use crate::util::worker_pool::{Pool, Worker, drive, parallelism};
 
 struct HashCheckWork {
@@ -59,7 +60,7 @@ pub fn verify_gcz_blocking(
         parallelism() * 2,
         |i| {
             if cancel.is_cancelled() {
-                return Err(GczError::Cancelled);
+                return Err(Cancelled.into());
             }
             let (off, len, _) = layout.stored_extent(i)?;
             let mut stored = vec![0u8; len as usize];

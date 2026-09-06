@@ -21,11 +21,14 @@ use crate::chd::map::{
 };
 use crate::chd::swap_audio_sector;
 use crate::util::CancelToken;
+use crate::util::Cancelled;
 use crate::util::hash::MultiHasher;
 use crate::util::pread::file_read_exact_at;
-use crate::util::worker_pool::{Pool, Worker, drive, parallelism};
+use crate::util::worker_pool::{
+    Pool, PoolChannelClosed, Worker, drive, parallelism, with_writer_thread,
+};
 use sha1::{Digest, Sha1};
-use std::io::{BufWriter, Write};
+use std::io::BufWriter;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -296,48 +299,34 @@ where
     let hunk_count = map.len() as u64;
     let max_in_flight = parallelism() * 2;
 
-    let (write_tx, write_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(max_in_flight * 2);
-
-    let scope_result: ChdResult<()> = std::thread::scope(|s| {
-        let writer_slot: &mut BufWriter<std::fs::File> = writer;
-        let writer_handle = s.spawn(move || -> ChdResult<()> {
-            while let Ok(bytes) = write_rx.recv() {
-                writer_slot.write_all(&bytes)?;
-            }
-            Ok(())
-        });
-
-        let drive_result = drive(
-            pool,
-            hunk_count,
-            max_in_flight,
-            |chunk_idx| -> ChdResult<ChdExtractWork> {
-                if cancel.is_cancelled() {
-                    return Err(ChdError::Cancelled);
-                }
-                let entry = resolve_entry(map, chunk_idx as u32)?;
-                Ok(ChdExtractWork { entry })
-            },
-            |seq, out| -> ChdResult<()> {
-                let bytes = shape(seq, out)?;
-                let len = bytes.len() as u64;
-                write_tx
-                    .send(bytes)
-                    .map_err(|_| ChdError::WorkerPoolClosed)?;
-                bytes_done.fetch_add(len, Ordering::Relaxed);
-                Ok(())
-            },
-        );
-
-        drop(write_tx);
-        let writer_result = writer_handle
-            .join()
-            .unwrap_or_else(|_| Err(ChdError::WorkerPoolPanic));
-        drive_result?;
-        writer_result
-    });
-
-    scope_result
+    with_writer_thread(
+        writer,
+        max_in_flight * 2,
+        ChdError::WorkerPoolPanic,
+        |write_tx| {
+            drive(
+                pool,
+                hunk_count,
+                max_in_flight,
+                |chunk_idx| -> ChdResult<ChdExtractWork> {
+                    if cancel.is_cancelled() {
+                        return Err(Cancelled.into());
+                    }
+                    let entry = resolve_entry(map, chunk_idx as u32)?;
+                    Ok(ChdExtractWork { entry })
+                },
+                |seq, out| -> ChdResult<()> {
+                    let bytes = shape(seq, out)?;
+                    let len = bytes.len() as u64;
+                    write_tx
+                        .send(bytes)
+                        .map_err(|_| ChdError::WorkerPoolClosed(PoolChannelClosed))?;
+                    bytes_done.fetch_add(len, Ordering::Relaxed);
+                    Ok(())
+                },
+            )
+        },
+    )
 }
 
 /// Verify-side variant: same pool shape but instead of writing
@@ -370,7 +359,7 @@ pub(crate) fn verify_hunks(
         max_in_flight,
         |chunk_idx| -> ChdResult<ChdExtractWork> {
             if cancel.is_cancelled() {
-                return Err(ChdError::Cancelled);
+                return Err(Cancelled.into());
             }
             let entry = resolve_entry(map, chunk_idx as u32)?;
             Ok(ChdExtractWork { entry })
@@ -442,7 +431,7 @@ pub(crate) fn digest_hunks_per_track(
         max_in_flight,
         |chunk_idx| -> ChdResult<ChdExtractWork> {
             if cancel.is_cancelled() {
-                return Err(ChdError::Cancelled);
+                return Err(Cancelled.into());
             }
             let entry = resolve_entry(map, chunk_idx as u32)?;
             Ok(ChdExtractWork { entry })
@@ -496,7 +485,7 @@ pub(crate) fn digest_hunks_dvd(
         max_in_flight,
         |chunk_idx| -> ChdResult<ChdExtractWork> {
             if cancel.is_cancelled() {
-                return Err(ChdError::Cancelled);
+                return Err(Cancelled.into());
             }
             let entry = resolve_entry(map, chunk_idx as u32)?;
             Ok(ChdExtractWork { entry })

@@ -37,8 +37,6 @@ const PART_CACHE_CAP: usize = 4;
 /// touched by each call, caching recently decoded raw chunks and
 /// partition clusters.
 pub struct RvzDiscReader {
-    #[allow(dead_code)]
-    head: WiaFileHead,
     disc: WiaDisc,
     parts: Vec<WiaPart>,
     raw_data: Vec<WiaRawData>,
@@ -133,7 +131,6 @@ impl RvzDiscReader {
         let iso_size = head.iso_file_size;
 
         Ok(Self {
-            head,
             disc,
             parts,
             raw_data,

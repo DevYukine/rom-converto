@@ -6,30 +6,17 @@ use crate::nintendo::ctr::z3ds::error::{Z3dsError, Z3dsResult};
 use crate::nintendo::ctr::z3ds::models::Z3dsHeader;
 use crate::util::hash::{FileDigests, HashAlgo};
 use crate::util::worker_pool::{Pool, parallelism};
-use crate::util::{
-    BYTES_PER_MB, CancelToken, ProgressReporter, await_with_progress_cancel, scratch_output_path,
-};
+use crate::util::{BYTES_PER_MB, CancelToken, ProgressReporter, run_scratch_write};
 use binrw::BinRead;
 use log::info;
 use std::io::{BufWriter, Cursor, Read};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::task;
 
-/// Decompresses a Z3DS container at `input` back to the original ROM at
-/// `output`.
+/// Restore the `.z3ds` archive at `input` to the original ROM at
+/// `output`; on cancel the partial output is removed.
 pub async fn decompress_rom(
-    input: &Path,
-    output: &Path,
-    progress: &dyn ProgressReporter,
-) -> Z3dsResult<()> {
-    decompress_rom_cancellable(input, output, progress, CancelToken::new()).await
-}
-
-/// Like [`decompress_rom`] but observes `cancel` at every frame boundary;
-/// on cancel the partial output is removed.
-pub async fn decompress_rom_cancellable(
     input: &Path,
     output: &Path,
     progress: &dyn ProgressReporter,
@@ -61,88 +48,64 @@ pub async fn decompress_rom_cancellable(
         ),
     );
 
-    // Relays progress out of the blocking thread, same pattern as compress_rom.
-    let bytes_done = Arc::new(AtomicU64::new(0));
-    let bytes_done_clone = bytes_done.clone();
-
-    let write_path = scratch_output_path(output)?;
     let input_owned = input.to_path_buf();
-    let write_owned = write_path.to_path_buf();
-    let cancel_bg = cancel.clone();
+    let expected_size = uncompressed_size;
+    let actual_size = run_scratch_write(
+        output,
+        true,
+        progress,
+        &cancel,
+        move |write_path, bytes_done, cancel| -> Z3dsResult<u64> {
+            // Re-reading the 32-byte header here is cheaper than shipping the parsed
+            // struct across the await.
+            let mut header_file = std::fs::File::open(&input_owned)?;
+            let mut header_buf = vec![0u8; 0x20];
+            header_file.read_exact(&mut header_buf)?;
+            let header = Z3dsHeader::read(&mut Cursor::new(&header_buf))?;
+            drop(header_file);
 
-    let handle = task::spawn_blocking(move || -> Z3dsResult<u64> {
-        // Re-reading the 32-byte header here is cheaper than shipping the parsed
-        // struct across the await.
-        let mut header_file = std::fs::File::open(&input_owned)?;
-        let mut header_buf = vec![0u8; 0x20];
-        header_file.read_exact(&mut header_buf)?;
-        let header = Z3dsHeader::read(&mut Cursor::new(&header_buf))?;
-        drop(header_file);
+            let payload_offset = header.header_size as u64 + header.metadata_size as u64;
+            let compressed_size = header.compressed_size;
+            let uncompressed_size = header.uncompressed_size;
 
-        let payload_offset = header.header_size as u64 + header.metadata_size as u64;
-        let compressed_size = header.compressed_size;
-        let uncompressed_size = header.uncompressed_size;
+            // Arc<File> so every worker can pread concurrently without fighting over
+            // a shared cursor.
+            let in_file = Arc::new(std::fs::File::open(&input_owned)?);
 
-        // Arc<File> so every worker can pread concurrently without fighting over
-        // a shared cursor.
-        let in_file = Arc::new(std::fs::File::open(&input_owned)?);
+            let work_items = plan_decompress_work(&in_file, payload_offset, compressed_size)?;
 
-        let work_items = plan_decompress_work(&in_file, payload_offset, compressed_size)?;
+            // `progress.start` was called with compressed_size + uncompressed_size,
+            // so the bar only reaches 100% if both halves get ticked. The driver ticks
+            // uncompressed_size per frame; the compressed half is pre-ticked here
+            // because workers pread their own frames.
+            bytes_done.fetch_add(compressed_size, Ordering::Relaxed);
 
-        // `progress.start` was called with compressed_size + uncompressed_size,
-        // so the bar only reaches 100% if both halves get ticked. The driver ticks
-        // uncompressed_size per frame; the compressed half is pre-ticked here
-        // because workers pread their own frames.
-        bytes_done_clone.fetch_add(compressed_size, Ordering::Relaxed);
+            let out_file = std::fs::File::create(&write_path)?;
+            let mut writer = BufWriter::with_capacity(4 * 1024 * 1024, out_file);
 
-        let out_file = std::fs::File::create(&write_owned)?;
-        let mut writer = BufWriter::with_capacity(4 * 1024 * 1024, out_file);
+            let n_threads = parallelism();
+            let workers = make_z3ds_decompress_workers(n_threads, &in_file)?;
+            let pool: Pool<Z3dsDecompressWork, Z3dsDecompressedFrame, Z3dsError> =
+                Pool::spawn(workers);
 
-        let n_threads = parallelism();
-        let workers = make_z3ds_decompress_workers(n_threads, &in_file)?;
-        let pool: Pool<Z3dsDecompressWork, Z3dsDecompressedFrame, Z3dsError> = Pool::spawn(workers);
+            decompress_frames(&pool, &mut writer, work_items, &bytes_done, &cancel)?;
 
-        decompress_frames(
-            &pool,
-            &mut writer,
-            work_items,
-            &bytes_done_clone,
-            &cancel_bg,
-        )?;
+            pool.shutdown();
+            writer
+                .into_inner()
+                .map_err(|e| std::io::Error::other(format!("flush decompress output: {e}")))?
+                .sync_all()?;
 
-        pool.shutdown();
-        writer
-            .into_inner()
-            .map_err(|e| std::io::Error::other(format!("flush decompress output: {e}")))?
-            .sync_all()?;
-
-        Ok(uncompressed_size)
-    });
-
-    let cleanup = {
-        let write_path = write_path.to_path_buf();
-        move || -> Z3dsError {
-            let _ = std::fs::remove_file(&write_path);
-            Z3dsError::Cancelled
-        }
-    };
-    let actual_size =
-        match await_with_progress_cancel(progress, &bytes_done, handle, &cancel, cleanup).await {
-            Ok(size) => size,
-            Err(err) => {
-                let _ = tokio::fs::remove_file(&write_path).await;
-                return Err(err);
+            if uncompressed_size != expected_size {
+                return Err(Z3dsError::DecompressedSizeMismatch {
+                    expected: expected_size,
+                    actual: uncompressed_size,
+                });
             }
-        };
-
-    if actual_size != uncompressed_size {
-        let _ = tokio::fs::remove_file(&write_path).await;
-        return Err(Z3dsError::DecompressedSizeMismatch {
-            expected: uncompressed_size,
-            actual: actual_size,
-        });
-    }
-    crate::util::publish_temp(write_path, output, true)?;
+            Ok(uncompressed_size)
+        },
+    )
+    .await?;
 
     info!(
         "Decompressed {} -> {} ({:.2} MB)",
@@ -155,7 +118,7 @@ pub async fn decompress_rom_cancellable(
 }
 
 /// Digests a Z3DS file's decoded content in one streaming pass, with no temp
-/// files: the blocking body of [`decompress_rom_cancellable`] with each frame
+/// files: the blocking body of [`decompress_rom`] with each frame
 /// folded into the hashers instead of a `BufWriter`. The returned `size_bytes`
 /// is the decoded ROM size.
 ///
@@ -231,10 +194,17 @@ mod tests {
         let original = fake_3dsx(2 * 1024 * 1024 + 123);
         tokio::fs::write(&raw, &original).await.unwrap();
 
-        compress_rom(&raw, &compressed, None, false, &NoProgress)
-            .await
-            .unwrap();
-        decompress_rom(&compressed, &decompressed, &NoProgress)
+        compress_rom(
+            &raw,
+            &compressed,
+            None,
+            false,
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+        decompress_rom(&compressed, &decompressed, &NoProgress, CancelToken::new())
             .await
             .unwrap();
 
@@ -249,7 +219,7 @@ mod tests {
             .unwrap()
             .unwrap()
         };
-        let direct = hash_file(&decompressed, &algos, &NoProgress).unwrap();
+        let direct = hash_file(&decompressed, &algos, &NoProgress, &CancelToken::new()).unwrap();
         assert_eq!(inner, direct);
         assert_eq!(inner.size_bytes, original.len() as u64);
     }

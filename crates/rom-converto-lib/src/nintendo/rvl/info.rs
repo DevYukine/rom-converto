@@ -14,6 +14,7 @@ use crate::nintendo::rvl::models::tmd::WiiTmd;
 use crate::nintendo::rvl::models::u8_archive::U8Archive;
 use crate::nintendo::rvl::partition::read_partition_info;
 use crate::nintendo::rvl::partition_reader::PartitionPayloadReader;
+use crate::util::bytes::cstr_ascii;
 use crate::util::pixel::{
     decode_cmpr_tiled, decode_i4_tiled, decode_rgb5a3_tiled, decode_rgba32_tiled, encode_png,
 };
@@ -155,7 +156,7 @@ fn read_disc_header<R: Read + Seek>(reader: &mut R) -> Result<DiscHeader> {
     let mut id = [0u8; 6];
     reader.seek(SeekFrom::Start(0))?;
     reader.read_exact(&mut id)?;
-    let game_id = read_ascii_trim(&id);
+    let game_id = cstr_ascii(&id);
     let maker_code = String::from_utf8_lossy(&id[4..6]).into_owned();
 
     reader.seek(SeekFrom::Start(0x06))?;
@@ -171,7 +172,7 @@ fn read_disc_header<R: Read + Seek>(reader: &mut R) -> Result<DiscHeader> {
     let mut name = [0u8; 64];
     reader.seek(SeekFrom::Start(0x20))?;
     reader.read_exact(&mut name)?;
-    let game_name = read_ascii_trim(&name);
+    let game_name = cstr_ascii(&name);
 
     reader.seek(SeekFrom::Start(0x4E000))?;
     let region_code = reader.read_u32::<BE>().unwrap_or(0xFFFF_FFFF);
@@ -192,11 +193,6 @@ fn read_disc_header<R: Read + Seek>(reader: &mut R) -> Result<DiscHeader> {
         game_name,
         region,
     })
-}
-
-fn read_ascii_trim(buf: &[u8]) -> String {
-    let end = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
-    buf[..end].iter().map(|&b| b as char).collect()
 }
 
 fn partition_kind_name(t: u32) -> &'static str {

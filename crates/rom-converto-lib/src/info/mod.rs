@@ -7,7 +7,7 @@
 //! supported file without knowing its format in advance.
 
 use crate::util::iso9660::DiscKind;
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -24,11 +24,11 @@ pub use crate::nintendo::nds::info::NdsInfo;
 pub use crate::nintendo::nx::info::NxInfo;
 pub use crate::nintendo::rvl::info::RvlInfo;
 pub use crate::nintendo::wup::info::WupInfo;
-pub use crate::ps3::Ps3Info;
 pub use crate::retro::RetroInfo;
+pub use crate::sony::disc::{DiscContent, PspInfo, PsxInfo};
+pub use crate::sony::ps3::Ps3Info;
 pub use crate::sony::psp::PbpInfo;
 pub use crate::sony::vita::{PkgInfo, VpkInfo};
-pub use crate::sony_disc::{DiscContent, PspInfo, PsxInfo};
 pub use image::Image;
 
 /// Per-console metadata read by [`read_info`], tagged with a `kind`
@@ -201,10 +201,10 @@ pub fn read_info(path: &Path, opts: &InfoOptions) -> Result<InfoResult> {
         }
         DetectedConsole::Xenon => Ok(InfoResult::Xenon(crate::microsoft::xenon::read_info(path)?)),
         DetectedConsole::Ps3 => Ok(InfoResult::Ps3(
-            crate::ps3::read_ps3_info(path).map_err(|e| anyhow!("ps3 info: {e}"))?,
+            crate::sony::ps3::read_ps3_info(path).context("ps3 info")?,
         )),
-        DetectedConsole::Psx => Ok(InfoResult::Psx(crate::sony_disc::read_psx_info(path)?)),
-        DetectedConsole::Psp => Ok(InfoResult::Psp(crate::sony_disc::read_psp_info(path)?)),
+        DetectedConsole::Psx => Ok(InfoResult::Psx(crate::sony::disc::read_psx_info(path)?)),
+        DetectedConsole::Psp => Ok(InfoResult::Psp(crate::sony::disc::read_psp_info(path)?)),
         DetectedConsole::LaserDisc => Ok(InfoResult::LaserDisc(crate::laserdisc::info::read_info(
             path,
         )?)),
@@ -405,7 +405,7 @@ fn sniff_disc_magic(path: &Path) -> Result<DetectedConsole> {
     }
 
     // PS3 discs are ISO9660; the reliable marker is /PS3_DISC.SFB in root.
-    if let Ok(true) = crate::ps3::fs::is_ps3_disc(&mut f) {
+    if let Ok(true) = crate::sony::ps3::fs::is_ps3_disc(&mut f) {
         return Ok(DetectedConsole::Ps3);
     }
 
@@ -1133,7 +1133,7 @@ mod tests {
 
     #[test]
     fn info_result_ps3_round_trips_via_json() {
-        use crate::ps3::info::Ps3RootEntry;
+        use crate::sony::ps3::info::Ps3RootEntry;
 
         let r = InfoResult::Ps3(Ps3Info {
             icon: Some(Image::new(vec![0x89, b'P', b'N', b'G'], 128, 128)),

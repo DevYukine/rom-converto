@@ -17,6 +17,7 @@ use std::io;
 use std::path::Path;
 
 use super::pread::file_read_exact_at;
+use crate::util::bytes::u32_le;
 
 const SECTOR: usize = 2048;
 const PVD_LBA: u32 = 16;
@@ -120,15 +121,15 @@ pub fn read_volume<S: SectorSource>(src: &mut S) -> io::Result<Option<Volume>> {
 
     // The PVD may under-report on some masters; trust whichever of the
     // declared volume size and the source's own extent is larger.
-    let volume_sectors = read_u32(&pvd, 80) as u64;
+    let volume_sectors = u32_le(&pvd, 80) as u64;
     let record = &pvd[156..190];
 
     let mut volume = Volume {
         kind: DiscKind::UnknownIso,
         volume_id: trimmed_ascii(&pvd[40..72]),
         total_sectors: volume_sectors.max(src.total_sectors()),
-        root_lba: read_u32(record, 2),
-        root_size: read_u32(record, 10).min(MAX_DIR_BYTES),
+        root_lba: u32_le(record, 2),
+        root_size: u32_le(record, 10).min(MAX_DIR_BYTES),
     };
     volume.kind = classify(src, &volume, &pvd[8..40])?;
     Ok(Some(volume))
@@ -270,22 +271,14 @@ fn find_in_dir(dir: &[u8], name: &str) -> Option<DirEntry> {
             && strip_version(&entry[33..33 + ident_len]).eq_ignore_ascii_case(name.as_bytes())
         {
             return Some(DirEntry {
-                lba: read_u32(entry, 2),
-                size: read_u32(entry, 10),
+                lba: u32_le(entry, 2),
+                size: u32_le(entry, 10),
                 is_dir: entry[25] & 0x02 != 0,
             });
         }
         off += rec_len;
     }
     None
-}
-
-fn read_u32(data: &[u8], off: usize) -> u32 {
-    u32::from_le_bytes(
-        data[off..off + 4]
-            .try_into()
-            .expect("slice is exactly 4 bytes"),
-    )
 }
 
 fn trimmed_ascii(raw: &[u8]) -> String {

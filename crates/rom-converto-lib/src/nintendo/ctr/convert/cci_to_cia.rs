@@ -9,7 +9,6 @@ use crate::nintendo::ctr::constants::{
 use crate::nintendo::ctr::convert::template::{retail_cert_chain, template_ticket};
 use crate::nintendo::ctr::decrypt::cia::{Aes128Ctr, derive_ctr_key, get_ncch_aes_counter};
 use crate::nintendo::ctr::decrypt::model::NcchSection;
-use crate::nintendo::ctr::error::NintendoCTRError;
 use crate::nintendo::ctr::models::cia::{CIA_HEADER_SIZE, CiaFileWithoutContent, CiaHeader};
 use crate::nintendo::ctr::models::ncch_header::NcchHeader;
 use crate::nintendo::ctr::models::ncsd_header::{NCSD_HEADER_SIZE, NcsdHeader};
@@ -17,7 +16,7 @@ use crate::nintendo::ctr::models::signature::{SignatureData, SignatureType};
 use crate::nintendo::ctr::models::title_metadata::{
     ContentChunkRecord, ContentInfoRecord, ContentType, TitleMetadata, TitleMetadataHeader,
 };
-use crate::util::{CancelToken, ProgressReporter, scratch_output_path};
+use crate::util::{CancelToken, Cancelled, ProgressReporter, scratch_output_path};
 use aes::cipher::{KeyIvInit, StreamCipher};
 use anyhow::{Context, Result, bail};
 use binrw::{BinRead, BinWrite, Endian};
@@ -36,17 +35,8 @@ const EXHEADER_SAVE_DATA_SIZE_OFFSET: usize = 0x1C0;
 const NCCH_EXHEADER_HASH_OFFSET: usize = 0x160;
 const CONTENT_COPY_BUF: usize = 4 * 1024 * 1024;
 
-/// Converts a CCI (`.3ds`) cartridge image at `input` into a CIA at `output`.
+/// Rebuild the CCI (NCSD) image at `input` as a CIA at `output`.
 pub async fn cci_to_cia(
-    input: &Path,
-    output: &Path,
-    progress: &dyn ProgressReporter,
-) -> Result<()> {
-    cci_to_cia_cancellable(input, output, progress, CancelToken::new()).await
-}
-
-/// Like [`cci_to_cia`] but observes `cancel`.
-pub async fn cci_to_cia_cancellable(
     input: &Path,
     output: &Path,
     progress: &dyn ProgressReporter,
@@ -180,12 +170,7 @@ pub async fn cci_to_cia_cancellable(
     }
     .await;
 
-    if let Err(err) = stream {
-        drop(out);
-        tokio::fs::remove_file(&tmp).await.ok();
-        return Err(err);
-    }
-
+    stream?;
     drop(out);
     crate::util::publish_temp(tmp, output, true)?;
     progress.finish();
@@ -351,7 +336,7 @@ async fn stream_partition(
         let mut remaining = p.size - prefix_len;
         while remaining > 0 {
             if cancel.is_cancelled() {
-                return Err(NintendoCTRError::Cancelled.into());
+                return Err(Cancelled.into());
             }
             let to_read = remaining.min(buf.len() as u64) as usize;
             file.read_exact(&mut buf[..to_read]).await?;
@@ -364,7 +349,7 @@ async fn stream_partition(
         let mut remaining = p.size;
         while remaining > 0 {
             if cancel.is_cancelled() {
-                return Err(NintendoCTRError::Cancelled.into());
+                return Err(Cancelled.into());
             }
             let to_read = remaining.min(buf.len() as u64) as usize;
             file.read_exact(&mut buf[..to_read]).await?;

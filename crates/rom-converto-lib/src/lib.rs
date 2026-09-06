@@ -7,15 +7,23 @@
 //! ([`crate::nintendo::ctr`], [`crate::nintendo::dol`],
 //! [`crate::nintendo::rvl`], [`crate::nintendo::wup`],
 //! [`crate::nintendo::nx`]); Microsoft platforms under [`crate::microsoft`]
-//! ([`crate::microsoft::xbox`], [`crate::microsoft::xenon`]); CD and DVD
-//! disc images go through [`crate::chd`] and [`crate::cue`], and PSP/PS2
-//! ISOs through [`crate::cso`]. PS1, PS2, and PSP disc metadata comes
-//! from [`crate::sony_disc`]. [`crate::pipeline`] chains CSO/ZSO and CHD
-//! conversion through a temporary ISO for one-step conversion between the
-//! two. [`crate::config`] loads the config file and presets, [`crate::info`]
-//! renders per-format metadata, [`crate::playlist`] writes multi-disc `.m3u`
-//! files, and [`crate::util`] holds the shared conflict resolution, hashing,
-//! dry-run planning, and reporting machinery every format uses.
+//! ([`crate::microsoft::xbox`], [`crate::microsoft::xenon`]), which share
+//! the [`crate::zar`] ZArchive container with the Wii U.
+//!
+//! The rest, one module each: [`crate::cd`] holds the CD sector and
+//! subchannel primitives, [`crate::chd`] and [`crate::cue`] the CD and DVD
+//! disc images, [`crate::cso`] the PSP/PS2 ISO compressors,
+//! [`crate::laserdisc`] the LaserDisc AVI captures, [`crate::sony::ps3`] the
+//! PS3 disc and package formats, [`crate::sony`] the PSP and Vita packages,
+//! [`crate::sony::disc`] the PS1, PS2, and PSP disc metadata, and
+//! [`crate::retro`] the cartridge systems. [`crate::pipeline`] chains
+//! CSO/ZSO and CHD conversion through a temporary ISO, [`crate::dat`]
+//! matches files against Redump and No-Intro DATs, [`crate::runner`]
+//! drives batch runs for the CLI and GUI, [`crate::config`] loads the
+//! config file and presets, [`crate::info`] renders per-format metadata,
+//! [`crate::playlist`] writes multi-disc `.m3u` files, and [`crate::util`]
+//! holds the shared conflict resolution, hashing, dry-run planning, and
+//! reporting machinery every format uses.
 
 pub mod cd;
 pub mod chd;
@@ -29,9 +37,8 @@ pub mod microsoft;
 pub mod nintendo;
 pub mod pipeline;
 pub mod playlist;
-pub mod ps3;
 pub mod retro;
 pub mod runner;
 pub mod sony;
-pub mod sony_disc;
 pub mod util;
+pub mod zar;

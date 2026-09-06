@@ -8,6 +8,7 @@
 //! The Vita is end-of-life and these keys are long published, so they are
 //! embedded here the way the package keys are.
 
+use crate::util::bytes::u32_le;
 use aes::Aes128;
 use aes::cipher::{BlockCipherDecrypt, BlockCipherEncrypt, BlockModeDecrypt, KeyInit, KeyIvInit};
 use anyhow::{Context, Result, anyhow, bail};
@@ -65,11 +66,11 @@ pub fn decrypt_file(
     if &table[..8] != TABLE_MAGIC {
         bail!("vita pfs: unicv.db page {page} is not a file table");
     }
-    let version = le_u32(table, TABLE_VERSION_OFFSET);
+    let version = u32_le(table, TABLE_VERSION_OFFSET);
     if version < 2 {
         bail!("vita pfs: unicv.db version {version} predates the per-file seed");
     }
-    let sector_size = le_u32(table, TABLE_SECTOR_SIZE_OFFSET) as usize;
+    let sector_size = u32_le(table, TABLE_SECTOR_SIZE_OFFSET) as usize;
     if sector_size == 0 || !sector_size.is_multiple_of(16) {
         bail!("vita pfs: unicv.db page {page} has file sector size {sector_size}");
     }
@@ -153,10 +154,6 @@ fn pflist_entry<'a>(pflist: &'a str, path: &str) -> Result<(&'a str, u32)> {
         return Ok((flags, page));
     }
     bail!("vita pfs: {path} is not listed in pflist")
-}
-
-fn le_u32(d: &[u8], off: usize) -> u32 {
-    u32::from_le_bytes(d[off..off + 4].try_into().expect("4-byte slice"))
 }
 
 #[cfg(test)]

@@ -69,21 +69,10 @@ fn cleanup_run(header_path: &Path, data_dir: &Path) {
     }
 }
 
-/// Convert the Xbox 360 XDVDFS ISO `input` into a GoD container under
-/// `output_dir`. `title` overrides the header's display name and
-/// description; without it the executable's own title name is used.
+/// Convert the Xbox 360 disc image at `input` into a Games on Demand
+/// title tree under `output_dir`; on cancel the partially written tree
+/// is removed.
 pub async fn convert_to_god(
-    input: &Path,
-    output_dir: &Path,
-    title: Option<&str>,
-    progress: &dyn ProgressReporter,
-) -> GodResult<GodSummary> {
-    convert_to_god_cancellable(input, output_dir, title, progress, CancelToken::new()).await
-}
-
-/// Like [`convert_to_god`] but observes `cancel` at subpart boundaries;
-/// on cancel the partially written title tree is removed.
-pub async fn convert_to_god_cancellable(
     input: &Path,
     output_dir: &Path,
     title: Option<&str>,
@@ -118,11 +107,7 @@ pub async fn convert_to_god_cancellable(
         )
     });
 
-    match await_with_progress_cancel(progress, &bytes_done, handle, &cancel, || {
-        GodError::Cancelled
-    })
-    .await
-    {
+    match await_with_progress_cancel(progress, &bytes_done, handle, &cancel).await {
         Ok(summary) => Ok(summary),
         Err(err) => {
             cleanup_run(&header_path, &data_dir);
@@ -212,9 +197,15 @@ mod tests {
         write_source_iso(&iso);
         let out = work.path().join("out");
 
-        let summary = convert_to_god(&iso, &out, Some("Test Title"), &NoProgress)
-            .await
-            .unwrap();
+        let summary = convert_to_god(
+            &iso,
+            &out,
+            Some("Test Title"),
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
         assert_eq!(summary.title_id, TITLE_ID);
         assert_eq!(summary.media_id, MEDIA_ID);
         assert_eq!(summary.part_count, 1);
@@ -245,8 +236,8 @@ mod tests {
 
         let cancel = CancelToken::new();
         cancel.cancel();
-        let result = convert_to_god_cancellable(&iso, &out, None, &NoProgress, cancel).await;
-        assert!(matches!(result, Err(GodError::Cancelled)));
+        let result = convert_to_god(&iso, &out, None, &NoProgress, cancel).await;
+        assert!(matches!(result, Err(GodError::Cancelled(_))));
         assert!(!title_dir(&out, TITLE_ID).exists());
     }
 
@@ -266,8 +257,8 @@ mod tests {
 
         let cancel = CancelToken::new();
         cancel.cancel();
-        let result = convert_to_god_cancellable(&iso, &out, None, &NoProgress, cancel).await;
-        assert!(matches!(result, Err(GodError::Cancelled)));
+        let result = convert_to_god(&iso, &out, None, &NoProgress, cancel).await;
+        assert!(matches!(result, Err(GodError::Cancelled(_))));
         assert!(sibling_file.exists());
     }
 
@@ -284,7 +275,9 @@ mod tests {
         std::fs::create_dir_all(&data_dir).unwrap();
         std::fs::write(data_dir.join("Data0001"), b"stale").unwrap();
 
-        convert_to_god(&iso, &out, None, &NoProgress).await.unwrap();
+        convert_to_god(&iso, &out, None, &NoProgress, CancelToken::new())
+            .await
+            .unwrap();
 
         assert!(!data_dir.join("Data0001").exists());
         assert!(data_dir.join("Data0000").exists());

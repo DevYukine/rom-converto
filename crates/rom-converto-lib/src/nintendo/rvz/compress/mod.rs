@@ -38,6 +38,7 @@
 pub mod partition;
 pub mod raw;
 
+use crate::nintendo::disc_input::{disc_size_of, open_disc_input};
 use crate::nintendo::dol::is_gamecube;
 use crate::nintendo::rvl::constants::WII_SECTOR_SIZE_U64;
 use crate::nintendo::rvl::is_wii;
@@ -53,9 +54,8 @@ use crate::nintendo::rvz::format::{
     WiaRawData,
 };
 use crate::nintendo::rvz::regions::{DiscRegion, RegionPlan};
-use crate::nintendo::wbfs::WbfsReader;
 use crate::util::worker_pool::{Pool, parallelism};
-use crate::util::{CancelToken, ProgressReporter, await_with_progress_cancel, scratch_output_path};
+use crate::util::{CancelToken, Cancelled, ProgressReporter, run_scratch_write};
 use binrw::{BinWrite, Endian};
 use log::info;
 use std::io::{BufReader, BufWriter, Cursor, Read, Seek, SeekFrom, Write};
@@ -92,27 +92,14 @@ impl Default for RvzCompressOptions {
     }
 }
 
-/// Compress a GameCube or Wii disc image to RVZ. Legacy containers
-/// (GCZ, WIA, NKit) are detected by magic and routed through
-/// [`crate::nintendo::legacy_input::migrate_disc_cancellable`], which verifies
-/// their integrity before converting.
-pub async fn compress_disc(
-    input: &Path,
-    output: &Path,
-    options: RvzCompressOptions,
-    progress: &dyn ProgressReporter,
-) -> RvzResult<()> {
-    compress_disc_cancellable(input, output, options, progress, CancelToken::new()).await
-}
-
-/// Like [`compress_disc`] but observes `cancel` at region and chunk
+/// Compresses a disc image to RVZ, checking `cancel` at region and chunk
 /// boundaries; on cancel the partial RVZ is removed (the writer targets
 /// a sibling temp file renamed into place only on success). Legacy
 /// containers (GCZ, WIA, NKit) are detected by magic and routed through
-/// [`crate::nintendo::legacy_input::migrate_disc_cancellable`], which
+/// [`crate::nintendo::legacy_input::migrate_disc`], which
 /// verifies their integrity before converting; everything else goes
 /// straight to the raw writer.
-pub async fn compress_disc_cancellable(
+pub async fn compress_disc(
     input: &Path,
     output: &Path,
     options: RvzCompressOptions,
@@ -125,7 +112,7 @@ pub async fn compress_disc_cancellable(
             .await??
     };
     if legacy.is_some() {
-        return crate::nintendo::legacy_input::migrate_disc_cancellable(
+        return crate::nintendo::legacy_input::migrate_disc(
             input,
             output,
             options,
@@ -136,17 +123,18 @@ pub async fn compress_disc_cancellable(
         )
         .await;
     }
-    compress_iso_cancellable(input, output, options, progress, cancel).await
+    compress_iso(input, output, options, progress, cancel).await
 }
 
 /// The raw cancellable RVZ writer. Performs no legacy detection or
 /// routing: it opens the input through the standard reader set (so a
 /// legacy container reconstructs its logical disc on the fly), streams
 /// it to a sibling temp file, and renames into place only on success.
-/// On cancel the partial RVZ is removed. This is the single point every
+/// An `.rvz` input is transcoded through the RVZ reader rather than
+/// copied raw. On cancel the partial RVZ is removed. This is the single point every
 /// compress path bottoms out in, which keeps the migrate route free of
 /// recursion.
-pub(crate) async fn compress_iso_cancellable(
+pub(crate) async fn compress_iso(
     input: &Path,
     output: &Path,
     options: RvzCompressOptions,
@@ -161,40 +149,24 @@ pub(crate) async fn compress_iso_cancellable(
     };
     progress.start(iso_size, "Compressing disc to RVZ");
 
-    let write_path = scratch_output_path(output)?;
     let input_owned: PathBuf = input.to_path_buf();
-    let write_owned = write_path.to_path_buf();
-    let cancel_bg = cancel.clone();
-    let bytes_done = Arc::new(AtomicU64::new(0));
-    let bytes_done_bg = bytes_done.clone();
-
-    let handle = task::spawn_blocking(move || -> RvzResult<u64> {
-        compress_blocking(
-            &input_owned,
-            &write_owned,
-            options,
-            iso_size,
-            bytes_done_bg,
-            &cancel_bg,
-        )
-    });
-
-    let cleanup = {
-        let write_path = write_path.to_path_buf();
-        move || -> RvzError {
-            let _ = std::fs::remove_file(&write_path);
-            RvzError::Cancelled
-        }
-    };
-    let compressed_size =
-        match await_with_progress_cancel(progress, &bytes_done, handle, &cancel, cleanup).await {
-            Ok(size) => size,
-            Err(err) => {
-                let _ = tokio::fs::remove_file(&write_path).await;
-                return Err(err);
-            }
-        };
-    crate::util::publish_temp(write_path, output, true)?;
+    let compressed_size = run_scratch_write(
+        output,
+        true,
+        progress,
+        &cancel,
+        move |write_path, bytes_done, cancel| {
+            compress_blocking(
+                &input_owned,
+                &write_path,
+                options,
+                iso_size,
+                bytes_done,
+                &cancel,
+            )
+        },
+    )
+    .await?;
 
     let ratio = (1.0 - compressed_size as f64 / iso_size.max(1) as f64) * 100.0;
     info!(
@@ -207,8 +179,6 @@ pub(crate) async fn compress_iso_cancellable(
     Ok(())
 }
 
-/// A sibling temp path in the output directory so an interrupted write
-/// never lands on the final name.
 fn validate_chunk_size(chunk_size: u32) -> RvzResult<()> {
     if !(MIN_CHUNK_SIZE..=MAX_CHUNK_SIZE).contains(&chunk_size) || !chunk_size.is_power_of_two() {
         return Err(RvzError::InvalidChunkSize(
@@ -220,45 +190,11 @@ fn validate_chunk_size(chunk_size: u32) -> RvzResult<()> {
     Ok(())
 }
 
-/// Detect a WBFS container by extension or leading magic so compress
-/// can pick the right reader. The magic fallback covers inputs whose
-/// extension was changed.
-fn is_wbfs_input(input: &Path) -> bool {
-    let by_ext = input
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|s| s.eq_ignore_ascii_case("wbfs"))
-        .unwrap_or(false);
-    by_ext || wbfs_magic(input).unwrap_or(false)
-}
-
-fn wbfs_magic(input: &Path) -> std::io::Result<bool> {
-    let mut f = std::fs::File::open(input)?;
-    let mut buf = [0u8; 4];
-    if f.read(&mut buf)? < 4 {
-        return Ok(false);
-    }
-    Ok(buf == *b"WBFS")
-}
-
 /// Logical disc size of the input in bytes, used as the progress
 /// total. Reconstructing containers (WBFS, GCZ, WIA, NKit) report the
 /// logical disc size, not their (smaller) on-disk size.
 fn logical_input_size(input: &Path) -> RvzResult<u64> {
-    use crate::nintendo::legacy_input::{LegacyFormat, detect_legacy_format};
-    match detect_legacy_format(input)? {
-        Some(LegacyFormat::Gcz) => Ok(crate::nintendo::gcz::GczReader::data_size_of(input)?),
-        Some(LegacyFormat::Wia) => Ok(crate::nintendo::wia::WiaReader::iso_size_of(input)?),
-        Some(LegacyFormat::NkitIso) => Ok(crate::nintendo::nkit::NkitReader::image_size_of(input)?),
-        Some(LegacyFormat::NkitGcz) => {
-            let dhead = crate::nintendo::gcz::gcz_logical_prefix(input, 0x440)?;
-            Ok(crate::nintendo::nkit::format::NkitHeader::parse(&dhead)
-                .map_err(RvzError::from)?
-                .image_size)
-        }
-        None if is_wbfs_input(input) => Ok(WbfsReader::open(input)?.disc_size()),
-        None => Ok(std::fs::metadata(input)?.len()),
-    }
+    Ok(disc_size_of(input)?)
 }
 
 /// Shared tag describing how one chunk ended up on disk. Emitted by
@@ -307,40 +243,9 @@ fn compress_blocking(
     bytes_done: Arc<AtomicU64>,
     cancel: &CancelToken,
 ) -> RvzResult<u64> {
-    use crate::nintendo::legacy_input::{LegacyFormat, detect_legacy_format};
-    const BUF: usize = 4 * 1024 * 1024;
-    match detect_legacy_format(input)? {
-        Some(LegacyFormat::Gcz) => {
-            let reader =
-                BufReader::with_capacity(BUF, crate::nintendo::gcz::GczReader::open(input)?);
-            compress_reader(reader, output, options, iso_size, bytes_done, cancel)
-        }
-        Some(LegacyFormat::Wia) => {
-            let reader =
-                BufReader::with_capacity(BUF, crate::nintendo::wia::WiaReader::open(input)?);
-            compress_reader(reader, output, options, iso_size, bytes_done, cancel)
-        }
-        Some(LegacyFormat::NkitIso) => {
-            let reader =
-                BufReader::with_capacity(BUF, crate::nintendo::nkit::NkitReader::open(input)?);
-            compress_reader(reader, output, options, iso_size, bytes_done, cancel)
-        }
-        Some(LegacyFormat::NkitGcz) => {
-            let gcz = crate::nintendo::gcz::GczReader::open(input)?;
-            let nkit =
-                crate::nintendo::nkit::NkitReader::from_source(gcz).map_err(RvzError::from)?;
-            let reader = BufReader::with_capacity(BUF, nkit);
-            compress_reader(reader, output, options, iso_size, bytes_done, cancel)
-        }
-        None if is_wbfs_input(input) => {
-            let reader = BufReader::with_capacity(BUF, WbfsReader::open(input)?);
-            compress_reader(reader, output, options, iso_size, bytes_done, cancel)
-        }
-        None => {
-            let reader = BufReader::with_capacity(BUF, std::fs::File::open(input)?);
-            compress_reader(reader, output, options, iso_size, bytes_done, cancel)
-        }
-    }
+    let disc = open_disc_input(input)?;
+    let reader = BufReader::with_capacity(4 * 1024 * 1024, disc);
+    compress_reader(reader, output, options, iso_size, bytes_done, cancel)
 }
 
 /// Sync pipeline driven inside `spawn_blocking`. Returns the final
@@ -354,32 +259,7 @@ fn compress_reader<R: Read + Seek>(
     bytes_done: Arc<AtomicU64>,
     cancel: &CancelToken,
 ) -> RvzResult<u64> {
-    // Read the 0x80-byte disc header used by both the format struct
-    // and the GC/Wii detection helpers.
-    let mut dhead = [0u8; 128];
-    reader.read_exact(&mut dhead)?;
-    reader.seek(SeekFrom::Start(0))?;
-
-    let disc_type = if is_gamecube(&dhead) {
-        1u32
-    } else if is_wii(&dhead) {
-        2u32
-    } else {
-        return Err(RvzError::UnrecognizedDisc);
-    };
-
-    let plan = if disc_type == 1 {
-        RegionPlan::gamecube(iso_size)
-    } else {
-        RegionPlan::wii(&mut reader, iso_size)?
-    };
-
-    // Wii partitions: the user's chunk_size flows through unchanged.
-    // One Wii cluster (2 MiB) spans `chunks_per_cluster =
-    // 0x200000 / chunk_size` output chunks, each carrying its own
-    // `wia_except_list_t` with chunk-local block offsets. Dolphin's
-    // default is 128 KiB (16 chunks per cluster).
-    let effective_chunk_size = options.chunk_size;
+    let (dhead, disc_type, plan) = read_disc_plan(&mut reader, iso_size)?;
 
     let mut writer = BufWriter::with_capacity(4 * 1024 * 1024, std::fs::File::create(output)?);
 
@@ -395,9 +275,95 @@ fn compress_reader<R: Read + Seek>(
     // disk and negates the whole point of buffering.
     let mut writer_pos: u64 = (WIA_FILE_HEAD_SIZE + WIA_DISC_SIZE) as u64;
 
-    let mut groups: Vec<RvzGroup> = Vec::new();
-    let mut raw_data: Vec<WiaRawData> = Vec::new();
-    let mut partitions: Vec<WiaPart> = Vec::new();
+    let tables = encode_regions(
+        &mut reader,
+        &mut writer,
+        &mut writer_pos,
+        &plan,
+        RegionEncodeCtx {
+            options,
+            iso_size,
+            bytes_done: &bytes_done,
+            cancel,
+        },
+    )?;
+
+    write_tables_and_head(
+        &mut writer,
+        writer_pos,
+        &tables,
+        dhead,
+        disc_type,
+        options,
+        iso_size,
+    )
+}
+
+/// Read the 0x80-byte disc header used by both the format struct and
+/// the GC/Wii detection helpers, then slice the disc into the ordered
+/// region plan the encoder walks.
+fn read_disc_plan<R: Read + Seek>(
+    reader: &mut BufReader<R>,
+    iso_size: u64,
+) -> RvzResult<([u8; 128], u32, RegionPlan)> {
+    let mut dhead = [0u8; 128];
+    reader.read_exact(&mut dhead)?;
+    reader.seek(SeekFrom::Start(0))?;
+
+    let disc_type = if is_gamecube(&dhead) {
+        1u32
+    } else if is_wii(&dhead) {
+        2u32
+    } else {
+        return Err(RvzError::UnrecognizedDisc);
+    };
+
+    let plan = if disc_type == 1 {
+        RegionPlan::gamecube(iso_size)
+    } else {
+        RegionPlan::wii(reader, iso_size)?
+    };
+    Ok((dhead, disc_type, plan))
+}
+
+/// Everything the region walk needs beyond the reader, the writer,
+/// and the plan itself.
+struct RegionEncodeCtx<'a> {
+    options: RvzCompressOptions,
+    iso_size: u64,
+    bytes_done: &'a Arc<AtomicU64>,
+    cancel: &'a CancelToken,
+}
+
+/// The three metadata tables the region walk fills in. Serialized to
+/// the tail of the file once the last region has landed.
+struct EncodedTables {
+    groups: Vec<RvzGroup>,
+    raw_data: Vec<WiaRawData>,
+    partitions: Vec<WiaPart>,
+}
+
+/// Walk the region plan, encoding every raw region and Wii partition
+/// into `writer` and recording their group ranges.
+fn encode_regions<R: Read + Seek>(
+    reader: &mut BufReader<R>,
+    writer: &mut BufWriter<std::fs::File>,
+    writer_pos: &mut u64,
+    plan: &RegionPlan,
+    ctx: RegionEncodeCtx<'_>,
+) -> RvzResult<EncodedTables> {
+    // Wii partitions: the user's chunk_size flows through unchanged.
+    // One Wii cluster (2 MiB) spans `chunks_per_cluster =
+    // 0x200000 / chunk_size` output chunks, each carrying its own
+    // `wia_except_list_t` with chunk-local block offsets. Dolphin's
+    // default is 128 KiB (16 chunks per cluster).
+    let effective_chunk_size = ctx.options.chunk_size;
+
+    let mut tables = EncodedTables {
+        groups: Vec::new(),
+        raw_data: Vec::new(),
+        partitions: Vec::new(),
+    };
 
     // Spawn the worker pools once per compress invocation: one
     // raw pool (always, since the 0x80-aligned disc header lives
@@ -406,7 +372,7 @@ fn compress_reader<R: Read + Seek>(
     // exactly once per worker this way, instead of once per
     // region. GameCube runs skip the partition pool entirely.
     let n_threads = parallelism();
-    let raw_workers = raw::make_raw_compress_workers(n_threads, options.compression_level)?;
+    let raw_workers = raw::make_raw_compress_workers(n_threads, ctx.options.compression_level)?;
     let raw_pool: Pool<raw::RawWork, raw::CompressedChunk, RvzError> = Pool::spawn(raw_workers);
 
     let has_partitions = plan
@@ -417,7 +383,7 @@ fn compress_reader<R: Read + Seek>(
         Pool<partition::PartitionWork, Vec<partition::PartitionChunk>, RvzError>,
     > = if has_partitions {
         let workers =
-            partition::make_partition_compress_workers(n_threads, options.compression_level)?;
+            partition::make_partition_compress_workers(n_threads, ctx.options.compression_level)?;
         Some(Pool::spawn(workers))
     } else {
         None
@@ -425,31 +391,31 @@ fn compress_reader<R: Read + Seek>(
 
     let encode_result: RvzResult<()> = (|| {
         for region in &plan.regions {
-            if cancel.is_cancelled() {
-                return Err(RvzError::Cancelled);
+            if ctx.cancel.is_cancelled() {
+                return Err(Cancelled.into());
             }
             match region {
                 DiscRegion::Raw { offset, size } => {
-                    let group_index = groups.len() as u32;
+                    let group_index = tables.groups.len() as u32;
                     raw::encode_raw_region(
                         &raw_pool,
-                        &mut reader,
+                        &mut *reader,
                         RegionWriteState {
-                            writer: &mut writer,
-                            writer_pos: &mut writer_pos,
-                            groups: &mut groups,
+                            writer: &mut *writer,
+                            writer_pos: &mut *writer_pos,
+                            groups: &mut tables.groups,
                         },
                         raw::RawRegionEncode {
                             region_offset: *offset,
                             region_size: *size,
-                            iso_size,
+                            iso_size: ctx.iso_size,
                             chunk_size: effective_chunk_size,
-                            bytes_done: &bytes_done,
-                            cancel,
+                            bytes_done: ctx.bytes_done,
+                            cancel: ctx.cancel,
                         },
                     )?;
-                    let n_groups = groups.len() as u32 - group_index;
-                    raw_data.push(WiaRawData {
+                    let n_groups = tables.groups.len() as u32 - group_index;
+                    tables.raw_data.push(WiaRawData {
                         raw_data_off: *offset,
                         raw_data_size: *size,
                         group_index,
@@ -457,26 +423,26 @@ fn compress_reader<R: Read + Seek>(
                     });
                 }
                 DiscRegion::Partition(info) => {
-                    let group_index = groups.len() as u32;
+                    let group_index = tables.groups.len() as u32;
                     let layout = partition::encode_partition_region(
                         partition_pool
                             .as_ref()
                             .expect("partition_pool must exist if plan contains partitions"),
-                        &mut reader,
+                        &mut *reader,
                         RegionWriteState {
-                            writer: &mut writer,
-                            writer_pos: &mut writer_pos,
-                            groups: &mut groups,
+                            writer: &mut *writer,
+                            writer_pos: &mut *writer_pos,
+                            groups: &mut tables.groups,
                         },
                         partition::PartitionRegionEncode {
                             info,
                             chunk_size: effective_chunk_size,
-                            bytes_done: &bytes_done,
-                            cancel,
+                            bytes_done: ctx.bytes_done,
+                            cancel: ctx.cancel,
                         },
                     )?;
                     let first_sector = (info.data_start() / WII_SECTOR_SIZE_U64) as u32;
-                    partitions.push(WiaPart {
+                    tables.partitions.push(WiaPart {
                         part_key: info.title_key,
                         pd: [
                             WiaPartData {
@@ -508,6 +474,20 @@ fn compress_reader<R: Read + Seek>(
     }
     encode_result?;
 
+    Ok(tables)
+}
+
+/// Emit the three metadata tables and rewrite the file head and disc
+/// struct now that every offset is known. Returns the final file size.
+fn write_tables_and_head(
+    writer: &mut BufWriter<std::fs::File>,
+    mut writer_pos: u64,
+    tables: &EncodedTables,
+    dhead: [u8; 128],
+    disc_type: u32,
+    options: RvzCompressOptions,
+    iso_size: u64,
+) -> RvzResult<u64> {
     // Now that every region is on disk, emit the three metadata
     // tables in the order Dolphin expects: partitions, raw_data
     // (zstd-compressed), groups (zstd-compressed). Each is 4-byte
@@ -516,32 +496,32 @@ fn compress_reader<R: Read + Seek>(
     // These offsets come from the tracked `writer_pos` rather
     // than `writer.stream_position()` so the BufWriter never
     // flushes in the middle of a contiguous write stream.
-    let part_off = if !partitions.is_empty() {
+    let part_off = if !tables.partitions.is_empty() {
         let pos = writer_pos;
-        for part in &partitions {
+        for part in &tables.partitions {
             let mut bytes = Vec::with_capacity(crate::nintendo::rvz::format::WIA_PART_SIZE);
             part.write_options(&mut Cursor::new(&mut bytes), Endian::Big, ())?;
             writer.write_all(&bytes)?;
             writer_pos += bytes.len() as u64;
         }
-        pad_to_alignment(&mut writer, &mut writer_pos, 4)?;
+        pad_to_alignment(writer, &mut writer_pos, 4)?;
         pos
     } else {
         0
     };
-    let part_hash = compute_part_hash(&partitions);
+    let part_hash = compute_part_hash(&tables.partitions);
 
     let raw_data_off = writer_pos;
-    let raw_data_compressed = serialize_and_compress(&raw_data, options.compression_level)?;
+    let raw_data_compressed = serialize_and_compress(&tables.raw_data, options.compression_level)?;
     writer.write_all(&raw_data_compressed)?;
     writer_pos += raw_data_compressed.len() as u64;
-    pad_to_alignment(&mut writer, &mut writer_pos, 4)?;
+    pad_to_alignment(writer, &mut writer_pos, 4)?;
 
     let group_off = writer_pos;
-    let group_compressed = serialize_and_compress(&groups, options.compression_level)?;
+    let group_compressed = serialize_and_compress(&tables.groups, options.compression_level)?;
     writer.write_all(&group_compressed)?;
     writer_pos += group_compressed.len() as u64;
-    pad_to_alignment(&mut writer, &mut writer_pos, 4)?;
+    pad_to_alignment(writer, &mut writer_pos, 4)?;
 
     let wia_file_size = writer_pos;
 
@@ -549,16 +529,16 @@ fn compress_reader<R: Read + Seek>(
         disc_type,
         compression: 5,
         compr_level: options.compression_level,
-        chunk_size: effective_chunk_size,
+        chunk_size: options.chunk_size,
         dhead,
-        n_part: partitions.len() as u32,
+        n_part: tables.partitions.len() as u32,
         part_t_size: crate::nintendo::rvz::format::WIA_PART_SIZE as u32,
         part_off,
         part_hash,
-        n_raw_data: raw_data.len() as u32,
+        n_raw_data: tables.raw_data.len() as u32,
         raw_data_off,
         raw_data_size: raw_data_compressed.len() as u32,
-        n_groups: groups.len() as u32,
+        n_groups: tables.groups.len() as u32,
         group_off,
         group_size: group_compressed.len() as u32,
         compr_data_len: 0,
@@ -615,13 +595,7 @@ pub(super) fn pad_to_alignment(
     let rem = *writer_pos % alignment;
     if rem != 0 {
         let pad = alignment - rem;
-        let zeros = [0u8; 16];
-        let mut left = pad as usize;
-        while left > 0 {
-            let n = left.min(zeros.len());
-            writer.write_all(&zeros[..n])?;
-            left -= n;
-        }
+        std::io::copy(&mut std::io::repeat(0).take(pad), writer)?;
         *writer_pos += pad;
     }
     Ok(())
@@ -721,17 +695,11 @@ pub(super) fn write_msg_drain_loop(
     writer: &mut BufWriter<std::fs::File>,
     write_rx: std::sync::mpsc::Receiver<WriteMsg>,
 ) -> RvzResult<()> {
-    let zeros = [0u8; 16];
     while let Ok(msg) = write_rx.recv() {
         match msg {
             WriteMsg::Bytes(bytes) => writer.write_all(&bytes)?,
             WriteMsg::Pad(n) => {
-                let mut left = n as usize;
-                while left > 0 {
-                    let k = left.min(zeros.len());
-                    writer.write_all(&zeros[..k])?;
-                    left -= k;
-                }
+                std::io::copy(&mut std::io::repeat(0).take(n as u64), writer)?;
             }
         }
     }

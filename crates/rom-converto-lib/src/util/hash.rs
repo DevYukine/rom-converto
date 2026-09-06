@@ -1,7 +1,7 @@
 //! File hashing for the `hash` command and verify pipelines: CRC32, SHA-1,
 //! MD5, and SHA-256, computed in a single streaming pass over each file.
 
-use crate::util::{CancelToken, ProgressReporter};
+use crate::util::{CancelToken, Cancelled, ProgressReporter};
 use crc::{CRC_32_ISO_HDLC, Crc};
 use sha2::Digest as _;
 use std::io::Read;
@@ -75,14 +75,15 @@ pub struct MultiHasher {
     sha256: Option<sha2::Sha256>,
 }
 
-static CRC32_ISO_HDLC: Crc<u32> = Crc::<u32>::new(&CRC_32_ISO_HDLC);
+/// CRC-32/ISO-HDLC (zip/DAT flavour), shared by every CRC32 site in the crate.
+pub static CRC32: Crc<u32> = Crc::<u32>::new(&CRC_32_ISO_HDLC);
 
 impl MultiHasher {
     /// Allocates hasher state only for the requested `algos`.
     pub fn new(algos: &[HashAlgo]) -> Self {
         let want = |a: HashAlgo| algos.contains(&a);
         Self {
-            crc: want(HashAlgo::Crc32).then(|| CRC32_ISO_HDLC.digest()),
+            crc: want(HashAlgo::Crc32).then(|| CRC32.digest()),
             sha1: want(HashAlgo::Sha1).then(sha1::Sha1::new),
             md5: want(HashAlgo::Md5).then(md_5::Md5::new),
             sha256: want(HashAlgo::Sha256).then(sha2::Sha256::new),
@@ -248,7 +249,7 @@ impl ChecksumBounds {
 /// Compute every requested digest for `path` in a single streaming pass.
 /// The file is read in fixed-size chunks and every selected hasher is fed
 /// each chunk, so memory stays constant no matter how large the file is.
-pub fn hash_file_cancellable(
+pub fn hash_file(
     path: &Path,
     algos: &[HashAlgo],
     progress: &dyn ProgressReporter,
@@ -270,7 +271,7 @@ pub fn hash_file_cancellable(
         if cancel.is_cancelled() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::Interrupted,
-                "operation cancelled",
+                Cancelled,
             ));
         }
         hasher.update(&buf[..n]);
@@ -279,15 +280,6 @@ pub fn hash_file_cancellable(
     progress.finish();
 
     Ok(hasher.finalize(size_bytes))
-}
-
-/// Computes `algos` digests for the file at `path` in one streaming pass.
-pub fn hash_file(
-    path: &Path,
-    algos: &[HashAlgo],
-    progress: &dyn ProgressReporter,
-) -> std::io::Result<FileDigests> {
-    hash_file_cancellable(path, algos, progress, &CancelToken::new())
 }
 
 #[cfg(test)]
@@ -306,7 +298,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("input.bin");
         std::fs::write(&path, data).unwrap();
-        hash_file(&path, algos, &NoProgress).unwrap()
+        hash_file(&path, algos, &NoProgress, &CancelToken::new()).unwrap()
     }
 
     #[test]
@@ -389,8 +381,7 @@ mod tests {
         let token = CancelToken::new();
         token.cancel();
 
-        let err =
-            hash_file_cancellable(&path, &[HashAlgo::Sha256], &NoProgress, &token).unwrap_err();
+        let err = hash_file(&path, &[HashAlgo::Sha256], &NoProgress, &token).unwrap_err();
         assert_eq!(err.to_string(), "operation cancelled");
     }
 
@@ -402,8 +393,7 @@ mod tests {
         std::fs::write(&path, &data).unwrap();
 
         let token = CancelToken::new();
-        let digests =
-            hash_file_cancellable(&path, &[HashAlgo::Sha256], &NoProgress, &token).unwrap();
+        let digests = hash_file(&path, &[HashAlgo::Sha256], &NoProgress, &token).unwrap();
         assert_eq!(digests.size_bytes, data.len() as u64);
         assert_eq!(
             digests.sha256,

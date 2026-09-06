@@ -20,7 +20,8 @@ use crate::cso::models::{
     CISO_HEADER_SIZE, CISO_INDEX_UNCOMPRESSED, CisoHeader, CsoFormat, block_count,
 };
 use crate::util::CancelToken;
-use crate::util::worker_pool::{Pool, Worker, drive, parallelism};
+use crate::util::Cancelled;
+use crate::util::worker_pool::{Pool, PoolChannelClosed, Worker, drive, parallelism};
 
 pub(crate) struct CsoBlockWork {
     data: Vec<u8>,
@@ -115,7 +116,7 @@ pub(crate) fn write_cso_blocking(
             max_in_flight,
             |block_idx| -> CsoResult<CsoBlockWork> {
                 if cancel.is_cancelled() {
-                    return Err(CsoError::Cancelled);
+                    return Err(Cancelled.into());
                 }
                 let offset = block_idx * block_size as u64;
                 let take = ((input_size - offset) as usize).min(block_size as usize);
@@ -129,13 +130,13 @@ pub(crate) fn write_cso_blocking(
                 if aligned_pos > pos {
                     write_tx
                         .send(vec![0u8; (aligned_pos - pos) as usize])
-                        .map_err(|_| CsoError::WorkerPoolClosed)?;
+                        .map_err(|_| CsoError::WorkerPoolClosed(PoolChannelClosed))?;
                 }
                 index[seq as usize] = index_entry(aligned_pos, index_shift, out.raw)?;
                 pos = aligned_pos + out.bytes.len() as u64;
                 write_tx
                     .send(out.bytes)
-                    .map_err(|_| CsoError::WorkerPoolClosed)?;
+                    .map_err(|_| CsoError::WorkerPoolClosed(PoolChannelClosed))?;
                 Ok(())
             },
         );

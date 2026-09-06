@@ -3,7 +3,6 @@
 //! headerless layout.
 
 use crate::cd::{BYTES_PER_STEREO_SAMPLE, CD_CHANNELS, SECTOR_SIZE};
-use crate::chd::compression::{ChdCompressor, tag_to_bytes};
 use crate::chd::error::{ChdError, ChdResult};
 use flacenc::bitsink::ByteSink;
 use flacenc::component::BitRepr;
@@ -15,56 +14,42 @@ use std::io::{self, Cursor};
 pub(crate) const CD_SAMPLE_RATE: usize = 44_100;
 const FLAC_BITS_PER_SAMPLE: usize = 16;
 
-/// [`ChdCompressor`] for the CHD `flac` codec: whole 16-bit-stereo hunks only.
-#[derive(Debug, Clone)]
-#[allow(dead_code)] // CHD spec codec: non-CD hunk compression.
-pub struct FlacCompressor;
-
-impl ChdCompressor for FlacCompressor {
-    fn name(&self) -> &'static str {
-        "FLAC Compressor"
+/// Compress one whole 16-bit-stereo hunk with the CHD `flac` codec.
+pub(crate) fn flac_compress(data: &[u8]) -> ChdResult<Vec<u8>> {
+    // chdman only offers `flac` when the hunk is whole 16-bit
+    // stereo samples; otherwise the codec is not applicable.
+    if !data.len().is_multiple_of(BYTES_PER_STEREO_SAMPLE) {
+        return Err(ChdError::InvalidHunkSize);
     }
 
-    fn tag_bytes(&self) -> [u8; 4] {
-        tag_to_bytes("flac")
-    }
+    let block_size = chd_flac_block_size(data.len());
+    let le = encode_flac_samples(
+        &samples_from_bytes(data, Endian::Little),
+        CD_CHANNELS,
+        CD_SAMPLE_RATE,
+        block_size,
+    )?;
+    let be = encode_flac_samples(
+        &samples_from_bytes(data, Endian::Big),
+        CD_CHANNELS,
+        CD_SAMPLE_RATE,
+        block_size,
+    )?;
 
-    fn compress(&self, data: &[u8]) -> ChdResult<Vec<u8>> {
-        // chdman only offers `flac` when the hunk is whole 16-bit
-        // stereo samples; otherwise the codec is not applicable.
-        if !data.len().is_multiple_of(BYTES_PER_STEREO_SAMPLE) {
-            return Err(ChdError::InvalidHunkSize);
-        }
+    // The synthesized STREAMINFO on decode is fixed, so store only
+    // the raw frames; ties favor little-endian, matching chdman.
+    let le_frames = strip_flac_stream_header(&le);
+    let be_frames = strip_flac_stream_header(&be);
+    let (marker, frames) = if le_frames.len() <= be_frames.len() {
+        (b'L', le_frames)
+    } else {
+        (b'B', be_frames)
+    };
 
-        let block_size = chd_flac_block_size(data.len());
-        let le = encode_flac_samples(
-            &samples_from_bytes(data, Endian::Little),
-            CD_CHANNELS,
-            CD_SAMPLE_RATE,
-            block_size,
-        )?;
-        let be = encode_flac_samples(
-            &samples_from_bytes(data, Endian::Big),
-            CD_CHANNELS,
-            CD_SAMPLE_RATE,
-            block_size,
-        )?;
-
-        // The synthesized STREAMINFO on decode is fixed, so store only
-        // the raw frames; ties favor little-endian, matching chdman.
-        let le_frames = strip_flac_stream_header(&le);
-        let be_frames = strip_flac_stream_header(&be);
-        let (marker, frames) = if le_frames.len() <= be_frames.len() {
-            (b'L', le_frames)
-        } else {
-            (b'B', be_frames)
-        };
-
-        let mut output = Vec::with_capacity(frames.len() + 1);
-        output.push(marker);
-        output.extend_from_slice(frames);
-        Ok(output)
-    }
+    let mut output = Vec::with_capacity(frames.len() + 1);
+    output.push(marker);
+    output.extend_from_slice(frames);
+    Ok(output)
 }
 
 /// Strip the fLaC magic and metadata blocks, returning the raw frames.
@@ -363,7 +348,7 @@ mod tests {
     }
 
     fn round_trips(data: &[u8]) -> u8 {
-        let compressed = FlacCompressor.compress(data).unwrap();
+        let compressed = flac_compress(data).unwrap();
         let decoded = flac_decompress_chd_raw(&compressed, data.len()).unwrap();
         assert_eq!(decoded, data);
         compressed[0]
@@ -392,7 +377,7 @@ mod tests {
 
     #[test]
     fn flac_encoder_rejects_non_stereo_sample_length() {
-        assert!(FlacCompressor.compress(&[0u8; 4098]).is_err());
+        assert!(flac_compress(&[0u8; 4098]).is_err());
     }
 
     #[test]

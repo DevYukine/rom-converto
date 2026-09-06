@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use thiserror::Error;
 
-use crate::util::worker_pool::PoolChannelClosed;
+use crate::zar::ZarError;
 
 /// Error type covering every stage of Wii U title handling: NUS layout
 /// discovery, ticket/TMD/FST parsing, AES decryption, disc partition
@@ -19,28 +19,13 @@ pub enum WupError {
     JoinError(#[from] tokio::task::JoinError),
 
     #[error(transparent)]
-    BinRwError(#[from] binrw::Error),
-
-    #[error("worker pool channel closed")]
-    WorkerPoolClosed,
+    Zar(#[from] ZarError),
 
     #[error("invalid zstd compression level {level}: must be in the range {min}..={max}")]
     InvalidCompressionLevel { level: i32, min: i32, max: i32 },
 
-    #[error("node name is {0} bytes, must be at most 127")]
-    NameTooLong(usize),
-
-    #[error("name table would exceed the 2 GiB section limit")]
-    NameTableTooLarge,
-
     #[error("path is empty or malformed: {0:?}")]
     InvalidPath(String),
-
-    #[error("path conflict at {0:?}: cannot place a file under a file or a directory over a file")]
-    PathConflict(String),
-
-    #[error("output already exists: {0}; pass --on-conflict overwrite to replace it")]
-    DuplicateFile(String),
 
     #[error("title directory is neither loadiine nor NUS layout: {0}")]
     UnrecognizedTitleDirectory(PathBuf),
@@ -108,14 +93,8 @@ pub enum WupError {
     #[error("invalid ZArchive: {0}")]
     InvalidZArchive(String),
 
-    #[error("operation cancelled")]
-    Cancelled,
-}
-
-impl From<PoolChannelClosed> for WupError {
-    fn from(_: PoolChannelClosed) -> Self {
-        WupError::WorkerPoolClosed
-    }
+    #[error("{0}")]
+    Cancelled(#[from] crate::util::Cancelled),
 }
 
 /// Result alias used throughout the `wup` module.

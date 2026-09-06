@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::cso::error::CsoResult;
 use crate::cso::models::CISO_INDEX_UNCOMPRESSED;
 use crate::cso::reader::open_cso_sync;
-use crate::sony_disc::DiscContent;
+use crate::sony::disc::DiscContent;
 
 /// CSO/ZSO/DAX header fields and derived compression stats.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -50,6 +50,6 @@ pub fn read_info(path: &Path) -> CsoResult<CsoInfo> {
             * 100.0,
         block_count: blocks,
         raw_block_count,
-        content: crate::sony_disc::cso_disc_content(path),
+        content: crate::sony::disc::cso_disc_content(path),
     })
 }

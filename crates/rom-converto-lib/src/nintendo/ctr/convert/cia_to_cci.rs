@@ -2,17 +2,15 @@
 //! partitions, laying them out with the card padding and alignment a real
 //! cartridge would carry.
 
-use crate::nintendo::ctr::constants::{CTR_COMMON_KEYS_HEX, CTR_MEDIA_UNIT_SIZE};
-use crate::nintendo::ctr::decrypt::util::{cbc_decrypt, gen_iv};
-use crate::nintendo::ctr::error::NintendoCTRError;
+use crate::nintendo::ctr::constants::CTR_MEDIA_UNIT_SIZE;
+use crate::nintendo::ctr::decrypt::util::{cbc_decrypt, derive_title_key, gen_iv};
 use crate::nintendo::ctr::models::cia::CiaFileWithoutContent;
 use crate::nintendo::ctr::models::ncsd_header::{
     NCSD_FIRST_PARTITION_OFFSET, NCSD_HEADER_SIZE, NCSD_PARTITION_FS_TYPE_NORMAL, NcsdHeader,
     NcsdPartitionEntry,
 };
-use crate::nintendo::ctr::models::ticket::Ticket;
 use crate::nintendo::ctr::util::{align_64, is_twl_title_id};
-use crate::util::{CancelToken, ProgressReporter, scratch_output_path};
+use crate::util::{CancelToken, Cancelled, ProgressReporter, scratch_output_path};
 use anyhow::{Context, Result, bail};
 use binrw::{BinRead, BinWrite};
 use log::{info, warn};
@@ -26,22 +24,8 @@ const COPY_BUF: usize = 4 * 1024 * 1024;
 const CARD1_MIN_IMAGE_SIZE: u64 = 0x8000000;
 const NCSD_PADDING_BYTE: u8 = 0xFF;
 
-/// Converts a CIA at `input` into a CCI (`.3ds`) cartridge image at `output`.
-///
-/// # Errors
-///
-/// Returns an error if the CIA's title ID is a DSiWare/TWL title, which
-/// cannot be represented as a CCI.
+/// Rebuild the CIA at `input` as a CCI (NCSD) image at `output`.
 pub async fn cia_to_cci(
-    input: &Path,
-    output: &Path,
-    progress: &dyn ProgressReporter,
-) -> Result<()> {
-    cia_to_cci_cancellable(input, output, progress, CancelToken::new()).await
-}
-
-/// Like [`cia_to_cci`] but observes `cancel`.
-pub async fn cia_to_cci_cancellable(
     input: &Path,
     output: &Path,
     progress: &dyn ProgressReporter,
@@ -99,7 +83,7 @@ pub async fn cia_to_cci_cancellable(
     let mut placements: Vec<PartitionPlacement> = Vec::new();
     let mut cur_pos = NCSD_FIRST_PARTITION_OFFSET;
     for p in &partitions {
-        let aligned = align_to(p.ncch_size, media_unit);
+        let aligned = p.ncch_size.next_multiple_of(media_unit);
         placements.push(PartitionPlacement {
             ncsd_offset: cur_pos,
             ncsd_size: aligned,
@@ -150,7 +134,7 @@ pub async fn cia_to_cci_cancellable(
             let mut remaining = pl.layout.ncch_size;
             while remaining > 0 {
                 if cancel.is_cancelled() {
-                    return Err(NintendoCTRError::Cancelled.into());
+                    return Err(Cancelled.into());
                 }
                 let to_read = remaining.min(buf.len() as u64) as usize;
                 in_file.read_exact(&mut buf[..to_read]).await?;
@@ -187,12 +171,7 @@ pub async fn cia_to_cci_cancellable(
     }
     .await;
 
-    if let Err(err) = stream {
-        drop(out);
-        tokio::fs::remove_file(&tmp).await.ok();
-        return Err(err);
-    }
-
+    stream?;
     drop(out);
     crate::util::publish_temp(tmp, output, true)?;
     progress.finish();
@@ -220,39 +199,13 @@ struct PartitionPlacement {
     layout: PartitionLayout,
 }
 
-fn derive_title_key(ticket: &Ticket) -> Result<[u8; 16]> {
-    let td = &ticket.ticket_data;
-    if td.title_key.len() != 16 {
-        bail!("ticket has wrong title_key length: {}", td.title_key.len());
-    }
-    let idx = td.common_key_index as usize;
-    let common = CTR_COMMON_KEYS_HEX
-        .get(idx)
-        .ok_or_else(|| anyhow::anyhow!("ticket common_key_index {idx} out of range"))?;
-    let mut iv = [0u8; 16];
-    iv[..8].copy_from_slice(&td.title_id.to_be_bytes());
-    let mut buf = [0u8; 16];
-    buf.copy_from_slice(&td.title_key);
-    cbc_decrypt(common, &iv, &mut buf)?;
-    Ok(buf)
-}
-
-fn align_to(n: u64, align: u64) -> u64 {
-    n.div_ceil(align) * align
-}
-
 fn next_pow2_at_least(used: u64, min: u64) -> u64 {
     let target = used.max(min);
     target.next_power_of_two()
 }
 
-async fn pad_with(out: &mut BufWriter<File>, mut count: u64, byte: u8) -> Result<()> {
-    let chunk = [byte; 4096];
-    while count > 0 {
-        let n = (count as usize).min(chunk.len());
-        out.write_all(&chunk[..n]).await?;
-        count -= n as u64;
-    }
+async fn pad_with(out: &mut BufWriter<File>, count: u64, byte: u8) -> Result<()> {
+    tokio::io::copy(&mut tokio::io::repeat(byte).take(count), out).await?;
     Ok(())
 }
 
@@ -275,7 +228,7 @@ mod tests {
         );
         let out_path = tmp.path().join("out.3ds");
 
-        let err = cia_to_cci(&in_path, &out_path, &NoProgress)
+        let err = cia_to_cci(&in_path, &out_path, &NoProgress, CancelToken::new())
             .await
             .unwrap_err();
         assert!(

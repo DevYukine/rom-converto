@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use super::{nonpdrm, pfs};
 use crate::info::{ContentKind, Image};
 use crate::util::ProgressReporter;
+use crate::util::bytes::{u16_be, u32_be, u64_be};
 use crate::util::sfo::Sfo;
 
 type Aes128Ctr = ctr::Ctr128BE<Aes128>;
@@ -584,13 +585,13 @@ fn read_header(file: &mut File, path: &Path) -> Result<Header> {
     file.read_exact(&mut head)
         .with_context(|| format!("vita pkg: short header in {}", path.display()))?;
 
-    if be_u32(&head, 0) != PKG_MAGIC {
+    if u32_be(&head, 0) != PKG_MAGIC {
         bail!("vita pkg: bad magic in {}", path.display());
     }
 
     // Bit 15 of pkg_revision marks a finalized (retail) package; a debug
     // build without it is not encrypted with the retail keys embedded here.
-    let revision = be_u16(&head, 4);
+    let revision = u16_be(&head, 4);
     if revision & 0x8000 == 0 {
         bail!(
             "vita pkg: unsupported debug (non-finalized) pkg in {}",
@@ -608,13 +609,13 @@ fn read_header(file: &mut File, path: &Path) -> Result<Header> {
 
     Ok(Header {
         revision,
-        pkg_type: be_u16(&head, 6),
-        meta_offset: u64::from(be_u32(&head, 8)),
-        meta_count: be_u32(&head, 12),
-        item_count: be_u32(&head, 20),
-        total_size: be_u64(&head, 24),
-        data_offset: be_u64(&head, 32),
-        data_size: be_u64(&head, 40),
+        pkg_type: u16_be(&head, 6),
+        meta_offset: u64::from(u32_be(&head, 8)),
+        meta_count: u32_be(&head, 12),
+        item_count: u32_be(&head, 20),
+        total_size: u64_be(&head, 24),
+        data_offset: u64_be(&head, 32),
+        data_size: u64_be(&head, 40),
         content_id,
         iv,
         key_type: head[0xE7] & 7,
@@ -629,17 +630,17 @@ fn read_meta(file: &mut File, header: &Header) -> Result<Meta> {
         if file.seek(SeekFrom::Start(offset)).is_err() || file.read_exact(&mut block).is_err() {
             break;
         }
-        let id = be_u32(&block, 0);
-        let size = be_u32(&block, 4);
+        let id = u32_be(&block, 0);
+        let size = u32_be(&block, 4);
         meta.ids.push(id);
         match id {
-            1 => meta.drm_type = Some(be_u32(&block, 8)),
-            2 => meta.content_type = be_u32(&block, 8),
-            3 => meta.package_flags = Some(be_u32(&block, 8)),
-            13 => meta.items_offset = u64::from(be_u32(&block, 8)),
+            1 => meta.drm_type = Some(u32_be(&block, 8)),
+            2 => meta.content_type = u32_be(&block, 8),
+            3 => meta.package_flags = Some(u32_be(&block, 8)),
+            13 => meta.items_offset = u64::from(u32_be(&block, 8)),
             14 => {
-                meta.sfo_offset = u64::from(be_u32(&block, 8));
-                meta.sfo_size = be_u32(&block, 12);
+                meta.sfo_offset = u64::from(u32_be(&block, 8));
+                meta.sfo_size = u32_be(&block, 12);
             }
             _ => {}
         }
@@ -685,10 +686,10 @@ fn read_items(
     let mut items = Vec::with_capacity(header.item_count as usize);
     for i in 0..header.item_count as usize {
         let e = &table[i * 32..i * 32 + 32];
-        let name_offset = u64::from(be_u32(e, 0));
-        let name_size = be_u32(e, 4);
-        let data_offset = be_u64(e, 8);
-        let data_size = be_u64(e, 16);
+        let name_offset = u64::from(u32_be(e, 0));
+        let name_size = u32_be(e, 4);
+        let data_offset = u64_be(e, 8);
+        let data_size = u64_be(e, 16);
         let psp_type = e[24];
         let flags = e[27];
 
@@ -845,18 +846,6 @@ fn content_type_label(content_type: u32, category: Option<&str>) -> Option<Strin
         _ => return None,
     };
     Some(label.to_string())
-}
-
-fn be_u16(d: &[u8], off: usize) -> u16 {
-    u16::from_be_bytes(d[off..off + 2].try_into().expect("2-byte slice"))
-}
-
-fn be_u32(d: &[u8], off: usize) -> u32 {
-    u32::from_be_bytes(d[off..off + 4].try_into().expect("4-byte slice"))
-}
-
-fn be_u64(d: &[u8], off: usize) -> u64 {
-    u64::from_be_bytes(d[off..off + 8].try_into().expect("8-byte slice"))
 }
 
 #[cfg(test)]

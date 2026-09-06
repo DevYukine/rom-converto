@@ -8,6 +8,7 @@
 //! wouldn't clean up.
 
 use crate::nintendo::wup::error::{WupError, WupResult};
+use crate::util::bytes::{u16_be, u32_be, u64_be};
 
 /// Fixed base size of a Wii U ticket header. Optional V1 extensions
 /// (AOC content rights) sit beyond this offset but are not parsed
@@ -52,16 +53,16 @@ impl WupTicket {
             return Err(WupError::InvalidTicket);
         }
         Ok(Self {
-            signature_type: read_u32_be(bytes, OFFSET_SIGNATURE_TYPE),
+            signature_type: u32_be(bytes, OFFSET_SIGNATURE_TYPE),
             ticket_format_version: bytes[OFFSET_TICKET_FORMAT_VERSION],
             encrypted_title_key: bytes[OFFSET_ENCRYPTED_TITLE_KEY..OFFSET_ENCRYPTED_TITLE_KEY + 16]
                 .try_into()
                 .expect("16-byte slice"),
-            ticket_id: read_u64_be(bytes, OFFSET_TICKET_ID),
-            device_id: read_u32_be(bytes, OFFSET_DEVICE_ID),
-            title_id: read_u64_be(bytes, OFFSET_TITLE_ID),
-            title_version: read_u16_be(bytes, OFFSET_TITLE_VERSION),
-            account_id: read_u32_be(bytes, OFFSET_ACCOUNT_ID),
+            ticket_id: u64_be(bytes, OFFSET_TICKET_ID),
+            device_id: u32_be(bytes, OFFSET_DEVICE_ID),
+            title_id: u64_be(bytes, OFFSET_TITLE_ID),
+            title_version: u16_be(bytes, OFFSET_TITLE_VERSION),
+            account_id: u32_be(bytes, OFFSET_ACCOUNT_ID),
         })
     }
 
@@ -72,18 +73,6 @@ impl WupTicket {
     pub fn is_personalized(&self) -> bool {
         self.device_id != 0
     }
-}
-
-fn read_u16_be(bytes: &[u8], offset: usize) -> u16 {
-    u16::from_be_bytes(bytes[offset..offset + 2].try_into().expect("2-byte slice"))
-}
-
-fn read_u32_be(bytes: &[u8], offset: usize) -> u32 {
-    u32::from_be_bytes(bytes[offset..offset + 4].try_into().expect("4-byte slice"))
-}
-
-fn read_u64_be(bytes: &[u8], offset: usize) -> u64 {
-    u64::from_be_bytes(bytes[offset..offset + 8].try_into().expect("8-byte slice"))
 }
 
 #[cfg(test)]

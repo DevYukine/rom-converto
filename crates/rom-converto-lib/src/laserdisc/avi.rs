@@ -10,6 +10,7 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
+use crate::util::bytes::{u16_le, u32_le};
 use anyhow::{Context, Result, anyhow, bail};
 
 /// Video codecs the reader accepts; everything else is compressed.
@@ -477,14 +478,6 @@ fn read_chunk_header<R: Read + Seek>(reader: &mut R, pos: u64) -> Result<ChunkHe
     })
 }
 
-fn le_u16(buf: &[u8], off: usize) -> u16 {
-    u16::from_le_bytes([buf[off], buf[off + 1]])
-}
-
-fn le_u32(buf: &[u8], off: usize) -> u32 {
-    u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]])
-}
-
 fn fourcc_str(cc: &[u8; 4]) -> String {
     if cc.iter().all(|b| b.is_ascii_graphic() || *b == b' ') {
         String::from_utf8_lossy(cc).into_owned()
@@ -589,11 +582,11 @@ fn build_stream(strh: Option<&[u8]>, strf: &[u8]) -> Result<StreamInfo> {
                 );
             }
             Ok(StreamInfo::Video {
-                timescale: le_u32(strh, 24),
-                sampletime: le_u32(strh, 20),
-                length: le_u32(strh, 32),
-                width: le_u32(strf, 4),
-                height: (le_u32(strf, 8) as i32).unsigned_abs(),
+                timescale: u32_le(strh, 24),
+                sampletime: u32_le(strh, 20),
+                length: u32_le(strh, 32),
+                width: u32_le(strf, 4),
+                height: (u32_le(strf, 8) as i32).unsigned_abs(),
                 format: [strf[16], strf[17], strf[18], strf[19]],
             })
         }
@@ -605,10 +598,10 @@ fn build_stream(strh: Option<&[u8]>, strf: &[u8]) -> Result<StreamInfo> {
                 );
             }
             Ok(StreamInfo::Audio {
-                format_tag: le_u16(strf, 0),
-                channels: u32::from(le_u16(strf, 2)),
-                samplerate: le_u32(strf, 4),
-                samplebits: u32::from(le_u16(strf, 14)),
+                format_tag: u16_le(strf, 0),
+                channels: u32::from(u16_le(strf, 2)),
+                samplerate: u32_le(strf, 4),
+                samplebits: u32::from(u16_le(strf, 14)),
             })
         }
         _ => Ok(StreamInfo::Other),
@@ -682,7 +675,7 @@ fn index_from_idx1<R: Read + Seek>(
     reader.read_exact(&mut raw)?;
 
     let first_id = [raw[0], raw[1], raw[2], raw[3]];
-    let first_offset = u64::from(le_u32(&raw, 8));
+    let first_offset = u64::from(u32_le(&raw, 8));
     let base = [movi_base, 0]
         .into_iter()
         .find(|base| chunk_id_at(reader, base + first_offset, file_len) == Some(first_id));
@@ -696,8 +689,8 @@ fn index_from_idx1<R: Read + Seek>(
         let Some(number) = stream_number(&[entry[0], entry[1], entry[2], entry[3]]) else {
             continue;
         };
-        let data_pos = base + u64::from(le_u32(entry, 8)) + 8;
-        let len = le_u32(entry, 12);
+        let data_pos = base + u64::from(u32_le(entry, 8)) + 8;
+        let len = u32_le(entry, 12);
         if number == video_stream {
             video.push((data_pos, len));
         } else if Some(number) == audio_stream {

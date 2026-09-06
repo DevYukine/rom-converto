@@ -4,6 +4,7 @@
 //! per the layout at switchbrew.org/wiki/NACP_Format.
 
 use crate::nintendo::nx::error::{NxError, NxResult};
+use crate::util::bytes::u32_le;
 
 pub const NACP_TITLE_TABLE_SIZE: usize = 0x3000;
 pub const NACP_TITLE_ENTRY_SIZE: usize = 0x300;
@@ -171,9 +172,9 @@ impl Nacp {
             startup_user_account: buf[NACP_OFFSET_STARTUP_USER_ACCOUNT],
             screenshot: buf[NACP_OFFSET_SCREENSHOT],
             video_capture: buf[NACP_OFFSET_VIDEO_CAPTURE],
-            attribute_flag: read_u32_at(buf, NACP_OFFSET_ATTRIBUTE_FLAG),
-            supported_language_bitmask: read_u32_at(buf, NACP_OFFSET_SUPPORTED_LANGUAGE),
-            parental_control_flag: read_u32_at(buf, NACP_OFFSET_PARENTAL_CONTROL),
+            attribute_flag: u32_le(buf, NACP_OFFSET_ATTRIBUTE_FLAG),
+            supported_language_bitmask: u32_le(buf, NACP_OFFSET_SUPPORTED_LANGUAGE),
+            parental_control_flag: u32_le(buf, NACP_OFFSET_PARENTAL_CONTROL),
             user_account_save: read_i64_at(buf, NACP_OFFSET_USER_ACCOUNT_SAVE),
             user_account_save_journal: read_i64_at(buf, NACP_OFFSET_USER_ACCOUNT_SAVE_JOURNAL),
             device_save: read_i64_at(buf, NACP_OFFSET_DEVICE_SAVE),
@@ -189,14 +190,6 @@ impl Nacp {
 fn read_utf8_string(slice: &[u8]) -> String {
     let end = slice.iter().position(|b| *b == 0).unwrap_or(slice.len());
     String::from_utf8_lossy(&slice[..end]).into_owned()
-}
-
-fn read_u32_at(buf: &[u8], off: usize) -> u32 {
-    u32::from_le_bytes(
-        buf[off..off + 4]
-            .try_into()
-            .expect("4-byte slice always converts to [u8; 4]"),
-    )
 }
 
 fn read_i64_at(buf: &[u8], off: usize) -> i64 {

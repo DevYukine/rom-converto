@@ -44,6 +44,14 @@ pub fn in_flight_cap(max_group_bytes: u64) -> usize {
     parallelism().min(by_budget.max(1)).max(2)
 }
 
+/// Results for groups the reader no longer wants: the error belongs to
+/// discarded work, so it is logged instead of surfaced.
+fn log_discarded<O, E>((seq, result): (u64, Result<O, E>)) {
+    if result.is_err() {
+        log::debug!("group reader: dropped failed result for discarded group {seq}");
+    }
+}
+
 /// Reads a decoded byte stream out of fixed-size compressed groups,
 /// decoding ahead of the read position on a worker pool while returning
 /// bytes to the caller in order.
@@ -127,7 +135,7 @@ where
     /// are dropped: they belong to work the caller no longer wants.
     fn reset_window(&mut self, base: u64) {
         while self.in_flight > 0 {
-            let _ = self.pool().recv();
+            log_discarded(self.pool().recv());
             self.in_flight -= 1;
         }
         self.pending.clear();
@@ -247,7 +255,7 @@ where
     fn drop(&mut self) {
         if let Some(pool) = self.pool.take() {
             while self.in_flight > 0 {
-                let _ = pool.recv();
+                log_discarded(pool.recv());
                 self.in_flight -= 1;
             }
             pool.shutdown();

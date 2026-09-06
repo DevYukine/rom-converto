@@ -24,6 +24,7 @@ use crate::util::worker_pool::{Pool, Worker, drive, parallelism};
 
 use super::error::{GodError, GodResult};
 use super::layout::{BLOCK_SIZE, BLOCKS_PER_PART_FILE, GodScan, SUBPART_SIZE, SUBPARTS_PER_PART};
+use crate::util::Cancelled;
 
 /// Bytes per SHA-1 entry in a hash list.
 const DIGEST_SIZE: usize = 20;
@@ -160,7 +161,7 @@ pub fn write_parts<R: Read + Seek>(
         n_threads * 2,
         |seq| {
             if cancel.is_cancelled() {
-                return Err(GodError::Cancelled);
+                return Err(Cancelled.into());
             }
             let start = seq * SUBPART_SIZE;
             let len = SUBPART_SIZE.min(scan.data_size - start);
@@ -174,7 +175,7 @@ pub fn write_parts<R: Read + Seek>(
         },
         |seq, (sub_list, data)| {
             if cancel.is_cancelled() {
-                return Err(GodError::Cancelled);
+                return Err(Cancelled.into());
             }
             writer.push(&sub_list, &data)?;
             bytes_done.fetch_add(
@@ -338,6 +339,6 @@ mod tests {
             &AtomicU64::new(0),
             &cancel,
         );
-        assert!(matches!(result, Err(GodError::Cancelled)));
+        assert!(matches!(result, Err(GodError::Cancelled(_))));
     }
 }

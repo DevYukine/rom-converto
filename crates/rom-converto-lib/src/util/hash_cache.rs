@@ -12,7 +12,7 @@
 use crate::util::hash::{FileDigests, HashAlgo};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, PoisonError};
 use std::time::UNIX_EPOCH;
 
 const CACHE_VERSION: u32 = 1;
@@ -130,6 +130,12 @@ impl HashCache {
         self.path.is_none()
     }
 
+    /// A poisoned cache mutex only means some other caller panicked mid-update;
+    /// the entries stay well formed, so the run keeps using them.
+    fn lock(&self) -> std::sync::MutexGuard<'_, State> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// Raw-byte digests for `path`, only when the fingerprint still matches and
     /// every requested algorithm is present.
     pub fn lookup_raw(&self, path: &Path, algos: &[HashAlgo]) -> Option<FileDigests> {
@@ -152,7 +158,7 @@ impl HashCache {
         }
         let key = canonical_key(path)?;
         let fp = fingerprint(path)?;
-        let state = self.state.lock().expect("hash cache mutex poisoned");
+        let state = self.lock();
         let entry = state.entries.get(&key)?;
         if !entry_matches(entry, fp) {
             return None;
@@ -194,7 +200,7 @@ impl HashCache {
         if too_recent(fp) {
             return;
         }
-        let mut state = self.state.lock().expect("hash cache mutex poisoned");
+        let mut state = self.lock();
         let entry = entry_for(&mut state.entries, key, fp);
         merge_digests(pick(entry), digests);
         state.dirty = true;
@@ -214,7 +220,7 @@ impl HashCache {
         }
         let key = canonical_key(cue)?;
         let fp = fingerprint(cue)?;
-        let state = self.state.lock().expect("hash cache mutex poisoned");
+        let state = self.lock();
         let entry = state.entries.get(&key)?;
         if !entry_matches(entry, fp) {
             return None;
@@ -270,7 +276,7 @@ impl HashCache {
             }
             member_keys.push(mfp);
         }
-        let mut state = self.state.lock().expect("hash cache mutex poisoned");
+        let mut state = self.lock();
         let entry = entry_for(&mut state.entries, key, fp);
         entry.whole = Some(whole.clone());
         entry.tracks = Some(tracks.to_vec());
@@ -290,7 +296,7 @@ impl HashCache {
         let Some(fp) = fingerprint(path) else {
             return false;
         };
-        let state = self.state.lock().expect("hash cache mutex poisoned");
+        let state = self.lock();
         let Some(entry) = state.entries.get(&key) else {
             return false;
         };
@@ -312,7 +318,7 @@ impl HashCache {
         if too_recent(fp) {
             return;
         }
-        let mut state = self.state.lock().expect("hash cache mutex poisoned");
+        let mut state = self.lock();
         let entry = entry_for(&mut state.entries, key, fp);
         entry.verify_valid.insert(label.to_string(), true);
         state.dirty = true;
@@ -324,7 +330,7 @@ impl HashCache {
         let Some(path) = &self.path else {
             return;
         };
-        let mut state = self.state.lock().expect("hash cache mutex poisoned");
+        let mut state = self.lock();
         if !state.dirty {
             return;
         }
@@ -436,27 +442,24 @@ fn read_envelope(path: &Path) -> Option<HashMap<String, CacheEntry>> {
 }
 
 fn write_atomic(path: &Path, entries: &HashMap<String, CacheEntry>) -> std::io::Result<()> {
-    use std::io::Write as _;
-    let dir = path.parent().unwrap_or_else(|| Path::new("."));
-    std::fs::create_dir_all(dir)?;
-    let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
-    let mut encoder = flate2::write::GzEncoder::new(&mut tmp, flate2::Compression::default());
-    serde_json::to_writer(
-        &mut encoder,
-        &EnvelopeRef {
-            version: CACHE_VERSION,
-            entries,
-        },
-    )?;
-    encoder.finish()?;
-    tmp.flush()?;
-    tmp.persist(path).map_err(|e| e.error)?;
-    Ok(())
+    crate::util::atomic_write(path, true, |file| {
+        let mut encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+        serde_json::to_writer(
+            &mut encoder,
+            &EnvelopeRef {
+                version: CACHE_VERSION,
+                entries,
+            },
+        )?;
+        encoder.finish()?;
+        Ok(())
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util::CancelToken;
     use crate::util::NoProgress;
     use crate::util::hash::hash_file;
 
@@ -485,7 +488,7 @@ mod tests {
     }
 
     fn digests_of(path: &Path) -> FileDigests {
-        hash_file(path, ALL, &NoProgress).unwrap()
+        hash_file(path, ALL, &NoProgress, &CancelToken::new()).unwrap()
     }
 
     #[test]
@@ -528,7 +531,8 @@ mod tests {
         let file = dir.path().join("game.iso");
         write_old(&file, b"partial algos");
         let cache = cache_at(dir.path(), false);
-        let only_crc = hash_file(&file, &[HashAlgo::Crc32], &NoProgress).unwrap();
+        let only_crc =
+            hash_file(&file, &[HashAlgo::Crc32], &NoProgress, &CancelToken::new()).unwrap();
         cache.store_raw(&file, &only_crc);
         assert!(cache.lookup_raw(&file, &[HashAlgo::Crc32]).is_some());
         assert!(cache.lookup_raw(&file, &[HashAlgo::Sha256]).is_none());
@@ -542,11 +546,11 @@ mod tests {
         let cache = cache_at(dir.path(), false);
         cache.store_raw(
             &file,
-            &hash_file(&file, &[HashAlgo::Crc32], &NoProgress).unwrap(),
+            &hash_file(&file, &[HashAlgo::Crc32], &NoProgress, &CancelToken::new()).unwrap(),
         );
         cache.store_raw(
             &file,
-            &hash_file(&file, &[HashAlgo::Sha256], &NoProgress).unwrap(),
+            &hash_file(&file, &[HashAlgo::Sha256], &NoProgress, &CancelToken::new()).unwrap(),
         );
         let hit = cache
             .lookup_raw(&file, &[HashAlgo::Crc32, HashAlgo::Sha256])

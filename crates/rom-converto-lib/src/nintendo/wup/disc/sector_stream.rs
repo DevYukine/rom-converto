@@ -76,7 +76,11 @@ pub fn open_disc<P: AsRef<Path>>(path: P) -> WupResult<Box<dyn DiscSectorSource>
     let mut magic = [0u8; 8];
     {
         let mut f = File::open(path)?;
-        let _ = f.read(&mut magic)?;
+        match f.read_exact(&mut magic) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {}
+            Err(e) => return Err(e.into()),
+        }
     }
 
     if is_wux_magic(&magic) {

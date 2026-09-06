@@ -1,20 +1,18 @@
 use crate::nintendo::ctr::constants::{
-    CTR_COMMON_KEYS_HEX, CTR_MEDIA_UNIT_SIZE, CTR_NCSD_PARTITIONS, NCCH_MAGIC_OFFSET,
-    NCSD_PARTITION_COUNT, NCSD_PARTITION_ENTRY_SIZE, NCSD_PARTITION_TABLE_OFFSET,
-    NCSD_TITLE_ID_OFFSET,
+    CTR_MEDIA_UNIT_SIZE, CTR_NCSD_PARTITIONS, NCCH_MAGIC_OFFSET, NCSD_PARTITION_COUNT,
+    NCSD_PARTITION_ENTRY_SIZE, NCSD_PARTITION_TABLE_OFFSET, NCSD_TITLE_ID_OFFSET,
 };
-use crate::nintendo::ctr::decrypt::util::{cbc_decrypt, gen_iv};
-use crate::nintendo::ctr::error::NintendoCTRError;
+use crate::nintendo::ctr::decrypt::util::{derive_title_key, gen_iv};
 use crate::nintendo::ctr::models::certificate::{Certificate, PublicKey};
 use crate::nintendo::ctr::models::cia::{CIA_HEADER_SIZE, CiaFileWithoutContent, CiaHeader};
 use crate::nintendo::ctr::models::ncch_header::NcchHeader;
 use crate::nintendo::ctr::models::ticket::Ticket;
-use crate::nintendo::ctr::util::align_64;
+use crate::nintendo::ctr::util::{check_cancel, hash_cbc_stream, run_batch};
 use crate::nintendo::ctr::verify::root_key::{ROOT_CA_EXPONENT, ROOT_CA_MODULUS};
 use crate::nintendo::ctr::z3ds::models::Z3dsHeader;
-use crate::util::{CancelToken, ProgressReporter};
+use crate::util::{CancelToken, Cancelled, ProgressReporter};
 use anyhow::{Context, Result};
-use binrw::{BinRead, BinWrite, Endian};
+use binrw::{BinRead, BinResult, BinWrite, Endian};
 use rsa::pkcs1v15::VerifyingKey;
 use rsa::signature::Verifier;
 use rsa::{BigUint, RsaPublicKey};
@@ -149,18 +147,9 @@ impl CtrVerifyResult {
     }
 }
 
-/// Verifies a CIA or CCI/3DS at `input` against the built-in root key,
-/// detecting the format automatically (including Z3DS-compressed inputs).
+/// Verify the CTR container at `input`, dispatching on its magic to
+/// the CIA or NCSD check.
 pub async fn verify_ctr(
-    input: &Path,
-    options: &CtrVerifyOptions,
-    progress: &dyn ProgressReporter,
-) -> Result<CtrVerifyResult> {
-    verify_ctr_cancellable(input, options, progress, &CancelToken::new()).await
-}
-
-/// Like [`verify_ctr`] but observes `cancel`.
-pub async fn verify_ctr_cancellable(
     input: &Path,
     options: &CtrVerifyOptions,
     progress: &dyn ProgressReporter,
@@ -195,7 +184,7 @@ pub async fn verify_ctr_cancellable(
     if probe_len >= 4 {
         let header_size = u32::from_le_bytes(probe[0..4].try_into()?);
         if header_size == CIA_HEADER_SIZE {
-            let result = verify_cia_cancellable(input, options, progress, cancel).await?;
+            let result = verify_cia(input, options, progress, cancel).await?;
             return Ok(CtrVerifyResult::Cia(result));
         }
     }
@@ -267,7 +256,7 @@ async fn verify_compressed(
     })
     .await?;
     if cancel.is_cancelled() {
-        return Err(NintendoCTRError::Cancelled.into());
+        return Err(Cancelled.into());
     }
     result?;
     progress.inc(header.uncompressed_size / 4);
@@ -275,10 +264,7 @@ async fn verify_compressed(
     progress.finish();
 
     // temp_dir's Drop removes the file after this function returns.
-    let mut result = Box::pin(verify_ctr_cancellable(
-        &temp_path, options, progress, cancel,
-    ))
-    .await?;
+    let mut result = Box::pin(verify_ctr(&temp_path, options, progress, cancel)).await?;
     match &mut result {
         CtrVerifyResult::Cia(c) => c.compressed = true,
         CtrVerifyResult::Ncsd(n) => n.compressed = true,
@@ -286,18 +272,8 @@ async fn verify_compressed(
     Ok(result)
 }
 
-/// Verifies a CIA at `input`: its certificate chain, ticket/TMD signatures,
-/// and (if requested) content hashes.
+/// Verify the signatures and content hashes of the CIA at `input`.
 pub async fn verify_cia(
-    input: &Path,
-    options: &CtrVerifyOptions,
-    progress: &dyn ProgressReporter,
-) -> Result<CiaVerifyResult> {
-    verify_cia_cancellable(input, options, progress, &CancelToken::new()).await
-}
-
-/// Like [`verify_cia`] but observes `cancel`.
-pub async fn verify_cia_cancellable(
     input: &Path,
     options: &CtrVerifyOptions,
     progress: &dyn ProgressReporter,
@@ -308,39 +284,10 @@ pub async fn verify_cia_cancellable(
     let file_size = file.metadata().await?.len();
     progress.start(file_size, "Verifying CIA signatures");
 
-    // The header's declared sizes drive the rest of the layout walk.
-    let mut header_buf = vec![0u8; CIA_HEADER_SIZE as usize];
-    file.read_exact(&mut header_buf).await?;
-    let cia_header =
-        CiaHeader::read_le(&mut Cursor::new(&header_buf)).context("failed to parse CIA header")?;
-
-    let header_end: u64 = CIA_HEADER_SIZE as u64;
-    let cert_start = align_64(header_end);
-    let cert_end = cert_start + cia_header.cert_chain_size as u64;
-    let ticket_start = align_64(cert_end);
-    let ticket_end = ticket_start + cia_header.ticket_size as u64;
-    let tmd_start = align_64(ticket_end);
-    let tmd_end = tmd_start + cia_header.tmd_size as u64;
-    let content_start = align_64(tmd_end);
-
-    if content_start > file_size {
-        anyhow::bail!("CIA preamble exceeds file size (corrupt header)");
-    }
-
-    // Read only the preamble [0..content_start] (few MB at most); content
-    // bytes will be hashed later by streaming directly from the file.
-    let mut preamble = vec![0u8; content_start as usize];
-    preamble[..CIA_HEADER_SIZE as usize].copy_from_slice(&header_buf);
-    file.seek(SeekFrom::Start(CIA_HEADER_SIZE as u64)).await?;
-    file.read_exact(&mut preamble[CIA_HEADER_SIZE as usize..])
-        .await?;
+    let (cia_without_content, content_start) = read_cia_preamble(&mut file, file_size).await?;
     check_cancel(cancel)?;
 
     let mut details = Vec::new();
-
-    let mut cursor = Cursor::new(&preamble);
-    let cia_without_content = CiaFileWithoutContent::read_options(&mut cursor, Endian::Little, ())
-        .context("failed to parse CIA file")?;
 
     let title_id = format!("{:016X}", cia_without_content.tmd.header.title_id);
     let console_id = cia_without_content.ticket.ticket_data.console_id;
@@ -364,117 +311,24 @@ pub async fn verify_cia_cancellable(
     progress.inc(file_size / 4);
     check_cancel(cancel)?;
 
-    let ca_cert = find_cert_by_name_prefix(&cia_without_content.cert_chain, "CA");
-    let cp_cert = find_cert_by_name_prefix(&cia_without_content.cert_chain, "CP");
-    let xs_cert = find_cert_by_name_prefix(&cia_without_content.cert_chain, "XS");
-
-    let ca_cert_valid = if let Some(ca) = &ca_cert {
-        let body = serialize_cert_body(ca);
-        let valid = verify_rsa_signature(&ROOT_CA_MODULUS, ROOT_CA_EXPONENT, &ca.signature, &body);
-        details.push(format!(
-            "CA certificate (Root -> CA): {}",
-            if valid { "VALID" } else { "INVALID" }
-        ));
-        valid
-    } else {
-        details.push("CA certificate: NOT FOUND".to_string());
-        false
-    };
-
-    let tmd_signer_cert_valid = if let (Some(ca), Some(cp)) = (&ca_cert, &cp_cert) {
-        if let Some((modulus, exponent)) = extract_rsa_key(&ca.public_key) {
-            let body = serialize_cert_body(cp);
-            let valid = verify_rsa_signature(modulus, exponent, &cp.signature, &body);
-            details.push(format!(
-                "TMD signer cert (CA -> CP): {}",
-                if valid { "VALID" } else { "INVALID" }
-            ));
-            ca_cert_valid && valid
-        } else {
-            details.push("TMD signer cert: CA has unsupported key type".to_string());
-            false
-        }
-    } else {
-        details.push("TMD signer cert (CP): NOT FOUND".to_string());
-        false
-    };
-
-    let ticket_signer_cert_valid = if let (Some(ca), Some(xs)) = (&ca_cert, &xs_cert) {
-        if let Some((modulus, exponent)) = extract_rsa_key(&ca.public_key) {
-            let body = serialize_cert_body(xs);
-            let valid = verify_rsa_signature(modulus, exponent, &xs.signature, &body);
-            details.push(format!(
-                "Ticket signer cert (CA -> XS): {}",
-                if valid { "VALID" } else { "INVALID" }
-            ));
-            ca_cert_valid && valid
-        } else {
-            details.push("Ticket signer cert: CA has unsupported key type".to_string());
-            false
-        }
-    } else {
-        details.push("Ticket signer cert (XS): NOT FOUND".to_string());
-        false
-    };
-
-    progress.inc(file_size / 4);
-    check_cancel(cancel)?;
-
-    let tmd_signature_valid = if let Some(cp) = &cp_cert {
-        if let Some((modulus, exponent)) = extract_rsa_key(&cp.public_key) {
-            let body = serialize_tmd_body(&cia_without_content.tmd);
-            let valid = verify_rsa_signature(
-                modulus,
-                exponent,
-                &cia_without_content.tmd.signature_data.signature,
-                &body,
-            );
-            details.push(format!(
-                "TMD signature: {}",
-                if valid { "VALID" } else { "INVALID" }
-            ));
-            tmd_signer_cert_valid && valid
-        } else {
-            details.push("TMD signature: CP has unsupported key type".to_string());
-            false
-        }
-    } else {
-        details.push("TMD signature: CP cert not found".to_string());
-        false
-    };
-
-    let ticket_signature_valid = if let Some(xs) = &xs_cert {
-        if let Some((modulus, exponent)) = extract_rsa_key(&xs.public_key) {
-            let body = serialize_ticket_body(&cia_without_content.ticket);
-            let valid = verify_rsa_signature(
-                modulus,
-                exponent,
-                &cia_without_content.ticket.signature_data.signature,
-                &body,
-            );
-            details.push(format!(
-                "Ticket signature: {}",
-                if valid { "VALID" } else { "INVALID" }
-            ));
-            ticket_signer_cert_valid && valid
-        } else {
-            details.push("Ticket signature: XS has unsupported key type".to_string());
-            false
-        }
-    } else {
-        details.push("Ticket signature: XS cert not found".to_string());
-        false
-    };
-
-    progress.inc(file_size / 4);
-    check_cancel(cancel)?;
+    let SignatureChecks {
+        ca_cert_valid,
+        tmd_signer_cert_valid,
+        ticket_signer_cert_valid,
+        tmd_signature_valid,
+        ticket_signature_valid,
+    } = verify_signature_chain(
+        &cia_without_content,
+        &mut details,
+        progress,
+        file_size,
+        cancel,
+    )?;
 
     let content_hashes_valid = if options.verify_content_hashes {
-        // Derive title key from ticket: AES-CBC decrypt the encrypted
-        // title_key using common_keys[common_key_index] as the AES key
-        // and the title_id (big-endian, zero-padded to 16 bytes) as the
-        // IV. Needed to decrypt encrypted content before hashing.
-        let title_key_opt = derive_title_key(&cia_without_content.ticket);
+        // A ticket this crate cannot key off leaves the contents unverifiable
+        // rather than aborting: the hash check reports them as failures.
+        let title_key_opt = derive_title_key(&cia_without_content.ticket).ok();
         match verify_content_hashes_streaming(
             &mut file,
             content_start,
@@ -835,15 +689,15 @@ async fn read_and_hash(
     const CHUNK_SIZE: usize = 4 * 1024 * 1024;
     let mut hasher = Sha256::new();
     let mut remaining = size as usize;
+    let mut buf = vec![0u8; remaining.min(CHUNK_SIZE)];
 
     while remaining > 0 {
         check_cancel(cancel)?;
         let to_read = remaining.min(CHUNK_SIZE);
-        let mut buf = vec![0u8; to_read];
-        if file.read_exact(&mut buf).await.is_err() {
+        if file.read_exact(&mut buf[..to_read]).await.is_err() {
             return Ok(None);
         }
-        hasher.update(&buf);
+        hasher.update(&buf[..to_read]);
         remaining -= to_read;
     }
 
@@ -921,59 +775,197 @@ fn verify_rsa_signature(modulus: &[u8], exponent: u32, signature: &[u8], data: &
     }
 }
 
-fn serialize_cert_body(cert: &Certificate) -> Vec<u8> {
+/// Reads and parses everything before the content section: the header, the
+/// certificate chain, the ticket, and the TMD. Only [0..content_start] (a few
+/// MB at most) is buffered; content bytes are streamed later. Returns the
+/// parsed preamble and the content section's offset.
+async fn read_cia_preamble(
+    file: &mut tokio::fs::File,
+    file_size: u64,
+) -> Result<(CiaFileWithoutContent, u64)> {
+    let mut header_buf = vec![0u8; CIA_HEADER_SIZE as usize];
+    file.read_exact(&mut header_buf).await?;
+    let cia_header =
+        CiaHeader::read_le(&mut Cursor::new(&header_buf)).context("failed to parse CIA header")?;
+
+    let content_start = cia_header.layout().content_start;
+    if content_start > file_size {
+        anyhow::bail!("CIA preamble exceeds file size (corrupt header)");
+    }
+
+    let mut preamble = vec![0u8; content_start as usize];
+    preamble[..CIA_HEADER_SIZE as usize].copy_from_slice(&header_buf);
+    file.seek(SeekFrom::Start(CIA_HEADER_SIZE as u64)).await?;
+    file.read_exact(&mut preamble[CIA_HEADER_SIZE as usize..])
+        .await?;
+
+    let cia = CiaFileWithoutContent::read_options(&mut Cursor::new(&preamble), Endian::Little, ())
+        .context("failed to parse CIA file")?;
+    Ok((cia, content_start))
+}
+
+/// Results of the certificate-chain and signature checks, each already
+/// folded together with the checks it depends on.
+struct SignatureChecks {
+    ca_cert_valid: bool,
+    tmd_signer_cert_valid: bool,
+    ticket_signer_cert_valid: bool,
+    tmd_signature_valid: bool,
+    ticket_signature_valid: bool,
+}
+
+/// Walks Root -> CA -> CP/XS and then checks the TMD and ticket signatures
+/// against their signer certificates, appending a line per check to `details`.
+fn verify_signature_chain(
+    cia: &CiaFileWithoutContent,
+    details: &mut Vec<String>,
+    progress: &dyn ProgressReporter,
+    file_size: u64,
+    cancel: &CancelToken,
+) -> Result<SignatureChecks> {
+    let ca_cert = find_cert_by_name_prefix(&cia.cert_chain, "CA");
+    let cp_cert = find_cert_by_name_prefix(&cia.cert_chain, "CP");
+    let xs_cert = find_cert_by_name_prefix(&cia.cert_chain, "XS");
+
+    let ca_cert_valid = if let Some(ca) = &ca_cert {
+        let body = serialize_cert_body(ca)?;
+        let valid = verify_rsa_signature(&ROOT_CA_MODULUS, ROOT_CA_EXPONENT, &ca.signature, &body);
+        details.push(format!(
+            "CA certificate (Root -> CA): {}",
+            if valid { "VALID" } else { "INVALID" }
+        ));
+        valid
+    } else {
+        details.push("CA certificate: NOT FOUND".to_string());
+        false
+    };
+
+    let tmd_signer_cert_valid = if let (Some(ca), Some(cp)) = (&ca_cert, &cp_cert) {
+        if let Some((modulus, exponent)) = extract_rsa_key(&ca.public_key) {
+            let body = serialize_cert_body(cp)?;
+            let valid = verify_rsa_signature(modulus, exponent, &cp.signature, &body);
+            details.push(format!(
+                "TMD signer cert (CA -> CP): {}",
+                if valid { "VALID" } else { "INVALID" }
+            ));
+            ca_cert_valid && valid
+        } else {
+            details.push("TMD signer cert: CA has unsupported key type".to_string());
+            false
+        }
+    } else {
+        details.push("TMD signer cert (CP): NOT FOUND".to_string());
+        false
+    };
+
+    let ticket_signer_cert_valid = if let (Some(ca), Some(xs)) = (&ca_cert, &xs_cert) {
+        if let Some((modulus, exponent)) = extract_rsa_key(&ca.public_key) {
+            let body = serialize_cert_body(xs)?;
+            let valid = verify_rsa_signature(modulus, exponent, &xs.signature, &body);
+            details.push(format!(
+                "Ticket signer cert (CA -> XS): {}",
+                if valid { "VALID" } else { "INVALID" }
+            ));
+            ca_cert_valid && valid
+        } else {
+            details.push("Ticket signer cert: CA has unsupported key type".to_string());
+            false
+        }
+    } else {
+        details.push("Ticket signer cert (XS): NOT FOUND".to_string());
+        false
+    };
+
+    progress.inc(file_size / 4);
+    check_cancel(cancel)?;
+
+    let tmd_signature_valid = if let Some(cp) = &cp_cert {
+        if let Some((modulus, exponent)) = extract_rsa_key(&cp.public_key) {
+            let body = serialize_tmd_body(&cia.tmd)?;
+            let valid =
+                verify_rsa_signature(modulus, exponent, &cia.tmd.signature_data.signature, &body);
+            details.push(format!(
+                "TMD signature: {}",
+                if valid { "VALID" } else { "INVALID" }
+            ));
+            tmd_signer_cert_valid && valid
+        } else {
+            details.push("TMD signature: CP has unsupported key type".to_string());
+            false
+        }
+    } else {
+        details.push("TMD signature: CP cert not found".to_string());
+        false
+    };
+
+    let ticket_signature_valid = if let Some(xs) = &xs_cert {
+        if let Some((modulus, exponent)) = extract_rsa_key(&xs.public_key) {
+            let body = serialize_ticket_body(&cia.ticket)?;
+            let valid = verify_rsa_signature(
+                modulus,
+                exponent,
+                &cia.ticket.signature_data.signature,
+                &body,
+            );
+            details.push(format!(
+                "Ticket signature: {}",
+                if valid { "VALID" } else { "INVALID" }
+            ));
+            ticket_signer_cert_valid && valid
+        } else {
+            details.push("Ticket signature: XS has unsupported key type".to_string());
+            false
+        }
+    } else {
+        details.push("Ticket signature: XS cert not found".to_string());
+        false
+    };
+
+    progress.inc(file_size / 4);
+    check_cancel(cancel)?;
+
+    Ok(SignatureChecks {
+        ca_cert_valid,
+        tmd_signer_cert_valid,
+        ticket_signer_cert_valid,
+        tmd_signature_valid,
+        ticket_signature_valid,
+    })
+}
+
+fn serialize_cert_body(cert: &Certificate) -> BinResult<Vec<u8>> {
     let mut buf = Vec::new();
     let mut cursor = Cursor::new(&mut buf);
-    let _ = cert.issuer.write_options(&mut cursor, Endian::Big, ());
-    let _ = cert.key_type.write_options(&mut cursor, Endian::Big, ());
-    let _ = cert.name.write_options(&mut cursor, Endian::Big, ());
-    let _ = cert
-        .expiration_time
-        .write_options(&mut cursor, Endian::Big, ());
-    let _ = cert.public_key.write_options(&mut cursor, Endian::Big, ());
-    buf
+    cert.issuer.write_options(&mut cursor, Endian::Big, ())?;
+    cert.key_type.write_options(&mut cursor, Endian::Big, ())?;
+    cert.name.write_options(&mut cursor, Endian::Big, ())?;
+    cert.expiration_time
+        .write_options(&mut cursor, Endian::Big, ())?;
+    cert.public_key
+        .write_options(&mut cursor, Endian::Big, ())?;
+    Ok(buf)
 }
 
 fn serialize_tmd_body(
     tmd: &crate::nintendo::ctr::models::title_metadata::TitleMetadata,
-) -> Vec<u8> {
+) -> BinResult<Vec<u8>> {
     // The TMD signature only covers the header (through
     // content_info_records_hash). Info records are validated through
     // the header's content_info_records_hash, and chunk records are
     // validated through each info record's hash, a Merkle-style chain.
     let mut buf = Vec::new();
     let mut cursor = Cursor::new(&mut buf);
-    let _ = tmd.header.write_options(&mut cursor, Endian::Big, ());
-    buf
+    tmd.header.write_options(&mut cursor, Endian::Big, ())?;
+    Ok(buf)
 }
 
-/// Decrypt the encrypted title key stored in a ticket using the common
-/// key at the ticket's common_key_index. Returns None if the ticket's
-/// title_key length is wrong (corrupt ticket) or the key index is out
-/// of range.
-fn derive_title_key(ticket: &Ticket) -> Option<[u8; 16]> {
-    let td = &ticket.ticket_data;
-    if td.title_key.len() != 16 {
-        return None;
-    }
-    let idx = td.common_key_index as usize;
-    let common_key = CTR_COMMON_KEYS_HEX.get(idx)?;
-
-    let mut iv = [0u8; 16];
-    iv[..8].copy_from_slice(&td.title_id.to_be_bytes());
-    let mut key_buf = [0u8; 16];
-    key_buf.copy_from_slice(&td.title_key);
-    cbc_decrypt(common_key, &iv, &mut key_buf).ok()?;
-    Some(key_buf)
-}
-
-fn serialize_ticket_body(ticket: &crate::nintendo::ctr::models::ticket::Ticket) -> Vec<u8> {
+fn serialize_ticket_body(ticket: &Ticket) -> BinResult<Vec<u8>> {
     let mut buf = Vec::new();
     let mut cursor = Cursor::new(&mut buf);
-    let _ = ticket
+    ticket
         .ticket_data
-        .write_options(&mut cursor, Endian::Big, ());
-    buf
+        .write_options(&mut cursor, Endian::Big, ())?;
+    Ok(buf)
 }
 
 /// Streaming content hash verify: seeks the file to each content chunk's offset
@@ -1043,27 +1035,16 @@ async fn verify_content_hashes_streaming(
         }
 
         file.seek(SeekFrom::Start(offset)).await?;
-        let mut hasher = Sha256::new();
-        // CBC state for this content: IV starts as the content index
-        // big-endian, padded to 16 bytes. Each subsequent chunk picks up
-        // the IV from the LAST ciphertext block of the previous chunk,
-        // which must be saved BEFORE in-place decryption clobbers it.
-        let mut cbc_iv = gen_iv(record.content_index);
-        let mut remaining = size;
-        while remaining > 0 {
-            check_cancel(cancel)?;
-            let to_read = remaining.min(buf.len() as u64) as usize;
-            file.read_exact(&mut buf[..to_read]).await?;
-            if encrypted {
-                let key = title_key.expect("title_key checked above");
-                let next_iv: [u8; 16] = buf[to_read - 16..to_read].try_into().expect("16 bytes");
-                cbc_decrypt(key, &cbc_iv, &mut buf[..to_read])?;
-                cbc_iv = next_iv;
-            }
-            hasher.update(&buf[..to_read]);
-            remaining -= to_read as u64;
-        }
-        let hash = hasher.finalize();
+        let key = encrypted.then(|| title_key.expect("title_key checked above"));
+        let hash = hash_cbc_stream(
+            file,
+            key,
+            gen_iv(record.content_index),
+            size,
+            &mut buf,
+            cancel,
+        )
+        .await?;
 
         if hash.as_slice() == record.hash.as_slice() {
             details.push(format!("Content {}: hash OK", record.content_id));
@@ -1079,7 +1060,7 @@ async fn verify_content_hashes_streaming(
     let mut info_buf = Vec::new();
     let mut info_cursor = Cursor::new(&mut info_buf);
     for record in &tmd.content_info_records {
-        let _ = record.write_options(&mut info_cursor, Endian::Big, ());
+        record.write_options(&mut info_cursor, Endian::Big, ())?;
     }
     let info_hash = Sha256::digest(&info_buf);
 
@@ -1103,28 +1084,8 @@ pub struct BatchVerifySummary {
 
 const VERIFY_EXTS: &[&str] = &["cia", "3ds", "cci", "cxi", "zcia", "zcci", "zcxi"];
 
-/// Verifies every supported ROM file found under `input_dir`, logging each
-/// result and returning an aggregate summary.
+/// Verify every CTR container under `input_dir` and tally the results.
 pub async fn verify_ctr_batch(
-    input_dir: &Path,
-    options: &CtrVerifyOptions,
-    progress: &dyn ProgressReporter,
-    total_progress: &dyn ProgressReporter,
-    max_depth: Option<usize>,
-) -> Result<BatchVerifySummary> {
-    verify_ctr_batch_cancellable(
-        input_dir,
-        options,
-        progress,
-        total_progress,
-        max_depth,
-        &CancelToken::new(),
-    )
-    .await
-}
-
-/// Like [`verify_ctr_batch`] but observes `cancel` between files.
-pub async fn verify_ctr_batch_cancellable(
     input_dir: &Path,
     options: &CtrVerifyOptions,
     progress: &dyn ProgressReporter,
@@ -1132,71 +1093,57 @@ pub async fn verify_ctr_batch_cancellable(
     max_depth: Option<usize>,
     cancel: &CancelToken,
 ) -> Result<BatchVerifySummary> {
-    let roms = crate::util::fs::collect_files_with_exts_cancellable(
-        input_dir,
-        VERIFY_EXTS,
-        max_depth,
-        cancel,
-    )?;
-
     let mut summary = BatchVerifySummary::default();
 
-    if roms.is_empty() {
-        log::warn!(
-            "No supported ROM files found in {} (looked for {:?})",
-            input_dir.display(),
-            VERIFY_EXTS
-        );
-        return Ok(summary);
-    }
+    run_batch(
+        input_dir,
+        VERIFY_EXTS,
+        ("Verifying", "verify"),
+        max_depth,
+        total_progress,
+        cancel,
+        async |path| {
+            summary.total += 1;
+            let display_name = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("<unnamed>");
 
-    total_progress.start(
-        roms.len() as u64,
-        &format!("Verifying {} files", roms.len()),
-    );
-
-    for path in roms {
-        check_cancel(cancel)?;
-        summary.total += 1;
-        let display_name = path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("<unnamed>");
-
-        match verify_ctr_cancellable(&path, options, progress, cancel).await {
-            Ok(result) => {
-                let tag = if result.ok() { "[OK]" } else { "[FAIL]" };
-                if result.ok() {
-                    summary.ok += 1;
-                } else {
+            match verify_ctr(path, options, progress, cancel).await {
+                Ok(result) => {
+                    let tag = if result.ok() { "[OK]" } else { "[FAIL]" };
+                    if result.ok() {
+                        summary.ok += 1;
+                    } else {
+                        summary.failed += 1;
+                    }
+                    match &result {
+                        CtrVerifyResult::Cia(cia) => {
+                            log::info!("{tag} {display_name} - CIA / {}", cia.legitimacy);
+                        }
+                        CtrVerifyResult::Ncsd(ncsd) => {
+                            log::info!(
+                                "{tag} {display_name} - NCSD / {} partitions / Title ID {}",
+                                ncsd.partition_count,
+                                ncsd.title_id
+                            );
+                        }
+                    }
+                    Ok(())
+                }
+                Err(err) => {
+                    if cancel.is_cancelled() {
+                        return Err(err);
+                    }
                     summary.failed += 1;
-                }
-                match &result {
-                    CtrVerifyResult::Cia(cia) => {
-                        log::info!("{tag} {display_name} - CIA / {}", cia.legitimacy);
-                    }
-                    CtrVerifyResult::Ncsd(ncsd) => {
-                        log::info!(
-                            "{tag} {display_name} - NCSD / {} partitions / Title ID {}",
-                            ncsd.partition_count,
-                            ncsd.title_id
-                        );
-                    }
+                    log::warn!("[FAIL] {display_name} - {err}");
+                    Ok(())
                 }
             }
-            Err(err) => {
-                if cancel.is_cancelled() {
-                    return Err(err);
-                }
-                summary.failed += 1;
-                log::warn!("[FAIL] {display_name} - {err}");
-            }
-        }
+        },
+    )
+    .await?;
 
-        total_progress.inc(1);
-    }
-
-    total_progress.finish();
     Ok(summary)
 }
 
@@ -1210,18 +1157,11 @@ impl<R: Read> Read for CancelReader<R> {
         if self.cancel.is_cancelled() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::Interrupted,
-                "cancelled",
+                Cancelled,
             ));
         }
         self.inner.read(buf)
     }
-}
-
-fn check_cancel(cancel: &CancelToken) -> Result<()> {
-    if cancel.is_cancelled() {
-        return Err(NintendoCTRError::Cancelled.into());
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -1240,6 +1180,7 @@ mod tests {
                 verify_content_hashes: false,
             },
             &progress,
+            &CancelToken::new(),
         )
         .await
         .expect("verify should parse the synthetic CIA");
@@ -1268,6 +1209,7 @@ mod tests {
                 verify_content_hashes: true,
             },
             &progress,
+            &CancelToken::new(),
         )
         .await
         .unwrap();
@@ -1286,13 +1228,13 @@ mod tests {
         // The synthetic CIA's content is not a real NCCH, so the encryption
         // guard cannot read its crypto state; allow it through, this test only
         // exercises the streaming verify path.
-        compress_rom(&cia_path, &zcia_path, None, true, &prog)
+        compress_rom(&cia_path, &zcia_path, None, true, &prog, CancelToken::new())
             .await
             .unwrap();
 
         // Sanity: round-trip the compressed file back and compare to original.
         let decompressed_path = cia_path.with_extension("roundtrip.cia");
-        decompress_rom(&zcia_path, &decompressed_path, &prog)
+        decompress_rom(&zcia_path, &decompressed_path, &prog, CancelToken::new())
             .await
             .unwrap();
         assert_eq!(
@@ -1308,6 +1250,7 @@ mod tests {
                 verify_content_hashes: true,
             },
             &prog,
+            &CancelToken::new(),
         )
         .await
         .unwrap();
@@ -1421,6 +1364,7 @@ mod tests {
                 verify_content_hashes: true,
             },
             &progress,
+            &CancelToken::new(),
         )
         .await
         .unwrap();
@@ -1458,6 +1402,7 @@ mod tests {
                 verify_content_hashes: true,
             },
             &progress,
+            &CancelToken::new(),
         )
         .await
         .unwrap();

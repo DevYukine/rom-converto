@@ -14,14 +14,15 @@ use crate::nintendo::ctr::constants::{
 };
 use crate::nintendo::ctr::decrypt::util::{decrypt_first_ncch_block, derive_title_key_from_ticket};
 use crate::nintendo::ctr::exefs::read_icon_section;
-use crate::nintendo::ctr::models::cia::{CIA_HEADER_SIZE, CiaHeader, MetaData};
+use crate::nintendo::ctr::models::cia::{CIA_HEADER_SIZE, CiaHeader, CiaLayout, MetaData};
 use crate::nintendo::ctr::models::ncch_header::NcchHeader;
 use crate::nintendo::ctr::models::smdh::{AgeRating, SMDH_LARGE_ICON_DIM, SMDH_TOTAL_SIZE, Smdh};
 use crate::nintendo::ctr::models::title_metadata::ContentChunkRecord;
-use crate::nintendo::ctr::util::{align_64, is_twl_title_id};
+use crate::nintendo::ctr::util::is_twl_title_id;
 use crate::nintendo::ctr::z3ds::models::{
     Z3DS_HEADER_SIZE, Z3DS_MAGIC, Z3dsHeader, underlying_magic,
 };
+use crate::util::bytes::cstr_ascii;
 use crate::util::pixel::{decode_rgb565_morton_tiled, encode_png};
 use anyhow::{Context, Result, anyhow};
 use binrw::BinRead;
@@ -212,16 +213,13 @@ fn read_cia_info(path: &Path, physical_bytes: u64) -> Result<CtrInfo> {
     let cia_header =
         CiaHeader::read_le(&mut Cursor::new(&header_buf)).context("ctr info: parse CIA header")?;
 
-    let header_end = CIA_HEADER_SIZE as u64;
-    let cert_start = align_64(header_end);
-    let cert_end = cert_start + cia_header.cert_chain_size as u64;
-    let ticket_start = align_64(cert_end);
-    let ticket_end = ticket_start + cia_header.ticket_size as u64;
-    let tmd_start = align_64(ticket_end);
-    let tmd_end = tmd_start + cia_header.tmd_size as u64;
-    let content_start = align_64(tmd_end);
-    let content_end = content_start + cia_header.content_size;
-    let meta_start = align_64(content_end);
+    let CiaLayout {
+        ticket_start,
+        tmd_start,
+        content_start,
+        meta_start,
+        ..
+    } = cia_header.layout();
 
     let first_chunk = read_first_content_chunk(&mut reader, tmd_start)?;
     let content_encrypted = first_chunk.content_type.is_encrypted();
@@ -527,7 +525,7 @@ fn info_from_ncch_header(hdr: &NcchHeader) -> NcchSummary {
     tid_be.reverse();
     let mut pid_be = hdr.programid;
     pid_be.reverse();
-    let product_code = trim_nul_ascii(&hdr.productcode);
+    let product_code = cstr_ascii(&hdr.productcode);
     let maker_code = format!(
         "{}{}",
         ascii_or_dot((hdr.makercode & 0xFF) as u8),
@@ -550,8 +548,8 @@ fn info_from_srl_header(block: &[u8; 0x200], title_id: u64) -> NcchSummary {
     NcchSummary {
         title_id: title_id_hex.clone(),
         program_id: title_id_hex,
-        product_code: trim_nul_ascii(&block[0x0C..0x10]),
-        maker_code: trim_nul_ascii(&block[0x10..0x12]),
+        product_code: cstr_ascii(&block[0x0C..0x10]),
+        maker_code: cstr_ascii(&block[0x10..0x12]),
         encrypted: false,
     }
 }
@@ -564,11 +562,6 @@ fn read_ticket_title_id<R: Read + Seek>(reader: &mut R, ticket_offset: u64) -> R
     let mut buf = [0u8; 8];
     reader.read_exact(&mut buf)?;
     Ok(u64::from_be_bytes(buf))
-}
-
-fn trim_nul_ascii(buf: &[u8]) -> String {
-    let end = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
-    String::from_utf8_lossy(&buf[..end]).into_owned()
 }
 
 fn ascii_or_dot(b: u8) -> char {
@@ -772,6 +765,7 @@ mod tests {
     };
     use crate::nintendo::ctr::z3ds::compress_rom;
     use crate::nintendo::ctr::z3ds::models::underlying_magic;
+    use crate::util::CancelToken;
     use crate::util::NoProgress;
 
     fn make_fake_decrypted_cxi(size: usize) -> Vec<u8> {
@@ -792,9 +786,16 @@ mod tests {
         let zcxi_path = dir.path().join("game.zcxi");
 
         std::fs::write(&cxi_path, make_fake_decrypted_cxi(64 * 1024)).unwrap();
-        compress_rom(&cxi_path, &zcxi_path, None, false, &NoProgress)
-            .await
-            .unwrap();
+        compress_rom(
+            &cxi_path,
+            &zcxi_path,
+            None,
+            false,
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
 
         let info = read_info(&zcxi_path).unwrap();
         assert_eq!(info.format, CtrFormat::Ncch);
@@ -934,9 +935,16 @@ mod tests {
         let z3dsx_path = dir.path().join("game.z3dsx");
         std::fs::write(&dsx_path, &data).unwrap();
 
-        compress_rom(&dsx_path, &z3dsx_path, None, false, &NoProgress)
-            .await
-            .unwrap();
+        compress_rom(
+            &dsx_path,
+            &z3dsx_path,
+            None,
+            false,
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
 
         let info = read_info(&z3dsx_path).unwrap();
         assert_eq!(info.format, CtrFormat::Threedsx);

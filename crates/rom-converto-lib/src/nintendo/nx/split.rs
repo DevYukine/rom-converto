@@ -15,7 +15,9 @@ use crate::nintendo::nx::meta::{merge_inline_tickets, read_meta_cnmt};
 use crate::nintendo::nx::models::cnmt::{CNMT_TYPE_ADD_ON_CONTENT, CNMT_TYPE_PATCH};
 use crate::nintendo::nx::util::{Pfs0Source, write_pfs0_from_sources};
 use crate::nintendo::nx::walker::NcaWalker;
-use crate::util::{AtomicProgress, CancelToken, ProgressReporter, await_with_progress_cancel};
+use crate::util::{
+    AtomicProgress, CancelToken, Cancelled, ProgressReporter, await_with_progress_cancel,
+};
 
 /// Splits a multi-title NSP/XCI into one NSP per title, copying every NCA
 /// byte-verbatim, and returns the written paths.
@@ -199,7 +201,7 @@ fn write_split(
 /// # Errors
 /// Same as [`split_container`], plus [`NxError::Cancelled`] when `cancel`
 /// fires.
-pub async fn split_container_async_cancellable(
+pub async fn split_container_async(
     input: PathBuf,
     output_dir: PathBuf,
     keys: KeySet,
@@ -211,7 +213,7 @@ pub async fn split_container_async_cancellable(
         progress.warn(warning);
     }
     if cancel.is_cancelled() {
-        return Err(NxError::Cancelled);
+        return Err(Cancelled.into());
     }
     progress.start(plan.total_bytes(), "Splitting Switch container");
     let bytes_done = Arc::new(AtomicU64::new(0));
@@ -225,8 +227,7 @@ pub async fn split_container_async_cancellable(
     let handle = tokio::task::spawn_blocking(move || -> NxResult<Vec<PathBuf>> {
         write_split(&plan, &output_dir, &proxy, &cancel_bg)
     });
-    let cleanup = || NxError::Cancelled;
-    match await_with_progress_cancel(progress, &bytes_done, handle, &cancel, cleanup).await {
+    match await_with_progress_cancel(progress, &bytes_done, handle, &cancel).await {
         Ok(written) => Ok(written),
         Err(err) => {
             for path in &outputs {
@@ -535,7 +536,7 @@ mod tests {
         ]);
         let dir = tempdir().unwrap();
         let cancel = CancelToken::new();
-        let err = split_container_async_cancellable(
+        let err = split_container_async(
             nsp.path().to_path_buf(),
             dir.path().to_path_buf(),
             synthetic_keyset(),
@@ -544,7 +545,7 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(matches!(err, NxError::Cancelled));
+        assert!(matches!(err, NxError::Cancelled(_)));
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }
 
@@ -565,7 +566,7 @@ mod tests {
         let recorder = WarnRecorder {
             warnings: Mutex::new(Vec::new()),
         };
-        let out = split_container_async_cancellable(
+        let out = split_container_async(
             nsp.path().to_path_buf(),
             dir.path().to_path_buf(),
             synthetic_keyset(),

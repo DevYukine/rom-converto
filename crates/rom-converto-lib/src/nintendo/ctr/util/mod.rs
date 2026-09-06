@@ -1,19 +1,117 @@
+use crate::util::{CancelToken, Cancelled, ProgressReporter};
+use anyhow::Result;
 use binrw::BinResult;
-use std::io::{Seek, Write};
+use log::warn;
+use sha2::{Digest, Sha256};
+use std::io::{Read, Seek, Write};
+use std::path::{Path, PathBuf};
+use tokio::io::AsyncReadExt;
 
 pub mod fs;
 
+pub fn check_cancel(cancel: &CancelToken) -> Result<()> {
+    if cancel.is_cancelled() {
+        return Err(Cancelled.into());
+    }
+    Ok(())
+}
+
+/// Drives a per-file batch over every `exts` file under `input_dir`:
+/// progress accounting, a cancel check between files, and turning a
+/// per-file failure into a warning so one bad ROM does not abort the run.
+/// `labels` is the progress-bar gerund and the failure-message verb, e.g.
+/// `("Decrypting", "decrypt")`.
+pub async fn run_batch(
+    input_dir: &Path,
+    exts: &[&str],
+    labels: (&str, &str),
+    max_depth: Option<usize>,
+    total_progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
+    mut op: impl AsyncFnMut(&Path) -> Result<()>,
+) -> Result<()> {
+    check_cancel(cancel)?;
+    let roms = crate::util::fs::collect_files_with_exts(input_dir, exts, max_depth, cancel)?;
+    if roms.is_empty() {
+        warn!(
+            "No supported ROM files found in {} (looked for {:?})",
+            input_dir.display(),
+            exts
+        );
+        return Ok(());
+    }
+
+    let (gerund, verb) = labels;
+    total_progress.start(roms.len() as u64, &format!("{gerund} {} files", roms.len()));
+
+    for path in roms {
+        check_cancel(cancel)?;
+        if let Err(err) = op(&path).await {
+            if Cancelled::in_chain(&err) || cancel.is_cancelled() {
+                return Err(err);
+            }
+            warn!("Failed to {verb} {}: {err}", path.display());
+        }
+        total_progress.inc(1);
+    }
+
+    total_progress.finish();
+    Ok(())
+}
+
+/// Mirrors `src`'s position under `output_dir` (see
+/// [`crate::util::place_in_dir_mirrored`]) and creates the parent directory.
+pub async fn mirrored_output(
+    src: &Path,
+    input_dir: &Path,
+    output_dir: Option<&Path>,
+) -> std::io::Result<PathBuf> {
+    let output = crate::util::place_in_dir_mirrored(src, input_dir, output_dir);
+    if let Some(parent) = output.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    Ok(output)
+}
+
+/// Reads `size` bytes from `file`'s current position through `buf` and
+/// returns their SHA-256. With `key` set the bytes are AES-128-CBC decrypted
+/// in place first, chaining `iv` across chunks, because TMD hashes cover the
+/// decrypted content.
+pub async fn hash_cbc_stream(
+    file: &mut tokio::fs::File,
+    key: Option<&[u8; 16]>,
+    mut iv: [u8; 16],
+    size: u64,
+    buf: &mut [u8],
+    cancel: &CancelToken,
+) -> Result<[u8; 32]> {
+    let mut hasher = Sha256::new();
+    let mut remaining = size;
+
+    while remaining > 0 {
+        check_cancel(cancel)?;
+        let to_read = remaining.min(buf.len() as u64) as usize;
+        file.read_exact(&mut buf[..to_read]).await?;
+        if let Some(key) = key {
+            // The next chunk chains off this chunk's last ciphertext block,
+            // which in-place decryption is about to overwrite.
+            let next_iv: [u8; 16] = buf[to_read - 16..to_read].try_into().expect("16 bytes");
+            crate::nintendo::ctr::decrypt::util::cbc_decrypt(key, &iv, &mut buf[..to_read])?;
+            iv = next_iv;
+        }
+        hasher.update(&buf[..to_read]);
+        remaining -= to_read as u64;
+    }
+
+    Ok(hasher.finalize().into())
+}
+
 pub fn align_64(x: u64) -> u64 {
-    align(x, 64)
+    x.next_multiple_of(64)
 }
 
 pub fn align_64_usize(x: usize) -> usize {
     align_64(x as u64) as usize
-}
-
-fn align(x: u64, y: u64) -> u64 {
-    let mask: u64 = !(y - 1);
-    (x + (y - 1)) & mask
 }
 
 /// True for TWL/DSiWare title ids (title type `0x0004800x`): the high 20
@@ -25,15 +123,9 @@ pub fn is_twl_title_id(title_id: u64) -> bool {
 }
 
 pub fn pad_to_align_64(aligned_pos: u64, writer: &mut (impl Write + Seek)) -> BinResult<()> {
-    if aligned_pos > writer.stream_position()? {
-        let padding_size = (aligned_pos - writer.stream_position()?) as usize;
-        const ZERO_BUF: [u8; 64] = [0u8; 64];
-        let mut remaining = padding_size;
-        while remaining > 0 {
-            let chunk = remaining.min(ZERO_BUF.len());
-            writer.write_all(&ZERO_BUF[..chunk])?;
-            remaining -= chunk;
-        }
+    let pos = writer.stream_position()?;
+    if aligned_pos > pos {
+        std::io::copy(&mut std::io::repeat(0).take(aligned_pos - pos), writer)?;
     }
 
     Ok(())
@@ -42,16 +134,6 @@ pub fn pad_to_align_64(aligned_pos: u64, writer: &mut (impl Write + Seek)) -> Bi
 #[cfg(test)]
 pub mod tests {
     use super::*;
-
-    #[test]
-    fn align_returns_correct_alignment() {
-        assert_eq!(align(0, 64), 0);
-        assert_eq!(align(1, 64), 64);
-        assert_eq!(align(63, 64), 64);
-        assert_eq!(align(64, 64), 64);
-        assert_eq!(align(65, 64), 128);
-        assert_eq!(align(128, 64), 128);
-    }
 
     #[test]
     fn test_cia_alignment() {

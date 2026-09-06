@@ -4,6 +4,7 @@
 
 use std::path::Path;
 
+use crate::util::bytes::{u16_be, u32_be};
 use anyhow::{Context, Result, bail};
 use base64::Engine as _;
 use flate2::{Decompress, FlushDecompress};
@@ -133,12 +134,12 @@ pub fn parse(data: &[u8]) -> Result<NoNpDrmInfo> {
         } else {
             LicenseKind::Retail
         },
-        version: be_u16(data, 0x00),
-        version_flag: be_u16(data, 0x02),
-        license_type: be_u16(data, 0x04),
-        license_flags: be_u16(data, 0x06),
+        version: u16_be(data, 0x00),
+        version_flag: u16_be(data, 0x02),
+        license_type: u16_be(data, 0x04),
+        license_flags: u16_be(data, 0x06),
         account_id,
-        sku_flag: (data.len() >= 0x100).then(|| be_u32(data, 0xFC)),
+        sku_flag: (data.len() >= 0x100).then(|| u32_be(data, 0xFC)),
         has_klicensee: klicensee.iter().any(|&b| b != 0),
     })
 }
@@ -164,12 +165,12 @@ pub fn decode_zrif(zrif: &str) -> Result<Vec<u8>> {
     if raw[1] & 0x20 == 0 {
         bail!("nonpdrm: zRIF is missing its preset dictionary flag");
     }
-    if be_u32(&raw, 2) != ZRIF_DICT_ID {
+    if u32_be(&raw, 2) != ZRIF_DICT_ID {
         bail!("nonpdrm: zRIF uses an unknown dictionary");
     }
 
     let body = &raw[6..raw.len() - 4];
-    let expected = be_u32(&raw, raw.len() - 4);
+    let expected = u32_be(&raw, raw.len() - 4);
 
     let mut inflate = Decompress::new(false);
     inflate
@@ -193,14 +194,6 @@ fn adler32(data: &[u8]) -> u32 {
         b = (b + a) % 65521;
     }
     (b << 16) | a
-}
-
-fn be_u16(d: &[u8], off: usize) -> u16 {
-    u16::from_be_bytes(d[off..off + 2].try_into().expect("2-byte slice"))
-}
-
-fn be_u32(d: &[u8], off: usize) -> u32 {
-    u32::from_be_bytes(d[off..off + 4].try_into().expect("4-byte slice"))
 }
 
 #[cfg(test)]

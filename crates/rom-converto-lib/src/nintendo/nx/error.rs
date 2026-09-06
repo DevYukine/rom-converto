@@ -17,8 +17,8 @@ pub enum NxError {
     #[error(transparent)]
     BinRwError(#[from] binrw::Error),
 
-    #[error("worker pool channel closed")]
-    WorkerPoolClosed,
+    #[error(transparent)]
+    WorkerPoolClosed(#[from] PoolChannelClosed),
 
     #[error("prod.keys not found; tried: {}", format_paths(.0))]
     KeyfileMissing(Vec<PathBuf>),
@@ -80,8 +80,8 @@ pub enum NxError {
     #[error("no ticket found for rights_id {0}")]
     MissingTicket(String),
 
-    #[error("operation cancelled")]
-    Cancelled,
+    #[error("{0}")]
+    Cancelled(#[from] crate::util::Cancelled),
 
     #[error("compressed container {0} is not supported here; decompress it to NSP/XCI first")]
     CompressedInputUnsupported(PathBuf),
@@ -120,12 +120,6 @@ fn format_paths(paths: &[PathBuf]) -> String {
         .map(|p| p.display().to_string())
         .collect::<Vec<_>>()
         .join(", ")
-}
-
-impl From<PoolChannelClosed> for NxError {
-    fn from(_: PoolChannelClosed) -> Self {
-        NxError::WorkerPoolClosed
-    }
 }
 
 /// Convenience alias for results returned by the NX (Switch) module.

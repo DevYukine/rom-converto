@@ -32,7 +32,7 @@ use crate::nintendo::wup::nus::content_stream::{ContentBytesSource, raw_content_
 use crate::nintendo::wup::nus::fst_parser::{FstClusterHashMode, VirtualFs};
 use crate::nintendo::wup::nus::source::NusSource;
 use crate::nintendo::wup::nus::ticket_parser::TitleKey;
-use crate::util::{CancelToken, ProgressReporter};
+use crate::util::{AtomicProgress, CancelToken, Cancelled, ProgressReporter};
 
 /// Overall verification outcome for one input.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,26 +58,12 @@ pub struct TitleVerdict {
     pub skipped_content: usize,
 }
 
-/// Verifies a Wii U input, dispatching on its file type or directory
-/// layout: `.wua`, `.wud`/`.wux` disc images, loadiine directories,
-/// or NUS directories.
-///
-/// # Errors
-/// Returns an error for an unrecognized file extension or an unreadable input.
-pub fn verify_wup(
-    input: &Path,
-    key_override: Option<&Path>,
-    progress: &dyn ProgressReporter,
-) -> Result<WupVerifyResult> {
-    verify_wup_cancellable(input, key_override, progress, &CancelToken::new())
-}
-
 /// Cancellable version of [`verify_wup`].
 ///
 /// # Errors
 /// Returns an error if `cancel` fires, the input type is unrecognized,
 /// or the input cannot be read.
-pub fn verify_wup_cancellable(
+pub fn verify_wup(
     input: &Path,
     key_override: Option<&Path>,
     progress: &dyn ProgressReporter,
@@ -104,23 +90,11 @@ pub fn verify_wup_cancellable(
     verify_nus(input, progress, cancel)
 }
 
-/// Async wrapper around [`verify_wup`].
+/// Async, cancellable version of [`verify_wup`].
 ///
 /// # Errors
 /// See [`verify_wup`].
 pub async fn verify_wup_async(
-    input: PathBuf,
-    key_override: Option<PathBuf>,
-    progress: &dyn ProgressReporter,
-) -> Result<WupVerifyResult> {
-    verify_wup_async_cancellable(input, key_override, progress, CancelToken::new()).await
-}
-
-/// Async, cancellable version of [`verify_wup`].
-///
-/// # Errors
-/// See [`verify_wup_cancellable`].
-pub async fn verify_wup_async_cancellable(
     input: PathBuf,
     key_override: Option<PathBuf>,
     progress: &dyn ProgressReporter,
@@ -140,7 +114,7 @@ pub async fn verify_wup_async_cancellable(
     let cancel_bg = cancel.clone();
 
     let mut handle = tokio::task::spawn_blocking(move || -> Result<WupVerifyResult> {
-        verify_wup_cancellable(&input, key_override.as_deref(), &proxy, &cancel_bg)
+        verify_wup(&input, key_override.as_deref(), &proxy, &cancel_bg)
     });
 
     let result;
@@ -167,20 +141,7 @@ pub async fn verify_wup_async_cancellable(
     Ok(result)
 }
 
-/// Decrypt each raw-mode content and compare its SHA-1 to the TMD hash.
-/// Returns `(verified, mismatched, skipped)` counts.
-#[cfg(test)]
 fn verify_title_contents(
-    tmd: &WupTmd,
-    fs: &VirtualFs,
-    title_key: &TitleKey,
-    source: &mut dyn ContentBytesSource,
-    progress: &dyn ProgressReporter,
-) -> Result<(usize, usize, usize)> {
-    verify_title_contents_cancellable(tmd, fs, title_key, source, progress, &CancelToken::new())
-}
-
-fn verify_title_contents_cancellable(
     tmd: &WupTmd,
     fs: &VirtualFs,
     title_key: &TitleKey,
@@ -206,7 +167,7 @@ fn verify_title_contents_cancellable(
                 source
                     .visit_encrypted_content(tmd_entry.content_id, &mut |encrypted| {
                         if cancel.is_cancelled() {
-                            return Err(WupError::Cancelled);
+                            return Err(Cancelled.into());
                         }
                         if !encrypted.len().is_multiple_of(16) {
                             return Err(WupError::AesError(format!(
@@ -258,14 +219,8 @@ fn verify_nus(
         .map_err(|e| anyhow!("wup verify: load FST: {e}"))?;
     let mut content_source = src.content_source();
 
-    let (verified, mismatched, skipped) = verify_title_contents_cancellable(
-        &tmd,
-        &fs,
-        &title_key,
-        &mut content_source,
-        progress,
-        cancel,
-    )?;
+    let (verified, mismatched, skipped) =
+        verify_title_contents(&tmd, &fs, &title_key, &mut content_source, progress, cancel)?;
     let ok = mismatched == 0;
     Ok(WupVerifyResult {
         kind: "nus".to_string(),
@@ -314,7 +269,7 @@ fn verify_disc(
             .map_err(|e| anyhow!("wup verify: plan {}: {e}", partition.name))?;
         let title_id = plan.title_id;
         let mut source = PartitionContentSource::new(&mut *disc, plan.locations);
-        let (verified, mismatched, skipped) = verify_title_contents_cancellable(
+        let (verified, mismatched, skipped) = verify_title_contents(
             &plan.tmd,
             &plan.fs,
             &plan.title_key,
@@ -390,7 +345,7 @@ fn structural_verdict(
 
 fn check_cancel(cancel: &CancelToken) -> Result<()> {
     if cancel.is_cancelled() {
-        return Err(WupError::Cancelled.into());
+        return Err(Cancelled.into());
     }
     Ok(())
 }
@@ -399,18 +354,6 @@ fn is_loadiine_dir(dir: &Path) -> bool {
     dir.join("code/app.xml").is_file()
         && dir.join("meta/meta.xml").is_file()
         && dir.join("code/cos.xml").is_file()
-}
-
-struct AtomicProgress {
-    counter: Arc<AtomicU64>,
-}
-
-impl ProgressReporter for AtomicProgress {
-    fn start(&self, _: u64, _: &str) {}
-    fn inc(&self, delta: u64) {
-        self.counter.fetch_add(delta, Ordering::Relaxed);
-    }
-    fn finish(&self) {}
 }
 
 #[cfg(test)]
@@ -512,7 +455,9 @@ mod tests {
             bytes: encrypted,
             content_id: 7,
         };
-        let (v, m, s) = verify_title_contents(&tmd, &fs, &key, &mut src, &NoProgress).unwrap();
+        let (v, m, s) =
+            verify_title_contents(&tmd, &fs, &key, &mut src, &NoProgress, &CancelToken::new())
+                .unwrap();
         assert_eq!((v, m, s), (1, 0, 0));
     }
 
@@ -526,7 +471,9 @@ mod tests {
             bytes: encrypted,
             content_id: 7,
         };
-        let (v, m, s) = verify_title_contents(&tmd, &fs, &key, &mut src, &NoProgress).unwrap();
+        let (v, m, s) =
+            verify_title_contents(&tmd, &fs, &key, &mut src, &NoProgress, &CancelToken::new())
+                .unwrap();
         assert_eq!((v, m, s), (0, 1, 0));
     }
 
@@ -539,7 +486,9 @@ mod tests {
             bytes: vec![0u8; 64],
             content_id: 7,
         };
-        let (v, m, s) = verify_title_contents(&tmd, &fs, &key, &mut src, &NoProgress).unwrap();
+        let (v, m, s) =
+            verify_title_contents(&tmd, &fs, &key, &mut src, &NoProgress, &CancelToken::new())
+                .unwrap();
         assert_eq!((v, m, s), (0, 0, 1));
     }
 
@@ -549,7 +498,7 @@ mod tests {
         let mut source = CancellingSource {
             cancel: cancel.clone(),
         };
-        let result = verify_title_contents_cancellable(
+        let result = verify_title_contents(
             &tmd_with_one_content([0u8; 32]),
             &fs_with_one_cluster(FstClusterHashMode::Raw),
             &TitleKey([0u8; 16]),
@@ -559,7 +508,7 @@ mod tests {
         );
         assert!(matches!(
             result.unwrap_err().downcast_ref::<WupError>(),
-            Some(WupError::Cancelled)
+            Some(WupError::Cancelled(_))
         ));
     }
 }

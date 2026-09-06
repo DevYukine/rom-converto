@@ -14,16 +14,21 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 
 use crate::nintendo::nx::container::{ContainerKind, detect_container};
-use crate::nintendo::nx::error::{NxError, NxResult};
+use crate::nintendo::nx::error::NxResult;
 use crate::nintendo::nx::keys::KeySet;
 use crate::nintendo::nx::models::hfs0 as hfs0_mod;
 use crate::nintendo::nx::models::pfs0 as pfs0_mod;
 use crate::nintendo::nx::models::ticket::Ticket;
-use crate::nintendo::nx::ncz::ncz_to_nca_cancellable;
+use crate::nintendo::nx::ncz::ncz_to_nca;
 use crate::nintendo::nx::util::positional_reader::PositionalReader;
 use crate::nintendo::nx::walker::NcaWalker;
 use crate::util::pread::file_read_exact_at;
-use crate::util::{CancelToken, ProgressReporter};
+use crate::util::{CancelToken, Cancelled, ProgressReporter};
+
+/// AES block size; section reads decrypt in whole blocks.
+const AES_BLOCK_SIZE: usize = 16;
+/// Bytes read from the head of each section to prove it decrypts.
+const SECTION_PROBE_LEN: usize = 0x10000;
 
 /// Outcome of verifying every NCA in one Switch container.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,20 +49,10 @@ pub struct NcaVerdict {
     pub mismatched_sections: usize,
 }
 
-/// Verifies a Switch container synchronously, with no cancellation
-/// support.
-pub fn verify_container(
-    input: &Path,
-    keys: &KeySet,
-    progress: &dyn ProgressReporter,
-) -> NxResult<NxVerifyResult> {
-    verify_container_cancellable(input, keys, progress, &CancelToken::new())
-}
-
 /// Verifies a Switch container: lists its PFS0/HFS0 entries, merges
 /// any bundled tickets into `keys` so rights-protected NCAs can be
 /// opened, then decrypts and reads back every NCA/NCZ section.
-pub fn verify_container_cancellable(
+pub fn verify_container(
     input: &Path,
     keys: &KeySet,
     progress: &dyn ProgressReporter,
@@ -119,20 +114,10 @@ pub fn verify_container_cancellable(
     })
 }
 
-/// Async wrapper over [`verify_container_cancellable`], with no
-/// cancellation support.
-pub async fn verify_container_async(
-    input: PathBuf,
-    keys: KeySet,
-    progress: &dyn ProgressReporter,
-) -> NxResult<NxVerifyResult> {
-    verify_container_async_cancellable(input, keys, progress, CancelToken::new()).await
-}
-
-/// Runs [`verify_container_cancellable`] on a blocking task and polls
+/// Runs [`verify_container`] on a blocking task and polls
 /// it every 100ms to forward its progress and phase-label updates to
 /// `progress` without blocking the async runtime.
-pub async fn verify_container_async_cancellable(
+pub async fn verify_container_async(
     input: PathBuf,
     keys: KeySet,
     progress: &dyn ProgressReporter,
@@ -159,7 +144,7 @@ pub async fn verify_container_async_cancellable(
     };
 
     let mut handle = tokio::task::spawn_blocking(move || -> NxResult<NxVerifyResult> {
-        verify_container_cancellable(&input, &keys, &proxy, &cancel_bg)
+        verify_container(&input, &keys, &proxy, &cancel_bg)
     });
 
     let result;
@@ -267,7 +252,7 @@ fn verify_one(
     if lower.ends_with(".ncz") {
         let mut reader = PositionalReader::new(in_file.clone(), entry.abs_offset, entry.size);
         let mut decoded = tempfile::NamedTempFile::new()?;
-        ncz_to_nca_cancellable(&mut reader, &mut decoded, progress, cancel)?;
+        ncz_to_nca(&mut reader, &mut decoded, progress, cancel)?;
         check_cancel(cancel)?;
         let size = decoded.as_file().metadata()?.len();
         check_nca_file(
@@ -316,31 +301,37 @@ fn check_nca_file(
         }
     };
 
-    let mut mismatches = 0usize;
+    // The probe decrypts whole AES blocks, so the buffer is padded up
+    // to the block size; one allocation covers every section.
+    let mut buf = vec![0u8; SECTION_PROBE_LEN.next_multiple_of(AES_BLOCK_SIZE)];
+    let mut read_failures = 0usize;
     for section in &walker.sections {
         check_cancel(cancel)?;
         let len = section.raw_size;
         if len == 0 {
             continue;
         }
-        let chunk_len = (len.min(0x10000)) as usize;
-        let mut buf = vec![0u8; (chunk_len + 0xF) & !0xF];
-        if walker.read_section_plain(section, 0, &mut buf).is_err() {
-            mismatches += 1;
+        let probe_len =
+            (len.min(SECTION_PROBE_LEN as u64) as usize).next_multiple_of(AES_BLOCK_SIZE);
+        if walker
+            .read_section_plain(section, 0, &mut buf[..probe_len])
+            .is_err()
+        {
+            read_failures += 1;
         }
     }
 
     Ok(NcaVerdict {
         name: name.into(),
         partition: partition.clone(),
-        ok: mismatches == 0,
-        mismatched_sections: mismatches,
+        ok: read_failures == 0,
+        mismatched_sections: read_failures,
     })
 }
 
 fn check_cancel(cancel: &CancelToken) -> NxResult<()> {
     if cancel.is_cancelled() {
-        return Err(NxError::Cancelled);
+        return Err(Cancelled.into());
     }
     Ok(())
 }
@@ -388,7 +379,7 @@ mod tests {
 
         let keys = KeySet::default();
         let recorder = PhaseRecorder::default();
-        verify_container(&nsp, &keys, &recorder).unwrap();
+        verify_container(&nsp, &keys, &recorder, &CancelToken::new()).unwrap();
 
         let phases = recorder.phases.lock().unwrap();
         assert_eq!(

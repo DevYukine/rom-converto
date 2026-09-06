@@ -1,9 +1,11 @@
-use crate::dat::model::{DatFileSummary, GameAndRelationMatchResult};
+use crate::dat::model::DatFileSummary;
+pub use crate::dat::run::DatMatchData;
 use crate::util::{FileDigests, PlanLine, ReportRecord, ReportTotals};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use super::{RUN_SCHEMA, totals_for};
+use super::RUN_SCHEMA;
+use super::ops::{operation_names, totals_for};
 
 /// The runner's request/response schema: required and optional request
 /// fields, response fields, supported operations, and common option names.
@@ -64,57 +66,7 @@ impl RunSchemaManifest {
                     "events", "data",
                 ],
             },
-            operations: &[
-                "cso.compress",
-                "cso.decompress",
-                "cso.verify",
-                "cso.to_chd",
-                "cso.to-chd",
-                "chd.compress",
-                "chd.migrate",
-                "chd.extract",
-                "chd.verify",
-                "chd.to_cso",
-                "chd.to-cso",
-                "dol.compress",
-                "dol.decompress",
-                "dol.migrate",
-                "dol.verify",
-                "rvl.compress",
-                "rvl.decompress",
-                "rvl.migrate",
-                "rvl.verify",
-                "rvz.compress",
-                "rvz.decompress",
-                "rvz.migrate",
-                "ctr.cdn_to_cia",
-                "ctr.cdn-to-cia",
-                "ctr.generate_cdn_ticket",
-                "ctr.generate-cdn-ticket",
-                "ctr.decrypt",
-                "ctr.encrypt",
-                "ctr.compress",
-                "ctr.decompress",
-                "ctr.convert",
-                "ctr.verify",
-                "nx.compress",
-                "nx.decompress",
-                "nx.verify",
-                "wup.compress",
-                "wup.decrypt",
-                "wup.verify",
-                "cue.merge",
-                "playlist.write",
-                "playlist",
-                "dat.verify",
-                "dat.scan",
-                "dat.rename",
-                "dat.identify",
-                "dat.fixdat",
-                "hash",
-                "info",
-                "info.read",
-            ],
+            operations: operation_names(),
             common_options: CommonOptionsSchema {
                 on_conflict: &["error", "overwrite", "skip", "rename", "overwrite_invalid"],
                 recursive: "bool",
@@ -357,24 +309,6 @@ pub struct PlaylistPlanData {
     pub contents: String,
     pub disc_count: usize,
     pub has_duplicate_numbers: bool,
-}
-
-/// Result of matching one local file against the Playmatch DAT database.
-#[derive(Debug, Serialize)]
-pub struct DatMatchData {
-    pub kind: &'static str,
-    pub path: PathBuf,
-    pub verdict: String,
-    pub match_algo: Option<String>,
-    pub game_name: Option<String>,
-    pub platform: Option<String>,
-    pub signature_group: Option<String>,
-    pub dat_file: Option<String>,
-    pub dat_file_id: Option<String>,
-    pub dat_version: Option<String>,
-    #[serde(rename = "match")]
-    pub matched: Option<GameAndRelationMatchResult>,
-    pub error: Option<String>,
 }
 
 /// Result of a `dat.scan` run: one [`DatMatchData`] per scanned file.

@@ -1,6 +1,7 @@
 //! `\0PSF` (PARAM.SFO) key/value parser, shared by the PS3 disc and PSP
 //! UMD metadata readers.
 
+use crate::util::bytes::{u16_le, u32_le};
 use std::collections::BTreeMap;
 use std::io;
 
@@ -49,9 +50,9 @@ impl Sfo {
         if data.len() < HEADER_LEN || &data[0..4] != MAGIC {
             return Err(invalid("missing \\0PSF header"));
         }
-        let key_table_start = read_u32(data, 8) as usize;
-        let data_table_start = read_u32(data, 12) as usize;
-        let num_entries = read_u32(data, 16);
+        let key_table_start = u32_le(data, 8) as usize;
+        let data_table_start = u32_le(data, 12) as usize;
+        let num_entries = u32_le(data, 16);
         if num_entries > MAX_ENTRIES {
             return Err(invalid(format!(
                 "entry count {num_entries} exceeds cap {MAX_ENTRIES}"
@@ -67,10 +68,10 @@ impl Sfo {
         let mut map = BTreeMap::new();
         for i in 0..num_entries as usize {
             let base = HEADER_LEN + i * INDEX_ENTRY_LEN;
-            let key_offset = read_u16(data, base) as usize;
-            let data_fmt = read_u16(data, base + 2);
-            let data_len = read_u32(data, base + 4) as usize;
-            let data_offset = read_u32(data, base + 12) as usize;
+            let key_offset = u16_le(data, base) as usize;
+            let data_fmt = u16_le(data, base + 2);
+            let data_len = u32_le(data, base + 4) as usize;
+            let data_offset = u32_le(data, base + 12) as usize;
 
             let Some(key) = read_c_string(data, key_table_start.saturating_add(key_offset)) else {
                 continue;
@@ -104,14 +105,6 @@ impl Sfo {
 
 fn invalid(msg: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg)
-}
-
-fn read_u16(data: &[u8], off: usize) -> u16 {
-    u16::from_le_bytes(data[off..off + 2].try_into().expect("2-byte slice"))
-}
-
-fn read_u32(data: &[u8], off: usize) -> u32 {
-    u32::from_le_bytes(data[off..off + 4].try_into().expect("4-byte slice"))
 }
 
 fn read_c_string(data: &[u8], pos: usize) -> Option<String> {

@@ -1,7 +1,7 @@
 //! CSO/ZSO reading: header + index parsing and the pool-parallel
 //! block decompressor.
 
-use std::io::{BufWriter, Read, Write};
+use std::io::{BufWriter, Read};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -15,9 +15,12 @@ use crate::cso::models::{
     CISO_HEADER_SIZE, CISO_INDEX_UNCOMPRESSED, CisoHeader, CsoFormat, DAX_MAGIC, valid_block_size,
 };
 use crate::util::CancelToken;
+use crate::util::Cancelled;
 use crate::util::hash::{FileDigests, HashAlgo, MultiHasher};
 use crate::util::pread::file_read_exact_at;
-use crate::util::worker_pool::{Pool, Worker, drive, parallelism};
+use crate::util::worker_pool::{
+    Pool, PoolChannelClosed, Worker, drive, parallelism, with_writer_thread,
+};
 
 pub(crate) struct CsoSyncHandle {
     pub header: CisoHeader,
@@ -187,48 +190,36 @@ pub(crate) fn extract_blocks(
 ) -> CsoResult<()> {
     let blocks = handle.header.block_count();
     let max_in_flight = parallelism() * 2;
-    let (write_tx, write_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(max_in_flight * 2);
 
-    let scope_result: CsoResult<()> = std::thread::scope(|s| {
-        let writer_slot = &mut *writer;
-        let writer_handle = s.spawn(move || -> CsoResult<()> {
-            while let Ok(bytes) = write_rx.recv() {
-                writer_slot.write_all(&bytes)?;
-            }
-            Ok(())
-        });
-
-        let drive_result = drive(
-            pool,
-            blocks,
-            max_in_flight,
-            |block| -> CsoResult<CsoExtractWork> {
-                if cancel.is_cancelled() {
-                    return Err(CsoError::Cancelled);
-                }
-                Ok(CsoExtractWork {
-                    spec: block_spec(handle, block)?,
-                    block,
-                })
-            },
-            |_seq, out: CsoExtractedOut| -> CsoResult<()> {
-                let len = out.bytes.len() as u64;
-                write_tx
-                    .send(out.bytes)
-                    .map_err(|_| CsoError::WorkerPoolClosed)?;
-                bytes_done.fetch_add(len, Ordering::Relaxed);
-                Ok(())
-            },
-        );
-
-        drop(write_tx);
-        let writer_result = writer_handle
-            .join()
-            .unwrap_or_else(|_| Err(CsoError::WorkerPoolPanic));
-        drive_result?;
-        writer_result
-    });
-    scope_result
+    with_writer_thread(
+        writer,
+        max_in_flight * 2,
+        CsoError::WorkerPoolPanic,
+        |write_tx| {
+            drive(
+                pool,
+                blocks,
+                max_in_flight,
+                |block| -> CsoResult<CsoExtractWork> {
+                    if cancel.is_cancelled() {
+                        return Err(Cancelled.into());
+                    }
+                    Ok(CsoExtractWork {
+                        spec: block_spec(handle, block)?,
+                        block,
+                    })
+                },
+                |_seq, out: CsoExtractedOut| -> CsoResult<()> {
+                    let len = out.bytes.len() as u64;
+                    write_tx
+                        .send(out.bytes)
+                        .map_err(|_| CsoError::WorkerPoolClosed(PoolChannelClosed))?;
+                    bytes_done.fetch_add(len, Ordering::Relaxed);
+                    Ok(())
+                },
+            )
+        },
+    )
 }
 
 /// Digest-side twin of [`extract_blocks`]: the pool decodes every
@@ -253,7 +244,7 @@ pub(crate) fn hash_blocks(
         max_in_flight,
         |block| -> CsoResult<CsoExtractWork> {
             if cancel.is_cancelled() {
-                return Err(CsoError::Cancelled);
+                return Err(Cancelled.into());
             }
             Ok(CsoExtractWork {
                 spec: block_spec(handle, block)?,

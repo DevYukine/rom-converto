@@ -154,7 +154,7 @@ mod tests {
         cancel.cancel();
         let done = Arc::new(AtomicU64::new(0));
         let err = verify_gcz_blocking(f.path(), done.clone(), cancel).unwrap_err();
-        assert!(matches!(err, GczError::Cancelled), "{err}");
+        assert!(matches!(err, GczError::Cancelled(_)), "{err}");
         assert_eq!(done.load(std::sync::atomic::Ordering::Relaxed), 0);
     }
 

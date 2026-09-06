@@ -1,17 +1,11 @@
 //! XEX2 basefile recovery: AES-128-CBC with an all-zero IV, then the basic
 //! or LZX decompression path (xenia `xex_module.cc`).
 
-use aes::{
-    Aes128,
-    cipher::{BlockModeDecrypt, KeyIvInit},
-};
-use block_padding::NoPadding;
 use lzxd::{Lzxd, WindowSize};
 use sha1::{Digest, Sha1};
 
 use super::{Compression, FileFormatInfo, SecurityInfo, read_u16, read_u32};
-
-type Aes128CbcDec = cbc::Decryptor<Aes128>;
+use crate::util::aes::aes128_cbc_decrypt_nopad;
 
 /// The 360 is end of life and this key is public, so metadata reads work
 /// without the user supplying anything.
@@ -30,11 +24,7 @@ const LZX_CHUNK: usize = 32768;
 const MAX_IMAGE_SIZE: usize = 256 * 1024 * 1024;
 
 fn cbc_decrypt_zero_iv(key: &[u8; 16], buf: &mut [u8]) -> Option<()> {
-    Aes128CbcDec::new_from_slices(key, &[0u8; 16])
-        .ok()?
-        .decrypt_padded::<NoPadding>(buf)
-        .ok()?;
-    Some(())
+    aes128_cbc_decrypt_nopad(key, &[0u8; 16], buf).ok()
 }
 
 /// Each region is its own CBC stream, so the IV restarts at zero every call.
@@ -211,12 +201,7 @@ pub(crate) fn decrypt_and_decompress(
 
 #[cfg(test)]
 pub(super) fn cbc_encrypt_zero_iv(key: &[u8; 16], buf: &mut [u8]) {
-    use aes::cipher::BlockModeEncrypt;
-
-    let len = buf.len();
-    cbc::Encryptor::<Aes128>::new_from_slices(key, &[0u8; 16])
-        .expect("key and iv are both 16 bytes")
-        .encrypt_padded::<NoPadding>(buf, len)
+    crate::util::aes::aes128_cbc_encrypt_nopad(key, &[0u8; 16], buf)
         .expect("buffer length is a multiple of the block size");
 }
 

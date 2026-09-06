@@ -10,7 +10,7 @@ use crate::chd::models::{
 use crate::chd::reader::cue_generator::parse_chd_track_metadata;
 use crate::chd::reader::{chd_version, open_chd_sync};
 pub use crate::laserdisc::vbi::{LdClvTime, LdDiscType};
-use crate::sony_disc::DiscContent;
+use crate::sony::disc::DiscContent;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -171,7 +171,7 @@ fn add_metadata(mut info: ChdInfo, metadata: &[ChdMetadataHeader], path: &Path) 
     if let Some(geometry) = extract_hard_disk_info(metadata) {
         info.hard_disk = Some(geometry);
     }
-    info.content = crate::sony_disc::chd_disc_content(path);
+    info.content = crate::sony::disc::chd_disc_content(path);
     Ok(info)
 }
 

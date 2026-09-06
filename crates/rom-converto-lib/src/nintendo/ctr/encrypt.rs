@@ -5,7 +5,7 @@ use aes::{
 use anyhow::{Context, Result, anyhow};
 use binrw::{BinRead, BinWrite};
 use byteorder::{BigEndian, ByteOrder, LittleEndian};
-use log::{debug, info, warn};
+use log::{debug, info};
 use sha2::{Digest, Sha256};
 use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -25,16 +25,15 @@ use crate::nintendo::ctr::decrypt::cia::{
 };
 use crate::nintendo::ctr::decrypt::model::NcchSection;
 use crate::nintendo::ctr::decrypt::util::{derive_title_key_from_ticket, gen_iv};
-use crate::nintendo::ctr::error::NintendoCTRError;
 use crate::nintendo::ctr::models::cia::{
     CIA_HEADER_SIZE, CiaFile, CiaFileWithoutContent, CiaHeader,
 };
 use crate::nintendo::ctr::models::exe_fs_header::ExeFSHeader;
 use crate::nintendo::ctr::models::ncch_header::NcchHeader;
 use crate::nintendo::ctr::models::title_metadata::{ContentInfoRecord, TitleMetadata};
-use crate::nintendo::ctr::util::{align_64, is_twl_title_id};
+use crate::nintendo::ctr::util::{align_64, is_twl_title_id, mirrored_output, run_batch};
 use crate::nintendo::ctr::z3ds::models::underlying_magic;
-use crate::util::{CancelToken, ProgressReporter, scratch_output_path};
+use crate::util::{CancelToken, Cancelled, ProgressReporter, scratch_output_path};
 
 const ENCRYPT_EXTS: &[&str] = &["cia", "3ds", "cci", "cxi"];
 const COPY_BUF: usize = 4 * 1024 * 1024;
@@ -43,28 +42,11 @@ const CRYPTO_BUF: usize = 4 * 1024 * 1024;
 /// Derives the output path for an encrypted ROM by inserting `.encrypted`
 /// before the file extension.
 pub fn derive_encrypted_path(input: &Path) -> PathBuf {
-    let stem = input.file_stem().and_then(|s| s.to_str()).unwrap_or("out");
-    let ext = input.extension().and_then(|s| s.to_str()).unwrap_or("");
-    let name = if ext.is_empty() {
-        format!("{stem}.encrypted")
-    } else {
-        format!("{stem}.encrypted.{ext}")
-    };
-    input.with_file_name(name)
+    crate::util::with_tag(input, "encrypted")
 }
 
-/// Encrypts a CIA, NCSD (`.3ds`/`.cci`), or standalone NCCH (`.cxi`) ROM to
-/// `output`, detecting the format from its magic bytes.
+/// Re-encrypt the decrypted NCSD or NCCH ROM at `input` to `output`.
 pub async fn encrypt_rom(
-    input: &Path,
-    output: &Path,
-    progress: &dyn ProgressReporter,
-) -> Result<()> {
-    encrypt_rom_cancellable(input, output, progress, CancelToken::new()).await
-}
-
-/// Like [`encrypt_rom`] but observes `cancel` throughout.
-pub async fn encrypt_rom_cancellable(
     input: &Path,
     output: &Path,
     progress: &dyn ProgressReporter,
@@ -79,10 +61,10 @@ pub async fn encrypt_rom_cancellable(
 
     if magic_buf == underlying_magic::NCSD {
         info!("Detected NCSD format (.3ds/.cci)");
-        encrypt_ncsd_cancellable(input, output, progress, &cancel).await
+        encrypt_ncsd(input, output, progress, &cancel).await
     } else if magic_buf == underlying_magic::NCCH {
         info!("Detected standalone NCCH format (.cxi)");
-        encrypt_ncch_cancellable(input, output, progress, &cancel).await
+        encrypt_ncch(input, output, progress, &cancel).await
     } else {
         let mut file = File::open(input).await?;
         let mut header_check = [0u8; 4];
@@ -91,7 +73,7 @@ pub async fn encrypt_rom_cancellable(
 
         if u32::from_le_bytes(header_check) == CIA_HEADER_SIZE {
             info!("Detected CIA format");
-            encrypt_cia_cancellable(input, output, progress, &cancel).await
+            encrypt_cia(input, output, progress, &cancel).await
         } else {
             Err(anyhow!(
                 "unrecognized format: no NCSD/NCCH magic at 0x100 and not a CIA file"
@@ -100,7 +82,7 @@ pub async fn encrypt_rom_cancellable(
     }
 }
 
-async fn encrypt_ncsd_cancellable(
+async fn encrypt_ncsd(
     input: &Path,
     output: &Path,
     progress: &dyn ProgressReporter,
@@ -110,25 +92,15 @@ async fn encrypt_ncsd_cancellable(
     progress.start(input_size, "Encrypting NCSD");
 
     let tmp = scratch_output_path(output)?;
-    let result = async {
-        fs::copy(input, &tmp).await?;
-        encrypt_ncsd_partitions(input, &tmp, progress, cancel).await?;
-        Ok::<(), anyhow::Error>(())
-    }
-    .await;
-
-    if let Err(err) = result {
-        fs::remove_file(&tmp).await.ok();
-        return Err(err);
-    }
-
+    fs::copy(input, &tmp).await?;
+    encrypt_ncsd_partitions(input, &tmp, progress, cancel).await?;
     crate::util::publish_temp(tmp, output, true)?;
     progress.finish();
     info!("Encrypted NCSD file");
     Ok(())
 }
 
-async fn encrypt_ncch_cancellable(
+async fn encrypt_ncch(
     input: &Path,
     output: &Path,
     progress: &dyn ProgressReporter,
@@ -138,27 +110,17 @@ async fn encrypt_ncch_cancellable(
     progress.start(input_size, "Encrypting NCCH");
 
     let tmp = scratch_output_path(output)?;
-    let result = async {
-        fs::copy(input, &tmp).await?;
-        encrypt_ncch_at(
-            input,
-            &tmp,
-            0,
-            [0u8; 8],
-            NcchSource::Standalone,
-            progress,
-            cancel,
-        )
-        .await?;
-        Ok::<(), anyhow::Error>(())
-    }
-    .await;
-
-    if let Err(err) = result {
-        fs::remove_file(&tmp).await.ok();
-        return Err(err);
-    }
-
+    fs::copy(input, &tmp).await?;
+    encrypt_ncch_at(
+        input,
+        &tmp,
+        0,
+        [0u8; 8],
+        NcchSource::Standalone,
+        progress,
+        cancel,
+    )
+    .await?;
     crate::util::publish_temp(tmp, output, true)?;
     progress.finish();
     info!("Encrypted NCCH file");
@@ -167,7 +129,7 @@ async fn encrypt_ncch_cancellable(
 
 /// Encrypts every supported ROM file (`.cia`, `.3ds`, `.cci`, `.cxi`) found
 /// under `input_dir`, observing `cancel` between files.
-pub async fn encrypt_rom_batch_cancellable(
+pub async fn encrypt_rom_batch(
     input_dir: &Path,
     output_dir: Option<&Path>,
     progress: &dyn ProgressReporter,
@@ -175,55 +137,21 @@ pub async fn encrypt_rom_batch_cancellable(
     max_depth: Option<usize>,
     cancel: CancelToken,
 ) -> Result<()> {
-    let roms = crate::util::fs::collect_files_with_exts(input_dir, ENCRYPT_EXTS, max_depth)?;
-    if roms.is_empty() {
-        warn!(
-            "No supported ROM files found in {} (looked for {:?})",
-            input_dir.display(),
-            ENCRYPT_EXTS
-        );
-        return Ok(());
-    }
-
-    total_progress.start(
-        roms.len() as u64,
-        &format!("Encrypting {} files", roms.len()),
-    );
-
-    if let Some(dir) = output_dir {
-        fs::create_dir_all(dir).await?;
-    }
-
-    for path in roms {
-        if cancel.is_cancelled() {
-            return Err(NintendoCTRError::Cancelled.into());
-        }
-
-        let output = crate::util::place_in_dir_mirrored(
-            &derive_encrypted_path(&path),
-            input_dir,
-            output_dir,
-        );
-        if let Some(parent) = output.parent() {
-            fs::create_dir_all(parent).await?;
-        }
-
-        debug!("Encrypting {} -> {}", path.display(), output.display());
-        if let Err(err) = encrypt_rom_cancellable(&path, &output, progress, cancel.clone()).await {
-            if matches!(
-                err.downcast_ref::<NintendoCTRError>(),
-                Some(NintendoCTRError::Cancelled)
-            ) {
-                return Err(err);
-            }
-            warn!("Failed to encrypt {}: {err}", path.display());
-        }
-
-        total_progress.inc(1);
-    }
-
-    total_progress.finish();
-    Ok(())
+    run_batch(
+        input_dir,
+        ENCRYPT_EXTS,
+        ("Encrypting", "encrypt"),
+        max_depth,
+        total_progress,
+        &cancel,
+        async |path| {
+            let output =
+                mirrored_output(&derive_encrypted_path(path), input_dir, output_dir).await?;
+            debug!("Encrypting {} -> {}", path.display(), output.display());
+            encrypt_rom(path, &output, progress, cancel.clone()).await
+        },
+    )
+    .await
 }
 
 async fn encrypt_ncsd_partitions(
@@ -255,7 +183,7 @@ async fn encrypt_ncsd_partitions(
 
     for (i, partition_name) in CTR_NCSD_PARTITIONS.iter().enumerate() {
         if cancel.is_cancelled() {
-            return Err(NintendoCTRError::Cancelled.into());
+            return Err(Cancelled.into());
         }
 
         let entry_offset = i * NCSD_PARTITION_ENTRY_SIZE;
@@ -286,7 +214,7 @@ async fn encrypt_ncsd_partitions(
     Ok(())
 }
 
-async fn encrypt_cia_cancellable(
+async fn encrypt_cia(
     input: &Path,
     output: &Path,
     progress: &dyn ProgressReporter,
@@ -297,7 +225,7 @@ async fn encrypt_cia_cancellable(
 
     let tmp = scratch_output_path(output)?;
     let content_tmp = scratch_output_path(output)?;
-    let result = async {
+    async {
         let mut std_in = std::fs::File::open(input)?;
         let mut header_buf = [0u8; CIA_HEADER_SIZE as usize];
         std_in.read_exact(&mut header_buf)?;
@@ -344,7 +272,7 @@ async fn encrypt_cia_cancellable(
         let mut next_content_offs = 0u64;
         for record in &encrypted_cia.tmd.content_chunk_records {
             if cancel.is_cancelled() {
-                return Err(anyhow::Error::from(NintendoCTRError::Cancelled));
+                return Err(Cancelled.into());
             }
 
             if any_bit_set
@@ -426,13 +354,7 @@ async fn encrypt_cia_cancellable(
         out.flush().await?;
         Ok::<(), anyhow::Error>(())
     }
-    .await;
-
-    fs::remove_file(&content_tmp).await.ok();
-    if let Err(err) = result {
-        fs::remove_file(&tmp).await.ok();
-        return Err(err);
-    }
+    .await?;
 
     crate::util::publish_temp(tmp, output, true)?;
     info!("Encrypted CIA file");
@@ -637,7 +559,7 @@ async fn encrypt_stream_section(
     let mut buf = vec![0u8; CRYPTO_BUF];
     while remaining > 0 {
         if cancel.is_cancelled() {
-            return Err(NintendoCTRError::Cancelled.into());
+            return Err(Cancelled.into());
         }
 
         let take = remaining.min(CRYPTO_BUF as u64) as usize;
@@ -769,7 +691,7 @@ async fn copy_exact(src: &mut File, dst: &mut File, size: u64, cancel: &CancelTo
     let mut buf = vec![0u8; COPY_BUF];
     while remaining > 0 {
         if cancel.is_cancelled() {
-            return Err(NintendoCTRError::Cancelled.into());
+            return Err(Cancelled.into());
         }
         let take = remaining.min(COPY_BUF as u64) as usize;
         src.read_exact(&mut buf[..take]).await?;
@@ -800,7 +722,7 @@ async fn write_cbc_encrypted_content(
     let mut buf = vec![0u8; COPY_BUF];
     while remaining > 0 {
         if cancel.is_cancelled() {
-            return Err(NintendoCTRError::Cancelled.into());
+            return Err(Cancelled.into());
         }
 
         let take = remaining.min(COPY_BUF as u64) as usize;
@@ -946,9 +868,14 @@ mod tests {
         let plain = make_plain_ncch_with_romfs();
         std::fs::write(&plain_path, &plain).unwrap();
 
-        encrypt_rom(&plain_path, &encrypted_path, &NoProgress)
-            .await
-            .unwrap();
+        encrypt_rom(
+            &plain_path,
+            &encrypted_path,
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
         let mut out = File::create(&decrypted_path).await.unwrap();
         parse_and_decrypt_ncch(&encrypted_path, &mut out, &NoProgress, &CancelToken::new())
             .await
@@ -1029,12 +956,22 @@ mod tests {
             .unwrap();
         std::fs::write(&plain_path, &buf).unwrap();
 
-        encrypt_rom(&plain_path, &encrypted_path, &NoProgress)
-            .await
-            .unwrap();
-        crate::nintendo::ctr::decrypt_cia(&encrypted_path, &decrypted_path, &NoProgress)
-            .await
-            .unwrap();
+        encrypt_rom(
+            &plain_path,
+            &encrypted_path,
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+        crate::nintendo::ctr::decrypt_cia(
+            &encrypted_path,
+            &decrypted_path,
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
 
         let decrypted_bytes = std::fs::read(&decrypted_path).unwrap();
         let decrypted_cia =
@@ -1138,12 +1075,22 @@ mod tests {
             .unwrap();
         std::fs::write(&original_path, &buf).unwrap();
 
-        crate::nintendo::ctr::decrypt_cia(&original_path, &decrypted_path, &NoProgress)
-            .await
-            .unwrap();
-        encrypt_rom(&decrypted_path, &reencrypted_path, &NoProgress)
-            .await
-            .unwrap();
+        crate::nintendo::ctr::decrypt_cia(
+            &original_path,
+            &decrypted_path,
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+        encrypt_rom(
+            &decrypted_path,
+            &reencrypted_path,
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
 
         let re_bytes = std::fs::read(&reencrypted_path).unwrap();
         let re_cia =

@@ -18,24 +18,20 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::nintendo::wup::compress_worker::spawn_zarchive_pool;
-use crate::nintendo::wup::constants::{
-    COMPRESSED_BLOCK_SIZE, MAX_ZSTD_LEVEL, MIN_ZSTD_LEVEL, ZARCHIVE_DEFAULT_ZSTD_LEVEL,
-};
-use crate::nintendo::wup::disc::compress::{
-    compress_disc_title_with_cancel, estimate_disc_uncompressed_bytes,
-};
+use crate::nintendo::wup::disc::compress::{compress_disc_title, estimate_disc_uncompressed_bytes};
 use crate::nintendo::wup::error::{WupError, WupResult};
 use crate::nintendo::wup::loadiine::{
-    compress_loadiine_title_with_cancel, detect_loadiine_title,
-    estimate_loadiine_uncompressed_bytes,
+    compress_loadiine_title, detect_loadiine_title, estimate_loadiine_uncompressed_bytes,
 };
 use crate::nintendo::wup::nus::compress::{
     compress_nus_title_with_cancel, estimate_nus_uncompressed_bytes,
 };
-use crate::nintendo::wup::streaming_sink::{StreamingSink, spawn_stream_pipeline};
-use crate::nintendo::wup::zarchive_writer::write_zarchive_tail;
-use crate::util::{CancelToken, ProgressReporter, scratch_output_path};
+use crate::util::worker_pool::parallelism;
+use crate::util::{CancelToken, Cancelled, ProgressReporter, scratch_output_path};
+use crate::zar::{
+    COMPRESSED_BLOCK_SIZE, DEFAULT_COMPRESSION_LEVEL, MAX_COMPRESSION_LEVEL, MIN_COMPRESSION_LEVEL,
+    ZarWriter,
+};
 
 /// Recognized Wii U title layouts. The [`compress_titles`]
 /// dispatcher picks one per input.
@@ -91,14 +87,14 @@ impl TitleInput {
 #[derive(Debug, Clone, Copy)]
 pub struct WupCompressOptions {
     /// Zstd compression level (0..=22). 0 selects the Cemu default
-    /// of [`ZARCHIVE_DEFAULT_ZSTD_LEVEL`].
+    /// of [`DEFAULT_COMPRESSION_LEVEL`].
     pub zstd_level: i32,
 }
 
 impl Default for WupCompressOptions {
     fn default() -> Self {
         Self {
-            zstd_level: ZARCHIVE_DEFAULT_ZSTD_LEVEL,
+            zstd_level: DEFAULT_COMPRESSION_LEVEL,
         }
     }
 }
@@ -233,11 +229,11 @@ pub fn derive_wua_path(input: &Path) -> PathBuf {
 /// Validate the zstd level before spinning up the writer. Zero is
 /// treated as "use the Cemu default" and passed through unchanged.
 fn validate_level(level: i32) -> WupResult<()> {
-    if !(MIN_ZSTD_LEVEL..=MAX_ZSTD_LEVEL).contains(&level) {
+    if !(MIN_COMPRESSION_LEVEL..=MAX_COMPRESSION_LEVEL).contains(&level) {
         return Err(WupError::InvalidCompressionLevel {
             level,
-            min: MIN_ZSTD_LEVEL,
-            max: MAX_ZSTD_LEVEL,
+            min: MIN_COMPRESSION_LEVEL,
+            max: MAX_COMPRESSION_LEVEL,
         });
     }
     Ok(())
@@ -254,18 +250,6 @@ pub fn compress_title(
     compress_titles(&[TitleInput::auto(input)], output, opts, progress)
 }
 
-/// Async wrapper around [`compress_titles`]. Runs the sync pipeline
-/// inside `spawn_blocking` and relays progress back via an atomic
-/// byte counter polled every 100 ms, matching `z3ds::compress_rom`.
-pub async fn compress_titles_async(
-    titles: Vec<TitleInput>,
-    output: PathBuf,
-    opts: WupCompressOptions,
-    progress: &dyn ProgressReporter,
-) -> WupResult<()> {
-    compress_titles_async_cancellable(titles, output, opts, progress, CancelToken::new()).await
-}
-
 /// Cancellable variant of [`compress_titles_async`]. Runs the sync
 /// pipeline inside `spawn_blocking`, sharing a cancel flag that
 /// `cancel` can flip to abort the worker pool early.
@@ -273,7 +257,7 @@ pub async fn compress_titles_async(
 /// # Errors
 /// Returns [`WupError::InvalidCompressionLevel`] if `opts.zstd_level`
 /// is out of range, or [`WupError::InvalidPath`] if `titles` is empty.
-pub async fn compress_titles_async_cancellable(
+pub async fn compress_titles_async(
     titles: Vec<TitleInput>,
     output: PathBuf,
     opts: WupCompressOptions,
@@ -332,7 +316,7 @@ pub async fn compress_titles_async_cancellable(
         // wrapper observes it, so the completed archive must be removed
         // to honor the no-partial-output guarantee.
         tokio::fs::remove_file(&output).await.ok();
-        return Err(WupError::Cancelled);
+        return Err(Cancelled.into());
     }
     Ok(())
 }
@@ -344,7 +328,14 @@ pub async fn compress_title_async(
     opts: WupCompressOptions,
     progress: &dyn ProgressReporter,
 ) -> WupResult<()> {
-    compress_titles_async(vec![TitleInput::auto(input)], output, opts, progress).await
+    compress_titles_async(
+        vec![TitleInput::auto(input)],
+        output,
+        opts,
+        progress,
+        CancelToken::new(),
+    )
+    .await
 }
 
 enum ProgressEvent {
@@ -453,20 +444,10 @@ fn compress_titles_with_cancel(
     }
 
     let tmp = scratch_output_path(output)?;
-    let result =
-        compress_titles_into_tmp(&resolved, &tmp, opts, progress, cancelled, read_total_bytes);
-
-    match result {
-        Ok(()) => {
-            crate::util::publish_temp(tmp, output, true)?;
-            progress.finish();
-            Ok(())
-        }
-        Err(err) => {
-            std::fs::remove_file(&tmp).ok();
-            Err(err)
-        }
-    }
+    compress_titles_into_tmp(&resolved, &tmp, opts, progress, cancelled, read_total_bytes)?;
+    crate::util::publish_temp(tmp, output, true)?;
+    progress.finish();
+    Ok(())
 }
 
 fn compress_titles_into_tmp(
@@ -482,97 +463,49 @@ fn compress_titles_into_tmp(
     // WriteFile syscall, cutting user <-> kernel transitions across
     // large archives. The OS write cache does the rest.
     let buf_writer = std::io::BufWriter::with_capacity(4 * 1024 * 1024, file);
-    let pool = spawn_zarchive_pool(opts.zstd_level)?;
 
-    // `total_blocks` is the exact count the streaming pipeline will
-    // consume. Reads produce ceil(read_total_bytes / 64 KiB) blocks:
+    // Writer-driven progress: the writer incs per batch of blocks
+    // committed to disk. Reads stay silent so the bar tracks bytes
+    // that have actually cleared compression, not bytes read ahead
+    // of it. Reads produce ceil(read_total_bytes / 64 KiB) blocks:
     // exact multiples land on a block boundary, anything else is
     // flushed as one padded trailing block.
-    let total_blocks = if read_total_bytes == 0 {
-        0
-    } else {
-        read_total_bytes.div_ceil(COMPRESSED_BLOCK_SIZE as u64)
-    };
-
-    // Writer-driven progress: `inc` fires per batch of blocks
-    // committed to disk. Reads stay silent so the bar keeps moving
-    // while the main thread is inside a long AES decrypt.
-    let total_uncompressed_bytes = total_blocks * COMPRESSED_BLOCK_SIZE as u64;
+    let total_blocks = read_total_bytes.div_ceil(COMPRESSED_BLOCK_SIZE as u64);
     progress.start(
-        total_uncompressed_bytes,
+        total_blocks * COMPRESSED_BLOCK_SIZE as u64,
         "Reading and compressing Wii U titles",
     );
 
-    // Run reads + compression + writes concurrently inside a scope.
-    // After the scope exits, the writer thread has returned the
-    // output file back to the main thread along with the hasher,
-    // byte counter, and offset-records table needed to emit the
-    // metadata sections.
-    let (stream_result, mut tree) = std::thread::scope(|s| -> WupResult<_> {
-        let (block_tx, handle) =
-            spawn_stream_pipeline(s, pool, total_blocks, buf_writer, Some(progress));
-        let mut sink = StreamingSink::new(block_tx);
-        let silent = crate::util::NoProgress;
-
-        let read_result: WupResult<()> = (|| {
-            for (i, (path, format, key_path)) in resolved.iter().enumerate() {
-                if cancelled.is_some_and(|c| c.load(Ordering::Relaxed)) {
-                    return Err(WupError::Cancelled);
-                }
-                progress.set_phase(&format!("Packing title ({}/{})", i + 1, resolved.len()));
-                match format {
-                    TitleInputFormat::Loadiine => {
-                        let title = detect_loadiine_title(path)?
-                            .ok_or_else(|| WupError::UnrecognizedTitleDirectory(path.clone()))?;
-                        compress_loadiine_title_with_cancel(&title, &mut sink, &silent, cancelled)?;
-                    }
-                    TitleInputFormat::Nus => {
-                        compress_nus_title_with_cancel(path, &mut sink, &silent, cancelled)?;
-                    }
-                    TitleInputFormat::Disc => {
-                        compress_disc_title_with_cancel(
-                            path,
-                            key_path.as_deref(),
-                            &mut sink,
-                            &silent,
-                            cancelled,
-                        )?;
-                    }
-                }
+    let mut writer =
+        ZarWriter::with_options(buf_writer, parallelism(), opts.zstd_level, Some(progress))?;
+    let silent = crate::util::NoProgress;
+    for (i, (path, format, key_path)) in resolved.iter().enumerate() {
+        if cancelled.is_some_and(|c| c.load(Ordering::Relaxed)) {
+            return Err(Cancelled.into());
+        }
+        progress.set_phase(&format!("Packing title ({}/{})", i + 1, resolved.len()));
+        match format {
+            TitleInputFormat::Loadiine => {
+                let title = detect_loadiine_title(path)?
+                    .ok_or_else(|| WupError::UnrecognizedTitleDirectory(path.clone()))?;
+                compress_loadiine_title(&title, &mut writer, &silent, cancelled)?;
             }
-            Ok(())
-        })();
-        read_result?;
+            TitleInputFormat::Nus => {
+                compress_nus_title_with_cancel(path, &mut writer, &silent, cancelled)?;
+            }
+            TitleInputFormat::Disc => {
+                compress_disc_title(path, key_path.as_deref(), &mut writer, &silent, cancelled)?;
+            }
+        }
+    }
 
-        // Pad and send the trailing partial block, dropping the sink
-        // (which drops its block_tx copy) so the driver sees end of
-        // stream.
-        let tree = sink.flush_trailing()?;
-
-        // Writer thread returns the finalized output state on join.
-        let stream_result = handle.join()?;
-        Ok((stream_result, tree))
-    })?;
-
-    // Streaming pipeline is done; now on the main thread with full
-    // ownership of the inner writer. Switch to the "Finalizing"
-    // indeterminate pulse while the metadata tail is emitted and
-    // the OS flushes the multi-GB write cache on drop.
+    // Every data block is accounted for against the determinate
+    // total before switching to the indeterminate pulse, which then
+    // covers the metadata tail and the OS flush of the multi-GB
+    // write cache.
+    writer.flush_data()?;
     progress.start(0, "Finalizing archive");
-
-    let mut inner = stream_result.inner;
-    let mut hasher = stream_result.hasher;
-    let mut bytes_written = stream_result.bytes_written;
-    write_zarchive_tail(
-        &mut inner,
-        &mut hasher,
-        &mut bytes_written,
-        &stream_result.offset_records,
-        &mut tree,
-    )?;
-
-    drop(inner);
-
+    writer.finish()?;
     Ok(())
 }
 
@@ -580,6 +513,16 @@ fn compress_titles_into_tmp(
 mod tests {
     use super::*;
     use crate::util::NoProgress;
+
+    /// Read one archived file back out of a finished `.wua`.
+    fn read_archived(archive: &Path, path: &str) -> Vec<u8> {
+        let mut reader =
+            crate::zar::ZarReader::open(std::fs::File::open(archive).unwrap()).unwrap();
+        let index = reader.lookup(path).unwrap();
+        let mut out = Vec::new();
+        reader.read_file(index, &mut out).unwrap();
+        out
+    }
 
     fn make_minimal_loadiine(root: &Path, title_id_hex: &str, title_version: u32) {
         std::fs::create_dir_all(root.join("meta")).unwrap();
@@ -677,14 +620,10 @@ mod tests {
 
         // The produced archive should contain the three minimum
         // loadiine files plus the content payload.
-        let bytes = std::fs::read(&output).unwrap();
-        let reader =
-            crate::nintendo::wup::zarchive_writer::tests::test_reader::TestReader::open(&bytes)
-                .unwrap();
-        let meta = reader.extract_file("0005000e10102000_v32/meta/meta.xml");
-        let app = reader.extract_file("0005000e10102000_v32/code/app.xml");
-        let cos = reader.extract_file("0005000e10102000_v32/code/cos.xml");
-        let data = reader.extract_file("0005000e10102000_v32/content/data.bin");
+        let meta = read_archived(&output, "0005000e10102000_v32/meta/meta.xml");
+        let app = read_archived(&output, "0005000e10102000_v32/code/app.xml");
+        let cos = read_archived(&output, "0005000e10102000_v32/code/cos.xml");
+        let data = read_archived(&output, "0005000e10102000_v32/content/data.bin");
         assert_eq!(meta, b"<menu/>");
         assert!(!app.is_empty());
         assert_eq!(cos, b"<cos/>");
@@ -710,16 +649,12 @@ mod tests {
         )
         .unwrap();
 
-        let bytes = std::fs::read(&output).unwrap();
-        let reader =
-            crate::nintendo::wup::zarchive_writer::tests::test_reader::TestReader::open(&bytes)
-                .unwrap();
         assert_eq!(
-            reader.extract_file("0005000010102000_v0/meta/meta.xml"),
+            read_archived(&output, "0005000010102000_v0/meta/meta.xml"),
             b"<menu/>"
         );
         assert_eq!(
-            reader.extract_file("0005000e10102000_v32/meta/meta.xml"),
+            read_archived(&output, "0005000e10102000_v32/meta/meta.xml"),
             b"<menu/>"
         );
     }
@@ -992,16 +927,12 @@ mod tests {
         )
         .unwrap();
 
-        let bytes = std::fs::read(&output).unwrap();
-        let reader =
-            crate::nintendo::wup::zarchive_writer::tests::test_reader::TestReader::open(&bytes)
-                .unwrap();
         assert_eq!(
-            reader.extract_file("0005000010102000_v0/content/foo.bin"),
+            read_archived(&output, "0005000010102000_v0/content/foo.bin"),
             base_payload
         );
         assert_eq!(
-            reader.extract_file("0005000e10102000_v32/content/foo.bin"),
+            read_archived(&output, "0005000e10102000_v32/content/foo.bin"),
             update_payload
         );
     }
@@ -1080,7 +1011,7 @@ mod tests {
 
         let token = CancelToken::new();
         token.cancel();
-        let result = compress_titles_async_cancellable(
+        let result = compress_titles_async(
             vec![TitleInput::auto(&title_dir)],
             output.clone(),
             WupCompressOptions::default(),
@@ -1089,7 +1020,7 @@ mod tests {
         )
         .await;
 
-        assert!(matches!(result, Err(WupError::Cancelled)));
+        assert!(matches!(result, Err(WupError::Cancelled(_))));
         assert!(!output.exists(), "no partial output");
         assert!(!crate::util::scratch_output_exists(&output).unwrap());
     }
@@ -1128,7 +1059,7 @@ mod tests {
             token: token.clone(),
             fired: AtomicBool::new(false),
         };
-        let result = compress_titles_async_cancellable(
+        let result = compress_titles_async(
             vec![TitleInput::auto(&title_dir)],
             output.clone(),
             WupCompressOptions::default(),
@@ -1137,7 +1068,7 @@ mod tests {
         )
         .await;
 
-        assert!(matches!(result, Err(WupError::Cancelled)));
+        assert!(matches!(result, Err(WupError::Cancelled(_))));
         assert!(!output.exists(), "no partial output");
         assert!(!crate::util::scratch_output_exists(&output).unwrap());
     }
@@ -1151,7 +1082,7 @@ mod tests {
         let output = dir.path().join("out.wua");
 
         let token = CancelToken::new();
-        compress_titles_async_cancellable(
+        compress_titles_async(
             vec![TitleInput::auto(&title_dir)],
             output.clone(),
             WupCompressOptions::default(),
@@ -1177,7 +1108,7 @@ mod tests {
 
         let token = CancelToken::new();
         token.cancel();
-        let result = compress_titles_async_cancellable(
+        let result = compress_titles_async(
             vec![TitleInput::auto(&title_dir)],
             output.clone(),
             WupCompressOptions::default(),
@@ -1186,7 +1117,7 @@ mod tests {
         )
         .await;
 
-        assert!(matches!(result, Err(WupError::Cancelled)));
+        assert!(matches!(result, Err(WupError::Cancelled(_))));
         assert_eq!(std::fs::read(&output).unwrap(), original);
         assert!(!crate::util::scratch_output_exists(&output).unwrap());
     }

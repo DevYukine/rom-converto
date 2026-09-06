@@ -106,7 +106,7 @@ pub(crate) fn build_x360_iso() -> (SparseDisk, Vec<(&'static str, Vec<u8>)>) {
     let sub_sector = 4098u32;
 
     let xex_data: Vec<u8> = (0..500u32).map(|i| i as u8).collect();
-    let big_len = 3 * crate::microsoft::zar::COMPRESSED_BLOCK_SIZE as u32 + 123;
+    let big_len = 3 * crate::zar::COMPRESSED_BLOCK_SIZE as u32 + 123;
     let big_data: Vec<u8> = (0..big_len).map(|i| (i % 251) as u8).collect();
 
     // File sector addresses are made up (any base works for a

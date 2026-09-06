@@ -13,16 +13,12 @@ use crate::nintendo::ctr::z3ds::models::{
 };
 use crate::nintendo::ctr::z3ds::seekable::{FRAME_SIZE_CIA, FRAME_SIZE_DEFAULT};
 use crate::util::worker_pool::{Pool, parallelism};
-use crate::util::{
-    BYTES_PER_MB, CancelToken, ProgressReporter, await_with_progress_cancel, scratch_output_path,
-};
+use crate::util::{BYTES_PER_MB, CancelToken, ProgressReporter, run_scratch_write};
 use binrw::{BinRead, BinWrite, Endian};
 use chrono::Utc;
 use log::{info, warn};
 use std::io::{BufReader, BufWriter as StdBufWriter, Cursor, Seek, SeekFrom, Write};
 use std::path::Path;
-use std::sync::Arc;
-use tokio::task;
 
 /// Zstd level used when the caller does not request one. Level 0
 /// asks libzstd for its own default (currently level 3) and picks
@@ -57,34 +53,9 @@ const _: () = assert!(
     "ENCRYPTION_PROBE_SIZE too small for high-MU NCSD partitions",
 );
 
-/// Compresses `input` into a Z3DS container at `output`.
-///
-/// # Errors
-///
-/// Returns [`Z3dsError::InputNotDecrypted`] or
-/// [`Z3dsError::EncryptionStateUnknown`] if `input` looks encrypted and
-/// `allow_encrypted` is false.
-pub async fn compress_rom(
-    input: &Path,
-    output: &Path,
-    level: Option<i32>,
-    allow_encrypted: bool,
-    progress: &dyn ProgressReporter,
-) -> Z3dsResult<()> {
-    compress_rom_cancellable(
-        input,
-        output,
-        level,
-        allow_encrypted,
-        progress,
-        CancelToken::new(),
-    )
-    .await
-}
-
-/// Like [`compress_rom`] but observes `cancel` at every frame boundary;
+/// Compress the CTR ROM at `input` into a `.z3ds` archive at `output`;
 /// on cancel the partial output is removed.
-pub async fn compress_rom_cancellable(
+pub async fn compress_rom(
     input: &Path,
     output: &Path,
     level: Option<i32>,
@@ -162,86 +133,67 @@ pub async fn compress_rom_cancellable(
     );
 
     // Atomic counter to relay progress out of the blocking thread.
-    use std::sync::atomic::AtomicU64;
-    let bytes_done = Arc::new(AtomicU64::new(0));
-    let bytes_done_clone = bytes_done.clone();
-
-    // The paths are moved into the blocking task; borrows do not cross await.
-    let write_path = scratch_output_path(output)?;
     let input_owned = input.to_path_buf();
-    let write_owned = write_path.to_path_buf();
-    let cancel_bg = cancel.clone();
+    let compressed_size = run_scratch_write(
+        output,
+        true,
+        progress,
+        &cancel,
+        move |write_path, bytes_done, cancel| -> Z3dsResult<u64> {
+            // std::fs (not tokio) lets the reader and writer hand off directly to zstd.
+            let in_file = std::fs::File::open(&input_owned)?;
+            let mut reader = BufReader::with_capacity(4 * 1024 * 1024, in_file);
 
-    let handle = task::spawn_blocking(move || -> Z3dsResult<(u64, u64)> {
-        // std::fs (not tokio) lets the reader and writer hand off directly to zstd.
-        let in_file = std::fs::File::open(&input_owned)?;
-        let mut reader = BufReader::with_capacity(4 * 1024 * 1024, in_file);
+            let out_file = std::fs::File::create(&write_path)?;
+            let mut writer = StdBufWriter::with_capacity(4 * 1024 * 1024, out_file);
 
-        let out_file = std::fs::File::create(&write_owned)?;
-        let mut writer = StdBufWriter::with_capacity(4 * 1024 * 1024, out_file);
+            // Placeholder header. The real one is written after the payload, by
+            // seeking back to offset 0 once compressed_size is known.
+            let placeholder_header = vec![0u8; Z3DS_HEADER_SIZE as usize];
+            writer.write_all(&placeholder_header)?;
+            writer.write_all(&metadata_bytes)?;
 
-        // Placeholder header. The real one is written after the payload, by
-        // seeking back to offset 0 once compressed_size is known.
-        let placeholder_header = vec![0u8; Z3DS_HEADER_SIZE as usize];
-        writer.write_all(&placeholder_header)?;
-        writer.write_all(&metadata_bytes)?;
+            // One persistent zstd encoder per thread, torn down at the end of this
+            // closure so the pool's lifetime is bounded by one compress invocation.
+            let n_threads = parallelism();
+            let workers = make_z3ds_compress_workers(n_threads, zstd_level)?;
+            let pool: Pool<Z3dsCompressWork, Z3dsCompressedFrame, Z3dsError> = Pool::spawn(workers);
 
-        // One persistent zstd encoder per thread, torn down at the end of this
-        // closure so the pool's lifetime is bounded by one compress invocation.
-        let n_threads = parallelism();
-        let workers = make_z3ds_compress_workers(n_threads, zstd_level)?;
-        let pool: Pool<Z3dsCompressWork, Z3dsCompressedFrame, Z3dsError> = Pool::spawn(workers);
+            let compressed_size = encode_seekable(
+                &pool,
+                &mut reader,
+                &mut writer,
+                frame_size,
+                uncompressed_size,
+                &bytes_done,
+                &cancel,
+            )?;
 
-        let compressed_size = encode_seekable(
-            &pool,
-            &mut reader,
-            &mut writer,
-            frame_size,
-            uncompressed_size,
-            &bytes_done_clone,
-            &cancel_bg,
-        )?;
+            pool.shutdown();
 
-        pool.shutdown();
+            // Flush before seeking back so the BufWriter doesn't leak buffered
+            // payload bytes past the rewritten header.
+            writer.flush()?;
 
-        // Flush before seeking back so the BufWriter doesn't leak buffered
-        // payload bytes past the rewritten header.
-        writer.flush()?;
+            let header = Z3dsHeader::new(
+                underlying_magic,
+                metadata_size,
+                compressed_size,
+                uncompressed_size,
+            );
+            let mut header_buf = Cursor::new(Vec::with_capacity(Z3DS_HEADER_SIZE as usize));
+            header.write(&mut header_buf)?;
+            let header_bytes = header_buf.into_inner();
+            debug_assert_eq!(header_bytes.len(), Z3DS_HEADER_SIZE as usize);
 
-        let header = Z3dsHeader::new(
-            underlying_magic,
-            metadata_size,
-            compressed_size,
-            uncompressed_size,
-        );
-        let mut header_buf = Cursor::new(Vec::with_capacity(Z3DS_HEADER_SIZE as usize));
-        header.write(&mut header_buf)?;
-        let header_bytes = header_buf.into_inner();
-        debug_assert_eq!(header_bytes.len(), Z3DS_HEADER_SIZE as usize);
+            writer.seek(SeekFrom::Start(0))?;
+            writer.write_all(&header_bytes)?;
+            writer.flush()?;
 
-        writer.seek(SeekFrom::Start(0))?;
-        writer.write_all(&header_bytes)?;
-        writer.flush()?;
-
-        Ok((compressed_size, uncompressed_size))
-    });
-
-    let cleanup = {
-        let write_path = write_path.to_path_buf();
-        move || -> Z3dsError {
-            let _ = std::fs::remove_file(&write_path);
-            Z3dsError::Cancelled
-        }
-    };
-    let (compressed_size, _) =
-        match await_with_progress_cancel(progress, &bytes_done, handle, &cancel, cleanup).await {
-            Ok(sizes) => sizes,
-            Err(err) => {
-                let _ = tokio::fs::remove_file(&write_path).await;
-                return Err(err);
-            }
-        };
-    crate::util::publish_temp(write_path, output, true)?;
+            Ok(compressed_size)
+        },
+    )
+    .await?;
 
     let ratio = (1.0 - compressed_size as f64 / uncompressed_size as f64) * 100.0;
     info!(

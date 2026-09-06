@@ -188,14 +188,14 @@ fn huff_err(msg: &str) -> crate::chd::error::ChdError {
 /// MSB-first bit writer mirroring MAME's `bitstream_out`: `write`
 /// emits the low `numbits` of `value` most-significant-bit first, and
 /// `finish` left-aligns the trailing partial byte with zero padding.
-struct BitWriter {
+pub(crate) struct BitWriter {
     out: Vec<u8>,
     accum: u32,
     bits: u8,
 }
 
 impl BitWriter {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             out: Vec::new(),
             accum: 0,
@@ -203,7 +203,7 @@ impl BitWriter {
         }
     }
 
-    fn write(&mut self, value: u32, numbits: u8) {
+    pub(crate) fn write(&mut self, value: u32, numbits: u8) {
         for i in (0..numbits).rev() {
             self.accum = (self.accum << 1) | ((value >> i) & 1);
             self.bits += 1;
@@ -215,7 +215,7 @@ impl BitWriter {
         }
     }
 
-    fn finish(mut self) -> Vec<u8> {
+    pub(crate) fn finish(mut self) -> Vec<u8> {
         if self.bits > 0 {
             self.out.push((self.accum << (8 - self.bits)) as u8);
         }
@@ -376,13 +376,13 @@ fn compute_tree_from_histo(
     let sdatacount: u32 = histo[..numcodes].iter().sum();
 
     let mut lowerweight = 0u32;
-    let mut upperweight = sdatacount * 2;
+    let mut upperweight = sdatacount.saturating_mul(2);
     loop {
         let curweight = (upperweight + lowerweight) / 2;
         let curmaxbits = build_tree(histo, numcodes, sdatacount, curweight, nodes);
         if curmaxbits <= maxbits {
             lowerweight = curweight;
-            if curweight == sdatacount || (upperweight - lowerweight) <= 1 {
+            if curweight == sdatacount || upperweight.saturating_sub(lowerweight) <= 1 {
                 break;
             }
         } else {
@@ -395,8 +395,9 @@ fn compute_tree_from_histo(
 
 /// Build MAME-canonical huffman codes for `histo` over `numcodes`
 /// symbols capped at `maxbits`, returning `(code, length)` per symbol.
-/// Shared with the avhuff codec, whose contexts are 272 codes wide.
-pub(super) fn canonical_codes(
+/// Shared with the avhuff codec (272-code contexts) and the compressed
+/// map codec in [`crate::chd::map`] (16 codes, 8 bits).
+pub(crate) fn canonical_codes(
     histo: &[u32],
     numcodes: usize,
     maxbits: u8,

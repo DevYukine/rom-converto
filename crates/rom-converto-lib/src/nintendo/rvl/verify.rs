@@ -23,9 +23,9 @@ use crate::nintendo::rvl::partition::{
     HASH_REGION_BYTES, PartitionInfo, hash_region, read_and_decrypt_cluster, read_partition_info,
     recompute_hash_regions_into,
 };
-use crate::nintendo::rvz::verify::{RvzStructuralVerify, verify_rvz_structure_cancellable};
-use crate::util::{CancelToken, ProgressReporter};
-use anyhow::{Context, Result, anyhow, bail};
+use crate::nintendo::rvz::verify::{RvzStructuralVerify, verify_rvz_structure};
+use crate::util::{CancelToken, Cancelled, ProgressReporter};
+use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
@@ -76,28 +76,21 @@ fn partition_kind_name(t: u32) -> &'static str {
     }
 }
 
-/// Verifies a Wii disc image: RVZ container hashes plus, with `options.full`, the decrypted partition hash tree.
+/// Verify the Wii disc image at `path`: game id and, for `.rvz` input,
+/// its structure, plus the per-partition hash trees when `options.full`
+/// is set.
 pub fn verify_rvl(
-    path: &Path,
-    options: &RvlVerifyOptions,
-    progress: &dyn ProgressReporter,
-) -> Result<RvlVerifyResult> {
-    verify_rvl_cancellable(path, options, progress, &CancelToken::new())
-}
-
-/// Like [`verify_rvl`] but observes `cancel`, checked between clusters and partitions.
-pub fn verify_rvl_cancellable(
     path: &Path,
     options: &RvlVerifyOptions,
     progress: &dyn ProgressReporter,
     cancel: &CancelToken,
 ) -> Result<RvlVerifyResult> {
     if cancel.is_cancelled() {
-        bail!("cancelled");
+        return Err(Cancelled.into());
     }
-    let rvz_structure = verify_rvz_structure_cancellable(path, cancel).ok();
+    let rvz_structure = verify_rvz_structure(path, cancel).ok();
     if cancel.is_cancelled() {
-        bail!("cancelled");
+        return Err(Cancelled.into());
     }
 
     let mut reader =
@@ -114,7 +107,7 @@ pub fn verify_rvl_cancellable(
         let mut infos: Vec<(u64, u32, Option<PartitionInfo>)> = Vec::with_capacity(entries.len());
         for e in &entries {
             if cancel.is_cancelled() {
-                bail!("cancelled");
+                return Err(Cancelled.into());
             }
             let info = read_partition_info(&mut reader, e.offset, e.group, e.partition_type).ok();
             infos.push((e.offset, e.partition_type, info));
@@ -186,7 +179,7 @@ fn verify_partition<R: Read + Seek>(
 
     for cluster_idx in 0..cluster_count {
         if cancel.is_cancelled() {
-            bail!("cancelled");
+            return Err(Cancelled.into());
         }
         let cluster_enc_start = cluster_idx * WII_GROUP_TOTAL_SIZE;
         if reader
@@ -318,7 +311,13 @@ mod tests {
         std::fs::write(&iso, make_fake_wii_iso_with_partition(2)).unwrap();
 
         let recorder = PhaseRecorder::default();
-        verify_rvl(&iso, &RvlVerifyOptions { full: true }, &recorder).unwrap();
+        verify_rvl(
+            &iso,
+            &RvlVerifyOptions { full: true },
+            &recorder,
+            &CancelToken::new(),
+        )
+        .unwrap();
 
         let phases = recorder.phases.lock().unwrap();
         assert!(!phases.is_empty(), "full verify should emit phase labels");
@@ -335,7 +334,13 @@ mod tests {
         let iso = dir.path().join("wii.iso");
         std::fs::write(&iso, make_fake_wii_iso_with_partition(2)).unwrap();
 
-        let res = verify_rvl(&iso, &RvlVerifyOptions { full: true }, &NoProgress).unwrap();
+        let res = verify_rvl(
+            &iso,
+            &RvlVerifyOptions { full: true },
+            &NoProgress,
+            &CancelToken::new(),
+        )
+        .unwrap();
         assert!(
             !res.partitions.is_empty(),
             "should find at least one partition"
@@ -358,11 +363,23 @@ mod tests {
         let iso = dir.path().join("wii.iso");
         let rvz = dir.path().join("wii.rvz");
         std::fs::write(&iso, make_fake_wii_iso_with_partition(2)).unwrap();
-        compress_disc(&iso, &rvz, RvzCompressOptions::default(), &NoProgress)
-            .await
-            .unwrap();
+        compress_disc(
+            &iso,
+            &rvz,
+            RvzCompressOptions::default(),
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
 
-        let fast = verify_rvl(&rvz, &RvlVerifyOptions { full: false }, &NoProgress).unwrap();
+        let fast = verify_rvl(
+            &rvz,
+            &RvlVerifyOptions { full: false },
+            &NoProgress,
+            &CancelToken::new(),
+        )
+        .unwrap();
         let structural = fast.rvz_structure.expect("rvz input has structural hashes");
         assert!(structural.file_head_hash_ok);
         assert!(structural.disc_hash_ok);
@@ -381,11 +398,23 @@ mod tests {
         let iso = dir.path().join("wii.iso");
         let rvz = dir.path().join("wii.rvz");
         std::fs::write(&iso, make_fake_wii_iso_with_partition(2)).unwrap();
-        compress_disc(&iso, &rvz, RvzCompressOptions::default(), &NoProgress)
-            .await
-            .unwrap();
+        compress_disc(
+            &iso,
+            &rvz,
+            RvzCompressOptions::default(),
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
 
-        let res = verify_rvl(&rvz, &RvlVerifyOptions { full: true }, &NoProgress).unwrap();
+        let res = verify_rvl(
+            &rvz,
+            &RvlVerifyOptions { full: true },
+            &NoProgress,
+            &CancelToken::new(),
+        )
+        .unwrap();
         assert!(!res.partitions.is_empty());
         for p in &res.partitions {
             assert_eq!(p.mismatched_clusters, 0, "note={:?}", p.note);

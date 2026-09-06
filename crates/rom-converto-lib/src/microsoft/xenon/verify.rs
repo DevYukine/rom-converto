@@ -5,13 +5,14 @@
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::microsoft::zar::format::ZarError;
-use crate::microsoft::zar::{ZarReader, decompress_block};
 use crate::util::CancelToken;
 use crate::util::worker_pool::{Pool, Worker, drive, parallelism};
+use crate::zar::format::ZarError;
+use crate::zar::{ZarReader, decompress_block};
 
 use super::error::{XenonError, XenonResult};
 use super::extract::logical_size;
+use crate::util::Cancelled;
 
 /// Outcome of a verify run, mirroring [`crate::nintendo::rvz::verify::RvzStructuralVerify`]'s
 /// shape at a scale that fits a single-hash, single-tree container.
@@ -48,7 +49,7 @@ pub fn verify_blocking(
     let hash_ok = match reader.verify_integrity(cancel) {
         Ok(()) => true,
         Err(ZarError::HashMismatch) => false,
-        Err(ZarError::Cancelled) => return Err(XenonError::Cancelled),
+        Err(ZarError::Cancelled(_)) => return Err(Cancelled.into()),
         Err(e) => return Err(e.into()),
     };
 
@@ -67,13 +68,13 @@ pub fn verify_blocking(
         n_threads * 2,
         |seq| {
             if cancel.is_cancelled() {
-                return Err(XenonError::Cancelled);
+                return Err(Cancelled.into());
             }
             Ok(reader.read_block_raw(seq)?)
         },
         |_seq, block| {
             if cancel.is_cancelled() {
-                return Err(XenonError::Cancelled);
+                return Err(Cancelled.into());
             }
             let take = (block.len() as u64).min(logical_bytes - logical_done);
             logical_done += take;
@@ -94,7 +95,7 @@ pub fn verify_blocking(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::microsoft::zar::ZarWriter;
+    use crate::zar::ZarWriter;
 
     #[test]
     fn verify_fails_after_a_flipped_payload_byte() {
@@ -102,7 +103,7 @@ mod tests {
         // decodes cleanly (it's not a zstd frame) and only the SHA-256
         // check should notice.
         let mut state: u64 = 0x1234_5678_9ABC_DEF0;
-        let data: Vec<u8> = (0..crate::microsoft::zar::COMPRESSED_BLOCK_SIZE)
+        let data: Vec<u8> = (0..crate::zar::COMPRESSED_BLOCK_SIZE)
             .map(|_| {
                 state = state
                     .wrapping_mul(6364136223846793005)

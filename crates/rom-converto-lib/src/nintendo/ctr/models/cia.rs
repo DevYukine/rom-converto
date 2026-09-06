@@ -25,7 +25,34 @@ pub struct CiaHeader {
     pub content_index: Vec<u8>,
 }
 
+/// Byte offsets of a CIA's sections, derived from the header's declared
+/// sizes by walking the 64-byte-aligned section chain.
+#[derive(Debug, Clone, Copy)]
+pub struct CiaLayout {
+    pub cert_start: u64,
+    pub ticket_start: u64,
+    pub tmd_start: u64,
+    pub content_start: u64,
+    pub meta_start: u64,
+}
+
 impl CiaHeader {
+    /// Walks the section chain to the offsets of the cert chain, ticket, TMD,
+    /// content, and meta data.
+    pub fn layout(&self) -> CiaLayout {
+        let cert_start = align_64(CIA_HEADER_SIZE as u64);
+        let ticket_start = align_64(cert_start + self.cert_chain_size as u64);
+        let tmd_start = align_64(ticket_start + self.ticket_size as u64);
+        let content_start = align_64(tmd_start + self.tmd_size as u64);
+        CiaLayout {
+            cert_start,
+            ticket_start,
+            tmd_start,
+            content_start,
+            meta_start: align_64(content_start + self.content_size),
+        }
+    }
+
     /// Sets the bit for `content_index` in the content index bitmask.
     pub fn set_content_index(&mut self, content_index: usize) {
         let byte_index = content_index / 8;
@@ -133,6 +160,55 @@ impl CiaFile {
     }
 }
 
+/// Reads the header, certificate chain, ticket, and TMD, walking the
+/// 64-byte-aligned section chain. Leaves the reader just past the TMD.
+fn read_preamble<R: Read + Seek>(reader: &mut R) -> BinResult<CiaFileWithoutContent> {
+    let header = CiaHeader::read_options(reader, Endian::Little, ())?;
+
+    let cert_start = align_64(reader.stream_position()?);
+    let cert_end = cert_start + header.cert_chain_size as u64;
+    reader.seek(SeekFrom::Start(cert_start))?;
+    let cert_chain = read_cert_chain(reader, cert_end)?;
+
+    reader.seek(SeekFrom::Start(align_64(cert_end)))?;
+    let ticket = Ticket::read_options(reader, Endian::Big, ())?;
+
+    let tmd_start = align_64(reader.stream_position()?);
+    reader.seek(SeekFrom::Start(tmd_start))?;
+    let tmd = TitleMetadata::read_options(reader, Endian::Big, ())?;
+
+    Ok(CiaFileWithoutContent {
+        header,
+        cert_chain,
+        ticket,
+        tmd,
+    })
+}
+
+/// Writes the header, certificate chain, ticket, and TMD, padding each
+/// section to its 64-byte boundary, then pads up to the content offset so
+/// callers streaming content next start at the right position.
+fn write_preamble<W: Write + Seek>(
+    writer: &mut W,
+    header: &CiaHeader,
+    cert_chain: &[Certificate],
+    ticket: &Ticket,
+    tmd: &TitleMetadata,
+) -> BinResult<()> {
+    header.write_options(writer, Endian::Little, ())?;
+
+    pad_to_align_64(align_64(writer.stream_position()?), writer)?;
+    write_cert_chain(writer, cert_chain, header.cert_chain_size)?;
+
+    pad_to_align_64(align_64(writer.stream_position()?), writer)?;
+    ticket.write_options(writer, Endian::Big, ())?;
+
+    pad_to_align_64(align_64(writer.stream_position()?), writer)?;
+    tmd.write_options(writer, Endian::Big, ())?;
+
+    pad_to_align_64(align_64(writer.stream_position()?), writer)
+}
+
 impl BinRead for CiaFileWithoutContent {
     type Args<'a> = ();
 
@@ -141,29 +217,7 @@ impl BinRead for CiaFileWithoutContent {
         _endian: Endian,
         _args: Self::Args<'_>,
     ) -> BinResult<Self> {
-        let header = CiaHeader::read_options(reader, Endian::Little, ())?;
-
-        let header_end = reader.stream_position()?;
-        reader.seek(SeekFrom::Start(align_64(header_end)))?;
-
-        let cert_start = reader.stream_position()?;
-        let cert_end = cert_start + header.cert_chain_size as u64;
-        let cert_chain = read_cert_chain(reader, cert_end)?;
-        reader.seek(SeekFrom::Start(cert_end))?;
-
-        reader.seek(SeekFrom::Start(align_64(cert_end)))?;
-        let ticket = Ticket::read_options(reader, Endian::Big, ())?;
-
-        let tmd_start = align_64(reader.stream_position()?);
-        reader.seek(SeekFrom::Start(tmd_start))?;
-        let tmd = TitleMetadata::read_options(reader, Endian::Big, ())?;
-
-        Ok(CiaFileWithoutContent {
-            header,
-            cert_chain,
-            ticket,
-            tmd,
-        })
+        read_preamble(reader)
     }
 }
 
@@ -176,28 +230,13 @@ impl BinWrite for CiaFileWithoutContent {
         _endian: Endian,
         _args: Self::Args<'_>,
     ) -> BinResult<()> {
-        self.header.write_options(writer, Endian::Little, ())?;
-
-        let header_end = writer.stream_position()?;
-        let cert_start = align_64(header_end);
-        pad_to_align_64(cert_start, writer)?;
-
-        write_cert_chain(writer, &self.cert_chain, self.header.cert_chain_size)?;
-
-        let ticket_start = align_64(writer.stream_position()?);
-        pad_to_align_64(ticket_start, writer)?;
-        self.ticket.write_options(writer, Endian::Big, ())?;
-
-        let tmd_start = align_64(writer.stream_position()?);
-        pad_to_align_64(tmd_start, writer)?;
-        self.tmd.write_options(writer, Endian::Big, ())?;
-
-        // Pad up to the content offset so callers streaming content next
-        // start at the right position.
-        let content_start = align_64(writer.stream_position()?);
-        pad_to_align_64(content_start, writer)?;
-
-        Ok(())
+        write_preamble(
+            writer,
+            &self.header,
+            &self.cert_chain,
+            &self.ticket,
+            &self.tmd,
+        )
     }
 }
 
@@ -209,22 +248,12 @@ impl BinRead for CiaFile {
         _endian: Endian,
         _args: Self::Args<'_>,
     ) -> BinResult<Self> {
-        let header = CiaHeader::read_options(reader, Endian::Little, ())?;
-
-        let header_end = reader.stream_position()?;
-        reader.seek(SeekFrom::Start(align_64(header_end)))?;
-
-        let cert_start = reader.stream_position()?;
-        let cert_end = cert_start + header.cert_chain_size as u64;
-        let cert_chain = read_cert_chain(reader, cert_end)?;
-        reader.seek(SeekFrom::Start(cert_end))?;
-
-        reader.seek(SeekFrom::Start(align_64(cert_end)))?;
-        let ticket = Ticket::read_options(reader, Endian::Big, ())?;
-
-        let tmd_start = align_64(reader.stream_position()?);
-        reader.seek(SeekFrom::Start(tmd_start))?;
-        let tmd = TitleMetadata::read_options(reader, Endian::Big, ())?;
+        let CiaFileWithoutContent {
+            header,
+            cert_chain,
+            ticket,
+            tmd,
+        } = read_preamble(reader)?;
 
         let content_start = align_64(reader.stream_position()?);
         reader.seek(SeekFrom::Start(content_start))?;
@@ -259,24 +288,13 @@ impl BinWrite for CiaFile {
         _endian: Endian,
         _args: Self::Args<'_>,
     ) -> BinResult<()> {
-        self.header.write_options(writer, Endian::Little, ())?;
-
-        let header_end = writer.stream_position()?;
-        let cert_start = align_64(header_end);
-        pad_to_align_64(cert_start, writer)?;
-
-        write_cert_chain(writer, &self.cert_chain, self.header.cert_chain_size)?;
-
-        let ticket_start = align_64(writer.stream_position()?);
-        pad_to_align_64(ticket_start, writer)?;
-        self.ticket.write_options(writer, Endian::Big, ())?;
-
-        let tmd_start = align_64(writer.stream_position()?);
-        pad_to_align_64(tmd_start, writer)?;
-        self.tmd.write_options(writer, Endian::Big, ())?;
-
-        let content_start = align_64(writer.stream_position()?);
-        pad_to_align_64(content_start, writer)?;
+        write_preamble(
+            writer,
+            &self.header,
+            &self.cert_chain,
+            &self.ticket,
+            &self.tmd,
+        )?;
         writer.write_all(&self.content_data)?;
 
         if let Some(ref meta) = self.meta_data {

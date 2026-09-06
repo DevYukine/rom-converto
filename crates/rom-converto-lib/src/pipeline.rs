@@ -11,14 +11,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 
-use crate::chd::{
-    ChdOptions, DiscMode, convert_disc_to_chd_cancellable, extract_from_chd_cancellable,
-    is_dvd_mode_chd,
-};
-use crate::cso::{
-    CsoCompressOptions, CsoFormat, compress_to_cso, compress_to_cso_cancellable,
-    decompress_from_cso_cancellable,
-};
+use crate::chd::{ChdOptions, DiscMode, convert_disc_to_chd, extract_from_chd, is_dvd_mode_chd};
+use crate::cso::{CsoCompressOptions, CsoFormat, compress_to_cso, decompress_from_cso};
 use crate::cue::to_iso::cue_to_iso;
 use crate::util::{CancelToken, ProgressReporter};
 
@@ -56,7 +50,7 @@ fn reject_unsupported_input(input: &Path) -> Result<()> {
 /// ISO, then run the same disc-to-CHD writer a direct build would use
 /// (so CD/DVD routing and any embedded tags match exactly), and
 /// always remove the temporary ISO afterward.
-pub async fn cso_to_chd_cancellable(
+pub async fn cso_to_chd(
     progress: &dyn ProgressReporter,
     input_path: PathBuf,
     output_path: PathBuf,
@@ -67,36 +61,31 @@ pub async fn cso_to_chd_cancellable(
     reject_unsupported_input(&input_path)?;
 
     let temp_iso = temp_iso_path(&output_path)?;
-    let result: Result<()> = async {
-        decompress_from_cso_cancellable(
-            progress,
-            input_path.clone(),
-            temp_iso.to_path_buf(),
-            true,
-            cancel.clone(),
-        )
-        .await?;
-        convert_disc_to_chd_cancellable(
-            progress,
-            temp_iso.to_path_buf(),
-            output_path.clone(),
-            mode,
-            opts.clone(),
-            cancel.clone(),
-        )
-        .await?;
-        Ok(())
-    }
-    .await;
-
-    result
+    decompress_from_cso(
+        progress,
+        input_path.clone(),
+        temp_iso.to_path_buf(),
+        true,
+        cancel.clone(),
+    )
+    .await?;
+    convert_disc_to_chd(
+        progress,
+        temp_iso.to_path_buf(),
+        output_path.clone(),
+        mode,
+        opts.clone(),
+        cancel.clone(),
+    )
+    .await?;
+    Ok(())
 }
 
 /// Extract a CHD straight to a `.cso`/`.zso`: extract to a temporary
 /// ISO, then compress it, always removing the temporary ISO
 /// afterward. Only DVD-mode CHDs qualify; a CD-mode CHD has no flat
 /// ISO for the CSO/ZSO writer to consume.
-pub async fn chd_to_cso_cancellable(
+pub async fn chd_to_cso(
     progress: &dyn ProgressReporter,
     input_path: PathBuf,
     output_path: PathBuf,
@@ -112,28 +101,23 @@ pub async fn chd_to_cso_cancellable(
     }
 
     let temp_iso = temp_iso_path(&output_path)?;
-    let result: Result<()> = async {
-        extract_from_chd_cancellable(
-            progress,
-            input_path.clone(),
-            temp_iso.to_path_buf(),
-            None,
-            cancel.clone(),
-        )
-        .await?;
-        compress_to_cso_cancellable(
-            progress,
-            temp_iso.to_path_buf(),
-            output_path.clone(),
-            opts.clone(),
-            cancel.clone(),
-        )
-        .await?;
-        Ok(())
-    }
-    .await;
-
-    result
+    extract_from_chd(
+        progress,
+        input_path.clone(),
+        temp_iso.to_path_buf(),
+        None,
+        cancel.clone(),
+    )
+    .await?;
+    compress_to_cso(
+        progress,
+        temp_iso.to_path_buf(),
+        output_path.clone(),
+        opts.clone(),
+        cancel.clone(),
+    )
+    .await?;
+    Ok(())
 }
 
 /// Compress a `.cue`/`.bin` straight to a `.cso`/`.zso`: extract the data
@@ -147,24 +131,20 @@ pub async fn cue_to_cso(
     force: bool,
 ) -> Result<()> {
     let temp_iso = temp_iso_path(&output_path)?;
-    let result: Result<()> = async {
-        cue_to_iso(progress, cue_path.clone(), temp_iso.to_path_buf(), true).await?;
-        compress_to_cso(
-            progress,
-            temp_iso.to_path_buf(),
-            output_path.clone(),
-            CsoCompressOptions {
-                format,
-                block_size: None,
-                force,
-            },
-        )
-        .await?;
-        Ok(())
-    }
-    .await;
-
-    result
+    cue_to_iso(progress, cue_path.clone(), temp_iso.to_path_buf(), true).await?;
+    compress_to_cso(
+        progress,
+        temp_iso.to_path_buf(),
+        output_path.clone(),
+        CsoCompressOptions {
+            format,
+            block_size: None,
+            force,
+        },
+        CancelToken::new(),
+    )
+    .await?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -189,7 +169,7 @@ mod tests {
         std::fs::write(&iso_path, &iso).unwrap();
 
         let cso_path = dir.path().join(format!("game.{}", format.extension()));
-        compress_to_cso_cancellable(
+        compress_to_cso(
             &NoProgress,
             iso_path,
             cso_path.clone(),
@@ -204,7 +184,7 @@ mod tests {
         .unwrap();
 
         let chd_path = dir.path().join("game.chd");
-        cso_to_chd_cancellable(
+        cso_to_chd(
             &NoProgress,
             cso_path,
             chd_path.clone(),
@@ -218,13 +198,25 @@ mod tests {
         // The temp ISO never survives a successful chain.
         assert_no_temp_iso(&chd_path);
 
-        verify_chd(&NoProgress, chd_path.clone(), None, false)
-            .await
-            .unwrap();
+        verify_chd(
+            &NoProgress,
+            chd_path.clone(),
+            None,
+            false,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
         let restored = dir.path().join("restored");
-        extract_from_chd(&NoProgress, chd_path, restored.clone(), None)
-            .await
-            .unwrap();
+        extract_from_chd(
+            &NoProgress,
+            chd_path,
+            restored.clone(),
+            None,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
         assert_eq!(std::fs::read(restored.with_extension("iso")).unwrap(), iso);
     }
 
@@ -263,9 +255,15 @@ mod tests {
         assert_no_temp_iso(&zso_path);
 
         let restored = dir.path().join("restored.iso");
-        decompress_from_cso(&NoProgress, zso_path, restored.clone(), false)
-            .await
-            .unwrap();
+        decompress_from_cso(
+            &NoProgress,
+            zso_path,
+            restored.clone(),
+            false,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
         assert_eq!(std::fs::read(&restored).unwrap(), iso);
     }
 
@@ -282,7 +280,7 @@ mod tests {
         std::fs::write(&iso_path, &iso).unwrap();
 
         let chd_path = dir.path().join("game.chd");
-        convert_disc_to_chd_cancellable(
+        convert_disc_to_chd(
             &NoProgress,
             iso_path,
             chd_path.clone(),
@@ -294,7 +292,7 @@ mod tests {
         .unwrap();
 
         let cso_path = dir.path().join("game.cso");
-        chd_to_cso_cancellable(
+        chd_to_cso(
             &NoProgress,
             chd_path,
             cso_path.clone(),
@@ -307,9 +305,15 @@ mod tests {
         assert_no_temp_iso(&cso_path);
 
         let restored = dir.path().join("restored.iso");
-        decompress_from_cso(&NoProgress, cso_path, restored.clone(), false)
-            .await
-            .unwrap();
+        decompress_from_cso(
+            &NoProgress,
+            cso_path,
+            restored.clone(),
+            false,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
         assert_eq!(std::fs::read(&restored).unwrap(), iso);
     }
 
@@ -339,7 +343,7 @@ mod tests {
         .unwrap();
 
         let cso_path = dir.path().join("game.cso");
-        let err = chd_to_cso_cancellable(
+        let err = chd_to_cso(
             &NoProgress,
             chd_path,
             cso_path.clone(),
@@ -360,7 +364,7 @@ mod tests {
         std::fs::write(&iso_path, b"not a container").unwrap();
 
         let chd_path = dir.path().join("game.chd");
-        let err = cso_to_chd_cancellable(
+        let err = cso_to_chd(
             &NoProgress,
             iso_path,
             chd_path.clone(),
@@ -383,7 +387,7 @@ mod tests {
         std::fs::write(&iso_path, &iso).unwrap();
 
         let cso_path = dir.path().join("game.cso");
-        compress_to_cso_cancellable(
+        compress_to_cso(
             &NoProgress,
             iso_path,
             cso_path.clone(),
@@ -396,7 +400,7 @@ mod tests {
         let chd_path = dir.path().join("game.chd");
         let cancel = CancelToken::new();
         cancel.cancel();
-        let err = cso_to_chd_cancellable(
+        let err = cso_to_chd(
             &NoProgress,
             cso_path,
             chd_path.clone(),

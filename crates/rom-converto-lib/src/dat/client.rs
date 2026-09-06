@@ -4,7 +4,7 @@
 use crate::dat::error::{DatError, DatResult};
 use crate::dat::model::*;
 use crate::util::http::CLIENT;
-use crate::util::{CancelToken, ProgressReporter};
+use crate::util::{CancelToken, Cancelled, ProgressReporter};
 use futures::stream::{self, StreamExt};
 use serde::de::DeserializeOwned;
 use std::time::Duration;
@@ -73,7 +73,7 @@ impl PlaymatchClient {
         let mut attempt: u32 = 0;
         loop {
             if cancel.is_cancelled() {
-                return Err(DatError::Cancelled);
+                return Err(Cancelled.into());
             }
             let Some(builder) = req.try_clone() else {
                 return Err(DatError::BadResponse(
@@ -83,7 +83,7 @@ impl PlaymatchClient {
 
             let response = tokio::select! {
                 biased;
-                _ = cancel.cancelled() => return Err(DatError::Cancelled),
+                _ = cancel.cancelled() => return Err(Cancelled.into()),
                 r = builder.send() => r,
             };
 
@@ -101,7 +101,7 @@ impl PlaymatchClient {
             if status.is_success() {
                 let bytes = tokio::select! {
                     biased;
-                    _ = cancel.cancelled() => return Err(DatError::Cancelled),
+                    _ = cancel.cancelled() => return Err(Cancelled.into()),
                     b = response.bytes() => b,
                 };
                 let bytes = bytes.map_err(|e| DatError::Transport(e.to_string()))?;
@@ -120,7 +120,7 @@ impl PlaymatchClient {
                 attempt += 1;
                 let slept = tokio::select! {
                     biased;
-                    _ = cancel.cancelled() => return Err(DatError::Cancelled),
+                    _ = cancel.cancelled() => return Err(Cancelled.into()),
                     _ = tokio::time::sleep(wait) => true,
                 };
                 if slept {
@@ -352,7 +352,7 @@ impl PlaymatchClient {
                 let cancel = cancel.clone();
                 async move {
                     if cancel.is_cancelled() {
-                        return Err(DatError::Cancelled);
+                        return Err(Cancelled.into());
                     }
                     let count = chunk.len();
                     let mut results = run_chunk(chunk, cancel).await?;
@@ -404,7 +404,7 @@ impl PlaymatchClient {
         let mut out = Vec::with_capacity(ids.len());
         for chunk in ids.chunks(BULK_MAX_ITEMS) {
             if cancel.is_cancelled() {
-                return Err(DatError::Cancelled);
+                return Err(Cancelled.into());
             }
             let req = self
                 .http
@@ -436,7 +436,7 @@ impl PlaymatchClient {
 
         for page_index in 0..MAX_PAGES {
             if cancel.is_cancelled() {
-                return Err(DatError::Cancelled);
+                return Err(Cancelled.into());
             }
             let mut query: Vec<(&str, String)> = base_query.to_vec();
             query.push(("limit", PAGE_LIMIT.to_string()));

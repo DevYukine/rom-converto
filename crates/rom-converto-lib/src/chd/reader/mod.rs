@@ -5,7 +5,8 @@ use crate::cd::IO_BUFFER_SIZE;
 use crate::chd::error::{ChdError, ChdResult};
 use crate::chd::map::{MapEntry, decompress_v5_map};
 use crate::chd::models::{
-    CHD_METADATA_HEADER_BYTES, CHD_V5_HEADER_SIZE, ChdHeaderV5, ChdMetadataHeader, ChdVersion,
+    CHD_METADATA_HEADER_BYTES, CHD_METADATA_TAG_AV, CHD_METADATA_TAG_DVD, CHD_V5_HEADER_SIZE,
+    ChdHeaderV5, ChdMetadataHeader, ChdVersion,
 };
 use binrw::BinRead;
 use byteorder::{BigEndian, ByteOrder};
@@ -23,6 +24,28 @@ pub(crate) struct SyncChdHandle {
     pub map: Vec<MapEntry>,
     pub metadata: Vec<ChdMetadataHeader>,
     pub file: Arc<std::fs::File>,
+}
+
+/// What a CHD holds, as told by its metadata tags: CD tracks, a flat
+/// DVD sector stream, or laserdisc A/V frames.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChdFlavor {
+    Cd,
+    Dvd,
+    Ld,
+}
+
+impl SyncChdHandle {
+    pub(crate) fn flavor(&self) -> ChdFlavor {
+        let has = |tag| self.metadata.iter().any(|m| m.tag == tag);
+        if has(CHD_METADATA_TAG_AV) {
+            ChdFlavor::Ld
+        } else if has(CHD_METADATA_TAG_DVD) {
+            ChdFlavor::Dvd
+        } else {
+            ChdFlavor::Cd
+        }
+    }
 }
 
 /// The on-disk CHD format version of `path`, without parsing the rest of

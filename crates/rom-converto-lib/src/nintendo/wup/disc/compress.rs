@@ -12,6 +12,7 @@
 //! 6. Each virtual file decrypted on demand through the shared
 //!    [`ContentLoader`].
 
+use std::io::Write;
 use std::path::Path;
 
 use crate::nintendo::wup::disc::disc_key::{DiscKey, load_disc_key};
@@ -30,13 +31,14 @@ use crate::nintendo::wup::models::WupTmd;
 use crate::nintendo::wup::nus::content_stream::{ContentLoader, decrypt_content_0};
 use crate::nintendo::wup::nus::fst_parser::{VirtualFs, parse_fst};
 use crate::nintendo::wup::nus::ticket_parser::{TitleKey, parse_ticket_bytes};
-use crate::nintendo::wup::zarchive_writer::ArchiveSink;
+use crate::util::Cancelled;
 use crate::util::ProgressReporter;
+use crate::zar::ZarWriter;
 
 /// Sum the decrypted byte size of every FST file this disc would
 /// actually emit across all content partitions, skipping shared
 /// entries (FST type bit 7). Does the same partition walk and
-/// content-0 decrypt as [`compress_disc_title`] but stops before
+/// content-0 decrypt as `compress_disc_title` but stops before
 /// per-file streaming so the caller can seed the progress bar with
 /// a real byte total.
 pub fn estimate_disc_uncompressed_bytes(
@@ -112,19 +114,10 @@ fn estimate_one_partition(
 /// game plus any UP/UC partitions that share the disc. Returns a
 /// `(title_id, version)` pair for every title written so the caller
 /// can log what landed in the archive.
-pub fn compress_disc_title(
+pub(crate) fn compress_disc_title<W: Write>(
     disc_path: &Path,
     key_override: Option<&Path>,
-    sink: &mut dyn ArchiveSink,
-    progress: &dyn ProgressReporter,
-) -> WupResult<Vec<(u64, u16)>> {
-    compress_disc_title_with_cancel(disc_path, key_override, sink, progress, None)
-}
-
-pub(crate) fn compress_disc_title_with_cancel(
-    disc_path: &Path,
-    key_override: Option<&Path>,
-    sink: &mut dyn ArchiveSink,
+    sink: &mut ZarWriter<'_, W>,
     progress: &dyn ProgressReporter,
     cancelled: Option<&AtomicBool>,
 ) -> WupResult<Vec<(u64, u16)>> {
@@ -153,7 +146,7 @@ pub(crate) fn compress_disc_title_with_cancel(
         .collect();
     for (toc_index, partition) in &indexed {
         if cancelled.is_some_and(|c| c.load(Ordering::Relaxed)) {
-            return Err(WupError::Cancelled);
+            return Err(Cancelled.into());
         }
         let si_title = match find_matching_title(&si_titles, *toc_index) {
             Some(t) => t,
@@ -323,11 +316,11 @@ pub(crate) fn plan_partition(
     })
 }
 
-fn compress_one_partition_with_cancel(
+fn compress_one_partition_with_cancel<W: Write>(
     disc: &mut dyn DiscSectorSource,
     partition: &PartitionEntry,
     si_title: &SiTitle,
-    sink: &mut dyn ArchiveSink,
+    sink: &mut ZarWriter<'_, W>,
     progress: &dyn ProgressReporter,
     cancelled: Option<&AtomicBool>,
 ) -> WupResult<(u64, u16)> {
@@ -337,11 +330,11 @@ fn compress_one_partition_with_cancel(
     let mut loader = ContentLoader::new(&mut source, plan.title_key, &plan.tmd, &plan.fs);
     for vfile in &plan.fs.files {
         if cancelled.is_some_and(|c| c.load(Ordering::Relaxed)) {
-            return Err(WupError::Cancelled);
+            return Err(Cancelled.into());
         }
         let bytes = loader.extract_file(vfile)?;
         let archive_path = format!("{archive_folder}/{}", vfile.path);
-        sink.start_new_file(&archive_path)?;
+        sink.start_file(&archive_path)?;
         sink.append_data(&bytes)?;
         progress.inc(bytes.len() as u64);
     }

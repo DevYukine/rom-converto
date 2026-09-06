@@ -55,12 +55,6 @@ pub const DISC_HEADER_COPY_SIZE: usize = 0x100;
 pub const DEFAULT_HD_SECTOR_SHIFT: u8 = 9;
 pub const DEFAULT_WBFS_SECTOR_SHIFT: u8 = 21;
 
-/// Round `value` up to the next multiple of `align` (a power of two is
-/// not required).
-pub fn align_up(value: u64, align: u64) -> u64 {
-    value.div_ceil(align) * align
-}
-
 /// Number of wlba entries for a container whose block size is
 /// `1 << wbfs_sec_sz_s`.
 pub fn wbfs_sectors_per_disc(wbfs_sec_sz_s: u8) -> u64 {
@@ -71,7 +65,7 @@ pub fn wbfs_sectors_per_disc(wbfs_sec_sz_s: u8) -> u64 {
 /// table), aligned up to the HD sector size.
 pub fn disc_info_size(wbfs_sec_sz_s: u8, hd_sec_sz: u64) -> u64 {
     let raw = DISC_HEADER_COPY_SIZE as u64 + wbfs_sectors_per_disc(wbfs_sec_sz_s) * 2;
-    align_up(raw, hd_sec_sz)
+    raw.next_multiple_of(hd_sec_sz)
 }
 
 /// Reconstruct the canonical full-image size of a disc stored in a
@@ -106,15 +100,6 @@ pub fn reconstruct_disc_size(disc_header: &[u8], used_size: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn align_up_rounds_to_multiple() {
-        assert_eq!(align_up(0, 512), 0);
-        assert_eq!(align_up(1, 512), 512);
-        assert_eq!(align_up(512, 512), 512);
-        assert_eq!(align_up(513, 512), 1024);
-        assert_eq!(align_up(9220, 512), 9728);
-    }
 
     #[test]
     fn table_length_scales_with_block_size() {

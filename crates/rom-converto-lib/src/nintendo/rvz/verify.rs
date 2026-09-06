@@ -23,6 +23,7 @@ use crate::nintendo::rvz::format::sha1::{
 use crate::nintendo::rvz::format::{
     WIA_FILE_HEAD_SIZE, WIA_PART_SIZE, WiaDisc, WiaFileHead, WiaPart,
 };
+use crate::util::Cancelled;
 
 /// Result of verifying the three SHA-1 hashes an RVZ container stores over its
 /// own metadata structs.
@@ -46,27 +47,18 @@ impl RvzStructuralVerify {
     }
 }
 
-/// Verify the stored SHA-1 digests of an RVZ container. Errors with
-/// [`RvzError::InvalidMagic`] when `path` is not an RVZ file, which callers
-/// treat as "no structural data to check".
-pub fn verify_rvz_structure(path: &Path) -> RvzResult<RvzStructuralVerify> {
-    verify_rvz_structure_cancellable(path, &CancelToken::new())
-}
-
-/// Like [`verify_rvz_structure`] but observes `cancel` between stages.
-pub fn verify_rvz_structure_cancellable(
-    path: &Path,
-    cancel: &CancelToken,
-) -> RvzResult<RvzStructuralVerify> {
+/// Check the RVZ at `path` against its own header, disc and group
+/// hashes, without decompressing the disc data.
+pub fn verify_rvz_structure(path: &Path, cancel: &CancelToken) -> RvzResult<RvzStructuralVerify> {
     if cancel.is_cancelled() {
-        return Err(RvzError::Cancelled);
+        return Err(Cancelled.into());
     }
     let mut reader = BufReader::with_capacity(64 * 1024, File::open(path)?);
 
     let mut head_bytes = vec![0u8; WIA_FILE_HEAD_SIZE];
     reader.read_exact(&mut head_bytes)?;
     if cancel.is_cancelled() {
-        return Err(RvzError::Cancelled);
+        return Err(Cancelled.into());
     }
     let head = WiaFileHead::read_options(&mut Cursor::new(&head_bytes), Endian::Big, ())?;
     if head.magic != RVZ_MAGIC {
@@ -77,7 +69,7 @@ pub fn verify_rvz_structure_cancellable(
     let mut disc_bytes = vec![0u8; head.disc_size as usize];
     reader.read_exact(&mut disc_bytes)?;
     if cancel.is_cancelled() {
-        return Err(RvzError::Cancelled);
+        return Err(Cancelled.into());
     }
     let disc = WiaDisc::read_options(&mut Cursor::new(&disc_bytes), Endian::Big, ())?;
     let disc_hash_ok = compute_disc_hash(&disc) == head.disc_hash;
@@ -90,7 +82,7 @@ pub fn verify_rvz_structure_cancellable(
         let mut parts = Vec::with_capacity(disc.n_part as usize);
         for _ in 0..disc.n_part {
             if cancel.is_cancelled() {
-                return Err(RvzError::Cancelled);
+                return Err(Cancelled.into());
             }
             parts.push(WiaPart::read_options(&mut cur, Endian::Big, ())?);
         }

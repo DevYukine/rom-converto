@@ -26,6 +26,7 @@ use super::{
 use crate::nintendo::rvl::constants::WII_SECTOR_SIZE_U64;
 use crate::nintendo::rvz::error::{RvzError, RvzResult};
 use crate::util::CancelToken;
+use crate::util::Cancelled;
 use crate::util::worker_pool::{Pool, Worker, drive, parallelism};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom};
 use std::sync::Arc;
@@ -180,7 +181,7 @@ pub(super) fn encode_raw_region<R: Read + Seek>(
             // `bytes_to_read` is zeroed.
             |chunk_idx| -> RvzResult<RawWork> {
                 if cancel.is_cancelled() {
-                    return Err(RvzError::Cancelled);
+                    return Err(Cancelled.into());
                 }
                 let chunk_abs_start = effective_start + chunk_idx * chunk_size_u64;
                 let effective_remaining =
@@ -190,32 +191,9 @@ pub(super) fn encode_raw_region<R: Read + Seek>(
                     iso_size.saturating_sub(chunk_abs_start).min(chunk_size_u64) as usize;
                 let bytes_to_read = bytes_to_compress.min(bytes_available_on_disc);
 
-                let mut data = Vec::with_capacity(bytes_to_compress);
-                // SAFETY: `Vec::with_capacity(n)` gives us at
-                // least `n` bytes of uninitialised memory.
-                // `u8` has no drop glue and no validity
-                // invariants beyond "initialised before read",
-                // so extending `len` past uninit bytes is
-                // sound as long as no reader observes them
-                // before we write. We then overwrite
-                // `[..bytes_to_read]` via `read_exact` (which
-                // only writes its destination; `BufReader`
-                // never reads uninit bytes)
-                // and initialise `[bytes_to_read..bytes_to_compress]`
-                // with zeros on the short-tail path. On the
-                // error path the `Vec` is dropped without any
-                // byte ever being read, which is fine for
-                // `u8` (no drop). Clippy's lint is overly
-                // conservative for this element type.
-                #[allow(clippy::uninit_vec)]
-                unsafe {
-                    data.set_len(bytes_to_compress);
-                }
+                let mut data = vec![0u8; bytes_to_compress];
                 if bytes_to_read > 0 {
                     reader.read_exact(&mut data[..bytes_to_read])?;
-                }
-                if bytes_to_read < bytes_to_compress {
-                    data[bytes_to_read..].fill(0);
                 }
 
                 let chunk_abs_end = chunk_abs_start + bytes_to_compress as u64;

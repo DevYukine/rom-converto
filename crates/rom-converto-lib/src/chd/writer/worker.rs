@@ -21,11 +21,14 @@ use crate::chd::swap_audio_sector;
 use crate::laserdisc::avi::{AviFile, LdParams};
 use crate::laserdisc::vbi::{VBI_PACKED_BYTES, vbi_metadata_pack, vbi_parse_all};
 use crate::util::CancelToken;
-use crate::util::worker_pool::{Pool, Worker, drive, parallelism};
+use crate::util::Cancelled;
+use crate::util::worker_pool::{
+    Pool, PoolChannelClosed, Worker, drive, parallelism, with_writer_thread,
+};
 use sha1::{Digest, Sha1};
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
-use std::io::{BufWriter, Read, Seek, Write};
+use std::io::{BufWriter, Read, Seek};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -221,7 +224,7 @@ pub(super) fn compress_hunks<R: Read>(
         // free from the `vec![0; hunk_bytes]` allocation.
         |chunk_idx| -> ChdResult<ChdCompressWork> {
             if cancel.is_cancelled() {
-                return Err(ChdError::Cancelled);
+                return Err(Cancelled.into());
             }
             let first_sector = chunk_idx as usize * frames_per_hunk;
             let sectors_in_hunk = frames_per_hunk.min(total_sectors - first_sector);
@@ -283,7 +286,7 @@ pub(super) fn compress_hunks_dvd<R: Read>(
         total_hunks,
         |chunk_idx| -> ChdResult<ChdCompressWork> {
             if cancel.is_cancelled() {
-                return Err(ChdError::Cancelled);
+                return Err(Cancelled.into());
             }
             let offset = chunk_idx * hunk_bytes as u64;
             let take = ((logical_bytes - offset) as usize).min(hunk_bytes);
@@ -364,7 +367,7 @@ pub(super) fn compress_hunks_ld<R: Read + Seek>(
         u64::from(params.frame_count),
         |chunk_idx| -> ChdResult<ChdCompressWork> {
             if cancel.is_cancelled() {
-                return Err(ChdError::Cancelled);
+                return Err(Cancelled.into());
             }
             let effframe = chunk_idx as u32;
             let source_frame = effframe / interlace_factor as u32;
@@ -437,62 +440,50 @@ where
     let max_in_flight = parallelism() * 2;
     let mut local_writer_pos = *writer_pos;
     let mut written_hunks: HashMap<(u16, [u8; SHA1_BYTES]), u64> = HashMap::new();
-    let (write_tx, write_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(max_in_flight * 2);
-
-    let scope_result: ChdResult<()> = std::thread::scope(|s| {
-        let writer_slot: &mut BufWriter<std::fs::File> = writer;
-        let writer_handle = s.spawn(move || -> ChdResult<()> {
-            while let Ok(bytes) = write_rx.recv() {
-                writer_slot.write_all(&bytes)?;
-            }
-            Ok(())
-        });
-
-        let drive_result = drive(
-            pool,
-            total_hunks,
-            max_in_flight,
-            produce,
-            |seq, out: ChdCompressedOut| -> ChdResult<()> {
-                if let Some(sha1) = out.sha1 {
-                    match written_hunks.entry((out.crc16, sha1)) {
-                        Entry::Occupied(first) => {
-                            map_entries.push(MapEntry {
-                                compression: COMPRESSION_SELF,
-                                length: 0,
-                                offset: *first.get(),
-                                crc16: 0,
-                            });
-                            return Ok(());
-                        }
-                        Entry::Vacant(slot) => {
-                            slot.insert(seq);
+    let scope_result = with_writer_thread(
+        writer,
+        max_in_flight * 2,
+        ChdError::WorkerPoolPanic,
+        |write_tx| {
+            drive(
+                pool,
+                total_hunks,
+                max_in_flight,
+                produce,
+                |seq, out: ChdCompressedOut| -> ChdResult<()> {
+                    if let Some(sha1) = out.sha1 {
+                        match written_hunks.entry((out.crc16, sha1)) {
+                            Entry::Occupied(first) => {
+                                map_entries.push(MapEntry {
+                                    compression: COMPRESSION_SELF,
+                                    length: 0,
+                                    offset: *first.get(),
+                                    crc16: 0,
+                                });
+                                return Ok(());
+                            }
+                            Entry::Vacant(slot) => {
+                                slot.insert(seq);
+                            }
                         }
                     }
-                }
-                let offset = local_writer_pos;
-                let length = out.compressed.len() as u32;
-                map_entries.push(MapEntry {
-                    compression: out.compression,
-                    length,
-                    offset,
-                    crc16: out.crc16,
-                });
-                write_tx
-                    .send(out.compressed)
-                    .map_err(|_| ChdError::WorkerPoolClosed)?;
-                local_writer_pos += length as u64;
-                Ok(())
-            },
-        );
-
-        drop(write_tx);
-        let writer_result = writer_handle
-            .join()
-            .unwrap_or_else(|_| Err(ChdError::WorkerPoolPanic));
-        drive_result?;
-        writer_result
-    });
+                    let offset = local_writer_pos;
+                    let length = out.compressed.len() as u32;
+                    map_entries.push(MapEntry {
+                        compression: out.compression,
+                        length,
+                        offset,
+                        crc16: out.crc16,
+                    });
+                    write_tx
+                        .send(out.compressed)
+                        .map_err(|_| ChdError::WorkerPoolClosed(PoolChannelClosed))?;
+                    local_writer_pos += length as u64;
+                    Ok(())
+                },
+            )
+        },
+    );
 
     *writer_pos = local_writer_pos;
     scope_result

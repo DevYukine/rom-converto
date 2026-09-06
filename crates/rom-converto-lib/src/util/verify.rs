@@ -3,7 +3,7 @@
 //! result, so a corrupt or partial output gets rewritten and a valid one
 //! is kept.
 
-use super::{CancelToken, ProgressReporter};
+use super::{CancelToken, Cancelled, ProgressReporter};
 use anyhow::Result;
 use std::path::Path;
 
@@ -12,6 +12,7 @@ use std::path::Path;
 /// integrity check, where the policy falls back to existence-based skip.
 /// `Nx` carries the keyset because the NX verify decrypts every NCA section;
 /// when keys are missing the existing output is kept rather than rewritten.
+#[derive(Clone)]
 pub enum OutputVerify {
     Chd,
     Cso,
@@ -27,46 +28,29 @@ pub enum VerifyOutcome {
     Invalid,
 }
 
-/// Run the format's read-only integrity check on an existing output. Any
-/// verification failure, including an output that cannot be read or decoded,
-/// is reported as `Invalid` so the caller rewrites it.
-pub async fn verify_existing_output(
-    progress: &dyn ProgressReporter,
-    path: &Path,
-    target: OutputVerify,
-) -> VerifyOutcome {
-    verify_existing_output_cancellable(progress, path, target, CancelToken::new())
-        .await
-        .unwrap_or(VerifyOutcome::Invalid)
-}
-
 /// Cancellable twin of [`verify_existing_output`], propagating verification
 /// and cancellation errors instead of collapsing them into `Invalid`.
-pub async fn verify_existing_output_cancellable(
+pub async fn verify_existing_output(
     progress: &dyn ProgressReporter,
     path: &Path,
     target: OutputVerify,
     cancel: CancelToken,
 ) -> Result<VerifyOutcome> {
-    use crate::chd::verify_chd_cancellable;
-    use crate::cso::verify_cso_cancellable;
-    use crate::nintendo::nx::verify_container_async_cancellable;
-    use crate::nintendo::rvz::verify::verify_rvz_structure_cancellable;
+    use crate::chd::verify_chd;
+    use crate::cso::verify_cso;
+    use crate::nintendo::nx::verify_container_async;
+    use crate::nintendo::rvz::verify::verify_rvz_structure;
     if cancel.is_cancelled() {
-        anyhow::bail!("cancelled");
+        return Err(Cancelled.into());
     }
     let ok = match target {
-        OutputVerify::Chd => {
-            verify_chd_cancellable(progress, path.to_path_buf(), None, false, cancel.clone())
-                .await
-                .is_ok()
-        }
-        OutputVerify::Cso => {
-            verify_cso_cancellable(progress, path.to_path_buf(), true, cancel.clone())
-                .await
-                .is_ok()
-        }
-        OutputVerify::Rvz => verify_rvz_structure_cancellable(path, &cancel)
+        OutputVerify::Chd => verify_chd(progress, path.to_path_buf(), None, false, cancel.clone())
+            .await
+            .is_ok(),
+        OutputVerify::Cso => verify_cso(progress, path.to_path_buf(), true, cancel.clone())
+            .await
+            .is_ok(),
+        OutputVerify::Rvz => verify_rvz_structure(path, &cancel)
             .map(|r| r.ok())
             .unwrap_or(false),
         OutputVerify::Nx(keys) => {
@@ -77,13 +61,8 @@ pub async fn verify_existing_output_cancellable(
                 );
                 true
             } else {
-                match verify_container_async_cancellable(
-                    path.to_path_buf(),
-                    *keys,
-                    progress,
-                    cancel.clone(),
-                )
-                .await
+                match verify_container_async(path.to_path_buf(), *keys, progress, cancel.clone())
+                    .await
                 {
                     Ok(result) => result.ok,
                     Err(e) => {
@@ -105,7 +84,7 @@ pub async fn verify_existing_output_cancellable(
         }
     };
     if cancel.is_cancelled() {
-        anyhow::bail!("cancelled");
+        return Err(Cancelled.into());
     }
     Ok(if ok {
         VerifyOutcome::Valid
@@ -125,7 +104,10 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("game.iso");
         std::fs::write(&path, b"x").unwrap();
-        let outcome = verify_existing_output(&NoProgress, &path, OutputVerify::None).await;
+        let outcome =
+            verify_existing_output(&NoProgress, &path, OutputVerify::None, CancelToken::new())
+                .await
+                .unwrap();
         assert_eq!(outcome, VerifyOutcome::Valid);
     }
 
@@ -138,8 +120,14 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("game.nsz");
         std::fs::write(&path, b"not a real container").unwrap();
-        let outcome =
-            verify_existing_output(&NoProgress, &path, OutputVerify::Nx(Box::default())).await;
+        let outcome = verify_existing_output(
+            &NoProgress,
+            &path,
+            OutputVerify::Nx(Box::default()),
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
         assert_eq!(outcome, VerifyOutcome::Valid);
     }
 
@@ -148,7 +136,10 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("game.rvz");
         std::fs::write(&path, b"this is not an rvz container at all").unwrap();
-        let outcome = verify_existing_output(&NoProgress, &path, OutputVerify::Rvz).await;
+        let outcome =
+            verify_existing_output(&NoProgress, &path, OutputVerify::Rvz, CancelToken::new())
+                .await
+                .unwrap();
         assert_eq!(outcome, VerifyOutcome::Invalid);
     }
 }

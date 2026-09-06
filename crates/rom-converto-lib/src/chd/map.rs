@@ -1,3 +1,4 @@
+use crate::chd::compression::huffman8::{BitWriter, canonical_codes};
 use crate::chd::error::{ChdError, ChdResult};
 use byteorder::{BigEndian, ByteOrder};
 use crc::{CRC_16_IBM_3740, Crc};
@@ -54,7 +55,7 @@ pub(crate) fn compress_v5_map(
 
     let mapcrc = crc16_ccitt(&rawmap);
     let mut compression_rle = Vec::with_capacity(hunk_count as usize);
-    let mut encoder = HuffmanEncoder::new();
+    let mut datahisto = [0u32; HUFFMAN_CODES];
 
     let mut max_self = 0u32;
     let mut last_self = 0u32;
@@ -103,28 +104,28 @@ pub(crate) fn compress_v5_map(
         if curcomp != lastcomp || hunknum == hunk_count - 1 {
             while count != 0 {
                 if count < RLE_SMALL_BASE {
-                    push_symbol(&mut compression_rle, &mut encoder, lastcomp);
+                    push_symbol(&mut compression_rle, &mut datahisto, lastcomp);
                     count -= 1;
                 } else if count <= RLE_SMALL_BASE + RLE_SMALL_MAX_EXTRA {
-                    push_symbol(&mut compression_rle, &mut encoder, COMPRESSION_RLE_SMALL);
+                    push_symbol(&mut compression_rle, &mut datahisto, COMPRESSION_RLE_SMALL);
                     push_symbol(
                         &mut compression_rle,
-                        &mut encoder,
+                        &mut datahisto,
                         (count - RLE_SMALL_BASE) as u8,
                     );
                     count = 0;
                 } else {
                     let this_count = cmp::min(count, RLE_LARGE_BASE + RLE_LARGE_MAX_EXTRA);
                     let rem = this_count - RLE_LARGE_BASE;
-                    push_symbol(&mut compression_rle, &mut encoder, COMPRESSION_RLE_LARGE);
-                    push_symbol(&mut compression_rle, &mut encoder, (rem >> 4) as u8);
-                    push_symbol(&mut compression_rle, &mut encoder, (rem & 0x0f) as u8);
+                    push_symbol(&mut compression_rle, &mut datahisto, COMPRESSION_RLE_LARGE);
+                    push_symbol(&mut compression_rle, &mut datahisto, (rem >> 4) as u8);
+                    push_symbol(&mut compression_rle, &mut datahisto, (rem & 0x0f) as u8);
                     count -= this_count;
                 }
             }
 
             if curcomp != lastcomp {
-                push_symbol(&mut compression_rle, &mut encoder, curcomp);
+                push_symbol(&mut compression_rle, &mut datahisto, curcomp);
                 lastcomp = curcomp;
             }
         }
@@ -134,12 +135,20 @@ pub(crate) fn compress_v5_map(
     let selfbits = bits_for_value(max_self as u64);
     let parentbits = bits_for_value(max_parent);
 
-    encoder.compute_tree_from_histo()?;
+    let mut codes = canonical_codes(&datahisto, HUFFMAN_CODES, HUFFMAN_MAX_BITS)
+        .map_err(|_| ChdError::MapCompressionError)?;
+    // A hunkless map weighs no symbols, and an all-zero tree would RLE
+    // into a different run than chdman's, which still gives symbol 0 a
+    // one-bit code.
+    if hunk_count == 0 {
+        codes[0] = (0, 1);
+    }
 
     let mut bitbuf = BitWriter::new();
-    encoder.export_tree_rle(&mut bitbuf)?;
+    export_tree_rle(&mut bitbuf, &codes);
     for &symbol in &compression_rle {
-        encoder.encode_one(&mut bitbuf, symbol);
+        let (bits, num_bits) = codes[symbol as usize];
+        bitbuf.write(bits, num_bits);
     }
 
     let mut src_index = 0usize;
@@ -217,9 +226,9 @@ pub(crate) fn compress_v5_map(
     Ok(output)
 }
 
-fn push_symbol(list: &mut Vec<u8>, encoder: &mut HuffmanEncoder, value: u8) {
+fn push_symbol(list: &mut Vec<u8>, histo: &mut [u32; HUFFMAN_CODES], value: u8) {
     list.push(value);
-    encoder.histo_one(value);
+    histo[value as usize] += 1;
 }
 
 fn encode_raw_map(entries: &[MapEntry]) -> Vec<u8> {
@@ -252,49 +261,6 @@ fn read_u48_be(buf: &[u8]) -> u64 {
 fn write_u48_be(buf: &mut [u8], value: u64) {
     let bytes = value.to_be_bytes();
     buf.copy_from_slice(&bytes[2..]);
-}
-
-#[derive(Debug)]
-struct BitWriter {
-    data: Vec<u8>,
-    accum: u8,
-    bits: u8,
-}
-
-impl BitWriter {
-    fn new() -> Self {
-        Self {
-            data: Vec::new(),
-            accum: 0,
-            bits: 0,
-        }
-    }
-
-    fn write(&mut self, value: u32, num_bits: u8) {
-        if num_bits == 0 {
-            return;
-        }
-
-        for i in (0..num_bits).rev() {
-            let bit = ((value >> i) & 1) as u8;
-            self.accum = (self.accum << 1) | bit;
-            self.bits += 1;
-            if self.bits == 8 {
-                self.data.push(self.accum);
-                self.accum = 0;
-                self.bits = 0;
-            }
-        }
-    }
-
-    fn finish(mut self) -> Vec<u8> {
-        if self.bits > 0 {
-            self.data.push(self.accum << (8 - self.bits));
-            self.bits = 0;
-            self.accum = 0;
-        }
-        self.data
-    }
 }
 
 #[derive(Debug)]
@@ -340,209 +306,34 @@ impl BitReader {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct HuffNode {
-    parent: Option<usize>,
-    weight: u32,
-    bits: u32,
-    num_bits: u8,
-}
+/// Serialize the tree as RLE-coded code lengths. This is the map
+/// codec's own tree format; the `huff` hunk codec in
+/// [`crate::chd::compression::huffman8`] shares the canonical-code
+/// construction but serializes its tree with a second huffman tree.
+fn export_tree_rle(bitbuf: &mut BitWriter, codes: &[(u32, u8)]) {
+    let num_bits = if HUFFMAN_MAX_BITS >= 16 {
+        5
+    } else if HUFFMAN_MAX_BITS >= 8 {
+        4
+    } else {
+        3
+    };
 
-#[derive(Debug)]
-struct HuffmanEncoder {
-    datahisto: [u32; HUFFMAN_CODES],
-    nodes: Vec<HuffNode>,
-}
-
-impl HuffmanEncoder {
-    fn new() -> Self {
-        Self {
-            datahisto: [0u32; HUFFMAN_CODES],
-            nodes: vec![
-                HuffNode {
-                    parent: None,
-                    weight: 0,
-                    bits: 0,
-                    num_bits: 0,
-                };
-                HUFFMAN_CODES * 2
-            ],
-        }
-    }
-
-    fn histo_one(&mut self, data: u8) {
-        self.datahisto[data as usize] += 1;
-    }
-
-    fn compute_tree_from_histo(&mut self) -> ChdResult<()> {
-        let totaldata = self.datahisto.iter().copied().sum::<u32>();
-        if totaldata == 0 {
-            self.nodes[0].num_bits = 1;
-            self.nodes[0].bits = 0;
-            return Ok(());
-        }
-
-        let mut lowerweight = 0u32;
-        let mut upperweight = totaldata.saturating_mul(2);
-        loop {
-            let curweight = (upperweight + lowerweight) / 2;
-            let curmaxbits = self.build_tree(totaldata, curweight);
-            if curmaxbits <= HUFFMAN_MAX_BITS {
-                lowerweight = curweight;
-                if curweight == totaldata || upperweight.saturating_sub(lowerweight) <= 1 {
-                    break;
-                }
-            } else {
-                upperweight = curweight;
-            }
-        }
-
-        self.assign_canonical_codes()
-    }
-
-    fn build_tree(&mut self, totaldata: u32, totalweight: u32) -> u8 {
-        self.nodes.fill(HuffNode {
-            parent: None,
-            weight: 0,
-            bits: 0,
-            num_bits: 0,
-        });
-
-        let mut list: Vec<usize> = Vec::with_capacity(HUFFMAN_CODES * 2);
-        for code in 0..HUFFMAN_CODES {
-            let count = self.datahisto[code];
-            if count != 0 {
-                let mut weight = (count as u64 * totalweight as u64) / totaldata as u64;
-                if weight == 0 {
-                    weight = 1;
-                }
-                self.nodes[code].weight = weight as u32;
-                self.nodes[code].bits = code as u32;
-                list.push(code);
-            }
-        }
-
-        list.sort_by(|&a, &b| {
-            let wa = self.nodes[a].weight;
-            let wb = self.nodes[b].weight;
-            if wa != wb {
-                wb.cmp(&wa)
-            } else {
-                self.nodes[a].bits.cmp(&self.nodes[b].bits)
-            }
-        });
-
-        let mut nextalloc = HUFFMAN_CODES;
-        while list.len() > 1 {
-            let node1 = list
-                .pop()
-                .expect("list.len() > 1 checked by while condition");
-            let node0 = list
-                .pop()
-                .expect("list.len() > 1 checked by while condition, second pop after first");
-
-            let new_index = nextalloc;
-            nextalloc += 1;
-            self.nodes[new_index].weight = self.nodes[node0].weight + self.nodes[node1].weight;
-            self.nodes[node0].parent = Some(new_index);
-            self.nodes[node1].parent = Some(new_index);
-
-            let insert_pos = list
-                .iter()
-                .position(|&idx| self.nodes[new_index].weight > self.nodes[idx].weight)
-                .unwrap_or(list.len());
-            list.insert(insert_pos, new_index);
-        }
-
-        let mut maxbits = 0u8;
-        for code in 0..HUFFMAN_CODES {
-            if self.nodes[code].weight == 0 {
-                continue;
-            }
-            let mut bits = 0u8;
-            let mut current = Some(code);
-            while let Some(idx) = current {
-                if let Some(parent) = self.nodes[idx].parent {
-                    bits += 1;
-                    current = Some(parent);
-                } else {
-                    break;
-                }
-            }
-            if bits == 0 {
-                bits = 1;
-            }
-            self.nodes[code].num_bits = bits;
-            maxbits = maxbits.max(bits);
-        }
-
-        maxbits
-    }
-
-    fn assign_canonical_codes(&mut self) -> ChdResult<()> {
-        let mut bithisto = [0u32; BITHISTO_LEN];
-        for code in 0..HUFFMAN_CODES {
-            let bits = self.nodes[code].num_bits as usize;
-            if bits > HUFFMAN_MAX_BITS as usize {
-                return Err(ChdError::MapCompressionError);
-            }
-            if bits <= CANONICAL_MAX_BITS {
-                bithisto[bits] += 1;
-            }
-        }
-
-        let mut curstart = 0u32;
-        for codelen in (1..=CANONICAL_MAX_BITS).rev() {
-            let nextstart = (curstart + bithisto[codelen]) >> 1;
-            if codelen != 1 && nextstart * 2 != curstart + bithisto[codelen] {
-                return Err(ChdError::MapCompressionError);
-            }
-            bithisto[codelen] = curstart;
-            curstart = nextstart;
-        }
-
-        for code in 0..HUFFMAN_CODES {
-            let bits = self.nodes[code].num_bits as usize;
-            if bits > 0 {
-                self.nodes[code].bits = bithisto[bits];
-                bithisto[bits] += 1;
-            }
-        }
-
-        Ok(())
-    }
-
-    fn export_tree_rle(&self, bitbuf: &mut BitWriter) -> ChdResult<()> {
-        let num_bits = if HUFFMAN_MAX_BITS >= 16 {
-            5
-        } else if HUFFMAN_MAX_BITS >= 8 {
-            4
+    let mut lastval = i32::MIN;
+    let mut repcount = 0u32;
+    for &(_, len) in codes {
+        let newval = len as i32;
+        if newval == lastval {
+            repcount += 1;
         } else {
-            3
-        };
-
-        let mut lastval = i32::MIN;
-        let mut repcount = 0u32;
-        for code in 0..HUFFMAN_CODES {
-            let newval = self.nodes[code].num_bits as i32;
-            if newval == lastval {
-                repcount += 1;
-            } else {
-                if repcount != 0 {
-                    write_rle_tree_bits(bitbuf, lastval as u32, repcount, num_bits);
-                }
-                lastval = newval;
-                repcount = 1;
+            if repcount != 0 {
+                write_rle_tree_bits(bitbuf, lastval as u32, repcount, num_bits);
             }
+            lastval = newval;
+            repcount = 1;
         }
-        write_rle_tree_bits(bitbuf, lastval as u32, repcount, num_bits);
-        Ok(())
     }
-
-    fn encode_one(&self, bitbuf: &mut BitWriter, data: u8) {
-        let node = self.nodes[data as usize];
-        bitbuf.write(node.bits, node.num_bits);
-    }
+    write_rle_tree_bits(bitbuf, lastval as u32, repcount, num_bits);
 }
 
 fn write_rle_tree_bits(bitbuf: &mut BitWriter, value: u32, mut repcount: u32, num_bits: u8) {

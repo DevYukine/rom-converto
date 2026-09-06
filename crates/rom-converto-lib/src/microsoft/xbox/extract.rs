@@ -12,6 +12,7 @@ use crate::microsoft::xdvdfs::{
     XBOX_PROBE_BASES, XdvdfsError, XdvdfsVolume, data_offset, walk_dir_tables,
 };
 use crate::util::CancelToken;
+use crate::util::Cancelled;
 
 const COPY_BUF: usize = 1024 * 1024;
 
@@ -74,14 +75,14 @@ pub(super) fn extract_blocking(
     let mut buf = vec![0u8; COPY_BUF];
     for (dest, sector, size) in files {
         if cancel.is_cancelled() {
-            return Err(XboxError::Cancelled);
+            return Err(Cancelled.into());
         }
         image.seek(SeekFrom::Start(data_offset(&volume, sector)))?;
         let mut out = io::BufWriter::with_capacity(COPY_BUF, File::create(&dest)?);
         let mut left = size;
         while left > 0 {
             if cancel.is_cancelled() {
-                return Err(XboxError::Cancelled);
+                return Err(Cancelled.into());
             }
             let take = left.min(buf.len() as u64) as usize;
             image.read_exact(&mut buf[..take])?;

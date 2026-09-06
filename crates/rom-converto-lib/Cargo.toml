@@ -16,7 +16,6 @@ async-recursion = "^1.1"
 binrw = "^0.15"
 byteorder = "1.5"
 chrono = "^0.4"
-lazy_static.workspace = true
 
 # RustCrypto cipher stack (cipher 0.5): keep these five in lockstep
 aes = "^0.9"

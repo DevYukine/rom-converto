@@ -2,6 +2,7 @@
 //! filesystem sanitization and collision/disc-set guards.
 
 use crate::playlist::{group_disc_files, parse_disc_token};
+use crate::util::{CancelToken, Cancelled};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -469,5 +470,189 @@ mod tests {
             plan_of(&plans, "dir/Game (Disc 2).chd").action,
             RenameAction::SkipDiscSetConflict
         );
+    }
+}
+
+pub(crate) struct StagedRename {
+    from: PathBuf,
+    to: PathBuf,
+    temp: Option<tempfile::TempPath>,
+    backup: Option<tempfile::TempPath>,
+    published: bool,
+}
+
+pub(crate) fn cancelled_io() -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::Interrupted, Cancelled)
+}
+
+pub(crate) fn rollback_renames(moves: &mut [StagedRename]) -> std::io::Result<()> {
+    let mut first_error = None;
+    for item in moves.iter_mut().filter(|item| item.published) {
+        let result = crate::util::scratch_output_path(&item.to).and_then(|temp| {
+            std::fs::remove_file(&temp)?;
+            std::fs::rename(&item.to, &temp)?;
+            item.temp = Some(temp);
+            item.published = false;
+            Ok(())
+        });
+        if let Err(err) = result {
+            if let Some(backup) = item.backup.take() {
+                let _ = backup.keep();
+            }
+            first_error.get_or_insert(err);
+        }
+    }
+    for item in moves.iter_mut().filter(|item| !item.published) {
+        if let Some(temp) = item.temp.take()
+            && let Err(err) = crate::util::restore_temp(temp, &item.from)
+        {
+            first_error.get_or_insert(err);
+        }
+        if let Some(backup) = item.backup.take()
+            && let Err(err) = crate::util::restore_temp(backup, &item.to)
+        {
+            first_error.get_or_insert(err);
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
+pub(crate) fn rename_transaction(
+    pairs: &[(PathBuf, PathBuf)],
+    overwrite: bool,
+    cancel: &CancelToken,
+) -> std::io::Result<()> {
+    let mut moves = Vec::with_capacity(pairs.len());
+    for (from, to) in pairs {
+        if cancel.is_cancelled() {
+            rollback_renames(&mut moves)?;
+            return Err(cancelled_io());
+        }
+        let temp = match crate::util::scratch_output_path(from) {
+            Ok(temp) => temp,
+            Err(err) => {
+                rollback_renames(&mut moves)?;
+                return Err(err);
+            }
+        };
+        if let Err(err) = std::fs::remove_file(&temp) {
+            rollback_renames(&mut moves)?;
+            return Err(err);
+        }
+        if let Err(err) = std::fs::rename(from, &temp) {
+            rollback_renames(&mut moves)?;
+            return Err(err);
+        }
+        moves.push(StagedRename {
+            from: from.clone(),
+            to: to.clone(),
+            temp: Some(temp),
+            backup: None,
+            published: false,
+        });
+    }
+
+    if cancel.is_cancelled() {
+        rollback_renames(&mut moves)?;
+        return Err(cancelled_io());
+    }
+    if overwrite {
+        for index in 0..moves.len() {
+            match crate::util::backup_existing(&moves[index].to) {
+                Ok(backup) => moves[index].backup = backup,
+                Err(err) => {
+                    rollback_renames(&mut moves)?;
+                    return Err(err);
+                }
+            }
+        }
+    }
+
+    for index in 0..moves.len() {
+        if cancel.is_cancelled() {
+            rollback_renames(&mut moves)?;
+            return Err(cancelled_io());
+        }
+        let temp = moves[index].temp.take().expect("staged source");
+        let result = if overwrite {
+            temp.persist(&moves[index].to)
+        } else {
+            temp.persist_noclobber(&moves[index].to)
+        };
+        match result {
+            Ok(_) => moves[index].published = true,
+            Err(err) => {
+                let error = err.error;
+                moves[index].temp = Some(err.path);
+                rollback_renames(&mut moves)?;
+                return Err(error);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod transaction_tests {
+    use super::rename_transaction;
+    use crate::util::CancelToken;
+
+    #[test]
+    fn rename_transaction_handles_cycles_cross_platform() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.bin");
+        let b = dir.path().join("b.bin");
+        std::fs::write(&a, b"a").unwrap();
+        std::fs::write(&b, b"b").unwrap();
+
+        rename_transaction(
+            &[(a.clone(), b.clone()), (b.clone(), a.clone())],
+            true,
+            &CancelToken::new(),
+        )
+        .unwrap();
+
+        assert_eq!(std::fs::read(a).unwrap(), b"b");
+        assert_eq!(std::fs::read(b).unwrap(), b"a");
+    }
+
+    #[test]
+    fn rename_transaction_rolls_back_partial_publish() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.bin");
+        let b = dir.path().join("b.bin");
+        let x = dir.path().join("x.bin");
+        let occupied = dir.path().join("occupied.bin");
+        std::fs::write(&a, b"a").unwrap();
+        std::fs::write(&b, b"b").unwrap();
+        std::fs::write(&occupied, b"old").unwrap();
+
+        assert!(
+            rename_transaction(
+                &[(a.clone(), x.clone()), (b.clone(), occupied.clone())],
+                false,
+                &CancelToken::new(),
+            )
+            .is_err()
+        );
+
+        assert_eq!(std::fs::read(a).unwrap(), b"a");
+        assert_eq!(std::fs::read(b).unwrap(), b"b");
+        assert_eq!(std::fs::read(occupied).unwrap(), b"old");
+        assert!(!x.exists());
+    }
+
+    #[test]
+    fn cancelled_rename_transaction_keeps_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = dir.path().join("from.bin");
+        let to = dir.path().join("to.bin");
+        std::fs::write(&from, b"source").unwrap();
+        let cancel = CancelToken::new();
+        cancel.cancel();
+
+        assert!(rename_transaction(&[(from.clone(), to.clone())], true, &cancel).is_err());
+        assert_eq!(std::fs::read(from).unwrap(), b"source");
+        assert!(!to.exists());
     }
 }

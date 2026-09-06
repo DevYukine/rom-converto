@@ -10,6 +10,7 @@
 //! [`ContentLoader`] caches decrypted cluster bytes across files that
 //! share the same `.app`.
 
+use std::io::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -22,8 +23,9 @@ use crate::nintendo::wup::nus::layout::{NusLayout, TicketSource};
 use crate::nintendo::wup::nus::ticket_parser::{TitleKey, read_ticket_file};
 use crate::nintendo::wup::nus::tmd_parser::read_tmd_file;
 use crate::nintendo::wup::title_key_derive::derive_title_key;
-use crate::nintendo::wup::zarchive_writer::ArchiveSink;
+use crate::util::Cancelled;
 use crate::util::ProgressReporter;
+use crate::zar::ZarWriter;
 
 /// Sum the decrypted byte size of every FST file this title would
 /// actually emit, skipping inherited-from-base entries (FST type bit
@@ -71,17 +73,17 @@ pub fn estimate_nus_uncompressed_bytes(title_dir: &Path) -> WupResult<u64> {
 /// Compress one NUS-format title into `sink`. Returns
 /// `(title_id, title_version)` read from the TMD for caller logging.
 /// The TMD is the source of truth since a ticket may not exist.
-pub fn compress_nus_title(
+pub fn compress_nus_title<W: Write>(
     title_dir: &Path,
-    sink: &mut dyn ArchiveSink,
+    sink: &mut ZarWriter<'_, W>,
     progress: &dyn ProgressReporter,
 ) -> WupResult<(u64, u16)> {
     compress_nus_title_with_cancel(title_dir, sink, progress, None)
 }
 
-pub(crate) fn compress_nus_title_with_cancel(
+pub(crate) fn compress_nus_title_with_cancel<W: Write>(
     title_dir: &Path,
-    sink: &mut dyn ArchiveSink,
+    sink: &mut ZarWriter<'_, W>,
     progress: &dyn ProgressReporter,
     cancelled: Option<&AtomicBool>,
 ) -> WupResult<(u64, u16)> {
@@ -134,12 +136,12 @@ pub(crate) fn compress_nus_title_with_cancel(
     let mut skipped: u32 = 0;
     for vfile in &fs.files {
         if cancelled.is_some_and(|c| c.load(Ordering::Relaxed)) {
-            return Err(WupError::Cancelled);
+            return Err(Cancelled.into());
         }
         match loader.extract_file(vfile) {
             Ok(bytes) => {
                 let archive_path = format!("{archive_folder}/{}", vfile.path);
-                sink.start_new_file(&archive_path)?;
+                sink.start_file(&archive_path)?;
                 sink.append_data(&bytes)?;
                 progress.inc(bytes.len() as u64);
             }
@@ -163,7 +165,6 @@ pub(crate) fn compress_nus_title_with_cancel(
 mod tests {
     use super::*;
     use crate::nintendo::wup::common_keys::WII_U_COMMON_KEY;
-    use crate::nintendo::wup::constants::ZARCHIVE_DEFAULT_ZSTD_LEVEL;
     use crate::nintendo::wup::models::ticket::{WUP_TICKET_BASE_SIZE, WUP_TICKET_FORMAT_V1};
     use crate::nintendo::wup::models::tmd::{
         TmdContentEntry, TmdContentFlags, WUP_TMD_CONTENT_ENTRY_SIZE, WUP_TMD_HEADER_SIZE,
@@ -171,7 +172,6 @@ mod tests {
     use crate::nintendo::wup::nus::fst_parser::{
         FST_CLUSTER_ENTRY_SIZE, FST_FILE_ENTRY_SIZE, FST_HEADER_SIZE, FST_MAGIC,
     };
-    use crate::nintendo::wup::zarchive_writer::ZArchiveWriter;
     use crate::util::NoProgress;
     use aes::{
         Aes128,
@@ -357,28 +357,25 @@ mod tests {
 
     #[test]
     fn end_to_end_nus_title_ends_up_in_archive() {
-        use crate::nintendo::wup::zarchive_writer::ZArchiveWriter;
-
         let dir = tempfile::tempdir().unwrap();
         let expected_payload = make_synthetic_nus_title(dir.path());
 
-        let mut writer = ZArchiveWriter::new(Vec::new(), ZARCHIVE_DEFAULT_ZSTD_LEVEL).unwrap();
+        let mut archive = Vec::new();
+        let mut writer = ZarWriter::new(&mut archive, 2).unwrap();
         let (title_id, title_version) =
             compress_nus_title(dir.path(), &mut writer, &NoProgress).unwrap();
         assert_eq!(title_id, TEST_TITLE_ID);
         assert_eq!(title_version, TEST_TITLE_VERSION);
-        let pool =
-            crate::nintendo::wup::compress_worker::spawn_zarchive_pool(ZARCHIVE_DEFAULT_ZSTD_LEVEL)
-                .unwrap();
-        let (archive, _size) = writer.finalize(&pool, None).unwrap();
-        pool.shutdown();
+        writer.finish().unwrap();
 
         // Decode the produced archive and verify the virtual file
         // landed under the title folder with byte-identical payload.
-        let reader =
-            crate::nintendo::wup::zarchive_writer::tests::test_reader::TestReader::open(&archive)
-                .unwrap();
-        let extracted = reader.extract_file("0005000e12345678_v32/content/hello.bin");
+        let mut reader = crate::zar::ZarReader::open(std::io::Cursor::new(&archive)).unwrap();
+        let index = reader
+            .lookup("0005000e12345678_v32/content/hello.bin")
+            .unwrap();
+        let mut extracted = Vec::new();
+        reader.read_file(index, &mut extracted).unwrap();
         assert_eq!(extracted, expected_payload);
     }
 
@@ -407,11 +404,7 @@ mod tests {
         // Drive the real compress path and sum every inc delta. The
         // estimate must equal the sum so the progress bar lands at
         // exactly 100% when reads finish.
-        let mut writer = crate::nintendo::wup::zarchive_writer::ZArchiveWriter::new(
-            Vec::new(),
-            ZARCHIVE_DEFAULT_ZSTD_LEVEL,
-        )
-        .unwrap();
+        let mut writer = ZarWriter::new(Vec::new(), 2).unwrap();
         let progress = RecordingProgress::default();
         compress_nus_title(dir.path(), &mut writer, &progress).unwrap();
         let actual: u64 = progress.events.lock().unwrap().iter().sum();
@@ -424,22 +417,22 @@ mod tests {
         // content list. Without one the directory is unrecognizable.
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("title.tik"), b"junk").unwrap();
-        let mut writer = ZArchiveWriter::new(Vec::new(), ZARCHIVE_DEFAULT_ZSTD_LEVEL).unwrap();
+        let mut writer = ZarWriter::new(Vec::new(), 2).unwrap();
         let err = compress_nus_title(dir.path(), &mut writer, &NoProgress);
         assert!(matches!(err, Err(WupError::UnrecognizedTitleDirectory(_))));
     }
 
     #[test]
     fn rejects_junk_tmd_bytes() {
-        // A present-but-unparseable TMD surfaces as InvalidTmd or a
-        // binrw parse error, not as a missing-file error.
+        // A present-but-unparseable TMD surfaces as a parse error, not
+        // as a missing-file error.
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("title.tmd"), b"junk").unwrap();
-        let mut writer = ZArchiveWriter::new(Vec::new(), ZARCHIVE_DEFAULT_ZSTD_LEVEL).unwrap();
+        let mut writer = ZarWriter::new(Vec::new(), 2).unwrap();
         let err = compress_nus_title(dir.path(), &mut writer, &NoProgress);
         assert!(matches!(
             err,
-            Err(WupError::InvalidTmd) | Err(WupError::BinRwError(_)) | Err(WupError::IoError(_))
+            Err(WupError::InvalidTmd) | Err(WupError::IoError(_))
         ));
     }
 }

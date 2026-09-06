@@ -6,7 +6,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::microsoft::xex::read_xex_info;
-use crate::microsoft::zar::ZarReader;
+use crate::zar::ZarReader;
 
 use super::error::XenonResult;
 
@@ -103,7 +103,7 @@ fn read_default_xex<R: std::io::Read + std::io::Seek>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::microsoft::zar::ZarWriter;
+    use crate::zar::ZarWriter;
 
     #[test]
     fn reads_tree_summary_and_detects_root_default_xex() {

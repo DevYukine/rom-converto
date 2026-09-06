@@ -5,22 +5,22 @@ use aes::{
 use byteorder::{BigEndian, ByteOrder, LittleEndian};
 
 use crate::nintendo::ctr::constants::{
-    CTR_COMMON_KEYS_HEX, CTR_KEY_SCRAMBLE_C, CTR_KEYS_0, CTR_KEYS_1, CTR_MEDIA_UNIT_SIZE,
-    CTR_NCSD_PARTITIONS, CTR_SEED_COUNTRIES, EXEFS_ENTRY_SIZE, EXEFS_HEADER_SIZE,
-    EXEFS_MAX_FILE_ENTRIES, EXEFS_SECTION_BANNER, EXEFS_SECTION_ICON,
-    NCCH_FLAGS_EXTRA_CRYPTO_INDEX, NCCH_FLAGS_OFFSET, NCCH_FLAGS7_CRYPTO_METHOD,
-    NCCH_FLAGS7_FIXED_KEY, NCCH_FLAGS7_NOCRYPTO, NCCH_FLAGS7_SEED_CRYPTO, NCCH_MAGIC,
-    NCCH_MAGIC_OFFSET, NCSD_PARTITION_COUNT, NCSD_PARTITION_ENTRY_SIZE,
-    NCSD_PARTITION_TABLE_OFFSET, NCSD_TITLE_ID_OFFSET, TICKET_COMMON_KEY_IDX_OFFSET,
-    TICKET_SIG_BODY_OFFSET, TICKET_TITLE_ID_OFFSET, TICKET_TITLE_KEY_OFFSET,
-    TMD_CONTENT_COUNT_OFFSET, TMD_CONTENT_RECORD_SIZE, TMD_CONTENT_RECORDS_OFFSET,
+    CTR_KEY_SCRAMBLE_C, CTR_KEYS_0, CTR_KEYS_1, CTR_MEDIA_UNIT_SIZE, CTR_NCSD_PARTITIONS,
+    CTR_SEED_COUNTRIES, EXEFS_ENTRY_SIZE, EXEFS_HEADER_SIZE, EXEFS_MAX_FILE_ENTRIES,
+    EXEFS_SECTION_BANNER, EXEFS_SECTION_ICON, NCCH_FLAGS_EXTRA_CRYPTO_INDEX, NCCH_FLAGS_OFFSET,
+    NCCH_FLAGS7_CRYPTO_METHOD, NCCH_FLAGS7_FIXED_KEY, NCCH_FLAGS7_NOCRYPTO,
+    NCCH_FLAGS7_SEED_CRYPTO, NCCH_MAGIC, NCCH_MAGIC_OFFSET, NCSD_PARTITION_COUNT,
+    NCSD_PARTITION_ENTRY_SIZE, NCSD_PARTITION_TABLE_OFFSET, NCSD_TITLE_ID_OFFSET,
+    TICKET_COMMON_KEY_IDX_OFFSET, TICKET_SIG_BODY_OFFSET, TICKET_TITLE_ID_OFFSET,
+    TICKET_TITLE_KEY_OFFSET, TMD_CONTENT_COUNT_OFFSET, TMD_CONTENT_RECORD_SIZE,
+    TMD_CONTENT_RECORDS_OFFSET,
 };
 use crate::nintendo::ctr::decrypt::model::{CiaContent, NcchSection};
 use crate::nintendo::ctr::decrypt::reader::{CiaReader, CiaReaderArgs};
 use crate::nintendo::ctr::decrypt::romfs_worker::{
     RomfsChunk, RomfsChunkWork, RomfsDecryptWorker, advance_counter,
 };
-use crate::nintendo::ctr::decrypt::util::{cbc_decrypt, gen_iv};
+use crate::nintendo::ctr::decrypt::util::{cbc_decrypt, decrypt_title_key, gen_iv};
 use crate::nintendo::ctr::error::NintendoCTRError;
 use crate::nintendo::ctr::models::cia::{CIA_HEADER_SIZE, CiaHeader};
 use crate::nintendo::ctr::models::exe_fs_header::ExeFSHeader;
@@ -30,14 +30,14 @@ use crate::nintendo::ctr::models::title_metadata::ContentChunkRecord;
 use crate::nintendo::ctr::util::{align_64, is_twl_title_id};
 use crate::nintendo::ctr::z3ds::models::underlying_magic;
 use crate::util::worker_pool::{Pool, parallelism};
-use crate::util::{CancelToken, ProgressReporter};
+use crate::util::{CancelToken, Cancelled, ProgressReporter};
 use anyhow::{Context, anyhow};
 use binrw::BinRead;
 use futures::future::select_ok;
-use lazy_static::lazy_static;
 use log::debug;
 use sha2::{Digest, Sha256};
 use std::io::{Cursor, SeekFrom};
+use std::sync::LazyLock;
 use std::{collections::HashMap, path::Path, vec};
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufWriter};
@@ -123,7 +123,7 @@ async fn copy_plain_section(
 
     while remaining_bytes > CHUNK_SIZE as u32 {
         if cancel.is_cancelled() {
-            return Err(NintendoCTRError::Cancelled.into());
+            return Err(Cancelled.into());
         }
         cia.read(&mut buf).await.context("reading plain chunk")?;
         hash_bytes(hasher, &buf);
@@ -301,7 +301,7 @@ async fn write_romfs_section(
         while write_seq < n_chunks {
             while in_flight < ROMFS_MAX_IN_FLIGHT && submit_seq < n_chunks {
                 if cancel.is_cancelled() {
-                    return Err(anyhow::Error::from(NintendoCTRError::Cancelled));
+                    return Err(Cancelled.into());
                 }
                 let this = std::cmp::min(CHUNK_SIZE as u64, total_size - bytes_read) as usize;
                 let mut buf = vec![0u8; this];
@@ -379,15 +379,15 @@ fn scramblekey(key_x: u128, key_y: u128) -> u128 {
 }
 
 async fn fetch_seed(title_id: &str) -> anyhow::Result<[u8; 16]> {
-    lazy_static! {
-        // Nintendo's seed CDN serves a custom certificate that won't chain to the
-        // standard root store, so disabling TLS validation is the simplest way to
-        // reach it.
-        static ref CLIENT: reqwest::Client = reqwest::Client::builder()
+    // Nintendo's seed CDN serves a custom certificate that won't chain to the
+    // standard root store, so disabling TLS validation is the simplest way to
+    // reach it.
+    static CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+        reqwest::Client::builder()
             .tls_danger_accept_invalid_certs(true)
             .build()
-            .expect("Failed to create HTTP client");
-    }
+            .expect("Failed to create HTTP client")
+    });
 
     let requests = CTR_SEED_COUNTRIES.iter().map(|&country| {
         let client = &*CLIENT;
@@ -507,24 +507,22 @@ pub(crate) async fn get_new_key(
     header: &NcchHeader,
     title_id: String,
 ) -> anyhow::Result<u128> {
-    lazy_static! {
-        static ref SEEDS: HashMap<String, [u8; 16]> = {
-            let db_path = Path::new("seeddb.bin");
-            if let Ok(data) = std::fs::read(db_path)
-                && let Ok(seeddb) = SeedDatabase::read(&mut Cursor::new(data))
-            {
-                debug!("Loading {} seeds from seeddb.bin", seeddb.seed_count);
-                seeddb
-                    .seeds
-                    .into_iter()
-                    .map(|seed| (seed.key, seed.value))
-                    .collect()
-            } else {
-                debug!("No seeddb.bin found, starting with an empty seed map");
-                HashMap::new()
-            }
-        };
-    }
+    static SEEDS: LazyLock<HashMap<String, [u8; 16]>> = LazyLock::new(|| {
+        let db_path = Path::new("seeddb.bin");
+        if let Ok(data) = std::fs::read(db_path)
+            && let Ok(seeddb) = SeedDatabase::read(&mut Cursor::new(data))
+        {
+            debug!("Loading {} seeds from seeddb.bin", seeddb.seed_count);
+            seeddb
+                .seeds
+                .into_iter()
+                .map(|seed| (seed.key, seed.value))
+                .collect()
+        } else {
+            debug!("No seeddb.bin found, starting with an empty seed map");
+            HashMap::new()
+        }
+    });
 
     let mut seed = SEEDS.get(&title_id).copied();
 
@@ -748,7 +746,7 @@ pub async fn parse_and_decrypt_ncsd(
 
     for (i, partition_name) in CTR_NCSD_PARTITIONS.iter().enumerate() {
         if cancel.is_cancelled() {
-            return Err(NintendoCTRError::Cancelled.into());
+            return Err(Cancelled.into());
         }
         let entry_offset = i * NCSD_PARTITION_ENTRY_SIZE;
         let offset_mu = u32::from_le_bytes(table_buf[entry_offset..entry_offset + 4].try_into()?);
@@ -775,7 +773,6 @@ pub async fn parse_and_decrypt_ncsd(
             encrypted: false,
             path: input.to_path_buf(),
             key: [0u8; 16],
-            content_id: i as u32,
             cidx: i as u16,
             contentoff: 0,
             single_ncch: false,
@@ -815,7 +812,6 @@ pub async fn parse_and_decrypt_ncch(
         encrypted: false,
         path: input.to_path_buf(),
         key: [0u8; 16],
-        content_id: 0,
         cidx: 0,
         contentoff: 0,
         single_ncch: true,
@@ -864,37 +860,11 @@ pub async fn parse_and_decrypt_cia(
     let tmdoff = align_64(tikoff + cia_header.ticket_size as u64);
     let contentoffs = align_64(tmdoff + cia_header.tmd_size as u64);
 
-    rom_file
-        .seek(SeekFrom::Start(
-            tikoff + TICKET_SIG_BODY_OFFSET + TICKET_TITLE_KEY_OFFSET,
-        ))
-        .await?;
-    let mut enckey: [u8; 16] = [0; 16];
-    rom_file.read_exact(&mut enckey).await?;
-    rom_file
-        .seek(SeekFrom::Start(
-            tikoff + TICKET_SIG_BODY_OFFSET + TICKET_TITLE_ID_OFFSET,
-        ))
-        .await?;
-    let mut tid: [u8; 16] = [0; 16];
-    rom_file.read_exact(&mut tid[0..8]).await?;
+    let (title_key, title_id) = read_ticket_title_key(&mut rom_file, tikoff).await?;
 
     // TWL/DSiWare content is a modcrypt SRL, not an NCCH. A decrypt only strips
     // the outer titlekey CBC layer; the NCCH probe/gate and parse are skipped.
-    let is_twl = is_twl_title_id(u64::from_be_bytes(tid[0..8].try_into()?));
-
-    rom_file
-        .seek(SeekFrom::Start(
-            tikoff + TICKET_SIG_BODY_OFFSET + TICKET_COMMON_KEY_IDX_OFFSET,
-        ))
-        .await?;
-    let mut cmnkeyidx: u8 = 0;
-    rom_file
-        .read_exact(std::slice::from_mut(&mut cmnkeyidx))
-        .await?;
-
-    cbc_decrypt(&CTR_COMMON_KEYS_HEX[cmnkeyidx as usize], &tid, &mut enckey)?;
-    let title_key = enckey;
+    let is_twl = is_twl_title_id(u64::from_be_bytes(title_id));
 
     rom_file
         .seek(SeekFrom::Start(tmdoff + TMD_CONTENT_COUNT_OFFSET))
@@ -915,7 +885,7 @@ pub async fn parse_and_decrypt_cia(
     let mut out_pos = out.stream_position().await?;
     for i in 0..content_count {
         if cancel.is_cancelled() {
-            return Err(NintendoCTRError::Cancelled.into());
+            return Err(Cancelled.into());
         }
         rom_file
             .seek(SeekFrom::Start(
@@ -940,35 +910,14 @@ pub async fn parse_and_decrypt_cia(
         let cenc = (content.ctype & 1) != 0;
 
         if !is_twl {
-            rom_file
-                .seek(SeekFrom::Start(contentoffs + next_content_offs))
-                .await?;
-            let mut probe_buf: [u8; 512] = [0; 512];
-            rom_file.read_exact(&mut probe_buf).await?;
-            let mut magic: [u8; 4] = probe_buf[256..260].try_into()?;
-
-            if cenc {
-                let iv: [u8; 16] = gen_iv(content.cidx);
-                cbc_decrypt(&title_key, &iv, &mut probe_buf)?;
-                magic = probe_buf[256..260].try_into()?;
-            }
-
-            if magic != NCCH_MAGIC.as_bytes() {
-                return Err(if cenc {
-                    anyhow!(
-                        "content {:08x} (index {}) is not an NCCH after decryption; \
-                         the title key is likely wrong - supply the real cetk/ticket",
-                        content.cid,
-                        content.cidx
-                    )
-                } else {
-                    anyhow!(
-                        "content {:08x} (index {}) is not an NCCH",
-                        content.cid,
-                        content.cidx
-                    )
-                });
-            }
+            ensure_ncch_magic(
+                &mut rom_file,
+                contentoffs + next_content_offs,
+                &content,
+                cenc,
+                &title_key,
+            )
+            .await?;
         }
 
         rom_file
@@ -979,7 +928,6 @@ pub async fn parse_and_decrypt_cia(
             encrypted: cenc,
             path: input.to_path_buf(),
             key: title_key,
-            content_id: content.cid,
             cidx: content.cidx,
             contentoff: contentoffs + next_content_offs,
             single_ncch: false,
@@ -989,23 +937,16 @@ pub async fn parse_and_decrypt_cia(
 
         let mut hasher = Sha256::new();
         if is_twl {
-            // Strip only the outer titlekey CBC: stream the whole content
-            // through the reader and write the plaintext SRL verbatim. Modcrypt
-            // and any NCCH-layer work are left untouched.
-            cia_handle.seek(0).await?;
-            out.seek(SeekFrom::Start(out_pos)).await?;
-            let mut writer = BufWriter::new(&mut *out);
-            let mut h: ContentHasher = Some(&mut hasher);
-            copy_plain_section(
+            copy_twl_content(
                 &mut cia_handle,
-                &mut writer,
-                content.csize as u32,
-                &mut h,
+                out,
+                out_pos,
+                content.csize,
+                &mut hasher,
                 progress,
                 cancel,
             )
             .await?;
-            writer.flush().await?;
         } else {
             parse_ncch(
                 &mut cia_handle,
@@ -1013,7 +954,7 @@ pub async fn parse_and_decrypt_cia(
                 NcchOutput {
                     out_base: out_pos,
                     offs: 0,
-                    title_id: tid[0..8].try_into()?,
+                    title_id,
                 },
                 Some(&mut hasher),
                 progress,
@@ -1026,6 +967,103 @@ pub async fn parse_and_decrypt_cia(
     }
 
     Ok(hashes)
+}
+
+/// Reads the ticket's encrypted title key, title id, and common key index at
+/// `tikoff` and returns the decrypted key alongside the big-endian title id.
+async fn read_ticket_title_key(
+    rom_file: &mut File,
+    tikoff: u64,
+) -> anyhow::Result<([u8; 16], [u8; 8])> {
+    let sig_body = tikoff + TICKET_SIG_BODY_OFFSET;
+
+    rom_file
+        .seek(SeekFrom::Start(sig_body + TICKET_TITLE_KEY_OFFSET))
+        .await?;
+    let mut enckey = [0u8; 16];
+    rom_file.read_exact(&mut enckey).await?;
+
+    rom_file
+        .seek(SeekFrom::Start(sig_body + TICKET_TITLE_ID_OFFSET))
+        .await?;
+    let mut title_id = [0u8; 8];
+    rom_file.read_exact(&mut title_id).await?;
+
+    rom_file
+        .seek(SeekFrom::Start(sig_body + TICKET_COMMON_KEY_IDX_OFFSET))
+        .await?;
+    let mut cmnkeyidx: u8 = 0;
+    rom_file
+        .read_exact(std::slice::from_mut(&mut cmnkeyidx))
+        .await?;
+
+    let title_key = decrypt_title_key(cmnkeyidx as usize, &title_id, enckey)?;
+    Ok((title_key, title_id))
+}
+
+/// Rejects a content whose first block is not an NCCH once decrypted, which
+/// is how a wrong (usually forged) title key shows up.
+async fn ensure_ncch_magic(
+    rom_file: &mut File,
+    offset: u64,
+    content: &CiaContent,
+    encrypted: bool,
+    title_key: &[u8; 16],
+) -> anyhow::Result<()> {
+    rom_file.seek(SeekFrom::Start(offset)).await?;
+    let mut probe_buf: [u8; 512] = [0; 512];
+    rom_file.read_exact(&mut probe_buf).await?;
+
+    if encrypted {
+        cbc_decrypt(title_key, &gen_iv(content.cidx), &mut probe_buf)?;
+    }
+
+    if probe_buf[256..260] == *NCCH_MAGIC.as_bytes() {
+        return Ok(());
+    }
+    Err(if encrypted {
+        anyhow!(
+            "content {:08x} (index {}) is not an NCCH after decryption; \
+             the title key is likely wrong - supply the real cetk/ticket",
+            content.cid,
+            content.cidx
+        )
+    } else {
+        anyhow!(
+            "content {:08x} (index {}) is not an NCCH",
+            content.cid,
+            content.cidx
+        )
+    })
+}
+
+/// Strips only the outer titlekey CBC: streams the whole content through the
+/// reader and writes the plaintext SRL verbatim. Modcrypt and any NCCH-layer
+/// work are left untouched.
+async fn copy_twl_content(
+    cia_handle: &mut CiaReader,
+    out: &mut File,
+    out_pos: u64,
+    csize: u64,
+    hasher: &mut Sha256,
+    progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
+) -> anyhow::Result<()> {
+    cia_handle.seek(0).await?;
+    out.seek(SeekFrom::Start(out_pos)).await?;
+    let mut writer = BufWriter::new(out);
+    let mut h: ContentHasher = Some(hasher);
+    copy_plain_section(
+        cia_handle,
+        &mut writer,
+        csize as u32,
+        &mut h,
+        progress,
+        cancel,
+    )
+    .await?;
+    writer.flush().await?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1070,7 +1108,6 @@ mod tests {
             encrypted: false,
             path: in_path.clone(),
             key: [0u8; 16],
-            content_id: 0,
             cidx: 0,
             contentoff: 0,
             single_ncch: true,
@@ -1158,7 +1195,6 @@ mod tests {
             encrypted: false,
             path: in_path.clone(),
             key: [0u8; 16],
-            content_id: 0,
             cidx,
             contentoff: 0,
             single_ncch: false,
@@ -1241,7 +1277,6 @@ mod tests {
             encrypted: false,
             path: in_path.clone(),
             key: [0u8; 16],
-            content_id: 0,
             cidx,
             contentoff: 0,
             single_ncch: true,

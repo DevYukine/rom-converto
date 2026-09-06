@@ -14,9 +14,7 @@ use log::info;
 
 use crate::cd::IO_BUFFER_SIZE;
 use crate::util::hash::{FileDigests, HashAlgo};
-use crate::util::{
-    BYTES_PER_MB, CancelToken, ProgressReporter, await_with_progress_cancel, scratch_output_path,
-};
+use crate::util::{BYTES_PER_MB, CancelToken, ProgressReporter, run_scratch_write};
 
 pub mod compression;
 pub(crate) mod dax;
@@ -30,7 +28,7 @@ pub(crate) mod writer;
 pub use error::{CsoError, CsoResult};
 pub use info::CsoInfo;
 pub use models::CsoFormat;
-pub use verify::{verify_cso, verify_cso_cancellable};
+pub use verify::verify_cso;
 
 use models::{pick_block_size, pick_index_shift, valid_block_size};
 
@@ -54,21 +52,11 @@ impl Default for CsoCompressOptions {
     }
 }
 
-/// Compress an ISO into a CSO or ZSO container.
-pub async fn compress_to_cso(
-    progress: &dyn ProgressReporter,
-    input_path: PathBuf,
-    output_path: PathBuf,
-    opts: CsoCompressOptions,
-) -> CsoResult<()> {
-    compress_to_cso_cancellable(progress, input_path, output_path, opts, CancelToken::new()).await
-}
-
 /// Compress an ISO into a CSO or ZSO container, observing `cancel` at
 /// every block boundary. On cancel the partial output is removed and a
 /// pre-existing overwrite target is left untouched (the writer targets a
 /// sibling temp file that is renamed into place only on success).
-pub async fn compress_to_cso_cancellable(
+pub async fn compress_to_cso(
     progress: &dyn ProgressReporter,
     input_path: PathBuf,
     output_path: PathBuf,
@@ -99,41 +87,26 @@ pub async fn compress_to_cso_cancellable(
         ),
     );
 
-    let write_path = scratch_output_path(&output_path)?;
     let input_owned = input_path.clone();
-    let write_owned = write_path.to_path_buf();
     let format = opts.format;
-    let cancel_bg = cancel.clone();
-    let bytes_done = Arc::new(AtomicU64::new(0));
-    let bytes_done_bg = bytes_done.clone();
-
-    let handle = tokio::task::spawn_blocking(move || -> CsoResult<()> {
-        writer::write_cso_blocking(
-            &input_owned,
-            &write_owned,
-            format,
-            block_size,
-            index_shift,
-            &bytes_done_bg,
-            &cancel_bg,
-        )
-    });
-
-    let cleanup = {
-        let write_path = write_path.to_path_buf();
-        move || -> CsoError {
-            let _ = std::fs::remove_file(&write_path);
-            CsoError::Cancelled
-        }
-    };
-    if let Err(err) =
-        await_with_progress_cancel(progress, &bytes_done, handle, &cancel, cleanup).await
-    {
-        let _ = tokio::fs::remove_file(&write_path).await;
-        return Err(err);
-    }
-
-    crate::util::publish_temp(write_path, &output_path, true)?;
+    run_scratch_write(
+        &output_path,
+        true,
+        progress,
+        &cancel,
+        move |write_path, bytes_done, cancel| {
+            writer::write_cso_blocking(
+                &input_owned,
+                &write_path,
+                format,
+                block_size,
+                index_shift,
+                &bytes_done,
+                &cancel,
+            )
+        },
+    )
+    .await?;
 
     let out_size = tokio::fs::metadata(&output_path).await?.len();
     info!(
@@ -158,55 +131,36 @@ pub async fn compress_to_cso_batch(
     output_dir: Option<&std::path::Path>,
     max_depth: Option<usize>,
 ) -> CsoResult<()> {
-    let images = crate::util::fs::collect_files_with_exts(input_dir, &["iso"], max_depth)?;
-    if images.is_empty() {
-        log::warn!("No .iso inputs found in {}", input_dir.display());
-        return Ok(());
-    }
-
-    if let Some(dir) = output_dir {
-        std::fs::create_dir_all(dir)?;
-    }
-
-    total_progress.start(
-        images.len() as u64,
-        &format!("Compressing {} images", images.len()),
-    );
-
-    for path in images {
-        let output = crate::util::place_in_dir_mirrored(
-            &path.with_extension(opts.format.extension()),
+    crate::chd::batch::run_file_batch(
+        crate::chd::batch::BatchSpec {
             input_dir,
             output_dir,
-        );
-        if let Some(parent) = output.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        if let Err(err) = compress_to_cso(progress, path.clone(), output, opts.clone()).await {
-            log::warn!("Failed to compress {}: {err}", path.display());
-        }
-        total_progress.inc(1);
-    }
-
-    total_progress.finish();
+            exts: &["iso"],
+            max_depth,
+            verb: "Compressing",
+            action: "compress",
+            noun: "images",
+        },
+        total_progress,
+        |path| {
+            Some(crate::util::place_in_dir_mirrored(
+                &path.with_extension(opts.format.extension()),
+                input_dir,
+                output_dir,
+            ))
+        },
+        async |input, output| {
+            compress_to_cso(progress, input, output, opts.clone(), CancelToken::new()).await
+        },
+    )
+    .await?;
     Ok(())
-}
-
-/// Restore the original ISO from a CSO or ZSO container.
-pub async fn decompress_from_cso(
-    progress: &dyn ProgressReporter,
-    input_path: PathBuf,
-    output_path: PathBuf,
-    force: bool,
-) -> CsoResult<()> {
-    decompress_from_cso_cancellable(progress, input_path, output_path, force, CancelToken::new())
-        .await
 }
 
 /// Restore the original ISO from a CSO or ZSO container, observing
 /// `cancel` at every block boundary. Cleanup and overwrite guarantees
-/// match [`compress_to_cso_cancellable`].
-pub async fn decompress_from_cso_cancellable(
+/// match [`compress_to_cso`].
+pub async fn decompress_from_cso(
     progress: &dyn ProgressReporter,
     input_path: PathBuf,
     output_path: PathBuf,
@@ -219,12 +173,9 @@ pub async fn decompress_from_cso_cancellable(
     }
 
     let peek_path = input_path.clone();
-    let (uncompressed_size, format) =
-        tokio::task::spawn_blocking(move || -> CsoResult<(u64, CsoFormat)> {
-            let handle = reader::open_cso_sync(&peek_path)?;
-            Ok((handle.header.uncompressed_size, handle.format))
-        })
-        .await??;
+    let handle = tokio::task::spawn_blocking(move || reader::open_cso_sync(&peek_path)).await??;
+    let uncompressed_size = handle.header.uncompressed_size;
+    let format = handle.format;
 
     let total_mb = uncompressed_size as f64 / BYTES_PER_MB;
     progress.start(
@@ -236,48 +187,31 @@ pub async fn decompress_from_cso_cancellable(
         ),
     );
 
-    let write_path = scratch_output_path(&output_path)?;
-    let input_owned = input_path.clone();
-    let write_owned = write_path.to_path_buf();
-    let cancel_bg = cancel.clone();
-    let bytes_done = Arc::new(AtomicU64::new(0));
-    let bytes_done_bg = bytes_done.clone();
+    run_scratch_write(
+        &output_path,
+        true,
+        progress,
+        &cancel,
+        move |write_path, bytes_done, cancel| -> CsoResult<()> {
+            use crate::util::worker_pool::{Pool, parallelism};
 
-    let handle = tokio::task::spawn_blocking(move || -> CsoResult<()> {
-        use crate::util::worker_pool::{Pool, parallelism};
+            let out_file = std::fs::File::create(&write_path)?;
+            let mut writer = std::io::BufWriter::with_capacity(IO_BUFFER_SIZE, out_file);
 
-        let handle = reader::open_cso_sync(&input_owned)?;
-        let out_file = std::fs::File::create(&write_owned)?;
-        let mut writer = std::io::BufWriter::with_capacity(IO_BUFFER_SIZE, out_file);
+            let workers =
+                reader::make_cso_extract_workers(parallelism(), handle.format, &handle.file);
+            let pool: Pool<reader::CsoExtractWork, reader::CsoExtractedOut, CsoError> =
+                Pool::spawn(workers);
+            let result = reader::extract_blocks(&pool, &handle, &mut writer, &bytes_done, &cancel);
+            pool.shutdown();
+            result?;
 
-        let workers = reader::make_cso_extract_workers(parallelism(), handle.format, &handle.file);
-        let pool: Pool<reader::CsoExtractWork, reader::CsoExtractedOut, CsoError> =
-            Pool::spawn(workers);
-        let result =
-            reader::extract_blocks(&pool, &handle, &mut writer, &bytes_done_bg, &cancel_bg);
-        pool.shutdown();
-        result?;
-
-        use std::io::Write as _;
-        writer.flush()?;
-        Ok(())
-    });
-
-    let cleanup = {
-        let write_path = write_path.to_path_buf();
-        move || -> CsoError {
-            let _ = std::fs::remove_file(&write_path);
-            CsoError::Cancelled
-        }
-    };
-    if let Err(err) =
-        await_with_progress_cancel(progress, &bytes_done, handle, &cancel, cleanup).await
-    {
-        let _ = tokio::fs::remove_file(&write_path).await;
-        return Err(err);
-    }
-
-    crate::util::publish_temp(write_path, &output_path, true)?;
+            use std::io::Write as _;
+            writer.flush()?;
+            Ok(())
+        },
+    )
+    .await?;
 
     info!(
         "Decompressed: {:.2} MB ISO from {}",
@@ -288,7 +222,7 @@ pub async fn decompress_from_cso_cancellable(
 }
 
 /// Digest a CSO/ZSO's decoded ISO content in a single streaming pass,
-/// no temp files, following [`decompress_from_cso_cancellable`]'s
+/// no temp files, following [`decompress_from_cso`]'s
 /// open/pool/drive shape but folding decoded blocks into the hashers
 /// instead of a writer. The returned `size_bytes` is the uncompressed
 /// ISO size.
@@ -349,14 +283,21 @@ mod tests {
                 block_size,
                 force: false,
             },
+            CancelToken::new(),
         )
         .await
         .unwrap();
 
         let restored_path = dir.path().join("restored.iso");
-        decompress_from_cso(&NoProgress, packed, restored_path.clone(), false)
-            .await
-            .unwrap();
+        decompress_from_cso(
+            &NoProgress,
+            packed,
+            restored_path.clone(),
+            false,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
         assert_eq!(std::fs::read(&restored_path).unwrap(), data);
     }
 
@@ -386,6 +327,7 @@ mod tests {
                     block_size: None,
                     force: false,
                 },
+                CancelToken::new(),
             )
             .await
             .unwrap();
@@ -394,7 +336,7 @@ mod tests {
             let bytes_done = Arc::new(AtomicU64::new(0));
             let inner =
                 digest_cso_inner(&packed, &algos, &bytes_done, &CancelToken::new()).unwrap();
-            let direct = hash_file(&iso, &algos, &NoProgress).unwrap();
+            let direct = hash_file(&iso, &algos, &NoProgress, &CancelToken::new()).unwrap();
             assert_eq!(inner, direct, "format {format:?}");
         }
     }
@@ -483,9 +425,15 @@ mod tests {
         std::fs::write(&packed, build_dax(&data, &[(1, 1)], 1, None)).unwrap();
 
         let restored = dir.path().join("restored.iso");
-        decompress_from_cso(&NoProgress, packed, restored.clone(), false)
-            .await
-            .unwrap();
+        decompress_from_cso(
+            &NoProgress,
+            packed,
+            restored.clone(),
+            false,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
         assert_eq!(std::fs::read(&restored).unwrap(), data);
     }
 
@@ -502,7 +450,7 @@ mod tests {
         let algos = [HashAlgo::Crc32, HashAlgo::Sha1, HashAlgo::Sha256];
         let bytes_done = Arc::new(AtomicU64::new(0));
         let inner = digest_cso_inner(&packed, &algos, &bytes_done, &CancelToken::new()).unwrap();
-        let direct = hash_file(&iso, &algos, &NoProgress).unwrap();
+        let direct = hash_file(&iso, &algos, &NoProgress, &CancelToken::new()).unwrap();
         assert_eq!(inner, direct);
     }
 
@@ -516,9 +464,15 @@ mod tests {
         std::fs::write(&packed, build_dax(&data, &[], 1, Some(0))).unwrap();
 
         let restored = dir.path().join("restored.iso");
-        decompress_from_cso(&NoProgress, packed, restored.clone(), false)
-            .await
-            .unwrap();
+        decompress_from_cso(
+            &NoProgress,
+            packed,
+            restored.clone(),
+            false,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
         assert_eq!(std::fs::read(&restored).unwrap(), data);
     }
 
@@ -532,7 +486,7 @@ mod tests {
         std::fs::write(&short_header, &full[..0x1C]).unwrap();
         let out = dir.path().join("head.iso");
         assert!(
-            decompress_from_cso(&NoProgress, short_header, out, false)
+            decompress_from_cso(&NoProgress, short_header, out, false, CancelToken::new())
                 .await
                 .is_err()
         );
@@ -541,7 +495,7 @@ mod tests {
         std::fs::write(&short_table, &full[..0x24]).unwrap();
         let out2 = dir.path().join("table.iso");
         assert!(
-            decompress_from_cso(&NoProgress, short_table, out2, false)
+            decompress_from_cso(&NoProgress, short_table, out2, false, CancelToken::new())
                 .await
                 .is_err()
         );
@@ -587,9 +541,15 @@ mod tests {
             }
 
             let restored_path = dir.path().join("restored.iso");
-            decompress_from_cso(&NoProgress, packed, restored_path.clone(), false)
-                .await
-                .unwrap();
+            decompress_from_cso(
+                &NoProgress,
+                packed,
+                restored_path.clone(),
+                false,
+                CancelToken::new(),
+            )
+            .await
+            .unwrap();
             assert_eq!(std::fs::read(&restored_path).unwrap(), data);
         }
     }
@@ -607,7 +567,8 @@ mod tests {
                 &NoProgress,
                 iso.clone(),
                 exists,
-                CsoCompressOptions::default()
+                CsoCompressOptions::default(),
+                CancelToken::new()
             )
             .await,
             Err(CsoError::OutputAlreadyExists)
@@ -622,7 +583,8 @@ mod tests {
                 CsoCompressOptions {
                     block_size: Some(3000),
                     ..Default::default()
-                }
+                },
+                CancelToken::new()
             )
             .await,
             Err(CsoError::InvalidBlockSize(3000))
@@ -644,7 +606,7 @@ mod tests {
 
         let token = CancelToken::new();
         token.cancel();
-        let result = compress_to_cso_cancellable(
+        let result = compress_to_cso(
             &NoProgress,
             iso,
             out.clone(),
@@ -653,7 +615,7 @@ mod tests {
         )
         .await;
 
-        assert!(matches!(result, Err(CsoError::Cancelled)));
+        assert!(matches!(result, Err(CsoError::Cancelled(_))));
         assert!(!out.exists(), "no partial output");
         assert!(!crate::util::scratch_output_exists(&out).unwrap());
     }
@@ -671,7 +633,7 @@ mod tests {
             token2.cancel();
         });
 
-        let result = compress_to_cso_cancellable(
+        let result = compress_to_cso(
             &NoProgress,
             iso,
             out.clone(),
@@ -684,7 +646,7 @@ mod tests {
         // fires; accept either a clean cancel (no output) or a completed
         // run, but never a leftover temp file.
         match result {
-            Err(CsoError::Cancelled) => {
+            Err(CsoError::Cancelled(_)) => {
                 assert!(!out.exists(), "no partial output after mid-stream cancel");
             }
             Ok(()) => assert!(out.exists()),
@@ -701,7 +663,7 @@ mod tests {
         let out = dir.path().join("game.cso");
 
         let token = CancelToken::new();
-        compress_to_cso_cancellable(
+        compress_to_cso(
             &NoProgress,
             iso,
             out.clone(),
@@ -729,7 +691,7 @@ mod tests {
             token2.cancel();
         });
 
-        let result = compress_to_cso_cancellable(
+        let result = compress_to_cso(
             &NoProgress,
             iso,
             out.clone(),
@@ -746,7 +708,7 @@ mod tests {
         // while a completed run replaces it with a valid CSO. A leftover
         // temp file is never acceptable.
         match result {
-            Err(CsoError::Cancelled) => {
+            Err(CsoError::Cancelled(_)) => {
                 assert_eq!(
                     std::fs::read(&out).unwrap(),
                     original,
@@ -784,9 +746,15 @@ mod tests {
             .expect("run maxcso");
         assert!(status.success(), "maxcso compress failed");
         let restored = dir.path().join("restored.iso");
-        decompress_from_cso(&NoProgress, their_cso, restored.clone(), false)
-            .await
-            .unwrap();
+        decompress_from_cso(
+            &NoProgress,
+            their_cso,
+            restored.clone(),
+            false,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
         assert_eq!(std::fs::read(&restored).unwrap(), data);
 
         let our_cso = dir.path().join("our.cso");
@@ -795,6 +763,7 @@ mod tests {
             iso,
             our_cso.clone(),
             CsoCompressOptions::default(),
+            CancelToken::new(),
         )
         .await
         .unwrap();

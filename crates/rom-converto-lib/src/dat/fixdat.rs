@@ -3,7 +3,7 @@
 
 use crate::dat::digest::TrackDigests;
 use crate::dat::model::{DatFileGame, DatFileSummary, PlaymatchGameFile};
-use crate::util::{CancelToken, FileDigests};
+use crate::util::{CancelToken, Cancelled, FileDigests};
 use std::borrow::Cow;
 use std::collections::HashSet;
 
@@ -119,18 +119,9 @@ pub fn xml_escape(s: &str) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
-/// Emit a Logiqx fixdat of the missing ROMs and disc images.
-pub fn write_fixdat_xml<W: std::io::Write>(
-    w: &mut W,
-    dat: &DatFileSummary,
-    entries: &[FixdatEntry],
-) -> std::io::Result<()> {
-    write_fixdat_xml_cancellable(w, dat, entries, &CancelToken::new())
-}
-
 /// Writes `entries` as a Logiqx fixdat XML to `w`, checking `cancel`
 /// between games and rom entries.
-pub fn write_fixdat_xml_cancellable<W: std::io::Write>(
+pub fn write_fixdat_xml<W: std::io::Write>(
     w: &mut W,
     dat: &DatFileSummary,
     entries: &[FixdatEntry],
@@ -194,7 +185,7 @@ fn check_cancel(cancel: &CancelToken) -> std::io::Result<()> {
     if cancel.is_cancelled() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::Interrupted,
-            "cancelled",
+            Cancelled,
         ));
     }
     Ok(())
@@ -359,12 +350,11 @@ mod tests {
 
         let cancel = CancelToken::new();
         cancel.cancel();
-        let err =
-            write_fixdat_xml_cancellable(&mut Vec::new(), &dat, &entries, &cancel).unwrap_err();
+        let err = write_fixdat_xml(&mut Vec::new(), &dat, &entries, &cancel).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::Interrupted);
 
         let mut buf = Vec::new();
-        write_fixdat_xml(&mut buf, &dat, &entries).unwrap();
+        write_fixdat_xml(&mut buf, &dat, &entries, &CancelToken::new()).unwrap();
         let out = String::from_utf8(buf).unwrap();
 
         let expected = concat!(

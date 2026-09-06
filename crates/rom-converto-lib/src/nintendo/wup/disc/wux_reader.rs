@@ -40,8 +40,6 @@ const CACHE_CAPACITY: usize = 4;
 pub struct WuxReader {
     file: BufReader<File>,
     logical_sector_count: u64,
-    #[allow(dead_code)]
-    physical_sector_count: u64,
     sector_size: u64,
     index_table: Vec<u32>,
     pool_offset: u64,
@@ -140,7 +138,6 @@ impl WuxReader {
         Ok(Self {
             file,
             logical_sector_count,
-            physical_sector_count,
             sector_size,
             index_table,
             pool_offset,
@@ -188,11 +185,6 @@ impl WuxReader {
     fn next_stamp(&self) -> u64 {
         // Monotonic from the current max; cheap since cache is tiny.
         self.cache.iter().map(|e| e.last_use).max().unwrap_or(0) + 1
-    }
-
-    #[cfg(test)]
-    pub(crate) fn physical_sector_count(&self) -> u64 {
-        self.physical_sector_count
     }
 }
 
@@ -315,7 +307,7 @@ mod tests {
         write_wux_for_test(tmp.path(), &sectors).unwrap();
         let rdr = WuxReader::open(tmp.path()).unwrap();
         assert_eq!(rdr.total_sectors(), 4);
-        assert_eq!(rdr.physical_sector_count(), 2);
+        assert_eq!(rdr.index_table.iter().max(), Some(&1));
     }
 
     #[test]

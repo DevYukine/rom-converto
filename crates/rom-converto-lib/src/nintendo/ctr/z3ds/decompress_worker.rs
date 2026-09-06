@@ -18,9 +18,10 @@
 use crate::nintendo::ctr::z3ds::error::{Z3dsError, Z3dsResult};
 use crate::nintendo::ctr::z3ds::seekable::{FrameEntry, parse_seek_table, read_seek_table_footer};
 use crate::util::CancelToken;
+use crate::util::Cancelled;
 use crate::util::hash::{FileDigests, HashAlgo, MultiHasher};
 use crate::util::pread::file_read_exact_at;
-use crate::util::worker_pool::{Pool, Worker, drive, parallelism};
+use crate::util::worker_pool::{Pool, PoolChannelClosed, Worker, drive, parallelism};
 use std::io::{BufWriter, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -198,7 +199,7 @@ pub(super) fn decompress_frames(
             max_in_flight,
             |_seq| -> Z3dsResult<Z3dsDecompressWork> {
                 if cancel.is_cancelled() {
-                    return Err(Z3dsError::Cancelled);
+                    return Err(Cancelled.into());
                 }
                 work_iter.next().ok_or_else(|| {
                     Z3dsError::IoError(std::io::Error::other(
@@ -210,7 +211,7 @@ pub(super) fn decompress_frames(
                 let len = out.bytes.len() as u64;
                 write_tx
                     .send(out.bytes)
-                    .map_err(|_| Z3dsError::WorkerPoolClosed)?;
+                    .map_err(|_| Z3dsError::WorkerPoolClosed(PoolChannelClosed))?;
                 bytes_done.fetch_add(len, Ordering::Relaxed);
                 Ok(())
             },
@@ -258,7 +259,7 @@ pub(super) fn digest_frames(
         max_in_flight,
         |_seq| -> Z3dsResult<Z3dsDecompressWork> {
             if cancel.is_cancelled() {
-                return Err(Z3dsError::Cancelled);
+                return Err(Cancelled.into());
             }
             work_iter.next().ok_or_else(|| {
                 Z3dsError::IoError(std::io::Error::other(

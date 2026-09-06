@@ -38,8 +38,8 @@ pub enum NkitError {
     },
 
     /// The operation was cancelled by the caller.
-    #[error("operation cancelled")]
-    Cancelled,
+    #[error("{0}")]
+    Cancelled(#[from] crate::util::Cancelled),
 
     #[error("{0}")]
     Custom(String),

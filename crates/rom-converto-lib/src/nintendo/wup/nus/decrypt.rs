@@ -14,7 +14,7 @@ use crate::nintendo::wup::nus::layout::{NusLayout, TicketSource};
 use crate::nintendo::wup::nus::ticket_parser::{TitleKey, read_ticket_file};
 use crate::nintendo::wup::nus::tmd_parser::read_tmd_file;
 use crate::nintendo::wup::title_key_derive::derive_title_key;
-use crate::util::{CancelToken, ProgressReporter};
+use crate::util::{CancelToken, Cancelled, ProgressReporter};
 
 /// Decrypt one NUS-format title into a loadiine-style directory tree
 /// under `output_dir`. Returns `(title_id, title_version)` from the
@@ -74,7 +74,7 @@ fn decrypt_nus_title_with_cancel(
         let mut skipped: u32 = 0;
         for vfile in &fs.files {
             if cancelled.is_some_and(|c| c.load(Ordering::Relaxed)) {
-                return Err(WupError::Cancelled);
+                return Err(Cancelled.into());
             }
             match loader.extract_file(vfile) {
                 Ok(bytes) => {
@@ -110,16 +110,6 @@ fn decrypt_nus_title_with_cancel(
     Ok((title_id, title_version))
 }
 
-/// Async wrapper around [`decrypt_nus_title`] that runs the decrypt on
-/// a blocking task and reports progress incrementally.
-pub async fn decrypt_nus_title_async(
-    title_dir: PathBuf,
-    output_dir: PathBuf,
-    progress: &dyn ProgressReporter,
-) -> WupResult<()> {
-    decrypt_nus_title_async_cancellable(title_dir, output_dir, progress, CancelToken::new()).await
-}
-
 /// Async, cancellable version of [`decrypt_nus_title`]. Polls the
 /// blocking decrypt task every 100ms to relay progress and check
 /// `cancel`; on cancellation, removes an output directory this call
@@ -128,7 +118,7 @@ pub async fn decrypt_nus_title_async(
 /// # Errors
 /// Returns [`WupError::Cancelled`] if `cancel` fires before the
 /// decrypt finishes, plus any error [`decrypt_nus_title`] can return.
-pub async fn decrypt_nus_title_async_cancellable(
+pub async fn decrypt_nus_title_async(
     title_dir: PathBuf,
     output_dir: PathBuf,
     progress: &dyn ProgressReporter,
@@ -180,7 +170,7 @@ pub async fn decrypt_nus_title_async_cancellable(
         if !output_existed {
             tokio::fs::remove_dir_all(&output_for_cleanup).await.ok();
         }
-        return Err(WupError::Cancelled);
+        return Err(Cancelled.into());
     }
     Ok(())
 }

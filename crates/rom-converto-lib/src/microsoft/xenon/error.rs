@@ -3,7 +3,7 @@
 use thiserror::Error;
 
 use crate::microsoft::xdvdfs::XdvdfsError;
-use crate::microsoft::zar::format::ZarError;
+use crate::zar::format::ZarError;
 
 /// Errors from the Xbox 360 (Xenon) ISO/ZArchive pipeline.
 #[derive(Debug, Error)]
@@ -20,8 +20,8 @@ pub enum XenonError {
     #[error(transparent)]
     Join(#[from] tokio::task::JoinError),
 
-    #[error("worker pool channel closed")]
-    WorkerPool,
+    #[error(transparent)]
+    WorkerPool(#[from] crate::util::worker_pool::PoolChannelClosed),
 
     #[error("archive entry path {path:?} is unsafe to extract")]
     UnsafePath { path: String },
@@ -31,14 +31,8 @@ pub enum XenonError {
     )]
     OffsetMismatch { expected: u64, actual: u64 },
 
-    #[error("operation cancelled")]
-    Cancelled,
-}
-
-impl From<crate::util::worker_pool::PoolChannelClosed> for XenonError {
-    fn from(_: crate::util::worker_pool::PoolChannelClosed) -> Self {
-        XenonError::WorkerPool
-    }
+    #[error("{0}")]
+    Cancelled(#[from] crate::util::Cancelled),
 }
 
 /// Convenience alias for a [`Result`] with [`XenonError`].

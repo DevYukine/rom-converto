@@ -8,15 +8,13 @@
 
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 
 use log::info;
 
 use crate::cd::IO_BUFFER_SIZE;
-use crate::util::{
-    BYTES_PER_MB, CancelToken, ProgressReporter, await_with_progress_cancel, scratch_output_path,
-};
+use crate::util::bytes::u32_le;
+use crate::util::{BYTES_PER_MB, CancelToken, Cancelled, ProgressReporter, run_scratch_write};
 
 pub mod embedded_keys;
 pub mod error;
@@ -75,7 +73,7 @@ pub fn detect_state(
     header: &[u8; HEADER_SIZE],
     secure: &[u8; SECURE_BLOCK_LEN],
 ) -> NdsResult<SecureAreaState> {
-    let arm9_rom_offset = read_u32(&header[0x20..0x24]) as usize;
+    let arm9_rom_offset = u32_le(header, 0x20) as usize;
     if !(SECURE_AREA_OFFSET..SECURE_AREA_END).contains(&arm9_rom_offset) {
         return Err(NdsError::NoSecureArea);
     }
@@ -85,7 +83,7 @@ pub fn detect_state(
         return Ok(SecureAreaState::Decrypted);
     }
 
-    let idcode = read_u32(&header[0x0C..0x10]);
+    let idcode = u32_le(header, 0x0C);
     let mut block = load_block(secure, 0);
     Key1::new(idcode, 2, KEYCODE_MODULO).decrypt_block(&mut block);
     Key1::new(idcode, 3, KEYCODE_MODULO).decrypt_block(&mut block);
@@ -138,16 +136,16 @@ pub fn crypt_secure_area(buf: &mut [u8; SECURE_BLOCK_LEN], idcode: u32, encrypt:
 
 /// Default output path for an NDS encrypt: `.encrypted` before the extension.
 pub fn derive_encrypted_path(input: &Path) -> PathBuf {
-    derive_tagged_path(input, "encrypted")
+    crate::util::with_tag(input, "encrypted")
 }
 
 /// Default output path for an NDS decrypt: `.decrypted` before the extension.
 pub fn derive_decrypted_path(input: &Path) -> PathBuf {
-    derive_tagged_path(input, "decrypted")
+    crate::util::with_tag(input, "decrypted")
 }
 
 /// Encrypts a ROM's secure area, copying the rest of the file unchanged.
-pub async fn encrypt_nds_rom_cancellable(
+pub async fn encrypt_nds_rom(
     progress: &dyn ProgressReporter,
     input_path: PathBuf,
     output_path: PathBuf,
@@ -158,7 +156,7 @@ pub async fn encrypt_nds_rom_cancellable(
 }
 
 /// Decrypts a ROM's secure area, copying the rest of the file unchanged.
-pub async fn decrypt_nds_rom_cancellable(
+pub async fn decrypt_nds_rom(
     progress: &dyn ProgressReporter,
     input_path: PathBuf,
     output_path: PathBuf,
@@ -200,7 +198,7 @@ async fn crypt_nds_rom(
             (SecureAreaState::Decrypted, false) => return Err(NdsError::AlreadyDecrypted),
             _ => {}
         }
-        crypt_secure_area(&mut secure, read_u32(&header[0x0C..0x10]), encrypt);
+        crypt_secure_area(&mut secure, u32_le(&header, 0x0C), encrypt);
         Ok(secure)
     })
     .await??;
@@ -212,54 +210,39 @@ async fn crypt_nds_rom(
         &format!("{verb} NDS secure area (~{total_mb:.2} MB)"),
     );
 
-    let write_path = scratch_output_path(&output_path)?;
     let input_owned = input_path.clone();
-    let write_owned = write_path.to_path_buf();
-    let cancel_bg = cancel.clone();
-    let bytes_done = Arc::new(AtomicU64::new(0));
-    let bytes_done_bg = bytes_done.clone();
+    run_scratch_write(
+        &output_path,
+        force,
+        progress,
+        &cancel,
+        move |write_path, bytes_done, cancel| -> NdsResult<()> {
+            let in_file = std::fs::File::open(&input_owned)?;
+            let mut reader = std::io::BufReader::with_capacity(IO_BUFFER_SIZE, in_file);
+            let out_file = std::fs::File::create(&write_path)?;
+            let mut writer = std::io::BufWriter::with_capacity(IO_BUFFER_SIZE, out_file);
 
-    let handle = tokio::task::spawn_blocking(move || -> NdsResult<()> {
-        let in_file = std::fs::File::open(&input_owned)?;
-        let mut reader = std::io::BufReader::with_capacity(IO_BUFFER_SIZE, in_file);
-        let out_file = std::fs::File::create(&write_owned)?;
-        let mut writer = std::io::BufWriter::with_capacity(IO_BUFFER_SIZE, out_file);
-
-        let mut chunk = vec![0u8; IO_BUFFER_SIZE];
-        loop {
-            if cancel_bg.is_cancelled() {
-                return Err(NdsError::Cancelled);
+            let mut chunk = vec![0u8; IO_BUFFER_SIZE];
+            loop {
+                if cancel.is_cancelled() {
+                    return Err(Cancelled.into());
+                }
+                let read = reader.read(&mut chunk)?;
+                if read == 0 {
+                    break;
+                }
+                writer.write_all(&chunk[..read])?;
+                bytes_done.fetch_add(read as u64, Ordering::Relaxed);
             }
-            let read = reader.read(&mut chunk)?;
-            if read == 0 {
-                break;
-            }
-            writer.write_all(&chunk[..read])?;
-            bytes_done_bg.fetch_add(read as u64, Ordering::Relaxed);
-        }
 
-        let mut out = writer.into_inner().map_err(|err| err.into_error())?;
-        out.seek(SeekFrom::Start(SECURE_AREA_OFFSET as u64))?;
-        out.write_all(&secure)?;
-        out.flush()?;
-        Ok(())
-    });
-
-    let cleanup = {
-        let write_path = write_path.to_path_buf();
-        move || -> NdsError {
-            let _ = std::fs::remove_file(&write_path);
-            NdsError::Cancelled
-        }
-    };
-    if let Err(err) =
-        await_with_progress_cancel(progress, &bytes_done, handle, &cancel, cleanup).await
-    {
-        let _ = tokio::fs::remove_file(&write_path).await;
-        return Err(err);
-    }
-
-    crate::util::publish_temp(write_path, &output_path, force)?;
+            let mut out = writer.into_inner().map_err(|err| err.into_error())?;
+            out.seek(SeekFrom::Start(SECURE_AREA_OFFSET as u64))?;
+            out.write_all(&secure)?;
+            out.flush()?;
+            Ok(())
+        },
+    )
+    .await?;
 
     info!(
         "{} NDS secure area: {:.2} MB from {}",
@@ -270,21 +253,8 @@ async fn crypt_nds_rom(
     Ok(())
 }
 
-fn derive_tagged_path(input: &Path, tag: &str) -> PathBuf {
-    let stem = input.file_stem().and_then(|s| s.to_str()).unwrap_or("out");
-    let ext = input.extension().and_then(|s| s.to_str()).unwrap_or("nds");
-    input.with_file_name(format!("{stem}.{tag}.{ext}"))
-}
-
-fn read_u32(bytes: &[u8]) -> u32 {
-    u32::from_le_bytes(bytes.try_into().expect("4-byte slice"))
-}
-
 fn load_block(buf: &[u8; SECURE_BLOCK_LEN], offset: usize) -> [u32; 2] {
-    [
-        read_u32(&buf[offset..offset + 4]),
-        read_u32(&buf[offset + 4..offset + 8]),
-    ]
+    [u32_le(buf, offset), u32_le(buf, offset + 4)]
 }
 
 fn store_block(buf: &mut [u8; SECURE_BLOCK_LEN], offset: usize, block: [u32; 2]) {
@@ -408,7 +378,7 @@ mod tests {
         let input = write_rom(dir.path(), "game.nds", &rom).await;
 
         let encrypted = derive_encrypted_path(&input);
-        encrypt_nds_rom_cancellable(
+        encrypt_nds_rom(
             &NoProgress,
             input.clone(),
             encrypted.clone(),
@@ -425,7 +395,7 @@ mod tests {
         );
 
         let decrypted = derive_decrypted_path(&encrypted);
-        decrypt_nds_rom_cancellable(
+        decrypt_nds_rom(
             &NoProgress,
             encrypted.clone(),
             decrypted.clone(),
@@ -448,7 +418,7 @@ mod tests {
         let input = write_rom(dir.path(), "game.nds", &rom).await;
 
         let decrypted = derive_decrypted_path(&input);
-        decrypt_nds_rom_cancellable(
+        decrypt_nds_rom(
             &NoProgress,
             input.clone(),
             decrypted.clone(),
@@ -459,7 +429,7 @@ mod tests {
         .expect("decrypts");
 
         let encrypted = derive_encrypted_path(&decrypted);
-        encrypt_nds_rom_cancellable(
+        encrypt_nds_rom(
             &NoProgress,
             decrypted.clone(),
             encrypted.clone(),
@@ -481,7 +451,7 @@ mod tests {
         rom[SECURE_AREA_OFFSET..SECURE_AREA_OFFSET + SECURE_BLOCK_LEN].copy_from_slice(&secure);
         let input = write_rom(dir.path(), "game.nds", &rom).await;
 
-        let err = encrypt_nds_rom_cancellable(
+        let err = encrypt_nds_rom(
             &NoProgress,
             input.clone(),
             dir.path().join("out.nds"),
@@ -499,7 +469,7 @@ mod tests {
         let rom = synth_nds(SYNTH_IDCODE, SECURE_AREA_OFFSET as u32);
         let input = write_rom(dir.path(), "game.nds", &rom).await;
 
-        let err = decrypt_nds_rom_cancellable(
+        let err = decrypt_nds_rom(
             &NoProgress,
             input.clone(),
             dir.path().join("out.nds"),

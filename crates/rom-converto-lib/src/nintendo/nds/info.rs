@@ -3,8 +3,9 @@
 
 use crate::info::{Image, LanguageCode, MultilingualString};
 use crate::nintendo::nds::{
-    DECRYPTED_MARKER, HEADER_SIZE, SECURE_AREA_END, SECURE_AREA_ID, SECURE_AREA_OFFSET, read_u32,
+    DECRYPTED_MARKER, HEADER_SIZE, SECURE_AREA_END, SECURE_AREA_ID, SECURE_AREA_OFFSET,
 };
+use crate::util::bytes::{cstr_ascii, u32_le};
 use crate::util::pixel::encode_png;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -91,9 +92,9 @@ pub fn read_info(path: &Path) -> Result<NdsInfo> {
     file.read_exact(&mut header)
         .context("nds info: read header")?;
 
-    let game_title = read_ascii_trim(&header[0x000..0x00C]);
-    let game_code = read_ascii_trim(&header[0x00C..0x010]);
-    let maker_code = read_ascii_trim(&header[0x010..0x012]);
+    let game_title = cstr_ascii(&header[0x000..0x00C]);
+    let game_code = cstr_ascii(&header[0x00C..0x010]);
+    let maker_code = cstr_ascii(&header[0x010..0x012]);
     let unit_code = header[0x012];
     let device_capacity = header[0x014];
     let region = header[0x01D];
@@ -101,12 +102,12 @@ pub fn read_info(path: &Path) -> Result<NdsInfo> {
 
     let arm9 = read_arm_info(&header[0x020..0x030]);
     let arm7 = read_arm_info(&header[0x030..0x040]);
-    let fnt_offset = read_u32(&header[0x040..0x044]);
-    let fnt_size = read_u32(&header[0x044..0x048]);
-    let fat_offset = read_u32(&header[0x048..0x04C]);
-    let fat_size = read_u32(&header[0x04C..0x050]);
-    let banner_offset = read_u32(&header[0x068..0x06C]);
-    let ntr_rom_size = read_u32(&header[0x080..0x084]);
+    let fnt_offset = u32_le(&header, 0x040);
+    let fnt_size = u32_le(&header, 0x044);
+    let fat_offset = u32_le(&header, 0x048);
+    let fat_size = u32_le(&header, 0x04C);
+    let banner_offset = u32_le(&header, 0x068);
+    let ntr_rom_size = u32_le(&header, 0x080);
 
     let header_crc16 = u16::from_le_bytes(header[0x15E..0x160].try_into().expect("2-byte slice"));
     let header_crc16_computed = crc16(&header[..0x15E]);
@@ -151,10 +152,10 @@ pub fn read_info(path: &Path) -> Result<NdsInfo> {
 
 fn read_arm_info(bytes: &[u8]) -> NdsArmInfo {
     NdsArmInfo {
-        rom_offset: read_u32(&bytes[0x00..0x04]),
-        entry_address: read_u32(&bytes[0x04..0x08]),
-        load_address: read_u32(&bytes[0x08..0x0C]),
-        size: read_u32(&bytes[0x0C..0x10]),
+        rom_offset: u32_le(bytes, 0x00),
+        entry_address: u32_le(bytes, 0x04),
+        load_address: u32_le(bytes, 0x08),
+        size: u32_le(bytes, 0x0C),
     }
 }
 
@@ -247,11 +248,6 @@ fn read_banner<R: Read + Seek>(reader: &mut R, offset: u64) -> Result<Option<Nds
     }))
 }
 
-fn read_ascii_trim(buf: &[u8]) -> String {
-    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-    buf[..end].iter().map(|&b| b as char).collect()
-}
-
 fn read_utf16_string(slice: &[u8]) -> String {
     let units: Vec<u16> = slice
         .as_chunks::<2>()
@@ -269,7 +265,7 @@ fn read_utf16_string(slice: &[u8]) -> String {
 fn decode_icon(tiles: &[u8], palette: &[u16; 16]) -> Vec<u8> {
     let mut rgba_palette = [[0u8; 4]; 16];
     for (i, entry) in rgba_palette.iter_mut().enumerate() {
-        let (r, g, b) = bgr555_to_rgb8(palette[i]);
+        let (r, g, b) = crate::util::pixel::bgr555_to_rgb8(palette[i]);
         *entry = [r, g, b, if i == 0 { 0 } else { 0xFF }];
     }
 
@@ -291,14 +287,6 @@ fn decode_icon(tiles: &[u8], palette: &[u16; 16]) -> Vec<u8> {
         }
     }
     out
-}
-
-fn bgr555_to_rgb8(pixel: u16) -> (u8, u8, u8) {
-    let r5 = (pixel & 0x1F) as u8;
-    let g5 = ((pixel >> 5) & 0x1F) as u8;
-    let b5 = ((pixel >> 10) & 0x1F) as u8;
-    let expand = |v: u8| (v << 3) | (v >> 2);
-    (expand(r5), expand(g5), expand(b5))
 }
 
 /// CRC-16 used for both the header checksum (`0x15E`) and the banner
@@ -344,7 +332,7 @@ mod tests {
         assert_eq!(info.unit_code, 0x00);
         assert_eq!(info.unit_code_name, "NDS");
         assert_eq!(info.device_capacity, 7);
-        assert_eq!(info.capacity_bytes, 128 * 1024 << 7);
+        assert_eq!(info.capacity_bytes, (128 * 1024) << 7);
         assert_eq!(info.arm9.rom_offset, 0x4000);
         assert_eq!(info.fnt_offset, 0);
         assert_eq!(info.fat_offset, 0);

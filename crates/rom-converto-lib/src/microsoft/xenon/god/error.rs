@@ -16,8 +16,8 @@ pub enum GodError {
     #[error(transparent)]
     Join(#[from] tokio::task::JoinError),
 
-    #[error("worker pool channel closed")]
-    WorkerPool,
+    #[error(transparent)]
+    WorkerPool(#[from] crate::util::worker_pool::PoolChannelClosed),
 
     #[error("image has no root-level default.xex")]
     MissingDefaultXex,
@@ -28,14 +28,8 @@ pub enum GodError {
     #[error("invalid XEX2 executable: {reason}")]
     InvalidXex { reason: &'static str },
 
-    #[error("operation cancelled")]
-    Cancelled,
-}
-
-impl From<crate::util::worker_pool::PoolChannelClosed> for GodError {
-    fn from(_: crate::util::worker_pool::PoolChannelClosed) -> Self {
-        GodError::WorkerPool
-    }
+    #[error("{0}")]
+    Cancelled(#[from] crate::util::Cancelled),
 }
 
 /// Convenience alias for a [`Result`] with [`GodError`].

@@ -655,6 +655,16 @@ pub fn rgb565_to_rgb8(pixel: u16) -> (u8, u8, u8) {
     (r, g, b)
 }
 
+/// Expands one BGR555 halfword (NDS palette order) to RGB8.
+#[inline]
+pub fn bgr555_to_rgb8(pixel: u16) -> (u8, u8, u8) {
+    let r5 = (pixel & 0x1F) as u8;
+    let g5 = ((pixel >> 5) & 0x1F) as u8;
+    let b5 = ((pixel >> 10) & 0x1F) as u8;
+    let expand = |v: u8| (v << 3) | (v >> 2);
+    (expand(r5), expand(g5), expand(b5))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

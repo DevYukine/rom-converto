@@ -4255,7 +4255,6 @@ dependencies = [
  "hex-literal",
  "hmac",
  "image",
- "lazy_static",
  "log",
  "lz4",
  "lzma-sdk-sys",

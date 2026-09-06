@@ -37,11 +37,8 @@ pub mod compress;
 pub mod decompress;
 pub mod verify;
 
-pub use compress::{RvzCompressOptions, compress_disc, compress_disc_cancellable};
-pub use decompress::{
-    decompress_disc, decompress_disc_cancellable, decompress_disc_to_wbfs,
-    decompress_disc_to_wbfs_cancellable,
-};
+pub use compress::{RvzCompressOptions, compress_disc};
+pub use decompress::{decompress_disc, decompress_disc_to_wbfs};
 pub use error::{RvzError, RvzResult};
 pub use verify::{RvzStructuralVerify, verify_rvz_structure};
 
@@ -150,6 +147,7 @@ mod integration_tests {
     use super::*;
     use crate::nintendo::dol::test_fixtures::make_fake_gamecube_iso;
     use crate::nintendo::rvl::test_fixtures::make_fake_wii_iso;
+    use crate::util::CancelToken;
     use crate::util::NoProgress;
 
     #[tokio::test]
@@ -163,11 +161,19 @@ mod integration_tests {
         let original = make_fake_gamecube_iso(5 * 1024 * 1024 + 123);
         tokio::fs::write(&iso, &original).await.unwrap();
 
-        compress_disc(&iso, &rvz, RvzCompressOptions::default(), &NoProgress)
+        compress_disc(
+            &iso,
+            &rvz,
+            RvzCompressOptions::default(),
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+
+        decompress_disc(&rvz, &restored, &NoProgress, CancelToken::new())
             .await
             .unwrap();
-
-        decompress_disc(&rvz, &restored, &NoProgress).await.unwrap();
 
         let result = tokio::fs::read(&restored).await.unwrap();
         assert_eq!(original, result, "GC round trip must be byte-identical");
@@ -189,10 +195,16 @@ mod integration_tests {
         let original = make_fake_gamecube_iso(5 * 1024 * 1024 + 123);
         tokio::fs::write(&iso, &original).await.unwrap();
 
-        compress_disc(&iso, &rvz, RvzCompressOptions::default(), &NoProgress)
-            .await
-            .unwrap();
-        decompress_disc_to_wbfs(&rvz, &wbfs, &NoProgress)
+        compress_disc(
+            &iso,
+            &rvz,
+            RvzCompressOptions::default(),
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+        decompress_disc_to_wbfs(&rvz, &wbfs, &NoProgress, CancelToken::new())
             .await
             .unwrap();
 
@@ -220,13 +232,19 @@ mod integration_tests {
 
         let original = make_fake_gamecube_iso(5 * 1024 * 1024 + 123);
         tokio::fs::write(&iso, &original).await.unwrap();
-        compress_disc(&iso, &rvz, RvzCompressOptions::default(), &NoProgress)
+        compress_disc(
+            &iso,
+            &rvz,
+            RvzCompressOptions::default(),
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+        decompress_disc_to_wbfs(&rvz, &a, &NoProgress, CancelToken::new())
             .await
             .unwrap();
-        decompress_disc_to_wbfs(&rvz, &a, &NoProgress)
-            .await
-            .unwrap();
-        decompress_disc_to_wbfs(&rvz, &b, &NoProgress)
+        decompress_disc_to_wbfs(&rvz, &b, &NoProgress, CancelToken::new())
             .await
             .unwrap();
 
@@ -251,10 +269,16 @@ mod integration_tests {
 
         let original = make_fake_wii_iso_with_partition(2);
         tokio::fs::write(&iso, &original).await.unwrap();
-        compress_disc(&iso, &rvz, RvzCompressOptions::default(), &NoProgress)
-            .await
-            .unwrap();
-        decompress_disc_to_wbfs(&rvz, &wbfs, &NoProgress)
+        compress_disc(
+            &iso,
+            &rvz,
+            RvzCompressOptions::default(),
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+        decompress_disc_to_wbfs(&rvz, &wbfs, &NoProgress, CancelToken::new())
             .await
             .unwrap();
 
@@ -288,9 +312,15 @@ mod integration_tests {
         }
         tokio::fs::write(&iso, &original).await.unwrap();
 
-        compress_disc(&iso, &rvz, RvzCompressOptions::default(), &NoProgress)
-            .await
-            .unwrap();
+        compress_disc(
+            &iso,
+            &rvz,
+            RvzCompressOptions::default(),
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
 
         let rvz_size = tokio::fs::metadata(&rvz).await.unwrap().len();
         assert!(
@@ -320,8 +350,12 @@ mod integration_tests {
             chunk_size: 128 * 1024,
             ..RvzCompressOptions::default()
         };
-        compress_disc(&iso, &rvz, opts, &NoProgress).await.unwrap();
-        decompress_disc(&rvz, &restored, &NoProgress).await.unwrap();
+        compress_disc(&iso, &rvz, opts, &NoProgress, CancelToken::new())
+            .await
+            .unwrap();
+        decompress_disc(&rvz, &restored, &NoProgress, CancelToken::new())
+            .await
+            .unwrap();
 
         let result = tokio::fs::read(&restored).await.unwrap();
         assert_eq!(
@@ -354,10 +388,10 @@ mod integration_tests {
             chunk_size: 2 * 1024 * 1024,
             ..RvzCompressOptions::default()
         };
-        compress_disc(&iso, &rvz_2m, opts_2m, &NoProgress)
+        compress_disc(&iso, &rvz_2m, opts_2m, &NoProgress, CancelToken::new())
             .await
             .unwrap();
-        decompress_disc(&rvz_2m, &restored_2m, &NoProgress)
+        decompress_disc(&rvz_2m, &restored_2m, &NoProgress, CancelToken::new())
             .await
             .unwrap();
         assert_eq!(
@@ -370,10 +404,10 @@ mod integration_tests {
             chunk_size: 128 * 1024,
             ..RvzCompressOptions::default()
         };
-        compress_disc(&iso, &rvz_128k, opts_128k, &NoProgress)
+        compress_disc(&iso, &rvz_128k, opts_128k, &NoProgress, CancelToken::new())
             .await
             .unwrap();
-        decompress_disc(&rvz_128k, &restored_128k, &NoProgress)
+        decompress_disc(&rvz_128k, &restored_128k, &NoProgress, CancelToken::new())
             .await
             .unwrap();
         assert_eq!(
@@ -395,10 +429,18 @@ mod integration_tests {
 
         let original = make_fake_gamecube_iso(5 * 1024 * 1024 + 4096);
         tokio::fs::write(&iso, &original).await.unwrap();
-        compress_disc(&iso, &rvz, RvzCompressOptions::default(), &NoProgress)
+        compress_disc(
+            &iso,
+            &rvz,
+            RvzCompressOptions::default(),
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+        decompress_disc(&rvz, &restored, &NoProgress, CancelToken::new())
             .await
             .unwrap();
-        decompress_disc(&rvz, &restored, &NoProgress).await.unwrap();
         let expected = tokio::fs::read(&restored).await.unwrap();
 
         let mut reader = RvzDiscReader::open(&rvz).unwrap();
@@ -448,10 +490,18 @@ mod integration_tests {
 
         let original = make_fake_wii_iso_with_partition(2);
         tokio::fs::write(&iso, &original).await.unwrap();
-        compress_disc(&iso, &rvz, RvzCompressOptions::default(), &NoProgress)
+        compress_disc(
+            &iso,
+            &rvz,
+            RvzCompressOptions::default(),
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+        decompress_disc(&rvz, &restored, &NoProgress, CancelToken::new())
             .await
             .unwrap();
-        decompress_disc(&rvz, &restored, &NoProgress).await.unwrap();
         let expected = tokio::fs::read(&restored).await.unwrap();
 
         let mut reader = RvzDiscReader::open(&rvz).unwrap();
@@ -500,11 +550,19 @@ mod integration_tests {
         let original = make_fake_wii_iso_with_partition(2);
         tokio::fs::write(&iso, &original).await.unwrap();
 
-        compress_disc(&iso, &rvz, RvzCompressOptions::default(), &NoProgress)
+        compress_disc(
+            &iso,
+            &rvz,
+            RvzCompressOptions::default(),
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+
+        decompress_disc(&rvz, &restored, &NoProgress, CancelToken::new())
             .await
             .unwrap();
-
-        decompress_disc(&rvz, &restored, &NoProgress).await.unwrap();
         let result = tokio::fs::read(&restored).await.unwrap();
         assert_eq!(
             original.len(),
@@ -527,11 +585,19 @@ mod integration_tests {
         let original = make_fake_wii_iso(3 * 1024 * 1024 + 17);
         tokio::fs::write(&iso, &original).await.unwrap();
 
-        compress_disc(&iso, &rvz, RvzCompressOptions::default(), &NoProgress)
+        compress_disc(
+            &iso,
+            &rvz,
+            RvzCompressOptions::default(),
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+
+        decompress_disc(&rvz, &restored, &NoProgress, CancelToken::new())
             .await
             .unwrap();
-
-        decompress_disc(&rvz, &restored, &NoProgress).await.unwrap();
         let result = tokio::fs::read(&restored).await.unwrap();
         assert_eq!(original, result, "Wii round trip must be byte-identical");
     }
@@ -552,10 +618,18 @@ mod integration_tests {
         }
         tokio::fs::write(&iso, &original).await.unwrap();
 
-        compress_disc(&iso, &rvz, RvzCompressOptions::default(), &NoProgress)
+        compress_disc(
+            &iso,
+            &rvz,
+            RvzCompressOptions::default(),
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+        decompress_disc(&rvz, &restored, &NoProgress, CancelToken::new())
             .await
             .unwrap();
-        decompress_disc(&rvz, &restored, &NoProgress).await.unwrap();
 
         let result = tokio::fs::read(&restored).await.unwrap();
         assert_eq!(original, result, "round-trip with sentinels must be exact");
@@ -584,8 +658,12 @@ mod integration_tests {
             chunk_size: 32 * 1024,
             ..RvzCompressOptions::default()
         };
-        compress_disc(&iso, &rvz, opts, &NoProgress).await.unwrap();
-        decompress_disc(&rvz, &restored, &NoProgress).await.unwrap();
+        compress_disc(&iso, &rvz, opts, &NoProgress, CancelToken::new())
+            .await
+            .unwrap();
+        decompress_disc(&rvz, &restored, &NoProgress, CancelToken::new())
+            .await
+            .unwrap();
 
         assert_eq!(original, tokio::fs::read(&restored).await.unwrap());
     }
@@ -604,7 +682,7 @@ mod integration_tests {
             chunk_size: 100 * 1024,
             ..RvzCompressOptions::default()
         };
-        let err = compress_disc(&iso, &rvz, opts, &NoProgress)
+        let err = compress_disc(&iso, &rvz, opts, &NoProgress, CancelToken::new())
             .await
             .unwrap_err();
         assert!(matches!(err, RvzError::InvalidChunkSize(_, _, _)));
@@ -614,7 +692,7 @@ mod integration_tests {
             chunk_size: 16 * 1024,
             ..RvzCompressOptions::default()
         };
-        let err = compress_disc(&iso, &rvz, opts, &NoProgress)
+        let err = compress_disc(&iso, &rvz, opts, &NoProgress, CancelToken::new())
             .await
             .unwrap_err();
         assert!(matches!(err, RvzError::InvalidChunkSize(_, _, _)));
@@ -624,7 +702,7 @@ mod integration_tests {
             chunk_size: 4 * 1024 * 1024,
             ..RvzCompressOptions::default()
         };
-        let err = compress_disc(&iso, &rvz, opts, &NoProgress)
+        let err = compress_disc(&iso, &rvz, opts, &NoProgress, CancelToken::new())
             .await
             .unwrap_err();
         assert!(matches!(err, RvzError::InvalidChunkSize(_, _, _)));
@@ -636,7 +714,9 @@ mod integration_tests {
         let bad = dir.path().join("bad.rvz");
         tokio::fs::write(&bad, vec![0u8; 200]).await.unwrap();
         let out = dir.path().join("out.iso");
-        let err = decompress_disc(&bad, &out, &NoProgress).await.unwrap_err();
+        let err = decompress_disc(&bad, &out, &NoProgress, CancelToken::new())
+            .await
+            .unwrap_err();
         assert!(matches!(err, RvzError::InvalidMagic(_)));
     }
 
@@ -720,7 +800,7 @@ mod integration_tests {
             compression_level: 5,
             ..RvzCompressOptions::default()
         };
-        compress_disc(iso_path, &ours_rvz, opts, &NoProgress)
+        compress_disc(iso_path, &ours_rvz, opts, &NoProgress, CancelToken::new())
             .await
             .expect("our compress failed");
 
@@ -771,9 +851,14 @@ mod integration_tests {
 
         // Step 4: this decoder on Dolphin's RVZ must hash-match.
         eprintln!("[{label}] step 4: rom-converto decode dolphin.rvz");
-        decompress_disc(&dolphin_rvz, &dolphin_from_ours_iso, &NoProgress)
-            .await
-            .expect("our decompress failed on Dolphin's RVZ");
+        decompress_disc(
+            &dolphin_rvz,
+            &dolphin_from_ours_iso,
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .expect("our decompress failed on Dolphin's RVZ");
         let ours_decoded_sha1 = sha1_file(&dolphin_from_ours_iso).await;
         assert_eq!(
             input_sha1, ours_decoded_sha1,

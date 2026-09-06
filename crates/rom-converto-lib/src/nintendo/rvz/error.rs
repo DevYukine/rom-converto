@@ -68,8 +68,8 @@ pub enum RvzError {
     #[error("{0}")]
     Custom(String),
 
-    #[error("operation cancelled")]
-    Cancelled,
+    #[error("{0}")]
+    Cancelled(#[from] crate::util::Cancelled),
 }
 
 impl From<crate::util::worker_pool::PoolChannelClosed> for RvzError {

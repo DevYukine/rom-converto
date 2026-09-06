@@ -42,8 +42,8 @@ pub enum NdsError {
     OutputAlreadyExists,
 
     /// The operation was cancelled by the caller.
-    #[error("operation cancelled")]
-    Cancelled,
+    #[error("{0}")]
+    Cancelled(#[from] crate::util::Cancelled),
 }
 
 /// Convenience alias for a [`Result`] with [`NdsError`].

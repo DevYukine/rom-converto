@@ -19,6 +19,7 @@ use super::error::{NkitError, NkitResult};
 use super::format::NkitHeader;
 use crate::nintendo::gcz;
 use crate::util::CancelToken;
+use crate::util::Cancelled;
 
 const READ_CHUNK: usize = 4 * 1024 * 1024;
 
@@ -41,7 +42,7 @@ pub fn verify_nkit_blocking(
     let mut buf = vec![0u8; READ_CHUNK];
     loop {
         if cancel.is_cancelled() {
-            return Err(NkitError::Cancelled);
+            return Err(Cancelled.into());
         }
         let n = f.read(&mut buf)?;
         if n == 0 {

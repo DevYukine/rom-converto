@@ -8,9 +8,9 @@
 
 use crate::nintendo::disc_input::open_disc_input;
 use crate::nintendo::dol::models::boot_bin::GcBootBin;
-use crate::nintendo::rvz::verify::{RvzStructuralVerify, verify_rvz_structure_cancellable};
-use crate::util::{CancelToken, ProgressReporter};
-use anyhow::{Context, Result, bail};
+use crate::nintendo::rvz::verify::{RvzStructuralVerify, verify_rvz_structure};
+use crate::util::{CancelToken, Cancelled, ProgressReporter};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use std::io::{Read, Seek, SeekFrom};
@@ -45,29 +45,21 @@ pub struct DolStructuralReport {
     pub notes: Vec<String>,
 }
 
-/// Verifies a GameCube disc image at `path`. See the module docs for
-/// what fast mode and `--full` each check.
+/// Verify the GameCube disc image at `path`: game id and, for `.rvz`
+/// input, its structure, plus FST geometry and the whole-disc SHA-1
+/// when `options.full` is set.
 pub fn verify_dol(
-    path: &Path,
-    options: &DolVerifyOptions,
-    progress: &dyn ProgressReporter,
-) -> Result<DolVerifyResult> {
-    verify_dol_cancellable(path, options, progress, &CancelToken::new())
-}
-
-/// Like [`verify_dol`] but observes `cancel` between stages.
-pub fn verify_dol_cancellable(
     path: &Path,
     options: &DolVerifyOptions,
     progress: &dyn ProgressReporter,
     cancel: &CancelToken,
 ) -> Result<DolVerifyResult> {
     if cancel.is_cancelled() {
-        bail!("cancelled");
+        return Err(Cancelled.into());
     }
-    let rvz_structure = verify_rvz_structure_cancellable(path, cancel).ok();
+    let rvz_structure = verify_rvz_structure(path, cancel).ok();
     if cancel.is_cancelled() {
-        bail!("cancelled");
+        return Err(Cancelled.into());
     }
 
     let mut reader =
@@ -79,7 +71,7 @@ pub fn verify_dol_cancellable(
     let mut disc_sha1 = None;
 
     if options.full {
-        let iso_size = reader.iso_size().context("dol verify: iso size")?;
+        let iso_size = reader.logical_size();
         let fst_end = boot.fst_offset as u64 + boot.fst_size as u64;
         let fst_within_bounds = boot.fst_size > 0 && boot.fst_offset > 0 && fst_end <= iso_size;
         let mut notes = vec![
@@ -129,7 +121,7 @@ fn sha1_stream<R: Read>(
     let mut buf = vec![0u8; 4 * 1024 * 1024];
     loop {
         if cancel.is_cancelled() {
-            bail!("cancelled");
+            return Err(Cancelled.into());
         }
         let n = reader.read(&mut buf)?;
         if n == 0 {
@@ -155,11 +147,23 @@ mod tests {
         let iso = dir.path().join("game.iso");
         let rvz = dir.path().join("game.rvz");
         std::fs::write(&iso, make_fake_gamecube_iso(4 * 1024 * 1024 + 0x123)).unwrap();
-        compress_disc(&iso, &rvz, RvzCompressOptions::default(), &NoProgress)
-            .await
-            .unwrap();
+        compress_disc(
+            &iso,
+            &rvz,
+            RvzCompressOptions::default(),
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
 
-        let fast = verify_dol(&rvz, &DolVerifyOptions { full: false }, &NoProgress).unwrap();
+        let fast = verify_dol(
+            &rvz,
+            &DolVerifyOptions { full: false },
+            &NoProgress,
+            &CancelToken::new(),
+        )
+        .unwrap();
         let structural = fast.rvz_structure.expect("rvz input has structural hashes");
         assert!(structural.file_head_hash_ok);
         assert!(structural.disc_hash_ok);
@@ -173,11 +177,23 @@ mod tests {
         let iso = dir.path().join("game.iso");
         let rvz = dir.path().join("game.rvz");
         std::fs::write(&iso, make_fake_gamecube_iso(4 * 1024 * 1024)).unwrap();
-        compress_disc(&iso, &rvz, RvzCompressOptions::default(), &NoProgress)
-            .await
-            .unwrap();
+        compress_disc(
+            &iso,
+            &rvz,
+            RvzCompressOptions::default(),
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
 
-        let full = verify_dol(&rvz, &DolVerifyOptions { full: true }, &NoProgress).unwrap();
+        let full = verify_dol(
+            &rvz,
+            &DolVerifyOptions { full: true },
+            &NoProgress,
+            &CancelToken::new(),
+        )
+        .unwrap();
         assert!(full.structural.is_some());
         assert_eq!(full.disc_sha1.as_ref().map(|s| s.len()), Some(40));
     }
@@ -187,7 +203,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let iso = dir.path().join("game.iso");
         std::fs::write(&iso, make_fake_gamecube_iso(2 * 1024 * 1024)).unwrap();
-        let fast = verify_dol(&iso, &DolVerifyOptions { full: false }, &NoProgress).unwrap();
+        let fast = verify_dol(
+            &iso,
+            &DolVerifyOptions { full: false },
+            &NoProgress,
+            &CancelToken::new(),
+        )
+        .unwrap();
         assert!(fast.rvz_structure.is_none());
         assert!(fast.ok);
     }

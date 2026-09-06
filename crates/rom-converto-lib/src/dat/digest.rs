@@ -9,8 +9,8 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
 use crate::dat::error::{DatError, DatResult};
-use crate::util::hash::{FileDigests, HashAlgo, MultiHasher, hash_file_cancellable};
-use crate::util::{CancelToken, ProgressReporter};
+use crate::util::hash::{FileDigests, HashAlgo, MultiHasher, hash_file};
+use crate::util::{CancelToken, Cancelled, ProgressReporter};
 
 /// How a file's decoded inner stream is obtained, chosen by extension.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,27 +151,27 @@ pub enum RomDigests {
 /// as [`DatError::Container`] via `Display`.
 fn map_chd(e: crate::chd::error::ChdError) -> DatError {
     match e {
-        crate::chd::error::ChdError::Cancelled => DatError::Cancelled,
+        crate::chd::error::ChdError::Cancelled(c) => DatError::Cancelled(c),
         other => DatError::Container(other.to_string()),
     }
 }
 
 fn map_cso(e: crate::cso::CsoError) -> DatError {
     match e {
-        crate::cso::CsoError::Cancelled => DatError::Cancelled,
+        crate::cso::CsoError::Cancelled(c) => DatError::Cancelled(c),
         other => DatError::Container(other.to_string()),
     }
 }
 
 fn map_z3ds(e: crate::nintendo::ctr::z3ds::error::Z3dsError) -> DatError {
     match e {
-        crate::nintendo::ctr::z3ds::error::Z3dsError::Cancelled => DatError::Cancelled,
+        crate::nintendo::ctr::z3ds::error::Z3dsError::Cancelled(c) => DatError::Cancelled(c),
         other => DatError::Container(other.to_string()),
     }
 }
 
 /// Digest a sequential reader (RVZ or WBFS) with a 4 MiB read loop,
-/// the same multi-hasher fold as `hash_file_cancellable`. `total` is
+/// the same multi-hasher fold as `hash_file`. `total` is
 /// the decoded logical size used for progress sizing and recorded as
 /// `size_bytes`.
 fn digest_reader<R: Read>(
@@ -187,7 +187,7 @@ fn digest_reader<R: Read>(
     let mut buf = vec![0u8; 4 * 1024 * 1024];
     loop {
         if cancel.is_cancelled() {
-            return Err(DatError::Cancelled);
+            return Err(Cancelled.into());
         }
         let n = reader.read(&mut buf)?;
         if n == 0 {
@@ -345,9 +345,9 @@ fn digest_raw(
     }
     // Safe: AtomicProgress only touches the Arc's atomic, which is Sync.
     let reporter = AtomicProgress(bytes_done);
-    hash_file_cancellable(path, algos, &reporter, cancel).map_err(|e| {
+    hash_file(path, algos, &reporter, cancel).map_err(|e| {
         if e.kind() == std::io::ErrorKind::Interrupted {
-            DatError::Cancelled
+            DatError::Cancelled(Cancelled)
         } else {
             DatError::IoError(e)
         }
@@ -432,7 +432,7 @@ pub async fn digest_inner_async(
     // Cover the race where the pass finished a unit just as the token
     // fired: surface it as Cancelled.
     if result.is_ok() && cancel.is_cancelled() {
-        return Err(DatError::Cancelled);
+        return Err(Cancelled.into());
     }
     result
 }
@@ -592,7 +592,7 @@ mod tests {
         let RomDigests::Single(single) = d else {
             panic!("raw input must be Single");
         };
-        let direct = crate::util::hash_file(&path, &algos, &progress).unwrap();
+        let direct = crate::util::hash_file(&path, &algos, &progress, &CancelToken::new()).unwrap();
         assert_eq!(single, direct);
     }
 
@@ -612,7 +612,13 @@ mod tests {
     }
 
     fn plain_digest(path: &Path) -> FileDigests {
-        crate::util::hash_file(path, &legacy_algos(), &crate::util::NoProgress).unwrap()
+        crate::util::hash_file(
+            path,
+            &legacy_algos(),
+            &crate::util::NoProgress,
+            &CancelToken::new(),
+        )
+        .unwrap()
     }
 
     #[test]
@@ -739,8 +745,13 @@ mod tests {
         let data: Vec<u8> = (0..10_000u32).map(|i| (i % 200) as u8).collect();
         let raw = dir.path().join("game.iso");
         std::fs::write(&raw, &data).unwrap();
-        let expected =
-            crate::util::hash_file(&raw, &[HashAlgo::Crc32], &crate::util::NoProgress).unwrap();
+        let expected = crate::util::hash_file(
+            &raw,
+            &[HashAlgo::Crc32],
+            &crate::util::NoProgress,
+            &CancelToken::new(),
+        )
+        .unwrap();
 
         let zip = dir.path().join("game.zip");
         write_zip(&zip, &[("game.iso", &data)]);

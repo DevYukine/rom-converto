@@ -1099,7 +1099,7 @@ mod tests {
             decode_hunks(&chd, &header),
             expected_ld_stream(&avi, &params)
         );
-        verify_chd(&NoProgress, chd_path, None, false)
+        verify_chd(&NoProgress, chd_path, None, false, CancelToken::new())
             .await
             .unwrap();
     }

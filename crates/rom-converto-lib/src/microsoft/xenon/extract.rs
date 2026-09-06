@@ -2,7 +2,7 @@
 //!
 //! Block decompression is CPU-bound and independent per block, so it
 //! runs on a [`crate::util::worker_pool::Pool`]. Files concatenate into
-//! one logical stream with no gaps (see [`crate::microsoft::zar`]), so
+//! one logical stream with no gaps (see [`crate::zar`]), so
 //! a single sequential cursor can slice each decompressed block across
 //! file boundaries as results come back in order.
 
@@ -10,12 +10,13 @@ use std::io::{BufReader, BufWriter, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::microsoft::zar::format::split_path;
-use crate::microsoft::zar::{ZarEntry, ZarReader, decompress_block};
 use crate::util::CancelToken;
 use crate::util::worker_pool::{Pool, Worker, drive, parallelism};
+use crate::zar::format::split_path;
+use crate::zar::{ZarEntry, ZarReader, decompress_block};
 
 use super::error::{XenonError, XenonResult};
+use crate::util::Cancelled;
 
 /// Rejects an archive entry path that could escape `output_dir`: a
 /// leading separator (root- or drive-relative), an empty path, a `.`
@@ -203,13 +204,13 @@ pub fn extract_blocking(
         n_threads * 2,
         |seq| {
             if cancel.is_cancelled() {
-                return Err(XenonError::Cancelled);
+                return Err(Cancelled.into());
             }
             Ok(reader.read_block_raw(seq)?)
         },
         |_seq, block| {
             if cancel.is_cancelled() {
-                return Err(XenonError::Cancelled);
+                return Err(Cancelled.into());
             }
             let written = cursor.consume_block(&block)?;
             bytes_done.fetch_add(written, Ordering::Relaxed);
@@ -230,7 +231,7 @@ pub fn extract_blocking(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::microsoft::zar::{COMPRESSED_BLOCK_SIZE, ZarWriter};
+    use crate::zar::{COMPRESSED_BLOCK_SIZE, ZarWriter};
     use std::sync::Arc;
 
     #[test]

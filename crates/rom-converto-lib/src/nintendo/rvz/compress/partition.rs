@@ -43,6 +43,7 @@ use crate::nintendo::rvl::partition::{
 };
 use crate::nintendo::rvz::error::{RvzError, RvzResult};
 use crate::util::CancelToken;
+use crate::util::Cancelled;
 use crate::util::worker_pool::{Pool, Worker, drive, parallelism};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom};
 use std::sync::Arc;
@@ -233,33 +234,11 @@ pub(super) fn encode_partition_region<R: Read + Seek>(
             // per-partition metadata the worker needs. Sharing
             // one pool across partitions means these vary per
             // cluster.
-            //
-            // The cluster buffer is allocated uninitialized
-            // rather than via `vec![0u8; 2 MiB]` because
-            // `alloc_zeroed` pays for a 2 MiB `memset` per
-            // cluster even though `read_exact` immediately
-            // overwrites every byte. On a full Wii disc that
-            // zero-fill adds up to gigabytes of wasted work.
             |seq| -> RvzResult<PartitionWork> {
                 if cancel.is_cancelled() {
-                    return Err(RvzError::Cancelled);
+                    return Err(Cancelled.into());
                 }
-                let mut buf = Vec::with_capacity(cluster_size);
-                // SAFETY: `u8` has no drop glue and no
-                // validity invariants, so extending `len`
-                // over uninit bytes is sound as long as no
-                // reader observes them first. `read_exact`
-                // only writes its destination slice;
-                // `BufReader` is a well-behaved `Read`
-                // that never reads uninit bytes. On error
-                // the `Vec` is dropped without any byte ever
-                // being read. Clippy's `uninit_vec` lint is
-                // conservative for element types with real
-                // drop glue and is explicitly allowed here.
-                #[allow(clippy::uninit_vec)]
-                unsafe {
-                    buf.set_len(cluster_size);
-                }
+                let mut buf = vec![0u8; cluster_size];
                 reader.read_exact(&mut buf)?;
                 Ok(PartitionWork {
                     raw_cluster: buf,

@@ -112,8 +112,9 @@ impl DvdDecoderSet {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chd::compression::deflate_decompress;
     use crate::chd::compression::lzma::LzmaDecoder;
-    use crate::chd::compression::{deflate_decompress, deflate_with_reset};
+    use crate::util::deflate::deflate_with_reset;
 
     fn compressible_hunk(len: usize) -> Vec<u8> {
         (0..len).map(|i| (i / 64) as u8).collect()

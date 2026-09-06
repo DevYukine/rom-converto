@@ -6,10 +6,10 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::nintendo::nx::error::{NxError, NxResult};
+use crate::nintendo::nx::error::NxResult;
 use crate::nintendo::nx::models::pfs0::{Pfs0LayoutHints, build_header};
 use crate::util::pread::file_read_exact_at;
-use crate::util::{CancelToken, ProgressReporter};
+use crate::util::{CancelToken, Cancelled, ProgressReporter};
 
 /// A byte range in one opened input, copied verbatim into an output PFS0.
 pub(crate) struct Pfs0Source {
@@ -66,7 +66,7 @@ pub(crate) fn copy_range<W: Write>(
     let mut at = abs_offset;
     while remaining > 0 {
         if cancel.is_cancelled() {
-            return Err(NxError::Cancelled);
+            return Err(Cancelled.into());
         }
         let take = (CHUNK as u64).min(remaining) as usize;
         file_read_exact_at(file, &mut buf[..take], at)?;

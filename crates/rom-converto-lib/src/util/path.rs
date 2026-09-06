@@ -27,6 +27,18 @@ fn expand_tilde_with(path: &Path, home: Option<&Path>) -> PathBuf {
     path.to_path_buf()
 }
 
+/// Inserts `tag` before the file extension, so `game.cia` with tag
+/// `decrypted` becomes `game.decrypted.cia`. An input without an
+/// extension gets `stem.tag`.
+pub fn with_tag(input: &Path, tag: &str) -> PathBuf {
+    let stem = input.file_stem().and_then(|s| s.to_str()).unwrap_or("out");
+    let name = match input.extension().and_then(|s| s.to_str()) {
+        Some(ext) if !ext.is_empty() => format!("{stem}.{tag}.{ext}"),
+        _ => format!("{stem}.{tag}"),
+    };
+    input.with_file_name(name)
+}
+
 /// Shortens a path under the home directory to a `~`-prefixed display
 /// string. The inverse of `expand_tilde`, for showing paths compactly.
 pub fn contract_tilde(path: &Path) -> String {

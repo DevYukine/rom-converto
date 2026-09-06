@@ -9,7 +9,6 @@ use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
 
 use crate::nintendo::nx::container::{
     ContainerKind, ContainerListing, detect_container, list_container,
@@ -24,10 +23,7 @@ use crate::nintendo::nx::models::hfs0::{
 use crate::nintendo::nx::models::xci::{MEDIA_UNIT, XCI_PREFIX_SIZE, build_xci_prefix};
 use crate::nintendo::nx::util::{Pfs0Source, copy_range, write_pfs0_from_sources};
 use crate::util::pread::file_read_exact_at;
-use crate::util::{
-    AtomicProgress, CancelToken, ProgressReporter, await_with_progress_cancel, publish_temp,
-    scratch_output_path,
-};
+use crate::util::{AtomicProgress, CancelToken, Cancelled, ProgressReporter, run_scratch_write};
 
 /// Emitted once per merge. The exact wording is part of the feature
 /// contract, do not paraphrase.
@@ -111,7 +107,7 @@ fn is_same_file(a: &Path, b: &Path) -> bool {
 /// # Errors
 /// Same as [`merge_containers`], plus [`NxError::Cancelled`] when `cancel`
 /// fires.
-pub async fn merge_containers_async_cancellable(
+pub async fn merge_containers_async(
     inputs: Vec<PathBuf>,
     output: PathBuf,
     format: NxMergeFormat,
@@ -122,7 +118,7 @@ pub async fn merge_containers_async_cancellable(
     validate_merge_paths(&inputs, &output)?;
     let sel = tokio::task::spawn_blocking(move || select_content(&inputs, &keys)).await??;
     if cancel.is_cancelled() {
-        return Err(NxError::Cancelled);
+        return Err(Cancelled.into());
     }
     // A super XCI carries only the NCAs; tickets and certs are dropped.
     let total: u64 = match format {
@@ -134,33 +130,20 @@ pub async fn merge_containers_async_cancellable(
             .sum(),
         NxMergeFormat::Xci => sel.nca_order.iter().map(|r| r.size).sum(),
     };
-    let bytes_done = Arc::new(AtomicU64::new(0));
     progress.start(total, "Merging Switch containers");
-    let proxy = AtomicProgress {
-        counter: bytes_done.clone(),
-    };
-
-    let write_path = scratch_output_path(&output)?;
-    let write_owned = write_path.to_path_buf();
-    let cancel_bg = cancel.clone();
-    let handle = tokio::task::spawn_blocking(move || -> NxResult<()> {
-        write_selection(&sel, &write_owned, format, &proxy, &cancel_bg)
-    });
-
-    let cleanup = {
-        let write_path = write_path.to_path_buf();
-        move || -> NxError {
-            let _ = std::fs::remove_file(&write_path);
-            NxError::Cancelled
-        }
-    };
-    if let Err(err) =
-        await_with_progress_cancel(progress, &bytes_done, handle, &cancel, cleanup).await
-    {
-        let _ = tokio::fs::remove_file(&write_path).await;
-        return Err(err);
-    }
-    publish_temp(write_path, &output, true)?;
+    run_scratch_write(
+        &output,
+        true,
+        progress,
+        &cancel,
+        move |write_path, bytes_done, cancel| {
+            let proxy = AtomicProgress {
+                counter: bytes_done,
+            };
+            write_selection(&sel, &write_path, format, &proxy, &cancel)
+        },
+    )
+    .await?;
     progress.warn(SIGNATURE_WARNING);
     Ok(())
 }

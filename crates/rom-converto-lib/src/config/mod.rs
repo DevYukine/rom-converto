@@ -102,6 +102,67 @@ pub struct DatDefaults {
     pub input_checksum_max: Option<String>,
 }
 
+/// Field-wise merge of two config layers: preset over config file, or
+/// config file over nothing.
+pub trait MergeOver: Sized + Clone + Default {
+    /// Returns `self` with every unset field taken from `base`.
+    fn merge_over(self, base: Self) -> Self;
+
+    /// Merges optional layers, treating an absent layer as all-unset.
+    fn merge_layers(top: Option<&Self>, base: Option<&Self>) -> Self {
+        top.cloned()
+            .unwrap_or_default()
+            .merge_over(base.cloned().unwrap_or_default())
+    }
+}
+
+macro_rules! impl_merge_over {
+    ($ty:ident { $($field:ident),* $(,)? }) => {
+        impl MergeOver for $ty {
+            fn merge_over(self, base: Self) -> Self {
+                Self { $($field: self.$field.or(base.$field)),* }
+            }
+        }
+    };
+}
+
+impl_merge_over!(DiscDefaults {
+    level,
+    chunk_size,
+    on_conflict,
+    output_dir,
+    report
+});
+impl_merge_over!(NxDefaults {
+    level,
+    mode,
+    block_size_exp,
+    on_conflict,
+    output_dir,
+    report
+});
+impl_merge_over!(ChdDefaults {
+    hunk_size,
+    codecs,
+    level,
+    on_conflict,
+    output_dir,
+    report
+});
+impl_merge_over!(CsoDefaults {
+    block_size,
+    on_conflict,
+    output_dir,
+    report
+});
+impl_merge_over!(WupDefaults { level, on_conflict });
+impl_merge_over!(DatDefaults {
+    api_base,
+    report,
+    input_checksum_min,
+    input_checksum_max
+});
+
 /// A named bundle of per-format defaults that fully replaces the matching
 /// top-level defaults when applied.
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]

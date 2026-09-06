@@ -112,7 +112,6 @@ pub struct ContentChunkRecord {
 #[brw(big)]
 pub struct ContentType(pub u16);
 
-#[allow(dead_code)]
 impl ContentType {
     pub const ENCRYPTED: u16 = 0x0001;
     pub const DISC: u16 = 0x0002;

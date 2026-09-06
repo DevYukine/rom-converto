@@ -2,7 +2,6 @@ use crate::nintendo::ctr::constants::{
     CERT_SIG_TYPE_MAX, CERT_SIG_TYPE_MIN, CIA_CERT_CHAIN_SIZE, CIA_CONTENT_INDEX_SIZE,
 };
 use crate::nintendo::ctr::decrypt::cia::parse_and_decrypt_cia;
-use crate::nintendo::ctr::error::NintendoCTRError;
 use crate::nintendo::ctr::models::certificate::Certificate;
 use crate::nintendo::ctr::models::cia::{
     CIA_HEADER_SIZE, CiaFile, CiaFileWithoutContent, CiaHeader,
@@ -10,7 +9,7 @@ use crate::nintendo::ctr::models::cia::{
 use crate::nintendo::ctr::models::ticket::Ticket;
 use crate::nintendo::ctr::models::title_metadata::TitleMetadata;
 use crate::nintendo::ctr::util::align_64;
-use crate::util::{CancelToken, ProgressReporter};
+use crate::util::{CancelToken, Cancelled, ProgressReporter};
 use binrw::{BinRead, BinWrite, Endian};
 use byteorder::{BigEndian, ReadBytesExt};
 use sha2::{Digest, Sha256};
@@ -294,7 +293,7 @@ pub async fn write_cia(out: &mut BufWriter<File>, args: CiaWriteArgs<'_>) -> any
         let mut written: u64 = 0;
         loop {
             if cancel.is_cancelled() {
-                return Err(NintendoCTRError::Cancelled.into());
+                return Err(Cancelled.into());
             }
             let n = f.read(&mut buf).await?;
             if n == 0 {
@@ -513,7 +512,7 @@ mod tests {
 
     #[tokio::test]
     async fn write_cia_verifies_via_streaming_verify() {
-        // End-to-end: write_cia → verify_cia (streaming content hashes).
+        // End-to-end: write_cia → verify_cia (streaming content hashes, &CancelToken::new()).
         let tmp = tempfile::tempdir().unwrap();
         let cdn = tmp.path();
 
@@ -576,6 +575,7 @@ mod tests {
                 verify_content_hashes: true,
             },
             &NoProgress,
+            &CancelToken::new(),
         )
         .await
         .unwrap();

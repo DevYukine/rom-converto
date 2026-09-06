@@ -1,14 +1,5 @@
 use hex_literal::hex;
 
-pub const CTR_COMMON_KEYS: [&str; 6] = [
-    "64c5fd55dd3ad988325baaec5243db98",
-    "4aaa3d0e27d4d728d0b1b433f0f9cbc8",
-    "fbb0ef8cdbb0d8e453cd99344371697f",
-    "25959b7ad0409f72684198ba2ecd7dc6",
-    "7ada22caffc476cc8297a0c7ceeeeebe",
-    "a5051ca1b37dcf3afbcf8cc1edd9ce02",
-];
-
 pub const CTR_COMMON_KEYS_HEX: [[u8; 16]; 6] = [
     hex!("64c5fd55dd3ad988325baaec5243db98"),
     hex!("4aaa3d0e27d4d728d0b1b433f0f9cbc8"),

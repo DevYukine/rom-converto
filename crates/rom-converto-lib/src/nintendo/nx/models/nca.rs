@@ -12,6 +12,7 @@ use crate::nintendo::nx::constants::{
 use crate::nintendo::nx::crypto::derive::{KEY_AREA_OFFSET, KEY_AREA_TOTAL};
 use crate::nintendo::nx::error::{NxError, NxResult};
 use crate::nintendo::nx::keys::KeyAreaKind;
+use crate::util::bytes::{u32_le, u64_le};
 
 /// Parsed NCA3 header, read from the 0xC00 plaintext bytes produced by
 /// XTS-decrypting the on-disk header. Holds content metadata, up to
@@ -96,8 +97,8 @@ impl NcaHeader {
         }
         let content_type = buf[0x205];
         let key_index = buf[0x207];
-        let content_size = read_u64_at(buf, 0x208);
-        let title_id = read_u64_at(buf, 0x210);
+        let content_size = u64_le(buf, 0x208);
+        let title_id = u64_le(buf, 0x210);
         let mut rights_id = [0u8; 16];
         rights_id.copy_from_slice(&buf[0x230..0x240]);
 
@@ -108,8 +109,8 @@ impl NcaHeader {
         for (i, entry) in fs_entries.iter_mut().enumerate() {
             let off = NCA_FS_ENTRY_OFFSET + i * 0x10;
             *entry = FsEntry {
-                start_sector: read_u32_at(buf, off),
-                end_sector: read_u32_at(buf, off + 4),
+                start_sector: u32_le(buf, off),
+                end_sector: u32_le(buf, off + 4),
             };
         }
 
@@ -170,8 +171,8 @@ fn parse_fs_header(buf: &[u8]) -> NxResult<FsHeader> {
     let encryption_type = cur.read_u8()?;
     let metadata_hash_type = cur.read_u8()?;
     let _reserved = cur.read_u16::<LE>()?;
-    let section_ctr_low = read_u32_at(buf, 0x140);
-    let section_ctr_high = read_u32_at(buf, 0x144);
+    let section_ctr_low = u32_le(buf, 0x140);
+    let section_ctr_high = u32_le(buf, 0x144);
     Ok(FsHeader {
         version,
         fs_type,
@@ -181,16 +182,6 @@ fn parse_fs_header(buf: &[u8]) -> NxResult<FsHeader> {
         section_ctr_low,
         section_ctr_high,
     })
-}
-
-fn read_u32_at(buf: &[u8], off: usize) -> u32 {
-    u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]])
-}
-
-fn read_u64_at(buf: &[u8], off: usize) -> u64 {
-    let mut bytes = [0u8; 8];
-    bytes.copy_from_slice(&buf[off..off + 8]);
-    u64::from_le_bytes(bytes)
 }
 
 /// Build the 16-byte initial CTR for an FsHeader at a given byte offset

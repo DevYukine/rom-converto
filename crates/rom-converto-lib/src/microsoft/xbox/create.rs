@@ -19,6 +19,7 @@ use crate::microsoft::xdvdfs::{
     XBOX_PROBE_BASES, XdvdfsVolume, data_offset, walk_dir_tables,
 };
 use crate::util::CancelToken;
+use crate::util::Cancelled;
 
 /// First sector the linear allocator hands out. extract-xiso seeds here
 /// rather than at the format minimum of 33.
@@ -504,7 +505,7 @@ impl Writer<'_> {
         let mut left = size;
         while left > 0 {
             if cancel.is_cancelled() {
-                return Err(XboxError::Cancelled);
+                return Err(Cancelled.into());
             }
             let take = left.min(buf.len() as u64) as usize;
             src.read_exact(&mut buf[..take])?;

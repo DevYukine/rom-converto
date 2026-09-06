@@ -2,7 +2,7 @@
 //!
 //! The DS is end-of-life, so the cartridge KEY1 key buffer is embedded in
 //! the binary the same way the PS3 and Wii U disc-key databases are (see
-//! [`crate::ps3::embedded_keys`] and
+//! [`crate::sony::ps3::embedded_keys`] and
 //! [`crate::nintendo::wup::disc::embedded_keys`]). It is not per-title key
 //! material: every retail cartridge derives its secure-area key from this
 //! one table plus the header id code, so no user-supplied key file exists

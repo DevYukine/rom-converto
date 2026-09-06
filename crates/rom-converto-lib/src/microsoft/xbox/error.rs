@@ -33,8 +33,8 @@ pub enum XboxError {
     #[error("image would need {sectors} sectors, past the u32 sector numbers XDVDFS records")]
     ImageTooLarge { sectors: u64 },
 
-    #[error("operation cancelled")]
-    Cancelled,
+    #[error("{0}")]
+    Cancelled(#[from] crate::util::Cancelled),
 
     #[error("dirent name {name:?} is unsafe to extract (absolute or path-traversing)")]
     UnsafeName { name: String },

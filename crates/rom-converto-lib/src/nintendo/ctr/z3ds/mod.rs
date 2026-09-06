@@ -1,4 +1,4 @@
-use crate::util::ProgressReporter;
+use crate::util::{CancelToken, ProgressReporter};
 use anyhow::Result;
 use log::{debug, warn};
 use std::path::{Path, PathBuf};
@@ -14,10 +14,8 @@ pub mod error;
 pub mod models;
 mod seekable;
 
-pub use compress::{
-    DEFAULT_ZSTD_LEVEL, MAX_ZSTD_LEVEL, MIN_ZSTD_LEVEL, compress_rom, compress_rom_cancellable,
-};
-pub use decompress::{decompress_rom, decompress_rom_cancellable, digest_z3ds_inner};
+pub use compress::{DEFAULT_ZSTD_LEVEL, MAX_ZSTD_LEVEL, MIN_ZSTD_LEVEL, compress_rom};
+pub use decompress::{decompress_rom, digest_z3ds_inner};
 pub use seekable::decode_seekable;
 
 const COMPRESS_EXTS: &[&str] = &["cia", "cci", "3ds", "cxi", "3dsx"];
@@ -77,7 +75,12 @@ pub async fn compress_rom_batch(
     max_depth: Option<usize>,
     allow_encrypted: bool,
 ) -> Result<()> {
-    let roms = crate::util::fs::collect_files_with_exts(input_dir, COMPRESS_EXTS, max_depth)?;
+    let roms = crate::util::fs::collect_files_with_exts(
+        input_dir,
+        COMPRESS_EXTS,
+        max_depth,
+        &CancelToken::new(),
+    )?;
     if roms.is_empty() {
         warn!(
             "No supported ROM files found in {} (looked for {:?})",
@@ -107,7 +110,16 @@ pub async fn compress_rom_batch(
         }
         debug!("Compressing {} -> {}", path.display(), output.display());
 
-        if let Err(err) = compress_rom(&path, &output, level, allow_encrypted, progress).await {
+        if let Err(err) = compress_rom(
+            &path,
+            &output,
+            level,
+            allow_encrypted,
+            progress,
+            CancelToken::new(),
+        )
+        .await
+        {
             warn!("Failed to compress {}: {err}", path.display());
         }
 
@@ -127,7 +139,12 @@ pub async fn decompress_rom_batch(
     total_progress: &dyn ProgressReporter,
     max_depth: Option<usize>,
 ) -> Result<()> {
-    let roms = crate::util::fs::collect_files_with_exts(input_dir, DECOMPRESS_EXTS, max_depth)?;
+    let roms = crate::util::fs::collect_files_with_exts(
+        input_dir,
+        DECOMPRESS_EXTS,
+        max_depth,
+        &CancelToken::new(),
+    )?;
     if roms.is_empty() {
         warn!(
             "No supported Z3DS files found in {} (looked for {:?})",
@@ -157,7 +174,7 @@ pub async fn decompress_rom_batch(
         }
         debug!("Decompressing {} -> {}", path.display(), output.display());
 
-        if let Err(err) = decompress_rom(&path, &output, progress).await {
+        if let Err(err) = decompress_rom(&path, &output, progress, CancelToken::new()).await {
             warn!("Failed to decompress {}: {err}", path.display());
         }
 
@@ -301,10 +318,17 @@ mod tests {
         let original = make_fake_decrypted_cxi(64 * 1024);
         tokio::fs::write(&input, &original).await.unwrap();
 
-        compress_rom(&input, &compressed, None, false, &NoProgress)
-            .await
-            .unwrap();
-        decompress_rom(&compressed, &decompressed, &NoProgress)
+        compress_rom(
+            &input,
+            &compressed,
+            None,
+            false,
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+        decompress_rom(&compressed, &decompressed, &NoProgress, CancelToken::new())
             .await
             .unwrap();
 
@@ -322,10 +346,17 @@ mod tests {
         let original = make_fake_3dsx(128 * 1024);
         tokio::fs::write(&input, &original).await.unwrap();
 
-        compress_rom(&input, &compressed, None, false, &NoProgress)
-            .await
-            .unwrap();
-        decompress_rom(&compressed, &decompressed, &NoProgress)
+        compress_rom(
+            &input,
+            &compressed,
+            None,
+            false,
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+        decompress_rom(&compressed, &decompressed, &NoProgress, CancelToken::new())
             .await
             .unwrap();
 
@@ -352,10 +383,17 @@ mod tests {
         let original = make_fake_decrypted_cxi(2 * 1024 * 1024 + 7);
         tokio::fs::write(&input, &original).await.unwrap();
 
-        compress_rom(&input, &compressed, None, false, &NoProgress)
-            .await
-            .unwrap();
-        decompress_rom(&compressed, &decompressed, &NoProgress)
+        compress_rom(
+            &input,
+            &compressed,
+            None,
+            false,
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+        decompress_rom(&compressed, &decompressed, &NoProgress, CancelToken::new())
             .await
             .unwrap();
 
@@ -390,9 +428,16 @@ mod tests {
         let original = make_fake_decrypted_cxi(256 * 1024);
         tokio::fs::write(&input, &original).await.unwrap();
 
-        compress_rom(&input, &compressed, None, false, &NoProgress)
-            .await
-            .unwrap();
+        compress_rom(
+            &input,
+            &compressed,
+            None,
+            false,
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
 
         let compressed_size = tokio::fs::metadata(&compressed).await.unwrap().len();
         assert!(
@@ -413,7 +458,15 @@ mod tests {
         data[NCCH_MAGIC_OFFSET..NCCH_MAGIC_OFFSET + 4].copy_from_slice(&underlying_magic::NCCH);
         tokio::fs::write(&input, &data).await.unwrap();
 
-        let result = compress_rom(&input, &output, None, false, &NoProgress).await;
+        let result = compress_rom(
+            &input,
+            &output,
+            None,
+            false,
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await;
         assert!(
             matches!(
                 result,
@@ -513,7 +566,8 @@ mod tests {
             .await
             .unwrap();
 
-        let result = compress_rom(&input, &output, None, true, &NoProgress).await;
+        let result =
+            compress_rom(&input, &output, None, true, &NoProgress, CancelToken::new()).await;
         assert!(
             !matches!(result, Err(Z3dsError::InputNotDecrypted)),
             "expected the override to bypass the refusal, got {result:?}"
@@ -539,7 +593,15 @@ mod tests {
             .copy_from_slice(&partition_mu.to_le_bytes());
         tokio::fs::write(&input, &data).await.unwrap();
 
-        let result = compress_rom(&input, &output, None, false, &NoProgress).await;
+        let result = compress_rom(
+            &input,
+            &output,
+            None,
+            false,
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await;
         assert!(
             matches!(result, Err(Z3dsError::InputNotDecrypted)),
             "expected InputNotDecrypted, got {result:?}"
@@ -559,7 +621,15 @@ mod tests {
             .await
             .unwrap();
 
-        let result = compress_rom(&input, &output, None, false, &NoProgress).await;
+        let result = compress_rom(
+            &input,
+            &output,
+            None,
+            false,
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await;
         assert!(
             matches!(result, Err(Z3dsError::InputNotDecrypted)),
             "expected InputNotDecrypted, got {result:?}"
@@ -576,9 +646,16 @@ mod tests {
             let input = dir.path().join(format!("app_{allow}.3dsx"));
             let output = dir.path().join(format!("app_{allow}.z3dsx"));
             tokio::fs::write(&input, &original).await.unwrap();
-            compress_rom(&input, &output, None, allow, &NoProgress)
-                .await
-                .unwrap_or_else(|e| panic!("3dsx compress failed at allow={allow}: {e}"));
+            compress_rom(
+                &input,
+                &output,
+                None,
+                allow,
+                &NoProgress,
+                CancelToken::new(),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("3dsx compress failed at allow={allow}: {e}"));
             assert!(output.exists());
         }
     }
@@ -594,7 +671,15 @@ mod tests {
         // No NCCH magic anywhere; crypto state cannot be determined.
         tokio::fs::write(&input, vec![0u8; 0x200]).await.unwrap();
 
-        let refused = compress_rom(&input, &output, None, false, &NoProgress).await;
+        let refused = compress_rom(
+            &input,
+            &output,
+            None,
+            false,
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await;
         assert!(
             matches!(refused, Err(Z3dsError::EncryptionStateUnknown)),
             "expected EncryptionStateUnknown, got {refused:?}"
@@ -604,7 +689,7 @@ mod tests {
             "no output should be written when failing safe"
         );
 
-        compress_rom(&input, &output, None, true, &NoProgress)
+        compress_rom(&input, &output, None, true, &NoProgress, CancelToken::new())
             .await
             .expect("override should bypass the fail-safe");
         assert!(output.exists());
@@ -618,7 +703,15 @@ mod tests {
 
         tokio::fs::write(&input, b"dummy").await.unwrap();
 
-        let result = compress_rom(&input, &output, None, false, &NoProgress).await;
+        let result = compress_rom(
+            &input,
+            &output,
+            None,
+            false,
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await;
         assert!(
             matches!(
                 result,
@@ -637,9 +730,16 @@ mod tests {
         tokio::fs::write(&input, &make_fake_3dsx(16 * 1024))
             .await
             .unwrap();
-        compress_rom(&input, &output, None, false, &NoProgress)
-            .await
-            .unwrap();
+        compress_rom(
+            &input,
+            &output,
+            None,
+            false,
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
 
         let header_bytes = tokio::fs::read(&output).await.unwrap();
         assert_eq!(&header_bytes[0..4], Z3DS_MAGIC);
@@ -661,10 +761,17 @@ mod tests {
             let original = make_fake_decrypted_cxi(1024 * 1024);
             tokio::fs::write(&input, &original).await.unwrap();
 
-            compress_rom(&input, &compressed, level, false, &NoProgress)
-                .await
-                .unwrap_or_else(|e| panic!("compress failed at level={level:?}: {e}"));
-            decompress_rom(&compressed, &decompressed, &NoProgress)
+            compress_rom(
+                &input,
+                &compressed,
+                level,
+                false,
+                &NoProgress,
+                CancelToken::new(),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("compress failed at level={level:?}: {e}"));
+            decompress_rom(&compressed, &decompressed, &NoProgress, CancelToken::new())
                 .await
                 .unwrap_or_else(|e| panic!("decompress failed at level={level:?}: {e}"));
 
@@ -686,7 +793,15 @@ mod tests {
             .unwrap();
 
         for bad in [-1, 23, 100] {
-            let result = compress_rom(&input, &output, Some(bad), false, &NoProgress).await;
+            let result = compress_rom(
+                &input,
+                &output,
+                Some(bad),
+                false,
+                &NoProgress,
+                CancelToken::new(),
+            )
+            .await;
             assert!(
                 matches!(
                     result,
@@ -714,9 +829,16 @@ mod tests {
             .await
             .unwrap();
 
-        compress_rom(&input, &output, Some(9), false, &NoProgress)
-            .await
-            .unwrap();
+        compress_rom(
+            &input,
+            &output,
+            Some(9),
+            false,
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
 
         let bytes = tokio::fs::read(&output).await.unwrap();
         let metadata_start = Z3DS_HEADER_SIZE as usize;
@@ -741,16 +863,23 @@ mod tests {
         let raw = dir.path().join("game.3dsx");
         std::fs::write(&raw, make_fake_3dsx(2 * 1024 * 1024)).unwrap();
         let compressed = dir.path().join("game.z3dsx");
-        compress_rom(&raw, &compressed, None, false, &NoProgress)
-            .await
-            .unwrap();
+        compress_rom(
+            &raw,
+            &compressed,
+            None,
+            false,
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
         let out = dir.path().join("out.3dsx");
 
         let token = CancelToken::new();
         token.cancel();
-        let result = decompress_rom_cancellable(&compressed, &out, &NoProgress, token).await;
+        let result = decompress_rom(&compressed, &out, &NoProgress, token).await;
 
-        assert!(matches!(result, Err(Z3dsError::Cancelled)));
+        assert!(matches!(result, Err(Z3dsError::Cancelled(_))));
         assert!(!out.exists(), "no partial output");
         assert!(
             !crate::util::scratch_output_exists(&out).unwrap(),
@@ -767,9 +896,16 @@ mod tests {
         let raw = dir.path().join("game.3dsx");
         std::fs::write(&raw, make_fake_3dsx(16 * 1024 * 1024)).unwrap();
         let compressed = dir.path().join("game.z3dsx");
-        compress_rom(&raw, &compressed, None, false, &NoProgress)
-            .await
-            .unwrap();
+        compress_rom(
+            &raw,
+            &compressed,
+            None,
+            false,
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
         let out = dir.path().join("out.3dsx");
 
         let token = CancelToken::new();
@@ -779,13 +915,13 @@ mod tests {
             token2.cancel();
         });
 
-        let result = decompress_rom_cancellable(&compressed, &out, &NoProgress, token).await;
+        let result = decompress_rom(&compressed, &out, &NoProgress, token).await;
 
         // Mid-stream timing can occasionally complete before the cancel
         // fires; accept either a clean cancel (no output) or a completed
         // run, but never a leftover temp file.
         match result {
-            Err(Z3dsError::Cancelled) => {
+            Err(Z3dsError::Cancelled(_)) => {
                 assert!(!out.exists(), "no partial output after mid-stream cancel");
             }
             Ok(()) => assert!(out.exists()),
@@ -806,13 +942,20 @@ mod tests {
         let original = make_fake_3dsx(2 * 1024 * 1024);
         std::fs::write(&raw, &original).unwrap();
         let compressed = dir.path().join("game.z3dsx");
-        compress_rom(&raw, &compressed, None, false, &NoProgress)
-            .await
-            .unwrap();
+        compress_rom(
+            &raw,
+            &compressed,
+            None,
+            false,
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
         let out = dir.path().join("out.3dsx");
 
         let token = CancelToken::new();
-        decompress_rom_cancellable(&compressed, &out, &NoProgress, token.clone())
+        decompress_rom(&compressed, &out, &NoProgress, token.clone())
             .await
             .unwrap();
         token.cancel();

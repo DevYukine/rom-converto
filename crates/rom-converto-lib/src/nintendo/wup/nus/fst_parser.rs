@@ -23,6 +23,7 @@
 //! added.
 
 use crate::nintendo::wup::error::{WupError, WupResult};
+use crate::util::bytes::{u16_be, u32_be, u64_be};
 
 /// Magic of a valid FST header: ASCII `"FST\0"` big-endian.
 pub const FST_MAGIC: u32 = 0x4653_5400;
@@ -122,12 +123,12 @@ pub fn parse_fst(bytes: &[u8]) -> WupResult<VirtualFs> {
         return Err(WupError::InvalidFst);
     }
 
-    let magic = read_u32_be(bytes, 0);
+    let magic = u32_be(bytes, 0);
     if magic != FST_MAGIC {
         return Err(WupError::InvalidFst);
     }
-    let offset_factor = read_u32_be(bytes, 0x04);
-    let num_clusters = read_u32_be(bytes, 0x08) as usize;
+    let offset_factor = u32_be(bytes, 0x04);
+    let num_clusters = u32_be(bytes, 0x08) as usize;
     let hash_is_disabled = bytes[0x0C] != 0;
 
     // Sanity: reject pathological cluster counts that would
@@ -148,10 +149,10 @@ pub fn parse_fst(bytes: &[u8]) -> WupResult<VirtualFs> {
         let start = FST_HEADER_SIZE + i * FST_CLUSTER_ENTRY_SIZE;
         let entry = &bytes[start..start + FST_CLUSTER_ENTRY_SIZE];
         clusters.push(FstCluster {
-            offset: read_u32_be(entry, 0x00),
-            size: read_u32_be(entry, 0x04),
-            owner_title_id: read_u64_be(entry, 0x08),
-            group_id: read_u32_be(entry, 0x10),
+            offset: u32_be(entry, 0x00),
+            size: u32_be(entry, 0x04),
+            owner_title_id: u64_be(entry, 0x08),
+            group_id: u32_be(entry, 0x10),
             hash_mode: FstClusterHashMode::from_u8(entry[0x14]),
         });
     }
@@ -264,10 +265,10 @@ impl FileEntryRaw {
     fn parse(bytes: &[u8]) -> Self {
         debug_assert!(bytes.len() >= FST_FILE_ENTRY_SIZE);
         Self {
-            type_and_name_offset: read_u32_be(bytes, 0x00),
-            parent_or_offset: read_u32_be(bytes, 0x04),
-            size_or_end_index: read_u32_be(bytes, 0x08),
-            cluster_index: read_u16_be(bytes, 0x0E),
+            type_and_name_offset: u32_be(bytes, 0x00),
+            parent_or_offset: u32_be(bytes, 0x04),
+            size_or_end_index: u32_be(bytes, 0x08),
+            cluster_index: u16_be(bytes, 0x0E),
         }
     }
 
@@ -302,18 +303,6 @@ fn read_nul_terminated(name_table: &[u8], offset: u32) -> WupResult<&str> {
         .position(|&b| b == 0)
         .ok_or(WupError::InvalidFst)?;
     std::str::from_utf8(&name_table[start..start + rel]).map_err(|_| WupError::InvalidFst)
-}
-
-fn read_u16_be(bytes: &[u8], offset: usize) -> u16 {
-    u16::from_be_bytes(bytes[offset..offset + 2].try_into().expect("2-byte slice"))
-}
-
-fn read_u32_be(bytes: &[u8], offset: usize) -> u32 {
-    u32::from_be_bytes(bytes[offset..offset + 4].try_into().expect("4-byte slice"))
-}
-
-fn read_u64_be(bytes: &[u8], offset: usize) -> u64 {
-    u64::from_be_bytes(bytes[offset..offset + 8].try_into().expect("8-byte slice"))
 }
 
 #[cfg(test)]

@@ -13,15 +13,15 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 
 use log::{info, warn};
 use tokio::task;
 
 use super::gcz;
-use super::rvz::compress::{RvzCompressOptions, compress_iso_cancellable};
+use super::rvz::compress::{RvzCompressOptions, compress_iso};
 use super::rvz::error::{RvzError, RvzResult};
-use crate::util::{CancelToken, ProgressReporter};
+use crate::util::{CancelToken, Cancelled, ProgressReporter, await_with_progress_cancel};
 
 const NKIT_MAGIC_OFFSET: u64 = 0x200;
 const NKIT_MAGIC: &[u8; 4] = b"NKIT";
@@ -161,52 +161,6 @@ pub(crate) fn head_has_legacy_magic(head: &[u8]) -> bool {
     head.len() >= end && &head[start..end] == NKIT_MAGIC.as_slice()
 }
 
-/// Run a blocking job that reports progress through an atomic byte
-/// counter, polled at 100 ms like the compress pipelines.
-async fn run_blocking_with_progress<T, F>(
-    total: u64,
-    msg: &str,
-    progress: &dyn ProgressReporter,
-    cancel: &CancelToken,
-    job: F,
-) -> RvzResult<T>
-where
-    T: Send + 'static,
-    F: FnOnce(Arc<AtomicU64>, CancelToken) -> RvzResult<T> + Send + 'static,
-{
-    progress.start(total, msg);
-    let bytes_done = Arc::new(AtomicU64::new(0));
-    let bytes_done_bg = bytes_done.clone();
-    let cancel_bg = cancel.clone();
-    let mut handle = task::spawn_blocking(move || job(bytes_done_bg, cancel_bg));
-    let result = loop {
-        match tokio::time::timeout(std::time::Duration::from_millis(100), &mut handle).await {
-            Ok(joined) => break joined?,
-            Err(_) => {
-                let delta = bytes_done.swap(0, Ordering::Relaxed);
-                if delta > 0 {
-                    progress.inc(delta);
-                }
-            }
-        }
-    };
-    let remaining = bytes_done.swap(0, Ordering::Relaxed);
-    if remaining > 0 {
-        progress.inc(remaining);
-    }
-    progress.finish();
-    if result.is_ok() && cancel.is_cancelled() {
-        return Err(RvzError::Cancelled);
-    }
-    result.map_err(|e| {
-        if cancel.is_cancelled() {
-            RvzError::Cancelled
-        } else {
-            e
-        }
-    })
-}
-
 /// Pre-conversion integrity pass. GCZ checks every stored block's
 /// Adler-32 without inflating; WIA checks the SHA-1 header chain and
 /// decodes both metadata tables (`deep` additionally decodes every
@@ -218,58 +172,63 @@ pub async fn verify_legacy_input(
     progress: &dyn ProgressReporter,
     cancel: &CancelToken,
 ) -> RvzResult<()> {
+    let label = match fmt {
+        LegacyFormat::Gcz => "Verifying GCZ integrity",
+        LegacyFormat::Wia => "Verifying WIA integrity",
+        LegacyFormat::NkitIso | LegacyFormat::NkitGcz => "Verifying NKit integrity",
+    };
+
+    let path = input.to_path_buf();
+    let total = {
+        let path = path.clone();
+        task::spawn_blocking(move || legacy_verify_total(&path, fmt, deep)).await??
+    };
+    progress.start(total, label);
+
+    let bytes_done = Arc::new(AtomicU64::new(0));
+    let handle = task::spawn_blocking({
+        let bytes_done = bytes_done.clone();
+        let cancel = cancel.clone();
+        move || legacy_verify_blocking(&path, fmt, deep, bytes_done, cancel)
+    });
+    // A codec that stopped on the token reports its own module's
+    // `Cancelled`; normalize it so callers can match one variant.
+    await_with_progress_cancel(progress, &bytes_done, handle, cancel)
+        .await
+        .map_err(|e| {
+            if cancel.is_cancelled() {
+                Cancelled.into()
+            } else {
+                e
+            }
+        })
+}
+
+/// Progress total the integrity pass will report against, in the unit
+/// each format's verifier counts.
+fn legacy_verify_total(path: &Path, fmt: LegacyFormat, deep: bool) -> RvzResult<u64> {
+    Ok(match fmt {
+        LegacyFormat::Gcz => gcz::verify_total(path)?,
+        LegacyFormat::Wia => super::wia::verify_total(path, deep)?,
+        LegacyFormat::NkitIso => super::nkit::verify_total(path, false)?,
+        LegacyFormat::NkitGcz => super::nkit::verify_total(path, true)?,
+    })
+}
+
+fn legacy_verify_blocking(
+    path: &Path,
+    fmt: LegacyFormat,
+    deep: bool,
+    done: Arc<AtomicU64>,
+    cancel: CancelToken,
+) -> RvzResult<()> {
     match fmt {
-        LegacyFormat::Gcz => {
-            let total = {
-                let path = input.to_path_buf();
-                task::spawn_blocking(move || gcz::verify_total(&path)).await??
-            };
-            let path = input.to_path_buf();
-            run_blocking_with_progress(
-                total,
-                "Verifying GCZ integrity",
-                progress,
-                cancel,
-                move |done, cancel| Ok(gcz::verify_gcz_blocking(&path, done, cancel)?),
-            )
-            .await
-        }
-        LegacyFormat::Wia => {
-            let total = {
-                let path = input.to_path_buf();
-                task::spawn_blocking(move || super::wia::verify_total(&path, deep)).await??
-            };
-            let path = input.to_path_buf();
-            run_blocking_with_progress(
-                total,
-                "Verifying WIA integrity",
-                progress,
-                cancel,
-                move |done, cancel| Ok(super::wia::verify_wia_blocking(&path, deep, done, cancel)?),
-            )
-            .await
-        }
-        LegacyFormat::NkitIso | LegacyFormat::NkitGcz => {
-            let wrapped = fmt == LegacyFormat::NkitGcz;
-            let total = {
-                let path = input.to_path_buf();
-                task::spawn_blocking(move || super::nkit::verify_total(&path, wrapped)).await??
-            };
-            let path = input.to_path_buf();
-            run_blocking_with_progress(
-                total,
-                "Verifying NKit integrity",
-                progress,
-                cancel,
-                move |done, cancel| {
-                    Ok(super::nkit::verify_nkit_blocking(
-                        &path, wrapped, done, cancel,
-                    )?)
-                },
-            )
-            .await
-        }
+        LegacyFormat::Gcz => gcz::verify_gcz_blocking(path, done, cancel)?,
+        LegacyFormat::Wia => super::wia::verify_wia_blocking(path, deep, done, cancel)?,
+        LegacyFormat::NkitIso => super::nkit::verify_nkit_blocking(path, false, done, cancel)?,
+        LegacyFormat::NkitGcz => super::nkit::verify_nkit_blocking(path, true, done, cancel)?,
     }
+    Ok(())
 }
 
 /// Knobs for the migrate operation's verify phase.
@@ -283,34 +242,12 @@ pub struct MigrateOptions {
     pub deep_verify: bool,
 }
 
-/// Verify a legacy container, then stream-convert it to RVZ. No
-/// temporary files: the source reconstructs the logical disc on the
-/// fly and feeds the regular compress pipeline.
-pub async fn migrate_disc(
-    input: &Path,
-    output: &Path,
-    options: RvzCompressOptions,
-    migrate: MigrateOptions,
-    progress: &dyn ProgressReporter,
-) -> RvzResult<()> {
-    migrate_disc_cancellable(
-        input,
-        output,
-        options,
-        migrate,
-        ALL_MIGRATE_FORMATS,
-        progress,
-        CancelToken::new(),
-    )
-    .await
-}
-
-/// Like [`migrate_disc`] but observes `cancel`. Both phases honor the
-/// token: the verify pass checks it at block/group boundaries and the
-/// conversion phase streams through [`compress_iso_cancellable`],
+/// Verifies a legacy container, then converts it to RVZ. Both phases
+/// honor `cancel`: the verify pass checks it at block/group boundaries and the
+/// conversion phase streams through [`compress_iso`],
 /// which writes to a scratch file and renames on success, so an
 /// interrupted migration leaves no partial RVZ behind.
-pub async fn migrate_disc_cancellable(
+pub async fn migrate_disc(
     input: &Path,
     output: &Path,
     options: RvzCompressOptions,
@@ -333,7 +270,7 @@ pub async fn migrate_disc_cancellable(
     if !migrate.skip_verify {
         verify_legacy_input(input, fmt, migrate.deep_verify, progress, &cancel).await?;
     }
-    compress_iso_cancellable(input, output, options, progress, cancel).await
+    compress_iso(input, output, options, progress, cancel).await
 }
 
 /// Migrate every legacy container directly inside `dir` (top level
@@ -407,7 +344,7 @@ pub async fn migrate_disc_batch(
             summary.skipped += 1;
             continue;
         }
-        match migrate_disc_cancellable(
+        match migrate_disc(
             input,
             &output,
             options,
@@ -419,7 +356,7 @@ pub async fn migrate_disc_batch(
         .await
         {
             Ok(()) => summary.ok += 1,
-            Err(RvzError::Cancelled) => break,
+            Err(RvzError::Cancelled(_)) => break,
             Err(e) => {
                 warn!("Failed to migrate {}: {e}", input.display());
                 summary.failed += 1;
@@ -478,7 +415,9 @@ mod tests {
             &rvz_from_gcz,
             RvzCompressOptions::default(),
             MigrateOptions::default(),
+            ALL_MIGRATE_FORMATS,
             &NoProgress,
+            CancelToken::new(),
         )
         .await
         .unwrap();
@@ -491,6 +430,7 @@ mod tests {
             &rvz_from_iso,
             RvzCompressOptions::default(),
             &NoProgress,
+            CancelToken::new(),
         )
         .await
         .unwrap();
@@ -500,7 +440,7 @@ mod tests {
         );
 
         let restored = dir.path().join("restored.iso");
-        decompress_disc(&rvz_from_gcz, &restored, &NoProgress)
+        decompress_disc(&rvz_from_gcz, &restored, &NoProgress, CancelToken::new())
             .await
             .unwrap();
         assert_eq!(std::fs::read(&restored).unwrap(), original);
@@ -513,12 +453,20 @@ mod tests {
         let gcz = write_gcz_fixture(dir.path(), &original);
 
         let rvz = dir.path().join("auto.rvz");
-        compress_disc(&gcz, &rvz, RvzCompressOptions::default(), &NoProgress)
-            .await
-            .unwrap();
+        compress_disc(
+            &gcz,
+            &rvz,
+            RvzCompressOptions::default(),
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
 
         let restored = dir.path().join("restored.iso");
-        decompress_disc(&rvz, &restored, &NoProgress).await.unwrap();
+        decompress_disc(&rvz, &restored, &NoProgress, CancelToken::new())
+            .await
+            .unwrap();
         assert_eq!(std::fs::read(&restored).unwrap(), original);
     }
 
@@ -539,7 +487,9 @@ mod tests {
             &rvz,
             RvzCompressOptions::default(),
             MigrateOptions::default(),
+            ALL_MIGRATE_FORMATS,
             &NoProgress,
+            CancelToken::new(),
         )
         .await
         .unwrap_err();
@@ -577,6 +527,7 @@ mod tests {
             &corrupt_out,
             RvzCompressOptions::default(),
             &NoProgress,
+            CancelToken::new(),
         )
         .await
         .unwrap_err();
@@ -590,9 +541,15 @@ mod tests {
         let valid = write_gcz_fixture(valid_dir.path(), &original);
         let valid_out = valid_dir.path().join("valid.rvz");
         let recorder = PhaseRecorder::default();
-        compress_disc(&valid, &valid_out, RvzCompressOptions::default(), &recorder)
-            .await
-            .unwrap();
+        compress_disc(
+            &valid,
+            &valid_out,
+            RvzCompressOptions::default(),
+            &recorder,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
         assert!(valid_out.exists());
 
         let messages = recorder.messages.lock().unwrap();
@@ -612,7 +569,7 @@ mod tests {
         cancel.cancel();
 
         let rvz = dir.path().join("out.rvz");
-        let err = migrate_disc_cancellable(
+        let err = migrate_disc(
             &gcz,
             &rvz,
             RvzCompressOptions::default(),
@@ -623,7 +580,7 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(matches!(err, RvzError::Cancelled), "{err}");
+        assert!(matches!(err, RvzError::Cancelled(_)), "{err}");
         assert!(!rvz.exists(), "no output may be written when cancelled");
     }
 
@@ -719,7 +676,9 @@ mod tests {
                 skip_verify: false,
                 deep_verify: true,
             },
+            ALL_MIGRATE_FORMATS,
             &NoProgress,
+            CancelToken::new(),
         )
         .await
         .unwrap();
@@ -730,6 +689,7 @@ mod tests {
             &rvz_from_iso,
             RvzCompressOptions::default(),
             &NoProgress,
+            CancelToken::new(),
         )
         .await
         .unwrap();
@@ -739,7 +699,7 @@ mod tests {
         );
 
         let restored = dir.path().join("restored.iso");
-        decompress_disc(&rvz_from_wia, &restored, &NoProgress)
+        decompress_disc(&rvz_from_wia, &restored, &NoProgress, CancelToken::new())
             .await
             .unwrap();
         assert_eq!(std::fs::read(&restored).unwrap(), original);
@@ -777,6 +737,7 @@ mod tests {
             &rvz_from_iso,
             RvzCompressOptions::default(),
             &NoProgress,
+            CancelToken::new(),
         )
         .await
         .unwrap();
@@ -788,7 +749,9 @@ mod tests {
                 &rvz,
                 RvzCompressOptions::default(),
                 MigrateOptions::default(),
+                ALL_MIGRATE_FORMATS,
                 &NoProgress,
+                CancelToken::new(),
             )
             .await
             .unwrap();
@@ -800,9 +763,14 @@ mod tests {
         }
 
         let restored = dir.path().join("restored.iso");
-        decompress_disc(&dir.path().join("from_nkit.rvz"), &restored, &NoProgress)
-            .await
-            .unwrap();
+        decompress_disc(
+            &dir.path().join("from_nkit.rvz"),
+            &restored,
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
         assert_eq!(std::fs::read(&restored).unwrap(), original);
     }
 
@@ -823,6 +791,7 @@ mod tests {
             &rvz_from_iso,
             RvzCompressOptions::default(),
             &NoProgress,
+            CancelToken::new(),
         )
         .await
         .unwrap();
@@ -833,7 +802,9 @@ mod tests {
             &rvz_from_nkit,
             RvzCompressOptions::default(),
             MigrateOptions::default(),
+            ALL_MIGRATE_FORMATS,
             &NoProgress,
+            CancelToken::new(),
         )
         .await
         .unwrap();
@@ -843,7 +814,7 @@ mod tests {
         );
 
         let restored = dir.path().join("restored.iso");
-        decompress_disc(&rvz_from_nkit, &restored, &NoProgress)
+        decompress_disc(&rvz_from_nkit, &restored, &NoProgress, CancelToken::new())
             .await
             .unwrap();
         assert_eq!(std::fs::read(&restored).unwrap(), original);
@@ -859,7 +830,9 @@ mod tests {
             &dir.path().join("out.rvz"),
             RvzCompressOptions::default(),
             MigrateOptions::default(),
+            ALL_MIGRATE_FORMATS,
             &NoProgress,
+            CancelToken::new(),
         )
         .await
         .unwrap_err();
@@ -881,7 +854,7 @@ mod tests {
         let wia = write_wia_fixture(dir.path());
 
         let rejected = dir.path().join("rejected.rvz");
-        let err = migrate_disc_cancellable(
+        let err = migrate_disc(
             &wia,
             &rejected,
             RvzCompressOptions::default(),
@@ -902,7 +875,7 @@ mod tests {
         );
 
         let accepted = dir.path().join("accepted.rvz");
-        migrate_disc_cancellable(
+        migrate_disc(
             &wia,
             &accepted,
             RvzCompressOptions::default(),

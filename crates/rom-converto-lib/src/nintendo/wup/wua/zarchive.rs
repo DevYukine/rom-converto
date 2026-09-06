@@ -1,26 +1,24 @@
 //! Read-only ZArchive (`.wua`) reader.
 //!
-//! The format is footer-anchored: the 144-byte [`ZArchiveFooter`] at
-//! the tail of the file points at the four index sections plus the
-//! compressed data. Data blocks are 64 KiB and zstd-compressed; a
-//! sentinel `compressed_size == 64 KiB` means "stored raw" so an
-//! incompressible block still fits in one offset-record slot.
+//! The format is footer-anchored: the 144-byte [`Footer`] at the tail
+//! of the file points at the four index sections plus the compressed
+//! data. Data blocks are 64 KiB and zstd-compressed; a sentinel
+//! `compressed_size == 64 KiB` means "stored raw" so an
+//! incompressible block still fits in one offset-record slot. The
+//! structures themselves live in [`crate::zar::format`], shared with
+//! the writer and the Xbox 360 `.zar` pipeline.
 
-use binrw::BinRead;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
 
-use crate::nintendo::wup::constants::{
-    COMPRESSED_BLOCK_SIZE, COMPRESSION_OFFSET_RECORD_SIZE, ENTRIES_PER_OFFSET_RECORD,
-    FILE_DIR_NAME_OFFSET_MASK, FILE_DIRECTORY_ENTRY_SIZE, ZARCHIVE_FOOTER_MAGIC,
-    ZARCHIVE_FOOTER_SIZE, ZARCHIVE_FOOTER_VERSION,
-};
 use crate::nintendo::wup::error::{WupError, WupResult};
-use crate::nintendo::wup::models::file_tree::FileDirectoryEntry;
-use crate::nintendo::wup::models::footer::ZArchiveFooter;
-use crate::nintendo::wup::models::offset_record::CompressionOffsetRecord;
+use crate::zar::format::{
+    COMPRESSED_BLOCK_SIZE, CompressionOffsetRecord, ENTRIES_PER_OFFSET_RECORD,
+    FILE_DIRECTORY_ENTRY_SIZE, FOOTER_SIZE, FileDirectoryEntry, Footer, OFFSET_RECORD_SIZE,
+    Section, decode_name_len,
+};
 
 /// Read-only handle onto one `.wua` file. Holds the parsed index
 /// sections (names, file tree, offset records) in memory; file data
@@ -45,28 +43,16 @@ impl ZArchiveReader {
     pub fn open(path: &Path) -> WupResult<Self> {
         let mut file = File::open(path)?;
         let total = file.metadata()?.len();
-        if total < ZARCHIVE_FOOTER_SIZE as u64 {
+        if total < FOOTER_SIZE as u64 {
             return Err(WupError::InvalidZArchive("file shorter than footer".into()));
         }
 
-        file.seek(SeekFrom::Start(total - ZARCHIVE_FOOTER_SIZE as u64))?;
-        let mut footer_buf = vec![0u8; ZARCHIVE_FOOTER_SIZE];
+        file.seek(SeekFrom::Start(total - FOOTER_SIZE as u64))?;
+        let mut footer_buf = [0u8; FOOTER_SIZE];
         file.read_exact(&mut footer_buf)?;
-        let footer = ZArchiveFooter::read(&mut Cursor::new(&footer_buf))
-            .map_err(|e| WupError::InvalidZArchive(format!("footer parse: {}", e)))?;
+        let footer = Footer::from_bytes(&footer_buf)
+            .map_err(|e| WupError::InvalidZArchive(e.to_string()))?;
 
-        if footer.magic != ZARCHIVE_FOOTER_MAGIC {
-            return Err(WupError::InvalidZArchive(format!(
-                "bad footer magic 0x{:08x}",
-                footer.magic
-            )));
-        }
-        if footer.version != ZARCHIVE_FOOTER_VERSION {
-            return Err(WupError::InvalidZArchive(format!(
-                "unsupported zarchive version 0x{:08x}",
-                footer.version
-            )));
-        }
         if footer.total_size != total {
             return Err(WupError::InvalidZArchive(format!(
                 "footer total_size {} does not match file length {}",
@@ -74,43 +60,37 @@ impl ZArchiveReader {
             )));
         }
 
-        let names = read_section(&mut file, &footer.section_names)?;
+        let names = read_section(&mut file, footer.names)?;
 
-        let entries_bytes = read_section(&mut file, &footer.section_file_tree)?;
-        if entries_bytes.len() % FILE_DIRECTORY_ENTRY_SIZE != 0 {
+        let entries_bytes = read_section(&mut file, footer.file_tree)?;
+        let (entry_chunks, rest) = entries_bytes.as_chunks::<FILE_DIRECTORY_ENTRY_SIZE>();
+        if !rest.is_empty() {
             return Err(WupError::InvalidZArchive(
                 "file tree section size not aligned to entry size".into(),
             ));
         }
-        let entry_count = entries_bytes.len() / FILE_DIRECTORY_ENTRY_SIZE;
-        let mut entries = Vec::with_capacity(entry_count);
-        let mut cur = Cursor::new(&entries_bytes);
-        for _ in 0..entry_count {
-            let e = FileDirectoryEntry::read(&mut cur)
-                .map_err(|e| WupError::InvalidZArchive(format!("entry parse: {}", e)))?;
-            entries.push(e);
-        }
+        let entries: Vec<FileDirectoryEntry> = entry_chunks
+            .iter()
+            .map(FileDirectoryEntry::from_bytes)
+            .collect();
 
-        let offset_records_bytes = read_section(&mut file, &footer.section_offset_records)?;
-        if offset_records_bytes.len() % COMPRESSION_OFFSET_RECORD_SIZE != 0 {
+        let record_bytes = read_section(&mut file, footer.offset_records)?;
+        let (record_chunks, rest) = record_bytes.as_chunks::<OFFSET_RECORD_SIZE>();
+        if !rest.is_empty() {
             return Err(WupError::InvalidZArchive(
                 "offset records section not aligned to record size".into(),
             ));
         }
-        let record_count = offset_records_bytes.len() / COMPRESSION_OFFSET_RECORD_SIZE;
-        let mut offset_records = Vec::with_capacity(record_count);
-        let mut cur = Cursor::new(&offset_records_bytes);
-        for _ in 0..record_count {
-            let r = CompressionOffsetRecord::read(&mut cur)
-                .map_err(|e| WupError::InvalidZArchive(format!("offset record parse: {}", e)))?;
-            offset_records.push(r);
-        }
+        let offset_records: Vec<CompressionOffsetRecord> = record_chunks
+            .iter()
+            .map(CompressionOffsetRecord::from_bytes)
+            .collect();
 
         let mut children_by_dir: HashMap<u32, Vec<u32>> = HashMap::new();
         for (idx, entry) in entries.iter().enumerate() {
             if !entry.is_file() {
                 let start = entry.node_start_index();
-                let count = entry.child_count();
+                let count = entry.count();
                 let children: Vec<u32> = (start..start + count).collect();
                 children_by_dir.insert(idx as u32, children);
             }
@@ -122,7 +102,7 @@ impl ZArchiveReader {
             entries,
             offset_records,
             children_by_dir,
-            compressed_data_size: footer.section_compressed_data.size,
+            compressed_data_size: footer.compressed_data.size,
         })
     }
 
@@ -258,23 +238,10 @@ impl ZArchiveReader {
     }
 
     fn entry_name(&self, entry: &FileDirectoryEntry) -> WupResult<&str> {
-        let offset = (entry.name_offset_and_type_flag & FILE_DIR_NAME_OFFSET_MASK) as usize;
-        if offset >= self.names.len() {
-            return Err(WupError::InvalidZArchive("name offset past table".into()));
-        }
-        let prefix = self.names[offset];
-        let (start, len) = if prefix & 0x80 == 0 {
-            (offset + 1, prefix as usize)
-        } else {
-            if offset + 2 > self.names.len() {
-                return Err(WupError::InvalidZArchive(
-                    "name table truncated on 2-byte prefix".into(),
-                ));
-            }
-            let hi = (prefix & 0x7F) as usize;
-            let lo = self.names[offset + 1] as usize;
-            (offset + 2, (hi << 8) | lo)
-        };
+        let offset = entry.name_offset() as usize;
+        let (len, header) = decode_name_len(&self.names, offset)
+            .map_err(|e| WupError::InvalidZArchive(e.to_string()))?;
+        let start = offset + header;
         if start + len > self.names.len() {
             return Err(WupError::InvalidZArchive("name slice past table".into()));
         }
@@ -310,9 +277,9 @@ impl ZArchiveReader {
         })?;
         let mut compressed_offset = record.base_offset;
         for s in 0..slot {
-            compressed_offset += record.block_size(s) as u64;
+            compressed_offset += record.sizes[s] as u64 + 1;
         }
-        let block_size = record.block_size(slot);
+        let block_size = record.sizes[slot] as usize + 1;
         if compressed_offset + block_size as u64 > self.compressed_data_size {
             return Err(WupError::InvalidZArchive(
                 "block read past compressed data".into(),
@@ -332,10 +299,7 @@ impl ZArchiveReader {
     }
 }
 
-fn read_section(
-    file: &mut File,
-    section: &crate::nintendo::wup::models::footer::ZArchiveSectionInfo,
-) -> WupResult<Vec<u8>> {
+fn read_section(file: &mut File, section: Section) -> WupResult<Vec<u8>> {
     file.seek(SeekFrom::Start(section.offset))?;
     let mut buf = vec![0u8; section.size as usize];
     file.read_exact(&mut buf)?;
@@ -345,22 +309,15 @@ fn read_section(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::nintendo::wup::compress_worker::spawn_zarchive_pool;
-    use crate::nintendo::wup::constants::ZARCHIVE_DEFAULT_ZSTD_LEVEL;
-    use crate::nintendo::wup::zarchive_writer::ZArchiveWriter;
-    use std::io::Write;
+    use crate::zar::ZarWriter;
 
     fn build_archive_to_path<F>(path: &Path, build: F)
     where
-        F: FnOnce(&mut ZArchiveWriter<Vec<u8>>) -> WupResult<()>,
+        F: FnOnce(&mut ZarWriter<'_, File>) -> WupResult<()>,
     {
-        let mut writer = ZArchiveWriter::new(Vec::new(), ZARCHIVE_DEFAULT_ZSTD_LEVEL).unwrap();
+        let mut writer = ZarWriter::new(File::create(path).unwrap(), 2).unwrap();
         build(&mut writer).unwrap();
-        let pool = spawn_zarchive_pool(ZARCHIVE_DEFAULT_ZSTD_LEVEL).unwrap();
-        let (bytes, _) = writer.finalize(&pool, None).unwrap();
-        pool.shutdown();
-        let mut file = File::create(path).unwrap();
-        file.write_all(&bytes).unwrap();
+        writer.finish().unwrap();
     }
 
     #[test]
@@ -368,9 +325,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let archive_path = dir.path().join("test.wua");
         build_archive_to_path(&archive_path, |w| {
-            w.make_dir("0000000000000000")?;
-            w.make_dir("0000000000000000/meta")?;
-            w.start_new_file("0000000000000000/meta/meta.xml")?;
+            w.make_dir("0000000000000000", true)?;
+            w.make_dir("0000000000000000/meta", true)?;
+            w.start_file("0000000000000000/meta/meta.xml")?;
             w.append_data(b"<meta>hello</meta>")?;
             Ok(())
         });
@@ -391,8 +348,8 @@ mod tests {
         let large: Vec<u8> = (0..200_000).map(|i| (i & 0xFF) as u8).collect();
         let payload = large.clone();
         build_archive_to_path(&archive_path, |w| {
-            w.make_dir("title")?;
-            w.start_new_file("title/big.bin")?;
+            w.make_dir("title", true)?;
+            w.start_file("title/big.bin")?;
             w.append_data(&payload)?;
             Ok(())
         });

@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::CancelToken;
+use super::{CancelToken, Cancelled};
 
 /// True if `path` is a file whose extension case-insensitively matches one
 /// of `exts`.
@@ -14,6 +14,21 @@ pub fn has_any_extension(path: &Path, exts: &[&str]) -> bool {
             .and_then(|e| e.to_str())
             .map(|e| exts.iter().any(|want| e.eq_ignore_ascii_case(want)))
             .unwrap_or(false)
+}
+
+/// True if `path`'s extension case-insensitively matches `ext`. Unlike
+/// [`has_any_extension`] the path need not exist, so it also answers for
+/// output paths that have not been written yet.
+pub fn has_ext(path: &Path, ext: &str) -> bool {
+    path.extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.eq_ignore_ascii_case(ext))
+        .unwrap_or(false)
+}
+
+/// Size of `path` in bytes, or 0 when it cannot be stat'd.
+pub fn file_len(path: &Path) -> u64 {
+    std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
 }
 
 /// True for OS-generated junk file names: `._*`, `.DS_Store`, `Thumbs.db`,
@@ -49,24 +64,8 @@ pub fn is_os_junk_dir(name: &str) -> bool {
         || name.eq_ignore_ascii_case("System Volume Information")
 }
 
-/// Recursive listing of files under `dir` whose extension matches any of
-/// `exts` (case-insensitive), sorted for deterministic processing order.
-///
-/// `max_depth` counts directory levels below the scan root: files directly
-/// in `dir` are depth 1. `None` descends without limit, `Some(1)` returns
-/// only the top-level files (no descent), and `Some(N)` descends at most
-/// `N` levels. Symlinked directories are not followed, so cycles cannot
-/// cause infinite recursion.
-pub fn collect_files_with_exts(
-    dir: &Path,
-    exts: &[&str],
-    max_depth: Option<usize>,
-) -> std::io::Result<Vec<PathBuf>> {
-    collect_files_with_exts_cancellable(dir, exts, max_depth, &CancelToken::new())
-}
-
 /// Cancellable twin of [`collect_files_with_exts`].
-pub fn collect_files_with_exts_cancellable(
+pub fn collect_files_with_exts(
     dir: &Path,
     exts: &[&str],
     max_depth: Option<usize>,
@@ -96,19 +95,8 @@ pub fn collect_files_with_exts_cancellable(
     Ok(out)
 }
 
-/// Recursive listing of every regular file under `dir`, sorted for
-/// deterministic processing order. Unlike `collect_files_with_exts` this
-/// applies no extension filter, so it suits format-agnostic operations.
-///
-/// `max_depth` follows the same convention as `collect_files_with_exts`:
-/// files directly in `dir` are depth 1, `None` descends without limit, and
-/// symlinked directories are not followed.
-pub fn collect_all_files(dir: &Path, max_depth: Option<usize>) -> std::io::Result<Vec<PathBuf>> {
-    collect_all_files_cancellable(dir, max_depth, &CancelToken::new())
-}
-
 /// Cancellable twin of [`collect_all_files`].
-pub fn collect_all_files_cancellable(
+pub fn collect_all_files(
     dir: &Path,
     max_depth: Option<usize>,
     cancel: &CancelToken,
@@ -141,7 +129,7 @@ fn cancelled(cancel: &CancelToken) -> std::io::Result<()> {
     if cancel.is_cancelled() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::Interrupted,
-            "cancelled",
+            Cancelled,
         ));
     }
     Ok(())
@@ -200,6 +188,13 @@ mod tests {
     }
 
     #[test]
+    fn has_ext_is_case_insensitive_and_does_not_require_a_file() {
+        assert!(has_ext(Path::new("/nowhere/game.WBFS"), "wbfs"));
+        assert!(!has_ext(Path::new("/nowhere/game.wbfs"), "iso"));
+        assert!(!has_ext(Path::new("/nowhere/game"), "iso"));
+    }
+
+    #[test]
     fn has_any_extension_is_case_insensitive_and_requires_a_file() {
         let dir = tempfile::tempdir().unwrap();
         let chd = dir.path().join("game.CHD");
@@ -221,11 +216,14 @@ mod tests {
         std::fs::write(dir.path().join("c.rvz"), b"x").unwrap();
         std::fs::write(dir.path().join("d.txt"), b"x").unwrap();
 
-        let found = collect_files_with_exts(dir.path(), &["iso", "wbfs"], None).unwrap();
+        let found =
+            collect_files_with_exts(dir.path(), &["iso", "wbfs"], None, &CancelToken::new())
+                .unwrap();
         assert_eq!(found.len(), 2);
         assert!(found.iter().all(|p| p.extension().is_some()));
 
-        let single = collect_files_with_exts(dir.path(), &["rvz"], None).unwrap();
+        let single =
+            collect_files_with_exts(dir.path(), &["rvz"], None, &CancelToken::new()).unwrap();
         assert_eq!(single.len(), 1);
     }
 
@@ -235,7 +233,8 @@ mod tests {
         for name in ["z.iso", "a.iso", "m.iso"] {
             std::fs::write(dir.path().join(name), b"x").unwrap();
         }
-        let found = collect_files_with_exts(dir.path(), &["iso"], None).unwrap();
+        let found =
+            collect_files_with_exts(dir.path(), &["iso"], None, &CancelToken::new()).unwrap();
         let mut sorted = found.clone();
         sorted.sort();
         assert_eq!(found, sorted);
@@ -256,21 +255,24 @@ mod tests {
     #[test]
     fn collect_files_with_exts_recurses_into_subdirectories() {
         let dir = nested_iso_tree();
-        let found = collect_files_with_exts(dir.path(), &["iso"], None).unwrap();
+        let found =
+            collect_files_with_exts(dir.path(), &["iso"], None, &CancelToken::new()).unwrap();
         assert_eq!(found.len(), 3);
     }
 
     #[test]
     fn collect_files_with_exts_max_depth_one_is_top_level_only() {
         let dir = nested_iso_tree();
-        let found = collect_files_with_exts(dir.path(), &["iso"], Some(1)).unwrap();
+        let found =
+            collect_files_with_exts(dir.path(), &["iso"], Some(1), &CancelToken::new()).unwrap();
         assert_eq!(found, vec![dir.path().join("b.iso")]);
     }
 
     #[test]
     fn collect_files_with_exts_max_depth_two_descends_one_level() {
         let dir = nested_iso_tree();
-        let found = collect_files_with_exts(dir.path(), &["iso"], Some(2)).unwrap();
+        let found =
+            collect_files_with_exts(dir.path(), &["iso"], Some(2), &CancelToken::new()).unwrap();
         assert_eq!(
             found,
             vec![
@@ -289,7 +291,8 @@ mod tests {
         std::fs::write(sub.join("a.iso"), b"x").unwrap();
         std::fs::write(sub.join("m.iso"), b"x").unwrap();
 
-        let found = collect_files_with_exts(dir.path(), &["iso"], None).unwrap();
+        let found =
+            collect_files_with_exts(dir.path(), &["iso"], None, &CancelToken::new()).unwrap();
         let mut sorted = found.clone();
         sorted.sort();
         assert_eq!(found, sorted);
@@ -302,7 +305,8 @@ mod tests {
         std::fs::create_dir(&sub).unwrap();
         std::fs::write(sub.join("a.iso"), b"x").unwrap();
 
-        let found = collect_files_with_exts(dir.path(), &["iso"], None).unwrap();
+        let found =
+            collect_files_with_exts(dir.path(), &["iso"], None, &CancelToken::new()).unwrap();
         assert_eq!(found.len(), 1);
         let rel = found[0].strip_prefix(dir.path()).unwrap();
         assert_eq!(rel, Path::new("sub").join("a.iso"));
@@ -314,7 +318,8 @@ mod tests {
         std::fs::create_dir(dir.path().join("empty")).unwrap();
         std::fs::write(dir.path().join("b.iso"), b"x").unwrap();
 
-        let found = collect_files_with_exts(dir.path(), &["iso"], None).unwrap();
+        let found =
+            collect_files_with_exts(dir.path(), &["iso"], None, &CancelToken::new()).unwrap();
         assert_eq!(found, vec![dir.path().join("b.iso")]);
     }
 
@@ -328,7 +333,8 @@ mod tests {
         std::os::unix::fs::symlink(dir.path(), dir.path().join("loop")).unwrap();
         std::os::unix::fs::symlink(&real, dir.path().join("link")).unwrap();
 
-        let found = collect_files_with_exts(dir.path(), &["iso"], None).unwrap();
+        let found =
+            collect_files_with_exts(dir.path(), &["iso"], None, &CancelToken::new()).unwrap();
         assert_eq!(found, vec![real.join("a.iso")]);
     }
 
@@ -342,7 +348,7 @@ mod tests {
         std::fs::create_dir(&sub).unwrap();
         std::fs::write(sub.join("c.bin"), b"x").unwrap();
 
-        let found = collect_all_files(dir.path(), None).unwrap();
+        let found = collect_all_files(dir.path(), None, &CancelToken::new()).unwrap();
         assert_eq!(found.len(), 4);
         let mut sorted = found.clone();
         sorted.sort();
@@ -357,7 +363,7 @@ mod tests {
         std::fs::create_dir(&sub).unwrap();
         std::fs::write(sub.join("b.bin"), b"x").unwrap();
 
-        let found = collect_all_files(dir.path(), Some(1)).unwrap();
+        let found = collect_all_files(dir.path(), Some(1), &CancelToken::new()).unwrap();
         assert_eq!(found, vec![dir.path().join("a.bin")]);
     }
 
@@ -427,7 +433,7 @@ mod tests {
         std::fs::create_dir(&eadir).unwrap();
         std::fs::write(eadir.join("junk.cia"), b"x").unwrap();
 
-        let found = collect_files_with_exts(root, &["cia"], None).unwrap();
+        let found = collect_files_with_exts(root, &["cia"], None, &CancelToken::new()).unwrap();
         assert_eq!(
             found,
             vec![
@@ -449,7 +455,7 @@ mod tests {
         std::fs::create_dir(&eadir).unwrap();
         std::fs::write(eadir.join("junk.bin"), b"x").unwrap();
 
-        let found = collect_all_files(root, None).unwrap();
+        let found = collect_all_files(root, None, &CancelToken::new()).unwrap();
         assert_eq!(found, vec![root.join("rom.bin")]);
     }
 }

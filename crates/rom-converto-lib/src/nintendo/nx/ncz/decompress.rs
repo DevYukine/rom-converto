@@ -17,27 +17,11 @@ use crate::nintendo::nx::ncz::decompress_worker::{
 };
 use crate::nintendo::nx::ncz::header::{NczBlockInfo, NczSectionEntry};
 use crate::nintendo::nx::ncz::reencrypt::ReencryptWriter;
-use crate::util::worker_pool::drive;
-use crate::util::{CancelToken, ProgressReporter};
+use crate::util::worker_pool::{PoolChannelClosed, drive};
+use crate::util::{CancelToken, Cancelled, ProgressReporter};
 
 const STREAM_CHUNK: usize = 256 * 1024;
 const READ_BUFFER: usize = 4 * 1024 * 1024;
-
-/// Decompresses an NCZ stream from `input` into a re-encrypted NCA
-/// written to `out`. Convenience wrapper over `ncz_to_nca_cancellable`
-/// with a token that is never cancelled.
-///
-/// # Errors
-///
-/// Returns an error if the NCZ headers are malformed, decompression
-/// fails, or I/O on `input` / `out` fails.
-pub fn ncz_to_nca<R: Read + Send, W: Write>(
-    input: &mut R,
-    out: &mut W,
-    progress: &dyn ProgressReporter,
-) -> NxResult<()> {
-    ncz_to_nca_cancellable(input, out, progress, &CancelToken::new())
-}
 
 /// Streams an NCZ container from `input`, decompressing its payload
 /// (solid or block mode) and re-encrypting it through a
@@ -48,7 +32,7 @@ pub fn ncz_to_nca<R: Read + Send, W: Write>(
 ///
 /// Returns an error if the NCZ headers are malformed, decompression
 /// fails, `cancel` is triggered, or I/O on `input` / `out` fails.
-pub fn ncz_to_nca_cancellable<R: Read + Send, W: Write>(
+pub fn ncz_to_nca<R: Read + Send, W: Write>(
     input: &mut R,
     out: &mut W,
     progress: &dyn ProgressReporter,
@@ -199,7 +183,7 @@ fn decode_solid_stream<R: Read + Send, W: Write>(
         }
         decode_handle
             .join()
-            .map_err(|_| NxError::WorkerPoolClosed)??;
+            .map_err(|_| NxError::WorkerPoolClosed(PoolChannelClosed))??;
         Ok(())
     })
 }
@@ -252,7 +236,7 @@ fn decode_blocks_stream<R: Read, W: Write>(
 
 fn check_cancel(cancel: &CancelToken) -> NxResult<()> {
     if cancel.is_cancelled() {
-        return Err(NxError::Cancelled);
+        return Err(Cancelled.into());
     }
     Ok(())
 }
@@ -350,7 +334,7 @@ mod tests {
 
         let mut cur = Cursor::new(&ncz_blob);
         let mut recovered = Vec::new();
-        ncz_to_nca(&mut cur, &mut recovered, &NoProgress).unwrap();
+        ncz_to_nca(&mut cur, &mut recovered, &NoProgress, &CancelToken::new()).unwrap();
         assert_eq!(recovered.len(), nca_bytes.len(), "size mismatch");
         let mismatch = recovered.iter().zip(&nca_bytes).position(|(a, b)| a != b);
         if let Some(p) = mismatch {

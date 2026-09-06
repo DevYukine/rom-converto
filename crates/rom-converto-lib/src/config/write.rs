@@ -58,23 +58,10 @@ fn read_doc(path: &Path) -> anyhow::Result<DocumentMut> {
 /// so a crash or I/O error mid-write cannot leave the config file
 /// truncated or partially overwritten.
 fn write_doc(path: &Path, doc: &DocumentMut) -> anyhow::Result<()> {
-    let parent = match path.parent() {
-        Some(p) if !p.as_os_str().is_empty() => p,
-        _ => Path::new("."),
-    };
-    std::fs::create_dir_all(parent)
-        .with_context(|| format!("cannot create directory: {}", parent.display()))?;
-
-    let mut tmp = tempfile::Builder::new()
-        .prefix(".rom-converto-config-")
-        .suffix(".toml.tmp")
-        .tempfile_in(parent)
-        .with_context(|| format!("cannot create temp file in: {}", parent.display()))?;
-    tmp.write_all(doc.to_string().as_bytes())
-        .with_context(|| format!("cannot write config file: {}", path.display()))?;
-    tmp.persist(path)
-        .with_context(|| format!("cannot replace config file: {}", path.display()))?;
-    Ok(())
+    crate::util::atomic_write(path, true, |file| {
+        file.write_all(doc.to_string().as_bytes())
+    })
+    .with_context(|| format!("cannot write config file: {}", path.display()))
 }
 
 /// Returns the `presets` table, creating it (as an implicit table, so it

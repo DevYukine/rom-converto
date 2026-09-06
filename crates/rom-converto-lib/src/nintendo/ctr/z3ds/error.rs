@@ -34,20 +34,14 @@ pub enum Z3dsError {
     #[error("decompressed size mismatch: expected {expected}, got {actual}")]
     DecompressedSizeMismatch { expected: u64, actual: u64 },
 
-    #[error("worker pool channel closed")]
-    WorkerPoolClosed,
+    #[error(transparent)]
+    WorkerPoolClosed(#[from] crate::util::worker_pool::PoolChannelClosed),
 
     #[error("worker pool writer thread panicked")]
     WorkerPoolPanic,
 
-    #[error("operation cancelled")]
-    Cancelled,
-}
-
-impl From<crate::util::worker_pool::PoolChannelClosed> for Z3dsError {
-    fn from(_: crate::util::worker_pool::PoolChannelClosed) -> Self {
-        Z3dsError::WorkerPoolClosed
-    }
+    #[error("{0}")]
+    Cancelled(#[from] crate::util::Cancelled),
 }
 
 /// Convenience alias for a `Result` with [`Z3dsError`].

@@ -41,8 +41,8 @@ pub enum GczError {
     Inflate { block: u64, reason: String },
 
     /// The operation was cancelled by the caller.
-    #[error("operation cancelled")]
-    Cancelled,
+    #[error("{0}")]
+    Cancelled(#[from] crate::util::Cancelled),
 
     #[error("{0}")]
     Custom(String),

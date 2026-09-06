@@ -33,25 +33,17 @@ pub mod walker;
 #[cfg(test)]
 pub mod test_fixtures;
 
-pub use compress::{
-    NxCompressOptions, compress_container, compress_container_async,
-    compress_container_async_cancellable,
-};
+pub use compress::{NxCompressOptions, compress_container, compress_container_async};
 pub use container::{ContainerKind, detect_container};
-pub use decompress::{
-    decompress_container, decompress_container_async, decompress_container_async_cancellable,
-};
+pub use decompress::{decompress_container, decompress_container_async};
 pub use derive_paths::{
     derive_compressed_path, derive_decompressed_path, derive_merged_path, derive_split_dir,
 };
 pub use error::{NxError, NxResult};
 pub use keys::{KeyAreaKind, KeySet, find_keys_file, load_keyset};
-pub use merge::{NxMergeFormat, merge_containers, merge_containers_async_cancellable};
+pub use merge::{NxMergeFormat, merge_containers, merge_containers_async};
 pub use models::{Hfs0, NcaHeader, Pfs0};
 pub use ncz::NczMode;
-pub use split::{split_container, split_container_async_cancellable};
-pub use verify::{
-    NcaVerdict, NxVerifyResult, verify_container, verify_container_async,
-    verify_container_async_cancellable, verify_container_cancellable,
-};
+pub use split::{split_container, split_container_async};
+pub use verify::{NcaVerdict, NxVerifyResult, verify_container, verify_container_async};
 pub use walker::{NcaSection, NcaWalker};

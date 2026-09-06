@@ -11,11 +11,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::microsoft::xdvdfs::{
     DirEntry, X360_PROBE_BASES, XdvdfsVolume, data_offset, walk_dir_tables,
 };
-use crate::microsoft::zar::{ZarSummary, ZarWriter};
 use crate::util::CancelToken;
 use crate::util::worker_pool::parallelism;
+use crate::zar::{ZarSummary, ZarWriter};
 
-use super::error::{XenonError, XenonResult};
+use super::error::XenonResult;
+use crate::util::Cancelled;
 
 /// Read buffer used while streaming file payloads into the writer.
 const COPY_BUF_SIZE: usize = 1 << 20;
@@ -107,7 +108,7 @@ fn pack_iso<R: Read + Seek, W: Write>(
     let mut buf = vec![0u8; COPY_BUF_SIZE];
     for (parent, entry) in &listing {
         if cancel.is_cancelled() {
-            return Err(XenonError::Cancelled);
+            return Err(Cancelled.into());
         }
         let path = archive_path(parent, &entry.name_str());
         if entry.is_directory() {
@@ -119,7 +120,7 @@ fn pack_iso<R: Read + Seek, W: Write>(
         let mut remaining = entry.size as u64;
         while remaining > 0 {
             if cancel.is_cancelled() {
-                return Err(XenonError::Cancelled);
+                return Err(Cancelled.into());
             }
             let take = (buf.len() as u64).min(remaining) as usize;
             reader.read_exact(&mut buf[..take])?;
@@ -155,7 +156,7 @@ fn pack_dir<W: Write>(
     let mut buf = vec![0u8; COPY_BUF_SIZE];
     for (rel, path, is_dir) in &listing {
         if cancel.is_cancelled() {
-            return Err(XenonError::Cancelled);
+            return Err(Cancelled.into());
         }
         if *is_dir {
             zar.make_dir(rel, true)?;
@@ -165,7 +166,7 @@ fn pack_dir<W: Write>(
         let mut file = std::fs::File::open(path)?;
         loop {
             if cancel.is_cancelled() {
-                return Err(XenonError::Cancelled);
+                return Err(Cancelled.into());
             }
             let n = file.read(&mut buf)?;
             if n == 0 {
@@ -220,7 +221,7 @@ fn walk_fs_dir_into(
 mod tests {
     use super::*;
     use crate::microsoft::xenon::test_fixtures::build_x360_iso;
-    use crate::microsoft::zar::ZarReader;
+    use crate::zar::ZarReader;
     use std::io::Cursor;
 
     #[test]

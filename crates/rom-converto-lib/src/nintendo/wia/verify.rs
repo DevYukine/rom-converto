@@ -19,6 +19,7 @@ use super::reader::{
     Segment, SegmentKind, WiaLayout, WiaSegmentWorker, build_segments, read_segment_work,
 };
 use crate::util::CancelToken;
+use crate::util::Cancelled;
 use crate::util::worker_pool::{Pool, drive, parallelism};
 
 /// Bytes covered by the non-deep pass (header chain plus tables).
@@ -84,7 +85,7 @@ pub fn verify_wia_blocking(
         parallelism() * 2,
         |_seq| {
             if cancel.is_cancelled() {
-                return Err(WiaError::Cancelled);
+                return Err(Cancelled.into());
             }
             let seg = seg_iter
                 .next()

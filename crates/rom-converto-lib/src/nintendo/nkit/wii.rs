@@ -86,10 +86,14 @@ fn flags_len_for(data_size: u64) -> u64 {
     groups.div_ceil(32) * 4
 }
 
+/// One restored piece of a partition's hashless data stream: output
+/// offset, length, and how to produce its bytes.
+type PdataPiece = (u64, u64, WiiPiece);
+
 /// Pieces of one partition's hashless data stream, in data
 /// coordinates.
 struct PdataPlan {
-    pieces: Vec<(u64, u64, WiiPiece)>,
+    pieces: Vec<PdataPiece>,
     hashed_size: u64,
     junk_id: [u8; 4],
     disc_num: u8,
@@ -99,7 +103,7 @@ struct PdataPlan {
     src_end: u64,
 }
 
-fn pd_emit(pieces: &mut Vec<(u64, u64, WiiPiece)>, off: u64, len: u64, kind: WiiPiece) {
+fn pd_emit(pieces: &mut Vec<PdataPiece>, off: u64, len: u64, kind: WiiPiece) {
     if len > 0 {
         pieces.push((off, len, kind));
     }
@@ -114,7 +118,7 @@ fn pd_emit(pieces: &mut Vec<(u64, u64, WiiPiece)>, off: u64, len: u64, kind: Wii
 /// GameCube images always are, so this is Wii-only). Only regenerated
 /// junk is affected: verbatim file data and explicit fills come from
 /// authoritative NKit records and are left untouched.
-fn zero_pad_partial_tail(pieces: &mut Vec<(u64, u64, WiiPiece)>, data_size: u64) {
+fn zero_pad_partial_tail(pieces: &mut Vec<PdataPiece>, data_size: u64) {
     let zero_start = data_size & !(WII_SECTOR_SIZE_U64 - 1);
     if zero_start >= data_size {
         return;
@@ -134,94 +138,184 @@ fn zero_pad_partial_tail(pieces: &mut Vec<(u64, u64, WiiPiece)>, data_size: u64)
     *pieces = rebuilt;
 }
 
-/// Walk one partition's hashless stream starting at `src_base`,
-/// mirroring `partitionStreamWrite`.
-fn build_pdata_plan<S: Read + Seek>(src: &mut S, src_base: u64) -> NkitResult<PdataPlan> {
-    let mut head = vec![0u8; PDATA_HEADER as usize];
-    read_exact_at(src, src_base, &mut head)?;
+/// Fields [`build_pdata_plan`] reads out of a partition's 0x440-byte
+/// NKit header before walking its FST.
+struct PdataHead {
+    /// The header with NKit's own fields cleared, ready to emit.
+    bytes: Vec<u8>,
+    hashed_size: u64,
+    data_size: u64,
+    junk_id: [u8; 4],
+    disc_num: u8,
+    dol_addr: u32,
+    fst_off: u64,
+    fst_size: u64,
+    /// Offset the FST-driven gap walk starts at, past the FST and its
+    /// 4-byte alignment padding.
+    walk_start: u64,
+    /// Length of the hash-preservation flag block that follows the FST.
+    flags_len: u64,
+}
 
-    if head[..4] == [0u8; 4] {
-        // Null-ID partition: raw header, a u32 hashed size, one gap.
-        let mut sz = [0u8; 4];
-        read_exact_at(src, src_base + PDATA_HEADER, &mut sz)?;
-        let hashed_size = u32::from_be_bytes(sz) as u64 * 4;
-        let data_size = hashed_to_data(hashed_size);
-        let mut pieces = Vec::new();
-        pd_emit(
-            &mut pieces,
-            0,
-            PDATA_HEADER,
-            WiiPiece::Patched(Arc::new(head), 0),
-        );
-        let mut nkit_pos = src_base + PDATA_HEADER + 4;
-        let mut out_pos = PDATA_HEADER;
-        let mut nulls_pos = 0u64;
-        expand_pd_gap(
-            src,
-            &mut pieces,
-            &mut nkit_pos,
-            &mut out_pos,
-            &mut nulls_pos,
-            true,
-        )?;
-        if out_pos != data_size {
-            return Err(NkitError::InvalidHeader(
-                "null-ID partition gap does not cover its data".into(),
-            ));
-        }
-        zero_pad_partial_tail(&mut pieces, data_size);
-        let groups = hashed_size.div_ceil(WII_GROUP_TOTAL_SIZE) as usize;
-        return Ok(PdataPlan {
-            pieces,
-            hashed_size,
-            junk_id: [0u8; 4],
-            disc_num: 0,
-            preserved: vec![None; groups],
-            src_end: nkit_pos,
-        });
-    }
-
-    if &head[0x200..0x208] != NKIT_MAGIC_VERSION {
+fn parse_pdata_head(mut bytes: Vec<u8>) -> NkitResult<PdataHead> {
+    if &bytes[0x200..0x208] != NKIT_MAGIC_VERSION {
         return Err(NkitError::InvalidHeader(
             "partition data carries no NKit header".into(),
         ));
     }
-    let hashed_size =
-        u32::from_be_bytes(head[0x210..0x214].try_into().expect("4-byte slice")) as u64 * 4;
+    let be32 = |at: usize| u32::from_be_bytes(bytes[at..at + 4].try_into().expect("4-byte slice"));
+    let hashed_size = be32(0x210) as u64 * 4;
     let data_size = hashed_to_data(hashed_size);
-    let junk_id: [u8; 4] = head[..4].try_into().expect("4-byte slice");
-    let disc_num = head[6];
-    let dol_addr = u32::from_be_bytes(head[0x420..0x424].try_into().expect("4-byte slice"));
-    let fst_off =
-        u32::from_be_bytes(head[0x424..0x428].try_into().expect("4-byte slice")) as u64 * 4;
-    let fst_size =
-        u32::from_be_bytes(head[0x428..0x42C].try_into().expect("4-byte slice")) as u64 * 4;
+    let junk_id: [u8; 4] = bytes[..4].try_into().expect("4-byte slice");
+    let disc_num = bytes[6];
+    let dol_addr = be32(0x420);
+    let fst_off = be32(0x424) as u64 * 4;
+    let fst_size = be32(0x428) as u64 * 4;
     if fst_off < PDATA_HEADER || fst_off + fst_size > data_size {
         return Err(NkitError::InvalidHeader(format!(
             "partition FST {fst_off:#x}+{fst_size:#x} outside its data"
         )));
     }
-    clear_nkit_header(&mut head);
+    clear_nkit_header(&mut bytes);
+    Ok(PdataHead {
+        bytes,
+        hashed_size,
+        data_size,
+        junk_id,
+        disc_num,
+        dol_addr,
+        fst_off,
+        fst_size,
+        walk_start: (fst_off + fst_size + 3) & !3,
+        flags_len: flags_len_for(data_size),
+    })
+}
 
-    let mut fst = vec![0u8; fst_size as usize];
-    read_exact_at(src, src_base + fst_off, &mut fst)?;
+/// Null-ID partition: raw header, a u32 hashed size, one gap.
+fn build_null_id_pdata_plan<S: Read + Seek>(
+    src: &mut S,
+    src_base: u64,
+    head: Vec<u8>,
+) -> NkitResult<PdataPlan> {
+    let mut sz = [0u8; 4];
+    read_exact_at(src, src_base + PDATA_HEADER, &mut sz)?;
+    let hashed_size = u32::from_be_bytes(sz) as u64 * 4;
+    let data_size = hashed_to_data(hashed_size);
+    let mut pieces = Vec::new();
+    pd_emit(
+        &mut pieces,
+        0,
+        PDATA_HEADER,
+        WiiPiece::Patched(Arc::new(head), 0),
+    );
+    let mut nkit_pos = src_base + PDATA_HEADER + 4;
+    let mut out_pos = PDATA_HEADER;
+    let mut nulls_pos = 0u64;
+    expand_pd_gap(
+        src,
+        &mut pieces,
+        &mut nkit_pos,
+        &mut out_pos,
+        &mut nulls_pos,
+        true,
+    )?;
+    if out_pos != data_size {
+        return Err(NkitError::InvalidHeader(
+            "null-ID partition gap does not cover its data".into(),
+        ));
+    }
+    zero_pad_partial_tail(&mut pieces, data_size);
+    let groups = hashed_size.div_ceil(WII_GROUP_TOTAL_SIZE) as usize;
+    Ok(PdataPlan {
+        pieces,
+        hashed_size,
+        junk_id: [0u8; 4],
+        disc_num: 0,
+        preserved: vec![None; groups],
+        src_end: nkit_pos,
+    })
+}
+
+/// Walk one partition's hashless stream starting at `src_base`,
+/// mirroring `partitionStreamWrite`.
+fn build_pdata_plan<S: Read + Seek>(src: &mut S, src_base: u64) -> NkitResult<PdataPlan> {
+    let mut head = vec![0u8; PDATA_HEADER as usize];
+    read_exact_at(src, src_base, &mut head)?;
+    if head[..4] == [0u8; 4] {
+        return build_null_id_pdata_plan(src, src_base, head);
+    }
+    let mut hd = parse_pdata_head(head)?;
+
+    let mut fst = vec![0u8; hd.fst_size as usize];
+    read_exact_at(src, src_base + hd.fst_off, &mut fst)?;
     let mut files = super::format::parse_gc_fst(&fst)?;
     for f in &mut files {
         f.data_offset *= 4;
     }
     files.sort_by_key(|f| f.data_offset);
 
-    let flags_len = flags_len_for(data_size);
-    let groups = hashed_size.div_ceil(WII_GROUP_TOTAL_SIZE) as usize;
-    let mut flags = vec![0u8; flags_len as usize];
-    read_exact_at(src, src_base + fst_off + fst_size, &mut flags)?;
+    let mut flags = vec![0u8; hd.flags_len as usize];
+    read_exact_at(src, src_base + hd.fst_off + hd.fst_size, &mut flags)?;
 
-    let mut pieces: Vec<(u64, u64, WiiPiece)> = Vec::new();
-    let mut head_arc = head;
-    let walk_start = (fst_off + fst_size + 3) & !3;
+    let (pieces, src_end) = walk_pdata_files(src, src_base, &mut hd, &files, &mut fst)?;
+
+    // Fixed regions: patched header, verbatim up to the FST, the
+    // restored FST. Inserted up front so the piece list is ordered.
+    let mut fixed = Vec::new();
+    pd_emit(
+        &mut fixed,
+        0,
+        PDATA_HEADER,
+        WiiPiece::Patched(Arc::new(std::mem::take(&mut hd.bytes)), 0),
+    );
+    pd_emit(
+        &mut fixed,
+        PDATA_HEADER,
+        hd.fst_off - PDATA_HEADER,
+        WiiPiece::Verbatim(src_base + PDATA_HEADER),
+    );
+    pd_emit(
+        &mut fixed,
+        hd.fst_off,
+        hd.fst_size,
+        WiiPiece::Patched(Arc::new(fst), 0),
+    );
+    pd_emit(
+        &mut fixed,
+        hd.fst_off + hd.fst_size,
+        hd.walk_start - (hd.fst_off + hd.fst_size),
+        WiiPiece::Verbatim(src_base + hd.fst_off + hd.fst_size),
+    );
+    fixed.extend(pieces);
+
+    let (preserved, src_end) = preserved_hash_groups(&flags, hd.hashed_size, src_end);
+
+    Ok(PdataPlan {
+        pieces: fixed,
+        hashed_size: hd.hashed_size,
+        junk_id: hd.junk_id,
+        disc_num: hd.disc_num,
+        preserved,
+        src_end,
+    })
+}
+
+/// Walk the partition's FST in restored order, expanding a gap record
+/// before each file and patching every FST entry to its restored
+/// position. Returns the piece list and the source offset just past
+/// the last record consumed.
+fn walk_pdata_files<S: Read + Seek>(
+    src: &mut S,
+    src_base: u64,
+    hd: &mut PdataHead,
+    files: &[super::format::FstFile],
+    fst: &mut [u8],
+) -> NkitResult<(Vec<PdataPiece>, u64)> {
+    let mut pieces: Vec<PdataPiece> = Vec::new();
+    let walk_start = hd.walk_start;
     // The nkit FST carries nkit-internal positions; the restored
     // positions are recomputed as the gaps expand.
-    let mut nkit_pos = src_base + walk_start + flags_len;
+    let mut nkit_pos = src_base + walk_start + hd.flags_len;
     let mut out_pos = walk_start;
     let mut nulls_pos = out_pos + NULLS_LEAD;
 
@@ -262,22 +356,22 @@ fn build_pdata_plan<S: Read + Seek>(src: &mut S, src_base: u64) -> NkitResult<Pd
                     junk_pos: out_pos + rec.leading_nulls,
                 },
             );
-            patch_wii_fst_entry(&mut fst, file, out_pos, rec.file_len as u32);
+            patch_wii_fst_entry(fst, file, out_pos, rec.file_len as u32);
             out_pos += restored_len;
             nulls_pos = 0;
         } else {
             let copy_len = ((file.size as u64) + 3) & !3;
-            if file.data_offset == dol_addr as u64 * 4 {
-                head_arc[0x420..0x424].copy_from_slice(&((out_pos / 4) as u32).to_be_bytes());
+            if file.data_offset == hd.dol_addr as u64 * 4 {
+                hd.bytes[0x420..0x424].copy_from_slice(&((out_pos / 4) as u32).to_be_bytes());
             }
             pd_emit(&mut pieces, out_pos, copy_len, WiiPiece::Verbatim(nkit_pos));
-            patch_wii_fst_entry(&mut fst, file, out_pos, file.size);
+            patch_wii_fst_entry(fst, file, out_pos, file.size);
             nkit_pos += copy_len;
             out_pos += copy_len;
             nulls_pos = out_pos + NULLS_LEAD;
         }
     }
-    if out_pos < data_size {
+    if out_pos < hd.data_size {
         expand_pd_gap(
             src,
             &mut pieces,
@@ -287,46 +381,26 @@ fn build_pdata_plan<S: Read + Seek>(src: &mut S, src_base: u64) -> NkitResult<Pd
             true,
         )?;
     }
-    if out_pos != data_size {
+    if out_pos != hd.data_size {
         return Err(NkitError::InvalidHeader(format!(
-            "partition data restored to {out_pos:#x} bytes, header declares {data_size:#x}"
+            "partition data restored to {out_pos:#x} bytes, header declares {:#x}",
+            hd.data_size
         )));
     }
-    zero_pad_partial_tail(&mut pieces, data_size);
+    zero_pad_partial_tail(&mut pieces, hd.data_size);
+    Ok((pieces, nkit_pos))
+}
 
-    // Fixed regions: patched header, verbatim up to the FST, the
-    // restored FST. Inserted up front so the piece list is ordered.
-    let mut fixed = Vec::new();
-    pd_emit(
-        &mut fixed,
-        0,
-        PDATA_HEADER,
-        WiiPiece::Patched(Arc::new(head_arc), 0),
-    );
-    pd_emit(
-        &mut fixed,
-        PDATA_HEADER,
-        fst_off - PDATA_HEADER,
-        WiiPiece::Verbatim(src_base + PDATA_HEADER),
-    );
-    pd_emit(
-        &mut fixed,
-        fst_off,
-        fst_size,
-        WiiPiece::Patched(Arc::new(fst), 0),
-    );
-    pd_emit(
-        &mut fixed,
-        fst_off + fst_size,
-        walk_start - (fst_off + fst_size),
-        WiiPiece::Verbatim(src_base + fst_off + fst_size),
-    );
-    fixed.extend(pieces);
-
-    // Preserved hash groups: MSB-first bit per 2 MiB group, sector
-    // data appended after the last gap in flagged-group order.
+/// Preserved hash groups: MSB-first bit per 2 MiB group, sector data
+/// appended after the last gap in flagged-group order. Returns the
+/// per-group source offsets and the end of the partition's stream.
+fn preserved_hash_groups(
+    flags: &[u8],
+    hashed_size: u64,
+    mut cursor: u64,
+) -> (Vec<Option<u64>>, u64) {
+    let groups = hashed_size.div_ceil(WII_GROUP_TOTAL_SIZE) as usize;
     let mut preserved = vec![None; groups];
-    let mut cursor = nkit_pos;
     for (g, slot) in preserved.iter_mut().enumerate() {
         let bit = 0x80 >> (g % 8);
         if flags.get(g / 8).map(|b| b & bit != 0).unwrap_or(false) {
@@ -335,15 +409,7 @@ fn build_pdata_plan<S: Read + Seek>(src: &mut S, src_base: u64) -> NkitResult<Pd
             cursor += blocks as u64 * 0x400;
         }
     }
-
-    Ok(PdataPlan {
-        pieces: fixed,
-        hashed_size,
-        junk_id,
-        disc_num,
-        preserved,
-        src_end: cursor,
-    })
+    (preserved, cursor)
 }
 
 fn patch_wii_fst_entry(fst: &mut [u8], file: &super::format::FstFile, out_off: u64, size: u32) {
@@ -361,7 +427,7 @@ fn group_blocks(hashed_size: u64, group: u64) -> usize {
 /// positions in hashless coordinates.
 fn expand_pd_gap<S: Read + Seek>(
     src: &mut S,
-    pieces: &mut Vec<(u64, u64, WiiPiece)>,
+    pieces: &mut Vec<PdataPiece>,
     nkit_pos: &mut u64,
     out_pos: &mut u64,
     nulls_pos: &mut u64,
@@ -392,7 +458,7 @@ fn expand_pd_gap<S: Read + Seek>(
     Ok(())
 }
 
-fn slice_pieces(pieces: &[(u64, u64, WiiPiece)], start: u64, len: u64) -> Vec<(u64, WiiPiece)> {
+fn slice_pieces(pieces: &[PdataPiece], start: u64, len: u64) -> Vec<(u64, WiiPiece)> {
     let end = start + len;
     let mut out = Vec::new();
     for (off, plen, kind) in pieces {
@@ -415,6 +481,155 @@ fn slice_pieces(pieces: &[(u64, u64, WiiPiece)], start: u64, len: u64) -> Vec<(u
     }
     debug_assert_eq!(out.iter().map(|(l, _)| l).sum::<u64>(), len);
     out
+}
+
+/// Where the disc stream stands after one partition has been planned,
+/// plus the junk ID that seeds any filler following it.
+struct PartitionEmit {
+    src_pos: u64,
+    out_pos: u64,
+    junk_id: [u8; 4],
+}
+
+/// Plan one partition: its verbatim 0x20000-byte header (with the
+/// with-hash data size restored) followed by one span per 2 MiB hash
+/// group of its data.
+fn emit_partition<S: Read + Seek>(
+    src: &mut S,
+    spans: &mut Vec<Span>,
+    disc_header: &mut [u8],
+    part: &PartitionEntry,
+    src_pos: u64,
+    out_pos: u64,
+) -> NkitResult<PartitionEmit> {
+    let mut part_header = vec![0u8; PARTITION_HEADER_LEN as usize];
+    read_exact_at(src, src_pos, &mut part_header)?;
+    let data_src = src_pos + PARTITION_HEADER_LEN;
+
+    let pdata = build_pdata_plan(src, data_src)?;
+
+    // Restore the with-hash data size NKit shrank at 0x2BC.
+    part_header[0x2BC..0x2C0].copy_from_slice(&((pdata.hashed_size / 4) as u32).to_be_bytes());
+
+    let info = read_partition_info(
+        &mut std::io::Cursor::new(&part_header),
+        0,
+        0,
+        part.partition_type,
+    )
+    .map_err(|e| NkitError::InvalidHeader(format!("partition header: {e}")))?;
+    if info.data_offset != PARTITION_HEADER_LEN {
+        return Err(NkitError::InvalidHeader(format!(
+            "unsupported partition data offset {:#x}",
+            info.data_offset
+        )));
+    }
+
+    disc_header[part.table_value_offset..part.table_value_offset + 4]
+        .copy_from_slice(&((out_pos / 4) as u32).to_be_bytes());
+
+    emit(
+        spans,
+        out_pos,
+        PARTITION_HEADER_LEN,
+        SpanKind::Patched(Arc::new(part_header), 0),
+    );
+    let data_out = out_pos + PARTITION_HEADER_LEN;
+    let groups = pdata.hashed_size.div_ceil(WII_GROUP_TOTAL_SIZE);
+    for g in 0..groups {
+        let blocks = group_blocks(pdata.hashed_size, g);
+        let data_start = g * WII_GROUP_PAYLOAD_SIZE;
+        let pieces = slice_pieces(
+            &pdata.pieces,
+            data_start,
+            blocks as u64 * WII_SECTOR_PAYLOAD_SIZE as u64,
+        );
+        spans.push(Span {
+            out_off: data_out + g * WII_GROUP_TOTAL_SIZE,
+            len: blocks as u64 * WII_SECTOR_SIZE_U64,
+            kind: SpanKind::WiiGroup(Box::new(WiiGroupSpec {
+                pieces,
+                preserved_src: pdata.preserved[g as usize],
+                title_key: info.title_key,
+                blocks,
+                junk_id: pdata.junk_id,
+                disc_num: pdata.disc_num,
+            })),
+        });
+    }
+
+    Ok(PartitionEmit {
+        src_pos: pdata.src_end,
+        out_pos: data_out + pdata.hashed_size,
+        junk_id: pdata.junk_id,
+    })
+}
+
+/// Expand one disc-coordinate gap record covering the filler between
+/// partitions (or after the last one). Junk regenerated straight after
+/// a removed update partition is forced to zeroes. Returns the new
+/// output position.
+fn expand_disc_filler<S: Read + Seek>(
+    src: &mut S,
+    spans: &mut Vec<Span>,
+    src_pos: u64,
+    out_pos: u64,
+    prev: (Option<u32>, [u8; 4]),
+    disc: ([u8; 4], u8),
+) -> NkitResult<u64> {
+    let (prev_type, prev_id) = prev;
+    let (disc_junk_id, disc_num) = disc;
+    let junk_id = match prev_type {
+        Some(0) => prev_id,
+        _ => disc_junk_id,
+    };
+    let zeros_filler = prev_type == Some(1);
+    let mut filler_spans: Vec<Span> = Vec::new();
+    let mut gap = GapPositions {
+        nkit_pos: src_pos,
+        out_pos,
+        nulls_pos: out_pos + NULLS_LEAD,
+    };
+    expand_gap_record(&mut filler_spans, src, &mut gap, true, junk_id, disc_num)?;
+    for mut s in filler_spans {
+        if zeros_filler && matches!(s.kind, SpanKind::Junk { .. }) {
+            s.kind = SpanKind::Zeros;
+        }
+        spans.push(s);
+    }
+    Ok(gap.out_pos)
+}
+
+/// The update partition was removed: an 0x8000-byte filler carries the
+/// original partition table; without recovery data the update area
+/// restores as zeroes. Returns the new source and output positions.
+fn restore_removed_update_partition<S: Read + Seek>(
+    src: &mut S,
+    disc_header: &mut [u8],
+    spans: &mut Vec<Span>,
+    first_partition_offset: u64,
+    src_pos: u64,
+    out_pos: u64,
+) -> NkitResult<(u64, u64)> {
+    let filler_len = first_partition_offset - src_pos;
+    let mut filler = vec![0u8; filler_len as usize];
+    read_exact_at(src, src_pos, &mut filler)?;
+    disc_header[PARTITION_TABLE_OFFSET..PARTITION_TABLE_OFFSET + PARTITION_TABLE_LENGTH]
+        .copy_from_slice(&filler[..PARTITION_TABLE_LENGTH]);
+    let original = parse_partition_table(disc_header)?;
+    let first_data = original
+        .iter()
+        .find(|p| p.partition_type != 1)
+        .ok_or_else(|| {
+            NkitError::InvalidHeader("backup partition table has no data partition".into())
+        })?;
+    emit(
+        spans,
+        out_pos,
+        first_data.nkit_offset - out_pos,
+        SpanKind::Zeros,
+    );
+    Ok((src_pos + filler_len, first_data.nkit_offset))
 }
 
 pub(crate) fn build_wii_plan<S: Read + Seek>(
@@ -446,29 +661,16 @@ pub(crate) fn build_wii_plan<S: Read + Seek>(
     let mut prev_id = disc_junk_id;
 
     if header.update_partition_crc != 0 {
-        // The update partition was removed: an 0x8000-byte filler
-        // carries the original partition table; without recovery data
-        // the update area restores as zeroes.
-        let filler_len = partitions[0].nkit_offset - src_pos;
-        let mut filler = vec![0u8; filler_len as usize];
-        read_exact_at(src, src_pos, &mut filler)?;
-        src_pos += filler_len;
-        disc_header[PARTITION_TABLE_OFFSET..PARTITION_TABLE_OFFSET + PARTITION_TABLE_LENGTH]
-            .copy_from_slice(&filler[..PARTITION_TABLE_LENGTH]);
-        let original = parse_partition_table(&disc_header)?;
-        let first_data = original
-            .iter()
-            .find(|p| p.partition_type != 1)
-            .ok_or_else(|| {
-                NkitError::InvalidHeader("backup partition table has no data partition".into())
-            })?;
-        emit(
+        let (next_src, next_out) = restore_removed_update_partition(
+            src,
+            &mut disc_header,
             &mut spans,
+            partitions[0].nkit_offset,
+            src_pos,
             out_pos,
-            first_data.nkit_offset - out_pos,
-            SpanKind::Zeros,
-        );
-        out_pos = first_data.nkit_offset;
+        )?;
+        src_pos = next_src;
+        out_pos = next_out;
         warning = Some(format!(
             "The update partition (CRC32 {:08x}) was removed by NKit and is restored as zeroes; \
              the result is playable but not byte-identical to the original disc",
@@ -480,111 +682,34 @@ pub(crate) fn build_wii_plan<S: Read + Seek>(
 
     for part in &partitions {
         if src_pos < part.nkit_offset {
-            let zeros_filler = prev_type == Some(1);
-            let mut filler_spans: Vec<Span> = Vec::new();
-            let junk_id = match prev_type {
-                Some(0) => prev_id,
-                _ => disc_junk_id,
-            };
-            let mut gap = GapPositions {
-                nkit_pos: src_pos,
+            out_pos = expand_disc_filler(
+                src,
+                &mut spans,
+                src_pos,
                 out_pos,
-                nulls_pos: out_pos + NULLS_LEAD,
-            };
-            expand_gap_record(&mut filler_spans, src, &mut gap, true, junk_id, disc_num)?;
-            out_pos = gap.out_pos;
-            for mut s in filler_spans {
-                if zeros_filler && matches!(s.kind, SpanKind::Junk { .. }) {
-                    s.kind = SpanKind::Zeros;
-                }
-                spans.push(s);
-            }
+                (prev_type, prev_id),
+                (disc_junk_id, disc_num),
+            )?;
             // Source padding up to the partition start.
             src_pos = part.nkit_offset;
         }
 
-        let mut part_header = vec![0u8; PARTITION_HEADER_LEN as usize];
-        read_exact_at(src, src_pos, &mut part_header)?;
-        src_pos += PARTITION_HEADER_LEN;
-
-        let pdata = build_pdata_plan(src, src_pos)?;
-
-        // Restore the with-hash data size NKit shrank at 0x2BC.
-        part_header[0x2BC..0x2C0].copy_from_slice(&((pdata.hashed_size / 4) as u32).to_be_bytes());
-
-        let info = read_partition_info(
-            &mut std::io::Cursor::new(&part_header),
-            0,
-            0,
-            part.partition_type,
-        )
-        .map_err(|e| NkitError::InvalidHeader(format!("partition header: {e}")))?;
-        if info.data_offset != PARTITION_HEADER_LEN {
-            return Err(NkitError::InvalidHeader(format!(
-                "unsupported partition data offset {:#x}",
-                info.data_offset
-            )));
-        }
-
-        disc_header[part.table_value_offset..part.table_value_offset + 4]
-            .copy_from_slice(&((out_pos / 4) as u32).to_be_bytes());
-
-        emit(
-            &mut spans,
-            out_pos,
-            PARTITION_HEADER_LEN,
-            SpanKind::Patched(Arc::new(part_header), 0),
-        );
-        let data_out = out_pos + PARTITION_HEADER_LEN;
-        let groups = pdata.hashed_size.div_ceil(WII_GROUP_TOTAL_SIZE);
-        for g in 0..groups {
-            let blocks = group_blocks(pdata.hashed_size, g);
-            let data_start = g * WII_GROUP_PAYLOAD_SIZE;
-            let pieces = slice_pieces(
-                &pdata.pieces,
-                data_start,
-                blocks as u64 * WII_SECTOR_PAYLOAD_SIZE as u64,
-            );
-            spans.push(Span {
-                out_off: data_out + g * WII_GROUP_TOTAL_SIZE,
-                len: blocks as u64 * WII_SECTOR_SIZE_U64,
-                kind: SpanKind::WiiGroup(Box::new(WiiGroupSpec {
-                    pieces,
-                    preserved_src: pdata.preserved[g as usize],
-                    title_key: info.title_key,
-                    blocks,
-                    junk_id: pdata.junk_id,
-                    disc_num: pdata.disc_num,
-                })),
-            });
-        }
-
-        out_pos = data_out + pdata.hashed_size;
-        src_pos = pdata.src_end;
+        let emitted = emit_partition(src, &mut spans, &mut disc_header, part, src_pos, out_pos)?;
+        src_pos = emitted.src_pos;
+        out_pos = emitted.out_pos;
         prev_type = Some(part.partition_type);
-        prev_id = pdata.junk_id;
+        prev_id = emitted.junk_id;
     }
 
     if src_pos < nkit_len {
-        let junk_id = match prev_type {
-            Some(0) => prev_id,
-            _ => disc_junk_id,
-        };
-        let zeros_filler = prev_type == Some(1);
-        let mut filler_spans: Vec<Span> = Vec::new();
-        let mut gap = GapPositions {
-            nkit_pos: src_pos,
+        out_pos = expand_disc_filler(
+            src,
+            &mut spans,
+            src_pos,
             out_pos,
-            nulls_pos: out_pos + NULLS_LEAD,
-        };
-        expand_gap_record(&mut filler_spans, src, &mut gap, true, junk_id, disc_num)?;
-        out_pos = gap.out_pos;
-        for mut s in filler_spans {
-            if zeros_filler && matches!(s.kind, SpanKind::Junk { .. }) {
-                s.kind = SpanKind::Zeros;
-            }
-            spans.push(s);
-        }
+            (prev_type, prev_id),
+            (disc_junk_id, disc_num),
+        )?;
     }
     if out_pos != image_size {
         return Err(NkitError::InvalidHeader(format!(
@@ -612,7 +737,7 @@ pub(crate) fn build_wii_plan<S: Read + Seek>(
 mod tests {
     use super::*;
 
-    fn kinds(pieces: &[(u64, u64, WiiPiece)]) -> Vec<(u64, u64, &'static str)> {
+    fn kinds(pieces: &[PdataPiece]) -> Vec<(u64, u64, &'static str)> {
         pieces
             .iter()
             .map(|(off, len, k)| {

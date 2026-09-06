@@ -1,17 +1,14 @@
-use aes::{
-    Aes128,
-    cipher::{BlockModeDecrypt, KeyIvInit},
-};
-use block_padding::NoPadding;
 use byteorder::{BigEndian, ByteOrder};
 use std::io::{Read, Seek, SeekFrom};
+
+use crate::util::aes::aes128_cbc_decrypt_nopad;
 
 use crate::nintendo::ctr::constants::{
     CTR_COMMON_KEYS_HEX, TICKET_COMMON_KEY_IDX_OFFSET, TICKET_SIG_BODY_OFFSET,
     TICKET_TITLE_ID_OFFSET, TICKET_TITLE_KEY_OFFSET,
 };
-
-pub type Aes128Cbc = cbc::Decryptor<Aes128>;
+use crate::nintendo::ctr::error::{NintendoCTRError, NintendoCTRResult};
+use crate::nintendo::ctr::models::ticket::Ticket;
 
 pub fn gen_iv(cidx: u16) -> [u8; 16] {
     let mut iv: [u8; 16] = [0; 16];
@@ -21,11 +18,38 @@ pub fn gen_iv(cidx: u16) -> [u8; 16] {
 }
 
 pub fn cbc_decrypt(key: &[u8; 16], iv: &[u8; 16], data: &mut [u8]) -> anyhow::Result<()> {
-    Aes128Cbc::new_from_slices(key, iv)?
-        .decrypt_padded::<NoPadding>(data)
-        .map_err(|e| anyhow::anyhow!(e))?;
+    aes128_cbc_decrypt_nopad(key, iv, data).map_err(|e| anyhow::anyhow!(e))
+}
 
-    Ok(())
+/// Decrypts an encrypted title key with the common key at `common_key_index`,
+/// using the big-endian title id (zero-padded to 16 bytes) as the CBC IV.
+pub fn decrypt_title_key(
+    common_key_index: usize,
+    title_id_be: &[u8; 8],
+    mut key: [u8; 16],
+) -> NintendoCTRResult<[u8; 16]> {
+    let common_key = CTR_COMMON_KEYS_HEX
+        .get(common_key_index)
+        .ok_or(NintendoCTRError::TicketCommonKeyIndex(common_key_index))?;
+    let mut iv = [0u8; 16];
+    iv[..8].copy_from_slice(title_id_be);
+    cbc_decrypt(common_key, &iv, &mut key).map_err(|e| std::io::Error::other(e.to_string()))?;
+    Ok(key)
+}
+
+/// Decrypts a parsed ticket's title key.
+pub fn derive_title_key(ticket: &Ticket) -> NintendoCTRResult<[u8; 16]> {
+    let td = &ticket.ticket_data;
+    let key: [u8; 16] = td
+        .title_key
+        .as_slice()
+        .try_into()
+        .map_err(|_| NintendoCTRError::TicketTitleKeyLength(td.title_key.len()))?;
+    decrypt_title_key(
+        td.common_key_index as usize,
+        &td.title_id.to_be_bytes(),
+        key,
+    )
 }
 
 /// `ticket_offset` is the absolute byte offset of the ticket section
@@ -41,22 +65,18 @@ pub fn derive_title_key_from_ticket<R: Read + Seek>(
     reader.read_exact(&mut enckey)?;
 
     reader.seek(SeekFrom::Start(sig_body + TICKET_TITLE_ID_OFFSET))?;
-    let mut tid_iv = [0u8; 16];
-    reader.read_exact(&mut tid_iv[..8])?;
+    let mut title_id = [0u8; 8];
+    reader.read_exact(&mut title_id)?;
 
     reader.seek(SeekFrom::Start(sig_body + TICKET_COMMON_KEY_IDX_OFFSET))?;
     let mut cmnkey_idx = [0u8; 1];
     reader.read_exact(&mut cmnkey_idx)?;
-    let idx = cmnkey_idx[0] as usize;
-    if idx >= CTR_COMMON_KEYS_HEX.len() {
-        return Err(anyhow::anyhow!(
-            "ticket common key index out of range: {}",
-            idx
-        ));
-    }
 
-    cbc_decrypt(&CTR_COMMON_KEYS_HEX[idx], &tid_iv, &mut enckey)?;
-    Ok(enckey)
+    Ok(decrypt_title_key(
+        cmnkey_idx[0] as usize,
+        &title_id,
+        enckey,
+    )?)
 }
 
 pub fn decrypt_first_ncch_block<R: Read + Seek>(

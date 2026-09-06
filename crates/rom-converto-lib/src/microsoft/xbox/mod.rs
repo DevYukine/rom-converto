@@ -22,7 +22,7 @@ use std::sync::atomic::AtomicU64;
 use log::info;
 use tokio::task;
 
-use crate::util::{CancelToken, ProgressReporter, await_with_progress_cancel, scratch_output_path};
+use crate::util::{CancelToken, ProgressReporter, await_with_progress_cancel, run_scratch_write};
 
 /// Options for building an XISO from a directory or an existing XDVDFS image.
 #[derive(Debug, Clone, Copy)]
@@ -39,21 +39,10 @@ impl Default for XisoCreateOptions {
     }
 }
 
-/// Build an XISO from `input`, which may be either a directory to pack or
-/// an existing XDVDFS image to trim and re-lay-out.
-pub async fn convert_to_xiso(
-    input: &Path,
-    output: &Path,
-    options: XisoCreateOptions,
-    progress: &dyn ProgressReporter,
-) -> XboxResult<()> {
-    convert_to_xiso_cancellable(input, output, options, progress, CancelToken::new()).await
-}
-
-/// Like [`convert_to_xiso`] but observes `cancel` at file and chunk
-/// boundaries; on cancel the partial image is removed (the writer targets
+/// Build an XISO image at `output` from the directory or image at
+/// `input`. On cancel the partial image is removed (the writer targets
 /// a sibling temp file renamed into place only on success).
-pub async fn convert_to_xiso_cancellable(
+pub async fn convert_to_xiso(
     input: &Path,
     output: &Path,
     options: XisoCreateOptions,
@@ -66,55 +55,25 @@ pub async fn convert_to_xiso_cancellable(
     };
     progress.start(total_bytes, "Building XISO");
 
-    let write_path = scratch_output_path(output)?;
     let input_owned = input.to_path_buf();
-    let write_owned = write_path.to_path_buf();
-    let cancel_bg = cancel.clone();
-    let bytes_done = Arc::new(AtomicU64::new(0));
-    let bytes_done_bg = bytes_done.clone();
-
-    let handle = task::spawn_blocking(move || {
-        create::create_blocking(
-            &input_owned,
-            &write_owned,
-            options,
-            bytes_done_bg,
-            &cancel_bg,
-        )
-    });
-
-    let cleanup = {
-        let write_path = write_path.to_path_buf();
-        move || -> XboxError {
-            let _ = std::fs::remove_file(&write_path);
-            XboxError::Cancelled
-        }
-    };
-    if let Err(err) =
-        await_with_progress_cancel(progress, &bytes_done, handle, &cancel, cleanup).await
-    {
-        let _ = tokio::fs::remove_file(&write_path).await;
-        return Err(err);
-    }
-    crate::util::publish_temp(write_path, output, true)?;
+    run_scratch_write(
+        output,
+        true,
+        progress,
+        &cancel,
+        move |write_path, bytes_done, cancel| {
+            create::create_blocking(&input_owned, &write_path, options, bytes_done, &cancel)
+        },
+    )
+    .await?;
 
     info!("Wrote XISO {} -> {}", input.display(), output.display());
     Ok(())
 }
 
-/// Extract every file in an XISO into `output_dir`, mirroring the disc's
-/// directory tree.
+/// Extract every file of the XISO at `input` into `output_dir`. Files
+/// already written stay on disk if the run is cancelled.
 pub async fn extract_xiso(
-    input: &Path,
-    output_dir: &Path,
-    progress: &dyn ProgressReporter,
-) -> XboxResult<()> {
-    extract_xiso_cancellable(input, output_dir, progress, CancelToken::new()).await
-}
-
-/// Like [`extract_xiso`] but observes `cancel` at file and chunk
-/// boundaries. Files already written stay on disk.
-pub async fn extract_xiso_cancellable(
     input: &Path,
     output_dir: &Path,
     progress: &dyn ProgressReporter,
@@ -137,10 +96,7 @@ pub async fn extract_xiso_cancellable(
     let handle = task::spawn_blocking(move || {
         extract::extract_blocking(&input_owned, &output_owned, bytes_done_bg, &cancel_bg)
     });
-    await_with_progress_cancel(progress, &bytes_done, handle, &cancel, || {
-        XboxError::Cancelled
-    })
-    .await?;
+    await_with_progress_cancel(progress, &bytes_done, handle, &cancel).await?;
 
     info!(
         "Extracted XISO {} -> {}",
@@ -203,9 +159,15 @@ mod tests {
         build_source_tree(&source);
 
         let image = dir.path().join("game.iso");
-        convert_to_xiso(&source, &image, XisoCreateOptions::default(), &NoProgress)
-            .await
-            .unwrap();
+        convert_to_xiso(
+            &source,
+            &image,
+            XisoCreateOptions::default(),
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
 
         let info = read_info(&image).unwrap();
         assert_eq!(info.kind, PartitionKind::Trimmed);
@@ -215,7 +177,9 @@ mod tests {
         assert_eq!(info.total_file_bytes, 100 + 5 + 5000 + 3);
 
         let extracted = dir.path().join("out");
-        extract_xiso(&image, &extracted, &NoProgress).await.unwrap();
+        extract_xiso(&image, &extracted, &NoProgress, CancelToken::new())
+            .await
+            .unwrap();
         assert_eq!(snapshot(&source), snapshot(&extracted));
     }
 
@@ -225,9 +189,15 @@ mod tests {
         let source = dir.path().join("src");
         build_source_tree(&source);
         let image = dir.path().join("game.iso");
-        convert_to_xiso(&source, &image, XisoCreateOptions::default(), &NoProgress)
-            .await
-            .unwrap();
+        convert_to_xiso(
+            &source,
+            &image,
+            XisoCreateOptions::default(),
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
 
         let bytes = std::fs::read(&image).unwrap();
         assert_eq!(bytes.len() as u64 % 0x10000, 0);
@@ -274,11 +244,14 @@ mod tests {
                 &image,
                 XisoCreateOptions { media_patch },
                 &NoProgress,
+                CancelToken::new(),
             )
             .await
             .unwrap();
             let extracted = dir.path().join(format!("out{media_patch}"));
-            extract_xiso(&image, &extracted, &NoProgress).await.unwrap();
+            extract_xiso(&image, &extracted, &NoProgress, CancelToken::new())
+                .await
+                .unwrap();
 
             let xbe = std::fs::read(extracted.join("default.xbe")).unwrap();
             assert_eq!(xbe[split + 7], want, "media_patch = {media_patch}");
@@ -299,6 +272,7 @@ mod tests {
             &dir.path().join("a.iso"),
             XisoCreateOptions::default(),
             &NoProgress,
+            CancelToken::new(),
         )
         .await
         .unwrap_err();
@@ -321,13 +295,21 @@ mod tests {
         }
 
         let image = dir.path().join("game.iso");
-        convert_to_xiso(&source, &image, XisoCreateOptions::default(), &NoProgress)
-            .await
-            .unwrap();
+        convert_to_xiso(
+            &source,
+            &image,
+            XisoCreateOptions::default(),
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(read_info(&image).unwrap().root_size, 2 * 2048);
         let extracted = dir.path().join("out");
-        extract_xiso(&image, &extracted, &NoProgress).await.unwrap();
+        extract_xiso(&image, &extracted, &NoProgress, CancelToken::new())
+            .await
+            .unwrap();
         assert_eq!(snapshot(&source), snapshot(&extracted));
     }
 
@@ -340,9 +322,15 @@ mod tests {
         // Build a trimmed image first, then shift it to the XGD2 base to
         // synthesize a full disc image.
         let trimmed = dir.path().join("trimmed.iso");
-        convert_to_xiso(&source, &trimmed, XisoCreateOptions::default(), &NoProgress)
-            .await
-            .unwrap();
+        convert_to_xiso(
+            &source,
+            &trimmed,
+            XisoCreateOptions::default(),
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
 
         // Seek past the base rather than materializing it, so the video
         // partition costs nothing to synthesize.
@@ -360,6 +348,7 @@ mod tests {
             &rebuilt,
             XisoCreateOptions::default(),
             &NoProgress,
+            CancelToken::new(),
         )
         .await
         .unwrap();
@@ -370,7 +359,7 @@ mod tests {
         assert_eq!(info.dir_count, 3);
 
         let extracted = dir.path().join("out");
-        extract_xiso(&rebuilt, &extracted, &NoProgress)
+        extract_xiso(&rebuilt, &extracted, &NoProgress, CancelToken::new())
             .await
             .unwrap();
         assert_eq!(snapshot(&source), snapshot(&extracted));
