@@ -9,6 +9,7 @@
     "build": "nuxt generate",
     "preview": "nuxt preview",
     "test": "vitest run",
+    "typecheck": "nuxt typecheck",
     "tauri": "tauri"
   },
   "dependencies": {
@@ -24,6 +25,7 @@
   "devDependencies": {
     "@tailwindcss/postcss": "^4.3.3",
     "@tauri-apps/cli": "^2.11.4",
+    "@types/node": "^26.4.1",
     "nuxt": "^4.5.2",
     "tailwindcss": "^4.3.3",
     "typescript": "^6.0.3",
