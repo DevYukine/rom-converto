@@ -2,15 +2,12 @@
 //! `rom-converto.toml` presets the CLI reads, so a GUI-authored profile is
 //! reproducible from the CLI and vice versa.
 
+use crate::err_to_string;
 use rom_converto_lib::config::{
     Preset, UserConfig, discover_config_path, load_config_raw, remove_preset, upsert_preset,
     user_config_write_path,
 };
 use std::path::PathBuf;
-
-fn err_to_string(e: impl std::fmt::Display) -> String {
-    e.to_string()
-}
 
 /// The config file a save/delete would target: the discovered file if one
 /// exists, otherwise the per-user config path (which may not exist yet).

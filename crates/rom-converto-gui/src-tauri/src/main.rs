@@ -15,6 +15,11 @@ use info_cache::InfoCache;
 use rom_converto_lib::util::HashCache;
 use std::sync::Arc;
 
+/// Every command returns errors to the frontend as plain strings.
+pub(crate) fn err_to_string(e: impl std::fmt::Display) -> String {
+    e.to_string()
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())

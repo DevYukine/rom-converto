@@ -4,16 +4,27 @@
 //! can resolve (e.g. Switch CNMT/control data needs prod.keys).
 
 use rom_converto_lib::info::InfoResult;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 type Key = (PathBuf, SystemTime, Option<PathBuf>);
 
+/// Entry cap. An `InfoResult` carries decoded icon and banner PNGs, so an
+/// unbounded map would hold every ROM the user ever inspected in memory.
+const CAPACITY: usize = 64;
+
+#[derive(Default)]
+struct Entries {
+    map: HashMap<Key, Arc<InfoResult>>,
+    /// Insertion order, oldest first; drives eviction.
+    order: VecDeque<Key>,
+}
+
 #[derive(Default)]
 pub struct InfoCache {
-    entries: Mutex<HashMap<Key, Arc<InfoResult>>>,
+    entries: Mutex<Entries>,
 }
 
 impl InfoCache {
@@ -24,12 +35,19 @@ impl InfoCache {
     }
 
     pub fn get(&self, key: &Key) -> Option<Arc<InfoResult>> {
-        self.entries.lock().ok()?.get(key).cloned()
+        self.entries.lock().ok()?.map.get(key).cloned()
     }
 
     pub fn insert(&self, key: Key, value: Arc<InfoResult>) {
         if let Ok(mut guard) = self.entries.lock() {
-            guard.insert(key, value);
+            if guard.map.insert(key.clone(), value).is_none() {
+                guard.order.push_back(key);
+            }
+            while guard.order.len() > CAPACITY {
+                if let Some(oldest) = guard.order.pop_front() {
+                    guard.map.remove(&oldest);
+                }
+            }
         }
     }
 }
