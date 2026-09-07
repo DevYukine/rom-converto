@@ -24,7 +24,7 @@ function close() {
 <template>
 	<div class="titlebar" data-tauri-drag-region>
 		<div class="left" data-tauri-drag-region>
-			<div class="icon" />
+			<img class="icon" src="/logo.png" alt="" aria-hidden="true" />
 			<span class="name">rom-converto</span>
 			<span v-if="version" class="version">v{{ version }}</span>
 		</div>
@@ -75,10 +75,9 @@ function close() {
 }
 
 .icon {
-	width: 16px;
-	height: 16px;
-	border-radius: 4px;
-	background: #2f6fd0;
+	width: 24px;
+	height: 24px;
+	object-fit: cover;
 }
 
 .name {

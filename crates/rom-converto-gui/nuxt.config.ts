@@ -5,6 +5,11 @@ export default defineNuxtConfig({
 	telemetry: false,
 	modules: ["@pinia/nuxt"],
 	components: [{ path: "~/components", pathPrefix: false }],
+	app: {
+		head: {
+			link: [{ rel: "icon", type: "image/png", href: "/logo.png" }],
+		},
+	},
 	spaLoadingTemplate: "app/spa-loading-template.html",
 	experimental: {
 		payloadExtraction: false,
