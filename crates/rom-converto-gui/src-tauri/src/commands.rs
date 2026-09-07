@@ -4522,103 +4522,109 @@ async fn digest_all(
     // Cue sheets and playlists are set descriptors, not hashable images: they
     // are handled via cue grouping (rename) and would otherwise digest to an
     // InvalidInput failure and surface as a spurious Failed row in scan.
-    let files: Vec<PathBuf> = collect_all_files(input_dir, max_depth, &CancelToken::new())
-        .map_err(err_to_string)?
-        .into_iter()
-        .filter(|f| {
-            !f.extension()
-                .and_then(|e| e.to_str())
-                .is_some_and(|e| e.eq_ignore_ascii_case("cue") || e.eq_ignore_ascii_case("m3u"))
-        })
-        .collect();
-    progress.set_phase("Hashing files");
+    progress.set_phase("Collecting files");
+    let walk_root = input_dir.to_path_buf();
+    let walk_token = token.clone();
+    let files: Vec<PathBuf> =
+        tokio::task::spawn_blocking(move || collect_all_files(&walk_root, max_depth, &walk_token))
+            .await
+            .map_err(err_to_string)?
+            .map_err(err_to_string)?
+            .into_iter()
+            .filter(|f| {
+                !f.extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| e.eq_ignore_ascii_case("cue") || e.eq_ignore_ascii_case("m3u"))
+            })
+            .collect();
+    // The outer channel counts files; per-file byte progress from the hasher
+    // goes to a side channel so the bar never resets on every small file.
+    progress.start(files.len() as u64, "Hashing files");
+    let file_progress = progress.child("file");
     let mut units = Vec::with_capacity(files.len());
     for file in files {
         if token.is_cancelled() {
             return Err(Cancelled.to_string());
         }
-        if let Some(hit) = cache.lookup_decoded(&file, algos) {
+        units.push(digest_one(progress, &file_progress, cache, file, algos, quick, token).await?);
+        progress.inc(1);
+    }
+    Ok(units)
+}
+
+async fn digest_one(
+    progress: &TauriProgress,
+    file_progress: &TauriProgress,
+    cache: &HashCache,
+    file: PathBuf,
+    algos: &[HashAlgo],
+    quick: bool,
+    token: &CancelToken,
+) -> Result<DigestedUnit, String> {
+    let pending = |path: &Path| DatScanRow {
+        path: path.display().to_string(),
+        status: "pending",
+        game_name: None,
+        canonical_stem: None,
+        error: None,
+    };
+    if let Some(hit) = cache.lookup_decoded(&file, algos) {
+        progress.emit_row(pending(&file));
+        return Ok(DigestedUnit::Ok {
+            path: file,
+            digests: RomDigests::Single(hit),
+            quick: false,
+        });
+    }
+    // Quick digests come from the zip's own central directory, not a
+    // real read of the content, so they are used as is and never stored
+    // in the cache.
+    if quick {
+        let probe = file.clone();
+        if let Ok(Some(q)) = tokio::task::spawn_blocking(move || quick_crc_digest(&probe)).await {
+            progress.emit_row(pending(&file));
+            return Ok(DigestedUnit::Ok {
+                path: file,
+                digests: RomDigests::Single(q.digests),
+                quick: true,
+            });
+        }
+    }
+    match digest_inner_async(file.clone(), algos.to_vec(), file_progress, token.clone()).await {
+        Ok(digests) => {
+            if let RomDigests::Single(d) = &digests {
+                cache.store_decoded(&file, d);
+            }
+            progress.emit_row(pending(&file));
+            Ok(DigestedUnit::Ok {
+                path: file,
+                digests,
+                quick: false,
+            })
+        }
+        Err(rom_converto_lib::dat::DatError::UnsupportedInnerHash { .. }) => {
             progress.emit_row(DatScanRow {
                 path: file.display().to_string(),
-                status: "pending",
+                status: DatVerdict::Unsupported.as_str(),
                 game_name: None,
                 canonical_stem: None,
                 error: None,
             });
-            units.push(DigestedUnit::Ok {
-                path: file,
-                digests: RomDigests::Single(hit),
-                quick: false,
+            Ok(DigestedUnit::Unsupported { path: file })
+        }
+        Err(rom_converto_lib::dat::DatError::Cancelled(_)) => Err(Cancelled.to_string()),
+        Err(e) => {
+            let error = e.to_string();
+            progress.emit_row(DatScanRow {
+                path: file.display().to_string(),
+                status: DatVerdict::Failed.as_str(),
+                game_name: None,
+                canonical_stem: None,
+                error: Some(error.clone()),
             });
-            continue;
-        }
-        // Quick digests come from the zip's own central directory, not a
-        // real read of the content, so they are used as is and never stored
-        // in the cache.
-        if quick {
-            let probe = file.clone();
-            if let Ok(Some(q)) = tokio::task::spawn_blocking(move || quick_crc_digest(&probe)).await
-            {
-                progress.emit_row(DatScanRow {
-                    path: file.display().to_string(),
-                    status: "pending",
-                    game_name: None,
-                    canonical_stem: None,
-                    error: None,
-                });
-                units.push(DigestedUnit::Ok {
-                    path: file,
-                    digests: RomDigests::Single(q.digests),
-                    quick: true,
-                });
-                continue;
-            }
-        }
-        match digest_inner_async(file.clone(), algos.to_vec(), progress, token.clone()).await {
-            Ok(digests) => {
-                if let RomDigests::Single(d) = &digests {
-                    cache.store_decoded(&file, d);
-                }
-                progress.emit_row(DatScanRow {
-                    path: file.display().to_string(),
-                    status: "pending",
-                    game_name: None,
-                    canonical_stem: None,
-                    error: None,
-                });
-                units.push(DigestedUnit::Ok {
-                    path: file,
-                    digests,
-                    quick: false,
-                })
-            }
-            Err(rom_converto_lib::dat::DatError::UnsupportedInnerHash { .. }) => {
-                progress.emit_row(DatScanRow {
-                    path: file.display().to_string(),
-                    status: DatVerdict::Unsupported.as_str(),
-                    game_name: None,
-                    canonical_stem: None,
-                    error: None,
-                });
-                units.push(DigestedUnit::Unsupported { path: file })
-            }
-            Err(rom_converto_lib::dat::DatError::Cancelled(_)) => {
-                return Err(Cancelled.to_string());
-            }
-            Err(e) => {
-                let error = e.to_string();
-                progress.emit_row(DatScanRow {
-                    path: file.display().to_string(),
-                    status: DatVerdict::Failed.as_str(),
-                    game_name: None,
-                    canonical_stem: None,
-                    error: Some(error.clone()),
-                });
-                units.push(DigestedUnit::Failed { path: file, error })
-            }
+            Ok(DigestedUnit::Failed { path: file, error })
         }
     }
-    Ok(units)
 }
 
 /// The strongest single search key for one digested unit: the whole-image
@@ -4651,7 +4657,7 @@ pub async fn cmd_dat_scan(
     let token = begin(&state, "dat-scan").await;
     let cache = cache.inner().clone();
     let result = run_dat_scan(
-        progress,
+        progress.clone(),
         cache.clone(),
         input,
         max_depth,
@@ -4660,6 +4666,7 @@ pub async fn cmd_dat_scan(
         token,
     )
     .await;
+    progress.finish();
     finish(&state, "dat-scan").await;
     cache.save();
     let outcome = result?;
@@ -4730,7 +4737,10 @@ async fn run_dat_scan(
     }
 
     let client = PlaymatchClient::new(Some(DEFAULT_API_BASE));
-    progress.set_phase("Querying matches");
+    // Zero total marks the network phases as indeterminate for the frontend.
+    if !queryable.is_empty() {
+        progress.start(0, &format!("Matching {} files", queryable.len()));
+    }
     let items: Vec<BulkIdentifyItem> = queryable
         .iter()
         .map(|(_, _, name, digests, _)| BulkIdentifyItem {
@@ -4793,21 +4803,19 @@ async fn run_dat_scan(
         .map(|(unit_idx, path, name, _, _)| (*unit_idx, path.clone(), name.clone()))
         .collect();
     if !redo.is_empty() {
-        progress.set_phase("Rehashing quick misses");
+        progress.start(redo.len() as u64, "Rehashing quick misses");
+        let file_progress = progress.child("file");
         let mut redo_items: Vec<BulkIdentifyItem> = Vec::new();
         let mut redo_owner: Vec<(usize, PathBuf)> = Vec::new();
         for (unit_idx, path, name) in redo {
             if token.is_cancelled() {
                 return Err(Cancelled.to_string());
             }
-            match digest_inner_async(
-                path.clone(),
-                algos.clone(),
-                progress.as_ref(),
-                token.clone(),
-            )
-            .await
-            {
+            let digested =
+                digest_inner_async(path.clone(), algos.clone(), &file_progress, token.clone())
+                    .await;
+            progress.inc(1);
+            match digested {
                 Ok(digests) => {
                     if let RomDigests::Single(d) = &digests {
                         cache.store_decoded(&path, d);
@@ -4835,7 +4843,7 @@ async fn run_dat_scan(
             }
         }
         if !redo_items.is_empty() {
-            progress.set_phase("Querying matches");
+            progress.start(0, &format!("Matching {} rehashed files", redo_items.len()));
             let redo_results = client
                 .identify_bulk_ids(redo_items, &token)
                 .await
@@ -5039,7 +5047,7 @@ pub async fn cmd_dat_rename(
     let token = begin(&state, "dat-rename").await;
     let cache = cache.inner().clone();
     let result = run_dat_rename(
-        progress,
+        progress.clone(),
         cache.clone(),
         input,
         max_depth,
@@ -5048,6 +5056,7 @@ pub async fn cmd_dat_rename(
         token,
     )
     .await;
+    progress.finish();
     finish(&state, "dat-rename").await;
     cache.save();
     let outcome = result?;

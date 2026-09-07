@@ -1,4 +1,5 @@
 import { defineStore } from "pinia";
+import { shallowRef } from "vue";
 import { listen } from "~/lib/ipc";
 
 export type ScanLevel = "crc" | "md5" | "sha1" | "sha256";
@@ -29,27 +30,62 @@ export interface DatScanResult {
   rows: DatScanRow[];
 }
 
+const FLUSH_MS = 100;
+
 export const useDatScanStore = defineStore("dat-scan", () => {
   const input = ref("");
   const maxDepth = ref<number | null>(null);
   const scanLevel = ref<ScanLevel>("crc");
   const quick = ref(false);
   const commandLine = ref("");
-  const statusFilter = ref<DatScanStatus | "all">("all");
+  const statusFilter = ref<DatScanStatus | "pending" | "all">("all");
   const scanResult = ref<DatScanResult | null>(null);
-  const liveRows = ref(new Map<string, DatScanRowEvent>());
+  // Row events arrive per file, thousands of times for folders of small
+  // files. They are buffered and folded into one array on a timer so the
+  // result list re-renders a few times a second instead of per event.
+  const liveRows = shallowRef<DatScanRowEvent[]>([]);
+  const liveIndex = new Map<string, number>();
+  let pending: DatScanRowEvent[] = [];
+  let flushTimer: ReturnType<typeof setTimeout> | null = null;
   const error = ref("");
   const loading = ref(false);
+  const startedAt = ref(0);
+  const finishedAt = ref(0);
   let rowListener: Promise<void> | null = null;
+
+  // Replaces the array rather than mutating it: a computed that returns the
+  // same array identity does not notify its own dependents.
+  function flushLiveRows() {
+    if (flushTimer) clearTimeout(flushTimer);
+    flushTimer = null;
+    if (!pending.length) return;
+    const rows = liveRows.value.slice();
+    for (const row of pending) {
+      const i = liveIndex.get(row.path);
+      if (i === undefined) {
+        liveIndex.set(row.path, rows.length);
+        rows.push(row);
+      } else {
+        rows[i] = row;
+      }
+    }
+    pending = [];
+    liveRows.value = rows;
+  }
 
   function clearScanState() {
     scanResult.value = null;
-    liveRows.value.clear();
+    if (flushTimer) clearTimeout(flushTimer);
+    flushTimer = null;
+    pending = [];
+    liveIndex.clear();
+    liveRows.value = [];
     statusFilter.value = "all";
   }
 
   function setLiveRow(row: DatScanRowEvent) {
-    liveRows.value.set(row.path, row);
+    pending.push(row);
+    flushTimer ??= setTimeout(flushLiveRows, FLUSH_MS);
   }
 
   function ensureRowListener() {
@@ -67,6 +103,8 @@ export const useDatScanStore = defineStore("dat-scan", () => {
     commandLine.value = "";
     error.value = "";
     loading.value = false;
+    startedAt.value = 0;
+    finishedAt.value = 0;
     clearScanState();
   }
 
@@ -81,8 +119,11 @@ export const useDatScanStore = defineStore("dat-scan", () => {
     liveRows,
     error,
     loading,
+    startedAt,
+    finishedAt,
     clearScanState,
     setLiveRow,
+    flushLiveRows,
     ensureRowListener,
     $reset,
   };

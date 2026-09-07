@@ -662,29 +662,89 @@ function verifyPayload(command: string): string {
 
 // --- DAT samples ---
 
+type ScanRow = { path: string; status: string; gameName: string | null; canonicalStem: string | null; error: string | null };
+
+function scanRow(path: string, status: string, gameName: string | null = null, canonicalStem: string | null = null, error: string | null = null): ScanRow {
+	return { path, status, gameName, canonicalStem, error };
+}
+
+// A folder whose path mentions "cdn" mimics a title-server layout: hundreds of
+// small identically named content files under per-title directories.
+function scanFixture(dir: string): ScanRow[] {
+	if (!/cdn/i.test(dir)) {
+		return [
+			scanRow(`${dir}/title-a.chd`, "matched", "Sample Title A"),
+			scanRow(`${dir}/title-b.chd`, "misnamed", "Sample Title B", "Sample Title B (USA)"),
+			scanRow(`${dir}/title-c.iso`, "hint", "Sample Title C"),
+			scanRow(`${dir}/title-d.bin`, "unknown"),
+			scanRow(`${dir}/notes.txt`, "unsupported"),
+			scanRow(`${dir}/title-e.chd`, "failed", null, null, "Hash read error"),
+		];
+	}
+	const rows: ScanRow[] = [];
+	for (let t = 0; t < 40; t++) {
+		const title = `${dir}/000400000${(0x1000 + t * 0x100).toString(16)}`;
+		rows.push(scanRow(`${title}/tmd`, "unsupported"), scanRow(`${title}/cetk`, "unsupported"));
+		for (let c = 0; c < 8; c++) {
+			const name = `${title}/${c.toString(16).padStart(8, "0")}`;
+			if (c === 0) rows.push(scanRow(name, "matched", `Sample Title ${t + 1}`));
+			else if (c === 7 && t % 5 === 0) rows.push(scanRow(name, "failed", null, null, "Hash read error"));
+			else rows.push(scanRow(name, "unknown"));
+		}
+	}
+	return rows;
+}
+
+// Mirrors the real scan's progress protocol: an outer file counter on
+// `dat-scan`, per-file bytes on `dat-scan-file`, and zero-total starts for the
+// indeterminate network phases.
 async function datScan(a: Record<string, unknown>): Promise<string> {
 	const dir = typeof a.input === "string" ? a.input : FAKE_LIB;
-	const rows = [
-		{ path: `${dir}/title-a.chd`, status: "matched", gameName: "Sample Title A", canonicalStem: null, error: null },
-		{ path: `${dir}/title-b.chd`, status: "misnamed", gameName: "Sample Title B", canonicalStem: "Sample Title B (USA)", error: null },
-		{ path: `${dir}/title-c.iso`, status: "hint", gameName: "Sample Title C", canonicalStem: null, error: null },
-		{ path: `${dir}/title-d.bin`, status: "unknown", gameName: null, canonicalStem: null, error: null },
-		{ path: `${dir}/notes.txt`, status: "unsupported", gameName: null, canonicalStem: null, error: null },
-		{ path: `${dir}/title-e.chd`, status: "failed", gameName: null, canonicalStem: null, error: "Hash read error" },
-	];
-	cancelled.delete("dat-scan");
-	emit("progress", { task_id: "dat-scan", kind: "start", total: rows.length, current: 0, message: "" });
-	for (let i = 0; i < rows.length; i++) {
-		await delay(220);
+	const rows = scanFixture(dir);
+	const many = rows.length > 20;
+	const progress = (task_id: string, kind: string, total: number, current: number, message = "") =>
+		emit("progress", { task_id, kind, total, current, message });
+	const checkCancel = () => {
 		if (cancelled.has("dat-scan")) {
 			cancelled.delete("dat-scan");
 			throw "operation cancelled";
 		}
-		emit("dat-scan-row", rows[i]);
-		emit("progress", { task_id: "dat-scan", kind: "inc", total: rows.length, current: i + 1, message: "" });
+	};
+	cancelled.delete("dat-scan");
+	progress("dat-scan", "phase", 0, 0, "Collecting files");
+	await delay(400);
+	progress("dat-scan", "start", rows.length, 0, "Hashing files");
+	for (let i = 0; i < rows.length; i++) {
+		const r = rows[i]!;
+		const size = many ? 16_384 : 700_000_000;
+		const steps = many ? 1 : 4;
+		progress("dat-scan-file", "start", size, 0, `Hashing ${baseName(r.path)}`);
+		for (let s = 1; s <= steps; s++) {
+			await delay(many ? 12 : 60);
+			checkCancel();
+			progress("dat-scan-file", "inc", 0, (size / steps) * s);
+		}
+		progress("dat-scan-file", "finish", 0, 0);
+		const settled = r.status === "unsupported" || r.status === "failed";
+		emit("dat-scan-row", settled ? r : { ...r, status: "pending", gameName: null, canonicalStem: null });
+		progress("dat-scan", "inc", 0, i + 1);
 	}
-	emit("progress", { task_id: "dat-scan", kind: "finish", total: rows.length, current: rows.length, message: "" });
-	return JSON.stringify({ kind: "scan", matched: 1, misnamed: 1, hint: 1, unknown: 1, unsupported: 1, failed: 1, rows });
+	progress("dat-scan", "start", 0, 0, `Matching ${rows.length} files`);
+	await delay(many ? 1500 : 600);
+	checkCancel();
+	for (const r of rows) emit("dat-scan-row", r);
+	progress("dat-scan", "finish", 0, 0);
+	const tally = (status: string) => rows.filter((r) => r.status === status).length;
+	return JSON.stringify({
+		kind: "scan",
+		matched: tally("matched"),
+		misnamed: tally("misnamed"),
+		hint: tally("hint"),
+		unknown: tally("unknown"),
+		unsupported: tally("unsupported"),
+		failed: tally("failed"),
+		rows,
+	});
 }
 
 function datVerify(a: Record<string, unknown>): string {

@@ -35,6 +35,12 @@ impl TauriProgress {
             tally: Mutex::new(ProgressTally::default()),
         }
     }
+
+    /// A reporter on `<task_id>-<suffix>` sharing this app handle, for nested
+    /// per-item progress that must not clobber the outer counter.
+    pub fn child(&self, suffix: &str) -> Self {
+        Self::new(self.app.clone(), format!("{}-{suffix}", self.task_id))
+    }
 }
 
 impl ProgressReporter for TauriProgress {
