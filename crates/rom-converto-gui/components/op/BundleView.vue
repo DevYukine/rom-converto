@@ -14,8 +14,8 @@ import ConflictPopover from "~/components/modals/ConflictPopover.vue";
 import PrimaryButton from "~/components/ui/PrimaryButton.vue";
 import DryRunModal from "~/components/modals/DryRunModal.vue";
 import type { DryRunLine } from "~/components/modals/DryRunModal.vue";
-import type { InfoResult, WupInfo } from "~/types/info";
-import { invokeArgs, opCommand, opProgressKey } from "~/lib/opdefs/types";
+import type { InfoResult, WupInfo } from "~/types";
+import { dryRunArgs, opCommand, opProgressKey, runArgs } from "~/lib/opdefs/types";
 import type { OpDef } from "~/lib/opdefs/types";
 
 const props = defineProps<{ def: OpDef }>();
@@ -199,32 +199,43 @@ async function pickOutput(b: Bundle) {
 	if (typeof picked === "string") outputOverrides.value[b.lowId] = picked;
 }
 
-function bundleArgs(b: Bundle) {
-	return {
-		inputs: b.parts.map((p) => p.path),
-		output: bundleOutput(b),
-		level: store.level,
-		keys: b.parts.filter((p) => p.isDisc).map((p) => p.key || ""),
-		onConflict: store.onConflict,
-		skipSpaceCheck: store.skipSpaceCheck,
-	};
+function bundleArgs(b: Bundle, taskId = newTaskId()) {
+	return runArgs(
+		"wup.compress",
+		null,
+		bundleOutput(b),
+		{
+			level: store.level,
+			inputs: b.parts.map((p) => ({
+				path: p.path,
+				format: p.isDisc ? "disc" : null,
+				key: p.key || null,
+				key_path: null,
+			})),
+			on_conflict: store.onConflict,
+			skip_space_check: store.skipSpaceCheck,
+		},
+		false,
+		taskId,
+	);
+}
+
+// Unique per bundle, so cancelling one bundle leaves the others running.
+function newTaskId(): string {
+	return `job-${crypto.randomUUID()}`;
+}
+
+function progressKey(): string | undefined {
+	return opProgressKey(props.def, store);
 }
 
 const partTag: Record<PartKind, string> = { base: "BASE", update: "UPDATE", dlc: "DLC", unknown: "?" };
 
 const cli = computed(() => {
 	const b = readyBundles.value[0];
-	const args = b
-		? bundleArgs(b)
-		: {
-				inputs: [],
-				output: "",
-				level: store.level,
-				keys: [],
-				onConflict: store.onConflict,
-				skipSpaceCheck: store.skipSpaceCheck,
-			};
-	return buildCliCommand("cmd_wup_compress", args);
+	return buildCliCommand(
+		b ? bundleArgs(b) : runArgs("wup.compress", null, null, { level: store.level }, false, newTaskId()),
+	);
 });
 
 const queued = ref(false);
@@ -235,13 +246,14 @@ const addLabel = computed(() =>
 function addBundles() {
 	if (queued.value || !readyBundles.value.length) return;
 	const specs = readyBundles.value.map((b) => {
-		const args = bundleArgs(b);
+		const taskId = newTaskId();
 		return {
-			name: basename(args.output),
+			name: basename(bundleOutput(b)),
 			opLabel: props.def.opLabel,
 			command: opCommand(props.def, store),
-			args,
-			taskId: opProgressKey(props.def, store) ?? "wup-compress",
+			args: bundleArgs(b, taskId),
+			taskId,
+			progressKey: progressKey(),
 			chips: `level ${store.level}`,
 			resultKind: props.def.resultKind,
 			routeBack: { storeId: props.def.storeId },
@@ -262,15 +274,12 @@ async function dryRun() {
 	let cmd = "";
 	for (const b of readyBundles.value) {
 		const args = bundleArgs(b);
-		if (!cmd) cmd = buildCliCommand(opCommand(props.def, store), args);
+		if (!cmd) cmd = buildCliCommand(args);
 		let note = "ok";
 		let conflict = false;
 		try {
 			const command = opCommand(props.def, store);
-			const res = await invoke<{ message?: string }>(
-				command,
-				invokeArgs(command, { ...args, dryRun: true }),
-			);
+			const res = await invoke<{ message?: string }>(command, dryRunArgs(args));
 			const msg = typeof res === "object" && res ? String(res.message ?? "") : String(res);
 			if (msg) note = msg;
 			conflict = /exists|rename/i.test(msg);
@@ -278,7 +287,7 @@ async function dryRun() {
 			note = String(e);
 			conflict = true;
 		}
-		lines.push({ source: bundleName(b), output: args.output, note, conflict });
+		lines.push({ source: bundleName(b), output: bundleOutput(b), note, conflict });
 	}
 	dryLines.value = lines;
 	dryCommand.value = cmd;

@@ -1,5 +1,5 @@
 import { contentTypeDisplayName } from "../display";
-import type { PkgInfo } from "~/types/info";
+import type { PkgInfo } from "~/types";
 import { add, formatBytes, hex } from "./shared";
 import type { InspectBuild, InspectField, KindModule } from "./types";
 

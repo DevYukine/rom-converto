@@ -1,3 +1,20 @@
+const HASH_LABELS: [string, string][] = [
+	["crc32", "CRC32"],
+	["md5", "MD5"],
+	["sha1", "SHA-1"],
+	["sha256", "SHA-256"],
+];
+
+// The digests the runner computed, in a stable display order.
+export function digestValues(digests: unknown): { label: string; value: string }[] {
+	if (!digests || typeof digests !== "object") return [];
+	const d = digests as Record<string, unknown>;
+	return HASH_LABELS.filter(([key]) => typeof d[key] === "string" && d[key]).map(([key, label]) => ({
+		label,
+		value: d[key] as string,
+	}));
+}
+
 export function enumDisplayName(raw: string): string {
 	return raw
 		.replace(/_/g, " ")

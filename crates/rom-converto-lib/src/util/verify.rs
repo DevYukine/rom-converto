@@ -3,7 +3,7 @@
 //! result, so a corrupt or partial output gets rewritten and a valid one
 //! is kept.
 
-use super::{CancelToken, Cancelled, ProgressReporter};
+use super::{CancelToken, Cancelled, HashCache, ProgressReporter};
 use anyhow::Result;
 use std::path::Path;
 
@@ -93,11 +93,73 @@ pub async fn verify_existing_output(
     })
 }
 
+/// Format label for the verify cache. `None` means the target is not cached:
+/// an output with no integrity check, or an NX container with no usable keyset
+/// (its verify is skipped and its output kept, so caching it would be wrong).
+fn verify_label(target: &OutputVerify) -> Option<&'static str> {
+    match target {
+        OutputVerify::Chd => Some("chd"),
+        OutputVerify::Cso => Some("cso"),
+        OutputVerify::Rvz => Some("rvz"),
+        OutputVerify::Nx(keys) if keys.header_key.is_some() => Some("nx"),
+        OutputVerify::Nx(_) | OutputVerify::None => None,
+    }
+}
+
+/// [`verify_existing_output`] with a cache in front. A prior `Valid` verdict for
+/// an unchanged output short-circuits the read; only `Valid` is stored, since an
+/// `Invalid` output gets rewritten (changing its mtime and invalidating the
+/// entry anyway).
+pub async fn verify_existing_cached(
+    cache: &HashCache,
+    progress: &dyn ProgressReporter,
+    path: &Path,
+    target: OutputVerify,
+    cancel: CancelToken,
+) -> Result<VerifyOutcome> {
+    let label = verify_label(&target);
+    if let Some(label) = label
+        && cache.lookup_verify(path, label)
+    {
+        return Ok(VerifyOutcome::Valid);
+    }
+    let outcome = verify_existing_output(progress, path, target, cancel).await?;
+    if outcome == VerifyOutcome::Valid
+        && let Some(label) = label
+    {
+        cache.store_verify(path, label, true);
+    }
+    Ok(outcome)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::util::NoProgress;
     use tempfile::tempdir;
+
+    #[test]
+    fn verify_label_maps_targets() {
+        use crate::nintendo::nx::KeySet;
+        assert_eq!(verify_label(&OutputVerify::Chd), Some("chd"));
+        assert_eq!(verify_label(&OutputVerify::Cso), Some("cso"));
+        assert_eq!(verify_label(&OutputVerify::Rvz), Some("rvz"));
+        assert_eq!(verify_label(&OutputVerify::None), None);
+
+        // NX without a header key is not cached: its verify is skipped and the
+        // output kept, so a cached "valid" verdict would be wrong.
+        let no_key = KeySet::default();
+        assert_eq!(verify_label(&OutputVerify::Nx(Box::new(no_key))), None);
+
+        let with_key = KeySet {
+            header_key: Some([0u8; 32]),
+            ..Default::default()
+        };
+        assert_eq!(
+            verify_label(&OutputVerify::Nx(Box::new(with_key))),
+            Some("nx")
+        );
+    }
 
     #[tokio::test]
     async fn verify_existing_output_none_keeps_unverifiable() {

@@ -1,5 +1,5 @@
 import { invoke } from "~/lib/ipc";
-import type { ReportRecord, ReportTotals } from "~/types/report";
+import type { ReportRecord, ReportTotals } from "~/types";
 
 // Synthesize a failed record for a file whose command threw, mirroring the
 // CLI's `failed_record`: empty output, the input file size, and the error

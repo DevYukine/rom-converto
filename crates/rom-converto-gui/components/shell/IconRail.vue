@@ -47,9 +47,9 @@ function go(op: string) {
 		return;
 	}
 	const last = ui.lastConsolePerOp[op];
-	// dat pages live outside the opdef registry; a stale persisted console
-	// (e.g. one removed from an op) must not route to a dead page.
-	const valid = op === "dat" ? ["scan", "verify", "rename"].includes(last ?? "") : !!(last && opDef(op, last));
+	// A stale persisted console (e.g. one removed from an op) must not route to
+	// a dead page.
+	const valid = !!(last && opDef(op, last));
 	router.push(`/${op}/${valid ? last : DEFAULT_CONSOLE[op]}`);
 }
 </script>

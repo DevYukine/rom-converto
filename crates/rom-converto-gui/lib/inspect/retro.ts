@@ -1,4 +1,4 @@
-import type { RetroDetails } from "~/types/info";
+import type { RetroDetails } from "~/types";
 import { add, crcField, formatBytes, hex } from "./shared";
 import type { InspectField, KindModule } from "./types";
 

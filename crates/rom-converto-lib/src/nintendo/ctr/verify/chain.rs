@@ -34,6 +34,8 @@ pub type CiaVerifyOptions = CtrVerifyOptions;
 /// Result of verifying a CIA's certificate chain, signatures, and (if
 /// requested) content hashes.
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub struct CiaVerifyResult {
     pub legitimacy: CiaLegitimacy,
     pub ca_cert_valid: bool,
@@ -53,6 +55,8 @@ pub struct CiaVerifyResult {
 /// Classification of a CIA's ticket/TMD signer, derived from which
 /// certificates and signatures validate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub enum CiaLegitimacy {
     Legit(CiaLegitimacySubType),
     Piratelegit,
@@ -62,6 +66,8 @@ pub enum CiaLegitimacy {
 /// Distinguishes a Legit CIA signed by the eShop CA (`Global`) from one
 /// signed by a personalized ticket (`Personalized`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub enum CiaLegitimacySubType {
     Global,
     Personalized,
@@ -74,6 +80,8 @@ pub enum CiaLegitimacySubType {
 /// signature). Detected by the Encrypted flag being clear on every
 /// content chunk record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub enum StandardSubType {
     Encrypted,
     Decrypted,
@@ -97,6 +105,8 @@ impl std::fmt::Display for CiaLegitimacy {
 
 /// Verification result for one NCCH partition within an NCSD image.
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub struct NcchPartitionResult {
     pub index: usize,
     pub name: String,
@@ -114,6 +124,8 @@ pub struct NcchPartitionResult {
 /// Verification result for an NCSD (CCI/`.3ds`) cartridge image, covering
 /// every partition.
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub struct NcsdVerifyResult {
     pub ncsd_magic_valid: bool,
     pub title_id: String,
@@ -127,6 +139,8 @@ pub struct NcsdVerifyResult {
 /// Verification result for a CIA or CCI/3DS input, tagged by detected format.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "format")]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub enum CtrVerifyResult {
     Cia(CiaVerifyResult),
     Ncsd(NcsdVerifyResult),

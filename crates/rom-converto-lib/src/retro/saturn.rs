@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 /// Fields of the Saturn IP header, with the area and peripheral fields
 /// kept raw alongside the symbols decoded from them.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct SaturnInfo {
     pub sector_size: u32,
     pub hardware_id: String,

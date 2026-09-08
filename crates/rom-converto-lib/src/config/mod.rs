@@ -18,6 +18,8 @@ pub const USER_CONFIG_SUBPATH: &str = "rom-converto/config.toml";
 /// Top-level `rom-converto.toml` structure: per-format defaults plus named presets.
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "config.ts", optional_fields = nullable))]
 pub struct UserConfig {
     pub dol: Option<DiscDefaults>,
     pub rvl: Option<DiscDefaults>,
@@ -33,6 +35,8 @@ pub struct UserConfig {
 /// Config defaults shared by the GameCube/Wii (`dol`/`rvl`) disc formats.
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "config.ts", optional_fields = nullable))]
 pub struct DiscDefaults {
     /// Zstandard compression level, -22 to 22. Defaults to 22.
     pub level: Option<i32>,
@@ -47,6 +51,8 @@ pub struct DiscDefaults {
 /// Config defaults for Switch (`nx`) NSZ/XCZ conversion.
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "config.ts", optional_fields = nullable))]
 pub struct NxDefaults {
     /// Zstd compression level, 1 to 22. Defaults to 18.
     pub level: Option<i32>,
@@ -60,6 +66,8 @@ pub struct NxDefaults {
 /// Config defaults for CHD compression/extraction.
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "config.ts", optional_fields = nullable))]
 pub struct ChdDefaults {
     pub hunk_size: Option<u32>,
     /// Codec list, e.g. `["cdlz", "cdzl", "cdfl"]`.
@@ -74,6 +82,8 @@ pub struct ChdDefaults {
 /// Config defaults for CSO/ZSO compression.
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "config.ts", optional_fields = nullable))]
 pub struct CsoDefaults {
     pub block_size: Option<u32>,
     pub on_conflict: Option<String>,
@@ -84,6 +94,8 @@ pub struct CsoDefaults {
 /// Config defaults for Wii U (`wup`) package conversion.
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "config.ts", optional_fields = nullable))]
 pub struct WupDefaults {
     /// Zstd compression level, 0 to 22. Defaults to 6.
     pub level: Option<i32>,
@@ -93,6 +105,8 @@ pub struct WupDefaults {
 /// Config defaults for DAT-based verification and matching.
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "config.ts", optional_fields = nullable))]
 pub struct DatDefaults {
     pub api_base: Option<String>,
     pub report: Option<PathBuf>,
@@ -167,6 +181,8 @@ impl_merge_over!(DatDefaults {
 /// top-level defaults when applied.
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "config.ts", optional_fields = nullable))]
 pub struct Preset {
     pub dol: Option<DiscDefaults>,
     pub rvl: Option<DiscDefaults>,

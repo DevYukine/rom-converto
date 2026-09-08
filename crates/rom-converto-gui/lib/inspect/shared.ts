@@ -1,5 +1,5 @@
 import { contentTypeDisplayName } from "../display";
-import type { DiscContent, LdClvTime } from "~/types/info";
+import type { DiscContent, LdClvTime } from "~/types";
 import type { InspectField } from "./types";
 
 export function add(list: InspectField[], label: string, value: string | number | null | undefined) {

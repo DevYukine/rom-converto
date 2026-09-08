@@ -5,7 +5,7 @@ import { useConfigStore } from "~/stores/config";
 import { useUpdatesStore } from "~/stores/updates";
 import { useUiStore } from "~/stores/ui";
 import { useJobConcurrency } from "~/composables/useJobConcurrency";
-import type { Preset, PresetFormat } from "~/types/config";
+import type { Preset, PresetFormat } from "~/types";
 
 const store = useConfigStore();
 if (!store.loaded) store.loadConfig();

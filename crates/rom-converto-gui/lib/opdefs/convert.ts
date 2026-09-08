@@ -1,7 +1,8 @@
 import {
-	commonArgs,
+	commonOptions,
 	directoryOutputRows,
 	recursiveFields,
+	runArgs,
 	templateIsActive,
 	type OpDef,
 } from "./types";
@@ -64,7 +65,7 @@ const ctr: OpDef = {
 	opLabel: "Convert",
 	storeId: "ctr-convert",
 	useStore: useCtrConvertStore,
-	command: "cmd_convert_ctr",
+	command: "cmd_run",
 	resultKind: "convert",
 	title: "Convert CIA ↔ CCI",
 	subtitle: "Converts between the installable CIA container and the raw CCI cart image.",
@@ -88,19 +89,15 @@ const ctr: OpDef = {
 	verifyLabel: "Compute output hash",
 	actionNote: "Jobs start automatically. Parameters lock once queued.",
 	deriveOutput: deriveConvertedPath,
-	buildArgs: (store, item, taskId) => {
-		const tmpl = templateIsActive(store);
-		return {
-			input: item.path,
-			output: tmpl ? null : withOutputDir(deriveConvertedPath(item.path), store.outputDir || ""),
-			onConflict: store.onConflict,
-			skipSpaceCheck: store.skipSpaceCheck,
-			outputTemplate: store.outputTemplate || null,
-			verifyAfter: store.verifyAfter,
-			dryRun: false,
+	buildArgs: (store, item, taskId) =>
+		runArgs(
+			"ctr.convert",
+			item.path,
+			templateIsActive(store) ? null : withOutputDir(deriveConvertedPath(item.path), store.outputDir || ""),
+			commonOptions(store),
+			false,
 			taskId,
-		};
-	},
+		),
 	chips: () => "",
 };
 
@@ -110,7 +107,7 @@ const cso: OpDef = {
 	opLabel: "Convert",
 	storeId: "cso-to-chd",
 	useStore: useCsoToChdStore,
-	command: "cmd_cso_to_chd",
+	command: "cmd_run",
 	resultKind: "convert",
 	title: "Convert ISO → CHD",
 	subtitle: "Decodes a CSO/ZSO/DAX disc image and rebuilds it as a CHD.",
@@ -178,19 +175,22 @@ const cso: OpDef = {
 	verifyLabel: "Verify after conversion",
 	actionNote: "Jobs start automatically. Parameters lock once queued.",
 	deriveOutput: deriveChdPath,
-	buildArgs: (store, item, taskId) => {
-		const tmpl = templateIsActive(store);
-		return {
-			inputPath: item.path,
-			output: tmpl ? null : withOutputDir(deriveChdPath(item.path), store.outputDir || ""),
-			codecs: store.codecs.length ? store.codecs : null,
-			level: store.level,
-			mode: store.mode === "auto" ? null : store.mode,
-			hunkSize: store.hunkSize || null,
-			...commonArgs(store, taskId),
-			dryRun: false,
-		};
-	},
+	buildArgs: (store, item, taskId) =>
+		runArgs(
+			"cso.to_chd",
+			item.path,
+			templateIsActive(store) ? null : withOutputDir(deriveChdPath(item.path), store.outputDir || ""),
+			{
+				codecs: store.codecs.length ? store.codecs : null,
+				level: store.level,
+				mode: store.mode === "auto" ? null : store.mode,
+				hunk_size: store.hunkSize || null,
+				...commonOptions(store),
+			},
+			false,
+			taskId,
+			store.reportFile || null,
+		),
 	chips: (store) =>
 		[
 			store.mode !== "auto" ? store.mode : "",
@@ -207,7 +207,7 @@ const chd: OpDef = {
 	opLabel: "Convert",
 	storeId: "chd-to-cso",
 	useStore: useChdToCsoStore,
-	command: "cmd_chd_to_cso",
+	command: "cmd_run",
 	resultKind: "convert",
 	title: "Convert CHD → CSO/ZSO",
 	subtitle: "Decodes a DVD-mode CHD and re-encodes it as CSO or ZSO.",
@@ -242,17 +242,22 @@ const chd: OpDef = {
 	verifyLabel: "Verify after conversion",
 	actionNote: "Jobs start automatically. Parameters lock once queued.",
 	deriveOutput: (input, store) => deriveCsoPath(input, store.format),
-	buildArgs: (store, item, taskId) => {
-		const tmpl = templateIsActive(store);
-		return {
-			inputPath: item.path,
-			output: tmpl ? null : withOutputDir(deriveCsoPath(item.path, store.format), store.outputDir || ""),
-			format: store.format,
-			blockSize: store.blockSize || null,
-			...commonArgs(store, taskId),
-			dryRun: false,
-		};
-	},
+	buildArgs: (store, item, taskId) =>
+		runArgs(
+			"chd.to_cso",
+			item.path,
+			templateIsActive(store)
+				? null
+				: withOutputDir(deriveCsoPath(item.path, store.format), store.outputDir || ""),
+			{
+				format: store.format,
+				block_size: store.blockSize || null,
+				...commonOptions(store),
+			},
+			false,
+			taskId,
+			store.reportFile || null,
+		),
 	chips: (store) => store.format,
 };
 
@@ -268,7 +273,7 @@ const chdMigrate: OpDef = {
 	opLabel: "chd migrate",
 	storeId: "chd-migrate",
 	useStore: useChdMigrateStore,
-	command: "cmd_chd_migrate",
+	command: "cmd_run",
 	resultKind: "convert",
 	title: "Migrate CHD to v5",
 	subtitle:
@@ -322,18 +327,21 @@ const chdMigrate: OpDef = {
 	verifyLabel: "Verify after conversion",
 	actionNote: "Jobs start automatically. Parameters lock once queued.",
 	deriveOutput: deriveChdV5Path,
-	buildArgs: (store, item, taskId) => {
-		const tmpl = templateIsActive(store);
-		return {
-			inputPath: item.path,
-			output: tmpl ? null : withOutputDir(deriveChdV5Path(item.path), store.outputDir || ""),
-			codecs: store.codecs.length ? store.codecs : null,
-			level: store.level,
-			hunkSize: store.hunkSize || null,
-			...commonArgs(store, taskId),
-			dryRun: false,
-		};
-	},
+	buildArgs: (store, item, taskId) =>
+		runArgs(
+			"chd.migrate",
+			item.path,
+			templateIsActive(store) ? null : withOutputDir(deriveChdV5Path(item.path), store.outputDir || ""),
+			{
+				codecs: store.codecs.length ? store.codecs : null,
+				level: store.level,
+				hunk_size: store.hunkSize || null,
+				...commonOptions(store),
+			},
+			false,
+			taskId,
+			store.reportFile || null,
+		),
 	chips: (store) =>
 		[
 			store.codecs.length ? store.codecs.join(", ") : "",
@@ -344,8 +352,8 @@ const chdMigrate: OpDef = {
 			.join(" · "),
 };
 
-// ISO goes through cmd_cue_to_iso (no format arg); CSO and ZSO share
-// cmd_cue_to_cso, which takes the container format as an argument.
+// ISO goes through cue.to_iso (no format option); CSO and ZSO share
+// cue.to_cso, which takes the container format as an option.
 function deriveCueOutput(input: string, format: string): string {
 	return format === "iso" ? deriveDiscIsoPath(input) : deriveCsoPath(input, format as "cso" | "zso");
 }
@@ -356,7 +364,7 @@ const cue: OpDef = {
 	opLabel: "Convert",
 	storeId: "cue-convert",
 	useStore: useCueConvertStore,
-	command: (store) => (store.format === "iso" ? "cmd_cue_to_iso" : "cmd_cue_to_cso"),
+	command: "cmd_run",
 	resultKind: "convert",
 	title: "Convert CUE/BIN",
 	subtitle: "Converts a CUE/BIN disc image's data track to ISO, or to a block-compressed CSO or ZSO.",
@@ -392,26 +400,19 @@ const cue: OpDef = {
 	],
 	actionNote: "Jobs start automatically. Parameters lock once queued.",
 	deriveOutput: (input, store) => deriveCueOutput(input, store.format),
-	buildArgs: (store, item) => {
-		const output = withOutputDir(deriveCueOutput(item.path, store.format), store.outputDir || "");
-		if (store.format === "iso") {
-			return {
-				cuePath: item.path,
-				output,
-				onConflict: store.onConflict,
-				skipSpaceCheck: store.skipSpaceCheck,
-				dryRun: false,
-			};
-		}
-		return {
-			cuePath: item.path,
-			output,
-			format: store.format,
-			onConflict: store.onConflict,
-			skipSpaceCheck: store.skipSpaceCheck,
-			dryRun: false,
-		};
-	},
+	buildArgs: (store, item, taskId) =>
+		runArgs(
+			store.format === "iso" ? "cue.to_iso" : "cue.to_cso",
+			item.path,
+			withOutputDir(deriveCueOutput(item.path, store.format), store.outputDir || ""),
+			{
+				format: store.format,
+				on_conflict: store.onConflict,
+				skip_space_check: store.skipSpaceCheck,
+			},
+			false,
+			taskId,
+		),
 	chips: (store) => store.format,
 };
 
@@ -421,7 +422,7 @@ const xbox: OpDef = {
 	opLabel: "Convert",
 	storeId: "xbox-convert",
 	useStore: useXboxConvertStore,
-	command: "cmd_xbox_convert",
+	command: "cmd_run",
 	resultKind: "convert",
 	title: "Convert ISO → XISO",
 	subtitle: "Trims a full disc image down to the game partition, or packs a directory of extracted files.",
@@ -442,19 +443,19 @@ const xbox: OpDef = {
 	note: "The media patch is inert on .xbe files that don't need it, so leaving it on is safe by default.",
 	outputRows: templateOutputRowsWithReport(),
 	showVerify: true,
-	verifyLabel: "Verify after conversion",
+	verifyLabel: "Compute output hash",
 	actionNote: "Jobs start automatically. Parameters lock once queued.",
 	deriveOutput: deriveXisoPath,
-	buildArgs: (store, item, taskId) => {
-		const tmpl = templateIsActive(store);
-		return {
-			input: item.path,
-			output: tmpl ? null : withOutputDir(deriveXisoPath(item.path), store.outputDir || ""),
-			mediaPatch: store.mediaPatch,
-			...commonArgs(store, taskId),
-			dryRun: false,
-		};
-	},
+	buildArgs: (store, item, taskId) =>
+		runArgs(
+			"xbox.convert",
+			item.path,
+			templateIsActive(store) ? null : withOutputDir(deriveXisoPath(item.path), store.outputDir || ""),
+			{ media_patch: store.mediaPatch, ...commonOptions(store) },
+			false,
+			taskId,
+			store.reportFile || null,
+		),
 	chips: (store) => (store.mediaPatch ? "" : "no media patch"),
 };
 
@@ -464,7 +465,7 @@ const psp: OpDef = {
 	opLabel: "Convert",
 	storeId: "psp-to-iso",
 	useStore: usePspToIsoStore,
-	command: "cmd_psp_to_iso",
+	command: "cmd_run",
 	resultKind: "convert",
 	title: "Convert EBOOT.PBP → ISO",
 	subtitle:
@@ -476,18 +477,19 @@ const psp: OpDef = {
 	note: "Only PSN-distributed NPUMDIMG UMD images convert; homebrew and PS1 Classic EBOOTs fail with a clear error.",
 	outputRows: templateOutputRowsWithReport(),
 	showVerify: true,
-	verifyLabel: "Verify after conversion",
+	verifyLabel: "Compute output hash",
 	actionNote: "Jobs start automatically. Parameters lock once queued.",
 	deriveOutput: deriveDiscIsoPath,
-	buildArgs: (store, item, taskId) => {
-		const tmpl = templateIsActive(store);
-		return {
-			input: item.path,
-			output: tmpl ? null : withOutputDir(deriveDiscIsoPath(item.path), store.outputDir || ""),
-			...commonArgs(store, taskId),
-			dryRun: false,
-		};
-	},
+	buildArgs: (store, item, taskId) =>
+		runArgs(
+			"psp.to_iso",
+			item.path,
+			templateIsActive(store) ? null : withOutputDir(deriveDiscIsoPath(item.path), store.outputDir || ""),
+			commonOptions(store),
+			false,
+			taskId,
+			store.reportFile || null,
+		),
 	chips: () => "",
 };
 
@@ -497,7 +499,7 @@ const xenon: OpDef = {
 	opLabel: "Convert",
 	storeId: "xenon-convert",
 	useStore: useXenonConvertStore,
-	command: "cmd_xenon_convert",
+	command: "cmd_run",
 	resultKind: "convert",
 	title: "Convert ISO → GoD",
 	subtitle: "Converts a full disc image into a Games on Demand (GoD) container that a console installs.",
@@ -520,15 +522,19 @@ const xenon: OpDef = {
 	),
 	actionNote: "Jobs start automatically. Parameters lock once queued.",
 	deriveOutput: deriveGodDir,
-	buildArgs: (store, item, taskId) => ({
-		input: item.path,
-		outputDir: withOutputDir(deriveGodDir(item.path), store.outputDir || ""),
-		title: store.title || null,
-		onConflict: store.onConflict,
-		skipSpaceCheck: store.skipSpaceCheck,
-		dryRun: false,
-		taskId,
-	}),
+	buildArgs: (store, item, taskId) =>
+		runArgs(
+			"xenon.convert",
+			item.path,
+			withOutputDir(deriveGodDir(item.path), store.outputDir || ""),
+			{
+				title: store.title || null,
+				on_conflict: store.onConflict,
+				skip_space_check: store.skipSpaceCheck,
+			},
+			false,
+			taskId,
+		),
 	chips: (store) => (store.title ? "custom title" : ""),
 };
 

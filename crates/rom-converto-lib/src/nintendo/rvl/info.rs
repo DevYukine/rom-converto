@@ -27,6 +27,8 @@ use std::path::Path;
 
 /// Metadata extracted from a Wii disc image: the disc header, partitions, TMD, and banner.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct RvlInfo {
     pub physical_bytes: u64,
     pub container: String,
@@ -45,6 +47,8 @@ pub struct RvlInfo {
 
 /// One entry from the disc's partition table.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct RvlPartitionSummary {
     pub offset: u64,
     pub partition_type: u32,
@@ -54,6 +58,8 @@ pub struct RvlPartitionSummary {
 
 /// Fields from the data partition's Title Metadata, surfaced for `rvl info`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct RvlTmdInfo {
     pub title_id: u64,
     /// [`Self::title_id`] formatted as 16 uppercase hex digits, so callers

@@ -7,7 +7,7 @@ import { useChdVerifyStore } from "~/stores/chd-verify";
 import { useCsoVerifyStore } from "~/stores/cso-verify";
 import { useXenonVerifyStore } from "~/stores/xenon-verify";
 import { nxKeysColor, nxKeysDisplay } from "./nx-keys";
-import { NX_KEYS_TOOLTIP, type OpDef } from "./types";
+import { NX_KEYS_TOOLTIP, runArgs, type OpDef } from "./types";
 
 const SUBTITLE = "Checks hashes and container structure. Read-only.";
 const DROP_TEXT = "Drop files or a folder";
@@ -20,7 +20,7 @@ export const verifyOps: OpDef[] = [
 		opLabel: "ctr verify",
 		storeId: "ctr-verify",
 		useStore: useCtrVerifyStore,
-		command: "cmd_verify_ctr",
+		command: "cmd_run",
 		resultKind: "verify",
 		progressKey: "ctr-verify",
 		title: "Verify 3DS files",
@@ -45,7 +45,8 @@ export const verifyOps: OpDef[] = [
 		showDryRun: false,
 		actionNote: ACTION_NOTE,
 		deriveOutput: undefined,
-		buildArgs: (store, item) => ({ input: item.path, verifyContent: !!store.verifyContent }),
+		buildArgs: (store, item, taskId) =>
+			runArgs("ctr.verify", item.path, null, { content_hashes: !!store.verifyContent }, false, taskId),
 		chips: (store) => (store.verifyContent ? "content hashes" : "structure only"),
 	},
 	{
@@ -54,7 +55,7 @@ export const verifyOps: OpDef[] = [
 		opLabel: "dol verify",
 		storeId: "dol-verify",
 		useStore: useDolVerifyStore,
-		command: "cmd_verify_dol",
+		command: "cmd_run",
 		resultKind: "verify",
 		progressKey: "dol-verify",
 		title: "Verify GameCube files",
@@ -77,7 +78,8 @@ export const verifyOps: OpDef[] = [
 		showDryRun: false,
 		actionNote: ACTION_NOTE,
 		deriveOutput: undefined,
-		buildArgs: (store, item) => ({ input: item.path, full: !!store.full }),
+		buildArgs: (store, item, taskId) =>
+			runArgs("dol.verify", item.path, null, { full: !!store.full }, false, taskId),
 		chips: (store) => (store.full ? "full verification" : "quick"),
 	},
 	{
@@ -86,7 +88,7 @@ export const verifyOps: OpDef[] = [
 		opLabel: "rvl verify",
 		storeId: "rvl-verify",
 		useStore: useRvlVerifyStore,
-		command: "cmd_verify_rvl",
+		command: "cmd_run",
 		resultKind: "verify",
 		progressKey: "rvl-verify",
 		title: "Verify Wii files",
@@ -109,7 +111,8 @@ export const verifyOps: OpDef[] = [
 		showDryRun: false,
 		actionNote: ACTION_NOTE,
 		deriveOutput: undefined,
-		buildArgs: (store, item) => ({ input: item.path, full: !!store.full }),
+		buildArgs: (store, item, taskId) =>
+			runArgs("rvl.verify", item.path, null, { full: !!store.full }, false, taskId),
 		chips: (store) => (store.full ? "full verification" : "quick"),
 	},
 	{
@@ -118,7 +121,7 @@ export const verifyOps: OpDef[] = [
 		opLabel: "wup verify",
 		storeId: "wup-verify",
 		useStore: useWupVerifyStore,
-		command: "cmd_wup_verify",
+		command: "cmd_run",
 		resultKind: "verify",
 		progressKey: "wup-verify",
 		title: "Verify Wii U files",
@@ -144,7 +147,8 @@ export const verifyOps: OpDef[] = [
 		showDryRun: false,
 		actionNote: ACTION_NOTE,
 		deriveOutput: undefined,
-		buildArgs: (store, item) => ({ input: item.path, keys: store.keys || null }),
+		buildArgs: (store, item, taskId) =>
+			runArgs("wup.verify", item.path, null, { key: store.keys || null }, false, taskId),
 		chips: (store) => (store.keys ? "disc key set" : "no disc key"),
 	},
 	{
@@ -153,7 +157,7 @@ export const verifyOps: OpDef[] = [
 		opLabel: "nx verify",
 		storeId: "nx-verify",
 		useStore: useNxVerifyStore,
-		command: "cmd_nx_verify",
+		command: "cmd_run",
 		resultKind: "verify",
 		progressKey: "nx-verify",
 		title: "Verify Switch files",
@@ -180,7 +184,8 @@ export const verifyOps: OpDef[] = [
 		showDryRun: false,
 		actionNote: ACTION_NOTE,
 		deriveOutput: undefined,
-		buildArgs: (store, item) => ({ input: item.path, keys: store.keys || null }),
+		buildArgs: (store, item, taskId) =>
+			runArgs("nx.verify", item.path, null, { keys: store.keys || null }, false, taskId),
 		chips: (store) => (store.keys ? "prod.keys set" : "prod.keys auto"),
 	},
 	{
@@ -189,7 +194,7 @@ export const verifyOps: OpDef[] = [
 		opLabel: "chd verify",
 		storeId: "chd-verify",
 		useStore: useChdVerifyStore,
-		command: "cmd_chd_verify",
+		command: "cmd_run",
 		resultKind: "verify",
 		progressKey: "chd-verify",
 		title: "Verify CD / DVD (CHD) files",
@@ -221,7 +226,8 @@ export const verifyOps: OpDef[] = [
 		showDryRun: false,
 		actionNote: ACTION_NOTE,
 		deriveOutput: undefined,
-		buildArgs: (store, item) => ({ input: item.path, parent: store.parent || null, fix: !!store.fix }),
+		buildArgs: (store, item, taskId) =>
+			runArgs("chd.verify", item.path, null, { parent: store.parent || null, fix: !!store.fix }, false, taskId),
 		chips: (store) => {
 			const parts = [];
 			if (store.parent) parts.push("parent set");
@@ -235,7 +241,7 @@ export const verifyOps: OpDef[] = [
 		opLabel: "cso verify",
 		storeId: "cso-verify",
 		useStore: useCsoVerifyStore,
-		command: "cmd_cso_verify",
+		command: "cmd_run",
 		resultKind: "verify",
 		progressKey: "cso-verify",
 		title: "Verify PSP / PS2 files",
@@ -258,7 +264,8 @@ export const verifyOps: OpDef[] = [
 		showDryRun: false,
 		actionNote: ACTION_NOTE,
 		deriveOutput: undefined,
-		buildArgs: (store, item) => ({ inputPath: item.path, full: !!store.full }),
+		buildArgs: (store, item, taskId) =>
+			runArgs("cso.verify", item.path, null, { full: !!store.full }, false, taskId),
 		chips: (store) => (store.full ? "full verification" : "quick"),
 	},
 	{
@@ -267,7 +274,7 @@ export const verifyOps: OpDef[] = [
 		opLabel: "xenon verify",
 		storeId: "xenon-verify",
 		useStore: useXenonVerifyStore,
-		command: "cmd_xenon_verify",
+		command: "cmd_run",
 		resultKind: "verify",
 		progressKey: "xenon-verify",
 		title: "Verify Xbox 360 files",
@@ -282,7 +289,7 @@ export const verifyOps: OpDef[] = [
 		showDryRun: false,
 		actionNote: ACTION_NOTE,
 		deriveOutput: undefined,
-		buildArgs: (store, item) => ({ input: item.path }),
+		buildArgs: (_store, item, taskId) => runArgs("xenon.verify", item.path, null, {}, false, taskId),
 		chips: () => "",
 	},
 ];

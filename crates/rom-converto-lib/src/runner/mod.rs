@@ -11,15 +11,21 @@ use anyhow::Result;
 use serde_json::Value;
 use std::sync::Mutex;
 
+/// CLI-invocation metadata for a request, for frontends that echo commands.
+pub mod cli_echo;
 mod dat;
 mod defaults;
 pub(crate) mod ops;
+mod ops_misc;
+mod ops_ms;
+mod ops_sony;
 
 /// Request, response, and progress-event types for [`run_json`] and friends.
 pub mod models;
 
 use defaults::apply_config_defaults;
 use models::{ProgressEvent, RunRequest, RunResponse, RunSchemaManifest, RunStatus};
+pub use ops::batch_exts;
 use ops::{run_batch_request, run_single_request};
 
 pub const RUN_SCHEMA: &str = "rom-converto.run.v1";
@@ -210,6 +216,24 @@ pub async fn run_request(
     Ok(response)
 }
 
+/// Short report verb for a dotted operation name: `chd.compress` becomes
+/// `compress`, `cso.to_chd` becomes `to-chd`. Report records carry the verb
+/// the CLI and GUI already write.
+pub(crate) fn record_verb(op: &str) -> String {
+    op.rsplit('.').next().unwrap_or(op).replace('_', "-")
+}
+
+/// [`record_verb`] with the suffix the CLI writes under a dry run, so an
+/// exported plan is distinguishable from a report of a real run.
+pub(crate) fn planned_verb(op: &str, dry_run: bool) -> String {
+    let verb = record_verb(op);
+    if dry_run {
+        format!("{verb} (dry run)")
+    } else {
+        verb
+    }
+}
+
 fn error_chain(err: &anyhow::Error) -> Option<String> {
     let details = err
         .chain()
@@ -332,6 +356,37 @@ mod tests {
         let data = serde_json::to_value(res.data.as_ref().unwrap()).unwrap();
         assert_eq!(data["plans"].as_array().unwrap().len(), 2);
         assert!(report.exists());
+    }
+
+    #[tokio::test]
+    async fn recursive_output_dir_mirrors_subdirectories() {
+        let dir = tempfile::tempdir().unwrap();
+        let input_dir = dir.path().join("roms");
+        let output_dir = dir.path().join("out");
+        std::fs::create_dir_all(input_dir.join("sub")).unwrap();
+        std::fs::write(input_dir.join("top.iso"), b"a").unwrap();
+        std::fs::write(input_dir.join("sub").join("nested.iso"), b"b").unwrap();
+
+        let req = json!({
+            "operation": "cso.compress",
+            "input": input_dir,
+            "dry_run": true,
+            "options": { "recursive": true, "output_dir": output_dir }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        let data = serde_json::to_value(res.data.as_ref().unwrap()).unwrap();
+        let outputs: Vec<&str> = data["plans"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|plan| plan["output"].as_str().unwrap())
+            .collect();
+        assert!(outputs.contains(&output_dir.join("top.cso").to_str().unwrap()));
+        assert!(
+            outputs.contains(&output_dir.join("sub").join("nested.cso").to_str().unwrap()),
+            "{outputs:?}"
+        );
     }
 
     #[tokio::test]
@@ -520,19 +575,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recursive_file_input_is_invalid_argument_response() {
+    async fn recursive_file_input_processes_that_file() {
         let dir = tempfile::tempdir().unwrap();
         let input = dir.path().join("game.iso");
-        std::fs::write(&input, b"x").unwrap();
+        std::fs::write(&input, vec![0u8; 4 * 2048]).unwrap();
         let req: Value = json!({
             "operation": "cso.compress",
             "input": input,
             "options": { "recursive": true }
         });
         let res = run_json(&req.to_string(), CancelToken::new()).await;
-        assert!(!res.ok);
-        assert_eq!(res.status, 2);
-        assert!(res.message.contains("recursive input"));
+        assert!(res.ok, "{res:?}");
+        assert!(dir.path().join("game.cso").exists());
     }
 
     #[tokio::test]
@@ -594,6 +648,7 @@ mod tests {
             config: Some(config),
             preset: Some("fast".to_string()),
             options: RunOptions::default(),
+            ctx: Default::default(),
             dry_run: false,
         };
         let req = apply_config_defaults(req).unwrap();
@@ -610,6 +665,7 @@ mod tests {
             config: None,
             preset: None,
             options: RunOptions::default(),
+            ctx: Default::default(),
             dry_run: false,
         };
         let algos = [HashAlgo::Crc32, HashAlgo::Sha1];

@@ -4,26 +4,17 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 use crate::commands::support::{
-    ALL_IMAGE_EXTS, DispatchCtx, finish_single, migrate_dry_run, print_rvz_structure, require_dir,
-    require_info_input, resolve_migrate_opts, save_rvl_image, verify_gate, wants_wbfs_output,
+    ALL_IMAGE_EXTS, DispatchCtx, print_rvz_structure, require_dir, require_info_input,
+    require_input, resolve_migrate_opts, save_rvl_image, verify_gate,
 };
-use crate::util::{
-    SingleOutput, WriteDecision, ensure_input_exists, file_len, log_skipped, resolve_output,
-    resolve_policy, resolve_single_output,
-};
+use crate::util::{ensure_input_exists, resolve_policy};
 use crate::{batch, config, info_print};
 use anyhow::Result;
-use rom_converto_lib::nintendo::legacy_input::{
-    ALL_MIGRATE_FORMATS, MigrateOptions, migrate_disc, migrate_disc_batch,
-};
+use rom_converto_lib::nintendo::legacy_input::ALL_MIGRATE_FORMATS;
 use rom_converto_lib::nintendo::rvl::verify::{RvlVerifyOptions, verify_rvl};
-use rom_converto_lib::nintendo::rvz::{
-    RvzCompressOptions, compress_disc, decompress_disc, decompress_disc_to_wbfs, derive_disc_path,
-    derive_rvz_path,
-};
-use rom_converto_lib::util::{CancelToken, TallyDirection, oversized_rvz_chunk};
-use std::path::Path;
-use std::time::Instant;
+use rom_converto_lib::nintendo::rvz::RvzCompressOptions;
+use rom_converto_lib::runner::models::RunOptions;
+use rom_converto_lib::util::{CancelToken, oversized_rvz_chunk};
 
 /// Commands specific to RVL (Wii) disc images
 #[derive(Subcommand, Debug, Eq, PartialEq)]
@@ -214,230 +205,114 @@ pub async fn run(command: RvlCommands, ctx: DispatchCtx<'_>) -> Result<()> {
         skip_space_check,
         cancel,
         cache,
+        config,
+        preset,
         ..
     } = ctx;
+    let run = batch::BatchRun {
+        progress: &progress,
+        total_progress: &total_progress,
+        cache,
+        cancel: &cancel,
+        config,
+        preset,
+        dry_run,
+    };
     match command {
         RvlCommands::Compress(cmd) => {
             let eff = &effective.rvl;
-            let opts = RvzCompressOptions {
-                compression_level: cmd
-                    .level
-                    .or(eff.level)
-                    .unwrap_or(RvzCompressOptions::default().compression_level),
-                chunk_size: cmd
-                    .chunk_size
-                    .or(eff.chunk_size)
-                    .unwrap_or(RvzCompressOptions::default().chunk_size),
-                ..RvzCompressOptions::default()
-            };
-            if let Some(msg) = oversized_rvz_chunk(opts.chunk_size) {
+            require_input(&cmd.input, cmd.recursive)?;
+            let level = cmd
+                .level
+                .or(eff.level)
+                .unwrap_or(RvzCompressOptions::default().compression_level);
+            let chunk_size = cmd
+                .chunk_size
+                .or(eff.chunk_size)
+                .unwrap_or(RvzCompressOptions::default().chunk_size);
+            if let Some(msg) = oversized_rvz_chunk(chunk_size) {
                 log::warn!("{msg}");
             }
-            let output_dir = cmd
-                .out
-                .output_dir
-                .clone()
-                .or_else(|| eff.output_dir.clone());
-            let report = cmd.batch.report.clone().or_else(|| eff.report.clone());
-            let fallback = config::policy_fallback(&eff.on_conflict)?;
-            if cmd.recursive {
-                require_dir(&cmd.input)?;
-                let run = batch::BatchRun {
-                    progress: &progress,
-                    total_progress: &total_progress,
-                    input_dir: &cmd.input,
-                    policy: resolve_policy(cmd.conflict.on_conflict, cmd.conflict.force, fallback),
-                    output_dir: output_dir.as_deref(),
-                    output_template: cmd.out.output_template.as_deref(),
-                    max_depth: cmd.batch.max_depth,
-                    dry_run,
-                    skip_space_check,
-                    report_path: report.as_deref(),
-                    cancel: &cancel,
-                };
-                batch::rvz_compress(&run, &["iso", "wbfs"], opts, cache).await?
-            } else {
-                ensure_input_exists(&cmd.input)?;
-                let resolved = rom_converto_lib::util::resolve_input(
-                    &cmd.input,
-                    &["iso", "wbfs", "gcz", "wia"],
-                )?;
-                let input = resolved.path();
-                let policy = resolve_policy(cmd.conflict.on_conflict, cmd.conflict.force, fallback);
-                let Some(output) = resolve_single_output(
-                    SingleOutput {
-                        operation: "compress",
-                        cli_input: &cmd.input,
-                        input,
-                        explicit: cmd.output_flag.or(cmd.output),
-                        derived: derive_rvz_path(resolved.output_basis()),
-                        output_dir: output_dir.as_deref(),
-                        output_template: cmd.out.output_template.as_deref(),
-                        output_ext: "rvz",
-                        keys_path: None,
-                        policy,
-                        verify: crate::util::OutputVerify::Rvz,
-                        media: Some("RVZ"),
-                        missing_keys: None,
-                        report: report.as_deref(),
-                        dry_run,
-                        cancel: cancel.clone(),
-                    },
-                    &progress,
-                )
-                .await?
-                else {
-                    return Ok(());
-                };
-                if !skip_space_check {
-                    let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
-                    batch::space_preflight_for_size(file_len(input), check_dir)?;
-                }
-                let started = Instant::now();
-                compress_disc(input, &output, opts, &progress, cancel.clone()).await?;
-                finish_single(
-                    &cmd.input,
-                    &output,
-                    TallyDirection::Compress,
-                    "compress",
-                    started,
-                    report.as_deref(),
-                )?;
-            }
+            let mut options = RunOptions::from(batch::Common {
+                recursive: cmd.recursive,
+                output_dir: cmd.out.output_dir.or_else(|| eff.output_dir.clone()),
+                output_template: cmd.out.output_template,
+                max_depth: cmd.batch.max_depth,
+                report: cmd.batch.report.or_else(|| eff.report.clone()),
+                policy: resolve_policy(
+                    cmd.conflict.on_conflict,
+                    cmd.conflict.force,
+                    config::policy_fallback(&eff.on_conflict)?,
+                ),
+                skip_space_check,
+            });
+            options.level = Some(level);
+            options.chunk_size = Some(chunk_size);
+            batch::run(
+                &run,
+                "rvl.compress",
+                cmd.input,
+                cmd.output_flag.or(cmd.output),
+                options,
+            )
+            .await?;
         }
         RvlCommands::Migrate(cmd) => {
             let opts = resolve_migrate_opts(cmd.level, cmd.chunk_size, &effective.rvl);
             if let Some(msg) = oversized_rvz_chunk(opts.chunk_size) {
                 log::warn!("{msg}");
             }
-            let migrate_opts = MigrateOptions {
-                skip_verify: cmd.skip_verify,
-                deep_verify: cmd.deep,
-            };
-            if dry_run {
-                return migrate_dry_run(
-                    &cmd.input,
-                    cmd.output_flag.or(cmd.output),
-                    cmd.recursive,
-                    cmd.force,
-                    ALL_MIGRATE_FORMATS,
-                );
-            }
-            if cmd.recursive {
-                require_dir(&cmd.input)?;
-                migrate_disc_batch(
-                    &cmd.input,
-                    opts,
-                    migrate_opts,
-                    ALL_MIGRATE_FORMATS,
-                    cmd.force,
-                    &progress,
-                    cancel.clone(),
-                )
-                .await?;
-            } else {
-                let output = cmd
-                    .output_flag
-                    .or(cmd.output)
-                    .unwrap_or_else(|| derive_rvz_path(&cmd.input));
-                let policy = resolve_policy(
+            require_input(&cmd.input, cmd.recursive)?;
+            let mut options = RunOptions::from(batch::Common {
+                recursive: cmd.recursive,
+                output_dir: None,
+                output_template: None,
+                max_depth: None,
+                report: None,
+                policy: resolve_policy(
                     None,
                     cmd.force,
                     rom_converto_lib::util::ConflictPolicy::Error,
-                );
-                let output = match resolve_output(&output, policy)? {
-                    WriteDecision::Skip => {
-                        log_skipped(&output);
-                        return Ok(());
-                    }
-                    WriteDecision::Write(p) => p,
-                };
-                migrate_disc(
-                    &cmd.input,
-                    &output,
-                    opts,
-                    migrate_opts,
-                    ALL_MIGRATE_FORMATS,
-                    &progress,
-                    cancel.clone(),
-                )
-                .await?
-            }
+                ),
+                skip_space_check,
+            });
+            options.level = Some(opts.compression_level);
+            options.chunk_size = Some(opts.chunk_size);
+            options.skip_verify = Some(cmd.skip_verify);
+            options.deep = Some(cmd.deep);
+            batch::run(
+                &run,
+                "rvl.migrate",
+                cmd.input,
+                cmd.output_flag.or(cmd.output),
+                options,
+            )
+            .await?;
         }
         RvlCommands::Decompress(cmd) => {
             let eff = &effective.rvl;
-            let output_dir = cmd
-                .out
-                .output_dir
-                .clone()
-                .or_else(|| eff.output_dir.clone());
-            let report = cmd.batch.report.clone().or_else(|| eff.report.clone());
-            let fallback = config::policy_fallback(&eff.on_conflict)?;
-            if cmd.recursive {
-                require_dir(&cmd.input)?;
-                let run = batch::BatchRun {
-                    progress: &progress,
-                    total_progress: &total_progress,
-                    input_dir: &cmd.input,
-                    policy: resolve_policy(cmd.conflict.on_conflict, cmd.conflict.force, fallback),
-                    output_dir: output_dir.as_deref(),
-                    output_template: cmd.out.output_template.as_deref(),
-                    max_depth: cmd.batch.max_depth,
-                    dry_run,
-                    skip_space_check,
-                    report_path: report.as_deref(),
-                    cancel: &cancel,
-                };
-                batch::rvz_decompress(&run).await?
-            } else {
-                ensure_input_exists(&cmd.input)?;
-                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["rvz"])?;
-                let input = resolved.path();
-                let policy = resolve_policy(cmd.conflict.on_conflict, cmd.conflict.force, fallback);
-                let Some(output) = resolve_single_output(
-                    SingleOutput {
-                        operation: "decompress",
-                        cli_input: &cmd.input,
-                        input,
-                        explicit: cmd.output_flag.or(cmd.output),
-                        derived: derive_disc_path(resolved.output_basis()),
-                        output_dir: output_dir.as_deref(),
-                        output_template: cmd.out.output_template.as_deref(),
-                        output_ext: "iso",
-                        keys_path: None,
-                        policy,
-                        verify: crate::util::OutputVerify::None,
-                        media: None,
-                        missing_keys: None,
-                        report: report.as_deref(),
-                        dry_run,
-                        cancel: cancel.clone(),
-                    },
-                    &progress,
-                )
-                .await?
-                else {
-                    return Ok(());
-                };
-                if !skip_space_check {
-                    let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
-                    batch::space_preflight_for_size(file_len(input), check_dir)?;
-                }
-                let started = Instant::now();
-                if wants_wbfs_output(&output) {
-                    decompress_disc_to_wbfs(input, &output, &progress, cancel.clone()).await?
-                } else {
-                    decompress_disc(input, &output, &progress, cancel.clone()).await?
-                }
-                finish_single(
-                    &cmd.input,
-                    &output,
-                    TallyDirection::Decompress,
-                    "decompress",
-                    started,
-                    report.as_deref(),
-                )?;
-            }
+            require_input(&cmd.input, cmd.recursive)?;
+            let options = RunOptions::from(batch::Common {
+                recursive: cmd.recursive,
+                output_dir: cmd.out.output_dir.or_else(|| eff.output_dir.clone()),
+                output_template: cmd.out.output_template,
+                max_depth: cmd.batch.max_depth,
+                report: cmd.batch.report.or_else(|| eff.report.clone()),
+                policy: resolve_policy(
+                    cmd.conflict.on_conflict,
+                    cmd.conflict.force,
+                    config::policy_fallback(&eff.on_conflict)?,
+                ),
+                skip_space_check,
+            });
+            batch::run(
+                &run,
+                "rvl.decompress",
+                cmd.input,
+                cmd.output_flag.or(cmd.output),
+                options,
+            )
+            .await?;
         }
         RvlCommands::Verify(cmd) => {
             if cmd.recursive {

@@ -1,4 +1,4 @@
-import type { ChdLdInfo } from "~/types/info";
+import type { ChdLdInfo } from "~/types";
 import { add, discContentRom, formatBytes, ldClvTime, ldDiscTypeLabel } from "./shared";
 import type { InspectBuild, InspectField, KindModule } from "./types";
 

@@ -485,6 +485,37 @@ pub(crate) fn cancelled_io() -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::Interrupted, Cancelled)
 }
 
+/// A transaction that could not undo its own staged renames: the sources
+/// were left moved away, so the caller must not report them as restored.
+#[derive(Debug, thiserror::Error)]
+#[error("{original}; rollback failed: {rollback}")]
+pub(crate) struct RollbackFailed {
+    original: String,
+    rollback: String,
+}
+
+impl RollbackFailed {
+    /// True when `err` is a transaction that failed to unwind.
+    pub(crate) fn is_in(err: &std::io::Error) -> bool {
+        err.get_ref().is_some_and(|inner| inner.is::<Self>())
+    }
+}
+
+/// The error a broken transaction reports: `err` once the staged renames are
+/// back where they came from, or a [`RollbackFailed`] naming both failures.
+fn unwind(moves: &mut [StagedRename], err: std::io::Error) -> std::io::Error {
+    match rollback_renames(moves) {
+        Ok(()) => err,
+        Err(rollback) => std::io::Error::new(
+            err.kind(),
+            RollbackFailed {
+                original: err.to_string(),
+                rollback: rollback.to_string(),
+            },
+        ),
+    }
+}
+
 pub(crate) fn rollback_renames(moves: &mut [StagedRename]) -> std::io::Result<()> {
     let mut first_error = None;
     for item in moves.iter_mut().filter(|item| item.published) {
@@ -525,23 +556,17 @@ pub(crate) fn rename_transaction(
     let mut moves = Vec::with_capacity(pairs.len());
     for (from, to) in pairs {
         if cancel.is_cancelled() {
-            rollback_renames(&mut moves)?;
-            return Err(cancelled_io());
+            return Err(unwind(&mut moves, cancelled_io()));
         }
         let temp = match crate::util::scratch_output_path(from) {
             Ok(temp) => temp,
-            Err(err) => {
-                rollback_renames(&mut moves)?;
-                return Err(err);
-            }
+            Err(err) => return Err(unwind(&mut moves, err)),
         };
         if let Err(err) = std::fs::remove_file(&temp) {
-            rollback_renames(&mut moves)?;
-            return Err(err);
+            return Err(unwind(&mut moves, err));
         }
         if let Err(err) = std::fs::rename(from, &temp) {
-            rollback_renames(&mut moves)?;
-            return Err(err);
+            return Err(unwind(&mut moves, err));
         }
         moves.push(StagedRename {
             from: from.clone(),
@@ -553,16 +578,14 @@ pub(crate) fn rename_transaction(
     }
 
     if cancel.is_cancelled() {
-        rollback_renames(&mut moves)?;
-        return Err(cancelled_io());
+        return Err(unwind(&mut moves, cancelled_io()));
     }
     if overwrite {
         for index in 0..moves.len() {
             match crate::util::backup_existing(&moves[index].to) {
                 Ok(backup) => moves[index].backup = backup,
                 Err(err) => {
-                    rollback_renames(&mut moves)?;
-                    return Err(err);
+                    return Err(unwind(&mut moves, err));
                 }
             }
         }
@@ -570,8 +593,7 @@ pub(crate) fn rename_transaction(
 
     for index in 0..moves.len() {
         if cancel.is_cancelled() {
-            rollback_renames(&mut moves)?;
-            return Err(cancelled_io());
+            return Err(unwind(&mut moves, cancelled_io()));
         }
         let temp = moves[index].temp.take().expect("staged source");
         let result = if overwrite {
@@ -584,8 +606,7 @@ pub(crate) fn rename_transaction(
             Err(err) => {
                 let error = err.error;
                 moves[index].temp = Some(err.path);
-                rollback_renames(&mut moves)?;
-                return Err(error);
+                return Err(unwind(&mut moves, error));
             }
         }
     }

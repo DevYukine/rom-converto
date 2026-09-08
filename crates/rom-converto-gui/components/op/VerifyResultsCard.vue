@@ -17,9 +17,9 @@ interface Row {
 	lines: string[];
 }
 
-function summarize(data: Record<string, any>, command: string): { ok: boolean; detail: string; lines: string[] } {
-	switch (command) {
-		case "cmd_verify_ctr": {
+function summarize(data: Record<string, any>, console: string): { ok: boolean; detail: string; lines: string[] } {
+	switch (console) {
+		case "ctr": {
 			if (data.format === "Cia") {
 				const leg = typeof data.legitimacy === "string" ? data.legitimacy : Object.keys(data.legitimacy)[0];
 				const ok = data.content_hashes_valid !== false;
@@ -34,14 +34,14 @@ function summarize(data: Record<string, any>, command: string): { ok: boolean; d
 				lines: data.details ?? [],
 			};
 		}
-		case "cmd_verify_dol": {
+		case "dol": {
 			const ok = !!data.ok;
 			const parts: string[] = [];
 			if (data.rvz_structure) parts.push(`RVZ structure ${data.rvz_structure.ok ? "✓" : "✗"}`);
 			if (data.disc_sha1) parts.push(`SHA-1 ${String(data.disc_sha1).slice(0, 12)}…`);
 			return { ok, detail: parts.join(" · ") || (ok ? "structure ok" : "structure mismatch"), lines: data.structural?.notes ?? [] };
 		}
-		case "cmd_verify_rvl": {
+		case "rvl": {
 			const ok = !!data.ok;
 			const partitions = data.partitions ?? [];
 			const bad = partitions.reduce((n: number, p: any) => n + p.mismatched_clusters, 0);
@@ -53,7 +53,7 @@ function summarize(data: Record<string, any>, command: string): { ok: boolean; d
 				.map((p: any) => p.note ?? `partition @0x${p.offset.toString(16)}: ${p.mismatched_clusters} mismatched clusters`);
 			return { ok, detail: parts.join(" · "), lines };
 		}
-		case "cmd_wup_verify": {
+		case "wup": {
 			const ok = !!data.ok;
 			const titles = data.titles ?? [];
 			const mismatched = titles.reduce((n: number, t: any) => n + t.mismatched_content, 0);
@@ -63,7 +63,7 @@ function summarize(data: Record<string, any>, command: string): { ok: boolean; d
 			);
 			return { ok, detail, lines };
 		}
-		case "cmd_nx_verify": {
+		case "nx": {
 			const ok = !!data.ok;
 			const ncas = data.ncas ?? [];
 			const bad = ncas.filter((n: any) => !n.ok).length;
@@ -73,15 +73,20 @@ function summarize(data: Record<string, any>, command: string): { ok: boolean; d
 				.map((n: any) => `${n.name}${n.partition ? ` (${n.partition})` : ""}: ${n.mismatched_sections} section(s) mismatched`);
 			return { ok, detail, lines };
 		}
-		case "cmd_chd_verify": {
+		case "chd": {
 			const ok = data.ok !== false;
 			const detail = ok ? "SHA-1 ok" : "SHA-1 mismatch";
 			return { ok, detail, lines: [detail] };
 		}
-		case "cmd_cso_verify": {
+		case "cso": {
 			const ok = data.ok !== false;
 			const mismatches = typeof data.mismatches === "number" ? ` (${data.mismatches})` : "";
 			const detail = ok ? "structure ok" : `structure mismatch${mismatches}`;
+			return { ok, detail, lines: [detail] };
+		}
+		case "xenon": {
+			const ok = data.hash_ok !== false;
+			const detail = `${data.blocks} block(s) · ${ok ? "hashes ok" : "hash mismatch"}`;
 			return { ok, detail, lines: [detail] };
 		}
 		default:
@@ -89,21 +94,19 @@ function summarize(data: Record<string, any>, command: string): { ok: boolean; d
 	}
 }
 
+function resultData(job: QueueJob): Record<string, any> | null {
+	if (typeof job.result === "string") return null;
+	return (job.result?.data as Record<string, any> | undefined) ?? null;
+}
+
 function toRow(job: QueueJob): Row {
 	if (job.status === "failed") {
 		const msg = job.error ?? "Verification failed.";
 		return { job, ok: false, detail: msg, lines: [msg] };
 	}
-	let data: Record<string, any> | null = null;
-	if (typeof job.result === "string") {
-		try {
-			data = JSON.parse(job.result);
-		} catch {
-			data = null;
-		}
-	}
+	const data = resultData(job);
 	if (!data) return { job, ok: true, detail: "", lines: [] };
-	const { ok, detail, lines } = summarize(data, job.command);
+	const { ok, detail, lines } = summarize(data, props.def.console);
 	return { job, ok, detail, lines };
 }
 

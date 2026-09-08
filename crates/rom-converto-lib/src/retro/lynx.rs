@@ -9,6 +9,8 @@ const MAGIC: [u8; 4] = *b"LYNX";
 
 /// Fields of the LNX header. The format defines no checksum.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct LynxInfo {
     pub bank0_page_size: u16,
     pub bank1_page_size: u16,

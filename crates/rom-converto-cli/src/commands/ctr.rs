@@ -4,34 +4,18 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 use crate::commands::support::{
-    ALL_IMAGE_EXTS, CTR_COMPRESS_EXTS, CTR_CONVERT_EXTS, CTR_CRYPT_EXTS, CTR_DECOMPRESS_EXTS,
-    DispatchCtx, dry_run_ctr_scan, log_count_summary, log_single_summary, require_info_input,
-    save_ctr_icon,
+    ALL_IMAGE_EXTS, CTR_CRYPT_EXTS, DispatchCtx, require_info_input, require_input, save_ctr_icon,
 };
-use crate::util::{
-    SingleOutput, WriteDecision, ensure_input_exists, file_len, log_skipped, resolve_output,
-    resolve_policy, resolve_single_output,
-};
+use crate::util::{WriteDecision, ensure_input_exists, resolve_policy};
 use crate::{batch, dry_run, info_print};
 use anyhow::Result;
-use rom_converto_lib::nintendo::ctr::convert::{
-    convert_rom, convert_rom_batch, derive_converted_path,
-};
+use rom_converto_lib::nintendo::ctr::generate_ticket_from_cdn;
 use rom_converto_lib::nintendo::ctr::verify::{
     CtrVerifyOptions, CtrVerifyResult, verify_ctr, verify_ctr_batch,
 };
-use rom_converto_lib::nintendo::ctr::z3ds::{
-    compress_rom, compress_rom_batch, decompress_rom, decompress_rom_batch, derive_compressed_path,
-    derive_decompressed_path,
-};
-use rom_converto_lib::nintendo::ctr::{
-    CdnToCiaOptions, convert_cdn_to_cia, decrypt_rom, decrypt_rom_batch, derive_decrypted_path,
-    derive_encrypted_path, encrypt_rom, encrypt_rom_batch, generate_ticket_from_cdn,
-};
-use rom_converto_lib::util::fs::{collect_files_with_exts, is_os_junk_dir};
-use rom_converto_lib::util::{CancelToken, Tally, TallyDirection};
-use std::path::Path;
-use std::time::Instant;
+use rom_converto_lib::runner::models::RunOptions;
+use rom_converto_lib::util::CancelToken;
+use rom_converto_lib::util::ConflictPolicy;
 
 /// Commands specific to CTR (3DS) formats
 #[derive(Subcommand, Debug, Eq, PartialEq)]
@@ -354,131 +338,48 @@ pub async fn run(command: CtrCommands, ctx: DispatchCtx<'_>) -> Result<()> {
         dry_run,
         skip_space_check,
         cancel,
+        cache,
+        config,
+        preset,
         ..
     } = ctx;
+    let run = batch::BatchRun {
+        progress: &progress,
+        total_progress: &total_progress,
+        cache,
+        cancel: &cancel,
+        config,
+        preset,
+        dry_run,
+    };
     match command {
         CtrCommands::CdnToCia(cmd) => {
-            let mut output = cmd.output_flag.or(cmd.output);
-            let mut output_dir = cmd.output_dir;
-            if cmd.recursive && dry_run {
-                ensure_input_exists(&cmd.cdn_dir)?;
-                let policy = resolve_policy(
-                    cmd.conflict.on_conflict,
-                    cmd.conflict.force,
-                    rom_converto_lib::util::ConflictPolicy::Error,
-                );
-                let mut tally = Tally::new();
-                let mut dirs: Vec<std::path::PathBuf> = std::fs::read_dir(&cmd.cdn_dir)?
-                    .flatten()
-                    .map(|e| e.path())
-                    .filter(|p| {
-                        p.is_dir()
-                            && p.file_name()
-                                .and_then(|n| n.to_str())
-                                .is_none_or(|n| !is_os_junk_dir(n))
-                    })
-                    .collect();
-                dirs.sort();
-                for dir in &dirs {
-                    let name = dir
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .map(|n| format!("{n}.cia"))
-                        .unwrap_or_else(|| "output.cia".to_string());
-                    let base = rom_converto_lib::util::place_in_dir(
-                        &dir.parent().unwrap_or_else(|| Path::new(".")).join(name),
-                        output_dir.as_deref(),
-                    );
-                    let resolved = if cmd.compress {
-                        derive_compressed_path(&base)
-                    } else {
-                        base
-                    };
-                    let decision = resolve_output(&resolved, policy)?;
-                    dry_run::log_plan("convert", dir, &resolved, &decision, None, None);
-                    dry_run::record(&mut tally, dir, &decision);
-                }
-                log::info!("{}", tally.summary_line(TallyDirection::DryRun));
-                return Ok(());
-            }
-            if !cmd.recursive {
-                ensure_input_exists(&cmd.cdn_dir)?;
-                let base = match output.clone() {
-                    Some(p) => p,
-                    None => {
-                        if !dry_run && let Some(dir) = output_dir.as_deref() {
-                            std::fs::create_dir_all(dir)?;
-                        }
-                        let name = cmd
-                            .cdn_dir
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .map(|n| format!("{n}.cia"))
-                            .unwrap_or_else(|| "output.cia".to_string());
-                        let derived = cmd
-                            .cdn_dir
-                            .parent()
-                            .unwrap_or_else(|| std::path::Path::new("."))
-                            .join(name);
-                        rom_converto_lib::util::place_in_dir(&derived, output_dir.as_deref())
-                    }
-                };
-                let resolved = if cmd.compress {
-                    derive_compressed_path(&base)
-                } else {
-                    base.clone()
-                };
-                let policy = resolve_policy(
-                    cmd.conflict.on_conflict,
-                    cmd.conflict.force,
-                    rom_converto_lib::util::ConflictPolicy::Error,
-                );
-                let decision = resolve_output(&resolved, policy)?;
-                if dry_run {
-                    return dry_run::single(
-                        "convert",
-                        &cmd.cdn_dir,
-                        &resolved,
-                        &decision,
-                        None,
-                        None,
-                        None,
-                    );
-                }
-                match decision {
-                    WriteDecision::Skip => {
-                        log_skipped(&resolved);
-                        return Ok(());
-                    }
-                    WriteDecision::Write(p) if p != resolved => {
-                        // rename redirected the write; pin the lib to the
-                        // free path and drop output_dir so it is not re-rooted.
-                        output = Some(if cmd.compress {
-                            derive_decompressed_path(&p)
-                        } else {
-                            p
-                        });
-                        output_dir = None;
-                    }
-                    WriteDecision::Write(_) => {}
-                }
-            }
-            let opts = CdnToCiaOptions {
-                cdn_dir: cmd.cdn_dir,
-                output,
-                cleanup: cmd.cleanup,
+            require_input(&cmd.cdn_dir, cmd.recursive)?;
+            let mut options = RunOptions::from(batch::Common {
                 recursive: cmd.recursive,
-                ensure_ticket_exists: cmd.ensure_ticket_exists,
-                decrypt: cmd.decrypt,
-                compress: cmd.compress,
-                output_dir,
-                on_conflict: resolve_policy(
+                output_dir: cmd.output_dir,
+                output_template: None,
+                max_depth: None,
+                report: None,
+                policy: resolve_policy(
                     cmd.conflict.on_conflict,
                     cmd.conflict.force,
-                    rom_converto_lib::util::ConflictPolicy::Error,
+                    ConflictPolicy::Error,
                 ),
-            };
-            convert_cdn_to_cia(opts, &progress, &total_progress, cancel.clone()).await?
+                skip_space_check,
+            });
+            options.cleanup = Some(cmd.cleanup);
+            options.ensure_ticket_exists = Some(cmd.ensure_ticket_exists);
+            options.decrypt = Some(cmd.decrypt);
+            options.compress = Some(cmd.compress);
+            batch::run(
+                &run,
+                "ctr.cdn_to_cia",
+                cmd.cdn_dir,
+                cmd.output_flag.or(cmd.output),
+                options,
+            )
+            .await?;
         }
         CtrCommands::GenerateCdnTicket(cmd) => {
             ensure_input_exists(&cmd.cdn_dir)?;
@@ -497,479 +398,126 @@ pub async fn run(command: CtrCommands, ctx: DispatchCtx<'_>) -> Result<()> {
             generate_ticket_from_cdn(&cmd.cdn_dir, &cmd.output, &CancelToken::new()).await?
         }
         CtrCommands::Decrypt(cmd) => {
-            if cmd.recursive {
-                if !cmd.input.is_dir() {
-                    anyhow::bail!(
-                        "INPUT must be a directory when --recursive is set: {}",
-                        cmd.input.display()
-                    );
-                }
-                let files = collect_files_with_exts(
-                    &cmd.input,
-                    CTR_CRYPT_EXTS,
-                    cmd.max_depth,
-                    &CancelToken::new(),
-                )?;
-                if dry_run {
-                    dry_run_ctr_scan(
-                        "decrypt",
-                        &files,
-                        cmd.out.output_dir.as_deref(),
-                        resolve_policy(
-                            cmd.conflict.on_conflict,
-                            cmd.conflict.force,
-                            rom_converto_lib::util::ConflictPolicy::Error,
-                        ),
-                        derive_decrypted_path,
-                    )?;
-                    return Ok(());
-                }
-                if !skip_space_check {
-                    let check_dir = cmd.out.output_dir.as_deref().unwrap_or(&cmd.input);
-                    batch::space_preflight(&files, check_dir)?;
-                }
-                let tally = Tally::new();
-                let count = files.len();
-                decrypt_rom_batch(
-                    &cmd.input,
-                    cmd.out.output_dir.as_deref(),
-                    &progress,
-                    &total_progress,
-                    cmd.max_depth,
-                    cancel.clone(),
-                )
-                .await?;
-                log_count_summary(count, tally);
-            } else {
-                ensure_input_exists(&cmd.input)?;
-                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, CTR_CRYPT_EXTS)?;
-                let input = resolved.path();
-                let policy = resolve_policy(
+            require_input(&cmd.input, cmd.recursive)?;
+            let options = RunOptions::from(batch::Common {
+                recursive: cmd.recursive,
+                output_dir: cmd.out.output_dir,
+                output_template: cmd.out.output_template,
+                max_depth: cmd.max_depth,
+                report: None,
+                policy: resolve_policy(
                     cmd.conflict.on_conflict,
                     cmd.conflict.force,
-                    rom_converto_lib::util::ConflictPolicy::Error,
-                );
-                let derived = derive_decrypted_path(resolved.output_basis());
-                let output_ext = derived
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("")
-                    .to_string();
-                let Some(output) = resolve_single_output(
-                    SingleOutput {
-                        operation: "decrypt",
-                        cli_input: &cmd.input,
-                        input,
-                        explicit: cmd.output_flag.or(cmd.output),
-                        derived,
-                        output_dir: cmd.out.output_dir.as_deref(),
-                        output_template: cmd.out.output_template.as_deref(),
-                        output_ext: &output_ext,
-                        keys_path: None,
-                        policy,
-                        verify: crate::util::OutputVerify::None,
-                        media: None,
-                        missing_keys: None,
-                        report: None,
-                        dry_run,
-                        cancel: cancel.clone(),
-                    },
-                    &progress,
-                )
-                .await?
-                else {
-                    return Ok(());
-                };
-                if !skip_space_check {
-                    let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
-                    batch::space_preflight_for_size(file_len(input), check_dir)?;
-                }
-                let started = Instant::now();
-                decrypt_rom(input, &output, &progress, cancel.clone()).await?;
-                log_single_summary(&cmd.input, &output, TallyDirection::Convert, started);
-            }
+                    ConflictPolicy::Error,
+                ),
+                skip_space_check,
+            });
+            batch::run(
+                &run,
+                "ctr.decrypt",
+                cmd.input,
+                cmd.output_flag.or(cmd.output),
+                options,
+            )
+            .await?;
         }
         CtrCommands::Encrypt(cmd) => {
-            if cmd.recursive {
-                if !cmd.input.is_dir() {
-                    anyhow::bail!(
-                        "INPUT must be a directory when --recursive is set: {}",
-                        cmd.input.display()
-                    );
-                }
-                let files = collect_files_with_exts(
-                    &cmd.input,
-                    CTR_CRYPT_EXTS,
-                    cmd.max_depth,
-                    &CancelToken::new(),
-                )?;
-                if dry_run {
-                    dry_run_ctr_scan(
-                        "encrypt",
-                        &files,
-                        cmd.out.output_dir.as_deref(),
-                        resolve_policy(
-                            cmd.conflict.on_conflict,
-                            cmd.conflict.force,
-                            rom_converto_lib::util::ConflictPolicy::Error,
-                        ),
-                        derive_encrypted_path,
-                    )?;
-                    return Ok(());
-                }
-                if !skip_space_check {
-                    let check_dir = cmd.out.output_dir.as_deref().unwrap_or(&cmd.input);
-                    batch::space_preflight(&files, check_dir)?;
-                }
-                let tally = Tally::new();
-                let count = files.len();
-                encrypt_rom_batch(
-                    &cmd.input,
-                    cmd.out.output_dir.as_deref(),
-                    &progress,
-                    &total_progress,
-                    cmd.max_depth,
-                    cancel.clone(),
-                )
-                .await?;
-                log_count_summary(count, tally);
-            } else {
-                ensure_input_exists(&cmd.input)?;
-                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, CTR_CRYPT_EXTS)?;
-                let input = resolved.path();
-                let policy = resolve_policy(
+            require_input(&cmd.input, cmd.recursive)?;
+            let options = RunOptions::from(batch::Common {
+                recursive: cmd.recursive,
+                output_dir: cmd.out.output_dir,
+                output_template: cmd.out.output_template,
+                max_depth: cmd.max_depth,
+                report: None,
+                policy: resolve_policy(
                     cmd.conflict.on_conflict,
                     cmd.conflict.force,
-                    rom_converto_lib::util::ConflictPolicy::Error,
-                );
-                let derived = derive_encrypted_path(resolved.output_basis());
-                let output_ext = derived
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("")
-                    .to_string();
-                let Some(output) = resolve_single_output(
-                    SingleOutput {
-                        operation: "encrypt",
-                        cli_input: &cmd.input,
-                        input,
-                        explicit: cmd.output_flag.or(cmd.output),
-                        derived,
-                        output_dir: cmd.out.output_dir.as_deref(),
-                        output_template: cmd.out.output_template.as_deref(),
-                        output_ext: &output_ext,
-                        keys_path: None,
-                        policy,
-                        verify: crate::util::OutputVerify::None,
-                        media: None,
-                        missing_keys: None,
-                        report: None,
-                        dry_run,
-                        cancel: cancel.clone(),
-                    },
-                    &progress,
-                )
-                .await?
-                else {
-                    return Ok(());
-                };
-                if !skip_space_check {
-                    let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
-                    batch::space_preflight_for_size(file_len(input), check_dir)?;
-                }
-                let started = Instant::now();
-                encrypt_rom(input, &output, &progress, cancel.clone()).await?;
-                log_single_summary(&cmd.input, &output, TallyDirection::Convert, started);
-            }
+                    ConflictPolicy::Error,
+                ),
+                skip_space_check,
+            });
+            batch::run(
+                &run,
+                "ctr.encrypt",
+                cmd.input,
+                cmd.output_flag.or(cmd.output),
+                options,
+            )
+            .await?;
         }
         CtrCommands::Compress(cmd) => {
-            if cmd.recursive {
-                if !cmd.input.is_dir() {
-                    anyhow::bail!(
-                        "INPUT must be a directory when --recursive is set: {}",
-                        cmd.input.display()
-                    );
-                }
-                let files = collect_files_with_exts(
-                    &cmd.input,
-                    CTR_COMPRESS_EXTS,
-                    cmd.max_depth,
-                    &CancelToken::new(),
-                )?;
-                if dry_run {
-                    dry_run_ctr_scan(
-                        "compress",
-                        &files,
-                        cmd.out.output_dir.as_deref(),
-                        resolve_policy(
-                            cmd.conflict.on_conflict,
-                            cmd.conflict.force,
-                            rom_converto_lib::util::ConflictPolicy::Error,
-                        ),
-                        derive_compressed_path,
-                    )?;
-                    return Ok(());
-                }
-                if !skip_space_check {
-                    let check_dir = cmd.out.output_dir.as_deref().unwrap_or(&cmd.input);
-                    batch::space_preflight(&files, check_dir)?;
-                }
-                let tally = Tally::new();
-                let count = files.len();
-                compress_rom_batch(
-                    &cmd.input,
-                    cmd.level,
-                    cmd.out.output_dir.as_deref(),
-                    &progress,
-                    &total_progress,
-                    cmd.max_depth,
-                    cmd.allow_encrypted,
-                )
-                .await?;
-                log_count_summary(count, tally);
-            } else {
-                ensure_input_exists(&cmd.input)?;
-                let resolved =
-                    rom_converto_lib::util::resolve_input(&cmd.input, CTR_COMPRESS_EXTS)?;
-                let input = resolved.path();
-                let policy = resolve_policy(
+            require_input(&cmd.input, cmd.recursive)?;
+            let mut options = RunOptions::from(batch::Common {
+                recursive: cmd.recursive,
+                output_dir: cmd.out.output_dir,
+                output_template: cmd.out.output_template,
+                max_depth: cmd.max_depth,
+                report: None,
+                policy: resolve_policy(
                     cmd.conflict.on_conflict,
                     cmd.conflict.force,
-                    rom_converto_lib::util::ConflictPolicy::Error,
-                );
-                let derived = derive_compressed_path(resolved.output_basis());
-                let output_ext = derived
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("")
-                    .to_string();
-                let Some(output) = resolve_single_output(
-                    SingleOutput {
-                        operation: "compress",
-                        cli_input: &cmd.input,
-                        input,
-                        explicit: cmd.output_flag.or(cmd.output),
-                        derived,
-                        output_dir: cmd.out.output_dir.as_deref(),
-                        output_template: cmd.out.output_template.as_deref(),
-                        output_ext: &output_ext,
-                        keys_path: None,
-                        policy,
-                        verify: crate::util::OutputVerify::None,
-                        media: None,
-                        missing_keys: None,
-                        report: None,
-                        dry_run,
-                        cancel: cancel.clone(),
-                    },
-                    &progress,
-                )
-                .await?
-                else {
-                    return Ok(());
-                };
-                if !skip_space_check {
-                    let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
-                    batch::space_preflight_for_size(file_len(input), check_dir)?;
-                }
-                let started = Instant::now();
-                compress_rom(
-                    input,
-                    &output,
-                    cmd.level,
-                    cmd.allow_encrypted,
-                    &progress,
-                    cancel.clone(),
-                )
-                .await?;
-                log_single_summary(&cmd.input, &output, TallyDirection::Compress, started);
-            }
+                    ConflictPolicy::Error,
+                ),
+                skip_space_check,
+            });
+            options.level = cmd.level;
+            options.allow_encrypted = Some(cmd.allow_encrypted);
+            batch::run(
+                &run,
+                "ctr.compress",
+                cmd.input,
+                cmd.output_flag.or(cmd.output),
+                options,
+            )
+            .await?;
         }
         CtrCommands::Decompress(cmd) => {
-            if cmd.recursive {
-                if !cmd.input.is_dir() {
-                    anyhow::bail!(
-                        "INPUT must be a directory when --recursive is set: {}",
-                        cmd.input.display()
-                    );
-                }
-                let files = collect_files_with_exts(
-                    &cmd.input,
-                    CTR_DECOMPRESS_EXTS,
-                    cmd.max_depth,
-                    &CancelToken::new(),
-                )?;
-                if dry_run {
-                    dry_run_ctr_scan(
-                        "decompress",
-                        &files,
-                        cmd.out.output_dir.as_deref(),
-                        resolve_policy(
-                            cmd.conflict.on_conflict,
-                            cmd.conflict.force,
-                            rom_converto_lib::util::ConflictPolicy::Error,
-                        ),
-                        derive_decompressed_path,
-                    )?;
-                    return Ok(());
-                }
-                if !skip_space_check {
-                    let check_dir = cmd.out.output_dir.as_deref().unwrap_or(&cmd.input);
-                    batch::space_preflight(&files, check_dir)?;
-                }
-                let tally = Tally::new();
-                let count = files.len();
-                decompress_rom_batch(
-                    &cmd.input,
-                    cmd.out.output_dir.as_deref(),
-                    &progress,
-                    &total_progress,
-                    cmd.max_depth,
-                )
-                .await?;
-                log_count_summary(count, tally);
-            } else {
-                ensure_input_exists(&cmd.input)?;
-                let resolved =
-                    rom_converto_lib::util::resolve_input(&cmd.input, CTR_DECOMPRESS_EXTS)?;
-                let input = resolved.path();
-                let policy = resolve_policy(
+            require_input(&cmd.input, cmd.recursive)?;
+            let options = RunOptions::from(batch::Common {
+                recursive: cmd.recursive,
+                output_dir: cmd.out.output_dir,
+                output_template: cmd.out.output_template,
+                max_depth: cmd.max_depth,
+                report: None,
+                policy: resolve_policy(
                     cmd.conflict.on_conflict,
                     cmd.conflict.force,
-                    rom_converto_lib::util::ConflictPolicy::Error,
-                );
-                let derived = derive_decompressed_path(resolved.output_basis());
-                let output_ext = derived
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("")
-                    .to_string();
-                let Some(output) = resolve_single_output(
-                    SingleOutput {
-                        operation: "decompress",
-                        cli_input: &cmd.input,
-                        input,
-                        explicit: cmd.output_flag.or(cmd.output),
-                        derived,
-                        output_dir: cmd.out.output_dir.as_deref(),
-                        output_template: cmd.out.output_template.as_deref(),
-                        output_ext: &output_ext,
-                        keys_path: None,
-                        policy,
-                        verify: crate::util::OutputVerify::None,
-                        media: None,
-                        missing_keys: None,
-                        report: None,
-                        dry_run,
-                        cancel: cancel.clone(),
-                    },
-                    &progress,
-                )
-                .await?
-                else {
-                    return Ok(());
-                };
-                if !skip_space_check {
-                    let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
-                    batch::space_preflight_for_size(file_len(input), check_dir)?;
-                }
-                let started = Instant::now();
-                decompress_rom(input, &output, &progress, cancel.clone()).await?;
-                log_single_summary(&cmd.input, &output, TallyDirection::Decompress, started);
-            }
+                    ConflictPolicy::Error,
+                ),
+                skip_space_check,
+            });
+            batch::run(
+                &run,
+                "ctr.decompress",
+                cmd.input,
+                cmd.output_flag.or(cmd.output),
+                options,
+            )
+            .await?;
         }
         CtrCommands::Convert(cmd) => {
-            if cmd.recursive {
-                if !cmd.input.is_dir() {
-                    anyhow::bail!(
-                        "INPUT must be a directory when --recursive is set: {}",
-                        cmd.input.display()
-                    );
-                }
-                let files = collect_files_with_exts(
-                    &cmd.input,
-                    CTR_CONVERT_EXTS,
-                    cmd.max_depth,
-                    &CancelToken::new(),
-                )?;
-                if dry_run {
-                    dry_run_ctr_scan(
-                        "convert",
-                        &files,
-                        cmd.out.output_dir.as_deref(),
-                        resolve_policy(
-                            cmd.conflict.on_conflict,
-                            cmd.conflict.force,
-                            rom_converto_lib::util::ConflictPolicy::Error,
-                        ),
-                        derive_converted_path,
-                    )?;
-                    return Ok(());
-                }
-                if !skip_space_check {
-                    let check_dir = cmd.out.output_dir.as_deref().unwrap_or(&cmd.input);
-                    batch::space_preflight(&files, check_dir)?;
-                }
-                let tally = Tally::new();
-                let count = files.len();
-                convert_rom_batch(
-                    &cmd.input,
-                    cmd.out.output_dir.as_deref(),
-                    &progress,
-                    &total_progress,
-                    cmd.max_depth,
-                    cancel.clone(),
-                )
-                .await?;
-                log_count_summary(count, tally);
-            } else {
-                ensure_input_exists(&cmd.input)?;
-                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, CTR_CONVERT_EXTS)?;
-                let input = resolved.path();
-                let policy = resolve_policy(
+            require_input(&cmd.input, cmd.recursive)?;
+            let options = RunOptions::from(batch::Common {
+                recursive: cmd.recursive,
+                output_dir: cmd.out.output_dir,
+                output_template: cmd.out.output_template,
+                max_depth: cmd.max_depth,
+                report: None,
+                policy: resolve_policy(
                     cmd.conflict.on_conflict,
                     cmd.conflict.force,
-                    rom_converto_lib::util::ConflictPolicy::Error,
-                );
-                let derived = derive_converted_path(resolved.output_basis());
-                let output_ext = derived
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("")
-                    .to_string();
-                let Some(output) = resolve_single_output(
-                    SingleOutput {
-                        operation: "convert",
-                        cli_input: &cmd.input,
-                        input,
-                        explicit: cmd.output_flag.or(cmd.output),
-                        derived,
-                        output_dir: cmd.out.output_dir.as_deref(),
-                        output_template: cmd.out.output_template.as_deref(),
-                        output_ext: &output_ext,
-                        keys_path: None,
-                        policy,
-                        verify: crate::util::OutputVerify::None,
-                        media: None,
-                        missing_keys: None,
-                        report: None,
-                        dry_run,
-                        cancel: cancel.clone(),
-                    },
-                    &progress,
-                )
-                .await?
-                else {
-                    return Ok(());
-                };
-                if !skip_space_check {
-                    let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
-                    batch::space_preflight_for_size(file_len(input), check_dir)?;
-                }
-                let started = Instant::now();
-                convert_rom(input, &output, &progress, cancel.clone()).await?;
-                log_single_summary(&cmd.input, &output, TallyDirection::Convert, started);
-            }
+                    ConflictPolicy::Error,
+                ),
+                skip_space_check,
+            });
+            batch::run(
+                &run,
+                "ctr.convert",
+                cmd.input,
+                cmd.output_flag.or(cmd.output),
+                options,
+            )
+            .await?;
         }
         CtrCommands::Verify(cmd) => {
             let opts = CtrVerifyOptions {

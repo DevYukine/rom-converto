@@ -68,3 +68,7 @@ zip = { version = "^8", default-features = false, features = ["deflate", "deflat
 sevenz-rust2 = { version = "^0.22", features = ["brotli", "deflate", "lz4", "zstd"] }
 tar = "^0.4"
 unrar = { package = "unrar-ng", version = "^0.7" }
+ts-rs = { workspace = true, optional = true }
+
+[features]
+ts-export = ["dep:ts-rs"]

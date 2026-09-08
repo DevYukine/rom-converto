@@ -1,49 +1,51 @@
 import { describe, expect, it } from "vitest";
-import { buildCliCommand } from "../../composables/useCliEcho";
+import { registeredCommands, runOptionKeys } from "../source-parsers";
+import { allOpDefs, opCommand } from "./index";
+import type { RunPayload, StagedItem } from "./types";
 
-describe("cmd_nx_merge CLI echo", () => {
-  it("builds the nx merge command from staged inputs", () => {
-    expect(
-      buildCliCommand("cmd_nx_merge", {
-        inputs: ["a.nsp", "b.nsp"],
-        output: "merged.nsp",
-        format: "nsp",
-        keys: "",
-        onConflict: "overwrite",
-        skipSpaceCheck: false,
-        taskId: "job-1",
-      }),
-    ).toBe("> rom-converto nx merge -o merged.nsp a.nsp b.nsp");
-  });
+const ITEM: StagedItem = {
+	id: "item-1",
+	path: "/roms/sample.iso",
+	name: "sample.iso",
+	size: 1024,
+	outExt: "chd",
+};
 
-  it("includes --format xci and --keys when set", () => {
-    expect(
-      buildCliCommand("cmd_nx_merge", {
-        inputs: ["a.xci"],
-        output: "merged.xci",
-        format: "xci",
-        keys: "C:\\Program Files\\keys\\prod.keys",
-        onConflict: "rename",
-        skipSpaceCheck: true,
-        taskId: "job-2",
-      }),
-    ).toBe(
-      '> rom-converto --skip-space-check nx merge --keys "C:\\Program Files\\keys\\prod.keys" --format xci --on-conflict rename -o merged.xci a.xci',
-    );
-  });
-});
+function payloadsOf(def: ReturnType<typeof allOpDefs>[number]): RunPayload[] {
+	const store = def.useStore();
+	const payloads = [def.buildArgs(store, ITEM, "task-1")];
+	if (def.buildArgsAll) payloads.push(def.buildArgsAll(store, [ITEM], "task-1"));
+	return payloads;
+}
 
-describe("cmd_nx_split CLI echo", () => {
-  it("passes outputDir as --output-dir and input positionally", () => {
-    expect(
-      buildCliCommand("cmd_nx_split", {
-        input: "merged.nsp",
-        outputDir: "out",
-        keys: "",
-        onConflict: "overwrite",
-        skipSpaceCheck: false,
-        taskId: "job-3",
-      }),
-    ).toBe("> rom-converto nx split --output-dir out merged.nsp");
-  });
+describe("op registry", () => {
+	const defs = allOpDefs();
+
+	it("registers every op module", () => {
+		expect(defs.length).toBeGreaterThan(0);
+	});
+
+	// The runner rejects unknown option keys outright, so a typo here would only
+	// surface as a failed run.
+	it("sends only keys the runner's RunOptions defines", () => {
+		const known = new Set(runOptionKeys());
+		expect(known.size).toBeGreaterThan(0);
+		const unknown: string[] = [];
+		for (const def of defs) {
+			for (const payload of payloadsOf(def)) {
+				for (const key of Object.keys(payload.request.options)) {
+					if (!known.has(key)) unknown.push(`${def.op}/${def.console}: ${key}`);
+				}
+			}
+		}
+		expect(unknown).toEqual([]);
+	});
+
+	it("invokes only commands the Tauri backend registers", () => {
+		const registered = new Set(registeredCommands());
+		const missing = defs
+			.filter((def) => !registered.has(opCommand(def, def.useStore())))
+			.map((def) => `${def.op}/${def.console}`);
+		expect(missing).toEqual([]);
+	});
 });

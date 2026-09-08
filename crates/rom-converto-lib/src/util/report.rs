@@ -11,11 +11,14 @@ use std::path::Path;
 
 /// One file's outcome in a conversion run report.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "report.ts"))]
 pub struct ReportRecord {
     pub input_path: String,
     pub output_path: String,
     pub operation: String,
     #[serde(serialize_with = "ser_status", deserialize_with = "de_status")]
+    #[cfg_attr(feature = "ts-export", ts(type = "\"ok\" | \"skipped\" | \"failed\""))]
     pub status: FileStatus,
     pub input_bytes: u64,
     pub output_bytes: u64,
@@ -29,6 +32,8 @@ pub struct ReportRecord {
 
 /// Aggregate counters for a conversion run report.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "report.ts"))]
 pub struct ReportTotals {
     pub total_files: usize,
     /// Files converted successfully.
@@ -82,7 +87,8 @@ pub struct ReportRecordInput {
 
 impl ReportRecord {
     /// Builds a record from `input`, deriving `ratio_pct` from the byte
-    /// counts and status.
+    /// counts and status. A row with nothing written (a dry run's plan, a
+    /// batch row for an operation that produced no file) has no ratio.
     pub fn new(input: ReportRecordInput) -> Self {
         let ReportRecordInput {
             input_path,
@@ -95,7 +101,7 @@ impl ReportRecord {
             error,
         } = input;
         let ratio_pct = match status {
-            FileStatus::Ok if input_bytes > 0 => {
+            FileStatus::Ok if input_bytes > 0 && output_bytes > 0 => {
                 let saved = (1.0 - output_bytes as f64 / input_bytes as f64) * 100.0;
                 Some((saved * 10.0).round() / 10.0)
             }

@@ -25,29 +25,6 @@ pub fn log_plan(
     media: Option<&str>,
     missing_keys: Option<&str>,
 ) {
-    log_plan_decision(
-        operation,
-        input,
-        desired,
-        decision,
-        classify(desired, decision),
-        media,
-        missing_keys,
-    );
-}
-
-/// Like `log_plan` but with the conflict outcome supplied by the caller, used
-/// for `overwrite-invalid` where the keep-vs-rewrite choice comes from a
-/// read-only verify the pure classifier cannot run.
-pub fn log_plan_decision(
-    operation: &str,
-    input: &Path,
-    desired: &Path,
-    decision: &WriteDecision,
-    outcome: PlanDecision,
-    media: Option<&str>,
-    missing_keys: Option<&str>,
-) {
     let target = match decision {
         WriteDecision::Write(p) => p.clone(),
         WriteDecision::Skip => desired.to_path_buf(),
@@ -56,7 +33,7 @@ pub fn log_plan_decision(
         operation: operation.to_string(),
         input: input.to_path_buf(),
         output: target,
-        decision: outcome,
+        decision: classify(desired, decision),
         media: media.map(str::to_string),
         missing_keys: missing_keys.map(str::to_string),
     };
@@ -116,75 +93,6 @@ pub fn finish(tally: &Tally, records: &[ReportRecord], report: Option<&Path>) ->
         )?;
     }
     Ok(())
-}
-
-pub struct SingleVerifyPlan<'a> {
-    pub operation: &'a str,
-    pub input: &'a Path,
-    pub desired: &'a Path,
-    pub decision: &'a WriteDecision,
-    pub policy: rom_converto_lib::util::ConflictPolicy,
-    pub target: crate::util::OutputVerify,
-    pub media: Option<&'a str>,
-    pub missing_keys: Option<&'a str>,
-    pub cancel: CancelToken,
-}
-
-/// Single-file dry-run preview for an `overwrite-invalid` arm. The verify is
-/// read-only, so it runs under dry-run to show whether the existing output
-/// would be kept or rewritten. The synthesized decision feeds the existing
-/// tally/report path so the plan counts match a real run.
-pub async fn single_verify(
-    plan: SingleVerifyPlan<'_>,
-    progress: &dyn rom_converto_lib::util::ProgressReporter,
-    report: Option<&Path>,
-) -> Result<()> {
-    use crate::util::{VerifyOutcome, verify_existing_output};
-    let SingleVerifyPlan {
-        operation,
-        input,
-        desired,
-        decision,
-        policy,
-        target,
-        media,
-        missing_keys,
-        cancel,
-    } = plan;
-    if policy != rom_converto_lib::util::ConflictPolicy::OverwriteInvalid || !desired.exists() {
-        return single(
-            operation,
-            input,
-            desired,
-            decision,
-            media,
-            missing_keys,
-            report,
-        );
-    }
-    let (synth, outcome) = match verify_existing_output(progress, desired, target, cancel).await? {
-        VerifyOutcome::Valid => (
-            WriteDecision::Skip,
-            rom_converto_lib::util::PlanDecision::KeepValid,
-        ),
-        VerifyOutcome::Invalid => (
-            WriteDecision::Write(desired.to_path_buf()),
-            rom_converto_lib::util::PlanDecision::RewriteInvalid,
-        ),
-    };
-    log_plan_decision(
-        operation,
-        input,
-        desired,
-        &synth,
-        outcome,
-        media,
-        missing_keys,
-    );
-    let mut tally = Tally::new();
-    record(&mut tally, input, &synth);
-    let records = [report_record(operation, input, desired, &synth)];
-    finish(&tally, &records, report)
 }
 
 /// Emit the plan line, summary, and optional report for a single-file

@@ -31,6 +31,8 @@ use std::sync::Arc;
 
 /// Switch-side payload for [`crate::info::InfoResult::Nx`].
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct NxInfo {
     pub container_kind: NxContainerKind,
     pub is_compressed: bool,
@@ -53,6 +55,8 @@ pub struct NxInfo {
 /// layouts; NSZ and XCZ are their NCZ-compressed counterparts.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub enum NxContainerKind {
     #[default]
     Nsp,
@@ -67,6 +71,8 @@ pub enum NxContainerKind {
 /// NSP/NSZ are digital packages.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub enum NxDistribution {
     #[default]
     Digital,
@@ -88,6 +94,8 @@ impl NxDistribution {
 /// dumps ship `.cert`, CDN exports ship `.xml`, and so on).
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub enum NxStructure {
     #[default]
     Unknown,
@@ -128,6 +136,8 @@ impl From<ContainerKind> for NxContainerKind {
 /// byte offset of the file's data from the start of the physical input
 /// file, not from the start of its partition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct ContainerFileSummary {
     pub partition: Option<String>,
     pub name: String,
@@ -137,6 +147,8 @@ pub struct ContainerFileSummary {
 
 /// Summary of one parsed `.tik` ticket found in the container.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct TicketSummary {
     pub file_name: String,
     pub rights_id: String,
@@ -145,6 +157,8 @@ pub struct TicketSummary {
 
 /// Summary of one HFS0 sub-partition inside an XCI/XCZ cartridge image.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct XciPartitionSummary {
     pub name: String,
     pub file_count: usize,
@@ -153,6 +167,8 @@ pub struct XciPartitionSummary {
 
 /// CNMT / NACP / icon fields populated when `prod.keys` is available.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct NxFullInfo {
     pub application_title_id: u64,
     /// [`Self::application_title_id`] formatted as 16 uppercase hex digits,
@@ -182,6 +198,8 @@ pub struct NxFullInfo {
 /// Decoded `control.nacp` fields plus the extracted icon, populated once
 /// the Control NCA has been located and successfully decrypted.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct NxControl {
     pub titles: Vec<NxNacpTitle>,
     pub display_version: String,
@@ -215,6 +233,8 @@ pub struct NxControl {
 /// organization plus its assigned age. Entries with a negative or `0xFF`
 /// value in the source table are filtered out before this type is built.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct AgeRatingEntry {
     pub organization: String,
     pub age: i8,
@@ -223,6 +243,8 @@ pub struct AgeRatingEntry {
 /// One localized title entry from the NACP, giving the display name and
 /// publisher for a single language.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct NxNacpTitle {
     pub language: String,
     pub name: String,
@@ -233,6 +255,8 @@ pub struct NxNacpTitle {
 /// (`CNMT_TYPE_*` constants in [`crate::nintendo::nx::models::cnmt`]).
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub enum CnmtTitleKind {
     #[default]
     Unknown,
@@ -277,6 +301,8 @@ impl CnmtTitleKind {
 /// One content entry from a CNMT's content table: the content ID as hex,
 /// its content type name (meta, program, control, ...), and its size.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct CnmtContentSummary {
     pub content_id: String,
     pub content_type: String,
@@ -286,6 +312,8 @@ pub struct CnmtContentSummary {
 /// A sibling CNMT found alongside the primary title's CNMT in the same
 /// container (e.g. a bundled patch or add-on content).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct RelatedTitleSummary {
     pub title_id: u64,
     /// [`Self::title_id`] formatted as 16 uppercase hex digits.

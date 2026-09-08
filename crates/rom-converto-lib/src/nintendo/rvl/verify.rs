@@ -40,6 +40,8 @@ pub struct RvlVerifyOptions {
 
 /// Outcome of a Wii disc verification pass.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub struct RvlVerifyResult {
     pub game_id: String,
     /// Present only for `.rvz` input.
@@ -51,6 +53,8 @@ pub struct RvlVerifyResult {
 
 /// Hash-tree verification result for one Wii partition, from the `--full` pass.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub struct RvlPartitionVerify {
     pub offset: u64,
     pub partition_type: u32,

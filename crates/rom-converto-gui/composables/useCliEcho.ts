@@ -1,498 +1,68 @@
+import rawManifest from "../types/generated/cli_echo.json";
+import type { CliEchoManifest } from "../types/generated/cli_echo";
+
+const manifest = rawManifest as CliEchoManifest;
 const BINARY = "rom-converto";
 
-function quote(p: string): string {
-  return p.includes(" ") ? `"${p}"` : p;
+function quote(v: unknown): string {
+	const s = v == null ? "" : String(v);
+	return s.includes(" ") ? `"${s}"` : s;
 }
 
-function str(v: unknown): string {
-  return v == null ? "" : String(v);
+function flagToken(kind: string, flag: string, value: unknown): string | false {
+	if (kind === "bool") return value === true && flag;
+	if (kind === "list") return Array.isArray(value) && value.length > 0 && `${flag} ${value.join(",")}`;
+	return value != null && value !== "" && `${flag} ${quote(value)}`;
 }
 
-function join(parts: Array<string | false | null | undefined>): string {
-  const tokens = parts.filter((p): p is string => typeof p === "string" && p.length > 0);
-  return `> ${BINARY} ${tokens.join(" ")}`;
-}
+// Builds the `> rom-converto ...` preview for a `cmd_run` payload
+// (`{ request: { operation, input, output, options, dry_run }, reportFile }`
+// from lib/opdefs/types.ts `runArgs`), deriving the CLI's shape entirely
+// from the generated cli_echo manifest.
+export function buildCliCommand(payload: Record<string, unknown>): string {
+	const request = payload.request as Record<string, unknown> | undefined;
+	if (!request) return "";
+	const operation = String(request.operation ?? "");
+	const path = manifest.ops[operation];
+	const opFlags = manifest.op_flags[operation];
+	if (!path || !opFlags) return "";
+	const options: Record<string, unknown> = {
+		...(request.options as Record<string, unknown>),
+		report: payload.reportFile ?? undefined,
+	};
 
-function discSub(args: Record<string, unknown>, verb: string, family: string): string[] {
-  // dol and rvl share cmd_compress_disc/cmd_decompress_disc; the console can't
-  // be read from the command, so callers pass it in. Fall back to the taskId
-  // prefix for fixed-key decompress jobs that don't.
-  const f = family || (str(args.taskId).startsWith("dol") ? "dol" : "rvl");
-  return [f, verb];
-}
+	const tokens: string[] = [BINARY];
+	if (request.dry_run === true) tokens.push("--dry-run");
+	if (options.skip_space_check === true) tokens.push("--skip-space-check");
+	if (options.config) tokens.push("--config", quote(options.config));
+	if (options.preset) tokens.push("--preset", quote(options.preset));
+	tokens.push(...path);
 
-function conflict(args: Record<string, unknown>): string | false {
-  const value = str(args.onConflict);
-  return value && value !== "overwrite" ? `--on-conflict ${value}` : false;
-}
+	const inputs = options.inputs;
+	if (Array.isArray(inputs) && inputs.length > 0) {
+		for (const entry of inputs) {
+			const p = typeof entry === "string" ? entry : (entry as { path?: unknown } | null)?.path;
+			tokens.push(quote(p));
+		}
+	} else if (request.input) {
+		tokens.push(quote(request.input));
+	}
 
-function template(args: Record<string, unknown>): string | false {
-  const value = str(args.outputTemplate);
-  return value && `--output-template ${quote(value)}`;
-}
+	const output = request.output;
+	if (output && !options.output_template) {
+		const kind = manifest.output[operation];
+		if (kind === "output_dir") tokens.push("--output-dir", quote(output));
+		else if (kind === "output_flag") tokens.push("--output", quote(output));
+		else if (kind !== "none") tokens.push(quote(output));
+	}
 
-function report(args: Record<string, unknown>): string | false {
-  const value = str(args.reportFile);
-  return value && `--report ${quote(value)}`;
-}
+	for (const field of opFlags) {
+		if (field === "on_conflict" && options.on_conflict === "overwrite") continue;
+		const def = manifest.flags[field];
+		if (!def) continue;
+		const token = flagToken(def.kind, def.flag, options[field]);
+		if (token) tokens.push(token);
+	}
 
-// When a template is set it names the exact output path, so the positional
-// output token is dropped to mirror the CLI's conflicts_with rule.
-function outputArg(args: Record<string, unknown>): string | false {
-  if (str(args.outputTemplate)) return false;
-  const value = str(args.output);
-  return value && quote(value);
-}
-
-export function buildCliCommand(command: string, args: Record<string, unknown>, console = ""): string {
-  switch (command) {
-    case "cmd_chd_compress": {
-      const mode = str(args.mode);
-      const hunk = args.hunkSize as number | null | undefined;
-      return join([
-        args.dryRun === true && "--dry-run",
-        args.skipSpaceCheck === true && "--skip-space-check",
-        "chd", "compress",
-        mode === "dvd" && "--dvd",
-        mode === "cd" && "--cd",
-        Array.isArray(args.codecs) && args.codecs.length > 0 && `--codecs ${args.codecs.join(",")}`,
-        args.level != null && `--level ${args.level}`,
-        hunk ? `--hunk-size ${hunk}` : false,
-        conflict(args),
-        template(args),
-        report(args),
-        quote(str(args.inputPath)),
-        outputArg(args),
-      ]);
-    }
-    case "cmd_chd_extract": {
-      const parent = str(args.parent);
-      return join([
-        args.dryRun === true && "--dry-run",
-        args.skipSpaceCheck === true && "--skip-space-check",
-        "chd", "extract",
-        parent && `--parent ${quote(parent)}`,
-        template(args),
-        report(args),
-        quote(str(args.input)),
-        outputArg(args),
-      ]);
-    }
-    case "cmd_chd_verify": {
-      const parent = str(args.parent);
-      return join([
-        "chd", "verify",
-        parent && `--parent ${quote(parent)}`,
-        args.fix === true && "--fix",
-        quote(str(args.input)),
-      ]);
-    }
-    case "cmd_cso_compress": {
-      const block = args.blockSize as number | null | undefined;
-      return join([
-        args.dryRun === true && "--dry-run",
-        args.skipSpaceCheck === true && "--skip-space-check",
-        "cso", "compress",
-        args.format === "zso" && "--format zso",
-        block ? `--block-size ${block}` : false,
-        conflict(args),
-        template(args),
-        report(args),
-        quote(str(args.inputPath)),
-        outputArg(args),
-      ]);
-    }
-    case "cmd_cso_decompress":
-      return join([
-        args.dryRun === true && "--dry-run",
-        args.skipSpaceCheck === true && "--skip-space-check",
-        "cso", "decompress",
-        conflict(args),
-        template(args),
-        report(args),
-        quote(str(args.inputPath)),
-        outputArg(args),
-      ]);
-    case "cmd_cso_verify":
-      return join([
-        "cso", "verify",
-        args.full === true && "--full",
-        quote(str(args.inputPath)),
-      ]);
-    case "cmd_cso_to_chd": {
-      const mode = str(args.mode);
-      const hunk = args.hunkSize as number | null | undefined;
-      return join([
-        args.dryRun === true && "--dry-run",
-        args.skipSpaceCheck === true && "--skip-space-check",
-        "cso", "to-chd",
-        mode === "dvd" && "--dvd",
-        mode === "cd" && "--cd",
-        Array.isArray(args.codecs) && args.codecs.length > 0 && `--codecs ${args.codecs.join(",")}`,
-        args.level != null && `--level ${args.level}`,
-        hunk ? `--hunk-size ${hunk}` : false,
-        conflict(args),
-        template(args),
-        report(args),
-        quote(str(args.inputPath)),
-        outputArg(args),
-      ]);
-    }
-    case "cmd_chd_to_cso": {
-      const block = args.blockSize as number | null | undefined;
-      return join([
-        args.dryRun === true && "--dry-run",
-        args.skipSpaceCheck === true && "--skip-space-check",
-        "chd", "to-cso",
-        `--format ${str(args.format)}`,
-        block ? `--block-size ${block}` : false,
-        conflict(args),
-        template(args),
-        report(args),
-        quote(str(args.inputPath)),
-        outputArg(args),
-      ]);
-    }
-    case "cmd_cue_merge":
-      return join([
-        args.dryRun === true && "--dry-run",
-        args.skipSpaceCheck === true && "--skip-space-check",
-        "cue", "merge",
-        conflict(args),
-        quote(str(args.cuePath)),
-        quote(str(args.output)),
-      ]);
-    case "cmd_cue_to_iso":
-      return join([
-        args.dryRun === true && "--dry-run",
-        args.skipSpaceCheck === true && "--skip-space-check",
-        "cue", "to-iso",
-        conflict(args),
-        quote(str(args.cuePath)),
-        quote(str(args.output)),
-      ]);
-    case "cmd_cue_to_cso":
-      return join([
-        args.dryRun === true && "--dry-run",
-        args.skipSpaceCheck === true && "--skip-space-check",
-        "cue", "to-cso",
-        args.format === "cso" && "--format cso",
-        conflict(args),
-        quote(str(args.cuePath)),
-        quote(str(args.output)),
-      ]);
-    case "cmd_cdn_to_cia": {
-      const output = str(args.output);
-      return join([
-        args.skipSpaceCheck === true && "--skip-space-check",
-        "ctr", "cdn-to-cia",
-        args.decrypt === true && "-D",
-        args.compress === true && "-Z",
-        args.cleanup === true && "-C",
-        args.recursive === true && "-R",
-        args.ensureTicketExists === true && "-T",
-        conflict(args),
-        quote(str(args.cdnDir)),
-        output && quote(output),
-      ]);
-    }
-    case "cmd_generate_ticket":
-      return join([
-        "ctr", "generate-cdn-ticket",
-        quote(str(args.cdnDir)),
-        quote(str(args.output)),
-      ]);
-    case "cmd_compress_rom": {
-      const level = args.level as number | null | undefined;
-      return join([
-        args.dryRun === true && "--dry-run",
-        args.skipSpaceCheck === true && "--skip-space-check",
-        "ctr", "compress",
-        level ? `-l ${level}` : false,
-        args.allowEncrypted === true && "--allow-encrypted",
-        conflict(args),
-        template(args),
-        quote(str(args.input)),
-        outputArg(args),
-      ]);
-    }
-    case "cmd_decompress_rom":
-      return join([args.dryRun === true && "--dry-run", args.skipSpaceCheck === true && "--skip-space-check", "ctr", "decompress", conflict(args), template(args), quote(str(args.input)), outputArg(args)]);
-    case "cmd_decrypt_rom":
-      return join([args.dryRun === true && "--dry-run", args.skipSpaceCheck === true && "--skip-space-check", "ctr", "decrypt", conflict(args), template(args), quote(str(args.input)), outputArg(args)]);
-    case "cmd_encrypt_rom":
-      return join([args.dryRun === true && "--dry-run", args.skipSpaceCheck === true && "--skip-space-check", "ctr", "encrypt", conflict(args), template(args), quote(str(args.input)), outputArg(args)]);
-    case "cmd_convert_ctr":
-      return join([args.dryRun === true && "--dry-run", args.skipSpaceCheck === true && "--skip-space-check", "ctr", "convert", conflict(args), template(args), quote(str(args.input)), outputArg(args)]);
-    case "cmd_verify_ctr":
-      return join([
-        "ctr", "verify",
-        args.verifyContent === true && "--full",
-        quote(str(args.input)),
-      ]);
-    case "cmd_compress_disc": {
-      const level = args.level as number | undefined;
-      const chunk = args.chunkSize as number | undefined;
-      return join([
-        args.dryRun === true && "--dry-run",
-        args.skipSpaceCheck === true && "--skip-space-check",
-        ...discSub(args, "compress", console),
-        level != null && level !== 22 ? `-l ${level}` : false,
-        chunk != null && chunk !== 131072 ? `--chunk-size ${chunk}` : false,
-        conflict(args),
-        template(args),
-        report(args),
-        quote(str(args.input)),
-        outputArg(args),
-      ]);
-    }
-    case "cmd_decompress_disc":
-      return join([args.dryRun === true && "--dry-run", args.skipSpaceCheck === true && "--skip-space-check", ...discSub(args, "decompress", console), conflict(args), template(args), report(args), quote(str(args.input)), outputArg(args)]);
-    case "cmd_verify_dol":
-      return join(["dol", "verify", args.full === true && "--full", quote(str(args.input))]);
-    case "cmd_verify_rvl":
-      return join(["rvl", "verify", args.full === true && "--full", quote(str(args.input))]);
-    case "cmd_nx_compress": {
-      const keys = str(args.keys);
-      const level = args.level as number | undefined;
-      const mode = str(args.mode);
-      const exp = args.blockSizeExp as number | undefined;
-      return join([
-        args.dryRun === true && "--dry-run",
-        args.skipSpaceCheck === true && "--skip-space-check",
-        "nx", "compress",
-        keys && `--keys ${quote(keys)}`,
-        level != null && level !== 18 ? `-l ${level}` : false,
-        mode === "block" && "--mode block",
-        mode === "block" && exp != null && exp !== 20 ? `--block-size-exp ${exp}` : false,
-        conflict(args),
-        template(args),
-        report(args),
-        quote(str(args.input)),
-        outputArg(args),
-      ]);
-    }
-    case "cmd_nx_decompress": {
-      const keys = str(args.keys);
-      return join([
-        args.dryRun === true && "--dry-run",
-        args.skipSpaceCheck === true && "--skip-space-check",
-        "nx", "decompress",
-        keys && `--keys ${quote(keys)}`,
-        conflict(args),
-        template(args),
-        report(args),
-        quote(str(args.input)),
-        outputArg(args),
-      ]);
-    }
-    case "cmd_nx_verify": {
-      const keys = str(args.keys);
-      return join(["nx", "verify", keys && `--keys ${quote(keys)}`, quote(str(args.input))]);
-    }
-    case "cmd_nx_merge": {
-      const inputs = Array.isArray(args.inputs) ? (args.inputs as string[]) : [];
-      const keys = str(args.keys);
-      return join([
-        args.dryRun === true && "--dry-run",
-        args.skipSpaceCheck === true && "--skip-space-check",
-        "nx", "merge",
-        keys && `--keys ${quote(keys)}`,
-        args.format === "xci" && "--format xci",
-        conflict(args),
-        `-o ${quote(str(args.output))}`,
-        ...inputs.map((i) => quote(i)),
-      ]);
-    }
-    case "cmd_nx_split": {
-      const keys = str(args.keys);
-      const outputDir = str(args.outputDir);
-      return join([
-        args.dryRun === true && "--dry-run",
-        args.skipSpaceCheck === true && "--skip-space-check",
-        "nx", "split",
-        keys && `--keys ${quote(keys)}`,
-        outputDir && `--output-dir ${quote(outputDir)}`,
-        conflict(args),
-        quote(str(args.input)),
-      ]);
-    }
-    case "cmd_wup_compress": {
-      const inputs = Array.isArray(args.inputs) ? (args.inputs as string[]) : [];
-      const keys = Array.isArray(args.keys) ? (args.keys as string[]) : [];
-      const level = args.level as number | undefined;
-      return join([
-        args.dryRun === true && "--dry-run",
-        args.skipSpaceCheck === true && "--skip-space-check",
-        "wup", "compress",
-        `-o ${quote(str(args.output))}`,
-        level ? `-l ${level}` : false,
-        conflict(args),
-        ...keys.filter((k) => k).map((k) => `--key ${quote(k)}`),
-        ...inputs.map((i) => quote(i)),
-      ]);
-    }
-    case "cmd_wup_decrypt":
-      return join([
-        args.dryRun === true && "--dry-run",
-        args.skipSpaceCheck === true && "--skip-space-check",
-        "wup", "decrypt",
-        `-o ${quote(str(args.output))}`,
-        conflict(args),
-        quote(str(args.input)),
-      ]);
-    case "cmd_ps3_decrypt": {
-      const key = str(args.key);
-      return join([
-        args.dryRun === true && "--dry-run",
-        args.skipSpaceCheck === true && "--skip-space-check",
-        "ps3", "decrypt",
-        key && `--key ${quote(key)}`,
-        conflict(args),
-        template(args),
-        quote(str(args.input)),
-        outputArg(args),
-      ]);
-    }
-    case "cmd_nds_encrypt":
-      return join([args.dryRun === true && "--dry-run", args.skipSpaceCheck === true && "--skip-space-check", "nds", "encrypt", conflict(args), template(args), quote(str(args.input)), outputArg(args)]);
-    case "cmd_nds_decrypt":
-      return join([args.dryRun === true && "--dry-run", args.skipSpaceCheck === true && "--skip-space-check", "nds", "decrypt", conflict(args), template(args), quote(str(args.input)), outputArg(args)]);
-    case "cmd_wup_verify": {
-      const keys = str(args.keys);
-      return join(["wup", "verify", keys && `--key ${quote(keys)}`, quote(str(args.input))]);
-    }
-    case "cmd_hash": {
-      const algos = Array.isArray(args.algos) ? (args.algos as string[]) : [];
-      const depth = args.maxDepth as number | null | undefined;
-      return join([
-        "hash",
-        algos.length > 0 && `--algo ${algos.join(",")}`,
-        args.recursive === true && "-R",
-        args.recursive === true && depth != null ? `--max-depth ${depth}` : false,
-        quote(str(args.input)),
-      ]);
-    }
-    case "cmd_playlist": {
-      const outputDir = str(args.outputDir);
-      const depth = args.maxDepth as number | null | undefined;
-      const policy = str(args.onConflict);
-      return join([
-        "playlist",
-        outputDir && `--output-dir ${quote(outputDir)}`,
-        args.mode === "always" && "--playlist-mode always",
-        `--ext ${str(args.extensions)}`,
-        depth != null ? `--max-depth ${depth}` : false,
-        policy && `--on-conflict ${policy}`,
-        quote(str(args.scanDir)),
-      ]);
-    }
-    case "cmd_dat_verify":
-      return join(["dat", "verify", args.quick === true && "--quick", quote(str(args.input))]);
-    case "cmd_dat_scan": {
-      const depth = args.maxDepth as number | null | undefined;
-      const algos = Array.isArray(args.algos) ? args.algos.join(",") : "";
-      return join([
-        "dat", "scan",
-        algos !== "" && algos !== "crc32" && `--algo ${algos}`,
-        args.quick === true && "--quick",
-        depth != null ? `--max-depth ${depth}` : false,
-        quote(str(args.input)),
-      ]);
-    }
-    case "cmd_xbox_convert":
-      return join([
-        args.dryRun === true && "--dry-run",
-        args.skipSpaceCheck === true && "--skip-space-check",
-        "xbox", "convert",
-        args.mediaPatch === false && "--no-media-patch",
-        conflict(args),
-        template(args),
-        report(args),
-        quote(str(args.input)),
-        outputArg(args),
-      ]);
-    case "cmd_xbox_extract":
-      return join([
-        args.dryRun === true && "--dry-run",
-        args.skipSpaceCheck === true && "--skip-space-check",
-        "xbox", "extract",
-        conflict(args),
-        quote(str(args.input)),
-        quote(str(args.outputDir)),
-      ]);
-    case "cmd_xenon_compress":
-      return join([
-        args.dryRun === true && "--dry-run",
-        args.skipSpaceCheck === true && "--skip-space-check",
-        "xenon", "compress",
-        conflict(args),
-        template(args),
-        report(args),
-        quote(str(args.input)),
-        outputArg(args),
-      ]);
-    case "cmd_xenon_extract":
-      return join([
-        args.dryRun === true && "--dry-run",
-        args.skipSpaceCheck === true && "--skip-space-check",
-        "xenon", "extract",
-        conflict(args),
-        quote(str(args.input)),
-        quote(str(args.outputDir)),
-      ]);
-    case "cmd_xenon_convert":
-      return join([
-        args.dryRun === true && "--dry-run",
-        args.skipSpaceCheck === true && "--skip-space-check",
-        "xenon", "convert",
-        conflict(args),
-        str(args.title) && `--title ${quote(str(args.title))}`,
-        quote(str(args.input)),
-        quote(str(args.outputDir)),
-      ]);
-    case "cmd_xenon_verify":
-      return join(["xenon", "verify", quote(str(args.input))]);
-    case "cmd_psp_extract":
-      return join([
-        args.dryRun === true && "--dry-run",
-        args.skipSpaceCheck === true && "--skip-space-check",
-        "psp", "extract",
-        quote(str(args.input)),
-        quote(str(args.outputDir)),
-      ]);
-    case "cmd_psp_to_iso":
-      return join([
-        args.dryRun === true && "--dry-run",
-        args.skipSpaceCheck === true && "--skip-space-check",
-        "psp", "to-iso",
-        conflict(args),
-        template(args),
-        report(args),
-        quote(str(args.input)),
-        outputArg(args),
-      ]);
-    case "cmd_vita_extract":
-      return join([
-        args.dryRun === true && "--dry-run",
-        args.skipSpaceCheck === true && "--skip-space-check",
-        "vita", "extract",
-        quote(str(args.input)),
-        quote(str(args.outputDir)),
-      ]);
-    case "cmd_dat_rename": {
-      const depth = args.maxDepth as number | null | undefined;
-      const policy = str(args.onConflict);
-      return join([
-        "dat", "rename",
-        "-R",
-        depth != null ? `--max-depth ${depth}` : false,
-        args.dryRun === true && "--dry-run",
-        policy && `--on-conflict ${policy}`,
-        quote(str(args.input)),
-      ]);
-    }
-    default:
-      return "";
-  }
+	return `> ${tokens.join(" ")}`;
 }

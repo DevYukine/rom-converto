@@ -18,6 +18,25 @@ pub enum ConflictPolicy {
     OverwriteInvalid,
 }
 
+/// The `error` policy's refusal of an existing output, carried as the
+/// source of the `AlreadyExists` error so callers can tell it apart from
+/// any other `AlreadyExists` raised while writing.
+#[derive(Debug, thiserror::Error)]
+#[error("output already exists: {}; pass --on-conflict overwrite to replace it", .0.display())]
+pub struct OutputExists(pub PathBuf);
+
+impl OutputExists {
+    /// True when `err`'s chain carries this refusal.
+    pub fn in_chain(err: &anyhow::Error) -> bool {
+        err.chain().any(|cause| {
+            cause
+                .downcast_ref::<Error>()
+                .and_then(Error::get_ref)
+                .is_some_and(|inner| inner.is::<OutputExists>())
+        })
+    }
+}
+
 /// Outcome of resolving a conflict: write to a path (possibly renamed), or
 /// skip the file entirely.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -41,10 +60,7 @@ pub fn resolve_conflict(
         ConflictPolicy::Skip => Ok(ConflictResolution::Skip),
         ConflictPolicy::Error => Err(Error::new(
             ErrorKind::AlreadyExists,
-            format!(
-                "output already exists: {}; pass --on-conflict overwrite to replace it",
-                desired.display()
-            ),
+            OutputExists(desired.to_path_buf()),
         )),
         ConflictPolicy::Rename => Ok(ConflictResolution::Write(first_free_slot(desired)?)),
         // The integrity check is async and format specific, so it cannot run

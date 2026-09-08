@@ -11,6 +11,8 @@ use crate::util::sfo::Sfo;
 
 /// Metadata read from a PSP UMD image.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct PspInfo {
     pub title: Option<String>,
     pub title_id: Option<String>,

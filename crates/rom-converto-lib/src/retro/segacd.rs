@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 /// Fields of a Sega CD boot sector. The Mega Drive header the disc
 /// embeds defines no checksum over disc contents, so none is reported.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct SegaCdInfo {
     pub sector_size: u32,
     pub hardware_id: String,

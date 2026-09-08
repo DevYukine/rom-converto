@@ -16,6 +16,8 @@ use crate::microsoft::xex::read_xex_info;
 
 /// Summary of an XISO's probed partition layout and root title metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct XisoInfo {
     /// Renamed on the wire: [`crate::info::InfoResult`] already tags its
     /// variants with a `kind` field, which would otherwise collide with
@@ -46,6 +48,8 @@ const MAX_ROOT_ENTRIES: usize = 64;
 
 /// One entry in an XISO's root directory.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct XisoRootEntry {
     pub name: String,
     pub size: u32,

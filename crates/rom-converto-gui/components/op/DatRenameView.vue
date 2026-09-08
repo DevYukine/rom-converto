@@ -1,98 +1,81 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
-import { storeToRefs } from "pinia";
-import { invoke } from "~/lib/ipc";
+import { computed } from "vue";
 import { basename } from "~/composables/useDerivedPath";
 import { openContextMenu } from "~/composables/useContextMenu";
-import { useProgress } from "~/composables/useProgress";
-import { useDatRenameStore } from "~/stores/datRename";
+import { useQueueStore, type QueueJob } from "~/stores/queue";
+import type { DatRenameData, DatRenameRowData } from "~/types";
+import type { OpDef } from "~/lib/opdefs/types";
 import ConfigCard from "~/components/ui/ConfigCard.vue";
-import ConflictPopover from "~/components/modals/ConflictPopover.vue";
 import StatusTag from "~/components/ui/StatusTag.vue";
-import DropZone from "~/components/op/DropZone.vue";
 
-type DatRenameAction =
-	| "renamed"
-	| "would-rename"
-	| "already-canonical"
-	| "skip-unmatched"
-	| "skip-weak"
-	| "skip-collision"
-	| "skip-disc-set"
-	| "failed";
+const props = defineProps<{ def: OpDef }>();
 
-interface DatRenameRow {
-	from: string;
-	to: string | null;
-	action: DatRenameAction;
-	detail: string | null;
-}
+const queue = useQueueStore();
 
-interface DatRenameResult {
-	kind: "rename";
-	dryRun: boolean;
-	renamed: number;
-	skipped: number;
-	failed: number;
-	rows: DatRenameRow[];
-}
-
-const store = useDatRenameStore();
-const { input, maxDepth, onConflict, loading, error } = storeToRefs(store);
-const progress = useProgress("dat-rename");
-
-const renameResult = ref<DatRenameResult | null>(null);
-
-const TAG: Record<DatRenameAction, { tag: string; label: string }> = {
+const TAG: Record<string, { tag: string; label: string }> = {
 	renamed: { tag: "RENAMED", label: "Renamed" },
-	"would-rename": { tag: "MISNAMED", label: "Would rename" },
-	"already-canonical": { tag: "MATCHED", label: "Canonical" },
-	"skip-unmatched": { tag: "UNKNOWN", label: "Skip: unmatched" },
-	"skip-weak": { tag: "UNKNOWN", label: "Skip: weak match" },
-	"skip-collision": { tag: "UNKNOWN", label: "Skip: collision" },
-	"skip-disc-set": { tag: "UNKNOWN", label: "Skip: disc set" },
+	would_rename: { tag: "MISNAMED", label: "Would rename" },
+	already_canonical: { tag: "MATCHED", label: "Canonical" },
+	skipped: { tag: "UNKNOWN", label: "Skipped" },
+	skip_unmatched: { tag: "UNKNOWN", label: "Skip: unmatched" },
+	skip_weak: { tag: "UNKNOWN", label: "Skip: weak match" },
+	skip_collision: { tag: "UNKNOWN", label: "Skip: collision" },
+	skip_disc_set: { tag: "UNKNOWN", label: "Skip: disc set" },
 	failed: { tag: "FAILED", label: "Failed" },
 };
 
-const pendingCount = computed(() => (renameResult.value?.rows ?? []).filter((r) => r.action === "would-rename").length);
-const applied = computed(() => !!renameResult.value && !renameResult.value.dryRun && pendingCount.value === 0);
-
-function onDepthInput(e: Event) {
-	const raw = (e.target as HTMLInputElement).value;
-	maxDepth.value = raw === "" ? null : Number(raw);
-}
-
-async function setDir(paths: string[]) {
-	if (!paths[0]) return;
-	input.value = paths[0];
-	await run(true);
-}
-
-async function run(dry: boolean) {
-	if (!input.value || loading.value) return;
-	progress.reset();
-	renameResult.value = null;
-	loading.value = true;
-	error.value = "";
-	const args = { input: input.value, maxDepth: maxDepth.value, dryRun: dry, onConflict: onConflict.value };
-	try {
-		const json = await invoke<string>("cmd_dat_rename", args);
-		renameResult.value = JSON.parse(json) as DatRenameResult;
-	} catch (e: unknown) {
-		const msg = typeof e === "string" ? e : (e as Error)?.message ?? String(e);
-		if (!msg.includes("operation cancelled")) error.value = msg;
-	} finally {
-		loading.value = false;
+const lastJob = computed<QueueJob | null>(() => {
+	for (let i = queue.finished.length - 1; i >= 0; i--) {
+		const job = queue.finished[i]!;
+		if (job.resultKind !== "datRename" || job.routeBack?.storeId !== props.def.storeId) continue;
+		if (job.status !== "done" || !job.result || typeof job.result === "string") continue;
+		return job;
 	}
-}
+	return null;
+});
 
-// Apply re-runs the full pipeline with dryRun false rather than replaying the
-// preview plan, so filesystem changes between preview and apply are re-planned.
+const plan = computed<DatRenameData | null>(() => {
+	const result = lastJob.value?.result;
+	if (!result || typeof result === "string") return null;
+	return (result.data as DatRenameData | null) ?? null;
+});
+
+const pendingCount = computed(() => plan.value?.rows.filter((r) => r.action === "would_rename").length ?? 0);
+const applied = computed(() => !!plan.value && !plan.value.dry_run);
+// A queued or running rename must not be queued a second time: the plan on
+// screen is already being re-planned against the filesystem.
+const running = computed(() =>
+	queue.jobs.some(
+		(j) =>
+			j.resultKind === "datRename" &&
+			j.routeBack?.storeId === props.def.storeId &&
+			(j.status === "queued" || j.status === "running"),
+	),
+);
+
+// Apply re-queues the same request without the dry-run flag rather than
+// replaying the preview plan, so filesystem changes since the preview are
+// re-planned.
 function apply() {
-	void run(false);
+	const job = lastJob.value;
+	if (!job || running.value) return;
+	const taskId = `job-${crypto.randomUUID()}`;
+	queue.enqueue([
+		{
+			name: job.name,
+			opLabel: job.opLabel,
+			command: job.command,
+			args: { ...job.args, taskId, request: { ...job.args.request, dry_run: false } },
+			taskId,
+			progressKey: job.progressKey,
+			chips: job.chips,
+			resultKind: "datRename",
+			routeBack: job.routeBack,
+		},
+	]);
 }
 
-function contextItems(r: DatRenameRow) {
+function contextItems(r: DatRenameRowData) {
 	const items = [{ label: "Copy file path", value: r.from }];
 	if (r.to) items.push({ label: "Copy new name", value: basename(r.to) });
 	if (r.detail) items.push({ label: "Copy detail", value: r.detail });
@@ -103,122 +86,52 @@ function contextItems(r: DatRenameRow) {
 </script>
 
 <template>
-	<div class="rc-page">
-		<div class="rc-head">
-			<div class="rc-head__text">
-				<h1 class="rc-head__title">Rename to canonical</h1>
-				<p class="rc-head__subtitle">
-					Renames files to their canonical Playmatch DAT names. Only hash-verified matches are renamed.
-				</p>
-			</div>
-			<div class="rc-head__actions">
-				<button
-					type="button"
-					class="rc-apply"
-					:class="{ 'rc-apply--done': applied }"
-					:disabled="loading || pendingCount === 0"
-					@click="apply"
-				>
-					{{ applied ? "All renamed ✓" : `Rename all (${pendingCount})` }}
+	<ConfigCard v-if="plan" title="Rename plan">
+		<template #head-tag>
+			<span class="rc-head">
+				<span class="rc-head__note">Only the filename changes. The file content is never touched.</span>
+				<button type="button" class="rc-apply" :disabled="pendingCount === 0 || running" @click="apply">
+					{{ running ? "Renaming…" : applied ? "All renamed ✓" : `Rename all (${pendingCount})` }}
 				</button>
+			</span>
+		</template>
+
+		<div
+			v-for="r in plan.rows"
+			:key="r.from"
+			class="rc-row"
+			@contextmenu="openContextMenu($event, contextItems(r))"
+		>
+			<StatusTag :status="TAG[r.action]?.tag ?? r.action" :label="TAG[r.action]?.label" :width="96" />
+			<div class="rc-row__text">
+				<span class="rc-row__name">{{ basename(r.from) }}</span>
+				<span v-if="r.to" class="rc-row__to">↳ {{ basename(r.to) }}</span>
+				<span v-else-if="r.detail" class="rc-row__detail">{{ r.detail }}</span>
 			</div>
 		</div>
-
-		<DropZone
-			:drop-text="input || 'Drop a folder to preview renames'"
-			:multiple="false"
-			directory
-			@add="setDir"
-		/>
-
-		<ConfigCard title="Options">
-			<label class="rc-num">
-				<FieldLabel label="Max depth" tooltip="Folder levels to scan. Leave it empty for unlimited." />
-				<input
-					type="number"
-					min="1"
-					class="rc-num__input"
-					placeholder="Unlimited"
-					:value="maxDepth ?? ''"
-					@input="onDepthInput"
-				>
-			</label>
-			<div class="rc-conflict-row">
-				<FieldLabel
-					label="On conflict"
-					tooltip="What to do when the output file already exists. The choice is resolved before anything is written."
-				/>
-				<ConflictPopover :model-value="onConflict" @update:model-value="onConflict = $event" />
-			</div>
-		</ConfigCard>
-
-		<div v-if="renameResult" class="rc-results">
-			<div class="rc-results__head">
-				<span>{{ pendingCount }} file{{ pendingCount === 1 ? "" : "s" }} to rename</span>
-				<span class="rc-results__note">Only the filename changes. The file content is never touched.</span>
-			</div>
-			<div v-for="r in renameResult.rows" :key="r.from" class="rc-row" @contextmenu="openContextMenu($event, contextItems(r))">
-				<StatusTag :status="TAG[r.action].tag" :label="TAG[r.action].label" :width="96" />
-				<div class="rc-row__text">
-					<span class="rc-row__name">{{ basename(r.from) }}</span>
-					<span v-if="r.to" class="rc-row__to">↳ {{ basename(r.to) }}</span>
-					<span v-else-if="r.detail" class="rc-row__detail">{{ r.detail }}</span>
-				</div>
-			</div>
-		</div>
-
-		<div v-if="error" class="rc-error">{{ error }}</div>
-
-		<div v-if="loading" class="rc-progress">
-			<div class="rc-progress__track">
-				<div class="rc-progress__fill" :style="{ width: `${progress.percent.value}%` }" />
-			</div>
-		</div>
-	</div>
+	</ConfigCard>
 </template>
 
 <style scoped>
-.rc-page {
-	display: flex;
-	flex-direction: column;
-	gap: 14px;
-	padding: 20px 26px;
-}
-
 .rc-head {
 	display: flex;
-	align-items: flex-start;
-	justify-content: space-between;
-	gap: 16px;
-}
-
-.rc-head__title {
-	margin: 0;
-	font-size: 18px;
-	font-weight: 700;
-	color: var(--t0);
-}
-
-.rc-head__subtitle {
-	margin: 4px 0 0;
-	font-size: 11.5px;
-	color: var(--t4);
-	max-width: 520px;
-	line-height: 1.45;
-}
-
-.rc-head__actions {
-	display: flex;
 	align-items: center;
-	gap: 8px;
-	flex-shrink: 0;
+	gap: 10px;
+}
+
+.rc-head__note {
+	font-size: 11px;
+	font-weight: 400;
+	text-transform: none;
+	letter-spacing: 0;
+	color: var(--t5);
 }
 
 .rc-apply {
 	border: none;
 	border-radius: 8px;
-	padding: 7px 16px;
-	font-size: 12px;
+	padding: 5px 14px;
+	font-size: 11.5px;
 	font-weight: 700;
 	color: #fff;
 	background: #2f6fd0;
@@ -227,71 +140,17 @@ function contextItems(r: DatRenameRow) {
 
 .rc-apply:disabled {
 	background: var(--btnDim);
-	cursor: not-allowed;
-}
-
-.rc-apply--done:disabled {
-	background: var(--btnDim);
 	color: var(--t3);
-}
-
-.rc-num {
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	gap: 10px;
-	padding: 3px 0;
-}
-
-.rc-num__input {
-	width: 110px;
-	background: var(--bg2);
-	border: 1px solid var(--a14);
-	border-radius: 6px;
-	padding: 4px 8px;
-	color: var(--t1);
-	font-family: ui-monospace, monospace;
-	font-size: 11px;
-	text-align: right;
-}
-
-.rc-conflict-row {
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	padding: 3px 0;
-}
-
-.rc-results {
-	border: 1px solid var(--a10);
-	border-radius: 10px;
-	background: var(--card);
-	overflow: hidden;
-	user-select: text;
-}
-
-.rc-results__head {
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	gap: 10px;
-	padding: 10px 14px;
-	border-bottom: 1px solid var(--a06);
-	font-size: 11.5px;
-	color: var(--t2);
-}
-
-.rc-results__note {
-	font-size: 11px;
-	color: var(--t5);
+	cursor: not-allowed;
 }
 
 .rc-row {
 	display: flex;
 	align-items: center;
 	gap: 12px;
-	padding: 8px 14px;
+	padding: 8px 0;
 	border-top: 1px solid var(--a06);
+	user-select: text;
 }
 
 .rc-row__text {
@@ -324,34 +183,5 @@ function contextItems(r: DatRenameRow) {
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
-}
-
-.rc-error {
-	border-left: 2px solid var(--red);
-	background: rgba(212, 58, 62, 0.06);
-	border-radius: 8px;
-	padding: 10px 14px;
-	font-size: 12px;
-	color: var(--red);
-}
-
-.rc-progress {
-	display: flex;
-	align-items: center;
-	gap: 10px;
-}
-
-.rc-progress__track {
-	flex: 1;
-	height: 4px;
-	border-radius: 3px;
-	background: var(--a10);
-	overflow: hidden;
-}
-
-.rc-progress__fill {
-	height: 100%;
-	background: #2f6fd0;
-	transition: width 0.15s linear;
 }
 </style>

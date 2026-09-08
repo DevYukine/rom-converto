@@ -9,6 +9,8 @@ use crate::util::iso9660::{SectorSource, Volume};
 
 /// Metadata read from a PS1 or PS2 disc image.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct PsxInfo {
     /// Console family, `"PS1"` or `"PS2"`.
     pub console: String,

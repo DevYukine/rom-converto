@@ -8,6 +8,8 @@ const MAGIC: [u8; 4] = *b"NES\x1a";
 
 /// Header fields of an iNES or NES 2.0 image.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct NesInfo {
     pub nes2: bool,
     pub prg_rom_bytes: u64,

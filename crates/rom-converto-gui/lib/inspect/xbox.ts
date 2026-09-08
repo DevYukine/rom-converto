@@ -1,8 +1,8 @@
-import type { XboxInfo } from "~/types/info";
+import type { PartitionKind } from "~/types";
 import { add, formatBytes, hex } from "./shared";
 import type { InspectBuild, InspectField, KindModule } from "./types";
 
-function formatXboxPartitionKind(pk: XboxInfo["partition_kind"]): string {
+function formatXboxPartitionKind(pk: PartitionKind): string {
 	if (typeof pk === "object") return `X360 Extra (+${pk.x360_extra})`;
 	switch (pk) {
 		case "trimmed":

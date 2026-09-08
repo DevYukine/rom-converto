@@ -13,6 +13,8 @@ const VERIFICATION: &[u8; 14] = b"*NINTENDO-HVC*";
 
 /// An FDS image: the wrapper it arrived in, and one entry per disk side.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct FdsInfo {
     pub fwnes_header: bool,
     pub side_count: usize,
@@ -21,6 +23,8 @@ pub struct FdsInfo {
 
 /// The disk info block at the start of one disk side.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct FdsSide {
     pub licensee_code: u8,
     pub game_name: String,

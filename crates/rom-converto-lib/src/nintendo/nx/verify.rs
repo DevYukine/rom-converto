@@ -32,6 +32,8 @@ const SECTION_PROBE_LEN: usize = 0x10000;
 
 /// Outcome of verifying every NCA in one Switch container.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub struct NxVerifyResult {
     pub kind: String,
     pub ok: bool,
@@ -42,6 +44,8 @@ pub struct NxVerifyResult {
 /// first): whether its header decrypted and every present section
 /// could be read back without error.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub struct NcaVerdict {
     pub name: String,
     pub partition: Option<String>,

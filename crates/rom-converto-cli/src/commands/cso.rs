@@ -5,22 +5,16 @@ use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 use crate::commands::support::{
-    ALL_IMAGE_EXTS, DispatchCtx, finish_single, maybe_log_dvd_codec_tip, require_dir,
-    require_info_input, resolve_chd_codecs, resolved_dvd_mode,
+    ALL_IMAGE_EXTS, DispatchCtx, disc_mode_name, maybe_log_dvd_codec_tip, require_dir,
+    require_info_input, require_input, resolve_chd_codecs, resolved_dvd_mode,
 };
-use crate::util::{
-    SingleOutput, ensure_input_exists, file_len, resolve_policy, resolve_single_output,
-};
+use crate::util::{ensure_input_exists, resolve_policy};
 use crate::{batch, config, info_print};
 use anyhow::Result;
-use rom_converto_lib::chd::{ChdOptions, DiscMode};
-use rom_converto_lib::cso::{
-    CsoCompressOptions, CsoFormat, compress_to_cso, decompress_from_cso, verify_cso,
-};
-use rom_converto_lib::pipeline::cso_to_chd;
-use rom_converto_lib::util::{CancelToken, TallyDirection};
-use std::path::Path;
-use std::time::Instant;
+use rom_converto_lib::chd::DiscMode;
+use rom_converto_lib::cso::verify_cso;
+use rom_converto_lib::runner::models::RunOptions;
+use rom_converto_lib::util::CancelToken;
 
 /// Commands for CSO/ZSO compressed ISO images (PSP, PS2)
 #[derive(Subcommand, Debug, Eq, PartialEq)]
@@ -221,175 +215,71 @@ pub async fn run(command: CsoCommands, ctx: DispatchCtx<'_>) -> Result<()> {
         skip_space_check,
         cancel,
         cache,
+        config,
+        preset,
         ..
     } = ctx;
+    let run = batch::BatchRun {
+        progress: &progress,
+        total_progress: &total_progress,
+        cache,
+        cancel: &cancel,
+        config,
+        preset,
+        dry_run,
+    };
     match command {
         CsoCommands::Compress(cmd) => {
             let eff = &effective.cso;
-            let format = match cmd.format {
-                CsoFormatArg::Cso => CsoFormat::Cso,
-                CsoFormatArg::Zso => CsoFormat::Zso,
-            };
-            let mut opts = CsoCompressOptions {
-                format,
-                block_size: cmd.block_size.or(eff.block_size),
-                force: cmd.conflict.force,
-            };
-            let output_dir = cmd
-                .out
-                .output_dir
-                .clone()
-                .or_else(|| eff.output_dir.clone());
-            let report = cmd.batch.report.clone().or_else(|| eff.report.clone());
-            let fallback = config::policy_fallback(&eff.on_conflict)?;
-            if cmd.recursive {
-                require_dir(&cmd.input)?;
-                let policy = resolve_policy(cmd.conflict.on_conflict, cmd.conflict.force, fallback);
-                let run = batch::BatchRun {
-                    progress: &progress,
-                    total_progress: &total_progress,
-                    input_dir: &cmd.input,
-                    policy,
-                    output_dir: output_dir.as_deref(),
-                    output_template: cmd.out.output_template.as_deref(),
-                    max_depth: cmd.batch.max_depth,
-                    dry_run,
-                    skip_space_check,
-                    report_path: report.as_deref(),
-                    cancel: &cancel,
-                };
-                batch::cso_compress(&run, opts, cache).await?
-            } else {
-                ensure_input_exists(&cmd.input)?;
-                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["iso"])?;
-                let input = resolved.path();
-                let policy = resolve_policy(cmd.conflict.on_conflict, cmd.conflict.force, fallback);
-                let media = format.name();
-                let derived = resolved.output_basis().with_extension(format.extension());
-                let output_ext = derived
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("")
-                    .to_string();
-                let Some(output) = resolve_single_output(
-                    SingleOutput {
-                        operation: "compress",
-                        cli_input: &cmd.input,
-                        input,
-                        explicit: cmd.output_flag.or(cmd.output),
-                        derived,
-                        output_dir: output_dir.as_deref(),
-                        output_template: cmd.out.output_template.as_deref(),
-                        output_ext: &output_ext,
-                        keys_path: None,
-                        policy,
-                        verify: crate::util::OutputVerify::Cso,
-                        media: Some(media),
-                        missing_keys: None,
-                        report: report.as_deref(),
-                        dry_run,
-                        cancel: cancel.clone(),
-                    },
-                    &progress,
-                )
-                .await?
-                else {
-                    return Ok(());
-                };
-                if !skip_space_check {
-                    let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
-                    batch::space_preflight_for_size(file_len(input), check_dir)?;
-                }
-                opts.force = true;
-                let out_path = output.clone();
-                let started = Instant::now();
-                compress_to_cso(&progress, input.to_path_buf(), output, opts, cancel.clone())
-                    .await?;
-                finish_single(
-                    &cmd.input,
-                    &out_path,
-                    TallyDirection::Compress,
-                    "compress",
-                    started,
-                    report.as_deref(),
-                )?;
-            }
+            require_input(&cmd.input, cmd.recursive)?;
+            let mut options = RunOptions::from(batch::Common {
+                recursive: cmd.recursive,
+                output_dir: cmd.out.output_dir.or_else(|| eff.output_dir.clone()),
+                output_template: cmd.out.output_template,
+                max_depth: cmd.batch.max_depth,
+                report: cmd.batch.report.or_else(|| eff.report.clone()),
+                policy: resolve_policy(
+                    cmd.conflict.on_conflict,
+                    cmd.conflict.force,
+                    config::policy_fallback(&eff.on_conflict)?,
+                ),
+                skip_space_check,
+            });
+            options.format = Some(cso_format_name(cmd.format).to_string());
+            options.block_size = cmd.block_size.or(eff.block_size);
+            batch::run(
+                &run,
+                "cso.compress",
+                cmd.input,
+                cmd.output_flag.or(cmd.output),
+                options,
+            )
+            .await?;
         }
         CsoCommands::Decompress(cmd) => {
             let eff = &effective.cso;
-            let output_dir = cmd
-                .out
-                .output_dir
-                .clone()
-                .or_else(|| eff.output_dir.clone());
-            let report = cmd.batch.report.clone().or_else(|| eff.report.clone());
-            let fallback = config::policy_fallback(&eff.on_conflict)?;
-            if cmd.recursive {
-                require_dir(&cmd.input)?;
-                let policy = resolve_policy(cmd.conflict.on_conflict, cmd.conflict.force, fallback);
-                let run = batch::BatchRun {
-                    progress: &progress,
-                    total_progress: &total_progress,
-                    input_dir: &cmd.input,
-                    policy,
-                    output_dir: output_dir.as_deref(),
-                    output_template: cmd.out.output_template.as_deref(),
-                    max_depth: cmd.batch.max_depth,
-                    dry_run,
-                    skip_space_check,
-                    report_path: report.as_deref(),
-                    cancel: &cancel,
-                };
-                batch::cso_decompress(&run).await?
-            } else {
-                ensure_input_exists(&cmd.input)?;
-                let resolved =
-                    rom_converto_lib::util::resolve_input(&cmd.input, &["cso", "zso", "dax"])?;
-                let input = resolved.path();
-                let policy = resolve_policy(cmd.conflict.on_conflict, cmd.conflict.force, fallback);
-                let Some(output) = resolve_single_output(
-                    SingleOutput {
-                        operation: "decompress",
-                        cli_input: &cmd.input,
-                        input,
-                        explicit: cmd.output_flag.or(cmd.output),
-                        derived: resolved.output_basis().with_extension("iso"),
-                        output_dir: output_dir.as_deref(),
-                        output_template: cmd.out.output_template.as_deref(),
-                        output_ext: "iso",
-                        keys_path: None,
-                        policy,
-                        verify: crate::util::OutputVerify::None,
-                        media: None,
-                        missing_keys: None,
-                        report: report.as_deref(),
-                        dry_run,
-                        cancel: cancel.clone(),
-                    },
-                    &progress,
-                )
-                .await?
-                else {
-                    return Ok(());
-                };
-                if !skip_space_check {
-                    let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
-                    batch::space_preflight_for_size(file_len(input), check_dir)?;
-                }
-                let in_path = input.to_path_buf();
-                let out_path = output.clone();
-                let started = Instant::now();
-                decompress_from_cso(&progress, in_path.clone(), output, true, cancel.clone())
-                    .await?;
-                finish_single(
-                    &cmd.input,
-                    &out_path,
-                    TallyDirection::Decompress,
-                    "decompress",
-                    started,
-                    report.as_deref(),
-                )?;
-            }
+            require_input(&cmd.input, cmd.recursive)?;
+            let options = RunOptions::from(batch::Common {
+                recursive: cmd.recursive,
+                output_dir: cmd.out.output_dir.or_else(|| eff.output_dir.clone()),
+                output_template: cmd.out.output_template,
+                max_depth: cmd.batch.max_depth,
+                report: cmd.batch.report.or_else(|| eff.report.clone()),
+                policy: resolve_policy(
+                    cmd.conflict.on_conflict,
+                    cmd.conflict.force,
+                    config::policy_fallback(&eff.on_conflict)?,
+                ),
+                skip_space_check,
+            });
+            batch::run(
+                &run,
+                "cso.decompress",
+                cmd.input,
+                cmd.output_flag.or(cmd.output),
+                options,
+            )
+            .await?;
         }
         CsoCommands::Verify(cmd) => {
             if cmd.recursive {
@@ -417,20 +307,8 @@ pub async fn run(command: CsoCommands, ctx: DispatchCtx<'_>) -> Result<()> {
         }
         CsoCommands::ToChd(cmd) => {
             let eff = &effective.chd;
-            let mut opts = ChdOptions {
-                hunk_size: cmd.hunk_size.or(eff.hunk_size),
-                codecs: resolve_chd_codecs(cmd.codecs.clone(), &eff.codecs)?,
-                level: cmd.level.or(eff.level),
-                force: cmd.conflict.force,
-            };
-            let codecs_set = opts.codecs.is_some();
-            let output_dir = cmd
-                .out
-                .output_dir
-                .clone()
-                .or_else(|| eff.output_dir.clone());
-            let report = cmd.batch.report.clone().or_else(|| eff.report.clone());
-            let fallback = config::policy_fallback(&eff.on_conflict)?;
+            require_input(&cmd.input, cmd.recursive)?;
+            let codecs = resolve_chd_codecs(cmd.codecs.clone(), &eff.codecs)?;
             let mode = if cmd.dvd {
                 Some(DiscMode::Dvd)
             } else if cmd.cd {
@@ -438,76 +316,34 @@ pub async fn run(command: CsoCommands, ctx: DispatchCtx<'_>) -> Result<()> {
             } else {
                 None
             };
-            if cmd.recursive {
-                require_dir(&cmd.input)?;
-                let policy = resolve_policy(cmd.conflict.on_conflict, cmd.conflict.force, fallback);
-                let run = batch::BatchRun {
-                    progress: &progress,
-                    total_progress: &total_progress,
-                    input_dir: &cmd.input,
-                    policy,
-                    output_dir: output_dir.as_deref(),
-                    output_template: cmd.out.output_template.as_deref(),
-                    max_depth: cmd.batch.max_depth,
-                    dry_run,
-                    skip_space_check,
-                    report_path: report.as_deref(),
-                    cancel: &cancel,
-                };
-                batch::cso_to_chd(&run, mode, opts, cache).await?
-            } else {
-                ensure_input_exists(&cmd.input)?;
-                let resolved =
-                    rom_converto_lib::util::resolve_input(&cmd.input, &["cso", "zso", "dax"])?;
-                let input = resolved.path();
-                maybe_log_dvd_codec_tip(resolved_dvd_mode(mode, input), codecs_set);
-                let policy = resolve_policy(cmd.conflict.on_conflict, cmd.conflict.force, fallback);
-                let Some(output) = resolve_single_output(
-                    SingleOutput {
-                        operation: "compress",
-                        cli_input: &cmd.input,
-                        input,
-                        explicit: cmd.output_flag.or(cmd.output),
-                        derived: resolved.output_basis().with_extension("chd"),
-                        output_dir: output_dir.as_deref(),
-                        output_template: cmd.out.output_template.as_deref(),
-                        output_ext: "chd",
-                        keys_path: None,
-                        policy,
-                        verify: crate::util::OutputVerify::Chd,
-                        media: None,
-                        missing_keys: None,
-                        report: report.as_deref(),
-                        dry_run,
-                        cancel: cancel.clone(),
-                    },
-                    &progress,
-                )
-                .await?
-                else {
-                    return Ok(());
-                };
-                if !skip_space_check {
-                    let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
-                    let required = rom_converto_lib::cso::info::read_info(input)
-                        .map(|info| info.uncompressed_size)
-                        .unwrap_or_else(|_| file_len(input));
-                    batch::space_preflight_for_size(required, check_dir)?;
-                }
-                opts.force = true;
-                let in_path = input.to_path_buf();
-                let out_path = output.clone();
-                let started = Instant::now();
-                cso_to_chd(&progress, in_path, output, mode, opts, cancel.clone()).await?;
-                finish_single(
-                    &cmd.input,
-                    &out_path,
-                    TallyDirection::Compress,
-                    "compress",
-                    started,
-                    report.as_deref(),
-                )?;
+            if !cmd.recursive {
+                maybe_log_dvd_codec_tip(resolved_dvd_mode(mode, &cmd.input), codecs.is_some());
             }
+            let mut options = RunOptions::from(batch::Common {
+                recursive: cmd.recursive,
+                output_dir: cmd.out.output_dir.or_else(|| eff.output_dir.clone()),
+                output_template: cmd.out.output_template,
+                max_depth: cmd.batch.max_depth,
+                report: cmd.batch.report.or_else(|| eff.report.clone()),
+                policy: resolve_policy(
+                    cmd.conflict.on_conflict,
+                    cmd.conflict.force,
+                    config::policy_fallback(&eff.on_conflict)?,
+                ),
+                skip_space_check,
+            });
+            options.hunk_size = cmd.hunk_size.or(eff.hunk_size);
+            options.codecs = codecs.map(|c| c.iter().map(ToString::to_string).collect());
+            options.level = cmd.level.or(eff.level);
+            options.mode = mode.map(|m| disc_mode_name(m).to_string());
+            batch::run(
+                &run,
+                "cso.to_chd",
+                cmd.input,
+                cmd.output_flag.or(cmd.output),
+                options,
+            )
+            .await?;
         }
         CsoCommands::Info(cmd) => {
             if cmd.keys.is_some() {
@@ -526,6 +362,13 @@ pub async fn run(command: CsoCommands, ctx: DispatchCtx<'_>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+pub(crate) fn cso_format_name(format: CsoFormatArg) -> &'static str {
+    match format {
+        CsoFormatArg::Cso => "cso",
+        CsoFormatArg::Zso => "zso",
+    }
 }
 
 #[cfg(test)]

@@ -1,4 +1,4 @@
-import type { Image, InfoResult } from "~/types/info";
+import type { Image, InfoResult } from "~/types";
 
 export function pickIconImage(info: InfoResult): Image | null {
   switch (info.kind) {

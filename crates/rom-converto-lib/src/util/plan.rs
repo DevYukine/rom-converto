@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 /// What a dry-run planner decided to do with one input, before any file is
 /// touched.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub enum PlanDecision {
     New,
     Overwrite,
@@ -20,6 +22,8 @@ pub enum PlanDecision {
 /// One rendered line of a dry-run preview: an operation, its input/output
 /// paths, and the decision made for it.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub struct PlanLine {
     pub operation: String,
     pub input: PathBuf,
@@ -70,6 +74,23 @@ pub fn classify(desired: &Path, resolution: &ConflictResolution) -> PlanDecision
         ConflictResolution::Write(p) if p != desired => PlanDecision::Rename(p.clone()),
         ConflictResolution::Write(_) if desired.exists() => PlanDecision::Overwrite,
         ConflictResolution::Write(_) => PlanDecision::New,
+    }
+}
+
+/// Best-effort media label for a CHD dry-run plan line: cue inputs imply a
+/// CD, AVI inputs a LaserDisc, ISO inputs read a header to predict the kind.
+pub fn chd_media_label(input: &Path) -> Option<String> {
+    let ext = input
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase());
+    match ext.as_deref() {
+        Some("cue") => Some("CD".to_string()),
+        Some("avi") => Some("LaserDisc".to_string()),
+        Some("iso") => super::iso9660::detect_disc_kind(input)
+            .ok()
+            .map(|k| k.label().to_string()),
+        _ => None,
     }
 }
 

@@ -9,6 +9,8 @@ use std::path::Path;
 /// Fields of the Dreamcast IP header, with the area and peripheral fields
 /// kept raw alongside what is decoded from them.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct DreamcastInfo {
     pub sector_size: u32,
     pub hardware_id: String,
@@ -31,6 +33,8 @@ pub struct DreamcastInfo {
 
 /// The track table of a `.gdi` sheet.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct GdiIndex {
     /// Track count the sheet declares on its first line.
     pub track_count: usize,
@@ -39,6 +43,8 @@ pub struct GdiIndex {
 
 /// One track line of a `.gdi` sheet.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct GdiTrack {
     pub number: u32,
     pub lba: u64,

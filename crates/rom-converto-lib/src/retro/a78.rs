@@ -9,6 +9,8 @@ const MAGIC: [u8; 9] = *b"ATARI7800";
 
 /// Fields of the A78 header. The format defines no checksum.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct A78Info {
     pub version: u8,
     pub title: String,

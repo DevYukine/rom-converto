@@ -14,7 +14,7 @@ import {
 	withOutputDir,
 } from "~/composables/useDerivedPath";
 import { nxKeysColor, nxKeysDisplay } from "./nx-keys";
-import { NX_KEYS_TOOLTIP, type OpDef, type OpStore } from "./types";
+import { NX_KEYS_TOOLTIP, runArgs, type OpDef, type OpStore, type RunPayload } from "./types";
 
 function dirName(path: string): string {
 	const norm = path.replace(/[\\/]+$/, "");
@@ -74,7 +74,7 @@ const hash: OpDef = {
 	opLabel: "Tools",
 	storeId: "hash",
 	useStore: useHash,
-	command: "cmd_hash",
+	command: "cmd_run",
 	resultKind: "hash",
 
 	title: "Hash files",
@@ -131,12 +131,19 @@ const hash: OpDef = {
 	showDryRun: false,
 	actionNote: "Runs in the global queue like everything else.",
 
-	buildArgs: (store, item) => ({
-		input: item.path,
-		algos: store.algos,
-		recursive: store.recursive,
-		maxDepth: store.recursive ? store.maxDepth : null,
-	}),
+	buildArgs: (store, item, taskId) =>
+		runArgs(
+			"hash",
+			item.path,
+			null,
+			{
+				algo: (store.algos as string[]).join(","),
+				recursive: store.recursive,
+				max_depth: store.recursive ? store.maxDepth : null,
+			},
+			false,
+			taskId,
+		),
 	chips: (store) => `${(store.algos as string[]).join("+")}${store.recursive ? " · recursive" : ""}`,
 };
 
@@ -146,7 +153,7 @@ const playlist: OpDef = {
 	opLabel: "Tools",
 	storeId: "playlist",
 	useStore: () => usePlaylistStore(),
-	command: "cmd_playlist",
+	command: "cmd_run",
 	resultKind: "text",
 
 	title: "Generate playlists (.m3u)",
@@ -199,14 +206,21 @@ const playlist: OpDef = {
 	showDryRun: false,
 	actionNote: "Runs in the global queue like everything else.",
 
-	buildArgs: (store, item) => ({
-		scanDir: item.path,
-		outputDir: store.outputDir || null,
-		mode: store.mode,
-		extensions: store.extensions,
-		maxDepth: store.maxDepth,
-		onConflict: store.onConflict,
-	}),
+	buildArgs: (store, item, taskId) =>
+		runArgs(
+			"playlist.write",
+			item.path,
+			null,
+			{
+				output_dir: store.outputDir || null,
+				playlist_mode: store.mode,
+				extensions: store.extensions,
+				max_depth: store.maxDepth,
+				on_conflict: store.onConflict,
+			},
+			false,
+			taskId,
+		),
 	chips: (store) => `mode:${store.mode}`,
 };
 
@@ -216,7 +230,7 @@ const merge: OpDef = {
 	opLabel: "Tools",
 	storeId: "cue-merge",
 	useStore: () => useCueMergeStore(),
-	command: "cmd_cue_merge",
+	command: "cmd_run",
 	resultKind: "text",
 
 	title: "Merge multi-bin",
@@ -252,12 +266,15 @@ const merge: OpDef = {
 	actionNote: "Runs in the global queue like everything else.",
 
 	deriveOutput: (input, store) => store.output || deriveMergedCuePath(input),
-	buildArgs: (store, item) => ({
-		cuePath: item.path,
-		output: store.output || deriveMergedCuePath(item.path),
-		onConflict: store.onConflict,
-		skipSpaceCheck: store.skipSpaceCheck,
-	}),
+	buildArgs: (store, item, taskId) =>
+		runArgs(
+			"cue.merge",
+			item.path,
+			store.output || deriveMergedCuePath(item.path),
+			{ on_conflict: store.onConflict, skip_space_check: store.skipSpaceCheck },
+			false,
+			taskId,
+		),
 	chips: (store) => `onConflict:${store.onConflict}`,
 };
 
@@ -267,7 +284,7 @@ const cdn2cia: OpDef = {
 	opLabel: "Tools",
 	storeId: "ctr-cdn-to-cia",
 	useStore: useCdnToCia,
-	command: "cmd_cdn_to_cia",
+	command: "cmd_run",
 	resultKind: "text",
 
 	title: "Convert CDN to CIA",
@@ -339,17 +356,23 @@ const cdn2cia: OpDef = {
 	actionNote: "Runs in the global queue like everything else.",
 
 	deriveOutput: (input, store) => store.output || `${input}.cia`,
-	buildArgs: (store, item) => ({
-		cdnDir: item.path,
-		output: store.output || null,
-		decrypt: store.decrypt,
-		compress: store.compress,
-		cleanup: store.cleanup,
-		recursive: store.recursive,
-		ensureTicketExists: store.ensureTicket,
-		onConflict: store.onConflict,
-		skipSpaceCheck: store.skipSpaceCheck,
-	}),
+	buildArgs: (store, item, taskId) =>
+		runArgs(
+			"ctr.cdn_to_cia",
+			item.path,
+			store.output || null,
+			{
+				decrypt: store.decrypt,
+				compress: store.compress,
+				cleanup: store.cleanup,
+				recursive: store.recursive,
+				ensure_ticket_exists: store.ensureTicket,
+				on_conflict: store.onConflict,
+				skip_space_check: store.skipSpaceCheck,
+			},
+			false,
+			taskId,
+		),
 	chips: (store) => [store.decrypt && "decrypt", store.compress && "compress", store.ensureTicket && "ticket"]
 		.filter(Boolean)
 		.join("+"),
@@ -361,7 +384,7 @@ const ticket: OpDef = {
 	opLabel: "Tools",
 	storeId: "ctr-generate-ticket",
 	useStore: () => useCtrGenerateTicketStore(),
-	command: "cmd_generate_ticket",
+	command: "cmd_run",
 	resultKind: "text",
 
 	title: "Generate ticket",
@@ -400,10 +423,8 @@ const ticket: OpDef = {
 	actionNote: "Runs in the global queue like everything else.",
 
 	deriveOutput: (input, store) => store.output || `${input}/ticket.tik`,
-	buildArgs: (store, item) => ({
-		cdnDir: item.path,
-		output: store.output || `${item.path}/ticket.tik`,
-	}),
+	buildArgs: (store, item, taskId) =>
+		runArgs("ctr.generate_cdn_ticket", item.path, store.output || `${item.path}/ticket.tik`, {}, false, taskId),
 	chips: () => "ticket",
 };
 
@@ -417,7 +438,7 @@ const nxMerge: OpDef = {
 	opLabel: "Tools",
 	storeId: "nx-merge",
 	useStore: () => useNxMergeStore(),
-	command: "cmd_nx_merge",
+	command: "cmd_run",
 	resultKind: "convert",
 
 	title: "Merge Switch NSP/XCI",
@@ -479,26 +500,30 @@ const nxMerge: OpDef = {
 	actionNote: "All staged files merge into one queue job producing a single output.",
 
 	deriveOutput: (input, store) => store.output || nxMergedPath(input, store),
-	buildArgs: (store, item, taskId) => ({
-		inputs: [item.path],
-		output: store.output || nxMergedPath(item.path, store),
-		format: store.format,
-		keys: store.keys || null,
-		onConflict: store.onConflict,
-		skipSpaceCheck: store.skipSpaceCheck,
-		taskId,
-	}),
-	buildArgsAll: (store, items, taskId) => ({
-		inputs: items.map((i) => i.path),
-		output: store.output || (items[0] ? nxMergedPath(items[0].path, store) : ""),
-		format: store.format,
-		keys: store.keys || null,
-		onConflict: store.onConflict,
-		skipSpaceCheck: store.skipSpaceCheck,
-		taskId,
-	}),
+	buildArgs: (store, item, taskId) => mergeArgs(store, [item.path], taskId),
+	buildArgsAll: (store, items, taskId) =>
+		mergeArgs(store, items.map((i) => i.path), taskId),
 	chips: (store) => `format:${store.format}`,
 };
+
+// Every staged part merges into one container, so the first input names the
+// job and the rest travel in `options.inputs`.
+function mergeArgs(store: OpStore, inputs: string[], taskId: string): RunPayload {
+	return runArgs(
+		"nx.merge",
+		inputs[0] ?? null,
+		store.output || (inputs[0] ? nxMergedPath(inputs[0], store) : ""),
+		{
+			inputs,
+			format: store.format,
+			keys: store.keys || null,
+			on_conflict: store.onConflict,
+			skip_space_check: store.skipSpaceCheck,
+		},
+		false,
+		taskId,
+	);
+}
 
 const nxSplit: OpDef = {
 	op: "tools",
@@ -506,7 +531,7 @@ const nxSplit: OpDef = {
 	opLabel: "Tools",
 	storeId: "nx-split",
 	useStore: () => useNxSplitStore(),
-	command: "cmd_nx_split",
+	command: "cmd_run",
 	resultKind: "text",
 
 	title: "Split Switch NSP/XCI",
@@ -546,14 +571,19 @@ const nxSplit: OpDef = {
 	actionNote: "Runs in the global queue like everything else.",
 
 	deriveOutput: (input, store) => store.outputDir || deriveNxSplitDir(input),
-	buildArgs: (store, item, taskId) => ({
-		input: item.path,
-		outputDir: store.outputDir || deriveNxSplitDir(item.path),
-		keys: store.keys || null,
-		onConflict: store.onConflict,
-		skipSpaceCheck: store.skipSpaceCheck,
-		taskId,
-	}),
+	buildArgs: (store, item, taskId) =>
+		runArgs(
+			"nx.split",
+			item.path,
+			store.outputDir || deriveNxSplitDir(item.path),
+			{
+				keys: store.keys || null,
+				on_conflict: store.onConflict,
+				skip_space_check: store.skipSpaceCheck,
+			},
+			false,
+			taskId,
+		),
 	chips: () => "",
 };
 

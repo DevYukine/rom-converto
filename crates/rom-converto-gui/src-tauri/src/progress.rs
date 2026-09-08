@@ -111,6 +111,16 @@ impl ProgressReporter for TauriProgress {
         );
     }
 
+    fn row(&self, row: &rom_converto_lib::runner::models::RunRow) {
+        if let Ok(value) = serde_json::to_value(row) {
+            self.emit_row(value);
+        }
+    }
+
+    fn child(&self, suffix: &str) -> Box<dyn ProgressReporter + Send + Sync> {
+        Box::new(TauriProgress::child(self, suffix))
+    }
+
     fn warn(&self, message: &str) {
         let _ = self.app.emit(
             "progress",

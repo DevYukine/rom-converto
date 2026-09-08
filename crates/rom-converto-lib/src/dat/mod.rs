@@ -8,6 +8,8 @@ pub mod fixdat;
 pub mod model;
 pub mod rename;
 pub mod run;
+pub mod scan;
+pub mod units;
 pub mod verdict;
 
 pub use client::{DEFAULT_API_BASE, DatFileFilter, PlaymatchClient};

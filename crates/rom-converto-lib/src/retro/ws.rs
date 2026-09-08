@@ -12,6 +12,8 @@ const FAR_JMP: u8 = 0xEA;
 /// Fields of the WonderSwan cartridge footer, with the checksum recomputed
 /// over the ROM body.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct WsInfo {
     pub publisher_id: u8,
     pub color: bool,

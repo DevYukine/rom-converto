@@ -325,6 +325,59 @@ fn cue_referenced_basenames(cue_path: &Path) -> Vec<String> {
         .collect()
 }
 
+/// The member [`resolve_input`] extracts for `exts`: the first match by
+/// sorted name. `warn` logs the ambiguity when several qualify; the
+/// listing-only probe leaves that to the extraction that follows it.
+fn pick_member<'a>(
+    path: &Path,
+    members: &'a [ArchiveMember],
+    exts: &[&str],
+    warn: bool,
+) -> Result<&'a ArchiveMember> {
+    let matches: Vec<&ArchiveMember> = members
+        .iter()
+        .filter(|m| name_has_ext(&m.name, exts))
+        .collect();
+    match matches.as_slice() {
+        [] => bail!(
+            "archive {} contains no matching image ({:?})",
+            path.display(),
+            exts
+        ),
+        [first, rest @ ..] => {
+            if warn && !rest.is_empty() {
+                log::warn!(
+                    "{} contains {} matching members; using {}",
+                    path.display(),
+                    matches.len(),
+                    first.name
+                );
+            }
+            Ok(*first)
+        }
+    }
+}
+
+/// Default-output basis for `member` of `path`: next to the archive, named
+/// after the member.
+fn basis_for(path: &Path, member: &ArchiveMember) -> Result<PathBuf> {
+    Ok(path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(safe_basename(&member.name)?))
+}
+
+/// The [`ResolvedInput::output_basis`] an archive would resolve to for
+/// `exts`, read from its member listing without extracting anything.
+/// `None` for a plain file, whose basis is the file itself.
+pub fn output_basis(path: &Path, exts: &[&str]) -> Result<Option<PathBuf>> {
+    if !is_archive_path(path) {
+        return Ok(None);
+    }
+    let members = list_members(path)?;
+    basis_for(path, pick_member(path, &members, exts, false)?).map(Some)
+}
+
 /// Resolve a read input for `exts`. Plain files pass through unchanged. For an
 /// archive, extract the first member matching `exts` (plus the bin tracks a cue
 /// references) to a temp dir and point the pipeline at it.
@@ -344,28 +397,7 @@ pub fn resolve_input(path: &Path, exts: &[&str]) -> Result<ResolvedInput> {
         )
     })?;
     let members = list_members(path)?;
-    let matches: Vec<&ArchiveMember> = members
-        .iter()
-        .filter(|m| name_has_ext(&m.name, exts))
-        .collect();
-    let member = match matches.as_slice() {
-        [] => bail!(
-            "archive {} contains no matching image ({:?})",
-            path.display(),
-            exts
-        ),
-        [first, rest @ ..] => {
-            if !rest.is_empty() {
-                log::warn!(
-                    "{} contains {} matching members; using {}",
-                    path.display(),
-                    matches.len(),
-                    first.name
-                );
-            }
-            *first
-        }
-    };
+    let member = pick_member(path, &members, exts, true)?;
 
     let tmp = tempfile::tempdir()?;
     if let Ok(available) = available_space(tmp.path())
@@ -394,14 +426,9 @@ pub fn resolve_input(path: &Path, exts: &[&str]) -> Result<ResolvedInput> {
         }
     }
 
-    let output_basis = path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join(safe_basename(&member.name)?);
-
     Ok(ResolvedInput {
         path: extracted,
-        output_basis,
+        output_basis: basis_for(path, member)?,
         _tmp: Some(tmp),
     })
 }

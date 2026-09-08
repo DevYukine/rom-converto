@@ -117,7 +117,10 @@ async fn main() -> Result<()> {
     let effective = config::resolve(&user_config, preset.as_ref());
     let dry_run = cli.dry_run;
     let skip_space_check = cli.skip_space_check;
-    let cache = rom_converto_lib::util::HashCache::load(cli.no_cache, cli.rebuild_cache);
+    let cache = std::sync::Arc::new(rom_converto_lib::util::HashCache::load(
+        cli.no_cache,
+        cli.rebuild_cache,
+    ));
 
     let cancel = rom_converto_lib::util::CancelToken::new();
     {
@@ -135,6 +138,8 @@ async fn main() -> Result<()> {
             progress,
             total_progress,
             effective: &effective,
+            config: cli.config,
+            preset: cli.preset,
             dry_run,
             skip_space_check,
             cancel: cancel.clone(),

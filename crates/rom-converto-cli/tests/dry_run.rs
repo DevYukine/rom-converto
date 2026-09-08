@@ -62,6 +62,45 @@ fn cso_compress_dry_run_single_matches_real_path() {
     assert!(text.contains("[new]"), "{text}");
 }
 
+/// A planned skip is one line: the plan line carries the decision, so the
+/// record behind it must not print a second skip note or the runner's
+/// "Dry run planned." message.
+#[test]
+fn cso_compress_dry_run_skip_prints_one_line() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("game.iso");
+    fs::write(&input, b"x").unwrap();
+    fs::write(dir.path().join("game.cso"), b"original contents").unwrap();
+
+    for args in [
+        vec!["--dry-run", "cso", "compress", "--on-conflict", "skip"],
+        vec![
+            "--dry-run",
+            "cso",
+            "compress",
+            "-R",
+            "--on-conflict",
+            "skip",
+        ],
+    ] {
+        let recursive = args.contains(&"-R");
+        let mut cmd = bin();
+        cmd.args(&args);
+        if recursive {
+            cmd.arg(dir.path());
+        } else {
+            cmd.arg(&input);
+        }
+        let output = cmd.output().unwrap();
+
+        assert!(output.status.success(), "{}", combined(&output));
+        let text = combined(&output);
+        assert!(text.contains("[skip]"), "{args:?}: {text}");
+        assert!(!text.contains("Dry run planned."), "{args:?}: {text}");
+        assert!(!text.contains("Skipped, output exists"), "{args:?}: {text}");
+    }
+}
+
 #[test]
 fn cso_compress_dry_run_overwrite_leaves_existing_file_untouched() {
     let dir = tempfile::tempdir().unwrap();
@@ -510,7 +549,8 @@ fn cdn_to_cia_recursive_dry_run_skip_on_existing() {
 fn cdn_to_cia_recursive_dry_run_error_on_existing() {
     let dir = tempfile::tempdir().unwrap();
     fs::create_dir(dir.path().join("title_a")).unwrap();
-    fs::write(dir.path().join("title_a.cia"), b"original").unwrap();
+    let existing = dir.path().join("title_a.cia");
+    fs::write(&existing, b"original").unwrap();
 
     let output = bin()
         .args(["--dry-run", "ctr", "cdn-to-cia", "-R"])
@@ -518,7 +558,13 @@ fn cdn_to_cia_recursive_dry_run_error_on_existing() {
         .output()
         .unwrap();
 
-    assert!(!output.status.success(), "{}", combined(&output));
+    // Every recursive arm reports an existing output under `error` as a
+    // warned skip and leaves the rest of the batch planned.
+    assert!(output.status.success(), "{}", combined(&output));
+    assert_eq!(fs::read(&existing).unwrap(), b"original");
+    let text = combined(&output);
+    assert!(text.contains("output already exists"), "{text}");
+    assert!(text.contains("1 skipped"), "{text}");
 }
 
 #[test]
@@ -710,4 +756,99 @@ fn rvl_migrate_dry_run_single_writes_nothing() {
     let text = combined(&output);
     assert!(text.contains("Would migrate"), "{text}");
     assert!(text.contains("[new]"), "{text}");
+}
+
+#[test]
+fn explicit_config_shadows_the_ambient_one() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(
+        dir.path().join("rom-converto.toml"),
+        "[cso]\noutput_dir = \"ambient\"\n",
+    )
+    .unwrap();
+    fs::write(dir.path().join("other.toml"), "[cso]\nblock_size = 32768\n").unwrap();
+    fs::write(dir.path().join("game.iso"), b"x").unwrap();
+
+    let ambient = bin()
+        .current_dir(dir.path())
+        .args(["--dry-run", "cso", "compress", "game.iso"])
+        .output()
+        .unwrap();
+    assert!(ambient.status.success(), "{}", combined(&ambient));
+    let ambient_text = combined(&ambient);
+    assert!(ambient_text.contains("ambient"), "{ambient_text}");
+
+    let explicit = bin()
+        .current_dir(dir.path())
+        .args([
+            "--config",
+            "other.toml",
+            "--dry-run",
+            "cso",
+            "compress",
+            "game.iso",
+        ])
+        .output()
+        .unwrap();
+    assert!(explicit.status.success(), "{}", combined(&explicit));
+    let text = combined(&explicit);
+    assert!(text.contains("Would compress"), "{text}");
+    assert!(!text.contains("ambient"), "{text}");
+}
+
+#[test]
+fn dry_run_single_prints_summary_and_writes_report() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("game.iso");
+    fs::write(&input, b"x").unwrap();
+    let report = dir.path().join("plan.json");
+
+    let output = bin()
+        .args(["--dry-run", "cso", "compress"])
+        .arg(&input)
+        .arg("--report")
+        .arg(&report)
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "{}", combined(&output));
+    assert!(!dir.path().join("game.cso").exists());
+    let text = combined(&output);
+    assert!(text.contains("Dry run: 1 files planned"), "{text}");
+    let plan = fs::read_to_string(&report).unwrap();
+    assert!(plan.contains("compress (dry run)"), "{plan}");
+}
+
+#[test]
+fn already_done_single_reports_the_skip_reason() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("tiny.nds");
+    fs::write(&input, vec![0u8; 128]).unwrap();
+
+    let output = bin().args(["nds", "decrypt"]).arg(&input).output().unwrap();
+
+    assert!(output.status.success(), "{}", combined(&output));
+    let text = combined(&output);
+    assert!(text.contains("too small for a secure area"), "{text}");
+    assert!(!text.contains("1 skipped"), "{text}");
+}
+
+#[test]
+fn failed_batch_still_writes_its_report() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("a.iso"), vec![0u8; 4096]).unwrap();
+    fs::write(dir.path().join("b.iso"), vec![0u8; 4096]).unwrap();
+    let report = dir.path().join("report.json");
+
+    let output = bin()
+        .args(["dol", "compress", "-R"])
+        .arg(dir.path())
+        .arg("--report")
+        .arg(&report)
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success(), "{}", combined(&output));
+    let written = fs::read_to_string(&report).unwrap();
+    assert!(written.contains("\"failed\""), "{written}");
 }

@@ -13,6 +13,7 @@ const PALETTE: Record<string, { bg: string; text: string }> = {
 	MATCHED: { bg: "rgba(63,185,80,.15)", text: "var(--green)" },
 	VERIFIED: { bg: "rgba(63,185,80,.15)", text: "var(--green)" },
 	RENAMED: { bg: "rgba(63,185,80,.15)", text: "var(--green)" },
+	CHECKED: { bg: "rgba(69,147,248,.15)", text: "var(--blue)" },
 	MISNAMED: { bg: "rgba(210,153,34,.15)", text: "var(--yellow)" },
 	HINT: { bg: "rgba(210,153,34,.1)", text: "var(--yellow)" },
 	UNKNOWN: { bg: "var(--a10)", text: "var(--t3)" },

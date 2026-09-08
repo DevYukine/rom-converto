@@ -13,6 +13,8 @@ const HEAD_LEN: usize = 0x1000;
 /// Fields of the N64 cartridge header, with the boot code CRC used to
 /// identify the CIC lockout chip.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct N64Info {
     pub byte_order: String,
     pub internal_name: String,

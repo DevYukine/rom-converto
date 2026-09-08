@@ -1,10 +1,12 @@
 use crate::dat::model::DatFileSummary;
-pub use crate::dat::run::DatMatchData;
+pub use crate::dat::run::{DatMatchData, DatTrackCheck, ExternalId};
+pub use crate::dat::scan::{DatScanData, DatScanRow};
 use crate::util::{FileDigests, PlanLine, ReportRecord, ReportTotals};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use super::RUN_SCHEMA;
+use super::cli_echo::{CliEchoManifest, manifest as cli_echo_manifest};
 use super::ops::{operation_names, totals_for};
 
 /// The runner's request/response schema: required and optional request
@@ -16,6 +18,7 @@ pub struct RunSchemaManifest {
     pub response: ResponseSchema,
     pub operations: &'static [&'static str],
     pub common_options: CommonOptionsSchema,
+    pub cli: CliEchoManifest,
 }
 
 /// Version and schema manifest returned by the C ABI's version query.
@@ -74,7 +77,14 @@ impl RunSchemaManifest {
                 output_template: "string",
                 max_depth: "usize",
                 report: "path",
+                skip_space_check: "bool",
+                verify_after: "bool",
+                quick: "bool",
+                skip_probe: "bool",
+                media_patch: "bool",
+                title: "string",
             },
+            cli: cli_echo_manifest(),
         }
     }
 }
@@ -140,6 +150,12 @@ pub struct CommonOptionsSchema {
     pub output_template: &'static str,
     pub max_depth: &'static str,
     pub report: &'static str,
+    pub skip_space_check: &'static str,
+    pub verify_after: &'static str,
+    pub quick: &'static str,
+    pub skip_probe: &'static str,
+    pub media_patch: &'static str,
+    pub title: &'static str,
 }
 
 /// Outcome category of a run, mapped to a stable numeric exit code.
@@ -182,6 +198,8 @@ impl RunStatus {
 /// JSON-encoded result of one run: status, message, records, progress
 /// events, and operation-specific data.
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub struct RunResponse {
     pub schema: &'static str,
     pub ok: bool,
@@ -189,14 +207,17 @@ pub struct RunResponse {
     pub code: String,
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-export", ts(optional))]
     pub details: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-export", ts(optional))]
     pub totals: Option<ReportTotals>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub records: Vec<ReportRecord>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub events: Vec<ProgressEvent>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-export", ts(optional))]
     pub data: Option<RunData>,
 }
 
@@ -244,10 +265,13 @@ impl RunResponse {
 /// operation family.
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub enum RunData {
     Plan(PlanLine),
     Plans(RunPlansData),
     Hash(FileDigests),
+    Hashes(Vec<HashRow>),
     Comparison(RunComparisonData),
     BasicPlan(BasicPlanData),
     CtrVerify(crate::nintendo::ctr::verify::CtrVerifyResult),
@@ -255,9 +279,12 @@ pub enum RunData {
     RvlVerify(crate::nintendo::rvl::verify::RvlVerifyResult),
     NxVerify(crate::nintendo::nx::NxVerifyResult),
     WupVerify(crate::nintendo::wup::WupVerifyResult),
+    XenonVerify(XenonVerifyData),
+    XenonConvert(XenonConvertData),
     Info(crate::info::InfoResult),
     Playlists(PlaylistsData),
     DatMatch(DatMatchData),
+    DatVerify(DatVerifyData),
     DatScan(DatScanData),
     DatRename(DatRenameData),
     FixdatPlan(FixdatPlanData),
@@ -266,43 +293,102 @@ pub enum RunData {
 
 /// Dry-run plan lines for an operation that plans to a list of actions.
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub struct RunPlansData {
     pub plans: Vec<PlanLine>,
 }
 
+/// One file's digests from a recursive `hash` run.
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
+pub struct HashRow {
+    pub path: PathBuf,
+    pub digests: FileDigests,
+}
+
 /// Wraps a [`ComparisonData`] for the response's `data` field.
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub struct RunComparisonData {
     pub comparison: ComparisonData,
 }
 
 /// Input/output size comparison for a completed conversion.
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub struct ComparisonData {
     pub input_bytes: u64,
     pub output_bytes: u64,
     pub ratio_pct: Option<f64>,
     pub input_format: String,
     pub output_format: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-export", ts(optional))]
+    pub output_sha1: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-export", ts(optional))]
+    pub verify: Option<VerifyReport>,
 }
 
-/// Dry-run plan for a simple one-input-one-output operation.
+/// Outcome of a post-conversion verification pass.
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
+pub struct VerifyReport {
+    pub ok: bool,
+    pub round_trip: bool,
+    pub message: String,
+}
+
+/// Result of a `xenon.verify` run.
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
+pub struct XenonVerifyData {
+    pub blocks: u64,
+    pub logical_bytes: u64,
+    pub hash_ok: bool,
+}
+
+/// Dry-run plan for a simple one-input-one-output operation. No runner
+/// operation emits it any more; every dry run plans a [`PlanLine`].
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub struct BasicPlanData {
     pub operation: &'static str,
     pub input: PathBuf,
     pub output: PathBuf,
 }
 
+/// Result of a `xenon.convert` run: the Games on Demand container written.
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
+pub struct XenonConvertData {
+    pub title_id: u32,
+    pub media_id: u32,
+    pub part_count: u64,
+    pub total_bytes: u64,
+}
+
 /// Result of a `playlist.write` run: the playlists that were (or would be)
 /// written.
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub struct PlaylistsData {
     pub playlists: Vec<PlaylistPlanData>,
 }
 
 /// One planned or written `.m3u` playlist.
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub struct PlaylistPlanData {
     pub base_title: String,
     pub output: PathBuf,
@@ -311,21 +397,51 @@ pub struct PlaylistPlanData {
     pub has_duplicate_numbers: bool,
 }
 
-/// Result of a `dat.scan` run: one [`DatMatchData`] per scanned file.
-#[derive(Debug, Serialize)]
-pub struct DatScanData {
+/// Result of a `dat.verify` run over a directory: per-verdict counts and one
+/// [`DatMatchData`] per unit in walk order.
+#[derive(Debug, Default, Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
+pub struct DatVerifyData {
+    pub verified: usize,
+    pub hint: usize,
+    pub unknown: usize,
+    pub unsupported: usize,
+    pub failed: usize,
     pub rows: Vec<DatMatchData>,
 }
 
-/// Result of a `dat.rename` run: the planned or applied renames.
-#[derive(Debug, Serialize)]
+impl DatVerifyData {
+    /// Append a row, bumping the count for its verdict.
+    pub fn push(&mut self, row: DatMatchData) {
+        match row.verdict.as_str() {
+            "verified" => self.verified += 1,
+            "hint" => self.hint += 1,
+            "unknown" => self.unknown += 1,
+            "unsupported" => self.unsupported += 1,
+            _ => self.failed += 1,
+        }
+        self.rows.push(row);
+    }
+}
+
+/// Result of a `dat.rename` run: the planned or applied renames and how many
+/// were renamed (or would be), skipped, or failed.
+#[derive(Debug, Default, Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub struct DatRenameData {
     pub rows: Vec<DatRenameRowData>,
     pub dry_run: bool,
+    pub renamed: usize,
+    pub skipped: usize,
+    pub failed: usize,
 }
 
 /// One planned or applied rename.
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub struct DatRenameRowData {
     pub from: PathBuf,
     pub to: Option<PathBuf>,
@@ -333,24 +449,51 @@ pub struct DatRenameRowData {
     pub detail: Option<String>,
 }
 
-/// Dry-run result of a `dat.fixdat` run: the DAT file and how many entries
-/// would be written.
+/// Dry-run result of a `dat.fixdat` run: the DAT file, how many of its games
+/// are missing locally, and how many files those games span.
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub struct FixdatPlanData {
     pub dat_file: DatFileSummary,
+    pub total_games: usize,
     pub missing_count: usize,
+    pub missing_files: usize,
+    pub output: PathBuf,
 }
 
-/// Result of a `dat.fixdat` run: the DAT file and how many entries were written.
+/// Result of a `dat.fixdat` run: the DAT file and what was written.
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub struct FixdatWrittenData {
     pub dat_file: DatFileSummary,
+    pub total_games: usize,
     pub missing_count: usize,
+    pub missing_files: usize,
+    pub output: PathBuf,
+}
+
+/// One row emitted to a live consumer during a run: a finished file's
+/// report record, or a dry-run plan line.
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
+pub enum RunRow {
+    Record(ReportRecord),
+    Plan(PlanLine),
+    Hash(HashRow),
+    DatMatch(Box<DatMatchData>),
+    DatScan(DatScanRow),
+    DatRename(DatRenameRowData),
 }
 
 /// One progress update emitted during a run.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub enum ProgressEvent {
     Start {
         total: u64,
@@ -375,6 +518,8 @@ pub enum ProgressEvent {
 /// Deserialized JSON request: operation name, input/output paths, and
 /// per-operation options.
 #[derive(Clone, Debug, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub struct RunRequest {
     #[serde(default)]
     pub schema: Option<String>,
@@ -392,12 +537,35 @@ pub struct RunRequest {
     pub options: RunOptions,
     #[serde(default)]
     pub dry_run: bool,
+    #[serde(skip)]
+    pub ctx: RunContext,
+}
+
+/// In-process state threaded into a run that cannot travel through JSON.
+#[derive(Clone, Default)]
+pub struct RunContext {
+    pub hash_cache: Option<std::sync::Arc<crate::util::HashCache>>,
+    /// Conflict policy for writing operations when neither the request nor
+    /// the config defaults set `on_conflict`; `None` means `error`. Lets a
+    /// frontend carry its own default without forcing it onto every request.
+    pub default_conflict: Option<crate::util::ConflictPolicy>,
+}
+
+impl std::fmt::Debug for RunContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RunContext")
+            .field("hash_cache", &self.hash_cache.is_some())
+            .field("default_conflict", &self.default_conflict)
+            .finish()
+    }
 }
 
 /// Per-operation options accepted in a [`RunRequest`], validated
 /// per-operation by the handler that reads them.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub struct RunOptions {
     pub config: Option<PathBuf>,
     pub preset: Option<String>,
@@ -441,12 +609,20 @@ pub struct RunOptions {
     pub dat_id: Option<String>,
     pub dat_name: Option<String>,
     pub subset: Option<String>,
+    pub skip_space_check: Option<bool>,
+    pub verify_after: Option<bool>,
+    pub quick: Option<bool>,
+    pub skip_probe: Option<bool>,
+    pub media_patch: Option<bool>,
+    pub title: Option<String>,
 }
 
 /// One Wii U title input: a bare path, or a path with an explicit format
 /// and key.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(untagged)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub enum WupTitleInputOption {
     Path(PathBuf),
     Object {

@@ -3,7 +3,7 @@
 
 import { defineStore } from "pinia";
 import { invoke } from "~/lib/ipc";
-import type { InfoResult } from "~/types/info";
+import type { InfoResult } from "~/types";
 
 export function makeInfoStore(id: string) {
   return defineStore(id, () => {

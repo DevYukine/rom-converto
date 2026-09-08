@@ -19,6 +19,8 @@ const MAX_METADATA_BYTES: u64 = 4 * 1024 * 1024;
 /// The image `DATA.PSAR` carries, identified by its first 8 bytes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub enum PsarKind {
     /// PSN-distributed UMD image.
     Npumdimg,
@@ -32,6 +34,8 @@ pub enum PsarKind {
 
 /// One PBP segment as reported by [`read_info`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct PbpSegmentInfo {
     pub name: String,
     pub offset: u64,
@@ -41,6 +45,8 @@ pub struct PbpSegmentInfo {
 
 /// Metadata read from an `EBOOT.PBP`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct PbpInfo {
     pub physical_bytes: u64,
     pub version: u32,

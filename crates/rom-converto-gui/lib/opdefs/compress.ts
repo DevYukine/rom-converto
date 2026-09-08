@@ -5,6 +5,7 @@ import {
 	deriveCsoPath,
 	deriveNszPath,
 	deriveRvzPath,
+	deriveWuaPath,
 	deriveZarPath,
 	withOutputDir,
 } from "~/composables/useDerivedPath";
@@ -19,8 +20,9 @@ import { useXenonCompressStore } from "~/stores/xenon-compress";
 import { nxKeysColor, nxKeysDisplay } from "./nx-keys";
 import {
 	NX_KEYS_TOOLTIP,
-	commonArgs,
+	commonOptions,
 	recursiveFields,
+	runArgs,
 	templateIsActive,
 	type OpDef,
 	type OpStore,
@@ -159,7 +161,7 @@ export const compressOps: OpDef[] = [
 		opLabel: "nx compress",
 		storeId: "nx-compress",
 		useStore: useNxCompressStore,
-		command: "cmd_nx_compress",
+		command: "cmd_run",
 		resultKind: "convert",
 		title: "Compress to NSZ / XCZ",
 		subtitle: "Output is nsz-compatible. Requires prod.keys.",
@@ -223,15 +225,22 @@ export const compressOps: OpDef[] = [
 			if (!store.userPickedMode && items.some((i) => isXciInput(i.path))) store.mode = "block";
 		},
 		deriveOutput: (input) => deriveNszPath(input),
-		buildArgs: (store, item, taskId) => ({
-			input: item.path,
-			output: outPath(store, deriveNszPath(item.path)),
-			keys: store.keys || null,
-			level: store.level,
-			mode: store.mode,
-			blockSizeExp: store.blockSizeExp,
-			...commonArgs(store, taskId),
-		}),
+		buildArgs: (store, item, taskId) =>
+			runArgs(
+				"nx.compress",
+				item.path,
+				outPath(store, deriveNszPath(item.path)),
+				{
+					keys: store.keys || null,
+					level: store.level,
+					mode: store.mode,
+					block_size_exp: store.blockSizeExp,
+					...commonOptions(store),
+				},
+				false,
+				taskId,
+				store.reportFile || null,
+			),
 		chips: (s) =>
 			`level ${s.level} · ${s.mode}${s.mode === "block" ? ` · 2^${s.blockSizeExp}` : ""}`,
 	},
@@ -242,7 +251,7 @@ export const compressOps: OpDef[] = [
 		opLabel: "dol compress",
 		storeId: "dol-compress",
 		useStore: useDolCompressStore,
-		command: "cmd_compress_disc",
+		command: "cmd_run",
 		resultKind: "convert",
 		title: "Compress to RVZ",
 		subtitle: "Output is byte-identical to Dolphin at matching settings.",
@@ -257,13 +266,16 @@ export const compressOps: OpDef[] = [
 		actionNote:
 			"Jobs start automatically. Parameters can't be changed after queuing. Remove and re-add instead.",
 		deriveOutput: (input) => deriveRvzPath(input),
-		buildArgs: (store, item, taskId) => ({
-			input: item.path,
-			output: outPath(store, deriveRvzPath(item.path)),
-			level: store.level,
-			chunkSize: store.chunkSize,
-			...commonArgs(store, taskId),
-		}),
+		buildArgs: (store, item, taskId) =>
+			runArgs(
+				"dol.compress",
+				item.path,
+				outPath(store, deriveRvzPath(item.path)),
+				{ level: store.level, chunk_size: store.chunkSize, ...commonOptions(store) },
+				false,
+				taskId,
+				store.reportFile || null,
+			),
 		chips: (s) => `level ${s.level} · ${chunkLabel(s.chunkSize).split(" (")[0]}`,
 	},
 
@@ -273,7 +285,7 @@ export const compressOps: OpDef[] = [
 		opLabel: "rvl compress",
 		storeId: "rvl-compress",
 		useStore: useRvlCompressStore,
-		command: "cmd_compress_disc",
+		command: "cmd_run",
 		resultKind: "convert",
 		title: "Compress to RVZ",
 		subtitle: "Output is byte-identical to Dolphin at matching settings.",
@@ -288,13 +300,16 @@ export const compressOps: OpDef[] = [
 		actionNote:
 			"Jobs start automatically. Parameters can't be changed after queuing. Remove and re-add instead.",
 		deriveOutput: (input) => deriveRvzPath(input),
-		buildArgs: (store, item, taskId) => ({
-			input: item.path,
-			output: outPath(store, deriveRvzPath(item.path)),
-			level: store.level,
-			chunkSize: store.chunkSize,
-			...commonArgs(store, taskId),
-		}),
+		buildArgs: (store, item, taskId) =>
+			runArgs(
+				"rvl.compress",
+				item.path,
+				outPath(store, deriveRvzPath(item.path)),
+				{ level: store.level, chunk_size: store.chunkSize, ...commonOptions(store) },
+				false,
+				taskId,
+				store.reportFile || null,
+			),
 		chips: (s) => `level ${s.level} · ${chunkLabel(s.chunkSize).split(" (")[0]}`,
 	},
 
@@ -304,7 +319,7 @@ export const compressOps: OpDef[] = [
 		opLabel: "ctr compress",
 		storeId: "ctr-compress",
 		useStore: useCtrCompressStore,
-		command: "cmd_compress_rom",
+		command: "cmd_run",
 		resultKind: "convert",
 		title: "Compress to Z3DS",
 		subtitle: "Output loads in Azahar.",
@@ -339,16 +354,15 @@ export const compressOps: OpDef[] = [
 		actionNote:
 			"Jobs start automatically. Parameters can't be changed after queuing. Remove and re-add instead.",
 		deriveOutput: (input) => deriveCompressedPath(input),
-		buildArgs: (store, item, taskId) => ({
-			input: item.path,
-			output: outPath(store, deriveCompressedPath(item.path)),
-			level: store.level,
-			allowEncrypted: store.allowEncrypted,
-			taskId,
-			onConflict: store.onConflict,
-			skipSpaceCheck: store.skipSpaceCheck,
-			outputTemplate: store.outputTemplate || null,
-		}),
+		buildArgs: (store, item, taskId) =>
+			runArgs(
+				"ctr.compress",
+				item.path,
+				outPath(store, deriveCompressedPath(item.path)),
+				{ level: store.level, allow_encrypted: store.allowEncrypted, ...commonOptions(store) },
+				false,
+				taskId,
+			),
 		chips: (s) => `level ${s.level}${s.allowEncrypted ? " · allow-encrypted" : ""}`,
 	},
 
@@ -358,7 +372,7 @@ export const compressOps: OpDef[] = [
 		opLabel: "chd compress",
 		storeId: "chd-compress",
 		useStore: useChdCompressStore,
-		command: "cmd_chd_compress",
+		command: "cmd_run",
 		resultKind: "convert",
 		title: "Compress to CHD",
 		subtitle: "Output matches chdman createcd/createdvd/createld.",
@@ -432,15 +446,22 @@ export const compressOps: OpDef[] = [
 		actionNote:
 			"Jobs start automatically. Parameters can't be changed after queuing. Remove and re-add instead.",
 		deriveOutput: (input) => deriveChdPath(input),
-		buildArgs: (store, item, taskId) => ({
-			inputPath: item.path,
-			output: outPath(store, deriveChdPath(item.path)),
-			codecs: store.codecs.length ? store.codecs : null,
-			level: store.level,
-			mode: store.mode === "auto" ? null : store.mode,
-			hunkSize: store.hunkSize || null,
-			...commonArgs(store, taskId),
-		}),
+		buildArgs: (store, item, taskId) =>
+			runArgs(
+				"chd.compress",
+				item.path,
+				outPath(store, deriveChdPath(item.path)),
+				{
+					codecs: store.codecs.length ? store.codecs : null,
+					level: store.level,
+					mode: store.mode === "auto" ? null : store.mode,
+					hunk_size: store.hunkSize || null,
+					...commonOptions(store),
+				},
+				false,
+				taskId,
+				store.reportFile || null,
+			),
 		chips: (s) =>
 			`${s.mode}${s.codecs.length ? ` · ${s.codecs.join(", ")}` : ""}${s.level ? ` · level ${s.level}` : ""}${s.hunkSize ? ` · hunk ${s.hunkSize}` : ""}`,
 	},
@@ -451,7 +472,7 @@ export const compressOps: OpDef[] = [
 		opLabel: "cso compress",
 		storeId: "cso-compress",
 		useStore: useCsoCompressStore,
-		command: "cmd_cso_compress",
+		command: "cmd_run",
 		resultKind: "convert",
 		title: "Compress to CSO / ZSO",
 		subtitle: "Output is maxcso-compatible.",
@@ -487,13 +508,20 @@ export const compressOps: OpDef[] = [
 		actionNote:
 			"Jobs start automatically. Parameters can't be changed after queuing. Remove and re-add instead.",
 		deriveOutput: (input, store) => deriveCsoPath(input, store.format),
-		buildArgs: (store, item, taskId) => ({
-			inputPath: item.path,
-			output: outPath(store, deriveCsoPath(item.path, store.format)),
-			format: store.format,
-			blockSize: store.blockSize || null,
-			...commonArgs(store, taskId),
-		}),
+		buildArgs: (store, item, taskId) =>
+			runArgs(
+				"cso.compress",
+				item.path,
+				outPath(store, deriveCsoPath(item.path, store.format)),
+				{
+					format: store.format,
+					block_size: store.blockSize || null,
+					...commonOptions(store),
+				},
+				false,
+				taskId,
+				store.reportFile || null,
+			),
 		chips: (s) => `${s.format}${s.blockSize ? ` · block ${s.blockSize}` : ""}`,
 	},
 
@@ -503,7 +531,7 @@ export const compressOps: OpDef[] = [
 		opLabel: "xenon compress",
 		storeId: "xenon-compress",
 		useStore: useXenonCompressStore,
-		command: "cmd_xenon_compress",
+		command: "cmd_run",
 		resultKind: "convert",
 		title: "Compress to ZAR",
 		subtitle: "Packs a full disc image or a directory of extracted files into a ZArchive Xenia can mount directly.",
@@ -515,15 +543,20 @@ export const compressOps: OpDef[] = [
 		fields: [...recursiveFields()],
 		outputRows: outputRows("~/roms/xbox360/compressed", { template: true, report: "field" }),
 		showVerify: true,
-		verifyLabel: "Verify after conversion",
+		verifyLabel: "Compute output hash",
 		actionNote:
 			"Jobs start automatically. Parameters can't be changed after queuing. Remove and re-add instead.",
 		deriveOutput: (input) => deriveZarPath(input),
-		buildArgs: (store, item, taskId) => ({
-			input: item.path,
-			output: outPath(store, deriveZarPath(item.path)),
-			...commonArgs(store, taskId),
-		}),
+		buildArgs: (store, item, taskId) =>
+			runArgs(
+				"xenon.compress",
+				item.path,
+				outPath(store, deriveZarPath(item.path)),
+				commonOptions(store),
+				false,
+				taskId,
+				store.reportFile || null,
+			),
 		chips: () => "",
 	},
 
@@ -535,7 +568,7 @@ export const compressOps: OpDef[] = [
 		opLabel: "wup compress",
 		storeId: "wup-compress",
 		useStore: useWupCompressStore,
-		command: "cmd_wup_compress",
+		command: "cmd_run",
 		resultKind: "convert",
 		title: "Bundle to WUA",
 		subtitle:
@@ -550,14 +583,22 @@ export const compressOps: OpDef[] = [
 		outputRows: [],
 		actionNote:
 			"Each bundle is one queue job producing one .wua. The orphan DLC stays staged until you add its base or remove it.",
-		buildArgs: (store) => ({
-			inputs: [],
-			output: store.output,
-			level: store.level,
-			keys: [],
-			onConflict: store.onConflict,
-			skipSpaceCheck: store.skipSpaceCheck,
-		}),
+		// BundleView builds the real per-bundle payload; this only backs the CLI
+		// echo for a single staged title.
+		buildArgs: (store, item, taskId) =>
+			runArgs(
+				"wup.compress",
+				null,
+				deriveWuaPath(item.path),
+				{
+					level: store.level,
+					inputs: [item.path],
+					on_conflict: store.onConflict,
+					skip_space_check: store.skipSpaceCheck,
+				},
+				false,
+				taskId,
+			),
 		chips: (s) => `level ${s.level}`,
 	},
 ];

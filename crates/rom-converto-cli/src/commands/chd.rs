@@ -6,26 +6,18 @@ use rom_converto_lib::chd::ChdCodec;
 use std::path::PathBuf;
 
 use crate::commands::support::{
-    ALL_IMAGE_EXTS, DispatchCtx, chd_media_label, finish_single, finish_single_sized, input_len,
-    maybe_log_dvd_codec_tip, require_dir, require_info_input, resolve_chd_codecs,
-    resolved_dvd_mode,
+    ALL_IMAGE_EXTS, DispatchCtx, disc_mode_name, maybe_log_dvd_codec_tip, require_info_input,
+    require_input, resolve_chd_codecs, resolved_dvd_mode,
 };
-use crate::util::{
-    SingleOutput, WriteDecision, ensure_input_exists, file_len, log_skipped, resolve_output,
-    resolve_policy, resolve_single_output,
-};
+use crate::util::{WriteDecision, ensure_input_exists, resolve_policy};
 use crate::{batch, config, dry_run, info_print};
 use anyhow::Result;
 use rom_converto_lib::chd::{
-    ChdOptions, DiscMode, convert_disc_to_chd, extract_from_chd, migrate_chd_to_v5,
-    migrate_chd_to_v5_batch, verify_chd, verify_chd_batch,
+    ChdOptions, DiscMode, migrate_chd_to_v5_batch, verify_chd, verify_chd_batch,
 };
-use rom_converto_lib::cso::{CsoCompressOptions, CsoFormat};
-use rom_converto_lib::pipeline::chd_to_cso;
+use rom_converto_lib::runner::models::RunOptions;
 use rom_converto_lib::util::fs::collect_files_with_exts;
-use rom_converto_lib::util::{CancelToken, Tally, TallyDirection};
-use std::path::Path;
-use std::time::Instant;
+use rom_converto_lib::util::{CancelToken, Tally};
 
 /// A parsed `-c/--codecs` value. Aliased (rather than spelled as `Vec<ChdCodec>`
 /// on the arg field) so clap-derive treats it as an opaque single value instead
@@ -311,25 +303,24 @@ pub async fn run(command: ChdCommands, ctx: DispatchCtx<'_>) -> Result<()> {
         skip_space_check,
         cancel,
         cache,
+        config,
+        preset,
         ..
     } = ctx;
+    let run = batch::BatchRun {
+        progress: &progress,
+        total_progress: &total_progress,
+        cache,
+        cancel: &cancel,
+        config,
+        preset,
+        dry_run,
+    };
     match command {
         ChdCommands::Compress(cmd) => {
             let eff = &effective.chd;
-            let mut opts = ChdOptions {
-                hunk_size: cmd.hunk_size.or(eff.hunk_size),
-                codecs: resolve_chd_codecs(cmd.codecs.clone(), &eff.codecs)?,
-                level: cmd.level.or(eff.level),
-                force: cmd.conflict.force,
-            };
-            let codecs_set = opts.codecs.is_some();
-            let output_dir = cmd
-                .out
-                .output_dir
-                .clone()
-                .or_else(|| eff.output_dir.clone());
-            let report = cmd.batch.report.clone().or_else(|| eff.report.clone());
-            let fallback = config::policy_fallback(&eff.on_conflict)?;
+            require_input(&cmd.input, cmd.recursive)?;
+            let codecs = resolve_chd_codecs(cmd.codecs.clone(), &eff.codecs)?;
             let mode = if cmd.dvd {
                 Some(DiscMode::Dvd)
             } else if cmd.cd {
@@ -339,89 +330,38 @@ pub async fn run(command: ChdCommands, ctx: DispatchCtx<'_>) -> Result<()> {
             } else {
                 None
             };
-            if cmd.recursive {
-                require_dir(&cmd.input)?;
-                let policy = resolve_policy(cmd.conflict.on_conflict, cmd.conflict.force, fallback);
-                let run = batch::BatchRun {
-                    progress: &progress,
-                    total_progress: &total_progress,
-                    input_dir: &cmd.input,
-                    policy,
-                    output_dir: output_dir.as_deref(),
-                    output_template: cmd.out.output_template.as_deref(),
-                    max_depth: cmd.batch.max_depth,
-                    dry_run,
-                    skip_space_check,
-                    report_path: report.as_deref(),
-                    cancel: &cancel,
-                };
-                batch::chd_compress(&run, opts, mode, cache).await?
-            } else {
-                ensure_input_exists(&cmd.input)?;
-                let resolved =
-                    rom_converto_lib::util::resolve_input(&cmd.input, &["iso", "cue", "avi"])?;
-                let input = resolved.path();
-                maybe_log_dvd_codec_tip(resolved_dvd_mode(mode, input), codecs_set);
-                let policy = resolve_policy(cmd.conflict.on_conflict, cmd.conflict.force, fallback);
-                let media = if dry_run {
-                    chd_media_label(input)
-                } else {
-                    None
-                };
-                let Some(output) = resolve_single_output(
-                    SingleOutput {
-                        operation: "compress",
-                        cli_input: &cmd.input,
-                        input,
-                        explicit: cmd.output_flag.or(cmd.output),
-                        derived: resolved.output_basis().with_extension("chd"),
-                        output_dir: output_dir.as_deref(),
-                        output_template: cmd.out.output_template.as_deref(),
-                        output_ext: "chd",
-                        keys_path: None,
-                        policy,
-                        verify: crate::util::OutputVerify::Chd,
-                        media: media.as_deref(),
-                        missing_keys: None,
-                        report: report.as_deref(),
-                        dry_run,
-                        cancel: cancel.clone(),
-                    },
-                    &progress,
-                )
-                .await?
-                else {
-                    return Ok(());
-                };
-                if !skip_space_check {
-                    let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
-                    batch::space_preflight_for_size(file_len(input), check_dir)?;
-                }
-                opts.force = true;
-                let out_path = output.clone();
-                let started = Instant::now();
-                convert_disc_to_chd(
-                    &progress,
-                    input.to_path_buf(),
-                    output,
-                    mode,
-                    opts,
-                    cancel.clone(),
-                )
-                .await?;
-                finish_single(
-                    &cmd.input,
-                    &out_path,
-                    TallyDirection::Compress,
-                    "compress",
-                    started,
-                    report.as_deref(),
-                )?;
+            if !cmd.recursive {
+                maybe_log_dvd_codec_tip(resolved_dvd_mode(mode, &cmd.input), codecs.is_some());
             }
+            let mut options = RunOptions::from(batch::Common {
+                recursive: cmd.recursive,
+                output_dir: cmd.out.output_dir.or_else(|| eff.output_dir.clone()),
+                output_template: cmd.out.output_template,
+                max_depth: cmd.batch.max_depth,
+                report: cmd.batch.report.or_else(|| eff.report.clone()),
+                policy: resolve_policy(
+                    cmd.conflict.on_conflict,
+                    cmd.conflict.force,
+                    config::policy_fallback(&eff.on_conflict)?,
+                ),
+                skip_space_check,
+            });
+            options.hunk_size = cmd.hunk_size.or(eff.hunk_size);
+            options.codecs = codecs.map(|c| c.iter().map(ToString::to_string).collect());
+            options.level = cmd.level.or(eff.level);
+            options.mode = mode.map(|m| disc_mode_name(m).to_string());
+            batch::run(
+                &run,
+                "chd.compress",
+                cmd.input,
+                cmd.output_flag.or(cmd.output),
+                options,
+            )
+            .await?;
         }
         ChdCommands::Migrate(cmd) => {
             let eff = &effective.chd;
-            let mut opts = ChdOptions {
+            let opts = ChdOptions {
                 hunk_size: cmd.hunk_size.or(eff.hunk_size),
                 codecs: resolve_chd_codecs(cmd.codecs.clone(), &eff.codecs)?,
                 level: cmd.level.or(eff.level),
@@ -439,220 +379,96 @@ pub async fn run(command: ChdCommands, ctx: DispatchCtx<'_>) -> Result<()> {
             };
             let report = cmd.batch.report.clone().or_else(|| eff.report.clone());
             let fallback = config::policy_fallback(&eff.on_conflict)?;
-            if cmd.recursive {
-                require_dir(&cmd.input)?;
+            let policy = resolve_policy(
+                cmd.conflict.on_conflict,
+                cmd.conflict.force || cmd.in_place,
+                fallback,
+            );
+            require_input(&cmd.input, cmd.recursive)?;
+            // The runner derives a `.v5.chd` sibling per file, so a recursive
+            // run that must rewrite each source keeps driving the lib batch.
+            if cmd.recursive && cmd.in_place {
+                let inputs = collect_files_with_exts(
+                    &cmd.input,
+                    &["chd"],
+                    cmd.batch.max_depth,
+                    &CancelToken::new(),
+                )?;
                 if dry_run {
-                    // The lib batch migrator writes as it walks, so the
-                    // plan is enumerated here instead.
-                    let inputs = collect_files_with_exts(
-                        &cmd.input,
-                        &["chd"],
-                        cmd.batch.max_depth,
-                        &CancelToken::new(),
-                    )?;
                     let mut tally = Tally::new();
                     let mut records = Vec::with_capacity(inputs.len());
                     for file in &inputs {
-                        let desired = match (cmd.in_place, output_dir.as_deref()) {
-                            (true, _) => file.clone(),
-                            (false, Some(_)) => rom_converto_lib::util::place_in_dir_mirrored(
-                                file,
-                                &cmd.input,
-                                output_dir.as_deref(),
-                            ),
-                            (false, None) => rom_converto_lib::chd::migrated_chd_path(file),
-                        };
-                        let decision = WriteDecision::Write(desired.clone());
-                        dry_run::log_plan("migrate", file, &desired, &decision, None, None);
+                        let decision = WriteDecision::Write(file.clone());
+                        dry_run::log_plan("migrate", file, file, &decision, None, None);
                         dry_run::record(&mut tally, file, &decision);
-                        records.push(dry_run::report_record("migrate", file, &desired, &decision));
+                        records.push(dry_run::report_record("migrate", file, file, &decision));
                     }
                     return dry_run::finish(&tally, &records, report.as_deref());
                 }
-                migrate_chd_to_v5_batch(
+                return migrate_chd_to_v5_batch(
                     &progress,
                     &total_progress,
                     &cmd.input,
                     opts,
-                    output_dir.as_deref(),
+                    None,
                     cmd.batch.max_depth,
-                    cmd.in_place,
+                    true,
                 )
-                .await?
-            } else {
-                ensure_input_exists(&cmd.input)?;
-                if cmd.in_place && rom_converto_lib::util::is_archive_path(&cmd.input) {
-                    anyhow::bail!(
-                        "--in-place needs a plain .chd, not an archive: {}",
-                        cmd.input.display()
-                    );
-                }
-                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["chd"])?;
-                let input = resolved.path();
-                let output = if cmd.in_place {
-                    input.to_path_buf()
-                } else {
-                    match cmd.output_flag.clone().or_else(|| cmd.output.clone()) {
-                        Some(p) => p,
-                        None => {
-                            if !dry_run && let Some(dir) = output_dir.as_deref() {
-                                std::fs::create_dir_all(dir)?;
-                            }
-                            match cmd.out.output_template.as_deref() {
-                                Some(tmpl) => crate::util::templated_output(
-                                    tmpl,
-                                    input,
-                                    output_dir.as_deref(),
-                                    "chd",
-                                    None,
-                                    dry_run,
-                                )?,
-                                None => match output_dir.as_deref() {
-                                    Some(dir) => rom_converto_lib::util::place_in_dir(
-                                        &resolved.output_basis().with_extension("chd"),
-                                        Some(dir),
-                                    ),
-                                    None => rom_converto_lib::chd::migrated_chd_path(
-                                        resolved.output_basis(),
-                                    ),
-                                },
-                            }
-                        }
-                    }
-                };
-                let policy = resolve_policy(
-                    cmd.conflict.on_conflict,
-                    cmd.conflict.force || cmd.in_place,
-                    fallback,
-                );
-                let decision = resolve_output(&output, policy)?;
-                if dry_run {
-                    return dry_run::single(
-                        "migrate",
-                        &cmd.input,
-                        &output,
-                        &decision,
-                        None,
-                        None,
-                        report.as_deref(),
-                    );
-                }
-                let output = match decision {
-                    WriteDecision::Skip => {
-                        log_skipped(&output);
-                        return Ok(());
-                    }
-                    WriteDecision::Write(p) => p,
-                };
-                if !skip_space_check {
-                    let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
-                    batch::space_preflight_for_size(file_len(input), check_dir)?;
-                }
-                opts.force = true;
-                let in_path = input.to_path_buf();
-                let out_path = output.clone();
-                let started = Instant::now();
-                // --in-place overwrites the source, so its size has to be
-                // taken before the write to keep the summary honest.
-                let in_bytes = input_len(&cmd.input);
-                migrate_chd_to_v5(&progress, in_path, output, opts, cancel.clone()).await?;
-                finish_single_sized(
-                    &cmd.input,
-                    in_bytes,
-                    &out_path,
-                    TallyDirection::Compress,
-                    "migrate",
-                    started,
-                    report.as_deref(),
-                )?;
+                .await
+                .map_err(Into::into);
             }
+            if cmd.in_place && rom_converto_lib::util::is_archive_path(&cmd.input) {
+                anyhow::bail!(
+                    "--in-place needs a plain .chd, not an archive: {}",
+                    cmd.input.display()
+                );
+            }
+            let explicit = if cmd.in_place {
+                Some(cmd.input.clone())
+            } else {
+                cmd.output_flag.clone().or_else(|| cmd.output.clone())
+            };
+            let mut options = RunOptions::from(batch::Common {
+                recursive: cmd.recursive,
+                output_dir,
+                output_template: cmd.out.output_template,
+                max_depth: cmd.batch.max_depth,
+                report,
+                policy,
+                skip_space_check,
+            });
+            options.hunk_size = opts.hunk_size;
+            options.codecs = opts
+                .codecs
+                .map(|c| c.iter().map(ToString::to_string).collect());
+            options.level = opts.level;
+            batch::run(&run, "chd.migrate", cmd.input, explicit, options).await?;
         }
         ChdCommands::Extract(cmd) => {
             let eff = &effective.chd;
-            let output_dir = cmd
-                .out
-                .output_dir
-                .clone()
-                .or_else(|| eff.output_dir.clone());
-            let report = cmd.report.clone().or_else(|| eff.report.clone());
-            let fallback = config::policy_fallback(&eff.on_conflict)?;
-            if cmd.recursive {
-                require_dir(&cmd.input)?;
-                let policy = resolve_policy(cmd.conflict.on_conflict, cmd.conflict.force, fallback);
-                let run = batch::BatchRun {
-                    progress: &progress,
-                    total_progress: &total_progress,
-                    input_dir: &cmd.input,
-                    policy,
-                    output_dir: output_dir.as_deref(),
-                    output_template: cmd.out.output_template.as_deref(),
-                    max_depth: cmd.max_depth,
-                    dry_run,
-                    skip_space_check,
-                    report_path: report.as_deref(),
-                    cancel: &cancel,
-                };
-                batch::chd_extract(&run, cmd.parent).await?
-            } else {
-                ensure_input_exists(&cmd.input)?;
-                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["chd"])?;
-                let input = resolved.path();
-                let explicit = cmd.output_flag.or(cmd.output);
-                if explicit.is_none() && output_dir.is_none() {
-                    anyhow::bail!(
-                        "chd extract needs an OUTPUT path or --output-dir without --recursive"
-                    );
-                }
-                let policy = resolve_policy(cmd.conflict.on_conflict, cmd.conflict.force, fallback);
-                let Some(output) = resolve_single_output(
-                    SingleOutput {
-                        operation: "extract",
-                        cli_input: &cmd.input,
-                        input,
-                        explicit,
-                        derived: resolved.output_basis().with_extension(""),
-                        output_dir: output_dir.as_deref(),
-                        output_template: cmd.out.output_template.as_deref(),
-                        output_ext: "iso",
-                        keys_path: None,
-                        policy,
-                        verify: crate::util::OutputVerify::None,
-                        media: None,
-                        missing_keys: None,
-                        report: report.as_deref(),
-                        dry_run,
-                        cancel: cancel.clone(),
-                    },
-                    &progress,
-                )
-                .await?
-                else {
-                    return Ok(());
-                };
-                if !skip_space_check {
-                    let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
-                    batch::space_preflight_for_size(file_len(input), check_dir)?;
-                }
-                let in_path = input.to_path_buf();
-                let out_path = output.clone();
-                let started = Instant::now();
-                extract_from_chd(
-                    &progress,
-                    in_path.clone(),
-                    output,
-                    cmd.parent,
-                    cancel.clone(),
-                )
-                .await?;
-                finish_single(
-                    &cmd.input,
-                    &out_path,
-                    TallyDirection::CountOnly,
-                    "extract",
-                    started,
-                    report.as_deref(),
-                )?;
+            require_input(&cmd.input, cmd.recursive)?;
+            let output_dir = cmd.out.output_dir.or_else(|| eff.output_dir.clone());
+            let explicit = cmd.output_flag.or(cmd.output);
+            if !cmd.recursive && explicit.is_none() && output_dir.is_none() {
+                anyhow::bail!(
+                    "chd extract needs an OUTPUT path or --output-dir without --recursive"
+                );
             }
+            let mut options = RunOptions::from(batch::Common {
+                recursive: cmd.recursive,
+                output_dir,
+                output_template: cmd.out.output_template,
+                max_depth: cmd.max_depth,
+                report: cmd.report.or_else(|| eff.report.clone()),
+                policy: resolve_policy(
+                    cmd.conflict.on_conflict,
+                    cmd.conflict.force,
+                    config::policy_fallback(&eff.on_conflict)?,
+                ),
+                skip_space_check,
+            });
+            options.parent = cmd.parent;
+            batch::run(&run, "chd.extract", cmd.input, explicit, options).await?;
         }
         ChdCommands::Verify(cmd) => {
             if cmd.recursive {
@@ -685,97 +501,30 @@ pub async fn run(command: ChdCommands, ctx: DispatchCtx<'_>) -> Result<()> {
         }
         ChdCommands::ToCso(cmd) => {
             let eff = &effective.cso;
-            let format = match cmd.format {
-                CsoFormatArg::Cso => CsoFormat::Cso,
-                CsoFormatArg::Zso => CsoFormat::Zso,
-            };
-            let mut opts = CsoCompressOptions {
-                format,
-                block_size: cmd.block_size.or(eff.block_size),
-                force: cmd.conflict.force,
-            };
-            let output_dir = cmd
-                .out
-                .output_dir
-                .clone()
-                .or_else(|| eff.output_dir.clone());
-            let report = cmd.batch.report.clone().or_else(|| eff.report.clone());
-            let fallback = config::policy_fallback(&eff.on_conflict)?;
-            if cmd.recursive {
-                require_dir(&cmd.input)?;
-                let policy = resolve_policy(cmd.conflict.on_conflict, cmd.conflict.force, fallback);
-                let run = batch::BatchRun {
-                    progress: &progress,
-                    total_progress: &total_progress,
-                    input_dir: &cmd.input,
-                    policy,
-                    output_dir: output_dir.as_deref(),
-                    output_template: cmd.out.output_template.as_deref(),
-                    max_depth: cmd.batch.max_depth,
-                    dry_run,
-                    skip_space_check,
-                    report_path: report.as_deref(),
-                    cancel: &cancel,
-                };
-                batch::chd_to_cso(&run, opts, cache).await?
-            } else {
-                ensure_input_exists(&cmd.input)?;
-                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["chd"])?;
-                let input = resolved.path();
-                let policy = resolve_policy(cmd.conflict.on_conflict, cmd.conflict.force, fallback);
-                let media = format.name();
-                let derived = resolved.output_basis().with_extension(format.extension());
-                let output_ext = derived
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("")
-                    .to_string();
-                let Some(output) = resolve_single_output(
-                    SingleOutput {
-                        operation: "compress",
-                        cli_input: &cmd.input,
-                        input,
-                        explicit: cmd.output_flag.or(cmd.output),
-                        derived,
-                        output_dir: output_dir.as_deref(),
-                        output_template: cmd.out.output_template.as_deref(),
-                        output_ext: &output_ext,
-                        keys_path: None,
-                        policy,
-                        verify: crate::util::OutputVerify::Cso,
-                        media: Some(media),
-                        missing_keys: None,
-                        report: report.as_deref(),
-                        dry_run,
-                        cancel: cancel.clone(),
-                    },
-                    &progress,
-                )
-                .await?
-                else {
-                    return Ok(());
-                };
-                if !skip_space_check {
-                    let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
-                    let required = rom_converto_lib::chd::info::read_info(input)
-                        .map(|info| info.logical_bytes)
-                        .unwrap_or_else(|_| file_len(input));
-                    batch::space_preflight_for_size(required, check_dir)?;
-                }
-                opts.force = true;
-                let in_path = input.to_path_buf();
-                let out_path = output.clone();
-                let started = Instant::now();
-                chd_to_cso(&progress, in_path, output, opts, cancel.clone()).await?;
-                finish_single(
-                    &cmd.input,
-                    &out_path,
-                    TallyDirection::Compress,
-                    "compress",
-                    started,
-                    report.as_deref(),
-                )?;
-            }
+            require_input(&cmd.input, cmd.recursive)?;
+            let mut options = RunOptions::from(batch::Common {
+                recursive: cmd.recursive,
+                output_dir: cmd.out.output_dir.or_else(|| eff.output_dir.clone()),
+                output_template: cmd.out.output_template,
+                max_depth: cmd.batch.max_depth,
+                report: cmd.batch.report.or_else(|| eff.report.clone()),
+                policy: resolve_policy(
+                    cmd.conflict.on_conflict,
+                    cmd.conflict.force,
+                    config::policy_fallback(&eff.on_conflict)?,
+                ),
+                skip_space_check,
+            });
+            options.format = Some(crate::commands::cso::cso_format_name(cmd.format).to_string());
+            options.block_size = cmd.block_size.or(eff.block_size);
+            batch::run(
+                &run,
+                "chd.to_cso",
+                cmd.input,
+                cmd.output_flag.or(cmd.output),
+                options,
+            )
+            .await?;
         }
         ChdCommands::Info(cmd) => {
             if cmd.keys.is_some() {

@@ -15,6 +15,8 @@ const LICENSES: [&[u8; 28]; 2] = [
 /// Fields of the Neo Geo Pocket cartridge header. The format defines no
 /// checksum.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct NgpInfo {
     pub license: String,
     pub startup_address: u32,

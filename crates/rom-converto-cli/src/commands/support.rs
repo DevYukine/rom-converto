@@ -1,31 +1,21 @@
 //! Helpers shared by the per-family command runners: output-path derivation,
 //! single-file summaries and reports, dry-run planning, and artwork export.
 
-use crate::util::{
-    IndicatifProgress, TotalProgress, WriteDecision, ensure_input_exists, file_len, ok_str,
-    resolve_output, resolve_policy,
-};
-use crate::{config, dry_run, info_print};
+use crate::util::{IndicatifProgress, TotalProgress, ensure_input_exists, ok_str};
+use crate::{config, info_print};
 use anyhow::{Context, Result};
 use rom_converto_lib::chd::{ChdCodec, DiscMode};
 use rom_converto_lib::nintendo::legacy_input::{
-    LegacyFormat, detect_legacy_format, ensure_format_allowed, ensure_format_allowed_for,
+    LegacyFormat, detect_legacy_format, ensure_format_allowed_for,
 };
-use rom_converto_lib::nintendo::nx::load_keyset;
-use rom_converto_lib::nintendo::rvz::{RvzCompressOptions, derive_rvz_path};
-use rom_converto_lib::util::{
-    CancelToken, ChecksumBounds, FileDigests, HashAlgo, Tally, TallyDirection, hash_file,
-    parse_checksum_bound,
-};
+use rom_converto_lib::nintendo::rvz::RvzCompressOptions;
+use rom_converto_lib::util::{CancelToken, FileDigests, HashAlgo, Tally, hash_file};
 use std::path::Path;
 use std::time::Instant;
 
 // Extension sets mirror the lib-internal batch scanners so the closing
 // count summary matches what each lib batch function actually processed.
 pub(crate) const CTR_CRYPT_EXTS: &[&str] = &["cia", "3ds", "cci", "cxi"];
-pub(crate) const CTR_COMPRESS_EXTS: &[&str] = &["cia", "cci", "3ds", "cxi", "3dsx"];
-pub(crate) const CTR_DECOMPRESS_EXTS: &[&str] = &["zcia", "zcci", "zcxi", "z3dsx"];
-pub(crate) const CTR_CONVERT_EXTS: &[&str] = &["cia", "3ds", "cci"];
 
 // Union of image extensions the read side recognizes, used to pick the first
 // convertible member when a format-agnostic command (hash) is handed an archive.
@@ -35,164 +25,12 @@ pub(crate) const ALL_IMAGE_EXTS: &[&str] = &[
     "xcz", "ncz", "wud", "wux", "xiso", "zar",
 ];
 
-/// Default output path for a directory-or-image input. A file input keeps
-/// `with_extension`; a directory input appends the extension to the full
-/// directory name so dotted names (`Game v1.0`) aren't mangled.
-pub(crate) fn derive_output_with_ext(input: &Path, ext: &str) -> std::path::PathBuf {
-    if input.is_dir() {
-        let mut name = input.file_name().unwrap_or_default().to_os_string();
-        name.push(".");
-        name.push(ext);
-        input.with_file_name(name)
-    } else {
-        input.with_extension(ext)
-    }
-}
-
 /// Default GoD output directory for `input`: its file stem with `_god`
 /// appended, alongside the input.
 pub(crate) fn derive_god_dir(input: &Path) -> std::path::PathBuf {
     let mut name = input.file_stem().unwrap_or_default().to_os_string();
     name.push("_god");
     input.with_file_name(name)
-}
-
-pub(crate) fn log_single_summary(
-    input: &Path,
-    output: &Path,
-    direction: TallyDirection,
-    started: Instant,
-) {
-    let mut tally = Tally::new();
-    tally.backdate(started);
-    tally.record_ok(input_len(input), file_len(output), started.elapsed());
-    log::info!("{}", tally.summary_line(direction));
-}
-
-/// Input size for summaries: recursive byte total for a directory input,
-/// plain file length otherwise.
-pub(crate) fn input_len(path: &Path) -> u64 {
-    fn dir_len(dir: &Path) -> u64 {
-        std::fs::read_dir(dir)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|entry| {
-                let path = entry.path();
-                match entry.metadata() {
-                    Ok(meta) if meta.is_dir() => dir_len(&path),
-                    Ok(meta) if meta.is_file() => meta.len(),
-                    _ => 0,
-                }
-            })
-            .sum()
-    }
-    if path.is_dir() {
-        dir_len(path)
-    } else {
-        file_len(path)
-    }
-}
-
-pub(crate) fn finish_single(
-    input: &Path,
-    output: &Path,
-    direction: TallyDirection,
-    op: &str,
-    started: Instant,
-    report: Option<&Path>,
-) -> Result<()> {
-    let in_bytes = input_len(input);
-    finish_single_sized(input, in_bytes, output, direction, op, started, report)
-}
-
-/// [`finish_single`] for operations that can replace their own input, where
-/// the source size has to be measured before the write.
-pub(crate) fn finish_single_sized(
-    input: &Path,
-    in_bytes: u64,
-    output: &Path,
-    direction: TallyDirection,
-    op: &str,
-    started: Instant,
-    report: Option<&Path>,
-) -> Result<()> {
-    use rom_converto_lib::util::{
-        FileStatus, ReportFormat, ReportRecord, ReportRecordInput, ReportTotals, write_report,
-    };
-
-    let elapsed = started.elapsed();
-    let out_bytes = file_len(output);
-    let mut tally = Tally::new();
-    tally.backdate(started);
-    tally.record_ok(in_bytes, out_bytes, elapsed);
-    log::info!("{}", tally.summary_line(direction));
-    if let Some(path) = report {
-        let elapsed_ms = elapsed.as_millis().min(u64::MAX as u128) as u64;
-        let record = ReportRecord::new(ReportRecordInput {
-            input_path: input.display().to_string(),
-            output_path: output.display().to_string(),
-            operation: (op).into(),
-            status: FileStatus::Ok,
-            input_bytes: in_bytes,
-            output_bytes: out_bytes,
-            elapsed_ms,
-            error: None,
-        });
-        let totals = ReportTotals {
-            total_files: 1,
-            ok: 1,
-            total_input_bytes: in_bytes,
-            total_output_bytes: out_bytes,
-            elapsed_ms,
-            ..ReportTotals::default()
-        };
-        write_report(
-            path,
-            &[record],
-            &totals,
-            ReportFormat::from_path(path),
-            &CancelToken::new(),
-        )?;
-    }
-    Ok(())
-}
-
-pub(crate) fn skipped_single(
-    input: &Path,
-    op: &str,
-    reason: impl std::fmt::Display,
-    report: Option<&Path>,
-) -> Result<()> {
-    use rom_converto_lib::util::{
-        FileStatus, ReportFormat, ReportRecord, ReportRecordInput, ReportTotals, write_report,
-    };
-
-    if let Some(path) = report {
-        let record = ReportRecord::new(ReportRecordInput {
-            input_path: input.display().to_string(),
-            output_path: String::new(),
-            operation: op.into(),
-            status: FileStatus::Skipped,
-            input_bytes: 0,
-            output_bytes: 0,
-            elapsed_ms: 0,
-            error: Some(reason.to_string()),
-        });
-        let totals = ReportTotals {
-            total_files: 1,
-            skipped: 1,
-            ..ReportTotals::default()
-        };
-        write_report(
-            path,
-            &[record],
-            &totals,
-            ReportFormat::from_path(path),
-            &CancelToken::new(),
-        )?;
-    }
-    Ok(())
 }
 
 pub(crate) fn hash_single(
@@ -294,76 +132,6 @@ pub(crate) fn print_hash_row(path: &Path, d: &FileDigests, algos: &[HashAlgo]) {
     log::info!("{}  {}", path.display(), cells.join("  "));
 }
 
-/// Plan a legacy-disc migration without writing anything. Recursive mode
-/// mirrors [`migrate_disc_batch`]: it enumerates the legacy containers in
-/// the top level of the directory (detected by content) and shows each
-/// output landing next to its input. Single mode plans one file.
-pub(crate) fn migrate_dry_run(
-    input: &Path,
-    explicit_output: Option<std::path::PathBuf>,
-    recursive: bool,
-    force: bool,
-    allowed: &[LegacyFormat],
-) -> Result<()> {
-    if recursive {
-        require_dir(input)?;
-        let mut detected: Vec<(std::path::PathBuf, LegacyFormat)> = std::fs::read_dir(input)?
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.is_file())
-            .filter_map(|p| match detect_legacy_format(&p) {
-                Ok(Some(fmt)) => Some((p, fmt)),
-                _ => None,
-            })
-            .collect();
-        detected.sort_by(|a, b| a.0.cmp(&b.0));
-        if detected.is_empty() {
-            anyhow::bail!("no GCZ, WIA, or NKit images found in {}", input.display());
-        }
-        for (path, fmt) in detected.iter().filter(|(_, f)| !allowed.contains(f)) {
-            log::warn!(
-                "Skipped {}: {} is a Wii disc image; use rvl migrate",
-                path.display(),
-                fmt.name()
-            );
-        }
-        let inputs: Vec<std::path::PathBuf> = detected
-            .into_iter()
-            .filter(|(_, fmt)| allowed.contains(fmt))
-            .map(|(p, _)| p)
-            .collect();
-        let mut tally = Tally::new();
-        let mut records = Vec::with_capacity(inputs.len());
-        for file in &inputs {
-            let desired = derive_rvz_path(file);
-            // Mirror migrate_disc_batch: an existing output without
-            // --force is skipped, not overwritten, and never aborts the
-            // plan.
-            let decision = if !force && desired.exists() {
-                WriteDecision::Skip
-            } else {
-                WriteDecision::Write(desired.clone())
-            };
-            dry_run::log_plan("migrate", file, &desired, &decision, None, None);
-            dry_run::record(&mut tally, file, &decision);
-            records.push(dry_run::report_record("migrate", file, &desired, &decision));
-        }
-        dry_run::finish(&tally, &records, None)
-    } else {
-        ensure_input_exists(input)?;
-        match detect_legacy_format(input)? {
-            None => anyhow::bail!(
-                "input is not a GCZ, WIA, or NKit image; use compress for .iso/.gcm/.wbfs"
-            ),
-            Some(fmt) => ensure_format_allowed(fmt, allowed)?,
-        }
-        let policy = resolve_policy(None, force, rom_converto_lib::util::ConflictPolicy::Error);
-        let desired = explicit_output.unwrap_or_else(|| derive_rvz_path(input));
-        let decision = resolve_output(&desired, policy)?;
-        dry_run::single("migrate", input, &desired, &decision, None, None, None)
-    }
-}
-
 /// Reject a legacy container the verify console gate does not accept, pointing
 /// at `rvl verify`. A non-legacy input passes through to the normal magic check.
 pub(crate) fn verify_gate(input: &Path, allowed: &[LegacyFormat]) -> Result<()> {
@@ -389,27 +157,6 @@ pub(crate) fn resolve_migrate_opts(
             .unwrap_or(RvzCompressOptions::default().chunk_size),
         ..RvzCompressOptions::default()
     }
-}
-
-/// Resolve `--input-checksum-min`/`--input-checksum-max` against the dat
-/// config defaults, falling back to crc32/sha256 (compute crc32 first,
-/// escalate up to sha256 if the matched entry needs it).
-pub(crate) fn resolve_checksum_bounds(
-    min: Option<&str>,
-    max: Option<&str>,
-    eff: &rom_converto_lib::config::DatDefaults,
-) -> Result<ChecksumBounds> {
-    let min = min
-        .map(str::to_string)
-        .or_else(|| eff.input_checksum_min.clone())
-        .unwrap_or_else(|| "crc32".to_string());
-    let max = max
-        .map(str::to_string)
-        .or_else(|| eff.input_checksum_max.clone())
-        .unwrap_or_else(|| "sha256".to_string());
-    let min = parse_checksum_bound(&min).map_err(|e| anyhow::anyhow!(e))?;
-    let max = parse_checksum_bound(&max).map_err(|e| anyhow::anyhow!(e))?;
-    ChecksumBounds::new(min, max).map_err(|e| anyhow::anyhow!(e))
 }
 
 /// Best-effort media label for a CHD dry-run plan line. ISO inputs read a
@@ -473,63 +220,38 @@ pub(crate) fn resolve_chd_codecs(
         .transpose()
 }
 
-/// Load an NX keyset, but under dry-run a missing keyfile is reported as a
-/// plan note instead of aborting, so the preview still shows the resolved
-/// paths and exits 0. Outside dry-run the missing-keyfile error is preserved.
-pub(crate) fn load_keyset_for_plan(
-    explicit: Option<&Path>,
-    dry_run: bool,
-) -> Result<(rom_converto_lib::nintendo::nx::KeySet, Option<String>)> {
-    match load_keyset(explicit) {
-        Ok(keys) => Ok((keys, None)),
-        Err(e) if dry_run => Ok((
-            rom_converto_lib::nintendo::nx::KeySet::default(),
-            Some(e.to_string()),
-        )),
-        Err(e) => Err(e.into()),
-    }
-}
-
-/// Dry-run preview for the CTR recursive arms. The lib batch functions own
-/// their own walk and write with no CLI-level conflict policy, so the preview
-/// re-derives each output path here and reports the conflict decision without
-/// calling the lib batch. The detected media is omitted; the extension implies
-/// the format.
-pub(crate) fn dry_run_ctr_scan(
-    operation: &str,
-    files: &[std::path::PathBuf],
-    output_dir: Option<&Path>,
-    policy: rom_converto_lib::util::ConflictPolicy,
-    derive: fn(&Path) -> std::path::PathBuf,
-) -> Result<()> {
-    let mut tally = Tally::new();
-    for input in files {
-        let desired = rom_converto_lib::util::place_in_dir(&derive(input), output_dir);
-        let decision = resolve_output(&desired, policy)?;
-        dry_run::log_plan(operation, input, &desired, &decision, None, None);
-        dry_run::record(&mut tally, input, &decision);
-    }
-    log::info!("{}", tally.summary_line(TallyDirection::DryRun));
-    Ok(())
-}
-
-/// Decompress targets a WBFS container when the resolved output path
-/// carries a `.wbfs` extension; otherwise it writes a raw disc image.
-pub(crate) fn wants_wbfs_output(path: &std::path::Path) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .map(|s| s.eq_ignore_ascii_case("wbfs"))
-        .unwrap_or(false)
-}
-
 pub(crate) struct DispatchCtx<'a> {
     pub(crate) progress: IndicatifProgress,
     pub(crate) total_progress: TotalProgress,
     pub(crate) effective: &'a config::Effective,
+    /// `--config` and `--preset`, forwarded verbatim so the runner resolves
+    /// the same config file the CLI did instead of re-searching the default
+    /// locations.
+    pub(crate) config: Option<std::path::PathBuf>,
+    pub(crate) preset: Option<String>,
     pub(crate) dry_run: bool,
     pub(crate) skip_space_check: bool,
     pub(crate) cancel: rom_converto_lib::util::CancelToken,
-    pub(crate) cache: &'a rom_converto_lib::util::HashCache,
+    pub(crate) cache: &'a std::sync::Arc<rom_converto_lib::util::HashCache>,
+}
+
+/// A recursive run needs a directory; a single run just needs the input to
+/// exist.
+pub(crate) fn require_input(input: &Path, recursive: bool) -> Result<()> {
+    if recursive {
+        require_dir(input)
+    } else {
+        ensure_input_exists(input)
+    }
+}
+
+/// The runner's `mode` option value for a resolved disc mode.
+pub(crate) fn disc_mode_name(mode: DiscMode) -> &'static str {
+    match mode {
+        DiscMode::Cd => "cd",
+        DiscMode::Dvd => "dvd",
+        DiscMode::Ld => "ld",
+    }
 }
 
 pub(crate) fn require_dir(input: &std::path::Path) -> Result<()> {
@@ -868,45 +590,6 @@ pub(crate) fn save_pkg_icon(info: &rom_converto_lib::info::PkgInfo, dir: &Path) 
         "pkg-icon",
         dir,
     )
-}
-
-#[cfg(test)]
-mod migrate_gate_tests {
-    use super::*;
-    use rom_converto_lib::nintendo::legacy_input::{ALL_MIGRATE_FORMATS, DOL_MIGRATE_FORMATS};
-
-    fn write_wia(dir: &Path) -> std::path::PathBuf {
-        let p = dir.join("game.wia");
-        std::fs::write(&p, [b'W', b'I', b'A', 0x01, 0, 0, 0, 0]).unwrap();
-        p
-    }
-
-    #[test]
-    fn dol_migrate_dry_run_rejects_wia() {
-        let dir = tempfile::tempdir().unwrap();
-        let wia = write_wia(dir.path());
-        let err = migrate_dry_run(&wia, None, false, false, DOL_MIGRATE_FORMATS).unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            "input is a WIA image; use rvl migrate for Wii disc images"
-        );
-    }
-
-    #[test]
-    fn rvl_migrate_dry_run_accepts_wia() {
-        let dir = tempfile::tempdir().unwrap();
-        let wia = write_wia(dir.path());
-        migrate_dry_run(&wia, None, false, false, ALL_MIGRATE_FORMATS)
-            .expect("the rvl dry-run must accept a WIA image");
-    }
-
-    #[test]
-    fn dol_migrate_dry_run_recursive_skips_wia_without_failing() {
-        let dir = tempfile::tempdir().unwrap();
-        write_wia(dir.path());
-        migrate_dry_run(dir.path(), None, true, false, DOL_MIGRATE_FORMATS)
-            .expect("a WIA-only directory must not fail a dol dry-run");
-    }
 }
 
 #[cfg(test)]

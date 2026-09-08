@@ -16,6 +16,8 @@ const NINTENDO_LOGO: [u8; 48] = [
 /// Fields of the Game Boy cartridge header, with both checksums the format
 /// defines recomputed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct GbInfo {
     pub logo_valid: bool,
     pub title: String,

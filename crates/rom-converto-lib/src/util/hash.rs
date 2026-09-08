@@ -43,6 +43,8 @@ impl HashAlgo {
 /// A file's computed digests, one field per algorithm plus its size.
 /// Fields for algorithms that were not requested are `None`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub struct FileDigests {
     pub crc32: Option<String>,
     pub sha1: Option<String>,

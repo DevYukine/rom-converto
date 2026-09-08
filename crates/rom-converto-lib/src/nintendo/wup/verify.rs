@@ -36,6 +36,8 @@ use crate::util::{AtomicProgress, CancelToken, Cancelled, ProgressReporter};
 
 /// Overall verification outcome for one input.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub struct WupVerifyResult {
     /// Input kind: `"nus"`, `"disc"`, `"wua"`, or `"loadiine"`.
     pub kind: String,
@@ -45,6 +47,8 @@ pub struct WupVerifyResult {
 
 /// Per-title hash-check outcome.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub struct TitleVerdict {
     pub title_id: u64,
     pub title_id_hex: String,

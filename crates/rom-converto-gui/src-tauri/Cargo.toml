@@ -19,6 +19,10 @@ tokio = { workspace = true, features = ["full"] }
 tokio-util.workspace = true
 log.workspace = true
 anyhow.workspace = true
+ts-rs = { workspace = true, optional = true }
+
+[features]
+ts-export = ["dep:ts-rs", "rom-converto-lib/ts-export"]
 
 [build-dependencies]
 tauri-build = { version = "^2", features = [] }

@@ -1,4 +1,5 @@
 import type { ResultKind } from "~/stores/queue";
+import type { RunOptions, RunRequest } from "~/types";
 
 // A store field is bound live to a control; the concrete op stores are
 // heterogeneous Pinia setup stores, so binding is keyed by field name.
@@ -153,10 +154,10 @@ export interface OpDef {
 
 	// Output path shown in the staged-row meta and the dry-run plan.
 	deriveOutput?: (input: string, store: OpStore) => string;
-	buildArgs: (store: OpStore, item: StagedItem, taskId: string) => Record<string, unknown>;
+	buildArgs: (store: OpStore, item: StagedItem, taskId: string) => RunPayload;
 	// When set, all staged items build a single spec instead of one per item
 	// (e.g. merge, which combines every dropped file into one output).
-	buildArgsAll?: (store: OpStore, items: StagedItem[], taskId: string) => Record<string, unknown>;
+	buildArgsAll?: (store: OpStore, items: StagedItem[], taskId: string) => RunPayload;
 	chips: (store: OpStore) => string;
 }
 
@@ -174,17 +175,68 @@ export function directoryOutputRows(tooltip: string): OutputRow[] {
 	];
 }
 
-// The output/safety tail every report-capable write op appends verbatim.
-export function commonArgs(store: OpStore, taskId: string): Record<string, unknown> {
+// One `cmd_run` payload: the RunRequest the library runner deserialises, plus
+// the task id and report flag the shim reads beside it. Only the options an op
+// actually sets travel; the runner defaults the rest.
+// A type alias, not an interface: it has to stay assignable to the
+// `Record<string, unknown>` the Tauri `invoke` shim takes.
+export type RunPayload = {
+	taskId: string;
+	report: boolean;
+	// Read by the queue, which writes one report per finished group.
+	reportFile: string | null;
+	request: Omit<RunRequest, "options"> & { options: Partial<RunOptions> };
+};
+
+// Option keys are the runner's own snake_case names; unknown keys are rejected
+// by the backend.
+export function runArgs(
+	operation: string,
+	input: string | null,
+	output: string | null,
+	options: Partial<RunOptions>,
+	dryRun: boolean,
+	taskId: string,
+	report: string | null = null,
+): RunPayload {
 	return {
 		taskId,
-		onConflict: store.onConflict,
-		skipSpaceCheck: store.skipSpaceCheck,
-		outputTemplate: store.outputTemplate || null,
-		report: !!store.reportFile,
-		reportFile: store.reportFile || null,
-		verifyAfter: store.verifyAfter,
+		report: !!report,
+		reportFile: report,
+		request: {
+			schema: null,
+			operation,
+			input,
+			output,
+			config: null,
+			preset: null,
+			options,
+			dry_run: dryRun,
+		},
 	};
+}
+
+// One path out of the RunRequest inside a `cmd_run` payload, for job names,
+// plan lines and result rows.
+export function requestPath(args: RunPayload, field: "input" | "output"): string {
+	return args.request[field] ?? "";
+}
+
+// The output/safety tail every write op puts in its RunOptions. `verify_after`
+// travels only for the ops that show the toggle, which are exactly the stores
+// carrying the field.
+export function commonOptions(store: OpStore): Partial<RunOptions> {
+	return {
+		on_conflict: store.onConflict,
+		skip_space_check: store.skipSpaceCheck,
+		output_template: store.outputTemplate || null,
+		...("verifyAfter" in store ? { verify_after: store.verifyAfter } : {}),
+	};
+}
+
+// Turns a payload into its dry-run twin.
+export function dryRunArgs(args: RunPayload): RunPayload {
+	return { ...args, request: { ...args.request, dry_run: true } };
 }
 
 export function templateIsActive(store: OpStore): boolean {
@@ -197,50 +249,6 @@ export function opCommand(def: OpDef, store: OpStore): string {
 
 export function opProgressKey(def: OpDef, store: OpStore): string | undefined {
 	return typeof def.progressKey === "function" ? def.progressKey(store) : def.progressKey;
-}
-
-// Commands whose Rust handler takes a single `args` struct. Opdefs keep
-// building a flat payload (the queue and the CLI echo read it flat); it is
-// wrapped only on the way into `invoke`.
-export const NESTED_ARGS_COMMANDS = new Set([
-	"cmd_cdn_to_cia",
-	"cmd_decrypt_rom",
-	"cmd_encrypt_rom",
-	"cmd_compress_rom",
-	"cmd_decompress_rom",
-	"cmd_chd_compress",
-	"cmd_chd_migrate",
-	"cmd_cso_compress",
-	"cmd_cso_to_chd",
-	"cmd_cso_decompress",
-	"cmd_chd_extract",
-	"cmd_chd_to_cso",
-	"cmd_compress_disc",
-	"cmd_decompress_disc",
-	"cmd_wup_compress",
-	"cmd_nx_compress",
-	"cmd_nx_decompress",
-	"cmd_convert_ctr",
-	"cmd_xbox_convert",
-	"cmd_xbox_extract",
-	"cmd_xenon_compress",
-	"cmd_xenon_extract",
-	"cmd_ps3_decrypt",
-	"cmd_nds_encrypt",
-	"cmd_nds_decrypt",
-	"cmd_psp_to_iso",
-	"cmd_psp_extract",
-	"cmd_vita_extract",
-	"cmd_xenon_convert",
-	"cmd_nx_merge",
-	"cmd_nx_split",
-]);
-
-export function invokeArgs(
-	command: string,
-	payload: Record<string, unknown>,
-): Record<string, unknown> {
-	return NESTED_ARGS_COMMANDS.has(command) ? { args: payload } : payload;
 }
 
 // Mirrors default_candidate_paths() in rom-converto-lib nintendo/nx/keys.rs.
@@ -280,6 +288,10 @@ export function registerOps(defs: OpDef[]): void {
 		}
 		consoles.set(def.console, def);
 	}
+}
+
+export function allOpDefs(): OpDef[] {
+	return [...registry.values()].flatMap((consoles) => [...consoles.values()]);
 }
 
 export function opDef(op: string, console: string): OpDef | undefined {

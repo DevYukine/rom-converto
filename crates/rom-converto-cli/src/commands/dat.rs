@@ -2,11 +2,15 @@ use crate::commands::{BatchArgs, ConflictPolicyArg};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-use crate::batch;
-use crate::commands::support::{ALL_IMAGE_EXTS, DispatchCtx, require_dir, resolve_checksum_bounds};
-use crate::util::{ensure_input_exists, resolve_policy};
+use crate::commands::support::{DispatchCtx, require_dir};
+use crate::util::{CliProgress, ensure_input_exists, policy_name, resolve_policy};
 use anyhow::Result;
-use rom_converto_lib::util::parse_algos;
+use log::info;
+use rom_converto_lib::runner::models::{
+    DatMatchData, RunData, RunOptions, RunRequest, RunResponse, RunRow,
+};
+use rom_converto_lib::runner::run_request;
+use rom_converto_lib::util::FileStatus;
 
 /// Identify, verify and rename ROMs against the Playmatch database
 #[derive(Subcommand, Debug, Eq, PartialEq)]
@@ -608,54 +612,58 @@ pub async fn run(command: DatCommands, ctx: DispatchCtx<'_>) -> Result<()> {
         dry_run,
         cancel,
         cache,
+        config,
+        preset,
         ..
     } = ctx;
+    let dat = &effective.dat;
+    let mut req = RunRequest {
+        schema: None,
+        operation: String::new(),
+        input: None,
+        output: None,
+        config,
+        preset,
+        options: RunOptions {
+            api_base: dat.api_base.clone(),
+            report: dat.report.clone(),
+            input_checksum_min: dat.input_checksum_min.clone(),
+            input_checksum_max: dat.input_checksum_max.clone(),
+            ..Default::default()
+        },
+        dry_run,
+        ctx: Default::default(),
+    };
+    req.ctx.hash_cache = Some(cache.clone());
+    let opts = &mut req.options;
+    let mut recursive = false;
     match command {
         DatCommands::Verify(cmd) => {
-            let algos = parse_algos(&cmd.algo).map_err(|e| anyhow::anyhow!(e))?;
-            let bounds = resolve_checksum_bounds(
-                cmd.input_checksum_min.as_deref(),
-                cmd.input_checksum_max.as_deref(),
-                &effective.dat,
-            )?;
-            bounds
-                .validate_requested(&algos)
-                .map_err(|e| anyhow::anyhow!(e))?;
-            let api_base = cmd.api_base.or_else(|| effective.dat.api_base.clone());
-            let report = cmd.batch.report.or_else(|| effective.dat.report.clone());
-            let run = batch::DatRun {
-                progress: &progress,
-                total_progress: &total_progress,
-                cancel: &cancel,
-                cache,
-                algos: &algos,
-                bounds: &bounds,
-                quick: cmd.quick,
-                api_base: api_base.as_deref(),
-                report: report.as_deref(),
-            };
             if cmd.recursive {
                 require_dir(&cmd.input)?;
-                batch::dat_verify_batch(&run, &cmd.input, cmd.batch.max_depth).await?;
             } else {
                 ensure_input_exists(&cmd.input)?;
-                batch::dat_verify_single(&run, &cmd.input).await?;
             }
+            recursive = cmd.recursive;
+            req.operation = "dat.verify".to_string();
+            req.input = Some(cmd.input);
+            opts.algo = Some(cmd.algo);
+            opts.max_depth = cmd.batch.max_depth;
+            opts.quick = Some(cmd.quick);
+            fill(&mut opts.api_base, cmd.api_base);
+            fill(&mut opts.report, cmd.batch.report);
+            fill(&mut opts.input_checksum_min, cmd.input_checksum_min);
+            fill(&mut opts.input_checksum_max, cmd.input_checksum_max);
         }
         DatCommands::Scan(cmd) => {
             require_dir(&cmd.input)?;
-            let algos = parse_algos(&cmd.algo).map_err(|e| anyhow::anyhow!(e))?;
-            let api_base = cmd.api_base.or_else(|| effective.dat.api_base.clone());
-            let report = cmd.report.or_else(|| effective.dat.report.clone());
-            let run = batch::DatBulkRun {
-                progress: &progress,
-                total_progress: &total_progress,
-                cancel: &cancel,
-                cache,
-                api_base: api_base.as_deref(),
-                report: report.as_deref(),
-            };
-            batch::dat_scan(&run, &cmd.input, cmd.max_depth, &algos, cmd.quick).await?;
+            req.operation = "dat.scan".to_string();
+            req.input = Some(cmd.input);
+            opts.algo = Some(cmd.algo);
+            opts.max_depth = cmd.max_depth;
+            opts.quick = Some(cmd.quick);
+            fill(&mut opts.api_base, cmd.api_base);
+            fill(&mut opts.report, cmd.report);
         }
         DatCommands::Rename(cmd) => {
             if cmd.recursive {
@@ -663,78 +671,251 @@ pub async fn run(command: DatCommands, ctx: DispatchCtx<'_>) -> Result<()> {
             } else {
                 ensure_input_exists(&cmd.input)?;
             }
-            let api_base = cmd.api_base.or_else(|| effective.dat.api_base.clone());
-            let report = cmd.report.or_else(|| effective.dat.report.clone());
-            let policy = resolve_policy(
-                cmd.on_conflict,
-                cmd.force,
-                rom_converto_lib::util::ConflictPolicy::Error,
+            req.operation = "dat.rename".to_string();
+            req.input = Some(cmd.input);
+            opts.max_depth = cmd.max_depth;
+            opts.on_conflict = Some(
+                policy_name(resolve_policy(
+                    cmd.on_conflict,
+                    cmd.force,
+                    rom_converto_lib::util::ConflictPolicy::Error,
+                ))
+                .to_string(),
             );
-            let run = batch::DatBulkRun {
-                progress: &progress,
-                total_progress: &total_progress,
-                cancel: &cancel,
-                cache,
-                api_base: api_base.as_deref(),
-                report: report.as_deref(),
-            };
-            batch::dat_rename(
-                &run,
-                &cmd.input,
-                cmd.recursive,
-                cmd.max_depth,
-                policy,
-                dry_run,
-            )
-            .await?;
+            fill(&mut opts.api_base, cmd.api_base);
+            fill(&mut opts.report, cmd.report);
         }
         DatCommands::Identify(cmd) => {
             ensure_input_exists(&cmd.input)?;
-            let resolved = rom_converto_lib::util::resolve_input(&cmd.input, ALL_IMAGE_EXTS)?;
-            let algos = parse_algos(&cmd.algo).map_err(|e| anyhow::anyhow!(e))?;
-            let bounds = resolve_checksum_bounds(
-                cmd.input_checksum_min.as_deref(),
-                cmd.input_checksum_max.as_deref(),
-                &effective.dat,
-            )?;
-            bounds
-                .validate_requested(&algos)
-                .map_err(|e| anyhow::anyhow!(e))?;
-            let api_base = cmd.api_base.or_else(|| effective.dat.api_base.clone());
-            batch::dat_identify(
-                &progress,
-                resolved.path(),
-                &algos,
-                &bounds,
-                api_base.as_deref(),
-                &cancel,
-                cache,
-            )
-            .await?;
+            req.operation = "dat.identify".to_string();
+            req.input = Some(cmd.input);
+            opts.algo = Some(cmd.algo);
+            fill(&mut opts.api_base, cmd.api_base);
+            fill(&mut opts.input_checksum_min, cmd.input_checksum_min);
+            fill(&mut opts.input_checksum_max, cmd.input_checksum_max);
         }
         DatCommands::Fixdat(cmd) => {
             require_dir(&cmd.input)?;
-            let api_base = cmd
-                .api_base
-                .clone()
-                .or_else(|| effective.dat.api_base.clone());
-            let policy = resolve_policy(
-                cmd.on_conflict,
-                cmd.force,
-                rom_converto_lib::util::ConflictPolicy::Error,
+            req.operation = "dat.fixdat".to_string();
+            req.input = Some(cmd.input);
+            req.output = Some(cmd.output);
+            opts.platform = cmd.platform;
+            opts.dat_id = cmd.dat_id;
+            opts.dat_name = cmd.dat_name;
+            opts.subset = cmd.subset;
+            opts.max_depth = cmd.max_depth;
+            opts.on_conflict = Some(
+                policy_name(resolve_policy(
+                    cmd.on_conflict,
+                    cmd.force,
+                    rom_converto_lib::util::ConflictPolicy::Error,
+                ))
+                .to_string(),
             );
-            let args = batch::DatFixdatArgs {
-                input: cmd.input,
-                output: cmd.output,
-                platform: cmd.platform,
-                dat_id: cmd.dat_id,
-                dat_name: cmd.dat_name,
-                subset: cmd.subset,
-                max_depth: cmd.max_depth,
-                api_base,
-            };
-            batch::dat_fixdat(&progress, &args, dry_run, policy, &cancel, cache).await?;
+            fill(&mut opts.api_base, cmd.api_base);
         }
     }
+    let reporter = CliProgress {
+        file: &progress,
+        total: &total_progress,
+        print_row,
+        count_units: true,
+    };
+    let response = run_request(req, &reporter, cancel).await;
+    total_progress.finish_bar();
+    let response = response.map_err(cli_flag_names)?;
+    // A single input the runner could not even digest (an unreadable file, an
+    // archive with no image inside) is an error, not a verdict.
+    if !recursive
+        && let Some(RunData::DatMatch(data)) = &response.data
+        && data.verdict == "failed"
+    {
+        anyhow::bail!(
+            "{}",
+            data.error.as_deref().unwrap_or("could not read the input")
+        );
+    }
+    if !recursive && let Some(RunData::DatMatch(data)) = &response.data {
+        match data.kind {
+            "identify" => print_identify(data),
+            _ => print_verdict(data),
+        }
+    }
+    print_summary(&response);
     Ok(())
+}
+
+fn fill<T>(slot: &mut Option<T>, value: Option<T>) {
+    if value.is_some() {
+        *slot = value;
+    }
+}
+
+/// The runner names its narrowing options `dat_name` and `subset`; a CLI user
+/// only ever sees them as flags, so the hint is respelled on the way out.
+fn cli_flag_names(err: anyhow::Error) -> anyhow::Error {
+    let text = err.to_string();
+    match text.contains("dat_name or subset") {
+        true => anyhow::anyhow!(text.replace("dat_name or subset", "--dat-name or --subset")),
+        false => err,
+    }
+}
+
+/// Streamed rows: verify verdicts in batch form and rename actions. Scan
+/// rows only feed the final summary.
+fn print_row(row: &RunRow) {
+    match row {
+        RunRow::DatMatch(data) if data.error.is_some() => {
+            info!("{}: {}", data.path.display(), data.verdict);
+        }
+        RunRow::DatMatch(data) => print_verdict(data),
+        RunRow::DatRename(row) => match (row.action, &row.to) {
+            ("would_rename", Some(to)) => {
+                info!("Would rename {} -> {}", row.from.display(), to.display());
+            }
+            ("renamed", Some(to)) => info!("{} -> {}", row.from.display(), to.display()),
+            _ => {}
+        },
+        _ => {}
+    }
+}
+
+fn print_summary(response: &RunResponse) {
+    match &response.data {
+        Some(RunData::DatVerify(data)) => info!("{} verified, {} hint", data.verified, data.hint),
+        Some(RunData::DatScan(data)) => info!(
+            "{} matched, {} misnamed, {} hint, {} unknown, {} unsupported, {} failed",
+            data.matched, data.misnamed, data.hint, data.unknown, data.unsupported, data.failed
+        ),
+        Some(RunData::DatRename(data)) => {
+            let already = data
+                .rows
+                .iter()
+                .filter(|r| r.action == "already_canonical")
+                .count();
+            info!(
+                "{} renamed, {} already canonical, {} skipped",
+                data.renamed,
+                already,
+                data.skipped + data.failed - already
+            );
+        }
+        Some(RunData::FixdatPlan(data)) => {
+            info!(
+                "Using DAT {} (version {})",
+                data.dat_file.name, data.dat_file.current_version
+            );
+            info!(
+                "Dry run: missing {} of {} games ({} files); would write {}",
+                data.missing_count,
+                data.total_games,
+                data.missing_files,
+                data.output.display()
+            );
+        }
+        Some(RunData::FixdatWritten(data)) => {
+            info!(
+                "Using DAT {} (version {})",
+                data.dat_file.name, data.dat_file.current_version
+            );
+            info!(
+                "Missing {} of {} games ({} files); wrote {}",
+                data.missing_count,
+                data.total_games,
+                data.missing_files,
+                data.output.display()
+            );
+        }
+        _ => {
+            if let Some(record) = response.records.first()
+                && record.status == FileStatus::Skipped
+            {
+                info!("Skipped, output exists: {}", record.output_path);
+            }
+        }
+    }
+}
+
+/// One verify verdict line, with a per-track summary when the unit is a
+/// track set.
+fn print_verdict(data: &DatMatchData) {
+    let name = data.path.display();
+    match data.verdict.as_str() {
+        "verified" => {
+            let algo = data
+                .match_algo
+                .as_deref()
+                .map(|a| format!(" [{a}]"))
+                .unwrap_or_default();
+            let game = data.game_name.as_deref().unwrap_or("");
+            let mut extra = Vec::new();
+            if let Some(p) = &data.platform {
+                extra.push(format!("platform: {p}"));
+            }
+            if let Some(g) = &data.signature_group {
+                extra.push(format!("group: {g}"));
+            }
+            if let Some(d) = &data.dat_file {
+                extra.push(format!("DAT: {d}"));
+            }
+            if let Some(v) = &data.dat_version {
+                extra.push(format!("version: {v}"));
+            }
+            let suffix = if extra.is_empty() {
+                String::new()
+            } else {
+                format!("  ({})", extra.join(", "))
+            };
+            info!("{name}: verified{algo} -> {game}{suffix}");
+            if let Some(d) = data.track_detail() {
+                info!("  {d}");
+            }
+        }
+        "hint" => {
+            let game = data.game_name.as_deref().unwrap_or("?");
+            info!("{name}: not verified  (name+size hint only: \"{game}\")");
+        }
+        "unsupported" => info!("{name}: unsupported (decompress the file first)"),
+        "failed" => info!("{name}: failed"),
+        _ => info!("{name}: no match"),
+    }
+}
+
+fn print_identify(data: &DatMatchData) {
+    match data.verdict.as_str() {
+        "verified" => info!(
+            "Match: {} (verified)",
+            data.match_algo
+                .as_deref()
+                .unwrap_or_default()
+                .to_uppercase()
+        ),
+        "hint" => info!("Match: name+size (weak)"),
+        _ => {
+            info!("No match");
+            return;
+        }
+    }
+    if let Some(g) = &data.game_name {
+        info!(
+            "Game:  {g}      platform: {}   group: {}",
+            data.platform.as_deref().unwrap_or("?"),
+            data.signature_group.as_deref().unwrap_or("?")
+        );
+    }
+    if let Some(i) = data
+        .matched
+        .as_ref()
+        .and_then(|m| m.dat_file_import.as_ref())
+    {
+        info!("DAT:   version {}", i.version);
+    }
+    if !data.external_ids.is_empty() {
+        let ids: Vec<String> = data
+            .external_ids
+            .iter()
+            .map(|e| format!("{} {}", e.provider, e.id))
+            .collect();
+        info!("IDs:   {}", ids.join(", "));
+    }
 }

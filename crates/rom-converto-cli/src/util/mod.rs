@@ -2,46 +2,10 @@ pub mod http;
 
 use crate::commands::ConflictPolicyArg;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use rom_converto_lib::info::{InfoOptions, read_info};
-use rom_converto_lib::util::{
-    CancelToken, ConflictPolicy, ConflictResolution, ProgressReporter, TemplateTokens,
-    apply_template, place_in_dir_mirrored, resolve_conflict,
-};
+use rom_converto_lib::util::{ConflictPolicy, ProgressReporter};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
-
-/// Resolve an `--output-template` to a concrete output path joined under
-/// `base_dir`. Metadata is read best-effort: a failed or key-less read
-/// degrades the identity tokens to the input basename rather than aborting
-/// the conversion. A malformed template (traversal, empty result) still
-/// surfaces as an error since that is a user mistake worth reporting.
-pub fn templated_output(
-    template: &str,
-    input: &Path,
-    base_dir: Option<&Path>,
-    output_ext: &str,
-    keys_path: Option<&Path>,
-    dry_run: bool,
-) -> anyhow::Result<PathBuf> {
-    let info = read_info(
-        input,
-        &InfoOptions {
-            keys_path: keys_path.map(Path::to_path_buf),
-            parent_path: None,
-        },
-    )
-    .map_err(|e| log::debug!("Metadata unavailable for {}: {e}", input.display()))
-    .ok();
-    let tokens = TemplateTokens::new(info.as_ref(), input, output_ext);
-    let rel = apply_template(template, &tokens)?;
-    let base = base_dir.unwrap_or_else(|| Path::new("."));
-    let joined = base.join(rel);
-    if !dry_run && let Some(parent) = joined.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    Ok(joined)
-}
 
 pub fn file_len(path: &Path) -> u64 {
     std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
@@ -63,83 +27,9 @@ pub fn ok_str(b: bool) -> &'static str {
     if b { "OK" } else { "FAIL" }
 }
 
-pub struct BatchOutput<'a> {
-    pub input: &'a Path,
-    pub derived: &'a Path,
-    pub input_dir: &'a Path,
-    pub output_dir: Option<&'a Path>,
-    pub output_template: Option<&'a str>,
-    pub output_ext: &'a str,
-    pub keys_path: Option<&'a Path>,
-    pub dry_run: bool,
-}
-
-/// Per-file output path for a recursive batch. With a template it resolves
-/// against the file's metadata and joins under `output_dir`; without one it
-/// mirrors the input subtree via `place_in_dir_mirrored`, preserving the
-/// existing recursive behavior unchanged.
-pub fn batch_output(out: BatchOutput<'_>) -> anyhow::Result<PathBuf> {
-    match out.output_template {
-        Some(tmpl) => templated_output(
-            tmpl,
-            out.input,
-            out.output_dir,
-            out.output_ext,
-            out.keys_path,
-            out.dry_run,
-        ),
-        None => Ok(place_in_dir_mirrored(
-            out.derived,
-            out.input_dir,
-            out.output_dir,
-        )),
-    }
-}
-
 pub enum WriteDecision {
     Write(PathBuf),
     Skip,
-}
-
-pub use rom_converto_lib::util::{HashCache, OutputVerify, VerifyOutcome, verify_existing_output};
-
-/// Format label for the verify cache. `None` means the target is not cached:
-/// an output with no integrity check, or an NX container with no usable keyset
-/// (its verify is skipped and its output kept, so caching it would be wrong).
-fn verify_label(target: &OutputVerify) -> Option<&'static str> {
-    match target {
-        OutputVerify::Chd => Some("chd"),
-        OutputVerify::Cso => Some("cso"),
-        OutputVerify::Rvz => Some("rvz"),
-        OutputVerify::Nx(keys) if keys.header_key.is_some() => Some("nx"),
-        OutputVerify::Nx(_) | OutputVerify::None => None,
-    }
-}
-
-/// [`verify_existing_output`] with a cache in front. A prior `Valid` verdict for
-/// an unchanged output short-circuits the read; only `Valid` is stored, since an
-/// `Invalid` output gets rewritten (changing its mtime and invalidating the
-/// entry anyway).
-pub async fn verify_existing_cached(
-    cache: &HashCache,
-    progress: &dyn ProgressReporter,
-    path: &Path,
-    target: OutputVerify,
-    cancel: CancelToken,
-) -> anyhow::Result<VerifyOutcome> {
-    let label = verify_label(&target);
-    if let Some(label) = label
-        && cache.lookup_verify(path, label)
-    {
-        return Ok(VerifyOutcome::Valid);
-    }
-    let outcome = verify_existing_output(progress, path, target, cancel).await?;
-    if outcome == VerifyOutcome::Valid
-        && let Some(label) = label
-    {
-        cache.store_verify(path, label, true);
-    }
-    Ok(outcome)
 }
 
 /// Resolves the effective conflict policy for commands that read a
@@ -155,190 +45,6 @@ pub fn resolve_policy(
         ConflictPolicy::Overwrite
     } else {
         on_conflict.map(Into::into).unwrap_or(fallback)
-    }
-}
-
-pub fn log_skipped(output: &Path) {
-    log::info!("Skipped, output exists: {}", output.display());
-}
-
-pub fn log_kept_valid(output: &Path) {
-    log::info!("Kept, output verified valid: {}", output.display());
-}
-
-pub fn log_rewriting_invalid(output: &Path) {
-    log::info!(
-        "Rewriting, output failed verification: {}",
-        output.display()
-    );
-}
-
-/// One single-file conversion's output plan: where the write should land and
-/// what to do if something is already there.
-pub struct SingleOutput<'a> {
-    pub operation: &'a str,
-    /// The path the user typed, used for logs, tallies and reports.
-    pub cli_input: &'a Path,
-    /// The resolved input, which differs from `cli_input` for archive members.
-    pub input: &'a Path,
-    /// An explicit OUTPUT or `-o`, which short-circuits the derivation.
-    pub explicit: Option<PathBuf>,
-    /// The default output path, before `--output-dir` is applied.
-    pub derived: PathBuf,
-    pub output_dir: Option<&'a Path>,
-    pub output_template: Option<&'a str>,
-    pub output_ext: &'a str,
-    pub keys_path: Option<&'a Path>,
-    pub policy: ConflictPolicy,
-    /// `OutputVerify::None` opts the operation out of `overwrite-invalid`,
-    /// since there is nothing to check an existing output against.
-    pub verify: OutputVerify,
-    pub media: Option<&'a str>,
-    pub missing_keys: Option<&'a str>,
-    pub report: Option<&'a Path>,
-    pub dry_run: bool,
-    pub cancel: CancelToken,
-}
-
-/// Resolves where a single-file conversion writes, handling the explicit
-/// path, `--output-dir`, `--output-template`, the conflict policy and the
-/// dry-run preview. `None` means the caller is done: the plan was printed,
-/// the output was skipped, or an existing output verified clean.
-pub async fn resolve_single_output(
-    plan: SingleOutput<'_>,
-    progress: &dyn ProgressReporter,
-) -> anyhow::Result<Option<PathBuf>> {
-    let SingleOutput {
-        operation,
-        cli_input,
-        input,
-        explicit,
-        derived,
-        output_dir,
-        output_template,
-        output_ext,
-        keys_path,
-        policy,
-        verify,
-        media,
-        missing_keys,
-        report,
-        dry_run,
-        cancel,
-    } = plan;
-
-    let desired = match explicit {
-        Some(p) => p,
-        None => {
-            if !dry_run && let Some(dir) = output_dir {
-                std::fs::create_dir_all(dir)?;
-            }
-            match output_template {
-                Some(tmpl) => {
-                    templated_output(tmpl, input, output_dir, output_ext, keys_path, dry_run)?
-                }
-                None => rom_converto_lib::util::place_in_dir(&derived, output_dir),
-            }
-        }
-    };
-
-    let decision = resolve_output(&desired, policy)?;
-    let verifiable = !matches!(verify, OutputVerify::None);
-
-    if dry_run {
-        if verifiable {
-            crate::dry_run::single_verify(
-                crate::dry_run::SingleVerifyPlan {
-                    operation,
-                    input: cli_input,
-                    desired: &desired,
-                    decision: &decision,
-                    policy,
-                    target: verify,
-                    media,
-                    missing_keys,
-                    cancel,
-                },
-                progress,
-                report,
-            )
-            .await?;
-        } else {
-            crate::dry_run::single(
-                operation,
-                cli_input,
-                &desired,
-                &decision,
-                media,
-                missing_keys,
-                report,
-            )?;
-        }
-        return Ok(None);
-    }
-
-    match decision {
-        WriteDecision::Skip if verifiable && policy == ConflictPolicy::OverwriteInvalid => {
-            match verify_existing_output(progress, &desired, verify, cancel).await? {
-                VerifyOutcome::Valid => {
-                    log_kept_valid(&desired);
-                    Ok(None)
-                }
-                VerifyOutcome::Invalid => {
-                    log_rewriting_invalid(&desired);
-                    Ok(Some(desired))
-                }
-            }
-        }
-        WriteDecision::Skip => {
-            log_skipped(&desired);
-            Ok(None)
-        }
-        WriteDecision::Write(p) => Ok(Some(p)),
-    }
-}
-
-pub fn resolve_output(path: &Path, policy: ConflictPolicy) -> anyhow::Result<WriteDecision> {
-    match resolve_conflict(path, policy)? {
-        ConflictResolution::Write(p) => Ok(WriteDecision::Write(p)),
-        ConflictResolution::Skip => Ok(WriteDecision::Skip),
-    }
-}
-
-/// Directory outputs cannot auto-number, so `rename` is rejected here.
-/// `skip` returns `Skip` when the directory already holds files, and
-/// `error`/`overwrite` keep the original refuse/replace behavior.
-pub fn resolve_output_dir(path: &Path, policy: ConflictPolicy) -> anyhow::Result<WriteDecision> {
-    if !path.exists() {
-        return Ok(WriteDecision::Write(path.to_path_buf()));
-    }
-    if path.is_file() {
-        match policy {
-            ConflictPolicy::Overwrite => return Ok(WriteDecision::Write(path.to_path_buf())),
-            ConflictPolicy::Skip | ConflictPolicy::OverwriteInvalid => {
-                return Ok(WriteDecision::Skip);
-            }
-            _ => anyhow::bail!(
-                "output path exists and is a file, use --on-conflict overwrite to replace it: {}",
-                path.display()
-            ),
-        }
-    }
-    let non_empty = std::fs::read_dir(path)?.next().is_some();
-    if !non_empty {
-        return Ok(WriteDecision::Write(path.to_path_buf()));
-    }
-    match policy {
-        ConflictPolicy::Overwrite => Ok(WriteDecision::Write(path.to_path_buf())),
-        ConflictPolicy::Skip | ConflictPolicy::OverwriteInvalid => Ok(WriteDecision::Skip),
-        ConflictPolicy::Rename => anyhow::bail!(
-            "rename is not supported for directory outputs, use --on-conflict overwrite/skip/error: {}",
-            path.display()
-        ),
-        ConflictPolicy::Error => anyhow::bail!(
-            "output directory is not empty, use --on-conflict overwrite to replace it: {}",
-            path.display()
-        ),
     }
 }
 
@@ -375,6 +81,9 @@ pub fn expand_tilde_arg(arg: std::ffi::OsString) -> std::ffi::OsString {
 
 const PROGRESS_TEMPLATE: &str = "{msg}\n{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({binary_bytes_per_sec}, {eta})";
 
+const COUNT_TEMPLATE: &str =
+    "{msg}\n{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len} files ({eta})";
+
 /// A poisoned progress-bar mutex only means a panic happened while a bar was
 /// being swapped; the bar itself stays usable, so the guard is recovered
 /// rather than propagating a second panic out of a progress callback.
@@ -395,18 +104,38 @@ impl IndicatifProgress {
             bar: Mutex::new(None),
         }
     }
+
+    fn start_styled(&self, total: u64, msg: &str, style: ProgressStyle) {
+        let pg = self.mp.add(ProgressBar::new(total));
+        pg.set_style(style);
+        pg.set_message(msg.to_string());
+        *bar(&self.bar) = Some(pg);
+    }
+
+    /// A span whose units are files, not bytes. An unknown total (the one-shot
+    /// network phases) has nothing to count, so it spins instead.
+    pub fn start_count(&self, total: u64, msg: &str) {
+        let style = if total == 0 {
+            ProgressStyle::default_spinner()
+                .template("{spinner} {msg}")
+                .expect("valid progress template")
+        } else {
+            ProgressStyle::default_bar()
+                .template(COUNT_TEMPLATE)
+                .expect("valid progress template")
+                .progress_chars("#>-")
+        };
+        self.start_styled(total, msg, style);
+    }
 }
 
 impl ProgressReporter for IndicatifProgress {
     fn start(&self, total: u64, msg: &str) {
-        let pg = self.mp.add(ProgressBar::new(total));
         let style = ProgressStyle::default_bar()
             .template(PROGRESS_TEMPLATE)
             .expect("valid progress template")
             .progress_chars("#>-");
-        pg.set_style(style);
-        pg.set_message(msg.to_string());
-        *bar(&self.bar) = Some(pg);
+        self.start_styled(total, msg, style);
     }
 
     fn inc(&self, delta: u64) {
@@ -527,6 +256,68 @@ impl TotalProgress {
     }
 }
 
+/// The runner's view of the CLI: per-file bars on `file`, the aggregate bar
+/// on `total`, and streamed rows printed by the command that owns them.
+pub struct CliProgress<'a> {
+    pub file: &'a IndicatifProgress,
+    pub total: &'a TotalProgress,
+    pub print_row: fn(&rom_converto_lib::runner::models::RunRow),
+    /// Set by the dat commands, whose outer spans count files rather than
+    /// bytes; the nested per-file reporters keep counting bytes.
+    pub count_units: bool,
+}
+
+impl ProgressReporter for CliProgress<'_> {
+    fn start(&self, total: u64, msg: &str) {
+        if self.count_units {
+            self.file.start_count(total, msg);
+        } else {
+            self.file.start(total, msg);
+        }
+    }
+
+    fn inc(&self, delta: u64) {
+        self.file.inc(delta);
+    }
+
+    fn finish(&self) {
+        self.file.finish();
+    }
+
+    fn set_phase(&self, label: &str) {
+        self.file.set_phase(label);
+    }
+
+    fn row(&self, row: &rom_converto_lib::runner::models::RunRow) {
+        (self.print_row)(row);
+    }
+
+    fn batch_start(&self, total_files: u64, total_bytes: u64) {
+        self.total.begin(total_files, total_bytes);
+    }
+
+    fn batch_advance(&self, bytes: u64) {
+        self.total.advance(bytes);
+    }
+
+    /// Its own bar slot on the same `MultiProgress`, so a nested per-file bar
+    /// is drawn under the outer one instead of replacing it.
+    fn child(&self, _suffix: &str) -> Box<dyn ProgressReporter + Send + Sync> {
+        Box::new(IndicatifProgress::new(self.file.mp.clone()))
+    }
+}
+
+/// The runner's `on_conflict` option value for a resolved policy.
+pub fn policy_name(policy: ConflictPolicy) -> &'static str {
+    match policy {
+        ConflictPolicy::Error => "error",
+        ConflictPolicy::Overwrite => "overwrite",
+        ConflictPolicy::Skip => "skip",
+        ConflictPolicy::Rename => "rename",
+        ConflictPolicy::OverwriteInvalid => "overwrite_invalid",
+    }
+}
+
 /// Lets library functions outside batch.rs (which don't know the concrete
 /// `TotalProgress` byte-aware API) drive the same aggregate bar through the
 /// shared trait, one unit at a time.
@@ -547,7 +338,6 @@ impl ProgressReporter for TotalProgress {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
 
     #[test]
     fn resolve_policy_flag_wins() {
@@ -582,101 +372,6 @@ mod tests {
     }
 
     #[test]
-    fn resolve_output_error_existing_bails() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("game.chd");
-        std::fs::write(&path, b"x").unwrap();
-        assert!(resolve_output(&path, ConflictPolicy::Error).is_err());
-    }
-
-    #[test]
-    fn resolve_output_skip_existing() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("game.chd");
-        std::fs::write(&path, b"x").unwrap();
-        assert!(matches!(
-            resolve_output(&path, ConflictPolicy::Skip).unwrap(),
-            WriteDecision::Skip
-        ));
-    }
-
-    #[test]
-    fn resolve_output_rename_existing() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("game.chd");
-        std::fs::write(&path, b"x").unwrap();
-        let WriteDecision::Write(p) = resolve_output(&path, ConflictPolicy::Rename).unwrap() else {
-            panic!("expected write");
-        };
-        assert_eq!(p, dir.path().join("game (1).chd"));
-    }
-
-    #[test]
-    fn resolve_output_overwrite_existing() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("game.chd");
-        std::fs::write(&path, b"x").unwrap();
-        let WriteDecision::Write(p) = resolve_output(&path, ConflictPolicy::Overwrite).unwrap()
-        else {
-            panic!("expected write");
-        };
-        assert_eq!(p, path);
-    }
-
-    #[test]
-    fn resolve_output_overwrite_invalid_keeps_existing() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("game.cso");
-        std::fs::write(&path, b"x").unwrap();
-        assert!(matches!(
-            resolve_output(&path, ConflictPolicy::OverwriteInvalid).unwrap(),
-            WriteDecision::Skip
-        ));
-    }
-
-    #[test]
-    fn resolve_output_overwrite_invalid_writes_when_absent() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("game.cso");
-        let WriteDecision::Write(p) =
-            resolve_output(&path, ConflictPolicy::OverwriteInvalid).unwrap()
-        else {
-            panic!("expected write");
-        };
-        assert_eq!(p, path);
-    }
-
-    #[test]
-    fn resolve_output_dir_rejects_rename() {
-        let dir = tempdir().unwrap();
-        std::fs::write(dir.path().join("a"), b"x").unwrap();
-        assert!(resolve_output_dir(dir.path(), ConflictPolicy::Rename).is_err());
-    }
-
-    #[test]
-    fn verify_label_maps_targets() {
-        use rom_converto_lib::nintendo::nx::KeySet;
-        assert_eq!(verify_label(&OutputVerify::Chd), Some("chd"));
-        assert_eq!(verify_label(&OutputVerify::Cso), Some("cso"));
-        assert_eq!(verify_label(&OutputVerify::Rvz), Some("rvz"));
-        assert_eq!(verify_label(&OutputVerify::None), None);
-
-        // NX without a header key is not cached: its verify is skipped and the
-        // output kept, so a cached "valid" verdict would be wrong.
-        let no_key = KeySet::default();
-        assert_eq!(verify_label(&OutputVerify::Nx(Box::new(no_key))), None);
-
-        let with_key = KeySet {
-            header_key: Some([0u8; 32]),
-            ..Default::default()
-        };
-        assert_eq!(
-            verify_label(&OutputVerify::Nx(Box::new(with_key))),
-            Some("nx")
-        );
-    }
-
-    #[test]
     fn dry_run_flag_parses() {
         use crate::commands::Cli;
         use clap::Parser;
@@ -694,36 +389,6 @@ mod tests {
         assert!(cli.skip_space_check);
         let cli = Cli::parse_from(["bin", "cso", "compress", "game.iso"]);
         assert!(!cli.skip_space_check);
-    }
-
-    #[test]
-    fn templated_output_dry_run_skips_mkdir() {
-        let dir = tempdir().unwrap();
-        let input = dir.path().join("game.iso");
-        std::fs::write(&input, b"x").unwrap();
-
-        let out = templated_output(
-            "sub/{basename}.cso",
-            &input,
-            Some(dir.path()),
-            "cso",
-            None,
-            true,
-        )
-        .unwrap();
-        assert_eq!(out, dir.path().join("sub/game.cso"));
-        assert!(!dir.path().join("sub").exists());
-
-        templated_output(
-            "sub/{basename}.cso",
-            &input,
-            Some(dir.path()),
-            "cso",
-            None,
-            false,
-        )
-        .unwrap();
-        assert!(dir.path().join("sub").is_dir());
     }
 
     fn hidden_multi_progress() -> MultiProgress {

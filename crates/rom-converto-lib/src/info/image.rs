@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 /// `png_bytes` is a complete PNG file. Width and height describe the
 /// decoded image so callers do not need to parse the PNG header to render.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct Image {
     pub png_bytes: Vec<u8>,
     pub width: u32,

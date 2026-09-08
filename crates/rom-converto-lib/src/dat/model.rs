@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 /// How a file matched: by hash tier (SHA-256/SHA-1/MD5/CRC), by file name
 /// and size only, or not at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub enum GameMatchType {
     #[serde(rename = "SHA256")]
     Sha256,
@@ -99,6 +101,8 @@ pub struct GameMetadataMatchResult {
 /// One external database cross-reference (e.g. IGDB) for a matched game.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub struct ExternalMetadata {
     pub provider_name: String,
     pub match_type: String,
@@ -186,6 +190,8 @@ pub struct BulkIdentifyRelationsResponse {
 /// the matched game, platform, company, and DAT file, when known.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub struct GameAndRelationMatchResult {
     pub game_match_type: GameMatchType,
     #[serde(default)]
@@ -208,6 +214,8 @@ pub struct GameAndRelationMatchResult {
 
 /// A company as returned by the Playmatch API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub struct PlaymatchCompany {
     pub id: String,
     pub name: String,
@@ -216,6 +224,8 @@ pub struct PlaymatchCompany {
 /// A game as returned by the Playmatch API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub struct PlaymatchGame {
     pub id: String,
     pub name: String,
@@ -229,6 +239,8 @@ pub struct PlaymatchGame {
 /// A file entry of a DAT game, with its hashes and DAT presence.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub struct PlaymatchGameFile {
     pub id: String,
     pub game_id: String,
@@ -250,6 +262,8 @@ pub struct PlaymatchGameFile {
 
 /// A platform as returned by the Playmatch API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub struct PlaymatchPlatform {
     pub id: String,
     pub name: String,
@@ -257,6 +271,8 @@ pub struct PlaymatchPlatform {
 
 /// A signature group (DAT provider grouping) as returned by the Playmatch API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub struct PlaymatchSignatureGroup {
     pub id: String,
     pub name: String,
@@ -265,6 +281,8 @@ pub struct PlaymatchSignatureGroup {
 /// A DAT file's identity and current version, as returned by the Playmatch API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub struct PlaymatchDatFile {
     pub id: String,
     pub name: String,
@@ -280,6 +298,8 @@ pub struct PlaymatchDatFile {
 /// One recorded import of a DAT file version.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub struct PlaymatchDatFileImport {
     pub id: String,
     pub dat_file_id: String,
@@ -334,6 +354,8 @@ pub struct BulkGamesByIdResponse {
 /// An id/name pair, used across the API for platform, signature group, and
 /// company references.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub struct NamedRef {
     pub id: String,
     pub name: String,
@@ -342,6 +364,8 @@ pub struct NamedRef {
 /// Summary of one DAT file, as listed by `/dat-files`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub struct DatFileSummary {
     pub id: String,
     pub name: String,
@@ -361,6 +385,8 @@ pub struct DatFileSummary {
 /// The most recent recorded import of a DAT file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub struct LatestDatFileImport {
     pub id: String,
     pub version: String,

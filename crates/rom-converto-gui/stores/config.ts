@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { invoke } from "~/lib/ipc";
-import type { DatDefaults, Preset, UserConfig } from "~/types/config";
+import type { DatDefaults, Preset, UserConfig } from "~/types";
 
 // Backs the Settings page and every page's preset picker with the same
 // `rom-converto.toml` presets the CLI reads. `activePreset` is the one

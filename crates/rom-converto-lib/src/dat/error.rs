@@ -27,5 +27,11 @@ pub enum DatError {
     Cancelled(#[from] crate::util::Cancelled),
 }
 
+impl From<tokio::task::JoinError> for DatError {
+    fn from(err: tokio::task::JoinError) -> Self {
+        DatError::Container(err.to_string())
+    }
+}
+
 /// Result alias for Playmatch API client operations.
 pub type DatResult<T> = Result<T, DatError>;

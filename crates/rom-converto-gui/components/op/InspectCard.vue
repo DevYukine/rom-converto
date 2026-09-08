@@ -2,14 +2,15 @@
 import { computed, ref, watch } from "vue";
 import { invoke, save } from "~/lib/ipc";
 import { useToast } from "~/composables/useToast";
-import { parseHashLine } from "~/lib/hash-lines";
+import { digestValues } from "~/lib/display";
+import { runArgs } from "~/lib/opdefs/types";
+import type { InfoResult, RunOutcome } from "~/types";
 import PrimaryButton from "~/components/ui/PrimaryButton.vue";
 import ContentTypeChip from "~/components/ui/ContentTypeChip.vue";
 import KvRow from "~/components/ui/KvRow.vue";
 import InnerFilesList from "~/components/op/InnerFilesList.vue";
 import { buildInspectView, formatBytes, moduleFor } from "~/lib/inspect-view";
 import type { Stat } from "~/lib/inspect-view";
-import type { InfoResult } from "~/types/info";
 import { imageToDataUrl, pickBackgroundImage, pickIconImage } from "~/lib/info";
 
 const props = defineProps<{
@@ -76,15 +77,12 @@ async function computeHashes() {
 	hashing.value = true;
 	hashError.value = "";
 	try {
-		const text = await invoke<string>("cmd_hash", {
-			input: path,
-			algos: ["crc32", "md5", "sha1", "sha256"],
-			recursive: false,
-			maxDepth: null,
-		});
+		const res = await invoke<RunOutcome>(
+			"cmd_run",
+			runArgs("hash", path, null, { algo: "crc32,md5,sha1,sha256" }, false, "inspect-hash"),
+		);
 		if (path !== props.path) return;
-		const row = text.split("\n").map(parseHashLine).find(Boolean);
-		computedHashes.value = row ? row.values : [];
+		computedHashes.value = digestValues(res.data);
 		if (!computedHashes.value.length) hashError.value = "No hash data returned.";
 	} catch (e) {
 		if (path === props.path) hashError.value = String(e);

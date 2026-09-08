@@ -2,14 +2,11 @@ use crate::commands::ConflictArgs;
 use clap::Parser;
 use std::path::PathBuf;
 
+use crate::batch;
 use crate::commands::support::{DispatchCtx, require_dir};
-use crate::dry_run;
-use crate::util::{WriteDecision, resolve_output, resolve_policy};
+use crate::util::resolve_policy;
 use anyhow::Result;
-use rom_converto_lib::playlist::{PlaylistMode, PlaylistOptions, plan_playlists};
-use rom_converto_lib::util::{CancelToken, Tally, mixed_playlist_extensions};
-use std::path::Path;
-use std::time::Instant;
+use rom_converto_lib::runner::models::RunOptions;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum PlaylistModeArg {
@@ -56,93 +53,50 @@ pub struct PlaylistCommand {
 
 /// Runs one `playlist` subcommand.
 pub async fn run(cmd: PlaylistCommand, ctx: DispatchCtx<'_>) -> Result<()> {
-    let DispatchCtx { dry_run, .. } = ctx;
+    let DispatchCtx {
+        progress,
+        total_progress,
+        dry_run,
+        skip_space_check,
+        cancel,
+        cache,
+        config,
+        preset,
+        ..
+    } = ctx;
     require_dir(&cmd.input)?;
-
-    let exts: Vec<String> = cmd
-        .extensions
-        .split(',')
-        .map(|s| s.trim().to_ascii_lowercase())
-        .filter(|s| !s.is_empty())
-        .collect();
-    let ext_refs: Vec<&str> = exts.iter().map(String::as_str).collect();
-
-    let mode = match cmd.playlist_mode {
-        PlaylistModeArg::Multiple => PlaylistMode::Multiple,
-        PlaylistModeArg::Always => PlaylistMode::Always,
+    let run = batch::BatchRun {
+        progress: &progress,
+        total_progress: &total_progress,
+        cache,
+        cancel: &cancel,
+        config,
+        preset,
+        dry_run,
     };
-
-    let plans = plan_playlists(
-        &PlaylistOptions {
-            scan_dir: &cmd.input,
-            output_dir: cmd.output_dir.as_deref(),
-            extensions: &ext_refs,
-            mode,
-            max_depth: cmd.max_depth,
-        },
-        &CancelToken::new(),
-    )?;
-
-    // An .m3u has no integrity check, so overwrite-invalid degrades to skip.
-    let policy = resolve_policy(
-        cmd.conflict.on_conflict,
-        cmd.conflict.force,
-        rom_converto_lib::util::ConflictPolicy::Error,
+    let mut options = RunOptions::from(batch::Common {
+        recursive: false,
+        output_dir: cmd.output_dir,
+        output_template: None,
+        max_depth: cmd.max_depth,
+        report: None,
+        // An .m3u has no integrity check, so overwrite-invalid degrades to skip.
+        policy: resolve_policy(
+            cmd.conflict.on_conflict,
+            cmd.conflict.force,
+            rom_converto_lib::util::ConflictPolicy::Error,
+        ),
+        skip_space_check,
+    });
+    options.extensions = Some(cmd.extensions);
+    options.playlist_mode = Some(
+        match cmd.playlist_mode {
+            PlaylistModeArg::Multiple => "multiple",
+            PlaylistModeArg::Always => "always",
+        }
+        .to_string(),
     );
-
-    if !dry_run && let Some(dir) = cmd.output_dir.as_deref() {
-        std::fs::create_dir_all(dir)?;
-    }
-
-    let mut tally = Tally::new();
-    let started = Instant::now();
-
-    for plan in &plans {
-        if plan.has_duplicate_numbers {
-            log::warn!(
-                "Duplicate disc numbers in set {}, including all entries",
-                plan.base_title
-            );
-        }
-        let entry_exts = plan
-            .contents
-            .lines()
-            .filter_map(|line| Path::new(line).extension())
-            .filter_map(|ext| ext.to_str());
-        if let Some(mixed) = mixed_playlist_extensions(entry_exts) {
-            log::warn!(
-                "Mixed track formats ({mixed}) in set {}; emulators expect every disc \
-                     in a playlist to use the same format",
-                plan.base_title
-            );
-        }
-        let decision = resolve_output(&plan.m3u_path, policy)?;
-        if dry_run {
-            dry_run::log_plan("write", &cmd.input, &plan.m3u_path, &decision, None, None);
-            for line in plan.contents.lines() {
-                log::info!("    {line}");
-            }
-            dry_run::record(&mut tally, &cmd.input, &decision);
-            continue;
-        }
-        match decision {
-            WriteDecision::Write(path) => {
-                std::fs::write(&path, &plan.contents)?;
-                log::info!("Wrote {} ({} discs)", path.display(), plan.disc_count);
-                tally.record_ok(0, 0, std::time::Duration::ZERO);
-            }
-            WriteDecision::Skip => {
-                log::info!("Skipped existing {}", plan.m3u_path.display());
-                tally.record_skipped();
-            }
-        }
-    }
-
-    if dry_run {
-        dry_run::finish(&tally, &[], None)?;
-    } else {
-        log::info!("{}", Tally::count_summary(tally.count(), started.elapsed()));
-    }
+    batch::run(&run, "playlist.write", cmd.input, None, options).await?;
     Ok(())
 }
 

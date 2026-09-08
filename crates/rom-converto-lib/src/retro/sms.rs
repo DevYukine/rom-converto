@@ -13,6 +13,8 @@ const CANDIDATES: [usize; 3] = [0x7FF0, 0x3FF0, 0x1FF0];
 /// Fields of the Sega 8-bit cartridge header, with the checksum recomputed
 /// over the range the size nibble implies.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct SmsInfo {
     pub header_offset: u64,
     pub product_code: u32,

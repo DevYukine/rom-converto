@@ -62,6 +62,8 @@ const REGION_FLAGS: &[(u32, &str)] = &[
 
 /// Title metadata parsed from a `default.xex`'s optional headers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct XexInfo {
     pub title_id: u32,
     pub title_id_hex: String,

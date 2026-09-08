@@ -27,6 +27,8 @@ pub use psx::PsxInfo;
 /// A PlayStation-family disc found inside a container image.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub enum DiscContent {
     Psx(PsxInfo),
     Psp(PspInfo),

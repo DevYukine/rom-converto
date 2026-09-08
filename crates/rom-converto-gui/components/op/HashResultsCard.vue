@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { useQueueStore } from "~/stores/queue";
+import { useQueueStore, type QueueJob } from "~/stores/queue";
 import { basename } from "~/composables/useDerivedPath";
-import { parseHashLine } from "~/lib/hash-lines";
+import { digestValues } from "~/lib/display";
+import { requestPath } from "~/lib/opdefs/types";
 import ConfigCard from "~/components/ui/ConfigCard.vue";
 
 interface HashRow {
@@ -13,13 +14,21 @@ interface HashRow {
 
 const queue = useQueueStore();
 
+// A recursive run answers with one row per file; a single file answers with
+// its digests alone, named by the path the job was given.
+function jobRows(job: QueueJob): { path: string; digests: unknown }[] {
+	const data = typeof job.result === "string" ? null : job.result?.data;
+	if (Array.isArray(data)) return data as { path: string; digests: unknown }[];
+	if (!data) return [];
+	return [{ path: requestPath(job.args, "input") || job.name, digests: data }];
+}
+
 const rows = computed<HashRow[]>(() => {
 	const jobs = queue.finished.filter((j) => j.resultKind === "hash" && j.status === "done");
 	const out: HashRow[] = [];
 	for (const job of jobs.slice().reverse()) {
-		for (const line of String(job.result ?? "").split("\n")) {
-			const row = parseHashLine(line);
-			if (row) out.push({ key: row.path, name: basename(row.path), values: row.values });
+		for (const row of jobRows(job)) {
+			out.push({ key: row.path, name: basename(row.path), values: digestValues(row.digests) });
 		}
 	}
 	return out;

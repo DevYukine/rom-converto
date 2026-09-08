@@ -47,6 +47,8 @@ pub use ws::WsInfo;
 
 /// Metadata read from a cartridge ROM image.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct RetroInfo {
     pub file_size: u64,
     pub details: RetroDetails,
@@ -55,6 +57,8 @@ pub struct RetroInfo {
 /// Per-system header fields, tagged with the system on the wire.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "system", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub enum RetroDetails {
     Nes(NesInfo),
     Snes(SnesInfo),

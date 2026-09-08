@@ -4,19 +4,14 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 use crate::commands::support::{
-    ALL_IMAGE_EXTS, DispatchCtx, derive_god_dir, derive_output_with_ext, log_single_summary,
-    require_info_input, save_xex_icon,
+    ALL_IMAGE_EXTS, DispatchCtx, derive_god_dir, require_info_input, save_xex_icon,
 };
-use crate::util::{
-    WriteDecision, ensure_input_exists, file_len, log_skipped, ok_str, resolve_output,
-    resolve_output_dir, resolve_policy,
-};
-use crate::{batch, dry_run, info_print};
+use crate::util::{ensure_input_exists, ok_str, resolve_policy};
+use crate::{batch, info_print};
 use anyhow::Result;
-use rom_converto_lib::microsoft::xenon::{convert_to_god, extract_zar, pack_zar, verify_zar};
-use rom_converto_lib::util::TallyDirection;
-use std::path::Path;
-use std::time::Instant;
+use rom_converto_lib::microsoft::xenon::verify_zar;
+use rom_converto_lib::runner::models::{RunData, RunOptions};
+use rom_converto_lib::util::ConflictPolicy;
 
 /// Commands specific to Xbox 360 disc images and the ZArchive format
 #[derive(Subcommand, Debug, Eq, PartialEq)]
@@ -129,49 +124,44 @@ pub struct VerifyCommand {
 pub async fn run(command: XenonCommands, ctx: DispatchCtx<'_>) -> Result<()> {
     let DispatchCtx {
         progress,
+        total_progress,
         dry_run,
         skip_space_check,
         cancel,
+        cache,
+        config,
+        preset,
         ..
     } = ctx;
+    let run = batch::BatchRun {
+        progress: &progress,
+        total_progress: &total_progress,
+        cache,
+        cancel: &cancel,
+        config,
+        preset,
+        dry_run,
+    };
     match command {
         XenonCommands::Compress(cmd) => {
             ensure_input_exists(&cmd.input)?;
-            let output = cmd
-                .output_flag
-                .or(cmd.output)
-                .unwrap_or_else(|| derive_output_with_ext(&cmd.input, "zar"));
-            let policy = resolve_policy(
-                None,
-                cmd.force,
-                rom_converto_lib::util::ConflictPolicy::Error,
-            );
-            let decision = resolve_output(&output, policy)?;
-            if dry_run {
-                return dry_run::single(
-                    "compress", &cmd.input, &output, &decision, None, None, None,
-                );
-            }
-            let output = match decision {
-                WriteDecision::Skip => {
-                    log_skipped(&output);
-                    return Ok(());
-                }
-                WriteDecision::Write(p) => p,
-            };
-            if !skip_space_check {
-                let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
-                let required_space = if cmd.input.is_dir() {
-                    rom_converto_lib::microsoft::xenon::total_input_bytes(&cmd.input)
-                        .unwrap_or_else(|_| file_len(&cmd.input))
-                } else {
-                    file_len(&cmd.input)
-                };
-                batch::space_preflight_for_size(required_space, check_dir)?;
-            }
-            let started = Instant::now();
-            pack_zar(&cmd.input, &output, &progress, cancel.clone()).await?;
-            log_single_summary(&cmd.input, &output, TallyDirection::Compress, started);
+            let options = RunOptions::from(batch::Common {
+                recursive: false,
+                output_dir: None,
+                output_template: None,
+                max_depth: None,
+                report: None,
+                policy: resolve_policy(None, cmd.force, ConflictPolicy::Error),
+                skip_space_check,
+            });
+            batch::run(
+                &run,
+                "xenon.compress",
+                cmd.input,
+                cmd.output_flag.or(cmd.output),
+                options,
+            )
+            .await?;
         }
         XenonCommands::Convert(cmd) => {
             ensure_input_exists(&cmd.input)?;
@@ -179,73 +169,43 @@ pub async fn run(command: XenonCommands, ctx: DispatchCtx<'_>) -> Result<()> {
                 .output_dir
                 .clone()
                 .unwrap_or_else(|| derive_god_dir(&cmd.input));
-            let policy = resolve_policy(
-                Some(cmd.on_conflict),
-                cmd.force,
-                rom_converto_lib::util::ConflictPolicy::Error,
-            );
-            let decision = resolve_output_dir(&output_dir, policy)?;
-            if dry_run {
-                return dry_run::single(
-                    "convert",
-                    &cmd.input,
-                    &output_dir,
-                    &decision,
-                    None,
-                    None,
-                    None,
-                );
+            let mut options = RunOptions::from(batch::Common {
+                recursive: false,
+                output_dir: None,
+                output_template: None,
+                max_depth: None,
+                report: None,
+                policy: resolve_policy(Some(cmd.on_conflict), cmd.force, ConflictPolicy::Error),
+                skip_space_check,
+            });
+            options.title = cmd.title;
+            let response =
+                batch::run(&run, "xenon.convert", cmd.input, Some(output_dir), options).await?;
+            if let Some(RunData::XenonConvert(data)) = &response.data {
+                log::info!("Title ID: {:08X}", data.title_id);
+                log::info!("Media ID: {:08X}", data.media_id);
+                log::info!("{} parts, {} bytes", data.part_count, data.total_bytes);
             }
-            let output_dir = match decision {
-                WriteDecision::Skip => {
-                    log_skipped(&output_dir);
-                    return Ok(());
-                }
-                WriteDecision::Write(p) => p,
-            };
-            if !skip_space_check {
-                // On top of the payload: one hash block per 0xCC data
-                // blocks, plus the container header.
-                let len = file_len(&cmd.input);
-                batch::space_preflight_for_size(len + len / 0xCC + 0xB000, &output_dir)?;
-            }
-            let started = Instant::now();
-            let summary = convert_to_god(
-                &cmd.input,
-                &output_dir,
-                cmd.title.as_deref(),
-                &progress,
-                cancel.clone(),
-            )
-            .await?;
-            log::info!("Title ID: {:08X}", summary.title_id);
-            log::info!("Media ID: {:08X}", summary.media_id);
-            log::info!(
-                "{} parts, {} bytes",
-                summary.part_count,
-                summary.total_bytes
-            );
-            log_single_summary(&cmd.input, &output_dir, TallyDirection::CountOnly, started);
         }
         XenonCommands::Extract(cmd) => {
             ensure_input_exists(&cmd.input)?;
-            let policy = rom_converto_lib::util::ConflictPolicy::Error;
-            match resolve_output_dir(&cmd.output_dir, policy)? {
-                WriteDecision::Skip => {
-                    log_skipped(&cmd.output_dir);
-                    return Ok(());
-                }
-                WriteDecision::Write(_) => {}
-            }
-            let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["zar"])?;
-            let started = Instant::now();
-            extract_zar(resolved.path(), &cmd.output_dir, &progress, cancel.clone()).await?;
-            log_single_summary(
-                &cmd.input,
-                &cmd.output_dir,
-                TallyDirection::CountOnly,
-                started,
-            );
+            let options = RunOptions::from(batch::Common {
+                recursive: false,
+                output_dir: None,
+                output_template: None,
+                max_depth: None,
+                report: None,
+                policy: ConflictPolicy::Error,
+                skip_space_check,
+            });
+            batch::run(
+                &run,
+                "xenon.extract",
+                cmd.input,
+                Some(cmd.output_dir),
+                options,
+            )
+            .await?;
         }
         XenonCommands::Verify(cmd) => {
             ensure_input_exists(&cmd.input)?;

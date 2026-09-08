@@ -68,6 +68,8 @@ const PKG_VITA_4: [u8; 16] = [
 /// PSX/PSP-style codes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub enum PkgPlatform {
     Ps3,
     Psp,
@@ -78,6 +80,8 @@ pub enum PkgPlatform {
 /// Metadata read from a `.pkg` header and its plaintext metadata block.
 /// Every field here is readable without any key.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct PkgInfo {
     pub content_id: String,
     pub pkg_revision: u16,

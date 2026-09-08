@@ -19,6 +19,8 @@ const ICON_DIM: u32 = 32;
 /// Metadata read from a Nintendo DS cartridge image: header fields, secure
 /// area state, and the decoded banner, if present.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct NdsInfo {
     pub physical_bytes: u64,
     pub game_title: String,
@@ -47,6 +49,8 @@ pub struct NdsInfo {
 /// The rom_offset/entry_address/load_address/size quadruplet the header
 /// stores for each of the two on-cart CPUs.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct NdsArmInfo {
     pub rom_offset: u32,
     pub entry_address: u32,
@@ -58,6 +62,8 @@ pub struct NdsArmInfo {
 /// and if so whether it currently holds plaintext or ciphertext.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub enum NdsSecureAreaState {
     #[default]
     NotPresent,
@@ -68,6 +74,8 @@ pub enum NdsSecureAreaState {
 /// Decoded `banner.bin` header block: title strings per language plus the
 /// 32x32 icon.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct NdsBannerInfo {
     pub banner_version: u16,
     pub titles: MultilingualString,

@@ -18,6 +18,8 @@ use std::path::Path;
 /// Summary of a CHD file's header, hashes, tracks, and optional DVD
 /// geometry, for the `info` command.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct ChdInfo {
     pub version: u8,
     pub compressors: Vec<String>,
@@ -49,6 +51,8 @@ pub struct ChdInfo {
 
 /// Hard disk geometry, from a V1/V2 header or a `GDDD` metadata entry.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct ChdHardDiskInfo {
     pub cylinders: u32,
     pub heads: u32,
@@ -58,6 +62,8 @@ pub struct ChdHardDiskInfo {
 
 /// One CD track parsed from the CHD's CHT2 metadata.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct ChdTrack {
     pub number: u8,
     pub track_type: String,
@@ -71,6 +77,8 @@ pub struct ChdTrack {
 
 /// DVD-only geometry derived from a CHD's `DVD ` metadata tag.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct ChdDvdInfo {
     /// Total 2048-byte sectors derived from header.logical_bytes.
     pub total_sectors: u64,
@@ -80,6 +88,8 @@ pub struct ChdDvdInfo {
 /// Single- vs dual-layer DVD, inferred from total sector count.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub enum DvdLayerClass {
     #[default]
     SingleLayer,
@@ -89,6 +99,8 @@ pub enum DvdLayerClass {
 /// LaserDisc-only fields derived from a CHD's `AVAV` metadata tag, with VBI
 /// (`AVLD` tag) statistics when present.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct ChdLdInfo {
     /// Field rate rendered verbatim from `AVAV`, e.g. "59.940058" for
     /// interlaced NTSC.
@@ -109,6 +121,8 @@ pub struct ChdLdInfo {
 /// VBI (vertical blanking interval) statistics decoded from a CHD's `AVLD`
 /// metadata tag.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct ChdLdVbiInfo {
     pub disc_type: LdDiscType,
     pub white_flag_count: u32,
@@ -124,6 +138,8 @@ pub struct ChdLdVbiInfo {
 
 /// One CHD metadata tag's fourcc and byte length.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct ChdMetadataTagSummary {
     pub tag: String,
     pub length: u32,

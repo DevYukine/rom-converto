@@ -9,6 +9,8 @@ const HEADER_FROM_END: usize = 0x220;
 
 /// Fields of the Virtual Boy ROM header. The format defines no checksum.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct VbInfo {
     pub title: String,
     pub maker_code: String,

@@ -1,4 +1,4 @@
-import type { InfoResult } from "~/types/info";
+import type { InfoResult } from "~/types";
 
 export type InfoKind = InfoResult["kind"];
 export type InfoOf<K extends InfoKind> = Extract<InfoResult, { kind: K }>;

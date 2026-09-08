@@ -17,6 +17,8 @@ use crate::laserdisc::vbi::{
 
 /// Metadata read from a laserdisc rip's `.avi`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct LdAviInfo {
     // Container header, as the AVI reports it.
     pub video_fourcc: String,
@@ -46,6 +48,8 @@ pub struct LdAviInfo {
 
 /// Summary of the Philips codes recovered from every field's VBI lines.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct LdVbiSummary {
     pub fields_scanned: u32,
     pub white_flag_count: u32,

@@ -1,0 +1,1018 @@
+{
+  "ops": {
+    "chd.compress": [
+      "chd",
+      "compress"
+    ],
+    "chd.extract": [
+      "chd",
+      "extract"
+    ],
+    "chd.migrate": [
+      "chd",
+      "migrate"
+    ],
+    "chd.to-cso": [
+      "chd",
+      "to-cso"
+    ],
+    "chd.to_cso": [
+      "chd",
+      "to-cso"
+    ],
+    "chd.verify": [
+      "chd",
+      "verify"
+    ],
+    "cso.compress": [
+      "cso",
+      "compress"
+    ],
+    "cso.decompress": [
+      "cso",
+      "decompress"
+    ],
+    "cso.to-chd": [
+      "cso",
+      "to-chd"
+    ],
+    "cso.to_chd": [
+      "cso",
+      "to-chd"
+    ],
+    "cso.verify": [
+      "cso",
+      "verify"
+    ],
+    "ctr.cdn-to-cia": [
+      "ctr",
+      "cdn-to-cia"
+    ],
+    "ctr.cdn_to_cia": [
+      "ctr",
+      "cdn-to-cia"
+    ],
+    "ctr.compress": [
+      "ctr",
+      "compress"
+    ],
+    "ctr.convert": [
+      "ctr",
+      "convert"
+    ],
+    "ctr.decompress": [
+      "ctr",
+      "decompress"
+    ],
+    "ctr.decrypt": [
+      "ctr",
+      "decrypt"
+    ],
+    "ctr.encrypt": [
+      "ctr",
+      "encrypt"
+    ],
+    "ctr.generate-cdn-ticket": [
+      "ctr",
+      "generate-cdn-ticket"
+    ],
+    "ctr.generate_cdn_ticket": [
+      "ctr",
+      "generate-cdn-ticket"
+    ],
+    "ctr.verify": [
+      "ctr",
+      "verify"
+    ],
+    "cue.merge": [
+      "cue",
+      "merge"
+    ],
+    "cue.to-cso": [
+      "cue",
+      "to-cso"
+    ],
+    "cue.to-iso": [
+      "cue",
+      "to-iso"
+    ],
+    "cue.to_cso": [
+      "cue",
+      "to-cso"
+    ],
+    "cue.to_iso": [
+      "cue",
+      "to-iso"
+    ],
+    "dat.fixdat": [
+      "dat",
+      "fixdat"
+    ],
+    "dat.identify": [
+      "dat",
+      "identify"
+    ],
+    "dat.rename": [
+      "dat",
+      "rename"
+    ],
+    "dat.scan": [
+      "dat",
+      "scan"
+    ],
+    "dat.verify": [
+      "dat",
+      "verify"
+    ],
+    "dol.compress": [
+      "dol",
+      "compress"
+    ],
+    "dol.decompress": [
+      "dol",
+      "decompress"
+    ],
+    "dol.migrate": [
+      "dol",
+      "migrate"
+    ],
+    "dol.verify": [
+      "dol",
+      "verify"
+    ],
+    "hash": [
+      "hash"
+    ],
+    "info": [
+      "info"
+    ],
+    "info.read": [
+      "info"
+    ],
+    "nds.decrypt": [
+      "nds",
+      "decrypt"
+    ],
+    "nds.encrypt": [
+      "nds",
+      "encrypt"
+    ],
+    "nx.compress": [
+      "nx",
+      "compress"
+    ],
+    "nx.decompress": [
+      "nx",
+      "decompress"
+    ],
+    "nx.merge": [
+      "nx",
+      "merge"
+    ],
+    "nx.split": [
+      "nx",
+      "split"
+    ],
+    "nx.verify": [
+      "nx",
+      "verify"
+    ],
+    "playlist": [
+      "playlist"
+    ],
+    "playlist.write": [
+      "playlist"
+    ],
+    "ps3.decrypt": [
+      "ps3",
+      "decrypt"
+    ],
+    "psp.extract": [
+      "psp",
+      "extract"
+    ],
+    "psp.to-iso": [
+      "psp",
+      "to-iso"
+    ],
+    "psp.to_iso": [
+      "psp",
+      "to-iso"
+    ],
+    "rvl.compress": [
+      "rvl",
+      "compress"
+    ],
+    "rvl.decompress": [
+      "rvl",
+      "decompress"
+    ],
+    "rvl.migrate": [
+      "rvl",
+      "migrate"
+    ],
+    "rvl.verify": [
+      "rvl",
+      "verify"
+    ],
+    "rvz.compress": [
+      "rvl",
+      "compress"
+    ],
+    "rvz.decompress": [
+      "rvl",
+      "decompress"
+    ],
+    "rvz.migrate": [
+      "rvl",
+      "migrate"
+    ],
+    "vita.extract": [
+      "vita",
+      "extract"
+    ],
+    "wup.compress": [
+      "wup",
+      "compress"
+    ],
+    "wup.decrypt": [
+      "wup",
+      "decrypt"
+    ],
+    "wup.verify": [
+      "wup",
+      "verify"
+    ],
+    "xbox.convert": [
+      "xbox",
+      "convert"
+    ],
+    "xbox.extract": [
+      "xbox",
+      "extract"
+    ],
+    "xenon.compress": [
+      "xenon",
+      "compress"
+    ],
+    "xenon.convert": [
+      "xenon",
+      "convert"
+    ],
+    "xenon.extract": [
+      "xenon",
+      "extract"
+    ],
+    "xenon.verify": [
+      "xenon",
+      "verify"
+    ]
+  },
+  "flags": {
+    "algo": {
+      "flag": "--algo",
+      "global": false,
+      "kind": "value"
+    },
+    "allow_encrypted": {
+      "flag": "--allow-encrypted",
+      "global": false,
+      "kind": "bool"
+    },
+    "api_base": {
+      "flag": "--api-base",
+      "global": false,
+      "kind": "value"
+    },
+    "block_size": {
+      "flag": "--block-size",
+      "global": false,
+      "kind": "value"
+    },
+    "block_size_exp": {
+      "flag": "--block-size-exp",
+      "global": false,
+      "kind": "value"
+    },
+    "chunk_size": {
+      "flag": "--chunk-size",
+      "global": false,
+      "kind": "value"
+    },
+    "cleanup": {
+      "flag": "--cleanup",
+      "global": false,
+      "kind": "bool"
+    },
+    "codecs": {
+      "flag": "--codecs",
+      "global": false,
+      "kind": "list"
+    },
+    "compress": {
+      "flag": "--compress",
+      "global": false,
+      "kind": "bool"
+    },
+    "config": {
+      "flag": "--config",
+      "global": true,
+      "kind": "value"
+    },
+    "content_hashes": {
+      "flag": "--full",
+      "global": false,
+      "kind": "bool"
+    },
+    "dat_id": {
+      "flag": "--dat-id",
+      "global": false,
+      "kind": "value"
+    },
+    "dat_name": {
+      "flag": "--dat-name",
+      "global": false,
+      "kind": "value"
+    },
+    "decrypt": {
+      "flag": "--decrypt",
+      "global": false,
+      "kind": "bool"
+    },
+    "deep": {
+      "flag": "--deep",
+      "global": false,
+      "kind": "bool"
+    },
+    "deep_verify": {
+      "flag": "--deep",
+      "global": false,
+      "kind": "bool"
+    },
+    "dry_run": {
+      "flag": "--dry-run",
+      "global": true,
+      "kind": "bool"
+    },
+    "ensure_ticket_exists": {
+      "flag": "--ensure-ticket-exists",
+      "global": false,
+      "kind": "bool"
+    },
+    "extensions": {
+      "flag": "--ext",
+      "global": false,
+      "kind": "value"
+    },
+    "fix": {
+      "flag": "--fix",
+      "global": false,
+      "kind": "bool"
+    },
+    "format": {
+      "flag": "--format",
+      "global": false,
+      "kind": "value"
+    },
+    "full": {
+      "flag": "--full",
+      "global": false,
+      "kind": "bool"
+    },
+    "hunk_size": {
+      "flag": "--hunk-size",
+      "global": false,
+      "kind": "value"
+    },
+    "input_checksum_max": {
+      "flag": "--input-checksum-max",
+      "global": false,
+      "kind": "value"
+    },
+    "input_checksum_min": {
+      "flag": "--input-checksum-min",
+      "global": false,
+      "kind": "value"
+    },
+    "inputs": {
+      "flag": "--inputs",
+      "global": false,
+      "kind": "positional"
+    },
+    "key": {
+      "flag": "--key",
+      "global": false,
+      "kind": "value"
+    },
+    "keys": {
+      "flag": "--keys",
+      "global": false,
+      "kind": "value"
+    },
+    "level": {
+      "flag": "--level",
+      "global": false,
+      "kind": "value"
+    },
+    "max_depth": {
+      "flag": "--max-depth",
+      "global": false,
+      "kind": "value"
+    },
+    "mode": {
+      "flag": "--mode",
+      "global": false,
+      "kind": "value"
+    },
+    "on_conflict": {
+      "flag": "--on-conflict",
+      "global": false,
+      "kind": "value"
+    },
+    "output_dir": {
+      "flag": "--output-dir",
+      "global": false,
+      "kind": "value"
+    },
+    "output_template": {
+      "flag": "--output-template",
+      "global": false,
+      "kind": "value"
+    },
+    "parent": {
+      "flag": "--parent",
+      "global": false,
+      "kind": "value"
+    },
+    "platform": {
+      "flag": "--platform",
+      "global": false,
+      "kind": "value"
+    },
+    "playlist_mode": {
+      "flag": "--playlist-mode",
+      "global": false,
+      "kind": "value"
+    },
+    "preset": {
+      "flag": "--preset",
+      "global": true,
+      "kind": "value"
+    },
+    "quick": {
+      "flag": "--quick",
+      "global": false,
+      "kind": "bool"
+    },
+    "recursive": {
+      "flag": "--recursive",
+      "global": false,
+      "kind": "bool"
+    },
+    "report": {
+      "flag": "--report",
+      "global": false,
+      "kind": "value"
+    },
+    "skip_probe": {
+      "flag": "--skip-probe",
+      "global": false,
+      "kind": "bool"
+    },
+    "skip_space_check": {
+      "flag": "--skip-space-check",
+      "global": true,
+      "kind": "bool"
+    },
+    "skip_verify": {
+      "flag": "--skip-verify",
+      "global": false,
+      "kind": "bool"
+    },
+    "subset": {
+      "flag": "--subset",
+      "global": false,
+      "kind": "value"
+    },
+    "title": {
+      "flag": "--title",
+      "global": false,
+      "kind": "value"
+    }
+  },
+  "op_flags": {
+    "chd.compress": [
+      "codecs",
+      "hunk_size",
+      "level",
+      "max_depth",
+      "on_conflict",
+      "output_dir",
+      "output_template",
+      "recursive",
+      "report"
+    ],
+    "chd.extract": [
+      "max_depth",
+      "on_conflict",
+      "output_dir",
+      "output_template",
+      "parent",
+      "recursive",
+      "report"
+    ],
+    "chd.migrate": [
+      "codecs",
+      "hunk_size",
+      "level",
+      "max_depth",
+      "on_conflict",
+      "output_dir",
+      "output_template",
+      "recursive",
+      "report"
+    ],
+    "chd.to-cso": [
+      "block_size",
+      "format",
+      "max_depth",
+      "on_conflict",
+      "output_dir",
+      "output_template",
+      "recursive",
+      "report"
+    ],
+    "chd.to_cso": [
+      "block_size",
+      "format",
+      "max_depth",
+      "on_conflict",
+      "output_dir",
+      "output_template",
+      "recursive",
+      "report"
+    ],
+    "chd.verify": [
+      "fix",
+      "max_depth",
+      "parent",
+      "recursive"
+    ],
+    "cso.compress": [
+      "block_size",
+      "format",
+      "max_depth",
+      "on_conflict",
+      "output_dir",
+      "output_template",
+      "recursive",
+      "report"
+    ],
+    "cso.decompress": [
+      "max_depth",
+      "on_conflict",
+      "output_dir",
+      "output_template",
+      "recursive",
+      "report"
+    ],
+    "cso.to-chd": [
+      "codecs",
+      "hunk_size",
+      "level",
+      "max_depth",
+      "on_conflict",
+      "output_dir",
+      "output_template",
+      "recursive",
+      "report"
+    ],
+    "cso.to_chd": [
+      "codecs",
+      "hunk_size",
+      "level",
+      "max_depth",
+      "on_conflict",
+      "output_dir",
+      "output_template",
+      "recursive",
+      "report"
+    ],
+    "cso.verify": [
+      "content_hashes",
+      "full",
+      "max_depth",
+      "recursive"
+    ],
+    "ctr.cdn-to-cia": [
+      "cleanup",
+      "compress",
+      "decrypt",
+      "ensure_ticket_exists",
+      "on_conflict",
+      "output_dir",
+      "recursive"
+    ],
+    "ctr.cdn_to_cia": [
+      "cleanup",
+      "compress",
+      "decrypt",
+      "ensure_ticket_exists",
+      "on_conflict",
+      "output_dir",
+      "recursive"
+    ],
+    "ctr.compress": [
+      "allow_encrypted",
+      "level",
+      "max_depth",
+      "on_conflict",
+      "output_dir",
+      "output_template",
+      "recursive"
+    ],
+    "ctr.convert": [
+      "max_depth",
+      "on_conflict",
+      "output_dir",
+      "output_template",
+      "recursive"
+    ],
+    "ctr.decompress": [
+      "max_depth",
+      "on_conflict",
+      "output_dir",
+      "output_template",
+      "recursive"
+    ],
+    "ctr.decrypt": [
+      "max_depth",
+      "on_conflict",
+      "output_dir",
+      "output_template",
+      "recursive"
+    ],
+    "ctr.encrypt": [
+      "max_depth",
+      "on_conflict",
+      "output_dir",
+      "output_template",
+      "recursive"
+    ],
+    "ctr.generate-cdn-ticket": [],
+    "ctr.generate_cdn_ticket": [],
+    "ctr.verify": [
+      "content_hashes",
+      "max_depth",
+      "recursive"
+    ],
+    "cue.merge": [
+      "on_conflict"
+    ],
+    "cue.to-cso": [
+      "format",
+      "max_depth",
+      "on_conflict",
+      "output_dir",
+      "recursive"
+    ],
+    "cue.to-iso": [
+      "max_depth",
+      "on_conflict",
+      "output_dir",
+      "recursive"
+    ],
+    "cue.to_cso": [
+      "format",
+      "max_depth",
+      "on_conflict",
+      "output_dir",
+      "recursive"
+    ],
+    "cue.to_iso": [
+      "max_depth",
+      "on_conflict",
+      "output_dir",
+      "recursive"
+    ],
+    "dat.fixdat": [
+      "api_base",
+      "dat_id",
+      "dat_name",
+      "max_depth",
+      "on_conflict",
+      "platform",
+      "subset"
+    ],
+    "dat.identify": [
+      "algo",
+      "api_base",
+      "input_checksum_max",
+      "input_checksum_min"
+    ],
+    "dat.rename": [
+      "api_base",
+      "max_depth",
+      "on_conflict",
+      "recursive",
+      "report"
+    ],
+    "dat.scan": [
+      "algo",
+      "api_base",
+      "max_depth",
+      "quick",
+      "report"
+    ],
+    "dat.verify": [
+      "algo",
+      "api_base",
+      "input_checksum_max",
+      "input_checksum_min",
+      "max_depth",
+      "quick",
+      "recursive",
+      "report"
+    ],
+    "dol.compress": [
+      "chunk_size",
+      "level",
+      "max_depth",
+      "on_conflict",
+      "output_dir",
+      "output_template",
+      "recursive",
+      "report"
+    ],
+    "dol.decompress": [
+      "max_depth",
+      "on_conflict",
+      "output_dir",
+      "output_template",
+      "recursive",
+      "report"
+    ],
+    "dol.migrate": [
+      "chunk_size",
+      "level",
+      "recursive",
+      "skip_verify"
+    ],
+    "dol.verify": [
+      "content_hashes",
+      "full",
+      "max_depth",
+      "recursive"
+    ],
+    "hash": [
+      "algo",
+      "max_depth",
+      "recursive",
+      "report"
+    ],
+    "info": [
+      "keys"
+    ],
+    "info.read": [
+      "keys"
+    ],
+    "nds.decrypt": [
+      "max_depth",
+      "on_conflict",
+      "output_dir",
+      "output_template",
+      "recursive",
+      "report"
+    ],
+    "nds.encrypt": [
+      "max_depth",
+      "on_conflict",
+      "output_dir",
+      "output_template",
+      "recursive",
+      "report"
+    ],
+    "nx.compress": [
+      "block_size_exp",
+      "keys",
+      "level",
+      "max_depth",
+      "mode",
+      "on_conflict",
+      "output_dir",
+      "output_template",
+      "recursive",
+      "report"
+    ],
+    "nx.decompress": [
+      "keys",
+      "max_depth",
+      "on_conflict",
+      "output_dir",
+      "output_template",
+      "recursive",
+      "report"
+    ],
+    "nx.merge": [
+      "format",
+      "keys",
+      "on_conflict"
+    ],
+    "nx.split": [
+      "keys",
+      "on_conflict",
+      "output_dir"
+    ],
+    "nx.verify": [
+      "keys",
+      "max_depth",
+      "recursive"
+    ],
+    "playlist": [
+      "extensions",
+      "max_depth",
+      "on_conflict",
+      "output_dir",
+      "playlist_mode"
+    ],
+    "playlist.write": [
+      "extensions",
+      "max_depth",
+      "on_conflict",
+      "output_dir",
+      "playlist_mode"
+    ],
+    "ps3.decrypt": [
+      "key",
+      "max_depth",
+      "on_conflict",
+      "output_dir",
+      "output_template",
+      "recursive",
+      "report",
+      "skip_probe"
+    ],
+    "psp.extract": [],
+    "psp.to-iso": [
+      "on_conflict",
+      "output_template",
+      "report"
+    ],
+    "psp.to_iso": [
+      "on_conflict",
+      "output_template",
+      "report"
+    ],
+    "rvl.compress": [
+      "chunk_size",
+      "level",
+      "max_depth",
+      "on_conflict",
+      "output_dir",
+      "output_template",
+      "recursive",
+      "report"
+    ],
+    "rvl.decompress": [
+      "max_depth",
+      "on_conflict",
+      "output_dir",
+      "output_template",
+      "recursive",
+      "report"
+    ],
+    "rvl.migrate": [
+      "chunk_size",
+      "deep",
+      "deep_verify",
+      "level",
+      "recursive",
+      "skip_verify"
+    ],
+    "rvl.verify": [
+      "content_hashes",
+      "full",
+      "max_depth",
+      "recursive"
+    ],
+    "rvz.compress": [
+      "chunk_size",
+      "level",
+      "max_depth",
+      "on_conflict",
+      "output_dir",
+      "output_template",
+      "recursive",
+      "report"
+    ],
+    "rvz.decompress": [
+      "max_depth",
+      "on_conflict",
+      "output_dir",
+      "output_template",
+      "recursive",
+      "report"
+    ],
+    "rvz.migrate": [
+      "chunk_size",
+      "deep",
+      "deep_verify",
+      "level",
+      "recursive",
+      "skip_verify"
+    ],
+    "vita.extract": [],
+    "wup.compress": [
+      "key",
+      "level",
+      "on_conflict"
+    ],
+    "wup.decrypt": [
+      "on_conflict"
+    ],
+    "wup.verify": [
+      "key",
+      "max_depth",
+      "recursive"
+    ],
+    "xbox.convert": [],
+    "xbox.extract": [],
+    "xenon.compress": [],
+    "xenon.convert": [
+      "on_conflict",
+      "title"
+    ],
+    "xenon.extract": [],
+    "xenon.verify": []
+  },
+  "output": {
+    "chd.compress": "positional",
+    "chd.extract": "positional",
+    "chd.migrate": "positional",
+    "chd.to-cso": "positional",
+    "chd.to_cso": "positional",
+    "chd.verify": "none",
+    "cso.compress": "positional",
+    "cso.decompress": "positional",
+    "cso.to-chd": "positional",
+    "cso.to_chd": "positional",
+    "cso.verify": "none",
+    "ctr.cdn-to-cia": "positional",
+    "ctr.cdn_to_cia": "positional",
+    "ctr.compress": "positional",
+    "ctr.convert": "positional",
+    "ctr.decompress": "positional",
+    "ctr.decrypt": "positional",
+    "ctr.encrypt": "positional",
+    "ctr.generate-cdn-ticket": "positional",
+    "ctr.generate_cdn_ticket": "positional",
+    "ctr.verify": "none",
+    "cue.merge": "positional",
+    "cue.to-cso": "positional",
+    "cue.to-iso": "positional",
+    "cue.to_cso": "positional",
+    "cue.to_iso": "positional",
+    "dat.fixdat": "output_flag",
+    "dat.identify": "none",
+    "dat.rename": "none",
+    "dat.scan": "none",
+    "dat.verify": "none",
+    "dol.compress": "positional",
+    "dol.decompress": "positional",
+    "dol.migrate": "positional",
+    "dol.verify": "none",
+    "hash": "none",
+    "info": "none",
+    "info.read": "none",
+    "nds.decrypt": "positional",
+    "nds.encrypt": "positional",
+    "nx.compress": "positional",
+    "nx.decompress": "positional",
+    "nx.merge": "output_flag",
+    "nx.split": "output_dir",
+    "nx.verify": "none",
+    "playlist": "output_dir",
+    "playlist.write": "output_dir",
+    "ps3.decrypt": "positional",
+    "psp.extract": "positional",
+    "psp.to-iso": "positional",
+    "psp.to_iso": "positional",
+    "rvl.compress": "positional",
+    "rvl.decompress": "positional",
+    "rvl.migrate": "positional",
+    "rvl.verify": "none",
+    "rvz.compress": "positional",
+    "rvz.decompress": "positional",
+    "rvz.migrate": "positional",
+    "vita.extract": "positional",
+    "wup.compress": "output_flag",
+    "wup.decrypt": "output_flag",
+    "wup.verify": "none",
+    "xbox.convert": "positional",
+    "xbox.extract": "positional",
+    "xenon.compress": "positional",
+    "xenon.convert": "positional",
+    "xenon.extract": "positional",
+    "xenon.verify": "none"
+  }
+}

@@ -7,7 +7,7 @@ import { useToast } from "~/composables/useToast";
 import { basename } from "~/composables/useDerivedPath";
 import DropZone from "~/components/op/DropZone.vue";
 import InspectCard from "~/components/op/InspectCard.vue";
-import type { InfoResult } from "~/types/info";
+import type { InfoResult } from "~/types";
 import { opCommand, opProgressKey } from "~/lib/opdefs/types";
 import type { StagedItem } from "~/lib/opdefs/types";
 
@@ -97,7 +97,7 @@ function runQuick(kind: "compress" | "verify") {
 	const def = kind === "compress" ? compressDef.value : verifyDef.value;
 	if (!def || !info.value) return;
 	const store = def.useStore();
-	const taskId = opProgressKey(def, store) ?? `job-${crypto.randomUUID()}`;
+	const taskId = `job-${crypto.randomUUID()}`;
 	const item: StagedItem = {
 		id: crypto.randomUUID(),
 		path: input.value,
@@ -112,6 +112,7 @@ function runQuick(kind: "compress" | "verify") {
 			command: opCommand(def, store),
 			args: def.buildArgs(store, item, taskId),
 			taskId,
+			progressKey: opProgressKey(def, store),
 			chips: def.chips(store),
 			resultKind: def.resultKind,
 			routeBack: { storeId: def.storeId },

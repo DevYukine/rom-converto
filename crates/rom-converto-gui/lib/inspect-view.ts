@@ -1,5 +1,5 @@
 import { kindModules } from "./inspect";
-import type { InfoResult } from "~/types/info";
+import type { InfoResult } from "~/types";
 import type { InfoKind, InspectView, KindModule } from "./inspect/types";
 
 export * from "./inspect/types";

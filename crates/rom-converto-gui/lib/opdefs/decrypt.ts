@@ -1,4 +1,4 @@
-import { recursiveFields, templateIsActive, type OpDef } from "./types";
+import { commonOptions, recursiveFields, runArgs, templateIsActive, type OpDef } from "./types";
 import { useCtrDecryptStore } from "~/stores/ctr-decrypt";
 import { useWupDecryptStore } from "~/stores/wup-decrypt";
 import { usePs3DecryptStore } from "~/stores/ps3-decrypt";
@@ -18,7 +18,7 @@ const ctr: OpDef = {
 	opLabel: "Decrypt",
 	storeId: "ctr-decrypt",
 	useStore: useCtrDecryptStore,
-	command: "cmd_decrypt_rom",
+	command: "cmd_run",
 	resultKind: "convert",
 	title: "Decrypt 3DS ROMs",
 	subtitle: "Removes encryption for emulator use.",
@@ -59,22 +59,17 @@ const ctr: OpDef = {
 			tooltip: "The suffix keeps the output from colliding with the source.",
 		},
 	],
-	showVerify: true,
-	verifyLabel: "Verify after decryption",
 	actionNote: "Already-decrypted files are skipped automatically and never queued.",
 	deriveOutput: (input) => deriveDecryptedPath(input),
-	buildArgs: (store, item, taskId) => {
-		const tmpl = templateIsActive(store);
-		return {
-			input: item.path,
-			output: tmpl ? null : withOutputDir(deriveDecryptedPath(item.path), store.outputDir || ""),
-			onConflict: store.onConflict,
-			skipSpaceCheck: store.skipSpaceCheck,
-			outputTemplate: store.outputTemplate || null,
-			dryRun: false,
+	buildArgs: (store, item, taskId) =>
+		runArgs(
+			"ctr.decrypt",
+			item.path,
+			templateIsActive(store) ? null : withOutputDir(deriveDecryptedPath(item.path), store.outputDir || ""),
+			commonOptions(store),
+			false,
 			taskId,
-		};
-	},
+		),
 	chips: () => "",
 };
 
@@ -84,7 +79,7 @@ const wup: OpDef = {
 	opLabel: "Decrypt",
 	storeId: "wup-decrypt",
 	useStore: useWupDecryptStore,
-	command: "cmd_wup_decrypt",
+	command: "cmd_run",
 	resultKind: "convert",
 	title: "Decrypt NUS title",
 	subtitle:
@@ -128,13 +123,15 @@ const wup: OpDef = {
 	],
 	renameDisabled: true,
 	actionNote: "Already-decrypted files are skipped automatically and never queued.",
-	buildArgs: (store, item) => ({
-		input: item.path,
-		output: store.output || deriveDecryptedWupPath(item.path),
-		onConflict: store.onConflict,
-		skipSpaceCheck: store.skipSpaceCheck,
-		dryRun: false,
-	}),
+	buildArgs: (store, item, taskId) =>
+		runArgs(
+			"wup.decrypt",
+			item.path,
+			store.output || deriveDecryptedWupPath(item.path),
+			{ on_conflict: store.onConflict, skip_space_check: store.skipSpaceCheck },
+			false,
+			taskId,
+		),
 	chips: () => "",
 };
 
@@ -144,7 +141,7 @@ const ps3: OpDef = {
 	opLabel: "Decrypt",
 	storeId: "ps3-decrypt",
 	useStore: usePs3DecryptStore,
-	command: "cmd_ps3_decrypt",
+	command: "cmd_run",
 	resultKind: "convert",
 	title: "Decrypt PS3 ISO",
 	subtitle: "Removes disc encryption for emulator use.",
@@ -187,20 +184,17 @@ const ps3: OpDef = {
 	],
 	actionNote: "Already-decrypted files are detected and skipped during conversion.",
 	deriveOutput: (input) => deriveDecryptedPath(input, "iso"),
-	buildArgs: (store, item, taskId) => {
-		const tmpl = templateIsActive(store);
-		return {
-			input: item.path,
-			output: tmpl ? null : withOutputDir(deriveDecryptedPath(item.path, "iso"), store.outputDir || ""),
-			key: store.key || null,
-			skipProbe: store.skipProbe,
-			onConflict: store.onConflict,
-			skipSpaceCheck: store.skipSpaceCheck,
-			outputTemplate: store.outputTemplate || null,
-			dryRun: false,
+	buildArgs: (store, item, taskId) =>
+		runArgs(
+			"ps3.decrypt",
+			item.path,
+			templateIsActive(store)
+				? null
+				: withOutputDir(deriveDecryptedPath(item.path, "iso"), store.outputDir || ""),
+			{ key: store.key || null, skip_probe: store.skipProbe, ...commonOptions(store) },
+			false,
 			taskId,
-		};
-	},
+		),
 	chips: (store) => (store.key ? "key set" : "no key"),
 };
 
@@ -210,7 +204,7 @@ const nds: OpDef = {
 	opLabel: "Decrypt",
 	storeId: "nds-decrypt",
 	useStore: useNdsDecryptStore,
-	command: "cmd_nds_decrypt",
+	command: "cmd_run",
 	resultKind: "convert",
 	title: "Decrypt Nintendo DS ROMs",
 	subtitle: "Removes encryption for emulator use.",
@@ -236,18 +230,15 @@ const nds: OpDef = {
 	],
 	actionNote: "Already-decrypted files are skipped automatically and never queued.",
 	deriveOutput: (input) => deriveDecryptedPath(input),
-	buildArgs: (store, item, taskId) => {
-		const tmpl = templateIsActive(store);
-		return {
-			input: item.path,
-			output: tmpl ? null : withOutputDir(deriveDecryptedPath(item.path), store.outputDir || ""),
-			onConflict: store.onConflict,
-			skipSpaceCheck: store.skipSpaceCheck,
-			outputTemplate: store.outputTemplate || null,
-			dryRun: false,
+	buildArgs: (store, item, taskId) =>
+		runArgs(
+			"nds.decrypt",
+			item.path,
+			templateIsActive(store) ? null : withOutputDir(deriveDecryptedPath(item.path), store.outputDir || ""),
+			commonOptions(store),
+			false,
 			taskId,
-		};
-	},
+		),
 	chips: () => "",
 };
 

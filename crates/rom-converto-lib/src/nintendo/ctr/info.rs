@@ -34,6 +34,8 @@ use std::path::Path;
 
 /// Metadata extracted from a CIA, NCSD, NCCH, or Z3DS-wrapped 3DS ROM.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct CtrInfo {
     pub format: CtrFormat,
     pub physical_bytes: u64,
@@ -67,6 +69,8 @@ pub struct CtrInfo {
 /// Which container format a ROM was detected as.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub enum CtrFormat {
     #[default]
     Unknown,
@@ -78,6 +82,8 @@ pub enum CtrFormat {
 
 /// Fields of a parsed SMDH relevant to `info` output.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct CtrSmdhInfo {
     pub titles: Vec<CtrSmdhTitle>,
     pub region_lock: u32,
@@ -90,6 +96,8 @@ pub struct CtrSmdhInfo {
 
 /// A single language entry from the SMDH title table.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct CtrSmdhTitle {
     pub language: String,
     pub short_description: String,
@@ -99,6 +107,8 @@ pub struct CtrSmdhTitle {
 
 /// A single region's age rating from the SMDH age-rating block.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct CtrSmdhAgeRating {
     pub region: String,
     pub age: u8,
@@ -108,6 +118,8 @@ pub struct CtrSmdhAgeRating {
 
 /// A single partition entry from an NCSD partition table.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct CtrPartitionEntry {
     pub index: u8,
     pub name: String,
@@ -117,6 +129,8 @@ pub struct CtrPartitionEntry {
 
 /// A single content entry from a CIA's TMD content chunk records.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct CtrContentEntry {
     pub index: u16,
     pub content_id: String,

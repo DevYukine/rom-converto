@@ -19,6 +19,9 @@ import StagedList from "~/components/op/StagedList.vue";
 import ActionRow from "~/components/op/ActionRow.vue";
 import VerifyResultsCard from "~/components/op/VerifyResultsCard.vue";
 import HashResultsCard from "~/components/op/HashResultsCard.vue";
+import DatScanView from "~/components/op/DatScanView.vue";
+import DatVerifyView from "~/components/op/DatVerifyView.vue";
+import DatRenameView from "~/components/op/DatRenameView.vue";
 import { opCommand, opProgressKey } from "~/lib/opdefs/types";
 import type { FieldDef, OpDef, OutputRow, StagedItem } from "~/lib/opdefs/types";
 
@@ -36,7 +39,7 @@ const presetTag = computed(() =>
 const cli = computed(() => {
 	const sample: StagedItem = staged.value[0] ?? { id: "", path: "", name: "", size: 0, outExt: "" };
 	const taskId = opProgressKey(props.def, store) ?? "job";
-	return buildCliCommand(opCommand(props.def, store), props.def.buildArgs(store, sample, taskId), props.def.console);
+	return buildCliCommand(props.def.buildArgs(store, sample, taskId));
 });
 
 const stagedLabel = computed(() =>
@@ -271,6 +274,9 @@ function copied() {
 
 		<VerifyResultsCard v-if="def.resultKind === 'verify'" :def="def" />
 		<HashResultsCard v-else-if="def.resultKind === 'hash'" />
+		<DatScanView v-else-if="def.resultKind === 'datScan'" :def="def" />
+		<DatVerifyView v-else-if="def.resultKind === 'datVerify'" :def="def" />
+		<DatRenameView v-else-if="def.resultKind === 'datRename'" :def="def" />
 
 		<DirectoryPickerModal
 			v-if="dirRow"

@@ -3,17 +3,12 @@ use crate::commands::info_command::InfoCommand;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-use crate::commands::support::{
-    DispatchCtx, finish_single, log_single_summary, require_info_input, save_pbp_icon,
-};
-use crate::util::{
-    WriteDecision, ensure_input_exists, file_len, log_skipped, resolve_output, resolve_output_dir,
-};
-use crate::{batch, dry_run, info_print};
+use crate::commands::support::{DispatchCtx, require_info_input, save_pbp_icon};
+use crate::util::{ensure_input_exists, resolve_policy};
+use crate::{batch, info_print};
 use anyhow::Result;
-use rom_converto_lib::util::TallyDirection;
-use std::path::Path;
-use std::time::Instant;
+use rom_converto_lib::runner::models::RunOptions;
+use rom_converto_lib::util::ConflictPolicy;
 
 /// Commands for PSP EBOOT.PBP containers
 #[derive(Subcommand, Debug, Eq, PartialEq)]
@@ -89,10 +84,24 @@ pub struct ToIsoCommand {
 pub async fn run(command: PspCommands, ctx: DispatchCtx<'_>) -> Result<()> {
     let DispatchCtx {
         progress,
+        total_progress,
         dry_run,
         skip_space_check,
+        cancel,
+        cache,
+        config,
+        preset,
         ..
     } = ctx;
+    let run = batch::BatchRun {
+        progress: &progress,
+        total_progress: &total_progress,
+        cache,
+        cancel: &cancel,
+        config,
+        preset,
+        dry_run,
+    };
     match command {
         PspCommands::Info(cmd) => {
             if cmd.keys.is_some() {
@@ -109,79 +118,36 @@ pub async fn run(command: PspCommands, ctx: DispatchCtx<'_>) -> Result<()> {
         }
         PspCommands::Extract(cmd) => {
             ensure_input_exists(&cmd.input)?;
-            let policy = rom_converto_lib::util::ConflictPolicy::Error;
-            match resolve_output_dir(&cmd.output_dir, policy)? {
-                WriteDecision::Skip => {
-                    log_skipped(&cmd.output_dir);
-                    return Ok(());
-                }
-                WriteDecision::Write(_) => {}
-            }
-            let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["pbp"])?;
-            let started = Instant::now();
-            rom_converto_lib::sony::psp::extract_segments(
-                &progress,
-                resolved.path(),
-                &cmd.output_dir,
-            )?;
-            log_single_summary(
-                &cmd.input,
-                &cmd.output_dir,
-                TallyDirection::CountOnly,
-                started,
-            );
+            let options = RunOptions::from(batch::Common {
+                recursive: false,
+                output_dir: None,
+                output_template: None,
+                max_depth: None,
+                report: None,
+                policy: ConflictPolicy::Error,
+                skip_space_check,
+            });
+            batch::run(
+                &run,
+                "psp.extract",
+                cmd.input,
+                Some(cmd.output_dir),
+                options,
+            )
+            .await?;
         }
         PspCommands::ToIso(cmd) => {
             ensure_input_exists(&cmd.input)?;
-            let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["pbp", "pkg"])?;
-            let input = resolved.path();
-            let output = match cmd.output.clone() {
-                Some(p) => p,
-                None => match cmd.output_template.as_deref() {
-                    Some(tmpl) => {
-                        crate::util::templated_output(tmpl, input, None, "iso", None, dry_run)?
-                    }
-                    None => resolved.output_basis().with_extension("iso"),
-                },
-            };
-            let policy = if cmd.force {
-                rom_converto_lib::util::ConflictPolicy::Overwrite
-            } else {
-                cmd.on_conflict.into()
-            };
-            let decision = resolve_output(&output, policy)?;
-            if dry_run {
-                return dry_run::single(
-                    "convert",
-                    &cmd.input,
-                    &output,
-                    &decision,
-                    None,
-                    None,
-                    cmd.report.as_deref(),
-                );
-            }
-            let output = match decision {
-                WriteDecision::Skip => {
-                    log_skipped(&output);
-                    return Ok(());
-                }
-                WriteDecision::Write(p) => p,
-            };
-            if !skip_space_check {
-                let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
-                batch::space_preflight_for_size(file_len(input), check_dir)?;
-            }
-            let started = Instant::now();
-            rom_converto_lib::sony::psp::to_iso(&progress, input, &output)?;
-            finish_single(
-                &cmd.input,
-                &output,
-                TallyDirection::Convert,
-                "convert",
-                started,
-                cmd.report.as_deref(),
-            )?;
+            let options = RunOptions::from(batch::Common {
+                recursive: false,
+                output_dir: None,
+                output_template: cmd.output_template,
+                max_depth: None,
+                report: cmd.report,
+                policy: resolve_policy(Some(cmd.on_conflict), cmd.force, ConflictPolicy::Error),
+                skip_space_check,
+            });
+            batch::run(&run, "psp.to_iso", cmd.input, cmd.output, options).await?;
         }
     }
     Ok(())

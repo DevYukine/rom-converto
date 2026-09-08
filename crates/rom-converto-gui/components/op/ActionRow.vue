@@ -7,7 +7,7 @@ import { basename } from "~/composables/useDerivedPath";
 import PrimaryButton from "~/components/ui/PrimaryButton.vue";
 import DryRunModal from "~/components/modals/DryRunModal.vue";
 import type { DryRunLine } from "~/components/modals/DryRunModal.vue";
-import { invokeArgs, opCommand, opProgressKey } from "~/lib/opdefs/types";
+import { dryRunArgs, opCommand, opProgressKey, requestPath } from "~/lib/opdefs/types";
 import type { OpDef, OpStore, StagedItem } from "~/lib/opdefs/types";
 import { useToast } from "~/composables/useToast";
 
@@ -25,8 +25,15 @@ const { show: showToast } = useToast();
 const count = computed(() => props.items.length);
 const label = computed(() => (count.value > 0 ? `Add ${count.value} to queue` : "Nothing staged"));
 
+// Every job owns a unique task id, which is what the backend's cancel registry
+// keys on. A def's fixed progress key travels separately so its page can bind
+// to a channel it knows ahead of time.
 function taskIdFor(): string {
-	return opProgressKey(props.def, props.store) ?? `job-${crypto.randomUUID()}`;
+	return `job-${crypto.randomUUID()}`;
+}
+
+function progressKeyFor(): string | undefined {
+	return opProgressKey(props.def, props.store);
 }
 
 // An explicit PS3 key file only applies to a single queued ISO; multiple
@@ -45,11 +52,12 @@ function enqueue() {
 		const args = props.def.buildArgsAll(props.store, props.items, taskId);
 		queue.enqueue([
 			{
-				name: basename(String(args.output ?? "")) || `${count.value} files`,
+				name: basename(requestPath(args, "output")) || `${count.value} files`,
 				opLabel: props.def.opLabel,
 				command: opCommand(props.def, props.store),
 				args,
 				taskId,
+				progressKey: progressKeyFor(),
 				chips: props.def.chips(props.store),
 				resultKind: props.def.resultKind,
 				routeBack: { storeId: props.def.storeId },
@@ -68,6 +76,7 @@ function enqueue() {
 			command: opCommand(props.def, props.store),
 			args: props.def.buildArgs(props.store, item, taskId),
 			taskId,
+			progressKey: progressKeyFor(),
 			chips: props.def.chips(props.store),
 			resultKind: props.def.resultKind,
 			routeBack: { storeId: props.def.storeId },
@@ -91,14 +100,11 @@ async function dryRun() {
 	if (props.def.buildArgsAll) {
 		const args = props.def.buildArgsAll(props.store, props.items, taskIdFor());
 		const command = opCommand(props.def, props.store);
-		cmd = buildCliCommand(command, args, props.def.console);
+		cmd = buildCliCommand(args);
 		let note = "ok";
 		let conflict = false;
 		try {
-			const res = await invoke<{ message?: string }>(
-				command,
-				invokeArgs(command, { ...args, dryRun: true }),
-			);
+			const res = await invoke<{ message?: string }>(command, dryRunArgs(args));
 			const msg = typeof res === "object" && res ? String(res.message ?? "") : String(res);
 			if (msg) note = msg;
 			conflict = /exists|rename/i.test(msg);
@@ -108,7 +114,7 @@ async function dryRun() {
 		}
 		lines.push({
 			source: `${count.value} files`,
-			output: String(args.output ?? ""),
+			output: requestPath(args, "output"),
 			note,
 			conflict,
 		});
@@ -120,14 +126,11 @@ async function dryRun() {
 	for (const item of props.items) {
 		const args = props.def.buildArgs(props.store, item, taskIdFor());
 		const command = opCommand(props.def, props.store);
-		if (!cmd) cmd = buildCliCommand(command, args, props.def.console);
+		if (!cmd) cmd = buildCliCommand(args);
 		let note = "ok";
 		let conflict = false;
 		try {
-			const res = await invoke<{ message?: string }>(
-				command,
-				invokeArgs(command, { ...args, dryRun: true }),
-			);
+			const res = await invoke<{ message?: string }>(command, dryRunArgs(args));
 			const msg = typeof res === "object" && res ? String(res.message ?? "") : String(res);
 			if (msg) note = msg;
 			conflict = /exists|rename/i.test(msg);

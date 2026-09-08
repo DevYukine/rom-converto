@@ -24,6 +24,8 @@ pub struct DolVerifyOptions {
 
 /// Result of verifying a GameCube disc image.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub struct DolVerifyResult {
     pub game_id: String,
     /// Present only for `.rvz` input.
@@ -38,6 +40,8 @@ pub struct DolVerifyResult {
 /// FST geometry checked by the `--full` pass, plus any notes about what
 /// was found.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub struct DolStructuralReport {
     pub fst_offset: u32,
     pub fst_size: u32,

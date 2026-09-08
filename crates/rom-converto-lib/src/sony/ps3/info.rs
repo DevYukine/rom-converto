@@ -19,6 +19,8 @@ use crate::util::sfo::Sfo;
 /// Summary of a PS3 disc's region table and plaintext `PARAM.SFO`/
 /// `PS3_DISC.SFB` metadata.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct Ps3Info {
     pub title: Option<String>,
     pub title_id: Option<String>,
@@ -55,6 +57,8 @@ pub struct Ps3Info {
 
 /// One entry from a PS3 disc's ISO9660 root directory listing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct Ps3RootEntry {
     pub name: String,
     pub size: u32,

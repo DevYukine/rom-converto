@@ -259,4 +259,204 @@ mod tests {
             Cli::try_parse_from(["bin", "--no-cache", "--rebuild-cache", "hash", "game.iso"]);
         assert!(result.is_err());
     }
+
+    /// Arguments a subcommand requires beyond the input before it parses at
+    /// all. Where a required argument conflicts with an option under test,
+    /// several alternatives are listed and a flag counts as accepted when
+    /// any of them takes it.
+    const REQUIRED_EXTRA: &[(&str, &[&[&str]])] = &[
+        ("chd extract", &[&["--output-dir", "out"]]),
+        ("cue merge", &[&["out"]]),
+        ("psp extract", &[&["out"]]),
+        ("vita extract", &[&["out"]]),
+        ("xbox extract", &[&["out"]]),
+        ("xenon extract", &[&["out"]]),
+        ("wup compress", &[&["--output", "out"]]),
+        ("wup decrypt", &[&["--output", "out"]]),
+        (
+            "dat fixdat",
+            &[
+                &["--output", "out", "--platform", "p"],
+                &["--output", "out", "--dat-id", "d"],
+            ],
+        ),
+    ];
+
+    fn leaf(path: &[String]) -> clap::Command {
+        let mut cmd = <Cli as clap::CommandFactory>::command();
+        for name in path {
+            let next = cmd
+                .get_subcommands()
+                .find(|s| s.get_name() == name)
+                .cloned()
+                .unwrap_or_else(|| panic!("no subcommand for {path:?}"));
+            cmd = next;
+        }
+        cmd
+    }
+
+    /// A value the subcommand's parser accepts for `flag`.
+    fn sample(cmd: &clap::Command, flag: &str) -> String {
+        let long = flag.trim_start_matches("--");
+        let values = cmd
+            .get_arguments()
+            .find(|a| a.get_long() == Some(long))
+            .and_then(|a| a.get_value_parser().possible_values())
+            .and_then(|mut v| v.next());
+        match values {
+            Some(value) => value.get_name().to_string(),
+            None => match flag {
+                "--codecs" => "lzma,zlib".to_string(),
+                "--block-size-exp" => "14".to_string(),
+                _ => "1".to_string(),
+            },
+        }
+    }
+
+    fn parses(bases: &[Vec<String>], extra: &[String]) -> bool {
+        bases
+            .iter()
+            .any(|base| Cli::try_parse_from(base.iter().chain(extra)).is_ok())
+    }
+
+    /// Every derived subcommand path and flag in the CLI-echo manifest is
+    /// something clap actually accepts, and the manifest's per-operation
+    /// flag lists match what clap accepts for that subcommand.
+    #[test]
+    fn cli_echo_derivations_parse() {
+        use rom_converto_lib::runner::cli_echo::{FlagKind, OutputKind, manifest};
+
+        let manifest = manifest();
+        let globals: Vec<String> = manifest
+            .flags
+            .values()
+            .filter(|f| f.global)
+            .flat_map(|f| match f.kind {
+                FlagKind::Bool => vec![f.flag.clone()],
+                _ => vec![f.flag.clone(), "1".to_string()],
+            })
+            .collect();
+
+        let mut computed: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+        let mut outputs: std::collections::BTreeMap<String, OutputKind> = Default::default();
+        let mut drift = Vec::new();
+        let mut output_drift = Vec::new();
+        for (op, path) in &manifest.ops {
+            let cmd = leaf(path);
+            let key = path.join(" ");
+            let mut base = vec!["bin".to_string()];
+            base.extend(globals.iter().cloned());
+            base.extend(path.iter().cloned());
+            base.push("input".to_string());
+            let extras = REQUIRED_EXTRA
+                .iter()
+                .find(|(p, _)| *p == key)
+                .map(|(_, e)| *e)
+                .unwrap_or(&[&[]]);
+            let bases: Vec<Vec<String>> = extras
+                .iter()
+                .map(|extra| {
+                    let mut base = base.clone();
+                    base.extend(extra.iter().map(|s| (*s).to_string()));
+                    base
+                })
+                .collect();
+            assert!(
+                parses(&bases, &[]),
+                "{op}: base invocation does not parse: {bases:?}"
+            );
+
+            // A second positional is the output; failing that, --output-dir
+            // then --output.
+            let output = if cmd.get_positionals().count() > 1 {
+                assert!(
+                    Cli::try_parse_from(
+                        ["bin"]
+                            .iter()
+                            .map(|s| (*s).to_string())
+                            .chain(path.iter().cloned())
+                            .chain(["input".to_string(), "out".to_string()])
+                    )
+                    .is_ok(),
+                    "{op}: positional output does not parse"
+                );
+                OutputKind::Positional
+            } else if cmd.get_opts().any(|a| a.get_long() == Some("output-dir")) {
+                OutputKind::OutputDir
+            } else if cmd.get_opts().any(|a| a.get_long() == Some("output")) {
+                let output_flag = "--output".to_string();
+                assert!(
+                    bases.iter().any(|b| b.contains(&output_flag))
+                        || parses(&bases, &[output_flag, "out".to_string()]),
+                    "{op}: --output does not parse"
+                );
+                OutputKind::OutputFlag
+            } else {
+                OutputKind::None
+            };
+            if output != manifest.output[op] {
+                output_drift.push(op.clone());
+            }
+            outputs.insert(key.clone(), output);
+
+            let recursive = parses(&bases, &["--recursive".to_string()]);
+            let mut accepted = Vec::new();
+            for (field, flag) in &manifest.flags {
+                if flag.global || flag.kind == FlagKind::Positional {
+                    continue;
+                }
+                let mut tokens = match flag.kind {
+                    FlagKind::Bool => vec![flag.flag.clone()],
+                    _ => vec![flag.flag.clone(), sample(&cmd, &flag.flag)],
+                };
+                // --max-depth is only accepted alongside --recursive.
+                if field == "max_depth" && recursive {
+                    tokens.insert(0, "--recursive".to_string());
+                }
+                // Two option fields can spell the same flag (--full); only
+                // the one the table lists, and so the runner reads for this
+                // subcommand, belongs in the echo.
+                if !manifest.op_flags[op].contains(field)
+                    && manifest.flags.iter().any(|(other, f)| {
+                        other != field
+                            && f.flag == flag.flag
+                            && manifest.op_flags[op].contains(other)
+                    })
+                {
+                    continue;
+                }
+                // A flag a base already had to supply cannot be repeated,
+                // but the subcommand plainly accepts it.
+                if bases.iter().any(|b| b.contains(&flag.flag)) || parses(&bases, &tokens) {
+                    accepted.push(field.clone());
+                }
+            }
+            if accepted != manifest.op_flags[op] {
+                drift.push(op.clone());
+            }
+            computed.insert(key, accepted);
+        }
+
+        let table: String = computed
+            .iter()
+            .map(|(path, fields)| {
+                let fields: Vec<_> = fields.iter().map(|f| format!("{f:?}")).collect();
+                format!("    ({path:?}, &[{}]),\n", fields.join(", "))
+            })
+            .collect();
+        assert!(
+            drift.is_empty(),
+            "PATH_FLAGS in runner/cli_echo.rs is stale for {drift:?}; expected:\n{table}"
+        );
+
+        let table: String = outputs
+            .iter()
+            .filter(|(_, kind)| **kind != OutputKind::Positional)
+            .map(|(path, kind)| format!("    ({path:?}, OutputKind::{kind:?}),\n"))
+            .collect();
+        assert!(
+            output_drift.is_empty(),
+            "PATH_OUTPUT in runner/cli_echo.rs is stale for {output_drift:?}; expected:\n{table}"
+        );
+    }
 }

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import ModalShell from "~/components/modals/ModalShell.vue";
 import { useConfigStore } from "~/stores/config";
-import type { Preset, PresetFormat } from "~/types/config";
+import type { Preset, PresetFormat } from "~/types";
 
 const props = defineProps<{
 	name: string;

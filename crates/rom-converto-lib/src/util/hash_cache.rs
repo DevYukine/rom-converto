@@ -106,7 +106,7 @@ impl HashCache {
         Self::open_at(path, rebuild)
     }
 
-    fn open_at(path: Option<PathBuf>, rebuild: bool) -> Self {
+    pub(crate) fn open_at(path: Option<PathBuf>, rebuild: bool) -> Self {
         let existing = match &path {
             Some(p) => read_entries(p),
             None => HashMap::new(),

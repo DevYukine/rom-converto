@@ -25,6 +25,8 @@ use std::path::{Path, PathBuf};
 /// Title metadata extracted from a Wii U input, regardless of source
 /// (NUS directory, loadiine directory, `.wua`, or `.wud`/`.wux` disc).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct WupInfo {
     pub title_id: u64,
     pub title_id_hex: String,
@@ -58,6 +60,8 @@ pub struct WupInfo {
 /// One entry from a Wii U disc's partition table (TOC), as surfaced
 /// by the disc `info` path.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct WupDiscPartition {
     /// Full name from the TOC (with trailing NULs stripped).
     pub name: String,
@@ -71,6 +75,8 @@ pub struct WupDiscPartition {
 /// One title bundled alongside the primary title in a multi-title
 /// `.wua` archive or disc (base game, update, or DLC).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct BundledTitle {
     pub title_id: u64,
     pub title_id_hex: String,
@@ -81,6 +87,8 @@ pub struct BundledTitle {
 /// Fields parsed from `meta/meta.xml`, plus a maker name resolved
 /// from the company code.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct WupMetaInfo {
     pub long_names: MultilingualString,
     pub short_names: MultilingualString,

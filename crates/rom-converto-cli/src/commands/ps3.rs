@@ -3,18 +3,13 @@ use crate::commands::{BatchArgs, ConflictArgs, OutputArgs};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-use crate::commands::support::{
-    DispatchCtx, finish_single, require_dir, require_info_input, save_ps3_icon, skipped_single,
-};
-use crate::util::{
-    SingleOutput, ensure_input_exists, file_len, resolve_policy, resolve_single_output,
-};
+use crate::commands::support::{DispatchCtx, require_info_input, require_input, save_ps3_icon};
+use crate::util::{ensure_input_exists, file_len, resolve_policy};
 use crate::{batch, info_print};
 use anyhow::Result;
-use rom_converto_lib::sony::ps3::{decrypt_ps3_iso, read_ps3_info, resolve_ps3_key};
-use rom_converto_lib::util::TallyDirection;
-use std::path::Path;
-use std::time::Instant;
+use rom_converto_lib::runner::models::RunOptions;
+use rom_converto_lib::sony::ps3::{read_ps3_info, resolve_ps3_key};
+use rom_converto_lib::util::ConflictPolicy;
 
 /// Commands for PlayStation 3 disc images
 #[derive(Subcommand, Debug, Eq, PartialEq)]
@@ -80,105 +75,46 @@ pub async fn run(command: Ps3Commands, ctx: DispatchCtx<'_>) -> Result<()> {
         dry_run,
         skip_space_check,
         cancel,
+        cache,
+        config,
+        preset,
         ..
     } = ctx;
+    let run = batch::BatchRun {
+        progress: &progress,
+        total_progress: &total_progress,
+        cache,
+        cancel: &cancel,
+        config,
+        preset,
+        dry_run,
+    };
     match command {
         Ps3Commands::Decrypt(cmd) => {
-            let output_dir = cmd.out.output_dir.clone();
-            let report = cmd.batch.report.clone();
-            if cmd.recursive {
-                require_dir(&cmd.input)?;
-                let policy = resolve_policy(
+            require_input(&cmd.input, cmd.recursive)?;
+            let mut options = RunOptions::from(batch::Common {
+                recursive: cmd.recursive,
+                output_dir: cmd.out.output_dir,
+                output_template: cmd.out.output_template,
+                max_depth: cmd.batch.max_depth,
+                report: cmd.batch.report,
+                policy: resolve_policy(
                     cmd.conflict.on_conflict,
                     cmd.conflict.force,
-                    rom_converto_lib::util::ConflictPolicy::Error,
-                );
-                let run = batch::BatchRun {
-                    progress: &progress,
-                    total_progress: &total_progress,
-                    input_dir: &cmd.input,
-                    policy,
-                    output_dir: output_dir.as_deref(),
-                    output_template: cmd.out.output_template.as_deref(),
-                    max_depth: cmd.batch.max_depth,
-                    dry_run,
-                    skip_space_check,
-                    report_path: report.as_deref(),
-                    cancel: &cancel,
-                };
-                batch::ps3_decrypt(&run, cmd.skip_probe).await?
-            } else {
-                ensure_input_exists(&cmd.input)?;
-                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["iso"])?;
-                let input = resolved.path();
-                let policy = resolve_policy(
-                    cmd.conflict.on_conflict,
-                    cmd.conflict.force,
-                    rom_converto_lib::util::ConflictPolicy::Error,
-                );
-                let Some(output) = resolve_single_output(
-                    SingleOutput {
-                        operation: "decrypt",
-                        cli_input: &cmd.input,
-                        input,
-                        explicit: cmd.output_flag.or(cmd.output),
-                        derived: rom_converto_lib::sony::ps3::derive_decrypted_path(
-                            resolved.output_basis(),
-                        ),
-                        output_dir: output_dir.as_deref(),
-                        output_template: cmd.out.output_template.as_deref(),
-                        output_ext: "iso",
-                        keys_path: None,
-                        policy,
-                        verify: crate::util::OutputVerify::None,
-                        media: None,
-                        missing_keys: None,
-                        report: report.as_deref(),
-                        dry_run,
-                        cancel: cancel.clone(),
-                    },
-                    &progress,
-                )
-                .await?
-                else {
-                    return Ok(());
-                };
-                if !skip_space_check {
-                    let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
-                    batch::space_preflight_for_size(file_len(input), check_dir)?;
-                }
-                let key = resolve_ps3_key(input, resolved.output_basis(), cmd.key.as_deref())?;
-                let in_path = input.to_path_buf();
-                let out_path = output.clone();
-                let started = Instant::now();
-                match decrypt_ps3_iso(
-                    &progress,
-                    in_path,
-                    output,
-                    key,
-                    true,
-                    cmd.skip_probe,
-                    cancel.clone(),
-                )
-                .await
-                {
-                    Ok(()) => {}
-                    Err(e @ rom_converto_lib::sony::ps3::Ps3Error::AlreadyDecrypted) => {
-                        log::info!("{} is already decrypted", cmd.input.display());
-                        skipped_single(&cmd.input, "decrypt", e, report.as_deref())?;
-                        return Ok(());
-                    }
-                    Err(e) => return Err(e.into()),
-                }
-                finish_single(
-                    &cmd.input,
-                    &out_path,
-                    TallyDirection::Convert,
-                    "decrypt",
-                    started,
-                    report.as_deref(),
-                )?;
-            }
+                    ConflictPolicy::Error,
+                ),
+                skip_space_check,
+            });
+            options.key = cmd.key;
+            options.skip_probe = Some(cmd.skip_probe);
+            batch::run(
+                &run,
+                "ps3.decrypt",
+                cmd.input,
+                cmd.output_flag.or(cmd.output),
+                options,
+            )
+            .await?;
         }
         Ps3Commands::Info(cmd) => {
             let input = require_info_input(&cmd.input)?;

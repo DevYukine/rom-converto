@@ -11,6 +11,8 @@ use crate::sony::disc::DiscContent;
 
 /// CSO/ZSO/DAX header fields and derived compression stats.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct CsoInfo {
     pub format: String,
     pub version: u8,

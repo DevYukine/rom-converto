@@ -1,4 +1,4 @@
-import { recursiveFields, templateIsActive, type OpDef } from "./types";
+import { commonOptions, recursiveFields, runArgs, templateIsActive, type OpDef } from "./types";
 import { useCtrEncryptStore } from "~/stores/ctr-encrypt";
 import { useNdsEncryptStore } from "~/stores/nds-encrypt";
 import { deriveEncryptedPath, withOutputDir } from "~/composables/useDerivedPath";
@@ -11,7 +11,7 @@ const ctr: OpDef = {
 	opLabel: "Encrypt",
 	storeId: "ctr-encrypt",
 	useStore: useCtrEncryptStore,
-	command: "cmd_encrypt_rom",
+	command: "cmd_run",
 	resultKind: "convert",
 	title: "Encrypt 3DS ROMs",
 	subtitle: "Restores standard encryption on decrypted dumps.",
@@ -44,22 +44,17 @@ const ctr: OpDef = {
 			tooltip: "The suffix keeps the output from colliding with the source, same as {name}.decrypted.{ext} for decryption.",
 		},
 	],
-	showVerify: true,
-	verifyLabel: "Verify after encryption",
 	actionNote: "Already-encrypted files are skipped automatically and never queued.",
 	deriveOutput: deriveEncryptedPath,
-	buildArgs: (store, item, taskId) => {
-		const tmpl = templateIsActive(store);
-		return {
-			input: item.path,
-			output: tmpl ? null : withOutputDir(deriveEncryptedPath(item.path), store.outputDir || ""),
-			onConflict: store.onConflict,
-			skipSpaceCheck: store.skipSpaceCheck,
-			outputTemplate: store.outputTemplate || null,
-			dryRun: false,
+	buildArgs: (store, item, taskId) =>
+		runArgs(
+			"ctr.encrypt",
+			item.path,
+			templateIsActive(store) ? null : withOutputDir(deriveEncryptedPath(item.path), store.outputDir || ""),
+			commonOptions(store),
+			false,
 			taskId,
-		};
-	},
+		),
 	chips: () => "",
 };
 
@@ -69,7 +64,7 @@ const nds: OpDef = {
 	opLabel: "Encrypt",
 	storeId: "nds-encrypt",
 	useStore: useNdsEncryptStore,
-	command: "cmd_nds_encrypt",
+	command: "cmd_run",
 	resultKind: "convert",
 	title: "Encrypt Nintendo DS ROMs",
 	subtitle: "Restores standard encryption on decrypted dumps.",
@@ -95,18 +90,15 @@ const nds: OpDef = {
 	],
 	actionNote: "Already-encrypted files are skipped automatically and never queued.",
 	deriveOutput: deriveEncryptedPath,
-	buildArgs: (store, item, taskId) => {
-		const tmpl = templateIsActive(store);
-		return {
-			input: item.path,
-			output: tmpl ? null : withOutputDir(deriveEncryptedPath(item.path), store.outputDir || ""),
-			onConflict: store.onConflict,
-			skipSpaceCheck: store.skipSpaceCheck,
-			outputTemplate: store.outputTemplate || null,
-			dryRun: false,
+	buildArgs: (store, item, taskId) =>
+		runArgs(
+			"nds.encrypt",
+			item.path,
+			templateIsActive(store) ? null : withOutputDir(deriveEncryptedPath(item.path), store.outputDir || ""),
+			commonOptions(store),
+			false,
 			taskId,
-		};
-	},
+		),
 	chips: () => "",
 };
 

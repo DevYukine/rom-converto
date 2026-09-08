@@ -1,20 +1,14 @@
 use crate::commands::ConflictPolicyArg;
-use crate::commands::cso::CsoFormatArg;
+use crate::commands::cso::{CsoFormatArg, cso_format_name};
 use clap::{Parser, Subcommand};
-use rom_converto_lib::util::CancelToken;
 use std::path::PathBuf;
 
-use crate::commands::support::{DispatchCtx, require_dir};
-use crate::util::{
-    WriteDecision, ensure_input_exists, file_len, log_skipped, resolve_output, resolve_policy,
-};
-use crate::{batch, dry_run};
+use crate::batch;
+use crate::commands::support::{DispatchCtx, require_input};
+use crate::util::{ensure_input_exists, resolve_policy};
 use anyhow::Result;
-use rom_converto_lib::cso::CsoFormat;
-use rom_converto_lib::cue::merge::merge_bin;
-use rom_converto_lib::cue::to_iso::cue_to_iso;
-use rom_converto_lib::pipeline::cue_to_cso;
-use std::path::Path;
+use rom_converto_lib::runner::models::RunOptions;
+use rom_converto_lib::util::ConflictPolicy;
 
 /// Commands for CUE/BIN disc images
 #[derive(Subcommand, Debug, Eq, PartialEq)]
@@ -147,190 +141,66 @@ pub async fn run(command: CueCommands, ctx: DispatchCtx<'_>) -> Result<()> {
         skip_space_check,
         cancel,
         cache,
+        config,
+        preset,
         ..
     } = ctx;
+    let run = batch::BatchRun {
+        progress: &progress,
+        total_progress: &total_progress,
+        cache,
+        cancel: &cancel,
+        config,
+        preset,
+        dry_run,
+    };
     match command {
         CueCommands::Merge(cmd) => {
             ensure_input_exists(&cmd.input_cue)?;
-            let policy = resolve_policy(
-                Some(cmd.on_conflict),
-                cmd.force,
-                rom_converto_lib::util::ConflictPolicy::Error,
-            );
-            let decision = resolve_output(&cmd.output_cue, policy)?;
-            if dry_run {
-                let bin = cmd.output_cue.with_extension("bin");
-                let note = format!("+ {}", bin.display());
-                return dry_run::single(
-                    "merge",
-                    &cmd.input_cue,
-                    &cmd.output_cue,
-                    &decision,
-                    Some(&note),
-                    None,
-                    None,
-                );
-            }
-            let output_cue = match decision {
-                WriteDecision::Skip => {
-                    log_skipped(&cmd.output_cue);
-                    return Ok(());
-                }
-                WriteDecision::Write(p) => p,
-            };
-            if !skip_space_check {
-                let check_dir = output_cue.parent().unwrap_or_else(|| Path::new("."));
-                let required = rom_converto_lib::cue::referenced_files_size(&cmd.input_cue)
-                    .await
-                    .unwrap_or_else(|_| file_len(&cmd.input_cue));
-                batch::space_preflight_for_size(required, check_dir)?;
-            }
-            merge_bin(
-                &progress,
+            let options = RunOptions::from(batch::Common {
+                recursive: false,
+                output_dir: None,
+                output_template: None,
+                max_depth: None,
+                report: None,
+                policy: resolve_policy(Some(cmd.on_conflict), cmd.force, ConflictPolicy::Error),
+                skip_space_check,
+            });
+            batch::run(
+                &run,
+                "cue.merge",
                 cmd.input_cue,
-                output_cue,
-                true,
-                CancelToken::new(),
+                Some(cmd.output_cue),
+                options,
             )
-            .await?
+            .await?;
         }
         CueCommands::ToIso(cmd) => {
-            if cmd.recursive {
-                require_dir(&cmd.input)?;
-                let policy = resolve_policy(
-                    Some(cmd.on_conflict),
-                    cmd.force,
-                    rom_converto_lib::util::ConflictPolicy::Error,
-                );
-                let run = batch::BatchRun {
-                    progress: &progress,
-                    total_progress: &total_progress,
-                    input_dir: &cmd.input,
-                    policy,
-                    output_dir: cmd.output_dir.as_deref(),
-                    output_template: None,
-                    max_depth: cmd.max_depth,
-                    dry_run,
-                    skip_space_check,
-                    report_path: None,
-                    cancel: &cancel,
-                };
-                batch::cue_to_iso(&run).await?
-            } else {
-                ensure_input_exists(&cmd.input)?;
-                let output = match cmd.output.clone() {
-                    Some(p) => p,
-                    None => {
-                        if !dry_run && let Some(dir) = cmd.output_dir.as_deref() {
-                            std::fs::create_dir_all(dir)?;
-                        }
-                        rom_converto_lib::util::place_in_dir(
-                            &cmd.input.with_extension("iso"),
-                            cmd.output_dir.as_deref(),
-                        )
-                    }
-                };
-                let policy = resolve_policy(
-                    Some(cmd.on_conflict),
-                    cmd.force,
-                    rom_converto_lib::util::ConflictPolicy::Error,
-                );
-                let decision = resolve_output(&output, policy)?;
-                if dry_run {
-                    return dry_run::single(
-                        "to-iso", &cmd.input, &output, &decision, None, None, None,
-                    );
-                }
-                let output = match decision {
-                    WriteDecision::Skip => {
-                        log_skipped(&output);
-                        return Ok(());
-                    }
-                    WriteDecision::Write(p) => p,
-                };
-                if !skip_space_check {
-                    let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
-                    let required = rom_converto_lib::cue::referenced_files_size(&cmd.input)
-                        .await
-                        .unwrap_or_else(|_| file_len(&cmd.input));
-                    batch::space_preflight_for_size(required, check_dir)?;
-                }
-                cue_to_iso(&progress, cmd.input, output, true).await?
-            }
+            require_input(&cmd.input, cmd.recursive)?;
+            let options = RunOptions::from(batch::Common {
+                recursive: cmd.recursive,
+                output_dir: cmd.output_dir,
+                output_template: None,
+                max_depth: cmd.max_depth,
+                report: None,
+                policy: resolve_policy(Some(cmd.on_conflict), cmd.force, ConflictPolicy::Error),
+                skip_space_check,
+            });
+            batch::run(&run, "cue.to_iso", cmd.input, cmd.output, options).await?;
         }
         CueCommands::ToCso(cmd) => {
-            let format = match cmd.format {
-                CsoFormatArg::Cso => CsoFormat::Cso,
-                CsoFormatArg::Zso => CsoFormat::Zso,
-            };
-            if cmd.recursive {
-                require_dir(&cmd.input)?;
-                let policy = resolve_policy(
-                    Some(cmd.on_conflict),
-                    cmd.force,
-                    rom_converto_lib::util::ConflictPolicy::Error,
-                );
-                let run = batch::BatchRun {
-                    progress: &progress,
-                    total_progress: &total_progress,
-                    input_dir: &cmd.input,
-                    policy,
-                    output_dir: cmd.output_dir.as_deref(),
-                    output_template: None,
-                    max_depth: cmd.max_depth,
-                    dry_run,
-                    skip_space_check,
-                    report_path: None,
-                    cancel: &cancel,
-                };
-                batch::cue_to_cso(&run, format, cache).await?
-            } else {
-                ensure_input_exists(&cmd.input)?;
-                let output = match cmd.output.clone() {
-                    Some(p) => p,
-                    None => {
-                        if !dry_run && let Some(dir) = cmd.output_dir.as_deref() {
-                            std::fs::create_dir_all(dir)?;
-                        }
-                        rom_converto_lib::util::place_in_dir(
-                            &cmd.input.with_extension(format.extension()),
-                            cmd.output_dir.as_deref(),
-                        )
-                    }
-                };
-                let policy = resolve_policy(
-                    Some(cmd.on_conflict),
-                    cmd.force,
-                    rom_converto_lib::util::ConflictPolicy::Error,
-                );
-                let decision = resolve_output(&output, policy)?;
-                if dry_run {
-                    return dry_run::single(
-                        "to-cso",
-                        &cmd.input,
-                        &output,
-                        &decision,
-                        Some(format.name()),
-                        None,
-                        None,
-                    );
-                }
-                let output = match decision {
-                    WriteDecision::Skip => {
-                        log_skipped(&output);
-                        return Ok(());
-                    }
-                    WriteDecision::Write(p) => p,
-                };
-                if !skip_space_check {
-                    let check_dir = output.parent().unwrap_or_else(|| Path::new("."));
-                    let required = rom_converto_lib::cue::referenced_files_size(&cmd.input)
-                        .await
-                        .unwrap_or_else(|_| file_len(&cmd.input));
-                    batch::space_preflight_for_size(required, check_dir)?;
-                }
-                cue_to_cso(&progress, cmd.input, output, format, true).await?
-            }
+            require_input(&cmd.input, cmd.recursive)?;
+            let mut options = RunOptions::from(batch::Common {
+                recursive: cmd.recursive,
+                output_dir: cmd.output_dir,
+                output_template: None,
+                max_depth: cmd.max_depth,
+                report: None,
+                policy: resolve_policy(Some(cmd.on_conflict), cmd.force, ConflictPolicy::Error),
+                skip_space_check,
+            });
+            options.format = Some(cso_format_name(cmd.format).to_string());
+            batch::run(&run, "cue.to_cso", cmd.input, cmd.output, options).await?;
         }
     }
     Ok(())

@@ -1,8 +1,10 @@
 import { nxKeysColor, nxKeysDisplay } from "./nx-keys";
 import {
 	NX_KEYS_TOOLTIP,
+	commonOptions,
 	directoryOutputRows,
 	recursiveFields,
+	runArgs,
 	templateIsActive,
 	type OpDef,
 	type OutputRow,
@@ -72,7 +74,7 @@ const ctr: OpDef = {
 	opLabel: "Extract",
 	storeId: "ctr-decompress",
 	useStore: useCtrDecompressStore,
-	command: "cmd_decompress_rom",
+	command: "cmd_run",
 	resultKind: "convert",
 	title: "Decompress / Extract",
 	subtitle: "Restores the raw image from a compressed container.",
@@ -91,22 +93,17 @@ const ctr: OpDef = {
 	],
 	note: "Restores the original ROM byte-identically.",
 	outputRows: outputRows(),
-	showVerify: true,
-	verifyLabel: "Verify after extraction",
 	actionNote: "Extraction never overwrites the compressed source.",
 	deriveOutput: deriveDecompressedPath,
-	buildArgs: (store, item, taskId) => {
-		const tmpl = templateIsActive(store);
-		return {
-			input: item.path,
-			output: tmpl ? null : withOutputDir(deriveDecompressedPath(item.path), store.outputDir || ""),
-			onConflict: store.onConflict,
-			skipSpaceCheck: store.skipSpaceCheck,
-			outputTemplate: store.outputTemplate || null,
-			dryRun: false,
+	buildArgs: (store, item, taskId) =>
+		runArgs(
+			"ctr.decompress",
+			item.path,
+			templateIsActive(store) ? null : withOutputDir(deriveDecompressedPath(item.path), store.outputDir || ""),
+			commonOptions(store),
+			false,
 			taskId,
-		};
-	},
+		),
 	chips: () => "",
 };
 
@@ -116,7 +113,7 @@ const dol: OpDef = {
 	opLabel: "Extract",
 	storeId: "dol-decompress",
 	useStore: useDolDecompressStore,
-	command: "cmd_decompress_disc",
+	command: "cmd_run",
 	resultKind: "convert",
 	title: "Decompress / Extract",
 	subtitle: "Restores the raw image from a compressed container.",
@@ -127,24 +124,18 @@ const dol: OpDef = {
 	fields: recursiveFields(),
 	note: "Output is byte-identical to Dolphin's own decoder.",
 	outputRows: outputRows(),
-	showVerify: true,
-	verifyLabel: "Verify after extraction",
 	actionNote: "Extraction never overwrites the compressed source.",
 	deriveOutput: deriveDiscIsoPath,
-	buildArgs: (store, item, taskId) => {
-		const tmpl = templateIsActive(store);
-		return {
-			input: item.path,
-			output: tmpl ? null : withOutputDir(deriveDiscIsoPath(item.path), store.outputDir || ""),
+	buildArgs: (store, item, taskId) =>
+		runArgs(
+			"dol.decompress",
+			item.path,
+			templateIsActive(store) ? null : withOutputDir(deriveDiscIsoPath(item.path), store.outputDir || ""),
+			commonOptions(store),
+			false,
 			taskId,
-			onConflict: store.onConflict,
-			skipSpaceCheck: store.skipSpaceCheck,
-			outputTemplate: store.outputTemplate || null,
-			report: !!store.reportFile,
-			reportFile: store.reportFile || null,
-			dryRun: false,
-		};
-	},
+			store.reportFile || null,
+		),
 	chips: () => "",
 };
 
@@ -154,7 +145,7 @@ const rvl: OpDef = {
 	opLabel: "Extract",
 	storeId: "rvl-decompress",
 	useStore: useRvlDecompressStore,
-	command: "cmd_decompress_disc",
+	command: "cmd_run",
 	resultKind: "convert",
 	title: "Decompress / Extract",
 	subtitle: "Restores the raw image from a compressed container.",
@@ -177,24 +168,18 @@ const rvl: OpDef = {
 	],
 	note: "Output is byte-identical to Dolphin's own decoder.",
 	outputRows: outputRows(),
-	showVerify: true,
-	verifyLabel: "Verify after extraction",
 	actionNote: "Extraction never overwrites the compressed source.",
 	deriveOutput: (input, store) => deriveDiscPath(input, store.format),
-	buildArgs: (store, item, taskId) => {
-		const tmpl = templateIsActive(store);
-		return {
-			input: item.path,
-			output: tmpl ? null : withOutputDir(deriveDiscPath(item.path, store.format), store.outputDir || ""),
+	buildArgs: (store, item, taskId) =>
+		runArgs(
+			"rvl.decompress",
+			item.path,
+			templateIsActive(store) ? null : withOutputDir(deriveDiscPath(item.path, store.format), store.outputDir || ""),
+			commonOptions(store),
+			false,
 			taskId,
-			onConflict: store.onConflict,
-			skipSpaceCheck: store.skipSpaceCheck,
-			outputTemplate: store.outputTemplate || null,
-			report: !!store.reportFile,
-			reportFile: store.reportFile || null,
-			dryRun: false,
-		};
-	},
+			store.reportFile || null,
+		),
 	chips: (store) => (store.format === "wbfs" ? "wbfs" : ""),
 };
 
@@ -204,7 +189,7 @@ const nx: OpDef = {
 	opLabel: "Extract",
 	storeId: "nx-decompress",
 	useStore: useNxDecompressStore,
-	command: "cmd_nx_decompress",
+	command: "cmd_run",
 	resultKind: "convert",
 	title: "Decompress / Extract",
 	subtitle: "Restores the raw image from a compressed container.",
@@ -225,25 +210,18 @@ const nx: OpDef = {
 	],
 	note: "Output is byte-identical to the original installable NSP / XCI.",
 	outputRows: outputRows(),
-	showVerify: true,
-	verifyLabel: "Verify after extraction",
 	actionNote: "Extraction never overwrites the compressed source.",
 	deriveOutput: deriveNspPath,
-	buildArgs: (store, item, taskId) => {
-		const tmpl = templateIsActive(store);
-		return {
-			input: item.path,
-			output: tmpl ? null : withOutputDir(deriveNspPath(item.path), store.outputDir || ""),
-			keys: store.keys || null,
-			onConflict: store.onConflict,
-			skipSpaceCheck: store.skipSpaceCheck,
-			outputTemplate: store.outputTemplate || null,
-			report: !!store.reportFile,
-			reportFile: store.reportFile || null,
-			dryRun: false,
+	buildArgs: (store, item, taskId) =>
+		runArgs(
+			"nx.decompress",
+			item.path,
+			templateIsActive(store) ? null : withOutputDir(deriveNspPath(item.path), store.outputDir || ""),
+			{ keys: store.keys || null, ...commonOptions(store) },
+			false,
 			taskId,
-		};
-	},
+			store.reportFile || null,
+		),
 	chips: (store) => (store.keys ? "keys" : ""),
 };
 
@@ -253,7 +231,7 @@ const chd: OpDef = {
 	opLabel: "Extract",
 	storeId: "chd-extract",
 	useStore: useChdExtractStore,
-	command: "cmd_chd_extract",
+	command: "cmd_run",
 	resultKind: "convert",
 	title: "Decompress / Extract",
 	subtitle: "Restores the raw image from a compressed container.",
@@ -275,24 +253,18 @@ const chd: OpDef = {
 	note: "CD-mode CHDs extract to .bin + .cue, DVD-mode (PS2/PSP) to a single .iso. The mode is read from the file.",
 	outputRows: outputRowsWithReport(),
 	showConflict: false,
-	showVerify: true,
-	verifyLabel: "Verify after extraction",
 	actionNote: "Extraction never overwrites the compressed source.",
 	deriveOutput: deriveDiscIsoPath,
-	buildArgs: (store, item, taskId) => {
-		const tmpl = templateIsActive(store);
-		return {
-			input: item.path,
-			output: tmpl ? null : withOutputDir(deriveDiscIsoPath(item.path), store.outputDir || ""),
-			parent: store.parent || null,
-			skipSpaceCheck: store.skipSpaceCheck,
-			outputTemplate: store.outputTemplate || null,
-			report: !!store.reportFile,
-			reportFile: store.reportFile || null,
-			dryRun: false,
+	buildArgs: (store, item, taskId) =>
+		runArgs(
+			"chd.extract",
+			item.path,
+			templateIsActive(store) ? null : withOutputDir(deriveDiscIsoPath(item.path), store.outputDir || ""),
+			{ parent: store.parent || null, ...commonOptions(store) },
+			false,
 			taskId,
-		};
-	},
+			store.reportFile || null,
+		),
 	chips: (store) => (store.parent ? "parent" : ""),
 };
 
@@ -302,7 +274,7 @@ const cso: OpDef = {
 	opLabel: "Extract",
 	storeId: "cso-decompress",
 	useStore: useCsoDecompressStore,
-	command: "cmd_cso_decompress",
+	command: "cmd_run",
 	resultKind: "convert",
 	title: "Decompress / Extract",
 	subtitle: "Restores the raw image from a compressed container.",
@@ -322,24 +294,18 @@ const cso: OpDef = {
 	],
 	note: "Container detected by magic, not extension. DAX (PSP legacy) is decode-only.",
 	outputRows: outputRowsWithReport(),
-	showVerify: true,
-	verifyLabel: "Verify after extraction",
 	actionNote: "Extraction never overwrites the compressed source.",
 	deriveOutput: deriveDiscIsoPath,
-	buildArgs: (store, item, taskId) => {
-		const tmpl = templateIsActive(store);
-		return {
-			inputPath: item.path,
-			output: tmpl ? null : withOutputDir(deriveDiscIsoPath(item.path), store.outputDir || ""),
-			onConflict: store.onConflict,
-			skipSpaceCheck: store.skipSpaceCheck,
-			outputTemplate: store.outputTemplate || null,
-			report: !!store.reportFile,
-			reportFile: store.reportFile || null,
-			dryRun: false,
+	buildArgs: (store, item, taskId) =>
+		runArgs(
+			"cso.decompress",
+			item.path,
+			templateIsActive(store) ? null : withOutputDir(deriveDiscIsoPath(item.path), store.outputDir || ""),
+			commonOptions(store),
+			false,
 			taskId,
-		};
-	},
+			store.reportFile || null,
+		),
 	chips: () => "",
 };
 
@@ -349,7 +315,7 @@ const xbox: OpDef = {
 	opLabel: "Extract",
 	storeId: "xbox-extract",
 	useStore: useXboxExtractStore,
-	command: "cmd_xbox_extract",
+	command: "cmd_run",
 	resultKind: "convert",
 	title: "Extract XISO",
 	subtitle: "Walks the disc's file tree and writes every file to a folder.",
@@ -358,18 +324,17 @@ const xbox: OpDef = {
 	browseFilters: [{ name: "XISO", extensions: ["xiso", "iso"] }],
 	fields: recursiveFields(),
 	outputRows: directoryOutputRows(EXTRACT_DIR_TOOLTIP),
-	showVerify: true,
-	verifyLabel: "Verify after extraction",
 	actionNote: "Extraction never overwrites the source image.",
 	deriveOutput: deriveExtractDir,
-	buildArgs: (store, item, taskId) => ({
-		input: item.path,
-		outputDir: withOutputDir(deriveExtractDir(item.path), store.outputDir || ""),
-		onConflict: store.onConflict,
-		skipSpaceCheck: store.skipSpaceCheck,
-		dryRun: false,
-		taskId,
-	}),
+	buildArgs: (store, item, taskId) =>
+		runArgs(
+			"xbox.extract",
+			item.path,
+			withOutputDir(deriveExtractDir(item.path), store.outputDir || ""),
+			{ on_conflict: store.onConflict, skip_space_check: store.skipSpaceCheck },
+			false,
+			taskId,
+		),
 	chips: () => "",
 };
 
@@ -379,7 +344,7 @@ const xenon: OpDef = {
 	opLabel: "Extract",
 	storeId: "xenon-extract",
 	useStore: useXenonExtractStore,
-	command: "cmd_xenon_extract",
+	command: "cmd_run",
 	resultKind: "convert",
 	title: "Extract ZArchive",
 	subtitle: "Writes every file in the archive to a folder.",
@@ -388,18 +353,17 @@ const xenon: OpDef = {
 	browseFilters: [{ name: "ZArchive", extensions: ["zar"] }],
 	fields: recursiveFields(),
 	outputRows: directoryOutputRows(EXTRACT_DIR_TOOLTIP),
-	showVerify: true,
-	verifyLabel: "Verify after extraction",
 	actionNote: "Extraction never overwrites the source archive.",
 	deriveOutput: deriveExtractDir,
-	buildArgs: (store, item, taskId) => ({
-		input: item.path,
-		outputDir: withOutputDir(deriveExtractDir(item.path), store.outputDir || ""),
-		onConflict: store.onConflict,
-		skipSpaceCheck: store.skipSpaceCheck,
-		dryRun: false,
-		taskId,
-	}),
+	buildArgs: (store, item, taskId) =>
+		runArgs(
+			"xenon.extract",
+			item.path,
+			withOutputDir(deriveExtractDir(item.path), store.outputDir || ""),
+			{ on_conflict: store.onConflict, skip_space_check: store.skipSpaceCheck },
+			false,
+			taskId,
+		),
 	chips: () => "",
 };
 
@@ -409,7 +373,7 @@ const psp: OpDef = {
 	opLabel: "Extract",
 	storeId: "psp-extract",
 	useStore: usePspExtractStore,
-	command: "cmd_psp_extract",
+	command: "cmd_run",
 	resultKind: "convert",
 	title: "Extract EBOOT.PBP",
 	subtitle: "Writes every segment (SFO, icons, DATA.PSAR, ...) to a folder.",
@@ -419,18 +383,17 @@ const psp: OpDef = {
 	fields: recursiveFields(),
 	note: "DATA.PSAR is written as stored: still encrypted for PSN (NPUMDIMG) images.",
 	outputRows: directoryOutputRows(EXTRACT_DIR_TOOLTIP),
-	showVerify: true,
-	verifyLabel: "Verify after extraction",
 	actionNote: "Extraction never overwrites the source file.",
 	deriveOutput: deriveExtractDir,
-	buildArgs: (store, item, taskId) => ({
-		input: item.path,
-		outputDir: withOutputDir(deriveExtractDir(item.path), store.outputDir || ""),
-		onConflict: store.onConflict,
-		skipSpaceCheck: store.skipSpaceCheck,
-		dryRun: false,
-		taskId,
-	}),
+	buildArgs: (store, item, taskId) =>
+		runArgs(
+			"psp.extract",
+			item.path,
+			withOutputDir(deriveExtractDir(item.path), store.outputDir || ""),
+			{ on_conflict: store.onConflict, skip_space_check: store.skipSpaceCheck },
+			false,
+			taskId,
+		),
 	chips: () => "",
 };
 
@@ -440,7 +403,7 @@ const vita: OpDef = {
 	opLabel: "Extract",
 	storeId: "vita-extract",
 	useStore: useVitaExtractStore,
-	command: "cmd_vita_extract",
+	command: "cmd_run",
 	resultKind: "convert",
 	title: "Extract PKG",
 	subtitle: "Decrypts the item table and writes every file to a folder.",
@@ -449,18 +412,17 @@ const vita: OpDef = {
 	browseFilters: [{ name: "PKG", extensions: ["pkg"] }],
 	fields: recursiveFields(),
 	outputRows: directoryOutputRows(EXTRACT_DIR_TOOLTIP),
-	showVerify: true,
-	verifyLabel: "Verify after extraction",
 	actionNote: "Extraction never overwrites the source file.",
 	deriveOutput: deriveExtractDir,
-	buildArgs: (store, item, taskId) => ({
-		input: item.path,
-		outputDir: withOutputDir(deriveExtractDir(item.path), store.outputDir || ""),
-		onConflict: store.onConflict,
-		skipSpaceCheck: store.skipSpaceCheck,
-		dryRun: false,
-		taskId,
-	}),
+	buildArgs: (store, item, taskId) =>
+		runArgs(
+			"vita.extract",
+			item.path,
+			withOutputDir(deriveExtractDir(item.path), store.outputDir || ""),
+			{ on_conflict: store.onConflict, skip_space_check: store.skipSpaceCheck },
+			false,
+			taskId,
+		),
 	chips: () => "",
 };
 

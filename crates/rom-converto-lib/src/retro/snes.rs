@@ -22,6 +22,8 @@ const MIN_SCORE: u32 = 5;
 /// Fields of the SNES internal header, plus the checksum recomputed over
 /// the ROM body.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct SnesInfo {
     pub mapping: String,
     pub copier_header: bool,

@@ -27,8 +27,10 @@ pub mod template;
 pub mod verify;
 pub mod worker_pool;
 
-pub use archive::{ArchiveMember, ResolvedInput, is_archive_path, list_members, resolve_input};
-pub use conflict::{ConflictPolicy, ConflictResolution, resolve_conflict};
+pub use archive::{
+    ArchiveMember, ResolvedInput, is_archive_path, list_members, output_basis, resolve_input,
+};
+pub use conflict::{ConflictPolicy, ConflictResolution, OutputExists, resolve_conflict};
 pub use footgun::{
     DREAMCAST_CHD_WARNING, NX_DAT_UNSUPPORTED_HINT, dreamcast_boot_signature,
     mixed_playlist_extensions, oversized_rvz_chunk,
@@ -39,14 +41,14 @@ pub use hash::{
 };
 pub use hash_cache::{CachedTrack, CueDigests, HashCache};
 pub use path::{contract_tilde, expand_tilde, with_tag};
-pub use plan::{PlanDecision, PlanLine, classify};
+pub use plan::{PlanDecision, PlanLine, chd_media_label, classify};
 pub use report::{
     HashReportRecord, ReportFormat, ReportRecord, ReportRecordInput, ReportTotals,
     write_dat_report, write_hash_report, write_report,
 };
 pub use tally::{FileEntry, FileStatus, Tally, TallyDirection, format_bytes};
 pub use template::{TemplateTokens, apply_template};
-pub use verify::{OutputVerify, VerifyOutcome, verify_existing_output};
+pub use verify::{OutputVerify, VerifyOutcome, verify_existing_cached, verify_existing_output};
 
 pub const BYTES_PER_MB: f64 = 1_000_000.0;
 
@@ -245,6 +247,24 @@ pub trait ProgressReporter: Send + Sync {
     fn warn(&self, message: &str) {
         log::warn!("{message}");
     }
+
+    /// Surface a finished record or plan line as it is produced. Reporters
+    /// that only render progress leave this a no-op.
+    fn row(&self, _row: &crate::runner::models::RunRow) {}
+
+    /// Announce the size of a batch before its first unit is processed, for
+    /// reporters that render an aggregate bar above the per-file one.
+    fn batch_start(&self, _total_files: u64, _total_bytes: u64) {}
+
+    /// Mark one batch unit of `bytes` done, whatever its outcome.
+    fn batch_advance(&self, _bytes: u64) {}
+
+    /// A nested reporter on a `suffix`-derived channel, for per-item progress
+    /// that must not clobber this reporter's own counter. Reporters with a
+    /// single channel keep the default sink and simply drop it.
+    fn child(&self, _suffix: &str) -> Box<dyn ProgressReporter + Send + Sync> {
+        Box::new(NoProgress)
+    }
 }
 
 /// No-op [`ProgressReporter`] for callers that do not need progress output.
@@ -269,6 +289,69 @@ impl ProgressReporter for AtomicProgress {
             .fetch_add(delta, std::sync::atomic::Ordering::Relaxed);
     }
     fn finish(&self) {}
+}
+
+enum Relayed {
+    Start(u64, String),
+    Inc(u64),
+    Finish,
+    Phase(String),
+    Warn(String),
+}
+
+/// [`ProgressReporter`] handed to a blocking job so its reports can cross
+/// the `spawn_blocking` boundary back to the async caller's reporter.
+struct RelayProgress(std::sync::mpsc::Sender<Relayed>);
+
+impl ProgressReporter for RelayProgress {
+    fn start(&self, total: u64, msg: &str) {
+        let _ = self.0.send(Relayed::Start(total, msg.to_string()));
+    }
+    fn inc(&self, delta: u64) {
+        let _ = self.0.send(Relayed::Inc(delta));
+    }
+    fn finish(&self) {
+        let _ = self.0.send(Relayed::Finish);
+    }
+    fn set_phase(&self, label: &str) {
+        let _ = self.0.send(Relayed::Phase(label.to_string()));
+    }
+    fn warn(&self, message: &str) {
+        let _ = self.0.send(Relayed::Warn(message.to_string()));
+    }
+}
+
+/// Run a synchronous, progress-reporting job on the blocking pool and
+/// forward everything it reports to `progress` while it runs.
+pub(crate) async fn spawn_blocking_with_progress<T, E>(
+    progress: &dyn ProgressReporter,
+    job: impl FnOnce(&dyn ProgressReporter) -> Result<T, E> + Send + 'static,
+) -> Result<T, E>
+where
+    T: Send + 'static,
+    E: From<tokio::task::JoinError> + Send + 'static,
+{
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut handle = tokio::task::spawn_blocking(move || job(&RelayProgress(tx)));
+    let drain = || {
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                Relayed::Start(total, msg) => progress.start(total, &msg),
+                Relayed::Inc(delta) => progress.inc(delta),
+                Relayed::Finish => progress.finish(),
+                Relayed::Phase(label) => progress.set_phase(&label),
+                Relayed::Warn(message) => progress.warn(&message),
+            }
+        }
+    };
+    let result = loop {
+        match tokio::time::timeout(std::time::Duration::from_millis(100), &mut handle).await {
+            Ok(result) => break result,
+            Err(_) => drain(),
+        }
+    };
+    drain();
+    result?
 }
 
 /// Drive a blocking writer against a scratch sibling of `output`, relaying

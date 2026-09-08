@@ -28,6 +28,8 @@ use crate::util::Cancelled;
 /// Result of verifying the three SHA-1 hashes an RVZ container stores over its
 /// own metadata structs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
 pub struct RvzStructuralVerify {
     pub file_head_hash_ok: bool,
     pub disc_hash_ok: bool,

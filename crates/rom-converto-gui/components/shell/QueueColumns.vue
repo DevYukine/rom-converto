@@ -1,16 +1,21 @@
 <script setup lang="ts">
 import { useQueueStore, type QueueJob } from "~/stores/queue";
 import { useProgress } from "~/composables/useProgress";
+import StatusTag from "~/components/ui/StatusTag.vue";
+import KvRow from "~/components/ui/KvRow.vue";
+import { formatBytes } from "~/lib/inspect-view";
+import type { ComparisonData } from "~/types";
 
 defineProps<{ full?: boolean }>();
 
 const queue = useQueueStore();
+const expanded = ref<Set<string>>(new Set());
 
 function pct(job: QueueJob) {
-	return useProgress(job.taskId).percent.value;
+	return useProgress(job.progressKey).percent.value;
 }
 function jobSpeed(job: QueueJob) {
-	const p = useProgress(job.taskId);
+	const p = useProgress(job.progressKey);
 	if (!p.running.value || !job.startedAt) return "0";
 	const secs = (Date.now() - job.startedAt) / 1000;
 	return secs > 0 ? (p.current.value / secs / 1e6).toFixed(1) : "0";
@@ -42,6 +47,25 @@ function resultText(job: QueueJob): string {
 		return `-${(100 - (job.outputBytes / job.inputBytes) * 100).toFixed(1)}%`;
 	}
 	return "done";
+}
+
+function verifyTag(job: QueueJob): string | null {
+	const v = job.comparison?.verify;
+	if (!v) return null;
+	if (!v.ok) return "MISMATCH";
+	return v.round_trip ? "VERIFIED" : "CHECKED";
+}
+
+function ratioText(c: ComparisonData): string {
+	return c.ratio_pct != null ? `${c.ratio_pct.toFixed(1)}%` : "-";
+}
+
+function toggleExpand(job: QueueJob) {
+	if (!job.comparison) return;
+	const s = new Set(expanded.value);
+	if (s.has(job.id)) s.delete(job.id);
+	else s.add(job.id);
+	expanded.value = s;
 }
 </script>
 
@@ -87,12 +111,32 @@ function resultText(job: QueueJob): string {
 
 		<div class="col fin">
 			<div class="colhead">Finished this session<span class="sub green">{{ queue.savedGiB }} GiB saved</span></div>
-			<div v-for="job in queue.finished" :key="job.id" class="frow">
-				<span :class="['fmark', mark(job.status).cls]">{{ mark(job.status).ch }}</span>
-				<span class="name">{{ job.name }}</span>
-				<span class="optag">{{ job.opLabel }}</span>
-				<span :class="['fres', mark(job.status).cls]" :title="job.status === 'failed' ? job.error : undefined">{{ resultText(job) }}</span>
-				<button v-if="job.status === 'failed'" class="retry" @click="queue.retry(job.id)">Retry</button>
+			<div v-for="job in queue.finished" :key="job.id" class="fitem">
+				<div
+					class="frow"
+					:class="{ expandable: !!job.comparison }"
+					:tabindex="job.comparison ? 0 : undefined"
+					:role="job.comparison ? 'button' : undefined"
+					:aria-expanded="job.comparison ? expanded.has(job.id) : undefined"
+					@click="toggleExpand(job)"
+					@keydown.enter="toggleExpand(job)"
+					@keydown.space.prevent="toggleExpand(job)"
+				>
+					<span :class="['fmark', mark(job.status).cls]">{{ mark(job.status).ch }}</span>
+					<span class="name">{{ job.name }}</span>
+					<span class="optag">{{ job.opLabel }}</span>
+					<StatusTag v-if="verifyTag(job)" :status="verifyTag(job)!" :width="62" />
+					<span :class="['fres', mark(job.status).cls]" :title="job.status === 'failed' ? job.error : undefined">{{ resultText(job) }}</span>
+					<button v-if="job.status === 'failed'" class="retry" @click.stop="queue.retry(job.id)">Retry</button>
+				</div>
+				<div v-if="job.comparison && expanded.has(job.id)" class="fdetail">
+					<KvRow label="Input size" :value="formatBytes(job.comparison.input_bytes)" />
+					<KvRow label="Output size" :value="formatBytes(job.comparison.output_bytes)" />
+					<KvRow label="Saved" :value="ratioText(job.comparison)" />
+					<KvRow label="Formats" :value="`${job.comparison.input_format} → ${job.comparison.output_format}`" />
+					<KvRow v-if="job.comparison.output_sha1" label="SHA1" :value="job.comparison.output_sha1" />
+					<KvRow v-if="job.comparison.verify?.message" label="Verify message" :value="job.comparison.verify.message" />
+				</div>
 			</div>
 		</div>
 	</div>
@@ -242,6 +286,24 @@ function resultText(job: QueueJob): string {
 	max-width: 96px;
 	overflow: hidden;
 	text-overflow: ellipsis;
+}
+.fitem {
+	display: flex;
+	flex-direction: column;
+}
+.frow.expandable {
+	cursor: pointer;
+	border-radius: 6px;
+}
+.frow.expandable:hover {
+	background: var(--a03);
+}
+.fdetail {
+	margin: 2px 0 4px 20px;
+	padding: 6px 10px;
+	border-left: 2px solid var(--a10);
+	background: var(--a03);
+	border-radius: 0 6px 6px 0;
 }
 .rm,
 .retry {

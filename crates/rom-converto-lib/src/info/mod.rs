@@ -35,6 +35,8 @@ pub use image::Image;
 /// field on the wire.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub enum InfoResult {
     Chd(ChdInfo),
     Cso(CsoInfo),
@@ -62,6 +64,8 @@ pub enum InfoResult {
 /// per-console code (PSP "UG", Vita "gp", PS3 "DG", title-id high words).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub enum ContentKind {
     Game,
     Update,
@@ -88,6 +92,8 @@ impl ContentKind {
 /// A string carried per-language, as found in console-specific metadata
 /// blocks (3DS SMDH, Wii IMET, Wii U meta.xml, Switch NACP, ...).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct MultilingualString {
     pub entries: Vec<(LanguageCode, String)>,
 }
@@ -129,6 +135,8 @@ impl MultilingualString {
 /// (3DS SMDH, Wii IMET, Wii U meta.xml, Switch NACP, GameCube BNR2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub enum LanguageCode {
     Japanese,
     English,

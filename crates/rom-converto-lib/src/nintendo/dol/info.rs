@@ -18,6 +18,8 @@ const FST_ROOT_CAP: usize = 64;
 /// Metadata read from a GameCube disc image: boot.bin fields plus the
 /// decoded banner, if present.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct DolInfo {
     pub physical_bytes: u64,
     pub container: String,
@@ -43,6 +45,8 @@ pub struct DolInfo {
 /// One top-level entry of the disc's file layout (a path with no `/`),
 /// as listed from the FST.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct DolFstEntry {
     pub name: String,
     pub size: u64,
@@ -51,6 +55,8 @@ pub struct DolFstEntry {
 
 /// Decoded `opening.bnr` banner, with all title blocks it carries.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct GcBannerInfo {
     pub format: String,
     pub titles: Vec<GcBannerTitleInfo>,
@@ -59,6 +65,8 @@ pub struct GcBannerInfo {
 /// One language block of a banner: short/long game and maker names plus
 /// the description text.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct GcBannerTitleInfo {
     pub language: String,
     pub short_game_name: String,

@@ -58,6 +58,8 @@ pub const X360_PROBE_BASES: [u64; 6] = [
 /// Which disc/partition layout a probed base corresponds to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub enum PartitionKind {
     /// Already-trimmed XISO, or a base-0 game partition.
     Trimmed,

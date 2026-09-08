@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildInspectView, pkgPlatformBadge, wupEncryption } from "./inspect-view";
-import type { InfoResult } from "~/types/info";
+import type { InfoResult } from "~/types";
 
 function view(info: Partial<InfoResult> & { kind: InfoResult["kind"] }) {
 	return buildInspectView(info as InfoResult);

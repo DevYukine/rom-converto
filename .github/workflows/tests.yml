@@ -68,6 +68,12 @@ jobs:
       - name: Run cargo test (lib + cli + benchmark + ffi + gui)
         run: cargo test -p rom-converto-lib -p rom-converto-cli -p rom-converto-benchmark -p rom-converto-ffi -p rom-converto-gui
 
+      - name: Check generated TypeScript bindings are up to date
+        run: |
+          rm -rf crates/rom-converto-gui/types/generated
+          cargo test -p rom-converto-gui --features ts-export ts_export
+          test -z "$(git status --porcelain -- crates/rom-converto-gui/types/generated)" || { git status --porcelain -- crates/rom-converto-gui/types/generated; exit 1; }
+
   gui-test:
     name: GUI tests
     runs-on: "ubuntu-latest"

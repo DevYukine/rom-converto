@@ -12,6 +12,8 @@ const HEADER_END: usize = 0x200;
 /// Fields of the Mega Drive cartridge header, with the checksum recomputed
 /// over the ROM body.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct MdInfo {
     pub format: String,
     pub console: String,

@@ -22,6 +22,8 @@ const NINTENDO_LOGO: [u8; 156] = [
 
 /// Fields of the GBA cartridge header, with the complement check recomputed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct GbaInfo {
     pub title: String,
     pub game_code: String,

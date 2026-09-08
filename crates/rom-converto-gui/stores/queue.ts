@@ -1,25 +1,35 @@
 import { defineStore } from "pinia";
 import { invoke } from "~/lib/ipc";
-import { invokeArgs } from "~/lib/opdefs/types";
-import type { RunOutcome } from "~/types/report";
+import { requestPath, type RunPayload } from "~/lib/opdefs/types";
+import type { ComparisonData, ReportRecord, RunOutcome } from "~/types";
 import { useUiStore } from "~/stores/ui";
 import { useAlertsStore } from "~/stores/alerts";
 import { useJobConcurrency } from "~/composables/useJobConcurrency";
 import { useProgress } from "~/composables/useProgress";
 import { useBatchNotify } from "~/composables/useBatchNotify";
 import { pushFailedRecord, writeRunReport } from "~/composables/useReport";
-import type { ReportRecord } from "~/types/report";
 
 export type JobStatus = "queued" | "running" | "done" | "failed" | "cancelled";
-export type ResultKind = "convert" | "verify" | "hash" | "datVerify" | "text";
+export type ResultKind =
+	| "convert"
+	| "verify"
+	| "hash"
+	| "datScan"
+	| "datVerify"
+	| "datRename"
+	| "text";
 
 export interface QueueJob {
 	id: string;
 	name: string;
 	opLabel: string;
 	command: string;
-	args: Record<string, unknown>;
+	args: RunPayload;
+	/** Unique per job; the backend's cancel registry is keyed by it. */
 	taskId: string;
+	/** Progress and row-stream channel. Ops with a fixed key share one, so
+	 *  their pages can bind to it; those jobs run one at a time. */
+	progressKey: string;
 	chips: string;
 	status: JobStatus;
 	resultKind: ResultKind;
@@ -29,15 +39,18 @@ export interface QueueJob {
 	error?: string;
 	inputBytes: number;
 	outputBytes: number;
+	comparison?: ComparisonData;
 	startedAt?: number;
+	finishedAt?: number;
 }
 
 export interface EnqueueJob {
 	name: string;
 	opLabel: string;
 	command: string;
-	args: Record<string, unknown>;
+	args: RunPayload;
 	taskId: string;
+	progressKey?: string;
 	chips: string;
 	resultKind: ResultKind;
 	routeBack?: { storeId: string };
@@ -47,12 +60,15 @@ export interface EnqueueJob {
 
 const GIB = 2 ** 30;
 
+/** `RunStatus::PartialFailure` as it crosses the bridge. */
+const PARTIAL_FAILURE = 3;
+
 function isActive(s: JobStatus): boolean {
 	return s === "queued" || s === "running";
 }
 
 function inputOf(job: QueueJob): string {
-	return String(job.args.input ?? job.args.inputPath ?? job.name);
+	return requestPath(job.args, "input") || job.name;
 }
 
 export const useQueueStore = defineStore("queue", () => {
@@ -89,7 +105,7 @@ export const useQueueStore = defineStore("queue", () => {
 		const r = running.value;
 		if (!r.length) return 0;
 		let sum = 0;
-		for (const j of r) sum += useProgress(j.taskId).percent.value;
+		for (const j of r) sum += useProgress(j.progressKey).percent.value;
 		return Math.round(sum / r.length);
 	});
 
@@ -107,7 +123,7 @@ export const useQueueStore = defineStore("queue", () => {
 
 	function runningBytes(): number {
 		let cur = 0;
-		for (const j of running.value) cur += useProgress(j.taskId).current.value;
+		for (const j of running.value) cur += useProgress(j.progressKey).current.value;
 		return cur;
 	}
 
@@ -152,7 +168,7 @@ export const useQueueStore = defineStore("queue", () => {
 		if (speedBps.value <= 0) return null;
 		let remaining = 0;
 		for (const j of running.value) {
-			const p = useProgress(j.taskId);
+			const p = useProgress(j.progressKey);
 			remaining += Math.max(0, p.total.value - p.current.value);
 		}
 		if (remaining <= 0) return null;
@@ -179,6 +195,7 @@ export const useQueueStore = defineStore("queue", () => {
 				command: s.command,
 				args: Object.freeze({ ...s.args }),
 				taskId: s.taskId,
+				progressKey: s.progressKey ?? s.taskId,
 				chips: s.chips,
 				status: "queued",
 				resultKind: s.resultKind,
@@ -196,12 +213,12 @@ export const useQueueStore = defineStore("queue", () => {
 
 	function pump() {
 		if (!ui.startImmediately && !queueActive.value) return;
-		const keys = new Set(running.value.map((j) => j.taskId));
+		const keys = new Set(running.value.map((j) => j.progressKey));
 		for (const job of jobs.value) {
 			if (running.value.length >= concurrency.value) break;
 			if (job.status !== "queued") continue;
-			if (keys.has(job.taskId)) continue;
-			keys.add(job.taskId);
+			if (keys.has(job.progressKey)) continue;
+			keys.add(job.progressKey);
 			void startJob(job);
 		}
 	}
@@ -209,19 +226,33 @@ export const useQueueStore = defineStore("queue", () => {
 	async function startJob(job: QueueJob) {
 		job.status = "running";
 		job.startedAt = Date.now();
-		useProgress(job.taskId).reset();
+		useProgress(job.progressKey).reset();
 		try {
-			const res = await invoke<RunOutcome>(
-				job.command,
-				invokeArgs(job.command, job.args as Record<string, unknown>),
-			);
+			const res = await invoke<RunOutcome>(job.command, { ...job.args, progressKey: job.progressKey });
 			settle(job, res, null);
 		} catch (e) {
 			settle(job, null, String(e));
 		}
 	}
 
+	function fail(job: QueueJob, message: string) {
+		job.status = "failed";
+		job.error = message;
+		batchFailed++;
+		alerts.push({
+			type: "error",
+			title: "Conversion failed",
+			body: `${job.name}: ${message}`,
+			actions: [
+				{ label: "Retry", run: () => retry(job.id) },
+				{ label: "Show in queue", run: () => void navigateTo("/queue") },
+			],
+			meta: `${job.opLabel} · just now`,
+		});
+	}
+
 	function settle(job: QueueJob, res: RunOutcome | null, err: string | null) {
+		job.finishedAt = Date.now();
 		if (job.status === "cancelled") {
 			afterSettle();
 			return;
@@ -230,26 +261,21 @@ export const useQueueStore = defineStore("queue", () => {
 			if (err.includes("operation cancelled")) {
 				job.status = "cancelled";
 			} else {
-				job.status = "failed";
-				job.error = err;
-				batchFailed++;
-				alerts.push({
-					type: "error",
-					title: "Conversion failed",
-					body: `${job.name}: ${err}`,
-					actions: [
-						{ label: "Retry", run: () => retry(job.id) },
-						{ label: "Show in queue", run: () => void navigateTo("/queue") },
-					],
-					meta: `${job.opLabel} · just now`,
-				});
+				fail(job, err);
 			}
 		} else if (res) {
-			job.status = "done";
 			job.result = res;
 			job.outputBytes = res.output_bytes ?? 0;
 			if (res.input_bytes) job.inputBytes = res.input_bytes;
-			batchDone++;
+			job.comparison = res.comparison ?? undefined;
+			// A partial failure completed with records for the files that did
+			// work, but some file in the batch did not convert.
+			if (res.status === PARTIAL_FAILURE) {
+				fail(job, res.message);
+			} else {
+				job.status = "done";
+				batchDone++;
+			}
 		} else {
 			job.status = "done";
 			batchDone++;
@@ -265,14 +291,16 @@ export const useQueueStore = defineStore("queue", () => {
 
 	async function maybeWriteReport(job: QueueJob) {
 		if (!job.groupId) return;
-		const reportFile = job.args.reportFile as string | null | undefined;
+		const reportFile = job.args.reportFile;
 		if (!reportFile) return;
 		const group = jobs.value.filter((j) => j.groupId === job.groupId);
 		if (group.some((j) => isActive(j.status))) return;
 		const records: ReportRecord[] = [];
 		for (const j of group) {
-			if (j.status === "done" && j.result && typeof j.result !== "string") {
-				if (j.result.record) records.push(j.result.record);
+			// A partial failure carries the runner's own per-file rows; only a
+			// job that returned none needs a synthetic failed record.
+			if (j.result && typeof j.result !== "string" && j.result.records.length) {
+				records.push(...j.result.records);
 			} else if (j.status === "failed") {
 				await pushFailedRecord(records, inputOf(j), j.opLabel, j.error ?? "failed");
 			}
@@ -357,6 +385,7 @@ export const useQueueStore = defineStore("queue", () => {
 				command: job.command,
 				args: { ...job.args },
 				taskId: job.taskId,
+				progressKey: job.progressKey,
 				chips: job.chips,
 				resultKind: job.resultKind,
 				routeBack: job.routeBack,

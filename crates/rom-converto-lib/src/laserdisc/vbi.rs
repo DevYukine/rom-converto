@@ -377,6 +377,8 @@ pub fn vbi_clv_time(code: u32) -> Option<(u32, u32)> {
 /// VBI lines.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub enum LdDiscType {
     Cav,
     Clv,
@@ -386,6 +388,8 @@ pub enum LdDiscType {
 
 /// An `HH:MM` CLV timecode decoded from a Philips code.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct LdClvTime {
     pub hours: u32,
     pub minutes: u32,

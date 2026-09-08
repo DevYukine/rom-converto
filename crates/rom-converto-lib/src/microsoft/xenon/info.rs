@@ -12,6 +12,8 @@ use super::error::XenonResult;
 
 /// Summary of a ZArchive's tree contents and root `default.xex` metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct ZarInfo {
     pub file_count: u64,
     pub dir_count: u64,
@@ -31,6 +33,8 @@ const MAX_ROOT_ENTRIES: usize = 64;
 
 /// One entry at a ZArchive's root.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct ZarRootEntry {
     pub name: String,
     pub size: u64,

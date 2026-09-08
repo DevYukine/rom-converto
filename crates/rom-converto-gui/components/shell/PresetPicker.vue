@@ -8,7 +8,7 @@ import { useNxCompressStore } from "~/stores/nx-compress";
 import { useRvlCompressStore } from "~/stores/rvl-compress";
 import { useWupCompressStore } from "~/stores/wup-compress";
 import type { OpStore } from "~/lib/opdefs/types";
-import type { Preset, PresetFormat } from "~/types/config";
+import type { Preset, PresetFormat } from "~/types";
 
 const props = defineProps<{ console: string }>();
 
@@ -119,7 +119,10 @@ async function saveCurrent() {
 			const value = store[field];
 			if (isSetValue(value)) table[key] = value;
 		}
-		const preset: Preset = { ...config.presets[trimmed], [binding.format]: table };
+		const preset: Preset = {
+			...config.presets[trimmed],
+			[binding.format]: table as Preset[PresetFormat],
+		};
 		await config.savePreset(trimmed, preset);
 		config.applyPreset(trimmed);
 		saveName.value = "";
