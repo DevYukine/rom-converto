@@ -436,8 +436,8 @@ const XENON_INFO = {
 	],
 };
 
-const NDS_INFO = {
-	kind: "nds",
+const NTR_INFO = {
+	kind: "ntr",
 	physical_bytes: 33_554_432,
 	game_title: "SAMPLE GAME",
 	game_code: "ASME",
@@ -561,7 +561,7 @@ const INFO_SAMPLES: Record<string, unknown> = {
 	cso: CSO_INFO,
 	xbox: XBOX_INFO,
 	xenon: XENON_INFO,
-	nds: NDS_INFO,
+	ntr: NTR_INFO,
 	retro: RETRO_INFO,
 	pbp: PBP_INFO,
 	vpk: VPK_INFO,
@@ -579,7 +579,7 @@ function infoKindFor(path: string): string {
 	if (["cso", "zso", "dax"].includes(e)) return "cso";
 	if (["xiso"].includes(e)) return "xbox";
 	if (["zar"].includes(e)) return "xenon";
-	if (["nds", "dsi"].includes(e)) return "nds";
+	if (["nds", "dsi"].includes(e)) return "ntr";
 	if (["pbp"].includes(e)) return "pbp";
 	if (["vpk"].includes(e)) return "vpk";
 	if (["pkg"].includes(e)) return "pkg";

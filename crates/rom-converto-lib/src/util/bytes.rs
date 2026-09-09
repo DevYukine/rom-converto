@@ -32,3 +32,15 @@ pub fn cstr_ascii(buf: &[u8]) -> String {
     let end = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
     String::from_utf8_lossy(&buf[..end]).into_owned()
 }
+
+/// Renders a fixed-width header name field as a trimmed string, dropping
+/// the zero, 0xFF, and control bytes used as padding.
+pub(crate) fn ascii_trim(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .filter(|&&b| (0x20..=0x7E).contains(&b))
+        .map(|&b| b as char)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}

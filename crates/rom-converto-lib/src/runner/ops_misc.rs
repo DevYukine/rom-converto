@@ -1,4 +1,4 @@
-//! Cue, NDS and NX merge/split handlers.
+//! Cue, NTR and NX merge/split handlers.
 
 use super::invalid_arg;
 use super::models::{RunData, RunRequest, RunResponse, WupTitleInputOption};
@@ -6,7 +6,7 @@ use super::ops::{
     ConvertTarget, convert_op, cso_format, dir_op, nx_keys_for_run, required_input,
     skipped_already_done,
 };
-use crate::nintendo::nds::NdsError;
+use crate::nintendo::ntr::NtrError;
 use crate::nintendo::nx::NxMergeFormat;
 use crate::util::fs::file_len;
 use crate::util::{CancelToken, OutputVerify, ProgressReporter};
@@ -30,7 +30,7 @@ pub(crate) async fn cue_to_iso(
         },
         cancel,
         |input, output, _cancel| async move {
-            crate::cue::to_iso::cue_to_iso(progress, input, output, true)
+            crate::disc::cue::to_iso::cue_to_iso(progress, input, output, true)
                 .await
                 .map_err(anyhow::Error::from)
         },
@@ -62,7 +62,7 @@ pub(crate) async fn cue_to_cso(
     .await
 }
 
-pub(crate) async fn nds_encrypt(
+pub(crate) async fn ntr_encrypt(
     req: RunRequest,
     progress: &dyn ProgressReporter,
     cancel: CancelToken,
@@ -73,22 +73,22 @@ pub(crate) async fn nds_encrypt(
         &req,
         ConvertTarget {
             input: &input,
-            derive: &|basis, _| crate::nintendo::nds::derive_encrypted_path(basis),
-            operation: "nds.encrypt",
+            derive: &|basis, _| crate::nintendo::ntr::derive_encrypted_path(basis),
+            operation: "ntr.encrypt",
             verify: OutputVerify::None,
         },
         cancel,
         |input, output, cancel| async move {
-            crate::nintendo::nds::encrypt_nds_rom(progress, input, output, true, cancel)
+            crate::nintendo::ntr::encrypt_ntr_rom(progress, input, output, true, cancel)
                 .await
                 .map_err(anyhow::Error::from)
         },
     )
     .await;
-    nds_already_done(result, &input, "nds.encrypt", "already encrypted")
+    ntr_already_done(result, &input, "ntr.encrypt", "already encrypted")
 }
 
-pub(crate) async fn nds_decrypt(
+pub(crate) async fn ntr_decrypt(
     req: RunRequest,
     progress: &dyn ProgressReporter,
     cancel: CancelToken,
@@ -99,24 +99,24 @@ pub(crate) async fn nds_decrypt(
         &req,
         ConvertTarget {
             input: &input,
-            derive: &|basis, _| crate::nintendo::nds::derive_decrypted_path(basis),
-            operation: "nds.decrypt",
+            derive: &|basis, _| crate::nintendo::ntr::derive_decrypted_path(basis),
+            operation: "ntr.decrypt",
             verify: OutputVerify::None,
         },
         cancel,
         |input, output, cancel| async move {
-            crate::nintendo::nds::decrypt_nds_rom(progress, input, output, true, cancel)
+            crate::nintendo::ntr::decrypt_ntr_rom(progress, input, output, true, cancel)
                 .await
                 .map_err(anyhow::Error::from)
         },
     )
     .await;
-    nds_already_done(result, &input, "nds.decrypt", "already decrypted")
+    ntr_already_done(result, &input, "ntr.decrypt", "already decrypted")
 }
 
 /// A ROM that is already in the target state, or has no secure area to work
 /// on, is a skip rather than a failure.
-fn nds_already_done(
+fn ntr_already_done(
     result: Result<RunResponse>,
     input: &std::path::Path,
     operation: &str,
@@ -125,10 +125,10 @@ fn nds_already_done(
     let Err(err) = result else {
         return result;
     };
-    let reason = match err.downcast_ref::<NdsError>() {
-        Some(NdsError::AlreadyEncrypted | NdsError::AlreadyDecrypted) => already,
-        Some(NdsError::NoSecureArea) => "no secure area",
-        Some(NdsError::TooSmall) => "too small for a secure area",
+    let reason = match err.downcast_ref::<NtrError>() {
+        Some(NtrError::AlreadyEncrypted | NtrError::AlreadyDecrypted) => already,
+        Some(NtrError::NoSecureArea) => "no secure area",
+        Some(NtrError::TooSmall) => "too small for a secure area",
         _ => return Err(err),
     };
     Ok(skipped_already_done(input, operation, reason, &err))
@@ -252,13 +252,13 @@ mod tests {
                 dir.path().join("game.zso"),
             ),
             (
-                "nds.encrypt",
+                "ntr.encrypt",
                 &nds,
                 json!({}),
                 dir.path().join("game.encrypted.nds"),
             ),
             (
-                "nds.decrypt",
+                "ntr.decrypt",
                 &nds,
                 json!({}),
                 dir.path().join("game.decrypted.nds"),
@@ -297,7 +297,7 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_op_stays_invalid_after_registration() {
-        let res = run_json(r#"{"operation":"nds.compress"}"#, CancelToken::new()).await;
+        let res = run_json(r#"{"operation":"ntr.compress"}"#, CancelToken::new()).await;
         assert!(!res.ok);
         assert_eq!(res.status, 2);
         assert!(res.message.contains("unknown operation"));

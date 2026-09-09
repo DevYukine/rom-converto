@@ -186,7 +186,7 @@ async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()>
         Commands::Ps3(inner) => c::ps3::run(inner, ctx).await,
         Commands::Psp(inner) => c::psp::run(inner, ctx).await,
         Commands::Vita(inner) => c::vita::run(inner, ctx).await,
-        Commands::Nds(inner) => c::nds::run(inner, ctx).await,
+        Commands::Ntr(inner) => c::ntr::run(inner, ctx).await,
         Commands::Chd(inner) => c::chd::run(inner, ctx).await,
         Commands::Cso(inner) => c::cso::run(inner, ctx).await,
         Commands::Cue(inner) => c::cue::run(inner, ctx).await,

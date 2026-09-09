@@ -8,16 +8,16 @@ use super::models::{
     RunOptions, RunPlansData, RunRequest, RunResponse, RunRow, RunStatus, VerifyReport,
     WupTitleInputOption,
 };
-use super::ops_misc::{cue_to_cso, cue_to_iso, nds_decrypt, nds_encrypt, nx_merge, nx_split};
+use super::ops_misc::{cue_to_cso, cue_to_iso, ntr_decrypt, ntr_encrypt, nx_merge, nx_split};
 use super::ops_ms::{
     xbox_convert, xbox_extract, xenon_compress, xenon_convert, xenon_extract, xenon_verify,
 };
 use super::ops_sony::{ps3_decrypt, psp_extract, psp_to_iso, vita_extract};
 use super::{RUN_SCHEMA, invalid_arg, is_cancelled_error, planned_verb, record_verb};
-use crate::chd::{ChdCodec, ChdOptions, DiscMode};
 use crate::cso::{CsoCompressOptions, CsoFormat};
-use crate::nintendo::legacy_input::{ALL_MIGRATE_FORMATS, DOL_MIGRATE_FORMATS, MigrateOptions};
-use crate::nintendo::rvz::RvzCompressOptions;
+use crate::disc::chd::{ChdCodec, ChdOptions, DiscMode};
+use crate::nintendo::disc::legacy::{ALL_MIGRATE_FORMATS, DOL_MIGRATE_FORMATS, MigrateOptions};
+use crate::nintendo::disc::rvz::RvzCompressOptions;
 use crate::util::fs::{file_len, has_ext};
 use crate::util::{
     CancelToken, Cancelled, ConflictPolicy, ConflictResolution, DEFAULT_SPACE_HEADROOM, FileStatus,
@@ -137,7 +137,7 @@ pub(crate) static OPS: &[OpSpec] = &[
         input_exts: None,
         writes_output: true,
         required_bytes: Some(|_, source| {
-            crate::chd::info::read_info(source)
+            crate::disc::chd::info::read_info(source)
                 .map(|info| info.logical_bytes)
                 .unwrap_or_else(|_| file_len(source))
         }),
@@ -402,22 +402,22 @@ pub(crate) static OPS: &[OpSpec] = &[
         run: |req, progress, cancel| Box::pin(cue_to_cso(req, progress, cancel)),
     },
     OpSpec {
-        name: "nds.encrypt",
-        aliases: &[],
-        batch_exts: Some(&["nds"]),
+        name: "ntr.encrypt",
+        aliases: &["nds.encrypt"],
+        batch_exts: Some(&["nds", "dsi"]),
         input_exts: None,
         writes_output: true,
         required_bytes: None,
-        run: |req, progress, cancel| Box::pin(nds_encrypt(req, progress, cancel)),
+        run: |req, progress, cancel| Box::pin(ntr_encrypt(req, progress, cancel)),
     },
     OpSpec {
-        name: "nds.decrypt",
-        aliases: &[],
-        batch_exts: Some(&["nds"]),
+        name: "ntr.decrypt",
+        aliases: &["nds.decrypt"],
+        batch_exts: Some(&["nds", "dsi"]),
         input_exts: None,
         writes_output: true,
         required_bytes: None,
-        run: |req, progress, cancel| Box::pin(nds_decrypt(req, progress, cancel)),
+        run: |req, progress, cancel| Box::pin(ntr_decrypt(req, progress, cancel)),
     },
     OpSpec {
         name: "nx.merge",
@@ -922,7 +922,7 @@ pub(crate) async fn chd_compress(
         |input, output, cancel| async move {
             let opts = chd_options(req)?;
             let mode = disc_mode(req.options.mode.as_deref())?;
-            crate::chd::convert_disc_to_chd(progress, input, output, mode, opts, cancel)
+            crate::disc::chd::convert_disc_to_chd(progress, input, output, mode, opts, cancel)
                 .await
                 .map_err(anyhow::Error::from)
         },
@@ -944,13 +944,13 @@ pub(crate) async fn chd_migrate(
         req,
         ConvertTarget {
             input: &input,
-            derive: &|basis, _| crate::chd::migrated_chd_path(basis),
+            derive: &|basis, _| crate::disc::chd::migrated_chd_path(basis),
             operation: "chd.migrate",
             verify: OutputVerify::Chd,
         },
         cancel,
         |input, output, cancel| async move {
-            crate::chd::migrate_chd_to_v5(progress, input, output, chd_options(req)?, cancel)
+            crate::disc::chd::migrate_chd_to_v5(progress, input, output, chd_options(req)?, cancel)
                 .await
                 .map_err(anyhow::Error::from)
         },
@@ -981,7 +981,7 @@ pub(crate) async fn chd_extract(
         },
         cancel,
         |input, output, cancel| async move {
-            crate::chd::extract_from_chd(
+            crate::disc::chd::extract_from_chd(
                 progress,
                 input,
                 output,
@@ -999,9 +999,9 @@ pub(crate) async fn chd_extract(
 /// `.iso`, a CD-mode CHD a `.cue` beside its `.bin`. LaserDisc and unreadable
 /// inputs get no extension, leaving the choice (or the refusal) to the lib.
 fn chd_extract_ext(input: &Path) -> &'static str {
-    match crate::chd::reader::open_chd_sync(input).map(|handle| handle.flavor()) {
-        Ok(crate::chd::reader::ChdFlavor::Cd) => "cue",
-        Ok(crate::chd::reader::ChdFlavor::Dvd) => "iso",
+    match crate::disc::chd::reader::open_chd_sync(input).map(|handle| handle.flavor()) {
+        Ok(crate::disc::chd::reader::ChdFlavor::Cd) => "cue",
+        Ok(crate::disc::chd::reader::ChdFlavor::Dvd) => "iso",
         _ => "",
     }
 }
@@ -1012,7 +1012,7 @@ pub(crate) async fn chd_verify(
     cancel: CancelToken,
 ) -> Result<RunResponse> {
     let input = required_input(&req)?;
-    crate::chd::verify_chd(
+    crate::disc::chd::verify_chd(
         progress,
         input,
         req.options.parent.clone(),
@@ -1097,15 +1097,21 @@ pub(crate) async fn rvz_compress(
         req,
         ConvertTarget {
             input: &input,
-            derive: &|basis, _| crate::nintendo::rvz::derive_rvz_path(basis),
+            derive: &|basis, _| crate::nintendo::disc::rvz::derive_rvz_path(basis),
             operation: &req.operation,
             verify: OutputVerify::Rvz,
         },
         cancel,
         |input, output, cancel| async move {
-            crate::nintendo::rvz::compress_disc(&input, &output, rvz_options(req), progress, cancel)
-                .await
-                .map_err(anyhow::Error::from)
+            crate::nintendo::disc::rvz::compress_disc(
+                &input,
+                &output,
+                rvz_options(req),
+                progress,
+                cancel,
+            )
+            .await
+            .map_err(anyhow::Error::from)
         },
     )
     .await
@@ -1122,18 +1128,20 @@ pub(crate) async fn rvz_decompress(
         &req,
         ConvertTarget {
             input: &input,
-            derive: &|basis, _| crate::nintendo::rvz::derive_disc_path(basis),
+            derive: &|basis, _| crate::nintendo::disc::rvz::derive_disc_path(basis),
             operation: &req.operation,
             verify: OutputVerify::None,
         },
         cancel,
         |input, output, cancel| async move {
             if has_ext(&output, "wbfs") {
-                crate::nintendo::rvz::decompress_disc_to_wbfs(&input, &output, progress, cancel)
-                    .await
-                    .map_err(anyhow::Error::from)
+                crate::nintendo::disc::rvz::decompress_disc_to_wbfs(
+                    &input, &output, progress, cancel,
+                )
+                .await
+                .map_err(anyhow::Error::from)
             } else {
-                crate::nintendo::rvz::decompress_disc(&input, &output, progress, cancel)
+                crate::nintendo::disc::rvz::decompress_disc(&input, &output, progress, cancel)
                     .await
                     .map_err(anyhow::Error::from)
             }
@@ -1146,18 +1154,18 @@ pub(crate) async fn migrate_disc(
     req: RunRequest,
     progress: &dyn ProgressReporter,
     cancel: CancelToken,
-    allowed: &'static [crate::nintendo::legacy_input::LegacyFormat],
+    allowed: &'static [crate::nintendo::disc::legacy::LegacyFormat],
 ) -> Result<RunResponse> {
     let req = &req;
     let input = required_input(req)?;
     // A real run gates inside the lib; a dry run never gets there, so it has
     // to refuse a non-legacy or wrong-console input before planning a write.
     if req.dry_run {
-        match crate::nintendo::legacy_input::detect_legacy_format(&input)? {
+        match crate::nintendo::disc::legacy::detect_legacy_format(&input)? {
             None => anyhow::bail!(
                 "input is not a GCZ, WIA, or NKit image; use compress for .iso/.gcm/.wbfs"
             ),
-            Some(format) => crate::nintendo::legacy_input::ensure_format_allowed(format, allowed)?,
+            Some(format) => crate::nintendo::disc::legacy::ensure_format_allowed(format, allowed)?,
         }
     }
     convert_op(
@@ -1165,7 +1173,7 @@ pub(crate) async fn migrate_disc(
         req,
         ConvertTarget {
             input: &input,
-            derive: &|basis, _| crate::nintendo::rvz::derive_rvz_path(basis),
+            derive: &|basis, _| crate::nintendo::disc::rvz::derive_rvz_path(basis),
             operation: &req.operation,
             verify: OutputVerify::Rvz,
         },
@@ -1176,7 +1184,7 @@ pub(crate) async fn migrate_disc(
                 deep_verify: req.options.deep.unwrap_or(false)
                     || req.options.deep_verify.unwrap_or(false),
             };
-            crate::nintendo::legacy_input::migrate_disc(
+            crate::nintendo::disc::legacy::migrate_disc(
                 &input,
                 &output,
                 rvz_options(req),
@@ -1703,7 +1711,7 @@ pub(crate) async fn cue_merge(
             if cancel.is_cancelled() {
                 return Err(Cancelled.into());
             }
-            crate::cue::merge::merge_bin(progress, input, output, true, cancel)
+            crate::disc::cue::merge::merge_bin(progress, input, output, true, cancel)
                 .await
                 .map_err(anyhow::Error::from)
         },
@@ -2047,7 +2055,7 @@ async fn required_bytes(op: &OpSpec, req: &RunRequest, source: &Path) -> u64 {
         return estimate(req, source);
     }
     if has_ext(source, "cue") {
-        return crate::cue::referenced_files_size(source)
+        return crate::disc::cue::referenced_files_size(source)
             .await
             .unwrap_or_else(|_| file_len(source));
     }
@@ -2117,10 +2125,15 @@ async fn run_comparison_verify(
     Some(match target {
         OutputVerify::None => return None,
         OutputVerify::Chd => {
-            let ok =
-                crate::chd::verify_chd(progress, output.to_path_buf(), None, false, cancel.clone())
-                    .await
-                    .is_ok();
+            let ok = crate::disc::chd::verify_chd(
+                progress,
+                output.to_path_buf(),
+                None,
+                false,
+                cancel.clone(),
+            )
+            .await
+            .is_ok();
             report(ok, ok)
         }
         OutputVerify::Cso => {
@@ -2130,7 +2143,7 @@ async fn run_comparison_verify(
             report(ok, ok)
         }
         OutputVerify::Rvz => {
-            let ok = crate::nintendo::rvz::verify_rvz_structure(output, cancel)
+            let ok = crate::nintendo::disc::rvz::verify_rvz_structure(output, cancel)
                 .map(|r| r.ok())
                 .unwrap_or(false);
             report(ok, false)
@@ -3103,7 +3116,7 @@ mod tests {
     async fn chd_extract_dry_run_names_target_by_flavour() {
         let dir = tempfile::tempdir().unwrap();
         let chds = dir.path().join("chds");
-        let payload = crate::chd::test_fixtures::mixed_iso(3);
+        let payload = crate::disc::chd::test_fixtures::mixed_iso(3);
         let iso = dir.path().join("dvd.iso");
         std::fs::write(&iso, &payload).unwrap();
         std::fs::write(dir.path().join("cd.bin"), vec![0u8; 4 * 2352]).unwrap();

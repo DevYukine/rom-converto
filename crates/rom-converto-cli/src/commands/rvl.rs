@@ -10,9 +10,9 @@ use crate::commands::support::{
 use crate::util::{ensure_input_exists, resolve_policy};
 use crate::{batch, config, info_print};
 use anyhow::Result;
-use rom_converto_lib::nintendo::legacy_input::ALL_MIGRATE_FORMATS;
+use rom_converto_lib::nintendo::disc::legacy::ALL_MIGRATE_FORMATS;
+use rom_converto_lib::nintendo::disc::rvz::RvzCompressOptions;
 use rom_converto_lib::nintendo::rvl::verify::{RvlVerifyOptions, verify_rvl};
-use rom_converto_lib::nintendo::rvz::RvzCompressOptions;
 use rom_converto_lib::runner::models::RunOptions;
 use rom_converto_lib::util::{CancelToken, oversized_rvz_chunk};
 

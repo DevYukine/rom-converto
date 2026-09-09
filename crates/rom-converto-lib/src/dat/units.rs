@@ -2,10 +2,10 @@
 //! or a cue set whose member bins are hashed raw. Shared by verify, scan,
 //! rename and fixdat so every workflow groups, caches and buckets the same way.
 
-use crate::cue::CueParser;
 use crate::dat::digest::{QuickDigest, TrackDigests, quick_crc_digest};
 use crate::dat::verdict::DatVerdict;
 use crate::dat::{DatError, DatResult, RomDigests, digest_inner_async, is_raw_reread_cheap};
+use crate::disc::cue::CueParser;
 use crate::util::fs::{collect_all_files, file_len};
 use crate::util::hash::MultiHasher;
 use crate::util::{

@@ -12,7 +12,7 @@ use std::sync::atomic::AtomicU64;
 
 use log::info;
 
-use crate::cd::IO_BUFFER_SIZE;
+use crate::disc::cd::IO_BUFFER_SIZE;
 use crate::util::hash::{FileDigests, HashAlgo};
 use crate::util::{BYTES_PER_MB, CancelToken, ProgressReporter, run_scratch_write};
 
@@ -131,8 +131,8 @@ pub async fn compress_to_cso_batch(
     output_dir: Option<&std::path::Path>,
     max_depth: Option<usize>,
 ) -> CsoResult<()> {
-    crate::chd::batch::run_file_batch(
-        crate::chd::batch::BatchSpec {
+    crate::disc::chd::batch::run_file_batch(
+        crate::disc::chd::batch::BatchSpec {
             input_dir,
             output_dir,
             exts: &["iso"],

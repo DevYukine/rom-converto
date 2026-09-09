@@ -442,8 +442,8 @@ mod tests {
     #[test]
     fn cancelled_is_found_through_module_enums_and_io_payloads() {
         use super::Cancelled;
-        let typed =
-            anyhow::Error::from(crate::chd::error::ChdError::from(Cancelled)).context("outer");
+        let typed = anyhow::Error::from(crate::disc::chd::error::ChdError::from(Cancelled))
+            .context("outer");
         assert!(Cancelled::in_chain(&typed));
         let io = anyhow::Error::from(std::io::Error::new(
             std::io::ErrorKind::Interrupted,

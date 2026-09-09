@@ -157,7 +157,7 @@ impl TemplateTokens {
             InfoResult::LaserDisc(_) => {
                 tokens.console = Some("LaserDisc".to_string());
             }
-            InfoResult::Nds(n) => {
+            InfoResult::Ntr(n) => {
                 tokens.title = n
                     .banner
                     .as_ref()

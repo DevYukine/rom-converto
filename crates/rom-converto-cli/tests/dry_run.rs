@@ -825,7 +825,7 @@ fn already_done_single_reports_the_skip_reason() {
     let input = dir.path().join("tiny.nds");
     fs::write(&input, vec![0u8; 128]).unwrap();
 
-    let output = bin().args(["nds", "decrypt"]).arg(&input).output().unwrap();
+    let output = bin().args(["ntr", "decrypt"]).arg(&input).output().unwrap();
 
     assert!(output.status.success(), "{}", combined(&output));
     let text = combined(&output);

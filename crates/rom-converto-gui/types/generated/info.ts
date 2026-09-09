@@ -6,6 +6,11 @@
 export type A78Info = { version: number, title: string, cart_size: number, cart_type: number, cart_features: Array<string>, controller1: number, controller1_name: string | null, controller2: number, controller2_name: string | null, tv_type: string, save_device: number, };
 
 /**
+ * Fields of the GBA cartridge header, with the complement check recomputed.
+ */
+export type AgbInfo = { title: string, game_code: string, region: string | null, maker_code: string, version: number, header_checksum: number, computed_header_checksum: number, header_checksum_valid: boolean, logo_valid: boolean, };
+
+/**
  * One entry from the NACP `rating_age` table, decoded to a named rating
  * organization plus its assigned age. Entries with a negative or `0xFF`
  * value in the source table are filtered out before this type is built.
@@ -193,6 +198,12 @@ export type CtrSmdhTitle = { language: string, short_description: string, long_d
 export type DiscContent = { "kind": "psx" } & PsxInfo | { "kind": "psp" } & PspInfo;
 
 /**
+ * Fields of the Game Boy cartridge header, with both checksums the format
+ * defines recomputed.
+ */
+export type DmgInfo = { logo_valid: boolean, title: string, manufacturer_code: string | null, cgb_flag: number, cgb: string | null, sgb_flag: number, cart_type: number, cart_type_name: string | null, rom_bytes: number | null, ram_bytes: number | null, destination: number, destination_name: string | null, licensee: string, version: number, header_checksum: number, computed_header_checksum: number, header_checksum_valid: boolean, global_checksum: number, computed_global_checksum: number, global_checksum_valid: boolean, };
+
+/**
  * One top-level entry of the disc's file layout (a path with no `/`),
  * as listed from the FST.
  */
@@ -203,17 +214,6 @@ export type DolFstEntry = { name: string, size: number, is_dir: boolean, };
  * decoded banner, if present.
  */
 export type DolInfo = { physical_bytes: number, container: string, game_id: string, maker_code: string, maker_name: string | null, disc_number: number, disc_version: number, audio_streaming: boolean, game_name: string, region: string, apploader_date: string | null, banner: GcBannerInfo | null, banner_image: Image | null, fst_root: Array<DolFstEntry>, fst_file_count: number, fst_dir_count: number, };
-
-/**
- * Fields of the Dreamcast IP header, with the area and peripheral fields
- * kept raw alongside what is decoded from them.
- */
-export type DreamcastInfo = { sector_size: number, hardware_id: string, maker_id: string, device_info: string, area_symbols: string, regions: Array<string>, peripherals_raw: string, peripherals: Array<string>, product_number: string, version: string, release_date: string, boot_filename: string, maker_name: string, title: string, 
-/**
- * Track index of the `.gdi` the header was reached through, absent
- * when the header came straight out of a disc image.
- */
-gdi: GdiIndex | null, };
 
 /**
  * Single- vs dual-layer DVD, inferred from total sector count.
@@ -229,17 +229,6 @@ export type FdsInfo = { fwnes_header: boolean, side_count: number, sides: Array<
  * The disk info block at the start of one disk side.
  */
 export type FdsSide = { licensee_code: number, game_name: string, game_type_code: number, game_type: string | null, version: number, side_number: number, disk_number: number, disk_type_code: number, disk_type: string | null, boot_read_file_code: number, manufacture_date_raw: string, manufacture_date: string | null, };
-
-/**
- * Fields of the Game Boy cartridge header, with both checksums the format
- * defines recomputed.
- */
-export type GbInfo = { logo_valid: boolean, title: string, manufacturer_code: string | null, cgb_flag: number, cgb: string | null, sgb_flag: number, cart_type: number, cart_type_name: string | null, rom_bytes: number | null, ram_bytes: number | null, destination: number, destination_name: string | null, licensee: string, version: number, header_checksum: number, computed_header_checksum: number, header_checksum_valid: boolean, global_checksum: number, computed_global_checksum: number, global_checksum_valid: boolean, };
-
-/**
- * Fields of the GBA cartridge header, with the complement check recomputed.
- */
-export type GbaInfo = { title: string, game_code: string, region: string | null, maker_code: string, version: number, header_checksum: number, computed_header_checksum: number, header_checksum_valid: boolean, logo_valid: boolean, };
 
 /**
  * Decoded `opening.bnr` banner, with all title blocks it carries.
@@ -267,6 +256,16 @@ track_count: number, tracks: Array<GdiTrack>, };
 export type GdiTrack = { number: number, lba: number, track_type: number, sector_size: number, filename: string, };
 
 /**
+ * Fields of the LNX header. The format defines no checksum.
+ */
+export type HandyInfo = { bank0_page_size: number, bank1_page_size: number, version: number, cart_name: string, manufacturer: string, rotation: number, rotation_name: string | null, };
+
+/**
+ * Header fields of an iNES or NES 2.0 image.
+ */
+export type HvcInfo = { nes2: boolean, prg_rom_bytes: number, chr_rom_bytes: number, mapper: number, submapper: number | null, mirroring: string, battery: boolean, trainer: boolean, four_screen: boolean, console_type: string, timing: string, prg_ram_bytes: number | null, prg_nvram_bytes: number | null, chr_ram_bytes: number | null, chr_nvram_bytes: number | null, };
+
+/**
  * `png_bytes` is a complete PNG file. Width and height describe the
  * decoded image so callers do not need to parse the PNG header to render.
  */
@@ -276,7 +275,18 @@ export type Image = { png_bytes: Array<number>, width: number, height: number, }
  * Per-console metadata read by [`read_info`], tagged with a `kind`
  * field on the wire.
  */
-export type InfoResult = { "kind": "chd" } & ChdInfo | { "kind": "cso" } & CsoInfo | { "kind": "ctr" } & CtrInfo | { "kind": "dol" } & DolInfo | { "kind": "rvl" } & RvlInfo | { "kind": "wup" } & WupInfo | { "kind": "nx" } & NxInfo | { "kind": "xbox" } & XisoInfo | { "kind": "xenon" } & ZarInfo | { "kind": "ps3" } & Ps3Info | { "kind": "psx" } & PsxInfo | { "kind": "psp" } & PspInfo | { "kind": "laser_disc" } & LdAviInfo | { "kind": "nds" } & NdsInfo | { "kind": "retro" } & RetroInfo | { "kind": "pbp" } & PbpInfo | { "kind": "vpk" } & VpkInfo | { "kind": "pkg" } & PkgInfo;
+export type InfoResult = { "kind": "chd" } & ChdInfo | { "kind": "cso" } & CsoInfo | { "kind": "ctr" } & CtrInfo | { "kind": "dol" } & DolInfo | { "kind": "rvl" } & RvlInfo | { "kind": "wup" } & WupInfo | { "kind": "nx" } & NxInfo | { "kind": "xbox" } & XisoInfo | { "kind": "xenon" } & ZarInfo | { "kind": "ps3" } & Ps3Info | { "kind": "psx" } & PsxInfo | { "kind": "psp" } & PspInfo | { "kind": "laser_disc" } & LdAviInfo | { "kind": "ntr" } & NtrInfo | { "kind": "retro" } & RetroInfo | { "kind": "pbp" } & PbpInfo | { "kind": "vpk" } & VpkInfo | { "kind": "pkg" } & PkgInfo;
+
+/**
+ * Fields of the Dreamcast IP header, with the area and peripheral fields
+ * kept raw alongside what is decoded from them.
+ */
+export type KatanaInfo = { sector_size: number, hardware_id: string, maker_id: string, device_info: string, area_symbols: string, regions: Array<string>, peripherals_raw: string, peripherals: Array<string>, product_number: string, version: string, release_date: string, boot_filename: string, maker_name: string, title: string, 
+/**
+ * Track index of the `.gdi` the header was reached through, absent
+ * when the header came straight out of a disc image.
+ */
+gdi: GdiIndex | null, };
 
 /**
  * Union of every per-language slot the supported console formats carry
@@ -310,9 +320,10 @@ export type LdDiscType = "cav" | "clv" | "unknown";
 export type LdVbiSummary = { fields_scanned: number, white_flag_count: number, lead_in: boolean, lead_out: boolean, disc_type: LdDiscType, cav_picture_min: number | null, cav_picture_max: number | null, clv_start: LdClvTime | null, clv_end: LdClvTime | null, chapter_min: number | null, chapter_max: number | null, fields_without_code: number, };
 
 /**
- * Fields of the LNX header. The format defines no checksum.
+ * Fields of a Sega CD boot sector. The Mega Drive header the disc
+ * embeds defines no checksum over disc contents, so none is reported.
  */
-export type LynxInfo = { bank0_page_size: number, bank1_page_size: number, version: number, cart_name: string, manufacturer: string, rotation: number, rotation_name: string | null, };
+export type McdInfo = { sector_size: number, hardware_id: string, console: string, copyright: string, domestic_title: string, overseas_title: string, serial: string, device_support: Array<string>, region: Array<string>, };
 
 /**
  * Fields of the Mega Drive cartridge header, with the checksum recomputed
@@ -327,45 +338,40 @@ export type MdInfo = { format: string, console: string, copyright: string, domes
 export type MultilingualString = { entries: Array<[LanguageCode, string]>, };
 
 /**
- * Fields of the N64 cartridge header, with the boot code CRC used to
- * identify the CIC lockout chip.
+ * Fields of the Neo Geo Pocket cartridge header. The format defines no
+ * checksum.
  */
-export type N64Info = { byte_order: string, internal_name: string, game_id: string, media: string, region_code: string, region: string | null, version: number, crc1: string, crc2: string, bootcode_crc32: string, cic: string | null, };
+export type NgpInfo = { license: string, startup_address: number, catalog_id: number, subcatalog_id: number, machine: number, machine_name: string | null, title: string, };
 
 /**
  * The rom_offset/entry_address/load_address/size quadruplet the header
  * stores for each of the two on-cart CPUs.
  */
-export type NdsArmInfo = { rom_offset: number, entry_address: number, load_address: number, size: number, };
+export type NtrArmInfo = { rom_offset: number, entry_address: number, load_address: number, size: number, };
 
 /**
  * Decoded `banner.bin` header block: title strings per language plus the
  * 32x32 icon.
  */
-export type NdsBannerInfo = { banner_version: number, titles: MultilingualString, banner_crc16: number, banner_crc16_computed: number, banner_crc16_valid: boolean, icon: Image, };
+export type NtrBannerInfo = { banner_version: number, titles: MultilingualString, banner_crc16: number, banner_crc16_computed: number, banner_crc16_valid: boolean, icon: Image, };
 
 /**
  * Metadata read from a Nintendo DS cartridge image: header fields, secure
  * area state, and the decoded banner, if present.
  */
-export type NdsInfo = { physical_bytes: number, game_title: string, game_code: string, maker_code: string, unit_code: number, unit_code_name: string, region: number, rom_version: number, device_capacity: number, capacity_bytes: number, ntr_rom_size: number, arm9: NdsArmInfo, arm7: NdsArmInfo, fnt_offset: number, fnt_size: number, fat_offset: number, fat_size: number, header_crc16: number, header_crc16_computed: number, header_crc16_valid: boolean, secure_area: NdsSecureAreaState, banner: NdsBannerInfo | null, };
+export type NtrInfo = { physical_bytes: number, game_title: string, game_code: string, maker_code: string, unit_code: number, unit_code_name: string, region: number, rom_version: number, device_capacity: number, capacity_bytes: number, ntr_rom_size: number, arm9: NtrArmInfo, arm7: NtrArmInfo, fnt_offset: number, fnt_size: number, fat_offset: number, fat_size: number, header_crc16: number, header_crc16_computed: number, header_crc16_valid: boolean, secure_area: NtrSecureAreaState, banner: NtrBannerInfo | null, };
 
 /**
  * Whether the KEY1-encrypted secure area at `0x4000..0x8000` is present,
  * and if so whether it currently holds plaintext or ciphertext.
  */
-export type NdsSecureAreaState = "not_present" | "encrypted" | "decrypted";
+export type NtrSecureAreaState = "not_present" | "encrypted" | "decrypted";
 
 /**
- * Header fields of an iNES or NES 2.0 image.
+ * Fields of the N64 cartridge header, with the boot code CRC used to
+ * identify the CIC lockout chip.
  */
-export type NesInfo = { nes2: boolean, prg_rom_bytes: number, chr_rom_bytes: number, mapper: number, submapper: number | null, mirroring: string, battery: boolean, trainer: boolean, four_screen: boolean, console_type: string, timing: string, prg_ram_bytes: number | null, prg_nvram_bytes: number | null, chr_ram_bytes: number | null, chr_nvram_bytes: number | null, };
-
-/**
- * Fields of the Neo Geo Pocket cartridge header. The format defines no
- * checksum.
- */
-export type NgpInfo = { license: string, startup_address: number, catalog_id: number, subcatalog_id: number, machine: number, machine_name: string | null, title: string, };
+export type NusInfo = { byte_order: string, internal_name: string, game_id: string, media: string, region_code: string, region: string | null, version: number, crc1: string, crc2: string, bootcode_crc32: string, cic: string | null, };
 
 /**
  * Container file format for a Switch input.
@@ -604,7 +610,7 @@ title_id_hex: string, kind: CnmtTitleKind, version: number, };
 /**
  * Per-system header fields, tagged with the system on the wire.
  */
-export type RetroDetails = { "system": "nes" } & NesInfo | { "system": "snes" } & SnesInfo | { "system": "n64" } & N64Info | { "system": "game_boy" } & GbInfo | { "system": "gba" } & GbaInfo | { "system": "mega_drive" } & MdInfo | { "system": "master_system" } & SmsInfo | { "system": "game_gear" } & SmsInfo | { "system": "virtual_boy" } & VbInfo | { "system": "wonder_swan" } & WsInfo | { "system": "neo_geo_pocket" } & NgpInfo | { "system": "lynx" } & LynxInfo | { "system": "atari7800" } & A78Info | { "system": "sega32x" } & MdInfo | { "system": "fds" } & FdsInfo | { "system": "sega_saturn" } & SaturnInfo | { "system": "sega_cd" } & SegaCdInfo | { "system": "dreamcast" } & DreamcastInfo;
+export type RetroDetails = { "system": "nes" } & HvcInfo | { "system": "snes" } & ShvcInfo | { "system": "n64" } & NusInfo | { "system": "game_boy" } & DmgInfo | { "system": "gba" } & AgbInfo | { "system": "mega_drive" } & MdInfo | { "system": "master_system" } & SmsInfo | { "system": "game_gear" } & SmsInfo | { "system": "virtual_boy" } & VueInfo | { "system": "wonder_swan" } & WsInfo | { "system": "neo_geo_pocket" } & NgpInfo | { "system": "lynx" } & HandyInfo | { "system": "atari7800" } & A78Info | { "system": "sega32x" } & MdInfo | { "system": "fds" } & FdsInfo | { "system": "sega_saturn" } & SaturnInfo | { "system": "sega_cd" } & McdInfo | { "system": "dreamcast" } & KatanaInfo;
 
 /**
  * Metadata read from a cartridge ROM image.
@@ -639,10 +645,10 @@ title_id_hex: string, title_version: number, system_version: number, ios_slot: n
 export type SaturnInfo = { sector_size: number, hardware_id: string, maker_id: string, product_number: string, version: string, release_date: string, device_info: string, area_symbols: string, regions: Array<string>, peripheral_symbols: string, peripherals: Array<string>, title: string, };
 
 /**
- * Fields of a Sega CD boot sector. The Mega Drive header the disc
- * embeds defines no checksum over disc contents, so none is reported.
+ * Fields of the SNES internal header, plus the checksum recomputed over
+ * the ROM body.
  */
-export type SegaCdInfo = { sector_size: number, hardware_id: string, console: string, copyright: string, domestic_title: string, overseas_title: string, serial: string, device_support: Array<string>, region: Array<string>, };
+export type ShvcInfo = { mapping: string, copier_header: boolean, header_offset: number, title: string, map_mode: number, fastrom: boolean, chipset: number, coprocessor: string | null, rom_size_kb: number, sram_size_kb: number, country: number, region: string | null, licensee: number, version: number, checksum: number, checksum_complement: number, computed_checksum: number, checksum_valid: boolean, };
 
 /**
  * Fields of the Sega 8-bit cartridge header, with the checksum recomputed
@@ -651,20 +657,9 @@ export type SegaCdInfo = { sector_size: number, hardware_id: string, console: st
 export type SmsInfo = { header_offset: number, product_code: number, version: number, region_code: number, region: string | null, rom_size_code: number, rom_size_kb: number | null, checksum: number, computed_checksum: number, checksum_valid: boolean, };
 
 /**
- * Fields of the SNES internal header, plus the checksum recomputed over
- * the ROM body.
- */
-export type SnesInfo = { mapping: string, copier_header: boolean, header_offset: number, title: string, map_mode: number, fastrom: boolean, chipset: number, coprocessor: string | null, rom_size_kb: number, sram_size_kb: number, country: number, region: string | null, licensee: number, version: number, checksum: number, checksum_complement: number, computed_checksum: number, checksum_valid: boolean, };
-
-/**
  * Summary of one parsed `.tik` ticket found in the container.
  */
 export type TicketSummary = { file_name: string, rights_id: string, master_key_revision: number, };
-
-/**
- * Fields of the Virtual Boy ROM header. The format defines no checksum.
- */
-export type VbInfo = { title: string, maker_code: string, game_code: string, version: number, };
 
 /**
  * Metadata read from a `.vpk` package.
@@ -694,6 +689,11 @@ file_count: number,
  * Total uncompressed size of all file members.
  */
 total_size: number, };
+
+/**
+ * Fields of the Virtual Boy ROM header. The format defines no checksum.
+ */
+export type VueInfo = { title: string, maker_code: string, game_code: string, version: number, };
 
 /**
  * Fields of the WonderSwan cartridge footer, with the checksum recomputed

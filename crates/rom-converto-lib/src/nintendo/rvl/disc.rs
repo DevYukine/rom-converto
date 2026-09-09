@@ -2,6 +2,7 @@
 //! sector encryption, and the H0 hash helper used by the RVZ exception list
 //! builder.
 
+use crate::nintendo::disc::rvz::error::{RvzError, RvzResult};
 use crate::nintendo::rvl::common_keys::common_key;
 use crate::nintendo::rvl::constants::{
     WII_HASH_SIZE, WII_MAGIC, WII_MAGIC_OFFSET, WII_PARTITION_ENTRY_SIZE, WII_PARTITION_GROUPS,
@@ -9,7 +10,6 @@ use crate::nintendo::rvl::constants::{
     WII_TICKET_COMMON_KEY_INDEX_OFFSET, WII_TICKET_SIZE, WII_TICKET_TITLE_ID_OFFSET,
     WII_TICKET_TITLE_KEY_OFFSET,
 };
-use crate::nintendo::rvz::error::{RvzError, RvzResult};
 use aes::{
     Aes128,
     cipher::{BlockModeDecrypt, BlockModeEncrypt, KeyIvInit},

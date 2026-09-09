@@ -19,7 +19,7 @@ and `info` extensions in the installed build.
 | Original Xbox (`xbox`) | Full XDVDFS `.iso` or extracted game directory | `.xiso` | convert, extract |
 | Xbox 360 (`xenon`) | XDVDFS `.iso`; extracted game directories for ZAR only | `.zar` or GoD install tree | compress, extract, convert |
 | PlayStation 3 (`ps3`) | Encrypted disc `.iso` | Plain `.iso` | decrypt |
-| Nintendo DS (`nds`) | `.nds`, `.dsi` | Same extension | encrypt or decrypt the secure area |
+| Nintendo DS (`ntr`) | `.nds`, `.dsi` | Same extension | encrypt or decrypt the secure area |
 | PSP (`psp`) | `EBOOT.PBP` or PSN `.pkg` | extracted files or `.iso` | extract, to-iso |
 | PS Vita (`vita`) | `.pkg` | extracted files | extract |
 

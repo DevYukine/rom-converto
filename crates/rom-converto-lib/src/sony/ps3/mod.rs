@@ -13,7 +13,7 @@ use std::sync::atomic::Ordering;
 
 use log::info;
 
-use crate::cd::IO_BUFFER_SIZE;
+use crate::disc::cd::IO_BUFFER_SIZE;
 use crate::util::{BYTES_PER_MB, CancelToken, Cancelled, ProgressReporter, run_scratch_write};
 
 pub mod error;

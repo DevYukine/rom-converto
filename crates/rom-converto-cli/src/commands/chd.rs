@@ -2,7 +2,7 @@ use crate::commands::cso::CsoFormatArg;
 use crate::commands::info_command::InfoCommand;
 use crate::commands::{BatchArgs, ConflictArgs, OutputArgs};
 use clap::{Parser, Subcommand};
-use rom_converto_lib::chd::ChdCodec;
+use rom_converto_lib::disc::chd::ChdCodec;
 use std::path::PathBuf;
 
 use crate::commands::support::{
@@ -12,7 +12,7 @@ use crate::commands::support::{
 use crate::util::{WriteDecision, ensure_input_exists, resolve_policy};
 use crate::{batch, config, dry_run, info_print};
 use anyhow::Result;
-use rom_converto_lib::chd::{
+use rom_converto_lib::disc::chd::{
     ChdOptions, DiscMode, migrate_chd_to_v5_batch, verify_chd, verify_chd_batch,
 };
 use rom_converto_lib::runner::models::RunOptions;
@@ -27,10 +27,10 @@ pub(crate) type ChdCodecList = Vec<ChdCodec>;
 /// Parses a `-c/--codecs` value: a comma-separated chdman-style codec
 /// list, validated for emptiness/duplicates/slot count. The CD-only-vs-DVD
 /// check needs the resolved disc mode, so it happens later against the
-/// lib's [`rom_converto_lib::chd::validate_codecs`].
+/// lib's [`rom_converto_lib::disc::chd::validate_codecs`].
 pub(crate) fn parse_chd_codecs(s: &str) -> Result<ChdCodecList, String> {
-    let codecs = rom_converto_lib::chd::parse_codec_list(s).map_err(|e| e.to_string())?;
-    rom_converto_lib::chd::validate_codecs(&codecs, false).map_err(|e| e.to_string())?;
+    let codecs = rom_converto_lib::disc::chd::parse_codec_list(s).map_err(|e| e.to_string())?;
+    rom_converto_lib::disc::chd::validate_codecs(&codecs, false).map_err(|e| e.to_string())?;
     Ok(codecs)
 }
 
@@ -538,7 +538,7 @@ pub async fn run(command: ChdCommands, ctx: DispatchCtx<'_>) -> Result<()> {
             let input = require_info_input(&cmd.input)?;
             ensure_input_exists(input)?;
             let resolved = rom_converto_lib::util::resolve_input(input, ALL_IMAGE_EXTS)?;
-            let info = rom_converto_lib::chd::info::read_info(resolved.path())?;
+            let info = rom_converto_lib::disc::chd::info::read_info(resolved.path())?;
             info_print::print(&rom_converto_lib::info::InfoResult::Chd(info), cmd.json)?;
         }
     }
@@ -654,7 +654,7 @@ mod tests {
             panic!("expected Compress");
         };
         let codecs = c.codecs.expect("codecs parsed");
-        assert!(rom_converto_lib::chd::validate_codecs(&codecs, true).is_err());
+        assert!(rom_converto_lib::disc::chd::validate_codecs(&codecs, true).is_err());
     }
 
     #[test]

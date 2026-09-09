@@ -15,6 +15,7 @@
 //!
 //! See `Source/Core/DiscIO/VolumeWii.h` in Dolphin for the canonical layout.
 
+use crate::nintendo::disc::rvz::error::{RvzError, RvzResult};
 use crate::nintendo::rvl::constants::{
     WII_BLOCKS_PER_GROUP, WII_GROUP_PAYLOAD_SIZE, WII_GROUP_TOTAL_SIZE, WII_HASH_SIZE,
     WII_PARTITION_HEADER_DATA_OFFSET_OFFSET, WII_PARTITION_HEADER_DATA_SIZE_OFFSET,
@@ -22,7 +23,6 @@ use crate::nintendo::rvl::constants::{
     WII_TICKET_SIZE,
 };
 use crate::nintendo::rvl::disc::{decrypt_sector, decrypt_title_key, encrypt_sector};
-use crate::nintendo::rvz::error::{RvzError, RvzResult};
 use sha1::{Digest, Sha1};
 use std::io::{Read, Seek, SeekFrom};
 

@@ -2,7 +2,7 @@ import { commonOptions, recursiveFields, runArgs, templateIsActive, type OpDef }
 import { useCtrDecryptStore } from "~/stores/ctr-decrypt";
 import { useWupDecryptStore } from "~/stores/wup-decrypt";
 import { usePs3DecryptStore } from "~/stores/ps3-decrypt";
-import { useNdsDecryptStore } from "~/stores/nds-decrypt";
+import { useNtrDecryptStore } from "~/stores/ntr-decrypt";
 import { basename, deriveDecryptedPath, withOutputDir } from "~/composables/useDerivedPath";
 
 const ARCHIVE_EXTS = ["zip", "7z", "rar", "tar", "tgz", "gz"];
@@ -198,12 +198,12 @@ const ps3: OpDef = {
 	chips: (store) => (store.key ? "key set" : "no key"),
 };
 
-const nds: OpDef = {
+const ntr: OpDef = {
 	op: "decrypt",
-	console: "nds",
+	console: "ntr",
 	opLabel: "Decrypt",
-	storeId: "nds-decrypt",
-	useStore: useNdsDecryptStore,
+	storeId: "ntr-decrypt",
+	useStore: useNtrDecryptStore,
 	command: "cmd_run",
 	resultKind: "convert",
 	title: "Decrypt Nintendo DS ROMs",
@@ -232,7 +232,7 @@ const nds: OpDef = {
 	deriveOutput: (input) => deriveDecryptedPath(input),
 	buildArgs: (store, item, taskId) =>
 		runArgs(
-			"nds.decrypt",
+			"ntr.decrypt",
 			item.path,
 			templateIsActive(store) ? null : withOutputDir(deriveDecryptedPath(item.path), store.outputDir || ""),
 			commonOptions(store),
@@ -242,4 +242,4 @@ const nds: OpDef = {
 	chips: () => "",
 };
 
-export const decryptOps: OpDef[] = [ctr, wup, ps3, nds];
+export const decryptOps: OpDef[] = [ctr, wup, ps3, ntr];

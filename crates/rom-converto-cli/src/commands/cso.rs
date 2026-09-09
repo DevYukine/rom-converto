@@ -11,8 +11,8 @@ use crate::commands::support::{
 use crate::util::{ensure_input_exists, resolve_policy};
 use crate::{batch, config, info_print};
 use anyhow::Result;
-use rom_converto_lib::chd::DiscMode;
 use rom_converto_lib::cso::verify_cso;
+use rom_converto_lib::disc::chd::DiscMode;
 use rom_converto_lib::runner::models::RunOptions;
 use rom_converto_lib::util::CancelToken;
 
@@ -374,7 +374,7 @@ pub(crate) fn cso_format_name(format: CsoFormatArg) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rom_converto_lib::chd::ChdCodec;
+    use rom_converto_lib::disc::chd::ChdCodec;
 
     #[derive(Parser, Debug)]
     struct Harness {
@@ -585,7 +585,7 @@ mod tests {
             panic!("expected ToChd");
         };
         let codecs = c.codecs.expect("codecs parsed");
-        assert!(rom_converto_lib::chd::validate_codecs(&codecs, true).is_err());
+        assert!(rom_converto_lib::disc::chd::validate_codecs(&codecs, true).is_err());
     }
 
     #[test]

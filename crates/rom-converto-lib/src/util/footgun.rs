@@ -4,7 +4,7 @@
 //! biased toward silence, so callers can `log::warn!` the returned message
 //! without a separate plausibility check.
 
-use crate::nintendo::rvz::constants::WEAK_HW_CHUNK_WARN;
+use crate::nintendo::disc::rvz::constants::WEAK_HW_CHUNK_WARN;
 
 /// Dreamcast's IP.BIN identifier. It sits at the very start of the boot
 /// track and is unique to Dreamcast among CD-ROM system headers, so a

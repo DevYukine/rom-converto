@@ -14,7 +14,8 @@
 //! everything else is scrubbing fallout, the same call Dolphin's verifier
 //! makes.
 
-use crate::nintendo::disc_input::open_disc_input;
+use crate::nintendo::disc::input::open_disc_input;
+use crate::nintendo::disc::rvz::verify::{RvzStructuralVerify, verify_rvz_structure};
 use crate::nintendo::rvl::constants::{
     WII_BLOCKS_PER_GROUP, WII_GROUP_TOTAL_SIZE, WII_SECTOR_SIZE, WII_SECTOR_SIZE_U64,
 };
@@ -23,7 +24,6 @@ use crate::nintendo::rvl::partition::{
     HASH_REGION_BYTES, PartitionInfo, hash_region, read_and_decrypt_cluster, read_partition_info,
     recompute_hash_regions_into,
 };
-use crate::nintendo::rvz::verify::{RvzStructuralVerify, verify_rvz_structure};
 use crate::util::{CancelToken, Cancelled, ProgressReporter};
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
@@ -289,8 +289,8 @@ fn read_game_id<R: Read + Seek>(reader: &mut R) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nintendo::disc::rvz::{RvzCompressOptions, compress_disc};
     use crate::nintendo::rvl::test_fixtures::make_fake_wii_iso_with_partition;
-    use crate::nintendo::rvz::{RvzCompressOptions, compress_disc};
     use crate::util::{NoProgress, ProgressReporter};
     use std::sync::Mutex;
 

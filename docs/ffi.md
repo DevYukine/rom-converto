@@ -92,7 +92,7 @@ set through the C ABI.
 
 ### Operations
 
-Operations added since the first ABI v1 release: `cue.to_iso`, `cue.to_cso`, `nds.encrypt`, `nds.decrypt`,
+Operations added since the first ABI v1 release: `cue.to_iso`, `cue.to_cso`, `ntr.encrypt`, `ntr.decrypt` (the original `nds.encrypt` and `nds.decrypt` ids still resolve as aliases),
 `nx.merge`, `nx.split`, `ps3.decrypt`, `psp.to_iso`, `psp.extract`,
 `vita.extract`, `xbox.convert`, `xbox.extract`, `xenon.compress`,
 `xenon.convert`, `xenon.extract`, and `xenon.verify`.

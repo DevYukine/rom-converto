@@ -1,6 +1,6 @@
 import { commonOptions, recursiveFields, runArgs, templateIsActive, type OpDef } from "./types";
 import { useCtrEncryptStore } from "~/stores/ctr-encrypt";
-import { useNdsEncryptStore } from "~/stores/nds-encrypt";
+import { useNtrEncryptStore } from "~/stores/ntr-encrypt";
 import { deriveEncryptedPath, withOutputDir } from "~/composables/useDerivedPath";
 
 const ARCHIVE_EXTS = ["zip", "7z", "rar", "tar", "tgz", "gz"];
@@ -58,12 +58,12 @@ const ctr: OpDef = {
 	chips: () => "",
 };
 
-const nds: OpDef = {
+const ntr: OpDef = {
 	op: "encrypt",
-	console: "nds",
+	console: "ntr",
 	opLabel: "Encrypt",
-	storeId: "nds-encrypt",
-	useStore: useNdsEncryptStore,
+	storeId: "ntr-encrypt",
+	useStore: useNtrEncryptStore,
 	command: "cmd_run",
 	resultKind: "convert",
 	title: "Encrypt Nintendo DS ROMs",
@@ -92,7 +92,7 @@ const nds: OpDef = {
 	deriveOutput: deriveEncryptedPath,
 	buildArgs: (store, item, taskId) =>
 		runArgs(
-			"nds.encrypt",
+			"ntr.encrypt",
 			item.path,
 			templateIsActive(store) ? null : withOutputDir(deriveEncryptedPath(item.path), store.outputDir || ""),
 			commonOptions(store),
@@ -102,4 +102,4 @@ const nds: OpDef = {
 	chips: () => "",
 };
 
-export const encryptOps: OpDef[] = [ctr, nds];
+export const encryptOps: OpDef[] = [ctr, ntr];

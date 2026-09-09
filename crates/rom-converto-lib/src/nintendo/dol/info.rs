@@ -84,7 +84,7 @@ pub fn read_info(path: &Path) -> Result<DolInfo> {
         .with_context(|| format!("dol info: stat {}", path.display()))?
         .len();
 
-    let mut reader = crate::nintendo::disc_input::open_disc_input(path)
+    let mut reader = crate::nintendo::disc::input::open_disc_input(path)
         .with_context(|| format!("dol info: open {}", path.display()))?;
     let container = reader.container_name().to_string();
 
@@ -219,10 +219,10 @@ fn read_banner<R: Read + Seek>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nintendo::disc::gcz::test_fixtures::make_gcz;
     use crate::nintendo::dol::test_fixtures::{
         make_fake_gamecube_iso, make_fake_gamecube_iso_with_fst,
     };
-    use crate::nintendo::gcz::test_fixtures::make_gcz;
     use std::io::Write;
 
     #[test]

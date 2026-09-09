@@ -4,11 +4,11 @@
 use crate::util::{IndicatifProgress, TotalProgress, ensure_input_exists, ok_str};
 use crate::{config, info_print};
 use anyhow::{Context, Result};
-use rom_converto_lib::chd::{ChdCodec, DiscMode};
-use rom_converto_lib::nintendo::legacy_input::{
+use rom_converto_lib::disc::chd::{ChdCodec, DiscMode};
+use rom_converto_lib::nintendo::disc::legacy::{
     LegacyFormat, detect_legacy_format, ensure_format_allowed_for,
 };
-use rom_converto_lib::nintendo::rvz::RvzCompressOptions;
+use rom_converto_lib::nintendo::disc::rvz::RvzCompressOptions;
 use rom_converto_lib::util::{CancelToken, FileDigests, HashAlgo, Tally, hash_file};
 use std::path::Path;
 use std::time::Instant;
@@ -386,7 +386,7 @@ pub(crate) fn run_info_batch(
 }
 
 pub(crate) fn print_rvz_structure(
-    s: Option<&rom_converto_lib::nintendo::rvz::RvzStructuralVerify>,
+    s: Option<&rom_converto_lib::nintendo::disc::rvz::RvzStructuralVerify>,
 ) {
     let Some(s) = s else {
         return;
@@ -421,7 +421,7 @@ pub(crate) fn save_info_icon(info: &rom_converto_lib::info::InfoResult, dir: &Pa
         InfoResult::Xenon(i) => save_xex_icon(i.xex.as_ref(), dir),
         InfoResult::Psp(i) => save_psp_icon(i, dir),
         InfoResult::Ps3(i) => save_ps3_icon(i, dir),
-        InfoResult::Nds(i) => save_nds_icon(i, dir),
+        InfoResult::Ntr(i) => save_ntr_icon(i, dir),
         InfoResult::Pbp(i) => save_pbp_icon(i, dir),
         InfoResult::Vpk(i) => save_vpk_icon(i, dir),
         InfoResult::Pkg(i) => save_pkg_icon(i, dir),
@@ -545,12 +545,12 @@ pub(crate) fn save_psp_icon(info: &rom_converto_lib::info::PspInfo, dir: &Path) 
     )
 }
 
-pub(crate) fn save_nds_icon(info: &rom_converto_lib::info::NdsInfo, dir: &Path) -> Result<()> {
+pub(crate) fn save_ntr_icon(info: &rom_converto_lib::info::NtrInfo, dir: &Path) -> Result<()> {
     let Some(banner) = &info.banner else {
         log::warn!("No DS banner decoded; nothing to save");
         return Ok(());
     };
-    save_png(&banner.icon.png_bytes, &info.game_code, "nds-icon", dir)
+    save_png(&banner.icon.png_bytes, &info.game_code, "ntr-icon", dir)
 }
 
 pub(crate) fn save_pbp_icon(info: &rom_converto_lib::info::PbpInfo, dir: &Path) -> Result<()> {
@@ -595,7 +595,7 @@ pub(crate) fn save_pkg_icon(info: &rom_converto_lib::info::PkgInfo, dir: &Path) 
 #[cfg(test)]
 mod verify_gate_tests {
     use super::*;
-    use rom_converto_lib::nintendo::legacy_input::{ALL_MIGRATE_FORMATS, DOL_MIGRATE_FORMATS};
+    use rom_converto_lib::nintendo::disc::legacy::{ALL_MIGRATE_FORMATS, DOL_MIGRATE_FORMATS};
 
     fn write_wia(dir: &Path) -> std::path::PathBuf {
         let p = dir.join("game.wia");
@@ -678,7 +678,7 @@ mod chd_migrate_target_tests {
 
     #[test]
     fn derived_output_is_a_v5_sibling_not_the_input() {
-        let derived = rom_converto_lib::chd::migrated_chd_path(Path::new("roms/game.chd"));
+        let derived = rom_converto_lib::disc::chd::migrated_chd_path(Path::new("roms/game.chd"));
         assert_eq!(derived, Path::new("roms/game.v5.chd"));
     }
 

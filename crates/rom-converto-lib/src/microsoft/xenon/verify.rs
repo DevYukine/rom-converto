@@ -14,7 +14,7 @@ use super::error::{XenonError, XenonResult};
 use super::extract::logical_size;
 use crate::util::Cancelled;
 
-/// Outcome of a verify run, mirroring [`crate::nintendo::rvz::verify::RvzStructuralVerify`]'s
+/// Outcome of a verify run, mirroring [`crate::nintendo::disc::rvz::verify::RvzStructuralVerify`]'s
 /// shape at a scale that fits a single-hash, single-tree container.
 #[derive(Debug, Clone, Copy)]
 pub struct ZarVerifyResult {

@@ -259,7 +259,7 @@ mod tests {
     use super::models::RunOptions;
     use super::ops::disc_mode;
     use super::*;
-    use crate::chd::DiscMode;
+    use crate::disc::chd::DiscMode;
     use crate::util::{ChecksumBounds, FileStatus, HashAlgo};
     use serde_json::{Value, json};
 

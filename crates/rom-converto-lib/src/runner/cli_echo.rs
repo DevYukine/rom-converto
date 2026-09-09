@@ -102,6 +102,9 @@ const OVERRIDES: &[(&str, Override)] = &[
     ("rvz.compress", Override::Path(&["rvl", "compress"])),
     ("rvz.decompress", Override::Path(&["rvl", "decompress"])),
     ("rvz.migrate", Override::Path(&["rvl", "migrate"])),
+    // Pre-rename aliases; the CLI subcommand is ntr (nds stays a clap alias).
+    ("nds.encrypt", Override::Path(&["ntr", "encrypt"])),
+    ("nds.decrypt", Override::Path(&["ntr", "decrypt"])),
     ("playlist.write", Override::Path(&["playlist"])),
     ("info.read", Override::Path(&["info"])),
 ];
@@ -424,7 +427,7 @@ const PATH_FLAGS: &[(&str, &[&str])] = &[
     ("hash", &["algo", "max_depth", "recursive", "report"]),
     ("info", &["keys"]),
     (
-        "nds decrypt",
+        "ntr decrypt",
         &[
             "max_depth",
             "on_conflict",
@@ -435,7 +438,7 @@ const PATH_FLAGS: &[(&str, &[&str])] = &[
         ],
     ),
     (
-        "nds encrypt",
+        "ntr encrypt",
         &[
             "max_depth",
             "on_conflict",

@@ -81,7 +81,7 @@ pub fn read_info(path: &Path) -> Result<RvlInfo> {
         .with_context(|| format!("rvl info: stat {}", path.display()))?
         .len();
 
-    let mut reader = crate::nintendo::disc_input::open_disc_input(path)
+    let mut reader = crate::nintendo::disc::input::open_disc_input(path)
         .map_err(|e| anyhow!("rvl info: open input: {}", e))?;
     let container = reader.container_name().to_string();
 
@@ -780,8 +780,8 @@ mod banner_tests {
 #[cfg(test)]
 mod container_tests {
     use super::*;
+    use crate::nintendo::disc::wia::test_fixtures::make_wia;
     use crate::nintendo::rvl::test_fixtures::make_fake_wii_iso_with_partition;
-    use crate::nintendo::wia::test_fixtures::make_wia;
 
     #[test]
     fn info_reports_container() {

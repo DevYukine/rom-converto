@@ -13,12 +13,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use binrw::BinWrite;
 
-use crate::cd::IO_BUFFER_SIZE;
 use crate::cso::compression::BlockCompressor;
 use crate::cso::error::{CsoError, CsoResult};
 use crate::cso::models::{
     CISO_HEADER_SIZE, CISO_INDEX_UNCOMPRESSED, CisoHeader, CsoFormat, block_count,
 };
+use crate::disc::cd::IO_BUFFER_SIZE;
 use crate::util::CancelToken;
 use crate::util::Cancelled;
 use crate::util::worker_pool::{Pool, PoolChannelClosed, Worker, drive, parallelism};

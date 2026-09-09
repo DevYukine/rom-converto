@@ -1,6 +1,6 @@
 //! Cross-console ROM metadata extraction (the `info` feature).
 //!
-//! Per-console extractors live alongside their parsers (such as `crate::chd::info`).
+//! Per-console extractors live alongside their parsers (such as `crate::disc::chd::info`).
 //! This module owns the umbrella [`InfoResult`] sum type, the shared
 //! [`Image`] / [`MultilingualString`] / [`LanguageCode`] types, and a
 //! top-level [`read_info`] dispatcher that the GUI uses to read any
@@ -12,24 +12,25 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 pub mod image;
+pub mod retro;
 
-pub use crate::chd::info::ChdInfo;
 pub use crate::cso::info::CsoInfo;
-pub use crate::laserdisc::info::LdAviInfo;
+pub use crate::disc::chd::info::ChdInfo;
+pub use crate::disc::laserdisc::info::LdAviInfo;
 pub use crate::microsoft::xbox::XisoInfo;
 pub use crate::microsoft::xenon::ZarInfo;
 pub use crate::nintendo::ctr::info::CtrInfo;
 pub use crate::nintendo::dol::info::DolInfo;
-pub use crate::nintendo::nds::info::NdsInfo;
+pub use crate::nintendo::ntr::info::NtrInfo;
 pub use crate::nintendo::nx::info::NxInfo;
 pub use crate::nintendo::rvl::info::RvlInfo;
 pub use crate::nintendo::wup::info::WupInfo;
-pub use crate::retro::RetroInfo;
-pub use crate::sony::disc::{DiscContent, PspInfo, PsxInfo};
 pub use crate::sony::ps3::Ps3Info;
 pub use crate::sony::psp::PbpInfo;
 pub use crate::sony::vita::{PkgInfo, VpkInfo};
+pub use crate::sony::{DiscContent, PspInfo, PsxInfo};
 pub use image::Image;
+pub use retro::RetroInfo;
 
 /// Per-console metadata read by [`read_info`], tagged with a `kind`
 /// field on the wire.
@@ -51,7 +52,7 @@ pub enum InfoResult {
     Psx(PsxInfo),
     Psp(PspInfo),
     LaserDisc(LdAviInfo),
-    Nds(NdsInfo),
+    Ntr(NtrInfo),
     Retro(RetroInfo),
     Pbp(PbpInfo),
     Vpk(VpkInfo),
@@ -181,7 +182,7 @@ pub struct InfoOptions {
 pub fn read_info(path: &Path, opts: &InfoOptions) -> Result<InfoResult> {
     let kind = detect_console(path)?;
     match kind {
-        DetectedConsole::Chd => Ok(InfoResult::Chd(crate::chd::info::read_info(path)?)),
+        DetectedConsole::Chd => Ok(InfoResult::Chd(crate::disc::chd::info::read_info(path)?)),
         DetectedConsole::Cso => Ok(InfoResult::Cso(crate::cso::info::read_info(path)?)),
         DetectedConsole::Ctr => Ok(InfoResult::Ctr(crate::nintendo::ctr::info::read_info(
             path,
@@ -211,15 +212,15 @@ pub fn read_info(path: &Path, opts: &InfoOptions) -> Result<InfoResult> {
         DetectedConsole::Ps3 => Ok(InfoResult::Ps3(
             crate::sony::ps3::read_ps3_info(path).context("ps3 info")?,
         )),
-        DetectedConsole::Psx => Ok(InfoResult::Psx(crate::sony::disc::read_psx_info(path)?)),
-        DetectedConsole::Psp => Ok(InfoResult::Psp(crate::sony::disc::read_psp_info(path)?)),
-        DetectedConsole::LaserDisc => Ok(InfoResult::LaserDisc(crate::laserdisc::info::read_info(
+        DetectedConsole::Psx => Ok(InfoResult::Psx(crate::sony::read_psx_info(path)?)),
+        DetectedConsole::Psp => Ok(InfoResult::Psp(crate::sony::read_psp_info(path)?)),
+        DetectedConsole::LaserDisc => Ok(InfoResult::LaserDisc(
+            crate::disc::laserdisc::info::read_info(path)?,
+        )),
+        DetectedConsole::Ntr => Ok(InfoResult::Ntr(crate::nintendo::ntr::info::read_info(
             path,
         )?)),
-        DetectedConsole::Nds => Ok(InfoResult::Nds(crate::nintendo::nds::info::read_info(
-            path,
-        )?)),
-        DetectedConsole::Retro => Ok(InfoResult::Retro(crate::retro::read_info(path)?)),
+        DetectedConsole::Retro => Ok(InfoResult::Retro(retro::read_info(path)?)),
         DetectedConsole::Pbp => Ok(InfoResult::Pbp(crate::sony::psp::read_info(path)?)),
         DetectedConsole::Vpk => Ok(InfoResult::Vpk(crate::sony::vita::vpk::read_info(path)?)),
         DetectedConsole::Pkg => Ok(InfoResult::Pkg(crate::sony::vita::pkg::read_info(path)?)),
@@ -250,7 +251,7 @@ pub enum DetectedConsole {
     Psx,
     Psp,
     LaserDisc,
-    Nds,
+    Ntr,
     Retro,
     Pbp,
     Vpk,
@@ -287,13 +288,13 @@ pub fn detect_console(path: &Path) -> Result<DetectedConsole> {
         Some("zar") => return Ok(DetectedConsole::Xenon),
         Some("cue") => return Ok(sniff_cue(path)),
         Some("avi") => return Ok(DetectedConsole::LaserDisc),
-        Some("nds") | Some("dsi") => return Ok(DetectedConsole::Nds),
+        Some("nds") | Some("dsi") => return Ok(DetectedConsole::Ntr),
         Some("pbp") => return Ok(DetectedConsole::Pbp),
         Some("vpk") => return Ok(DetectedConsole::Vpk),
         Some("pkg") => return Ok(DetectedConsole::Pkg),
         Some("ngc") => return sniff_ngc(path),
         Some("iso") | Some("rvz") => return sniff_disc_magic(path),
-        Some(ext) if crate::retro::RETRO_EXTENSIONS.contains(&ext) => {
+        Some(ext) if retro::RETRO_EXTENSIONS.contains(&ext) => {
             return Ok(DetectedConsole::Retro);
         }
         _ => {}
@@ -331,13 +332,13 @@ fn sniff_ngc(path: &Path) -> Result<DetectedConsole> {
 }
 
 /// Distinguishes GameCube from Wii for a `.gcz` or `.wia` container: opens
-/// it through [`crate::nintendo::disc_input::open_disc_input`] to
+/// it through [`crate::nintendo::disc::input::open_disc_input`] to
 /// decompress it transparently, then checks the same disc-id magic
 /// [`sniff_disc_magic`] uses for a plain `.iso`.
 fn sniff_legacy_disc(path: &Path) -> Result<DetectedConsole> {
     use std::io::Read;
 
-    let mut reader = crate::nintendo::disc_input::open_disc_input(path)?;
+    let mut reader = crate::nintendo::disc::input::open_disc_input(path)?;
     let mut head = [0u8; 0x20];
     reader.read_exact(&mut head)?;
 
@@ -358,9 +359,9 @@ fn sniff_legacy_disc(path: &Path) -> Result<DetectedConsole> {
 /// entry names opens with a Sega disc hardware id. Anything that keeps
 /// the sheet from being read falls back to PlayStation.
 fn sniff_cue(path: &Path) -> DetectedConsole {
-    let sega = crate::retro::cue_first_file(path)
-        .and_then(|bin| crate::retro::read_disc_head(&bin))
-        .is_ok_and(|head| crate::retro::probe_sega_disc(&head).is_some());
+    let sega = crate::sega::cue_first_file(path)
+        .and_then(|bin| crate::sega::read_disc_head(&bin))
+        .is_ok_and(|head| crate::sega::probe_sega_disc(&head).is_some());
     if sega {
         DetectedConsole::Retro
     } else {
@@ -425,8 +426,8 @@ fn sniff_disc_magic(path: &Path) -> Result<DetectedConsole> {
 
     // Saturn, Sega CD, and Dreamcast discs are ISO9660 too; they identify
     // themselves through the hardware id in their first sector instead.
-    if let Ok(head) = crate::retro::read_disc_head(path)
-        && crate::retro::probe_sega_disc(&head).is_some()
+    if let Ok(head) = crate::sega::read_disc_head(path)
+        && crate::sega::probe_sega_disc(&head).is_some()
     {
         return Ok(DetectedConsole::Retro);
     }
@@ -670,7 +671,7 @@ mod tests {
 
         let dir = tempfile::tempdir().expect("temp dir");
 
-        let mut sega_bin = crate::retro::segacd::tests::cooked_sector();
+        let mut sega_bin = crate::sega::mcd::tests::cooked_sector();
         sega_bin.resize(2048 * 4, 0);
         std::fs::write(dir.path().join("sega.bin"), &sega_bin).expect("write bin");
         let sega_cue = dir.path().join("sega.cue");
@@ -710,10 +711,10 @@ mod tests {
     fn detect_sega_disc_isos_by_hardware_id() {
         let dir = tempfile::tempdir().expect("temp dir");
         for (name, sector) in [
-            ("saturn.iso", crate::retro::saturn::tests::cooked_sector()),
-            ("segacd.iso", crate::retro::segacd::tests::cooked_sector()),
-            ("dc.iso", crate::retro::dreamcast::tests::cooked_sector()),
-            ("saturn_raw.iso", crate::retro::saturn::tests::raw_sector()),
+            ("saturn.iso", crate::sega::saturn::tests::cooked_sector()),
+            ("segacd.iso", crate::sega::mcd::tests::cooked_sector()),
+            ("dc.iso", crate::sega::katana::tests::cooked_sector()),
+            ("saturn_raw.iso", crate::sega::saturn::tests::raw_sector()),
         ] {
             let path = dir.path().join(name);
             std::fs::write(&path, &sector).expect("write image");
@@ -727,10 +728,10 @@ mod tests {
 
     #[test]
     fn read_info_routes_a_gdi_to_dreamcast() {
-        use crate::retro::RetroDetails;
+        use retro::RetroDetails;
 
         let dir = tempfile::tempdir().expect("temp dir");
-        let gdi = crate::retro::dreamcast::tests::gdi_fixture(dir.path());
+        let gdi = crate::sega::katana::tests::gdi_fixture(dir.path());
 
         assert_eq!(
             detect_console(&gdi).expect("detect console"),
@@ -785,8 +786,8 @@ mod tests {
     #[test]
     fn detect_nds_and_sony_handheld_by_extension() {
         for (ext, want) in [
-            ("nds", DetectedConsole::Nds),
-            ("dsi", DetectedConsole::Nds),
+            ("nds", DetectedConsole::Ntr),
+            ("dsi", DetectedConsole::Ntr),
             ("pbp", DetectedConsole::Pbp),
             ("vpk", DetectedConsole::Vpk),
             ("pkg", DetectedConsole::Pkg),
@@ -802,10 +803,7 @@ mod tests {
 
     #[test]
     fn detect_retro_extensions_except_ngc() {
-        for ext in crate::retro::RETRO_EXTENSIONS
-            .iter()
-            .filter(|e| **e != "ngc")
-        {
+        for ext in retro::RETRO_EXTENSIONS.iter().filter(|e| **e != "ngc") {
             let p = format!("/tmp/x.{}", ext);
             assert_eq!(
                 detect_console(Path::new(&p)).expect("detect console"),
@@ -844,10 +842,10 @@ mod tests {
 
     #[test]
     fn detect_gcz_and_wia_sniff_legacy_disc() {
+        use crate::nintendo::disc::gcz::test_fixtures::make_gcz;
+        use crate::nintendo::disc::wia::test_fixtures::make_wia;
         use crate::nintendo::dol::test_fixtures::make_fake_gamecube_iso;
-        use crate::nintendo::gcz::test_fixtures::make_gcz;
         use crate::nintendo::rvl::test_fixtures::make_fake_wii_iso_with_partition;
-        use crate::nintendo::wia::test_fixtures::make_wia;
 
         let dir = tempfile::tempdir().expect("temp dir");
 
@@ -870,7 +868,7 @@ mod tests {
 
     #[test]
     fn supported_extensions_cover_every_retro_extension() {
-        for ext in crate::retro::RETRO_EXTENSIONS {
+        for ext in retro::RETRO_EXTENSIONS {
             assert!(
                 SUPPORTED_INFO_EXTENSIONS.contains(ext),
                 "missing retro extension {ext}"
@@ -879,35 +877,36 @@ mod tests {
     }
 
     #[test]
-    fn info_result_nds_round_trips_via_json() {
-        use crate::nintendo::nds::info::NdsSecureAreaState;
+    fn info_result_ntr_round_trips_via_json() {
+        use crate::nintendo::ntr::info::NtrSecureAreaState;
 
-        let r = InfoResult::Nds(NdsInfo {
+        let r = InfoResult::Ntr(NtrInfo {
             game_title: "TEST GAME".to_string(),
             game_code: "ARCE".to_string(),
-            secure_area: NdsSecureAreaState::Encrypted,
+            secure_area: NtrSecureAreaState::Encrypted,
             ..Default::default()
         });
         let s = serde_json::to_string(&r).unwrap();
-        assert!(s.contains("\"kind\":\"nds\""));
+        assert!(s.contains("\"kind\":\"ntr\""));
 
         let back: InfoResult = serde_json::from_str(&s).unwrap();
         match back {
-            InfoResult::Nds(n) => {
+            InfoResult::Ntr(n) => {
                 assert_eq!(n.game_code, "ARCE");
-                assert_eq!(n.secure_area, NdsSecureAreaState::Encrypted);
+                assert_eq!(n.secure_area, NtrSecureAreaState::Encrypted);
             }
-            _ => panic!("expected Nds variant"),
+            _ => panic!("expected Ntr variant"),
         }
     }
 
     #[test]
     fn info_result_retro_round_trips_via_json() {
-        use crate::retro::{RetroDetails, VbInfo};
+        use crate::nintendo::vue::VueInfo;
+        use retro::RetroDetails;
 
         let r = InfoResult::Retro(RetroInfo {
             file_size: 1024,
-            details: RetroDetails::VirtualBoy(VbInfo {
+            details: RetroDetails::VirtualBoy(VueInfo {
                 title: "TEST".to_string(),
                 maker_code: "01".to_string(),
                 game_code: "VTEJ".to_string(),

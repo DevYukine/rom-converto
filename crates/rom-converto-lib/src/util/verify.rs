@@ -36,10 +36,10 @@ pub async fn verify_existing_output(
     target: OutputVerify,
     cancel: CancelToken,
 ) -> Result<VerifyOutcome> {
-    use crate::chd::verify_chd;
     use crate::cso::verify_cso;
+    use crate::disc::chd::verify_chd;
+    use crate::nintendo::disc::rvz::verify::verify_rvz_structure;
     use crate::nintendo::nx::verify_container_async;
-    use crate::nintendo::rvz::verify::verify_rvz_structure;
     if cancel.is_cancelled() {
         return Err(Cancelled.into());
     }

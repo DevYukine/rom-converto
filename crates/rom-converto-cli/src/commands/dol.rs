@@ -10,11 +10,11 @@ use crate::commands::support::{
 use crate::util::{ensure_input_exists, ok_str, resolve_policy};
 use crate::{batch, config, info_print};
 use anyhow::Result;
-use rom_converto_lib::nintendo::dol::verify::{DolVerifyOptions, verify_dol};
-use rom_converto_lib::nintendo::legacy_input::{
+use rom_converto_lib::nintendo::disc::legacy::{
     DOL_MIGRATE_FORMATS, detect_legacy_format, ensure_format_allowed,
 };
-use rom_converto_lib::nintendo::rvz::RvzCompressOptions;
+use rom_converto_lib::nintendo::disc::rvz::RvzCompressOptions;
+use rom_converto_lib::nintendo::dol::verify::{DolVerifyOptions, verify_dol};
 use rom_converto_lib::runner::models::RunOptions;
 use rom_converto_lib::util::{CancelToken, oversized_rvz_chunk};
 

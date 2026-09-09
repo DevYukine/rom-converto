@@ -10,7 +10,7 @@ Use `rom-converto --help`, `rom-converto <command> --help`, or
 
 | Command | Purpose |
 |---|---|
-| `nds` | Encrypt, decrypt, and inspect Nintendo DS ROMs |
+| `ntr` | Encrypt, decrypt, and inspect Nintendo DS ROMs |
 | `ctr` | Convert, decrypt, compress, and verify Nintendo 3DS ROMs |
 | `dol` | Compress, migrate, and verify GameCube disc images (RVZ) |
 | `rvl` | Compress, migrate, and verify Wii disc images (RVZ) |
@@ -146,7 +146,7 @@ filesystem needs room for the unpacked input.
 ### Run reports
 
 `--report <FILE>` is available on conversion commands, `chd extract`, `ps3 decrypt`,
-`nds encrypt` and `decrypt`, `hash`, and `dat verify`, `scan`, and `rename`. `.csv` writes
+`ntr encrypt` and `decrypt`, `hash`, and `dat verify`, `scan`, and `rename`. `.csv` writes
 CSV, `.html` or `.htm` writes HTML, and all other extensions write JSON. Reports overwrite
 the target directly and ignore `--on-conflict`.
 
@@ -203,7 +203,7 @@ rejected.
 `--output-template` conflicts with an explicit `OUTPUT` positional or `-o`/`--output`, and
 is command-line only (not read from the config file). `wup compress` does not accept it,
 because it packs many inputs into one `.wua`. CTR supports it for single-file runs; its
-recursive runs use the mirrored layout. `ps3 decrypt` and `nds encrypt`/`decrypt` also
+recursive runs use the mirrored layout. `ps3 decrypt` and `ntr encrypt`/`decrypt` also
 support it, single-file runs only.
 
 ### Cancellation
@@ -441,11 +441,13 @@ rom-converto nx merge base.xci update.xci --format xci -o merged.xci
 rom-converto nx split merged.nsp --output-dir ./titles
 ```
 
-## nds (Nintendo DS)
+## ntr (Nintendo DS)
 
 ```
-rom-converto nds <SUBCOMMAND> <INPUT> [OUTPUT]
+rom-converto ntr <SUBCOMMAND> <INPUT> [OUTPUT]
 ```
+
+`nds` still works as an alias for `ntr`.
 
 | Subcommand | Description |
 |---|---|

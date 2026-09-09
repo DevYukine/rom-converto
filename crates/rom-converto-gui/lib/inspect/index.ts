@@ -3,7 +3,7 @@ import { cso } from "./cso";
 import { ctr } from "./ctr";
 import { dol } from "./dol";
 import { laserDisc } from "./laser-disc";
-import { nds } from "./nds";
+import { ntr } from "./ntr";
 import { nx } from "./nx";
 import { pbp } from "./pbp";
 import { pkg } from "./pkg";
@@ -34,7 +34,7 @@ export const kindModules: { [K in InfoKind]: KindModule<K> } = {
 	psx,
 	psp,
 	laser_disc: laserDisc,
-	nds,
+	ntr,
 	retro,
 	pbp,
 	vpk,

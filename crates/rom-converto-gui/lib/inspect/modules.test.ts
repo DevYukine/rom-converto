@@ -63,8 +63,8 @@ const fixtures: Partial<{ [K in InfoKind]: InfoOf<K> }> = {
 		size_bytes: 1024,
 		encrypted: true,
 	}),
-	nds: fixture({
-		kind: "nds",
+	ntr: fixture({
+		kind: "ntr",
 		game_title: "TEST GAME",
 		game_code: "ATSE",
 		physical_bytes: 0x200000,

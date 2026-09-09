@@ -150,11 +150,19 @@
       "info"
     ],
     "nds.decrypt": [
-      "nds",
+      "ntr",
       "decrypt"
     ],
     "nds.encrypt": [
-      "nds",
+      "ntr",
+      "encrypt"
+    ],
+    "ntr.decrypt": [
+      "ntr",
+      "decrypt"
+    ],
+    "ntr.encrypt": [
+      "ntr",
       "encrypt"
     ],
     "nx.compress": [
@@ -792,6 +800,22 @@
       "recursive",
       "report"
     ],
+    "ntr.decrypt": [
+      "max_depth",
+      "on_conflict",
+      "output_dir",
+      "output_template",
+      "recursive",
+      "report"
+    ],
+    "ntr.encrypt": [
+      "max_depth",
+      "on_conflict",
+      "output_dir",
+      "output_template",
+      "recursive",
+      "report"
+    ],
     "nx.compress": [
       "block_size_exp",
       "keys",
@@ -986,6 +1010,8 @@
     "info.read": "none",
     "nds.decrypt": "positional",
     "nds.encrypt": "positional",
+    "ntr.decrypt": "positional",
+    "ntr.encrypt": "positional",
     "nx.compress": "positional",
     "nx.decompress": "positional",
     "nx.merge": "output_flag",

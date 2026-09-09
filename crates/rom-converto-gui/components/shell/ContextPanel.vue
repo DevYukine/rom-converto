@@ -74,11 +74,11 @@ const CONSOLES: Record<string, ConsoleRow[]> = {
 		{ id: "ctr", name: "3DS", hint: ".3ds .cci .cia" },
 		{ id: "wup", name: "Wii U", hint: "NUS titles" },
 		{ id: "ps3", name: "PlayStation 3", hint: "built-in keys" },
-		{ id: "nds", name: "Nintendo DS", hint: "KEY1 secure area" },
+		{ id: "ntr", name: "Nintendo DS", hint: "KEY1 secure area" },
 	],
 	encrypt: [
 		{ id: "ctr", name: "3DS", hint: ".3ds .cci .cia" },
-		{ id: "nds", name: "Nintendo DS", hint: "KEY1 secure area" },
+		{ id: "ntr", name: "Nintendo DS", hint: "KEY1 secure area" },
 	],
 	convert: [
 		{ id: "ctr", name: "3DS", hint: "CIA ↔ CCI" },

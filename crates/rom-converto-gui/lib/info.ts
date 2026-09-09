@@ -23,7 +23,7 @@ export function pickIconImage(info: InfoResult): Image | null {
       return info.icon;
     case "psp":
       return info.icon;
-    case "nds":
+    case "ntr":
       return info.banner?.icon ?? null;
     case "pbp":
       return info.icon;

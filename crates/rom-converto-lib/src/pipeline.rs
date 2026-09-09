@@ -11,9 +11,11 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 
-use crate::chd::{ChdOptions, DiscMode, convert_disc_to_chd, extract_from_chd, is_dvd_mode_chd};
 use crate::cso::{CsoCompressOptions, CsoFormat, compress_to_cso, decompress_from_cso};
-use crate::cue::to_iso::cue_to_iso;
+use crate::disc::chd::{
+    ChdOptions, DiscMode, convert_disc_to_chd, extract_from_chd, is_dvd_mode_chd,
+};
+use crate::disc::cue::to_iso::cue_to_iso;
 use crate::util::{CancelToken, ProgressReporter};
 
 fn temp_iso_path(output: &Path) -> std::io::Result<tempfile::TempPath> {
@@ -150,8 +152,8 @@ pub async fn cue_to_cso(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chd::{extract_from_chd, verify_chd};
     use crate::cso::{CsoFormat, decompress_from_cso};
+    use crate::disc::chd::{extract_from_chd, verify_chd};
     use crate::util::NoProgress;
 
     fn assert_no_temp_iso(output: &Path) {
@@ -159,7 +161,7 @@ mod tests {
     }
 
     fn mixed_iso(sectors: usize) -> Vec<u8> {
-        crate::chd::test_fixtures::mixed_iso(sectors)
+        crate::disc::chd::test_fixtures::mixed_iso(sectors)
     }
 
     async fn round_trip_cso_to_chd(format: CsoFormat) {
@@ -319,7 +321,7 @@ mod tests {
 
     #[tokio::test]
     async fn chd_to_cso_rejects_cd_mode() {
-        use crate::chd::convert_to_chd;
+        use crate::disc::chd::convert_to_chd;
 
         let dir = tempfile::tempdir().unwrap();
         let bin_path = dir.path().join("game.bin");

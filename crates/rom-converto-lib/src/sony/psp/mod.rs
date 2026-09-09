@@ -5,6 +5,7 @@
 //! converted.
 
 pub mod amctrl;
+pub mod disc;
 pub mod extract;
 pub mod info;
 pub mod kirk;

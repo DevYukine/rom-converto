@@ -263,10 +263,10 @@ describe("buildInspectView ps3", () => {
 	});
 });
 
-describe("buildInspectView nds", () => {
+describe("buildInspectView ntr", () => {
 	it("shows the secure area state and CRC validity", () => {
 		const v = view({
-			kind: "nds",
+			kind: "ntr",
 			physical_bytes: 0x200000,
 			game_title: "TEST GAME",
 			game_code: "ATSE",
@@ -301,7 +301,7 @@ describe("buildInspectView nds", () => {
 
 	it("flags an invalid CRC with the computed value", () => {
 		const v = view({
-			kind: "nds",
+			kind: "ntr",
 			physical_bytes: 0x200000,
 			game_title: "TEST GAME",
 			game_code: "ATSE",

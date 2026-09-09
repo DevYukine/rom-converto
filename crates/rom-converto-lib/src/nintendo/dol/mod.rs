@@ -1,7 +1,7 @@
 //! GameCube (codename DOL) console support.
 //!
 //! Currently exposes disc-format helpers used by the shared RVZ pipeline in
-//! [`crate::nintendo::rvz`]. GameCube discs have no encryption and no
+//! [`crate::nintendo::disc::rvz`]. GameCube discs have no encryption and no
 //! partition table, so this module is intentionally small.
 
 pub mod constants;

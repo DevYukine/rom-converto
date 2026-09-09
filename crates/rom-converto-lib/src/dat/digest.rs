@@ -63,7 +63,7 @@ pub fn classify_input(path: &Path) -> InnerStreamKind {
 pub fn is_raw_reread_cheap(path: &Path) -> bool {
     classify_input(path) == InnerStreamKind::Raw
         && !matches!(
-            crate::nintendo::legacy_input::detect_legacy_format(path),
+            crate::nintendo::disc::legacy::detect_legacy_format(path),
             Ok(Some(_))
         )
 }
@@ -109,10 +109,10 @@ pub fn quick_crc_digest(path: &Path) -> Option<QuickDigest> {
     let head = crate::util::archive::zip_member_head(
         path,
         &member.name,
-        crate::nintendo::legacy_input::LEGACY_MAGIC_PROBE_LEN,
+        crate::nintendo::disc::legacy::LEGACY_MAGIC_PROBE_LEN,
     )
     .ok()?;
-    if crate::nintendo::legacy_input::head_has_legacy_magic(&head) {
+    if crate::nintendo::disc::legacy::head_has_legacy_magic(&head) {
         return None;
     }
     let (crc32, size) = crate::util::archive::zip_member_crc32(path, &member.name).ok()?;
@@ -149,9 +149,9 @@ pub enum RomDigests {
 /// own cancellation variant to [`DatError::Cancelled`] so the CLI's
 /// single cancel-detection arm suffices. Everything else is wrapped
 /// as [`DatError::Container`] via `Display`.
-fn map_chd(e: crate::chd::error::ChdError) -> DatError {
+fn map_chd(e: crate::disc::chd::error::ChdError) -> DatError {
     match e {
-        crate::chd::error::ChdError::Cancelled(c) => DatError::Cancelled(c),
+        crate::disc::chd::error::ChdError::Cancelled(c) => DatError::Cancelled(c),
         other => DatError::Container(other.to_string()),
     }
 }
@@ -204,36 +204,36 @@ fn digest_reader<R: Read>(
 /// and `compress_disc` decode the same inputs. Container decode errors
 /// surface through `digest_reader`'s `?` as I/O errors.
 fn digest_legacy(
-    fmt: crate::nintendo::legacy_input::LegacyFormat,
+    fmt: crate::nintendo::disc::legacy::LegacyFormat,
     path: &Path,
     algos: &[HashAlgo],
     bytes_done: &Arc<AtomicU64>,
     cancel: &CancelToken,
 ) -> DatResult<RomDigests> {
-    use crate::nintendo::legacy_input::LegacyFormat;
+    use crate::nintendo::disc::legacy::LegacyFormat;
     let single = match fmt {
         LegacyFormat::Gcz => {
-            let mut r = crate::nintendo::gcz::GczReader::open(path)
+            let mut r = crate::nintendo::disc::gcz::GczReader::open(path)
                 .map_err(|e| DatError::Container(e.to_string()))?;
             let total = r.data_size();
             digest_reader(&mut r, total, algos, bytes_done, cancel)?
         }
         LegacyFormat::Wia => {
-            let mut r = crate::nintendo::wia::WiaReader::open(path)
+            let mut r = crate::nintendo::disc::wia::WiaReader::open(path)
                 .map_err(|e| DatError::Container(e.to_string()))?;
             let total = r.iso_size();
             digest_reader(&mut r, total, algos, bytes_done, cancel)?
         }
         LegacyFormat::NkitIso => {
-            let mut r = crate::nintendo::nkit::NkitReader::open(path)
+            let mut r = crate::nintendo::disc::nkit::NkitReader::open(path)
                 .map_err(|e| DatError::Container(e.to_string()))?;
             let total = r.image_size();
             digest_reader(&mut r, total, algos, bytes_done, cancel)?
         }
         LegacyFormat::NkitGcz => {
-            let gcz = crate::nintendo::gcz::GczReader::open(path)
+            let gcz = crate::nintendo::disc::gcz::GczReader::open(path)
                 .map_err(|e| DatError::Container(e.to_string()))?;
-            let mut r = crate::nintendo::nkit::NkitReader::from_source(gcz)
+            let mut r = crate::nintendo::disc::nkit::NkitReader::from_source(gcz)
                 .map_err(|e| DatError::Container(e.to_string()))?;
             let total = r.image_size();
             digest_reader(&mut r, total, algos, bytes_done, cancel)?
@@ -256,7 +256,7 @@ fn digest_dispatch(
             // Legacy containers are magic-sniffed only for raw-looking
             // extensions, so known non-raw extensions keep their
             // extension-based errors and never pay a file open.
-            if let Some(fmt) = crate::nintendo::legacy_input::detect_legacy_format(path)
+            if let Some(fmt) = crate::nintendo::disc::legacy::detect_legacy_format(path)
                 .map_err(DatError::IoError)?
             {
                 return digest_legacy(fmt, path, algos, bytes_done, cancel);
@@ -265,14 +265,14 @@ fn digest_dispatch(
             Ok(RomDigests::Single(d))
         }
         InnerStreamKind::Rvz => {
-            let mut reader = crate::nintendo::rvz::decompress::RvzDiscReader::open(path)
+            let mut reader = crate::nintendo::disc::rvz::decompress::RvzDiscReader::open(path)
                 .map_err(|e| DatError::Container(e.to_string()))?;
             let total = reader.iso_size();
             let d = digest_reader(&mut reader, total, algos, bytes_done, cancel)?;
             Ok(RomDigests::Single(d))
         }
         InnerStreamKind::Wbfs => {
-            let mut reader = crate::nintendo::wbfs::WbfsReader::open(path)
+            let mut reader = crate::nintendo::disc::wbfs::WbfsReader::open(path)
                 .map_err(|e| DatError::Container(e.to_string()))?;
             let total = reader.disc_size();
             let d = digest_reader(&mut reader, total, algos, bytes_done, cancel)?;
@@ -290,7 +290,8 @@ fn digest_dispatch(
         }
         InnerStreamKind::ChdTracks => {
             let (tracks, whole) =
-                crate::chd::digest_chd_tracks(path, algos, bytes_done, cancel).map_err(map_chd)?;
+                crate::disc::chd::digest_chd_tracks(path, algos, bytes_done, cancel)
+                    .map_err(map_chd)?;
             if tracks.is_empty() {
                 // DVD-type CHD: one flat stream.
                 Ok(RomDigests::Single(whole))
@@ -507,8 +508,8 @@ mod tests {
 
     #[test]
     fn raw_reread_not_cheap_for_magic_sniffed_legacy_container() {
+        use crate::nintendo::disc::gcz::test_fixtures::make_gcz;
         use crate::nintendo::dol::test_fixtures::make_fake_gamecube_iso;
-        use crate::nintendo::gcz::test_fixtures::make_gcz;
 
         let dir = tempfile::tempdir().unwrap();
         let iso_bytes = make_fake_gamecube_iso(1024 * 1024);
@@ -623,8 +624,8 @@ mod tests {
 
     #[test]
     fn gcz_digest_matches_iso() {
+        use crate::nintendo::disc::gcz::test_fixtures::make_gcz;
         use crate::nintendo::dol::test_fixtures::make_fake_gamecube_iso;
-        use crate::nintendo::gcz::test_fixtures::make_gcz;
 
         let dir = tempfile::tempdir().unwrap();
         let iso_bytes = make_fake_gamecube_iso(5 * 1024 * 1024 + 123);
@@ -638,8 +639,8 @@ mod tests {
 
     #[test]
     fn wia_digest_matches_iso() {
+        use crate::nintendo::disc::wia::test_fixtures::make_wia;
         use crate::nintendo::rvl::test_fixtures::make_fake_wii_iso_with_partition;
-        use crate::nintendo::wia::test_fixtures::make_wia;
 
         let dir = tempfile::tempdir().unwrap();
         let iso_bytes = make_fake_wii_iso_with_partition(2);
@@ -653,7 +654,7 @@ mod tests {
 
     #[test]
     fn nkit_iso_digest_matches_iso() {
-        use crate::nintendo::nkit::test_fixtures::{make_fake_gc_fs_iso, make_nkit_gc};
+        use crate::nintendo::disc::nkit::test_fixtures::{make_fake_gc_fs_iso, make_nkit_gc};
 
         let dir = tempfile::tempdir().unwrap();
         let iso_bytes = make_fake_gc_fs_iso();
@@ -673,7 +674,7 @@ mod tests {
 
     #[test]
     fn nkit_gcz_digest_matches_iso() {
-        use crate::nintendo::nkit::test_fixtures::{
+        use crate::nintendo::disc::nkit::test_fixtures::{
             crc_of, make_fake_gc_fs_iso, make_nkit_gc, make_nkit_gcz,
         };
 
@@ -690,7 +691,7 @@ mod tests {
 
     #[test]
     fn nkit_wii_iso_digest_matches_iso() {
-        use crate::nintendo::nkit::test_fixtures::{make_fake_wii_fs_iso, make_nkit_wii};
+        use crate::nintendo::disc::nkit::test_fixtures::{make_fake_wii_fs_iso, make_nkit_wii};
 
         let dir = tempfile::tempdir().unwrap();
         let iso_bytes = make_fake_wii_fs_iso();
@@ -704,8 +705,8 @@ mod tests {
 
     #[test]
     fn gcz_digest_rejects_corrupted_container() {
+        use crate::nintendo::disc::gcz::test_fixtures::make_gcz;
         use crate::nintendo::dol::test_fixtures::make_fake_gamecube_iso;
-        use crate::nintendo::gcz::test_fixtures::make_gcz;
 
         let dir = tempfile::tempdir().unwrap();
         let iso_bytes = make_fake_gamecube_iso(1024 * 1024);
@@ -766,8 +767,8 @@ mod tests {
 
     #[test]
     fn quick_crc_digest_none_for_gcz_magic_member() {
+        use crate::nintendo::disc::gcz::test_fixtures::make_gcz;
         use crate::nintendo::dol::test_fixtures::make_fake_gamecube_iso;
-        use crate::nintendo::gcz::test_fixtures::make_gcz;
 
         // Member named .iso (classifies Raw by extension) whose content is a
         // GCZ container: the head sniff must catch it and fall back.

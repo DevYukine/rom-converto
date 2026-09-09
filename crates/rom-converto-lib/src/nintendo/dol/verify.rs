@@ -6,9 +6,9 @@
 //! have no built-in integrity hashes, so that digest is informational (useful
 //! for matching against external DAT/Redump databases), never a pass/fail.
 
-use crate::nintendo::disc_input::open_disc_input;
+use crate::nintendo::disc::input::open_disc_input;
+use crate::nintendo::disc::rvz::verify::{RvzStructuralVerify, verify_rvz_structure};
 use crate::nintendo::dol::models::boot_bin::GcBootBin;
-use crate::nintendo::rvz::verify::{RvzStructuralVerify, verify_rvz_structure};
 use crate::util::{CancelToken, Cancelled, ProgressReporter};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -141,8 +141,8 @@ fn sha1_stream<R: Read>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nintendo::disc::rvz::{RvzCompressOptions, compress_disc};
     use crate::nintendo::dol::test_fixtures::make_fake_gamecube_iso;
-    use crate::nintendo::rvz::{RvzCompressOptions, compress_disc};
     use crate::util::NoProgress;
 
     #[tokio::test]

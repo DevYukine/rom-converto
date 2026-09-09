@@ -1,7 +1,7 @@
 //! Wii (codename RVL) console support.
 //!
 //! Houses the Wii-specific pieces that the shared RVZ pipeline in
-//! [`crate::nintendo::rvz`] reaches for: disc detection, partition table
+//! [`crate::nintendo::disc::rvz`] reaches for: disc detection, partition table
 //! walking, AES-CBC sector encryption helpers, and the embedded Wii common
 //! keys.
 

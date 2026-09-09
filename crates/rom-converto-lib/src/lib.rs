@@ -6,17 +6,21 @@
 //! Each Nintendo platform lives under [`crate::nintendo`]
 //! ([`crate::nintendo::ctr`], [`crate::nintendo::dol`],
 //! [`crate::nintendo::rvl`], [`crate::nintendo::wup`],
-//! [`crate::nintendo::nx`]); Microsoft platforms under [`crate::microsoft`]
+//! [`crate::nintendo::nx`], [`crate::nintendo::ntr`], plus the
+//! cartridge-era header readers next to them); Microsoft platforms under
+//! [`crate::microsoft`]
 //! ([`crate::microsoft::xbox`], [`crate::microsoft::xenon`]), which share
 //! the [`crate::zar`] ZArchive container with the Wii U.
 //!
-//! The rest, one module each: [`crate::cd`] holds the CD sector and
-//! subchannel primitives, [`crate::chd`] and [`crate::cue`] the CD and DVD
-//! disc images, [`crate::cso`] the PSP/PS2 ISO compressors,
-//! [`crate::laserdisc`] the LaserDisc AVI captures, [`crate::sony::ps3`] the
-//! PS3 disc and package formats, [`crate::sony`] the PSP and Vita packages,
-//! [`crate::sony::disc`] the PS1, PS2, and PSP disc metadata, and
-//! [`crate::retro`] the cartridge systems. [`crate::pipeline`] chains
+//! The rest, one module each: [`crate::disc::cd`] holds the CD sector and
+//! subchannel primitives, [`crate::disc::chd`] and [`crate::disc::cue`] the
+//! CD and DVD disc images, [`crate::cso`] the PSP/PS2 ISO compressors,
+//! [`crate::disc::laserdisc`] the LaserDisc AVI captures, [`crate::sony::ps3`] the
+//! PS3 disc and package formats, [`crate::sony`] the PS1, PS2, and PSP disc
+//! metadata plus the PSP and Vita packages, and
+//! the cartridge systems grouped by maker under [`crate::nintendo`],
+//! [`crate::sega`], [`crate::atari`], [`crate::snk`], and
+//! [`crate::bandai`]. [`crate::pipeline`] chains
 //! CSO/ZSO and CHD conversion through a temporary ISO, [`crate::dat`]
 //! matches files against Redump and No-Intro DATs, [`crate::runner`]
 //! drives batch runs for the CLI and GUI, [`crate::config`] loads the
@@ -25,20 +29,20 @@
 //! holds the shared conflict resolution, hashing, dry-run planning, and
 //! reporting machinery every format uses.
 
-pub mod cd;
-pub mod chd;
+pub mod atari;
+pub mod bandai;
 pub mod config;
 pub mod cso;
-pub mod cue;
 pub mod dat;
+pub mod disc;
 pub mod info;
-pub mod laserdisc;
 pub mod microsoft;
 pub mod nintendo;
 pub mod pipeline;
 pub mod playlist;
-pub mod retro;
 pub mod runner;
+pub mod sega;
+pub mod snk;
 pub mod sony;
 pub mod util;
 pub mod zar;

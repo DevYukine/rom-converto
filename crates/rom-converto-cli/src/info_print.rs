@@ -112,7 +112,7 @@ pub fn print(result: &InfoResult, json: bool) -> Result<()> {
         InfoResult::Psx(info) => render_psx(info),
         InfoResult::Psp(info) => render_psp(info),
         InfoResult::LaserDisc(info) => render_laserdisc(info),
-        InfoResult::Nds(info) => render_nds(info),
+        InfoResult::Ntr(info) => render_ntr(info),
         InfoResult::Retro(info) => render_retro(info),
         InfoResult::Pbp(info) => render_pbp(info),
         InfoResult::Vpk(info) => render_vpk(info),
@@ -181,8 +181,10 @@ fn render_chd(info: &rom_converto_lib::info::ChdInfo) -> String {
     }
     if let Some(dvd) = &info.dvd {
         let layer = match dvd.layer_class {
-            rom_converto_lib::chd::info::DvdLayerClass::SingleLayer => "single-layer (4.7 GB)",
-            rom_converto_lib::chd::info::DvdLayerClass::DualLayer => "dual-layer (8.5 GB)",
+            rom_converto_lib::disc::chd::info::DvdLayerClass::SingleLayer => {
+                "single-layer (4.7 GB)"
+            }
+            rom_converto_lib::disc::chd::info::DvdLayerClass::DualLayer => "dual-layer (8.5 GB)",
         };
         c.push(
             "DVD geometry",
@@ -217,7 +219,7 @@ fn render_chd(info: &rom_converto_lib::info::ChdInfo) -> String {
         out.push_str(&l.render());
 
         if let Some(vbi) = &ld.vbi {
-            use rom_converto_lib::chd::info::LdDiscType;
+            use rom_converto_lib::disc::chd::info::LdDiscType;
             out.push_str("\nVBI:\n");
             let mut v = KeyValueTable::new();
             v.push(
@@ -1213,7 +1215,7 @@ fn render_psp(info: &rom_converto_lib::info::PspInfo) -> String {
 }
 
 fn render_laserdisc(info: &rom_converto_lib::info::LdAviInfo) -> String {
-    use rom_converto_lib::laserdisc::info::LdDiscType;
+    use rom_converto_lib::disc::laserdisc::info::LdDiscType;
 
     let mut t = KeyValueTable::new();
     t.push("Format", format!("LaserDisc AVI ({})", info.video_fourcc));
@@ -1370,8 +1372,8 @@ fn push_xex_rows(t: &mut KeyValueTable, xex: &XexInfo, include_shared: bool) {
     }
 }
 
-fn render_nds(info: &rom_converto_lib::info::NdsInfo) -> String {
-    use rom_converto_lib::nintendo::nds::info::NdsSecureAreaState;
+fn render_ntr(info: &rom_converto_lib::info::NtrInfo) -> String {
+    use rom_converto_lib::nintendo::ntr::info::NtrSecureAreaState;
 
     let mut c = KeyValueTable::new();
     c.push("Physical bytes", format!("{}", info.physical_bytes));
@@ -1421,9 +1423,9 @@ fn render_nds(info: &rom_converto_lib::info::NdsInfo) -> String {
     c.push(
         "Secure area",
         match info.secure_area {
-            NdsSecureAreaState::NotPresent => "not present",
-            NdsSecureAreaState::Encrypted => "encrypted",
-            NdsSecureAreaState::Decrypted => "decrypted",
+            NtrSecureAreaState::NotPresent => "not present",
+            NtrSecureAreaState::Encrypted => "encrypted",
+            NtrSecureAreaState::Decrypted => "decrypted",
         },
     );
 
@@ -1491,7 +1493,7 @@ fn yes_no(v: bool) -> &'static str {
 }
 
 fn render_retro(info: &rom_converto_lib::info::RetroInfo) -> String {
-    use rom_converto_lib::retro::RetroDetails;
+    use rom_converto_lib::info::retro::RetroDetails;
 
     let (system, mut t) = match &info.details {
         RetroDetails::Nes(n) => ("NES", retro_nes(n)),
@@ -1523,7 +1525,7 @@ fn render_retro(info: &rom_converto_lib::info::RetroInfo) -> String {
     out
 }
 
-fn retro_nes(info: &rom_converto_lib::retro::NesInfo) -> KeyValueTable {
+fn retro_nes(info: &rom_converto_lib::nintendo::hvc::HvcInfo) -> KeyValueTable {
     let mut t = KeyValueTable::new();
     t.push("Header", if info.nes2 { "NES 2.0" } else { "iNES" });
     t.push(
@@ -1554,7 +1556,7 @@ fn retro_nes(info: &rom_converto_lib::retro::NesInfo) -> KeyValueTable {
     t
 }
 
-fn retro_snes(info: &rom_converto_lib::retro::SnesInfo) -> KeyValueTable {
+fn retro_snes(info: &rom_converto_lib::nintendo::shvc::ShvcInfo) -> KeyValueTable {
     let mut t = KeyValueTable::new();
     t.push("Title", info.title.clone());
     t.push("Mapping", info.mapping.clone());
@@ -1589,7 +1591,7 @@ fn retro_snes(info: &rom_converto_lib::retro::SnesInfo) -> KeyValueTable {
     t
 }
 
-fn retro_n64(info: &rom_converto_lib::retro::N64Info) -> KeyValueTable {
+fn retro_n64(info: &rom_converto_lib::nintendo::nus::NusInfo) -> KeyValueTable {
     let mut t = KeyValueTable::new();
     t.push("Title", info.internal_name.clone());
     t.push("Title ID", info.game_id.clone());
@@ -1612,7 +1614,7 @@ fn retro_n64(info: &rom_converto_lib::retro::N64Info) -> KeyValueTable {
     t
 }
 
-fn retro_gb(info: &rom_converto_lib::retro::GbInfo) -> KeyValueTable {
+fn retro_gb(info: &rom_converto_lib::nintendo::dmg::DmgInfo) -> KeyValueTable {
     let mut t = KeyValueTable::new();
     t.push("Title", info.title.clone());
     if let Some(code) = &info.manufacturer_code {
@@ -1671,7 +1673,7 @@ fn retro_gb(info: &rom_converto_lib::retro::GbInfo) -> KeyValueTable {
     t
 }
 
-fn retro_gba(info: &rom_converto_lib::retro::GbaInfo) -> KeyValueTable {
+fn retro_gba(info: &rom_converto_lib::nintendo::agb::AgbInfo) -> KeyValueTable {
     let mut t = KeyValueTable::new();
     t.push("Title", info.title.clone());
     t.push("Title ID", info.game_code.clone());
@@ -1690,7 +1692,7 @@ fn retro_gba(info: &rom_converto_lib::retro::GbaInfo) -> KeyValueTable {
     t
 }
 
-fn retro_md(info: &rom_converto_lib::retro::MdInfo) -> KeyValueTable {
+fn retro_md(info: &rom_converto_lib::sega::md::MdInfo) -> KeyValueTable {
     let mut t = KeyValueTable::new();
     t.push("Title", info.overseas_title.clone());
     t.push("Domestic title", info.domestic_title.clone());
@@ -1713,7 +1715,7 @@ fn retro_md(info: &rom_converto_lib::retro::MdInfo) -> KeyValueTable {
     t
 }
 
-fn retro_sms(info: &rom_converto_lib::retro::SmsInfo) -> KeyValueTable {
+fn retro_sms(info: &rom_converto_lib::sega::sms::SmsInfo) -> KeyValueTable {
     let mut t = KeyValueTable::new();
     t.push("Title ID", format!("{}", info.product_code));
     t.push("Header offset", format!("0x{:X}", info.header_offset));
@@ -1741,7 +1743,7 @@ fn retro_sms(info: &rom_converto_lib::retro::SmsInfo) -> KeyValueTable {
     t
 }
 
-fn retro_vb(info: &rom_converto_lib::retro::VbInfo) -> KeyValueTable {
+fn retro_vb(info: &rom_converto_lib::nintendo::vue::VueInfo) -> KeyValueTable {
     let mut t = KeyValueTable::new();
     t.push("Title", info.title.clone());
     t.push("Title ID", info.game_code.clone());
@@ -1750,7 +1752,7 @@ fn retro_vb(info: &rom_converto_lib::retro::VbInfo) -> KeyValueTable {
     t
 }
 
-fn retro_ws(info: &rom_converto_lib::retro::WsInfo) -> KeyValueTable {
+fn retro_ws(info: &rom_converto_lib::bandai::ws::WsInfo) -> KeyValueTable {
     let mut t = KeyValueTable::new();
     t.push("Title ID", format!("0x{:02X}", info.game_id));
     t.push("Publisher ID", format!("0x{:02X}", info.publisher_id));
@@ -1772,7 +1774,7 @@ fn retro_ws(info: &rom_converto_lib::retro::WsInfo) -> KeyValueTable {
     t
 }
 
-fn retro_ngp(info: &rom_converto_lib::retro::NgpInfo) -> KeyValueTable {
+fn retro_ngp(info: &rom_converto_lib::snk::ngp::NgpInfo) -> KeyValueTable {
     let mut t = KeyValueTable::new();
     t.push("Title", info.title.clone());
     t.push("License", info.license.clone());
@@ -1789,7 +1791,7 @@ fn retro_ngp(info: &rom_converto_lib::retro::NgpInfo) -> KeyValueTable {
     t
 }
 
-fn retro_lynx(info: &rom_converto_lib::retro::LynxInfo) -> KeyValueTable {
+fn retro_lynx(info: &rom_converto_lib::atari::handy::HandyInfo) -> KeyValueTable {
     let mut t = KeyValueTable::new();
     t.push("Title", info.cart_name.clone());
     t.push("Manufacturer", info.manufacturer.clone());
@@ -1806,7 +1808,7 @@ fn retro_lynx(info: &rom_converto_lib::retro::LynxInfo) -> KeyValueTable {
     t
 }
 
-fn retro_a78(info: &rom_converto_lib::retro::A78Info) -> KeyValueTable {
+fn retro_a78(info: &rom_converto_lib::atari::a78::A78Info) -> KeyValueTable {
     let mut t = KeyValueTable::new();
     t.push("Title", info.title.clone());
     t.push("Version", format!("{}", info.version));
@@ -1832,7 +1834,7 @@ fn retro_a78(info: &rom_converto_lib::retro::A78Info) -> KeyValueTable {
     t
 }
 
-fn retro_fds(info: &rom_converto_lib::retro::FdsInfo) -> KeyValueTable {
+fn retro_fds(info: &rom_converto_lib::nintendo::fds::FdsInfo) -> KeyValueTable {
     let mut t = KeyValueTable::new();
     if let Some(first) = info.sides.first() {
         t.push("Title", first.game_name.clone());
@@ -1875,7 +1877,7 @@ fn retro_fds(info: &rom_converto_lib::retro::FdsInfo) -> KeyValueTable {
     t
 }
 
-fn retro_saturn(info: &rom_converto_lib::retro::SaturnInfo) -> KeyValueTable {
+fn retro_saturn(info: &rom_converto_lib::sega::saturn::SaturnInfo) -> KeyValueTable {
     let mut t = KeyValueTable::new();
     t.push("Title", info.title.clone());
     t.push("Title ID", info.product_number.clone());
@@ -1900,7 +1902,7 @@ fn retro_saturn(info: &rom_converto_lib::retro::SaturnInfo) -> KeyValueTable {
     t
 }
 
-fn retro_segacd(info: &rom_converto_lib::retro::SegaCdInfo) -> KeyValueTable {
+fn retro_segacd(info: &rom_converto_lib::sega::mcd::McdInfo) -> KeyValueTable {
     let mut t = KeyValueTable::new();
     t.push("Title", info.overseas_title.clone());
     t.push("Domestic title", info.domestic_title.clone());
@@ -1914,7 +1916,7 @@ fn retro_segacd(info: &rom_converto_lib::retro::SegaCdInfo) -> KeyValueTable {
     t
 }
 
-fn retro_dreamcast(info: &rom_converto_lib::retro::DreamcastInfo) -> KeyValueTable {
+fn retro_dreamcast(info: &rom_converto_lib::sega::katana::KatanaInfo) -> KeyValueTable {
     let mut t = KeyValueTable::new();
     t.push("Title", info.title.clone());
     t.push("Title ID", info.product_number.clone());
@@ -2234,7 +2236,7 @@ mod tests {
 
     #[test]
     fn render_chd_writes_laserdisc_block() {
-        use rom_converto_lib::chd::info::{ChdLdInfo, ChdLdVbiInfo, LdClvTime, LdDiscType};
+        use rom_converto_lib::disc::chd::info::{ChdLdInfo, ChdLdVbiInfo, LdClvTime, LdDiscType};
 
         let info = rom_converto_lib::info::ChdInfo {
             version: 5,
@@ -2650,7 +2652,7 @@ mod tests {
     fn render_chd_appends_pgtype_and_pgsub_to_track_line() {
         let info = rom_converto_lib::info::ChdInfo {
             version: 5,
-            tracks: vec![rom_converto_lib::chd::info::ChdTrack {
+            tracks: vec![rom_converto_lib::disc::chd::info::ChdTrack {
                 number: 1,
                 track_type: "MODE1/2048".to_string(),
                 frames: 100,
@@ -2687,17 +2689,17 @@ mod tests {
     }
 
     #[test]
-    fn render_nds_shows_secure_area_crc_and_banner_titles() {
+    fn render_ntr_shows_secure_area_crc_and_banner_titles() {
         use rom_converto_lib::info::{LanguageCode, MultilingualString};
-        use rom_converto_lib::nintendo::nds::info::{NdsBannerInfo, NdsSecureAreaState};
+        use rom_converto_lib::nintendo::ntr::info::{NtrBannerInfo, NtrSecureAreaState};
 
-        let info = rom_converto_lib::info::NdsInfo {
+        let info = rom_converto_lib::info::NtrInfo {
             game_code: "ARCE".to_string(),
-            secure_area: NdsSecureAreaState::Encrypted,
+            secure_area: NtrSecureAreaState::Encrypted,
             header_crc16: 0x1234,
             header_crc16_computed: 0x1234,
             header_crc16_valid: true,
-            banner: Some(NdsBannerInfo {
+            banner: Some(NtrBannerInfo {
                 banner_version: 1,
                 titles: MultilingualString::from_pairs([(
                     LanguageCode::English,
@@ -2714,7 +2716,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        let out = render_nds(&info);
+        let out = render_ntr(&info);
         assert!(has_field(&out, "Secure area", "encrypted"));
         assert!(has_field(
             &out,
@@ -2728,11 +2730,12 @@ mod tests {
 
     #[test]
     fn render_retro_shows_checksum_lines() {
-        use rom_converto_lib::retro::{GbaInfo, RetroDetails};
+        use rom_converto_lib::info::retro::RetroDetails;
+        use rom_converto_lib::nintendo::agb::AgbInfo;
 
         let info = rom_converto_lib::info::RetroInfo {
             file_size: 4096,
-            details: RetroDetails::Gba(GbaInfo {
+            details: RetroDetails::Gba(AgbInfo {
                 title: "TEST GAME".to_string(),
                 game_code: "AXVE".to_string(),
                 region: Some("Europe".to_string()),
