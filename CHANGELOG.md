@@ -1,3 +1,20 @@
+# [0.22.0](https://github.com/DevYukine/rom-converto/compare/v0.21.0...v0.22.0) (2026-09-11)
+
+
+### Features
+
+* **chd:** inspect CHD v1-v4 and migrate them to v5 across lib, CLI and GUI ([6cfa287](https://github.com/DevYukine/rom-converto/commit/6cfa2870fcb5b74fab64b180114fa868b0162488))
+* **ctr:** add a trim option to cia to 3ds conversion and size the free space check from the real cci output ([008d80e](https://github.com/DevYukine/rom-converto/commit/008d80eef5ca69440f9ba8010fe57b5aa74dbaa6))
+* **gui:** add disc conversion logo ([b8799f1](https://github.com/DevYukine/rom-converto/commit/b8799f1f304deddf84499d38cd75d6cf61562f1e))
+* **gui:** count files instead of bytes on the dat scan bar, add rate, eta, phases, relative paths, filtering and a virtual result list ([933fa9e](https://github.com/DevYukine/rom-converto/commit/933fa9e24c9ca58012c05d0738c12d7b57ce26a8))
+* **gui:** show an update notice with periodic checks and harden the cli self-update swap ([3eb004f](https://github.com/DevYukine/rom-converto/commit/3eb004f215071b90d181e9666c0d77c49dccbeb7))
+* **nx:** merge and split nsp/xci into super containers ([c07c464](https://github.com/DevYukine/rom-converto/commit/c07c464a574f79c766cf9b84166c747b2eea3ee2))
+* **runner:** route the cli and gui through the lib runner, add the missing ops and consolidated dat logic, generate gui types from rust and fold dat pages plus verify-after results into the gui registry ([c1ccd2e](https://github.com/DevYukine/rom-converto/commit/c1ccd2e711facef1abc096c350e1885113d574c1))
+* **sony:** inspect ps4 and ps5 pkg files without keys and label ps3 pkg content types across lib, cli and gui ([1e78d0e](https://github.com/DevYukine/rom-converto/commit/1e78d0eb617461ed8a1f2aaf5052ce8de7fcf37c))
+* **xenon:** convert xbox 360 disc images to games on demand containers ([ea2d52f](https://github.com/DevYukine/rom-converto/commit/ea2d52f30e70ae11ab2aacef9a650e9f0f719595))
+
+
+
 # [0.21.0](https://github.com/DevYukine/rom-converto/compare/v0.20.0...v0.21.0) (2026-09-03)
 
 
@@ -93,29 +110,6 @@
 * **chd:** support all chdman codecs with selectable codec sets and levels ([b3f8cc7](https://github.com/DevYukine/rom-converto/commit/b3f8cc7999ce6985d23f0ed98fcaf631c9bd44cb))
 * **ctr:** support DSiWare/TWL cias and verify forged cdn ticket keys ([b3c4212](https://github.com/DevYukine/rom-converto/commit/b3c4212fe90571f327f49fd394d3b6ea425370b8))
 * **gui:** add right-click copy and text selection to DAT results ([6db18a3](https://github.com/DevYukine/rom-converto/commit/6db18a333037be84eb8d8302b79ad9c76abb72d6))
-
-
-
-# [0.17.0](https://github.com/DevYukine/rom-converto/compare/v0.16.0...v0.17.0) (2026-07-16)
-
-
-### Bug Fixes
-
-* **archive:** support additional input codecs ([eb5df98](https://github.com/DevYukine/rom-converto/commit/eb5df983a5815a66a4835ec30fed58e4d5cb448a))
-* **ci:** drop unsupported musl FFI build ([81a130f](https://github.com/DevYukine/rom-converto/commit/81a130f36f66d16137c06c6df3e5ffcd4835c4be))
-* **ci:** generate nuxt types on install so gui tests can resolve tsconfig ([467f18b](https://github.com/DevYukine/rom-converto/commit/467f18b7ca31e886eaa3395f176578d06b976dd4))
-* **ci:** pin linuxdeploy for Linux AppImages ([e36bfcc](https://github.com/DevYukine/rom-converto/commit/e36bfcc476bde43dca8703783c05f9e8c5efa633))
-* **ctr:** harden CDN output publication ([fe3696f](https://github.com/DevYukine/rom-converto/commit/fe3696ffc5d3d1b41169f7a61e26175839d931b7))
-* **ctr:** preserve CDN conversion outputs ([0bf6290](https://github.com/DevYukine/rom-converto/commit/0bf62902792d5c0a3b94ad12758b2b255c0a07c0))
-* **gui:** keep dots in output filenames when deriving from archives ([cb25d14](https://github.com/DevYukine/rom-converto/commit/cb25d142b7d4c1175786c3a1ddc8b043a19d663f))
-* **gui:** parse WUP metadata response ([4df3250](https://github.com/DevYukine/rom-converto/commit/4df3250c8b8e037350098b8b7321cc6948ba1877))
-
-
-### Features
-
-* **ffi:** add C ABI integration ([9464c15](https://github.com/DevYukine/rom-converto/commit/9464c15bd6cab26d89594681b1e35e05bb0fa728))
-* **gui:** add desktop updater ([bfec539](https://github.com/DevYukine/rom-converto/commit/bfec5394a8413967d3bab8ce0b10e518cef71ca0))
-* **gui:** redesign interface with operation-first layout and global queue ([040c371](https://github.com/DevYukine/rom-converto/commit/040c371e16edf139f9a15350e336ef62fb976dda))
 
 
 
