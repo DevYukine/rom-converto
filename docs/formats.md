@@ -35,7 +35,10 @@ Z3DS uses seekable zstd around a 3DS ROM. By default, `ctr compress` rejects an
 encrypted input. Decrypt first, or pass `--allow-encrypted` when that tradeoff is
 intentional. `ctr decompress`, `ctr encrypt`, and `ctr decrypt` use the matching ROM
 extension. `ctr convert` changes `.cia` and `.3ds`/`.cci`; its CIA output is unsigned
-and intended for CFW or emulators, not a stock 3DS.
+and intended for CFW or emulators, not a stock 3DS. Its `.3ds` output is padded to the
+next cartridge size like a real cart dump; pass `--trim` to end it after the last
+partition instead. A trimmed file still carries the full card size in its header, so
+`ctr info` reports the padded size rather than the file size.
 
 ### RVZ and legacy Nintendo disc containers
 

@@ -8,6 +8,7 @@ export const useCtrConvertStore = makeOpStore("ctr-convert", () => ({
   skipSpaceCheck: false,
   outputTemplate: "",
   verifyAfter: false,
+  trim: false,
   recursive: true,
   maxDepth: null as number | null,
 }));

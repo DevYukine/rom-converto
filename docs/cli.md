@@ -268,6 +268,7 @@ in [Shared behaviors](#shared-behaviors)):
 | `-Z, --compress` | `cdn-to-cia` | Also compress the CIA after creation (implies decrypt) |
 | `-l, --level <LEVEL>` | `compress` | Zstd compression level 0..=22 (0 = library default, 22 = maximum ratio) |
 | `--allow-encrypted` | `compress` | Compress even if the input ROM appears encrypted. By default an encrypted ROM is refused; decrypt first with `ctr decrypt` |
+| `--trim` | `convert` | End the `.3ds`/`.cci` output after the last partition instead of padding it with `0xFF` to the next cartridge size. The header keeps the full card size, so emulators and loaders still accept the file. Ignored for CIA output |
 | `--full` | `verify` | Also verify content hashes against the TMD (CIA only, slower). `--verify-content` is an alias |
 
 Generated tickets from `generate-cdn-ticket` use placeholder values and only work on modded

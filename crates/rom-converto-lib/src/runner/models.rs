@@ -591,6 +591,7 @@ pub struct RunOptions {
     pub algo: Option<String>,
     pub allow_encrypted: Option<bool>,
     pub content_hashes: Option<bool>,
+    pub trim: Option<bool>,
     pub compress: Option<bool>,
     pub cleanup: Option<bool>,
     pub ensure_ticket_exists: Option<bool>,

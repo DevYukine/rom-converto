@@ -308,7 +308,10 @@ pub(crate) static OPS: &[OpSpec] = &[
         batch_exts: Some(&["cia", "3ds", "cci"]),
         input_exts: None,
         writes_output: true,
-        required_bytes: None,
+        required_bytes: Some(|req, source| {
+            crate::nintendo::ctr::convert::converted_size(source, req.options.trim.unwrap_or(false))
+                .unwrap_or_else(|_| file_len(source))
+        }),
         run: |req, progress, cancel| Box::pin(ctr_convert(req, progress, cancel)),
     },
     OpSpec {
@@ -1350,7 +1353,14 @@ pub(crate) async fn ctr_convert(
         },
         cancel,
         |input, output, cancel| async move {
-            crate::nintendo::ctr::convert::convert_rom(&input, &output, progress, cancel).await
+            crate::nintendo::ctr::convert::convert_rom(
+                &input,
+                &output,
+                req.options.trim.unwrap_or(false),
+                progress,
+                cancel,
+            )
+            .await
         },
     )
     .await

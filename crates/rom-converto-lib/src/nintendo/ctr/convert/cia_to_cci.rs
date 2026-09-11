@@ -23,86 +23,43 @@ const PREAMBLE_READ_LIMIT: usize = 256 * 1024;
 const COPY_BUF: usize = 4 * 1024 * 1024;
 const CARD1_MIN_IMAGE_SIZE: u64 = 0x8000000;
 const NCSD_PADDING_BYTE: u8 = 0xFF;
+const MEDIA_UNIT: u64 = CTR_MEDIA_UNIT_SIZE as u64;
 
 /// Rebuild the CIA at `input` as a CCI (NCSD) image at `output`.
+///
+/// The image is normally padded with `0xFF` up to the next cartridge
+/// capacity, like a full cart dump. With `trim` set the output ends after
+/// the last partition instead while the NCSD header still reports the full
+/// card size, the same shape as a trimmed cart dump.
 pub async fn cia_to_cci(
     input: &Path,
     output: &Path,
+    trim: bool,
     progress: &dyn ProgressReporter,
     cancel: CancelToken,
 ) -> Result<()> {
     let mut in_file = File::open(input).await.context("opening CIA input")?;
-    let file_size = in_file.metadata().await?.len();
-
-    let preamble_len = file_size.min(PREAMBLE_READ_LIMIT as u64) as usize;
-    let mut preamble_buf = vec![0u8; preamble_len];
-    in_file.read_exact(&mut preamble_buf).await?;
-
-    let mut cur = Cursor::new(&preamble_buf);
-    let pre = CiaFileWithoutContent::read_le(&mut cur).context("parsing CIA header/ticket/TMD")?;
-    let content_start = align_64(cur.position());
-
-    if is_twl_title_id(pre.tmd.header.title_id) {
-        bail!("DSiWare/TWL titles cannot be converted to CCI/3DS cartridge format");
-    }
-
+    let Layout {
+        pre,
+        placements,
+        dropped,
+        used_size,
+        image_size,
+    } = plan_layout(&read_preamble(&mut in_file).await?)?;
     let title_key = derive_title_key(&pre.ticket).context("deriving title key")?;
-
-    // Contents whose TMD record carries the optional flag may be missing
-    // from a partial (CDN-sourced) CIA; the header's content_index bitfield
-    // marks which ones are actually present. Older CIAs from this tool
-    // never set any bits, so an all-zero bitfield falls back to "every
-    // record is present".
-    let any_bit_set = pre.header.content_index.iter().any(|&b| b != 0);
-
-    let mut partitions: Vec<PartitionLayout> = Vec::new();
-    let mut byte_offset_into_content: u64 = 0;
-    for chunk in &pre.tmd.content_chunk_records {
-        if any_bit_set && !pre.header.has_content_index(chunk.content_index as usize) {
-            continue;
-        }
-        let idx = chunk.content_index;
-        if idx < 3 {
-            partitions.push(PartitionLayout {
-                content_index: idx,
-                ncch_size: chunk.content_size,
-                cia_offset: content_start + byte_offset_into_content,
-                encrypted: chunk.content_type.is_encrypted(),
-            });
-        } else {
-            warn!("Dropping content index {idx} (only indices 0/1/2 fit into NCSD)");
-        }
-        byte_offset_into_content += chunk.content_size;
+    for idx in dropped {
+        warn!("Dropping content index {idx} (only indices 0/1/2 fit into NCSD)");
     }
-
-    if !partitions.iter().any(|p| p.content_index == 0) {
-        bail!("CIA has no content index 0; cannot synthesize executable NCSD partition");
-    }
-
-    let media_unit = CTR_MEDIA_UNIT_SIZE as u64;
-    let mut placements: Vec<PartitionPlacement> = Vec::new();
-    let mut cur_pos = NCSD_FIRST_PARTITION_OFFSET;
-    for p in &partitions {
-        let aligned = p.ncch_size.next_multiple_of(media_unit);
-        placements.push(PartitionPlacement {
-            ncsd_offset: cur_pos,
-            ncsd_size: aligned,
-            layout: p.clone(),
-        });
-        cur_pos += aligned;
-    }
-    let used_size = cur_pos;
-    let image_size = next_pow2_at_least(used_size, CARD1_MIN_IMAGE_SIZE);
 
     let mut ncsd = NcsdHeader::blank();
     ncsd.media_id = pre.tmd.header.title_id;
-    ncsd.image_size = (image_size / media_unit) as u32;
+    ncsd.image_size = (image_size / MEDIA_UNIT) as u32;
     for pl in &placements {
         let i = pl.layout.content_index as usize;
         ncsd.partition_fs_types[i] = NCSD_PARTITION_FS_TYPE_NORMAL;
         ncsd.partition_table[i] = NcsdPartitionEntry {
-            offset: (pl.ncsd_offset / media_unit) as u32,
-            size: (pl.ncsd_size / media_unit) as u32,
+            offset: (pl.ncsd_offset / MEDIA_UNIT) as u32,
+            size: (pl.ncsd_size / MEDIA_UNIT) as u32,
         };
         ncsd.partition_id_table[i] = pre.tmd.header.title_id;
     }
@@ -162,7 +119,7 @@ pub async fn cia_to_cci(
             }
         }
 
-        if image_size > used_size {
+        if !trim && image_size > used_size {
             pad_with(&mut out, image_size - used_size, NCSD_PADDING_BYTE).await?;
         }
 
@@ -182,6 +139,100 @@ pub async fn cia_to_cci(
         output.display()
     );
     Ok(())
+}
+
+/// Returns the byte size [`cia_to_cci`] would write for the CIA at `input`.
+/// Blocking, so the runner can size its free space check up front.
+pub(super) fn cci_image_size(input: &Path, trim: bool) -> Result<u64> {
+    let mut in_file = std::fs::File::open(input).context("opening CIA input")?;
+    let file_size = in_file.metadata()?.len();
+    let mut preamble = vec![0u8; file_size.min(PREAMBLE_READ_LIMIT as u64) as usize];
+    std::io::Read::read_exact(&mut in_file, &mut preamble)?;
+    let layout = plan_layout(&preamble)?;
+    Ok(if trim {
+        layout.used_size
+    } else {
+        layout.image_size
+    })
+}
+
+struct Layout {
+    pre: CiaFileWithoutContent,
+    placements: Vec<PartitionPlacement>,
+    dropped: Vec<u16>,
+    used_size: u64,
+    image_size: u64,
+}
+
+async fn read_preamble(in_file: &mut File) -> Result<Vec<u8>> {
+    let file_size = in_file.metadata().await?.len();
+    let mut preamble = vec![0u8; file_size.min(PREAMBLE_READ_LIMIT as u64) as usize];
+    in_file.read_exact(&mut preamble).await?;
+    Ok(preamble)
+}
+
+fn plan_layout(preamble: &[u8]) -> Result<Layout> {
+    let mut cur = Cursor::new(preamble);
+    let pre = CiaFileWithoutContent::read_le(&mut cur).context("parsing CIA header/ticket/TMD")?;
+    let content_start = align_64(cur.position());
+
+    if is_twl_title_id(pre.tmd.header.title_id) {
+        bail!("DSiWare/TWL titles cannot be converted to CCI/3DS cartridge format");
+    }
+
+    // Contents whose TMD record carries the optional flag may be missing
+    // from a partial (CDN-sourced) CIA; the header's content_index bitfield
+    // marks which ones are actually present. Older CIAs from this tool
+    // never set any bits, so an all-zero bitfield falls back to "every
+    // record is present".
+    let any_bit_set = pre.header.content_index.iter().any(|&b| b != 0);
+
+    let mut partitions: Vec<PartitionLayout> = Vec::new();
+    let mut dropped = Vec::new();
+    let mut byte_offset_into_content: u64 = 0;
+    for chunk in &pre.tmd.content_chunk_records {
+        if any_bit_set && !pre.header.has_content_index(chunk.content_index as usize) {
+            continue;
+        }
+        let idx = chunk.content_index;
+        if idx < 3 {
+            partitions.push(PartitionLayout {
+                content_index: idx,
+                ncch_size: chunk.content_size,
+                cia_offset: content_start + byte_offset_into_content,
+                encrypted: chunk.content_type.is_encrypted(),
+            });
+        } else {
+            dropped.push(idx);
+        }
+        byte_offset_into_content += chunk.content_size;
+    }
+
+    if !partitions.iter().any(|p| p.content_index == 0) {
+        bail!("CIA has no content index 0; cannot synthesize executable NCSD partition");
+    }
+
+    let mut placements: Vec<PartitionPlacement> = Vec::new();
+    let mut cur_pos = NCSD_FIRST_PARTITION_OFFSET;
+    for p in &partitions {
+        let aligned = p.ncch_size.next_multiple_of(MEDIA_UNIT);
+        placements.push(PartitionPlacement {
+            ncsd_offset: cur_pos,
+            ncsd_size: aligned,
+            layout: p.clone(),
+        });
+        cur_pos += aligned;
+    }
+    let used_size = cur_pos;
+    let image_size = next_pow2_at_least(used_size, CARD1_MIN_IMAGE_SIZE);
+
+    Ok(Layout {
+        pre,
+        placements,
+        dropped,
+        used_size,
+        image_size,
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -214,6 +265,7 @@ mod tests {
     use super::*;
     use crate::nintendo::ctr::test_fixtures::synth_cia_with_content;
     use crate::util::NoProgress;
+    use std::io::Read;
 
     #[tokio::test]
     async fn rejects_dsiware_twl_title() {
@@ -228,7 +280,7 @@ mod tests {
         );
         let out_path = tmp.path().join("out.3ds");
 
-        let err = cia_to_cci(&in_path, &out_path, &NoProgress, CancelToken::new())
+        let err = cia_to_cci(&in_path, &out_path, false, &NoProgress, CancelToken::new())
             .await
             .unwrap_err();
         assert!(
@@ -236,5 +288,54 @@ mod tests {
                 .contains("DSiWare/TWL titles cannot be converted")
         );
         assert!(!out_path.exists());
+    }
+
+    #[tokio::test]
+    async fn trim_drops_card_padding_but_keeps_header_size() {
+        let title_id: u64 = 0x0004000000030000;
+        let content = vec![0xABu8; 0x300];
+        let (tmp, in_path) = synth_cia_with_content(
+            title_id,
+            vec![(0, 0, content.clone(), [0u8; 32])],
+            content.clone(),
+            false,
+        );
+
+        let full = tmp.path().join("full.3ds");
+        cia_to_cci(&in_path, &full, false, &NoProgress, CancelToken::new())
+            .await
+            .unwrap();
+        let trimmed = tmp.path().join("trimmed.3ds");
+        cia_to_cci(&in_path, &trimmed, true, &NoProgress, CancelToken::new())
+            .await
+            .unwrap();
+
+        let used =
+            NCSD_FIRST_PARTITION_OFFSET + (content.len() as u64).next_multiple_of(MEDIA_UNIT);
+        assert_eq!(
+            std::fs::metadata(&full).unwrap().len(),
+            CARD1_MIN_IMAGE_SIZE
+        );
+        assert_eq!(std::fs::metadata(&trimmed).unwrap().len(), used);
+        assert_eq!(
+            cci_image_size(&in_path, false).unwrap(),
+            CARD1_MIN_IMAGE_SIZE
+        );
+        assert_eq!(cci_image_size(&in_path, true).unwrap(), used);
+
+        let mut full_head = vec![0u8; used as usize];
+        std::fs::File::open(&full)
+            .unwrap()
+            .read_exact(&mut full_head)
+            .unwrap();
+        let trimmed_bytes = std::fs::read(&trimmed).unwrap();
+        assert_eq!(trimmed_bytes, full_head);
+
+        let header =
+            NcsdHeader::read(&mut Cursor::new(&trimmed_bytes[..NCSD_HEADER_SIZE])).unwrap();
+        assert_eq!(
+            u64::from(header.image_size) * MEDIA_UNIT,
+            CARD1_MIN_IMAGE_SIZE
+        );
     }
 }

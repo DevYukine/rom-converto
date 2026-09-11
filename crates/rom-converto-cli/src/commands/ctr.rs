@@ -266,8 +266,8 @@ pub struct DecompressRomCommand {
 /// Convert between CIA and CCI/3DS formats
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
-    long_about = "Convert between CIA and CCI/3DS formats\n\nDirection is auto-detected from the INPUT extension:\n  .cia       -> .3ds (CCI / NCSD)\n  .3ds, .cci -> .cia\n\nCCI/3DS to CIA produces an unsigned CIA with a zero title key, compatible with CFW (Luma3DS) and emulators (Citra/Lime3DS/Azahar). Not installable on stock 3DS.\n\nUse --recursive/-R to point INPUT at a directory and convert every matching file in it and its subdirectories; pass --max-depth N to limit the descent depth (1 = top level only). In batch mode OUTPUT is ignored and each output is written next to its source with the opposite extension.",
-    after_long_help = "EXAMPLES:\n  CIA to 3DS:      rom-converto ctr convert game.cia\n  Explicit output: rom-converto ctr convert game.3ds game.cia\n  Whole folder:    rom-converto ctr convert -R ./roms --output-dir ./converted\n"
+    long_about = "Convert between CIA and CCI/3DS formats\n\nDirection is auto-detected from the INPUT extension:\n  .cia       -> .3ds (CCI / NCSD)\n  .3ds, .cci -> .cia\n\nCCI/3DS to CIA produces an unsigned CIA with a zero title key, compatible with CFW (Luma3DS) and emulators (Citra/Lime3DS/Azahar). Not installable on stock 3DS.\n\nUse --recursive/-R to point INPUT at a directory and convert every matching file in it and its subdirectories; pass --max-depth N to limit the descent depth (1 = top level only). In batch mode OUTPUT is ignored and each output is written next to its source with the opposite extension.\n\nA CCI/3DS output is padded with 0xFF up to the next power of two cartridge size (128 MiB at least), the same layout as a real cart dump. Pass --trim to stop after the last partition instead; the header keeps the full card size, the same shape as a trimmed cart dump.",
+    after_long_help = "EXAMPLES:\n  CIA to 3DS:      rom-converto ctr convert game.cia\n  Trimmed 3DS:     rom-converto ctr convert game.cia --trim\n  Explicit output: rom-converto ctr convert game.3ds game.cia\n  Whole folder:    rom-converto ctr convert -R ./roms --output-dir ./converted\n"
 )]
 pub struct ConvertCommand {
     /// Input ROM file path, or a directory when --recursive is set (.cia, .3ds, or .cci)
@@ -297,6 +297,10 @@ pub struct ConvertCommand {
     /// Maximum directory depth when --recursive is set. 1 = top level only. Omit for unlimited
     #[arg(long = "max-depth", value_name = "N", requires = "recursive")]
     pub max_depth: Option<usize>,
+
+    /// Stop the CCI/3DS output after the last partition instead of padding it to the next cartridge size (ignored for CIA output)
+    #[arg(long, default_value = "false")]
+    pub trim: bool,
 
     #[command(flatten)]
     pub conflict: ConflictArgs,
@@ -497,7 +501,7 @@ pub async fn run(command: CtrCommands, ctx: DispatchCtx<'_>) -> Result<()> {
         }
         CtrCommands::Convert(cmd) => {
             require_input(&cmd.input, cmd.recursive)?;
-            let options = RunOptions::from(batch::Common {
+            let mut options = RunOptions::from(batch::Common {
                 recursive: cmd.recursive,
                 output_dir: cmd.out.output_dir,
                 output_template: cmd.out.output_template,
@@ -510,6 +514,7 @@ pub async fn run(command: CtrCommands, ctx: DispatchCtx<'_>) -> Result<()> {
                 ),
                 skip_space_check,
             });
+            options.trim = Some(cmd.trim);
             batch::run(
                 &run,
                 "ctr.convert",

@@ -506,6 +506,11 @@
       "flag": "--title",
       "global": false,
       "kind": "value"
+    },
+    "trim": {
+      "flag": "--trim",
+      "global": false,
+      "kind": "bool"
     }
   },
   "op_flags": {
@@ -644,7 +649,8 @@
       "on_conflict",
       "output_dir",
       "output_template",
-      "recursive"
+      "recursive",
+      "trim"
     ],
     "ctr.decompress": [
       "max_depth",

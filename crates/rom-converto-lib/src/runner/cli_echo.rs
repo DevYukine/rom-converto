@@ -137,6 +137,7 @@ const FIELDS: &[(&str, FlagKind)] = &[
     ("algo", FlagKind::Value),
     ("allow_encrypted", FlagKind::Bool),
     ("content_hashes", FlagKind::Bool),
+    ("trim", FlagKind::Bool),
     ("compress", FlagKind::Bool),
     ("cleanup", FlagKind::Bool),
     ("ensure_ticket_exists", FlagKind::Bool),
@@ -293,6 +294,7 @@ const PATH_FLAGS: &[(&str, &[&str])] = &[
             "output_dir",
             "output_template",
             "recursive",
+            "trim",
         ],
     ),
     (

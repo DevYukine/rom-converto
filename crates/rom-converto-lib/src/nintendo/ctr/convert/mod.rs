@@ -6,12 +6,13 @@ mod cia_to_cci;
 mod template;
 
 pub use cci_to_cia::cci_to_cia;
+use cia_to_cci::cci_image_size;
 pub use cia_to_cci::cia_to_cci;
 
 use crate::nintendo::ctr::util::{mirrored_output, run_batch};
 use crate::util::{CancelToken, ProgressReporter};
 use anyhow::{Result, bail};
-use log::debug;
+use log::{debug, warn};
 use std::path::{Path, PathBuf};
 
 const CIA_EXTS: &[&str] = &["cia"];
@@ -36,10 +37,12 @@ pub fn derive_converted_path(input: &Path) -> PathBuf {
 }
 
 /// Convert `input` to the other CTR container, picking the direction
-/// from its extension.
+/// from its extension. `trim` drops the trailing card padding when the
+/// output is a CCI and is ignored for CIA output.
 pub async fn convert_rom(
     input: &Path,
     output: &Path,
+    trim: bool,
     progress: &dyn ProgressReporter,
     cancel: CancelToken,
 ) -> Result<()> {
@@ -50,8 +53,14 @@ pub async fn convert_rom(
         .unwrap_or_default();
 
     if CIA_EXTS.contains(&ext.as_str()) {
-        cia_to_cci(input, output, progress, cancel).await
+        cia_to_cci(input, output, trim, progress, cancel).await
     } else if CCI_EXTS.contains(&ext.as_str()) {
+        if trim {
+            warn!(
+                "trim only applies to CCI output, ignoring it for {}",
+                input.display()
+            );
+        }
         cci_to_cia(input, output, progress, cancel).await
     } else {
         bail!(
@@ -61,10 +70,29 @@ pub async fn convert_rom(
     }
 }
 
-/// Convert every CTR container under `input_dir`.
+/// Returns the byte size [`convert_rom`] will write for `input`, for free
+/// space checks. CCI output is sized from the CIA's partition layout and
+/// card padding. CIA output uses the source size, which over-estimates by
+/// the card padding of an untrimmed cart image.
+pub fn converted_size(input: &Path, trim: bool) -> Result<u64> {
+    let ext = input
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default();
+    if CIA_EXTS.contains(&ext.as_str()) {
+        cci_image_size(input, trim)
+    } else {
+        Ok(std::fs::metadata(input)?.len())
+    }
+}
+
+/// Convert every CTR container under `input_dir`. See [`convert_rom`]
+/// for `trim`.
 pub async fn convert_rom_batch(
     input_dir: &Path,
     output_dir: Option<&Path>,
+    trim: bool,
     progress: &dyn ProgressReporter,
     total_progress: &dyn ProgressReporter,
     max_depth: Option<usize>,
@@ -81,7 +109,7 @@ pub async fn convert_rom_batch(
             let output =
                 mirrored_output(&derive_converted_path(path), input_dir, output_dir).await?;
             debug!("Converting {} -> {}", path.display(), output.display());
-            convert_rom(path, &output, progress, cancel.clone()).await
+            convert_rom(path, &output, trim, progress, cancel.clone()).await
         },
     )
     .await
@@ -90,6 +118,14 @@ pub async fn convert_rom_batch(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn converted_size_of_cci_input_is_its_file_size() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("game.3ds");
+        std::fs::write(&path, [0u8; 0x300]).expect("write");
+        assert_eq!(converted_size(&path, true).expect("size"), 0x300);
+    }
 
     #[test]
     fn convert_path_cia_to_3ds() {

@@ -81,6 +81,20 @@ const ctr: OpDef = {
 			tooltip:
 				"Detected from the input file: a CIA converts to a 3DS/CCI cart image, while a 3DS or CCI file converts to a CIA.",
 		},
+		{
+			kind: "toggle",
+			key: "trim",
+			label: "Trim 3DS output",
+			tooltip:
+				"Ends the 3DS/CCI image after the last partition instead of padding it with 0xFF to the next cartridge size, the same shape as a trimmed cart dump. Off by default to match a full dump. Ignored when converting to CIA.",
+		},
+		{
+			kind: "toggle",
+			key: "trim",
+			label: "Trim 3DS output",
+			tooltip:
+				"Ends the 3DS/CCI image after the last partition instead of padding it with 0xFF to the next cartridge size, the same shape as a trimmed cart dump. Off by default to match a full dump. Ignored when converting to CIA.",
+		},
 		...recursiveFields(),
 	],
 	note: "Produces an unsigned CIA with a zero title key: works on CFW and emulators, not installable on stock hardware.",
@@ -94,11 +108,11 @@ const ctr: OpDef = {
 			"ctr.convert",
 			item.path,
 			templateIsActive(store) ? null : withOutputDir(deriveConvertedPath(item.path), store.outputDir || ""),
-			commonOptions(store),
+			{ trim: store.trim, ...commonOptions(store) },
 			false,
 			taskId,
 		),
-	chips: () => "",
+	chips: (store) => (store.trim ? "trim 3ds" : ""),
 };
 
 const cso: OpDef = {
