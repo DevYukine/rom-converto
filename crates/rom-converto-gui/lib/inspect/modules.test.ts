@@ -99,6 +99,22 @@ const fixtures: Partial<{ [K in InfoKind]: InfoOf<K> }> = {
 		item_count: 10,
 		platform: "vita",
 	}),
+	ps4_pkg: fixture({
+		kind: "ps4_pkg",
+		title: "TEST PS4 GAME",
+		title_id: "CUSA00000",
+		file_size: 4096,
+		entry_count: 2,
+		entries: [],
+	}),
+	ps5_pkg: fixture({
+		kind: "ps5_pkg",
+		title: "TEST PS5 GAME",
+		title_id: "PPSA00000",
+		file_size: 8192,
+		entry_count: 2,
+		entries: [],
+	}),
 };
 
 describe("kindModules", () => {

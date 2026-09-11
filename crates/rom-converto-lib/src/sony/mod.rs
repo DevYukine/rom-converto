@@ -1,5 +1,6 @@
 //! Sony disc and container formats: PS1/PS2 and PSP disc metadata, PSP
-//! PBP/EBOOT containers, PS3 disc decryption, and PS Vita VPK/PKG packages.
+//! PBP/EBOOT containers, PS3 disc decryption, PS Vita VPK/PKG packages,
+//! and PS4/PS5 PKG inspection.
 //!
 //! One ISO9660 probe covers PS1, PS2, and PSP disc metadata: PS1 and PS2
 //! identify themselves through `SYSTEM.CNF`, PSP through
@@ -19,6 +20,8 @@ use crate::util::iso9660::{DiscKind, SectorSource, Volume, read_volume};
 
 mod disc_source;
 pub mod ps3;
+pub mod ps4;
+pub mod ps5;
 pub mod psp;
 pub mod psx;
 pub mod vita;

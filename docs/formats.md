@@ -29,6 +29,10 @@ media, so its reverse operation is named `extract`.
 
 ## Format notes
 
+### PS4 and PS5 PKG files
+
+PS4 and PS5 `.pkg` files are inspect-only. `info` reads the header, entry table, `param.sfo` or `param.json`, and the icon and background art, none of which is encrypted, so no keys are needed. Extraction is not offered: the file system inside these packages is encrypted with per-package keys that the tool does not embed.
+
 ### Z3DS
 
 Z3DS uses seekable zstd around a 3DS ROM. By default, `ctr compress` rejects an

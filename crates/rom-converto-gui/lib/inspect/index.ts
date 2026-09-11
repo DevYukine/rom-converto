@@ -8,6 +8,8 @@ import { nx } from "./nx";
 import { pbp } from "./pbp";
 import { pkg } from "./pkg";
 import { ps3 } from "./ps3";
+import { ps4Pkg } from "./ps4-pkg";
+import { ps5Pkg } from "./ps5-pkg";
 import { psp } from "./psp";
 import { psx } from "./psx";
 import { retro } from "./retro";
@@ -31,6 +33,8 @@ export const kindModules: { [K in InfoKind]: KindModule<K> } = {
 	xbox,
 	xenon,
 	ps3,
+	ps4_pkg: ps4Pkg,
+	ps5_pkg: ps5Pkg,
 	psx,
 	psp,
 	laser_disc: laserDisc,

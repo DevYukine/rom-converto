@@ -425,6 +425,8 @@ pub(crate) fn save_info_icon(info: &rom_converto_lib::info::InfoResult, dir: &Pa
         InfoResult::Pbp(i) => save_pbp_icon(i, dir),
         InfoResult::Vpk(i) => save_vpk_icon(i, dir),
         InfoResult::Pkg(i) => save_pkg_icon(i, dir),
+        InfoResult::Ps4Pkg(i) => save_ps4_pkg_icon(i, dir),
+        InfoResult::Ps5Pkg(i) => save_ps5_pkg_icon(i, dir),
         InfoResult::Chd(_)
         | InfoResult::Cso(_)
         | InfoResult::Psx(_)
@@ -588,6 +590,38 @@ pub(crate) fn save_pkg_icon(info: &rom_converto_lib::info::PkgInfo, dir: &Path) 
         &img.png_bytes,
         info.title_id.as_deref().unwrap_or_default(),
         "pkg-icon",
+        dir,
+    )
+}
+
+pub(crate) fn save_ps4_pkg_icon(
+    info: &rom_converto_lib::info::Ps4PkgInfo,
+    dir: &Path,
+) -> Result<()> {
+    let Some(img) = &info.icon else {
+        log::warn!("No icon0.png decoded; nothing to save");
+        return Ok(());
+    };
+    save_png(
+        &img.png_bytes,
+        info.title_id.as_deref().unwrap_or_default(),
+        "ps4-pkg-icon",
+        dir,
+    )
+}
+
+pub(crate) fn save_ps5_pkg_icon(
+    info: &rom_converto_lib::info::Ps5PkgInfo,
+    dir: &Path,
+) -> Result<()> {
+    let Some(img) = &info.icon else {
+        log::warn!("No icon0.png decoded; nothing to save");
+        return Ok(());
+    };
+    save_png(
+        &img.png_bytes,
+        info.title_id.as_deref().unwrap_or_default(),
+        "ps5-pkg-icon",
         dir,
     )
 }

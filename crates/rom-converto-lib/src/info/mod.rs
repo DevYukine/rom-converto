@@ -6,6 +6,7 @@
 //! top-level [`read_info`] dispatcher that the GUI uses to read any
 //! supported file without knowing its format in advance.
 
+use crate::sony::ps4::CntPlatform;
 use crate::util::iso9660::DiscKind;
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
@@ -26,6 +27,8 @@ pub use crate::nintendo::nx::info::NxInfo;
 pub use crate::nintendo::rvl::info::RvlInfo;
 pub use crate::nintendo::wup::info::WupInfo;
 pub use crate::sony::ps3::Ps3Info;
+pub use crate::sony::ps4::Ps4PkgInfo;
+pub use crate::sony::ps5::Ps5PkgInfo;
 pub use crate::sony::psp::PbpInfo;
 pub use crate::sony::vita::{PkgInfo, VpkInfo};
 pub use crate::sony::{DiscContent, PspInfo, PsxInfo};
@@ -57,6 +60,8 @@ pub enum InfoResult {
     Pbp(PbpInfo),
     Vpk(VpkInfo),
     Pkg(PkgInfo),
+    Ps4Pkg(Ps4PkgInfo),
+    Ps5Pkg(Ps5PkgInfo),
 }
 
 /// Normalized content category shared by every console that distinguishes
@@ -224,6 +229,8 @@ pub fn read_info(path: &Path, opts: &InfoOptions) -> Result<InfoResult> {
         DetectedConsole::Pbp => Ok(InfoResult::Pbp(crate::sony::psp::read_info(path)?)),
         DetectedConsole::Vpk => Ok(InfoResult::Vpk(crate::sony::vita::vpk::read_info(path)?)),
         DetectedConsole::Pkg => Ok(InfoResult::Pkg(crate::sony::vita::pkg::read_info(path)?)),
+        DetectedConsole::Ps4Pkg => Ok(InfoResult::Ps4Pkg(crate::sony::ps4::pkg::read_info(path)?)),
+        DetectedConsole::Ps5Pkg => Ok(InfoResult::Ps5Pkg(crate::sony::ps5::pkg::read_info(path)?)),
     }
 }
 
@@ -256,6 +263,8 @@ pub enum DetectedConsole {
     Pbp,
     Vpk,
     Pkg,
+    Ps4Pkg,
+    Ps5Pkg,
 }
 
 /// Detect which console family a path belongs to. Extension first, magic
@@ -291,7 +300,7 @@ pub fn detect_console(path: &Path) -> Result<DetectedConsole> {
         Some("nds") | Some("dsi") => return Ok(DetectedConsole::Ntr),
         Some("pbp") => return Ok(DetectedConsole::Pbp),
         Some("vpk") => return Ok(DetectedConsole::Vpk),
-        Some("pkg") => return Ok(DetectedConsole::Pkg),
+        Some("pkg") => return sniff_pkg(path),
         Some("ngc") => return sniff_ngc(path),
         Some("iso") | Some("rvz") => return sniff_disc_magic(path),
         Some(ext) if retro::RETRO_EXTENSIONS.contains(&ext) => {
@@ -304,6 +313,29 @@ pub fn detect_console(path: &Path) -> Result<DetectedConsole> {
         "could not detect console for path: {}",
         path.display()
     ))
+}
+
+/// A `.pkg` is either the legacy PSN package (`PKG`, PSP/PS3/Vita) or
+/// a PS4/PS5 `CNT` container, which a PS5 package may wrap in a FIH or
+/// LIH image.
+fn sniff_pkg(path: &Path) -> Result<DetectedConsole> {
+    use std::fs::File;
+    use std::io::Read;
+
+    let mut f = File::open(path)?;
+    let mut magic = [0u8; 4];
+    if f.read_exact(&mut magic).is_ok() && magic == [0x7F, b'P', b'K', b'G'] {
+        return Ok(DetectedConsole::Pkg);
+    }
+
+    match crate::sony::ps4::cnt::detect(path)? {
+        Some(CntPlatform::Ps4) => Ok(DetectedConsole::Ps4Pkg),
+        Some(CntPlatform::Ps5) => Ok(DetectedConsole::Ps5Pkg),
+        None => Err(anyhow!(
+            "could not detect pkg family for path: {}",
+            path.display()
+        )),
+    }
 }
 
 /// `.ngc` is a Neo Geo Pocket Color extension, but GameCube dumps in the
@@ -474,6 +506,41 @@ fn sniff_xdvdfs<R: std::io::Read + std::io::Seek>(reader: &mut R) -> Result<Dete
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pkg_extension_is_split_by_magic() {
+        use crate::sony::ps4::cnt::test_fixtures::{Entry, build_cnt, wrap_fih};
+
+        let dir = tempfile::tempdir().unwrap();
+        let entry = |id: u32, name: &'static str| Entry {
+            id,
+            name: Some(name),
+            data: vec![0u8; 8],
+            encrypted: false,
+        };
+
+        let legacy = dir.path().join("legacy.pkg");
+        std::fs::write(&legacy, b"\x7FPKG\x80\x01\x00\x02padding padding").unwrap();
+        assert_eq!(detect_console(&legacy).unwrap(), DetectedConsole::Pkg);
+
+        let ps4 = dir.path().join("ps4.pkg");
+        std::fs::write(&ps4, build_cnt(0x1A, 0, &[entry(0x1000, "param.sfo")])).unwrap();
+        assert_eq!(detect_console(&ps4).unwrap(), DetectedConsole::Ps4Pkg);
+
+        let ps5 = dir.path().join("ps5.pkg");
+        let cnt = build_cnt(0x20, 0, &[entry(0x2000, "param.json")]);
+        std::fs::write(&ps5, &cnt).unwrap();
+        assert_eq!(detect_console(&ps5).unwrap(), DetectedConsole::Ps5Pkg);
+
+        let fih = dir.path().join("fih.pkg");
+        std::fs::write(&fih, wrap_fih(&cnt, 0x80, 0x2000, 0x1000)).unwrap();
+        assert_eq!(detect_console(&fih).unwrap(), DetectedConsole::Ps5Pkg);
+
+        let junk = dir.path().join("junk.pkg");
+        std::fs::write(&junk, b"not a package at all").unwrap();
+        let err = detect_console(&junk).unwrap_err().to_string();
+        assert!(err.contains("could not detect pkg family"), "{err}");
+    }
 
     #[test]
     fn content_kind_serializes_snake_case_and_displays() {
@@ -790,7 +857,8 @@ mod tests {
             ("dsi", DetectedConsole::Ntr),
             ("pbp", DetectedConsole::Pbp),
             ("vpk", DetectedConsole::Vpk),
-            ("pkg", DetectedConsole::Pkg),
+            // `.pkg` needs its magic read, so it is covered by
+            // `pkg_extension_is_split_by_magic` instead.
         ] {
             let p = format!("/tmp/x.{}", ext);
             assert_eq!(

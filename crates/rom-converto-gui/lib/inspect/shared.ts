@@ -27,6 +27,18 @@ export function formatMaker(code: string, name: string | null): string {
 	return name ? `${code} (${name})` : code;
 }
 
+// PS4/PS5 CNT container helpers, shared by lib/inspect/ps4-pkg.ts and ps5-pkg.ts.
+export function contentFlagsLabel(flags: number, labels: string[]): string {
+	return `0x${hex(flags, 8)}${labels.length ? ` (${labels.join(", ")})` : ""}`;
+}
+
+// version_date is BCD yyyymmdd, so its hex digits already read as the date.
+export function versionDateLabel(v: number): string | null {
+	if (v === 0) return null;
+	const s = hex(v, 8);
+	return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`;
+}
+
 // Language tags differ per format ("AmericanEnglish", "english", "american_english");
 // normalize before comparing. Falls back to the first entry.
 export function englishFirst<T>(items: T[] | undefined, lang: (item: T) => string): T | undefined {

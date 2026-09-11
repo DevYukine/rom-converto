@@ -117,6 +117,8 @@ pub fn print(result: &InfoResult, json: bool) -> Result<()> {
         InfoResult::Pbp(info) => render_pbp(info),
         InfoResult::Vpk(info) => render_vpk(info),
         InfoResult::Pkg(info) => render_pkg(info),
+        InfoResult::Ps4Pkg(info) => render_ps4_pkg(info),
+        InfoResult::Ps5Pkg(info) => render_ps5_pkg(info),
     };
     print!("{}", rendered);
     Ok(())
@@ -2199,6 +2201,263 @@ fn render_pkg(info: &rom_converto_lib::info::PkgInfo) -> String {
     out
 }
 
+/// Formats a BCD `yyyymmdd` version date, e.g. `0x20240115` -> `2024-01-15`.
+/// A zero date means the field is unset.
+fn format_version_date(v: u32) -> Option<String> {
+    if v == 0 {
+        return None;
+    }
+    let s = format!("{v:08X}");
+    Some(format!("{}-{}-{}", &s[0..4], &s[4..6], &s[6..8]))
+}
+
+fn content_flags_row(flags: u32, labels: &[String]) -> String {
+    if labels.is_empty() {
+        format!("0x{flags:08X}")
+    } else {
+        format!("0x{:08X} ({})", flags, labels.join(", "))
+    }
+}
+
+fn content_type_row(label: &Option<String>, content_type: u32) -> String {
+    match label {
+        Some(l) => format!("{l} (0x{content_type:X})"),
+        None => format!("0x{content_type:X}"),
+    }
+}
+
+fn cnt_entries_inner(entries: &[rom_converto_lib::sony::ps4::cnt::CntEntry]) -> String {
+    let mut inner = String::new();
+    for e in entries {
+        let name = e.name.clone().unwrap_or_else(|| format!("0x{:04X}", e.id));
+        let suffix = if e.encrypted { " [encrypted]" } else { "" };
+        inner.push_str(&format!("  {}  {} bytes{}\n", name, e.size, suffix));
+    }
+    inner
+}
+
+fn render_ps4_pkg(info: &rom_converto_lib::info::Ps4PkgInfo) -> String {
+    let mut c = KeyValueTable::new();
+    c.push("Format", "PS4 PKG");
+    c.push("Finalized", if info.finalized { "yes" } else { "no" });
+    c.push("DRM type", format!("{}", info.drm_type));
+    c.push(
+        "Content type",
+        content_type_row(&info.content_type_label, info.content_type),
+    );
+    c.push(
+        "Content flags",
+        content_flags_row(info.content_flags, &info.content_flag_labels),
+    );
+    if let Some(date) = format_version_date(info.version_date) {
+        c.push("Version date", date);
+    }
+    c.push("Entries", format!("{}", info.entry_count));
+    c.push(
+        "PFS image",
+        format!(
+            "offset=0x{:X} size={}",
+            info.pfs_image_offset, info.pfs_image_size
+        ),
+    );
+    c.push("Package size", format!("{} bytes", info.package_size));
+
+    let mut t = KeyValueTable::new();
+    if let Some(v) = &info.title {
+        t.push("Title", v.clone());
+    }
+    if let Some(v) = &info.title_id {
+        t.push("Title ID", v.clone());
+    }
+    t.push("Content ID", info.content_id.clone());
+    if let Some(cat) = &info.category {
+        t.push(
+            "Category",
+            match &info.category_label {
+                Some(label) => format!("{} ({})", label, cat),
+                None => cat.clone(),
+            },
+        );
+    }
+    if let Some(v) = info.app_type {
+        t.push(
+            "App type",
+            match &info.app_type_label {
+                Some(label) => format!("{} ({})", label, v),
+                None => format!("{}", v),
+            },
+        );
+    }
+    if let Some(v) = &info.app_ver {
+        t.push("App version", v.clone());
+    }
+    if let Some(v) = &info.version {
+        t.push("Version", v.clone());
+    }
+    if let Some(v) = &info.system_ver {
+        t.push("System version", v.clone());
+    }
+    if let Some(v) = info.parental_level {
+        t.push("Parental level", format!("{}", v));
+    }
+    if info.ps2_classic {
+        t.push(
+            "PS2 Classic",
+            match info.emu_version {
+                Some(ev) => format!("yes (EMU_VERSION {ev})"),
+                None => "yes".to_string(),
+            },
+        );
+    }
+    if let Some(img) = &info.icon {
+        t.push(
+            "Icon",
+            format!(
+                "{}x{} PNG ({} bytes)",
+                img.width,
+                img.height,
+                img.png_bytes.len()
+            ),
+        );
+    }
+    if let Some(img) = &info.background {
+        t.push(
+            "Background",
+            format!(
+                "{}x{} PNG ({} bytes)",
+                img.width,
+                img.height,
+                img.png_bytes.len()
+            ),
+        );
+    }
+    order_rom(&mut t);
+
+    let mut out = String::new();
+    section(&mut out, "Container", &c);
+    section(&mut out, "ROM", &t);
+    if !info.entries.is_empty() {
+        nested(&mut out, "Inner files", &cnt_entries_inner(&info.entries));
+    }
+    out
+}
+
+fn render_ps5_pkg(info: &rom_converto_lib::info::Ps5PkgInfo) -> String {
+    use rom_converto_lib::sony::ps5::pkg::Ps5PkgImage;
+
+    let image_label = match info.image {
+        Ps5PkgImage::Cnt => "CNT",
+        Ps5PkgImage::Fih => "FIH",
+        Ps5PkgImage::Lih => "LIH",
+    };
+
+    let mut c = KeyValueTable::new();
+    c.push("Format", "PS5 PKG");
+    c.push(
+        "Image",
+        match info.signed {
+            Some(true) => format!("{image_label} (retail)"),
+            Some(false) => format!("{image_label} (debug)"),
+            None => image_label.to_string(),
+        },
+    );
+    c.push("Finalized", if info.finalized { "yes" } else { "no" });
+    c.push("DRM type", format!("{}", info.drm_type));
+    c.push(
+        "Content type",
+        content_type_row(&info.content_type_label, info.content_type),
+    );
+    c.push(
+        "Content flags",
+        content_flags_row(info.content_flags, &info.content_flag_labels),
+    );
+    if let Some(date) = format_version_date(info.version_date) {
+        c.push("Version date", date);
+    }
+    c.push("Entries", format!("{}", info.entry_count));
+    c.push(
+        "PFS image",
+        format!(
+            "offset=0x{:X} size={}",
+            info.pfs_image_offset, info.pfs_image_size
+        ),
+    );
+    c.push("Package size", format!("{} bytes", info.package_size));
+
+    let mut t = KeyValueTable::new();
+    if let Some(v) = &info.title {
+        t.push("Title", v.clone());
+    }
+    if let Some(v) = &info.title_id {
+        t.push("Title ID", v.clone());
+    }
+    t.push("Content ID", info.content_id.clone());
+    if let Some(v) = &info.content_version {
+        t.push("Content version", v.clone());
+    }
+    if let Some(v) = &info.target_content_version {
+        t.push("Target content version", v.clone());
+    }
+    if let Some(v) = &info.master_version {
+        t.push("Master version", v.clone());
+    }
+    if let Some(v) = &info.required_system_version {
+        t.push("Required firmware", v.clone());
+    }
+    if let Some(v) = &info.sdk_version {
+        t.push("SDK", v.clone());
+    }
+    if let Some(v) = info.application_category_type {
+        t.push(
+            "Application category",
+            match &info.application_category_label {
+                Some(label) => format!("{} ({})", label, v),
+                None => format!("{}", v),
+            },
+        );
+    }
+    if let Some(v) = &info.application_drm_type {
+        t.push("DRM", v.clone());
+    }
+    if let Some(v) = &info.default_language {
+        t.push("Default language", v.clone());
+    }
+    if let Some(v) = &info.creation_date {
+        t.push("Created", v.clone());
+    }
+    if let Some(img) = &info.icon {
+        t.push(
+            "Icon",
+            format!(
+                "{}x{} PNG ({} bytes)",
+                img.width,
+                img.height,
+                img.png_bytes.len()
+            ),
+        );
+    }
+    if let Some(img) = &info.background {
+        t.push(
+            "Background",
+            format!(
+                "{}x{} PNG ({} bytes)",
+                img.width,
+                img.height,
+                img.png_bytes.len()
+            ),
+        );
+    }
+    order_rom(&mut t);
+
+    let mut out = String::new();
+    section(&mut out, "Container", &c);
+    section(&mut out, "ROM", &t);
+    if !info.entries.is_empty() {
+        nested(&mut out, "Inner files", &cnt_entries_inner(&info.entries));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2861,5 +3120,74 @@ mod tests {
         };
         let out = render_pkg(&info);
         assert!(has_field(&out, "Platform", "PSP"));
+    }
+
+    #[test]
+    fn format_version_date_decodes_bcd() {
+        assert_eq!(
+            format_version_date(0x20240115),
+            Some("2024-01-15".to_string())
+        );
+        assert_eq!(format_version_date(0), None);
+    }
+
+    #[test]
+    fn render_ps4_pkg_shows_content_type_and_entries() {
+        let info = rom_converto_lib::info::Ps4PkgInfo {
+            content_id: "UP9000-CUSA00001_00-EXAMPLE0000000000".to_string(),
+            content_type: 0x1A,
+            content_type_label: Some("PS4 game data".to_string()),
+            title: Some("Example Game".to_string()),
+            entries: vec![rom_converto_lib::sony::ps4::cnt::CntEntry {
+                id: 0x1000,
+                name: Some("param.sfo".to_string()),
+                offset: 0,
+                size: 512,
+                encrypted: false,
+                key_index: 0,
+            }],
+            ..Default::default()
+        };
+        let out = render_ps4_pkg(&info);
+        assert!(has_field(&out, "Format", "PS4 PKG"));
+        assert!(has_field(&out, "Content type", "PS4 game data (0x1A)"));
+        assert!(has_field(&out, "Title", "Example Game"));
+        assert!(has_field(
+            &out,
+            "Content ID",
+            "UP9000-CUSA00001_00-EXAMPLE0000000000"
+        ));
+        assert!(out.contains("param.sfo") && out.contains("512 bytes"));
+    }
+
+    #[test]
+    fn render_ps5_pkg_shows_content_type_and_entries() {
+        let info = rom_converto_lib::info::Ps5PkgInfo {
+            content_id: "PPSA00001_00-EXAMPLE0000000000".to_string(),
+            content_type: 0x20,
+            content_type_label: Some("PS5 game data".to_string()),
+            title: Some("Example Game".to_string()),
+            entries: vec![rom_converto_lib::sony::ps4::cnt::CntEntry {
+                id: 0x1200,
+                name: Some("icon0.png".to_string()),
+                offset: 0,
+                size: 1024,
+                encrypted: true,
+                key_index: 0,
+            }],
+            ..Default::default()
+        };
+        let out = render_ps5_pkg(&info);
+        assert!(has_field(&out, "Format", "PS5 PKG"));
+        assert!(has_field(&out, "Content type", "PS5 game data (0x20)"));
+        assert!(has_field(&out, "Title", "Example Game"));
+        assert!(has_field(
+            &out,
+            "Content ID",
+            "PPSA00001_00-EXAMPLE0000000000"
+        ));
+        assert!(
+            out.contains("icon0.png") && out.contains("1024 bytes") && out.contains("[encrypted]")
+        );
     }
 }

@@ -892,13 +892,13 @@ returns the same data as structured JSON. Encrypted 3DS CIA headers are read in 
 | `--json` | Emit a machine-readable payload instead of the formatted report |
 | `--batch` | Generic `info` only. Recursively inspect every supported file under directory `INPUT` instead of reading it as one title |
 | `--paths-file <FILE>` | Generic `info` only. Read one input path per line; skip blank lines and `#` comments. Conflicts with `INPUT` |
-| `--save-icon <DIR>` | Write embedded artwork to `DIR`. Supported for `ctr`, `dol`, `rvl`, `nx`, `wup`, `xbox`, `xenon`, `ps3`, PSP images, VPK, and PKG |
+| `--save-icon <DIR>` | Write embedded artwork to `DIR`. Supported for `ctr`, `dol`, `rvl`, `nx`, `wup`, `xbox`, `xenon`, `ps3`, PSP images, VPK, and PKG files (PSP, PS3, Vita, PS4, PS5) |
 | `--keys <FILE>` | `prod.keys` for `nx info`, a disc master key file for `wup info` on `.wud`/`.wux` (optional), or a `.dkey` file for `ps3 info`. Other consoles do not use it |
 
 Supported inputs include every console and format listed in [Formats](formats.md), plus
 common cartridge ROMs: NES, SNES, Nintendo 64, Game Boy, Game Boy Color, Game Boy Advance,
 Mega Drive, Master System, Game Gear, Virtual Boy, WonderSwan, Neo Geo Pocket, Atari Lynx,
-and Atari 7800. It also reads PS1, PS2, and PSP discs; PSP, PS3, and Vita PKG files;
+and Atari 7800. It also reads PS1, PS2, and PSP discs; PSP, PS3, Vita, PS4, and PS5 PKG files;
 `.3dsx` and `.z3dsx`; and LaserDisc AVI files. NFS and TGC are unsupported.
 
 `chd info` and `cso info` probe an inner PS1, PS2, or PSP disc when possible. A failed

@@ -31,6 +31,9 @@ export function pickIconImage(info: InfoResult): Image | null {
       return info.icon;
     case "pkg":
       return info.icon;
+    case "ps4_pkg":
+    case "ps5_pkg":
+      return info.icon;
     default:
       return null;
   }
@@ -45,6 +48,9 @@ export function pickBackgroundImage(info: InfoResult): Image | null {
       return info.background;
     case "vpk":
     case "pkg":
+      return info.background;
+    case "ps4_pkg":
+    case "ps5_pkg":
       return info.background;
     default:
       return null;

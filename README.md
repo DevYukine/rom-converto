@@ -27,7 +27,7 @@ Convert, compress, decrypt, and verify ROMs and disc images. Available as a comm
 | Xbox 360 | Pack a disc image or game folder into ZAR; convert a disc ISO to GoD; extract ZAR files |
 | PlayStation 3 | Decrypt disc ISOs |
 
-`info` also inspects PSP, PS Vita, PSN packages, and classic cartridge ROMs. Inspection support does not imply conversion support. See [formats and compatibility](docs/formats.md) for extensions, limits, and emulator guidance.
+`info` also inspects PSP, PS Vita, PS3, PS4, and PS5 packages, and classic cartridge ROMs. Inspection support does not imply conversion support. See [formats and compatibility](docs/formats.md) for extensions, limits, and emulator guidance.
 
 **Preview first:** add `--dry-run` to a conversion to see planned outputs. Use `-R` (`--recursive`) on commands that support folder scans.
 

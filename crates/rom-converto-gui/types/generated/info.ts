@@ -117,6 +117,31 @@ export type CnmtContentSummary = { content_id: string, content_type: string, siz
 export type CnmtTitleKind = "unknown" | "application" | "patch" | "add_on_content" | "delta" | "system_program" | "system_data" | "system_update";
 
 /**
+ * One record of a PS4/PS5 package entry table.
+ */
+export type CntEntry = { 
+/**
+ * Entry id, e.g. 0x1000 for `param.sfo`, 0x1200 for `icon0.png`.
+ */
+id: number, 
+/**
+ * Name from the package name table, when the entry has one.
+ */
+name: string | null, 
+/**
+ * Absolute offset of the entry's data in the file.
+ */
+offset: number, size: number, 
+/**
+ * `flags1` bit 31.
+ */
+encrypted: boolean, 
+/**
+ * `flags2` bits 12..16.
+ */
+key_index: number, };
+
+/**
  * One file entry from a container's flat listing.
  *
  * `partition` names the enclosing HFS0 sub-partition for XCI/XCZ inputs
@@ -275,7 +300,7 @@ export type Image = { png_bytes: Array<number>, width: number, height: number, }
  * Per-console metadata read by [`read_info`], tagged with a `kind`
  * field on the wire.
  */
-export type InfoResult = { "kind": "chd" } & ChdInfo | { "kind": "cso" } & CsoInfo | { "kind": "ctr" } & CtrInfo | { "kind": "dol" } & DolInfo | { "kind": "rvl" } & RvlInfo | { "kind": "wup" } & WupInfo | { "kind": "nx" } & NxInfo | { "kind": "xbox" } & XisoInfo | { "kind": "xenon" } & ZarInfo | { "kind": "ps3" } & Ps3Info | { "kind": "psx" } & PsxInfo | { "kind": "psp" } & PspInfo | { "kind": "laser_disc" } & LdAviInfo | { "kind": "ntr" } & NtrInfo | { "kind": "retro" } & RetroInfo | { "kind": "pbp" } & PbpInfo | { "kind": "vpk" } & VpkInfo | { "kind": "pkg" } & PkgInfo;
+export type InfoResult = { "kind": "chd" } & ChdInfo | { "kind": "cso" } & CsoInfo | { "kind": "ctr" } & CtrInfo | { "kind": "dol" } & DolInfo | { "kind": "rvl" } & RvlInfo | { "kind": "wup" } & WupInfo | { "kind": "nx" } & NxInfo | { "kind": "xbox" } & XisoInfo | { "kind": "xenon" } & ZarInfo | { "kind": "ps3" } & Ps3Info | { "kind": "psx" } & PsxInfo | { "kind": "psp" } & PspInfo | { "kind": "laser_disc" } & LdAviInfo | { "kind": "ntr" } & NtrInfo | { "kind": "retro" } & RetroInfo | { "kind": "pbp" } & PbpInfo | { "kind": "vpk" } & VpkInfo | { "kind": "pkg" } & PkgInfo | { "kind": "ps4_pkg" } & Ps4PkgInfo | { "kind": "ps5_pkg" } & Ps5PkgInfo;
 
 /**
  * Fields of the Dreamcast IP header, with the area and peripheral fields
@@ -560,6 +585,107 @@ root_files: Array<Ps3RootEntry>, };
  * One entry from a PS3 disc's ISO9660 root directory listing.
  */
 export type Ps3RootEntry = { name: string, size: number, is_dir: boolean, };
+
+/**
+ * Metadata read from a PS4 `.pkg` header, entry table and plaintext
+ * `param.sfo`. Nothing here needs a key.
+ */
+export type Ps4PkgInfo = { content_id: string, 
+/**
+ * Header flags bit 31: a finalized (retail-style) package.
+ */
+finalized: boolean, 
+/**
+ * Header `drm_type`: 0 none, 0xF PS4.
+ */
+drm_type: number, 
+/**
+ * Header `content_type`: 0x1A game data, 0x1B additional content, 0x1C additional content without data, 0x1E delta patch.
+ */
+content_type: number, content_type_label: string | null, content_flags: number, 
+/**
+ * Decoded `content_flags` bit names, in ascending bit order.
+ */
+content_flag_labels: Array<string>, content_kind: ContentKind | null, 
+/**
+ * Header `version_date`, BCD `yyyymmdd`.
+ */
+version_date: number, title: string | null, title_id: string | null, 
+/**
+ * `CATEGORY` from `param.sfo`, verbatim.
+ */
+category: string | null, category_label: string | null, app_ver: string | null, version: string | null, 
+/**
+ * `SYSTEM_VER` decoded from BCD `0xAABBCCDD` to `"AA.BB"`.
+ */
+system_ver: string | null, 
+/**
+ * `APP_TYPE`: 1 paid standalone full, 2 upgradable, 3 demo, 4 freemium.
+ */
+app_type: number | null, app_type_label: string | null, parental_level: number | null, 
+/**
+ * A PS2 Classic wrapper: `CATEGORY` is `gdO`, or `EMU_VERSION` is present.
+ */
+ps2_classic: boolean, emu_version: number | null, 
+/**
+ * `icon0.png`.
+ */
+icon: Image | null, 
+/**
+ * `pic1.png`, else `pic0.png`.
+ */
+background: Image | null, entry_count: number, entries: Array<CntEntry>, pfs_image_offset: number, pfs_image_size: number, 
+/**
+ * Header `package_size`; the file length when the header stores 0.
+ */
+package_size: number, file_size: number, };
+
+/**
+ * Outer image kind of a PS5 package file.
+ */
+export type Ps5PkgImage = "cnt" | "fih" | "lih";
+
+/**
+ * Metadata read from a PS5 package header, entry table and plaintext
+ * `param.json`. Nothing here needs a key.
+ */
+export type Ps5PkgInfo = { content_id: string, image: Ps5PkgImage, 
+/**
+ * FIH or LIH signed byte 0x80; `None` for a bare CNT.
+ */
+signed: boolean | null, finalized: boolean, drm_type: number, 
+/**
+ * Header `content_type`: 0x20 is PS5 game data.
+ */
+content_type: number, content_type_label: string | null, content_flags: number, content_flag_labels: Array<string>, content_kind: ContentKind | null, version_date: number, 
+/**
+ * `localizedParameters[defaultLanguage].titleName`, else `en-US`, else the first language.
+ */
+title: string | null, title_id: string | null, default_language: string | null, content_version: string | null, target_content_version: string | null, master_version: string | null, 
+/**
+ * `requiredSystemSoftwareVersion` hex string `0xAABB...` decoded to `"AA.BB"`.
+ */
+required_system_version: string | null, 
+/**
+ * `sdkVersion` decoded the same way.
+ */
+sdk_version: string | null, application_category_type: number | null, application_category_label: string | null, 
+/**
+ * `applicationDrmType`: `standard`, `upgradable`, `demo`, `free`, `freemium`.
+ */
+application_drm_type: string | null, 
+/**
+ * `pubtools.creationDate`.
+ */
+creation_date: string | null, 
+/**
+ * `icon0.png`.
+ */
+icon: Image | null, 
+/**
+ * `pic0.png`.
+ */
+background: Image | null, entry_count: number, entries: Array<CntEntry>, pfs_image_offset: number, pfs_image_size: number, package_size: number, file_size: number, };
 
 /**
  * The image `DATA.PSAR` carries, identified by its first 8 bytes.

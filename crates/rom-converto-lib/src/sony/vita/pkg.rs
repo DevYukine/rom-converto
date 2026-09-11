@@ -800,7 +800,9 @@ fn content_kind(content_type: u32, category: Option<&str>) -> Option<ContentKind
 // never be case-normalized here.
 fn map_category(cat: &str) -> Option<ContentKind> {
     match cat {
-        "gd" | "gda" | "DG" | "HG" | "UG" | "MG" | "ME" => Some(ContentKind::Game),
+        "gd" | "gda" | "DG" | "HG" | "UG" | "MG" | "ME" | "1P" | "2P" | "PE" | "MN" => {
+            Some(ContentKind::Game)
+        }
         "gp" | "GD" => Some(ContentKind::Update),
         "ac" | "AC" => Some(ContentKind::Dlc),
         _ => None,
@@ -811,6 +813,7 @@ fn map_content_type(content_type: u32) -> Option<ContentKind> {
     match content_type {
         0x16 => Some(ContentKind::Dlc),
         0x15 => Some(ContentKind::Game),
+        0x4 | 0x5 | 0x12 | 0x14 => Some(ContentKind::Game),
         6 | 7 | 0xE | 0xF | 0x10 => Some(ContentKind::Game),
         _ => None,
     }
@@ -836,17 +839,30 @@ fn safe_join(root: &Path, name: &str) -> Result<PathBuf> {
 
 fn content_type_label(content_type: u32, category: Option<&str>) -> Option<String> {
     let label = match content_type {
+        0x4 => "PS3 game data",
+        0x5 => "PS3 game",
         6 => "PSX game",
         7 => "PSP game",
+        0x9 => "PS3 theme",
+        0xA => "PS3 widget",
+        0xB => "PS3 license",
+        0xC => "PS3 VSH module",
+        0xD => "PSN avatar",
         0xE => "PSP-Go game",
         0xF => "PSP-Mini game",
         0x10 => "PSP-NeoGeo game",
+        0x11 => "PS3 virtual memory card",
+        0x12 => "PS2 Classic",
+        0x14 => "PSP Remaster",
         0x15 => match category {
             Some("gp") => "Vita patch",
             _ => "Vita application",
         },
         0x16 => "Vita additional content",
+        0x17 => "Vita LiveArea",
         0x18 | 0x1D => "Vita PSM application",
+        0x19 => "PS3 Web TV",
+        0x1F => "Vita theme",
         _ => return None,
     };
     Some(label.to_string())
@@ -1463,6 +1479,16 @@ mod tests {
             .to_string();
         assert!(err.contains("EP9000-PCSF00002_00-SYNTHETIC000000"), "{err}");
         assert!(err.contains("PSP game"), "{err}");
+    }
+
+    #[test]
+    fn ps3_content_types_and_categories_are_labelled() {
+        assert_eq!(
+            content_type_label(0x12, None).as_deref(),
+            Some("PS2 Classic")
+        );
+        assert_eq!(map_content_type(0x12), Some(ContentKind::Game));
+        assert_eq!(map_category("2P"), Some(ContentKind::Game));
     }
 
     #[test]
