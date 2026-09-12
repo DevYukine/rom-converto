@@ -8,6 +8,7 @@ import { encryptOps } from "./encrypt";
 import { convertOps } from "./convert";
 import { verifyOps } from "./verify";
 import { datOps } from "./dat";
+import { organizeOps } from "./organize";
 import { toolOps } from "./tools";
 
 // One entry per op module. A module left out of this array no longer registers
@@ -20,6 +21,7 @@ const OP_MODULES: OpDef[][] = [
 	convertOps,
 	verifyOps,
 	datOps,
+	organizeOps,
 	toolOps,
 ];
 

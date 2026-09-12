@@ -10,6 +10,7 @@ use crate::commands::info_command::InfoCommand;
 use crate::commands::misc::{CapabilitiesCommand, SelfUpdateCommand};
 use crate::commands::ntr::NtrCommands;
 use crate::commands::nx::NxCommands;
+use crate::commands::organize::OrganizeCommand;
 use crate::commands::playlist::PlaylistCommand;
 use crate::commands::ps3::Ps3Commands;
 use crate::commands::psp::PspCommands;
@@ -34,6 +35,7 @@ pub mod info_command;
 pub mod misc;
 pub mod ntr;
 pub mod nx;
+pub mod organize;
 pub mod playlist;
 pub mod ps3;
 pub mod psp;
@@ -151,6 +153,9 @@ pub enum Commands {
 
     #[command(subcommand)]
     Dat(DatCommands),
+
+    /// Sort a ROM library into per-console folders and compress every file into its best format
+    Organize(OrganizeCommand),
 
     Capabilities(CapabilitiesCommand),
 

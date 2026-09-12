@@ -11,7 +11,7 @@ use crate::util::{
 use anyhow::Result;
 use log::{info, warn};
 use rom_converto_lib::runner::models::{
-    PlaylistsData, RunData, RunOptions, RunRequest, RunResponse, RunRow,
+    OrganizeRow, PlaylistsData, RunData, RunOptions, RunRequest, RunResponse, RunRow,
 };
 use rom_converto_lib::runner::run_request;
 use rom_converto_lib::util::fs::{collect_all_files, collect_files_with_exts, is_os_junk_dir};
@@ -206,7 +206,7 @@ fn is_empty_input(err: &anyhow::Error) -> bool {
 /// the process its exit code. `summary_line` counts entries, so the runner's
 /// totals are replayed one entry per file with the aggregate byte counts on
 /// the first success.
-fn finish(
+pub(crate) fn finish(
     totals: &ReportTotals,
     direction: TallyDirection,
     dry_run: bool,
@@ -241,7 +241,7 @@ fn finish(
 
 /// Closing-summary shape per operation, matching what each command reported
 /// before it went through the runner.
-fn direction(operation: &str) -> TallyDirection {
+pub(crate) fn direction(operation: &str) -> TallyDirection {
     match operation {
         "cso.compress" | "chd.compress" | "dol.compress" | "rvl.compress" | "rvz.compress"
         | "ctr.compress" | "nx.compress" | "wup.compress" | "xenon.compress" | "cso.to_chd"
@@ -282,10 +282,40 @@ fn plan_media(operation: &str, options: &RunOptions, output: Option<&Path>) -> O
     }
 }
 
+/// One organize row: `[status] console · action · input -> output (detail)`.
+/// Dry-run rows carry the same `Would ` prefix the plan lines use.
+fn organize_line(row: &OrganizeRow) -> String {
+    let status = match row.status {
+        FileStatus::Ok => "ok",
+        FileStatus::Skipped => "skipped",
+        FileStatus::Failed => "failed",
+    };
+    let target = row
+        .output
+        .as_deref()
+        .map_or_else(|| "-".to_string(), |p| p.display().to_string());
+    let line = format!(
+        "[{}] {} · {} · {} -> {}",
+        status,
+        row.console.as_deref().unwrap_or("-"),
+        row.action,
+        row.input.display(),
+        target,
+    );
+    let line = match &row.detail {
+        Some(detail) => format!("{line} ({detail})"),
+        None => line,
+    };
+    match row.planned {
+        true => format!("Would {line}"),
+        false => line,
+    }
+}
+
 /// Streamed rows of a dry run: a planned skip already printed its decision
 /// on the plan line, so only skips with no plan behind them (no output path:
 /// the input is already in the target format) still report themselves.
-fn print_plan_row(row: &RunRow) {
+pub(crate) fn print_plan_row(row: &RunRow) {
     match row {
         RunRow::Record(record)
             if record.status == FileStatus::Skipped && !record.output_path.is_empty() => {}
@@ -295,7 +325,7 @@ fn print_plan_row(row: &RunRow) {
 
 /// Streamed rows: the plan lines of a recursive dry run and the per-file
 /// skips and failures each batch arm used to report about itself.
-fn print_row(row: &RunRow) {
+pub(crate) fn print_row(row: &RunRow) {
     match row {
         RunRow::Plan(line) => info!("{}", plan_text(line)),
         RunRow::Record(record) if record.status == FileStatus::Failed => warn!(
@@ -309,6 +339,10 @@ fn print_row(row: &RunRow) {
             record.error.as_deref().unwrap_or_default(),
             record.input_path
         ),
+        RunRow::Organize(row) => match row.status {
+            FileStatus::Failed if !row.planned => warn!("{}", organize_line(row)),
+            _ => info!("{}", organize_line(row)),
+        },
         _ => {}
     }
 }

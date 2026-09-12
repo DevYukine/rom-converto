@@ -125,6 +125,13 @@ rom-converto's compression and disc-conversion targets. Sources checked Septembe
 DS, PS3, and Vita operations do not produce compressed formats. Dreamcast GDI is
 inspection-only input; rom-converto cannot convert it to CHD.
 
+## Organize targets
+
+`rom-converto organize` picks these recommendations for you: it sorts a library
+folder into per-console folders and converts each file to the best archival format
+for its console. The per-console targets and behavior are described under
+[organize](cli.md#organize).
+
 ## Inspection support
 
 `info` reads metadata from all conversion formats plus PS1/PS2/PSP disc images,

@@ -12,7 +12,7 @@ const emit = defineEmits<{ close: [] }>();
 
 const store = useConfigStore();
 
-type FieldKind = "number" | "text" | "conflict" | "list";
+type FieldKind = "number" | "text" | "conflict" | "list" | "bool";
 interface FieldSpec {
 	key: string;
 	label: string;
@@ -70,6 +70,15 @@ const FORMAT_SCHEMA: Record<PresetFormat, FieldSpec[]> = {
 		{ key: "input_checksum_min", label: "Checksum floor", kind: "text" },
 		{ key: "input_checksum_max", label: "Checksum ceiling", kind: "text" },
 	],
+	organize: [
+		{ key: "output_dir", label: "Output dir", kind: "text" },
+		{ key: "output_template", label: "Layout", kind: "text" },
+		{ key: "on_conflict", label: "On conflict", kind: "conflict" },
+		{ key: "report", label: "Report", kind: "text" },
+		{ key: "dat", label: "Rename with DAT", kind: "bool" },
+		{ key: "move_source", label: "Move sources", kind: "bool" },
+		{ key: "playlists", label: "Write playlists", kind: "bool" },
+	],
 };
 
 const FORMAT_LABELS: Record<PresetFormat, string> = {
@@ -80,6 +89,7 @@ const FORMAT_LABELS: Record<PresetFormat, string> = {
 	cso: "CSO/ZSO",
 	wup: "Wii U (wup)",
 	dat: "DAT",
+	organize: "Organize",
 };
 
 // props.preset is a reactive store proxy (and so are its nested objects);
@@ -168,6 +178,12 @@ async function save() {
 						placeholder="comma-separated"
 						:value="listText(format, field.key)"
 						@input="onListInput(format, field.key, ($event.target as HTMLInputElement).value)"
+					/>
+					<input
+						v-else-if="field.kind === 'bool'"
+						type="checkbox"
+						:checked="cell(format, field.key) === true"
+						@change="setCell(format, field.key, ($event.target as HTMLInputElement).checked)"
 					/>
 					<input
 						v-else

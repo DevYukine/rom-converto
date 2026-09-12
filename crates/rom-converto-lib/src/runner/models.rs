@@ -1,7 +1,8 @@
 use crate::dat::model::DatFileSummary;
 pub use crate::dat::run::{DatMatchData, DatTrackCheck, ExternalId};
 pub use crate::dat::scan::{DatScanData, DatScanRow};
-use crate::util::{FileDigests, PlanLine, ReportRecord, ReportTotals};
+use crate::util::report::ser_status;
+use crate::util::{FileDigests, FileStatus, PlanLine, ReportRecord, ReportTotals};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -77,6 +78,9 @@ impl RunSchemaManifest {
                 output_template: "string",
                 max_depth: "usize",
                 report: "path",
+                dat: "bool",
+                move_source: "bool",
+                playlists: "bool",
                 skip_space_check: "bool",
                 verify_after: "bool",
                 quick: "bool",
@@ -150,6 +154,9 @@ pub struct CommonOptionsSchema {
     pub output_template: &'static str,
     pub max_depth: &'static str,
     pub report: &'static str,
+    pub dat: &'static str,
+    pub move_source: &'static str,
+    pub playlists: &'static str,
     pub skip_space_check: &'static str,
     pub verify_after: &'static str,
     pub quick: &'static str,
@@ -282,6 +289,7 @@ pub enum RunData {
     XenonVerify(XenonVerifyData),
     XenonConvert(XenonConvertData),
     Info(crate::info::InfoResult),
+    Organize(OrganizeData),
     Playlists(PlaylistsData),
     DatMatch(DatMatchData),
     DatVerify(DatVerifyData),
@@ -397,6 +405,44 @@ pub struct PlaylistPlanData {
     pub has_duplicate_numbers: bool,
 }
 
+/// One library item handled by an `organize` run.
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
+pub struct OrganizeRow {
+    /// The unit's primary path: the file, the cue of a set, or the archive.
+    pub input: PathBuf,
+    /// Planned or written target path.
+    pub output: Option<PathBuf>,
+    /// Console folder label the unit was placed under.
+    pub console: Option<String>,
+    /// Child op name ("dol.compress", ...) or "zip" | "copy" | "move" | "skip".
+    pub action: String,
+    #[serde(serialize_with = "ser_status")]
+    #[cfg_attr(feature = "ts-export", ts(type = "\"ok\" | \"skipped\" | \"failed\""))]
+    pub status: FileStatus,
+    /// True for dry-run rows, which plan without writing.
+    pub planned: bool,
+    /// Skip reason, plan decision text, or error.
+    pub detail: Option<String>,
+    pub input_bytes: u64,
+    pub output_bytes: u64,
+    pub elapsed_ms: u64,
+}
+
+/// Result of an `organize` run: one row per library item.
+#[derive(Debug, Default, Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
+pub struct OrganizeData {
+    pub rows: Vec<OrganizeRow>,
+    pub dry_run: bool,
+    pub ok: usize,
+    pub skipped: usize,
+    pub failed: usize,
+    pub playlists: Vec<PlaylistPlanData>,
+}
+
 /// Result of a `dat.verify` run over a directory: per-verdict counts and one
 /// [`DatMatchData`] per unit in walk order.
 #[derive(Debug, Default, Serialize)]
@@ -487,6 +533,7 @@ pub enum RunRow {
     DatMatch(Box<DatMatchData>),
     DatScan(DatScanRow),
     DatRename(DatRenameRowData),
+    Organize(OrganizeRow),
 }
 
 /// One progress update emitted during a run.
@@ -616,6 +663,9 @@ pub struct RunOptions {
     pub skip_probe: Option<bool>,
     pub media_patch: Option<bool>,
     pub title: Option<String>,
+    pub dat: Option<bool>,
+    pub move_source: Option<bool>,
+    pub playlists: Option<bool>,
 }
 
 /// One Wii U title input: a bare path, or a path with an explicit format

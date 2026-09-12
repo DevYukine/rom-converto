@@ -13,6 +13,7 @@ use super::ops_ms::{
     xbox_convert, xbox_extract, xenon_compress, xenon_convert, xenon_extract, xenon_verify,
 };
 use super::ops_sony::{ps3_decrypt, psp_extract, psp_to_iso, vita_extract};
+use super::organize::organize;
 use super::{RUN_SCHEMA, invalid_arg, is_cancelled_error, planned_verb, record_verb};
 use crate::cso::{CsoCompressOptions, CsoFormat};
 use crate::disc::chd::{ChdCodec, ChdOptions, DiscMode};
@@ -617,6 +618,15 @@ pub(crate) static OPS: &[OpSpec] = &[
         writes_output: false,
         required_bytes: None,
         run: |req, progress, cancel| Box::pin(hash(req, progress, cancel)),
+    },
+    OpSpec {
+        name: "organize",
+        aliases: &[],
+        batch_exts: None,
+        input_exts: None,
+        writes_output: true,
+        required_bytes: None,
+        run: |req, progress, cancel| Box::pin(organize(req, progress, cancel)),
     },
     OpSpec {
         name: "info",

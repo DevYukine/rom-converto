@@ -6,7 +6,7 @@
 //! [`InfoResult`]. Missing metadata degrades to the input basename so a run
 //! never fails just because a token could not be resolved.
 
-use crate::info::InfoResult;
+use crate::info::{DetectedConsole, InfoResult, console_label, retro::RetroDetails};
 use anyhow::{Result, bail};
 use std::path::{Path, PathBuf};
 
@@ -62,7 +62,7 @@ impl TemplateTokens {
                     .as_ref()
                     .and_then(|s| s.region_names.first().cloned())
                     .and_then(non_empty);
-                tokens.console = Some("3DS".to_string());
+                tokens.console = console_label(DetectedConsole::Ctr).map(str::to_string);
                 tokens.serial = non_empty(c.product_code.clone());
             }
             InfoResult::Dol(d) => {
@@ -73,7 +73,7 @@ impl TemplateTokens {
                     .or_else(|| non_empty(d.game_name.clone()));
                 tokens.title_id = non_empty(d.game_id.clone());
                 tokens.region = non_empty(d.region.clone());
-                tokens.console = Some("GameCube".to_string());
+                tokens.console = console_label(DetectedConsole::Dol).map(str::to_string);
                 tokens.serial = non_empty(d.game_id.clone());
             }
             InfoResult::Rvl(r) => {
@@ -90,7 +90,7 @@ impl TemplateTokens {
                     .map(|t| format!("{:016X}", t.title_id))
                     .or_else(|| non_empty(r.game_id.clone()));
                 tokens.region = non_empty(r.region.clone());
-                tokens.console = Some("Wii".to_string());
+                tokens.console = console_label(DetectedConsole::Rvl).map(str::to_string);
                 tokens.serial = non_empty(r.game_id.clone());
             }
             InfoResult::Wup(w) => {
@@ -106,7 +106,7 @@ impl TemplateTokens {
                     .as_ref()
                     .map(|m| m.region_names.join(", "))
                     .and_then(non_empty);
-                tokens.console = Some("WiiU".to_string());
+                tokens.console = console_label(DetectedConsole::Wup).map(str::to_string);
                 tokens.serial = w.meta.as_ref().and_then(|m| m.product_code.clone());
             }
             InfoResult::Nx(n) => {
@@ -119,25 +119,25 @@ impl TemplateTokens {
                     .full
                     .as_ref()
                     .map(|f| format!("{:016X}", f.application_title_id));
-                tokens.console = Some("Switch".to_string());
+                tokens.console = console_label(DetectedConsole::Nx).map(str::to_string);
             }
             InfoResult::Chd(_) => {
-                tokens.console = Some("CHD".to_string());
+                tokens.console = console_label(DetectedConsole::Chd).map(str::to_string);
             }
             InfoResult::Cso(_) => {
-                tokens.console = Some("CSO".to_string());
+                tokens.console = console_label(DetectedConsole::Cso).map(str::to_string);
             }
             InfoResult::Xbox(_) => {
-                tokens.console = Some("Xbox".to_string());
+                tokens.console = console_label(DetectedConsole::Xbox).map(str::to_string);
             }
             InfoResult::Xenon(_) => {
-                tokens.console = Some("Xbox 360".to_string());
+                tokens.console = console_label(DetectedConsole::Xenon).map(str::to_string);
             }
             InfoResult::Ps3(p) => {
                 tokens.title = p.title.clone().and_then(non_empty);
                 tokens.title_id = p.title_id.clone().and_then(non_empty);
                 tokens.region = p.region.clone().and_then(non_empty);
-                tokens.console = Some("PS3".to_string());
+                tokens.console = console_label(DetectedConsole::Ps3).map(str::to_string);
                 tokens.serial = p.title_id.clone().and_then(non_empty);
             }
             InfoResult::Psx(p) => {
@@ -151,11 +151,11 @@ impl TemplateTokens {
             InfoResult::Psp(p) => {
                 tokens.title = p.title.clone().and_then(non_empty);
                 tokens.title_id = p.title_id.clone().and_then(non_empty);
-                tokens.console = Some("PSP".to_string());
+                tokens.console = console_label(DetectedConsole::Psp).map(str::to_string);
                 tokens.serial = p.title_id.clone().and_then(non_empty);
             }
             InfoResult::LaserDisc(_) => {
-                tokens.console = Some("LaserDisc".to_string());
+                tokens.console = console_label(DetectedConsole::LaserDisc).map(str::to_string);
             }
             InfoResult::Ntr(n) => {
                 tokens.title = n
@@ -166,46 +166,99 @@ impl TemplateTokens {
                     .and_then(non_empty)
                     .or_else(|| non_empty(n.game_title.clone()));
                 tokens.title_id = non_empty(n.game_code.clone());
-                tokens.console = Some("NDS".to_string());
+                tokens.console = console_label(DetectedConsole::Ntr).map(str::to_string);
                 tokens.serial = non_empty(n.game_code.clone());
             }
             InfoResult::Pbp(p) => {
                 tokens.title = p.title.clone().and_then(non_empty);
                 tokens.title_id = p.disc_id.clone().and_then(non_empty);
-                tokens.console = Some("PSP".to_string());
+                tokens.console = console_label(DetectedConsole::Pbp).map(str::to_string);
                 tokens.serial = p.disc_id.clone().and_then(non_empty);
             }
             InfoResult::Vpk(v) => {
                 tokens.title = v.title.clone().and_then(non_empty);
                 tokens.title_id = v.title_id.clone().and_then(non_empty);
-                tokens.console = Some("Vita".to_string());
+                tokens.console = console_label(DetectedConsole::Vpk).map(str::to_string);
                 tokens.serial = v.title_id.clone().and_then(non_empty);
             }
             InfoResult::Pkg(p) => {
                 tokens.title = p.title.clone().and_then(non_empty);
                 tokens.title_id = p.title_id.clone().and_then(non_empty);
-                tokens.console = Some("Vita".to_string());
+                tokens.console = console_label(DetectedConsole::Pkg).map(str::to_string);
                 tokens.serial = p.title_id.clone().and_then(non_empty);
             }
             InfoResult::Ps4Pkg(p) => {
                 tokens.title = p.title.clone().and_then(non_empty);
                 tokens.title_id = p.title_id.clone().and_then(non_empty);
-                tokens.console = Some("PS4".to_string());
+                tokens.console = console_label(DetectedConsole::Ps4Pkg).map(str::to_string);
                 tokens.serial = p.title_id.clone().and_then(non_empty);
             }
             InfoResult::Ps5Pkg(p) => {
                 tokens.title = p.title.clone().and_then(non_empty);
                 tokens.title_id = p.title_id.clone().and_then(non_empty);
-                tokens.console = Some("PS5".to_string());
+                tokens.console = console_label(DetectedConsole::Ps5Pkg).map(str::to_string);
                 tokens.serial = p.title_id.clone().and_then(non_empty);
             }
-            // The cartridge systems name themselves per variant, and none of
-            // them is a conversion target, so no tokens are derived.
-            InfoResult::Retro(_) => {}
+            // Cartridge-era and Sega disc systems carry their console label on
+            // the RetroDetails variant, and none of them is a conversion
+            // target, so no other tokens are derived.
+            InfoResult::Retro(r) => {
+                tokens.console = Some(retro_label(&r.details).to_string());
+            }
         }
 
         tokens.title = tokens.title.and_then(|t| non_empty(t.trim().to_string()));
         tokens
+    }
+}
+
+/// The folder label for a cartridge-era or Sega disc system, keyed by the
+/// [`RetroDetails`] variant the header parse produced.
+pub(crate) fn retro_label(details: &RetroDetails) -> &'static str {
+    match details {
+        RetroDetails::Nes(_) => "NES",
+        RetroDetails::Snes(_) => "SNES",
+        RetroDetails::N64(_) => "N64",
+        RetroDetails::GameBoy(_) => "Game Boy",
+        RetroDetails::Gba(_) => "Game Boy Advance",
+        RetroDetails::MegaDrive(_) => "Mega Drive",
+        RetroDetails::MasterSystem(_) => "Master System",
+        RetroDetails::GameGear(_) => "Game Gear",
+        RetroDetails::VirtualBoy(_) => "Virtual Boy",
+        RetroDetails::WonderSwan(_) => "WonderSwan",
+        RetroDetails::NeoGeoPocket(_) => "Neo Geo Pocket",
+        RetroDetails::Lynx(_) => "Lynx",
+        RetroDetails::Atari7800(_) => "Atari 7800",
+        RetroDetails::Sega32x(_) => "32X",
+        RetroDetails::Fds(_) => "Famicom Disk System",
+        RetroDetails::SegaSaturn(_) => "Saturn",
+        RetroDetails::SegaCd(_) => "Sega CD",
+        RetroDetails::Dreamcast(_) => "Dreamcast",
+    }
+}
+
+/// The console label for a cartridge file extension, using the same strings
+/// as [`retro_label`], for callers that only have a file name (a header
+/// parse may be unavailable). `None` for extensions that are not cartridge
+/// formats.
+pub(crate) fn retro_label_for_ext(ext: &str) -> Option<&'static str> {
+    match ext.to_ascii_lowercase().as_str() {
+        "nes" => Some("NES"),
+        "sfc" | "smc" => Some("SNES"),
+        "z64" | "n64" | "v64" => Some("N64"),
+        "gb" | "gbc" => Some("Game Boy"),
+        "gba" => Some("Game Boy Advance"),
+        "md" | "gen" | "smd" => Some("Mega Drive"),
+        "32x" => Some("32X"),
+        "sms" => Some("Master System"),
+        "gg" => Some("Game Gear"),
+        "vb" => Some("Virtual Boy"),
+        "ws" | "wsc" => Some("WonderSwan"),
+        "ngp" | "ngc" => Some("Neo Geo Pocket"),
+        "lnx" => Some("Lynx"),
+        "a78" => Some("Atari 7800"),
+        "fds" => Some("Famicom Disk System"),
+        _ => None,
     }
 }
 
@@ -394,9 +447,11 @@ fn truncate_bytes(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::info::{CtrInfo, DolInfo, InfoResult, NxInfo};
+    use crate::atari::handy::HandyInfo;
+    use crate::info::{CtrInfo, DolInfo, InfoResult, NxInfo, RetroInfo, retro::RetroDetails};
     use crate::nintendo::ctr::info::{CtrSmdhInfo, CtrSmdhTitle};
     use crate::nintendo::nx::info::{NxControl, NxFullInfo, NxNacpTitle};
+    use crate::sega::sms::SmsInfo;
 
     fn tokens(title: Option<&str>) -> TemplateTokens {
         TemplateTokens {
@@ -627,5 +682,57 @@ mod tests {
         assert!(t.serial.is_none());
         assert_eq!(t.ext, "rvz");
         assert_eq!(t.basename, "game");
+    }
+
+    /// A minimal SMS header payload; Master System and Game Gear share it.
+    fn sms_info() -> SmsInfo {
+        SmsInfo {
+            header_offset: 0x1ff0,
+            product_code: 0,
+            version: 0,
+            region_code: 4,
+            region: None,
+            rom_size_code: 0,
+            rom_size_kb: None,
+            checksum: 0,
+            computed_checksum: 0,
+            checksum_valid: false,
+        }
+    }
+
+    #[test]
+    fn retro_console_comes_from_details_variant() {
+        let console_for = |details: RetroDetails| {
+            TemplateTokens::new(
+                Some(&InfoResult::Retro(RetroInfo {
+                    file_size: 0,
+                    details,
+                })),
+                Path::new("game.rom"),
+                "zip",
+            )
+            .console
+        };
+        assert_eq!(
+            console_for(RetroDetails::Lynx(HandyInfo {
+                bank0_page_size: 512,
+                bank1_page_size: 0,
+                version: 1,
+                cart_name: "Chip's Challenge".to_string(),
+                manufacturer: "Atari".to_string(),
+                rotation: 0,
+                rotation_name: None,
+            }))
+            .as_deref(),
+            Some("Lynx")
+        );
+        assert_eq!(
+            console_for(RetroDetails::MasterSystem(sms_info())).as_deref(),
+            Some("Master System")
+        );
+        assert_eq!(
+            console_for(RetroDetails::GameGear(sms_info())).as_deref(),
+            Some("Game Gear")
+        );
     }
 }

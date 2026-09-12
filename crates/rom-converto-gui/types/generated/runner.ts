@@ -191,6 +191,40 @@ export type NcsdVerifyResult = { ncsd_magic_valid: boolean, title_id: string, pa
 export type NxVerifyResult = { kind: string, ok: boolean, ncas: Array<NcaVerdict>, };
 
 /**
+ * Result of an `organize` run: one row per library item.
+ */
+export type OrganizeData = { rows: Array<OrganizeRow>, dry_run: boolean, ok: number, skipped: number, failed: number, playlists: Array<PlaylistPlanData>, };
+
+/**
+ * One library item handled by an `organize` run.
+ */
+export type OrganizeRow = { 
+/**
+ * The unit's primary path: the file, the cue of a set, or the archive.
+ */
+input: string, 
+/**
+ * Planned or written target path.
+ */
+output: string | null, 
+/**
+ * Console folder label the unit was placed under.
+ */
+console: string | null, 
+/**
+ * Child op name ("dol.compress", ...) or "zip" | "copy" | "move" | "skip".
+ */
+action: string, status: "ok" | "skipped" | "failed", 
+/**
+ * True for dry-run rows, which plan without writing.
+ */
+planned: boolean, 
+/**
+ * Skip reason, plan decision text, or error.
+ */
+detail: string | null, input_bytes: number, output_bytes: number, elapsed_ms: number, };
+
+/**
  * What a dry-run planner decided to do with one input, before any file is
  * touched.
  */
@@ -267,13 +301,13 @@ export type RunComparisonData = { comparison: ComparisonData, };
  * Operation-specific payload of a [`RunResponse`], one variant per
  * operation family.
  */
-export type RunData = PlanLine | RunPlansData | FileDigests | Array<HashRow> | RunComparisonData | BasicPlanData | CtrVerifyResult | DolVerifyResult | RvlVerifyResult | NxVerifyResult | WupVerifyResult | XenonVerifyData | XenonConvertData | InfoResult | PlaylistsData | DatMatchData | DatVerifyData | DatScanData | DatRenameData | FixdatPlanData | FixdatWrittenData;
+export type RunData = PlanLine | RunPlansData | FileDigests | Array<HashRow> | RunComparisonData | BasicPlanData | CtrVerifyResult | DolVerifyResult | RvlVerifyResult | NxVerifyResult | WupVerifyResult | XenonVerifyData | XenonConvertData | InfoResult | OrganizeData | PlaylistsData | DatMatchData | DatVerifyData | DatScanData | DatRenameData | FixdatPlanData | FixdatWrittenData;
 
 /**
  * Per-operation options accepted in a [`RunRequest`], validated
  * per-operation by the handler that reads them.
  */
-export type RunOptions = { config: string | null, preset: string | null, on_conflict: string | null, recursive: boolean | null, output_dir: string | null, output_template: string | null, max_depth: number | null, report: string | null, format: string | null, block_size: number | null, hunk_size: number | null, codecs: Array<string> | null, mode: string | null, parent: string | null, full: boolean | null, fix: boolean | null, level: number | null, chunk_size: number | null, skip_verify: boolean | null, deep: boolean | null, deep_verify: boolean | null, algo: string | null, allow_encrypted: boolean | null, content_hashes: boolean | null, trim: boolean | null, compress: boolean | null, cleanup: boolean | null, ensure_ticket_exists: boolean | null, decrypt: boolean | null, output_dir_cia: string | null, keys: string | null, block_size_exp: number | null, key: string | null, extensions: string | null, playlist_mode: string | null, api_base: string | null, input_checksum_min: string | null, input_checksum_max: string | null, inputs: Array<WupTitleInputOption> | null, platform: string | null, dat_id: string | null, dat_name: string | null, subset: string | null, skip_space_check: boolean | null, verify_after: boolean | null, quick: boolean | null, skip_probe: boolean | null, media_patch: boolean | null, title: string | null, };
+export type RunOptions = { config: string | null, preset: string | null, on_conflict: string | null, recursive: boolean | null, output_dir: string | null, output_template: string | null, max_depth: number | null, report: string | null, format: string | null, block_size: number | null, hunk_size: number | null, codecs: Array<string> | null, mode: string | null, parent: string | null, full: boolean | null, fix: boolean | null, level: number | null, chunk_size: number | null, skip_verify: boolean | null, deep: boolean | null, deep_verify: boolean | null, algo: string | null, allow_encrypted: boolean | null, content_hashes: boolean | null, trim: boolean | null, compress: boolean | null, cleanup: boolean | null, ensure_ticket_exists: boolean | null, decrypt: boolean | null, output_dir_cia: string | null, keys: string | null, block_size_exp: number | null, key: string | null, extensions: string | null, playlist_mode: string | null, api_base: string | null, input_checksum_min: string | null, input_checksum_max: string | null, inputs: Array<WupTitleInputOption> | null, platform: string | null, dat_id: string | null, dat_name: string | null, subset: string | null, skip_space_check: boolean | null, verify_after: boolean | null, quick: boolean | null, skip_probe: boolean | null, media_patch: boolean | null, title: string | null, dat: boolean | null, move_source: boolean | null, playlists: boolean | null, };
 
 /**
  * Result of a report-capable command. The message drives the operation log;
@@ -319,7 +353,7 @@ export type RunResponse = { schema: string, ok: boolean, status: number, code: s
  * One row emitted to a live consumer during a run: a finished file's
  * report record, or a dry-run plan line.
  */
-export type RunRow = { "kind": "record" } & ReportRecord | { "kind": "plan" } & PlanLine | { "kind": "hash" } & HashRow | { "kind": "dat_match" } & DatMatchData | { "kind": "dat_scan" } & DatScanRow | { "kind": "dat_rename" } & DatRenameRowData;
+export type RunRow = { "kind": "record" } & ReportRecord | { "kind": "plan" } & PlanLine | { "kind": "hash" } & HashRow | { "kind": "dat_match" } & DatMatchData | { "kind": "dat_scan" } & DatScanRow | { "kind": "dat_rename" } & DatRenameRowData | { "kind": "organize" } & OrganizeRow;
 
 /**
  * Hash-tree verification result for one Wii partition, from the `--full` pass.

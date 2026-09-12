@@ -267,6 +267,32 @@ pub enum DetectedConsole {
     Ps5Pkg,
 }
 
+/// The constant folder label for a detected console, shared by output-path
+/// templating and the `organize` runner's fallback naming so both spell each
+/// system the same way. Returns `None` for [`DetectedConsole::Psx`] and
+/// [`DetectedConsole::Retro`], whose labels depend on parsed metadata.
+pub fn console_label(kind: DetectedConsole) -> Option<&'static str> {
+    match kind {
+        DetectedConsole::Chd => Some("CHD"),
+        DetectedConsole::Cso => Some("CSO"),
+        DetectedConsole::Ctr => Some("3DS"),
+        DetectedConsole::Dol => Some("GameCube"),
+        DetectedConsole::Rvl => Some("Wii"),
+        DetectedConsole::Wup => Some("WiiU"),
+        DetectedConsole::Nx => Some("Switch"),
+        DetectedConsole::Xbox => Some("Xbox"),
+        DetectedConsole::Xenon => Some("Xbox 360"),
+        DetectedConsole::Ps3 => Some("PS3"),
+        DetectedConsole::Psp | DetectedConsole::Pbp => Some("PSP"),
+        DetectedConsole::LaserDisc => Some("LaserDisc"),
+        DetectedConsole::Ntr => Some("NDS"),
+        DetectedConsole::Vpk | DetectedConsole::Pkg => Some("Vita"),
+        DetectedConsole::Ps4Pkg => Some("PS4"),
+        DetectedConsole::Ps5Pkg => Some("PS5"),
+        DetectedConsole::Psx | DetectedConsole::Retro => None,
+    }
+}
+
 /// Detect which console family a path belongs to. Extension first, magic
 /// bytes as a tiebreaker for the disc-image cases where the same extension
 /// (`.iso`) could be GameCube or Wii.

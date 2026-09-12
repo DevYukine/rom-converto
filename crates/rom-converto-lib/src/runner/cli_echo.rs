@@ -98,6 +98,8 @@ const OVERRIDES: &[(&str, Override)] = &[
     ("output_dir_cia", Override::Dropped),
     // The CLI only spells the inverse, --no-media-patch.
     ("media_patch", Override::Dropped),
+    // `organize` spells the move_source option --move.
+    ("move_source", Override::Flag("--move")),
     // RVZ conversions are reached through the Wii/GameCube family.
     ("rvz.compress", Override::Path(&["rvl", "compress"])),
     ("rvz.decompress", Override::Path(&["rvl", "decompress"])),
@@ -161,6 +163,9 @@ const FIELDS: &[(&str, FlagKind)] = &[
     ("skip_probe", FlagKind::Bool),
     ("media_patch", FlagKind::Bool),
     ("title", FlagKind::Value),
+    ("dat", FlagKind::Bool),
+    ("move_source", FlagKind::Bool),
+    ("playlists", FlagKind::Bool),
 ];
 
 /// Non-global option fields each subcommand accepts, keyed by the joined
@@ -481,6 +486,22 @@ const PATH_FLAGS: &[(&str, &[&str])] = &[
     ("nx split", &["keys", "on_conflict", "output_dir"]),
     ("nx verify", &["keys", "max_depth", "recursive"]),
     (
+        "organize",
+        &[
+            "allow_encrypted",
+            "api_base",
+            "dat",
+            "keys",
+            "max_depth",
+            "move_source",
+            "on_conflict",
+            "output_dir",
+            "output_template",
+            "playlists",
+            "report",
+        ],
+    ),
+    (
         "playlist",
         &[
             "extensions",
@@ -573,6 +594,7 @@ const PATH_OUTPUT: &[(&str, OutputKind)] = &[
     ("nx merge", OutputKind::OutputFlag),
     ("nx split", OutputKind::OutputDir),
     ("nx verify", OutputKind::None),
+    ("organize", OutputKind::OutputDir),
     ("playlist", OutputKind::OutputDir),
     ("rvl verify", OutputKind::None),
     ("wup compress", OutputKind::OutputFlag),

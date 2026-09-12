@@ -866,6 +866,62 @@ function datRename(dir: string, dry: boolean): unknown {
 	return { rows, dry_run: dry, renamed: 2, skipped: 2, failed: 0 };
 }
 
+// --- organize samples ---
+
+// One organized library: conversions, a zip, a copy, one skip and one failure
+// so every status chip has something to show. Dry-run rows are `planned` and
+// carry the planner's decision as their detail, as the runner does.
+async function organizeRun(taskId: string, progressKey: string, input: string, dry: boolean): Promise<unknown> {
+	const out = "~/roms/organized";
+	const unit = (
+		input: string,
+		output: string | null,
+		label: string | null,
+		action: string,
+		status: string,
+		detail: string | null,
+	) => ({
+		input,
+		output,
+		console: label,
+		action,
+		status,
+		detail: dry && status === "ok" ? "New" : detail,
+		planned: dry,
+		input_bytes: 734_003_200,
+		output_bytes: status === "ok" ? 366_000_000 : 0,
+		elapsed_ms: 1_250,
+	});
+	const rows = [
+		unit(`${input}/Zelda Four Swords.gcm`, `${out}/GameCube/Zelda Four Swords.rvz`, "GameCube", "dol.compress", "ok", null),
+		unit(`${input}/Panzer Dragoon.cue`, `${out}/Saturn/Panzer Dragoon.chd`, "Saturn", "chd.compress", "ok", null),
+		unit(`${input}/Pokemon Emerald.gba`, `${out}/Game Boy Advance/Pokemon Emerald.zip`, "Game Boy Advance", "zip", "ok", null),
+		unit(`${input}/Sample Game.rvz`, `${out}/GameCube/Sample Game.rvz`, "GameCube", "copy", "ok", null),
+		unit(`${input}/readme.txt`, null, null, "skip", "skipped", "unrecognized"),
+		unit(`${input}/Already In Place.chd`, `${out}/PS1/Already In Place.chd`, "PS1", "copy", "skipped", "already in place"),
+		unit(`${input}/Broken Disc.iso`, null, "PS2", "chd.compress", "failed", "Disc read error"),
+	];
+	await streamRows(taskId, progressKey, rows, (row) => ({ kind: "organize", ...row }));
+	return {
+		rows,
+		dry_run: dry,
+		ok: rows.filter((r) => r.status === "ok").length,
+		skipped: rows.filter((r) => r.status === "skipped").length,
+		failed: rows.filter((r) => r.status === "failed").length,
+		playlists: dry
+			? []
+			: [
+					{
+						base_title: "Panzer Dragoon",
+						output: `${out}/Saturn/Panzer Dragoon.m3u`,
+						contents: "Panzer Dragoon.chd",
+						disc_count: 1,
+						has_duplicate_numbers: false,
+					},
+				],
+	};
+}
+
 // One file's digests, holding only the algorithms the request asked for.
 function hashDigests(algo: string): Record<string, unknown> {
 	const values: Record<string, string> = {
@@ -904,6 +960,9 @@ export const handlers: Record<string, Handler> = {
 		const dir = typeof a.dir === "string" ? a.dir : FAKE_DIR;
 		// A path with an extension is a file, not a directory: no expansion.
 		if (extOf(dir)) return [];
+		// An empty extension list matches nothing, as the Tauri command does,
+		// so folder-input ops (dat, organize) stage the directory itself.
+		if (Array.isArray(a.exts) && a.exts.length === 0) return [];
 		return [`${dir}/a.nsp`, `${dir}/b.nsp`, `${dir}/c.nsp`];
 	},
 	cmd_cancel: async (a) => {
@@ -938,6 +997,11 @@ async function runRun(a: Record<string, unknown>): Promise<unknown> {
 		}
 		await fakeProgress(taskId, progressKey, 600);
 		return { ...runOutcome(), comparison: null, data: datRename(input, req.dry_run !== false) };
+	}
+	if (op === "organize") {
+		maybeFail(flat);
+		const input = String(req.input ?? FAKE_LIB);
+		return { ...runOutcome(), comparison: null, data: await organizeRun(taskId, progressKey, input, req.dry_run === true) };
 	}
 	if (op.endsWith(".verify")) {
 		maybeFail(flat);

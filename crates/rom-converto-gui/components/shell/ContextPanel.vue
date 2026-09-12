@@ -22,6 +22,7 @@ const TITLES: Record<string, string> = {
 	decrypt: "Decrypt",
 	encrypt: "Encrypt",
 	convert: "Convert",
+	organize: "Organize",
 	dat: "DAT",
 	tools: "Tools",
 };
@@ -33,6 +34,7 @@ const SUBTITLES: Record<string, string> = {
 	decrypt: "Remove encryption for emulator use.",
 	encrypt: "Re-encrypts decrypted ROMs.",
 	convert: "Change container or format.",
+	organize: "Sort a library into per-console folders in one pass.",
 	dat: "Match against the Playmatch DAT database.",
 	tools: "Utilities that don't convert.",
 };
@@ -90,6 +92,7 @@ const CONSOLES: Record<string, ConsoleRow[]> = {
 		{ id: "psp", name: "PSP", hint: "PBP → ISO" },
 		{ id: "xenon", name: "Xbox 360", hint: "ISO → GoD" },
 	],
+	organize: [{ id: "library", name: "Library", hint: "" }],
 	dat: [
 		{ id: "scan", name: "Scan", hint: "" },
 		{ id: "verify", name: "Verify", hint: "" },

@@ -55,15 +55,20 @@ export type NxDefaults = {
 level?: number | null, mode?: string | null, block_size_exp?: number | null, on_conflict?: string | null, output_dir?: string | null, report?: string | null, };
 
 /**
+ * Config defaults for the `organize` library-organizing run.
+ */
+export type OrganizeDefaults = { output_dir?: string | null, output_template?: string | null, on_conflict?: string | null, report?: string | null, dat?: boolean | null, move_source?: boolean | null, playlists?: boolean | null, };
+
+/**
  * A named bundle of per-format defaults that fully replaces the matching
  * top-level defaults when applied.
  */
-export type Preset = { dol?: DiscDefaults | null, rvl?: DiscDefaults | null, nx?: NxDefaults | null, chd?: ChdDefaults | null, cso?: CsoDefaults | null, wup?: WupDefaults | null, dat?: DatDefaults | null, };
+export type Preset = { dol?: DiscDefaults | null, rvl?: DiscDefaults | null, nx?: NxDefaults | null, chd?: ChdDefaults | null, cso?: CsoDefaults | null, wup?: WupDefaults | null, dat?: DatDefaults | null, organize?: OrganizeDefaults | null, };
 
 /**
  * Top-level `rom-converto.toml` structure: per-format defaults plus named presets.
  */
-export type UserConfig = { dol?: DiscDefaults | null, rvl?: DiscDefaults | null, nx?: NxDefaults | null, chd?: ChdDefaults | null, cso?: CsoDefaults | null, wup?: WupDefaults | null, dat?: DatDefaults | null, presets: { [key in string]: Preset }, };
+export type UserConfig = { dol?: DiscDefaults | null, rvl?: DiscDefaults | null, nx?: NxDefaults | null, chd?: ChdDefaults | null, cso?: CsoDefaults | null, wup?: WupDefaults | null, dat?: DatDefaults | null, organize?: OrganizeDefaults | null, presets: { [key in string]: Preset }, };
 
 /**
  * Config defaults for Wii U (`wup`) package conversion.

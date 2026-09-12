@@ -26,9 +26,11 @@ pub mod tally;
 pub mod template;
 pub mod verify;
 pub mod worker_pool;
+pub mod zip_write;
 
 pub use archive::{
-    ArchiveMember, ResolvedInput, is_archive_path, list_members, output_basis, resolve_input,
+    ArchiveMember, NoMatchingMember, ResolvedInput, is_archive_path, list_members, output_basis,
+    resolve_input,
 };
 pub use conflict::{ConflictPolicy, ConflictResolution, OutputExists, resolve_conflict};
 pub use footgun::{
@@ -49,6 +51,7 @@ pub use report::{
 pub use tally::{FileEntry, FileStatus, Tally, TallyDirection, format_bytes};
 pub use template::{TemplateTokens, apply_template};
 pub use verify::{OutputVerify, VerifyOutcome, verify_existing_cached, verify_existing_output};
+pub use zip_write::write_zip;
 
 pub const BYTES_PER_MB: f64 = 1_000_000.0;
 

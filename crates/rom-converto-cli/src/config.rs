@@ -1,6 +1,6 @@
 use rom_converto_lib::config::{
-    ChdDefaults, CsoDefaults, DatDefaults, DiscDefaults, MergeOver, NxDefaults, Preset, UserConfig,
-    WupDefaults,
+    ChdDefaults, CsoDefaults, DatDefaults, DiscDefaults, MergeOver, NxDefaults, OrganizeDefaults,
+    Preset, UserConfig, WupDefaults,
 };
 use rom_converto_lib::util::ConflictPolicy;
 
@@ -17,6 +17,7 @@ pub struct Effective {
     pub cso: CsoDefaults,
     pub wup: WupDefaults,
     pub dat: DatDefaults,
+    pub organize: OrganizeDefaults,
 }
 
 pub fn resolve(cfg: &UserConfig, preset: Option<&Preset>) -> Effective {
@@ -28,6 +29,10 @@ pub fn resolve(cfg: &UserConfig, preset: Option<&Preset>) -> Effective {
         cso: CsoDefaults::merge_layers(preset.and_then(|p| p.cso.as_ref()), cfg.cso.as_ref()),
         wup: WupDefaults::merge_layers(preset.and_then(|p| p.wup.as_ref()), cfg.wup.as_ref()),
         dat: DatDefaults::merge_layers(preset.and_then(|p| p.dat.as_ref()), cfg.dat.as_ref()),
+        organize: OrganizeDefaults::merge_layers(
+            preset.and_then(|p| p.organize.as_ref()),
+            cfg.organize.as_ref(),
+        ),
     }
 }
 

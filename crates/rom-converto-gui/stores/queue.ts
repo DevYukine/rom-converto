@@ -17,6 +17,7 @@ export type ResultKind =
 	| "datScan"
 	| "datVerify"
 	| "datRename"
+	| "organize"
 	| "text";
 
 export interface QueueJob {

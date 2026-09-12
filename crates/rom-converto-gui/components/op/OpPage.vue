@@ -20,8 +20,9 @@ import ActionRow from "~/components/op/ActionRow.vue";
 import VerifyResultsCard from "~/components/op/VerifyResultsCard.vue";
 import HashResultsCard from "~/components/op/HashResultsCard.vue";
 import DatScanView from "~/components/op/DatScanView.vue";
-import DatVerifyView from "~/components/op/DatVerifyView.vue";
 import DatRenameView from "~/components/op/DatRenameView.vue";
+import DatVerifyView from "~/components/op/DatVerifyView.vue";
+import OrganizeView from "~/components/op/OrganizeView.vue";
 import { opCommand, opProgressKey } from "~/lib/opdefs/types";
 import type { FieldDef, OpDef, OutputRow, StagedItem } from "~/lib/opdefs/types";
 
@@ -277,6 +278,7 @@ function copied() {
 		<DatScanView v-else-if="def.resultKind === 'datScan'" :def="def" />
 		<DatVerifyView v-else-if="def.resultKind === 'datVerify'" :def="def" />
 		<DatRenameView v-else-if="def.resultKind === 'datRename'" :def="def" />
+		<OrganizeView v-else-if="def.resultKind === 'organize'" :def="def" />
 
 		<DirectoryPickerModal
 			v-if="dirRow"

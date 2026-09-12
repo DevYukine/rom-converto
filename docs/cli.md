@@ -27,6 +27,7 @@ Use `rom-converto --help`, `rom-converto <command> --help`, or
 | `info` | Auto-detect the console and inspect any supported ROM or disc image |
 | `capabilities` | Print the supported operations and info extensions as JSON |
 | `dat` | Identify, verify, and rename ROMs against the Playmatch database |
+| `organize` | Sort a ROM library into per-console folders and convert each file to its best format |
 | `hash` | Compute CRC32, SHA-1, MD5, and SHA-256 digests |
 | `playlist` | Generate `.m3u` files for multi-disc sets |
 | `shell-completions` | Print a tab-completion script for your shell |
@@ -821,6 +822,81 @@ is rejected at startup instead of silently skipping the digest.
 the run with each candidate listed. `--api-base` points every subcommand at a different
 Playmatch instance and defaults to the public one at
 `https://playmatch.retrorealm.dev/api/v2`.
+
+## organize
+
+```sh
+rom-converto organize <INPUT> --output-dir <DIR> [--output-template <TEMPLATE>] [--dat]
+rom-converto organize <INPUT> --output-dir <DIR> [--move] [--playlists] [--max-depth N]
+rom-converto organize <INPUT> --output-dir <DIR> [--on-conflict POLICY | -f] [--report FILE]
+rom-converto organize <INPUT> --output-dir <DIR> [--keys FILE] [--allow-encrypted] [--api-base URL]
+```
+
+Scans the INPUT library folder and sorts every recognized file into a per-console
+folder under `--output-dir`, converting each file to the best archival format for
+its console. A `.cue` file and the `.bin` tracks it lists are one item, and zip,
+7z, tar, and rar archives are read transparently: the image inside is converted,
+while the archive itself is what the row reports. Detection needs the member, so
+a dry run extracts each archive to the temp directory just like the real run.
+Files whose console or target cannot be determined, including archives without a
+recognizable member, are skipped, so one odd file never fails the run.
+
+| Flag | Description |
+|---|---|
+| `--output-dir <DIR>` | Root of the organized library. Required unless the config file or a preset supplies `organize.output_dir` |
+| `--output-template <TEMPLATE>` | Layout inside `--output-dir`, with the same tokens as `--output-template` elsewhere. Defaults to `{console}/{basename}.{ext}` |
+| `--dat` | Rename files to their No-Intro/Redump names using the Playmatch DAT service (online) |
+| `--move` | Delete each source after it was organized successfully. Sources of skipped or failed files are never deleted |
+| `--playlists` | Write `.m3u` playlists for multi-disc sets in the output folders. Real runs only; a dry run reports none |
+| `--max-depth <N>` | Limit the library scan depth. `1` = top level only. Omit for unlimited |
+| `--on-conflict <POLICY>`, `-f` | What to do when an output already exists. See [Conflict policy](#conflict-policy) |
+| `--report <FILE>` | Write a run report. See [Run reports](#run-reports) |
+| `--keys <FILE>` | Path to `prod.keys`, needed to compress Switch NSP/XCI to NSZ/XCZ. Same lookup order as `nx compress` |
+| `--allow-encrypted` | Compress an encrypted ROM anyway, even though it barely compresses. Applies to the 3DS targets |
+| `--api-base <URL>` | Playmatch API base URL for this run. Defaults to the public instance |
+
+Per-console targets:
+
+| Console | Target |
+|---|---|
+| GameCube, Wii | RVZ |
+| Nintendo 3DS | Z3DS (`.zcci`, `.zcia`, ...); encrypted ROMs are refused unless `--allow-encrypted` |
+| Switch | NSZ / XCZ; needs `prod.keys` |
+| Wii U | WUA |
+| PS1, PS2, Saturn, Sega CD, LaserDisc | CHD |
+| PSP | CSO |
+| Xbox (full disc image) | XISO (the game partition) |
+| Xbox 360 disc | ZAR |
+| PS3 (encrypted ISO) | decrypted ISO; the disc key comes from the embedded key database or a sibling `.dkey` of the source |
+| CHD v1-v4 | CHD v5 |
+| Cartridge ROMs, Nintendo DS | ZIP |
+| already in its target format | copied unchanged |
+| anything unrecognized | skipped |
+
+Each output lands under a folder named for the detected console (`GameCube`, `Wii`,
+`WiiU`, `Switch`, `3DS`, `NDS`, `PSP`, `PS1`, `PS2`, `PS3`, `Xbox`, `Xbox 360`,
+`LaserDisc`, `Vita`, and classic names such as `NES`, `SNES`, `Saturn`, or
+`Dreamcast`), which is what the default `{console}/{basename}.{ext}` template puts
+into the path. A CHD or CSO/ZSO input carries no console of its own, so it is filed
+under `CHD` or `CSO` unless a `--dat` match supplies the platform name; a file whose
+console cannot be identified at all lands at the output root with a warning. The
+`{basename}` token becomes the DAT canonical name when `--dat`
+renames a file. A file already in its target format is copied as-is, so re-running
+`organize` on an organized library only fills the gaps.
+
+With `--dat`, every file is hashed and matched against the Playmatch database. A
+hash-verified match renames the file to its canonical database name; everything
+else keeps its own name. Match failures degrade to keep-name with a warning. A dry
+run still hashes every file and queries the API, so previewing with `--dat` costs
+the same lookups as the real run. With `--move`, the sources of a successfully
+organized item (every `.bin` and the `.cue` of a set) are deleted only after the
+output is in place — never for skipped or failed files.
+
+Example:
+
+```sh
+rom-converto organize ./library --output-dir ./sorted --dry-run
+```
 
 ## hash
 

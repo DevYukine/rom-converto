@@ -325,6 +325,13 @@ fn cue_referenced_basenames(cue_path: &Path) -> Vec<String> {
         .collect()
 }
 
+/// An archive holds no member with one of the extensions a caller accepts.
+/// Carried in the error chain so a library scan can treat such an archive
+/// as unrecognized rather than as a read failure.
+#[derive(Debug, thiserror::Error)]
+#[error("archive contains no matching image")]
+pub struct NoMatchingMember;
+
 /// The member [`resolve_input`] extracts for `exts`: the first match by
 /// sorted name. `warn` logs the ambiguity when several qualify; the
 /// listing-only probe leaves that to the extraction that follows it.
@@ -339,11 +346,11 @@ fn pick_member<'a>(
         .filter(|m| name_has_ext(&m.name, exts))
         .collect();
     match matches.as_slice() {
-        [] => bail!(
+        [] => Err(anyhow::Error::new(NoMatchingMember).context(format!(
             "archive {} contains no matching image ({:?})",
             path.display(),
             exts
-        ),
+        ))),
         [first, rest @ ..] => {
             if warn && !rest.is_empty() {
                 log::warn!(

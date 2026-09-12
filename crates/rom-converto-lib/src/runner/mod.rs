@@ -19,6 +19,7 @@ pub(crate) mod ops;
 mod ops_misc;
 mod ops_ms;
 mod ops_sony;
+mod organize;
 
 /// Request, response, and progress-event types for [`run_json`] and friends.
 pub mod models;

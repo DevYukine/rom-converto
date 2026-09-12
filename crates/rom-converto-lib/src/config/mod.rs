@@ -28,6 +28,7 @@ pub struct UserConfig {
     pub cso: Option<CsoDefaults>,
     pub wup: Option<WupDefaults>,
     pub dat: Option<DatDefaults>,
+    pub organize: Option<OrganizeDefaults>,
     #[serde(default)]
     pub presets: HashMap<String, Preset>,
 }
@@ -116,6 +117,21 @@ pub struct DatDefaults {
     pub input_checksum_max: Option<String>,
 }
 
+/// Config defaults for the `organize` library-organizing run.
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "config.ts", optional_fields = nullable))]
+pub struct OrganizeDefaults {
+    pub output_dir: Option<PathBuf>,
+    pub output_template: Option<String>,
+    pub on_conflict: Option<String>,
+    pub report: Option<PathBuf>,
+    pub dat: Option<bool>,
+    pub move_source: Option<bool>,
+    pub playlists: Option<bool>,
+}
+
 /// Field-wise merge of two config layers: preset over config file, or
 /// config file over nothing.
 pub trait MergeOver: Sized + Clone + Default {
@@ -176,6 +192,15 @@ impl_merge_over!(DatDefaults {
     input_checksum_min,
     input_checksum_max
 });
+impl_merge_over!(OrganizeDefaults {
+    output_dir,
+    output_template,
+    on_conflict,
+    report,
+    dat,
+    move_source,
+    playlists
+});
 
 /// A named bundle of per-format defaults that fully replaces the matching
 /// top-level defaults when applied.
@@ -191,6 +216,7 @@ pub struct Preset {
     pub cso: Option<CsoDefaults>,
     pub wup: Option<WupDefaults>,
     pub dat: Option<DatDefaults>,
+    pub organize: Option<OrganizeDefaults>,
 }
 
 /// Ordered list of paths to probe for a config file. An explicit path
@@ -302,6 +328,7 @@ fn resolve_paths(cfg: &mut UserConfig, base: &Path) {
     resolve_chd(cfg.chd.as_mut(), base);
     resolve_cso(cfg.cso.as_mut(), base);
     resolve_dat(cfg.dat.as_mut(), base);
+    resolve_organize(cfg.organize.as_mut(), base);
     for preset in cfg.presets.values_mut() {
         resolve_disc(preset.dol.as_mut(), base);
         resolve_disc(preset.rvl.as_mut(), base);
@@ -309,6 +336,7 @@ fn resolve_paths(cfg: &mut UserConfig, base: &Path) {
         resolve_chd(preset.chd.as_mut(), base);
         resolve_cso(preset.cso.as_mut(), base);
         resolve_dat(preset.dat.as_mut(), base);
+        resolve_organize(preset.organize.as_mut(), base);
     }
 }
 
@@ -351,6 +379,13 @@ fn resolve_cso(d: Option<&mut CsoDefaults>, base: &Path) {
 
 fn resolve_dat(d: Option<&mut DatDefaults>, base: &Path) {
     if let Some(d) = d {
+        resolve_relative(base, &mut d.report);
+    }
+}
+
+fn resolve_organize(d: Option<&mut OrganizeDefaults>, base: &Path) {
+    if let Some(d) = d {
+        resolve_relative(base, &mut d.output_dir);
         resolve_relative(base, &mut d.report);
     }
 }

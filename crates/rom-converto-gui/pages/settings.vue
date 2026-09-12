@@ -42,6 +42,7 @@ const FORMAT_LABELS: Record<PresetFormat, string> = {
 	cso: "CSO/ZSO",
 	wup: "Wii U (wup)",
 	dat: "DAT",
+	organize: "Organize",
 };
 
 const presetNames = computed(() => Object.keys(store.presets).sort());

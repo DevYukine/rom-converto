@@ -55,6 +55,24 @@ GUI conflict handling supports Rename; Overwrite if invalid skips existing outpu
 because GoD has no integrity probe. Folder scanning creates separate queue jobs,
 not a recursive `xenon convert` command.
 
+### Organize a library
+
+Under **Organize**, drop a library folder and pick a required output directory.
+Every file is detected, optionally renamed through the online Playmatch
+database, filed under `<output>/<console>/` following the layout template
+(default `{console}/{basename}.{ext}`, tokens `{console} {title} {titleId}
+{region} {serial} {basename} {ext}`), and converted to the best archival
+format for its console: GameCube and Wii compress to RVZ, 3DS to Z3DS, Switch
+to NSZ/XCZ (requires `prod.keys`), Wii U to WUA, PS1, PS2, Saturn, Sega CD and
+LaserDisc to CHD, PSP to CSO, Xbox to XISO, Xbox 360 to ZAR, PS3 to a
+decrypted ISO, and cartridge ROMs including DS to ZIP. Everything else is
+copied unchanged.
+
+`Rename with DAT` hashes every file and queries the Playmatch API — including
+during a dry run. `.m3u` playlists for multi-disc sets are written on real
+runs only, never during a dry run. Move deletes each source only after its
+organized copy was written successfully.
+
 ## Output and safety controls
 
 Switch split and GoD conversion overwrite multiple files directly. Use a separate
@@ -67,7 +85,9 @@ verifies supported outputs before choosing whether to retain or replace them.
 Most write pages provide Preview. It uses the same planning logic as CLI
 `--dry-run` and writes no conversion output. Archive previews may extract a file into a temporary directory, which is cleaned up afterward. The app also checks available space before a
 write, using the input size plus 256 MiB as a conservative floor. A page option
-can skip that check.
+can skip that check. Organize's Move option deletes source files only after
+their organized copies were written successfully; skipped or failed files keep
+their sources.
 
 Cancel stops current work and removes its partial output. Completed files remain
 completed. Batch completion can send an OS notification and update the taskbar or

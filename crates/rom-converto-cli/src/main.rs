@@ -191,6 +191,7 @@ async fn dispatch_command(command: Commands, ctx: DispatchCtx<'_>) -> Result<()>
         Commands::Cso(inner) => c::cso::run(inner, ctx).await,
         Commands::Cue(inner) => c::cue::run(inner, ctx).await,
         Commands::Dat(inner) => c::dat::run(inner, ctx).await,
+        Commands::Organize(cmd) => c::organize::run(cmd, ctx).await,
         Commands::Capabilities(cmd) => c::misc::run(cmd).await,
         Commands::Hash(cmd) => c::hash::run(cmd, ctx).await,
         Commands::Info(cmd) => c::info_command::run(cmd, ctx).await,

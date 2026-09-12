@@ -50,6 +50,11 @@ pub(crate) fn apply_config_defaults(mut req: RunRequest) -> Result<RunRequest> {
             preset.as_ref().and_then(|p| p.dat.as_ref()),
             config.dat.as_ref(),
         ),
+        _ if operation == "organize" => apply_organize_defaults(
+            &mut req.options,
+            preset.as_ref().and_then(|p| p.organize.as_ref()),
+            config.organize.as_ref(),
+        ),
         _ => {}
     }
     Ok(req)
@@ -129,6 +134,21 @@ pub(crate) fn apply_dat_defaults(
     fill(&mut options.report, defaults.report);
     fill(&mut options.input_checksum_min, defaults.input_checksum_min);
     fill(&mut options.input_checksum_max, defaults.input_checksum_max);
+}
+
+pub(crate) fn apply_organize_defaults(
+    options: &mut RunOptions,
+    top: Option<&crate::config::OrganizeDefaults>,
+    base: Option<&crate::config::OrganizeDefaults>,
+) {
+    let defaults = crate::config::OrganizeDefaults::merge_layers(top, base);
+    fill(&mut options.output_dir, defaults.output_dir);
+    fill(&mut options.output_template, defaults.output_template);
+    fill(&mut options.on_conflict, defaults.on_conflict);
+    fill(&mut options.report, defaults.report);
+    fill(&mut options.dat, defaults.dat);
+    fill(&mut options.move_source, defaults.move_source);
+    fill(&mut options.playlists, defaults.playlists);
 }
 
 pub(crate) fn fill<T>(slot: &mut Option<T>, value: Option<T>) {

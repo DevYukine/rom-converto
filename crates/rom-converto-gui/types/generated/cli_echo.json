@@ -185,6 +185,9 @@
       "nx",
       "verify"
     ],
+    "organize": [
+      "organize"
+    ],
     "playlist": [
       "playlist"
     ],
@@ -332,6 +335,11 @@
       "global": false,
       "kind": "bool"
     },
+    "dat": {
+      "flag": "--dat",
+      "global": false,
+      "kind": "bool"
+    },
     "dat_id": {
       "flag": "--dat-id",
       "global": false,
@@ -432,6 +440,11 @@
       "global": false,
       "kind": "value"
     },
+    "move_source": {
+      "flag": "--move",
+      "global": false,
+      "kind": "bool"
+    },
     "on_conflict": {
       "flag": "--on-conflict",
       "global": false,
@@ -461,6 +474,11 @@
       "flag": "--playlist-mode",
       "global": false,
       "kind": "value"
+    },
+    "playlists": {
+      "flag": "--playlists",
+      "global": false,
+      "kind": "bool"
     },
     "preset": {
       "flag": "--preset",
@@ -858,6 +876,19 @@
       "max_depth",
       "recursive"
     ],
+    "organize": [
+      "allow_encrypted",
+      "api_base",
+      "dat",
+      "keys",
+      "max_depth",
+      "move_source",
+      "on_conflict",
+      "output_dir",
+      "output_template",
+      "playlists",
+      "report"
+    ],
     "playlist": [
       "extensions",
       "max_depth",
@@ -1023,6 +1054,7 @@
     "nx.merge": "output_flag",
     "nx.split": "output_dir",
     "nx.verify": "none",
+    "organize": "output_dir",
     "playlist": "output_dir",
     "playlist.write": "output_dir",
     "ps3.decrypt": "positional",

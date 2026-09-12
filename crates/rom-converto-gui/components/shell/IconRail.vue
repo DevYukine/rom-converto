@@ -18,6 +18,7 @@ const NAV: { op: string; label: string; icon: string }[] = [
 	{ op: "decrypt", label: "Decrypt", icon: "M4 12a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2zM13 10V7a4 4 0 0 1 8 0v3" },
 	{ op: "encrypt", label: "Encrypt", icon: "M5 12a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2zM8 10V7a4 4 0 0 1 8 0v3M12 14.4a1.1 1.1 0 1 0 0 2.2 1.1 1.1 0 0 0 0-2.2" },
 	{ op: "convert", label: "Convert", icon: "M17 2l4 4-4 4M3 11v-1a4 4 0 0 1 4-4h14M7 22l-4-4 4-4M21 13v1a4 4 0 0 1-4 4H3" },
+	{ op: "organize", label: "Organize", icon: "M3 7V5a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM10 13h7M13.5 9.5L17 13l-3.5 3.5" },
 	{ op: "inspect", label: "Inspect", icon: "M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14M21 21l-4.35-4.35" },
 	{ op: "dat", label: "DAT", icon: "M4 5c0-1.66 3.58-3 8-3s8 1.34 8 3-3.58 3-8 3-8-1.34-8-3M4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3" },
 	{ op: "tools", label: "Tools", icon: "M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1.5 14h5M9.5 12h5M17.5 16h5" },
@@ -35,6 +36,7 @@ const DEFAULT_CONSOLE: Record<string, string> = {
 	decrypt: "ctr",
 	encrypt: "ctr",
 	convert: "ctr",
+	organize: "library",
 	dat: "scan",
 	tools: "playlist",
 };

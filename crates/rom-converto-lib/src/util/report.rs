@@ -129,7 +129,7 @@ fn status_str(status: FileStatus) -> &'static str {
     }
 }
 
-fn ser_status<S: Serializer>(status: &FileStatus, s: S) -> Result<S::Ok, S::Error> {
+pub(crate) fn ser_status<S: Serializer>(status: &FileStatus, s: S) -> Result<S::Ok, S::Error> {
     s.serialize_str(status_str(*status))
 }
 
