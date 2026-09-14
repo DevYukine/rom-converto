@@ -14,7 +14,7 @@ use crate::disc::chd::models::{
 };
 use crate::disc::chd::writer::metadata::{
     MetadataBlock, MetadataHash, cd_frame_layout, copy_metadata, generate_cd_metadata,
-    generate_dvd_metadata, generate_ld_metadata, ld_vbi_bytes,
+    generate_dvd_metadata, generate_ld_metadata, ld_vbi_bytes, track_frames,
 };
 use crate::disc::chd::writer::worker::{
     ChdLdCompressWorker, HunkCompressArgs, HunkWriteState, LdCompressArgs, compress_hunks,
@@ -66,22 +66,30 @@ pub struct ChdWriter {
 }
 
 impl ChdWriter {
-    /// `data_sectors` is the real frame count the CHT2 `FRAMES:`
-    /// metadata records; the physical stream pads every track to a
-    /// 4-frame boundary like chdman, so the logical size can exceed
-    /// `data_sectors * FRAME_SIZE`.
+    /// `file_sectors` is the unpadded sector count of every cue FILE in
+    /// order, one entry per `cue_sheet.files` element; the CHT2
+    /// `FRAMES:` metadata splits them per track and the physical stream
+    /// pads every track to a 4-frame boundary like chdman, so the
+    /// logical size can exceed the source frame count times
+    /// `FRAME_SIZE`.
     pub fn create(
         output_path: impl AsRef<Path>,
-        data_sectors: u32,
+        file_sectors: &[u32],
         hunk_size: u32,
         cue_sheet: &CueSheet,
         codecs: Vec<ChdCodec>,
         level: Option<i32>,
     ) -> ChdResult<Self> {
+        assert_eq!(
+            file_sectors.len(),
+            cue_sheet.files.len(),
+            "one sector count per cue FILE"
+        );
+        let frames = track_frames(cue_sheet, file_sectors)?;
         let file = std::fs::File::create(output_path)?;
         let writer = BufWriter::with_capacity(IO_BUFFER_SIZE, file);
 
-        let (cd_frame_data, cd_audio_frames) = cd_frame_layout(cue_sheet, data_sectors);
+        let (cd_frame_data, cd_audio_frames) = cd_frame_layout(cue_sheet, &frames);
         let logical_bytes = cd_frame_data.len() as u64 * FRAME_SIZE as u64;
         let unit_bytes = FRAME_SIZE as u32;
         if !hunk_size.is_multiple_of(unit_bytes) {
@@ -106,7 +114,7 @@ impl ChdWriter {
             parent_sha1: [0; SHA1_BYTES],
         };
 
-        let metadata = generate_cd_metadata(cue_sheet, data_sectors)?;
+        let metadata = generate_cd_metadata(cue_sheet, &frames)?;
         Self::init(
             writer,
             header,

@@ -55,6 +55,23 @@ pub enum ChdError {
     )]
     UnsupportedCueTrackWidth { cue_type: &'static str },
 
+    /// A cue FILE that is not `BINARY`; WAVE/MP3/AIFF tracks carry
+    /// container headers rather than raw sectors.
+    #[error("cue FILE {filename} is not BINARY; only raw bin tracks can be compressed to CHD")]
+    UnsupportedCueFileType { filename: String },
+
+    /// A cue track whose INDEX boundaries leave it no frames.
+    #[error("cue track {track} has no frames; check its INDEX lines")]
+    EmptyCueTrack { track: u8 },
+
+    /// A cue track without an INDEX 01 line, which every track needs.
+    #[error("cue track {track} has no INDEX 01 line")]
+    CueTrackMissingIndex01 { track: u8 },
+
+    /// The CUE sheet has FILE entries but no TRACK.
+    #[error("no tracks are defined in the CUE sheet")]
+    NoTrackInCueSheet,
+
     /// Compressing a CHD map hunk failed.
     #[error("CHD map compression failed")]
     MapCompressionError,

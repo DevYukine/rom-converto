@@ -13,6 +13,7 @@ use crate::util::{
     run_scratch_write,
 };
 use log::{debug, info, warn};
+use std::io::Read;
 use std::path::PathBuf;
 use tokio::fs;
 use tokio::io::AsyncReadExt;
@@ -176,7 +177,7 @@ pub async fn convert_iso_to_cd_chd(
 
             let mut writer = ChdWriter::create(
                 &write_path,
-                data_sectors,
+                &[data_sectors],
                 CD_HUNK_BYTES,
                 &cue_sheet,
                 codecs,
@@ -287,11 +288,43 @@ async fn dreamcast_head_bytes(bin_path: &std::path::Path) -> Vec<u8> {
     }
 }
 
+/// The cue's bin files read back to back in FILE order, each cut at
+/// its whole-sector length, so the writer's frame walk sees the one
+/// continuous sector stream chdman's `chd_cd_compressor` synthesizes.
+struct BinChain {
+    pending: std::vec::IntoIter<(PathBuf, u64)>,
+    current: Option<std::io::Take<std::io::BufReader<std::fs::File>>>,
+}
+
+impl Read for BinChain {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        loop {
+            if let Some(reader) = &mut self.current {
+                let n = reader.read(buf)?;
+                if n > 0 || buf.is_empty() {
+                    return Ok(n);
+                }
+                self.current = None;
+            }
+            let Some((path, bytes)) = self.pending.next() else {
+                return Ok(0);
+            };
+            let file = std::fs::File::open(&path)?;
+            self.current =
+                Some(std::io::BufReader::with_capacity(IO_BUFFER_SIZE, file).take(bytes));
+        }
+    }
+}
+
 /// Compresses a CUE/BIN CD image into a V5 CHD file at `output_path`.
+/// Every FILE the cue references is ingested in order, so both a
+/// single-bin image and a Redump-style one-bin-per-track set produce
+/// the same CHD `chdman createcd` would.
 ///
 /// # Errors
 /// Returns [`ChdError::ChdFileAlreadyExists`] if the output exists and
-/// `opts.force` is unset.
+/// `opts.force` is unset, and [`ChdError::UnsupportedCueFileType`] if
+/// a FILE is not `BINARY`.
 pub async fn convert_to_chd(
     progress: &dyn ProgressReporter,
     cue_path: PathBuf,
@@ -308,21 +341,24 @@ pub async fn convert_to_chd(
     let parser = CueParser::new(&cue_path);
     let cue_sheet = parser.parse().await?;
 
-    let bin_path = if cue_sheet.files.is_empty() {
+    if cue_sheet.files.is_empty() {
         return Err(ChdError::NoFileReferencedInCueSheet);
-    } else {
-        let cue_dir = cue_path.parent().unwrap_or(std::path::Path::new("."));
-        cue_dir.join(&cue_sheet.files[0].filename)
-    };
-
-    if matches!(cue_sheet.files[0].file_type, FileType::Binary)
-        && dreamcast_boot_signature(&dreamcast_head_bytes(&bin_path).await)
-    {
-        progress.warn(DREAMCAST_CHD_WARNING);
     }
-
-    // The single-bin ingest reads uniform 2352-byte raw sectors; any
-    // other track width would silently produce a corrupt CHD.
+    if cue_sheet.tracks.is_empty() {
+        return Err(ChdError::NoTrackInCueSheet);
+    }
+    // WAVE/MP3/AIFF carry container headers, not raw sectors.
+    if let Some(file) = cue_sheet
+        .files
+        .iter()
+        .find(|file| !matches!(file.file_type, FileType::Binary))
+    {
+        return Err(ChdError::UnsupportedCueFileType {
+            filename: file.filename.clone(),
+        });
+    }
+    // The ingest reads uniform 2352-byte raw sectors; any other track
+    // width would silently produce a corrupt CHD.
     if let Some(track) = cue_sheet
         .tracks
         .iter()
@@ -333,23 +369,38 @@ pub async fn convert_to_chd(
         });
     }
 
-    debug!("Opening BIN file: {:?}", bin_path);
-    let bin_size = fs::metadata(&bin_path).await?.len();
-    let total_sectors: u32 = (bin_size / SECTOR_SIZE as u64)
-        .try_into()
-        .map_err(|_| ChdError::InvalidHunkSize)?;
+    let cue_dir = cue_path.parent().unwrap_or(std::path::Path::new("."));
+    let mut bins = Vec::with_capacity(cue_sheet.files.len());
+    let mut file_sectors = Vec::with_capacity(cue_sheet.files.len());
+    for (idx, file) in cue_sheet.files.iter().enumerate() {
+        let bin_path = cue_dir.join(&file.filename);
+        let bin_size = fs::metadata(&bin_path).await?.len();
+        let sectors: u32 = (bin_size / SECTOR_SIZE as u64)
+            .try_into()
+            .map_err(|_| ChdError::InvalidHunkSize)?;
+        debug!("BIN file {:?}: {} sectors", bin_path, sectors);
+        file_sectors.push(sectors);
+        // A FILE no track lands in owns no frames, so it must not be
+        // streamed either or every later track would read shifted bytes.
+        if cue_sheet.tracks.iter().any(|t| t.file_index == idx) {
+            bins.push((bin_path, sectors as u64 * SECTOR_SIZE as u64));
+        }
+    }
 
-    debug!("Total sectors: {}", total_sectors);
+    let first_bin = cue_dir.join(&cue_sheet.files[cue_sheet.tracks[0].file_index].filename);
+    if dreamcast_boot_signature(&dreamcast_head_bytes(&first_bin).await) {
+        progress.warn(DREAMCAST_CHD_WARNING);
+    }
+
+    let total_bytes: u64 = bins.iter().map(|(_, bytes)| bytes).sum();
     debug!("Creating CHD file: {:?}", output_path);
 
-    let total_mb = (bin_size as f64) / BYTES_PER_MB;
+    let total_mb = (total_bytes as f64) / BYTES_PER_MB;
     progress.start(
-        bin_size,
+        total_bytes,
         &format!("Compressing to CHD (~{:.2} MB)", total_mb),
     );
 
-    let bin_path_owned = bin_path.clone();
-    let cue_sheet_owned = cue_sheet.clone();
     let codecs = opts.codecs.clone().unwrap_or_else(default_cd_codecs);
     let level = opts.level;
     run_scratch_write(
@@ -358,14 +409,16 @@ pub async fn convert_to_chd(
         progress,
         &cancel,
         move |write_path, bytes_done, cancel| -> ChdResult<()> {
-            let bin_file = std::fs::File::open(&bin_path_owned)?;
-            let mut bin_reader = std::io::BufReader::with_capacity(IO_BUFFER_SIZE, bin_file);
+            let mut bin_reader = BinChain {
+                pending: bins.into_iter(),
+                current: None,
+            };
 
             let mut writer = ChdWriter::create(
                 &write_path,
-                total_sectors,
+                &file_sectors,
                 CD_HUNK_BYTES,
-                &cue_sheet_owned,
+                &cue_sheet,
                 codecs,
                 level,
             )?;
@@ -378,9 +431,8 @@ pub async fn convert_to_chd(
     .await?;
 
     let chd_size = fs::metadata(&output_path).await?.len();
-    let original_size = bin_size;
-    let saved_bytes = original_size.saturating_sub(chd_size);
-    let compression_ratio = (chd_size as f64 / original_size as f64) * 100.0;
+    let saved_bytes = total_bytes.saturating_sub(chd_size);
+    let compression_ratio = (chd_size as f64 / total_bytes as f64) * 100.0;
     let saved_mb = saved_bytes as f64 / BYTES_PER_MB;
     let chd_mb = chd_size as f64 / BYTES_PER_MB;
 
@@ -874,10 +926,10 @@ mod tests {
         assert!(matches!(err, ChdError::UnsupportedCueTrackWidth { .. }));
     }
 
-    /// 10-frame MODE1/2352 data track + 7-frame AUDIO track; neither
-    /// count is a 4-frame multiple, so both need interior padding.
-    fn write_two_track_cue(dir: &std::path::Path) -> (PathBuf, Vec<u8>) {
-        let mut bin = vec![0u8; 17 * 2352];
+    /// xorshift byte pattern so audio and data frames are neither
+    /// zero nor repetitive.
+    fn pattern_bytes(len: usize) -> Vec<u8> {
+        let mut bin = vec![0u8; len];
         let mut state = 0x0123_4567_89AB_CDEFu64;
         for b in bin.iter_mut() {
             state ^= state << 13;
@@ -885,6 +937,13 @@ mod tests {
             state ^= state << 17;
             *b = state as u8;
         }
+        bin
+    }
+
+    /// 10-frame MODE1/2352 data track + 7-frame AUDIO track; neither
+    /// count is a 4-frame multiple, so both need interior padding.
+    fn write_two_track_cue(dir: &std::path::Path) -> (PathBuf, Vec<u8>) {
+        let bin = pattern_bytes(17 * 2352);
         let bin_path = dir.join("game.bin");
         std::fs::write(&bin_path, &bin).unwrap();
         let cue_path = dir.join("game.cue");
@@ -894,6 +953,177 @@ mod tests {
         )
         .unwrap();
         (cue_path, bin)
+    }
+
+    /// Redump-style one-bin-per-track set as dumped for Neo Geo CD,
+    /// Sega CD and PC Engine: a 10-frame data track, then 7- and
+    /// 5-frame audio tracks whose 3- and 2-frame pregaps are stored
+    /// in their own bins (`INDEX 00` ahead of `INDEX 01`). `FLAGS`
+    /// lines are present because real dumps carry them. Returns the
+    /// cue path and the bins concatenated in FILE order.
+    fn write_multi_bin_cue(dir: &std::path::Path) -> (PathBuf, Vec<u8>) {
+        let bin = pattern_bytes(22 * 2352);
+        std::fs::write(dir.join("game (Track 1).bin"), &bin[..10 * 2352]).unwrap();
+        std::fs::write(dir.join("game (Track 2).bin"), &bin[10 * 2352..17 * 2352]).unwrap();
+        std::fs::write(dir.join("game (Track 3).bin"), &bin[17 * 2352..]).unwrap();
+        let cue_path = dir.join("game.cue");
+        std::fs::write(
+            &cue_path,
+            "FILE \"game (Track 1).bin\" BINARY\r\n  TRACK 01 MODE1/2352\r\n    FLAGS DCP\r\n    INDEX 01 00:00:00\r\n\
+             FILE \"game (Track 2).bin\" BINARY\r\n  TRACK 02 AUDIO\r\n    FLAGS DCP\r\n    INDEX 00 00:00:00\r\n    INDEX 01 00:00:03\r\n\
+             FILE \"game (Track 3).bin\" BINARY\r\n  TRACK 03 AUDIO\r\n    INDEX 00 00:00:00\r\n    INDEX 01 00:00:02\r\n",
+        )
+        .unwrap();
+        (cue_path, bin)
+    }
+
+    /// Single-bin PS1-style cue whose audio track carries its 2-frame
+    /// pregap in the bin: chdman ends the data track at the audio
+    /// track's `INDEX 00`, not its `INDEX 01`.
+    fn write_single_bin_index00_cue(dir: &std::path::Path) -> (PathBuf, Vec<u8>) {
+        let bin = pattern_bytes(17 * 2352);
+        let bin_path = dir.join("game.bin");
+        std::fs::write(&bin_path, &bin).unwrap();
+        let cue_path = dir.join("game.cue");
+        std::fs::write(
+            &cue_path,
+            "FILE \"game.bin\" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n  TRACK 02 AUDIO\n    INDEX 00 00:00:10\n    INDEX 01 00:00:12\n",
+        )
+        .unwrap();
+        (cue_path, bin)
+    }
+
+    /// Compresses `cue_path`, checks the CHT2 text and logical size,
+    /// verifies, and extracts; returns the restored cue text after
+    /// asserting the restored bin equals `bin`.
+    async fn cue_round_trip(
+        dir: &std::path::Path,
+        cue_path: PathBuf,
+        bin: &[u8],
+        expected_meta: &[&str],
+        padded_frames: u64,
+    ) -> String {
+        let chd_path = dir.join("game.chd");
+        convert_to_chd(
+            &NoProgress,
+            cue_path,
+            chd_path.clone(),
+            ChdOptions::default(),
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+
+        let meta = cd_track_metadata(&chd_path);
+        for expected in expected_meta {
+            assert!(meta.contains(expected), "missing {expected} in {meta}");
+        }
+        {
+            let handle = crate::disc::chd::reader::open_chd_sync(&chd_path).unwrap();
+            assert_eq!(handle.header.logical_bytes, padded_frames * 2448);
+        }
+
+        verify_chd(
+            &NoProgress,
+            chd_path.clone(),
+            None,
+            false,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+
+        let out_cue = dir.join("restored.cue");
+        extract_from_chd(
+            &NoProgress,
+            chd_path,
+            out_cue.clone(),
+            None,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(std::fs::read(out_cue.with_extension("bin")).unwrap(), bin);
+        std::fs::read_to_string(out_cue).unwrap()
+    }
+
+    /// Every bin of a multi-file cue is ingested in FILE order, each
+    /// stored pregap lands in its track's `FRAMES:` with a `V`-flagged
+    /// `PGTYPE:`, and extraction restores the concatenated bins plus a
+    /// cue that puts the pregaps back as `INDEX 00`.
+    #[tokio::test]
+    async fn multi_bin_cue_round_trips_every_track() {
+        let dir = tempfile::tempdir().unwrap();
+        let (cue_path, bin) = write_multi_bin_cue(dir.path());
+        let cue = cue_round_trip(
+            dir.path(),
+            cue_path,
+            &bin,
+            &[
+                "TRACK:1 TYPE:MODE1_RAW SUBTYPE:NONE FRAMES:10 PREGAP:0 PGTYPE:MODE1",
+                "TRACK:2 TYPE:AUDIO SUBTYPE:NONE FRAMES:7 PREGAP:3 PGTYPE:VAUDIO",
+                "TRACK:3 TYPE:AUDIO SUBTYPE:NONE FRAMES:5 PREGAP:2 PGTYPE:VAUDIO",
+            ],
+            12 + 8 + 8,
+        )
+        .await;
+        assert!(
+            cue.contains("  TRACK 02 AUDIO\r\n    INDEX 00 00:00:10\r\n    INDEX 01 00:00:13\r\n"),
+            "cue: {cue}"
+        );
+        assert!(
+            cue.contains("  TRACK 03 AUDIO\r\n    INDEX 00 00:00:17\r\n    INDEX 01 00:00:19\r\n"),
+            "cue: {cue}"
+        );
+        assert!(!cue.contains("PREGAP"), "cue: {cue}");
+    }
+
+    /// A single bin whose audio track has an in-file pregap splits at
+    /// the audio track's `INDEX 00`, so the data track is 10 frames and
+    /// the audio track keeps its 2 pregap frames.
+    #[tokio::test]
+    async fn single_bin_index00_splits_at_pregap_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let (cue_path, bin) = write_single_bin_index00_cue(dir.path());
+        let cue = cue_round_trip(
+            dir.path(),
+            cue_path,
+            &bin,
+            &[
+                "TRACK:1 TYPE:MODE2_RAW SUBTYPE:NONE FRAMES:10 PREGAP:0 PGTYPE:MODE1",
+                "TRACK:2 TYPE:AUDIO SUBTYPE:NONE FRAMES:7 PREGAP:2 PGTYPE:VAUDIO",
+            ],
+            12 + 8,
+        )
+        .await;
+        assert!(
+            cue.contains("  TRACK 02 AUDIO\r\n    INDEX 00 00:00:10\r\n    INDEX 01 00:00:12\r\n"),
+            "cue: {cue}"
+        );
+    }
+
+    #[tokio::test]
+    async fn convert_to_chd_rejects_non_binary_cue_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let cue_path = dir.path().join("game.cue");
+        std::fs::write(
+            &cue_path,
+            "FILE \"game.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\nFILE \"track02.wav\" WAVE\n  TRACK 02 AUDIO\n    INDEX 01 00:00:00\n",
+        )
+        .unwrap();
+        let err = convert_to_chd(
+            &NoProgress,
+            cue_path,
+            dir.path().join("game.chd"),
+            ChdOptions::default(),
+            CancelToken::new(),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, ChdError::UnsupportedCueFileType { ref filename } if filename == "track02.wav"),
+            "{err:?}"
+        );
     }
 
     /// Multi-track cue/bin with track frame counts that are not 4-frame
@@ -1039,22 +1269,17 @@ mod tests {
         );
     }
 
-    /// Cue/bin twin of [`chdman_cd_iso_parity`]: a multi-track cue
-    /// whose track frame counts are not 4-frame multiples, so the
-    /// interior track padding and the audio byte swap are both
-    /// exercised. Both SHA1s reported by `chdman info` must match
-    /// between the two files, and extracting chdman's own CHD must
-    /// restore the original bin.
-    #[tokio::test]
-    async fn chdman_cd_cue_parity() {
-        let Some(chdman) = std::env::var_os("ROMCONVERTO_CHDMAN") else {
-            return;
-        };
-        let dir = tempfile::tempdir().unwrap();
-        let (cue_path, bin) = write_two_track_cue(dir.path());
-
-        let their_chd = dir.path().join("their.chd");
-        let status = std::process::Command::new(&chdman)
+    /// Runs `chdman createcd` on `cue_path` and our own converter, then
+    /// requires chdman to verify our CHD, both SHA1s from `chdman info`
+    /// to match, and extracting chdman's own CHD to restore `bin`.
+    async fn assert_chdman_cue_parity(
+        chdman: &std::ffi::OsStr,
+        dir: &std::path::Path,
+        cue_path: PathBuf,
+        bin: &[u8],
+    ) {
+        let their_chd = dir.join("their.chd");
+        let status = std::process::Command::new(chdman)
             .args(["createcd", "-i"])
             .arg(&cue_path)
             .arg("-o")
@@ -1063,7 +1288,7 @@ mod tests {
             .expect("run chdman createcd");
         assert!(status.success(), "chdman createcd failed");
 
-        let restored_cue = dir.path().join("restored.cue");
+        let restored_cue = dir.join("restored.cue");
         extract_from_chd(
             &NoProgress,
             their_chd.clone(),
@@ -1078,7 +1303,7 @@ mod tests {
             bin
         );
 
-        let our_chd = dir.path().join("our.chd");
+        let our_chd = dir.join("our.chd");
         convert_to_chd(
             &NoProgress,
             cue_path,
@@ -1088,7 +1313,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let status = std::process::Command::new(&chdman)
+        let status = std::process::Command::new(chdman)
             .args(["verify", "-i"])
             .arg(&our_chd)
             .status()
@@ -1096,7 +1321,7 @@ mod tests {
         assert!(status.success(), "chdman rejected our CD CHD");
 
         let info_sha1s = |path: &std::path::Path| -> Vec<String> {
-            let out = std::process::Command::new(&chdman)
+            let out = std::process::Command::new(chdman)
                 .args(["info", "-i"])
                 .arg(path)
                 .output()
@@ -1112,6 +1337,45 @@ mod tests {
             info_sha1s(&our_chd),
             "SHA1s must match chdman's output byte-for-byte"
         );
+    }
+
+    /// Cue/bin twin of [`chdman_cd_iso_parity`]: a multi-track cue
+    /// whose track frame counts are not 4-frame multiples, so the
+    /// interior track padding and the audio byte swap are both
+    /// exercised.
+    #[tokio::test]
+    async fn chdman_cd_cue_parity() {
+        let Some(chdman) = std::env::var_os("ROMCONVERTO_CHDMAN") else {
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let (cue_path, bin) = write_two_track_cue(dir.path());
+        assert_chdman_cue_parity(&chdman, dir.path(), cue_path, &bin).await;
+    }
+
+    /// One-bin-per-track cue with stored pregaps: the per-file track
+    /// lengths, the `V`-flagged pregap metadata and the file
+    /// concatenation must all match chdman.
+    #[tokio::test]
+    async fn chdman_multi_bin_cue_parity() {
+        let Some(chdman) = std::env::var_os("ROMCONVERTO_CHDMAN") else {
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let (cue_path, bin) = write_multi_bin_cue(dir.path());
+        assert_chdman_cue_parity(&chdman, dir.path(), cue_path, &bin).await;
+    }
+
+    /// Single bin with an in-file audio pregap: the data track must end
+    /// at the audio track's `INDEX 00` like chdman does.
+    #[tokio::test]
+    async fn chdman_single_bin_index00_parity() {
+        let Some(chdman) = std::env::var_os("ROMCONVERTO_CHDMAN") else {
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let (cue_path, bin) = write_single_bin_index00_cue(dir.path());
+        assert_chdman_cue_parity(&chdman, dir.path(), cue_path, &bin).await;
     }
 
     use crate::disc::laserdisc::avi::test_fixtures::{

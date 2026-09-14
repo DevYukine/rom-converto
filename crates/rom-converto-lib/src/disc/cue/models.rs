@@ -3,6 +3,7 @@
 use crate::disc::cd::{FRAMES_PER_SECOND, SECONDS_PER_MINUTE};
 
 const PRIMARY_INDEX: u8 = 1;
+const PREGAP_INDEX: u8 = 0;
 
 /// A parsed CUE sheet: the files it references and the tracks laid out
 /// across them.
@@ -87,6 +88,46 @@ impl Track {
             .iter()
             .find(|index| index.number == PRIMARY_INDEX)
             .map(|index| index.position.to_lba())
+    }
+
+    /// Returns the LBA of chdman's track boundary inside a shared FILE:
+    /// the INDEX 00 position when present, else the INDEX 01 position.
+    pub fn boundary_lba(&self) -> Option<u32> {
+        self.indices
+            .iter()
+            .find(|index| index.number == PREGAP_INDEX)
+            .or_else(|| {
+                self.indices
+                    .iter()
+                    .find(|index| index.number == PRIMARY_INDEX)
+            })
+            .map(|index| index.position.to_lba())
+    }
+
+    /// Returns the frames of pregap stored inside the track's own data,
+    /// chdman's rule: an INDEX 00 present and no nonzero `PREGAP`
+    /// directive. The value is the INDEX 01 LBA minus the INDEX 00 LBA
+    /// (saturating; `Some(0)` when the indices are equal), or `None`
+    /// when the pregap is not stored: no INDEX 00, no INDEX 01, or a
+    /// `PREGAP` directive with a nonzero position.
+    pub fn stored_pregap(&self) -> Option<u32> {
+        if self.pregap.is_some_and(|pregap| pregap.to_lba() > 0) {
+            return None;
+        }
+        let pregap_start = self
+            .indices
+            .iter()
+            .find(|index| index.number == PREGAP_INDEX)?;
+        let track_start = self
+            .indices
+            .iter()
+            .find(|index| index.number == PRIMARY_INDEX)?;
+        Some(
+            track_start
+                .position
+                .to_lba()
+                .saturating_sub(pregap_start.position.to_lba()),
+        )
     }
 }
 
@@ -256,6 +297,51 @@ mod tests {
             file_index: 0,
         };
         assert_eq!(track.primary_index_lba(), None);
+    }
+
+    /// Audio track with the given `(index number, LBA)` pairs and an
+    /// optional `PREGAP` directive in frames.
+    fn track(indices: &[(u8, u32)], pregap: Option<u32>) -> Track {
+        Track {
+            number: 2,
+            track_type: TrackType::Audio,
+            indices: indices
+                .iter()
+                .map(|&(number, lba)| Index {
+                    number,
+                    position: Msf::from_lba(lba),
+                })
+                .collect(),
+            pregap: pregap.map(Msf::from_lba),
+            postgap: None,
+            file_index: 0,
+        }
+    }
+
+    #[test]
+    fn boundary_lba_prefers_index_00_over_index_01() {
+        assert_eq!(track(&[(0, 0), (1, 150)], None).boundary_lba(), Some(0));
+        assert_eq!(track(&[(1, 150)], None).boundary_lba(), Some(150));
+        assert_eq!(track(&[], None).boundary_lba(), None);
+    }
+
+    #[test]
+    fn stored_pregap_is_the_index_00_to_01_gap() {
+        assert_eq!(track(&[(0, 0), (1, 150)], None).stored_pregap(), Some(150));
+        assert_eq!(track(&[(0, 150), (1, 150)], None).stored_pregap(), Some(0));
+        assert_eq!(track(&[(1, 150)], None).stored_pregap(), None);
+        assert_eq!(track(&[(0, 0)], None).stored_pregap(), None);
+    }
+
+    /// A nonzero `PREGAP` directive means the gap is not in the bin even
+    /// when an INDEX 00 is present; a zero one changes nothing.
+    #[test]
+    fn stored_pregap_yields_to_a_nonzero_pregap_directive() {
+        assert_eq!(track(&[(0, 0), (1, 150)], Some(150)).stored_pregap(), None);
+        assert_eq!(
+            track(&[(0, 0), (1, 150)], Some(0)).stored_pregap(),
+            Some(150)
+        );
     }
 
     #[test]

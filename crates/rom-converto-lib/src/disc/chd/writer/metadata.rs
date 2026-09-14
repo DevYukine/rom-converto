@@ -1,4 +1,4 @@
-use crate::disc::chd::error::ChdResult;
+use crate::disc::chd::error::{ChdError, ChdResult};
 use crate::disc::chd::models::{
     CHD_METADATA_FLAG_HASHED, CHD_METADATA_HEADER_BYTES, CHD_METADATA_RESERVED_BYTES,
     CHD_METADATA_TAG_AV, CHD_METADATA_TAG_AV_LD, CHD_V5_HEADER_SIZE, ChdMetadataHeader, SHA1_BYTES,
@@ -10,8 +10,8 @@ use binrw::BinWrite;
 use sha1::{Digest, Sha1};
 use std::io::Cursor;
 
-// chdman leaves PGTYPE at its MODE1 default unless the pregap data is
-// stored in-file, which this writer never does.
+// chdman leaves PGTYPE at its MODE1 default when the pregap is a bare
+// `PREGAP` directive, i.e. the gap frames are not stored in the bin.
 const PREGAP_TYPE: &str = "MODE1";
 
 #[derive(Debug, Clone)]
@@ -43,31 +43,49 @@ pub fn generate_dvd_metadata() -> ChdResult<MetadataBlock> {
     })
 }
 
-/// Per-track `(start, frames)` spans in source frames, derived from
-/// each track's INDEX 01 offset. The first track always starts at 0
-/// so a nonzero first INDEX cannot silently drop the head of the bin.
-fn track_spans(cue_sheet: &CueSheet, data_frames: u32) -> Vec<(u32, u32)> {
-    let starts: Vec<u32> = cue_sheet
-        .tracks
-        .iter()
-        .enumerate()
-        .map(|(idx, track)| {
-            if idx == 0 {
-                0
-            } else {
-                track.primary_index_lba().unwrap_or(0).min(data_frames)
-            }
-        })
-        .collect();
-    (0..cue_sheet.tracks.len())
+/// Per-track frame counts in source order, following chdman's
+/// `parse_cue` (`src/lib/util/cdrom.cpp`): `file_sectors[i]` is the
+/// sector count of `cue_sheet.files[i]`. Inside a shared FILE a track
+/// ends where the next track's INDEX 00 (else INDEX 01) begins, the
+/// last track of a FILE runs to its end, and a track alone in its
+/// FILE spans the whole file. The first track of each FILE always
+/// starts at sector 0 so a nonzero first INDEX cannot silently drop
+/// the head of the bin. Each track starts where the previous one in
+/// its FILE ended and boundaries clamp to the file, so the counts of
+/// a FILE's tracks always sum to its sector count.
+///
+/// # Errors
+/// [`ChdError::CueTrackMissingIndex01`] when a track has no INDEX 01,
+/// which chdman rejects outright, and [`ChdError::EmptyCueTrack`] when
+/// a track resolves to no frames (chdman refuses that inside a shared
+/// FILE; here it is refused everywhere, since a CHD with an empty track
+/// is never what the user wanted).
+pub fn track_frames(cue_sheet: &CueSheet, file_sectors: &[u32]) -> ChdResult<Vec<u32>> {
+    let tracks = &cue_sheet.tracks;
+    let mut start = 0u32;
+    (0..tracks.len())
         .map(|idx| {
-            let start = starts[idx];
-            let end = starts
-                .get(idx + 1)
-                .copied()
-                .unwrap_or(data_frames)
-                .clamp(start, data_frames);
-            (start, end - start)
+            let track = tracks[idx].number;
+            if tracks[idx].primary_index_lba().is_none() {
+                return Err(ChdError::CueTrackMissingIndex01 { track });
+            }
+            let file = tracks[idx].file_index;
+            let sectors = file_sectors[file];
+            if idx == 0 || tracks[idx - 1].file_index != file {
+                start = 0;
+            }
+            let end = match tracks.get(idx + 1) {
+                Some(next) if next.file_index == file => {
+                    next.boundary_lba().unwrap_or(0).clamp(start, sectors)
+                }
+                _ => sectors,
+            };
+            let frames = end - start;
+            start = end;
+            if frames == 0 {
+                return Err(ChdError::EmptyCueTrack { track });
+            }
+            Ok(frames)
         })
         .collect()
 }
@@ -78,17 +96,12 @@ fn track_spans(cue_sheet: &CueSheet, data_frames: u32) -> Vec<(u32, u32)> {
 /// track); `.1` is `true` where the frame belongs to an AUDIO track.
 /// MAME byte-swaps audio sector samples on ingest and swaps them back
 /// on extract; the writer consults `.1` to swap the right frames
-/// before hashing and compressing. Track spans use the same
-/// primary-index frame offsets as the CHT2 metadata; `data_frames` is
-/// the unpadded source frame count.
-pub fn cd_frame_layout(cue_sheet: &CueSheet, data_frames: u32) -> (Vec<bool>, Vec<bool>) {
+/// before hashing and compressing. `frames` is the per-track source
+/// frame count from [`track_frames`], shared with the CHT2 metadata.
+pub fn cd_frame_layout(cue_sheet: &CueSheet, frames: &[u32]) -> (Vec<bool>, Vec<bool>) {
     let mut is_data = Vec::new();
     let mut is_audio = Vec::new();
-    for (track, (_, frames)) in cue_sheet
-        .tracks
-        .iter()
-        .zip(track_spans(cue_sheet, data_frames))
-    {
+    for (track, &frames) in cue_sheet.tracks.iter().zip(frames) {
         let padded = crate::disc::chd::padded_track_frames(frames);
         let audio = matches!(track.track_type, TrackType::Audio);
         is_data.extend(std::iter::repeat_n(true, frames as usize));
@@ -100,15 +113,21 @@ pub fn cd_frame_layout(cue_sheet: &CueSheet, data_frames: u32) -> (Vec<bool>, Ve
 
 /// One CHT2 metadata entry per track, chained through the reserved
 /// bytes (the on-disk `next` offset), exactly as chdman's
-/// `write_metadata` lays them out right after the V5 header.
-pub fn generate_cd_metadata(cue_sheet: &CueSheet, total_frames: u32) -> ChdResult<MetadataBlock> {
+/// `write_metadata` lays them out right after the V5 header. A pregap
+/// stored in the bin (cue `INDEX 00`) is counted in `FRAMES:` and
+/// flagged by a `V` prefix on `PGTYPE:`; a bare `PREGAP` directive is
+/// recorded without stored frames. `frames` comes from
+/// [`track_frames`].
+pub fn generate_cd_metadata(cue_sheet: &CueSheet, frames: &[u32]) -> ChdResult<MetadataBlock> {
     let mut entries = Vec::new();
-    for (track, (_, frames)) in cue_sheet
-        .tracks
-        .iter()
-        .zip(track_spans(cue_sheet, total_frames))
-    {
-        let pregap = track.pregap.map(|p| p.to_lba()).unwrap_or(0);
+    for (track, &frames) in cue_sheet.tracks.iter().zip(frames) {
+        let (pregap, pgtype) = match track.stored_pregap() {
+            Some(stored) => (stored, format!("V{}", track.track_type.chd_metadata_type())),
+            None => (
+                track.pregap.map(|p| p.to_lba()).unwrap_or(0),
+                PREGAP_TYPE.to_string(),
+            ),
+        };
 
         // Format: TRACK:n TYPE:type SUBTYPE:NONE FRAMES:nnn PREGAP:n PGTYPE:type PGSUB:NONE POSTGAP:0
         entries.push(ChdMetadataHeader::new_cd_metadata(format!(
@@ -117,7 +136,7 @@ pub fn generate_cd_metadata(cue_sheet: &CueSheet, total_frames: u32) -> ChdResul
             track.track_type.chd_metadata_type(),
             frames,
             pregap,
-            PREGAP_TYPE
+            pgtype
         )));
     }
 
