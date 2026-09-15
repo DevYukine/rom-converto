@@ -177,6 +177,9 @@ jobs:
 
       - name: Package bundles
         shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ inputs.release && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ inputs.release && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -201,8 +204,10 @@ jobs:
 
               if [[ -n "$ROM_CONVERTO_RELEASE" ]]; then
                 [[ -f "${appimages[0]}.sig" ]]
+                [[ -f "${debs[0]}.sig" ]]
                 cp "${appimages[0]}" "updater/rom-converto-gui-${classifier}.AppImage"
                 cp "${appimages[0]}.sig" "updater/rom-converto-gui-${classifier}.AppImage.sig"
+                cp "${debs[0]}.sig" "updater/rom-converto-gui-${classifier}.deb.sig"
               fi
               ;;
 
@@ -249,6 +254,11 @@ jobs:
                 [[ -f "${installers[0]}.sig" ]]
                 cp "${installers[0]}" "updater/rom-converto-gui-${classifier}-setup.exe"
                 cp "${installers[0]}.sig" "updater/rom-converto-gui-${classifier}-setup.exe.sig"
+
+                # The portable exe is not a bundle, so tauri-action does not sign it.
+                (cd crates/rom-converto-gui && pnpm tauri signer sign "../../artifact/rom-converto-gui-${classifier}.exe")
+                [[ -f "artifact/rom-converto-gui-${classifier}.exe.sig" ]]
+                mv "artifact/rom-converto-gui-${classifier}.exe.sig" "updater/rom-converto-gui-${classifier}.exe.sig"
               fi
               ;;
 
@@ -304,41 +314,38 @@ jobs:
           release="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json body,publishedAt)"
           base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
 
+          # The plugin looks up "<os>-<arch>-<installer>" for the package type the
+          # running copy was bundled as and falls back to "<os>-<arch>", so only
+          # packages that differ from the fallback need their own key. The
+          # portable Windows exe asks for its own key.
           jq -n \
             --arg version "${RELEASE_TAG#v}" \
             --arg notes "$(jq -r .body <<<"$release")" \
             --arg pub_date "$(jq -r .publishedAt <<<"$release")" \
             --arg base "$base" \
-            --arg linux_x64 "$(<updater/rom-converto-gui-linux-x64.AppImage.sig)" \
-            --arg linux_arm64 "$(<updater/rom-converto-gui-linux-arm64.AppImage.sig)" \
-            --arg windows_x64 "$(<updater/rom-converto-gui-windows-x64-setup.exe.sig)" \
+            --arg linux_x64_appimage "$(<updater/rom-converto-gui-linux-x64.AppImage.sig)" \
+            --arg linux_x64_deb "$(<updater/rom-converto-gui-linux-x64.deb.sig)" \
+            --arg linux_arm64_appimage "$(<updater/rom-converto-gui-linux-arm64.AppImage.sig)" \
+            --arg linux_arm64_deb "$(<updater/rom-converto-gui-linux-arm64.deb.sig)" \
+            --arg windows_x64_nsis "$(<updater/rom-converto-gui-windows-x64-setup.exe.sig)" \
+            --arg windows_x64_portable "$(<updater/rom-converto-gui-windows-x64.exe.sig)" \
             --arg macos_x64 "$(<updater/rom-converto-gui-macos-x64.app.tar.gz.sig)" \
             --arg macos_arm64 "$(<updater/rom-converto-gui-macos-arm64.app.tar.gz.sig)" \
-            '{
+            '
+            def entry($sig; $file): { signature: $sig, url: ($base + "/" + $file) };
+            {
               version: $version,
               notes: $notes,
               pub_date: $pub_date,
               platforms: {
-                "linux-x86_64": {
-                  signature: $linux_x64,
-                  url: ($base + "/rom-converto-gui-linux-x64.AppImage")
-                },
-                "linux-aarch64": {
-                  signature: $linux_arm64,
-                  url: ($base + "/rom-converto-gui-linux-arm64.AppImage")
-                },
-                "windows-x86_64": {
-                  signature: $windows_x64,
-                  url: ($base + "/rom-converto-gui-windows-x64-setup.exe")
-                },
-                "darwin-x86_64": {
-                  signature: $macos_x64,
-                  url: ($base + "/rom-converto-gui-macos-x64.app.tar.gz")
-                },
-                "darwin-aarch64": {
-                  signature: $macos_arm64,
-                  url: ($base + "/rom-converto-gui-macos-arm64.app.tar.gz")
-                }
+                "linux-x86_64": entry($linux_x64_appimage; "rom-converto-gui-linux-x64.AppImage"),
+                "linux-x86_64-deb": entry($linux_x64_deb; "rom-converto-gui-linux-x64.deb"),
+                "linux-aarch64": entry($linux_arm64_appimage; "rom-converto-gui-linux-arm64.AppImage"),
+                "linux-aarch64-deb": entry($linux_arm64_deb; "rom-converto-gui-linux-arm64.deb"),
+                "windows-x86_64": entry($windows_x64_nsis; "rom-converto-gui-windows-x64-setup.exe"),
+                "windows-x86_64-portable": entry($windows_x64_portable; "rom-converto-gui-windows-x64.exe"),
+                "darwin-x86_64": entry($macos_x64; "rom-converto-gui-macos-x64.app.tar.gz"),
+                "darwin-aarch64": entry($macos_arm64; "rom-converto-gui-macos-arm64.app.tar.gz")
               }
             }' > latest.json
 

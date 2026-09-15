@@ -1,4 +1,6 @@
-import type { DownloadEvent } from "@tauri-apps/plugin-updater";
+import { Channel } from "@tauri-apps/api/core";
+import { invoke } from "~/lib/ipc";
+import type { UpdateEvent } from "~/types";
 
 export type UpdatePhase =
 	| "current"
@@ -22,24 +24,21 @@ export const CHECK_DELAY_MS = 5_000;
 /** Interval between background checks while the app stays open. */
 export const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
 
-interface PendingUpdate {
-	version: string;
-	downloadAndInstall(onEvent: (event: DownloadEvent) => void): Promise<void>;
-	close?(): Promise<void>;
-}
-
 interface UpdaterBridge {
-	check(): Promise<PendingUpdate | null>;
-	relaunch(): Promise<void>;
+	/** Resolves to the available version, or null when up to date. */
+	check(): Promise<string | null>;
+	/** Downloads, installs and restarts; resolves only if the backend returns before exiting. */
+	install(onEvent: (event: UpdateEvent) => void): Promise<void>;
 }
 
-async function loadBridge(): Promise<UpdaterBridge> {
-	const [{ check }, { relaunch }] = await Promise.all([
-		import("@tauri-apps/plugin-updater"),
-		import("@tauri-apps/plugin-process"),
-	]);
-	return { check, relaunch };
-}
+const ipcBridge: UpdaterBridge = {
+	check: () => invoke<string | null>("cmd_update_check"),
+	install(onEvent) {
+		const channel = new Channel<UpdateEvent>();
+		channel.onmessage = onEvent;
+		return invoke("cmd_update_install", { onEvent: channel });
+	},
+};
 
 /**
  * Whether the update toast is open. A found version stays hidden once the
@@ -66,11 +65,9 @@ export function promptOpen(state: UpdateState, hidden: readonly string[], instal
 export function createUpdater(
 	tauri: boolean,
 	changed: (state: UpdateState) => void = () => {},
-	load: () => Promise<UpdaterBridge> = loadBridge,
+	bridge: UpdaterBridge = ipcBridge,
 ) {
 	const state: UpdateState = { phase: "current", availableVersion: "", progress: -1, error: "" };
-	let bridge: UpdaterBridge | null = null;
-	let update: PendingUpdate | null = null;
 	const change = (next: Partial<UpdateState>) => {
 		Object.assign(state, next);
 		changed({ ...state });
@@ -85,40 +82,22 @@ export function createUpdater(
 
 		change({ phase: "checking", error: "" });
 		try {
-			bridge = await load();
-			// Each check allocates a backend resource; release the previous one.
-			await update?.close?.();
-			update = null;
-			update = await bridge.check();
-			change({
-				phase: update ? "available" : "up-to-date",
-				availableVersion: update?.version ?? "",
-			});
+			const version = await bridge.check();
+			change({ phase: version ? "available" : "up-to-date", availableVersion: version ?? "" });
 		} catch (error) {
 			change({ phase: "error", error: String(error) });
 		}
 	}
 
 	async function installUpdate() {
-		if (state.phase !== "available" || !bridge || !update) return;
+		if (state.phase !== "available") return;
 		change({ phase: "downloading", progress: -1 });
 		try {
-			let total = 0;
-			let downloaded = 0;
-			let percent = -1;
-			await update.downloadAndInstall((event) => {
-				if (event.event === "Started") total = event.data.contentLength ?? 0;
-				else if (event.event === "Progress" && total > 0) {
-					downloaded += event.data.chunkLength;
-					const next = Math.min(Math.floor((downloaded / total) * 100), 100);
-					if (next !== percent) {
-						percent = next;
-						change({ progress: next / 100 });
-					}
-				} else if (event.event === "Finished") change({ phase: "installing" });
+			// The backend restarts the app once the install lands.
+			await bridge.install((event) => {
+				if (event.kind === "progress") change({ progress: Math.min(1, event.downloaded / event.total) });
+				else change({ phase: "installing" });
 			});
-			change({ phase: "installing" });
-			await bridge.relaunch();
 		} catch (error) {
 			change({ phase: "error", error: String(error) });
 		}

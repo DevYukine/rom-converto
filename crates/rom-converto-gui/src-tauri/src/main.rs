@@ -10,12 +10,14 @@ mod info_cache;
 mod progress;
 #[cfg(all(test, feature = "ts-export"))]
 mod ts_export;
+mod updater;
 
 use commands::*;
 use config_cmds::*;
 use info_cache::InfoCache;
 use rom_converto_lib::util::HashCache;
 use std::sync::Arc;
+use updater::{PendingUpdate, cleanup_old_executable, cmd_update_check, cmd_update_install};
 
 /// Every command returns errors to the frontend as plain strings.
 pub(crate) fn err_to_string(e: impl std::fmt::Display) -> String {
@@ -23,13 +25,14 @@ pub(crate) fn err_to_string(e: impl std::fmt::Display) -> String {
 }
 
 fn main() {
+    cleanup_old_executable();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Arc::new(InfoCache::default()))
+        .manage(PendingUpdate::default())
         // Same on-disk store the CLI uses, so hashes computed by either
         // frontend are reused by both.
         .manage(Arc::new(HashCache::load(false, false)))
@@ -48,6 +51,8 @@ fn main() {
             cmd_save_preset,
             cmd_delete_preset,
             app_display_version,
+            cmd_update_check,
+            cmd_update_install,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

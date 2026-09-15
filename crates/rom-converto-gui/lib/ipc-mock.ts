@@ -942,6 +942,8 @@ type Handler = (args: Record<string, unknown>) => Promise<unknown>;
 
 export const handlers: Record<string, Handler> = {
 	app_display_version: async () => "1.4.0",
+	cmd_update_check: async () => null,
+	cmd_update_install: async () => null,
 	cmd_nx_keys_resolve: async (a) => (a.keys ? String(a.keys) : "~/.switch/prod.keys"),
 	cmd_config_path: async () => "~/.config/rom-converto/rom-converto.toml",
 	cmd_load_config: async () => ({

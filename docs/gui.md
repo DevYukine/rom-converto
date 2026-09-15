@@ -114,6 +114,20 @@ relaunches the app. Update download progress and installation errors remain in
 the toast. The GUI updater gets signed release metadata from the project's
 `latest.json` release asset.
 
+The updater matches how the running copy was set up, so installed and
+portable copies each receive their own package:
+
+- Windows installer: downloads the signed setup exe and runs it.
+- Windows portable `rom-converto-gui-windows-x64.exe`: downloads the signed
+  portable exe, swaps it in place, and restarts, so its folder must be
+  writable. The replaced exe is kept next to it with an `.old` suffix until
+  the next launch removes it.
+- Linux `.deb`: downloads the signed `.deb` and installs it with `dpkg`
+  through a `pkexec` (or sudo) prompt.
+- Linux AppImage: rewrites the running AppImage in place.
+- macOS: replaces the `.app` bundle where it runs, whether it came from the
+  `.dmg` or the `.app.zip`.
+
 ## CLI-only features
 
 The GUI does not expose shell completions, `self-update`, terminal verbosity

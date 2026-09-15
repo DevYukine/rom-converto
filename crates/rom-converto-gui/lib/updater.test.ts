@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { DownloadEvent } from "@tauri-apps/plugin-updater";
+import type { UpdateEvent } from "~/types";
 import { createUpdater, promptOpen, type UpdateState } from "./updater";
 
 describe("updater", () => {
@@ -13,46 +13,36 @@ describe("updater", () => {
 	});
 
 	it("reports when the current version is up to date", async () => {
-		const updater = createUpdater(true, undefined, async () => ({ check: async () => null, relaunch: vi.fn() }));
+		const updater = createUpdater(true, undefined, { check: async () => null, install: vi.fn() });
 		await updater.checkForUpdate();
 		expect(updater.state.phase).toBe("up-to-date");
 	});
 
-	it("downloads, installs, and relaunches an available update", async () => {
-		const relaunch = vi.fn();
+	it("downloads and installs an available update", async () => {
 		const seen: number[] = [];
-		const downloadAndInstall = vi.fn(async (onEvent: (event: DownloadEvent) => void) => {
-			onEvent({ event: "Started", data: { contentLength: 400 } });
-			onEvent({ event: "Progress", data: { chunkLength: 100 } });
-			onEvent({ event: "Progress", data: { chunkLength: 1 } });
-			onEvent({ event: "Progress", data: { chunkLength: 299 } });
-			onEvent({ event: "Finished" });
+		const install = vi.fn(async (onEvent: (event: UpdateEvent) => void) => {
+			onEvent({ kind: "progress", downloaded: 100, total: 400 });
+			// An understated Content-Length must not push the bar past full.
+			onEvent({ kind: "progress", downloaded: 500, total: 400 });
+			onEvent({ kind: "installing" });
 		});
-		const updater = createUpdater(true, (s) => seen.push(s.progress), async () => ({
-			check: async () => ({ version: "2.0.0", downloadAndInstall }),
-			relaunch,
-		}));
+		const updater = createUpdater(true, (s) => seen.push(s.progress), { check: async () => "2.0.0", install });
 
 		await updater.checkForUpdate();
 		expect(updater.state).toMatchObject({ phase: "available", availableVersion: "2.0.0" });
 		await updater.installUpdate();
-		expect(downloadAndInstall).toHaveBeenCalledOnce();
-		expect(relaunch).toHaveBeenCalledOnce();
+		expect(install).toHaveBeenCalledOnce();
 		expect(updater.state.phase).toBe("installing");
-		// One emit per whole percent, so the 1-byte chunk does not re-emit 25%.
 		expect(seen.filter((p, i) => p >= 0 && p !== seen[i - 1])).toEqual([0.25, 1]);
 	});
 
 	it("reports an install failure", async () => {
-		const updater = createUpdater(true, undefined, async () => ({
-			check: async () => ({
-				version: "2.0.0",
-				downloadAndInstall: async () => {
-					throw new Error("signature mismatch");
-				},
-			}),
-			relaunch: vi.fn(),
-		}));
+		const updater = createUpdater(true, undefined, {
+			check: async () => "2.0.0",
+			install: async () => {
+				throw new Error("signature mismatch");
+			},
+		});
 		await updater.checkForUpdate();
 		await updater.installUpdate();
 		expect(updater.state).toMatchObject({ phase: "error", error: "Error: signature mismatch" });
@@ -60,7 +50,7 @@ describe("updater", () => {
 
 	it("prevents duplicate checks", async () => {
 		const check = vi.fn(async () => null);
-		const updater = createUpdater(true, undefined, async () => ({ check, relaunch: vi.fn() }));
+		const updater = createUpdater(true, undefined, { check, install: vi.fn() });
 		await Promise.all([updater.checkForUpdate(), updater.checkForUpdate()]);
 		expect(check).toHaveBeenCalledOnce();
 	});

@@ -11,7 +11,6 @@ tauri = { version = "^2", features = [] }
 tauri-plugin-dialog = "^2"
 tauri-plugin-shell = "^2"
 tauri-plugin-notification = "^2"
-tauri-plugin-process = "^2"
 tauri-plugin-updater = "^2"
 serde.workspace = true
 serde_json.workspace = true
@@ -19,6 +18,7 @@ tokio = { workspace = true, features = ["full"] }
 tokio-util.workspace = true
 log.workspace = true
 anyhow.workspace = true
+parking_lot = "^0.12"
 ts-rs = { workspace = true, optional = true }
 
 [features]

@@ -11,6 +11,7 @@ use rom_converto_lib::util::{ReportRecord, ReportTotals};
 use ts_rs::{Config, ExportError, TS};
 
 use crate::commands::RunOutcome;
+use crate::updater::UpdateEvent;
 
 #[test]
 fn export_bindings() -> Result<(), ExportError> {
@@ -30,6 +31,7 @@ fn export_bindings() -> Result<(), ExportError> {
     RunRow::export_all(&cfg)?;
     ProgressEvent::export_all(&cfg)?;
     RunOutcome::export_all(&cfg)?;
+    UpdateEvent::export_all(&cfg)?;
     CliEchoManifest::export_all(&cfg)?;
 
     // The CLI-echo tables are data, not types: the GUI imports the JSON

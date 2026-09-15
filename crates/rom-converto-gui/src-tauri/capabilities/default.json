@@ -14,8 +14,6 @@
     "dialog:allow-open",
     "dialog:allow-save",
     "shell:allow-open",
-    "notification:default",
-    "updater:default",
-    "process:allow-restart"
+    "notification:default"
   ]
 }
