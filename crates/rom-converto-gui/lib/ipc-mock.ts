@@ -200,6 +200,43 @@ const CTR_INFO = {
 		{ index: 0, content_id: "00000000", size: 500_000_000, encrypted: false },
 		{ index: 1, content_id: "00000001", size: 12_000_000, encrypted: false },
 	],
+	bundle_kind: null,
+	bundled_titles: [],
+};
+
+// Same primary as CTR_INFO but reached through a .bcci bundle: the card reads
+// the bundle container rows plus the member list instead of CIA contents.
+const CTR_BUNDLE_INFO = {
+	...CTR_INFO,
+	format: "ncsd",
+	physical_bytes: 513_000_000,
+	ncsd_partitions: [{ index: 0, name: "Game", offset: 0x4000, size: 511_000_000 }],
+	cia_contents: [],
+	bundle_kind: "cci",
+	bundled_titles: [
+		{
+			name: "Sample 3DS Title.cci",
+			size: 512_000_000,
+			main: true,
+			format: "ncsd",
+			compressed: false,
+			encrypted: false,
+			title_id: "0004000000123400",
+			content_kind: "game",
+			title: "Sample 3DS Title",
+		},
+		{
+			name: "Update.cia",
+			size: 12_000_000,
+			main: false,
+			format: "cia",
+			compressed: false,
+			encrypted: false,
+			title_id: "0004000E00123400",
+			content_kind: "update",
+			title: null,
+		},
+	],
 };
 
 const DOL_INFO = {
@@ -628,6 +665,7 @@ const PS5_PKG_INFO = {
 const INFO_SAMPLES: Record<string, unknown> = {
 	nx: NX_INFO,
 	ctr: CTR_INFO,
+	"ctr-bundle": CTR_BUNDLE_INFO,
 	dol: DOL_INFO,
 	rvl: RVL_INFO,
 	wup: WUP_INFO,
@@ -647,6 +685,7 @@ const INFO_SAMPLES: Record<string, unknown> = {
 function infoKindFor(path: string): string {
 	const e = extOf(path);
 	if (["nsp", "xci", "nsz", "xcz"].includes(e)) return "nx";
+	if (["bcia", "bcci", "bcxi"].includes(e)) return "ctr-bundle";
 	if (["cia", "3ds", "cci", "cxi", "ncch", "3dsx", "zcia", "zcci", "zcxi", "z3dsx"].includes(e)) return "ctr";
 	if (["gcm", "gcz"].includes(e)) return "dol";
 	if (["wbfs", "wia"].includes(e)) return "rvl";

@@ -8,7 +8,7 @@ and `info` extensions in the installed build.
 
 | Family | Input | Output | Main operations |
 |---|---|---|---|
-| Nintendo 3DS (`ctr`) | `.cia`, `.3ds`/`.cci`, `.cxi`, `.3dsx`; CDN content | Z3DS: `.zcia`, `.zcci`, `.zcxi`, `.z3dsx`; encrypted/decrypted ROMs; CIA/CCI | compress, decompress, encrypt, decrypt, CIA/CCI conversion, CDN to CIA |
+| Nintendo 3DS (`ctr`) | `.cia`, `.3ds`/`.cci`, `.cxi`, `.3dsx`; CDN content | Z3DS: `.zcia`, `.zcci`, `.zcxi`, `.z3dsx`; encrypted/decrypted ROMs; CIA/CCI; Azahar bundles `.bcia`, `.bcci`, `.bcxi` | compress, decompress, encrypt, decrypt, CIA/CCI conversion, CDN to CIA, bundle/unbundle |
 | GameCube (`dol`) | `.iso`, `.gcm`; legacy `.gcz`, `.nkit.iso`, `.nkit.gcz` | `.rvz`, then `.iso` on decompress | compress, migrate, decompress |
 | Wii (`rvl`) | `.iso`, `.wbfs`; legacy `.gcz`, `.wia`, NKit | `.rvz`, then `.iso` or `.wbfs` | compress, migrate, decompress |
 | Wii U (`wup`) | NUS or loadiine title directory, `.wud`, `.wux` | `.wua` | compress, decrypt NUS to loadiine |
@@ -67,6 +67,19 @@ partition instead. A trimmed file still carries the full card size in its header
 `ctr info` reports the padded size rather than the file size. Z3DS files end with a
 seek table; `ctr info` reads only the frames it needs through that table and rejects a
 payload without one.
+
+### Bundle ROMs
+
+`.bcia`, `.bcci`, and `.bcxi` are Azahar bundle containers: a plain uncompressed tar
+of decrypted ROM members. A bundle holds one bootable main (CCI/3DS or CXI, or the
+Z3DS variants `.zcci`/`.zcxi`) plus any number of CIA/ZCIA titles such as updates,
+DLC, or system content. The extension follows the main ROM and is `.bcia` when there
+is none. Azahar boots the main ROM and simulates the bundled CIAs as installed, so a
+game and its extra titles load from one file. The format is specified by
+[Azahar PR #2369](https://github.com/azahar-emu/azahar/pull/2369), which is still a
+draft. The draft boots only a CCI/3DS main; `.bcxi` follows the PR text and may not
+load until upstream adds CXI mains. `ctr bundle` packs members into a bundle and
+`ctr unbundle` extracts them.
 
 ### RVZ and legacy Nintendo disc containers
 
@@ -134,7 +147,7 @@ rom-converto's compression and disc-conversion targets. Sources checked Septembe
 
 | Console / media | Recommended format | Target and limits |
 |---|---|---|
-| Nintendo 3DS | Z3DS (`.zcci`) | [Azahar 2123+](https://github.com/azahar-emu/azahar/releases/tag/2123), using decrypted ROMs. Compressed CIA packages (`.zcia`) are installed instead. |
+| Nintendo 3DS | Z3DS (`.zcci`) | [Azahar 2123+](https://github.com/azahar-emu/azahar/releases/tag/2123), using decrypted ROMs. Compressed CIA packages (`.zcia`) are installed instead. A `.bcci` bundle packs a game with its update and DLC for Azahar. |
 | GameCube / Wii | RVZ | [Dolphin](https://github.com/dolphin-emu/dolphin/blob/master/Readme.md). For a real Wii with [USB Loader GX](https://github.com/wiidev/usbloadergx/blob/enhanced/source/usbloader/wbfs/wbfs_fat.cpp), decompress to WBFS or ISO. |
 | Wii U | WUA | [Cemu](https://github.com/cemu-project/Cemu/blob/main/src/Cafe/TitleList/TitleList.cpp). Can bundle the base game, updates, and DLC. |
 | Switch | NSP / XCI for playback | [Eden](https://github.com/eden-emulator/mirror/blob/master/src/core/loader/loader.cpp) loads NSP/XCI. [NSZ / XCZ](https://github.com/nicoboss/nsz/blob/master/docs/usage.md) are compressed storage formats; use `nx decompress` first. |

@@ -4,6 +4,8 @@ import {
   deriveCompressedPath,
   deriveConvertedPath,
   deriveCsoPath,
+  deriveCtrBundlePath,
+  deriveCtrUnbundleDir,
   deriveCuePath,
   deriveDecryptedPath,
   deriveDiscIsoPath,
@@ -134,6 +136,29 @@ describe("nx merge and split derivation", () => {
       `${DOTTED} (Merged).nsp`,
     );
     expect(deriveNxSplitDir(`${DOTTED}.zip`)).toBe(`${DOTTED}_split`);
+  });
+});
+
+describe("ctr bundle and unbundle derivation", () => {
+  it("names the bundle after the main member, not the first input", () => {
+    expect(deriveCtrBundlePath(["D:\\3ds\\Update.cia", "D:\\3ds\\Game.cci"])).toBe(
+      "D:\\3ds\\Game.bcci",
+    );
+    expect(deriveCtrBundlePath(["D:\\3ds\\Game.cxi", "D:\\3ds\\Update.cia"])).toBe(
+      "D:\\3ds\\Game.bcxi",
+    );
+    expect(deriveCtrBundlePath(["D:\\3ds\\Update.cia", "D:\\3ds\\DLC.cia"])).toBe(
+      "D:\\3ds\\Update.bcia",
+    );
+  });
+
+  it("returns no bundle path for empty inputs", () => {
+    expect(deriveCtrBundlePath([])).toBe("");
+  });
+
+  it("appends _unbundled to the stripped stem", () => {
+    expect(deriveCtrUnbundleDir("D:\\3ds\\Game.bcci")).toBe("D:\\3ds\\Game_unbundled");
+    expect(deriveCtrUnbundleDir(`${DOTTED}.zip`)).toBe(`${DOTTED}_unbundled`);
   });
 });
 

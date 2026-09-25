@@ -24,6 +24,7 @@ pub mod positional_reader;
 pub mod pread;
 pub mod report;
 pub mod sfo;
+pub mod slice_reader;
 pub mod tally;
 pub mod template;
 pub mod verify;

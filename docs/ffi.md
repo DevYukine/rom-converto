@@ -93,18 +93,21 @@ set through the C ABI.
 ### Operations
 
 Operations added since the first ABI v1 release: `cue.to_iso`, `cue.to_cso`, `ntr.encrypt`, `ntr.decrypt` (the original `nds.encrypt` and `nds.decrypt` ids still resolve as aliases),
-`nx.merge`, `nx.split`, `ps3.decrypt`, `psp.to_iso`, `psp.extract`,
+`nx.merge`, `nx.split`, `ctr.bundle`, `ctr.unbundle`, `ps3.decrypt`, `psp.to_iso`, `psp.extract`,
 `vita.extract`, `xbox.convert`, `xbox.extract`, `xenon.compress`,
 `xenon.convert`, `xenon.extract`, and `xenon.verify`.
 
 `nx.merge` takes its containers in `options.inputs` (the first names the
 record) and its format in `options.format` (`nsp`, default, or `xci`).
 `nx.split` writes into `output` or `options.output_dir`, defaulting to a
-`<name>_split` directory next to the input. Directory-output operations
-(`nx.split`, `psp.extract`, `vita.extract`, `xbox.extract`, `xenon.extract`,
-`xenon.convert`, `wup.decrypt`) accept `on_conflict` `error`, `overwrite`,
-and `skip` but not `rename`; `overwrite` replaces an existing file at the path
-and writes into a non-empty directory as it is.
+`<name>_split` directory next to the input. `ctr.bundle` takes its member
+ROM paths in `options.inputs` (the first names the record); `ctr.unbundle`
+writes into `output` or `options.output_dir`, defaulting to a
+`<name>_unbundled` directory next to the input. Directory-output operations
+(`nx.split`, `ctr.unbundle`, `psp.extract`, `vita.extract`, `xbox.extract`,
+`xenon.extract`, `xenon.convert`, `wup.decrypt`) accept `on_conflict` `error`,
+`overwrite`, and `skip` but not `rename`; `overwrite` replaces an existing
+file at the path and writes into a non-empty directory as it is.
 
 `xenon.convert` writes a Games on Demand container and returns `data` with
 `title_id`, `media_id`, `part_count`, and `total_bytes`.

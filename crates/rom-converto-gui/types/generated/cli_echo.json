@@ -44,6 +44,10 @@
       "cso",
       "verify"
     ],
+    "ctr.bundle": [
+      "ctr",
+      "bundle"
+    ],
     "ctr.cdn-to-cia": [
       "ctr",
       "cdn-to-cia"
@@ -79,6 +83,10 @@
     "ctr.generate_cdn_ticket": [
       "ctr",
       "generate-cdn-ticket"
+    ],
+    "ctr.unbundle": [
+      "ctr",
+      "unbundle"
     ],
     "ctr.verify": [
       "ctr",
@@ -635,6 +643,9 @@
       "max_depth",
       "recursive"
     ],
+    "ctr.bundle": [
+      "on_conflict"
+    ],
     "ctr.cdn-to-cia": [
       "cleanup",
       "compress",
@@ -693,6 +704,10 @@
     ],
     "ctr.generate-cdn-ticket": [],
     "ctr.generate_cdn_ticket": [],
+    "ctr.unbundle": [
+      "on_conflict",
+      "output_dir"
+    ],
     "ctr.verify": [
       "content_hashes",
       "max_depth",
@@ -1018,6 +1033,7 @@
     "cso.to-chd": "positional",
     "cso.to_chd": "positional",
     "cso.verify": "none",
+    "ctr.bundle": "output_flag",
     "ctr.cdn-to-cia": "positional",
     "ctr.cdn_to_cia": "positional",
     "ctr.compress": "positional",
@@ -1027,6 +1043,7 @@
     "ctr.encrypt": "positional",
     "ctr.generate-cdn-ticket": "positional",
     "ctr.generate_cdn_ticket": "positional",
+    "ctr.unbundle": "output_dir",
     "ctr.verify": "none",
     "cue.merge": "positional",
     "cue.to-cso": "positional",

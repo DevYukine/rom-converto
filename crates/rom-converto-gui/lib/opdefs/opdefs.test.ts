@@ -49,3 +49,29 @@ describe("op registry", () => {
 		expect(missing).toEqual([]);
 	});
 });
+
+describe("ctr bundle output", () => {
+	const def = allOpDefs().find((d) => d.console === "ctr-bundle")!;
+	const items: StagedItem[] = [
+		{ id: "u", path: "/roms/update.cia", name: "update.cia", size: 1, outExt: "" },
+		{ id: "g", path: "/roms/game.cci", name: "game.cci", size: 1, outExt: "" },
+	];
+
+	// The extension follows the main member, so a directory picked before
+	// staging must not pin a name; the derived one is joined into it.
+	it("joins a chosen directory with the name derived from the main member", () => {
+		const store = def.useStore();
+		store.output = "";
+		store.outputDir = "/out";
+		const payload = def.buildArgsAll!(store, items, "task-1");
+		expect(payload.request.output).toBe("/out/game.bcci");
+		expect(payload.request.options.inputs).toEqual(["/roms/update.cia", "/roms/game.cci"]);
+	});
+
+	it("keeps an explicit file over the derived name", () => {
+		const store = def.useStore();
+		store.output = "/elsewhere/pack.bcci";
+		store.outputDir = "/out";
+		expect(def.buildArgsAll!(store, items, "task-1").request.output).toBe("/elsewhere/pack.bcci");
+	});
+});

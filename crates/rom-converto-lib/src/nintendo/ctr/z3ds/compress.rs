@@ -43,7 +43,7 @@ pub const MIN_ZSTD_LEVEL: i32 = 0;
 /// encrypted ROMs through `check_ncch_not_encrypted` (which skips the check
 /// on EOF). 1 MB is still negligible RAM and covers any realistic partition
 /// 0 offset.
-const ENCRYPTION_PROBE_SIZE: usize = 1024 * 1024;
+pub(crate) const ENCRYPTION_PROBE_SIZE: usize = 1024 * 1024;
 
 /// Compile-time guard. `ENCRYPTION_PROBE_SIZE` must be large enough to reach
 /// an NCSD partition 0 placed at MU=0x100 (offset 0x20000). Shrinking the

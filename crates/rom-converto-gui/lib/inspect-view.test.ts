@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildInspectView, pkgPlatformBadge, wupEncryption } from "./inspect-view";
+import { buildInspectView, moduleFor, pkgPlatformBadge, wupEncryption } from "./inspect-view";
 import type { InfoResult } from "~/types";
 
 function view(info: Partial<InfoResult> & { kind: InfoResult["kind"] }) {
@@ -29,6 +29,8 @@ describe("buildInspectView ctr", () => {
 			compressed: false,
 			ncsd_partitions: [{ index: 0, name: "Game", offset: 0x4000, size: 2048 }],
 			cia_contents: [{ index: 0, content_id: "0000000a", size: 512, encrypted: true }],
+			bundle_kind: null,
+			bundled_titles: [],
 		});
 		expect(v.innerTitle).toBe("Partitions");
 		expect(v.innerFiles).toEqual([{ name: "Game", detail: "2.0 KiB · 0x4000" }]);
@@ -53,6 +55,8 @@ describe("buildInspectView ctr", () => {
 			compressed: false,
 			ncsd_partitions: [],
 			cia_contents: [],
+			bundle_kind: null,
+			bundled_titles: [],
 		});
 		expect(row(v.rom, "Content Type")).toBe("System");
 	});
@@ -75,9 +79,71 @@ describe("buildInspectView ctr", () => {
 			compressed: false,
 			ncsd_partitions: [],
 			cia_contents: [{ index: 1, content_id: "0000000a", size: 512, encrypted: true }],
+			bundle_kind: null,
+			bundled_titles: [],
 		});
 		expect(v.innerTitle).toBe("Contents");
 		expect(v.innerFiles).toEqual([{ name: "Content 1", detail: "0000000a · 512 B · encrypted" }]);
+	});
+
+	it("renders bundle rows and the BCCI format for a bundled title", () => {
+		const info = {
+			kind: "ctr",
+			format: "ncsd",
+			physical_bytes: 513_000,
+			title_id: "0004000000123400",
+			program_id: "0004000000123400",
+			product_code: "CTR-P-TEST",
+			maker_code: "01",
+			maker_name: null,
+			cartridge_size: null,
+			ncch_encrypted: false,
+			seed_crypto: false,
+			seed_found: null,
+			seed_keyy: null,
+			content_kind: "game",
+			smdh: null,
+			icon: null,
+			small_icon: null,
+			compressed: false,
+			ncsd_partitions: [{ index: 0, name: "Game", offset: 0x4000, size: 511_000 }],
+			cia_contents: [],
+			bundle_kind: "cci",
+			bundled_titles: [
+				{
+					name: "Sample 3DS Title.cci",
+					size: 700_000,
+					main: true,
+					format: "ncsd",
+					compressed: false,
+					encrypted: false,
+					title_id: "0004000000123400",
+					content_kind: "game",
+					title: null,
+				},
+				{
+					name: "Update.cia",
+					size: 12_000,
+					main: false,
+					format: "cia",
+					compressed: true,
+					encrypted: false,
+					title_id: "0004000E00123400",
+					content_kind: "update",
+					title: null,
+				},
+			],
+		} as InfoResult;
+		const v = view(info);
+		expect(row(v.container, "Container")).toBe("Bundle (BCCI)");
+		expect(row(v.container, "Members")).toBe("2");
+		expect(v.innerTitle).toBe("Bundled Titles");
+		expect(v.innerFiles).toEqual([
+			{ name: "Sample 3DS Title.cci", detail: "NCSD · 684 KiB · main · 0004000000123400" },
+			{ name: "Update.cia", detail: "CIA · 12 KiB · zstd · 0004000E00123400" },
+		]);
+		expect(moduleFor(info).format(info)).toBe("BCCI");
+		expect(moduleFor(info).stats?.(info)).toContainEqual({ label: "Members", value: "2" });
 	});
 });
 

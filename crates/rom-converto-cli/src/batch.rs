@@ -249,7 +249,7 @@ pub(crate) fn direction(operation: &str) -> TallyDirection {
         "cso.decompress" | "ctr.decompress" | "dol.decompress" | "rvl.decompress"
         | "rvz.decompress" | "nx.decompress" => TallyDirection::Decompress,
         "chd.extract" | "psp.extract" | "vita.extract" | "xbox.extract" | "xenon.extract"
-        | "xenon.convert" | "nx.split" | "wup.decrypt" | "playlist.write" => {
+        | "xenon.convert" | "nx.split" | "ctr.unbundle" | "wup.decrypt" | "playlist.write" => {
             TallyDirection::CountOnly
         }
         _ => TallyDirection::Convert,

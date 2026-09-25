@@ -18,10 +18,10 @@ const DECOMPRESS_MAP: Record<string, string> = {
 // this list is treated as one; anything else stays part of the title
 // ("10.000 Bullets (Europe)", "Super Mario Bros. U").
 const IMAGE_EXTS = new Set([
-  "3ds", "3dsx", "bin", "cci", "chd", "cia", "cso", "cue", "cxi", "dax",
-  "gcm", "gcz", "iso", "nds", "nsp", "nsz", "pbp", "pkg", "rvz", "wbfs",
-  "wia", "wua", "wud", "wux", "xci", "xcz", "xiso", "z3ds", "z3dsx", "zar",
-  "zcia", "zcci", "zcxi", "zso",
+  "3ds", "3dsx", "bcia", "bcci", "bcxi", "bin", "cci", "chd", "cia", "cso",
+  "cue", "cxi", "dax", "gcm", "gcz", "iso", "nds", "nsp", "nsz", "pbp", "pkg",
+  "rvz", "wbfs", "wia", "wua", "wud", "wux", "xci", "xcz", "xiso", "z3ds",
+  "z3dsx", "zar", "zcia", "zcci", "zcxi", "zso",
 ]);
 
 function getExt(path: string): string {
@@ -208,6 +208,28 @@ export function deriveNxMergedPath(input: string, format: string): string {
 // Mirrors `rom-converto nx split`'s default output directory.
 export function deriveNxSplitDir(input: string): string {
   return `${stemOf(stripArchiveExt(input))}_split`;
+}
+
+// Mirrors `rom-converto ctr bundle`'s default output: named after the main
+// member (bcci for 3ds/cci/zcci, bcxi for cxi/zcxi), else after the first
+// input with bcia when only CIA members are staged.
+const CTR_MAIN_BUNDLE_EXT: Record<string, "bcci" | "bcxi"> = {
+  "3ds": "bcci",
+  cci: "bcci",
+  zcci: "bcci",
+  cxi: "bcxi",
+  zcxi: "bcxi",
+};
+
+export function deriveCtrBundlePath(inputs: string[]): string {
+  const main = inputs.find((p) => CTR_MAIN_BUNDLE_EXT[getExt(p)]);
+  if (!main) return inputs[0] ? replaceExt(stripArchiveExt(inputs[0]), "bcia") : "";
+  return replaceExt(stripArchiveExt(main), CTR_MAIN_BUNDLE_EXT[getExt(main)]!);
+}
+
+// Mirrors `rom-converto ctr unbundle`'s default output directory.
+export function deriveCtrUnbundleDir(input: string): string {
+  return `${stemOf(stripArchiveExt(input))}_unbundled`;
 }
 
 // Extract-to-directory ops (xbox, xenon) place output files under a sibling

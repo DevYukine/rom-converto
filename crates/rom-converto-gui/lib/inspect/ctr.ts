@@ -8,7 +8,10 @@ export const ctr: KindModule<"ctr"> = {
 		const rom: InspectField[] = [];
 		let innerTitle: string | undefined;
 		let innerFiles: InnerFile[] | undefined;
-		if (info.compressed) {
+		if (info.bundle_kind) {
+			add(container, "Container", `Bundle (B${info.bundle_kind.toUpperCase()})`);
+			add(container, "Members", String(info.bundled_titles.length));
+		} else if (info.compressed) {
 			add(container, "Container", "Z3DS");
 			add(container, "Compression", "zstd");
 			add(container, "Compressed Size", formatBytes(info.physical_bytes));
@@ -45,7 +48,13 @@ export const ctr: KindModule<"ctr"> = {
 			add(rom, "EULA", `v${smdh.eula_version_major}.${smdh.eula_version_minor}`);
 			add(rom, "Flags", `0x${hex(smdh.flags, 8)}`);
 		}
-		if (info.ncsd_partitions.length) {
+		if (info.bundled_titles.length) {
+			innerTitle = "Bundled Titles";
+			innerFiles = info.bundled_titles.map((t) => ({
+				name: t.name,
+				detail: `${t.format.toUpperCase()} · ${formatBytes(t.size)}${t.main ? " · main" : ""}${t.compressed ? " · zstd" : ""}${t.encrypted ? " · encrypted" : ""}${t.title_id ? ` · ${t.title_id}` : ""}`,
+			}));
+		} else if (info.ncsd_partitions.length) {
 			innerTitle = "Partitions";
 			innerFiles = info.ncsd_partitions.map((p) => ({
 				name: p.name,
@@ -64,12 +73,13 @@ export const ctr: KindModule<"ctr"> = {
 		englishFirst(info.smdh?.titles, (t) => t.language)?.long_description || info.product_code || info.title_id,
 	size: (info) => info.physical_bytes,
 	console: () => "3DS",
-	format: (info) => info.format.toUpperCase(),
+	format: (info) => (info.bundle_kind ? `B${info.bundle_kind.toUpperCase()}` : info.format.toUpperCase()),
 	meta: (info) => [formatMaker(info.maker_code, info.maker_name), info.smdh?.region_names.join(", ")],
 	stats: (info) => [
 		{ label: "Title ID", value: info.title_id },
 		{ label: "Encryption", value: info.ncch_encrypted ? "encrypted" : "decrypted ✓" },
 		...(info.compressed ? [{ label: "Compressed", value: "zstd" }] : []),
+		...(info.bundle_kind ? [{ label: "Members", value: String(info.bundled_titles.length) }] : []),
 	],
 	titleId: (info) => info.title_id,
 };

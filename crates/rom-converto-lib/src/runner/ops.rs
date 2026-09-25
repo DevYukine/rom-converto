@@ -8,7 +8,9 @@ use super::models::{
     RunOptions, RunPlansData, RunRequest, RunResponse, RunRow, RunStatus, VerifyReport,
     WupTitleInputOption,
 };
-use super::ops_misc::{cue_to_cso, cue_to_iso, ntr_decrypt, ntr_encrypt, nx_merge, nx_split};
+use super::ops_misc::{
+    ctr_bundle, ctr_unbundle, cue_to_cso, cue_to_iso, ntr_decrypt, ntr_encrypt, nx_merge, nx_split,
+};
 use super::ops_ms::{
     xbox_convert, xbox_extract, xenon_compress, xenon_convert, xenon_extract, xenon_verify,
 };
@@ -325,6 +327,24 @@ pub(crate) static OPS: &[OpSpec] = &[
         run: |req, progress, cancel| Box::pin(ctr_verify(req, progress, cancel)),
     },
     OpSpec {
+        name: "ctr.bundle",
+        aliases: &[],
+        batch_exts: None,
+        input_exts: None,
+        writes_output: true,
+        required_bytes: Some(|req, _| inputs_total_len(req)),
+        run: |req, progress, cancel| Box::pin(ctr_bundle(req, progress, cancel)),
+    },
+    OpSpec {
+        name: "ctr.unbundle",
+        aliases: &[],
+        batch_exts: None,
+        input_exts: Some(crate::nintendo::ctr::bundle::BUNDLE_EXTS),
+        writes_output: true,
+        required_bytes: None,
+        run: |req, progress, cancel| Box::pin(ctr_unbundle(req, progress, cancel)),
+    },
+    OpSpec {
         name: "nx.compress",
         aliases: &[],
         batch_exts: Some(&["nsp", "xci", "nca"]),
@@ -429,18 +449,7 @@ pub(crate) static OPS: &[OpSpec] = &[
         batch_exts: None,
         input_exts: None,
         writes_output: true,
-        required_bytes: Some(|req, _| {
-            req.options
-                .inputs
-                .iter()
-                .flatten()
-                .map(|input| match input {
-                    WupTitleInputOption::Path(path) | WupTitleInputOption::Object { path, .. } => {
-                        file_len(path)
-                    }
-                })
-                .sum()
-        }),
+        required_bytes: Some(|req, _| inputs_total_len(req)),
         run: |req, progress, cancel| Box::pin(nx_merge(req, progress, cancel)),
     },
     OpSpec {
@@ -638,6 +647,21 @@ pub(crate) static OPS: &[OpSpec] = &[
         run: |req, _progress, _cancel| Box::pin(std::future::ready(info(req))),
     },
 ];
+
+/// Bytes a merge or bundle writes: the combined size of every input path,
+/// since the output reproduces its inputs verbatim.
+fn inputs_total_len(req: &RunRequest) -> u64 {
+    req.options
+        .inputs
+        .iter()
+        .flatten()
+        .map(|input| match input {
+            WupTitleInputOption::Path(path) | WupTitleInputOption::Object { path, .. } => {
+                file_len(path)
+            }
+        })
+        .sum()
+}
 
 impl OpSpec {
     fn input_exts(&self) -> &'static [&'static str] {

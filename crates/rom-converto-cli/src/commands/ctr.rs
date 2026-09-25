@@ -1,5 +1,5 @@
 use crate::commands::info_command::InfoCommand;
-use crate::commands::{ConflictArgs, OutputArgs};
+use crate::commands::{ConflictArgs, ConflictPolicyArg, OutputArgs};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
@@ -13,9 +13,8 @@ use rom_converto_lib::nintendo::ctr::generate_ticket_from_cdn;
 use rom_converto_lib::nintendo::ctr::verify::{
     CtrVerifyOptions, CtrVerifyResult, verify_ctr, verify_ctr_batch,
 };
-use rom_converto_lib::runner::models::RunOptions;
-use rom_converto_lib::util::CancelToken;
-use rom_converto_lib::util::ConflictPolicy;
+use rom_converto_lib::runner::models::{RunOptions, WupTitleInputOption};
+use rom_converto_lib::util::{CancelToken, ConflictPolicy, FileStatus};
 
 /// Commands specific to CTR (3DS) formats
 #[derive(Subcommand, Debug, Eq, PartialEq)]
@@ -28,6 +27,8 @@ pub enum CtrCommands {
     Decompress(DecompressRomCommand),
     Verify(VerifyCommand),
     Convert(ConvertCommand),
+    Bundle(BundleCommand),
+    Unbundle(UnbundleCommand),
     Info(InfoCommand),
 }
 
@@ -306,6 +307,54 @@ pub struct ConvertCommand {
     pub conflict: ConflictArgs,
 }
 
+/// Bundle 3DS ROM members into one Azahar bundle file
+#[derive(Parser, Debug, Clone, Eq, PartialEq)]
+#[command(
+    long_about = "Bundle 3DS ROM members into one Azahar bundle file\n\nMembers are one CCI/3DS or CXI ROM (or their Z3DS variants .zcci/.zcxi) plus any number of CIA/ZCIA files (updates, DLC, system titles). The output extension follows the main ROM: .bcci for CCI/3DS, .bcxi for CXI, or .bcia when there is no main ROM.\n\nAzahar simulates the bundled CIAs as installed and boots the main ROM, so a game and its update and DLC load from a single file.\n\nEncrypted members are refused: decrypt them first with rom-converto ctr decrypt.\n\nIf OUTPUT is omitted the bundle is written next to the main ROM as <main ROM name>.bcci (or .bcxi / .bcia).",
+    after_long_help = "EXAMPLES:\n  Game plus extras: rom-converto ctr bundle game.cci update.cia dlc.cia\n  Z3DS members:     rom-converto ctr bundle game.zcci update.zcia -o game.bcci\n  CIAs only:        rom-converto ctr bundle update.cia dlc.cia (writes update.bcia)\n"
+)]
+pub struct BundleCommand {
+    /// Member ROM files: one CCI/3DS or CXI main ROM (optional) plus any number of CIA/ZCIA files
+    #[arg(required = true, num_args = 1.., value_name = "INPUT")]
+    pub inputs: Vec<PathBuf>,
+
+    /// Output bundle file path, defaults to <main ROM name>.bcci (or .bcxi / .bcia) next to the main ROM
+    #[arg(short = 'o', long = "output", value_name = "OUTPUT")]
+    pub output: Option<PathBuf>,
+
+    #[command(flatten)]
+    pub conflict: ConflictArgs,
+}
+
+/// Extract every member of an Azahar bundle into a directory
+#[derive(Parser, Debug, Clone, Eq, PartialEq)]
+#[command(
+    long_about = "Extract every member of an Azahar bundle file into a directory\n\nSupported input formats: .bcia, .bcci, .bcxi\nEach member is written to the output directory under its own name.\n\nIf --output-dir is omitted the members are extracted to <input name>_unbundled next to the input.",
+    after_long_help = "EXAMPLES:\n  Default dir:  rom-converto ctr unbundle game.bcci\n  Explicit dir: rom-converto ctr unbundle game.bcci --output-dir ./members\n"
+)]
+pub struct UnbundleCommand {
+    /// Input bundle file path (.bcia, .bcci, or .bcxi)
+    #[arg(value_name = "INPUT")]
+    pub input: PathBuf,
+
+    /// Directory to write the members into. Created if missing. Defaults to <input's name>_unbundled next to the input
+    #[arg(long = "output-dir", value_name = "DIR")]
+    pub output_dir: Option<PathBuf>,
+
+    /// What to do when the output directory already exists: error, overwrite, or skip. `rename` is rejected for directory outputs
+    #[arg(long = "on-conflict", value_enum)]
+    pub on_conflict: Option<ConflictPolicyArg>,
+
+    /// Alias for --on-conflict overwrite
+    #[arg(
+        long,
+        short = 'f',
+        default_value_t = false,
+        conflicts_with = "on_conflict"
+    )]
+    pub force: bool,
+}
+
 /// Verify CTR ROM file integrity and legitimacy
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
@@ -523,6 +572,54 @@ pub async fn run(command: CtrCommands, ctx: DispatchCtx<'_>) -> Result<()> {
                 options,
             )
             .await?;
+        }
+        CtrCommands::Bundle(cmd) => {
+            for input in &cmd.inputs {
+                ensure_input_exists(input)?;
+            }
+            let mut options = RunOptions::from(batch::Common {
+                recursive: false,
+                output_dir: None,
+                output_template: None,
+                max_depth: None,
+                report: None,
+                policy: resolve_policy(
+                    cmd.conflict.on_conflict,
+                    cmd.conflict.force,
+                    ConflictPolicy::Error,
+                ),
+                skip_space_check,
+            });
+            options.inputs = Some(
+                cmd.inputs
+                    .iter()
+                    .cloned()
+                    .map(WupTitleInputOption::Path)
+                    .collect(),
+            );
+            let first = cmd.inputs[0].clone();
+            let response = batch::run(&run, "ctr.bundle", first, cmd.output, options).await?;
+            if let Some(record) = response.records.first()
+                && record.status == FileStatus::Ok
+            {
+                log::info!("wrote {}", record.output_path);
+            }
+        }
+        CtrCommands::Unbundle(cmd) => {
+            ensure_input_exists(&cmd.input)?;
+            let options = RunOptions::from(batch::Common {
+                recursive: false,
+                output_dir: cmd.output_dir,
+                output_template: None,
+                max_depth: None,
+                report: None,
+                policy: resolve_policy(cmd.on_conflict, cmd.force, ConflictPolicy::Error),
+                skip_space_check,
+            });
+            let response = batch::run(&run, "ctr.unbundle", cmd.input, None, options).await?;
+            if response.records.iter().any(|r| r.status == FileStatus::Ok) {
+                log::info!("{}", response.message);
+            }
         }
         CtrCommands::Verify(cmd) => {
             let opts = CtrVerifyOptions {
@@ -773,5 +870,44 @@ mod tests {
             panic!("expected Verify");
         };
         assert!(c.verify_content);
+    }
+
+    #[test]
+    fn parses_bundle_inputs_and_output() {
+        let h = Harness::parse_from(["bin", "bundle", "a.cci", "b.cia", "-o", "out.bcci"]);
+        let CtrCommands::Bundle(c) = h.cmd else {
+            panic!("expected Bundle");
+        };
+        assert_eq!(
+            c.inputs,
+            vec![PathBuf::from("a.cci"), PathBuf::from("b.cia")]
+        );
+        assert_eq!(c.output, Some(PathBuf::from("out.bcci")));
+        assert!(c.conflict.on_conflict.is_none());
+    }
+
+    #[test]
+    fn bundle_requires_inputs() {
+        let result = Harness::try_parse_from(["bin", "bundle"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parses_unbundle_output_dir() {
+        let h = Harness::parse_from(["bin", "unbundle", "x.bcci", "--output-dir", "d"]);
+        let CtrCommands::Unbundle(c) = h.cmd else {
+            panic!("expected Unbundle");
+        };
+        assert_eq!(c.input, PathBuf::from("x.bcci"));
+        assert_eq!(c.output_dir, Some(PathBuf::from("d")));
+        assert!(c.on_conflict.is_none());
+        assert!(!c.force);
+    }
+
+    #[test]
+    fn unbundle_force_conflicts_with_on_conflict() {
+        let result =
+            Harness::try_parse_from(["bin", "unbundle", "x.bcci", "-f", "--on-conflict", "skip"]);
+        assert!(result.is_err());
     }
 }

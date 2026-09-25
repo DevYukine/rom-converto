@@ -6,6 +6,7 @@
 //! MetaData block fall back to ExeFS extraction from the boot content.
 
 use crate::info::{ContentKind, Image};
+use crate::nintendo::ctr::bundle::{BundleEntry, BundleKind, list_bundle};
 use crate::nintendo::ctr::constants::{
     CTR_MEDIA_UNIT_SIZE, NCCH_FLAGS7_SEED_CRYPTO, NCCH_MAGIC, NCCH_MAGIC_OFFSET,
     NCSD_PARTITION_COUNT, NCSD_PARTITION_ENTRY_SIZE, NCSD_PARTITION_TABLE_OFFSET,
@@ -24,6 +25,7 @@ use crate::nintendo::ctr::z3ds::models::{Z3DS_HEADER_SIZE, Z3DS_MAGIC, Z3dsHeade
 use crate::util::bytes::cstr_ascii;
 use crate::util::extent_end;
 use crate::util::pixel::{decode_rgb565_morton_tiled, encode_png};
+use crate::util::slice_reader::SliceReader;
 use anyhow::{Context, Result, anyhow, bail};
 use binrw::BinRead;
 use byteorder::{BE, LE, ReadBytesExt};
@@ -69,6 +71,13 @@ pub struct CtrInfo {
     /// TMD content chunk entries. Empty for non-CIA inputs.
     #[serde(default)]
     pub cia_contents: Vec<CtrContentEntry>,
+    /// Set when the input is an Azahar bundle archive (`.bcia`/`.bcci`/`.bcxi`);
+    /// every other field describes the bootable member, not the container.
+    #[serde(default)]
+    pub bundle_kind: Option<BundleKind>,
+    /// Every member title in archive order. Empty for non-bundle inputs.
+    #[serde(default)]
+    pub bundled_titles: Vec<CtrBundledTitle>,
 }
 
 /// Which container format a ROM was detected as.
@@ -143,12 +152,40 @@ pub struct CtrContentEntry {
     pub encrypted: bool,
 }
 
+/// One member title bundled inside a `.bcia`/`.bcci`/`.bcxi` archive, in
+/// archive order. A member the parser cannot read (unknown extension or
+/// garbage bytes) still gets a row, as an `Unknown` format.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
+pub struct CtrBundledTitle {
+    pub name: String,
+    pub size: u64,
+    pub main: bool,
+    pub format: CtrFormat,
+    pub compressed: bool,
+    pub encrypted: bool,
+    pub title_id: String,
+    pub content_kind: Option<ContentKind>,
+    /// English SMDH long description when the member carries one.
+    pub title: Option<String>,
+}
+
 /// Detects the ROM format at `path` and extracts its [`CtrInfo`] metadata.
+/// Azahar bundle extensions are routed to [`read_bundle_info`]; everything
+/// else is parsed in place.
 pub fn read_info(path: &Path) -> Result<CtrInfo> {
     let physical_bytes = std::fs::metadata(path)
         .with_context(|| format!("ctr info: stat {}", path.display()))?
         .len();
 
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase());
+    if let Some(kind) = ext.as_deref().and_then(BundleKind::from_ext) {
+        return read_bundle_info(path, kind);
+    }
     let mut reader = BufReader::new(File::open(path)?);
     let mut info =
         read_info_from(&mut reader).with_context(|| format!("ctr info: {}", path.display()))?;
@@ -201,6 +238,106 @@ pub fn read_info_from<R: Read + Seek>(reader: &mut R) -> Result<CtrInfo> {
     }
 
     Err(anyhow!("ctr info: unrecognized format"))
+}
+
+/// Reads an Azahar bundle archive (plain tar of decrypted members). The
+/// result describes the bootable member; every member is listed in
+/// [`CtrInfo::bundled_titles`] in archive order.
+fn read_bundle_info(path: &Path, kind: BundleKind) -> Result<CtrInfo> {
+    let entries = list_bundle(path)?;
+
+    // The first entry ending .cci/.zcci/.3ds mirrors Azahar's
+    // AutoOpenNCCHNCSD, which opens a CCI/3DS main over a CXI or CIA; the
+    // CXI-then-CIA fallbacks below are rom-converto's own descriptive
+    // choice for a bundle with no CCI/3DS main (a .bcia is handled by
+    // Azahar's AM CIA path instead).
+    let primary_idx = entries
+        .iter()
+        .position(|e| {
+            [".cci", ".zcci", ".3ds"]
+                .iter()
+                .any(|ext| e.name.ends_with(ext))
+        })
+        .or_else(|| {
+            entries
+                .iter()
+                .position(|e| [".cxi", ".zcxi"].iter().any(|ext| e.name.ends_with(ext)))
+        })
+        .or_else(|| {
+            entries
+                .iter()
+                .position(|e| [".cia", ".zcia"].iter().any(|ext| e.name.ends_with(ext)))
+        })
+        .ok_or_else(|| anyhow!("ctr info: bundle contains no 3DS ROM at {}", path.display()))?;
+
+    let physical_bytes = std::fs::metadata(path)?.len();
+    let mut bundled_titles = Vec::with_capacity(entries.len());
+    let mut primary_info = None;
+    for (idx, entry) in entries.iter().enumerate() {
+        let is_main = idx == primary_idx;
+        match read_bundle_member(path, entry) {
+            Ok(info) => {
+                let row = bundled_title_row(&info, entry, is_main);
+                if is_main {
+                    primary_info = Some(info);
+                }
+                bundled_titles.push(row);
+            }
+            // The bootable member must parse; anything else (unknown
+            // extension, garbage bytes) degrades to an Unknown row.
+            Err(e) if is_main => {
+                return Err(e)
+                    .with_context(|| format!("ctr info: {} in {}", entry.name, path.display()));
+            }
+            Err(_) => bundled_titles.push(unknown_bundled_title(entry)),
+        }
+    }
+    let mut info = primary_info.expect("primary member parse failure returns early");
+    info.physical_bytes = physical_bytes;
+    info.bundle_kind = Some(kind);
+    info.bundled_titles = bundled_titles;
+    Ok(info)
+}
+
+fn read_bundle_member(path: &Path, entry: &BundleEntry) -> Result<CtrInfo> {
+    let file = File::open(path)?;
+    let mut reader = BufReader::new(SliceReader::new(file, entry.offset, entry.size));
+    read_info_from(&mut reader)
+}
+
+fn bundled_title_row(info: &CtrInfo, entry: &BundleEntry, is_main: bool) -> CtrBundledTitle {
+    let title = info.smdh.as_ref().and_then(|smdh| {
+        smdh.titles
+            .iter()
+            .find(|t| t.language == "English")
+            .map(|t| t.long_description.clone())
+            .filter(|t| !t.is_empty())
+    });
+    CtrBundledTitle {
+        name: entry.name.clone(),
+        size: entry.size,
+        main: is_main,
+        format: info.format,
+        compressed: info.compressed,
+        encrypted: info.ncch_encrypted,
+        title_id: info.title_id.clone(),
+        content_kind: info.content_kind,
+        title,
+    }
+}
+
+fn unknown_bundled_title(entry: &BundleEntry) -> CtrBundledTitle {
+    CtrBundledTitle {
+        name: entry.name.clone(),
+        size: entry.size,
+        main: false,
+        format: CtrFormat::Unknown,
+        compressed: false,
+        encrypted: false,
+        title_id: String::new(),
+        content_kind: None,
+        title: None,
+    }
 }
 
 fn read_z3ds_info(reader: &mut dyn ReadSeek) -> Result<CtrInfo> {
@@ -298,6 +435,8 @@ fn read_cia_info<R: Read + Seek>(reader: &mut R) -> Result<CtrInfo> {
         format: CtrFormat::Cia,
         compressed: false,
         physical_bytes: 0,
+        bundle_kind: None,
+        bundled_titles: Vec::new(),
         title_id: info_from_ncch.title_id,
         program_id: info_from_ncch.program_id,
         product_code: info_from_ncch.product_code,
@@ -367,6 +506,8 @@ fn read_ncsd_info<R: Read + Seek>(reader: &mut R) -> Result<CtrInfo> {
         format: CtrFormat::Ncsd,
         compressed: false,
         physical_bytes: 0,
+        bundle_kind: None,
+        bundled_titles: Vec::new(),
         title_id: info_from_ncch.title_id,
         program_id: info_from_ncch.program_id,
         product_code: info_from_ncch.product_code,
@@ -416,6 +557,8 @@ fn read_ncch_info<R: Read + Seek>(reader: &mut R) -> Result<CtrInfo> {
         format: CtrFormat::Ncch,
         compressed: false,
         physical_bytes: 0,
+        bundle_kind: None,
+        bundled_titles: Vec::new(),
         title_id: info_from_ncch.title_id,
         program_id: info_from_ncch.program_id,
         product_code: info_from_ncch.product_code,
@@ -476,6 +619,8 @@ fn read_3dsx_info<R: Read + Seek>(reader: &mut R) -> Result<CtrInfo> {
         format: CtrFormat::Threedsx,
         compressed: false,
         physical_bytes: 0,
+        bundle_kind: None,
+        bundled_titles: Vec::new(),
         title_id: String::new(),
         program_id: String::new(),
         product_code: String::new(),
@@ -1140,5 +1285,211 @@ mod tests {
             let info = read_info(&cia_path).unwrap();
             assert_eq!(info.content_kind, Some(ContentKind::System));
         }
+    }
+
+    /// Persists `bytes` as `name` inside `dir` and appends it to `builder`
+    /// under that exact archive name.
+    fn tar_append(builder: &mut tar::Builder<std::fs::File>, dir: &Path, name: &str, bytes: &[u8]) {
+        let path = dir.join(name);
+        std::fs::write(&path, bytes).unwrap();
+        builder.append_path_with_name(&path, name).unwrap();
+    }
+
+    #[test]
+    fn read_info_on_bcci_reports_primary_ncsd_and_member_rows() {
+        use crate::nintendo::ctr::bundle::BundleKind;
+        use crate::nintendo::ctr::test_fixtures::{SYNTH_CIA_TITLE_ID, make_fake_ncsd, synth_cia};
+
+        let dir = tempfile::tempdir().unwrap();
+        let (_cia_tmp, cia_path, _) = synth_cia(SYNTH_CIA_TITLE_ID, 0x400);
+
+        let bundle_path = dir.path().join("game.bcci");
+        let mut builder = tar::Builder::new(std::fs::File::create(&bundle_path).unwrap());
+        tar_append(
+            &mut builder,
+            dir.path(),
+            "game.cci",
+            &make_fake_ncsd(SYNTH_CIA_TITLE_ID),
+        );
+        std::fs::copy(&cia_path, dir.path().join("update.cia")).unwrap();
+        builder
+            .append_path_with_name(dir.path().join("update.cia"), "update.cia")
+            .unwrap();
+        builder.finish().unwrap();
+        let bundle_size = std::fs::metadata(&bundle_path).unwrap().len();
+
+        let info = read_info(&bundle_path).unwrap();
+        assert_eq!(info.format, CtrFormat::Ncsd);
+        assert_eq!(info.bundle_kind, Some(BundleKind::Cci));
+        assert_eq!(info.physical_bytes, bundle_size);
+        assert_eq!(info.bundled_titles.len(), 2);
+        assert!(info.bundled_titles[0].main);
+        assert_eq!(info.bundled_titles[0].name, "game.cci");
+        assert!(!info.bundled_titles[0].compressed);
+        assert!(!info.bundled_titles[1].main);
+        assert_eq!(info.bundled_titles[1].format, CtrFormat::Cia);
+        assert!(!info.bundled_titles[1].title_id.is_empty());
+    }
+
+    #[test]
+    fn read_info_on_bcia_picks_first_cia_as_primary() {
+        use crate::nintendo::ctr::bundle::BundleKind;
+        use crate::nintendo::ctr::test_fixtures::{make_ncch_header_bytes, synth_cia_with_content};
+        use sha2::Digest;
+
+        let dir = tempfile::tempdir().unwrap();
+        let synth = |title_id: u64, name: &str| {
+            let content = make_ncch_header_bytes(title_id);
+            let content_hash = {
+                let mut h = sha2::Sha256::new();
+                h.update(&content);
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&h.finalize());
+                arr
+            };
+            let (_tmp, path) = synth_cia_with_content(
+                title_id,
+                vec![(0, 0, content.clone(), content_hash)],
+                content,
+                false,
+            );
+            let dest = dir.path().join(name);
+            std::fs::copy(&path, &dest).unwrap();
+            dest
+        };
+        let first = synth(0x00040000_00000001, "game.cia");
+        let second = synth(0x0004000E_00000002, "update.cia");
+
+        let bundle_path = dir.path().join("titles.bcia");
+        let mut builder = tar::Builder::new(std::fs::File::create(&bundle_path).unwrap());
+        builder.append_path_with_name(&first, "game.cia").unwrap();
+        builder
+            .append_path_with_name(&second, "update.cia")
+            .unwrap();
+        builder.finish().unwrap();
+
+        let info = read_info(&bundle_path).unwrap();
+        assert_eq!(info.bundle_kind, Some(BundleKind::Cia));
+        assert_eq!(info.format, CtrFormat::Cia);
+        assert_eq!(info.title_id, "0004000000000001");
+        assert_eq!(info.bundled_titles.len(), 2);
+        assert!(info.bundled_titles[0].main);
+        assert_eq!(info.bundled_titles[0].title_id, "0004000000000001");
+        assert!(!info.bundled_titles[1].main);
+        assert_eq!(info.bundled_titles[1].title_id, "0004000E00000002");
+    }
+
+    #[test]
+    fn read_info_on_bcia_with_only_a_main_member_describes_it() {
+        use crate::nintendo::ctr::bundle::BundleKind;
+        use crate::nintendo::ctr::test_fixtures::{SYNTH_CIA_TITLE_ID, make_fake_ncsd};
+
+        let dir = tempfile::tempdir().unwrap();
+        let bundle_path = dir.path().join("odd.bcia");
+        let mut builder = tar::Builder::new(std::fs::File::create(&bundle_path).unwrap());
+        tar_append(
+            &mut builder,
+            dir.path(),
+            "game.cci",
+            &make_fake_ncsd(SYNTH_CIA_TITLE_ID),
+        );
+        builder.finish().unwrap();
+
+        let info = read_info(&bundle_path).unwrap();
+        assert_eq!(info.bundle_kind, Some(BundleKind::Cia));
+        assert_eq!(info.format, CtrFormat::Ncsd);
+        assert_eq!(info.bundled_titles.len(), 1);
+        assert!(info.bundled_titles[0].main);
+        assert_eq!(info.bundled_titles[0].name, "game.cci");
+    }
+
+    #[test]
+    fn read_info_on_bundle_lists_unknown_member_as_unknown_row() {
+        use crate::nintendo::ctr::bundle::BundleKind;
+        use crate::nintendo::ctr::test_fixtures::{SYNTH_CIA_TITLE_ID, synth_cia};
+
+        let dir = tempfile::tempdir().unwrap();
+        let (_cia_tmp, cia_path, _) = synth_cia(SYNTH_CIA_TITLE_ID, 0x400);
+
+        let bundle_path = dir.path().join("mixed.bcia");
+        let mut builder = tar::Builder::new(std::fs::File::create(&bundle_path).unwrap());
+        builder
+            .append_path_with_name(&cia_path, "game.cia")
+            .unwrap();
+        tar_append(&mut builder, dir.path(), "notes.txt", b"not a rom at all");
+        builder.finish().unwrap();
+
+        let info = read_info(&bundle_path).unwrap();
+        assert_eq!(info.bundle_kind, Some(BundleKind::Cia));
+        assert_eq!(info.format, CtrFormat::Cia);
+        assert_eq!(info.bundled_titles.len(), 2);
+        assert!(info.bundled_titles[0].main);
+        assert!(!info.bundled_titles[1].main);
+        assert_eq!(info.bundled_titles[1].format, CtrFormat::Unknown);
+        assert!(info.bundled_titles[1].title_id.is_empty());
+        assert_eq!(info.bundled_titles[1].name, "notes.txt");
+    }
+
+    #[test]
+    fn read_bundle_info_prefers_cci_over_cxi_and_cia_regardless_of_position() {
+        use crate::nintendo::ctr::test_fixtures::{SYNTH_CIA_TITLE_ID, make_fake_ncsd, synth_cia};
+
+        let dir = tempfile::tempdir().unwrap();
+        let (_cia_tmp, cia_path, _) = synth_cia(SYNTH_CIA_TITLE_ID, 0x400);
+
+        let bundle_path = dir.path().join("game.bcci");
+        let mut builder = tar::Builder::new(std::fs::File::create(&bundle_path).unwrap());
+        builder
+            .append_path_with_name(&cia_path, "update.cia")
+            .unwrap();
+        tar_append(
+            &mut builder,
+            dir.path(),
+            "game.cxi",
+            &make_fake_decrypted_cxi(0x400),
+        );
+        tar_append(
+            &mut builder,
+            dir.path(),
+            "game.cci",
+            &make_fake_ncsd(SYNTH_CIA_TITLE_ID),
+        );
+        builder.finish().unwrap();
+
+        let info = read_info(&bundle_path).unwrap();
+        assert_eq!(info.bundled_titles.len(), 3);
+        assert!(!info.bundled_titles[0].main);
+        assert!(!info.bundled_titles[1].main);
+        assert!(info.bundled_titles[2].main);
+        assert_eq!(info.bundled_titles[2].name, "game.cci");
+        assert_eq!(info.format, CtrFormat::Ncsd);
+    }
+
+    #[test]
+    fn read_bundle_info_falls_back_to_cxi_when_no_cci_member() {
+        use crate::nintendo::ctr::test_fixtures::{SYNTH_CIA_TITLE_ID, synth_cia};
+
+        let dir = tempfile::tempdir().unwrap();
+        let (_cia_tmp, cia_path, _) = synth_cia(SYNTH_CIA_TITLE_ID, 0x400);
+
+        let bundle_path = dir.path().join("game.bcxi");
+        let mut builder = tar::Builder::new(std::fs::File::create(&bundle_path).unwrap());
+        builder
+            .append_path_with_name(&cia_path, "update.cia")
+            .unwrap();
+        tar_append(
+            &mut builder,
+            dir.path(),
+            "game.cxi",
+            &make_fake_decrypted_cxi(0x400),
+        );
+        builder.finish().unwrap();
+
+        let info = read_info(&bundle_path).unwrap();
+        assert_eq!(info.bundled_titles.len(), 2);
+        assert!(!info.bundled_titles[0].main);
+        assert!(info.bundled_titles[1].main);
+        assert_eq!(info.bundled_titles[1].name, "game.cxi");
+        assert_eq!(info.format, CtrFormat::Ncch);
     }
 }

@@ -267,6 +267,7 @@ const PATH_FLAGS: &[(&str, &[&str])] = &[
         "cso verify",
         &["content_hashes", "full", "max_depth", "recursive"],
     ),
+    ("ctr bundle", &["on_conflict"]),
     (
         "ctr cdn-to-cia",
         &[
@@ -333,6 +334,7 @@ const PATH_FLAGS: &[(&str, &[&str])] = &[
         ],
     ),
     ("ctr generate-cdn-ticket", &[]),
+    ("ctr unbundle", &["on_conflict", "output_dir"]),
     // The runner reads `content_hashes` here; `full` is the same `--full`
     // flag and would echo it twice.
     ("ctr verify", &["content_hashes", "max_depth", "recursive"]),
@@ -582,6 +584,8 @@ const PATH_FLAGS: &[(&str, &[&str])] = &[
 const PATH_OUTPUT: &[(&str, OutputKind)] = &[
     ("chd verify", OutputKind::None),
     ("cso verify", OutputKind::None),
+    ("ctr bundle", OutputKind::OutputFlag),
+    ("ctr unbundle", OutputKind::OutputDir),
     ("ctr verify", OutputKind::None),
     ("dat fixdat", OutputKind::OutputFlag),
     ("dat identify", OutputKind::None),

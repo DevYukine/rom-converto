@@ -308,18 +308,26 @@ fn disc_rom_table(content: Option<&DiscContent>) -> KeyValueTable {
     }
 }
 
-fn render_ctr(info: &rom_converto_lib::info::CtrInfo) -> String {
+fn ctr_format_label(format: rom_converto_lib::nintendo::ctr::info::CtrFormat) -> &'static str {
     use rom_converto_lib::nintendo::ctr::info::CtrFormat;
-    let fmt = match info.format {
+    match format {
         CtrFormat::Cia => "3DS CIA",
         CtrFormat::Ncsd => "3DS NCSD/CCI",
         CtrFormat::Ncch => "3DS NCCH/CXI",
         CtrFormat::Unknown => "3DS",
         CtrFormat::Threedsx => "3DSX homebrew",
-    };
+    }
+}
+
+fn render_ctr(info: &rom_converto_lib::info::CtrInfo) -> String {
+    use rom_converto_lib::nintendo::ctr::info::CtrFormat;
+    let fmt = ctr_format_label(info.format);
 
     let mut t = KeyValueTable::new();
-    t.push("Format", fmt);
+    let bundle_fmt = info
+        .bundle_kind
+        .map(|k| format!("Bundle ({}), {}", k.ext().to_uppercase(), fmt));
+    t.push("Format", bundle_fmt.as_deref().unwrap_or(fmt));
     t.push("Title ID", info.title_id.clone());
     t.push(
         "Content type",
@@ -398,7 +406,46 @@ fn render_ctr(info: &rom_converto_lib::info::CtrInfo) -> String {
     }
 
     let mut inner = String::new();
+    if !info.bundled_titles.is_empty() {
+        inner.push_str("Bundled titles:\n");
+        for bt in &info.bundled_titles {
+            let role = if bt.main {
+                "main"
+            } else if bt.format == CtrFormat::Cia {
+                "cia"
+            } else {
+                "other"
+            };
+            let mut line = format!(
+                "  {}  {} bytes  {}  {}",
+                bt.name,
+                bt.size,
+                role,
+                ctr_format_label(bt.format)
+            );
+            if bt.compressed {
+                line.push_str(" zstd");
+            }
+            if bt.encrypted {
+                line.push_str(" encrypted");
+            }
+            if !bt.title_id.is_empty() {
+                line.push_str(&format!("  {}", bt.title_id));
+            }
+            if let Some(kind) = bt.content_kind {
+                line.push_str(&format!("  {}", kind.display_name()));
+            }
+            if let Some(title) = &bt.title {
+                line.push_str(&format!("  {title}"));
+            }
+            inner.push_str(&line);
+            inner.push('\n');
+        }
+    }
     if !info.ncsd_partitions.is_empty() {
+        if !inner.is_empty() {
+            inner.push('\n');
+        }
         inner.push_str("Partitions:\n");
         for p in &info.ncsd_partitions {
             inner.push_str(&format!(
@@ -2733,6 +2780,49 @@ mod tests {
         };
         let out = render_ctr(&info);
         assert!(has_field(&out, "Content type", "System"));
+    }
+
+    #[test]
+    fn render_ctr_shows_bundle_format_and_bundled_titles() {
+        use rom_converto_lib::nintendo::ctr::bundle::BundleKind;
+        use rom_converto_lib::nintendo::ctr::info::CtrBundledTitle;
+        use rom_converto_lib::nintendo::ctr::info::CtrFormat;
+        let info = rom_converto_lib::info::CtrInfo {
+            format: CtrFormat::Ncsd,
+            bundle_kind: Some(BundleKind::Cci),
+            bundled_titles: vec![
+                CtrBundledTitle {
+                    name: "game.cci".to_string(),
+                    size: 536870912,
+                    main: true,
+                    format: CtrFormat::Ncsd,
+                    compressed: false,
+                    encrypted: false,
+                    title_id: "0004000000030800".to_string(),
+                    content_kind: Some(rom_converto_lib::info::ContentKind::Game),
+                    title: Some("Test Game".to_string()),
+                },
+                CtrBundledTitle {
+                    name: "update.cia".to_string(),
+                    size: 1234,
+                    main: false,
+                    format: CtrFormat::Cia,
+                    compressed: true,
+                    encrypted: true,
+                    title_id: String::new(),
+                    content_kind: None,
+                    title: None,
+                },
+            ],
+            ..Default::default()
+        };
+        let out = render_ctr(&info);
+        assert!(has_field(&out, "Format", "Bundle (BCCI), 3DS NCSD/CCI"));
+        assert!(out.contains("Bundled titles:"));
+        assert!(out.contains(
+            "game.cci  536870912 bytes  main  3DS NCSD/CCI  0004000000030800  Game  Test Game"
+        ));
+        assert!(out.contains("update.cia  1234 bytes  cia  3DS CIA zstd encrypted"));
     }
 
     #[test]
