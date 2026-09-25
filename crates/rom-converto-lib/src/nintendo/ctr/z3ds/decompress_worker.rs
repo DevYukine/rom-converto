@@ -22,17 +22,17 @@ use crate::util::Cancelled;
 use crate::util::hash::{FileDigests, HashAlgo, MultiHasher};
 use crate::util::pread::file_read_exact_at;
 use crate::util::worker_pool::{Pool, PoolChannelClosed, Worker, drive, parallelism};
-use std::io::{BufWriter, Write};
+use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// One frame worth of work: where to read the compressed bytes from
 /// in the shared file, and how many uncompressed bytes the worker
 /// is expected to produce.
-pub(super) struct Z3dsDecompressWork {
-    pub file_offset: u64,
-    pub compressed_size: u32,
-    pub uncompressed_size: u32,
+pub(crate) struct Z3dsDecompressWork {
+    pub(crate) file_offset: u64,
+    pub(crate) compressed_size: u32,
+    pub(crate) uncompressed_size: u32,
 }
 
 /// Decoded frame bytes, sized exactly to the frame's declared uncompressed size.
@@ -81,8 +81,8 @@ pub(super) fn make_z3ds_decompress_workers(
 
 /// Plans one decompress invocation from the seek table at the end of the
 /// payload, returning one work item per compressed frame in submission order.
-pub(super) fn plan_decompress_work(
-    file: &std::fs::File,
+pub(crate) fn plan_decompress_work<R: Read + Seek>(
+    mut reader: R,
     payload_offset: u64,
     compressed_size: u64,
 ) -> Z3dsResult<Vec<Z3dsDecompressWork>> {
@@ -96,21 +96,24 @@ pub(super) fn plan_decompress_work(
             )
         })?;
     let mut footer = [0u8; 9];
-    file_read_exact_at(file, &mut footer, footer_offset)?;
+    reader.seek(SeekFrom::Start(footer_offset))?;
+    reader.read_exact(&mut footer)?;
     let (_num_frames, skippable_total) = read_seek_table_footer(&footer)?;
 
-    // Full skippable frame: header + entries + footer.
-    let frame_start = payload_offset
-        .checked_add(compressed_size)
-        .and_then(|end| end.checked_sub(skippable_total))
-        .ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "compressed payload too small for seek table",
-            )
-        })?;
+    // Full skippable frame: header + entries + footer. The footer is
+    // untrusted, so bound the table by the payload it sits in before
+    // allocating for it.
+    if skippable_total > compressed_size {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "seek table larger than compressed payload",
+        )
+        .into());
+    }
+    let frame_start = payload_offset + compressed_size - skippable_total;
     let mut frame_bytes = vec![0u8; skippable_total as usize];
-    file_read_exact_at(file, &mut frame_bytes, frame_start)?;
+    reader.seek(SeekFrom::Start(frame_start))?;
+    reader.read_exact(&mut frame_bytes)?;
     let entries: Vec<FrameEntry> = parse_seek_table(&frame_bytes)?;
 
     // The sum of compressed frame sizes plus the seek table must equal the
@@ -335,7 +338,7 @@ mod tests {
         let out_file = std::fs::File::create(&out_path).unwrap();
         let mut writer = BufWriter::with_capacity(4 * 1024 * 1024, out_file);
 
-        let work_items = plan_decompress_work(&in_file, 0, payload.len() as u64).unwrap();
+        let work_items = plan_decompress_work(&*in_file, 0, payload.len() as u64).unwrap();
 
         let n_threads = parallelism();
         let workers = make_z3ds_decompress_workers(n_threads, &in_file).unwrap();

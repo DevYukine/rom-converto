@@ -19,18 +19,22 @@ use crate::nintendo::ctr::models::ncch_header::NcchHeader;
 use crate::nintendo::ctr::models::smdh::{AgeRating, SMDH_LARGE_ICON_DIM, SMDH_TOTAL_SIZE, Smdh};
 use crate::nintendo::ctr::models::title_metadata::ContentChunkRecord;
 use crate::nintendo::ctr::util::is_twl_title_id;
-use crate::nintendo::ctr::z3ds::models::{
-    Z3DS_HEADER_SIZE, Z3DS_MAGIC, Z3dsHeader, underlying_magic,
-};
+use crate::nintendo::ctr::z3ds::Z3dsReader;
+use crate::nintendo::ctr::z3ds::models::{Z3DS_HEADER_SIZE, Z3DS_MAGIC, Z3dsHeader};
 use crate::util::bytes::cstr_ascii;
 use crate::util::pixel::{decode_rgb565_morton_tiled, encode_png};
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use binrw::BinRead;
 use byteorder::{BE, LE, ReadBytesExt};
 use serde::{Deserialize, Serialize};
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Cursor, Read, Seek, SeekFrom};
+use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
+
+// Type erasure at the Z3DS recursion point so `read_info_from::<Z3dsReader<&mut dyn ReadSeek>>`
+// is a fixed point instead of unbounded monomorphization.
+pub(crate) trait ReadSeek: Read + Seek {}
+impl<T: Read + Seek + ?Sized> ReadSeek for T {}
 
 /// Metadata extracted from a CIA, NCSD, NCCH, or Z3DS-wrapped 3DS ROM.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -144,84 +148,78 @@ pub fn read_info(path: &Path) -> Result<CtrInfo> {
         .with_context(|| format!("ctr info: stat {}", path.display()))?
         .len();
 
-    let mut file = File::open(path)?;
+    let mut reader = BufReader::new(File::open(path)?);
+    let mut info =
+        read_info_from(&mut reader).with_context(|| format!("ctr info: {}", path.display()))?;
+    info.physical_bytes = physical_bytes;
+    Ok(info)
+}
+
+/// Reads [`CtrInfo`] from any reader positioned at the start of a CIA, NCSD,
+/// NCCH, 3DSX, or Z3DS image. `physical_bytes` is left at 0; callers that
+/// know the container's on-disk size set it afterwards.
+pub fn read_info_from<R: Read + Seek>(reader: &mut R) -> Result<CtrInfo> {
+    // Read may return short (Z3dsReader stops at frame boundaries), so
+    // fill the probe until it is full or the source ends.
     let mut probe = [0u8; 0x104];
-    let n = file.read(&mut probe)?;
-    file.seek(SeekFrom::Start(0))?;
+    let mut n = 0;
+    while n < probe.len() {
+        let k = reader.read(&mut probe[n..])?;
+        if k == 0 {
+            break;
+        }
+        n += k;
+    }
+    reader.seek(SeekFrom::Start(0))?;
 
     if n < 4 {
         return Err(anyhow!("ctr info: file is too small"));
     }
 
     if &probe[0..4] == Z3DS_MAGIC.as_slice() {
-        return read_z3ds_info(path, physical_bytes);
+        return read_z3ds_info(reader);
     }
 
     if &probe[0..4] == b"3DSX" {
-        return read_3dsx_info(path, physical_bytes);
+        return read_3dsx_info(reader);
     }
 
     // NCSD / NCCH have magic at 0x100; CIA has a 4-byte header_size at 0.
     if n >= 0x104 {
         let magic = &probe[0x100..0x104];
         if magic == NCCH_MAGIC.as_bytes() {
-            return read_ncch_info(path, physical_bytes);
+            return read_ncch_info(reader);
         }
         if magic == b"NCSD" {
-            return read_ncsd_info(path, physical_bytes);
+            return read_ncsd_info(reader);
         }
     }
     let cia_hdr = u32::from_le_bytes(probe[0..4].try_into()?);
     if cia_hdr == CIA_HEADER_SIZE {
-        return read_cia_info(path, physical_bytes);
+        return read_cia_info(reader);
     }
 
-    Err(anyhow!(
-        "ctr info: unrecognized format at {}",
-        path.display()
-    ))
+    Err(anyhow!("ctr info: unrecognized format"))
 }
 
-fn read_z3ds_info(path: &Path, physical_bytes: u64) -> Result<CtrInfo> {
-    let mut file = File::open(path)?;
+fn read_z3ds_info(reader: &mut dyn ReadSeek) -> Result<CtrInfo> {
     let mut header_buf = vec![0u8; Z3DS_HEADER_SIZE as usize];
-    file.read_exact(&mut header_buf)?;
+    reader.read_exact(&mut header_buf)?;
     let header =
         Z3dsHeader::read(&mut Cursor::new(&header_buf)).context("ctr info: parse Z3DS header")?;
 
     let payload_offset = header.header_size as u64 + header.metadata_size as u64;
-    let compressed_size = header.compressed_size;
-
-    let temp_dir = tempfile::tempdir()?;
-    let ext = match header.underlying_magic {
-        underlying_magic::CIA => "cia",
-        underlying_magic::NCSD => "3ds",
-        underlying_magic::NCCH => "cxi",
-        underlying_magic::THREEDSX => "3dsx",
-        _ => "bin",
-    };
-    let temp_path = temp_dir.path().join(format!("info_temp.{ext}"));
-
-    file.seek(SeekFrom::Start(payload_offset))?;
-    let limited = file.take(compressed_size);
-    let mut reader = BufReader::with_capacity(4 * 1024 * 1024, limited);
-    let mut writer = BufWriter::with_capacity(4 * 1024 * 1024, File::create(&temp_path)?);
-    zstd::stream::copy_decode(&mut reader, &mut writer)?;
-    writer
-        .into_inner()
-        .map_err(|e| anyhow!("ctr info: failed to flush decompressed output: {e}"))?
-        .sync_all()?;
-
-    let mut result = read_info(&temp_path)?;
-    result.physical_bytes = physical_bytes;
+    let mut z = Z3dsReader::open(reader, payload_offset, header.compressed_size)
+        .context("ctr info: Z3DS seek table")?;
+    if z.len() != header.uncompressed_size {
+        bail!("ctr info: Z3DS seek table disagrees with header size");
+    }
+    let mut result = read_info_from(&mut z)?;
     result.compressed = true;
     Ok(result)
 }
 
-fn read_cia_info(path: &Path, physical_bytes: u64) -> Result<CtrInfo> {
-    let file = File::open(path)?;
-    let mut reader = BufReader::new(file);
-
+fn read_cia_info<R: Read + Seek>(reader: &mut R) -> Result<CtrInfo> {
     let mut header_buf = vec![0u8; CIA_HEADER_SIZE as usize];
     reader.read_exact(&mut header_buf)?;
     let cia_header =
@@ -235,20 +233,15 @@ fn read_cia_info(path: &Path, physical_bytes: u64) -> Result<CtrInfo> {
         ..
     } = cia_header.layout();
 
-    let first_chunk = read_first_content_chunk(&mut reader, tmd_start)?;
+    let first_chunk = read_first_content_chunk(reader, tmd_start)?;
     let content_encrypted = first_chunk.content_type.is_encrypted();
-    let cia_contents = read_cia_contents(&mut reader, tmd_start)?;
-    let ticket_title_id = read_ticket_title_id(&mut reader, ticket_start)?;
+    let cia_contents = read_cia_contents(reader, tmd_start)?;
+    let ticket_title_id = read_ticket_title_id(reader, ticket_start)?;
     let is_twl = is_twl_title_id(ticket_title_id);
 
     let block = if content_encrypted {
-        let title_key = derive_title_key_from_ticket(&mut reader, ticket_start)?;
-        decrypt_first_ncch_block(
-            &mut reader,
-            content_start,
-            first_chunk.content_index,
-            &title_key,
-        )?
+        let title_key = derive_title_key_from_ticket(reader, ticket_start)?;
+        decrypt_first_ncch_block(reader, content_start, first_chunk.content_index, &title_key)?
     } else {
         reader.seek(SeekFrom::Start(content_start))?;
         let mut buf = [0u8; 0x200];
@@ -292,7 +285,7 @@ fn read_cia_info(path: &Path, physical_bytes: u64) -> Result<CtrInfo> {
     Ok(CtrInfo {
         format: CtrFormat::Cia,
         compressed: false,
-        physical_bytes,
+        physical_bytes: 0,
         title_id: info_from_ncch.title_id,
         program_id: info_from_ncch.program_id,
         product_code: info_from_ncch.product_code,
@@ -313,10 +306,7 @@ fn read_cia_info(path: &Path, physical_bytes: u64) -> Result<CtrInfo> {
     })
 }
 
-fn read_ncsd_info(path: &Path, physical_bytes: u64) -> Result<CtrInfo> {
-    let file = File::open(path)?;
-    let mut reader = BufReader::new(file);
-
+fn read_ncsd_info<R: Read + Seek>(reader: &mut R) -> Result<CtrInfo> {
     let mut title_id = [0u8; 8];
     reader.seek(SeekFrom::Start(NCSD_TITLE_ID_OFFSET))?;
     reader.read_exact(&mut title_id)?;
@@ -334,17 +324,16 @@ fn read_ncsd_info(path: &Path, physical_bytes: u64) -> Result<CtrInfo> {
     let ncsd_partitions = parse_ncsd_partition_table(&table);
 
     reader.seek(SeekFrom::Start(first_offset))?;
-    let ncch_hdr = read_ncch_header_at(&mut reader)?;
+    let ncch_hdr = read_ncch_header_at(reader)?;
     let info_from_ncch = info_from_ncch_header(&ncch_hdr);
     let (seed_crypto, seed_found, seed_keyy) = seed_fields(&ncch_hdr);
 
-    let cartridge_size = read_ncsd_image_size(&mut reader).ok();
+    let cartridge_size = read_ncsd_image_size(reader).ok();
 
-    // ExeFS sits at (first_offset + exefsoffset*MU) for exefssize*MU.
+    // ExeFS sits at (first_offset + exefsoffset*MU).
     let smdh = if ncch_hdr.exefssize > 0 {
         let exefs_abs = first_offset + ncch_hdr.exefsoffset as u64 * CTR_MEDIA_UNIT_SIZE as u64;
-        let exefs_len = (ncch_hdr.exefssize as u64) * CTR_MEDIA_UNIT_SIZE as u64;
-        match read_exefs_icon_as_smdh(&mut reader, &ncch_hdr, exefs_abs, exefs_len) {
+        match read_exefs_icon_as_smdh(reader, &ncch_hdr, exefs_abs) {
             Ok(s) => Some(s),
             Err(e) => {
                 log::debug!("ctr info: ExeFS read skipped ({})", e);
@@ -365,7 +354,7 @@ fn read_ncsd_info(path: &Path, physical_bytes: u64) -> Result<CtrInfo> {
     Ok(CtrInfo {
         format: CtrFormat::Ncsd,
         compressed: false,
-        physical_bytes,
+        physical_bytes: 0,
         title_id: info_from_ncch.title_id,
         program_id: info_from_ncch.program_id,
         product_code: info_from_ncch.product_code,
@@ -386,18 +375,14 @@ fn read_ncsd_info(path: &Path, physical_bytes: u64) -> Result<CtrInfo> {
     })
 }
 
-fn read_ncch_info(path: &Path, physical_bytes: u64) -> Result<CtrInfo> {
-    let file = File::open(path)?;
-    let mut reader = BufReader::new(file);
-
-    let ncch_hdr = read_ncch_header_at(&mut reader)?;
+fn read_ncch_info<R: Read + Seek>(reader: &mut R) -> Result<CtrInfo> {
+    let ncch_hdr = read_ncch_header_at(reader)?;
     let info_from_ncch = info_from_ncch_header(&ncch_hdr);
     let (seed_crypto, seed_found, seed_keyy) = seed_fields(&ncch_hdr);
 
     let smdh = if ncch_hdr.exefssize > 0 {
         let exefs_abs = ncch_hdr.exefsoffset as u64 * CTR_MEDIA_UNIT_SIZE as u64;
-        let exefs_len = ncch_hdr.exefssize as u64 * CTR_MEDIA_UNIT_SIZE as u64;
-        match read_exefs_icon_as_smdh(&mut reader, &ncch_hdr, exefs_abs, exefs_len) {
+        match read_exefs_icon_as_smdh(reader, &ncch_hdr, exefs_abs) {
             Ok(s) => Some(s),
             Err(e) => {
                 log::debug!("ctr info: ExeFS read skipped ({})", e);
@@ -418,7 +403,7 @@ fn read_ncch_info(path: &Path, physical_bytes: u64) -> Result<CtrInfo> {
     Ok(CtrInfo {
         format: CtrFormat::Ncch,
         compressed: false,
-        physical_bytes,
+        physical_bytes: 0,
         title_id: info_from_ncch.title_id,
         program_id: info_from_ncch.program_id,
         product_code: info_from_ncch.product_code,
@@ -443,10 +428,7 @@ fn read_ncch_info(path: &Path, physical_bytes: u64) -> Result<CtrInfo> {
 ///
 /// 3DSX files have no title id, so [`CtrInfo::content_kind`] is always
 /// `None` and title/program/product/maker fields stay empty.
-fn read_3dsx_info(path: &Path, physical_bytes: u64) -> Result<CtrInfo> {
-    let file = File::open(path)?;
-    let mut reader = BufReader::new(file);
-
+fn read_3dsx_info<R: Read + Seek>(reader: &mut R) -> Result<CtrInfo> {
     let mut magic = [0u8; 4];
     reader.read_exact(&mut magic)?;
     if magic != *b"3DSX" {
@@ -481,7 +463,7 @@ fn read_3dsx_info(path: &Path, physical_bytes: u64) -> Result<CtrInfo> {
     Ok(CtrInfo {
         format: CtrFormat::Threedsx,
         compressed: false,
-        physical_bytes,
+        physical_bytes: 0,
         title_id: String::new(),
         program_id: String::new(),
         product_code: String::new(),
@@ -683,13 +665,8 @@ fn read_exefs_icon_as_smdh<R: Read + Seek>(
     reader: &mut R,
     ncch_hdr: &NcchHeader,
     exefs_abs: u64,
-    exefs_len: u64,
 ) -> Result<Smdh> {
-    reader.seek(SeekFrom::Start(exefs_abs))?;
-    let mut buf = vec![0u8; exefs_len as usize];
-    reader.read_exact(&mut buf)?;
-    let icon_bytes = read_icon_section(ncch_hdr, &buf)?;
-    Smdh::parse(&icon_bytes)
+    Smdh::parse(&read_icon_section(reader, ncch_hdr, exefs_abs)?)
 }
 
 fn smdh_to_info(s: Smdh) -> CtrSmdhInfo {
@@ -964,6 +941,90 @@ mod tests {
         assert_eq!(info.format, CtrFormat::Threedsx);
         assert!(info.compressed);
         assert!(info.smdh.is_some());
+    }
+
+    /// Compresses a synthetic CXI into `game.zcxi` inside a fresh tempdir.
+    async fn zcxi_with_frames(size: usize) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let cxi_path = dir.path().join("game.cxi");
+        let zcxi_path = dir.path().join("game.zcxi");
+        std::fs::write(&cxi_path, make_fake_decrypted_cxi(size)).unwrap();
+        compress_rom(
+            &cxi_path,
+            &zcxi_path,
+            None,
+            false,
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+        (dir, zcxi_path)
+    }
+
+    /// Number of zstd frames in the `game.zcxi` payload per its seek table.
+    fn zcxi_frame_count(zcxi_path: &std::path::Path) -> usize {
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(zcxi_path)
+            .unwrap();
+        let mut header_buf = [0u8; 0x20];
+        file.read_exact(&mut header_buf).unwrap();
+        let header = Z3dsHeader::read(&mut Cursor::new(&header_buf)).unwrap();
+        let payload_offset = header.header_size as u64 + header.metadata_size as u64;
+        crate::nintendo::ctr::z3ds::plan_decompress_work(
+            &file,
+            payload_offset,
+            header.compressed_size,
+        )
+        .unwrap()
+        .len()
+    }
+
+    /// Zeroes the first 4 bytes (zstd frame magic) of the seek-table frame
+    /// at `index`, so decoding that frame fails deterministically.
+    fn corrupt_zstd_frame_magic(zcxi_path: &std::path::Path, index: usize) {
+        use std::io::Write;
+
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(zcxi_path)
+            .unwrap();
+        let mut header_buf = [0u8; 0x20];
+        file.read_exact(&mut header_buf).unwrap();
+        let header = Z3dsHeader::read(&mut Cursor::new(&header_buf)).unwrap();
+        let payload_offset = header.header_size as u64 + header.metadata_size as u64;
+        let frames = crate::nintendo::ctr::z3ds::plan_decompress_work(
+            &file,
+            payload_offset,
+            header.compressed_size,
+        )
+        .unwrap();
+        let frame = &frames[index];
+        file.seek(SeekFrom::Start(frame.file_offset)).unwrap();
+        file.write_all(&[0u8; 4]).unwrap();
+    }
+
+    #[tokio::test]
+    async fn read_info_on_z3ds_reads_only_the_frames_it_needs() {
+        let (_dir, zcxi_path) = zcxi_with_frames(3 * 256 * 1024).await;
+        let count = zcxi_frame_count(&zcxi_path);
+        assert!(count >= 2);
+        corrupt_zstd_frame_magic(&zcxi_path, count - 1);
+
+        let info = read_info(&zcxi_path).unwrap();
+        assert_eq!(info.format, CtrFormat::Ncch);
+        assert!(info.compressed);
+    }
+
+    #[tokio::test]
+    async fn read_info_on_z3ds_with_corrupt_first_frame_errors() {
+        let (_dir, zcxi_path) = zcxi_with_frames(3 * 256 * 1024).await;
+        corrupt_zstd_frame_magic(&zcxi_path, 0);
+
+        assert!(read_info(&zcxi_path).is_err());
     }
 
     #[test]

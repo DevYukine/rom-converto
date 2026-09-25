@@ -1,10 +1,12 @@
-//! Sync, in-memory ExeFS section reader.
+//! Sync ExeFS section reader over any `Read + Seek` source.
 //!
 //! `crate::nintendo::ctr::decrypt::cia` decrypts NCCH ExeFS sections
 //! while streaming the file to disk. The `info` extractor needs the
 //! same decryption logic but for a single named entry (typically
-//! `icon`, holding the SMDH) returned as a `Vec<u8>` it can parse
-//! in-process. This module shares the same key-derivation helpers and
+//! `icon`, holding the SMDH). Only the ExeFS header and the requested
+//! entry's bytes are read and decrypted, so large neighbour entries
+//! (`.code` can run to several megabytes) are never pulled into
+//! memory. This module shares the same key-derivation helpers and
 //! AES-CTR machinery; it does not duplicate any crypto code.
 //!
 //! Seed crypto is not supported here: titles that require it must be
@@ -13,16 +15,17 @@
 
 use aes::{
     Aes128,
-    cipher::{KeyIvInit, StreamCipher},
+    cipher::{KeyIvInit, StreamCipher, StreamCipherSeek},
 };
 use anyhow::{Result, anyhow};
 use binrw::BinRead;
 use byteorder::{BigEndian, ByteOrder, LittleEndian};
-use std::io::Cursor;
+use std::io::{Cursor, Read, Seek, SeekFrom};
 
 use crate::nintendo::ctr::constants::{
-    CTR_KEYS_0, CTR_KEYS_1, EXEFS_ENTRY_SIZE, EXEFS_HEADER_SIZE, EXEFS_MAX_FILE_ENTRIES,
-    EXEFS_SECTION_ICON, NCCH_FLAGS7_FIXED_KEY, NCCH_FLAGS7_NOCRYPTO, NCCH_FLAGS7_SEED_CRYPTO,
+    CTR_KEYS_0, CTR_KEYS_1, CTR_MEDIA_UNIT_SIZE, EXEFS_ENTRY_SIZE, EXEFS_HEADER_SIZE,
+    EXEFS_MAX_FILE_ENTRIES, EXEFS_SECTION_ICON, NCCH_FLAGS7_FIXED_KEY, NCCH_FLAGS7_NOCRYPTO,
+    NCCH_FLAGS7_SEED_CRYPTO,
 };
 use crate::nintendo::ctr::decrypt::cia::{derive_ctr_key, get_ncch_aes_counter};
 use crate::nintendo::ctr::decrypt::model::NcchSection;
@@ -35,22 +38,28 @@ fn fixed_key(fixed_crypto: u8) -> Option<[u8; 16]> {
     (fixed_crypto != 0).then(|| u128::to_be_bytes(CTR_KEYS_1[(fixed_crypto as usize) - 1]))
 }
 
-fn decrypt_exefs_with_base(base_key: &[u8; 16], ctr: &[u8; 16], exefs: &mut [u8]) -> Result<()> {
-    Aes128Ctr::new_from_slices(base_key, ctr)
-        .map_err(|e| anyhow!("aes ctr init: {}", e))?
-        .apply_keystream(exefs);
-    Ok(())
+/// Builds an AES-128-CTR stream positioned at `at` bytes into the
+/// ExeFS region.
+fn exefs_cipher(key: &[u8; 16], ctr: &[u8; 16], at: u64) -> Result<Aes128Ctr> {
+    let mut cipher =
+        Aes128Ctr::new_from_slices(key, ctr).map_err(|e| anyhow!("aes ctr init: {}", e))?;
+    cipher
+        .try_seek(at)
+        .map_err(|e| anyhow!("exefs: cannot seek keystream to {at}: {e}"))?;
+    Ok(cipher)
 }
 
-/// Decrypt the named ExeFS section out of `exefs_encrypted` and return
-/// just that section's plaintext bytes.
+/// Decrypt the named ExeFS section and return just that section's
+/// plaintext bytes.
 ///
-/// `header` is the NCCH header for the partition. `exefs_encrypted` is
-/// the encrypted ExeFS region (`exefssize * media_unit` bytes) read
-/// from the source file at `exefsoffset * media_unit`.
-pub fn read_exefs_section(
+/// `header` is the NCCH header for the partition and `exefs_abs` the
+/// absolute offset of the ExeFS region within `reader`
+/// (`exefsoffset * media_unit`). The entry size is validated against
+/// `header.exefssize` before any section bytes are read.
+pub fn read_exefs_section<R: Read + Seek>(
+    reader: &mut R,
     header: &NcchHeader,
-    exefs_encrypted: &[u8],
+    exefs_abs: u64,
     section_name: &[u8],
 ) -> Result<Vec<u8>> {
     let nocrypto = header.flags[7] & NCCH_FLAGS7_NOCRYPTO != 0;
@@ -80,9 +89,11 @@ pub fn read_exefs_section(
 
     let ctr = get_ncch_aes_counter(header, NcchSection::ExeFS);
 
-    let mut decrypted = exefs_encrypted.to_vec();
+    reader.seek(SeekFrom::Start(exefs_abs))?;
+    let mut hdr = [0u8; EXEFS_HEADER_SIZE];
+    reader.read_exact(&mut hdr)?;
     if !nocrypto {
-        decrypt_exefs_with_base(&working_key, &ctr, &mut decrypted)?;
+        exefs_cipher(&working_key, &ctr, 0)?.apply_keystream(&mut hdr);
     }
 
     // Sections like `icon` / `banner` never want the extra-crypto
@@ -90,37 +101,52 @@ pub fn read_exefs_section(
     // Other sections would re-decrypt with the extra key, but the
     // info path only reads the icon today.
 
-    let (offset, size) = find_exefs_entry(&decrypted, section_name)
+    let (offset, size) = find_exefs_entry(&hdr, section_name)
         .ok_or_else(|| anyhow!("ExeFS section {:?} not found", short_name(section_name)))?;
 
-    let start = EXEFS_HEADER_SIZE + offset;
-    let end = start + size;
-    if end > decrypted.len() {
-        return Err(anyhow!("ExeFS section overruns buffer"));
+    // Both bounds run in u64: the entry fields are untrusted u32s, and
+    // the reader length check keeps a lying header from allocating
+    // `size` bytes that the file cannot contain.
+    let start = EXEFS_HEADER_SIZE as u64 + u64::from(offset);
+    let end = start + u64::from(size);
+    if end > u64::from(header.exefssize) * u64::from(CTR_MEDIA_UNIT_SIZE) {
+        return Err(anyhow!("ExeFS section overruns ExeFS"));
     }
-    Ok(decrypted[start..end].to_vec())
+    if exefs_abs + end > reader.seek(SeekFrom::End(0))? {
+        return Err(anyhow!("ExeFS section overruns file"));
+    }
+
+    reader.seek(SeekFrom::Start(exefs_abs + start))?;
+    let mut section = vec![0u8; size as usize];
+    reader.read_exact(&mut section)?;
+    if !nocrypto {
+        exefs_cipher(&working_key, &ctr, start)?.apply_keystream(&mut section);
+    }
+    Ok(section)
 }
 
-/// Decrypts and returns the `icon` ExeFS section (the SMDH) from
-/// `exefs_encrypted`.
-pub fn read_icon_section(header: &NcchHeader, exefs_encrypted: &[u8]) -> Result<Vec<u8>> {
-    read_exefs_section(header, exefs_encrypted, &EXEFS_SECTION_ICON)
+/// Decrypts and returns the `icon` ExeFS section (the SMDH) read from
+/// the ExeFS region at `exefs_abs`.
+pub fn read_icon_section<R: Read + Seek>(
+    reader: &mut R,
+    header: &NcchHeader,
+    exefs_abs: u64,
+) -> Result<Vec<u8>> {
+    read_exefs_section(reader, header, exefs_abs, &EXEFS_SECTION_ICON)
 }
 
-fn find_exefs_entry(decrypted_exefs: &[u8], name: &[u8]) -> Option<(usize, usize)> {
+fn find_exefs_entry(exefs_hdr: &[u8], name: &[u8]) -> Option<(u32, u32)> {
     for i in 0..EXEFS_MAX_FILE_ENTRIES {
         let off = i * EXEFS_ENTRY_SIZE;
-        if off + EXEFS_ENTRY_SIZE > decrypted_exefs.len() {
+        if off + EXEFS_ENTRY_SIZE > exefs_hdr.len() {
             break;
         }
-        let entry = ExeFSHeader::read(&mut Cursor::new(
-            &decrypted_exefs[off..off + EXEFS_ENTRY_SIZE],
-        ))
-        .ok()?;
+        let entry =
+            ExeFSHeader::read(&mut Cursor::new(&exefs_hdr[off..off + EXEFS_ENTRY_SIZE])).ok()?;
         let entry_name = trim_zero(&entry.file_name);
         if entry_name == name {
-            let offset = LittleEndian::read_u32(&entry.file_offset) as usize;
-            let size = LittleEndian::read_u32(&entry.file_size) as usize;
+            let offset = LittleEndian::read_u32(&entry.file_offset);
+            let size = LittleEndian::read_u32(&entry.file_size);
             return Some((offset, size));
         }
     }
@@ -145,7 +171,9 @@ mod tests {
         let bytes = make_ncch_header_bytes(0x000400000C123456);
         // The fixture writes the NCCH magic at 0x100; binrw expects to
         // read from the start of the 0x200-byte header structure.
-        let header = NcchHeader::read(&mut Cursor::new(&bytes)).unwrap();
+        let mut header = NcchHeader::read(&mut Cursor::new(&bytes)).unwrap();
+        header.exefssize = (EXEFS_HEADER_SIZE + plaintext_icon.len())
+            .div_ceil(CTR_MEDIA_UNIT_SIZE as usize) as u32;
 
         let mut exefs = vec![0u8; EXEFS_HEADER_SIZE + plaintext_icon.len()];
         exefs[0..4].copy_from_slice(b"icon");
@@ -157,16 +185,71 @@ mod tests {
         (header, exefs)
     }
 
+    /// ExeFS with `.code` first (so the icon entry has a nonzero
+    /// offset) and `icon` second, as on real titles.
+    fn synth_code_then_icon_exefs(code: &[u8], icon: &[u8]) -> Vec<u8> {
+        let icon_offset = EXEFS_HEADER_SIZE + code.len();
+        let mut exefs = vec![0u8; icon_offset + icon.len()];
+        exefs[0..5].copy_from_slice(b".code");
+        exefs[12..16].copy_from_slice(&(code.len() as u32).to_le_bytes());
+        exefs[EXEFS_ENTRY_SIZE..EXEFS_ENTRY_SIZE + 4].copy_from_slice(b"icon");
+        exefs[EXEFS_ENTRY_SIZE + 8..EXEFS_ENTRY_SIZE + 12]
+            .copy_from_slice(&(code.len() as u32).to_le_bytes());
+        exefs[EXEFS_ENTRY_SIZE + 12..EXEFS_ENTRY_SIZE + 16]
+            .copy_from_slice(&(icon.len() as u32).to_le_bytes());
+        exefs[EXEFS_HEADER_SIZE..icon_offset].copy_from_slice(code);
+        exefs[icon_offset..].copy_from_slice(icon);
+        exefs
+    }
+
     #[test]
     fn reads_icon_when_nocrypto() {
         let (header, exefs) = synth_header_and_exefs(b"hello-icon-bytes");
-        let bytes = read_icon_section(&header, &exefs).unwrap();
+        let bytes = read_icon_section(&mut Cursor::new(&exefs), &header, 0).unwrap();
         assert_eq!(bytes, b"hello-icon-bytes");
     }
 
     #[test]
     fn missing_section_errors() {
         let (header, exefs) = synth_header_and_exefs(b"x");
-        assert!(read_exefs_section(&header, &exefs, b"banner").is_err());
+        assert!(read_exefs_section(&mut Cursor::new(&exefs), &header, 0, b"banner").is_err());
+    }
+
+    #[test]
+    fn reads_icon_when_encrypted() {
+        let code = vec![0x41u8; 700];
+        let icon = b"encrypted-icon-plaintext";
+        let mut exefs = synth_code_then_icon_exefs(&code, icon);
+
+        let bytes = make_ncch_header_bytes(0x000400000C123456);
+        let mut header = NcchHeader::read(&mut Cursor::new(&bytes)).unwrap();
+        header.flags[7] &= !NCCH_FLAGS7_NOCRYPTO;
+        // Entry offsets are relative to the end of the ExeFS header;
+        // the bound needs header + offset + size bytes of coverage.
+        header.exefssize = (EXEFS_HEADER_SIZE + code.len() + icon.len())
+            .div_ceil(CTR_MEDIA_UNIT_SIZE as usize) as u32;
+
+        // Pre-encrypt with the same derived key and counter; CTR is
+        // symmetric, so applying the keystream from offset 0 flips it
+        // back to plaintext on read.
+        let key_y = BigEndian::read_u128(header.signature[0..16].try_into().unwrap());
+        let working_key = derive_ctr_key(CTR_KEYS_0[0], key_y);
+        let ctr = get_ncch_aes_counter(&header, NcchSection::ExeFS);
+        Aes128Ctr::new_from_slices(&working_key, &ctr)
+            .unwrap()
+            .apply_keystream(&mut exefs);
+
+        let out = read_icon_section(&mut Cursor::new(&exefs), &header, 0).unwrap();
+        assert_eq!(out, icon);
+    }
+
+    #[test]
+    fn entry_overrunning_exefssize_errors() {
+        let (mut header, exefs) = synth_header_and_exefs(b"icon-bytes");
+        // One media unit covers only the header; the icon entry claims
+        // 10 bytes past it. The buffer is long enough, so only the
+        // exefssize bound can reject this.
+        header.exefssize = 1;
+        assert!(read_icon_section(&mut Cursor::new(&exefs), &header, 0).is_err());
     }
 }

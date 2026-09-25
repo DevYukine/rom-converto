@@ -72,7 +72,7 @@ pub async fn decompress_rom(
             // a shared cursor.
             let in_file = Arc::new(std::fs::File::open(&input_owned)?);
 
-            let work_items = plan_decompress_work(&in_file, payload_offset, compressed_size)?;
+            let work_items = plan_decompress_work(&*in_file, payload_offset, compressed_size)?;
 
             // `progress.start` was called with compressed_size + uncompressed_size,
             // so the bar only reaches 100% if both halves get ticked. The driver ticks
@@ -144,7 +144,7 @@ pub fn digest_z3ds_inner(
     let uncompressed_size = header.uncompressed_size;
 
     let in_file = Arc::new(std::fs::File::open(input)?);
-    let work_items = plan_decompress_work(&in_file, payload_offset, compressed_size)?;
+    let work_items = plan_decompress_work(&*in_file, payload_offset, compressed_size)?;
 
     let n_threads = parallelism();
     let workers = make_z3ds_decompress_workers(n_threads, &in_file)?;

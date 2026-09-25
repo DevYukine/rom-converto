@@ -12,10 +12,14 @@ mod decompress_worker;
 pub mod error;
 /// Z3DS container header and metadata block layouts.
 pub mod models;
+mod reader;
 mod seekable;
 
 pub use compress::{DEFAULT_ZSTD_LEVEL, MAX_ZSTD_LEVEL, MIN_ZSTD_LEVEL, compress_rom};
 pub use decompress::{decompress_rom, digest_z3ds_inner};
+#[cfg(test)]
+pub(crate) use decompress_worker::plan_decompress_work;
+pub use reader::Z3dsReader;
 pub use seekable::decode_seekable;
 
 const COMPRESS_EXTS: &[&str] = &["cia", "cci", "3ds", "cxi", "3dsx"];
