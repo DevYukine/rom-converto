@@ -4,7 +4,8 @@
 use crate::info::Image;
 use crate::nintendo::dol::fst::FST_ENTRY_SIZE;
 use crate::nintendo::dol::models::banner::{BANNER_IMAGE_HEIGHT, BANNER_IMAGE_WIDTH, GcBanner};
-use crate::nintendo::dol::models::boot_bin::GcBootBin;
+use crate::nintendo::dol::models::boot_bin::{GcBootBin, GcRegion};
+use crate::util::bytes::cstr_shift_jis;
 use crate::util::extent_end;
 use crate::util::pixel::{decode_rgb5a3_tiled, encode_png};
 use anyhow::{Context, Result};
@@ -98,10 +99,12 @@ pub fn read_info(path: &Path) -> Result<DolInfo> {
     });
     let (fst_root, fst_file_count, fst_dir_count, banner_extent) = fst.unwrap_or_default();
     let (banner, banner_image) = match banner_extent {
-        Some((offset, size)) => read_banner(&mut reader, offset, size).unwrap_or_else(|e| {
-            log::debug!("dol info: banner read skipped ({})", e);
-            (None, None)
-        }),
+        Some((offset, size)) => {
+            read_banner(&mut reader, offset, size, boot.region).unwrap_or_else(|e| {
+                log::debug!("dol info: banner read skipped ({})", e);
+                (None, None)
+            })
+        }
         None => (None, None),
     };
 
@@ -267,12 +270,7 @@ fn read_fst_name<R: Read + Seek>(
         return Ok(String::new());
     }
     if let Some(table) = string_table {
-        let bytes = &table[offset as usize..];
-        let name_len = bytes
-            .iter()
-            .position(|&byte| byte == 0)
-            .unwrap_or(bytes.len());
-        return Ok(String::from_utf8_lossy(&bytes[..name_len]).into_owned());
+        return Ok(cstr_shift_jis(&table[offset as usize..]));
     }
 
     let mut name = Vec::new();
@@ -289,13 +287,14 @@ fn read_fst_name<R: Read + Seek>(
         name.extend_from_slice(chunk);
         consumed += read_len as u64;
     }
-    Ok(String::from_utf8_lossy(&name).into_owned())
+    Ok(cstr_shift_jis(&name))
 }
 
 fn read_banner<R: Read + Seek>(
     reader: &mut R,
     bnr_offset: u64,
     bnr_size: u64,
+    region: GcRegion,
 ) -> Result<(Option<GcBannerInfo>, Option<Image>)> {
     use crate::nintendo::dol::models::banner::{
         BNR1_FILE_SIZE, BNR1_MAGIC, BNR2_FILE_SIZE, BNR2_MAGIC,
@@ -322,7 +321,7 @@ fn read_banner<R: Read + Seek>(
     reader.seek(SeekFrom::Start(bnr_offset))?;
     let mut bnr = vec![0u8; expected];
     reader.read_exact(&mut bnr)?;
-    let banner = GcBanner::parse(&bnr)?;
+    let banner = GcBanner::parse(&bnr, region)?;
 
     let image = decode_rgb5a3_tiled(&banner.image_raw, BANNER_IMAGE_WIDTH, BANNER_IMAGE_HEIGHT)
         .ok()
@@ -399,7 +398,13 @@ mod tests {
         disc[0..4].copy_from_slice(&BNR1_MAGIC);
         let mut reader = std::io::Cursor::new(disc);
 
-        let (info, _) = read_banner(&mut reader, 0, (BNR1_FILE_SIZE + 4096) as u64).unwrap();
+        let (info, _) = read_banner(
+            &mut reader,
+            0,
+            (BNR1_FILE_SIZE + 4096) as u64,
+            GcRegion::Usa,
+        )
+        .unwrap();
         assert_eq!(info.unwrap().titles.len(), 1);
         assert_eq!(reader.position(), BNR1_FILE_SIZE as u64);
     }
@@ -412,6 +417,35 @@ mod tests {
         assert_eq!(name.len(), 10_000);
         assert!(name.bytes().all(|byte| byte == b'a'));
         assert!(reader.position() <= 3 * 4 * 1024);
+    }
+
+    #[test]
+    fn fst_name_decodes_shift_jis_across_chunk_boundary() {
+        let mut strings = vec![b'a'; 4095];
+        strings.extend_from_slice(&[0x82, 0xad, 0x00]);
+        let expected = format!("{}く", "a".repeat(4095));
+
+        let name = read_fst_name(
+            &mut std::io::Cursor::new(strings.clone()),
+            Some(strings.as_slice()),
+            0,
+            strings.len() as u64,
+            0,
+            &mut [0; 4 * 1024],
+        )
+        .unwrap();
+        assert_eq!(name, expected);
+
+        let name = read_fst_name(
+            &mut std::io::Cursor::new(strings.clone()),
+            None,
+            0,
+            strings.len() as u64,
+            0,
+            &mut [0; 4 * 1024],
+        )
+        .unwrap();
+        assert_eq!(name, expected);
     }
 
     #[test]

@@ -7,9 +7,11 @@ use anyhow::{Result, anyhow};
 use byteorder::{BE, ReadBytesExt};
 use std::io::{Read, Seek, SeekFrom};
 
+use crate::util::bytes::{cstr_shift_jis, cstr_windows_1252};
+
 pub const BOOT_BIN_GAME_ID_OFFSET: u64 = 0x00;
 pub const BOOT_BIN_GAME_NAME_OFFSET: u64 = 0x20;
-pub const BOOT_BIN_GAME_NAME_LEN: usize = 64;
+pub const BOOT_BIN_GAME_NAME_LEN: usize = 0x60;
 pub const BOOT_BIN_MAGIC_OFFSET: u64 = 0x1C;
 pub const GC_MAGIC: u32 = 0xC2339F3D;
 
@@ -42,6 +44,14 @@ impl GcRegion {
             2 => Self::Pal,
             4 => Self::Korea,
             other => Self::Unknown(other),
+        }
+    }
+
+    /// Decodes a NUL-terminated disc text field in this region's encoding.
+    pub fn decode_text(self, buf: &[u8]) -> String {
+        match self {
+            Self::Japan => cstr_shift_jis(buf),
+            _ => cstr_windows_1252(buf),
         }
     }
 }
@@ -93,7 +103,6 @@ impl GcBootBin {
         let mut name_buf = [0u8; BOOT_BIN_GAME_NAME_LEN];
         reader.seek(SeekFrom::Start(start + BOOT_BIN_GAME_NAME_OFFSET))?;
         reader.read_exact(&mut name_buf)?;
-        let game_name = read_latin1_trim(&name_buf);
 
         reader.seek(SeekFrom::Start(start + BOOT_BIN_FST_OFFSET_FIELD))?;
         let fst_offset = reader.read_u32::<BE>()?;
@@ -102,6 +111,7 @@ impl GcBootBin {
         reader.seek(SeekFrom::Start(start + BI2_REGION_OFFSET))?;
         let region_code = reader.read_u32::<BE>().unwrap_or(0xFFFF_FFFF);
         let region = GcRegion::from_code(region_code);
+        let game_name = region.decode_text(&name_buf);
 
         let apploader_date = read_apploader_date(reader, start).ok();
 
@@ -139,7 +149,7 @@ mod tests {
     use byteorder::WriteBytesExt;
     use std::io::Cursor;
 
-    fn build_min_disc_image(name: &str, region: u32, fst_off: u32, fst_size: u32) -> Vec<u8> {
+    fn build_min_disc_image(name: &[u8], region: u32, fst_off: u32, fst_size: u32) -> Vec<u8> {
         let mut buf = vec![0u8; 0x2500];
         buf[0..6].copy_from_slice(b"GALE01");
         buf[6] = 0;
@@ -147,8 +157,7 @@ mod tests {
         buf[8] = 1;
         buf[9] = 16;
         (&mut buf[0x1C..0x20]).write_u32::<BE>(GC_MAGIC).unwrap();
-        let name_bytes = name.as_bytes();
-        buf[0x20..0x20 + name_bytes.len()].copy_from_slice(name_bytes);
+        buf[0x20..0x20 + name.len()].copy_from_slice(name);
         (&mut buf[BOOT_BIN_FST_OFFSET_FIELD as usize..BOOT_BIN_FST_OFFSET_FIELD as usize + 4])
             .write_u32::<BE>(fst_off)
             .unwrap();
@@ -166,7 +175,7 @@ mod tests {
 
     #[test]
     fn parses_known_disc() {
-        let buf = build_min_disc_image("Animal Crossing", 1, 0x100000, 0x500);
+        let buf = build_min_disc_image(b"Animal Crossing", 1, 0x100000, 0x500);
         let mut cur = Cursor::new(&buf);
         let boot = GcBootBin::read(&mut cur).unwrap();
         assert_eq!(boot.game_id, "GALE01");
@@ -183,7 +192,7 @@ mod tests {
 
     #[test]
     fn rejects_non_gamecube_magic() {
-        let mut buf = build_min_disc_image("Test", 0, 0x100, 0x10);
+        let mut buf = build_min_disc_image(b"Test", 0, 0x100, 0x10);
         buf[0x1C..0x20].copy_from_slice(&[0u8; 4]);
         let mut cur = Cursor::new(&buf);
         assert!(GcBootBin::read(&mut cur).is_err());
@@ -199,5 +208,32 @@ mod tests {
             GcRegion::Unknown(99) => (),
             _ => panic!("expected Unknown(99)"),
         }
+    }
+
+    #[test]
+    fn decode_text_uses_shift_jis_only_for_japan() {
+        let kururin = [0x82, 0xAD, 0x82, 0xE9, 0x82, 0xE8, 0x82, 0xF1];
+        let mut bytes = kururin.to_vec();
+        bytes.push(0x00);
+        bytes.extend_from_slice(b"XY");
+        assert_eq!(GcRegion::Japan.decode_text(&bytes), "くるりん");
+        for region in [
+            GcRegion::Usa,
+            GcRegion::Pal,
+            GcRegion::Korea,
+            GcRegion::Unknown(0xFFFF_FFFF),
+        ] {
+            assert_eq!(region.decode_text(b"A\x99\0XY"), "A\u{2122}");
+        }
+    }
+
+    #[test]
+    fn reads_full_shift_jis_game_name_on_japanese_disc() {
+        // 72 bytes: longer than 64, within the 0x60 name field.
+        let name = [0x82, 0xAD, 0x82, 0xE9, 0x82, 0xE8, 0x82, 0xF1].repeat(9);
+        let buf = build_min_disc_image(&name, 0, 0x100000, 0x500);
+        let mut cur = Cursor::new(&buf);
+        let boot = GcBootBin::read(&mut cur).unwrap();
+        assert_eq!(boot.game_name, "くるりん".repeat(9));
     }
 }

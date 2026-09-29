@@ -33,6 +33,26 @@ pub fn cstr_ascii(buf: &[u8]) -> String {
     String::from_utf8_lossy(&buf[..end]).into_owned()
 }
 
+/// Decodes a NUL-terminated Shift-JIS field, dropping the terminator and
+/// everything after it.
+pub(crate) fn cstr_shift_jis(buf: &[u8]) -> String {
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    encoding_rs::SHIFT_JIS
+        .decode_without_bom_handling(&buf[..end])
+        .0
+        .into_owned()
+}
+
+/// Decodes a NUL-terminated Windows-1252 field, dropping the terminator and
+/// everything after it.
+pub(crate) fn cstr_windows_1252(buf: &[u8]) -> String {
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    encoding_rs::WINDOWS_1252
+        .decode_without_bom_handling(&buf[..end])
+        .0
+        .into_owned()
+}
+
 /// Renders a fixed-width header name field as a trimmed string, dropping
 /// the zero, 0xFF, and control bytes used as padding.
 pub(crate) fn ascii_trim(bytes: &[u8]) -> String {

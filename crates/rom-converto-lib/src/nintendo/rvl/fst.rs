@@ -8,6 +8,8 @@ use anyhow::{Result, anyhow};
 use byteorder::{BE, ReadBytesExt};
 use std::io::Cursor;
 
+use crate::util::bytes::cstr_shift_jis;
+
 pub const FST_ENTRY_SIZE: usize = 0x0C;
 
 /// One entry from a Wii partition FST: a file with its byte offset and size, or a directory.
@@ -116,15 +118,8 @@ fn read_u32_be(buf: &[u8], offset: usize) -> Result<u32> {
 }
 
 fn read_c_string(table: &[u8], offset: usize) -> String {
-    if offset >= table.len() {
-        return String::new();
-    }
-    let end = table[offset..]
-        .iter()
-        .position(|b| *b == 0)
-        .map(|n| offset + n)
-        .unwrap_or(table.len());
-    String::from_utf8_lossy(&table[offset..end]).into_owned()
+    // FST entry names are Shift-JIS regardless of disc region.
+    table.get(offset..).map(cstr_shift_jis).unwrap_or_default()
 }
 
 #[cfg(test)]

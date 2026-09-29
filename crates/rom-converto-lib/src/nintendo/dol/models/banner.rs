@@ -1,12 +1,16 @@
 //! GameCube `opening.bnr` parser.
 //!
 //! Two formats:
-//!   - BNR1 (single language, typically Latin-1) used by US/EU titles.
+//!   - BNR1 (single language) used by NTSC discs, plus some single-language
+//!     PAL discs.
 //!   - BNR2 (six languages: English, German, French, Spanish, Italian,
 //!     Dutch) used by PAL titles.
 //!
+//! Text fields are Shift-JIS on NTSC-J discs and Windows-1252 otherwise.
+//!
 //! Both formats embed a 96x32 RGB5A3 banner image at offset 0x20.
 
+use crate::nintendo::dol::models::boot_bin::GcRegion;
 use anyhow::{Result, anyhow};
 
 pub const BANNER_IMAGE_OFFSET: usize = 0x20;
@@ -31,9 +35,9 @@ pub enum BannerFormat {
 /// Language of one banner title block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BannerLanguage {
-    /// BNR1 carries a single language slot (region-dependent: typically
-    /// English for US, German for German PAL, and so on). It is exposed as
-    /// `BannerLanguage::Default`.
+    /// BNR1 carries a single language slot (region-dependent: English for
+    /// US, German for German PAL, Japanese on NTSC-J discs, and so on). It
+    /// is exposed as `BannerLanguage::Default`.
     Default,
     English,
     German,
@@ -44,7 +48,8 @@ pub enum BannerLanguage {
 }
 
 /// One decoded title block: short and long game/maker names plus the
-/// description text, all Latin-1 and trimmed at the first NUL.
+/// description text, decoded in the disc region's encoding and trimmed at
+/// the first NUL.
 #[derive(Debug, Clone)]
 pub struct BannerTitle {
     pub language: BannerLanguage,
@@ -68,7 +73,8 @@ pub struct GcBanner {
 impl GcBanner {
     /// Parses an `opening.bnr` buffer, detecting BNR1 vs BNR2 from its
     /// magic and decoding one title block per language it carries.
-    pub fn parse(buf: &[u8]) -> Result<Self> {
+    /// `region` selects the text encoding of the title blocks.
+    pub fn parse(buf: &[u8], region: GcRegion) -> Result<Self> {
         if buf.len() < BNR1_FILE_SIZE {
             return Err(anyhow!("opening.bnr too small: {} bytes", buf.len()));
         }
@@ -87,7 +93,7 @@ impl GcBanner {
                     return Err(anyhow!("BNR1 file truncated"));
                 }
                 let block = &buf[titles_start..titles_start + BANNER_LANG_BLOCK_SIZE];
-                vec![parse_block(BannerLanguage::Default, block)]
+                vec![parse_block(BannerLanguage::Default, region, block)]
             }
             BannerFormat::Bnr2 => {
                 if buf.len() < BNR2_FILE_SIZE {
@@ -106,7 +112,7 @@ impl GcBanner {
                     .enumerate()
                     .map(|(i, lang)| {
                         let base = titles_start + i * BANNER_LANG_BLOCK_SIZE;
-                        parse_block(*lang, &buf[base..base + BANNER_LANG_BLOCK_SIZE])
+                        parse_block(*lang, region, &buf[base..base + BANNER_LANG_BLOCK_SIZE])
                     })
                     .collect()
             }
@@ -120,20 +126,15 @@ impl GcBanner {
     }
 }
 
-fn parse_block(lang: BannerLanguage, block: &[u8]) -> BannerTitle {
+fn parse_block(lang: BannerLanguage, region: GcRegion, block: &[u8]) -> BannerTitle {
     BannerTitle {
         language: lang,
-        short_game_name: trim_latin1(&block[0x00..0x20]),
-        short_maker: trim_latin1(&block[0x20..0x40]),
-        long_game_name: trim_latin1(&block[0x40..0x80]),
-        long_maker: trim_latin1(&block[0x80..0xC0]),
-        description: trim_latin1(&block[0xC0..0x140]),
+        short_game_name: region.decode_text(&block[0x00..0x20]),
+        short_maker: region.decode_text(&block[0x20..0x40]),
+        long_game_name: region.decode_text(&block[0x40..0x80]),
+        long_maker: region.decode_text(&block[0x80..0xC0]),
+        description: region.decode_text(&block[0xC0..0x140]),
     }
-}
-
-fn trim_latin1(buf: &[u8]) -> String {
-    let end = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
-    buf[..end].iter().map(|&b| b as char).collect()
 }
 
 #[cfg(test)]
@@ -170,7 +171,7 @@ mod tests {
     #[test]
     fn parses_bnr1() {
         let buf = build_bnr1();
-        let b = GcBanner::parse(&buf).unwrap();
+        let b = GcBanner::parse(&buf, GcRegion::Usa).unwrap();
         assert_eq!(b.format, BannerFormat::Bnr1);
         assert_eq!(b.titles.len(), 1);
         assert_eq!(b.titles[0].language, BannerLanguage::Default);
@@ -183,7 +184,7 @@ mod tests {
     #[test]
     fn parses_bnr2_in_pal_language_order() {
         let buf = build_bnr2();
-        let b = GcBanner::parse(&buf).unwrap();
+        let b = GcBanner::parse(&buf, GcRegion::Pal).unwrap();
         assert_eq!(b.format, BannerFormat::Bnr2);
         let parsed: Vec<_> = b
             .titles
@@ -207,6 +208,20 @@ mod tests {
     fn rejects_bad_magic() {
         let mut buf = build_bnr1();
         buf[0..4].copy_from_slice(b"XXXX");
-        assert!(GcBanner::parse(&buf).is_err());
+        assert!(GcBanner::parse(&buf, GcRegion::Usa).is_err());
+    }
+
+    #[test]
+    fn decodes_bnr1_shift_jis_titles_on_japanese_disc() {
+        const KURURIN: [u8; 8] = [0x82, 0xAD, 0x82, 0xE9, 0x82, 0xE8, 0x82, 0xF1];
+        let mut buf = build_bnr1();
+        let titles_off = BANNER_IMAGE_OFFSET + BANNER_IMAGE_BYTES;
+        buf[titles_off..titles_off + KURURIN.len()].copy_from_slice(&KURURIN);
+        buf[titles_off + KURURIN.len()] = 0;
+        buf[titles_off + 0xC0..titles_off + 0xC0 + KURURIN.len()].copy_from_slice(&KURURIN);
+
+        let b = GcBanner::parse(&buf, GcRegion::Japan).unwrap();
+        assert_eq!(b.titles[0].short_game_name, "くるりん");
+        assert_eq!(b.titles[0].description, "くるりん");
     }
 }

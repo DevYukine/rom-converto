@@ -15,7 +15,7 @@ use crate::nintendo::rvl::models::tmd::WiiTmd;
 use crate::nintendo::rvl::models::u8_archive::U8Archive;
 use crate::nintendo::rvl::partition::read_partition_info;
 use crate::nintendo::rvl::partition_reader::PartitionPayloadReader;
-use crate::util::bytes::cstr_ascii;
+use crate::util::bytes::{cstr_ascii, cstr_shift_jis, cstr_windows_1252};
 use crate::util::extent_end;
 use crate::util::pixel::{
     decode_cmpr_tiled, decode_i4_tiled, decode_rgb5a3_tiled, decode_rgba32_tiled, encode_png,
@@ -160,6 +160,10 @@ impl std::fmt::Display for WiiRegion {
     }
 }
 
+/// The Wii disc header title field is 0x40 bytes; 0x60 and 0x61 are the
+/// hash and encryption flags, not name bytes.
+const WII_TITLE_LEN: usize = 0x40;
+
 fn read_disc_header<R: Read + Seek>(reader: &mut R) -> Result<DiscHeader> {
     let mut id = [0u8; 6];
     reader.seek(SeekFrom::Start(0))?;
@@ -177,10 +181,9 @@ fn read_disc_header<R: Read + Seek>(reader: &mut R) -> Result<DiscHeader> {
         return Err(anyhow!("rvl info: Wii magic missing (got 0x{:08x})", magic));
     }
 
-    let mut name = [0u8; 64];
+    let mut name = [0u8; WII_TITLE_LEN];
     reader.seek(SeekFrom::Start(0x20))?;
     reader.read_exact(&mut name)?;
-    let game_name = cstr_ascii(&name);
 
     reader.seek(SeekFrom::Start(0x4E000))?;
     let region_code = reader.read_u32::<BE>().unwrap_or(0xFFFF_FFFF);
@@ -191,6 +194,11 @@ fn read_disc_header<R: Read + Seek>(reader: &mut R) -> Result<DiscHeader> {
         3 => WiiRegion::RegionFree,
         4 => WiiRegion::Korea,
         other => WiiRegion::Unknown(other),
+    };
+
+    let game_name = match region {
+        WiiRegion::Japan => cstr_shift_jis(&name),
+        _ => cstr_windows_1252(&name),
     };
 
     Ok(DiscHeader {
@@ -921,5 +929,36 @@ mod container_tests {
             access_rights: 0,
         };
         assert_eq!(tmd.title_id_hex, "01ABCDEF01234801");
+    }
+}
+
+#[cfg(test)]
+mod header_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn disc_header_decodes_title_by_region() {
+        // Shift-JIS for "くるりん".
+        const TITLE: [u8; 8] = [0x82, 0xAD, 0x82, 0xE9, 0x82, 0xE8, 0x82, 0xF1];
+
+        let build = |region: u32| {
+            let mut buf = vec![0u8; 0x4E004];
+            buf[WII_MAGIC_OFFSET..WII_MAGIC_OFFSET + 4].copy_from_slice(&WII_MAGIC.to_be_bytes());
+            buf[0x20..0x20 + TITLE.len()].copy_from_slice(&TITLE);
+            buf[0x4E000..].copy_from_slice(&region.to_be_bytes());
+            buf
+        };
+
+        let header = read_disc_header(&mut Cursor::new(build(0))).expect("header must parse");
+        assert!(matches!(header.region, WiiRegion::Japan));
+        assert_eq!(header.game_name, "くるりん");
+
+        let header = read_disc_header(&mut Cursor::new(build(1))).expect("header must parse");
+        assert!(matches!(header.region, WiiRegion::Usa));
+        assert_eq!(
+            header.game_name,
+            "\u{201A}\u{AD}\u{201A}\u{E9}\u{201A}\u{E8}\u{201A}\u{F1}"
+        );
     }
 }

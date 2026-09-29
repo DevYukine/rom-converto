@@ -4248,6 +4248,7 @@ dependencies = [
  "crc",
  "ctr",
  "dirs",
+ "encoding_rs",
  "flacenc",
  "flate2",
  "fs4",
