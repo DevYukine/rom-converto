@@ -489,8 +489,6 @@ pub(super) fn decompress_raw_region(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs::{self, OpenOptions};
-    use std::io::Write;
 
     struct VecSink(Vec<u8>);
 
@@ -536,18 +534,8 @@ mod tests {
             } else {
                 decoded.clone()
             };
-            let path = std::env::temp_dir().join(format!(
-                "rom-converto-raw-stream-{}-{name}",
-                std::process::id()
-            ));
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)
-                .unwrap();
-            file.write_all(&stored).unwrap();
-            drop(file);
-            let file = Arc::new(std::fs::File::open(&path).unwrap());
+            let dir = tempfile::tempdir().unwrap();
+            let file = write_stored(&dir, name, &stored);
 
             let work = RawDecompressWork {
                 data_off: 0,
@@ -579,24 +567,13 @@ mod tests {
             )
             .unwrap();
             assert_eq!(actual_sink.0, expected_sink.0, "{name}");
-            fs::remove_file(path).unwrap();
         }
     }
 
     #[test]
     fn streamed_zero_sentinel_clears_reused_buffer() {
-        let path = std::env::temp_dir().join(format!(
-            "rom-converto-raw-stream-zero-sentinel-{}",
-            std::process::id()
-        ));
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .unwrap();
-        file.write_all(&[0x5a; 8]).unwrap();
-        drop(file);
-        let file = std::fs::File::open(&path).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let file = write_stored(&dir, "zero-sentinel.bin", &[0x5a; 8]);
         let mut sink = VecSink(Vec::new());
         let bytes_done = AtomicU64::new(0);
         let mut buffer = [0xa5; 8];
@@ -627,7 +604,6 @@ mod tests {
         stream_raw_chunk(&sentinel, &file, &mut sink, &bytes_done, &mut buffer).unwrap();
 
         assert_eq!(sink.0, [vec![0x5a; 8], vec![0; 8]].concat());
-        fs::remove_file(path).unwrap();
     }
 
     /// Packed record stream: verbatim 1000 bytes, LFG-seeded 200 bytes,
