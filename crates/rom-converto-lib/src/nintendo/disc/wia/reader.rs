@@ -585,6 +585,8 @@ impl WiaReader {
         Self::open_with_lookahead(path, usize::MAX)
     }
 
+    /// Same as [`Self::open`], with `lookahead` as the pipeline prefetch
+    /// bound in groups; `usize::MAX` means unbounded.
     pub fn open_with_lookahead(path: &Path, lookahead: usize) -> WiaResult<Self> {
         let mut f = File::open(path)?;
         let layout = WiaLayout::parse(&mut f)?;

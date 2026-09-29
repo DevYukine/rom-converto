@@ -558,6 +558,8 @@ impl NkitReader {
         Self::open_with_lookahead(path, usize::MAX)
     }
 
+    /// Same as [`Self::open`], with `lookahead` as the pipeline prefetch
+    /// bound in groups; `usize::MAX` means unbounded.
     pub fn open_with_lookahead(path: &Path, lookahead: usize) -> NkitResult<Self> {
         Self::from_source_with_lookahead(File::open(path)?, lookahead)
     }
@@ -568,6 +570,8 @@ impl NkitReader {
         Self::from_source_with_lookahead(src, usize::MAX)
     }
 
+    /// Same as [`Self::from_source`], with `lookahead` as the pipeline
+    /// prefetch bound in groups; `usize::MAX` means unbounded.
     pub fn from_source_with_lookahead<S: Read + Seek + Send + 'static>(
         mut src: S,
         lookahead: usize,

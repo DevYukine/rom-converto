@@ -157,6 +157,8 @@ pub fn open_disc_input(path: &Path) -> DiscInputResult<Box<dyn DiscReader>> {
     open_disc_input_with_lookahead(path, usize::MAX)
 }
 
+/// Same as [`open_disc_input`], with `lookahead` as the pipeline prefetch
+/// bound in groups; `usize::MAX` means unbounded.
 pub fn open_disc_input_with_lookahead(
     path: &Path,
     lookahead: usize,

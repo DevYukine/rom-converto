@@ -45,6 +45,8 @@ pub struct ArchiveSelection {
 }
 
 impl ArchiveSelection {
+    /// The [`ResolvedInput::output_basis`] an archive would resolve to for
+    /// this selection, read from the member listing without extracting.
     pub fn output_basis(&self, archive: &Path) -> Result<PathBuf> {
         basis_for(archive, &self.members[self.member_index])
     }
@@ -396,6 +398,8 @@ pub fn resolve_input(path: &Path, exts: &[&str]) -> Result<ResolvedInput> {
     resolve_input_with_selection(path, exts, None)
 }
 
+/// Same as [`resolve_input`], but reuses a previously probed
+/// [`ArchiveSelection`] instead of listing the archive again.
 pub fn resolve_input_with_selection(
     path: &Path,
     exts: &[&str],

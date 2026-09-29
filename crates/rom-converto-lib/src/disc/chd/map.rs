@@ -271,6 +271,7 @@ pub(crate) struct BitReader<'a> {
 }
 
 impl<'a> BitReader<'a> {
+    /// Creates a reader that yields bits MSB first within each byte.
     pub fn new(data: &'a [u8]) -> Self {
         Self {
             data,
@@ -451,6 +452,8 @@ impl HuffmanDecoder {
         Ok(Self { lookup })
     }
 
+    /// Decodes one Huffman symbol by walking the lookup table MSB first:
+    /// peeks `HUFFMAN_MAX_BITS` bits, then consumes only the matched length.
     pub fn decode_one(&self, bits: &mut BitReader<'_>) -> ChdResult<u8> {
         let pos = bits.position();
         let value = bits.read(HUFFMAN_MAX_BITS)?;
