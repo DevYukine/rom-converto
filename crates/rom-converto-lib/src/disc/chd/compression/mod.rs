@@ -208,7 +208,7 @@ pub(crate) fn codec_header_slots(codecs: &[ChdCodec]) -> [[u8; 4]; 4] {
 /// a parent CHD).
 // IMPORTANT: These values map to positions in the header, not codec IDs
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[allow(dead_code)] // CHD spec values: Self_ and Parent are used in map constants.
+#[allow(dead_code)] // CHD spec values; the writer only constructs None and Codec0.
 pub enum ChdCompression {
     Codec0 = 0, // First codec in header
     Codec1 = 1, // Second codec in header

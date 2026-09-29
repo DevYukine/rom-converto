@@ -6,7 +6,6 @@
 use crate::nintendo::nx::error::{NxError, NxResult};
 use crate::util::bytes::u32_le;
 
-pub const NACP_TITLE_TABLE_SIZE: usize = 0x3000;
 pub const NACP_TITLE_ENTRY_SIZE: usize = 0x300;
 pub const NACP_NAME_SIZE: usize = 0x200;
 pub const NACP_PUBLISHER_SIZE: usize = 0x100;

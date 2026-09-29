@@ -20,6 +20,6 @@ pub mod verify;
 pub mod test_fixtures;
 
 pub use disc::{
-    WiiPartitionEntry, decrypt_sector, decrypt_title_key, encrypt_sector, encrypt_title_key,
-    hash_h0, is_wii, read_partition_table,
+    WiiPartitionEntry, decrypt_sector, decrypt_title_key, encrypt_sector, is_wii,
+    read_partition_table,
 };

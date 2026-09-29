@@ -94,7 +94,6 @@ pub mod wud_reader;
 pub mod wux_reader;
 
 pub use disc_key::{DiscKey, load_disc_key};
-pub use embedded_keys::{embedded_key_by_name, embedded_keys};
 pub use meta_source::DiscMetaSource;
 pub use partition_table::{PartitionEntry, PartitionKind, PartitionTable, parse_partition_table};
 pub use sector_stream::{DiscSectorSource, SECTOR_SIZE, open_disc};

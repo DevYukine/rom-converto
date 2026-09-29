@@ -13,14 +13,12 @@ pub const NCA_FS_ENTRY_OFFSET: usize = 0x240;
 pub const NCA_FS_HEADER_OFFSET: usize = 0x400;
 pub const NCA_FS_HEADER_STRIDE: usize = 0x200;
 pub const NCA_MAX_SECTIONS: usize = 4;
-pub const NCA_SECTOR_SIZE: u64 = 0x200;
 
 pub const PFS0_HEADER_SIZE: usize = 0x10;
 pub const PFS0_ENTRY_SIZE: usize = 0x18;
 pub const HFS0_HEADER_SIZE: usize = 0x10;
 pub const HFS0_ENTRY_SIZE: usize = 0x40;
 
-pub const XCI_HFS0_OFFSET: u64 = 0x10000;
 pub const XCI_PARTITIONS: &[&str] = &["update", "logo", "normal", "secure"];
 
 pub const NCZ_SECTION_ENTRY_SIZE: usize = 0x40;

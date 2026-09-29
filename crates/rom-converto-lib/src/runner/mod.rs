@@ -26,7 +26,6 @@ pub mod models;
 
 use defaults::apply_config_defaults;
 use models::{ProgressEvent, RunRequest, RunResponse, RunSchemaManifest, RunStatus};
-pub use ops::batch_exts;
 use ops::{run_batch_request, run_single_request};
 
 pub const RUN_SCHEMA: &str = "rom-converto.run.v1";

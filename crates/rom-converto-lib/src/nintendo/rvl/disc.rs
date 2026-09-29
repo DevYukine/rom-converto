@@ -1,6 +1,5 @@
-//! Wii disc handling: partition table parsing, ticket title-key handling,
-//! sector encryption, and the H0 hash helper used by the RVZ exception list
-//! builder.
+//! Wii disc handling: partition table parsing, ticket title-key handling
+//! and sector encryption.
 
 use crate::nintendo::disc::rvz::error::{RvzError, RvzResult};
 use crate::nintendo::rvl::common_keys::common_key;
@@ -16,7 +15,6 @@ use aes::{
 };
 use block_padding::NoPadding;
 use cbc::{Decryptor, Encryptor};
-use sha1::{Digest, Sha1};
 use std::io::{Read, Seek, SeekFrom};
 
 type Aes128CbcDec = Decryptor<Aes128>;
@@ -134,32 +132,6 @@ pub fn decrypt_title_key(ticket: &[u8; WII_TICKET_SIZE]) -> RvzResult<[u8; 16]> 
     Ok(buf)
 }
 
-/// Re-encrypt a title key with the Wii common key. The IV construction
-/// matches [`decrypt_title_key`].
-pub fn encrypt_title_key(
-    ticket: &[u8; WII_TICKET_SIZE],
-    title_key: &[u8; 16],
-) -> RvzResult<[u8; 16]> {
-    let common_key_index = ticket[WII_TICKET_COMMON_KEY_INDEX_OFFSET];
-    let key =
-        common_key(common_key_index).ok_or(RvzError::UnknownCommonKeyIndex(common_key_index))?;
-
-    let mut iv = [0u8; 16];
-    iv[..8].copy_from_slice(&ticket[WII_TICKET_TITLE_ID_OFFSET..WII_TICKET_TITLE_ID_OFFSET + 8]);
-
-    let cipher =
-        Aes128CbcEnc::new_from_slices(key, &iv).map_err(|e| RvzError::AesError(e.to_string()))?;
-    let mut buf = [0u8; 16];
-    buf.copy_from_slice(title_key);
-    let mut out = [0u8; 16];
-    let ct = cipher
-        .encrypt_padded_b2b::<NoPadding>(&buf, &mut out)
-        .map_err(|e| RvzError::AesError(format!("title key encrypt: {e}")))?;
-    let mut arr = [0u8; 16];
-    arr.copy_from_slice(ct);
-    Ok(arr)
-}
-
 /// Decrypt one 0x8000-byte Wii partition sector in place. On entry `sector`
 /// contains the encrypted block as it sits on disc; on return `sector` is
 /// `[hash_region (0x400) | plaintext payload (0x7C00)]`.
@@ -221,18 +193,6 @@ pub fn encrypt_sector(sector: &mut [u8; WII_SECTOR_SIZE], title_key: &[u8; 16]) 
     sector[..WII_HASH_SIZE].copy_from_slice(&hash_enc);
     sector[WII_HASH_SIZE..].copy_from_slice(&payload_enc);
     Ok(())
-}
-
-/// Recompute the H0 hash array for a plaintext Wii sector payload. Each
-/// 0x400-byte sub-block contributes one SHA-1.
-pub fn hash_h0(plaintext: &[u8; WII_SECTOR_PAYLOAD_SIZE]) -> [[u8; 20]; 31] {
-    let mut h0 = [[0u8; 20]; 31];
-    for (i, chunk) in plaintext.as_chunks::<0x400>().0.iter().enumerate().take(31) {
-        let mut hasher = Sha1::new();
-        hasher.update(chunk);
-        h0[i] = hasher.finalize().into();
-    }
-    h0
 }
 
 #[cfg(test)]

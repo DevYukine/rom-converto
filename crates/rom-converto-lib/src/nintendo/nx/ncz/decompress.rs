@@ -430,7 +430,7 @@ fn decode_blocks_stream_large<R: Read, W: Write>(
             return Err(NxError::IncompleteSection);
         }
         // The frame ending doesn't by itself guarantee every declared
-        // `csz` byte was consumed from `input` — a frame that's
+        // `csz` byte was consumed from `input`. A frame that's
         // internally valid but shorter than its declared stored size
         // would leave `input` positioned wrong for the next block.
         // The legacy decoder consumed the full declared block span even

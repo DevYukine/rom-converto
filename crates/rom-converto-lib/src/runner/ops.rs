@@ -2645,7 +2645,7 @@ pub(crate) fn child_options(options: &RunOptions) -> RunOptions {
 }
 
 /// Extensions a recursive run of `operation` scans.
-pub fn batch_exts(operation: &str) -> Result<&'static [&'static str]> {
+pub(crate) fn batch_exts(operation: &str) -> Result<&'static [&'static str]> {
     find_op(operation)
         .and_then(|op| op.batch_exts)
         .ok_or_else(|| {

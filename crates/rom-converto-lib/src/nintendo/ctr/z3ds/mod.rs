@@ -20,7 +20,6 @@ pub use decompress::{decompress_rom, digest_z3ds_inner};
 #[cfg(test)]
 pub(crate) use decompress_worker::plan_decompress_work;
 pub use reader::Z3dsReader;
-pub use seekable::decode_seekable;
 
 const COMPRESS_EXTS: &[&str] = &["cia", "cci", "3ds", "cxi", "3dsx"];
 const DECOMPRESS_EXTS: &[&str] = &["zcia", "zcci", "zcxi", "z3dsx"];

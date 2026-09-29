@@ -35,8 +35,6 @@ pub struct NcaHeader {
 pub const CONTENT_TYPE_PROGRAM: u8 = 0;
 pub const CONTENT_TYPE_META: u8 = 1;
 pub const CONTENT_TYPE_CONTROL: u8 = 2;
-pub const CONTENT_TYPE_MANUAL: u8 = 3;
-pub const CONTENT_TYPE_DATA: u8 = 4;
 pub const CONTENT_TYPE_PUBLIC_DATA: u8 = 5;
 
 /// One entry in the NCA's filesystem section table: the start and end

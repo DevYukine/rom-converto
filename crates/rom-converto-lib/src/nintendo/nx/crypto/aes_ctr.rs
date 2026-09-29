@@ -27,29 +27,15 @@ pub fn apply_ctr(key: &[u8; 16], counter: &[u8; 16], data: &mut [u8]) -> NxResul
     Ok(())
 }
 
-/// Builds the 128-bit counter for `nca_offset`: the 8-byte `ctr_iv`
-/// followed by the big-endian block index (`nca_offset / 16`).
-pub fn counter_for_offset(ctr_iv: &[u8; 8], nca_offset: u64) -> [u8; 16] {
-    let mut out = [0u8; 16];
-    out[..8].copy_from_slice(ctr_iv);
-    let blocks = nca_offset / 16;
-    out[8..].copy_from_slice(&blocks.to_be_bytes());
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn counter_layout_matches_spec() {
-        let iv: [u8; 8] = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11];
-        let c = counter_for_offset(&iv, 0x10);
-        assert_eq!(&c[..8], &iv);
-        assert_eq!(&c[8..], &[0u8, 0, 0, 0, 0, 0, 0, 1]);
-
-        let c2 = counter_for_offset(&iv, 0x100);
-        assert_eq!(&c2[8..], &[0u8, 0, 0, 0, 0, 0, 0, 0x10]);
+    fn counter_for_offset(ctr_iv: &[u8; 8], nca_offset: u64) -> [u8; 16] {
+        let mut out = [0u8; 16];
+        out[..8].copy_from_slice(ctr_iv);
+        out[8..].copy_from_slice(&(nca_offset / 16).to_be_bytes());
+        out
     }
 
     #[test]

@@ -169,7 +169,8 @@ pub fn encode_seekable_streaming<R: Read, W: Write>(
 /// Strips the seek table skippable frame (if present) then decompresses all
 /// remaining ZSTD frames sequentially. The standard zstd library handles
 /// multiple concatenated frames natively.
-pub fn decode_seekable(data: &[u8]) -> Z3dsResult<Vec<u8>> {
+#[cfg(test)]
+pub(crate) fn decode_seekable(data: &[u8]) -> Z3dsResult<Vec<u8>> {
     let payload = strip_seek_table(data);
     Ok(zstd::decode_all(payload)?)
 }
@@ -316,6 +317,7 @@ pub(super) fn parse_seek_table(frame_bytes: &[u8]) -> Z3dsResult<Vec<FrameEntry>
 
 /// Returns a slice of `data` with the trailing seek table skippable frame
 /// removed, or the original slice unchanged if no seek table is present.
+#[cfg(test)]
 fn strip_seek_table(data: &[u8]) -> &[u8] {
     // Walk back from the trailing seekable magic to the skippable frame header.
     if data.len() < 13 {

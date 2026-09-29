@@ -8,8 +8,6 @@ use std::io::{Cursor, Read};
 pub const CNMT_TYPE_SYSTEM_PROGRAM: u8 = 0x01;
 pub const CNMT_TYPE_SYSTEM_DATA: u8 = 0x02;
 pub const CNMT_TYPE_SYSTEM_UPDATE: u8 = 0x03;
-pub const CNMT_TYPE_BOOT_IMAGE_PACKAGE: u8 = 0x04;
-pub const CNMT_TYPE_BOOT_IMAGE_PACKAGE_SAFE: u8 = 0x05;
 pub const CNMT_TYPE_APPLICATION: u8 = 0x80;
 pub const CNMT_TYPE_PATCH: u8 = 0x81;
 pub const CNMT_TYPE_ADD_ON_CONTENT: u8 = 0x82;

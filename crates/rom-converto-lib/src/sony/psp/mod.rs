@@ -16,4 +16,3 @@ pub mod pbp;
 pub use extract::extract_segments;
 pub use info::{PbpInfo, PbpSegmentInfo, PsarKind, read_info};
 pub use npumd::to_iso;
-pub use pbp::Pbp;
