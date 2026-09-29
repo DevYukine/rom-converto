@@ -38,17 +38,10 @@ pub async fn verify_chd(
     let input_for_peek = input_path.clone();
     let (handle, metadata_hashes) =
         tokio::task::spawn_blocking(move || -> ChdResult<(SyncChdHandle, Vec<MetadataHash>)> {
-            let handle = crate::disc::chd::reader::open_chd_sync(&input_for_peek)?;
-            let hashes: Vec<MetadataHash> = handle
-                .metadata
-                .iter()
-                .filter(|m| m.flags & crate::disc::chd::models::CHD_METADATA_FLAG_HASHED != 0)
-                .map(|m| MetadataHash {
-                    tag: m.tag,
-                    sha1: <[u8; SHA1_BYTES]>::from(Sha1::digest(&m.data)),
-                })
-                .collect();
-            Ok((handle, hashes))
+            let handle =
+                crate::disc::chd::reader::open_chd_sync_with_metadata_hash(&input_for_peek, true)?;
+            let metadata_hashes = handle.metadata_hashes.clone();
+            Ok((handle, metadata_hashes))
         })
         .await??;
 
@@ -63,7 +56,7 @@ pub async fn verify_chd(
 
     let task = tokio::task::spawn_blocking(move || -> ChdResult<[u8; SHA1_BYTES]> {
         use crate::disc::chd::reader::worker::{
-            ChdExtractWork, ChdExtractedOut, make_chd_dvd_extract_workers,
+            ChdExtractWork, ChdExtractedOut, chd_read_admission, make_chd_dvd_extract_workers,
             make_chd_extract_workers, verify_hunks,
         };
         use crate::util::worker_pool::{Pool, parallelism};
@@ -71,17 +64,18 @@ pub async fn verify_chd(
         let hunk_bytes = handle.header.hunk_bytes as usize;
 
         let n_threads = parallelism();
+        let admission = chd_read_admission(hunk_bytes, n_threads, handle.map.len() as u64, false);
         let pool: Pool<ChdExtractWork, ChdExtractedOut, ChdError> =
             if handle.flavor() == ChdFlavor::Dvd {
                 Pool::spawn(make_chd_dvd_extract_workers(
-                    n_threads,
+                    admission.workers,
                     &handle.file,
                     hunk_bytes,
                     handle.header.compressors(),
                 )?)
             } else {
                 Pool::spawn(make_chd_extract_workers(
-                    n_threads,
+                    admission.workers,
                     &handle.file,
                     hunk_bytes,
                     handle.header.compressors(),
@@ -97,6 +91,7 @@ pub async fn verify_chd(
             logical_bytes,
             &bytes_done_bg,
             &cancel_bg,
+            admission,
         );
         pool.shutdown();
         verify_result?;

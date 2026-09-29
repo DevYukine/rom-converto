@@ -44,8 +44,8 @@ pub fn digest_chd_tracks(
 ) -> ChdResult<(Vec<ChdTrackDigest>, FileDigests)> {
     use crate::disc::chd::reader::open_chd_sync;
     use crate::disc::chd::reader::worker::{
-        ChdExtractWork, ChdExtractedOut, TrackDigestArgs, digest_hunks_dvd, digest_hunks_per_track,
-        make_chd_dvd_extract_workers, make_chd_extract_workers,
+        ChdExtractWork, ChdExtractedOut, TrackDigestArgs, chd_read_admission, digest_hunks_dvd,
+        digest_hunks_per_track, make_chd_dvd_extract_workers, make_chd_extract_workers,
     };
     use crate::util::worker_pool::{Pool, parallelism};
 
@@ -57,9 +57,10 @@ pub fn digest_chd_tracks(
         // Flat decoded stream capped at logical_bytes, same coverage
         // as extract_hunks_dvd.
         let logical_bytes = handle.header.logical_bytes;
+        let admission = chd_read_admission(hunk_bytes, n_threads, handle.map.len() as u64, false);
         let pool: Pool<ChdExtractWork, ChdExtractedOut, ChdError> =
             Pool::spawn(make_chd_dvd_extract_workers(
-                n_threads,
+                admission.workers,
                 &handle.file,
                 hunk_bytes,
                 handle.header.compressors(),
@@ -73,6 +74,7 @@ pub fn digest_chd_tracks(
             &mut whole,
             bytes_done,
             cancel,
+            admission,
         );
         pool.shutdown();
         result?;
@@ -90,9 +92,10 @@ pub fn digest_chd_tracks(
         (0..tracks.len()).map(|_| MultiHasher::new(algos)).collect();
     let mut whole = MultiHasher::new(algos);
 
+    let admission = chd_read_admission(hunk_bytes, n_threads, handle.map.len() as u64, false);
     let pool: Pool<ChdExtractWork, ChdExtractedOut, ChdError> =
         Pool::spawn(make_chd_extract_workers(
-            n_threads,
+            admission.workers,
             &handle.file,
             hunk_bytes,
             handle.header.compressors(),
@@ -109,6 +112,7 @@ pub fn digest_chd_tracks(
             whole: &mut whole,
             bytes_done,
             cancel,
+            admission,
         },
     );
     pool.shutdown();

@@ -6,7 +6,7 @@
 //! handful of sectors, not the whole thing.
 
 use std::fs::File;
-use std::io;
+use std::io::{self, BufReader};
 use std::path::Path;
 
 use crate::cso::compression::BlockDecompressor;
@@ -51,8 +51,9 @@ impl CueSectors {
     /// Opens the first track of the CUE sheet at `path`; it must be a
     /// BINARY MODE1/MODE2 data track.
     pub fn open(path: &Path) -> io::Result<Self> {
+        let cue_file = File::open(path)?;
         let sheet = CueParser::new(path)
-            .parse_bytes(&std::fs::read(path)?)
+            .parse_reader(BufReader::new(cue_file))
             .map_err(io::Error::other)?;
         let track = sheet
             .tracks
@@ -135,15 +136,9 @@ impl CsoSectors {
             return Err(past_end());
         }
         let spec = block_spec(&self.handle, block).map_err(io::Error::other)?;
-        let mut stored = vec![0u8; spec.stored_len];
-        file_read_exact_at(&self.handle.file, &mut stored, spec.offset)?;
-        self.block = if spec.raw {
-            stored
-        } else {
-            self.codec
-                .decompress(&stored, spec.expected_len)
-                .map_err(io::Error::other)?
-        };
+        self.block =
+            crate::cso::reader::decode_cso_block(&self.handle.file, &mut self.codec, spec, block)
+                .map_err(io::Error::other)?;
         self.cached = Some(block);
         Ok(())
     }
@@ -189,7 +184,7 @@ enum ChdDecoder {
 enum ChdSource {
     V5 {
         handle: SyncChdHandle,
-        decoder: ChdDecoder,
+        decoder: Box<ChdDecoder>,
     },
     Legacy(LegacyChd),
 }
@@ -202,7 +197,7 @@ impl ChdSource {
                     return Err(past_end());
                 }
                 let entry = resolve_entry(&handle.map, index).map_err(io::Error::other)?;
-                let out = match decoder {
+                let out = match decoder.as_mut() {
                     ChdDecoder::Cd(worker) => worker.process(ChdExtractWork { entry }),
                     ChdDecoder::Dvd(worker) => worker.process(ChdExtractWork { entry }),
                 }
@@ -255,7 +250,10 @@ impl ChdSectors {
                         ),
                     };
                     (
-                        ChdSource::V5 { handle, decoder },
+                        ChdSource::V5 {
+                            handle,
+                            decoder: Box::new(decoder),
+                        },
                         layout,
                         hunk_bytes,
                         sectors,

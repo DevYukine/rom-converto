@@ -195,14 +195,22 @@ pub async fn decompress_from_cso(
         move |write_path, bytes_done, cancel| -> CsoResult<()> {
             use crate::util::worker_pool::{Pool, parallelism};
 
+            let admission = reader::cso_extract_admission(&handle, parallelism());
             let out_file = std::fs::File::create(&write_path)?;
             let mut writer = std::io::BufWriter::with_capacity(IO_BUFFER_SIZE, out_file);
 
             let workers =
-                reader::make_cso_extract_workers(parallelism(), handle.format, &handle.file);
+                reader::make_cso_extract_workers(admission.workers, handle.format, &handle.file);
             let pool: Pool<reader::CsoExtractWork, reader::CsoExtractedOut, CsoError> =
                 Pool::spawn(workers);
-            let result = reader::extract_blocks(&pool, &handle, &mut writer, &bytes_done, &cancel);
+            let result = reader::extract_blocks(
+                &pool,
+                &handle,
+                &mut writer,
+                &bytes_done,
+                &cancel,
+                admission,
+            );
             pool.shutdown();
             result?;
 
@@ -238,10 +246,11 @@ pub fn digest_cso_inner(
     use crate::util::worker_pool::{Pool, parallelism};
 
     let handle = reader::open_cso_sync(path)?;
-    let workers = reader::make_cso_extract_workers(parallelism(), handle.format, &handle.file);
+    let admission = reader::cso_extract_admission(&handle, parallelism());
+    let workers = reader::make_cso_extract_workers(admission.workers, handle.format, &handle.file);
     let pool: Pool<reader::CsoExtractWork, reader::CsoExtractedOut, CsoError> =
         Pool::spawn(workers);
-    let result = reader::hash_blocks(&handle, &pool, algos, bytes_done, cancel);
+    let result = reader::hash_blocks(&handle, &pool, algos, bytes_done, cancel, admission);
     pool.shutdown();
     result
 }
@@ -249,6 +258,7 @@ pub fn digest_cso_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cso::models::{CISO_HEADER_SIZE, CISO_INDEX_UNCOMPRESSED};
     use crate::util::NoProgress;
 
     fn mixed_payload(len: usize) -> Vec<u8> {
@@ -777,5 +787,77 @@ mod tests {
             .expect("run maxcso --decompress");
         assert!(status.success(), "maxcso rejected our CSO");
         assert_eq!(std::fs::read(&their_restored).unwrap(), data);
+    }
+
+    #[test]
+    fn rejects_truncated_index_before_reserving_from_declared_size() {
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("truncated.cso");
+        let mut header = [0u8; CISO_HEADER_SIZE as usize];
+        header[..4].copy_from_slice(b"CISO");
+        header[4..8].copy_from_slice(&CISO_HEADER_SIZE.to_le_bytes());
+        header[8..16].copy_from_slice(&u64::MAX.to_le_bytes());
+        header[16..20].copy_from_slice(&2048u32.to_le_bytes());
+        std::fs::File::create(&path)
+            .unwrap()
+            .write_all(&header)
+            .unwrap();
+
+        assert!(matches!(
+            reader::open_cso_sync(&path),
+            Err(CsoError::CorruptIndex(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn decodes_compressed_blocks_without_reading_shift_padding_into_memory() {
+        use std::io::{Seek, SeekFrom, Write};
+
+        for format in [CsoFormat::Cso, CsoFormat::Zso] {
+            let dir = tempfile::tempdir().unwrap();
+            let data = vec![0x5Au8; 2048];
+            let iso = dir.path().join("game.iso");
+            std::fs::write(&iso, &data).unwrap();
+            let packed = dir.path().join(format!("game.{}", format.extension()));
+            compress_to_cso(
+                &NoProgress,
+                iso,
+                packed.clone(),
+                CsoCompressOptions {
+                    format,
+                    block_size: Some(2048),
+                    force: false,
+                },
+                CancelToken::new(),
+            )
+            .await
+            .unwrap();
+
+            let mut file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&packed)
+                .unwrap();
+            let handle = reader::open_cso_sync(&packed).unwrap();
+            assert_eq!(handle.header.index_shift, 0);
+            let end = handle.index[1] & !CISO_INDEX_UNCOMPRESSED;
+            let padded_end = end + 64 * 1024 * 1024;
+            file.seek(SeekFrom::Start((CISO_HEADER_SIZE + 4) as u64))
+                .unwrap();
+            file.write_all(&padded_end.to_le_bytes()).unwrap();
+            file.set_len(padded_end as u64).unwrap();
+
+            let bytes_done = Arc::new(AtomicU64::new(0));
+            let digests = digest_cso_inner(
+                &packed,
+                &[crate::util::hash::HashAlgo::Sha256],
+                &bytes_done,
+                &CancelToken::new(),
+            )
+            .unwrap();
+            assert_eq!(digests.size_bytes, data.len() as u64);
+        }
     }
 }

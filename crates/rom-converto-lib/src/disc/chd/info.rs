@@ -154,18 +154,28 @@ pub fn read_info(path: &Path) -> Result<ChdInfo> {
     match chd_version(path).map_err(into_anyhow)? {
         5 => {
             let handle = open_chd_sync(path).map_err(into_anyhow)?;
-            add_metadata(v5_header_info(&handle.header), &handle.metadata, path)
+            add_metadata(
+                v5_header_info(&handle.header),
+                &handle.metadata,
+                Some(&handle.metadata_tags),
+                path,
+            )
         }
         _ => {
             let chd = LegacyChd::open(path).map_err(into_anyhow)?;
-            add_metadata(legacy_header_info(chd.header()), chd.metadata(), path)
+            add_metadata(legacy_header_info(chd.header()), chd.metadata(), None, path)
         }
     }
 }
 
 /// Fills the fields both format generations derive from the metadata
 /// chain and the file itself.
-fn add_metadata(mut info: ChdInfo, metadata: &[ChdMetadataHeader], path: &Path) -> Result<ChdInfo> {
+fn add_metadata(
+    mut info: ChdInfo,
+    metadata: &[ChdMetadataHeader],
+    metadata_tags: Option<&[([u8; 4], u32)]>,
+    path: &Path,
+) -> Result<ChdInfo> {
     info.physical_bytes = std::fs::metadata(path)?.len();
     info.compression_ratio = if info.logical_bytes > 0 {
         (info.physical_bytes as f64 / info.logical_bytes as f64) * 100.0
@@ -173,13 +183,17 @@ fn add_metadata(mut info: ChdInfo, metadata: &[ChdMetadataHeader], path: &Path) 
         0.0
     };
     info.tracks = extract_tracks(metadata);
-    info.metadata_tags = metadata
-        .iter()
-        .map(|m| ChdMetadataTagSummary {
-            tag: fourcc_to_string(&m.tag).unwrap_or_else(|| hex::encode(m.tag)),
-            length: m.data.len() as u32,
-        })
-        .collect();
+    let summarize = |(tag, length): ([u8; 4], u32)| ChdMetadataTagSummary {
+        tag: fourcc_to_string(&tag).unwrap_or_else(|| hex::encode(tag)),
+        length,
+    };
+    info.metadata_tags = match metadata_tags {
+        Some(tags) => tags.iter().copied().map(summarize).collect(),
+        None => metadata
+            .iter()
+            .map(|m| summarize((m.tag, m.data.len() as u32)))
+            .collect(),
+    };
     info.version_string = extract_version_string(metadata);
     info.dvd = extract_dvd_info(metadata, info.logical_bytes);
     info.ld = extract_ld_info(metadata, info.logical_bytes, info.hunk_bytes);

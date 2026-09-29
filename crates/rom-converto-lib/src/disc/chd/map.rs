@@ -264,14 +264,14 @@ fn write_u48_be(buf: &mut [u8], value: u64) {
 }
 
 #[derive(Debug)]
-pub(crate) struct BitReader {
-    data: Vec<u8>,
+pub(crate) struct BitReader<'a> {
+    data: &'a [u8],
     byte_pos: usize,
     bit_pos: u8, // bits consumed in current byte (0-7), MSB first
 }
 
-impl BitReader {
-    pub fn new(data: Vec<u8>) -> Self {
+impl<'a> BitReader<'a> {
+    pub fn new(data: &'a [u8]) -> Self {
         Self {
             data,
             byte_pos: 0,
@@ -363,7 +363,7 @@ pub(crate) struct HuffmanDecoder {
 
 impl HuffmanDecoder {
     /// Import Huffman tree from RLE-encoded bit-lengths (reverse of HuffmanEncoder::export_tree_rle)
-    pub fn import_tree_rle(bits: &mut BitReader) -> ChdResult<Self> {
+    pub fn import_tree_rle(bits: &mut BitReader<'_>) -> ChdResult<Self> {
         let num_bits: u8 = if HUFFMAN_MAX_BITS >= 16 {
             5
         } else if HUFFMAN_MAX_BITS >= 8 {
@@ -451,7 +451,7 @@ impl HuffmanDecoder {
         Ok(Self { lookup })
     }
 
-    pub fn decode_one(&self, bits: &mut BitReader) -> ChdResult<u8> {
+    pub fn decode_one(&self, bits: &mut BitReader<'_>) -> ChdResult<u8> {
         let pos = bits.position();
         let value = bits.read(HUFFMAN_MAX_BITS)?;
         let (symbol, num_bits) = self.lookup[value as usize];
@@ -463,6 +463,26 @@ impl HuffmanDecoder {
         bits.read(num_bits)?;
         Ok(symbol)
     }
+}
+
+/// Upper bound on the hunk count a `compressed_len`-byte RLE
+/// bitstream could plausibly decode into, used to size the initial
+/// reserve below instead of trusting the header's declared
+/// `hunk_count` outright. Even the densest encoding
+/// (`COMPRESSION_RLE_LARGE`: three 1-bit Huffman codes covering up to
+/// `RLE_LARGE_BASE + RLE_LARGE_MAX_EXTRA` hunks) needs at least 3
+/// bits per that many hunks, so a tiny map can never justify a
+/// multi-gigabyte reserve. `Vec::push` still grows past this guess
+/// for legitimately RLE-heavy maps; a bitstream that runs dry first
+/// is caught by `decode_one`/`bits.read` before any hunk beyond what
+/// it actually encodes is ever allocated.
+fn plausible_hunk_reserve(compressed_len: usize, hunk_count: u32) -> usize {
+    let max_run = u64::from(RLE_LARGE_BASE + RLE_LARGE_MAX_EXTRA);
+    let plausible = (compressed_len as u64)
+        .saturating_mul(8)
+        .saturating_mul(max_run)
+        / 3;
+    (hunk_count as u64).min(plausible) as usize
 }
 
 pub(crate) fn decompress_v5_map(
@@ -486,8 +506,7 @@ pub(crate) fn decompress_v5_map(
         return Err(ChdError::MapDecompressionError);
     }
 
-    let compressed = map_data[MAP_HEADER_SIZE..MAP_HEADER_SIZE + compressed_len].to_vec();
-    let mut bits = BitReader::new(compressed);
+    let mut bits = BitReader::new(&map_data[MAP_HEADER_SIZE..MAP_HEADER_SIZE + compressed_len]);
 
     let decoder = HuffmanDecoder::import_tree_rle(&mut bits)?;
 
@@ -496,7 +515,8 @@ pub(crate) fn decompress_v5_map(
     //   - if count==0: read next symbol. RLE_SMALL/LARGE set count. Other values set lastcomp.
     //   - if count>0: decrement count.
     // In both cases, lastcomp is used for the current hunk.
-    let mut compression_types = Vec::with_capacity(hunk_count as usize);
+    let reserve_hunks = plausible_hunk_reserve(compressed_len, hunk_count);
+    let mut compression_types = Vec::with_capacity(reserve_hunks);
     {
         let mut count = 0u32;
         let mut lastcomp = 0u8;
@@ -521,7 +541,7 @@ pub(crate) fn decompress_v5_map(
         }
     }
 
-    let mut entries = Vec::with_capacity(hunk_count as usize);
+    let mut entries = Vec::with_capacity(reserve_hunks);
     let mut cur_offset = first_offset;
     let mut last_self = 0u32;
     let mut last_parent = 0u64;
@@ -688,5 +708,26 @@ mod tests {
     #[test]
     fn crc16_ccitt_empty_is_init_value() {
         assert_eq!(crc16_ccitt(&[]), 0xFFFF);
+    }
+
+    #[test]
+    fn plausible_hunk_reserve_bounds_a_tiny_map_against_a_huge_hunk_count() {
+        // 16 bytes of compressed map data can never plausibly decode
+        // into anywhere near u32::MAX hunks, so the initial reserve
+        // must stay tiny instead of trusting the header's declared
+        // count outright.
+        let reserve = plausible_hunk_reserve(16, u32::MAX);
+        assert!(reserve < 100_000, "reserve {reserve} is not bounded");
+    }
+
+    #[test]
+    fn decompress_v5_map_rejects_huge_hunk_count_against_tiny_map_without_hanging() {
+        // A 16-byte header (compressed_len = 0) declaring u32::MAX
+        // hunks: the bounded reserve above must never try to
+        // allocate for billions of hunks, and the empty bitstream
+        // must fail fast through `decode_one`/`bits.read` instead.
+        let map_data = vec![0u8; MAP_HEADER_SIZE];
+        let result = decompress_v5_map(&map_data, u32::MAX, 2048, 2048);
+        assert!(matches!(result, Err(ChdError::MapDecompressionError)));
     }
 }

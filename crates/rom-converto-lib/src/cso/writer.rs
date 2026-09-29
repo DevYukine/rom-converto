@@ -21,7 +21,9 @@ use crate::cso::models::{
 use crate::disc::cd::IO_BUFFER_SIZE;
 use crate::util::CancelToken;
 use crate::util::Cancelled;
-use crate::util::worker_pool::{Pool, PoolChannelClosed, Worker, drive, parallelism};
+use crate::util::worker_pool::{
+    Pool, PoolChannelClosed, Worker, drive, parallelism, with_writer_thread,
+};
 
 pub(crate) struct CsoBlockWork {
     data: Vec<u8>,
@@ -99,57 +101,45 @@ pub(crate) fn write_cso_blocking(
     let max_in_flight = parallelism() * 2;
 
     let mut pos = data_start;
-    let (write_tx, write_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(max_in_flight * 2);
-
-    let scope_result: CsoResult<()> = std::thread::scope(|s| {
-        let writer_slot = &mut writer;
-        let writer_handle = s.spawn(move || -> CsoResult<()> {
-            while let Ok(bytes) = write_rx.recv() {
-                writer_slot.write_all(&bytes)?;
-            }
-            Ok(())
-        });
-
-        let drive_result = drive(
-            &pool,
-            blocks,
-            max_in_flight,
-            |block_idx| -> CsoResult<CsoBlockWork> {
-                if cancel.is_cancelled() {
-                    return Err(Cancelled.into());
-                }
-                let offset = block_idx * block_size as u64;
-                let take = ((input_size - offset) as usize).min(block_size as usize);
-                let mut data = vec![0u8; take];
-                reader.read_exact(&mut data)?;
-                bytes_done.fetch_add(take as u64, Ordering::Relaxed);
-                Ok(CsoBlockWork { data })
-            },
-            |seq, out: CsoBlockOut| -> CsoResult<()> {
-                let aligned_pos = pos.div_ceil(align) * align;
-                if aligned_pos > pos {
+    let writer_result = with_writer_thread(
+        &mut writer,
+        max_in_flight * 2,
+        CsoError::WorkerPoolPanic,
+        |write_tx| {
+            drive(
+                &pool,
+                blocks,
+                max_in_flight,
+                |block_idx| -> CsoResult<CsoBlockWork> {
+                    if cancel.is_cancelled() {
+                        return Err(Cancelled.into());
+                    }
+                    let offset = block_idx * block_size as u64;
+                    let take = ((input_size - offset) as usize).min(block_size as usize);
+                    let mut data = vec![0u8; take];
+                    reader.read_exact(&mut data)?;
+                    bytes_done.fetch_add(take as u64, Ordering::Relaxed);
+                    Ok(CsoBlockWork { data })
+                },
+                |seq, out: CsoBlockOut| -> CsoResult<()> {
+                    let aligned_pos = pos.div_ceil(align) * align;
+                    if aligned_pos > pos {
+                        write_tx
+                            .send(vec![0u8; (aligned_pos - pos) as usize])
+                            .map_err(|_| CsoError::WorkerPoolClosed(PoolChannelClosed))?;
+                    }
+                    index[seq as usize] = index_entry(aligned_pos, index_shift, out.raw)?;
+                    pos = aligned_pos + out.bytes.len() as u64;
                     write_tx
-                        .send(vec![0u8; (aligned_pos - pos) as usize])
+                        .send(out.bytes)
                         .map_err(|_| CsoError::WorkerPoolClosed(PoolChannelClosed))?;
-                }
-                index[seq as usize] = index_entry(aligned_pos, index_shift, out.raw)?;
-                pos = aligned_pos + out.bytes.len() as u64;
-                write_tx
-                    .send(out.bytes)
-                    .map_err(|_| CsoError::WorkerPoolClosed(PoolChannelClosed))?;
-                Ok(())
-            },
-        );
-
-        drop(write_tx);
-        let writer_result = writer_handle
-            .join()
-            .unwrap_or_else(|_| Err(CsoError::WorkerPoolPanic));
-        drive_result?;
-        writer_result
-    });
+                    Ok(())
+                },
+            )
+        },
+    );
     pool.shutdown();
-    scope_result?;
+    writer_result?;
 
     // EOF sentinel, then pad the file end to the alignment the
     // sentinel claims.

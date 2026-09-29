@@ -16,10 +16,11 @@ use crate::cso::models::{
 };
 use crate::util::CancelToken;
 use crate::util::Cancelled;
+use crate::util::extent_end;
 use crate::util::hash::{FileDigests, HashAlgo, MultiHasher};
 use crate::util::pread::file_read_exact_at;
 use crate::util::worker_pool::{
-    Pool, PoolChannelClosed, Worker, drive, parallelism, with_writer_thread,
+    Admission, Budget, Pool, PoolChannelClosed, Worker, drive, with_writer_thread,
 };
 
 pub(crate) struct CsoSyncHandle {
@@ -59,15 +60,38 @@ pub(crate) fn open_cso_sync(path: &Path) -> CsoResult<CsoSyncHandle> {
         return Err(CsoError::InvalidHeader("empty image".into()));
     }
 
-    let entries = header.block_count() as usize + 1;
-    let mut index_bytes = vec![0u8; entries * 4];
-    file.read_exact(&mut index_bytes)?;
-    let index: Vec<u32> = index_bytes
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .map(|c| u32::from_le_bytes(*c))
-        .collect();
+    let entries = header
+        .block_count()
+        .checked_add(1)
+        .ok_or_else(|| CsoError::CorruptIndex("index entry count overflow".into()))?;
+    let index_bytes = entries
+        .checked_mul(4)
+        .ok_or_else(|| CsoError::CorruptIndex("index byte length overflow".into()))?;
+    if extent_end(CISO_HEADER_SIZE as u64, index_bytes, file_size).is_none() {
+        return Err(CsoError::CorruptIndex(
+            "index table extends beyond the file".into(),
+        ));
+    }
+    let entries = usize::try_from(entries)
+        .map_err(|_| CsoError::CorruptIndex("index does not fit memory".into()))?;
+    let mut index = Vec::new();
+    index
+        .try_reserve_exact(entries)
+        .map_err(|_| CsoError::CorruptIndex("index does not fit memory".into()))?;
+    let mut buf = [0u8; 64 * 1024];
+    let mut remaining = index_bytes;
+    while remaining != 0 {
+        let bytes = remaining.min(buf.len() as u64) as usize;
+        file.read_exact(&mut buf[..bytes])?;
+        for entry in buf[..bytes].chunks_exact(4) {
+            index.push(u32::from_le_bytes(
+                entry
+                    .try_into()
+                    .expect("chunks_exact(4) yields four-byte entries"),
+            ));
+        }
+        remaining -= bytes as u64;
+    }
 
     Ok(CsoSyncHandle {
         header,
@@ -92,12 +116,31 @@ pub(crate) fn block_spec(handle: &CsoSyncHandle, block: u64) -> CsoResult<BlockS
     if let Some(dax) = &handle.dax {
         return crate::cso::dax::dax_block_spec(handle, dax, block);
     }
-    let shift = handle.header.index_shift;
-    let entry = handle.index[block as usize];
-    let next = handle.index[block as usize + 1];
+    if block >= handle.header.block_count() {
+        return Err(CsoError::CorruptIndex(format!(
+            "block {block} exceeds the image block count"
+        )));
+    }
+    let shift = handle.header.index_shift as u32;
+    let scale = 1u64
+        .checked_shl(shift)
+        .ok_or_else(|| CsoError::CorruptIndex("index shift is too large".into()))?;
+    let entry = *handle
+        .index
+        .get(block as usize)
+        .ok_or_else(|| CsoError::CorruptIndex(format!("missing index entry for block {block}")))?;
+    let next = *handle.index.get(block as usize + 1).ok_or_else(|| {
+        CsoError::CorruptIndex(format!("missing index sentinel after block {block}"))
+    })?;
 
-    let offset = ((entry & !CISO_INDEX_UNCOMPRESSED) as u64) << shift;
-    let end = ((next & !CISO_INDEX_UNCOMPRESSED) as u64) << shift;
+    let offset = ((entry & !CISO_INDEX_UNCOMPRESSED) as u64)
+        .checked_mul(scale)
+        .ok_or_else(|| CsoError::CorruptIndex("block offset shift overflow".into()))?;
+    let end = ((next & !CISO_INDEX_UNCOMPRESSED) as u64)
+        .checked_mul(scale)
+        .ok_or_else(|| CsoError::CorruptIndex("block end shift overflow".into()))?;
+    // `open_cso_sync` already rejected an index table extending past
+    // `file_size`, so the data region start is always in bounds here.
     if end < offset || end > handle.file_size {
         return Err(CsoError::CorruptIndex(format!(
             "block {block} spans {offset:#X}..{end:#X} outside the file"
@@ -105,24 +148,27 @@ pub(crate) fn block_spec(handle: &CsoSyncHandle, block: u64) -> CsoResult<BlockS
     }
 
     let block_size = handle.header.block_size as u64;
-    let logical_start = block * block_size;
+    let logical_start = block
+        .checked_mul(block_size)
+        .ok_or_else(|| CsoError::CorruptIndex("logical block offset overflow".into()))?;
     let expected_len = (handle.header.uncompressed_size - logical_start).min(block_size) as usize;
 
     let raw = entry & CISO_INDEX_UNCOMPRESSED != 0;
     // Raw blocks occupy exactly their logical size; the span up to
     // the next entry may carry alignment padding. Compressed spans
-    // keep the padding: deflate and LZ4 both stop at stream end.
+    // are consumed incrementally until the codec emits this block.
+    let span = end - offset;
     let stored_len = if raw {
-        if ((end - offset) as usize) < expected_len {
+        if span < expected_len as u64 {
             return Err(CsoError::CorruptIndex(format!(
                 "raw block {block} shorter than its logical size"
             )));
         }
         expected_len
     } else {
-        (end - offset) as usize
+        usize::try_from(span)
+            .map_err(|_| CsoError::CorruptIndex("compressed span exceeds address space".into()))?
     };
-
     Ok(BlockSpec {
         offset,
         stored_len,
@@ -147,24 +193,143 @@ pub(crate) struct CsoExtractWorker {
 
 impl Worker<CsoExtractWork, CsoExtractedOut, CsoError> for CsoExtractWorker {
     fn process(&mut self, work: CsoExtractWork) -> CsoResult<CsoExtractedOut> {
-        let spec = work.spec;
-        let mut stored = vec![0u8; spec.stored_len];
-        file_read_exact_at(&self.file, &mut stored, spec.offset)?;
-
-        let bytes = if spec.raw {
-            stored
-        } else {
-            self.codec.decompress(&stored, spec.expected_len)?
-        };
-        if bytes.len() != spec.expected_len {
-            return Err(CsoError::BlockSizeMismatch {
-                block: work.block,
-                expected: spec.expected_len,
-                actual: bytes.len(),
-            });
-        }
+        let bytes = decode_cso_block(&self.file, &mut self.codec, work.spec, work.block)?;
         Ok(CsoExtractedOut { bytes })
     }
+}
+
+pub(crate) fn decode_cso_block(
+    file: &std::fs::File,
+    codec: &mut BlockDecompressor,
+    spec: BlockSpec,
+    block: u64,
+) -> CsoResult<Vec<u8>> {
+    let bytes = if spec.raw {
+        let mut raw = vec![0u8; spec.expected_len];
+        file_read_exact_at(file, &mut raw, spec.offset)?;
+        raw
+    } else {
+        let fast_span_limit = spec
+            .expected_len
+            .saturating_mul(2)
+            .saturating_add(64 * 1024);
+        if spec.stored_len <= fast_span_limit {
+            let mut stored = vec![0u8; spec.stored_len];
+            file_read_exact_at(file, &mut stored, spec.offset)?;
+            codec.decompress(&stored, spec.expected_len)?
+        } else if matches!(codec, BlockDecompressor::Lz4) {
+            decompress_lz4_at(file, codec, spec)?
+        } else {
+            // Deflate is the only other codec that can exceed the
+            // fast span limit; DAX stored spans are u16-bounded (at
+            // most 65535 bytes), always under `fast_span_limit`, so
+            // the Dax variant never reaches this branch.
+            stream_inflate_at(file, spec)?
+        }
+    };
+    if bytes.len() != spec.expected_len {
+        return Err(CsoError::BlockSizeMismatch {
+            block,
+            expected: spec.expected_len,
+            actual: bytes.len(),
+        });
+    }
+    Ok(bytes)
+}
+
+fn stream_inflate_at(file: &std::fs::File, spec: BlockSpec) -> CsoResult<Vec<u8>> {
+    use flate2::{Decompress, FlushDecompress, Status};
+
+    const INPUT_CHUNK: usize = 64 * 1024;
+    let mut decoder = Decompress::new(false);
+    // Sized to `expected_len` exactly, same as the fast path's fixed
+    // buffer: a stream that decodes to more than this silently
+    // truncates at `expected_len` instead of erroring, matching
+    // `deflate_decompress_with`'s behavior for identical corrupt
+    // input taken through the fast path.
+    let mut output = vec![0u8; spec.expected_len];
+    let mut input = [0u8; INPUT_CHUNK];
+    let mut input_len = 0usize;
+    let mut input_used = 0usize;
+    let mut read_total = 0usize;
+    let mut written = 0usize;
+    loop {
+        if input_used == input_len && read_total < spec.stored_len {
+            input_len = (spec.stored_len - read_total).min(INPUT_CHUNK);
+            file_read_exact_at(
+                file,
+                &mut input[..input_len],
+                spec.offset + read_total as u64,
+            )?;
+            read_total += input_len;
+            input_used = 0;
+        }
+        let before_in = decoder.total_in();
+        let before_out = decoder.total_out();
+        let status = decoder
+            .decompress(
+                &input[input_used..input_len],
+                &mut output[written..],
+                if read_total == spec.stored_len && input_used == input_len {
+                    FlushDecompress::Finish
+                } else {
+                    FlushDecompress::None
+                },
+            )
+            .map_err(|e| CsoError::IoError(std::io::Error::other(e)))?;
+        let consumed = (decoder.total_in() - before_in) as usize;
+        let produced = (decoder.total_out() - before_out) as usize;
+        input_used += consumed;
+        written += produced;
+        if status == Status::BufError {
+            return Err(CsoError::IoError(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "deflate decoder needs more input or output space",
+            )));
+        }
+        if consumed == 0 && produced == 0 && input_used < input_len {
+            return Err(CsoError::IoError(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "deflate decoder made no progress",
+            )));
+        }
+        if status == Status::StreamEnd || written == spec.expected_len {
+            output.truncate(written);
+            return Ok(output);
+        }
+        if input_used == input_len && read_total == spec.stored_len {
+            return Err(CsoError::IoError(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "incomplete deflate block",
+            )));
+        }
+    }
+}
+
+fn decompress_lz4_at(
+    file: &std::fs::File,
+    codec: &mut BlockDecompressor,
+    spec: BlockSpec,
+) -> CsoResult<Vec<u8>> {
+    // LZ4's maximum compressed block size, excluding arbitrary
+    // index-shift padding that follows the stream.
+    let max_stream = spec.expected_len + spec.expected_len / 255 + 16;
+    let stored_len = spec.stored_len.min(max_stream);
+    let mut stored = vec![0u8; stored_len];
+    file_read_exact_at(file, &mut stored, spec.offset)?;
+    codec.decompress(&stored, spec.expected_len)
+}
+
+pub(crate) fn cso_extract_admission(handle: &CsoSyncHandle, requested_workers: usize) -> Admission {
+    let block_bytes = handle.header.block_size as usize;
+    Budget {
+        codec_per_worker: 0,
+        per_job: block_bytes.saturating_mul(2).saturating_add(4096),
+        writer_slot: block_bytes.saturating_mul(2),
+        fixed: 0,
+    }
+    .admit(requested_workers, handle.header.block_count())
+    .unwrap_or(Admission::DEGRADED)
 }
 
 pub(crate) fn make_cso_extract_workers(
@@ -187,13 +352,14 @@ pub(crate) fn extract_blocks(
     writer: &mut BufWriter<std::fs::File>,
     bytes_done: &Arc<AtomicU64>,
     cancel: &CancelToken,
+    admission: crate::util::worker_pool::Admission,
 ) -> CsoResult<()> {
     let blocks = handle.header.block_count();
-    let max_in_flight = parallelism() * 2;
+    let max_in_flight = admission.max_in_flight;
 
     with_writer_thread(
         writer,
-        max_in_flight * 2,
+        admission.writer_capacity,
         CsoError::WorkerPoolPanic,
         |write_tx| {
             drive(
@@ -233,9 +399,10 @@ pub(crate) fn hash_blocks(
     algos: &[HashAlgo],
     bytes_done: &Arc<AtomicU64>,
     cancel: &CancelToken,
+    admission: crate::util::worker_pool::Admission,
 ) -> CsoResult<FileDigests> {
     let blocks = handle.header.block_count();
-    let max_in_flight = parallelism() * 2;
+    let max_in_flight = admission.max_in_flight;
     let mut hasher = MultiHasher::new(algos);
 
     drive(

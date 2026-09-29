@@ -98,7 +98,7 @@ pub async fn extract_from_chd(
 
     let task = tokio::task::spawn_blocking(move || -> ChdResult<()> {
         use crate::disc::chd::reader::worker::{
-            ChdExtractWork, ChdExtractedOut, HunkExtractArgs, extract_hunks,
+            ChdExtractWork, ChdExtractedOut, HunkExtractArgs, chd_read_admission, extract_hunks,
             make_chd_extract_workers,
         };
         use crate::util::worker_pool::{Pool, parallelism};
@@ -115,8 +115,9 @@ pub async fn extract_from_chd(
         let mut bin_writer = std::io::BufWriter::with_capacity(IO_BUFFER_SIZE, bin_file);
 
         let n_threads = parallelism();
+        let admission = chd_read_admission(hunk_bytes, n_threads, handle.map.len() as u64, true);
         let workers = make_chd_extract_workers(
-            n_threads,
+            admission.workers,
             &handle.file,
             hunk_bytes,
             handle.header.compressors(),
@@ -133,6 +134,7 @@ pub async fn extract_from_chd(
                 frame_audio: &frame_audio,
                 bytes_done: &bytes_done_bg,
                 cancel: &cancel_bg,
+                admission,
             },
         );
         pool.shutdown();
@@ -209,17 +211,20 @@ async fn extract_dvd_iso(
         &cancel,
         move |write_path, bytes_done, cancel| -> ChdResult<()> {
             use crate::disc::chd::reader::worker::{
-                ChdExtractWork, ChdExtractedOut, extract_hunks_dvd, make_chd_dvd_extract_workers,
+                ChdExtractWork, ChdExtractedOut, chd_read_admission, extract_hunks_dvd,
+                make_chd_dvd_extract_workers,
             };
             use crate::util::worker_pool::{Pool, parallelism};
 
             let hunk_bytes = handle.header.hunk_bytes as usize;
+            let admission =
+                chd_read_admission(hunk_bytes, parallelism(), handle.map.len() as u64, true);
 
             let iso_file = std::fs::File::create(&write_path)?;
             let mut iso_writer = std::io::BufWriter::with_capacity(IO_BUFFER_SIZE, iso_file);
 
             let workers = make_chd_dvd_extract_workers(
-                parallelism(),
+                admission.workers,
                 &handle.file,
                 hunk_bytes,
                 handle.header.compressors(),
@@ -234,6 +239,7 @@ async fn extract_dvd_iso(
                 logical_bytes,
                 &bytes_done,
                 &cancel,
+                admission,
             );
             pool.shutdown();
             extract_result?;

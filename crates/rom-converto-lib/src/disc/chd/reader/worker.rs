@@ -22,15 +22,34 @@ use crate::disc::chd::map::{
 use crate::disc::chd::swap_audio_sector;
 use crate::util::CancelToken;
 use crate::util::Cancelled;
+use crate::util::extent_end;
 use crate::util::hash::MultiHasher;
 use crate::util::pread::file_read_exact_at;
-use crate::util::worker_pool::{
-    Pool, PoolChannelClosed, Worker, drive, parallelism, with_writer_thread,
-};
+use crate::util::worker_pool::{Pool, PoolChannelClosed, Worker, drive, with_writer_thread};
 use sha1::{Digest, Sha1};
 use std::io::BufWriter;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+pub(crate) fn chd_read_admission(
+    hunk_bytes: usize,
+    requested_workers: usize,
+    jobs: u64,
+    writer: bool,
+) -> crate::util::worker_pool::Admission {
+    crate::util::worker_pool::Budget {
+        codec_per_worker: hunk_bytes.saturating_mul(3),
+        per_job: hunk_bytes.saturating_mul(3).saturating_add(128),
+        writer_slot: if writer {
+            hunk_bytes.saturating_mul(2)
+        } else {
+            0
+        },
+        fixed: 0,
+    }
+    .admit(requested_workers, jobs)
+    .unwrap_or(crate::util::worker_pool::Admission::DEGRADED)
+}
 
 /// Per-hunk work item. Holds the already-resolved map entry so the
 /// worker never has to walk a self-reference chain.
@@ -52,21 +71,32 @@ pub(crate) struct ChdExtractedOut {
 pub(crate) struct ChdExtractWorker {
     decoders: CdDecoderSet,
     file: Arc<std::fs::File>,
+    file_size: u64,
     hunk_bytes: usize,
 }
 
 impl ChdExtractWorker {
     pub fn new(
         file: Arc<std::fs::File>,
+        file_size: u64,
         hunk_bytes: usize,
         compressors: [[u8; 4]; 4],
     ) -> ChdResult<Self> {
         Ok(Self {
             decoders: CdDecoderSet::new(compressors, hunk_bytes)?,
             file,
+            file_size,
             hunk_bytes,
         })
     }
+}
+
+fn checked_compressed_hunk_len(entry: &MapEntry, file_size: u64) -> ChdResult<usize> {
+    let stored_len = usize::try_from(entry.length).map_err(|_| ChdError::MapDecompressionError)?;
+    if extent_end(entry.offset, u64::from(entry.length), file_size).is_none() {
+        return Err(ChdError::MapDecompressionError);
+    }
+    Ok(stored_len)
 }
 
 impl Worker<ChdExtractWork, ChdExtractedOut, ChdError> for ChdExtractWorker {
@@ -76,7 +106,8 @@ impl Worker<ChdExtractWork, ChdExtractedOut, ChdError> for ChdExtractWorker {
 
         let hunk = match entry.compression {
             slot @ 0..=3 => {
-                let mut compressed = vec![0u8; entry.length as usize];
+                let stored_len = checked_compressed_hunk_len(&entry, self.file_size)?;
+                let mut compressed = vec![0u8; stored_len];
                 file_read_exact_at(&self.file, &mut compressed, entry.offset)?;
                 self.decoders.decompress(slot, &compressed, hunk_bytes)?
             }
@@ -116,8 +147,9 @@ pub(crate) fn make_chd_extract_workers(
     hunk_bytes: usize,
     compressors: [[u8; 4]; 4],
 ) -> ChdResult<Vec<ChdExtractWorker>> {
+    let file_size = file.metadata()?.len();
     (0..n)
-        .map(|_| ChdExtractWorker::new(file.clone(), hunk_bytes, compressors))
+        .map(|_| ChdExtractWorker::new(file.clone(), file_size, hunk_bytes, compressors))
         .collect()
 }
 
@@ -127,6 +159,7 @@ pub(crate) fn make_chd_extract_workers(
 pub(crate) struct ChdDvdExtractWorker {
     decoders: DvdDecoderSet,
     file: Arc<std::fs::File>,
+    file_size: u64,
     hunk_bytes: usize,
 }
 
@@ -137,7 +170,8 @@ impl Worker<ChdExtractWork, ChdExtractedOut, ChdError> for ChdDvdExtractWorker {
 
         let hunk = match entry.compression {
             slot @ 0..=3 => {
-                let mut compressed = vec![0u8; entry.length as usize];
+                let stored_len = checked_compressed_hunk_len(&entry, self.file_size)?;
+                let mut compressed = vec![0u8; stored_len];
                 file_read_exact_at(&self.file, &mut compressed, entry.offset)?;
                 self.decoders.decompress(slot, &compressed, hunk_bytes)?
             }
@@ -177,11 +211,13 @@ pub(crate) fn make_chd_dvd_extract_workers(
     hunk_bytes: usize,
     compressors: [[u8; 4]; 4],
 ) -> ChdResult<Vec<ChdDvdExtractWorker>> {
+    let file_size = file.metadata()?.len();
     (0..n)
         .map(|_| {
             Ok(ChdDvdExtractWorker {
                 decoders: DvdDecoderSet::new(compressors, hunk_bytes)?,
                 file: file.clone(),
+                file_size,
                 hunk_bytes,
             })
         })
@@ -195,7 +231,7 @@ pub(crate) fn resolve_entry(map: &[MapEntry], hunk_index: u32) -> ChdResult<MapE
     let mut idx = hunk_index as usize;
     let mut guard = 0usize;
     loop {
-        if guard > map.len() {
+        if guard > map.len() || idx >= map.len() {
             return Err(ChdError::MapDecompressionError);
         }
         let entry = map[idx];
@@ -220,6 +256,7 @@ pub(crate) struct HunkExtractArgs<'a> {
     pub frame_audio: &'a [bool],
     pub bytes_done: &'a Arc<AtomicU64>,
     pub cancel: &'a CancelToken,
+    pub admission: crate::util::worker_pool::Admission,
 }
 
 /// Drive the extract pipeline: pool of decompressors reading a
@@ -237,34 +274,44 @@ pub(crate) fn extract_hunks(
         frame_audio,
         bytes_done,
         cancel,
+        admission,
     } = args;
     let frames_per_hunk = hunk_bytes / FRAME_SIZE;
     let total_frames = frame_sizes.len();
 
-    run_extract_pipeline(pool, map, writer, bytes_done, cancel, |seq, mut out| {
-        // Gather payload bytes from the interleaved hunk, dropping
-        // the subcode and any tail past each track's datasize.
-        // `chdman extractcd` writes datasize-wide bins; track padding
-        // frames past the CHT2 frame counts are dropped entirely.
-        let first_frame = seq as usize * frames_per_hunk;
-        let frames_in_hunk = frames_per_hunk.min(total_frames.saturating_sub(first_frame));
-        let mut sectors = Vec::with_capacity(frames_in_hunk * SECTOR_SIZE);
-        for frame in 0..frames_in_hunk {
-            let off = frame * FRAME_SIZE;
-            let size = frame_sizes[first_frame + frame];
-            // Audio frames are stored big-endian; swap back to the
-            // little-endian samples the extracted bin carries.
-            if frame_audio[first_frame + frame] {
-                swap_audio_sector(&mut out.hunk[off..off + size]);
+    run_extract_pipeline(
+        pool,
+        map,
+        writer,
+        admission,
+        bytes_done,
+        cancel,
+        |seq, mut out| {
+            // Gather payload bytes from the interleaved hunk, dropping
+            // the subcode and any tail past each track's datasize.
+            // `chdman extractcd` writes datasize-wide bins; track padding
+            // frames past the CHT2 frame counts are dropped entirely.
+            let first_frame = seq as usize * frames_per_hunk;
+            let frames_in_hunk = frames_per_hunk.min(total_frames.saturating_sub(first_frame));
+            let mut sectors = Vec::with_capacity(frames_in_hunk * SECTOR_SIZE);
+            for frame in 0..frames_in_hunk {
+                let off = frame * FRAME_SIZE;
+                let size = frame_sizes[first_frame + frame];
+                // Audio frames are stored big-endian; swap back to the
+                // little-endian samples the extracted bin carries.
+                if frame_audio[first_frame + frame] {
+                    swap_audio_sector(&mut out.hunk[off..off + size]);
+                }
+                sectors.extend_from_slice(&out.hunk[off..off + size]);
             }
-            sectors.extend_from_slice(&out.hunk[off..off + size]);
-        }
-        Ok(sectors)
-    })
+            Ok(sectors)
+        },
+    )
 }
 
 /// DVD extract: hunks are already flat sector data, so each hunk is
 /// written as-is, with the final one truncated to `logical_bytes`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn extract_hunks_dvd(
     pool: &Pool<ChdExtractWork, ChdExtractedOut, ChdError>,
     map: &[MapEntry],
@@ -273,14 +320,24 @@ pub(crate) fn extract_hunks_dvd(
     logical_bytes: u64,
     bytes_done: &Arc<AtomicU64>,
     cancel: &CancelToken,
+    admission: crate::util::worker_pool::Admission,
 ) -> ChdResult<()> {
-    run_extract_pipeline(pool, map, writer, bytes_done, cancel, |seq, out| {
-        let offset = seq * hunk_bytes as u64;
-        let take = ((logical_bytes - offset.min(logical_bytes)) as usize).min(hunk_bytes);
-        let mut hunk = out.hunk;
-        hunk.truncate(take);
-        Ok(hunk)
-    })
+    run_extract_pipeline(
+        pool,
+        map,
+        writer,
+        admission,
+        bytes_done,
+        cancel,
+        |seq, out| {
+            let offset = seq * hunk_bytes as u64;
+            let remaining = (logical_bytes - offset.min(logical_bytes)).min(hunk_bytes as u64);
+            let take = usize::try_from(remaining).map_err(|_| ChdError::MapDecompressionError)?;
+            let mut hunk = out.hunk;
+            hunk.truncate(take);
+            Ok(hunk)
+        },
+    )
 }
 
 /// Shared extract scaffold; `shape` turns one decoded hunk into the
@@ -289,6 +346,7 @@ fn run_extract_pipeline<F>(
     pool: &Pool<ChdExtractWork, ChdExtractedOut, ChdError>,
     map: &[MapEntry],
     writer: &mut BufWriter<std::fs::File>,
+    admission: crate::util::worker_pool::Admission,
     bytes_done: &Arc<AtomicU64>,
     cancel: &CancelToken,
     mut shape: F,
@@ -297,13 +355,14 @@ where
     F: FnMut(u64, ChdExtractedOut) -> ChdResult<Vec<u8>>,
 {
     let hunk_count = map.len() as u64;
-    let max_in_flight = parallelism() * 2;
+    let max_in_flight = admission.max_in_flight;
+    let writer_capacity = admission.writer_capacity;
 
     with_writer_thread(
         writer,
-        max_in_flight * 2,
+        writer_capacity,
         ChdError::WorkerPoolPanic,
-        |write_tx| {
+        |write_tx: &std::sync::mpsc::SyncSender<Vec<u8>>| {
             drive(
                 pool,
                 hunk_count,
@@ -338,6 +397,7 @@ where
 /// Only the first `logical_bytes` bytes of the decoded hunks
 /// are folded into the hash, matching chdman's raw SHA-1
 /// coverage rule.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn verify_hunks(
     pool: &Pool<ChdExtractWork, ChdExtractedOut, ChdError>,
     map: &[MapEntry],
@@ -346,9 +406,10 @@ pub(crate) fn verify_hunks(
     logical_bytes: u64,
     bytes_done: &Arc<AtomicU64>,
     cancel: &CancelToken,
+    admission: crate::util::worker_pool::Admission,
 ) -> ChdResult<()> {
     let hunk_count = map.len() as u64;
-    let max_in_flight = parallelism() * 2;
+    let max_in_flight = admission.max_in_flight;
     let hunk_bytes_u64 = hunk_bytes as u64;
 
     let mut bytes_remaining = logical_bytes;
@@ -369,7 +430,8 @@ pub(crate) fn verify_hunks(
             // `logical_bytes` so the final partial hunk's zero
             // padding isn't folded in. Matches chdman's
             // `do_verify` and the existing serial verify path.
-            let take = bytes_remaining.min(hunk_bytes_u64) as usize;
+            let take = usize::try_from(bytes_remaining.min(hunk_bytes_u64))
+                .map_err(|_| ChdError::MapDecompressionError)?;
             raw_sha1.update(&out.hunk[..take]);
             bytes_remaining = bytes_remaining.saturating_sub(hunk_bytes_u64);
             bytes_done.fetch_add(take as u64, Ordering::Relaxed);
@@ -390,6 +452,7 @@ pub(crate) struct TrackDigestArgs<'a> {
     pub whole: &'a mut MultiHasher,
     pub bytes_done: &'a Arc<AtomicU64>,
     pub cancel: &'a CancelToken,
+    pub admission: crate::util::worker_pool::Admission,
 }
 
 /// Digest-side variant of [`extract_hunks`]: the pool decodes every
@@ -419,9 +482,10 @@ pub(crate) fn digest_hunks_per_track(
         whole,
         bytes_done,
         cancel,
+        admission,
     } = args;
     let hunk_count = map.len() as u64;
-    let max_in_flight = parallelism() * 2;
+    let max_in_flight = admission.max_in_flight;
     let frames_per_hunk = hunk_bytes / FRAME_SIZE;
     let total_frames = frame_sizes.len();
 
@@ -465,6 +529,7 @@ pub(crate) fn digest_hunks_per_track(
 /// hunk) into `whole`. Same coverage rule as [`extract_hunks_dvd`]
 /// and [`verify_hunks`], but the output is a multi-algorithm digest
 /// of the flat ISO instead of a written file or a lone SHA-1.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn digest_hunks_dvd(
     pool: &Pool<ChdExtractWork, ChdExtractedOut, ChdError>,
     map: &[MapEntry],
@@ -473,9 +538,10 @@ pub(crate) fn digest_hunks_dvd(
     whole: &mut MultiHasher,
     bytes_done: &Arc<AtomicU64>,
     cancel: &CancelToken,
+    admission: crate::util::worker_pool::Admission,
 ) -> ChdResult<()> {
     let hunk_count = map.len() as u64;
-    let max_in_flight = parallelism() * 2;
+    let max_in_flight = admission.max_in_flight;
     let hunk_bytes_u64 = hunk_bytes as u64;
     let mut bytes_remaining = logical_bytes;
 
@@ -491,11 +557,87 @@ pub(crate) fn digest_hunks_dvd(
             Ok(ChdExtractWork { entry })
         },
         |_seq, out| -> ChdResult<()> {
-            let take = bytes_remaining.min(hunk_bytes_u64) as usize;
+            let take = usize::try_from(bytes_remaining.min(hunk_bytes_u64))
+                .map_err(|_| ChdError::MapDecompressionError)?;
             whole.update(&out.hunk[..take]);
             bytes_remaining = bytes_remaining.saturating_sub(hunk_bytes_u64);
             bytes_done.fetch_add(take as u64, Ordering::Relaxed);
             Ok(())
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ChdDvdExtractWorker, ChdExtractWork, ChdExtractWorker, ChdExtractedOut, chd_read_admission,
+        resolve_entry,
+    };
+    use crate::disc::chd::error::ChdError;
+    use crate::disc::chd::map::{COMPRESSION_SELF, MapEntry};
+    use crate::util::worker_pool::Worker;
+    use std::sync::Arc;
+
+    fn assert_rejected<W: Worker<ChdExtractWork, ChdExtractedOut, ChdError>>(
+        worker: &mut W,
+        entry: MapEntry,
+    ) {
+        assert!(matches!(
+            worker.process(ChdExtractWork { entry }),
+            Err(ChdError::MapDecompressionError)
+        ));
+    }
+
+    #[test]
+    fn oversized_hunk_uses_single_worker_instead_of_rejecting_chd() {
+        let admission = chd_read_admission(256 * 1024 * 1024, 4, 1, true);
+        assert_eq!(admission.workers, 1);
+        assert_eq!(admission.max_in_flight, 1);
+        assert_eq!(admission.writer_capacity, 0);
+    }
+
+    #[test]
+    fn hunk_past_eof_is_rejected_before_allocation_in_both_workers() {
+        let file = Arc::new(tempfile::tempfile().unwrap());
+        let file_size = 1024 * 1024;
+        file.set_len(file_size).unwrap();
+        let hunk_bytes = 2048;
+        let past_eof = MapEntry {
+            compression: 0,
+            length: 1,
+            offset: file_size,
+            crc16: 0,
+        };
+        let mut cd =
+            ChdExtractWorker::new(file.clone(), file_size, hunk_bytes, [[0; 4]; 4]).unwrap();
+        let mut dvd = ChdDvdExtractWorker {
+            decoders: crate::disc::chd::compression::dvd::DvdDecoderSet::new(
+                [[0; 4]; 4],
+                hunk_bytes,
+            )
+            .unwrap(),
+            file,
+            file_size,
+            hunk_bytes,
+        };
+
+        assert_rejected(&mut cd, past_eof);
+        assert_rejected(&mut dvd, past_eof);
+    }
+
+    #[test]
+    fn resolve_entry_rejects_self_reference_past_map_len_instead_of_panicking() {
+        // A crafted self-reference pointing past the map must error
+        // out, not index-panic a worker and hang the dispatcher.
+        let map = [MapEntry {
+            compression: COMPRESSION_SELF,
+            length: 0,
+            offset: 5,
+            crc16: 0,
+        }];
+        assert!(matches!(
+            resolve_entry(&map, 0),
+            Err(ChdError::MapDecompressionError)
+        ));
+    }
 }

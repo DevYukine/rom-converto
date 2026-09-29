@@ -59,13 +59,15 @@ pub async fn verify_cso(
     let task = tokio::task::spawn_blocking(move || -> CsoResult<()> {
         use crate::util::worker_pool::{Pool, drive, parallelism};
 
-        let workers = make_cso_extract_workers(parallelism(), handle.format, &handle.file);
+        // Blocks are at most 1 MiB, so one worker always fits.
+        let admission = crate::cso::reader::cso_extract_admission(&handle, parallelism());
+        let workers = make_cso_extract_workers(admission.workers, handle.format, &handle.file);
         let pool = Pool::spawn(workers);
 
         let result = drive(
             &pool,
             handle.header.block_count(),
-            parallelism() * 2,
+            admission.max_in_flight,
             |block| {
                 if cancel_bg.is_cancelled() {
                     return Err(Cancelled.into());
