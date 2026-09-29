@@ -477,7 +477,7 @@ pub(crate) fn save_xex_icon(
 }
 
 /// Prefers the OG Xbox XBE title image, falling back to the Xbox 360 XEX
-/// icon when the disc only carries a `default.xex` — mirrors the GUI's
+/// icon when the disc only carries a `default.xex`, which mirrors the GUI's
 /// `extract_icon_png`.
 pub(crate) fn save_xbox_icon(info: &rom_converto_lib::info::XisoInfo, dir: &Path) -> Result<()> {
     if let Some(xbe) = &info.xbe

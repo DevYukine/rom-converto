@@ -27,7 +27,7 @@ pub struct OrganizeCommand {
 
     /// Output path template applied per file. Tokens: {title}, {titleId}, {region},
     /// {console}, {serial}, {ext}, {basename}. Defaults to {console}/{basename}.{ext}.
-    /// Joined under --output-dir
+    /// Missing tokens fall back to the input basename. Joined under --output-dir
     #[arg(long = "output-template", value_name = "TEMPLATE")]
     pub output_template: Option<String>,
 
@@ -54,8 +54,8 @@ pub struct OrganizeCommand {
     #[arg(long = "report", value_name = "FILE")]
     pub report: Option<PathBuf>,
 
-    /// Path to `prod.keys` for Switch NSP/XCI compression. Defaults to `$HOME/.switch/prod.keys` on Linux/macOS or `%USERPROFILE%/.switch/prod.keys` on Windows, then the binary's own directory
-    #[arg(long = "keys", value_name = "FILE")]
+    /// Path to `prod.keys`. Defaults to `$HOME/.switch/prod.keys` on Linux/macOS or `%USERPROFILE%/.switch/prod.keys` on Windows, then the binary's own directory
+    #[arg(long = "keys", value_name = "PRODKEYS")]
     pub keys: Option<PathBuf>,
 
     /// Compress an encrypted ROM anyway, even though it barely compresses
