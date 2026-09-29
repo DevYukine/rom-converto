@@ -103,10 +103,10 @@ pub(crate) fn parse_chd_track_metadata(metadata_str: &str) -> ChdResult<Vec<ChdT
 }
 
 pub(crate) fn generate_cue_sheet(bin_filename: &str, tracks: &[ChdTrackInfo]) -> String {
-    // CRLF line endings and the exact indentation below match
-    // chdman's `output_track_metadata` in `src/tools/chdman.cpp`
-    // so `chd extract` output is byte-identical to `chdman
-    // extractcd` for the same input. A `V` prefix on PGTYPE marks
+    // The line content and indentation below match chdman's
+    // `output_track_metadata` in `src/tools/chdman.cpp`; CRLF endings
+    // follow older chdman builds (0.289 writes LF) and are kept so
+    // existing extracts stay byte-identical. A `V` prefix on PGTYPE marks
     // a pregap stored inside the track's own frames, so it is
     // written as an INDEX 00 position rather than a PREGAP line.
     let mut cue = format!("FILE \"{bin_filename}\" BINARY\r\n");
@@ -145,6 +145,16 @@ pub(crate) fn generate_cue_sheet(bin_filename: &str, tracks: &[ChdTrackInfo]) ->
             "    INDEX 01 {:02}:{:02}:{:02}\r\n",
             msf.minutes, msf.seconds, msf.frames
         ));
+
+        // chdman's `output_track_metadata` writes a POSTGAP line only
+        // for a nonzero frame count, so zero stays silent.
+        if let Some(postgap) = track.postgap.filter(|postgap| *postgap > 0) {
+            let msf = Msf::from_lba(postgap);
+            cue.push_str(&format!(
+                "    POSTGAP {:02}:{:02}:{:02}\r\n",
+                msf.minutes, msf.seconds, msf.frames
+            ));
+        }
 
         frame_offset += track.frames;
     }

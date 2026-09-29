@@ -129,14 +129,15 @@ pub fn generate_cd_metadata(cue_sheet: &CueSheet, frames: &[u32]) -> ChdResult<M
             ),
         };
 
-        // Format: TRACK:n TYPE:type SUBTYPE:NONE FRAMES:nnn PREGAP:n PGTYPE:type PGSUB:NONE POSTGAP:0
+        // Format: TRACK:n TYPE:type SUBTYPE:NONE FRAMES:nnn PREGAP:n PGTYPE:type PGSUB:NONE POSTGAP:n
         entries.push(ChdMetadataHeader::new_cd_metadata(format!(
-            "TRACK:{} TYPE:{} SUBTYPE:NONE FRAMES:{} PREGAP:{} PGTYPE:{} PGSUB:NONE POSTGAP:0",
+            "TRACK:{} TYPE:{} SUBTYPE:NONE FRAMES:{} PREGAP:{} PGTYPE:{} PGSUB:NONE POSTGAP:{}",
             track.number,
             track.track_type.chd_metadata_type(),
             frames,
             pregap,
-            pgtype
+            pgtype,
+            track.postgap.map(|p| p.to_lba()).unwrap_or(0)
         )));
     }
 
@@ -227,4 +228,63 @@ fn chain_and_serialize(mut entries: Vec<ChdMetadataHeader>) -> ChdResult<Metadat
         bytes: metadata_buffer,
         hashes,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::disc::chd::reader::cue_generator::{generate_cue_sheet, parse_chd_track_metadata};
+    use crate::disc::cue::models::{CueFile, FileType, Index, Msf, Track};
+
+    /// A single-bin sheet with one MODE1/2352 track and the given
+    /// pregap and postgap directives in frames.
+    fn sheet(pregap: Option<u32>, postgap: Option<u32>) -> CueSheet {
+        CueSheet {
+            files: vec![CueFile {
+                filename: "game.bin".to_string(),
+                file_type: FileType::Binary,
+            }],
+            tracks: vec![Track {
+                number: 1,
+                track_type: TrackType::Mode1_2352,
+                indices: vec![Index {
+                    number: 1,
+                    position: Msf::from_lba(0),
+                }],
+                pregap: pregap.map(Msf::from_lba),
+                postgap: postgap.map(Msf::from_lba),
+                file_index: 0,
+            }],
+        }
+    }
+
+    /// The CHT2 text of a single-entry block: one 16-byte header, then
+    /// the NUL-terminated string.
+    fn cht2_text(block: &MetadataBlock) -> String {
+        String::from_utf8_lossy(&block.bytes[CHD_METADATA_HEADER_BYTES..])
+            .trim_end_matches('\0')
+            .to_string()
+    }
+
+    /// The postgap value travels cue -> CHT2 -> generated cue, the way
+    /// chdman's `write_metadata` and `output_track_metadata` carry it;
+    /// a track without one keeps `POSTGAP:0` and no cue line.
+    #[test]
+    fn postgap_round_trips_through_cht2_metadata() {
+        let block = generate_cd_metadata(&sheet(None, Some(150)), &[300]).unwrap();
+        let text = cht2_text(&block);
+        assert!(text.contains("POSTGAP:150"), "metadata: {text}");
+
+        let tracks = parse_chd_track_metadata(&text).unwrap();
+        let cue = generate_cue_sheet("game.bin", &tracks);
+        let index_pos = cue.find("INDEX 01").expect("INDEX 01 present");
+        let postgap_pos = cue.find("    POSTGAP 00:02:00\r\n").expect("POSTGAP line");
+        assert!(index_pos < postgap_pos, "cue: {cue}");
+
+        let block = generate_cd_metadata(&sheet(None, None), &[300]).unwrap();
+        let text = cht2_text(&block);
+        assert!(text.contains("POSTGAP:0"), "metadata: {text}");
+        let cue = generate_cue_sheet("game.bin", &parse_chd_track_metadata(&text).unwrap());
+        assert!(!cue.contains("POSTGAP"), "cue: {cue}");
+    }
 }
