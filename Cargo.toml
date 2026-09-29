@@ -25,3 +25,10 @@ serde = { version = "^1", features = ["derive"] }
 serde_json = "^1"
 reqwest = { version = "^0.13", default-features = false, features = ["charset", "http2", "system-proxy", "json", "stream", "rustls"] }
 ts-rs = { version = "^12", features = ["serde-compat"] }
+
+# One codegen unit for the library keeps the FLAC and LZMA decoder hot loops
+# in one unit; with the default partitioning, unrelated code changes moved
+# them across units and cost about 10% throughput. The binaries keep the
+# default so their release builds stay fast.
+[profile.release.package.rom-converto-lib]
+codegen-units = 1

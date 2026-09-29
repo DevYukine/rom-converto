@@ -54,6 +54,7 @@ lzma-sdk-sys = "^0.1"
 flacenc = "^0.5"
 claxon = "^0.4"
 zstd = { version = "^0.13", features = ["zstdmt"] }
+zstd-sys = { version = "^2.0", default-features = false, features = ["experimental"] }
 lz4 = "^1.28"
 bzip2 = "^0.6"
 lzxd = "^0.2"

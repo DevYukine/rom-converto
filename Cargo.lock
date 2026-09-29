@@ -4284,6 +4284,7 @@ dependencies = [
  "xts-mode",
  "zip 8.6.0",
  "zstd",
+ "zstd-sys",
 ]
 
 [[package]]
