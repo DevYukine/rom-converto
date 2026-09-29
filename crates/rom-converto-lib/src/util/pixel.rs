@@ -1057,7 +1057,12 @@ mod tests {
 
         let rgba = decode_dxt1(&block, 4, 4).unwrap();
         assert_eq!(rgba.len(), 4 * 4 * 4);
-        assert!(rgba.chunks_exact(4).all(|p| p == [0x00, 0x00, 0xFF, 0xFF]));
+        assert!(
+            rgba.as_chunks::<4>()
+                .0
+                .iter()
+                .all(|p| *p == [0x00, 0x00, 0xFF, 0xFF])
+        );
     }
 
     #[test]

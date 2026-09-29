@@ -139,8 +139,10 @@ impl GczLayout {
             inner.read_exact(&mut table_buf[..bytes])?;
             ptrs.extend(
                 table_buf[..bytes]
-                    .chunks_exact(8)
-                    .map(|c| u64::from_le_bytes(c.try_into().expect("8-byte table chunk"))),
+                    .as_chunks::<8>()
+                    .0
+                    .iter()
+                    .map(|c| u64::from_le_bytes(*c)),
             );
             remaining -= count;
         }
@@ -152,8 +154,10 @@ impl GczLayout {
             inner.read_exact(&mut table_buf[..bytes])?;
             hashes.extend(
                 table_buf[..bytes]
-                    .chunks_exact(4)
-                    .map(|c| u32::from_le_bytes(c.try_into().expect("4-byte table chunk"))),
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|c| u32::from_le_bytes(*c)),
             );
             remaining -= count;
         }

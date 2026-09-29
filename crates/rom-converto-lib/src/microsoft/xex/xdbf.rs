@@ -113,7 +113,7 @@ pub(crate) fn parse_xdbf_ranges(
         let Some(table_bytes) = read_range(byte_offset as u64, byte_len) else {
             break;
         };
-        for (within_batch, entry) in table_bytes.chunks_exact(ENTRY_LEN).enumerate() {
+        for (within_batch, entry) in table_bytes.as_chunks::<ENTRY_LEN>().0.iter().enumerate() {
             let (Some(namespace), Some(id), Some(offset), Some(length)) = (
                 read_u16(entry, 0),
                 read_u64(entry, 2),

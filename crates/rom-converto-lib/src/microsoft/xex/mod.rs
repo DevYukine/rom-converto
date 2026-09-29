@@ -241,7 +241,7 @@ pub(crate) fn read_xex_info_at<R: std::io::Read + std::io::Seek>(
             at,
             (batch_count * OPT_HEADER_ENTRY as u64) as usize,
         )?;
-        for pair in pairs.chunks_exact(OPT_HEADER_ENTRY) {
+        for pair in pairs.as_chunks::<OPT_HEADER_ENTRY>().0 {
             let key = read_u32(pair, 0)?;
             let value = read_u32(pair, 4)? as u64;
             match key {

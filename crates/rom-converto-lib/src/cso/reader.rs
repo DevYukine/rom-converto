@@ -83,12 +83,8 @@ pub(crate) fn open_cso_sync(path: &Path) -> CsoResult<CsoSyncHandle> {
     while remaining != 0 {
         let bytes = remaining.min(buf.len() as u64) as usize;
         file.read_exact(&mut buf[..bytes])?;
-        for entry in buf[..bytes].chunks_exact(4) {
-            index.push(u32::from_le_bytes(
-                entry
-                    .try_into()
-                    .expect("chunks_exact(4) yields four-byte entries"),
-            ));
+        for entry in buf[..bytes].as_chunks::<4>().0 {
+            index.push(u32::from_le_bytes(*entry));
         }
         remaining -= bytes as u64;
     }

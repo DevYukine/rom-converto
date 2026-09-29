@@ -202,7 +202,7 @@ impl BasicResourceReader {
             let at = index.checked_mul(8)?;
             let batch_len = usize::try_from(batch_count.checked_mul(8)?).ok()?;
             let pairs = read_extent_at(reader, table_offset, count.checked_mul(8)?, at, batch_len)?;
-            for pair in pairs.chunks_exact(8) {
+            for pair in pairs.as_chunks::<8>().0 {
                 let data_size = u64::from(read_u32(pair, 0)?);
                 let zero_size = u64::from(read_u32(pair, 4)?);
                 descriptors.push((logical_offset, total_stored, data_size));

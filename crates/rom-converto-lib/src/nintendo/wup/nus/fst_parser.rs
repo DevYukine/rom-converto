@@ -210,7 +210,9 @@ fn read_entry_name_offsets(table: &[u8]) -> WupResult<Vec<u32>> {
         return Err(WupError::InvalidFst);
     }
     Ok(table
-        .chunks_exact(FST_FILE_ENTRY_SIZE)
+        .as_chunks::<FST_FILE_ENTRY_SIZE>()
+        .0
+        .iter()
         .map(|entry| FileEntryRaw::parse(entry).name_offset())
         .collect())
 }
@@ -345,7 +347,7 @@ fn parse_clusters(bytes: &[u8], num_clusters: usize) -> WupResult<Vec<FstCluster
         return Err(WupError::InvalidFst);
     }
     let mut clusters = Vec::with_capacity(num_clusters);
-    for entry in bytes.chunks_exact(FST_CLUSTER_ENTRY_SIZE) {
+    for entry in bytes.as_chunks::<FST_CLUSTER_ENTRY_SIZE>().0 {
         clusters.push(FstCluster {
             offset: u32_be(entry, 0x00),
             size: u32_be(entry, 0x04),

@@ -252,9 +252,9 @@ pub(crate) mod tests {
             let half = block.len() / 2;
             let mut odd = Vec::with_capacity(half);
             let mut even = Vec::with_capacity(half);
-            for pair in block.chunks_exact(2) {
-                even.push(pair[0]);
-                odd.push(pair[1]);
+            for &[e, o] in block.as_chunks::<2>().0 {
+                even.push(e);
+                odd.push(o);
             }
             out.extend_from_slice(&odd);
             out.extend_from_slice(&even);

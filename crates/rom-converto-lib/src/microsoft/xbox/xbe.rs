@@ -178,7 +178,12 @@ pub(crate) fn parse_xbe_at<R: std::io::Read + std::io::Seek>(
             ) else {
                 break;
             };
-            for (within, header) in headers.chunks_exact(SECTION_HEADER_SIZE).enumerate() {
+            for (within, header) in headers
+                .as_chunks::<SECTION_HEADER_SIZE>()
+                .0
+                .iter()
+                .enumerate()
+            {
                 let Some(name_address) = read_u32(header, SECTION_NAME_ADDRESS)
                     .and_then(|address| address.checked_sub(base_address))
                 else {
