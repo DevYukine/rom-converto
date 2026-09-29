@@ -366,7 +366,166 @@ const MAX_PLAIN_RUN: u32 = 0x7FFF_FFFF;
 /// used by `forward_bytes` at decode time.
 const RVZ_BLOCK_SIZE: u64 = 0x8000;
 
-/// Decode an RVZ-packed byte stream into its original bytes.
+/// State of the record a [`PackedDecoder`] is currently walking.
+#[derive(Clone, Copy)]
+enum RecordState {
+    /// Between records; the next `read` reads a record header.
+    Idle,
+    /// Verbatim record with `remaining` payload bytes still in the reader.
+    Plain { size: usize, remaining: usize },
+    /// LFG record with `remaining` output bytes still in the decoder's `lfg`.
+    Random { size: usize, remaining: usize },
+}
+
+/// Streaming decoder for RVZ packing records. [`PackedDecoder::read`]
+/// decodes the next window of output and resumes mid-record on the next
+/// call, so oversized packed chunks can be decoded in bounded windows
+/// instead of materializing the whole record stream.
+pub struct PackedDecoder<R> {
+    reader: R,
+    /// Packed input bytes consumed so far.
+    input_len: usize,
+    /// Absolute logical offset of the in-progress record's first output
+    /// byte, advanced by each record's full size as it completes.
+    current_offset: u64,
+    state: RecordState,
+    /// Generator for the current `Random` record; re-seeded per record.
+    lfg: LaggedFibonacci,
+}
+
+impl<R: std::io::Read> PackedDecoder<R> {
+    /// Wraps `reader`, whose records decode output starting at disc
+    /// offset `data_offset`.
+    pub fn new(reader: R, data_offset: u64) -> Self {
+        Self {
+            reader,
+            input_len: 0,
+            current_offset: data_offset,
+            state: RecordState::Idle,
+            lfg: LaggedFibonacci {
+                buffer: [0; LFG_K],
+                position_bytes: 0,
+            },
+        }
+    }
+
+    /// Decode the next window of packed output into `out`, continuing
+    /// across calls. Returns `Ok(0)` once the record stream ends; an
+    /// empty `out` consumes and discards any remaining records.
+    pub fn read(&mut self, out: &mut [u8]) -> RvzResult<usize> {
+        if out.is_empty() {
+            self.drain()?;
+            return Ok(0);
+        }
+        let mut written = 0;
+        while written < out.len() {
+            match self.state {
+                RecordState::Idle => {
+                    if !self.start_record()? {
+                        break;
+                    }
+                }
+                RecordState::Plain { size, remaining } => {
+                    let want = remaining.min(out.len() - written);
+                    self.reader
+                        .read_exact(&mut out[written..written + want])
+                        .map_err(|error| {
+                            if error.kind() == std::io::ErrorKind::UnexpectedEof {
+                                RvzError::Custom("truncated RVZ packing payload".into())
+                            } else {
+                                error.into()
+                            }
+                        })?;
+                    written += want;
+                    self.state = if want == remaining {
+                        self.input_len += size;
+                        self.current_offset += size as u64;
+                        RecordState::Idle
+                    } else {
+                        RecordState::Plain {
+                            size,
+                            remaining: remaining - want,
+                        }
+                    };
+                }
+                RecordState::Random { size, remaining } => {
+                    let want = remaining.min(out.len() - written);
+                    self.lfg.fill(&mut out[written..written + want]);
+                    written += want;
+                    self.state = if want == remaining {
+                        self.current_offset += size as u64;
+                        RecordState::Idle
+                    } else {
+                        RecordState::Random {
+                            size,
+                            remaining: remaining - want,
+                        }
+                    };
+                }
+            }
+        }
+        Ok(written)
+    }
+
+    /// Reads the next record header into the state. Returns `false` at
+    /// end of stream.
+    fn start_record(&mut self) -> RvzResult<bool> {
+        let mut header = [0u8; 4];
+        loop {
+            match self.reader.read(&mut header[..1]) {
+                Ok(0) => return Ok(false),
+                Ok(1) => break,
+                Ok(_) => unreachable!("single-byte read cannot return more than one byte"),
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error.into()),
+            }
+        }
+        self.reader.read_exact(&mut header[1..]).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::UnexpectedEof {
+                RvzError::Custom("truncated RVZ packing record header".into())
+            } else {
+                error.into()
+            }
+        })?;
+        self.input_len += 4;
+        let encoded_size = u32::from_be_bytes(header);
+        let size = (encoded_size & MAX_PLAIN_RUN) as usize;
+        if encoded_size & COMPRESSED_FLAG != 0 {
+            let mut seed = [0u8; 68];
+            self.reader.read_exact(&mut seed).map_err(|error| {
+                if error.kind() == std::io::ErrorKind::UnexpectedEof {
+                    RvzError::Custom("truncated RVZ packing seed".into())
+                } else {
+                    error.into()
+                }
+            })?;
+            self.input_len += seed.len();
+            self.lfg = LaggedFibonacci::init(&seed);
+            self.lfg
+                .forward_bytes((self.current_offset % RVZ_BLOCK_SIZE) as usize);
+            self.state = RecordState::Random {
+                size,
+                remaining: size,
+            };
+        } else {
+            self.state = RecordState::Plain {
+                size,
+                remaining: size,
+            };
+        }
+        Ok(true)
+    }
+
+    /// Consumes every remaining record, discarding their output.
+    fn drain(&mut self) -> RvzResult<()> {
+        let mut discard = [0u8; 8192];
+        while self.read(&mut discard)? != 0 {}
+        Ok(())
+    }
+}
+
+/// Decode RVZ packing records from `reader` directly into a bounded
+/// output slice, returning the output and packed-input byte counts.
 ///
 /// The input format is a sequence of records. Each record starts with a
 /// 4-byte big-endian `u32`:
@@ -380,44 +539,28 @@ const RVZ_BLOCK_SIZE: u64 = 0x8000;
 /// `data_offset` is the absolute logical byte offset of the chunk's first
 /// byte inside the partition (or raw region) being decoded. It's used
 /// solely to compute the LFG forward skip per junk record.
-pub fn pack_decode(mut src: &[u8], data_offset: u64) -> RvzResult<Vec<u8>> {
-    let mut out = Vec::new();
-    let mut current_offset = data_offset;
-    while !src.is_empty() {
-        if src.len() < 4 {
-            return Err(RvzError::Custom(
-                "truncated RVZ packing record header".to_string(),
-            ));
+///
+/// # Errors
+/// Returns an error for truncated records; records beyond the output bound
+/// are consumed or skipped, and `output_len` is clamped to the buffer length.
+pub fn pack_decode_reader<R: std::io::Read>(
+    reader: &mut R,
+    data_offset: u64,
+    output: &mut [u8],
+) -> RvzResult<(usize, usize)> {
+    let mut decoder = PackedDecoder::new(reader, data_offset);
+    let mut output_len = 0;
+    while output_len < output.len() {
+        let count = decoder.read(&mut output[output_len..])?;
+        if count == 0 {
+            break;
         }
-        let size = u32::from_be_bytes([src[0], src[1], src[2], src[3]]);
-        src = &src[4..];
-
-        let is_random = size & COMPRESSED_FLAG != 0;
-        let size = (size & MAX_PLAIN_RUN) as usize;
-
-        if is_random {
-            if src.len() < 68 {
-                return Err(RvzError::Custom("truncated RVZ packing seed".to_string()));
-            }
-            let seed: [u8; 68] = src[..68].try_into().expect("src.len() >= 68 checked above");
-            src = &src[68..];
-            let mut lfg = LaggedFibonacci::init(&seed);
-            lfg.forward_bytes((current_offset % RVZ_BLOCK_SIZE) as usize);
-            let start = out.len();
-            out.resize(start + size, 0);
-            lfg.fill(&mut out[start..]);
-        } else {
-            if src.len() < size {
-                return Err(RvzError::Custom(
-                    "truncated RVZ packing payload".to_string(),
-                ));
-            }
-            out.extend_from_slice(&src[..size]);
-            src = &src[size..];
-        }
-        current_offset += size as u64;
+        output_len += count;
     }
-    Ok(out)
+    // Records past the output bound are still consumed so the input count
+    // and truncation checks cover the whole stream.
+    decoder.drain()?;
+    Ok((output_len, decoder.input_len))
 }
 
 /// Encode a plain byte stream as a single verbatim RVZ packing record.
@@ -504,7 +647,7 @@ fn scan_junk_runs(chunk: &[u8], chunk_data_offset: u64) -> Vec<JunkRun> {
 ///
 /// Returns `Some(packed)` when one or more junk runs were found. The
 /// caller should zstd-compress `packed` and set `rvz_packed_size` to
-/// `packed.len()` so the decoder knows to invoke [`pack_decode`] on the
+/// `packed.len()` so the decoder knows to invoke [`pack_decode_reader`] on the
 /// zstd-decompressed output.
 ///
 /// Ports Dolphin's `RVZPack` second pass from `WIABlob.cpp`, simplified
@@ -543,11 +686,19 @@ pub fn pack_encode(src: &[u8], data_offset: u64) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
 
+    fn decode(input: &[u8], data_offset: u64, max_output: usize) -> RvzResult<Vec<u8>> {
+        let mut output = vec![0; max_output];
+        let (decoded_len, _) =
+            pack_decode_reader(&mut std::io::Cursor::new(input), data_offset, &mut output)?;
+        output.truncate(decoded_len);
+        Ok(output)
+    }
+
     #[test]
     fn verbatim_roundtrips() {
         let data: Vec<u8> = (0u8..=255).cycle().take(10_000).collect();
         let encoded = pack_encode_verbatim(&data);
-        let decoded = pack_decode(&encoded, 0).unwrap();
+        let decoded = decode(&encoded, 0, data.len()).unwrap();
         assert_eq!(decoded, data);
     }
 
@@ -582,7 +733,7 @@ mod tests {
             chunk.len()
         );
 
-        let decoded = pack_decode(&packed, 0).unwrap();
+        let decoded = decode(&packed, 0, chunk.len()).unwrap();
         assert_eq!(decoded, chunk, "round-trip must be exact");
     }
 
@@ -590,7 +741,7 @@ mod tests {
     fn decoder_handles_mixed_record_stream() {
         // Build a hand-rolled packed stream: verbatim 100 bytes, then an
         // LFG-seeded run of 64 bytes, then verbatim 50 bytes. Round-trip
-        // through pack_decode and assert the boundary handling is correct.
+        // through the streaming decoder and assert the boundary handling is correct.
         let mut input = Vec::new();
         // First record: verbatim, 100 bytes of 0xAB
         input.extend_from_slice(&100u32.to_be_bytes());
@@ -603,8 +754,11 @@ mod tests {
         input.extend_from_slice(&50u32.to_be_bytes());
         input.extend_from_slice(&[0xCDu8; 50]);
 
-        let decoded = pack_decode(&input, 0).unwrap();
-        assert_eq!(decoded.len(), 100 + 64 + 50);
+        let mut decoded = [0u8; 214];
+        let (decoded_len, input_len) =
+            pack_decode_reader(&mut std::io::Cursor::new(&input), 0, &mut decoded).unwrap();
+        assert_eq!(decoded_len, 100 + 64 + 50);
+        assert_eq!(input_len, input.len());
         assert_eq!(&decoded[..100], &[0xABu8; 100]);
         assert_eq!(&decoded[164..], &[0xCDu8; 50]);
 
@@ -619,10 +773,69 @@ mod tests {
     }
 
     #[test]
+    fn decoder_discards_record_excess_beyond_output_bound() {
+        let mut input = Vec::new();
+        input.extend_from_slice(&5u32.to_be_bytes());
+        input.extend_from_slice(b"abcde");
+        let mut output = [0; 3];
+        let (decoded_len, input_len) =
+            pack_decode_reader(&mut std::io::Cursor::new(&input), 0, &mut output).unwrap();
+        assert_eq!(decoded_len, 3);
+        assert_eq!(input_len, input.len());
+        assert_eq!(&output, b"abc");
+    }
+
+    #[test]
+    fn packed_decoder_windows_match_one_shot_across_lfg_block_boundary() {
+        // The verbatim lead ends 100 bytes short of the 0x8000 boundary,
+        // so the LFG record's forward skip is 0x7F9C and its 200 output
+        // bytes cross the boundary. Windowed reads of an awkward size
+        // must reproduce the one-shot walk exactly.
+        let seed = [0x7Bu8; 68];
+        let lead_len = 0x7F9Cusize;
+        const JUNK_LEN: usize = 200;
+        let mut input = Vec::new();
+        input.extend_from_slice(&(lead_len as u32).to_be_bytes());
+        input.extend_from_slice(&vec![0x41u8; lead_len]);
+        input.extend_from_slice(&((JUNK_LEN as u32) | COMPRESSED_FLAG).to_be_bytes());
+        input.extend_from_slice(&seed);
+        input.extend_from_slice(&12u32.to_be_bytes());
+        input.extend_from_slice(b"tail-payload");
+
+        let total = lead_len + JUNK_LEN + 12;
+        let mut one_shot = vec![0u8; total];
+        let (decoded_len, input_len) =
+            pack_decode_reader(&mut std::io::Cursor::new(&input), 0, &mut one_shot).unwrap();
+        assert_eq!(decoded_len, total);
+        assert_eq!(input_len, input.len());
+        // Independent check of the LFG span across the 0x8000 boundary.
+        let mut lfg = LaggedFibonacci::init(&seed);
+        lfg.forward_bytes(lead_len % 0x8000);
+        let mut expected_junk = [0u8; JUNK_LEN];
+        lfg.fill(&mut expected_junk);
+        assert_eq!(&one_shot[lead_len..lead_len + JUNK_LEN], &expected_junk);
+
+        let mut decoder = PackedDecoder::new(std::io::Cursor::new(&input), 0);
+        let mut windowed = Vec::new();
+        // 32668 % 995 = 828, so the 200-byte LFG record straddles a window
+        // edge and must resume mid-record on the next call.
+        let mut window = [0u8; 995];
+        loop {
+            let count = decoder.read(&mut window).unwrap();
+            if count == 0 {
+                break;
+            }
+            windowed.extend_from_slice(&window[..count]);
+        }
+        assert_eq!(windowed, one_shot.as_slice());
+        assert_eq!(decoder.input_len, input.len());
+    }
+
+    #[test]
     fn empty_input_decodes_to_empty_output() {
-        assert!(pack_decode(&[], 0).unwrap().is_empty());
+        assert!(decode(&[], 0, 0).unwrap().is_empty());
         let encoded = pack_encode_verbatim(&[]);
-        assert!(pack_decode(&encoded, 0).unwrap().is_empty());
+        assert!(decode(&encoded, 0, 0).unwrap().is_empty());
     }
 
     #[test]
@@ -720,7 +933,7 @@ mod tests {
         let mut header_and_seed = Vec::new();
         header_and_seed.extend_from_slice(&(0x80000100u32).to_be_bytes());
         header_and_seed.extend_from_slice(&seed);
-        let decoded = pack_decode(&header_and_seed, 0).unwrap();
+        let decoded = decode(&header_and_seed, 0, 0x100).unwrap();
         assert_eq!(decoded.len(), 0x100);
 
         // Independently verify with a second LFG instance.
@@ -733,7 +946,7 @@ mod tests {
     #[test]
     fn decode_errors_on_truncated_header() {
         assert!(matches!(
-            pack_decode(&[0x00, 0x00], 0),
+            decode(&[0x00, 0x00], 0, 0x100),
             Err(RvzError::Custom(_))
         ));
     }
@@ -742,14 +955,14 @@ mod tests {
     fn decode_errors_on_truncated_payload() {
         let mut buf = (5u32).to_be_bytes().to_vec();
         buf.extend_from_slice(b"abc"); // only 3 bytes, need 5
-        assert!(matches!(pack_decode(&buf, 0), Err(RvzError::Custom(_))));
+        assert!(matches!(decode(&buf, 0, 0x100), Err(RvzError::Custom(_))));
     }
 
     #[test]
     fn decode_errors_on_truncated_seed() {
         let mut buf = (0x80000100u32).to_be_bytes().to_vec();
         buf.extend_from_slice(&[0u8; 30]); // need 68 seed bytes
-        assert!(matches!(pack_decode(&buf, 0), Err(RvzError::Custom(_))));
+        assert!(matches!(decode(&buf, 0, 0x100), Err(RvzError::Custom(_))));
     }
 
     /// Published junk vector cross-checked against nod's `lfg.rs` test

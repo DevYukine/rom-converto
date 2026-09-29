@@ -555,12 +555,23 @@ pub struct NkitReader {
 impl NkitReader {
     /// Opens an NKit image file and indexes it into a restoration plan.
     pub fn open(path: &Path) -> NkitResult<Self> {
-        Self::from_source(File::open(path)?)
+        Self::open_with_lookahead(path, usize::MAX)
+    }
+
+    pub fn open_with_lookahead(path: &Path, lookahead: usize) -> NkitResult<Self> {
+        Self::from_source_with_lookahead(File::open(path)?, lookahead)
     }
 
     /// Build a reader over any seekable source, allowing the GCZ
     /// wrapper (`.nkit.gcz`) to layer underneath.
-    pub fn from_source<S: Read + Seek + Send + 'static>(mut src: S) -> NkitResult<Self> {
+    pub fn from_source<S: Read + Seek + Send + 'static>(src: S) -> NkitResult<Self> {
+        Self::from_source_with_lookahead(src, usize::MAX)
+    }
+
+    pub fn from_source_with_lookahead<S: Read + Seek + Send + 'static>(
+        mut src: S,
+        lookahead: usize,
+    ) -> NkitResult<Self> {
         let plan = build_plan(&mut src)?;
         if let Some(w) = &plan.warning {
             warn!("{w}");
@@ -575,7 +586,7 @@ impl NkitReader {
             })
             .collect();
         let cap = in_flight_cap(MAX_SPAN_BYTES);
-        let workers: Vec<NkitSpanWorker> = (0..parallelism().min(cap.max(2)))
+        let workers: Vec<NkitSpanWorker> = (0..parallelism().min(cap.max(2)).min(lookahead.max(2)))
             .map(|_| NkitSpanWorker::new())
             .collect();
 
@@ -642,7 +653,7 @@ impl NkitReader {
         });
 
         Ok(Self {
-            pipeline: PipelinedGroupReader::new(workers, spans, cap, produce),
+            pipeline: PipelinedGroupReader::with_lookahead(workers, spans, cap, lookahead, produce),
             image_size: plan.image_size,
             source_crc: plan.source_crc,
             crc: Crc32::new(),

@@ -2,9 +2,10 @@
 //! `opening.bnr` banner and its decoded image, for the `dol info` command.
 
 use crate::info::Image;
-use crate::nintendo::dol::fst::{FstNode, find_file, list_files};
+use crate::nintendo::dol::fst::FST_ENTRY_SIZE;
 use crate::nintendo::dol::models::banner::{BANNER_IMAGE_HEIGHT, BANNER_IMAGE_WIDTH, GcBanner};
 use crate::nintendo::dol::models::boot_bin::GcBootBin;
+use crate::util::extent_end;
 use crate::util::pixel::{decode_rgb5a3_tiled, encode_png};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -14,6 +15,7 @@ use std::path::Path;
 /// Cap on the number of entries returned in [`DolInfo::fst_root`], to keep
 /// the info payload small for discs with very large root directories.
 const FST_ROOT_CAP: usize = 64;
+type FstMetadata = (Vec<DolFstEntry>, u32, u32, Option<(u64, u64)>);
 
 /// Metadata read from a GameCube disc image: boot.bin fields plus the
 /// decoded banner, if present.
@@ -84,27 +86,19 @@ pub fn read_info(path: &Path) -> Result<DolInfo> {
         .with_context(|| format!("dol info: stat {}", path.display()))?
         .len();
 
-    let mut reader = crate::nintendo::disc::input::open_disc_input(path)
+    let mut reader = crate::nintendo::disc::input::open_disc_input_with_lookahead(path, 1)
         .with_context(|| format!("dol info: open {}", path.display()))?;
     let container = reader.container_name().to_string();
 
     let boot = GcBootBin::read(&mut reader).context("dol info: parse boot.bin")?;
 
-    let fst_bytes = read_fst_bytes(&mut reader, &boot).unwrap_or_else(|e| {
+    let fst = read_fst_metadata(&mut reader, &boot).unwrap_or_else(|e| {
         log::debug!("dol info: fst read skipped ({})", e);
         None
     });
-
-    let (fst_root, fst_file_count, fst_dir_count) = match fst_bytes.as_deref() {
-        Some(fst) => fst_summary(fst).unwrap_or_else(|e| {
-            log::debug!("dol info: fst listing skipped ({})", e);
-            Default::default()
-        }),
-        None => Default::default(),
-    };
-
-    let (banner, banner_image) = match fst_bytes.as_deref() {
-        Some(fst) => read_banner(&mut reader, fst).unwrap_or_else(|e| {
+    let (fst_root, fst_file_count, fst_dir_count, banner_extent) = fst.unwrap_or_default();
+    let (banner, banner_image) = match banner_extent {
+        Some((offset, size)) => read_banner(&mut reader, offset, size).unwrap_or_else(|e| {
             log::debug!("dol info: banner read skipped ({})", e);
             (None, None)
         }),
@@ -134,61 +128,199 @@ pub fn read_info(path: &Path) -> Result<DolInfo> {
     })
 }
 
-/// Reads the raw FST blob referenced by `boot`, if it carries valid
-/// geometry. Returns `None` rather than erroring when a disc has no FST.
-fn read_fst_bytes<R: Read + Seek>(reader: &mut R, boot: &GcBootBin) -> Result<Option<Vec<u8>>> {
+/// Read only FST records and names that are surfaced in info. Nested entries
+/// still contribute to summary counts but do not materialize full paths.
+fn read_fst_metadata<R: Read + Seek>(
+    reader: &mut R,
+    boot: &GcBootBin,
+) -> Result<Option<FstMetadata>> {
     if boot.fst_size == 0 || boot.fst_offset == 0 {
         return Ok(None);
     }
-    reader.seek(SeekFrom::Start(boot.fst_offset as u64))?;
-    let mut fst = vec![0u8; boot.fst_size as usize];
-    reader.read_exact(&mut fst)?;
-    Ok(Some(fst))
-}
+    let fst_start = boot.fst_offset as u64;
+    let fst_size = boot.fst_size as u64;
+    let file_len = reader.seek(SeekFrom::End(0))?;
+    if extent_end(fst_start, fst_size, file_len).is_none() || fst_size < FST_ENTRY_SIZE as u64 {
+        anyhow::bail!("FST extent is outside the logical disc");
+    }
+    let mut root_record = [0u8; FST_ENTRY_SIZE];
+    reader.seek(SeekFrom::Start(fst_start))?;
+    reader.read_exact(&mut root_record)?;
+    if root_record[0] != 1 {
+        anyhow::bail!("FST root entry is not a directory");
+    }
+    let total_entries = u32::from_be_bytes(root_record[8..12].try_into()?) as usize;
+    let records_size = total_entries
+        .checked_mul(FST_ENTRY_SIZE)
+        .context("FST record count overflows")? as u64;
+    if total_entries == 0 || records_size > fst_size {
+        anyhow::bail!("FST entry table exceeds its declared extent");
+    }
+    let string_start = fst_start + records_size;
+    let string_size = fst_size - records_size;
+    let string_table = if string_size <= 64 * 1024 {
+        let mut table = vec![0; string_size as usize];
+        reader.seek(SeekFrom::Start(string_start))?;
+        reader.read_exact(&mut table)?;
+        reader.seek(SeekFrom::Start(fst_start + FST_ENTRY_SIZE as u64))?;
+        Some(table)
+    } else {
+        None
+    };
 
-/// Summarizes an FST into its top-level entries (capped at
-/// [`FST_ROOT_CAP`]) plus total file and directory counts.
-fn fst_summary(fst: &[u8]) -> Result<(Vec<DolFstEntry>, u32, u32)> {
     let mut root = Vec::new();
     let mut file_count = 0u32;
     let mut dir_count = 0u32;
-    for node in list_files(fst)? {
-        match node {
-            FstNode::File { path, size, .. } => {
-                file_count += 1;
-                if !path.contains('/') && root.len() < FST_ROOT_CAP {
-                    root.push(DolFstEntry {
-                        name: path,
-                        size,
-                        is_dir: false,
-                    });
-                }
+    let mut banner = None;
+    let mut dir_ends = vec![total_entries];
+    let mut name_scratch = [0u8; 4 * 1024];
+    const ENTRIES_PER_CHUNK: usize = (64 * 1024) / FST_ENTRY_SIZE;
+    let mut entries = [0u8; ENTRIES_PER_CHUNK * FST_ENTRY_SIZE];
+    let mut idx = 1usize;
+    while idx < total_entries {
+        let chunk_entries = (total_entries - idx).min(ENTRIES_PER_CHUNK);
+        let chunk_size = chunk_entries * FST_ENTRY_SIZE;
+        reader.read_exact(&mut entries[..chunk_size])?;
+        let mut read_name = false;
+        for entry_idx in 0..chunk_entries {
+            let current_idx = idx + entry_idx;
+            while dir_ends.len() > 1 && current_idx >= *dir_ends.last().expect("root remains") {
+                dir_ends.pop();
             }
-            FstNode::Directory { path } => {
+            let entry = &entries[entry_idx * FST_ENTRY_SIZE..(entry_idx + 1) * FST_ENTRY_SIZE];
+            let is_dir = entry[0] != 0;
+            let top_level = dir_ends.len() == 1;
+            if is_dir {
                 dir_count += 1;
-                if !path.contains('/') && root.len() < FST_ROOT_CAP {
+            } else {
+                file_count += 1;
+            }
+
+            if is_dir {
+                let end = u32::from_be_bytes(entry[8..12].try_into()?) as usize;
+                if top_level && root.len() < FST_ROOT_CAP {
+                    let name_offset = u32::from_be_bytes([0, entry[1], entry[2], entry[3]]) as u64;
+                    let name = read_fst_name(
+                        reader,
+                        string_table.as_deref(),
+                        string_start,
+                        string_size,
+                        name_offset,
+                        &mut name_scratch,
+                    )?;
+                    read_name |= string_table.is_none();
                     root.push(DolFstEntry {
-                        name: path,
+                        name,
                         size: 0,
                         is_dir: true,
                     });
                 }
+                dir_ends.push(end);
+            } else if top_level {
+                let offset = u32::from_be_bytes(entry[4..8].try_into()?) as u64;
+                let size = u32::from_be_bytes(entry[8..12].try_into()?) as u64;
+                let retained = root.len() < FST_ROOT_CAP;
+                if retained || banner.is_none() {
+                    let name_offset = u32::from_be_bytes([0, entry[1], entry[2], entry[3]]) as u64;
+                    let name = read_fst_name(
+                        reader,
+                        string_table.as_deref(),
+                        string_start,
+                        string_size,
+                        name_offset,
+                        &mut name_scratch,
+                    )?;
+                    read_name |= string_table.is_none();
+                    if name == "opening.bnr" {
+                        banner = Some((offset, size));
+                    }
+                    if retained {
+                        root.push(DolFstEntry {
+                            name,
+                            size,
+                            is_dir: false,
+                        });
+                    }
+                }
             }
         }
+        if read_name {
+            let next_entry = idx + chunk_entries;
+            reader.seek(SeekFrom::Start(
+                fst_start + (next_entry * FST_ENTRY_SIZE) as u64,
+            ))?;
+        }
+        idx += chunk_entries;
     }
-    Ok((root, file_count, dir_count))
+    Ok(Some((root, file_count, dir_count, banner)))
+}
+
+fn read_fst_name<R: Read + Seek>(
+    reader: &mut R,
+    string_table: Option<&[u8]>,
+    strings_start: u64,
+    strings_len: u64,
+    offset: u64,
+    scratch: &mut [u8; 4 * 1024],
+) -> Result<String> {
+    if offset >= strings_len {
+        return Ok(String::new());
+    }
+    if let Some(table) = string_table {
+        let bytes = &table[offset as usize..];
+        let name_len = bytes
+            .iter()
+            .position(|&byte| byte == 0)
+            .unwrap_or(bytes.len());
+        return Ok(String::from_utf8_lossy(&bytes[..name_len]).into_owned());
+    }
+
+    let mut name = Vec::new();
+    let mut consumed = 0u64;
+    while consumed < strings_len - offset {
+        let read_len = (strings_len - offset - consumed).min(scratch.len() as u64) as usize;
+        reader.seek(SeekFrom::Start(strings_start + offset + consumed))?;
+        reader.read_exact(&mut scratch[..read_len])?;
+        let chunk = &scratch[..read_len];
+        if let Some(nul) = chunk.iter().position(|&byte| byte == 0) {
+            name.extend_from_slice(&chunk[..nul]);
+            break;
+        }
+        name.extend_from_slice(chunk);
+        consumed += read_len as u64;
+    }
+    Ok(String::from_utf8_lossy(&name).into_owned())
 }
 
 fn read_banner<R: Read + Seek>(
     reader: &mut R,
-    fst: &[u8],
+    bnr_offset: u64,
+    bnr_size: u64,
 ) -> Result<(Option<GcBannerInfo>, Option<Image>)> {
-    let Some((bnr_offset, bnr_size)) = find_file(fst, "opening.bnr")? else {
-        return Ok((None, None));
+    use crate::nintendo::dol::models::banner::{
+        BNR1_FILE_SIZE, BNR1_MAGIC, BNR2_FILE_SIZE, BNR2_MAGIC,
     };
-
+    if bnr_size < 4 {
+        anyhow::bail!("opening.bnr is too small");
+    }
+    reader.seek(SeekFrom::End(0))?;
+    let file_len = reader.stream_position()?;
+    if extent_end(bnr_offset, bnr_size, file_len).is_none() {
+        anyhow::bail!("opening.bnr extent exceeds the logical disc");
+    }
     reader.seek(SeekFrom::Start(bnr_offset))?;
-    let mut bnr = vec![0u8; bnr_size as usize];
+    let mut magic = [0u8; 4];
+    reader.read_exact(&mut magic)?;
+    let expected = match magic {
+        BNR1_MAGIC => BNR1_FILE_SIZE,
+        BNR2_MAGIC => BNR2_FILE_SIZE,
+        _ => anyhow::bail!("opening.bnr has unknown magic"),
+    };
+    if bnr_size < expected as u64 {
+        anyhow::bail!("opening.bnr is truncated");
+    }
+    reader.seek(SeekFrom::Start(bnr_offset))?;
+    let mut bnr = vec![0u8; expected];
     reader.read_exact(&mut bnr)?;
     let banner = GcBanner::parse(&bnr)?;
 
@@ -258,5 +390,79 @@ mod tests {
                 .any(|e| e.name == "opening.bnr" && !e.is_dir)
         );
         assert!(info.fst_root.iter().any(|e| e.name == "sub" && e.is_dir));
+    }
+
+    #[test]
+    fn banner_reads_only_the_format_defined_extent() {
+        use crate::nintendo::dol::models::banner::{BNR1_FILE_SIZE, BNR1_MAGIC};
+        let mut disc = vec![0u8; BNR1_FILE_SIZE + 4096];
+        disc[0..4].copy_from_slice(&BNR1_MAGIC);
+        let mut reader = std::io::Cursor::new(disc);
+
+        let (info, _) = read_banner(&mut reader, 0, (BNR1_FILE_SIZE + 4096) as u64).unwrap();
+        assert_eq!(info.unwrap().titles.len(), 1);
+        assert_eq!(reader.position(), BNR1_FILE_SIZE as u64);
+    }
+    #[test]
+    fn fst_name_longer_than_four_kibibytes_is_preserved() {
+        let mut strings = vec![b'a'; 100 * 1024];
+        strings[10_000] = 0;
+        let mut reader = std::io::Cursor::new(strings);
+        let name = read_fst_name(&mut reader, None, 0, 100 * 1024, 0, &mut [0; 4 * 1024]).unwrap();
+        assert_eq!(name.len(), 10_000);
+        assert!(name.bytes().all(|byte| byte == b'a'));
+        assert!(reader.position() <= 3 * 4 * 1024);
+    }
+
+    #[test]
+    fn fst_names_use_entry_offsets_and_banner_is_root_only() {
+        fn entry(kind: u8, name_offset: u32, first: u32, second: u32) -> [u8; FST_ENTRY_SIZE] {
+            let mut entry = [0; FST_ENTRY_SIZE];
+            entry[0] = kind;
+            entry[1..4].copy_from_slice(&name_offset.to_be_bytes()[1..]);
+            entry[4..8].copy_from_slice(&first.to_be_bytes());
+            entry[8..12].copy_from_slice(&second.to_be_bytes());
+            entry
+        }
+
+        let strings = b"xopening.bnr\0sub\0opening.bnr\0";
+        let records = [
+            entry(1, 0, 0, 5),
+            entry(0, 0, 0x1111, 0x10),
+            entry(0, 1, 0x1234, 0x56),
+            entry(1, 13, 0, 5),
+            entry(0, 17, 0x9999, 0x20),
+        ];
+        let fst_start = 32u32;
+        let mut disc = vec![0; fst_start as usize];
+        for record in records {
+            disc.extend_from_slice(&record);
+        }
+        disc.extend_from_slice(strings);
+        let boot = GcBootBin {
+            game_id: String::new(),
+            maker_code: String::new(),
+            disc_number: 0,
+            disc_version: 0,
+            audio_streaming: false,
+            stream_buffer_size: 0,
+            game_name: String::new(),
+            region: crate::nintendo::dol::models::boot_bin::GcRegion::Unknown(0),
+            fst_offset: fst_start,
+            fst_size: (records.len() * FST_ENTRY_SIZE + strings.len()) as u32,
+            apploader_date: None,
+        };
+
+        let mut reader = std::io::Cursor::new(disc);
+        let (root, file_count, dir_count, banner) =
+            read_fst_metadata(&mut reader, &boot).unwrap().unwrap();
+        assert_eq!(
+            root.iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["xopening.bnr", "opening.bnr", "sub"]
+        );
+        assert_eq!((file_count, dir_count), (3, 1));
+        assert_eq!(banner, Some((0x1234, 0x56)));
     }
 }

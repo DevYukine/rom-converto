@@ -97,16 +97,36 @@ impl<'a> U8Archive<'a> {
 
     /// Looks up a file by exact slash-separated path, walking the directory tree component by component.
     pub fn find(&self, path: &str) -> Option<&'a [u8]> {
+        let (start, size) = self.locate(path)?;
+        let end = start.checked_add(size)?;
+        (end <= self.data.len()).then(|| &self.data[start..end])
+    }
+
+    /// Byte extent `(offset, size)` of a file by exact path, without
+    /// requiring the payload to be present in the parsed buffer.
+    pub fn locate(&self, path: &str) -> Option<(usize, usize)> {
         let components: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
         if components.is_empty() {
             return None;
         }
         let total_nodes = self.nodes.first()?.size as usize;
-        self.find_in_dir(0, total_nodes, &components)
+        let node = self.find_in_dir(0, total_nodes, &components)?;
+        Some((node.data_offset as usize, node.size as usize))
     }
 
     /// Lists every file in the archive with its full path and payload bytes.
     pub fn list_paths(&self) -> Vec<(String, &'a [u8])> {
+        self.list_extents()
+            .into_iter()
+            .filter_map(|(path, start, size)| {
+                let end = start.checked_add(size)?;
+                (end <= self.data.len()).then(|| (path, &self.data[start..end]))
+            })
+            .collect()
+    }
+
+    /// Lists every file as `(path, offset, size)` without touching payloads.
+    pub fn list_extents(&self) -> Vec<(String, usize, usize)> {
         let mut out = Vec::new();
         if self.nodes.is_empty() {
             return out;
@@ -135,20 +155,15 @@ impl<'a> U8Archive<'a> {
             if node.is_dir {
                 stack.push(name);
                 end_stack.push(node.size as usize);
-                idx += 1;
             } else {
                 let path = if stack.is_empty() {
                     name
                 } else {
                     format!("{}/{}", stack.join("/"), name)
                 };
-                let start = node.data_offset as usize;
-                let end = start.saturating_add(node.size as usize);
-                if end <= self.data.len() {
-                    out.push((path, &self.data[start..end]));
-                }
-                idx += 1;
+                out.push((path, node.data_offset as usize, node.size as usize));
             }
+            idx += 1;
         }
         out
     }
@@ -157,12 +172,10 @@ impl<'a> U8Archive<'a> {
     /// directories.
     pub fn find_path_ending_with(&self, suffix: &str) -> Option<&'a [u8]> {
         let suffix_lower = suffix.to_ascii_lowercase();
-        for (path, bytes) in self.list_paths() {
-            if path.to_ascii_lowercase().ends_with(&suffix_lower) {
-                return Some(bytes);
-            }
-        }
-        None
+        self.list_paths()
+            .into_iter()
+            .find(|(path, _)| path.to_ascii_lowercase().ends_with(&suffix_lower))
+            .map(|(_, bytes)| bytes)
     }
 
     fn find_in_dir(
@@ -170,7 +183,7 @@ impl<'a> U8Archive<'a> {
         dir_idx: usize,
         dir_end_excl: usize,
         components: &[&str],
-    ) -> Option<&'a [u8]> {
+    ) -> Option<U8Node> {
         let (head, rest) = components.split_first()?;
         let mut idx = dir_idx + 1;
         while idx < dir_end_excl {
@@ -183,21 +196,12 @@ impl<'a> U8Archive<'a> {
             };
             if name == *head {
                 if rest.is_empty() {
-                    if node.is_dir {
-                        return None;
-                    }
-                    let start = node.data_offset as usize;
-                    let end = start.checked_add(node.size as usize)?;
-                    if end > self.data.len() {
-                        return None;
-                    }
-                    return Some(&self.data[start..end]);
-                } else {
-                    if !node.is_dir {
-                        return None;
-                    }
-                    return self.find_in_dir(idx, node.size as usize, rest);
+                    return (!node.is_dir).then_some(node);
                 }
+                if !node.is_dir {
+                    return None;
+                }
+                return self.find_in_dir(idx, node.size as usize, rest);
             }
             idx = next_subtree_end.max(idx + 1);
         }

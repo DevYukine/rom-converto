@@ -6,21 +6,22 @@
 //! single-threaded; small LRU caches keep repeat reads in the same
 //! region cheap.
 
-use binrw::{BinRead, Endian};
 use std::collections::VecDeque;
 use std::fs::File;
-use std::io::{self, BufReader, Cursor, Read, Seek, SeekFrom};
+use std::io::{self, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::nintendo::disc::rvz::constants::RVZ_MAGIC;
 use crate::nintendo::disc::rvz::error::{RvzError, RvzResult};
-use crate::nintendo::disc::rvz::format::sha1::{compute_disc_hash, compute_file_head_hash};
-use crate::nintendo::disc::rvz::format::{RvzGroup, WiaDisc, WiaFileHead, WiaPart, WiaRawData};
+use crate::nintendo::disc::rvz::format::{RvzGroup, WiaDisc, WiaPart, WiaRawData};
+use crate::nintendo::disc::rvz::packing::PackedDecoder;
 use crate::nintendo::rvl::constants::WII_SECTOR_SIZE_U64;
+use crate::util::positional_reader::PositionalReader;
+use crate::util::pread::file_read_exact_at;
 use crate::util::worker_pool::Worker;
 
+use super::parse_rvz_metadata;
 use super::partition::{
     PartitionDecompressOut, PartitionDecompressWorker, build_partition_work_items,
     make_one_partition_worker,
@@ -30,8 +31,36 @@ use super::raw::{
     make_one_raw_worker,
 };
 
+// Chunks up to this size are decoded whole; larger ones stream through the
+// bounded cursor, since a raw-only RVZ may declare a far larger chunk_size.
+// With the 8-entry cache this keeps retained raw chunks <= 128 MiB.
+const RAW_WHOLE_CHUNK_LIMIT: usize = 16 * 1024 * 1024;
+// Retain the last decoded raw chunks for repeat reads.
 const RAW_CACHE_CAP: usize = 8;
+// Cap each streaming discard/read operation while traversing oversized chunks.
+const STREAM_BUFFER_SIZE: usize = 1024 * 1024;
+// Partition clusters are small enough that a few recent ones help common seeks.
 const PART_CACHE_CAP: usize = 4;
+
+type RawStreamDecoder =
+    zstd::stream::read::Decoder<'static, BufReader<PositionalReader<Arc<File>>>>;
+type PackedStreamDecoder = PackedDecoder<Box<dyn Read>>;
+type PartCacheEntry = ((usize, u64), Arc<[u8]>);
+
+/// Build a windowed decoder over a packed chunk's stored range.
+fn make_packed_stream_decoder(
+    file: Arc<File>,
+    work: &RawDecompressWork,
+) -> RvzResult<PackedStreamDecoder> {
+    let stored = PositionalReader::new(file, work.data_off, u64::from(work.data_size));
+    let source: Box<dyn Read> = if work.is_compressed {
+        let buffered = BufReader::with_capacity(STREAM_BUFFER_SIZE, stored);
+        Box::new(zstd::stream::read::Decoder::with_buffer(buffered)?)
+    } else {
+        Box::new(BufReader::with_capacity(STREAM_BUFFER_SIZE, stored))
+    };
+    Ok(PackedDecoder::new(source, work.chunk_abs_start))
+}
 
 /// `Read + Seek` view over an RVZ container that decodes only the groups
 /// touched by each call, caching recently decoded raw chunks and
@@ -47,83 +76,20 @@ pub struct RvzDiscReader {
 
     raw_worker: RawDecompressWorker,
     part_worker: PartitionDecompressWorker,
+    file: Arc<File>,
 
     raw_cache: VecDeque<(u32, Arc<[u8]>)>,
+    raw_cursor: Option<(u32, RawStreamDecoder, usize)>,
+    packed_cursor: Option<(u32, PackedStreamDecoder, usize)>,
     part_cache: VecDeque<PartCacheEntry>,
+    discard: Vec<u8>,
 }
-
-type PartCacheEntry = ((usize, u64), Arc<[u8]>);
 
 impl RvzDiscReader {
     /// Opens the RVZ container at `path` and reads its metadata tables.
     pub fn open(path: &Path) -> RvzResult<Self> {
-        let mut reader = BufReader::with_capacity(1024 * 1024, File::open(path)?);
-
-        let mut head_bytes = vec![0u8; crate::nintendo::disc::rvz::format::WIA_FILE_HEAD_SIZE];
-        reader.read_exact(&mut head_bytes)?;
-        let head = WiaFileHead::read_options(&mut Cursor::new(&head_bytes), Endian::Big, ())?;
-        if head.magic != RVZ_MAGIC {
-            return Err(RvzError::InvalidMagic(head.magic));
-        }
-        if compute_file_head_hash(&head) != head.file_head_hash {
-            return Err(RvzError::HeaderHashMismatch);
-        }
-
-        let mut disc_bytes = vec![0u8; head.disc_size as usize];
-        reader.read_exact(&mut disc_bytes)?;
-        let disc = WiaDisc::read_options(&mut Cursor::new(&disc_bytes), Endian::Big, ())?;
-        if compute_disc_hash(&disc) != head.disc_hash {
-            return Err(RvzError::DiscHashMismatch);
-        }
-        if disc.compression != 5 {
-            return Err(RvzError::UnsupportedCompression(disc.compression));
-        }
-        if disc.disc_type != 1 && disc.disc_type != 2 {
-            return Err(RvzError::UnsupportedDiscType(disc.disc_type));
-        }
-
-        let parts: Vec<WiaPart> = if disc.n_part > 0 {
-            reader.seek(SeekFrom::Start(disc.part_off))?;
-            let mut buf =
-                vec![0u8; disc.n_part as usize * crate::nintendo::disc::rvz::format::WIA_PART_SIZE];
-            reader.read_exact(&mut buf)?;
-            let mut cur = Cursor::new(&buf);
-            let mut out = Vec::with_capacity(disc.n_part as usize);
-            for _ in 0..disc.n_part {
-                out.push(WiaPart::read_options(&mut cur, Endian::Big, ())?);
-            }
-            out
-        } else {
-            Vec::new()
-        };
-
-        reader.seek(SeekFrom::Start(disc.raw_data_off))?;
-        let mut raw_compressed = vec![0u8; disc.raw_data_size as usize];
-        reader.read_exact(&mut raw_compressed)?;
-        let raw_decompressed = zstd::bulk::decompress(
-            &raw_compressed,
-            disc.n_raw_data as usize * crate::nintendo::disc::rvz::format::WIA_RAW_DATA_SIZE,
-        )?;
-        let mut raw_cursor = Cursor::new(&raw_decompressed);
-        let mut raw_data = Vec::with_capacity(disc.n_raw_data as usize);
-        for _ in 0..disc.n_raw_data {
-            raw_data.push(WiaRawData::read_options(&mut raw_cursor, Endian::Big, ())?);
-        }
-
-        reader.seek(SeekFrom::Start(disc.group_off))?;
-        let mut group_compressed = vec![0u8; disc.group_size as usize];
-        reader.read_exact(&mut group_compressed)?;
-        let group_decompressed = zstd::bulk::decompress(
-            &group_compressed,
-            disc.n_groups as usize * crate::nintendo::disc::rvz::format::RVZ_GROUP_SIZE,
-        )?;
-        let mut group_cursor = Cursor::new(&group_decompressed);
-        let mut groups: Vec<RvzGroup> = Vec::with_capacity(disc.n_groups as usize);
-        for _ in 0..disc.n_groups {
-            groups.push(RvzGroup::read_options(&mut group_cursor, Endian::Big, ())?);
-        }
-
-        let shared_file = Arc::new(File::open(path)?);
+        let (shared_file, head, disc, parts, raw_data, groups) = parse_rvz_metadata(path)?;
+        let file = Arc::clone(&shared_file);
         let raw_worker = make_one_raw_worker(&shared_file)?;
         let part_worker = make_one_partition_worker(&shared_file)?;
 
@@ -142,6 +108,10 @@ impl RvzDiscReader {
             part_worker,
             raw_cache: VecDeque::with_capacity(RAW_CACHE_CAP),
             part_cache: VecDeque::with_capacity(PART_CACHE_CAP),
+            file,
+            raw_cursor: None,
+            packed_cursor: None,
+            discard: vec![0; STREAM_BUFFER_SIZE],
         })
     }
 
@@ -197,9 +167,114 @@ impl RvzDiscReader {
         let region = self.raw_data[region_idx].clone();
         let work = self
             .build_raw_chunk_work_for(&region, pos)
+            .map_err(io::Error::other)?
             .ok_or_else(|| io::Error::other("raw chunk lookup failed"))?;
-        let group_idx = self.group_index_for_raw(&region, pos);
         let chunk_abs_start = work.chunk_abs_start;
+        let group_idx = self.group_index_for_raw(&region, pos);
+        if work.chunk_bytes > RAW_WHOLE_CHUNK_LIMIT {
+            let in_chunk = (pos - chunk_abs_start) as usize;
+            let take = (work.chunk_bytes - in_chunk).min(want);
+            if work.data_size == 0 {
+                buf[..take].fill(0);
+                self.pos += take as u64;
+                return Ok(Some(take));
+            }
+            if work.rvz_packed_size != 0 {
+                // Serve oversized packed chunks through the windowed
+                // decoder instead of materializing the whole chunk.
+                let (mut decoder, mut position) = match self.packed_cursor.take() {
+                    Some((idx, decoder, position)) if idx == group_idx && position <= in_chunk => {
+                        (decoder, position)
+                    }
+                    _ => (
+                        make_packed_stream_decoder(Arc::clone(&self.file), &work)
+                            .map_err(io::Error::other)?,
+                        0,
+                    ),
+                };
+                while position < in_chunk {
+                    let discard_len = (in_chunk - position).min(self.discard.len());
+                    let n = decoder
+                        .read(&mut self.discard[..discard_len])
+                        .map_err(io::Error::other)?;
+                    if n == 0 {
+                        return Err(io::Error::other("truncated RVZ raw chunk"));
+                    }
+                    position += n;
+                }
+                let mut written = 0;
+                while written < take {
+                    let n = decoder
+                        .read(&mut buf[written..take])
+                        .map_err(io::Error::other)?;
+                    if n == 0 {
+                        return Err(io::Error::other("truncated RVZ raw chunk"));
+                    }
+                    written += n;
+                }
+                position += written;
+                self.packed_cursor = Some((group_idx, decoder, position));
+                self.pos += take as u64;
+                return Ok(Some(take));
+            }
+            if !work.is_compressed {
+                let required = work.chunk_slice_offset + work.write_len;
+                if (work.data_size as usize) < required {
+                    return Err(io::Error::other(RvzError::DecompressedSizeMismatch {
+                        expected: required as u64,
+                        actual: u64::from(work.data_size),
+                    }));
+                }
+                let requested_end = in_chunk + take;
+                if (work.data_size as usize) < requested_end {
+                    return Err(io::Error::other(RvzError::DecompressedSizeMismatch {
+                        expected: requested_end as u64,
+                        actual: u64::from(work.data_size),
+                    }));
+                }
+                file_read_exact_at(
+                    &self.file,
+                    &mut buf[..take],
+                    work.data_off + in_chunk as u64,
+                )?;
+                self.pos += take as u64;
+                return Ok(Some(take));
+            }
+            let (mut decoder, mut position) = match self.raw_cursor.take() {
+                Some((idx, decoder, position)) if idx == group_idx && position <= in_chunk => {
+                    (decoder, position)
+                }
+                _ => {
+                    let source = PositionalReader::new(
+                        self.file.clone(),
+                        work.data_off,
+                        u64::from(work.data_size),
+                    );
+                    let buffered = BufReader::with_capacity(STREAM_BUFFER_SIZE, source);
+                    (RawStreamDecoder::with_buffer(buffered)?, 0)
+                }
+            };
+            while position < in_chunk {
+                let discard_len = (in_chunk - position).min(self.discard.len());
+                let n = decoder.read(&mut self.discard[..discard_len])?;
+                if n == 0 {
+                    return Err(io::Error::other("truncated RVZ raw chunk"));
+                }
+                position += n;
+            }
+            let mut written = 0;
+            while written < take {
+                let n = decoder.read(&mut buf[written..take])?;
+                if n == 0 {
+                    return Err(io::Error::other("truncated RVZ raw chunk"));
+                }
+                written += n;
+            }
+            position += written;
+            self.raw_cursor = Some((group_idx, decoder, position));
+            self.pos += take as u64;
+            return Ok(Some(take));
+        }
         let decoded = match self.get_raw_chunk(group_idx, &work) {
             Ok(v) => v,
             Err(e) => return Err(io::Error::other(format!("rvz raw decompress: {}", e))),
@@ -285,12 +360,21 @@ impl RvzDiscReader {
         region.group_index + chunk_in_region
     }
 
-    fn build_raw_chunk_work_for(&self, region: &WiaRawData, pos: u64) -> Option<RawDecompressWork> {
-        let items =
-            build_raw_region_work_items(region, &self.groups, self.chunk_size, self.iso_size, None);
-        items
+    fn build_raw_chunk_work_for(
+        &self,
+        region: &WiaRawData,
+        pos: u64,
+    ) -> RvzResult<Option<RawDecompressWork>> {
+        let items = build_raw_region_work_items(
+            region,
+            &self.groups,
+            self.chunk_size,
+            self.iso_size,
+            None,
+        )?;
+        Ok(items
             .into_iter()
-            .find(|w| pos >= w.chunk_abs_start && pos < w.chunk_abs_start + w.chunk_bytes as u64)
+            .find(|w| pos >= w.chunk_abs_start && pos < w.chunk_abs_start + w.chunk_bytes as u64))
     }
 
     fn get_raw_chunk(&mut self, group_idx: u32, work: &RawDecompressWork) -> RvzResult<Arc<[u8]>> {
@@ -316,7 +400,6 @@ impl RvzDiscReader {
         self.raw_cache.push_back((group_idx, bytes.clone()));
         Ok(bytes)
     }
-
     fn get_partition_cluster(
         &mut self,
         part_idx: usize,
@@ -332,7 +415,7 @@ impl RvzDiscReader {
             self.part_cache.push_back((k, v.clone()));
             return Ok(v);
         }
-        let all = build_partition_work_items(part, &self.groups, self.chunk_size, None);
+        let all = build_partition_work_items(part, &self.groups, self.chunk_size, None)?;
         let work = all
             .into_iter()
             .find(|w| w.cluster_idx == cluster_idx)
@@ -367,18 +450,7 @@ impl Read for RvzDiscReader {
 
 impl Seek for RvzDiscReader {
     fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
-        let new_pos: i128 = match from {
-            SeekFrom::Start(p) => p as i128,
-            SeekFrom::Current(d) => self.pos as i128 + d as i128,
-            SeekFrom::End(d) => self.iso_size as i128 + d as i128,
-        };
-        if new_pos < 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "seek to negative offset",
-            ));
-        }
-        self.pos = new_pos as u64;
+        self.pos = crate::util::positional_reader::seek_target(self.pos, self.iso_size, from)?;
         Ok(self.pos)
     }
 }

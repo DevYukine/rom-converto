@@ -90,7 +90,14 @@ pub fn verify_wia_blocking(
             let seg = seg_iter
                 .next()
                 .ok_or_else(|| WiaError::Custom("segment iterator exhausted".into()))?;
-            read_segment_work(&mut f, seg, &layout.groups, &layout.disc.dhead, n_lists)
+            read_segment_work(
+                &mut f,
+                layout.file_len,
+                seg,
+                &layout.groups,
+                &layout.disc.dhead,
+                n_lists,
+            )
         },
         |seq, _decoded| {
             bytes_done.fetch_add(sizes[seq as usize], Ordering::Relaxed);

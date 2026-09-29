@@ -20,8 +20,8 @@ use std::io::Cursor;
 use super::codec::WiaCodec;
 use super::error::{WiaError, WiaResult};
 use super::format::{
-    WIA_GROUP_SIZE, WIA_MAGIC, WIA_VERSION, WIA_VERSION_READ_COMPATIBLE, WiaGroup,
-    exception_lists_per_group, validate_disc,
+    WIA_COMPR_LZMA, WIA_COMPR_LZMA2, WIA_GROUP_SIZE, WIA_MAGIC, WIA_VERSION,
+    WIA_VERSION_READ_COMPATIBLE, WiaGroup, exception_lists_per_group, validate_disc,
 };
 use crate::nintendo::disc::rvz::format::sha1::compute_file_head_hash;
 use crate::nintendo::disc::rvz::format::{
@@ -43,6 +43,41 @@ pub(crate) struct WiaLayout {
     pub parts: Vec<WiaPart>,
     pub raw_data: Vec<WiaRawData>,
     pub groups: Vec<WiaGroup>,
+    pub file_len: u64,
+}
+
+/// Largest LZMA/LZMA2 dictionary the decoder will allocate for a
+/// file's declared properties; Dolphin's highest level writes 64 MiB,
+/// so anything larger is a hostile reservation.
+const MAX_LZMA_DICT_BYTES: u32 = 256 * 1024 * 1024;
+
+/// Rejects declared LZMA/LZMA2 dictionaries larger than
+/// [`MAX_LZMA_DICT_BYTES`]; `WiaCodec::new` allocates the declared
+/// size up front. Other codecs have no dictionary.
+fn validate_lzma_dict(compression: u32, props: &[u8]) -> WiaResult<()> {
+    let dict = match compression {
+        WIA_COMPR_LZMA if props.len() >= 5 => u32::from_le_bytes(
+            props[1..5]
+                .try_into()
+                .expect("props is at least five bytes"),
+        ) as u64,
+        WIA_COMPR_LZMA2 if !props.is_empty() => {
+            let prop = props[0] as u32;
+            if prop >= 40 {
+                u32::MAX as u64
+            } else {
+                ((2 + (prop & 1)) as u64) << (prop / 2 + 11)
+            }
+        }
+        _ => return Ok(()),
+    };
+    if dict > MAX_LZMA_DICT_BYTES as u64 {
+        return Err(WiaError::InvalidHeader(format!(
+            "LZMA dictionary of {dict} bytes exceeds the {} byte limit",
+            MAX_LZMA_DICT_BYTES
+        )));
+    }
+    Ok(())
 }
 
 impl WiaLayout {
@@ -73,16 +108,37 @@ impl WiaLayout {
                 head.wia_file_size, file_len
             )));
         }
-
-        let mut disc_bytes = vec![0u8; head.disc_size as usize];
-        f.read_exact(&mut disc_bytes)?;
-        if <[u8; 20]>::from(Sha1::digest(&disc_bytes)) != head.disc_hash {
-            return Err(WiaError::HashChainMismatch("disc struct"));
-        }
-        if disc_bytes.len() < crate::nintendo::disc::rvz::format::WIA_DISC_SIZE {
+        crate::util::validate_extent(
+            WIA_FILE_HEAD_SIZE as u64,
+            head.disc_size as u64,
+            file_len,
+            "disc struct",
+        )?;
+        if (head.disc_size as usize) < crate::nintendo::disc::rvz::format::WIA_DISC_SIZE {
             return Err(WiaError::InvalidHeader("disc struct too small".into()));
         }
+
+        let mut disc_bytes = [0u8; crate::nintendo::disc::rvz::format::WIA_DISC_SIZE];
+        f.seek(SeekFrom::Start(WIA_FILE_HEAD_SIZE as u64))?;
+        f.read_exact(&mut disc_bytes)?;
         let disc = WiaDisc::read_options(&mut Cursor::new(&disc_bytes), Endian::Big, ())?;
+
+        let mut hasher = Sha1::new();
+        hasher.update(disc_bytes);
+        let mut remaining = head.disc_size as u64 - disc_bytes.len() as u64;
+        f.seek(SeekFrom::Start(
+            WIA_FILE_HEAD_SIZE as u64 + disc_bytes.len() as u64,
+        ))?;
+        let mut hash_buf = [0u8; 64 * 1024];
+        while remaining > 0 {
+            let count = remaining.min(hash_buf.len() as u64) as usize;
+            f.read_exact(&mut hash_buf[..count])?;
+            hasher.update(&hash_buf[..count]);
+            remaining -= count as u64;
+        }
+        if <[u8; 20]>::from(hasher.finalize()) != head.disc_hash {
+            return Err(WiaError::HashChainMismatch("disc struct"));
+        }
         validate_disc(&disc)?;
 
         let parts = if disc.n_part > 0 {
@@ -92,59 +148,102 @@ impl WiaLayout {
                     disc.part_t_size
                 )));
             }
+            let table_len = (disc.n_part as u64)
+                .checked_mul(disc.part_t_size as u64)
+                .ok_or_else(|| WiaError::InvalidHeader("partition table size overflows".into()))?;
+            crate::util::validate_extent(disc.part_off, table_len, file_len, "partition table")?;
             f.seek(SeekFrom::Start(disc.part_off))?;
-            let mut buf = vec![0u8; disc.n_part as usize * disc.part_t_size as usize];
-            f.read_exact(&mut buf)?;
-            if <[u8; 20]>::from(Sha1::digest(&buf)) != disc.part_hash {
-                return Err(WiaError::HashChainMismatch("partition table"));
-            }
+            let mut hasher = Sha1::new();
+            let row_size = disc.part_t_size as usize;
             let mut out = Vec::with_capacity(disc.n_part as usize);
-            for i in 0..disc.n_part as usize {
-                let entry = &buf[i * disc.part_t_size as usize..];
+            for _ in 0..disc.n_part {
+                let mut row = [0u8; WIA_PART_SIZE];
+                f.read_exact(&mut row)?;
+                hasher.update(row);
+                let mut remaining = row_size - WIA_PART_SIZE;
+                while remaining > 0 {
+                    let count = remaining.min(hash_buf.len());
+                    f.read_exact(&mut hash_buf[..count])?;
+                    hasher.update(&hash_buf[..count]);
+                    remaining -= count;
+                }
                 out.push(WiaPart::read_options(
-                    &mut Cursor::new(&entry[..WIA_PART_SIZE]),
+                    &mut Cursor::new(row),
                     Endian::Big,
                     (),
                 )?);
+            }
+            if <[u8; 20]>::from(hasher.finalize()) != disc.part_hash {
+                return Err(WiaError::HashChainMismatch("partition table"));
             }
             out
         } else {
             Vec::new()
         };
 
-        let mut codec = WiaCodec::new(
-            disc.compression,
-            &disc.compr_data[..disc.compr_data_len as usize],
-        )?;
+        let props = &disc.compr_data[..disc.compr_data_len as usize];
+        validate_lzma_dict(disc.compression, props)?;
+        let mut codec = WiaCodec::new(disc.compression, props)?;
 
-        f.seek(SeekFrom::Start(disc.raw_data_off))?;
-        let mut raw_stored = vec![0u8; disc.raw_data_size as usize];
-        f.read_exact(&mut raw_stored)?;
-        let raw_bytes =
-            codec.decode_table(&raw_stored, disc.n_raw_data as usize * WIA_RAW_DATA_SIZE)?;
+        crate::util::validate_extent(
+            disc.raw_data_off,
+            disc.raw_data_size as u64,
+            file_len,
+            "raw table",
+        )?;
+        let raw_decoded_size = (disc.n_raw_data as usize)
+            .checked_mul(WIA_RAW_DATA_SIZE)
+            .ok_or_else(|| WiaError::InvalidHeader("raw table size overflows".into()))?;
+        let raw_bytes = codec.decode_table_reader(
+            crate::util::positional_reader::PositionalReader::new(
+                &*f,
+                disc.raw_data_off,
+                disc.raw_data_size as u64,
+            ),
+            disc.raw_data_size as u64,
+            raw_decoded_size,
+        )?;
         let mut raw_cursor = Cursor::new(&raw_bytes);
-        let mut raw_data = Vec::with_capacity(disc.n_raw_data as usize);
+        // The declared row count is untrusted; the decoded table (and
+        // with it this vector) is bounded by the table extent, so grow
+        // as rows actually parse instead of reserving the full count.
+        let mut raw_data = Vec::new();
         for _ in 0..disc.n_raw_data {
             raw_data.push(WiaRawData::read_options(&mut raw_cursor, Endian::Big, ())?);
         }
+        drop(raw_bytes);
 
-        f.seek(SeekFrom::Start(disc.group_off))?;
-        let mut group_stored = vec![0u8; disc.group_size as usize];
-        f.read_exact(&mut group_stored)?;
-        let group_bytes =
-            codec.decode_table(&group_stored, disc.n_groups as usize * WIA_GROUP_SIZE)?;
+        crate::util::validate_extent(
+            disc.group_off,
+            disc.group_size as u64,
+            file_len,
+            "group table",
+        )?;
+        let group_decoded_size = (disc.n_groups as usize)
+            .checked_mul(WIA_GROUP_SIZE)
+            .ok_or_else(|| WiaError::InvalidHeader("group table size overflows".into()))?;
+        let group_bytes = codec.decode_table_reader(
+            crate::util::positional_reader::PositionalReader::new(
+                &*f,
+                disc.group_off,
+                disc.group_size as u64,
+            ),
+            disc.group_size as u64,
+            group_decoded_size,
+        )?;
         let mut group_cursor = Cursor::new(&group_bytes);
-        let mut groups = Vec::with_capacity(disc.n_groups as usize);
+        let mut groups = Vec::new();
         for _ in 0..disc.n_groups {
             groups.push(WiaGroup::read_options(&mut group_cursor, Endian::Big, ())?);
         }
-
+        drop(group_bytes);
         Ok(Self {
             head,
             disc,
             parts,
             raw_data,
             groups,
+            file_len,
         })
     }
 
@@ -421,6 +520,7 @@ impl Worker<WiaSegmentWork, Vec<u8>, WiaError> for WiaSegmentWorker {
 /// file access stays sequential.
 pub(crate) fn read_segment_work(
     f: &mut File,
+    file_len: u64,
     seg: &Segment,
     layout_groups: &[WiaGroup],
     dhead: &[u8; 128],
@@ -437,7 +537,7 @@ pub(crate) fn read_segment_work(
             chunk_bytes,
             slice_offset,
         } => WiaWorkKind::RawGroup {
-            stored: read_group_stored(f, &layout_groups[group_index as usize])?,
+            stored: read_group_stored(f, &layout_groups[group_index as usize], file_len)?,
             chunk_bytes: chunk_bytes as usize,
             slice_offset: slice_offset as usize,
         },
@@ -446,7 +546,7 @@ pub(crate) fn read_segment_work(
             part_key,
             n_sectors,
         } => WiaWorkKind::PartGroup {
-            stored: read_group_stored(f, &layout_groups[group_index as usize])?,
+            stored: read_group_stored(f, &layout_groups[group_index as usize], file_len)?,
             part_key,
             n_sectors: n_sectors as usize,
             n_lists,
@@ -455,10 +555,16 @@ pub(crate) fn read_segment_work(
     Ok(WiaSegmentWork { kind, out_len })
 }
 
-fn read_group_stored(f: &mut File, group: &WiaGroup) -> WiaResult<Vec<u8>> {
+fn read_group_stored(f: &mut File, group: &WiaGroup, file_len: u64) -> WiaResult<Vec<u8>> {
     if group.data_size == 0 {
         return Ok(Vec::new());
     }
+    crate::util::validate_extent(
+        group.data_offset(),
+        group.data_size as u64,
+        file_len,
+        "group",
+    )?;
     let mut stored = vec![0u8; group.data_size as usize];
     f.seek(SeekFrom::Start(group.data_offset()))?;
     f.read_exact(&mut stored)?;
@@ -476,6 +582,10 @@ pub struct WiaReader {
 impl WiaReader {
     /// Opens the WIA file at `path` and parses its metadata tables.
     pub fn open(path: &Path) -> WiaResult<Self> {
+        Self::open_with_lookahead(path, usize::MAX)
+    }
+
+    pub fn open_with_lookahead(path: &Path, lookahead: usize) -> WiaResult<Self> {
         let mut f = File::open(path)?;
         let layout = WiaLayout::parse(&mut f)?;
         let segments = build_segments(&layout)?;
@@ -496,18 +606,29 @@ impl WiaReader {
             .max()
             .unwrap_or(1);
         let cap = in_flight_cap(max_segment);
-        let workers: WiaResult<Vec<WiaSegmentWorker>> = (0..parallelism().min(cap.max(2)))
-            .map(|_| WiaSegmentWorker::new(&layout.disc))
-            .collect();
+        let workers: WiaResult<Vec<WiaSegmentWorker>> =
+            (0..parallelism().min(cap.max(2)).min(lookahead.max(2)))
+                .map(|_| WiaSegmentWorker::new(&layout.disc))
+                .collect();
 
         let dhead = layout.disc.dhead;
         let groups = layout.groups;
+        let file_len = layout.file_len;
         let produce: ProduceFn = Box::new(move |i| {
-            read_segment_work(&mut f, &segments[i as usize], &groups, &dhead, n_lists)
+            read_segment_work(
+                &mut f,
+                file_len,
+                &segments[i as usize],
+                &groups,
+                &dhead,
+                n_lists,
+            )
         });
 
         Ok(Self {
-            pipeline: PipelinedGroupReader::new(workers?, spans, cap, produce),
+            pipeline: PipelinedGroupReader::with_lookahead(
+                workers?, spans, cap, lookahead, produce,
+            ),
             iso_size,
         })
     }
@@ -539,5 +660,37 @@ impl Read for WiaReader {
 impl Seek for WiaReader {
     fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
         self.pipeline.seek(from)
+    }
+}
+
+#[cfg(test)]
+mod geometry_tests {
+    use super::{MAX_LZMA_DICT_BYTES, validate_lzma_dict};
+    use crate::nintendo::disc::wia::format::{WIA_COMPR_LZMA, WIA_COMPR_LZMA2, WIA_COMPR_NONE};
+    use crate::util::validate_extent;
+
+    #[test]
+    fn table_and_group_extents_reject_overflow_and_truncation() {
+        assert!(validate_extent(0x100, 0x200, 0x300, "fixture").is_ok());
+        assert!(validate_extent(0x100, 0x201, 0x300, "fixture").is_err());
+        assert!(validate_extent(u64::MAX - 1, 4, u64::MAX, "fixture").is_err());
+    }
+
+    #[test]
+    fn lzma_dictionaries_over_256_mib_are_rejected() {
+        let mut props = vec![0u8; 5];
+        props[1..5].copy_from_slice(&MAX_LZMA_DICT_BYTES.to_le_bytes());
+        assert!(validate_lzma_dict(WIA_COMPR_LZMA, &props).is_ok());
+        props[1..5].copy_from_slice(&(MAX_LZMA_DICT_BYTES + 1).to_le_bytes());
+        assert!(validate_lzma_dict(WIA_COMPR_LZMA, &props).is_err());
+
+        // LZMA2 packs the dictionary into one prop byte; values from
+        // 40 on mean u32::MAX, and 39 means 3 GiB.
+        assert!(validate_lzma_dict(WIA_COMPR_LZMA2, &[39]).is_err());
+        assert!(validate_lzma_dict(WIA_COMPR_LZMA2, &[0xFF]).is_err());
+        assert!(validate_lzma_dict(WIA_COMPR_LZMA2, &[0x14]).is_ok());
+
+        // Other codecs carry no dictionary.
+        assert!(validate_lzma_dict(WIA_COMPR_NONE, &[]).is_ok());
     }
 }

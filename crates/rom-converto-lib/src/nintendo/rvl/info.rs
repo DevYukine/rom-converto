@@ -10,11 +10,13 @@ use crate::nintendo::rvl::disc::{WiiPartitionEntry, read_partition_table};
 use crate::nintendo::rvl::fst::find_file;
 use crate::nintendo::rvl::models::banner_bin::{maybe_decompress_lz77_ascii, strip_imd5};
 use crate::nintendo::rvl::models::imet::ImetHeader;
+use crate::nintendo::rvl::models::imet::{IMET_NAMES_OFFSET, IMET_TOTAL_NAMES_BYTES};
 use crate::nintendo::rvl::models::tmd::WiiTmd;
 use crate::nintendo::rvl::models::u8_archive::U8Archive;
 use crate::nintendo::rvl::partition::read_partition_info;
 use crate::nintendo::rvl::partition_reader::PartitionPayloadReader;
 use crate::util::bytes::cstr_ascii;
+use crate::util::extent_end;
 use crate::util::pixel::{
     decode_cmpr_tiled, decode_i4_tiled, decode_rgb5a3_tiled, decode_rgba32_tiled, encode_png,
 };
@@ -81,7 +83,7 @@ pub fn read_info(path: &Path) -> Result<RvlInfo> {
         .with_context(|| format!("rvl info: stat {}", path.display()))?
         .len();
 
-    let mut reader = crate::nintendo::disc::input::open_disc_input(path)
+    let mut reader = crate::nintendo::disc::input::open_disc_input_with_lookahead(path, 1)
         .map_err(|e| anyhow!("rvl info: open input: {}", e))?;
     let container = reader.container_name().to_string();
 
@@ -225,14 +227,15 @@ fn try_read_data_partition_extras<R: Read + Seek>(
         .map_err(|e| anyhow!("read partition info: {}", e))?;
 
     let tmd_info = read_tmd_at(reader, data.offset).ok();
-
+    let payload_len = (info.data_size / crate::nintendo::rvl::constants::WII_SECTOR_SIZE as u64)
+        .checked_mul(crate::nintendo::rvl::constants::WII_SECTOR_PAYLOAD_SIZE as u64)
+        .ok_or_else(|| anyhow!("rvl info: partition payload size overflows"))?;
     let mut payload_reader = PartitionPayloadReader::new(&mut *reader, &info);
+    let bnr = read_opening_bnr(&mut payload_reader, payload_len).ok();
 
-    let bnr_bytes = read_opening_bnr(&mut payload_reader).ok();
-
-    let imet_names = bnr_bytes
-        .as_deref()
-        .and_then(|bnr| ImetHeader::parse(bnr).ok())
+    let imet_names = bnr
+        .as_ref()
+        .and_then(|bnr| ImetHeader::parse(&bnr.imet).ok())
         .map(|imet| {
             let entries = imet
                 .names
@@ -242,17 +245,197 @@ fn try_read_data_partition_extras<R: Read + Seek>(
             MultilingualString::from_pairs(entries)
         });
 
-    let image = bnr_bytes
-        .as_deref()
-        .and_then(|bnr| match extract_icon_image(bnr) {
+    let image = bnr.as_ref().and_then(|bnr| {
+        let payloads = bnr
+            .members
+            .iter()
+            .map(|(label, bytes)| (label.as_str(), bytes.as_slice()))
+            .collect::<Vec<_>>();
+        match extract_icon_payloads(&payloads) {
             Ok(img) => Some(img),
             Err(e) => {
                 log::warn!("rvl info: banner image extraction failed: {}", e);
                 None
             }
-        });
+        }
+    });
 
     Ok((tmd_info, imet_names, image))
+}
+
+struct OpeningBanner {
+    imet: Vec<u8>,
+    members: Vec<(String, Vec<u8>)>,
+}
+
+fn read_opening_bnr<R: Read + Seek>(reader: &mut R, payload_len: u64) -> Result<OpeningBanner> {
+    reader.seek(SeekFrom::Start(0))?;
+    let mut boot = [0u8; 0x440];
+    reader.read_exact(&mut boot)?;
+
+    let fst_offset_word = u32::from_be_bytes(boot[0x424..0x428].try_into()?) as u64;
+    let fst_size_word = u32::from_be_bytes(boot[0x428..0x42C].try_into()?) as u64;
+    let fst_offset = fst_offset_word << 2;
+    let fst_size = fst_size_word << 2;
+    if fst_offset == 0
+        || fst_size == 0
+        || fst_size > 0x100000
+        || extent_end(fst_offset, fst_size, payload_len).is_none()
+    {
+        return Err(anyhow!("rvl info: implausible FST geometry"));
+    }
+
+    reader.seek(SeekFrom::Start(fst_offset))?;
+    let mut fst_buf = vec![0u8; usize::try_from(fst_size)?];
+    reader.read_exact(&mut fst_buf)?;
+    let Some((bnr_off, bnr_size)) = find_file(&fst_buf, "opening.bnr")? else {
+        return Err(anyhow!("rvl info: opening.bnr not found in FST"));
+    };
+    if bnr_size == 0 || extent_end(bnr_off, bnr_size, payload_len).is_none() {
+        return Err(anyhow!(
+            "rvl info: opening.bnr extent {bnr_off:#x}+{bnr_size:#x} exceeds partition geometry"
+        ));
+    }
+    let imet_size = bnr_size.min((IMET_NAMES_OFFSET + IMET_TOTAL_NAMES_BYTES) as u64);
+    reader.seek(SeekFrom::Start(bnr_off))?;
+    let mut imet = vec![0; usize::try_from(imet_size)?];
+    reader.read_exact(&mut imet)?;
+
+    // IMET names stand on their own; a damaged U8 only costs the artwork.
+    let members = read_outer_u8_members(reader, bnr_off, bnr_size).unwrap_or_else(|e| {
+        log::warn!("rvl info: banner image extraction failed: {}", e);
+        Vec::new()
+    });
+    Ok(OpeningBanner { imet, members })
+}
+
+/// Reads only the outer U8 node/string tables plus the banner.bin and
+/// icon.bin payloads, so memory scales with the members used, not the
+/// whole opening.bnr.
+fn read_outer_u8_members<R: Read + Seek>(
+    reader: &mut R,
+    bnr_off: u64,
+    bnr_size: u64,
+) -> Result<Vec<(String, Vec<u8>)>> {
+    let u8_offset = locate_outer_u8(reader, bnr_off, bnr_size)?;
+    let remaining = bnr_size - u8_offset;
+    let u8_start = bnr_off + u8_offset;
+    reader.seek(SeekFrom::Start(u8_start))?;
+    let mut header = [0u8; 0x20];
+    reader.read_exact(&mut header)?;
+    let node_offset = u64::from(u32::from_be_bytes(header[4..8].try_into()?));
+    if extent_end(node_offset, 12, remaining).is_none() {
+        return Err(anyhow!("rvl info: outer U8 root node is out of range"));
+    }
+    reader.seek(SeekFrom::Start(u8_start + node_offset))?;
+    let mut root = [0u8; 12];
+    reader.read_exact(&mut root)?;
+    let node_bytes = u64::from(u32::from_be_bytes(root[8..12].try_into()?)) * 12;
+    let node_table_end = extent_end(node_offset, node_bytes, remaining)
+        .ok_or_else(|| anyhow!("rvl info: outer U8 node table is out of range"))?;
+    // Node table plus a fixed string-table allowance. The declared
+    // fst_size is untrusted and must not size the read.
+    let tables_len = node_table_end.saturating_add(1024 * 1024).min(remaining);
+    let mut tables = vec![0; usize::try_from(tables_len)?];
+    reader.seek(SeekFrom::Start(u8_start))?;
+    reader.read_exact(&mut tables)?;
+    let outer = U8Archive::parse(&tables)
+        .map_err(|e| anyhow!("parse outer U8 at offset 0x{:x}: {}", u8_offset, e))?;
+
+    let mut members = Vec::new();
+    for (label, exact, suffix) in [
+        ("banner.bin", "meta/banner.bin", "/banner.bin"),
+        ("icon.bin", "meta/icon.bin", "/icon.bin"),
+    ] {
+        // Same precedence as `U8Archive::find`: an exact match whose extent
+        // lies outside the banner is skipped in favour of the suffix match.
+        let in_banner = |&(start, size): &(usize, usize)| {
+            extent_end(start as u64, size as u64, remaining).is_some()
+        };
+        let suffix_lower = suffix.to_ascii_lowercase();
+        let Some((start, size)) = outer.locate(exact).filter(in_banner).or_else(|| {
+            outer
+                .list_extents()
+                .into_iter()
+                .map(|(path, start, size)| (path, (start, size)))
+                .find(|(path, extent)| {
+                    in_banner(extent) && path.to_ascii_lowercase().ends_with(&suffix_lower)
+                })
+                .map(|(_, extent)| extent)
+        }) else {
+            continue;
+        };
+        let (start, size) = (start as u64, size as u64);
+        let mut bytes = vec![0; usize::try_from(size)?];
+        reader.seek(SeekFrom::Start(u8_start + start))?;
+        reader.read_exact(&mut bytes)?;
+        members.push((label.to_string(), bytes));
+    }
+    Ok(members)
+}
+
+const U8_MAGIC_BYTES: [u8; 4] = [0x55, 0xAA, 0x38, 0x2D];
+
+/// Offset of the outer U8 archive inside opening.bnr. Tilka/wii-banner-player:
+/// disc opening.bnr puts the U8 at 0x600 (the IMET block is the leading
+/// 0x600 bytes including padding), NAND 00000000.app at 0x640; the IMET tag
+/// sits 0x40 into its block, so the U8 follows it by 0x5C0 on titles whose
+/// padding diverges; finally any 0x20-aligned magic counts.
+fn locate_outer_u8<R: Read + Seek>(reader: &mut R, bnr_off: u64, bnr_size: u64) -> Result<u64> {
+    for offset in [0x600u64, 0x640, 0x680, 0x500, 0x80, 0x40, 0] {
+        if offset + 4 <= bnr_size && read_u8_magic(reader, bnr_off + offset)? {
+            return Ok(offset);
+        }
+    }
+    if let Some(imet_at) = scan_banner(reader, bnr_off, bnr_size, 1, b"IMET")? {
+        let candidate = imet_at + 0x5C0;
+        if candidate + 4 <= bnr_size && read_u8_magic(reader, bnr_off + candidate)? {
+            return Ok(candidate);
+        }
+    }
+    scan_banner(reader, bnr_off, bnr_size, 0x20, &U8_MAGIC_BYTES)?
+        .ok_or_else(|| anyhow!("rvl info: U8 archive magic not found in opening.bnr"))
+}
+
+fn read_u8_magic<R: Read + Seek>(reader: &mut R, offset: u64) -> Result<bool> {
+    reader.seek(SeekFrom::Start(offset))?;
+    let mut magic = [0; 4];
+    reader.read_exact(&mut magic)?;
+    Ok(magic == U8_MAGIC_BYTES)
+}
+
+/// First `step`-aligned offset within the banner whose four bytes equal
+/// `needle`, scanning through a fixed 64 KiB window.
+fn scan_banner<R: Read + Seek>(
+    reader: &mut R,
+    bnr_off: u64,
+    bnr_size: u64,
+    step: u64,
+    needle: &[u8; 4],
+) -> Result<Option<u64>> {
+    const WINDOW: usize = 64 * 1024;
+    let mut buffer = vec![0u8; WINDOW];
+    let mut offset = 0u64;
+    let mut carried = 0usize;
+    while offset + (carried as u64) < bnr_size {
+        let count = ((bnr_size - offset - carried as u64).min((WINDOW - carried) as u64)) as usize;
+        reader.seek(SeekFrom::Start(bnr_off + offset + carried as u64))?;
+        reader.read_exact(&mut buffer[carried..carried + count])?;
+        let filled = carried + count;
+        let hit = buffer[..filled]
+            .windows(4)
+            .enumerate()
+            .find(|(i, window)| (offset + *i as u64).is_multiple_of(step) && *window == needle);
+        if let Some((i, _)) = hit {
+            return Ok(Some(offset + i as u64));
+        }
+        // Keep the last three bytes so a needle straddling windows is found.
+        let keep = filled.min(3);
+        buffer.copy_within(filled - keep..filled, 0);
+        offset += (filled - keep) as u64;
+        carried = keep;
+    }
+    Ok(None)
 }
 
 fn read_tmd_at<R: Read + Seek>(reader: &mut R, partition_offset: u64) -> Result<RvlTmdInfo> {
@@ -284,64 +467,7 @@ fn read_tmd_at<R: Read + Seek>(reader: &mut R, partition_offset: u64) -> Result<
     })
 }
 
-fn read_opening_bnr<R: Read + Seek>(reader: &mut R) -> Result<Vec<u8>> {
-    reader.seek(SeekFrom::Start(0))?;
-    let mut boot = [0u8; 0x440];
-    reader.read_exact(&mut boot)?;
-
-    let fst_offset_word = u32::from_be_bytes(boot[0x424..0x428].try_into()?) as u64;
-    let fst_size_word = u32::from_be_bytes(boot[0x428..0x42C].try_into()?) as u64;
-    let fst_offset = fst_offset_word << 2;
-    let fst_size = fst_size_word << 2;
-    if fst_offset == 0 || fst_size == 0 || fst_size > 0x100000 {
-        return Err(anyhow!("rvl info: implausible FST geometry"));
-    }
-
-    reader.seek(SeekFrom::Start(fst_offset))?;
-    let mut fst_buf = vec![0u8; fst_size as usize];
-    reader.read_exact(&mut fst_buf)?;
-
-    let Some((bnr_off, bnr_size)) = find_file(&fst_buf, "opening.bnr")? else {
-        return Err(anyhow!("rvl info: opening.bnr not found in FST"));
-    };
-
-    reader.seek(SeekFrom::Start(bnr_off))?;
-    let mut bnr = vec![0u8; bnr_size as usize];
-    reader.read_exact(&mut bnr)?;
-    Ok(bnr)
-}
-
-/// Pipeline reference: `Tilka/wii-banner-player/Source/Banner.cpp` +
-/// `rom-properties/src/librptexture/decoder/ImageDecoder_GCN.cpp`.
-///
-/// opening.bnr := [0x40 padding] [0x600 IMET] [outer U8 archive]
-/// outer U8 := /meta/banner.bin /meta/icon.bin /meta/sound.bin
-/// meta/banner.bin := optional "LZ77"-magic LZSS wrapper around an
-///                    inner U8 archive holding arc/blyt/*.brlyt,
-///                    arc/timg/*.tpl and arc/anim/*.brlan.
-///
-/// The layout is composed by [`banner::render_banner`]; banner.bin is tried
-/// first, then icon.bin, and only if neither layout renders does this fall
-/// back to picking a single texture with [`select_banner_tpl`].
-fn extract_icon_image(bnr: &[u8]) -> Result<Image> {
-    let u8_offset = locate_outer_u8(bnr)
-        .ok_or_else(|| anyhow!("rvl info: U8 archive magic not found in opening.bnr"))?;
-    log::debug!("rvl info: outer U8 archive at bnr offset 0x{:X}", u8_offset);
-    let outer = U8Archive::parse(&bnr[u8_offset..])
-        .map_err(|e| anyhow!("parse outer U8 at offset 0x{:x}: {}", u8_offset, e))?;
-
-    let mut raw_payloads: Vec<(&str, &[u8])> = Vec::new();
-    for (label, exact, suffix) in [
-        ("banner.bin", "meta/banner.bin", "/banner.bin"),
-        ("icon.bin", "meta/icon.bin", "/icon.bin"),
-    ] {
-        if let Some(raw) = outer
-            .find(exact)
-            .or_else(|| outer.find_path_ending_with(suffix))
-        {
-            raw_payloads.push((label, raw));
-        }
-    }
+fn extract_icon_payloads(raw_payloads: &[(&str, &[u8])]) -> Result<Image> {
     if raw_payloads.is_empty() {
         return Err(anyhow!(
             "rvl info: neither banner.bin nor icon.bin found in opening.bnr U8"
@@ -350,7 +476,7 @@ fn extract_icon_image(bnr: &[u8]) -> Result<Image> {
 
     // banner.bin is tried before icon.bin, decompressing each payload lazily
     // so a payload that never gets used is never decompressed.
-    for (label, raw) in &raw_payloads {
+    for &(label, raw) in raw_payloads {
         let payload = match unwrap_disc_banner_payload(raw) {
             Ok(payload) => payload,
             Err(e) => {
@@ -381,7 +507,7 @@ fn extract_icon_image(bnr: &[u8]) -> Result<Image> {
 
     // No layout rendered anything visible; fall back to picking a single
     // texture, trying every payload before giving up.
-    for (label, raw) in &raw_payloads {
+    for &(label, raw) in raw_payloads {
         let payload = match unwrap_disc_banner_payload(raw) {
             Ok(payload) => payload,
             Err(_) => continue,
@@ -450,34 +576,6 @@ fn is_decodable_tpl_format(format: u32) -> bool {
 fn unwrap_disc_banner_payload(bytes: &[u8]) -> Result<Vec<u8>> {
     let stripped = strip_imd5(bytes);
     maybe_decompress_lz77_ascii(stripped)
-}
-
-fn locate_outer_u8(bnr: &[u8]) -> Option<usize> {
-    const U8_MAGIC_BYTES: [u8; 4] = [0x55, 0xAA, 0x38, 0x2D];
-    // Tilka/wii-banner-player: disc opening.bnr puts the U8 at 0x600
-    // (the IMET block IS the leading 0x600 bytes including padding),
-    // NAND 00000000.app puts it at 0x640.
-    let probes = [0x600usize, 0x640, 0x680, 0x500, 0x80, 0x40, 0];
-    for off in probes {
-        if off + 4 <= bnr.len() && bnr[off..off + 4] == U8_MAGIC_BYTES {
-            return Some(off);
-        }
-    }
-    // IMET tag sits 0x40 into a 0x600 IMET block, so the U8 starts
-    // 0x5C0 bytes after the "IMET" magic on titles whose padding
-    // diverges from the canonical 0x40.
-    if let Some(imet_at) = bnr.windows(4).position(|w| w == b"IMET") {
-        let candidate = imet_at + 0x5C0;
-        if candidate + 4 <= bnr.len() && bnr[candidate..candidate + 4] == U8_MAGIC_BYTES {
-            return Some(candidate);
-        }
-    }
-    for (chunk_idx, chunk) in bnr.chunks(0x20).enumerate() {
-        if chunk.starts_with(&U8_MAGIC_BYTES) {
-            return Some(chunk_idx * 0x20);
-        }
-    }
-    None
 }
 
 struct TplImageHeader {
@@ -696,13 +794,23 @@ mod banner_tests {
         assert!(rgba.iter().all(|&b| b == 0xFF));
     }
 
+    fn extract_icon_image(bnr: &[u8]) -> Result<Image> {
+        let mut reader = std::io::Cursor::new(bnr);
+        let members = read_outer_u8_members(&mut reader, 0, bnr.len() as u64)?;
+        let payloads = members
+            .iter()
+            .map(|(label, bytes)| (label.as_str(), bytes.as_slice()))
+            .collect::<Vec<_>>();
+        extract_icon_payloads(&payloads)
+    }
+
     fn build_synthetic_opening_bnr() -> Vec<u8> {
         let (tpl, _) = build_test_tpl(192, 64);
         let inner_u8 = build_u8_archive(&[("arc/timg/banner.tpl", tpl)]);
         let outer_u8 = build_u8_archive(&[("meta/banner.bin", inner_u8)]);
 
         let mut bnr = vec![0u8; 0x640];
-        // Plant a fake "IMET" tag so locate_outer_u8's IMET fallback
+        // Plant a fake "IMET" tag so the IMET fallback
         // doesn't accidentally help us reach the right answer.
         bnr[0x40..0x44].copy_from_slice(b"IMET");
         bnr.extend_from_slice(&outer_u8);
@@ -717,6 +825,14 @@ mod banner_tests {
         assert_eq!(image.height, 64, "expected 64-tall banner");
         assert!(!image.png_bytes.is_empty(), "PNG bytes should be non-empty");
         assert_eq!(&image.png_bytes[..8], &[137, 80, 78, 71, 13, 10, 26, 10]);
+    }
+
+    #[test]
+    fn extracts_artwork_from_large_opening_bnr_without_reading_padding() {
+        let mut bnr = build_synthetic_opening_bnr();
+        bnr.resize(16 * 1024 * 1024 + 1, 0);
+        let image = extract_icon_image(&bnr).expect("large banner artwork must render");
+        assert_eq!((image.width, image.height), (192, 64));
     }
 
     fn build_synthetic_opening_bnr_multi_tpl() -> Vec<u8> {
@@ -742,12 +858,6 @@ mod banner_tests {
         let image = extract_icon_image(&bnr).expect("banner extraction must succeed");
         assert_eq!(image.width, 192, "must select the 192x64 banner texture");
         assert_eq!(image.height, 64, "must select the 192x64 banner texture");
-    }
-
-    #[test]
-    fn locates_u8_archive_at_0x640() {
-        let bnr = build_synthetic_opening_bnr();
-        assert_eq!(locate_outer_u8(&bnr), Some(0x640));
     }
 
     #[test]

@@ -95,23 +95,6 @@ pub fn list_files(fst: &[u8]) -> Result<Vec<FstNode>> {
     Ok(out)
 }
 
-/// Looks up `path` in the FST and returns its `(offset, size)` if it
-/// names a file.
-pub fn find_file(fst: &[u8], path: &str) -> Result<Option<(u64, u64)>> {
-    for node in list_files(fst)? {
-        if let FstNode::File {
-            path: p,
-            offset,
-            size,
-        } = node
-            && p == path
-        {
-            return Ok(Some((offset, size)));
-        }
-    }
-    Ok(None)
-}
-
 fn read_u32_be(buf: &[u8], offset: usize) -> Result<u32> {
     if offset + 4 > buf.len() {
         return Err(anyhow!("FST read out of bounds at {offset}"));
@@ -195,20 +178,5 @@ mod tests {
             }
             _ => panic!("expected nested file"),
         }
-    }
-
-    #[test]
-    fn finds_file_by_path() {
-        let fst = build_fst();
-        let found = find_file(&fst, "opening.bnr").unwrap();
-        assert_eq!(found, Some((0x40000, 0x1840)));
-        let nested = find_file(&fst, "sub/nested").unwrap();
-        assert_eq!(nested, Some((0x50000, 0x100)));
-    }
-
-    #[test]
-    fn missing_file_returns_none() {
-        let fst = build_fst();
-        assert!(find_file(&fst, "nope").unwrap().is_none());
     }
 }

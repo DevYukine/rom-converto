@@ -8,6 +8,7 @@ use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
 
 use binrw::BinRead;
+
 use flate2::{Decompress, FlushDecompress, Status};
 
 use super::error::{GczError, GczResult};
@@ -107,6 +108,7 @@ pub(crate) struct GczLayout {
     ptrs: Vec<u64>,
     hashes: Vec<u32>,
     data_base: u64,
+    file_len: u64,
 }
 
 impl GczLayout {
@@ -114,34 +116,57 @@ impl GczLayout {
         inner.seek(SeekFrom::Start(0))?;
         let header = GczHeader::read(inner)?;
         header.validate()?;
-
+        let file_len = inner.seek(SeekFrom::End(0))?;
         let nb = header.num_blocks as usize;
-        let mut table = vec![0u8; nb * 12];
-        inner.read_exact(&mut table)?;
-        let (ptr_bytes, hash_bytes) = table.split_at(nb * 8);
-        let ptrs: Vec<u64> = ptr_bytes
-            .as_chunks::<8>()
-            .0
-            .iter()
-            .map(|c| u64::from_le_bytes(*c))
-            .collect();
-        let hashes: Vec<u32> = hash_bytes
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|c| u32::from_le_bytes(*c))
-            .collect();
-
+        let table_len = (nb as u64)
+            .checked_mul(12)
+            .ok_or_else(|| GczError::InvalidHeader("block table size overflows".into()))?;
+        let data_base = GCZ_HEADER_SIZE
+            .checked_add(table_len)
+            .ok_or_else(|| GczError::InvalidHeader("block table extent overflows".into()))?;
+        if data_base > file_len {
+            return Err(GczError::InvalidHeader(format!(
+                "block tables end at {data_base:#x}, past file size {file_len:#x}"
+            )));
+        }
+        inner.seek(SeekFrom::Start(GCZ_HEADER_SIZE))?;
+        let mut table_buf = [0u8; 64 * 1024];
+        let mut ptrs = Vec::with_capacity(nb);
+        let mut remaining = nb;
+        while remaining > 0 {
+            let count = remaining.min(table_buf.len() / 8);
+            let bytes = count * 8;
+            inner.read_exact(&mut table_buf[..bytes])?;
+            ptrs.extend(
+                table_buf[..bytes]
+                    .chunks_exact(8)
+                    .map(|c| u64::from_le_bytes(c.try_into().expect("8-byte table chunk"))),
+            );
+            remaining -= count;
+        }
+        let mut hashes = Vec::with_capacity(nb);
+        remaining = nb;
+        while remaining > 0 {
+            let count = remaining.min(table_buf.len() / 4);
+            let bytes = count * 4;
+            inner.read_exact(&mut table_buf[..bytes])?;
+            hashes.extend(
+                table_buf[..bytes]
+                    .chunks_exact(4)
+                    .map(|c| u32::from_le_bytes(c.try_into().expect("4-byte table chunk"))),
+            );
+            remaining -= count;
+        }
         Ok(Self {
             header,
             ptrs,
             hashes,
-            data_base: GCZ_HEADER_SIZE + nb as u64 * 12,
+            data_base,
+            file_len,
         })
     }
 
-    /// Absolute file offset, stored length, and compression flag of
-    /// block `i`.
+    /// Absolute file offset, stored length, and compression flag of block `i`.
     pub(crate) fn stored_extent(&self, i: u64) -> GczResult<(u64, u32, bool)> {
         let ptr = self.ptrs[i as usize];
         let compressed = ptr & GCZ_UNCOMPRESSED_FLAG == 0;
@@ -155,6 +180,11 @@ impl GczLayout {
                 "block {i} pointer table is inconsistent ({start:#x}..{end:#x})"
             )));
         }
+        if self.data_base.saturating_add(end) > self.file_len {
+            return Err(GczError::InvalidHeader(format!(
+                "block {i} extent ends at {end:#x}, past end of file"
+            )));
+        }
         Ok((self.data_base + start, (end - start) as u32, compressed))
     }
 
@@ -162,7 +192,6 @@ impl GczLayout {
         self.hashes[i as usize]
     }
 
-    /// Logical size served by block `i`.
     pub(crate) fn out_size(&self, i: u64) -> u32 {
         let off = i * self.header.block_size as u64;
         (self.header.data_size - off).min(self.header.block_size as u64) as u32
@@ -208,22 +237,27 @@ pub struct GczReader {
 impl GczReader {
     /// Opens the GCZ file at `path`.
     pub fn open(path: &Path) -> GczResult<Self> {
-        Self::from_source(File::open(path)?)
+        Self::open_with_lookahead(path, usize::MAX)
     }
 
-    /// Build a reader over any seekable source, allowing layered
-    /// containers (an NKit stream inside a GCZ wrapper).
-    pub fn from_source<S: Read + Seek + Send + 'static>(mut inner: S) -> GczResult<Self> {
+    pub fn open_with_lookahead(path: &Path, lookahead: usize) -> GczResult<Self> {
+        Self::from_source_with_lookahead(File::open(path)?, lookahead)
+    }
+
+    pub fn from_source_with_lookahead<S: Read + Seek + Send + 'static>(
+        mut inner: S,
+        lookahead: usize,
+    ) -> GczResult<Self> {
         let layout = GczLayout::parse(&mut inner)?;
         let header = layout.header;
         let spans = layout.spans();
         let cap = in_flight_cap(header.block_size as u64);
-        let workers: Vec<GczBlockWorker> = (0..parallelism().min(cap.max(2)))
+        let workers: Vec<GczBlockWorker> = (0..parallelism().min(cap.max(2)).min(lookahead.max(2)))
             .map(|_| GczBlockWorker::new())
             .collect();
         let produce: ProduceFn = Box::new(move |i| layout.read_work(&mut inner, i));
         Ok(Self {
-            pipeline: PipelinedGroupReader::new(workers, spans, cap, produce),
+            pipeline: PipelinedGroupReader::with_lookahead(workers, spans, cap, lookahead, produce),
             header,
         })
     }

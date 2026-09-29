@@ -40,10 +40,15 @@ use crate::nintendo::rvl::partition::{
     ChunkSectorPos, HASH_REGION_BYTES, HashException, apply_hash_exceptions,
     parse_exception_header, recompute_hash_regions_into, reencrypt_cluster_into,
 };
+use crate::util::positional_reader::PositionalReader;
 use crate::util::pread::file_read_exact_at;
-use crate::util::worker_pool::{Pool, Worker, drive, parallelism};
+use crate::util::worker_pool::{Admission, Budget, Pool, Worker, drive, parallelism};
+use std::io::{BufReader, Read};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Serialized size of one hash exception: u16 offset plus a 20-byte hash.
+const EXCEPTION_ENTRY_SIZE: usize = 22;
 
 /// Per-chunk spec inside a partition-cluster work item. The
 /// dispatcher precomputes the sector math (first_sector,
@@ -59,6 +64,25 @@ pub(crate) struct PartitionChunkSpec {
     chunk_n_sectors: usize,
     chunk_data_offset_pay: u64,
     expected_payload_len: usize,
+}
+
+impl PartitionChunkSpec {
+    /// Maximum decoded size for a non-packed group: the payload plus
+    /// one exception list at its u16 maximum and alignment padding.
+    fn decoded_bound(&self) -> usize {
+        // Each chunk is bucketed within one cluster, so it has one exception list.
+        let exception_bytes = 2 + usize::from(u16::MAX) * EXCEPTION_ENTRY_SIZE + 3;
+        self.expected_payload_len + exception_bytes
+    }
+
+    fn stored_bound(&self) -> usize {
+        let decoded = self.decoded_bound();
+        if self.is_compressed {
+            zstd::zstd_safe::compress_bound(decoded)
+        } else {
+            decoded
+        }
+    }
 }
 
 /// One partition cluster of work: every chunk that falls inside
@@ -97,6 +121,7 @@ pub(crate) struct PartitionDecompressWorker {
     file: Arc<std::fs::File>,
     scratch_in: Vec<u8>,
     scratch_decomp: Vec<u8>,
+    scratch_packed: Vec<u8>,
     // `Vec<[u8; 0x7C00]>` rather than `Box<[[u8; 0x7C00]; 64]>`
     // because the stack-initialize-then-box-move path blows the
     // default worker stack on the 2 MiB array copy. The `Vec` is
@@ -137,43 +162,148 @@ impl Worker<PartitionDecompressWork, PartitionDecompressOut, RvzError>
             Vec::with_capacity(work.chunks.len());
 
         for spec in &work.chunks {
-            self.scratch_in.resize(spec.data_size as usize, 0);
-            file_read_exact_at(&self.file, &mut self.scratch_in, spec.data_off)?;
+            let target = spec.decoded_bound();
+            if self.scratch_decomp.len() < target {
+                self.scratch_decomp.resize(target, 0);
+            }
+            if spec.rvz_packed_size != 0 {
+                let max_stored = spec.stored_bound();
+                // The packed scratch must hold the whole zstd frame: the
+                // exception-list prefix plus the packed records. Two
+                // payloads of record headroom keeps the common chunk on
+                // the bulk path (a fully plain chunk packs to payload +
+                // 4) while anything larger streams without truncating.
+                let exception_bytes_max = 2 + usize::from(u16::MAX) * EXCEPTION_ENTRY_SIZE + 3;
+                let packed_target = spec
+                    .decoded_bound()
+                    .max(spec.rvz_packed_size as usize + exception_bytes_max);
+                let (chunk_exceptions, decoded_len) = if spec.data_size as usize <= max_stored
+                    && spec.rvz_packed_size as usize <= 2 * spec.expected_payload_len
+                {
+                    self.scratch_in.resize(spec.data_size as usize, 0);
+                    file_read_exact_at(&self.file, &mut self.scratch_in, spec.data_off)?;
+                    // Stored frames decode straight from scratch_in; only
+                    // zstd frames need the scratch_packed staging pass.
+                    let packed: &[u8] = if spec.is_compressed {
+                        if self.scratch_packed.len() < packed_target {
+                            self.scratch_packed.resize(packed_target, 0);
+                        }
+                        let packed_len = self.decompressor.decompress_to_buffer(
+                            &self.scratch_in,
+                            &mut self.scratch_packed[..packed_target],
+                        )?;
+                        &self.scratch_packed[..packed_len]
+                    } else {
+                        &self.scratch_in
+                    };
+                    decode_packed_partition_group(
+                        &mut std::io::Cursor::new(packed),
+                        spec,
+                        &mut self.scratch_decomp[..spec.expected_payload_len],
+                    )?
+                } else {
+                    let stored =
+                        PositionalReader::new(&*self.file, spec.data_off, spec.data_size as u64);
+                    if spec.is_compressed {
+                        let mut stream = zstd::stream::read::Decoder::new(stored)?;
+                        decode_packed_partition_group(
+                            &mut stream,
+                            spec,
+                            &mut self.scratch_decomp[..spec.expected_payload_len],
+                        )?
+                    } else {
+                        let mut stream = BufReader::with_capacity(64 * 1024, stored);
+                        decode_packed_partition_group(
+                            &mut stream,
+                            spec,
+                            &mut self.scratch_decomp[..spec.expected_payload_len],
+                        )?
+                    }
+                };
+                // Like the bulk path, the payload only has to be complete.
+                if decoded_len < spec.expected_payload_len {
+                    return Err(RvzError::DecompressedSizeMismatch {
+                        expected: spec.expected_payload_len as u64,
+                        actual: decoded_len as u64,
+                    });
+                }
 
-            let decompressed_len: usize = if spec.is_compressed {
-                let target = WII_GROUP_TOTAL_SIZE as usize + 1024 * 1024;
-                if self.scratch_decomp.len() < target {
-                    self.scratch_decomp.resize(target, 0);
+                for b in 0..spec.chunk_n_sectors {
+                    let block_idx = spec.first_sector_in_chunk + b;
+                    self.payloads[block_idx].copy_from_slice(
+                        &self.scratch_decomp
+                            [b * WII_SECTOR_PAYLOAD_SIZE..(b + 1) * WII_SECTOR_PAYLOAD_SIZE],
+                    );
                 }
-                self.decompressor
-                    .decompress_to_buffer(&self.scratch_in, &mut self.scratch_decomp)?
+                deferred.push((
+                    spec.first_sector_in_chunk,
+                    spec.first_sector_in_chunk + spec.chunk_n_sectors,
+                    chunk_exceptions,
+                ));
+                continue;
+            }
+            let decoded_len = if spec.data_size as usize > spec.stored_bound() {
+                // Stored size beyond the codec bound: decode straight from the
+                // file into the bounded scratch instead of buffering the input.
+                let bound = spec.decoded_bound();
+                let stored =
+                    PositionalReader::new(&*self.file, spec.data_off, u64::from(spec.data_size));
+                if !spec.is_compressed {
+                    // Bulk path tolerates trailing bytes in plain groups.
+                    file_read_exact_at(
+                        &self.file,
+                        &mut self.scratch_decomp[..bound],
+                        spec.data_off,
+                    )?;
+                    bound
+                } else {
+                    let mut source = zstd::stream::read::Decoder::new(stored)?;
+                    let mut decoded_len = 0;
+                    loop {
+                        let count = source.read(&mut self.scratch_decomp[decoded_len..bound])?;
+                        if count == 0 {
+                            break;
+                        }
+                        decoded_len += count;
+                        if decoded_len == bound {
+                            let mut extra = [0u8; 1];
+                            let count = source.read(&mut extra)?;
+                            if count != 0 {
+                                return Err(RvzError::DecompressedSizeMismatch {
+                                    expected: bound as u64,
+                                    actual: decoded_len as u64 + count as u64,
+                                });
+                            }
+                            break;
+                        }
+                    }
+                    decoded_len
+                }
             } else {
-                if self.scratch_decomp.len() < self.scratch_in.len() {
-                    self.scratch_decomp.resize(self.scratch_in.len(), 0);
+                self.scratch_in.resize(spec.data_size as usize, 0);
+                file_read_exact_at(&self.file, &mut self.scratch_in, spec.data_off)?;
+                if spec.is_compressed {
+                    self.decompressor
+                        .decompress_to_buffer(&self.scratch_in, &mut self.scratch_decomp)?
+                } else {
+                    if self.scratch_decomp.len() < self.scratch_in.len() {
+                        self.scratch_decomp.resize(self.scratch_in.len(), 0);
+                    }
+                    self.scratch_decomp[..self.scratch_in.len()].copy_from_slice(&self.scratch_in);
+                    self.scratch_in.len()
                 }
-                self.scratch_decomp[..self.scratch_in.len()].copy_from_slice(&self.scratch_in);
-                self.scratch_in.len()
             };
 
             // Raw chunks have a 4-byte alignment pad after the exception entries;
             // see `pad_exception_lists` in Dolphin's `WIABlob.cpp`.
-            let decompressed = &self.scratch_decomp[..decompressed_len];
+            let decompressed = &self.scratch_decomp[..decoded_len];
             let (chunk_exceptions_ref, payload_region) =
                 parse_exception_header(decompressed, !spec.is_compressed)?;
             let chunk_exceptions: Vec<HashException> = chunk_exceptions_ref.iter().collect();
+            let take = spec.expected_payload_len.min(payload_region.len());
+            let unpacked: Vec<u8> = payload_region[..take].to_vec();
 
-            let unpacked: Vec<u8> = if spec.rvz_packed_size != 0 {
-                let records_len = (spec.rvz_packed_size as usize).min(payload_region.len());
-                crate::nintendo::disc::rvz::packing::pack_decode(
-                    &payload_region[..records_len],
-                    spec.chunk_data_offset_pay,
-                )?
-            } else {
-                let take = spec.expected_payload_len.min(payload_region.len());
-                payload_region[..take].to_vec()
-            };
-
-            if unpacked.len() < spec.expected_payload_len {
+            if unpacked.len() != spec.expected_payload_len {
                 return Err(RvzError::DecompressedSizeMismatch {
                     expected: spec.expected_payload_len as u64,
                     actual: unpacked.len() as u64,
@@ -224,6 +354,60 @@ impl Worker<PartitionDecompressWork, PartitionDecompressOut, RvzError>
     }
 }
 
+fn decode_packed_partition_group<R: Read>(
+    reader: &mut R,
+    spec: &PartitionChunkSpec,
+    output: &mut [u8],
+) -> RvzResult<(Vec<HashException>, usize)> {
+    // Chunks are bucketed per cluster, so each has exactly one exception list.
+    let mut count_bytes = [0; 2];
+    reader.read_exact(&mut count_bytes).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::UnexpectedEof {
+            RvzError::Custom("truncated partition chunk header".into())
+        } else {
+            error.into()
+        }
+    })?;
+    let count = u16::from_be_bytes(count_bytes) as usize;
+
+    let mut exceptions = Vec::new();
+    for _ in 0..count {
+        let mut entry = [0; EXCEPTION_ENTRY_SIZE];
+        reader.read_exact(&mut entry).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::UnexpectedEof {
+                RvzError::Custom("truncated exception list".into())
+            } else {
+                error.into()
+            }
+        })?;
+        exceptions.push(HashException {
+            offset: u16::from_be_bytes([entry[0], entry[1]]),
+            hash: entry[2..].try_into().expect("exception hash is 20 bytes"),
+        });
+    }
+    let exception_area = 2 + count * EXCEPTION_ENTRY_SIZE;
+
+    if !spec.is_compressed {
+        let padding = (4 - exception_area % 4) % 4;
+        let mut pad = [0; 3];
+        reader.read_exact(&mut pad[..padding]).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::UnexpectedEof {
+                RvzError::Custom("truncated exception list".into())
+            } else {
+                error.into()
+            }
+        })?;
+    }
+
+    let mut records = reader.take(spec.rvz_packed_size as u64);
+    let (decoded_len, _) = crate::nintendo::disc::rvz::packing::pack_decode_reader(
+        &mut records,
+        spec.chunk_data_offset_pay,
+        output,
+    )?;
+    Ok((exceptions, decoded_len))
+}
+
 fn make_partition_decompress_workers(
     n_threads: usize,
     file: &Arc<std::fs::File>,
@@ -242,6 +426,7 @@ pub(crate) fn make_one_partition_worker(
         file: Arc::clone(file),
         scratch_in: Vec::new(),
         scratch_decomp: Vec::new(),
+        scratch_packed: Vec::new(),
         payloads: vec![[0u8; WII_SECTOR_PAYLOAD_SIZE]; WII_BLOCKS_PER_GROUP],
         hash_regions: vec![[0u8; HASH_REGION_BYTES]; WII_BLOCKS_PER_GROUP],
         cluster_out: vec![0u8; WII_GROUP_TOTAL_SIZE as usize],
@@ -286,12 +471,15 @@ pub(crate) fn build_partition_work_items(
     groups: &[RvzGroup],
     chunk_size_u64: u64,
     filter: Option<&UsageFilter>,
-) -> Vec<PartitionDecompressWork> {
+) -> RvzResult<Vec<PartitionDecompressWork>> {
     let pd0 = part.pd[0];
     let pd1 = part.pd[1];
-    let total_n_groups = pd0.n_groups + pd1.n_groups;
+    let total_n_groups = pd0
+        .n_groups
+        .checked_add(pd1.n_groups)
+        .ok_or_else(|| RvzError::Custom("partition group count overflows".into()))?;
     if total_n_groups == 0 {
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
     let data_start = pd0.first_sector as u64 * WII_SECTOR_SIZE_U64;
@@ -305,7 +493,9 @@ pub(crate) fn build_partition_work_items(
     let mut enc_pos: u64 = 0;
 
     for group_cursor in group_index_start..group_index_end {
-        let group = &groups[group_cursor as usize];
+        let Some(group) = groups.get(group_cursor as usize) else {
+            return Err(RvzError::Custom("group index past table".into()));
+        };
 
         let remaining_in_partition = total_data_size - enc_pos;
         let this_chunk_enc_bytes = chunk_size_u64.min(remaining_in_partition);
@@ -354,7 +544,7 @@ pub(crate) fn build_partition_work_items(
         );
     }
 
-    work_items
+    Ok(work_items)
 }
 
 /// Sectors the partition's declared `data_size` occupies in the
@@ -385,16 +575,54 @@ pub(super) fn decompress_partition(
     sink: &mut dyn DiscSink,
     bytes_done: &Arc<AtomicU64>,
 ) -> RvzResult<()> {
-    let work_items = build_partition_work_items(part, groups, chunk_size_u64, usage);
+    let work_items = build_partition_work_items(part, groups, chunk_size_u64, usage)?;
     if work_items.is_empty() {
         return Ok(());
     }
 
-    let n_threads = parallelism();
+    let largest_specs = work_items
+        .iter()
+        .map(|item| item.chunks.len())
+        .max()
+        .unwrap_or(0);
+    let largest_decoded_bound = work_items
+        .iter()
+        .flat_map(|item| item.chunks.iter())
+        .map(PartitionChunkSpec::decoded_bound)
+        .max()
+        .unwrap_or(0);
+    let largest_expected_payload = work_items
+        .iter()
+        .flat_map(|item| item.chunks.iter())
+        .map(|chunk| chunk.expected_payload_len)
+        .max()
+        .unwrap_or(0);
+    // Scratch per worker: the decomposed-chunk scratch plus the packed
+    // frame scratch (both bounded by decoded_bound), headroom for the
+    // largest plain payload, then the fixed cluster buffers and the
+    // decompressor context.
+    let codec_bytes = largest_decoded_bound
+        .saturating_mul(2)
+        .saturating_add(largest_expected_payload)
+        .saturating_add(WII_BLOCKS_PER_GROUP * WII_SECTOR_PAYLOAD_SIZE)
+        .saturating_add(WII_BLOCKS_PER_GROUP * HASH_REGION_BYTES)
+        .saturating_add(WII_GROUP_TOTAL_SIZE as usize)
+        .saturating_add(crate::util::worker_pool::zstd_dctx_estimate());
+    let queued_bytes = (WII_GROUP_TOTAL_SIZE as usize)
+        .saturating_add(largest_specs.saturating_mul(std::mem::size_of::<PartitionChunkSpec>()));
+    let admission = Budget {
+        codec_per_worker: codec_bytes,
+        per_job: queued_bytes,
+        writer_slot: 0,
+        fixed: 0,
+    }
+    .admit(parallelism(), work_items.len() as u64)
+    .unwrap_or(Admission::DEGRADED);
+    let n_threads = admission.workers;
     let workers = make_partition_decompress_workers(n_threads, file)?;
     let pool: Pool<PartitionDecompressWork, PartitionDecompressOut, RvzError> =
         Pool::spawn(workers);
-    let max_in_flight = n_threads * 2;
+    let max_in_flight = admission.max_in_flight;
 
     let total = work_items.len() as u64;
     let mut items_iter = work_items.into_iter();
@@ -420,4 +648,197 @@ pub(super) fn decompress_partition(
 
     pool.shutdown();
     result
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    fn packed_records() -> (Vec<u8>, Vec<u8>) {
+        let mut records = Vec::new();
+        records.extend_from_slice(&3u32.to_be_bytes());
+        records.extend_from_slice(b"abc");
+        records.extend_from_slice(&(0x8000_0004u32).to_be_bytes());
+        records.extend_from_slice(&[0x11; 68]);
+
+        let mut decoded = [0; 7];
+        let (decoded_len, input_len) = crate::nintendo::disc::rvz::packing::pack_decode_reader(
+            &mut Cursor::new(&records),
+            0,
+            &mut decoded,
+        )
+        .unwrap();
+        assert_eq!(decoded_len, decoded.len());
+        assert_eq!(input_len, records.len());
+        (records, decoded.to_vec())
+    }
+
+    fn append_exception(input: &mut Vec<u8>, offset: u16, hash: [u8; 20]) {
+        input.extend_from_slice(&offset.to_be_bytes());
+        input.extend_from_slice(&hash);
+    }
+
+    #[test]
+    fn packed_group_streams_exceptions_and_records() {
+        let (records, expected_payload) = packed_records();
+        let expected_exception = HashException {
+            offset: 0x1234,
+            hash: [0x56; 20],
+        };
+        for is_compressed in [false, true] {
+            let mut input = Vec::new();
+            input.extend_from_slice(&1u16.to_be_bytes());
+            append_exception(
+                &mut input,
+                expected_exception.offset,
+                expected_exception.hash,
+            );
+            input.extend_from_slice(&records);
+            let spec = PartitionChunkSpec {
+                data_off: 0,
+                data_size: input.len() as u32,
+                is_compressed,
+                rvz_packed_size: records.len() as u32,
+                first_sector_in_chunk: 0,
+                chunk_n_sectors: 1,
+                chunk_data_offset_pay: 0,
+                expected_payload_len: expected_payload.len(),
+            };
+            let mut payload = [0; 7];
+            let (exceptions, decoded_len) =
+                decode_packed_partition_group(&mut Cursor::new(input), &spec, &mut payload)
+                    .unwrap();
+
+            assert_eq!(&payload, expected_payload.as_slice());
+            assert_eq!(decoded_len, expected_payload.len());
+            assert_eq!(exceptions, vec![expected_exception]);
+        }
+    }
+
+    #[test]
+    fn packed_group_aligns_single_exception_list() {
+        let (records, expected_payload) = packed_records();
+        let mut input = vec![0, 0, 0, 0];
+        input.extend_from_slice(&records);
+        let spec = PartitionChunkSpec {
+            data_off: 0,
+            data_size: input.len() as u32,
+            is_compressed: false,
+            rvz_packed_size: records.len() as u32,
+            first_sector_in_chunk: 0,
+            chunk_n_sectors: 1,
+            chunk_data_offset_pay: 0,
+            expected_payload_len: expected_payload.len(),
+        };
+        let mut payload = [0; 7];
+        let (exceptions, decoded_len) =
+            decode_packed_partition_group(&mut Cursor::new(input), &spec, &mut payload).unwrap();
+
+        assert!(exceptions.is_empty());
+        assert_eq!(&payload, expected_payload.as_slice());
+        assert_eq!(decoded_len, expected_payload.len());
+    }
+    #[test]
+    fn packed_group_rejects_truncated_exception_entry() {
+        let spec = PartitionChunkSpec {
+            data_off: 0,
+            data_size: 2,
+            is_compressed: true,
+            rvz_packed_size: 0,
+            first_sector_in_chunk: 0,
+            chunk_n_sectors: 1,
+            chunk_data_offset_pay: 0,
+            expected_payload_len: 0,
+        };
+        assert!(matches!(
+            decode_packed_partition_group(&mut Cursor::new([0, 1]), &spec, &mut []),
+            Err(RvzError::Custom(message)) if message == "truncated exception list"
+        ));
+    }
+
+    /// Oversized stored groups are read through the bounded streaming
+    /// path instead of sizing the input buffer from the declaration.
+    #[test]
+    fn non_packed_group_streams_oversized_stored_size_with_bounded_memory() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sparse.rvz");
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(1 << 30).unwrap();
+        let file = Arc::new(std::fs::File::open(&path).unwrap());
+        let mut worker = make_one_partition_worker(&file).unwrap();
+
+        let spec = PartitionChunkSpec {
+            data_off: 0,
+            data_size: 1 << 30,
+            is_compressed: false,
+            rvz_packed_size: 0,
+            first_sector_in_chunk: 0,
+            chunk_n_sectors: WII_BLOCKS_PER_GROUP,
+            chunk_data_offset_pay: 0,
+            expected_payload_len: WII_BLOCKS_PER_GROUP * WII_SECTOR_PAYLOAD_SIZE,
+        };
+        assert!(spec.stored_bound() < (1 << 30));
+        let result = worker.process(PartitionDecompressWork {
+            cluster_idx: 0,
+            data_start: 0,
+            part_key: [0; 16],
+            valid_blocks_in_cluster: WII_BLOCKS_PER_GROUP,
+            chunks: vec![spec],
+        });
+        // Plain groups tolerate trailing stored bytes, exactly like the
+        // bulk path; the declaration must not size any buffer.
+        assert!(result.is_ok());
+        assert!(worker.scratch_in.capacity() < (1 << 30));
+    }
+
+    /// A1 regression: a packed stream whose size exceeds `decoded_bound`
+    /// used to be truncated into the bulk scratch and then rejected as a
+    /// truncated record walk; it must take the streaming branch and decode.
+    #[test]
+    fn packed_group_above_decoded_bound_streams_instead_of_erroring() {
+        let mut records = Vec::new();
+        let payload = [0x5Cu8; 1000];
+        let bound = WII_SECTOR_PAYLOAD_SIZE + 2 + u16::MAX as usize * EXCEPTION_ENTRY_SIZE + 3;
+        while records.len() <= bound {
+            records.extend_from_slice(&1000u32.to_be_bytes());
+            records.extend_from_slice(&payload);
+        }
+        let mut stored = Vec::new();
+        stored.extend_from_slice(&0u16.to_be_bytes());
+        stored.extend_from_slice(&records);
+        let compressed = zstd::bulk::compress(&stored, 0).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("packed-over-bound.rvz");
+        std::fs::write(&path, &compressed).unwrap();
+        let file = Arc::new(std::fs::File::open(&path).unwrap());
+        let mut worker = make_one_partition_worker(&file).unwrap();
+
+        let spec = PartitionChunkSpec {
+            data_off: 0,
+            data_size: compressed.len() as u32,
+            is_compressed: true,
+            rvz_packed_size: records.len() as u32,
+            first_sector_in_chunk: 0,
+            chunk_n_sectors: 1,
+            chunk_data_offset_pay: 0,
+            expected_payload_len: WII_SECTOR_PAYLOAD_SIZE,
+        };
+        assert!(spec.data_size as usize <= spec.stored_bound());
+        assert!(spec.rvz_packed_size as usize > spec.decoded_bound());
+
+        let out = worker
+            .process(PartitionDecompressWork {
+                cluster_idx: 0,
+                data_start: 0,
+                part_key: [0; 16],
+                valid_blocks_in_cluster: 1,
+                chunks: vec![spec],
+            })
+            .unwrap();
+        // The cluster decoded (the walk was not truncated), and the bulk
+        // packed scratch was never grown, proving the streaming branch ran.
+        assert_eq!(out.bytes_to_write, WII_SECTOR_SIZE);
+        assert!(worker.scratch_packed.is_empty());
+    }
 }

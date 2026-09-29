@@ -79,12 +79,62 @@ impl WiaCodec {
         }
     }
 
-    /// Decode a metadata table (raw-data or group table): same codec,
-    /// no exception framing.
-    pub(crate) fn decode_table(&mut self, stored: &[u8], expected: usize) -> WiaResult<Vec<u8>> {
-        let (_, payload) = self.decode_group(stored, 0, expected)?;
-        Ok(payload)
+    /// Decode a metadata table directly from its bounded file range.
+    ///
+    /// `expected` comes from untrusted row counts, so both the initial
+    /// reservation and any zero padding are capped by what the
+    /// validated `stored_size` extent can honestly expand to; the
+    /// buffer grows as bytes actually decode.
+    pub(crate) fn decode_table_reader<R: std::io::Read>(
+        &mut self,
+        reader: R,
+        stored_size: u64,
+        expected: usize,
+    ) -> WiaResult<Vec<u8>> {
+        use std::io::Read;
+        let bound = table_extent_bound(stored_size, expected);
+        let mut out = match self {
+            Self::None => {
+                let mut out = Vec::with_capacity(bound);
+                reader.take(expected as u64).read_to_end(&mut out)?;
+                out
+            }
+            Self::Purge => purge_decode_reader(reader, &[], stored_size, bound)?,
+            Self::Bzip2 => {
+                let mut out = Vec::with_capacity(bound);
+                bzip2::read::BzDecoder::new(reader)
+                    .take(expected as u64)
+                    .read_to_end(&mut out)?;
+                out
+            }
+            Self::Lzma(dec) => dec.decode_reader(reader, expected)?,
+            Self::Lzma2(dec) => dec.decode_reader(reader, expected)?,
+        };
+        if out.len() < expected {
+            // Writers may trim trailing zero rows. Only pad while the
+            // table stays within the extent bound, so a hostile row
+            // count cannot grow the buffer past what it stored.
+            let pad_to = expected.min(bound.max(out.len()));
+            out.resize(pad_to, 0);
+        }
+        Ok(out)
     }
+}
+
+/// Assumed worst-case expansion of a metadata table relative to its
+/// validated stored extent; also the floor for tiny tables.
+const TABLE_MIN_EXPANSION: u64 = 1024;
+const MIN_TABLE_BOUND: u64 = 64 * 1024;
+
+fn table_extent_bound(stored_size: u64, expected: usize) -> usize {
+    expected.min(
+        usize::try_from(
+            stored_size
+                .saturating_mul(TABLE_MIN_EXPANSION)
+                .max(MIN_TABLE_BOUND),
+        )
+        .unwrap_or(usize::MAX),
+    )
 }
 
 fn zero_extend(payload: &mut Vec<u8>, expected: usize) {
@@ -148,46 +198,66 @@ fn parse_exception_lists(
 /// runs over a zero base, with a trailing SHA-1 over the exception
 /// list bytes plus all segment structs.
 fn purge_decode(stream: &[u8], exception_bytes: &[u8], out_len: usize) -> WiaResult<Vec<u8>> {
-    if stream.len() < 20 {
+    purge_decode_reader(
+        std::io::Cursor::new(stream),
+        exception_bytes,
+        stream.len() as u64,
+        out_len,
+    )
+}
+
+fn purge_decode_reader<R: std::io::Read>(
+    mut reader: R,
+    exception_bytes: &[u8],
+    stored_size: u64,
+    out_len: usize,
+) -> WiaResult<Vec<u8>> {
+    if stored_size < 20 {
         return Err(WiaError::Decode("purge group shorter than its hash".into()));
     }
+    let mut remaining = stored_size;
     let mut hasher = Sha1::new();
     hasher.update(exception_bytes);
     let mut out = vec![0u8; out_len];
-    let mut pos = 0usize;
-    while stream.len() - pos > 20 {
-        if stream.len() - pos < 28 {
+    let mut scratch = [0u8; 64 * 1024];
+    while remaining > 20 {
+        if remaining < 28 {
             return Err(WiaError::Decode("truncated purge segment header".into()));
         }
-        let offset = u32::from_be_bytes(
-            stream[pos..pos + 4]
-                .try_into()
-                .expect("stream.len() - pos >= 28 checked above"),
-        ) as usize;
-        let size = u32::from_be_bytes(
-            stream[pos + 4..pos + 8]
-                .try_into()
-                .expect("stream.len() - pos >= 28 checked above"),
-        ) as usize;
-        if stream.len() - pos - 8 < size {
+        let mut header = [[0u8; 4]; 2];
+        reader.read_exact(header.as_flattened_mut())?;
+        let offset = u32::from_be_bytes(header[0]) as usize;
+        let size = u32::from_be_bytes(header[1]) as usize;
+        if size as u64 > remaining - 28 {
             return Err(WiaError::Decode("truncated purge segment data".into()));
         }
-        if offset + size > out.len() {
+        let end = offset
+            .checked_add(size)
+            .ok_or_else(|| WiaError::Decode("purge segment extent overflows".into()))?;
+        if end > out.len() {
             return Err(WiaError::Decode(format!(
                 "purge segment {offset:#x}+{size:#x} exceeds group size {out_len:#x}"
             )));
         }
-        hasher.update(&stream[pos..pos + 8 + size]);
-        out[offset..offset + size].copy_from_slice(&stream[pos + 8..pos + 8 + size]);
-        pos += 8 + size;
+        hasher.update(header.as_flattened());
+        let mut written = 0;
+        while written < size {
+            let count = (size - written).min(scratch.len());
+            reader.read_exact(&mut scratch[..count])?;
+            hasher.update(&scratch[..count]);
+            out[offset + written..offset + written + count].copy_from_slice(&scratch[..count]);
+            written += count;
+        }
+        remaining -= 8 + size as u64;
     }
+    let mut stored_hash = [0u8; 20];
+    reader.read_exact(&mut stored_hash)?;
     let computed: [u8; 20] = hasher.finalize().into();
-    if computed != stream[pos..pos + 20] {
+    if computed != stored_hash {
         return Err(WiaError::HashChainMismatch("purge group"));
     }
     Ok(out)
 }
-
 fn bzip2_decode(stored: &[u8], max_out: usize) -> WiaResult<Vec<u8>> {
     use std::io::Read;
     let mut out = Vec::new();
@@ -195,6 +265,49 @@ fn bzip2_decode(stored: &[u8], max_out: usize) -> WiaResult<Vec<u8>> {
         .take(max_out as u64)
         .read_to_end(&mut out)
         .map_err(|e| WiaError::Decode(format!("bzip2: {e}")))?;
+    Ok(out)
+}
+
+/// Shared streaming loop for the raw LZMA/LZMA2 decoders: feeds `src` in
+/// 64 KiB chunks and calls `decode_to_buf` until `max_out` bytes are
+/// produced, the stream ends, or the input is exhausted. `decode_to_buf`
+/// performs the codec-specific SDK call and reports how many output/input
+/// bytes it consumed plus whether the stream reported
+/// `LZMA_STATUS_FINISHED_WITH_MARK`.
+fn stream_lzma<R: std::io::Read>(
+    mut src: R,
+    max_out: usize,
+    mut decode_to_buf: impl FnMut(&mut [u8], &[u8]) -> WiaResult<(usize, usize, bool)>,
+) -> WiaResult<Vec<u8>> {
+    // Output grows in chunks instead of reserving `max_out` up front:
+    // callers pass untrusted expected sizes and a hostile stream must
+    // not reserve gigabytes before it fails.
+    const OUTPUT_CHUNK: usize = 1024 * 1024;
+    let mut out: Vec<u8> = Vec::new();
+    let mut input = [0u8; 64 * 1024];
+    let mut out_pos = 0;
+    let mut in_pos = 0;
+    let mut in_len = 0;
+    let mut eof = false;
+    while out_pos < max_out {
+        if out.len() == out_pos {
+            let chunk = out.len().saturating_add(OUTPUT_CHUNK).min(max_out);
+            out.resize(chunk, 0);
+        }
+        if in_pos == in_len && !eof {
+            in_len = src.read(&mut input)?;
+            in_pos = 0;
+            eof = in_len == 0;
+        }
+        let (dest_len, src_len, finished) =
+            decode_to_buf(&mut out[out_pos..], &input[in_pos..in_len])?;
+        out_pos += dest_len;
+        in_pos += src_len;
+        if finished || (dest_len == 0 && src_len == 0 && eof) {
+            break;
+        }
+    }
+    out.truncate(out_pos);
     Ok(out)
 }
 
@@ -234,23 +347,21 @@ impl RawLzmaDec {
     }
 
     fn decode(&mut self, src: &[u8], max_out: usize) -> WiaResult<Vec<u8>> {
+        self.decode_reader(std::io::Cursor::new(src), max_out)
+    }
+    fn decode_reader<R: std::io::Read>(&mut self, src: R, max_out: usize) -> WiaResult<Vec<u8>> {
         unsafe { lzma_sdk_sys::LzmaDec_Init(&mut self.handle) };
-        let mut out = vec![0u8; max_out];
-        let mut out_pos = 0usize;
-        let mut in_pos = 0usize;
-        loop {
-            let mut dest_len = (out.len() - out_pos) as lzma_sdk_sys::SizeT;
-            let mut src_len = (src.len() - in_pos) as lzma_sdk_sys::SizeT;
-            if dest_len == 0 {
-                break;
-            }
+        let handle = &mut self.handle;
+        stream_lzma(src, max_out, move |dest, input| {
+            let mut dest_len = dest.len() as lzma_sdk_sys::SizeT;
+            let mut src_len = input.len() as lzma_sdk_sys::SizeT;
             let mut status = lzma_sdk_sys::ELzmaStatus::LZMA_STATUS_NOT_SPECIFIED;
             let res = unsafe {
                 lzma_sdk_sys::LzmaDec_DecodeToBuf(
-                    &mut self.handle,
-                    out[out_pos..].as_mut_ptr(),
+                    &mut *handle,
+                    dest.as_mut_ptr(),
                     &mut dest_len,
-                    src[in_pos..].as_ptr(),
+                    input.as_ptr(),
                     &mut src_len,
                     lzma_sdk_sys::ELzmaFinishMode::LZMA_FINISH_ANY,
                     &mut status,
@@ -259,16 +370,9 @@ impl RawLzmaDec {
             if res != lzma_sdk_sys::SZ_OK as i32 {
                 return Err(WiaError::Decode(format!("LZMA decode failed ({res})")));
             }
-            out_pos += dest_len as usize;
-            in_pos += src_len as usize;
-            if status == lzma_sdk_sys::ELzmaStatus::LZMA_STATUS_FINISHED_WITH_MARK
-                || (dest_len == 0 && src_len == 0)
-            {
-                break;
-            }
-        }
-        out.truncate(out_pos);
-        Ok(out)
+            let finished = status == lzma_sdk_sys::ELzmaStatus::LZMA_STATUS_FINISHED_WITH_MARK;
+            Ok((dest_len as usize, src_len as usize, finished))
+        })
     }
 }
 
@@ -304,23 +408,21 @@ impl RawLzma2Dec {
     }
 
     fn decode(&mut self, src: &[u8], max_out: usize) -> WiaResult<Vec<u8>> {
+        self.decode_reader(std::io::Cursor::new(src), max_out)
+    }
+    fn decode_reader<R: std::io::Read>(&mut self, src: R, max_out: usize) -> WiaResult<Vec<u8>> {
         unsafe { lzma_sdk_sys::Lzma2Dec_Init(&mut self.handle) };
-        let mut out = vec![0u8; max_out];
-        let mut out_pos = 0usize;
-        let mut in_pos = 0usize;
-        loop {
-            let mut dest_len = (out.len() - out_pos) as lzma_sdk_sys::SizeT;
-            let mut src_len = (src.len() - in_pos) as lzma_sdk_sys::SizeT;
-            if dest_len == 0 {
-                break;
-            }
+        let handle = &mut self.handle;
+        stream_lzma(src, max_out, move |dest, input| {
+            let mut dest_len = dest.len() as lzma_sdk_sys::SizeT;
+            let mut src_len = input.len() as lzma_sdk_sys::SizeT;
             let mut status = lzma_sdk_sys::ELzmaStatus::LZMA_STATUS_NOT_SPECIFIED;
             let res = unsafe {
                 lzma_sdk_sys::Lzma2Dec_DecodeToBuf(
-                    &mut self.handle,
-                    out[out_pos..].as_mut_ptr(),
+                    &mut *handle,
+                    dest.as_mut_ptr(),
                     &mut dest_len,
-                    src[in_pos..].as_ptr(),
+                    input.as_ptr(),
                     &mut src_len,
                     lzma_sdk_sys::ELzmaFinishMode::LZMA_FINISH_ANY,
                     &mut status,
@@ -329,16 +431,9 @@ impl RawLzma2Dec {
             if res != lzma_sdk_sys::SZ_OK as i32 {
                 return Err(WiaError::Decode(format!("LZMA2 decode failed ({res})")));
             }
-            out_pos += dest_len as usize;
-            in_pos += src_len as usize;
-            if status == lzma_sdk_sys::ELzmaStatus::LZMA_STATUS_FINISHED_WITH_MARK
-                || (dest_len == 0 && src_len == 0)
-            {
-                break;
-            }
-        }
-        out.truncate(out_pos);
-        Ok(out)
+            let finished = status == lzma_sdk_sys::ELzmaStatus::LZMA_STATUS_FINISHED_WITH_MARK;
+            Ok((dest_len as usize, src_len as usize, finished))
+        })
     }
 }
 
@@ -422,6 +517,50 @@ mod tests {
         let (prop, compressed) = crate::nintendo::disc::wia::test_fixtures::lzma2_encode(&original);
         let mut dec = RawLzma2Dec::new(&[prop]).unwrap();
         let out = dec.decode(&compressed, original.len()).unwrap();
+        assert_eq!(out, original);
+    }
+
+    #[test]
+    fn table_row_reservation_is_bounded_by_stored_extent() {
+        let mut codec = WiaCodec::None;
+        let stored = b"raw table row!";
+        let out = codec
+            .decode_table_reader(
+                std::io::Cursor::new(&stored[..]),
+                stored.len() as u64,
+                4 * 1024 * 1024,
+            )
+            .unwrap();
+        // Fourteen stored bytes can only expand to a bounded buffer,
+        // never to the declared 4 MiB of rows.
+        assert!(out.capacity() <= 64 * 1024);
+        assert!(out.len() <= 64 * 1024);
+
+        // A table that really holds all its rows is untouched.
+        let full = vec![7u8; 96];
+        let out = codec
+            .decode_table_reader(std::io::Cursor::new(&full), full.len() as u64, full.len())
+            .unwrap();
+        assert_eq!(out, full);
+
+        // Trailing zero rows are still zero-filled as before.
+        let short = b"0123456789";
+        let out = codec
+            .decode_table_reader(std::io::Cursor::new(&short[..]), short.len() as u64, 32)
+            .unwrap();
+        let mut want = short.to_vec();
+        want.resize(32, 0);
+        assert_eq!(out, want);
+    }
+
+    #[test]
+    fn lzma_table_reader_grows_without_upfront_reservation() {
+        let original = vec![0u8; 2 * 1024 * 1024];
+        let (props, compressed) = crate::nintendo::disc::wia::test_fixtures::lzma_encode(&original);
+        let mut dec = RawLzmaDec::new(&props).unwrap();
+        let out = dec
+            .decode_reader(std::io::Cursor::new(compressed), original.len())
+            .unwrap();
         assert_eq!(out, original);
     }
 }

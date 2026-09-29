@@ -28,12 +28,15 @@ pub use disc_reader::RvzDiscReader;
 use crate::nintendo::disc::rvz::constants::RVZ_MAGIC;
 use crate::nintendo::disc::rvz::error::{RvzError, RvzResult};
 use crate::nintendo::disc::rvz::format::sha1::{compute_disc_hash, compute_file_head_hash};
-use crate::nintendo::disc::rvz::format::{RvzGroup, WiaDisc, WiaFileHead, WiaPart, WiaRawData};
+use crate::nintendo::disc::rvz::format::{
+    RVZ_GROUP_SIZE, RvzGroup, WIA_DISC_SIZE, WIA_FILE_HEAD_SIZE, WIA_PART_SIZE, WIA_RAW_DATA_SIZE,
+    WiaDisc, WiaFileHead, WiaPart, WiaRawData,
+};
 use crate::nintendo::disc::wbfs::build_disc_usage;
 use crate::nintendo::disc::wbfs::format::{
     DEFAULT_HD_SECTOR_SHIFT, DEFAULT_WBFS_SECTOR_SHIFT, WII_SECTOR_SIZE,
 };
-use crate::util::{CancelToken, Cancelled, ProgressReporter, run_scratch_write};
+use crate::util::{CancelToken, Cancelled, ProgressReporter, run_scratch_write, validate_extent};
 use binrw::{BinRead, Endian};
 use log::info;
 use sink::{DiscSink, IsoSink, UsageFilter, WbfsSink};
@@ -137,7 +140,19 @@ fn parse_rvz_metadata(input: &Path) -> RvzResult<RvzMetadata> {
         return Err(RvzError::HeaderHashMismatch);
     }
 
-    let mut disc_bytes = vec![0u8; head.disc_size as usize];
+    let file_len = reader.get_ref().metadata()?.len();
+    if head.disc_size < WIA_DISC_SIZE as u32 {
+        return Err(RvzError::Custom(
+            "disc struct is smaller than the fixed RVZ structure".into(),
+        ));
+    }
+    validate_extent(
+        WIA_FILE_HEAD_SIZE as u64,
+        WIA_DISC_SIZE as u64,
+        file_len,
+        "disc struct",
+    )?;
+    let mut disc_bytes = vec![0u8; WIA_DISC_SIZE];
     reader.read_exact(&mut disc_bytes)?;
     let disc = WiaDisc::read_options(&mut Cursor::new(&disc_bytes), Endian::Big, ())?;
     if compute_disc_hash(&disc) != head.disc_hash {
@@ -149,47 +164,94 @@ fn parse_rvz_metadata(input: &Path) -> RvzResult<RvzMetadata> {
     if disc.disc_type != 1 && disc.disc_type != 2 {
         return Err(RvzError::UnsupportedDiscType(disc.disc_type));
     }
-
-    let parts: Vec<WiaPart> = if disc.n_part > 0 {
+    let chunk_size = disc.chunk_size;
+    // The Wii partition decoder indexes one cluster (2 MiB) of sectors per
+    // chunk, so partitioned discs with chunks past MAX_CHUNK_SIZE are not
+    // decodable here; raw-only GameCube images have no such limit.
+    if disc.n_part > 0 && chunk_size > crate::nintendo::disc::rvz::constants::MAX_CHUNK_SIZE {
+        return Err(RvzError::Custom(format!(
+            "unsupported RVZ chunk size {chunk_size:#x}"
+        )));
+    }
+    let mut parts = Vec::new();
+    if disc.n_part > 0 {
+        let part_bytes = (disc.n_part as u64)
+            .checked_mul(WIA_PART_SIZE as u64)
+            .ok_or_else(|| RvzError::Custom("partition table size overflows".into()))?;
+        validate_extent(disc.part_off, part_bytes, file_len, "partition table")?;
+        // The validated extent bounds the table by the file size, so a
+        // hostile count can no longer size the reservation.
+        parts.reserve(disc.n_part as usize);
         reader.seek(SeekFrom::Start(disc.part_off))?;
-        let mut buf =
-            vec![0u8; disc.n_part as usize * crate::nintendo::disc::rvz::format::WIA_PART_SIZE];
-        reader.read_exact(&mut buf)?;
-        let mut cur = Cursor::new(&buf);
-        let mut out = Vec::with_capacity(disc.n_part as usize);
         for _ in 0..disc.n_part {
-            out.push(WiaPart::read_options(&mut cur, Endian::Big, ())?);
+            let mut row = [0u8; WIA_PART_SIZE];
+            reader.read_exact(&mut row)?;
+            parts.push(WiaPart::read_options(
+                &mut Cursor::new(row),
+                Endian::Big,
+                (),
+            )?);
         }
-        out
-    } else {
-        Vec::new()
-    };
+    }
 
-    reader.seek(SeekFrom::Start(disc.raw_data_off))?;
-    let mut raw_compressed = vec![0u8; disc.raw_data_size as usize];
-    reader.read_exact(&mut raw_compressed)?;
-    let raw_decompressed = zstd::bulk::decompress(
-        &raw_compressed,
-        disc.n_raw_data as usize * crate::nintendo::disc::rvz::format::WIA_RAW_DATA_SIZE,
+    validate_extent(
+        disc.raw_data_off,
+        disc.raw_data_size as u64,
+        file_len,
+        "raw table",
     )?;
-    let mut raw_cursor = Cursor::new(&raw_decompressed);
-    let mut raw_data = Vec::with_capacity(disc.n_raw_data as usize);
+    let mut raw_reader = BufReader::new(File::open(input)?);
+    raw_reader.seek(SeekFrom::Start(disc.raw_data_off))?;
+    let mut raw_decoder =
+        zstd::stream::read::Decoder::new(raw_reader.take(disc.raw_data_size as u64))?;
+    // The declared counts are not bounded by any file extent (only the
+    // compressed table size is), so the vectors grow row by row; the read
+    // loops fail at EOF.
+    let mut raw_data = Vec::new();
     for _ in 0..disc.n_raw_data {
-        raw_data.push(WiaRawData::read_options(&mut raw_cursor, Endian::Big, ())?);
+        let mut row = [0u8; WIA_RAW_DATA_SIZE];
+        raw_decoder.read_exact(&mut row)?;
+        raw_data.push(WiaRawData::read_options(
+            &mut Cursor::new(row),
+            Endian::Big,
+            (),
+        )?);
+    }
+    let mut extra = [0u8; 1];
+    if raw_decoder.read(&mut extra)? != 0 {
+        return Err(RvzError::Custom(
+            "raw table expands past declared count".into(),
+        ));
     }
 
-    reader.seek(SeekFrom::Start(disc.group_off))?;
-    let mut group_compressed = vec![0u8; disc.group_size as usize];
-    reader.read_exact(&mut group_compressed)?;
-    let group_decompressed = zstd::bulk::decompress(
-        &group_compressed,
-        disc.n_groups as usize * crate::nintendo::disc::rvz::format::RVZ_GROUP_SIZE,
+    validate_extent(
+        disc.group_off,
+        disc.group_size as u64,
+        file_len,
+        "group table",
     )?;
-    let mut group_cursor = Cursor::new(&group_decompressed);
-    let mut groups: Vec<RvzGroup> = Vec::with_capacity(disc.n_groups as usize);
+    let mut group_reader = BufReader::new(File::open(input)?);
+    group_reader.seek(SeekFrom::Start(disc.group_off))?;
+    let mut group_decoder =
+        zstd::stream::read::Decoder::new(group_reader.take(disc.group_size as u64))?;
+    let mut groups: Vec<RvzGroup> = Vec::new();
     for _ in 0..disc.n_groups {
-        groups.push(RvzGroup::read_options(&mut group_cursor, Endian::Big, ())?);
+        let mut row = [0u8; RVZ_GROUP_SIZE];
+        group_decoder.read_exact(&mut row)?;
+        groups.push(RvzGroup::read_options(
+            &mut Cursor::new(row),
+            Endian::Big,
+            (),
+        )?);
     }
+    let mut extra = [0u8; 1];
+    if group_decoder.read(&mut extra)? != 0 {
+        return Err(RvzError::Custom(
+            "group table expands past declared count".into(),
+        ));
+    }
+    // Individual group extents are checked only when the group is accessed;
+    // unused entries in a valid table need not point into this file.
 
     Ok((shared_file, head, disc, parts, raw_data, groups))
 }

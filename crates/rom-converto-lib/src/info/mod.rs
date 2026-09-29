@@ -396,7 +396,7 @@ fn sniff_ngc(path: &Path) -> Result<DetectedConsole> {
 fn sniff_legacy_disc(path: &Path) -> Result<DetectedConsole> {
     use std::io::Read;
 
-    let mut reader = crate::nintendo::disc::input::open_disc_input(path)?;
+    let mut reader = crate::nintendo::disc::input::open_disc_input_with_lookahead(path, 1)?;
     let mut head = [0u8; 0x20];
     reader.read_exact(&mut head)?;
 

@@ -51,6 +51,16 @@ mod tests {
     }
 
     #[test]
+    fn zero_lookahead_still_restores() {
+        let iso = make_fake_gc_fs_iso();
+        let f = write_temp(&make_nkit_gc(&iso), ".nkit.iso");
+        let mut r = NkitReader::open_with_lookahead(f.path(), 0).unwrap();
+        let mut out = Vec::new();
+        r.read_to_end(&mut out).unwrap();
+        assert_eq!(out, iso);
+    }
+
+    #[test]
     fn nkit_gcz_layers_through_gcz_reader() {
         let iso = make_fake_gc_fs_iso();
         let nkit = make_nkit_gc(&iso);

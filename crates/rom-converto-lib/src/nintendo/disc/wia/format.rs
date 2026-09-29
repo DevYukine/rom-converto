@@ -94,4 +94,14 @@ mod tests {
         assert_eq!(exception_lists_per_group(0x20_0000), 1);
         assert_eq!(exception_lists_per_group(0x280_0000), 20);
     }
+
+    #[test]
+    fn chunk_may_exceed_logical_disc_size() {
+        let bytes = vec![0u8; crate::nintendo::disc::rvz::format::WIA_DISC_SIZE];
+        let mut disc =
+            WiaDisc::read_options(&mut Cursor::new(bytes), binrw::Endian::Big, ()).unwrap();
+        disc.disc_type = 1;
+        disc.chunk_size = WIA_CHUNK_GRANULARITY;
+        validate_disc(&disc).unwrap();
+    }
 }

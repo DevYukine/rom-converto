@@ -154,6 +154,13 @@ fn io_err<'a>(op: &'static str, path: &'a Path) -> impl Fn(std::io::Error) -> Di
 /// Opens `path` as a disc image, detecting the container format from its
 /// extension or magic bytes and falling back to a plain file otherwise.
 pub fn open_disc_input(path: &Path) -> DiscInputResult<Box<dyn DiscReader>> {
+    open_disc_input_with_lookahead(path, usize::MAX)
+}
+
+pub fn open_disc_input_with_lookahead(
+    path: &Path,
+    lookahead: usize,
+) -> DiscInputResult<Box<dyn DiscReader>> {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
@@ -168,12 +175,20 @@ pub fn open_disc_input(path: &Path) -> DiscInputResult<Box<dyn DiscReader>> {
     }
 
     match detect_legacy_format(path).unwrap_or(None) {
-        Some(LegacyFormat::Gcz) => return Ok(Box::new(GczReader::open(path)?)),
-        Some(LegacyFormat::Wia) => return Ok(Box::new(WiaReader::open(path)?)),
-        Some(LegacyFormat::NkitIso) => return Ok(Box::new(NkitReader::open(path)?)),
+        Some(LegacyFormat::Gcz) => {
+            return Ok(Box::new(GczReader::open_with_lookahead(path, lookahead)?));
+        }
+        Some(LegacyFormat::Wia) => {
+            return Ok(Box::new(WiaReader::open_with_lookahead(path, lookahead)?));
+        }
+        Some(LegacyFormat::NkitIso) => {
+            return Ok(Box::new(NkitReader::open_with_lookahead(path, lookahead)?));
+        }
         Some(LegacyFormat::NkitGcz) => {
-            let gcz = GczReader::open(path)?;
-            return Ok(Box::new(NkitReader::from_source(gcz)?));
+            let gcz = GczReader::open_with_lookahead(path, lookahead)?;
+            return Ok(Box::new(NkitReader::from_source_with_lookahead(
+                gcz, lookahead,
+            )?));
         }
         None => {}
     }

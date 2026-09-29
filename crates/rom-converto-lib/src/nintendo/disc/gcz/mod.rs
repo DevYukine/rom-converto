@@ -85,6 +85,16 @@ mod tests {
     }
 
     #[test]
+    fn zero_lookahead_still_reads() {
+        let iso = mixed_payload(0x20000);
+        let f = write_temp_gcz(&iso, 0x8000);
+        let mut r = GczReader::open_with_lookahead(f.path(), 0).unwrap();
+        let mut out = Vec::new();
+        r.read_to_end(&mut out).unwrap();
+        assert_eq!(out, iso);
+    }
+
+    #[test]
     fn reader_round_trips_partial_last_block() {
         let iso = mixed_payload(0x40000 + 0x123);
         let f = write_temp_gcz(&iso, 0x8000);
@@ -183,5 +193,24 @@ mod tests {
         let f = write_temp_gcz(&iso, 0x8000);
         let prefix = gcz_logical_prefix(f.path(), 0x204).unwrap();
         assert_eq!(&prefix[..], &iso[..0x204]);
+    }
+    #[test]
+    fn reader_rejects_block_tables_past_file_before_allocating_them() {
+        let block_size = 0x100_0000u32;
+        let num_blocks = u32::MAX;
+        let data_size = block_size as u64 * num_blocks as u64;
+        let mut header = Vec::new();
+        header.extend_from_slice(&format::GCZ_MAGIC.to_le_bytes());
+        header.extend_from_slice(&0u32.to_le_bytes());
+        header.extend_from_slice(&0u64.to_le_bytes());
+        header.extend_from_slice(&data_size.to_le_bytes());
+        header.extend_from_slice(&block_size.to_le_bytes());
+        header.extend_from_slice(&num_blocks.to_le_bytes());
+
+        let error = match reader::GczLayout::parse(&mut std::io::Cursor::new(header)) {
+            Err(error) => error,
+            Ok(_) => panic!("the absent table must be rejected"),
+        };
+        assert!(error.to_string().contains("past file size"));
     }
 }
