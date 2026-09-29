@@ -11,6 +11,7 @@ use crate::util::{DEFAULT_SPACE_HEADROOM, available_space, format_bytes, space_s
 use anyhow::{Result, anyhow, bail};
 use std::collections::HashSet;
 use std::fs::File;
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
 /// Extensions the recursive walker treats as archives. Matches the form
@@ -34,6 +35,19 @@ pub struct ArchiveMember {
     pub name: String,
     /// Uncompressed size in bytes.
     pub size: u64,
+}
+
+/// Listing and selected member retained from an archive probe until staging.
+#[derive(Debug)]
+pub struct ArchiveSelection {
+    members: Vec<ArchiveMember>,
+    member_index: usize,
+}
+
+impl ArchiveSelection {
+    pub fn output_basis(&self, archive: &Path) -> Result<PathBuf> {
+        basis_for(archive, &self.members[self.member_index])
+    }
 }
 
 /// True when `path` carries an extension the archive layer recognizes. A bare
@@ -299,32 +313,6 @@ impl ResolvedInput {
     }
 }
 
-fn parse_cue_file_line(rest: &str) -> Option<String> {
-    let rest = rest.trim();
-    if let Some(start) = rest.find('"') {
-        let after = &rest[start + 1..];
-        let end = after.find('"')?;
-        return Some(after[..end].to_string());
-    }
-    rest.split_whitespace().next().map(str::to_string)
-}
-
-/// Basenames referenced by `FILE` lines in an extracted cue sheet.
-fn cue_referenced_basenames(cue_path: &Path) -> Vec<String> {
-    let text = std::fs::read_to_string(cue_path).unwrap_or_default();
-    text.lines()
-        .filter_map(|line| {
-            let trimmed = line.trim_start();
-            let upper = trimmed.get(..5).map(str::to_ascii_uppercase);
-            if upper.as_deref() == Some("FILE ") {
-                parse_cue_file_line(&trimmed[4..]).map(|n| basename(&n).to_string())
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
 /// An archive holds no member with one of the extensions a caller accepts.
 /// Carried in the error chain so a library scan can treat such an archive
 /// as unrecognized rather than as a read failure.
@@ -332,18 +320,14 @@ fn cue_referenced_basenames(cue_path: &Path) -> Vec<String> {
 #[error("archive contains no matching image")]
 pub struct NoMatchingMember;
 
-/// The member [`resolve_input`] extracts for `exts`: the first match by
-/// sorted name. `warn` logs the ambiguity when several qualify; the
-/// listing-only probe leaves that to the extraction that follows it.
-fn pick_member<'a>(
-    path: &Path,
-    members: &'a [ArchiveMember],
-    exts: &[&str],
-    warn: bool,
-) -> Result<&'a ArchiveMember> {
-    let matches: Vec<&ArchiveMember> = members
+/// The member [`probe_archive`] extracts for `exts`: the first match by
+/// sorted name. Several qualifying members log a warning.
+fn pick_member(path: &Path, members: &[ArchiveMember], exts: &[&str]) -> Result<usize> {
+    let matches: Vec<usize> = members
         .iter()
-        .filter(|m| name_has_ext(&m.name, exts))
+        .enumerate()
+        .filter(|(_, m)| name_has_ext(&m.name, exts))
+        .map(|(index, _)| index)
         .collect();
     match matches.as_slice() {
         [] => Err(anyhow::Error::new(NoMatchingMember).context(format!(
@@ -352,12 +336,12 @@ fn pick_member<'a>(
             exts
         ))),
         [first, rest @ ..] => {
-            if warn && !rest.is_empty() {
+            if !rest.is_empty() {
                 log::warn!(
                     "{} contains {} matching members; using {}",
                     path.display(),
                     matches.len(),
-                    first.name
+                    members[*first].name
                 );
             }
             Ok(*first)
@@ -374,21 +358,49 @@ fn basis_for(path: &Path, member: &ArchiveMember) -> Result<PathBuf> {
         .join(safe_basename(&member.name)?))
 }
 
-/// The [`ResolvedInput::output_basis`] an archive would resolve to for
-/// `exts`, read from its member listing without extracting anything.
-/// `None` for a plain file, whose basis is the file itself.
-pub fn output_basis(path: &Path, exts: &[&str]) -> Result<Option<PathBuf>> {
+/// Lists an archive once and retains its selected member for later staging.
+/// Plain files return `None`; archives without a matching member return an error.
+pub fn probe_archive(path: &Path, exts: &[&str]) -> Result<Option<ArchiveSelection>> {
     if !is_archive_path(path) {
         return Ok(None);
     }
-    let members = list_members(path)?;
-    basis_for(path, pick_member(path, &members, exts, false)?).map(Some)
+    Ok(Some(probe_selection(path, exts)?))
 }
 
-/// Resolve a read input for `exts`. Plain files pass through unchanged. For an
-/// archive, extract the first member matching `exts` (plus the bin tracks a cue
-/// references) to a temp dir and point the pipeline at it.
+/// Lists an archive and retains its selected member. Callers pass the path
+/// through [`is_archive_path`] first, so the selection always exists.
+fn probe_selection(path: &Path, exts: &[&str]) -> Result<ArchiveSelection> {
+    let members = list_members(path)?;
+    let member_index = pick_member(path, &members, exts)?;
+    Ok(ArchiveSelection {
+        members,
+        member_index,
+    })
+}
+
+fn cue_sidecar_members<'a>(
+    members: &'a [ArchiveMember],
+    cue_name: &str,
+    references: &HashSet<String>,
+) -> Vec<&'a ArchiveMember> {
+    members
+        .iter()
+        .filter(|member| {
+            member.name != cue_name
+                && references.contains(&basename(&member.name).to_ascii_lowercase())
+        })
+        .collect()
+}
+/// Resolve a read input, reusing an archive probe if available.
 pub fn resolve_input(path: &Path, exts: &[&str]) -> Result<ResolvedInput> {
+    resolve_input_with_selection(path, exts, None)
+}
+
+pub fn resolve_input_with_selection(
+    path: &Path,
+    exts: &[&str],
+    selection: Option<ArchiveSelection>,
+) -> Result<ResolvedInput> {
     if !is_archive_path(path) {
         return Ok(ResolvedInput {
             path: path.to_path_buf(),
@@ -403,34 +415,73 @@ pub fn resolve_input(path: &Path, exts: &[&str]) -> Result<ResolvedInput> {
             path.display()
         )
     })?;
-    let members = list_members(path)?;
-    let member = pick_member(path, &members, exts, true)?;
+    let selection = match selection {
+        Some(selection) => selection,
+        None => probe_selection(path, exts)?,
+    };
+    let ArchiveSelection {
+        members,
+        member_index,
+    } = selection;
+    let member = &members[member_index];
 
     let tmp = tempfile::tempdir()?;
-    if let Ok(available) = available_space(tmp.path())
-        && space_shortfall(available, member.size, DEFAULT_SPACE_HEADROOM).is_some()
-    {
-        bail!(
-            "not enough space on the temp volume at {} to extract {}: need about {}, only {} free. Point TMPDIR at a larger volume or extract the archive first.",
-            tmp.path().display(),
-            format_bytes(member.size),
-            format_bytes(member.size.saturating_add(DEFAULT_SPACE_HEADROOM)),
-            format_bytes(available)
-        );
-    }
-    let extracted = extract_one(path, kind, &member.name, tmp.path())?;
-
-    if name_has_ext(&member.name, &["cue"]) {
-        let wanted: HashSet<String> = cue_referenced_basenames(&extracted)
-            .into_iter()
-            .map(|n| n.to_ascii_lowercase())
-            .collect();
-        for other in &members {
-            let base = basename(&other.name).to_ascii_lowercase();
-            if other.name != member.name && wanted.contains(&base) {
-                extract_one(path, kind, &other.name, tmp.path())?;
-            }
+    let is_cue = name_has_ext(&member.name, &["cue"]);
+    let mut needed = member.size;
+    let mut referenced = Vec::new();
+    let extracted_cue = if is_cue {
+        if let Ok(available) = available_space(tmp.path())
+            && space_shortfall(available, member.size, DEFAULT_SPACE_HEADROOM).is_some()
+        {
+            bail!(
+                "not enough space on the temp volume at {} to extract {}: need about {}, only {} free. Point TMPDIR at a larger volume or extract the archive first.",
+                tmp.path().display(),
+                format_bytes(member.size),
+                format_bytes(member.size.saturating_add(DEFAULT_SPACE_HEADROOM)),
+                format_bytes(available)
+            );
         }
+        Some(extract_one(path, kind, &member.name, tmp.path())?)
+    } else {
+        None
+    };
+    if let Some(cue_path) = extracted_cue.as_ref() {
+        // Best-effort: a non-UTF-8 or nonstandard cue sheet yields no sidecars
+        // rather than failing extraction of the primary member.
+        let cue_files = crate::disc::cue::CueParser::new(cue_path)
+            .parse_reader(BufReader::new(File::open(cue_path)?))
+            .map(|cue| cue.files)
+            .unwrap_or_default();
+        let wanted: HashSet<String> = cue_files
+            .into_iter()
+            .map(|file| basename(&file.filename).to_ascii_lowercase())
+            .collect();
+        let sidecars = cue_sidecar_members(&members, &member.name, &wanted);
+        for other in sidecars {
+            needed = needed
+                .checked_add(other.size)
+                .ok_or_else(|| anyhow!("archive extraction size overflow"))?;
+            referenced.push(other);
+        }
+    }
+    if let Ok(available) = available_space(tmp.path()) {
+        let available_before_cue = available.saturating_add(if is_cue { member.size } else { 0 });
+        if space_shortfall(available_before_cue, needed, DEFAULT_SPACE_HEADROOM).is_some() {
+            bail!(
+                "not enough space on the temp volume at {} to extract {}: need about {}, only {} free. Point TMPDIR at a larger volume or extract the archive first.",
+                tmp.path().display(),
+                format_bytes(needed),
+                format_bytes(needed.saturating_add(DEFAULT_SPACE_HEADROOM)),
+                format_bytes(available_before_cue)
+            );
+        }
+    }
+    let extracted = match extracted_cue {
+        Some(path) => path,
+        None => extract_one(path, kind, &member.name, tmp.path())?,
+    };
+    for other in referenced {
+        extract_one(path, kind, &other.name, tmp.path())?;
     }
 
     Ok(ResolvedInput {
@@ -690,5 +741,81 @@ mod tests {
         let resolved = resolve_input(&iso, &["iso"]).unwrap();
         assert_eq!(resolved.path(), iso);
         assert_eq!(resolved.output_basis(), iso);
+    }
+
+    #[test]
+    fn probed_selection_stages_without_changing_selected_output_basis() {
+        let dir = tempfile::tempdir().unwrap();
+        let zip = dir.path().join("bundle.zip");
+        write_zip(
+            &zip,
+            zip::CompressionMethod::Stored,
+            &[("b.iso", b"second"), ("a.iso", b"first")],
+        );
+        let selection = probe_archive(&zip, &["iso"]).unwrap().unwrap();
+        assert_eq!(
+            selection.output_basis(&zip).unwrap(),
+            dir.path().join("a.iso")
+        );
+        let resolved = resolve_input_with_selection(&zip, &["iso"], Some(selection)).unwrap();
+        assert_eq!(std::fs::read(resolved.path()).unwrap(), b"first");
+        assert_eq!(resolved.output_basis(), dir.path().join("a.iso"));
+    }
+
+    #[test]
+    fn tar_cue_extracts_only_referenced_regular_track() {
+        let dir = tempfile::tempdir().unwrap();
+        let tar = dir.path().join("disc.tar");
+        let cue = b"FILE \"tracks/one.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n";
+        write_tar(
+            &tar,
+            false,
+            &[
+                ("disc.cue", cue.as_slice()),
+                ("tracks/one.bin", b"track"),
+                ("other.bin", b"unreferenced"),
+            ],
+        );
+        let resolved = resolve_input(&tar, &["cue"]).unwrap();
+        let staged = resolved.path().parent().unwrap();
+        assert_eq!(std::fs::read(staged.join("one.bin")).unwrap(), b"track");
+        assert!(!staged.join("other.bin").exists());
+    }
+
+    #[test]
+    fn cue_sidecar_preflight_counts_only_referenced_regular_entries() {
+        let members = vec![
+            ArchiveMember {
+                name: "disc.cue".into(),
+                size: 32,
+            },
+            ArchiveMember {
+                name: "tracks/one.bin".into(),
+                size: 100,
+            },
+            ArchiveMember {
+                name: "two.bin".into(),
+                size: 200,
+            },
+            ArchiveMember {
+                name: "unrelated.bin".into(),
+                size: u64::MAX,
+            },
+        ];
+        let wanted = HashSet::from(["one.bin".to_string(), "two.bin".to_string()]);
+        let tracks = cue_sidecar_members(&members, "disc.cue", &wanted);
+        let required = tracks
+            .iter()
+            .try_fold(members[0].size, |sum, member| sum.checked_add(member.size))
+            .unwrap();
+        assert_eq!(required, 332);
+        assert!(
+            space_shortfall(
+                required + DEFAULT_SPACE_HEADROOM - 1,
+                required,
+                DEFAULT_SPACE_HEADROOM
+            )
+            .is_some()
+        );
     }
 }

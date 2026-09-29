@@ -5,6 +5,7 @@
 
 pub mod aes;
 pub mod archive;
+pub mod bounded_line;
 pub mod bytes;
 pub mod conflict;
 pub mod deflate;
@@ -19,6 +20,7 @@ pub mod maker_codes;
 pub mod path;
 pub mod pixel;
 pub mod plan;
+pub mod positional_reader;
 pub mod pread;
 pub mod report;
 pub mod sfo;
@@ -29,8 +31,8 @@ pub mod worker_pool;
 pub mod zip_write;
 
 pub use archive::{
-    ArchiveMember, NoMatchingMember, ResolvedInput, is_archive_path, list_members, output_basis,
-    resolve_input,
+    ArchiveMember, ArchiveSelection, NoMatchingMember, ResolvedInput, is_archive_path,
+    list_members, probe_archive, resolve_input, resolve_input_with_selection,
 };
 pub use conflict::{ConflictPolicy, ConflictResolution, OutputExists, resolve_conflict};
 pub use footgun::{
@@ -54,6 +56,27 @@ pub use verify::{OutputVerify, VerifyOutcome, verify_existing_cached, verify_exi
 pub use zip_write::write_zip;
 
 pub const BYTES_PER_MB: f64 = 1_000_000.0;
+
+/// Compute `offset + size` when that extent stays within `len`: `Some(end)`
+/// when the addition does not overflow and `end <= len`, else `None`. The
+/// error-type-agnostic core of [`validate_extent`] for callers that map an
+/// overrun onto their own error type.
+pub fn extent_end(offset: u64, size: u64, len: u64) -> Option<u64> {
+    let end = offset.checked_add(size)?;
+    (end <= len).then_some(end)
+}
+
+/// Check that an extent read out of an untrusted header stays within
+/// `file_len`, so a hostile `offset + size` cannot address past the file.
+/// Overflow of `offset + size` is reported like any other overrun.
+pub fn validate_extent(offset: u64, size: u64, file_len: u64, what: &str) -> std::io::Result<()> {
+    match extent_end(offset, size, file_len) {
+        Some(_) => Ok(()),
+        None => Err(std::io::Error::other(format!(
+            "{what} extent {offset:#x}+{size:#x} exceeds file size {file_len:#x}"
+        ))),
+    }
+}
 
 /// Cooperative cancellation handle threaded into the long-running
 /// compress/decompress/extract loops. The blocking codec pipelines
@@ -433,7 +456,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{place_in_dir_mirrored, publish_temp, scratch_output_path};
+    use super::{extent_end, place_in_dir_mirrored, publish_temp, scratch_output_path};
     use crate::util::{NoProgress, ProgressReporter};
     use std::path::{Path, PathBuf};
 
@@ -523,5 +546,13 @@ mod tests {
         let temp = scratch_output_path(&output).unwrap();
         assert!(output.parent().unwrap().is_dir());
         assert!(temp.exists());
+    }
+
+    #[test]
+    fn extent_end_bounds_and_overflow() {
+        assert_eq!(extent_end(0x100, 0x200, 0x300), Some(0x300));
+        assert_eq!(extent_end(0x100, 0x201, 0x300), None);
+        assert_eq!(extent_end(u64::MAX - 1, 4, u64::MAX), None);
+        assert_eq!(extent_end(0, 0, 0), Some(0));
     }
 }

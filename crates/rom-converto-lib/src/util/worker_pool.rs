@@ -52,6 +52,220 @@ pub fn parallelism() -> usize {
         .unwrap_or(4)
         .max(1)
 }
+/// The per-operation working-set target, excluding final indexes and results.
+pub const MEMORY_TARGET_BYTES: usize = 512 * 1024 * 1024;
+
+/// Queue admission derived from codec, producer, item and writer memory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Admission {
+    pub workers: usize,
+    pub max_in_flight: usize,
+    /// Bounded writer-channel capacity; the writer's in-hand buffer is
+    /// reserved separately, so callers pass this value unchanged.
+    pub writer_capacity: usize,
+}
+
+impl Admission {
+    /// One worker, one job, and a rendezvous writer channel: the writer
+    /// holds one unit while the worker decodes the next, so a unit that
+    /// exceeds the target on its own is never live more than twice.
+    pub const DEGRADED: Self = Self {
+        workers: 1,
+        max_in_flight: 1,
+        writer_capacity: 0,
+    };
+}
+
+/// Memory inputs to [`Budget::admit`], in bytes.
+pub struct Budget {
+    /// Persistent per-worker codec context (zstd cctx, LZMA state, ...).
+    pub codec_per_worker: usize,
+    /// Each job's input, output, and per-job scratch.
+    pub per_job: usize,
+    /// One bounded writer-channel slot.
+    pub writer_slot: usize,
+    /// Producer/consumer items held outside channel occupancy.
+    pub fixed: usize,
+}
+
+impl Budget {
+    /// Derive worker and queue counts while reserving all simultaneously-live
+    /// buffers, or `None` when one queued unit plus the codec context and the
+    /// writer reserve exceeds [`MEMORY_TARGET_BYTES`].
+    ///
+    /// Callers fall back in two tiers when this returns `None`: formats whose
+    /// units are header-capped (CSO, CHD, RVZ partition clusters, Z3DS
+    /// compress, ZAR) take [`Admission::DEGRADED`], while formats that can
+    /// stream a unit (NCZ, plain and packed RVZ chunks, Z3DS decompress)
+    /// treat `None` as "stream instead".
+    ///
+    /// `per_job` includes each job's input, output, and per-job scratch.
+    /// `fixed` includes producer/consumer items held outside channel occupancy.
+    /// The 512 MiB target applies to one operation; up to eight GUI operations
+    /// may run concurrently, so aggregate process memory can be higher.
+    ///
+    /// Workers never exceed `max_in_flight` or `jobs`: an idle worker only
+    /// pins a codec context, and effective concurrency is `min(workers,
+    /// in_flight)` anyway.
+    pub fn admit(&self, requested_workers: usize, jobs: u64) -> Option<Admission> {
+        // A hostile table can declare zero-byte units; one byte keeps the
+        // divisions below meaningful without changing any real admission.
+        let per_job = self.per_job.max(1);
+        let target = MEMORY_TARGET_BYTES;
+        let jobs = usize::try_from(jobs).unwrap_or(usize::MAX);
+        // One channel slot plus the writer's in-hand buffer.
+        let reserve = self.writer_slot.saturating_mul(2);
+        let spare = target.checked_sub(self.fixed.saturating_add(reserve))?;
+        let unit = self.codec_per_worker.saturating_add(per_job);
+        // Largest worker count whose best in-flight depth keeps every worker
+        // busy; one worker with one job always fits once `spare >= unit`.
+        let workers = requested_workers.min(jobs).min(spare / unit);
+        if workers == 0 {
+            return None;
+        }
+        let after = spare - self.codec_per_worker.saturating_mul(workers);
+        let max_in_flight = jobs.min(workers.saturating_mul(2)).min(after / per_job);
+        // Twice the in-flight depth lets the writer absorb bursts of
+        // small units without stalling decoders (develop's 4x depth).
+        // `reserve` sits in the numerator, so the quotient is at least 2.
+        let writer_capacity = (after + reserve - per_job * max_in_flight)
+            .checked_div(self.writer_slot)
+            .map_or(0, |slots| (slots - 1).min(max_in_flight.saturating_mul(2)));
+        Some(Admission {
+            workers,
+            max_in_flight,
+            writer_capacity,
+        })
+    }
+}
+
+/// Native zstd one-shot compression-context estimate for a block size and level.
+pub fn zstd_cctx_estimate(level: i32, max_input: usize) -> usize {
+    // SAFETY: these native estimate functions accept arbitrary level/input hints.
+    let params = unsafe { zstd_sys::ZSTD_getCParams(level, max_input as u64, 0) };
+    unsafe { zstd_sys::ZSTD_estimateCCtxSize_usingCParams(params) }
+}
+
+/// Native zstd decompression-context estimate (window buffers excluded).
+pub fn zstd_dctx_estimate() -> usize {
+    // SAFETY: pure size query with no arguments.
+    unsafe { zstd_sys::ZSTD_estimateDCtxSize() }
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+
+    const MIB: usize = 1024 * 1024;
+
+    #[test]
+    fn zero_byte_units_admit_without_dividing_by_zero() {
+        let admission = Budget {
+            codec_per_worker: MIB,
+            per_job: 0,
+            writer_slot: 0,
+            fixed: 0,
+        }
+        .admit(4, 8)
+        .expect("zero-byte units fit");
+        assert_eq!((admission.workers, admission.max_in_flight), (4, 8));
+    }
+
+    #[test]
+    fn admission_counts_writer_buffers_and_reports_unfit_single_worker() {
+        let fits = Budget {
+            codec_per_worker: 200 * MIB,
+            per_job: 100 * MIB,
+            writer_slot: 50 * MIB,
+            fixed: 10 * MIB,
+        }
+        .admit(8, 64)
+        .expect("one worker fits");
+        assert_eq!(fits.workers, 1);
+        assert!(fits.writer_capacity >= 1);
+        // The writer's in-hand buffer is reserved on top of the channel slots.
+        assert!(
+            10 * MIB
+                + fits.workers * 200 * MIB
+                + fits.max_in_flight * 100 * MIB
+                + (fits.writer_capacity + 1) * 50 * MIB
+                <= MEMORY_TARGET_BYTES
+        );
+
+        let too_large = Budget {
+            codec_per_worker: MEMORY_TARGET_BYTES,
+            per_job: 1,
+            writer_slot: 0,
+            fixed: 1,
+        }
+        .admit(8, 1);
+        assert!(too_large.is_none());
+    }
+
+    #[test]
+    fn admission_never_leaves_workers_idle() {
+        // 3 workers fit with one job in flight, but 2 workers with two jobs
+        // is the same concurrency without an idle codec context.
+        let a = Budget {
+            codec_per_worker: 100 * MIB,
+            per_job: 128 * MIB,
+            writer_slot: 0,
+            fixed: 0,
+        }
+        .admit(8, 64)
+        .expect("fits");
+        assert_eq!((a.workers, a.max_in_flight), (2, 2));
+
+        let few_jobs = Budget {
+            codec_per_worker: MIB,
+            per_job: MIB,
+            writer_slot: 0,
+            fixed: 0,
+        }
+        .admit(8, 3)
+        .expect("fits");
+        assert_eq!((few_jobs.workers, few_jobs.max_in_flight), (3, 3));
+
+        // Default-sized units keep full parallelism with in_flight >= workers.
+        let full = Budget {
+            codec_per_worker: MIB,
+            per_job: 2 * MIB,
+            writer_slot: 2 * MIB,
+            fixed: 0,
+        }
+        .admit(64, u64::MAX)
+        .expect("fits");
+        assert_eq!(
+            (full.workers, full.max_in_flight, full.writer_capacity),
+            (64, 128, 95)
+        );
+    }
+
+    struct SlowEvens;
+
+    impl Worker<u64, u64, PoolChannelClosed> for SlowEvens {
+        fn process(&mut self, seq: u64) -> Result<u64, PoolChannelClosed> {
+            if seq.is_multiple_of(2) {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            Ok(seq)
+        }
+    }
+
+    #[test]
+    fn drive_consumes_in_sequence_when_workers_finish_out_of_order() {
+        let pool = Pool::spawn(vec![SlowEvens, SlowEvens, SlowEvens, SlowEvens]);
+        let mut seen = Vec::new();
+        drive(&pool, 32, 8, Ok, |seq, out| {
+            assert_eq!(seq, out);
+            seen.push(seq);
+            Ok(())
+        })
+        .expect("drive completes");
+        pool.shutdown();
+        assert_eq!(seen, (0..32).collect::<Vec<_>>());
+    }
+}
 
 /// Pool-internal error returned by [`Pool::submit`] when a worker's
 /// inbound channel has closed (usually because the worker thread
@@ -102,6 +316,7 @@ impl<W: Send + 'static, O: Send + 'static, E: Send + 'static> Pool<W, O, E> {
     where
         Wk: Worker<W, O, E> + Send + 'static,
     {
+        assert!(!workers.is_empty(), "pool needs at least one worker");
         let n_threads = workers.len();
         let (result_tx, result_rx) = channel::<(u64, Result<O, E>)>();
         let mut work_txs = Vec::with_capacity(n_threads);
@@ -232,6 +447,7 @@ where
     Produce: FnMut(u64) -> Result<W, E>,
     Consume: FnMut(u64, O) -> Result<(), E>,
 {
+    debug_assert!(max_in_flight > 0);
     let mut pending: HashMap<u64, O> = HashMap::new();
     let mut submit_seq: u64 = 0;
     let mut write_seq: u64 = 0;
@@ -327,8 +543,9 @@ where
 
         let body_result = body(&tx);
         drop(tx);
-        let writer_result = handle.join().unwrap_or(Err(on_panic));
-        body_result?;
-        writer_result
+        // A failed write closes `rx`, which the body only sees as a closed
+        // channel; report the writer's I/O error, not that symptom.
+        handle.join().unwrap_or(Err(on_panic))?;
+        body_result
     })
 }

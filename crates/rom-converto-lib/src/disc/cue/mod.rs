@@ -2,7 +2,8 @@
 
 use crate::disc::cue::error::{CueError, CueResult};
 use crate::disc::cue::models::{CueFile, CueSheet, FileType, Index, Msf, Track, TrackType};
-use std::io::{BufRead, Cursor};
+use crate::util::bounded_line;
+use std::io::{BufRead, BufReader, Cursor};
 use std::path::{Path, PathBuf};
 
 pub mod error;
@@ -24,17 +25,16 @@ impl CueParser {
         }
     }
 
-    /// Reads and parses the CUE sheet at the parser's path.
     pub async fn parse(&self) -> CueResult<CueSheet> {
-        self.parse_bytes(&tokio::fs::read(&self.cue_path).await?)
+        let file = tokio::fs::File::open(&self.cue_path).await?;
+        let file = file.into_std().await;
+        self.parse_reader(BufReader::new(file))
     }
 
-    /// Parses CUE sheet bytes line by line, handling `FILE`, `TRACK`,
+    /// Parses a CUE sheet from a buffered reader, handling `FILE`, `TRACK`,
     /// `INDEX`, `PREGAP`, and `POSTGAP` directives; `REM` lines and blank
-    /// lines are skipped.
-    pub fn parse_bytes(&self, data: &[u8]) -> CueResult<CueSheet> {
-        let reader = Cursor::new(data);
-
+    /// lines are skipped. Retains track metadata but not the complete text.
+    pub fn parse_reader<R: BufRead>(&self, mut reader: R) -> CueResult<CueSheet> {
         let mut cue_sheet = CueSheet {
             files: Vec::new(),
             tracks: Vec::new(),
@@ -42,8 +42,7 @@ impl CueParser {
 
         let mut current_track: Option<Track> = None;
 
-        for line in reader.lines() {
-            let line = line?;
+        while let Some(line) = bounded_line::read_line(&mut reader)? {
             let line = line.trim();
 
             if line.is_empty() || line.starts_with("REM") {
@@ -61,7 +60,15 @@ impl CueParser {
                         cue_sheet.tracks.push(track);
                     }
 
-                    let filename = self.extract_quoted_string(line)?;
+                    let filename = if line.contains('"') {
+                        self.extract_quoted_string(line)?
+                    } else {
+                        parts
+                            .get(1)
+                            .filter(|_| parts.len() >= 3)
+                            .ok_or(CueError::MissingOpeningQuote)?
+                            .to_string()
+                    };
                     let file_type = self.parse_file_type(
                         parts
                             .last()
@@ -130,6 +137,11 @@ impl CueParser {
         }
 
         Ok(cue_sheet)
+    }
+
+    /// Parses CUE sheet bytes line by line; see [`Self::parse_reader`].
+    pub fn parse_bytes(&self, data: &[u8]) -> CueResult<CueSheet> {
+        self.parse_reader(Cursor::new(data))
     }
 
     fn extract_quoted_string(&self, line: &str) -> CueResult<String> {
@@ -334,5 +346,56 @@ mod tests {
         .await
         .unwrap();
         assert!(CueParser::new(&cue).parse().await.is_err());
+    }
+    #[test]
+    fn streamed_sheet_preserves_quoted_files_and_multitrack_indices() {
+        let mut text = String::with_capacity(64 * 1024);
+        for _ in 0..4096 {
+            text.push_str("REM generated comment line\n");
+        }
+        text.push_str(
+            "FILE \"first track.bin\" BINARY\n\
+             TRACK 01 MODE1/2352\n\
+             INDEX 00 00:00:00\n\
+             INDEX 01 00:02:00\n\
+             FILE \"second track.bin\" BINARY\n\
+             TRACK 02 AUDIO\n\
+             INDEX 01 00:00:00\n",
+        );
+        let sheet = parser().parse_reader(Cursor::new(text.as_bytes())).unwrap();
+        assert_eq!(sheet.files[0].filename, "first track.bin");
+        assert_eq!(sheet.files[1].filename, "second track.bin");
+        assert_eq!(sheet.tracks.len(), 2);
+        assert_eq!(sheet.tracks[0].file_index, 0);
+        assert_eq!(sheet.tracks[0].indices.len(), 2);
+        assert_eq!(sheet.tracks[1].file_index, 1);
+        let unquoted = parser()
+            .parse_bytes(b"FILE disk.bin BINARY\nTRACK 01 MODE1/2048\nINDEX 01 00:00:00\n")
+            .unwrap();
+        assert_eq!(unquoted.files[0].filename, "disk.bin");
+    }
+    #[test]
+    fn accepts_cue_rem_lines_over_64_kib() {
+        let mut cue = String::from("REM ");
+        cue.push_str(&"x".repeat(64 * 1024));
+        // A directive padded far past any sane width must still parse whole.
+        cue.push_str("\nFILE \"disk.bin\"");
+        cue.push_str(&" ".repeat(65 * 1024));
+        cue.push_str("BINARY\nTRACK 01 MODE1/2048\nINDEX 01 00:00:00\n");
+        let parsed = parser().parse_reader(Cursor::new(cue.as_bytes())).unwrap();
+        let expected = parser()
+            .parse_bytes(b"FILE disk.bin BINARY\nTRACK 01 MODE1/2048\nINDEX 01 00:00:00\n")
+            .unwrap();
+        assert_eq!(parsed.files[0].filename, expected.files[0].filename);
+        let parsed_msf = parsed.tracks[0].indices[0].position;
+        let expected_msf = expected.tracks[0].indices[0].position;
+        assert_eq!(
+            (parsed_msf.minutes, parsed_msf.seconds, parsed_msf.frames),
+            (
+                expected_msf.minutes,
+                expected_msf.seconds,
+                expected_msf.frames
+            )
+        );
     }
 }

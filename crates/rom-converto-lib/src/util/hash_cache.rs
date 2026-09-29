@@ -11,12 +11,19 @@
 
 use crate::util::hash::{FileDigests, HashAlgo};
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 use std::time::UNIX_EPOCH;
 
 const CACHE_VERSION: u32 = 1;
 const CACHE_SUBPATH: &str = "rom-converto/hash-cache.json.gz";
+
+/// For a typical entry with raw + decoded CRC32/SHA-1/MD5/SHA-256 digests and
+/// an 86-byte path, compact JSON is about 680 bytes: 250,000 entries are about
+/// 170 MB. The 256 MiB decoded-load cap leaves headroom for larger paths/entries.
+const MAX_CACHE_ENTRIES: usize = 250_000;
+const MAX_CACHE_LOAD_BYTES: u64 = 256 * 1024 * 1024;
 
 /// Files whose mtime is within this window of now are not stored, to dodge
 /// coarse filesystem timestamps on a file that may still be written.
@@ -44,10 +51,12 @@ struct CacheEntry {
     size: u64,
     mtime_secs: i64,
     mtime_nanos: u32,
+    #[serde(default)]
+    last_used: u64,
     /// Digests of the raw file bytes (the `hash` command).
     #[serde(default)]
     raw: FileDigests,
-    /// Digests of the decoded inner stream (`dat verify` of a container).
+    /// Digests of the decoded inner-stream (`dat verify` of a container).
     #[serde(default)]
     decoded: FileDigests,
     /// Whole-image and per-track digests for a cue set keyed on this cue.
@@ -83,6 +92,7 @@ struct State {
     /// or one that stores nothing, does not discard the rest of the collection.
     preserved: HashMap<String, CacheEntry>,
     dirty: bool,
+    access_clock: u64,
 }
 
 /// In-process shared cache. Access is serialized behind a `Mutex`; the batch
@@ -107,20 +117,30 @@ impl HashCache {
     }
 
     pub(crate) fn open_at(path: Option<PathBuf>, rebuild: bool) -> Self {
-        let existing = match &path {
+        let mut existing = match &path {
             Some(p) => read_entries(p),
             None => HashMap::new(),
         };
+        let original_len = existing.len();
+        prune_entries(&mut existing);
+        let pruned = existing.len() != original_len;
         let (entries, preserved) = if rebuild {
             (HashMap::new(), existing)
         } else {
             (existing, HashMap::new())
         };
+        let access_clock = entries
+            .values()
+            .chain(preserved.values())
+            .map(|entry| entry.last_used)
+            .max()
+            .unwrap_or(0);
         HashCache {
             state: Mutex::new(State {
                 entries,
                 preserved,
-                dirty: false,
+                dirty: pruned && !rebuild,
+                access_clock,
             }),
             path,
         }
@@ -158,17 +178,17 @@ impl HashCache {
         }
         let key = canonical_key(path)?;
         let fp = fingerprint(path)?;
-        let state = self.lock();
-        let entry = state.entries.get(&key)?;
-        if !entry_matches(entry, fp) {
+        let mut state = self.lock();
+        let found = state
+            .entries
+            .get(&key)
+            .filter(|entry| entry_matches(entry, fp))?;
+        if !has_all(pick(found), algos) {
             return None;
         }
-        let digests = pick(entry);
-        if has_all(digests, algos) {
-            Some(digests.clone())
-        } else {
-            None
-        }
+        let result = pick(found).clone();
+        touch(&mut state, &key);
+        Some(result)
     }
 
     /// Merge raw-byte digests for `path` into its entry, replacing the entry
@@ -201,8 +221,10 @@ impl HashCache {
             return;
         }
         let mut state = self.lock();
-        let entry = entry_for(&mut state.entries, key, fp);
+        let entry = entry_for(&mut state.entries, key.clone(), fp);
         merge_digests(pick(entry), digests);
+        touch(&mut state, &key);
+        prune_entries(&mut state.entries);
         state.dirty = true;
     }
 
@@ -220,7 +242,7 @@ impl HashCache {
         }
         let key = canonical_key(cue)?;
         let fp = fingerprint(cue)?;
-        let state = self.lock();
+        let mut state = self.lock();
         let entry = state.entries.get(&key)?;
         if !entry_matches(entry, fp) {
             return None;
@@ -239,12 +261,13 @@ impl HashCache {
         if !has_all(whole, algos) || !tracks.iter().all(|t| has_all(&t.digests, algos)) {
             return None;
         }
-        Some(CueDigests {
+        let result = CueDigests {
             whole: whole.clone(),
             tracks: tracks.clone(),
-        })
+        };
+        touch(&mut state, &key);
+        Some(result)
     }
-
     /// Store a cue set's digests plus each member bin's fingerprint. Skipped if
     /// the cue or any member was modified within the recent-mtime guard.
     pub fn store_cue_set(
@@ -277,10 +300,12 @@ impl HashCache {
             member_keys.push(mfp);
         }
         let mut state = self.lock();
-        let entry = entry_for(&mut state.entries, key, fp);
+        let entry = entry_for(&mut state.entries, key.clone(), fp);
         entry.whole = Some(whole.clone());
         entry.tracks = Some(tracks.to_vec());
         entry.members = Some(member_keys);
+        touch(&mut state, &key);
+        prune_entries(&mut state.entries);
         state.dirty = true;
     }
 
@@ -296,11 +321,15 @@ impl HashCache {
         let Some(fp) = fingerprint(path) else {
             return false;
         };
-        let state = self.lock();
+        let mut state = self.lock();
         let Some(entry) = state.entries.get(&key) else {
             return false;
         };
-        entry_matches(entry, fp) && entry.verify_valid.get(label).copied().unwrap_or(false)
+        if !entry_matches(entry, fp) || !entry.verify_valid.get(label).copied().unwrap_or(false) {
+            return false;
+        }
+        touch(&mut state, &key);
+        true
     }
 
     /// Record a `label` verify verdict for `path`. Only `valid == true` is
@@ -319,13 +348,17 @@ impl HashCache {
             return;
         }
         let mut state = self.lock();
-        let entry = entry_for(&mut state.entries, key, fp);
+        let entry = entry_for(&mut state.entries, key.clone(), fp);
         entry.verify_valid.insert(label.to_string(), true);
+        touch(&mut state, &key);
+        prune_entries(&mut state.entries);
         state.dirty = true;
     }
 
     /// Persist the cache if anything changed. Errors log a warning and are
-    /// swallowed so a cache write can never fail the run.
+    /// swallowed so a cache write can never fail the run. The save folds
+    /// any preserved pre-rebuild entries into the live map, so a handle
+    /// kept open afterwards serves the entries that were just written.
     pub fn save(&self) {
         let Some(path) = &self.path else {
             return;
@@ -334,16 +367,13 @@ impl HashCache {
         if !state.dirty {
             return;
         }
-        let result = if state.preserved.is_empty() {
-            write_atomic(path, &state.entries)
-        } else {
-            let mut merged = state.preserved.clone();
-            for (key, entry) in &state.entries {
-                merged.insert(key.clone(), entry.clone());
-            }
-            write_atomic(path, &merged)
-        };
-        match result {
+        if !state.preserved.is_empty() {
+            let mut merged = std::mem::take(&mut state.preserved);
+            merged.extend(std::mem::take(&mut state.entries));
+            state.entries = merged;
+        }
+        prune_entries(&mut state.entries);
+        match write_atomic(path, &state.entries) {
             Ok(()) => state.dirty = false,
             Err(e) => log::warn!("Could not write hash cache to {}: {e}", path.display()),
         }
@@ -362,7 +392,7 @@ fn entry_for(
     fp: Fingerprint,
 ) -> &mut CacheEntry {
     let entry = entries.entry(key).or_default();
-    if entry.size != fp.0 || entry.mtime_secs != fp.1 || entry.mtime_nanos != fp.2 {
+    if !entry_matches(entry, fp) {
         *entry = CacheEntry {
             size: fp.0,
             mtime_secs: fp.1,
@@ -371,6 +401,39 @@ fn entry_for(
         };
     }
     entry
+}
+
+// Deliberately does not set `state.dirty`: a lookup-only run (no new
+// digests stored) must not rewrite the cache file on `save()`. The
+// trade-off is that `last_used` reordering from lookups alone never
+// reaches disk, so a process that only ever reads the cache leaves
+// its LRU order exactly as the last write left it.
+fn touch(state: &mut State, key: &str) {
+    state.access_clock = state.access_clock.saturating_add(1);
+    if let Some(entry) = state.entries.get_mut(key) {
+        entry.last_used = state.access_clock;
+    }
+}
+
+fn prune_entries(entries: &mut HashMap<String, CacheEntry>) {
+    if entries.len() > MAX_CACHE_ENTRIES {
+        prune_entries_to(entries, MAX_CACHE_ENTRIES * 95 / 100);
+    }
+}
+
+fn prune_entries_to(entries: &mut HashMap<String, CacheEntry>, limit: usize) {
+    if entries.len() <= limit {
+        return;
+    }
+    let remove_count = entries.len() - limit;
+    let mut entries_by_age = entries.drain().collect::<Vec<_>>();
+    entries_by_age.sort_unstable_by(|(key_a, entry_a), (key_b, entry_b)| {
+        entry_a
+            .last_used
+            .cmp(&entry_b.last_used)
+            .then_with(|| key_a.cmp(key_b))
+    });
+    entries.extend(entries_by_age.into_iter().skip(remove_count));
 }
 
 fn has_all(digests: &FileDigests, algos: &[HashAlgo]) -> bool {
@@ -432,9 +495,25 @@ fn read_entries(path: &Path) -> HashMap<String, CacheEntry> {
 }
 
 fn read_envelope(path: &Path) -> Option<HashMap<String, CacheEntry>> {
+    read_envelope_limited(path, MAX_CACHE_LOAD_BYTES)
+}
+
+fn read_envelope_limited(path: &Path, max_bytes: u64) -> Option<HashMap<String, CacheEntry>> {
     let file = std::fs::File::open(path).ok()?;
     let decoder = flate2::read::GzDecoder::new(std::io::BufReader::new(file));
-    let envelope: Envelope = serde_json::from_reader(decoder).ok()?;
+    // Buffered so the JSON reader pulls 64 KiB blocks out of the inflate
+    // stream instead of one byte per call.
+    let mut limited = std::io::BufReader::with_capacity(64 << 10, decoder.take(max_bytes + 1));
+    let envelope = serde_json::from_reader(&mut limited).ok();
+    if limited.get_ref().limit() == 0 {
+        log::warn!(
+            "Hash cache at {} exceeds the {}-byte decoded-load limit; starting with an empty cache",
+            path.display(),
+            max_bytes
+        );
+        return None;
+    }
+    let envelope: Envelope = envelope?;
     if envelope.version != CACHE_VERSION {
         return None;
     }
@@ -716,5 +795,69 @@ mod tests {
         }
         let reopened = cache_at(dir.path(), false);
         assert_eq!(reopened.lookup_raw(&file, ALL), Some(d));
+    }
+    #[test]
+    fn eviction_and_reload_keep_recent_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hash-cache.json.gz");
+        let cap = 4;
+        let mut entries = HashMap::new();
+        for i in 0..(cap - 1) {
+            entries.insert(
+                format!("retained-{i}"),
+                CacheEntry {
+                    last_used: i as u64 + 2,
+                    ..Default::default()
+                },
+            );
+        }
+        for key in ["evict-a", "evict-b"] {
+            entries.insert(
+                key.to_string(),
+                CacheEntry {
+                    last_used: 1,
+                    ..Default::default()
+                },
+            );
+        }
+        write_atomic(&path, &entries).unwrap();
+
+        let mut loaded = read_entries(&path);
+        prune_entries_to(&mut loaded, cap);
+        assert_eq!(loaded.len(), cap);
+        assert!(!loaded.contains_key("evict-a"));
+        assert!(loaded.contains_key("evict-b"));
+        assert!(loaded.contains_key("retained-0"));
+        write_atomic(&path, &loaded).unwrap();
+
+        let reloaded = read_entries(&path);
+        assert_eq!(reloaded.len(), cap);
+        assert!(reloaded.contains_key("retained-0"));
+        assert!(reloaded.contains_key("retained-2"));
+        assert!(reloaded.contains_key("evict-b"));
+    }
+
+    #[test]
+    fn oversized_decoded_cache_loads_empty() {
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("oversized-cache.json.gz");
+        let file = std::fs::File::create(&path).unwrap();
+        let mut encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+        encoder
+            .write_all(br#"{"version":1,"entries":{},"padding":""#)
+            .unwrap();
+        let padding = [b' '; 256];
+        let mut remaining = 1025_u64;
+        while remaining > 0 {
+            let count = remaining.min(padding.len() as u64) as usize;
+            encoder.write_all(&padding[..count]).unwrap();
+            remaining -= count as u64;
+        }
+        encoder.write_all(b"\"}").unwrap();
+        encoder.finish().unwrap();
+
+        assert!(read_envelope_limited(&path, 1024).is_none());
     }
 }

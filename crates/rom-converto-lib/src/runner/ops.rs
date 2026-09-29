@@ -1931,11 +1931,17 @@ where
     } else {
         None
     };
+    let mut selection = None;
     let basis = match &resolved {
         Some(staged) => staged.output_basis().to_path_buf(),
-        None => probe_basis(input, op)
-            .await?
-            .unwrap_or_else(|| input.to_path_buf()),
+        None => {
+            selection = probe_selection(input, op).await?;
+            selection
+                .as_ref()
+                .map(|selected| selected.output_basis(input))
+                .transpose()?
+                .unwrap_or_else(|| input.to_path_buf())
+        }
     };
     let source = staged_path(&resolved, input);
     let desired = output_or(req, source, || derive(&basis, source))?;
@@ -1961,7 +1967,7 @@ where
         return Ok(planned(line));
     }
     if resolved.is_none() {
-        resolved = stage_input(input, operation).await?;
+        resolved = stage_input_with_selection(input, operation, selection.take()).await?;
     }
     let source = staged_path(&resolved, input).to_path_buf();
     if !req.options.skip_space_check.unwrap_or(false) {
@@ -2038,33 +2044,43 @@ fn nx_media_label(input: &Path) -> Option<String> {
     .then_some(label)
 }
 
-/// Stages an archive input for `operation` (extracting the first member
-/// matching its input extensions); operations without any read the input as is.
+/// Stages an archive input for `operation`.
 pub(crate) async fn stage_input(input: &Path, operation: &str) -> Result<Option<ResolvedInput>> {
+    stage_input_with_selection(input, operation, None).await
+}
+
+async fn stage_input_with_selection(
+    input: &Path,
+    operation: &str,
+    selection: Option<crate::util::ArchiveSelection>,
+) -> Result<Option<ResolvedInput>> {
     let exts = find_op(operation).map_or(&[][..], OpSpec::input_exts);
     if exts.is_empty() {
         return Ok(None);
     }
     let input = input.to_path_buf();
-    tokio::task::spawn_blocking(move || crate::util::resolve_input(&input, exts))
-        .await?
-        .map(Some)
+    tokio::task::spawn_blocking(move || {
+        crate::util::resolve_input_with_selection(&input, exts, selection)
+    })
+    .await?
+    .map(Some)
 }
 
-/// The file a conversion reads: the staged member, else `input` itself.
-pub(crate) fn staged_path<'a>(resolved: &'a Option<ResolvedInput>, input: &'a Path) -> &'a Path {
-    resolved.as_ref().map_or(input, ResolvedInput::path)
-}
-
-/// The default-output basis of an archive input for `op`, read from its
-/// member listing without extracting; `None` for a plain file.
-async fn probe_basis(input: &Path, op: &OpSpec) -> Result<Option<PathBuf>> {
+async fn probe_selection(
+    input: &Path,
+    op: &OpSpec,
+) -> Result<Option<crate::util::ArchiveSelection>> {
     let exts = op.input_exts();
     if exts.is_empty() {
         return Ok(None);
     }
     let input = input.to_path_buf();
-    tokio::task::spawn_blocking(move || crate::util::output_basis(&input, exts)).await?
+    tokio::task::spawn_blocking(move || crate::util::probe_archive(&input, exts)).await?
+}
+
+/// The file a conversion reads: the staged member, else `input` itself.
+pub(crate) fn staged_path<'a>(resolved: &'a Option<ResolvedInput>, input: &'a Path) -> &'a Path {
+    resolved.as_ref().map_or(input, ResolvedInput::path)
 }
 
 /// Bytes a conversion of `source` needs at the output: the operation's own

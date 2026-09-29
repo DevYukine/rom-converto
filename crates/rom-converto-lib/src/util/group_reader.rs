@@ -6,8 +6,8 @@
 //! the logical stream, and a `produce` closure that loads the raw bytes
 //! for a group index (run on the reader thread, so disk access stays
 //! sequential). Workers decode raw groups into logical bytes; the
-//! adapter keeps up to `in_flight_cap` groups in flight and reassembles
-//! results in order with a reorder map, the same scheme as
+//! adapter keeps up to its caller-provided group cap in flight or pending
+//! and reassembles results in order with a reorder map, the same scheme as
 //! [`crate::util::worker_pool::drive`] but pull-based so it works
 //! incrementally inside `Read::read`.
 //!
@@ -19,6 +19,7 @@
 use std::collections::HashMap;
 use std::io::{self, Read, Seek, SeekFrom};
 
+use super::positional_reader::seek_target;
 use super::worker_pool::{Pool, Worker, parallelism};
 
 /// Placement of one decoded group inside the logical output stream.
@@ -33,6 +34,10 @@ pub struct GroupSpan {
 /// Soft ceiling for raw + decoded group bytes held by the pipeline.
 /// Keeps worst-case memory bounded on low-end machines even for
 /// formats with very large groups (wit writes WIA chunks of 40 MiB).
+/// The legacy GCZ, WIA and NKit readers deliberately size through
+/// [`in_flight_cap`] and this budget rather than the codec
+/// [`MEMORY_TARGET_BYTES`](crate::util::worker_pool::MEMORY_TARGET_BYTES)
+/// admission; that is develop's sizing, kept by user decision.
 const IN_FLIGHT_BUDGET_BYTES: u64 = 128 * 1024 * 1024;
 
 /// In-flight group cap for a given maximum group size: at least 2 so
@@ -65,7 +70,7 @@ where
     produce: P,
     spans: Vec<GroupSpan>,
     logical_size: u64,
-    cap: usize,
+    window: usize,
     /// First group index that may still be needed; everything below it
     /// has been consumed or skipped.
     window_base: u64,
@@ -85,8 +90,23 @@ where
     /// `spans` must be non-empty, ordered, and contiguous from logical
     /// offset 0. `pool` must produce, for work item `produce(i)`, the
     /// decoded bytes of group `i` with exactly `spans[i].logical_size`
-    /// bytes.
-    pub fn new<Wk>(workers: Vec<Wk>, spans: Vec<GroupSpan>, cap: usize, produce: P) -> Self
+    /// bytes. `window` caps in-flight groups and submission lookahead
+    /// alike; [`Self::with_lookahead`] splits the two bounds.
+    pub fn new<Wk>(workers: Vec<Wk>, spans: Vec<GroupSpan>, window: usize, produce: P) -> Self
+    where
+        Wk: Worker<W, Vec<u8>, E> + Send + 'static,
+    {
+        Self::with_lookahead(workers, spans, window, window, produce)
+    }
+
+    /// Creates a reader with a fixed, smaller submission window.
+    pub fn with_lookahead<Wk>(
+        workers: Vec<Wk>,
+        spans: Vec<GroupSpan>,
+        cap: usize,
+        lookahead: usize,
+        produce: P,
+    ) -> Self
     where
         Wk: Worker<W, Vec<u8>, E> + Send + 'static,
     {
@@ -107,7 +127,9 @@ where
             produce,
             spans,
             logical_size,
-            cap: cap.max(2),
+            // Never below two: one group decodes while the other is
+            // being consumed, as documented for oversize units.
+            window: lookahead.max(2).min(cap.max(2)),
             window_base: 0,
             next_submit: 0,
             in_flight: 0,
@@ -144,7 +166,9 @@ where
     }
 
     fn top_up(&mut self) -> io::Result<()> {
-        while self.in_flight < self.cap && self.next_submit < self.spans.len() as u64 {
+        while self.in_flight + self.pending.len() < self.window
+            && self.next_submit < self.spans.len() as u64
+        {
             let work = (self.produce)(self.next_submit).map_err(io::Error::other)?;
             self.pool()
                 .submit(self.next_submit, work)
@@ -171,9 +195,28 @@ where
             );
             let (seq, result) = self.pool().recv();
             self.in_flight -= 1;
-            let bytes = result.map_err(io::Error::other)?;
-            if seq >= self.window_base {
-                self.pending.insert(seq, bytes);
+            if seq < self.window_base {
+                log_discarded((seq, result));
+            } else {
+                match result {
+                    Ok(bytes) => {
+                        debug_assert!(self.pending.len() < self.window);
+                        self.pending.insert(seq, bytes);
+                        debug_assert!(self.pending.len() + self.in_flight <= self.window);
+                    }
+                    // The group is at or after the read position, so every
+                    // later read needs it too: surface the error now
+                    // instead of parking it until the group is wanted.
+                    Err(error) => {
+                        // The failed group is neither pending nor
+                        // resubmittable while its index stays inside the
+                        // submitted window; rewind so a retried read
+                        // resubmits it instead of waiting forever.
+                        let base = self.window_base;
+                        self.reset_window(base);
+                        return Err(io::Error::other(error));
+                    }
+                }
             }
             self.top_up()?;
         }
@@ -199,12 +242,7 @@ where
         self.ensure_group(idx)?;
         let span = self.spans[idx as usize];
         let in_group = (self.pos - span.logical_offset) as usize;
-        // Never serve across a group boundary in one call; the next
-        // group may still be in flight.
-        let take = buf
-            .len()
-            .min(span.logical_size as usize - in_group)
-            .min((self.logical_size - self.pos) as usize);
+        let take = buf.len().min(span.logical_size as usize - in_group);
         let (_, bytes) = self.current.as_ref().expect("ensured above");
         buf[..take].copy_from_slice(&bytes[in_group..in_group + take]);
         self.pos += take as u64;
@@ -230,18 +268,7 @@ where
     P: FnMut(u64) -> Result<W, E>,
 {
     fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
-        let new_pos: i128 = match from {
-            SeekFrom::Start(p) => p as i128,
-            SeekFrom::Current(d) => self.pos as i128 + d as i128,
-            SeekFrom::End(d) => self.logical_size as i128 + d as i128,
-        };
-        if new_pos < 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "seek to negative offset",
-            ));
-        }
-        self.pos = new_pos as u64;
+        self.pos = seek_target(self.pos, self.logical_size, from)?;
         Ok(self.pos)
     }
 }
@@ -353,6 +380,34 @@ mod tests {
     }
 
     #[test]
+    fn window_never_drops_below_two() {
+        let produced = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = produced.clone();
+        let spans = (0..8)
+            .map(|i| GroupSpan {
+                logical_offset: i * 8,
+                logical_size: 8,
+            })
+            .collect();
+        let mut reader = PipelinedGroupReader::with_lookahead(
+            vec![FillWorker, FillWorker, FillWorker],
+            spans,
+            4,
+            1,
+            move |i| {
+                count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Ok((i, 8, i as u8))
+            },
+        );
+        let mut first = [0; 8];
+        reader.read_exact(&mut first).unwrap();
+        // One group decodes while the other is consumed, but the window
+        // still never expands to the cap.
+        assert_eq!(produced.load(std::sync::atomic::Ordering::Relaxed), 2);
+        assert_eq!(first, [0; 8]);
+    }
+
+    #[test]
     fn worker_error_surfaces_as_io_error() {
         struct FailWorker;
         impl Worker<u64, Vec<u8>, std::io::Error> for FailWorker {
@@ -381,6 +436,145 @@ mod tests {
         assert!(err.to_string().contains("decode failed"));
     }
 
+    /// One-shot gate: one worker blocks until another worker's result has
+    /// been produced (or the test releases it), so arrival order does not
+    /// depend on sleeps.
+    #[derive(Clone)]
+    struct Gate(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+    impl Gate {
+        fn new() -> Self {
+            Self(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                false,
+            )))
+        }
+
+        /// Blocks until [`Gate::signal`].
+        fn wait(&self) {
+            while !self.0.load(std::sync::atomic::Ordering::Acquire) {
+                std::thread::yield_now();
+            }
+        }
+
+        fn signal(&self) {
+            self.0.store(true, std::sync::atomic::Ordering::Release);
+        }
+    }
+
+    #[test]
+    fn retried_read_after_surfaced_error_resubmits_the_group() {
+        struct FailOnceWorker(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+        impl Worker<u64, Vec<u8>, std::io::Error> for FailOnceWorker {
+            fn process(&mut self, idx: u64) -> io::Result<Vec<u8>> {
+                if idx == 0 {
+                    let attempt = self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if attempt == 0 {
+                        return Err(io::Error::other("decode failed"));
+                    }
+                    return Ok(vec![0; 16]);
+                }
+                Ok(vec![idx as u8; 16])
+            }
+        }
+        let spans: Vec<GroupSpan> = (0..3)
+            .map(|i| GroupSpan {
+                logical_offset: i * 16,
+                logical_size: 16,
+            })
+            .collect();
+        let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut reader = PipelinedGroupReader::new(
+            vec![
+                FailOnceWorker(attempts.clone()),
+                FailOnceWorker(attempts.clone()),
+            ],
+            spans,
+            2,
+            Ok::<u64, std::io::Error>,
+        );
+        let mut first = [0; 16];
+        let err = reader.read_exact(&mut first).unwrap_err();
+        assert!(err.to_string().contains("decode failed"));
+
+        // The retry resubmits the failed group and the stream recovers.
+        let mut out = Vec::new();
+        reader.read_to_end(&mut out).unwrap();
+        assert_eq!(out.len(), 48);
+        assert!(out[..16].iter().all(|&b| b == 0));
+        assert!(out[16..32].iter().all(|&b| b == 1));
+        assert!(out[32..].iter().all(|&b| b == 2));
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn next_group_error_surfaces_on_next_read_and_retry_recovers() {
+        struct NextGroupFailWorker {
+            attempts: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+            gate: Gate,
+        }
+        impl Worker<u64, Vec<u8>, std::io::Error> for NextGroupFailWorker {
+            fn process(&mut self, idx: u64) -> io::Result<Vec<u8>> {
+                match idx {
+                    0 => Ok(vec![0; 16]),
+                    1 => {
+                        let attempt = self
+                            .attempts
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if attempt == 0 {
+                            // Group 1 stays blocked until read 1 has served
+                            // group 0, so its error can only surface on the
+                            // next read.
+                            self.gate.wait();
+                            Err(io::Error::other("next group failed"))
+                        } else {
+                            Ok(vec![1; 16])
+                        }
+                    }
+                    _ => Ok(vec![idx as u8; 16]),
+                }
+            }
+        }
+        let spans: Vec<GroupSpan> = (0..3)
+            .map(|i| GroupSpan {
+                logical_offset: i * 16,
+                logical_size: 16,
+            })
+            .collect();
+        let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let gate = Gate::new();
+        let mut reader = PipelinedGroupReader::new(
+            vec![
+                NextGroupFailWorker {
+                    attempts: attempts.clone(),
+                    gate: gate.clone(),
+                },
+                NextGroupFailWorker {
+                    attempts: attempts.clone(),
+                    gate: gate.clone(),
+                },
+            ],
+            spans,
+            2,
+            Ok::<u64, std::io::Error>,
+        );
+        let mut first = [0; 16];
+        reader.read_exact(&mut first).unwrap();
+        assert_eq!(first, [0; 16]);
+
+        // Group 0 is served; release group 1's error for the next read.
+        gate.signal();
+
+        let mut second = [0; 16];
+        let err = reader.read_exact(&mut second).unwrap_err();
+        assert!(err.to_string().contains("next group failed"));
+
+        let mut out = Vec::new();
+        reader.read_to_end(&mut out).unwrap();
+        assert_eq!(out.len(), 32);
+        assert!(out[..16].iter().all(|&b| b == 1));
+        assert!(out[16..].iter().all(|&b| b == 2));
+    }
+
     #[test]
     fn wrong_decoded_size_is_an_error() {
         struct ShortWorker;
@@ -401,10 +595,55 @@ mod tests {
     }
 
     #[test]
+    fn pending_results_do_not_expand_submission_window() {
+        struct CoordinatedWorker(std::sync::Arc<(std::sync::Mutex<usize>, std::sync::Condvar)>);
+        impl Worker<u64, Vec<u8>, std::io::Error> for CoordinatedWorker {
+            fn process(&mut self, idx: u64) -> io::Result<Vec<u8>> {
+                let output = vec![idx as u8; 16];
+                let (completed, ready) = &*self.0;
+                if idx == 0 {
+                    let mut count = completed.lock().unwrap();
+                    while *count < 3 {
+                        count = ready.wait(count).unwrap();
+                    }
+                } else {
+                    let mut count = completed.lock().unwrap();
+                    *count += 1;
+                    ready.notify_one();
+                }
+                Ok(output)
+            }
+        }
+
+        let spans: Vec<GroupSpan> = (0..8)
+            .map(|i| GroupSpan {
+                logical_offset: i * 16,
+                logical_size: 16,
+            })
+            .collect();
+        let cap = 4;
+        let completed = std::sync::Arc::new((std::sync::Mutex::new(0), std::sync::Condvar::new()));
+        let mut r = PipelinedGroupReader::new(
+            (0..cap)
+                .map(|_| CoordinatedWorker(completed.clone()))
+                .collect(),
+            spans,
+            cap,
+            Ok::<u64, std::io::Error>,
+        );
+        let mut first = [0; 16];
+        r.read_exact(&mut first).unwrap();
+        assert_eq!(first, [0; 16]);
+        assert!(r.pending.len() <= cap);
+        assert_eq!(r.next_submit, cap as u64);
+    }
+
+    #[test]
     fn in_flight_cap_scales_with_group_size() {
-        assert!(in_flight_cap(128 * 1024) >= 2);
-        assert_eq!(in_flight_cap(40 * 1024 * 1024).min(2), 2);
-        assert!(in_flight_cap(40 * 1024 * 1024) <= parallelism().max(2));
-        let _ = in_flight_cap(0);
+        // 128 MiB over two 40 MiB groups leaves one slot, so the cap
+        // bottoms out at the pipeline floor instead of parallelism.
+        assert_eq!(in_flight_cap(40 * 1024 * 1024), 2);
+        // Tiny groups leave the budget unused, so one slot per core.
+        assert_eq!(in_flight_cap(0), parallelism().max(2));
     }
 }
