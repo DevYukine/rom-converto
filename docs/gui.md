@@ -65,10 +65,10 @@ database, filed under `<output>/<console>/` following the layout template
 format for its console: GameCube and Wii compress to RVZ, 3DS to Z3DS, Switch
 to NSZ/XCZ (requires `prod.keys`), Wii U to WUA, PS1, PS2, Saturn, Sega CD and
 LaserDisc to CHD, PSP to CSO, Xbox to XISO, Xbox 360 to ZAR, PS3 to a
-decrypted ISO, and cartridge ROMs including DS to ZIP. Everything else is
-copied unchanged.
+decrypted ISO, and cartridge ROMs including DS to ZIP. Files already in their target
+format are copied unchanged; unrecognized files are skipped.
 
-`Rename with DAT` hashes every file and queries the Playmatch API — including
+`Rename with DAT` hashes every file and queries the Playmatch API, including
 during a dry run. `.m3u` playlists for multi-disc sets are written on real
 runs only, never during a dry run. Move deletes each source only after its
 organized copy was written successfully.

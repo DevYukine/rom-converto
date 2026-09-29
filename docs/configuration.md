@@ -47,6 +47,7 @@ An unknown preset is an error.
 | `[cso]` | `block_size`, `on_conflict`, `output_dir`, `report` |
 | `[wup]` | `level`, `on_conflict` |
 | `[dat]` | `api_base`, `report`, `input_checksum_min`, `input_checksum_max` |
+| `[organize]` | `output_dir`, `output_template`, `on_conflict`, `report`, `dat`, `move_source`, `playlists` |
 
 `[presets.NAME]` can contain any of these format tables. `on_conflict` accepts
 `error`, `overwrite`, `skip`, `rename`, or `overwrite-invalid`.

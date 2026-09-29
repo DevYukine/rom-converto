@@ -863,7 +863,7 @@ Per-console targets:
 | Nintendo 3DS | Z3DS (`.zcci`, `.zcia`, ...); encrypted ROMs are refused unless `--allow-encrypted` |
 | Switch | NSZ / XCZ; needs `prod.keys` |
 | Wii U | WUA |
-| PS1, PS2, Saturn, Sega CD, LaserDisc | CHD |
+| PS1, PS2, Saturn, Sega CD, Dreamcast (`.cue`), LaserDisc | CHD; `.gdi` sets are skipped |
 | PSP | CSO |
 | Xbox (full disc image) | XISO (the game partition) |
 | Xbox 360 disc | ZAR |
@@ -890,7 +890,7 @@ else keeps its own name. Match failures degrade to keep-name with a warning. A d
 run still hashes every file and queries the API, so previewing with `--dat` costs
 the same lookups as the real run. With `--move`, the sources of a successfully
 organized item (every `.bin` and the `.cue` of a set) are deleted only after the
-output is in place — never for skipped or failed files.
+output is in place, never for skipped or failed files.
 
 Example:
 

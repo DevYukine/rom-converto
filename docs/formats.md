@@ -64,7 +64,9 @@ extension. `ctr convert` changes `.cia` and `.3ds`/`.cci`; its CIA output is uns
 and intended for CFW or emulators, not a stock 3DS. Its `.3ds` output is padded to the
 next cartridge size like a real cart dump; pass `--trim` to end it after the last
 partition instead. A trimmed file still carries the full card size in its header, so
-`ctr info` reports the padded size rather than the file size.
+`ctr info` reports the padded size rather than the file size. Z3DS files end with a
+seek table; `ctr info` reads only the frames it needs through that table and rejects a
+payload without one.
 
 ### RVZ and legacy Nintendo disc containers
 

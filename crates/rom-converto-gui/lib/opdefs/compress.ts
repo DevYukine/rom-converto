@@ -346,7 +346,7 @@ export const compressOps: OpDef[] = [
 					"Lets you compress a ROM that still looks encrypted, even though encrypted data barely compresses. Decrypt it first for real savings.",
 				note: (s) =>
 					s.allowEncrypted &&
-					"Compresses even if the ROM looks encrypted. Encrypted 3DS ROMs barely compress — ctr decrypt first for real savings.",
+					"Compresses even if the ROM looks encrypted. Encrypted 3DS ROMs barely compress; ctr decrypt first for real savings.",
 			},
 			...recursiveFields(),
 		],
