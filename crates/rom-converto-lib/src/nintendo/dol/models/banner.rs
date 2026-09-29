@@ -2,8 +2,8 @@
 //!
 //! Two formats:
 //!   - BNR1 (single language, typically Latin-1) used by US/EU titles.
-//!   - BNR2 (six languages: Japanese, English, German, French, Spanish,
-//!     Italian) used by some PAL/JP titles.
+//!   - BNR2 (six languages: English, German, French, Spanish, Italian,
+//!     Dutch) used by PAL titles.
 //!
 //! Both formats embed a 96x32 RGB5A3 banner image at offset 0x20.
 
@@ -35,12 +35,12 @@ pub enum BannerLanguage {
     /// English for US, German for German PAL, and so on). It is exposed as
     /// `BannerLanguage::Default`.
     Default,
-    Japanese,
     English,
     German,
     French,
     Spanish,
     Italian,
+    Dutch,
 }
 
 /// One decoded title block: short and long game/maker names plus the
@@ -94,12 +94,12 @@ impl GcBanner {
                     return Err(anyhow!("BNR2 file truncated"));
                 }
                 let order = [
-                    BannerLanguage::Japanese,
                     BannerLanguage::English,
                     BannerLanguage::German,
                     BannerLanguage::French,
                     BannerLanguage::Spanish,
                     BannerLanguage::Italian,
+                    BannerLanguage::Dutch,
                 ];
                 order
                     .iter()
@@ -153,13 +153,17 @@ mod tests {
         buf
     }
 
+    const BNR2_SLOT_NAMES: [&str; 6] =
+        ["English", "German", "French", "Spanish", "Italian", "Dutch"];
+
     fn build_bnr2() -> Vec<u8> {
         let mut buf = vec![0u8; BNR2_FILE_SIZE];
         buf[0..4].copy_from_slice(&BNR2_MAGIC);
         let titles_off = BANNER_IMAGE_OFFSET + BANNER_IMAGE_BYTES;
-        let eng = titles_off + BANNER_LANG_BLOCK_SIZE;
-        let s = b"English Game";
-        buf[eng..eng + s.len()].copy_from_slice(s);
+        for (i, name) in BNR2_SLOT_NAMES.iter().enumerate() {
+            let off = titles_off + i * BANNER_LANG_BLOCK_SIZE;
+            buf[off..off + name.len()].copy_from_slice(name.as_bytes());
+        }
         buf
     }
 
@@ -177,17 +181,26 @@ mod tests {
     }
 
     #[test]
-    fn parses_bnr2_six_languages() {
+    fn parses_bnr2_in_pal_language_order() {
         let buf = build_bnr2();
         let b = GcBanner::parse(&buf).unwrap();
         assert_eq!(b.format, BannerFormat::Bnr2);
-        assert_eq!(b.titles.len(), 6);
-        let eng = b
+        let parsed: Vec<_> = b
             .titles
             .iter()
-            .find(|t| t.language == BannerLanguage::English)
-            .unwrap();
-        assert_eq!(eng.short_game_name, "English Game");
+            .map(|t| (t.language, t.short_game_name.as_str()))
+            .collect();
+        assert_eq!(
+            parsed,
+            [
+                (BannerLanguage::English, "English"),
+                (BannerLanguage::German, "German"),
+                (BannerLanguage::French, "French"),
+                (BannerLanguage::Spanish, "Spanish"),
+                (BannerLanguage::Italian, "Italian"),
+                (BannerLanguage::Dutch, "Dutch"),
+            ]
+        );
     }
 
     #[test]
