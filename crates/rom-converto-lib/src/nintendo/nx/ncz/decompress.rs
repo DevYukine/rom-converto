@@ -3,22 +3,21 @@
 //! re-encrypted bytes to `out`. Memory stays bounded by buffer sizes
 //! regardless of input length.
 
-use std::io::{self, Cursor, Read, Write};
+use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 
 use byteorder::{LE, ReadBytesExt};
 
+use super::LARGE_BLOCK_STREAM_CHUNK;
 use crate::nintendo::nx::constants::{
     MAX_BLOCK_SIZE_EXP, MIN_BLOCK_SIZE_EXP, NCA_PREFIX_SIZE, NCZ_SECTION_ENTRY_SIZE,
     NCZBLOCK_MAGIC, NCZSECTN_MAGIC,
 };
 use crate::nintendo::nx::error::{NxError, NxResult};
-use crate::nintendo::nx::ncz::decompress_worker::{
-    NczDecompressWork, default_thread_count, spawn_ncz_decompress_pool,
-};
+use crate::nintendo::nx::ncz::decompress_worker::{NczDecompressWork, spawn_ncz_decompress_pool};
 use crate::nintendo::nx::ncz::header::{NczBlockInfo, NczSectionEntry};
 use crate::nintendo::nx::ncz::reencrypt::ReencryptWriter;
-use crate::util::worker_pool::{PoolChannelClosed, drive};
-use crate::util::{CancelToken, Cancelled, ProgressReporter};
+use crate::util::worker_pool::{PoolChannelClosed, drive, parallelism};
+use crate::util::{CancelToken, Cancelled, ProgressReporter, extent_end};
 
 const STREAM_CHUNK: usize = 256 * 1024;
 const READ_BUFFER: usize = 4 * 1024 * 1024;
@@ -32,7 +31,7 @@ const READ_BUFFER: usize = 4 * 1024 * 1024;
 ///
 /// Returns an error if the NCZ headers are malformed, decompression
 /// fails, `cancel` is triggered, or I/O on `input` / `out` fails.
-pub fn ncz_to_nca<R: Read + Send, W: Write>(
+pub fn ncz_to_nca<R: Read + Seek + Send, W: Write>(
     input: &mut R,
     out: &mut W,
     progress: &dyn ProgressReporter,
@@ -61,7 +60,10 @@ pub fn ncz_to_nca<R: Read + Send, W: Write>(
     Ok(())
 }
 
-fn read_sections<R: Read>(input: &mut R, cancel: &CancelToken) -> NxResult<Vec<NczSectionEntry>> {
+fn read_sections<R: Read + Seek>(
+    input: &mut R,
+    cancel: &CancelToken,
+) -> NxResult<Vec<NczSectionEntry>> {
     let mut magic = [0u8; 8];
     input.read_exact(&mut magic)?;
     if magic != NCZSECTN_MAGIC {
@@ -71,7 +73,18 @@ fn read_sections<R: Read>(input: &mut R, cancel: &CancelToken) -> NxResult<Vec<N
     if count < 0 {
         return Err(NxError::IncompleteSection);
     }
-    let mut sections = Vec::with_capacity(count as usize);
+    let after_count = input.stream_position()?;
+    let end = input.seek(SeekFrom::End(0))?;
+    let section_bytes = u64::try_from(count)
+        .ok()
+        .and_then(|n| n.checked_mul(NCZ_SECTION_ENTRY_SIZE as u64))
+        .ok_or(NxError::IncompleteSection)?;
+    if extent_end(after_count, section_bytes, end).is_none() {
+        return Err(NxError::IncompleteSection);
+    }
+    input.seek(SeekFrom::Start(after_count))?;
+    let count = usize::try_from(count).map_err(|_| NxError::IncompleteSection)?;
+    let mut sections = Vec::with_capacity(count);
     let mut entry = vec![0u8; NCZ_SECTION_ENTRY_SIZE];
     for _ in 0..count {
         check_cancel(cancel)?;
@@ -96,7 +109,7 @@ fn read_sections<R: Read>(input: &mut R, cancel: &CancelToken) -> NxResult<Vec<N
     Ok(sections)
 }
 
-fn read_block_or_payload_start<R: Read>(
+fn read_block_or_payload_start<R: Read + Seek>(
     input: &mut R,
     cancel: &CancelToken,
 ) -> NxResult<(Option<NczBlockInfo>, Option<[u8; 8]>)> {
@@ -121,7 +134,19 @@ fn read_block_or_payload_start<R: Read>(
     }
     let num_blocks = input.read_u32::<LE>()?;
     let decompressed_size = input.read_i64::<LE>()?;
-    let mut compressed_block_sizes = Vec::with_capacity(num_blocks as usize);
+    let _logical_size = u64::try_from(decompressed_size).map_err(|_| NxError::IncompleteSection)?;
+    // The size table must fit between this header and the end of the
+    // file (same span check as `read_sections`), so the loop below is
+    // bounded by bytes actually present rather than the declared
+    // count.
+    let after_header = input.stream_position()?;
+    let end = input.seek(SeekFrom::End(0))?;
+    let table_bytes = u64::from(num_blocks) * size_of::<u32>() as u64;
+    if extent_end(after_header, table_bytes, end).is_none() {
+        return Err(NxError::IncompleteSection);
+    }
+    input.seek(SeekFrom::Start(after_header))?;
+    let mut compressed_block_sizes = Vec::new();
     for _ in 0..num_blocks {
         check_cancel(cancel)?;
         compressed_block_sizes.push(input.read_u32::<LE>()?);
@@ -150,40 +175,69 @@ fn decode_solid_stream<R: Read + Send, W: Write>(
     // (Thread B) lets the OS overlap libzstd's read syscalls and
     // arithmetic with the AES + write pipeline on a second core. On
     // a 14 GB single-NCA NSZ this trims ~30% off serial wall time.
+    // A second bounded channel carries drained buffers back to the
+    // decoder thread so steady-state operation allocates nothing per
+    // chunk instead of a fresh `Vec` every iteration.
     use std::sync::mpsc::sync_channel;
     use std::thread::scope;
 
     let (tx, rx) = sync_channel::<Vec<u8>>(8);
+    let (ret_tx, ret_rx) = sync_channel::<Vec<u8>>(8);
 
     scope(|s| -> NxResult<()> {
         let decode_handle = s.spawn(move || -> NxResult<()> {
             let mut decoder = zstd::stream::read::Decoder::new(input)
                 .map_err(|e| NxError::ZstdError(format!("zstd decoder init: {e}")))?;
+            let mut buf = vec![0u8; STREAM_CHUNK];
             loop {
                 check_cancel(cancel)?;
-                let mut buf = vec![0u8; STREAM_CHUNK];
                 let n = decoder
                     .read(&mut buf)
                     .map_err(|e| NxError::ZstdError(format!("zstd read: {e}")))?;
                 if n == 0 {
                     break;
                 }
-                buf.truncate(n);
-                if tx.send(buf).is_err() {
+                let mut chunk = std::mem::take(&mut buf);
+                chunk.truncate(n);
+                if tx.send(chunk).is_err() {
                     break;
                 }
+                buf = ret_rx
+                    .try_recv()
+                    .map(|mut recycled| {
+                        recycled.clear();
+                        recycled.resize(STREAM_CHUNK, 0);
+                        recycled
+                    })
+                    .unwrap_or_else(|_| vec![0u8; STREAM_CHUNK]);
             }
             Ok(())
         });
 
-        while let Ok(chunk) = rx.recv() {
-            check_cancel(cancel)?;
-            reenc.write_all(&chunk)?;
-            progress.inc(chunk.len() as u64);
-        }
-        decode_handle
+        let recv_result: NxResult<()> = (|| {
+            while let Ok(chunk) = rx.recv() {
+                check_cancel(cancel)?;
+                reenc.write_all(&chunk)?;
+                progress.inc(chunk.len() as u64);
+                let _ = ret_tx.send(chunk);
+            }
+            Ok(())
+        })();
+        // Drop the receiver (and the now-unused return sender) before
+        // joining: if `recv_result` above returned early on
+        // cancellation or a write error, the decoder thread may still
+        // be blocked in `tx.send()` on a full channel. Since `rx`
+        // stays alive for this whole scope by default, that send
+        // would otherwise never unblock (a dropped receiver is the
+        // only thing that turns a blocked `send` into an `Err`),
+        // deadlocking `scope()`'s implicit join below.
+        drop(rx);
+        drop(ret_tx);
+        let join_result = decode_handle
             .join()
-            .map_err(|_| NxError::WorkerPoolClosed(PoolChannelClosed))??;
+            .map_err(|_| NxError::WorkerPoolClosed(PoolChannelClosed));
+        recv_result?;
+        join_result??;
         Ok(())
     })
 }
@@ -195,31 +249,92 @@ fn decode_blocks_stream<R: Read, W: Write>(
     progress: &dyn ProgressReporter,
     cancel: &CancelToken,
 ) -> NxResult<()> {
-    let block_size = info.block_size_bytes() as usize;
+    let block_size_u64 = info.block_size_bytes();
+    let Ok(block_size) = usize::try_from(block_size_u64) else {
+        return decode_blocks_stream_large(input, info, reenc, progress, cancel);
+    };
+    let decompressed_size =
+        u64::try_from(info.decompressed_size).map_err(|_| NxError::IncompleteSection)?;
     let num_blocks = info.compressed_block_sizes.len();
-    let n_threads = default_thread_count().min(num_blocks.max(1));
+    // `decompressed_size` and the block table must agree: the last
+    // block's logical size is `decompressed_size` minus the preceding
+    // full blocks, and it is handed to workers as an allocation size,
+    // so it can never exceed one block. Without this, a tiny header
+    // declaring a huge `decompressed_size` reaches a worker's
+    // `vec![0u8; logical_size]` before any byte is decoded.
+    let declared_end = block_size_u64
+        .checked_mul(num_blocks as u64)
+        .ok_or(NxError::IncompleteSection)?;
+    let last_block_start = block_size_u64
+        .checked_mul(num_blocks.saturating_sub(1) as u64)
+        .ok_or(NxError::IncompleteSection)?;
+    if decompressed_size > declared_end || last_block_start > decompressed_size {
+        return Err(NxError::IncompleteSection);
+    }
+    // The bulk path needs a compressed block buffer. Stream blocks whose
+    // stored size exceeds zstd's usual bound directly from the input
+    // instead of allocating from an untrusted stored-size field.
+    for (i, &csz) in info.compressed_block_sizes.iter().enumerate() {
+        let logical_size = if i + 1 == num_blocks {
+            decompressed_size
+                .checked_sub((i as u64) * block_size_u64)
+                .ok_or(NxError::IncompleteSection)?
+        } else {
+            block_size_u64
+        };
+        if u64::from(csz) != logical_size
+            && usize::try_from(logical_size)
+                .is_ok_and(|size| csz as usize > zstd::zstd_safe::compress_bound(size))
+        {
+            return decode_blocks_stream_large(input, info, reenc, progress, cancel);
+        }
+    }
+
+    // The decompression worker holds no persistent codec state (each
+    // call is a one-shot `zstd::bulk::decompress_to_buffer`); the
+    // per-in-flight-job cost is its compressed input plus decompressed
+    // output. Only fall back to the bounded sequential streaming path
+    // when even one in-memory block doesn't fit the shared budget.
+    const TRANSIENT_DECODE_OVERHEAD: usize = 1024 * 1024;
+    let queued_bytes_per_job = block_size.saturating_mul(2);
+    let Some(admission) = crate::util::worker_pool::Budget {
+        codec_per_worker: TRANSIENT_DECODE_OVERHEAD,
+        per_job: queued_bytes_per_job,
+        writer_slot: 0,
+        fixed: 0,
+    }
+    .admit(parallelism().min(num_blocks.max(1)), num_blocks as u64) else {
+        return decode_blocks_stream_large(input, info, reenc, progress, cancel);
+    };
+    let n_threads = admission.workers;
+    let max_in_flight = admission.max_in_flight;
     let pool = spawn_ncz_decompress_pool(n_threads);
 
     let drive_result = drive(
         &pool,
         num_blocks as u64,
-        n_threads * 2,
+        max_in_flight,
         |seq| -> NxResult<NczDecompressWork> {
             check_cancel(cancel)?;
-            let i = seq as usize;
+            let i = usize::try_from(seq).map_err(|_| NxError::IncompleteSection)?;
             let csz = info.compressed_block_sizes[i] as usize;
             let is_last = i + 1 == num_blocks;
-            let logical_size = if is_last {
-                (info.decompressed_size as usize) - i * block_size
+            let logical_size_u64 = if is_last {
+                decompressed_size
+                    .checked_sub((i as u64) * block_size_u64)
+                    .ok_or(NxError::IncompleteSection)?
             } else {
-                block_size
+                block_size_u64
             };
+            let logical_size =
+                usize::try_from(logical_size_u64).map_err(|_| NxError::IncompleteSection)?;
+            let raw = csz == logical_size;
             let mut compressed = vec![0u8; csz];
             input.read_exact(&mut compressed)?;
             Ok(NczDecompressWork {
                 compressed,
                 logical_size,
-                raw: csz == logical_size,
+                raw,
             })
         },
         |_seq, out_block| -> NxResult<()> {
@@ -234,6 +349,99 @@ fn decode_blocks_stream<R: Read, W: Write>(
     Ok(())
 }
 
+/// Sequential, bounded-memory counterpart of [`decode_blocks_stream`],
+/// used when its admission check finds that even one in-memory block
+/// doesn't fit the shared worker-pool budget (huge block exponents).
+/// Never materializes a whole compressed or decompressed block: raw
+/// blocks stream straight through in fixed chunks, compressed blocks
+/// stream through a zstd decoder that reads exactly `csz` bytes per
+/// block (via `Read::take`) and writes decoded output as it's produced.
+fn decode_blocks_stream_large<R: Read, W: Write>(
+    input: &mut R,
+    info: &NczBlockInfo,
+    reenc: &mut ReencryptWriter<W>,
+    progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
+) -> NxResult<()> {
+    let block_size = info.block_size_bytes();
+    let num_blocks = info.compressed_block_sizes.len();
+    if num_blocks == 0 {
+        return Ok(());
+    }
+    let mut scratch = vec![0u8; LARGE_BLOCK_STREAM_CHUNK];
+
+    for (i, &csz) in info.compressed_block_sizes.iter().enumerate() {
+        check_cancel(cancel)?;
+        let csz = u64::from(csz);
+        let is_last = i + 1 == num_blocks;
+        let logical_size = if is_last {
+            (info.decompressed_size as u64)
+                .checked_sub((i as u64) * block_size)
+                .ok_or(NxError::IncompleteSection)?
+        } else {
+            block_size
+        };
+
+        if csz == logical_size {
+            // Stored raw: copy straight through in fixed chunks.
+            let mut remaining = csz;
+            while remaining > 0 {
+                check_cancel(cancel)?;
+                let take = remaining.min(scratch.len() as u64) as usize;
+                input.read_exact(&mut scratch[..take])?;
+                reenc.write_all(&scratch[..take])?;
+                progress.inc(take as u64);
+                remaining -= take as u64;
+            }
+            continue;
+        }
+
+        // Compressed: decode through exactly this block's `csz`-byte
+        // span. `Take` bounds every read the decoder's internal
+        // `BufReader` performs, so it can never pull bytes belonging
+        // to the next block regardless of its buffering granularity.
+        let limited = (&mut *input).take(csz);
+        let mut decoder = zstd::stream::read::Decoder::new(limited)
+            .map_err(|e| NxError::ZstdError(format!("decompress block {i}: {e}")))?;
+        let mut produced = 0u64;
+        while produced < logical_size {
+            check_cancel(cancel)?;
+            let want = (logical_size - produced).min(scratch.len() as u64) as usize;
+            let n = decoder
+                .read(&mut scratch[..want])
+                .map_err(|e| NxError::ZstdError(format!("decompress block {i}: {e}")))?;
+            if n == 0 {
+                return Err(NxError::IncompleteSection);
+            }
+            reenc.write_all(&scratch[..n])?;
+            progress.inc(n as u64);
+            produced += n as u64;
+        }
+        // Continue reading *through the decoder* (not just draining
+        // the raw underlying stream) until it reports true frame EOF:
+        // this is what actually validates the frame's checksum and
+        // epilogue. Any further non-empty read past `logical_size` is
+        // corruption, since a well-formed block decodes to exactly
+        // its declared logical size.
+        let trailing = decoder
+            .read(&mut scratch)
+            .map_err(|e| NxError::ZstdError(format!("decompress block {i}: {e}")))?;
+        if trailing != 0 {
+            return Err(NxError::IncompleteSection);
+        }
+        // The frame ending doesn't by itself guarantee every declared
+        // `csz` byte was consumed from `input` — a frame that's
+        // internally valid but shorter than its declared stored size
+        // would leave `input` positioned wrong for the next block.
+        // The legacy decoder consumed the full declared block span even
+        // when zstd stopped at an earlier frame boundary. Preserve that
+        // positioning while allowing trailing bytes in the span.
+        let mut remainder = decoder.finish();
+        io::copy(&mut remainder, &mut io::sink())?;
+    }
+    Ok(())
+}
+
 fn check_cancel(cancel: &CancelToken) -> NxResult<()> {
     if cancel.is_cancelled() {
         return Err(Cancelled.into());
@@ -245,15 +453,9 @@ fn check_cancel(cancel: &CancelToken) -> NxResult<()> {
 mod tests {
     use super::*;
     use crate::nintendo::nx::compress::{NxCompressOptions, compress_container};
-    use crate::nintendo::nx::constants::{NCA_FS_ENTRY_OFFSET, NCA_FS_HEADER_OFFSET, NCA3_MAGIC};
-    use crate::nintendo::nx::crypto::aes_ctr::apply_ctr;
-    use crate::nintendo::nx::crypto::aes_xts::encrypt_nca_header;
-    use crate::nintendo::nx::models::nca::{FsHeader, initial_ctr_for_offset};
     use crate::nintendo::nx::models::pfs0;
     use crate::nintendo::nx::ncz::compress::{NcaToNczOptions, NczMode, nca_to_ncz};
-    use crate::nintendo::nx::test_fixtures::{
-        TEST_BODY_KEY, encrypt_key_area_block, synthetic_keyset,
-    };
+    use crate::nintendo::nx::test_fixtures::{build_synthetic_nca, synthetic_keyset};
     use crate::nintendo::nx::walker::NcaWalker;
     use crate::util::NoProgress;
     use sha2::{Digest, Sha256};
@@ -262,52 +464,55 @@ mod tests {
     use std::sync::Arc;
     use tempfile::NamedTempFile;
 
-    fn build_synthetic_nca(plaintext_section: &[u8]) -> Vec<u8> {
-        const ENC_AES_CTR: u8 = 3;
-        let mut header = [0u8; 0xC00];
-        header[0x200..0x204].copy_from_slice(&NCA3_MAGIC);
-        header[0x207] = 0;
-        header[0x220] = 1;
+    #[test]
+    fn zero_sized_block_table_decodes_empty_payload() {
+        use byteorder::WriteBytesExt;
 
-        let section_start_byte = 0x4000u64;
-        let section_size = plaintext_section.len() as u64;
-        let section_end_byte = section_start_byte + section_size;
-        let start_sector = (section_start_byte / 0x200) as u32;
-        let end_sector = (section_end_byte / 0x200) as u32;
+        let prefix = vec![0xA5; NCA_PREFIX_SIZE];
+        let mut ncz = prefix.clone();
+        ncz.extend_from_slice(&NCZSECTN_MAGIC);
+        ncz.write_i64::<LE>(0).unwrap();
+        ncz.extend_from_slice(&NCZBLOCK_MAGIC);
+        ncz.write_u8(1).unwrap();
+        ncz.write_u8(0).unwrap();
+        ncz.write_u8(0).unwrap();
+        ncz.write_u8(MIN_BLOCK_SIZE_EXP).unwrap();
+        ncz.write_u32::<LE>(0).unwrap();
+        ncz.write_i64::<LE>(0).unwrap();
 
-        header[NCA_FS_ENTRY_OFFSET..NCA_FS_ENTRY_OFFSET + 4]
-            .copy_from_slice(&start_sector.to_le_bytes());
-        header[NCA_FS_ENTRY_OFFSET + 4..NCA_FS_ENTRY_OFFSET + 8]
-            .copy_from_slice(&end_sector.to_le_bytes());
+        let mut input = Cursor::new(ncz);
+        let mut output = Vec::new();
+        ncz_to_nca(&mut input, &mut output, &NoProgress, &CancelToken::new()).unwrap();
+        assert_eq!(output, prefix);
+    }
 
-        let fs0_off = NCA_FS_HEADER_OFFSET;
-        header[fs0_off + 4] = ENC_AES_CTR;
-        let ctr_low: u32 = 0x12345678;
-        let ctr_high: u32 = 0x9ABCDEF0;
-        header[fs0_off + 0x140..fs0_off + 0x144].copy_from_slice(&ctr_low.to_le_bytes());
-        header[fs0_off + 0x144..fs0_off + 0x148].copy_from_slice(&ctr_high.to_le_bytes());
+    /// A 1-block header declaring a multi-TiB `decompressed_size` must
+    /// be rejected from the header alone: the declared size disagrees
+    /// with the one-entry block table, and the bulk path would hand
+    /// it to a worker as a `vec!` allocation size before decoding a
+    /// single byte.
+    #[test]
+    fn block_header_declaring_size_larger_than_table_is_rejected() {
+        use byteorder::WriteBytesExt;
 
-        let key_area = encrypt_key_area_block([[0x11; 16], [0x22; 16], TEST_BODY_KEY, [0x44; 16]]);
-        header[0x300..0x340].copy_from_slice(&key_area);
+        let prefix = vec![0xA5; NCA_PREFIX_SIZE];
+        let mut ncz = prefix.clone();
+        ncz.extend_from_slice(&NCZSECTN_MAGIC);
+        ncz.write_i64::<LE>(0).unwrap();
+        ncz.extend_from_slice(&NCZBLOCK_MAGIC);
+        ncz.write_u8(1).unwrap();
+        ncz.write_u8(0).unwrap();
+        ncz.write_u8(0).unwrap();
+        ncz.write_u8(MIN_BLOCK_SIZE_EXP).unwrap();
+        ncz.write_u32::<LE>(1).unwrap();
+        ncz.write_i64::<LE>(0x1000_0000_0000).unwrap();
+        ncz.write_u32::<LE>(1000).unwrap();
+        ncz.extend_from_slice(&[0x77; 1000]);
 
-        let keys = synthetic_keyset();
-        encrypt_nca_header(&mut header, keys.header_key().unwrap()).unwrap();
-
-        let mut nca = vec![0u8; section_start_byte as usize];
-        nca[..0xC00].copy_from_slice(&header);
-
-        let mut encrypted = plaintext_section.to_vec();
-        let counter = initial_ctr_for_offset(
-            &FsHeader {
-                section_ctr_low: ctr_low,
-                section_ctr_high: ctr_high,
-                ..Default::default()
-            },
-            section_start_byte,
-        );
-        apply_ctr(&TEST_BODY_KEY, &counter, &mut encrypted).unwrap();
-        nca.extend_from_slice(&encrypted);
-        nca
+        let mut input = Cursor::new(ncz);
+        let mut output = Vec::new();
+        let result = ncz_to_nca(&mut input, &mut output, &NoProgress, &CancelToken::new());
+        assert!(matches!(result, Err(NxError::IncompleteSection)));
     }
 
     fn round_trip_with_mode(mode: NczMode, plaintext_size: usize) {

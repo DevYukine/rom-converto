@@ -9,6 +9,7 @@ use crate::nintendo::nx::constants::{
     MAX_BLOCK_SIZE_EXP, MIN_BLOCK_SIZE_EXP, NCZBLOCK_MAGIC, NCZSECTN_MAGIC,
 };
 use crate::nintendo::nx::error::{NxError, NxResult};
+use crate::util::extent_end;
 
 /// One NCZSECTN entry: an NCA section's byte range plus the
 /// encryption type, key, and counter needed to re-encrypt it after decompression.
@@ -108,7 +109,18 @@ pub fn read_headers<R: Read + Seek>(reader: &mut R) -> NxResult<ParsedHeaders> {
     if count < 0 {
         return Err(NxError::IncompleteSection);
     }
-    let mut sections = Vec::with_capacity(count as usize);
+    let after_count = reader.stream_position()?;
+    let end = reader.seek(SeekFrom::End(0))?;
+    let section_bytes = u64::try_from(count)
+        .ok()
+        .and_then(|n| n.checked_mul(crate::nintendo::nx::constants::NCZ_SECTION_ENTRY_SIZE as u64))
+        .ok_or(NxError::IncompleteSection)?;
+    if extent_end(after_count, section_bytes, end).is_none() {
+        return Err(NxError::IncompleteSection);
+    }
+    reader.seek(SeekFrom::Start(after_count))?;
+    let count = usize::try_from(count).map_err(|_| NxError::IncompleteSection)?;
+    let mut sections = Vec::with_capacity(count);
     for _ in 0..count {
         let offset = reader.read_i64::<LE>()?;
         let size = reader.read_i64::<LE>()?;
@@ -141,6 +153,17 @@ pub fn read_headers<R: Read + Seek>(reader: &mut R) -> NxResult<ParsedHeaders> {
             }
             let num_blocks = reader.read_u32::<LE>()?;
             let decompressed_size = reader.read_i64::<LE>()?;
+            // The declared block count is authoritative for compatibility
+            // with NCZ files accepted by the original decoder.
+            let _logical_size =
+                u64::try_from(decompressed_size).map_err(|_| NxError::IncompleteSection)?;
+            let after_block_header = reader.stream_position()?;
+            let block_table_bytes = u64::from(num_blocks)
+                .checked_mul(4)
+                .ok_or(NxError::IncompleteSection)?;
+            if extent_end(after_block_header, block_table_bytes, end).is_none() {
+                return Err(NxError::IncompleteSection);
+            }
             let mut compressed_block_sizes = Vec::with_capacity(num_blocks as usize);
             for _ in 0..num_blocks {
                 compressed_block_sizes.push(reader.read_u32::<LE>()?);
@@ -203,7 +226,7 @@ mod tests {
             version: 1,
             kind: 0,
             block_size_exp: 20,
-            decompressed_size: 0x100000,
+            decompressed_size: 0x400000,
             compressed_block_sizes: vec![0x40000, 0x30000, 0x20000, 0x10000],
         };
         let mut blob = Vec::new();
@@ -218,5 +241,52 @@ mod tests {
             vec![0x40000, 0x30000, 0x20000, 0x10000]
         );
         assert_eq!(b.block_size_exp, 20);
+    }
+
+    #[test]
+    fn block_table_uses_declared_count_and_allows_zero_sizes() {
+        let mut blob = Vec::new();
+        write_nczsectn(&mut blob, &[]).unwrap();
+        blob.extend_from_slice(&NCZBLOCK_MAGIC);
+        blob.write_u8(1).unwrap();
+        blob.write_u8(0).unwrap();
+        blob.write_u8(0).unwrap();
+        blob.write_u8(20).unwrap();
+        blob.write_u32::<LE>(2).unwrap();
+        blob.write_i64::<LE>(0x100000).unwrap();
+        blob.write_u32::<LE>(0).unwrap();
+        blob.write_u32::<LE>(0).unwrap();
+
+        let parsed = read_headers(&mut Cursor::new(&blob)).unwrap();
+        assert_eq!(parsed.block.unwrap().compressed_block_sizes, vec![0, 0]);
+    }
+
+    #[test]
+    fn zero_sized_block_mode_with_no_blocks_is_accepted() {
+        let mut blob = Vec::new();
+        write_nczsectn(&mut blob, &[]).unwrap();
+        blob.extend_from_slice(&NCZBLOCK_MAGIC);
+        blob.write_u8(1).unwrap();
+        blob.write_u8(0).unwrap();
+        blob.write_u8(0).unwrap();
+        blob.write_u8(20).unwrap();
+        blob.write_u32::<LE>(0).unwrap();
+        blob.write_i64::<LE>(0).unwrap();
+
+        let parsed = read_headers(&mut Cursor::new(&blob)).unwrap();
+        assert!(parsed.block.unwrap().compressed_block_sizes.is_empty());
+    }
+
+    #[test]
+    fn rejects_huge_section_count_without_allocating() {
+        // A tiny file declaring billions of sections must be rejected
+        // by checked arithmetic against the actual (tiny) remaining
+        // length, not by attempting `Vec::with_capacity(i64::MAX)`.
+        let mut blob = Vec::new();
+        blob.extend_from_slice(&NCZSECTN_MAGIC);
+        blob.write_i64::<LE>(i64::MAX).unwrap();
+        let mut cur = Cursor::new(blob);
+        let err = read_headers(&mut cur).unwrap_err();
+        assert!(matches!(err, NxError::IncompleteSection));
     }
 }

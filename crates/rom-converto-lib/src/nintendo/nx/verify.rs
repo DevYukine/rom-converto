@@ -20,8 +20,8 @@ use crate::nintendo::nx::models::hfs0 as hfs0_mod;
 use crate::nintendo::nx::models::pfs0 as pfs0_mod;
 use crate::nintendo::nx::models::ticket::Ticket;
 use crate::nintendo::nx::ncz::ncz_to_nca;
-use crate::nintendo::nx::util::positional_reader::PositionalReader;
 use crate::nintendo::nx::walker::NcaWalker;
+use crate::util::positional_reader::PositionalReader;
 use crate::util::pread::file_read_exact_at;
 use crate::util::{CancelToken, Cancelled, ProgressReporter};
 

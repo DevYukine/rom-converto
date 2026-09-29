@@ -523,10 +523,14 @@ fn try_read_control(
             continue;
         }
         let walker = if is_ncz_entry(name) {
+            let Ok(header_key) = keys.header_key() else {
+                continue;
+            };
             let reader = match crate::nintendo::nx::ncz::NczReader::open(
                 file.clone(),
                 entry.abs_offset,
                 entry.size,
+                header_key,
             ) {
                 Ok(reader) => reader,
                 Err(e) => {
@@ -831,7 +835,11 @@ fn read_tickets(path: &Path, listing: &ContainerListing) -> Result<Vec<TicketSum
             continue;
         }
         file.seek(SeekFrom::Start(entry.abs_offset))?;
-        let mut buf = vec![0u8; entry.size as usize];
+        let ticket_size = (entry
+            .size
+            .min(crate::nintendo::nx::models::ticket::MAX_TICKET_SIZE as u64))
+            as usize;
+        let mut buf = vec![0u8; ticket_size];
         if file.read_exact(&mut buf).is_err() {
             continue;
         }

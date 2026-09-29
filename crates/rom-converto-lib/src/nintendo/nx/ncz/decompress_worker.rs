@@ -4,7 +4,7 @@
 //! `ReencryptWriter`.
 
 use crate::nintendo::nx::error::{NxError, NxResult};
-use crate::util::worker_pool::{Pool, Worker, parallelism};
+use crate::util::worker_pool::{Pool, Worker};
 
 /// One compressed NCZ block queued for a decompression worker.
 pub struct NczDecompressWork {
@@ -51,9 +51,4 @@ pub fn spawn_ncz_decompress_pool(
 ) -> Pool<NczDecompressWork, NczDecompressedBlock, NxError> {
     let workers = (0..n_threads).map(|_| NczDecompressWorker).collect();
     Pool::spawn(workers)
-}
-
-/// Returns the default number of decompression worker threads (host parallelism).
-pub fn default_thread_count() -> usize {
-    parallelism()
 }

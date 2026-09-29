@@ -57,6 +57,55 @@ pub fn encrypt_key_area_block(plain_keys: [[u8; 16]; KEY_AREA_KEY_COUNT]) -> [u8
     out
 }
 
+/// Build a minimal encrypted NCA whose section 0 is AES-CTR encrypted
+/// `plaintext_section`, readable by [`synthetic_keyset`].
+pub fn build_synthetic_nca(plaintext_section: &[u8]) -> Vec<u8> {
+    let mut header = [0u8; NCA_HEADER_SIZE];
+    header[0x200..0x204].copy_from_slice(&NCA3_MAGIC);
+    header[0x207] = 0;
+    header[0x220] = 1;
+
+    let section_start_byte = 0x4000u64;
+    let section_size = plaintext_section.len() as u64;
+    let section_end_byte = section_start_byte + section_size;
+    let start_sector = (section_start_byte / 0x200) as u32;
+    let end_sector = (section_end_byte / 0x200) as u32;
+
+    header[NCA_FS_ENTRY_OFFSET..NCA_FS_ENTRY_OFFSET + 4]
+        .copy_from_slice(&start_sector.to_le_bytes());
+    header[NCA_FS_ENTRY_OFFSET + 4..NCA_FS_ENTRY_OFFSET + 8]
+        .copy_from_slice(&end_sector.to_le_bytes());
+
+    let fs0_off = NCA_FS_HEADER_OFFSET;
+    header[fs0_off + 4] = ENC_AES_CTR;
+    let ctr_low: u32 = 0x12345678;
+    let ctr_high: u32 = 0x9ABCDEF0;
+    header[fs0_off + 0x140..fs0_off + 0x144].copy_from_slice(&ctr_low.to_le_bytes());
+    header[fs0_off + 0x144..fs0_off + 0x148].copy_from_slice(&ctr_high.to_le_bytes());
+
+    let key_area = encrypt_key_area_block([[0x11; 16], [0x22; 16], TEST_BODY_KEY, [0x44; 16]]);
+    header[0x300..0x340].copy_from_slice(&key_area);
+
+    let keys = synthetic_keyset();
+    encrypt_nca_header(&mut header, keys.header_key().unwrap()).unwrap();
+
+    let mut nca = vec![0u8; section_start_byte as usize];
+    nca[..NCA_HEADER_SIZE].copy_from_slice(&header);
+
+    let mut encrypted = plaintext_section.to_vec();
+    let counter = initial_ctr_for_offset(
+        &FsHeader {
+            section_ctr_low: ctr_low,
+            section_ctr_high: ctr_high,
+            ..Default::default()
+        },
+        section_start_byte,
+    );
+    apply_ctr(&TEST_BODY_KEY, &counter, &mut encrypted).unwrap();
+    nca.extend_from_slice(&encrypted);
+    nca
+}
+
 /// Serialize a minimal `PackagedContentMeta` (CNMT) blob matching the
 /// layout `Cnmt::parse` expects. No extended header; content records
 /// carry only the content id (hash/size zeroed).

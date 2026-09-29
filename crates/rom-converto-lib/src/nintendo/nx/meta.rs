@@ -26,7 +26,11 @@ pub(crate) fn merge_inline_tickets(path: &Path, listing: &ContainerListing, keys
         if !entry.name.to_ascii_lowercase().ends_with(".tik") {
             continue;
         }
-        let mut buf = vec![0u8; entry.size as usize];
+        let ticket_size = (entry
+            .size
+            .min(crate::nintendo::nx::models::ticket::MAX_TICKET_SIZE as u64))
+            as usize;
+        let mut buf = vec![0u8; ticket_size];
         if file_read_exact_at(&file, &mut buf, entry.abs_offset).is_err() {
             continue;
         }

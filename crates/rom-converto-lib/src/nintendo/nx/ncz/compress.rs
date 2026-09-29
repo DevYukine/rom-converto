@@ -10,15 +10,14 @@ use crate::nintendo::nx::constants::{
 };
 use crate::nintendo::nx::error::{NxError, NxResult};
 use crate::nintendo::nx::models::nca::initial_ctr_for_offset;
-use crate::nintendo::nx::ncz::compress_worker::{
-    NczBlockWork, default_thread_count, spawn_ncz_pool,
-};
+use crate::nintendo::nx::ncz::LARGE_BLOCK_STREAM_CHUNK;
+use crate::nintendo::nx::ncz::compress_worker::{NczBlockWork, spawn_ncz_pool};
 use crate::nintendo::nx::ncz::header::{
     NczBlockInfo, NczSectionEntry, write_nczblock, write_nczsectn,
 };
 use crate::nintendo::nx::walker::NcaWalker;
 use crate::util::ProgressReporter;
-use crate::util::worker_pool::drive;
+use crate::util::worker_pool::{drive, parallelism};
 
 /// NCZ payload layout: one continuous zstd stream, or fixed-size
 /// blocks that can be decompressed independently.
@@ -88,7 +87,8 @@ pub fn nca_to_ncz<W: Write + Seek>(
 
     let nca_offset = walker.nca_offset();
     let nca_size = walker.nca_size();
-    let prefix_size = (nca_size as usize).min(NCA_PREFIX_SIZE);
+    let prefix_size = usize::try_from(nca_size.min(NCA_PREFIX_SIZE as u64))
+        .map_err(|_| NxError::IncompleteSection)?;
 
     let mut prefix = vec![0u8; prefix_size];
     walker.read_exact_at(&mut prefix, nca_offset)?;
@@ -106,6 +106,12 @@ pub fn nca_to_ncz<W: Write + Seek>(
     match opts.mode {
         NczMode::Solid => write_solid(walker, out, payload_size, opts.level, progress),
         NczMode::Block { size_exp } => {
+            let size_exp = if payload_size >= (1u64 << 32) {
+                // The u32 compressed-size table cannot represent a 4 GiB raw block.
+                size_exp.min(31)
+            } else {
+                size_exp
+            };
             write_block(walker, out, payload_size, size_exp, opts.level, progress)
         }
     }
@@ -118,6 +124,7 @@ fn write_solid<W: Write + Seek>(
     level: i32,
     progress: &dyn ProgressReporter,
 ) -> NxResult<()> {
+    let workers = crate::util::worker_pool::parallelism().min(u32::MAX as usize) as u32;
     let mut encoder = zstd::stream::write::Encoder::new(out, level)
         .map_err(|e| NxError::ZstdError(format!("zstd encoder init: {e}")))?;
     // Match nsz's `ZstdCompressionParameters.from_level(level,
@@ -127,7 +134,6 @@ fn write_solid<W: Write + Seek>(
     // bumps the effective window/job sizing zstd uses, which on
     // multi-GB program NCAs trims a handful of percent off the output
     // compared to single-threaded `from_level` defaults.
-    let workers = crate::util::worker_pool::parallelism().min(u32::MAX as usize) as u32;
     encoder
         .set_parameter(zstd::stream::raw::CParameter::NbWorkers(workers))
         .map_err(|e| NxError::ZstdError(format!("zstd NbWorkers: {e}")))?;
@@ -140,20 +146,27 @@ fn write_solid<W: Write + Seek>(
             true,
         ))
         .map_err(|e| NxError::ZstdError(format!("zstd EnableLDM: {e}")))?;
-    stream_plaintext(walker, payload_size, |chunk| -> NxResult<()> {
-        encoder
-            .write_all(chunk)
-            .map_err(|e| NxError::ZstdError(format!("zstd write: {e}")))?;
-        progress.inc(chunk.len() as u64);
-        Ok(())
-    })?;
+    let mut scratch = vec![0u8; LARGE_BLOCK_STREAM_CHUNK];
+    stream_plain_range(
+        walker,
+        0,
+        payload_size,
+        &mut scratch,
+        |chunk| -> NxResult<()> {
+            encoder
+                .write_all(chunk)
+                .map_err(|e| NxError::ZstdError(format!("zstd write: {e}")))?;
+            progress.inc(chunk.len() as u64);
+            Ok(())
+        },
+    )?;
     encoder
         .finish()
         .map_err(|e| NxError::ZstdError(format!("zstd finish: {e}")))?;
     Ok(())
 }
 
-fn write_block<W: Write + Seek>(
+pub(super) fn write_block<W: Write + Seek>(
     walker: &NcaWalker,
     out: &mut W,
     payload_size: u64,
@@ -161,23 +174,43 @@ fn write_block<W: Write + Seek>(
     level: i32,
     progress: &dyn ProgressReporter,
 ) -> NxResult<()> {
-    let block_size = 1usize << size_exp;
-    let num_blocks = (payload_size as usize).div_ceil(block_size);
+    let block_size_u64 = 1u64 << size_exp;
+    let num_blocks_u64 = payload_size.div_ceil(block_size_u64);
+    let Ok(block_size) = usize::try_from(block_size_u64) else {
+        return write_block_large(walker, out, payload_size, size_exp, level, progress);
+    };
+    let Ok(num_blocks) = usize::try_from(num_blocks_u64) else {
+        return write_block_large(walker, out, payload_size, size_exp, level, progress);
+    };
 
-    let n_threads = default_thread_count().min(num_blocks.max(1));
+    // Each in-flight job holds its plaintext input and (until the
+    // reorder buffer consumes it) its compressed/raw output; workers
+    // hold a persistent zstd context plus a `compress_bound`-sized
+    // scratch buffer. Only fall back to the bounded sequential
+    // streaming path when even one in-memory block's worth of that
+    // doesn't fit the shared budget (huge block exponents) or there are
+    // no blocks at all; ordinary exponents (including the default) admit
+    // full host parallelism, identical to the original unconditional pool path.
+    let codec_bytes_per_worker = crate::util::worker_pool::zstd_cctx_estimate(level, block_size)
+        + zstd::zstd_safe::compress_bound(block_size);
+    let queued_bytes_per_job = block_size.saturating_mul(2);
+    let Some(admission) = crate::util::worker_pool::Budget {
+        codec_per_worker: codec_bytes_per_worker,
+        per_job: queued_bytes_per_job,
+        writer_slot: 0,
+        fixed: 0,
+    }
+    .admit(parallelism(), num_blocks as u64) else {
+        return write_block_large(walker, out, payload_size, size_exp, level, progress);
+    };
+    let n_threads = admission.workers;
+    let max_in_flight = admission.max_in_flight;
     let pool = spawn_ncz_pool(level, block_size, n_threads)?;
 
     // nsz has emitted version 2 / type 1 since the format's first
     // commit; readers that validate these bytes expect them.
-    let placeholder_info = NczBlockInfo {
-        version: 2,
-        kind: 1,
-        block_size_exp: size_exp,
-        decompressed_size: payload_size as i64,
-        compressed_block_sizes: vec![0u32; num_blocks],
-    };
     let header_start = out.stream_position()?;
-    write_nczblock(out, &placeholder_info)?;
+    write_nczblock(out, &placeholder_block_info(payload_size, size_exp)?)?;
 
     let mut sizes = vec![0u32; num_blocks];
     let mut producer = PlaintextBlockProducer::new(walker, payload_size, block_size);
@@ -185,7 +218,7 @@ fn write_block<W: Write + Seek>(
     let drive_result = drive(
         &pool,
         num_blocks as u64,
-        n_threads * 2,
+        max_in_flight,
         |_seq| -> NxResult<NczBlockWork> { producer.next_block(progress) },
         |seq, out_block| -> NxResult<()> {
             sizes[seq as usize] = out_block.bytes.len() as u32;
@@ -195,19 +228,164 @@ fn write_block<W: Write + Seek>(
     );
     pool.shutdown();
     drive_result?;
+    finalize_block_header(out, header_start, payload_size, size_exp, sizes)
+}
 
-    let payload_end = out.stream_position()?;
-    let final_info = NczBlockInfo {
+/// Sequential, bounded-memory block-mode compressor used when
+/// `write_block`'s admission check finds that even one in-memory
+/// block doesn't fit the shared worker-pool budget. It compresses
+/// directly into `out`, then rewrites blocks that do not compress.
+fn write_block_large<W: Write + Seek>(
+    walker: &NcaWalker,
+    out: &mut W,
+    payload_size: u64,
+    size_exp: u8,
+    level: i32,
+    progress: &dyn ProgressReporter,
+) -> NxResult<()> {
+    let header_start = out.stream_position()?;
+    write_nczblock(out, &placeholder_block_info(payload_size, size_exp)?)?;
+    let sizes = compress_blocks_into(walker, out, payload_size, size_exp, level, progress)?;
+    finalize_block_header(out, header_start, payload_size, size_exp, sizes)
+}
+
+fn placeholder_block_info(payload_size: u64, size_exp: u8) -> NxResult<NczBlockInfo> {
+    let block_size = 1u64 << size_exp;
+    let num_blocks = usize::try_from(payload_size.div_ceil(block_size))
+        .map_err(|_| NxError::IncompleteSection)?;
+    Ok(NczBlockInfo {
         version: 2,
         kind: 1,
         block_size_exp: size_exp,
         decompressed_size: payload_size as i64,
-        compressed_block_sizes: sizes,
-    };
+        compressed_block_sizes: vec![0u32; num_blocks],
+    })
+}
+
+fn finalize_block_header<W: Write + Seek>(
+    out: &mut W,
+    header_start: u64,
+    payload_size: u64,
+    size_exp: u8,
+    sizes: Vec<u32>,
+) -> NxResult<()> {
+    let payload_end = out.stream_position()?;
     out.seek(SeekFrom::Start(header_start))?;
-    write_nczblock(out, &final_info)?;
+    write_nczblock(
+        out,
+        &NczBlockInfo {
+            version: 2,
+            kind: 1,
+            block_size_exp: size_exp,
+            decompressed_size: payload_size as i64,
+            compressed_block_sizes: sizes,
+        },
+    )?;
     out.seek(SeekFrom::Start(payload_end))?;
     Ok(())
+}
+
+/// Writes each block's compressed (or raw-fallback) bytes to `sink`
+/// in order without materializing a whole block in memory.
+fn compress_blocks_into<S: Write + Seek>(
+    walker: &NcaWalker,
+    sink: &mut S,
+    payload_size: u64,
+    size_exp: u8,
+    level: i32,
+    progress: &dyn ProgressReporter,
+) -> NxResult<Vec<u32>> {
+    let block_size = 1u64 << size_exp;
+    let num_blocks = usize::try_from(payload_size.div_ceil(block_size))
+        .map_err(|_| NxError::IncompleteSection)?;
+    let mut sizes = Vec::with_capacity(num_blocks);
+    let mut scratch = vec![0u8; LARGE_BLOCK_STREAM_CHUNK];
+
+    for i in 0..num_blocks {
+        let block_start = (i as u64) * block_size;
+        let block_len = block_size.min(payload_size - block_start);
+        let output_start = sink.stream_position()?;
+        let mut capped = CappedWriter::new(&mut *sink, block_len);
+        let compression_result = (|| -> NxResult<()> {
+            let mut encoder = zstd::stream::write::Encoder::new(&mut capped, level)
+                .map_err(|e| NxError::ZstdError(format!("zstd encoder init: {e}")))?;
+            encoder
+                .set_pledged_src_size(Some(block_len))
+                .map_err(|e| NxError::ZstdError(format!("zstd pledged size: {e}")))?;
+            stream_plain_range(walker, block_start, block_len, &mut scratch, |chunk| {
+                encoder
+                    .write_all(chunk)
+                    .map_err(|e| NxError::ZstdError(format!("zstd write: {e}")))?;
+                Ok(())
+            })?;
+            encoder
+                .finish()
+                .map_err(|e| NxError::ZstdError(format!("zstd finish: {e}")))?;
+            Ok(())
+        })();
+        let incompressible = capped.exceeded;
+        if let Err(error) = compression_result
+            && !incompressible
+        {
+            return Err(error);
+        }
+        if incompressible {
+            sink.seek(SeekFrom::Start(output_start))?;
+            sizes.push(u32::try_from(block_len).map_err(|_| NxError::IncompleteSection)?);
+            stream_plain_range(walker, block_start, block_len, &mut scratch, |chunk| {
+                sink.write_all(chunk)?;
+                Ok(())
+            })?;
+        } else {
+            let compressed_len = sink
+                .stream_position()?
+                .checked_sub(output_start)
+                .ok_or(NxError::IncompleteSection)?;
+            sizes.push(u32::try_from(compressed_len).map_err(|_| NxError::IncompleteSection)?);
+        }
+        progress.inc(block_len);
+    }
+    Ok(sizes)
+}
+
+struct CappedWriter<'a, W> {
+    inner: &'a mut W,
+    limit: u64,
+    written: u64,
+    exceeded: bool,
+}
+
+impl<'a, W> CappedWriter<'a, W> {
+    fn new(inner: &'a mut W, limit: u64) -> Self {
+        Self {
+            inner,
+            limit,
+            written: 0,
+            exceeded: false,
+        }
+    }
+}
+
+impl<W: Write> Write for CappedWriter<'_, W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let remaining = self.limit - self.written;
+        if buf.len() as u64 >= remaining {
+            if remaining <= 1 {
+                self.exceeded = true;
+                return Err(std::io::Error::other("compressed block reached raw size"));
+            }
+            let written = self.inner.write(&buf[..(remaining - 1) as usize])?;
+            self.written += written as u64;
+            return Ok(written);
+        }
+        let written = self.inner.write(buf)?;
+        self.written += written as u64;
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
 }
 
 struct PlaintextBlockProducer<'a> {
@@ -244,18 +422,18 @@ impl<'a> PlaintextBlockProducer<'a> {
     }
 }
 
-fn stream_plaintext<F: FnMut(&[u8]) -> NxResult<()>>(
+fn stream_plain_range<F: FnMut(&[u8]) -> NxResult<()>>(
     walker: &NcaWalker,
-    payload_size: u64,
+    start: u64,
+    len: u64,
+    scratch: &mut [u8],
     mut sink: F,
 ) -> NxResult<()> {
-    const CHUNK: usize = 4 * 1024 * 1024;
-    let mut scratch = vec![0u8; CHUNK];
     let payload_start_in_nca = NCA_PREFIX_SIZE as u64;
     let mut written = 0u64;
-    while written < payload_size {
-        let take = (CHUNK as u64).min(payload_size - written) as usize;
-        let abs_offset = walker.nca_offset() + payload_start_in_nca + written;
+    while written < len {
+        let take = (scratch.len() as u64).min(len - written) as usize;
+        let abs_offset = walker.nca_offset() + payload_start_in_nca + start + written;
         read_plain_range(walker, abs_offset, &mut scratch[..take])?;
         sink(&scratch[..take])?;
         written += take as u64;
@@ -349,4 +527,64 @@ fn build_section_entries(walker: &NcaWalker) -> NxResult<Vec<NczSectionEntry>> {
     // highest-offset section), so this sorts here.
     out.sort_by_key(|e| e.offset);
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::nintendo::nx::test_fixtures::{build_synthetic_nca, synthetic_keyset};
+    use crate::util::NoProgress;
+    use std::fs::File;
+    use std::io::Cursor;
+    use std::sync::Arc;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn large_block_compression_matches_pool_with_raw_fallback() {
+        let block_size = 1 << 14;
+        let mut plaintext = vec![0x5A; block_size];
+        let mut state = 0x1234_5678u32;
+        plaintext.extend((0..block_size).map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state as u8
+        }));
+        let nca_bytes = build_synthetic_nca(&plaintext);
+        let mut tmp = NamedTempFile::new().unwrap();
+        tmp.write_all(&nca_bytes).unwrap();
+        tmp.flush().unwrap();
+        let walker = NcaWalker::open(
+            Arc::new(File::open(tmp.path()).unwrap()),
+            0,
+            nca_bytes.len() as u64,
+            &synthetic_keyset(),
+        )
+        .unwrap();
+
+        for level in [3, DEFAULT_ZSTD_LEVEL] {
+            let mut pool_output = Cursor::new(Vec::new());
+            write_block(
+                &walker,
+                &mut pool_output,
+                plaintext.len() as u64,
+                14,
+                level,
+                &NoProgress,
+            )
+            .unwrap();
+            let mut large_output = Cursor::new(Vec::new());
+            write_block_large(
+                &walker,
+                &mut large_output,
+                plaintext.len() as u64,
+                14,
+                level,
+                &NoProgress,
+            )
+            .unwrap();
+
+            assert_eq!(large_output.into_inner(), pool_output.into_inner());
+        }
+    }
 }

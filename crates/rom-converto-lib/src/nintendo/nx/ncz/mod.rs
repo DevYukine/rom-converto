@@ -4,6 +4,8 @@
 //! still demanded higher up; the cached keys make the zstd payload
 //! itself replayable on hosts without keys.
 
+/// Shared chunk size for bounded sequential NCZ payload processing.
+pub(super) const LARGE_BLOCK_STREAM_CHUNK: usize = 4 * 1024 * 1024;
 pub mod compress;
 pub mod compress_worker;
 pub mod decompress;

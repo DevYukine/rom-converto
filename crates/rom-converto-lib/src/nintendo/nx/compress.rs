@@ -31,6 +31,7 @@ use crate::nintendo::nx::models::nca::{CONTENT_TYPE_PROGRAM, CONTENT_TYPE_PUBLIC
 use crate::nintendo::nx::models::pfs0 as pfs0_mod;
 use crate::nintendo::nx::models::ticket::Ticket;
 use crate::nintendo::nx::ncz::compress::{NcaToNczOptions, NczMode, nca_to_ncz};
+use crate::nintendo::nx::util::write_zeros;
 use crate::nintendo::nx::walker::NcaWalker;
 use crate::util::pread::file_read_exact_at;
 use crate::util::{AtomicProgress, CancelToken, Cancelled, ProgressReporter, run_scratch_write};
@@ -212,8 +213,7 @@ fn compress_pfs0(
         .open(output)?;
     out.write_all(&placeholder_header.bytes)?;
     if hints.first_file_data_offset > 0 {
-        let pad = vec![0u8; hints.first_file_data_offset as usize];
-        out.write_all(&pad)?;
+        write_zeros(&mut out, hints.first_file_data_offset)?;
     }
 
     let mut sizes = Vec::with_capacity(pfs0.files.len());
@@ -272,9 +272,6 @@ fn compress_xci(
     };
     let mut reader = BufReader::new(File::open(input)?);
 
-    let mut xci_prefix = vec![0u8; hfs0_off as usize];
-    reader.read_exact(&mut xci_prefix)?;
-
     reader.seek(SeekFrom::Start(hfs0_off))?;
     let root = hfs0_mod::Hfs0::read(&mut reader)?;
 
@@ -301,7 +298,7 @@ fn compress_xci(
         .create(true)
         .truncate(true)
         .open(output)?;
-    out.write_all(&xci_prefix)?;
+    copy_range(&in_file, 0, hfs0_off, &mut out)?;
 
     let placeholder_root_specs: Vec<Hfs0FileSpec> = sub_partitions
         .iter()
@@ -319,8 +316,7 @@ fn compress_xci(
     let placeholder_root_header = hfs0_mod::build_header(&placeholder_root_specs, &root_hints)?;
     out.write_all(&placeholder_root_header.bytes)?;
     if root_hints.first_file_data_offset > 0 {
-        let pad = vec![0u8; root_hints.first_file_data_offset as usize];
-        out.write_all(&pad)?;
+        write_zeros(&mut out, root_hints.first_file_data_offset)?;
     }
 
     let mut new_partition_sizes = Vec::with_capacity(sub_partitions.len());

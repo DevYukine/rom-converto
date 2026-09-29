@@ -112,6 +112,9 @@ pub enum NxError {
 
     #[error("meta NCA .cnmt entry runs past the end of its section")]
     MetaCnmtTruncated,
+
+    #[error("NCZ solid payload previously failed to decode; not retrying")]
+    NczSolidDecodeFailed,
 }
 
 fn format_paths(paths: &[PathBuf]) -> String {

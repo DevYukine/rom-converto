@@ -6,7 +6,7 @@
 //! reassembles them in submission order.
 
 use crate::nintendo::nx::error::{NxError, NxResult};
-use crate::util::worker_pool::{Pool, Worker, parallelism};
+use crate::util::worker_pool::{Pool, Worker};
 
 /// One plaintext NCA block queued for a compression worker.
 pub struct NczBlockWork {
@@ -88,11 +88,6 @@ pub fn spawn_ncz_pool(
         workers.push(NczCompressWorker::new(level, block_size)?);
     }
     Ok(Pool::spawn(workers))
-}
-
-/// Returns the default number of compression worker threads (host parallelism).
-pub fn default_thread_count() -> usize {
-    parallelism()
 }
 
 #[cfg(test)]

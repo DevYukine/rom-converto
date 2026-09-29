@@ -46,6 +46,20 @@ impl Pfs0 {
         let string_table_size = reader.read_u32::<LE>()?;
         let _reserved = reader.read_u32::<LE>()?;
 
+        let table_bytes = u64::from(file_count)
+            .checked_mul(PFS0_ENTRY_SIZE as u64)
+            .and_then(|n| n.checked_add(u64::from(string_table_size)))
+            .ok_or(NxError::IncompleteSection)?;
+        let data_section_offset = header_pos
+            .checked_add(PFS0_HEADER_SIZE as u64)
+            .and_then(|n| n.checked_add(table_bytes))
+            .ok_or(NxError::IncompleteSection)?;
+        let after_header = reader.stream_position()?;
+        let end = reader.seek(SeekFrom::End(0))?;
+        if data_section_offset > end {
+            return Err(NxError::IncompleteSection);
+        }
+        reader.seek(SeekFrom::Start(after_header))?;
         let mut entries = Vec::with_capacity(file_count as usize);
         for _ in 0..file_count {
             let data_offset = reader.read_u64::<LE>()?;
@@ -219,6 +233,31 @@ mod tests {
                 [..parsed.files[1].size as usize],
             b"BBBBBB"
         );
+    }
+
+    #[test]
+    fn rejects_huge_file_count_without_allocating() {
+        // A tiny file declaring billions of entries must be rejected
+        // by checked arithmetic against the actual (tiny) remaining
+        // length, not by attempting `Vec::with_capacity(u32::MAX)`.
+        let mut blob = vec![0u8; 0x10];
+        blob[0..4].copy_from_slice(&PFS0_MAGIC);
+        blob[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
+        blob[8..12].copy_from_slice(&0u32.to_le_bytes());
+        let mut cur = Cursor::new(blob);
+        let err = Pfs0::read(&mut cur).unwrap_err();
+        assert!(matches!(err, NxError::IncompleteSection));
+    }
+
+    #[test]
+    fn rejects_huge_string_table_size_without_allocating() {
+        let mut blob = vec![0u8; 0x10];
+        blob[0..4].copy_from_slice(&PFS0_MAGIC);
+        blob[4..8].copy_from_slice(&0u32.to_le_bytes());
+        blob[8..12].copy_from_slice(&(u32::MAX - 1).to_le_bytes());
+        let mut cur = Cursor::new(blob);
+        let err = Pfs0::read(&mut cur).unwrap_err();
+        assert!(matches!(err, NxError::IncompleteSection));
     }
 
     #[test]

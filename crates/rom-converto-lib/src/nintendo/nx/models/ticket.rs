@@ -18,6 +18,9 @@ pub struct Ticket {
     pub master_key_revision: u8,
 }
 
+/// Largest serialized ticket extent accepted by [`Ticket::parse`].
+pub const MAX_TICKET_SIZE: usize = 0x3c0;
+
 impl Ticket {
     /// Parses a raw ticket buffer: reads the signature type to compute
     /// the fixed signature size and the resulting 0x40-aligned ticket
