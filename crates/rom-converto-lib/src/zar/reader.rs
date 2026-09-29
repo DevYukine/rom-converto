@@ -12,6 +12,7 @@ use super::format::{
 };
 use crate::util::CancelToken;
 use crate::util::Cancelled;
+use crate::util::extent_end;
 use sha2::{Digest, Sha256};
 use std::io::{Read, Seek, SeekFrom, Write};
 
@@ -231,25 +232,48 @@ impl<R: Read + Seek> ZarReader<R> {
         decompress_block(&payload, stored_raw)
     }
 
-    /// Stream the contents of file node `index` to `out`, returning the
-    /// number of bytes written.
-    pub fn read_file<W: Write>(&mut self, index: u32, out: &mut W) -> ZarResult<u64> {
+    /// Read a byte range of file node `index` without materializing the file.
+    /// The range is relative to the file and must be entirely in bounds.
+    pub fn read_file_range<W: Write>(
+        &mut self,
+        index: u32,
+        offset: u64,
+        length: u64,
+        out: &mut W,
+    ) -> ZarResult<u64> {
         let entry = self.entry(index)?;
         if !entry.is_file() {
             return Err(ZarError::NotAFile(index));
         }
         let size = entry.file_size();
-        let mut raw_offset = entry.file_offset();
-        let mut remaining = size;
+        if extent_end(offset, length, size).is_none() {
+            return Err(ZarError::CorruptStructure(
+                "file range extends past end of file".to_string(),
+            ));
+        }
+        let mut raw_offset = entry
+            .file_offset()
+            .checked_add(offset)
+            .ok_or_else(|| ZarError::CorruptStructure("file range offset overflow".to_string()))?;
+        let mut remaining = length;
         while remaining > 0 {
             let block_offset = (raw_offset % COMPRESSED_BLOCK_SIZE as u64) as usize;
             let step = remaining.min((COMPRESSED_BLOCK_SIZE - block_offset) as u64) as usize;
             let block = self.read_block(raw_offset / COMPRESSED_BLOCK_SIZE as u64)?;
             out.write_all(&block[block_offset..block_offset + step])?;
-            raw_offset += step as u64;
+            raw_offset = raw_offset.checked_add(step as u64).ok_or_else(|| {
+                ZarError::CorruptStructure("file range offset overflow".to_string())
+            })?;
             remaining -= step as u64;
         }
-        Ok(size)
+        Ok(length)
+    }
+
+    /// Stream the contents of file node `index` to `out`, returning the
+    /// number of bytes written.
+    pub fn read_file<W: Write>(&mut self, index: u32, out: &mut W) -> ZarResult<u64> {
+        let size = self.entry(index)?.file_size();
+        self.read_file_range(index, 0, size, out)
     }
 
     /// Re-hash the archive and compare against the stored digest. The
@@ -466,6 +490,28 @@ mod tests {
         reader
             .verify_integrity(&CancelToken::new())
             .expect("hash matches");
+    }
+
+    #[test]
+    fn file_range_reads_across_blocks_and_rejects_out_of_bounds() {
+        let (buf, files) = sample_archive();
+        let expected = &files[2].1;
+        let mut reader = ZarReader::open(Cursor::new(buf)).expect("archive opens");
+        let index = reader.lookup("dir/sub/big.bin").expect("path resolves");
+        let start = COMPRESSED_BLOCK_SIZE as u64 - 5;
+        let mut out = Vec::new();
+        assert_eq!(
+            reader
+                .read_file_range(index, start, 32, &mut out)
+                .expect("range reads"),
+            32
+        );
+        assert_eq!(out, expected[start as usize..start as usize + 32]);
+        assert!(
+            reader
+                .read_file_range(index, expected.len() as u64, 1, &mut Vec::new())
+                .is_err()
+        );
     }
 
     #[test]

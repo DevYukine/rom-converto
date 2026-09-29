@@ -18,7 +18,9 @@ use super::format::{
     ZarResult, encode_name_len, split_path,
 };
 use crate::util::ProgressReporter;
-use crate::util::worker_pool::{Pool, PoolChannelClosed, Worker};
+use crate::util::worker_pool::{
+    Admission, Budget, Pool, PoolChannelClosed, Worker, parallelism, zstd_cctx_estimate,
+};
 use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -117,9 +119,10 @@ pub struct ZarWriter<'p, W: Write> {
     pending: HashMap<u64, BlockOut>,
     records: Vec<CompressionOffsetRecord>,
     block_buf: Vec<u8>,
-    /// Input buffers handed back by workers, reused so the steady
-    /// state does not allocate a 64 KiB block per 64 KiB of input.
-    spare: Vec<Vec<u8>>,
+    /// Recycled input buffers, so the steady state does not allocate a
+    /// 64 KiB block per 64 KiB of input. Capped at `max_in_flight + 1`
+    /// and counted in admission's producer reserve.
+    spares: Vec<Vec<u8>>,
     input_offset: u64,
     names: Vec<u8>,
     interned: HashMap<Vec<u8>, u32>,
@@ -163,9 +166,22 @@ impl<'p, W: Write> ZarWriter<'p, W> {
         } else {
             level
         };
-        let n_threads = n_threads.max(1);
+        let n_threads = n_threads.min(parallelism()).max(1);
         let bound = zstd::zstd_safe::compress_bound(COMPRESSED_BLOCK_SIZE);
-        let workers = (0..n_threads)
+        let codec_bytes = zstd_cctx_estimate(level, COMPRESSED_BLOCK_SIZE).saturating_add(bound);
+        // One producer block in hand plus a recycled-input pool of up to
+        // `max_in_flight + 1` buffers; admit never grants more than twice
+        // the worker count as in-flight depth.
+        let producer_bytes = COMPRESSED_BLOCK_SIZE.saturating_mul(n_threads.saturating_mul(2) + 2);
+        let admission = Budget {
+            codec_per_worker: codec_bytes,
+            per_job: COMPRESSED_BLOCK_SIZE.saturating_mul(2),
+            writer_slot: 0,
+            fixed: producer_bytes,
+        }
+        .admit(n_threads, u64::MAX)
+        .unwrap_or(Admission::DEGRADED);
+        let workers = (0..admission.workers)
             .map(|_| {
                 Ok(BlockCompressWorker {
                     compressor: zstd::bulk::Compressor::new(level)
@@ -179,16 +195,16 @@ impl<'p, W: Write> ZarWriter<'p, W> {
             hasher: Sha256::new(),
             out_pos: 0,
             pool: Some(Pool::spawn(workers)),
-            // Two blocks per thread keeps every worker busy without
-            // letting the in-flight set grow with the input size.
-            max_in_flight: n_threads * 2,
+            // The same byte admission bounds both active jobs and
+            // completed results waiting behind an earlier block.
+            max_in_flight: admission.max_in_flight,
             in_flight: 0,
             submit_seq: 0,
             write_seq: 0,
             pending: HashMap::new(),
             records: Vec::new(),
             block_buf: Vec::with_capacity(COMPRESSED_BLOCK_SIZE),
-            spare: Vec::new(),
+            spares: Vec::new(),
             input_offset: 0,
             names: Vec::new(),
             interned: HashMap::new(),
@@ -378,7 +394,7 @@ impl<'p, W: Write> ZarWriter<'p, W> {
         pool.submit(self.submit_seq, block)?;
         self.submit_seq += 1;
         self.in_flight += 1;
-        while self.in_flight >= self.max_in_flight {
+        while self.in_flight.saturating_add(self.pending.len()) >= self.max_in_flight {
             self.drain_one()?;
         }
         Ok(())
@@ -399,11 +415,12 @@ impl<'p, W: Write> ZarWriter<'p, W> {
             self.write_seq += 1;
             // A stored-raw block was emitted straight out of its input
             // buffer, so recycle `payload` in that case and `spare`
-            // otherwise. Bounded by `max_in_flight`: every submitted
-            // block took a buffer out of the pool first.
+            // otherwise. This pool is included in admission's producer reserve.
             let reuse = out.spare.unwrap_or(out.payload);
-            if reuse.capacity() >= COMPRESSED_BLOCK_SIZE {
-                self.spare.push(reuse);
+            if reuse.capacity() >= COMPRESSED_BLOCK_SIZE
+                && self.spares.len() < self.max_in_flight + 1
+            {
+                self.spares.push(reuse);
             }
         }
         Ok(())
@@ -412,7 +429,7 @@ impl<'p, W: Write> ZarWriter<'p, W> {
     /// An empty buffer with room for a full block, recycled when a
     /// worker has handed one back.
     fn take_buf(&mut self) -> Vec<u8> {
-        match self.spare.pop() {
+        match self.spares.pop() {
             Some(mut buf) => {
                 buf.clear();
                 buf
