@@ -27,6 +27,28 @@ and `info` extensions in the installed build.
 CHD extraction recreates `.bin` plus `.cue` for CD media and an `.iso` for DVD
 media, so its reverse operation is named `extract`.
 
+## Large files and memory
+
+Payload memory does not grow with the size of the input file. Every operation
+reads and writes in fixed-size blocks, and `info` reads only headers and the
+metadata it reports. Block index tables (CHD maps, CSO indexes, RVZ and WIA group
+tables) are kept in memory and take a few bytes per block.
+
+| Behavior | Detail |
+|---|---|
+| Demand decoding | `info` on Z3DS, NCZ, RVZ, WIA, GCZ, CHD, CSO, ZSO, DAX, ZAR, WUA and XEX decodes only the frames, blocks or hunks that hold the requested bytes. |
+| Worker memory | Decoders whose unit size comes from the file (CHD, CSO, Z3DS, RVZ, NCZ blocks) and the ZAR, Z3DS and NCZ block compressors size their worker pools against a 512 MiB working set per operation, counting codec contexts, queued units and the writer queue. Default unit sizes keep full parallelism; only user-chosen unit sizes far above the defaults (for example NCZ blocks of 256 MiB) shrink the pool. A unit that does not fit the working set on its own is never rejected: it is decoded on one worker with at most two units live (one decoding, one being written), and formats whose codec streams (Z3DS frames, plain and packed RVZ chunks, NCZ) stream it in 4 MiB pieces instead of holding it whole. The legacy GCZ, WIA and NKit readers used by `migrate` and `verify` are capped at one worker per core and about 128 MiB of groups in flight (`in_flight_cap`), so large blocks or chunks reduce the worker count; their memory is the file's block or chunk size times the worker count plus, for WIA LZMA files, the dictionary per worker (files declaring a dictionary above 256 MiB are rejected). |
+| Size checks | Sizes and counts declared inside a file are checked against the file before anything is allocated, so metadata memory scales with what is actually stored on disk, not with a declared value. Apart from the guards above, nothing a previous release accepted is rejected; `info` also retains only the entries it reports (for example PKG artwork and SFO items, CHD metadata tags without their payloads). |
+| Sheets | CUE and GDI sheets are parsed line by line; a single line is kept up to 16 MiB, far beyond any directive, so a bogus multi-gigabyte sheet never loads whole. |
+| Validation scope | `info` validates only the ranges it reads. `verify` checks structure and stored hashes; with `--full` (RVZ, CSO, Z3DS) it decodes every byte. Full conversions always decode every byte. |
+| Hash cache | The persistent hash cache keeps up to 250,000 entries and evicts entries least recently written or used in a run that stores the cache. A cache file that decodes to more than 256 MiB is ignored and rebuilt. |
+
+WIA groups and CHD hunks are held whole because the format compresses each as one
+stream; RVZ chunks, Z3DS frames and NCZ blocks stream in 4 MiB pieces (see above).
+Solid NSZ and XCZ compression uses zstd's multithreaded mode with one job per core:
+its memory depends on the level and the core count, not on the input size. The
+desktop app can run up to eight operations at once, each with its own budget.
+
 ## Format notes
 
 ### PS4 and PS5 PKG files
