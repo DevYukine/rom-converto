@@ -11,19 +11,22 @@
 use std::io::{Read, Seek, SeekFrom};
 
 use crate::nintendo::wup::crypto::aes_cbc_decrypt_in_place;
-use crate::nintendo::wup::error::WupResult;
+use crate::nintendo::wup::error::{WupError, WupResult};
 use crate::nintendo::wup::nus::content_stream::{
     HASHED_BLOCK_DATA_SIZE, HASHED_BLOCK_H0_COUNT, HASHED_BLOCK_H0_SIZE, HASHED_BLOCK_HASH_SIZE,
     HASHED_BLOCK_SIZE, raw_content_iv,
 };
 use crate::nintendo::wup::nus::ticket_parser::TitleKey;
 
-/// Decrypts a byte range of a raw-mode content file without loading
-/// the whole file. Seeks to the AES block preceding `byte_offset` to
-/// recover the correct chaining IV, then trims the decrypted buffer
-/// down to the requested range.
-pub fn decrypt_raw_range<R: Read + Seek>(
-    reader: &mut R,
+/// Adapts a seekable reader to the random-access callback used by the shared range decryptors.
+pub fn read_at<R: Read + Seek>(reader: &mut R, offset: u64, output: &mut [u8]) -> WupResult<()> {
+    reader.seek(SeekFrom::Start(offset))?;
+    reader.read_exact(output).map_err(WupError::from)
+}
+
+/// Decrypts a byte range of raw-mode content, using the preceding ciphertext block as IV.
+pub fn decrypt_raw_range(
+    mut read_at: impl FnMut(u64, &mut [u8]) -> WupResult<()>,
     title_key: &TitleKey,
     cluster_index: u16,
     byte_offset: u64,
@@ -35,31 +38,26 @@ pub fn decrypt_raw_range<R: Read + Seek>(
 
     let aligned_offset = byte_offset & !15;
     let head_skip = (byte_offset - aligned_offset) as usize;
-    let aligned_end = (byte_offset + byte_len as u64 + 15) & !15;
+    let aligned_end = byte_offset
+        .checked_add(byte_len as u64)
+        .and_then(|end| end.checked_add(15))
+        .ok_or(WupError::InvalidFst)?
+        & !15;
     let aligned_len = (aligned_end - aligned_offset) as usize;
-
-    let iv = if aligned_offset == 0 {
-        reader.seek(SeekFrom::Start(0))?;
-        raw_content_iv(cluster_index)
-    } else {
-        reader.seek(SeekFrom::Start(aligned_offset - 16))?;
-        let mut iv = [0u8; 16];
-        reader.read_exact(&mut iv)?;
-        iv
-    };
-
-    let mut buf = vec![0u8; aligned_len];
-    reader.read_exact(&mut buf)?;
-    aes_cbc_decrypt_in_place(&title_key.0, &iv, &mut buf)?;
-    Ok(buf[head_skip..head_skip + byte_len].to_vec())
+    let prefix = usize::from(aligned_offset != 0) * 16;
+    let mut buf = vec![0u8; aligned_len + prefix];
+    read_at(aligned_offset - prefix as u64, &mut buf)?;
+    let mut iv = raw_content_iv(cluster_index);
+    if prefix != 0 {
+        iv.copy_from_slice(&buf[..16]);
+    }
+    aes_cbc_decrypt_in_place(&title_key.0, &iv, &mut buf[prefix..])?;
+    Ok(buf[prefix + head_skip..prefix + head_skip + byte_len].to_vec())
 }
 
-/// Decrypts a byte range of a hashed-mode content file. Reads only
-/// the 64 KiB physical blocks that overlap `[virtual_offset,
-/// virtual_offset + virtual_len)`, deriving each block's data IV from
-/// its own hash prefix.
-pub fn decrypt_hashed_range<R: Read + Seek>(
-    reader: &mut R,
+/// Decrypts a byte range of hashed-mode content, reading only its overlapping physical blocks.
+pub fn decrypt_hashed_range(
+    mut read_at: impl FnMut(u64, &mut [u8]) -> WupResult<()>,
     title_key: &TitleKey,
     virtual_offset: u64,
     virtual_len: usize,
@@ -78,23 +76,20 @@ pub fn decrypt_hashed_range<R: Read + Seek>(
 
     for block_idx in first_block..=last_block {
         let phys_offset = block_idx * HASHED_BLOCK_SIZE as u64;
-        reader.seek(SeekFrom::Start(phys_offset))?;
         let mut block = [0u8; HASHED_BLOCK_SIZE];
-        reader.read_exact(&mut block)?;
+        read_at(phys_offset, &mut block)?;
 
         let mut hash_part = [0u8; HASHED_BLOCK_HASH_SIZE];
         hash_part.copy_from_slice(&block[..HASHED_BLOCK_HASH_SIZE]);
-        let iv_zero = [0u8; 16];
-        aes_cbc_decrypt_in_place(&title_key.0, &iv_zero, &mut hash_part)?;
+        aes_cbc_decrypt_in_place(&title_key.0, &[0; 16], &mut hash_part)?;
 
         let iv_offset = (block_idx as usize % HASHED_BLOCK_H0_COUNT) * HASHED_BLOCK_H0_SIZE;
         let data_iv: [u8; 16] = hash_part[iv_offset..iv_offset + 16]
             .try_into()
             .expect("16 bytes");
 
-        let mut data_part = vec![0u8; HASHED_BLOCK_DATA_SIZE];
-        data_part.copy_from_slice(&block[HASHED_BLOCK_HASH_SIZE..]);
-        aes_cbc_decrypt_in_place(&title_key.0, &data_iv, &mut data_part)?;
+        let data_part = &mut block[HASHED_BLOCK_HASH_SIZE..];
+        aes_cbc_decrypt_in_place(&title_key.0, &data_iv, data_part)?;
 
         let block_virt_start = block_idx * data_size;
         let in_block_start = (current_virt - block_virt_start) as usize;
@@ -143,7 +138,8 @@ mod tests {
         let plain = (0..0x400u32).map(|i| (i & 0xFF) as u8).collect::<Vec<_>>();
         let encrypted = encrypt_raw(&plain, &key, 0);
         let mut cur = Cursor::new(encrypted);
-        let got = decrypt_raw_range(&mut cur, &key, 0, 0, 0x40).unwrap();
+        let got =
+            decrypt_raw_range(|at, out| read_at(&mut cur, at, out), &key, 0, 0, 0x40).unwrap();
         assert_eq!(got, &plain[0..0x40]);
     }
 
@@ -153,7 +149,8 @@ mod tests {
         let plain = (0..0x1000u32).map(|i| (i & 0xFF) as u8).collect::<Vec<_>>();
         let encrypted = encrypt_raw(&plain, &key, 0);
         let mut cur = Cursor::new(encrypted);
-        let got = decrypt_raw_range(&mut cur, &key, 0, 0x40, 0x100).unwrap();
+        let got =
+            decrypt_raw_range(|at, out| read_at(&mut cur, at, out), &key, 0, 0x40, 0x100).unwrap();
         assert_eq!(got, &plain[0x40..0x140]);
     }
 
@@ -163,19 +160,23 @@ mod tests {
         let plain = (0..0x2000u32).map(|i| (i & 0xFF) as u8).collect::<Vec<_>>();
         let encrypted = encrypt_raw(&plain, &key, 0);
         let mut cur = Cursor::new(encrypted);
-        let got = decrypt_raw_range(&mut cur, &key, 0, 0x57, 0x123).unwrap();
+        let got =
+            decrypt_raw_range(|at, out| read_at(&mut cur, at, out), &key, 0, 0x57, 0x123).unwrap();
         assert_eq!(got, &plain[0x57..0x57 + 0x123]);
     }
 
     #[test]
-    fn raw_range_matches_whole_buffer_decrypt() {
+    fn raw_range_matches_whole_buffer_decrypt_with_unaligned_bounds() {
         let key = make_title_key();
         let plain = (0..0x800u32).map(|i| (i ^ 0x5A) as u8).collect::<Vec<_>>();
         let encrypted = encrypt_raw(&plain, &key, 5);
         let whole = decrypt_raw_content(encrypted.clone(), &key, 5).unwrap();
         let mut cur = Cursor::new(encrypted);
-        let part = decrypt_raw_range(&mut cur, &key, 5, 0x200, 0x400).unwrap();
-        assert_eq!(part, &whole[0x200..0x600]);
+        let offset = 0x205;
+        let len = 0x123;
+        let part =
+            decrypt_raw_range(|at, out| read_at(&mut cur, at, out), &key, 5, offset, len).unwrap();
+        assert_eq!(part, &whole[offset as usize..offset as usize + len]);
     }
 
     fn build_hashed_blocks(num_blocks: usize, key: &TitleKey, plaintext: &[u8]) -> Vec<u8> {
@@ -221,7 +222,8 @@ mod tests {
         let encrypted = build_hashed_blocks(1, &key, &plain);
         let whole = decrypt_hashed_content(&encrypted, &key).unwrap();
         let mut cur = Cursor::new(encrypted);
-        let got = decrypt_hashed_range(&mut cur, &key, 0x100, 0x80).unwrap();
+        let got =
+            decrypt_hashed_range(|at, out| read_at(&mut cur, at, out), &key, 0x100, 0x80).unwrap();
         assert_eq!(got, &whole[0x100..0x180]);
     }
 
@@ -236,7 +238,13 @@ mod tests {
         let mut cur = Cursor::new(encrypted);
         let start = HASHED_BLOCK_DATA_SIZE - 0x20;
         let len = 0x80;
-        let got = decrypt_hashed_range(&mut cur, &key, start as u64, len).unwrap();
+        let got = decrypt_hashed_range(
+            |at, out| read_at(&mut cur, at, out),
+            &key,
+            start as u64,
+            len,
+        )
+        .unwrap();
         assert_eq!(got, &whole[start..start + len]);
     }
 
@@ -251,7 +259,34 @@ mod tests {
         let mut cur = Cursor::new(encrypted);
         let start = 2 * HASHED_BLOCK_DATA_SIZE + 0x10;
         let len = 0x40;
-        let got = decrypt_hashed_range(&mut cur, &key, start as u64, len).unwrap();
+        let got = decrypt_hashed_range(
+            |at, out| read_at(&mut cur, at, out),
+            &key,
+            start as u64,
+            len,
+        )
+        .unwrap();
+        assert_eq!(got, &whole[start..start + len]);
+    }
+
+    #[test]
+    fn hashed_range_crossing_block_15_to_16_matches_whole_decrypt() {
+        let key = make_title_key();
+        let plain: Vec<u8> = (0..17 * HASHED_BLOCK_DATA_SIZE)
+            .map(|i| (i.wrapping_mul(13) & 0xFF) as u8)
+            .collect();
+        let encrypted = build_hashed_blocks(17, &key, &plain);
+        let whole = decrypt_hashed_content(&encrypted, &key).unwrap();
+        let mut cur = Cursor::new(encrypted);
+        let start = 15 * HASHED_BLOCK_DATA_SIZE - 31;
+        let len = 80;
+        let got = decrypt_hashed_range(
+            |at, out| read_at(&mut cur, at, out),
+            &key,
+            start as u64,
+            len,
+        )
+        .unwrap();
         assert_eq!(got, &whole[start..start + len]);
     }
 }

@@ -1,35 +1,26 @@
 //! [`MetaSource`] over one decrypted Wii U disc partition.
 //!
-//! Lets the source-agnostic `read_loadiine` path in [`super::super::info`]
-//! pull `code/app.xml`, `meta/meta.xml`, and `meta/iconTex.tga` straight off a
-//! WUD/WUX disc without first extracting the whole title. Decrypted clusters
-//! are cached so repeated meta reads from the same cluster skip the AES work.
-
-use std::collections::HashMap;
+//! The source-agnostic metadata extractor reads only the requested FST file
+//! extents; encrypted content ranges are decrypted in bounded chunks.
 
 use anyhow::{Result, anyhow};
 
 use crate::nintendo::wup::disc::partition::PartitionContentSource;
 use crate::nintendo::wup::meta_source::MetaSource;
 use crate::nintendo::wup::models::WupTmd;
-use crate::nintendo::wup::nus::content_stream::{
-    ContentBytesSource, decrypt_hashed_content, decrypt_raw_content,
-};
-use crate::nintendo::wup::nus::fst_parser::{FstClusterHashMode, VirtualFs};
+use crate::nintendo::wup::nus::content_stream::ContentLoader;
+use crate::nintendo::wup::nus::fst_parser::VirtualFs;
 use crate::nintendo::wup::nus::ticket_parser::TitleKey;
 
-/// [`MetaSource`] backed by one decrypted disc partition, caching
-/// decrypted clusters by index.
+/// [`MetaSource`] backed by one decrypted Wii U disc partition.
 pub struct DiscMetaSource<'d> {
     source: PartitionContentSource<'d>,
     title_key: TitleKey,
     tmd: WupTmd,
     fs: VirtualFs,
-    cache: HashMap<u16, Vec<u8>>,
 }
 
 impl<'d> DiscMetaSource<'d> {
-    /// Builds a source over `source`, starting with an empty cluster cache.
     pub fn new(
         source: PartitionContentSource<'d>,
         title_key: TitleKey,
@@ -41,47 +32,7 @@ impl<'d> DiscMetaSource<'d> {
             title_key,
             tmd,
             fs,
-            cache: HashMap::new(),
         }
-    }
-
-    fn decrypted_cluster(&mut self, cluster_index: u16) -> Result<&[u8]> {
-        if !self.cache.contains_key(&cluster_index) {
-            let hash_mode = self
-                .fs
-                .clusters
-                .get(cluster_index as usize)
-                .ok_or_else(|| anyhow!("disc meta: cluster {cluster_index} missing from FST"))?
-                .hash_mode;
-            let content_id = self
-                .tmd
-                .content_by_index(cluster_index)
-                .ok_or_else(|| anyhow!("disc meta: tmd missing cluster {cluster_index}"))?
-                .content_id;
-            let encrypted = self
-                .source
-                .read_encrypted_content(content_id)
-                .map_err(|e| anyhow!("disc meta: read content {content_id}: {e}"))?;
-            let decrypted = match hash_mode {
-                FstClusterHashMode::HashInterleaved => {
-                    decrypt_hashed_content(&encrypted, &self.title_key).map_err(|e| {
-                        anyhow!("disc meta: decrypt hashed cluster {cluster_index}: {e}")
-                    })?
-                }
-                FstClusterHashMode::Raw | FstClusterHashMode::RawStream => {
-                    decrypt_raw_content(encrypted, &self.title_key, cluster_index).map_err(|e| {
-                        anyhow!("disc meta: decrypt raw cluster {cluster_index}: {e}")
-                    })?
-                }
-                FstClusterHashMode::Unknown(b) => {
-                    return Err(anyhow!(
-                        "disc meta: unsupported hash mode {b} for cluster {cluster_index}"
-                    ));
-                }
-            };
-            self.cache.insert(cluster_index, decrypted);
-        }
-        Ok(self.cache.get(&cluster_index).expect("just inserted"))
     }
 }
 
@@ -91,18 +42,45 @@ impl<'d> MetaSource for DiscMetaSource<'d> {
             Some(f) => f.clone(),
             None => return Ok(None),
         };
-        // Meta/code files on a base game partition are never shared, but be
-        // defensive: a shared entry has no own bytes here.
-        if file.is_shared {
-            return Ok(None);
+        let mut loader = ContentLoader::new(&mut self.source, self.title_key, &self.tmd, &self.fs);
+        // Validate the extent (shared / out-of-extent entries) before
+        // reserving file_size bytes, so a crafted FST that declares a
+        // huge size for a file this title never actually shipped fails
+        // cheaply instead of allocating first.
+        let extent = match loader.validate_file(&file) {
+            Ok(extent) => extent,
+            Err(crate::nintendo::wup::error::WupError::FileInheritedFromOtherTitle { .. }) => {
+                return Ok(None);
+            }
+            Err(error) => return Err(anyhow!("disc meta: {error}")),
+        };
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(file.file_size as usize)
+            .map_err(|e| anyhow!("disc metadata allocation failed: {e}"))?;
+        loader
+            .stream_prepared_file(&file, extent, |chunk| {
+                bytes.extend_from_slice(chunk);
+                Ok(())
+            })
+            .map_err(|error| anyhow!("disc meta: {error}"))?;
+        Ok(Some(bytes))
+    }
+    fn exists(&mut self, virtual_path: &str) -> Result<bool> {
+        let file = match self.fs.files.iter().find(|f| f.path == virtual_path) {
+            Some(f) => f.clone(),
+            None => return Ok(false),
+        };
+        // Same predicate as read(): a shared or out-of-extent entry has
+        // no own bytes on this partition and should not be reported as
+        // present.
+        let mut loader = ContentLoader::new(&mut self.source, self.title_key, &self.tmd, &self.fs);
+        match loader.validate_file(&file) {
+            Ok(_) => Ok(true),
+            Err(crate::nintendo::wup::error::WupError::FileInheritedFromOtherTitle { .. }) => {
+                Ok(false)
+            }
+            Err(error) => Err(anyhow!("disc meta: {error}")),
         }
-        let offset_factor = self.fs.offset_factor as u64;
-        let start = u64::from(file.file_offset) * offset_factor;
-        let end = start + u64::from(file.file_size);
-        let cluster = self.decrypted_cluster(file.cluster_index)?;
-        if end as usize > cluster.len() {
-            return Ok(None);
-        }
-        Ok(Some(cluster[start as usize..end as usize].to_vec()))
     }
 }

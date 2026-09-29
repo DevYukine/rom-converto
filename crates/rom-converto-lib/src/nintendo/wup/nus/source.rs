@@ -14,14 +14,12 @@ use anyhow::{Context, Result, anyhow};
 
 use crate::nintendo::wup::meta_source::MetaSource;
 use crate::nintendo::wup::models::tmd::WupTmd;
-use crate::nintendo::wup::nus::content_reader::{decrypt_hashed_range, decrypt_raw_range};
-use crate::nintendo::wup::nus::fst_parser::{FstClusterHashMode, VirtualFs, parse_fst};
+use crate::nintendo::wup::nus::content_reader::{decrypt_hashed_range, decrypt_raw_range, read_at};
+use crate::nintendo::wup::nus::fst_parser::{FstClusterHashMode, VirtualFs, parse_fst_ranges};
 use crate::nintendo::wup::nus::layout::{NusLayout, TicketSource};
 use crate::nintendo::wup::nus::ticket_parser::{TitleKey, read_ticket_file};
 use crate::nintendo::wup::nus::tmd_parser::read_tmd_file;
 use crate::nintendo::wup::title_key_derive::derive_title_key;
-
-const FST_INITIAL_PROBE: usize = 4 * 1024 * 1024;
 
 /// [`MetaSource`] backed by a NUS-layout title directory, decrypting
 /// each requested file's byte range on demand instead of extracting
@@ -95,12 +93,17 @@ impl NusSource {
             .resolve(content_0.content_id)
             .ok_or_else(|| anyhow!("content 0 missing on disk"))?;
         let mut file = File::open(&path).context("open content 0")?;
-        let file_size = file.metadata()?.len();
-        let probe = (FST_INITIAL_PROBE as u64).min(file_size) as usize;
-        let probe_aligned = probe & !15;
-        let decrypted = decrypt_raw_range(&mut file, &self.title_key, 0, 0, probe_aligned)
-            .map_err(|e| anyhow!("decrypt content 0 probe: {}", e))?;
-        parse_fst(&decrypted).map_err(|e| anyhow!("parse fst: {}", e))
+        let content_len = file.metadata()?.len();
+        parse_fst_ranges(content_len, |offset, len| {
+            decrypt_raw_range(
+                |at, out| read_at(&mut file, at, out),
+                &self.title_key,
+                0,
+                offset,
+                len,
+            )
+        })
+        .map_err(|e| anyhow!("parse fst: {}", e))
     }
 }
 
@@ -122,7 +125,9 @@ impl MetaSource for NusSource {
                 .ok_or_else(|| anyhow!("cluster {} missing from FST", entry.cluster_index))?;
             (
                 entry.cluster_index,
-                u64::from(entry.file_offset) * u64::from(fst.offset_factor),
+                u64::from(entry.file_offset)
+                    .checked_mul(u64::from(fst.offset_factor))
+                    .ok_or_else(|| anyhow!("metadata file offset overflow"))?,
                 entry.file_size as usize,
                 cluster.hash_mode,
             )
@@ -142,17 +147,20 @@ impl MetaSource for NusSource {
 
         let bytes = match hash_mode {
             FstClusterHashMode::Raw | FstClusterHashMode::RawStream => decrypt_raw_range(
-                &mut file,
+                |at, out| read_at(&mut file, at, out),
                 &self.title_key,
                 cluster_index,
                 byte_offset,
                 byte_len,
             )
             .map_err(|e| anyhow!("decrypt raw range: {}", e))?,
-            FstClusterHashMode::HashInterleaved => {
-                decrypt_hashed_range(&mut file, &self.title_key, byte_offset, byte_len)
-                    .map_err(|e| anyhow!("decrypt hashed range: {}", e))?
-            }
+            FstClusterHashMode::HashInterleaved => decrypt_hashed_range(
+                |at, out| read_at(&mut file, at, out),
+                &self.title_key,
+                byte_offset,
+                byte_len,
+            )
+            .map_err(|e| anyhow!("decrypt hashed range: {}", e))?,
             FstClusterHashMode::Unknown(b) => {
                 return Err(anyhow!(
                     "unsupported cluster hash mode {} for {}",
@@ -162,5 +170,17 @@ impl MetaSource for NusSource {
             }
         };
         Ok(Some(bytes))
+    }
+    fn exists(&mut self, virtual_path: &str) -> Result<bool> {
+        if self.fst_cache.is_none() {
+            self.fst_cache = Some(self.load_fst()?);
+        }
+        Ok(self
+            .fst_cache
+            .as_ref()
+            .expect("just set")
+            .files
+            .iter()
+            .any(|file| file.path == virtual_path))
     }
 }

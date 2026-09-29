@@ -22,6 +22,8 @@
 //! separately: the writer recreates them implicitly when files are
 //! added.
 
+use std::collections::BTreeMap;
+
 use crate::nintendo::wup::error::{WupError, WupResult};
 use crate::util::bytes::{u16_be, u32_be, u64_be};
 
@@ -115,24 +117,216 @@ pub struct VirtualFs {
     pub files: Vec<VirtualFile>,
 }
 
-/// Parse a full FST from the given decrypted bytes. `bytes` must be
-/// the full decrypted contents of cluster 0 (content 0), including
-/// the header, cluster table, file entries, and name string table.
-pub fn parse_fst(bytes: &[u8]) -> WupResult<VirtualFs> {
-    if bytes.len() < FST_HEADER_SIZE {
+/// Parse an FST by requesting only its header, tables, and name strings.
+/// `read_range` must return exactly the requested decrypted bytes.
+pub fn parse_fst_ranges(
+    content_len: u64,
+    mut read_range: impl FnMut(u64, usize) -> WupResult<Vec<u8>>,
+) -> WupResult<VirtualFs> {
+    if content_len < FST_HEADER_SIZE as u64 {
+        return Err(WupError::InvalidFst);
+    }
+    let header = read_range(0, FST_HEADER_SIZE)?;
+    if header.len() != FST_HEADER_SIZE {
+        return Err(WupError::InvalidFst);
+    }
+    let (offset_factor, hash_is_disabled, num_clusters, clusters_end) = parse_header(&header)?;
+    if clusters_end as u64 > content_len {
+        return Err(WupError::InvalidFst);
+    }
+    let cluster_len = num_clusters
+        .checked_mul(FST_CLUSTER_ENTRY_SIZE)
+        .ok_or(WupError::InvalidFst)?;
+    let cluster_bytes = read_range(FST_HEADER_SIZE as u64, cluster_len)?;
+    if cluster_bytes.len() != cluster_len {
+        return Err(WupError::InvalidFst);
+    }
+    let clusters = parse_clusters(&cluster_bytes, num_clusters)?;
+    let root_end = clusters_end
+        .checked_add(FST_FILE_ENTRY_SIZE)
+        .ok_or(WupError::InvalidFst)?;
+    if root_end as u64 > content_len {
+        return Err(WupError::InvalidFst);
+    }
+    let root_bytes = read_range(clusters_end as u64, FST_FILE_ENTRY_SIZE)?;
+    if root_bytes.len() != FST_FILE_ENTRY_SIZE {
+        return Err(WupError::InvalidFst);
+    }
+    let num_entries = entry_count(FileEntryRaw::parse(&root_bytes))?;
+    let entries_len = num_entries
+        .checked_mul(FST_FILE_ENTRY_SIZE)
+        .ok_or(WupError::InvalidFst)?;
+    let entries_end = clusters_end
+        .checked_add(entries_len)
+        .ok_or(WupError::InvalidFst)?;
+    if entries_end as u64 > content_len {
+        return Err(WupError::InvalidFst);
+    }
+    let name_table_start = entries_end;
+    let entry_start = u64::try_from(clusters_end).map_err(|_| WupError::InvalidFst)?;
+    let entry_table = read_entry_table(&mut read_range, entry_start, entries_len, &root_bytes)?;
+    let name_offsets = read_entry_name_offsets(&entry_table)?;
+    let names = read_name_table(&mut read_range, content_len, name_table_start, name_offsets)?;
+    let entries = EntryTableReader::new(&entry_table, num_entries);
+    walk_entries(
+        offset_factor,
+        hash_is_disabled,
+        clusters,
+        num_entries,
+        |index| entries.read_entry(index),
+        |offset| names.get(&offset).cloned().ok_or(WupError::InvalidFst),
+    )
+}
+fn read_entry_table(
+    read_range: &mut impl FnMut(u64, usize) -> WupResult<Vec<u8>>,
+    entry_start: u64,
+    entries_len: usize,
+    root_entry: &[u8],
+) -> WupResult<Vec<u8>> {
+    if root_entry.len() != FST_FILE_ENTRY_SIZE || entries_len < FST_FILE_ENTRY_SIZE {
+        return Err(WupError::InvalidFst);
+    }
+    let rest_len = entries_len - FST_FILE_ENTRY_SIZE;
+    let rest_start = entry_start
+        .checked_add(FST_FILE_ENTRY_SIZE as u64)
+        .ok_or(WupError::InvalidFst)?;
+    let rest = if rest_len == 0 {
+        Vec::new()
+    } else {
+        let rest = read_range(rest_start, rest_len)?;
+        if rest.len() != rest_len {
+            return Err(WupError::InvalidFst);
+        }
+        rest
+    };
+    let mut table = Vec::with_capacity(entries_len);
+    table.extend_from_slice(root_entry);
+    table.extend_from_slice(&rest);
+    Ok(table)
+}
+
+fn read_entry_name_offsets(table: &[u8]) -> WupResult<Vec<u32>> {
+    if !table.len().is_multiple_of(FST_FILE_ENTRY_SIZE) {
+        return Err(WupError::InvalidFst);
+    }
+    Ok(table
+        .chunks_exact(FST_FILE_ENTRY_SIZE)
+        .map(|entry| FileEntryRaw::parse(entry).name_offset())
+        .collect())
+}
+
+struct EntryTableReader<'a> {
+    table: &'a [u8],
+    num_entries: usize,
+}
+
+impl<'a> EntryTableReader<'a> {
+    fn new(table: &'a [u8], num_entries: usize) -> Self {
+        Self { table, num_entries }
+    }
+
+    fn read_entry(&self, index: usize) -> WupResult<FileEntryRaw> {
+        if index >= self.num_entries {
+            return Err(WupError::InvalidFst);
+        }
+        let start = index
+            .checked_mul(FST_FILE_ENTRY_SIZE)
+            .ok_or(WupError::InvalidFst)?;
+        Ok(FileEntryRaw::parse(
+            &self.table[start..start + FST_FILE_ENTRY_SIZE],
+        ))
+    }
+}
+
+fn read_name_table(
+    read_range: &mut impl FnMut(u64, usize) -> WupResult<Vec<u8>>,
+    content_len: u64,
+    table_start: usize,
+    mut offsets: Vec<u32>,
+) -> WupResult<BTreeMap<u32, String>> {
+    const WINDOW_SIZE: usize = 4096;
+
+    offsets.sort_unstable();
+    offsets.dedup();
+    let table_start_u64 = u64::try_from(table_start).map_err(|_| WupError::InvalidFst)?;
+    let name_table_len = content_len
+        .checked_sub(table_start_u64)
+        .ok_or(WupError::InvalidFst)?;
+    if offsets
+        .iter()
+        .any(|offset| u64::from(*offset) >= name_table_len)
+    {
         return Err(WupError::InvalidFst);
     }
 
-    let magic = u32_be(bytes, 0);
-    if magic != FST_MAGIC {
+    let mut names = BTreeMap::new();
+    let mut pending: BTreeMap<u32, Vec<u8>> = BTreeMap::new();
+    let mut next_offset = 0;
+    let mut window_start = 0usize;
+    while next_offset < offsets.len() || !pending.is_empty() {
+        if pending.is_empty() {
+            window_start = offsets[next_offset] as usize;
+        }
+        let absolute_start = table_start_u64
+            .checked_add(window_start as u64)
+            .ok_or(WupError::InvalidFst)?;
+        let remaining = name_table_len
+            .checked_sub(window_start as u64)
+            .ok_or(WupError::InvalidFst)?;
+        let window_len = WINDOW_SIZE.min(usize::try_from(remaining).unwrap_or(usize::MAX));
+        let window = read_range(absolute_start, window_len)?;
+        if window.len() != window_len {
+            return Err(WupError::InvalidFst);
+        }
+        let window_end = window_start
+            .checked_add(window_len)
+            .ok_or(WupError::InvalidFst)?;
+        while next_offset < offsets.len() && (offsets[next_offset] as usize) < window_end {
+            pending.insert(offsets[next_offset], Vec::new());
+            next_offset += 1;
+        }
+
+        let mut finished = Vec::new();
+        for (&offset, name) in pending.iter_mut() {
+            let start = (offset as usize).saturating_sub(window_start);
+            let suffix = window.get(start..).ok_or(WupError::InvalidFst)?;
+            let bytes_remaining = name_table_len
+                .checked_sub(u64::from(offset))
+                .and_then(|remaining| remaining.checked_sub(name.len() as u64))
+                .ok_or(WupError::InvalidFst)?;
+            let suffix_len = suffix
+                .len()
+                .min(usize::try_from(bytes_remaining).unwrap_or(usize::MAX));
+            let suffix = &suffix[..suffix_len];
+            if let Some(nul) = suffix.iter().position(|&byte| byte == 0) {
+                name.extend_from_slice(&suffix[..nul]);
+                finished.push(offset);
+            } else {
+                name.extend_from_slice(suffix);
+                if suffix_len as u64 == bytes_remaining {
+                    return Err(WupError::InvalidFst);
+                }
+            }
+        }
+        for offset in finished {
+            let name = pending.remove(&offset).ok_or(WupError::InvalidFst)?;
+            names.insert(
+                offset,
+                String::from_utf8(name).map_err(|_| WupError::InvalidFst)?,
+            );
+        }
+        window_start = window_end;
+    }
+    Ok(names)
+}
+
+fn parse_header(header: &[u8]) -> WupResult<(u32, bool, usize, usize)> {
+    if header.len() < FST_HEADER_SIZE || u32_be(header, 0) != FST_MAGIC {
         return Err(WupError::InvalidFst);
     }
-    let offset_factor = u32_be(bytes, 0x04);
-    let num_clusters = u32_be(bytes, 0x08) as usize;
-    let hash_is_disabled = bytes[0x0C] != 0;
-
-    // Sanity: reject pathological cluster counts that would
-    // overflow usize or point past the buffer.
+    let offset_factor = u32_be(header, 0x04);
+    let num_clusters = u32_be(header, 0x08) as usize;
+    let hash_is_disabled = header[0x0C] != 0;
     let clusters_end = FST_HEADER_SIZE
         .checked_add(
             num_clusters
@@ -140,14 +334,18 @@ pub fn parse_fst(bytes: &[u8]) -> WupResult<VirtualFs> {
                 .ok_or(WupError::InvalidFst)?,
         )
         .ok_or(WupError::InvalidFst)?;
-    if bytes.len() < clusters_end {
+    Ok((offset_factor, hash_is_disabled, num_clusters, clusters_end))
+}
+
+fn parse_clusters(bytes: &[u8], num_clusters: usize) -> WupResult<Vec<FstCluster>> {
+    let expected_len = num_clusters
+        .checked_mul(FST_CLUSTER_ENTRY_SIZE)
+        .ok_or(WupError::InvalidFst)?;
+    if bytes.len() != expected_len {
         return Err(WupError::InvalidFst);
     }
-
     let mut clusters = Vec::with_capacity(num_clusters);
-    for i in 0..num_clusters {
-        let start = FST_HEADER_SIZE + i * FST_CLUSTER_ENTRY_SIZE;
-        let entry = &bytes[start..start + FST_CLUSTER_ENTRY_SIZE];
+    for entry in bytes.chunks_exact(FST_CLUSTER_ENTRY_SIZE) {
         clusters.push(FstCluster {
             offset: u32_be(entry, 0x00),
             size: u32_be(entry, 0x04),
@@ -156,36 +354,28 @@ pub fn parse_fst(bytes: &[u8]) -> WupResult<VirtualFs> {
             hash_mode: FstClusterHashMode::from_u8(entry[0x14]),
         });
     }
+    Ok(clusters)
+}
 
-    // The root entry's size field carries the total entry count; the
-    // name string table follows the entry array.
-    let entries_start = clusters_end;
-    if bytes.len() < entries_start + FST_FILE_ENTRY_SIZE {
+fn entry_count(root: FileEntryRaw) -> WupResult<usize> {
+    if !root.is_directory() || root.parent_or_offset != 0 {
         return Err(WupError::InvalidFst);
     }
-    let root_entry =
-        FileEntryRaw::parse(&bytes[entries_start..entries_start + FST_FILE_ENTRY_SIZE]);
-    if !root_entry.is_directory() || root_entry.parent_or_offset != 0 {
+    let count = root.size_or_end_index as usize;
+    if count == 0 {
         return Err(WupError::InvalidFst);
     }
-    let num_entries = root_entry.size_or_end_index as usize;
-    if num_entries == 0 {
-        return Err(WupError::InvalidFst);
-    }
-    let entries_end = entries_start
-        .checked_add(
-            num_entries
-                .checked_mul(FST_FILE_ENTRY_SIZE)
-                .ok_or(WupError::InvalidFst)?,
-        )
-        .ok_or(WupError::InvalidFst)?;
-    if bytes.len() < entries_end {
-        return Err(WupError::InvalidFst);
-    }
+    Ok(count)
+}
 
-    let name_table = &bytes[entries_end..];
-
-    // Depth-first walk, mirroring Cemu's ProcessFST.
+fn walk_entries(
+    offset_factor: u32,
+    hash_is_disabled: bool,
+    clusters: Vec<FstCluster>,
+    num_entries: usize,
+    mut read_entry: impl FnMut(usize) -> WupResult<FileEntryRaw>,
+    mut read_name: impl FnMut(u32) -> WupResult<String>,
+) -> WupResult<VirtualFs> {
     let mut files: Vec<VirtualFile> = Vec::new();
     let mut dir_end_stack: Vec<usize> = vec![num_entries];
     let mut path_stack: Vec<String> = Vec::new();
@@ -198,19 +388,16 @@ pub fn parse_fst(bytes: &[u8]) -> WupResult<VirtualFs> {
                 break;
             }
         }
-
-        let entry_start = entries_start + i * FST_FILE_ENTRY_SIZE;
-        let entry = FileEntryRaw::parse(&bytes[entry_start..entry_start + FST_FILE_ENTRY_SIZE]);
-        let name = read_nul_terminated(name_table, entry.name_offset())?;
-
+        let entry = read_entry(i)?;
+        let name = read_name(entry.name_offset())?;
         if entry.is_file() {
             let path = if path_stack.is_empty() {
-                name.to_string()
+                name
             } else {
-                let mut s = path_stack.join("/");
-                s.push('/');
-                s.push_str(name);
-                s
+                let mut path = path_stack.join("/");
+                path.push('/');
+                path.push_str(&name);
+                path
             };
             files.push(VirtualFile {
                 path,
@@ -219,26 +406,19 @@ pub fn parse_fst(bytes: &[u8]) -> WupResult<VirtualFs> {
                 file_size: entry.size_or_end_index,
                 is_shared: entry.is_shared(),
             });
-        } else if entry.is_directory() {
-            if i == 0 {
-                // Root: already seeded onto the stack; only
-                // validation needed.
-                if entry.size_or_end_index as usize != num_entries {
-                    return Err(WupError::InvalidFst);
-                }
-            } else {
-                let end = entry.size_or_end_index as usize;
-                if end <= i || end > num_entries {
-                    return Err(WupError::InvalidFst);
-                }
-                path_stack.push(name.to_string());
-                dir_end_stack.push(end);
+        } else if i == 0 {
+            if entry.size_or_end_index as usize != num_entries {
+                return Err(WupError::InvalidFst);
             }
         } else {
-            return Err(WupError::InvalidFst);
+            let end = entry.size_or_end_index as usize;
+            if end <= i || end > num_entries {
+                return Err(WupError::InvalidFst);
+            }
+            path_stack.push(name);
+            dir_end_stack.push(end);
         }
     }
-
     Ok(VirtualFs {
         offset_factor,
         hash_is_disabled,
@@ -291,18 +471,6 @@ impl FileEntryRaw {
     fn is_shared(&self) -> bool {
         (self.type_flag_field() & 0x80) != 0
     }
-}
-
-fn read_nul_terminated(name_table: &[u8], offset: u32) -> WupResult<&str> {
-    let start = offset as usize;
-    if start >= name_table.len() {
-        return Err(WupError::InvalidFst);
-    }
-    let rel = name_table[start..]
-        .iter()
-        .position(|&b| b == 0)
-        .ok_or(WupError::InvalidFst)?;
-    std::str::from_utf8(&name_table[start..start + rel]).map_err(|_| WupError::InvalidFst)
 }
 
 #[cfg(test)]
@@ -416,9 +584,17 @@ mod tests {
         buf
     }
 
+    fn parse_fixture_fst_ranges(bytes: &[u8]) -> WupResult<VirtualFs> {
+        parse_fst_ranges(bytes.len() as u64, |offset, len| {
+            let start = usize::try_from(offset).map_err(|_| WupError::InvalidFst)?;
+            let end = start.checked_add(len).ok_or(WupError::InvalidFst)?;
+            Ok(bytes.get(start..end).ok_or(WupError::InvalidFst)?.to_vec())
+        })
+    }
+
     #[test]
     fn parses_fixture_header() {
-        let fst = parse_fst(&build_fixture_fst()).unwrap();
+        let fst = parse_fixture_fst_ranges(&build_fixture_fst()).unwrap();
         assert_eq!(fst.offset_factor, 1);
         assert!(!fst.hash_is_disabled);
         assert_eq!(fst.clusters.len(), 1);
@@ -428,7 +604,7 @@ mod tests {
 
     #[test]
     fn parses_fixture_files() {
-        let fst = parse_fst(&build_fixture_fst()).unwrap();
+        let fst = parse_fixture_fst_ranges(&build_fixture_fst()).unwrap();
         let paths: Vec<_> = fst.files.iter().map(|f| f.path.clone()).collect();
         assert_eq!(
             paths,
@@ -441,10 +617,156 @@ mod tests {
             ]
         );
     }
+    #[test]
+    fn range_parser_reads_bounded_name_windows() {
+        let mut bytes = build_fixture_fst();
+        let name_table_start = FST_HEADER_SIZE + FST_CLUSTER_ENTRY_SIZE + 9 * FST_FILE_ENTRY_SIZE;
+        bytes.extend_from_slice(&[0xAA; 8192]);
+        let mut ranges = Vec::new();
+        let actual = parse_fst_ranges(bytes.len() as u64, |offset, len| {
+            ranges.push((offset, len));
+            let start = offset as usize;
+            Ok(bytes[start..start + len].to_vec())
+        })
+        .unwrap();
+        assert_eq!(
+            actual
+                .files
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "meta/meta.xml",
+                "meta/icon.tga",
+                "code/app.xml",
+                "code/main.rpx",
+                "content/shader.bin",
+            ]
+        );
+        assert!(!ranges.iter().any(|(offset, len)| {
+            *offset >= name_table_start as u64
+                && (*len > 4096 || *offset + *len as u64 > (name_table_start + 4096) as u64)
+        }));
+    }
+
+    #[test]
+    fn range_parser_reads_entry_table_once_in_memory() {
+        let mut bytes = build_fixture_fst();
+        let entry_start = FST_HEADER_SIZE + FST_CLUSTER_ENTRY_SIZE;
+        let original_count = 9;
+        let extra_count = 5000;
+        let name_table_start = entry_start + original_count * FST_FILE_ENTRY_SIZE;
+        let names = bytes[name_table_start..].to_vec();
+        let template_start = entry_start + (original_count - 1) * FST_FILE_ENTRY_SIZE;
+        let template = bytes[template_start..template_start + FST_FILE_ENTRY_SIZE].to_vec();
+        bytes.truncate(name_table_start);
+        let entry_count = original_count + extra_count;
+        bytes[entry_start + 8..entry_start + 12]
+            .copy_from_slice(&(entry_count as u32).to_be_bytes());
+        for _ in 0..extra_count {
+            bytes.extend_from_slice(&template);
+        }
+        bytes.extend_from_slice(&names);
+
+        let entry_end = entry_start + entry_count * FST_FILE_ENTRY_SIZE;
+        let mut entry_reads = Vec::new();
+        let parsed = parse_fst_ranges(bytes.len() as u64, |offset, len| {
+            if offset >= entry_start as u64 && offset < entry_end as u64 {
+                entry_reads.push((offset, len));
+            }
+            let start = offset as usize;
+            Ok(bytes[start..start + len].to_vec())
+        })
+        .unwrap();
+        assert_eq!(parsed.files.len(), 5 + extra_count);
+        assert_eq!(
+            entry_reads,
+            vec![
+                (entry_start as u64, FST_FILE_ENTRY_SIZE),
+                (
+                    entry_start as u64 + FST_FILE_ENTRY_SIZE as u64,
+                    (entry_count - 1) * FST_FILE_ENTRY_SIZE,
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn range_parser_rejects_cluster_table_past_content_before_reading_it() {
+        let mut header = [0u8; FST_HEADER_SIZE];
+        header[..4].copy_from_slice(&FST_MAGIC.to_be_bytes());
+        header[0x04..0x08].copy_from_slice(&1u32.to_be_bytes());
+        header[0x08..0x0C].copy_from_slice(&1u32.to_be_bytes());
+        let mut calls = 0;
+        let result = parse_fst_ranges(FST_HEADER_SIZE as u64, |offset, len| {
+            calls += 1;
+            assert_eq!((offset, len), (0, FST_HEADER_SIZE));
+            Ok(header.to_vec())
+        });
+        assert!(matches!(result, Err(WupError::InvalidFst)));
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn range_parser_rejects_entry_table_past_content_before_reading_it() {
+        let bytes = build_fixture_fst();
+        let content_len = (FST_HEADER_SIZE + FST_CLUSTER_ENTRY_SIZE + FST_FILE_ENTRY_SIZE) as u64;
+        let mut calls = 0;
+        let result = parse_fst_ranges(content_len, |offset, len| {
+            calls += 1;
+            let start = offset as usize;
+            Ok(bytes[start..start + len].to_vec())
+        });
+        assert!(matches!(result, Err(WupError::InvalidFst)));
+        assert_eq!(calls, 3);
+    }
+
+    #[test]
+    fn range_parser_rejects_unterminated_name_at_string_table_end() {
+        let bytes = build_fixture_fst();
+        let result = parse_fst_ranges((bytes.len() - 1) as u64, |offset, len| {
+            let start = offset as usize;
+            Ok(bytes[start..start + len].to_vec())
+        });
+        assert!(matches!(result, Err(WupError::InvalidFst)));
+    }
+
+    #[test]
+    fn range_parser_reads_names_larger_than_4kib() {
+        let name_len = 8 * 1024;
+        let mut bytes = build_fixture_fst();
+        let table_start = FST_HEADER_SIZE + FST_CLUSTER_ENTRY_SIZE + 9 * FST_FILE_ENTRY_SIZE;
+        let last_entry = FST_HEADER_SIZE + FST_CLUSTER_ENTRY_SIZE + 8 * FST_FILE_ENTRY_SIZE;
+        let name_offset = u32_be(&bytes, last_entry) & 0x00FF_FFFF;
+        bytes.truncate(table_start + name_offset as usize);
+        bytes.extend(vec![b'x'; name_len]);
+        bytes.push(0);
+
+        let parsed = parse_fixture_fst_ranges(&bytes).unwrap();
+        assert_eq!(
+            parsed.files.last().unwrap().path.len(),
+            "content/".len() + name_len
+        );
+    }
+    #[test]
+    fn entry_table_ranges_are_decrypted_once() {
+        let bytes = build_fixture_fst();
+        let table_start = FST_HEADER_SIZE + FST_CLUSTER_ENTRY_SIZE;
+        let table_end = table_start + 9 * FST_FILE_ENTRY_SIZE;
+        let mut requested_table_bytes = 0;
+        parse_fst_ranges(bytes.len() as u64, |offset, len| {
+            let start = offset as usize;
+            let end = start + len;
+            requested_table_bytes += end.min(table_end).saturating_sub(start.max(table_start));
+            Ok(bytes[start..end].to_vec())
+        })
+        .unwrap();
+        assert_eq!(requested_table_bytes, table_end - table_start);
+    }
 
     #[test]
     fn preserves_file_offsets_and_sizes() {
-        let fst = parse_fst(&build_fixture_fst()).unwrap();
+        let fst = parse_fixture_fst_ranges(&build_fixture_fst()).unwrap();
         let by_path: std::collections::HashMap<_, _> = fst
             .files
             .iter()
@@ -458,7 +780,7 @@ mod tests {
 
     #[test]
     fn every_file_points_at_cluster_zero() {
-        let fst = parse_fst(&build_fixture_fst()).unwrap();
+        let fst = parse_fixture_fst_ranges(&build_fixture_fst()).unwrap();
         for file in &fst.files {
             assert_eq!(file.cluster_index, 0);
         }
@@ -468,14 +790,14 @@ mod tests {
     fn rejects_wrong_magic() {
         let mut bytes = build_fixture_fst();
         bytes[0] = b'X';
-        let err = parse_fst(&bytes);
+        let err = parse_fixture_fst_ranges(&bytes);
         assert!(matches!(err, Err(WupError::InvalidFst)));
     }
 
     #[test]
     fn rejects_short_header() {
         let short = vec![0u8; FST_HEADER_SIZE - 1];
-        let err = parse_fst(&short);
+        let err = parse_fixture_fst_ranges(&short);
         assert!(matches!(err, Err(WupError::InvalidFst)));
     }
 
@@ -483,14 +805,14 @@ mod tests {
     fn rejects_entries_past_buffer() {
         let mut bytes = build_fixture_fst();
         bytes.truncate(FST_HEADER_SIZE + FST_CLUSTER_ENTRY_SIZE + FST_FILE_ENTRY_SIZE);
-        let err = parse_fst(&bytes);
+        let err = parse_fixture_fst_ranges(&bytes);
         assert!(matches!(err, Err(WupError::InvalidFst)));
     }
 
     #[test]
     fn file_entries_with_type_bit_7_are_flagged_shared() {
         // Flip entry index 4 (code/main.rpx in the fixture) to type
-        // 0x80 and confirm parse_fst marks it as shared. Every other
+        // 0x80 and confirm the range parser marks it as shared. Every other
         // file keeps is_shared == false.
         let mut bytes = build_fixture_fst();
         // Layout: header + clusters, then entries. Entry 4 is
@@ -499,7 +821,7 @@ mod tests {
         let rpx_entry = entries_start + 6 * FST_FILE_ENTRY_SIZE;
         // Set bit 7 of the type byte (high byte of type_and_name_offset).
         bytes[rpx_entry] |= 0x80;
-        let fst = parse_fst(&bytes).unwrap();
+        let fst = parse_fixture_fst_ranges(&bytes).unwrap();
         let by_path: std::collections::HashMap<_, _> = fst
             .files
             .iter()

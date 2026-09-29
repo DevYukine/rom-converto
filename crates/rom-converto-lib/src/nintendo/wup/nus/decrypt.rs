@@ -1,15 +1,15 @@
 //! Decrypts a NUS-layout title directory into a flat loadiine-style
 //! file tree.
 
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::nintendo::wup::error::{WupError, WupResult};
-use crate::nintendo::wup::nus::content_stream::{
-    ContentLoader, DirectoryContentSource, decrypt_content_0,
-};
-use crate::nintendo::wup::nus::fst_parser::parse_fst;
+use crate::nintendo::wup::nus::content_reader::{decrypt_raw_range, read_at};
+use crate::nintendo::wup::nus::content_stream::{ContentLoader, DirectoryContentSource};
+use crate::nintendo::wup::nus::fst_parser::parse_fst_ranges;
 use crate::nintendo::wup::nus::layout::{NusLayout, TicketSource};
 use crate::nintendo::wup::nus::ticket_parser::{TitleKey, read_ticket_file};
 use crate::nintendo::wup::nus::tmd_parser::read_tmd_file;
@@ -57,12 +57,19 @@ fn decrypt_nus_title_with_cancel(
             .ok_or(WupError::ContentNotFound {
                 content_id: content_0.content_id,
             })?;
-    let encrypted_content_0 =
-        std::fs::read(&content_0_path).map_err(|_| WupError::ContentNotFound {
-            content_id: content_0.content_id,
-        })?;
-    let decrypted_content_0 = decrypt_content_0(encrypted_content_0, &title_key)?;
-    let fs = parse_fst(&decrypted_content_0)?;
+    let mut content0_file = File::open(&content_0_path).map_err(|_| WupError::ContentNotFound {
+        content_id: content_0.content_id,
+    })?;
+    let content0_len = content0_file.metadata()?.len();
+    let fs = parse_fst_ranges(content0_len, |offset, len| {
+        decrypt_raw_range(
+            |at, out| read_at(&mut content0_file, at, out),
+            &title_key,
+            0,
+            offset,
+            len,
+        )
+    })?;
 
     let created_output_dir = !output_dir.exists();
     std::fs::create_dir_all(output_dir)?;
@@ -76,15 +83,24 @@ fn decrypt_nus_title_with_cancel(
             if cancelled.is_some_and(|c| c.load(Ordering::Relaxed)) {
                 return Err(Cancelled.into());
             }
-            match loader.extract_file(vfile) {
-                Ok(bytes) => {
-                    let out_path = output_dir.join(&vfile.path);
-                    if let Some(parent) = out_path.parent() {
-                        std::fs::create_dir_all(parent)?;
-                    }
-                    std::fs::write(&out_path, &bytes)?;
-                    progress.inc(bytes.len() as u64);
+            let out_path = output_dir.join(&vfile.path);
+            let stream_result = (|| {
+                let extent = loader.validate_file(vfile)?;
+                if let Some(parent) = out_path.parent() {
+                    std::fs::create_dir_all(parent)?;
                 }
+                crate::util::atomic_write(&out_path, true, |output| {
+                    use std::io::Write;
+                    loader.stream_prepared_file(vfile, extent, |bytes| {
+                        output.write_all(bytes)?;
+                        progress.inc(bytes.len() as u64);
+                        Ok(())
+                    })?;
+                    Ok(())
+                })
+            })();
+            match stream_result {
+                Ok(()) => {}
                 Err(WupError::FileInheritedFromOtherTitle { .. }) => {
                     skipped = skipped.saturating_add(1);
                 }
@@ -486,14 +502,14 @@ mod tests {
             !out.path().join("content").join("foo.bin").exists(),
             "shared file must not be emitted"
         );
+        assert!(!out.path().join("content").exists());
     }
 
     #[test]
     fn decrypt_skips_file_that_extends_past_its_cluster() {
         let dir = tempfile::tempdir().unwrap();
         let out = tempfile::tempdir().unwrap();
-        // Payload cluster decrypts to 128 bytes; claim 1 MiB in the
-        // FST so extract_file returns FileInheritedFromOtherTitle via
+        // FST so stream_file returns FileInheritedFromOtherTitle via
         // the extent check.
         let fx = NusFixture {
             file_size_override: Some(0x10_0000),
@@ -506,6 +522,7 @@ mod tests {
             !out.path().join("content").join("foo.bin").exists(),
             "oversized file must not be emitted"
         );
+        assert!(!out.path().join("content").exists());
     }
 
     #[test]

@@ -4,7 +4,7 @@
 use crate::info::{ContentKind, Image, MultilingualString};
 use crate::nintendo::wup::app_xml::AppXml;
 use crate::nintendo::wup::disc::compress::{
-    content_partitions_with_index, find_matching_title, parse_si_titles, plan_partition,
+    build_partition_plan, content_partitions_with_index, find_matching_title, parse_si_titles,
 };
 use crate::nintendo::wup::disc::meta_source::DiscMetaSource;
 use crate::nintendo::wup::disc::partition::PartitionContentSource;
@@ -196,11 +196,10 @@ fn read_disc(path: &Path, key_override: Option<&Path>) -> Result<WupInfo> {
         .or_else(|| game_candidates.first())
         .cloned()
         .ok_or_else(|| anyhow!("wup info: disc has no game partition with a matching ticket"))?;
-    let si_title = find_matching_title(&si_titles, game_index)
-        .ok_or_else(|| anyhow!("wup info: SI has no ticket/TMD for {}", game.name))?;
 
-    let plan =
-        plan_partition(&mut *disc, &game, si_title).map_err(|e| anyhow!("wup info: {}", e))?;
+    let plan = build_partition_plan(&mut *disc, &game, game_index, &si_titles)
+        .map_err(|e| anyhow!("wup info: {}", e))?
+        .ok_or_else(|| anyhow!("wup info: SI has no ticket/TMD for {}", game.name))?;
 
     let title_id = plan.title_id;
     let title_version = plan.title_version as u32;

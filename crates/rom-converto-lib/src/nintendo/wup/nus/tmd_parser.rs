@@ -4,10 +4,12 @@
 //! for the NUS pipeline: read a `title.tmd` file and return the
 //! parsed metadata + content list.
 
+use std::io::Read;
 use std::path::Path;
 
-use crate::nintendo::wup::error::WupResult;
+use crate::nintendo::wup::error::{WupError, WupResult};
 use crate::nintendo::wup::models::WupTmd;
+use crate::nintendo::wup::models::tmd::WUP_TMD_HEADER_SIZE;
 
 /// Parse an in-memory TMD blob.
 pub fn parse_tmd_bytes(bytes: &[u8]) -> WupResult<WupTmd> {
@@ -17,7 +19,20 @@ pub fn parse_tmd_bytes(bytes: &[u8]) -> WupResult<WupTmd> {
 /// Convenience: read a TMD file from disk and run [`parse_tmd_bytes`]
 /// on its contents.
 pub fn read_tmd_file(path: &Path) -> WupResult<WupTmd> {
-    let bytes = std::fs::read(path)?;
+    let mut file = std::fs::File::open(path)?;
+    let file_len = file.metadata()?.len();
+    if file_len < WUP_TMD_HEADER_SIZE as u64 {
+        return Err(WupError::InvalidTmd);
+    }
+    let mut header = vec![0; WUP_TMD_HEADER_SIZE];
+    file.read_exact(&mut header)?;
+    let required_len = WupTmd::required_len(&header)?;
+    if u64::try_from(required_len).map_err(|_| WupError::InvalidTmd)? > file_len {
+        return Err(WupError::InvalidTmd);
+    }
+    let mut bytes = header;
+    bytes.resize(required_len, 0);
+    file.read_exact(&mut bytes[WUP_TMD_HEADER_SIZE..])?;
     parse_tmd_bytes(&bytes)
 }
 

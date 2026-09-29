@@ -5,11 +5,13 @@
 //! operations the NUS pipeline actually wants: read a `title.tik`
 //! file and immediately produce a decrypted title key.
 
+use std::io::Read;
 use std::path::Path;
 
 use crate::nintendo::wup::crypto::decrypt_title_key;
 use crate::nintendo::wup::error::{WupError, WupResult};
 use crate::nintendo::wup::models::WupTicket;
+use crate::nintendo::wup::models::ticket::WUP_TICKET_BASE_SIZE;
 
 /// Decrypted title key used to encrypt all content files for a
 /// single Wii U title. The raw bytes are carried by value because
@@ -35,7 +37,12 @@ pub fn parse_ticket_bytes(bytes: &[u8]) -> WupResult<(WupTicket, TitleKey)> {
 /// Convenience: read a ticket file from disk and run
 /// [`parse_ticket_bytes`] on its contents.
 pub fn read_ticket_file(path: &Path) -> WupResult<(WupTicket, TitleKey)> {
-    let bytes = std::fs::read(path)?;
+    let mut file = std::fs::File::open(path)?;
+    if file.metadata()?.len() < WUP_TICKET_BASE_SIZE as u64 {
+        return Err(WupError::InvalidTicket);
+    }
+    let mut bytes = vec![0; WUP_TICKET_BASE_SIZE];
+    file.read_exact(&mut bytes)?;
     parse_ticket_bytes(&bytes)
 }
 

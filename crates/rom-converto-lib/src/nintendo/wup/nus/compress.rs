@@ -7,18 +7,17 @@
 //! is absent the title key is derived via
 //! [`crate::nintendo::wup::title_key_derive::derive_title_key`].
 //!
-//! [`ContentLoader`] caches decrypted cluster bytes across files that
-//! share the same `.app`.
+//! [`ContentLoader`] decrypts only the ranges covered by each FST file.
 
+use std::fs::File;
 use std::io::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::nintendo::wup::error::{WupError, WupResult};
-use crate::nintendo::wup::nus::content_stream::{
-    ContentLoader, DirectoryContentSource, decrypt_content_0,
-};
-use crate::nintendo::wup::nus::fst_parser::parse_fst;
+use crate::nintendo::wup::nus::content_reader::{decrypt_raw_range, read_at};
+use crate::nintendo::wup::nus::content_stream::{ContentLoader, DirectoryContentSource};
+use crate::nintendo::wup::nus::fst_parser::{VirtualFs, parse_fst_ranges};
 use crate::nintendo::wup::nus::layout::{NusLayout, TicketSource};
 use crate::nintendo::wup::nus::ticket_parser::{TitleKey, read_ticket_file};
 use crate::nintendo::wup::nus::tmd_parser::read_tmd_file;
@@ -27,14 +26,39 @@ use crate::util::Cancelled;
 use crate::util::ProgressReporter;
 use crate::zar::ZarWriter;
 
-/// Sum the decrypted byte size of every FST file this title would
-/// actually emit, skipping inherited-from-base entries (FST type bit
-/// 7) the same way [`compress_nus_title`] and
-/// [`crate::nintendo::wup::nus::decrypt::decrypt_nus_title`]
-/// do. Parses the TMD and content 0 only; no per-file decryption
-/// work. Lets the caller seed the progress bar with a real byte
-/// total.
-pub fn estimate_nus_uncompressed_bytes(title_dir: &Path) -> WupResult<u64> {
+fn parse_content0_fst(path: &Path, title_key: &TitleKey) -> WupResult<VirtualFs> {
+    let mut file = File::open(path)?;
+    let content_len = file.metadata()?.len();
+    parse_fst_ranges(content_len, |offset, len| {
+        decrypt_raw_range(
+            |at, out| read_at(&mut file, at, out),
+            title_key,
+            0,
+            offset,
+            len,
+        )
+    })
+}
+
+pub(crate) struct NusTitlePlan {
+    layout: NusLayout,
+    tmd: crate::nintendo::wup::models::WupTmd,
+    title_key: TitleKey,
+    fs: VirtualFs,
+}
+
+impl NusTitlePlan {
+    pub(crate) fn uncompressed_bytes(&self) -> u64 {
+        self.fs
+            .files
+            .iter()
+            .filter(|file| !file.is_shared)
+            .map(|file| u64::from(file.file_size))
+            .fold(0, u64::saturating_add)
+    }
+}
+
+pub(crate) fn prepare_nus_title(title_dir: &Path) -> WupResult<NusTitlePlan> {
     let layout = NusLayout::discover(title_dir)?;
     let tmd = read_tmd_file(&layout.tmd_path)?;
     let title_key = match &layout.ticket_source {
@@ -55,19 +79,13 @@ pub fn estimate_nus_uncompressed_bytes(title_dir: &Path) -> WupResult<u64> {
             .ok_or(WupError::ContentNotFound {
                 content_id: content_0.content_id,
             })?;
-    let encrypted_content_0 =
-        std::fs::read(&content_0_path).map_err(|_| WupError::ContentNotFound {
-            content_id: content_0.content_id,
-        })?;
-    let decrypted_content_0 = decrypt_content_0(encrypted_content_0, &title_key)?;
-    let fs = parse_fst(&decrypted_content_0)?;
-    let mut total: u64 = 0;
-    for vfile in &fs.files {
-        if !vfile.is_shared {
-            total = total.saturating_add(u64::from(vfile.file_size));
-        }
-    }
-    Ok(total)
+    let fs = parse_content0_fst(&content_0_path, &title_key)?;
+    Ok(NusTitlePlan {
+        layout,
+        tmd,
+        title_key,
+        fs,
+    })
 }
 
 /// Compress one NUS-format title into `sink`. Returns
@@ -87,50 +105,28 @@ pub(crate) fn compress_nus_title_with_cancel<W: Write>(
     progress: &dyn ProgressReporter,
     cancelled: Option<&AtomicBool>,
 ) -> WupResult<(u64, u16)> {
-    let layout = NusLayout::discover(title_dir)?;
-    let tmd = read_tmd_file(&layout.tmd_path)?;
+    let plan = prepare_nus_title(title_dir)?;
+    compress_prepared_nus_title_with_cancel(plan, sink, progress, cancelled)
+}
+
+pub(crate) fn compress_prepared_nus_title_with_cancel<W: Write>(
+    plan: NusTitlePlan,
+    sink: &mut ZarWriter<'_, W>,
+    progress: &dyn ProgressReporter,
+    cancelled: Option<&AtomicBool>,
+) -> WupResult<(u64, u16)> {
+    let NusTitlePlan {
+        layout,
+        tmd,
+        title_key,
+        fs,
+    } = plan;
     let title_id = tmd.title_id;
     let title_version = tmd.title_version;
-
-    let title_key = match &layout.ticket_source {
-        TicketSource::OnDisk(path) => {
-            let (ticket, key) = read_ticket_file(path)?;
-            // Ticket and TMD must agree on the title id. Mismatch
-            // means the inputs are inconsistent; fail instead of
-            // guessing which is right.
-            if ticket.title_id != title_id {
-                return Err(WupError::InvalidTicket);
-            }
-            key
-        }
-        TicketSource::Derive => TitleKey(derive_title_key(title_id)),
-    };
-
-    // Content 0 holds the FST. Decrypt it and parse into a flat
-    // virtual file list.
-    let content_0 = tmd.contents.first().ok_or(WupError::InvalidTmd)?;
-    let content_0_path =
-        layout
-            .content
-            .resolve(content_0.content_id)
-            .ok_or(WupError::ContentNotFound {
-                content_id: content_0.content_id,
-            })?;
-    let encrypted_content_0 =
-        std::fs::read(&content_0_path).map_err(|_| WupError::ContentNotFound {
-            content_id: content_0.content_id,
-        })?;
-    let decrypted_content_0 = decrypt_content_0(encrypted_content_0, &title_key)?;
-    let fs = parse_fst(&decrypted_content_0)?;
-
     let archive_folder = format!("{:016x}_v{}", title_id, title_version);
 
-    // One ContentLoader for the whole title so cluster bytes are
-    // cached across files that share a cluster. Files that extend
-    // past their cluster's available bytes are skipped: that is the
-    // Wii U update pattern where the FST describes the merged game
-    // but only delta clusters ship. Cemu stacks `.wua` files at load
-    // time, so the base archive supplies the skipped files.
+    // Files extending beyond this title's shipped delta content are
+    // inherited from the base title and remain absent from this overlay.
     let source = DirectoryContentSource::with_resolver(layout.content);
     let mut loader = ContentLoader::new(source, title_key, &tmd, &fs);
     let mut skipped: u32 = 0;
@@ -138,12 +134,21 @@ pub(crate) fn compress_nus_title_with_cancel<W: Write>(
         if cancelled.is_some_and(|c| c.load(Ordering::Relaxed)) {
             return Err(Cancelled.into());
         }
-        match loader.extract_file(vfile) {
-            Ok(bytes) => {
-                let archive_path = format!("{archive_folder}/{}", vfile.path);
+        let archive_path = format!("{archive_folder}/{}", vfile.path);
+        let mut started = false;
+        match loader.stream_file(vfile, |bytes| {
+            if !started {
                 sink.start_file(&archive_path)?;
-                sink.append_data(&bytes)?;
-                progress.inc(bytes.len() as u64);
+                started = true;
+            }
+            sink.append_data(bytes)?;
+            progress.inc(bytes.len() as u64);
+            Ok(())
+        }) {
+            Ok(_) => {
+                if !started {
+                    sink.start_file(&archive_path)?;
+                }
             }
             Err(WupError::FileInheritedFromOtherTitle { .. }) => {
                 skipped = skipped.saturating_add(1);
@@ -398,7 +403,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let expected_payload = make_synthetic_nus_title(dir.path());
 
-        let estimate = estimate_nus_uncompressed_bytes(dir.path()).unwrap();
+        let estimate = prepare_nus_title(dir.path()).unwrap().uncompressed_bytes();
         assert_eq!(estimate, expected_payload.len() as u64);
 
         // Drive the real compress path and sum every inc delta. The

@@ -105,59 +105,71 @@ impl<'d> PartitionContentSource<'d> {
 }
 
 impl<'d> ContentBytesSource for PartitionContentSource<'d> {
-    fn read_encrypted_content(&mut self, content_id: u32) -> WupResult<Vec<u8>> {
-        let loc = self
-            .locations
+    fn encrypted_content_len(&mut self, content_id: u32) -> WupResult<u64> {
+        self.locations
             .iter()
             .find(|(id, _)| *id == content_id)
-            .map(|(_, l)| *l)
-            .ok_or(WupError::ContentNotFound { content_id })?;
-        let mut out = vec![0u8; loc.size as usize];
-        self.disc.read_bytes(loc.disc_byte_offset, &mut out)?;
-        Ok(out)
+            .map(|(_, location)| location.size)
+            .ok_or(WupError::ContentNotFound { content_id })
     }
 
-    fn visit_encrypted_content(
+    fn read_encrypted_range(
         &mut self,
         content_id: u32,
-        visitor: &mut dyn FnMut(&mut [u8]) -> WupResult<()>,
+        offset: u64,
+        output: &mut [u8],
     ) -> WupResult<()> {
-        let loc = self
+        let location = self
             .locations
             .iter()
             .find(|(id, _)| *id == content_id)
-            .map(|(_, l)| *l)
+            .map(|(_, location)| *location)
             .ok_or(WupError::ContentNotFound { content_id })?;
-        let mut offset = 0u64;
-        let mut buf = vec![0u8; (loc.size.min(4 * 1024 * 1024)) as usize];
-        while offset < loc.size {
-            let n = (loc.size - offset).min(buf.len() as u64) as usize;
-            self.disc
-                .read_bytes(loc.disc_byte_offset + offset, &mut buf[..n])?;
-            visitor(&mut buf[..n])?;
-            offset += n as u64;
+        let end = offset
+            .checked_add(output.len() as u64)
+            .ok_or(WupError::InvalidFst)?;
+        if end > location.size {
+            return Err(WupError::InvalidFst);
         }
+        self.disc
+            .read_bytes(location.disc_byte_offset + offset, output)?;
         Ok(())
     }
 }
 
-/// Decrypt a raw disc byte range with the disc key and a zero IV.
-/// Used for the partition TOC and the SI FST. The SI header can
-/// report an FST size that is not 16-aligned (retail discs do), so
-/// the read is rounded up to whole AES blocks and truncated after.
-pub fn read_disc_decrypted_zero_iv(
+/// Reads a bounded range from a zero-IV AES-CBC stream on disc.
+pub fn read_disc_decrypted_zero_iv_range(
     disc: &mut dyn DiscSectorSource,
     key: &DiscKey,
-    offset: u64,
-    len: usize,
+    stream_offset: u64,
+    stream_len: u64,
+    byte_offset: u64,
+    byte_len: usize,
 ) -> WupResult<Vec<u8>> {
-    let aligned_len = len.next_multiple_of(16);
-    let mut out = vec![0u8; aligned_len];
-    disc.read_bytes(offset, &mut out)?;
-    let iv = [0u8; 16];
-    aes_cbc_decrypt_in_place(key.as_bytes(), &iv, &mut out)?;
-    out.truncate(len);
-    Ok(out)
+    if byte_len == 0 {
+        return Ok(Vec::new());
+    }
+    let end = byte_offset
+        .checked_add(byte_len as u64)
+        .ok_or(WupError::InvalidFst)?;
+    let rounded_stream_len = stream_len.checked_add(15).ok_or(WupError::InvalidFst)? & !15;
+    let aligned_start = byte_offset & !15;
+    let aligned_end = end.checked_add(15).ok_or(WupError::InvalidFst)? & !15;
+    if end > stream_len || aligned_end > rounded_stream_len {
+        return Err(WupError::InvalidFst);
+    }
+    let mut iv = [0u8; 16];
+    let source_start = stream_offset
+        .checked_add(aligned_start)
+        .ok_or(WupError::InvalidFst)?;
+    if aligned_start > 0 {
+        disc.read_bytes(source_start - 16, &mut iv)?;
+    }
+    let mut encrypted = vec![0u8; (aligned_end - aligned_start) as usize];
+    disc.read_bytes(source_start, &mut encrypted)?;
+    aes_cbc_decrypt_in_place(key.as_bytes(), &iv, &mut encrypted)?;
+    let skip = (byte_offset - aligned_start) as usize;
+    Ok(encrypted[skip..skip + byte_len].to_vec())
 }
 
 /// Read a file inside the SI partition's FST and decrypt it.
@@ -266,10 +278,12 @@ mod tests {
             ),
         ];
         let mut src = PartitionContentSource::new(&mut reader, locations);
-        let a = src.read_encrypted_content(0x1111_1111).unwrap();
+        let mut a = vec![0; src.encrypted_content_len(0x1111_1111).unwrap() as usize];
+        src.read_encrypted_range(0x1111_1111, 0, &mut a).unwrap();
         assert_eq!(a.len(), 256);
         assert!(a.iter().all(|&b| b == 0xAA));
-        let b = src.read_encrypted_content(0x2222_2222).unwrap();
+        let mut b = vec![0; src.encrypted_content_len(0x2222_2222).unwrap() as usize];
+        src.read_encrypted_range(0x2222_2222, 0, &mut b).unwrap();
         assert_eq!(b.len(), 128);
         assert!(b.iter().all(|&b| b == 0xBB));
     }
@@ -278,7 +292,7 @@ mod tests {
     fn partition_source_content_not_found_for_unknown_id() {
         let mut reader = InMemoryDisc::new(vec![0u8; 2 * SECTOR_SIZE]);
         let mut src = PartitionContentSource::new(&mut reader, vec![]);
-        let result = src.read_encrypted_content(0xDEAD_BEEF);
+        let result = src.encrypted_content_len(0xDEAD_BEEF);
         assert!(matches!(
             result,
             Err(WupError::ContentNotFound {

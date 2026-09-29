@@ -22,7 +22,7 @@ use sha1::{Digest, Sha1};
 
 use crate::nintendo::wup::crypto::aes_cbc_decrypt_in_place;
 use crate::nintendo::wup::disc::compress::{
-    content_partitions_with_index, find_matching_title, parse_si_titles, plan_partition,
+    build_partition_plan, content_partitions_with_index, parse_si_titles,
 };
 use crate::nintendo::wup::disc::partition::PartitionContentSource;
 use crate::nintendo::wup::disc::{load_disc_key, open_disc, parse_partition_table};
@@ -266,11 +266,11 @@ fn verify_disc(
 
     for (toc_index, partition) in &content_partitions {
         check_cancel(cancel)?;
-        let Some(si_title) = find_matching_title(&si_titles, *toc_index) else {
+        let Some(plan) = build_partition_plan(&mut *disc, partition, *toc_index, &si_titles)
+            .map_err(|e| anyhow!("wup verify: plan {}: {e}", partition.name))?
+        else {
             continue;
         };
-        let plan = plan_partition(&mut *disc, partition, si_title)
-            .map_err(|e| anyhow!("wup verify: plan {}: {e}", partition.name))?;
         let title_id = plan.title_id;
         let mut source = PartitionContentSource::new(&mut *disc, plan.locations);
         let (verified, mismatched, skipped) = verify_title_contents(
@@ -373,12 +373,32 @@ mod tests {
         content_id: u32,
     }
     impl ContentBytesSource for MemSource {
-        fn read_encrypted_content(
+        fn encrypted_content_len(
             &mut self,
             content_id: u32,
-        ) -> crate::nintendo::wup::WupResult<Vec<u8>> {
+        ) -> crate::nintendo::wup::WupResult<u64> {
             assert_eq!(content_id, self.content_id);
-            Ok(self.bytes.clone())
+            Ok(self.bytes.len() as u64)
+        }
+
+        fn read_encrypted_range(
+            &mut self,
+            content_id: u32,
+            offset: u64,
+            output: &mut [u8],
+        ) -> crate::nintendo::wup::WupResult<()> {
+            assert_eq!(content_id, self.content_id);
+            let start = usize::try_from(offset)
+                .map_err(|_| crate::nintendo::wup::error::WupError::InvalidFst)?;
+            let end = start
+                .checked_add(output.len())
+                .ok_or(crate::nintendo::wup::error::WupError::InvalidFst)?;
+            output.copy_from_slice(
+                self.bytes
+                    .get(start..end)
+                    .ok_or(crate::nintendo::wup::error::WupError::InvalidFst)?,
+            );
+            Ok(())
         }
     }
 
@@ -387,8 +407,18 @@ mod tests {
     }
 
     impl ContentBytesSource for CancellingSource {
-        fn read_encrypted_content(&mut self, _: u32) -> crate::nintendo::wup::WupResult<Vec<u8>> {
-            unreachable!()
+        fn encrypted_content_len(&mut self, _: u32) -> crate::nintendo::wup::WupResult<u64> {
+            Ok(32)
+        }
+
+        fn read_encrypted_range(
+            &mut self,
+            _: u32,
+            _: u64,
+            output: &mut [u8],
+        ) -> crate::nintendo::wup::WupResult<()> {
+            output.fill(0);
+            Ok(())
         }
 
         fn visit_encrypted_content(

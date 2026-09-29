@@ -18,13 +18,15 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::nintendo::wup::disc::compress::{compress_disc_title, estimate_disc_uncompressed_bytes};
+use crate::nintendo::wup::disc::compress::{
+    DiscTitlePlan, compress_prepared_disc_title, prepare_disc_title,
+};
 use crate::nintendo::wup::error::{WupError, WupResult};
 use crate::nintendo::wup::loadiine::{
     compress_loadiine_title, detect_loadiine_title, estimate_loadiine_uncompressed_bytes,
 };
 use crate::nintendo::wup::nus::compress::{
-    compress_nus_title_with_cancel, estimate_nus_uncompressed_bytes,
+    NusTitlePlan, compress_prepared_nus_title_with_cancel, prepare_nus_title,
 };
 use crate::util::worker_pool::parallelism;
 use crate::util::{CancelToken, Cancelled, ProgressReporter, scratch_output_path};
@@ -46,6 +48,17 @@ pub enum TitleInputFormat {
     /// Wii U disc image: raw (`.wud`) or deduplicated (`.wux`).
     /// Requires a per-disc master key file.
     Disc,
+}
+
+// Keep plans inline to avoid a separate allocation for each NUS title.
+// Carrying `Loadiine` as a variant (rather than `Option<PreparedTitlePlan>`
+// alongside a separate `TitleInputFormat`) means a title's format and its
+// prepared plan can never drift out of sync.
+#[allow(clippy::large_enum_variant)]
+enum PreparedTitlePlan {
+    Loadiine,
+    Nus(NusTitlePlan),
+    Disc(DiscTitlePlan),
 }
 
 /// One input title, optionally with a caller-supplied format hint
@@ -434,24 +447,35 @@ fn compress_titles_with_cancel(
     // streaming readers so the sum matches the bytes that flow
     // through the pipeline.
     let mut read_total_bytes: u64 = 0;
-    for (path, format, key_path) in &resolved {
-        let n = match format {
-            TitleInputFormat::Loadiine => estimate_loadiine_uncompressed_bytes(path)?,
-            TitleInputFormat::Nus => estimate_nus_uncompressed_bytes(path)?,
-            TitleInputFormat::Disc => estimate_disc_uncompressed_bytes(path, key_path.as_deref())?,
+    let mut prepared = Vec::with_capacity(resolved.len());
+    for (path, format, key_path) in resolved {
+        let (n, plan) = match format {
+            TitleInputFormat::Loadiine => (
+                estimate_loadiine_uncompressed_bytes(&path)?,
+                PreparedTitlePlan::Loadiine,
+            ),
+            TitleInputFormat::Nus => {
+                let plan = prepare_nus_title(&path)?;
+                (plan.uncompressed_bytes(), PreparedTitlePlan::Nus(plan))
+            }
+            TitleInputFormat::Disc => {
+                let plan = prepare_disc_title(&path, key_path.as_deref())?;
+                (plan.uncompressed_bytes(), PreparedTitlePlan::Disc(plan))
+            }
         };
         read_total_bytes = read_total_bytes.saturating_add(n);
+        prepared.push((path, plan));
     }
 
     let tmp = scratch_output_path(output)?;
-    compress_titles_into_tmp(&resolved, &tmp, opts, progress, cancelled, read_total_bytes)?;
+    compress_titles_into_tmp(prepared, &tmp, opts, progress, cancelled, read_total_bytes)?;
     crate::util::publish_temp(tmp, output, true)?;
     progress.finish();
     Ok(())
 }
 
 fn compress_titles_into_tmp(
-    resolved: &[(PathBuf, TitleInputFormat, Option<PathBuf>)],
+    prepared: Vec<(PathBuf, PreparedTitlePlan)>,
     output: &Path,
     opts: WupCompressOptions,
     progress: &(dyn ProgressReporter + Sync),
@@ -479,22 +503,23 @@ fn compress_titles_into_tmp(
     let mut writer =
         ZarWriter::with_options(buf_writer, parallelism(), opts.zstd_level, Some(progress))?;
     let silent = crate::util::NoProgress;
-    for (i, (path, format, key_path)) in resolved.iter().enumerate() {
+    let total = prepared.len();
+    for (i, (path, plan)) in prepared.into_iter().enumerate() {
         if cancelled.is_some_and(|c| c.load(Ordering::Relaxed)) {
             return Err(Cancelled.into());
         }
-        progress.set_phase(&format!("Packing title ({}/{})", i + 1, resolved.len()));
-        match format {
-            TitleInputFormat::Loadiine => {
-                let title = detect_loadiine_title(path)?
+        progress.set_phase(&format!("Packing title ({}/{})", i + 1, total));
+        match plan {
+            PreparedTitlePlan::Loadiine => {
+                let title = detect_loadiine_title(&path)?
                     .ok_or_else(|| WupError::UnrecognizedTitleDirectory(path.clone()))?;
                 compress_loadiine_title(&title, &mut writer, &silent, cancelled)?;
             }
-            TitleInputFormat::Nus => {
-                compress_nus_title_with_cancel(path, &mut writer, &silent, cancelled)?;
+            PreparedTitlePlan::Nus(plan) => {
+                compress_prepared_nus_title_with_cancel(plan, &mut writer, &silent, cancelled)?;
             }
-            TitleInputFormat::Disc => {
-                compress_disc_title(path, key_path.as_deref(), &mut writer, &silent, cancelled)?;
+            PreparedTitlePlan::Disc(plan) => {
+                compress_prepared_disc_title(&path, plan, &mut writer, &silent, cancelled)?;
             }
         }
     }

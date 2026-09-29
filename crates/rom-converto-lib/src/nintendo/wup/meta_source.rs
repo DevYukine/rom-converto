@@ -43,6 +43,10 @@ impl MetaSource for DirSource {
         }
         Ok(Some(std::fs::read(&path)?))
     }
+
+    fn exists(&mut self, virtual_path: &str) -> Result<bool> {
+        Ok(self.root.join(virtual_path).is_file())
+    }
 }
 
 /// [`MetaSource`] backed by one title directory inside a `.wua` archive.
@@ -77,6 +81,12 @@ impl<'a> MetaSource for WuaSource<'a> {
             .read_file(&full)
             .map(Some)
             .map_err(|e| anyhow!("wua: read {}: {}", full, e))
+    }
+
+    fn exists(&mut self, virtual_path: &str) -> Result<bool> {
+        Ok(self
+            .reader
+            .has_file(&format!("{}{}", self.title_prefix, virtual_path)))
     }
 }
 

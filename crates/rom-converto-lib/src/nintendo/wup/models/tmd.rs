@@ -109,22 +109,34 @@ impl TmdContentEntry {
 }
 
 impl WupTmd {
+    /// Return the serialized header and content-entry length for a TMD header.
+    pub fn required_len(header: &[u8]) -> WupResult<usize> {
+        if header.len() < WUP_TMD_HEADER_SIZE {
+            return Err(WupError::InvalidTmd);
+        }
+        let num_content = usize::from(u16_be(header, OFFSET_NUM_CONTENT));
+        WUP_TMD_HEADER_SIZE
+            .checked_add(
+                num_content
+                    .checked_mul(WUP_TMD_CONTENT_ENTRY_SIZE)
+                    .ok_or(WupError::InvalidTmd)?,
+            )
+            .ok_or(WupError::InvalidTmd)
+    }
     /// Parse a Wii U TMD from a byte slice.
     pub fn parse(bytes: &[u8]) -> WupResult<Self> {
         if bytes.len() < WUP_TMD_HEADER_SIZE {
             return Err(WupError::InvalidTmd);
         }
-        let title_id = u64_be(bytes, OFFSET_TITLE_ID);
-        let title_version = u16_be(bytes, OFFSET_TITLE_VERSION);
-        let num_content = u16_be(bytes, OFFSET_NUM_CONTENT) as usize;
-
-        let entries_start = WUP_TMD_HEADER_SIZE;
-        let entries_end = entries_start
-            .checked_add(num_content * WUP_TMD_CONTENT_ENTRY_SIZE)
-            .ok_or(WupError::InvalidTmd)?;
-        if bytes.len() < entries_end {
+        let required_len = Self::required_len(bytes)?;
+        if bytes.len() < required_len {
             return Err(WupError::InvalidTmd);
         }
+        let title_id = u64_be(bytes, OFFSET_TITLE_ID);
+        let title_version = u16_be(bytes, OFFSET_TITLE_VERSION);
+        let num_content = usize::from(u16_be(bytes, OFFSET_NUM_CONTENT));
+
+        let entries_start = WUP_TMD_HEADER_SIZE;
 
         let mut contents = Vec::with_capacity(num_content);
         for i in 0..num_content {
