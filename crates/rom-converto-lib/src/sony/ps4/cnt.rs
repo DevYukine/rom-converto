@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::info::Image;
 use crate::util::bytes::{cstr_ascii, u32_be, u64_be, u64_le};
+use crate::util::extent_end;
 
 const CNT_MAGIC: [u8; 4] = [0x7F, b'C', b'N', b'T'];
 const FIH_MAGIC: [u8; 4] = [0x7F, b'F', b'I', b'H'];
@@ -170,10 +171,7 @@ impl Cnt {
         }
         let table_offset = loc.base.saturating_add(u64::from(u32_be(&head, 0x18)));
         let table_bytes = u64::from(entry_count) * ENTRY_LEN as u64;
-        if table_offset
-            .checked_add(table_bytes)
-            .is_none_or(|end| end > file_size)
-        {
+        if extent_end(table_offset, table_bytes, file_size).is_none() {
             bail!(
                 "ps4/ps5 pkg: entry table runs past end of {}",
                 path.display()
@@ -196,7 +194,7 @@ impl Cnt {
             let size = u64::from(u32_be(record, 0x14));
             // A record pointing outside the file is dropped, not fatal:
             // the rest of the table is still worth reporting.
-            if offset.checked_add(size).is_none_or(|end| end > file_size) {
+            if extent_end(offset, size, file_size).is_none() {
                 continue;
             }
             let flags2 = u32_be(record, 0xC);

@@ -23,6 +23,7 @@ use super::{nonpdrm, pfs};
 use crate::info::{ContentKind, Image};
 use crate::util::ProgressReporter;
 use crate::util::bytes::{u16_be, u32_be, u64_be};
+use crate::util::extent_end;
 use crate::util::sfo::Sfo;
 
 type Aes128Ctr = ctr::Ctr128BE<Aes128>;
@@ -169,37 +170,41 @@ pub fn read_info(path: &Path) -> Result<PkgInfo> {
     let header = read_header(&mut file, path)?;
     let meta = read_meta(&mut file, &header)?;
     let platform = classify_platform(header.pkg_type, meta.content_type);
-    // Artwork lookup needs whole references into `header`/`meta`, so it runs
-    // before either is partially moved into the `PkgInfo` literal below.
+    let (items, truncated) = derive_key(header.key_type, &header.iv, platform)
+        .and_then(|key| read_items(&mut file, &header, &meta, &key, pkg_size, true, None))
+        .unwrap_or_default();
+    // Artwork and item-backed metadata share this one decoded package index.
+    // Keep it alive through all best-effort lookups below.
     // Vita artwork sits under PFS; the package-layer read only helps when
     // the entry is stored unencrypted, so it runs as the fallback there.
     let (icon, background) = if platform == PkgPlatform::Vita {
         let (icon, background) =
-            read_vita_pfs_art(&mut file, &header, &meta, pkg_size, path).unwrap_or_default();
-        let icon = icon.or_else(|| read_icon(&mut file, &header, &meta, platform, pkg_size));
+            read_vita_pfs_art(&mut file, &header, &items, path).unwrap_or_default();
+        let icon = icon.or_else(|| read_icon(&mut file, &header, &items));
         (icon, background)
     } else {
         // PSP and PS3 packages keep ICON0.PNG and the PIC0/PIC1 backdrop as
         // plaintext top-level items, no PFS layer. PIC1 is the full-screen
         // backdrop; PIC0 is the smaller window art some titles ship instead.
-        let icon = read_icon(&mut file, &header, &meta, platform, pkg_size);
-        let background = read_png_item(&mut file, &header, &meta, platform, pkg_size, "pic1.png")
-            .or_else(|| read_png_item(&mut file, &header, &meta, platform, pkg_size, "pic0.png"));
+        let icon = read_icon(&mut file, &header, &items);
+        let background = read_png_item(&mut file, &header, &items, "pic1.png")
+            .or_else(|| read_png_item(&mut file, &header, &items, "pic0.png"));
         (icon, background)
     };
 
     // PSP and PS3 packages carry no metadata-region SFO; the title lives in
     // a plaintext top-level PARAM.SFO item instead. Read it here, before
     // `header`/`meta` are partially moved into the struct below. Vita keeps
-    // its copy PFS encrypted, so only the metadata SFO is trusted there.
-    let item_sfo = (platform != PkgPlatform::Vita)
+    // its copy PFS encrypted, so only the metadata SFO is trusted there. A
+    // truncated scan (a bad record stopped the table read early) drops the
+    // SFO item for byte parity with a full strict parse, even though the
+    // record it stopped on may have come after PARAM.SFO in the table.
+    let item_sfo = (platform != PkgPlatform::Vita && !truncated)
         .then(|| {
             read_named_item_bytes(
                 &mut file,
                 &header,
-                &meta,
-                platform,
-                pkg_size,
+                &items,
                 "PARAM.SFO",
                 MAX_SFO_BYTES as u64,
             )
@@ -259,47 +264,38 @@ pub fn read_info(path: &Path) -> Result<PkgInfo> {
 }
 
 /// Best-effort read of the single item whose name ends with `suffix`
-/// (compared case-insensitively), decrypted at the package layer. Any
-/// failure along the way — an unsupported key type, a corrupt item table, a
-/// missing or oversized item, a truncated payload — yields `None` instead
-/// of failing the caller's read.
+/// (compared case-insensitively), decrypted at the package layer. Missing,
+/// oversized, or unreadable payloads yield `None`.
 fn read_item_bytes(
     file: &mut File,
     header: &Header,
-    meta: &Meta,
-    platform: PkgPlatform,
-    pkg_size: u64,
+    items: &[RawItem],
     suffix: &str,
     max_bytes: u64,
 ) -> Option<Vec<u8>> {
-    let main_key = derive_key(header.key_type, &header.iv, platform).ok()?;
-    let items = read_items(file, header, meta, &main_key, pkg_size, Some(suffix)).ok()?;
     let entry = items
-        .into_iter()
-        .find(|r| !r.item.is_dir && r.item.name.to_ascii_lowercase().ends_with(suffix))?;
-    read_entry_payload(file, header, &entry, max_bytes)
+        .iter()
+        .find(|r| !r.item.is_dir && ends_with_ignore_ascii_case(&r.item.name, suffix))?;
+    read_entry_payload(file, header, entry, max_bytes)
+}
+fn ends_with_ignore_ascii_case(name: &str, suffix: &str) -> bool {
+    suffix.is_empty()
+        || name
+            .get(name.len().saturating_sub(suffix.len())..)
+            .is_some_and(|tail| tail.eq_ignore_ascii_case(suffix))
 }
 
-/// Best-effort read of the single top-level item named exactly `name`
-/// (case-insensitively), decrypted at the package layer. Unlike
-/// [`read_item_bytes`] a nested item that merely ends with the same name
-/// cannot match, so a `PARAM.SFO` under a subdirectory never shadows the
-/// package's own. Any failure yields `None`.
 fn read_named_item_bytes(
     file: &mut File,
     header: &Header,
-    meta: &Meta,
-    platform: PkgPlatform,
-    pkg_size: u64,
+    items: &[RawItem],
     name: &str,
     max_bytes: u64,
 ) -> Option<Vec<u8>> {
-    let main_key = derive_key(header.key_type, &header.iv, platform).ok()?;
-    let items = read_items(file, header, meta, &main_key, pkg_size, None).ok()?;
     let entry = items
-        .into_iter()
+        .iter()
         .find(|r| !r.item.is_dir && r.item.name.eq_ignore_ascii_case(name))?;
-    read_entry_payload(file, header, &entry, max_bytes)
+    read_entry_payload(file, header, entry, max_bytes)
 }
 
 /// Reads and CTR-decrypts one item's payload, rejecting anything larger
@@ -326,35 +322,17 @@ fn read_entry_payload(
 
 /// Best-effort icon lookup, for the platforms that store `icon0.png`
 /// straight under the package layer.
-fn read_icon(
-    file: &mut File,
-    header: &Header,
-    meta: &Meta,
-    platform: PkgPlatform,
-    pkg_size: u64,
-) -> Option<Image> {
-    read_png_item(file, header, meta, platform, pkg_size, "icon0.png")
+fn read_icon(file: &mut File, header: &Header, items: &[RawItem]) -> Option<Image> {
+    read_png_item(file, header, items, "icon0.png")
 }
 
-/// Reads the package-layer item whose name ends with `suffix` and decodes
-/// it as a PNG, best-effort. `None` on any read or decode failure.
 fn read_png_item(
     file: &mut File,
     header: &Header,
-    meta: &Meta,
-    platform: PkgPlatform,
-    pkg_size: u64,
+    items: &[RawItem],
     suffix: &str,
 ) -> Option<Image> {
-    let buf = read_item_bytes(
-        file,
-        header,
-        meta,
-        platform,
-        pkg_size,
-        suffix,
-        MAX_ICON_BYTES,
-    )?;
+    let buf = read_item_bytes(file, header, items, suffix, MAX_ICON_BYTES)?;
     Image::from_png(buf)
 }
 
@@ -365,35 +343,16 @@ fn read_png_item(
 fn read_vita_pfs_art(
     file: &mut File,
     header: &Header,
-    meta: &Meta,
-    pkg_size: u64,
+    items: &[RawItem],
     pkg_path: &Path,
 ) -> Option<(Option<Image>, Option<Image>)> {
     let klicensee = find_license(pkg_path, &header.content_id)?;
-    let platform = PkgPlatform::Vita;
-    let pflist = read_item_bytes(
-        file,
-        header,
-        meta,
-        platform,
-        pkg_size,
-        "sce_pfs/pflist",
-        MAX_PFS_DB_BYTES,
-    )?;
+    let pflist = read_item_bytes(file, header, items, "sce_pfs/pflist", MAX_PFS_DB_BYTES)?;
     let pflist = String::from_utf8(pflist).ok()?;
-    let unicv = read_item_bytes(
-        file,
-        header,
-        meta,
-        platform,
-        pkg_size,
-        "sce_pfs/unicv.db",
-        MAX_PFS_DB_BYTES,
-    )?;
+    let unicv = read_item_bytes(file, header, items, "sce_pfs/unicv.db", MAX_PFS_DB_BYTES)?;
 
     let mut decode = |name: &str| -> Option<Image> {
-        let mut buf =
-            read_item_bytes(file, header, meta, platform, pkg_size, name, MAX_ICON_BYTES)?;
+        let mut buf = read_item_bytes(file, header, items, name, MAX_ICON_BYTES)?;
         pfs::decrypt_file(&klicensee, &pflist, name, &unicv, &mut buf).ok()?;
         Image::from_png(buf)
     };
@@ -452,7 +411,7 @@ pub fn extract(
     let platform = classify_platform(header.pkg_type, meta.content_type);
 
     let main_key = derive_key(header.key_type, &header.iv, platform)?;
-    let raw = read_items(&mut file, &header, &meta, &main_key, pkg_size, None)?;
+    let (raw, _) = read_items(&mut file, &header, &meta, &main_key, pkg_size, false, None)?;
 
     let total: u64 = raw
         .iter()
@@ -523,12 +482,19 @@ pub fn open_item(path: &Path, name_suffix: &str) -> Result<PkgItemReader> {
     let meta = read_meta(&mut file, &header)?;
     let platform = classify_platform(header.pkg_type, meta.content_type);
     let main_key = derive_key(header.key_type, &header.iv, platform)?;
-    let raw = read_items(&mut file, &header, &meta, &main_key, pkg_size, None)?;
+    let (raw, _) = read_items(
+        &mut file,
+        &header,
+        &meta,
+        &main_key,
+        pkg_size,
+        false,
+        Some(name_suffix),
+    )?;
 
-    let suffix = name_suffix.to_ascii_lowercase();
     let entry = raw
         .into_iter()
-        .find(|r| !r.item.is_dir && r.item.name.to_ascii_lowercase().ends_with(&suffix))
+        .find(|r| !r.item.is_dir && ends_with_ignore_ascii_case(&r.item.name, name_suffix))
         .ok_or_else(|| {
             let label = content_type_label(meta.content_type, None)
                 .unwrap_or_else(|| format!("content type {}", meta.content_type));
@@ -657,6 +623,7 @@ fn read_meta(file: &mut File, header: &Header) -> Result<Meta> {
 struct RawItem {
     item: PkgItem,
     key: [u8; 16],
+    original_index: usize,
 }
 
 fn read_items(
@@ -665,87 +632,205 @@ fn read_items(
     meta: &Meta,
     main_key: &[u8; 16],
     pkg_size: u64,
-    stop_at_suffix: Option<&str>,
-) -> Result<Vec<RawItem>> {
+    info_only: bool,
+    lookup_suffix: Option<&str>,
+) -> Result<(Vec<RawItem>, bool)> {
+    const IO_BATCH_BYTES: usize = 64 * 1024;
     let table_bytes = u64::from(header.item_count)
         .checked_mul(ITEM_LEN)
         .ok_or_else(|| anyhow!("vita pkg: item count overflows"))?;
-    let table_end = header
+    let table_start = header
         .data_offset
         .checked_add(meta.items_offset)
-        .and_then(|v| v.checked_add(table_bytes));
-    if table_end.is_none_or(|end| end > pkg_size) {
+        .ok_or_else(|| anyhow!("vita pkg: item table offset overflows"))?;
+    if extent_end(table_start, table_bytes, pkg_size).is_none() {
         bail!("vita pkg: item table runs past end of file");
     }
-
-    let mut table = vec![0u8; table_bytes as usize];
-    file.seek(SeekFrom::Start(header.data_offset + meta.items_offset))?;
-    file.read_exact(&mut table)?;
-    ctr_at(main_key, &header.iv, meta.items_offset)?.apply_keystream(&mut table);
 
     // PSX and PSP packages key each item by its psp_type byte; Vita ones
     // always use the main key.
     let psp_style = matches!(meta.content_type, 6 | 7 | 0xE | 0xF | 0x10);
+    let item_count = header.item_count as usize;
+    let records_per_batch = IO_BATCH_BYTES / ITEM_LEN as usize;
+    let record_buffer_len = item_count.min(records_per_batch) * ITEM_LEN as usize;
+    let mut records = vec![0u8; record_buffer_len];
+    let mut items = if info_only || lookup_suffix.is_some() {
+        Vec::new()
+    } else {
+        Vec::with_capacity(item_count)
+    };
+    // Set once an implausible record stops the scan early in info-only mode;
+    // read_info uses this to drop the PARAM.SFO lookup, since a full strict
+    // parse (extract/open_item) would have bailed on the same record instead
+    // of silently reporting whatever came before it.
+    let mut truncated = false;
+    'records: for batch_start in (0..item_count).step_by(records_per_batch) {
+        let count = (item_count - batch_start).min(records_per_batch);
+        let byte_len = count * ITEM_LEN as usize;
+        let batch_offset = table_start
+            .checked_add(
+                (batch_start as u64)
+                    .checked_mul(ITEM_LEN)
+                    .ok_or_else(|| anyhow!("vita pkg: item record offset overflows"))?,
+            )
+            .ok_or_else(|| anyhow!("vita pkg: item record offset overflows"))?;
+        file.seek(SeekFrom::Start(batch_offset))?;
+        file.read_exact(&mut records[..byte_len])?;
+        let ctr_offset = meta
+            .items_offset
+            .checked_add(
+                (batch_start as u64)
+                    .checked_mul(ITEM_LEN)
+                    .ok_or_else(|| anyhow!("vita pkg: item record offset overflows"))?,
+            )
+            .ok_or_else(|| anyhow!("vita pkg: item record offset overflows"))?;
+        ctr_at(main_key, &header.iv, ctr_offset)?.apply_keystream(&mut records[..byte_len]);
 
-    let mut items = Vec::with_capacity(header.item_count as usize);
-    for i in 0..header.item_count as usize {
-        let e = &table[i * 32..i * 32 + 32];
-        let name_offset = u64::from(u32_be(e, 0));
-        let name_size = u32_be(e, 4);
-        let data_offset = u64_be(e, 8);
-        let data_size = u64_be(e, 16);
-        let psp_type = e[24];
-        let flags = e[27];
+        for in_batch in 0..count {
+            let i = batch_start + in_batch;
+            let record =
+                &mut records[in_batch * ITEM_LEN as usize..(in_batch + 1) * ITEM_LEN as usize];
+            let name_offset = u64::from(u32_be(record, 0));
+            let name_size = u32_be(record, 4);
+            let data_offset = u64_be(record, 8);
+            let data_size = u64_be(record, 16);
+            let psp_type = record[24];
+            let flags = record[27];
 
-        if name_size > MAX_NAME_BYTES {
-            bail!("vita pkg: item {i} has an implausible name length");
-        }
-        let name_end = header
-            .data_offset
-            .checked_add(name_offset)
-            .and_then(|v| v.checked_add(u64::from(name_size)));
-        let data_end = header
-            .data_offset
-            .checked_add(data_offset)
-            .and_then(|v| v.checked_add(data_size));
-        if name_end.is_none_or(|end| end > pkg_size) || data_end.is_none_or(|end| end > pkg_size) {
-            bail!("vita pkg: item {i} runs past end of file");
-        }
+            if name_size > MAX_NAME_BYTES {
+                if info_only {
+                    truncated = true;
+                    break 'records;
+                }
+                bail!("vita pkg: item {i} has an implausible name length");
+            }
+            let name_end = header
+                .data_offset
+                .checked_add(name_offset)
+                .and_then(|v| v.checked_add(u64::from(name_size)));
+            let data_end = header
+                .data_offset
+                .checked_add(data_offset)
+                .and_then(|v| v.checked_add(data_size));
+            if name_end.is_none_or(|end| end > pkg_size)
+                || data_end.is_none_or(|end| end > pkg_size)
+            {
+                if info_only {
+                    truncated = true;
+                    break 'records;
+                }
+                bail!("vita pkg: item {i} runs past end of file");
+            }
 
-        let key = if psp_style && psp_type != 0x90 {
-            PKG_PS3_KEY
-        } else {
-            *main_key
-        };
-
-        let mut name = vec![0u8; name_size as usize];
-        file.seek(SeekFrom::Start(header.data_offset + name_offset))?;
-        file.read_exact(&mut name)?;
-        ctr_at(&key, &header.iv, name_offset)?.apply_keystream(&mut name);
-        let name = String::from_utf8_lossy(&name).into_owned();
-
-        let is_dir = flags == 4 || flags == 18;
-        // A caller looking for one specific file (by name suffix) doesn't
-        // need the rest of the table decrypted once it's found.
-        let matched =
-            !is_dir && stop_at_suffix.is_some_and(|suf| name.to_ascii_lowercase().ends_with(suf));
-
-        items.push(RawItem {
-            item: PkgItem {
-                name,
-                name_offset,
-                name_size,
-                data_offset,
-                data_size,
-                is_dir,
-            },
-            key,
-        });
-        if matched {
-            break;
+            let key = if psp_style && psp_type != 0x90 {
+                PKG_PS3_KEY
+            } else {
+                *main_key
+            };
+            let mut raw = RawItem {
+                item: PkgItem {
+                    name: String::new(),
+                    name_offset,
+                    name_size,
+                    data_offset,
+                    data_size,
+                    is_dir: flags == 4 || flags == 18,
+                },
+                key,
+                original_index: i,
+            };
+            if let Some(suffix) = lookup_suffix {
+                let name_len = usize::try_from(name_size)
+                    .map_err(|_| anyhow!("vita pkg: item name is too large"))?;
+                let mut name = vec![0; name_len];
+                file.seek(SeekFrom::Start(header.data_offset + name_offset))?;
+                file.read_exact(&mut name)?;
+                ctr_at(&raw.key, &header.iv, name_offset)?.apply_keystream(&mut name);
+                raw.item.name = String::from_utf8_lossy(&name).into_owned();
+                if !raw.item.is_dir && ends_with_ignore_ascii_case(&raw.item.name, suffix) {
+                    items.push(raw);
+                    break 'records;
+                }
+            } else {
+                items.push(raw);
+            }
         }
     }
-    Ok(items)
+    if lookup_suffix.is_some() {
+        return Ok((items, truncated));
+    }
+
+    // Name offsets usually follow record order, but packages may list
+    // them otherwise. Sort the already-decoded items in place so each
+    // 64 KiB read covers nearby names without retaining a second index.
+    items.sort_unstable_by_key(|raw| raw.item.name_offset);
+    let mut name_bytes = vec![0u8; if items.is_empty() { 0 } else { IO_BATCH_BYTES }];
+    let mut batch_start = 0;
+    while batch_start < items.len() {
+        let start = items[batch_start].item.name_offset;
+        let mut end = start
+            .checked_add(u64::from(items[batch_start].item.name_size))
+            .ok_or_else(|| anyhow!("vita pkg: item name extent overflows"))?;
+        let mut batch_end = batch_start + 1;
+        while batch_end < items.len() {
+            let item_end = items[batch_end]
+                .item
+                .name_offset
+                .checked_add(u64::from(items[batch_end].item.name_size))
+                .ok_or_else(|| anyhow!("vita pkg: item name extent overflows"))?;
+            if item_end.saturating_sub(start) > IO_BATCH_BYTES as u64 {
+                break;
+            }
+            end = end.max(item_end);
+            batch_end += 1;
+        }
+
+        let byte_len = usize::try_from(end - start)
+            .map_err(|_| anyhow!("vita pkg: item name batch is too large"))?;
+        if byte_len != 0 {
+            let read_offset = header
+                .data_offset
+                .checked_add(start)
+                .ok_or_else(|| anyhow!("vita pkg: item name offset overflows"))?;
+            file.seek(SeekFrom::Start(read_offset))?;
+            file.read_exact(&mut name_bytes[..byte_len])?;
+        }
+        for raw in &mut items[batch_start..batch_end] {
+            let begin = (raw.item.name_offset - start) as usize;
+            let end = begin + raw.item.name_size as usize;
+            let mut name = name_bytes[begin..end].to_vec();
+            ctr_at(&raw.key, &header.iv, raw.item.name_offset)?.apply_keystream(&mut name);
+            raw.item.name = String::from_utf8_lossy(&name).into_owned();
+            // Info keeps only the names it reports; everything else is
+            // released as soon as its batch is decoded.
+            if info_only && !info_reports(&raw.item) {
+                raw.item.name = String::new();
+            }
+        }
+        batch_start = batch_end;
+    }
+    if info_only {
+        items.retain(|raw| !raw.item.name.is_empty());
+    }
+    items.sort_unstable_by_key(|raw| raw.original_index);
+    Ok((items, truncated))
+}
+
+/// Items `read_info` looks up: the SFO plus artwork and PFS index entries.
+fn info_reports(item: &PkgItem) -> bool {
+    !item.is_dir
+        && (item.name.eq_ignore_ascii_case("PARAM.SFO")
+            || [
+                "icon0.png",
+                "pic0.png",
+                "pic1.png",
+                "sce_pfs/pflist",
+                "sce_pfs/unicv.db",
+                "sce_sys/icon0.png",
+                "sce_sys/pic0.png",
+            ]
+            .iter()
+            .any(|suffix| ends_with_ignore_ascii_case(&item.name, suffix)))
 }
 
 /// Builds an AES-128-CTR stream positioned at `offset` bytes into the
