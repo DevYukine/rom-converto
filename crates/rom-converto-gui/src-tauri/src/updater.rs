@@ -11,6 +11,7 @@ use tauri::utils::platform::bundle_type;
 use tauri::{AppHandle, State};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
+use crate::commands::ActiveCancel;
 use crate::err_to_string;
 
 const PORTABLE_SUFFIX: &str = "-portable";
@@ -92,8 +93,16 @@ pub async fn cmd_update_check(
 pub async fn cmd_update_install(
     app: AppHandle,
     pending: State<'_, PendingUpdate>,
+    cancel: State<'_, ActiveCancel>,
     on_event: Channel<UpdateEvent>,
 ) -> Result<(), String> {
+    // Installing restarts or replaces the process, which would cut short
+    // any conversion still running; holding the lock keeps new jobs from
+    // starting until the install has failed or the process restarted.
+    let active = cancel.lock().await;
+    if !active.is_empty() {
+        return Err("wait for running jobs to finish before installing the update".to_string());
+    }
     let update = pending.0.lock().take().ok_or("no pending update")?;
 
     let mut throttle = PercentThrottle::default();
@@ -117,22 +126,42 @@ pub async fn cmd_update_install(
     } else {
         // On Windows the plugin launches the installer and exits the process
         // itself; macOS and Linux replace the bundle in place and return.
-        update.install(bytes).map_err(err_to_string)?;
+        // Like the portable swap, the install blocks, so keep it off the
+        // async runtime.
+        tokio::task::spawn_blocking(move || update.install(bytes))
+            .await
+            .map_err(err_to_string)?
+            .map_err(err_to_string)?;
     }
     app.request_restart();
     Ok(())
 }
 
 fn swap_portable(bytes: &[u8]) -> Result<(), String> {
+    // These bytes replace the running exe as is, so anything that is not
+    // a PE image would trade a working binary for a dead one.
+    if !bytes.starts_with(b"MZ") {
+        return Err("portable update is not a Windows executable".to_string());
+    }
     let exe = std::env::current_exe().map_err(err_to_string)?;
+    let staged = sibling(&exe, ".new");
+    let swapped = swap_staged(&exe, &staged, bytes);
+    if swapped.is_err() {
+        // Whatever failed, the running binary is in place and the staged
+        // file is dead weight; nothing at launch cleans a stale .new.
+        let _ = std::fs::remove_file(&staged);
+    }
+    swapped
+}
+
+fn swap_staged(exe: &Path, staged: &Path, bytes: &[u8]) -> Result<(), String> {
     let dir = exe
         .parent()
         .ok_or("current executable path has no parent directory")?;
-    let staged = sibling(&exe, ".new");
-    let old = sibling(&exe, ".old");
+    let old = sibling(exe, ".old");
 
     // Staged next to the exe so the swap is a same-volume rename.
-    let mut file = std::fs::File::create(&staged).map_err(|e| {
+    let mut file = std::fs::File::create(staged).map_err(|e| {
         format!(
             "cannot write to {} ({e}); the folder must be writable to update in place",
             dir.display()
@@ -145,10 +174,10 @@ fn swap_portable(bytes: &[u8]) -> Result<(), String> {
     drop(file);
 
     // A running exe can be renamed but not overwritten.
-    std::fs::rename(&exe, &old).map_err(err_to_string)?;
-    if let Err(e) = rename_with_retry(&staged, &exe) {
+    std::fs::rename(exe, &old).map_err(err_to_string)?;
+    if let Err(e) = rename_with_retry(staged, exe) {
         // Put the running binary back so the user is never left without one.
-        if let Err(rollback) = std::fs::rename(&old, &exe) {
+        if let Err(rollback) = std::fs::rename(&old, exe) {
             return Err(format!(
                 "failed to install the new binary ({e}) and could not restore the old one ({rollback}); rename {} back to {} by hand",
                 old.display(),
