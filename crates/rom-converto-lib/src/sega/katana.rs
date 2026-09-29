@@ -2,9 +2,15 @@
 //! that points at the GD-ROM track the header lives in.
 
 use super::{SegaDiscSystem, probe_sega_disc};
+use crate::util::bounded_line;
 use crate::util::bytes::ascii_trim;
 use anyhow::{Context, Result, anyhow};
+
 use serde::{Deserialize, Serialize};
+use std::fs::File;
+#[cfg(test)]
+use std::io::Cursor;
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 /// Fields of the Dreamcast IP header, with the area and peripheral fields
@@ -98,9 +104,8 @@ pub fn parse(head: &[u8]) -> Result<KatanaInfo> {
 /// Returns an error when the index is malformed, lists fewer than three
 /// tracks, or the third track's file holds no Dreamcast IP header.
 pub fn parse_gdi(path: &Path) -> Result<KatanaInfo> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("retro info: read {}", path.display()))?;
-    let index = parse_index(&text)?;
+    let file = File::open(path).with_context(|| format!("retro info: read {}", path.display()))?;
+    let index = parse_index_reader(BufReader::new(file))?;
     let third = index
         .tracks
         .get(2)
@@ -115,16 +120,28 @@ pub fn parse_gdi(path: &Path) -> Result<KatanaInfo> {
     Ok(info)
 }
 
-fn parse_index(text: &str) -> Result<GdiIndex> {
-    let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty());
-    let track_count = lines
-        .next()
-        .and_then(|l| l.parse::<usize>().ok())
-        .ok_or_else(|| anyhow!("katana: gdi does not open with a track count"))?;
-    let tracks = lines
-        .take(track_count)
-        .map(parse_track)
-        .collect::<Result<Vec<_>>>()?;
+fn parse_index_reader<R: BufRead>(mut reader: R) -> Result<GdiIndex> {
+    let track_count = loop {
+        let line = bounded_line::read_line(&mut reader)?
+            .ok_or_else(|| anyhow!("katana: gdi does not open with a track count"))?;
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        break line
+            .parse::<usize>()
+            .map_err(|_| anyhow!("katana: gdi does not open with a track count"))?;
+    };
+    let mut tracks = Vec::new();
+    while tracks.len() < track_count {
+        let Some(line) = bounded_line::read_line(&mut reader)? else {
+            break;
+        };
+        let line = line.trim();
+        if !line.is_empty() {
+            tracks.push(parse_track(line)?);
+        }
+    }
     Ok(GdiIndex {
         track_count,
         tracks,
@@ -296,10 +313,19 @@ pub(crate) mod tests {
 
     #[test]
     fn rejects_malformed_gdi() {
-        assert!(parse_index("").is_err());
-        assert!(parse_index("two\n1 0 4 2352 a.bin 0\n").is_err());
-        assert!(parse_index("1\n1 0 4\n").is_err());
-        assert!(parse_index("1\n1 0 4 2352 a.bin 0\n").is_ok());
+        assert!(parse_index_reader(Cursor::new("")).is_err());
+        assert!(parse_index_reader(Cursor::new("two\n1 0 4 2352 a.bin 0\n")).is_err());
+        assert!(parse_index_reader(Cursor::new("1\n1 0 4\n")).is_err());
+        assert!(parse_index_reader(Cursor::new("1\n1 0 4 2352 a.bin 0\n")).is_ok());
+    }
+
+    #[test]
+    fn skips_blank_line_before_track_count() {
+        let line = format!("{}\n0\n", " ".repeat(64 * 1024 + 1));
+        assert_eq!(
+            parse_index_reader(Cursor::new(line)).unwrap().track_count,
+            0
+        );
     }
 
     #[test]

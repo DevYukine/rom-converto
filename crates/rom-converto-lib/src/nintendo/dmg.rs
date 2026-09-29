@@ -3,8 +3,10 @@
 use crate::util::bytes::ascii_trim;
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
+use std::io::{Read, Seek, SeekFrom};
 
 const HEADER_END: usize = 0x150;
+const IO_BLOCK_LEN: usize = 64 * 1024;
 
 /// The Nintendo bitmap the boot ROM compares against, at 0x104.
 const NINTENDO_LOGO: [u8; 48] = [
@@ -44,59 +46,70 @@ pub struct DmgInfo {
 /// Parses the Game Boy cartridge header at 0x100.
 ///
 /// # Errors
-/// Returns an error when `data` is shorter than the header.
-pub fn parse(data: &[u8]) -> Result<DmgInfo> {
-    if data.len() < HEADER_END {
+/// Returns an error when the file is shorter than the header.
+pub fn parse_reader(reader: &mut (impl Read + Seek), file_len: u64) -> Result<DmgInfo> {
+    if file_len < HEADER_END as u64 {
         return Err(anyhow!("dmg: file shorter than the 0x150-byte header"));
     }
-
-    let cgb_flag = data[0x143];
+    let mut header = [0; HEADER_END];
+    reader.seek(SeekFrom::Start(0))?;
+    reader.read_exact(&mut header)?;
+    let cgb_flag = header[0x143];
     let cgb_aware = matches!(cgb_flag, 0x80 | 0xC0);
-    let old_licensee = data[0x14B];
-
-    let header_checksum = data[0x14D];
-    let computed_header_checksum = data[0x134..0x14D]
+    let old_licensee = header[0x14B];
+    let header_checksum = header[0x14D];
+    let computed_header_checksum = header[0x134..0x14D]
         .iter()
         .fold(0u8, |acc, &b| acc.wrapping_sub(b).wrapping_sub(1));
-
-    let global_checksum = u16::from_be_bytes([data[0x14E], data[0x14F]]);
-    let computed_global_checksum = data
+    let global_checksum = u16::from_be_bytes([header[0x14E], header[0x14F]]);
+    let mut computed_global_checksum = header
         .iter()
         .enumerate()
         .filter(|(i, _)| *i != 0x14E && *i != 0x14F)
         .fold(0u16, |acc, (_, &b)| acc.wrapping_add(u16::from(b)));
-
+    let mut buf = [0; IO_BLOCK_LEN];
+    let mut offset = HEADER_END as u64;
+    while offset < file_len {
+        let count = ((file_len - offset).min(buf.len() as u64)) as usize;
+        reader.read_exact(&mut buf[..count])?;
+        computed_global_checksum = buf[..count]
+            .iter()
+            .fold(computed_global_checksum, |acc, &b| {
+                acc.wrapping_add(u16::from(b))
+            });
+        offset += count as u64;
+    }
     Ok(DmgInfo {
-        logo_valid: data[0x104..0x134] == NINTENDO_LOGO,
+        logo_valid: header[0x104..0x134] == NINTENDO_LOGO,
         title: if cgb_aware {
-            ascii_trim(&data[0x134..0x13F])
+            ascii_trim(&header[0x134..0x13F])
         } else {
-            ascii_trim(&data[0x134..0x143])
+            ascii_trim(&header[0x134..0x143])
         },
-        manufacturer_code: cgb_aware.then(|| ascii_trim(&data[0x13F..0x143])),
+        manufacturer_code: cgb_aware.then(|| ascii_trim(&header[0x13F..0x143])),
         cgb_flag,
         cgb: match cgb_flag {
             0x80 => Some("compatible".to_string()),
             0xC0 => Some("exclusive".to_string()),
             _ => None,
         },
-        sgb_flag: data[0x146],
-        cart_type: data[0x147],
-        cart_type_name: cart_type(data[0x147]).map(str::to_string),
-        rom_bytes: (data[0x148] <= 8).then(|| (32 * 1024u32) << data[0x148]),
-        ram_bytes: ram_bytes(data[0x149]),
-        destination: data[0x14A],
-        destination_name: match data[0x14A] {
-            0x00 => Some("Japan".to_string()),
-            0x01 => Some("Overseas".to_string()),
+        sgb_flag: header[0x146],
+        cart_type: header[0x147],
+        cart_type_name: cart_type(header[0x147]).map(str::to_string),
+        rom_bytes: (header[0x148] <= 8).then(|| (32 * 1024u32) << header[0x148]),
+        ram_bytes: ram_bytes(header[0x149]),
+        destination: header[0x14A],
+        destination_name: match header[0x14A] {
+            0 => Some("Japan".to_string()),
+            1 => Some("Overseas".to_string()),
             _ => None,
         },
         licensee: if old_licensee == 0x33 {
-            ascii_trim(&data[0x144..0x146])
+            ascii_trim(&header[0x144..0x146])
         } else {
             format!("{old_licensee:02X}")
         },
-        version: data[0x14C],
+        version: header[0x14C],
         header_checksum,
         computed_header_checksum,
         header_checksum_valid: header_checksum == computed_header_checksum,
@@ -189,7 +202,8 @@ pub(crate) mod tests {
 
     #[test]
     fn reads_dmg_header() {
-        let info = parse(&fixture(0x00)).unwrap();
+        let rom = fixture(0x00);
+        let info = parse_reader(&mut std::io::Cursor::new(&rom), rom.len() as u64).unwrap();
         assert!(info.logo_valid);
         assert_eq!(info.title, "TESTROM");
         assert_eq!(info.manufacturer_code, None);
@@ -207,7 +221,8 @@ pub(crate) mod tests {
 
     #[test]
     fn splits_title_and_manufacturer_for_cgb() {
-        let info = parse(&fixture(0xC0)).unwrap();
+        let rom = fixture(0xC0);
+        let info = parse_reader(&mut std::io::Cursor::new(&rom), rom.len() as u64).unwrap();
         assert_eq!(info.title, "TESTROM");
         assert_eq!(info.manufacturer_code.as_deref(), Some("ABCD"));
         assert_eq!(info.cgb.as_deref(), Some("exclusive"));
@@ -218,7 +233,7 @@ pub(crate) mod tests {
     fn flags_corrupted_checksums() {
         let mut rom = fixture(0x00);
         rom[0x134] ^= 0xFF;
-        let info = parse(&rom).unwrap();
+        let info = parse_reader(&mut std::io::Cursor::new(&rom), rom.len() as u64).unwrap();
         assert!(!info.header_checksum_valid);
         assert!(!info.global_checksum_valid);
     }
@@ -227,7 +242,12 @@ pub(crate) mod tests {
     fn flags_bad_logo_and_rejects_short_file() {
         let mut rom = fixture(0x00);
         rom[0x104] ^= 0xFF;
-        assert!(!parse(&rom).unwrap().logo_valid);
-        assert!(parse(&rom[..0x140]).is_err());
+        assert!(
+            !parse_reader(&mut std::io::Cursor::new(&rom), rom.len() as u64)
+                .unwrap()
+                .logo_valid
+        );
+        let short = &rom[..0x140];
+        assert!(parse_reader(&mut std::io::Cursor::new(short), short.len() as u64).is_err());
     }
 }

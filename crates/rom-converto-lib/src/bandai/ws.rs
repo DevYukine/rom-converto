@@ -3,6 +3,7 @@
 
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
+use std::io::{Read, Seek, SeekFrom};
 
 const FOOTER_LEN: usize = 16;
 
@@ -26,26 +27,34 @@ pub struct WsInfo {
     pub checksum_valid: bool,
 }
 
-/// Parses the WonderSwan footer from the tail of `data`.
+/// Parses the WonderSwan footer from the tail of the image.
 ///
 /// # Errors
-/// Returns an error when `data` is shorter than the footer or does not open
-/// it with the far-jump reset vector.
-pub fn parse(data: &[u8]) -> Result<WsInfo> {
-    let base = data
-        .len()
-        .checked_sub(FOOTER_LEN)
-        .ok_or_else(|| anyhow!("ws: file shorter than the 16-byte footer"))?;
-    let footer = &data[base..];
+/// Returns an error when the file is shorter than the footer or does not
+/// open it with the far-jump reset vector.
+pub fn parse_reader(reader: &mut (impl Read + Seek), file_len: u64) -> Result<WsInfo> {
+    if file_len < FOOTER_LEN as u64 {
+        return Err(anyhow!("ws: file shorter than the 16-byte footer"));
+    }
+    let mut footer = [0; FOOTER_LEN];
+    reader.seek(SeekFrom::Start(file_len - FOOTER_LEN as u64))?;
+    reader.read_exact(&mut footer)?;
     if footer[0] != FAR_JMP {
         return Err(anyhow!("ws: footer does not start with a far-jump vector"));
     }
-
+    reader.seek(SeekFrom::Start(0))?;
+    let mut sum = 0u16;
+    let mut buf = [0; 64 * 1024];
+    let mut offset = 0u64;
+    while offset < file_len - 2 {
+        let count = ((file_len - 2 - offset).min(buf.len() as u64)) as usize;
+        reader.read_exact(&mut buf[..count])?;
+        sum = buf[..count]
+            .iter()
+            .fold(sum, |acc, &b| acc.wrapping_add(u16::from(b)));
+        offset += count as u64;
+    }
     let checksum = u16::from_le_bytes([footer[14], footer[15]]);
-    let computed_checksum = data[..data.len() - 2]
-        .iter()
-        .fold(0u16, |acc, &b| acc.wrapping_add(u16::from(b)));
-
     Ok(WsInfo {
         publisher_id: footer[6],
         color: footer[7] != 0,
@@ -54,8 +63,8 @@ pub fn parse(data: &[u8]) -> Result<WsInfo> {
         save: save(footer[11]).map(str::to_string),
         version: footer[9],
         checksum,
-        computed_checksum,
-        checksum_valid: checksum == computed_checksum,
+        computed_checksum: sum,
+        checksum_valid: checksum == sum,
     })
 }
 
@@ -104,7 +113,8 @@ pub(crate) mod tests {
 
     #[test]
     fn reads_footer() {
-        let info = parse(&fixture(0x00)).unwrap();
+        let rom = fixture(0x00);
+        let info = parse_reader(&mut std::io::Cursor::new(&rom), rom.len() as u64).unwrap();
         assert_eq!(info.publisher_id, 0x01);
         assert!(!info.color);
         assert_eq!(info.game_id, 0x2A);
@@ -116,14 +126,23 @@ pub(crate) mod tests {
 
     #[test]
     fn flags_color_system() {
-        assert!(parse(&fixture(0x01)).unwrap().color);
+        let rom = fixture(0x01);
+        assert!(
+            parse_reader(&mut std::io::Cursor::new(&rom), rom.len() as u64)
+                .unwrap()
+                .color
+        );
     }
 
     #[test]
     fn flags_corrupted_checksum() {
         let mut rom = fixture(0x00);
         rom[0x100] ^= 0xFF;
-        assert!(!parse(&rom).unwrap().checksum_valid);
+        assert!(
+            !parse_reader(&mut std::io::Cursor::new(&rom), rom.len() as u64)
+                .unwrap()
+                .checksum_valid
+        );
     }
 
     #[test]
@@ -131,7 +150,7 @@ pub(crate) mod tests {
         let mut rom = fixture(0x00);
         let base = rom.len() - FOOTER_LEN;
         rom[base] = 0x00;
-        assert!(parse(&rom).is_err());
-        assert!(parse(&[]).is_err());
+        assert!(parse_reader(&mut std::io::Cursor::new(&rom), rom.len() as u64).is_err());
+        assert!(parse_reader(&mut std::io::Cursor::new(&[]), 0).is_err());
     }
 }

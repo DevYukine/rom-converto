@@ -73,9 +73,9 @@ pub(crate) fn read_disc_head(path: &Path) -> Result<Vec<u8>> {
 /// Path of the first file a cue sheet references, resolved against the
 /// sheet's own directory.
 pub(crate) fn cue_first_file(path: &Path) -> Result<PathBuf> {
-    let sheet = crate::disc::cue::CueParser::new(path).parse_bytes(
-        &std::fs::read(path).with_context(|| format!("retro info: read {}", path.display()))?,
-    )?;
+    let file = File::open(path).with_context(|| format!("retro info: read {}", path.display()))?;
+    let sheet =
+        crate::disc::cue::CueParser::new(path).parse_reader(std::io::BufReader::new(file))?;
     let file = sheet
         .files
         .first()

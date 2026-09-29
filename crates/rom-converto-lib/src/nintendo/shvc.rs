@@ -7,6 +7,7 @@
 use crate::util::bytes::ascii_trim;
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
+use std::io::{Read, Seek, SeekFrom};
 
 const HEADER_LEN: usize = 32;
 const COPIER_HEADER_LEN: usize = 512;
@@ -45,54 +46,64 @@ pub struct ShvcInfo {
     pub checksum_valid: bool,
 }
 
-/// Locates and parses the SNES internal header in `data`.
+/// Locates and parses the SNES internal header, probing each candidate
+/// mapping with a bounded read and streaming the checksum.
 ///
 /// # Errors
 /// Returns an error when no candidate location holds a plausible header.
-pub fn parse(data: &[u8]) -> Result<ShvcInfo> {
-    let mut best: Option<(&'static str, bool, usize, [u8; HEADER_LEN])> = None;
+pub fn parse_reader(reader: &mut (impl Read + Seek), file_len: u64) -> Result<ShvcInfo> {
+    let mut best: Option<(&'static str, bool, u64, [u8; HEADER_LEN])> = None;
     let mut best_score = 0u32;
     for copier_header in [false, true] {
-        let body_start = if copier_header { COPIER_HEADER_LEN } else { 0 };
+        let body_start = if copier_header {
+            COPIER_HEADER_LEN as u64
+        } else {
+            0
+        };
         for (mapping, base) in CANDIDATES {
-            let at = body_start + base;
-            let Some(header) = data
-                .get(at..at + HEADER_LEN)
-                .and_then(|s| <[u8; HEADER_LEN]>::try_from(s).ok())
-            else {
+            let at = body_start + base as u64;
+            if at + HEADER_LEN as u64 > file_len {
                 continue;
-            };
-            let score = score(&header);
-            if score > best_score {
-                best_score = score;
+            }
+            let mut header = [0; HEADER_LEN];
+            reader.seek(SeekFrom::Start(at))?;
+            reader.read_exact(&mut header)?;
+            let candidate_score = score(&header);
+            if candidate_score > best_score {
+                best_score = candidate_score;
                 best = Some((mapping, copier_header, at, header));
             }
         }
     }
-
     let Some((mapping, copier_header, at, header)) = best.filter(|_| best_score >= MIN_SCORE)
     else {
         return Err(anyhow!("shvc: no plausible internal header found"));
     };
-    let body = &data[if copier_header { COPIER_HEADER_LEN } else { 0 }..];
 
+    let chipset_subtype = if header[0x1A] == 0x33 && at > 0 {
+        let mut subtype = [0];
+        reader.seek(SeekFrom::Start(at - 1))?;
+        reader.read_exact(&mut subtype)?;
+        Some(subtype[0])
+    } else {
+        None
+    };
+    let body_start = if copier_header {
+        COPIER_HEADER_LEN as u64
+    } else {
+        0
+    };
+    let (sum, _) = mirror_sum_reader(reader, body_start, file_len - body_start)?;
+    let computed_checksum = (sum & 0xFFFF) as u16;
     let map_mode = header[0x15];
     let chipset = header[0x16];
-    let licensee = header[0x1A];
-    // The extended header sits directly below the internal one, and its
-    // last byte names the coprocessor when the chipset high nibble is 0xF.
-    let chipset_subtype = (licensee == 0x33)
-        .then(|| at.checked_sub(1).and_then(|i| data.get(i).copied()))
-        .flatten();
-
     let checksum_complement = u16::from_le_bytes([header[0x1C], header[0x1D]]);
     let checksum = u16::from_le_bytes([header[0x1E], header[0x1F]]);
-    let computed_checksum = (mirror_sum(body).0 & 0xFFFF) as u16;
 
     Ok(ShvcInfo {
         mapping: mapping.to_string(),
         copier_header,
-        header_offset: at as u64,
+        header_offset: at,
         title: ascii_trim(&header[..21]),
         map_mode,
         fastrom: map_mode & 0x10 != 0,
@@ -106,13 +117,44 @@ pub fn parse(data: &[u8]) -> Result<ShvcInfo> {
         },
         country: header[0x19],
         region: region(header[0x19]).map(str::to_string),
-        licensee,
+        licensee: header[0x1A],
         version: header[0x1B],
         checksum,
         checksum_complement,
         computed_checksum,
         checksum_valid: checksum == computed_checksum,
     })
+}
+
+fn mirror_sum_reader(reader: &mut (impl Read + Seek), start: u64, len: u64) -> Result<(u64, u64)> {
+    if len == 0 {
+        return Ok((0, 0));
+    }
+    let full = len.next_power_of_two();
+    if full == len {
+        return Ok((sum_range(reader, start, len)?, full));
+    }
+    let base = full >> 1;
+    let (tail_sum, tail_size) = mirror_sum_reader(reader, start + base, len - base)?;
+    let head = sum_range(reader, start, base)?;
+    Ok((
+        head.wrapping_add(tail_sum.wrapping_mul(base / tail_size)),
+        full,
+    ))
+}
+
+fn sum_range(reader: &mut (impl Read + Seek), start: u64, len: u64) -> Result<u64> {
+    let mut buf = [0; 64 * 1024];
+    let mut offset = 0;
+    let mut sum = 0u64;
+    reader.seek(SeekFrom::Start(start))?;
+    while offset < len {
+        let count = (len - offset).min(buf.len() as u64) as usize;
+        reader.read_exact(&mut buf[..count])?;
+        sum = buf[..count].iter().fold(sum, |acc, &b| acc + u64::from(b));
+        offset += count as u64;
+    }
+    Ok(sum)
 }
 
 fn score(header: &[u8]) -> u32 {
@@ -136,24 +178,6 @@ fn score(header: &[u8]) -> u32 {
         score += 1;
     }
     score
-}
-
-/// Sums a ROM body the way the SNES memory map sees it: a non-power-of-two
-/// image has its tail mirrored up to fill the next power of two. Returns
-/// the sum and the size of that mirrored image.
-fn mirror_sum(data: &[u8]) -> (u32, usize) {
-    if data.is_empty() {
-        return (0, 0);
-    }
-    let full = data.len().next_power_of_two();
-    if full == data.len() {
-        return (data.iter().map(|&b| u32::from(b)).sum(), full);
-    }
-    let base = full >> 1;
-    let head: u32 = data[..base].iter().map(|&b| u32::from(b)).sum();
-    let (tail, tail_size) = mirror_sum(&data[base..]);
-    let repeats = (base / tail_size) as u32;
-    (head.wrapping_add(tail.wrapping_mul(repeats)), full)
 }
 
 /// Decodes the coprocessor named by the chipset byte. The low nibble must
@@ -224,7 +248,15 @@ pub(crate) mod tests {
 
         // The checksum pair always contributes 0x1FE to the total, so the
         // sum with it zeroed plus 0x1FE is the value to store.
-        let checksum = ((mirror_sum(&rom).0.wrapping_add(0x1FE)) & 0xFFFF) as u16;
+        let checksum = ((mirror_sum_reader(
+            &mut std::io::Cursor::new(rom.as_slice()),
+            0,
+            rom.len() as u64,
+        )
+        .unwrap()
+        .0
+        .wrapping_add(0x1FE))
+            & 0xFFFF) as u16;
         rom[base + 0x1C..base + 0x1E].copy_from_slice(&(!checksum).to_le_bytes());
         rom[base + 0x1E..base + 0x20].copy_from_slice(&checksum.to_le_bytes());
         rom
@@ -232,7 +264,8 @@ pub(crate) mod tests {
 
     #[test]
     fn reads_lorom_header() {
-        let info = parse(&fixture(0x8000, 0x7FC0, 0x20, 0x00)).unwrap();
+        let rom = fixture(0x8000, 0x7FC0, 0x20, 0x00);
+        let info = parse_reader(&mut std::io::Cursor::new(&rom), rom.len() as u64).unwrap();
         assert_eq!(info.mapping, "LoROM");
         assert!(!info.copier_header);
         assert_eq!(info.header_offset, 0x7FC0);
@@ -248,7 +281,8 @@ pub(crate) mod tests {
 
     #[test]
     fn reads_hirom_fastrom_with_coprocessor() {
-        let info = parse(&fixture(0x10000, 0xFFC0, 0x31, 0x15)).unwrap();
+        let rom = fixture(0x10000, 0xFFC0, 0x31, 0x15);
+        let info = parse_reader(&mut std::io::Cursor::new(&rom), rom.len() as u64).unwrap();
         assert_eq!(info.mapping, "HiROM");
         assert_eq!(info.header_offset, 0xFFC0);
         assert!(info.fastrom);
@@ -260,9 +294,19 @@ pub(crate) mod tests {
     fn detects_copier_header() {
         let mut rom = vec![0u8; COPIER_HEADER_LEN];
         rom.extend_from_slice(&fixture(0x8000, 0x7FC0, 0x20, 0x00));
-        let info = parse(&rom).unwrap();
+        let info = parse_reader(&mut std::io::Cursor::new(&rom), rom.len() as u64).unwrap();
         assert!(info.copier_header);
         assert_eq!(info.header_offset, (COPIER_HEADER_LEN + 0x7FC0) as u64);
+        assert!(info.checksum_valid);
+    }
+
+    #[test]
+    fn reads_exhirom_header_from_reader() {
+        let rom = fixture(0x800000, 0x40FFC0, 0x25, 0x00);
+        let mut reader = std::io::Cursor::new(rom.clone());
+        let info = parse_reader(&mut reader, rom.len() as u64).unwrap();
+        assert_eq!(info.mapping, "ExHiROM");
+        assert_eq!(info.header_offset, 0x40FFC0);
         assert!(info.checksum_valid);
     }
 
@@ -270,12 +314,17 @@ pub(crate) mod tests {
     fn flags_corrupted_checksum() {
         let mut rom = fixture(0x8000, 0x7FC0, 0x20, 0x00);
         rom[0x100] ^= 0xFF;
-        assert!(!parse(&rom).unwrap().checksum_valid);
+        assert!(
+            !parse_reader(&mut std::io::Cursor::new(&rom), rom.len() as u64)
+                .unwrap()
+                .checksum_valid
+        );
     }
 
     #[test]
     fn rejects_image_without_header() {
-        assert!(parse(&[0u8; 0x8000]).is_err());
-        assert!(parse(&[]).is_err());
+        let invalid = [0u8; 0x8000];
+        assert!(parse_reader(&mut std::io::Cursor::new(&invalid), invalid.len() as u64).is_err());
+        assert!(parse_reader(&mut std::io::Cursor::new(&[]), 0).is_err());
     }
 }

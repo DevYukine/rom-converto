@@ -3,6 +3,7 @@
 
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
+use std::io::{Read, Seek, SeekFrom};
 
 const MAGIC: &[u8; 8] = b"TMR SEGA";
 
@@ -28,21 +29,45 @@ pub struct SmsInfo {
     pub checksum_valid: bool,
 }
 
-/// Locates and parses the `TMR SEGA` header in `data`.
+/// Locates the `TMR SEGA` header and streams its checksum from a seekable image.
 ///
 /// # Errors
 /// Returns an error when none of the three header offsets holds the magic.
-pub fn parse(data: &[u8]) -> Result<SmsInfo> {
+pub fn parse_reader(reader: &mut (impl Read + Seek), file_len: u64) -> Result<SmsInfo> {
+    const PREFIX_LEN: usize = 0x8000;
+    const IO_BUFFER_LEN: usize = 64 * 1024;
+
+    let prefix_len = file_len.min(PREFIX_LEN as u64) as usize;
+    let mut prefix = vec![0; prefix_len];
+    reader.seek(SeekFrom::Start(0))?;
+    reader.read_exact(&mut prefix)?;
     let at = CANDIDATES
         .into_iter()
-        .find(|&at| data.get(at..at + 16).is_some_and(|h| &h[..8] == MAGIC))
+        .find(|&at| prefix.get(at..at + 16).is_some_and(|h| &h[..8] == MAGIC))
         .ok_or_else(|| anyhow!("sms: no \"TMR SEGA\" header found"))?;
-    let header = &data[at..at + 16];
+    let header = &prefix[at..at + 16];
 
     let region_code = header[0x0F] >> 4;
     let rom_size_code = header[0x0F] & 0x0F;
     let checksum = u16::from_le_bytes([header[0x0A], header[0x0B]]);
-    let computed_checksum = compute_checksum(data, at, rom_size_code);
+    let mut computed_checksum = prefix[..at]
+        .iter()
+        .fold(0u16, |acc, &b| acc.wrapping_add(u16::from(b)));
+
+    if let Some(end) = checksum_end(rom_size_code).filter(|_| file_len > PREFIX_LEN as u64) {
+        let end = end.min(file_len);
+        let mut offset = PREFIX_LEN as u64;
+        let mut buffer = [0; IO_BUFFER_LEN];
+        reader.seek(SeekFrom::Start(offset))?;
+        while offset < end {
+            let count = (end - offset).min(buffer.len() as u64) as usize;
+            reader.read_exact(&mut buffer[..count])?;
+            computed_checksum = buffer[..count]
+                .iter()
+                .fold(computed_checksum, |acc, &b| acc.wrapping_add(u16::from(b)));
+            offset += count as u64;
+        }
+    }
 
     Ok(SmsInfo {
         header_offset: at as u64,
@@ -60,14 +85,8 @@ pub fn parse(data: &[u8]) -> Result<SmsInfo> {
     })
 }
 
-fn bcd(byte: u8) -> u32 {
-    u32::from(byte >> 4) * 10 + u32::from(byte & 0x0F)
-}
-
-/// Sums everything below the header, then everything from 0x8000 up to the
-/// limit the size nibble sets. Ranges past the end of the file are clipped.
-fn compute_checksum(data: &[u8], header_offset: usize, rom_size_code: u8) -> u16 {
-    let second_end = match rom_size_code {
+fn checksum_end(rom_size_code: u8) -> Option<u64> {
+    match rom_size_code {
         0xA..=0xC => None,
         0xD => Some(0x0C000),
         0xE => Some(0x10000),
@@ -75,18 +94,11 @@ fn compute_checksum(data: &[u8], header_offset: usize, rom_size_code: u8) -> u16
         0x0 => Some(0x40000),
         0x1 => Some(0x80000),
         _ => Some(0x100000),
-    };
+    }
+}
 
-    let sum = |range: &[u8]| {
-        range
-            .iter()
-            .fold(0u16, |acc, &b| acc.wrapping_add(u16::from(b)))
-    };
-    let second = second_end
-        .filter(|_| data.len() > 0x8000)
-        .map(|end| sum(&data[0x8000..end.min(data.len())]))
-        .unwrap_or(0);
-    sum(&data[..header_offset.min(data.len())]).wrapping_add(second)
+fn bcd(byte: u8) -> u32 {
+    u32::from(byte >> 4) * 10 + u32::from(byte & 0x0F)
 }
 
 fn region(code: u8) -> Option<&'static str> {
@@ -118,6 +130,28 @@ fn rom_size_kb(code: u8) -> Option<u32> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    use std::io::Cursor;
+
+    /// Sums everything below the header, then everything from 0x8000 up to the
+    /// limit the size nibble sets. Ranges past the end of the file are clipped.
+    fn compute_checksum(data: &[u8], header_offset: usize, rom_size_code: u8) -> u16 {
+        let second_end = checksum_end(rom_size_code);
+        let sum = |range: &[u8]| {
+            range
+                .iter()
+                .fold(0u16, |acc, &b| acc.wrapping_add(u16::from(b)))
+        };
+        let second = second_end
+            .filter(|_| data.len() > 0x8000)
+            .map(|end| sum(&data[0x8000..(end as usize).min(data.len())]))
+            .unwrap_or(0);
+        sum(&data[..header_offset.min(data.len())]).wrapping_add(second)
+    }
+
+    fn parse(data: &[u8]) -> Result<SmsInfo> {
+        parse_reader(&mut Cursor::new(data), data.len() as u64)
+    }
 
     /// Builds a 32 KiB image with the header at 0x7FF0 and a matching
     /// checksum.
@@ -154,6 +188,18 @@ pub(crate) mod tests {
     fn decodes_game_gear_region() {
         let info = parse(&fixture(0x7C)).unwrap();
         assert_eq!(info.region.as_deref(), Some("Game Gear (International)"));
+    }
+
+    #[test]
+    fn streams_checksum_bytes_past_header_prefix() {
+        let mut rom = fixture(0x40);
+        rom.resize(0x40000, 0x1);
+        let at = 0x7FF0;
+        let checksum = compute_checksum(&rom, at, 0);
+        rom[at + 0x0A..at + 0x0C].copy_from_slice(&checksum.to_le_bytes());
+        assert!(parse(&rom).unwrap().checksum_valid);
+        rom[0x30000] ^= 0xFF;
+        assert!(!parse(&rom).unwrap().checksum_valid);
     }
 
     #[test]

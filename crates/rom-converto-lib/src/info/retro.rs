@@ -1,12 +1,7 @@
 //! Extension dispatch for the cartridge-era and Sega disc systems.
 //!
-//! The per-system header parsers live under their maker
-//! ([`crate::nintendo`], [`crate::sega`], [`crate::atari`],
-//! [`crate::snk`], [`crate::bandai`]); [`read_info`] picks one by file
-//! extension. Cartridge headers are parsed out of a whole-file read,
-//! since the checksums those formats define cover the whole image; the
-//! Sega disc systems instead read only the first sector of the first
-//! data track.
+//! Cartridge metadata uses fixed-size header/tail reads and streaming checksums.
+//! Sega disc systems read only the first sector of the first data track.
 
 use crate::atari::a78::{self, A78Info};
 use crate::atari::handy::{self, HandyInfo};
@@ -27,6 +22,9 @@ use crate::sega::{SegaDiscSystem, cue_first_file, probe_sega_disc, read_disc_hea
 use crate::snk::ngp::{self, NgpInfo};
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
+
+use std::io::{Read, Seek, SeekFrom};
+
 use std::path::Path;
 
 /// Metadata read from a cartridge ROM image.
@@ -97,33 +95,48 @@ pub fn read_info(path: &Path) -> Result<RetroInfo> {
         });
     }
 
-    let data =
-        std::fs::read(path).with_context(|| format!("retro info: read {}", path.display()))?;
-
+    let mut file = std::fs::File::open(path)
+        .with_context(|| format!("retro info: read {}", path.display()))?;
+    let file_size = file.metadata()?.len();
     let details = match ext.as_str() {
-        "nes" => RetroDetails::Nes(hvc::parse(&data)?),
-        "sfc" | "smc" => RetroDetails::Snes(shvc::parse(&data)?),
-        "z64" | "n64" | "v64" => RetroDetails::N64(nus::parse(&data)?),
-        "gb" | "gbc" => RetroDetails::GameBoy(dmg::parse(&data)?),
-        "gba" => RetroDetails::Gba(agb::parse(&data)?),
-        "md" | "gen" | "smd" => RetroDetails::MegaDrive(md::parse(&data)?),
-        // 32X carts carry the plain Mega Drive header, console name apart.
-        "32x" => RetroDetails::Sega32x(md::parse(&data)?),
-        "fds" => RetroDetails::Fds(fds::parse(&data)?),
-        "sms" => RetroDetails::MasterSystem(sms::parse(&data)?),
-        "gg" => RetroDetails::GameGear(sms::parse(&data)?),
-        "vb" => RetroDetails::VirtualBoy(vue::parse(&data)?),
-        "ws" | "wsc" => RetroDetails::WonderSwan(ws::parse(&data)?),
-        "ngp" | "ngc" => RetroDetails::NeoGeoPocket(ngp::parse(&data)?),
-        "lnx" => RetroDetails::Lynx(handy::parse(&data)?),
-        "a78" => RetroDetails::Atari7800(a78::parse(&data)?),
+        "gb" | "gbc" => RetroDetails::GameBoy(dmg::parse_reader(&mut file, file_size)?),
+        "32x" => RetroDetails::Sega32x(md::parse_reader(&mut file, file_size)?),
+        "md" | "gen" | "smd" => RetroDetails::MegaDrive(md::parse_reader(&mut file, file_size)?),
+        "fds" => RetroDetails::Fds(fds::parse_reader(&mut file, file_size)?),
+        "nes" => RetroDetails::Nes(hvc::parse(&read_prefix(&mut file, 16, file_size)?)?),
+        "sfc" | "smc" => RetroDetails::Snes(shvc::parse_reader(&mut file, file_size)?),
+        "z64" | "n64" | "v64" => {
+            RetroDetails::N64(nus::parse(&read_prefix(&mut file, 0x1000, file_size)?)?)
+        }
+        "gba" => RetroDetails::Gba(agb::parse(&read_prefix(&mut file, 0xC0, file_size)?)?),
+        "sms" => RetroDetails::MasterSystem(sms::parse_reader(&mut file, file_size)?),
+        "gg" => RetroDetails::GameGear(sms::parse_reader(&mut file, file_size)?),
+        "vb" => RetroDetails::VirtualBoy(vue::parse(&read_tail(&mut file, 0x220, file_size)?)?),
+        "ws" | "wsc" => RetroDetails::WonderSwan(ws::parse_reader(&mut file, file_size)?),
+        "ngp" | "ngc" => {
+            RetroDetails::NeoGeoPocket(ngp::parse(&read_prefix(&mut file, 0x30, file_size)?)?)
+        }
+        "lnx" => RetroDetails::Lynx(handy::parse(&read_prefix(&mut file, 64, file_size)?)?),
+        "a78" => RetroDetails::Atari7800(a78::parse(&read_prefix(&mut file, 128, file_size)?)?),
         other => return Err(anyhow!("retro info: unsupported extension {other:?}")),
     };
 
-    Ok(RetroInfo {
-        file_size: data.len() as u64,
-        details,
-    })
+    Ok(RetroInfo { file_size, details })
+}
+
+fn read_prefix(file: &mut std::fs::File, size: usize, file_len: u64) -> Result<Vec<u8>> {
+    let mut bytes = vec![0; (file_len.min(size as u64)) as usize];
+    file.seek(SeekFrom::Start(0))?;
+    file.read_exact(&mut bytes)?;
+    Ok(bytes)
+}
+
+fn read_tail(file: &mut std::fs::File, size: usize, file_len: u64) -> Result<Vec<u8>> {
+    let count = file_len.min(size as u64);
+    let mut bytes = vec![0; count as usize];
+    file.seek(SeekFrom::Start(file_len - count))?;
+    file.read_exact(&mut bytes)?;
+    Ok(bytes)
 }
 
 /// Reads the Sega disc header out of the first sector a `.gdi`, `.iso`,

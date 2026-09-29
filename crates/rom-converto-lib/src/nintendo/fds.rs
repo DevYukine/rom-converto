@@ -4,6 +4,7 @@
 use crate::util::bytes::ascii_trim;
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
+use std::io::{Read, Seek, SeekFrom};
 
 const FWNES_MAGIC: &[u8; 4] = b"FDS\x1a";
 const FWNES_HEADER_LEN: usize = 16;
@@ -45,29 +46,34 @@ pub struct FdsSide {
 /// # Errors
 /// Returns an error when the image holds no whole disk side, or when a
 /// side does not open with the `*NINTENDO-HVC*` disk info block.
-pub fn parse(data: &[u8]) -> Result<FdsInfo> {
-    let fwnes_header = data.len() >= FWNES_HEADER_LEN && &data[..4] == FWNES_MAGIC;
-    let body = if fwnes_header {
-        &data[FWNES_HEADER_LEN..]
+pub fn parse_reader(reader: &mut (impl Read + Seek), file_len: u64) -> Result<FdsInfo> {
+    let mut prefix = [0; FWNES_HEADER_LEN];
+    let fwnes_header = file_len >= FWNES_HEADER_LEN as u64 && {
+        reader.seek(SeekFrom::Start(0))?;
+        reader.read_exact(&mut prefix)?;
+        &prefix[..4] == FWNES_MAGIC
+    };
+    let body_start = if fwnes_header {
+        FWNES_HEADER_LEN as u64
     } else {
-        data
+        0
     };
     let side_count = if fwnes_header {
-        usize::from(data[4])
+        usize::from(prefix[4])
     } else {
-        body.len() / SIDE_LEN
+        ((file_len - body_start) / SIDE_LEN as u64) as usize
     };
-
-    // Overdumps carry trailing garbage; only whole 65500-byte sides count.
-    let (side_chunks, _) = body.as_chunks::<SIDE_LEN>();
-    let sides = side_chunks
-        .iter()
-        .map(|side| parse_side(side.as_slice()))
-        .collect::<Result<Vec<_>>>()?;
+    let whole_sides = (file_len - body_start) / SIDE_LEN as u64;
+    let mut sides = Vec::new();
+    let mut block = [0; INFO_BLOCK_LEN];
+    for index in 0..whole_sides {
+        reader.seek(SeekFrom::Start(body_start + index * SIDE_LEN as u64))?;
+        reader.read_exact(&mut block)?;
+        sides.push(parse_side(&block)?);
+    }
     if sides.is_empty() {
         return Err(anyhow!("fds: image holds no disk side"));
     }
-
     Ok(FdsInfo {
         fwnes_header,
         side_count,
@@ -179,7 +185,8 @@ pub(crate) mod tests {
 
     #[test]
     fn reads_fwnes_image() {
-        let info = parse(&fixture(true)).unwrap();
+        let rom = fixture(true);
+        let info = parse_reader(&mut std::io::Cursor::new(&rom), rom.len() as u64).unwrap();
         assert!(info.fwnes_header);
         assert_eq!(info.side_count, 2);
         assert_eq!(info.sides.len(), 2);
@@ -200,7 +207,8 @@ pub(crate) mod tests {
 
     #[test]
     fn reads_headerless_image_and_derives_side_count() {
-        let info = parse(&fixture(false)).unwrap();
+        let rom = fixture(false);
+        let info = parse_reader(&mut std::io::Cursor::new(&rom), rom.len() as u64).unwrap();
         assert!(!info.fwnes_header);
         assert_eq!(info.side_count, 2);
     }
@@ -209,7 +217,7 @@ pub(crate) mod tests {
     fn keeps_raw_bytes_for_a_non_bcd_date() {
         let mut rom = fixture(true);
         rom[FWNES_HEADER_LEN + 0x1F] = 0xAB;
-        let info = parse(&rom).unwrap();
+        let info = parse_reader(&mut std::io::Cursor::new(&rom), rom.len() as u64).unwrap();
         assert_eq!(info.sides[0].manufacture_date, None);
         assert_eq!(info.sides[0].manufacture_date_raw, "AB0401");
     }
@@ -218,16 +226,17 @@ pub(crate) mod tests {
     fn rejects_missing_verification_string() {
         let mut rom = fixture(true);
         rom[FWNES_HEADER_LEN + 1] = b'X';
-        assert!(parse(&rom).is_err());
+        assert!(parse_reader(&mut std::io::Cursor::new(&rom), rom.len() as u64).is_err());
 
         let mut rom = fixture(true);
         rom[FWNES_HEADER_LEN] = 0x02;
-        assert!(parse(&rom).is_err());
+        assert!(parse_reader(&mut std::io::Cursor::new(&rom), rom.len() as u64).is_err());
     }
 
     #[test]
     fn rejects_truncated_image() {
-        assert!(parse(&fixture(true)[..FWNES_HEADER_LEN + 8]).is_err());
-        assert!(parse(&[]).is_err());
+        let short = &fixture(true)[..FWNES_HEADER_LEN + 8];
+        assert!(parse_reader(&mut std::io::Cursor::new(short), short.len() as u64).is_err());
+        assert!(parse_reader(&mut std::io::Cursor::new(&[]), 0).is_err());
     }
 }
