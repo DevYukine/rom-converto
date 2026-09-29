@@ -117,6 +117,9 @@ pub(crate) async fn organize(
         if cancel.is_cancelled() {
             return Err(Cancelled.into());
         }
+        // organize_unit measures its own start, but an Err return discards
+        // it; time the unit here so failed rows still carry real elapsed.
+        let unit_started = Instant::now();
         let row = organize_unit(
             &req,
             unit,
@@ -144,7 +147,7 @@ pub(crate) async fn organize(
                     detail: Some(error_detail(&err)),
                     input_bytes: unit.size_bytes(),
                     output_bytes: 0,
-                    elapsed_ms: 0,
+                    elapsed_ms: elapsed_ms(unit_started),
                 }
             }
         };
@@ -345,45 +348,43 @@ async fn organize_unit(
         ));
     }
 
-    match &action {
-        Action::Skip(_) => unreachable!("skip actions returned above"),
-        Action::Convert { op, format, .. } => {
-            run_conversion(
-                req,
-                unit,
-                op,
-                *format,
-                &desired,
-                source,
-                tokens.console,
-                input_bytes,
-                move_source,
-                unit_started,
-                progress,
-                file_progress,
-                cancel,
-            )
-            .await
-        }
-        Action::Zip | Action::Copy => {
-            run_place(
-                req,
-                &action,
-                &action_str,
-                &primary,
-                source,
-                &desired,
-                unit,
-                tokens.console,
-                input_bytes,
-                move_source,
-                unit_started,
-                progress,
-                file_progress,
-                cancel,
-            )
-            .await
-        }
+    // Skips returned when `action_str` was derived, so only conversions and
+    // placements reach the dispatch below.
+    if let Action::Convert { op, format, .. } = &action {
+        run_conversion(
+            req,
+            unit,
+            op,
+            *format,
+            &desired,
+            source,
+            tokens.console,
+            input_bytes,
+            move_source,
+            unit_started,
+            progress,
+            file_progress,
+            cancel,
+        )
+        .await
+    } else {
+        run_place(
+            req,
+            matches!(action, Action::Zip),
+            &action_str,
+            &primary,
+            source,
+            &desired,
+            unit,
+            tokens.console,
+            input_bytes,
+            move_source,
+            unit_started,
+            progress,
+            file_progress,
+            cancel,
+        )
+        .await
     }
 }
 
@@ -720,14 +721,24 @@ async fn run_conversion(
                     _ => {}
                 }
             }
-            if status == FileStatus::Ok
-                && move_source
-                && let Err(err) = remove_sources(unit, &output).await
-            {
-                progress.warn(&format!(
-                    "could not move source {}: {err}",
-                    unit.display_path().display()
-                ));
+            if status == FileStatus::Ok && move_source {
+                // Child records can claim success without the output landing
+                // on disk; never delete sources for an output that is not
+                // there.
+                if output.is_file() {
+                    if let Err(err) = remove_sources(unit, &output).await {
+                        progress.warn(&format!(
+                            "could not move source {}: {err}",
+                            unit.display_path().display()
+                        ));
+                    }
+                } else {
+                    progress.warn(&format!(
+                        "could not move source {}: output {} is missing",
+                        unit.display_path().display(),
+                        output.display()
+                    ));
+                }
             }
             Ok(OrganizeRow {
                 input: primary,
@@ -774,7 +785,7 @@ async fn run_conversion(
 #[allow(clippy::too_many_arguments)]
 async fn run_place(
     req: &RunRequest,
-    action: &Action,
+    zip: bool,
     action_str: &str,
     primary: &Path,
     source: &Path,
@@ -873,10 +884,10 @@ async fn run_place(
             elapsed_ms: elapsed_ms(unit_started),
         });
     }
-    let written = match action {
-        Action::Zip => write_zip_output(source, desired, &output, file_progress, cancel).await,
-        Action::Copy => copy_output(source, &output, cancel).await,
-        Action::Skip(_) | Action::Convert { .. } => unreachable!("only zip/copy reach here"),
+    let written = if zip {
+        write_zip_output(source, desired, &output, file_progress, cancel).await
+    } else {
+        copy_output(source, &output, cancel).await
     };
     if let Err(err) = written {
         if is_cancelled_error(&err) {
@@ -989,13 +1000,18 @@ fn same_file(a: &Path, b: &Path) -> bool {
 }
 
 /// Deletes a placed unit's source files (the cue plus every bin of a set),
-/// never touching a file that is also the output.
+/// never touching a file that is also the output. A source that is already
+/// gone counts as deleted.
 async fn remove_sources(unit: &DatUnit, output: &Path) -> std::io::Result<()> {
     for path in unit_source_files(unit) {
         if same_file(&path, output) {
             continue;
         }
-        tokio::fs::remove_file(&path).await?;
+        match tokio::fs::remove_file(&path).await {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err),
+        }
     }
     Ok(())
 }
@@ -1148,7 +1164,7 @@ async fn write_playlists(
                     "could not plan playlists in {}: {err}",
                     dir.display()
                 ));
-                return Ok(playlists);
+                continue;
             }
         };
         for plan in plans {
@@ -1177,7 +1193,7 @@ async fn write_playlists(
                         "could not resolve playlist {}: {err}",
                         plan.m3u_path.display()
                     ));
-                    return Ok(playlists);
+                    continue;
                 }
             };
             // A playlist is only reported once it is on disk; a failed write
