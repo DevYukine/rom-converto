@@ -8,7 +8,7 @@ use crate::microsoft::xdvdfs::{
 };
 
 use super::error::{GodError, GodResult};
-use super::xex::{ExecutionId, parse_execution_id};
+use super::xex::{ExecutionId, parse_execution_id_at};
 
 /// Data is hashed and stored in 4 KiB blocks.
 pub const BLOCK_SIZE: u64 = 0x1000;
@@ -82,10 +82,11 @@ pub fn scan<R: Read + Seek>(reader: &mut R) -> GodResult<GodScan> {
     if expected > actual {
         return Err(GodError::TruncatedImage { expected, actual });
     }
+    let base = data_offset(&volume, sector);
 
-    reader.seek(SeekFrom::Start(data_offset(&volume, sector)))?;
-    let mut buf = vec![0u8; size as usize];
-    reader.read_exact(&mut buf)?;
+    let execution = parse_execution_id_at(reader, base, size as u64)?;
+    let title_name = crate::microsoft::xex::read_xex_info_at(reader, base, size as u64)
+        .and_then(|info| info.title_name);
 
     let block_count = data_size.div_ceil(BLOCK_SIZE);
     Ok(GodScan {
@@ -93,8 +94,8 @@ pub fn scan<R: Read + Seek>(reader: &mut R) -> GodResult<GodScan> {
         data_size,
         block_count,
         part_count: block_count.div_ceil(BLOCKS_PER_PART),
-        execution: parse_execution_id(&buf)?,
-        title_name: crate::microsoft::xex::read_xex_info(&buf).and_then(|info| info.title_name),
+        execution,
+        title_name,
     })
 }
 

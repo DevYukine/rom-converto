@@ -3,6 +3,7 @@
 //! container's title id, media id and disc numbering come from.
 
 use super::error::{GodError, GodResult};
+use crate::util::extent_end;
 
 /// Fixed XEX2 header: magic, module flags, code offset, reserved,
 /// certificate offset, optional header count. The optional header table
@@ -38,42 +39,66 @@ fn be_u32(buf: &[u8], offset: usize) -> GodResult<u32> {
 }
 
 /// Parses the execution id out of a `default.xex` image.
-pub fn parse_execution_id(buf: &[u8]) -> GodResult<ExecutionId> {
-    if buf.get(0..4) != Some(b"XEX2".as_slice()) {
+/// Reads only the XEX fixed header, optional-header table, and execution
+/// record from a seekable executable range.
+pub fn parse_execution_id_at<R: std::io::Read + std::io::Seek>(
+    reader: &mut R,
+    base: u64,
+    length: u64,
+) -> GodResult<ExecutionId> {
+    if FIXED_HEADER_SIZE as u64 > length {
+        return Err(GodError::InvalidXex {
+            reason: "truncated",
+        });
+    }
+    let mut fixed = [0u8; FIXED_HEADER_SIZE];
+    reader.seek(std::io::SeekFrom::Start(base))?;
+    reader.read_exact(&mut fixed)?;
+    if fixed.get(0..4) != Some(b"XEX2".as_slice()) {
         return Err(GodError::InvalidXex {
             reason: "bad XEX2 magic",
         });
     }
-
-    let header_count = be_u32(buf, 0x14)?;
-    let mut value = None;
-    for index in 0..header_count as usize {
-        let pair = FIXED_HEADER_SIZE + index * 8;
-        if be_u32(buf, pair)? == EXECUTION_ID_KEY {
-            value = Some(be_u32(buf, pair + 4)? as usize);
-            break;
+    let count = be_u32(&fixed, 0x14)? as u64;
+    let mut table_pos = 0u64;
+    let mut pair = [0u8; 8];
+    let mut record_offset = None;
+    while table_pos < count {
+        let relative = FIXED_HEADER_SIZE as u64 + table_pos * 8;
+        if extent_end(relative, 8, length).is_none() {
+            return Err(GodError::InvalidXex {
+                reason: "truncated",
+            });
         }
-    }
-    let offset = value.ok_or(GodError::InvalidXex {
-        reason: "no execution id optional header",
-    })?;
-
-    let record = buf
-        .get(offset..offset + EXECUTION_ID_SIZE)
-        .ok_or(GodError::InvalidXex {
+        let at = relative.checked_add(base).ok_or(GodError::InvalidXex {
             reason: "truncated",
         })?;
+        reader.seek(std::io::SeekFrom::Start(at))?;
+        reader.read_exact(&mut pair)?;
+        if u32::from_be_bytes(pair[0..4].try_into().expect("four bytes")) == EXECUTION_ID_KEY {
+            record_offset =
+                Some(u32::from_be_bytes(pair[4..8].try_into().expect("four bytes")) as u64);
+            break;
+        }
+        table_pos += 1;
+    }
+    let offset = record_offset.ok_or(GodError::InvalidXex {
+        reason: "no execution id optional header",
+    })?;
+    if extent_end(offset, EXECUTION_ID_SIZE as u64, length).is_none() {
+        return Err(GodError::InvalidXex {
+            reason: "truncated",
+        });
+    }
+    let mut record = [0u8; EXECUTION_ID_SIZE];
+    let at = base.checked_add(offset).ok_or(GodError::InvalidXex {
+        reason: "truncated",
+    })?;
+    reader.seek(std::io::SeekFrom::Start(at))?;
+    reader.read_exact(&mut record)?;
     Ok(ExecutionId {
-        media_id: u32::from_be_bytes(
-            record[0..4]
-                .try_into()
-                .expect("record[0..4] is always 4 bytes"),
-        ),
-        title_id: u32::from_be_bytes(
-            record[12..16]
-                .try_into()
-                .expect("record[12..16] is always 4 bytes"),
-        ),
+        media_id: u32::from_be_bytes(record[0..4].try_into().expect("four bytes")),
+        title_id: u32::from_be_bytes(record[12..16].try_into().expect("four bytes")),
         platform: record[16],
         executable_type: record[17],
         disc_number: record[18],
@@ -118,39 +143,49 @@ mod tests {
         }
     }
 
+    fn parse_at(bytes: &[u8]) -> GodResult<ExecutionId> {
+        let mut cursor = std::io::Cursor::new(bytes);
+        parse_execution_id_at(&mut cursor, 0, bytes.len() as u64)
+    }
+
     #[test]
     fn round_trips_every_execution_id_field() {
         let exec = sample();
-        assert_eq!(parse_execution_id(&synthetic_xex(&exec)).unwrap(), exec);
+        assert_eq!(parse_at(&synthetic_xex(&exec)).unwrap(), exec);
+    }
+
+    #[test]
+    fn seekable_execution_id_parser_reads_a_subrange() {
+        let expected = sample();
+        let mut source = synthetic_xex(&expected);
+        source.resize(8 * 1024 * 1024, 0);
+        let mut cursor = std::io::Cursor::new(source);
+        let length = cursor.get_ref().len() as u64;
+        assert_eq!(
+            parse_execution_id_at(&mut cursor, 0, length).unwrap(),
+            expected
+        );
+        assert!(cursor.position() < 1024);
     }
 
     #[test]
     fn rejects_a_buffer_without_the_magic() {
         let mut buf = synthetic_xex(&sample());
         buf[0..4].copy_from_slice(b"XEX1");
-        assert!(matches!(
-            parse_execution_id(&buf),
-            Err(GodError::InvalidXex { .. })
-        ));
+        assert!(matches!(parse_at(&buf), Err(GodError::InvalidXex { .. })));
     }
 
     #[test]
     fn rejects_a_buffer_truncated_before_the_execution_id() {
         let mut buf = synthetic_xex(&sample());
         buf.truncate(FIXED_HEADER_SIZE + 8 + 4);
-        assert!(matches!(
-            parse_execution_id(&buf),
-            Err(GodError::InvalidXex { .. })
-        ));
+        assert!(matches!(parse_at(&buf), Err(GodError::InvalidXex { .. })));
     }
 
     #[test]
     fn rejects_a_buffer_without_the_execution_id_header() {
         let mut buf = synthetic_xex(&sample());
         buf[0x18..0x1C].copy_from_slice(&0x0004_0007u32.to_be_bytes());
-        assert!(matches!(
-            parse_execution_id(&buf),
-            Err(GodError::InvalidXex { .. })
-        ));
+        assert!(matches!(parse_at(&buf), Err(GodError::InvalidXex { .. })));
     }
 }

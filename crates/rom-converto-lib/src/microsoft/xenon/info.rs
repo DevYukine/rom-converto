@@ -1,14 +1,14 @@
 //! Read a ZArchive's tree summary without decoding any block payload.
 
-use std::io::BufReader;
+use std::io::{self, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::microsoft::xex::read_xex_info;
-use crate::zar::ZarReader;
-
 use super::error::XenonResult;
+use crate::microsoft::xex::read_xex_info_at;
+use crate::util::positional_reader::seek_target;
+use crate::zar::{ZarReader, format::ZarError};
 
 /// Summary of a ZArchive's tree contents and root `default.xex` metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,8 +41,36 @@ pub struct ZarRootEntry {
     pub is_file: bool,
 }
 
-/// Reads a ZArchive's file/directory counts, sizes, and root
-/// `default.xex` metadata, without decoding any block payload.
+struct ZarFileRange<'a, R: Read + Seek> {
+    reader: &'a mut ZarReader<R>,
+    index: u32,
+    size: u64,
+    position: u64,
+}
+
+impl<R: Read + Seek> Read for ZarFileRange<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let len = (self.size.saturating_sub(self.position)).min(buf.len() as u64) as usize;
+        if len == 0 {
+            return Ok(0);
+        }
+        self.reader
+            .read_file_range(self.index, self.position, len as u64, &mut &mut buf[..len])
+            .map_err(|err: ZarError| io::Error::other(err.to_string()))?;
+        self.position += len as u64;
+        Ok(len)
+    }
+}
+
+impl<R: Read + Seek> Seek for ZarFileRange<'_, R> {
+    fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
+        self.position = seek_target(self.position, self.size, from)?;
+        Ok(self.position)
+    }
+}
+
+/// Reads a ZArchive's file/directory counts and sizes, and decodes only
+/// the root `default.xex` ranges needed for metadata.
 ///
 /// # Errors
 /// Returns an error if the archive's footer or structure is invalid.
@@ -99,9 +127,14 @@ fn read_default_xex<R: std::io::Read + std::io::Seek>(
     reader: &mut ZarReader<R>,
 ) -> Option<crate::microsoft::xex::XexInfo> {
     let index = reader.lookup("default.xex").ok()?;
-    let mut bytes = Vec::new();
-    reader.read_file(index, &mut bytes).ok()?;
-    read_xex_info(&bytes)
+    let size = reader.entry(index).ok()?.file_size();
+    let mut range = ZarFileRange {
+        reader,
+        index,
+        size,
+        position: 0,
+    };
+    read_xex_info_at(&mut range, 0, size)
 }
 
 #[cfg(test)]

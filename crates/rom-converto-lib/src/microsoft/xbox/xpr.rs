@@ -29,34 +29,68 @@ const FMT_DXT1: u32 = 0x0C;
 /// larger is a misread format dword rather than an icon.
 const MAX_DIMENSION: u32 = 512;
 
-/// Decodes an XPR0 texture into a PNG-backed [`Image`].
-///
-/// `None` for anything unrecognized: a bad magic, a pixel format other than
-/// DXT1 or swizzled A8R8G8B8, implausible dimensions, or a truncated payload.
-pub(super) fn decode_xpr0(bytes: &[u8]) -> Option<Image> {
-    if bytes.get(0..4)? != MAGIC {
+/// Everything [`decode_xpr0_parts`] needs from the 0x20-byte XPR0 header.
+pub(super) struct Xpr0Layout {
+    pub(super) data_offset: usize,
+    pub(super) pixels_len: usize,
+    pub(super) width: u32,
+    pub(super) height: u32,
+    pub(super) format: u32,
+}
+
+pub(super) fn xpr0_layout(header: &[u8], section_size: usize) -> Option<Xpr0Layout> {
+    if header.get(0..4)? != MAGIC {
         return None;
     }
-    let data_offset = read_u32(bytes, DATA_OFFSET_OFFSET)? as usize;
-    let format = read_u32(bytes, FORMAT_OFFSET)?;
-
-    let width = 1u32 << ((format & USIZE_MASK) >> USIZE_SHIFT);
-    let height = 1u32 << ((format & VSIZE_MASK) >> VSIZE_SHIFT);
-    if width > MAX_DIMENSION || height > MAX_DIMENSION {
+    let data_offset = read_u32(header, DATA_OFFSET_OFFSET)? as usize;
+    let format = read_u32(header, FORMAT_OFFSET)?;
+    let width = 1u32.checked_shl((format & USIZE_MASK) >> USIZE_SHIFT)?;
+    let height = 1u32.checked_shl((format & VSIZE_MASK) >> VSIZE_SHIFT)?;
+    if width > MAX_DIMENSION || height > MAX_DIMENSION || data_offset < 0x20 {
         return None;
     }
+    let pixels_len = match (format & FORMAT_MASK) >> FORMAT_SHIFT {
+        FMT_DXT1 => width
+            .div_ceil(4)
+            .checked_mul(height.div_ceil(4))?
+            .checked_mul(8)?,
+        FMT_A8R8G8B8 => width.checked_mul(height)?.checked_mul(4)?,
+        _ => return None,
+    } as usize;
+    let end = data_offset.checked_add(pixels_len)?;
+    if end > section_size {
+        return None;
+    }
+    Some(Xpr0Layout {
+        data_offset,
+        pixels_len,
+        width,
+        height,
+        format,
+    })
+}
 
-    let data = bytes.get(data_offset..)?;
-    let rgba = match (format & FORMAT_MASK) >> FORMAT_SHIFT {
-        FMT_DXT1 => decode_dxt1(data, width, height).ok()?,
-        FMT_A8R8G8B8 => decode_a8r8g8b8_swizzled(data, width, height).ok()?,
+pub(super) fn decode_xpr0_parts(layout: Xpr0Layout, pixels: &[u8]) -> Option<Image> {
+    let rgba = match (layout.format & FORMAT_MASK) >> FORMAT_SHIFT {
+        FMT_DXT1 => decode_dxt1(pixels, layout.width, layout.height).ok()?,
+        FMT_A8R8G8B8 => decode_a8r8g8b8_swizzled(pixels, layout.width, layout.height).ok()?,
         _ => return None,
     };
     Some(Image::new(
-        encode_png(&rgba, width, height).ok()?,
-        width,
-        height,
+        encode_png(&rgba, layout.width, layout.height).ok()?,
+        layout.width,
+        layout.height,
     ))
+}
+
+/// Decodes an XPR0 texture into a PNG-backed [`Image`].
+#[cfg(test)]
+fn decode_xpr0(bytes: &[u8]) -> Option<Image> {
+    let header = bytes.get(..0x20)?;
+    let layout = xpr0_layout(header, bytes.len())?;
+    let pixels =
+        bytes.get(layout.data_offset..layout.data_offset.checked_add(layout.pixels_len)?)?;
+    decode_xpr0_parts(layout, pixels)
 }
 
 #[cfg(test)]

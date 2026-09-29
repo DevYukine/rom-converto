@@ -2,17 +2,16 @@
 //! tables account for.
 
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
 use super::error::XboxResult;
-use super::xbe::parse_xbe;
 use crate::microsoft::xdvdfs::{
-    PartitionKind, XBOX_PROBE_BASES, XdvdfsVolume, data_offset, walk_dir_tables, walk_root_table,
+    PartitionKind, XBOX_PROBE_BASES, XdvdfsVolume, data_offset, walk_dir_tables,
 };
-use crate::microsoft::xex::read_xex_info;
+use crate::microsoft::xex::read_xex_info_at;
+use crate::util::extent_end;
 
 /// Summary of an XISO's probed partition layout and root title metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,36 +55,6 @@ pub struct XisoRootEntry {
     pub is_dir: bool,
 }
 
-/// Reads a named non-directory file from the volume's root directory,
-/// case-insensitively. Best effort: any miss or I/O error yields `None`.
-fn read_root_file<R: Read + Seek>(
-    reader: &mut R,
-    volume: &XdvdfsVolume,
-    name: &str,
-    image_size: u64,
-) -> Option<Vec<u8>> {
-    let mut found: Option<(u32, u32)> = None;
-    walk_root_table(reader, volume, |entry| {
-        if found.is_none() && !entry.is_directory() && entry.name_str().eq_ignore_ascii_case(name) {
-            found = Some((entry.start_sector, entry.size));
-        }
-        Ok(())
-    })
-    .ok()?;
-    let (sector, size) = found?;
-    // A corrupt or truncated image can claim a huge size; never allocate
-    // past the file itself.
-    if size as u64 > image_size {
-        return None;
-    }
-    reader
-        .seek(SeekFrom::Start(data_offset(volume, sector)))
-        .ok()?;
-    let mut buf = vec![0u8; size as usize];
-    reader.read_exact(&mut buf).ok()?;
-    Some(buf)
-}
-
 /// Probes an XISO and summarizes its partition layout, file/dir counts,
 /// and root `default.xbe`/`default.xex` metadata.
 ///
@@ -99,32 +68,50 @@ pub fn read_info(path: &Path) -> XboxResult<XisoInfo> {
     let mut file_count = 0;
     let mut dir_count = 0;
     let mut total_file_bytes = 0;
-    walk_dir_tables(&mut file, &volume, |_, entry| {
+    let mut root_entries = Vec::new();
+    let mut root_xbe = None;
+    let mut root_xex = None;
+    walk_dir_tables(&mut file, &volume, |parent, entry| {
         if entry.is_directory() {
             dir_count += 1;
         } else {
             file_count += 1;
             total_file_bytes += entry.size as u64;
         }
-        Ok(())
-    })?;
-
-    let xbe =
-        read_root_file(&mut file, &volume, "default.xbe", image_size).and_then(|b| parse_xbe(&b));
-    let xex = read_root_file(&mut file, &volume, "default.xex", image_size)
-        .and_then(|b| read_xex_info(&b));
-
-    let mut root_entries = Vec::new();
-    walk_root_table(&mut file, &volume, |entry| {
-        if root_entries.len() < MAX_ROOT_ENTRIES {
-            root_entries.push(XisoRootEntry {
-                name: entry.name_str().to_string(),
-                size: entry.size,
-                is_dir: entry.is_directory(),
-            });
+        if parent.is_empty() {
+            if root_entries.len() < MAX_ROOT_ENTRIES {
+                root_entries.push(XisoRootEntry {
+                    name: entry.name_str().to_string(),
+                    size: entry.size,
+                    is_dir: entry.is_directory(),
+                });
+            }
+            if !entry.is_directory()
+                && root_xbe.is_none()
+                && entry.name_str().eq_ignore_ascii_case("default.xbe")
+            {
+                root_xbe = Some((entry.start_sector, entry.size));
+            }
+            if !entry.is_directory()
+                && root_xex.is_none()
+                && entry.name_str().eq_ignore_ascii_case("default.xex")
+            {
+                root_xex = Some((entry.start_sector, entry.size));
+            }
         }
         Ok(())
     })?;
+
+    let xbe = root_xbe.and_then(|(sector, size)| {
+        let start = data_offset(&volume, sector);
+        extent_end(start, size as u64, image_size)?;
+        super::xbe::parse_xbe_at(&mut file, start, size as u64)
+    });
+    let xex = root_xex.and_then(|(sector, size)| {
+        let start = data_offset(&volume, sector);
+        extent_end(start, size as u64, image_size)?;
+        read_xex_info_at(&mut file, start, size as u64)
+    });
     root_entries.sort_by(|a, b| a.name.cmp(&b.name));
 
     Ok(XisoInfo {

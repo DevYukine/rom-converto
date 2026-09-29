@@ -105,8 +105,28 @@ struct DirTable {
     sector: u32,
 }
 
-/// Total bytes the create path will stream, so the caller can size a
-/// progress bar before the layout engine runs.
+/// Discovery result shared by progress reporting and image construction.
+pub(super) struct PreparedInput {
+    image: Option<File>,
+    nodes: Vec<Node>,
+    pub total_bytes: u64,
+}
+
+pub(super) fn prepare_input(input: &Path) -> XboxResult<PreparedInput> {
+    let (image, nodes) = if fs::metadata(input)?.is_dir() {
+        (None, scan_dir(input)?)
+    } else {
+        let (file, nodes) = scan_image(input)?;
+        (Some(file), nodes)
+    };
+    let total_bytes = nodes_total(&nodes);
+    Ok(PreparedInput {
+        image,
+        nodes,
+        total_bytes,
+    })
+}
+
 pub fn input_total_bytes(input: &Path) -> XboxResult<u64> {
     if fs::metadata(input)?.is_dir() {
         Ok(dir_bytes(input)?)
@@ -131,19 +151,24 @@ fn dir_bytes(dir: &Path) -> io::Result<u64> {
     Ok(total)
 }
 
+fn nodes_total(nodes: &[Node]) -> u64 {
+    nodes
+        .iter()
+        .map(|node| match &node.payload {
+            Payload::File { size, .. } => *size,
+            Payload::Dir(table) => nodes_total(&table.nodes),
+        })
+        .sum()
+}
+
 pub(super) fn create_blocking(
-    input: &Path,
+    prepared: PreparedInput,
     output: &Path,
     options: XisoCreateOptions,
     bytes_done: Arc<AtomicU64>,
     cancel: &CancelToken,
 ) -> XboxResult<()> {
-    let (image, nodes) = if fs::metadata(input)?.is_dir() {
-        (None, scan_dir(input)?)
-    } else {
-        let (file, nodes) = scan_image(input)?;
-        (Some(file), nodes)
-    };
+    let PreparedInput { image, nodes, .. } = prepared;
     let mut root = DirTable {
         nodes,
         ..DirTable::default()

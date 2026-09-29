@@ -49,20 +49,20 @@ pub async fn convert_to_xiso(
     progress: &dyn ProgressReporter,
     cancel: CancelToken,
 ) -> XboxResult<()> {
-    let total_bytes = {
+    let prepared = {
         let input = input.to_path_buf();
-        task::spawn_blocking(move || create::input_total_bytes(&input)).await??
+        task::spawn_blocking(move || create::prepare_input(&input)).await??
     };
+    let total_bytes = prepared.total_bytes;
     progress.start(total_bytes, "Building XISO");
 
-    let input_owned = input.to_path_buf();
     run_scratch_write(
         output,
         true,
         progress,
         &cancel,
         move |write_path, bytes_done, cancel| {
-            create::create_blocking(&input_owned, &write_path, options, bytes_done, &cancel)
+            create::create_blocking(prepared, &write_path, options, bytes_done, &cancel)
         },
     )
     .await?;

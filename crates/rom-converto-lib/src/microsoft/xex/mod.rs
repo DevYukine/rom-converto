@@ -7,11 +7,11 @@
 mod basefile;
 mod xdbf;
 
-use std::collections::HashMap;
-
 use serde::{Deserialize, Serialize};
 
+use super::read_extent_at as read_xex_range;
 use crate::info::Image;
+use crate::util::extent_end;
 
 const MAGIC: &[u8; 4] = b"XEX2";
 const HEADER_SIZE_OFFSET: usize = 0x08;
@@ -83,20 +83,14 @@ pub struct XexInfo {
     pub icon: Option<Image>,
 }
 
-enum OptHeader<'a> {
-    /// Inline value; nothing this module reads uses the inline encoding.
-    Value,
-    Data(&'a [u8]),
-}
-
-struct ExecutionInfo {
-    media_id: u32,
-    version: u32,
-    base_version: u32,
-    title_id: u32,
-    platform: u8,
-    disc_number: u8,
-    disc_count: u8,
+pub(crate) struct ExecutionInfo {
+    pub media_id: u32,
+    pub version: u32,
+    pub base_version: u32,
+    pub title_id: u32,
+    pub platform: u8,
+    pub disc_number: u8,
+    pub disc_count: u8,
 }
 
 pub(crate) struct SecurityInfo {
@@ -114,8 +108,11 @@ pub(crate) struct FileFormatInfo {
 
 pub(crate) enum Compression {
     None,
-    /// `(data_size, zero_size)` pairs.
-    Basic(Vec<(u32, u32)>),
+    /// Seekable descriptor table for the bounded metadata path.
+    BasicAt {
+        table_offset: u64,
+        count: u64,
+    },
     Normal {
         window_size: u32,
         first_block_size: u32,
@@ -124,7 +121,6 @@ pub(crate) enum Compression {
 }
 
 struct ResourceEntry {
-    name: String,
     address: u32,
     size: u32,
 }
@@ -172,42 +168,6 @@ fn version_string(version: u32) -> String {
     )
 }
 
-/// The low byte of the key says where the payload lives: `0x01` means the
-/// table slot itself is the value, `0xFF` means it points at a self-sized
-/// block, anything else means a fixed `low_byte * 4` bytes at that offset.
-fn resolve_opt_header(bytes: &[u8], key: u32, value: u32) -> Option<OptHeader<'_>> {
-    let at = value as usize;
-    let size = match (key & 0xFF) as u8 {
-        0x01 => return Some(OptHeader::Value),
-        0xFF => read_u32(bytes, at)? as usize,
-        low => low as usize * 4,
-    };
-    bytes.get(at..at.checked_add(size)?).map(OptHeader::Data)
-}
-
-fn opt_headers(bytes: &[u8]) -> HashMap<u32, OptHeader<'_>> {
-    let count = read_u32(bytes, HEADER_COUNT_OFFSET).unwrap_or(0) as usize;
-    let count = count.min(bytes.len() / OPT_HEADER_ENTRY);
-    let mut headers = HashMap::new();
-    for i in 0..count {
-        let at = OPT_HEADER_TABLE + i * OPT_HEADER_ENTRY;
-        let (Some(key), Some(value)) = (read_u32(bytes, at), read_u32(bytes, at + 4)) else {
-            break;
-        };
-        if let Some(header) = resolve_opt_header(bytes, key, value) {
-            headers.insert(key, header);
-        }
-    }
-    headers
-}
-
-fn opt_data<'a>(headers: &HashMap<u32, OptHeader<'a>>, key: u32) -> Option<&'a [u8]> {
-    match headers.get(&key)? {
-        OptHeader::Data(data) => Some(data),
-        OptHeader::Value => None,
-    }
-}
-
 fn parse_execution_info(data: &[u8]) -> Option<ExecutionInfo> {
     Some(ExecutionInfo {
         media_id: read_u32(data, EXEC_MEDIA_ID)?,
@@ -218,15 +178,6 @@ fn parse_execution_info(data: &[u8]) -> Option<ExecutionInfo> {
         disc_number: *data.get(EXEC_DISC_NUMBER)?,
         disc_count: *data.get(EXEC_DISC_COUNT)?,
     })
-}
-
-fn parse_original_pe_name(data: &[u8]) -> Option<String> {
-    let name = data.get(4..)?;
-    let end = name.iter().position(|&b| b == 0).unwrap_or(name.len());
-    if end == 0 {
-        return None;
-    }
-    Some(String::from_utf8_lossy(&name[..end]).into_owned())
 }
 
 fn parse_security_info(bytes: &[u8], offset: usize) -> Option<SecurityInfo> {
@@ -240,90 +191,95 @@ fn parse_security_info(bytes: &[u8], offset: usize) -> Option<SecurityInfo> {
     })
 }
 
-fn parse_file_format_info(data: &[u8]) -> Option<FileFormatInfo> {
-    let info_size = read_u32(data, 0)? as usize;
-    let encryption_type = read_u16(data, 4)?;
-    let compression = match read_u16(data, 6)? {
-        COMPRESSION_NONE => Compression::None,
-        COMPRESSION_BASIC => {
-            let count = info_size.checked_sub(8)? / 8;
-            let mut blocks = Vec::new();
-            for i in 0..count {
-                let at = 8 + i * 8;
-                blocks.push((read_u32(data, at)?, read_u32(data, at + 4)?));
-            }
-            Compression::Basic(blocks)
-        }
-        COMPRESSION_NORMAL => Compression::Normal {
-            window_size: read_u32(data, 8)?,
-            first_block_size: read_u32(data, 12)?,
-            first_block_hash: data.get(16..36)?.try_into().ok()?,
+fn valid_opt_header<R: std::io::Read + std::io::Seek>(
+    reader: &mut R,
+    base: u64,
+    length: u64,
+    key: u32,
+    offset: u64,
+) -> bool {
+    let size = match key & 0xFF {
+        0x01 => return true,
+        0xFF => match read_xex_range(reader, base, length, offset, 4)
+            .and_then(|bytes| read_u32(&bytes, 0))
+        {
+            Some(size) => size as u64,
+            None => return false,
         },
-        _ => return None,
+        fixed => fixed as u64 * 4,
     };
-    Some(FileFormatInfo {
-        encryption_type,
-        compression,
-    })
+    extent_end(offset, size, length).is_some()
 }
 
-fn parse_resource_info(data: &[u8]) -> Vec<ResourceEntry> {
-    let count = data.len().saturating_sub(4) / RESOURCE_ENTRY;
-    (0..count)
-        .filter_map(|i| {
-            let at = 4 + i * RESOURCE_ENTRY;
-            let name = data.get(at..at + RESOURCE_NAME_LEN)?;
-            Some(ResourceEntry {
-                name: String::from_utf8_lossy(name)
-                    .trim_matches(|c| c == ' ' || c == '\0')
-                    .to_string(),
-                address: read_u32(data, at + 8)?,
-                size: read_u32(data, at + 12)?,
-            })
-        })
-        .collect()
-}
-
-/// Best effort: any failure here just means no title name or icon.
-fn read_xdbf_meta(
-    bytes: &[u8],
-    header_size: usize,
-    security: &SecurityInfo,
-    headers: &HashMap<u32, OptHeader<'_>>,
-    title_id: u32,
-) -> Option<xdbf::XdbfMeta> {
-    let fmt = parse_file_format_info(opt_data(headers, KEY_FILE_FORMAT_INFO)?)?;
-    let pe_data = bytes.get(header_size..)?;
-    let basefile = basefile::decrypt_and_decompress(pe_data, &fmt, security)?;
-
-    let wanted = format!("{title_id:08X}");
-    let entry = parse_resource_info(opt_data(headers, KEY_RESOURCE_INFO)?)
-        .into_iter()
-        .find(|entry| entry.name == wanted)?;
-    let start = entry.address.checked_sub(security.load_address)? as usize;
-    let end = start.checked_add(entry.size as usize)?.min(basefile.len());
-    Some(xdbf::parse_xdbf(basefile.get(start..end)?))
-}
-
-/// Parses a `default.xex`'s title, version, region, and icon metadata.
-/// Returns `None` if `bytes` is not a valid XEX2 image.
-pub fn read_xex_info(bytes: &[u8]) -> Option<XexInfo> {
-    if bytes.get(0..4)? != MAGIC {
+/// Parses XEX metadata using the fixed header and individually validated
+/// optional-header/resource ranges.
+pub(crate) fn read_xex_info_at<R: std::io::Read + std::io::Seek>(
+    reader: &mut R,
+    base: u64,
+    length: u64,
+) -> Option<XexInfo> {
+    let fixed = read_xex_range(reader, base, length, 0, OPT_HEADER_TABLE)?;
+    if fixed.get(0..4)? != MAGIC {
         return None;
     }
-    let header_size = read_u32(bytes, HEADER_SIZE_OFFSET)? as usize;
-    let security = parse_security_info(bytes, read_u32(bytes, SECURITY_OFFSET_OFFSET)? as usize)?;
-    let headers = opt_headers(bytes);
+    let header_size = read_u32(&fixed, HEADER_SIZE_OFFSET)? as u64;
 
-    let exec = opt_data(&headers, KEY_EXECUTION_INFO).and_then(parse_execution_info);
+    let declared_count = read_u32(&fixed, HEADER_COUNT_OFFSET)? as u64;
+    let count = declared_count.min((length - OPT_HEADER_TABLE as u64) / OPT_HEADER_ENTRY as u64);
+    let mut execution_offset = None;
+    let mut format_offset = None;
+    let mut resource_offset = None;
+    let mut name_offset = None;
+    let mut index = 0u64;
+    while index < count {
+        let batch_count = (count - index).min(512);
+        let at = OPT_HEADER_TABLE as u64 + index * OPT_HEADER_ENTRY as u64;
+        let pairs = read_xex_range(
+            reader,
+            base,
+            length,
+            at,
+            (batch_count * OPT_HEADER_ENTRY as u64) as usize,
+        )?;
+        for pair in pairs.chunks_exact(OPT_HEADER_ENTRY) {
+            let key = read_u32(pair, 0)?;
+            let value = read_u32(pair, 4)? as u64;
+            match key {
+                KEY_EXECUTION_INFO if valid_opt_header(reader, base, length, key, value) => {
+                    execution_offset = Some(value)
+                }
+                KEY_FILE_FORMAT_INFO if valid_opt_header(reader, base, length, key, value) => {
+                    format_offset = Some(value)
+                }
+                KEY_RESOURCE_INFO if valid_opt_header(reader, base, length, key, value) => {
+                    resource_offset = Some(value)
+                }
+                KEY_ORIGINAL_PE_NAME if valid_opt_header(reader, base, length, key, value) => {
+                    name_offset = Some(value)
+                }
+                _ => {}
+            }
+        }
+        index += batch_count;
+    }
+
+    let exec = execution_offset.and_then(|offset| {
+        read_xex_range(reader, base, length, offset, 20)
+            .and_then(|bytes| parse_execution_info(&bytes))
+    });
+    let security_offset = read_u32(&fixed, SECURITY_OFFSET_OFFSET)? as u64;
+    let security_bytes = read_xex_range(reader, base, length, security_offset, SEC_TAIL)?;
+    let security = parse_security_info(&security_bytes, 0)?;
     let title_id = exec.as_ref().map_or(0, |e| e.title_id);
     let version = exec.as_ref().map_or(0, |e| e.version);
     let base_version = exec.as_ref().map_or(0, |e| e.base_version);
+    let original_pe_name =
+        name_offset.and_then(|offset| read_xex_original_name(reader, base, length, offset));
+    let fmt = format_offset.and_then(|offset| read_xex_file_format(reader, base, length, offset));
+    let resource = resource_offset
+        .and_then(|offset| find_title_resource(reader, base, length, offset, title_id));
 
-    let meta =
-        read_xdbf_meta(bytes, header_size, &security, &headers, title_id).unwrap_or_default();
-
-    Some(XexInfo {
+    let mut info = XexInfo {
         title_id,
         title_id_hex: format!("{title_id:08X}"),
         media_id: exec.as_ref().map_or(0, |e| e.media_id),
@@ -334,13 +290,159 @@ pub fn read_xex_info(bytes: &[u8]) -> Option<XexInfo> {
         disc_number: exec.as_ref().map_or(0, |e| e.disc_number),
         disc_count: exec.as_ref().map_or(0, |e| e.disc_count),
         platform: exec.as_ref().map_or(0, |e| e.platform),
-        original_pe_name: opt_data(&headers, KEY_ORIGINAL_PE_NAME).and_then(parse_original_pe_name),
+        original_pe_name,
         region: security.region,
         region_names: flag_names(security.region, REGION_FLAGS),
         allowed_media: security.allowed_media,
-        title_name: meta.title_name,
-        icon: meta.icon,
+        title_name: None,
+        icon: None,
+    };
+    if let (Some(fmt), Some(resource)) = (fmt, resource) {
+        let Some(start) = resource
+            .address
+            .checked_sub(security.load_address)
+            .map(u64::from)
+        else {
+            return Some(info);
+        };
+        let end = start
+            .checked_add(resource.size as u64)?
+            .min(security.image_size as u64);
+        if start < end
+            && let Some(stored_len) = length.checked_sub(header_size)
+            && let Some(source_base) = base.checked_add(header_size)
+            && let Some(source) =
+                basefile::ResourceSource::new(source_base, stored_len, &fmt, &security)
+        {
+            let mut resource_reader = basefile::ResourceReader::new();
+            let meta = xdbf::parse_xdbf_ranges(end - start, |offset, size| {
+                let resource_offset = start.checked_add(offset)?;
+                resource_reader.read_resource_at(
+                    reader,
+                    &source,
+                    &fmt,
+                    &security,
+                    resource_offset,
+                    size,
+                )
+            });
+            info.title_name = meta.title_name;
+            info.icon = meta.icon;
+        }
+    }
+    Some(info)
+}
+
+fn read_xex_file_format<R: std::io::Read + std::io::Seek>(
+    reader: &mut R,
+    base: u64,
+    extent: u64,
+    offset: u64,
+) -> Option<FileFormatInfo> {
+    let fixed = read_xex_range(reader, base, extent, offset, 8)?;
+    let info_size = read_u32(&fixed, 0)? as u64;
+    if info_size < 8 || extent_end(offset, info_size, extent).is_none() {
+        return None;
+    }
+    let encryption_type = read_u16(&fixed, 4)?;
+    let compression = match read_u16(&fixed, 6)? {
+        COMPRESSION_NONE => Compression::None,
+        COMPRESSION_NORMAL => {
+            if info_size < 36 {
+                return None;
+            }
+            let data = read_xex_range(reader, base, extent, offset, 36)?;
+            Compression::Normal {
+                window_size: read_u32(&data, 8)?,
+                first_block_size: read_u32(&data, 12)?,
+                first_block_hash: data.get(16..36)?.try_into().ok()?,
+            }
+        }
+        COMPRESSION_BASIC => Compression::BasicAt {
+            table_offset: base.checked_add(offset)?.checked_add(8)?,
+            count: info_size.checked_sub(8)? / 8,
+        },
+        _ => return None,
+    };
+    Some(FileFormatInfo {
+        encryption_type,
+        compression,
     })
+}
+
+fn read_xex_original_name<R: std::io::Read + std::io::Seek>(
+    reader: &mut R,
+    base: u64,
+    extent: u64,
+    offset: u64,
+) -> Option<String> {
+    let size = read_xex_range(reader, base, extent, offset, 4)
+        .and_then(|bytes| read_u32(&bytes, 0))? as u64;
+    if size <= 4 || extent_end(offset, size, extent).is_none() {
+        return None;
+    }
+    let mut at = 4u64;
+    let mut name = Vec::new();
+    while at < size {
+        let length = (size - at).min(64 * 1024) as usize;
+        let bytes = read_xex_range(reader, base, extent, offset.checked_add(at)?, length)?;
+        let end = bytes
+            .iter()
+            .position(|&byte| byte == 0)
+            .unwrap_or(bytes.len());
+        name.extend_from_slice(&bytes[..end]);
+        if end < bytes.len() {
+            break;
+        }
+        at += length as u64;
+    }
+    if name.is_empty() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&name).into_owned())
+}
+
+fn find_title_resource<R: std::io::Read + std::io::Seek>(
+    reader: &mut R,
+    base: u64,
+    extent: u64,
+    offset: u64,
+    title_id: u32,
+) -> Option<ResourceEntry> {
+    let size = read_xex_range(reader, base, extent, offset, 4)
+        .and_then(|bytes| read_u32(&bytes, 0))? as u64;
+    if size < 4 || extent_end(offset, size, extent).is_none() {
+        return None;
+    }
+    let count = (size - 4) / RESOURCE_ENTRY as u64;
+    let wanted = format!("{title_id:08X}");
+    for index in 0..count {
+        let entry_offset = offset
+            .checked_add(4)?
+            .checked_add(index.checked_mul(RESOURCE_ENTRY as u64)?)?;
+        let entry = read_xex_range(reader, base, extent, entry_offset, RESOURCE_ENTRY)?;
+        let raw_name = entry.get(..RESOURCE_NAME_LEN)?;
+        let start = raw_name
+            .iter()
+            .position(|&byte| byte != b' ' && byte != 0)
+            .unwrap_or(raw_name.len());
+        let end = raw_name
+            .iter()
+            .rposition(|&byte| byte != b' ' && byte != 0)
+            .map_or(start, |index| index + 1);
+        if raw_name.get(start..end)? == wanted.as_bytes() {
+            return Some(ResourceEntry {
+                address: read_u32(&entry, 8)?,
+                size: read_u32(&entry, 12)?,
+            });
+        }
+    }
+    None
+}
+/// Test convenience: parses XEX metadata from an in-memory image.
+#[cfg(test)]
+pub fn read_xex_info(bytes: &[u8]) -> Option<XexInfo> {
+    read_xex_info_at(&mut std::io::Cursor::new(bytes), 0, bytes.len() as u64)
 }
 
 #[cfg(test)]
@@ -368,39 +470,6 @@ mod tests {
 
     fn put16(buf: &mut [u8], at: usize, value: u16) {
         buf[at..at + 2].copy_from_slice(&value.to_be_bytes());
-    }
-
-    #[test]
-    fn opt_table_walks_all_size_encodings() {
-        let mut buf = vec![0u8; 0x200];
-        put32(&mut buf, HEADER_COUNT_OFFSET, 3);
-        // inline value
-        put32(&mut buf, OPT_HEADER_TABLE, 0x0001_0001);
-        put32(&mut buf, OPT_HEADER_TABLE + 4, 0xDEAD_BEEF);
-        // self-sized block at 0x100
-        put32(&mut buf, OPT_HEADER_TABLE + 8, 0x0000_02FF);
-        put32(&mut buf, OPT_HEADER_TABLE + 12, 0x100);
-        put32(&mut buf, 0x100, 0x14);
-        // fixed 6 * 4 bytes at 0x180
-        put32(&mut buf, OPT_HEADER_TABLE + 16, KEY_EXECUTION_INFO);
-        put32(&mut buf, OPT_HEADER_TABLE + 20, 0x180);
-
-        let headers = opt_headers(&buf);
-        assert!(matches!(headers.get(&0x0001_0001), Some(OptHeader::Value)));
-        assert_eq!(opt_data(&headers, 0x0000_02FF).map(<[u8]>::len), Some(0x14));
-        assert_eq!(
-            opt_data(&headers, KEY_EXECUTION_INFO).map(<[u8]>::len),
-            Some(0x18)
-        );
-    }
-
-    #[test]
-    fn opt_header_out_of_bounds_is_dropped() {
-        let mut buf = vec![0u8; 0x40];
-        put32(&mut buf, HEADER_COUNT_OFFSET, 1);
-        put32(&mut buf, OPT_HEADER_TABLE, KEY_EXECUTION_INFO);
-        put32(&mut buf, OPT_HEADER_TABLE + 4, 0x3000);
-        assert!(opt_headers(&buf).is_empty());
     }
 
     #[test]
@@ -459,33 +528,6 @@ mod tests {
             flag_names(0xFFFF_FFFF, REGION_FLAGS).len(),
             REGION_FLAGS.len()
         );
-    }
-
-    #[test]
-    fn original_pe_name_stops_at_null() {
-        let mut data = vec![0u8; 4];
-        put32(&mut data, 0, 0x18);
-        data.extend_from_slice(b"default.xex\0trailing");
-        assert_eq!(
-            parse_original_pe_name(&data).as_deref(),
-            Some("default.xex")
-        );
-        assert!(parse_original_pe_name(&[0, 0, 0, 4]).is_none());
-    }
-
-    #[test]
-    fn resource_entry_name_is_trimmed() {
-        let mut data = vec![0u8; 4 + RESOURCE_ENTRY];
-        put32(&mut data, 0, 4 + RESOURCE_ENTRY as u32);
-        data[4..12].copy_from_slice(b"45410A\0\0");
-        put32(&mut data, 12, LOAD_ADDRESS + XDBF_AT);
-        put32(&mut data, 16, 0x200);
-
-        let entries = parse_resource_info(&data);
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].name, "45410A");
-        assert_eq!(entries[0].address, LOAD_ADDRESS + XDBF_AT);
-        assert_eq!(entries[0].size, 0x200);
     }
 
     /// ENCRYPTION_NORMAL + COMPRESSION_NONE, basefile carrying an XDBF at
@@ -580,6 +622,21 @@ mod tests {
     }
 
     #[test]
+    fn seekable_xex_reader_preserves_encrypted_title_and_icon() {
+        let png = xdbf::tests::build_png(64, 64);
+        let bytes = build_xex("Range Title", &png, false);
+        let expected = read_xex_info(&bytes).expect("slice parser reads fixture");
+        let mut cursor = std::io::Cursor::new(bytes.clone());
+        let actual = read_xex_info_at(&mut cursor, 0, bytes.len() as u64)
+            .expect("seekable parser reads fixture");
+        assert_eq!(actual.title_name, expected.title_name);
+        assert_eq!(
+            actual.icon.expect("title icon exists").png_bytes,
+            expected.icon.expect("slice icon exists").png_bytes
+        );
+    }
+
+    #[test]
     fn read_xex_info_keeps_plaintext_when_key_is_wrong() {
         let png = xdbf::tests::build_png(64, 64);
         let info = read_xex_info(&build_xex("Test Title", &png, true)).expect("valid xex");
@@ -595,5 +652,156 @@ mod tests {
     fn read_xex_info_rejects_bad_magic() {
         assert!(read_xex_info(b"XEX1").is_none());
         assert!(read_xex_info(&[]).is_none());
+    }
+    #[test]
+    fn large_seekable_xex_reads_only_required_stored_data_and_preserves_icon() {
+        use std::io::{Read, Seek, SeekFrom};
+
+        struct Sparse {
+            data: Vec<u8>,
+            position: u64,
+            length: u64,
+            bytes_read: u64,
+        }
+        impl Read for Sparse {
+            fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+                let count = out.len().min((self.length - self.position) as usize);
+                if count == 0 {
+                    return Ok(0);
+                }
+                let start = self.position as usize;
+                let prefix_end = (start + count).min(self.data.len());
+                if start < self.data.len() {
+                    let prefix_len = prefix_end - start;
+                    out[..prefix_len].copy_from_slice(&self.data[start..prefix_end]);
+                    out[prefix_len..count].fill(0);
+                } else {
+                    out[..count].fill(0);
+                }
+                self.position += count as u64;
+                self.bytes_read += count as u64;
+                Ok(count)
+            }
+        }
+        impl Seek for Sparse {
+            fn seek(&mut self, from: SeekFrom) -> std::io::Result<u64> {
+                let next = match from {
+                    SeekFrom::Start(pos) => pos as i128,
+                    SeekFrom::Current(delta) => self.position as i128 + delta as i128,
+                    SeekFrom::End(delta) => self.length as i128 + delta as i128,
+                };
+                if next < 0 || next > self.length as i128 {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "seek outside sparse file",
+                    ));
+                }
+                self.position = next as u64;
+                Ok(self.position)
+            }
+        }
+
+        let png = xdbf::tests::build_png(64, 64);
+        let mut fixture = build_xex("Range Header", &png, false);
+        let expected = read_xex_info(&fixture).expect("fixture parses");
+        put32(
+            &mut fixture,
+            SECURITY_OFFSET + SEC_IMAGE_SIZE,
+            256 * 1024 * 1024 + 1,
+        );
+        let stored_len = fixture.len() as u64;
+        let length = (256 * 1024 * 1024 + 1) as u64;
+        let mut source = Sparse {
+            data: fixture,
+            position: 0,
+            length,
+            bytes_read: 0,
+        };
+        let actual = read_xex_info_at(&mut source, 0, length).expect("large XEX parses");
+        assert_eq!(actual.title_id, expected.title_id);
+        assert_eq!(actual.title_name, expected.title_name);
+        assert_eq!(
+            actual.icon.expect("icon is preserved").png_bytes,
+            expected.icon.expect("reference icon exists").png_bytes
+        );
+        assert!(source.bytes_read <= stored_len + 12);
+    }
+
+    #[test]
+    fn seekable_xex_does_not_materialize_declared_header_extent() {
+        use std::io::{Read, Seek, SeekFrom};
+
+        struct Sparse {
+            data: Vec<u8>,
+            length: u64,
+            position: u64,
+            bytes_read: u64,
+        }
+        impl Read for Sparse {
+            fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+                let count = out.len().min((self.length - self.position) as usize);
+                if count == 0 {
+                    return Ok(0);
+                }
+                let start = self.position as usize;
+                let copied = count.min(self.data.len().saturating_sub(start));
+                out[..copied].copy_from_slice(&self.data[start..start + copied]);
+                out[copied..count].fill(0);
+                self.position += count as u64;
+                self.bytes_read += count as u64;
+                Ok(count)
+            }
+        }
+        impl Seek for Sparse {
+            fn seek(&mut self, from: SeekFrom) -> std::io::Result<u64> {
+                let next = match from {
+                    SeekFrom::Start(position) => position as i128,
+                    SeekFrom::Current(offset) => self.position as i128 + offset as i128,
+                    SeekFrom::End(offset) => self.length as i128 + offset as i128,
+                };
+                if next < 0 || next > self.length as i128 {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "bad seek",
+                    ));
+                }
+                self.position = next as u64;
+                Ok(self.position)
+            }
+        }
+
+        let mut bytes = build_xex("Header Range", &xdbf::tests::build_png(1, 1), false);
+        let expected = read_xex_info(&bytes).unwrap();
+        let count = read_u32(&bytes, HEADER_COUNT_OFFSET).unwrap() as usize;
+        for index in 0..count {
+            let at = OPT_HEADER_TABLE + index * OPT_HEADER_ENTRY;
+            let key = read_u32(&bytes, at).unwrap();
+            if key == KEY_FILE_FORMAT_INFO || key == KEY_RESOURCE_INFO {
+                put32(&mut bytes, at, 0x0000_7777);
+            }
+        }
+        let header_size = 32 * 1024 * 1024u32;
+        put32(&mut bytes, HEADER_SIZE_OFFSET, header_size);
+        let mut source = Sparse {
+            data: bytes,
+            length: header_size as u64 + 4096,
+            position: 0,
+            bytes_read: 0,
+        };
+        let length = source.length;
+        let actual = read_xex_info_at(&mut source, 0, length).unwrap();
+        assert_eq!(actual.original_pe_name, expected.original_pe_name);
+        assert_eq!(actual.title_id, expected.title_id);
+        assert!(source.bytes_read < 4096);
+    }
+    #[test]
+    fn plaintext_metadata_survives_header_extent_mismatches() {
+        let mut bytes = build_xex("Header Bounds", &xdbf::tests::build_png(1, 1), false);
+        for header_size in [0x10, 0x40, bytes.len() as u32 + 1] {
+            put32(&mut bytes, HEADER_SIZE_OFFSET, header_size);
+            let info = read_xex_info(&bytes).expect("plaintext XEX metadata remains available");
+            assert_eq!(info.title_id, TITLE_ID);
+            assert_eq!(info.original_pe_name.as_deref(), Some("default.xex"));
+        }
     }
 }
