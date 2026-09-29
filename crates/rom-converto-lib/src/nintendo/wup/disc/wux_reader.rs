@@ -5,10 +5,11 @@
 //! ```text
 //! 0x00  u32 LE   magic0          == 0x30585557 ("WUX0")
 //! 0x04  u32 LE   magic1          == 0x1099D02E
-//! 0x08  u32 LE   sectorSize      commonly 0x8000
-//! 0x0C  u32 LE   flags           zero in all known files
+//! 0x08  u32 LE   sectorSize      must be 0x8000
+//! 0x0C  ..0x10   zero padding
 //! 0x10  u64 LE   uncompressedSize
-//! 0x18  ..0x20   padding
+//! 0x18  u32 LE   flags           zero in all known files
+//! 0x1C  ..0x20   zero padding
 //! 0x20  u32 LE * ceil(uncompressedSize/sectorSize)  index table
 //!       (each entry is the physical sector index in the pool below)
 //! <align up to sectorSize> .. end of file: physical sector pool
@@ -22,12 +23,12 @@ use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
-use crate::nintendo::wup::disc::sector_stream::DiscSectorSource;
+use crate::nintendo::wup::disc::sector_stream::{DiscSectorSource, SECTOR_SIZE};
 use crate::nintendo::wup::error::{WupError, WupResult};
 
-const WUX_MAGIC_0: u32 = 0x3058_5557; // "WUX0" little-endian on disk
-const WUX_MAGIC_1: u32 = 0x1099_D02E;
-const WUX_HEADER_SIZE: u64 = 0x20;
+pub(crate) const WUX_MAGIC_0: u32 = 0x3058_5557; // "WUX0" little-endian on disk
+pub(crate) const WUX_MAGIC_1: u32 = 0x1099_D02E;
+pub(crate) const WUX_HEADER_SIZE: u64 = 0x20;
 
 /// Tiny LRU of recently-decoded physical sectors. Workloads that walk
 /// the partition TOC and FSTs hit a small working set, so even two
@@ -40,7 +41,6 @@ const CACHE_CAPACITY: usize = 4;
 pub struct WuxReader {
     file: BufReader<File>,
     logical_sector_count: u64,
-    sector_size: u64,
     index_table: Vec<u32>,
     pool_offset: u64,
     cache: Vec<CacheEntry>,
@@ -76,27 +76,46 @@ impl WuxReader {
 
         let sector_size =
             u32::from_le_bytes(header[8..12].try_into().expect("4-byte slice")) as u64;
-        // flags at [12..16] is ignored.
         let uncompressed_size =
             u64::from_le_bytes(header[16..24].try_into().expect("8-byte slice"));
-        // header[24..32] is padding.
+        // flags at [24..28] and the [12..16] / [28..32] padding are zero
+        // in all known files and ignored here.
 
-        if sector_size == 0 || sector_size > 0x1000_0000 {
+        // sectorSize must be 0x8000: callers pass SECTOR_SIZE buffers,
+        // and any other sector size has no supported reader.
+        if sector_size != SECTOR_SIZE as u64 {
             return Err(WupError::UnsupportedDiscFormat(path.as_ref().to_path_buf()));
         }
-        if !uncompressed_size.is_multiple_of(sector_size) {
+        if !uncompressed_size.is_multiple_of(SECTOR_SIZE as u64) {
             return Err(WupError::DiscTruncated {
-                expected: uncompressed_size.next_multiple_of(sector_size),
+                expected: uncompressed_size.next_multiple_of(SECTOR_SIZE as u64),
                 actual: uncompressed_size,
             });
         }
 
-        let logical_sector_count = uncompressed_size / sector_size;
+        let logical_sector_count = uncompressed_size / SECTOR_SIZE as u64;
 
-        // Read the index table.
-        let index_bytes_len = logical_sector_count
+        // Bounds check in checked u64 math before allocating a hostile
+        // header's index table.
+        let index_table_end = logical_sector_count
             .checked_mul(4)
-            .ok_or(WupError::InvalidFst)? as usize;
+            .and_then(|bytes| bytes.checked_add(WUX_HEADER_SIZE))
+            .ok_or(WupError::DiscTruncated {
+                expected: u64::MAX,
+                actual: file_len,
+            })?;
+        if index_table_end > file_len {
+            return Err(WupError::DiscTruncated {
+                expected: index_table_end,
+                actual: file_len,
+            });
+        }
+        let index_bytes_len = usize::try_from(index_table_end - WUX_HEADER_SIZE).map_err(|_| {
+            WupError::DiscTruncated {
+                expected: index_table_end,
+                actual: file_len,
+            }
+        })?;
         let mut index_bytes = vec![0u8; index_bytes_len];
         file.read_exact(&mut index_bytes)?;
         let index_table: Vec<u32> = index_bytes
@@ -108,7 +127,8 @@ impl WuxReader {
 
         // Sector pool starts at the first sector-aligned offset past
         // the index table.
-        let pool_offset = (WUX_HEADER_SIZE + index_bytes_len as u64).next_multiple_of(sector_size);
+        let pool_offset =
+            (WUX_HEADER_SIZE + index_bytes_len as u64).next_multiple_of(SECTOR_SIZE as u64);
 
         if pool_offset > file_len {
             return Err(WupError::DiscTruncated {
@@ -117,20 +137,20 @@ impl WuxReader {
             });
         }
         let pool_bytes = file_len - pool_offset;
-        if !pool_bytes.is_multiple_of(sector_size) {
+        if !pool_bytes.is_multiple_of(SECTOR_SIZE as u64) {
             return Err(WupError::DiscTruncated {
-                expected: pool_bytes.next_multiple_of(sector_size),
+                expected: pool_bytes.next_multiple_of(SECTOR_SIZE as u64),
                 actual: pool_bytes,
             });
         }
-        let physical_sector_count = pool_bytes / sector_size;
+        let physical_sector_count = pool_bytes / SECTOR_SIZE as u64;
 
         // Every index must land inside the pool.
         if let Some(&max_idx) = index_table.iter().max()
             && (max_idx as u64) >= physical_sector_count
         {
             return Err(WupError::DiscTruncated {
-                expected: (max_idx as u64 + 1) * sector_size,
+                expected: (max_idx as u64 + 1) * SECTOR_SIZE as u64,
                 actual: pool_bytes,
             });
         }
@@ -138,7 +158,6 @@ impl WuxReader {
         Ok(Self {
             file,
             logical_sector_count,
-            sector_size,
             index_table,
             pool_offset,
             cache: Vec::with_capacity(CACHE_CAPACITY),
@@ -158,9 +177,9 @@ impl WuxReader {
         }
 
         // Load fresh, evicting oldest if at capacity.
-        let offset = self.pool_offset + physical_index as u64 * self.sector_size;
+        let offset = self.pool_offset + physical_index as u64 * SECTOR_SIZE as u64;
         self.file.seek(SeekFrom::Start(offset))?;
-        let mut bytes = vec![0u8; self.sector_size as usize];
+        let mut bytes = vec![0u8; SECTOR_SIZE];
         self.file.read_exact(&mut bytes)?;
 
         if self.cache.len() == CACHE_CAPACITY {
@@ -186,6 +205,21 @@ impl WuxReader {
         // Monotonic from the current max; cheap since cache is tiny.
         self.cache.iter().map(|e| e.last_use).max().unwrap_or(0) + 1
     }
+
+    /// Logical-to-physical index table, one entry per logical sector.
+    pub(crate) fn index_table(&self) -> &[u32] {
+        &self.index_table
+    }
+
+    /// File offset of the first physical sector in the pool.
+    pub(crate) fn pool_offset(&self) -> u64 {
+        self.pool_offset
+    }
+
+    /// Backing file for positional reads that bypass the LRU.
+    pub(crate) fn file(&self) -> &File {
+        self.file.get_ref()
+    }
 }
 
 impl DiscSectorSource for WuxReader {
@@ -195,14 +229,14 @@ impl DiscSectorSource for WuxReader {
 
     fn read_sector(&mut self, sector_index: u64, dst: &mut [u8]) -> WupResult<()> {
         assert_eq!(
-            dst.len() as u64,
-            self.sector_size,
+            dst.len(),
+            SECTOR_SIZE,
             "sector buffer must match container sector size"
         );
         if sector_index >= self.logical_sector_count {
             return Err(WupError::DiscTruncated {
-                expected: (sector_index + 1) * self.sector_size,
-                actual: self.logical_sector_count * self.sector_size,
+                expected: (sector_index + 1) * SECTOR_SIZE as u64,
+                actual: self.logical_sector_count * SECTOR_SIZE as u64,
             });
         }
         let physical = self.index_table[sector_index as usize];
@@ -333,5 +367,32 @@ mod tests {
         let mut buf = vec![0u8; SECTOR_SIZE];
         let result = rdr.read_sector(2, &mut buf);
         assert!(matches!(result, Err(WupError::DiscTruncated { .. })));
+    }
+
+    fn write_wux_header(path: &Path, sector_size: u32, uncompressed_size: u64) {
+        let mut header = [0u8; 0x20];
+        header[0..4].copy_from_slice(&WUX_MAGIC_0.to_le_bytes());
+        header[4..8].copy_from_slice(&WUX_MAGIC_1.to_le_bytes());
+        header[8..12].copy_from_slice(&sector_size.to_le_bytes());
+        header[16..24].copy_from_slice(&uncompressed_size.to_le_bytes());
+        std::fs::write(path, header).unwrap();
+    }
+
+    #[test]
+    fn huge_uncompressed_size_is_rejected_without_allocation() {
+        let tmp = NamedTempFile::new().unwrap();
+        // 2^48 bytes claims a 32 GiB index table on a 32-byte file; the
+        // bound check must fire before the table is allocated.
+        write_wux_header(tmp.path(), SECTOR_SIZE as u32, 1u64 << 48);
+        let result = WuxReader::open(tmp.path());
+        assert!(matches!(result, Err(WupError::DiscTruncated { .. })));
+    }
+
+    #[test]
+    fn non_standard_sector_size_is_rejected() {
+        let tmp = NamedTempFile::new().unwrap();
+        write_wux_header(tmp.path(), 0x10000, 0x20000);
+        let result = WuxReader::open(tmp.path());
+        assert!(matches!(result, Err(WupError::UnsupportedDiscFormat(_))));
     }
 }

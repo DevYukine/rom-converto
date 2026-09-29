@@ -21,7 +21,8 @@ import { useCueConvertStore } from "~/stores/cue-convert";
 import { useXboxConvertStore } from "~/stores/xbox-convert";
 import { usePspToIsoStore } from "~/stores/psp-to-iso";
 import { useXenonConvertStore } from "~/stores/xenon-convert";
-import { basename, deriveConvertedPath, deriveChdPath, deriveCsoPath, deriveDiscIsoPath, deriveGodDir, deriveXisoPath, withOutputDir } from "~/composables/useDerivedPath";
+import { useWupConvertStore } from "~/stores/wup-convert";
+import { basename, deriveConvertedPath, deriveChdPath, deriveCsoPath, deriveDiscIsoPath, deriveGodDir, deriveWupDiscPath, deriveXisoPath, withOutputDir } from "~/composables/useDerivedPath";
 
 const ARCHIVE_EXTS = ["zip", "7z", "rar", "tar", "tgz", "gz"];
 
@@ -113,6 +114,59 @@ const ctr: OpDef = {
 			taskId,
 		),
 	chips: (store) => (store.trim ? "trim 3ds" : ""),
+};
+
+const wup: OpDef = {
+	op: "convert",
+	console: "wup",
+	opLabel: "Convert",
+	storeId: "wup-convert",
+	useStore: useWupConvertStore,
+	command: "cmd_run",
+	resultKind: "convert",
+	title: "Convert WUD ↔ WUX",
+	subtitle:
+		"Converts between the raw WUD disc image and a WUX that deduplicates identical 32 KiB sectors, losslessly in both directions.",
+	dropText: "Drop .wud or .wux files or folders",
+	acceptedExts: ["wud", "wux", ...ARCHIVE_EXTS],
+	browseFilters: [{ name: "WUD/WUX", extensions: ["wud", "wux"] }],
+	fields: [
+		{
+			kind: "segmented",
+			key: "direction",
+			label: "Direction",
+			options: [
+				{ label: "WUD → WUX", value: "wux" },
+				{ label: "WUX → WUD", value: "wud" },
+			],
+			tooltip:
+				"WUD → WUX packs the disc image into a WUX that stores each unique 32 KiB sector once. WUX → WUD unpacks it back to the raw image. For a split dump, keep every game_partN.wud next to game_part1.wud: only game_part1.wud converts and the other parts are skipped.",
+		},
+		...recursiveFields(),
+	],
+	outputRows: templateOutputRowsWithReport(),
+	showVerify: true,
+	verifyLabel: "Compute output hash",
+	actionNote: "Jobs start automatically. Parameters lock once queued.",
+	// Follow the dropped files' kind; mixed and archive drops leave the direction alone.
+	onStaged: (store, items) => {
+		if (items.every((i) => i.path.toLowerCase().endsWith(".wux"))) store.direction = "wud";
+		else if (items.every((i) => i.path.toLowerCase().endsWith(".wud"))) store.direction = "wux";
+	},
+	deriveOutput: (input, store) => deriveWupDiscPath(input, store.direction),
+	buildArgs: (store, item, taskId) =>
+		runArgs(
+			`wup.to_${store.direction}`,
+			item.path,
+			templateIsActive(store)
+				? null
+				: withOutputDir(deriveWupDiscPath(item.path, store.direction), store.outputDir || ""),
+			commonOptions(store),
+			false,
+			taskId,
+			store.reportFile || null,
+		),
+	chips: (store) => (store.direction === "wud" ? "wux → wud" : "wud → wux"),
 };
 
 const cso: OpDef = {
@@ -552,4 +606,4 @@ const xenon: OpDef = {
 	chips: (store) => (store.title ? "custom title" : ""),
 };
 
-export const convertOps: OpDef[] = [ctr, cso, chd, chdMigrate, cue, xbox, psp, xenon];
+export const convertOps: OpDef[] = [ctr, wup, cso, chd, chdMigrate, cue, xbox, psp, xenon];

@@ -379,6 +379,36 @@ pub(crate) static OPS: &[OpSpec] = &[
         run: |req, progress, cancel| Box::pin(wup_verify(req, progress, cancel)),
     },
     OpSpec {
+        name: "wup.to_wux",
+        aliases: &["wup.to-wux"],
+        batch_exts: Some(&["wud"]),
+        input_exts: None,
+        writes_output: true,
+        required_bytes: Some(|_, source| {
+            // A continuation part is converted with its game_part1.wud, so
+            // it needs no output space of its own.
+            if crate::nintendo::wup::disc::is_split_continuation(source) {
+                0
+            } else {
+                crate::nintendo::wup::disc::logical_disc_size(source)
+                    .unwrap_or_else(|_| file_len(source))
+            }
+        }),
+        run: |req, progress, cancel| Box::pin(wup_to_wux(req, progress, cancel)),
+    },
+    OpSpec {
+        name: "wup.to_wud",
+        aliases: &["wup.to-wud"],
+        batch_exts: Some(&["wux"]),
+        input_exts: None,
+        writes_output: true,
+        required_bytes: Some(|_, source| {
+            crate::nintendo::wup::disc::logical_disc_size(source)
+                .unwrap_or_else(|_| file_len(source))
+        }),
+        run: |req, progress, cancel| Box::pin(wup_to_wud(req, progress, cancel)),
+    },
+    OpSpec {
         name: "cue.merge",
         aliases: &[],
         batch_exts: Some(&["cue"]),
@@ -1708,6 +1738,81 @@ pub(crate) async fn wup_verify(
     ))
 }
 
+pub(crate) async fn wup_to_wux(
+    req: RunRequest,
+    progress: &dyn ProgressReporter,
+    cancel: CancelToken,
+) -> Result<RunResponse> {
+    let input = required_input(&req)?;
+    if crate::nintendo::wup::disc::is_split_continuation(&input) {
+        return Ok(skipped_already_done(
+            &input,
+            "wup.to_wux",
+            "split continuation part",
+            &"converted together with game_part1.wud",
+        ));
+    }
+    if crate::nintendo::wup::disc::sector_stream::is_wux_file(&input) {
+        return Ok(skipped_already_done(
+            &input,
+            "wup.to_wux",
+            "already WUX",
+            &"input is already a WUX image",
+        ));
+    }
+    convert_op(
+        progress,
+        &req,
+        ConvertTarget {
+            input: &input,
+            derive: &|basis, _| basis.with_extension("wux"),
+            operation: "wup.to_wux",
+            verify: OutputVerify::None,
+        },
+        cancel,
+        |input, output, cancel| async move {
+            crate::nintendo::wup::wud_to_wux(progress, input, output, cancel)
+                .await
+                .map_err(anyhow::Error::from)
+        },
+    )
+    .await
+}
+
+pub(crate) async fn wup_to_wud(
+    req: RunRequest,
+    progress: &dyn ProgressReporter,
+    cancel: CancelToken,
+) -> Result<RunResponse> {
+    let input = required_input(&req)?;
+    // A plain file that lacks the WUX magic is not a disc image; without
+    // this check a .wud input would fail with "output already exists"
+    // instead. Archive members are rejected once opened.
+    if input.is_file()
+        && !crate::util::archive::is_archive_path(&input)
+        && !crate::nintendo::wup::disc::sector_stream::is_wux_file(&input)
+    {
+        return Err(crate::nintendo::wup::WupError::UnsupportedDiscFormat(input).into());
+    }
+    convert_op(
+        progress,
+        &req,
+        ConvertTarget {
+            input: &input,
+            derive: &|basis, _| basis.with_extension("wud"),
+            operation: "wup.to_wud",
+            verify: OutputVerify::None,
+        },
+        cancel,
+        |input, output, cancel| async move {
+            crate::nintendo::wup::wux_to_wud(progress, input, output, cancel)
+                .await
+                .map_err(anyhow::Error::from)
+        },
+    )
+    .await
+}
+
 pub(crate) async fn cue_merge(
     req: RunRequest,
     progress: &dyn ProgressReporter,
@@ -2528,7 +2633,14 @@ pub(crate) fn dir_op_record(
 /// way the space preflight already sizes one.
 fn input_size(input: &Path) -> u64 {
     if !input.is_dir() {
-        return file_len(input);
+        if !has_ext(input, "wud") {
+            return file_len(input);
+        }
+        // A game_part1.wud record reports the whole part set it converts.
+        return crate::nintendo::wup::disc::sector_stream::discover_split_parts(input)
+            .iter()
+            .map(|part| file_len(part))
+            .sum();
     }
     crate::util::fs::collect_all_files(input, None, &CancelToken::new())
         .map(|files| files.iter().map(|file| file_len(file)).sum())
@@ -3037,6 +3149,36 @@ mod tests {
         assert!(res.ok, "{res:?}");
         let data = serde_json::to_value(res.data.unwrap()).unwrap();
         assert_eq!(data["media"], "CD");
+    }
+
+    #[tokio::test]
+    async fn wup_to_wux_skips_continuation_and_wux_input() {
+        let dir = tempfile::tempdir().unwrap();
+        // A continuation part is converted together with its
+        // game_part1.wud sibling, so a run over it alone skips.
+        let part1 = dir.path().join("game_part1.wud");
+        std::fs::write(&part1, b"part1").unwrap();
+        let input = dir.path().join("game_part2.wud");
+        std::fs::write(&input, b"continuation").unwrap();
+        let req = json!({ "operation": "wup.to_wux", "input": input });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        assert_eq!(res.records[0].status, FileStatus::Skipped);
+        assert_eq!(res.records[0].output_path, "");
+        assert!(!dir.path().join("game_part2.wux").exists());
+
+        // A WUX input is already the target format.
+        let wux_input = dir.path().join("image.wux");
+        crate::nintendo::wup::disc::wux_reader::write_wux_for_test(
+            &wux_input,
+            &[[0xAA; crate::nintendo::wup::disc::sector_stream::SECTOR_SIZE]],
+        )
+        .unwrap();
+        let req = json!({ "operation": "wup.to_wux", "input": wux_input });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        assert_eq!(res.records[0].status, FileStatus::Skipped);
+        assert_eq!(res.records[0].output_path, "");
     }
 
     #[test]

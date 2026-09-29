@@ -34,6 +34,7 @@ pub use compress::{
     TitleInput, TitleInputFormat, WupCompressOptions, compress_title, compress_title_async,
     compress_titles, compress_titles_async, derive_wua_path, detect_title_format,
 };
+pub use disc::{wud_to_wux, wux_to_wud};
 pub use error::{WupError, WupResult};
 pub use loadiine::{LoadiineTitle, detect_loadiine_title, walk_loadiine_files};
 pub use nus::decrypt::{decrypt_nus_title, decrypt_nus_title_async};

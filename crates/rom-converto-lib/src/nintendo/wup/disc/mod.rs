@@ -1,8 +1,9 @@
 //! Wii U optical disc (WUD) and compressed disc (WUX) parsing.
 //!
-//! This module exposes a byte-level reader for Nintendo's Wii U disc
-//! image containers. It is one of three Wii U title sources the WUA
-//! compressor accepts; see [`super::compress`] for the dispatcher.
+//! This module exposes byte-level readers for Nintendo's Wii U disc
+//! image containers plus the lossless [`wud_to_wux`] / [`wux_to_wud`]
+//! converter between them. It is one of three Wii U title sources the
+//! WUA compressor accepts; see [`super::compress`] for the dispatcher.
 //!
 //! # Containers
 //!
@@ -91,9 +92,13 @@ pub mod partition;
 pub mod partition_table;
 pub mod sector_stream;
 pub mod wud_reader;
+pub mod wux_convert;
 pub mod wux_reader;
 
 pub use disc_key::{DiscKey, load_disc_key};
 pub use meta_source::DiscMetaSource;
 pub use partition_table::{PartitionEntry, PartitionKind, PartitionTable, parse_partition_table};
+pub(crate) use sector_stream::is_split_continuation;
 pub use sector_stream::{DiscSectorSource, SECTOR_SIZE, open_disc};
+pub(crate) use wux_convert::logical_disc_size;
+pub use wux_convert::{wud_to_wux, wux_to_wud};

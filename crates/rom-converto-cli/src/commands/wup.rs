@@ -1,11 +1,11 @@
 use crate::commands::info_command::InfoCommand;
-use crate::commands::{ConflictArgs, ConflictPolicyArg};
+use crate::commands::{BatchArgs, ConflictArgs, ConflictPolicyArg, OutputArgs};
 use clap::{Parser, Subcommand};
 use rom_converto_lib::util::CancelToken;
 use std::path::PathBuf;
 
 use crate::commands::support::{
-    ALL_IMAGE_EXTS, DispatchCtx, require_dir, require_info_input, save_wup_image,
+    ALL_IMAGE_EXTS, DispatchCtx, require_dir, require_info_input, require_input, save_wup_image,
 };
 use crate::util::{ensure_input_exists, resolve_policy};
 use crate::{batch, config, info_print};
@@ -19,6 +19,8 @@ use rom_converto_lib::util::ConflictPolicy;
 pub enum WupCommands {
     Compress(CompressWupCommand),
     Decrypt(DecryptWupCommand),
+    ToWux(ToWuxCommand),
+    ToWud(ToWudCommand),
     Verify(VerifyWupCommand),
     Info(InfoCommand),
 }
@@ -121,6 +123,82 @@ pub struct CompressWupCommand {
     pub conflict: ConflictArgs,
 }
 
+/// Compress a .wud disc image to a WUX container
+#[derive(Parser, Debug, Clone, Eq, PartialEq)]
+#[command(
+    long_about = "Compress a .wud disc image to a WUX container\n\nWUX stores each 32 KiB disc sector once and points repeated sectors at the first copy, so a disc with repeated sectors shrinks without losing a byte. A split set is converted from its game_part1.wud part, which must be complete; continuation parts are skipped. WUX to WUD to WUX reproduces the original file.",
+    after_long_help = "EXAMPLES:\n  Single file:     rom-converto wup to-wux game.wud\n  Explicit output: rom-converto wup to-wux game.wud game.wux\n  Whole folder:    rom-converto wup to-wux -R ./wud --output-dir ./wux\n"
+)]
+pub struct ToWuxCommand {
+    /// Input .wud path, or a directory with --recursive. A split set starts at its game_part1.wud part
+    #[arg(value_name = "INPUT")]
+    pub input: PathBuf,
+
+    /// Output WUX path, defaults to the input path with extension replaced by .wux
+    #[arg(value_name = "OUTPUT")]
+    pub output: Option<PathBuf>,
+
+    /// Output WUX path, defaults to the input path with extension replaced by .wux
+    #[arg(
+        short = 'o',
+        long = "output",
+        value_name = "OUTPUT",
+        conflicts_with = "output"
+    )]
+    pub output_flag: Option<PathBuf>,
+
+    #[command(flatten)]
+    pub out: OutputArgs,
+
+    #[command(flatten)]
+    pub conflict: ConflictArgs,
+
+    /// Convert every .wud found in the INPUT directory and its subdirectories
+    #[arg(long, short = 'R', default_value_t = false)]
+    pub recursive: bool,
+
+    #[command(flatten)]
+    pub batch: BatchArgs,
+}
+
+/// Decompress a WUX container back to a plain .wud disc image
+#[derive(Parser, Debug, Clone, Eq, PartialEq)]
+#[command(
+    long_about = "Decompress a WUX container back to a plain .wud disc image\n\nThe output holds every logical sector of the original disc image, so WUX to WUD to WUX reproduces the original file.",
+    after_long_help = "EXAMPLES:\n  Single file:     rom-converto wup to-wud game.wux\n  Explicit output: rom-converto wup to-wud game.wux game.wud\n  Whole folder:    rom-converto wup to-wud -R ./wux --output-dir ./wud\n"
+)]
+pub struct ToWudCommand {
+    /// Input .wux path, or a directory with --recursive
+    #[arg(value_name = "INPUT")]
+    pub input: PathBuf,
+
+    /// Output WUD path, defaults to the input path with extension replaced by .wud
+    #[arg(value_name = "OUTPUT")]
+    pub output: Option<PathBuf>,
+
+    /// Output WUD path, defaults to the input path with extension replaced by .wud
+    #[arg(
+        short = 'o',
+        long = "output",
+        value_name = "OUTPUT",
+        conflicts_with = "output"
+    )]
+    pub output_flag: Option<PathBuf>,
+
+    #[command(flatten)]
+    pub out: OutputArgs,
+
+    #[command(flatten)]
+    pub conflict: ConflictArgs,
+
+    /// Decompress every .wux found in the INPUT directory and its subdirectories
+    #[arg(long, short = 'R', default_value_t = false)]
+    pub recursive: bool,
+
+    #[command(flatten)]
+    pub batch: BatchArgs,
+}
+
 /// Runs one `wup` subcommand.
 pub async fn run(command: WupCommands, ctx: DispatchCtx<'_>) -> Result<()> {
     let DispatchCtx {
@@ -202,6 +280,56 @@ pub async fn run(command: WupCommands, ctx: DispatchCtx<'_>) -> Result<()> {
                 skip_space_check,
             });
             batch::run(&run, "wup.decrypt", cmd.input, Some(cmd.output), options).await?;
+        }
+        WupCommands::ToWux(cmd) => {
+            let eff = &effective.wup;
+            require_input(&cmd.input, cmd.recursive)?;
+            let options = RunOptions::from(batch::Common {
+                recursive: cmd.recursive,
+                output_dir: cmd.out.output_dir,
+                output_template: cmd.out.output_template,
+                max_depth: cmd.batch.max_depth,
+                report: cmd.batch.report,
+                policy: resolve_policy(
+                    cmd.conflict.on_conflict,
+                    cmd.conflict.force,
+                    config::policy_fallback(&eff.on_conflict)?,
+                ),
+                skip_space_check,
+            });
+            batch::run(
+                &run,
+                "wup.to_wux",
+                cmd.input,
+                cmd.output_flag.or(cmd.output),
+                options,
+            )
+            .await?;
+        }
+        WupCommands::ToWud(cmd) => {
+            let eff = &effective.wup;
+            require_input(&cmd.input, cmd.recursive)?;
+            let options = RunOptions::from(batch::Common {
+                recursive: cmd.recursive,
+                output_dir: cmd.out.output_dir,
+                output_template: cmd.out.output_template,
+                max_depth: cmd.batch.max_depth,
+                report: cmd.batch.report,
+                policy: resolve_policy(
+                    cmd.conflict.on_conflict,
+                    cmd.conflict.force,
+                    config::policy_fallback(&eff.on_conflict)?,
+                ),
+                skip_space_check,
+            });
+            batch::run(
+                &run,
+                "wup.to_wud",
+                cmd.input,
+                cmd.output_flag.or(cmd.output),
+                options,
+            )
+            .await?;
         }
         WupCommands::Verify(cmd) => {
             if cmd.recursive {

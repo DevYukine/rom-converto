@@ -11,7 +11,7 @@ and `info` extensions in the installed build.
 | Nintendo 3DS (`ctr`) | `.cia`, `.3ds`/`.cci`, `.cxi`, `.3dsx`; CDN content | Z3DS: `.zcia`, `.zcci`, `.zcxi`, `.z3dsx`; encrypted/decrypted ROMs; CIA/CCI | compress, decompress, encrypt, decrypt, CIA/CCI conversion, CDN to CIA |
 | GameCube (`dol`) | `.iso`, `.gcm`; legacy `.gcz`, `.nkit.iso`, `.nkit.gcz` | `.rvz`, then `.iso` on decompress | compress, migrate, decompress |
 | Wii (`rvl`) | `.iso`, `.wbfs`; legacy `.gcz`, `.wia`, NKit | `.rvz`, then `.iso` or `.wbfs` | compress, migrate, decompress |
-| Wii U (`wup`) | NUS or loadiine title directory, `.wud`, `.wux` | `.wua` | compress, decrypt NUS to loadiine |
+| Wii U (`wup`) | NUS or loadiine title directory, `.wud`, `.wux` | `.wua`; `.wux` or `.wud` | compress, to-wux, to-wud, decrypt NUS to loadiine |
 | Switch (`nx`) | `.nsp`, `.xci` | `.nsz`, `.xcz`, merged NSP/XCI, or per-title NSPs | compress, decompress, merge, split |
 | CHD (`chd`) | `.cue` with tracks, suitable `.iso`, LaserDisc `.avi`, or legacy CHD v1 to v4 | CHD v5 | compress, migrate, extract, convert DVD CHD to CSO/ZSO |
 | CSO (`cso`) | `.iso` | `.cso` or `.zso` | compress, decompress, convert to CHD |
@@ -37,6 +37,7 @@ tables) are kept in memory and take a few bytes per block.
 | Behavior | Detail |
 |---|---|
 | Demand decoding | `info` on Z3DS, NCZ, RVZ, WIA, GCZ, CHD, CSO, ZSO, DAX, ZAR, WUA and XEX decodes only the frames, blocks or hunks that hold the requested bytes. |
+| WUX dedup table | `wup to-wux` keeps a dedup entry per unique 32 KiB sector, tens of MiB for a full disc. Its sector hashers share the 512 MiB worker working set described below. |
 | Worker memory | Decoders whose unit size comes from the file (CHD, CSO, Z3DS, RVZ, NCZ blocks) and the ZAR, Z3DS and NCZ block compressors size their worker pools against a 512 MiB working set per operation, counting codec contexts, queued units and the writer queue. Default unit sizes keep full parallelism; only user-chosen unit sizes far above the defaults (for example NCZ blocks of 256 MiB) shrink the pool. A unit that does not fit the working set on its own is never rejected: it is decoded on one worker with at most two units live (one decoding, one being written), and formats whose codec streams (Z3DS frames, plain and packed RVZ chunks, NCZ) stream it in 4 MiB pieces instead of holding it whole. The legacy GCZ, WIA and NKit readers used by `migrate` and `verify` are capped at one worker per core and about 128 MiB of groups in flight (`in_flight_cap`), so large blocks or chunks reduce the worker count; their memory is the file's block or chunk size times the worker count plus, for WIA LZMA files, the dictionary per worker (files declaring a dictionary above 256 MiB are rejected). |
 | Size checks | Sizes and counts declared inside a file are checked against the file before anything is allocated, so metadata memory scales with what is actually stored on disk, not with a declared value. Apart from the guards above, nothing a previous release accepted is rejected; `info` also retains only the entries it reports (for example PKG artwork and SFO items, CHD metadata tags without their payloads). |
 | Sheets | CUE and GDI sheets are parsed line by line; a single line is kept up to 16 MiB, far beyond any directive, so a bogus multi-gigabyte sheet never loads whole. |
@@ -80,6 +81,13 @@ output name ends in `.wbfs`.
 WUA is the Wii U archive used by Cemu. A single archive can contain base, update, and
 DLC title inputs. A WUA is not a general Wii U disc-image replacement: use `wup compress`
 only with the accepted title layouts or a `.wud`/`.wux` disc image.
+
+### WUX
+
+WUX is a lossless container for Wii U disc images. It stores each 32 KiB sector once and
+points repeated sectors at the first copy. `wup to-wud` restores a plain `.wud`, and
+WUX to WUD to WUX reproduces the original file. A split `.wud` set must be complete:
+`wup to-wux` reads its `game_part1.wud` part and skips the continuation parts.
 
 ### NSZ and XCZ
 

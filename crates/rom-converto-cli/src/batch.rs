@@ -244,10 +244,10 @@ pub(crate) fn finish(
 pub(crate) fn direction(operation: &str) -> TallyDirection {
     match operation {
         "cso.compress" | "chd.compress" | "dol.compress" | "rvl.compress" | "rvz.compress"
-        | "ctr.compress" | "nx.compress" | "wup.compress" | "xenon.compress" | "cso.to_chd"
-        | "chd.to_cso" | "cue.to_cso" => TallyDirection::Compress,
+        | "ctr.compress" | "nx.compress" | "wup.compress" | "wup.to_wux" | "xenon.compress"
+        | "cso.to_chd" | "chd.to_cso" | "cue.to_cso" => TallyDirection::Compress,
         "cso.decompress" | "ctr.decompress" | "dol.decompress" | "rvl.decompress"
-        | "rvz.decompress" | "nx.decompress" => TallyDirection::Decompress,
+        | "rvz.decompress" | "nx.decompress" | "wup.to_wud" => TallyDirection::Decompress,
         "chd.extract" | "psp.extract" | "vita.extract" | "xbox.extract" | "xenon.extract"
         | "xenon.convert" | "nx.split" | "wup.decrypt" | "playlist.write" => {
             TallyDirection::CountOnly

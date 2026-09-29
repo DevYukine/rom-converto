@@ -56,7 +56,15 @@ export function useStaging(def: OpDef) {
 				item.size = n;
 			});
 		}
-		if (added.length) def.onStaged?.(store, added);
+		if (!added.length || !def.onStaged) return;
+		def.onStaged(store, added);
+		// onStaged may switch an option that picks the output extension.
+		const derive = def.deriveOutput;
+		if (!derive) return;
+		const ids = new Set(added.map((item) => item.id));
+		for (const item of staged.value) {
+			if (ids.has(item.id)) item.outExt = extOf(derive(item.path, store));
+		}
 	}
 
 	function remove(id: string) {

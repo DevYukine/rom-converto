@@ -16,7 +16,7 @@ Convert, compress, decrypt, and verify ROMs and disc images. Available as a comm
 | Nintendo 3DS | Encrypt, decrypt, and convert CIA/CCI; compress decrypted ROMs to Z3DS; build CIA from CDN content |
 | GameCube | Compress ISO/GCM to RVZ; migrate GCZ and NKit to RVZ; decompress RVZ |
 | Wii | Compress ISO/WBFS to RVZ; migrate GCZ, WIA, and NKit to RVZ; decompress RVZ |
-| Wii U | Pack NUS, loadiine, WUD, or WUX into WUA; decrypt NUS to a game folder |
+| Wii U | Pack NUS, loadiine, WUD, or WUX into WUA; convert WUD to WUX and back; decrypt NUS to a game folder |
 | Nintendo Switch | Compress NSP/XCI to NSZ/XCZ and decompress them; merge or split unpacked NSP/XCI |
 | CD / DVD | Compress CUE/BIN or ISO to CHD; migrate CHD v1 to v4 into v5; extract CHD; merge CUE/BIN tracks |
 | LaserDisc | Compress AVI to CHD |

@@ -70,20 +70,9 @@ pub fn open_disc<P: AsRef<Path>>(path: P) -> WupResult<Box<dyn DiscSectorSource>
         return Err(WupError::MissingRequiredFile(path.to_path_buf()));
     }
 
-    // Peek at the first 8 bytes to distinguish WUX0 from raw
-    // WUD. File extension is not relied on for this, only for the
-    // split-part chain convention below.
-    let mut magic = [0u8; 8];
-    {
-        let mut f = File::open(path)?;
-        match f.read_exact(&mut magic) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {}
-            Err(e) => return Err(e.into()),
-        }
-    }
-
-    if is_wux_magic(&magic) {
+    // File extension is not relied on for WUX detection, only for
+    // the split-part chain convention below.
+    if is_wux_file(path) {
         let reader = WuxReader::open(path)?;
         return Ok(Box::new(reader));
     }
@@ -114,18 +103,64 @@ pub(crate) fn is_wux_magic(prefix: &[u8]) -> bool {
     prefix.len() >= 8 && &prefix[0..4] == b"WUX0" && prefix[4..8] == [0x2E, 0xD0, 0x99, 0x10]
 }
 
-/// Collect `game_part<N>.wud` siblings into a single ordered vec.
-/// Returns a singleton when no splits are present.
-fn discover_split_parts(first: &Path) -> Vec<PathBuf> {
-    let stem = first
+/// True when the file's first 8 bytes carry the WUX0 container magic.
+/// Any IO error or short file reads as false.
+pub(crate) fn is_wux_file(path: &Path) -> bool {
+    let Ok(mut f) = File::open(path) else {
+        return false;
+    };
+    let mut magic = [0u8; 8];
+    f.read_exact(&mut magic).is_ok() && is_wux_magic(&magic)
+}
+
+/// Canonical `game_part<N>` stem number in `1..=12`, or `None`.
+/// Canonical digits only (no signs, no leading zeros), matching the
+/// names [`discover_split_parts`] builds.
+pub(crate) fn split_part_number(path: &Path) -> Option<u32> {
+    let stem = path
         .file_stem()
         .and_then(|s| s.to_str())
+        .map(str::to_ascii_lowercase)?;
+    let digits = stem.strip_prefix("game_part")?;
+    if digits.is_empty()
+        || digits.len() > 2
+        || !digits.bytes().all(|b| b.is_ascii_digit())
+        || (digits.len() == 2 && digits.starts_with('0'))
+    {
+        return None;
+    }
+    let n = digits.parse().ok()?;
+    (1..=12).contains(&n).then_some(n)
+}
+
+/// True when the path names a `game_part2.wud` .. `game_part12.wud`
+/// split-image continuation sitting next to its `game_part1.wud`.
+/// Continuations convert together with `game_part1.wud`; a part whose
+/// first sibling is missing is not skipped here, so it converts and
+/// then fails as a truncated disc instead of vanishing silently.
+pub(crate) fn is_split_continuation(path: &Path) -> bool {
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())
         .map(str::to_ascii_lowercase);
-    let parent = first.parent().map(PathBuf::from).unwrap_or_default();
-    if stem.as_deref() != Some("game_part1") {
+    if ext.as_deref() != Some("wud") {
+        return false;
+    }
+    if !matches!(split_part_number(path), Some(2..=12)) {
+        return false;
+    }
+    let parent = path.parent().map(PathBuf::from).unwrap_or_default();
+    parent.join("game_part1.wud").is_file()
+}
+
+/// Collect `game_part<N>.wud` siblings into a single ordered vec.
+/// Returns a singleton when no splits are present.
+pub(crate) fn discover_split_parts(first: &Path) -> Vec<PathBuf> {
+    if split_part_number(first) != Some(1) {
         return vec![first.to_path_buf()];
     }
     let mut parts = vec![first.to_path_buf()];
+    let parent = first.parent().map(PathBuf::from).unwrap_or_default();
     for idx in 2u32..=12 {
         let candidate = parent.join(format!("game_part{}.wud", idx));
         if candidate.is_file() {
@@ -279,6 +314,38 @@ mod tests {
     #[test]
     fn rejects_short_prefix() {
         assert!(!is_wux_magic(&[0u8; 4]));
+    }
+
+    #[test]
+    fn is_wux_file_needs_the_full_magic_prefix() {
+        let short = NamedTempFile::new().unwrap();
+        std::fs::write(short.path(), [0u8; 4]).unwrap();
+        assert!(!is_wux_file(short.path()));
+
+        let real = NamedTempFile::new().unwrap();
+        std::fs::write(real.path(), b"WUX0\x2e\xd0\x99\x10payload").unwrap();
+        assert!(is_wux_file(real.path()));
+    }
+
+    #[test]
+    fn split_continuation_detection() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("game_part1.wud"), b"x").unwrap();
+        let d = dir.path();
+        assert!(is_split_continuation(&d.join("game_part2.wud")));
+        assert!(is_split_continuation(&d.join("GAME_PART12.WUD")));
+        assert!(!is_split_continuation(&d.join("game_part1.wud")));
+        assert!(!is_split_continuation(&d.join("game_part13.wud")));
+        assert!(!is_split_continuation(&d.join("game_part2")));
+        assert!(!is_split_continuation(&d.join("game.wud")));
+        // Continuation digits are canonical: no leading zeros or signs.
+        assert!(!is_split_continuation(&d.join("game_part02.wud")));
+        assert!(!is_split_continuation(&d.join("game_part+2.wud")));
+        // Without a game_part1.wud sibling the part is not skipped.
+        let lonely = tempfile::tempdir().unwrap();
+        assert!(!is_split_continuation(
+            &lonely.path().join("game_part2.wud")
+        ));
     }
 
     #[test]

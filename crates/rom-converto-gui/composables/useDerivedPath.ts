@@ -191,6 +191,10 @@ export function deriveWuaPath(input: string): string {
   return parent ? `${parent}${sep}${base}.wua` : `${base}.wua`;
 }
 
+export function deriveWupDiscPath(input: string, direction: "wux" | "wud"): string {
+  return replaceExt(stripArchiveExt(input), direction);
+}
+
 export function deriveXisoPath(input: string): string {
   return replaceExt(stripArchiveExt(input), "xiso");
 }

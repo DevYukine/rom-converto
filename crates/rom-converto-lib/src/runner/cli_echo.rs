@@ -568,6 +568,28 @@ const PATH_FLAGS: &[(&str, &[&str])] = &[
     ("vita extract", &[]),
     ("wup compress", &["key", "level", "on_conflict"]),
     ("wup decrypt", &["on_conflict"]),
+    (
+        "wup to-wud",
+        &[
+            "max_depth",
+            "on_conflict",
+            "output_dir",
+            "output_template",
+            "recursive",
+            "report",
+        ],
+    ),
+    (
+        "wup to-wux",
+        &[
+            "max_depth",
+            "on_conflict",
+            "output_dir",
+            "output_template",
+            "recursive",
+            "report",
+        ],
+    ),
     ("wup verify", &["key", "max_depth", "recursive"]),
     ("xbox convert", &[]),
     ("xbox extract", &[]),

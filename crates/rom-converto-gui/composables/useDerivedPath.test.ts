@@ -15,6 +15,7 @@ import {
   deriveNxSplitDir,
   deriveRvzPath,
   deriveWuaPath,
+  deriveWupDiscPath,
   stripArchiveExt,
 } from "./useDerivedPath";
 
@@ -105,6 +106,18 @@ describe("wua derivation", () => {
     expect(deriveWuaPath("D:\\wiiu\\Super Mario Bros. U (Europe)")).toBe(
       "D:\\wiiu\\Super Mario Bros. U.wua",
     );
+  });
+});
+
+describe("wud/wux derivation", () => {
+  it("replaces the image extension in both directions", () => {
+    expect(deriveWupDiscPath("game.wud", "wux")).toBe("game.wux");
+    expect(deriveWupDiscPath("game.wux", "wud")).toBe("game.wud");
+  });
+
+  it("derives from dotted archive names without truncating", () => {
+    expect(deriveWupDiscPath(`${DOTTED}.zip`, "wux")).toBe(`${DOTTED}.wux`);
+    expect(deriveWupDiscPath(`${DOTTED}.7z`, "wud")).toBe(`${DOTTED}.wud`);
   });
 });
 

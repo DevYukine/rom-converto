@@ -72,6 +72,9 @@ pub enum WupError {
     #[error("unsupported disc container format: {0}")]
     UnsupportedDiscFormat(PathBuf),
 
+    #[error("{0} is already a WUX image")]
+    AlreadyWux(PathBuf),
+
     #[error("disc contains no GM (game) partition")]
     NoGamePartitionFound,
 
@@ -95,6 +98,14 @@ pub enum WupError {
 
     #[error("{0}")]
     Cancelled(#[from] crate::util::Cancelled),
+
+    /// The worker pool's channel closed before the task could be submitted.
+    #[error(transparent)]
+    WorkerPoolClosed(#[from] crate::util::worker_pool::PoolChannelClosed),
+
+    /// The worker pool's writer thread panicked.
+    #[error("worker pool writer thread panicked")]
+    WorkerPoolPanic,
 }
 
 /// Result alias used throughout the `wup` module.

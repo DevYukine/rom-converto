@@ -250,6 +250,22 @@
       "wup",
       "decrypt"
     ],
+    "wup.to-wud": [
+      "wup",
+      "to-wud"
+    ],
+    "wup.to-wux": [
+      "wup",
+      "to-wux"
+    ],
+    "wup.to_wud": [
+      "wup",
+      "to-wud"
+    ],
+    "wup.to_wux": [
+      "wup",
+      "to-wux"
+    ],
     "wup.verify": [
       "wup",
       "verify"
@@ -991,6 +1007,38 @@
     "wup.decrypt": [
       "on_conflict"
     ],
+    "wup.to-wud": [
+      "max_depth",
+      "on_conflict",
+      "output_dir",
+      "output_template",
+      "recursive",
+      "report"
+    ],
+    "wup.to-wux": [
+      "max_depth",
+      "on_conflict",
+      "output_dir",
+      "output_template",
+      "recursive",
+      "report"
+    ],
+    "wup.to_wud": [
+      "max_depth",
+      "on_conflict",
+      "output_dir",
+      "output_template",
+      "recursive",
+      "report"
+    ],
+    "wup.to_wux": [
+      "max_depth",
+      "on_conflict",
+      "output_dir",
+      "output_template",
+      "recursive",
+      "report"
+    ],
     "wup.verify": [
       "key",
       "max_depth",
@@ -1071,6 +1119,10 @@
     "vita.extract": "positional",
     "wup.compress": "output_flag",
     "wup.decrypt": "output_flag",
+    "wup.to-wud": "positional",
+    "wup.to-wux": "positional",
+    "wup.to_wud": "positional",
+    "wup.to_wux": "positional",
     "wup.verify": "none",
     "xbox.convert": "positional",
     "xbox.extract": "positional",

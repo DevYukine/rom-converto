@@ -14,7 +14,7 @@ Use `rom-converto --help`, `rom-converto <command> --help`, or
 | `ctr` | Convert, decrypt, compress, and verify Nintendo 3DS ROMs |
 | `dol` | Compress, migrate, and verify GameCube disc images (RVZ) |
 | `rvl` | Compress, migrate, and verify Wii disc images (RVZ) |
-| `wup` | Bundle and decrypt Wii U titles (WUA) |
+| `wup` | Bundle and decrypt Wii U titles (WUA); convert WUD and WUX disc images |
 | `nx` | Compress, decompress, verify, and inspect Switch containers; merge or split unpacked NSP/XCI |
 | `chd` | Compress, extract, and verify CD/DVD/LaserDisc images (CHD) |
 | `cso` | Compress and verify PSP/PS2 ISOs (CSO/ZSO) |
@@ -135,8 +135,8 @@ size or modification time changes. DAT commands still query the remote database.
 
 Single-file operations can read `.zip`, `.7z`, `.rar`, `.tar`, `.tar.gz`, and `.tgz`
 archives. This applies to conversion, extraction, verification, and info under `ctr`, `dol`,
-`rvl`, `nx`, `chd`, `cso`, and `ps3`, including `chd to-cso` and `cso to-chd`. It also
-applies to `hash`, `dat verify`, and `dat identify`.
+`rvl`, `nx`, `chd`, `cso`, `wup`, and `ps3`, including `chd to-cso`, `cso to-chd`,
+`wup to-wux`, and `wup to-wud`. It also applies to `hash`, `dat verify`, and `dat identify`.
 
 The first matching member in name order is extracted to a temporary directory. Cue track
 files are extracted with their cue sheet. Output is named after the member and written next
@@ -359,6 +359,8 @@ rom-converto wup <SUBCOMMAND> ...
 |---|---|
 | `compress -o <OUTPUT> <INPUTS>...` | Bundle one or more titles into a Cemu `.wua` archive |
 | `decrypt -o <OUTPUT> <INPUT>` | Decrypt a NUS directory into a loadiine `meta/code/content` tree |
+| `to-wux <INPUT> [OUTPUT]` | Convert a `.wud` disc image to the WUX container |
+| `to-wud <INPUT> [OUTPUT]` | Decompress a WUX container back to a plain `.wud` |
 | `verify <INPUT>` | Verify Wii U content SHA-1 against the TMD |
 | `info <PATH>` | Inspect Wii U title metadata. See [info](#info) |
 
@@ -366,12 +368,18 @@ rom-converto wup <SUBCOMMAND> ...
 |---|---|---|
 | `-o, --output <FILE>` | `compress` | Output `.wua` file path |
 | `-o, --output <DIR>` | `decrypt` | Output directory |
+| `-o, --output <FILE>` | `to-wux`, `to-wud` | Output path, defaults to the input name with the extension replaced |
 | `-l, --level <LEVEL>` | `compress` | Zstd compression level 0..=22 (0 = Cemu default of 6) |
 | `--key <KEYFILE>` | `compress`, `verify` | Disc master key file for `.wud`/`.wux` inputs (optional). Pass once per disc input in positional order on `compress`. See key resolution below |
 
-`wup` commands do not take `--output-dir` or `--output-template`, because `compress` packs
-many inputs into a single archive and `decrypt` writes a directory tree. `compress` and
-`verify` auto-detect each input as a loadiine directory, a NUS directory, or a disc image.
+`to-wux` and `to-wud` also take the common output and batch flags (`--output-dir`,
+`--output-template`, `-R`, `--max-depth`, `--on-conflict`/`-f`, `--report`). They read
+`[wup] on_conflict` as the fallback conflict policy.
+
+`wup compress` and `wup decrypt` do not take `--output-dir` or `--output-template`,
+because `compress` packs many inputs into a single archive and `decrypt` writes a
+directory tree. `compress` and `verify` auto-detect each input as a loadiine directory,
+a NUS directory, or a disc image.
 
 For disc images (`.wud`/`.wux`), the disc key is optional. It is resolved in order:
 explicit `--key`, else a sibling `<disc>.key` or `game.key` file, else the built-in disc key
