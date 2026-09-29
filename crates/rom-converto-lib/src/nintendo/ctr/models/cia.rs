@@ -89,6 +89,13 @@ pub struct MetaData {
     pub icon_data: Vec<u8>,
 }
 
+impl MetaData {
+    /// Exact serialized size. The binrw counts above are per field, so callers
+    /// that need the whole block size (buffer allocation, meta_size sanity
+    /// checks) take it from here instead of restating the layout.
+    pub const SERIALIZED_LEN: usize = 0x3AC0;
+}
+
 /// Reads certificates from a reader until padding or end of section.
 fn read_cert_chain<R: Read + Seek>(reader: &mut R, cert_end: u64) -> BinResult<Vec<Certificate>> {
     let mut cert_chain = Vec::new();

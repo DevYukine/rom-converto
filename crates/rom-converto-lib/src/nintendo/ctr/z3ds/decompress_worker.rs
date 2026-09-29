@@ -19,9 +19,11 @@ use crate::nintendo::ctr::z3ds::error::{Z3dsError, Z3dsResult};
 use crate::nintendo::ctr::z3ds::seekable::{FrameEntry, parse_seek_table, read_seek_table_footer};
 use crate::util::CancelToken;
 use crate::util::Cancelled;
+use crate::util::extent_end;
 use crate::util::hash::{FileDigests, HashAlgo, MultiHasher};
+use crate::util::positional_reader::PositionalReader;
 use crate::util::pread::file_read_exact_at;
-use crate::util::worker_pool::{Pool, PoolChannelClosed, Worker, drive, parallelism};
+use crate::util::worker_pool::{Pool, PoolChannelClosed, Worker, drive};
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -86,23 +88,24 @@ pub(crate) fn plan_decompress_work<R: Read + Seek>(
     payload_offset: u64,
     compressed_size: u64,
 ) -> Z3dsResult<Vec<Z3dsDecompressWork>> {
-    let footer_offset = payload_offset
-        .checked_add(compressed_size)
-        .and_then(|end| end.checked_sub(9))
-        .ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "compressed payload too small for seek-table footer",
-            )
-        })?;
+    let file_len = reader.seek(SeekFrom::End(0))?;
+    let payload_end = extent_end(payload_offset, compressed_size, file_len).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "compressed payload overruns input file",
+        )
+    })?;
+    let footer_offset = payload_end.checked_sub(9).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "compressed payload too small for seek-table footer",
+        )
+    })?;
     let mut footer = [0u8; 9];
     reader.seek(SeekFrom::Start(footer_offset))?;
     reader.read_exact(&mut footer)?;
     let (_num_frames, skippable_total) = read_seek_table_footer(&footer)?;
 
-    // Full skippable frame: header + entries + footer. The footer is
-    // untrusted, so bound the table by the payload it sits in before
-    // allocating for it.
     if skippable_total > compressed_size {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -110,27 +113,58 @@ pub(crate) fn plan_decompress_work<R: Read + Seek>(
         )
         .into());
     }
-    let frame_start = payload_offset + compressed_size - skippable_total;
-    let mut frame_bytes = vec![0u8; skippable_total as usize];
+    let frame_start = payload_end.checked_sub(skippable_total).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "seek table extent underflow",
+        )
+    })?;
+    if extent_end(frame_start, skippable_total, file_len).is_none() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "seek table overruns input file",
+        )
+        .into());
+    }
+    let table_size = usize::try_from(skippable_total).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "seek table does not fit in memory address space",
+        )
+    })?;
+    let mut frame_bytes = vec![0u8; table_size];
     reader.seek(SeekFrom::Start(frame_start))?;
     reader.read_exact(&mut frame_bytes)?;
     let entries: Vec<FrameEntry> = parse_seek_table(&frame_bytes)?;
 
-    // The sum of compressed frame sizes plus the seek table must equal the
-    // declared compressed_size, so a corrupted file fails at plan time.
     let mut work = Vec::with_capacity(entries.len());
     let mut cursor = payload_offset;
-    let mut frames_bytes_sum: u64 = 0;
+    let mut frames_bytes_sum = 0u64;
     for e in &entries {
+        let frame_end =
+            extent_end(cursor, u64::from(e.compressed_size), frame_start).ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "seek-table frame overruns its payload",
+                )
+            })?;
         work.push(Z3dsDecompressWork {
             file_offset: cursor,
             compressed_size: e.compressed_size,
             uncompressed_size: e.decompressed_size,
         });
-        cursor = cursor.saturating_add(e.compressed_size as u64);
-        frames_bytes_sum = frames_bytes_sum.saturating_add(e.compressed_size as u64);
+        cursor = frame_end;
+        frames_bytes_sum = frames_bytes_sum
+            .checked_add(u64::from(e.compressed_size))
+            .ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "frame sizes overflow")
+            })?;
     }
-    let expected = frames_bytes_sum + skippable_total;
+    let expected = frames_bytes_sum
+        .checked_add(skippable_total)
+        .ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "payload sizes overflow")
+        })?;
     if expected != compressed_size {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -144,97 +178,150 @@ pub(crate) fn plan_decompress_work<R: Read + Seek>(
     Ok(work)
 }
 
-/// Pick a conservative `max_in_flight` cap that respects both the
-/// thread count and the expected per-frame working set.
-///
-/// Decompress peak memory ≈ `max_in_flight * (compressed_size +
-/// uncompressed_size)` per frame. For 32 MB CIA frames capping at 4
-/// caps the working set at ~256 MB. For 256 KB frames
-/// `parallelism() * 2` is typically 32-64 on modern CPUs which
-/// stays well under 32 MB.
-fn pick_max_in_flight(max_uncompressed: u32) -> usize {
-    const LARGE_FRAME_CUTOFF: u32 = 4 * 1024 * 1024;
-    if max_uncompressed >= LARGE_FRAME_CUTOFF {
-        4
-    } else {
-        parallelism() * 2
+pub(super) fn decompression_admission(
+    work_items: &[Z3dsDecompressWork],
+    requested_workers: usize,
+) -> Option<crate::util::worker_pool::Admission> {
+    let max_uncompressed = work_items
+        .iter()
+        .map(|w| w.uncompressed_size)
+        .max()
+        .unwrap_or(0) as usize;
+    let max_compressed = work_items
+        .iter()
+        .map(|w| w.compressed_size)
+        .max()
+        .unwrap_or(0) as usize;
+    let frame_bytes = max_compressed.saturating_add(max_uncompressed);
+    crate::util::worker_pool::Budget {
+        codec_per_worker: crate::util::worker_pool::zstd_dctx_estimate(),
+        per_job: frame_bytes,
+        writer_slot: max_uncompressed,
+        fixed: 0,
     }
+    .admit(requested_workers, work_items.len() as u64)
 }
 
+const STREAM_CHUNK_SIZE: usize = 4 * 1024 * 1024;
+
+pub(super) fn stream_decompress_frames(
+    file: &Arc<std::fs::File>,
+    work_items: &[Z3dsDecompressWork],
+    mut on_chunk: impl FnMut(&[u8]) -> Z3dsResult<()>,
+) -> Z3dsResult<u64> {
+    let mut total = 0u64;
+    let mut output = vec![0u8; STREAM_CHUNK_SIZE];
+    for work in work_items {
+        let source = PositionalReader::new(
+            file.clone(),
+            work.file_offset,
+            u64::from(work.compressed_size),
+        );
+        let mut decoder = zstd::stream::read::Decoder::new(source)?;
+        let mut frame_total = 0u64;
+        loop {
+            let n = decoder.read(&mut output)?;
+            if n == 0 {
+                break;
+            }
+            frame_total += n as u64;
+            if frame_total > u64::from(work.uncompressed_size) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "zstd frame exceeds declared decompressed size",
+                )
+                .into());
+            }
+            on_chunk(&output[..n])?;
+        }
+        // A short frame is passed through like the pooled bulk path does;
+        // the digest path compares the total against the header.
+        total += frame_total;
+    }
+    Ok(total)
+}
+
+/// Single-worker fallback for frames that exceed the memory target:
+/// decodes each frame as a zstd stream and writes it in
+/// `STREAM_CHUNK_SIZE` pieces, so no frame is ever held whole.
+///
+/// Returns the total number of bytes written.
+pub(super) fn stream_decompress_to_writer(
+    file: &Arc<std::fs::File>,
+    work_items: &[Z3dsDecompressWork],
+    writer: &mut BufWriter<std::fs::File>,
+    bytes_done: &Arc<AtomicU64>,
+    cancel: &CancelToken,
+) -> Z3dsResult<u64> {
+    stream_decompress_frames(file, work_items, |chunk| {
+        if cancel.is_cancelled() {
+            return Err(Cancelled.into());
+        }
+        writer.write_all(chunk)?;
+        bytes_done.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+        Ok(())
+    })
+}
 /// Drives the worker-pool decompress pipeline, handing decoded frames to a
 /// dedicated writer thread in strict frame order.
+///
+/// Returns the total number of bytes handed to the writer.
 pub(super) fn decompress_frames(
+    admission: crate::util::worker_pool::Admission,
     pool: &Pool<Z3dsDecompressWork, Z3dsDecompressedFrame, Z3dsError>,
     writer: &mut BufWriter<std::fs::File>,
     work_items: Vec<Z3dsDecompressWork>,
     bytes_done: &Arc<AtomicU64>,
     cancel: &CancelToken,
-) -> Z3dsResult<()> {
+) -> Z3dsResult<u64> {
     let num_frames = work_items.len() as u64;
     if num_frames == 0 {
-        return Ok(());
+        return Ok(0);
     }
 
-    // Cap in-flight work by the largest declared frame, not the frame count.
-    let max_uncompressed = work_items
-        .iter()
-        .map(|w| w.uncompressed_size)
-        .max()
-        .unwrap_or(0);
-    let max_in_flight = pick_max_in_flight(max_uncompressed);
-
-    let (write_tx, write_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(max_in_flight * 2);
-
-    let scope_result: Z3dsResult<()> = std::thread::scope(|s| {
-        let writer_slot: &mut BufWriter<std::fs::File> = writer;
-        let writer_handle = s.spawn(move || -> Z3dsResult<()> {
-            while let Ok(bytes) = write_rx.recv() {
-                writer_slot.write_all(&bytes)?;
-            }
-            Ok(())
-        });
-
-        // Moved into the closure so `produce` hands items out without cloning.
-        let mut work_iter = work_items.into_iter();
-        let drive_result = drive(
-            pool,
-            num_frames,
-            max_in_flight,
-            |_seq| -> Z3dsResult<Z3dsDecompressWork> {
-                if cancel.is_cancelled() {
-                    return Err(Cancelled.into());
-                }
-                work_iter.next().ok_or_else(|| {
-                    Z3dsError::IoError(std::io::Error::other(
-                        "work iterator exhausted before drive() finished",
-                    ))
-                })
-            },
-            |_seq, out| -> Z3dsResult<()> {
-                let len = out.bytes.len() as u64;
-                write_tx
-                    .send(out.bytes)
-                    .map_err(|_| Z3dsError::WorkerPoolClosed(PoolChannelClosed))?;
-                bytes_done.fetch_add(len, Ordering::Relaxed);
-                Ok(())
-            },
-        );
-
-        drop(write_tx);
-        let writer_result = writer_handle
-            .join()
-            .unwrap_or_else(|_| Err(Z3dsError::WorkerPoolPanic));
-        drive_result?;
-        writer_result
-    });
-
-    scope_result
+    let max_in_flight = admission.max_in_flight;
+    let mut written = 0u64;
+    crate::util::worker_pool::with_writer_thread(
+        writer,
+        admission.writer_capacity,
+        Z3dsError::WorkerPoolPanic,
+        |write_tx| {
+            // Moved into the closure so `produce` hands items out without cloning.
+            let mut work_iter = work_items.into_iter();
+            drive(
+                pool,
+                num_frames,
+                max_in_flight,
+                |_seq| -> Z3dsResult<Z3dsDecompressWork> {
+                    if cancel.is_cancelled() {
+                        return Err(Cancelled.into());
+                    }
+                    work_iter.next().ok_or_else(|| {
+                        Z3dsError::IoError(std::io::Error::other(
+                            "work iterator exhausted before drive() finished",
+                        ))
+                    })
+                },
+                |_seq, out| -> Z3dsResult<()> {
+                    let len = out.bytes.len() as u64;
+                    written += len;
+                    write_tx
+                        .send(out.bytes)
+                        .map_err(|_| Z3dsError::WorkerPoolClosed(PoolChannelClosed))?;
+                    bytes_done.fetch_add(len, Ordering::Relaxed);
+                    Ok(())
+                },
+            )
+        },
+    )?;
+    Ok(written)
 }
 
 /// Digest-side twin of [`decompress_frames`]: folds each decoded frame into a
 /// [`MultiHasher`] instead of writing it. `drive`'s reorder buffer keeps strict
 /// frame order, so the digest matches one taken over the decompressed output.
 pub(super) fn digest_frames(
+    admission: crate::util::worker_pool::Admission,
     pool: &Pool<Z3dsDecompressWork, Z3dsDecompressedFrame, Z3dsError>,
     work_items: Vec<Z3dsDecompressWork>,
     algos: &[HashAlgo],
@@ -248,13 +335,7 @@ pub(super) fn digest_frames(
         return Ok(hasher.finalize(0));
     }
 
-    let max_uncompressed = work_items
-        .iter()
-        .map(|w| w.uncompressed_size)
-        .max()
-        .unwrap_or(0);
-    let max_in_flight = pick_max_in_flight(max_uncompressed);
-
+    let max_in_flight = admission.max_in_flight;
     let mut work_iter = work_items.into_iter();
     drive(
         pool,
@@ -284,8 +365,10 @@ pub(super) fn digest_frames(
 mod tests {
     use super::*;
     use crate::nintendo::ctr::z3ds::compress_worker::{
-        Z3dsCompressWork, Z3dsCompressedFrame, encode_seekable, make_z3ds_compress_workers,
+        Z3dsCompressWork, Z3dsCompressedFrame, compression_admission, encode_seekable,
+        make_z3ds_compress_workers,
     };
+    use crate::util::worker_pool::parallelism;
     use std::io::BufReader;
 
     fn write_z3ds_payload(input: &[u8], max_frame_size: usize, level: i32) -> Vec<u8> {
@@ -298,7 +381,10 @@ mod tests {
         std::fs::write(&in_path, input).unwrap();
 
         let n_threads = parallelism();
-        let workers = make_z3ds_compress_workers(n_threads, level).unwrap();
+        let num_frames = (input.len() as u64).div_ceil(max_frame_size as u64);
+        let admission =
+            compression_admission(level, max_frame_size, num_frames, n_threads).expect("admission");
+        let workers = make_z3ds_compress_workers(admission.workers, level).unwrap();
         let pool: Pool<Z3dsCompressWork, Z3dsCompressedFrame, Z3dsError> = Pool::spawn(workers);
 
         let in_file = std::fs::File::open(&in_path).unwrap();
@@ -309,6 +395,7 @@ mod tests {
         let bytes_done = Arc::new(AtomicU64::new(0));
         encode_seekable(
             &pool,
+            admission,
             &mut reader,
             &mut writer,
             max_frame_size,
@@ -339,13 +426,15 @@ mod tests {
         let mut writer = BufWriter::with_capacity(4 * 1024 * 1024, out_file);
 
         let work_items = plan_decompress_work(&*in_file, 0, payload.len() as u64).unwrap();
+        let admission = decompression_admission(&work_items, parallelism()).expect("admission");
 
-        let n_threads = parallelism();
+        let n_threads = admission.workers;
         let workers = make_z3ds_decompress_workers(n_threads, &in_file).unwrap();
         let pool: Pool<Z3dsDecompressWork, Z3dsDecompressedFrame, Z3dsError> = Pool::spawn(workers);
 
         let bytes_done = Arc::new(AtomicU64::new(0));
         decompress_frames(
+            admission,
             &pool,
             &mut writer,
             work_items,
@@ -469,5 +558,49 @@ mod tests {
             result.is_err(),
             "plan_decompress_work should reject a truncated compressed_size"
         );
+    }
+
+    #[test]
+    fn plan_rejects_untrusted_frame_count_before_allocating_table() {
+        let mut payload = vec![0u8; 9];
+        payload[..4].copy_from_slice(&u32::MAX.to_le_bytes());
+        payload[4] = 0;
+        payload[5..].copy_from_slice(&0x8F92EAB1u32.to_le_bytes());
+        let result = plan_decompress_work(std::io::Cursor::new(payload), 0, 9);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn four_mib_frames_retain_requested_parallelism() {
+        let work: Vec<_> = (0..8)
+            .map(|_| Z3dsDecompressWork {
+                file_offset: 0,
+                compressed_size: 4 * 1024 * 1024,
+                uncompressed_size: 4 * 1024 * 1024,
+            })
+            .collect();
+        let admission = decompression_admission(&work, 8).expect("admission");
+        assert!(admission.workers >= 8);
+        assert!(admission.max_in_flight >= 8);
+    }
+
+    #[test]
+    fn streaming_decoder_matches_bulk_path() {
+        let original: Vec<u8> = (0u8..=255).cycle().take(256 * 1024).collect();
+        let payload = write_z3ds_payload(&original, 64 * 1024, 0);
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("stream.z3ds");
+        std::fs::write(&path, &payload).unwrap();
+        let file = Arc::new(std::fs::File::open(path).unwrap());
+        let work = plan_decompress_work(&*file, 0, payload.len() as u64).unwrap();
+        let mut streamed = Vec::new();
+        stream_decompress_frames(&file, &work, |chunk| {
+            assert!(chunk.len() <= STREAM_CHUNK_SIZE);
+            streamed.extend_from_slice(chunk);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(streamed, decompress_payload(&payload));
+        assert_eq!(streamed, original);
     }
 }

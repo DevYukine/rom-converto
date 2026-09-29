@@ -5,14 +5,15 @@ use crate::nintendo::ctr::constants::{
 use crate::nintendo::ctr::models::title_metadata::TitleMetadata;
 use crate::nintendo::ctr::util::align_64_usize;
 use crate::nintendo::ctr::z3ds::compress_worker::{
-    Z3dsCompressWork, Z3dsCompressedFrame, encode_seekable, make_z3ds_compress_workers,
+    Z3dsCompressWork, Z3dsCompressedFrame, compression_admission, encode_seekable,
+    make_z3ds_compress_workers,
 };
 use crate::nintendo::ctr::z3ds::error::{Z3dsError, Z3dsResult};
 use crate::nintendo::ctr::z3ds::models::{
     Z3DS_HEADER_SIZE, Z3dsHeader, Z3dsMetadata, Z3dsMetadataItem, underlying_magic,
 };
 use crate::nintendo::ctr::z3ds::seekable::{FRAME_SIZE_CIA, FRAME_SIZE_DEFAULT};
-use crate::util::worker_pool::{Pool, parallelism};
+use crate::util::worker_pool::{Admission, Pool, parallelism};
 use crate::util::{BYTES_PER_MB, CancelToken, ProgressReporter, run_scratch_write};
 use binrw::{BinRead, BinWrite, Endian};
 use chrono::Utc;
@@ -153,14 +154,18 @@ pub async fn compress_rom(
             writer.write_all(&placeholder_header)?;
             writer.write_all(&metadata_bytes)?;
 
-            // One persistent zstd encoder per thread, torn down at the end of this
-            // closure so the pool's lifetime is bounded by one compress invocation.
-            let n_threads = parallelism();
-            let workers = make_z3ds_compress_workers(n_threads, zstd_level)?;
+            // One persistent zstd encoder per admitted worker, torn down at the
+            // end of this invocation.
+            let num_frames = uncompressed_size.div_ceil(frame_size as u64);
+            let admission =
+                compression_admission(zstd_level, frame_size, num_frames, parallelism())
+                    .unwrap_or(Admission::DEGRADED);
+            let workers = make_z3ds_compress_workers(admission.workers, zstd_level)?;
             let pool: Pool<Z3dsCompressWork, Z3dsCompressedFrame, Z3dsError> = Pool::spawn(workers);
 
             let compressed_size = encode_seekable(
                 &pool,
+                admission,
                 &mut reader,
                 &mut writer,
                 frame_size,

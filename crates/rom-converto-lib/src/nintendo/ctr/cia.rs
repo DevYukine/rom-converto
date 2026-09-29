@@ -30,26 +30,24 @@ pub async fn decrypt_from_encrypted_cia(
     let input_size = tokio::fs::metadata(input).await?.len();
     progress.start(input_size, "Decrypting CIA");
 
-    let source_bytes = tokio::fs::read(input).await?;
-    let original_cia = CiaFileWithoutContent::read_le(&mut Cursor::new(&source_bytes))?;
+    let input_path = input.to_owned();
+    let original_cia = tokio::task::spawn_blocking(move || {
+        let mut source = std::fs::File::open(input_path)?;
+        CiaFileWithoutContent::read_le(&mut source).map_err(anyhow::Error::from)
+    })
+    .await??;
 
-    // Meta sits at the tail of the source CIA, after content. The header
-    // declares meta_size, so strict parsers reject the file if those bytes
-    // are missing from the output.
-    let meta_size = original_cia.header.meta_size as usize;
-    let meta_bytes: Option<Vec<u8>> = if meta_size > 0 {
-        let start = source_bytes.len().checked_sub(meta_size).ok_or_else(|| {
-            anyhow::anyhow!(
-                "CIA header declares meta_size {} but source file is only {} bytes",
-                meta_size,
-                source_bytes.len()
-            )
-        })?;
-        Some(source_bytes[start..].to_vec())
-    } else {
-        None
-    };
-    drop(source_bytes);
+    let meta_size = u64::from(original_cia.header.meta_size);
+    if meta_size > input_size {
+        anyhow::bail!(
+            "CIA header declares meta_size {} but source file is only {} bytes",
+            meta_size,
+            input_size
+        );
+    }
+    let meta_start = input_size - meta_size;
+    let mut source = File::open(input).await?;
+    source.seek(SeekFrom::Start(meta_start)).await?;
 
     let mut decrypted_cia = CiaFile {
         header: original_cia.header,
@@ -159,13 +157,22 @@ pub async fn decrypt_from_encrypted_cia(
     out_file.write_all(finalized.get_ref()).await?;
     out_file.seek(SeekFrom::Start(end_pos)).await?;
 
-    if let Some(meta) = meta_bytes {
+    if meta_size > 0 {
         let aligned = align_64(end_pos);
         if aligned > end_pos {
-            let pad = vec![0u8; (aligned - end_pos) as usize];
-            out_file.write_all(&pad).await?;
+            let pad = [0u8; 64];
+            out_file
+                .write_all(&pad[..(aligned - end_pos) as usize])
+                .await?;
         }
-        out_file.write_all(&meta).await?;
+        let mut remaining = meta_size;
+        let mut buffer = vec![0u8; CONTENT_COPY_BUF];
+        while remaining > 0 {
+            let len = remaining.min(buffer.len() as u64) as usize;
+            source.read_exact(&mut buffer[..len]).await?;
+            out_file.write_all(&buffer[..len]).await?;
+            remaining -= len as u64;
+        }
     }
 
     Ok(())

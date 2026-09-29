@@ -22,6 +22,7 @@ use crate::nintendo::ctr::util::is_twl_title_id;
 use crate::nintendo::ctr::z3ds::Z3dsReader;
 use crate::nintendo::ctr::z3ds::models::{Z3DS_HEADER_SIZE, Z3DS_MAGIC, Z3dsHeader};
 use crate::util::bytes::cstr_ascii;
+use crate::util::extent_end;
 use crate::util::pixel::{decode_rgb565_morton_tiled, encode_png};
 use anyhow::{Context, Result, anyhow, bail};
 use binrw::BinRead;
@@ -265,8 +266,19 @@ fn read_cia_info<R: Read + Seek>(reader: &mut R) -> Result<CtrInfo> {
     };
 
     let smdh = if cia_header.meta_size > 0 {
+        if cia_header.meta_size < MetaData::SERIALIZED_LEN as u32 {
+            bail!("ctr info: CIA metadata is shorter than its required fields");
+        }
+        let file_len = reader.seek(SeekFrom::End(0))?;
+        if extent_end(meta_start, u64::from(cia_header.meta_size), file_len).is_none() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "CIA metadata overruns file",
+            )
+            .into());
+        }
         reader.seek(SeekFrom::Start(meta_start))?;
-        let mut meta_buf = vec![0u8; cia_header.meta_size as usize];
+        let mut meta_buf = [0u8; MetaData::SERIALIZED_LEN];
         reader.read_exact(&mut meta_buf)?;
         let meta = MetaData::read_le(&mut Cursor::new(&meta_buf))
             .context("ctr info: parse CIA metadata")?;
@@ -833,6 +845,38 @@ mod tests {
         assert_eq!(info.cia_contents[0].content_id, "00000000");
         assert_eq!(info.cia_contents[0].size, 0x200);
         assert!(!info.cia_contents[0].encrypted);
+    }
+
+    #[test]
+    fn cia_info_rejects_metadata_extent_past_eof() {
+        use crate::nintendo::ctr::test_fixtures::{make_meta, synth_cia_with_meta};
+
+        let (_tmp, cia_path, _, _) = synth_cia_with_meta(make_meta(0));
+        let mut cia = std::fs::read(&cia_path).unwrap();
+        cia[0x14..0x18].copy_from_slice(&u32::MAX.to_le_bytes());
+        std::fs::write(&cia_path, cia).unwrap();
+
+        assert!(read_info(&cia_path).is_err());
+    }
+
+    #[test]
+    fn cia_info_reads_real_sized_metadata_title_and_icon() {
+        use crate::nintendo::ctr::test_fixtures::{make_meta, synth_cia_with_meta};
+
+        let mut meta = make_meta(0);
+        meta.icon_data = build_minimal_smdh("Homebrew", "Author");
+        let (_tmp, cia_path, _, _) = synth_cia_with_meta(meta);
+
+        let info = read_info(&cia_path).unwrap();
+        let smdh = info.smdh.expect("CIA metadata SMDH");
+        let title = smdh
+            .titles
+            .iter()
+            .find(|title| title.language == "English")
+            .expect("English title");
+        assert_eq!(title.short_description, "Homebrew");
+        assert_eq!(title.publisher, "Author");
+        assert!(info.icon.is_some());
     }
 
     #[test]

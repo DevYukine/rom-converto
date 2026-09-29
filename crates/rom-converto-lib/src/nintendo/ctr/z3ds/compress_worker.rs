@@ -15,8 +15,11 @@ use crate::nintendo::ctr::z3ds::error::{Z3dsError, Z3dsResult};
 use crate::nintendo::ctr::z3ds::seekable::{FrameEntry, write_seek_table};
 use crate::util::CancelToken;
 use crate::util::Cancelled;
-use crate::util::worker_pool::{Pool, PoolChannelClosed, Worker, drive, parallelism};
-use std::io::{BufReader, BufWriter, Read, Write};
+use crate::util::worker_pool::{
+    Admission, Budget, Pool, PoolChannelClosed, Worker, drive, with_writer_thread,
+    zstd_cctx_estimate,
+};
+use std::io::{BufReader, BufWriter, Read};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -65,23 +68,20 @@ pub(super) fn make_z3ds_compress_workers(
 ) -> Z3dsResult<Vec<Z3dsCompressWorker>> {
     (0..n).map(|_| Z3dsCompressWorker::new(level)).collect()
 }
-
-/// Pick a conservative `max_in_flight` cap that respects both the
-/// thread count and the per-frame working set.
-///
-/// For 32 MB CIA frames, capping at 4 in-flight keeps the peak
-/// working set around 4 x 32 MB = 128 MB (uncompressed queue) plus
-/// a similar amount in flight through the workers and writer
-/// channel, which stays well inside a reasonable RAM budget even on
-/// 8 GB laptops. For 256 KB frames the cap is `parallelism() * 2`,
-/// typically 32-64 on modern CPUs, which still fits inside 16 MB.
-fn pick_max_in_flight(max_frame_size: usize) -> usize {
-    const LARGE_FRAME_CUTOFF: usize = 4 * 1024 * 1024;
-    if max_frame_size >= LARGE_FRAME_CUTOFF {
-        4
-    } else {
-        parallelism() * 2
+pub(super) fn compression_admission(
+    level: i32,
+    frame_size: usize,
+    num_frames: u64,
+    requested_workers: usize,
+) -> Option<Admission> {
+    Budget {
+        codec_per_worker: zstd_cctx_estimate(level, frame_size)
+            + zstd::zstd_safe::compress_bound(frame_size),
+        per_job: 2 * frame_size,
+        writer_slot: frame_size,
+        fixed: 0,
     }
+    .admit(requested_workers, num_frames)
 }
 
 /// Read the next frame worth of bytes from `reader` into a freshly
@@ -115,8 +115,10 @@ fn read_frame<R: Read>(reader: &mut R, max_frame_size: usize) -> Z3dsResult<Opti
 ///
 /// Returns the total bytes written to `writer` (frames plus seek table), the
 /// value that goes into the Z3DS header's `compressed_size` field.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn encode_seekable(
     pool: &Pool<Z3dsCompressWork, Z3dsCompressedFrame, Z3dsError>,
+    admission: Admission,
     reader: &mut BufReader<std::fs::File>,
     writer: &mut BufWriter<std::fs::File>,
     max_frame_size: usize,
@@ -129,61 +131,41 @@ pub(super) fn encode_seekable(
     } else {
         uncompressed_size.div_ceil(max_frame_size as u64)
     };
-    let max_in_flight = pick_max_in_flight(max_frame_size);
 
     let mut entries: Vec<FrameEntry> = Vec::with_capacity(num_frames as usize);
     let mut frames_bytes: u64 = 0;
+    with_writer_thread(
+        writer,
+        admission.writer_capacity,
+        Z3dsError::WorkerPoolPanic,
+        |write_tx| {
+            drive(
+                pool,
+                num_frames,
+                admission.max_in_flight,
+                |_seq| -> Z3dsResult<Z3dsCompressWork> {
+                    if cancel.is_cancelled() {
+                        return Err(Cancelled.into());
+                    }
+                    let uncompressed = read_frame(reader, max_frame_size)?.unwrap_or_default();
+                    Ok(Z3dsCompressWork { uncompressed })
+                },
+                |_seq, out| -> Z3dsResult<()> {
+                    entries.push(FrameEntry {
+                        compressed_size: out.compressed.len() as u32,
+                        decompressed_size: out.uncompressed_size,
+                    });
+                    frames_bytes += out.compressed.len() as u64;
+                    bytes_done.fetch_add(out.uncompressed_size as u64, Ordering::Relaxed);
+                    write_tx
+                        .send(out.compressed)
+                        .map_err(|_| Z3dsError::WorkerPoolClosed(PoolChannelClosed))?;
+                    Ok(())
+                },
+            )
+        },
+    )?;
 
-    let (write_tx, write_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(max_in_flight * 2);
-
-    let scope_result: Z3dsResult<()> = std::thread::scope(|s| {
-        let writer_slot: &mut BufWriter<std::fs::File> = writer;
-        let writer_handle = s.spawn(move || -> Z3dsResult<()> {
-            while let Ok(bytes) = write_rx.recv() {
-                writer_slot.write_all(&bytes)?;
-            }
-            Ok(())
-        });
-
-        let drive_result = drive(
-            pool,
-            num_frames,
-            max_in_flight,
-            // produce: read the next frame from the sequential reader.
-            |_seq| -> Z3dsResult<Z3dsCompressWork> {
-                if cancel.is_cancelled() {
-                    return Err(Cancelled.into());
-                }
-                let uncompressed = read_frame(reader, max_frame_size)?.unwrap_or_default();
-                Ok(Z3dsCompressWork { uncompressed })
-            },
-            // consume: runs in strict seq order, so the seek-table entries come
-            // out byte-identical to a sequential pass.
-            |_seq, out| -> Z3dsResult<()> {
-                entries.push(FrameEntry {
-                    compressed_size: out.compressed.len() as u32,
-                    decompressed_size: out.uncompressed_size,
-                });
-                frames_bytes += out.compressed.len() as u64;
-                bytes_done.fetch_add(out.uncompressed_size as u64, Ordering::Relaxed);
-                write_tx
-                    .send(out.compressed)
-                    .map_err(|_| Z3dsError::WorkerPoolClosed(PoolChannelClosed))?;
-                Ok(())
-            },
-        );
-
-        drop(write_tx);
-        let writer_result = writer_handle
-            .join()
-            .unwrap_or_else(|_| Err(Z3dsError::WorkerPoolPanic));
-        drive_result?;
-        writer_result
-    });
-
-    scope_result?;
-
-    // The writer thread has exited and released its borrow of `writer`.
     let footer_bytes = write_seek_table(writer, &entries)?;
     Ok(frames_bytes + footer_bytes)
 }
@@ -192,6 +174,8 @@ pub(super) fn encode_seekable(
 mod tests {
     use super::*;
     use crate::nintendo::ctr::z3ds::seekable::{decode_seekable, encode_seekable_streaming};
+    use crate::util::worker_pool::parallelism;
+    use std::io::Write;
 
     fn encode_pool(input: &[u8], max_frame_size: usize, level: i32) -> Z3dsResult<Vec<u8>> {
         let tmp = tempfile::tempdir().unwrap();
@@ -199,8 +183,10 @@ mod tests {
         let out_path = tmp.path().join("out.bin");
         std::fs::write(&in_path, input).unwrap();
 
-        let n_threads = parallelism();
-        let workers = make_z3ds_compress_workers(n_threads, level)?;
+        let num_frames = (input.len() as u64).div_ceil(max_frame_size as u64);
+        let admission = compression_admission(level, max_frame_size, num_frames, parallelism())
+            .expect("admission");
+        let workers = make_z3ds_compress_workers(admission.workers, level)?;
         let pool: Pool<Z3dsCompressWork, Z3dsCompressedFrame, Z3dsError> = Pool::spawn(workers);
 
         let in_file = std::fs::File::open(&in_path)?;
@@ -211,6 +197,7 @@ mod tests {
         let bytes_done = Arc::new(AtomicU64::new(0));
         encode_seekable(
             &pool,
+            admission,
             &mut reader,
             &mut writer,
             max_frame_size,
@@ -223,6 +210,21 @@ mod tests {
 
         pool.shutdown();
         Ok(std::fs::read(&out_path).unwrap())
+    }
+
+    #[test]
+    fn four_mib_frames_admit_eight_workers_and_in_flight_jobs() {
+        let admission = compression_admission(0, 4 * 1024 * 1024, 16, 8).expect("admission");
+        assert!(admission.workers >= 8, "{admission:?}");
+        assert!(admission.max_in_flight >= 8, "{admission:?}");
+    }
+
+    #[test]
+    fn level_22_large_frames_fall_back_to_one_worker() {
+        let admission = compression_admission(22, 32 * 1024 * 1024, 1, 8);
+        assert!(admission.is_none(), "{admission:?}");
+        let admission = admission.unwrap_or(Admission::DEGRADED);
+        assert_eq!((admission.workers, admission.max_in_flight), (1, 1));
     }
 
     /// Round-trip the pooled encoder output through `decode_seekable`

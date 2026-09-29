@@ -131,21 +131,8 @@ impl<R: Read + Seek> Read for Z3dsReader<R> {
 
 impl<R: Read + Seek> Seek for Z3dsReader<R> {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
-        let next = match pos {
-            SeekFrom::Start(n) => Some(n),
-            SeekFrom::End(d) => self.len.checked_add_signed(d),
-            SeekFrom::Current(d) => self.pos.checked_add_signed(d),
-        };
-        match next {
-            Some(n) => {
-                self.pos = n;
-                Ok(n)
-            }
-            None => Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "seek before start or past u64",
-            )),
-        }
+        self.pos = crate::util::positional_reader::seek_target(self.pos, self.len, pos)?;
+        Ok(self.pos)
     }
 }
 

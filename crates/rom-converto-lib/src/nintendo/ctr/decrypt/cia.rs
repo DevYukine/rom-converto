@@ -30,7 +30,7 @@ use crate::nintendo::ctr::models::title_metadata::ContentChunkRecord;
 use crate::nintendo::ctr::util::{align_64, is_twl_title_id};
 use crate::nintendo::ctr::z3ds::models::underlying_magic;
 use crate::util::worker_pool::{Pool, parallelism};
-use crate::util::{CancelToken, Cancelled, ProgressReporter};
+use crate::util::{CancelToken, Cancelled, ProgressReporter, extent_end};
 use anyhow::{Context, anyhow};
 use binrw::BinRead;
 use futures::future::select_ok;
@@ -44,12 +44,9 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufWriter};
 
 pub type Aes128Ctr = ctr::Ctr128BE<Aes128>;
 
-// RomFS streams through the shared worker pool in fixed CHUNK_SIZE pieces.
-// Peak working memory per RomFS region is ROMFS_MAX_IN_FLIGHT * CHUNK_SIZE
-// for the in-flight queue plus the same again inside the worker threads
-// (about 256 MiB), on top of one full ExeFS buffer (bounded at 8 MiB by the
-// 3DS spec) and small fixed headers. The whole ROM/partition is never held
-// in memory.
+// RomFS and ExeFS stream in fixed CHUNK_SIZE pieces; whole sections are never
+// retained in memory. RomFS keeps at most ROMFS_MAX_IN_FLIGHT chunks in
+// flight, counting worker threads and the reorder queue together.
 pub(crate) const ROMFS_CHUNK_SIZE: usize = 32 * 1024 * 1024; // 32 MiB
 const CHUNK_SIZE: usize = ROMFS_CHUNK_SIZE;
 const ROMFS_MAX_IN_FLIGHT: usize = 4;
@@ -80,6 +77,23 @@ fn hash_bytes(hasher: &mut ContentHasher<'_>, bytes: &[u8]) {
     }
 }
 
+/// Whether a chunked read through this reader re-applies the content-index IV
+/// to a chunk's first block: only CIA content with a non-zero index goes
+/// through the outer CBC layer (NCSD and standalone NCCH readers are plain),
+/// and the re-application only happens while that layer is actually active.
+fn needs_cidx_fixup(cia: &CiaReader) -> bool {
+    cia.encrypted() && cia.cidx > 0 && !(cia.single_ncch || cia.from_ncsd)
+}
+
+/// Undoes the content-index IV that [`CiaReader`] re-applies to the first
+/// block of every chunk after the first: its CBC layer restarts from
+/// `gen_iv(cidx)` (big-endian cidx in the first two bytes) on each read call,
+/// so a single-read output only ever had it on the very first block.
+fn undo_cidx_iv(data: &mut [u8], cidx: u16) {
+    data[0] ^= (cidx >> 8) as u8;
+    data[1] ^= cidx as u8;
+}
+
 async fn advance_to_offset(
     writer: &mut BufWriter<&mut File>,
     cia: &mut CiaReader,
@@ -90,22 +104,40 @@ async fn advance_to_offset(
     if let Some(gap) = target_offset.checked_sub(writer.stream_position().await?)
         && gap > 0
     {
-        let mut buf = vec![0u8; gap as usize];
-        cia.read(&mut buf)
-            .await
-            .context("reading gap bytes before section")?;
+        // Stream the gap instead of allocating it: the section offsets come
+        // straight from the NCCH header, so a crafted offset must fail the
+        // read rather than build a multi-gigabyte buffer first.
         // At the NCCH header boundary (0x200 into the NCCH), clear the second
         // byte to fix the content-index field after decryption. out_base
         // shifts the comparison to the partition's absolute position when the
         // writer targets a multi-partition NCSD output.
-        if writer.stream_position().await? == out_base + EXEFS_HEADER_SIZE as u64 {
-            buf[1] = 0x00;
+        let clear_content_index =
+            writer.stream_position().await? == out_base + EXEFS_HEADER_SIZE as u64;
+        let fixup = needs_cidx_fixup(cia);
+        let mut buf = vec![0u8; CHUNK_SIZE.min(gap as usize)];
+        let mut remaining = gap;
+        let mut first_chunk = true;
+        while remaining > 0 {
+            let len = buf.len().min(remaining as usize);
+            let chunk = &mut buf[..len];
+            cia.read(chunk)
+                .await
+                .context("reading gap bytes before section")?;
+            if first_chunk {
+                if clear_content_index && len > 1 {
+                    chunk[1] = 0x00;
+                }
+            } else if fixup && len > 1 {
+                undo_cidx_iv(chunk, cia.cidx);
+            }
+            hash_bytes(hasher, chunk);
+            writer
+                .write_all(chunk)
+                .await
+                .context("writing gap bytes before section")?;
+            first_chunk = false;
+            remaining -= len as u64;
         }
-        hash_bytes(hasher, &buf);
-        writer
-            .write_all(&buf)
-            .await
-            .context("writing gap bytes before section")?;
     }
     Ok(())
 }
@@ -170,11 +202,26 @@ async fn write_exheader_section(
         key = fixed;
     }
 
-    let mut buf = vec![0u8; size as usize];
-    cia.read(&mut buf).await.context("reading ExHeader")?;
-    Aes128Ctr::new_from_slices(&key, crypto.ctr)?.apply_keystream(&mut buf);
-    hash_bytes(hasher, &buf);
-    writer.write_all(&buf).await.context("writing ExHeader")?;
+    // `exhdrsize` is an unvalidated header field, so decrypt through a fixed
+    // buffer instead of trusting it with one allocation.
+    let mut cipher = Aes128Ctr::new_from_slices(&key, crypto.ctr)?;
+    let fixup = needs_cidx_fixup(cia);
+    let mut buf = vec![0u8; CHUNK_SIZE.min(size as usize)];
+    let mut remaining = size;
+    let mut first_chunk = true;
+    while remaining > 0 {
+        let len = buf.len().min(remaining as usize);
+        let chunk = &mut buf[..len];
+        cia.read(chunk).await.context("reading ExHeader")?;
+        if !first_chunk && fixup && len > 1 {
+            undo_cidx_iv(chunk, cia.cidx);
+        }
+        cipher.apply_keystream(chunk);
+        hash_bytes(hasher, chunk);
+        writer.write_all(chunk).await.context("writing ExHeader")?;
+        first_chunk = false;
+        remaining -= len as u32;
+    }
     progress.inc(size as u64);
     Ok(())
 }
@@ -202,53 +249,110 @@ async fn write_exefs_section(
         working_key = fixed;
     }
 
-    let mut encrypted_exefs = vec![0u8; opts.size as usize];
-    cia.read(&mut encrypted_exefs)
-        .await
-        .context("reading ExeFS")?;
-
-    let mut decrypted_exefs = encrypted_exefs.clone();
-    Aes128Ctr::new_from_slices(&working_key, &opts.ctr)?.apply_keystream(&mut decrypted_exefs);
-
-    if opts.uses_extra_crypto != 0 || opts.use_seed_crypto {
-        let mut extra_decrypted = encrypted_exefs;
-        let extra_key = derive_ctr_key(
+    if (opts.uses_extra_crypto != 0 || opts.use_seed_crypto) && opts.size < EXEFS_HEADER_SIZE as u32
+    {
+        anyhow::bail!("ExeFS section is shorter than its header");
+    }
+    let extra_key = (opts.uses_extra_crypto != 0 || opts.use_seed_crypto).then(|| {
+        derive_ctr_key(
             CTR_KEYS_0[extra_crypto_index(opts.uses_extra_crypto)],
             opts.key_y,
-        );
-        Aes128Ctr::new_from_slices(&extra_key, &opts.ctr)?.apply_keystream(&mut extra_decrypted);
+        )
+    });
+    let mut base_cipher = Aes128Ctr::new_from_slices(&working_key, &opts.ctr)?;
+    let mut extra_cipher = extra_key
+        .as_ref()
+        .map(|key| Aes128Ctr::new_from_slices(key, &opts.ctr))
+        .transpose()?;
 
-        for entry_idx in 0usize..EXEFS_MAX_FILE_ENTRIES {
-            let entry_bytes =
-                &decrypted_exefs[entry_idx * EXEFS_ENTRY_SIZE..(entry_idx + 1) * EXEFS_ENTRY_SIZE];
-            let exe_info = ExeFSHeader::read(&mut Cursor::new(entry_bytes))?;
+    // Chunk 0 reproduces the single-read output as is; each later chunk gets
+    // the reader's content-index IV re-applied to its first block, so undo it
+    // (the RomFS loop applies the same undo to every chunk).
+    let fixup = needs_cidx_fixup(cia);
 
-            let offset = LittleEndian::read_u32(&exe_info.file_offset) as usize + EXEFS_HEADER_SIZE;
-            let size = LittleEndian::read_u32(&exe_info.file_size) as usize;
+    let mut remaining = u64::from(opts.size);
+    let mut offset = 0u64;
+    let mut encrypted = vec![0u8; CHUNK_SIZE.min(opts.size as usize)];
+    let mut decrypted = extra_cipher.as_ref().map(|_| vec![0u8; encrypted.len()]);
+    let mut entries = None;
 
-            match exe_info.file_name.iter().rposition(|&x| x != 0) {
-                Some(name_end) if exe_info.file_name[..=name_end].is_ascii() => {
-                    if exe_info.file_name[..=name_end] != EXEFS_SECTION_ICON
-                        && exe_info.file_name[..=name_end] != EXEFS_SECTION_BANNER
-                    {
-                        decrypted_exefs[offset..offset + size]
-                            .copy_from_slice(&extra_decrypted[offset..offset + size]);
+    while remaining > 0 {
+        let len = remaining.min(encrypted.len() as u64) as usize;
+        cia.read(&mut encrypted[..len])
+            .await
+            .context("reading ExeFS")?;
+        if offset > 0 && fixup && len > 1 {
+            undo_cidx_iv(&mut encrypted, cia.cidx);
+        }
+        if let Some(decrypted) = &mut decrypted {
+            decrypted[..len].copy_from_slice(&encrypted[..len]);
+            base_cipher.apply_keystream(&mut decrypted[..len]);
+            extra_cipher
+                .as_mut()
+                .expect("extra cipher is paired with the decrypted buffer")
+                .apply_keystream(&mut encrypted[..len]);
+
+            if entries.is_none() {
+                let mut parsed = Vec::with_capacity(EXEFS_MAX_FILE_ENTRIES);
+                for entry_idx in 0..EXEFS_MAX_FILE_ENTRIES {
+                    let start = entry_idx * EXEFS_ENTRY_SIZE;
+                    let exe_info = ExeFSHeader::read(&mut Cursor::new(
+                        &decrypted[start..start + EXEFS_ENTRY_SIZE],
+                    ))?;
+                    let name_end = exe_info.file_name.iter().rposition(|&byte| byte != 0);
+                    let extra_crypto = match name_end {
+                        Some(end) if exe_info.file_name[..=end].is_ascii() => {
+                            exe_info.file_name[..=end] != EXEFS_SECTION_ICON
+                                && exe_info.file_name[..=end] != EXEFS_SECTION_BANNER
+                        }
+                        _ => true,
+                    };
+                    if extra_crypto {
+                        let start = EXEFS_HEADER_SIZE as u64
+                            + u64::from(LittleEndian::read_u32(&exe_info.file_offset));
+                        let end = extent_end(
+                            start,
+                            u64::from(LittleEndian::read_u32(&exe_info.file_size)),
+                            u64::from(opts.size),
+                        )
+                        .ok_or_else(|| anyhow::anyhow!("ExeFS entry overruns section"))?;
+                        if start < end {
+                            parsed.push((start, end));
+                        }
                     }
                 }
-                _ => {
-                    decrypted_exefs[offset..offset + size]
-                        .copy_from_slice(&extra_decrypted[offset..offset + size]);
+                entries = Some(parsed);
+            }
+
+            let chunk_end = offset + len as u64;
+            for &(start, end) in entries
+                .as_ref()
+                .expect("ExeFS entries are initialized before processing the chunk")
+            {
+                let copy_start = start.max(offset);
+                let copy_end = end.min(chunk_end);
+                if copy_start < copy_end {
+                    let range = (copy_start - offset) as usize..(copy_end - offset) as usize;
+                    decrypted[range.clone()].copy_from_slice(&encrypted[range]);
                 }
             }
+            hash_bytes(hasher, &decrypted[..len]);
+            writer
+                .write_all(&decrypted[..len])
+                .await
+                .context("writing ExeFS")?;
+        } else {
+            base_cipher.apply_keystream(&mut encrypted[..len]);
+            hash_bytes(hasher, &encrypted[..len]);
+            writer
+                .write_all(&encrypted[..len])
+                .await
+                .context("writing ExeFS")?;
         }
+        offset += len as u64;
+        remaining -= len as u64;
+        progress.inc(len as u64);
     }
-
-    hash_bytes(hasher, &decrypted_exefs);
-    writer
-        .write_all(&decrypted_exefs)
-        .await
-        .context("writing ExeFS")?;
-    progress.inc(opts.size as u64);
     Ok(())
 }
 
@@ -281,10 +385,12 @@ async fn write_romfs_section(
     let base_ctr = *crypto.ctr;
     // The producer reads through the CIA outer CBC layer (sequential), so
     // chunks must be read in order; only the per-chunk AES-CTR step runs in
-    // parallel across the pool. The legacy path XORed cidx into byte 1 of every
-    // chunk buffer, so the fixup is applied per chunk here to stay byte-identical.
+    // parallel across the pool. Every read call re-applies the content-index
+    // IV to the chunk's first block, so the two-byte fixup runs on every
+    // chunk. The gate is develop's index check alone: develop XORed RomFS
+    // chunks even when the outer CBC layer is inactive, so the RomFS output
+    // must not switch to the CBC-gated needs_cidx_fixup.
     let apply_cidx_fixup = cia.cidx > 0 && !(cia.single_ncch || cia.from_ncsd);
-    let cidx_byte = cia.cidx as u8;
     let total_size = size as u64;
     let n_chunks = total_size.div_ceil(CHUNK_SIZE as u64);
 
@@ -299,15 +405,15 @@ async fn write_romfs_section(
 
     let result = async {
         while write_seq < n_chunks {
-            while in_flight < ROMFS_MAX_IN_FLIGHT && submit_seq < n_chunks {
+            while in_flight + pending.len() < ROMFS_MAX_IN_FLIGHT && submit_seq < n_chunks {
                 if cancel.is_cancelled() {
                     return Err(Cancelled.into());
                 }
                 let this = std::cmp::min(CHUNK_SIZE as u64, total_size - bytes_read) as usize;
                 let mut buf = vec![0u8; this];
                 cia.read(&mut buf).await.context("reading RomFS chunk")?;
-                if apply_cidx_fixup {
-                    buf[1] ^= cidx_byte;
+                if apply_cidx_fixup && buf.len() > 1 {
+                    undo_cidx_iv(&mut buf, cia.cidx);
                 }
                 let counter = advance_counter(&base_ctr, bytes_read);
                 pool.submit(
@@ -550,11 +656,14 @@ pub(crate) async fn get_new_key(
 
 /// Where one NCCH lands in the output and which title it belongs to.
 /// `title_id` may be all zeros, in which case the NCCH header's own
-/// program ID is used.
+/// program ID is used. `content_size` is the size declared for the content
+/// the NCCH lives in (CIA content record, NCSD partition, or the file itself),
+/// which bounds the header's section offsets.
 pub struct NcchOutput {
     pub out_base: u64,
     pub offs: u64,
     pub title_id: [u8; 8],
+    pub content_size: u64,
 }
 
 pub async fn parse_ncch(
@@ -569,6 +678,7 @@ pub async fn parse_ncch(
         out_base,
         offs,
         mut title_id,
+        content_size,
     } = output;
     if cia.from_ncsd {
         debug!("  Parsing {} NCCH", CTR_NCSD_PARTITIONS[cia.cidx as usize]);
@@ -585,6 +695,20 @@ pub async fn parse_ncch(
     let mut tmp = [0u8; 512];
     cia.read(&mut tmp).await?;
     let header = NcchHeader::read(&mut Cursor::new(&tmp))?;
+    // The section offsets are raw header fields; reject ones that fall outside
+    // the declared content size before they become seek targets.
+    let exefs_offset = u64::from(header.exefsoffset) * u64::from(CTR_MEDIA_UNIT_SIZE);
+    let romfs_offset = u64::from(header.romfsoffset) * u64::from(CTR_MEDIA_UNIT_SIZE);
+    if exefs_offset > content_size {
+        return Err(anyhow!(
+            "ExeFS offset {exefs_offset:#x} exceeds the declared content size {content_size:#x}"
+        ));
+    }
+    if romfs_offset > content_size {
+        return Err(anyhow!(
+            "RomFS offset {romfs_offset:#x} exceeds the declared content size {content_size:#x}"
+        ));
+    }
     if title_id.iter().all(|&x| x == 0) {
         title_id = header.programid;
         title_id.reverse();
@@ -666,7 +790,7 @@ pub async fn parse_ncch(
             cia,
             out_base,
             NcchWriteOptions {
-                offset: (header.exefsoffset * CTR_MEDIA_UNIT_SIZE) as u64,
+                offset: exefs_offset,
                 size: header.exefssize * CTR_MEDIA_UNIT_SIZE,
                 section: NcchSection::ExeFS,
                 counter,
@@ -690,7 +814,7 @@ pub async fn parse_ncch(
             cia,
             out_base,
             NcchWriteOptions {
-                offset: (header.romfsoffset * CTR_MEDIA_UNIT_SIZE) as u64,
+                offset: romfs_offset,
                 size: header.romfssize * CTR_MEDIA_UNIT_SIZE,
                 section: NcchSection::RomFS,
                 counter,
@@ -786,6 +910,7 @@ pub async fn parse_and_decrypt_ncsd(
                 out_base: partition_offset,
                 offs: partition_offset,
                 title_id,
+                content_size: u64::from(size_mu) * u64::from(CTR_MEDIA_UNIT_SIZE),
             },
             None,
             progress,
@@ -806,6 +931,7 @@ pub async fn parse_and_decrypt_ncch(
     debug!("Parsing standalone NCCH file: {}", input.display());
 
     let rom_file = File::open(input).await?;
+    let content_size = rom_file.metadata().await?.len();
 
     let mut reader = CiaReader::new(CiaReaderArgs {
         file: rom_file,
@@ -825,6 +951,7 @@ pub async fn parse_and_decrypt_ncch(
             out_base: 0,
             offs: 0,
             title_id: [0u8; 8],
+            content_size,
         },
         None,
         progress,
@@ -955,6 +1082,7 @@ pub async fn parse_and_decrypt_cia(
                     out_base: out_pos,
                     offs: 0,
                     title_id,
+                    content_size: content.csize,
                 },
                 Some(&mut hasher),
                 progress,
@@ -1070,7 +1198,369 @@ async fn copy_twl_content(
 mod tests {
     use super::*;
     use crate::util::NoProgress;
+    use binrw::BinWrite;
     use tokio::io::AsyncReadExt;
+    #[tokio::test]
+    async fn write_exefs_section_accepts_short_plain_crypto_sections() {
+        let key = [0x24; 16];
+        let counter = [0x17; 16];
+        let plaintext = vec![0x5A; 0x100];
+        let mut encrypted = plaintext.clone();
+        Aes128Ctr::new_from_slices(&key, &counter)
+            .unwrap()
+            .apply_keystream(&mut encrypted);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let in_path = tmp.path().join("exefs.bin");
+        let out_path = tmp.path().join("out.bin");
+        std::fs::write(&in_path, encrypted).unwrap();
+        let in_file = File::open(&in_path).await.unwrap();
+        let mut reader = CiaReader::new(CiaReaderArgs {
+            file: in_file,
+            encrypted: false,
+            path: in_path,
+            key: [0; 16],
+            cidx: 0,
+            contentoff: 0,
+            single_ncch: true,
+            from_ncsd: false,
+        });
+        reader.seek(0).await.unwrap();
+
+        let mut out = File::create(&out_path).await.unwrap();
+        {
+            let mut writer = BufWriter::new(&mut out);
+            let mut hasher: ContentHasher<'_> = None;
+            write_exefs_section(
+                &mut reader,
+                &mut writer,
+                ExefsDecryptOptions {
+                    size: plaintext.len() as u32,
+                    ctr: counter,
+                    base_key: key,
+                    uses_extra_crypto: 0,
+                    fixed_crypto: 0,
+                    use_seed_crypto: false,
+                    key_y: 0,
+                },
+                &mut hasher,
+                &NoProgress,
+            )
+            .await
+            .unwrap();
+            writer.flush().await.unwrap();
+        }
+
+        assert_eq!(tokio::fs::read(out_path).await.unwrap(), plaintext);
+    }
+
+    #[tokio::test]
+    async fn write_exefs_section_streams_multiple_chunks() {
+        let key = [0x24; 16];
+        let counter = [0x17; 16];
+        let key_y = 0x0123_4567_89AB_CDEF_0011_2233_4455_6677;
+        let size = (CHUNK_SIZE + 17) as u32;
+        let mut plaintext: Vec<u8> = (0..size)
+            .map(|i| (i.wrapping_mul(31) % 251) as u8)
+            .collect();
+        plaintext[..EXEFS_HEADER_SIZE].fill(0);
+        ExeFSHeader {
+            file_name: *b"code\0\0\0\0",
+            file_offset: 0u32.to_le_bytes(),
+            file_size: 0x100u32.to_le_bytes(),
+        }
+        .write(&mut Cursor::new(&mut plaintext))
+        .unwrap();
+        let file_range = EXEFS_HEADER_SIZE..EXEFS_HEADER_SIZE + 0x100;
+        let mut encrypted = plaintext.clone();
+        Aes128Ctr::new_from_slices(&key, &counter)
+            .unwrap()
+            .apply_keystream(&mut encrypted);
+        let extra_key = derive_ctr_key(CTR_KEYS_0[1], key_y);
+        let mut extra_encrypted = plaintext.clone();
+        Aes128Ctr::new_from_slices(&extra_key, &counter)
+            .unwrap()
+            .apply_keystream(&mut extra_encrypted);
+        encrypted[file_range.clone()].copy_from_slice(&extra_encrypted[file_range]);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let in_path = tmp.path().join("exefs.bin");
+        let out_path = tmp.path().join("out.bin");
+        std::fs::write(&in_path, encrypted).unwrap();
+        let in_file = File::open(&in_path).await.unwrap();
+        let mut reader = CiaReader::new(CiaReaderArgs {
+            file: in_file,
+            encrypted: false,
+            path: in_path,
+            key: [0; 16],
+            cidx: 0,
+            contentoff: 0,
+            single_ncch: true,
+            from_ncsd: false,
+        });
+        reader.seek(0).await.unwrap();
+
+        let mut out = File::create(&out_path).await.unwrap();
+        let mut content_hash = Sha256::new();
+        let expected_hash = Sha256::digest(&plaintext);
+        {
+            let mut writer = BufWriter::new(&mut out);
+            let mut hasher = Some(&mut content_hash);
+            write_exefs_section(
+                &mut reader,
+                &mut writer,
+                ExefsDecryptOptions {
+                    size,
+                    ctr: counter,
+                    base_key: key,
+                    uses_extra_crypto: 1,
+                    fixed_crypto: 0,
+                    use_seed_crypto: false,
+                    key_y,
+                },
+                &mut hasher,
+                &NoProgress,
+            )
+            .await
+            .unwrap();
+            writer.flush().await.unwrap();
+        }
+
+        let output = tokio::fs::read(out_path).await.unwrap();
+        assert_eq!(output, plaintext);
+        assert_eq!(content_hash.finalize(), expected_hash);
+    }
+
+    /// Develop read the ExeFS with a single call, so the reader's CBC re-entry
+    /// only touched the first block of the first chunk. The chunked loop must
+    /// undo that content-index IV (big-endian cidx in the first two bytes) on
+    /// every chunk after the first to stay byte-identical with the single-read
+    /// output, including the high byte for content indexes >= 0x100. Uses a
+    /// reader with the outer CBC layer active, because that layer is what
+    /// re-applies the index and the fixup is gated on it.
+    #[tokio::test]
+    async fn write_exefs_section_applies_cidx_fixup_to_every_chunk() {
+        fn cbc_encrypt(key: &[u8; 16], iv: &[u8; 16], plain: &[u8]) -> Vec<u8> {
+            use block_padding::NoPadding;
+            use cbc::cipher::{BlockModeEncrypt, KeyIvInit};
+            let mut buf = plain.to_vec();
+            buf.resize(plain.len() + 16, 0);
+            cbc::Encryptor::<Aes128>::new_from_slices(key, iv)
+                .unwrap()
+                .encrypt_padded::<NoPadding>(&mut buf, plain.len())
+                .unwrap()
+                .to_vec()
+        }
+
+        for cidx in [3u16, 0x0301] {
+            let cbc_key = [0x5A; 16];
+            let base_key = [0x24; 16];
+            let counter = [0x17; 16];
+            let size = (2 * CHUNK_SIZE + 0x1000) as u32;
+
+            let plaintext: Vec<u8> = (0..size)
+                .map(|i| (i.wrapping_mul(31) % 251) as u8)
+                .collect();
+
+            // Build the input the decrypt path expects: the inner continuous
+            // CTR layer, then the outer CBC layer keyed with gen_iv(cidx),
+            // whose per-chunk re-entry the fixup must cancel.
+            let mut inner = plaintext.clone();
+            Aes128Ctr::new_from_slices(&base_key, &counter)
+                .unwrap()
+                .apply_keystream(&mut inner);
+            let encrypted = cbc_encrypt(&cbc_key, &gen_iv(cidx), &inner);
+
+            let tmp = tempfile::tempdir().unwrap();
+            let in_path = tmp.path().join("exefs.bin");
+            std::fs::write(&in_path, &encrypted).unwrap();
+            let out_path = tmp.path().join("out.bin");
+
+            let in_file = File::open(&in_path).await.unwrap();
+            let mut reader = CiaReader::new(CiaReaderArgs {
+                file: in_file,
+                encrypted: true,
+                path: in_path.clone(),
+                key: cbc_key,
+                cidx,
+                contentoff: 0,
+                single_ncch: false,
+                from_ncsd: false,
+            });
+            reader.seek(0).await.unwrap();
+
+            let mut out = File::create(&out_path).await.unwrap();
+            {
+                let mut writer = BufWriter::new(&mut out);
+                let mut hasher: ContentHasher = None;
+                write_exefs_section(
+                    &mut reader,
+                    &mut writer,
+                    ExefsDecryptOptions {
+                        size,
+                        ctr: counter,
+                        base_key,
+                        uses_extra_crypto: 0,
+                        fixed_crypto: 0,
+                        use_seed_crypto: false,
+                        key_y: 0,
+                    },
+                    &mut hasher,
+                    &NoProgress,
+                )
+                .await
+                .unwrap();
+                writer.flush().await.unwrap();
+            }
+
+            let output = tokio::fs::read(out_path).await.unwrap();
+            assert_eq!(
+                output, plaintext,
+                "per-chunk cidx fixup must hold across multiple chunks and the tail"
+            );
+        }
+    }
+
+    /// A CIA content with the TMD encrypted bit clear has no outer CBC layer,
+    /// so the reader re-applies no content-index IV and the chunked undo must
+    /// not fire even for cidx > 0. A section past one chunk would otherwise
+    /// corrupt the first two bytes of every chunk after the first.
+    #[tokio::test]
+    async fn write_exefs_section_skips_cidx_fixup_when_unencrypted() {
+        let key = [0x24; 16];
+        let counter = [0x17; 16];
+        let size = (2 * CHUNK_SIZE + 0x1000) as u32;
+
+        let plaintext: Vec<u8> = (0..size)
+            .map(|i| (i.wrapping_mul(31) % 251) as u8)
+            .collect();
+
+        // No CBC layer and no baked-in index bytes: the input is only the
+        // continuous-keystream encryption the section decrypt undoes.
+        let mut encrypted = plaintext.clone();
+        Aes128Ctr::new_from_slices(&key, &counter)
+            .unwrap()
+            .apply_keystream(&mut encrypted);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let in_path = tmp.path().join("exefs.bin");
+        std::fs::write(&in_path, &encrypted).unwrap();
+        let out_path = tmp.path().join("out.bin");
+
+        let in_file = File::open(&in_path).await.unwrap();
+        let mut reader = CiaReader::new(CiaReaderArgs {
+            file: in_file,
+            encrypted: false,
+            path: in_path.clone(),
+            key: [0u8; 16],
+            cidx: 3,
+            contentoff: 0,
+            single_ncch: false,
+            from_ncsd: false,
+        });
+        reader.seek(0).await.unwrap();
+
+        let mut out = File::create(&out_path).await.unwrap();
+        {
+            let mut writer = BufWriter::new(&mut out);
+            let mut hasher: ContentHasher = None;
+            write_exefs_section(
+                &mut reader,
+                &mut writer,
+                ExefsDecryptOptions {
+                    size,
+                    ctr: counter,
+                    base_key: key,
+                    uses_extra_crypto: 0,
+                    fixed_crypto: 0,
+                    use_seed_crypto: false,
+                    key_y: 0,
+                },
+                &mut hasher,
+                &NoProgress,
+            )
+            .await
+            .unwrap();
+            writer.flush().await.unwrap();
+        }
+
+        let output = tokio::fs::read(out_path).await.unwrap();
+        assert_eq!(
+            output, plaintext,
+            "unencrypted content must not get the cidx undo"
+        );
+    }
+
+    /// A header-claimed section offset outside the declared content size must
+    /// be rejected up front, before it becomes a multi-gigabyte seek target
+    /// or allocation.
+    #[tokio::test]
+    async fn parse_ncch_rejects_section_offset_past_declared_content_size() {
+        use crate::nintendo::ctr::test_fixtures::make_ncch_header_bytes;
+
+        let mut ncch = make_ncch_header_bytes(0x0004000000030000);
+        ncch[0x1A0..0x1A4].copy_from_slice(&0x0040_0000u32.to_le_bytes()); // exefsoffset (media units) = 0x8000_0000 bytes
+        ncch[0x1A4..0x1A8].copy_from_slice(&0x10u32.to_le_bytes()); // exefssize
+
+        let tmp = tempfile::tempdir().unwrap();
+        let in_path = tmp.path().join("craft.ncch");
+        std::fs::write(&in_path, &ncch).unwrap();
+        let out_path = tmp.path().join("out.bin");
+        let mut out = File::create(&out_path).await.unwrap();
+
+        let result =
+            parse_and_decrypt_ncch(&in_path, &mut out, &NoProgress, &CancelToken::new()).await;
+        assert!(
+            result.is_err(),
+            "section offset past the declared content size must be rejected"
+        );
+    }
+
+    /// A gap the declared content size only makes plausible but the file
+    /// cannot back must fail while streaming through the fixed chunk buffer;
+    /// the pre-fix code allocated the whole gap (here about 4 GiB) first.
+    #[tokio::test]
+    async fn parse_ncch_fails_when_gap_reaches_past_end_of_file() {
+        use crate::nintendo::ctr::test_fixtures::make_ncch_header_bytes;
+
+        let mut ncch = make_ncch_header_bytes(0x0004000000030000);
+        ncch[0x1A0..0x1A4].copy_from_slice(&0x007F_F000u32.to_le_bytes()); // exefsoffset (media units) = 0xFFE0_0000 bytes
+        ncch[0x1A4..0x1A8].copy_from_slice(&0x10u32.to_le_bytes()); // exefssize
+
+        let tmp = tempfile::tempdir().unwrap();
+        let in_path = tmp.path().join("short.ncch");
+        std::fs::write(&in_path, &ncch).unwrap(); // only the 0x200 header
+        let out_path = tmp.path().join("out.bin");
+
+        let in_file = File::open(&in_path).await.unwrap();
+        let mut reader = CiaReader::new(CiaReaderArgs {
+            file: in_file,
+            encrypted: false,
+            path: in_path,
+            key: [0u8; 16],
+            cidx: 0,
+            contentoff: 0,
+            single_ncch: true,
+            from_ncsd: false,
+        });
+        let mut out = File::create(&out_path).await.unwrap();
+
+        let result = parse_ncch(
+            &mut reader,
+            &mut out,
+            NcchOutput {
+                out_base: 0,
+                offs: 0,
+                title_id: [0u8; 8],
+                content_size: 0xFFFF_FFFF,
+            },
+            None,
+            &NoProgress,
+            &CancelToken::new(),
+        )
+        .await;
+        assert!(result.is_err(), "gap past end of file must fail the read");
+    }
 
     /// The pooled RomFS path must decrypt to the exact bytes a single
     /// continuous AES-CTR stream would produce, including the per-region cidx
@@ -1153,9 +1643,11 @@ mod tests {
     }
 
     /// When the cidx fixup is active (non-first CIA content, not single NCCH,
-    /// not from NCSD) the legacy path XORed cidx into byte 1 of every chunk
-    /// buffer, including chunks past the first and the partial tail. Spans more
-    /// than two chunks so a regression that only fixes up chunk 0 is caught.
+    /// not from NCSD) every chunk buffer's first two bytes carry the
+    /// content-index IV, including chunks past the first and the partial tail.
+    /// Uses a cidx above 0x100 so a byte-1-only fixup regression is caught.
+    /// Spans more than two chunks so a regression that only fixes up chunk 0
+    /// is caught.
     #[tokio::test]
     async fn write_romfs_section_applies_cidx_fixup_to_every_chunk() {
         let key_y: u128 = 0x0123_4567_89AB_CDEF_0011_2233_4455_6677;
@@ -1163,7 +1655,7 @@ mod tests {
             0xAA, 0xBB, 0xCC, 0xDD, 0x00, 0x00, 0x00, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00,
         ];
-        let cidx: u16 = 3;
+        let cidx: u16 = 0x0301;
         let size: u32 = (2 * CHUNK_SIZE + 0x1000) as u32;
 
         let plaintext: Vec<u8> = (0..size)
@@ -1172,14 +1664,15 @@ mod tests {
         let key = derive_ctr_key(CTR_KEYS_0[0], key_y);
 
         // Build the encrypted input the decrypt path expects: per chunk, run the
-        // continuous-keystream encrypt, then XOR cidx back into byte 1 so the
-        // decrypt's per-chunk fixup cancels it out.
+        // continuous-keystream encrypt, then XOR cidx back into the first two
+        // bytes so the decrypt's per-chunk fixup cancels it out.
         let mut encrypted = plaintext.clone();
         Aes128Ctr::new_from_slices(&key, &counter)
             .unwrap()
             .apply_keystream(&mut encrypted);
         let mut offset = 0usize;
         while offset < encrypted.len() {
+            encrypted[offset] ^= (cidx >> 8) as u8;
             encrypted[offset + 1] ^= cidx as u8;
             offset += CHUNK_SIZE;
         }

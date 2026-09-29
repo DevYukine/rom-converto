@@ -57,6 +57,11 @@ impl CiaReader {
         }
     }
 
+    /// Whether the outer CIA CBC layer is active for this content.
+    pub fn encrypted(&self) -> bool {
+        self.encrypted
+    }
+
     pub async fn seek(&mut self, offs: u64) -> anyhow::Result<()> {
         if self.single_ncch || self.from_ncsd {
             self.file.seek(SeekFrom::Start(offs)).await?;
