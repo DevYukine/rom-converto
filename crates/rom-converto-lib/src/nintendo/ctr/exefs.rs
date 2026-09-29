@@ -31,6 +31,7 @@ use crate::nintendo::ctr::decrypt::cia::{derive_ctr_key, get_ncch_aes_counter};
 use crate::nintendo::ctr::decrypt::model::NcchSection;
 use crate::nintendo::ctr::models::exe_fs_header::ExeFSHeader;
 use crate::nintendo::ctr::models::ncch_header::NcchHeader;
+use crate::nintendo::ctr::models::smdh::SMDH_TOTAL_SIZE;
 
 type Aes128Ctr = ctr::Ctr128BE<Aes128>;
 
@@ -55,12 +56,15 @@ fn exefs_cipher(key: &[u8; 16], ctr: &[u8; 16], at: u64) -> Result<Aes128Ctr> {
 /// `header` is the NCCH header for the partition and `exefs_abs` the
 /// absolute offset of the ExeFS region within `reader`
 /// (`exefsoffset * media_unit`). The entry size is validated against
-/// `header.exefssize` before any section bytes are read.
+/// `header.exefssize` and `max_size` before any section bytes are read;
+/// the latter matters on the Z3DS path, where the reader length is
+/// itself declared data and cannot stop a crafted multi-GiB entry.
 pub fn read_exefs_section<R: Read + Seek>(
     reader: &mut R,
     header: &NcchHeader,
     exefs_abs: u64,
     section_name: &[u8],
+    max_size: usize,
 ) -> Result<Vec<u8>> {
     let nocrypto = header.flags[7] & NCCH_FLAGS7_NOCRYPTO != 0;
     let fixed = header.flags[7] & NCCH_FLAGS7_FIXED_KEY != 0;
@@ -103,6 +107,12 @@ pub fn read_exefs_section<R: Read + Seek>(
 
     let (offset, size) = find_exefs_entry(&hdr, section_name)
         .ok_or_else(|| anyhow!("ExeFS section {:?} not found", short_name(section_name)))?;
+    if size as usize > max_size {
+        return Err(anyhow!(
+            "ExeFS section {:?} larger than {max_size} bytes",
+            short_name(section_name)
+        ));
+    }
 
     // Both bounds run in u64: the entry fields are untrusted u32s, and
     // the reader length check keeps a lying header from allocating
@@ -132,7 +142,13 @@ pub fn read_icon_section<R: Read + Seek>(
     header: &NcchHeader,
     exefs_abs: u64,
 ) -> Result<Vec<u8>> {
-    read_exefs_section(reader, header, exefs_abs, &EXEFS_SECTION_ICON)
+    read_exefs_section(
+        reader,
+        header,
+        exefs_abs,
+        &EXEFS_SECTION_ICON,
+        SMDH_TOTAL_SIZE,
+    )
 }
 
 fn find_exefs_entry(exefs_hdr: &[u8], name: &[u8]) -> Option<(u32, u32)> {
@@ -212,7 +228,10 @@ mod tests {
     #[test]
     fn missing_section_errors() {
         let (header, exefs) = synth_header_and_exefs(b"x");
-        assert!(read_exefs_section(&mut Cursor::new(&exefs), &header, 0, b"banner").is_err());
+        assert!(
+            read_exefs_section(&mut Cursor::new(&exefs), &header, 0, b"banner", usize::MAX)
+                .is_err()
+        );
     }
 
     #[test]
@@ -251,5 +270,20 @@ mod tests {
         // exefssize bound can reject this.
         header.exefssize = 1;
         assert!(read_icon_section(&mut Cursor::new(&exefs), &header, 0).is_err());
+    }
+
+    #[test]
+    fn icon_larger_than_smdh_errors() {
+        // On the Z3DS path the ExeFS size and the reader length are both
+        // declared data, so only the SMDH cap can stop a crafted icon
+        // entry from forcing a huge allocation.
+        let (mut header, mut exefs) = synth_header_and_exefs(b"x");
+        exefs[12..16].copy_from_slice(&0x1000_0000u32.to_le_bytes());
+        header.exefssize = u32::MAX;
+        let err = read_icon_section(&mut Cursor::new(&exefs), &header, 0)
+            .err()
+            .unwrap()
+            .to_string();
+        assert_eq!(err, "ExeFS section \"icon\" larger than 14016 bytes");
     }
 }
