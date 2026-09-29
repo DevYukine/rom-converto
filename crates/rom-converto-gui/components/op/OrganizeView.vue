@@ -97,35 +97,6 @@ const summary = computed(() => {
 	return playlists ? `${text} · ${playlists} playlists` : text;
 });
 
-const isPlan = computed(() => !!plan.value?.dry_run && plan.value.rows.some((r) => r.planned));
-
-// A queued or running organize job must not be queued a second time.
-const applying = computed(() =>
-	queue.jobs.some((j) => mine(j) && (j.status === "queued" || j.status === "running")),
-);
-
-// Apply re-queues the same request without the dry-run flag rather than
-// replaying the preview plan, so filesystem changes since the preview are
-// re-planned.
-function apply() {
-	const job = lastJob.value;
-	if (!job || applying.value) return;
-	const taskId = `job-${crypto.randomUUID()}`;
-	queue.enqueue([
-		{
-			name: job.name,
-			opLabel: job.opLabel,
-			command: job.command,
-			args: { ...job.args, taskId, request: { ...job.args.request, dry_run: false } },
-			taskId,
-			progressKey: job.progressKey,
-			chips: job.chips,
-			resultKind: "organize",
-			routeBack: job.routeBack,
-		},
-	]);
-}
-
 // Each run starts from an empty stream; staging alone must not drop the
 // results already on screen. The tail of the buffer is folded in when the run
 // ends, so a cancelled run keeps every row it did produce.
@@ -142,10 +113,9 @@ watch(
 	},
 );
 
-function detail(r: OrganizeRow): { text: string; tone: "green" | "red" | "muted" } | null {
+function detail(r: OrganizeRow): { text: string; tone: "red" | "muted" } | null {
 	if (!r.detail) return null;
 	if (r.status === "failed") return { text: r.detail, tone: "red" };
-	if (r.planned) return { text: r.detail, tone: "green" };
 	if (r.status === "skipped") return { text: r.detail, tone: "muted" };
 	return null;
 }
@@ -184,12 +154,6 @@ function contextItems(r: OrganizeRow) {
 	<div v-for="w in progress.warnings.value" :key="w" role="note" class="rc-warning">{{ w }}</div>
 
 	<ConfigCard v-if="sourceRows.length" title="Results">
-		<template #head-tag>
-			<button v-if="isPlan && !applying" type="button" class="rc-link" @click="apply">
-				Apply — run for real…
-			</button>
-		</template>
-
 		<div class="rc-chips">
 			<FilterChip
 				label="All"
@@ -229,7 +193,6 @@ function contextItems(r: OrganizeRow) {
 		<VirtualList v-else :items="visibleRows" :row-height="ROW_HEIGHT" :key-of="(r) => r.input">
 			<template #default="{ item: r }">
 				<div class="rc-row" @contextmenu="openContextMenu($event, contextItems(r))">
-					<StatusTag v-if="r.planned" status="BASE" label="Planned" :width="58" />
 					<StatusTag :status="TAG[r.status]?.tag ?? r.status" :label="TAG[r.status]?.label" />
 					<div class="rc-row__text">
 						<span class="rc-row__path">
@@ -464,10 +427,6 @@ function contextItems(r: OrganizeRow) {
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
-}
-
-.rc-row__detail--green {
-	color: var(--green);
 }
 
 .rc-row__detail--red {
