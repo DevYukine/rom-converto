@@ -251,6 +251,8 @@ impl ChecksumBounds {
 /// Compute every requested digest for `path` in a single streaming pass.
 /// The file is read in fixed-size chunks and every selected hasher is fed
 /// each chunk, so memory stays constant no matter how large the file is.
+/// Cancellation is observed before every chunk read, so an
+/// already-cancelled token errors even on an empty file.
 pub fn hash_file(
     path: &Path,
     algos: &[HashAlgo],
@@ -266,15 +268,15 @@ pub fn hash_file(
 
     let mut buf = vec![0u8; 4 * 1024 * 1024];
     loop {
-        let n = file.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
         if cancel.is_cancelled() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::Interrupted,
                 Cancelled,
             ));
+        }
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
         }
         hasher.update(&buf[..n]);
         progress.inc(n as u64);
@@ -384,6 +386,12 @@ mod tests {
         token.cancel();
 
         let err = hash_file(&path, &[HashAlgo::Sha256], &NoProgress, &token).unwrap_err();
+        assert_eq!(err.to_string(), "operation cancelled");
+
+        // The check precedes the first read, so an empty file errors too.
+        let empty = dir.path().join("empty.bin");
+        std::fs::write(&empty, b"").unwrap();
+        let err = hash_file(&empty, &[HashAlgo::Sha256], &NoProgress, &token).unwrap_err();
         assert_eq!(err.to_string(), "operation cancelled");
     }
 
