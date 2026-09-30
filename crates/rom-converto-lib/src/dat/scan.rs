@@ -507,35 +507,9 @@ mod tests {
             Some("no result returned for this file")
         );
     }
-    struct MockServer {
-        shutdown: Option<std::sync::mpsc::Sender<()>>,
-        handle: Option<std::thread::JoinHandle<Vec<usize>>>,
-    }
-
-    impl MockServer {
-        fn finish(mut self) -> Vec<usize> {
-            if let Some(shutdown) = self.shutdown.take() {
-                let _ = shutdown.send(());
-            }
-            self.handle.take().unwrap().join().unwrap()
-        }
-    }
-
-    impl Drop for MockServer {
-        fn drop(&mut self) {
-            if let Some(shutdown) = self.shutdown.take() {
-                let _ = shutdown.send(());
-            }
-            if let Some(handle) = self.handle.take() {
-                let _ = handle.join();
-            }
-        }
-    }
     #[tokio::test]
     async fn scan_matches_in_pages_and_preserves_walk_order() {
-        use std::io::{BufRead, BufReader, Read, Write};
-        use std::net::TcpListener;
-        use std::thread;
+        use std::io::Write as _;
         use std::time::Duration;
         let dir = tempfile::tempdir().unwrap();
         let units: Vec<_> = (0..BULK_MAX_ITEMS * MAX_IN_FLIGHT + 1)
@@ -550,85 +524,37 @@ mod tests {
                 DatUnit::File(path)
             })
             .collect();
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        listener.set_nonblocking(true).unwrap();
-        let (shutdown, shutdown_rx) = std::sync::mpsc::channel();
-        let server = MockServer {
-            shutdown: Some(shutdown),
-            handle: Some(thread::spawn(move || {
-                let mut page_sizes = Vec::new();
-                while page_sizes.len() < 6 {
-                    if shutdown_rx.try_recv().is_ok() {
-                        break;
-                    }
-                    let (stream, _) = match listener.accept() {
-                        Ok(connection) => connection,
-                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                            thread::sleep(Duration::from_millis(10));
-                            continue;
-                        }
-                        Err(error) => panic!("mock server accept failed: {error}"),
-                    };
-                    stream.set_nonblocking(false).unwrap();
-                    stream
-                        .set_read_timeout(Some(Duration::from_secs(60)))
-                        .unwrap();
-                    let mut reader = BufReader::new(stream);
-                    let mut content_length = 0;
-                    loop {
-                        let mut line = String::new();
-                        if reader.read_line(&mut line).unwrap() == 0 {
-                            return page_sizes;
-                        }
-                        if line == "\r\n" {
-                            break;
-                        }
-                        if let Some((name, value)) = line.split_once(':')
-                            && name.eq_ignore_ascii_case("content-length")
-                        {
-                            content_length = value.trim().parse::<usize>().unwrap();
-                        }
-                    }
-                    let mut body = vec![0; content_length];
-                    reader.read_exact(&mut body).unwrap();
-                    let request: serde_json::Value = serde_json::from_slice(&body).unwrap();
-                    let count = request["items"].as_array().unwrap().len();
-                    page_sizes.push(count);
-                    let results: Vec<_> = (0..count)
-                        .map(|index| {
-                            serde_json::json!({
-                                "index": index,
-                                "status": "ok",
-                                "match": null
-                            })
-                        })
-                        .collect();
-                    let response = serde_json::json!({
-                        "summary": {
-                            "total": count,
-                            "succeeded": count,
-                            "failed": 0,
-                            "matched": 0,
-                            "unmatched": count
-                        },
-                        "results": results
+        let (page_tx, page_rx) = std::sync::mpsc::channel::<usize>();
+        let server = crate::dat::client::mock_api::spawn(move |request_line, body| {
+            if !request_line.starts_with("POST /identify/bulk/") {
+                return serde_json::json!({"match": null}).to_string();
+            }
+            let request: serde_json::Value = serde_json::from_slice(body).unwrap();
+            let count = request["items"].as_array().unwrap().len();
+            let _ = page_tx.send(count);
+            let results: Vec<_> = (0..count)
+                .map(|index| {
+                    serde_json::json!({
+                        "index": index,
+                        "status": "ok",
+                        "match": null
                     })
-                    .to_string();
-                    let stream = reader.get_mut();
-                    write!(
-                        stream,
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                        response.len(),
-                        response
-                    )
-                    .unwrap();
-                }
-                page_sizes
-            })),
-        };
+                })
+                .collect();
+            serde_json::json!({
+                "summary": {
+                    "total": count,
+                    "succeeded": count,
+                    "failed": 0,
+                    "matched": 0,
+                    "unmatched": count
+                },
+                "results": results
+            })
+            .to_string()
+        });
 
-        let client = PlaymatchClient::new(Some(&format!("http://{address}")));
+        let client = PlaymatchClient::new(Some(server.url()));
         let scan = tokio::time::timeout(
             Duration::from_secs(60),
             scan_units(
@@ -643,7 +569,8 @@ mod tests {
         )
         .await;
 
-        let mut page_sizes = server.finish();
+        drop(server);
+        let mut page_sizes: Vec<usize> = page_rx.into_iter().collect();
         let data = scan.expect("paged DAT scan timed out").unwrap();
 
         page_sizes.sort_unstable();

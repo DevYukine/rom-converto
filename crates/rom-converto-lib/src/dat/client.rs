@@ -526,6 +526,102 @@ impl PlaymatchClient {
 }
 
 #[cfg(test)]
+pub(crate) mod mock_api {
+    //! A raw-HTTP stand-in for the Playmatch API, shared by the tests that
+    //! exercise the batched identify flow.
+
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::TcpListener;
+    use std::time::Duration;
+
+    /// A running mock: `respond(request_line, body)` answers every
+    /// request. Dropping it stops the server.
+    pub(crate) struct MockServer {
+        shutdown: Option<std::sync::mpsc::Sender<()>>,
+        handle: Option<std::thread::JoinHandle<()>>,
+        url: String,
+    }
+
+    impl MockServer {
+        /// The base URL to hand the API client.
+        pub(crate) fn url(&self) -> &str {
+            &self.url
+        }
+    }
+
+    impl Drop for MockServer {
+        fn drop(&mut self) {
+            if let Some(shutdown) = self.shutdown.take() {
+                let _ = shutdown.send(());
+            }
+            if let Some(handle) = self.handle.take() {
+                let _ = handle.join();
+            }
+        }
+    }
+
+    /// Starts a mock on an OS-assigned port.
+    pub(crate) fn spawn(respond: impl Fn(&str, &[u8]) -> String + Send + 'static) -> MockServer {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        listener.set_nonblocking(true).unwrap();
+        let (shutdown, shutdown_rx) = std::sync::mpsc::channel::<()>();
+        let handle = std::thread::spawn(move || {
+            loop {
+                if shutdown_rx.try_recv().is_ok() {
+                    return;
+                }
+                let stream = match listener.accept() {
+                    Ok((stream, _)) => stream,
+                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(10));
+                        continue;
+                    }
+                    Err(err) => panic!("mock accept failed: {err}"),
+                };
+                stream.set_nonblocking(false).unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(30)))
+                    .unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut request_line = String::new();
+                if reader.read_line(&mut request_line).unwrap() == 0 {
+                    continue;
+                }
+                let mut content_length = 0usize;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
+                        break;
+                    }
+                    if let Some((name, value)) = line.split_once(':')
+                        && name.eq_ignore_ascii_case("content-length")
+                    {
+                        content_length = value.trim().parse().unwrap();
+                    }
+                }
+                let mut body = vec![0u8; content_length];
+                reader.read_exact(&mut body).unwrap();
+                let response = respond(&request_line, &body);
+                let stream = reader.get_mut();
+                write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            response.len(),
+            response
+        )
+        .unwrap();
+            }
+        });
+        MockServer {
+            shutdown: Some(shutdown),
+            handle: Some(handle),
+            url,
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
