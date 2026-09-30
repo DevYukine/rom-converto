@@ -26,6 +26,7 @@ pub mod report;
 pub mod sfo;
 pub mod tally;
 pub mod template;
+pub mod torrentzip;
 pub mod verify;
 pub mod worker_pool;
 pub mod zip_write;
@@ -52,6 +53,7 @@ pub use report::{
 };
 pub use tally::{FileEntry, FileStatus, Tally, TallyDirection, format_bytes};
 pub use template::{TemplateTokens, apply_template};
+pub use torrentzip::{ZipEntry, ZipFormat, ZipMember, validate_torrentzip, write_torrentzip};
 pub use verify::{OutputVerify, VerifyOutcome, verify_existing_cached, verify_existing_output};
 pub use zip_write::write_zip;
 

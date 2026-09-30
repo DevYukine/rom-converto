@@ -72,5 +72,17 @@ tar = "^0.4"
 unrar = { package = "unrar-ng", version = "^0.7" }
 ts-rs = { workspace = true, optional = true }
 
+# Pins the zlib behind flate2 to the bundled static build, so TorrentZip
+# deflate bytes do not depend on the system zlib (zlib-ng based system
+# zlibs emit different streams). flate2's `zlib` feature routes every
+# deflate call through this crate; the exceptions are the platforms
+# libz-sys itself does not build from source (vcpkg on Windows, the system
+# z on android/haiku/ohos) and an explicit LIBZ_SYS_STATIC=0. macOS keeps
+# its system zlib: its deflate output matches stock zlib byte for byte, and
+# its inflate is about 1.5x faster than the bundled build on every zipped
+# input.
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+libz-sys = { version = "^1", features = ["static"] }
+
 [features]
 ts-export = ["dep:ts-rs"]
