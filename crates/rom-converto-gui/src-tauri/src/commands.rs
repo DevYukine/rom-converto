@@ -475,6 +475,7 @@ mod comparison_tests {
             verify: Some(VerifyReport {
                 ok: true,
                 round_trip: false,
+                verdict: rom_converto_lib::runner::models::VerifyVerdict::Verified,
                 message: "Verified".into(),
             }),
         };
@@ -491,7 +492,7 @@ mod comparison_tests {
                 "verify",
             ],
         );
-        assert_keys(&v["verify"], &["ok", "round_trip", "message"]);
+        assert_keys(&v["verify"], &["ok", "round_trip", "verdict", "message"]);
     }
 
     // The queue reads `status` to tell a partial failure from a clean run.

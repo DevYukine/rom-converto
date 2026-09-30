@@ -427,7 +427,14 @@ skipped_content: number, };
 /**
  * Outcome of a post-conversion verification pass.
  */
-export type VerifyReport = { ok: boolean, round_trip: boolean, message: string, };
+export type VerifyReport = { ok: boolean, round_trip: boolean, verdict: VerifyVerdict, message: string, };
+
+/**
+ * Whether a post-conversion verification ran to a verdict: `verified` and
+ * `failed` are verdicts the check itself produced; `unverified` means it
+ * never could: a missing key, an environment error, or cancellation.
+ */
+export type VerifyVerdict = "verified" | "failed" | "unverified";
 
 /**
  * One Wii U title input: a bare path, or a path with an explicit format

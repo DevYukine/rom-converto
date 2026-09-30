@@ -68,14 +68,12 @@ pub enum RvzError {
     #[error("{0}")]
     Custom(String),
 
+    /// The worker pool's channel closed before the task could be submitted.
+    #[error(transparent)]
+    WorkerPoolClosed(#[from] crate::util::worker_pool::PoolChannelClosed),
+
     #[error("{0}")]
     Cancelled(#[from] crate::util::Cancelled),
-}
-
-impl From<crate::util::worker_pool::PoolChannelClosed> for RvzError {
-    fn from(_: crate::util::worker_pool::PoolChannelClosed) -> Self {
-        RvzError::Custom("worker pool channel closed".into())
-    }
 }
 
 impl From<crate::nintendo::disc::wia::error::WiaError> for RvzError {

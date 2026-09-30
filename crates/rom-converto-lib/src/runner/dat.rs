@@ -528,7 +528,7 @@ pub(crate) async fn dat_fixdat(
     let output = match resolve_conflict(&desired, policy)? {
         ConflictResolution::Write(path) => path,
         ConflictResolution::Skip if !req.dry_run => {
-            return Ok(skipped(&input, &desired, "dat.fixdat"));
+            return Ok(skipped(&input, &desired, "dat.fixdat", None));
         }
         ConflictResolution::Skip => desired,
     };

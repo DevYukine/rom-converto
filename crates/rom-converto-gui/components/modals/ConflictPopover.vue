@@ -30,7 +30,7 @@ const OPTIONS = [
 		label: "Overwrite if invalid",
 		value: "overwrite-invalid",
 		description:
-			"Check the existing output, keep it if it passes, rewrite it if it fails or cannot be checked.",
+			"Check the existing output, keep it if it passes or cannot be checked, rewrite it only if it fails.",
 	},
 ];
 

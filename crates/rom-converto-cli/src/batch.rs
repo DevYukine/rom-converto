@@ -13,7 +13,7 @@ use log::{info, warn};
 use rom_converto_lib::runner::models::{
     OrganizeRow, PlaylistsData, RunData, RunOptions, RunRequest, RunResponse, RunRow,
 };
-use rom_converto_lib::runner::run_request;
+use rom_converto_lib::runner::{VERIFIED_VALID, run_request};
 use rom_converto_lib::util::fs::{collect_all_files, collect_files_with_exts, is_os_junk_dir};
 use rom_converto_lib::util::{
     CancelToken, FileDigests, FileStatus, HashAlgo, HashCache, HashReportRecord, ProgressReporter,
@@ -187,11 +187,12 @@ fn print_playlists(data: &PlaylistsData, records: &[ReportRecord], dry_run: bool
 /// already logged by the runner, an "input is already in this format" skip
 /// carries its reason in the record and is not.
 fn is_reported_skip(record: &ReportRecord) -> bool {
+    // Existing outputs are already logged by the runner ("Skipped, output
+    // exists" / "Kept, output verified valid"), so they are not repeated.
     record.status == FileStatus::Skipped
-        && record
-            .error
-            .as_deref()
-            .is_some_and(|reason| !reason.contains("output already exists"))
+        && record.error.as_deref().is_some_and(|reason| {
+            !reason.contains("output already exists") && reason != VERIFIED_VALID
+        })
 }
 
 /// The runner rejects an empty batch input as an invalid argument: "no files

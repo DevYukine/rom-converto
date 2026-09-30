@@ -20,6 +20,7 @@ const PALETTE: Record<string, { bg: string; text: string }> = {
 	UNSUPPORTED: { bg: "var(--a10)", text: "var(--t3)" },
 	FAILED: { bg: "rgba(212,58,62,.15)", text: "var(--red)" },
 	MISMATCH: { bg: "rgba(212,58,62,.15)", text: "var(--red)" },
+	UNVERIFIED: { bg: "var(--a10)", text: "var(--t3)" },
 	BASE: { bg: "rgba(69,147,248,.15)", text: "var(--blue)" },
 	UPDATE: { bg: "rgba(63,185,80,.15)", text: "var(--green)" },
 	DLC: { bg: "rgba(210,153,34,.15)", text: "var(--yellow)" },

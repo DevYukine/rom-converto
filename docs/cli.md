@@ -81,7 +81,7 @@ Most commands that write files take `--on-conflict <POLICY>`:
 - `overwrite`: replace the existing output.
 - `skip`: keep the existing output and continue.
 - `rename`: write to the next free numbered sibling, so `Game.chd` becomes `Game (1).chd`.
-- `overwrite-invalid`: keep a valid output; rewrite an invalid or unverifiable output.
+- `overwrite-invalid`: keep an existing output that verifies valid or cannot be verified; rewrite one that fails its integrity check.
 
 `-f`, `--force` means `--on-conflict overwrite`. The two flags conflict. `wup decrypt`
 cannot rename an output directory, so `rename` acts as `error`. For `chd extract` and
@@ -106,7 +106,8 @@ still write a requested `--report` or `--debug-log`, rebuild the persistent cach
 checks. Add `--no-update-check` when a fully local preview is required.
 
 With `overwrite-invalid`, the preview reads and verifies an existing output before showing
-`keep (valid)` or `rewrite (invalid)`. Recursive `ctr` batches show resolved output paths;
+`keep (valid)`, `rewrite (invalid)`, or `skip` when the output cannot be verified.
+Recursive `ctr` batches show resolved output paths;
 recursive `ctr cdn-to-cia` also shows each conflict decision.
 
 ### Verbosity

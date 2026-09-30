@@ -25,6 +25,7 @@ mod organize;
 pub mod models;
 
 use defaults::apply_config_defaults;
+pub use models::VERIFIED_VALID;
 use models::{ProgressEvent, RunRequest, RunResponse, RunSchemaManifest, RunStatus};
 use ops::{run_batch_request, run_single_request};
 

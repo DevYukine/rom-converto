@@ -52,7 +52,8 @@ function resultText(job: QueueJob): string {
 function verifyTag(job: QueueJob): string | null {
 	const v = job.comparison?.verify;
 	if (!v) return null;
-	if (!v.ok) return "MISMATCH";
+	if (v.verdict === "unverified") return "UNVERIFIED";
+	if (v.verdict === "failed") return "MISMATCH";
 	return v.round_trip ? "VERIFIED" : "CHECKED";
 }
 

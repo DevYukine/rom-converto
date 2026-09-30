@@ -4,9 +4,9 @@
 
 use super::dat::{dat_fixdat, dat_identify, dat_rename, dat_scan, dat_verify};
 use super::models::{
-    ComparisonData, HashRow, PlaylistPlanData, PlaylistsData, RunComparisonData, RunData,
-    RunOptions, RunPlansData, RunRequest, RunResponse, RunRow, RunStatus, VerifyReport,
-    WupTitleInputOption,
+    COULD_NOT_VERIFY, ComparisonData, HashRow, PlaylistPlanData, PlaylistsData, RunComparisonData,
+    RunData, RunOptions, RunPlansData, RunRequest, RunResponse, RunRow, RunStatus, VERIFIED_VALID,
+    VerifyReport, VerifyVerdict, WupTitleInputOption,
 };
 use super::ops_misc::{cue_to_cso, cue_to_iso, ntr_decrypt, ntr_encrypt, nx_merge, nx_split};
 use super::ops_ms::{
@@ -20,6 +20,7 @@ use crate::disc::chd::{ChdCodec, ChdOptions, DiscMode};
 use crate::nintendo::disc::legacy::{ALL_MIGRATE_FORMATS, DOL_MIGRATE_FORMATS, MigrateOptions};
 use crate::nintendo::disc::rvz::RvzCompressOptions;
 use crate::util::fs::{file_len, has_ext};
+use crate::util::verify::unverifiable;
 use crate::util::{
     CancelToken, Cancelled, ConflictPolicy, ConflictResolution, DEFAULT_SPACE_HEADROOM, FileStatus,
     HashAlgo, OutputExists, OutputVerify, PlanDecision, PlanLine, ProgressReporter, ReportRecord,
@@ -1461,7 +1462,7 @@ pub(crate) async fn ctr_cdn_to_cia(
     )
     .await?;
     let Some(resolved) = plan.output else {
-        return Ok(skipped(&input, &output, operation));
+        return Ok(skipped(&input, &output, operation, None));
     };
     if let Some(line) = plan.line {
         return Ok(planned(line));
@@ -1508,7 +1509,7 @@ pub(crate) async fn ctr_generate_cdn_ticket(
     )
     .await?;
     let Some(output) = plan.output else {
-        return Ok(skipped(&input, &desired, operation));
+        return Ok(skipped(&input, &desired, operation, None));
     };
     if let Some(line) = plan.line {
         return Ok(planned(line));
@@ -1704,7 +1705,7 @@ pub(crate) async fn wup_decrypt(
         .ok_or_else(|| invalid_arg("output path is required"))?;
     let plan = prepare_output_dir(&req, &input, &desired, "wup.decrypt")?;
     let Some(output) = plan.output else {
-        return Ok(skipped(&input, &desired, "wup.decrypt"));
+        return Ok(skipped(&input, &desired, "wup.decrypt", None));
     };
     if let Some(line) = plan.line {
         return Ok(planned(line));
@@ -2061,7 +2062,12 @@ where
     )
     .await?;
     let Some(output) = plan.output else {
-        return Ok(skipped(input, &desired, operation));
+        return Ok(skipped(
+            input,
+            &desired,
+            operation,
+            plan.kept_valid.then(|| VERIFIED_VALID.to_string()),
+        ));
     };
     if let Some(mut line) = plan.line {
         if operation.starts_with("chd.") {
@@ -2123,7 +2129,7 @@ pub(crate) fn planned(line: PlanLine) -> RunResponse {
 fn plan_record(line: &PlanLine) -> ReportRecord {
     let (status, error) = match line.decision {
         PlanDecision::Skip => (FileStatus::Skipped, Some("output exists")),
-        PlanDecision::KeepValid => (FileStatus::Skipped, Some("existing output verified valid")),
+        PlanDecision::KeepValid => (FileStatus::Skipped, Some(VERIFIED_VALID)),
         _ => (FileStatus::Ok, None),
     };
     ReportRecord::new(ReportRecordInput {
@@ -2245,8 +2251,11 @@ pub(crate) fn extracted_output_size(output: &Path) -> u64 {
 
 /// Format-specific integrity check for the comparison card. Unlike
 /// [`verify_existing_output`], this never treats "could not check" as a
-/// pass: a missing NX header key or a verify error is its own unverified
-/// state rather than a green "Verified" badge.
+/// pass: every arm classifies its error through the shared fail-closed
+/// [`unverifiable`] filter, so a decode, parse, truncation, or hash
+/// mismatch reports a failed verification and only cancellation, unusable
+/// keys, worker-pool trouble, and environment io errors leave the check
+/// without a verdict.
 async fn run_comparison_verify(
     progress: &dyn ProgressReporter,
     output: &Path,
@@ -2256,6 +2265,11 @@ async fn run_comparison_verify(
     let report = |ok: bool, round_trip: bool| VerifyReport {
         ok,
         round_trip,
+        verdict: if ok {
+            VerifyVerdict::Verified
+        } else {
+            VerifyVerdict::Failed
+        },
         message: if ok {
             "Verified"
         } else {
@@ -2263,10 +2277,16 @@ async fn run_comparison_verify(
         }
         .to_string(),
     };
+    let could_not = |err: String| VerifyReport {
+        ok: false,
+        round_trip: false,
+        verdict: VerifyVerdict::Unverified,
+        message: format!("{COULD_NOT_VERIFY}{err}"),
+    };
     Some(match target {
         OutputVerify::None => return None,
         OutputVerify::Chd => {
-            let ok = crate::disc::chd::verify_chd(
+            match crate::disc::chd::verify_chd(
                 progress,
                 output.to_path_buf(),
                 None,
@@ -2274,28 +2294,39 @@ async fn run_comparison_verify(
                 cancel.clone(),
             )
             .await
-            .is_ok();
-            report(ok, ok)
+            {
+                Ok(()) => report(true, true),
+                Err(e) if unverifiable(&e) => could_not(e.to_string()),
+                Err(_) => report(false, false),
+            }
         }
         OutputVerify::Cso => {
-            let ok = crate::cso::verify_cso(progress, output.to_path_buf(), true, cancel.clone())
-                .await
-                .is_ok();
-            report(ok, ok)
+            match crate::cso::verify_cso(progress, output.to_path_buf(), true, cancel.clone()).await
+            {
+                Ok(()) => report(true, true),
+                Err(e) if unverifiable(&e) => could_not(e.to_string()),
+                Err(_) => report(false, false),
+            }
         }
         OutputVerify::Rvz => {
-            let ok = crate::nintendo::disc::rvz::verify_rvz_structure(output, cancel)
-                .map(|r| r.ok())
-                .unwrap_or(false);
-            report(ok, false)
+            let output = output.to_path_buf();
+            let cancel = cancel.clone();
+            match tokio::task::spawn_blocking(move || {
+                crate::nintendo::disc::rvz::verify_rvz_structure(&output, &cancel)
+            })
+            .await
+            {
+                Ok(Ok(structure)) => report(structure.ok(), false),
+                Ok(Err(e)) if unverifiable(&e) => could_not(e.to_string()),
+                Ok(Err(_)) => report(false, false),
+                // The blocking task never produced a verdict:
+                // infrastructure, not data, like the Chd/Cso worker pools.
+                Err(e) => could_not(e.to_string()),
+            }
         }
         OutputVerify::Nx(keys) => {
             if keys.header_key.is_none() {
-                return Some(VerifyReport {
-                    ok: false,
-                    round_trip: false,
-                    message: "Could not verify: keyset has no header key".to_string(),
-                });
+                return Some(could_not("keyset has no header key".to_string()));
             }
             match crate::nintendo::nx::verify_container_async(
                 output.to_path_buf(),
@@ -2306,11 +2337,8 @@ async fn run_comparison_verify(
             .await
             {
                 Ok(result) => report(result.ok, result.ok),
-                Err(e) => VerifyReport {
-                    ok: false,
-                    round_trip: false,
-                    message: format!("Could not verify: {e}"),
-                },
+                Err(e) if unverifiable(&e) => could_not(e.to_string()),
+                Err(_) => report(false, false),
             }
         }
     })
@@ -2340,6 +2368,11 @@ pub(crate) fn rvz_options(req: &RunRequest) -> RvzCompressOptions {
 pub(crate) struct PreparedOutput {
     pub(crate) output: Option<PathBuf>,
     pub(crate) line: Option<PlanLine>,
+    /// True when a real run kept an existing output because it verified
+    /// valid under `overwrite-invalid`. Never set for a dry run, and never
+    /// for an operation carrying [`OutputVerify::None`]: an output nobody
+    /// checked is never claimed valid.
+    pub(crate) kept_valid: bool,
 }
 
 /// An existing-output refusal carrying the [`OutputExists`] marker, so a
@@ -2423,6 +2456,7 @@ pub(crate) fn prepare_output_dir(
     Ok(PreparedOutput {
         output: write.then(|| desired.to_path_buf()),
         line,
+        kept_valid: false,
     })
 }
 
@@ -2446,6 +2480,9 @@ pub(crate) async fn prepare_output(
             match verify_existing(req, progress, desired, verify, cancel).await? {
                 VerifyOutcome::Valid => crate::util::PlanDecision::KeepValid,
                 VerifyOutcome::Invalid => crate::util::PlanDecision::RewriteInvalid,
+                // Nobody checked this output, so a dry run cannot claim
+                // it verified; a plain skip keeps the real run in step.
+                VerifyOutcome::Unverified(_) => crate::util::PlanDecision::Skip,
             }
         } else {
             crate::util::classify(desired, &resolution)
@@ -2460,6 +2497,7 @@ pub(crate) async fn prepare_output(
                 media: None,
                 missing_keys: None,
             }),
+            kept_valid: false,
         });
     }
 
@@ -2467,6 +2505,7 @@ pub(crate) async fn prepare_output(
         ConflictResolution::Write(path) => Ok(PreparedOutput {
             output: Some(path),
             line: None,
+            kept_valid: false,
         }),
         ConflictResolution::Skip
             if policy == ConflictPolicy::OverwriteInvalid && desired.exists() =>
@@ -2477,6 +2516,15 @@ pub(crate) async fn prepare_output(
                     Ok(PreparedOutput {
                         output: None,
                         line: None,
+                        kept_valid: true,
+                    })
+                }
+                VerifyOutcome::Unverified(_) => {
+                    log::info!("Kept, output exists (unverified): {}", desired.display());
+                    Ok(PreparedOutput {
+                        output: None,
+                        line: None,
+                        kept_valid: false,
                     })
                 }
                 VerifyOutcome::Invalid => {
@@ -2487,6 +2535,7 @@ pub(crate) async fn prepare_output(
                     Ok(PreparedOutput {
                         output: Some(desired.to_path_buf()),
                         line: None,
+                        kept_valid: false,
                     })
                 }
             }
@@ -2496,6 +2545,7 @@ pub(crate) async fn prepare_output(
             Ok(PreparedOutput {
                 output: None,
                 line: None,
+                kept_valid: false,
             })
         }
     }
@@ -2576,7 +2626,7 @@ where
 {
     let plan = prepare_output_dir(req, input, desired, operation)?;
     let Some(output) = plan.output else {
-        return Ok(skipped(input, desired, operation));
+        return Ok(skipped(input, desired, operation, None));
     };
     if let Some(line) = plan.line {
         return Ok(planned(line));
@@ -2686,7 +2736,15 @@ pub(crate) fn nx_keys_for_run(
     }
 }
 
-pub(crate) fn skipped(input: &Path, desired: &Path, operation: &str) -> RunResponse {
+/// A plain skip of an existing output; `detail`, the kept-valid marker for
+/// an output that verified valid under `overwrite-invalid`, lands on the
+/// record's error so batched runs can tell the two apart.
+pub(crate) fn skipped(
+    input: &Path,
+    desired: &Path,
+    operation: &str,
+    detail: Option<String>,
+) -> RunResponse {
     RunResponse::ok(format!("Skipped existing {}", desired.display()), None).with_record(
         ReportRecord::new(ReportRecordInput {
             input_path: input.display().to_string(),
@@ -2696,7 +2754,7 @@ pub(crate) fn skipped(input: &Path, desired: &Path, operation: &str) -> RunRespo
             input_bytes: 0,
             output_bytes: 0,
             elapsed_ms: 0,
-            error: None,
+            error: detail,
         }),
     )
 }
@@ -3018,6 +3076,163 @@ mod tests {
         assert_eq!(res.status, RunStatus::Cancelled.as_i32(), "{res:?}");
     }
 
+    /// A flipped hunk byte is a verified integrity failure: the CHD's payload
+    /// is incompressible noise, so its hunks are stored raw and the flip
+    /// survives decode to fail the map entry's CRC-16: a mismatch verdict,
+    /// never a could-not-run.
+    #[tokio::test]
+    async fn comparison_verify_reports_a_flipped_hunk_byte_as_failed() {
+        use crate::disc::chd::convert_iso_to_chd;
+        let dir = tempfile::tempdir().unwrap();
+        let mut iso = vec![0u8; 4 * 16 * 1024];
+        let mut state = 0x1234_5678_9ABC_DEF0u64;
+        for byte in iso.iter_mut() {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            *byte = state as u8;
+        }
+        let iso_path = dir.path().join("game.iso");
+        std::fs::write(&iso_path, &iso).unwrap();
+        let chd_path = dir.path().join("game.chd");
+        convert_iso_to_chd(
+            &crate::util::NoProgress,
+            iso_path,
+            chd_path.clone(),
+            ChdOptions {
+                hunk_size: None,
+                codecs: None,
+                level: None,
+                force: false,
+            },
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+        let mut bytes = std::fs::read(&chd_path).unwrap();
+        let mid = bytes.len() / 2;
+        bytes[mid] ^= 0xFF;
+        std::fs::write(&chd_path, &bytes).unwrap();
+
+        let report = run_comparison_verify(
+            &crate::util::NoProgress,
+            &chd_path,
+            OutputVerify::Chd,
+            &CancelToken::new(),
+        )
+        .await
+        .unwrap();
+        assert!(!report.ok, "{report:?}");
+        assert_eq!(report.verdict, VerifyVerdict::Failed, "{report:?}");
+        assert_eq!(report.message, "Verification failed");
+    }
+
+    /// A verify that cannot read its input at all never produces a verdict:
+    /// the report says could-not-verify, not "Verification failed".
+    #[tokio::test]
+    async fn comparison_verify_reports_an_unreadable_output_as_could_not_verify() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing.chd");
+        let report = run_comparison_verify(
+            &crate::util::NoProgress,
+            &missing,
+            OutputVerify::Chd,
+            &CancelToken::new(),
+        )
+        .await
+        .unwrap();
+        assert!(!report.ok, "{report:?}");
+        assert_eq!(report.verdict, VerifyVerdict::Unverified, "{report:?}");
+        assert!(
+            report
+                .message
+                .starts_with(crate::runner::models::COULD_NOT_VERIFY),
+            "{}",
+            report.message
+        );
+    }
+
+    /// A truncated RVZ is a failed verification, not a could-not-run: the
+    /// fail-closed classifier reads truncation as the container being
+    /// broken, so the comparison card never shows a green pass or a
+    /// transient-looking unverified state for it.
+    #[tokio::test]
+    async fn comparison_verify_reports_a_truncated_rvz_as_failed() {
+        use crate::nintendo::disc::rvz::RvzCompressOptions;
+        use crate::nintendo::dol::test_fixtures::make_fake_gamecube_iso;
+        let dir = tempfile::tempdir().unwrap();
+        let iso = dir.path().join("game.iso");
+        std::fs::write(&iso, make_fake_gamecube_iso(5 * 1024 * 1024 + 123)).unwrap();
+        let rvz = dir.path().join("game.rvz");
+        crate::nintendo::disc::rvz::compress_disc(
+            &iso,
+            &rvz,
+            RvzCompressOptions::default(),
+            &crate::util::NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+        // The group table closes the file, so cutting the tail removes it
+        // along with the last group's data: either way, not valid.
+        let full = std::fs::read(&rvz).unwrap();
+        std::fs::write(&rvz, &full[..full.len() - 4096]).unwrap();
+
+        let report = run_comparison_verify(
+            &crate::util::NoProgress,
+            &rvz,
+            OutputVerify::Rvz,
+            &CancelToken::new(),
+        )
+        .await
+        .unwrap();
+        assert!(!report.ok, "{report:?}");
+        assert_eq!(report.verdict, VerifyVerdict::Failed, "{report:?}");
+        assert_eq!(report.message, "Verification failed");
+    }
+
+    /// A flipped byte inside a CSO's compressed block data decodes to
+    /// garbage the full pass rejects: a verified failure under the
+    /// fail-closed classifier, never a could-not-run.
+    #[tokio::test]
+    async fn comparison_verify_reports_a_flipped_cso_block_as_failed() {
+        use crate::cso::models::CsoFormat;
+        use crate::cso::writer::write_cso_blocking;
+        let dir = tempfile::tempdir().unwrap();
+        let iso = dir.path().join("game.iso");
+        let data: Vec<u8> = (0..8 * 2048usize).map(|i| (i / 7) as u8).collect();
+        std::fs::write(&iso, &data).unwrap();
+        let packed = dir.path().join("game.cso");
+        write_cso_blocking(
+            &iso,
+            &packed,
+            CsoFormat::Cso,
+            2048,
+            0,
+            &std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            &CancelToken::new(),
+        )
+        .unwrap();
+        let mut bytes = std::fs::read(&packed).unwrap();
+        // Past the header and index, inside compressed block data.
+        let data_start = 0x18 + (8 + 1) * 4;
+        let mid = data_start + (bytes.len() - data_start) / 2;
+        bytes[mid] ^= 0xFF;
+        std::fs::write(&packed, &bytes).unwrap();
+
+        let report = run_comparison_verify(
+            &crate::util::NoProgress,
+            &packed,
+            OutputVerify::Cso,
+            &CancelToken::new(),
+        )
+        .await
+        .unwrap();
+        assert!(!report.ok, "{report:?}");
+        assert_eq!(report.verdict, VerifyVerdict::Failed, "{report:?}");
+        assert_eq!(report.message, "Verification failed");
+    }
+
     #[tokio::test]
     async fn read_only_batch_skips_space_preflight() {
         let dir = tempfile::tempdir().unwrap();
@@ -3245,6 +3460,94 @@ mod tests {
             prepared.line.unwrap().decision,
             crate::util::PlanDecision::Skip
         );
+    }
+
+    /// An Nx target with no header key is unverifiable: `overwrite-invalid`
+    /// keeps the existing output rather than rewriting it, but (unlike a
+    /// verified match) never claims it valid.
+    #[tokio::test]
+    async fn prepare_output_keeps_an_unverifiable_nx_output_without_claiming_it_valid() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("title.nsp");
+        let desired = dir.path().join("title.nsz");
+        std::fs::write(&input, b"input").unwrap();
+        std::fs::write(&desired, b"stale nsz").unwrap();
+
+        let req = RunRequest {
+            schema: None,
+            operation: "nx.compress".to_string(),
+            input: Some(input.clone()),
+            output: None,
+            config: None,
+            preset: None,
+            options: RunOptions {
+                on_conflict: Some("overwrite-invalid".to_string()),
+                ..RunOptions::default()
+            },
+            dry_run: false,
+            ctx: Default::default(),
+        };
+        let prepared = prepare_output(
+            &crate::util::NoProgress,
+            &req,
+            &input,
+            &desired,
+            "nx.compress",
+            OutputVerify::Nx(Box::default()),
+            &CancelToken::new(),
+        )
+        .await
+        .unwrap();
+        assert!(prepared.output.is_none(), "kept, not rewritten");
+        assert!(
+            !prepared.kept_valid,
+            "nobody checked it, so it is not claimed valid"
+        );
+        assert_eq!(std::fs::read(&desired).unwrap(), b"stale nsz");
+    }
+
+    /// A dry run over an existing output that nobody can check
+    /// (`OutputVerify::None`) plans a plain skip (the real run keeps the
+    /// file), and its record says "output exists", not a verified keep.
+    #[tokio::test]
+    async fn dry_run_with_unverifiable_output_plans_a_plain_skip() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("title.nsp");
+        let desired = dir.path().join("title.nsz");
+        std::fs::write(&input, b"input").unwrap();
+        std::fs::write(&desired, b"existing").unwrap();
+
+        let req = RunRequest {
+            schema: None,
+            operation: "nx.compress".to_string(),
+            input: Some(input.clone()),
+            output: None,
+            config: None,
+            preset: None,
+            options: RunOptions {
+                on_conflict: Some("overwrite-invalid".to_string()),
+                ..RunOptions::default()
+            },
+            dry_run: true,
+            ctx: Default::default(),
+        };
+        let prepared = prepare_output(
+            &crate::util::NoProgress,
+            &req,
+            &input,
+            &desired,
+            "nx.compress",
+            OutputVerify::None,
+            &CancelToken::new(),
+        )
+        .await
+        .unwrap();
+        let line = prepared.line.expect("dry run plans a line");
+        assert_eq!(line.decision, crate::util::PlanDecision::Skip);
+
+        let record = plan_record(&line);
+        assert_eq!(record.status, FileStatus::Skipped);
+        assert_eq!(record.error.as_deref(), Some("output exists"));
     }
 
     #[tokio::test]

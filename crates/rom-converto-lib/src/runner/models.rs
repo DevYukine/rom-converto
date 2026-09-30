@@ -342,6 +342,19 @@ pub struct ComparisonData {
     pub verify: Option<VerifyReport>,
 }
 
+/// Whether a post-conversion verification ran to a verdict: `verified` and
+/// `failed` are verdicts the check itself produced; `unverified` means it
+/// never could: a missing key, an environment error, or cancellation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export_to = "runner.ts"))]
+#[serde(rename_all = "lowercase")]
+pub enum VerifyVerdict {
+    Verified,
+    Failed,
+    Unverified,
+}
+
 /// Outcome of a post-conversion verification pass.
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
@@ -349,8 +362,20 @@ pub struct ComparisonData {
 pub struct VerifyReport {
     pub ok: bool,
     pub round_trip: bool,
+    pub verdict: VerifyVerdict,
     pub message: String,
 }
+
+/// Message prefix of a [`VerifyReport`] whose check never produced a verdict:
+/// an I/O, open, unsupported-input, or cancellation error rather than an
+/// integrity mismatch, so a caller can tell "ran and failed" from "could
+/// not run".
+pub(crate) const COULD_NOT_VERIFY: &str = "Could not verify: ";
+
+/// Row detail of a placement skipped because its existing output verified
+/// valid under `overwrite-invalid`, and of the conversion records that fold
+/// into the same spelling. The CLI detects a kept valid output by this text.
+pub const VERIFIED_VALID: &str = "existing output verified valid";
 
 /// Result of a `xenon.verify` run.
 #[derive(Debug, Serialize)]
