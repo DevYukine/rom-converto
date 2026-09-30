@@ -1,4 +1,5 @@
 import { makeOpStore } from "./_makeOpStore";
+import type { RvzStructuralVerify } from "~/types";
 
 export interface RvlPartitionVerify {
   offset: number;
@@ -14,7 +15,8 @@ export interface RvlPartitionVerify {
 
 export interface RvlVerifyResult {
   game_id: string;
-  rvz_structure: { ok: boolean } | null;
+  rvz_structure: RvzStructuralVerify | null;
+  rvz_note: string | null;
   partitions: RvlPartitionVerify[];
   ok: boolean;
 }

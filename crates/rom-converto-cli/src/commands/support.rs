@@ -385,6 +385,17 @@ pub(crate) fn run_info_batch(
     }
 }
 
+/// The partition-table hash line. `None` means the table was not read: the
+/// container declares no partitions, or an earlier stored hash already
+/// failed.
+fn part_hash_line(part_hash_ok: Option<bool>, n_part: u32) -> String {
+    match part_hash_ok {
+        Some(v) => format!("RVZ partition table hash: {}", ok_str(v)),
+        None if n_part == 0 => "RVZ partition table hash: n/a (no partitions)".to_string(),
+        None => "RVZ partition table hash: not checked".to_string(),
+    }
+}
+
 pub(crate) fn print_rvz_structure(
     s: Option<&rom_converto_lib::nintendo::disc::rvz::RvzStructuralVerify>,
 ) {
@@ -393,10 +404,7 @@ pub(crate) fn print_rvz_structure(
     };
     log::info!("RVZ file header hash: {}", ok_str(s.file_head_hash_ok));
     log::info!("RVZ disc struct hash: {}", ok_str(s.disc_hash_ok));
-    match s.part_hash_ok {
-        Some(v) => log::info!("RVZ partition table hash: {}", ok_str(v)),
-        None => log::info!("RVZ partition table hash: n/a (no partitions)"),
-    }
+    log::info!("{}", part_hash_line(s.part_hash_ok, s.n_part));
 }
 
 pub(crate) fn save_dol_banner(info: &rom_converto_lib::info::DolInfo, dir: &Path) -> Result<()> {
@@ -741,5 +749,22 @@ mod chd_codecs_tip_tests {
     fn no_cli_and_no_preset_leaves_codecs_unset() {
         let resolved = resolve_chd_codecs(None, &None).unwrap();
         assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn part_hash_line_distinguishes_no_partitions_from_not_checked() {
+        assert_eq!(
+            part_hash_line(Some(false), 2),
+            "RVZ partition table hash: FAIL"
+        );
+        assert_eq!(
+            part_hash_line(None, 0),
+            "RVZ partition table hash: n/a (no partitions)"
+        );
+        // A failed earlier hash skips the table read even on a Wii disc.
+        assert_eq!(
+            part_hash_line(None, 2),
+            "RVZ partition table hash: not checked"
+        );
     }
 }

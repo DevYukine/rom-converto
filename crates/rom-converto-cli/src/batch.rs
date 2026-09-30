@@ -444,9 +444,12 @@ pub async fn dol_verify(
                 ok += 1;
                 info!("[OK] {}", path.display());
             }
-            Ok(_) => {
+            Ok(result) => {
                 failed += 1;
                 warn!("[FAIL] {}", path.display());
+                if let Some(note) = &result.rvz_note {
+                    warn!("  {note}");
+                }
             }
             Err(e) => {
                 failed += 1;
@@ -484,9 +487,12 @@ pub async fn rvl_verify(
                 ok += 1;
                 info!("[OK] {}", path.display());
             }
-            Ok(_) => {
+            Ok(result) => {
                 failed += 1;
                 warn!("[FAIL] {}", path.display());
+                if let Some(note) = &result.rvz_note {
+                    warn!("  {note}");
+                }
             }
             Err(e) => {
                 failed += 1;

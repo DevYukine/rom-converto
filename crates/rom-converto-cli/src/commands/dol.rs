@@ -336,7 +336,12 @@ pub async fn run(command: DolCommands, ctx: DispatchCtx<'_>) -> Result<()> {
                 verify_gate(input, DOL_MIGRATE_FORMATS)?;
                 let opts = DolVerifyOptions { full: cmd.full };
                 let result = verify_dol(input, &opts, &progress, &CancelToken::new())?;
-                log::info!("Game ID: {}", result.game_id);
+                if !result.game_id.is_empty() {
+                    log::info!("Game ID: {}", result.game_id);
+                }
+                if let Some(note) = &result.rvz_note {
+                    log::warn!("RVZ: {note}");
+                }
                 print_rvz_structure(result.rvz_structure.as_ref());
                 if let Some(st) = &result.structural {
                     log::info!("FST within bounds: {}", ok_str(st.fst_within_bounds));

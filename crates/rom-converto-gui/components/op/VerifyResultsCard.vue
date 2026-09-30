@@ -5,6 +5,7 @@ import ConfigCard from "~/components/ui/ConfigCard.vue";
 import StatusTag from "~/components/ui/StatusTag.vue";
 import DetailModal from "~/components/modals/DetailModal.vue";
 import type { OpDef } from "~/lib/opdefs/types";
+import { rvzStructureOk } from "~/lib/fields";
 
 const props = defineProps<{ def: OpDef }>();
 
@@ -37,20 +38,25 @@ function summarize(data: Record<string, any>, console: string): { ok: boolean; d
 		case "dol": {
 			const ok = !!data.ok;
 			const parts: string[] = [];
-			if (data.rvz_structure) parts.push(`RVZ structure ${data.rvz_structure.ok ? "✓" : "✗"}`);
+			if (data.rvz_structure) parts.push(`RVZ structure ${rvzStructureOk(data.rvz_structure) ? "✓" : "✗"}`);
 			if (data.disc_sha1) parts.push(`SHA-1 ${String(data.disc_sha1).slice(0, 12)}…`);
-			return { ok, detail: parts.join(" · ") || (ok ? "structure ok" : "structure mismatch"), lines: data.structural?.notes ?? [] };
+			const lines: string[] = [...(data.structural?.notes ?? [])];
+			if (data.rvz_note) lines.unshift(data.rvz_note);
+			return { ok, detail: parts.join(" · ") || (ok ? "structure ok" : "structure mismatch"), lines };
 		}
 		case "rvl": {
 			const ok = !!data.ok;
 			const partitions = data.partitions ?? [];
 			const bad = partitions.reduce((n: number, p: any) => n + p.mismatched_clusters, 0);
 			const parts: string[] = [];
-			if (data.rvz_structure) parts.push(`RVZ structure ${data.rvz_structure.ok ? "✓" : "✗"}`);
+			if (data.rvz_structure) parts.push(`RVZ structure ${rvzStructureOk(data.rvz_structure) ? "✓" : "✗"}`);
 			parts.push(`${partitions.length} partition(s)${bad ? ` · ${bad} mismatched clusters` : ""}`);
-			const lines = partitions
-				.filter((p: any) => !p.ok)
-				.map((p: any) => p.note ?? `partition @0x${p.offset.toString(16)}: ${p.mismatched_clusters} mismatched clusters`);
+			const lines: string[] = data.rvz_note ? [data.rvz_note] : [];
+			lines.push(
+				...partitions
+					.filter((p: any) => !p.ok)
+					.map((p: any) => p.note ?? `partition @0x${p.offset.toString(16)}: ${p.mismatched_clusters} mismatched clusters`),
+			);
 			return { ok, detail: parts.join(" · "), lines };
 		}
 		case "wup": {

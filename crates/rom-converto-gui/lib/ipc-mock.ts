@@ -680,12 +680,12 @@ function verifyResult(console: string): unknown {
 				: { format: "Cia", legitimacy: "Illegitimate", content_hashes_valid: false, title_id: "0004000000123400", details: ["Signature: INVALID", "Content hash mismatch at index 2"] };
 		case "dol":
 			return pass
-				? { ok: true, rvz_structure: { ok: true }, disc_sha1: HEX40, structural: { notes: [] } }
-				: { ok: false, rvz_structure: { ok: false }, disc_sha1: HEX40, structural: { notes: ["Block 42 checksum mismatch"] } };
+				? { ok: true, rvz_structure: { file_head_hash_ok: true, disc_hash_ok: true, part_hash_ok: null, disc_type: 1, iso_size: 1459970432, n_part: 1 }, disc_sha1: HEX40, structural: { notes: [] } }
+				: { ok: false, rvz_structure: { file_head_hash_ok: true, disc_hash_ok: false, part_hash_ok: null, disc_type: 1, iso_size: 1459970432, n_part: 1 }, disc_sha1: HEX40, structural: { notes: ["Block 42 checksum mismatch"] } };
 		case "rvl":
 			return pass
-				? { ok: true, rvz_structure: { ok: true }, partitions: [{ ok: true, mismatched_clusters: 0, offset: 0, note: null }] }
-				: { ok: false, rvz_structure: { ok: true }, partitions: [{ ok: false, mismatched_clusters: 12, offset: 0x100000, note: null }] };
+				? { ok: true, rvz_structure: { file_head_hash_ok: true, disc_hash_ok: true, part_hash_ok: true, disc_type: 2, iso_size: 4699979776, n_part: 2 }, partitions: [{ ok: true, mismatched_clusters: 0, offset: 0, note: null }] }
+				: { ok: false, rvz_structure: { file_head_hash_ok: true, disc_hash_ok: true, part_hash_ok: false, disc_type: 2, iso_size: 4699979776, n_part: 2 }, partitions: [{ ok: false, mismatched_clusters: 12, offset: 0x100000, note: null }] };
 		case "wup":
 			return pass
 				? { ok: true, kind: "NUS", titles: [{ title_id_hex: "0005000010112200", ok: true, verified_content: 5, mismatched_content: 0, skipped_content: 0 }] }

@@ -335,9 +335,14 @@ pub async fn run(command: RvlCommands, ctx: DispatchCtx<'_>) -> Result<()> {
                 verify_gate(input, ALL_MIGRATE_FORMATS)?;
                 let opts = RvlVerifyOptions { full: cmd.full };
                 let result = verify_rvl(input, &opts, &progress, &CancelToken::new())?;
-                log::info!("Game ID: {}", result.game_id);
+                if !result.game_id.is_empty() {
+                    log::info!("Game ID: {}", result.game_id);
+                }
+                if let Some(note) = &result.rvz_note {
+                    log::warn!("RVZ: {note}");
+                }
                 print_rvz_structure(result.rvz_structure.as_ref());
-                if result.rvz_structure.is_none() && !cmd.full {
+                if result.rvz_structure.is_none() && result.rvz_note.is_none() && !cmd.full {
                     log::info!(
                         "No RVZ container hashes to check; pass --full to verify the partition hash tree"
                     );

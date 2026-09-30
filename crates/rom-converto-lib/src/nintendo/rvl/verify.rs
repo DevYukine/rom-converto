@@ -11,11 +11,10 @@
 //! sector drags the recomputed regions of intact neighbors off too. A sector
 //! therefore only counts as corrupt when its own H0 table (which covers just
 //! its payload) differs AND its ciphertext is not one repeated filler byte;
-//! everything else is scrubbing fallout, the same call Dolphin's verifier
-//! makes.
+//! everything else is scrubbing fallout.
 
 use crate::nintendo::disc::input::open_disc_input;
-use crate::nintendo::disc::rvz::verify::{RvzStructuralVerify, verify_rvz_structure};
+use crate::nintendo::disc::rvz::verify::RvzStructuralVerify;
 use crate::nintendo::rvl::constants::{
     WII_BLOCKS_PER_GROUP, WII_GROUP_TOTAL_SIZE, WII_SECTOR_SIZE, WII_SECTOR_SIZE_U64,
 };
@@ -46,6 +45,11 @@ pub struct RvlVerifyResult {
     pub game_id: String,
     /// Present only for `.rvz` input.
     pub rvz_structure: Option<RvzStructuralVerify>,
+    /// Why the RVZ container could not be structurally checked (a broken
+    /// table, for example): `None` for non-RVZ input, healthy containers,
+    /// and containers whose stored hashes alone fail (those fail through
+    /// `rvz_structure` instead).
+    pub rvz_note: Option<String>,
     /// Per-partition hash-tree results, `--full` only.
     pub partitions: Vec<RvlPartitionVerify>,
     pub ok: bool,
@@ -92,9 +96,36 @@ pub fn verify_rvl(
     if cancel.is_cancelled() {
         return Err(Cancelled.into());
     }
-    let rvz_structure = verify_rvz_structure(path, cancel).ok();
+    let (rvz_structure, rvz_note) =
+        crate::nintendo::disc::rvz::verify::verify_rvz_structure_reported(path, cancel)?;
     if cancel.is_cancelled() {
         return Err(Cancelled.into());
+    }
+
+    // A structurally broken container usually cannot be opened as a disc
+    // at all (a tail-cut RVZ loses its closing group table), so the
+    // verify fails on the note alone instead of aborting the run.
+    if let Some(note) = rvz_note {
+        return Ok(RvlVerifyResult {
+            game_id: String::new(),
+            rvz_structure: None,
+            rvz_note: Some(note),
+            partitions: Vec::new(),
+            ok: false,
+        });
+    }
+
+    // A container whose stored hashes fail fails the same checks when
+    // opened as a disc, so report the per-hash structure instead of
+    // erroring the whole verify on the open.
+    if rvz_structure.as_ref().is_some_and(|s| !s.ok()) {
+        return Ok(RvlVerifyResult {
+            game_id: String::new(),
+            rvz_structure,
+            rvz_note: None,
+            partitions: Vec::new(),
+            ok: false,
+        });
     }
 
     let mut reader =
@@ -160,6 +191,7 @@ pub fn verify_rvl(
     Ok(RvlVerifyResult {
         game_id,
         rvz_structure,
+        rvz_note: None,
         partitions,
         ok,
     })
@@ -394,6 +426,112 @@ mod tests {
             "fast mode does not walk partitions"
         );
         assert!(fast.ok);
+    }
+
+    /// An environment failure (here: the input cannot be opened at all)
+    /// means nobody checked the container: it must surface as an error
+    /// for the fail-closed Unverified classification, not as a failed
+    /// verify result that reads the container as broken.
+    #[test]
+    fn missing_input_fails_as_error_not_broken_container() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("nope.rvz");
+        let result = verify_rvl(
+            &missing,
+            &RvlVerifyOptions { full: false },
+            &NoProgress,
+            &CancelToken::new(),
+        );
+        assert!(result.is_err());
+    }
+
+    /// A container whose stored disc hash fails must produce the failed
+    /// per-hash report instead of erroring the whole verify: opening it
+    /// as a disc fails the same hash.
+    #[tokio::test]
+    async fn failed_disc_hash_reports_instead_of_open_error() {
+        use crate::nintendo::disc::rvz::format::WIA_FILE_HEAD_SIZE;
+
+        let dir = tempfile::tempdir().unwrap();
+        let iso = dir.path().join("wii.iso");
+        let rvz = dir.path().join("wii.rvz");
+        std::fs::write(&iso, make_fake_wii_iso_with_partition(2)).unwrap();
+        compress_disc(
+            &iso,
+            &rvz,
+            RvzCompressOptions::default(),
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+
+        // Flip a byte inside the disc struct's embedded boot head: the
+        // disc hash no longer matches while the file head stays valid.
+        let mut bytes = std::fs::read(&rvz).unwrap();
+        bytes[WIA_FILE_HEAD_SIZE + 0x21] ^= 0xFF;
+        std::fs::write(&rvz, &bytes).unwrap();
+
+        let result = verify_rvl(
+            &rvz,
+            &RvlVerifyOptions { full: false },
+            &NoProgress,
+            &CancelToken::new(),
+        )
+        .expect("a failed stored hash must report, not error");
+        assert!(!result.ok);
+        assert!(result.rvz_note.is_none());
+        let structure = result
+            .rvz_structure
+            .expect("rvz input has structural hashes");
+        assert!(structure.file_head_hash_ok);
+        assert!(!structure.disc_hash_ok);
+    }
+
+    /// A structurally truncated RVZ fails the fast verify with
+    /// `ok == false` and the reason in `rvz_note`.
+    #[test]
+    fn truncated_rvz_fails_fast_verify_with_note() {
+        use crate::nintendo::disc::rvz::format::RvzGroup;
+        use crate::nintendo::disc::rvz::verify::test_support::build_rvz;
+
+        let dir = tempfile::tempdir().unwrap();
+        // A middle group claims 8 bytes at 16 KiB, far past the tables,
+        // and the last entry is a zero sentinel, so only a bound over
+        // every group catches the truncation. The note path returns
+        // before any disc input is opened, so the container head bytes
+        // need not describe a real disc.
+        let file = build_rvz(
+            [0u8; 128],
+            &[
+                RvzGroup::new_compressed(0, 8, 0),
+                RvzGroup::new_compressed(0x4000 / 4, 8, 0),
+                RvzGroup {
+                    data_off4: 0,
+                    data_size: 0,
+                    rvz_packed_size: 0,
+                },
+            ],
+            &[],
+        );
+        let rvz = dir.path().join("wii.rvz");
+        std::fs::write(&rvz, file).unwrap();
+
+        let result = verify_rvl(
+            &rvz,
+            &RvlVerifyOptions { full: false },
+            &NoProgress,
+            &CancelToken::new(),
+        )
+        .unwrap();
+        assert!(!result.ok);
+        assert!(result.rvz_structure.is_none());
+        assert!(
+            result
+                .rvz_note
+                .as_deref()
+                .is_some_and(|note| note.contains("truncated"))
+        );
     }
 
     #[tokio::test]

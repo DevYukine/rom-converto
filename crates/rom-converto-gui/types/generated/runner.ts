@@ -103,6 +103,13 @@ export type DolVerifyResult = { game_id: string,
  */
 rvz_structure: RvzStructuralVerify | null, 
 /**
+ * Why the RVZ container could not be structurally checked (a broken
+ * table, for example): `None` for non-RVZ input, healthy containers,
+ * and containers whose stored hashes alone fail (those fail through
+ * `rvz_structure` instead).
+ */
+rvz_note: string | null, 
+/**
  * Present only with `--full`.
  */
 structural: DolStructuralReport | null, 
@@ -377,6 +384,13 @@ export type RvlVerifyResult = { game_id: string,
  * Present only for `.rvz` input.
  */
 rvz_structure: RvzStructuralVerify | null, 
+/**
+ * Why the RVZ container could not be structurally checked (a broken
+ * table, for example): `None` for non-RVZ input, healthy containers,
+ * and containers whose stored hashes alone fail (those fail through
+ * `rvz_structure` instead).
+ */
+rvz_note: string | null, 
 /**
  * Per-partition hash-tree results, `--full` only.
  */

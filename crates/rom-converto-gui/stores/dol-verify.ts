@@ -1,4 +1,5 @@
 import { makeOpStore } from "./_makeOpStore";
+import type { RvzStructuralVerify } from "~/types";
 
 export interface DolStructuralReport {
   fst_offset: number;
@@ -9,7 +10,8 @@ export interface DolStructuralReport {
 
 export interface DolVerifyResult {
   game_id: string;
-  rvz_structure: { ok: boolean } | null;
+  rvz_structure: RvzStructuralVerify | null;
+  rvz_note: string | null;
   structural: DolStructuralReport | null;
   disc_sha1: string | null;
   ok: boolean;
