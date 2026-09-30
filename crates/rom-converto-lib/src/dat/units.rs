@@ -74,6 +74,10 @@ pub async fn collect_units(
     };
     let mut sets = HashMap::new();
     let mut covered = HashSet::new();
+    // The extensions (and the no-extension case) the parsed cue sheets
+    // actually reference: only walked files matching one need the
+    // canonical stat in the coverage lookup.
+    let mut referenced: HashSet<Option<String>> = HashSet::new();
     for cue in files.iter().filter(|f| ext(f).as_deref() == Some("cue")) {
         let sheet = match CueParser::new(cue).parse().await {
             Ok(s) => s,
@@ -91,10 +95,19 @@ pub async fn collect_units(
         if bins.is_empty() {
             continue;
         }
-        covered.extend(bins.iter().cloned());
+        covered.extend(bins.iter().map(|bin| covered_key(bin)));
+        referenced.extend(bins.iter().map(|bin| {
+            bin.extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.to_ascii_lowercase())
+        }));
         sets.insert(cue.clone(), bins);
     }
     let mut units = Vec::new();
+    // A cue can reference any file name, so the coverage lookup needs a
+    // canonical stat per walked file: skipped entirely when no cue
+    // produced candidates, and narrowed to referenced extensions.
+    let check_covered = !covered.is_empty();
     for f in files {
         match ext(&f).as_deref() {
             Some("cue") => {
@@ -103,11 +116,20 @@ pub async fn collect_units(
                 }
             }
             Some("m3u") => {}
-            _ if covered.contains(&f) => {}
+            _ if check_covered
+                && referenced.contains(&ext(&f))
+                && covered.contains(&covered_key(&f)) => {}
             _ => units.push(DatUnit::File(f)),
         }
     }
     Ok(units)
+}
+
+/// The identity a covered file is keyed by: its canonical path when it
+/// exists on disk (resolving `..` components, `.` prefixes and directory
+/// symlinks), else the spelling it was given.
+fn covered_key(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// Digest one unit through the persistent hash cache when one is given. A
@@ -301,6 +323,30 @@ pub fn bucket(e: DatError) -> DatResult<(DigestBucket, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A cue sheet referencing a bin through a redundant `sub/../` path
+    /// still covers the file the walk produced: the bin does not resurface
+    /// as a standalone unit beside its cue set.
+    #[tokio::test]
+    async fn redundant_cue_reference_still_covers_the_bin() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(
+            dir.path().join("game.cue"),
+            "FILE \"sub/../a.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("a.bin"), b"bin").unwrap();
+
+        let units = collect_units(dir.path(), None, &CancelToken::new())
+            .await
+            .unwrap();
+        assert_eq!(units.len(), 1, "{units:?}");
+        let DatUnit::CueSet { bins, .. } = &units[0] else {
+            panic!("expected the cue set");
+        };
+        assert_eq!(bins.len(), 1);
+    }
 
     #[tokio::test]
     async fn cue_set_groups_bins() {
