@@ -38,6 +38,7 @@ pub mod disc;
 pub mod info;
 pub mod microsoft;
 pub mod nintendo;
+pub mod patch;
 pub mod pipeline;
 pub mod playlist;
 pub mod runner;

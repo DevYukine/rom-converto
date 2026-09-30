@@ -1,10 +1,10 @@
 //! File hashing for the `hash` command and verify pipelines: CRC32, SHA-1,
 //! MD5, and SHA-256, computed in a single streaming pass over each file.
 
-use crate::util::{CancelToken, Cancelled, ProgressReporter};
+use crate::util::{CancelToken, Cancelled, NoProgress, ProgressReporter};
 use crc::{CRC_32_ISO_HDLC, Crc, Table};
 use sha2::Digest as _;
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 /// A supported file-digest algorithm.
@@ -291,6 +291,77 @@ pub fn hash_file(
     Ok(hasher.finalize(size_bytes))
 }
 
+/// Streams `path` through CRC-32/ISO-HDLC in fixed-size chunks via
+/// [`pump_skip_pad`], observing `cancel`: cancellation surfaces as an
+/// `io::Error` carrying [`Cancelled`], like every sibling helper.
+pub fn crc32_of_file(path: &Path, cancel: &CancelToken) -> std::io::Result<u32> {
+    let mut file = std::fs::File::open(path)?;
+    let mut crc = CRC32.digest();
+    pump_skip_pad(&mut file, &mut crc, 0, 0, 0, &NoProgress, cancel)?;
+    Ok(crc.finalize())
+}
+
+/// Byte sink for [`pump_skip_pad`]: a hasher, or a hasher that writes each
+/// chunk through to an output stream.
+pub trait PumpSink {
+    fn absorb(&mut self, chunk: &[u8]) -> std::io::Result<()>;
+}
+
+impl PumpSink for MultiHasher {
+    fn absorb(&mut self, chunk: &[u8]) -> std::io::Result<()> {
+        self.update(chunk);
+        Ok(())
+    }
+}
+
+impl PumpSink for Crc32Digest {
+    fn absorb(&mut self, chunk: &[u8]) -> std::io::Result<()> {
+        self.update(chunk);
+        Ok(())
+    }
+}
+
+/// Streams `reader` from `skip` bytes in, then `pad` bytes of `fill`, into
+/// `sink`, one fixed-size chunk at a time, advancing `progress` per chunk.
+/// Cancellation stops at a chunk boundary as an `io::Error` carrying
+/// [`Cancelled`].
+pub fn pump_skip_pad<R: Read + Seek, S: PumpSink>(
+    reader: &mut R,
+    sink: &mut S,
+    skip: u64,
+    pad: u64,
+    fill: u8,
+    progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
+) -> std::io::Result<()> {
+    reader.seek(SeekFrom::Start(skip))?;
+    let cancelled = || std::io::Error::new(std::io::ErrorKind::Interrupted, Cancelled);
+    let mut buf = vec![0u8; 4 * 1024 * 1024];
+    loop {
+        if cancel.is_cancelled() {
+            return Err(cancelled());
+        }
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        sink.absorb(&buf[..n])?;
+        progress.inc(n as u64);
+    }
+    buf.fill(fill);
+    let mut remaining = pad;
+    while remaining > 0 {
+        if cancel.is_cancelled() {
+            return Err(cancelled());
+        }
+        let n = remaining.min(buf.len() as u64) as usize;
+        sink.absorb(&buf[..n])?;
+        progress.inc(n as u64);
+        remaining -= n as u64;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,6 +411,37 @@ mod tests {
             Some("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
         );
         assert_eq!(d.size_bytes, 3);
+    }
+
+    /// The shared CRC-32 helper matches the direct `CRC32` digest and reads
+    /// as cancelled through an already-cancelled token.
+    #[test]
+    fn crc32_of_file_streams_and_cancels() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("input.bin");
+        std::fs::write(&path, b"abc").unwrap();
+        assert_eq!(
+            crc32_of_file(&path, &CancelToken::new()).unwrap(),
+            CRC32.checksum(b"abc")
+        );
+
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let err = crc32_of_file(&path, &cancel).unwrap_err();
+        assert!(
+            err.get_ref().is_some_and(|inner| inner.is::<Cancelled>()),
+            "{err}"
+        );
+
+        // The cancel check precedes the first read, so even an empty file
+        // errors instead of hashing to the empty digest.
+        let empty = dir.path().join("empty.bin");
+        std::fs::write(&empty, b"").unwrap();
+        let err = crc32_of_file(&empty, &cancel).unwrap_err();
+        assert!(
+            err.get_ref().is_some_and(|inner| inner.is::<Cancelled>()),
+            "{err}"
+        );
     }
 
     #[test]
