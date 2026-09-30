@@ -10,6 +10,7 @@ pub mod bytes;
 pub mod conflict;
 pub mod deflate;
 pub mod footgun;
+pub mod frontends;
 pub mod fs;
 pub mod group_reader;
 pub mod hash;

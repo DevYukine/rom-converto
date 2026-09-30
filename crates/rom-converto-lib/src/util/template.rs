@@ -3,10 +3,26 @@
 //! Resolves a user template string such as `{console}/{title}.{ext}` against
 //! the metadata rom-converto already extracts, producing a sanitized relative
 //! path. No external DAT is consulted; every token comes from the in-tool
-//! [`InfoResult`]. Missing metadata degrades to the input basename so a run
-//! never fails just because a token could not be resolved.
+//! [`InfoResult`], except the DAT-sourced tokens below, which the organize
+//! op's DAT-matching pass fills in on [`TemplateTokens`] when a Playmatch
+//! hash-verified match exists.
+//!
+//! Supported tokens: `{title}`, `{titleId}`, `{region}`, `{console}`,
+//! `{serial}`, `{ext}`, `{basename}`, `{language}`, `{type}`, `{dat}`,
+//! `{game}`, `{input_dir}` (the unit's directory relative to the scan
+//! root; unlike every other token, its `/` separators are kept, so a
+//! nested source layout is mirrored rather than flattened), and one token
+//! per [`frontends::FRONTENDS`](crate::util::frontends::FRONTENDS) entry
+//! (e.g. `{es}`), which resolves to that frontend's ROM-root folder name
+//! for [`TemplateTokens::frontend_console`], or an empty string when the
+//! frontend has no folder for that console (the segment is left out).
+//! `{title}`, `{titleId}` and `{serial}` fall back to the input basename;
+//! every other missing token resolves to the empty string, and a template
+//! whose every component resolves empty is an error. Unknown tokens are
+//! left as literal text.
 
 use crate::info::{DetectedConsole, InfoResult, console_label, retro::RetroDetails};
+use crate::util::frontends;
 use anyhow::{Result, bail};
 use std::path::{Path, PathBuf};
 
@@ -18,19 +34,41 @@ const WINDOWS_RESERVED: &[&str] = &[
 ];
 
 /// Metadata values substitutable into an output path template.
+#[derive(Clone)]
 pub struct TemplateTokens {
     pub title: Option<String>,
     pub title_id: Option<String>,
+    /// DAT primary region code when a `GameRef` matched; else the in-tool
+    /// header region.
     pub region: Option<String>,
     pub console: Option<String>,
+    /// The label frontend folder tokens resolve against, never `{console}`:
+    /// the console label refined to a Color system by the cartridge header
+    /// or the input extension, or the DAT platform label when the organize
+    /// match overwrites the console fallback.
+    pub frontend_console: Option<String>,
     pub serial: Option<String>,
     pub ext: String,
     pub basename: String,
+    /// `{language}`: the DAT match's first tagged language, else its
+    /// primary region's main language.
+    pub language: Option<String>,
+    /// `{type}`: the DAT match's release-type label (e.g. "Retail",
+    /// "BIOS", "Beta").
+    pub game_type: Option<String>,
+    /// `{dat}`: the matched DAT file's name.
+    pub dat: Option<String>,
+    /// `{game}`: the matched game's DAT name.
+    pub game: Option<String>,
+    /// `{input_dir}`: the unit's directory relative to the scan root.
+    pub input_dir: Option<String>,
 }
 
 impl TemplateTokens {
     /// Builds tokens from `info`, falling back to `input`'s basename and
-    /// `output_ext` when metadata is missing or `info` is `None`.
+    /// `output_ext` when metadata is missing or `info` is `None`. The
+    /// DAT-sourced fields (`region` aside) start empty; the organize DAT
+    /// match pass fills them in once a `GameRef` exists.
     pub fn new(info: Option<&InfoResult>, input: &Path, output_ext: &str) -> Self {
         let basename = input
             .file_stem()
@@ -44,10 +82,22 @@ impl TemplateTokens {
             title_id: None,
             region: None,
             console: None,
+            frontend_console: None,
             serial: None,
             ext,
             basename,
+            language: None,
+            game_type: None,
+            dat: None,
+            game: None,
+            input_dir: None,
         };
+
+        let input_ext = input
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
 
         let Some(info) = info else {
             return tokens;
@@ -207,9 +257,40 @@ impl TemplateTokens {
             }
         }
 
+        tokens.frontend_console = frontend_console_label(tokens.console.as_deref(), &input_ext);
+        if let InfoResult::Retro(r) = info {
+            let color = match &r.details {
+                RetroDetails::GameBoy(dmg) => {
+                    matches!(dmg.cgb_flag, 0x80 | 0xC0).then_some("Game Boy Color")
+                }
+                RetroDetails::WonderSwan(ws) => ws.color.then_some("WonderSwan Color"),
+                RetroDetails::NeoGeoPocket(ngp) => {
+                    (ngp.machine == 0x10).then_some("Neo Geo Pocket Color")
+                }
+                _ => None,
+            };
+            if let Some(label) = color {
+                tokens.frontend_console = Some(label.to_string());
+            }
+        }
+
         tokens.title = tokens.title.and_then(|t| non_empty(t.trim().to_string()));
         tokens
     }
+}
+
+/// The frontend folder lookup label for a console: `.gbc`, `.wsc` and
+/// `.ngc` inputs name the Color systems their mono labels would hide.
+pub(crate) fn frontend_console_label(console: Option<&str>, input_ext: &str) -> Option<String> {
+    console.map(|label| {
+        match (label, input_ext) {
+            ("Game Boy", "gbc") => "Game Boy Color",
+            ("WonderSwan", "wsc") => "WonderSwan Color",
+            ("Neo Geo Pocket", "ngc") => "Neo Geo Pocket Color",
+            _ => label,
+        }
+        .to_string()
+    })
 }
 
 /// The folder label for a cartridge-era or Sega disc system, keyed by the
@@ -382,6 +463,13 @@ fn substitute(template: &str, tokens: &TemplateTokens) -> String {
 }
 
 fn resolve_token(name: &str, tokens: &TemplateTokens) -> Option<String> {
+    // `input_dir` names a real (trusted) relative directory, possibly with
+    // several components; apply_template's per-component split/sanitize
+    // pass below still guards it, so it skips the separator neutralization
+    // every other (metadata-sourced) token gets.
+    if name == "input_dir" {
+        return Some(tokens.input_dir.clone().unwrap_or_default());
+    }
     let value = match name {
         "title" => tokens
             .title
@@ -399,6 +487,16 @@ fn resolve_token(name: &str, tokens: &TemplateTokens) -> Option<String> {
         "console" => tokens.console.clone().unwrap_or_default(),
         "ext" => tokens.ext.clone(),
         "basename" => tokens.basename.clone(),
+        "language" => tokens.language.clone().unwrap_or_default(),
+        "type" => tokens.game_type.clone().unwrap_or_default(),
+        "dat" => tokens.dat.clone().unwrap_or_default(),
+        "game" => tokens.game.clone().unwrap_or_default(),
+        _ if frontends::is_frontend(name) => {
+            let console_label = tokens.frontend_console.as_deref().unwrap_or("");
+            frontends::frontend_dir(name, console_label)
+                .map(str::to_string)
+                .unwrap_or_default()
+        }
         _ => return None,
     };
     Some(neutralize_separators(&value))
@@ -448,10 +546,15 @@ fn truncate_bytes(s: &str, max: usize) -> String {
 mod tests {
     use super::*;
     use crate::atari::handy::HandyInfo;
-    use crate::info::{CtrInfo, DolInfo, InfoResult, NxInfo, RetroInfo, retro::RetroDetails};
+    use crate::bandai::ws::WsInfo;
+    use crate::info::{
+        ChdInfo, CtrInfo, DolInfo, InfoResult, NxInfo, RetroInfo, retro::RetroDetails,
+    };
     use crate::nintendo::ctr::info::{CtrSmdhInfo, CtrSmdhTitle};
+    use crate::nintendo::dmg::DmgInfo;
     use crate::nintendo::nx::info::{NxControl, NxFullInfo, NxNacpTitle};
     use crate::sega::sms::SmsInfo;
+    use crate::snk::ngp::NgpInfo;
 
     fn tokens(title: Option<&str>) -> TemplateTokens {
         TemplateTokens {
@@ -459,9 +562,15 @@ mod tests {
             title_id: Some("ABCD".to_string()),
             region: Some("USA".to_string()),
             console: Some("Wii".to_string()),
+            frontend_console: Some("Wii".to_string()),
             serial: Some("RMCE01".to_string()),
             ext: "rvz".to_string(),
             basename: "game01".to_string(),
+            language: Some("EN".to_string()),
+            game_type: Some("Retail".to_string()),
+            dat: Some("Nintendo - Wii".to_string()),
+            game: Some("Mario Kart Wii".to_string()),
+            input_dir: Some("wii/mario".to_string()),
         }
     }
 
@@ -580,6 +689,222 @@ mod tests {
         let t = tokens(Some("Mario"));
         let p = apply_template("{bogus}-{title}.{ext}", &t).unwrap();
         assert_eq!(p, PathBuf::from("{bogus}-Mario.rvz"));
+    }
+
+    #[test]
+    fn dat_tokens_resolve() {
+        let t = tokens(Some("Mario"));
+        let p = apply_template("{type}/{language}/{dat}/{game}.{ext}", &t).unwrap();
+        assert_eq!(
+            p,
+            PathBuf::from("Retail/EN/Nintendo - Wii/Mario Kart Wii.rvz")
+        );
+    }
+
+    #[test]
+    fn missing_dat_tokens_collapse_to_empty() {
+        let mut t = tokens(Some("Mario"));
+        t.language = None;
+        t.game_type = None;
+        t.dat = None;
+        t.game = None;
+        let p = apply_template("{type}{language}{dat}{game}{title}.{ext}", &t).unwrap();
+        assert_eq!(p, PathBuf::from("Mario.rvz"));
+    }
+
+    #[test]
+    fn frontend_token_resolves_known_console() {
+        let mut t = tokens(Some("Mario"));
+        t.console = Some("NES".to_string());
+        t.frontend_console = Some("NES".to_string());
+        let p = apply_template("{es}/{title}.{ext}", &t).unwrap();
+        assert_eq!(p, PathBuf::from("nes/Mario.rvz"));
+    }
+
+    #[test]
+    fn frontend_token_resolves_the_refined_label() {
+        let mut t = tokens(Some("Mario"));
+        t.console = Some("Game Boy".to_string());
+        t.frontend_console = Some("Game Boy Color".to_string());
+        let p = apply_template("{es}/{title}.{ext}", &t).unwrap();
+        assert_eq!(p, PathBuf::from("gbc/Mario.rvz"));
+    }
+
+    /// A CHD unit whose DAT match names a platform resolves the frontend
+    /// folders of that platform's row, where the generic CHD label has
+    /// none.
+    #[test]
+    fn chd_unit_with_a_dat_platform_resolves_frontend_folders() {
+        let mut t = TemplateTokens::new(
+            Some(&InfoResult::Chd(ChdInfo::default())),
+            Path::new("game.chd"),
+            "",
+        );
+        assert_eq!(t.console.as_deref(), Some("CHD"));
+        assert!(t.frontend_console.as_deref() == Some("CHD"));
+        // No frontend documents a folder for the generic label, so its
+        // segment collapses.
+        assert_eq!(
+            apply_template("{es}/{title}", &t).unwrap(),
+            PathBuf::from("game")
+        );
+
+        // The organize DAT pass writes the matched platform label over the
+        // generic CHD label in both fields.
+        t.console = Some("Sega Saturn".to_string());
+        t.frontend_console = Some("Sega Saturn".to_string());
+        assert_eq!(
+            apply_template("{es}/{title}", &t).unwrap(),
+            PathBuf::from("saturn/game")
+        );
+    }
+
+    /// A minimal Game Boy cartridge header payload.
+    fn dmg_info(cgb_flag: u8) -> DmgInfo {
+        DmgInfo {
+            logo_valid: true,
+            title: "ZELDA".to_string(),
+            manufacturer_code: None,
+            cgb_flag,
+            cgb: None,
+            sgb_flag: 0,
+            cart_type: 0,
+            cart_type_name: None,
+            rom_bytes: None,
+            ram_bytes: None,
+            destination: 0,
+            destination_name: None,
+            licensee: "01".to_string(),
+            version: 0,
+            header_checksum: 0,
+            computed_header_checksum: 0,
+            header_checksum_valid: true,
+            global_checksum: 0,
+            computed_global_checksum: 0,
+            global_checksum_valid: true,
+        }
+    }
+
+    fn ws_info() -> WsInfo {
+        WsInfo {
+            publisher_id: 0,
+            color: false,
+            game_id: 0,
+            save_type: 0,
+            save: None,
+            version: 0,
+            checksum: 0,
+            computed_checksum: 0,
+            checksum_valid: false,
+        }
+    }
+
+    fn ngp_info() -> NgpInfo {
+        NgpInfo {
+            license: "SNK".to_string(),
+            startup_address: 0,
+            catalog_id: 0,
+            subcatalog_id: 0,
+            machine: 0,
+            machine_name: None,
+            title: "GAME".to_string(),
+        }
+    }
+
+    /// Frontend folders come from the Color rows for `.gbc`, `.wsc` and
+    /// `.ngc` inputs and for a CGB-capable Game Boy header, while
+    /// `{console}` keeps its mono label.
+    #[test]
+    fn frontend_folders_use_the_color_labels() {
+        let folders = |ext: &str, details: RetroDetails| {
+            let t = TemplateTokens::new(
+                Some(&InfoResult::Retro(RetroInfo {
+                    file_size: 0,
+                    details,
+                })),
+                Path::new(&format!("game{ext}")),
+                "",
+            );
+            (
+                t.console.clone(),
+                t.frontend_console.clone(),
+                apply_template("{es}", &t).unwrap(),
+            )
+        };
+
+        let (console, frontend, folder) = folders(".gbc", RetroDetails::GameBoy(dmg_info(0x00)));
+        assert_eq!(console.as_deref(), Some("Game Boy"));
+        assert_eq!(frontend.as_deref(), Some("Game Boy Color"));
+        assert_eq!(folder, PathBuf::from("gbc"));
+
+        // The CGB flags 0x80 (enhanced) and 0xC0 (exclusive) both name the
+        // Color system, whatever the extension.
+        let (console, frontend, folder) = folders(".gb", RetroDetails::GameBoy(dmg_info(0x80)));
+        assert_eq!(console.as_deref(), Some("Game Boy"));
+        assert_eq!(frontend.as_deref(), Some("Game Boy Color"));
+        assert_eq!(folder, PathBuf::from("gbc"));
+        let (console, frontend, folder) = folders(".gb", RetroDetails::GameBoy(dmg_info(0xC0)));
+        assert_eq!(console.as_deref(), Some("Game Boy"));
+        assert_eq!(frontend.as_deref(), Some("Game Boy Color"));
+        assert_eq!(folder, PathBuf::from("gbc"));
+
+        // A DMG-only header on a .gb input stays mono.
+        let (console, frontend, folder) = folders(".gb", RetroDetails::GameBoy(dmg_info(0x00)));
+        assert_eq!(console.as_deref(), Some("Game Boy"));
+        assert_eq!(frontend.as_deref(), Some("Game Boy"));
+        assert_eq!(folder, PathBuf::from("gb"));
+
+        let (console, frontend, folder) = folders(".wsc", RetroDetails::WonderSwan(ws_info()));
+        assert_eq!(console.as_deref(), Some("WonderSwan"));
+        assert_eq!(frontend.as_deref(), Some("WonderSwan Color"));
+        assert_eq!(folder, PathBuf::from("wonderswancolor"));
+
+        let (console, frontend, folder) = folders(".ngc", RetroDetails::NeoGeoPocket(ngp_info()));
+        assert_eq!(console.as_deref(), Some("Neo Geo Pocket"));
+        assert_eq!(frontend.as_deref(), Some("Neo Geo Pocket Color"));
+        assert_eq!(folder, PathBuf::from("ngpc"));
+
+        // The parsed color flags name the Color systems whatever the
+        // extension, and their mono headers stay mono.
+        let color_ws = WsInfo {
+            color: true,
+            ..ws_info()
+        };
+        let (console, frontend, folder) = folders(".ws", RetroDetails::WonderSwan(color_ws));
+        assert_eq!(console.as_deref(), Some("WonderSwan"));
+        assert_eq!(frontend.as_deref(), Some("WonderSwan Color"));
+        assert_eq!(folder, PathBuf::from("wonderswancolor"));
+        let (_, frontend, folder) = folders(".ws", RetroDetails::WonderSwan(ws_info()));
+        assert_eq!(frontend.as_deref(), Some("WonderSwan"));
+        assert_eq!(folder, PathBuf::from("wonderswan"));
+
+        let color_ngp = NgpInfo {
+            machine: 0x10,
+            ..ngp_info()
+        };
+        let (console, frontend, folder) = folders(".ngp", RetroDetails::NeoGeoPocket(color_ngp));
+        assert_eq!(console.as_deref(), Some("Neo Geo Pocket"));
+        assert_eq!(frontend.as_deref(), Some("Neo Geo Pocket Color"));
+        assert_eq!(folder, PathBuf::from("ngpc"));
+        let (_, frontend, folder) = folders(".ngp", RetroDetails::NeoGeoPocket(ngp_info()));
+        assert_eq!(frontend.as_deref(), Some("Neo Geo Pocket"));
+        assert_eq!(folder, PathBuf::from("ngp"));
+    }
+
+    #[test]
+    fn frontend_token_empty_for_unknown_console() {
+        let mut t = tokens(Some("Mario"));
+        t.console = Some("PS5".to_string());
+        t.frontend_console = Some("PS5".to_string());
+        let p = apply_template("{es}{title}.{ext}", &t).unwrap();
+        assert_eq!(p, PathBuf::from("Mario.rvz"));
+    }
+
+    #[test]
+    fn input_dir_token_resolves() {
+        let t = tokens(Some("Mario"));
+        let p = apply_template("{input_dir}/{title}.{ext}", &t).unwrap();
+        assert_eq!(p, PathBuf::from("wii/mario/Mario.rvz"));
     }
 
     #[test]
