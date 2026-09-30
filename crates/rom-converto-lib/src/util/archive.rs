@@ -152,13 +152,30 @@ fn list_zip(path: &Path) -> Result<Vec<ArchiveMember>> {
     Ok(out)
 }
 
+/// Index of the zip entry whose decoded name is `member_name`. The zip
+/// crate decodes a stored name by its flag: a CP437-stored non-ASCII name
+/// is only visible through the decoded [`zip::read::ZipFile::name`], never
+/// through `by_name`'s raw-name lookup.
+fn zip_member_index<R>(zip: &mut zip::ZipArchive<R>, member_name: &str) -> Result<usize>
+where
+    R: std::io::Read + std::io::Seek,
+{
+    for index in 0..zip.len() {
+        if zip.name_for_index(index) == Some(member_name) {
+            return Ok(index);
+        }
+    }
+    bail!("member {member_name} not found")
+}
+
 /// The zip central directory's CRC32 and uncompressed size for `member_name`,
 /// read without decompressing the member. Backs dat verify/scan's `--quick`
 /// mode, which trusts a zip's own checksum for an eligible cartridge image
 /// instead of extracting and hashing it.
 pub(crate) fn zip_member_crc32(path: &Path, member_name: &str) -> Result<(u32, u64)> {
     let mut zip = zip::ZipArchive::new(File::open(path)?)?;
-    let entry = zip.by_name(member_name)?;
+    let index = zip_member_index(&mut zip, member_name)?;
+    let entry = zip.by_index(index)?;
     Ok((entry.crc32(), entry.size()))
 }
 
@@ -168,7 +185,8 @@ pub(crate) fn zip_member_crc32(path: &Path, member_name: &str) -> Result<(u32, u
 pub(crate) fn zip_member_head(path: &Path, member_name: &str, len: usize) -> Result<Vec<u8>> {
     use std::io::Read;
     let mut zip = zip::ZipArchive::new(File::open(path)?)?;
-    let entry = zip.by_name(member_name)?;
+    let index = zip_member_index(&mut zip, member_name)?;
+    let entry = zip.by_index(index)?;
     let mut buf = Vec::with_capacity(len);
     entry.take(len as u64).read_to_end(&mut buf)?;
     Ok(buf)
@@ -233,7 +251,8 @@ fn extract_one(
     match kind {
         ArchiveKind::Zip => {
             let mut zip = zip::ZipArchive::new(File::open(path)?)?;
-            let mut entry = zip.by_name(member_name)?;
+            let index = zip_member_index(&mut zip, member_name)?;
+            let mut entry = zip.by_index(index)?;
             let out = dest_dir.join(safe_basename(member_name)?);
             let mut writer = File::create(&out)?;
             std::io::copy(&mut entry, &mut writer)?;
@@ -498,6 +517,46 @@ pub fn resolve_input_with_selection(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util::{CancelToken, NoProgress, ZipFormat, ZipMember};
+
+    /// A zip whose non-ASCII member name is stored CP437 without the UTF-8
+    /// flag stages through the decoded name: the member is found, extracted,
+    /// and its bytes come back whole.
+    #[test]
+    fn a_cp437_stored_member_stages_by_its_decoded_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw = dir.path().join("Pok\u{e9}mon.gba");
+        let bytes = b"pokemon rom bytes";
+        std::fs::write(&raw, bytes).unwrap();
+        let zip_path = dir.path().join("Pokemon.zip");
+        crate::util::write_torrentzip(
+            &ZipMember {
+                name: "Pok\u{e9}mon.gba".to_string(),
+                path: raw,
+                skip: 0,
+                pad: 0,
+                fill: 0,
+            },
+            &zip_path,
+            ZipFormat::TorrentZip,
+            &NoProgress,
+            &CancelToken::new(),
+        )
+        .unwrap();
+        // The writer stored the name without the UTF-8 flag, so by_name's
+        // raw-name lookup cannot find it.
+        let mut zip = zip::ZipArchive::new(File::open(&zip_path).unwrap()).unwrap();
+        assert!(zip.by_name("Pok\u{e9}mon.gba").is_err());
+
+        let resolved = resolve_input(&zip_path, &["gba"]).unwrap();
+        let extracted = std::fs::read(resolved.path()).unwrap();
+        assert_eq!(extracted, bytes);
+        assert_eq!(
+            resolved.path().file_name().and_then(|name| name.to_str()),
+            Some("Pok\u{e9}mon.gba")
+        );
+    }
+
     use std::io::Write;
 
     fn write_zip(path: &Path, method: zip::CompressionMethod, entries: &[(&str, &[u8])]) {
