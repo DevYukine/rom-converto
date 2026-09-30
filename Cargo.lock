@@ -4267,6 +4267,7 @@ dependencies = [
  "md5",
  "pbkdf2",
  "png 0.18.1",
+ "regex",
  "reqwest",
  "rsa",
  "serde",

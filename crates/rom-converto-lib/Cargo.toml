@@ -17,6 +17,7 @@ binrw = "^0.15"
 byteorder = "1.5"
 chrono = "^0.4"
 encoding_rs = "^0.8"
+regex = "^1.12"
 
 # RustCrypto cipher stack (cipher 0.5): keep these five in lockstep
 aes = "^0.9"

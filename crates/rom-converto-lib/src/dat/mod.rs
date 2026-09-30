@@ -9,6 +9,7 @@ pub mod model;
 pub mod rename;
 pub mod run;
 pub mod scan;
+pub mod tags;
 pub mod units;
 pub mod verdict;
 
