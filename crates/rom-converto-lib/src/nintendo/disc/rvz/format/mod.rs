@@ -1,7 +1,7 @@
 //! WIA/RVZ binrw structures.
 //!
 //! Every multi-byte integer in the WIA/RVZ container is big-endian. The
-//! struct layouts here mirror the Dolphin spec section-for-section, so
+//! struct layouts here follow the format's spec section-for-section, so
 //! sibling modules can parse and write files with a single call.
 
 use binrw::{BinRead, BinWrite};

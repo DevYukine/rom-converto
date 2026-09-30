@@ -4,33 +4,31 @@
 //! padding that the spec uses to re-synthesize large runs of Wii partition
 //! padding losslessly. Both encoder and decoder live here.
 //!
-//! This module is a line-by-line port of Dolphin's
-//! `Source/Core/DiscIO/LaggedFibonacciGenerator.{h,cpp}` from
-//! `dolphin-emu/dolphin`. The in-memory buffer layout matches Dolphin on
-//! a little-endian host (the only platform supported here), so `get_seed`
-//! round-trips any bytes Dolphin's encoder produces.
-//!
-//! Spec: <https://github.com/dolphin-emu/dolphin/blob/master/docs/WiaAndRvz.md>
+//! The generator keeps its 521-word state as native-endian `u32` words
+//! and emits the in-memory bytes of those words in order, so on a
+//! little-endian host (the only platform supported here) the byte
+//! stream is the little-endian reading of the state words. `get_seed`
+//! inverts that layout, so packing records produced by existing RVZ
+//! encoders decode here byte-for-byte and vice versa.
 
 use crate::nintendo::disc::rvz::error::{RvzError, RvzResult};
 
-/// Buffer length in u32 words (Dolphin's `LFG_K`).
+/// Buffer length in u32 words.
 const LFG_K: usize = 521;
-/// Lag (Dolphin's `LFG_J`).
+/// Lag of the recurrence.
 const LFG_J: usize = 32;
-/// Seed length in u32 words (Dolphin's `SEED_SIZE`). The on-disc seed is
+/// Seed length in u32 words. The on-disc seed is
 /// `SEED_SIZE * 4 = 68` bytes.
 pub const SEED_SIZE: usize = 17;
 /// Buffer length in bytes.
 const LFG_BUFFER_BYTES: usize = LFG_K * 4;
 
-/// Lagged Fibonacci generator matching Dolphin's RVZ packing
-/// implementation byte-for-byte.
+/// Lagged Fibonacci generator over a 521-word state whose output is
+/// byte-identical to the RVZ packing format's.
 #[derive(Clone)]
 pub struct LaggedFibonacci {
     buffer: [u32; LFG_K],
-    /// Byte position inside the buffer. Matches Dolphin's
-    /// `m_position_bytes`. Can reach `LFG_K * 4 = 2084`.
+    /// Byte position inside the buffer. Can reach `LFG_K * 4 = 2084`.
     position_bytes: usize,
 }
 
@@ -44,8 +42,9 @@ impl Default for LaggedFibonacci {
 }
 
 impl LaggedFibonacci {
-    /// Seed the generator from a 68-byte preamble, matching Dolphin's
-    /// `SetSeed(const u8*)` + `Initialize(false)` pair.
+    /// Seed the generator from a 68-byte preamble: each big-endian
+    /// u32 slice lands in the state verbatim, then the state is
+    /// expanded without the validation pass.
     pub fn init(seed: &[u8; 68]) -> Self {
         let mut seed_words = [0u32; SEED_SIZE];
         for (word, chunk) in seed_words.iter_mut().zip(seed.as_chunks::<4>().0) {
@@ -54,27 +53,26 @@ impl LaggedFibonacci {
         Self::from_seed_words(&seed_words)
     }
 
-    /// Port of Dolphin's `SetSeed(const u32*)` + `Initialize(false)`.
+    /// Seed the generator from words read big-endian on disc, then
+    /// expand the state without the validation pass.
     pub fn from_seed_words(seed: &[u32; SEED_SIZE]) -> Self {
         let mut lfg = Self {
             buffer: [0; LFG_K],
             position_bytes: 0,
         };
-        // SetSeed: copy seed into buffer[0..17]. Dolphin's SetSeed(u8*)
-        // reads each 4-byte slice as a big-endian u32 via
-        // `Common::swap32(ptr)` and stores that directly. The caller
-        // already did the big-endian read in `init` (from_be_bytes),
-        // so this copies as-is; an additional byte-swap here would break
-        // round-trips against real Dolphin files.
+        // The seed words are stored verbatim in the state head: the
+        // on-disc bytes were read big-endian by `init`, and every
+        // consumer reads them back big-endian, so no byte-swap here.
         lfg.buffer[..SEED_SIZE].copy_from_slice(seed);
         lfg.initialize(false)
             .expect("Initialize(false) cannot fail");
         lfg
     }
 
-    /// Port of Dolphin's `Initialize(bool check_existing_data)`. Returns
-    /// `false` if `check_existing_data` is true and the buffer contents
-    /// don't match the bit-munge constraint.
+    /// Expand the state from its first 17 words via the recurrence.
+    /// With `check_existing_data`, returns `None` when the existing
+    /// buffer contents do not match the bit-munge constraint (the
+    /// observed data is not a valid trajectory).
     fn initialize(&mut self, check_existing_data: bool) -> Option<()> {
         // Fill buffer[17..521] via the recurrence.
         for i in SEED_SIZE..LFG_K {
@@ -105,7 +103,8 @@ impl LaggedFibonacci {
         Some(())
     }
 
-    /// Port of Dolphin's `Forward()`.
+    /// Step the recurrence once: XOR the lag tail into the head, then
+    /// each word into its lag-predecessor.
     fn forward(&mut self) {
         for i in 0..LFG_J {
             self.buffer[i] ^= self.buffer[i + LFG_K - LFG_J];
@@ -115,7 +114,8 @@ impl LaggedFibonacci {
         }
     }
 
-    /// Port of Dolphin's `Backward(size_t start_word, size_t end_word)`.
+    /// Undo one recurrence step over the word range
+    /// `start_word..end_word`.
     fn backward(&mut self, start_word: usize, end_word: usize) {
         let loop_end = LFG_J.max(start_word);
         let mut i = end_word.min(LFG_K);
@@ -130,17 +130,16 @@ impl LaggedFibonacci {
         }
     }
 
-    /// Port of Dolphin's 0-arg `Backward()`. Equivalent to
-    /// `Backward(0, LFG_K)`.
+    /// Undo one recurrence step over the whole state.
     fn backward_all(&mut self) {
         self.backward(0, LFG_K);
     }
 
-    /// Port of Dolphin's `Reinitialize(u32 seed_out[SEED_SIZE])`. Reverses
-    /// the four forward steps, undoes the bit-munge, extracts the seed,
-    /// and re-initializes with `check_existing_data = true`. Returns
-    /// `None` if the validation fails (the observed data isn't a valid
-    /// LFG trajectory).
+    /// Recover the seed from an expanded state: undo the four forward
+    /// steps, undo the bit-munge, reconstruct the two missing seed bits
+    /// per word from the later state words, and re-initialize with
+    /// validation. Returns `None` if the validation fails (the observed
+    /// data isn't a valid LFG trajectory).
     fn reinitialize(&mut self) -> Option<[u32; SEED_SIZE]> {
         for _ in 0..4 {
             self.backward_all();
@@ -150,9 +149,8 @@ impl LaggedFibonacci {
             *x = x.swap_bytes();
         }
 
-        // Reconstruct bits 16-17 via the XOR trick from Dolphin. Each
-        // seed word's missing 2 bits can be recovered from the later
-        // buffer words because the recurrence leaks them.
+        // Each seed word's missing 2 bits can be recovered from the
+        // later buffer words because the recurrence leaks them.
         for i in 0..SEED_SIZE {
             self.buffer[i] = (self.buffer[i] & 0xFF00FFFF)
                 | ((self.buffer[i] << 2) & 0x00FC0000)
@@ -160,18 +158,18 @@ impl LaggedFibonacci {
         }
 
         // Return the seed u32 values as-is: the caller converts them
-        // to 68 bytes via `to_be_bytes` per word, which mirrors
-        // Dolphin's `SetSeed(u8*)` big-endian read convention. No
-        // byte-swap here; see `from_seed_words` for the symmetry.
+        // to 68 bytes via `to_be_bytes` per word, the inverse of
+        // `init`'s big-endian read. No byte-swap here; see
+        // `from_seed_words` for the symmetry.
         let mut seed_out = [0u32; SEED_SIZE];
         seed_out.copy_from_slice(&self.buffer[..SEED_SIZE]);
 
         self.initialize(true).map(|_| seed_out)
     }
 
-    /// Port of Dolphin's `GetByte()`. Reads the next byte from the LFG
-    /// output stream; matches Dolphin on a little-endian host because
-    /// both sides read u32 words as their native in-memory bytes.
+    /// Read the next byte of the generator's output stream: the
+    /// in-memory bytes of the state words in order, wrapping the state
+    /// with a forward step after each full buffer.
     pub fn next_byte(&mut self) -> u8 {
         let word_idx = self.position_bytes / 4;
         let byte_in_word = self.position_bytes % 4;
@@ -185,16 +183,15 @@ impl LaggedFibonacci {
         result
     }
 
-    /// Fill `out` with LFG output. Port of Dolphin's `GetBytes`.
+    /// Fill `out` with successive generator output bytes.
     pub fn fill(&mut self, out: &mut [u8]) {
         for b in out.iter_mut() {
             *b = self.next_byte();
         }
     }
 
-    /// Port of Dolphin's `Forward(size_t count)`. Advance the generator
-    /// by `count` bytes without producing output, triggering buffer-wrap
-    /// state updates as needed.
+    /// Advance the generator by `count` bytes without producing output,
+    /// wrapping the state as needed.
     pub fn forward_bytes(&mut self, count: usize) {
         self.position_bytes += count;
         while self.position_bytes >= LFG_BUFFER_BYTES {
@@ -209,9 +206,6 @@ impl LaggedFibonacci {
     /// number of leading bytes of `data` that match the generator's
     /// output. A non-zero match count means `data[..matched]` is LFG
     /// junk with the returned seed.
-    ///
-    /// Port of Dolphin's public
-    /// `LaggedFibonacciGenerator::GetSeed(const u8*, ...)`.
     pub fn get_seed(data: &[u8], data_offset: usize) -> Option<([u32; SEED_SIZE], usize)> {
         // Skip up to 3 leading bytes to land on a u32 boundary
         // relative to the stream.
@@ -226,8 +220,8 @@ impl LaggedFibonacci {
         let mut words = Vec::with_capacity(u32_count);
         for i in 0..u32_count {
             let off = i * 4;
-            // On an LE host, Dolphin's `reinterpret_cast<const u32*>`
-            // reads bytes as little-endian u32s.
+            // The state words are the little-endian reading of the
+            // output bytes on this host.
             words.push(u32::from_le_bytes([
                 aligned[off],
                 aligned[off + 1],
@@ -252,8 +246,9 @@ impl LaggedFibonacci {
         Some((seed, reconstructed_bytes))
     }
 
-    /// Port of Dolphin's private
-    /// `GetSeed(const u32*, size, data_offset, *lfg, seed_out)`.
+    /// Recover the seed from the first `LFG_K` state words of an
+    /// unexpanded buffer, validating the reconstruction against the
+    /// remaining words.
     fn get_seed_from_words(
         &mut self,
         words: &[u32],
@@ -361,9 +356,9 @@ pub fn junk_seed(disc_id: &[u8; 4], disc_num: u8, sector: u32) -> [u32; SEED_SIZ
 const COMPRESSED_FLAG: u32 = 1 << 31;
 const MAX_PLAIN_RUN: u32 = 0x7FFF_FFFF;
 
-/// Wii block size (`VolumeWii::BLOCK_TOTAL_SIZE`). Dolphin's RVZ packing
-/// treats this as the LFG stream's period for the `data_offset` modulo
-/// used by `forward_bytes` at decode time.
+/// Wii block size. The packing format treats this as the LFG stream's
+/// period for the `data_offset` modulo used by `forward_bytes` at
+/// decode time.
 const RVZ_BLOCK_SIZE: u64 = 0x8000;
 
 /// State of the record a [`PackedDecoder`] is currently walking.
@@ -388,6 +383,12 @@ pub struct PackedDecoder<R> {
     /// Absolute logical offset of the in-progress record's first output
     /// byte, advanced by each record's full size as it completes.
     current_offset: u64,
+    /// Output bytes produced by completed records so far.
+    produced: usize,
+    /// Ceiling on the record stream's total output: the chunk size the
+    /// container declares. A record starting past it is a corrupt
+    /// stream, not up to 2^31 bytes of LFG output to synthesise.
+    max_output: usize,
     state: RecordState,
     /// Generator for the current `Random` record; re-seeded per record.
     lfg: LaggedFibonacci,
@@ -395,18 +396,32 @@ pub struct PackedDecoder<R> {
 
 impl<R: std::io::Read> PackedDecoder<R> {
     /// Wraps `reader`, whose records decode output starting at disc
-    /// offset `data_offset`.
-    pub fn new(reader: R, data_offset: u64) -> Self {
+    /// offset `data_offset`. `max_output` is the output size the record
+    /// stream may not exceed: the chunk size the container declares.
+    pub fn new(reader: R, data_offset: u64, max_output: usize) -> Self {
         Self {
             reader,
             input_len: 0,
             current_offset: data_offset,
+            produced: 0,
+            max_output,
             state: RecordState::Idle,
             lfg: LaggedFibonacci {
                 buffer: [0; LFG_K],
                 position_bytes: 0,
             },
         }
+    }
+
+    /// The wrapped record reader, for callers that must inspect the
+    /// stream they cut (for example a `Take`'s remaining limit).
+    pub fn get_ref(&self) -> &R {
+        &self.reader
+    }
+
+    /// Mutable access to the wrapped record reader.
+    pub fn get_mut(&mut self) -> &mut R {
+        &mut self.reader
     }
 
     /// Decode the next window of packed output into `out`, continuing
@@ -440,6 +455,7 @@ impl<R: std::io::Read> PackedDecoder<R> {
                     self.state = if want == remaining {
                         self.input_len += size;
                         self.current_offset += size as u64;
+                        self.produced += size;
                         RecordState::Idle
                     } else {
                         RecordState::Plain {
@@ -454,6 +470,7 @@ impl<R: std::io::Read> PackedDecoder<R> {
                     written += want;
                     self.state = if want == remaining {
                         self.current_offset += size as u64;
+                        self.produced += size;
                         RecordState::Idle
                     } else {
                         RecordState::Random {
@@ -490,6 +507,16 @@ impl<R: std::io::Read> PackedDecoder<R> {
         self.input_len += 4;
         let encoded_size = u32::from_be_bytes(header);
         let size = (encoded_size & MAX_PLAIN_RUN) as usize;
+        // A record whose output would run past the chunk's declared size
+        // is corrupt: reject it here instead of generating (or draining
+        // through) up to 0x7FFF_FFFF bytes of verbatim or LFG output.
+        let total = self.produced.saturating_add(size);
+        if total > self.max_output {
+            return Err(RvzError::DecompressedSizeMismatch {
+                expected: self.max_output as u64,
+                actual: total as u64,
+            });
+        }
         if encoded_size & COMPRESSED_FLAG != 0 {
             let mut seed = [0u8; 68];
             self.reader.read_exact(&mut seed).map_err(|error| {
@@ -532,23 +559,25 @@ impl<R: std::io::Read> PackedDecoder<R> {
 /// * MSB = 0: the next `size` bytes are raw payload.
 /// * MSB = 1: the lower 31 bits are the size, followed by 68 bytes of LFG
 ///   seed. The decoder constructs an LFG from the seed, advances it by
-///   `data_offset % 0x8000` bytes (matching Dolphin's
-///   `RVZPackDecompressor::Decompress`), and fills `size` bytes of
-///   output.
+///   `data_offset % 0x8000` bytes, and fills `size` bytes of output.
 ///
 /// `data_offset` is the absolute logical byte offset of the chunk's first
 /// byte inside the partition (or raw region) being decoded. It's used
 /// solely to compute the LFG forward skip per junk record.
 ///
 /// # Errors
-/// Returns an error for truncated records; records beyond the output bound
-/// are consumed or skipped, and `output_len` is clamped to the buffer length.
+/// Returns an error for truncated records; a record that would push the
+/// output past `output.len()` (the chunk size the caller declared) is
+/// a [`RvzError::DecompressedSizeMismatch`], on the initial decode and
+/// on the final drain alike. The drain only consumes records that
+/// produce no output: a non-empty record past the bound errors, so the
+/// reader cannot be made to walk an unbounded record stream.
 pub fn pack_decode_reader<R: std::io::Read>(
     reader: &mut R,
     data_offset: u64,
     output: &mut [u8],
 ) -> RvzResult<(usize, usize)> {
-    let mut decoder = PackedDecoder::new(reader, data_offset);
+    let mut decoder = PackedDecoder::new(reader, data_offset, output.len());
     let mut output_len = 0;
     while output_len < output.len() {
         let count = decoder.read(&mut output[output_len..])?;
@@ -557,8 +586,8 @@ pub fn pack_decode_reader<R: std::io::Read>(
         }
         output_len += count;
     }
-    // Records past the output bound are still consumed so the input count
-    // and truncation checks cover the whole stream.
+    // Consume trailing records so truncation and input counts cover the
+    // whole declared stream; only zero-output records can remain.
     decoder.drain()?;
     Ok((output_len, decoder.input_len))
 }
@@ -586,11 +615,10 @@ struct JunkRun {
     seed: [u32; SEED_SIZE],
 }
 
-/// Port of Dolphin's `RVZPack` first pass: walk `chunk` left-to-right,
-/// at each position try to reverse-derive an LFG seed via
-/// [`LaggedFibonacci::get_seed`]. Runs the length-capping logic that
-/// stops GetSeed calls at the next `RVZ_BLOCK_SIZE` boundary. Returns
-/// the list of discovered junk runs in order.
+/// Walk `chunk` left-to-right, at each position try to reverse-derive
+/// an LFG seed via [`LaggedFibonacci::get_seed`]. Seed recovery never
+/// reads past the next `RVZ_BLOCK_SIZE` boundary. Returns the list of
+/// discovered junk runs in order.
 fn scan_junk_runs(chunk: &[u8], chunk_data_offset: u64) -> Vec<JunkRun> {
     let mut runs = Vec::new();
     let mut position: usize = 0;
@@ -609,8 +637,8 @@ fn scan_junk_runs(chunk: &[u8], chunk_data_offset: u64) -> Vec<JunkRun> {
             break;
         }
 
-        // Dolphin caps `bytes_to_read` at the next RVZ_BLOCK_SIZE
-        // boundary so one GetSeed call never straddles a sector.
+        // Cap the recovery window at the next RVZ_BLOCK_SIZE boundary
+        // so one seed recovery never straddles a sector.
         let next_boundary = ((data_offset / RVZ_BLOCK_SIZE) + 1) * RVZ_BLOCK_SIZE;
         let bytes_to_read = ((next_boundary - data_offset) as usize).min(total_size - position);
         let data_offset_mod = (data_offset % RVZ_BLOCK_SIZE) as usize;
@@ -641,17 +669,15 @@ fn scan_junk_runs(chunk: &[u8], chunk_data_offset: u64) -> Vec<JunkRun> {
 ///
 /// Returns `None` if no junk runs were found. Callers should fall
 /// through to using `src` verbatim in that case, and set
-/// `rvz_packed_size = 0` in the corresponding `RvzGroup` entry. This
-/// matches Dolphin's "first_loop_iteration" special case in `RVZPack`
-/// where a chunk with no junk runs is stored without any length header.
+/// `rvz_packed_size = 0` in the corresponding `RvzGroup` entry: a chunk
+/// with no junk runs is stored without any length header.
 ///
 /// Returns `Some(packed)` when one or more junk runs were found. The
 /// caller should zstd-compress `packed` and set `rvz_packed_size` to
 /// `packed.len()` so the decoder knows to invoke [`pack_decode_reader`] on the
 /// zstd-decompressed output.
 ///
-/// Ports Dolphin's `RVZPack` second pass from `WIABlob.cpp`, simplified
-/// for the single-chunk case (`multipart = false`, no group reuse).
+/// Encodes the single-chunk case only (no multipart grouping).
 pub fn pack_encode(src: &[u8], data_offset: u64) -> Option<Vec<u8>> {
     let runs = scan_junk_runs(src, data_offset);
     if runs.is_empty() {
@@ -710,9 +736,9 @@ mod tests {
 
     #[test]
     fn pack_encode_detects_lfg_junk_and_round_trips() {
-        // Dolphin's RVZPack scanner only probes for LFG junk at
-        // RVZ_BLOCK_SIZE (0x8000) boundaries, so junk runs must START
-        // at a multiple of 0x8000 relative to the chunk's data_offset.
+        // The scanner only probes for LFG junk at RVZ_BLOCK_SIZE
+        // (0x8000) boundaries, so junk runs must START at a multiple of
+        // 0x8000 relative to the chunk's data_offset.
         // Build a chunk where the first 0x8000 is pure LFG output, then
         // a trailing run of 0xBB filler. Compress and round-trip.
         let seed = [0x5Au8; 68];
@@ -772,17 +798,52 @@ mod tests {
         assert_eq!(&decoded[100..164], &expected);
     }
 
+    /// A record whose declared output would run past the decoder's
+    /// `max_output` (the chunk size the container declares) must be
+    /// rejected in `start_record`, before any of its up-to-0x7FFF_FFFF
+    /// bytes of LFG output are generated.
     #[test]
-    fn decoder_discards_record_excess_beyond_output_bound() {
+    fn record_past_max_output_errors_immediately() {
         let mut input = Vec::new();
-        input.extend_from_slice(&5u32.to_be_bytes());
-        input.extend_from_slice(b"abcde");
-        let mut output = [0; 3];
-        let (decoded_len, input_len) =
-            pack_decode_reader(&mut std::io::Cursor::new(&input), 0, &mut output).unwrap();
-        assert_eq!(decoded_len, 3);
-        assert_eq!(input_len, input.len());
-        assert_eq!(&output, b"abc");
+        input.extend_from_slice(&(0x7FFF_FFFFu32 | COMPRESSED_FLAG).to_be_bytes());
+        input.extend_from_slice(&[0x5Au8; 68]);
+        let mut decoder = PackedDecoder::new(std::io::Cursor::new(&input), 0, 16);
+        let mut out = [0u8; 64];
+        let err = decoder.read(&mut out).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                RvzError::DecompressedSizeMismatch {
+                    expected: 16,
+                    actual: 0x7FFF_FFFF
+                }
+            ),
+            "{err}"
+        );
+    }
+
+    /// The post-decode drain must reject a further record rather than
+    /// silently consuming output the chunk size cannot back.
+    #[test]
+    fn drain_rejects_record_past_max_output() {
+        let mut input = Vec::new();
+        input.extend_from_slice(&4u32.to_be_bytes());
+        input.extend_from_slice(b"abcd");
+        input.extend_from_slice(&4u32.to_be_bytes());
+        input.extend_from_slice(b"wxyz");
+        let mut output = [0u8; 4];
+        let err =
+            pack_decode_reader(&mut std::io::Cursor::new(&input), 0, &mut output).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                RvzError::DecompressedSizeMismatch {
+                    expected: 4,
+                    actual: 8
+                }
+            ),
+            "{err}"
+        );
     }
 
     #[test]
@@ -815,7 +876,7 @@ mod tests {
         lfg.fill(&mut expected_junk);
         assert_eq!(&one_shot[lead_len..lead_len + JUNK_LEN], &expected_junk);
 
-        let mut decoder = PackedDecoder::new(std::io::Cursor::new(&input), 0);
+        let mut decoder = PackedDecoder::new(std::io::Cursor::new(&input), 0, total);
         let mut windowed = Vec::new();
         // 32668 % 995 = 828, so the 200-byte LFG record straddles a window
         // edge and must resume mid-record on the next call.

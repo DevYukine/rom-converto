@@ -2,7 +2,7 @@
 //!
 //! Walks the partition's logical byte range `[0, data_size)` in
 //! `chunk_size` strides, emitting one group entry per stride.
-//! Partitions are split into Dolphin's two `wia_part_data_t`
+//! Partitions are split into the format's two `wia_part_data_t`
 //! segments:
 //!
 //! * `pd[0]` = first 2 MiB cluster (management / FST area in
@@ -11,10 +11,10 @@
 //!
 //! For the partial last chunk (when `data_size` is not a multiple
 //! of `chunk_size`), the chunk carries fewer than `blocks_per_chunk`
-//! payloads and its plaintext payload region is shorter. This
-//! matches Dolphin's `CreatePartitionDataEntry` formula:
-//! `n_groups = AlignUp(AlignDown(size, BLOCK_TOTAL_SIZE), chunk_size)
-//! / chunk_size`.
+//! payloads and its plaintext payload region is shorter. The
+//! partition data entry rule applies:
+//! `n_groups = size rounded up to the chunk size, divided by the
+//! chunk size` (sizes are whole sectors to begin with).
 //!
 //! Chunks within a cluster share the same decrypted cluster +
 //! exception list. The exception list is built against
@@ -33,6 +33,7 @@ use super::{
     write_msg_drain_loop,
 };
 use crate::nintendo::disc::rvz::error::{RvzError, RvzResult};
+use crate::nintendo::disc::rvz::partition_encoded_size;
 use crate::nintendo::rvl::constants::{
     WII_BLOCKS_PER_GROUP, WII_GROUP_TOTAL_SIZE, WII_SECTOR_PAYLOAD_SIZE, WII_SECTOR_SIZE,
     WII_SECTOR_SIZE_U64,
@@ -143,6 +144,9 @@ pub(super) fn make_partition_compress_workers(
 pub(super) struct PartitionRegionEncode<'a> {
     pub info: &'a PartitionInfo,
     pub chunk_size: u32,
+    /// Full input ISO size: the final cluster read clamps to the bytes
+    /// the disc actually has, since the image can end inside a cluster.
+    pub iso_size: u64,
     pub bytes_done: &'a Arc<AtomicU64>,
     pub cancel: &'a CancelToken,
 }
@@ -170,39 +174,38 @@ pub(super) fn encode_partition_region<R: Read + Seek>(
     let PartitionRegionEncode {
         info,
         chunk_size,
+        iso_size,
         bytes_done,
         cancel,
     } = args;
     let title_key = info.title_key;
     let chunk_size_u64 = chunk_size as u64;
-    let data_size = info.data_size;
+    // The partition layout counts whole 0x8000-byte sectors inside the
+    // ISO (`n_sectors == min(data_size, available) truncated to whole
+    // 0x8000-byte sectors`), so a declared size past EOF or a
+    // sub-sector tail is left
+    // to the following raw region before the cluster walk. Without this
+    // the walk emits groups the decoder's geometry check rejects.
+    let data_size = partition_encoded_size(info.data_start(), info.data_size, iso_size);
 
     // Split boundary: one 2 MiB cluster for pd[0] (unless the
     // partition is smaller, which shouldn't happen in practice).
     let pd0_bytes = WII_GROUP_TOTAL_SIZE.min(data_size);
     let pd1_bytes = data_size - pd0_bytes;
 
-    // Dolphin's `CreatePartitionDataEntry` rule:
-    //   n_sectors  = size / BLOCK_TOTAL_SIZE   (truncated)
-    //   n_groups   = AlignUp(AlignDown(size, BLOCK_TOTAL_SIZE),
-    //                        chunk_size) / chunk_size
+    // The format's partition data entry rule:
+    //   n_sectors  = size / WII_SECTOR_SIZE   (truncated)
+    //   n_groups   = size rounded up to the chunk size, divided by the
+    //                chunk size
+    // `data_size` is already sector-truncated, so the pre-rounding
+    // truncation is a no-op here.
     let pd0_n_sectors = (pd0_bytes / WII_SECTOR_SIZE_U64) as u32;
-    let pd0_rounded = pd0_bytes & !(WII_SECTOR_SIZE_U64 - 1);
-    let pd0_n_groups = if pd0_rounded == 0 {
-        0
-    } else {
-        pd0_rounded.div_ceil(chunk_size_u64) as u32
-    };
+    let pd0_n_groups = pd0_bytes.div_ceil(chunk_size_u64) as u32;
     let pd1_n_sectors = (pd1_bytes / WII_SECTOR_SIZE_U64) as u32;
-    let pd1_rounded = pd1_bytes & !(WII_SECTOR_SIZE_U64 - 1);
-    let pd1_n_groups = if pd1_rounded == 0 {
-        0
-    } else {
-        pd1_rounded.div_ceil(chunk_size_u64) as u32
-    };
+    let pd1_n_groups = pd1_bytes.div_ceil(chunk_size_u64) as u32;
 
     let cluster_size = WII_GROUP_TOTAL_SIZE as usize;
-    let cluster_count = info.cluster_count();
+    let cluster_count = data_size.div_ceil(WII_GROUP_TOTAL_SIZE);
 
     reader.seek(SeekFrom::Start(info.data_start()))?;
 
@@ -238,8 +241,16 @@ pub(super) fn encode_partition_region<R: Read + Seek>(
                 if cancel.is_cancelled() {
                     return Err(Cancelled.into());
                 }
+                // The disc can end inside the partition's final
+                // cluster: clamp the read to the bytes the ISO
+                // actually has and let the buffer's zero fill stand
+                // in for the rest. The sectors the missing bytes
+                // would back are padding past `partition_data_size`,
+                // and padding payloads never reach a chunk.
+                let cluster_start = info.data_start() + seq * WII_GROUP_TOTAL_SIZE;
+                let present = iso_size.saturating_sub(cluster_start);
                 let mut buf = vec![0u8; cluster_size];
-                reader.read_exact(&mut buf)?;
+                reader.read_exact(&mut buf[..(cluster_size as u64).min(present) as usize])?;
                 Ok(PartitionWork {
                     raw_cluster: buf,
                     cluster_idx: seq,
@@ -316,7 +327,7 @@ fn encode_one_partition_cluster_with(
     let cluster = read_and_decrypt_cluster(&mut cursor, &title_key)?;
 
     // Encrypted-coordinate range of this cluster inside the
-    // partition's declared data. Dolphin's `data_size` and
+    // partition's declared data. The format's `data_size` and
     // `chunk_size` are in encrypted bytes (one sector = 0x8000,
     // one cluster = 0x200000). `enc_cluster_end` is clamped to
     // `partition_data_size` for the partial last cluster.
@@ -407,12 +418,12 @@ fn encode_one_partition_cluster_with(
 /// 4. Serialize the exception header into
 ///    `worker.exception_header`, then assemble
 ///    `[header | payload_region]` into `worker.assembly`.
-/// 5. Run zstd on `worker.assembly`. Mirror Dolphin's "will it
-///    compress" check (compressed length < `AlignUp(exception
-///    list size, 4) + payload length`) to decide compressed vs
-///    raw storage. Raw storage zero-pads the exception list up
-///    to a 4-byte boundary as Dolphin's `pad_exception_lists`
-///    does for the uncompressed fallback path.
+/// 5. Run zstd on `worker.assembly`. Apply the format's "will it
+///    compress" check (compressed length < exception list size
+///    rounded up to 4 bytes, plus payload length) to decide
+///    compressed vs raw storage. Raw storage zero-pads the
+///    exception list up to a 4-byte boundary for the uncompressed
+///    fallback path.
 fn encode_one_chunk_with(
     worker: &mut PartitionCompressWorker,
     cluster_payloads: &[[u8; WII_SECTOR_PAYLOAD_SIZE]],
@@ -477,18 +488,18 @@ fn encode_one_chunk_with(
         .compress(&worker.assembly)
         .map_err(|e| RvzError::Custom(format!("zstd compress: {e}")))?;
 
-    // Dolphin's RVZ "will it compress" check uses
-    // `uncompressed_size = main_data.size() +
-    // AlignUp(exception_lists.size(), 4)`. Match that so the
-    // compressed/raw decisions made here agree with Dolphin's.
+    // The format's "will it compress" threshold compares against
+    // `main_data.size() + exception_lists.size() rounded up to 4
+    // bytes`; the same bound keeps compressed/raw decisions
+    // consistent with decoders.
     let aligned_exc_len = (worker.exception_header.len() + 3) & !3;
     let uncompressed_size = aligned_exc_len + payload_region.len();
     let kind = if compressed.len() < uncompressed_size {
         CompressedKind::Compressed(compressed)
     } else {
-        // Dolphin's `pad_exception_lists` zero-pads the
-        // exception list up to a 4-byte boundary when a
-        // partition chunk falls back to raw storage.
+        // Raw storage zero-pads the exception list up to a
+        // 4-byte boundary when a partition chunk falls back
+        // to raw storage.
         let mut raw_body = Vec::with_capacity(aligned_exc_len + payload_region.len());
         raw_body.extend_from_slice(&worker.exception_header);
         raw_body.resize(aligned_exc_len, 0);

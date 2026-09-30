@@ -73,12 +73,11 @@ pub struct RvzCompressOptions {
     /// [`MIN_CHUNK_SIZE`] and [`MAX_CHUNK_SIZE`].
     pub chunk_size: u32,
     /// Reserved for the RVZ packing encoder. Currently a no-op: the
-    /// decoder side of packing is fully implemented (so RVZ files
-    /// Dolphin produces with packing decompress correctly), but the
-    /// encoder side requires Dolphin's
-    /// `LaggedFibonacciGenerator::GetSeed` reverse derivation which
-    /// has not been ported yet. Setting this flag has no effect on
-    /// output until that lands.
+    /// decoder side of packing is fully implemented (so packed RVZ
+    /// files decompress correctly), but the encoder side needs the
+    /// LFG seed reverse derivation, which is not implemented here
+    /// yet. Setting this flag has no effect on output until that
+    /// lands.
     pub use_rvz_packing: bool,
 }
 
@@ -181,11 +180,10 @@ pub(crate) async fn compress_iso(
 
 fn validate_chunk_size(chunk_size: u32) -> RvzResult<()> {
     if !(MIN_CHUNK_SIZE..=MAX_CHUNK_SIZE).contains(&chunk_size) || !chunk_size.is_power_of_two() {
-        return Err(RvzError::InvalidChunkSize(
-            chunk_size,
-            MIN_CHUNK_SIZE,
-            MAX_CHUNK_SIZE,
-        ));
+        return Err(RvzError::Custom(format!(
+            "invalid chunk size {chunk_size}: this writer emits power-of-two chunk sizes \
+             between {MIN_CHUNK_SIZE} and {MAX_CHUNK_SIZE} bytes"
+        )));
     }
     Ok(())
 }
@@ -222,8 +220,7 @@ pub(super) struct RegionWriteState<'a> {
 
 /// Metadata returned by [`partition::encode_partition_region`]
 /// so [`compress_blocking`] can populate `WiaPart::pd[0]` and
-/// `WiaPart::pd[1]` with values that match Dolphin's
-/// `CreatePartitionDataEntry` formula.
+/// `WiaPart::pd[1]` with the format's partition data entry values.
 pub(super) struct PartitionLayout {
     pub pd0_n_sectors: u32,
     pub pd0_n_groups: u32,
@@ -355,8 +352,8 @@ fn encode_regions<R: Read + Seek>(
     // Wii partitions: the user's chunk_size flows through unchanged.
     // One Wii cluster (2 MiB) spans `chunks_per_cluster =
     // 0x200000 / chunk_size` output chunks, each carrying its own
-    // `wia_except_list_t` with chunk-local block offsets. Dolphin's
-    // default is 128 KiB (16 chunks per cluster).
+    // `wia_except_list_t` with chunk-local block offsets. The
+    // common default is 128 KiB (16 chunks per cluster).
     let effective_chunk_size = ctx.options.chunk_size;
 
     let mut tables = EncodedTables {
@@ -437,6 +434,7 @@ fn encode_regions<R: Read + Seek>(
                         partition::PartitionRegionEncode {
                             info,
                             chunk_size: effective_chunk_size,
+                            iso_size: ctx.iso_size,
                             bytes_done: ctx.bytes_done,
                             cancel: ctx.cancel,
                         },
@@ -489,7 +487,7 @@ fn write_tables_and_head(
     iso_size: u64,
 ) -> RvzResult<u64> {
     // Now that every region is on disk, emit the three metadata
-    // tables in the order Dolphin expects: partitions, raw_data
+    // tables in the format's order: partitions, raw_data
     // (zstd-compressed), groups (zstd-compressed). Each is 4-byte
     // aligned so the file-head offsets are trivially recoverable.
     //
@@ -548,8 +546,7 @@ fn write_tables_and_head(
 
     let head = WiaFileHead {
         magic: RVZ_MAGIC,
-        // Matches RVZ_VERSION / RVZ_VERSION_WRITE_COMPATIBLE from
-        // Dolphin's `Source/Core/DiscIO/WIABlob.h`.
+        // The container version pair every reader accepts.
         version: 0x01000000,
         version_compatible: 0x00030000,
         disc_size: WIA_DISC_SIZE as u32,
@@ -737,7 +734,7 @@ mod tests {
     fn validate_chunk_size_rejects_below_min() {
         assert!(matches!(
             validate_chunk_size(MIN_CHUNK_SIZE / 2),
-            Err(RvzError::InvalidChunkSize(_, _, _))
+            Err(RvzError::Custom(_))
         ));
     }
 
@@ -745,17 +742,14 @@ mod tests {
     fn validate_chunk_size_rejects_above_max() {
         assert!(matches!(
             validate_chunk_size(MAX_CHUNK_SIZE * 2),
-            Err(RvzError::InvalidChunkSize(_, _, _))
+            Err(RvzError::Custom(_))
         ));
     }
 
     #[test]
     fn validate_chunk_size_rejects_non_power_of_two() {
         let mid = MIN_CHUNK_SIZE + (MIN_CHUNK_SIZE / 2);
-        assert!(matches!(
-            validate_chunk_size(mid),
-            Err(RvzError::InvalidChunkSize(_, _, _))
-        ));
+        assert!(matches!(validate_chunk_size(mid), Err(RvzError::Custom(_))));
     }
 
     #[test]

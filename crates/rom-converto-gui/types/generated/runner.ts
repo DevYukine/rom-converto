@@ -388,7 +388,10 @@ partitions: Array<RvlPartitionVerify>, ok: boolean, };
  */
 export type RvzStructuralVerify = { file_head_hash_ok: boolean, disc_hash_ok: boolean, 
 /**
- * `None` when the container declares no partition table (`n_part == 0`).
+ * Partition-table hash verdict. `false` means the stored hash does
+ * not match; `None` means it was not checked (the container
+ * declares no partition table, or an earlier stored hash already
+ * failed).
  */
 part_hash_ok: boolean | null, 
 /**

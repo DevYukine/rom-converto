@@ -13,7 +13,8 @@
 //!   arrays in the same sub-group (h1), then 8 SHA-1s of the 8 sub-groups' h1
 //!   arrays in the same group (h2), with padding fields between each tier.
 //!
-//! See `Source/Core/DiscIO/VolumeWii.h` in Dolphin for the canonical layout.
+//! See the constants in [`crate::nintendo::rvl::constants`] and the
+//! sector layout above for the canonical field placement.
 
 use crate::nintendo::disc::rvz::error::{RvzError, RvzResult};
 use crate::nintendo::rvl::constants::{
@@ -44,7 +45,7 @@ const H0_BLOCK_SIZE: usize = 0x400;
 /// and decoder don't each hand-roll (and mis-roll) it.
 ///
 /// "Enc" prefix = **encrypted-byte coordinates**: the units
-/// Dolphin's `data_size` and `chunk_size` live in. One sector
+/// the partition's `data_size` and `chunk_size` live in. One sector
 /// = 0x8000 enc bytes, one cluster = 0x200000 enc bytes. The
 /// caller supplies `enc_pos` (byte offset from the partition's
 /// declared data start) and `this_chunk_enc_bytes` (the chunk's
@@ -101,8 +102,7 @@ impl ChunkSectorPos {
 
 pub const HASH_REGION_BYTES: usize = WII_HASH_SIZE;
 
-/// Field offsets inside a sector's 0x400 hash region. Match Dolphin's
-/// `VolumeWii::HashBlock`.
+/// Field offsets inside a sector's 0x400 hash region.
 pub(crate) mod hash_region {
     pub const H0_OFFSET: usize = 0;
     pub const H0_LEN: usize = 31 * 20;
@@ -145,8 +145,7 @@ impl PartitionInfo {
     ///
     /// Real Wii discs can declare `data_size` values that aren't a whole number
     /// of clusters. This rounds up so both encode and decode process every on-disc
-    /// cluster; Dolphin does the same via `align_up(data_size, GROUP_TOTAL_SIZE)`
-    /// in `WIABlob.cpp`.
+    /// cluster (`data_size.div_ceil(WII_GROUP_TOTAL_SIZE)`).
     pub fn cluster_count(&self) -> u64 {
         self.data_size.div_ceil(WII_GROUP_TOTAL_SIZE)
     }
@@ -187,9 +186,8 @@ pub fn read_partition_info<R: Read + Seek>(
     let data_offset = (data_offset_word as u64) << 2;
     let data_size = (data_size_word as u64) << 2;
 
-    // Dolphin's `WIABlob.cpp` rounds `data_size` up to a multiple of
-    // `GROUP_TOTAL_SIZE` when computing how many clusters to process.
-    // This mirrors that by relaxing the strict alignment check: real
+    // The cluster count rounds `data_size` up to a multiple of
+    // `WII_GROUP_TOTAL_SIZE`, so relax the strict alignment check: real
     // partitions frequently carry a short tail beyond the declared
     // data_size, and the last cluster's extra bytes are just junk
     // padding that still needs to flow through encrypt/decrypt.
@@ -360,12 +358,11 @@ pub fn recompute_hash_regions_into(
     }
 }
 
-/// One entry in a Dolphin `wia_except_list_t`. Matches Dolphin's
-/// `HashExceptionEntry` in `Source/Core/DiscIO/WIABlob.h`:
+/// One entry in a `wia_except_list_t`:
 /// `{ u16 offset; SHA1::Digest hash; }`, 22 bytes on disc, big-endian.
 ///
 /// `offset` is the byte position of the 20-byte SHA-1 inside the chunk's
-/// packed hash data, where block N starts at `N * BLOCK_HEADER_SIZE`
+/// packed hash data, where block N starts at `N * HASH_REGION_BYTES`
 /// (0x400). For this single-cluster-per-chunk configuration this maxes at
 /// `63 * 0x400 + 0x3E0 = 0xFFE0`, which fits in u16.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -374,17 +371,17 @@ pub struct HashException {
     pub hash: [u8; 20],
 }
 
-/// Dolphin's documented cap on exceptions per `wia_except_list_t`.
+/// The format's cap on exceptions per `wia_except_list_t`.
 pub const MAX_HASH_EXCEPTIONS_PER_CHUNK: usize = 3328;
 
-/// Port of Dolphin's `compare_hashes` lambda from `WIABlob.cpp`. Iterates
-/// SHA-1-sized slices of a hash-region field, emitting a `HashException`
-/// whenever the on-disc bytes diverge from the recomputed ones.
+/// Compare a hash-region field against its recomputation, iterating
+/// SHA-1-sized slices and emitting a `HashException` whenever the
+/// on-disc bytes diverge from the recomputed ones.
 ///
 /// The `min(l, size - 20)` clamp on the last iteration handles fields
 /// whose size isn't a multiple of 20 (`padding_1`, `padding_2` are 32
-/// bytes). This produces the 8-byte overlap Dolphin's encoder emits, and
-/// the applier on the decoder side accepts it because later overlapping
+/// bytes). This produces the 8-byte overlap the format's encoder emits,
+/// and the applier on the decoder side accepts it because later overlapping
 /// writes are identical to earlier ones.
 fn compare_hashes(
     on_disc: &[u8; HASH_REGION_BYTES],
@@ -412,16 +409,15 @@ fn compare_hashes(
     }
 }
 
-/// Build the Dolphin-format hash exception list for one Wii cluster.
+/// Build the hash exception list for one Wii cluster.
 ///
-/// This ports the per-block exception-building loop from `WIABlob.cpp`
-/// in `dolphin-emu/dolphin`. For each of the 64 blocks in a cluster this
+/// For each of the 64 blocks in a cluster this
 /// compares the on-disc hash region (plaintext, post-decryption) against
 /// the recomputed one tier-by-tier (h0, padding_0, h1, padding_1, h2,
 /// padding_2), in 20-byte slices.
 ///
-/// `region_base` for block `j` is `j * BLOCK_HEADER_SIZE` (0x400), not
-/// `j * BLOCK_TOTAL_SIZE`. The exception offsets are into the chunk's
+/// `region_base` for block `j` is `j * HASH_REGION_BYTES` (0x400), not
+/// `j * WII_SECTOR_SIZE`. The exception offsets are into the chunk's
 /// packed hash region, not into raw sector bytes.
 pub fn build_hash_exceptions(
     cluster: &DecryptedCluster,
@@ -489,7 +485,7 @@ pub fn build_hash_exceptions(
     out
 }
 
-/// Apply a Dolphin-format exception list to a freshly-reconstructed set
+/// Apply a hash exception list to a freshly-reconstructed set
 /// of hash regions. Each exception overwrites 20 bytes starting at the
 /// stored offset. Overlapping writes (see `compare_hashes`) are handled
 /// by letting later writes take precedence; since both slices contain
@@ -514,8 +510,8 @@ pub fn apply_hash_exceptions(
 ///
 /// When `chunk_size < WII_GROUP_TOTAL_SIZE`, one Wii cluster spans
 /// `chunks_per_cluster = WII_GROUP_TOTAL_SIZE / chunk_size` chunks, each
-/// covering `blocks_per_chunk = 64 / chunks_per_cluster` blocks. Dolphin
-/// computes exception offsets using `block_index_in_chunk * 0x400`, so
+/// covering `blocks_per_chunk = 64 / chunks_per_cluster` blocks. Exception
+/// offsets use `block_index_in_chunk * 0x400`, so
 /// each chunk's exceptions live in `[0, blocks_per_chunk * 0x400)`.
 /// This helper takes a full cluster's exceptions (cluster-local offsets
 /// in `[0, 64 * 0x400)`) and returns the subset belonging to chunk
@@ -599,7 +595,7 @@ pub fn reencrypt_cluster_into(
 }
 
 /// Serialize the exception-list header that prefixes every `wia_part_t`
-/// chunk body, matching Dolphin's `wia_except_list_t`:
+/// chunk body, the `wia_except_list_t` layout:
 ///
 /// ```text
 /// [u16 BE n_exceptions][n × (u16 BE offset, 20-byte SHA-1 hash)]
@@ -621,7 +617,7 @@ pub fn serialize_exception_header_into(
 ) -> RvzResult<()> {
     if exceptions.len() > MAX_HASH_EXCEPTIONS_PER_CHUNK {
         return Err(RvzError::Custom(format!(
-            "hash exception count {} exceeds Dolphin's cap of {}",
+            "hash exception count {} exceeds the format cap of {}",
             exceptions.len(),
             MAX_HASH_EXCEPTIONS_PER_CHUNK
         )));
@@ -675,9 +671,8 @@ impl<'a> ExceptionEntriesRef<'a> {
 ///
 /// When `align_to_4` is true, the parser rounds the exception area
 /// up to a 4-byte boundary after reading the count + entries.
-/// Dolphin's `Chunk::HandleExceptions` in `WIABlob.cpp` applies this
-/// alignment for raw (uncompressed) chunks only, matching the
-/// `align=true` flag it passes when `!m_compressed_exception_lists`.
+/// The format applies this
+/// alignment for raw (uncompressed) chunks only.
 /// Compressed chunks do NOT have the alignment pad.
 pub fn parse_exception_header<'a>(
     data: &'a [u8],

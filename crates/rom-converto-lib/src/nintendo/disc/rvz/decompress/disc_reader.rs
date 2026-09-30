@@ -2,7 +2,7 @@
 //! only the groups touched by each call. Backs the info commands
 //! against multi-GB Wii ISOs without materializing the full image
 //! anywhere. Reuses the parallel decoder's worker types
-//! (`build_raw_region_work_items`, `build_partition_work_items`)
+//! (`raw_chunk_work_at`, `build_partition_cluster_work`)
 //! single-threaded; small LRU caches keep repeat reads in the same
 //! region cheap.
 
@@ -23,12 +23,12 @@ use crate::util::worker_pool::Worker;
 
 use super::parse_rvz_metadata;
 use super::partition::{
-    PartitionDecompressOut, PartitionDecompressWorker, build_partition_work_items,
+    PartitionDecompressOut, PartitionDecompressWorker, build_partition_cluster_work,
     make_one_partition_worker,
 };
 use super::raw::{
-    RawDecompressOut, RawDecompressWork, RawDecompressWorker, build_raw_region_work_items,
-    make_one_raw_worker,
+    RawDecompressOut, RawDecompressWork, RawDecompressWorker, check_group_bounds,
+    make_one_raw_worker, raw_chunk_work_at,
 };
 
 // Chunks up to this size are decoded whole; larger ones stream through the
@@ -44,10 +44,13 @@ const PART_CACHE_CAP: usize = 4;
 
 type RawStreamDecoder =
     zstd::stream::read::Decoder<'static, BufReader<PositionalReader<Arc<File>>>>;
-type PackedStreamDecoder = PackedDecoder<Box<dyn Read>>;
+type PackedStreamDecoder = PackedDecoder<io::Take<Box<dyn Read>>>;
 type PartCacheEntry = ((usize, u64), Arc<[u8]>);
 
-/// Build a windowed decoder over a packed chunk's stored range.
+/// Build a windowed decoder over a packed chunk's stored range. The
+/// record walk is cut at the declared `rvz_packed_size`, matching the
+/// bulk worker and the region streaming path. The caller has already
+/// applied `check_group_bounds` to the descriptor.
 fn make_packed_stream_decoder(
     file: Arc<File>,
     work: &RawDecompressWork,
@@ -59,7 +62,12 @@ fn make_packed_stream_decoder(
     } else {
         Box::new(BufReader::with_capacity(STREAM_BUFFER_SIZE, stored))
     };
-    Ok(PackedDecoder::new(source, work.chunk_abs_start))
+    let limited = source.take(u64::from(work.rvz_packed_size));
+    Ok(PackedDecoder::new(
+        limited,
+        work.chunk_abs_start,
+        work.chunk_bytes,
+    ))
 }
 
 /// `Read + Seek` view over an RVZ container that decodes only the groups
@@ -165,12 +173,12 @@ impl RvzDiscReader {
             return Ok(None);
         };
         let region = self.raw_data[region_idx].clone();
-        let work = self
-            .build_raw_chunk_work_for(&region, pos)
-            .map_err(io::Error::other)?
-            .ok_or_else(|| io::Error::other("raw chunk lookup failed"))?;
+        let Some((group_idx, work)) =
+            raw_chunk_work_at(&region, &self.groups, self.chunk_size, self.iso_size, pos)
+        else {
+            return Err(io::Error::other("raw chunk lookup failed"));
+        };
         let chunk_abs_start = work.chunk_abs_start;
-        let group_idx = self.group_index_for_raw(&region, pos);
         if work.chunk_bytes > RAW_WHOLE_CHUNK_LIMIT {
             let in_chunk = (pos - chunk_abs_start) as usize;
             let take = (work.chunk_bytes - in_chunk).min(want);
@@ -179,6 +187,9 @@ impl RvzDiscReader {
                 self.pos += take as u64;
                 return Ok(Some(take));
             }
+            // Every oversized chunk with stored data is held to the
+            // descriptor bounds conversion applies.
+            check_group_bounds(&work).map_err(io::Error::other)?;
             if work.rvz_packed_size != 0 {
                 // Serve oversized packed chunks through the windowed
                 // decoder instead of materializing the whole chunk.
@@ -213,6 +224,35 @@ impl RvzDiscReader {
                     written += n;
                 }
                 position += written;
+                if position >= work.chunk_bytes {
+                    // The chunk window is complete: drain the remaining
+                    // records, and require the declared record stream to
+                    // be consumed exactly and to end there, matching the
+                    // bulk worker and the region streaming path.
+                    let mut drained: [u8; 0] = [];
+                    decoder.read(&mut drained).map_err(io::Error::other)?;
+                    if decoder.get_ref().limit() != 0 {
+                        return Err(io::Error::other(RvzError::Custom(format!(
+                            "packed record stream ends {} bytes short of the declared {}",
+                            decoder.get_ref().limit(),
+                            work.rvz_packed_size
+                        ))));
+                    }
+                    decoder.get_mut().set_limit(1);
+                    let mut probe = [0u8; 1];
+                    let extra = decoder
+                        .get_mut()
+                        .read(&mut probe)
+                        .map_err(io::Error::other)?;
+                    if extra != 0 {
+                        return Err(io::Error::other(RvzError::Custom(format!(
+                            "packed record stream continues past the declared {} bytes",
+                            work.rvz_packed_size
+                        ))));
+                    }
+                    self.pos += take as u64;
+                    return Ok(Some(take));
+                }
                 self.packed_cursor = Some((group_idx, decoder, position));
                 self.pos += take as u64;
                 return Ok(Some(take));
@@ -222,13 +262,6 @@ impl RvzDiscReader {
                 if (work.data_size as usize) < required {
                     return Err(io::Error::other(RvzError::DecompressedSizeMismatch {
                         expected: required as u64,
-                        actual: u64::from(work.data_size),
-                    }));
-                }
-                let requested_end = in_chunk + take;
-                if (work.data_size as usize) < requested_end {
-                    return Err(io::Error::other(RvzError::DecompressedSizeMismatch {
-                        expected: requested_end as u64,
                         actual: u64::from(work.data_size),
                     }));
                 }
@@ -271,6 +304,20 @@ impl RvzDiscReader {
                 written += n;
             }
             position += written;
+            if position >= work.chunk_bytes {
+                // The chunk window is complete: the frame must end here,
+                // as the bulk worker (decoding into exactly the chunk)
+                // and the region streaming path require.
+                let mut probe = [0u8; 1];
+                if decoder.read(&mut probe)? != 0 {
+                    return Err(io::Error::other(RvzError::DecompressedSizeMismatch {
+                        expected: work.chunk_bytes as u64,
+                        actual: work.chunk_bytes as u64 + 1,
+                    }));
+                }
+                self.pos += take as u64;
+                return Ok(Some(take));
+            }
             self.raw_cursor = Some((group_idx, decoder, position));
             self.pos += take as u64;
             return Ok(Some(take));
@@ -280,10 +327,15 @@ impl RvzDiscReader {
             Err(e) => return Err(io::Error::other(format!("rvz raw decompress: {}", e))),
         };
         let in_chunk = (pos - chunk_abs_start) as usize;
-        if in_chunk >= decoded.len() {
+        if in_chunk >= work.chunk_bytes || in_chunk >= decoded.len() {
             return Ok(Some(0));
         }
-        let take = (decoded.len() - in_chunk).min(want);
+        // Serve at most the chunk's declared span: a decoded buffer that
+        // overruns it (corrupt stream) must not leak the next chunk's
+        // bytes, and a short one is bounded by `decoded.len()`.
+        let take = (work.chunk_bytes - in_chunk)
+            .min(want)
+            .min(decoded.len() - in_chunk);
         buf[..take].copy_from_slice(&decoded[in_chunk..in_chunk + take]);
         self.pos += take as u64;
         Ok(Some(take))
@@ -328,7 +380,7 @@ impl RvzDiscReader {
     fn find_partition(&self, pos: u64) -> Option<usize> {
         for (idx, part) in self.parts.iter().enumerate() {
             let start = part.pd[0].first_sector as u64 * WII_SECTOR_SIZE_U64;
-            let total_sectors = (part.pd[0].n_sectors + part.pd[1].n_sectors) as u64;
+            let total_sectors = part.pd[0].n_sectors as u64 + part.pd[1].n_sectors as u64;
             let end = start + total_sectors * WII_SECTOR_SIZE_U64;
             if pos >= start && pos < end {
                 return Some(idx);
@@ -351,30 +403,6 @@ impl RvzDiscReader {
             }
         }
         next
-    }
-
-    fn group_index_for_raw(&self, region: &WiaRawData, pos: u64) -> u32 {
-        let effective_start = region.raw_data_off - (region.raw_data_off % WII_SECTOR_SIZE_U64);
-        let local = pos - effective_start;
-        let chunk_in_region = (local / self.chunk_size) as u32;
-        region.group_index + chunk_in_region
-    }
-
-    fn build_raw_chunk_work_for(
-        &self,
-        region: &WiaRawData,
-        pos: u64,
-    ) -> RvzResult<Option<RawDecompressWork>> {
-        let items = build_raw_region_work_items(
-            region,
-            &self.groups,
-            self.chunk_size,
-            self.iso_size,
-            None,
-        )?;
-        Ok(items
-            .into_iter()
-            .find(|w| pos >= w.chunk_abs_start && pos < w.chunk_abs_start + w.chunk_bytes as u64))
     }
 
     fn get_raw_chunk(&mut self, group_idx: u32, work: &RawDecompressWork) -> RvzResult<Arc<[u8]>> {
@@ -415,16 +443,13 @@ impl RvzDiscReader {
             self.part_cache.push_back((k, v.clone()));
             return Ok(v);
         }
-        let all = build_partition_work_items(part, &self.groups, self.chunk_size, None)?;
-        let work = all
-            .into_iter()
-            .find(|w| w.cluster_idx == cluster_idx)
+        let work = build_partition_cluster_work(part, &self.groups, self.chunk_size, cluster_idx)
             .ok_or_else(|| {
-                RvzError::Custom(format!(
-                    "rvz disc reader: no work for part {} cluster {}",
-                    part_idx, cluster_idx
-                ))
-            })?;
+            RvzError::Custom(format!(
+                "rvz disc reader: no work for part {} cluster {}",
+                part_idx, cluster_idx
+            ))
+        })?;
         let started = Instant::now();
         let out: PartitionDecompressOut = self.part_worker.process(work)?;
         log::trace!(
@@ -452,5 +477,269 @@ impl Seek for RvzDiscReader {
     fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
         self.pos = crate::util::positional_reader::seek_target(self.pos, self.iso_size, from)?;
         Ok(self.pos)
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::nintendo::disc::rvz::format::{RvzGroup, WiaFileHead, WiaRawData};
+    use crate::nintendo::disc::rvz::verify::test_support;
+    use binrw::{BinRead, BinWrite, Endian};
+    use std::io::{Cursor, Read};
+
+    /// Build a raw-only container whose single packed group covers a
+    /// chunk larger than the whole-chunk limit, so reads go through the
+    /// windowed packed decoder. `declared` is the record stream length
+    /// the group declares.
+    fn oversized_packed_container(
+        records: &[u8],
+        declared: u32,
+        stored: bool,
+        name: &str,
+        dir: &tempfile::TempDir,
+    ) -> std::path::PathBuf {
+        const REGION_SIZE: u64 = 0x110_0000;
+        const RAW_DATA_OFF: u64 = 0x8000;
+        let group = if stored {
+            RvzGroup {
+                data_off4: 0,
+                data_size: records.len() as u32,
+                rvz_packed_size: declared,
+            }
+        } else {
+            RvzGroup::new_compressed(0, records.len() as u32, declared)
+        };
+        let mut dhead = [0u8; 128];
+        dhead[0x1C..0x20].copy_from_slice(&0xC233_9F3Du32.to_be_bytes());
+        let build = |group: RvzGroup, trailing: &[u8]| {
+            test_support::build_rvz_custom(
+                dhead,
+                0,
+                1,
+                &[WiaRawData {
+                    raw_data_off: RAW_DATA_OFF,
+                    raw_data_size: REGION_SIZE,
+                    group_index: 0,
+                    n_groups: 1,
+                }],
+                &[group],
+                trailing,
+                |disc| disc.chunk_size = 32 * 1024 * 1024,
+            )
+        };
+        // The group table's compressed length does not depend on the
+        // group's offset value for a single entry, so a probe build
+        // with the real descriptor locates the trailing bytes.
+        // Group offsets are 4-byte granular, so the stored bytes start
+        // at the next aligned offset after the tables.
+        let mut group = group;
+        let mut probe = build(group, &[]);
+        for _ in 0..4 {
+            let off4 = probe.len().div_ceil(4) as u32;
+            if group.data_off4 == off4 {
+                break;
+            }
+            group.data_off4 = off4;
+            probe = build(group, &[]);
+        }
+        let data_off = u64::from(group.data_off4) * 4;
+        assert!(data_off >= probe.len() as u64);
+        // The file backs the whole region span with zero padding so the
+        // truncation gates stay quiet.
+        let mut trailing = vec![0u8; (data_off - probe.len() as u64) as usize];
+        trailing.extend_from_slice(records);
+        let total = RAW_DATA_OFF + REGION_SIZE;
+        if trailing.len() < (total - probe.len() as u64) as usize {
+            trailing.resize((total - probe.len() as u64) as usize, 0);
+        }
+        let mut file = build(group, &trailing);
+        // Raise the declared ISO size over the region span.
+        let mut head =
+            WiaFileHead::read_options(&mut Cursor::new(&file[..]), Endian::Big, ()).unwrap();
+        head.iso_file_size = RAW_DATA_OFF + REGION_SIZE;
+        head.file_head_hash =
+            crate::nintendo::disc::rvz::format::sha1::compute_file_head_hash(&head);
+        head.write_options(&mut Cursor::new(&mut file), Endian::Big, ())
+            .unwrap();
+        let path = dir.path().join(name);
+        std::fs::write(&path, &file).unwrap();
+        path
+    }
+
+    /// The random-access reader rejects a stored packed chunk whose
+    /// stored size differs from its declared record stream, exactly
+    /// like the bulk worker and the region streaming path.
+    #[test]
+    fn reader_rejects_stored_packed_size_mismatch() {
+        // A plain record header with a short payload. The stored-size
+        // check runs before any record is read, so this vector pins that
+        // check's message; with it disabled the record walk still
+        // rejects the vector as a truncated payload, with different
+        // text.
+        let mut records = Vec::new();
+        records.extend_from_slice(&0x110_0000u32.to_be_bytes());
+        records.extend_from_slice(&[0x5Au8; 68]);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = oversized_packed_container(
+            &records,
+            records.len() as u32 + 4,
+            true,
+            "reader_size_mismatch.rvz",
+            &dir,
+        );
+        let mut reader = RvzDiscReader::open(&path).unwrap();
+        let mut out = Vec::new();
+        let err = match reader.read_to_end(&mut out) {
+            Ok(_) => panic!("stored packed size mismatch unexpectedly accepted"),
+            Err(e) => e,
+        };
+        assert!(
+            matches!(&err, e if e.to_string().contains("stored packed chunk holds")
+                && e.to_string().contains("declares")),
+            "{err}"
+        );
+    }
+
+    /// The random-access reader requires a compressed packed chunk's
+    /// record stream to fill its declared length exactly, like the
+    /// bulk worker and the region streaming path.
+    #[test]
+    fn reader_rejects_short_compressed_packed_stream() {
+        // One junk record filling the whole chunk (72 record bytes),
+        // declared as 76.
+        let mut records = Vec::new();
+        records.extend_from_slice(&(0x8000_0000u32 | 0x110_0000).to_be_bytes());
+        records.extend_from_slice(&[0x5Au8; 68]);
+        let stored = zstd::bulk::compress(&records, 0).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = oversized_packed_container(
+            &stored,
+            records.len() as u32 + 4,
+            false,
+            "reader_short.rvz",
+            &dir,
+        );
+        let mut reader = RvzDiscReader::open(&path).unwrap();
+        let mut out = Vec::new();
+        let err = match reader.read_to_end(&mut out) {
+            Ok(_) => panic!("short packed stream unexpectedly accepted"),
+            Err(e) => e,
+        };
+        assert!(
+            matches!(&err, e if e.to_string().contains("ends 4 bytes short of the declared 76")),
+            "{err}"
+        );
+    }
+
+    /// The reader requires a compressed packed chunk's record stream to
+    /// end at its declared length: bytes past `rvz_packed_size` fail
+    /// with the same 'continues past' rejection as the other paths.
+    #[test]
+    fn reader_rejects_compressed_packed_stream_past_declared_end() {
+        // One junk record filling the whole chunk (72 record bytes),
+        // then 4 further bytes the declaration does not cover.
+        let mut records = Vec::new();
+        records.extend_from_slice(&(0x8000_0000u32 | 0x110_0000).to_be_bytes());
+        records.extend_from_slice(&[0x5Au8; 68]);
+        let declared = records.len() as u32;
+        records.extend_from_slice(&[0u8; 4]);
+        let stored = zstd::bulk::compress(&records, 0).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = oversized_packed_container(&stored, declared, false, "reader_long.rvz", &dir);
+        let mut reader = RvzDiscReader::open(&path).unwrap();
+        let mut out = Vec::new();
+        let err = match reader.read_to_end(&mut out) {
+            Ok(_) => panic!("packed stream past its declared end unexpectedly accepted"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string()
+                .contains("continues past the declared 72 bytes"),
+            "{err}"
+        );
+    }
+
+    /// The reader holds a packed descriptor to the same bounds as
+    /// conversion: a declared record stream above the worst-case bound
+    /// is rejected before any decoding.
+    #[test]
+    fn reader_applies_the_shared_packed_bounds() {
+        let mut records = Vec::new();
+        records.extend_from_slice(&(0x8000_0000u32 | 0x110_0000).to_be_bytes());
+        records.extend_from_slice(&[0x5Au8; 68]);
+        let stored = zstd::bulk::compress(&records, 0).unwrap();
+        // The bound for the 17 MiB (0x110_0000-byte) chunk is the chunk
+        // plus 76 bytes per sector; declare one byte more than the
+        // chunk's bound allows.
+        let chunk_bytes: u64 = 0x110_0000;
+        let stage1_cap = chunk_bytes + 76 * chunk_bytes.div_ceil(0x8000);
+        let dir = tempfile::tempdir().unwrap();
+        let path = oversized_packed_container(
+            &stored,
+            (stage1_cap + 1) as u32,
+            false,
+            "reader_bounds.rvz",
+            &dir,
+        );
+        let mut reader = RvzDiscReader::open(&path).unwrap();
+        let mut out = Vec::new();
+        let err = match reader.read_to_end(&mut out) {
+            Ok(_) => panic!("over-bound packed descriptor unexpectedly accepted"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string().contains("decompressed size mismatch"),
+            "{err}"
+        );
+    }
+
+    /// A compressed non-packed oversized chunk whose zstd frame decodes
+    /// past `chunk_bytes` is rejected by the reader like conversion
+    /// rejects it.
+    #[test]
+    fn reader_rejects_oversized_raw_frame_past_chunk() {
+        // One byte more than the 17 MiB chunk the region declares.
+        let decoded = vec![0x77u8; 0x110_0001];
+        let stored = zstd::bulk::compress(&decoded, 0).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = oversized_packed_container(&stored, 0, false, "reader_raw_over.rvz", &dir);
+        let mut reader = RvzDiscReader::open(&path).unwrap();
+        let mut out = Vec::new();
+        let err = match reader.read_to_end(&mut out) {
+            Ok(_) => panic!("raw frame past the chunk unexpectedly accepted"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string().contains("decompressed size mismatch"),
+            "{err}"
+        );
+    }
+
+    /// A stored non-packed oversized chunk larger than the descriptor
+    /// bound is rejected by the reader as conversion rejects it, even
+    /// though the direct read would otherwise serve its bytes.
+    #[test]
+    fn reader_rejects_oversized_stored_chunk_above_the_bound() {
+        let chunk_bytes: usize = 0x110_0000;
+        let stage1_cap = chunk_bytes + 76 * chunk_bytes.div_ceil(0x8000);
+        // One byte above the stored bound for an uncompressed chunk.
+        let stored = vec![0x33u8; stage1_cap + 1];
+        let dir = tempfile::tempdir().unwrap();
+        let path = oversized_packed_container(&stored, 0, true, "reader_stored_over.rvz", &dir);
+        let mut reader = RvzDiscReader::open(&path).unwrap();
+        let mut out = Vec::new();
+        let err = match reader.read_to_end(&mut out) {
+            Ok(_) => panic!("over-bound stored chunk unexpectedly accepted"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string().contains(&format!(
+                "group stores {} bytes, more than the {}-byte bound",
+                stage1_cap + 1,
+                stage1_cap
+            )),
+            "{err}"
+        );
     }
 }

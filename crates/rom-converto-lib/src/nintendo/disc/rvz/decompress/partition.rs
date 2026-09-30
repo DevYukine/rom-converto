@@ -11,8 +11,8 @@
 //! See the parent module ([`super`]) for the overall pipeline
 //! shape; see the encoder counterpart
 //! ([`super::super::compress::partition`]) for the symmetric write
-//! path. The per-cluster math mirrors Dolphin's
-//! `Source/Core/DiscIO/WIABlob.cpp` partition-data branch:
+//! path. The per-cluster math follows the format's partition-data
+//! rules:
 //!
 //! * Each cluster covers `WII_GROUP_TOTAL_SIZE` encrypted bytes.
 //! * For a partition whose `data_size` is not a multiple of
@@ -162,6 +162,22 @@ impl Worker<PartitionDecompressWork, PartitionDecompressOut, RvzError>
             Vec::with_capacity(work.chunks.len());
 
         for spec in &work.chunks {
+            // `data_size == 0` is the format's all-zero sentinel: no
+            // stored bytes, no exception list. Zero the chunk's
+            // sectors directly (mirroring the raw worker) instead of
+            // issuing I/O: full clusters skip the pre-loop zeroing,
+            // so this path must clear exactly the sectors it covers.
+            if spec.data_size == 0 {
+                for b in 0..spec.chunk_n_sectors {
+                    self.payloads[spec.first_sector_in_chunk + b] = [0u8; WII_SECTOR_PAYLOAD_SIZE];
+                }
+                deferred.push((
+                    spec.first_sector_in_chunk,
+                    spec.first_sector_in_chunk + spec.chunk_n_sectors,
+                    Vec::new(),
+                ));
+                continue;
+            }
             let target = spec.decoded_bound();
             if self.scratch_decomp.len() < target {
                 self.scratch_decomp.resize(target, 0);
@@ -294,8 +310,8 @@ impl Worker<PartitionDecompressWork, PartitionDecompressOut, RvzError>
                 }
             };
 
-            // Raw chunks have a 4-byte alignment pad after the exception entries;
-            // see `pad_exception_lists` in Dolphin's `WIABlob.cpp`.
+            // Raw chunks have a 4-byte alignment pad after the exception
+            // entries.
             let decompressed = &self.scratch_decomp[..decoded_len];
             let (chunk_exceptions_ref, payload_region) =
                 parse_exception_header(decompressed, !spec.is_compressed)?;
@@ -547,6 +563,80 @@ pub(crate) fn build_partition_work_items(
     Ok(work_items)
 }
 
+/// Build the single [`PartitionDecompressWork`] for one cluster of
+/// `part`: the read-side counterpart of [`build_partition_work_items`]
+/// (which buckets every cluster of the partition, too much to rebuild
+/// per random-access read). Chunks never straddle a cluster boundary:
+/// chunk starts are multiples of `chunk_size`, which is a power-of-two
+/// divisor of `WII_GROUP_TOTAL_SIZE`, so per-cluster reconstruction is
+/// exact. The chunk walk is bounded by the partition's declared
+/// pd[0]+pd[1] group range capped at the table length, so a corrupt
+/// descriptor can never make it index past `groups`. Returns `None`
+/// when the cluster lies past the partition's data or no group in the
+/// declared range covers it.
+pub(crate) fn build_partition_cluster_work(
+    part: &WiaPart,
+    groups: &[RvzGroup],
+    chunk_size_u64: u64,
+    cluster_idx: u64,
+) -> Option<PartitionDecompressWork> {
+    let pd0 = part.pd[0];
+    let pd1 = part.pd[1];
+    let total_data_size = (pd0.n_sectors as u64 + pd1.n_sectors as u64) * WII_SECTOR_SIZE_U64;
+    let cluster_start = cluster_idx * WII_GROUP_TOTAL_SIZE;
+    if cluster_start >= total_data_size {
+        return None;
+    }
+    let cluster_end = (cluster_start + WII_GROUP_TOTAL_SIZE).min(total_data_size);
+
+    // Every chunk before the partition's last one is exactly
+    // `chunk_size` bytes, so the group storing the chunk at `enc_pos`
+    // sits `enc_pos / chunk_size` entries past `pd[0].group_index`.
+    // The cursor is bounded by the partition's declared pd[0]+pd[1]
+    // group range, capped by the table length, in u64 so neither the
+    // cluster-derived start nor the increment can wrap or index past
+    // `groups`.
+    let group_index_end =
+        (u64::from(pd0.group_index) + u64::from(pd0.n_groups) + u64::from(pd1.n_groups))
+            .min(groups.len() as u64);
+    let mut group_cursor = u64::from(pd0.group_index) + cluster_start / chunk_size_u64;
+    let mut chunks: Vec<PartitionChunkSpec> = Vec::new();
+    let mut enc_pos = cluster_start;
+    while enc_pos < cluster_end && group_cursor < group_index_end {
+        let remaining_in_partition = total_data_size - enc_pos;
+        let this_chunk_enc_bytes = chunk_size_u64.min(remaining_in_partition);
+        let pos = ChunkSectorPos::new(enc_pos, this_chunk_enc_bytes);
+        debug_assert_eq!(pos.cluster_idx, cluster_idx);
+
+        let group = &groups[group_cursor as usize];
+        chunks.push(PartitionChunkSpec {
+            data_off: (group.data_off4 as u64) << 2,
+            data_size: group.compressed_size(),
+            is_compressed: group.is_compressed(),
+            rvz_packed_size: group.rvz_packed_size,
+            first_sector_in_chunk: pos.first_sector_in_chunk,
+            chunk_n_sectors: pos.chunk_n_sectors,
+            chunk_data_offset_pay: pos.chunk_data_offset_pay(),
+            expected_payload_len: pos.payload_len(),
+        });
+
+        enc_pos += this_chunk_enc_bytes;
+        group_cursor += 1;
+    }
+
+    if chunks.is_empty() {
+        return None;
+    }
+
+    Some(PartitionDecompressWork {
+        cluster_idx,
+        data_start: pd0.first_sector as u64 * WII_SECTOR_SIZE_U64,
+        part_key: part.part_key,
+        valid_blocks_in_cluster: valid_blocks_for_cluster(cluster_idx, total_data_size),
+        chunks,
+    })
+}
+
 /// Sectors the partition's declared `data_size` occupies in the
 /// given cluster. For all but the partial last cluster this is
 /// `WII_BLOCKS_PER_GROUP` (64). For the partial last cluster it's
@@ -791,11 +881,13 @@ mod tests {
         assert!(worker.scratch_in.capacity() < (1 << 30));
     }
 
-    /// A1 regression: a packed stream whose size exceeds `decoded_bound`
-    /// used to be truncated into the bulk scratch and then rejected as a
-    /// truncated record walk; it must take the streaming branch and decode.
+    /// A packed stream whose size exceeds `decoded_bound` must take the
+    /// streaming branch instead of being truncated into the bulk
+    /// scratch. Its records out-produce the chunk's payload, so the
+    /// bounded `max_output` walk rejects them with a size mismatch
+    /// instead of generating the excess.
     #[test]
-    fn packed_group_above_decoded_bound_streams_instead_of_erroring() {
+    fn packed_group_above_decoded_bound_streams_and_rejects_overrun() {
         let mut records = Vec::new();
         let payload = [0x5Cu8; 1000];
         let bound = WII_SECTOR_PAYLOAD_SIZE + 2 + u16::MAX as usize * EXCEPTION_ENTRY_SIZE + 3;
@@ -826,19 +918,103 @@ mod tests {
         };
         assert!(spec.data_size as usize <= spec.stored_bound());
         assert!(spec.rvz_packed_size as usize > spec.decoded_bound());
+        // `PartitionDecompressOut` is not `Debug`, so `unwrap_err` is
+        // unavailable; this extracts the error the same way.
+        let err = match worker.process(PartitionDecompressWork {
+            cluster_idx: 0,
+            data_start: 0,
+            part_key: [0; 16],
+            valid_blocks_in_cluster: 1,
+            chunks: vec![spec],
+        }) {
+            Ok(_) => panic!("oversized packed stream unexpectedly decoded"),
+            Err(e) => e,
+        };
+        assert!(
+            matches!(err, RvzError::DecompressedSizeMismatch { .. }),
+            "{err}"
+        );
+        // The streaming branch ran: the bulk packed scratch was never
+        // grown, so the rejection cost no bulk-sized buffer.
+        assert!(worker.scratch_packed.is_empty());
+    }
+
+    /// pd[0] claims one group without sectors and pd[1] claims two
+    /// groups for 0x200 sectors, but the table only carries one entry.
+    /// A random-access read of cluster 1 must not walk the group cursor
+    /// past the table: the bounded walk returns `None` and the caller
+    /// reports an error instead of panicking on the index.
+    #[test]
+    fn cluster_work_never_indexes_past_group_table() {
+        use crate::nintendo::disc::rvz::format::WiaPartData;
+
+        let part = WiaPart {
+            part_key: [0u8; 16],
+            pd: [
+                WiaPartData {
+                    first_sector: 0,
+                    n_sectors: 0,
+                    group_index: 0,
+                    n_groups: 1,
+                },
+                WiaPartData {
+                    first_sector: 0,
+                    n_sectors: 0x200,
+                    group_index: 1,
+                    n_groups: 2,
+                },
+            ],
+        };
+        let groups = vec![RvzGroup::new_compressed(0, 8, 0)];
+        assert!(build_partition_cluster_work(&part, &groups, 2 * 1024 * 1024, 1).is_none());
+        // Cluster 0 still builds work from the one stored group.
+        assert!(build_partition_cluster_work(&part, &groups, 2 * 1024 * 1024, 0).is_some());
+    }
+
+    /// A `data_size == 0` group is the format's all-zero sentinel: the
+    /// worker must synthesise zero payloads without any I/O instead of
+    /// trying to decompress an empty stored chunk. The re-encrypted
+    /// cluster is decrypted back, so the payloads provably decode to
+    /// zeros.
+    #[test]
+    fn sentinel_chunk_decodes_to_zero_payloads_without_io() {
+        use crate::nintendo::rvl::disc::decrypt_sector;
+        use crate::nintendo::rvl::partition::HASH_REGION_BYTES;
+
+        let dir = tempfile::tempdir().unwrap();
+        let backing = dir.path().join("backing.bin");
+        std::fs::write(&backing, b"sentinel workers never read this").unwrap();
+        let file = Arc::new(std::fs::File::open(&backing).unwrap());
+        let mut worker = make_one_partition_worker(&file).unwrap();
 
         let out = worker
             .process(PartitionDecompressWork {
                 cluster_idx: 0,
                 data_start: 0,
-                part_key: [0; 16],
-                valid_blocks_in_cluster: 1,
-                chunks: vec![spec],
+                part_key: [0u8; 16],
+                valid_blocks_in_cluster: WII_BLOCKS_PER_GROUP,
+                chunks: vec![PartitionChunkSpec {
+                    data_off: 0,
+                    data_size: 0,
+                    is_compressed: false,
+                    rvz_packed_size: 0,
+                    first_sector_in_chunk: 0,
+                    chunk_n_sectors: WII_BLOCKS_PER_GROUP,
+                    chunk_data_offset_pay: 0,
+                    expected_payload_len: WII_BLOCKS_PER_GROUP * WII_SECTOR_PAYLOAD_SIZE,
+                }],
             })
             .unwrap();
-        // The cluster decoded (the walk was not truncated), and the bulk
-        // packed scratch was never grown, proving the streaming branch ran.
-        assert_eq!(out.bytes_to_write, WII_SECTOR_SIZE);
-        assert!(worker.scratch_packed.is_empty());
+
+        assert_eq!(out.bytes_to_write, WII_GROUP_TOTAL_SIZE as usize);
+        for sector_bytes in out.buf.as_chunks::<WII_SECTOR_SIZE>().0 {
+            let mut sector = [0u8; WII_SECTOR_SIZE];
+            sector.copy_from_slice(sector_bytes);
+            decrypt_sector(&mut sector, &[0u8; 16]).unwrap();
+            assert!(
+                sector[HASH_REGION_BYTES..].iter().all(|&b| b == 0),
+                "sentinel chunk must decode to zero payloads"
+            );
+        }
     }
 }

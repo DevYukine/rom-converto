@@ -39,7 +39,7 @@ tables) are kept in memory and take a few bytes per block.
 | Demand decoding | `info` on Z3DS, NCZ, RVZ, WIA, GCZ, CHD, CSO, ZSO, DAX, ZAR, WUA and XEX decodes only the frames, blocks or hunks that hold the requested bytes. |
 | WUX dedup table | `wup to-wux` keeps a dedup entry per unique 32 KiB sector, tens of MiB for a full disc. Its sector hashers share the 512 MiB worker working set described below. |
 | Worker memory | Decoders whose unit size comes from the file (CHD, CSO, Z3DS, RVZ, NCZ blocks) and the ZAR, Z3DS and NCZ block compressors size their worker pools against a 512 MiB working set per operation, counting codec contexts, queued units and the writer queue. Default unit sizes keep full parallelism; only user-chosen unit sizes far above the defaults (for example NCZ blocks of 256 MiB) shrink the pool. A unit that does not fit the working set on its own is never rejected: it is decoded on one worker with at most two units live (one decoding, one being written), and formats whose codec streams (Z3DS frames, plain and packed RVZ chunks, NCZ) stream it in 4 MiB pieces instead of holding it whole. The legacy GCZ, WIA and NKit readers used by `migrate` and `verify` are capped at one worker per core and about 128 MiB of groups in flight (`in_flight_cap`), so large blocks or chunks reduce the worker count; their memory is the file's block or chunk size times the worker count plus, for WIA LZMA files, the dictionary per worker (files declaring a dictionary above 256 MiB are rejected). |
-| Size checks | Sizes and counts declared inside a file are checked against the file before anything is allocated, so metadata memory scales with what is actually stored on disk, not with a declared value. Apart from the guards above, nothing a previous release accepted is rejected; `info` also retains only the entries it reports (for example PKG artwork and SFO items, CHD metadata tags without their payloads). |
+| Size checks | Sizes and counts declared inside a file are checked against the file before anything is allocated, so metadata memory scales with what is actually stored on disk, not with a declared value. For RVZ this rejects chunk sizes that are neither a power of two of at least 32 KiB nor a multiple of 2 MiB, any group with stored bytes past the end of the file, raw regions that under-declare the groups their span needs, partition data entries whose second entry does not continue the first on a chunk boundary, group and raw-data tables whose stored size exceeds zstd's worst-case expansion for the declared entry count, table streams that decode past the declared entry count, groups whose stored bytes or declared packed record stream exceed the chunk's worst-case size, stored packed groups whose size differs from their declared record stream, and ISO sizes above 64 GiB. A partitioned RVZ whose chunk size exceeds 2 MiB is refused by `info` and conversion and reported as unverifiable by `verify`. `info` retains only the entries it reports (for example PKG artwork and SFO items, CHD metadata tags without their payloads). |
 | Sheets | CUE and GDI sheets are parsed line by line; a single line is kept up to 16 MiB, far beyond any directive, so a bogus multi-gigabyte sheet never loads whole. |
 | Validation scope | `info` validates only the ranges it reads. `verify` checks structure and stored hashes; with `--full` (RVZ, CSO, Z3DS) it decodes every byte. Full conversions always decode every byte. |
 | Hash cache | The persistent hash cache keeps up to 250,000 entries and evicts entries least recently written or used in a run that stores the cache. A cache file that decodes to more than 256 MiB is ignored and rebuilt. |
@@ -75,6 +75,21 @@ RVZ is the GameCube and Wii output container. `dol migrate` accepts GCZ and NKit
 `rvl migrate` also accepts WIA. Migration checks the legacy container before writing
 RVZ. An RVZ decompresses to ISO for GameCube; Wii writes WBFS only when the requested
 output name ends in `.wbfs`.
+
+Chunk sizes above 2 MiB are only unsupported for Wii partition data:
+the container-level rule accepts a power of two of at least 32 KiB or a
+multiple of 2 MiB, and raw-only (GameCube) containers written that way
+decode like any other container; a chunk is streamed in bounded windows
+only when it exceeds the decoder working set or the disc reader's
+whole-chunk limit, and is decoded whole otherwise,
+while partitioned containers walk one 2 MiB cluster of sectors per
+chunk, so a larger chunk is reported as unverifiable by `verify` and
+refused by conversion instead of being treated as corrupt. Partition
+data entries must
+also be split on a chunk boundary: when a partition carries two data entries,
+the first entry's byte span has to be a whole number of chunks, or the
+second entry's groups would not start on a chunk boundary. The decoder
+rejects such containers, and this writer always splits there.
 
 ### WUA
 

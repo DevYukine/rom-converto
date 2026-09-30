@@ -1,13 +1,10 @@
 //! Wii and GameCube RVZ disc image compression.
 //!
-//! RVZ is Dolphin's zstd-based evolution of Wiimm's WIA format. It stores a
-//! disc image as a chunk table of independently-compressed blocks. Both
+//! RVZ stores a disc image as a chunk table of independently-compressed
+//! blocks. Both
 //! GameCube and Wii discs use the same on-disc format; the console-specific
 //! pieces (disc detection, encryption, common keys) live in
 //! [`crate::nintendo::dol`] and [`crate::nintendo::rvl`].
-//!
-//! Spec reference:
-//! <https://github.com/dolphin-emu/dolphin/blob/master/docs/WiaAndRvz.md>
 //!
 //! # Async/sync boundary
 //!
@@ -42,7 +39,470 @@ pub use decompress::{decompress_disc, decompress_disc_to_wbfs};
 pub use error::{RvzError, RvzResult};
 pub use verify::{RvzStructuralVerify, verify_rvz_structure};
 
+use crate::nintendo::rvl::constants::WII_SECTOR_SIZE_U64;
+use binrw::{BinRead, Endian};
+use constants::{MAX_CHUNK_SIZE, MAX_PLAUSIBLE_ISO_SIZE, MIN_CHUNK_SIZE};
+use format::{
+    RVZ_GROUP_SIZE, RvzGroup, WIA_FILE_HEAD_SIZE, WIA_PART_SIZE, WIA_RAW_DATA_SIZE, WiaDisc,
+    WiaFileHead, WiaPart, WiaRawData,
+};
+use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+
+/// Read and parse the compressed group descriptor table described by
+/// `disc`. Shared by the structural verifier and both decompress paths.
+///
+/// Every bound runs before any table-sized allocation:
+///
+/// * `disc.chunk_size` must satisfy the container-level rule (see
+///   [`validate_container_chunk_size`]); a partitioned container with a
+///   chunk size past the 2 MiB partition-decode limit reads as
+///   [`RvzError::PartitionChunkTooLarge`], anything else invalid as
+///   [`RvzError::InvalidChunkSize`].
+/// * `n_groups` is capped geometrically: every region contributes at
+///   most one group per chunk of disc space (plus one for sector
+///   alignment), so `iso_file_size.div_ceil(chunk_size)` plus a
+///   per-region/per-partition slack term bounds the group count any
+///   real container can carry. Inflated counts read as
+///   [`RvzError::TableTooLarge`] instead of a multi-gigabyte
+///   allocation.
+/// * The table's location is checked against the file length
+///   ([`RvzError::Truncated`]) and, secondarily, zstd's worst-case
+///   expansion ratio ([`RvzError::TableTooLarge`]): the ratio alone
+///   would reject sparse containers whose sentinel-packed tables
+///   legitimately dwarf the file, but it still catches tables whose
+///   claimed expansion no zstd frame could produce. Symmetrically, the
+///   compressed table's stored size is capped at zstd's worst case for
+///   the declared entry count before the whole table is read into
+///   memory: a larger `group_size` cannot decode to the declared
+///   entries.
+///
+/// Decoding streams through `zstd::stream` + `io::take`, so the decode
+/// buffer never grows beyond the bounded raw table, and the decoded
+/// length must match the declared entry count exactly.
+pub(crate) fn read_group_table(
+    reader: &mut (impl Read + Seek),
+    disc: &WiaDisc,
+    iso_file_size: u64,
+) -> RvzResult<Vec<RvzGroup>> {
+    validate_container_chunk_size(disc.chunk_size, disc.n_part)?;
+    if disc.n_groups == 0 {
+        return Ok(Vec::new());
+    }
+    let max_groups = iso_file_size.div_ceil(u64::from(disc.chunk_size))
+        + 2 * (u64::from(disc.n_raw_data) + 2 * u64::from(disc.n_part))
+        + 64;
+    if u64::from(disc.n_groups) > max_groups {
+        return Err(RvzError::TableTooLarge {
+            table: "group",
+            entries: disc.n_groups,
+        });
+    }
+    let file_len = reader.seek(SeekFrom::End(0))?;
+    let table_end = disc.group_off.saturating_add(u64::from(disc.group_size));
+    if table_end > file_len {
+        return Err(RvzError::Truncated {
+            expected: table_end,
+            actual: file_len,
+        });
+    }
+    // Secondary gate: zstd's worst case expansion is one 128 KiB block
+    // per 3 stored bytes (RLE block = 3 bytes → 128 KiB), plus bounded
+    // frame overhead. The geometric bound above is what catches inflated
+    // counts (sparse containers legitimately need this full ratio
+    // headroom), but a table claiming a larger expansion than any frame
+    // could produce is still corrupt.
+    let raw_len = u64::from(disc.n_groups) * RVZ_GROUP_SIZE as u64;
+    let raw_len_cap = (u64::from(disc.group_size) / 3 + 64) * 128 * 1024;
+    if raw_len > raw_len_cap {
+        return Err(RvzError::TableTooLarge {
+            table: "group",
+            entries: disc.n_groups,
+        });
+    }
+    // The compressed table is read whole: cap it at zstd's worst case
+    // for the declared entry count (plus slack for streaming-encoder
+    // overhead) so a hostile `group_size` bounded only by the file
+    // length cannot become a file-sized allocation. A larger table
+    // cannot decode to `n_groups` entries.
+    let table_cap = u64::try_from(zstd::zstd_safe::compress_bound(raw_len as usize))
+        .unwrap_or(u64::MAX)
+        + 64 * 1024;
+    if u64::from(disc.group_size) > table_cap {
+        return Err(RvzError::Custom(format!(
+            "group table stores {} bytes, more than zstd's worst case for {} entries",
+            disc.group_size, disc.n_groups
+        )));
+    }
+
+    reader.seek(SeekFrom::Start(disc.group_off))?;
+    let mut compressed = vec![0u8; disc.group_size as usize];
+    reader.read_exact(&mut compressed)?;
+    let decompressed = decode_table(&compressed, raw_len)?;
+    let mut cursor = Cursor::new(&decompressed);
+    let mut groups = Vec::with_capacity(raw_len as usize / RVZ_GROUP_SIZE);
+    for _ in 0..disc.n_groups {
+        groups.push(RvzGroup::read_options(&mut cursor, Endian::Big, ())?);
+    }
+    Ok(groups)
+}
+
+/// The chunk size an RVZ container may declare: a power of two of at
+/// least [`MIN_CHUNK_SIZE`], or a multiple of [`MAX_CHUNK_SIZE`]. A
+/// partitioned container (`n_part > 0`) additionally cannot exceed
+/// [`MAX_CHUNK_SIZE`]: the partition decoder walks one 2 MiB cluster of
+/// sectors per chunk, so a larger chunk is a decode limitation, not a
+/// corrupt value, and reads as [`RvzError::PartitionChunkTooLarge`].
+/// Anything else is corrupt and reads as [`RvzError::InvalidChunkSize`].
+/// Every caller that divides by `chunk_size` runs this first.
+pub(crate) fn validate_container_chunk_size(chunk_size: u32, n_part: u32) -> RvzResult<()> {
+    let valid = (chunk_size.is_power_of_two() && chunk_size >= MIN_CHUNK_SIZE)
+        || (chunk_size >= MAX_CHUNK_SIZE && chunk_size.is_multiple_of(MAX_CHUNK_SIZE));
+    if !valid {
+        return Err(RvzError::InvalidChunkSize(
+            chunk_size,
+            MIN_CHUNK_SIZE,
+            MAX_CHUNK_SIZE,
+        ));
+    }
+    if n_part > 0 && chunk_size > MAX_CHUNK_SIZE {
+        return Err(RvzError::PartitionChunkTooLarge(chunk_size, MAX_CHUNK_SIZE));
+    }
+    Ok(())
+}
+
+/// Read and parse the compressed raw-data descriptor table described by
+/// `disc`. [`check_table_bounds`] must have run first: it bounds
+/// `n_raw_data` by zstd's worst-case expansion ratio against the bytes
+/// the file stores, by the ISO's sector count, and caps the table's
+/// file span, so the allocations here are bounded. The stored table is
+/// additionally capped at zstd's worst case for the declared entry
+/// count before it is read whole. The decode streams through
+/// `zstd::stream` + `io::take` and must yield exactly the declared
+/// entry bytes. Shared by the structural verifier and both decompress
+/// paths.
+pub(crate) fn read_raw_data_table(
+    reader: &mut (impl Read + Seek),
+    disc: &WiaDisc,
+) -> RvzResult<Vec<WiaRawData>> {
+    if disc.n_raw_data == 0 {
+        return Ok(Vec::new());
+    }
+    let raw_len = u64::from(disc.n_raw_data) * WIA_RAW_DATA_SIZE as u64;
+    let table_cap = u64::try_from(zstd::zstd_safe::compress_bound(raw_len as usize))
+        .unwrap_or(u64::MAX)
+        + 64 * 1024;
+    if u64::from(disc.raw_data_size) > table_cap {
+        return Err(RvzError::Custom(format!(
+            "raw_data table stores {} bytes, more than zstd's worst case for {} entries",
+            disc.raw_data_size, disc.n_raw_data
+        )));
+    }
+    reader.seek(SeekFrom::Start(disc.raw_data_off))?;
+    let mut compressed = vec![0u8; disc.raw_data_size as usize];
+    reader.read_exact(&mut compressed)?;
+    let decompressed = decode_table(&compressed, raw_len)?;
+    let mut cursor = Cursor::new(&decompressed);
+    let mut out = Vec::with_capacity(disc.n_raw_data as usize);
+    for _ in 0..disc.n_raw_data {
+        out.push(WiaRawData::read_options(&mut cursor, Endian::Big, ())?);
+    }
+    Ok(out)
+}
+
+/// Streaming-decode a compressed metadata table to exactly `raw_len`
+/// bytes. The reservation is capped at 64 MiB (real tables max a few MB)
+/// and the `take(raw_len)` + `read_to_end` combination grows the buffer
+/// only as bytes actually arrive, so a hostile `raw_len` can never turn
+/// into a hostile up-front allocation; the streaming decoder's window is
+/// zstd's default cap. The frame must end exactly at `raw_len`: the
+/// table parsers read exactly the declared entries, so a stream that
+/// decodes further is rejected instead of silently ignored.
+fn decode_table(compressed: &[u8], raw_len: u64) -> RvzResult<Vec<u8>> {
+    let mut decoder = zstd::stream::read::Decoder::new(compressed)?;
+    let mut out = Vec::with_capacity(raw_len.min(64 * 1024 * 1024) as usize);
+    {
+        let mut limited = (&mut decoder).take(raw_len);
+        limited.read_to_end(&mut out)?;
+    }
+    if out.len() as u64 != raw_len {
+        return Err(RvzError::DecompressedSizeMismatch {
+            expected: raw_len,
+            actual: out.len() as u64,
+        });
+    }
+    // Probe one byte past the declared length: the frame must end here.
+    let mut extra = [0u8; 1];
+    let extra_len = decoder.read(&mut extra)?;
+    if extra_len != 0 {
+        return Err(RvzError::DecompressedSizeMismatch {
+            expected: raw_len,
+            actual: raw_len + extra_len as u64,
+        });
+    }
+    Ok(out)
+}
+
+/// Rejects a `disc_size` the file could not back and an
+/// `iso_file_size` no plausible GameCube/Wii disc could have, before
+/// the disc-struct allocation: the 64 GiB [`MAX_PLAUSIBLE_ISO_SIZE`]
+/// cap reads as [`RvzError::ImplausibleIsoSize`], leaving generous
+/// slack over the ~8.5 GB dual-layer ceiling while still bounding the
+/// geometric group-count math. Shared by the structural verifier and
+/// both decompress paths.
+pub(crate) fn check_disc_size(head: &WiaFileHead, file_len: u64) -> RvzResult<()> {
+    if head.iso_file_size > MAX_PLAUSIBLE_ISO_SIZE {
+        return Err(RvzError::ImplausibleIsoSize(head.iso_file_size));
+    }
+    if u64::from(head.disc_size) > file_len.saturating_sub(WIA_FILE_HEAD_SIZE as u64) {
+        return Err(RvzError::Truncated {
+            expected: u64::from(head.disc_size) + WIA_FILE_HEAD_SIZE as u64,
+            actual: file_len,
+        });
+    }
+    Ok(())
+}
+
+/// The partition data span the writer actually encodes: the declared size
+/// clamped to what the ISO holds past `data_start` (the format's "too
+/// large partition" clamp), then truncated to whole 0x8000-byte Wii
+/// sectors. The RVZ partition layout stores `n_sectors` truncated to
+/// sectors, so a sub-sector tail cannot be represented inside a
+/// partition. Both the region planner and the partition encoder use
+/// this: the group ranges never claim sectors past the ISO, and the
+/// dropped tail falls into the following raw region.
+pub(crate) fn partition_encoded_size(data_start: u64, data_size: u64, iso_size: u64) -> u64 {
+    let clamped = data_size.min(iso_size.saturating_sub(data_start));
+    clamped - clamped % WII_SECTOR_SIZE_U64
+}
+
+/// Rejects header-declared table sizes the file could not back, before
+/// the partition-array and raw-data-table allocations. `n_raw_data` is
+/// additionally bounded by the file-backed zstd ratio gate: the decoded
+/// table is `n_raw_data * WIA_RAW_DATA_SIZE` bytes, and no zstd frame
+/// can expand beyond `(stored_len / 3 + 64) * 128 KiB` (one 128 KiB
+/// block per 3 stored bytes), where `stored_len` is `raw_data_size`
+/// (capped against `file_len` below). It is also capped at
+/// `div_ceil(iso_file_size, 0x8000) + 64`: not a format invariant (the
+/// spec allows zero-size or overlapping entries), but every writer
+/// emits at most one entry per disc sector plus a few reserved ones,
+/// so
+/// the `+ 64` slack is writer tolerance and the rest a DoS bound.
+/// Shared by the structural verifier
+/// and both decompress paths.
+pub(crate) fn check_table_bounds(
+    disc: &WiaDisc,
+    file_len: u64,
+    iso_file_size: u64,
+) -> RvzResult<()> {
+    let raw_table_len = u64::from(disc.n_raw_data) * WIA_RAW_DATA_SIZE as u64;
+    let raw_len_cap = (u64::from(disc.raw_data_size) / 3 + 64) * 128 * 1024;
+    let n_raw_data_cap = iso_file_size.div_ceil(0x8000) + 64;
+    if raw_table_len > raw_len_cap || u64::from(disc.n_raw_data) > n_raw_data_cap {
+        return Err(RvzError::TableTooLarge {
+            table: "raw_data",
+            entries: disc.n_raw_data,
+        });
+    }
+    // The partition table exists only when the container declares one;
+    // an unused `part_off` on a raw-only container carries no bytes and
+    // is not checked.
+    if disc.n_part > 0 {
+        let parts_len = u64::from(disc.n_part) * WIA_PART_SIZE as u64;
+        let parts_end = disc.part_off.saturating_add(parts_len);
+        if parts_end > file_len {
+            return Err(RvzError::Truncated {
+                expected: parts_end,
+                actual: file_len,
+            });
+        }
+    }
+    let raw_end = disc
+        .raw_data_off
+        .saturating_add(u64::from(disc.raw_data_size));
+    if raw_end > file_len {
+        return Err(RvzError::Truncated {
+            expected: raw_end,
+            actual: file_len,
+        });
+    }
+    Ok(())
+}
+
+/// Bounds every group descriptor's stored bytes against the file
+/// length: a group whose data runs past EOF reads as
+/// [`RvzError::Truncated`] before any group is decompressed. The scan
+/// covers all groups with stored data, not just the last entry:
+/// tables can close with zero sentinels that would hide an earlier
+/// group running past EOF. Shared by the structural verifier and both
+/// decompress paths.
+pub(crate) fn check_group_data_bounds(groups: &[RvzGroup], file_len: u64) -> RvzResult<()> {
+    let mut data_end = 0u64;
+    for group in groups {
+        if group.data_size != 0 {
+            let end = (u64::from(group.data_off4) << 2) + u64::from(group.compressed_size());
+            data_end = data_end.max(end);
+        }
+    }
+    if file_len < data_end {
+        return Err(RvzError::Truncated {
+            expected: data_end,
+            actual: file_len,
+        });
+    }
+    Ok(())
+}
+
+/// Requires every raw-data region to lie inside the disc image the file
+/// declares (`raw_data_off + raw_data_size <= iso_file_size`) and to
+/// have a group range inside the parsed group table, and every
+/// partition's `pd[0] + pd[1]` group range to be contiguous
+/// (`pd[1].group_index == pd[0].group_index + pd[0].n_groups`) and to
+/// end inside the table (exactly the range
+/// [`crate::nintendo::disc::rvz::decompress::partition::build_partition_work_items`]
+/// consumes), so later `groups[...]` indexing can neither go out of
+/// bounds nor silently decode a non-contiguous span. The partition
+/// entries must additionally match the format's partition-data entry
+/// geometry, which this crate's writer also emits:
+/// `pd.n_groups == div_ceil(pd.n_sectors * 0x8000, chunk_size)` per
+/// entry, and (when pd[1] stores data) `pd[1].first_sector` continues
+/// pd[0] and pd[0]'s span is a whole number of chunks, so the chunk
+/// walk crosses the pd[0]→pd[1] boundary on a chunk boundary. Every
+/// raw region must also declare at least the group count its
+/// sector-aligned span needs (`div_ceil(span, chunk_size)`; zero-size
+/// regions need none), and every
+/// partition's sector span must end inside the image
+/// (`(pd0.first_sector + pd0.n_sectors + pd1.n_sectors) * 0x8000 <=
+/// iso_file_size`). Runs the chunk-size precondition first, since the
+/// chunk walks below divide by it. Shared by the structural verifier
+/// and both decompress paths.
+pub(crate) fn check_group_indices(
+    raw_data: &[WiaRawData],
+    parts: &[WiaPart],
+    groups: &[RvzGroup],
+    iso_file_size: u64,
+    chunk_size: u32,
+) -> RvzResult<()> {
+    validate_container_chunk_size(chunk_size, parts.len() as u32)?;
+    let len = groups.len() as u64;
+    for region in raw_data {
+        let end = match region.raw_data_off.checked_add(region.raw_data_size) {
+            Some(end) if end <= iso_file_size => end,
+            _ => {
+                return Err(RvzError::Custom(format!(
+                    "raw data region at offset {} ends {}, past the {}-byte disc image",
+                    region.raw_data_off,
+                    region.raw_data_off.saturating_add(region.raw_data_size),
+                    iso_file_size
+                )));
+            }
+        };
+        if !group_range_fits(region.group_index, region.n_groups, len) {
+            return Err(RvzError::Custom(format!(
+                "raw data region at offset {} references groups {}..{}, \
+                 but the group table holds {} entries",
+                region.raw_data_off,
+                region.group_index,
+                region.group_index.saturating_add(region.n_groups),
+                len
+            )));
+        }
+        // The region decoder walks chunks from the sector-aligned
+        // effective start, one group per chunk; an under-declared
+        // `n_groups` would leave the region's tail undecodable.
+        // Zero-size regions carry no bytes and need no groups.
+        if region.raw_data_size > 0 {
+            let effective_start = region.raw_data_off - region.raw_data_off % 0x8000;
+            let required = (end - effective_start).div_ceil(u64::from(chunk_size));
+            if u64::from(region.n_groups) < required {
+                return Err(RvzError::Custom(format!(
+                    "raw data region at offset {} declares {} groups but {} are needed to \
+                     cover {} bytes at chunk size {}",
+                    region.raw_data_off,
+                    region.n_groups,
+                    required,
+                    end - effective_start,
+                    chunk_size
+                )));
+            }
+        }
+    }
+    for part in parts {
+        let (pd0, pd1) = (&part.pd[0], &part.pd[1]);
+        match pd0
+            .group_index
+            .checked_add(pd0.n_groups)
+            .and_then(|end| end.checked_add(pd1.n_groups))
+        {
+            Some(end) if u64::from(end) <= len => {}
+            _ => {
+                return Err(RvzError::Custom(format!(
+                    "partition data references groups {}..{}, \
+                     but the group table holds {} entries",
+                    pd0.group_index,
+                    pd0.group_index
+                        .saturating_add(pd0.n_groups)
+                        .saturating_add(pd1.n_groups),
+                    len
+                )));
+            }
+        }
+        if pd1.group_index != pd0.group_index.wrapping_add(pd0.n_groups) {
+            return Err(RvzError::Custom(format!(
+                "partition group ranges are not contiguous: pd[1].group_index {} != {}",
+                pd1.group_index,
+                pd0.group_index.wrapping_add(pd0.n_groups)
+            )));
+        }
+        if pd1.n_groups > 0 {
+            if pd1.first_sector != pd0.first_sector.wrapping_add(pd0.n_sectors) {
+                return Err(RvzError::Custom(format!(
+                    "partition data entries are not contiguous: pd[1].first_sector {} != {}",
+                    pd1.first_sector,
+                    pd0.first_sector.wrapping_add(pd0.n_sectors)
+                )));
+            }
+            if (u64::from(pd0.n_sectors) * 0x8000) % u64::from(chunk_size) != 0 {
+                return Err(RvzError::Custom(format!(
+                    "pd[0] data ({} sectors) is not a multiple of the {}-byte chunk size, \
+                     so pd[1]'s groups do not start on a chunk boundary",
+                    pd0.n_sectors, chunk_size
+                )));
+            }
+        }
+        for (idx, pd) in part.pd.iter().enumerate() {
+            let expected = (u64::from(pd.n_sectors) * 0x8000).div_ceil(u64::from(chunk_size));
+            if u64::from(pd.n_groups) != expected {
+                return Err(RvzError::Custom(format!(
+                    "pd[{idx}].n_groups {} does not match its sector count ({} sectors \
+                     need {} groups at chunk size {})",
+                    pd.n_groups, pd.n_sectors, expected, chunk_size
+                )));
+            }
+        }
+        // The cluster walk reads the partition's whole sector span out
+        // of the disc image, so a span past the declared ISO size is a
+        // corrupt descriptor, not a short file.
+        let expected_bytes =
+            (u64::from(pd0.first_sector) + u64::from(pd0.n_sectors) + u64::from(pd1.n_sectors))
+                * 0x8000;
+        if expected_bytes > iso_file_size {
+            return Err(RvzError::Custom(format!(
+                "partition data at sector {} spans {} bytes, past the {}-byte disc image",
+                pd0.first_sector, expected_bytes, iso_file_size
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// True if `group_index + n_groups` stays inside a table of `len`
+/// entries.
+fn group_range_fits(group_index: u32, n_groups: u32, len: u64) -> bool {
+    group_index
+        .checked_add(n_groups)
+        .is_some_and(|end| u64::from(end) <= len)
+}
 
 /// Derives an output `.rvz` path from `input`, collapsing NKit's
 /// `.nkit.iso`/`.nkit.gcz` double extension so the result is
@@ -645,6 +1105,105 @@ mod integration_tests {
     }
 
     #[tokio::test]
+    async fn mostly_zero_disc_verifies_and_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let iso = dir.path().join("game.iso");
+        let rvz = dir.path().join("game.rvz");
+        let restored = dir.path().join("game.round.iso");
+
+        // 64 MiB at 32 KiB chunks with only the boot head intact: every
+        // chunk is an AllZero sentinel, so the container shrinks far
+        // below its own raw group table (2048 groups * 12 bytes = 24 KiB
+        // of descriptors in a few-KiB file). The table bound rejects
+        // exactly this shape as truncated when it under-declares the
+        // table's backing.
+        let mut original = make_fake_gamecube_iso(64 * 1024 * 1024);
+        for byte in original.iter_mut().skip(0x80) {
+            *byte = 0;
+        }
+        tokio::fs::write(&iso, &original).await.unwrap();
+
+        let opts = RvzCompressOptions {
+            chunk_size: 32 * 1024,
+            ..RvzCompressOptions::default()
+        };
+        compress_disc(&iso, &rvz, opts, &NoProgress, CancelToken::new())
+            .await
+            .unwrap();
+
+        let rvz_len = tokio::fs::metadata(&rvz).await.unwrap().len();
+        let raw_table_len = (64u64 * 1024 * 1024 / (32 * 1024)) * 12;
+        assert!(
+            rvz_len < raw_table_len,
+            "fixture regression: sparse container {rvz_len} must be smaller than its raw table"
+        );
+        assert!(
+            verify_rvz_structure(&rvz, &CancelToken::new())
+                .unwrap()
+                .ok()
+        );
+
+        decompress_disc(&rvz, &restored, &NoProgress, CancelToken::new())
+            .await
+            .unwrap();
+        let result = tokio::fs::read(&restored).await.unwrap();
+        assert_eq!(original, result, "sparse disc round trip must be exact");
+    }
+
+    #[test]
+    fn sparse_disc_with_all_zero_first_chunk_reads_byte_exact() {
+        use crate::nintendo::disc::rvz::decompress::RvzDiscReader;
+        use crate::nintendo::disc::rvz::verify::test_support;
+        use std::io::Read;
+
+        let dir = tempfile::tempdir().unwrap();
+        let rvz = dir.path().join("sparse.rvz");
+
+        // Hand-built container: the dhead covers 0..0x80 and the single
+        // raw region starts at the unaligned offset 0x80, so its only
+        // group, a `data_size == 0` all-zero sentinel covering the
+        // chunk from the sector-aligned effective start 0, must be
+        // sliced at 0x80. A reader that stalls at the sentinel or
+        // mis-slices the padding never reaches the zero fill past the
+        // region end.
+        std::fs::write(
+            &rvz,
+            test_support::build_rvz_custom(
+                [0u8; 128],
+                0,
+                1,
+                &[WiaRawData {
+                    raw_data_off: 0x80,
+                    raw_data_size: 0x1000,
+                    group_index: 0,
+                    n_groups: 1,
+                }],
+                &[RvzGroup {
+                    data_off4: 0,
+                    data_size: 0,
+                    rvz_packed_size: 0,
+                }],
+                &[],
+                |_| {},
+            ),
+        )
+        .unwrap();
+
+        let mut reader = RvzDiscReader::open(&rvz).unwrap();
+        let mut got = Vec::new();
+        reader.read_to_end(&mut got).unwrap();
+        assert_eq!(
+            got.len() as u64,
+            reader.iso_size(),
+            "reader must return the full iso_file_size"
+        );
+        assert!(
+            got.iter().all(|&b| b == 0),
+            "sparse disc must read as zeros"
+        );
+    }
+
+    #[tokio::test]
     async fn small_chunk_size_round_trips() {
         let dir = tempfile::tempdir().unwrap();
         let iso = dir.path().join("game.iso");
@@ -685,7 +1244,7 @@ mod integration_tests {
         let err = compress_disc(&iso, &rvz, opts, &NoProgress, CancelToken::new())
             .await
             .unwrap_err();
-        assert!(matches!(err, RvzError::InvalidChunkSize(_, _, _)));
+        assert!(matches!(err, RvzError::Custom(_)), "{err}");
 
         // Below MIN_CHUNK_SIZE.
         let opts = RvzCompressOptions {
@@ -695,9 +1254,10 @@ mod integration_tests {
         let err = compress_disc(&iso, &rvz, opts, &NoProgress, CancelToken::new())
             .await
             .unwrap_err();
-        assert!(matches!(err, RvzError::InvalidChunkSize(_, _, _)));
+        assert!(matches!(err, RvzError::Custom(_)), "{err}");
 
-        // Above MAX_CHUNK_SIZE.
+        // Above MAX_CHUNK_SIZE: the partition decoder walks one 2 MiB
+        // cluster of sectors per chunk, so the writer never emits more.
         let opts = RvzCompressOptions {
             chunk_size: 4 * 1024 * 1024,
             ..RvzCompressOptions::default()
@@ -705,7 +1265,7 @@ mod integration_tests {
         let err = compress_disc(&iso, &rvz, opts, &NoProgress, CancelToken::new())
             .await
             .unwrap_err();
-        assert!(matches!(err, RvzError::InvalidChunkSize(_, _, _)));
+        assert!(matches!(err, RvzError::Custom(_)), "{err}");
     }
 
     #[tokio::test]
@@ -784,7 +1344,6 @@ mod integration_tests {
             iso_path.display()
         );
 
-        eprintln!("[{label}] SHA-1 of input ISO...");
         let input_sha1 = sha1_file(iso_path).await;
 
         let dir = tempfile::tempdir().unwrap();
@@ -794,7 +1353,6 @@ mod integration_tests {
         let dolphin_from_ours_iso = dir.path().join("dolphin.from_ours.iso");
 
         // Step 1: compress with rom-converto.
-        eprintln!("[{label}] step 1: rom-converto compress");
         let opts = RvzCompressOptions {
             chunk_size: 131072,
             compression_level: 5,
@@ -805,7 +1363,6 @@ mod integration_tests {
             .expect("our compress failed");
 
         // Step 2: Dolphin decompresses the RVZ produced above; result must hash-match.
-        eprintln!("[{label}] step 2: DolphinTool decode ours.rvz");
         run_dolphin_with_timeout(
             dolphin_tool,
             &[
@@ -827,7 +1384,6 @@ mod integration_tests {
         );
 
         // Step 3: compress with Dolphin.
-        eprintln!("[{label}] step 3: DolphinTool encode reference.iso");
         run_dolphin_with_timeout(
             dolphin_tool,
             &[
@@ -850,7 +1406,6 @@ mod integration_tests {
         );
 
         // Step 4: this decoder on Dolphin's RVZ must hash-match.
-        eprintln!("[{label}] step 4: rom-converto decode dolphin.rvz");
         decompress_disc(
             &dolphin_rvz,
             &dolphin_from_ours_iso,
@@ -923,7 +1478,7 @@ mod integration_tests {
 
     #[test]
     fn wii_exception_format_is_spec_compliant() {
-        // Verify that pack_partition_chunk emits bytes matching Dolphin's
+        // Verify that pack_partition_chunk emits the format's
         // wia_except_list_t layout:
         //   [u16 BE count][count × (u16 BE offset, 20-byte hash)][0x1F0000 payloads]
         use crate::nintendo::rvl::constants::{

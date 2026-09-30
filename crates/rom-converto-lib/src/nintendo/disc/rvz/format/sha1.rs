@@ -69,9 +69,8 @@ where
 
 /// SHA-1 of [`WiaFileHead`] over the first
 /// `WIA_FILE_HEAD_SIZE - 20` bytes, that is, everything before the
-/// `file_head_hash` field itself. Matches Dolphin's
-/// `CalculateDigest(&header_1, offsetof(WIAHeader1, header_1_hash))`
-/// in `Source/Core/DiscIO/WIABlob.cpp`.
+/// `file_head_hash` field itself: the digest covers the header up to
+/// (not including) the hash field.
 ///
 /// Note: this is NOT "hash the full struct with the hash field zeroed".
 /// The trailing 20 bytes are excluded from the hash input, not

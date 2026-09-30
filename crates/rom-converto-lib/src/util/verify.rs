@@ -131,7 +131,11 @@ pub(crate) fn unverifiable(err: &(dyn std::error::Error + 'static)) -> bool {
             )
             || matches!(
                 err.downcast_ref::<RvzError>(),
-                Some(RvzError::JoinError(_) | RvzError::WorkerPoolClosed(_))
+                Some(
+                    RvzError::JoinError(_)
+                        | RvzError::WorkerPoolClosed(_)
+                        | RvzError::PartitionChunkTooLarge(_, _)
+                )
             )
         {
             return true;

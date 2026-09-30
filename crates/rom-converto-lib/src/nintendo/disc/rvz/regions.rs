@@ -6,10 +6,11 @@
 //! with `Partition` regions (encrypted partition data that the Wii pipeline
 //! handles separately).
 //!
-//! The split mirrors Dolphin's `AddRawDataEntry` from `WIABlob.cpp:1785`:
-//! the very first raw region skips the 0x80-byte disc header, which lives
+//! The split follows the format's raw-data rule: the very first raw
+//! region skips the 0x80-byte disc header, which lives
 //! in `wia_disc_t.dhead` instead of in a raw_data entry.
 
+use super::partition_encoded_size;
 use crate::nintendo::disc::rvz::error::RvzResult;
 use crate::nintendo::rvl::constants::WII_PARTITION_INFO_OFFSET;
 use crate::nintendo::rvl::disc::read_partition_table;
@@ -29,24 +30,6 @@ pub enum DiscRegion {
     /// A Wii partition whose encrypted data is handled by the partition
     /// pipeline.
     Partition(PartitionInfo),
-}
-
-impl DiscRegion {
-    /// Byte offset in the disc image where this region starts.
-    pub fn offset(&self) -> u64 {
-        match self {
-            DiscRegion::Raw { offset, .. } => *offset,
-            DiscRegion::Partition(info) => info.data_start(),
-        }
-    }
-
-    /// Length of this region in bytes.
-    pub fn size(&self) -> u64 {
-        match self {
-            DiscRegion::Raw { size, .. } => *size,
-            DiscRegion::Partition(info) => info.data_size,
-        }
-    }
 }
 
 /// Ordered list of regions covering the entire disc.
@@ -92,6 +75,12 @@ impl RegionPlan {
                 continue;
             }
             let info = read_partition_info(reader, e.offset, e.group, e.partition_type)?;
+            // A dump cut inside the partition header/TMD span, or one
+            // holding less than a sector of partition data, has nothing to
+            // encode as a partition; its bytes stay in the raw region.
+            if partition_encoded_size(info.data_start(), info.data_size, iso_size) == 0 {
+                continue;
+            }
             partitions.push(info);
         }
         if partitions.is_empty() {
@@ -112,15 +101,13 @@ impl RegionPlan {
                 });
             }
             regions.push(DiscRegion::Partition(*p));
-            // Advance past the partition's declared `data_size`, matching
-            // Dolphin's `last_partition_end_offset` in `WIABlob.cpp`.
-            // Dolphin stores `n_sectors = AlignDown(data_size, 0x8000)
-            // / 0x8000` in pd[1], so sectors past `data_start +
-            // data_size` (the padding tail of a partial last cluster)
-            // are NOT in the partition's group range and instead fall
-            // into the following raw_data entry. The region cursor
-            // must match so those bytes get compressed as raw.
-            cursor = data_start + p.data_size;
+            // Advance past the partition's encoded data (clamped to the
+            // ISO and sector-truncated), matching the format's reference
+            // implementation: sectors past it
+            // (a partial last cluster's padding, any sub-sector tail) are
+            // NOT in the partition's group range and fall into the
+            // following raw_data entry, so they get compressed as raw.
+            cursor = data_start + partition_encoded_size(data_start, p.data_size, iso_size);
         }
         if iso_size > cursor {
             regions.push(DiscRegion::Raw {
@@ -153,5 +140,31 @@ mod tests {
     fn tiny_disc_skips_everything() {
         let plan = RegionPlan::gamecube(0x40);
         assert!(plan.regions.is_empty());
+    }
+
+    /// A dump cut inside the partition header span: the header fits, its
+    /// data start does not, so the planner keeps everything raw instead of
+    /// emitting a partition the geometry check would reject.
+    #[test]
+    fn partition_starting_past_eof_stays_raw() {
+        use crate::nintendo::rvl::constants::WII_PARTITION_HEADER_SIZE;
+        use crate::nintendo::rvl::test_fixtures::make_fake_wii_iso_with_partition;
+        const PARTITION_OFFSET: u64 = 0x050000;
+        let iso_size = PARTITION_OFFSET + WII_PARTITION_HEADER_SIZE as u64;
+        let iso = make_fake_wii_iso_with_partition(1)[..iso_size as usize].to_vec();
+        let plan = RegionPlan::wii(&mut std::io::Cursor::new(iso), iso_size).unwrap();
+        assert_eq!(plan.regions.len(), 1);
+        assert!(matches!(
+            plan.regions[0],
+            DiscRegion::Raw { offset: DISC_HEADER_SKIP, size } if size == iso_size - DISC_HEADER_SKIP
+        ));
+
+        // Cut exactly at the data start: still nothing to encode.
+        const DATA_OFFSET_IN_PARTITION: u64 = 0x020000;
+        let iso_size = PARTITION_OFFSET + DATA_OFFSET_IN_PARTITION;
+        let iso = make_fake_wii_iso_with_partition(1)[..iso_size as usize].to_vec();
+        let plan = RegionPlan::wii(&mut std::io::Cursor::new(iso), iso_size).unwrap();
+        assert_eq!(plan.regions.len(), 1);
+        assert!(matches!(plan.regions[0], DiscRegion::Raw { .. }));
     }
 }

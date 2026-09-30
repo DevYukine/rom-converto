@@ -7,10 +7,9 @@
 //! Each worker's `zstd::bulk::Compressor` is allocated once per
 //! thread for the lifetime of the region.
 //!
-//! The per-chunk math here mirrors Dolphin's
-//! `Source/Core/DiscIO/WIABlob.cpp` raw-data branch:
+//! The per-chunk math follows the format's raw-data rules:
 //!
-//! * `effective_start = region_offset - (region_offset % BLOCK_TOTAL_SIZE)`
+//! * `effective_start = region_offset - (region_offset % WII_SECTOR_SIZE)`
 //!   so chunks are indexed from a sector-aligned absolute position.
 //! * `bytes_to_read = min(chunk_size, data_offset + data_size - bytes_read)`
 //!   so the final chunk of a region is shorter than `chunk_size`
@@ -52,8 +51,7 @@ pub(super) struct RawWork {
 
 /// Per-thread raw-region encoder state. The persistent
 /// `zstd::bulk::Compressor` is allocated once per thread for the
-/// lifetime of the [`Pool`], mirroring Dolphin's
-/// `MultithreadedCompressor` pattern.
+/// lifetime of the [`Pool`].
 pub(super) struct RawCompressWorker {
     compressor: zstd::bulk::Compressor<'static>,
 }
@@ -123,9 +121,8 @@ pub(super) fn encode_raw_region<R: Read + Seek>(
     } = args;
     let chunk_size_u64 = chunk_size as u64;
 
-    // Port of Dolphin's `data_offset -= data_offset % BLOCK_TOTAL_SIZE`
-    // from `WIABlob.cpp`: align the effective read-start DOWN to a
-    // `VolumeWii::BLOCK_TOTAL_SIZE` boundary so chunks are indexed
+    // Align the effective read-start DOWN to a
+    // `WII_SECTOR_SIZE` boundary so chunks are indexed
     // from an absolute-disc-position the decoder can reproduce.
     // For GameCube's first region (`region_offset = 0x80`),
     // effective start becomes 0 and chunk 0 contains disc bytes
@@ -167,7 +164,7 @@ pub(super) fn encode_raw_region<R: Read + Seek>(
             total_chunks,
             max_in_flight,
             // produce: read the next chunk from the ISO in
-            // submission order. Port of Dolphin's
+            // submission order, clamped by
             // `bytes_to_read = min(chunk_size, data_offset +
             // data_size - bytes_read)`.
             //
@@ -282,9 +279,8 @@ fn compress_one_chunk_with(
     // packed bytes replace the raw chunk going into zstd and the
     // decoder knows to invoke `pack_decode` via the non-zero
     // `rvz_packed_size`. Otherwise fall through to zstd on raw
-    // bytes. Mirrors Dolphin's `RVZPack(data.data(), ...,
-    // parameters.data_offset, ...)` on the raw-data branch in
-    // `WIABlob.cpp`.
+    // bytes, exactly as the format's packing pass does on the
+    // raw-data branch.
     let (bytes_for_zstd, rvz_packed_size) =
         match crate::nintendo::disc::rvz::packing::pack_encode(&data, data_offset) {
             Some(packed) => {
