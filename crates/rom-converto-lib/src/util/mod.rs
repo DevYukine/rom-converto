@@ -119,9 +119,17 @@ pub(crate) fn scratch_output_path(output: &std::path::Path) -> std::io::Result<t
     prefix.push(output.file_name().unwrap_or_default());
     prefix.push(".");
     std::fs::create_dir_all(parent)?;
-    tempfile::Builder::new()
-        .prefix(&prefix)
-        .suffix(".tmp")
+    // The scratch file is created with the process's default mode (0666 &
+    // !umask on unix), not tempfile's private 0600: whatever is published
+    // through it must stay readable like any File::create.
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(&prefix).suffix(".tmp");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(std::fs::Permissions::from_mode(0o666));
+    }
+    builder
         .tempfile_in(parent)
         .map(tempfile::NamedTempFile::into_temp_path)
 }
