@@ -196,7 +196,7 @@ const RETRO_SYSTEMS: { [S in RetroSystem]: RetroSystemDef<S> } = {
 		name: "Famicom Disk System",
 		title: (d) => d.sides[0]?.game_name,
 		fields(rom, d) {
-			add(rom, "Format", d.fwnes_header ? "fwNES" : "Headerless");
+			add(rom, "Header", d.fwnes_header ? "FDS header" : "none");
 			add(rom, "Sides", d.side_count);
 			const side = d.sides[0];
 			if (side) {

@@ -248,7 +248,11 @@ export type DvdLayerClass = "single_layer" | "dual_layer";
 /**
  * An FDS image: the wrapper it arrived in, and one entry per disk side.
  */
-export type FdsInfo = { fwnes_header: boolean, side_count: number, sides: Array<FdsSide>, };
+export type FdsInfo = { 
+/**
+ * True when the image opens with the 16-byte FDS wrapper header.
+ */
+fwnes_header: boolean, side_count: number, sides: Array<FdsSide>, };
 
 /**
  * The disk info block at the start of one disk side.

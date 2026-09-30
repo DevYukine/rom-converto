@@ -1,13 +1,13 @@
-//! Famicom Disk System image parsing: the optional fwNES wrapper plus the
-//! disk info block that opens every disk side.
+//! Famicom Disk System image parsing: the optional 16-byte FDS wrapper
+//! header plus the disk info block that opens every disk side.
 
 use crate::util::bytes::ascii_trim;
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Seek, SeekFrom};
 
-const FWNES_MAGIC: &[u8; 4] = b"FDS\x1a";
-const FWNES_HEADER_LEN: usize = 16;
+const FDS_WRAPPER_MAGIC: &[u8; 4] = b"FDS\x1a";
+const FDS_WRAPPER_HEADER_LEN: usize = 16;
 const SIDE_LEN: usize = 65500;
 const INFO_BLOCK_LEN: usize = 0x38;
 const VERIFICATION: &[u8; 14] = b"*NINTENDO-HVC*";
@@ -17,7 +17,9 @@ const VERIFICATION: &[u8; 14] = b"*NINTENDO-HVC*";
 #[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct FdsInfo {
-    pub fwnes_header: bool,
+    /// True when the image opens with the 16-byte FDS wrapper header.
+    #[serde(rename = "fwnes_header")]
+    pub wrapper_header: bool,
     pub side_count: usize,
     pub sides: Vec<FdsSide>,
 }
@@ -41,24 +43,24 @@ pub struct FdsSide {
     pub manufacture_date: Option<String>,
 }
 
-/// Parses an FDS image, with or without its 16-byte fwNES header.
+/// Parses an FDS image, with or without its 16-byte FDS wrapper header.
 ///
 /// # Errors
 /// Returns an error when the image holds no whole disk side, or when a
 /// side does not open with the `*NINTENDO-HVC*` disk info block.
 pub fn parse_reader(reader: &mut (impl Read + Seek), file_len: u64) -> Result<FdsInfo> {
-    let mut prefix = [0; FWNES_HEADER_LEN];
-    let fwnes_header = file_len >= FWNES_HEADER_LEN as u64 && {
+    let mut prefix = [0; FDS_WRAPPER_HEADER_LEN];
+    let has_wrapper = file_len >= FDS_WRAPPER_HEADER_LEN as u64 && {
         reader.seek(SeekFrom::Start(0))?;
         reader.read_exact(&mut prefix)?;
-        &prefix[..4] == FWNES_MAGIC
+        &prefix[..4] == FDS_WRAPPER_MAGIC
     };
-    let body_start = if fwnes_header {
-        FWNES_HEADER_LEN as u64
+    let body_start = if has_wrapper {
+        FDS_WRAPPER_HEADER_LEN as u64
     } else {
         0
     };
-    let side_count = if fwnes_header {
+    let side_count = if has_wrapper {
         usize::from(prefix[4])
     } else {
         ((file_len - body_start) / SIDE_LEN as u64) as usize
@@ -75,7 +77,7 @@ pub fn parse_reader(reader: &mut (impl Read + Seek), file_len: u64) -> Result<Fd
         return Err(anyhow!("fds: image holds no disk side"));
     }
     Ok(FdsInfo {
-        fwnes_header,
+        wrapper_header: has_wrapper,
         side_count,
         sides,
     })
@@ -170,13 +172,14 @@ pub(crate) mod tests {
         disk
     }
 
-    /// Builds a two-sided image, optionally wrapped in a fwNES header.
-    pub(crate) fn fixture(fwnes: bool) -> Vec<u8> {
+    /// Builds a two-sided image, optionally wrapped in the 16-byte FDS
+    /// wrapper header.
+    pub(crate) fn fixture(wrapper: bool) -> Vec<u8> {
         let mut out = Vec::new();
-        if fwnes {
-            out.extend_from_slice(FWNES_MAGIC);
+        if wrapper {
+            out.extend_from_slice(FDS_WRAPPER_MAGIC);
             out.push(2);
-            out.resize(FWNES_HEADER_LEN, 0);
+            out.resize(FDS_WRAPPER_HEADER_LEN, 0);
         }
         out.extend_from_slice(&side(0, 0));
         out.extend_from_slice(&side(1, 0));
@@ -184,10 +187,10 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn reads_fwnes_image() {
+    fn reads_fds_wrapper_image() {
         let rom = fixture(true);
         let info = parse_reader(&mut std::io::Cursor::new(&rom), rom.len() as u64).unwrap();
-        assert!(info.fwnes_header);
+        assert!(info.wrapper_header);
         assert_eq!(info.side_count, 2);
         assert_eq!(info.sides.len(), 2);
 
@@ -209,14 +212,14 @@ pub(crate) mod tests {
     fn reads_headerless_image_and_derives_side_count() {
         let rom = fixture(false);
         let info = parse_reader(&mut std::io::Cursor::new(&rom), rom.len() as u64).unwrap();
-        assert!(!info.fwnes_header);
+        assert!(!info.wrapper_header);
         assert_eq!(info.side_count, 2);
     }
 
     #[test]
     fn keeps_raw_bytes_for_a_non_bcd_date() {
         let mut rom = fixture(true);
-        rom[FWNES_HEADER_LEN + 0x1F] = 0xAB;
+        rom[FDS_WRAPPER_HEADER_LEN + 0x1F] = 0xAB;
         let info = parse_reader(&mut std::io::Cursor::new(&rom), rom.len() as u64).unwrap();
         assert_eq!(info.sides[0].manufacture_date, None);
         assert_eq!(info.sides[0].manufacture_date_raw, "AB0401");
@@ -225,17 +228,17 @@ pub(crate) mod tests {
     #[test]
     fn rejects_missing_verification_string() {
         let mut rom = fixture(true);
-        rom[FWNES_HEADER_LEN + 1] = b'X';
+        rom[FDS_WRAPPER_HEADER_LEN + 1] = b'X';
         assert!(parse_reader(&mut std::io::Cursor::new(&rom), rom.len() as u64).is_err());
 
         let mut rom = fixture(true);
-        rom[FWNES_HEADER_LEN] = 0x02;
+        rom[FDS_WRAPPER_HEADER_LEN] = 0x02;
         assert!(parse_reader(&mut std::io::Cursor::new(&rom), rom.len() as u64).is_err());
     }
 
     #[test]
     fn rejects_truncated_image() {
-        let short = &fixture(true)[..FWNES_HEADER_LEN + 8];
+        let short = &fixture(true)[..FDS_WRAPPER_HEADER_LEN + 8];
         assert!(parse_reader(&mut std::io::Cursor::new(short), short.len() as u64).is_err());
         assert!(parse_reader(&mut std::io::Cursor::new(&[]), 0).is_err());
     }

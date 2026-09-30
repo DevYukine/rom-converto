@@ -1868,7 +1868,14 @@ fn retro_fds(info: &rom_converto_lib::nintendo::fds::FdsInfo) -> KeyValueTable {
             },
         );
     }
-    t.push("Header", if info.fwnes_header { "fwNES" } else { "raw" });
+    t.push(
+        "Header",
+        if info.wrapper_header {
+            "FDS header"
+        } else {
+            "none"
+        },
+    );
     t.push("Sides", format!("{}", info.side_count));
     for side in &info.sides {
         t.push(
