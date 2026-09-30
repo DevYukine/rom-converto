@@ -13,9 +13,9 @@ use super::error::{WiaError, WiaResult};
 use crate::nintendo::disc::rvz::format::WiaDisc;
 
 pub const WIA_MAGIC: [u8; 4] = [b'W', b'I', b'A', 0x01];
-/// Writer version Dolphin and wit emit.
+/// Writer version emitted by the reference encoders.
 pub const WIA_VERSION: u32 = 0x0100_0000;
-/// Oldest file version this reader accepts (matches Dolphin's
+/// Oldest file version this reader accepts (matches the reference reader's
 /// `WIA_VERSION_READ_COMPATIBLE`).
 pub const WIA_VERSION_READ_COMPATIBLE: u32 = 0x0008_0000;
 /// Size of a serialized [`WiaGroup`] (8 bytes).

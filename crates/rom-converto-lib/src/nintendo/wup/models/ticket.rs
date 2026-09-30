@@ -2,7 +2,7 @@
 //!
 //! The Wii U ticket header is a 0x220-byte fixed-layout structure.
 //! Field offsets are taken verbatim from `ETicketFileHeaderWiiU` in
-//! Cemu's `src/Cemu/ncrypto/ncrypto.cpp`. This uses hand-rolled
+//! the upstream `ncrypto.cpp`. This uses hand-rolled
 //! offset reads rather than binrw because only a handful of
 //! fields are needed and the ticket layout has a lot of padding that binrw
 //! wouldn't clean up.
@@ -15,8 +15,8 @@ use crate::util::bytes::{u16_be, u32_be, u64_be};
 /// here.
 pub const WUP_TICKET_BASE_SIZE: usize = 0x220;
 
-/// Expected ticket format version ("v1" Wii U ticket) that Cemu's
-/// parser tolerates. Older v0 Wii tickets aren't used for Wii U
+/// Expected ticket format version ("v1" Wii U ticket) accepted by the
+/// reference parser. Older v0 Wii tickets aren't used for Wii U
 /// content, so either 0 or 1 is accepted without distinguishing.
 pub const WUP_TICKET_FORMAT_V1: u8 = 1;
 

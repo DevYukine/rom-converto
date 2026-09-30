@@ -40,7 +40,8 @@ pub fn aes_cbc_decrypt_in_place(key: &[u8; 16], iv: &[u8; 16], data: &mut [u8]) 
 /// The decryption uses the retail Wii U common key and an IV built
 /// from the ticket's title id: the first 8 bytes of the IV are the
 /// big-endian title id, the remaining 8 bytes are zero. This matches
-/// `ETicketParser::GetTitleKey` in Cemu's `ncrypto.cpp`.
+/// `ETicketParser::GetTitleKey` in the reference implementation's
+/// `ncrypto.cpp`.
 pub fn decrypt_title_key(encrypted_title_key: &[u8; 16], title_id: u64) -> WupResult<[u8; 16]> {
     let mut iv = [0u8; 16];
     iv[0..8].copy_from_slice(&title_id.to_be_bytes());
@@ -93,7 +94,7 @@ mod tests {
 
     #[test]
     fn title_key_decrypts_matching_encryption() {
-        // Encrypt a known title key the same way Cemu's ticket
+        // Encrypt a known title key the same way the reference ticket
         // builder would (common key + title_id IV), then run the
         // decrypt and assert the original is recovered.
         let title_id: u64 = 0x0005_000E_1234_5678;

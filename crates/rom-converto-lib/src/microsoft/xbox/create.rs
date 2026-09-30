@@ -1,9 +1,9 @@
-//! extract-xiso's create path, driven from either a filesystem directory
-//! or an existing XDVDFS image. The image source is the trim/rebuild
-//! route: the source tree is read back out of the old dirtabs and
-//! re-laid-out from scratch, so a full disc image becomes a freshly
-//! packed trimmed XISO rather than a byte slice that keeps the mastering
-//! tool's padding.
+//! XISO create path following the reference tool, driven from either a
+//! filesystem directory or an existing XDVDFS image. The image source is
+//! the trim/rebuild route: the source tree is read back out of the old
+//! dirtabs and re-laid-out from scratch, so a full disc image becomes a
+//! freshly packed trimmed XISO rather than a byte slice that keeps the
+//! mastering tool's padding.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
@@ -21,12 +21,12 @@ use crate::microsoft::xdvdfs::{
 use crate::util::CancelToken;
 use crate::util::Cancelled;
 
-/// First sector the linear allocator hands out. extract-xiso seeds here
-/// rather than at the format minimum of 33.
+/// First sector the linear allocator hands out. The reference writer seeds
+/// here rather than at the format minimum of 33.
 const FIRST_DATA_SECTOR: u64 = 0x108;
 /// The image length is padded up to a multiple of this (`XISO_FILE_MODULUS`).
 const FILE_MODULUS: u64 = 0x10000;
-/// Byte offset of the extract-xiso "already optimized" tag.
+/// Byte offset of the "already optimized" tag that PC tools look for.
 const OPTIMIZED_TAG_OFFSET: usize = 31337;
 /// Largest a single directory table may grow: past this the u16 word
 /// offsets in a dirent can no longer address every entry.
@@ -292,7 +292,7 @@ fn assemble(flat: &mut HashMap<Vec<String>, Vec<Node>>, path: &mut Vec<String>) 
 /// only bounds the console driver's lookup depth.
 fn lay_out(table: &mut DirTable, path: &str) -> XboxResult<()> {
     validate(&table.nodes, path)?;
-    // extract-xiso compares names with a signed `char`, so cp1252 high
+    // The reference tool compares names with a signed `char`, so cp1252 high
     // bytes (0x80-0xFF) sort before ASCII rather than after; map through
     // `i8` to match its on-disk BST order.
     table.nodes.sort_by_cached_key(|node| {
@@ -443,7 +443,7 @@ impl Writer<'_> {
     }
 
     /// The first 0x10000 bytes: zeros, plus the cosmetic ISO 9660
-    /// descriptors and the extract-xiso tag that PC tools look for.
+    /// descriptors and the "already optimized" tag that PC tools look for.
     fn write_lead_in(&mut self, image_sectors: u64) -> io::Result<()> {
         let mut lead = vec![0u8; (VOLUME_DESCRIPTOR_SECTOR as u64 * SECTOR_SIZE) as usize];
         let tag = format!("in!xiso!{}", env!("CARGO_PKG_VERSION"));
@@ -458,7 +458,7 @@ impl Writer<'_> {
         descriptor[0x00..0x14].copy_from_slice(VOLUME_MAGIC);
         descriptor[0x14..0x18].copy_from_slice(&root.sector.to_le_bytes());
         descriptor[0x18..0x1C].copy_from_slice(&(root.size as u32).to_le_bytes());
-        // The FILETIME at 0x1C stays zero, as extract-xiso emits.
+        // The FILETIME at 0x1C stays zero, as in the reference writer.
         descriptor[0x7EC..0x800].copy_from_slice(VOLUME_MAGIC);
         self.out.write_all(&descriptor)
     }
@@ -738,7 +738,7 @@ mod tests {
     #[test]
     fn lay_out_sorts_cp1252_high_bytes_as_signed_bytes_like_extract_xiso() {
         // A raw name byte >= 0x80 is negative as `i8`, so it must sort
-        // before plain ASCII under extract-xiso's signed-char comparator
+        // before plain ASCII under the reference tool's signed-char comparator
         // (the opposite of a plain unsigned-byte comparison).
         let high = Node {
             name: "high".to_string(),

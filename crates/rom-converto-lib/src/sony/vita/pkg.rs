@@ -4,10 +4,10 @@
 //!
 //! All three consoles are end-of-life and their package keys are long
 //! published, so they are embedded here. Key selection and derivation
-//! follow the `pkg2zip` lineage: PS3 packages always use the PS3 key,
-//! PSP/Vita key type 1 uses the PSP key directly, and types 2 to 4 derive
-//! the CTR key by AES-ECB encrypting the header's `pkg_data_iv` under the
-//! matching Vita key.
+//! follow the reference package implementation: PS3 packages always use
+//! the PS3 key, PSP/Vita key type 1 uses the PSP key directly, and types
+//! 2 to 4 derive the CTR key by AES-ECB encrypting the header's
+//! `pkg_data_iv` under the matching Vita key.
 
 use std::fs::File;
 use std::io;

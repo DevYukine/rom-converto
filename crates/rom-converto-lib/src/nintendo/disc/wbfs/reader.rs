@@ -5,8 +5,9 @@
 //!
 //! Split containers are supported: a `.wbfs` and its `.wbf1` .. `.wbf9`
 //! siblings (how FAT32 drives store discs over the 4 GiB file limit)
-//! are concatenated into one physical address space, matching Dolphin's
-//! `WbfsBlob`. Block 0, with all the metadata, always lives in part 0.
+//! are concatenated into one physical address space, following the
+//! split-file rule of the upstream `WbfsBlob` reader. Block 0, with
+//! all the metadata, always lives in part 0.
 
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
@@ -171,8 +172,9 @@ fn open_parts(path: &Path) -> WbfsResult<Vec<Part>> {
     Ok(parts)
 }
 
-/// The split-file naming rule replaces the last character of the path
-/// with `'0' + idx` (Dolphin `WbfsBlob`), so `game.wbfs` -> `game.wbf1`.
+/// The split-file naming rule replaces the path's last character with
+/// `'0' + idx` (the upstream `WbfsBlob` reader), so
+/// `game.wbfs` becomes `game.wbf1`.
 fn sibling_path(path: &Path, idx: u8) -> Option<PathBuf> {
     let s = path.to_str()?;
     let last = *s.as_bytes().last()?;

@@ -184,7 +184,7 @@ fn parse_fs_header(buf: &[u8]) -> NxResult<FsHeader> {
 
 /// Build the 16-byte initial CTR for an FsHeader at a given byte offset
 /// inside the NCA. Layout is `section_ctr_high BE || section_ctr_low BE
-/// || (offset / 16) BE`, matching nsz/hactool.
+/// || (offset / 16) BE`, matching the reference implementations.
 pub fn initial_ctr_for_offset(fs: &FsHeader, nca_offset: u64) -> [u8; 16] {
     let mut out = [0u8; 16];
     out[0..4].copy_from_slice(&fs.section_ctr_high.to_be_bytes());

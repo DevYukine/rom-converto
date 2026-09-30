@@ -64,10 +64,10 @@ pub(crate) struct ChdExtractedOut {
     pub hunk: Vec<u8>,
 }
 
-/// Per-thread decompress worker. Owns the shared file handle + a
-/// reusable [`CdDecoderSet`] whose slots are resolved from the
-/// header compressor tags, so codec state allocates exactly once
-/// per thread and any chdman codec combination decodes correctly.
+/// Per-thread decompress worker. Owns the shared file handle and a
+/// reusable [`CdDecoderSet`] with slots resolved from the header's
+/// compressor tags. Codec state is allocated once per thread, and all
+/// combinations supported by the reference implementation decode correctly.
 pub(crate) struct ChdExtractWorker {
     decoders: CdDecoderSet,
     file: Arc<std::fs::File>,
@@ -289,8 +289,8 @@ pub(crate) fn extract_hunks(
         |seq, mut out| {
             // Gather payload bytes from the interleaved hunk, dropping
             // the subcode and any tail past each track's datasize.
-            // `chdman extractcd` writes datasize-wide bins; track padding
-            // frames past the CHT2 frame counts are dropped entirely.
+            // The reference CD extractor writes datasize-wide bins; track
+            // padding frames past the CHT2 frame counts are dropped entirely.
             let first_frame = seq as usize * frames_per_hunk;
             let frames_in_hunk = frames_per_hunk.min(total_frames.saturating_sub(first_frame));
             let mut sectors = Vec::with_capacity(frames_in_hunk * SECTOR_SIZE);
@@ -395,8 +395,8 @@ where
 /// the worker pool still does every decompression in parallel.
 ///
 /// Only the first `logical_bytes` bytes of the decoded hunks
-/// are folded into the hash, matching chdman's raw SHA-1
-/// coverage rule.
+/// are folded into the hash, matching the reference implementation's
+/// raw SHA-1 coverage rule.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn verify_hunks(
     pool: &Pool<ChdExtractWork, ChdExtractedOut, ChdError>,
@@ -428,8 +428,8 @@ pub(crate) fn verify_hunks(
         |_seq, out| -> ChdResult<()> {
             // Hash the full interleaved hunk, capped at
             // `logical_bytes` so the final partial hunk's zero
-            // padding isn't folded in. Matches chdman's
-            // `do_verify` and the existing serial verify path.
+            // padding isn't folded in. Matches the upstream `do_verify`
+            // and the existing serial verify path.
             let take = usize::try_from(bytes_remaining.min(hunk_bytes_u64))
                 .map_err(|_| ChdError::MapDecompressionError)?;
             raw_sha1.update(&out.hunk[..take]);
@@ -461,8 +461,8 @@ pub(crate) struct TrackDigestArgs<'a> {
 /// and into the whole-image hasher. Shaping matches `extract_hunks`
 /// byte-for-byte (same per-frame slice widths, same drop of padding
 /// frames past the CHT2 counts), so the per-track digests reproduce
-/// the bins `chdman extractcd` would write and `whole` reproduces the
-/// single concatenated bin.
+/// the reference extractor would write and `whole` reproduces the single
+/// concatenated bin.
 ///
 /// Routing is per FRAME via `frame_track`, never by byte offset into
 /// the shaped output: track datasizes vary (2048/2336/2352) and one

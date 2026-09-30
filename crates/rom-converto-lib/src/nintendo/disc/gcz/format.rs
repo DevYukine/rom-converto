@@ -1,6 +1,6 @@
-//! GCZ (Dolphin CompressedBlob) on-disk structures.
+//! GCZ on-disk structures.
 //!
-//! Spec source: Dolphin's `Source/Core/DiscIO/CompressedBlob.{h,cpp}`.
+//! Spec source: upstream `CompressedBlob.h` and `CompressedBlob.cpp`.
 //! Layout: a 32-byte little-endian header, `num_blocks` u64 block
 //! pointers, `num_blocks` u32 Adler-32 checksums, then the block data.
 //! Block pointers are relative to the start of the data section; bit 63
@@ -21,7 +21,8 @@ pub const GCZ_UNCOMPRESSED_FLAG: u64 = 1 << 63;
 #[brw(little)]
 pub struct GczHeader {
     pub magic: u32,
-    /// 0 = GameCube, 1 = Wii. Dolphin writes it but never reads it.
+    /// 0 = GameCube, 1 = Wii. The reference implementation writes it
+    /// but never reads it.
     pub sub_type: u32,
     pub compressed_data_size: u64,
     pub data_size: u64,

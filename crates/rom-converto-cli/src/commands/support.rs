@@ -201,7 +201,8 @@ pub(crate) fn maybe_log_dvd_codec_tip(dvd: bool, codecs_set: bool) {
 
 /// Resolves the codec list to hand `ChdOptions`: an explicit CLI value wins,
 /// otherwise the preset/config codec names are parsed, otherwise `None`
-/// (letting the lib apply its per-mode chdman default).
+/// (letting the lib apply its per-mode default, which follows the reference
+/// implementation).
 pub(crate) fn resolve_chd_codecs(
     cli: Option<Vec<ChdCodec>>,
     preset: &Option<Vec<String>>,

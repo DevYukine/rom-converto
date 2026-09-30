@@ -22,8 +22,8 @@ use crate::util::bytes::u32_le;
 const SECTOR: usize = 2048;
 const PVD_LBA: u32 = 16;
 
-/// Sector count above which the medium cannot be a CD. Same cutoff
-/// PCSX2 uses for its CD/DVD typing (`FindDiskType`).
+/// Sector count above which the medium cannot be a CD: the same cutoff
+/// the upstream `FindDiskType` uses for its CD/DVD typing.
 const CD_MAX_SECTORS: u64 = 452_849;
 
 /// Reading a directory is capped to keep a hostile or corrupt extent

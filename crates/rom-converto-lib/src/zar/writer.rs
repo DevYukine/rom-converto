@@ -715,7 +715,7 @@ mod tests {
         // and the insertion order they were added in does not.
         assert_eq!(sorted, vec!["alpha", "Beta", "Zeta", "zeta"]);
         // Names are interned in tree order, not the order the files
-        // were added, so the table matches what Cemu's writer emits.
+        // were added, so the table matches what the reference writer emits.
         assert_eq!(table, b"\x05alpha\x04Beta\x04Zeta\x04zeta");
     }
 

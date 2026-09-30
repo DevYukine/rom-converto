@@ -14,8 +14,9 @@ export const useNxCompressStore = defineStore("nx-compress", () => {
   const output = ref("");
   const keys = ref("");
   const level = ref<number>(18);
-  // Defaults follow nsz: solid for NSP, block for XCI. The auto switch
-  // only kicks in when the user has not deliberately picked a mode.
+  // Defaults follow the reference compressor: solid for NSP, block for XCI.
+  // The auto switch only kicks in when the user has not deliberately picked
+  // a mode.
   const mode = ref<NxMode>("solid");
   const blockSizeExp = ref<number>(20);
   const onConflict = ref(ui.defaultOnConflict);

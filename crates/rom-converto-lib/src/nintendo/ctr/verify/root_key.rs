@@ -2,7 +2,7 @@ use hex_literal::hex;
 
 /// Nintendo Root-CA00000003 RSA-4096 public key modulus (retail).
 /// This key signs the CA certificate in CIA cert chains.
-/// Source: Project_CTR makerom pki/prod.h (root_ppki_rsa)
+/// Source: upstream `pki/prod.h` (`root_ppki_rsa`).
 pub const ROOT_CA_MODULUS: [u8; 512] = hex!(
     "F8246C58BAE7500301FBB7C2EBE0010571DA922378F0514EC0031DD0D21ED3D0"
     "7EFC852069B5DE9BB951A8BC90A244926D379295AE9436AAA6A302510C7B1DED"

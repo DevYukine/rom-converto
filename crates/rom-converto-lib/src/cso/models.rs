@@ -1,8 +1,8 @@
 //! CISO/ZISO on-disk structures.
 //!
-//! Spec source: maxcso (`src/cso.h`, `README_CSO.md`) and PPSSPP's
-//! `CISOFileBlockDevice`. Both formats share one 24-byte
-//! little-endian header and a u32 index:
+//! Spec source: the reference encoder (`src/cso.h`, `README_CSO.md`)
+//! and the reference reader (`CISOFileBlockDevice`). Both formats share
+//! one 24-byte little-endian header and a u32 index:
 //!
 //! ```text
 //! 0x00  magic               "CISO" (deflate) or "ZISO" (LZ4)
@@ -31,8 +31,8 @@ pub const CISO_HEADER_SIZE: u32 = 0x18;
 pub const CISO_INDEX_UNCOMPRESSED: u32 = 0x8000_0000;
 
 pub const DEFAULT_BLOCK_SIZE: u32 = 2048;
-/// maxcso bumps the block size for large inputs so the u32 index
-/// stays small and offsets need less shifting.
+/// The reference encoder bumps the block size for large inputs so
+/// the u32 index stays small and offsets need less shifting.
 pub const LARGE_INPUT_BLOCK_SIZE: u32 = 16384;
 pub const LARGE_INPUT_THRESHOLD: u64 = 0x8000_0000;
 
@@ -143,8 +143,9 @@ pub fn valid_block_size(block_size: u32) -> bool {
     block_size.is_power_of_two() && (DEFAULT_BLOCK_SIZE..=MAX_BLOCK_SIZE).contains(&block_size)
 }
 
-/// Picks the block size maxcso would use for an input of `input_size`
-/// bytes: 16384 at or above 2 GiB, 2048 otherwise.
+/// Picks the block size the reference encoder would use for an
+/// input of `input_size` bytes: 16384 at or above 2 GiB, 2048
+/// otherwise.
 pub fn pick_block_size(input_size: u64) -> u32 {
     if input_size >= LARGE_INPUT_THRESHOLD {
         LARGE_INPUT_BLOCK_SIZE
@@ -155,7 +156,7 @@ pub fn pick_block_size(input_size: u64) -> u32 {
 
 /// Smallest shift that keeps every possible block offset within the
 /// index's 31 offset bits, sized against the worst case of all blocks
-/// stored raw (maxcso `Output::SetFile`).
+/// stored raw (`Output::SetFile` in the reference encoder).
 pub fn pick_index_shift(uncompressed_size: u64, block_size: u32) -> u8 {
     let index_bytes = (block_count(uncompressed_size, block_size) + 1) * 4;
     let worst_size = CISO_HEADER_SIZE as u64 + index_bytes + uncompressed_size;

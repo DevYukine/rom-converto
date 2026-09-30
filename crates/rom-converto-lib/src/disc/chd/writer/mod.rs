@@ -32,8 +32,9 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
-/// Largest accepted DVD hunk: chdman never goes near this; the cap
-/// only guards against absurd `--hunk-size` values.
+/// Largest accepted DVD hunk. The reference implementation does not
+/// approach this limit; the cap only guards against absurd `--hunk-size`
+/// values.
 const MAX_DVD_HUNK_BYTES: u32 = 1024 * 1024;
 
 /// Sync CHD writer. One instance is created per output file; it
@@ -51,11 +52,12 @@ pub struct ChdWriter {
     raw_sha1: Sha1,
     metadata_hashes: Vec<MetadataHash>,
     /// Per-frame source flags; empty for DVD-mode writers. `false`
-    /// frames are the per-track zero padding chdman appends to reach
-    /// a 4-frame boundary; nothing is read from the source for them.
+    /// frames are the per-track zero padding the reference writer appends
+    /// to reach a 4-frame boundary; nothing is read from the source for them.
     cd_frame_data: Vec<bool>,
-    /// Per-frame audio flags; empty for DVD-mode writers. Audio frames
-    /// get their 16-bit sample bytes swapped on ingest to match chdman.
+    /// Per-frame audio flags; empty for DVD-mode writers. The writer
+    /// swaps audio frames' 16-bit sample bytes on ingest to match the
+    /// reference implementation.
     cd_audio_frames: Vec<bool>,
     /// Packed VBI records, one per field; empty unless this is a
     /// laserdisc writer whose field height calls for an `AVLD` blob.
@@ -69,9 +71,9 @@ impl ChdWriter {
     /// `file_sectors` is the unpadded sector count of every cue FILE in
     /// order, one entry per `cue_sheet.files` element; the CHT2
     /// `FRAMES:` metadata splits them per track and the physical stream
-    /// pads every track to a 4-frame boundary like chdman, so the
-    /// logical size can exceed the source frame count times
-    /// `FRAME_SIZE`.
+    /// pads every track to a 4-frame boundary like the reference
+    /// implementation, so the logical size can exceed the source frame
+    /// count times `FRAME_SIZE`.
     pub fn create(
         output_path: impl AsRef<Path>,
         file_sectors: &[u32],
@@ -275,7 +277,7 @@ impl ChdWriter {
 
     /// Reads `sector_data_size` bytes from the source for every data
     /// frame of the padded layout; the per-track padding frames stay
-    /// zero but are still hashed, matching chdman.
+    /// zero but are still hashed, matching the reference implementation.
     pub fn compress_all_hunks<R: Read>(
         &mut self,
         bin_reader: &mut R,

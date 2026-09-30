@@ -3,9 +3,9 @@
 //! The FST is a small filesystem table embedded at the start of
 //! content 0 (`00000000.app`) of every Wii U title. Once content 0
 //! has been decrypted with the ticket title key it becomes parseable
-//! with this module. The layout matches Cemu's `FSTHeader`,
-//! `FSTHeader_ClusterEntry`, and `FSTHeader_FileEntry` structs in
-//! `src/Cafe/Filesystem/FST/FST.h`:
+//! with this module. The layout matches the reference implementation's
+//! `FSTHeader`, `FSTHeader_ClusterEntry`, and `FSTHeader_FileEntry`
+//! structs in upstream `FST.h`:
 //!
 //! - 0x20-byte `FstHeader` (magic `0x46535400`, offset factor,
 //!   cluster count, hash disabled flag, padding).

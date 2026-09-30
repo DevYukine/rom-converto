@@ -1,7 +1,7 @@
 //! NKit gap record decoding.
 //!
-//! Between files (in FST order) NKit replaces the original padding
-//! with a compact record (`Gaps.cs`):
+//! Between files (in FST order) the reference encoder replaces the
+//! original padding with a compact record (`Gaps.cs`):
 //!
 //! ```text
 //! u32 BE header: bits[1:0] = type, bits[31:2] = gap size (4-aligned)
@@ -179,8 +179,8 @@ pub(crate) fn parse_junk_file_record<R: Read + Seek>(
             hdr & 3
         )));
     }
-    // Only bits 2..8 carry the NUL count (`(size & 0xFC) >> 2` in
-    // NkitReaderGc/Wii).
+    // Only bits 2..8 carry the NUL count (`(size & 0xFC) >> 2`) in
+    // upstream `NkitReaderGc.cs` and `NkitReaderWii.cs`.
     let leading_nulls = ((hdr & 0xFC) >> 2) as u64;
     let file_len = read_u32_be(r)? as u64;
     if leading_nulls > file_len {

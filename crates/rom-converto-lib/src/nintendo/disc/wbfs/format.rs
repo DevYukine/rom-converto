@@ -8,12 +8,13 @@
 //! physical block that stores it. A table entry of 0 means the block
 //! was scrubbed (all zero) and is not stored.
 //!
-//! Reference: libwbfs (`libwbfs.h`, `libwbfs.c`).
+//! Reference: the upstream implementation (`libwbfs.h`, `libwbfs.c`).
 
 /// `WBFS` partition magic at offset 0 of the file.
 pub const WBFS_MAGIC: [u8; 4] = *b"WBFS";
 
-/// Layout version written into new containers. libwbfs ships `1`.
+/// Layout version written into new containers. The reference
+/// implementation uses `1`.
 pub const WBFS_VERSION: u8 = 1;
 
 /// Size in bytes of a raw (pre-decryption) Wii disc sector.

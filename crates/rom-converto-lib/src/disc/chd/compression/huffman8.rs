@@ -1,24 +1,24 @@
-//! MAME `huffman_8bit_decoder` port for the CHD `huff` hunk codec.
+//! Port of the upstream `huffman_8bit_decoder` for the CHD `huff` hunk codec.
 //!
-//! chdman's createdvd/createhd default codec set includes `huff`, so
-//! reading arbitrary chdman files needs it even though this crate's writer
-//! never emits it. The format (MAME `huffman.cpp`): a 24-code/6-bit
+//! The reference implementation's default DVD/HD codec set includes `huff`,
+//! so decoding arbitrary CHD files needs it even though this crate's writer
+//! never emits it. The format (upstream `huffman.cpp`): a 24-code/6-bit
 //! "small" huffman tree describes the code lengths of the real
 //! 256-code/16-bit tree (lengths shifted by one, value 0 = RLE repeat
 //! of the previous length), both trees canonical; the payload is one
 //! code per output byte.
 //!
 //! This is the same canonical-code scheme as the compressed-map
-//! decoder in `chd/map.rs` but with different parameters and the
-//! huffman (not RLE) tree serialization, and it needs MAME's
-//! `bitstream_in` semantics: `peek` past the end of input reads
-//! zeroes, only `overflow()` at the end reports truncation.
+//! decoder in `chd/map.rs` but with different parameters and
+//! huffman (not RLE) tree serialization. It needs the reference
+//! `bitstream_in` semantics: `peek` past the end of input reads zeroes,
+//! and only `overflow()` at the end reports truncation.
 
 use std::io;
 
 use crate::disc::chd::error::ChdResult;
 
-/// MSB-first bit reader with zero-padded lookahead, mirroring MAME's
+/// MSB-first bit reader matching the reference implementation's
 /// `bitstream_in` so 16-bit peeks near the end of the stream behave
 /// identically.
 struct BitStream<'a> {
@@ -68,7 +68,7 @@ impl<'a> BitStream<'a> {
 }
 
 /// Canonical huffman decoder over `lengths.len()` codes with a flat
-/// `max_bits`-wide lookup table, matching MAME's
+/// `max_bits`-wide lookup table, matching the reference
 /// `assign_canonical_codes` + `build_lookup_table`.
 struct CanonicalDecoder {
     lookup: Vec<(u16, u8)>,
@@ -129,7 +129,7 @@ impl CanonicalDecoder {
 /// `huffman_8bit_decoder::decode`.
 pub(crate) fn huffman8_decode(src: &[u8], dest_len: usize) -> ChdResult<Vec<u8>> {
     const NUM_CODES: usize = 256;
-    // ceil(log2(NUM_CODES - 9)) per MAME's rlefullbits derivation.
+    // ceil(log2(NUM_CODES - 9)) per the reference `rlefullbits` derivation.
     const RLE_FULL_BITS: u8 = 8;
 
     let mut bits = BitStream::new(src);
@@ -185,8 +185,8 @@ fn huff_err(msg: &str) -> crate::disc::chd::error::ChdError {
     io::Error::other(format!("huffman hunk decode: {msg}")).into()
 }
 
-/// MSB-first bit writer mirroring MAME's `bitstream_out`: `write`
-/// emits the low `numbits` of `value` most-significant-bit first, and
+/// MSB-first bit writer matching the reference `bitstream_out`:
+/// `write` emits the low `numbits` of `value` most-significant-bit first, and
 /// `finish` left-aligns the trailing partial byte with zero padding.
 pub(crate) struct BitWriter {
     out: Vec<u8>,
@@ -223,8 +223,8 @@ impl BitWriter {
     }
 }
 
-/// One huffman tree node. Ports MAME's `node_t`; `parent == -1` is the
-/// null-parent sentinel (MAME uses a null pointer).
+/// One huffman tree node. Ports the upstream `node_t`; `parent == -1`
+/// is the null-parent sentinel (upstream uses a null pointer).
 #[derive(Clone, Copy)]
 struct Node {
     parent: i32,
@@ -244,7 +244,7 @@ impl Default for Node {
     }
 }
 
-/// Port of MAME `build_tree`: build a huffman tree from the histogram
+/// Port of upstream `build_tree`: build a huffman tree from the histogram
 /// with weights scaled by `totalweight / totaldata`, returning the
 /// longest resulting code length. Leaves live at `nodes[0..numcodes]`;
 /// internal nodes are allocated from `nodes[numcodes..]`.
@@ -272,7 +272,7 @@ fn build_tree(
     }
 
     // Largest weight first; ties broken by ascending code index, which
-    // matches MAME's qsort key (weight desc, then m_bits == curcode asc)
+    // matches the upstream qsort key (weight desc, then m_bits == curcode asc)
     // with unique keys, so a stable sort reproduces it exactly.
     list.sort_by(|&a, &b| nodes[b].weight.cmp(&nodes[a].weight).then(a.cmp(&b)));
 
@@ -328,7 +328,7 @@ fn build_tree(
     maxbits
 }
 
-/// Port of MAME `assign_canonical_codes`: turn the per-node code
+/// Port of upstream `assign_canonical_codes`: turn the per-node code
 /// lengths into canonical codes, the same scheme the decoder's
 /// [`CanonicalDecoder::from_lengths`] reads back.
 fn assign_canonical_codes(nodes: &mut [Node], numcodes: usize, maxbits: u8) -> ChdResult<()> {
@@ -365,7 +365,7 @@ fn assign_canonical_codes(nodes: &mut [Node], numcodes: usize, maxbits: u8) -> C
     Ok(())
 }
 
-/// Port of MAME `compute_tree_from_histo`: binary-search the weight
+/// Port of upstream `compute_tree_from_histo`: binary-search the weight
 /// scale so the tree fits within `maxbits`, then assign canonical codes.
 fn compute_tree_from_histo(
     histo: &[u32],
@@ -393,10 +393,11 @@ fn compute_tree_from_histo(
     assign_canonical_codes(nodes, numcodes, maxbits)
 }
 
-/// Build MAME-canonical huffman codes for `histo` over `numcodes`
-/// symbols capped at `maxbits`, returning `(code, length)` per symbol.
-/// Shared with the avhuff codec (272-code contexts) and the compressed
-/// map codec in [`crate::disc::chd::map`] (16 codes, 8 bits).
+/// Build canonical huffman codes, assigned as the reference
+/// implementation assigns them, for `histo` over `numcodes` symbols capped
+/// at `maxbits`, returning `(code, length)` per symbol. Shared with the
+/// avhuff codec (272-code contexts) and the compressed map codec in
+/// [`crate::disc::chd::map`] (16 codes, 8 bits).
 pub(crate) fn canonical_codes(
     histo: &[u32],
     numcodes: usize,
@@ -410,7 +411,7 @@ pub(crate) fn canonical_codes(
         .collect())
 }
 
-/// Port of MAME `export_tree_huffman`: RLE-compress the main tree's code
+/// Port of upstream `export_tree_huffman`: RLE-compress the main tree's code
 /// lengths, build a 24-code/6-bit huffman tree over the RLE tokens,
 /// then write the small-tree header followed by the huffman-coded RLE
 /// stream. Mirrors the decoder's `import_tree_huffman`.
@@ -519,7 +520,7 @@ fn export_tree_huffman(w: &mut BitWriter, nodes: &[Node], numcodes: usize) -> Ch
 }
 
 /// Encode `src` into the CHD `huff` codec bitstream, appended to `dst`.
-/// Port of MAME `huffman_8bit_encoder::encode`; the output round-trips
+/// Port of upstream `huffman_8bit_encoder::encode`; the output round-trips
 /// through [`huffman8_decode`]. The caller decides whether the result
 /// is worth keeping by comparing sizes, matching the CD/DVD codec trials.
 pub(crate) fn huffman8_encode(src: &[u8], dst: &mut Vec<u8>) -> ChdResult<()> {

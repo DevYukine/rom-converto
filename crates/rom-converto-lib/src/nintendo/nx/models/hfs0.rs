@@ -150,12 +150,12 @@ pub struct Hfs0FileSpec {
 pub struct Hfs0LayoutHints {
     /// Pad the string table so the total HFS0 header size matches
     /// the input. Without this, gamecard root HFS0s emit a different
-    /// data-section offset than nsz and per-NCA SHA-256 round-trips
-    /// still pass but the file isn't byte-identical.
+    /// data-section offset than the reference implementation and per-NCA
+    /// SHA-256 round-trips still pass but the file isn't byte-identical.
     pub target_total_header_size: Option<usize>,
     /// First file's data_offset relative to the data section.
     /// Defaults to 0 (files placed contiguously at data section
-    /// start). nsz preserves the input's value.
+    /// start). The reference implementation preserves the input's value.
     pub first_file_data_offset: u64,
 }
 
@@ -180,8 +180,8 @@ pub fn build_header(specs: &[Hfs0FileSpec], hints: &Hfs0LayoutHints) -> NxResult
     if let Some(target) = hints.target_total_header_size {
         let want_string_table = target.saturating_sub(header_overhead);
         // Honor the input's value verbatim, even if it is shorter
-        // than the 0x10-aligned default used here; this matches nsz's behavior
-        // where `getStringTableSize` is forwarded byte-exact.
+        // than the 0x10-aligned default used here; the reference implementation
+        // also forwards `getStringTableSize` byte-exactly.
         string_table.resize(want_string_table, 0);
     }
 

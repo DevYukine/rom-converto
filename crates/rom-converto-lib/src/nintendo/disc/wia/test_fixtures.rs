@@ -1,5 +1,5 @@
-//! Synthetic WIA writer for tests, mirroring the layout Dolphin and
-//! wit produce: header chain with SHA-1s, codec-compressed metadata
+//! Synthetic WIA writer for tests, mirroring the layout produced by
+//! the reference encoders: a header chain with SHA-1s, codec-compressed
 //! tables, raw groups chunked from sector-aligned region starts, and
 //! Wii partition groups stored decrypted and hash-stripped with
 //! cluster-local exception lists.

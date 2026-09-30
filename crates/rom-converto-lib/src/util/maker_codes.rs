@@ -1,8 +1,8 @@
 //! Two-character publisher / maker code lookup shared across all
 //! Nintendo platforms (GameCube, Wii, Wii U, 3DS, DS, Switch).
 //!
-//! Table ported from Dolphin's `Source/Core/DiscIO/Enums.cpp`
-//! `GetCompanyFromID` map (MIT licensed). Lookup is case-insensitive.
+//! Table ported from the upstream implementation's `GetCompanyFromID` map
+//! (`Enums.cpp`, MIT licensed). Lookup is case-insensitive.
 
 /// Looks up a two-character maker code, case-insensitively. Returns `None`
 /// for the wrong length or a code not in the table.

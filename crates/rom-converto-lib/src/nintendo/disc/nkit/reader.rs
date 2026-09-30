@@ -41,7 +41,7 @@ use crate::util::worker_pool::{Worker, parallelism};
 const MAX_SPAN_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Junk gaps begin with up to this many zero bytes after a file end
-/// (`nullsPos = dstPos + 0x1c` in NKit's readers).
+/// (`nullsPos = dstPos + 0x1c` in the reference readers).
 pub(crate) const NULLS_LEAD: u64 = 0x1C;
 /// Junk runs at least this large skip the leading NULs unless they
 /// follow the FST or trail the last file.
@@ -138,9 +138,9 @@ pub(crate) struct GapPositions {
 }
 
 /// Decode one gap record into spans, applying the leading-NUL rule
-/// from NKit's `writeGap`: a run of zeroes (up to the tracked
-/// `nulls_pos`) precedes junk output, skipped for large mid-image
-/// gaps.
+/// from the reference implementation's `writeGap`: a run of zeroes (up
+/// to the tracked `nulls_pos`) precedes junk output, skipped for large
+/// mid-image gaps.
 pub(crate) fn expand_gap_record<S: Read + Seek>(
     spans: &mut Vec<Span>,
     src: &mut S,
@@ -278,7 +278,8 @@ fn build_plan<S: Read + Seek>(src: &mut S) -> NkitResult<NkitPlan> {
                     "gap record extends past the next file".into(),
                 ));
             }
-            // Bytes up to the file are alignment padding NKit added.
+            // Bytes up to the file are alignment padding added by the
+            // reference writer.
             nkit_pos = target;
         }
 

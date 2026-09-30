@@ -1,5 +1,5 @@
-//! LZMA hunk compression for the CHD `lzma` codec, via a persistent
-//! encoder handle matching chdman's `configure_properties` approach.
+//! LZMA hunk compression for the CHD `lzma` codec uses a persistent
+//! encoder handle and follows the reference `configure_properties` approach.
 
 use crate::disc::chd::error::ChdResult;
 use lzma_sdk_sys::*;
@@ -13,12 +13,13 @@ fn lzma_max_output_size(input_len: usize) -> usize {
     input_len + input_len / 3 + 128
 }
 
-/// Configure LZMA encoder properties matching chdman's configure_properties.
-/// Uses hunk_bytes as reduceSize (matching chdman which passes hunkbytes, not base data length).
-/// Encoder and decoder props can differ per level, but `LzmaEncProps_Normalize`
-/// guarantees the decoder's fixed level-[`LZMA_LEVEL`] dictSize (reduceSize-capped)
-/// is always >= the encoder's dictSize for any level within the 1 MB hunk cap,
-/// so decode stays correct.
+/// Configure LZMA encoder properties like the reference
+/// `configure_properties`: reduceSize is hunk_bytes (the reference passes
+/// hunkbytes, not the base data length). Encoder and decoder props can
+/// differ per level, but `LzmaEncProps_Normalize` guarantees the decoder's
+/// fixed level-[`LZMA_LEVEL`] dictSize (reduceSize-capped) stays >= the
+/// encoder's dictSize for any level within the 1 MB hunk cap, so decode
+/// stays correct.
 fn configure_props(hunk_bytes: usize, level: i32) -> CLzmaEncProps {
     unsafe {
         let mut props = CLzmaEncProps::default();
@@ -41,7 +42,8 @@ fn encode_props(props: &CLzmaEncProps) -> [u8; LZMA_PROPS_SIZE as usize] {
 }
 
 /// A reusable LZMA encoder that creates the encoder handle once and reuses it
-/// via `LzmaEnc_MemEncode`, matching chdman's approach of persistent codec state.
+/// via `LzmaEnc_MemEncode`, keeping persistent codec state like the
+/// reference implementation.
 pub(crate) struct LzmaEncoder {
     handle: CLzmaEncHandle,
     alloc: Allocator,

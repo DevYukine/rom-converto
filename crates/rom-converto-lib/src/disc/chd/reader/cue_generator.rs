@@ -103,12 +103,12 @@ pub(crate) fn parse_chd_track_metadata(metadata_str: &str) -> ChdResult<Vec<ChdT
 }
 
 pub(crate) fn generate_cue_sheet(bin_filename: &str, tracks: &[ChdTrackInfo]) -> String {
-    // The line content and indentation below match chdman's
-    // `output_track_metadata` in `src/tools/chdman.cpp`; CRLF endings
-    // follow older chdman builds (0.289 writes LF) and are kept so
-    // existing extracts stay byte-identical. A `V` prefix on PGTYPE marks
-    // a pregap stored inside the track's own frames, so it is
-    // written as an INDEX 00 position rather than a PREGAP line.
+    // The line content and indentation below follow the upstream
+    // `output_track_metadata`. CRLF endings follow its older builds
+    // (0.289 writes LF) and are kept so existing extracts stay
+    // byte-identical. A `V` prefix on PGTYPE marks a pregap stored
+    // inside the track's own frames, so it is written as INDEX 00
+    // rather than a PREGAP line.
     let mut cue = format!("FILE \"{bin_filename}\" BINARY\r\n");
     let mut frame_offset: u32 = 0;
 
@@ -146,7 +146,7 @@ pub(crate) fn generate_cue_sheet(bin_filename: &str, tracks: &[ChdTrackInfo]) ->
             msf.minutes, msf.seconds, msf.frames
         ));
 
-        // chdman's `output_track_metadata` writes a POSTGAP line only
+        // The upstream `output_track_metadata` writes a POSTGAP line only
         // for a nonzero frame count, so zero stays silent.
         if let Some(postgap) = track.postgap.filter(|postgap| *postgap > 0) {
             let msf = Msf::from_lba(postgap);
@@ -176,9 +176,9 @@ fn chd_type_to_cue_type(chd_type: &str) -> &'static str {
 }
 
 /// Bytes of frame payload the extracted bin carries per track type,
-/// matching the datasizes in chdman's `get_info_from_type_string`
-/// (`src/lib/util/cdrom.cpp`). Mirrors [`chd_type_to_cue_type`] so
-/// the generated cue sheet and the bin widths always agree.
+/// matching the datasizes in the upstream `get_info_from_type_string`
+/// (`cdrom.cpp`). Mirrors [`chd_type_to_cue_type`] so the generated cue
+/// sheet and the bin widths always agree.
 pub(crate) fn chd_type_datasize(chd_type: &str) -> usize {
     match chd_type {
         "MODE1" | "MODE2_FORM1" => 2048,

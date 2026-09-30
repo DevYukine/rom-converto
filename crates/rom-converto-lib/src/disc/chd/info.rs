@@ -1,6 +1,6 @@
 //! `info` extractor for CHD files. Surfaces the header, hashes,
 //! per-track metadata, optional DVD or hard disk geometry, and the
-//! chdman build string when present, for every format version.
+//! CHD producer's build string when present, for every format version.
 
 use crate::disc::chd::legacy::{LegacyChd, LegacyChdHeader};
 use crate::disc::chd::models::{
@@ -36,7 +36,7 @@ pub struct ChdInfo {
     pub parent_md5: Option<String>,
     pub tracks: Vec<ChdTrack>,
     pub metadata_tags: Vec<ChdMetadataTagSummary>,
-    /// Chdman build string from the optional `VERS` metadata tag.
+    /// CHD producer tool's build string from the optional `VERS` metadata tag.
     pub version_string: Option<String>,
     /// DVD-only fields derived when a `DVD ` metadata tag is present.
     pub dvd: Option<ChdDvdInfo>,
@@ -197,7 +197,8 @@ fn add_metadata(
     info.version_string = extract_version_string(metadata);
     info.dvd = extract_dvd_info(metadata, info.logical_bytes);
     info.ld = extract_ld_info(metadata, info.logical_bytes, info.hunk_bytes);
-    // chdman trusts the GDDD entry over the v1/v2 header geometry.
+    // The reference implementation trusts the GDDD entry over the v1/v2
+    // header geometry.
     if let Some(geometry) = extract_hard_disk_info(metadata) {
         info.hard_disk = Some(geometry);
     }
@@ -305,7 +306,7 @@ fn extract_dvd_info(metadata: &[ChdMetadataHeader], logical_bytes: u64) -> Optio
     }
     // DVD CHDs store ISO bytes 1:1 (2048-byte sectors); derive count
     // from logical_bytes rather than trusting the tag payload, which
-    // chdman has used inconsistently across versions.
+    // the reference implementation has used inconsistently across versions.
     const DVD_SECTOR_SIZE: u64 = 2048;
     const DVD_SL_MAX_SECTORS: u64 = 2_295_104;
     let total_sectors = logical_bytes / DVD_SECTOR_SIZE;
@@ -322,7 +323,7 @@ fn extract_dvd_info(metadata: &[ChdMetadataHeader], logical_bytes: u64) -> Optio
 
 /// Reads the `AVAV` and, when present, `AVLD` metadata tags into a
 /// [`ChdLdInfo`] summary. Returns `None` when the `AVAV` tag is absent or its
-/// payload does not match chdman's `FPS:%d.%06d WIDTH:%d HEIGHT:%d
+/// payload does not match the expected `FPS:%d.%06d WIDTH:%d HEIGHT:%d
 /// INTERLACED:%d CHANNELS:%d SAMPLERATE:%d` format.
 fn extract_ld_info(
     metadata: &[ChdMetadataHeader],
@@ -366,7 +367,7 @@ fn extract_ld_info(
     })
 }
 
-/// Parses chdman's `AVAV` format string. Any missing or malformed field
+/// Parses the CHD `AVAV` format string. Any missing or malformed field
 /// yields `None` for the whole tuple.
 fn parse_av_metadata(data: &[u8]) -> Option<(String, u32, u32, bool, u32, u32)> {
     let text = String::from_utf8_lossy(data);

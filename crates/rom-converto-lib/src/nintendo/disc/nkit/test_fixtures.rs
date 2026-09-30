@@ -1,8 +1,8 @@
 //! Synthetic NKit fixtures: a GameCube ISO with a real filesystem
 //! (FST, files, junk/zero/mixed gaps, a pure-junk file) and a mirror
-//! NKit encoder producing the layout `NkitWriterGc.cs` emits,
-//! including the CRC fix-up that makes the container's CRC32 equal
-//! the source image's.
+//! NKit encoder producing the layout emitted by the reference writer
+//! (`NkitWriterGc.cs`), including the CRC fix-up that makes the
+//! container's CRC32 equal the source image's.
 
 use super::crc::Crc32;
 use super::format::{GC_FST_OFFSET_FIELD, GC_FST_SIZE_FIELD, parse_gc_fst};
@@ -282,8 +282,8 @@ fn write_gap_id(
 }
 
 /// Wrap an nkit stream in a GCZ container and force the container's
-/// whole-file CRC32 to the source CRC; NKit places this fix-up in
-/// the GCZ header's sub_type field at offset 0x4.
+/// whole-file CRC32 to the source CRC; the reference writer places
+/// this fix-up in the GCZ header's sub_type field at offset 0x4.
 pub(crate) fn make_nkit_gcz(nkit: &[u8], source_crc: u32) -> Vec<u8> {
     let mut gcz = crate::nintendo::disc::gcz::test_fixtures::make_gcz(nkit, 0x8000, 0);
     let fixup = force_crc(&gcz, 0x4, source_crc);
@@ -298,7 +298,8 @@ pub(crate) fn crc_of(bytes: &[u8]) -> u32 {
 }
 
 /// Compute the 4-byte big-endian value to place at `off` so the
-/// buffer's CRC32 becomes `target` (what NKit's `CrcForce` does).
+/// buffer's CRC32 becomes `target` (what the reference
+/// implementation's `CrcForce` does).
 /// CRC32 is GF(2)-linear, so the patch is the solution of a 32x32
 /// bit system whose basis is probed one bit at a time.
 fn force_crc(buf: &[u8], off: usize, target: u32) -> u32 {
@@ -400,7 +401,8 @@ fn group_blocks_at(data_sectors: usize, group: usize) -> usize {
 
 /// Build a Wii ISO with one valid encrypted partition whose decrypted
 /// content is a real filesystem with junk gaps, plus a deliberately
-/// corrupted hash region in cluster 1 to force NKit hash preservation.
+/// corrupted hash region in cluster 1 to exercise preservation of the
+/// original hash sectors.
 pub(crate) fn make_fake_wii_fs_iso() -> Vec<u8> {
     fake_wii_fs_iso(N_CLUSTERS * WII_BLOCKS_PER_GROUP)
 }
@@ -502,9 +504,9 @@ fn fake_wii_fs_iso(data_sectors: usize) -> Vec<u8> {
     data[junk_from..junk_to].copy_from_slice(&tail);
 
     // Hash and encrypt clusters; corrupt one hash byte in cluster 1
-    // so NKit must preserve that group's hash sectors. The final group
-    // may be partial: pad the missing sectors with zeros for hashing,
-    // then write only the sectors the disc actually carries.
+    // so the encoder must preserve that group's hash sectors. The final
+    // group may be partial: pad the missing sectors with zeros for
+    // hashing, then write only the sectors the disc actually carries.
     let data_start = PART_OFFSET + PART_DATA_OFFSET;
     let mut payloads = vec![[0u8; WII_SECTOR_PAYLOAD_SIZE]; WII_BLOCKS_PER_GROUP];
     let mut regions = vec![[0u8; HASH_REGION_BYTES]; WII_BLOCKS_PER_GROUP];

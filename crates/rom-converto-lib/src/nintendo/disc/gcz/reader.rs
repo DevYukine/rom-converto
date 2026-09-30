@@ -275,8 +275,8 @@ impl GczReader {
         self.header.data_size
     }
 
-    /// The header's `sub_type` field (0 = GameCube, 1 = Wii). Dolphin
-    /// writes it but never reads it back.
+    /// The header's `sub_type` field (0 = GameCube, 1 = Wii). The
+    /// reference implementation writes it but never reads it back.
     pub fn sub_type(&self) -> u32 {
         self.header.sub_type
     }

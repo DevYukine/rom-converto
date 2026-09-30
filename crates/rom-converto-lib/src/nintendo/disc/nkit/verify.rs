@@ -1,12 +1,12 @@
 //! NKit integrity verification.
 //!
-//! NKit patches a 4-byte fix-up into its header so the CRC32 of the
-//! whole nkit file equals the CRC32 of the original source image
-//! (`CrcForce.Calculate` in NKit's source). One sequential pass over
-//! the container therefore self-checks the file with no external
-//! database: for `.nkit.iso` the hash covers the file itself, for
-//! `.nkit.gcz` it covers the GCZ container (whose fix-up lives at
-//! offset 0x4), checked after the GCZ block checksums.
+//! The reference writer patches a 4-byte fix-up into the header so the
+//! CRC32 of the whole nkit file equals the CRC32 of the original source
+//! image (upstream `CrcForce.Calculate`). One sequential pass over the
+//! container therefore self-checks the file with no external database:
+//! for `.nkit.iso` the hash covers the file itself, for `.nkit.gcz` it
+//! covers the GCZ container (whose fix-up lives at offset 0x4), checked
+//! after the GCZ block checksums.
 
 use std::fs::File;
 use std::io::Read;

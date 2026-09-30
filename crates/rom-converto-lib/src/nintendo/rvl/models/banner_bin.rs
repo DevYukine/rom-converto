@@ -7,8 +7,8 @@
 //! `0x10` (LZSS type), followed by a 24-bit little-endian uncompressed
 //! size.
 //!
-//! Reference: wiibrew.org/wiki/U8_archive#IMD5,
-//! github.com/rvanasa/lz77.
+//! Reference: wiibrew.org/wiki/U8_archive#IMD5, and an existing
+//! open-source LZ77 decoder.
 
 use anyhow::{Result, anyhow};
 

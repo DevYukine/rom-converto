@@ -100,12 +100,14 @@ impl Pfs0 {
 #[derive(Debug, Clone, Default)]
 pub struct Pfs0LayoutHints {
     /// Pad the string table so the total header size matches the
-    /// input container exactly. nsz uses `getStringTableSize` from
-    /// input to output, which keeps the entry table aligned.
+    /// input container exactly. The reference implementation uses
+    /// `getStringTableSize` from input to output, keeping the entry
+    /// table aligned.
     pub target_total_header_size: Option<usize>,
     /// Where the first file should sit in the output's data section
-    /// (that is, `pfs0.files[0].data_offset` from input). nsz preserves
-    /// this so the original NSP padding round trips byte-for-byte.
+    /// (that is, `pfs0.files[0].data_offset` from input). The reference
+    /// implementation preserves this so the original NSP padding round
+    /// trips byte-for-byte.
     pub first_file_data_offset: u64,
 }
 

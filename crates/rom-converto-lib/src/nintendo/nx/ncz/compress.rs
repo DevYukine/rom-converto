@@ -127,13 +127,14 @@ fn write_solid<W: Write + Seek>(
     let workers = crate::util::worker_pool::parallelism().min(u32::MAX as usize) as u32;
     let mut encoder = zstd::stream::write::Encoder::new(out, level)
         .map_err(|e| NxError::ZstdError(format!("zstd encoder init: {e}")))?;
-    // Match nsz's `ZstdCompressionParameters.from_level(level,
-    // threads=N)` solid pipeline. With `zstdmt`, libzstd splits the
-    // input into jobs, compresses them on N worker threads, and
-    // serializes the output. This both saturates more cores AND
-    // bumps the effective window/job sizing zstd uses, which on
-    // multi-GB program NCAs trims a handful of percent off the output
-    // compared to single-threaded `from_level` defaults.
+    // Match the upstream compressor's
+    // `ZstdCompressionParameters.from_level(level, threads=N)` solid
+    // pipeline. With `zstdmt`, libzstd splits the input into jobs,
+    // compresses them on N worker threads, and serializes the output.
+    // This both saturates more cores AND bumps the effective window/job
+    // sizing zstd uses, which on multi-GB program NCAs trims a handful
+    // of percent off the output compared to single-threaded
+    // `from_level` defaults.
     encoder
         .set_parameter(zstd::stream::raw::CParameter::NbWorkers(workers))
         .map_err(|e| NxError::ZstdError(format!("zstd NbWorkers: {e}")))?;
@@ -207,8 +208,8 @@ pub(super) fn write_block<W: Write + Seek>(
     let max_in_flight = admission.max_in_flight;
     let pool = spawn_ncz_pool(level, block_size, n_threads)?;
 
-    // nsz has emitted version 2 / type 1 since the format's first
-    // commit; readers that validate these bytes expect them.
+    // The upstream compressor has emitted version 2 / type 1 since the
+    // format's first commit; readers that validate these bytes expect them.
     let header_start = out.stream_position()?;
     write_nczblock(out, &placeholder_block_info(payload_size, size_exp)?)?;
 
@@ -503,9 +504,9 @@ fn build_section_entries(walker: &NcaWalker) -> NxResult<Vec<NczSectionEntry>> {
     let mut out = Vec::with_capacity(walker.sections.len());
     for s in &walker.sections {
         let section_nca_offset = (s.raw_offset - walker.nca_offset()) as i64;
-        // nsz stores bytes 0..8 of crypto_counter as the FsHeader's
-        // section_ctr reversed, and bytes 8..16 as zeros (the
-        // decompressor fills in `position_in_nca / 16` BE on the fly).
+        // The upstream compressor stores bytes 0..8 of crypto_counter as
+        // the FsHeader's section_ctr reversed, and bytes 8..16 as zeros
+        // (the decompressor fills in `position_in_nca / 16` BE on the fly).
         // Match that convention so other tools can read the resulting NSZ.
         let mut crypto_counter = [0u8; 16];
         crypto_counter[0..4].copy_from_slice(&s.section_ctr_high.to_be_bytes());
@@ -518,13 +519,13 @@ fn build_section_entries(walker: &NcaWalker) -> NxResult<Vec<NczSectionEntry>> {
             crypto_counter,
         });
     }
-    // Sort by offset ascending. nsz's `__getDecompressedNczSize`
-    // accumulates `0x4000 + sum(section.size)` after inserting a
-    // synthetic "fake section" for the gap before `sections[0]`,
-    // and that math only matches the actual NCA size when entries
-    // are ordered by offset. Real NCAs sometimes lay out sections
-    // in non-monotonic fs_entry slots (such as slot 0 holding the
-    // highest-offset section), so this sorts here.
+    // Sort by offset ascending. The upstream implementation's
+    // `__getDecompressedNczSize` accumulates `0x4000 + sum(section.size)`
+    // after inserting a synthetic "fake section" for the gap before
+    // `sections[0]`, and that math only matches the actual NCA size
+    // when entries are ordered by offset. Real NCAs sometimes lay out
+    // sections in non-monotonic fs_entry slots (such as slot 0 holding
+    // the highest-offset section), so this sorts here.
     out.sort_by_key(|e| e.offset);
     Ok(out)
 }

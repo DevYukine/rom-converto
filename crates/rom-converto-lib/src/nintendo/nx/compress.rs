@@ -53,8 +53,9 @@ impl Default for NxCompressOptions {
 }
 
 impl NxCompressOptions {
-    /// Match nsz: solid for NSP (smaller), block-1 MiB for XCI (random
-    /// read friendly for emulators that mount the .xcz live).
+    /// Match the reference compressor: solid for NSP (smaller),
+    /// block-1 MiB for XCI (random read friendly for emulators that
+    /// mount the .xcz live).
     pub fn for_kind(kind: ContainerKind) -> Self {
         let mode = if kind.is_xci() {
             NczMode::Block {
@@ -162,12 +163,13 @@ fn compress_pfs0(
     let mut keys = keys.clone();
     load_tickets_into_keyset(&in_file, &pfs0, &mut keys)?;
 
-    // Mirror nsz: only rename .nca -> .ncz for PROGRAM and PUBLICDATA
-    // content types whose first section sits at or past 0x4000. CONTROL,
-    // MANUAL, META, and DATA NCAs stay as .nca; otherwise this would write
-    // a .ncz whose NCZSECTN entry references bytes inside the prefix
-    // and nsz's `nca_size = 0x4000 + sum(section.size)` formula would
-    // overcount the decompressed size.
+    // Mirror the reference compressor: only rename .nca -> .ncz for
+    // PROGRAM and PUBLICDATA content types whose first section sits at
+    // or past 0x4000. CONTROL, MANUAL, META, and DATA NCAs stay as .nca;
+    // otherwise this would write a .ncz whose NCZSECTN entry references
+    // bytes inside the prefix, and the reference implementation's
+    // `nca_size = 0x4000 + sum(section.size)` formula would overcount
+    // the decompressed size.
     let new_names: Vec<String> = pfs0
         .files
         .iter()
@@ -326,11 +328,12 @@ fn compress_xci(
         if cancel.is_some_and(|c| c.is_cancelled()) {
             return Err(Cancelled.into());
         }
-        // nsz's XCZ decompressor (Hfs0Stream) starts each partition at the
-        // previous partition's header end, so any non-secure partition that
-        // carries files gets its data overwritten by the partitions that
-        // follow it. nsz -C therefore always writes empty update/logo/normal
-        // partitions; do the same or `nsz -D` produces a corrupt XCI.
+        // The reference XCZ decompressor (`Hfs0Stream`) starts each
+        // partition at the previous partition's header end, so any
+        // non-secure partition that carries files gets its data overwritten
+        // by the partitions that follow. The reference compressor therefore
+        // always writes empty update/logo/normal partitions (`-C`); do the
+        // same or its decompressor (`-D`) produces a corrupt XCI.
         if plan.partition_name != "secure" && !plan.sub.files.is_empty() {
             let stub = hfs0_mod::build_header(
                 &[],

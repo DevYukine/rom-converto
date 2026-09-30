@@ -43,7 +43,7 @@ export type ChdHardDiskInfo = { cylinders: number, heads: number, sectors: numbe
  */
 export type ChdInfo = { version: number, compressors: Array<string>, hunk_bytes: number, unit_bytes: number, hunk_count: number, logical_bytes: number, physical_bytes: number, compression_ratio: number, raw_sha1: string | null, sha1: string | null, md5: string | null, parent_sha1: string | null, parent_md5: string | null, tracks: Array<ChdTrack>, metadata_tags: Array<ChdMetadataTagSummary>, 
 /**
- * Chdman build string from the optional `VERS` metadata tag.
+ * CHD producer tool's build string from the optional `VERS` metadata tag.
  */
 version_string: string | null, 
 /**

@@ -33,7 +33,8 @@ pub struct GroupSpan {
 
 /// Soft ceiling for raw + decoded group bytes held by the pipeline.
 /// Keeps worst-case memory bounded on low-end machines even for
-/// formats with very large groups (wit writes WIA chunks of 40 MiB).
+/// formats with very large groups (the reference WIA writer uses
+/// 40 MiB chunks).
 /// The legacy GCZ, WIA and NKit readers deliberately size through
 /// [`in_flight_cap`] and this budget rather than the codec
 /// [`MEMORY_TARGET_BYTES`](crate::util::worker_pool::MEMORY_TARGET_BYTES)

@@ -1,5 +1,5 @@
-//! MAME `avhuff` codec port: the A/V hunk format `chdman createld`
-//! writes for laserdisc CHDs (MAME `avhuff.cpp`).
+//! Port of the upstream `avhuff.cpp` codec: the A/V hunk format used
+//! for laserdisc CHDs.
 //!
 //! A hunk is one video frame (one field, when interlaced) plus that
 //! frame's slice of audio. Raw hunks carry a `'chav'` header, planar
@@ -36,9 +36,9 @@ fn avhuff_err(msg: &str) -> ChdError {
     io::Error::other(format!("avhuff: {msg}")).into()
 }
 
-/// Size of the raw (uncompressed) frame for these dimensions, MAME's
-/// `avhuff_encoder::raw_data_size`. This is also the CHD hunk and unit
-/// size for a laserdisc image.
+/// Size of the raw (uncompressed) frame for these dimensions, per the
+/// upstream `avhuff_encoder::raw_data_size`. This is also the CHD hunk
+/// and unit size for a laserdisc image.
 pub fn raw_data_size(width: u32, height: u32, channels: u8, samples: u32) -> usize {
     RAW_HEADER_SIZE
         + channels as usize * samples as usize * 2
@@ -73,7 +73,7 @@ pub fn assemble_raw_frame(
         samples as u32,
     ));
     out.extend_from_slice(b"chav");
-    out.push(0); // metadata size; chdman never emits frame metadata
+    out.push(0); // metadata size; the reference never emits frame metadata
     out.push(channels);
     out.extend_from_slice(&samples.to_be_bytes());
     out.extend_from_slice(&width.to_be_bytes());
@@ -206,8 +206,8 @@ fn flac_block_size(samples: usize) -> usize {
     )
 }
 
-/// The 42-byte stream header MAME's decoder synthesizes for avhuff
-/// audio: `fLaC` plus a STREAMINFO of 48 kHz, mono, 16-bit. avhuff
+/// The reference decoder synthesizes this 42-byte stream header for
+/// avhuff audio: `fLaC` plus a STREAMINFO of 48 kHz, mono, 16-bit. avhuff
 /// stores the FLAC frames alone, with magic and metadata stripped.
 fn flac_stream_header(block_size: usize) -> [u8; 42] {
     let mut header = [0u8; 42];
@@ -267,8 +267,8 @@ fn decode_audio(stream: &[u8], samples: usize) -> ChdResult<Vec<u8>> {
 
 // -- bit I/O ----------------------------------------------------------
 
-/// MSB-first bit writer mirroring MAME's `bitstream_out`: writes past
-/// `limit` are dropped but still counted, and [`BitWriter::flush`]
+/// MSB-first bit writer mirroring the reference `bitstream_out`: writes
+/// past `limit` are dropped but still counted, and [`BitWriter::flush`]
 /// left-aligns the trailing partial byte and returns the cumulative
 /// byte count, which avhuff uses to size its sections.
 struct BitWriter {
@@ -324,9 +324,9 @@ impl BitWriter {
     }
 }
 
-/// MSB-first bit reader mirroring MAME's `bitstream_in`: reads past the
-/// end yield zeroes, and [`BitReader::flush`] rewinds to the next byte
-/// boundary so a byte-flushed section can be followed exactly.
+/// MSB-first bit reader mirroring the reference `bitstream_in`: reads
+/// past the end yield zeroes, and [`BitReader::flush`] rewinds to the
+/// next byte boundary so a byte-flushed section can be followed exactly.
 struct BitReader<'a> {
     data: &'a [u8],
     offset: usize,
@@ -382,10 +382,10 @@ impl<'a> BitReader<'a> {
 // -- huffman tree serialization ---------------------------------------
 
 /// Bits per code-length field in the RLE tree form. `VIDEO_MAX_BITS`
-/// is 16, so MAME picks 5.
+/// is 16, so the reference implementation uses 5.
 const TREE_LENGTH_BITS: u8 = 5;
 
-/// Port of MAME `write_rle_tree_bits`: length 1 is the escape value and
+/// Port of upstream `write_rle_tree_bits`: length 1 is the escape value and
 /// is always written twice; three or more equal lengths become
 /// escape + value + (count - 3).
 fn write_rle_tree_bits(w: &mut BitWriter, value: u32, mut repcount: u32) {
@@ -407,7 +407,7 @@ fn write_rle_tree_bits(w: &mut BitWriter, value: u32, mut repcount: u32) {
     }
 }
 
-/// Port of MAME `export_tree_rle`: RLE the per-code lengths into the
+/// Port of upstream `export_tree_rle`: RLE the per-code lengths into the
 /// bitstream. The caller byte-flushes afterwards.
 fn export_tree_rle(w: &mut BitWriter, lengths: &[u8]) {
     let mut lastval = u32::MAX;
@@ -427,7 +427,7 @@ fn export_tree_rle(w: &mut BitWriter, lengths: &[u8]) {
     write_rle_tree_bits(w, lastval, repcount);
 }
 
-/// Port of MAME `import_tree_rle`, reading `VIDEO_CODES` code lengths.
+/// Port of upstream `import_tree_rle`, reading `VIDEO_CODES` code lengths.
 fn import_tree_rle(r: &mut BitReader) -> [u8; VIDEO_CODES] {
     let mut lengths = [0u8; VIDEO_CODES];
     let mut index = 0usize;
@@ -457,8 +457,8 @@ fn import_tree_rle(r: &mut BitReader) -> [u8; VIDEO_CODES] {
 }
 
 /// Canonical huffman decoder over `VIDEO_CODES` symbols with a flat
-/// `VIDEO_MAX_BITS`-wide lookup table, matching MAME's
-/// `build_lookup_table`.
+/// `VIDEO_MAX_BITS`-wide lookup table, matching the reference
+/// implementation's `build_lookup_table`.
 struct CanonicalDecoder {
     lookup: Vec<(u16, u8)>,
 }
@@ -541,7 +541,7 @@ fn rlecount_to_code(rlecount: usize) -> usize {
 }
 
 /// One video plane's delta-RLE context: token generation with
-/// histogramming, then huffman-coded emission. Ports MAME's
+/// histogramming, then huffman-coded emission. Ports the upstream
 /// `avhuff_encoder::deltarle_encoder`.
 struct DeltaRleEncoder {
     histo: [u32; VIDEO_CODES],
@@ -636,7 +636,7 @@ impl DeltaRleEncoder {
     }
 }
 
-/// Decoding counterpart of [`DeltaRleEncoder`], MAME's
+/// Decoding counterpart of [`DeltaRleEncoder`]; ports the upstream
 /// `deltarle_decoder`.
 struct DeltaRleDecoder {
     decoder: CanonicalDecoder,
@@ -708,8 +708,8 @@ fn encode_video(source: &[u8], width: usize, height: usize) -> ChdResult<Vec<u8>
 
     w.flush();
     if w.overflow() {
-        // MAME lets the truncated stream through and relies on the CHD
-        // layer rejecting the oversized hunk; failing here is the same
+        // The reference implementation passes truncated streams to the CHD
+        // layer to reject as oversized hunks; failing here has the same
         // outcome without ever emitting a corrupt stream.
         return Err(avhuff_err("video stream does not compress"));
     }
@@ -764,7 +764,8 @@ mod tests {
 
     /// Noisy but video-like: a slow ramp with small per-pixel jitter.
     /// Uniform random bytes are incompressible and would legitimately
-    /// overflow the codec's output budget, as they would in chdman.
+    /// overflow the codec's output budget, here as in the reference
+    /// implementation.
     fn noisy_frame(len: usize) -> Vec<u16> {
         let mut state = 0x1234_5678_9ABC_DEF0u64;
         (0..len)

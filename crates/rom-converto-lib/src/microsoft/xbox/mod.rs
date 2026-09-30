@@ -28,8 +28,8 @@ use crate::util::{CancelToken, ProgressReporter, await_with_progress_cancel, run
 #[derive(Debug, Clone, Copy)]
 pub struct XisoCreateOptions {
     /// Rewrite the XDK media-type check in every `.xbe`. On by default:
-    /// xdvdfs-built images are known not to boot on some BIOSes without
-    /// it, and the patch is inert on the ones that do not need it.
+    /// images built by other tools are known not to boot on some BIOSes
+    /// without it, and the patch is inert on the ones that do not need it.
     pub media_patch: bool,
 }
 

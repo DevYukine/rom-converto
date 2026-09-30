@@ -1,4 +1,4 @@
-//! GCZ (Dolphin CompressedBlob) input support: streaming reconstruction
+//! GCZ (CompressedBlob) input support: streaming reconstruction
 //! of the logical disc plus a pre-conversion integrity pass.
 
 pub mod error;

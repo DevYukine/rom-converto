@@ -384,7 +384,7 @@ fn read_outer_u8_members<R: Read + Seek>(
 
 const U8_MAGIC_BYTES: [u8; 4] = [0x55, 0xAA, 0x38, 0x2D];
 
-/// Offset of the outer U8 archive inside opening.bnr. Tilka/wii-banner-player:
+/// Other banner tools find the outer U8 at these offsets in opening.bnr:
 /// disc opening.bnr puts the U8 at 0x600 (the IMET block is the leading
 /// 0x600 bytes including padding), NAND 00000000.app at 0x640; the IMET tag
 /// sits 0x40 into its block, so the U8 follows it by 0x5C0 on titles whose

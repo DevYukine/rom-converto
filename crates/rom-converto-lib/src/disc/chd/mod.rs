@@ -1,5 +1,5 @@
 //! CHD (Compressed Hunks of Data) compression and extraction for CD and DVD
-//! disc images, targeting the same V5 format chdman writes.
+//! disc images, targeting the same V5 format the reference implementation writes.
 //!
 //! CD input (`.cue`/`.bin`) keeps its sidecar files, so restoring a CHD back
 //! to disc form is called extract rather than decompress; see
@@ -11,8 +11,8 @@ use crate::util::{CancelToken, ProgressReporter};
 use log::{info, warn};
 use std::path::PathBuf;
 
-/// CHD hunk codecs: the compressor set chdman implements and the raw
-/// compress/decompress primitives the CD and DVD paths build on.
+/// CHD hunk codecs: the reference implementation's compressor set and
+/// raw compress/decompress primitives used by the CD and DVD paths.
 pub mod compression;
 pub use compression::{
     ChdCodec, default_cd_codecs, default_dvd_codecs, deflate_level, lzma_level, parse_codec_list,
@@ -40,7 +40,7 @@ pub mod verify;
 pub use verify::*;
 pub(crate) mod writer;
 
-/// chdman's `createdvd` default: two 2048-byte sectors per hunk.
+/// The reference DVD-mode default: two 2048-byte sectors per hunk.
 pub const DVD_HUNK_BYTES_DEFAULT: u32 = 4096;
 /// PPSSPP serves the PSP's 2048-byte block API straight from hunks
 /// and warns about anything larger, so detected PSP input defaults
@@ -54,7 +54,7 @@ pub struct ChdOptions {
     /// console ([`DVD_HUNK_BYTES_DEFAULT`] / [`DVD_HUNK_BYTES_PSP`]).
     pub hunk_size: Option<u32>,
     /// Codec list for the CHD header's compressor slots. `None` uses
-    /// the per-mode chdman default ([`default_cd_codecs`] /
+    /// the per-mode reference implementation default ([`default_cd_codecs`] /
     /// [`default_dvd_codecs`]).
     pub codecs: Option<Vec<ChdCodec>>,
     /// Compression level in `1..=22`. `None` uses each codec's
@@ -82,7 +82,8 @@ pub(crate) fn validate_chd_options(opts: &ChdOptions, dvd: bool) -> ChdResult<()
 pub enum DiscMode {
     Cd,
     Dvd,
-    /// Laserdisc A/V CHD (`chdman createld`), written from a `.avi` rip.
+    /// Laserdisc A/V CHD (the reference implementation's laserdisc mode),
+    /// written from a `.avi` rip.
     Ld,
 }
 

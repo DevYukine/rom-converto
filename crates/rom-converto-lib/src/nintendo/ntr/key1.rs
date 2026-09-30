@@ -1,7 +1,7 @@
 //! KEY1, the Blowfish variant the DS cartridge protocol and secure area use.
 //!
-//! Ported from devkitPro `ndstool` `source/encryption.cpp` (`lookup`,
-//! `encrypt`, `decrypt`, `update_hashtable`, `init1`/`init2`), cross-read
+//! Ported from upstream `source/encryption.cpp` (`lookup`, `encrypt`,
+//! `decrypt`, `update_hashtable`, `init1`/`init2`), cross-read
 //! against the gbatek "DS Cartridge Secure Area" and "KEY1 Encryption"
 //! notes. It differs from stock Blowfish in the round function (`d + (c ^
 //! (b + a))` rather than `((a + b) ^ c) + d`) and in the key schedule,
@@ -24,7 +24,7 @@ impl Key1 {
     /// `modulo` is the byte-wise wrap applied to the key code while folding
     /// it into the P-array; the secure area uses 8. Levels are cumulative:
     /// level 3 additionally doubles/halves the key code words before its
-    /// final round, exactly as `ndstool`'s `init1` plus `init2` sequence.
+    /// final round, exactly as the reference `init1` plus `init2` sequence.
     pub fn new(idcode: u32, level: u8, modulo: usize) -> Self {
         let mut keybuf = [0u32; KEYBUF_WORDS];
         for (word, chunk) in keybuf.iter_mut().zip(blowfish_table().as_chunks::<4>().0) {
@@ -107,7 +107,8 @@ impl Key1 {
             *word ^= folded;
         }
 
-        // The scratch block chains across both loops; ndstool never resets it.
+        // The scratch block chains across both loops; the reference
+        // implementation never resets it.
         let mut scratch = [0u32; 2];
         for i in (0..18).step_by(2) {
             self.encrypt_block(&mut scratch);

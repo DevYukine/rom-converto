@@ -1,5 +1,5 @@
 //! XEX2 basefile recovery: AES-128-CBC with an all-zero IV, then the basic
-//! or LZX decompression path (xenia `xex_module.cc`).
+//! or LZX decompression path (upstream `xex_module.cc`).
 
 use lzxd::{Lzxd, WindowSize};
 use sha1::{Digest, Sha1};

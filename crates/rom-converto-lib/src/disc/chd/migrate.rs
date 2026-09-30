@@ -47,7 +47,7 @@ pub async fn migrate_chd_to_v5(
     let open_path = input_path.clone();
     let source = tokio::task::spawn_blocking(move || legacy::LegacyChd::open(&open_path)).await??;
     // V1/V2 keep their geometry in header fields V5 dropped, so it rides
-    // along as the `GDDD` entry chdman writes.
+    // along as the `GDDD` entry the reference implementation writes.
     let geometry = source
         .header()
         .chs
@@ -57,7 +57,7 @@ pub async fn migrate_chd_to_v5(
     let logical_bytes = source.header().logical_bytes;
     let is_dvd = unit_bytes != FRAME_SIZE as u32;
     // A/V hunks are `avhu` frames; the generic slots store them faithfully but
-    // far larger than chdman would.
+    // far larger than the reference implementation's output.
     if source.header().compression == LEGACY_COMPRESSION_AV {
         warn!(
             "{} is an A/V CHD; the V5 output will not be avhuff-compressed and will be much larger",
@@ -115,10 +115,10 @@ pub async fn migrate_chd_to_v5(
                 data,
             });
         }
-        // chdman's `copy` rewrites the pre-CHT2 `CHTR` entries as hashed
-        // CHT2, so the migrated disc hashes like a current createcd and
-        // matches MAME's checksums. `CHGD` stays verbatim: its upgrade
-        // also byte-swaps the audio frames.
+        // The reference implementation's copy operation rewrites the pre-CHT2
+        // `CHTR` entries as hashed CHT2, so the migrated disc hashes like
+        // current reference CD-CHD output and matches MAME's checksums.
+        // `CHGD` stays verbatim: its upgrade also byte-swaps the audio frames.
         if metadata.iter().any(|m| m.tag == CHD_METADATA_TAG_CD_TRACK)
             && !metadata.iter().any(|m| m.tag == CHD_METADATA_TAG_CD)
         {
@@ -174,8 +174,8 @@ mod tests {
 
     /// Hand-built V4 CHD holding `raw` as uncompressed `hunk_bytes` hunks,
     /// with `metadata` chained after the map and the header hashes filled
-    /// in the way chdman would. An empty list leaves the chain absent, as
-    /// chdman's `createraw` does.
+    /// in the way the reference implementation would. An empty list leaves
+    /// the chain absent, as its raw-image writer does.
     fn v4_raw_image(raw: &[u8], hunk_bytes: usize, metadata: &[ChdMetadataHeader]) -> Vec<u8> {
         const V4_HEADER_BYTES: usize = 108;
 
@@ -269,7 +269,7 @@ mod tests {
         assert_eq!(handle.flavor(), ChdFlavor::Dvd);
     }
 
-    /// chdman's `createraw` writes no metadata at all. The migrated V5
+    /// The reference raw-image writer emits no metadata. The migrated V5
     /// must then carry a zero metadata offset, or readers walk the first
     /// hunk as a metadata entry and the overall SHA-1 stops verifying.
     #[tokio::test]
@@ -283,10 +283,10 @@ mod tests {
         assert_eq!(handle.header.sha1, image[48..68]);
     }
 
-    /// Pre-2009 CD CHDs carry unhashed `CHTR` track entries. chdman's
-    /// `copy` rewrites them as hashed CHT2 with the pregap fields at their
-    /// defaults, and the migration has to do the same so the overall
-    /// SHA-1 lands on the value current chdman builds produce.
+    /// Pre-2009 CD CHDs carry unhashed `CHTR` track entries. The reference
+    /// implementation's copy operation rewrites them as hashed CHT2 with
+    /// pregap fields at their defaults, and the migration has to do the
+    /// same so the overall SHA-1 matches current reference CD-CHD output.
     #[tokio::test]
     async fn migrate_upgrades_chtr_track_metadata_to_cht2() {
         // Two legacy CD hunks of four 2448-byte frames each.

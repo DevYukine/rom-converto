@@ -9,8 +9,8 @@
 //! correct keystream offset without re-deriving state.
 //!
 //! Sections that don't cover the current position pass bytes through
-//! unchanged, matching how nsz writes the inter-section gap bytes
-//! verbatim.
+//! unchanged, matching how the reference decompressor writes the
+//! inter-section gap bytes verbatim.
 
 use std::io::{self, Write};
 
@@ -102,10 +102,11 @@ impl<'a, W: Write> ReencryptWriter<'a, W> {
             });
             return Ok(());
         }
-        // Match nsz convention: stored `crypto_counter[8..16]` is zero
-        // and the runtime fills in `position_in_nca / 16` BE. Replace
-        // (not add) so this also tolerates `crypto_counter[8..16]`
-        // already containing `section.offset / 16` from older writers.
+        // Match the reference compressor's convention: stored
+        // `crypto_counter[8..16]` is zero and the runtime fills in
+        // `position_in_nca / 16` BE. Replace (not add) so this also
+        // tolerates `crypto_counter[8..16]` already containing
+        // `section.offset / 16` from older writers.
         let mut counter = s.crypto_counter;
         let block = self.position_in_nca / 16;
         counter[8..16].copy_from_slice(&block.to_be_bytes());

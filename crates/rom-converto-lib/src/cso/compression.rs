@@ -1,11 +1,11 @@
 //! Per-block codecs: raw DEFLATE for CSO, LZ4 block format for ZSO.
 //!
 //! Both formats compress each block independently. CSO blocks are
-//! raw deflate (no zlib wrapper, windowBits -15 in maxcso and
-//! PPSSPP); ZSO blocks are the raw LZ4 block format with no frame,
-//! compressed with LZ4HC like maxcso for the best ratio. Any valid
-//! LZ4 block decodes on the consumer side (OPL, ARK-4), so the HC
-//! level is a ratio knob, not a compatibility one.
+//! raw deflate (no zlib wrapper, windowBits -15 in the reference
+//! encoder and PPSSPP); ZSO blocks are the raw LZ4 block format with
+//! no frame, compressed with LZ4HC like the reference encoder for the
+//! best ratio. Any valid LZ4 block decodes on the consumer side (OPL,
+//! ARK-4), so the HC level is a ratio knob, not a compatibility one.
 
 use std::io;
 
@@ -114,8 +114,9 @@ fn inflate_once(
 // The lz4 crate only binds LZ4_decompress_safe, which rejects input
 // with trailing bytes. ZSO spans may carry alignment padding after
 // the stream (index_shift > 0), so decode with the partial variant
-// that stops once the target size is reached, the same call maxcso
-// and OPL use. The symbol comes from the liblz4 the lz4 crate links.
+// that stops once the target size is reached, the same call the
+// reference encoder and OPL use. The symbol comes from the liblz4 the
+// lz4 crate links.
 unsafe extern "C" {
     fn LZ4_decompress_safe_partial(
         src: *const std::ffi::c_char,

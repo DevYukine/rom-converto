@@ -1,7 +1,7 @@
 //! Per-worker WIA group decoding: codec dispatch plus the exception
 //! list framing rules.
 //!
-//! Framing (Dolphin `WIABlob.cpp` / `WiaAndRvz.md`):
+//! Framing (upstream `WIABlob.cpp` / `WiaAndRvz.md`):
 //! * None and Purge store exception lists uncompressed before the
 //!   payload, padded to a 4-byte boundary after the last list.
 //! * Bzip2, LZMA, and LZMA2 compress the exception lists together
@@ -20,7 +20,7 @@ use super::format::{
 use crate::nintendo::rvl::partition::HashException;
 
 /// Upper bound for one serialized exception list: u16 count plus
-/// Dolphin's documented 3328-entry cap.
+/// the reference implementation's documented 3328-entry cap.
 const MAX_EXCEPTION_LIST_BYTES: usize = 2 + 3328 * 22;
 
 pub(crate) enum WiaCodec {

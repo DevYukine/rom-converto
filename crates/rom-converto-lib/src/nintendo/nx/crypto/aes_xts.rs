@@ -1,7 +1,7 @@
 //! NCA header crypto: 0x200-byte sectors, sector address 0 at the
 //! start of the NCA. Switch uses a *big-endian* sector tweak, opposite
 //! the IEEE 1619 standard that `xts_mode::get_tweak_default` follows;
-//! confirmed against `nsz/aes128.py::AESXTS.get_tweak`. Without the
+//! confirmed against upstream `aes128.py` (`AESXTS.get_tweak`). Without the
 //! BE tweak the first sector decrypts correctly (sector 0 = all zeros
 //! either way) but every later sector lands on garbage and the NCA3
 //! magic at offset 0x200 fails to validate.

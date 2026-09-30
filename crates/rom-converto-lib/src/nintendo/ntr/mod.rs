@@ -46,7 +46,7 @@ const KEYCODE_MODULO: usize = 8;
 /// Check value the first block decrypts to.
 const SECURE_AREA_ID: &[u8; 8] = b"encryObj";
 
-/// What `ndstool` and melonDS leave at `0x4000` after decrypting: two
+/// The decrypted value left at `0x4000` by the reference implementation: two
 /// `0xE7FFDEFF` words, an undefined-instruction pair that doubles as the
 /// "already decrypted" marker.
 const DECRYPTED_MARKER: &[u8; 8] = &[0xFF, 0xDE, 0xFF, 0xE7, 0xFF, 0xDE, 0xFF, 0xE7];
@@ -104,7 +104,7 @@ pub fn detect_state(
 /// The first 64-bit block is crypted twice, at level 2 over level 3, and
 /// carries [`SECURE_AREA_ID`] as the check value while encrypted; the
 /// remaining 0x7F8 bytes use level 3 only. Decryption leaves
-/// [`DECRYPTED_MARKER`] in the first block, matching `ndstool`.
+/// [`DECRYPTED_MARKER`] in the first block, as in the reference implementation.
 pub fn crypt_secure_area(buf: &mut [u8; SECURE_BLOCK_LEN], idcode: u32, encrypt: bool) {
     let key2 = Key1::new(idcode, 2, KEYCODE_MODULO);
     let key3 = Key1::new(idcode, 3, KEYCODE_MODULO);
@@ -481,10 +481,10 @@ mod tests {
         assert!(matches!(err, NtrError::AlreadyDecrypted));
     }
 
-    /// Locks the port to `ndstool`. The expected digest comes from running a
-    /// direct transcription of `encryption.cpp`'s `encrypt_arm9` over the same
-    /// fixture, so a drift in the key schedule fails here rather than silently
-    /// producing ROMs no DS will boot.
+    /// Locks the port to the reference implementation. The expected digest comes
+    /// from running a direct transcription of upstream `encryption.cpp`'s
+    /// `encrypt_arm9` over the same fixture, so a drift in the key schedule fails
+    /// here rather than silently producing ROMs no DS will boot.
     #[test]
     fn encrypted_block_matches_ndstool() {
         use sha2::{Digest, Sha256};

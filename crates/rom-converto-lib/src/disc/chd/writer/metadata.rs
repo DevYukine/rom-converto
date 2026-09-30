@@ -10,8 +10,9 @@ use binrw::BinWrite;
 use sha1::{Digest, Sha1};
 use std::io::Cursor;
 
-// chdman leaves PGTYPE at its MODE1 default when the pregap is a bare
-// `PREGAP` directive, i.e. the gap frames are not stored in the bin.
+// The reference writer leaves PGTYPE at its MODE1 default when the
+// pregap is a bare `PREGAP` directive, i.e. the gap frames are not
+// stored in the bin.
 const PREGAP_TYPE: &str = "MODE1";
 
 #[derive(Debug, Clone)]
@@ -26,8 +27,8 @@ pub struct MetadataBlock {
     pub hashes: Vec<MetadataHash>,
 }
 
-/// Serialized `DVD ` marker block: chdman's whole DVD metadata is the
-/// hashed empty string.
+/// Serialized `DVD ` marker block: the reference writer's whole DVD
+/// metadata is the hashed empty string.
 pub fn generate_dvd_metadata() -> ChdResult<MetadataBlock> {
     let metadata = ChdMetadataHeader::new_dvd_metadata();
     let mut bytes = Vec::new();
@@ -43,23 +44,24 @@ pub fn generate_dvd_metadata() -> ChdResult<MetadataBlock> {
     })
 }
 
-/// Per-track frame counts in source order, following chdman's
-/// `parse_cue` (`src/lib/util/cdrom.cpp`): `file_sectors[i]` is the
-/// sector count of `cue_sheet.files[i]`. Inside a shared FILE a track
-/// ends where the next track's INDEX 00 (else INDEX 01) begins, the
-/// last track of a FILE runs to its end, and a track alone in its
-/// FILE spans the whole file. The first track of each FILE always
-/// starts at sector 0 so a nonzero first INDEX cannot silently drop
-/// the head of the bin. Each track starts where the previous one in
-/// its FILE ended and boundaries clamp to the file, so the counts of
-/// a FILE's tracks always sum to its sector count.
+/// Per-track frame counts in source order, following the upstream
+/// `parse_cue` (`cdrom.cpp`): `file_sectors[i]` is the sector count of
+/// `cue_sheet.files[i]`. Inside a shared FILE, a track ends where the
+/// next track's INDEX 00 (else INDEX 01) begins. The last track of a
+/// FILE runs to its end, and a track alone in its FILE spans the whole
+/// file. The first track of each FILE always starts at sector 0 so a
+/// nonzero first INDEX cannot silently drop the head of the bin. Each
+/// track starts where the previous one in its FILE ended and boundaries
+/// clamp to the file, so the counts of a FILE's tracks always sum to its
+/// sector count.
 ///
 /// # Errors
 /// [`ChdError::CueTrackMissingIndex01`] when a track has no INDEX 01,
-/// which chdman rejects outright, and [`ChdError::EmptyCueTrack`] when
-/// a track resolves to no frames (chdman refuses that inside a shared
-/// FILE; here it is refused everywhere, since a CHD with an empty track
-/// is never what the user wanted).
+/// which the reference parser rejects outright, and
+/// [`ChdError::EmptyCueTrack`] when a track resolves to no frames (the
+/// reference parser refuses that inside a shared FILE; here it is refused
+/// everywhere, since a CHD with an empty track is never what the user
+/// wanted).
 pub fn track_frames(cue_sheet: &CueSheet, file_sectors: &[u32]) -> ChdResult<Vec<u32>> {
     let tracks = &cue_sheet.tracks;
     let mut start = 0u32;
@@ -91,13 +93,14 @@ pub fn track_frames(cue_sheet: &CueSheet, file_sectors: &[u32]) -> ChdResult<Vec
 }
 
 /// Per-frame maps for the physical CHD stream, each track padded to
-/// chdman's 4-frame boundary. `.0` is `true` where the frame carries
-/// source data (`false` for the zero padding frames appended per
-/// track); `.1` is `true` where the frame belongs to an AUDIO track.
-/// MAME byte-swaps audio sector samples on ingest and swaps them back
-/// on extract; the writer consults `.1` to swap the right frames
-/// before hashing and compressing. `frames` is the per-track source
-/// frame count from [`track_frames`], shared with the CHT2 metadata.
+/// the reference implementation's 4-frame boundary. `.0` is `true` where
+/// the frame carries source data (`false` for the zero padding frames
+/// appended per track); `.1` is `true` where the frame belongs to an
+/// AUDIO track. The reference implementation byte-swaps audio sector
+/// samples on ingest and swaps them back on extract; the writer consults
+/// `.1` to swap the right frames before hashing and compressing. `frames`
+/// is the per-track source frame count from [`track_frames`], shared with
+/// the CHT2 metadata.
 pub fn cd_frame_layout(cue_sheet: &CueSheet, frames: &[u32]) -> (Vec<bool>, Vec<bool>) {
     let mut is_data = Vec::new();
     let mut is_audio = Vec::new();
@@ -112,7 +115,7 @@ pub fn cd_frame_layout(cue_sheet: &CueSheet, frames: &[u32]) -> (Vec<bool>, Vec<
 }
 
 /// One CHT2 metadata entry per track, chained through the reserved
-/// bytes (the on-disk `next` offset), exactly as chdman's
+/// bytes (the on-disk `next` offset), exactly as the upstream
 /// `write_metadata` lays them out right after the V5 header. A pregap
 /// stored in the bin (cue `INDEX 00`) is counted in `FRAMES:` and
 /// flagged by a `V` prefix on `PGTYPE:`; a bare `PREGAP` directive is
@@ -144,8 +147,8 @@ pub fn generate_cd_metadata(cue_sheet: &CueSheet, frames: &[u32]) -> ChdResult<M
     chain_and_serialize(entries)
 }
 
-/// NTSC and PAL field heights. chdman emits the `AVLD` blob only for
-/// these two, so anything else is a plain A/V CHD.
+/// NTSC and PAL field heights. The reference writer emits the `AVLD`
+/// blob only for these two, so anything else is a plain A/V CHD.
 const LD_VBI_FIELD_HEIGHTS: [u32; 2] = [524 / 2, 624 / 2];
 
 /// Size of the `AVLD` VBI blob these parameters call for: one packed
@@ -267,7 +270,7 @@ mod tests {
     }
 
     /// The postgap value travels cue -> CHT2 -> generated cue, the way
-    /// chdman's `write_metadata` and `output_track_metadata` carry it;
+    /// the upstream `write_metadata` and `output_track_metadata` carry it;
     /// a track without one keeps `POSTGAP:0` and no cue line.
     #[test]
     fn postgap_round_trips_through_cht2_metadata() {

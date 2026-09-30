@@ -80,14 +80,15 @@ pub(crate) fn build_block0(
     sector0
 }
 
-/// Write the libwbfs free-block bitmap into block 0: one bit per WBFS
+/// Write the WBFS free-block bitmap into block 0: one bit per WBFS
 /// block, big-endian `u32` words, set = free. Physical block `b` maps
 /// to bit `b - 1` (block 0 is the management block and has no bit), so
 /// every allocated data block is cleared. USB loaders that add or
 /// remove discs read this to find free space; Dolphin ignores it.
 ///
-/// `alloc_block` in libwbfs iterates exactly `n_wbfs_sec / 32` words at
-/// `freeblks_lba`, so the bitmap is sized and placed to match.
+/// `alloc_block` in the reference implementation iterates exactly
+/// `n_wbfs_sec / 32` words at `freeblks_lba`, so the bitmap is sized
+/// and placed to match.
 fn write_freeblocks(sector0: &mut [u8], total_blocks: u64, wbfs_sec_sz: u64, hd_sec_sz_s: u8) {
     let n_wbfs_sec = total_blocks;
     let n_words = (n_wbfs_sec / 32) as usize;

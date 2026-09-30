@@ -220,7 +220,8 @@ export const compressOps: OpDef[] = [
 		verifyLabel: "Verify after conversion",
 		actionNote:
 			"Jobs start automatically. Parameters can't be changed after queuing. Remove and re-add instead.",
-		// nsz defaults block mode for XCI; honor that unless the user picked a mode.
+		// The reference compressor defaults to block mode for XCI; honor that
+		// unless the user picked a mode.
 		onStaged: (store, items) => {
 			if (!store.userPickedMode && items.some((i) => isXciInput(i.path))) store.mode = "block";
 		},

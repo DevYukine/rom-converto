@@ -1,12 +1,13 @@
 //! NKit Wii planning: maps a native NKit Wii image to restored-disc
 //! spans.
 //!
-//! Semantics from `NkitReaderWii.cs` / `NkitWriterWii.cs`: the
-//! 0x50000-byte disc header section is verbatim (NKit fields and the
-//! partition table patched on restore); partitions follow in order,
-//! each as a verbatim 0x20000-byte partition header (data size at
-//! 0x2BC restored from the value preserved inside the partition data
-//! at 0x210) plus partition data stored decrypted and hash-stripped.
+//! Semantics from upstream sources (`NkitReaderWii.cs`,
+//! `NkitWriterWii.cs`): the 0x50000-byte disc header section is
+//! verbatim (NKit fields and the partition table patched on restore);
+//! partitions follow in order, each as a verbatim 0x20000-byte
+//! partition header (data size at 0x2BC restored from the value
+//! preserved inside the partition data at 0x210) plus partition data
+//! stored decrypted and hash-stripped.
 //! Partition data carries its own NKit header at 0x200, an FST-driven
 //! gap walk in hashless coordinates (offsets times 4) seeded by the
 //! partition's own junk ID, hash-preservation flags right after
@@ -36,8 +37,8 @@ const WII_HEADER_SECTION: u64 = 0x50000;
 const PARTITION_TABLE_OFFSET: usize = 0x40000;
 const PARTITION_TABLE_LENGTH: usize = 0x100;
 const PDATA_HEADER: u64 = 0x440;
-/// NKit stores and restores the partition header (ticket, TMD, cert
-/// chain, H3 table) as one fixed 0x20000-byte block.
+/// The NKit format stores and restores the partition header (ticket,
+/// TMD, cert chain, H3 table) as one fixed 0x20000-byte block.
 const PARTITION_HEADER_LEN: u64 = 0x20000;
 
 struct PartitionEntry {
@@ -508,7 +509,8 @@ fn emit_partition<S: Read + Seek>(
 
     let pdata = build_pdata_plan(src, data_src)?;
 
-    // Restore the with-hash data size NKit shrank at 0x2BC.
+    // Restore the with-hash data size the reference writer shrank at
+    // 0x2BC.
     part_header[0x2BC..0x2C0].copy_from_slice(&((pdata.hashed_size / 4) as u32).to_be_bytes());
 
     let info = read_partition_info(

@@ -2,7 +2,7 @@
 //!
 //! Switch is a current-generation console, so no keys are baked into
 //! this crate. Every operation (compress, decompress, verify) requires
-//! a `prod.keys` file. Resolution order matches `nsz`: explicit
+//! a `prod.keys` file. Resolution order matches the reference tool: explicit
 //! `--keys` path, `$HOME/.switch/prod.keys` (Linux/macOS),
 //! `%USERPROFILE%/.switch/prod.keys` (Windows), then the binary's own
 //! directory.

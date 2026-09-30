@@ -126,9 +126,9 @@ impl ChdMetadataHeader {
         }
     }
 
-    /// chdman writes the DVD marker as an empty string, which lands
-    /// on disk as a single NUL byte. The tag's presence is the whole
-    /// signal; there is no payload format.
+    /// The reference implementation writes the DVD marker as an empty
+    /// string, which lands on disk as a single NUL byte. The tag's presence
+    /// is the whole signal; there is no payload format.
     pub fn new_dvd_metadata() -> Self {
         Self {
             tag: CHD_METADATA_TAG_DVD,

@@ -137,9 +137,9 @@ pub(crate) fn compress_v5_map(
 
     let mut codes = canonical_codes(&datahisto, HUFFMAN_CODES, HUFFMAN_MAX_BITS)
         .map_err(|_| ChdError::MapCompressionError)?;
-    // A hunkless map weighs no symbols, and an all-zero tree would RLE
-    // into a different run than chdman's, which still gives symbol 0 a
-    // one-bit code.
+    // A hunkless map weighs no symbols. An all-zero tree would RLE into
+    // a different run than the reference encoding, which still gives
+    // symbol 0 a one-bit code.
     if hunk_count == 0 {
         codes[0] = (0, 1);
     }

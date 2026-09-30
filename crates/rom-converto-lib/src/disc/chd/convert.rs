@@ -1,5 +1,4 @@
-//! Disc image to CHD compression: the DVD (`createdvd`), CD
-//! (`createcd`), and laserdisc (`createld`) writer entry points.
+//! Disc image to CHD compression: DVD, CD, and laserdisc writer entry points.
 
 use crate::disc::cd::{CD_HUNK_BYTES, IO_BUFFER_SIZE, SECTOR_SIZE};
 use crate::disc::chd::error::{ChdError, ChdResult};
@@ -21,7 +20,7 @@ use tokio::io::AsyncReadExt;
 use super::*;
 
 /// Compress a 2048-byte-sector ISO (PS2 DVD, PSP UMD) to a DVD-mode
-/// CHD, the equivalent of `chdman createdvd`.
+/// CHD, the equivalent of the reference DVD-mode writer's output.
 pub async fn convert_iso_to_chd(
     progress: &dyn ProgressReporter,
     iso_path: PathBuf,
@@ -108,7 +107,7 @@ pub(crate) async fn convert_iso_to_chd_with_kind(
     Ok(())
 }
 
-/// The track list `chdman createcd` synthesizes for a flat `.iso`
+/// The track list the reference CD writer synthesizes for a flat `.iso`
 /// input: one MODE1/2048 data track starting at frame 0.
 fn synth_mode1_2048_cue_sheet() -> CueSheet {
     CueSheet {
@@ -132,7 +131,7 @@ fn synth_mode1_2048_cue_sheet() -> CueSheet {
 
 /// Compress a CD-media 2048-byte-sector ISO (PS1, PS2-CD) to a
 /// CD-mode CHD with a single MODE1/2048 track, the equivalent of
-/// `chdman createcd -i game.iso`.
+/// the reference CD-mode writer's output for `game.iso`.
 pub async fn convert_iso_to_cd_chd(
     progress: &dyn ProgressReporter,
     iso_path: PathBuf,
@@ -207,9 +206,9 @@ pub async fn convert_iso_to_cd_chd(
 }
 
 /// Compress a laserdisc `.avi` rip to an LD-mode CHD, the equivalent of
-/// `chdman createld`. The `avhu` codec, per-field hunk size, and field
-/// count are all derived from the AVI's own headers, so `opts.codecs`,
-/// `opts.level`, and `opts.hunk_size` must be unset.
+/// the reference laserdisc writer. The `avhu` codec, per-field hunk size,
+/// and field count are all derived from the AVI's own headers, so
+/// `opts.codecs`, `opts.level`, and `opts.hunk_size` must be unset.
 ///
 /// # Errors
 /// Returns [`ChdError::LdRejectsOverride`] if `opts` sets a codec list,
@@ -290,7 +289,7 @@ async fn dreamcast_head_bytes(bin_path: &std::path::Path) -> Vec<u8> {
 
 /// The cue's bin files read back to back in FILE order, each cut at
 /// its whole-sector length, so the writer's frame walk sees the one
-/// continuous sector stream chdman's `chd_cd_compressor` synthesizes.
+/// continuous sector stream the upstream `chd_cd_compressor` synthesizes.
 struct BinChain {
     pending: std::vec::IntoIter<(PathBuf, u64)>,
     current: Option<std::io::Take<std::io::BufReader<std::fs::File>>>,
@@ -319,7 +318,7 @@ impl Read for BinChain {
 /// Compresses a CUE/BIN CD image into a V5 CHD file at `output_path`.
 /// Every FILE the cue references is ingested in order, so both a
 /// single-bin image and a Redump-style one-bin-per-track set produce
-/// the same CHD `chdman createcd` would.
+/// the same CHD the reference CD writer would produce.
 ///
 /// # Errors
 /// Returns [`ChdError::ChdFileAlreadyExists`] if the output exists and
@@ -510,7 +509,7 @@ mod tests {
         round_trip(true, Some(2048)).await;
     }
 
-    /// `ChdOptions.codecs = None` must resolve to chdman's `createdvd`
+    /// `ChdOptions.codecs = None` must resolve to the reference DVD writer's
     /// default pack, filling the header slots in that exact order.
     #[tokio::test]
     async fn dvd_chd_default_codecs_match_chdman_slots() {
@@ -538,7 +537,7 @@ mod tests {
         );
     }
 
-    /// `ChdOptions.codecs = None` must resolve to chdman's `createcd`
+    /// `ChdOptions.codecs = None` must resolve to the reference CD writer's
     /// default pack, filling the header slots in that exact order.
     #[tokio::test]
     async fn cd_chd_default_codecs_match_chdman_slots() {
@@ -611,10 +610,10 @@ mod tests {
         );
     }
 
-    /// Cross-checks against real chdman; set ROMCONVERTO_CHDMAN to
-    /// the binary path to enable. Covers both directions: chdman
-    /// createdvd output (with its huff/flac codec set) must extract
-    /// and verify here, and this crate's DVD CHD must pass chdman verify.
+    /// Cross-checks against the reference tool; set ROMCONVERTO_CHDMAN to
+    /// the binary path to enable. Covers both directions: its DVD-CHD
+    /// output (with its huff/flac codec set) must extract and verify here,
+    /// and this crate's DVD CHD must pass its verify.
     #[tokio::test]
     async fn chdman_dvd_parity() {
         let Some(chdman) = std::env::var_os("ROMCONVERTO_CHDMAN") else {
@@ -978,7 +977,7 @@ mod tests {
     }
 
     /// Single-bin PS1-style cue whose audio track carries its 2-frame
-    /// pregap in the bin: chdman ends the data track at the audio
+    /// pregap in the bin: the reference writer ends the data track at the audio
     /// track's `INDEX 00`, not its `INDEX 01`.
     fn write_single_bin_index00_cue(dir: &std::path::Path) -> (PathBuf, Vec<u8>) {
         let bin = pattern_bytes(17 * 2352);
@@ -1128,9 +1127,9 @@ mod tests {
 
     /// Multi-track cue/bin with track frame counts that are not 4-frame
     /// multiples: the writer must pad each track to a 4-frame boundary
-    /// like `chdman createcd` (10 -> 12, 7 -> 8 frames), and extraction
-    /// must drop the interior padding to restore the original bin
-    /// byte-for-byte.
+    /// like the reference CD writer (10 -> 12, 7 -> 8 frames), and
+    /// extraction must drop the interior padding to restore the original
+    /// bin byte-for-byte.
     #[tokio::test]
     async fn multi_track_cue_round_trips_with_padding() {
         let dir = tempfile::tempdir().unwrap();
@@ -1178,12 +1177,12 @@ mod tests {
         assert_eq!(std::fs::read(out_cue.with_extension("bin")).unwrap(), bin);
     }
 
-    /// Cross-checks the CD-iso path against real chdman; set
+    /// Cross-checks the CD-iso path against the reference tool; set
     /// ROMCONVERTO_CHDMAN to the binary path to enable. The sector
     /// count is deliberately not a 4-frame multiple so the track
-    /// padding rule is exercised, and both SHA1s reported by
-    /// `chdman info` must match between the two files, proving the
-    /// frame layout, padding, and CHT2 metadata are byte-identical.
+    /// padding rule is exercised, and both SHA1s reported by the reference
+    /// tool must match between the two files, proving the frame layout,
+    /// padding, and CHT2 metadata are byte-identical.
     #[tokio::test]
     async fn chdman_cd_iso_parity() {
         let Some(chdman) = std::env::var_os("ROMCONVERTO_CHDMAN") else {
@@ -1269,9 +1268,9 @@ mod tests {
         );
     }
 
-    /// Runs `chdman createcd` on `cue_path` and our own converter, then
-    /// requires chdman to verify our CHD, both SHA1s from `chdman info`
-    /// to match, and extracting chdman's own CHD to restore `bin`.
+    /// Runs the reference CD writer on `cue_path` and our own converter, then
+    /// requires the reference tool to verify our CHD, both SHA1s from its info
+    /// output to match, and extracting its CHD to restore `bin`.
     async fn assert_chdman_cue_parity(
         chdman: &std::ffi::OsStr,
         dir: &std::path::Path,
@@ -1354,8 +1353,8 @@ mod tests {
     }
 
     /// One-bin-per-track cue with stored pregaps: the per-file track
-    /// lengths, the `V`-flagged pregap metadata and the file
-    /// concatenation must all match chdman.
+    /// lengths, the `V`-flagged pregap metadata and the file concatenation
+    /// must all match the reference CD writer.
     #[tokio::test]
     async fn chdman_multi_bin_cue_parity() {
         let Some(chdman) = std::env::var_os("ROMCONVERTO_CHDMAN") else {
@@ -1367,7 +1366,7 @@ mod tests {
     }
 
     /// Single bin with an in-file audio pregap: the data track must end
-    /// at the audio track's `INDEX 00` like chdman does.
+    /// at the audio track's `INDEX 00` as the reference writer does.
     #[tokio::test]
     async fn chdman_single_bin_index00_parity() {
         let Some(chdman) = std::env::var_os("ROMCONVERTO_CHDMAN") else {

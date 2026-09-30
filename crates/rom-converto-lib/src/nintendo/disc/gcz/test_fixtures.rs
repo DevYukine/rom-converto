@@ -1,6 +1,6 @@
-//! Synthetic GCZ writer for tests: same layout Dolphin's
-//! `ConvertToGcz` produces, including the stored-raw fallback for
-//! blocks deflate cannot shrink and a partial final block.
+//! Synthetic GCZ writer for tests, using the same layout as the
+//! reference encoder's `ConvertToGcz`, including its stored-raw
+//! fallback for blocks deflate cannot shrink and a partial final block.
 
 use std::io::Write;
 

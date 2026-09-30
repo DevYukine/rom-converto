@@ -370,7 +370,7 @@ fn first_data_track(metadata: &[ChdMetadataHeader]) -> io::Result<(TrackType, u6
 
 /// [`first_data_track`] over already-parsed CHT2 tracks.
 ///
-/// Two chdman layout rules drive the arithmetic: every track is padded to
+/// Two CHD layout rules drive the arithmetic: every track is padded to
 /// a 4-frame boundary in the hunk stream, and a cue `INDEX 00` pregap is
 /// stored inside the track's own `FRAMES:`, flagged by a `V` prefix on
 /// `PGTYPE:`. A pregap that is not stored carries no frames to skip.
@@ -398,7 +398,7 @@ fn cue_track_type(chd_type: &str) -> Option<TrackType> {
         "MODE1" => Some(TrackType::Mode1_2048),
         "MODE1_RAW" => Some(TrackType::Mode1_2352),
         "MODE2_RAW" => Some(TrackType::Mode2_2352),
-        // chdman's MODE2_FORM1 datasize is 2048 with the user data at
+        // CHD's MODE2_FORM1 datasize is 2048 with the user data at
         // frame offset 0, which is the MODE1/2048 payload shape.
         "MODE2_FORM1" => Some(TrackType::Mode1_2048),
         _ => None,

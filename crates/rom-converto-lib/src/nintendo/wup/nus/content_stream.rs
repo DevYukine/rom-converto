@@ -8,7 +8,7 @@
 //! derived and whether the hash prefixes are stripped from the
 //! output.
 //!
-//! Byte layout matches Cemu's FST decryption so every virtual file
+//! Byte layout follows the reference FST decryption, so every virtual file
 //! is recoverable regardless of which mode its cluster uses.
 
 use std::io::Read;
@@ -510,7 +510,7 @@ mod tests {
 
     /// Build a synthetic hashed-mode content file: `num_blocks`
     /// blocks of `[hash_prefix: 0x400][data: 0xFC00]`, encrypted
-    /// the same way Cemu's content creator does. Returns the
+    /// the same way the reference content creator does. Returns the
     /// encrypted content plus the plaintext data-only stream the
     /// decryptor is expected to recover.
     fn build_hashed_content(title_key: &TitleKey, num_blocks: usize) -> (Vec<u8>, Vec<u8>) {

@@ -10,7 +10,7 @@ export function isDiscInput(input: string): boolean {
 
 export const useWupCompressStore = makeOpStore("wup-compress", () => ({
   output: "",
-  // Zstd level: 0 = Cemu default (6), 1..22 = explicit.
+  // Zstd level: 0 = reference writer default (6), 1..22 = explicit.
   level: 0,
   onConflict: useUiStore().defaultOnConflict,
   skipSpaceCheck: false,

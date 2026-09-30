@@ -1,6 +1,6 @@
 //! Lossless WUD to WUX and WUX to WUD conversion.
 //!
-//! The writer mirrors the layout WudCompress produces: a 0x20-byte
+//! The writer mirrors the reference compressor's layout: a 0x20-byte
 //! header, a u32 LE physical-index table (one entry per logical
 //! sector, first-occurrence order), and a sector-aligned pool holding
 //! each unique 32 KiB sector once. Sectors are deduplicated by their

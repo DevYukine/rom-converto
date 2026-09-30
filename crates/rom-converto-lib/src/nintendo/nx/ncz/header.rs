@@ -1,5 +1,5 @@
-//! NCZSECTN and NCZBLOCK headers. Layouts come straight from
-//! `nicoboss/nsz/IndependentNczDecompressorConcise.py`.
+//! NCZSECTN and NCZBLOCK headers. Layouts come straight from the upstream
+//! `IndependentNczDecompressorConcise.py`.
 
 use std::io::{Read, Seek, SeekFrom, Write};
 

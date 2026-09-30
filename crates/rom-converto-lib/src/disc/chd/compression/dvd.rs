@@ -1,7 +1,7 @@
 //! Raw-codec set for DVD-mode hunks.
 //!
 //! DVD CHDs store flat 2048-byte-sector data, so hunks go through the
-//! plain codecs exactly as chdman's `createdvd` does: no CD frame
+//! plain codecs exactly as the reference DVD writer does: no CD frame
 //! split, no subcode stream, no ECC stripping. The header's compressor
 //! slots come straight from the resolved codec list and the per-hunk
 //! trial runs those codecs in slot order.

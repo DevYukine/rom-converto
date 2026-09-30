@@ -6,8 +6,7 @@
 //! carrying it in-tree lets us decrypt NUS content without asking
 //! the user to supply a key file.
 //!
-//! Sourced verbatim from Cemu's `ncrypto.cpp`:
-//! <https://github.com/cemu-project/Cemu/blob/master/src/Cemu/ncrypto/ncrypto.cpp>
+//! Sourced verbatim from the upstream implementation (`ncrypto.cpp`).
 
 /// Retail Wii U common key. Used as the AES-128-CBC key when
 /// decrypting a ticket's encrypted title key.

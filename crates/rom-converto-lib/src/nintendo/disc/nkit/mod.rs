@@ -1,6 +1,6 @@
 //! Native NKit input support (`.nkit.iso` / `.nkit.gcz`): streaming
 //! restoration of the original disc with junk regeneration, plus the
-//! whole-file CRC32 self-check NKit embeds.
+//! whole-file CRC32 self-check embedded in the NKit format.
 
 pub mod crc;
 pub mod error;

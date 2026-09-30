@@ -45,8 +45,8 @@ pub(super) struct ChdCompressWork {
 }
 
 /// Compressed output plus the codec slot the best-of trial picked
-/// and a CRC-16 over the raw hunk (matches chdman's
-/// `hunk_write_compressed` input).
+/// and a CRC-16 over the raw hunk (matches the input of the upstream
+/// `hunk_write_compressed`).
 pub(super) struct ChdCompressedOut {
     pub compressed: Vec<u8>,
     pub compression: u8,
@@ -135,8 +135,8 @@ pub(super) fn make_chd_dvd_compress_workers(
         .collect()
 }
 
-/// Laserdisc worker: one video field per hunk, `avhu` only. chdman
-/// refuses to store an uncompressed A/V hunk (the reader rejects them),
+/// Laserdisc worker: one video field per hunk, `avhu` only. The reference
+/// writer refuses to store an uncompressed A/V hunk (the reader rejects them),
 /// so a failed or oversized encode is fatal rather than a fallback.
 pub(super) struct ChdLdCompressWorker;
 
@@ -191,8 +191,8 @@ pub(super) struct HunkCompressArgs<'a, R> {
 /// `frame_data[i]` marks the frames read from the source
 /// (`sector_data_size` bytes each, 2352 for raw bin tracks, 2048 for
 /// MODE1/2048 ISO data); the interleaved per-track padding frames
-/// stay zero but are still hashed: chdman includes them in the raw
-/// SHA-1.
+/// stay zero but are still hashed: the reference implementation includes them
+/// in the raw SHA-1.
 ///
 /// `state.writer_pos` is the file position **before** the next
 /// compressed hunk would land. The caller owns it and passes it
@@ -240,7 +240,7 @@ pub(super) fn compress_hunks<R: Read>(
             }
             // Byte-swap 16-bit samples of audio-track sectors before
             // hashing or compressing, so the stored data and raw SHA-1
-            // match chdman (which swaps audio on ingest).
+            // match the reference implementation (which swaps audio on ingest).
             for s in 0..sectors_in_hunk {
                 if cd_audio_frames
                     .get(first_sector + s)
@@ -264,7 +264,7 @@ pub(super) fn compress_hunks<R: Read>(
 /// DVD produce path: flat 2048-byte sectors, no interleave, no
 /// subcode. The raw SHA-1 covers exactly `logical_bytes`; the zero
 /// padding of the final partial hunk is compressed but never hashed,
-/// matching chdman.
+/// matching the reference implementation.
 pub(super) fn compress_hunks_dvd<R: Read>(
     pool: &Pool<ChdCompressWork, ChdCompressedOut, ChdError>,
     state: HunkWriteState<'_>,
@@ -420,9 +420,9 @@ pub(super) fn compress_hunks_ld<R: Read + Seek>(
 /// side is mode-independent: append a map entry, forward bytes,
 /// advance the writer position.
 ///
-/// Outputs carrying a raw-hunk SHA-1 additionally go through chdman's
-/// self-map dedup: a hunk whose (crc16, sha1) was already written
-/// becomes a `COMPRESSION_SELF` back-reference and stores no bytes.
+/// Outputs carrying a raw-hunk SHA-1 additionally go through the reference
+/// implementation's self-map dedup: a hunk whose (crc16, sha1) was already
+/// written becomes a `COMPRESSION_SELF` back-reference and stores no bytes.
 fn run_pipeline<F>(
     pool: &Pool<ChdCompressWork, ChdCompressedOut, ChdError>,
     state: HunkWriteState<'_>,

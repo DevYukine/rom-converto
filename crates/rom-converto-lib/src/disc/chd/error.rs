@@ -84,7 +84,7 @@ pub enum ChdError {
     #[error("unsupported CHD version: expected V5, run `chd migrate` to convert a V1-V4 CHD")]
     UnsupportedChdVersion,
 
-    /// A V1-V4 CHD header failed one of chdman's validity checks.
+    /// A V1-V4 CHD header failed one of the reference validity checks.
     #[error("invalid CHD v{version} header: {reason}")]
     InvalidLegacyHeader { version: u8, reason: String },
 
@@ -144,7 +144,7 @@ pub enum ChdError {
     #[error("{0}")]
     Cancelled(#[from] crate::util::Cancelled),
 
-    /// A codec list named a codec chdman does not implement.
+    /// A codec list named a codec the reference implementation does not have.
     #[error("unknown compression codec name: {0}")]
     UnknownCodecName(String),
 

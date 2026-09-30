@@ -1,9 +1,10 @@
 //! PFS gamedata decryption: the second encryption layer a PS Vita package
 //! keeps under its AES-CTR package layer, keyed by the license klicensee.
 //!
-//! Ported from psvpfstools. Only the read path for gamedata images
-//! (`sce_pfs/unicv.db`, `SCEIFTBL` version 2 and up) is covered, which is
-//! what retail packages carry. Integrity check values are not verified.
+//! Ported from the reference implementation. Only the read path for
+//! gamedata images (`sce_pfs/unicv.db`, `SCEIFTBL` version 2 and up) is
+//! covered, which is what retail packages carry. Integrity check values
+//! are not verified.
 //!
 //! The Vita is end-of-life and these keys are long published, so they are
 //! embedded here the way the package keys are.

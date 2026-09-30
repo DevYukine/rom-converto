@@ -1,6 +1,6 @@
 //! Minimal RIFF/AVI reader for laserdisc rips.
 //!
-//! Covers exactly what a `createld`-style CHD needs: uncompressed
+//! Covers exactly what a laserdisc CHD needs: uncompressed
 //! YUY2/UYVY/VYUY video handed out as big-endian YUY16 words (Y in the high
 //! byte, chroma in the low byte, the layout avhuff encodes), PCM audio
 //! de-interleaved per channel, and the derived frame geometry in
@@ -18,7 +18,7 @@ const SUPPORTED_VIDEO: [[u8; 4]; 3] = [*b"YUY2", *b"UYVY", *b"VYUY"];
 
 /// Header values read straight out of `avih`, `strh`, and `strf`.
 ///
-/// Field names follow MAME's `avi_file::movie_info`, which is where the
+/// Field names follow the upstream `avi_file::movie_info`, which is where the
 /// laserdisc frame geometry is derived from.
 #[derive(Debug, Clone, Default)]
 pub struct AviInfo {
@@ -246,9 +246,9 @@ impl<R: Read + Seek> AviFile<R> {
             file_len,
         )?;
 
-        // chdman derives the frame count from the walked stream index, not the
-        // header's dwLength, so a header that disagrees with (or omits) it never
-        // desyncs frame_count/logical size mid-convert.
+        // The reference implementation derives the frame count from the walked
+        // stream index, not the header's dwLength, so a header that disagrees
+        // with (or omits) it never desyncs frame_count/logical size mid-convert.
         info.video_numsamples = u32::try_from(video.len())
             .map_err(|_| anyhow!("AVI holds more than 2^32 video frames"))?;
 

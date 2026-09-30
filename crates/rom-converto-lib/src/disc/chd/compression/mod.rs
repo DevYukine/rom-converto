@@ -35,7 +35,7 @@ pub const fn tag_to_bytes(tag: &str) -> [u8; 4] {
     [bytes[0], bytes[1], bytes[2], bytes[3]]
 }
 
-/// A single CHD hunk compressor, one of the codecs chdman implements.
+/// A single CHD hunk compressor, supported by the reference implementation.
 /// The `Cd*` variants only decode/encode CD frame hunks (base + subcode
 /// split); the rest apply to a hunk's raw bytes directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -50,12 +50,12 @@ pub enum ChdCodec {
     Cdlz,
     Cdfl,
     /// A/V huffman: the laserdisc frame codec. Not user-selectable;
-    /// `createld` is the only producer.
+    /// the reference laserdisc writer is the only producer.
     AvHuff,
 }
 
 impl ChdCodec {
-    /// The chdman fourcc tag stored in the CHD header's compressor slots.
+    /// The CHD fourcc tag stored in the header's compressor slots.
     pub const fn tag(self) -> [u8; 4] {
         tag_to_bytes(match self {
             ChdCodec::Zlib => "zlib",
@@ -132,7 +132,7 @@ pub fn deflate_level(level: Option<i32>) -> flate2::Compression {
 }
 
 /// LZMA compression level for a user-supplied `--level` in `1..=22`.
-/// Unset defaults to chdman's level 8; a set level is clamped to
+/// Unset uses the reference level 8; a set level is clamped to
 /// LZMA's 0..=9 range.
 pub fn lzma_level(level: Option<i32>) -> u32 {
     match level {
@@ -142,21 +142,21 @@ pub fn lzma_level(level: Option<i32>) -> u32 {
 }
 
 /// Zstd compression level for a user-supplied `--level` in `1..=22`.
-/// Unset defaults to chdman's max level 19; unlike deflate/lzma, zstd
+/// Unset uses the reference max level 19; unlike deflate/lzma, zstd
 /// accepts the full requested range unclamped.
 pub fn zstd_level(level: Option<i32>) -> i32 {
     level.unwrap_or(19)
 }
 
-/// Parse a comma-separated chdman-style codec list, e.g. `"cdlz,cdzl,cdfl"`.
+/// Parse a comma-separated CHD codec list, e.g. `"cdlz,cdzl,cdfl"`.
 pub fn parse_codec_list(s: &str) -> Result<Vec<ChdCodec>, ChdError> {
     s.split(',').map(|part| part.trim().parse()).collect()
 }
 
-/// Validate a codec list for CHD header use: non-empty, at most the 4
 /// header compressor slots, no duplicates, no `avhu` (laserdisc-only,
-/// and chdman does not expose it either), and (for DVD-mode CHDs) no
-/// CD-only codec since DVD hunks are never CD frame-split.
+/// and the reference implementation does not expose it either), and
+/// (for DVD-mode CHDs) no CD-only codec since DVD hunks are never CD
+/// frame-split.
 pub fn validate_codecs(codecs: &[ChdCodec], dvd: bool) -> Result<(), ChdError> {
     if codecs.is_empty() {
         return Err(ChdError::EmptyCodecList);
@@ -178,12 +178,12 @@ pub fn validate_codecs(codecs: &[ChdCodec], dvd: bool) -> Result<(), ChdError> {
     Ok(())
 }
 
-/// chdman `createcd`'s default codec pack.
+/// The reference implementation's default CD codec pack.
 pub fn default_cd_codecs() -> Vec<ChdCodec> {
     vec![ChdCodec::Cdlz, ChdCodec::Cdzl, ChdCodec::Cdfl]
 }
 
-/// chdman `createdvd`'s default codec pack.
+/// The reference implementation's default DVD codec pack.
 pub fn default_dvd_codecs() -> Vec<ChdCodec> {
     vec![
         ChdCodec::Lzma,
@@ -359,11 +359,11 @@ fn write_cd_header(buf: &mut [u8], ecc_bytes: usize, base_len: usize, complen_by
     }
 }
 
-/// Persistent codec state for CD hunk compression, matching chdman's approach
-/// of reusing encoder instances across hunks rather than creating new ones each time.
+/// Persistent codec state for CD hunk compression, following the
+/// reference implementation's reuse of encoder instances across hunks.
 /// The trial runs the resolved header codec list in slot order; the CD frame
 /// codecs (cd*) split base + subcode, the generic codecs compress the raw hunk
-/// buffer as chdman does.
+/// buffer as it does.
 pub(crate) struct CdCodecSet {
     codecs: Vec<ChdCodec>,
     lzma: Option<LzmaEncoder>,
@@ -398,7 +398,7 @@ impl CdCodecSet {
         let (frames, mut base, subcode) = split_cd_frames(hunk)?;
         let (header_bytes, ecc_bytes, complen_bytes) = cd_header_sizes(hunk.len(), frames);
 
-        // MAME's cd_flac copies the audio straight from the source and
+        // The reference `cd_flac` copies the audio straight from the source and
         // never strips ECC or writes ecc-flag/complen header bytes; it
         // only ever wins on all-audio hunks. Mirror that: offer cdfl
         // only when no frame carries a data-sector sync header, and run
@@ -513,7 +513,7 @@ impl CdCodecSet {
         ))
     }
 
-    /// MAME's headerless cdfl layout: FLAC frames of the audio data
+    /// Reference headerless `cdfl` layout: FLAC frames of the audio data
     /// immediately followed by the raw-deflate subcode stream. No
     /// ecc-flag bytes, no complen field; the FLAC stream is self-
     /// delimiting so the decoder finds the subcode offset from it.
@@ -550,7 +550,7 @@ impl CdCodecSet {
     }
 
     /// Generic (non-CD-frame) codec on the raw hunk buffer, matching
-    /// chdman's plain codecs. Returns `None` when the codec is not
+    /// the reference implementation's plain codecs. Returns `None` when
     /// applicable so the trial simply skips it.
     fn compress_generic(&mut self, codec: ChdCodec, hunk: &[u8]) -> Option<Vec<u8>> {
         compress_raw_codec(
@@ -611,8 +611,9 @@ fn assemble_cd_output(
 
 /// Persistent generic-codec decoder state shared by the CD and DVD
 /// reader worker sets. Each decoder inflates a whole hunk buffer the
-/// way chdman's plain codecs do (no CD frame split), and the same
-/// state also drives the base/subcode streams of the CD frame codecs.
+/// way the reference implementation's plain codecs do (no CD frame
+/// split), and the same state also drives the base/subcode streams of
+/// the CD frame codecs.
 pub(crate) struct RawDecoders {
     lzma: lzma::LzmaDecoder,
     deflate: flate2::Decompress,
@@ -684,7 +685,8 @@ enum CdStream {
 /// slot index resolves against the header compressor tags, so any codec
 /// combination decodes correctly: the CD frame codecs (`cdlz`/`cdzl`/
 /// `cdfl`/`cdzs`) split base + subcode and interleave with ECC restore,
-/// the generic codecs inflate the whole hunk buffer as chdman does.
+/// the generic codecs inflate the whole hunk buffer as the reference
+/// implementation does.
 pub(crate) struct CdDecoderSet {
     slots: [Option<ChdCodec>; 4],
     raw: RawDecoders,
@@ -779,10 +781,10 @@ impl CdDecoderSet {
         interleave_cd_hunk(output_len, frames, &base_bytes, &subcode)
     }
 
-    /// Decode MAME's headerless cdfl hunk: FLAC audio frames followed by
-    /// the raw-deflate subcode. The FLAC stream is self-delimiting, so
-    /// its consumed length locates the subcode. No ecc-flag header and
-    /// no ECC restore, matching `chd_cd_flac_decompressor`.
+    /// Decode the reference implementation's headerless `cdfl` hunk: FLAC
+    /// audio frames followed by the raw-deflate subcode. The FLAC stream is
+    /// self-delimiting, so its consumed length locates the subcode. No ecc-flag
+    /// header and no ECC restore, matching `chd_cd_flac_decompressor`.
     fn decompress_cdfl(&mut self, data: &[u8], output_len: usize) -> ChdResult<Vec<u8>> {
         let frames = output_len / FRAME_SIZE;
         let expected_base_len = frames * SECTOR_SIZE;
@@ -1061,7 +1063,7 @@ mod tests {
 
     /// A leveled codec (`cdzs`, backed by zstd's per-level knob) must
     /// round-trip byte-for-byte at both the lowest and highest
-    /// `--level` values chdman accepts.
+    /// `--level` values accepted by the reference implementation.
     #[test]
     fn cd_leveled_codec_round_trips_at_level_extremes() {
         for level in [Some(1), Some(22)] {

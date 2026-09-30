@@ -1,5 +1,5 @@
 //! Nintendo U8 archive reader (format reference:
-//! `wiimms-szs-tools/project/src/lib-szs.h:93-124`).
+//! upstream `lib-szs.h:93-124`).
 //!
 //! Non-obvious invariant: a directory node's `size` is the
 //! **exclusive end index** of its subtree, NOT a child count.

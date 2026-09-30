@@ -47,8 +47,8 @@ pub(crate) struct WiaLayout {
 }
 
 /// Largest LZMA/LZMA2 dictionary the decoder will allocate for a
-/// file's declared properties; Dolphin's highest level writes 64 MiB,
-/// so anything larger is a hostile reservation.
+/// file's declared properties; the reference encoder's highest level
+/// writes 64 MiB, so anything larger is a hostile reservation.
 const MAX_LZMA_DICT_BYTES: u32 = 256 * 1024 * 1024;
 
 /// Rejects declared LZMA/LZMA2 dictionaries larger than

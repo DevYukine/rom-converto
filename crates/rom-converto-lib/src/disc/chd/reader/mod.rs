@@ -85,12 +85,12 @@ pub(crate) fn open_chd_sync_with_metadata_hash(
     if header.hunk_bytes == 0 {
         return Err(ChdError::InvalidHunkSize);
     }
-    // chdman caps createcd/createdvd hunks at 1 MiB (chdman.cpp's
-    // `constexpr uint32_t HUNK_SIZE_MAX = 1024 * 1024;`), but a v5
-    // file migrated from a v1-v4 source inherits that source's hunk
-    // size, which the legacy reader accepts up to its own
-    // `MAX_HUNK_BYTES = 65536 * 256` (16 MiB, legacy.rs); the v5
-    // reader accepts the same ceiling so migrated files still open.
+    // The reference writer caps CD/DVD hunks at 1 MiB
+    // (`HUNK_SIZE_MAX = 1024 * 1024`), but a v5 file migrated from a
+    // v1-v4 source inherits that source's hunk size, which the legacy
+    // reader accepts up to its own `MAX_HUNK_BYTES = 65536 * 256`
+    // (16 MiB, legacy.rs); the v5 reader accepts the same ceiling so
+    // migrated files still open.
     const CHD_HUNK_BYTES_MAX: u32 = 65536 * 256;
     if header.hunk_bytes > CHD_HUNK_BYTES_MAX {
         return Err(ChdError::InvalidHunkSize);
@@ -194,9 +194,9 @@ pub(crate) fn open_chd_sync_with_metadata_hash(
             });
         }
 
-        // Follow the chain only forward: chdman writes entries in
-        // ascending order, and a malformed next pointer must not
-        // loop the walk forever.
+        // Follow the chain only forward: the reference implementation
+        // writes entries in ascending order, and a malformed next pointer
+        // must not loop the walk forever.
         let next_offset = BigEndian::read_u64(&reserved);
         offset = if next_offset > offset { next_offset } else { 0 };
     }

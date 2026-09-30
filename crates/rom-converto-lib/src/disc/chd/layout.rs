@@ -8,11 +8,12 @@ use crate::disc::chd::reader::cue_generator::{ChdTrackInfo, chd_type_datasize};
 use crate::disc::chd::writer::metadata::MetadataHash;
 use sha1::{Digest, Sha1};
 
-/// chdman pads every track, including a lone final one, to a 4-frame
-/// boundary; the zero padding frames count into the logical size and
-/// the raw SHA-1, while CHT2 `FRAMES:` records the real count.
-/// Measured against chdman 0.288: a 10-sector iso produces a CHD with
-/// logical size 12 * 2448 and a data SHA-1 over all 12 frames.
+/// The reference implementation pads every track, including a lone
+/// final one, to a 4-frame boundary. Zero padding frames count toward
+/// the logical size and raw SHA-1, while CHT2 `FRAMES:` records the
+/// real count. Measured against its version 0.288, a 10-sector iso
+/// produces a CHD with logical size 12 * 2448 and a data SHA-1 over all
+/// 12 frames.
 pub(crate) const CD_TRACK_PADDING: u32 = 4;
 
 pub(crate) fn padded_track_frames(data_sectors: u32) -> u32 {
@@ -28,10 +29,11 @@ pub(crate) const CHD_METADATA_TAG_GD_TRACK: [u8; 4] = *b"CHGD";
 pub(crate) const CHD_METADATA_TAG_GD_TRACK_LEGACY: [u8; 4] = *b"CHGT";
 
 /// Concatenated text of every metadata entry for the first present
-/// track-tag family, in `CHT2`, `CHTR`, `CHGD`, `CHGT` priority order.
-/// chdman writes one entry per track, while older rom-converto builds
-/// packed every track into a single entry; joining with a space parses
-/// both layouts identically. Families are never mixed within one file.
+/// track-tag family, in priority order: `CHT2`, `CHTR`, `CHGD`, `CHGT`.
+/// The reference implementation writes one entry per track. Older
+/// rom-converto builds packed every track into one entry, so joining
+/// with a space parses both layouts identically. Families are never
+/// mixed within one file.
 pub(crate) fn cd_track_metadata_text(metadata: &[ChdMetadataHeader]) -> Option<String> {
     const TAG_PRIORITY: [[u8; 4]; 4] = [
         CHD_METADATA_TAG_CD,
@@ -55,11 +57,11 @@ pub(crate) fn cd_track_metadata_text(metadata: &[ChdMetadataHeader]) -> Option<S
     Some(parts.join(" "))
 }
 
-/// Whether a CHD's physical stream uses chdman's per-track 4-frame
-/// padding. Pre-padding rom-converto builds wrote the frames
-/// back-to-back; those files are recognized by a physical frame count
-/// (`logical_bytes / FRAME_SIZE`) that matches the raw `FRAMES:` sum
-/// and not the padded one. Anything else, chdman output included, is
+/// Whether a CHD's physical stream uses the reference implementation's
+/// per-track 4-frame padding. Pre-padding rom-converto builds wrote
+/// frames back to back. Identify those files by a physical frame count
+/// (`logical_bytes / FRAME_SIZE`) matching the raw `FRAMES:` sum rather
+/// than the padded count. Other layouts, including reference output, are
 /// treated as padded.
 pub(crate) fn chd_layout_is_padded(tracks: &[ChdTrackInfo], physical_frames: u64) -> bool {
     let unpadded: u64 = tracks.iter().map(|t| t.frames as u64).sum();
@@ -70,17 +72,16 @@ pub(crate) fn chd_layout_is_padded(tracks: &[ChdTrackInfo], physical_frames: u64
     physical_frames != unpadded || unpadded == padded
 }
 
-/// Per-frame span map for the physical CHD CD stream: `frame_sizes[i]`
-/// is the payload width of frame `i` and `frame_track[i]` is the index
-/// (into `tracks`) of the track that owns frame `i`. chdman pads every
-/// track to a 4-frame boundary, so each track's `FRAMES:` payload
-/// frames are followed by padding frames of width 0 that contribute
-/// nothing to the output; `padded` is false only for legacy unpadded
-/// layouts (see [`chd_layout_is_padded`]). Both vecs are laid out
-/// exactly as `extract_hunks` shapes the stream, so hashing frame by
-/// frame through them reproduces the bin `chdman extractcd` writes.
-/// Pure so it is unit-testable against a synthetic CHT2 metadata
-/// string.
+/// Per-frame span map for the physical CHD CD stream. `frame_sizes[i]`
+/// is the payload width of frame `i`; `frame_track[i]` is the index into
+/// `tracks` of the track that owns frame `i`. The reference
+/// implementation pads each track to a 4-frame boundary. Each track's
+/// `FRAMES:` payload is followed by zero-width padding frames that add
+/// nothing to the output. `padded` is false only for legacy unpadded
+/// layouts (see [`chd_layout_is_padded`]). Both vectors are laid out
+/// exactly as `extract_hunks` shapes the stream, so hashing them frame by
+/// frame reproduces the bin written by the reference extractor. Pure so
+/// it is unit-testable against synthetic CHT2 metadata.
 pub(crate) fn chd_frame_spans(tracks: &[ChdTrackInfo], padded: bool) -> (Vec<usize>, Vec<usize>) {
     let mut frame_sizes = Vec::new();
     let mut frame_track = Vec::new();
@@ -104,9 +105,10 @@ pub(crate) fn chd_track_decoded_size(track: &ChdTrackInfo) -> u64 {
     track.frames as u64 * chd_type_datasize(&track.track_type) as u64
 }
 
-/// Byte-swap the 16-bit samples of one audio sector in place. chdman
-/// stores CD audio big-endian and swaps back on extract; the writer
-/// and reader apply this to audio-track frames only.
+/// Byte-swap the 16-bit samples of one audio sector in place. The
+/// reference implementation stores CD audio big-endian and swaps back
+/// on extract. The writer and reader apply this only to audio-track
+/// frames.
 pub(crate) fn swap_audio_sector(sector: &mut [u8]) {
     for pair in sector.as_chunks_mut::<2>().0 {
         pair.swap(0, 1);
@@ -199,7 +201,7 @@ mod tests {
 
     /// Track frame counts that are not 4-frame multiples: each track's
     /// payload frames are followed by width-0 padding frames (10 -> 12,
-    /// 5 -> 8, 7 -> 8 physical frames), matching chdman's layout.
+    /// 5 -> 8, 7 -> 8 physical frames), matching the reference layout.
     #[test]
     fn frame_spans_mixed_datasizes() {
         let meta = "TRACK:1 TYPE:MODE1 FRAMES:10 TRACK:2 TYPE:MODE2_FORM1 FRAMES:5 TRACK:3 TYPE:AUDIO FRAMES:7";

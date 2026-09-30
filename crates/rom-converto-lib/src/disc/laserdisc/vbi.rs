@@ -1,4 +1,4 @@
-//! Port of MAME's `vbiparse`: white flag and Philips code recovery from
+//! Port of the upstream `vbiparse`: white flag and Philips code recovery from
 //! laserdisc VBI lines.
 //!
 //! Input rows are the 16-bit YUY16 words of one field; a `source_shift` of 8
@@ -39,8 +39,8 @@ pub const VBI_CODE_CLV_PICTURE: u32 = 0x80e000;
 
 /// The decoded VBI content of one field.
 ///
-/// A line that fails to decode stays zero, which is also how MAME marks
-/// "no code present".
+/// A line that fails to decode stays zero, which is also how the
+/// reference implementation marks "no code present".
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct VbiMetadata {
     pub white: bool,
@@ -155,7 +155,8 @@ pub fn vbi_parse_manchester_code(
         return 0;
     }
 
-    // MAME reads past the ends of its fixed 1024-wide buffers; clamp instead.
+    // The reference decoder reads past the ends of its fixed 1024-wide
+    // buffers; clamp instead.
     let luma = |i: i64| -> u8 {
         let idx = i.clamp(0, source_width as i64 - 1) as usize;
         (source[idx] >> source_shift) as u8
@@ -178,7 +179,7 @@ pub fn vbi_parse_manchester_code(
     let max = mid + (max - mid) / 2;
 
     let mut srcabs = [0u8; MAX_SOURCE_WIDTH];
-    // Seeded from the unshifted word, as MAME does.
+    // Seeded from the unshifted word, as in the reference implementation.
     let mut level = u8::from(source[0] > u16::from(mid));
     for (x, slot) in srcabs.iter_mut().take(source_width).enumerate() {
         let raw = luma(x as i64);

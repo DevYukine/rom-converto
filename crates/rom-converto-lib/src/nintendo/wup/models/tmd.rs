@@ -1,7 +1,7 @@
 //! Wii U TMD (Title Metadata) parser.
 //!
 //! Field offsets match `TMDFileHeaderWiiU` / `TMDFileContentEntryWiiU`
-//! in Cemu's `src/Cemu/ncrypto/ncrypto.cpp`. The TMD layout is:
+//! in the upstream `ncrypto.cpp`. The TMD layout is:
 //!
 //! - Fixed `WUP_TMD_HEADER_SIZE` byte header (signature, metadata,
 //!   64 x 36-byte content info records).

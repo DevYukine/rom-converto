@@ -1,8 +1,7 @@
 //! Wii U `meta/*.tga` files are standard uncompressed type-2
 //! Truevision TGAs (BGRA or BGR, bottom-up), not GX2-tiled BC3
-//! textures. Cemu, decaf-emu, rom-properties, and the devkitPro
-//! `wuhbtool` all treat them as plain TGA, so no GX2 deswizzler
-//! is needed.
+//! textures. Cemu and decaf-emu read them as plain TGA, as do other
+//! Wii U tools, so no GX2 deswizzler is needed.
 
 use anyhow::{Context, Result, anyhow};
 use std::io::Cursor;

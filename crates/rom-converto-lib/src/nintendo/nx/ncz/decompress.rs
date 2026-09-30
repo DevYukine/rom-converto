@@ -565,8 +565,9 @@ mod tests {
         round_trip_with_mode(NczMode::Block { size_exp: 14 }, 0x40200);
     }
 
-    /// nsz has written NCZBLOCK version 2 / type 1 since the format's
-    /// first commit; strict third-party readers may reject other values.
+    /// The reference compressor has written NCZBLOCK version 2 / type 1
+    /// since the format's first commit; strict third-party readers may
+    /// reject other values.
     #[test]
     fn block_mode_emits_nsz_version_and_type() {
         use crate::nintendo::nx::ncz::header::read_headers;

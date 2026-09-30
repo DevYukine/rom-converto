@@ -1,10 +1,11 @@
 //! FST-aware disc usage analysis.
 //!
-//! Ports libwbfs `wd_build_disc_usage`: walk the disc structure and mark
-//! which `0x8000`-byte sectors actually hold data, so the WBFS writer can
-//! drop everything else (scrubbing). Encrypted Wii partition data is never
-//! all-zero, so a naive "drop zero blocks" pass cannot find the unused
-//! space inside a partition; only the FST tells us which sectors are real.
+//! Ports the reference implementation's `wd_build_disc_usage`: walk the
+//! disc structure and mark which `0x8000`-byte sectors actually hold data,
+//! so the WBFS writer can drop everything else (scrubbing). Encrypted Wii
+//! partition data is never all-zero, so a naive "drop zero blocks" pass
+//! cannot find the unused space inside a partition; only the FST tells us
+//! which sectors are real.
 //!
 //! Marking is deliberately conservative. Over-marking just stores a few
 //! extra sectors; under-marking would drop live data and corrupt the

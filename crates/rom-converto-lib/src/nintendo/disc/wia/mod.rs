@@ -1,6 +1,6 @@
-//! WIA (Wii ISO Archive, wit's format and RVZ's predecessor) input
-//! support: streaming reconstruction of the original encrypted disc
-//! plus pre-conversion integrity verification.
+//! WIA (Wii ISO Archive, RVZ's predecessor) input support: streaming
+//! reconstruction of the original encrypted disc plus pre-conversion
+//! integrity verification.
 
 pub mod codec;
 pub mod error;

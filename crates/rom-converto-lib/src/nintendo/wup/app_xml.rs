@@ -4,7 +4,7 @@
 //! title, of which only two fields matter: `<title_id>` (64-bit hex)
 //! and `<title_version>` (unsigned decimal). Rather than pull in a
 //! full XML crate, this module does a targeted tag extraction that matches the
-//! machine-generated shape Cemu and every Wii U toolchain produces,
+//! machine-generated shape every Wii U toolchain produces,
 //! such as `<title_id type="hexBinary" length="8">0005000E10102000</title_id>`.
 
 use crate::nintendo::wup::error::{WupError, WupResult};

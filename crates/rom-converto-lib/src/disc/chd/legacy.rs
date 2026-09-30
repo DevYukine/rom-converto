@@ -1,9 +1,9 @@
 //! Reader for the pre-V5 CHD formats (v1 through v4).
 //!
-//! chdman has written V5 for over a decade, but MAME sets and old disc
-//! dumps still carry the earlier layouts. Only the read side lives here:
-//! the header, the flat map, and hunk decode, which is enough to stream a
-//! legacy image back out as raw bytes.
+//! V5 has been the current format for over a decade, but MAME sets and
+//! old disc dumps still carry earlier layouts. Only the read side lives
+//! here: the header, the flat map, and hunk decode, which is enough to
+//! stream a legacy image back out as raw bytes.
 
 use crate::disc::cd::FRAME_SIZE;
 use crate::disc::chd::compression::avhuff;
@@ -93,8 +93,9 @@ impl LegacyChd {
         let mut header = read_header(&mut file)?;
         let metadata = read_metadata(&mut file, header.meta_offset)?;
 
-        // libchdr synthesizes a GDDD entry for v1/v2, so their unit is the
-        // header's sector size rather than a guess from the (empty) chain.
+        // The reference reader synthesizes a GDDD entry for v1/v2, so their
+        // unit is the header's sector size rather than a guess from the
+        // (empty) chain.
         header.unit_bytes = match &header.chs {
             Some(chs) => chs.sector_bytes,
             None => guess_unit_bytes(header.hunk_bytes, &metadata),
@@ -144,8 +145,8 @@ impl LegacyChd {
                     1 | 2 => {
                         let mut decoder = DeflateDecoder::new(packed.as_slice());
                         let mut filled = fill(&mut decoder, dest)?;
-                        // libchdr demands the stream end exactly at the
-                        // hunk; v1/v2 have no CRC to catch an overrun.
+                        // The reference reader requires the stream to end exactly
+                        // at the hunk; v1/v2 have no CRC to catch an overrun.
                         if filled == dest.len() {
                             filled += decoder.read(&mut [0u8; 1])?;
                         }
@@ -285,9 +286,9 @@ fn fill(source: &mut impl Read, dest: &mut [u8]) -> io::Result<usize> {
     Ok(filled)
 }
 
-/// Longest SELF_HUNK chain accepted. chdman never writes one longer than a
-/// single hop, and libchdr resolves them by recursion, so anything deep is
-/// hostile rather than real.
+/// Longest SELF_HUNK chain accepted. The reference implementation never
+/// writes a chain longer than one hop, and the reference reader resolves
+/// chains recursively, so anything deeper is hostile rather than real.
 const MAX_SELF_HUNK_HOPS: u32 = 64;
 
 fn invalid(version: ChdVersion, reason: &str) -> ChdError {
@@ -458,9 +459,9 @@ fn read_metadata(file: &mut File, meta_offset: u64) -> ChdResult<Vec<ChdMetadata
             data,
         });
 
-        // Follow the chain only forward, and past the entry just read:
-        // chdman lays entries out end to end, and a malformed next pointer
-        // must not loop the walk or let overlapping entries pile up.
+        // Follow the chain only forward, and past the entry just read.
+        // The reference implementation lays entries out end to end.
+        // A malformed next pointer must not loop the walk or overlap entries.
         let next_offset = BigEndian::read_u64(&reserved);
         let entry_end = offset + CHD_METADATA_HEADER_BYTES as u64 + u64::from(length);
         offset = if next_offset >= entry_end {
@@ -472,8 +473,8 @@ fn read_metadata(file: &mut File, meta_offset: u64) -> ChdResult<Vec<ChdMetadata
     Ok(metadata)
 }
 
-/// chdman's `header_guess_unitbytes`: the unit size is not stored before
-/// V5, so it is inferred from the metadata the image carries.
+/// Port of the upstream `header_guess_unitbytes`: the unit size is not
+/// stored before V5, so it is inferred from the metadata the image carries.
 fn guess_unit_bytes(hunk_bytes: u32, metadata: &[ChdMetadataHeader]) -> u32 {
     if let Some(bps) = metadata
         .iter()

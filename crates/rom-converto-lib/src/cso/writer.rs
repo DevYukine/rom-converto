@@ -42,8 +42,8 @@ struct CsoCompressWorker {
 impl Worker<CsoBlockWork, CsoBlockOut, CsoError> for CsoCompressWorker {
     fn process(&mut self, work: CsoBlockWork) -> CsoResult<CsoBlockOut> {
         let compressed = self.codec.compress(&work.data)?;
-        // maxcso's store-raw rule: a compressed block only pays off
-        // if it is still smaller after alignment padding.
+        // The reference encoder's store-raw rule: a compressed block
+        // only pays off if it is still smaller after alignment padding.
         let aligned = |len: usize| len.div_ceil(self.align) * self.align;
         if aligned(compressed.len()) >= aligned(work.data.len()) {
             Ok(CsoBlockOut {

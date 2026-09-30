@@ -1280,21 +1280,23 @@ mod integration_tests {
         assert!(matches!(err, RvzError::InvalidMagic(_)));
     }
 
-    /// Bidirectional byte-identical round-trip against Dolphin's own
-    /// `DolphinTool.exe`. Gated behind env vars so CI stays
+    /// Bidirectional byte-identical round-trip against the reference RVZ
+    /// encoder and decoder. Gated behind env vars so CI stays
     /// deterministic:
     ///
     /// * `ROM_CONVERTO_DOLPHIN_PARITY_ISO`: optional GameCube ISO/GCM.
     /// * `ROM_CONVERTO_DOLPHIN_PARITY_WII_ISO`: optional Wii ISO.
-    /// * `ROM_CONVERTO_DOLPHIN_TOOL`: path to `DolphinTool[.exe]`.
+    /// * `ROM_CONVERTO_DOLPHIN_TOOL`: path to the reference tool executable.
     ///
     /// For each ISO that's set, the test runs four steps:
     /// 1. Compress the input ISO with rom-converto (L5, 128 KiB).
-    /// 2. Decompress that `.rvz` with Dolphin's `convert -f iso` and
-    ///    assert byte equality (SHA-1) against the input.
-    /// 3. Compress the input ISO with Dolphin (`convert -f rvz -l 5 -b 131072`).
-    /// 4. Decompress Dolphin's `.rvz` with rom-converto and assert
-    ///    byte equality (SHA-1) against the input.
+    /// 2. Decompress that `.rvz` with the reference decoder
+    ///    (`convert -f iso`) and assert byte equality (SHA-1) against
+    ///    the input.
+    /// 3. Compress the input ISO with the reference encoder
+    ///    (`convert -f rvz -l 5 -b 131072`).
+    /// 4. Decompress the reference encoder's `.rvz` with rom-converto
+    ///    and assert byte equality (SHA-1) against the input.
     ///
     /// Skipped with a printed note when the tool is unset or no ISO
     /// env vars are set.
@@ -1332,7 +1334,7 @@ mod integration_tests {
         }
     }
 
-    /// Run both directions of rom-converto ↔ Dolphin parity on a single
+    /// Run both directions of the cross-tool round-trip on a single
     /// input ISO. Shared helper so the same four steps cover GameCube
     /// and Wii when their respective env vars are set.
     async fn run_cross_tool_parity(iso_path: &Path, dolphin_tool: &str, label: &str) {
@@ -1362,7 +1364,7 @@ mod integration_tests {
             .await
             .expect("our compress failed");
 
-        // Step 2: Dolphin decompresses the RVZ produced above; result must hash-match.
+        // Step 2: the reference decoder decompresses our RVZ; result must hash-match.
         run_dolphin_with_timeout(
             dolphin_tool,
             &[
@@ -1383,7 +1385,7 @@ mod integration_tests {
             "[{label}] Dolphin's decode of our RVZ does not match the original ISO"
         );
 
-        // Step 3: compress with Dolphin.
+        // Step 3: compress with the reference encoder.
         run_dolphin_with_timeout(
             dolphin_tool,
             &[
@@ -1405,7 +1407,7 @@ mod integration_tests {
             &format!("{label} Dolphin compress"),
         );
 
-        // Step 4: this decoder on Dolphin's RVZ must hash-match.
+        // Step 4: this decoder on the reference encoder's RVZ must hash-match.
         decompress_disc(
             &dolphin_rvz,
             &dolphin_from_ours_iso,
@@ -1436,10 +1438,10 @@ mod integration_tests {
         }
     }
 
-    /// Run `DolphinTool` with a hard timeout. If the process doesn't
+    /// Run the external tool with a hard timeout. If the process does not
     /// finish within `timeout_secs`, kill it and panic. This prevents
-    /// failed runs from hanging on a modal error dialog on Windows
-    /// (`DolphinTool.exe` pops "Unable to open disc image" and similar on
+    /// failed runs from hanging on a modal error dialog on Windows (the
+    /// reference tool pops "Unable to open disc image" and similar on
     /// failure and blocks on user acknowledgment without a timeout).
     fn run_dolphin_with_timeout(tool: &str, args: &[&str], timeout_secs: u64, label: &str) {
         use std::process::{Command, Stdio};

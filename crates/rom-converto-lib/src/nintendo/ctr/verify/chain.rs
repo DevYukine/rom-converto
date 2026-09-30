@@ -370,7 +370,7 @@ pub async fn verify_cia(
 
     // A CIA counts as "Decrypted" iff every content chunk has its
     // Encrypted flag cleared. That's how this crate's own decrypt path
-    // (and ctrtool and similar tools) marks the post-decrypt output.
+    // (and other tools) marks the post-decrypt output.
     let is_decrypted = !cia_without_content.tmd.content_chunk_records.is_empty()
         && cia_without_content
             .tmd

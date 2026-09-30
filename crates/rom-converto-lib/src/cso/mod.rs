@@ -1,5 +1,5 @@
 //! CSO (CISO v1) and ZSO support: block-compressed PSP/PS2 ISO
-//! containers, the maxcso equivalent.
+//! containers, equivalent to the reference encoder.
 //!
 //! Target matrix: real PSP hardware (CFW) and PPSSPP read CSO v1;
 //! Open PS2 Loader (>= 1.2) on real PS2 reads ZSO. CSO v2 was never
@@ -37,7 +37,7 @@ use models::{pick_block_size, pick_index_shift, valid_block_size};
 pub struct CsoCompressOptions {
     pub format: CsoFormat,
     /// Block size override; the default is 2048, or 16384 for inputs
-    /// of 2 GiB and beyond, matching maxcso.
+    /// of 2 GiB and beyond, matching the reference encoder.
     pub block_size: Option<u32>,
     pub force: bool,
 }
@@ -735,7 +735,7 @@ mod tests {
         assert!(!crate::util::scratch_output_exists(&out).unwrap());
     }
 
-    /// Cross-checks against real maxcso; set ROMCONVERTO_MAXCSO to
+    /// Cross-checks against the reference tool; set ROMCONVERTO_MAXCSO to
     /// the binary path to enable.
     #[tokio::test]
     async fn maxcso_parity() {

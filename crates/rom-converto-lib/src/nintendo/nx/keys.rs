@@ -1,4 +1,4 @@
-//! `prod.keys` / `title.keys` parser. Format is hactool's: ASCII
+//! `prod.keys` / `title.keys` parser. Key files use ASCII
 //! `name = hex` lines, `#` comments and blank lines ignored. NCZ
 //! decompression alone could re-encrypt sections from the keys cached
 //! in `NCZSECTN`, but every operation here demands a keyfile so the
@@ -135,9 +135,9 @@ impl KeySet {
 
 /// On miss, returns `KeyfileMissing` with every path that was tried so
 /// the error message tells the user exactly where to drop the file.
-/// When `explicit` is provided only that path is honored: matching nsz,
-/// the fallback search is skipped so a typo'd `--keys` flag is loud
-/// instead of silently resolving to a different file.
+/// When `explicit` is provided only that path is honored: as in the
+/// reference tool, the fallback search is skipped so a typo'd `--keys`
+/// flag is loud instead of silently resolving to a different file.
 pub fn load_keyset(explicit: Option<&Path>) -> NxResult<KeySet> {
     let path = find_keys_file(explicit)
         .ok_or_else(|| NxError::KeyfileMissing(candidate_paths(explicit)))?;

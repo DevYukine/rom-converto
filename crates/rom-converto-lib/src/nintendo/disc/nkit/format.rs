@@ -1,9 +1,9 @@
 //! NKit native format structures (`.nkit.iso` / `.nkit.gcz`).
 //!
-//! Spec source: NKit 1.4 C# sources (`NkitWriterGc.cs`,
-//! `NkitReaderGc.cs`, `Gaps.cs`, mirrored at
-//! `github.com/extremscorner/nkit`). NKit embeds its header in the
-//! reserved area of Boot.bin at 0x200; all integers are big-endian:
+//! Spec source: upstream 1.4 C# files (`NkitWriterGc.cs`,
+//! `NkitReaderGc.cs`, and `Gaps.cs`). The NKit format embeds its
+//! header in the reserved area of Boot.bin at 0x200; all integers
+//! are big-endian:
 //!
 //! ```text
 //! 0x200  "NKIT"      magic

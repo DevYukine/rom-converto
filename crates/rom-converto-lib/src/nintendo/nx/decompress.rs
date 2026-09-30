@@ -97,11 +97,11 @@ fn decompress_pfs0(
         .zip(&pfs0.files)
         .map(|(n, f)| (n.clone(), f.size))
         .collect();
-    // Match nsz: preserve the input PFS0's stringTable size + the
-    // first file's data_offset (typically 0x7E30 in a 0x8000-aligned
-    // NSP). nsz applies the same `getStringTableSize` and
-    // `files[0].offset` to its output, so doing the same yields a
-    // byte-identical container after decompression.
+    // Match the reference decompressor: preserve the input PFS0's
+    // stringTable size + the first file's data_offset (typically 0x7E30
+    // in a 0x8000-aligned NSP). The reference decompressor applies the
+    // same `getStringTableSize` and `files[0].offset` to its output, so
+    // doing the same yields a byte-identical container after decompression.
     let hints = pfs0_mod::Pfs0LayoutHints {
         target_total_header_size: Some(pfs0.data_section_offset as usize),
         first_file_data_offset: pfs0.files.first().map(|f| f.data_offset).unwrap_or(0),
@@ -612,10 +612,10 @@ mod tests {
         out
     }
 
-    /// XCZ carries empty update/logo/normal partitions to match nsz's
-    /// default secure-only layout (nsz retains the rest only with
-    /// --keep; its pre-5.0.0 decompressor also corrupted such files by
-    /// overlapping partitions).
+    /// XCZ carries empty update/logo/normal partitions to match the reference
+    /// compressor's default secure-only layout. The reference tool retains the
+    /// rest only with `--keep`; its pre-5.0.0 decompressor also corrupted such
+    /// files by overlapping partitions.
     #[test]
     fn xci_round_trip_stubs_content_bearing_non_secure_partitions() {
         let nca = build_synthetic_nca(0x40200);
@@ -696,7 +696,7 @@ mod tests {
         assert_eq!(fs::read(&xcz_path).unwrap(), fs::read(&xcz2_path).unwrap());
     }
 
-    /// nsz 5.0.0 fixed its decompressor's partition overlap, so
+    /// The reference decompressor fixed its partition overlap in 5.0.0, so
     /// `--keep` XCZs with real .ncz entries outside `secure` circulate;
     /// decompression must rebuild those partitions too.
     #[test]

@@ -128,7 +128,8 @@ pub fn detect_legacy_format(input: &Path) -> std::io::Result<Option<LegacyFormat
             LegacyFormat::Gcz
         }));
     }
-    // Plain files: NKit puts its header in Boot.bin's reserved area.
+    // Plain files: NKit images carry their header in Boot.bin's reserved
+    // area.
     if f.seek(SeekFrom::Start(NKIT_MAGIC_OFFSET)).is_ok() {
         let mut magic = [0u8; 4];
         if f.read_exact(&mut magic).is_ok() && magic == *NKIT_MAGIC {

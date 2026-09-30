@@ -17,9 +17,9 @@ pub(super) const SEEK_TABLE_ENTRY_SIZE: u32 = 8;
 pub(super) const SEEK_TABLE_FOOTER_SIZE: u32 = 9; // num_frames(4) + descriptor(1) + seekable_magic(4)
 // Bit 7 of the seek-table descriptor byte. When set, each entry
 // carries a trailing XXH64 checksum so the entry size is 12 bytes
-// instead of 8. External tools that use the full seekable-zstd spec
-// (such as Azahar's z3ds_compressor) set this flag; rom-converto does
-// not, but must still parse flagged inputs for cross-tool compat.
+// instead of 8. Other tools that use the full seekable-zstd spec set this
+// flag; rom-converto does not, but must still parse flagged inputs for
+// cross-tool compatibility.
 const SEEK_TABLE_DESCRIPTOR_CHECKSUM_FLAG: u8 = 0x80;
 
 /// Per-frame entry recorded while encoding.

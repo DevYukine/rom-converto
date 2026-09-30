@@ -2,8 +2,8 @@
 //! NCA crypto: the 16-byte rights_id (matches the NCA's rights_id at
 //! header offset 0x230) and the 16-byte encrypted titlekey, plus the
 //! master_key_revision to pick the right `titlekek_xx`. Layout per
-//! switchbrew.org/wiki/Ticket and confirmed against
-//! `nsz/Fs/Ticket.py`.
+//! switchbrew.org/wiki/Ticket and cross-checked against the upstream
+//! `Ticket.py`.
 
 use crate::nintendo::nx::error::{NxError, NxResult};
 
@@ -38,7 +38,7 @@ impl Ticket {
         }
         let signature_type =
             u32::from_le_bytes(buf[0..4].try_into().expect("buf is at least 4 bytes"));
-        // Signature type IDs from nsz Type.TicketSignature. Switch
+        // Signature type IDs from the reference `Type.TicketSignature`. Switch
         // retail tickets are typically 0x10004 (RSA-2048-SHA256) at
         // 0x100 bytes, which puts the ticket data at 0x140.
         let sig_size = match signature_type {

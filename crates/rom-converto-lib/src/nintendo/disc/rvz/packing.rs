@@ -298,9 +298,10 @@ impl LaggedFibonacci {
     /// byte offset for GameCube, or a partition-data offset (hashes
     /// excluded) for Wii partition contents.
     ///
-    /// Matches nod's `LaggedFibonacci::init_with_seed`, validated
-    /// against the published vector (see tests). Junk reseeds every
-    /// 32 KiB; use [`Self::fill_junk`] to cross sector boundaries.
+    /// Matches the reference implementation's
+    /// `LaggedFibonacci::init_with_seed`, validated against the published
+    /// vector (see tests). Junk reseeds every 32 KiB; use
+    /// [`Self::fill_junk`] to cross sector boundaries.
     pub fn with_junk_position(disc_id: &[u8; 4], disc_num: u8, offset: u64) -> Self {
         let sector = (offset / RVZ_BLOCK_SIZE) as u32;
         let seed = junk_seed(disc_id, disc_num, sector);
@@ -326,11 +327,12 @@ impl LaggedFibonacci {
 }
 
 /// Forward seed derivation for GameCube/Wii junk data: 17 seed words
-/// from the disc ID, disc number, and 32 KiB sector index. Port of
-/// nod's `generate_seed` (`nod/src/util/lfg.rs`), itself derived from
-/// the generator the disc mastering process used. The reverse path
-/// ([`LaggedFibonacci::get_seed`]) recovers seeds from observed bytes;
-/// this is the forward path NKit relies on to regenerate stripped junk.
+/// from the disc ID, disc number, and 32 KiB sector index. Port of the
+/// reference implementation's `generate_seed` (`src/util/lfg.rs`),
+/// itself derived from the generator the disc mastering process used.
+/// The reverse path ([`LaggedFibonacci::get_seed`]) recovers seeds from
+/// observed bytes; this is the forward path NKit restoration relies on
+/// to regenerate stripped junk.
 pub fn junk_seed(disc_id: &[u8; 4], disc_num: u8, sector: u32) -> [u32; SEED_SIZE] {
     let base = u32::from_be_bytes([
         disc_id[2],
@@ -1026,9 +1028,9 @@ mod tests {
         assert!(matches!(decode(&buf, 0, 0x100), Err(RvzError::Custom(_))));
     }
 
-    /// Published junk vector cross-checked against nod's `lfg.rs` test
-    /// suite: disc "GALE" (Super Smash Bros. Melee), disc 0, offset
-    /// 0x600000.
+    /// Published junk vector cross-checked against the reference
+    /// implementation's `lfg.rs` test suite: disc "GALE" (Super Smash
+    /// Bros. Melee), disc 0, offset 0x600000.
     #[test]
     fn junk_seed_matches_known_vector() {
         let mut out = [0u8; 16];

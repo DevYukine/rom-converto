@@ -90,8 +90,9 @@ impl Track {
             .map(|index| index.position.to_lba())
     }
 
-    /// Returns the LBA of chdman's track boundary inside a shared FILE:
-    /// the INDEX 00 position when present, else the INDEX 01 position.
+    /// Returns the LBA where the reference implementation puts the track
+    /// boundary inside a shared FILE: the INDEX 00 position when present,
+    /// else the INDEX 01 position.
     pub fn boundary_lba(&self) -> Option<u32> {
         self.indices
             .iter()
@@ -105,11 +106,11 @@ impl Track {
     }
 
     /// Returns the frames of pregap stored inside the track's own data,
-    /// chdman's rule: an INDEX 00 present and no nonzero `PREGAP`
-    /// directive. The value is the INDEX 01 LBA minus the INDEX 00 LBA
-    /// (saturating; `Some(0)` when the indices are equal), or `None`
-    /// when the pregap is not stored: no INDEX 00, no INDEX 01, or a
-    /// `PREGAP` directive with a nonzero position.
+    /// per the reference rule: an INDEX 00 is present and no nonzero
+    /// `PREGAP` directive. The value is the INDEX 01 LBA minus the INDEX
+    /// 00 LBA (saturating; `Some(0)` when the indices are equal), or
+    /// `None` when the pregap is not stored: no INDEX 00, no INDEX 01, or
+    /// a `PREGAP` directive with a nonzero position.
     pub fn stored_pregap(&self) -> Option<u32> {
         if self.pregap.is_some_and(|pregap| pregap.to_lba() > 0) {
             return None;
@@ -173,10 +174,10 @@ impl TrackType {
         }
     }
 
-    /// Returns the CHD track metadata type string, matching chdman's
-    /// `get_info_from_type_string` (`MODE2/2336` is `MODE2`, `CDI/2352` is
-    /// `MODE2_RAW`). Types with no direct CHD equivalent (`CdG`, `CdI2336`)
-    /// fall back to `"MODE1_RAW"`.
+    /// Returns the CHD track metadata type string, matching the reference
+    /// implementation's `get_info_from_type_string` (`MODE2/2336` is `MODE2`,
+    /// `CDI/2352` is `MODE2_RAW`). Types with no direct CHD equivalent
+    /// (`CdG`, `CdI2336`) fall back to `"MODE1_RAW"`.
     pub fn chd_metadata_type(self) -> &'static str {
         match self {
             TrackType::Audio => "AUDIO",

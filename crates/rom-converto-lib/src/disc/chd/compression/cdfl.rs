@@ -1,4 +1,4 @@
-//! MAME's CD-FLAC (`cdfl`) codec support: gates the FLAC trial to audio
+//! CHD CD-FLAC (`cdfl`) codec support: gates the FLAC trial to audio
 //! sectors, since running it against data sectors never wins.
 
 /// The Mode-1 sync pattern at the start of a CD data sector. Used to

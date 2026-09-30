@@ -99,7 +99,7 @@ impl TitleInput {
 /// Runtime options for [`compress_titles`].
 #[derive(Debug, Clone, Copy)]
 pub struct WupCompressOptions {
-    /// Zstd compression level (0..=22). 0 selects the Cemu default
+    /// Zstd compression level (0..=22). 0 selects the reference default
     /// of [`DEFAULT_COMPRESSION_LEVEL`].
     pub zstd_level: i32,
 }
@@ -240,7 +240,7 @@ pub fn derive_wua_path(input: &Path) -> PathBuf {
 }
 
 /// Validate the zstd level before spinning up the writer. Zero is
-/// treated as "use the Cemu default" and passed through unchanged.
+/// treated as "use the reference default" and passed through unchanged.
 fn validate_level(level: i32) -> WupResult<()> {
     if !(MIN_COMPRESSION_LEVEL..=MAX_COMPRESSION_LEVEL).contains(&level) {
         return Err(WupError::InvalidCompressionLevel {

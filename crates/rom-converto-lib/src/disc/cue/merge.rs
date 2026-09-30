@@ -83,8 +83,8 @@ pub(crate) struct MergeFilePlan {
 
 /// Builds the single-file cue sheet for the merged bin. Index positions in a
 /// multi-file cue are relative to their own file, so each one is rebased by
-/// the sector count of all preceding files. Unlike binmerge, PREGAP and
-/// POSTGAP lines are preserved.
+/// the sector count of all preceding files. Unlike some other tools,
+/// this keeps PREGAP and POSTGAP lines.
 pub(crate) fn build_merged_cue(
     out_bin_filename: &str,
     sheet: &CueSheet,

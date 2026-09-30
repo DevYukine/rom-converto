@@ -8,9 +8,9 @@
 //! one table plus the header id code, so no user-supplied key file exists
 //! to ask for.
 //!
-//! The bytes are the `encr_data` array from devkitPro `ndstool`
-//! (`source/encryption.cpp`), byte-identical to the table SabreTools
-//! `NDecrypt` validates against its embedded SHA-512.
+//! The bytes are the `encr_data` array from upstream `source/encryption.cpp`,
+//! byte-identical to the table other tools validate against an embedded
+//! SHA-512 digest.
 //!
 //! DSi-enhanced and DSi-exclusive cartridges use a different KEY1 table
 //! plus modcrypt for the DSi-only regions; neither is handled here.

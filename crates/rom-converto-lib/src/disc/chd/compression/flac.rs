@@ -1,6 +1,6 @@
 //! FLAC hunk compression for the CHD `flac` codec: encodes whole
-//! 16-bit-stereo hunks and stores only the raw frames, matching chdman's
-//! headerless layout.
+//! 16-bit-stereo hunks and stores only the raw frames, matching the
+//! reference implementation's headerless layout.
 
 use crate::disc::cd::{BYTES_PER_STEREO_SAMPLE, CD_CHANNELS, SECTOR_SIZE};
 use crate::disc::chd::error::{ChdError, ChdResult};
@@ -16,8 +16,8 @@ const FLAC_BITS_PER_SAMPLE: usize = 16;
 
 /// Compress one whole 16-bit-stereo hunk with the CHD `flac` codec.
 pub(crate) fn flac_compress(data: &[u8]) -> ChdResult<Vec<u8>> {
-    // chdman only offers `flac` when the hunk is whole 16-bit
-    // stereo samples; otherwise the codec is not applicable.
+    // The reference implementation only offers `flac` when the hunk is
+    // whole 16-bit stereo samples; otherwise the codec is not applicable.
     if !data.len().is_multiple_of(BYTES_PER_STEREO_SAMPLE) {
         return Err(ChdError::InvalidHunkSize);
     }
@@ -36,8 +36,9 @@ pub(crate) fn flac_compress(data: &[u8]) -> ChdResult<Vec<u8>> {
         block_size,
     )?;
 
-    // The synthesized STREAMINFO on decode is fixed, so store only
-    // the raw frames; ties favor little-endian, matching chdman.
+    // The synthesized STREAMINFO on decode is fixed, so store only the
+    // raw frames; ties favor little-endian, matching the reference
+    // implementation.
     let le_frames = strip_flac_stream_header(&le);
     let be_frames = strip_flac_stream_header(&be);
     let (marker, frames) = if le_frames.len() <= be_frames.len() {
@@ -53,8 +54,8 @@ pub(crate) fn flac_compress(data: &[u8]) -> ChdResult<Vec<u8>> {
 }
 
 /// Strip the fLaC magic and metadata blocks, returning the raw frames.
-/// chdman's raw `flac` hunks are stored headerless; the decoder
-/// resynthesizes STREAMINFO from the hunk size.
+/// Raw `flac` hunks from the reference implementation are stored
+/// headerless; the decoder resynthesizes STREAMINFO from the hunk size.
 pub(super) fn strip_flac_stream_header(stream: &[u8]) -> &[u8] {
     let mut off = 4; // skip "fLaC"
     loop {
@@ -139,9 +140,10 @@ pub fn bytes_from_samples(samples: &[i32], endian: &Endian) -> Vec<u8> {
     output
 }
 
-/// Encode a hunk's audio sectors (`base`) as MAME's cdfl base stream:
-/// headerless FLAC frames over the big-endian reading of the sample
-/// bytes, no endian marker. STREAMINFO is resynthesized on decode.
+/// Encode a hunk's audio sectors (`base`) as the reference
+/// implementation's `cdfl` base stream: headerless FLAC frames over the
+/// big-endian reading of the sample bytes, no endian marker. STREAMINFO
+/// is resynthesized on decode.
 pub(crate) fn cdfl_compress(base: &[u8]) -> ChdResult<Vec<u8>> {
     if !base.len().is_multiple_of(BYTES_PER_STEREO_SAMPLE) {
         return Err(ChdError::InvalidHunkSize);
@@ -177,12 +179,12 @@ impl<R: std::io::Read> std::io::Read for CountingReader<R> {
     }
 }
 
-/// Decode a MAME cdfl base stream: headerless FLAC frames whose samples
-/// are the big-endian reading of the sector bytes. STREAMINFO (44100 Hz,
-/// 2 channels, 16-bit, cdfl block size) is resynthesized before claxon
-/// parses the frames. Returns the decoded audio bytes and the number of
-/// `data` bytes the FLAC stream consumed, i.e. where the subcode deflate
-/// stream begins.
+/// Decode the reference implementation's `cdfl` base stream: headerless
+/// FLAC frames whose samples are the big-endian reading of the sector bytes.
+/// STREAMINFO (44100 Hz, 2 channels, 16-bit, cdfl block size) is
+/// resynthesized before claxon parses the frames. Returns the decoded audio bytes
+/// and the number of `data` bytes the FLAC stream consumed, i.e. where the
+/// subcode deflate stream begins.
 pub(crate) fn cdfl_decompress(data: &[u8], expected_len: usize) -> ChdResult<(Vec<u8>, usize)> {
     let header = chd_flac_stream_header(chd_cd_flac_block_size(expected_len));
     let mut stream = Vec::with_capacity(header.len() + data.len());
@@ -217,7 +219,7 @@ pub(crate) fn cdfl_decompress(data: &[u8], expected_len: usize) -> ChdResult<(Ve
     Ok((bytes_from_samples(&samples, &Endian::Big), consumed))
 }
 
-/// chdman's cdfl block size: a quarter of the audio bytes in samples,
+/// Reference `cdfl` block size: a quarter of the audio bytes in samples,
 /// halved until at most one sector's worth
 /// (`chd_cd_flac_compressor::blocksize`, MAX_SECTOR_DATA).
 pub(crate) fn chd_cd_flac_block_size(audio_bytes: usize) -> usize {
@@ -228,7 +230,7 @@ pub(crate) fn chd_cd_flac_block_size(audio_bytes: usize) -> usize {
     block
 }
 
-/// chdman's FLAC block size for raw `flac` hunks: a quarter of the
+/// Reference FLAC block size for raw `flac` hunks: a quarter of the
 /// hunk in samples, halved until at most 2048
 /// (`chd_flac_compressor::blocksize`).
 pub(crate) fn chd_flac_block_size(hunk_bytes: usize) -> usize {
@@ -239,8 +241,8 @@ pub(crate) fn chd_flac_block_size(hunk_bytes: usize) -> usize {
     block
 }
 
-/// The 0x2A-byte stream header MAME's `flac_decoder::reset`
-/// synthesizes: chdman stores raw `flac` hunks headerless, so the
+/// The 0x2A-byte stream header synthesized by the reference
+/// `flac_decoder::reset`: raw `flac` hunks are stored headerless, so the
 /// fLaC magic and STREAMINFO (44100 Hz, 2 channels, 16-bit) must be
 /// regenerated before claxon can parse the frames.
 fn chd_flac_stream_header(block_size: usize) -> [u8; 42] {
@@ -256,7 +258,7 @@ fn chd_flac_stream_header(block_size: usize) -> [u8; 42] {
     header
 }
 
-/// Decode a chdman raw `flac` hunk: a 1-byte 'L'/'B' endian marker,
+/// Decode a raw CHD `flac` hunk: a 1-byte 'L'/'B' endian marker,
 /// then headerless FLAC frames of interleaved 16-bit stereo samples.
 pub(crate) fn flac_decompress_chd_raw(data: &[u8], expected_len: usize) -> ChdResult<Vec<u8>> {
     let endian = match data.first() {

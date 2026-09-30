@@ -1,6 +1,7 @@
-//! Streaming CRC32 (IEEE reflected, the zlib variant NKit uses for
-//! its whole-file self-check). A resumable plain-table implementation
-//! so positional tee hashing does not fight borrow lifetimes.
+//! Streaming CRC32 (IEEE reflected, the zlib variant the NKit format
+//! uses for its whole-file self-check). A resumable plain-table
+//! implementation so positional tee hashing does not fight borrow
+//! lifetimes.
 
 const fn build_table() -> [u32; 256] {
     let mut table = [0u32; 256];

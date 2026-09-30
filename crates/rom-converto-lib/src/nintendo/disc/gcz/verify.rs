@@ -2,9 +2,9 @@
 //!
 //! The checksums cover the bytes exactly as stored, so the pass needs
 //! no inflation: one sequential read of the data section with the
-//! checksum math spread over the worker pool. Stricter than Dolphin,
-//! which logs a mismatch and keeps serving data; here a mismatch is a
-//! hard error, matching nod.
+//! checksum math spread over the worker pool. This is stricter than
+//! the reference implementation, which logs a mismatch and keeps
+//! serving data; here, as in other tools, a mismatch is a hard error.
 
 use std::fs::File;
 use std::path::Path;

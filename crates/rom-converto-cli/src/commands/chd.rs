@@ -24,9 +24,10 @@ use rom_converto_lib::util::{CancelToken, Tally};
 /// of peeling `Vec` and expecting one `ChdCodec` per occurrence.
 pub(crate) type ChdCodecList = Vec<ChdCodec>;
 
-/// Parses a `-c/--codecs` value: a comma-separated chdman-style codec
-/// list, validated for emptiness/duplicates/slot count. The CD-only-vs-DVD
-/// check needs the resolved disc mode, so it happens later against the
+/// Parses a `-c/--codecs` value: a comma-separated codec list
+/// compatible with the reference implementation. Validates emptiness,
+/// duplicates, and slot count. The CD-only-vs-DVD check needs the
+/// resolved disc mode, so it happens later against the
 /// lib's [`rom_converto_lib::disc::chd::validate_codecs`].
 pub(crate) fn parse_chd_codecs(s: &str) -> Result<ChdCodecList, String> {
     let codecs = rom_converto_lib::disc::chd::parse_codec_list(s).map_err(|e| e.to_string())?;

@@ -1,4 +1,5 @@
-//! Xbox 360 XEX2 executable metadata (xenia `xex2_info.h` / `xex_module.cc`).
+//! Xbox 360 XEX2 executable metadata (upstream `xex2_info.h` /
+//! `xex_module.cc`).
 //!
 //! Everything in the XEX2 headers is plaintext and big-endian. The title name
 //! and icon live in an XDBF resource inside the basefile, which has to be

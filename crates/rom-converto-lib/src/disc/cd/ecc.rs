@@ -1,7 +1,8 @@
 //! CD-ROM ECC (Error Correction Code) implementation.
 //!
-//! Ported from MAME's cdrom.cpp. Used to strip and restore ECC/EDC parity
-//! bytes in CD-ROM Mode 1 sectors for improved compression ratios.
+//! Ported from the upstream implementation (`cdrom.cpp`). Used to strip
+//! and restore ECC/EDC parity bytes in CD-ROM Mode 1 sectors for improved
+//! compression ratios.
 
 use super::constants::SECTOR_SIZE;
 
