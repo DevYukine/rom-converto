@@ -2,7 +2,7 @@
 //! MD5, and SHA-256, computed in a single streaming pass over each file.
 
 use crate::util::{CancelToken, Cancelled, ProgressReporter};
-use crc::{CRC_32_ISO_HDLC, Crc};
+use crc::{CRC_32_ISO_HDLC, Crc, Table};
 use sha2::Digest as _;
 use std::io::Read;
 use std::path::Path;
@@ -71,14 +71,19 @@ impl FileDigests {
 /// `Option` so unrequested algorithms allocate no state and cost
 /// nothing in the update loop.
 pub struct MultiHasher {
-    crc: Option<crc::Digest<'static, u32>>,
+    crc: Option<Crc32Digest>,
     sha1: Option<sha1::Sha1>,
     md5: Option<md_5::Md5>,
     sha256: Option<sha2::Sha256>,
 }
 
 /// CRC-32/ISO-HDLC (zip/DAT flavour), shared by every CRC32 site in the crate.
-pub static CRC32: Crc<u32> = Crc::<u32>::new(&CRC_32_ISO_HDLC);
+/// Slice-by-16: the crate's byte-at-a-time default costs about 10% of an
+/// organize zip run on multi-MB ROMs.
+pub static CRC32: Crc<u32, Table<16>> = Crc::<u32, Table<16>>::new(&CRC_32_ISO_HDLC);
+
+/// A running [`CRC32`] digest.
+pub type Crc32Digest = crc::Digest<'static, u32, Table<16>>;
 
 impl MultiHasher {
     /// Allocates hasher state only for the requested `algos`.
