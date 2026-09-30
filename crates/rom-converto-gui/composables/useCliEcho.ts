@@ -1,18 +1,90 @@
 import rawManifest from "../types/generated/cli_echo.json";
-import type { CliEchoManifest } from "../types/generated/cli_echo";
+import type { CliEchoManifest, CliFlag } from "../types/generated/cli_echo";
 
 const manifest = rawManifest as CliEchoManifest;
 const BINARY = "rom-converto";
 
-function quote(v: unknown): string {
-	const s = v == null ? "" : String(v);
-	return s.includes(" ") ? `"${s}"` : s;
+// Values a POSIX shell treats literally: alphanumerics plus a few safe
+// punctuation marks. Anything else is quoted, so regexes, globs, and paths
+// with spaces survive the trip.
+const PLAIN = /^[A-Za-z0-9_\-.,/:@+=]+$/;
+
+// Windows shells treat single quotes as literal characters, so values there
+// get the MSVC argv encoding: double quotes, doubled inner quotes, and
+// doubled backslash runs that precede a quote or close the value.
+let WINDOWS = typeof navigator !== "undefined" && /win/i.test(navigator.platform ?? "");
+
+// Overridable for tests; the GUI never changes it at runtime.
+export function setWindowsQuoting(enabled: boolean): void {
+	WINDOWS = enabled;
 }
 
-function flagToken(kind: string, flag: string, value: unknown): string | false {
-	if (kind === "bool") return value === true && flag;
-	if (kind === "list") return Array.isArray(value) && value.length > 0 && `${flag} ${value.join(",")}`;
-	return value != null && value !== "" && `${flag} ${quote(value)}`;
+function windowsQuote(s: string): string {
+	let out = '"';
+	let slashes = 0;
+	for (const ch of s) {
+		if (ch === "\\") {
+			slashes++;
+		} else if (ch === '"') {
+			out += "\\".repeat(slashes * 2 + 1) + '"';
+			slashes = 0;
+		} else {
+			out += "\\".repeat(slashes) + ch;
+			slashes = 0;
+		}
+	}
+	return out + "\\".repeat(slashes * 2) + '"';
+}
+
+function quote(v: unknown): string {
+	const s = v == null ? "" : String(v);
+	if (s === "") return '""';
+	if (PLAIN.test(s)) return s;
+	if (WINDOWS) return windowsQuote(s);
+	return `'${s.replaceAll("'", `'\\''`)}'`;
+}
+
+function flagToken(def: CliFlag, value: unknown): string | false {
+	const { kind, flag, explicit_off } = def;
+	if (kind === "bool") {
+		if (value === true) return flag;
+		// An explicit false overrides a config true; omitting the flag
+		// would let the config value apply.
+		return value === false && explicit_off && `${flag}=false`;
+	}
+	if (kind === "list" || kind === "repeated" || kind === "equals_list") {
+		if (!Array.isArray(value)) return false;
+		if (value.length === 0) {
+			// The bare form of an equals-list flag selects the flag's own
+			// default (--remove-headers strips every detected header);
+			// other empty lists either drop out or, when the flag has an
+			// explicit empty form, ride on =.
+			if (kind === "equals_list") return flag;
+			return explicit_off && `${flag}=`;
+		}
+		const rendered = value.map((v) => quote(v));
+		if (kind === "equals_list") return `${flag}=${quote(value.join(","))}`;
+		if (kind === "repeated") {
+			return value
+				.map((v, i) => {
+					const token = rendered[i];
+					return typeof v === "string" && v.startsWith("-")
+						? `${flag}=${token}`
+						: `${flag} ${token}`;
+				})
+				.join(" ");
+		}
+		return `${flag} ${rendered.join(",")}`;
+	}
+	if (value == null) return false;
+	// An empty string is the explicit empty value; a value starting with
+	// '-' would parse as a flag, so it rides on =.
+	const text = Array.isArray(value) ? value.map((v) => String(v)).join(",") : value;
+	return text === ""
+		? `${flag}=`
+		: typeof text === "string" && text.startsWith("-")
+			? `${flag}=${quote(text)}`
+			: `${flag} ${quote(text)}`;
 }
 
 // Builds the `> rom-converto ...` preview for a `cmd_run` payload
@@ -57,10 +129,13 @@ export function buildCliCommand(payload: Record<string, unknown>): string {
 	}
 
 	for (const field of opFlags) {
-		if (field === "on_conflict" && options.on_conflict === "overwrite") continue;
+		// Other ops get the same policy from the global default, so echoing
+		// it would be noise; organize resolves an unset policy itself and
+		// must always show the flag.
+		if (field === "on_conflict" && options.on_conflict === "overwrite" && operation !== "organize") continue;
 		const def = manifest.flags[field];
 		if (!def) continue;
-		const token = flagToken(def.kind, def.flag, options[field]);
+		const token = flagToken(def, options[field]);
 		if (token) tokens.push(token);
 	}
 

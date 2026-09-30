@@ -6,6 +6,7 @@ import { open } from "~/lib/ipc";
 const props = defineProps<{
 	modelValue: string;
 	defaultOutputDir: string;
+	picker?: { title: string; clearLabel: string };
 }>();
 
 const emit = defineEmits<{
@@ -13,12 +14,16 @@ const emit = defineEmits<{
 	close: [];
 }>();
 
-const rows = computed(() => [
-	{ label: "same as source", value: "" },
-	{ label: props.defaultOutputDir, value: props.defaultOutputDir },
-	{ label: "~/roms/output", value: "~/roms/output" },
-	{ label: "~/emulation/archive", value: "~/emulation/archive" },
-]);
+const rows = computed(() =>
+	props.picker
+		? [{ label: props.picker.clearLabel, value: "" }]
+		: [
+				{ label: "same as source", value: "" },
+				{ label: props.defaultOutputDir, value: props.defaultOutputDir },
+				{ label: "~/roms/output", value: "~/roms/output" },
+				{ label: "~/emulation/archive", value: "~/emulation/archive" },
+			],
+);
 
 function select(value: string) {
 	emit("update:modelValue", value);
@@ -32,7 +37,7 @@ async function chooseFolder() {
 </script>
 
 <template>
-	<ModalShell title="Output directory" :width="460" @close="emit('close')">
+	<ModalShell :title="picker?.title ?? 'Output directory'" :width="460" @close="emit('close')">
 		<div class="rc-rows">
 			<button
 				v-for="row in rows"

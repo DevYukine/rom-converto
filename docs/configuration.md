@@ -19,7 +19,7 @@ The CLI uses the first existing path in this order:
 | macOS | `~/Library/Application Support/rom-converto/config.toml` |
 | Windows | `%APPDATA%\rom-converto\config.toml` |
 
-Malformed TOML and unknown keys are errors. Relative `output_dir` and `report` paths
+Malformed TOML and unknown keys are errors. Relative `output_dir`, `report`, and `clean_backup` paths
 resolve from the selected config file's directory. The GUI reads and writes presets in
 the same file, while preserving relative paths when it saves them.
 `ROM_CONVERTO_CONFIG` is not a supported environment variable. Use `--config`.
@@ -47,7 +47,7 @@ An unknown preset is an error.
 | `[cso]` | `block_size`, `on_conflict`, `output_dir`, `report` |
 | `[wup]` | `level`, `on_conflict` |
 | `[dat]` | `api_base`, `report`, `input_checksum_min`, `input_checksum_max` |
-| `[organize]` | `output_dir`, `output_template`, `on_conflict`, `report`, `dat`, `move_source`, `playlists` |
+| `[organize]` | `output_dir`, `output_template`, `on_conflict`, `report`, `dat`, `move_source`, `playlists`, `filter_regex`, `filter_regex_exclude`, `filter_language`, `filter_region`, `no_type`, `only_type`, `only_retail`, `single`, `prefer_game_regex`, `prefer_verified`, `prefer_good`, `prefer_language`, `prefer_region`, `prefer_revision`, `prefer_retail`, `prefer_parent`, `prefer_filename_regex`, `dir_letter`, `dir_letter_count`, `dir_letter_limit`, `dir_letter_group`, `zip_format`, `zip_exclude`, `link_mode`, `symlink_relative`, `remove_headers`, `trim_add_padding`, `clean`, `clean_exclude`, `clean_backup`, `move_delete_dirs` |
 
 `[presets.NAME]` can contain any of these format tables. `on_conflict` accepts
 `error`, `overwrite`, `skip`, `rename`, or `overwrite-invalid`.
@@ -56,7 +56,24 @@ An unknown preset is an error.
 22, `nx.block_size_exp` is 14 through 32, and `wup.level` is 0 through 22. CHD
 `codecs` is an array, for example `['cdlz', 'cdzl', 'cdfl']`. Command-line selectors
 such as CHD `--cd`/`--dvd`/`--ld`, CSO `--format`, recursion, and output templates are
-not config settings.
+not config settings; the one exception is `[organize] output_template`, which
+mirrors the organize flag of the same name.
+
+`[organize]` mirrors the `rom-converto organize` flags (the `--move` flag is the
+`move_source` key), with the same names as the
+flags in snake_case. List keys are arrays, for example
+`filter_language = ["EN", "FR"]`. `zip_format` is `torrentzip` or `rvzstd`,
+`link_mode` is `hardlink`, `symlink`, or `reflink`, `move_delete_dirs` is `never`,
+`auto`, or `always`, and `prefer_revision` is `older`, `newer`, or `any` (no
+preference). `zip_exclude = ""` is the explicit no-exclusion override.
+`remove_headers` lists the extensions whose headers are stripped; `remove_headers = []`
+is the bare-flag form and strips every detected header, `["all"]` is
+equivalent to the bare flag, omitting the key
+strips none, and the empty `--remove-headers=` form is rejected. The CLI-only
+`input_exclude`, `patch`, `patch_only`, `verify_after`, `max_depth`, `keys`,
+`allow_encrypted`, and `api_base` flags are not config keys. GUI organize runs
+always use the public instance; the echoed CLI command reads the `[dat]`
+section's `api_base`.
 
 ```toml
 [dol]

@@ -3,7 +3,7 @@
 //! result, so a corrupt or partial output gets rewritten and a valid one
 //! is kept.
 
-use super::{CancelToken, Cancelled, HashCache, ProgressReporter};
+use super::{CancelToken, Cancelled, HashCache, ProgressReporter, ZipFormat};
 use anyhow::Result;
 use std::path::Path;
 
@@ -12,12 +12,27 @@ use std::path::Path;
 /// integrity check, where the policy falls back to existence-based skip.
 /// `Nx` carries the keyset because the NX verify decrypts every NCA section;
 /// when keys are missing the existing output is kept rather than rewritten.
+/// `Zip` pins the structured zip flavour the output must be (a TorrentZip
+/// file is invalid when RvZstd was requested, and vice versa, so
+/// overwrite-invalid migrates between the two) plus the one member it must
+/// hold (name plus the source payload's CRC-32 and size); `Raw` pins a plain
+/// file's CRC-32 and size.
 #[derive(Clone)]
 pub enum OutputVerify {
     Chd,
     Cso,
     Rvz,
     Nx(Box<crate::nintendo::nx::KeySet>),
+    Zip {
+        format: ZipFormat,
+        crc: u32,
+        size: u64,
+        member: String,
+    },
+    Raw {
+        crc: u32,
+        size: u64,
+    },
     None,
 }
 
@@ -295,6 +310,28 @@ pub async fn verify_existing_output(
                 }
             }
         }
+        OutputVerify::Zip {
+            format,
+            crc,
+            size,
+            member,
+        } => {
+            let path = path.to_path_buf();
+            let cancel = cancel.clone();
+            blocking_outcome(
+                tokio::task::spawn_blocking(move || {
+                    zip_member_matches(&path, format, crc, size, &member, &cancel)
+                })
+                .await,
+            )
+        }
+        OutputVerify::Raw { crc, size } => {
+            let path = path.to_path_buf();
+            let cancel = cancel.clone();
+            blocking_outcome(
+                tokio::task::spawn_blocking(move || raw_matches(&path, crc, size, &cancel)).await,
+            )
+        }
         OutputVerify::None => {
             log::debug!(
                 "overwrite-invalid: no integrity check for {}, keeping existing output",
@@ -309,6 +346,100 @@ pub async fn verify_existing_output(
     Ok(outcome)
 }
 
+/// Maps a blocking zip/raw check to a verdict: `Ok(true)` valid, `Ok(false)`
+/// invalid, and an error the fail-closed [`unverifiable`] filter lets
+/// through unverified (the check never produced a verdict), so the existing
+/// output is kept rather than rewritten. Any other error (a decoder or
+/// checksum rejecting the payload) is the container itself being broken.
+fn blocking_outcome(
+    checked: Result<anyhow::Result<bool>, tokio::task::JoinError>,
+) -> VerifyOutcome {
+    match checked {
+        Ok(Ok(true)) => VerifyOutcome::Valid,
+        Ok(Ok(false)) => VerifyOutcome::Invalid,
+        Ok(Err(err)) if unverifiable(err.as_ref()) => {
+            log::debug!("overwrite-invalid: zip/raw check could not run, keeping output: {err}");
+            VerifyOutcome::Unverified(err.to_string())
+        }
+        Ok(Err(_)) => VerifyOutcome::Invalid,
+        Err(err) => {
+            log::debug!("overwrite-invalid: zip/raw check task failed, keeping output: {err}");
+            VerifyOutcome::Unverified(err.to_string())
+        }
+    }
+}
+
+/// Streaming CRC-32/size check for a plain-file output. `Ok(false)` is a
+/// verified mismatch; `Err` means the check could not run: the file could
+/// not be opened, sized, or read. Cancellation surfaces as an `Err` carrying
+/// [`Cancelled`], which the fail-closed caller reads as unverifiable and
+/// converts back to a cancellation error after the match.
+fn raw_matches(path: &Path, crc: u32, size: u64, cancel: &CancelToken) -> anyhow::Result<bool> {
+    if std::fs::metadata(path)?.len() != size {
+        return Ok(false);
+    }
+    Ok(crate::util::hash::crc32_of_file(path, cancel)? == crc)
+}
+
+/// Streaming payload check for a TorrentZip/RVZSTD output: the archive must
+/// be a structurally valid `format` torrentzip whose one member is `member`
+/// pinning `crc`/`size`: structurally valid central directories can still
+/// sit on a corrupt compressed stream, so the one member is decoded and
+/// folded too. `Ok(false)` is a verified mismatch, including a payload
+/// whose stream fails to decode or whose checksum breaks; `Err` means the
+/// check could not run: the archive or its member could not be opened, or
+/// an environment read failure interrupted the pass.
+/// Cancellation reads as a mismatch here; the caller converts it back after
+/// the match, like every other verify arm.
+fn zip_member_matches(
+    path: &Path,
+    format: ZipFormat,
+    crc: u32,
+    size: u64,
+    member: &str,
+    cancel: &CancelToken,
+) -> anyhow::Result<bool> {
+    use std::io::Read;
+    match crate::util::validate_torrentzip(path) {
+        Ok(Some((detected, entries)))
+            if detected == format
+                && entries.len() == 1
+                && entries[0].name == member
+                && entries[0].crc == crc
+                && entries[0].size == size => {}
+        // The check ran: the structure or one of the pins mismatches.
+        Ok(_) => return Ok(false),
+        // I/O trouble: no verdict was produced.
+        Err(err) => return Err(err),
+    }
+    let file = std::fs::File::open(path)?;
+    let mut archive = zip::ZipArchive::new(file)?;
+    if archive.len() != 1 {
+        return Ok(false);
+    }
+    let mut member = archive.by_index(0)?;
+    if member.size() != size {
+        return Ok(false);
+    }
+    let mut digest = crate::util::hash::CRC32.digest();
+    let mut chunk = vec![0u8; 4 * 1024 * 1024];
+    loop {
+        if cancel.is_cancelled() {
+            return Ok(false);
+        }
+        match member.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(read) => digest.update(&chunk[..read]),
+            // An environment read failure means the check never produced a
+            // verdict; a decode or checksum failure means the payload itself
+            // is broken.
+            Err(err) if env_io_error(&err) => return Err(err.into()),
+            Err(_) => return Ok(false),
+        }
+    }
+    Ok(digest.finalize() == crc)
+}
+
 /// Format label for the verify cache. `None` means the target is not cached:
 /// an output with no integrity check, or an NX container with no usable keyset
 /// (its verify is skipped and its output kept, so caching it would be wrong).
@@ -320,7 +451,10 @@ fn verify_label(target: &OutputVerify) -> Option<&'static str> {
         // under other labels are never read.
         OutputVerify::Rvz => Some("rvz2"),
         OutputVerify::Nx(keys) if keys.header_key.is_some() => Some("nx"),
-        OutputVerify::Nx(_) | OutputVerify::None => None,
+        OutputVerify::Nx(_)
+        | OutputVerify::Zip { .. }
+        | OutputVerify::Raw { .. }
+        | OutputVerify::None => None,
     }
 }
 
@@ -363,6 +497,18 @@ mod tests {
         assert_eq!(verify_label(&OutputVerify::Cso), Some("cso"));
         assert_eq!(verify_label(&OutputVerify::Rvz), Some("rvz2"));
         assert_eq!(verify_label(&OutputVerify::None), None);
+
+        // Zip and Raw pin digests, not a format cache key: never cached.
+        assert_eq!(
+            verify_label(&OutputVerify::Zip {
+                format: ZipFormat::TorrentZip,
+                crc: 0,
+                size: 0,
+                member: "game.rom".to_string()
+            }),
+            None
+        );
+        assert_eq!(verify_label(&OutputVerify::Raw { crc: 0, size: 0 }), None);
 
         // NX without a header key is not cached: its verify is skipped and the
         // output kept, so a cached "valid" verdict would be wrong.
@@ -526,5 +672,244 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(outcome, VerifyOutcome::Invalid);
+    }
+
+    /// Writes a real torrentzip holding `payload` under `name` at `path`.
+    fn torrentzip_of(path: &Path, payload: &[u8], name: &str) {
+        let raw = path.with_extension("payload");
+        std::fs::write(&raw, payload).unwrap();
+        crate::util::write_torrentzip(
+            &crate::util::ZipMember {
+                name: name.to_string(),
+                path: raw,
+                skip: 0,
+                pad: 0,
+                fill: 0,
+            },
+            path,
+            crate::util::ZipFormat::TorrentZip,
+            &NoProgress,
+            &CancelToken::new(),
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn zip_verify_accepts_the_pinned_member_and_rejects_corruption() {
+        let dir = tempdir().unwrap();
+        let zip_path = dir.path().join("game.zip");
+        let payload = b"rom payload bytes";
+        torrentzip_of(&zip_path, payload, "game.rom");
+        let crc = crate::util::hash::CRC32.checksum(payload);
+        let size = payload.len() as u64;
+        let target = OutputVerify::Zip {
+            format: ZipFormat::TorrentZip,
+            crc,
+            size,
+            member: "game.rom".to_string(),
+        };
+        assert_eq!(
+            verify_existing_output(&NoProgress, &zip_path, target.clone(), CancelToken::new())
+                .await
+                .unwrap(),
+            VerifyOutcome::Valid
+        );
+
+        // A member CRC that cannot be the payload's is a rewrite.
+        let stale = OutputVerify::Zip {
+            format: ZipFormat::TorrentZip,
+            crc: crc ^ 1,
+            size,
+            member: "game.rom".to_string(),
+        };
+        assert_eq!(
+            verify_existing_output(&NoProgress, &zip_path, stale, CancelToken::new())
+                .await
+                .unwrap(),
+            VerifyOutcome::Invalid
+        );
+
+        // Structural corruption (any central-directory byte flip breaks the
+        // EOCD comment checksum) is a rewrite too.
+        let mut bytes = std::fs::read(&zip_path).unwrap();
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0xFF;
+        std::fs::write(&zip_path, &bytes).unwrap();
+        assert_eq!(
+            verify_existing_output(&NoProgress, &zip_path, target, CancelToken::new())
+                .await
+                .unwrap(),
+            VerifyOutcome::Invalid
+        );
+    }
+
+    /// A central-directory-valid torrentzip whose compressed payload does
+    /// not decode to the pinned bytes is a rewrite: the payload itself is
+    /// streamed and folded, so a flipped byte in the deflate stream is
+    /// caught even though every recorded field still matches.
+    #[tokio::test]
+    async fn zip_verify_rejects_a_corrupt_compressed_payload() {
+        let dir = tempdir().unwrap();
+        let zip_path = dir.path().join("game.zip");
+        // Compressible enough that deflate actually shrinks it.
+        let payload = vec![0xABu8; 64 * 1024];
+        torrentzip_of(&zip_path, &payload, "game.rom");
+        let target = OutputVerify::Zip {
+            format: ZipFormat::TorrentZip,
+            crc: crate::util::hash::CRC32.checksum(&payload),
+            size: payload.len() as u64,
+            member: "game.rom".to_string(),
+        };
+        assert_eq!(
+            verify_existing_output(&NoProgress, &zip_path, target.clone(), CancelToken::new())
+                .await
+                .unwrap(),
+            VerifyOutcome::Valid
+        );
+
+        // Flip a byte inside the compressed member data (past the 30-byte
+        // local header plus the member name, well before the central
+        // directory, whose checksum stays intact).
+        let mut bytes = std::fs::read(&zip_path).unwrap();
+        let member_start = 30 + "game.rom".len();
+        assert!(member_start + 64 < bytes.len(), "payload not compressed in");
+        bytes[member_start + 64] ^= 0xFF;
+        std::fs::write(&zip_path, &bytes).unwrap();
+        assert_eq!(
+            verify_existing_output(&NoProgress, &zip_path, target, CancelToken::new())
+                .await
+                .unwrap(),
+            VerifyOutcome::Invalid
+        );
+    }
+
+    /// overwrite-invalid migrates between zip flavours: a structurally
+    /// perfect TorrentZip is invalid when RvZstd was requested, and the
+    /// matching flavour still passes.
+    #[tokio::test]
+    async fn zip_verify_rejects_a_different_flavour() {
+        let dir = tempdir().unwrap();
+        let zip_path = dir.path().join("game.zip");
+        let payload = b"rom payload bytes";
+        torrentzip_of(&zip_path, payload, "game.rom");
+        let crc = crate::util::hash::CRC32.checksum(payload);
+        let size = payload.len() as u64;
+        let pin = |format| OutputVerify::Zip {
+            format,
+            crc,
+            size,
+            member: "game.rom".to_string(),
+        };
+
+        assert_eq!(
+            verify_existing_output(
+                &NoProgress,
+                &zip_path,
+                pin(ZipFormat::RvZstd),
+                CancelToken::new()
+            )
+            .await
+            .unwrap(),
+            VerifyOutcome::Invalid
+        );
+        assert_eq!(
+            verify_existing_output(
+                &NoProgress,
+                &zip_path,
+                pin(ZipFormat::TorrentZip),
+                CancelToken::new()
+            )
+            .await
+            .unwrap(),
+            VerifyOutcome::Valid
+        );
+    }
+
+    /// An output nobody can read never gets a verdict: the check could not
+    /// run, so the existing output is kept rather than rewritten.
+    #[tokio::test]
+    async fn unreadable_output_is_unverified_not_invalid() {
+        let dir = tempdir().unwrap();
+        let missing = dir.path().join("gone.rom");
+        let raw = verify_existing_output(
+            &NoProgress,
+            &missing,
+            OutputVerify::Raw { crc: 0, size: 0 },
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(raw, VerifyOutcome::Unverified(_)));
+        let zip = verify_existing_output(
+            &NoProgress,
+            &missing,
+            OutputVerify::Zip {
+                format: ZipFormat::TorrentZip,
+                crc: 0,
+                size: 0,
+                member: "game.rom".to_string(),
+            },
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(zip, VerifyOutcome::Unverified(_)));
+    }
+
+    /// The container verifies read their path the same way: a missing CHD
+    /// is an environment miss (the check never ran), so the (nonexistent)
+    /// output is kept unverified instead of scheduled for a rewrite.
+    #[tokio::test]
+    async fn missing_chd_output_is_unverified_not_invalid() {
+        let dir = tempdir().unwrap();
+        let missing = dir.path().join("gone.chd");
+        let outcome =
+            verify_existing_output(&NoProgress, &missing, OutputVerify::Chd, CancelToken::new())
+                .await
+                .unwrap();
+        assert!(matches!(outcome, VerifyOutcome::Unverified(_)));
+    }
+
+    #[tokio::test]
+    async fn raw_verify_checks_size_and_crc() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("game.rom");
+        let payload = b"rom payload bytes";
+        std::fs::write(&path, payload).unwrap();
+        let crc = crate::util::hash::CRC32.checksum(payload);
+
+        let good = OutputVerify::Raw {
+            crc,
+            size: payload.len() as u64,
+        };
+        assert_eq!(
+            verify_existing_output(&NoProgress, &path, good, CancelToken::new())
+                .await
+                .unwrap(),
+            VerifyOutcome::Valid
+        );
+
+        let wrong_size = OutputVerify::Raw {
+            crc,
+            size: payload.len() as u64 + 1,
+        };
+        assert_eq!(
+            verify_existing_output(&NoProgress, &path, wrong_size, CancelToken::new())
+                .await
+                .unwrap(),
+            VerifyOutcome::Invalid
+        );
+
+        std::fs::write(&path, b"rom payload bytex").unwrap();
+        let wrong_crc = OutputVerify::Raw {
+            crc,
+            size: payload.len() as u64,
+        };
+        assert_eq!(
+            verify_existing_output(&NoProgress, &path, wrong_crc, CancelToken::new())
+                .await
+                .unwrap(),
+            VerifyOutcome::Invalid
+        );
     }
 }

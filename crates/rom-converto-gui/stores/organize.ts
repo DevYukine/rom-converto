@@ -2,13 +2,11 @@ import { defineStore } from "pinia";
 import { shallowRef } from "vue";
 import { listen } from "~/lib/ipc";
 import type { OrganizeRow, RunRow } from "~/types";
-import { useUiStore } from "~/stores/ui";
 import { MAX_LIVE_ROWS } from "./datScan";
 
 const FLUSH_MS = 100;
 
 export const useOrganizeStore = defineStore("organize", () => {
-  const ui = useUiStore();
   const outputDir = ref("");
   const outputTemplate = ref("{console}/{basename}.{ext}");
   const dat = ref(false);
@@ -17,7 +15,49 @@ export const useOrganizeStore = defineStore("organize", () => {
   const allowEncrypted = ref(false);
   const maxDepth = ref<number | null>(null);
   const keys = ref("");
-  const onConflict = ref(ui.defaultOnConflict);
+  // Library-management options. Code lists (languages, regions, types) are
+  // stored as one comma-separated string; glob, regex, and path lists are
+  // one entry per line. Both are split in the opdef's buildArgs.
+  const inputExclude = ref("");
+  const filterRegex = ref("");
+  const filterRegexExclude = ref("");
+  const filterLanguage = ref("");
+  const filterRegion = ref("");
+  const noType = ref("");
+  const onlyType = ref("");
+  const onlyRetail = ref(false);
+  const single = ref(false);
+  const preferRegion = ref("");
+  const preferLanguage = ref("");
+  const preferRevision = ref("");
+  const preferRetail = ref(false);
+  const preferParent = ref(false);
+  const preferVerified = ref(false);
+  const preferGood = ref(false);
+  const preferGameRegex = ref("");
+  const preferFilenameRegex = ref("");
+  const dirLetter = ref(false);
+  const dirLetterCount = ref<number | null>(null);
+  const dirLetterLimit = ref<number | null>(null);
+  const dirLetterGroup = ref(false);
+  // Empty means "follow the config file"; the segmented options carry the
+  // explicit values.
+  const zipFormat = ref("");
+  const zipExclude = ref("");
+  const linkMode = ref("");
+  const symlinkRelative = ref(false);
+  const removeHeaders = ref("");
+  const trimAddPadding = ref(false);
+  const patch = ref("");
+  const patchOnly = ref(false);
+  const clean = ref(false);
+  const cleanExclude = ref("");
+  const cleanBackup = ref("");
+  const moveDeleteDirs = ref("");
+  const verifyAfter = ref(false);
+  // Organize resolves an unset policy itself, so the page always sends one
+  // and defaults to the runner's own default, not the global one.
+  const onConflict = ref("error");
   const skipSpaceCheck = ref(false);
   const statusFilter = ref<"all" | OrganizeRow["status"]>("all");
   // Rows the running organize streams on the op's fixed progress key. Events
@@ -79,7 +119,42 @@ export const useOrganizeStore = defineStore("organize", () => {
     allowEncrypted.value = false;
     maxDepth.value = null;
     keys.value = "";
-    onConflict.value = ui.defaultOnConflict;
+    inputExclude.value = "";
+    filterRegex.value = "";
+    filterRegexExclude.value = "";
+    filterLanguage.value = "";
+    filterRegion.value = "";
+    noType.value = "";
+    onlyType.value = "";
+    onlyRetail.value = false;
+    single.value = false;
+    preferRegion.value = "";
+    preferLanguage.value = "";
+    preferRevision.value = "";
+    preferRetail.value = false;
+    preferParent.value = false;
+    preferVerified.value = false;
+    preferGood.value = false;
+    preferGameRegex.value = "";
+    preferFilenameRegex.value = "";
+    dirLetter.value = false;
+    dirLetterCount.value = null;
+    dirLetterLimit.value = null;
+    dirLetterGroup.value = false;
+    zipFormat.value = "";
+    zipExclude.value = "";
+    linkMode.value = "";
+    symlinkRelative.value = false;
+    removeHeaders.value = "";
+    trimAddPadding.value = false;
+    patch.value = "";
+    patchOnly.value = false;
+    clean.value = false;
+    cleanExclude.value = "";
+    cleanBackup.value = "";
+    moveDeleteDirs.value = "";
+    verifyAfter.value = false;
+    onConflict.value = "error";
     skipSpaceCheck.value = false;
     clearRunState();
   }
@@ -93,6 +168,41 @@ export const useOrganizeStore = defineStore("organize", () => {
     allowEncrypted,
     maxDepth,
     keys,
+    inputExclude,
+    filterRegex,
+    filterRegexExclude,
+    filterLanguage,
+    filterRegion,
+    noType,
+    onlyType,
+    onlyRetail,
+    single,
+    preferRegion,
+    preferLanguage,
+    preferRevision,
+    preferRetail,
+    preferParent,
+    preferVerified,
+    preferGood,
+    preferGameRegex,
+    preferFilenameRegex,
+    dirLetter,
+    dirLetterCount,
+    dirLetterLimit,
+    dirLetterGroup,
+    zipFormat,
+    zipExclude,
+    linkMode,
+    symlinkRelative,
+    removeHeaders,
+    trimAddPadding,
+    patch,
+    patchOnly,
+    clean,
+    cleanExclude,
+    cleanBackup,
+    moveDeleteDirs,
+    verifyAfter,
     onConflict,
     skipSpaceCheck,
     statusFilter,

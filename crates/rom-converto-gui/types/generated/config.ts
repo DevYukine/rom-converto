@@ -57,7 +57,7 @@ level?: number | null, mode?: string | null, block_size_exp?: number | null, on_
 /**
  * Config defaults for the `organize` library-organizing run.
  */
-export type OrganizeDefaults = { output_dir?: string | null, output_template?: string | null, on_conflict?: string | null, report?: string | null, dat?: boolean | null, move_source?: boolean | null, playlists?: boolean | null, };
+export type OrganizeDefaults = { output_dir?: string | null, output_template?: string | null, on_conflict?: string | null, report?: string | null, dat?: boolean | null, move_source?: boolean | null, playlists?: boolean | null, filter_regex?: Array<string> | null, filter_regex_exclude?: Array<string> | null, filter_language?: Array<string> | null, filter_region?: Array<string> | null, no_type?: Array<string> | null, only_type?: Array<string> | null, only_retail?: boolean | null, single?: boolean | null, prefer_game_regex?: Array<string> | null, prefer_verified?: boolean | null, prefer_good?: boolean | null, prefer_language?: Array<string> | null, prefer_region?: Array<string> | null, prefer_revision?: string | null, prefer_retail?: boolean | null, prefer_parent?: boolean | null, prefer_filename_regex?: Array<string> | null, dir_letter?: boolean | null, dir_letter_count?: number | null, dir_letter_limit?: number | null, dir_letter_group?: boolean | null, zip_format?: string | null, zip_exclude?: string | null, link_mode?: string | null, symlink_relative?: boolean | null, remove_headers?: Array<string> | null, trim_add_padding?: boolean | null, clean?: boolean | null, clean_exclude?: Array<string> | null, clean_backup?: string | null, move_delete_dirs?: string | null, };
 
 /**
  * A named bundle of per-format defaults that fully replaces the matching

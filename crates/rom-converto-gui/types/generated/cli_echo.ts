@@ -30,12 +30,18 @@ export type CliFlag = { flag: string,
  * Global flags are parsed before the subcommand, so they are emitted
  * ahead of the operation path.
  */
-global: boolean, kind: FlagKind, };
+global: boolean, kind: FlagKind, 
+/**
+ * The CLI can spell this option's explicit off or empty value
+ * (`--flag=false`, `--flag=`), which overrides a config value where
+ * omitting the flag would take the config value.
+ */
+explicit_off: boolean, };
 
 /**
  * How a [`CliFlag`] carries its value on the command line.
  */
-export type FlagKind = "bool" | "value" | "list" | "positional";
+export type FlagKind = "bool" | "value" | "list" | "repeated" | "equals_list" | "positional";
 
 /**
  * Where a subcommand takes its output path.

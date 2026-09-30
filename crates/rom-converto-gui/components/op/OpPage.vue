@@ -4,6 +4,7 @@ import { open, save } from "~/lib/ipc";
 import { useConfigStore } from "~/stores/config";
 import { useStaging } from "~/lib/staging";
 import { buildCliCommand } from "~/composables/useCliEcho";
+import { boundedNumber } from "~/lib/fields";
 import ConfigCard from "~/components/ui/ConfigCard.vue";
 import LevelSlider from "~/components/ui/LevelSlider.vue";
 import Segmented from "~/components/ui/Segmented.vue";
@@ -60,11 +61,6 @@ const showSafety = computed(() => showConflict.value || showVerify.value || show
 
 function visible(field: FieldDef): boolean {
 	return field.visible ? field.visible(store) : true;
-}
-
-function toNumber(e: Event): number | null {
-	const v = (e.target as HTMLInputElement).value;
-	return v === "" ? null : Number(v);
 }
 
 async function pickFile(field: FieldDef & { filters?: { name: string; extensions: string[] }[] }) {
@@ -183,26 +179,42 @@ function copied() {
 							:clickable="!!field.onClick"
 							@click="field.onClick && field.onClick(store)"
 						/>
-						<label v-else-if="field.kind === 'number'" class="rc-num">
-							<FieldLabel :label="field.label" :tooltip="field.tooltip" />
-							<input
-								type="number"
-								class="rc-num__input"
-								:placeholder="field.placeholder"
-								:value="store[field.key]"
-								@input="store[field.key] = toNumber($event)"
-							/>
-						</label>
-						<label v-else-if="field.kind === 'text'" class="rc-num">
-							<FieldLabel :label="field.label" :tooltip="field.tooltip" />
-							<input
-								type="text"
-								class="rc-num__input rc-num__input--text"
-								:placeholder="field.placeholder"
-								:value="store[field.key]"
-								@input="store[field.key] = ($event.target as HTMLInputElement).value"
-							/>
-						</label>
+						<div v-else-if="field.kind === 'number'" class="rc-field">
+							<label class="rc-num">
+								<FieldLabel :label="field.label" :tooltip="field.tooltip" />
+								<input
+									type="number"
+									class="rc-num__input"
+									:placeholder="field.placeholder"
+									:min="field.min"
+									:max="field.max"
+									:value="store[field.key]"
+									@input="store[field.key] = boundedNumber($event, field)"
+								/>
+							</label>
+							<p v-if="field.hint" class="rc-field__note">{{ field.hint }}</p>
+						</div>
+						<div v-else-if="field.kind === 'text'" class="rc-field">
+							<label class="rc-num">
+								<FieldLabel :label="field.label" :tooltip="field.tooltip" />
+								<textarea
+									v-if="field.multiline"
+									class="rc-num__input rc-num__input--text"
+									:placeholder="field.placeholder"
+									:value="store[field.key]"
+									@input="store[field.key] = ($event.target as HTMLTextAreaElement).value"
+								/>
+								<input
+									v-else
+									type="text"
+									class="rc-num__input rc-num__input--text"
+									:placeholder="field.placeholder"
+									:value="store[field.key]"
+									@input="store[field.key] = ($event.target as HTMLInputElement).value"
+								/>
+							</label>
+							<p v-if="field.hint" class="rc-field__note">{{ field.hint }}</p>
+						</div>
 						<KvRow
 							v-else-if="field.kind === 'file'"
 							:label="field.label"
@@ -258,7 +270,7 @@ function copied() {
 					v-if="showVerify"
 					:model-value="store.verifyAfter"
 					:label="def.verifyLabel"
-					tooltip="Runs the same integrity check the verify page does on each output right after it is written."
+					:tooltip="def.verifyTooltip ?? 'Runs the same integrity check the verify page does on each output right after it is written.'"
 					@update:model-value="store.verifyAfter = $event"
 				/>
 				<ToggleSwitch
@@ -282,8 +294,9 @@ function copied() {
 
 		<DirectoryPickerModal
 			v-if="dirRow"
-			:model-value="dirRow.display(store)"
+			:model-value="dirRow.value ? dirRow.value(store) : dirRow.display(store)"
 			:default-output-dir="def.defaultOutputDir ?? ''"
+			:picker="dirRow.picker"
 			@update:model-value="setDir"
 			@close="dirRow = null"
 		/>

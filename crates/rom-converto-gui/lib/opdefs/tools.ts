@@ -195,6 +195,7 @@ const playlist: OpDef = {
 			kind: "directory",
 			label: "Output directory",
 			display: (store) => store.outputDir || "(next to input)",
+			value: (store) => store.outputDir,
 			set: (store, value) => {
 				store.outputDir = value;
 			},
@@ -558,6 +559,7 @@ const nxSplit: OpDef = {
 			kind: "directory",
 			label: "Output directory",
 			display: (store) => store.outputDir || "same as source",
+			value: (store) => store.outputDir,
 			set: (store, value) => {
 				store.outputDir = value;
 			},

@@ -30,7 +30,9 @@ Convert, compress, decrypt, and verify ROMs and disc images. Available as a comm
 `info` also inspects PSP, PS Vita, PS3, PS4, and PS5 packages, and classic cartridge ROMs. Inspection support does not imply conversion support. See [formats and compatibility](docs/formats.md) for extensions, limits, and emulator guidance.
 
 `organize` sorts a whole library folder into per-console folders and converts each
-file to the best archival format for its console. See [CLI reference](docs/cli.md#organize).
+file to the best archival format for its console, with release-tag filtering,
+one release per game, letter folders, TorrentZip zips, header removal, patching, and
+output cleaning. See [CLI reference](docs/cli.md#organize).
 
 **Preview first:** add `--dry-run` to a conversion to see planned outputs. Use `-R` (`--recursive`) on commands that support folder scans.
 
@@ -80,6 +82,9 @@ rom-converto hash -R ./games --report hashes.csv
 
 # Sort a library into per-console folders
 rom-converto organize ./library --output-dir ./sorted --dry-run
+
+# Keep one release per game, in letter folders, cleaning stale output
+rom-converto organize ./library --output-dir ./sorted --dat --single --prefer-region USA,EUR,JPN --dir-letter --clean
 ```
 
 Most conversions derive the output name from the input. Use an explicit output path or `--output-dir` where supported.

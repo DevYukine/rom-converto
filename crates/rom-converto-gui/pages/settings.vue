@@ -170,10 +170,10 @@ onMounted(async () => {
 				<div class="row">
 					<FieldLabel
 						label="Default on-conflict policy"
-						tooltip="Applied to new jobs unless a page overrides it. What to do when the output file already exists."
+						tooltip="Applied to new jobs unless a page overrides it. What to do when the output file already exists. Organize always starts at Error regardless of this setting."
 					/>
 					<ConflictPopover v-model="ui.defaultOnConflict" />
-					<p class="caption">Pages can still override before queuing.</p>
+					<p class="caption">Pages can still override before queuing. Organize always starts at Error.</p>
 				</div>
 			</ConfigCard>
 

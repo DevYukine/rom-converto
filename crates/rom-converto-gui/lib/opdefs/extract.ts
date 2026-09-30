@@ -35,6 +35,7 @@ function outputRows(): OutputRow[] {
 			kind: "directory",
 			label: "Directory",
 			display: (s) => s.outputDir || "same as source",
+			value: (s) => s.outputDir,
 			set: (s, v) => { s.outputDir = v; },
 			tooltip: "Where extracted files are written. Leave empty to write each output next to its source file.",
 		},

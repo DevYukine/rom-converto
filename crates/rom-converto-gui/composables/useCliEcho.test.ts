@@ -1,6 +1,9 @@
-import { describe, expect, it } from "vitest";
-import { buildCliCommand } from "./useCliEcho";
+import { describe, expect, it, beforeEach } from "vitest";
+import { buildCliCommand, setWindowsQuoting } from "./useCliEcho";
 import { runArgs } from "../lib/opdefs/types";
+
+// The POSIX-quote expectations below must not depend on the host OS.
+beforeEach(() => setWindowsQuoting(false));
 
 describe("buildCliCommand", () => {
   it("orders global flags dry-run, then skip-space-check, ahead of the op path", () => {
@@ -37,7 +40,7 @@ describe("buildCliCommand", () => {
 
   it("suppresses the positional output when an output template is set", () => {
     const payload = runArgs("chd.compress", "a.iso", "a.chd", { output_template: "{title}.chd" }, false, "t6");
-    expect(buildCliCommand(payload)).toBe("> rom-converto chd compress a.iso --output-template {title}.chd");
+    expect(buildCliCommand(payload)).toBe("> rom-converto chd compress a.iso --output-template '{title}.chd'");
   });
 
   it("emits a bool-kind flag only when true", () => {
@@ -45,7 +48,7 @@ describe("buildCliCommand", () => {
     expect(buildCliCommand(payload)).toBe("> rom-converto dol verify a.dol");
   });
 
-  it("quotes flag values containing spaces", () => {
+  it("single-quotes values with shell metacharacters, not only spaces", () => {
     const payload = runArgs(
       "nx.merge",
       "a.xci",
@@ -55,8 +58,55 @@ describe("buildCliCommand", () => {
       "t8",
     );
     expect(buildCliCommand(payload)).toBe(
-      '> rom-converto --skip-space-check nx merge a.xci --output merged.xci --format xci --keys "C:\\Program Files\\keys\\prod.keys"',
+      "> rom-converto --skip-space-check nx merge a.xci --output merged.xci --format xci --keys 'C:\\Program Files\\keys\\prod.keys'",
     );
+  });
+
+  it("emits one flag per value for repeated-kind flags", () => {
+    const payload = runArgs(
+      "organize",
+      "./library",
+      null,
+      { output_dir: "./sorted", filter_regex: ["(USA|Europe)", "Rev A"], patch: ["a.ips", "b.bps"] },
+      false,
+      "t12",
+    );
+    expect(buildCliCommand(payload)).toBe(
+      "> rom-converto organize ./library --filter-regex '(USA|Europe)' --filter-regex 'Rev A' --output-dir ./sorted --patch a.ips --patch b.bps",
+    );
+  });
+
+  it("echoes the bare --remove-headers for an empty list and the = form for values", () => {
+    const all = runArgs("organize", "./library", null, { output_dir: "./sorted", remove_headers: [] }, false, "t13");
+    expect(buildCliCommand(all)).toBe("> rom-converto organize ./library --output-dir ./sorted --remove-headers");
+    const listed = runArgs(
+      "organize",
+      "./library",
+      null,
+      { output_dir: "./sorted", remove_headers: ["nes", "fds"] },
+      false,
+      "t13b",
+    );
+    expect(buildCliCommand(listed)).toBe("> rom-converto organize ./library --output-dir ./sorted --remove-headers=nes,fds");
+  });
+
+  it("echoes organize's explicit on-conflict even when it is overwrite", () => {
+    const payload = runArgs("organize", "./library", null, { output_dir: "./sorted", on_conflict: "overwrite" }, false, "t14");
+    expect(buildCliCommand(payload)).toBe("> rom-converto organize ./library --on-conflict overwrite --output-dir ./sorted");
+  });
+
+  it("emits the = form for values that start with a dash", () => {
+    const repeated = runArgs(
+      "organize",
+      "./library",
+      null,
+      { output_dir: "./sorted", filter_regex: ["-Beta"] },
+      false,
+      "t15",
+    );
+    expect(buildCliCommand(repeated)).toBe("> rom-converto organize ./library --filter-regex=-Beta --output-dir ./sorted");
+    const single = runArgs("organize", "./library", null, { output_dir: "./sorted", zip_exclude: "-*.bad" }, false, "t16");
+    expect(buildCliCommand(single)).toBe("> rom-converto organize ./library --output-dir ./sorted --zip-exclude='-*.bad'");
   });
 
   it("emits --report from reportFile, not from the options", () => {

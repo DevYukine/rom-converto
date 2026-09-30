@@ -2283,6 +2283,8 @@ async fn run_comparison_verify(
         verdict: VerifyVerdict::Unverified,
         message: format!("{COULD_NOT_VERIFY}{err}"),
     };
+    // Zip and Raw reuse the overwrite-invalid check wholesale and only map
+    // its verdict onto a report; only cancellation escapes it as an error.
     Some(match target {
         OutputVerify::None => return None,
         OutputVerify::Chd => {
@@ -2321,6 +2323,14 @@ async fn run_comparison_verify(
                 Ok(Err(_)) => report(false, false),
                 // The blocking task never produced a verdict:
                 // infrastructure, not data, like the Chd/Cso worker pools.
+                Err(e) => could_not(e.to_string()),
+            }
+        }
+        OutputVerify::Zip { .. } | OutputVerify::Raw { .. } => {
+            match verify_existing_output(progress, output, target, cancel.clone()).await {
+                Ok(VerifyOutcome::Valid) => report(true, false),
+                Ok(VerifyOutcome::Invalid) => report(false, false),
+                Ok(VerifyOutcome::Unverified(cause)) => could_not(cause),
                 Err(e) => could_not(e.to_string()),
             }
         }
@@ -2373,6 +2383,11 @@ pub(crate) struct PreparedOutput {
     /// for an operation carrying [`OutputVerify::None`]: an output nobody
     /// checked is never claimed valid.
     pub(crate) kept_valid: bool,
+    /// True when an existing output failed verification under
+    /// `overwrite-invalid` and the returned output path rewrites it. Set
+    /// only for that verdict: a brand-new output never sets it, so callers
+    /// announce a rewrite exactly when one replaces an invalid file.
+    pub(crate) rewrite_invalid: bool,
 }
 
 /// An existing-output refusal carrying the [`OutputExists`] marker, so a
@@ -2457,6 +2472,7 @@ pub(crate) fn prepare_output_dir(
         output: write.then(|| desired.to_path_buf()),
         line,
         kept_valid: false,
+        rewrite_invalid: false,
     })
 }
 
@@ -2469,14 +2485,60 @@ pub(crate) async fn prepare_output(
     verify: OutputVerify,
     cancel: &CancelToken,
 ) -> Result<PreparedOutput> {
+    prepare_output_inner(
+        progress, req, input, desired, operation, verify, cancel, false, false,
+    )
+    .await
+}
+
+/// [`prepare_output`] with the rewrite announcement suppressed: organize
+/// logs it only after its write guards pass. `released` is a dry run's
+/// mirror of a source this run frees: the desired path still exists on
+/// disk, but a real run finds it gone, so the dry run plans it as new.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn prepare_output_quiet(
+    progress: &dyn ProgressReporter,
+    req: &RunRequest,
+    input: &Path,
+    desired: &Path,
+    operation: &str,
+    verify: OutputVerify,
+    cancel: &CancelToken,
+    released: bool,
+) -> Result<PreparedOutput> {
+    prepare_output_inner(
+        progress, req, input, desired, operation, verify, cancel, true, released,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn prepare_output_inner(
+    progress: &dyn ProgressReporter,
+    req: &RunRequest,
+    input: &Path,
+    desired: &Path,
+    operation: &str,
+    verify: OutputVerify,
+    cancel: &CancelToken,
+    quiet_rewrite: bool,
+    released: bool,
+) -> Result<PreparedOutput> {
     let policy = conflict_policy(req)?;
-    let resolution = resolve_conflict(desired, policy)?;
+    let absent = req.dry_run && released;
+    let resolution = if absent {
+        ConflictResolution::Write(desired.to_path_buf())
+    } else {
+        resolve_conflict(desired, policy)?
+    };
     if req.dry_run {
         let output = match &resolution {
             ConflictResolution::Write(p) => p.clone(),
             ConflictResolution::Skip => desired.to_path_buf(),
         };
-        let decision = if policy == ConflictPolicy::OverwriteInvalid && desired.exists() {
+        let decision = if absent {
+            crate::util::PlanDecision::New
+        } else if policy == ConflictPolicy::OverwriteInvalid && desired.exists() {
             match verify_existing(req, progress, desired, verify, cancel).await? {
                 VerifyOutcome::Valid => crate::util::PlanDecision::KeepValid,
                 VerifyOutcome::Invalid => crate::util::PlanDecision::RewriteInvalid,
@@ -2498,6 +2560,7 @@ pub(crate) async fn prepare_output(
                 missing_keys: None,
             }),
             kept_valid: false,
+            rewrite_invalid: false,
         });
     }
 
@@ -2506,6 +2569,7 @@ pub(crate) async fn prepare_output(
             output: Some(path),
             line: None,
             kept_valid: false,
+            rewrite_invalid: false,
         }),
         ConflictResolution::Skip
             if policy == ConflictPolicy::OverwriteInvalid && desired.exists() =>
@@ -2517,6 +2581,7 @@ pub(crate) async fn prepare_output(
                         output: None,
                         line: None,
                         kept_valid: true,
+                        rewrite_invalid: false,
                     })
                 }
                 VerifyOutcome::Unverified(_) => {
@@ -2525,17 +2590,21 @@ pub(crate) async fn prepare_output(
                         output: None,
                         line: None,
                         kept_valid: false,
+                        rewrite_invalid: false,
                     })
                 }
                 VerifyOutcome::Invalid => {
-                    log::info!(
-                        "Rewriting, output failed verification: {}",
-                        desired.display()
-                    );
+                    if !quiet_rewrite {
+                        log::info!(
+                            "Rewriting, output failed verification: {}",
+                            desired.display()
+                        );
+                    }
                     Ok(PreparedOutput {
                         output: Some(desired.to_path_buf()),
                         line: None,
                         kept_valid: false,
+                        rewrite_invalid: true,
                     })
                 }
             }
@@ -2546,6 +2615,7 @@ pub(crate) async fn prepare_output(
                 output: None,
                 line: None,
                 kept_valid: false,
+                rewrite_invalid: false,
             })
         }
     }
@@ -3504,6 +3574,66 @@ mod tests {
             "nobody checked it, so it is not claimed valid"
         );
         assert_eq!(std::fs::read(&desired).unwrap(), b"stale nsz");
+    }
+
+    /// `rewrite_invalid` is set only when an existing output verified
+    /// invalid: a fresh output and a kept-valid output never announce a
+    /// rewrite.
+    #[tokio::test]
+    async fn prepare_output_flags_a_rewrite_only_for_an_invalid_existing_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("game.bin");
+        let desired = dir.path().join("game.out");
+        std::fs::write(&input, b"payload").unwrap();
+        let crc = crate::util::hash::CRC32.checksum(b"payload");
+        let verify = || OutputVerify::Raw {
+            crc,
+            size: b"payload".len() as u64,
+        };
+        let req = RunRequest {
+            schema: None,
+            operation: "organize".to_string(),
+            input: Some(input.clone()),
+            output: None,
+            config: None,
+            preset: None,
+            options: RunOptions {
+                on_conflict: Some("overwrite-invalid".to_string()),
+                ..RunOptions::default()
+            },
+            dry_run: false,
+            ctx: Default::default(),
+        };
+        let prepare = || async {
+            prepare_output_quiet(
+                &crate::util::NoProgress,
+                &req,
+                &input,
+                &desired,
+                "copy",
+                verify(),
+                &CancelToken::new(),
+                false,
+            )
+            .await
+            .unwrap()
+        };
+
+        // Nothing at the path: a fresh write, not a rewrite.
+        let fresh = prepare().await;
+        assert!(fresh.output.is_some());
+        assert!(!fresh.rewrite_invalid, "a fresh output is no rewrite");
+
+        // A valid output is kept.
+        std::fs::write(&desired, b"payload").unwrap();
+        let kept = prepare().await;
+        assert!(kept.kept_valid && !kept.rewrite_invalid);
+
+        // A corrupt output is rewritten and says so.
+        std::fs::write(&desired, b"corrupt!").unwrap();
+        let rewritten = prepare().await;
+        assert!(rewritten.output.is_some());
+        assert!(rewritten.rewrite_invalid, "an invalid output is rewritten");
     }
 
     /// A dry run over an existing output that nobody can check

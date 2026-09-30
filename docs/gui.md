@@ -61,7 +61,10 @@ Under **Organize**, drop a library folder and pick a required output directory.
 Every file is detected, optionally renamed through the online Playmatch
 database, filed under `<output>/<console>/` following the layout template
 (default `{console}/{basename}.{ext}`, tokens `{console} {title} {titleId}
-{region} {serial} {basename} {ext}`), and converted to the best archival
+{region} {serial} {basename} {ext} {language} {type} {dat} {game}
+{input_dir}`, plus the frontend tokens `{adam} {batocera} {crossmix} {es}
+{funkeyos} {minui} {mister} {miyoocfw} {onion} {pocket} {retrodeck}
+{rocknix} {romm} {spruce} {twmenu}`), and converted to the best archival
 format for its console: GameCube and Wii compress to RVZ, 3DS to Z3DS, Switch
 to NSZ/XCZ (requires `prod.keys`), Wii U to WUA, PS1, PS2, Saturn, Sega CD and
 LaserDisc to CHD, PSP to CSO, Xbox to XISO, Xbox 360 to ZAR, PS3 to a
@@ -73,6 +76,30 @@ during a dry run. `.m3u` playlists for multi-disc sets are written on real
 runs only, never during a dry run. Move deletes each source only after its
 organized copy was written successfully.
 
+The remaining options mirror the CLI flags, grouped as in
+[the CLI reference](cli.md#organize):
+
+- **Choose what gets organized**: excluded input globs, name-regex include and
+  exclude, language and region filters, kinds to drop or keep, and retail-only.
+- **Best release**: keep one release per parent/clone group
+  (needs the DAT match) and the preferences that pick the winner: name regex,
+  verified, good, language, region, revision, retail, and parent. A separate
+  file-name regex breaks ties between inputs for the same game or the same
+  output path, after the already-placed and format preferences, whether or
+  not Best release is on.
+- **Zip, links, and output layout**: letter folders with count, limit, and
+  range grouping; TorrentZip or RVZSTD; a zip-exclusion glob; and hardlink,
+  symlink, or reflink instead of copying already-correct files.
+- **Headers, trimming, and patching**: header stripping (`nes`, `fds`, `a78`,
+  `lnx`, `smc`/`sfc`), re-padding trimmed GBA/NDS dumps, and CRC32-matched patch
+  application with a patch-only mode.
+- **Cleaning up**: delete files in written output folders that the run did not
+  produce (clean never deletes files under INPUT), with exclusion globs, a flat backup
+  folder, and source-folder deletion after moves; plus post-write verification
+  of zips, copies, and conversions. A conversion whose format has no output
+  check (3DS, Wii U, Xbox, Xbox 360, and PS3) fails as unverified and keeps
+  its source.
+
 ## Output and safety controls
 
 Switch split and GoD conversion overwrite multiple files directly. Use a separate
@@ -81,13 +108,17 @@ output directory if you need to retain the previous output after a failed or can
 Write pages provide `On conflict`: Overwrite, Skip, Rename, Error, and Overwrite
 if invalid. Skip and Error leave an existing target unchanged. The last option
 verifies supported outputs before choosing whether to retain or replace them.
+Organize always starts at Error, regardless of the default policy setting.
 
 Most write pages provide Preview. It uses the same planning logic as CLI
 `--dry-run` and writes no conversion output. Archive previews may extract a file into a temporary directory, which is cleaned up afterward. The app also checks available space before a
 write, using the input size plus 256 MiB as a conservative floor. A page option
 can skip that check. Organize's Move option deletes source files only after
 their organized copies were written successfully; skipped or failed files keep
-their sources.
+their sources, except with On conflict set to Overwrite if invalid: an existing
+zip, copy, or hardlink (never a symlink) that verifies valid counts as written
+and its source is deleted. Any item whose planned output path is its own
+source file is left untouched as already in place.
 
 Cancel stops current work and removes its partial output. Completed files remain
 completed. Batch completion can send an OS notification and update the taskbar or

@@ -24,6 +24,11 @@ pub enum FlagKind {
     Value,
     /// A comma-separated list in the next argument.
     List,
+    /// One value per flag occurrence; the flag is repeated for each value.
+    Repeated,
+    /// An optional comma-separated list that only takes a value in the
+    /// `--flag=a,b` form; the bare flag carries its own meaning.
+    EqualsList,
     /// Not a flag: the values are extra positional arguments.
     Positional,
 }
@@ -38,6 +43,10 @@ pub struct CliFlag {
     /// ahead of the operation path.
     pub global: bool,
     pub kind: FlagKind,
+    /// The CLI can spell this option's explicit off or empty value
+    /// (`--flag=false`, `--flag=`), which overrides a config value where
+    /// omitting the flag would take the config value.
+    pub explicit_off: bool,
 }
 
 /// Everything a frontend needs to echo a request as a CLI invocation.
@@ -91,7 +100,6 @@ const OVERRIDES: &[(&str, Override)] = &[
     ("skip_space_check", Override::Global),
     ("extensions", Override::Flag("--ext")),
     ("deep_verify", Override::Flag("--deep")),
-    ("verify_after", Override::Dropped),
     // `ctr verify` spells its TMD content-hash pass --full.
     ("content_hashes", Override::Flag("--full")),
     // Legacy alias the runner folds into output_dir before dispatch.
@@ -126,7 +134,7 @@ const FIELDS: &[(&str, FlagKind)] = &[
     ("format", FlagKind::Value),
     ("block_size", FlagKind::Value),
     ("hunk_size", FlagKind::Value),
-    ("codecs", FlagKind::List),
+    ("codecs", FlagKind::Value),
     ("mode", FlagKind::Value),
     ("parent", FlagKind::Value),
     ("full", FlagKind::Bool),
@@ -166,6 +174,40 @@ const FIELDS: &[(&str, FlagKind)] = &[
     ("dat", FlagKind::Bool),
     ("move_source", FlagKind::Bool),
     ("playlists", FlagKind::Bool),
+    ("input_exclude", FlagKind::Repeated),
+    ("filter_regex", FlagKind::Repeated),
+    ("filter_regex_exclude", FlagKind::Repeated),
+    ("filter_language", FlagKind::List),
+    ("filter_region", FlagKind::List),
+    ("no_type", FlagKind::List),
+    ("only_type", FlagKind::List),
+    ("only_retail", FlagKind::Bool),
+    ("single", FlagKind::Bool),
+    ("prefer_game_regex", FlagKind::Repeated),
+    ("prefer_verified", FlagKind::Bool),
+    ("prefer_good", FlagKind::Bool),
+    ("prefer_language", FlagKind::List),
+    ("prefer_region", FlagKind::List),
+    ("prefer_revision", FlagKind::Value),
+    ("prefer_retail", FlagKind::Bool),
+    ("prefer_parent", FlagKind::Bool),
+    ("prefer_filename_regex", FlagKind::Repeated),
+    ("dir_letter", FlagKind::Bool),
+    ("dir_letter_count", FlagKind::Value),
+    ("dir_letter_limit", FlagKind::Value),
+    ("dir_letter_group", FlagKind::Bool),
+    ("zip_format", FlagKind::Value),
+    ("zip_exclude", FlagKind::Value),
+    ("link_mode", FlagKind::Value),
+    ("symlink_relative", FlagKind::Bool),
+    ("remove_headers", FlagKind::EqualsList),
+    ("trim_add_padding", FlagKind::Bool),
+    ("patch", FlagKind::Repeated),
+    ("patch_only", FlagKind::Bool),
+    ("clean", FlagKind::Bool),
+    ("clean_exclude", FlagKind::Repeated),
+    ("clean_backup", FlagKind::Value),
+    ("move_delete_dirs", FlagKind::Value),
 ];
 
 /// Non-global option fields each subcommand accepts, keyed by the joined
@@ -490,15 +532,50 @@ const PATH_FLAGS: &[(&str, &[&str])] = &[
         &[
             "allow_encrypted",
             "api_base",
+            "clean",
+            "clean_backup",
+            "clean_exclude",
             "dat",
+            "dir_letter",
+            "dir_letter_count",
+            "dir_letter_group",
+            "dir_letter_limit",
+            "filter_language",
+            "filter_regex",
+            "filter_regex_exclude",
+            "filter_region",
+            "input_exclude",
             "keys",
+            "link_mode",
             "max_depth",
+            "move_delete_dirs",
             "move_source",
+            "no_type",
             "on_conflict",
+            "only_retail",
+            "only_type",
             "output_dir",
             "output_template",
+            "patch",
+            "patch_only",
             "playlists",
+            "prefer_filename_regex",
+            "prefer_game_regex",
+            "prefer_good",
+            "prefer_language",
+            "prefer_parent",
+            "prefer_region",
+            "prefer_retail",
+            "prefer_revision",
+            "prefer_verified",
+            "remove_headers",
             "report",
+            "single",
+            "symlink_relative",
+            "trim_add_padding",
+            "verify_after",
+            "zip_exclude",
+            "zip_format",
         ],
     ),
     (
@@ -629,6 +706,36 @@ fn find_override(key: &str) -> Option<&'static Override> {
     OVERRIDES.iter().find(|(k, _)| *k == key).map(|(_, o)| o)
 }
 
+/// Option fields whose explicit off or empty value has a CLI spelling that
+/// overrides a config value.
+const EXPLICIT_OFF: &[&str] = &[
+    "dat",
+    "move_source",
+    "playlists",
+    "only_retail",
+    "single",
+    "prefer_verified",
+    "prefer_good",
+    "prefer_retail",
+    "prefer_parent",
+    "dir_letter",
+    "dir_letter_group",
+    "symlink_relative",
+    "trim_add_padding",
+    "clean",
+    "filter_regex",
+    "filter_regex_exclude",
+    "filter_language",
+    "filter_region",
+    "no_type",
+    "only_type",
+    "prefer_game_regex",
+    "prefer_language",
+    "prefer_region",
+    "prefer_filename_regex",
+    "clean_exclude",
+];
+
 /// The subcommand path for an operation: the name split on `.`, with `_`
 /// turned into `-`, unless [`OVERRIDES`] says otherwise.
 pub fn cli_path(op: &str) -> Vec<String> {
@@ -653,6 +760,7 @@ pub fn cli_flag(field: &str) -> Option<CliFlag> {
         },
         global: matches!(ovr, Some(Override::Global)),
         kind: *kind,
+        explicit_off: EXPLICIT_OFF.contains(&field),
     })
 }
 
@@ -715,7 +823,7 @@ mod tests {
         assert_eq!(on_conflict.kind, FlagKind::Value);
         assert!(cli_flag("dry_run").unwrap().global);
         assert_eq!(cli_flag("extensions").unwrap().flag, "--ext");
-        assert!(cli_flag("verify_after").is_none());
+        assert_eq!(cli_flag("verify_after").unwrap().flag, "--verify-after");
         assert!(cli_flag("nonexistent").is_none());
     }
 

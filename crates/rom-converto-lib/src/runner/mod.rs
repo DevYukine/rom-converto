@@ -14,7 +14,7 @@ use std::sync::Mutex;
 /// CLI-invocation metadata for a request, for frontends that echo commands.
 pub mod cli_echo;
 mod dat;
-mod defaults;
+pub mod defaults;
 pub(crate) mod ops;
 mod ops_misc;
 mod ops_ms;

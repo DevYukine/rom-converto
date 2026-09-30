@@ -65,11 +65,16 @@ export interface KvField extends FieldBase {
 export interface NumberField extends FieldBase {
 	kind: "number";
 	placeholder?: string;
+	// Inclusive bounds the input validates against.
+	min?: number;
+	max?: number;
 }
 
 export interface TextField extends FieldBase {
 	kind: "text";
 	placeholder?: string;
+	// Renders a textarea; the value is one entry per line.
+	multiline?: boolean;
 }
 
 export interface FileField extends FieldBase {
@@ -103,9 +108,15 @@ export interface OutputRow {
 	kind: "directory" | "template" | "text" | "report" | "save";
 	label: string;
 	display: (store: OpStore) => string;
+	// kind "directory" only: the stored path (empty when unset), which the
+	// picker compares against its entries to mark the selection.
+	value?: (store: OpStore) => string;
 	set?: (store: OpStore, value: string) => void;
 	color?: "t3" | "blue" | "green" | "yellow";
 	tooltip?: string;
+	// kind "directory" only: a picker without the output presets, titled and
+	// with a clear entry labelled for what an empty value means here.
+	picker?: { title: string; clearLabel: string };
 	// kind "save" only: save-dialog filters and suggested filename.
 	filters?: { name: string; extensions: string[] }[];
 	defaultPath?: string;
@@ -146,6 +157,8 @@ export interface OpDef {
 	renameDisabled?: boolean;
 	showVerify?: boolean;
 	verifyLabel?: string;
+	// Replaces the generic verify-toggle tooltip when the op's check differs.
+	verifyTooltip?: string;
 	showDryRun?: boolean;
 	actionNote: string;
 
@@ -169,6 +182,7 @@ export function directoryOutputRows(tooltip: string): OutputRow[] {
 			kind: "directory",
 			label: "Directory",
 			display: (s) => s.outputDir || "same as source",
+			value: (s) => s.outputDir,
 			set: (s, v) => { s.outputDir = v; },
 			tooltip,
 		},

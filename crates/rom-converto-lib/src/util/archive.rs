@@ -317,6 +317,8 @@ fn extract_one(
 pub struct ResolvedInput {
     path: PathBuf,
     output_basis: PathBuf,
+    staged_bytes: u64,
+    sole_member: bool,
     _tmp: Option<tempfile::TempDir>,
 }
 
@@ -332,6 +334,16 @@ impl ResolvedInput {
     pub fn output_basis(&self) -> &Path {
         &self.output_basis
     }
+    /// Uncompressed bytes occupying the staging directory, including cue sidecars.
+    pub fn staged_bytes(&self) -> u64 {
+        self.staged_bytes
+    }
+
+    /// The archive lists exactly one convertible member, so every member
+    /// pick, whatever extensions it accepts, selects this one.
+    pub fn sole_member(&self) -> bool {
+        self.sole_member
+    }
 }
 
 /// An archive holds no member with one of the extensions a caller accepts.
@@ -340,6 +352,72 @@ impl ResolvedInput {
 #[derive(Debug, thiserror::Error)]
 #[error("archive contains no matching image")]
 pub struct NoMatchingMember;
+
+/// The temp volume has too little free space to extract a member. Carried
+/// in the error chain so a caller holding other extractions can free them
+/// and retry.
+#[derive(Debug, thiserror::Error)]
+#[error("not enough space on the temp volume")]
+pub struct TempSpaceShortfall;
+
+/// How many non-directory entries `path` holds, counted from the raw
+/// listing with no filtering: an archive holding several entries is never
+/// removed wholesale, because every entry this run did not place (a sidecar
+/// or a nested archive) would be destroyed with it.
+pub fn entry_count(path: &Path) -> Result<usize> {
+    let kind = kind_of(path).ok_or_else(|| {
+        anyhow!(
+            "gzip archives without a tar container are not supported, extract the file first: {}",
+            path.display()
+        )
+    })?;
+    Ok(match kind {
+        ArchiveKind::Zip => {
+            let mut zip = zip::ZipArchive::new(File::open(path)?)?;
+            (0..zip.len())
+                .filter(|index| {
+                    !zip.by_index_raw(*index)
+                        .map(|e| e.is_dir())
+                        .unwrap_or(false)
+                })
+                .count()
+        }
+        ArchiveKind::SevenZ => {
+            sevenz_rust2::ArchiveReader::open(path, sevenz_rust2::Password::empty())?
+                .archive()
+                .files
+                .iter()
+                .filter(|entry| !entry.is_directory())
+                .count()
+        }
+        ArchiveKind::Rar => {
+            let mut count = 0;
+            for entry in unrar::Archive::new(path).open_for_listing()? {
+                if !entry?.is_directory() {
+                    count += 1;
+                }
+            }
+            count
+        }
+        ArchiveKind::Tar | ArchiveKind::TarGz => {
+            // Only entries that hold data count: a pax global header (what
+            // `git archive` writes) or another metadata header is no file
+            // the archive's removal would destroy.
+            let mut count = 0;
+            for entry in open_tar(path, kind == ArchiveKind::TarGz)?.entries()? {
+                let kind = entry?.header().entry_type();
+                if kind.is_file()
+                    || kind.is_symlink()
+                    || kind.is_hard_link()
+                    || kind.is_gnu_sparse()
+                {
+                    count += 1;
+                }
+            }
+            count
+        }
+    })
+}
 
 /// The member [`probe_archive`] extracts for `exts`: the first match by
 /// sorted name. Several qualifying members log a warning.
@@ -428,6 +506,8 @@ pub fn resolve_input_with_selection(
         return Ok(ResolvedInput {
             path: path.to_path_buf(),
             output_basis: path.to_path_buf(),
+            staged_bytes: 0,
+            sole_member: false,
             _tmp: None,
         });
     }
@@ -456,13 +536,13 @@ pub fn resolve_input_with_selection(
         if let Ok(available) = available_space(tmp.path())
             && space_shortfall(available, member.size, DEFAULT_SPACE_HEADROOM).is_some()
         {
-            bail!(
+            return Err(anyhow::Error::new(TempSpaceShortfall).context(format!(
                 "not enough space on the temp volume at {} to extract {}: need about {}, only {} free. Point TMPDIR at a larger volume or extract the archive first.",
                 tmp.path().display(),
                 format_bytes(member.size),
                 format_bytes(member.size.saturating_add(DEFAULT_SPACE_HEADROOM)),
                 format_bytes(available)
-            );
+            )));
         }
         Some(extract_one(path, kind, &member.name, tmp.path())?)
     } else {
@@ -490,13 +570,13 @@ pub fn resolve_input_with_selection(
     if let Ok(available) = available_space(tmp.path()) {
         let available_before_cue = available.saturating_add(if is_cue { member.size } else { 0 });
         if space_shortfall(available_before_cue, needed, DEFAULT_SPACE_HEADROOM).is_some() {
-            bail!(
+            return Err(anyhow::Error::new(TempSpaceShortfall).context(format!(
                 "not enough space on the temp volume at {} to extract {}: need about {}, only {} free. Point TMPDIR at a larger volume or extract the archive first.",
                 tmp.path().display(),
                 format_bytes(needed),
                 format_bytes(needed.saturating_add(DEFAULT_SPACE_HEADROOM)),
                 format_bytes(available_before_cue)
-            );
+            )));
         }
     }
     let extracted = match extracted_cue {
@@ -510,6 +590,8 @@ pub fn resolve_input_with_selection(
     Ok(ResolvedInput {
         path: extracted,
         output_basis: basis_for(path, member)?,
+        staged_bytes: needed,
+        sole_member: members.len() == 1,
         _tmp: Some(tmp),
     })
 }
@@ -880,5 +962,32 @@ mod tests {
             )
             .is_some()
         );
+    }
+    /// A tar carrying a pax global header (what `git archive` writes) beside
+    /// one ROM holds one entry: the metadata header is no file the archive's
+    /// removal would destroy.
+    #[test]
+    fn a_pax_global_header_is_not_an_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rom.tar");
+        let mut builder = tar::Builder::new(File::create(&path).unwrap());
+        let global = b"52 comment=abcdef0123456789abcdef0123456789abcdef01\n";
+        let mut header = tar::Header::new_ustar();
+        header.set_entry_type(tar::EntryType::XGlobalHeader);
+        header.set_size(global.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, "pax_global_header", &global[..])
+            .unwrap();
+        let mut header = tar::Header::new_gnu();
+        header.set_size(4);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, "Game.gba", &b"rom!"[..])
+            .unwrap();
+        builder.into_inner().unwrap();
+        assert_eq!(entry_count(&path).unwrap(), 1);
     }
 }

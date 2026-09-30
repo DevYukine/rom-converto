@@ -130,6 +130,37 @@ pub struct OrganizeDefaults {
     pub dat: Option<bool>,
     pub move_source: Option<bool>,
     pub playlists: Option<bool>,
+    pub filter_regex: Option<Vec<String>>,
+    pub filter_regex_exclude: Option<Vec<String>>,
+    pub filter_language: Option<Vec<String>>,
+    pub filter_region: Option<Vec<String>>,
+    pub no_type: Option<Vec<String>>,
+    pub only_type: Option<Vec<String>>,
+    pub only_retail: Option<bool>,
+    pub single: Option<bool>,
+    pub prefer_game_regex: Option<Vec<String>>,
+    pub prefer_verified: Option<bool>,
+    pub prefer_good: Option<bool>,
+    pub prefer_language: Option<Vec<String>>,
+    pub prefer_region: Option<Vec<String>>,
+    pub prefer_revision: Option<String>,
+    pub prefer_retail: Option<bool>,
+    pub prefer_parent: Option<bool>,
+    pub prefer_filename_regex: Option<Vec<String>>,
+    pub dir_letter: Option<bool>,
+    pub dir_letter_count: Option<usize>,
+    pub dir_letter_limit: Option<usize>,
+    pub dir_letter_group: Option<bool>,
+    pub zip_format: Option<String>,
+    pub zip_exclude: Option<String>,
+    pub link_mode: Option<String>,
+    pub symlink_relative: Option<bool>,
+    pub remove_headers: Option<Vec<String>>,
+    pub trim_add_padding: Option<bool>,
+    pub clean: Option<bool>,
+    pub clean_exclude: Option<Vec<String>>,
+    pub clean_backup: Option<PathBuf>,
+    pub move_delete_dirs: Option<String>,
 }
 
 /// Field-wise merge of two config layers: preset over config file, or
@@ -199,7 +230,38 @@ impl_merge_over!(OrganizeDefaults {
     report,
     dat,
     move_source,
-    playlists
+    playlists,
+    filter_regex,
+    filter_regex_exclude,
+    filter_language,
+    filter_region,
+    no_type,
+    only_type,
+    only_retail,
+    single,
+    prefer_game_regex,
+    prefer_verified,
+    prefer_good,
+    prefer_language,
+    prefer_region,
+    prefer_revision,
+    prefer_retail,
+    prefer_parent,
+    prefer_filename_regex,
+    dir_letter,
+    dir_letter_count,
+    dir_letter_limit,
+    dir_letter_group,
+    zip_format,
+    zip_exclude,
+    link_mode,
+    symlink_relative,
+    remove_headers,
+    trim_add_padding,
+    clean,
+    clean_exclude,
+    clean_backup,
+    move_delete_dirs
 });
 
 /// A named bundle of per-format defaults that fully replaces the matching
@@ -278,8 +340,9 @@ pub fn load_config(explicit: Option<&Path>) -> anyhow::Result<UserConfig> {
     parse_str(&content, base).with_context(|| format!("invalid config file: {}", path.display()))
 }
 
-/// Like `load_config`, but leaves `output_dir`/`report` untouched instead of
-/// resolving relative ones against the config file's directory. Used by the
+/// Like `load_config`, but leaves relative output paths (`output_dir`,
+/// `report`, `clean_backup`) untouched instead of resolving them against
+/// the config file's directory. Used by the
 /// GUI so a preset saved back keeps a hand-authored relative path relative
 /// instead of baking in a machine-specific absolute one.
 pub fn load_config_raw(explicit: Option<&Path>) -> anyhow::Result<UserConfig> {
@@ -318,9 +381,9 @@ fn parse_str(content: &str, base: &Path) -> anyhow::Result<UserConfig> {
     Ok(cfg)
 }
 
-/// Relative `output_dir`/`report` paths resolve against the config
-/// file's own directory, not the process CWD, so a config in the user
-/// config dir behaves the same from any working directory.
+/// Relative `output_dir`/`report`/`clean_backup` paths resolve against the
+/// config file's own directory, not the process CWD, so a config in the
+/// user config dir behaves the same from any working directory.
 fn resolve_paths(cfg: &mut UserConfig, base: &Path) {
     resolve_disc(cfg.dol.as_mut(), base);
     resolve_disc(cfg.rvl.as_mut(), base);
@@ -387,6 +450,7 @@ fn resolve_organize(d: Option<&mut OrganizeDefaults>, base: &Path) {
     if let Some(d) = d {
         resolve_relative(base, &mut d.output_dir);
         resolve_relative(base, &mut d.report);
+        resolve_relative(base, &mut d.clean_backup);
     }
 }
 
@@ -492,6 +556,17 @@ mod tests {
         assert_eq!(
             cfg.dol.unwrap().output_dir.unwrap(),
             Path::new(BASE).join("out")
+        );
+    }
+
+    /// A relative `clean_backup` resolves against the config file's
+    /// directory like `output_dir` and `report`.
+    #[test]
+    fn relative_clean_backup_resolved_against_config_dir() {
+        let cfg = parse_str("[organize]\nclean_backup = \"bak\"\n", base()).unwrap();
+        assert_eq!(
+            cfg.organize.unwrap().clean_backup.unwrap(),
+            Path::new(BASE).join("bak")
         );
     }
 

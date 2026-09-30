@@ -155,7 +155,7 @@ pub enum Commands {
     Dat(DatCommands),
 
     /// Sort a ROM library into per-console folders and compress every file into its best format
-    Organize(OrganizeCommand),
+    Organize(Box<OrganizeCommand>),
 
     Capabilities(CapabilitiesCommand),
 
@@ -285,6 +285,8 @@ mod tests {
                 &["--output", "out", "--dat-id", "d"],
             ],
         ),
+        // patch_only requires --patch at the clap level.
+        ("organize", &[&["--patch", "p"]]),
     ];
 
     fn leaf(path: &[String]) -> clap::Command {
@@ -412,8 +414,57 @@ mod tests {
                 }
                 let mut tokens = match flag.kind {
                     FlagKind::Bool => vec![flag.flag.clone()],
+                    // Equals-list flags only accept a value in the = form.
+                    FlagKind::EqualsList => {
+                        vec![format!("{}={}", flag.flag, sample(&cmd, &flag.flag))]
+                    }
                     _ => vec![flag.flag.clone(), sample(&cmd, &flag.flag)],
                 };
+                // The manifest kind must describe how clap actually parses
+                // the flag: repeated flags append one value each with no
+                // delimiter, list flags split one value on a delimiter, and
+                // equals-list flags require the = form.
+                let long = flag.flag.trim_start_matches("--");
+                if let Some(arg) = cmd.get_arguments().find(|a| a.get_long() == Some(long)) {
+                    match flag.kind {
+                        FlagKind::Repeated => {
+                            assert!(
+                                matches!(arg.get_action(), clap::ArgAction::Append)
+                                    && arg.get_value_delimiter().is_none(),
+                                "{field}: Repeated must be an Append flag with no delimiter"
+                            );
+                        }
+                        FlagKind::List => {
+                            assert!(
+                                arg.get_value_delimiter().is_some(),
+                                "{field}: List must set a value delimiter"
+                            );
+                        }
+                        FlagKind::EqualsList => {
+                            assert!(
+                                arg.is_require_equals_set(),
+                                "{field}: EqualsList must require the = form"
+                            );
+                        }
+                        _ => {}
+                    }
+                }
+                // A flag advertising an explicit off value must be able to
+                // carry it: bools take =false, which needs require_equals so
+                // the bare form stays the true default.
+                if flag.explicit_off
+                    && flag.kind == FlagKind::Bool
+                    && manifest.op_flags[op].contains(field)
+                {
+                    let arg = cmd
+                        .get_arguments()
+                        .find(|a| a.get_long() == Some(long))
+                        .unwrap_or_else(|| panic!("{field}: explicit-off bool missing from clap"));
+                    assert!(
+                        arg.is_require_equals_set(),
+                        "{field}: needs require_equals so =false parses and the bare form stays true"
+                    );
+                }
                 // --max-depth is only accepted alongside --recursive.
                 if field == "max_depth" && recursive {
                     tokens.insert(0, "--recursive".to_string());

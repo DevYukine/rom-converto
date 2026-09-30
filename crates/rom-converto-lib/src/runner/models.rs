@@ -441,7 +441,8 @@ pub struct OrganizeRow {
     pub output: Option<PathBuf>,
     /// Console folder label the unit was placed under.
     pub console: Option<String>,
-    /// Child op name ("dol.compress", ...) or "zip" | "copy" | "move" | "skip".
+    /// Child op name ("dol.compress", ...) or "zip" | "copy" | "move" |
+    /// "link" | "skip" | "clean" | "playlist" | "organize".
     pub action: String,
     #[serde(serialize_with = "ser_status")]
     #[cfg_attr(feature = "ts-export", ts(type = "\"ok\" | \"skipped\" | \"failed\""))]
@@ -450,6 +451,14 @@ pub struct OrganizeRow {
     pub planned: bool,
     /// Skip reason, plan decision text, or error.
     pub detail: Option<String>,
+    /// Row-level verify verdict from a post-conversion comparison or the
+    /// placement's `verify_after` pass: `verified` marks an output the check
+    /// passed, `failed` marks the output invalid (clean sweeps the path as
+    /// stale), while `unverified` means the check never produced a verdict
+    /// and the path keeps its clean protection. `None` means no check ran.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-export", ts(optional))]
+    pub verify: Option<VerifyVerdict>,
     pub input_bytes: u64,
     pub output_bytes: u64,
     pub elapsed_ms: u64,
@@ -691,6 +700,40 @@ pub struct RunOptions {
     pub dat: Option<bool>,
     pub move_source: Option<bool>,
     pub playlists: Option<bool>,
+    pub input_exclude: Option<Vec<String>>,
+    pub filter_regex: Option<Vec<String>>,
+    pub filter_regex_exclude: Option<Vec<String>>,
+    pub filter_language: Option<Vec<String>>,
+    pub filter_region: Option<Vec<String>>,
+    pub no_type: Option<Vec<String>>,
+    pub only_type: Option<Vec<String>>,
+    pub only_retail: Option<bool>,
+    pub single: Option<bool>,
+    pub prefer_game_regex: Option<Vec<String>>,
+    pub prefer_verified: Option<bool>,
+    pub prefer_good: Option<bool>,
+    pub prefer_language: Option<Vec<String>>,
+    pub prefer_region: Option<Vec<String>>,
+    pub prefer_revision: Option<String>,
+    pub prefer_retail: Option<bool>,
+    pub prefer_parent: Option<bool>,
+    pub prefer_filename_regex: Option<Vec<String>>,
+    pub dir_letter: Option<bool>,
+    pub dir_letter_count: Option<usize>,
+    pub dir_letter_limit: Option<usize>,
+    pub dir_letter_group: Option<bool>,
+    pub zip_format: Option<String>,
+    pub zip_exclude: Option<String>,
+    pub link_mode: Option<String>,
+    pub symlink_relative: Option<bool>,
+    pub remove_headers: Option<Vec<String>>,
+    pub trim_add_padding: Option<bool>,
+    pub patch: Option<Vec<PathBuf>>,
+    pub patch_only: Option<bool>,
+    pub clean: Option<bool>,
+    pub clean_exclude: Option<Vec<String>>,
+    pub clean_backup: Option<PathBuf>,
+    pub move_delete_dirs: Option<String>,
 }
 
 /// One Wii U title input: a bare path, or a path with an explicit format

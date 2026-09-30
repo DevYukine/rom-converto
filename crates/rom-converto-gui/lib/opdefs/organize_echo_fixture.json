@@ -1,0 +1,176 @@
+{
+  "default": {
+    "echo": "> rom-converto organize /roms/library --clean=false --clean-exclude= --dat=false --dir-letter=false --dir-letter-group=false --filter-language= --filter-regex= --filter-regex-exclude= --filter-region= --move=false --no-type= --on-conflict error --only-retail=false --only-type= --output-dir /roms/sorted --output-template '{console}/{basename}.{ext}' --playlists=false --prefer-filename-regex= --prefer-game-regex= --prefer-good=false --prefer-language= --prefer-parent=false --prefer-region= --prefer-retail=false --prefer-revision any --prefer-verified=false --remove-headers=none --single=false --trim-add-padding=false --zip-exclude=",
+    "options": {
+      "output_dir": "/roms/sorted",
+      "output_template": "{console}/{basename}.{ext}",
+      "dat": false,
+      "move_source": false,
+      "playlists": false,
+      "allow_encrypted": false,
+      "keys": null,
+      "on_conflict": "error",
+      "skip_space_check": false,
+      "verify_after": false,
+      "input_exclude": [],
+      "filter_regex": [],
+      "filter_regex_exclude": [],
+      "filter_language": [],
+      "filter_region": [],
+      "no_type": [],
+      "only_type": [],
+      "only_retail": false,
+      "single": false,
+      "prefer_game_regex": [],
+      "prefer_verified": false,
+      "prefer_good": false,
+      "prefer_language": [],
+      "prefer_region": [],
+      "prefer_revision": "any",
+      "prefer_retail": false,
+      "prefer_parent": false,
+      "prefer_filename_regex": [],
+      "dir_letter": false,
+      "dir_letter_group": false,
+      "zip_exclude": "",
+      "remove_headers": [
+        "none"
+      ],
+      "trim_add_padding": false,
+      "patch": [],
+      "patch_only": false,
+      "clean": false,
+      "clean_exclude": []
+    }
+  },
+  "on": {
+    "echo": "> rom-converto --skip-space-check organize /roms/library --allow-encrypted --clean --clean-backup '~/backup' --clean-exclude '**/*.txt' --dat --dir-letter --dir-letter-count 2 --dir-letter-group --dir-letter-limit 10 --filter-language EN,FR --filter-regex '(USA|Europe)' --filter-regex-exclude '\\(Demo\\)' --filter-region USA,EUR --input-exclude '**/*-beta.*' --input-exclude '**/*.nav' --keys '~/prod.keys' --link-mode hardlink --max-depth 2 --move-delete-dirs never --move --no-type demo,beta --on-conflict error --only-retail --only-type program --output-dir /roms/sorted --output-template '{console}/{basename}.{ext}' --patch '~/patches' --patch-only --playlists --prefer-filename-regex Redump --prefer-game-regex 'Rev A' --prefer-good --prefer-language EN,FR --prefer-parent --prefer-region USA,EUR --prefer-retail --prefer-revision older --prefer-verified --remove-headers=nes,fds --single --trim-add-padding --verify-after --zip-exclude '**/*.zip' --zip-format torrentzip",
+    "options": {
+      "output_dir": "/roms/sorted",
+      "output_template": "{console}/{basename}.{ext}",
+      "dat": true,
+      "move_source": true,
+      "playlists": true,
+      "allow_encrypted": true,
+      "max_depth": 2,
+      "keys": "~/prod.keys",
+      "on_conflict": "error",
+      "skip_space_check": true,
+      "verify_after": true,
+      "input_exclude": [
+        "**/*-beta.*",
+        "**/*.nav"
+      ],
+      "filter_regex": [
+        "(USA|Europe)"
+      ],
+      "filter_regex_exclude": [
+        "\\(Demo\\)"
+      ],
+      "filter_language": [
+        "EN",
+        "FR"
+      ],
+      "filter_region": [
+        "USA",
+        "EUR"
+      ],
+      "no_type": [
+        "demo",
+        "beta"
+      ],
+      "only_type": [
+        "program"
+      ],
+      "only_retail": true,
+      "single": true,
+      "prefer_game_regex": [
+        "Rev A"
+      ],
+      "prefer_verified": true,
+      "prefer_good": true,
+      "prefer_language": [
+        "EN",
+        "FR"
+      ],
+      "prefer_region": [
+        "USA",
+        "EUR"
+      ],
+      "prefer_revision": "older",
+      "prefer_retail": true,
+      "prefer_parent": true,
+      "prefer_filename_regex": [
+        "Redump"
+      ],
+      "dir_letter": true,
+      "dir_letter_count": 2,
+      "dir_letter_limit": 10,
+      "dir_letter_group": true,
+      "zip_format": "torrentzip",
+      "zip_exclude": "**/*.zip",
+      "link_mode": "hardlink",
+      "remove_headers": [
+        "nes",
+        "fds"
+      ],
+      "trim_add_padding": true,
+      "patch": [
+        "~/patches"
+      ],
+      "patch_only": true,
+      "clean": true,
+      "clean_exclude": [
+        "**/*.txt"
+      ],
+      "clean_backup": "~/backup",
+      "move_delete_dirs": "never"
+    }
+  },
+  "symlink": {
+    "echo": "> rom-converto organize /roms/library --clean=false --clean-exclude= --dat=false --dir-letter=false --dir-letter-group=false --filter-language= --filter-regex= --filter-regex-exclude= --filter-region= --link-mode symlink --move=false --no-type= --on-conflict error --only-retail=false --only-type= --output-dir /roms/sorted --output-template '{console}/{basename}.{ext}' --playlists=false --prefer-filename-regex= --prefer-game-regex= --prefer-good=false --prefer-language= --prefer-parent=false --prefer-region= --prefer-retail=false --prefer-revision any --prefer-verified=false --remove-headers=none --single=false --symlink-relative=false --trim-add-padding=false --zip-exclude=",
+    "options": {
+      "output_dir": "/roms/sorted",
+      "output_template": "{console}/{basename}.{ext}",
+      "dat": false,
+      "move_source": false,
+      "playlists": false,
+      "allow_encrypted": false,
+      "keys": null,
+      "on_conflict": "error",
+      "skip_space_check": false,
+      "verify_after": false,
+      "input_exclude": [],
+      "filter_regex": [],
+      "filter_regex_exclude": [],
+      "filter_language": [],
+      "filter_region": [],
+      "no_type": [],
+      "only_type": [],
+      "only_retail": false,
+      "single": false,
+      "prefer_game_regex": [],
+      "prefer_verified": false,
+      "prefer_good": false,
+      "prefer_language": [],
+      "prefer_region": [],
+      "prefer_revision": "any",
+      "prefer_retail": false,
+      "prefer_parent": false,
+      "prefer_filename_regex": [],
+      "dir_letter": false,
+      "dir_letter_group": false,
+      "zip_exclude": "",
+      "link_mode": "symlink",
+      "symlink_relative": false,
+      "remove_headers": [
+        "none"
+      ],
+      "trim_add_padding": false,
+      "patch": [],
+      "patch_only": false,
+      "clean": false,
+      "clean_exclude": []
+    }
+  }
+}

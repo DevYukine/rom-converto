@@ -203,7 +203,8 @@ not escape the output root: a leading separator, a drive prefix, or any `..` com
 rejected.
 
 `--output-template` conflicts with an explicit `OUTPUT` positional or `-o`/`--output`, and
-is command-line only (not read from the config file). `wup compress` does not accept it,
+is command-line only (not read from the config file), except `organize`, which
+reads `[organize] output_template`. `wup compress` does not accept it,
 because it packs many inputs into one `.wua`. CTR supports it for single-file runs; its
 recursive runs use the mirrored layout. `ps3 decrypt` and `ntr encrypt`/`decrypt` also
 support it, single-file runs only.
@@ -838,31 +839,44 @@ Playmatch instance and defaults to the public one at
 rom-converto organize <INPUT> --output-dir <DIR> [--output-template <TEMPLATE>] [--dat]
 rom-converto organize <INPUT> --output-dir <DIR> [--move] [--playlists] [--max-depth N]
 rom-converto organize <INPUT> --output-dir <DIR> [--on-conflict POLICY | -f] [--report FILE]
-rom-converto organize <INPUT> --output-dir <DIR> [--keys FILE] [--allow-encrypted] [--api-base URL]
+rom-converto organize <INPUT> --output-dir <DIR> [--keys PRODKEYS] [--allow-encrypted] [--api-base URL]
+rom-converto organize <INPUT> --output-dir <DIR> [--dat] [--single] [--prefer-region USA,EUR,JPN] [--dir-letter] [--clean]
 ```
 
 Scans the INPUT library folder and sorts every recognized file into a per-console
 folder under `--output-dir`, converting each file to the best archival format for
 its console. A `.cue` file and the `.bin` tracks it lists are one item, and zip,
 7z, tar, and rar archives are read transparently: the image inside is converted,
-while the archive itself is what the row reports. Detection needs the member, so
+while the archive itself is what the row reports. Only the first member, by
+name, with a supported extension is organized per archive; any other
+members stay in the archive, and with `--move` such an archive keeps its source.
+Detection needs the member, so
 a dry run extracts each archive to the temp directory just like the real run.
 Files whose console or target cannot be determined, including archives without a
 recognizable member, are skipped, so one odd file never fails the run.
+
+Every toggle a config file can set takes an explicit value: the bare flag
+means true and `--flag=false` means false, overriding `[organize]` in the
+config file. List flags take an empty value (`--filter-language=`,
+`--clean-exclude=`) as an explicit empty list; `--prefer-revision any` is the
+explicit no-preference. With `--dat`, a file that matches the DAT only once its
+header is removed is written headerless even when `--remove-headers=none`. An item whose planned output
+path is its own source file is skipped as already in place and left untouched.
 
 | Flag | Description |
 |---|---|
 | `--output-dir <DIR>` | Root of the organized library. Required unless the config file or a preset supplies `organize.output_dir` |
 | `--output-template <TEMPLATE>` | Layout inside `--output-dir`, with the same tokens as `--output-template` elsewhere. Defaults to `{console}/{basename}.{ext}` |
 | `--dat` | Rename files to their No-Intro/Redump names using the Playmatch DAT service (online) |
-| `--move` | Delete each source after it was organized successfully. Sources of skipped or failed files are never deleted |
-| `--playlists` | Write `.m3u` playlists for multi-disc sets in the output folders. Real runs only; a dry run reports none |
+| `--move` | Delete each source after it was organized successfully. Skipped and failed files keep their sources. Sources also kept: an archive that holds more than one entry (only single-entry archives are released, so sidecars survive), a run with `--patch-only` (the unpatched original always stays), with `--verify-after` a conversion whose format has no output check, and under `--on-conflict overwrite-invalid` an existing output that cannot be verified. The release exception: under `--on-conflict overwrite-invalid`, an existing zip, copy, or hardlink (never a symlink) that was checked and verified valid counts as organized and its source is deleted. A conversion never deletes its source when the output already existed: its check only proves the container is self-consistent, not that this source produced it |
+| `--playlists` | Write `.m3u` playlists for multi-disc sets in the output folders. The playlists this run derives (one per multi-disc set, named after the set's base title) are derived data: planned before cleaning, so they are kept and never cleaned, and rewritten after cleaning only when their contents changed (with a `rewrote playlist that differed` row detail) regardless of `--on-conflict`; a playlist whose contents did not change is reported as already current, and one whose disc set was cleaned away is removed with it. An existing `.m3u` whose own location is under INPUT (including through a symlinked output folder) is never deleted, and is rewritten only when it is the tool's own output for the discs it lists (bare disc-file names of the playlist's title in planner order); anything else (comments, reordering, foreign lines) is kept with a `playlist is under the input directory` skip row, and a read-only `.m3u` is refused with a warning. Any other `.m3u` in a cleaned folder is deleted like any stale file unless `--clean-exclude` protects it, and a symlinked `.m3u` is never written through. A dry run lists playlists only for disc folders that already exist on disk and never writes them |
 | `--max-depth <N>` | Limit the library scan depth. `1` = top level only. Omit for unlimited |
 | `--on-conflict <POLICY>`, `-f` | What to do when an output already exists. See [Conflict policy](#conflict-policy) |
 | `--report <FILE>` | Write a run report. See [Run reports](#run-reports) |
-| `--keys <FILE>` | Path to `prod.keys`, needed to compress Switch NSP/XCI to NSZ/XCZ. Same lookup order as `nx compress` |
+| `--keys <PRODKEYS>` | Path to `prod.keys`, needed to compress Switch NSP/XCI to NSZ/XCZ. Same lookup order as `nx compress` |
 | `--allow-encrypted` | Compress an encrypted ROM anyway, even though it barely compresses. Applies to the 3DS targets |
 | `--api-base <URL>` | Playmatch API base URL for this run. Defaults to the public instance |
+| `--verify-after` | Verify each written zip, copy, or converted output right after writing it: size and CRC32 for zips and copies, plus TorrentZip/RVZSTD structure for zips; conversions run the format's own verify. A zip, copy, or conversion whose post-write verification fails fails its row. Conversions whose format has no output check (3DS, Wii U, Xbox, Xbox 360, and PS3) fail as unverified and keep their source. A failed check also drops the output's `--clean` protection (the invalid output is swept as stale by the same or a later `--clean` run), while an output whose check could not run is kept |
 
 Per-console targets:
 
@@ -878,8 +892,8 @@ Per-console targets:
 | Xbox 360 disc | ZAR |
 | PS3 (encrypted ISO) | decrypted ISO; the disc key comes from the embedded key database or a sibling `.dkey` of the source |
 | CHD v1-v4 | CHD v5 |
-| Cartridge ROMs, Nintendo DS | ZIP |
-| already in its target format | copied unchanged |
+| Cartridge ROMs, Nintendo DS | ZIP (TorrentZip; RVZSTD with `--zip-format rvzstd`) |
+| already in its target format | copied unchanged, or hardlinked, symlinked, or reflinked with `--link-mode` |
 | anything unrecognized | skipped |
 
 Each output lands under a folder named for the detected console (`GameCube`, `Wii`,
@@ -899,7 +913,211 @@ else keeps its own name. Match failures degrade to keep-name with a warning. A d
 run still hashes every file and queries the API, so previewing with `--dat` costs
 the same lookups as the real run. With `--move`, the sources of a successfully
 organized item (every `.bin` and the `.cue` of a set) are deleted only after the
-output is in place, never for skipped or failed files.
+output is in place, never for skipped or failed files. The one exception,
+shared with other ROM managers: under `--on-conflict overwrite-invalid`, an existing zip, copy, or hardlink (never a symlink)
+that verifies valid counts as placed and its source is deleted. A conversion
+whose existing output verifies valid keeps its source: the check only proves
+the container is self-consistent, not that this source produced it.
+
+### Choosing what gets organized
+
+Filters combine with AND: an item must pass every filter you set. Names and tags
+come from the DAT match with `--dat`, and from the file name's No-Intro, Redump,
+or TOSEC tags otherwise. An item that carries no tag for a filter never passes it.
+
+| Flag | Description |
+|---|---|
+| `--input-exclude <GLOB>` | Skip inputs whose path relative to INPUT matches this glob. Repeatable (brace globs are fine because values are never comma-split). `*` stops at `/`, so a recursive match needs `**/`. An excluded file is never cleaned or moved. A cue sheet with its bins, or a split `.wud` set, is dropped whole when any member matches. When every file is excluded, the run finishes with a note and exit code 0 |
+| `--filter-regex <REGEX>` | Keep only items whose game name (the DAT name with `--dat`, else the file name without its extension) matches. Repeatable, any match passes; the `/pattern/flags` form other ROM managers use is accepted |
+| `--filter-regex-exclude <REGEX>` | Drop items whose game name matches. Same matching rules |
+| `--filter-language <CODES>` | Keep only items in these two-letter languages, for example `EN,FR`. A game with no language tag falls back to its region's primary language; a game with neither is dropped |
+| `--filter-region <CODES>` | Keep only items in these region codes, for example `USA,EUR,JPN,WORLD` |
+| `--no-type <KINDS>` | Drop items of these kinds |
+| `--only-type <KINDS>` | Keep only items of these kinds |
+| `--only-retail` | Keep only retail releases; bios, device, alpha, bad, beta, bootleg, cracked, debug, demo, fixed, hacked, homebrew, overdump, pendingdump, pirated, program, prototype, sample, trained, translated, and aftermarket entries are dropped. `unlicensed` stays retail |
+
+Kinds are `bios`, `device`, `unlicensed`, `debug`, `demo`, `beta`, `sample`,
+`prototype`, `program`, `aftermarket`, `homebrew`, `alpha`, `bootleg`, `cracked`,
+`fixed`, `hacked`, `overdump`, `pendingdump`, `pirated`, `trained`, `translated`,
+`bad`, and `unverified`. `unverified` matches names that lack the classic `[!]`
+marker, so `--no-type unverified` drops every No-Intro or Redump named game, and
+`device` never matches anything.
+
+### One release per game
+
+`--single` keeps one release per parent/clone group. Grouping needs `--dat`, and
+`--single`, or any `--prefer-*` flag set to an enabling value (except
+`--prefer-filename-regex`), is rejected without `--dat`: the Playmatch match
+supplies the parent/clone
+link, and games without one are grouped by normalized title and platform.
+The explicit no-op forms (`--prefer-verified=false`, `--prefer-revision any`,
+`--prefer-game-regex=`) are accepted without `--dat`.
+`--prefer-filename-regex` also works without `--dat`: it breaks ties between
+inputs for the same game or the same output path (after the already-placed and
+format preferences), not group winners.
+The `--prefer-*` flags pick the winner inside a
+group, applied in this priority order: `--prefer-game-regex`, `--prefer-verified`,
+`--prefer-good`, `--prefer-language`, `--prefer-region`, `--prefer-revision`,
+`--prefer-retail`, `--prefer-parent`. Languages and regions are priority lists:
+the earliest listed code wins.
+
+| Flag | Description |
+|---|---|
+| `--single` | Keep one release per parent/clone group. Requires `--dat` |
+| `--prefer-game-regex <REGEX>` | Prefer the release whose game name matches. Repeatable, first match wins |
+| `--prefer-verified` | Prefer dumps whose game name carries the classic `[!]` verified-dump marker (a name check, not hash verification) |
+| `--prefer-good` | Prefer releases whose game name lacks the classic `[b]` bad-dump marker |
+| `--prefer-language <CODES>` | Prefer these languages, highest priority first |
+| `--prefer-region <CODES>` | Prefer these regions, highest priority first |
+| `--prefer-revision <older\|newer\|any>` | Prefer the older or the newer revision; `any` is the explicit no-preference, overriding the config |
+| `--prefer-retail` | Prefer retail releases (the kinds `--only-retail` drops) |
+| `--prefer-parent` | Prefer the parent release over a clone |
+| `--prefer-filename-regex <REGEX>` | Prefer the input whose own file name matches this regex; breaks ties between inputs for the same game or the same output path, after the already-placed and format preferences, including without `--dat`. Repeatable, first match wins |
+
+### Zip, links, and output layout
+
+| Flag | Description |
+|---|---|
+| `--dir-letter` | Put each output into a folder named after the first letters of its file name |
+| `--dir-letter-count <N>` | How many leading letters the folder uses, 1 through 26. Default `1`. Ignored unless `--dir-letter` is on (flag or config) |
+| `--dir-letter-limit <N>` | Cap how many items a letter folder holds; a letter that exceeds the cap is split into numbered folders. Ignored unless `--dir-letter` is on (flag or config) |
+| `--dir-letter-group` | Merge adjacent letter folders into ranges sized by the limit, such as `A-C` and `D-F`. Requires `--dir-letter-limit`. Ignored unless `--dir-letter` is on (flag or config) |
+| `--zip-format <FORMAT>` | Zip structure for cartridge outputs: `torrentzip` (default) or `rvzstd` |
+| `--zip-exclude <GLOB>` | Copy instead of zip when the planned `.zip` output path under `--output-dir` matches this glob; `*` stops at `/`, so a recursive match needs `**/`. An empty value (`--zip-exclude=`, or `zip_exclude = ""` in the config) is the explicit no-exclusion override |
+| `--link-mode <MODE>` | Replace the copy of an already-correct file with a `hardlink`, `symlink`, or `reflink`. `symlink` cannot be combined with `--move` (flag or config) |
+| `--symlink-relative` | Make `--link-mode symlink` links relative instead of absolute |
+
+Links are placed for plain, unpatched sources; archive members, patched variants
+and header-stripped/padded payloads are copied instead (the row detail says so).
+Hardlinks and reflinks need the source and the
+output on the same filesystem, and a link across that boundary fails the item.
+Reflinks also need a filesystem with copy-on-write clones (for example APFS,
+Btrfs, XFS, ReFS); elsewhere the item fails.
+`--symlink-relative` computes the relative target from the resolved output
+folder (the folder the link itself is written into) by stripping the common
+path prefix. On Windows, a link whose target is on another drive, a mapped
+network drive, or a subst drive stays absolute.
+
+Cartridge ROMs and DS games are zipped as TorrentZip: the same ROM always
+produces a byte-identical archive, so checksums stay stable across tools.
+`--zip-format rvzstd` writes Zstandard-compressed RVZSTD zips instead: smaller,
+but far fewer tools read them. A valid TorrentZip (or RVZSTD) input whose single
+member already has the planned name is copied through untouched instead of being
+re-zipped.
+
+### Headers, trimming, and patching
+
+| Flag | Description |
+|---|---|
+| `--remove-headers[=EXTS]` | Strip known ROM headers so the archived file hashes like its No-Intro/Redump dump: `nes`, `fds`, `a78`, `lnx` (becomes `.lyx`), `smc`/`sfc` (become `.sfc`). Given bare, or `--remove-headers=all`, every detected header is stripped; `--remove-headers=nes,fds` limits which; `--remove-headers=none` strips nothing, overriding the config; an empty value (`--remove-headers=`) is rejected. With `--dat`, a file that matches the DAT only once its header is removed is written headerless whatever this flag says, including `--remove-headers=none`; a match in a `(Headered)` DAT keeps the header |
+| `--trim-add-padding` | Re-pad trimmed GBA and NDS dumps to their full size, so the output matches the untrimmed checksum. The default fill is `0xFF` for unused retail GBA/NDS space; with `--dat`, a verified padded match uses the fill byte it verified (`0x00` or `0xFF`) |
+| `--patch <PATH>` | Apply patches from files or folders (`.aps`, `.bps`, `.ebp`, `.ips`, `.ips32`, `.ppf`, `.rup`, `.ups`, or `.vcdiff`/`.xdelta` (VCDIFF)), matched to inputs by CRC32. BPS and UPS carry the source CRC32; every other format pairs through the CRC32 in the patch file name: `[XXXXXXXX]`, `(XXXXXXXX)`, `0xXXXXXXXX`, or a bare 8-hex run containing a letter A-F. The APS declared size and the `.rup` source and target MD5 are checked when the patch is applied. APS per-block checksums are not checked, and APS patches pair to their source by the CRC32 in the patch file name. A patched copy is written alongside the untouched original. Repeatable |
+| `--patch-only` | Write only patched copies; inputs without a matching patch are skipped. The unpatched original always stays, even with `--move`. Requires `--patch` |
+
+### Cleaning up
+
+Cleaning only considers the folders that received output this run (the
+template-level folder of each output; letter subfolders below it count as part
+of it): a run that wrote nothing cleans nothing, and folders the run did not
+write into are untouched. If any item fails to stage, resolve its output
+path, or match the DAT, clean is skipped for the whole run (a warning and a
+failed clean row record it). Clean never deletes files under INPUT, even when the
+input folder is inside the output folder: existing files under INPUT are never
+overwritten either, and a conversion keeps such an output. A dry run reports what would be cleaned
+without deleting it, and `--clean-backup` keeps cleaned files recoverable.
+
+As in other ROM managers, the current inputs define what belongs in a cleaned folder: an
+output whose source is no longer in INPUT is stale. After a `--move` run the
+sources are gone, so a later `--clean` run over the same output folder
+removes the previously moved outputs: do not combine `--clean` with a
+library you organize incrementally with `--move`; use `--clean-backup` or
+`--dry-run` first when unsure.
+
+`--playlists` treats the playlists this run derives (one per multi-disc set,
+named after the set's base title) as derived data: they are planned before
+cleaning, so they are kept and never cleaned, and rewritten after cleaning
+only when their contents changed (with a `rewrote playlist that differed`
+row detail) regardless of `--on-conflict`; a playlist whose contents did
+not change is reported as already current, and one whose disc set was
+cleaned away is removed with it. An existing `.m3u` whose own location is
+under INPUT (including through a symlinked output folder) is never
+deleted, and is rewritten only when it is the tool's own output for the
+discs it lists (bare disc-file names of the playlist's
+title in planner order); anything else (comments, reordering, foreign
+lines) is kept with a `playlist is under the input directory` skip row,
+and a read-only `.m3u` is refused with a warning. Any
+other `.m3u` in a cleaned folder is
+deleted like any stale file unless `--clean-exclude` protects it, and a
+symlinked `.m3u` is never written through. Because a playlist is built from
+the cleaned disc folders, it only lists files that survived cleaning. A dry
+run lists playlists only for disc folders that already exist on disk and
+never writes them. Cleaned files and written playlists are printed as rows,
+like every other output.
+
+| Flag | Description |
+|---|---|
+| `--clean` | Delete files inside the folders this run wrote to that this run did not produce. Clean never deletes files under INPUT. If any item fails to stage, resolve its output path, or match the DAT, clean is skipped for the whole run. An output whose post-write verification (`--verify-after`) failed is not protected: it is swept as stale, since it is invalid; one whose check could not run is kept |
+| `--clean-exclude <GLOB>` | Never delete files matching this glob, relative to `--output-dir` (absolute globs also work). Repeatable. `*` stops at `/`, so a recursive match needs `**/`; matching ignores letter case. An empty value (`--clean-exclude=`) is an explicit empty list |
+| `--clean-backup <DIR>` | Move cleaned files here instead of deleting them, flat, with a ` (n)` suffix on name collisions |
+| `--move-delete-dirs <MODE>` | With `--move`, delete emptied source folders: `never`, `auto` (only folders this run emptied; the default), or `always` (every empty folder under INPUT, including ones that were already empty) |
+
+### Output tokens
+
+Organize templates accept the shared `--output-template` tokens (see
+[Output-path templates](#output-path-templates)) plus these:
+
+| Token | Resolves to |
+|---|---|
+| `{language}` | The game's first language, or its region's primary language |
+| `{type}` | Release type: `Retail`, `BIOS`, `Demo`, `Beta`, `Prototype`, and so on |
+| `{game}` | The matched database game name: what `--dat` renames the file to |
+| `{dat}` | Name of the DAT the match came from |
+| `{input_dir}` | The input file's folder, relative to the scanned input folder |
+| `{region}` | With a DAT match, the DAT region code such as `USA`; otherwise as documented under [Output-path templates](#output-path-templates) |
+
+Frontend tokens resolve to the ROM folder name each frontend documents for the
+detected console: `{adam}`, `{batocera}`, `{crossmix}`, `{es}`, `{funkeyos}`,
+`{minui}`, `{mister}`, `{miyoocfw}`, `{onion}`, `{pocket}`, `{retrodeck}`,
+`{rocknix}`, `{romm}`, `{spruce}`, `{twmenu}`. A console the frontend's
+documentation does not list resolves to an empty string, so the file lands one
+level up; frontends that document a single flat ROM folder resolve empty for
+every console.
+
+```sh
+rom-converto organize ./library --output-dir /roms --output-template "{onion}/{basename}.{ext}"
+```
+
+files every console into the folder the `{onion}` frontend expects under `/roms`.
+
+### Coming from other ROM managers
+
+One `organize` run covers the copy/move, zip, test, clean, playlist, and
+report workflow of a typical ROM manager:
+
+| ROM-manager feature | rom-converto organize |
+|---|---|
+| copy or move ROMs | the default behavior, or `--move` |
+| zip ROMs | automatic for cartridge ROMs (TorrentZip) |
+| extract archives | n/a: organize converts instead of extracting |
+| test written files | `--verify-after` |
+| clean the output folder | `--clean` |
+| write playlists | `--playlists` |
+| write a report | `--report` |
+| local DAT files | `--dat`: Playmatch matches online; local DAT files are not read |
+| folder per DAT name | the `{dat}` token (the name of the matched DAT) |
+| mirror the input folder layout | the `{input_dir}` token |
+| letter folders (count, limit, grouping) | `--dir-letter`, `--dir-letter-count`, `--dir-letter-limit`, `--dir-letter-group` |
+| header removal | `--remove-headers` |
+| one game per parent/clone group with region, language, revision and retail preferences | `--single`, `--prefer-*` |
+| language, region, name and release-type filters | `--filter-language`, `--filter-region`, `--filter-regex`, `--no-type`, `--only-type`, `--only-retail` |
+| zip flavour, links, patches, trim padding, input and clean exclusions, clean backup, empty-folder deletion | `--zip-format`, `--link-mode`, `--patch`, `--trim-add-padding`, `--input-exclude`, `--clean-exclude`, `--clean-backup`, `--move-delete-dirs` |
+| clean dry run | `--dry-run` |
+
+Not supported: local DAT files, generating DATs from a folder, arcade set
+merging and splitting (merged, split, non-merged sets, disk exclusion, excess
+or incomplete sets), DAT-level regex filters, per-game subfolders, multi-disc
+merging, one zip per DAT, reader/writer thread tuning, write retries, and
+extension fixing.
 
 Example:
 

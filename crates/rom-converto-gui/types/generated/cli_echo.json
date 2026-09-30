@@ -299,252 +299,512 @@
     "algo": {
       "flag": "--algo",
       "global": false,
-      "kind": "value"
+      "kind": "value",
+      "explicit_off": false
     },
     "allow_encrypted": {
       "flag": "--allow-encrypted",
       "global": false,
-      "kind": "bool"
+      "kind": "bool",
+      "explicit_off": false
     },
     "api_base": {
       "flag": "--api-base",
       "global": false,
-      "kind": "value"
+      "kind": "value",
+      "explicit_off": false
     },
     "block_size": {
       "flag": "--block-size",
       "global": false,
-      "kind": "value"
+      "kind": "value",
+      "explicit_off": false
     },
     "block_size_exp": {
       "flag": "--block-size-exp",
       "global": false,
-      "kind": "value"
+      "kind": "value",
+      "explicit_off": false
     },
     "chunk_size": {
       "flag": "--chunk-size",
       "global": false,
-      "kind": "value"
+      "kind": "value",
+      "explicit_off": false
+    },
+    "clean": {
+      "flag": "--clean",
+      "global": false,
+      "kind": "bool",
+      "explicit_off": true
+    },
+    "clean_backup": {
+      "flag": "--clean-backup",
+      "global": false,
+      "kind": "value",
+      "explicit_off": false
+    },
+    "clean_exclude": {
+      "flag": "--clean-exclude",
+      "global": false,
+      "kind": "repeated",
+      "explicit_off": true
     },
     "cleanup": {
       "flag": "--cleanup",
       "global": false,
-      "kind": "bool"
+      "kind": "bool",
+      "explicit_off": false
     },
     "codecs": {
       "flag": "--codecs",
       "global": false,
-      "kind": "list"
+      "kind": "value",
+      "explicit_off": false
     },
     "compress": {
       "flag": "--compress",
       "global": false,
-      "kind": "bool"
+      "kind": "bool",
+      "explicit_off": false
     },
     "config": {
       "flag": "--config",
       "global": true,
-      "kind": "value"
+      "kind": "value",
+      "explicit_off": false
     },
     "content_hashes": {
       "flag": "--full",
       "global": false,
-      "kind": "bool"
+      "kind": "bool",
+      "explicit_off": false
     },
     "dat": {
       "flag": "--dat",
       "global": false,
-      "kind": "bool"
+      "kind": "bool",
+      "explicit_off": true
     },
     "dat_id": {
       "flag": "--dat-id",
       "global": false,
-      "kind": "value"
+      "kind": "value",
+      "explicit_off": false
     },
     "dat_name": {
       "flag": "--dat-name",
       "global": false,
-      "kind": "value"
+      "kind": "value",
+      "explicit_off": false
     },
     "decrypt": {
       "flag": "--decrypt",
       "global": false,
-      "kind": "bool"
+      "kind": "bool",
+      "explicit_off": false
     },
     "deep": {
       "flag": "--deep",
       "global": false,
-      "kind": "bool"
+      "kind": "bool",
+      "explicit_off": false
     },
     "deep_verify": {
       "flag": "--deep",
       "global": false,
-      "kind": "bool"
+      "kind": "bool",
+      "explicit_off": false
+    },
+    "dir_letter": {
+      "flag": "--dir-letter",
+      "global": false,
+      "kind": "bool",
+      "explicit_off": true
+    },
+    "dir_letter_count": {
+      "flag": "--dir-letter-count",
+      "global": false,
+      "kind": "value",
+      "explicit_off": false
+    },
+    "dir_letter_group": {
+      "flag": "--dir-letter-group",
+      "global": false,
+      "kind": "bool",
+      "explicit_off": true
+    },
+    "dir_letter_limit": {
+      "flag": "--dir-letter-limit",
+      "global": false,
+      "kind": "value",
+      "explicit_off": false
     },
     "dry_run": {
       "flag": "--dry-run",
       "global": true,
-      "kind": "bool"
+      "kind": "bool",
+      "explicit_off": false
     },
     "ensure_ticket_exists": {
       "flag": "--ensure-ticket-exists",
       "global": false,
-      "kind": "bool"
+      "kind": "bool",
+      "explicit_off": false
     },
     "extensions": {
       "flag": "--ext",
       "global": false,
-      "kind": "value"
+      "kind": "value",
+      "explicit_off": false
+    },
+    "filter_language": {
+      "flag": "--filter-language",
+      "global": false,
+      "kind": "list",
+      "explicit_off": true
+    },
+    "filter_regex": {
+      "flag": "--filter-regex",
+      "global": false,
+      "kind": "repeated",
+      "explicit_off": true
+    },
+    "filter_regex_exclude": {
+      "flag": "--filter-regex-exclude",
+      "global": false,
+      "kind": "repeated",
+      "explicit_off": true
+    },
+    "filter_region": {
+      "flag": "--filter-region",
+      "global": false,
+      "kind": "list",
+      "explicit_off": true
     },
     "fix": {
       "flag": "--fix",
       "global": false,
-      "kind": "bool"
+      "kind": "bool",
+      "explicit_off": false
     },
     "format": {
       "flag": "--format",
       "global": false,
-      "kind": "value"
+      "kind": "value",
+      "explicit_off": false
     },
     "full": {
       "flag": "--full",
       "global": false,
-      "kind": "bool"
+      "kind": "bool",
+      "explicit_off": false
     },
     "hunk_size": {
       "flag": "--hunk-size",
       "global": false,
-      "kind": "value"
+      "kind": "value",
+      "explicit_off": false
     },
     "input_checksum_max": {
       "flag": "--input-checksum-max",
       "global": false,
-      "kind": "value"
+      "kind": "value",
+      "explicit_off": false
     },
     "input_checksum_min": {
       "flag": "--input-checksum-min",
       "global": false,
-      "kind": "value"
+      "kind": "value",
+      "explicit_off": false
+    },
+    "input_exclude": {
+      "flag": "--input-exclude",
+      "global": false,
+      "kind": "repeated",
+      "explicit_off": false
     },
     "inputs": {
       "flag": "--inputs",
       "global": false,
-      "kind": "positional"
+      "kind": "positional",
+      "explicit_off": false
     },
     "key": {
       "flag": "--key",
       "global": false,
-      "kind": "value"
+      "kind": "value",
+      "explicit_off": false
     },
     "keys": {
       "flag": "--keys",
       "global": false,
-      "kind": "value"
+      "kind": "value",
+      "explicit_off": false
     },
     "level": {
       "flag": "--level",
       "global": false,
-      "kind": "value"
+      "kind": "value",
+      "explicit_off": false
+    },
+    "link_mode": {
+      "flag": "--link-mode",
+      "global": false,
+      "kind": "value",
+      "explicit_off": false
     },
     "max_depth": {
       "flag": "--max-depth",
       "global": false,
-      "kind": "value"
+      "kind": "value",
+      "explicit_off": false
     },
     "mode": {
       "flag": "--mode",
       "global": false,
-      "kind": "value"
+      "kind": "value",
+      "explicit_off": false
+    },
+    "move_delete_dirs": {
+      "flag": "--move-delete-dirs",
+      "global": false,
+      "kind": "value",
+      "explicit_off": false
     },
     "move_source": {
       "flag": "--move",
       "global": false,
-      "kind": "bool"
+      "kind": "bool",
+      "explicit_off": true
+    },
+    "no_type": {
+      "flag": "--no-type",
+      "global": false,
+      "kind": "list",
+      "explicit_off": true
     },
     "on_conflict": {
       "flag": "--on-conflict",
       "global": false,
-      "kind": "value"
+      "kind": "value",
+      "explicit_off": false
+    },
+    "only_retail": {
+      "flag": "--only-retail",
+      "global": false,
+      "kind": "bool",
+      "explicit_off": true
+    },
+    "only_type": {
+      "flag": "--only-type",
+      "global": false,
+      "kind": "list",
+      "explicit_off": true
     },
     "output_dir": {
       "flag": "--output-dir",
       "global": false,
-      "kind": "value"
+      "kind": "value",
+      "explicit_off": false
     },
     "output_template": {
       "flag": "--output-template",
       "global": false,
-      "kind": "value"
+      "kind": "value",
+      "explicit_off": false
     },
     "parent": {
       "flag": "--parent",
       "global": false,
-      "kind": "value"
+      "kind": "value",
+      "explicit_off": false
+    },
+    "patch": {
+      "flag": "--patch",
+      "global": false,
+      "kind": "repeated",
+      "explicit_off": false
+    },
+    "patch_only": {
+      "flag": "--patch-only",
+      "global": false,
+      "kind": "bool",
+      "explicit_off": false
     },
     "platform": {
       "flag": "--platform",
       "global": false,
-      "kind": "value"
+      "kind": "value",
+      "explicit_off": false
     },
     "playlist_mode": {
       "flag": "--playlist-mode",
       "global": false,
-      "kind": "value"
+      "kind": "value",
+      "explicit_off": false
     },
     "playlists": {
       "flag": "--playlists",
       "global": false,
-      "kind": "bool"
+      "kind": "bool",
+      "explicit_off": true
+    },
+    "prefer_filename_regex": {
+      "flag": "--prefer-filename-regex",
+      "global": false,
+      "kind": "repeated",
+      "explicit_off": true
+    },
+    "prefer_game_regex": {
+      "flag": "--prefer-game-regex",
+      "global": false,
+      "kind": "repeated",
+      "explicit_off": true
+    },
+    "prefer_good": {
+      "flag": "--prefer-good",
+      "global": false,
+      "kind": "bool",
+      "explicit_off": true
+    },
+    "prefer_language": {
+      "flag": "--prefer-language",
+      "global": false,
+      "kind": "list",
+      "explicit_off": true
+    },
+    "prefer_parent": {
+      "flag": "--prefer-parent",
+      "global": false,
+      "kind": "bool",
+      "explicit_off": true
+    },
+    "prefer_region": {
+      "flag": "--prefer-region",
+      "global": false,
+      "kind": "list",
+      "explicit_off": true
+    },
+    "prefer_retail": {
+      "flag": "--prefer-retail",
+      "global": false,
+      "kind": "bool",
+      "explicit_off": true
+    },
+    "prefer_revision": {
+      "flag": "--prefer-revision",
+      "global": false,
+      "kind": "value",
+      "explicit_off": false
+    },
+    "prefer_verified": {
+      "flag": "--prefer-verified",
+      "global": false,
+      "kind": "bool",
+      "explicit_off": true
     },
     "preset": {
       "flag": "--preset",
       "global": true,
-      "kind": "value"
+      "kind": "value",
+      "explicit_off": false
     },
     "quick": {
       "flag": "--quick",
       "global": false,
-      "kind": "bool"
+      "kind": "bool",
+      "explicit_off": false
     },
     "recursive": {
       "flag": "--recursive",
       "global": false,
-      "kind": "bool"
+      "kind": "bool",
+      "explicit_off": false
+    },
+    "remove_headers": {
+      "flag": "--remove-headers",
+      "global": false,
+      "kind": "equals_list",
+      "explicit_off": false
     },
     "report": {
       "flag": "--report",
       "global": false,
-      "kind": "value"
+      "kind": "value",
+      "explicit_off": false
+    },
+    "single": {
+      "flag": "--single",
+      "global": false,
+      "kind": "bool",
+      "explicit_off": true
     },
     "skip_probe": {
       "flag": "--skip-probe",
       "global": false,
-      "kind": "bool"
+      "kind": "bool",
+      "explicit_off": false
     },
     "skip_space_check": {
       "flag": "--skip-space-check",
       "global": true,
-      "kind": "bool"
+      "kind": "bool",
+      "explicit_off": false
     },
     "skip_verify": {
       "flag": "--skip-verify",
       "global": false,
-      "kind": "bool"
+      "kind": "bool",
+      "explicit_off": false
     },
     "subset": {
       "flag": "--subset",
       "global": false,
-      "kind": "value"
+      "kind": "value",
+      "explicit_off": false
+    },
+    "symlink_relative": {
+      "flag": "--symlink-relative",
+      "global": false,
+      "kind": "bool",
+      "explicit_off": true
     },
     "title": {
       "flag": "--title",
       "global": false,
-      "kind": "value"
+      "kind": "value",
+      "explicit_off": false
     },
     "trim": {
       "flag": "--trim",
       "global": false,
-      "kind": "bool"
+      "kind": "bool",
+      "explicit_off": false
+    },
+    "trim_add_padding": {
+      "flag": "--trim-add-padding",
+      "global": false,
+      "kind": "bool",
+      "explicit_off": true
+    },
+    "verify_after": {
+      "flag": "--verify-after",
+      "global": false,
+      "kind": "bool",
+      "explicit_off": false
+    },
+    "zip_exclude": {
+      "flag": "--zip-exclude",
+      "global": false,
+      "kind": "value",
+      "explicit_off": false
+    },
+    "zip_format": {
+      "flag": "--zip-format",
+      "global": false,
+      "kind": "value",
+      "explicit_off": false
     }
   },
   "op_flags": {
@@ -895,15 +1155,50 @@
     "organize": [
       "allow_encrypted",
       "api_base",
+      "clean",
+      "clean_backup",
+      "clean_exclude",
       "dat",
+      "dir_letter",
+      "dir_letter_count",
+      "dir_letter_group",
+      "dir_letter_limit",
+      "filter_language",
+      "filter_regex",
+      "filter_regex_exclude",
+      "filter_region",
+      "input_exclude",
       "keys",
+      "link_mode",
       "max_depth",
+      "move_delete_dirs",
       "move_source",
+      "no_type",
       "on_conflict",
+      "only_retail",
+      "only_type",
       "output_dir",
       "output_template",
+      "patch",
+      "patch_only",
       "playlists",
-      "report"
+      "prefer_filename_regex",
+      "prefer_game_regex",
+      "prefer_good",
+      "prefer_language",
+      "prefer_parent",
+      "prefer_region",
+      "prefer_retail",
+      "prefer_revision",
+      "prefer_verified",
+      "remove_headers",
+      "report",
+      "single",
+      "symlink_relative",
+      "trim_add_padding",
+      "verify_after",
+      "zip_exclude",
+      "zip_format"
     ],
     "playlist": [
       "extensions",

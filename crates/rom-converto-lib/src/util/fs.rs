@@ -64,7 +64,9 @@ pub fn is_os_junk_dir(name: &str) -> bool {
         || name.eq_ignore_ascii_case("System Volume Information")
 }
 
-/// Cancellable twin of [`collect_files_with_exts`].
+/// Every file under `dir` whose extension case-insensitively matches one
+/// of `exts`, up to `max_depth` levels deep, returned sorted by path.
+/// Cancellation stops the walk with an error.
 pub fn collect_files_with_exts(
     dir: &Path,
     exts: &[&str],
@@ -95,7 +97,8 @@ pub fn collect_files_with_exts(
     Ok(out)
 }
 
-/// Cancellable twin of [`collect_all_files`].
+/// Every regular file under `dir`, up to `max_depth` levels deep, returned
+/// sorted by path. Cancellation stops the walk with an error.
 pub fn collect_all_files(
     dir: &Path,
     max_depth: Option<usize>,
