@@ -862,8 +862,11 @@ config file. List flags take an empty value (`--filter-language=`,
 explicit no-preference. With `--dat`, a file that matches the DAT only once its
 header is removed is written headerless even when `--remove-headers=none`. An item whose planned output
 path is its own source file is skipped as already in place and left untouched, also when the two paths
-spell the same file differently (a symlinked folder, a bind mount, or a letter-case variant on a
-case-insensitive volume). `--move` never deletes a source that is also one of its outputs.
+spell the same file differently: a symlinked folder, a bind mount, or a letter-case or Unicode
+normalization variant on a case-insensitive volume. Union filesystems (mergerfs, or Unraid's
+`/mnt/user` against `/mnt/diskN`) show the same file on a different device, so those spellings are not
+detected: give INPUT and `--output-dir` the same spelling there. `--move` never deletes a source that is
+also one of its outputs.
 
 | Flag | Description |
 |---|---|
@@ -917,7 +920,8 @@ the same lookups as the real run. With `--move`, the sources of a successfully
 organized item (every `.bin` and the `.cue` of a set) are deleted only after the
 output is in place, never for skipped or failed files. The one exception,
 shared with other ROM managers: under `--on-conflict overwrite-invalid`, an existing zip, copy, or hardlink (never a symlink)
-that verifies valid counts as placed and its source is deleted. A conversion
+that verifies valid counts as placed and its source is deleted. For a zip or copy, valid means it holds
+this source's data, so an existing output of a different dump with the same name is rewritten. A conversion
 whose existing output verifies valid keeps its source: the check only proves
 the container is self-consistent, not that this source produced it.
 
@@ -1024,10 +1028,10 @@ of it): a run that wrote nothing cleans nothing, and folders the run did not
 write into are untouched. If any item fails to stage, resolve its output
 path, or match the DAT, clean is skipped for the whole run (a warning and a
 failed clean row record it). Clean never deletes files under INPUT, even when the
-input folder is inside the output folder or reached through another spelling of the same path:
-existing files under INPUT are never overwritten either, and a conversion keeps such an output.
-A dry run reports what would be cleaned
-without deleting it, and `--clean-backup` keeps cleaned files recoverable.
+input folder is inside the output folder or reached through another spelling of the same path (union
+filesystem spellings are not detected, see above): existing files under INPUT are never overwritten
+either, and a conversion keeps such an output. A dry run reports what would be cleaned without
+deleting it, and `--clean-backup` keeps cleaned files recoverable.
 
 As in other ROM managers, the current inputs define what belongs in a cleaned folder: an
 output whose source is no longer in INPUT is stale. After a `--move` run the

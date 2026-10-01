@@ -116,9 +116,11 @@ write, using the input size plus 256 MiB as a conservative floor. A page option
 can skip that check. Organize's Move option deletes source files only after
 their organized copies were written successfully; skipped or failed files keep
 their sources, except with On conflict set to Overwrite if invalid: an existing
-zip, copy, or hardlink (never a symlink) that verifies valid counts as written
-and its source is deleted. Any item whose planned output path is its own
-source file, however the path is spelled, is left untouched as already in place.
+zip, copy, or hardlink (never a symlink) that verifies valid, meaning it holds this source's data,
+counts as written and its source is deleted. Any item whose planned output path is its own source file
+is left untouched as already in place, also through a symlinked folder, a bind mount, or a letter-case
+variant of the path. Union filesystems such as mergerfs or Unraid's `/mnt/user` are not detected, so
+use the same folder spelling for input and output there.
 
 Cancel stops current work and removes its partial output. Completed files remain
 completed. Batch completion can send an OS notification and update the taskbar or
