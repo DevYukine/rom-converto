@@ -36,6 +36,10 @@ pub enum CueError {
     /// A quoted string field is missing its closing quote.
     #[error("missing closing quote")]
     MissingClosingQuote,
+
+    /// A `FILE` name would resolve outside the sheet's own folder.
+    #[error("FILE path escapes the cue sheet's folder: {0}")]
+    UnsafeFilePath(String),
 }
 
 /// Result alias for CUE sheet parsing.
