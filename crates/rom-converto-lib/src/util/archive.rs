@@ -7,7 +7,9 @@
 //! not OSI-permissive.
 
 use crate::util::fs::{has_any_extension, is_os_junk_file};
-use crate::util::{DEFAULT_SPACE_HEADROOM, available_space, format_bytes, space_shortfall};
+use crate::util::{
+    DEFAULT_SPACE_HEADROOM, available_space, format_bytes, is_safe_dirent_name, space_shortfall,
+};
 use anyhow::{Result, anyhow, bail};
 use std::collections::HashSet;
 use std::fs::File;
@@ -79,10 +81,11 @@ fn basename(name: &str) -> &str {
 }
 
 /// Basename of a member path, rejecting names that would escape the extraction
-/// directory (empty, `.`, `..`).
+/// directory: empty, `.`, `..`, NULs, and on Windows drive-relative or
+/// alternate data stream names.
 fn safe_basename(name: &str) -> Result<String> {
     let base = basename(name);
-    if base.is_empty() || base == "." || base == ".." {
+    if !is_safe_dirent_name(base) {
         bail!("unsafe archive member name: {name}");
     }
     Ok(base.to_string())
@@ -600,6 +603,25 @@ pub fn resolve_input_with_selection(
 mod tests {
     use super::*;
     use crate::util::{CancelToken, NoProgress, ZipFormat, ZipMember};
+
+    #[test]
+    fn safe_basename_refuses_unsafe_names_and_keeps_plain_basenames() {
+        for name in ["..", ".", "", "nul\0.bin"] {
+            assert!(safe_basename(name).is_err(), "{name:?}");
+        }
+        for name in ["C:x.iso", "C:", "ab:c"] {
+            assert_eq!(safe_basename(name).is_err(), cfg!(windows), "{name:?}");
+        }
+
+        for (name, expected) in [
+            ("Game (USA).iso", "Game (USA).iso"),
+            ("a.b.c.bin", "a.b.c.bin"),
+            ("Pokémon.iso", "Pokémon.iso"),
+            ("dir/file.bin", "file.bin"),
+        ] {
+            assert_eq!(safe_basename(name).unwrap(), expected);
+        }
+    }
 
     /// A zip whose non-ASCII member name is stored CP437 without the UTF-8
     /// flag stages through the decoded name: the member is found, extracted,
