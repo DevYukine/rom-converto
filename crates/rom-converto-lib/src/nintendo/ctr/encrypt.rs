@@ -20,8 +20,7 @@ use crate::nintendo::ctr::constants::{
     NCSD_PARTITION_TABLE_OFFSET, NCSD_TITLE_ID_OFFSET,
 };
 use crate::nintendo::ctr::decrypt::cia::{
-    Aes128Ctr, ROMFS_CHUNK_SIZE, derive_ctr_key, extra_crypto_index, fixed_key,
-    get_ncch_aes_counter, get_new_key,
+    Aes128Ctr, derive_ctr_key, extra_crypto_index, fixed_key, get_ncch_aes_counter, get_new_key,
 };
 use crate::nintendo::ctr::decrypt::model::NcchSection;
 use crate::nintendo::ctr::decrypt::util::{derive_title_key_from_ticket, gen_iv};
@@ -111,16 +110,7 @@ async fn encrypt_ncch(
 
     let tmp = scratch_output_path(output)?;
     fs::copy(input, &tmp).await?;
-    encrypt_ncch_at(
-        input,
-        &tmp,
-        0,
-        [0u8; 8],
-        NcchSource::Standalone,
-        progress,
-        cancel,
-    )
-    .await?;
+    encrypt_ncch_at(input, &tmp, 0, [0u8; 8], progress, cancel).await?;
     crate::util::publish_temp(tmp, output, true)?;
     progress.finish();
     info!("Encrypted NCCH file");
@@ -199,16 +189,7 @@ async fn encrypt_ncsd_partitions(
             "  Partition {i} ({partition_name}) at offset 0x{partition_offset:X}, size {size_mu} MU",
         );
 
-        encrypt_ncch_at(
-            input,
-            output,
-            partition_offset,
-            title_id,
-            NcchSource::Ncsd,
-            progress,
-            cancel,
-        )
-        .await?;
+        encrypt_ncch_at(input, output, partition_offset, title_id, progress, cancel).await?;
     }
 
     Ok(())
@@ -299,9 +280,6 @@ async fn encrypt_cia(
                     &content_tmp,
                     0,
                     ticket_title_id,
-                    NcchSource::CiaContent {
-                        content_index: record.content_index,
-                    },
                     progress,
                     cancel,
                 )
@@ -361,28 +339,11 @@ async fn encrypt_cia(
     Ok(())
 }
 
-#[derive(Clone, Copy)]
-enum NcchSource {
-    Standalone,
-    Ncsd,
-    CiaContent { content_index: u16 },
-}
-
-impl NcchSource {
-    fn cia_content_index(self) -> Option<u16> {
-        match self {
-            Self::CiaContent { content_index } => Some(content_index),
-            _ => None,
-        }
-    }
-}
-
 async fn encrypt_ncch_at(
     input: &Path,
     output: &Path,
     ncch_offset: u64,
     mut title_id: [u8; 8],
-    source: NcchSource,
     progress: &dyn ProgressReporter,
     cancel: &CancelToken,
 ) -> Result<()> {
@@ -424,11 +385,7 @@ async fn encrypt_ncch_at(
             &mut write,
             ncch_offset + EXEFS_HEADER_SIZE as u64,
             header.exhdrsize as u64 * 2,
-            StreamCrypto {
-                key,
-                counter,
-                cia_cidx_fixup: None,
-            },
+            StreamCrypto { key, counter },
             progress,
             cancel,
         )
@@ -452,20 +409,12 @@ async fn encrypt_ncch_at(
     if header.romfssize != 0 {
         let counter = get_ncch_aes_counter(&header, NcchSection::RomFS);
         let key = crypto.romfs_key();
-        let cia_fixup = source
-            .cia_content_index()
-            .filter(|idx| *idx > 0)
-            .map(|idx| idx as u8);
         encrypt_stream_section(
             &mut read,
             &mut write,
             ncch_offset + (header.romfsoffset as u64 * CTR_MEDIA_UNIT_SIZE as u64),
             header.romfssize as u64 * CTR_MEDIA_UNIT_SIZE as u64,
-            StreamCrypto {
-                key,
-                counter,
-                cia_cidx_fixup: cia_fixup,
-            },
+            StreamCrypto { key, counter },
             progress,
             cancel,
         )
@@ -528,13 +477,10 @@ impl NcchCrypto {
     }
 }
 
-/// AES-CTR keying for one streamed section. `cia_cidx_fixup` carries
-/// the CIA content index whose low byte is XORed into byte 1 of every
-/// RomFS chunk, and is `None` for every other section.
+/// AES-CTR keying for one streamed section.
 struct StreamCrypto {
     key: [u8; 16],
     counter: [u8; 16],
-    cia_cidx_fixup: Option<u8>,
 }
 
 async fn encrypt_stream_section(
@@ -546,11 +492,7 @@ async fn encrypt_stream_section(
     progress: &dyn ProgressReporter,
     cancel: &CancelToken,
 ) -> Result<()> {
-    let StreamCrypto {
-        key,
-        counter,
-        cia_cidx_fixup,
-    } = crypto;
+    let StreamCrypto { key, counter } = crypto;
     read.seek(SeekFrom::Start(offset)).await?;
     write.seek(SeekFrom::Start(offset)).await?;
 
@@ -566,9 +508,6 @@ async fn encrypt_stream_section(
         read.read_exact(&mut buf[..take]).await?;
         let chunk = &mut buf[..take];
         Aes128Ctr::new_from_slices(&key, &advance_counter(&counter, done))?.apply_keystream(chunk);
-        if let Some(cidx) = cia_cidx_fixup {
-            apply_cia_romfs_cidx_fixup(chunk, done, cidx);
-        }
         write.write_all(chunk).await?;
         progress.inc(take as u64);
         remaining -= take as u64;
@@ -576,20 +515,6 @@ async fn encrypt_stream_section(
     }
 
     Ok(())
-}
-
-fn apply_cia_romfs_cidx_fixup(chunk: &mut [u8], chunk_start: u64, cidx: u8) {
-    let stride = ROMFS_CHUNK_SIZE as u64;
-    let chunk_end = chunk_start + chunk.len() as u64;
-    let mut fixup_pos = 1u64;
-    if fixup_pos < chunk_start {
-        fixup_pos += (chunk_start - fixup_pos).div_ceil(stride) * stride;
-    }
-
-    while fixup_pos < chunk_end {
-        chunk[(fixup_pos - chunk_start) as usize] ^= cidx;
-        fixup_pos += stride;
-    }
 }
 
 async fn encrypt_exefs_section(
@@ -1107,59 +1032,95 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cia_romfs_cidx_fixup_matches_decrypt_chunk_cadence() {
-        let dir = tempfile::tempdir().unwrap();
-        let plain_path = dir.path().join("plain.romfs");
-        let encrypted_path = dir.path().join("encrypted.romfs");
-        let size = ROMFS_CHUNK_SIZE + 0x1000;
-        let plain: Vec<u8> = (0..size)
-            .map(|i| (i as u8).wrapping_mul(29).wrapping_add(7))
-            .collect();
-        std::fs::write(&plain_path, &plain).unwrap();
-        std::fs::write(&encrypted_path, vec![0u8; size]).unwrap();
+    async fn cia_encrypt_decrypt_preserves_nonzero_index_romfs() {
+        use crate::nintendo::ctr::decrypt::util::cbc_decrypt;
+        use crate::nintendo::ctr::test_fixtures::synth_cia_with_content;
 
-        let key = [0x42; 16];
-        let counter = [0x11; 16];
-        let cidx = 3;
-        let mut read = File::open(&plain_path).await.unwrap();
-        let mut write = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&encrypted_path)
-            .await
-            .unwrap();
-        encrypt_stream_section(
-            &mut read,
-            &mut write,
-            0,
-            size as u64,
-            StreamCrypto {
-                key,
-                counter,
-                cia_cidx_fixup: Some(cidx),
-            },
+        let romfs_offset = 2 * CTR_MEDIA_UNIT_SIZE as usize;
+        let mut content0 = make_plain_ncch_with_romfs();
+        content0[romfs_offset..romfs_offset + 4].copy_from_slice(b"IVFC");
+        let mut content3 = make_plain_ncch_with_romfs();
+        content3[romfs_offset..romfs_offset + 4].copy_from_slice(b"IVFC");
+        let hash_content = |content: &[u8]| {
+            let digest = Sha256::digest(content);
+            let mut hash = [0u8; 32];
+            hash.copy_from_slice(&digest);
+            hash
+        };
+        let mut content_data = content0.clone();
+        content_data.extend_from_slice(&content3);
+        let (_tmp, plain_path) = synth_cia_with_content(
+            SYNTH_CIA_TITLE_ID,
+            vec![
+                (0, 0, content0.clone(), hash_content(&content0)),
+                (1, 3, content3.clone(), hash_content(&content3)),
+            ],
+            content_data,
+            false,
+        );
+        let encrypted_path = plain_path.with_extension("encrypted.cia");
+        let decrypted_path = plain_path.with_extension("decrypted.cia");
+        let plain_cia = std::fs::read(&plain_path).unwrap();
+
+        encrypt_rom(
+            &plain_path,
+            &encrypted_path,
             &NoProgress,
-            &CancelToken::new(),
+            CancelToken::new(),
         )
         .await
         .unwrap();
-        write.flush().await.unwrap();
+        crate::nintendo::ctr::decrypt_cia(
+            &encrypted_path,
+            &decrypted_path,
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
 
-        let mut decrypted = std::fs::read(&encrypted_path).unwrap();
-        let mut offset = 0usize;
-        while offset < decrypted.len() {
-            let end = (offset + ROMFS_CHUNK_SIZE).min(decrypted.len());
-            let chunk = &mut decrypted[offset..end];
-            if chunk.len() > 1 {
-                chunk[1] ^= cidx;
-            }
-            Aes128Ctr::new_from_slices(&key, &advance_counter(&counter, offset as u64))
-                .unwrap()
-                .apply_keystream(chunk);
-            offset = end;
-        }
+        let decrypted_bytes = std::fs::read(&decrypted_path).unwrap();
+        let original =
+            CiaFile::read_options(&mut Cursor::new(&plain_cia), Endian::Little, ()).unwrap();
+        let decrypted =
+            CiaFile::read_options(&mut Cursor::new(&decrypted_bytes), Endian::Little, ()).unwrap();
+        assert_bytes_eq(&decrypted.content_data, &original.content_data);
 
-        assert_bytes_eq(&decrypted, &plain);
+        let encrypted_bytes = std::fs::read(&encrypted_path).unwrap();
+        let encrypted_cia =
+            CiaFile::read_options(&mut Cursor::new(&encrypted_bytes), Endian::Little, ()).unwrap();
+        let mut cia_cursor = Cursor::new(encrypted_bytes.as_slice());
+        let title_key = derive_title_key_from_ticket(
+            &mut cia_cursor,
+            CiaLayout::new(&encrypted_cia.header).ticket_offset,
+        )
+        .unwrap();
+        let second_record = &encrypted_cia.tmd.content_chunk_records[1];
+        assert_eq!(second_record.content_index, 3);
+        let second_offset =
+            align_64(encrypted_cia.tmd.content_chunk_records[0].content_size) as usize;
+        let second_end = second_offset + second_record.content_size as usize;
+        let mut second_content = encrypted_cia.content_data[second_offset..second_end].to_vec();
+        cbc_decrypt(
+            &title_key,
+            &gen_iv(second_record.content_index),
+            &mut second_content,
+        )
+        .unwrap();
+
+        let ncch_header = NcchHeader::read(&mut Cursor::new(&second_content[..0x200])).unwrap();
+        let crypto = NcchCrypto::from_header(&ncch_header, SYNTH_CIA_TITLE_ID.to_be_bytes())
+            .await
+            .unwrap();
+        let mut romfs =
+            second_content[romfs_offset..romfs_offset + CTR_MEDIA_UNIT_SIZE as usize].to_vec();
+        Aes128Ctr::new_from_slices(
+            &crypto.romfs_key(),
+            &get_ncch_aes_counter(&ncch_header, NcchSection::RomFS),
+        )
+        .unwrap()
+        .apply_keystream(&mut romfs);
+        assert_eq!(&romfs[..4], b"IVFC");
     }
 
     fn assert_bytes_eq(left: &[u8], right: &[u8]) {
