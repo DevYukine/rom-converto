@@ -65,18 +65,20 @@ jobs:
 
     steps:
       - name: Checkout source
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: ${{ inputs.ref || github.ref }}
 
       - name: Build release library
-        uses: houseabsolute/actions-rust-cross@v1
+        uses: houseabsolute/actions-rust-cross@85826e468eac832e251ac58f6191ba784db237c8 # v1
         with:
           command: build
           target: ${{ matrix.target }}
           args: "--locked --release -p rom-converto-ffi"
           strip: true
           force-use-cross: ${{ matrix.force_cross }}
+          # Keep in sync with the image digests in Cross.toml.
+          cross-version: v0.2.5
 
       - name: Package library
         shell: bash
@@ -105,15 +107,21 @@ jobs:
 
       - name: Upload workflow artifact
         if: ${{ !inputs.release }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rom-converto-ffi-${{ matrix.classifier }}
           path: artifact/
           if-no-files-found: error
 
+      - name: Attest build provenance
+        if: ${{ inputs.release }}
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: artifact/*
+
       - name: Upload to release
         if: ${{ inputs.release }}
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: ${{ inputs.release_tag }}
           files: artifact/*

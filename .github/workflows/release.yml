@@ -19,10 +19,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Source code
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - name: Create Conventional Changelog
         id: changelog
-        uses: TriPSs/conventional-changelog-action@v6
+        uses: TriPSs/conventional-changelog-action@ee43def3241429afddab215ba89090cbf64fb45c # v6.4.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           version-file: "./Cargo.toml"
@@ -30,7 +30,7 @@ jobs:
           pre-commit: ".github/scripts/pre-commit.js"
       - name: Create Release
         if: ${{ steps.changelog.outputs.skipped == 'false' }}
-        uses: ncipollo/release-action@v1
+        uses: ncipollo/release-action@339a81892b84b4eeb0f6e744e4574d79d0d9b8dd # v1.21.0
         with:
           tag: ${{ steps.changelog.outputs.tag }}
           name: ${{ steps.changelog.outputs.tag }}
@@ -38,6 +38,10 @@ jobs:
 
   build-cli:
     needs: changelog
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     if: ${{ needs.changelog.outputs.skipped == 'false' }}
     uses: ./.github/workflows/_build-cli.yml
     with:
@@ -48,6 +52,10 @@ jobs:
 
   build-ffi:
     needs: changelog
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     if: ${{ needs.changelog.outputs.skipped == 'false' }}
     uses: ./.github/workflows/_build-ffi.yml
     with:
@@ -58,6 +66,10 @@ jobs:
 
   build-gui:
     needs: changelog
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     if: ${{ needs.changelog.outputs.skipped == 'false' }}
     uses: ./.github/workflows/_build-gui.yml
     with:

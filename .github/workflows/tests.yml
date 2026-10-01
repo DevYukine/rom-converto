@@ -19,10 +19,10 @@ jobs:
     runs-on: "ubuntu-latest"
     steps:
       - name: Checkout Source code
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Cache Rust dependencies
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -31,7 +31,7 @@ jobs:
           key: check-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Install Rust Toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
 
       - name: Run cargo check (lib + cli + benchmark + ffi)
         run: cargo check -p rom-converto-lib -p rom-converto-cli -p rom-converto-benchmark -p rom-converto-ffi
@@ -41,10 +41,10 @@ jobs:
     runs-on: "ubuntu-latest"
     steps:
       - name: Checkout Source code
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Cache Rust dependencies
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -53,7 +53,7 @@ jobs:
           key: test-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Install Rust Toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
 
       - name: Install Tauri system dependencies
         run: |
@@ -79,15 +79,15 @@ jobs:
     runs-on: "ubuntu-latest"
     steps:
       - name: Checkout Source code
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v5
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
         with:
           version: 11
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 22
           cache: pnpm
@@ -110,10 +110,10 @@ jobs:
     runs-on: "ubuntu-latest"
     steps:
       - name: Checkout Source code
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Install Rust Toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
           components: rustfmt
 
@@ -125,10 +125,10 @@ jobs:
     runs-on: "ubuntu-latest"
     steps:
       - name: Checkout Source code
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Cache Rust dependencies
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -137,7 +137,7 @@ jobs:
           key: clippy-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Install Rust Toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
           components: clippy
 
