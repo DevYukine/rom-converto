@@ -11,26 +11,9 @@ use super::error::{XboxError, XboxResult};
 use crate::microsoft::xdvdfs::{
     XBOX_PROBE_BASES, XdvdfsError, XdvdfsVolume, data_offset, walk_dir_tables,
 };
-use crate::util::CancelToken;
-use crate::util::Cancelled;
+use crate::util::{CancelToken, Cancelled, is_safe_dirent_name};
 
 const COPY_BUF: usize = 1024 * 1024;
-
-/// A dirent name safe to append to a real filesystem path: an untrusted
-/// image can otherwise plant an absolute or `..` name and escape
-/// `output_dir` (zip-slip).
-fn is_safe_dirent_name(name: &str) -> bool {
-    if name.is_empty() || name == "." || name == ".." {
-        return false;
-    }
-    if name.contains(['/', '\\', '\0']) {
-        return false;
-    }
-    if cfg!(windows) && name.contains(':') {
-        return false;
-    }
-    true
-}
 
 pub(super) fn extract_blocking(
     input: &Path,

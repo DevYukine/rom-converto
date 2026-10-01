@@ -60,6 +60,22 @@ pub use zip_write::write_zip;
 
 pub const BYTES_PER_MB: f64 = 1_000_000.0;
 
+/// A dirent name safe to append to a real filesystem path: an untrusted
+/// image can otherwise plant an absolute or `..` name and escape
+/// `output_dir` (zip-slip).
+pub(crate) fn is_safe_dirent_name(name: &str) -> bool {
+    if name.is_empty() || name == "." || name == ".." {
+        return false;
+    }
+    if name.contains(['/', '\\', '\0']) {
+        return false;
+    }
+    if cfg!(windows) && name.contains(':') {
+        return false;
+    }
+    true
+}
+
 /// Compute `offset + size` when that extent stays within `len`: `Some(end)`
 /// when the addition does not overflow and `end <= len`, else `None`. The
 /// error-type-agnostic core of [`validate_extent`] for callers that map an

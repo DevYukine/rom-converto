@@ -14,7 +14,7 @@ use crate::nintendo::wup::nus::layout::{NusLayout, TicketSource};
 use crate::nintendo::wup::nus::ticket_parser::{TitleKey, read_ticket_file};
 use crate::nintendo::wup::nus::tmd_parser::read_tmd_file;
 use crate::nintendo::wup::title_key_derive::derive_title_key;
-use crate::util::{CancelToken, Cancelled, ProgressReporter};
+use crate::util::{CancelToken, Cancelled, ProgressReporter, is_safe_dirent_name};
 
 /// Decrypt one NUS-format title into a loadiine-style directory tree
 /// under `output_dir`. Returns `(title_id, title_version)` from the
@@ -70,6 +70,12 @@ fn decrypt_nus_title_with_cancel(
             len,
         )
     })?;
+
+    for vfile in &fs.files {
+        if !vfile.path.split('/').all(is_safe_dirent_name) {
+            return Err(WupError::InvalidPath(vfile.path.clone()));
+        }
+    }
 
     let created_output_dir = !output_dir.exists();
     std::fs::create_dir_all(output_dir)?;
@@ -272,6 +278,8 @@ mod tests {
         /// High byte of the FST file entry's type_and_name_offset.
         /// `0x80` marks the file as inherited-from-base.
         file_type_byte: u8,
+        directory_name: &'static str,
+        file_name: &'static str,
         /// When `Some`, overrides the FST file entry's size so the
         /// extent-past-cluster path can be exercised.
         file_size_override: Option<u32>,
@@ -287,6 +295,8 @@ mod tests {
                 title_key: [0x99u8; 16],
                 ticket_title_id: Some(0x0005_000E_1234_5678),
                 file_type_byte: 0x00,
+                directory_name: "content",
+                file_name: "foo.bin",
                 file_size_override: None,
                 hashed_payload: false,
             }
@@ -296,7 +306,7 @@ mod tests {
     impl NusFixture {
         /// Write ticket (if enabled), TMD, FST, and payload to `dir`.
         /// Returns the plaintext payload bytes the decrypter should
-        /// emit under `content/foo.bin`.
+        /// emit under the configured directory and file names.
         fn build(&self, dir: &Path) -> Vec<u8> {
             if let Some(ticket_title_id) = self.ticket_title_id {
                 let mut ticket = vec![0u8; WUP_TICKET_BASE_SIZE];
@@ -319,9 +329,13 @@ mod tests {
             } else {
                 TmdContentFlags::ENCRYPTED
             };
-            let fst_size =
-                (FST_HEADER_SIZE + 2 * FST_CLUSTER_ENTRY_SIZE + 3 * FST_FILE_ENTRY_SIZE + 32)
-                    .max(0x200);
+            let names_size = 1 + self.directory_name.len() + 1 + self.file_name.len() + 1;
+            let fst_size = (FST_HEADER_SIZE
+                + 2 * FST_CLUSTER_ENTRY_SIZE
+                + 3 * FST_FILE_ENTRY_SIZE
+                + names_size)
+                .max(0x200)
+                .next_multiple_of(16);
 
             let mut tmd = vec![0u8; WUP_TMD_HEADER_SIZE + 2 * WUP_TMD_CONTENT_ENTRY_SIZE];
             tmd[0..4].copy_from_slice(&0x0001_0004u32.to_be_bytes());
@@ -365,8 +379,12 @@ mod tests {
 
             let name_table_off = entries_start + (num_entries as usize) * FST_FILE_ENTRY_SIZE;
             fst[name_table_off] = 0;
-            fst[name_table_off + 1..name_table_off + 9].copy_from_slice(b"content\0");
-            fst[name_table_off + 9..name_table_off + 17].copy_from_slice(b"foo.bin\0");
+            let file_name_offset = 1 + self.directory_name.len() + 1;
+            fst[name_table_off + 1..name_table_off + file_name_offset - 1]
+                .copy_from_slice(self.directory_name.as_bytes());
+            fst[name_table_off + file_name_offset
+                ..name_table_off + file_name_offset + self.file_name.len()]
+                .copy_from_slice(self.file_name.as_bytes());
 
             let dir_entry_off = entries_start + FST_FILE_ENTRY_SIZE;
             fst[dir_entry_off..dir_entry_off + 4]
@@ -374,7 +392,7 @@ mod tests {
             fst[dir_entry_off + 8..dir_entry_off + 12].copy_from_slice(&num_entries.to_be_bytes());
 
             let file_entry_off = dir_entry_off + FST_FILE_ENTRY_SIZE;
-            let file_name_and_type = ((self.file_type_byte as u32) << 24) | 9u32;
+            let file_name_and_type = ((self.file_type_byte as u32) << 24) | file_name_offset as u32;
             fst[file_entry_off..file_entry_off + 4]
                 .copy_from_slice(&file_name_and_type.to_be_bytes());
             fst[file_entry_off + 4..file_entry_off + 8].copy_from_slice(&0u32.to_be_bytes());
@@ -445,6 +463,58 @@ mod tests {
         assert_eq!(ver, fx.title_version);
         let written = std::fs::read(out.path().join("content").join("foo.bin")).unwrap();
         assert_eq!(written, expected);
+    }
+
+    #[test]
+    fn decrypt_rejects_backslash_in_any_path_component_without_writing() {
+        for (directory_name, file_name) in
+            [("content", "..\\outside.bin"), ("..\\outside", "foo.bin")]
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let out = tempfile::tempdir().unwrap();
+            let output_dir = out.path().join("output");
+            let fx = NusFixture {
+                directory_name,
+                file_name,
+                ..NusFixture::default()
+            };
+            fx.build(dir.path());
+
+            let err = decrypt_nus_title(dir.path(), &output_dir, &NoProgress).unwrap_err();
+            assert!(
+                matches!(&err, WupError::InvalidPath(path) if path == &format!("{directory_name}/{file_name}")),
+                "{err}"
+            );
+            assert!(!output_dir.exists());
+        }
+    }
+
+    #[test]
+    fn decrypt_colon_names_follow_host_path_rules() {
+        for (directory_name, file_name) in [("ab:c", "foo.bin"), ("content", "C:x.iso")] {
+            let dir = tempfile::tempdir().unwrap();
+            let out = tempfile::tempdir().unwrap();
+            let output_dir = out.path().join("output");
+            let fx = NusFixture {
+                directory_name,
+                file_name,
+                ..NusFixture::default()
+            };
+            let expected = fx.build(dir.path());
+            let path = format!("{directory_name}/{file_name}");
+
+            let result = decrypt_nus_title(dir.path(), &output_dir, &NoProgress);
+            if cfg!(windows) {
+                assert!(
+                    matches!(&result, Err(WupError::InvalidPath(name)) if name == &path),
+                    "{result:?}"
+                );
+                assert!(!output_dir.exists());
+            } else {
+                result.unwrap();
+                assert_eq!(std::fs::read(output_dir.join(path)).unwrap(), expected);
+            }
+        }
     }
 
     #[test]

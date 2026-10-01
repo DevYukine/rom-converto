@@ -392,6 +392,9 @@ fn walk_entries(
         }
         let entry = read_entry(i)?;
         let name = read_name(entry.name_offset())?;
+        if i != 0 && (name.is_empty() || name == "." || name == ".." || name.contains('/')) {
+            return Err(WupError::InvalidFst);
+        }
         if entry.is_file() {
             let path = if path_stack.is_empty() {
                 name
@@ -594,6 +597,21 @@ mod tests {
         })
     }
 
+    fn set_fixture_entry_name(bytes: &mut [u8], index: usize, name: &[u8]) {
+        let entries_start = FST_HEADER_SIZE + FST_CLUSTER_ENTRY_SIZE;
+        let entry_start = entries_start + index * FST_FILE_ENTRY_SIZE;
+        let name_offset = (u32_be(bytes, entry_start) & 0x00FF_FFFF) as usize;
+        let name_table_start = entries_start + 9 * FST_FILE_ENTRY_SIZE;
+        let name_start = name_table_start + name_offset;
+        let old_len = bytes[name_start..]
+            .iter()
+            .position(|&byte| byte == 0)
+            .unwrap();
+        assert!(name.len() <= old_len);
+        bytes[name_start..name_start + name.len()].copy_from_slice(name);
+        bytes[name_start + name.len()] = 0;
+    }
+
     #[test]
     fn parses_fixture_header() {
         let fst = parse_fixture_fst_ranges(&build_fixture_fst()).unwrap();
@@ -619,6 +637,37 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn rejects_invalid_directory_names() {
+        for name in ["", ".", ".."] {
+            let mut bytes = build_fixture_fst();
+            set_fixture_entry_name(&mut bytes, 1, name.as_bytes());
+            let err = parse_fixture_fst_ranges(&bytes).unwrap_err();
+            assert!(matches!(err, WupError::InvalidFst), "{err}");
+        }
+    }
+
+    #[test]
+    fn rejects_slash_in_file_name() {
+        let mut bytes = build_fixture_fst();
+        set_fixture_entry_name(&mut bytes, 2, b"m/ta.xml");
+        let err = parse_fixture_fst_ranges(&bytes).unwrap_err();
+        assert!(matches!(err, WupError::InvalidFst), "{err}");
+    }
+
+    #[test]
+    fn preserves_colons_and_backslashes_in_names() {
+        for (directory_name, file_name) in [("m:ta", "m:ta.xml"), ("m\\ta", "m\\ta.xml")] {
+            let mut bytes = build_fixture_fst();
+            set_fixture_entry_name(&mut bytes, 1, directory_name.as_bytes());
+            set_fixture_entry_name(&mut bytes, 2, file_name.as_bytes());
+
+            let fst = parse_fixture_fst_ranges(&bytes).unwrap();
+            assert_eq!(fst.files[0].path, format!("{directory_name}/{file_name}"));
+        }
+    }
+
     #[test]
     fn range_parser_reads_bounded_name_windows() {
         let mut bytes = build_fixture_fst();
