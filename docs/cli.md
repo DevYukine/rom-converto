@@ -861,7 +861,9 @@ config file. List flags take an empty value (`--filter-language=`,
 `--clean-exclude=`) as an explicit empty list; `--prefer-revision any` is the
 explicit no-preference. With `--dat`, a file that matches the DAT only once its
 header is removed is written headerless even when `--remove-headers=none`. An item whose planned output
-path is its own source file is skipped as already in place and left untouched.
+path is its own source file is skipped as already in place and left untouched, also when the two paths
+spell the same file differently (a symlinked folder, a bind mount, or a letter-case variant on a
+case-insensitive volume). `--move` never deletes a source that is also one of its outputs.
 
 | Flag | Description |
 |---|---|
@@ -1022,8 +1024,9 @@ of it): a run that wrote nothing cleans nothing, and folders the run did not
 write into are untouched. If any item fails to stage, resolve its output
 path, or match the DAT, clean is skipped for the whole run (a warning and a
 failed clean row record it). Clean never deletes files under INPUT, even when the
-input folder is inside the output folder: existing files under INPUT are never
-overwritten either, and a conversion keeps such an output. A dry run reports what would be cleaned
+input folder is inside the output folder or reached through another spelling of the same path:
+existing files under INPUT are never overwritten either, and a conversion keeps such an output.
+A dry run reports what would be cleaned
 without deleting it, and `--clean-backup` keeps cleaned files recoverable.
 
 As in other ROM managers, the current inputs define what belongs in a cleaned folder: an

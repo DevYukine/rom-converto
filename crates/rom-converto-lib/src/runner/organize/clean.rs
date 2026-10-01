@@ -6,9 +6,9 @@ use crate::runner::models::{OrganizeRow, RunOptions};
 use crate::util::{CancelToken, Cancelled, ConflictPolicy, FileStatus, ProgressReporter};
 use anyhow::{Context, Result};
 use globset::{GlobSet, GlobSetBuilder};
-use std::collections::BTreeSet;
 #[cfg(unix)]
 use std::collections::HashSet;
+use std::collections::{BTreeSet, HashMap};
 use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -253,6 +253,11 @@ fn clean_output_pass(
     let backup = options.backup.as_deref().map(BackupSpot::of);
     let mut rows = Vec::new();
     let mut backup_made = false;
+    #[cfg(unix)]
+    let root_identity = super::FileIdentity::of(input_root);
+    #[cfg(not(unix))]
+    let root_identity = None;
+    let mut parents = HashMap::new();
     // The set iterates sorted, so a written dir inside an already-walked
     // (recursive) one is covered and skipped.
     let mut covered: Vec<(PathBuf, bool)> = Vec::new();
@@ -301,7 +306,12 @@ fn clean_output_pass(
             // Nothing whose own location is under the input root is a clean
             // candidate, whatever it is (a file, a link, OS junk, or inside
             // a junk directory).
-            if location.starts_with(input_root) {
+            if super::entry_location_is_under_root(
+                &location,
+                input_root,
+                root_identity.as_ref(),
+                &mut parents,
+            ) {
                 continue;
             }
             if glob_matches(&options.exclude, output_dir, &candidate.path)
@@ -389,6 +399,11 @@ fn delete_stale_playlists_pass(
     let backup = options.backup.as_deref().map(BackupSpot::of);
     let mut rows = Vec::new();
     let mut backup_made = false;
+    #[cfg(unix)]
+    let root_identity = super::FileIdentity::of(input_root);
+    #[cfg(not(unix))]
+    let root_identity = None;
+    let mut parents = HashMap::new();
     for path in paths {
         if cancel.is_cancelled() {
             return Err(Cancelled.into());
@@ -399,7 +414,12 @@ fn delete_stale_playlists_pass(
         // A symlinked playlist is judged by where it sits: one whose own
         // location is under the input root is never deleted.
         let location = super::entry_location(path);
-        if location.starts_with(input_root) {
+        if super::entry_location_is_under_root(
+            &location,
+            input_root,
+            root_identity.as_ref(),
+            &mut parents,
+        ) {
             continue;
         }
         if backup

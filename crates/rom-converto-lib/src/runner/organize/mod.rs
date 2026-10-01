@@ -1552,7 +1552,7 @@ enum RefusalCause {
 /// file share an identity whatever their spelling, including case variants
 /// on case-insensitive volumes.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-enum FileIdentity {
+pub(super) enum FileIdentity {
     #[cfg(unix)]
     Inode(u64, u64),
     Path(PathBuf),
@@ -1601,11 +1601,47 @@ fn same_location(a: &Path, b: &Path) -> bool {
     if entry_location(a) == entry_location(b) {
         return true;
     }
-    // Case-variant spellings of one regular file name the same entry on a
-    // case-insensitive volume; a symlink is always its own entry. The
-    // identity check keeps two distinct files apart on a case-sensitive
-    // volume that merely folds the comparison.
-    if cfg!(any(target_os = "macos", windows))
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirEntryExt, MetadataExt};
+        if let (Ok(meta_a), Ok(meta_b)) =
+            (std::fs::symlink_metadata(a), std::fs::symlink_metadata(b))
+            && meta_a.is_file()
+            && meta_b.is_file()
+            && (meta_a.dev(), meta_a.ino()) == (meta_b.dev(), meta_b.ino())
+        {
+            if meta_a.nlink() == 1 && meta_b.nlink() == 1 {
+                return true;
+            }
+            if let (Some(parent_a), Some(parent_b)) = (a.parent(), b.parent())
+                && FileIdentity::of(parent_a)
+                    .zip(FileIdentity::of(parent_b))
+                    .is_some_and(|(a, b)| a == b)
+            {
+                let (name_a, name_b) = (a.file_name(), b.file_name());
+                if name_a == name_b {
+                    return true;
+                }
+                if let Ok(entries) = std::fs::read_dir(parent_a) {
+                    let mut links = 0;
+                    for entry in entries {
+                        let Ok(entry) = entry else {
+                            return false;
+                        };
+                        if entry.ino() == meta_a.ino() {
+                            links += 1;
+                            if links > 1 {
+                                return name_a == name_b;
+                            }
+                        }
+                    }
+                    return links == 1;
+                }
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    if cfg!(windows)
         && let (Some(meta_a), Some(meta_b)) = (
             std::fs::symlink_metadata(a).ok(),
             std::fs::symlink_metadata(b).ok(),
@@ -1622,6 +1658,96 @@ fn same_location(a: &Path, b: &Path) -> bool {
     false
 }
 
+#[cfg(unix)]
+fn single_link_identity(path: &Path) -> Option<FileIdentity> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = std::fs::metadata(path).ok()?;
+    (meta.nlink() == 1).then_some(FileIdentity::Inode(meta.dev(), meta.ino()))
+}
+
+/// Syncs outputs before sources are removed. Unsupported sync operations
+/// keep the previous behavior; file writeback errors must keep the sources.
+fn sync_outputs(outputs: &[PathBuf]) -> std::io::Result<()> {
+    for output in outputs {
+        if !std::fs::metadata(output).is_ok_and(|meta| meta.is_file()) {
+            continue;
+        }
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(output);
+        #[cfg(unix)]
+        let file = file.or_else(|err| {
+            if err.kind() == std::io::ErrorKind::PermissionDenied {
+                std::fs::File::open(output)
+            } else {
+                Err(err)
+            }
+        });
+        if let Ok(file) = file
+            && let Err(err) = sync_file_data(&file)
+            && sync_error_keeps_sources(&err)
+        {
+            return Err(std::io::Error::new(
+                err.kind(),
+                format!("could not sync output {}: {err}", output.display()),
+            ));
+        }
+    }
+    #[cfg(unix)]
+    {
+        let mut synced = HashSet::new();
+        for parent in outputs.iter().filter_map(|output| output.parent()) {
+            if synced.insert(parent)
+                && let Ok(directory) = std::fs::File::open(parent)
+            {
+                #[cfg(target_vendor = "apple")]
+                let _ = sync_file_data(&directory);
+                #[cfg(not(target_vendor = "apple"))]
+                let _ = directory.sync_all();
+            }
+        }
+    }
+    Ok(())
+}
+
+fn sync_error_keeps_sources(err: &std::io::Error) -> bool {
+    #[cfg(unix)]
+    if err.raw_os_error() == Some(5) {
+        // EIO has the same value on supported Unix targets.
+        return true;
+    }
+    // An aborted journal turns the filesystem read-only and a soft network
+    // mount times out: both mean the output may not be on disk.
+    matches!(
+        err.kind(),
+        std::io::ErrorKind::StorageFull
+            | std::io::ErrorKind::QuotaExceeded
+            | std::io::ErrorKind::StaleNetworkFileHandle
+            | std::io::ErrorKind::ReadOnlyFilesystem
+            | std::io::ErrorKind::TimedOut
+    )
+}
+
+fn sync_file_data(file: &std::fs::File) -> std::io::Result<()> {
+    #[cfg(target_vendor = "apple")]
+    {
+        use std::os::fd::AsRawFd;
+        // Plain fsync avoids a drive-wide cache flush for every moved unit.
+        loop {
+            if unsafe { libc::fsync(file.as_raw_fd()) } == 0 {
+                return Ok(());
+            }
+            let err = std::io::Error::last_os_error();
+            if err.kind() != std::io::ErrorKind::Interrupted {
+                return Err(err);
+            }
+        }
+    }
+    #[cfg(not(target_vendor = "apple"))]
+    file.sync_data()
+}
+
 /// The entry's own location: its parent canonicalized (resolving spelling
 /// and symlinked directories) with the file name re-joined. The entry's own
 /// final symlink is never followed, so a link is judged by where it sits.
@@ -1631,16 +1757,50 @@ fn entry_location(path: &Path) -> PathBuf {
         _ => path.to_path_buf(),
     }
 }
+#[cfg(unix)]
+fn directory_identity_in_ancestors(path: &Path, identity: &FileIdentity) -> bool {
+    path.ancestors()
+        .any(|ancestor| FileIdentity::of(ancestor).as_ref() == Some(identity))
+}
+
+pub(super) fn entry_location_is_under_root(
+    location: &Path,
+    root: &Path,
+    identity: Option<&FileIdentity>,
+    parents: &mut HashMap<PathBuf, bool>,
+) -> bool {
+    if location.starts_with(root) {
+        return true;
+    }
+    #[cfg(unix)]
+    if let (Some(identity), Some(parent)) = (identity, location.parent()) {
+        return *parents
+            .entry(parent.to_path_buf())
+            .or_insert_with(|| directory_identity_in_ancestors(parent, identity));
+    }
+    #[cfg(not(unix))]
+    let _ = (identity, parents);
+    false
+}
 
 /// True when either path contains the other: overlapping input and output
 /// trees make clean dangerous, because excluded inputs live inside the
-/// cleaned tree. Both sides are resolved through [`real_layout`] (the
-/// kernel's symlink-then-`..` order) and compared as prefixes, so the
-/// decision holds across spellings and symlinked directories while
-/// disjoint sibling trees never overlap.
+/// cleaned tree. The kernel-resolved paths are compared as a fast path,
+/// then directory identities cover distinct spellings of the same tree.
 fn paths_overlap(a: &Path, b: &Path) -> bool {
     let (a, b) = (real_layout(a), real_layout(b));
-    a == b || a.starts_with(&b) || b.starts_with(&a)
+    if a == b || a.starts_with(&b) || b.starts_with(&a) {
+        return true;
+    }
+    // On Windows both sides are canonical paths, so the prefix test decides.
+    #[cfg(unix)]
+    let aliased = FileIdentity::of(&a)
+        .is_some_and(|identity| directory_identity_in_ancestors(&b, &identity))
+        || FileIdentity::of(&b)
+            .is_some_and(|identity| directory_identity_in_ancestors(&a, &identity));
+    #[cfg(not(unix))]
+    let aliased = false;
+    aliased
 }
 
 /// Absolutizes `path`, then resolves it the way the kernel would: the
@@ -1694,10 +1854,118 @@ fn resolve_deepest_prefix(path: &Path) -> PathBuf {
     resolved
 }
 
-/// True when `path`'s own location sits inside the canonical `root` (the
-/// run's canonical input root).
-fn location_under_root(path: &Path, canonical_root: &Path) -> bool {
-    entry_location(path).starts_with(canonical_root)
+/// True when `path`'s own location sits inside the input root.
+fn location_under_root(path: &Path, root: &Path) -> bool {
+    #[cfg(unix)]
+    let identity = FileIdentity::of(root);
+    #[cfg(not(unix))]
+    let identity = None;
+    entry_location_is_under_root(
+        &entry_location(path),
+        root,
+        identity.as_ref(),
+        &mut HashMap::new(),
+    )
+}
+
+fn restore_source(source: &Path, temporary: &Path) -> std::io::Result<()> {
+    let outcome = match std::fs::symlink_metadata(source) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::rename(temporary, source)
+        }
+        Ok(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "the source name is occupied",
+        )),
+        Err(err) => Err(err),
+    };
+    outcome.map_err(|err| {
+        std::io::Error::new(
+            err.kind(),
+            format!(
+                "could not restore {} from {}: {err}",
+                source.display(),
+                temporary.display()
+            ),
+        )
+    })
+}
+
+/// Renaming first reveals aliases even on filesystems with unreliable identities.
+/// A failed probe or unlink restores the entry unless its old name is occupied.
+async fn remove_source(
+    source: &Path,
+    outputs: &[PathBuf],
+    synced: &mut bool,
+) -> std::io::Result<bool> {
+    match std::fs::symlink_metadata(source) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(true),
+        Err(err) => return Err(err),
+        Ok(_) => {}
+    }
+    let output_identity = |output: &Path| -> std::io::Result<FileIdentity> {
+        let meta = std::fs::metadata(output)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            Ok(FileIdentity::Inode(meta.dev(), meta.ino()))
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = meta;
+            // Some virtual and RAM-disk drives cannot report a final path; the
+            // metadata call above still catches an output that vanished.
+            match std::fs::canonicalize(output) {
+                Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
+                    std::path::absolute(output).map(FileIdentity::Path)
+                }
+                resolved => resolved.map(FileIdentity::Path),
+            }
+        }
+    };
+    let identities = outputs
+        .iter()
+        .map(|output| output_identity(output))
+        .collect::<std::io::Result<Vec<_>>>()?;
+    if !*synced {
+        let outputs = outputs.to_vec();
+        tokio::task::spawn_blocking(move || sync_outputs(&outputs))
+            .await
+            .map_err(std::io::Error::other)??;
+        *synced = true;
+    }
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let parent = source.parent().unwrap_or_else(|| Path::new("."));
+    let temporary = loop {
+        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = parent.join(format!(".rom-converto-move-{}-{id}", std::process::id()));
+        match std::fs::symlink_metadata(&path) {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => break path,
+            Err(err) => return Err(err),
+            Ok(_) => {}
+        }
+    };
+    match tokio::fs::rename(source, &temporary).await {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(true),
+        Err(err) => return Err(err),
+    }
+    let outcome = if outputs
+        .iter()
+        .zip(&identities)
+        .any(|(output, identity)| output_identity(output).as_ref().ok() != Some(identity))
+    {
+        Ok(false)
+    } else {
+        match tokio::fs::remove_file(&temporary).await {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(true),
+            removed => removed.map(|()| true),
+        }
+    };
+    if !matches!(outcome, Ok(true)) {
+        restore_source(source, &temporary)?;
+    }
+    outcome
 }
 
 /// Deletes a placed unit's source files (the cue plus every bin of a set;
@@ -1710,8 +1978,8 @@ fn location_under_root(path: &Path, canonical_root: &Path) -> bool {
 /// prefix survives). Returns the removed paths, one entry per file it
 /// could not remove (a partial removal fails the unit's rows and skips
 /// the emptied-dir pruning), and the notes. An already-missing file counts
-/// as removed, and the bins go before the cue, so a partial removal never
-/// leaves a cue sheet pointing at tracks that are already gone.
+/// as removed. Bins go before the cue; the first failed bin stops the
+/// remaining removals and keeps the cue for recovery.
 async fn remove_sources(
     unit: &DatUnit,
     own_sources: &[PathBuf],
@@ -1734,6 +2002,28 @@ async fn remove_sources(
     let mut removed = Vec::new();
     let mut failures = Vec::new();
     let mut kept = Vec::new();
+    let mut synced = false;
+    #[cfg(unix)]
+    let output_identities: HashSet<FileIdentity> = if dry_run {
+        outputs
+            .iter()
+            .filter_map(|output| FileIdentity::of(output))
+            .collect()
+    } else {
+        HashSet::new()
+    };
+    let same_output_location =
+        |source: &Path| outputs.iter().any(|output| same_location(source, output));
+    let shares_output_identity = |_source: &Path| {
+        #[cfg(unix)]
+        {
+            dry_run
+                && single_link_identity(_source)
+                    .is_some_and(|identity| output_identities.contains(&identity))
+        }
+        #[cfg(not(unix))]
+        false
+    };
     // A split set is released all-or-nothing: when any part would stay
     // (it is an output, another unit's source, or lies outside the
     // input), no part is removed, so the set never splits into an
@@ -1742,8 +2032,11 @@ async fn remove_sources(
         let mut any_kept = false;
         let mut notes: Vec<String> = Vec::new();
         for part in &bins {
-            if outputs.iter().any(|output| same_location(part, output)) {
+            if same_output_location(part) {
                 any_kept = true;
+            } else if shares_output_identity(part) {
+                any_kept = true;
+                notes.push(format!("kept {}: it is also an output", part.display()));
             } else {
                 let claimed = FileIdentity::of(part)
                     .and_then(|identity| claims.get(&identity).copied())
@@ -1754,7 +2047,7 @@ async fn remove_sources(
                         "kept {}: another scanned unit references it",
                         part.display()
                     ));
-                } else if !location_under_root(part, root) {
+                } else if !entry_location(part).starts_with(root) {
                     any_kept = true;
                     notes.push(format!(
                         "kept {}: it lies outside the input",
@@ -1768,8 +2061,13 @@ async fn remove_sources(
             return (removed, failures, kept);
         }
     }
+    let mut removal_stopped = false;
     for (position, bin) in bins.iter().enumerate() {
-        if outputs.iter().any(|output| same_location(bin, output)) {
+        if same_output_location(bin) {
+            continue;
+        }
+        if shares_output_identity(bin) {
+            kept.push(format!("kept {}: it is also an output", bin.display()));
             continue;
         }
         let claimed = FileIdentity::of(bin)
@@ -1782,53 +2080,80 @@ async fn remove_sources(
             ));
             continue;
         }
-        if !location_under_root(bin, root) {
+        if !entry_location(bin).starts_with(root) {
             kept.push(format!("kept {}: it lies outside the input", bin.display()));
             continue;
         }
         // A dry run applies every gate above and reports what it would
         // remove, touching nothing.
         let outcome = if dry_run {
-            Ok(())
+            Ok(true)
         } else {
-            tokio::fs::remove_file(bin).await
+            remove_source(bin, outputs, &mut synced).await
         };
-        match outcome {
-            Ok(()) => removed.push(bin.clone()),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => removed.push(bin.clone()),
+        removal_stopped = match outcome {
+            Ok(true) => {
+                removed.push(bin.clone());
+                false
+            }
+            Ok(false) => {
+                kept.push(format!("kept {}: it is also an output", bin.display()));
+                true
+            }
             Err(err) => {
                 failures.push((bin.clone(), err));
-                // A split set stops releasing at the first failed part: the
-                // earlier parts stay put, so an interrupted run still
-                // resumes from part1 instead of planning the orphaned
-                // middle part as its own truncated unit. The unattempted
-                // parts are reported as not removed.
-                if cue.is_none() {
-                    for part in &bins[position + 1..] {
-                        failures.push((
-                            part.clone(),
-                            std::io::Error::other(
-                                "not attempted: an earlier part of the split set failed to be removed",
-                            ),
-                        ));
-                    }
-                    break;
+                true
+            }
+        };
+        if removal_stopped {
+            if cue.is_none() {
+                for part in &bins[position + 1..] {
+                    failures.push((
+                        part.clone(),
+                        std::io::Error::other(
+                            "not attempted: an earlier part of the split set failed to be removed",
+                        ),
+                    ));
                 }
             }
+            break;
         }
     }
+    if let Some(cue) = cue.as_ref().filter(|_| removal_stopped) {
+        let detail = if removed.is_empty() {
+            "not removed: a bin could not be removed".to_string()
+        } else {
+            format!(
+                "not removed: a bin could not be removed (already removed: {})",
+                removed
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        failures.push((cue.clone(), std::io::Error::other(detail)));
+        return (removed, failures, kept);
+    }
     if let Some(cue) = &cue {
-        if outputs.iter().any(|output| same_location(cue, output)) {
+        if same_output_location(cue) {
+            return (removed, failures, kept);
+        }
+        if shares_output_identity(cue) {
+            kept.push(format!("kept {}: it is also an output", cue.display()));
             return (removed, failures, kept);
         }
         let outcome = if dry_run {
-            Ok(())
+            Ok(true)
         } else {
-            tokio::fs::remove_file(cue).await
+            remove_source(cue, outputs, &mut synced).await
         };
         let released = match outcome {
-            Ok(()) => true,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
+            Ok(true) => true,
+            Ok(false) => {
+                kept.push(format!("kept {}: it is also an output", cue.display()));
+                false
+            }
             Err(err) => {
                 failures.push((cue.clone(), err));
                 false
@@ -2174,6 +2499,14 @@ impl WriteGuards<'_> {
     /// real run finds nothing there, so a dry run treats it as absent.
     fn is_released(&self, path: &Path) -> bool {
         self.released.contains(&entry_location(path))
+            || FileIdentity::of(path)
+                .and_then(|identity| self.sources.get(&identity))
+                .is_some_and(|owners| {
+                    owners.iter().any(|(_, source)| {
+                        self.released.contains(&entry_location(source))
+                            && same_location(source, path)
+                    })
+                })
     }
 
     /// Why the guard would refuse a write to the plan's desired output:
@@ -3089,6 +3422,67 @@ mod tests {
         assert_eq!(row.status, FileStatus::Skipped);
         assert_eq!(row.detail.as_deref(), Some("already in place"));
         assert!(lib.path().join("game.xiso").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn case_variant_in_place_with_an_external_hardlink_survives_move() {
+        let base = TempDir::new().unwrap();
+        let lib = base.path().join("lib");
+        std::fs::create_dir(&lib).unwrap();
+        let source = lib.join("game.xiso");
+        let desired = lib.join("Game.xiso");
+        let twin = base.path().join("outside.xiso");
+        std::fs::write(&source, b"source").unwrap();
+        std::fs::hard_link(&source, &twin).unwrap();
+        let folds_case = select::probe_case_insensitive(&lib);
+        if !folds_case {
+            std::fs::hard_link(&source, &desired).unwrap();
+        }
+        assert_eq!(same_location(&source, &desired), folds_case);
+
+        let mut req = organize_request(&lib, Some(&lib), false);
+        req.options.output_template = Some("Game.{ext}".to_string());
+        req.options.move_source = Some(true);
+        req.options.on_conflict = Some("overwrite-invalid".to_string());
+        let response = organize(req, &RecordingProgress::default(), CancelToken::new())
+            .await
+            .unwrap();
+        let Some(RunData::Organize(data)) = response.data else {
+            panic!("expected organize data");
+        };
+        assert_eq!(data.failed, 0, "{:?}", data.rows);
+        assert_eq!(std::fs::read(&source).unwrap(), b"source");
+        assert_eq!(std::fs::read(&desired).unwrap(), b"source");
+        assert_eq!(std::fs::read(&twin).unwrap(), b"source");
+        if folds_case {
+            assert_eq!(
+                row_for(&data, "game.xiso").detail.as_deref(),
+                Some("already in place")
+            );
+        } else {
+            assert!(!same_location(&source, &desired));
+            assert_eq!(std::fs::read_dir(&lib).unwrap().count(), 2);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn same_location_with_hardlinks_and_a_symlinked_parent() {
+        let base = TempDir::new().unwrap();
+        let lib = base.path().join("lib");
+        let alias = base.path().join("alias");
+        std::fs::create_dir(&lib).unwrap();
+        let source = lib.join("Game.gba");
+        let twin = lib.join("Twin.gba");
+        std::fs::write(&source, b"source").unwrap();
+        std::fs::hard_link(&source, &twin).unwrap();
+        std::os::unix::fs::symlink(&lib, &alias).unwrap();
+        assert!(same_location(&source, &alias.join("Game.gba")));
+        assert!(!same_location(&source, &alias.join("Twin.gba")));
+        if select::probe_case_insensitive(&lib) {
+            assert!(!same_location(&source, &alias.join("twin.gba")));
+        }
     }
 
     /// The same-path guard compares by identity: an output dir spelled
@@ -5227,23 +5621,23 @@ mod tests {
         assert!(twin.exists(), "an output is never removed");
     }
 
-    /// A source that cannot be removed (here: a directory where a bin
-    /// should be) is reported as a failure while the files that did go stay
-    /// in `removed`; an already-missing file counts as removed.
+    /// A failed bin removal keeps all later bins and the cue for recovery.
+    /// Bins successfully removed before the failure stay in `removed`.
     #[tokio::test]
     async fn remove_sources_reports_files_it_could_not_remove() {
         let dir = TempDir::new().unwrap();
         let cue = dir.path().join("Game.cue");
         let bin = dir.path().join("Game.bin");
         let stuck = dir.path().join("Stuck.bin");
-        let missing = dir.path().join("Missing.bin");
+        let remaining = dir.path().join("Remaining.bin");
         std::fs::write(&cue, b"cue").unwrap();
         std::fs::write(&bin, b"bin").unwrap();
         std::fs::create_dir(&stuck).unwrap();
+        std::fs::write(&remaining, b"remaining").unwrap();
 
         let unit = DatUnit::CueSet {
             cue: cue.clone(),
-            bins: vec![bin.clone(), stuck.clone(), missing.clone()],
+            bins: vec![bin.clone(), stuck.clone(), remaining.clone()],
         };
         let mut claims = HashMap::new();
         let (removed, failures, kept) = remove_sources(
@@ -5257,10 +5651,275 @@ mod tests {
         .await;
 
         assert!(kept.is_empty(), "{kept:?}");
-        // Bins before the cue, and the vanished bin still counts as gone.
-        assert_eq!(removed, vec![bin, missing, cue]);
-        assert_eq!(failures.len(), 1);
+        // The failed bin stops the loop; later bins and the cue stay.
+        assert_eq!(removed, vec![bin.clone()]);
+        assert_eq!(std::fs::read(remaining).unwrap(), b"remaining");
+        assert!(stuck.is_dir(), "the failed source is restored");
+        assert!(
+            cue.exists(),
+            "the cue stays when any bin could not be removed"
+        );
+        assert_eq!(failures.len(), 2);
         assert_eq!(failures[0].0, stuck);
+        assert_eq!(failures[1].0, cue);
+        assert_eq!(
+            failures[1].1.to_string(),
+            format!(
+                "not removed: a bin could not be removed (already removed: {})",
+                bin.display()
+            )
+        );
+    }
+    /// A hardlinked twin is a different directory entry, so removing one
+    /// source name leaves the twin intact.
+    #[tokio::test]
+    async fn remove_sources_removes_only_the_source_name_of_a_hardlink() {
+        let dir = TempDir::new().unwrap();
+        let source = dir.path().join("input/Game.gba");
+        let twin = dir.path().join("twin/Game.gba");
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(twin.parent().unwrap()).unwrap();
+        std::fs::write(&source, b"source").unwrap();
+        std::fs::hard_link(&source, &twin).unwrap();
+        assert!(!same_location(&source, &twin));
+
+        let unit = DatUnit::File(source.clone());
+        let mut claims = HashMap::new();
+        let (removed, failures, kept) = remove_sources(
+            &unit,
+            &unit_source_files(&unit),
+            std::slice::from_ref(&twin),
+            &std::fs::canonicalize(source.parent().unwrap()).unwrap(),
+            &mut claims,
+            false,
+        )
+        .await;
+
+        assert_eq!(removed, vec![source.clone()]);
+        assert!(failures.is_empty(), "{failures:?}");
+        assert!(kept.is_empty(), "{kept:?}");
+        assert!(!source.exists());
+        assert_eq!(std::fs::read(twin).unwrap(), b"source");
+    }
+
+    /// The rename probe keeps a source even when another hardlink hides
+    /// the output symlink's dependency on the original entry.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn remove_sources_keeps_a_source_sharing_identity_with_an_output() {
+        let dir = TempDir::new().unwrap();
+        let source = dir.path().join("input/Game.gba");
+        let output = dir.path().join("output/Game.zip");
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(output.parent().unwrap()).unwrap();
+        std::fs::write(&source, b"source").unwrap();
+        let twin = dir.path().join("twin.gba");
+        std::fs::hard_link(&source, &twin).unwrap();
+        std::os::unix::fs::symlink(&source, &output).unwrap();
+        assert!(!same_location(&source, &output));
+
+        let unit = DatUnit::File(source.clone());
+        let mut claims = HashMap::new();
+        let (removed, failures, kept) = remove_sources(
+            &unit,
+            &unit_source_files(&unit),
+            std::slice::from_ref(&output),
+            &std::fs::canonicalize(source.parent().unwrap()).unwrap(),
+            &mut claims,
+            false,
+        )
+        .await;
+
+        assert!(removed.is_empty(), "{removed:?}");
+        assert!(failures.is_empty(), "{failures:?}");
+        assert_eq!(
+            kept,
+            vec![format!("kept {}: it is also an output", source.display())]
+        );
+        assert!(source.exists());
+        assert!(output.exists());
+        assert_eq!(std::fs::read(&twin).unwrap(), b"source");
+    }
+
+    #[tokio::test]
+    async fn remove_sources_probe_removes_a_source_with_a_separate_output() {
+        let dir = TempDir::new().unwrap();
+        let source = dir.path().join("Game.gba");
+        let output = dir.path().join("Game.zip");
+        std::fs::write(&source, b"source").unwrap();
+        std::fs::write(&output, b"output").unwrap();
+        let unit = DatUnit::File(source.clone());
+        let (removed, failures, kept) = remove_sources(
+            &unit,
+            &unit_source_files(&unit),
+            std::slice::from_ref(&output),
+            &std::fs::canonicalize(dir.path()).unwrap(),
+            &mut HashMap::new(),
+            false,
+        )
+        .await;
+        assert_eq!(removed, vec![source.clone()]);
+        assert!(failures.is_empty(), "{failures:?}");
+        assert!(kept.is_empty(), "{kept:?}");
+        assert!(!source.exists());
+        assert_eq!(std::fs::read(&output).unwrap(), b"output");
+    }
+
+    #[test]
+    fn output_sync_errors_keep_sources_only_for_writeback_failures() {
+        use std::io::{Error, ErrorKind};
+        for kind in [
+            ErrorKind::StorageFull,
+            ErrorKind::QuotaExceeded,
+            ErrorKind::StaleNetworkFileHandle,
+        ] {
+            assert!(sync_error_keeps_sources(&Error::from(kind)), "{kind:?}");
+        }
+        for kind in [
+            ErrorKind::Other,
+            ErrorKind::PermissionDenied,
+            ErrorKind::Unsupported,
+            ErrorKind::InvalidInput,
+            ErrorKind::WriteZero,
+            ErrorKind::Interrupted,
+        ] {
+            assert!(!sync_error_keeps_sources(&Error::from(kind)), "{kind:?}");
+        }
+        #[cfg(unix)]
+        {
+            assert!(sync_error_keeps_sources(&Error::from_raw_os_error(5)));
+            assert!(!sync_error_keeps_sources(&Error::from_raw_os_error(9)));
+        }
+        #[cfg(windows)]
+        for code in [1, 5, 50] {
+            assert!(!sync_error_keeps_sources(&Error::from_raw_os_error(code)));
+        }
+    }
+
+    #[test]
+    fn restore_source_keeps_an_occupied_source_name_and_the_temporary_file() {
+        let dir = TempDir::new().unwrap();
+        let source = dir.path().join("Game.gba");
+        let temporary = dir.path().join(".rom-converto-move-test");
+        std::fs::write(&temporary, b"original").unwrap();
+        std::fs::write(&source, b"occupying").unwrap();
+        let err = restore_source(&source, &temporary).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        let detail = err.to_string();
+        assert!(detail.contains(&source.display().to_string()), "{detail}");
+        assert!(
+            detail.contains(&temporary.display().to_string()),
+            "{detail}"
+        );
+        assert_eq!(std::fs::read(&source).unwrap(), b"occupying");
+        assert_eq!(std::fs::read(&temporary).unwrap(), b"original");
+    }
+
+    #[tokio::test]
+    async fn remove_sources_reports_a_missing_output_before_the_probe() {
+        let dir = TempDir::new().unwrap();
+        let source = dir.path().join("Game.gba");
+        let output = dir.path().join("missing.zip");
+        std::fs::write(&source, b"source").unwrap();
+        let unit = DatUnit::File(source.clone());
+        let (removed, failures, kept) = remove_sources(
+            &unit,
+            &unit_source_files(&unit),
+            &[output],
+            &std::fs::canonicalize(dir.path()).unwrap(),
+            &mut HashMap::new(),
+            false,
+        )
+        .await;
+        assert!(removed.is_empty(), "{removed:?}");
+        assert!(kept.is_empty(), "{kept:?}");
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].0, source);
+        assert_eq!(failures[0].1.kind(), std::io::ErrorKind::NotFound);
+        assert_eq!(std::fs::read(&source).unwrap(), b"source");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn remove_sources_stops_a_split_set_on_a_kept_part() {
+        let dir = TempDir::new().unwrap();
+        let parts: Vec<PathBuf> = ["game_part1.wud", "game_part2.wud", "game_part3.wud"]
+            .iter()
+            .map(|name| dir.path().join(name))
+            .collect();
+        for part in &parts {
+            std::fs::write(part, b"part").unwrap();
+        }
+        let output = dir.path().join("output.wud");
+        std::os::unix::fs::symlink(&parts[2], &output).unwrap();
+        let unit = DatUnit::File(parts[0].clone());
+        let (removed, failures, kept) = remove_sources(
+            &unit,
+            &unit_source_files(&unit),
+            std::slice::from_ref(&output),
+            &std::fs::canonicalize(dir.path()).unwrap(),
+            &mut HashMap::new(),
+            false,
+        )
+        .await;
+        assert!(removed.is_empty(), "{removed:?}");
+        assert_eq!(
+            kept,
+            vec![format!("kept {}: it is also an output", parts[2].display())]
+        );
+        assert_eq!(failures.len(), 2);
+        assert_eq!(failures[0].0, parts[1]);
+        assert_eq!(failures[1].0, parts[0]);
+        assert!(
+            failures
+                .iter()
+                .all(|(_, err)| err.to_string().contains("not attempted"))
+        );
+        for part in &parts {
+            assert_eq!(std::fs::read(part).unwrap(), b"part");
+        }
+        assert_eq!(std::fs::read(output).unwrap(), b"part");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn remove_sources_stops_a_cue_set_on_a_kept_bin() {
+        let dir = TempDir::new().unwrap();
+        let cue = dir.path().join("Game.cue");
+        let bin = dir.path().join("Game.bin");
+        let remaining = dir.path().join("Remaining.bin");
+        let output = dir.path().join("output.bin");
+        std::fs::write(&cue, b"cue").unwrap();
+        std::fs::write(&bin, b"bin").unwrap();
+        std::fs::write(&remaining, b"remaining").unwrap();
+        std::os::unix::fs::symlink(&bin, &output).unwrap();
+        let unit = DatUnit::CueSet {
+            cue: cue.clone(),
+            bins: vec![bin.clone(), remaining.clone()],
+        };
+        let (removed, failures, kept) = remove_sources(
+            &unit,
+            &unit_source_files(&unit),
+            &[output],
+            &std::fs::canonicalize(dir.path()).unwrap(),
+            &mut HashMap::new(),
+            false,
+        )
+        .await;
+        assert!(removed.is_empty(), "{removed:?}");
+        assert_eq!(
+            kept,
+            vec![format!("kept {}: it is also an output", bin.display())]
+        );
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].0, cue);
+        assert_eq!(
+            failures[0].1.to_string(),
+            "not removed: a bin could not be removed"
+        );
+        assert_eq!(std::fs::read(cue).unwrap(), b"cue");
+        assert_eq!(std::fs::read(bin).unwrap(), b"bin");
+        assert_eq!(std::fs::read(remaining).unwrap(), b"remaining");
     }
 
     /// Playlists are built from the CLEANED disc dirs: a stale disc in a
@@ -6411,6 +7070,103 @@ mod tests {
             &base.path().join("in"),
             &base.path().join("in").join("deeper")
         ));
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_dry_run_releases_firmlink_spellings_but_not_hardlink_twins() {
+        let base = tempfile::tempdir_in("/private/var/tmp").unwrap();
+        let root = base.path().join("lib");
+        std::fs::create_dir(&root).unwrap();
+        let source = root.join("Game.gba");
+        let twin = root.join("Twin.gba");
+        std::fs::write(&source, b"source").unwrap();
+        std::fs::hard_link(&source, &twin).unwrap();
+        let alias = Path::new("/System/Volumes/Data").join(source.strip_prefix("/").unwrap());
+        let identity = FileIdentity::of(&source).unwrap();
+        let sources = [(identity, vec![(1, source.clone())])]
+            .into_iter()
+            .collect();
+        let mut guards = WriteGuards {
+            sources: &sources,
+            realized: HashSet::new(),
+            released: HashSet::new(),
+            policy: ConflictPolicy::OverwriteInvalid,
+            root,
+        };
+        let mut plan = crc_plan(0);
+        plan.desired = Some(alias);
+        assert!(guards.refuse(&plan, &[], 1, Instant::now(), true).is_some());
+        guards.release(vec![source]);
+        assert!(guards.refuse(&plan, &[], 1, Instant::now(), true).is_none());
+        plan.desired = Some(twin);
+        assert!(guards.refuse(&plan, &[], 1, Instant::now(), true).is_some());
+    }
+
+    /// A firmlink spelling is the same tree even when canonical paths differ.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn firmlink_alias_keeps_in_place_sources_and_clean_candidates() {
+        fn data_volume_alias(path: &Path) -> PathBuf {
+            Path::new("/System/Volumes/Data").join(path.strip_prefix("/").unwrap())
+        }
+
+        let base = tempfile::tempdir_in("/private/var/tmp").unwrap();
+        let move_lib = base.path().join("move/lib");
+        let move_alias = data_volume_alias(&move_lib);
+        let archive = move_lib.join("Game Boy Advance").join("Test Game.zip");
+        std::fs::create_dir_all(archive.parent().unwrap()).unwrap();
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&archive).unwrap());
+        let options: zip::write::FileOptions<'_, ()> =
+            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        zip.start_file("Test Game.gba", options).unwrap();
+        zip.write_all(&gba_bytes()).unwrap();
+        zip.finish().unwrap();
+        std::fs::hard_link(&archive, base.path().join("outside.zip")).unwrap();
+        assert!(same_location(&archive, &data_volume_alias(&archive)));
+
+        for policy in ["overwrite-invalid", "overwrite"] {
+            let mut req = organize_request(&move_lib, Some(&move_alias), false);
+            req.options.move_source = Some(true);
+            req.options.on_conflict = Some(policy.to_string());
+            let response = organize(req, &RecordingProgress::default(), CancelToken::new())
+                .await
+                .unwrap();
+            let Some(RunData::Organize(data)) = response.data else {
+                panic!("expected organize data");
+            };
+            let row = row_for(&data, "Test Game.zip");
+            assert_eq!(row.status, FileStatus::Skipped, "{policy}: {row:?}");
+            assert_eq!(row.detail.as_deref(), Some("already in place"));
+            assert!(archive.exists(), "{policy}: the only copy survives");
+        }
+
+        let clean_lib = base.path().join("clean/lib");
+        let clean_alias = data_volume_alias(&clean_lib);
+        let console = clean_lib.join("Game Boy Advance");
+        std::fs::create_dir_all(&console).unwrap();
+        std::fs::write(clean_lib.join("Test Game.gba"), gba_bytes()).unwrap();
+        let deep = console.join("Deep Game.gba");
+        let playlist = console.join("My List.m3u");
+        std::fs::write(&deep, b"deep game").unwrap();
+        std::fs::write(&playlist, b"playlist").unwrap();
+
+        let progress = RecordingProgress::default();
+        let mut req = organize_request(&clean_lib, Some(&clean_alias), false);
+        req.options.max_depth = Some(1);
+        req.options.clean = Some(true);
+        organize(req, &progress, CancelToken::new()).await.unwrap();
+
+        assert!(deep.exists(), "clean never deletes a file under input");
+        assert!(
+            playlist.exists(),
+            "clean never deletes a playlist under input"
+        );
+        assert!(
+            warnings(&progress)
+                .iter()
+                .any(|warning| warning.contains("input and output directories overlap")),
+            "the overlap warning is reported"
+        );
     }
 
     /// With overlapping trees spelled differently, clean keeps every entry

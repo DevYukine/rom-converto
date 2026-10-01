@@ -118,7 +118,7 @@ their organized copies were written successfully; skipped or failed files keep
 their sources, except with On conflict set to Overwrite if invalid: an existing
 zip, copy, or hardlink (never a symlink) that verifies valid counts as written
 and its source is deleted. Any item whose planned output path is its own
-source file is left untouched as already in place.
+source file, however the path is spelled, is left untouched as already in place.
 
 Cancel stops current work and removes its partial output. Completed files remain
 completed. Batch completion can send an OS notification and update the taskbar or

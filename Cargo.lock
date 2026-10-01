@@ -4294,6 +4294,7 @@ dependencies = [
  "hex-literal",
  "hmac",
  "image",
+ "libc",
  "libz-sys",
  "log",
  "lz4",

@@ -87,5 +87,10 @@ ts-rs = { workspace = true, optional = true }
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 libz-sys = { version = "^1", features = ["static"] }
 
+# organize --move syncs outputs with plain fsync(2) before removing sources;
+# std's sync calls use F_FULLFSYNC on Apple, a drive-wide cache flush per file.
+[target.'cfg(target_vendor = "apple")'.dependencies]
+libc = "^0.2"
+
 [features]
 ts-export = ["dep:ts-rs"]
