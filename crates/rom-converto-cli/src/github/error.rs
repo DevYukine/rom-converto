@@ -16,4 +16,8 @@ pub enum GithubError {
     /// The requested asset name is not attached to the latest release.
     #[error("no asset with name {0} found in the release")]
     NoAssetFound(String),
+
+    /// The release has no readable `.sha256` file for the selected asset.
+    #[error("no valid checksum file {0} found in the release")]
+    NoChecksumFound(String),
 }

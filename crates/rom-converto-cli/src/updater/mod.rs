@@ -3,10 +3,12 @@
 
 use crate::github::api::GithubApi;
 use crate::updater::constants::{GH_REPO, GH_USER};
+use crate::updater::error::UpdaterError;
 use crate::updater::release::ReleaseVersionCompareResult;
 use futures::StreamExt;
 use log::{debug, error, info, warn};
 use release::compare_latest_release_to_current_version;
+use sha2::{Digest, Sha256};
 use tokio::fs::File;
 use tokio::io;
 use tokio::io::AsyncWriteExt;
@@ -103,7 +105,7 @@ pub async fn self_update(github_api: &mut GithubApi) -> anyhow::Result<()> {
         asset_query.expected_name
     );
 
-    let mut file_byte_stream = github_api
+    let (mut file_byte_stream, expected_sha256) = github_api
         .get_latest_release_file_by_asset_query(GH_USER, GH_REPO, &asset_query)
         .await?;
 
@@ -120,9 +122,12 @@ pub async fn self_update(github_api: &mut GithubApi) -> anyhow::Result<()> {
     let file = File::create(&temp_file_path).await?;
 
     let mut buffered_file = BufWriter::new(file);
+    let mut hasher = Sha256::new();
 
     while let Some(item) = file_byte_stream.next().await {
-        io::copy(&mut item?.as_ref(), &mut buffered_file).await?;
+        let chunk = item?;
+        hasher.update(&chunk);
+        io::copy(&mut chunk.as_ref(), &mut buffered_file).await?;
     }
 
     buffered_file.flush().await?;
@@ -131,7 +136,18 @@ pub async fn self_update(github_api: &mut GithubApi) -> anyhow::Result<()> {
     buffered_file.get_ref().sync_all().await?;
     drop(buffered_file);
 
-    debug!("Downloaded the new release to: {temp_file_path:?}");
+    let actual_sha256: [u8; 32] = hasher.finalize().into();
+    if actual_sha256 != expected_sha256 {
+        // Never leave an unverified binary where the next run might pick it up.
+        let _ = tokio::fs::remove_file(&temp_file_path).await;
+        return Err(UpdaterError::ChecksumMismatch {
+            expected: hex::encode(expected_sha256),
+            actual: hex::encode(actual_sha256),
+        }
+        .into());
+    }
+
+    debug!("Downloaded and verified the new release at: {temp_file_path:?}");
 
     #[cfg(unix)]
     {
