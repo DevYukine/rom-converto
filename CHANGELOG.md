@@ -1,3 +1,60 @@
+# [0.23.0](https://github.com/DevYukine/rom-converto/compare/v0.22.0...v0.23.0) (2026-10-01)
+
+
+### Bug Fixes
+
+* **archive:** find zip members stored with CP437 names ([c775a82](https://github.com/DevYukine/rom-converto/commit/c775a820461de6ba45c5f9562b90a8924257bd61))
+* **archive:** refuse drive-relative member names on Windows ([53090fc](https://github.com/DevYukine/rom-converto/commit/53090fc6faac6640be45a45fababab8d0af91418))
+* **chd:** compress every bin of a multi-file cue and store INDEX 00 pregaps like chdman ([5fe7a1a](https://github.com/DevYukine/rom-converto/commit/5fe7a1abbfba84ab3ad37ace298b06282b398a0e))
+* **chd:** store and regenerate cue POSTGAP like chdman ([f466a4d](https://github.com/DevYukine/rom-converto/commit/f466a4d9539e3667c34c6e34cd1dcfcef7f34875))
+* **ctr:** cap the ExeFS icon read at the SMDH size ([fefa70b](https://github.com/DevYukine/rom-converto/commit/fefa70b8225da76a5791b97e746a442d64d6f37c))
+* **ctr:** stop corrupting CIA contents after the first on decrypt and encrypt ([40f89a1](https://github.com/DevYukine/rom-converto/commit/40f89a1116abf569fb1d576957760026c49f811f))
+* **dat:** count a cue track once when its path has redundant parts ([393e083](https://github.com/DevYukine/rom-converto/commit/393e083f37cb9c6f282383ef711fff637120e7fe))
+* **dol,rvl:** decode Japanese banner text, game names and file names ([296c002](https://github.com/DevYukine/rom-converto/commit/296c0025e8416145c08b1ea8276312a572a59617))
+* **dol,rvl:** fail verify on a broken RVZ container and show why ([451a219](https://github.com/DevYukine/rom-converto/commit/451a219c81d6593241e38a83fd8c649984187641))
+* **dol:** label BNR2 banner slots English through Dutch ([0b87ba5](https://github.com/DevYukine/rom-converto/commit/0b87ba522839d763d54b7a840c25b27cb4dae35f))
+* **fds:** label the 16-byte header as FDS header instead of fwNES ([2b7924a](https://github.com/DevYukine/rom-converto/commit/2b7924a51560ec352a7a374ca349e0db65a285ca))
+* **gui:** refuse updates while jobs run and clean up a failed portable swap ([f31604e](https://github.com/DevYukine/rom-converto/commit/f31604eb4be555e3f0e135858fe0488a25148846))
+* **hash:** check cancellation before every read ([abd1443](https://github.com/DevYukine/rom-converto/commit/abd144371455f9bfc67d99ccb69ab424d378d892))
+* **lib:** use as_chunks for constant chunk sizes ([c0d23b9](https://github.com/DevYukine/rom-converto/commit/c0d23b9a88d75a7a4176d64ba47eb2c8f0b01290))
+* **lib:** write outputs with the default file mode ([2ca4591](https://github.com/DevYukine/rom-converto/commit/2ca4591c3beaf52515df8e157eceea47d13087e8))
+* **organize:** delete sources only when the output exists and keep writing playlists after one fails ([55e19d1](https://github.com/DevYukine/rom-converto/commit/55e19d12bd5bca9d66a61f61d39463c71cb6a969))
+* **organize:** keep files that are also outputs or inputs under another path spelling ([fd544d4](https://github.com/DevYukine/rom-converto/commit/fd544d4e5522fdf35e16449119dcbbbaac327e4a))
+* **runner:** keep outputs that cannot be verified under overwrite-invalid ([abd442b](https://github.com/DevYukine/rom-converto/commit/abd442b95052976ac4aa5f19d73390b07ade3727))
+* **rvz:** reject truncated and malformed RVZ containers ([a7f795c](https://github.com/DevYukine/rom-converto/commit/a7f795c1cc98e0a7130ad23d98c3e4d7a644fc0d))
+* **wup:** refuse title file names that would write outside the output folder ([9d9d13c](https://github.com/DevYukine/rom-converto/commit/9d9d13c6f4f7b128d33cbf6df9ba17f79acf0226))
+
+
+### Features
+
+* **dat:** parse regions, languages and release types from DAT names ([3a86af5](https://github.com/DevYukine/rom-converto/commit/3a86af5a6dd8603cba9e0ab67f25adf09d885206))
+* **gui:** update installed and portable copies with the package they run on every platform ([c7665a6](https://github.com/DevYukine/rom-converto/commit/c7665a6aafe162f313e7dc08523f6af933552fcc))
+* **organize:** add filters, best release per game, letter folders, patching and clean ([d344c52](https://github.com/DevYukine/rom-converto/commit/d344c52b1059032ce8568323366258bfc9e4588a))
+* **organize:** sort a rom library into per-console folders and compress each file into its best format across lib, cli and gui ([3329129](https://github.com/DevYukine/rom-converto/commit/33291290c72d578f7c4546f4227c499f57a45cea))
+* **patch:** apply IPS, UPS, BPS, APS, PPF, RUP and VCDIFF patches ([fe5b955](https://github.com/DevYukine/rom-converto/commit/fe5b9552ffc539b9dbdd2c9151afe72606a3fe9d))
+* **template:** add frontend folder, DAT and input folder tokens ([d03f79e](https://github.com/DevYukine/rom-converto/commit/d03f79e8f9459089f2cdd0af1991937f02720fc0))
+* **wup:** convert wud disc images to wux and back across lib, cli, gui and ffi ([3eefd94](https://github.com/DevYukine/rom-converto/commit/3eefd9462572b152c2cf1013b3297bcacfa49eb2))
+* **zip:** write and validate TorrentZip and RVZSTD archives ([0a01859](https://github.com/DevYukine/rom-converto/commit/0a018599f0fd97218d7aa0c537e90fee2d28e8d7))
+
+
+### Performance Improvements
+
+* **cartridges:** header range reads and streamed checksums ([c84c38a](https://github.com/DevYukine/rom-converto/commit/c84c38a943067ff67156c4d9c99628dc437679c1))
+* **chd,cso:** map-only open, extent checks, streamed oversized blocks ([d5fa8a4](https://github.com/DevYukine/rom-converto/commit/d5fa8a4d2a1807d0fccf9086f504ab599266199a))
+* **ctr:** inspect z3ds files through the seek table and read only the exefs icon instead of decompressing the whole rom ([635ed59](https://github.com/DevYukine/rom-converto/commit/635ed591f3c429756e788216bad9f50a4634141b))
+* **ctr:** stream cia decrypt and z3ds frames ([813ebfb](https://github.com/DevYukine/rom-converto/commit/813ebfbab11248e548dd34a8bd276c67f587eb6a))
+* **dat:** paged library scans ([6efd41d](https://github.com/DevYukine/rom-converto/commit/6efd41d79e149eb6cf753f2332373854e905e5df))
+* **disc:** stream rvz, wia, gcz and nkit within bounded buffers ([8fe4bdb](https://github.com/DevYukine/rom-converto/commit/8fe4bdb0374a993ee9b2cd5d84455e9a842e4afe))
+* **hash:** compute CRC32 with a slice-by-16 table ([072ea97](https://github.com/DevYukine/rom-converto/commit/072ea97eac7df502ee624527fbe88d237ccb657e))
+* **microsoft:** parse xbe, xex and xdbf by range ([8187f57](https://github.com/DevYukine/rom-converto/commit/8187f57ff8c29c51db9b9492a18d287edaef922d))
+* **nx:** bound ncz decoding and validate tables before allocating ([50d1a3c](https://github.com/DevYukine/rom-converto/commit/50d1a3c0f21dbc2eb0d04d0c6de846bf32c77793))
+* **sony:** batched pkg item reads ([4254135](https://github.com/DevYukine/rom-converto/commit/42541352a3e1dcda18109d93f03ad90d2abf4604))
+* **util:** budgeted worker admission and bounded group reader ([f494dac](https://github.com/DevYukine/rom-converto/commit/f494dacbd19eccefe1eb91ac1680350bcdad422e))
+* **wup:** decrypt by range and stream titles into wua ([34d6133](https://github.com/DevYukine/rom-converto/commit/34d613346a5aebb06f2c9e6954138ceed0d7adc9))
+* **zar:** bound writer buffers and reorder queue ([08b007b](https://github.com/DevYukine/rom-converto/commit/08b007b093374617f2a57a40a3da65f1e606b6fb))
+
+
+
 # [0.22.0](https://github.com/DevYukine/rom-converto/compare/v0.21.0...v0.22.0) (2026-09-11)
 
 
@@ -89,27 +146,6 @@
 * **wup:** embed disc key database and make disc key optional ([37451fe](https://github.com/DevYukine/rom-converto/commit/37451fed80afdaeec4434fdc10cd1d33e11396d6))
 * **xbox:** read game metadata for xbox and xbox 360 info command ([7cb783f](https://github.com/DevYukine/rom-converto/commit/7cb783fa7a46a289c90c91d107faead50608c7fa))
 * **xbox:** support original xbox xiso and xbox 360 zar conversion ([84c2a52](https://github.com/DevYukine/rom-converto/commit/84c2a52fd0e356e09701d991c72915968d5ec359))
-
-
-
-# [0.18.0](https://github.com/DevYukine/rom-converto/compare/v0.17.0...v0.18.0) (2026-08-31)
-
-
-### Bug Fixes
-
-* **ctr:** resolve cdn-to-cia failures with large tmds, key patching, and missing optional contents ([47666fb](https://github.com/DevYukine/rom-converto/commit/47666fb75137e813d37ea876be971e24780f61fa))
-* expand tilde paths and create missing output parent dirs ([657de6d](https://github.com/DevYukine/rom-converto/commit/657de6dec1472ee27ac628fc7420a8dd69aa9bb9))
-* **gui:** expand dropped folders before staging in dat verify ([a70c3db](https://github.com/DevYukine/rom-converto/commit/a70c3db649af55a16def6002fd1da3cfc84355a7))
-* **gui:** keep folder drops from being staged as files ([abd743f](https://github.com/DevYukine/rom-converto/commit/abd743f232baa49252576e5040c7d1278eca38c5))
-* **gui:** sort dropped files by name ([b9a7e5a](https://github.com/DevYukine/rom-converto/commit/b9a7e5acc016e8af70e084b171c64b7afa203c2e))
-* **lint:** resolve clippy errors in chd huffman and extract worker ([d4de224](https://github.com/DevYukine/rom-converto/commit/d4de2244462aa0baeeffa7bf9f383c4e50185d92))
-
-
-### Features
-
-* **chd:** support all chdman codecs with selectable codec sets and levels ([b3f8cc7](https://github.com/DevYukine/rom-converto/commit/b3f8cc7999ce6985d23f0ed98fcaf631c9bd44cb))
-* **ctr:** support DSiWare/TWL cias and verify forged cdn ticket keys ([b3c4212](https://github.com/DevYukine/rom-converto/commit/b3c4212fe90571f327f49fd394d3b6ea425370b8))
-* **gui:** add right-click copy and text selection to DAT results ([6db18a3](https://github.com/DevYukine/rom-converto/commit/6db18a333037be84eb8d8302b79ad9c76abb72d6))
 
 
 
