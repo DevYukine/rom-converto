@@ -3,7 +3,9 @@
 
 use crate::github::error::GithubError;
 use crate::github::model::GithubReleaseResponse;
-use crate::updater::release::{ReleaseAssetQuery, ReleaseVersion, select_release_asset_name};
+use crate::updater::release::{
+    ReleaseAssetQuery, ReleaseVersion, parse_sha256_file, select_release_asset_name,
+};
 use crate::util::http::{CLIENT, USER_AGENT};
 use bytes::Bytes;
 use futures::Stream;
@@ -39,12 +41,14 @@ impl GithubApi {
         })
     }
 
+    /// Streams the latest release's asset matching `asset_query`, along with
+    /// the SHA-256 its `<asset>.sha256` sibling publishes.
     pub async fn get_latest_release_file_by_asset_query(
         &mut self,
         user: &str,
         repo: &str,
         asset_query: &ReleaseAssetQuery,
-    ) -> anyhow::Result<impl Stream<Item = reqwest::Result<Bytes>>> {
+    ) -> anyhow::Result<(impl Stream<Item = reqwest::Result<Bytes>>, [u8; 32])> {
         let response = self.get_latest_release(user, repo).await?;
 
         let asset_name = select_release_asset_name(
@@ -66,9 +70,29 @@ impl GithubApi {
             asset.name, asset_query.expected_name
         );
 
+        let checksum_name = format!("{}.sha256", asset.name);
+        let checksum_asset = response
+            .assets
+            .iter()
+            .find(|candidate| candidate.name == checksum_name)
+            .ok_or_else(|| GithubError::NoChecksumFound(checksum_name.clone()))?;
+        let checksum_text = self
+            .download(&checksum_asset.browser_download_url)
+            .await?
+            .text()
+            .await?;
+        let expected_sha256 = parse_sha256_file(&checksum_text, &asset.name)
+            .ok_or_else(|| GithubError::NoChecksumFound(checksum_name.clone()))?;
+
+        let res = self.download(&asset.browser_download_url).await?;
+
+        Ok((res.bytes_stream(), expected_sha256))
+    }
+
+    async fn download(&mut self, url: &str) -> anyhow::Result<reqwest::Response> {
         let req = self
             .client
-            .request(Method::GET, asset.browser_download_url.clone())
+            .request(Method::GET, url)
             .headers(self.headers.clone())
             .build()?;
 
@@ -78,7 +102,7 @@ impl GithubApi {
             return Err(GithubError::NoSuccessStatusCode(res.status(), res.text().await?).into());
         }
 
-        Ok(res.bytes_stream())
+        Ok(res)
     }
 
     pub async fn get_latest_release_version(
@@ -128,20 +152,11 @@ impl GithubApi {
         user: &str,
         repo: &str,
     ) -> anyhow::Result<GithubReleaseResponse> {
-        let req = self
-            .client
-            .request(
-                Method::GET,
-                format!("https://api.github.com/repos/{user}/{repo}/releases/latest"),
-            )
-            .headers(self.headers.clone())
-            .build()?;
-
-        let res = self.service.ready().await?.call(req).await?;
-
-        if !res.status().is_success() {
-            return Err(GithubError::NoSuccessStatusCode(res.status(), res.text().await?).into());
-        }
+        let res = self
+            .download(&format!(
+                "https://api.github.com/repos/{user}/{repo}/releases/latest"
+            ))
+            .await?;
 
         let parsed = res.json::<GithubReleaseResponse>().await?;
 

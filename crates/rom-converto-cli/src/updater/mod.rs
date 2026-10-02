@@ -3,12 +3,15 @@
 
 use crate::github::api::GithubApi;
 use crate::updater::constants::{GH_REPO, GH_USER};
+use crate::updater::error::UpdaterError;
 use crate::updater::release::ReleaseVersionCompareResult;
-use futures::StreamExt;
+use bytes::Bytes;
+use futures::{Stream, StreamExt};
 use log::{debug, error, info, warn};
 use release::compare_latest_release_to_current_version;
+use sha2::{Digest, Sha256};
+use std::path::Path;
 use tokio::fs::File;
-use tokio::io;
 use tokio::io::AsyncWriteExt;
 use tokio::io::BufWriter;
 
@@ -103,7 +106,7 @@ pub async fn self_update(github_api: &mut GithubApi) -> anyhow::Result<()> {
         asset_query.expected_name
     );
 
-    let mut file_byte_stream = github_api
+    let (file_byte_stream, expected_sha256) = github_api
         .get_latest_release_file_by_asset_query(GH_USER, GH_REPO, &asset_query)
         .await?;
 
@@ -117,21 +120,9 @@ pub async fn self_update(github_api: &mut GithubApi) -> anyhow::Result<()> {
     // when temp lives on tmpfs or another drive.
     let temp_file_path = exe_dir.join("rom-converto_new");
 
-    let file = File::create(&temp_file_path).await?;
+    stage_verified(file_byte_stream, &temp_file_path, expected_sha256).await?;
 
-    let mut buffered_file = BufWriter::new(file);
-
-    while let Some(item) = file_byte_stream.next().await {
-        io::copy(&mut item?.as_ref(), &mut buffered_file).await?;
-    }
-
-    buffered_file.flush().await?;
-    // The swap below renames onto a path that no longer exists, so nothing
-    // orders the data before the rename; a crash could leave an empty binary.
-    buffered_file.get_ref().sync_all().await?;
-    drop(buffered_file);
-
-    debug!("Downloaded the new release to: {temp_file_path:?}");
+    debug!("Downloaded and verified the new release at: {temp_file_path:?}");
 
     #[cfg(unix)]
     {
@@ -169,4 +160,111 @@ pub async fn self_update(github_api: &mut GithubApi) -> anyhow::Result<()> {
     );
 
     Ok(())
+}
+
+/// Streams the download to `path` and keeps it only when it is fully
+/// written, synced and hashes to `expected`; any failure removes the file.
+async fn stage_verified<S, E>(mut stream: S, path: &Path, expected: [u8; 32]) -> anyhow::Result<()>
+where
+    S: Stream<Item = Result<Bytes, E>> + Unpin,
+    E: Into<anyhow::Error>,
+{
+    // The block's file handle is closed when it ends, before the removal.
+    let result: anyhow::Result<()> = async {
+        let mut buffered_file = BufWriter::new(File::create(path).await?);
+        let mut hasher = Sha256::new();
+
+        while let Some(item) = stream.next().await {
+            let chunk = item.map_err(Into::<anyhow::Error>::into)?;
+            hasher.update(&chunk);
+            buffered_file.write_all(&chunk).await?;
+        }
+
+        buffered_file.flush().await?;
+        // The caller renames this onto a path that no longer exists, so
+        // nothing orders the data before the rename; a crash could leave an
+        // empty binary.
+        buffered_file.get_ref().sync_all().await?;
+
+        let actual: [u8; 32] = hasher.finalize().into();
+        if actual != expected {
+            return Err(UpdaterError::ChecksumMismatch {
+                expected: hex::encode(expected),
+                actual: hex::encode(actual),
+            }
+            .into());
+        }
+        Ok(())
+    }
+    .await;
+
+    if result.is_err() {
+        let _ = tokio::fs::remove_file(path).await;
+    }
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::stream::iter;
+    use std::io::Error;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn stage_verified_removes_a_checksum_mismatch() {
+        let dir = tempdir().expect("create temp dir");
+        let path = dir.path().join("rom-converto_new");
+        let stream = iter([
+            Ok::<_, Error>(Bytes::from_static(b"first ")),
+            Ok(Bytes::from_static(b"second")),
+        ]);
+
+        let error = stage_verified(stream, &path, [0; 32])
+            .await
+            .expect_err("digest should mismatch");
+
+        assert!(matches!(
+            error.downcast_ref::<UpdaterError>(),
+            Some(UpdaterError::ChecksumMismatch { .. })
+        ));
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn stage_verified_keeps_a_matching_download() {
+        let dir = tempdir().expect("create temp dir");
+        let path = dir.path().join("rom-converto_new");
+        let stream = iter([
+            Ok::<_, Error>(Bytes::from_static(b"first ")),
+            Ok(Bytes::from_static(b"second")),
+        ]);
+        let expected = Sha256::digest(b"first second").into();
+
+        stage_verified(stream, &path, expected)
+            .await
+            .expect("stage verified download");
+
+        assert_eq!(
+            tokio::fs::read(&path).await.expect("read staged file"),
+            b"first second"
+        );
+    }
+
+    #[tokio::test]
+    async fn stage_verified_removes_a_failed_stream() {
+        let dir = tempdir().expect("create temp dir");
+        let path = dir.path().join("rom-converto_new");
+        let stream = iter([
+            Ok(Bytes::from_static(b"first ")),
+            Err(Error::other("stream failed")),
+        ]);
+
+        let error = stage_verified(stream, &path, [0; 32])
+            .await
+            .expect_err("stream should fail");
+
+        assert_eq!(error.to_string(), "stream failed");
+        assert!(!path.exists());
+    }
 }

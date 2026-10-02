@@ -1,7 +1,8 @@
 fn main() {
     built::write_built_file().expect("Failed to acquire build-time information");
 
-    let is_release = std::env::var("ROM_CONVERTO_RELEASE").is_ok();
+    // CI sets the variable to an empty string for non-release builds.
+    let is_release = std::env::var_os("ROM_CONVERTO_RELEASE").is_some_and(|v| !v.is_empty());
     let semver = std::env::var("CARGO_PKG_VERSION").expect("cargo sets CARGO_PKG_VERSION");
     let display = display_version(is_release, &semver, git_short_hash().as_deref());
     println!("cargo:rustc-env=ROM_CONVERTO_DISPLAY_VERSION={display}");

@@ -1257,4 +1257,6 @@ rom-converto shell-completions zsh > "${fpath[1]}/_rom-converto"
 rom-converto self-update
 ```
 
-Check GitHub for a newer release and replace the current binary in place.
+Check GitHub for a newer release and replace the current binary in place. The download is
+checked against the `.sha256` file published next to it in the release; the update is refused
+when that file is missing, does not list the download, or the hash differs.

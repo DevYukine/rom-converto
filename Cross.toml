@@ -1,0 +1,24 @@
+# The images cross v0.2.5 pulls for these targets, pinned by digest so a
+# retagged image cannot change a release build. Keep in sync with the
+# `cross-version` the build workflows pass to actions-rust-cross.
+
+# The CLI build script reads ROM_CONVERTO_RELEASE to print the release
+# version instead of dev-<hash>; cross forwards only CARGO_* and a fixed set
+# of variables into its container unless they are listed here.
+[build.env]
+passthrough = ["ROM_CONVERTO_RELEASE"]
+
+[target.x86_64-unknown-linux-musl]
+image = "ghcr.io/cross-rs/x86_64-unknown-linux-musl:0.2.5@sha256:77db671d8356a64ae72a3e1415e63f547f26d374fbe3c4762c1cd36c7eac7b99"
+
+[target.aarch64-unknown-linux-musl]
+image = "ghcr.io/cross-rs/aarch64-unknown-linux-musl:0.2.5@sha256:702154f52b2d8091671aa2c84d5582d849f949977228c735ff8462f93cc0e1e4"
+
+[target.armv7-unknown-linux-gnueabihf]
+image = "ghcr.io/cross-rs/armv7-unknown-linux-gnueabihf:0.2.5@sha256:4a08bebb60f08d52c1885b643a768f163c7318c05f91cf119f6c02855ea52699"
+
+[target.aarch64-unknown-linux-gnu]
+image = "ghcr.io/cross-rs/aarch64-unknown-linux-gnu:0.2.5@sha256:7f8308a8734d9fcd2ebbe9a3e4bdea74af293f0799d80c3cc341e340cda49a4c"
+
+[target.x86_64-unknown-freebsd]
+image = "ghcr.io/cross-rs/x86_64-unknown-freebsd:0.2.5@sha256:a10c9fb4c82409147bdbec768518765d59bd11ac8675e63d6b09c089e834f5ec"
