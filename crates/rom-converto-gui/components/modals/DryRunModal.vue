@@ -9,6 +9,8 @@ export interface DryRunLine {
 	output: string;
 	note: string;
 	conflict?: boolean;
+	// Nothing would happen for this line (skipped or already in place).
+	muted?: boolean;
 }
 
 const props = defineProps<{
@@ -38,7 +40,7 @@ function copied() {
 				<div class="rc-source">{{ line.source }}</div>
 				<span v-if="line.output" class="rc-arrow" aria-hidden="true">→</span>
 				<div v-if="line.output" class="rc-output">{{ line.output }}</div>
-				<div class="rc-note" :class="{ conflict: line.conflict }">{{ line.note }}</div>
+				<div class="rc-note" :class="{ conflict: line.conflict, muted: line.muted }">{{ line.note }}</div>
 			</div>
 		</div>
 
@@ -99,6 +101,10 @@ function copied() {
 
 .rc-note.conflict {
 	color: var(--yellow);
+}
+
+.rc-note.muted {
+	color: var(--t5);
 }
 
 .rc-hint {

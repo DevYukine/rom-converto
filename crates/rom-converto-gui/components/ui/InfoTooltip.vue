@@ -1,7 +1,6 @@
 <script setup lang="ts">
-// `label` names the trigger when the slot is a bare icon; wrapped controls
-// (a disabled Segmented option) keep their own text as the accessible name.
-defineProps<{ message: string; label?: string }>();
+// `label` names the icon trigger; the message itself is linked as its description.
+defineProps<{ message: string; label: string }>();
 
 const tipId = useId();
 const trigger = ref<HTMLElement | null>(null);
@@ -47,7 +46,7 @@ onBeforeUnmount(() => {
 		ref="trigger"
 		class="rc-info-tooltip"
 		tabindex="0"
-		:role="label ? 'img' : undefined"
+		role="img"
 		:aria-label="label"
 		:aria-describedby="tipId"
 		@mouseenter="hovered = true"

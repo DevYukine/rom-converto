@@ -902,6 +902,8 @@ async function organizeRun(taskId: string, progressKey: string, input: string, d
 		unit(`${input}/readme.txt`, null, null, "skip", "skipped", "unrecognized"),
 		unit(`${input}/Already In Place.chd`, `${out}/PS1/Already In Place.chd`, "PS1", "copy", "skipped", "already in place"),
 		unit(`${input}/Broken Disc.iso`, null, "PS2", "chd.compress", "failed", "Disc read error"),
+		// The runner reports each playlist as a row keyed by its folder; `playlists` is the summary list.
+		unit(`${out}/Saturn`, `${out}/Saturn/Panzer Dragoon.m3u`, null, "playlist", "ok", null),
 	];
 	await streamRows(taskId, progressKey, rows, (row) => ({ kind: "organize", ...row }));
 	return {

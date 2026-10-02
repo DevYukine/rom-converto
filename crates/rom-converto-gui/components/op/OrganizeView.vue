@@ -6,6 +6,7 @@ import { openContextMenu } from "~/composables/useContextMenu";
 import { useProgress } from "~/composables/useProgress";
 import { useResultRows } from "~/composables/useResultRows";
 import { relativePath } from "~/lib/scan-stats";
+import { actionLabel } from "~/lib/organize-actions";
 import { useOrganizeStore } from "~/stores/organize";
 import { useQueueStore, type QueueJob } from "~/stores/queue";
 import { opProgressKey, requestPath } from "~/lib/opdefs/types";
@@ -133,18 +134,6 @@ function detail(r: OrganizeRow): { text: string; tone: "red" | "muted" } | null 
 
 function rowHeight(row: OrganizeRow): number {
 	return detail(row) ? 60 : 44;
-}
-
-const ACTION_LABELS: Record<string, string> = {
-	compress: "Compress", zip: "Zip", copy: "Copy", move: "Move",
-	link: "Link", clean: "Clean", playlist: "Playlist", skip: "",
-};
-const SUFFIX_LABELS: Record<string, string> = {
-	migrate: "Migrate", convert: "Convert", decrypt: "Decrypt", compress: "Compress",
-};
-
-function actionLabel(action: string): string {
-	return ACTION_LABELS[action] ?? SUFFIX_LABELS[action.slice(action.lastIndexOf(".") + 1)] ?? action;
 }
 
 function consoleLabel(row: OrganizeRow): string {
@@ -397,6 +386,10 @@ function contextItems(r: OrganizeRow) {
 		align-items: baseline;
 		gap: 6px;
 		min-width: 0;
+	}
+
+	.rc-row__console:empty {
+		display: none;
 	}
 
 	.rc-row__console:not(:empty) + .rc-row__action:not(:empty)::before {

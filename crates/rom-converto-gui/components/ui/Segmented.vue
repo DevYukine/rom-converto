@@ -11,8 +11,6 @@ const props = withDefaults(
 		// control sits inline at its natural width.
 		row?: boolean;
 		disabled?: boolean;
-		disabledOptions?: string[];
-		disabledReason?: string;
 	}>(),
 	{ row: false },
 );
@@ -23,12 +21,8 @@ const emit = defineEmits<{
 
 const labelId = useId();
 
-function isDisabled(value: string) {
-	return props.disabled || (props.disabledOptions?.includes(value) ?? false);
-}
-
 function select(value: string) {
-	if (!isDisabled(value) && value !== props.modelValue) emit("update:modelValue", value);
+	if (!props.disabled && value !== props.modelValue) emit("update:modelValue", value);
 }
 </script>
 
@@ -41,25 +35,19 @@ function select(value: string) {
 			:aria-labelledby="label ? labelId : ($attrs['aria-labelledby'] as string | undefined)"
 			class="rc-segmented"
 		>
-			<template v-for="option in options" :key="option.value">
-				<InfoTooltip v-if="isDisabled(option.value) && disabledReason" :message="disabledReason" :label="`${option.label}, unavailable`" class="rc-segmented__tip">
-					<button type="button" disabled class="rc-segmented__option" :aria-pressed="option.value === modelValue">
-						{{ option.label }}
-					</button>
-				</InfoTooltip>
-				<button
-					v-else
-					type="button"
-					:disabled="isDisabled(option.value)"
-					:aria-pressed="option.value === modelValue"
-					class="rc-segmented__option"
-					:class="{ 'rc-segmented__option--active': option.value === modelValue }"
-					:title="option.label"
-					@click="select(option.value)"
-				>
-					{{ option.label }}
-				</button>
-			</template>
+			<button
+				v-for="option in options"
+				:key="option.value"
+				type="button"
+				:disabled="disabled"
+				:aria-pressed="option.value === modelValue"
+				class="rc-segmented__option"
+				:class="{ 'rc-segmented__option--active': option.value === modelValue }"
+				:title="option.label"
+				@click="select(option.value)"
+			>
+				{{ option.label }}
+			</button>
 		</div>
 	</div>
 </template>
@@ -101,8 +89,7 @@ function select(value: string) {
 		margin-left: 0;
 	}
 
-	.rc-segmented-wrap--row > .rc-segmented > .rc-segmented__option,
-	.rc-segmented-wrap--row > .rc-segmented > .rc-segmented__tip {
+	.rc-segmented-wrap--row > .rc-segmented > .rc-segmented__option {
 		flex: 1 1 0;
 		min-width: 0;
 	}
@@ -133,10 +120,6 @@ function select(value: string) {
 	overflow: hidden;
 	text-overflow: ellipsis;
 	cursor: pointer;
-}
-
-.rc-segmented__tip .rc-segmented__option {
-	width: 100%;
 }
 
 .rc-segmented__option:disabled {

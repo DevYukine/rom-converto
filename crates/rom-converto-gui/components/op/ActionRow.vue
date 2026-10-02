@@ -10,7 +10,8 @@ import type { DryRunLine } from "~/components/modals/DryRunModal.vue";
 import { dryRunArgs, opCommand, opProgressKey, requestPath } from "~/lib/opdefs/types";
 import type { OpDef, OpStore, StagedItem } from "~/lib/opdefs/types";
 import { useToast } from "~/composables/useToast";
-import type { RunOutcome } from "~/types";
+import type { OrganizeData, RunOutcome } from "~/types";
+import { organizeDryRunLines } from "~/lib/organize-actions";
 
 const props = defineProps<{
 	def: OpDef;
@@ -93,6 +94,14 @@ const dryLines = ref<DryRunLine[]>([]);
 const dryCommand = ref("");
 const dryOpen = ref(false);
 
+function isOrganizeData(data: unknown): data is OrganizeData {
+	return typeof data === "object" && data !== null && Array.isArray((data as OrganizeData).rows);
+}
+
+// An organize dry run plans the whole library; the modal is a plain list, so a
+// huge plan is cut off with a count instead of rendering every row.
+const DRY_RUN_ROWS_MAX = 500;
+
 async function dryRun() {
 	if (!count.value) return;
 	if (blockedByExplicitKey()) return;
@@ -137,6 +146,14 @@ async function dryRun() {
 			if (msg) note = msg;
 			conflict = /exists|rename/i.test(msg);
 			const data = res?.data;
+			if (props.def.resultKind === "organize" && isOrganizeData(data) && data.rows.length) {
+				const plan = organizeDryRunLines(data.rows.slice(0, DRY_RUN_ROWS_MAX), item.path, args.request.options.output_dir ?? "");
+				if (data.rows.length > DRY_RUN_ROWS_MAX) {
+					plan.push({ source: `${(data.rows.length - DRY_RUN_ROWS_MAX).toLocaleString()} more files`, output: "", note: "Not shown here", muted: true });
+				}
+				for (const line of plan) lines.push(line);
+				continue;
+			}
 			if (typeof data === "object" && data && "output" in data && typeof data.output === "string") {
 				output = data.output;
 			}
