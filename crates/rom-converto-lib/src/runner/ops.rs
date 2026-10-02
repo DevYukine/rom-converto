@@ -13,9 +13,10 @@ use super::ops_ms::{
     xbox_convert, xbox_extract, xenon_compress, xenon_convert, xenon_extract, xenon_verify,
 };
 use super::ops_sony::{ps3_decrypt, psp_extract, psp_to_iso, vita_extract};
-use super::organize::organize;
+use super::organize::{FileIdentity, organize};
 use super::{RUN_SCHEMA, invalid_arg, is_cancelled_error, planned_verb, record_verb};
 use crate::cso::{CsoCompressOptions, CsoFormat};
+use crate::disc::chd::error::ChdError;
 use crate::disc::chd::{ChdCodec, ChdOptions, DiscMode};
 use crate::nintendo::disc::legacy::{ALL_MIGRATE_FORMATS, DOL_MIGRATE_FORMATS, MigrateOptions};
 use crate::nintendo::disc::rvz::RvzCompressOptions;
@@ -25,8 +26,8 @@ use crate::util::{
     CancelToken, Cancelled, ConflictPolicy, ConflictResolution, DEFAULT_SPACE_HEADROOM, FileStatus,
     HashAlgo, OutputExists, OutputVerify, PlanDecision, PlanLine, ProgressReporter, ReportRecord,
     ReportRecordInput, ReportTotals, ResolvedInput, VerifyOutcome, available_space,
-    chd_media_label, format_bytes, hash_file, parse_algos, resolve_conflict, space_shortfall,
-    spawn_blocking_with_progress, verify_existing_cached, verify_existing_output,
+    chd_media_label, format_bytes, hash_file, parse_algos, resolve_conflict, resolve_conflict_by,
+    space_shortfall, spawn_blocking_with_progress, verify_existing_cached, verify_existing_output,
 };
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
@@ -1009,11 +1010,8 @@ pub(crate) async fn chd_extract(
 ) -> Result<RunResponse> {
     let req = &req;
     let input = required_input(req)?;
-    // The extractor keeps whatever extension it is handed, so the target has
-    // to name what this CHD actually restores or a cue sheet lands in a
-    // `.iso`. The flavour comes off the staged source, not the output basis:
-    // an archive's basis names a file that does not exist yet. A broken input
-    // stays extensionless and lets the extractor decide.
+    // The derived extension comes from the staged source, not the output
+    // basis: an archive's basis names a file that does not exist yet.
     convert_op(
         progress,
         req,
@@ -1039,15 +1037,65 @@ pub(crate) async fn chd_extract(
     .await
 }
 
-/// What `chd.extract` writes for `input`: a DVD-mode CHD restores a flat
-/// `.iso`, a CD-mode CHD a `.cue` beside its `.bin`. LaserDisc and unreadable
-/// inputs get no extension, leaving the choice (or the refusal) to the lib.
+/// Derived output extension: DVD restores `.iso`, CD `.cue` beside its `.bin`.
+/// LaserDisc and unreadable inputs get no extension here; `chd_extract_target`
+/// rejects them before planning.
 fn chd_extract_ext(input: &Path) -> &'static str {
-    match crate::disc::chd::reader::open_chd_sync(input).map(|handle| handle.flavor()) {
-        Ok(crate::disc::chd::reader::ChdFlavor::Cd) => "cue",
-        Ok(crate::disc::chd::reader::ChdFlavor::Dvd) => "iso",
-        _ => "",
+    crate::disc::chd::reader::open_chd_sync(input)
+        .and_then(|handle| crate::disc::chd::extract::extract_ext(handle.flavor()))
+        .unwrap_or("")
+}
+
+/// An explicit path keeps its extension or gets the missing mode extension;
+/// a contradicting extension is refused. A derived name appends it unless present.
+/// A target or CD target's `.bin` resolving to the input is rejected as an invalid argument.
+fn chd_extract_target(
+    output: PathBuf,
+    source: &Path,
+    input: &Path,
+    explicit: bool,
+) -> Result<PathBuf> {
+    let flavor = crate::disc::chd::reader::open_chd_sync(source)
+        .map_err(|err| anyhow::anyhow!("opening {}: {err}", source.display()))?
+        .flavor();
+    let ext = crate::disc::chd::extract::extract_ext(flavor)?;
+    let target = if explicit {
+        if output.is_dir() {
+            return Err(invalid_arg(format!(
+                "{} is a directory; set output_dir (--output-dir <DIR>) to extract into it",
+                output.display()
+            )));
+        }
+        crate::disc::chd::extract::extract_target(flavor, output).map_err(|err| match err {
+            ChdError::CdExtractNeedsCue(_) | ChdError::DvdExtractNeedsImage(_) => {
+                invalid_arg(err.to_string())
+            }
+            _ => err.into(),
+        })?
+    } else if output
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case(ext))
+    {
+        output
+    } else {
+        let mut output = output.into_os_string();
+        output.push(".");
+        output.push(ext);
+        output.into()
+    };
+    if let Ok(input_identity) = FileIdentity::probe(input) {
+        let bin = (flavor == crate::disc::chd::reader::ChdFlavor::Cd)
+            .then(|| target.with_extension("bin"));
+        for candidate in std::iter::once(target.as_path()).chain(bin.as_deref()) {
+            if FileIdentity::probe(candidate).is_ok_and(|identity| identity == input_identity) {
+                return Err(invalid_arg(format!(
+                    "{} is the input file; extracting would overwrite it",
+                    candidate.display()
+                )));
+            }
+        }
     }
+    Ok(target)
 }
 
 pub(crate) async fn chd_verify(
@@ -2051,6 +2099,11 @@ where
     };
     let source = staged_path(&resolved, input);
     let desired = output_or(req, source, || derive(&basis, source))?;
+    let desired = if operation == "chd.extract" {
+        chd_extract_target(desired, source, input, req.output.is_some())?
+    } else {
+        desired
+    };
     let plan = prepare_output(
         progress,
         req,
@@ -2512,6 +2565,23 @@ pub(crate) async fn prepare_output_quiet(
     .await
 }
 
+/// File taking `output`'s slot: a CD-mode `chd.extract` also writes the `.bin`
+/// its cue sheet names, so an existing `.bin` alone occupies the slot.
+fn output_occupant(operation: &str, output: &Path) -> Option<PathBuf> {
+    if output.exists() {
+        Some(output.to_path_buf())
+    } else if operation == "chd.extract"
+        && output
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("cue"))
+    {
+        let bin = output.with_extension("bin");
+        bin.exists().then_some(bin)
+    } else {
+        None
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn prepare_output_inner(
     progress: &dyn ProgressReporter,
@@ -2529,7 +2599,7 @@ async fn prepare_output_inner(
     let resolution = if absent {
         ConflictResolution::Write(desired.to_path_buf())
     } else {
-        resolve_conflict(desired, policy)?
+        resolve_conflict_by(desired, policy, |path| output_occupant(operation, path))?
     };
     if req.dry_run {
         let output = match &resolution {
@@ -2546,6 +2616,10 @@ async fn prepare_output_inner(
                 // it verified; a plain skip keeps the real run in step.
                 VerifyOutcome::Unverified(_) => crate::util::PlanDecision::Skip,
             }
+        } else if matches!(&resolution, ConflictResolution::Write(p) if p == desired)
+            && output_occupant(operation, desired).is_some()
+        {
+            crate::util::PlanDecision::Overwrite
         } else {
             crate::util::classify(desired, &resolution)
         };
@@ -2610,7 +2684,11 @@ async fn prepare_output_inner(
             }
         }
         ConflictResolution::Skip => {
-            log::info!("Skipped, output exists: {}", desired.display());
+            let existing = output_occupant(operation, desired);
+            log::info!(
+                "Skipped, output exists: {}",
+                existing.as_deref().unwrap_or(desired).display()
+            );
             Ok(PreparedOutput {
                 output: None,
                 line: None,
@@ -2815,18 +2893,24 @@ pub(crate) fn skipped(
     operation: &str,
     detail: Option<String>,
 ) -> RunResponse {
-    RunResponse::ok(format!("Skipped existing {}", desired.display()), None).with_record(
-        ReportRecord::new(ReportRecordInput {
-            input_path: input.display().to_string(),
-            output_path: desired.display().to_string(),
-            operation: record_verb(operation),
-            status: FileStatus::Skipped,
-            input_bytes: 0,
-            output_bytes: 0,
-            elapsed_ms: 0,
-            error: detail,
-        }),
+    let existing = output_occupant(operation, desired);
+    RunResponse::ok(
+        format!(
+            "Skipped existing {}",
+            existing.as_deref().unwrap_or(desired).display()
+        ),
+        None,
     )
+    .with_record(ReportRecord::new(ReportRecordInput {
+        input_path: input.display().to_string(),
+        output_path: desired.display().to_string(),
+        operation: record_verb(operation),
+        status: FileStatus::Skipped,
+        input_bytes: 0,
+        output_bytes: 0,
+        elapsed_ms: 0,
+        error: detail,
+    }))
 }
 
 pub(crate) fn totals_for(record: &ReportRecord) -> ReportTotals {
@@ -3106,6 +3190,41 @@ mod tests {
         let path = dir.join(name);
         std::fs::write(&path, (0..4 * 2048).map(|i| i as u8).collect::<Vec<_>>()).unwrap();
         path
+    }
+
+    async fn write_cd_chd(dir: &Path) -> (PathBuf, Vec<u8>) {
+        let chds = dir.join("chds");
+        let payload = vec![0u8; 4 * 2352];
+        std::fs::write(dir.join("cd.bin"), &payload).unwrap();
+        let cue = dir.join("cd.cue");
+        std::fs::write(
+            &cue,
+            "FILE \"cd.bin\" BINARY\r\n  TRACK 01 MODE1/2352\r\n    INDEX 01 00:00:00\r\n",
+        )
+        .unwrap();
+        let compress = json!({
+            "operation": "chd.compress",
+            "input": cue,
+            "options": { "mode": "cd", "output_dir": chds }
+        });
+        let res = run_json(&compress.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        (chds.join("cd.chd"), payload)
+    }
+
+    async fn write_dvd_chd(dir: &Path) -> (PathBuf, Vec<u8>) {
+        let chds = dir.join("chds");
+        let payload = crate::disc::chd::test_fixtures::mixed_iso(3);
+        let iso = dir.join("dvd.iso");
+        std::fs::write(&iso, &payload).unwrap();
+        let compress = json!({
+            "operation": "chd.compress",
+            "input": iso,
+            "options": { "mode": "dvd", "output_dir": chds }
+        });
+        let res = run_json(&compress.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        (chds.join("dvd.chd"), payload)
     }
 
     fn write_zip(archive: &Path, member: &str, data: &[u8]) {
@@ -3726,33 +3845,13 @@ mod tests {
     #[tokio::test]
     async fn chd_extract_dry_run_names_target_by_flavour() {
         let dir = tempfile::tempdir().unwrap();
-        let chds = dir.path().join("chds");
-        let payload = crate::disc::chd::test_fixtures::mixed_iso(3);
-        let iso = dir.path().join("dvd.iso");
-        std::fs::write(&iso, &payload).unwrap();
-        std::fs::write(dir.path().join("cd.bin"), vec![0u8; 4 * 2352]).unwrap();
-        let cue = dir.path().join("cd.cue");
-        std::fs::write(
-            &cue,
-            "FILE \"cd.bin\" BINARY\r\n  TRACK 01 MODE1/2352\r\n    INDEX 01 00:00:00\r\n",
-        )
-        .unwrap();
+        let (dvd_chd, _) = write_dvd_chd(dir.path()).await;
+        let (cd_chd, _) = write_cd_chd(dir.path()).await;
 
-        for (source, mode, chd, expected) in [
-            (&iso, "dvd", "dvd.chd", "dvd.iso"),
-            (&cue, "cd", "cd.chd", "cd.cue"),
-        ] {
-            let compress = json!({
-                "operation": "chd.compress",
-                "input": source,
-                "options": { "mode": mode, "output_dir": chds }
-            });
-            let res = run_json(&compress.to_string(), CancelToken::new()).await;
-            assert!(res.ok, "{mode}: {res:?}");
-
+        for (chd, mode, expected) in [(&dvd_chd, "dvd", "dvd.iso"), (&cd_chd, "cd", "cd.cue")] {
             let plan = json!({
                 "operation": "chd.extract",
-                "input": chds.join(chd),
+                "input": chd,
                 "dry_run": true
             });
             let res = run_json(&plan.to_string(), CancelToken::new()).await;
@@ -3760,7 +3859,7 @@ mod tests {
             let data = serde_json::to_value(res.data.unwrap()).unwrap();
             assert_eq!(
                 data["output"].as_str(),
-                chds.join(expected).to_str(),
+                chd.with_file_name(expected).to_str(),
                 "{mode}"
             );
         }
@@ -3770,17 +3869,224 @@ mod tests {
         let zips = dir.path().join("zips");
         std::fs::create_dir(&zips).unwrap();
         let archive = zips.join("disc.zip");
-        write_zip(
-            &archive,
-            "cd.chd",
-            &std::fs::read(chds.join("cd.chd")).unwrap(),
-        );
+        write_zip(&archive, "cd.chd", &std::fs::read(&cd_chd).unwrap());
         let plan = json!({ "operation": "chd.extract", "input": archive, "dry_run": true });
         let res = run_json(&plan.to_string(), CancelToken::new()).await;
         assert!(res.ok, "{res:?}");
         let data = serde_json::to_value(res.data.unwrap()).unwrap();
         assert_eq!(data["output"].as_str(), zips.join("cd.cue").to_str());
         assert!(!zips.join("cd.cue").exists());
+    }
+
+    #[tokio::test]
+    async fn chd_extract_settles_explicit_output_before_planning() {
+        let dir = tempfile::tempdir().unwrap();
+        let (chd_path, payload) = write_cd_chd(dir.path()).await;
+        let chds = chd_path.parent().unwrap();
+
+        let output = chds.join("out");
+        let extract = json!({
+            "operation": "chd.extract",
+            "input": chd_path,
+            "output": output
+        });
+        let res = run_json(&extract.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        assert_eq!(
+            res.records[0].output_path,
+            output.with_extension("cue").display().to_string()
+        );
+        assert!(output.with_extension("cue").exists());
+        assert_eq!(
+            std::fs::read(output.with_extension("bin")).unwrap(),
+            payload
+        );
+        assert!(!output.exists());
+
+        let invalid_output = chds.join("x.iso");
+        let plan = json!({
+            "operation": "chd.extract",
+            "input": chd_path,
+            "output": invalid_output,
+            "dry_run": true
+        });
+        let res = run_json(&plan.to_string(), CancelToken::new()).await;
+        assert!(!res.ok, "{res:?}");
+        assert_eq!(res.status, RunStatus::InvalidArgument.as_i32(), "{res:?}");
+        assert!(!invalid_output.exists());
+        assert!(!invalid_output.with_extension("cue").exists());
+        assert!(!invalid_output.with_extension("bin").exists());
+
+        let output_dir = chds.join("folder");
+        std::fs::create_dir(&output_dir).unwrap();
+        let extract = json!({
+            "operation": "chd.extract",
+            "input": chd_path,
+            "output": output_dir
+        });
+        let res = run_json(&extract.to_string(), CancelToken::new()).await;
+        assert!(!res.ok, "{res:?}");
+        assert_eq!(res.status, RunStatus::InvalidArgument.as_i32(), "{res:?}");
+        assert!(!output_dir.with_extension("cue").exists());
+        assert!(!output_dir.with_extension("bin").exists());
+    }
+
+    #[tokio::test]
+    async fn chd_extract_template_preserves_dotted_names_and_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let (chd_path, payload) = write_cd_chd(dir.path()).await;
+        let dotted_input = chd_path.with_file_name("Game v1.1.chd");
+        std::fs::rename(&chd_path, &dotted_input).unwrap();
+        let output_dir = dir.path().join("extracted");
+        let existing_dir = output_dir.join("Game v1.1");
+        std::fs::create_dir_all(&existing_dir).unwrap();
+
+        let extract = json!({
+            "operation": "chd.extract",
+            "input": dotted_input,
+            "options": {
+                "output_dir": output_dir,
+                "output_template": "{basename}",
+                "on_conflict": "error"
+            }
+        });
+        let res = run_json(&extract.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        let cue_path = output_dir.join("Game v1.1.cue");
+        assert_eq!(res.records[0].output_path, cue_path.display().to_string());
+        let sheet = crate::disc::cue::CueParser::new(&cue_path)
+            .parse()
+            .await
+            .unwrap();
+        assert_eq!(sheet.files[0].filename, "Game v1.1.bin");
+        assert_eq!(
+            std::fs::read(cue_path.with_extension("bin")).unwrap(),
+            payload
+        );
+    }
+
+    #[tokio::test]
+    async fn chd_extract_dvd_ignores_unrelated_bin() {
+        let dir = tempfile::tempdir().unwrap();
+        let (chd_path, payload) = write_dvd_chd(dir.path()).await;
+        let chds = chd_path.parent().unwrap();
+
+        let output = chds.join("x.iso");
+        let unrelated_bin = output.with_extension("bin");
+        let existing_bin = b"keep this unrelated bin";
+        std::fs::write(&unrelated_bin, existing_bin).unwrap();
+        let extract = json!({
+            "operation": "chd.extract",
+            "input": chd_path,
+            "output": output,
+            "options": { "on_conflict": "error" }
+        });
+        let res = run_json(&extract.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        assert_eq!(std::fs::read(&output).unwrap(), payload);
+        assert_eq!(std::fs::read(&unrelated_bin).unwrap(), existing_bin);
+    }
+
+    #[tokio::test]
+    async fn chd_extract_refuses_input_as_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let (dvd_chd, _) = write_dvd_chd(dir.path()).await;
+        let dvd_bytes = std::fs::read(&dvd_chd).unwrap();
+        let misnamed_dvd = dir.path().join("game.iso");
+        std::fs::copy(&dvd_chd, &misnamed_dvd).unwrap();
+        let (cd_chd, _) = write_cd_chd(dir.path()).await;
+        let cd_bytes = std::fs::read(&cd_chd).unwrap();
+        let misnamed_cd = dir.path().join("game.bin");
+        std::fs::copy(&cd_chd, &misnamed_cd).unwrap();
+        let archive = dir.path().join("games.zip");
+        write_zip(&archive, "dvd.chd", &dvd_bytes);
+        let archive_bytes = std::fs::read(&archive).unwrap();
+
+        for (input, output, original) in [
+            (&misnamed_dvd, Some(&misnamed_dvd), dvd_bytes.as_slice()),
+            (&misnamed_dvd, None, dvd_bytes.as_slice()),
+            (&misnamed_cd, None, cd_bytes.as_slice()),
+            (&archive, Some(&archive), archive_bytes.as_slice()),
+        ] {
+            let extract = json!({
+                "operation": "chd.extract",
+                "input": input,
+                "output": output,
+                "options": { "on_conflict": "overwrite" }
+            });
+            let res = run_json(&extract.to_string(), CancelToken::new()).await;
+            assert!(!res.ok, "{res:?}");
+            assert_eq!(res.status, RunStatus::InvalidArgument.as_i32(), "{res:?}");
+            assert_eq!(std::fs::read(input).unwrap().as_slice(), original);
+        }
+    }
+
+    #[tokio::test]
+    async fn chd_extract_conflict_policy_covers_sidecar_bin() {
+        let dir = tempfile::tempdir().unwrap();
+        let (chd_path, payload) = write_cd_chd(dir.path()).await;
+        let chds = chd_path.parent().unwrap();
+
+        let existing_bin = b"keep this bin unchanged";
+        let bin_path = chds.join("cd.bin");
+        std::fs::write(&bin_path, existing_bin).unwrap();
+        let request = |policy, dry_run| {
+            json!({
+                "operation": "chd.extract",
+                "input": chd_path,
+                "dry_run": dry_run,
+                "options": { "on_conflict": policy }
+            })
+        };
+
+        let plan = run_json(&request("overwrite", true).to_string(), CancelToken::new()).await;
+        assert!(plan.ok, "{plan:?}");
+        let Some(RunData::Plan(line)) = plan.data else {
+            panic!("expected extraction plan");
+        };
+        assert_eq!(line.decision, PlanDecision::Overwrite);
+        assert!(!chds.join("cd.cue").exists());
+        assert_eq!(std::fs::read(&bin_path).unwrap(), existing_bin);
+
+        let errored = run_json(&request("error", false).to_string(), CancelToken::new()).await;
+        assert!(!errored.ok, "{errored:?}");
+        assert!(
+            errored.message.contains(bin_path.to_str().unwrap()),
+            "{errored:?}"
+        );
+        assert!(!chds.join("cd.cue").exists());
+        assert_eq!(std::fs::read(&bin_path).unwrap(), existing_bin);
+
+        for policy in ["skip", "overwrite-invalid"] {
+            let skipped = run_json(&request(policy, false).to_string(), CancelToken::new()).await;
+            assert!(skipped.ok, "{policy}: {skipped:?}");
+            assert_eq!(skipped.records[0].status, FileStatus::Skipped);
+            assert!(
+                skipped.message.contains(bin_path.to_str().unwrap()),
+                "{policy}: {skipped:?}"
+            );
+            assert_eq!(
+                skipped.records[0].output_path,
+                chds.join("cd.cue").display().to_string()
+            );
+            assert!(!chds.join("cd.cue").exists());
+            assert_eq!(std::fs::read(&bin_path).unwrap(), existing_bin);
+        }
+
+        let renamed = run_json(&request("rename", false).to_string(), CancelToken::new()).await;
+        assert!(renamed.ok, "{renamed:?}");
+        let renamed_cue = chds.join("cd (1).cue");
+        let sheet = crate::disc::cue::CueParser::new(&renamed_cue)
+            .parse()
+            .await
+            .unwrap();
+        assert_eq!(sheet.files[0].filename, "cd (1).bin");
+        assert_eq!(
+            std::fs::read(renamed_cue.with_extension("bin")).unwrap(),
+            payload
+        );
+        assert!(!chds.join("cd.cue").exists());
+        assert_eq!(std::fs::read(&bin_path).unwrap(), existing_bin);
     }
 
     #[tokio::test]

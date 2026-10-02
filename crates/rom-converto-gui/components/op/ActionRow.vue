@@ -10,6 +10,7 @@ import type { DryRunLine } from "~/components/modals/DryRunModal.vue";
 import { dryRunArgs, opCommand, opProgressKey, requestPath } from "~/lib/opdefs/types";
 import type { OpDef, OpStore, StagedItem } from "~/lib/opdefs/types";
 import { useToast } from "~/composables/useToast";
+import type { RunOutcome } from "~/types";
 
 const props = defineProps<{
 	def: OpDef;
@@ -129,18 +130,23 @@ async function dryRun() {
 		if (!cmd) cmd = buildCliCommand(args);
 		let note = "ok";
 		let conflict = false;
+		let output = props.def.deriveOutput?.(item.path, props.store) ?? requestPath(args, "output");
 		try {
-			const res = await invoke<{ message?: string }>(command, dryRunArgs(args));
+			const res = await invoke<RunOutcome>(command, dryRunArgs(args));
 			const msg = typeof res === "object" && res ? String(res.message ?? "") : String(res);
 			if (msg) note = msg;
 			conflict = /exists|rename/i.test(msg);
+			const data = res?.data;
+			if (typeof data === "object" && data && "output" in data && typeof data.output === "string") {
+				output = data.output;
+			}
 		} catch (e) {
 			note = String(e);
 			conflict = true;
 		}
 		lines.push({
 			source: item.name,
-			output: props.def.deriveOutput ? props.def.deriveOutput(item.path, props.store) : item.path,
+			output,
 			note,
 			conflict,
 		});

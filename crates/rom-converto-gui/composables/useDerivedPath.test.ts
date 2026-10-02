@@ -16,8 +16,20 @@ import {
   deriveRvzPath,
   deriveWuaPath,
   deriveWupDiscPath,
+  dirName,
   stripArchiveExt,
 } from "./useDerivedPath";
+
+describe("directory names", () => {
+  it.each([
+    ["/game.chd", "/"],
+    ["E:\\game.chd", "E:\\"],
+    ["D:\\in\\X.chd", "D:\\in"],
+    ["game.chd", ""],
+  ])("finds the directory of %s", (path, expected) => {
+    expect(dirName(path)).toBe(expected);
+  });
+});
 
 // A stem containing dots must survive derivation intact once the archive
 // extension is stripped; only a real image extension may be replaced.

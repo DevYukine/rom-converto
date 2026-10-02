@@ -62,6 +62,14 @@ export function basename(path: string): string {
   return i >= 0 ? norm.slice(i + 1) : norm;
 }
 
+export function dirName(path: string): string {
+  const norm = path.replace(/[\\/]+$/, "");
+  const i = Math.max(norm.lastIndexOf("/"), norm.lastIndexOf("\\"));
+  // Keep root separators: a bare E: is drive-relative.
+  const root = i === 0 || (i === 2 && norm[1] === ":");
+  return i >= 0 ? norm.slice(0, root ? i + 1 : i) : "";
+}
+
 // Splits a path's filename into a shrinkable head and a fixed tail for
 // middle-ellipsis display. The tail keeps the extension and trailing
 // disambiguating tags (region, version) which are as identifying as the start.

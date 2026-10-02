@@ -7,20 +7,17 @@ use crate::disc::chd::reader::cue_generator::{
     ChdTrackInfo, chd_type_datasize, generate_cue_sheet, parse_chd_track_metadata,
 };
 use crate::disc::chd::reader::{ChdFlavor, SyncChdHandle};
-use crate::util::{
-    BYTES_PER_MB, CancelToken, ProgressReporter, await_with_progress_cancel, run_scratch_write,
-};
+use crate::util::{BYTES_PER_MB, CancelToken, ProgressReporter, run_scratch_write};
 use log::{debug, info};
+use std::io::Write as _;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
-use tokio::fs;
 
 use super::*;
 
-/// Extract the CHD at `input_path` back to its disc image at
-/// `output_path`; on cancel any output file this call created is
-/// removed.
+/// Extract the CHD at `input_path` back to its disc image at `output_path`.
+/// CD accepts `.cue` or no extension (adds `.cue`); DVD accepts anything but
+/// `.cue` or `.chd`, with no extension adding `.iso`. A failed or cancelled bin
+/// extraction leaves an existing `.bin` untouched.
 pub async fn extract_from_chd(
     progress: &dyn ProgressReporter,
     input_path: PathBuf,
@@ -41,19 +38,19 @@ pub async fn extract_from_chd(
     // not from `header.logical_bytes`: logical_bytes counts the padded
     // physical frames, which the extracted bin drops.
     let input_for_peek = input_path.clone();
-    let (handle, tracks) = tokio::task::spawn_blocking(
-        move || -> ChdResult<(SyncChdHandle, Option<Vec<ChdTrackInfo>>)> {
+    let (handle, tracks, output_path) = tokio::task::spawn_blocking(
+        move || -> ChdResult<(SyncChdHandle, Option<Vec<ChdTrackInfo>>, PathBuf)> {
             let handle = crate::disc::chd::reader::open_chd_sync(&input_for_peek)?;
+            let output_path = extract_target(handle.flavor(), output_path)?;
             match handle.flavor() {
-                ChdFlavor::Ld => Err(ChdError::LdExtractionUnsupported),
-                ChdFlavor::Dvd => Ok((handle, None)),
                 ChdFlavor::Cd => {
                     let meta_str = cd_track_metadata_text(&handle.metadata).ok_or_else(|| {
                         ChdError::InvalidTrackMetadata("no CHT2 metadata found".to_string())
                     })?;
                     let tracks = parse_chd_track_metadata(&meta_str)?;
-                    Ok((handle, Some(tracks)))
+                    Ok((handle, Some(tracks), output_path))
                 }
+                _ => Ok((handle, None, output_path)),
             }
         },
     )
@@ -68,17 +65,14 @@ pub async fn extract_from_chd(
         .map(|t| t.frames as u64 * chd_type_datasize(&t.track_type) as u64)
         .sum();
 
-    let cue_path = if output_path.extension().is_some() {
-        output_path.clone()
-    } else {
-        output_path.with_extension("cue")
-    };
+    let cue_path = output_path;
     let bin_path = cue_path.with_extension("bin");
     let bin_filename = bin_path
         .file_name()
         .unwrap_or_default()
         .to_string_lossy()
         .to_string();
+    let cue_content = generate_cue_sheet(&bin_filename, &tracks);
 
     let total_mb = total_bin_bytes as f64 / BYTES_PER_MB;
     progress.start(
@@ -86,78 +80,65 @@ pub async fn extract_from_chd(
         &format!("Extracting from CHD (~{:.2} MB)", total_mb),
     );
 
-    let bin_preexisting = fs::metadata(&bin_path).await.is_ok();
-    let cue_preexisting = fs::metadata(&cue_path).await.is_ok();
+    run_scratch_write(
+        &bin_path,
+        true,
+        progress,
+        &cancel,
+        move |write_path, bytes_done, cancel| -> ChdResult<()> {
+            use crate::disc::chd::reader::worker::{
+                ChdExtractWork, ChdExtractedOut, HunkExtractArgs, chd_read_admission,
+                extract_hunks, make_chd_extract_workers,
+            };
+            use crate::util::worker_pool::{Pool, parallelism};
 
-    let bin_owned = bin_path.clone();
-    let cue_owned = cue_path.clone();
-    let bin_filename_owned = bin_filename;
-    let cancel_bg = cancel.clone();
-    let bytes_done = Arc::new(AtomicU64::new(0));
-    let bytes_done_bg = bytes_done.clone();
+            let hunk_bytes = handle.header.hunk_bytes as usize;
+            // Frame maps come from the CHT2 `FRAMES:` counts; padding
+            // frames carry width 0 so they drop out of the bin. Legacy
+            // rom-converto CHDs stored the stream unpadded.
+            let padded =
+                chd_layout_is_padded(&tracks, handle.header.logical_bytes / FRAME_SIZE as u64);
+            let (frame_sizes, _) = chd_frame_spans(&tracks, padded);
+            let frame_audio = chd_frame_audio(&tracks, padded);
 
-    let task = tokio::task::spawn_blocking(move || -> ChdResult<()> {
-        use crate::disc::chd::reader::worker::{
-            ChdExtractWork, ChdExtractedOut, HunkExtractArgs, chd_read_admission, extract_hunks,
-            make_chd_extract_workers,
-        };
-        use crate::util::worker_pool::{Pool, parallelism};
+            let bin_file = std::fs::File::create(&write_path)?;
+            let mut bin_writer = std::io::BufWriter::with_capacity(IO_BUFFER_SIZE, bin_file);
 
-        let hunk_bytes = handle.header.hunk_bytes as usize;
-        // Frame maps come from the CHT2 `FRAMES:` counts; padding
-        // frames carry width 0 so they drop out of the bin. Legacy
-        // rom-converto CHDs stored the stream unpadded.
-        let padded = chd_layout_is_padded(&tracks, handle.header.logical_bytes / FRAME_SIZE as u64);
-        let (frame_sizes, _) = chd_frame_spans(&tracks, padded);
-        let frame_audio = chd_frame_audio(&tracks, padded);
-
-        let bin_file = std::fs::File::create(&bin_owned)?;
-        let mut bin_writer = std::io::BufWriter::with_capacity(IO_BUFFER_SIZE, bin_file);
-
-        let n_threads = parallelism();
-        let admission = chd_read_admission(hunk_bytes, n_threads, handle.map.len() as u64, true);
-        let workers = make_chd_extract_workers(
-            admission.workers,
-            &handle.file,
-            hunk_bytes,
-            handle.header.compressors(),
-        )?;
-        let pool: Pool<ChdExtractWork, ChdExtractedOut, ChdError> = Pool::spawn(workers);
-
-        let extract_result = extract_hunks(
-            &pool,
-            &mut bin_writer,
-            HunkExtractArgs {
-                map: &handle.map,
+            let n_threads = parallelism();
+            let admission =
+                chd_read_admission(hunk_bytes, n_threads, handle.map.len() as u64, true);
+            let workers = make_chd_extract_workers(
+                admission.workers,
+                &handle.file,
                 hunk_bytes,
-                frame_sizes: &frame_sizes,
-                frame_audio: &frame_audio,
-                bytes_done: &bytes_done_bg,
-                cancel: &cancel_bg,
-                admission,
-            },
-        );
-        pool.shutdown();
-        extract_result?;
+                handle.header.compressors(),
+            )?;
+            let pool: Pool<ChdExtractWork, ChdExtractedOut, ChdError> = Pool::spawn(workers);
 
-        use std::io::Write as _;
-        bin_writer.flush()?;
+            let extract_result = extract_hunks(
+                &pool,
+                &mut bin_writer,
+                HunkExtractArgs {
+                    map: &handle.map,
+                    hunk_bytes,
+                    frame_sizes: &frame_sizes,
+                    frame_audio: &frame_audio,
+                    bytes_done: &bytes_done,
+                    cancel: &cancel,
+                    admission,
+                },
+            );
+            pool.shutdown();
+            extract_result?;
 
-        let cue_content = generate_cue_sheet(&bin_filename_owned, &tracks);
-        std::fs::write(&cue_owned, cue_content)?;
-
-        Ok(())
-    });
-
-    if let Err(err) = await_with_progress_cancel(progress, &bytes_done, task, &cancel).await {
-        if !bin_preexisting {
-            let _ = fs::remove_file(&bin_path).await;
-        }
-        if !cue_preexisting {
-            let _ = fs::remove_file(&cue_path).await;
-        }
-        return Err(err);
-    }
+            bin_writer.flush()?;
+            Ok(())
+        },
+    )
+    .await?;
+    crate::util::atomic_write(&cue_path, true, |file| {
+        file.write_all(cue_content.as_bytes())
+    })?;
 
     let bin_mb = total_bin_bytes as f64 / BYTES_PER_MB;
     info!(
@@ -167,6 +148,33 @@ pub async fn extract_from_chd(
 
     debug!("Extraction complete");
     Ok(())
+}
+
+pub(crate) fn extract_ext(flavor: ChdFlavor) -> ChdResult<&'static str> {
+    match flavor {
+        ChdFlavor::Cd => Ok("cue"),
+        ChdFlavor::Dvd => Ok("iso"),
+        ChdFlavor::Ld => Err(ChdError::LdExtractionUnsupported),
+    }
+}
+
+/// Settle an extraction target: CD defaults to `.cue` and rejects other
+/// extensions; DVD defaults to `.iso` and rejects `.cue` or `.chd`.
+/// Extension checks are ASCII case-insensitive. LaserDisc extraction is unsupported.
+pub(crate) fn extract_target(flavor: ChdFlavor, output: PathBuf) -> ChdResult<PathBuf> {
+    let mode_ext = extract_ext(flavor)?;
+    match (flavor, output.extension()) {
+        (_, None) => Ok(output.with_extension(mode_ext)),
+        (ChdFlavor::Cd, Some(ext)) if ext.eq_ignore_ascii_case(mode_ext) => Ok(output),
+        (ChdFlavor::Cd, Some(_)) => Err(ChdError::CdExtractNeedsCue(output)),
+        (ChdFlavor::Dvd, Some(ext))
+            if ext.eq_ignore_ascii_case("cue") || ext.eq_ignore_ascii_case("chd") =>
+        {
+            Err(ChdError::DvdExtractNeedsImage(output))
+        }
+        (ChdFlavor::Dvd, Some(_)) => Ok(output),
+        (ChdFlavor::Ld, _) => Err(ChdError::LdExtractionUnsupported),
+    }
 }
 
 /// Peek a CHD's metadata to tell DVD-mode (flat ISO) apart from
@@ -187,16 +195,10 @@ pub async fn is_dvd_mode_chd(path: PathBuf) -> ChdResult<bool> {
 async fn extract_dvd_iso(
     progress: &dyn ProgressReporter,
     input_path: PathBuf,
-    output_path: PathBuf,
+    iso_path: PathBuf,
     handle: SyncChdHandle,
     cancel: CancelToken,
 ) -> ChdResult<()> {
-    let iso_path = if output_path.extension().is_some() {
-        output_path.clone()
-    } else {
-        output_path.with_extension("iso")
-    };
-
     let logical_bytes = handle.header.logical_bytes;
     let total_mb = logical_bytes as f64 / BYTES_PER_MB;
     progress.start(
@@ -244,7 +246,6 @@ async fn extract_dvd_iso(
             pool.shutdown();
             extract_result?;
 
-            use std::io::Write as _;
             iso_writer.flush()?;
             Ok(())
         },

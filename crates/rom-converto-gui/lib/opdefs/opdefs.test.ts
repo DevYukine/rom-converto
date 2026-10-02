@@ -25,6 +25,14 @@ describe("op registry", () => {
 		expect(defs.length).toBeGreaterThan(0);
 	});
 
+	it("lets CHD extraction choose its output format beside the input", () => {
+		const def = defs.find((def) => def.storeId === "chd-extract")!;
+		const item = { ...ITEM, path: "/roms/Game (USA).chd" };
+		const { request } = def.buildArgs(def.useStore(), item, "task-1");
+		expect(request.output).toBeNull();
+		expect(request.options.output_dir).toBe("/roms");
+	});
+
 	// The runner rejects unknown option keys outright, so a typo here would only
 	// surface as a failed run.
 	it("sends only keys the runner's RunOptions defines", () => {

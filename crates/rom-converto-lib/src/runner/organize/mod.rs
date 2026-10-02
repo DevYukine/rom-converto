@@ -1591,6 +1591,28 @@ impl FileIdentity {
             Self::Path(parent.join(path.file_name().unwrap_or_default()))
         })
     }
+
+    /// Identity of an existing `path`: (dev, ino) on unix; elsewhere its
+    /// canonical path, or its absolute path when canonicalize fails with an
+    /// error other than `NotFound`. Stat and path errors are returned.
+    pub(super) fn probe(path: &Path) -> std::io::Result<Self> {
+        let meta = std::fs::metadata(path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            Ok(Self::Inode(meta.dev(), meta.ino()))
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = meta;
+            match std::fs::canonicalize(path) {
+                Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
+                    std::path::absolute(path).map(Self::Path)
+                }
+                resolved => resolved.map(Self::Path),
+            }
+        }
+    }
 }
 
 /// True when both paths name the same directory entry: the same location,
@@ -1903,29 +1925,9 @@ async fn remove_source(
         Err(err) => return Err(err),
         Ok(_) => {}
     }
-    let output_identity = |output: &Path| -> std::io::Result<FileIdentity> {
-        let meta = std::fs::metadata(output)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            Ok(FileIdentity::Inode(meta.dev(), meta.ino()))
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = meta;
-            // Some virtual and RAM-disk drives cannot report a final path; the
-            // metadata call above still catches an output that vanished.
-            match std::fs::canonicalize(output) {
-                Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
-                    std::path::absolute(output).map(FileIdentity::Path)
-                }
-                resolved => resolved.map(FileIdentity::Path),
-            }
-        }
-    };
     let identities = outputs
         .iter()
-        .map(|output| output_identity(output))
+        .map(|output| FileIdentity::probe(output))
         .collect::<std::io::Result<Vec<_>>>()?;
     if !*synced {
         let outputs = outputs.to_vec();
@@ -1953,7 +1955,7 @@ async fn remove_source(
     let outcome = if outputs
         .iter()
         .zip(&identities)
-        .any(|(output, identity)| output_identity(output).as_ref().ok() != Some(identity))
+        .any(|(output, identity)| FileIdentity::probe(output).as_ref().ok() != Some(identity))
     {
         Ok(false)
     } else {

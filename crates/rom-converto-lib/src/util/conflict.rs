@@ -52,17 +52,28 @@ pub fn resolve_conflict(
     desired: &Path,
     policy: ConflictPolicy,
 ) -> std::io::Result<ConflictResolution> {
-    if !desired.exists() {
+    resolve_conflict_by(desired, policy, |path| {
+        path.exists().then(|| path.to_path_buf())
+    })
+}
+
+/// Resolve an output written together with sidecars, such as a cue sheet
+/// and its `.bin`, so the set conflicts and renames together.
+pub fn resolve_conflict_by(
+    desired: &Path,
+    policy: ConflictPolicy,
+    occupant: impl Fn(&Path) -> Option<PathBuf>,
+) -> std::io::Result<ConflictResolution> {
+    let Some(existing) = occupant(desired) else {
         return Ok(ConflictResolution::Write(desired.to_path_buf()));
-    }
+    };
     match policy {
         ConflictPolicy::Overwrite => Ok(ConflictResolution::Write(desired.to_path_buf())),
         ConflictPolicy::Skip => Ok(ConflictResolution::Skip),
-        ConflictPolicy::Error => Err(Error::new(
-            ErrorKind::AlreadyExists,
-            OutputExists(desired.to_path_buf()),
-        )),
-        ConflictPolicy::Rename => Ok(ConflictResolution::Write(first_free_slot(desired)?)),
+        ConflictPolicy::Error => Err(Error::new(ErrorKind::AlreadyExists, OutputExists(existing))),
+        ConflictPolicy::Rename => Ok(ConflictResolution::Write(first_free_slot(
+            desired, occupant,
+        )?)),
         // The integrity check is async and format specific, so it cannot run
         // here. Default to keeping the existing output; the caller overrides
         // this to a rewrite when it can verify the output and finds it broken.
@@ -70,7 +81,10 @@ pub fn resolve_conflict(
     }
 }
 
-fn first_free_slot(desired: &Path) -> std::io::Result<PathBuf> {
+fn first_free_slot(
+    desired: &Path,
+    occupant: impl Fn(&Path) -> Option<PathBuf>,
+) -> std::io::Result<PathBuf> {
     let stem = desired
         .file_stem()
         .and_then(|s| s.to_str())
@@ -88,7 +102,7 @@ fn first_free_slot(desired: &Path) -> std::io::Result<PathBuf> {
             Some(dir) if !dir.as_os_str().is_empty() => dir.join(name),
             _ => PathBuf::from(name),
         };
-        if !candidate.exists() {
+        if occupant(&candidate).is_none() {
             return Ok(candidate);
         }
     }
@@ -197,6 +211,28 @@ mod tests {
         assert_eq!(
             res,
             ConflictResolution::Write(dir.path().join("game (2).chd"))
+        );
+    }
+
+    #[test]
+    fn rename_skips_occupied_sidecar_slots() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("game.cue");
+        std::fs::write(path.with_extension("bin"), b"original bin").unwrap();
+        std::fs::write(dir.path().join("game (1).bin"), b"existing bin").unwrap();
+        std::fs::write(dir.path().join("game (2).cue"), b"existing cue").unwrap();
+        let res = resolve_conflict_by(&path, ConflictPolicy::Rename, |output| {
+            if output.exists() {
+                Some(output.to_path_buf())
+            } else {
+                let bin = output.with_extension("bin");
+                bin.exists().then_some(bin)
+            }
+        })
+        .unwrap();
+        assert_eq!(
+            res,
+            ConflictResolution::Write(dir.path().join("game (3).cue"))
         );
     }
 

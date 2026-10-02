@@ -48,7 +48,7 @@ export function useStaging(def: OpDef) {
 				path,
 				name: basename(path),
 				size: 0,
-				outExt: def.deriveOutput ? extOf(def.deriveOutput(path, store)) : extOf(path),
+				outExt: def.deriveOutput ? extOf(def.deriveOutput(path, store)) : "",
 			};
 			staged.value.push(item);
 			added.push(item);

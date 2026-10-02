@@ -836,6 +836,141 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cd_chd_extract_rejects_non_cue_outputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let (cue_path, _) = write_two_track_cue(dir.path());
+        let chd_path = dir.path().join("game.chd");
+        convert_to_chd(
+            &NoProgress,
+            cue_path,
+            chd_path.clone(),
+            ChdOptions::default(),
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+
+        let bin_path = dir.path().join("x.bin");
+        let existing_bin = b"keep this bin unchanged";
+        std::fs::write(&bin_path, existing_bin).unwrap();
+        for extension in ["iso", "bin"] {
+            let output = dir.path().join(format!("x.{extension}"));
+            let err = extract_from_chd(
+                &NoProgress,
+                chd_path.clone(),
+                output.clone(),
+                None,
+                CancelToken::new(),
+            )
+            .await
+            .unwrap_err();
+            assert!(matches!(err, ChdError::CdExtractNeedsCue(path) if path == output));
+            assert!(!dir.path().join("x.iso").exists());
+            assert!(!dir.path().join("x.cue").exists());
+            assert_eq!(std::fs::read(&bin_path).unwrap(), existing_bin);
+        }
+    }
+
+    #[tokio::test]
+    async fn dvd_chd_extract_rejects_non_image_outputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let iso_path = dir.path().join("game.iso");
+        std::fs::write(&iso_path, mixed_iso(3)).unwrap();
+        let chd_path = dir.path().join("game.chd");
+        convert_iso_to_chd(
+            &NoProgress,
+            iso_path,
+            chd_path.clone(),
+            ChdOptions::default(),
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+
+        for extension in ["cue", "CuE", "ChD"] {
+            let output = dir.path().join(format!("x.{extension}"));
+            let err = extract_from_chd(
+                &NoProgress,
+                chd_path.clone(),
+                output.clone(),
+                None,
+                CancelToken::new(),
+            )
+            .await
+            .unwrap_err();
+            assert!(matches!(err, ChdError::DvdExtractNeedsImage(path) if path == output));
+            assert!(!output.exists());
+        }
+
+        let original = std::fs::read(&chd_path).unwrap();
+        let err = extract_from_chd(
+            &NoProgress,
+            chd_path.clone(),
+            chd_path.clone(),
+            None,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ChdError::DvdExtractNeedsImage(path) if path == chd_path));
+        assert_eq!(std::fs::read(&chd_path).unwrap(), original);
+    }
+
+    #[tokio::test]
+    async fn cd_chd_extract_failure_and_cancel_preserve_bin() {
+        let dir = tempfile::tempdir().unwrap();
+        let (cue_path, _) = write_two_track_cue(dir.path());
+        let chd_path = dir.path().join("game.chd");
+        convert_to_chd(
+            &NoProgress,
+            cue_path,
+            chd_path.clone(),
+            ChdOptions::default(),
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+
+        let existing_bin = b"keep this bin unchanged";
+        for failure in [false, true] {
+            if failure {
+                let handle = crate::disc::chd::reader::open_chd_sync(&chd_path).unwrap();
+                let offset = handle.map[0].offset as usize;
+                drop(handle);
+                let mut bytes = std::fs::read(&chd_path).unwrap();
+                bytes[offset] ^= 0xFF;
+                std::fs::write(&chd_path, bytes).unwrap();
+            }
+            for preexisting in [false, true] {
+                let output = dir.path().join(format!("{failure}-{preexisting}.cue"));
+                let bin_path = output.with_extension("bin");
+                if preexisting {
+                    std::fs::write(&bin_path, existing_bin).unwrap();
+                }
+                let files_before = std::fs::read_dir(dir.path()).unwrap().count();
+                let cancel = CancelToken::new();
+                if !failure {
+                    cancel.cancel();
+                }
+                let err =
+                    extract_from_chd(&NoProgress, chd_path.clone(), output.clone(), None, cancel)
+                        .await
+                        .unwrap_err();
+                if !failure {
+                    assert!(matches!(err, ChdError::Cancelled(_)));
+                }
+                if preexisting {
+                    assert_eq!(std::fs::read(&bin_path).unwrap(), existing_bin);
+                } else {
+                    assert!(!bin_path.exists());
+                }
+                assert!(!output.exists());
+                assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), files_before);
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn dvd_flag_on_cue_is_rejected() {
         let dir = tempfile::tempdir().unwrap();
         let cue_path = dir.path().join("game.cue");

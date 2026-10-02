@@ -26,6 +26,7 @@ import {
 	deriveDiscIsoPath,
 	deriveExtractDir,
 	deriveNspPath,
+	dirName,
 	withOutputDir,
 } from "~/composables/useDerivedPath";
 
@@ -253,15 +254,21 @@ const chd: OpDef = {
 	],
 	note: "CD-mode CHDs extract to .bin + .cue, DVD-mode (PS2/PSP) to a single .iso. The mode is read from the file.",
 	outputRows: outputRowsWithReport(),
-	showConflict: false,
 	actionNote: "Extraction never overwrites the compressed source.",
-	deriveOutput: deriveDiscIsoPath,
+	// No explicit output: only the backend can read the CHD's mode and name a
+	// .cue (CD) or .iso (DVD). The input folder is the default directory so the
+	// config's [chd] output_dir cannot redirect it, and so the echoed CLI gets
+	// the --output-dir it requires.
 	buildArgs: (store, item, taskId) =>
 		runArgs(
 			"chd.extract",
 			item.path,
-			templateIsActive(store) ? null : withOutputDir(deriveDiscIsoPath(item.path), store.outputDir || ""),
-			{ parent: store.parent || null, ...commonOptions(store) },
+			null,
+			{
+				parent: store.parent || null,
+				output_dir: store.outputDir || dirName(item.path) || null,
+				...commonOptions(store),
+			},
 			false,
 			taskId,
 			store.reportFile || null,

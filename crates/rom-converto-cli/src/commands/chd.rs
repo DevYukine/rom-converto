@@ -172,24 +172,24 @@ pub struct MigrateCommand {
     pub batch: BatchArgs,
 }
 
-/// Extract files from a CHD file to a specified output directory
+/// Extract a CHD back to .bin + .cue (CD) or .iso (DVD)
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
-    after_long_help = "EXAMPLES:\n  Single file:     rom-converto chd extract game.chd game.cue\n  Explicit output: rom-converto chd extract game.chd --output-dir ./extracted\n  Whole folder:    rom-converto chd extract -R ./chds --output-dir ./extracted\n"
+    after_long_help = "EXAMPLES:\n  CD image:        rom-converto chd extract game.chd game.cue\n  DVD image:       rom-converto chd extract game.chd game.iso\n  Into a folder:   rom-converto chd extract game.chd --output-dir ./extracted\n  Whole folder:    rom-converto chd extract -R ./chds --output-dir ./extracted\n"
 )]
 pub struct ExtractCommand {
     /// Input CHD file, or a directory of .chd files when --recursive is set
     #[arg(value_name = "INPUT")]
     pub input: PathBuf,
 
-    /// Output path for extracted files (ignored with --recursive)
+    /// Output path: the .cue for a CD-mode CHD (its .bin is written beside it) or the image for a DVD-mode CHD (ignored with --recursive)
     #[arg(
         value_name = "OUTPUT",
         required_unless_present_any = ["recursive", "output_flag", "output_dir"]
     )]
     pub output: Option<PathBuf>,
 
-    /// Output path for extracted files (ignored with --recursive)
+    /// Output path: the .cue for a CD-mode CHD (its .bin is written beside it) or the image for a DVD-mode CHD (ignored with --recursive)
     #[arg(
         short = 'o',
         long = "output",

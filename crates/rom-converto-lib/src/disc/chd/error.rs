@@ -3,6 +3,7 @@
 use crate::disc::chd::DiscMode;
 use crate::disc::chd::compression::ChdCodec;
 use crate::disc::cue::error::CueError;
+use std::path::PathBuf;
 use thiserror::Error;
 
 /// Errors from CHD creation, extraction, and verification.
@@ -192,6 +193,14 @@ pub enum ChdError {
     /// Extracting a laserdisc (`AVAV`-tagged) CHD is not implemented.
     #[error("LaserDisc CHDs cannot be extracted yet")]
     LdExtractionUnsupported,
+
+    /// A CD-mode CHD was given an output path other than a cue sheet.
+    #[error("{} is not a .cue path; a CD-mode CHD extracts to a .cue sheet with its .bin beside it", .0.display())]
+    CdExtractNeedsCue(PathBuf),
+
+    /// A DVD-mode CHD was given a cue sheet or CHD as its output path.
+    #[error("{} is not an image path; a DVD-mode CHD extracts to a single flat image such as .iso, not .cue or .chd", .0.display())]
+    DvdExtractNeedsImage(PathBuf),
 }
 
 /// Convenience alias for a [`Result`] with [`ChdError`].

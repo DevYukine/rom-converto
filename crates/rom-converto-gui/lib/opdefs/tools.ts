@@ -11,16 +11,11 @@ import {
 	deriveMergedCuePath,
 	deriveNxMergedPath,
 	deriveNxSplitDir,
+	dirName,
 	withOutputDir,
 } from "~/composables/useDerivedPath";
 import { nxKeysColor, nxKeysDisplay } from "./nx-keys";
 import { NX_KEYS_TOOLTIP, runArgs, type OpDef, type OpStore, type RunPayload } from "./types";
-
-function dirName(path: string): string {
-	const norm = path.replace(/[\\/]+$/, "");
-	const i = Math.max(norm.lastIndexOf("/"), norm.lastIndexOf("\\"));
-	return i >= 0 ? norm.slice(0, i) : "";
-}
 
 // hash.algos is a string[]; the Options card only renders toggle/kv/slider/etc.
 // fields, so each algorithm gets a synthetic boolean accessor backed by the

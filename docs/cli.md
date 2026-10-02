@@ -551,6 +551,16 @@ afterward, whether the run succeeds, fails, or is cancelled.
 `extract` does not support LaserDisc CHDs yet; it errors out naming the limitation rather than
 writing a partial file.
 
+For a CD-mode CHD, an explicit OUTPUT names the `.cue` with a same-named `.bin` beside it;
+a CD output with another extension or a DVD output with `.cue` or `.chd` is rejected as an invalid
+argument before anything is written, including dry runs. An explicit OUTPUT with no extension
+gets `.cue` (CD) or `.iso` (DVD); text after its last dot counts as the extension, so dotted
+names need an explicit extension. An explicit OUTPUT that is an existing directory is rejected;
+set `output_dir` (`--output-dir <DIR>`) to extract into a folder. A name built from
+`--output-template` gets the mode's extension unless it already ends with it.
+A target, or a CD target's `.bin`, that resolves to the input file itself is rejected as an
+invalid argument.
+
 `info` on an LD-mode CHD prints an LD block (fps, field size, interlacing, audio, frame count)
 decoded from the `AVAV` metadata, plus a VBI summary (CAV picture numbers, CLV timecodes,
 chapters, white flags, lead-in/out) decoded from the `AVLD` metadata. Running `info` on a

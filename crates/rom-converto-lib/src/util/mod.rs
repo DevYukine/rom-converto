@@ -36,7 +36,9 @@ pub use archive::{
     ArchiveMember, ArchiveSelection, NoMatchingMember, ResolvedInput, TempSpaceShortfall,
     is_archive_path, list_members, probe_archive, resolve_input, resolve_input_with_selection,
 };
-pub use conflict::{ConflictPolicy, ConflictResolution, OutputExists, resolve_conflict};
+pub use conflict::{
+    ConflictPolicy, ConflictResolution, OutputExists, resolve_conflict, resolve_conflict_by,
+};
 pub use footgun::{
     DREAMCAST_CHD_WARNING, NX_DAT_UNSUPPORTED_HINT, dreamcast_boot_signature,
     mixed_playlist_extensions, oversized_rvz_chunk,
