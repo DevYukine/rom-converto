@@ -8,6 +8,7 @@ on:
       - crates/**
       - Cargo.toml
       - Cargo.lock
+      - Cross.toml
       - .github/workflows/build-cli.yml
       - .github/workflows/_build-cli.yml
 
