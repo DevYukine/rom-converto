@@ -78,7 +78,7 @@ jobs:
           ref: ${{ inputs.ref || github.ref }}
 
       - name: Build release binary
-        uses: houseabsolute/actions-rust-cross@85826e468eac832e251ac58f6191ba784db237c8 # v1
+        uses: houseabsolute/actions-rust-cross@21b0f18dc621b25bfae556ff2791fca4173121e8 # v1.0.8
         with:
           command: build
           target: ${{ matrix.target }}
