@@ -1,3 +1,14 @@
+## [0.23.1](https://github.com/DevYukine/rom-converto/compare/v0.23.0...v0.23.1) (2026-10-02)
+
+
+### Bug Fixes
+
+* **chd:** extract CD-mode CHDs to .cue and .bin instead of a .iso ([49bc51a](https://github.com/DevYukine/rom-converto/commit/49bc51a37541c7cec90d64529698c3f42bed9b50))
+* **cue:** refuse cue and gdi file names outside the sheet's folder ([c8369d9](https://github.com/DevYukine/rom-converto/commit/c8369d917c3c7a7e21412fa7441d294849d1b0b5))
+* **release:** pin actions and cross, attest releases, verify self-update downloads ([43e3414](https://github.com/DevYukine/rom-converto/commit/43e3414cd2168c09e5678e2a61bd61915e493bb4))
+
+
+
 # [0.23.0](https://github.com/DevYukine/rom-converto/compare/v0.22.0...v0.23.0) (2026-10-01)
 
 
@@ -122,30 +133,6 @@
 ### Performance Improvements
 
 * **chd:** disable flacenc per-call thread spawning in flac hunk trials ([fc5b111](https://github.com/DevYukine/rom-converto/commit/fc5b1113acb027f5391c82176393c534ab5239d5))
-
-
-
-# [0.19.0](https://github.com/DevYukine/rom-converto/compare/v0.18.0...v0.19.0) (2026-09-01)
-
-
-### Bug Fixes
-
-* **chd:** chdman-parity track padding, per-track cht2, datasizes; sanitize icon filename stems ([8ef7f5d](https://github.com/DevYukine/rom-converto/commit/8ef7f5de7d2664ed748f60e51e3ee6ac991ba676))
-* **gui:** pin tauri plugin crates to npm package minors ([756c313](https://github.com/DevYukine/rom-converto/commit/756c313015cc1a859f6a1e6c5c3685e637f4b4f1))
-* **gui:** update wup tooltips for optional disc keys ([53867ea](https://github.com/DevYukine/rom-converto/commit/53867ea4afe5d4f6fd98c9fa90f481d0bfe95cde))
-
-
-### Features
-
-* **cue:** batch convert folders of cue/bin discs in cli and gui ([492416f](https://github.com/DevYukine/rom-converto/commit/492416f7aab3ca6bec03722719887c9f0bebd6fb))
-* **gui:** add tooltips to every option control ([73b59f9](https://github.com/DevYukine/rom-converto/commit/73b59f923e2cd1a272e585891906b2451431904c))
-* **info:** read ps1, ps2, and psp metadata with auto-detect info command ([5de8fb7](https://github.com/DevYukine/rom-converto/commit/5de8fb7b202486b6d0b3cae7cbfe51c873d29508))
-* **nx:** document default prod.keys paths and color the gui keys row by found status ([7ddda5b](https://github.com/DevYukine/rom-converto/commit/7ddda5b125cab978121905146b04f5611e72d8f1))
-* **ps3:** decrypt encrypted ISOs and extract disc metadata ([071a8bd](https://github.com/DevYukine/rom-converto/commit/071a8bdfc17f7e7588ce28928d87512fa013e908))
-* **ps3:** decrypt with built-in disc keys, make --key optional ([a0c2d12](https://github.com/DevYukine/rom-converto/commit/a0c2d126a49397a704697ab5258083184ca529ae))
-* **wup:** embed disc key database and make disc key optional ([37451fe](https://github.com/DevYukine/rom-converto/commit/37451fed80afdaeec4434fdc10cd1d33e11396d6))
-* **xbox:** read game metadata for xbox and xbox 360 info command ([7cb783f](https://github.com/DevYukine/rom-converto/commit/7cb783fa7a46a289c90c91d107faead50608c7fa))
-* **xbox:** support original xbox xiso and xbox 360 zar conversion ([84c2a52](https://github.com/DevYukine/rom-converto/commit/84c2a52fd0e356e09701d991c72915968d5ec359))
 
 
 
