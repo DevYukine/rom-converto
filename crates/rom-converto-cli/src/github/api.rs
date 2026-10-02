@@ -152,20 +152,11 @@ impl GithubApi {
         user: &str,
         repo: &str,
     ) -> anyhow::Result<GithubReleaseResponse> {
-        let req = self
-            .client
-            .request(
-                Method::GET,
-                format!("https://api.github.com/repos/{user}/{repo}/releases/latest"),
-            )
-            .headers(self.headers.clone())
-            .build()?;
-
-        let res = self.service.ready().await?.call(req).await?;
-
-        if !res.status().is_success() {
-            return Err(GithubError::NoSuccessStatusCode(res.status(), res.text().await?).into());
-        }
+        let res = self
+            .download(&format!(
+                "https://api.github.com/repos/{user}/{repo}/releases/latest"
+            ))
+            .await?;
 
         let parsed = res.json::<GithubReleaseResponse>().await?;
 

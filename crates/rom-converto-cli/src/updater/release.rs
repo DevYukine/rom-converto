@@ -237,14 +237,14 @@ fn is_packaged_or_sidecar_asset(asset_name: &str) -> bool {
     .any(|suffix| lower_name.ends_with(suffix))
 }
 
-/// Reads the digest from a `sha256sum` line (`<hex>  <name>`) published for
-/// `asset_name`, or `None` when the line is malformed or names another file.
+/// Reads a checksum line (`<hex>  <name>`) published for `asset_name`, with
+/// an optional `*` marking binary mode before the name. Returns `None` for
+/// a malformed line or a missing or different name.
 pub fn parse_sha256_file(text: &str, asset_name: &str) -> Option<[u8; 32]> {
     let mut fields = text.split_whitespace();
     let digest = fields.next()?;
-    if let Some(name) = fields.next()
-        && name.trim_start_matches('*') != asset_name
-    {
+    let name = fields.next()?;
+    if name.strip_prefix('*').unwrap_or(name) != asset_name || fields.next().is_some() {
         return None;
     }
     let mut out = [0u8; 32];
@@ -295,18 +295,21 @@ mod tests {
     }
 
     #[test]
-    fn parse_sha256_file_accepts_binary_mode_and_a_bare_digest() {
+    fn parse_sha256_file_accepts_binary_mode_and_requires_a_name() {
         let binary = format!("{DIGEST} *rom-converto-cli-windows-x64.exe");
         assert!(parse_sha256_file(&binary, "rom-converto-cli-windows-x64.exe").is_some());
-        assert!(parse_sha256_file(DIGEST, "anything").is_some());
+        assert!(parse_sha256_file(DIGEST, "x").is_none());
     }
 
     #[test]
     fn parse_sha256_file_rejects_another_file_or_a_bad_digest() {
         let other = format!("{DIGEST}  rom-converto-cli-linux-arm64-musl");
         assert!(parse_sha256_file(&other, "rom-converto-cli-linux-x64-musl").is_none());
+        let trailing = format!("{DIGEST}  x extra");
+        assert!(parse_sha256_file(&trailing, "x").is_none());
         assert!(parse_sha256_file("not-hex  x", "x").is_none());
-        assert!(parse_sha256_file(&DIGEST[..62], "x").is_none());
+        let short_digest = format!("{}  x", &DIGEST[..62]);
+        assert!(parse_sha256_file(&short_digest, "x").is_none());
         assert!(parse_sha256_file("", "x").is_none());
     }
 

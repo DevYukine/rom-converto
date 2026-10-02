@@ -17,7 +17,7 @@ pub enum GithubError {
     #[error("no asset with name {0} found in the release")]
     NoAssetFound(String),
 
-    /// The release has no readable `.sha256` file for the selected asset.
-    #[error("no valid checksum file {0} found in the release")]
+    /// The release lacks a checksum file or its contents do not name the asset's SHA-256.
+    #[error("checksum file {0} is missing from the release or holds no SHA-256 for the asset")]
     NoChecksumFound(String),
 }
